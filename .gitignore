@@ -1,0 +1,40 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Build artifacts
+dist/
+build/
+*.exe
+*.bin
+
+# Local config (if any)
+.env
+.env.local
+config.local.*
+
+# Node modules (if we add any tooling later)
+node_modules/
+
+# PHP vendor (if we go PHP route)
+vendor/
+
+# Go build artifacts (if we go Go route)
+*.test
+*.out
