@@ -1,11 +1,13 @@
-# Memory #31: Conpas IA ecosystem - Initial context
-
-**Type**: discovery  
-**Created**: 2026-04-09 18:56:53  
-**Project**: jarvis-dev  
-**Scope**: project
-
 ---
+id: 31
+type: discovery
+project: jarvis-dev
+scope: project
+session: manual-save-jarvis-dev
+created_at: 2026-04-09 18:56:53
+---
+
+# Conpas IA ecosystem - Initial context
 
 **What**: Explorando requerimientos para ecosistema IA de equipo Conpas (8 devs, Zoho stack)
 

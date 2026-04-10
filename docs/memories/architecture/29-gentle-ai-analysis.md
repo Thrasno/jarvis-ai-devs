@@ -1,11 +1,13 @@
-# Memory #29: gentle-ai ecosystem architecture analysis
-
-**Type**: architecture  
-**Created**: 2026-04-09 18:52:05  
-**Project**: jarvis-dev  
-**Scope**: project
-
 ---
+id: 29
+type: architecture
+project: jarvis-dev
+scope: project
+session: manual-save-jarvis-dev
+created_at: 2026-04-09 18:52:05
+---
+
+# gentle-ai ecosystem architecture analysis
 
 **What**: Analyzed gentle-ai GitHub repository (https://github.com/Gentleman-Programming/gentle-ai) in depth — architecture, SDD workflow, skills system, PRD structure, Engram persistence, multi-agent support
 

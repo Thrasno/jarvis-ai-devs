@@ -1,11 +1,13 @@
-# Memory #34: Decisiones críticas arquitectura - Sistema de memoria propio
-
-**Type**: decision  
-**Created**: 2026-04-09 20:19:54  
-**Project**: jarvis-dev  
-**Scope**: project
-
 ---
+id: 34
+type: decision
+project: jarvis-dev
+scope: project
+session: manual-save-jarvis-dev
+created_at: 2026-04-09 20:19:54
+---
+
+# Decisiones críticas arquitectura - Sistema de memoria propio
 
 **What**: Decisiones arquitectónicas finales sobre sistema de memoria compartida
 
