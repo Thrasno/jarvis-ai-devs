@@ -2,7 +2,8 @@
 
 **Generated**: 2026-04-10  
 **Project**: jarvis-dev  
-**Agent Framework**: opencode / claude / gemini
+**Agent Framework**: opencode / claude / gemini  
+**Memory Backend**: hive (use `mcp__hive__*` tools — NOT Engram — for all mem_save, mem_search, mem_context, mem_session_summary operations in this project)
 
 This registry lists all available skills and conventions for this project. Skills provide specialized instructions and workflows for specific tasks.
 

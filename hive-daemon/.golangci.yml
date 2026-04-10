@@ -1,0 +1,22 @@
+version: "2"
+
+linters:
+  enable:
+    - forbidigo
+
+linters-settings:
+  forbidigo:
+    forbid:
+      - pattern: "^fmt\\.Print(ln|f)?$"
+        msg: "use logger.Log instead of fmt.Print* (stdout pollution risk)"
+      - pattern: "^log\\.Print(ln|f)?$"
+        msg: "use logger.Log instead of log.Print* (writes to stdout by default)"
+      - pattern: "^log\\.Fatal(ln|f)?$"
+        msg: "use logger.Log.Fatal* instead of log.Fatal* (stdout pollution risk)"
+      - pattern: "^print(ln)?$"
+        msg: "builtin print/println writes to stderr but bypasses logger — use logger.Log"
+    analyze-types: true
+
+issues:
+  exclude-dirs:
+    - vendor
