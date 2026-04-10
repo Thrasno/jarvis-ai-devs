@@ -38,3 +38,8 @@ vendor/
 # Go build artifacts (if we go Go route)
 *.test
 *.out
+
+# Archives (extracted content should be tracked, not zips)
+*.zip
+*.tar.gz
+*.rar
