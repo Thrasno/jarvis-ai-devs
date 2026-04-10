@@ -1,0 +1,56 @@
+# Docker Compose para desarrollo local y staging.
+# NO usar en producción — para prod usar el Dockerfile directamente
+# con un gestor de secretos real (Vault, AWS Secrets Manager, etc.)
+#
+# Uso:
+#   docker compose -f deploy/docker-compose.yml up
+#   docker compose -f deploy/docker-compose.yml down -v  (borra volumes también)
+
+version: "3.9"
+
+services:
+  # ============================================================
+  # PostgreSQL 15
+  # ============================================================
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: hive
+      POSTGRES_PASSWORD: hivepass
+      POSTGRES_DB: hivedb
+    ports:
+      - "5432:5432"
+    volumes:
+      # Volumen nombrado — los datos persisten entre reinicios de contenedor.
+      # "docker compose down" no borra este volumen. "docker compose down -v" sí.
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready verifica que PostgreSQL acepta conexiones.
+      # interval/timeout/retries: el api service espera a que esto pase antes de arrancar.
+      test: ["CMD-SHELL", "pg_isready -U hive -d hivedb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================
+  # hive-api
+  # ============================================================
+  api:
+    build:
+      context: ..        # contexto = raíz del módulo (hive-api/)
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://hive:hivepass@postgres:5432/hivedb
+      JWT_SECRET: cambia-este-secreto-en-produccion-minimo-32chars
+      PORT: "8080"
+      GIN_MODE: debug   # debug para desarrollo, release para prod
+    depends_on:
+      postgres:
+        # Solo arranca api cuando postgres esté healthy (pg_isready pasó)
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  postgres_data:

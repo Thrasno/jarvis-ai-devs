@@ -1,0 +1,12 @@
+# Binario compilado
+hive-api
+
+# Variables de entorno reales (nunca a git)
+.env
+
+# Cobertura de tests
+coverage.out
+coverage.html
+
+# Caché del compilador Go
+/tmp/
