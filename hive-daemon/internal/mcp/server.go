@@ -33,10 +33,10 @@ func NewServer(store MemoryStore, syncer SyncRunner) *sdkmcp.Server {
 
 	registerTools(s, store, syncer)
 
-	tools := 5
+	syncStatus := "sin sync"
 	if syncer != nil {
-		tools = 6
+		syncStatus = "sync activo"
 	}
-	logger.Log.Printf("hive-daemon MCP server ready (%d tools registered)", tools)
+	logger.Log.Printf("hive-daemon MCP server ready (6 tools, %s)", syncStatus)
 	return s
 }
