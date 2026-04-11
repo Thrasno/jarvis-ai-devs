@@ -77,8 +77,8 @@ func TestDaemon_Starts_AndRegisters5Tools(t *testing.T) {
 		toolNames = append(toolNames, tool.Name)
 	}
 
-	if len(toolNames) != 5 {
-		t.Errorf("expected 5 tools, got %d: %v", len(toolNames), toolNames)
+	if len(toolNames) != 6 {
+		t.Errorf("expected 6 tools, got %d: %v", len(toolNames), toolNames)
 	}
 }
 

@@ -9,9 +9,10 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	hivesync "github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
 )
 
-func registerTools(s *sdkmcp.Server, store MemoryStore) {
+func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncStore, syncer SyncRunner) {
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_save",
 		Description: "Save a memory observation to Hive persistent storage",
@@ -80,6 +81,18 @@ func registerTools(s *sdkmcp.Server, store MemoryStore) {
 			}
 		}`),
 	}, memContextHandler(store))
+
+	s.AddTool(&sdkmcp.Tool{
+		Name:        "mem_sync",
+		Description: "Sync local memories with the hive-api cloud server. Pushes unsynced local memories and pulls new ones from the server. Requires HIVE_API_URL, HIVE_API_EMAIL, HIVE_API_PASSWORD env vars or ~/.jarvis/sync.json config file.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"required": ["project"],
+			"properties": {
+				"project": {"type": "string", "description": "Project to sync (e.g. 'jarvis-dev')"}
+			}
+		}`),
+	}, memSyncHandler(syncStore, syncer))
 }
 
 // ─── Handlers ──────────────────────────────────────────────────────────────
@@ -240,6 +253,51 @@ func toolJSON(v any) (*sdkmcp.CallToolResult, error) {
 	return &sdkmcp.CallToolResult{
 		Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: string(b)}},
 	}, nil
+}
+
+func memSyncHandler(syncStore hivesync.SyncStore, syncer SyncRunner) sdkmcp.ToolHandler {
+	// syncer se captura por referencia — la inicialización lazy persiste entre llamadas.
+	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+		// Lazy init: si el daemon arrancó sin las vars (proceso en caché, env tardío),
+		// intentamos cargarlas ahora en cada llamada hasta que estén disponibles.
+		if syncer == nil && syncStore != nil {
+			cfg, err := hivesync.Load()
+			if err != nil {
+				return toolError(fmt.Errorf("sync config error: %w", err)), nil
+			}
+			if cfg != nil {
+				syncer = hivesync.New(cfg, syncStore)
+			}
+		}
+		if syncer == nil {
+			return toolError(fmt.Errorf(
+				"sync not configured — set HIVE_API_URL, HIVE_API_EMAIL, HIVE_API_PASSWORD env vars or create ~/.jarvis/sync.json (chmod 600)",
+			)), nil
+		}
+
+		var p struct {
+			Project string `json:"project"`
+		}
+		if err := json.Unmarshal(req.Params.Arguments, &p); err != nil {
+			return toolError(fmt.Errorf("invalid params: %w", err)), nil
+		}
+		if p.Project == "" {
+			return toolError(fmt.Errorf("project es requerido")), nil
+		}
+
+		result, err := syncer.Sync(ctx, p.Project)
+		if err != nil {
+			return toolError(fmt.Errorf("sync failed: %w", err)), nil
+		}
+
+		return toolJSON(map[string]any{
+			"pushed":    result.Pushed,
+			"pulled":    result.Pulled,
+			"conflicts": result.Conflicts,
+			"project":   result.Project,
+			"status":    "ok",
+		})
+	}
 }
 
 // titleFromContent extracts the first non-empty line from markdown content,

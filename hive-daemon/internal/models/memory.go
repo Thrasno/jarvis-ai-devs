@@ -7,19 +7,21 @@ import (
 
 // Memory represents a single memory observation stored in Hive.
 type Memory struct {
-	ID            int64     `json:"id"`
-	SyncID        string    `json:"sync_id"`
-	Project       string    `json:"project"`
-	TopicKey      *string   `json:"topic_key"`
-	Category      string    `json:"category"`
-	Title         string    `json:"title"`
-	Content       string    `json:"content"`
-	Tags          []string  `json:"tags"`
-	FilesAffected []string  `json:"files_affected"`
-	CreatedBy     string    `json:"created_by"`
-	CreatedAt     time.Time `json:"created_at"`
-	Confidence    string    `json:"confidence"`
-	ImpactScore   int       `json:"impact_score"`
+	ID            int64      `json:"id"`
+	SyncID        string     `json:"sync_id"`
+	Project       string     `json:"project"`
+	TopicKey      *string    `json:"topic_key"`
+	Category      string     `json:"category"`
+	Title         string     `json:"title"`
+	Content       string     `json:"content"`
+	Tags          []string   `json:"tags"`
+	FilesAffected []string   `json:"files_affected"`
+	CreatedBy     string     `json:"created_by"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	SyncedAt      *time.Time `json:"synced_at"` // nil = pendiente de sync
+	Confidence    string     `json:"confidence"`
+	ImpactScore   int        `json:"impact_score"`
 }
 
 // Validate checks that all required fields are present.

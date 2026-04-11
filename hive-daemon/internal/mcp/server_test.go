@@ -50,7 +50,7 @@ func connectTestServer(t *testing.T, store hivemcp.MemoryStore) *sdkmcp.ClientSe
 	t.Helper()
 	ctx := context.Background()
 
-	server := hivemcp.NewServer(store)
+	server := hivemcp.NewServer(store, nil, nil) // nil syncStore/syncer = sync desactivado
 
 	t1, t2 := sdkmcp.NewInMemoryTransports()
 	if _, err := server.Connect(ctx, t1, nil); err != nil {
