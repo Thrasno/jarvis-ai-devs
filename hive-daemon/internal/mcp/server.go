@@ -1,13 +1,15 @@
 package mcp
 
 import (
+	"context"
+
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
 )
 
-// MemoryStore is the interface the MCP handlers use to access the database.
-// The concrete implementation is *db.DB; tests use a mock.
+// MemoryStore es la interfaz que usan los handlers para acceder a la BD local.
 type MemoryStore interface {
 	SaveMemory(mem *models.Memory) (int64, error)
 	GetMemory(id int64) (*models.Memory, error)
@@ -15,15 +17,26 @@ type MemoryStore interface {
 	Search(query, project string, limit int) ([]*models.Memory, error)
 }
 
-// NewServer creates and configures the MCP server with all 5 hive tools.
-func NewServer(store MemoryStore) *sdkmcp.Server {
+// SyncRunner es la interfaz que usa el tool mem_sync.
+// *sync.Syncer la implementa; nil = sync no configurado.
+type SyncRunner interface {
+	Sync(ctx context.Context, project string) (*sync.Result, error)
+}
+
+// NewServer crea y configura el servidor MCP con todas las herramientas Hive.
+// syncer puede ser nil — en ese caso mem_sync devuelve un mensaje explicativo.
+func NewServer(store MemoryStore, syncer SyncRunner) *sdkmcp.Server {
 	s := sdkmcp.NewServer(&sdkmcp.Implementation{
 		Name:    "hive-daemon",
 		Version: "1.0.0",
 	}, nil)
 
-	registerTools(s, store)
+	registerTools(s, store, syncer)
 
-	logger.Log.Printf("hive-daemon MCP server ready (5 tools registered)")
+	tools := 5
+	if syncer != nil {
+		tools = 6
+	}
+	logger.Log.Printf("hive-daemon MCP server ready (%d tools registered)", tools)
 	return s
 }

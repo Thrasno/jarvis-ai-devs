@@ -23,8 +23,19 @@ CREATE TABLE IF NOT EXISTS memories (
     files_affected  TEXT NOT NULL DEFAULT '[]',
     created_by      TEXT NOT NULL DEFAULT 'unknown',
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    synced_at       DATETIME,
     confidence      TEXT NOT NULL DEFAULT '',
     impact_score    INTEGER NOT NULL DEFAULT 0
+);
+
+-- sync_state guarda el JWT y el timestamp del último sync por proyecto.
+-- La fila con project='__auth__' almacena el token global.
+CREATE TABLE IF NOT EXISTS sync_state (
+    project         TEXT PRIMARY KEY,
+    last_sync_at    DATETIME,
+    jwt_token       TEXT,
+    jwt_expires_at  DATETIME
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_topic_key
@@ -90,6 +101,16 @@ func (d *DB) Close() error {
 func initSchema(sqlDB *sql.DB) error {
 	if _, err := sqlDB.Exec(schema); err != nil {
 		return fmt.Errorf("exec schema: %w", err)
+	}
+	// Migraciones incrementales: añadimos columnas si no existen todavía.
+	// SQLite no soporta ALTER TABLE ADD COLUMN IF NOT EXISTS — ignoramos el error
+	// si la columna ya existe (error "duplicate column name").
+	migrations := []string{
+		`ALTER TABLE memories ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`,
+		`ALTER TABLE memories ADD COLUMN synced_at DATETIME`,
+	}
+	for _, m := range migrations {
+		_, _ = sqlDB.Exec(m) // ignoramos error si la columna ya existe
 	}
 	return nil
 }

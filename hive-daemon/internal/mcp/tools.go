@@ -11,7 +11,7 @@ import (
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
 )
 
-func registerTools(s *sdkmcp.Server, store MemoryStore) {
+func registerTools(s *sdkmcp.Server, store MemoryStore, syncer SyncRunner) {
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_save",
 		Description: "Save a memory observation to Hive persistent storage",
@@ -80,6 +80,18 @@ func registerTools(s *sdkmcp.Server, store MemoryStore) {
 			}
 		}`),
 	}, memContextHandler(store))
+
+	s.AddTool(&sdkmcp.Tool{
+		Name:        "mem_sync",
+		Description: "Sync local memories with the hive-api cloud server. Pushes unsynced local memories and pulls new ones from the server. Requires HIVE_API_URL, HIVE_API_EMAIL, HIVE_API_PASSWORD env vars.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"required": ["project"],
+			"properties": {
+				"project": {"type": "string", "description": "Project to sync (e.g. 'jarvis-dev')"}
+			}
+		}`),
+	}, memSyncHandler(syncer))
 }
 
 // ─── Handlers ──────────────────────────────────────────────────────────────
@@ -240,6 +252,39 @@ func toolJSON(v any) (*sdkmcp.CallToolResult, error) {
 	return &sdkmcp.CallToolResult{
 		Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: string(b)}},
 	}, nil
+}
+
+func memSyncHandler(syncer SyncRunner) sdkmcp.ToolHandler {
+	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+		if syncer == nil {
+			return toolError(fmt.Errorf(
+				"sync no configurado — define HIVE_API_URL, HIVE_API_EMAIL y HIVE_API_PASSWORD",
+			)), nil
+		}
+
+		var p struct {
+			Project string `json:"project"`
+		}
+		if err := json.Unmarshal(req.Params.Arguments, &p); err != nil {
+			return toolError(fmt.Errorf("invalid params: %w", err)), nil
+		}
+		if p.Project == "" {
+			return toolError(fmt.Errorf("project es requerido")), nil
+		}
+
+		result, err := syncer.Sync(ctx, p.Project)
+		if err != nil {
+			return toolError(fmt.Errorf("sync failed: %w", err)), nil
+		}
+
+		return toolJSON(map[string]any{
+			"pushed":    result.Pushed,
+			"pulled":    result.Pulled,
+			"conflicts": result.Conflicts,
+			"project":   result.Project,
+			"status":    "ok",
+		})
+	}
 }
 
 // titleFromContent extracts the first non-empty line from markdown content,

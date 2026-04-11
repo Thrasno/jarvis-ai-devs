@@ -8,6 +8,7 @@ import (
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/db"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
 	hivemcp "github.com/Thrasno/jarvis-dev/hive-daemon/internal/mcp"
+	hivesync "github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -22,7 +23,21 @@ func main() {
 
 	logger.Log.Printf("database: %s", dbPath)
 
-	server := hivemcp.NewServer(store)
+	// Sync es opcional — solo se activa si están las variables de entorno.
+	// Sin ellas, hive-daemon funciona en modo local puro (igual que antes).
+	var syncer hivemcp.SyncRunner
+	cfg, err := hivesync.Load()
+	if err != nil {
+		logger.Log.Fatalf("sync config error: %v", err)
+	}
+	if cfg != nil {
+		syncer = hivesync.New(cfg, store)
+		logger.Log.Printf("sync habilitado → %s", cfg.APIURL)
+	} else {
+		logger.Log.Printf("sync desactivado (define HIVE_API_URL/EMAIL/PASSWORD para activarlo)")
+	}
+
+	server := hivemcp.NewServer(store, syncer)
 
 	if err := server.Run(context.Background(), &sdkmcp.StdioTransport{}); err != nil {
 		logger.Log.Fatalf("server stopped: %v", err)
