@@ -29,6 +29,7 @@ Jarvis-Dev is an AI-powered development ecosystem designed specifically for the 
 2. [Vision & Goals](#vision--goals)
 3. [User Personas](#user-personas)
 4. [Components Architecture](#components-architecture)
+   - [Agent Support](#agent-support)
 5. [Component 1: Hive (Shared Memory)](#component-1-hive-shared-memory)
 6. [Component 2: SDD Workflow](#component-2-sdd-workflow)
 7. [Component 3: Persona System](#component-3-persona-system)
@@ -214,6 +215,21 @@ Jarvis-Dev is an AI-powered development ecosystem designed specifically for the 
                     Laravel
                     Git Workflow
 ```
+
+### Agent Support
+
+Jarvis-Dev configures whichever AI coding agents the developer has installed. The installer detects available agents and configures each one.
+
+| Agent | Support | Config files |
+|-------|---------|-------------|
+| **Claude Code** | ✅ MVP 1 (default) | `~/.claude/CLAUDE.md`, `~/.claude/settings.json`, `~/.claude/skills/` |
+| **OpenCode** | ✅ MVP 1 (if installed) | `~/.config/opencode/AGENTS.md`, `~/.config/opencode/opencode.json`, `~/.config/opencode/skills/` |
+
+**Install behavior**: `jarvis install` auto-detects which agents are present and configures all of them. No flags needed — if OpenCode is installed, it gets configured automatically.
+
+**Persona sync**: `jarvis persona set <preset>` patches the personality section in ALL configured agents simultaneously.
+
+**Skills**: shared format, copied to each agent's skills directory.
 
 ---
 
@@ -2433,10 +2449,39 @@ $ scoop bucket add conpasdevs https://github.com/ConpasDevs/scoop-bucket
 $ scoop install jarvis-dev
 ```
 
+After installing the binary, run the setup wizard:
+
+```bash
+$ jarvis install
+
+Detecting installed AI agents...
+  ✓ Claude Code found (~/.claude/)
+  ✓ OpenCode found (~/.config/opencode/)
+
+Configuring Claude Code...
+  ✓ ~/.claude/CLAUDE.md written (Layer 1 base + neutra preset)
+  ✓ ~/.claude/settings.json updated (hive-daemon MCP added)
+  ✓ ~/.claude/skills/ populated (sdd-*, zoho-deluge, laravel-architecture, git-workflow)
+
+Configuring OpenCode...
+  ✓ ~/.config/opencode/AGENTS.md written
+  ✓ ~/.config/opencode/opencode.json updated (hive-daemon MCP + SDD agents added)
+  ✓ ~/.config/opencode/skills/ populated
+
+Installing hive-daemon...
+  ✓ Binary installed: ~/go/bin/hive-daemon
+  ✓ systemd service enabled (auto-start on login)
+  ✓ Config created: ~/.jarvis/config.yaml
+
+Next: run 'jarvis login' to connect to Hive Cloud
+```
+
 **What it installs**:
 1. `jarvis` CLI binary
 2. `hive-daemon` (systemd service, auto-start)
 3. Config files in `~/.jarvis/`
+4. Agent configs for each detected AI agent (Claude Code, OpenCode)
+5. Skills copied to each agent's skills directory
 
 ---
 
@@ -2756,6 +2801,14 @@ func TestSDD_CompleteFlow(t *testing.T) {
    - Auto-run QA checklist (cuando sea posible)
    - Deploy automation
    - Rollback automático on failure
+
+6. **hive-api como Remote MCP**
+   - hive-api expone el protocolo MCP via HTTP/SSE (como context7)
+   - Claude Code y OpenCode se conectan directamente a `https://hivemem.dev/mcp`
+   - Acceso a memorias del equipo en tiempo real, sin esperar sync
+   - Configuración: `jarvis install` añade el MCP remoto junto al daemon local
+   - Caso de uso: María guarda una memory → Carlos la ve al instante, sin `mem_sync`
+   - Requiere: implementar MCP transport (SSE) en hive-api + auth por JWT
 
 ---
 

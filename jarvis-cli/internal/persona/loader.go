@@ -1,0 +1,151 @@
+// Package persona manages the Layer2 persona preset system.
+// Presets are embedded YAML files that define tone, language, and communication style.
+// The embed.FS is provided by the caller (assets.PersonaFS from the root package)
+// via function parameters — this avoids invalid ".." paths in go:embed directives.
+package persona
+
+import (
+	"embed"
+	"fmt"
+	"io/fs"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Tone describes the communication tone settings of a persona.
+type Tone struct {
+	Formality  string `yaml:"formality"`
+	Directness string `yaml:"directness"`
+	Humor      string `yaml:"humor"`
+	Language   string `yaml:"language"`
+}
+
+// CommunicationStyle describes how the persona communicates.
+type CommunicationStyle struct {
+	Verbosity            string `yaml:"verbosity"`
+	ShowAlternatives     bool   `yaml:"show_alternatives"`
+	ChallengeAssumptions bool   `yaml:"challenge_assumptions"`
+}
+
+// CharacteristicPhrases holds persona-specific phrases used in responses.
+type CharacteristicPhrases struct {
+	Greetings     []string `yaml:"greetings"`
+	Confirmations []string `yaml:"confirmations"`
+	Transitions   []string `yaml:"transitions"`
+	SignOffs      []string `yaml:"sign_offs"`
+}
+
+// Preset represents a complete persona configuration loaded from a YAML preset file.
+type Preset struct {
+	Name                  string                `yaml:"name"`
+	DisplayName           string                `yaml:"display_name"`
+	Description           string                `yaml:"description"`
+	Tone                  Tone                  `yaml:"tone"`
+	CommunicationStyle    CommunicationStyle    `yaml:"communication_style"`
+	CharacteristicPhrases CharacteristicPhrases `yaml:"characteristic_phrases"`
+}
+
+// LoadPreset loads a named preset from the provided embed.FS.
+// fs must be the root-package PersonaFS (embed/personas directory embedded at root).
+// name must be one of the 7 built-in preset names (e.g. "argentino", "tony-stark").
+func LoadPreset(fsys embed.FS, name string) (*Preset, error) {
+	// Normalize: replace spaces with hyphens, lowercase
+	name = strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+
+	data, err := fsys.ReadFile("embed/personas/" + name + ".yaml")
+	if err != nil {
+		available := listPresetNames(fsys)
+		return nil, fmt.Errorf("preset %q not found (available: %s)", name, strings.Join(available, ", "))
+	}
+
+	var preset Preset
+	if err := yaml.Unmarshal(data, &preset); err != nil {
+		return nil, fmt.Errorf("parse preset %q: %w", name, err)
+	}
+
+	return &preset, nil
+}
+
+// ListPresets returns all built-in presets loaded from the provided embed.FS.
+func ListPresets(fsys embed.FS) ([]Preset, error) {
+	names := listPresetNames(fsys)
+	presets := make([]Preset, 0, len(names))
+
+	for _, name := range names {
+		p, err := LoadPreset(fsys, name)
+		if err != nil {
+			return nil, fmt.Errorf("load preset %q: %w", name, err)
+		}
+		presets = append(presets, *p)
+	}
+
+	return presets, nil
+}
+
+// listPresetNames returns the names of all built-in presets by scanning the provided embed.FS.
+// Template files (*.tmpl) are excluded.
+func listPresetNames(fsys embed.FS) []string {
+	var names []string
+	_ = fs.WalkDir(fsys, "embed/personas", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(path, ".yaml") || strings.HasSuffix(path, ".yaml.tmpl") {
+			return nil
+		}
+		// Extract name from filename (strip directory and .yaml extension)
+		base := d.Name()
+		name := strings.TrimSuffix(base, ".yaml")
+		names = append(names, name)
+		return nil
+	})
+	return names
+}
+
+// ValidateCustom validates a user-provided custom persona YAML.
+// Returns a descriptive error if required fields are missing or Layer1 fields
+// are present (Layer1 fields must not be overridden via persona presets).
+func ValidateCustom(content []byte) error {
+	var raw map[string]any
+	if err := yaml.Unmarshal(content, &raw); err != nil {
+		return fmt.Errorf("invalid YAML: %w", err)
+	}
+
+	return validatePresetMap(raw)
+}
+
+// RenderLayer2 renders a Layer2 markdown block from a preset.
+// This is the content that goes between the LAYER2 sentinel markers.
+func RenderLayer2(preset *Preset) string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("## Persona: %s\n\n", preset.DisplayName))
+	sb.WriteString(fmt.Sprintf("%s\n\n", preset.Description))
+
+	sb.WriteString("### Tone\n")
+	sb.WriteString(fmt.Sprintf("- **Formality**: %s\n", preset.Tone.Formality))
+	sb.WriteString(fmt.Sprintf("- **Directness**: %s\n", preset.Tone.Directness))
+	sb.WriteString(fmt.Sprintf("- **Humor**: %s\n", preset.Tone.Humor))
+	sb.WriteString(fmt.Sprintf("- **Language**: %s\n\n", preset.Tone.Language))
+
+	sb.WriteString("### Communication Style\n")
+	if preset.CommunicationStyle.ShowAlternatives {
+		sb.WriteString("- Always propose alternatives with tradeoffs\n")
+	}
+	if preset.CommunicationStyle.ChallengeAssumptions {
+		sb.WriteString("- Challenge user assumptions when incorrect\n")
+	}
+	sb.WriteString(fmt.Sprintf("- Verbosity: %s\n\n", preset.CommunicationStyle.Verbosity))
+
+	if len(preset.CharacteristicPhrases.Greetings) > 0 {
+		sb.WriteString("### Characteristic Phrases\n")
+		sb.WriteString("**Greetings**: " + strings.Join(preset.CharacteristicPhrases.Greetings, " / ") + "\n")
+		sb.WriteString("**Confirmations**: " + strings.Join(preset.CharacteristicPhrases.Confirmations, " / ") + "\n")
+		if len(preset.CharacteristicPhrases.SignOffs) > 0 {
+			sb.WriteString("**Sign-off**: " + preset.CharacteristicPhrases.SignOffs[0] + "\n")
+		}
+	}
+
+	return sb.String()
+}
