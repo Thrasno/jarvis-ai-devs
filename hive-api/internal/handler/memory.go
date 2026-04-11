@@ -7,6 +7,7 @@ import (
 	"github.com/Thrasno/jarvis-dev/hive-api/internal/middleware"
 	"github.com/Thrasno/jarvis-dev/hive-api/internal/model"
 	"github.com/Thrasno/jarvis-dev/hive-api/internal/repository"
+	"github.com/Thrasno/jarvis-dev/hive-api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -52,6 +53,12 @@ func (h *MemoryHandler) Create(c *gin.Context) {
 
 	created, err := h.svc.Create(c.Request.Context(), mem)
 	if err != nil {
+		// ErrSyncIDExists → idempotencia: devolvemos el registro existente con 200.
+		// El daemon puede reenviar el mismo sync_id sin preocuparse por duplicados.
+		if errors.Is(err, service.ErrSyncIDExists) {
+			c.JSON(http.StatusOK, created)
+			return
+		}
 		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "error al crear memoria"})
 		return
 	}

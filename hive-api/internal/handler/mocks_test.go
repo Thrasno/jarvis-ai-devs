@@ -34,6 +34,14 @@ func (m *mockAuthSvc) ValidateToken(tokenString string) (*model.Claims, error) {
 	return args.Get(0).(*model.Claims), args.Error(1)
 }
 
+func (m *mockAuthSvc) GetCurrentUser(ctx context.Context, userID string) (*model.User, error) {
+	args := m.Called(ctx, userID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.User), args.Error(1)
+}
+
 // --- MemoryService mock ---
 
 type mockMemorySvc struct {
@@ -113,7 +121,30 @@ func (m *mockAdminSvc) SetLevel(ctx context.Context, username string, newLevel m
 	return args.Error(0)
 }
 
+func (m *mockAdminSvc) GrantAdmin(ctx context.Context, username string) error {
+	args := m.Called(ctx, username)
+	return args.Error(0)
+}
+
 func (m *mockAdminSvc) Deactivate(ctx context.Context, username string) error {
 	args := m.Called(ctx, username)
 	return args.Error(0)
+}
+
+func (m *mockAdminSvc) GetStats(ctx context.Context) (*model.AdminStatsResponse, error) {
+	args := m.Called(ctx)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.AdminStatsResponse), args.Error(1)
+}
+
+// --- DBPinger mock ---
+
+type mockDBPinger struct {
+	mock.Mock
+}
+
+func (m *mockDBPinger) Ping(ctx context.Context) error {
+	return m.Called(ctx).Error(0)
 }

@@ -15,6 +15,14 @@ import (
 type AuthService interface {
 	Login(ctx context.Context, email, password string) (string, error)
 	ValidateToken(tokenString string) (*model.Claims, error)
+	GetCurrentUser(ctx context.Context, userID string) (*model.User, error)
+}
+
+// DBPinger permite verificar la conectividad con la base de datos.
+// Lo usamos en GET /health para detectar si PostgreSQL está caído.
+// pgxpool.Pool implementa esta interfaz implícitamente (tiene Ping).
+type DBPinger interface {
+	Ping(ctx context.Context) error
 }
 
 // MemoryService define las operaciones sobre memorias individuales.
@@ -35,7 +43,9 @@ type SyncService interface {
 type AdminService interface {
 	ListUsers(ctx context.Context) ([]*model.User, error)
 	SetLevel(ctx context.Context, username string, newLevel model.UserLevel) error
+	GrantAdmin(ctx context.Context, username string) error
 	Deactivate(ctx context.Context, username string) error
+	GetStats(ctx context.Context) (*model.AdminStatsResponse, error)
 }
 
 // RouterDeps agrupa las dependencias del router.
@@ -46,23 +56,26 @@ type RouterDeps struct {
 	MemorySvc MemoryService
 	SyncSvc   SyncService
 	AdminSvc  AdminService
+	DB        DBPinger // puede ser nil en tests unitarios
 }
 
 // NewRouter construye y configura el router Gin con todas las rutas y middlewares.
 //
 // Estructura de rutas:
 //
-//	GET  /health                             — sin auth
-//	POST /auth/login                         — sin auth
-//	GET  /auth/me                            — RequireAuth
-//	GET  /memories                           — RequireAuth
-//	POST /memories                           — RequireAuth
-//	GET  /memories/search                    — RequireAuth (ANTES de /:id)
-//	GET  /memories/:id                       — RequireAuth
-//	POST /sync                               — RequireAuth
-//	GET  /admin/users                        — RequireAuth + RequireAdmin
-//	POST /admin/users/:username/level        — RequireAuth + RequireAdmin
-//	POST /admin/users/:username/deactivate   — RequireAuth + RequireAdmin
+//	GET  /health                                      — sin auth
+//	POST /auth/login                                  — sin auth
+//	GET  /auth/me                                     — RequireAuth
+//	GET  /memories                                    — RequireAuth
+//	POST /memories                                    — RequireAuth
+//	GET  /memories/search                             — RequireAuth (ANTES de /:id)
+//	GET  /memories/:id                                — RequireAuth
+//	POST /sync                                        — RequireAuth
+//	GET  /admin/users                                 — RequireAuth + RequireAdmin
+//	POST /admin/users/:username/level                 — RequireAuth + RequireAdmin
+//	POST /admin/users/:username/grant-admin           — RequireAuth + RequireAdmin
+//	POST /admin/users/:username/deactivate            — RequireAuth + RequireAdmin
+//	GET  /admin/stats                                 — RequireAuth + RequireAdmin
 func NewRouter(deps RouterDeps) *gin.Engine {
 	r := gin.New()
 
@@ -74,9 +87,10 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 	memH := NewMemoryHandler(deps.MemorySvc)
 	syncH := NewSyncHandler(deps.SyncSvc)
 	adminH := NewAdminHandler(deps.AdminSvc)
+	healthH := NewHealthHandler(deps.DB)
 
 	// Rutas públicas (sin autenticación)
-	r.GET("/health", HealthHandler)
+	r.GET("/health", healthH.Check)
 	r.POST("/auth/login", authH.Login)
 
 	// Rutas autenticadas — agrupamos con el middleware RequireAuth
@@ -99,7 +113,9 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 	admin := r.Group("/admin", middleware.RequireAuth(deps.AuthSvc), middleware.RequireAdmin())
 	{
 		admin.GET("/users", adminH.ListUsers)
+		admin.GET("/stats", adminH.GetStats)
 		admin.POST("/users/:username/level", adminH.SetLevel)
+		admin.POST("/users/:username/grant-admin", adminH.GrantAdmin)
 		admin.POST("/users/:username/deactivate", adminH.Deactivate)
 	}
 

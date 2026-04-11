@@ -156,8 +156,8 @@ func (r *postgresMemoryRepository) Search(ctx context.Context, query string, fil
 	                         tags, files_affected, created_by, created_at, updated_at,
 	                         origin, synced_at, confidence, impact_score
 	                  FROM memories
-	                  WHERE search_vector @@ plainto_tsquery('spanish', $1) %s
-	                  ORDER BY ts_rank(search_vector, plainto_tsquery('spanish', $1)) DESC
+	                  WHERE search_vector @@ plainto_tsquery('simple', $1) %s
+	                  ORDER BY ts_rank(search_vector, plainto_tsquery('simple', $1)) DESC
 	                  LIMIT $2 OFFSET $3`, where)
 
 	rows, err := r.pool.Query(ctx, q, args...)
@@ -235,7 +235,8 @@ func (r *postgresMemoryRepository) PullSince(ctx context.Context, project string
 	argIdx := 2
 
 	if !since.IsZero() {
-		where += fmt.Sprintf(" AND synced_at > $%d", argIdx)
+		// >= para no perder memorias con synced_at exactamente igual a 'since'
+		where += fmt.Sprintf(" AND synced_at >= $%d", argIdx)
 		args = append(args, since)
 		argIdx++
 	}

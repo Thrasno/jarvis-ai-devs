@@ -160,3 +160,70 @@ func TestListUsers_Success(t *testing.T) {
 	assert.Len(t, result, 2)
 	mockUserRepo.AssertExpectations(t)
 }
+
+// --- Tests de GrantAdmin ---
+
+func TestGrantAdmin_Success(t *testing.T) {
+	svc, mockUserRepo, _ := newTestAdminService(t)
+	ctx := context.Background()
+
+	member := &model.User{ID: "user-5", Username: "newadmin", Level: model.LevelMember}
+	mockUserRepo.On("GetByUsername", ctx, "newadmin").Return(member, nil)
+	mockUserRepo.On("CountAdmins", ctx).Return(1, nil)
+	mockUserRepo.On("UpdateLevel", ctx, "user-5", model.LevelAdmin).Return(nil)
+
+	err := svc.GrantAdmin(ctx, "newadmin")
+	require.NoError(t, err)
+	mockUserRepo.AssertExpectations(t)
+}
+
+func TestGrantAdmin_AlreadyAdmin_Idempotent(t *testing.T) {
+	svc, mockUserRepo, _ := newTestAdminService(t)
+	ctx := context.Background()
+
+	admin := &model.User{ID: "user-1", Username: "existing", Level: model.LevelAdmin}
+	mockUserRepo.On("GetByUsername", ctx, "existing").Return(admin, nil)
+
+	err := svc.GrantAdmin(ctx, "existing")
+	require.NoError(t, err)
+	// No debe llamar ni CountAdmins ni UpdateLevel — es idempotente
+	mockUserRepo.AssertNotCalled(t, "CountAdmins")
+	mockUserRepo.AssertNotCalled(t, "UpdateLevel")
+}
+
+func TestGrantAdmin_MaxAdmins(t *testing.T) {
+	svc, mockUserRepo, _ := newTestAdminService(t)
+	ctx := context.Background()
+
+	member := &model.User{ID: "user-6", Username: "blocked", Level: model.LevelMember}
+	mockUserRepo.On("GetByUsername", ctx, "blocked").Return(member, nil)
+	mockUserRepo.On("CountAdmins", ctx).Return(3, nil)
+
+	err := svc.GrantAdmin(ctx, "blocked")
+	assert.ErrorIs(t, err, service.ErrMaxAdminsReached)
+}
+
+// --- Tests de GetStats ---
+
+func TestGetStats_Success(t *testing.T) {
+	svc, mockUserRepo, mockMemRepo := newTestAdminService(t)
+	ctx := context.Background()
+
+	users := []*model.User{
+		{ID: "1", Level: model.LevelAdmin, IsActive: true},
+		{ID: "2", Level: model.LevelMember, IsActive: true},
+		{ID: "3", Level: model.LevelMember, IsActive: false},
+	}
+	mockUserRepo.On("List", ctx).Return(users, nil)
+	mockMemRepo.On("Count", ctx, model.MemoryFilter{}).Return(int64(42), nil)
+
+	stats, err := svc.GetStats(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 3, stats.Users.Total)
+	assert.Equal(t, 2, stats.Users.Active)
+	assert.Equal(t, 1, stats.Users.ByLevel["admin"])
+	assert.Equal(t, 2, stats.Users.ByLevel["member"])
+	assert.Equal(t, int64(42), stats.Memories.Total)
+	assert.NotNil(t, stats.Memories.ByProject)
+	assert.NotNil(t, stats.Memories.ByCategory)
+}

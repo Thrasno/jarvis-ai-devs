@@ -52,6 +52,11 @@ type AuthService interface {
 	// Devuelve los Claims (payload del token) si es válido.
 	// Devuelve error si el token está expirado, malformado, o tiene firma inválida.
 	ValidateToken(tokenString string) (*model.Claims, error)
+
+	// GetCurrentUser busca el usuario en la BD y verifica que sigue activo.
+	// Sirve para el endpoint GET /auth/me — re-valida is_active en cada request.
+	// Devuelve ErrUserInactive si el usuario fue desactivado después de emitir el token.
+	GetCurrentUser(ctx context.Context, userID string) (*model.User, error)
 }
 
 // --- Implementación ---
@@ -77,7 +82,7 @@ func NewAuthService(userRepo repository.UserRepository, jwtSecret string) AuthSe
 	return &authService{
 		userRepo:  userRepo,
 		jwtSecret: []byte(jwtSecret),
-		jwtTTL:   24 * time.Hour, // los tokens duran 24 horas
+		jwtTTL:   30 * 24 * time.Hour, // los tokens duran 30 días (spec)
 	}
 }
 
@@ -157,6 +162,21 @@ func (s *authService) generateToken(user *model.User) (string, error) {
 
 	// Firmamos el token con nuestro secret y obtenemos el string final.
 	return token.SignedString(s.jwtSecret)
+}
+
+// GetCurrentUser busca el usuario por ID y verifica que esté activo.
+// Es el método que usa GET /auth/me para re-validar el estado real en BD,
+// en lugar de confiar ciegamente en los datos del token (que podría estar caducado
+// en la BD aunque no haya expirado criptográficamente).
+func (s *authService) GetCurrentUser(ctx context.Context, userID string) (*model.User, error) {
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !user.IsActive {
+		return nil, ErrUserInactive
+	}
+	return user, nil
 }
 
 // ValidateToken verifica y parsea un JWT.

@@ -160,3 +160,91 @@ func TestSetLevel_ServiceError(t *testing.T) {
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
+
+// TestSetLevel_SelfChange verifica que un admin no puede cambiar su propio nivel.
+func TestSetLevel_SelfChange(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+
+	// "adminuser" es el username de adminClaims() — misma persona intentando cambiar su nivel
+	w := doAuthRequest(t, adminDeps(authSvc, &mockAdminSvc{}), http.MethodPost, "/admin/users/adminuser/level",
+		map[string]string{"level": "member"}, "admin-token")
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+// --- GrantAdmin handler tests ---
+
+// TestGrantAdmin_Success verifica que un admin pueda ascender a otro usuario.
+func TestGrantAdmin_Success(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+
+	adminSvc := &mockAdminSvc{}
+	adminSvc.On("GrantAdmin", context.Background(), "newguy").Return(nil)
+
+	w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodPost, "/admin/users/newguy/grant-admin",
+		nil, "admin-token")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	adminSvc.AssertExpectations(t)
+}
+
+// TestGrantAdmin_MaxAdmins verifica que 409 cuando se supera el límite de admins.
+func TestGrantAdmin_MaxAdmins(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+
+	adminSvc := &mockAdminSvc{}
+	adminSvc.On("GrantAdmin", context.Background(), "blocked").Return(service.ErrMaxAdminsReached)
+
+	w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodPost, "/admin/users/blocked/grant-admin",
+		nil, "admin-token")
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+}
+
+// TestGrantAdmin_SelfChange verifica que un admin no puede ascenderse a sí mismo.
+func TestGrantAdmin_SelfChange(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+
+	w := doAuthRequest(t, adminDeps(authSvc, &mockAdminSvc{}), http.MethodPost, "/admin/users/adminuser/grant-admin",
+		nil, "admin-token")
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+// --- GetStats handler tests ---
+
+// TestGetStats_Success verifica que un admin obtenga estadísticas del sistema.
+func TestGetStats_Success(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+
+	stats := &model.AdminStatsResponse{}
+	stats.Users.Total = 5
+	stats.Users.Active = 4
+	stats.Users.ByLevel = map[string]int{"admin": 1, "member": 4}
+	stats.Memories.Total = 42
+	stats.Memories.ByProject = []model.ProjectCount{}
+	stats.Memories.ByCategory = []model.CategoryCount{}
+
+	adminSvc := &mockAdminSvc{}
+	adminSvc.On("GetStats", context.Background()).Return(stats, nil)
+
+	w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodGet, "/admin/stats", nil, "admin-token")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	adminSvc.AssertExpectations(t)
+}
+
+// TestGetStats_Forbidden verifica que un no-admin no puede ver estadísticas.
+func TestGetStats_Forbidden(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "member-token").Return(testClaims(), nil) // LevelMember
+
+	w := doAuthRequest(t, adminDeps(authSvc, &mockAdminSvc{}), http.MethodGet, "/admin/stats", nil, "member-token")
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}

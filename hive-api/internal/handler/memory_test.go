@@ -9,6 +9,7 @@ import (
 
 	"github.com/Thrasno/jarvis-dev/hive-api/internal/model"
 	"github.com/Thrasno/jarvis-dev/hive-api/internal/repository"
+	"github.com/Thrasno/jarvis-dev/hive-api/internal/service"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -73,6 +74,37 @@ func TestCreateMemory_InvalidBody(t *testing.T) {
 		map[string]string{}, "valid-token") // body vacío — faltan campos requeridos
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// TestCreateMemory_DuplicateSyncID verifica que sync_id duplicado devuelve 200 (idempotente).
+// El daemon puede reenviar la misma memoria sin recibir un error — simplemente obtendrá
+// el registro existente con HTTP 200 en lugar de 201.
+func TestCreateMemory_DuplicateSyncID(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	existing := &model.Memory{
+		ID:      "existing-uuid",
+		SyncID:  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+		Project: "jarvis-dev",
+		Title:   "Existing memory",
+	}
+	memSvc := &mockMemorySvc{}
+	memSvc.On("Create", context.Background(), mock.AnythingOfType("*model.Memory")).
+		Return(existing, service.ErrSyncIDExists)
+
+	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodPost, "/memories",
+		map[string]interface{}{
+			"sync_id":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+			"project":  "jarvis-dev",
+			"category": "decision",
+			"title":    "Existing memory",
+			"content":  "Some content",
+		}, "valid-token")
+
+	// 200 OK (no 201) — idempotente, devuelve el existente
+	assert.Equal(t, http.StatusOK, w.Code)
+	memSvc.AssertExpectations(t)
 }
 
 func TestCreateMemory_ServiceError(t *testing.T) {

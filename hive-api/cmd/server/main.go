@@ -29,12 +29,13 @@ import (
 
 // buildAppDeps agrupa las dependencias inyectables para buildApp.
 // Separamos la construcción del router de la conexión a BD para poder
-// testear el router sin necesitar PostgreSQL real.
+// testear el router sin necesitar PostgreSQL real (db puede ser nil en tests).
 type buildAppDeps struct {
 	authSvc   handler.AuthService
 	memorySvc handler.MemoryService
 	syncSvc   handler.SyncService
 	adminSvc  handler.AdminService
+	db        handler.DBPinger // nil en tests unitarios → health skip DB check
 }
 
 // buildApp construye el router Gin con todas las dependencias inyectadas.
@@ -45,6 +46,7 @@ func buildApp(deps buildAppDeps) *gin.Engine {
 		MemorySvc: deps.memorySvc,
 		SyncSvc:   deps.syncSvc,
 		AdminSvc:  deps.adminSvc,
+		DB:        deps.db,
 	})
 }
 
@@ -68,6 +70,7 @@ func wireServices(pool *pgxpool.Pool, cfg *config.Config) buildAppDeps {
 		memorySvc: memorySvc,
 		syncSvc:   syncSvc,
 		adminSvc:  adminSvc,
+		db:        pool, // pgxpool.Pool implementa DBPinger (tiene Ping(ctx) error)
 	}
 }
 

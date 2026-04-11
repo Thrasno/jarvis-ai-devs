@@ -66,10 +66,10 @@ CREATE TABLE IF NOT EXISTS memories (
     -- FTS: columna generada automáticamente por PostgreSQL.
     -- Se recalcula en cada INSERT/UPDATE, sin necesidad de triggers.
     -- Combina título (peso A = más importante) y contenido (peso B).
-    -- El idioma 'spanish' usa el stemmer castellano (comprende/comprendió → comprend).
+    -- El idioma 'simple' usa el stemmer castellano (comprende/comprendió → comprend).
     search_vector  TSVECTOR GENERATED ALWAYS AS (
-        setweight(to_tsvector('spanish', coalesce(title, '')),   'A') ||
-        setweight(to_tsvector('spanish', coalesce(content, '')), 'B')
+        setweight(to_tsvector('simple', coalesce(title, '')),   'A') ||
+        setweight(to_tsvector('simple', coalesce(content, '')), 'B')
     ) STORED
 );
 

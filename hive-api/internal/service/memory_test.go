@@ -19,12 +19,14 @@ func newTestMemoryService(t *testing.T) (service.MemoryService, *repository.Mock
 	return svc, mockRepo
 }
 
-// TestCreateMemory_Success verifica que Create pasa la memoria al repo y devuelve la guardada.
+// TestCreateMemory_Success verifica que Create hace el lookup de sync_id primero
+// y luego inserta cuando no existe.
 func TestCreateMemory_Success(t *testing.T) {
 	svc, mockRepo := newTestMemoryService(t)
 	ctx := context.Background()
 
 	input := &model.Memory{
+		SyncID:   "sync-abc-123",
 		Project:  "jarvis-dev",
 		Title:    "Test memory",
 		Content:  "Contenido de prueba",
@@ -32,17 +34,40 @@ func TestCreateMemory_Success(t *testing.T) {
 	}
 	saved := &model.Memory{
 		ID:      "mem-uuid-123",
+		SyncID:  "sync-abc-123",
 		Project: "jarvis-dev",
 		Title:   "Test memory",
 		Content: "Contenido de prueba",
 	}
 
+	// GetBySyncID devuelve nil (no existe) → procedemos con Create
+	mockRepo.On("GetBySyncID", ctx, "sync-abc-123").Return(nil, nil)
 	mockRepo.On("Create", ctx, input).Return(saved, nil)
 
 	result, err := svc.Create(ctx, input)
 
 	require.NoError(t, err)
 	assert.Equal(t, "mem-uuid-123", result.ID)
+	mockRepo.AssertExpectations(t)
+}
+
+// TestCreateMemory_DuplicateSyncID verifica que Create devuelve el registro existente
+// con ErrSyncIDExists cuando el sync_id ya existe — sin crear duplicados.
+func TestCreateMemory_DuplicateSyncID(t *testing.T) {
+	svc, mockRepo := newTestMemoryService(t)
+	ctx := context.Background()
+
+	existing := &model.Memory{ID: "existing-uuid", SyncID: "dup-sync-id", Title: "already there"}
+	input := &model.Memory{SyncID: "dup-sync-id", Title: "new attempt"}
+
+	mockRepo.On("GetBySyncID", ctx, "dup-sync-id").Return(existing, nil)
+	// Create NO debe llamarse — devolvemos el existente
+	mockRepo.AssertNotCalled(t, "Create")
+
+	result, err := svc.Create(ctx, input)
+
+	assert.ErrorIs(t, err, service.ErrSyncIDExists)
+	assert.Equal(t, "existing-uuid", result.ID)
 	mockRepo.AssertExpectations(t)
 }
 

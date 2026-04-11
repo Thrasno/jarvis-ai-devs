@@ -24,6 +24,13 @@ func (m *mockAuth) ValidateToken(t string) (*model.Claims, error) {
 	}
 	return args.Get(0).(*model.Claims), args.Error(1)
 }
+func (m *mockAuth) GetCurrentUser(ctx context.Context, userID string) (*model.User, error) {
+	args := m.Called(ctx, userID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.User), args.Error(1)
+}
 
 type mockMemory struct{ mock.Mock }
 
@@ -85,6 +92,16 @@ func (m *mockAdmin) ListUsers(ctx context.Context) ([]*model.User, error) {
 func (m *mockAdmin) SetLevel(ctx context.Context, username string, newLevel model.UserLevel) error {
 	return m.Called(ctx, username, newLevel).Error(0)
 }
+func (m *mockAdmin) GrantAdmin(ctx context.Context, username string) error {
+	return m.Called(ctx, username).Error(0)
+}
 func (m *mockAdmin) Deactivate(ctx context.Context, username string) error {
 	return m.Called(ctx, username).Error(0)
+}
+func (m *mockAdmin) GetStats(ctx context.Context) (*model.AdminStatsResponse, error) {
+	args := m.Called(ctx)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.AdminStatsResponse), args.Error(1)
 }

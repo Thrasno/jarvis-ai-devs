@@ -2,10 +2,15 @@ package service
 
 import (
 	"context"
+	"errors"
 
 	"github.com/Thrasno/jarvis-dev/hive-api/internal/model"
 	"github.com/Thrasno/jarvis-dev/hive-api/internal/repository"
 )
+
+// ErrSyncIDExists se devuelve cuando se intenta crear una memoria con un sync_id
+// que ya existe. El handler lo mapea a HTTP 200 devolviendo el registro existente.
+var ErrSyncIDExists = errors.New("sync_id ya existe")
 
 // defaultMemoryLimit es cuántas memorias devolver cuando el caller no especifica.
 // 20 es un número cómodo — suficiente para una pantalla, no tan grande como para
@@ -41,7 +46,17 @@ func NewMemoryService(repo repository.MemoryRepository) MemoryService {
 }
 
 func (s *memoryService) Create(ctx context.Context, mem *model.Memory) (*model.Memory, error) {
-	// Sin lógica adicional por ahora — el repo se encarga de generar ID, timestamps, etc.
+	// Verificamos si ya existe una memoria con este sync_id.
+	// Si existe → devolvemos la existente con ErrSyncIDExists (idempotencia).
+	// El handler interpreta este "error" como HTTP 200 en lugar de 201.
+	// Esto garantiza que el mismo sync del daemon no crea duplicados.
+	existing, err := s.repo.GetBySyncID(ctx, mem.SyncID)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		return existing, ErrSyncIDExists
+	}
 	return s.repo.Create(ctx, mem)
 }
 
