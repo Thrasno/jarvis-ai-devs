@@ -34,10 +34,10 @@ func main() {
 		syncer = hivesync.New(cfg, store)
 		logger.Log.Printf("sync habilitado → %s", cfg.APIURL)
 	} else {
-		logger.Log.Printf("sync desactivado (define HIVE_API_URL/EMAIL/PASSWORD para activarlo)")
+		logger.Log.Printf("sync desactivado (define HIVE_API_URL/HIVE_API_EMAIL/HIVE_API_PASSWORD o crea ~/.jarvis/sync.json)")
 	}
 
-	server := hivemcp.NewServer(store, syncer)
+	server := hivemcp.NewServer(store, store, syncer)
 
 	if err := server.Run(context.Background(), &sdkmcp.StdioTransport{}); err != nil {
 		logger.Log.Fatalf("server stopped: %v", err)

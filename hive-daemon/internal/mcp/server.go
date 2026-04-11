@@ -24,14 +24,15 @@ type SyncRunner interface {
 }
 
 // NewServer crea y configura el servidor MCP con todas las herramientas Hive.
-// syncer puede ser nil — en ese caso mem_sync devuelve un mensaje explicativo.
-func NewServer(store MemoryStore, syncer SyncRunner) *sdkmcp.Server {
+// syncStore puede ser nil — en ese caso mem_sync no puede hacer lazy init.
+// syncer puede ser nil — se inicializa lazy en la primera llamada a mem_sync.
+func NewServer(store MemoryStore, syncStore sync.SyncStore, syncer SyncRunner) *sdkmcp.Server {
 	s := sdkmcp.NewServer(&sdkmcp.Implementation{
 		Name:    "hive-daemon",
 		Version: "1.0.0",
 	}, nil)
 
-	registerTools(s, store, syncer)
+	registerTools(s, store, syncStore, syncer)
 
 	syncStatus := "sin sync"
 	if syncer != nil {
