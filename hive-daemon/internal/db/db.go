@@ -106,8 +106,12 @@ func initSchema(sqlDB *sql.DB) error {
 	// SQLite no soporta ALTER TABLE ADD COLUMN IF NOT EXISTS — ignoramos el error
 	// si la columna ya existe (error "duplicate column name").
 	migrations := []string{
-		`ALTER TABLE memories ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`,
+		// SQLite no acepta DEFAULT CURRENT_TIMESTAMP en ALTER TABLE — solo defaults constantes.
+		// Usamos epoch como placeholder; las rows existentes se actualizan abajo.
+		`ALTER TABLE memories ADD COLUMN updated_at DATETIME NOT NULL DEFAULT '1970-01-01 00:00:00'`,
 		`ALTER TABLE memories ADD COLUMN synced_at DATETIME`,
+		// Backfill: copiar created_at a updated_at para las filas pre-migración.
+		`UPDATE memories SET updated_at = created_at WHERE updated_at = '1970-01-01 00:00:00'`,
 	}
 	for _, m := range migrations {
 		_, _ = sqlDB.Exec(m) // ignoramos error si la columna ya existe
