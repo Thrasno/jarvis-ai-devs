@@ -31,11 +31,12 @@ func buildFTS5Query(query string) string {
 //
 // When query is empty, returns all memories for project ordered by created_at DESC.
 // When project is empty, searches across all projects.
-func (d *DB) Search(query, project string, limit int) ([]*models.Memory, error) {
+// When category is non-empty, only observations with that category are returned.
+func (d *DB) Search(query, project, category string, limit int) ([]*models.Memory, error) {
 	ftsQuery := buildFTS5Query(query)
 
 	if ftsQuery == "" {
-		return d.searchAllForProject(project, limit)
+		return d.searchAllForProject(project, category, limit)
 	}
 
 	const q = `
@@ -45,10 +46,11 @@ FROM memories m
 JOIN memories_fts f ON m.id = f.rowid
 WHERE f.memories_fts MATCH ?
   AND (? = '' OR m.project = ?)
+  AND (? = '' OR m.category = ?)
 ORDER BY bm25(memories_fts, 10, 5, 1)
 LIMIT ?`
 
-	rows, err := d.sqlDB.Query(q, ftsQuery, project, project, limit)
+	rows, err := d.sqlDB.Query(q, ftsQuery, project, project, category, category, limit)
 	if err != nil {
 		return nil, fmt.Errorf("fts search: %w", err)
 	}
@@ -69,17 +71,19 @@ LIMIT ?`
 }
 
 // searchAllForProject returns all memories for a project (or all projects if empty),
-// ordered by created_at DESC. Used when the search query is empty.
-func (d *DB) searchAllForProject(project string, limit int) ([]*models.Memory, error) {
+// filtered by category when non-empty, ordered by created_at DESC.
+// Used when the search query is empty.
+func (d *DB) searchAllForProject(project, category string, limit int) ([]*models.Memory, error) {
 	const q = `
 SELECT id, sync_id, project, topic_key, category, title, content,
        tags, files_affected, created_by, created_at, confidence, impact_score
 FROM memories
 WHERE (? = '' OR project = ?)
+  AND (? = '' OR category = ?)
 ORDER BY created_at DESC, id DESC
 LIMIT ?`
 
-	rows, err := d.sqlDB.Query(q, project, project, limit)
+	rows, err := d.sqlDB.Query(q, project, project, category, category, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list all for project: %w", err)
 	}

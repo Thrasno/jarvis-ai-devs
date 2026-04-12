@@ -14,7 +14,7 @@ type MemoryStore interface {
 	SaveMemory(mem *models.Memory) (int64, error)
 	GetMemory(id int64) (*models.Memory, error)
 	ListMemories(project string, limit int) ([]*models.Memory, error)
-	Search(query, project string, limit int) ([]*models.Memory, error)
+	Search(query, project, category string, limit int) ([]*models.Memory, error)
 }
 
 // SyncRunner es la interfaz que usa el tool mem_sync.
@@ -32,7 +32,8 @@ func NewServer(store MemoryStore, syncStore sync.SyncStore, syncer SyncRunner) *
 		Version: "1.0.0",
 	}, nil)
 
-	registerTools(s, store, syncStore, syncer)
+	activity := NewActivityTracker()
+	registerTools(s, store, syncStore, syncer, activity)
 
 	syncStatus := "sin sync"
 	if syncer != nil {

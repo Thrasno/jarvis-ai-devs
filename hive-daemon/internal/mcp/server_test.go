@@ -14,7 +14,7 @@ type mockStore struct {
 	saveMemoryFn   func(*models.Memory) (int64, error)
 	getMemoryFn    func(int64) (*models.Memory, error)
 	listMemoriesFn func(string, int) ([]*models.Memory, error)
-	searchFn       func(string, string, int) ([]*models.Memory, error)
+	searchFn       func(string, string, string, int) ([]*models.Memory, error)
 }
 
 func (m *mockStore) SaveMemory(mem *models.Memory) (int64, error) {
@@ -38,9 +38,9 @@ func (m *mockStore) ListMemories(project string, limit int) ([]*models.Memory, e
 	return []*models.Memory{}, nil
 }
 
-func (m *mockStore) Search(query, project string, limit int) ([]*models.Memory, error) {
+func (m *mockStore) Search(query, project, category string, limit int) ([]*models.Memory, error) {
 	if m.searchFn != nil {
-		return m.searchFn(query, project, limit)
+		return m.searchFn(query, project, category, limit)
 	}
 	return []*models.Memory{}, nil
 }

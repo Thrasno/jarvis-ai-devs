@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
@@ -153,11 +154,59 @@ func TestMemSave_StoreError_ReturnsError(t *testing.T) {
 	}
 }
 
+func TestMemSave_ContentTooLong_ReturnsError(t *testing.T) {
+	session := connectTestServer(t, &mockStore{})
+
+	// 50001 runes — one over the limit
+	content := strings.Repeat("a", 50001)
+	res := callTool(t, session, "mem_save", map[string]any{
+		"title":   "title",
+		"content": content,
+		"type":    "architecture",
+		"project": "proj",
+	})
+
+	if !res.IsError {
+		t.Error("expected IsError=true for content exceeding 50000 runes")
+	}
+	body := textContent(t, res)
+	if !strings.Contains(body, "50001 runes (max 50000)") {
+		t.Errorf("error should mention rune count, got: %s", body)
+	}
+}
+
+func TestMemSave_ContentAtLimit_IsAccepted(t *testing.T) {
+	var saved *models.Memory
+	store := &mockStore{
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			saved = m
+			return 1, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	// Exactly 50000 runes — at the boundary, should be accepted
+	content := strings.Repeat("x", 50000)
+	res := callTool(t, session, "mem_save", map[string]any{
+		"title":   "title",
+		"content": content,
+		"type":    "architecture",
+		"project": "proj",
+	})
+
+	if res.IsError {
+		t.Fatalf("content at exactly 50000 runes should be accepted, got error: %s", textContent(t, res))
+	}
+	if saved == nil {
+		t.Error("SaveMemory should have been called for content at limit")
+	}
+}
+
 // ─── mem_search ────────────────────────────────────────────────────────────
 
 func TestMemSearch_CallsSearch_ReturnsResults(t *testing.T) {
 	store := &mockStore{
-		searchFn: func(query, project string, limit int) ([]*models.Memory, error) {
+		searchFn: func(query, project, category string, limit int) ([]*models.Memory, error) {
 			return []*models.Memory{
 				{ID: 1, Title: "Auth Design", Content: "jwt", Project: project},
 			}, nil
@@ -174,19 +223,23 @@ func TestMemSearch_CallsSearch_ReturnsResults(t *testing.T) {
 		t.Fatalf("unexpected error: %s", textContent(t, res))
 	}
 
-	var results []any
-	if err := json.Unmarshal([]byte(textContent(t, res)), &results); err != nil {
-		t.Fatalf("response not valid JSON array: %v", err)
+	body := textContent(t, res)
+	// Response is now markdown, not JSON
+	if !strings.Contains(body, "### [1]") {
+		t.Errorf("response should contain markdown header with ID, got: %s", body)
 	}
-	if len(results) != 1 {
-		t.Errorf("expected 1 result, got %d", len(results))
+	if !strings.Contains(body, "Auth Design") {
+		t.Errorf("response should contain the memory title, got: %s", body)
+	}
+	if !strings.Contains(body, "results for") {
+		t.Errorf("response should contain the footer with result count, got: %s", body)
 	}
 }
 
 func TestMemSearch_DefaultLimit_Is10(t *testing.T) {
 	var gotLimit int
 	store := &mockStore{
-		searchFn: func(_, _ string, limit int) ([]*models.Memory, error) {
+		searchFn: func(_, _, _ string, limit int) ([]*models.Memory, error) {
 			gotLimit = limit
 			return nil, nil
 		},
@@ -203,7 +256,7 @@ func TestMemSearch_DefaultLimit_Is10(t *testing.T) {
 func TestMemSearch_ProjectFilter_PassedToStore(t *testing.T) {
 	var gotProject string
 	store := &mockStore{
-		searchFn: func(_, project string, _ int) ([]*models.Memory, error) {
+		searchFn: func(_, project, _ string, _ int) ([]*models.Memory, error) {
 			gotProject = project
 			return nil, nil
 		},
@@ -217,6 +270,53 @@ func TestMemSearch_ProjectFilter_PassedToStore(t *testing.T) {
 
 	if gotProject != "my-project" {
 		t.Errorf("project = %q, want 'my-project'", gotProject)
+	}
+}
+
+func TestMemSearch_FiltersByCategory(t *testing.T) {
+	var gotCategory string
+	store := &mockStore{
+		searchFn: func(_, _, category string, _ int) ([]*models.Memory, error) {
+			gotCategory = category
+			return []*models.Memory{
+				{ID: 1, Title: "Arch Note", Content: "content", Project: "proj", Category: "architecture"},
+			}, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_search", map[string]any{
+		"query":   "design",
+		"project": "proj",
+		"type":    "architecture",
+	})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	if gotCategory != "architecture" {
+		t.Errorf("category passed to store = %q, want 'architecture'", gotCategory)
+	}
+}
+
+func TestMemSearch_NoResults_ReturnsNoResultsMessage(t *testing.T) {
+	store := &mockStore{
+		searchFn: func(_, _, _ string, _ int) ([]*models.Memory, error) {
+			return []*models.Memory{}, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_search", map[string]any{
+		"query": "nonexistent topic xyz",
+	})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	body := textContent(t, res)
+	if !strings.Contains(body, "No results found") {
+		t.Errorf("expected no-results message, got: %s", body)
 	}
 }
 
@@ -316,6 +416,25 @@ func TestMemSessionSummary_MissingContent_ReturnsError(t *testing.T) {
 	}
 }
 
+func TestMemSessionSummary_ContentTooLong_ReturnsError(t *testing.T) {
+	session := connectTestServer(t, &mockStore{})
+
+	// 60000 runes — well over the limit
+	content := strings.Repeat("x", 60000)
+	res := callTool(t, session, "mem_session_summary", map[string]any{
+		"content": content,
+		"project": "proj",
+	})
+
+	if !res.IsError {
+		t.Error("expected IsError=true for content exceeding 50000 runes")
+	}
+	body := textContent(t, res)
+	if !strings.Contains(body, "60000 runes (max 50000)") {
+		t.Errorf("error should mention rune count, got: %s", body)
+	}
+}
+
 // ─── mem_context ───────────────────────────────────────────────────────────
 
 func TestMemContext_DefaultLimit_Is20(t *testing.T) {
@@ -352,12 +471,12 @@ func TestMemContext_WithProject_PassedToStore(t *testing.T) {
 	}
 }
 
-func TestMemContext_ReturnsResultsAsJSON(t *testing.T) {
+func TestMemContext_ReturnsFormattedMarkdown(t *testing.T) {
 	store := &mockStore{
 		listMemoriesFn: func(_ string, _ int) ([]*models.Memory, error) {
 			return []*models.Memory{
-				{ID: 1, Title: "Recent Memory", Project: "proj", Content: "c"},
-				{ID: 2, Title: "Older Memory", Project: "proj", Content: "c"},
+				{ID: 1, Title: "Recent Memory", Project: "proj", Content: "c", Category: "decision"},
+				{ID: 2, Title: "Older Memory", Project: "proj", Content: "c", Category: "bugfix"},
 			}, nil
 		},
 	}
@@ -368,11 +487,45 @@ func TestMemContext_ReturnsResultsAsJSON(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", textContent(t, res))
 	}
-	var results []any
-	if err := json.Unmarshal([]byte(textContent(t, res)), &results); err != nil {
-		t.Fatalf("response not valid JSON array: %v", err)
+	body := textContent(t, res)
+
+	// Must be markdown, not JSON
+	if strings.HasPrefix(strings.TrimSpace(body), "[") {
+		t.Error("response should not be a JSON array")
 	}
-	if len(results) != 2 {
-		t.Errorf("expected 2 results, got %d", len(results))
+	if !strings.Contains(body, "### [") {
+		t.Errorf("response should contain markdown headers, got: %s", body)
+	}
+	if !strings.Contains(body, "---") {
+		t.Errorf("response should contain --- separators, got: %s", body)
+	}
+	if !strings.Contains(body, "memories shown") {
+		t.Errorf("response should contain footer with count, got: %s", body)
+	}
+	// Both memories should be present
+	if !strings.Contains(body, "Recent Memory") {
+		t.Errorf("response should contain 'Recent Memory', got: %s", body)
+	}
+	if !strings.Contains(body, "Older Memory") {
+		t.Errorf("response should contain 'Older Memory', got: %s", body)
+	}
+}
+
+func TestMemContext_NoResults_ReturnsNoMemoriesMessage(t *testing.T) {
+	store := &mockStore{
+		listMemoriesFn: func(_ string, _ int) ([]*models.Memory, error) {
+			return []*models.Memory{}, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_context", map[string]any{"project": "empty-proj"})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	body := textContent(t, res)
+	if !strings.Contains(body, "No memories found") {
+		t.Errorf("expected no-memories message, got: %s", body)
 	}
 }

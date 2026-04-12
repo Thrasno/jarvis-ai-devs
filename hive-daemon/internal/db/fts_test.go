@@ -67,7 +67,7 @@ func TestSearch_FindsByTitle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := d.Search("JWT", "proj", 10)
+	results, err := d.Search("JWT", "proj", "", 10)
 	if err != nil {
 		t.Fatalf("Search() failed: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestSearch_FindsByContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := d.Search("SQLite", "proj", 10)
+	results, err := d.Search("SQLite", "proj", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestSearch_SpecialCharactersNocrash(t *testing.T) {
 	specialQueries := []string{"@#user", "user@domain.com", "foo:bar", "hello*world"}
 	for _, q := range specialQueries {
 		t.Run(q, func(t *testing.T) {
-			_, err := d.Search(q, "proj", 10)
+			_, err := d.Search(q, "proj", "", 10)
 			if err != nil {
 				t.Errorf("Search(%q) should not error, got: %v", q, err)
 			}
@@ -127,7 +127,7 @@ func TestSearch_EmptyQuery_ReturnsAllForProject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := d.Search("", "proj", 10)
+	results, err := d.Search("", "proj", "", 10)
 	if err != nil {
 		t.Fatalf("Search('', 'proj') failed: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestSearch_ProjectFilter_IsolatesResults(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := d.Search("auth", "foo", 10)
+	results, err := d.Search("auth", "foo", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestSearch_NoProjectFilter_SearchesAll(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := d.Search("auth", "", 10)
+	results, err := d.Search("auth", "", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestSearch_BM25_TitleRanksAboveContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := d.Search("SQLite", "proj", 10)
+	results, err := d.Search("SQLite", "proj", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,12 +210,62 @@ func TestSearch_RespectsLimit(t *testing.T) {
 		}
 	}
 
-	results, err := d.Search("auth", "proj", 3)
+	results, err := d.Search("auth", "proj", "", 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(results) != 3 {
 		t.Errorf("expected 3 results with limit=3, got %d", len(results))
+	}
+}
+
+func TestSearch_CategoryFilter(t *testing.T) {
+	d := openTestDB(t)
+
+	// Save observations of two different categories
+	archMem := newMemory("proj", "Auth Design", "jwt authentication system")
+	archMem.Category = "architecture"
+	if _, err := d.SaveMemory(archMem); err != nil {
+		t.Fatal(err)
+	}
+
+	bugMem := newMemory("proj", "Auth Bug Fix", "fixed jwt token validation")
+	bugMem.Category = "bugfix"
+	if _, err := d.SaveMemory(bugMem); err != nil {
+		t.Fatal(err)
+	}
+
+	// Filter by "architecture" only
+	results, err := d.Search("auth", "proj", "architecture", 10)
+	if err != nil {
+		t.Fatalf("Search with category filter failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result with category=architecture, got %d", len(results))
+	}
+	if results[0].Category != "architecture" {
+		t.Errorf("result category = %q, want 'architecture'", results[0].Category)
+	}
+
+	// Filter by "bugfix" only
+	results, err = d.Search("auth", "proj", "bugfix", 10)
+	if err != nil {
+		t.Fatalf("Search with category=bugfix failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result with category=bugfix, got %d", len(results))
+	}
+	if results[0].Category != "bugfix" {
+		t.Errorf("result category = %q, want 'bugfix'", results[0].Category)
+	}
+
+	// No category filter — both returned
+	results, err = d.Search("auth", "proj", "", 10)
+	if err != nil {
+		t.Fatalf("Search without category filter failed: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("without category filter, expected 2 results, got %d", len(results))
 	}
 }
 

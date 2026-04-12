@@ -190,15 +190,12 @@ func TestE2E_SaveAndSearch(t *testing.T) {
 	}
 
 	body := searchRes.Content[0].(*sdkmcp.TextContent).Text
-	var results []map[string]any
-	if err := json.Unmarshal([]byte(body), &results); err != nil {
-		t.Fatalf("mem_search result not valid JSON: %v", err)
+	// mem_search now returns markdown, not JSON
+	if !strings.Contains(body, "SQLite Architecture") {
+		t.Errorf("search result should contain 'SQLite Architecture', got: %s", body)
 	}
-	if len(results) == 0 {
-		t.Error("expected at least 1 search result, got 0")
-	}
-	if results[0]["title"] != "SQLite Architecture" {
-		t.Errorf("first result title = %q, want 'SQLite Architecture'", results[0]["title"])
+	if !strings.Contains(body, "### [") {
+		t.Errorf("search result should contain markdown headers, got: %s", body)
 	}
 }
 
@@ -253,14 +250,13 @@ func TestE2E_TopicKeyUpsert(t *testing.T) {
 		t.Fatal("mem_search failed after upsert")
 	}
 
-	var results []map[string]any
-	if err := json.Unmarshal([]byte(searchRes.Content[0].(*sdkmcp.TextContent).Text), &results); err != nil {
-		t.Fatalf("search response not valid JSON: %v", err)
+	// mem_search now returns markdown, not JSON
+	searchBody := searchRes.Content[0].(*sdkmcp.TextContent).Text
+	if !strings.Contains(searchBody, "Auth Design v2") {
+		t.Errorf("search result should contain 'Auth Design v2' after upsert, got: %s", searchBody)
 	}
-	if len(results) != 1 {
-		t.Errorf("expected 1 result after upsert, got %d", len(results))
-	}
-	if results[0]["title"] != "Auth Design v2" {
-		t.Errorf("title after upsert = %q, want 'Auth Design v2'", results[0]["title"])
+	// Verify upsert worked: only 1 result should appear (1 result footer)
+	if strings.Contains(searchBody, "2 results") {
+		t.Errorf("upsert should leave only 1 result, but got 2 in response: %s", searchBody)
 	}
 }
