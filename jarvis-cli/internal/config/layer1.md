@@ -121,3 +121,17 @@ Sub-agent launch pattern: delegate reads of 4+ files, multi-file writes, and tes
 
 SDD DAG with sdd-qa: `proposal → specs → tasks → apply → sdd-qa → verify → archive`
 (sdd-qa = manual behavior acceptance between apply and verify)
+
+## Skills (Auto-load based on context)
+
+When you detect any of these contexts, IMMEDIATELY read the corresponding skill file BEFORE writing any code.
+
+| Context | Read this file |
+| ------- | -------------- |
+| Go tests, Bubbletea TUI testing | `~/.claude/skills/go-testing/SKILL.md` |
+| Creating new AI skills | `~/.claude/skills/skill-creator/SKILL.md` |
+| Zoho Deluge scripts | `~/.claude/skills/zoho-deluge/SKILL.md` |
+| Laravel projects | `~/.claude/skills/laravel-architecture/SKILL.md` |
+| PHP / Laravel tests | `~/.claude/skills/phpunit-testing/SKILL.md` |
+
+Read skills BEFORE writing code. Apply ALL patterns. Multiple skills can apply simultaneously.
