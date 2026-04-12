@@ -33,7 +33,7 @@ var personaSetCmd = &cobra.Command{
 		layer2 := persona.RenderLayer2(preset)
 
 		// 3. Patch Layer2 in instructions for each configured agent.
-		agents := agent.Detect()
+		agents := agent.Detect(jarvis.TemplatesFS)
 		for _, a := range agents {
 			if patchErr := a.WriteInstructions(config.Layer1Content(), layer2); patchErr != nil {
 				fmt.Printf("Warning: failed to update %s instructions: %v\n", a.Name(), patchErr)

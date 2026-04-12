@@ -119,7 +119,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 
 	// ── Step 5: AgentConfig ───────────────────────────────────────────────────
 	fmt.Println("\n=== Jarvis-Dev Setup [5/5] Configure AI Agents ===")
-	agents := agent.Detect()
+	agents := agent.Detect(wcfg.TemplateFS)
 	if len(agents) == 0 {
 		fmt.Println("No agents detected. Install Claude Code or OpenCode and re-run jarvis.")
 	}

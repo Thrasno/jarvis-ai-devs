@@ -153,21 +153,72 @@ func TestLoad_ReturnsErrorWhenFileCorrupt(t *testing.T) {
 	}
 }
 
-// TestLayer1Content_ContainsProjectContext verifies that Layer1Content includes
-// the PROJECT CONTEXT section with all three fallbacks documented.
-func TestLayer1Content_ContainsProjectContext(t *testing.T) {
+// TestLayer1Content_ContainsAllRequiredSections verifies that Layer1Content includes
+// all 10 required sections of the full Hive protocol (R2).
+func TestLayer1Content_ContainsAllRequiredSections(t *testing.T) {
 	content := Layer1Content()
 
-	for _, want := range []string{
+	required := []string{
+		// PROJECT CONTEXT
 		"PROJECT CONTEXT",
 		"git remote get-url origin",
 		"basename",
 		`"default"`,
+		// PROACTIVE SAVE TRIGGERS + self-check
+		"PROACTIVE SAVE TRIGGERS",
+		"Self-check after EVERY task",
+		// mem_save format fields
+		"scope",
+		"topic_key",
+		"What",
+		"Why",
+		"Where",
+		"Learned",
+		// Topic update rules
+		"Different topics MUST NOT overwrite",
+		"mem_suggest_topic_key",
+		// Search protocol
+		"mem_context",
+		"mem_get_observation",
+		// Session close protocol
+		"SESSION CLOSE PROTOCOL",
+		"mem_session_summary",
+		"Goal",
+		"Discoveries",
+		"Accomplished",
+		"Next Steps",
+		"Relevant Files",
+		// SDD with sdd-qa
+		"sdd-qa",
+		// Hive-specific
+		"mem_sync",
 		"project",
+		// Core tool
 		"mem_save",
-	} {
+	}
+
+	for _, want := range required {
 		if !strings.Contains(content, want) {
-			t.Errorf("Layer1Content missing %q", want)
+			t.Errorf("Layer1Content missing required string %q", want)
 		}
+	}
+
+	// AFTER COMPACTION — case-insensitive check
+	lowerContent := strings.ToLower(content)
+	if !strings.Contains(lowerContent, "after compaction") {
+		t.Error("Layer1Content missing 'AFTER COMPACTION' section (case-insensitive)")
+	}
+}
+
+// TestLayer1Content_NoEngramReferences verifies that Layer1Content contains no
+// references to "Engram" (the old memory system) in any casing.
+func TestLayer1Content_NoEngramReferences(t *testing.T) {
+	content := Layer1Content()
+
+	if strings.Contains(content, "Engram") {
+		t.Error("Layer1Content must not contain 'Engram' (old memory system reference)")
+	}
+	if strings.Contains(content, "engram") {
+		t.Error("Layer1Content must not contain 'engram' (old memory system reference)")
 	}
 }

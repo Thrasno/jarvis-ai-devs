@@ -3,8 +3,11 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
 )
 
 // ClaudeAgent implements Agent for Anthropic's Claude Code CLI.
@@ -13,12 +16,13 @@ import (
 // Instructions file: ~/.claude/CLAUDE.md
 // Skills dir: ~/.claude/skills/
 type ClaudeAgent struct {
-	home string
+	home        string
+	templatesFS fs.FS
 }
 
-func newClaudeAgent() *ClaudeAgent {
+func newClaudeAgent(fsys fs.FS) *ClaudeAgent {
 	home, _ := os.UserHomeDir()
-	return &ClaudeAgent{home: home}
+	return &ClaudeAgent{home: home, templatesFS: fsys}
 }
 
 func (a *ClaudeAgent) Name() string { return "claude" }
@@ -79,8 +83,11 @@ func (a *ClaudeAgent) MergeConfig(entry MCPEntry) error {
 }
 
 // WriteInstructions writes ~/.claude/CLAUDE.md with Layer1+Layer2 sentinel blocks.
-// If the file already exists, sentinels are patched in-place (user content preserved).
-// If not, a new file is created.
+//
+// Decision logic:
+//   - File absent or empty → render fresh via RenderCLAUDEMd ("created")
+//   - File exists with Jarvis sentinels → patch in-place via PatchFile ("updated")
+//   - File exists without sentinels → render fresh via RenderCLAUDEMd, replacing foreign content ("replaced")
 func (a *ClaudeAgent) WriteInstructions(layer1, layer2 string) error {
 	path := a.instructionsPath()
 
@@ -91,24 +98,24 @@ func (a *ClaudeAgent) WriteInstructions(layer1, layer2 string) error {
 
 	var content string
 	if os.IsNotExist(err) || len(existing) == 0 {
-		// Create new file from scratch
-		content = BuildFullContent("", layer1, layer2)
+		// Create new file from scratch using the canonical template renderer.
+		content, err = config.RenderCLAUDEMd(a.templatesFS, layer1, layer2, "")
+		if err != nil {
+			return fmt.Errorf("render CLAUDE.md: %w", err)
+		}
 	} else {
-		// File exists — check if sentinels are present
 		existingStr := string(existing)
-		if err := ValidateSentinels(existingStr); err != nil {
-			// Sentinels missing — append the blocks at the end
-			content = existingStr
-			if len(content) > 0 && content[len(content)-1] != '\n' {
-				content += "\n"
-			}
-			content += "\n" + Layer1Start + "\n" + layer1 + "\n" + Layer1End + "\n\n"
-			content += Layer2Start + "\n" + layer2 + "\n" + Layer2End + "\n"
-		} else {
-			// Sentinels present — patch in-place
+		if err := ValidateSentinels(existingStr); err == nil {
+			// Sentinels present — patch in-place (preserves user content outside blocks).
 			content, err = PatchFile(existingStr, layer1, layer2)
 			if err != nil {
 				return fmt.Errorf("patch CLAUDE.md sentinels: %w", err)
+			}
+		} else {
+			// Sentinels missing — discard foreign content and render a clean Jarvis file.
+			content, err = config.RenderCLAUDEMd(a.templatesFS, layer1, layer2, "")
+			if err != nil {
+				return fmt.Errorf("render CLAUDE.md (replace): %w", err)
 			}
 		}
 	}

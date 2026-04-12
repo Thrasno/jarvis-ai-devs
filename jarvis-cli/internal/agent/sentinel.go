@@ -93,40 +93,6 @@ func ValidateSentinels(content string) error {
 	return nil
 }
 
-// BuildFullContent builds a new CLAUDE.md / AGENTS.md content from scratch
-// with both Layer1 and Layer2 sentinel blocks. Used when the file doesn't exist.
-func BuildFullContent(preamble, layer1, layer2 string) string {
-	var sb strings.Builder
-
-	if preamble != "" {
-		sb.WriteString(preamble)
-		if !strings.HasSuffix(preamble, "\n") {
-			sb.WriteString("\n")
-		}
-		sb.WriteString("\n")
-	}
-
-	sb.WriteString(Layer1Start)
-	sb.WriteString("\n")
-	sb.WriteString(layer1)
-	if !strings.HasSuffix(layer1, "\n") {
-		sb.WriteString("\n")
-	}
-	sb.WriteString(Layer1End)
-	sb.WriteString("\n\n")
-
-	sb.WriteString(Layer2Start)
-	sb.WriteString("\n")
-	sb.WriteString(layer2)
-	if !strings.HasSuffix(layer2, "\n") {
-		sb.WriteString("\n")
-	}
-	sb.WriteString(Layer2End)
-	sb.WriteString("\n")
-
-	return sb.String()
-}
-
 // PatchFile patches both Layer1 and Layer2 blocks in an existing file's content.
 // Content outside the sentinel markers is preserved unchanged.
 func PatchFile(content, layer1, layer2 string) (string, error) {

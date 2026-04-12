@@ -116,8 +116,8 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 		}
 	}
 
-	// Detect installed agents.
-	m.Agents = agent.Detect()
+	// Detect installed agents (inject TemplatesFS for WriteInstructions rendering).
+	m.Agents = agent.Detect(wcfg.TemplateFS)
 
 	return m
 }
