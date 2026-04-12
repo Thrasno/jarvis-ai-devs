@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
+	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/apiclient"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
@@ -122,11 +124,17 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		fmt.Println("No agents detected. Install Claude Code or OpenCode and re-run jarvis.")
 	}
 
-	// Build skill map.
-	skillMap := make(map[string][]byte)
+	// Build the sub-FS rooted at embed/skills for InstallSkills.
+	skillsSubFS, err := fs.Sub(jarvis.SkillsFS, "embed/skills")
+	if err != nil {
+		return fmt.Errorf("skills sub-FS: %w", err)
+	}
+
+	// Build the list of selected skill IDs.
+	var selectedIDs []string
 	for _, s := range skillList {
 		if selected[s.ID] || s.IsCore {
-			skillMap[s.ID] = s.Content
+			selectedIDs = append(selectedIDs, s.ID)
 		}
 	}
 
@@ -160,7 +168,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 			fmt.Printf("  Instructions failed: %v\n", instrErr)
 			continue
 		}
-		if skillErr := a.InstallSkills(skillMap); skillErr != nil {
+		if skillErr := a.InstallSkills(skillsSubFS, selectedIDs); skillErr != nil {
 			fmt.Printf("  Skills install failed: %v\n", skillErr)
 			continue
 		}

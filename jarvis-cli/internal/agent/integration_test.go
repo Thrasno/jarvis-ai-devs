@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 // ── Real-world JSON fixtures ──────────────────────────────────────────────────
@@ -259,26 +260,31 @@ func TestOpenCodeAgent_InstallSkills_CreatesSkillDirs(t *testing.T) {
 
 	a := &OpenCodeAgent{home: home}
 
-	skills := map[string][]byte{
-		"go-testing": []byte("# Go Testing Skill\n\nUse table-driven tests."),
-		"sdd-apply":  []byte("# SDD Apply Skill\n\nImplement tasks from spec."),
+	testFS := fstest.MapFS{
+		"go-testing/SKILL.md": {Data: []byte("# Go Testing Skill\n\nUse table-driven tests.")},
+		"sdd-apply/SKILL.md":  {Data: []byte("# SDD Apply Skill\n\nImplement tasks from spec.")},
 	}
+	selectedIDs := []string{"go-testing", "sdd-apply"}
 
-	if err := a.InstallSkills(skills); err != nil {
+	if err := a.InstallSkills(testFS, selectedIDs); err != nil {
 		t.Fatalf("InstallSkills: %v", err)
 	}
 
 	// Each skill must have its own directory with SKILL.md inside.
-	for skillID, expectedContent := range skills {
+	expected := map[string]string{
+		"go-testing": "# Go Testing Skill\n\nUse table-driven tests.",
+		"sdd-apply":  "# SDD Apply Skill\n\nImplement tasks from spec.",
+	}
+	for skillID, expectedContent := range expected {
 		skillPath := filepath.Join(home, ".config", "opencode", "skills", skillID, "SKILL.md")
 		data, err := os.ReadFile(skillPath)
 		if err != nil {
 			t.Errorf("skill %q: expected SKILL.md at %s, got error: %v", skillID, skillPath, err)
 			continue
 		}
-		if string(data) != string(expectedContent) {
+		if string(data) != expectedContent {
 			t.Errorf("skill %q: content mismatch\n  got:  %q\n  want: %q",
-				skillID, string(data), string(expectedContent))
+				skillID, string(data), expectedContent)
 		}
 	}
 }

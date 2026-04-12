@@ -132,10 +132,10 @@ func TestClaudeAgent_InstallSkills(t *testing.T) {
 	}
 
 	a := newClaudeAgent(emptyFS)
-	skillsMap := map[string][]byte{
-		"my-skill": []byte("# My Skill\nSome content."),
+	testFS := fstest.MapFS{
+		"my-skill/SKILL.md": {Data: []byte("# My Skill\nSome content.")},
 	}
-	if err := a.InstallSkills(skillsMap); err != nil {
+	if err := a.InstallSkills(testFS, []string{"my-skill"}); err != nil {
 		t.Fatalf("InstallSkills: %v", err)
 	}
 
@@ -267,8 +267,8 @@ func TestOpenCodeAgent_InstallSkills(t *testing.T) {
 	}
 
 	a := newOpenCodeAgent(emptyFS)
-	skillsMap := map[string][]byte{"oc-skill": []byte("# OpenCode Skill")}
-	if err := a.InstallSkills(skillsMap); err != nil {
+	testFS := fstest.MapFS{"oc-skill/SKILL.md": {Data: []byte("# OpenCode Skill")}}
+	if err := a.InstallSkills(testFS, []string{"oc-skill"}); err != nil {
 		t.Fatalf("InstallSkills: %v", err)
 	}
 

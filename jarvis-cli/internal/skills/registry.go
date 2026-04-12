@@ -8,12 +8,13 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"path/filepath"
 	"strings"
 )
 
 // Skill represents a single embedded skill file.
 type Skill struct {
-	// ID is the filename without extension (e.g. "sdd-workflow").
+	// ID is the directory name for this skill (e.g. "sdd-workflow").
 	ID string
 
 	// Name is the human-readable display name.
@@ -23,31 +24,52 @@ type Skill struct {
 	Description string
 
 	// IsCore marks skills that are pre-selected and cannot be deselected.
-	// Core skills: sdd-workflow, hive.
 	IsCore bool
 
-	// Content holds the raw Markdown content of the skill file.
+	// Content holds the raw Markdown content of the skill's SKILL.md file.
 	Content []byte
+
+	// Path is the relative path within embed/skills/ (e.g. "sdd-qa/SKILL.md").
+	Path string
 }
 
 // coreSkillIDs lists the skills that are always installed.
 var coreSkillIDs = map[string]bool{
 	"sdd-workflow": true,
 	"hive":         true,
+	"sdd-init":     true,
+	"sdd-apply":    true,
+	"sdd-verify":   true,
+	"sdd-archive":  true,
+	"sdd-qa":       true,
 }
 
 // skillMeta provides human-readable metadata for each skill ID.
 var skillMeta = map[string]struct{ name, description string }{
-	"sdd-workflow":         {name: "SDD Workflow", description: "Spec-Driven Development lifecycle: proposal → spec → design → tasks → apply → verify → archive"},
+	"sdd-workflow":         {name: "SDD Workflow", description: "Spec-Driven Development lifecycle: proposal → spec → design → tasks → apply → sdd-qa → verify → archive"},
 	"hive":                 {name: "Hive Memory", description: "Persistent memory protocol: when to save, how to search, session summary triggers"},
+	"sdd-explore":          {name: "SDD Explore", description: "Investigate ideas and compare approaches before committing to a change"},
+	"sdd-propose":          {name: "SDD Propose", description: "Create a structured change proposal with intent, scope, and success criteria"},
+	"sdd-spec":             {name: "SDD Spec", description: "Write delta requirements and Given/When/Then scenarios for a change"},
+	"sdd-design":           {name: "SDD Design", description: "Document architecture decisions and technical approach with rationale"},
+	"sdd-tasks":            {name: "SDD Tasks", description: "Break down a change into a concrete, ordered implementation checklist"},
+	"sdd-apply":            {name: "SDD Apply", description: "Implement tasks following specs and design; supports Strict TDD mode"},
+	"sdd-qa":               {name: "SDD QA", description: "Run mixed [AUTO]/[MANUAL] QA checklist; mandatory before sdd-verify"},
+	"sdd-verify":           {name: "SDD Verify", description: "Verify implementation against specs with structural and behavioral checks"},
+	"sdd-archive":          {name: "SDD Archive", description: "Merge delta specs to main specs and close the SDD change cycle"},
+	"sdd-init":             {name: "SDD Init", description: "Detect project stack, testing capabilities, and initialize SDD context"},
 	"zoho-deluge":          {name: "Zoho Deluge", description: "Zoho Deluge scripting conventions: no nested loops, bulk operations, null safety"},
 	"laravel-architecture": {name: "Laravel Architecture", description: "Laravel conventions: thin controllers, services, repositories, FormRequest validation"},
 	"phpunit-testing":      {name: "PHPUnit Testing", description: "PHPUnit patterns: AAA structure, factories, one concept per test"},
 	"git-workflow":         {name: "Git Workflow", description: "Conventional commits, branch naming, no force push to main"},
+	"branch-pr":            {name: "Branch & PR", description: "PR creation workflow with issue-first enforcement, branch naming, and automated checks"},
+	"issue-creation":       {name: "Issue Creation", description: "GitHub issue creation with bug report and feature request templates"},
 }
 
 // ListSkills returns all available embedded skills with their metadata and content.
 // fsys must be the root-package SkillsFS (embed/skills directory embedded at root).
+// Only files named SKILL.md are registered. Supporting files (e.g. strict-tdd.md)
+// are installed but not registered. The _shared/ directory is never registered.
 func ListSkills(fsys embed.FS) ([]Skill, error) {
 	var skills []Skill
 
@@ -55,19 +77,32 @@ func ListSkills(fsys embed.FS) ([]Skill, error) {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		if !strings.HasSuffix(path, ".md") {
+
+		// Only register SKILL.md files.
+		if d.Name() != "SKILL.md" {
 			return nil
 		}
 
-		id := strings.TrimSuffix(d.Name(), ".md")
+		// Compute relative path from embed/skills root.
+		relPath := strings.TrimPrefix(path, "embed/skills/")
+
+		// Derive skill ID from the parent directory name.
+		dirName := filepath.Dir(relPath)
+
+		// Skip _shared/ — those files are not skills.
+		if dirName == "_shared" {
+			return nil
+		}
+
+		skillID := dirName
 
 		content, err := fsys.ReadFile(path)
 		if err != nil {
-			return fmt.Errorf("read skill %s: %w", id, err)
+			return fmt.Errorf("read skill %s: %w", skillID, err)
 		}
 
-		meta, hasMeta := skillMeta[id]
-		name := id
+		meta, hasMeta := skillMeta[skillID]
+		name := skillID
 		description := ""
 		if hasMeta {
 			name = meta.name
@@ -75,11 +110,12 @@ func ListSkills(fsys embed.FS) ([]Skill, error) {
 		}
 
 		skills = append(skills, Skill{
-			ID:          id,
+			ID:          skillID,
 			Name:        name,
 			Description: description,
-			IsCore:      coreSkillIDs[id],
+			IsCore:      coreSkillIDs[skillID],
 			Content:     content,
+			Path:        relPath,
 		})
 
 		return nil
