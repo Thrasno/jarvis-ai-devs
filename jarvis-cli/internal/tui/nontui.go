@@ -3,6 +3,7 @@ package tui
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,7 +18,12 @@ import (
 // RunNoTUI executes the full wizard using plain readline-style prompts.
 // Used when --no-tui flag is set or when stdin is not a terminal.
 func RunNoTUI(wcfg WizardConfig) error {
-	scanner := bufio.NewScanner(os.Stdin)
+	return runNoTUI(wcfg, os.Stdin)
+}
+
+// runNoTUI is the testable implementation that accepts any io.Reader as input.
+func runNoTUI(wcfg WizardConfig, input io.Reader) error {
+	scanner := bufio.NewScanner(input)
 	cfg := &config.AppConfig{APIURL: config.DefaultAPIURL}
 
 	// ── Step 1: HiveLocal ─────────────────────────────────────────────────────

@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -347,4 +349,519 @@ func TestStep_Persona_BackNavigation(t *testing.T) {
 // signature is accessible and skips if no injection mechanism is available.
 func TestNoTUI_SkipsTTYRequirement(t *testing.T) {
 	t.Skip("RunNoTUI reads from os.Stdin directly — use binary-level tests for full flow coverage")
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestNewModel_WithEmptyWizardConfig
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestNewModel_WithEmptyWizardConfig verifies that NewModel returns a valid model
+// even when the WizardConfig has zero-value FSes (errors are silently ignored).
+func TestNewModel_WithEmptyWizardConfig(t *testing.T) {
+	m := NewModel(WizardConfig{}, false)
+	if m.Step != StepHiveLocal {
+		t.Errorf("expected StepHiveLocal, got %v", m.Step)
+	}
+	if m.Selected == nil {
+		t.Error("Selected map should be non-nil")
+	}
+	if m.cfg == nil {
+		t.Error("cfg should be non-nil after NewModel")
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestModel_Init_ReturnsNil
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestModel_Init_ReturnsNil verifies that Init() returns a nil Cmd (no initial IO).
+func TestModel_Init_ReturnsNil(t *testing.T) {
+	m := Model{Step: StepHiveLocal, Selected: make(map[string]bool)}
+	cmd := m.Init()
+	if cmd != nil {
+		t.Error("Init() should return nil Cmd")
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestUpdate_WindowSizeMsg
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestUpdate_WindowSizeMsg verifies that the model stores terminal dimensions.
+func TestUpdate_WindowSizeMsg(t *testing.T) {
+	m := Model{Step: StepHiveLocal, Selected: make(map[string]bool)}
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m2 := updated.(Model)
+	if m2.width != 120 || m2.height != 40 {
+		t.Errorf("expected 120x40, got %dx%d", m2.width, m2.height)
+	}
+	if cmd != nil {
+		t.Error("expected nil cmd for WindowSizeMsg")
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestUpdate_ErrMsg
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestUpdate_ErrMsg verifies that async error messages are stored in m.Err.
+func TestUpdate_ErrMsg(t *testing.T) {
+	m := Model{Step: StepHiveLocal, Selected: make(map[string]bool)}
+	testErr := errors.New("async failure")
+	updated, _ := m.Update(errMsg{err: testErr})
+	m2 := updated.(Model)
+	if m2.Err != testErr {
+		t.Errorf("expected Err=%v, got %v", testErr, m2.Err)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestUpdateHiveCloud_TabSwitchesField
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestUpdateHiveCloud_TabSwitchesField verifies Tab toggles between email and password fields.
+func TestUpdateHiveCloud_TabSwitchesField(t *testing.T) {
+	m := Model{
+		Step:     StepHiveCloud,
+		Selected: make(map[string]bool),
+		cfg:      &config.AppConfig{},
+	}
+	if m.activeField != 0 {
+		t.Fatal("expected activeField=0 initially (email)")
+	}
+	m = sendKey(m, tea.KeyTab)
+	if m.activeField != 1 {
+		t.Errorf("after Tab: expected activeField=1 (password), got %d", m.activeField)
+	}
+	m = sendKey(m, tea.KeyTab)
+	if m.activeField != 0 {
+		t.Errorf("after Tab x2: expected activeField=0 (email), got %d", m.activeField)
+	}
+	// ShiftTab also toggles.
+	m = sendKey(m, tea.KeyShiftTab)
+	if m.activeField != 1 {
+		t.Errorf("after ShiftTab: expected activeField=1, got %d", m.activeField)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestUpdateHiveCloud_TypeEmailAndBackspace
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestUpdateHiveCloud_TypeEmailAndBackspace verifies rune input and backspace on the email field.
+func TestUpdateHiveCloud_TypeEmailAndBackspace(t *testing.T) {
+	m := Model{
+		Step:     StepHiveCloud,
+		Selected: make(map[string]bool),
+		cfg:      &config.AppConfig{},
+	}
+	m = sendRune(m, "a")
+	m = sendRune(m, "b")
+	m = sendRune(m, "c")
+	if m.Email != "abc" {
+		t.Errorf("expected Email=abc, got %q", m.Email)
+	}
+	m = sendKey(m, tea.KeyBackspace)
+	if m.Email != "ab" {
+		t.Errorf("after Backspace: expected Email=ab, got %q", m.Email)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestUpdateHiveCloud_TypePasswordAndBackspace
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestUpdateHiveCloud_TypePasswordAndBackspace verifies rune input and backspace on the password field.
+func TestUpdateHiveCloud_TypePasswordAndBackspace(t *testing.T) {
+	m := Model{
+		Step:        StepHiveCloud,
+		Selected:    make(map[string]bool),
+		cfg:         &config.AppConfig{},
+		activeField: 1,
+	}
+	m = sendRune(m, "x")
+	m = sendRune(m, "y")
+	if m.Password != "xy" {
+		t.Errorf("expected Password=xy, got %q", m.Password)
+	}
+	m = sendKey(m, tea.KeyBackspace)
+	if m.Password != "x" {
+		t.Errorf("after Backspace: expected Password=x, got %q", m.Password)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestUpdateHiveCloud_EnterOnEmailMovesToPassword
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestUpdateHiveCloud_EnterOnEmailMovesToPassword verifies that Enter on email field
+// switches focus to the password field (not submitting the form yet).
+func TestUpdateHiveCloud_EnterOnEmailMovesToPassword(t *testing.T) {
+	m := Model{
+		Step:     StepHiveCloud,
+		Selected: make(map[string]bool),
+		cfg:      &config.AppConfig{},
+		Email:    "user@example.com",
+	}
+	m = sendKey(m, tea.KeyEnter)
+	if m.activeField != 1 {
+		t.Errorf("expected password field (1) after Enter on email, got %d", m.activeField)
+	}
+	if m.Step != StepHiveCloud {
+		t.Errorf("expected still on StepHiveCloud, got %v", m.Step)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestUpdateHiveCloud_EmptyEmailEnterSkipsToPersona
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestUpdateHiveCloud_EmptyEmailEnterSkipsToPersona verifies that Enter with empty
+// email (on password field) skips cloud auth and advances to StepPersona.
+func TestUpdateHiveCloud_EmptyEmailEnterSkipsToPersona(t *testing.T) {
+	m := Model{
+		Step:        StepHiveCloud,
+		Selected:    make(map[string]bool),
+		cfg:         &config.AppConfig{},
+		Email:       "",
+		activeField: 1,
+	}
+	m = sendKey(m, tea.KeyEnter)
+	if m.Step != StepPersona {
+		t.Errorf("expected StepPersona after Enter with empty email, got %v", m.Step)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestUpdateHiveCloud_EscSkipsToPersona
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestUpdateHiveCloud_EscSkipsToPersona verifies that Esc clears credentials and skips to StepPersona.
+func TestUpdateHiveCloud_EscSkipsToPersona(t *testing.T) {
+	m := Model{
+		Step:     StepHiveCloud,
+		Selected: make(map[string]bool),
+		cfg:      &config.AppConfig{},
+		Email:    "user@example.com",
+		Password: "s3cr3t",
+	}
+	m = sendKey(m, tea.KeyEsc)
+	if m.Step != StepPersona {
+		t.Errorf("expected StepPersona after Esc, got %v", m.Step)
+	}
+	if m.Email != "" || m.Password != "" {
+		t.Errorf("expected Email and Password cleared, got email=%q pass=%q", m.Email, m.Password)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestUpdateDone_EnterQuits
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestUpdateDone_EnterQuits verifies that Enter on StepDone sets Done=true and returns a Quit cmd.
+func TestUpdateDone_EnterQuits(t *testing.T) {
+	m := Model{
+		Step:     StepDone,
+		Selected: make(map[string]bool),
+		cfg:      &config.AppConfig{},
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m2 := updated.(Model)
+	if !m2.Done {
+		t.Error("expected Done=true after Enter on StepDone")
+	}
+	if cmd == nil {
+		t.Error("expected non-nil Quit cmd after Enter on StepDone")
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestUpdateDone_QQuits
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestUpdateDone_QQuits verifies that pressing 'q' on StepDone sets Done=true and quits.
+func TestUpdateDone_QQuits(t *testing.T) {
+	m := Model{
+		Step:     StepDone,
+		Selected: make(map[string]bool),
+		cfg:      &config.AppConfig{},
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	m2 := updated.(Model)
+	if !m2.Done {
+		t.Error("expected Done=true after 'q' on StepDone")
+	}
+	if cmd == nil {
+		t.Error("expected non-nil Quit cmd after 'q' on StepDone")
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestBuildSkillMap_IncludesSelectedAndCore
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestBuildSkillMap_IncludesSelectedAndCore verifies buildSkillMap includes selected
+// and core skills but excludes unselected non-core ones.
+func TestBuildSkillMap_IncludesSelectedAndCore(t *testing.T) {
+	m := Model{
+		Step: StepSkills,
+		SkillList: []skills.Skill{
+			{ID: "core-skill", IsCore: true, Content: []byte("core content")},
+			{ID: "opt-selected", IsCore: false, Content: []byte("opt content")},
+			{ID: "opt-unselected", IsCore: false, Content: []byte("skip me")},
+		},
+		Selected: map[string]bool{
+			"core-skill":   true,
+			"opt-selected": true,
+		},
+	}
+	result := buildSkillMap(m)
+	if string(result["core-skill"]) != "core content" {
+		t.Error("expected core-skill in result")
+	}
+	if string(result["opt-selected"]) != "opt content" {
+		t.Error("expected opt-selected in result")
+	}
+	if _, ok := result["opt-unselected"]; ok {
+		t.Error("expected opt-unselected NOT in result")
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestSkillsSelectedList_ReturnsOnlySelected
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestSkillsSelectedList_ReturnsOnlySelected verifies that skillsSelectedList returns
+// only the IDs whose value is true in the Selected map.
+func TestSkillsSelectedList_ReturnsOnlySelected(t *testing.T) {
+	m := Model{
+		Selected: map[string]bool{
+			"skill-a": true,
+			"skill-b": false,
+			"skill-c": true,
+		},
+	}
+	result := skillsSelectedList(m)
+	if len(result) != 2 {
+		t.Errorf("expected 2 selected IDs, got %d: %v", len(result), result)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestUpdateAgentConfig_Enter_StartsSequence
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestUpdateAgentConfig_Enter_StartsSequence verifies that the first Enter on
+// StepAgentConfig (empty progress) returns a non-nil Cmd to start the sequence.
+func TestUpdateAgentConfig_Enter_StartsSequence(t *testing.T) {
+	m := Model{
+		Step:     StepAgentConfig,
+		Selected: make(map[string]bool),
+		cfg:      &config.AppConfig{},
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Error("expected non-nil cmd after first Enter on StepAgentConfig")
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestUpdateAgentConfig_Enter_WhenDone_AdvancesToStepDone
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestUpdateAgentConfig_Enter_WhenDone_AdvancesToStepDone verifies that Enter
+// when agentDone=true advances to StepDone.
+func TestUpdateAgentConfig_Enter_WhenDone_AdvancesToStepDone(t *testing.T) {
+	m := Model{
+		Step:          StepAgentConfig,
+		Selected:      make(map[string]bool),
+		cfg:           &config.AppConfig{},
+		agentProgress: []string{"configured claude"},
+		agentDone:     true,
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m2 := updated.(Model)
+	if m2.Step != StepDone {
+		t.Errorf("expected StepDone after Enter with agentDone=true, got %v", m2.Step)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestUpdatePersonaCustomEdit_RuneInput
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestUpdatePersonaCustomEdit_RuneInput verifies that typing runes appends to CustomYAML
+// and Backspace removes the last character when in custom edit mode.
+func TestUpdatePersonaCustomEdit_RuneInput(t *testing.T) {
+	m := Model{
+		Step:       StepPersona,
+		Selected:   make(map[string]bool),
+		cfg:        &config.AppConfig{},
+		customEdit: true,
+	}
+	m = sendRune(m, "n")
+	m = sendRune(m, "a")
+	m = sendRune(m, "m")
+	if m.CustomYAML != "nam" {
+		t.Errorf("expected CustomYAML=nam, got %q", m.CustomYAML)
+	}
+	m = sendKey(m, tea.KeyBackspace)
+	if m.CustomYAML != "na" {
+		t.Errorf("after Backspace: expected CustomYAML=na, got %q", m.CustomYAML)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestUpdatePersonaCustomEdit_EscCancels
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestUpdatePersonaCustomEdit_EscCancels verifies that Esc exits custom edit mode.
+func TestUpdatePersonaCustomEdit_EscCancels(t *testing.T) {
+	m := Model{
+		Step:       StepPersona,
+		Selected:   make(map[string]bool),
+		cfg:        &config.AppConfig{},
+		customEdit: true,
+	}
+	m = sendKey(m, tea.KeyEsc)
+	if m.customEdit {
+		t.Error("expected customEdit=false after Esc")
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestHandleStepMsg_LoginResult_Error
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestHandleStepMsg_LoginResult_Error verifies that a failed loginResultMsg sets m.Err.
+func TestHandleStepMsg_LoginResult_Error(t *testing.T) {
+	m := Model{
+		Step:     StepHiveCloud,
+		Selected: make(map[string]bool),
+		cfg:      &config.AppConfig{},
+	}
+	msg := loginResultMsg{err: errors.New("invalid credentials")}
+	updated, handled, _ := handleStepMsg(m, msg)
+	if !handled {
+		t.Error("expected loginResultMsg to be handled")
+	}
+	if updated.Err == nil {
+		t.Error("expected Err to be set on failed login")
+	}
+	if updated.Step != StepHiveCloud {
+		t.Errorf("expected to stay on StepHiveCloud after login error, got %v", updated.Step)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestHandleStepMsg_LoginResult_Success
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestHandleStepMsg_LoginResult_Success verifies successful login advances to StepPersona.
+func TestHandleStepMsg_LoginResult_Success(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	// writeSyncJSON ignores its own error, so .jarvis dir doesn't need to pre-exist.
+
+	m := Model{
+		Step:     StepHiveCloud,
+		Selected: make(map[string]bool),
+		cfg:      &config.AppConfig{APIURL: "https://hivemem.dev"},
+		Email:    "user@example.com",
+		Password: "s3cr3t",
+	}
+	msg := loginResultMsg{token: "tok-abc123", email: "user@example.com"}
+	updated, handled, _ := handleStepMsg(m, msg)
+	if !handled {
+		t.Error("expected loginResultMsg to be handled")
+	}
+	if updated.Step != StepPersona {
+		t.Errorf("expected StepPersona after successful login, got %v", updated.Step)
+	}
+	if updated.APIToken != "tok-abc123" {
+		t.Errorf("expected APIToken=tok-abc123, got %q", updated.APIToken)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestHandleStepMsg_AgentProgress
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestHandleStepMsg_AgentProgress verifies that agentProgressMsg is appended to progress list.
+func TestHandleStepMsg_AgentProgress(t *testing.T) {
+	m := Model{
+		Step:     StepAgentConfig,
+		Selected: make(map[string]bool),
+		cfg:      &config.AppConfig{},
+	}
+	msg := agentProgressMsg{line: "Configuring claude...", done: false}
+	updated, handled, _ := handleStepMsg(m, msg)
+	if !handled {
+		t.Error("expected agentProgressMsg to be handled")
+	}
+	if len(updated.agentProgress) != 1 || updated.agentProgress[0] != "Configuring claude..." {
+		t.Errorf("expected progress line to be appended, got: %v", updated.agentProgress)
+	}
+	if updated.agentDone {
+		t.Error("expected agentDone=false when done=false")
+	}
+}
+
+// TestHandleStepMsg_AgentProgress_Done verifies that agentProgressMsg with done=true sets agentDone.
+func TestHandleStepMsg_AgentProgress_Done(t *testing.T) {
+	m := Model{
+		Step:     StepAgentConfig,
+		Selected: make(map[string]bool),
+		cfg:      &config.AppConfig{},
+	}
+	msg := agentProgressMsg{line: "All done!", done: true}
+	updated, handled, _ := handleStepMsg(m, msg)
+	if !handled {
+		t.Error("expected agentProgressMsg to be handled")
+	}
+	if !updated.agentDone {
+		t.Error("expected agentDone=true when done=true")
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestHandleStepMsg_UnknownMsg
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestHandleStepMsg_UnknownMsg verifies unknown messages are not handled.
+func TestHandleStepMsg_UnknownMsg(t *testing.T) {
+	m := Model{Step: StepHiveLocal, Selected: make(map[string]bool)}
+	_, handled, _ := handleStepMsg(m, "some-random-message")
+	if handled {
+		t.Error("expected unknown message type to not be handled")
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestWriteSyncJSON
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestWriteSyncJSON verifies that sync credentials are written to ~/.jarvis/sync.json.
+func TestWriteSyncJSON(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	if err := os.MkdirAll(filepath.Join(tmpHome, ".jarvis"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := writeSyncJSON("https://hivemem.dev", "user@example.com", "s3cr3t", "token-xyz")
+	if err != nil {
+		t.Fatalf("writeSyncJSON: %v", err)
+	}
+
+	data, readErr := os.ReadFile(filepath.Join(tmpHome, ".jarvis", "sync.json"))
+	if readErr != nil {
+		t.Fatal("sync.json not created:", readErr)
+	}
+	if !strings.Contains(string(data), "token-xyz") {
+		t.Errorf("expected token in sync.json, got: %s", data)
+	}
+	if !strings.Contains(string(data), "user@example.com") {
+		t.Errorf("expected email in sync.json, got: %s", data)
+	}
 }
