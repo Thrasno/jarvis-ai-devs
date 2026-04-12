@@ -52,7 +52,6 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	fmt.Print("Email (press Enter to skip): ")
 	email := readLine(scanner)
 
-	var apiToken string
 	if email != "" {
 		fmt.Print("Password: ")
 		password := readLine(scanner)
@@ -63,10 +62,9 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 			fmt.Printf("Warning: authentication failed: %v\n", loginErr)
 			fmt.Println("Skipping cloud auth. You can re-authenticate with 'jarvis login'.")
 		} else {
-			apiToken = resp.Token
 			cfg.Email = resp.User.Email
 			fmt.Printf("Authenticated as %s.\n", cfg.Email)
-			_ = writeSyncJSON(cfg.APIURL, email, password, apiToken)
+			_ = writeSyncJSON(cfg.APIURL, email, password)
 		}
 	} else {
 		fmt.Println("Skipping cloud auth.")

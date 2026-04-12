@@ -849,7 +849,7 @@ func TestWriteSyncJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := writeSyncJSON("https://hivemem.dev", "user@example.com", "s3cr3t", "token-xyz")
+	err := writeSyncJSON("https://hivemem.dev", "user@example.com", "s3cr3t")
 	if err != nil {
 		t.Fatalf("writeSyncJSON: %v", err)
 	}
@@ -858,8 +858,9 @@ func TestWriteSyncJSON(t *testing.T) {
 	if readErr != nil {
 		t.Fatal("sync.json not created:", readErr)
 	}
-	if !strings.Contains(string(data), "token-xyz") {
-		t.Errorf("expected token in sync.json, got: %s", data)
+	// token must NOT be written — hive-daemon uses DisallowUnknownFields()
+	if strings.Contains(string(data), "token") {
+		t.Errorf("token must not appear in sync.json, got: %s", data)
 	}
 	if !strings.Contains(string(data), "user@example.com") {
 		t.Errorf("expected email in sync.json, got: %s", data)

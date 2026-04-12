@@ -2822,14 +2822,6 @@ func TestSDD_CompleteFlow(t *testing.T) {
    - Deploy automation
    - Rollback automático on failure
 
-6. **hive-api como Remote MCP**
-   - hive-api expone el protocolo MCP via HTTP/SSE (como context7)
-   - Claude Code y OpenCode se conectan directamente a `https://hivemem.dev/mcp`
-   - Acceso a memorias del equipo en tiempo real, sin esperar sync
-   - Configuración: `jarvis install` añade el MCP remoto junto al daemon local
-   - Caso de uso: María guarda una memory → Carlos la ve al instante, sin `mem_sync`
-   - Requiere: implementar MCP transport (SSE) en hive-api + auth por JWT
-
 ---
 
 ## Appendix A: Glossary

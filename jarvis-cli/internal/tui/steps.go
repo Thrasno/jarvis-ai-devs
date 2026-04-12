@@ -154,19 +154,22 @@ func (m Model) handleLoginResult(msg loginResultMsg) (tea.Model, tea.Cmd) {
 	m.cfg.Email = msg.email
 	m.Err = nil
 	// Write sync.json so hive-daemon can pick up the creds.
-	_ = writeSyncJSON(m.cfg.APIURL, m.Email, m.Password, m.APIToken)
+	_ = writeSyncJSON(m.cfg.APIURL, m.Email, m.Password)
 	m.Step = StepPersona
 	return m, nil
 }
 
 // writeSyncJSON writes ~/.jarvis/sync.json with cloud credentials.
-func writeSyncJSON(apiURL, email, password, token string) error {
+// Only api_url, email, and password are stored — token is intentionally
+// excluded because hive-daemon's syncFileConfig uses DisallowUnknownFields()
+// and manages the token internally after login.
+func writeSyncJSON(apiURL, email, password string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
-	content := fmt.Sprintf(`{"api_url":%q,"email":%q,"password":%q,"token":%q}`,
-		apiURL, email, password, token)
+	content := fmt.Sprintf(`{"api_url":%q,"email":%q,"password":%q}`,
+		apiURL, email, password)
 	path := filepath.Join(home, ".jarvis", "sync.json")
 	return os.WriteFile(path, []byte(content), 0600)
 }
