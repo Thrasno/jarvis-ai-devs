@@ -182,22 +182,3 @@ func TestValidateSentinels(t *testing.T) {
 	}
 }
 
-func TestBuildFullContent(t *testing.T) {
-	content := BuildFullContent("# Preamble", "Layer1 content", "Layer2 content")
-
-	if err := ValidateSentinels(content); err != nil {
-		t.Fatalf("built content has invalid sentinels: %v", err)
-	}
-
-	if !strings.Contains(content, "# Preamble") {
-		t.Error("preamble not found in output")
-	}
-
-	layer2, err := ExtractLayer2(content)
-	if err != nil {
-		t.Fatalf("ExtractLayer2 failed: %v", err)
-	}
-	if layer2 != "Layer2 content" {
-		t.Errorf("expected 'Layer2 content', got %q", layer2)
-	}
-}

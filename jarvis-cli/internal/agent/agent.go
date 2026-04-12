@@ -2,7 +2,10 @@
 // AI coding assistants (Claude Code, OpenCode) installed on the system.
 package agent
 
-import "os/exec"
+import (
+	"io/fs"
+	"os/exec"
+)
 
 // MCPEntry represents a single MCP server entry to be merged into an agent's config.
 type MCPEntry struct {
@@ -40,16 +43,17 @@ type Agent interface {
 }
 
 // Detect returns all agents detected as installed on the current system.
+// fsys must be an fs.FS containing the template files (e.g. root-package TemplatesFS).
 // It checks for ~/.claude (ClaudeAgent) and ~/.config/opencode or opencode binary
 // (OpenCodeAgent).
-func Detect() []Agent {
+func Detect(fsys fs.FS) []Agent {
 	var agents []Agent
 
-	if c := newClaudeAgent(); c.IsInstalled() {
+	if c := newClaudeAgent(fsys); c.IsInstalled() {
 		agents = append(agents, c)
 	}
 
-	oc := newOpenCodeAgent()
+	oc := newOpenCodeAgent(fsys)
 	if oc.IsInstalled() {
 		agents = append(agents, oc)
 	} else if _, err := exec.LookPath("opencode"); err == nil {

@@ -175,7 +175,7 @@ func TestClaudeAgent_WriteInstructions_CreatesSentinels(t *testing.T) {
 		t.Fatalf("mkdir .claude: %v", err)
 	}
 
-	a := &ClaudeAgent{home: home}
+	a := &ClaudeAgent{home: home, templatesFS: testTemplatesFS}
 
 	layer1 := "# Layer 1 — Hive Memory Protocol"
 	layer2 := "# Layer 2 — Tony Stark Persona"
@@ -215,7 +215,7 @@ func TestClaudeAgent_WriteInstructions_PatchesLayer2Only(t *testing.T) {
 		t.Fatalf("mkdir .claude: %v", err)
 	}
 
-	a := &ClaudeAgent{home: home}
+	a := &ClaudeAgent{home: home, templatesFS: testTemplatesFS}
 
 	layer1 := "# Layer1 — Memory system instructions"
 	layer2v1 := "# Layer2 v1 — argentino persona"

@@ -1,9 +1,12 @@
 package jarvis_test
 
 import (
+	"strings"
 	"testing"
 
 	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/agent"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
 )
 
 // TestPersonaFS_NotEmpty verifies that the embedded persona assets are present.
@@ -42,4 +45,25 @@ func TestTemplatesFS_NotEmpty(t *testing.T) {
 		t.Fatal("embed/templates is empty — template assets are missing")
 	}
 	t.Logf("found %d template assets", len(entries))
+}
+
+// TestRenderCLAUDEMd_ProducesValidSentinels verifies that RenderCLAUDEMd produces
+// output that passes ValidateSentinels and contains the provided layer content.
+// UNIT-04 from spec.
+func TestRenderCLAUDEMd_ProducesValidSentinels(t *testing.T) {
+	result, err := config.RenderCLAUDEMd(jarvis.TemplatesFS, "l1 content", "l2 content", "")
+	if err != nil {
+		t.Fatalf("RenderCLAUDEMd: %v", err)
+	}
+
+	if err := agent.ValidateSentinels(result); err != nil {
+		t.Errorf("rendered output must pass ValidateSentinels: %v", err)
+	}
+
+	if !strings.Contains(result, "l1 content") {
+		t.Error("rendered output must contain layer1 string")
+	}
+	if !strings.Contains(result, "l2 content") {
+		t.Error("rendered output must contain layer2 string")
+	}
 }

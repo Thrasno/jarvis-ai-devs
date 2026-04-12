@@ -5,8 +5,9 @@ package config
 
 import (
 	"bytes"
-	"embed"
+	_ "embed"
 	"fmt"
+	"io/fs"
 	"text/template"
 )
 
@@ -17,9 +18,10 @@ type TemplateData struct {
 	Expertise string
 }
 
-// RenderCLAUDEMd renders the CLAUDE.md content from the embedded template.
-// fsys must be the root-package TemplatesFS (embed/templates embedded at root).
-func RenderCLAUDEMd(fsys embed.FS, layer1, layer2, expertise string) (string, error) {
+// RenderCLAUDEMd renders the CLAUDE.md content from the provided filesystem.
+// fsys must contain "embed/templates/CLAUDE.md.tmpl" (root-package TemplatesFS layout).
+// Accepts any fs.FS implementation, including embed.FS and fstest.MapFS.
+func RenderCLAUDEMd(fsys fs.FS, layer1, layer2, expertise string) (string, error) {
 	return renderTemplate(fsys, "embed/templates/CLAUDE.md.tmpl", TemplateData{
 		Layer1:    layer1,
 		Layer2:    layer2,
@@ -27,9 +29,10 @@ func RenderCLAUDEMd(fsys embed.FS, layer1, layer2, expertise string) (string, er
 	})
 }
 
-// RenderAGENTSMd renders the AGENTS.md content from the embedded template.
-// fsys must be the root-package TemplatesFS (embed/templates embedded at root).
-func RenderAGENTSMd(fsys embed.FS, layer1, layer2, expertise string) (string, error) {
+// RenderAGENTSMd renders the AGENTS.md content from the provided filesystem.
+// fsys must contain "embed/templates/AGENTS.md.tmpl" (root-package TemplatesFS layout).
+// Accepts any fs.FS implementation, including embed.FS and fstest.MapFS.
+func RenderAGENTSMd(fsys fs.FS, layer1, layer2, expertise string) (string, error) {
 	return renderTemplate(fsys, "embed/templates/AGENTS.md.tmpl", TemplateData{
 		Layer1:    layer1,
 		Layer2:    layer2,
@@ -37,9 +40,9 @@ func RenderAGENTSMd(fsys embed.FS, layer1, layer2, expertise string) (string, er
 	})
 }
 
-// renderTemplate renders a named template from the provided embed.FS.
-func renderTemplate(fsys embed.FS, path string, data TemplateData) (string, error) {
-	tmplBytes, err := fsys.ReadFile(path)
+// renderTemplate renders a named template from the provided fs.FS.
+func renderTemplate(fsys fs.FS, path string, data TemplateData) (string, error) {
+	tmplBytes, err := fs.ReadFile(fsys, path)
 	if err != nil {
 		return "", fmt.Errorf("read template %s: %w", path, err)
 	}
@@ -57,55 +60,12 @@ func renderTemplate(fsys embed.FS, path string, data TemplateData) (string, erro
 	return buf.String(), nil
 }
 
+//go:embed layer1.md
+var layer1Content string
+
 // Layer1Content returns the standard Layer1 Hive memory protocol content.
+// The content is embedded at compile time from internal/config/layer1.md.
 // This is the immutable content written between the LAYER1 sentinel markers.
 func Layer1Content() string {
-	return `### PROJECT CONTEXT (run at session start)
-
-Detect the active project name at the START of EVERY session:
-1. Run: ` + "`git remote get-url origin`" + ` → extract repo name (last path segment, strip ` + "`.git`" + `)
-2. Fallback: basename of the current working directory
-3. Fallback: ` + `"default"` + `
-
-Use the resolved project name as the ` + "`project`" + ` field in ALL ` + "`mem_save`" + ` calls.
-NEVER save a memory without a ` + "`project`" + ` field.
-
----
-
-## Hive Persistent Memory — Protocol
-
-You have access to Hive, a persistent memory system via MCP tools.
-This protocol is MANDATORY and ALWAYS ACTIVE.
-
-### PROACTIVE SAVE TRIGGERS (mandatory — do NOT wait for user to ask)
-
-Call ` + "`mem_save`" + ` IMMEDIATELY and WITHOUT BEING ASKED after any of these:
-- Architecture or design decision made
-- Bug fix completed (include root cause)
-- Feature implemented with non-obvious approach
-- Non-obvious discovery about the codebase
-- Pattern established (naming, structure, convention)
-- Team convention documented
-
-### Format for mem_save
-- **title**: Verb + what (e.g. "Fixed N+1 query in UserList")
-- **type**: bugfix | decision | architecture | discovery | pattern | config
-- **topic_key**: stable key like ` + "`architecture/auth-model`" + `
-- **content**: What / Why / Where / Learned
-
-### WHEN TO SEARCH MEMORY
-On any "remember", "recall", "what did we do", "how did we solve":
-1. Call ` + "`mem_context`" + ` — recent session history
-2. If not found, call ` + "`mem_search`" + ` with keywords
-3. If found, use ` + "`mem_get_observation`" + ` for full content
-
-### SDD ENFORCEMENT
-- Never skip SDD phases for non-trivial changes
-- Always use conventional commits format
-- Never add Co-Authored-By AI attribution to commits
-
-### WORKFLOW RULES
-- ALWAYS verify before confirming technical claims
-- WHEN asking a question: STOP and wait for response
-- NEVER agree with user claims without checking code/docs first`
+	return layer1Content
 }

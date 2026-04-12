@@ -2,11 +2,27 @@ package agent
 
 import (
 	"bytes"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
+
+// emptyFS is used in tests where WriteInstructions is NOT called (no template rendering needed).
+var emptyFS fs.FS = fstest.MapFS{}
+
+// testTemplatesFS is a minimal in-memory FS with stub templates for WriteInstructions tests.
+// It mirrors the root TemplatesFS path structure: embed/templates/{CLAUDE,AGENTS}.md.tmpl
+var testTemplatesFS fs.FS = fstest.MapFS{
+	"embed/templates/CLAUDE.md.tmpl": {
+		Data: []byte("<!-- JARVIS:LAYER1:START -->\n{{.Layer1}}\n<!-- JARVIS:LAYER1:END -->\n\n<!-- JARVIS:LAYER2:START -->\n{{.Layer2}}\n<!-- JARVIS:LAYER2:END -->\n"),
+	},
+	"embed/templates/AGENTS.md.tmpl": {
+		Data: []byte("<!-- JARVIS:LAYER1:START -->\n{{.Layer1}}\n<!-- JARVIS:LAYER1:END -->\n\n<!-- JARVIS:LAYER2:START -->\n{{.Layer2}}\n<!-- JARVIS:LAYER2:END -->\n"),
+	},
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // ClaudeAgent tests
@@ -16,7 +32,7 @@ import (
 func TestClaudeAgent_Name(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
-	a := newClaudeAgent()
+	a := newClaudeAgent(emptyFS)
 	if a.Name() != "claude" {
 		t.Errorf("expected 'claude', got %q", a.Name())
 	}
@@ -26,7 +42,7 @@ func TestClaudeAgent_Name(t *testing.T) {
 func TestClaudeAgent_ConfigDir(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
-	a := newClaudeAgent()
+	a := newClaudeAgent(emptyFS)
 	expected := filepath.Join(tmpHome, ".claude")
 	if a.ConfigDir() != expected {
 		t.Errorf("expected ConfigDir=%q, got %q", expected, a.ConfigDir())
@@ -37,7 +53,7 @@ func TestClaudeAgent_ConfigDir(t *testing.T) {
 func TestClaudeAgent_IsInstalled_False(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
-	a := newClaudeAgent()
+	a := newClaudeAgent(emptyFS)
 	if a.IsInstalled() {
 		t.Error("expected not installed in a fresh tmpdir with no .claude dir")
 	}
@@ -50,7 +66,7 @@ func TestClaudeAgent_IsInstalled_True(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(tmpHome, ".claude"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	a := newClaudeAgent()
+	a := newClaudeAgent(emptyFS)
 	if !a.IsInstalled() {
 		t.Error("expected installed when .claude dir exists")
 	}
@@ -64,7 +80,7 @@ func TestClaudeAgent_MergeConfig_CreatesSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a := newClaudeAgent()
+	a := newClaudeAgent(emptyFS)
 	entry := MCPEntry{Name: "hive", DaemonPath: "/usr/local/bin/hive-daemon"}
 	if err := a.MergeConfig(entry); err != nil {
 		t.Fatalf("MergeConfig: %v", err)
@@ -93,7 +109,7 @@ func TestClaudeAgent_MergeConfig_PreservesExistingKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a := newClaudeAgent()
+	a := newClaudeAgent(emptyFS)
 	if err := a.MergeConfig(MCPEntry{Name: "hive", DaemonPath: "/usr/bin/hive"}); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +131,7 @@ func TestClaudeAgent_InstallSkills(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a := newClaudeAgent()
+	a := newClaudeAgent(emptyFS)
 	skillsMap := map[string][]byte{
 		"my-skill": []byte("# My Skill\nSome content."),
 	}
@@ -141,7 +157,7 @@ func TestClaudeAgent_InstallSkills(t *testing.T) {
 func TestOpenCodeAgent_Name(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
-	a := newOpenCodeAgent()
+	a := newOpenCodeAgent(emptyFS)
 	if a.Name() != "opencode" {
 		t.Errorf("expected 'opencode', got %q", a.Name())
 	}
@@ -151,7 +167,7 @@ func TestOpenCodeAgent_Name(t *testing.T) {
 func TestOpenCodeAgent_IsInstalled_False(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
-	a := newOpenCodeAgent()
+	a := newOpenCodeAgent(emptyFS)
 	if a.IsInstalled() {
 		t.Error("expected not installed in fresh tmpdir")
 	}
@@ -164,7 +180,7 @@ func TestOpenCodeAgent_IsInstalled_True(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "opencode"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	a := newOpenCodeAgent()
+	a := newOpenCodeAgent(emptyFS)
 	if !a.IsInstalled() {
 		t.Error("expected installed when ~/.config/opencode exists")
 	}
@@ -178,7 +194,7 @@ func TestOpenCodeAgent_MergeConfig_CreatesSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a := newOpenCodeAgent()
+	a := newOpenCodeAgent(emptyFS)
 	entry := MCPEntry{
 		Name:       "hive",
 		APIURL:     "https://hivemem.dev",
@@ -206,7 +222,7 @@ func TestOpenCodeAgent_MergeConfig_NoCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a := newOpenCodeAgent()
+	a := newOpenCodeAgent(emptyFS)
 	// No APIURL, Email, Password → env block should be omitted.
 	entry := MCPEntry{Name: "hive", DaemonPath: "/usr/bin/hive"}
 	if err := a.MergeConfig(entry); err != nil {
@@ -227,7 +243,7 @@ func TestOpenCodeAgent_WriteInstructions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a := newOpenCodeAgent()
+	a := newOpenCodeAgent(testTemplatesFS)
 	if err := a.WriteInstructions("layer1 content", "layer2 content"); err != nil {
 		t.Fatalf("WriteInstructions: %v", err)
 	}
@@ -250,7 +266,7 @@ func TestOpenCodeAgent_InstallSkills(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a := newOpenCodeAgent()
+	a := newOpenCodeAgent(emptyFS)
 	skillsMap := map[string][]byte{"oc-skill": []byte("# OpenCode Skill")}
 	if err := a.InstallSkills(skillsMap); err != nil {
 		t.Fatalf("InstallSkills: %v", err)
@@ -271,7 +287,7 @@ func TestDetect_NoAgents(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("PATH", "") // no opencode binary available
-	agents := Detect()
+	agents := Detect(emptyFS)
 	if len(agents) != 0 {
 		t.Errorf("expected 0 agents, got %d: %v", len(agents), agents)
 	}
@@ -286,7 +302,7 @@ func TestDetect_WithClaudeInstalled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	agents := Detect()
+	agents := Detect(emptyFS)
 	if len(agents) != 1 {
 		t.Fatalf("expected 1 agent, got %d", len(agents))
 	}
@@ -384,5 +400,148 @@ func TestReadFileOrEmpty_ExistingFile(t *testing.T) {
 	}
 	if !bytes.Contains(data, []byte("key")) {
 		t.Errorf("expected file contents, got: %s", data)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// WriteInstructions — R1 and R3 semantics (new tests)
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestClaudeAgent_WriteInstructions_ReplacesFileWithNoSentinels verifies that
+// WriteInstructions replaces (not appends) when an existing file has no Jarvis markers.
+// UNIT-01 from spec.
+func TestClaudeAgent_WriteInstructions_ReplacesFileWithNoSentinels(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a file with foreign content and NO Jarvis sentinel markers.
+	foreignContent := "## Engram Protocol\nsome engram content that should be gone\n"
+	claudeMd := filepath.Join(claudeDir, "CLAUDE.md")
+	if err := os.WriteFile(claudeMd, []byte(foreignContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := newClaudeAgent(testTemplatesFS)
+	if err := a.WriteInstructions("layer1 content", "layer2 content"); err != nil {
+		t.Fatalf("WriteInstructions: %v", err)
+	}
+
+	result, err := os.ReadFile(claudeMd)
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	content := string(result)
+
+	// Foreign content must be gone.
+	if strings.Contains(content, "Engram Protocol") {
+		t.Error("foreign content 'Engram Protocol' must not appear in replaced file")
+	}
+	if strings.Contains(content, "some engram content") {
+		t.Error("old foreign content must not appear in replaced file")
+	}
+
+	// File must pass sentinel validation.
+	if err := ValidateSentinels(content); err != nil {
+		t.Errorf("result file must pass ValidateSentinels: %v", err)
+	}
+
+	// Layer1 content must be present.
+	if !strings.Contains(content, "layer1 content") {
+		t.Error("layer1 content not found in result file")
+	}
+}
+
+// TestOpenCodeAgent_WriteInstructions_ReplacesFileWithNoSentinels is the symmetric
+// test for OpenCodeAgent. UNIT-01 symmetric from spec.
+func TestOpenCodeAgent_WriteInstructions_ReplacesFileWithNoSentinels(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	agentsDir := filepath.Join(home, ".config", "opencode")
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a file with foreign content and NO Jarvis sentinel markers.
+	foreignContent := "## Some AI Config\nforeign config content\n"
+	agentsMd := filepath.Join(agentsDir, "AGENTS.md")
+	if err := os.WriteFile(agentsMd, []byte(foreignContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := newOpenCodeAgent(testTemplatesFS)
+	if err := a.WriteInstructions("layer1 content", "layer2 content"); err != nil {
+		t.Fatalf("WriteInstructions: %v", err)
+	}
+
+	result, err := os.ReadFile(agentsMd)
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	content := string(result)
+
+	// Foreign content must be gone.
+	if strings.Contains(content, "Some AI Config") {
+		t.Error("foreign content 'Some AI Config' must not appear in replaced file")
+	}
+
+	// File must pass sentinel validation.
+	if err := ValidateSentinels(content); err != nil {
+		t.Errorf("result file must pass ValidateSentinels: %v", err)
+	}
+
+	// Layer1 content must be present.
+	if !strings.Contains(content, "layer1 content") {
+		t.Error("layer1 content not found in result file")
+	}
+}
+
+// TestClaudeAgent_WriteInstructions_PatchesExistingFile verifies that
+// WriteInstructions patches in-place when sentinels already exist. UNIT-02 from spec.
+func TestClaudeAgent_WriteInstructions_PatchesExistingFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	a := newClaudeAgent(testTemplatesFS)
+
+	// First write: establish sentinels.
+	if err := a.WriteInstructions("original layer1", "original layer2"); err != nil {
+		t.Fatalf("first WriteInstructions: %v", err)
+	}
+
+	// Second write: update Layer2 only.
+	if err := a.WriteInstructions("original layer1", "new layer2 content"); err != nil {
+		t.Fatalf("second WriteInstructions: %v", err)
+	}
+
+	result, err := os.ReadFile(filepath.Join(claudeDir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	content := string(result)
+
+	// Layer1 must be unchanged.
+	if !strings.Contains(content, "original layer1") {
+		t.Error("Layer1 content must be preserved after patch")
+	}
+
+	// Layer2 must be updated.
+	if !strings.Contains(content, "new layer2 content") {
+		t.Error("Layer2 content must be updated after patch")
+	}
+	if strings.Contains(content, "original layer2") {
+		t.Error("Old Layer2 content must not remain after patch")
+	}
+
+	// Sentinels must still be valid.
+	if err := ValidateSentinels(content); err != nil {
+		t.Errorf("result file must pass ValidateSentinels after patch: %v", err)
 	}
 }
