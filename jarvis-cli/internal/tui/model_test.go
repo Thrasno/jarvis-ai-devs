@@ -600,9 +600,9 @@ func TestUpdateDone_QQuits(t *testing.T) {
 // TestBuildSkillMap_IncludesSelectedAndCore
 // ──────────────────────────────────────────────────────────────────────────────
 
-// TestBuildSkillMap_IncludesSelectedAndCore verifies buildSkillMap includes selected
-// and core skills but excludes unselected non-core ones.
-func TestBuildSkillMap_IncludesSelectedAndCore(t *testing.T) {
+// TestBuildSelectedIDs_IncludesSelectedAndCore verifies buildSelectedIDs includes selected
+// and core skill IDs but excludes unselected non-core ones.
+func TestBuildSelectedIDs_IncludesSelectedAndCore(t *testing.T) {
 	m := Model{
 		Step: StepSkills,
 		SkillList: []skills.Skill{
@@ -615,14 +615,21 @@ func TestBuildSkillMap_IncludesSelectedAndCore(t *testing.T) {
 			"opt-selected": true,
 		},
 	}
-	result := buildSkillMap(m)
-	if string(result["core-skill"]) != "core content" {
+	result := buildSelectedIDs(m)
+
+	// Convert result to a set for easy lookup.
+	resultSet := make(map[string]bool)
+	for _, id := range result {
+		resultSet[id] = true
+	}
+
+	if !resultSet["core-skill"] {
 		t.Error("expected core-skill in result")
 	}
-	if string(result["opt-selected"]) != "opt content" {
+	if !resultSet["opt-selected"] {
 		t.Error("expected opt-selected in result")
 	}
-	if _, ok := result["opt-unselected"]; ok {
+	if resultSet["opt-unselected"] {
 		t.Error("expected opt-unselected NOT in result")
 	}
 }

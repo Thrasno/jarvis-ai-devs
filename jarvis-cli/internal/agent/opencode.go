@@ -10,6 +10,9 @@ import (
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
 )
 
+// Ensure OpenCodeAgent implements Agent at compile time.
+var _ Agent = (*OpenCodeAgent)(nil)
+
 // OpenCodeAgent implements Agent for the OpenCode AI coding assistant.
 // Config dir: ~/.config/opencode/
 // Settings file: ~/.config/opencode/opencode.json
@@ -133,24 +136,14 @@ func (a *OpenCodeAgent) WriteInstructions(layer1, layer2 string) error {
 	return writeFileAtomic(path, []byte(content), 0644)
 }
 
-// InstallSkills copies skill files to ~/.config/opencode/skills/{skillID}/SKILL.md.
+// InstallSkills installs selected skills from skillsFS to ~/.config/opencode/skills/.
+// skillsFS must be a sub-FS rooted at the embed/skills directory.
+// The _shared/ directory is always installed regardless of the selected list.
 // Idempotent: existing files are overwritten silently.
-func (a *OpenCodeAgent) InstallSkills(skills map[string][]byte) error {
+func (a *OpenCodeAgent) InstallSkills(skillsFS fs.FS, selected []string) error {
 	dir := a.skillsDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create skills dir: %w", err)
 	}
-
-	for skillID, content := range skills {
-		skillDir := filepath.Join(dir, skillID)
-		if err := os.MkdirAll(skillDir, 0755); err != nil {
-			return fmt.Errorf("create skill dir %s: %w", skillID, err)
-		}
-		skillPath := filepath.Join(skillDir, "SKILL.md")
-		if err := writeFileAtomic(skillPath, content, 0644); err != nil {
-			return fmt.Errorf("write skill %s: %w", skillID, err)
-		}
-	}
-
-	return nil
+	return installSkillsFromFS(dir, skillsFS, selected)
 }

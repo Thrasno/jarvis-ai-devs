@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/apiclient"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
@@ -457,8 +459,14 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 	return func() tea.Msg {
 		home, _ := os.UserHomeDir()
 
-		// Build the skill map from selected skills.
-		skillMap := buildSkillMap(m)
+		// Build the sub-FS rooted at embed/skills for InstallSkills.
+		skillsSubFS, err := fs.Sub(jarvis.SkillsFS, "embed/skills")
+		if err != nil {
+			return agentProgressMsg{line: fmt.Sprintf("Skills FS error: %v", err), done: true}
+		}
+
+		// Build the list of selected skill IDs.
+		selectedIDs := buildSelectedIDs(m)
 
 		// Build Layer1 + Layer2 content.
 		layer1 := config.Layer1Content()
@@ -491,7 +499,7 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			if err := a.WriteInstructions(layer1, layer2); err != nil {
 				return agentProgressMsg{line: fmt.Sprintf("[%s] Instructions FAILED: %v", agentName, err), done: false}
 			}
-			if err := a.InstallSkills(skillMap); err != nil {
+			if err := a.InstallSkills(skillsSubFS, selectedIDs); err != nil {
 				return agentProgressMsg{line: fmt.Sprintf("[%s] Skills install FAILED: %v", agentName, err), done: false}
 			}
 			configuredAgents = append(configuredAgents, agentName)
@@ -523,15 +531,16 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 	}
 }
 
-// buildSkillMap converts the Selected map into a {skillID: content} map for InstallSkills.
-func buildSkillMap(m Model) map[string][]byte {
-	result := make(map[string][]byte)
+// buildSelectedIDs returns a slice of skill IDs for all selected and core skills.
+// Used to pass to InstallSkills(skillsFS, selected).
+func buildSelectedIDs(m Model) []string {
+	var ids []string
 	for _, s := range m.SkillList {
 		if m.Selected[s.ID] || s.IsCore {
-			result[s.ID] = s.Content
+			ids = append(ids, s.ID)
 		}
 	}
-	return result
+	return ids
 }
 
 func viewAgentConfig(m Model) string {

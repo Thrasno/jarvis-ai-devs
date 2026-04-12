@@ -36,10 +36,12 @@ type Agent interface {
 	// If the file already exists, sentinel blocks are patched in-place.
 	WriteInstructions(layer1, layer2 string) error
 
-	// InstallSkills copies skill files to the agent's skills directory.
-	// Each skill is written as {skillsDir}/{skillID}/SKILL.md.
+	// InstallSkills installs selected skills from skillsFS to the agent's skills directory.
+	// skillsFS must be a sub-FS rooted at the embed/skills directory.
+	// selected lists the skill directory names to install (e.g. ["sdd-apply", "hive"]).
+	// The _shared/ directory is always installed regardless of the selected list.
 	// Install is idempotent: existing files are overwritten silently.
-	InstallSkills(skills map[string][]byte) error
+	InstallSkills(skillsFS fs.FS, selected []string) error
 }
 
 // Detect returns all agents detected as installed on the current system.
