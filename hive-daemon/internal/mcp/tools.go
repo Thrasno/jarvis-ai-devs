@@ -281,7 +281,7 @@ func memContextHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.Tool
 			results = []*models.Memory{}
 		}
 
-		formatted := formatContext(results)
+		formatted := formatContext(results, p.Project)
 		formatted += activity.NudgeIfNeeded(p.Project)
 
 		return &sdkmcp.CallToolResult{
@@ -294,9 +294,9 @@ func memContextHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.Tool
 
 // formatContext renders memories as compact markdown with truncated previews.
 // Returns a footer with count and hint to use mem_get_observation.
-func formatContext(memories []*models.Memory) string {
+func formatContext(memories []*models.Memory, project string) string {
 	if len(memories) == 0 {
-		return "No memories found."
+		return fmt.Sprintf("No memories found for project %q.", project)
 	}
 
 	var b strings.Builder
