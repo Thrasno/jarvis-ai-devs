@@ -2173,9 +2173,26 @@ Response (200):
 
 ## CLI Commands
 
+### Auto project detection (no user action required)
+
+**Purpose**: Automatically scope Hive memories to the correct project on every AI session — without requiring the user to run any command.
+
+**How it works**:
+
+The AI detects the active project at the start of every session:
+1. `git remote get-url origin` → canonical project name (e.g. `conpas-erp`)
+2. Fallback: current directory name
+3. Fallback: `"default"` if no git repo and no meaningful dirname
+
+This project identifier is used as the `project` field in every `mem_save` call automatically. If the project was never seen before, it is silently registered on first save — no separate init step needed.
+
+> **Design decision**: Separating project registration (automatic, no files) from project scaffold (explicit `jarvis init`) prevents silent memory mis-scoping when the user forgets to run a command. The global hive-daemon `~/.jarvis/memory.db` already scopes memories via the `project` field — no per-project SQLite file is needed.
+
+---
+
 ### jarvis init
 
-**Purpose**: Initialize project with Jarvis-Dev
+**Purpose**: Scaffold the `.jarvis/` project directory — a **team artifact** committed to the repo that enables project-specific skills and config.
 
 **Usage**:
 ```bash
@@ -2186,22 +2203,25 @@ Detecting project...
 ✓ Project: conpas-erp (from git remote)
 ✓ Stack: Laravel 10, PHP 8.2
 
-Initializing Hive...
-✓ SQLite database created: .jarvis/memory.db
+Scaffolding .jarvis/...
 ✓ Skill registry created: .jarvis/skill-registry.md
 
 Skills available:
   - Core: sdd-*, hive
   - Context: zoho-deluge, phpunit-testing, laravel-architecture, git-workflow
 
-✓ Project initialized
+✓ Project initialized — commit .jarvis/ to share with your team
 ```
 
 **What it does**:
 1. Detects project name (git remote or folder name)
-2. Creates `.jarvis/memory.db` (SQLite)
-3. Creates `.jarvis/skill-registry.md`
-4. Detects stack (Laravel, Zoho, etc.)
+2. Detects stack (Laravel, Zoho Deluge, etc.) via file heuristics
+3. Creates `.jarvis/skill-registry.md` with suggested skills for the detected stack
+4. Idempotent — safe to re-run (updates suggestions without overwriting custom entries)
+
+**What it does NOT do**:
+- Does NOT create a per-project SQLite database (global hive-daemon at `~/.jarvis/memory.db` handles all projects via the `project` field)
+- Does NOT register the project in Hive (auto-detection at session start handles that)
 
 ---
 

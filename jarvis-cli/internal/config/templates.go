@@ -60,7 +60,19 @@ func renderTemplate(fsys embed.FS, path string, data TemplateData) (string, erro
 // Layer1Content returns the standard Layer1 Hive memory protocol content.
 // This is the immutable content written between the LAYER1 sentinel markers.
 func Layer1Content() string {
-	return `## Hive Persistent Memory — Protocol
+	return `### PROJECT CONTEXT (run at session start)
+
+Detect the active project name at the START of EVERY session:
+1. Run: ` + "`git remote get-url origin`" + ` → extract repo name (last path segment, strip ` + "`.git`" + `)
+2. Fallback: basename of the current working directory
+3. Fallback: ` + `"default"` + `
+
+Use the resolved project name as the ` + "`project`" + ` field in ALL ` + "`mem_save`" + ` calls.
+NEVER save a memory without a ` + "`project`" + ` field.
+
+---
+
+## Hive Persistent Memory — Protocol
 
 You have access to Hive, a persistent memory system via MCP tools.
 This protocol is MANDATORY and ALWAYS ACTIVE.

@@ -37,7 +37,7 @@ Run without arguments to launch the setup wizard.`,
 
 func init() {
 	rootCmd.PersistentFlags().Bool("no-tui", false, "disable TUI, use readline prompts")
-	rootCmd.AddCommand(personaCmd, syncCmd, loginCmd, timelineCmd, configCmd)
+	rootCmd.AddCommand(personaCmd, syncCmd, loginCmd, timelineCmd, configCmd, initCmd)
 }
 
 func main() {

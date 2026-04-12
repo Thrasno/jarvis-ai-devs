@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -149,5 +150,24 @@ func TestLoad_ReturnsErrorWhenFileCorrupt(t *testing.T) {
 	_, err := Load()
 	if err == nil {
 		t.Fatal("expected Load() to return an error for corrupt YAML, got nil")
+	}
+}
+
+// TestLayer1Content_ContainsProjectContext verifies that Layer1Content includes
+// the PROJECT CONTEXT section with all three fallbacks documented.
+func TestLayer1Content_ContainsProjectContext(t *testing.T) {
+	content := Layer1Content()
+
+	for _, want := range []string{
+		"PROJECT CONTEXT",
+		"git remote get-url origin",
+		"basename",
+		`"default"`,
+		"project",
+		"mem_save",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("Layer1Content missing %q", want)
+		}
 	}
 }

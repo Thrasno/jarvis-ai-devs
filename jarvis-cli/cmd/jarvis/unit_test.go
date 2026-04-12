@@ -227,6 +227,47 @@ func TestRunConfigSet_InvalidKey_InProcess(t *testing.T) {
 	}
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// initCmd tests
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestRunInit_InProcess calls runInit() directly with a temp project dir.
+// Verifies .jarvis/skill-registry.md is created and the commit reminder is printed.
+func TestRunInit_InProcess(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", "") // prevent git from resolving a remote
+
+	// Create a go.mod so the Go stack is detected.
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n"), 0644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runInit(dir); err != nil {
+			t.Errorf("runInit: %v", err)
+		}
+	})
+
+	// Verify the registry file was created.
+	registryPath := filepath.Join(dir, ".jarvis", "skill-registry.md")
+	if _, err := os.Stat(registryPath); err != nil {
+		t.Errorf("expected .jarvis/skill-registry.md to exist: %v", err)
+	}
+
+	// Verify CLI output contains the commit reminder.
+	if !strings.Contains(out, "commit .jarvis/") {
+		t.Errorf("expected commit reminder in output:\n%s", out)
+	}
+
+	// Verify stack and skills appear in output.
+	if !strings.Contains(out, "Go") {
+		t.Errorf("expected 'Go' stack in output:\n%s", out)
+	}
+	if !strings.Contains(out, "go-testing") {
+		t.Errorf("expected 'go-testing' skill in output:\n%s", out)
+	}
+}
+
 // TestRunWizard_NoTUI_SkipsAuth exercises runWizard via stdin injection.
 //
 // In test environments stdin is NOT a TTY, so runWizard always calls RunNoTUI
