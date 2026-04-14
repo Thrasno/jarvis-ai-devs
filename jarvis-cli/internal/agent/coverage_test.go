@@ -244,7 +244,7 @@ func TestOpenCodeAgent_WriteInstructions(t *testing.T) {
 	}
 
 	a := newOpenCodeAgent(testTemplatesFS)
-	if err := a.WriteInstructions("layer1 content", "layer2 content"); err != nil {
+	if err := a.WriteInstructions("layer1 content", "layer2 content", nil); err != nil {
 		t.Fatalf("WriteInstructions: %v", err)
 	}
 
@@ -312,63 +312,27 @@ func TestDetect_WithClaudeInstalled(t *testing.T) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// GenerateStartScript / WriteStartScript tests
+// HiveDaemonBinaryPath tests
 // ──────────────────────────────────────────────────────────────────────────────
 
-// TestGenerateStartScript renders the shell script template with correct values.
-func TestGenerateStartScript(t *testing.T) {
-	data := StartScriptData{
-		APIURL:     "https://hivemem.dev",
-		Email:      "test@example.com",
-		Password:   "s3cr3t",
-		DaemonPath: "/home/user/.jarvis/hive-daemon",
+// TestHiveDaemonBinaryPath_DefaultGOPATH uses ~/go/bin when GOPATH is unset.
+func TestHiveDaemonBinaryPath_DefaultGOPATH(t *testing.T) {
+	t.Setenv("GOPATH", "")
+	got := HiveDaemonBinaryPath("/home/user")
+	if !strings.HasPrefix(got, "/home/user/go/bin/") {
+		t.Errorf("expected path under ~/go/bin, got %q", got)
 	}
-	script, err := GenerateStartScript(data)
-	if err != nil {
-		t.Fatalf("GenerateStartScript: %v", err)
-	}
-	if !strings.HasPrefix(script, "#!/bin/bash") {
-		t.Error("expected shebang line at start")
-	}
-	if !strings.Contains(script, "https://hivemem.dev") {
-		t.Error("expected APIURL in script")
-	}
-	if !strings.Contains(script, "test@example.com") {
-		t.Error("expected email in script")
-	}
-	if !strings.Contains(script, "/home/user/.jarvis/hive-daemon") {
-		t.Error("expected DaemonPath in script")
+	if !strings.Contains(got, "hive-daemon") {
+		t.Errorf("expected 'hive-daemon' in path, got %q", got)
 	}
 }
 
-// TestWriteStartScript creates the script file and backs up on overwrite.
-func TestWriteStartScript(t *testing.T) {
-	tmpDir := t.TempDir()
-	path := filepath.Join(tmpDir, "hive-daemon-start.sh")
-
-	// First write.
-	if err := WriteStartScript(path, "#!/bin/bash\necho first\n"); err != nil {
-		t.Fatalf("WriteStartScript (1st write): %v", err)
-	}
-	data, _ := os.ReadFile(path)
-	if !strings.Contains(string(data), "echo first") {
-		t.Error("expected 'echo first' in script file")
-	}
-
-	// Second write — should create .bak with original content.
-	if err := WriteStartScript(path, "#!/bin/bash\necho second\n"); err != nil {
-		t.Fatalf("WriteStartScript (2nd write): %v", err)
-	}
-	backup, err := os.ReadFile(path + ".bak")
-	if err != nil {
-		t.Fatal("expected .bak file to exist:", err)
-	}
-	if !strings.Contains(string(backup), "echo first") {
-		t.Error("expected original content in backup file")
-	}
-	updated, _ := os.ReadFile(path)
-	if !strings.Contains(string(updated), "echo second") {
-		t.Error("expected updated content in script file")
+// TestHiveDaemonBinaryPath_CustomGOPATH respects GOPATH env var.
+func TestHiveDaemonBinaryPath_CustomGOPATH(t *testing.T) {
+	t.Setenv("GOPATH", "/custom/gopath")
+	got := HiveDaemonBinaryPath("/home/user")
+	if !strings.HasPrefix(got, "/custom/gopath/bin/") {
+		t.Errorf("expected path under /custom/gopath/bin, got %q", got)
 	}
 }
 
@@ -426,7 +390,7 @@ func TestClaudeAgent_WriteInstructions_ReplacesFileWithNoSentinels(t *testing.T)
 	}
 
 	a := newClaudeAgent(testTemplatesFS)
-	if err := a.WriteInstructions("layer1 content", "layer2 content"); err != nil {
+	if err := a.WriteInstructions("layer1 content", "layer2 content", nil); err != nil {
 		t.Fatalf("WriteInstructions: %v", err)
 	}
 
@@ -473,7 +437,7 @@ func TestOpenCodeAgent_WriteInstructions_ReplacesFileWithNoSentinels(t *testing.
 	}
 
 	a := newOpenCodeAgent(testTemplatesFS)
-	if err := a.WriteInstructions("layer1 content", "layer2 content"); err != nil {
+	if err := a.WriteInstructions("layer1 content", "layer2 content", nil); err != nil {
 		t.Fatalf("WriteInstructions: %v", err)
 	}
 
@@ -512,12 +476,12 @@ func TestClaudeAgent_WriteInstructions_PatchesExistingFile(t *testing.T) {
 	a := newClaudeAgent(testTemplatesFS)
 
 	// First write: establish sentinels.
-	if err := a.WriteInstructions("original layer1", "original layer2"); err != nil {
+	if err := a.WriteInstructions("original layer1", "original layer2", nil); err != nil {
 		t.Fatalf("first WriteInstructions: %v", err)
 	}
 
 	// Second write: update Layer2 only.
-	if err := a.WriteInstructions("original layer1", "new layer2 content"); err != nil {
+	if err := a.WriteInstructions("original layer1", "new layer2 content", nil); err != nil {
 		t.Fatalf("second WriteInstructions: %v", err)
 	}
 

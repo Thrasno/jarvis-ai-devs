@@ -138,6 +138,18 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		}
 	}
 
+	// Build SkillInfo list for template rendering.
+	var skillInfos []config.SkillInfo
+	for _, s := range skillList {
+		if selected[s.ID] || s.IsCore {
+			skillInfos = append(skillInfos, config.SkillInfo{
+				Name:        s.Name,
+				Description: s.Description,
+				Trigger:     s.Trigger,
+			})
+		}
+	}
+
 	// Build Layer1 + Layer2 content.
 	layer1 := config.Layer1Content()
 	var layer2 string
@@ -147,12 +159,12 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		}
 	}
 
-	daemonPath := filepath.Join(home, ".jarvis", "hive-daemon-start.sh")
+	// Point MCP directly to the binary — credentials are read from ~/.jarvis/sync.json.
 	entry := agent.MCPEntry{
 		Name:       "hive",
 		APIURL:     cfg.APIURL,
 		Email:      cfg.Email,
-		DaemonPath: daemonPath,
+		DaemonPath: agent.HiveDaemonBinaryPath(home),
 	}
 
 	var configuredAgents []string
@@ -164,7 +176,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 			fmt.Printf("  MCP config failed: %v\n", mergeErr)
 			continue
 		}
-		if instrErr := a.WriteInstructions(layer1, layer2); instrErr != nil {
+		if instrErr := a.WriteInstructions(layer1, layer2, skillInfos); instrErr != nil {
 			fmt.Printf("  Instructions failed: %v\n", instrErr)
 			continue
 		}
@@ -172,20 +184,12 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 			fmt.Printf("  Skills install failed: %v\n", skillErr)
 			continue
 		}
+		if orchErr := a.InstallOrchestrator(jarvis.OrchestratorFS); orchErr != nil {
+			fmt.Printf("  Orchestrator install failed: %v\n", orchErr)
+			continue
+		}
 		fmt.Printf("  %s configured.\n", agentName)
 		configuredAgents = append(configuredAgents, agentName)
-	}
-
-	// Generate start script if we have cloud creds.
-	if cfg.Email != "" {
-		scriptData := agent.StartScriptData{
-			APIURL:     cfg.APIURL,
-			Email:      cfg.Email,
-			DaemonPath: daemonPath,
-		}
-		if scriptContent, scriptErr := agent.GenerateStartScript(scriptData); scriptErr == nil {
-			_ = agent.WriteStartScript(daemonPath, scriptContent)
-		}
 	}
 
 	// Save config.

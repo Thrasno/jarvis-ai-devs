@@ -122,3 +122,61 @@ func assertFileExists(t *testing.T, path string) {
 		t.Errorf("expected file at %s to exist, got: %v", path, err)
 	}
 }
+
+// TestInstallOrchestrator_CreatesFile verifies that installOrchestrator creates
+// the orchestrator file at the destination path with correct content.
+func TestInstallOrchestrator_CreatesFile(t *testing.T) {
+	dest := t.TempDir()
+	destFile := filepath.Join(dest, "sdd-orchestrator.md")
+
+	testFS := fstest.MapFS{
+		"embed/orchestrator/sdd-orchestrator.md": {Data: []byte("# SDD Orchestrator\nContent here")},
+	}
+
+	err := installOrchestrator(destFile, testFS)
+	if err != nil {
+		t.Fatalf("installOrchestrator: %v", err)
+	}
+
+	assertFileContent(t, destFile, "# SDD Orchestrator\nContent here")
+}
+
+// TestInstallOrchestrator_ReturnsErrorOnMissingFile verifies that installOrchestrator
+// returns an error when the orchestrator file is missing from the embedded FS.
+func TestInstallOrchestrator_ReturnsErrorOnMissingFile(t *testing.T) {
+	dest := t.TempDir()
+	destFile := filepath.Join(dest, "sdd-orchestrator.md")
+
+	testFS := fstest.MapFS{
+		// Empty FS - no orchestrator file
+	}
+
+	err := installOrchestrator(destFile, testFS)
+	if err == nil {
+		t.Error("expected error when orchestrator file is missing, got nil")
+	}
+}
+
+// TestInstallOrchestrator_Idempotent verifies that calling installOrchestrator twice
+// produces no error and does not duplicate content.
+func TestInstallOrchestrator_Idempotent(t *testing.T) {
+	dest := t.TempDir()
+	destFile := filepath.Join(dest, "sdd-orchestrator.md")
+
+	testFS := fstest.MapFS{
+		"embed/orchestrator/sdd-orchestrator.md": {Data: []byte("# Orchestrator")},
+	}
+
+	// First call.
+	if err := installOrchestrator(destFile, testFS); err != nil {
+		t.Fatalf("first installOrchestrator: %v", err)
+	}
+
+	// Second call (idempotency check).
+	if err := installOrchestrator(destFile, testFS); err != nil {
+		t.Fatalf("second installOrchestrator: %v", err)
+	}
+
+	// Content must be exactly what was written, not appended.
+	assertFileContent(t, destFile, "# Orchestrator")
+}

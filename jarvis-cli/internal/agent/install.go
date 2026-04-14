@@ -50,3 +50,14 @@ func installSkillsFromFS(destDir string, skillsFS fs.FS, selected []string) erro
 		return writeFileAtomic(destPath, content, 0644)
 	})
 }
+
+// installOrchestrator copies sdd-orchestrator.md from orchestratorFS to destPath.
+// orchestratorFS must be a sub-FS rooted at the embed/orchestrator directory.
+// The file is written atomically.
+func installOrchestrator(destPath string, orchestratorFS fs.FS) error {
+	content, err := fs.ReadFile(orchestratorFS, "embed/orchestrator/sdd-orchestrator.md")
+	if err != nil {
+		return fmt.Errorf("read sdd-orchestrator.md: %w", err)
+	}
+	return writeFileAtomic(destPath, content, 0644)
+}

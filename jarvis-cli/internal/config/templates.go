@@ -11,32 +11,42 @@ import (
 	"text/template"
 )
 
+// SkillInfo represents skill metadata for template rendering.
+type SkillInfo struct {
+	Name        string
+	Description string
+	Trigger     string
+}
+
 // TemplateData holds the data passed to CLAUDE.md and AGENTS.md templates.
 type TemplateData struct {
 	Layer1    string
 	Layer2    string
 	Expertise string
+	Skills    []SkillInfo
 }
 
 // RenderCLAUDEMd renders the CLAUDE.md content from the provided filesystem.
 // fsys must contain "embed/templates/CLAUDE.md.tmpl" (root-package TemplatesFS layout).
 // Accepts any fs.FS implementation, including embed.FS and fstest.MapFS.
-func RenderCLAUDEMd(fsys fs.FS, layer1, layer2, expertise string) (string, error) {
+func RenderCLAUDEMd(fsys fs.FS, layer1, layer2, expertise string, skills []SkillInfo) (string, error) {
 	return renderTemplate(fsys, "embed/templates/CLAUDE.md.tmpl", TemplateData{
 		Layer1:    layer1,
 		Layer2:    layer2,
 		Expertise: expertise,
+		Skills:    skills,
 	})
 }
 
 // RenderAGENTSMd renders the AGENTS.md content from the provided filesystem.
 // fsys must contain "embed/templates/AGENTS.md.tmpl" (root-package TemplatesFS layout).
 // Accepts any fs.FS implementation, including embed.FS and fstest.MapFS.
-func RenderAGENTSMd(fsys fs.FS, layer1, layer2, expertise string) (string, error) {
+func RenderAGENTSMd(fsys fs.FS, layer1, layer2, expertise string, skills []SkillInfo) (string, error) {
 	return renderTemplate(fsys, "embed/templates/AGENTS.md.tmpl", TemplateData{
 		Layer1:    layer1,
 		Layer2:    layer2,
 		Expertise: expertise,
+		Skills:    skills,
 	})
 }
 

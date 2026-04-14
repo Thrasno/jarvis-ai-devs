@@ -410,7 +410,7 @@ func viewSkills(m Model) string {
 
 		line := fmt.Sprintf("%s %s%s — %s", check, s.Name, lock, s.Description)
 		if i == cur {
-			line = selectedStyle.Render("> "+line)
+			line = selectedStyle.Render("> " + line)
 		} else {
 			line = "  " + line
 		}
@@ -468,6 +468,9 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		// Build the list of selected skill IDs.
 		selectedIDs := buildSelectedIDs(m)
 
+		// Build SkillInfo list from registry for template rendering.
+		skillInfos := buildSkillInfoList(m)
+
 		// Build Layer1 + Layer2 content.
 		layer1 := config.Layer1Content()
 		var layer2 string
@@ -479,13 +482,13 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			layer2 = m.CustomYAML
 		}
 
-		// MCP entry for hive-daemon.
-		daemonPath := filepath.Join(home, ".jarvis", "hive-daemon-start.sh")
+		// MCP entry for hive-daemon — point directly to the binary.
+		// Credentials are read by hive-daemon from ~/.jarvis/sync.json (written above).
 		entry := agent.MCPEntry{
 			Name:       "hive",
 			APIURL:     m.cfg.APIURL,
 			Email:      m.cfg.Email,
-			DaemonPath: daemonPath,
+			DaemonPath: agent.HiveDaemonBinaryPath(home),
 		}
 
 		// Configure each detected agent.
@@ -496,26 +499,16 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			if err := a.MergeConfig(entry); err != nil {
 				return agentProgressMsg{line: fmt.Sprintf("[%s] MCP config FAILED: %v", agentName, err), done: false}
 			}
-			if err := a.WriteInstructions(layer1, layer2); err != nil {
+			if err := a.WriteInstructions(layer1, layer2, skillInfos); err != nil {
 				return agentProgressMsg{line: fmt.Sprintf("[%s] Instructions FAILED: %v", agentName, err), done: false}
 			}
 			if err := a.InstallSkills(skillsSubFS, selectedIDs); err != nil {
 				return agentProgressMsg{line: fmt.Sprintf("[%s] Skills install FAILED: %v", agentName, err), done: false}
 			}
+			if err := a.InstallOrchestrator(jarvis.OrchestratorFS); err != nil {
+				return agentProgressMsg{line: fmt.Sprintf("[%s] Orchestrator install FAILED: %v", agentName, err), done: false}
+			}
 			configuredAgents = append(configuredAgents, agentName)
-		}
-
-		// Generate and write hive-daemon-start.sh.
-		if m.cfg.Email != "" {
-			scriptData := agent.StartScriptData{
-				APIURL:     m.cfg.APIURL,
-				Email:      m.cfg.Email,
-				Password:   m.Password,
-				DaemonPath: daemonPath,
-			}
-			if scriptContent, err := agent.GenerateStartScript(scriptData); err == nil {
-				_ = agent.WriteStartScript(daemonPath, scriptContent)
-			}
 		}
 
 		// Save config.
@@ -541,6 +534,22 @@ func buildSelectedIDs(m Model) []string {
 		}
 	}
 	return ids
+}
+
+// buildSkillInfoList returns a slice of SkillInfo structs for template rendering.
+// Only includes selected and core skills from the SkillList.
+func buildSkillInfoList(m Model) []config.SkillInfo {
+	var infos []config.SkillInfo
+	for _, s := range m.SkillList {
+		if m.Selected[s.ID] || s.IsCore {
+			infos = append(infos, config.SkillInfo{
+				Name:        s.Name,
+				Description: s.Description,
+				Trigger:     s.Trigger,
+			})
+		}
+	}
+	return infos
 }
 
 func viewAgentConfig(m Model) string {

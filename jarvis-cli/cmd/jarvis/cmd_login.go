@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/apiclient"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
 )
@@ -60,27 +59,16 @@ var loginCmd = &cobra.Command{
 		}
 
 		// Write sync.json with new credentials.
+		// token is intentionally excluded — hive-daemon uses DisallowUnknownFields().
 		home, homeErr := os.UserHomeDir()
 		if homeErr != nil {
 			return fmt.Errorf("get home dir: %w", homeErr)
 		}
-		syncJSON := fmt.Sprintf(`{"api_url":%q,"email":%q,"password":%q,"token":%q}`,
-			cfg.APIURL, email, password, resp.Token)
+		syncJSON := fmt.Sprintf(`{"api_url":%q,"email":%q,"password":%q}`,
+			cfg.APIURL, email, password)
 		syncPath := filepath.Join(home, ".jarvis", "sync.json")
 		if writeErr := os.WriteFile(syncPath, []byte(syncJSON), 0600); writeErr != nil {
 			return fmt.Errorf("write sync.json: %w", writeErr)
-		}
-
-		// Regenerate hive-daemon-start.sh.
-		daemonPath := filepath.Join(home, ".jarvis", "hive-daemon-start.sh")
-		scriptData := agent.StartScriptData{
-			APIURL:     cfg.APIURL,
-			Email:      email,
-			Password:   password,
-			DaemonPath: daemonPath,
-		}
-		if scriptContent, scriptErr := agent.GenerateStartScript(scriptData); scriptErr == nil {
-			_ = agent.WriteStartScript(daemonPath, scriptContent)
 		}
 
 		fmt.Printf("Authenticated as %s. Credentials saved.\n", resp.User.Email)
