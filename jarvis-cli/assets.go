@@ -18,3 +18,8 @@ var SkillsFS embed.FS
 //
 //go:embed all:embed/templates
 var TemplatesFS embed.FS
+
+// OrchestratorFS contains the embedded orchestrator file.
+//
+//go:embed all:embed/orchestrator
+var OrchestratorFS embed.FS

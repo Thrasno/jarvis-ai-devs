@@ -51,7 +51,7 @@ func TestTemplatesFS_NotEmpty(t *testing.T) {
 // output that passes ValidateSentinels and contains the provided layer content.
 // UNIT-04 from spec.
 func TestRenderCLAUDEMd_ProducesValidSentinels(t *testing.T) {
-	result, err := config.RenderCLAUDEMd(jarvis.TemplatesFS, "l1 content", "l2 content", "")
+	result, err := config.RenderCLAUDEMd(jarvis.TemplatesFS, "l1 content", "l2 content", "", nil)
 	if err != nil {
 		t.Fatalf("RenderCLAUDEMd: %v", err)
 	}

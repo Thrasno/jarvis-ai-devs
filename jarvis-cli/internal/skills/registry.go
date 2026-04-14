@@ -23,6 +23,9 @@ type Skill struct {
 	// Description is a brief explanation of what this skill teaches the AI.
 	Description string
 
+	// Trigger is the context phrase that triggers this skill to load.
+	Trigger string
+
 	// IsCore marks skills that are pre-selected and cannot be deselected.
 	IsCore bool
 
@@ -45,25 +48,30 @@ var coreSkillIDs = map[string]bool{
 }
 
 // skillMeta provides human-readable metadata for each skill ID.
-var skillMeta = map[string]struct{ name, description string }{
-	"sdd-workflow":         {name: "SDD Workflow", description: "Spec-Driven Development lifecycle: proposal → spec → design → tasks → apply → sdd-qa → verify → archive"},
-	"hive":                 {name: "Hive Memory", description: "Persistent memory protocol: when to save, how to search, session summary triggers"},
-	"sdd-explore":          {name: "SDD Explore", description: "Investigate ideas and compare approaches before committing to a change"},
-	"sdd-propose":          {name: "SDD Propose", description: "Create a structured change proposal with intent, scope, and success criteria"},
-	"sdd-spec":             {name: "SDD Spec", description: "Write delta requirements and Given/When/Then scenarios for a change"},
-	"sdd-design":           {name: "SDD Design", description: "Document architecture decisions and technical approach with rationale"},
-	"sdd-tasks":            {name: "SDD Tasks", description: "Break down a change into a concrete, ordered implementation checklist"},
-	"sdd-apply":            {name: "SDD Apply", description: "Implement tasks following specs and design; supports Strict TDD mode"},
-	"sdd-qa":               {name: "SDD QA", description: "Run mixed [AUTO]/[MANUAL] QA checklist; mandatory before sdd-verify"},
-	"sdd-verify":           {name: "SDD Verify", description: "Verify implementation against specs with structural and behavioral checks"},
-	"sdd-archive":          {name: "SDD Archive", description: "Merge delta specs to main specs and close the SDD change cycle"},
-	"sdd-init":             {name: "SDD Init", description: "Detect project stack, testing capabilities, and initialize SDD context"},
-	"zoho-deluge":          {name: "Zoho Deluge", description: "Zoho Deluge scripting conventions: no nested loops, bulk operations, null safety"},
-	"laravel-architecture": {name: "Laravel Architecture", description: "Laravel conventions: thin controllers, services, repositories, FormRequest validation"},
-	"phpunit-testing":      {name: "PHPUnit Testing", description: "PHPUnit patterns: AAA structure, factories, one concept per test"},
-	"git-workflow":         {name: "Git Workflow", description: "Conventional commits, branch naming, no force push to main"},
-	"branch-pr":            {name: "Branch & PR", description: "PR creation workflow with issue-first enforcement, branch naming, and automated checks"},
-	"issue-creation":       {name: "Issue Creation", description: "GitHub issue creation with bug report and feature request templates"},
+var skillMeta = map[string]struct{ name, description, trigger string }{
+	"sdd-workflow":         {name: "SDD Workflow", description: "Spec-Driven Development lifecycle: proposal → spec → design → tasks → apply → sdd-qa → verify → archive", trigger: "SDD workflow phase"},
+	"hive":                 {name: "Hive Memory", description: "Persistent memory protocol: when to save, how to search, session summary triggers", trigger: "Using engram memory"},
+	"sdd-explore":          {name: "SDD Explore", description: "Investigate ideas and compare approaches before committing to a change", trigger: "When exploring ideas"},
+	"sdd-propose":          {name: "SDD Propose", description: "Create a structured change proposal with intent, scope, and success criteria", trigger: "When creating proposals"},
+	"sdd-spec":             {name: "SDD Spec", description: "Write delta requirements and Given/When/Then scenarios for a change", trigger: "When writing specs"},
+	"sdd-design":           {name: "SDD Design", description: "Document architecture decisions and technical approach with rationale", trigger: "When designing architecture"},
+	"sdd-tasks":            {name: "SDD Tasks", description: "Break down a change into a concrete, ordered implementation checklist", trigger: "When creating task lists"},
+	"sdd-apply":            {name: "SDD Apply", description: "Implement tasks following specs and design; supports Strict TDD mode", trigger: "When implementing tasks"},
+	"sdd-qa":               {name: "SDD QA", description: "Run mixed [AUTO]/[MANUAL] QA checklist; mandatory before sdd-verify", trigger: "When running QA checks"},
+	"sdd-verify":           {name: "SDD Verify", description: "Verify implementation against specs with structural and behavioral checks", trigger: "When verifying implementation"},
+	"sdd-archive":          {name: "SDD Archive", description: "Merge delta specs to main specs and close the SDD change cycle", trigger: "When archiving changes"},
+	"sdd-init":             {name: "SDD Init", description: "Detect project stack, testing capabilities, and initialize SDD context", trigger: "When initializing SDD"},
+	"zoho-deluge":          {name: "Zoho Deluge", description: "Zoho Deluge scripting conventions: no nested loops, bulk operations, null safety", trigger: "When writing Zoho Deluge scripts"},
+	"laravel-architecture": {name: "Laravel Architecture", description: "Laravel conventions: thin controllers, services, repositories, FormRequest validation", trigger: "When writing Laravel code"},
+	"phpunit-testing":      {name: "PHPUnit Testing", description: "PHPUnit patterns: AAA structure, factories, one concept per test", trigger: "When writing PHP tests"},
+	"git-workflow":         {name: "Git Workflow", description: "Conventional commits, branch naming, no force push to main", trigger: "When using git"},
+	"branch-pr":            {name: "Branch & PR", description: "PR creation workflow with issue-first enforcement, branch naming, and automated checks", trigger: "When creating pull requests"},
+	"issue-creation":       {name: "Issue Creation", description: "GitHub issue creation with bug report and feature request templates", trigger: "When creating GitHub issues"},
+	"go-testing":           {name: "Go Testing", description: "Go testing patterns including Bubbletea TUI testing", trigger: "When writing Go tests, using teatest, or adding test coverage"},
+	"judgment-day":         {name: "Judgment Day", description: "Parallel adversarial review protocol with dual blind judges", trigger: "When user says judgment day, review adversarial, dual review"},
+	"sdd-onboard":          {name: "SDD Onboard", description: "Guided end-to-end walkthrough of SDD workflow", trigger: "When onboarding user through full SDD cycle"},
+	"skill-creator":        {name: "Skill Creator", description: "Creates new AI agent skills following the Agent Skills spec", trigger: "When creating a new skill or documenting patterns for AI"},
+	"skill-registry":       {name: "Skill Registry", description: "Create or update the skill registry for the current project", trigger: "When user says update skills, skill registry, or after installing skills"},
 }
 
 // ListSkills returns all available embedded skills with their metadata and content.
@@ -104,15 +112,18 @@ func ListSkills(fsys embed.FS) ([]Skill, error) {
 		meta, hasMeta := skillMeta[skillID]
 		name := skillID
 		description := ""
+		trigger := ""
 		if hasMeta {
 			name = meta.name
 			description = meta.description
+			trigger = meta.trigger
 		}
 
 		skills = append(skills, Skill{
 			ID:          skillID,
 			Name:        name,
 			Description: description,
+			Trigger:     trigger,
 			IsCore:      coreSkillIDs[skillID],
 			Content:     content,
 			Path:        relPath,

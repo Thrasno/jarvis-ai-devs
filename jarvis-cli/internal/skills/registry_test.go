@@ -95,6 +95,62 @@ func TestRegistry_SharedNotRegistered(t *testing.T) {
 	}
 }
 
+// TestRegistry_SkillMetaCount verifies that skillMeta contains entries for all
+// expected skills (23 total: 9 SDD core + 5 domain + 4 workflow + 5 new).
+func TestRegistry_SkillMetaCount(t *testing.T) {
+	expectedSkills := []string{
+		// 9 SDD core
+		"sdd-workflow", "hive", "sdd-explore", "sdd-propose", "sdd-spec",
+		"sdd-design", "sdd-tasks", "sdd-apply", "sdd-qa", "sdd-verify",
+		"sdd-archive", "sdd-init",
+		// 5 domain-specific
+		"zoho-deluge", "laravel-architecture", "phpunit-testing", "git-workflow",
+		// 4 workflow
+		"branch-pr", "issue-creation",
+		// 5 new from gentle-ai
+		"go-testing", "judgment-day", "sdd-onboard", "skill-creator", "skill-registry",
+	}
+
+	if len(skillMeta) != len(expectedSkills) {
+		t.Errorf("expected %d skills in skillMeta, got %d", len(expectedSkills), len(skillMeta))
+	}
+
+	for _, id := range expectedSkills {
+		meta, exists := skillMeta[id]
+		if !exists {
+			t.Errorf("expected skill %q in skillMeta, not found", id)
+			continue
+		}
+		if meta.name == "" {
+			t.Errorf("skill %q has empty name", id)
+		}
+		if meta.description == "" {
+			t.Errorf("skill %q has empty description", id)
+		}
+		if meta.trigger == "" {
+			t.Errorf("skill %q has empty trigger", id)
+		}
+	}
+}
+
+// TestRegistry_TriggerFieldPopulated verifies that Trigger field is populated
+// for skills with metadata.
+func TestRegistry_TriggerFieldPopulated(t *testing.T) {
+	skills, err := listSkillsFromFS(testEmbedFS, "testdata")
+	if err != nil {
+		t.Fatalf("listSkillsFromFS: %v", err)
+	}
+
+	for _, s := range skills {
+		// If skill has metadata, Trigger must be populated.
+		if _, hasMeta := skillMeta[s.ID]; hasMeta {
+			if s.Trigger == "" {
+				t.Errorf("skill %q has metadata but empty Trigger field", s.ID)
+			}
+		}
+	}
+}
+
 // listSkillsFromFS is a testable variant of ListSkills that accepts a root prefix.
 // This allows tests to use testdata/ instead of embed/skills/ as the root.
 func listSkillsFromFS(fsys embed.FS, root string) ([]Skill, error) {
@@ -129,15 +185,18 @@ func listSkillsFromFS(fsys embed.FS, root string) ([]Skill, error) {
 		meta, hasMeta := skillMeta[dirName]
 		name := dirName
 		description := ""
+		trigger := ""
 		if hasMeta {
 			name = meta.name
 			description = meta.description
+			trigger = meta.trigger
 		}
 
 		result = append(result, Skill{
 			ID:          dirName,
 			Name:        name,
 			Description: description,
+			Trigger:     trigger,
 			IsCore:      coreSkillIDs[dirName],
 			Content:     content,
 			Path:        relPath,
