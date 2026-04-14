@@ -2,10 +2,13 @@ package mcp_test
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	hivemcp "github.com/Thrasno/jarvis-dev/hive-daemon/internal/mcp"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	hivesync "github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -48,9 +51,15 @@ func (m *mockStore) Search(query, project, category string, limit int) ([]*model
 // connectTestServer creates a server+client pair using in-memory transport.
 func connectTestServer(t *testing.T, store hivemcp.MemoryStore) *sdkmcp.ClientSession {
 	t.Helper()
+	return connectTestServerWithSync(t, store, nil, nil)
+}
+
+// connectTestServerWithSync creates a server+client pair with optional sync config and syncer.
+func connectTestServerWithSync(t *testing.T, store hivemcp.MemoryStore, cfg *hivesync.Config, syncer hivemcp.SyncRunner) *sdkmcp.ClientSession {
+	t.Helper()
 	ctx := context.Background()
 
-	server := hivemcp.NewServer(store, nil, nil) // nil syncStore/syncer = sync desactivado
+	server := hivemcp.NewServer(store, nil, syncer, cfg)
 
 	t1, t2 := sdkmcp.NewInMemoryTransports()
 	if _, err := server.Connect(ctx, t1, nil); err != nil {
@@ -64,6 +73,46 @@ func connectTestServer(t *testing.T, store hivemcp.MemoryStore) *sdkmcp.ClientSe
 	}
 	t.Cleanup(func() { _ = session.Close() })
 	return session
+}
+
+// mockSyncer implements hivemcp.SyncRunner for testing.
+type mockSyncer struct {
+	mu        sync.Mutex
+	syncCalls []syncCall
+}
+
+type syncCall struct {
+	project string
+	time    time.Time
+}
+
+func (m *mockSyncer) Sync(ctx context.Context, project string) (*hivesync.Result, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.syncCalls = append(m.syncCalls, syncCall{
+		project: project,
+		time:    time.Now(),
+	})
+	return &hivesync.Result{
+		Pushed:  0,
+		Pulled:  0,
+		Project: project,
+	}, nil
+}
+
+func (m *mockSyncer) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.syncCalls)
+}
+
+func (m *mockSyncer) lastProject() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.syncCalls) == 0 {
+		return ""
+	}
+	return m.syncCalls[len(m.syncCalls)-1].project
 }
 
 func TestNewServer_RegistersFiveTools(t *testing.T) {

@@ -8,16 +8,16 @@ import (
 	"time"
 	"unicode/utf8"
 
-	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
 	hivesync "github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
+	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // MaxObservationLength is the maximum allowed content size in runes (not bytes).
 // Unicode-safe: a Japanese character counts as 1 rune even though it is 3 bytes.
 const MaxObservationLength = 50_000
 
-func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncStore, syncer SyncRunner, activity *ActivityTracker) {
+func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncStore, syncer SyncRunner, cfg *hivesync.Config, activity *ActivityTracker) {
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_save",
 		Description: "Save a memory observation to Hive persistent storage",
@@ -34,7 +34,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncS
 				"files_affected":{"type": "array", "items": {"type": "string"}}
 			}
 		}`),
-	}, memSaveHandler(store, activity))
+	}, memSaveHandler(store, syncer, cfg, activity))
 
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_search",
@@ -103,7 +103,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncS
 
 // ─── Handlers ──────────────────────────────────────────────────────────────
 
-func memSaveHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.ToolHandler {
+func memSaveHandler(store MemoryStore, syncer SyncRunner, cfg *hivesync.Config, activity *ActivityTracker) sdkmcp.ToolHandler {
 	return func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 		var p struct {
 			Title         string   `json:"title"`
@@ -145,6 +145,15 @@ func memSaveHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.ToolHan
 		}
 
 		activity.RecordSave(p.Project)
+
+		// Auto-sync: spawn background goroutine if enabled
+		if cfg != nil && cfg.AutoSync && syncer != nil {
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				_, _ = syncer.Sync(ctx, p.Project) // fire-and-forget
+			}()
+		}
 
 		return toolJSON(map[string]any{"id": id, "status": "saved"})
 	}

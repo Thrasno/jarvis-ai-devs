@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -17,6 +18,7 @@ type Config struct {
 	APIURL   string // HIVE_API_URL   e.g. "https://hivemem.dev"
 	Email    string // HIVE_API_EMAIL
 	Password string // HIVE_API_PASSWORD
+	AutoSync bool   // Enable automatic background sync after each mem_save (default: false)
 }
 
 // configFilePath es una función variable para que los tests puedan sustituirla.
@@ -37,6 +39,7 @@ type syncFileConfig struct {
 	APIURL   string `json:"api_url"`
 	Email    string `json:"email"`
 	Password string `json:"password"`
+	AutoSync bool   `json:"auto_sync"` // Optional: enable automatic background sync after each mem_save (default: false)
 }
 
 // loadFromEnv intenta cargar la configuración desde variables de entorno.
@@ -49,13 +52,14 @@ func loadFromEnv() (*Config, bool, error) {
 	url := os.Getenv("HIVE_API_URL")
 	email := os.Getenv("HIVE_API_EMAIL")
 	password := os.Getenv("HIVE_API_PASSWORD")
+	autoSyncStr := os.Getenv("HIVE_AUTO_SYNC")
 
 	// Ninguna configurada → sync desactivado desde este origen
 	if url == "" && email == "" && password == "" {
 		return nil, false, nil
 	}
 
-	// Colectar los que faltan
+	// Colectar los que faltan (auto_sync es opcional, no se incluye)
 	var missing []string
 	if url == "" {
 		missing = append(missing, "HIVE_API_URL")
@@ -74,7 +78,10 @@ func loadFromEnv() (*Config, bool, error) {
 		)
 	}
 
-	return &Config{APIURL: url, Email: email, Password: password}, true, nil
+	// Parse HIVE_AUTO_SYNC: "true" or "1" enables auto-sync
+	autoSync := autoSyncStr == "true" || autoSyncStr == "1"
+
+	return &Config{APIURL: url, Email: email, Password: password, AutoSync: autoSync}, true, nil
 }
 
 // loadFromFile intenta cargar la configuración desde ~/.jarvis/sync.json.
@@ -97,19 +104,22 @@ func loadFromFile() (*Config, bool, error) {
 		return nil, true, fmt.Errorf("stat %s: %w", path, err)
 	}
 
-	// Verificar permisos del archivo: deben ser exactamente 0600
-	if info.Mode().Perm()&0o077 != 0 {
-		return nil, true, fmt.Errorf(
-			"insecure permissions on %s: 0%o (must be 0600); run: chmod 600 %s",
-			path, info.Mode().Perm(), path,
-		)
-	}
+	// Verificar permisos del archivo en Unix: deben ser exactamente 0600.
+	// Windows no tiene el mismo modelo de permisos, se omite el check.
+	if runtime.GOOS != "windows" {
+		if info.Mode().Perm()&0o077 != 0 {
+			return nil, true, fmt.Errorf(
+				"insecure permissions on %s: 0%o (must be 0600); run: chmod 600 %s",
+				path, info.Mode().Perm(), path,
+			)
+		}
 
-	// Verificar permisos del directorio padre (warn-only, no fatal)
-	dirInfo, err := os.Stat(filepath.Dir(path))
-	if err == nil && dirInfo.Mode().Perm()&^os.FileMode(0o700) != 0 {
-		log.Printf("hive-sync: warning: directory %s has permissions 0%o (recommend 0700)",
-			filepath.Dir(path), dirInfo.Mode().Perm())
+		// Verificar permisos del directorio padre (warn-only, no fatal)
+		dirInfo, err := os.Stat(filepath.Dir(path))
+		if err == nil && dirInfo.Mode().Perm()&^os.FileMode(0o700) != 0 {
+			log.Printf("hive-sync: warning: directory %s has permissions 0%o (recommend 0700)",
+				filepath.Dir(path), dirInfo.Mode().Perm())
+		}
 	}
 
 	data, err := os.ReadFile(path)
@@ -139,7 +149,12 @@ func loadFromFile() (*Config, bool, error) {
 		return nil, true, fmt.Errorf("incomplete %s: missing %s", path, strings.Join(missing, ", "))
 	}
 
-	return &Config{APIURL: fc.APIURL, Email: fc.Email, Password: fc.Password}, true, nil
+	return &Config{
+		APIURL:   fc.APIURL,
+		Email:    fc.Email,
+		Password: fc.Password,
+		AutoSync: fc.AutoSync, // Defaults to false if not present in JSON
+	}, true, nil
 }
 
 // Load carga la configuración desde variables de entorno o desde ~/.jarvis/sync.json.

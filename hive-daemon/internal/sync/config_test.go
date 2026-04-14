@@ -234,6 +234,111 @@ func TestLoadFromFileDirWidePerms(t *testing.T) {
 	}
 }
 
+// TestAutoSyncFieldLoading verifies that the AutoSync field is correctly loaded
+// from both JSON files and environment variables, with proper defaults.
+func TestAutoSyncFieldLoading(t *testing.T) {
+	cases := []struct {
+		name         string
+		setup        func(t *testing.T)
+		wantAutoSync bool
+	}{
+		{
+			name: "JSON with auto_sync: true",
+			setup: func(t *testing.T) {
+				clearEnv(t)
+				dir := t.TempDir()
+				body := `{"api_url":"https://x.com","email":"u@x.com","password":"pass","auto_sync":true}`
+				path := writeFile(t, dir, body, 0600)
+				withConfigPath(t, path)
+			},
+			wantAutoSync: true,
+		},
+		{
+			name: "JSON with auto_sync: false",
+			setup: func(t *testing.T) {
+				clearEnv(t)
+				dir := t.TempDir()
+				body := `{"api_url":"https://x.com","email":"u@x.com","password":"pass","auto_sync":false}`
+				path := writeFile(t, dir, body, 0600)
+				withConfigPath(t, path)
+			},
+			wantAutoSync: false,
+		},
+		{
+			name: "JSON missing auto_sync field — defaults to false",
+			setup: func(t *testing.T) {
+				clearEnv(t)
+				dir := t.TempDir()
+				body := `{"api_url":"https://x.com","email":"u@x.com","password":"pass"}`
+				path := writeFile(t, dir, body, 0600)
+				withConfigPath(t, path)
+			},
+			wantAutoSync: false,
+		},
+		{
+			name: "ENV with HIVE_AUTO_SYNC=true",
+			setup: func(t *testing.T) {
+				t.Setenv("HIVE_API_URL", "https://env.example.com")
+				t.Setenv("HIVE_API_EMAIL", "env@example.com")
+				t.Setenv("HIVE_API_PASSWORD", "envpass")
+				t.Setenv("HIVE_AUTO_SYNC", "true")
+				withConfigPath(t, filepath.Join(t.TempDir(), "sync.json"))
+			},
+			wantAutoSync: true,
+		},
+		{
+			name: "ENV with HIVE_AUTO_SYNC=1",
+			setup: func(t *testing.T) {
+				t.Setenv("HIVE_API_URL", "https://env.example.com")
+				t.Setenv("HIVE_API_EMAIL", "env@example.com")
+				t.Setenv("HIVE_API_PASSWORD", "envpass")
+				t.Setenv("HIVE_AUTO_SYNC", "1")
+				withConfigPath(t, filepath.Join(t.TempDir(), "sync.json"))
+			},
+			wantAutoSync: true,
+		},
+		{
+			name: "ENV with HIVE_AUTO_SYNC=false",
+			setup: func(t *testing.T) {
+				t.Setenv("HIVE_API_URL", "https://env.example.com")
+				t.Setenv("HIVE_API_EMAIL", "env@example.com")
+				t.Setenv("HIVE_API_PASSWORD", "envpass")
+				t.Setenv("HIVE_AUTO_SYNC", "false")
+				withConfigPath(t, filepath.Join(t.TempDir(), "sync.json"))
+			},
+			wantAutoSync: false,
+		},
+		{
+			name: "ENV without HIVE_AUTO_SYNC — defaults to false",
+			setup: func(t *testing.T) {
+				t.Setenv("HIVE_API_URL", "https://env.example.com")
+				t.Setenv("HIVE_API_EMAIL", "env@example.com")
+				t.Setenv("HIVE_API_PASSWORD", "envpass")
+				// Don't set HIVE_AUTO_SYNC
+				withConfigPath(t, filepath.Join(t.TempDir(), "sync.json"))
+			},
+			wantAutoSync: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.setup(t)
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() returned error: %v", err)
+			}
+			if cfg == nil {
+				t.Fatal("Load() returned nil config")
+			}
+			if cfg.AutoSync != tc.wantAutoSync {
+				t.Errorf("AutoSync = %v, want %v", cfg.AutoSync, tc.wantAutoSync)
+			}
+		})
+	}
+}
+
 // contains es un helper para no importar strings en los tests.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||

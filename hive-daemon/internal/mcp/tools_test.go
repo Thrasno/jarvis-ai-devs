@@ -6,8 +6,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	hivesync "github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -199,6 +201,177 @@ func TestMemSave_ContentAtLimit_IsAccepted(t *testing.T) {
 	}
 	if saved == nil {
 		t.Error("SaveMemory should have been called for content at limit")
+	}
+}
+
+// ─── Auto-Sync Tests ───────────────────────────────────────────────────────
+
+func TestMemSave_WithAutoSyncDisabled_DoesNotCallSync(t *testing.T) {
+	store := &mockStore{
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			return 1, nil
+		},
+	}
+	syncer := &mockSyncer{}
+	cfg := &hivesync.Config{
+		APIURL:   "https://test.com",
+		Email:    "test@test.com",
+		Password: "pass",
+		AutoSync: false, // Auto-sync DISABLED
+	}
+
+	session := connectTestServerWithSync(t, store, cfg, syncer)
+
+	res := callTool(t, session, "mem_save", map[string]any{
+		"title":   "Test Memory",
+		"content": "content",
+		"type":    "architecture",
+		"project": "test-proj",
+	})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+
+	// Wait a bit to ensure no background goroutine was spawned
+	time.Sleep(100 * time.Millisecond)
+
+	if syncer.callCount() != 0 {
+		t.Errorf("syncer.Sync should NOT have been called when AutoSync=false, got %d calls", syncer.callCount())
+	}
+}
+
+func TestMemSave_WithAutoSyncEnabled_CallsSyncInBackground(t *testing.T) {
+	store := &mockStore{
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			return 1, nil
+		},
+	}
+	syncer := &mockSyncer{}
+	cfg := &hivesync.Config{
+		APIURL:   "https://test.com",
+		Email:    "test@test.com",
+		Password: "pass",
+		AutoSync: true, // Auto-sync ENABLED
+	}
+
+	session := connectTestServerWithSync(t, store, cfg, syncer)
+
+	res := callTool(t, session, "mem_save", map[string]any{
+		"title":   "Test Memory",
+		"content": "content",
+		"type":    "architecture",
+		"project": "test-proj",
+	})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+
+	// Wait for background goroutine to complete (with reasonable timeout)
+	time.Sleep(200 * time.Millisecond)
+
+	if syncer.callCount() != 1 {
+		t.Errorf("syncer.Sync should have been called exactly once when AutoSync=true, got %d calls", syncer.callCount())
+	}
+
+	if syncer.lastProject() != "test-proj" {
+		t.Errorf("syncer.Sync called with project=%q, want %q", syncer.lastProject(), "test-proj")
+	}
+}
+
+func TestMemSave_WithAutoSyncEnabled_ReturnsImmediately(t *testing.T) {
+	store := &mockStore{
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			return 1, nil
+		},
+	}
+	// Slow syncer that takes 1 second to complete
+	slowSyncer := &mockSyncer{}
+	cfg := &hivesync.Config{
+		APIURL:   "https://test.com",
+		Email:    "test@test.com",
+		Password: "pass",
+		AutoSync: true,
+	}
+
+	session := connectTestServerWithSync(t, store, cfg, slowSyncer)
+
+	start := time.Now()
+	res := callTool(t, session, "mem_save", map[string]any{
+		"title":   "Test Memory",
+		"content": "content",
+		"type":    "architecture",
+		"project": "test-proj",
+	})
+	elapsed := time.Since(start)
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+
+	// Should return in less than 50ms (fire-and-forget)
+	if elapsed > 50*time.Millisecond {
+		t.Errorf("mem_save with auto-sync should return immediately, took %v", elapsed)
+	}
+}
+
+func TestMemSave_WithAutoSyncEnabled_ButNilSyncer_DoesNotCrash(t *testing.T) {
+	store := &mockStore{
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			return 1, nil
+		},
+	}
+	cfg := &hivesync.Config{
+		APIURL:   "https://test.com",
+		Email:    "test@test.com",
+		Password: "pass",
+		AutoSync: true, // AutoSync enabled but syncer is nil
+	}
+
+	session := connectTestServerWithSync(t, store, cfg, nil) // nil syncer
+
+	res := callTool(t, session, "mem_save", map[string]any{
+		"title":   "Test Memory",
+		"content": "content",
+		"type":    "architecture",
+		"project": "test-proj",
+	})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+
+	// Should not crash — the nil check should prevent goroutine spawn
+	time.Sleep(50 * time.Millisecond)
+}
+
+func TestMemSave_WithNilConfig_DoesNotCallSync(t *testing.T) {
+	store := &mockStore{
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			return 1, nil
+		},
+	}
+	syncer := &mockSyncer{}
+
+	// nil config — AutoSync should be treated as disabled
+	session := connectTestServerWithSync(t, store, nil, syncer)
+
+	res := callTool(t, session, "mem_save", map[string]any{
+		"title":   "Test Memory",
+		"content": "content",
+		"type":    "architecture",
+		"project": "test-proj",
+	})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	if syncer.callCount() != 0 {
+		t.Errorf("syncer.Sync should NOT have been called when cfg is nil, got %d calls", syncer.callCount())
 	}
 }
 

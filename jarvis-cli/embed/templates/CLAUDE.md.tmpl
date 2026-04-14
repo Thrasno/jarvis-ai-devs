@@ -5,3 +5,16 @@
 <!-- JARVIS:LAYER2:START -->
 {{.Layer2}}
 <!-- JARVIS:LAYER2:END -->
+
+## Skills (Auto-load based on context)
+
+When you detect any of these contexts, IMMEDIATELY load the corresponding skill BEFORE writing any code.
+
+| Context | Skill to load |
+| ------- | ------------- |
+{{range .Skills -}}
+| {{.Trigger}} | {{.Name}} |
+{{end}}
+Load skills BEFORE writing code. Apply ALL patterns. Multiple skills can apply simultaneously.
+
+For detailed SDD orchestration logic, see: [sdd-orchestrator.md](./sdd-orchestrator.md)
