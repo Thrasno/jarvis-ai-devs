@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
 )
 
 // Ensure OpenCodeAgent implements Agent at compile time.
@@ -101,7 +102,10 @@ func (a *OpenCodeAgent) MergeConfig(entry MCPEntry) error {
 //   - File absent or empty → render fresh via RenderAGENTSMd ("created")
 //   - File exists with Jarvis sentinels → patch in-place via PatchFile ("updated")
 //   - File exists without sentinels → render fresh via RenderAGENTSMd, replacing foreign content ("replaced")
-func (a *OpenCodeAgent) WriteInstructions(layer1, layer2 string) error {
+//
+// After determining the final content, the Hive protocol is injected via InjectProtocol.
+// Any legacy gentle-ai protocol blocks are cleaned up first via CleanupOldProtocol.
+func (a *OpenCodeAgent) WriteInstructions(layer1, layer2 string, skills []config.SkillInfo) error {
 	path := a.instructionsPath()
 
 	existing, err := os.ReadFile(path)
@@ -112,7 +116,7 @@ func (a *OpenCodeAgent) WriteInstructions(layer1, layer2 string) error {
 	var content string
 	if os.IsNotExist(err) || len(existing) == 0 {
 		// Create new file from scratch using the canonical template renderer.
-		content, err = config.RenderAGENTSMd(a.templatesFS, layer1, layer2, "")
+		content, err = config.RenderAGENTSMd(a.templatesFS, layer1, layer2, "", skills)
 		if err != nil {
 			return fmt.Errorf("render AGENTS.md: %w", err)
 		}
@@ -126,12 +130,16 @@ func (a *OpenCodeAgent) WriteInstructions(layer1, layer2 string) error {
 			}
 		} else {
 			// Sentinels missing — discard foreign content and render a clean Jarvis file.
-			content, err = config.RenderAGENTSMd(a.templatesFS, layer1, layer2, "")
+			content, err = config.RenderAGENTSMd(a.templatesFS, layer1, layer2, "", skills)
 			if err != nil {
 				return fmt.Errorf("render AGENTS.md (replace): %w", err)
 			}
 		}
 	}
+
+	// Clean up legacy gentle-ai protocol blocks and inject Hive protocol
+	content = CleanupOldProtocol(content)
+	content = InjectProtocol(content, getHiveProtocol())
 
 	return writeFileAtomic(path, []byte(content), 0644)
 }
@@ -146,4 +154,24 @@ func (a *OpenCodeAgent) InstallSkills(skillsFS fs.FS, selected []string) error {
 		return fmt.Errorf("create skills dir: %w", err)
 	}
 	return installSkillsFromFS(dir, skillsFS, selected)
+}
+
+// InstallOrchestrator installs sdd-orchestrator.md to ~/.config/opencode/.
+// orchestratorFS must be a sub-FS rooted at the embed/orchestrator directory.
+// Idempotent: existing file is overwritten silently.
+func (a *OpenCodeAgent) InstallOrchestrator(orchestratorFS fs.FS) error {
+	destPath := filepath.Join(a.ConfigDir(), "sdd-orchestrator.md")
+	return installOrchestrator(destPath, orchestratorFS)
+}
+
+// SupportsOutputStyles returns false for OpenCodeAgent since OpenCode
+// does not have native output-style support.
+func (a *OpenCodeAgent) SupportsOutputStyles() bool {
+	return false
+}
+
+// WriteOutputStyle is a no-op for OpenCodeAgent since OpenCode doesn't support
+// output-styles. Returns nil to allow graceful handling in mixed agent environments.
+func (a *OpenCodeAgent) WriteOutputStyle(preset *persona.Preset) error {
+	return nil
 }

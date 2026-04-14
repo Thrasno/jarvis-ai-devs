@@ -5,6 +5,9 @@ package agent
 import (
 	"io/fs"
 	"os/exec"
+
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
 )
 
 // MCPEntry represents a single MCP server entry to be merged into an agent's config.
@@ -34,7 +37,8 @@ type Agent interface {
 
 	// WriteInstructions writes CLAUDE.md or AGENTS.md with Layer1+Layer2 content.
 	// If the file already exists, sentinel blocks are patched in-place.
-	WriteInstructions(layer1, layer2 string) error
+	// skills lists all installed skills for the Skills section of the persona file.
+	WriteInstructions(layer1, layer2 string, skills []config.SkillInfo) error
 
 	// InstallSkills installs selected skills from skillsFS to the agent's skills directory.
 	// skillsFS must be a sub-FS rooted at the embed/skills directory.
@@ -42,6 +46,22 @@ type Agent interface {
 	// The _shared/ directory is always installed regardless of the selected list.
 	// Install is idempotent: existing files are overwritten silently.
 	InstallSkills(skillsFS fs.FS, selected []string) error
+
+	// InstallOrchestrator installs sdd-orchestrator.md to the agent's config directory.
+	// orchestratorFS must be a sub-FS rooted at the embed/orchestrator directory.
+	// Install is idempotent: existing file is overwritten silently.
+	InstallOrchestrator(orchestratorFS fs.FS) error
+
+	// SupportsOutputStyles returns true if the agent supports native output-styles.
+	// Claude Code supports this via ~/.claude/output-styles/ and settings.json.
+	// OpenCode does not have native output-style support.
+	SupportsOutputStyles() bool
+
+	// WriteOutputStyle writes the persona's output-style file and patches agent settings.
+	// For agents that don't support output-styles, this is a no-op returning nil.
+	// For ClaudeAgent, writes to ~/.claude/output-styles/{TitleCaseName}.md and patches
+	// settings.json with {"outputStyle": "{TitleCaseName}"}.
+	WriteOutputStyle(preset *persona.Preset) error
 }
 
 // Detect returns all agents detected as installed on the current system.

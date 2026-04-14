@@ -6,8 +6,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
+	"unicode"
 
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
 )
 
 // Ensure ClaudeAgent implements Agent at compile time.
@@ -91,7 +94,10 @@ func (a *ClaudeAgent) MergeConfig(entry MCPEntry) error {
 //   - File absent or empty → render fresh via RenderCLAUDEMd ("created")
 //   - File exists with Jarvis sentinels → patch in-place via PatchFile ("updated")
 //   - File exists without sentinels → render fresh via RenderCLAUDEMd, replacing foreign content ("replaced")
-func (a *ClaudeAgent) WriteInstructions(layer1, layer2 string) error {
+//
+// After determining the final content, the Hive protocol is injected via InjectProtocol.
+// Any legacy gentle-ai protocol blocks are cleaned up first via CleanupOldProtocol.
+func (a *ClaudeAgent) WriteInstructions(layer1, layer2 string, skills []config.SkillInfo) error {
 	path := a.instructionsPath()
 
 	existing, err := os.ReadFile(path)
@@ -102,7 +108,7 @@ func (a *ClaudeAgent) WriteInstructions(layer1, layer2 string) error {
 	var content string
 	if os.IsNotExist(err) || len(existing) == 0 {
 		// Create new file from scratch using the canonical template renderer.
-		content, err = config.RenderCLAUDEMd(a.templatesFS, layer1, layer2, "")
+		content, err = config.RenderCLAUDEMd(a.templatesFS, layer1, layer2, "", skills)
 		if err != nil {
 			return fmt.Errorf("render CLAUDE.md: %w", err)
 		}
@@ -116,14 +122,81 @@ func (a *ClaudeAgent) WriteInstructions(layer1, layer2 string) error {
 			}
 		} else {
 			// Sentinels missing — discard foreign content and render a clean Jarvis file.
-			content, err = config.RenderCLAUDEMd(a.templatesFS, layer1, layer2, "")
+			content, err = config.RenderCLAUDEMd(a.templatesFS, layer1, layer2, "", skills)
 			if err != nil {
 				return fmt.Errorf("render CLAUDE.md (replace): %w", err)
 			}
 		}
 	}
 
+	// Clean up legacy gentle-ai protocol blocks and inject Hive protocol
+	content = CleanupOldProtocol(content)
+	content = InjectProtocol(content, getHiveProtocol())
+
 	return writeFileAtomic(path, []byte(content), 0644)
+}
+
+// SupportsOutputStyles returns true for ClaudeAgent since Claude Code has
+// native output-style support via ~/.claude/output-styles/.
+func (a *ClaudeAgent) SupportsOutputStyles() bool {
+	return true
+}
+
+// WriteOutputStyle writes the output-style file to ~/.claude/output-styles/{Name}.md
+// and patches settings.json with {"outputStyle": "{Name}"}.
+// Implements SPEC-002, SPEC-003, SPEC-004.
+func (a *ClaudeAgent) WriteOutputStyle(preset *persona.Preset) error {
+	// 1. Create output-styles directory
+	outputStylesDir := filepath.Join(a.ConfigDir(), "output-styles")
+	if err := os.MkdirAll(outputStylesDir, 0755); err != nil {
+		return fmt.Errorf("create output-styles dir: %w", err)
+	}
+
+	// 2. Render output-style content
+	content := persona.RenderOutputStyle(preset)
+
+	// 3. Write output-style file atomically
+	titleCaseName := toTitleCase(preset.Name)
+	outputStylePath := filepath.Join(outputStylesDir, titleCaseName+".md")
+	if err := writeFileAtomic(outputStylePath, []byte(content), 0644); err != nil {
+		return fmt.Errorf("write output-style file: %w", err)
+	}
+
+	// 4. Patch settings.json with outputStyle key
+	patch := map[string]any{
+		"outputStyle": titleCaseName,
+	}
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("marshal outputStyle patch: %w", err)
+	}
+
+	existingBytes, err := readFileOrEmpty(a.settingsPath())
+	if err != nil {
+		return fmt.Errorf("read settings.json: %w", err)
+	}
+
+	merged, err := MergeJSON(existingBytes, patchBytes)
+	if err != nil {
+		return fmt.Errorf("merge settings.json: %w", err)
+	}
+
+	return writeFileAtomic(a.settingsPath(), merged, 0644)
+}
+
+// toTitleCase converts a persona name to TitleCase format for output-style file naming.
+// Examples: "argentino" -> "Argentino", "tony-stark" -> "TonyStark"
+// Implements SPEC-006 transformation rules.
+func toTitleCase(name string) string {
+	parts := strings.Split(name, "-")
+	for i, part := range parts {
+		if len(part) > 0 {
+			runes := []rune(part)
+			runes[0] = unicode.ToUpper(runes[0])
+			parts[i] = string(runes)
+		}
+	}
+	return strings.Join(parts, "")
 }
 
 // InstallSkills installs selected skills from skillsFS to ~/.claude/skills/.
@@ -136,6 +209,14 @@ func (a *ClaudeAgent) InstallSkills(skillsFS fs.FS, selected []string) error {
 		return fmt.Errorf("create skills dir: %w", err)
 	}
 	return installSkillsFromFS(dir, skillsFS, selected)
+}
+
+// InstallOrchestrator installs sdd-orchestrator.md to ~/.claude/.
+// orchestratorFS must be a sub-FS rooted at the embed/orchestrator directory.
+// Idempotent: existing file is overwritten silently.
+func (a *ClaudeAgent) InstallOrchestrator(orchestratorFS fs.FS) error {
+	destPath := filepath.Join(a.ConfigDir(), "sdd-orchestrator.md")
+	return installOrchestrator(destPath, orchestratorFS)
 }
 
 // readFileOrEmpty reads a file's contents or returns an empty byte slice if not found.

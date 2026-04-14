@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -44,6 +45,10 @@ type Preset struct {
 	Tone                  Tone                  `yaml:"tone"`
 	CommunicationStyle    CommunicationStyle    `yaml:"communication_style"`
 	CharacteristicPhrases CharacteristicPhrases `yaml:"characteristic_phrases"`
+	// Notes holds the full persona description — language rules, philosophy, speech
+	// patterns, and behavior rules. Written as a freeform markdown block in the YAML
+	// and appended verbatim to the Layer2 output after a horizontal rule.
+	Notes string `yaml:"notes"`
 }
 
 // LoadPreset loads a named preset from the provided embed.FS.
@@ -147,5 +152,49 @@ func RenderLayer2(preset *Preset) string {
 		}
 	}
 
+	if preset.Notes != "" {
+		sb.WriteString("\n---\n")
+		sb.WriteString(preset.Notes)
+	}
+
 	return sb.String()
+}
+
+// RenderOutputStyle renders output-style markdown with YAML frontmatter for Claude Code.
+// Format: ---\nname: TitleCase\ndescription: ...\nkeep-coding-instructions: true\n---\n{Notes}
+// Implements SPEC-002.
+func RenderOutputStyle(preset *Preset) string {
+	var sb strings.Builder
+
+	// Convert name to TitleCase (e.g., "tony-stark" -> "TonyStark")
+	titleCaseName := toTitleCase(preset.Name)
+
+	// YAML frontmatter
+	sb.WriteString("---\n")
+	sb.WriteString(fmt.Sprintf("name: %s\n", titleCaseName))
+	sb.WriteString(fmt.Sprintf("description: %s\n", preset.Description))
+	sb.WriteString("keep-coding-instructions: true\n")
+	sb.WriteString("---\n")
+
+	// Append Notes after frontmatter
+	if preset.Notes != "" {
+		sb.WriteString("\n")
+		sb.WriteString(preset.Notes)
+	}
+
+	return sb.String()
+}
+
+// toTitleCase converts a persona name to TitleCase format.
+// Examples: "argentino" -> "Argentino", "tony-stark" -> "TonyStark"
+func toTitleCase(name string) string {
+	parts := strings.Split(name, "-")
+	for i, part := range parts {
+		if len(part) > 0 {
+			runes := []rune(part)
+			runes[0] = unicode.ToUpper(runes[0])
+			parts[i] = string(runes)
+		}
+	}
+	return strings.Join(parts, "")
 }

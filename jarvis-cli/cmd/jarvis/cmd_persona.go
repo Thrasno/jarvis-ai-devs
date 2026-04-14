@@ -9,6 +9,7 @@ import (
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/skills"
 )
 
 var personaCmd = &cobra.Command{
@@ -32,17 +33,39 @@ var personaSetCmd = &cobra.Command{
 		// 2. Render Layer2 from the preset.
 		layer2 := persona.RenderLayer2(preset)
 
-		// 3. Patch Layer2 in instructions for each configured agent.
+		// 3. Build SkillInfo list from all installed skills.
+		skillList, err := skills.ListSkills(jarvis.SkillsFS)
+		if err != nil {
+			return fmt.Errorf("list skills: %w", err)
+		}
+		var skillInfos []config.SkillInfo
+		for _, s := range skillList {
+			skillInfos = append(skillInfos, config.SkillInfo{
+				Name:        s.Name,
+				Description: s.Description,
+				Trigger:     s.Trigger,
+			})
+		}
+
+		// 4. Patch Layer2 in instructions for each configured agent.
 		agents := agent.Detect(jarvis.TemplatesFS)
 		for _, a := range agents {
-			if patchErr := a.WriteInstructions(config.Layer1Content(), layer2); patchErr != nil {
+			if patchErr := a.WriteInstructions(config.Layer1Content(), layer2, skillInfos); patchErr != nil {
 				fmt.Printf("Warning: failed to update %s instructions: %v\n", a.Name(), patchErr)
 			} else {
 				fmt.Printf("Updated %s instructions with persona %q.\n", a.Name(), presetName)
 			}
+			// Write output-style file if agent supports it
+			if a.SupportsOutputStyles() {
+				if styleErr := a.WriteOutputStyle(preset); styleErr != nil {
+					fmt.Printf("Warning: failed to update %s output-style: %v\n", a.Name(), styleErr)
+				} else {
+					fmt.Printf("Updated %s output-style with persona %q.\n", a.Name(), presetName)
+				}
+			}
 		}
 
-		// 4. Update ~/.jarvis/config.yaml preset field.
+		// 5. Update ~/.jarvis/config.yaml preset field.
 		cfg, loadErr := config.Load()
 		if loadErr != nil {
 			return fmt.Errorf("load config: %w", loadErr)
@@ -52,7 +75,7 @@ var personaSetCmd = &cobra.Command{
 			return fmt.Errorf("save config: %w", saveErr)
 		}
 
-		// 5. Confirmation.
+		// 6. Confirmation.
 		displayName := preset.DisplayName
 		if displayName == "" {
 			displayName = preset.Name
