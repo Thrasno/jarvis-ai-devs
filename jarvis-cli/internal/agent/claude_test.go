@@ -379,3 +379,172 @@ func TestClaudeAgent_WriteOutputStyle_NilNotes(t *testing.T) {
 		t.Error("output-style missing closing frontmatter delimiter")
 	}
 }
+
+// TestClaudeAgent_MergeConfig_Context7 verifies Context7 MCP is added with correct npx format.
+// Spec R2: Claude Code uses npx local mode with specific args.
+func TestClaudeAgent_MergeConfig_Context7(t *testing.T) {
+	tmpHome := t.TempDir()
+	agent := &ClaudeAgent{home: tmpHome}
+
+	// Create empty settings.json first
+	settingsPath := filepath.Join(tmpHome, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatalf("create .claude dir: %v", err)
+	}
+	if err := os.WriteFile(settingsPath, []byte(`{}`), 0644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	// Call MergeConfig with context7 entry
+	entry := MCPEntry{Name: "context7"}
+	err := agent.MergeConfig(entry)
+	if err != nil {
+		t.Fatalf("MergeConfig(context7) failed: %v", err)
+	}
+
+	// Read and verify settings.json
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal settings.json: %v", err)
+	}
+
+	mcp, ok := settings["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatal("mcpServers missing from settings.json")
+	}
+
+	context7, ok := mcp["context7"].(map[string]any)
+	if !ok {
+		t.Fatal("context7 entry missing from mcpServers")
+	}
+
+	// Verify npx format (Spec R2)
+	if context7["command"] != "npx" {
+		t.Errorf("expected context7.command=npx, got %v", context7["command"])
+	}
+
+	args, ok := context7["args"].([]any)
+	if !ok {
+		t.Fatalf("expected context7.args to be array, got %T", context7["args"])
+	}
+
+	if len(args) != 2 || args[0] != "-y" || args[1] != "@upstash/context7-mcp" {
+		t.Errorf("expected context7.args=[-y, @upstash/context7-mcp], got %v", args)
+	}
+}
+
+// TestClaudeAgent_MergeConfig_Context7_PreservesExisting verifies Context7 doesn't clobber other MCPs.
+// Spec R4: Deep merge behavior preserves existing servers.
+func TestClaudeAgent_MergeConfig_Context7_PreservesExisting(t *testing.T) {
+	tmpHome := t.TempDir()
+	agent := &ClaudeAgent{home: tmpHome}
+
+	// Create settings.json with existing hive and engram entries
+	settingsPath := filepath.Join(tmpHome, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatalf("create .claude dir: %v", err)
+	}
+
+	existingSettings := `{
+		"outputStyle": "Argentino",
+		"mcpServers": {
+			"hive": {"command": "/usr/local/bin/hive-daemon", "args": []},
+			"engram": {"command": "/go/bin/engram", "args": ["mcp"]}
+		}
+	}`
+	if err := os.WriteFile(settingsPath, []byte(existingSettings), 0644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	// Add Context7
+	entry := MCPEntry{Name: "context7"}
+	err := agent.MergeConfig(entry)
+	if err != nil {
+		t.Fatalf("MergeConfig(context7) failed: %v", err)
+	}
+
+	// Read and verify
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal settings.json: %v", err)
+	}
+
+	// Verify outputStyle preserved
+	if settings["outputStyle"] != "Argentino" {
+		t.Errorf("outputStyle was lost, expected Argentino, got %v", settings["outputStyle"])
+	}
+
+	mcp := settings["mcpServers"].(map[string]any)
+
+	// Verify existing servers preserved
+	if _, ok := mcp["hive"]; !ok {
+		t.Error("hive entry was lost after adding context7")
+	}
+	if _, ok := mcp["engram"]; !ok {
+		t.Error("engram entry was lost after adding context7")
+	}
+
+	// Verify context7 was added
+	if _, ok := mcp["context7"]; !ok {
+		t.Error("context7 entry was not added")
+	}
+}
+
+// TestClaudeAgent_MergeConfig_Context7_Idempotent verifies running MergeConfig twice doesn't duplicate entries.
+// Spec R5: Idempotency — no duplication on re-run.
+func TestClaudeAgent_MergeConfig_Context7_Idempotent(t *testing.T) {
+	tmpHome := t.TempDir()
+	agent := &ClaudeAgent{home: tmpHome}
+
+	settingsPath := filepath.Join(tmpHome, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatalf("create .claude dir: %v", err)
+	}
+	if err := os.WriteFile(settingsPath, []byte(`{}`), 0644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	entry := MCPEntry{Name: "context7"}
+
+	// Run MergeConfig TWICE
+	if err := agent.MergeConfig(entry); err != nil {
+		t.Fatalf("first MergeConfig(context7) failed: %v", err)
+	}
+	if err := agent.MergeConfig(entry); err != nil {
+		t.Fatalf("second MergeConfig(context7) failed: %v", err)
+	}
+
+	// Verify only ONE context7 entry exists
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal settings.json: %v", err)
+	}
+
+	mcp := settings["mcpServers"].(map[string]any)
+	context7 := mcp["context7"].(map[string]any)
+
+	// Verify still correct format after re-run
+	if context7["command"] != "npx" {
+		t.Errorf("expected context7.command=npx after re-run, got %v", context7["command"])
+	}
+
+	// Count mcpServers keys — should be exactly 1 (context7)
+	if len(mcp) != 1 {
+		t.Errorf("expected exactly 1 MCP server, got %d: %v", len(mcp), mcp)
+	}
+}

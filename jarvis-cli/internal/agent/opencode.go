@@ -52,30 +52,48 @@ func (a *OpenCodeAgent) skillsDir() string {
 	return filepath.Join(a.ConfigDir(), "skills")
 }
 
-// MergeConfig adds the hive MCP entry to ~/.config/opencode/opencode.json.
-// OpenCode format: command is an array of strings, not a string.
+// MergeConfig adds MCP entries to ~/.config/opencode/opencode.json based on entry.Name.
+// Supported entries: "hive" (local daemon), "context7" (remote URL).
+// OpenCode format: command is an array of strings (local mode) or type+url (remote mode).
 // Uses deep merge to preserve all existing config keys (agents, permissions, etc).
 func (a *OpenCodeAgent) MergeConfig(entry MCPEntry) error {
-	// Build the hive MCP patch for OpenCode format
-	// command is an array, env vars carry credentials
-	hiveCfg := map[string]any{
-		"command": []string{entry.DaemonPath},
-		"type":    "local",
-	}
+	var patch map[string]any
 
-	// Only add env block if credentials are provided
-	if entry.APIURL != "" || entry.Email != "" || entry.Password != "" {
-		hiveCfg["env"] = map[string]string{
-			"HIVE_API_URL":      entry.APIURL,
-			"HIVE_API_EMAIL":    entry.Email,
-			"HIVE_API_PASSWORD": entry.Password,
+	if entry.Name == "hive" {
+		// Build the hive MCP patch for OpenCode format
+		// command is an array, env vars carry credentials
+		hiveCfg := map[string]any{
+			"command": []string{entry.DaemonPath},
+			"type":    "local",
 		}
-	}
 
-	patch := map[string]any{
-		"mcp": map[string]any{
-			"hive": hiveCfg,
-		},
+		// Only add env block if credentials are provided
+		if entry.APIURL != "" || entry.Email != "" || entry.Password != "" {
+			hiveCfg["env"] = map[string]string{
+				"HIVE_API_URL":      entry.APIURL,
+				"HIVE_API_EMAIL":    entry.Email,
+				"HIVE_API_PASSWORD": entry.Password,
+			}
+		}
+
+		patch = map[string]any{
+			"mcp": map[string]any{
+				"hive": hiveCfg,
+			},
+		}
+	} else if entry.Name == "context7" {
+		// Build the Context7 MCP patch for OpenCode format (remote mode)
+		patch = map[string]any{
+			"mcp": map[string]any{
+				"context7": map[string]any{
+					"type":    "remote",
+					"url":     "https://mcp.context7.com/mcp",
+					"enabled": true,
+				},
+			},
+		}
+	} else {
+		return fmt.Errorf("unknown MCP entry name: %s", entry.Name)
 	}
 
 	patchBytes, err := json.Marshal(patch)

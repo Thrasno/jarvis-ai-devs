@@ -54,19 +54,36 @@ func (a *ClaudeAgent) skillsDir() string {
 	return filepath.Join(a.ConfigDir(), "skills")
 }
 
-// MergeConfig adds the hive MCP entry to ~/.claude/settings.json.
+// MergeConfig adds MCP entries to ~/.claude/settings.json based on entry.Name.
+// Supported entries: "hive" (local daemon), "context7" (npx remote package).
 // Claude format: command is a string, args is an array.
 // Uses deep merge to preserve all existing config keys.
 func (a *ClaudeAgent) MergeConfig(entry MCPEntry) error {
-	// Build the hive MCP patch for Claude format
-	patch := map[string]any{
-		"mcpServers": map[string]any{
-			"hive": map[string]any{
-				"command": entry.DaemonPath,
-				"args":    []string{},
-				"type":    "stdio",
+	var patch map[string]any
+
+	if entry.Name == "hive" {
+		// Build the hive MCP patch for Claude format
+		patch = map[string]any{
+			"mcpServers": map[string]any{
+				"hive": map[string]any{
+					"command": entry.DaemonPath,
+					"args":    []string{},
+					"type":    "stdio",
+				},
 			},
-		},
+		}
+	} else if entry.Name == "context7" {
+		// Build the Context7 MCP patch for Claude format (npx local mode)
+		patch = map[string]any{
+			"mcpServers": map[string]any{
+				"context7": map[string]any{
+					"command": "npx",
+					"args":    []any{"-y", "@upstash/context7-mcp"},
+				},
+			},
+		}
+	} else {
+		return fmt.Errorf("unknown MCP entry name: %s", entry.Name)
 	}
 
 	patchBytes, err := json.Marshal(patch)

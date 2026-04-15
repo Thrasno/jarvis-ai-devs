@@ -2,12 +2,17 @@ package tui
 
 import (
 	"embed"
+	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/skills"
 )
 
 // testPersonaFS and testSkillsFS embed the minimal fixture files used exclusively
@@ -111,5 +116,150 @@ func TestRunAgentConfigSequence_NoAgents(t *testing.T) {
 	}
 	if !strings.Contains(pr.line, "No agents detected") {
 		t.Errorf("unexpected summary line: %q", pr.line)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Mock Agent for testing Context7 configuration
+// ──────────────────────────────────────────────────────────────────────────────
+
+// mockAgent is a test double that tracks MergeConfig calls.
+type mockAgent struct {
+	name          string
+	configDir     string
+	mergedEntries []agent.MCPEntry
+}
+
+func (m *mockAgent) Name() string      { return m.name }
+func (m *mockAgent) IsInstalled() bool { return true }
+func (m *mockAgent) ConfigDir() string { return m.configDir }
+
+func (m *mockAgent) MergeConfig(entry agent.MCPEntry) error {
+	m.mergedEntries = append(m.mergedEntries, entry)
+	// Write to a test file to verify the config was written
+	settingsPath := filepath.Join(m.configDir, "settings.json")
+	if err := os.MkdirAll(m.configDir, 0755); err != nil {
+		return err
+	}
+
+	// Read existing or create new
+	var settings map[string]any
+	data, err := os.ReadFile(settingsPath)
+	if err == nil {
+		_ = json.Unmarshal(data, &settings)
+	}
+	if settings == nil {
+		settings = make(map[string]any)
+	}
+
+	// Add the entry
+	mcpServers, ok := settings["mcpServers"].(map[string]any)
+	if !ok {
+		mcpServers = make(map[string]any)
+		settings["mcpServers"] = mcpServers
+	}
+	mcpServers[entry.Name] = map[string]any{"configured": true}
+
+	// Write back
+	out, _ := json.MarshalIndent(settings, "", "  ")
+	return os.WriteFile(settingsPath, out, 0644)
+}
+
+func (m *mockAgent) WriteInstructions(layer1, layer2 string, skills []config.SkillInfo) error {
+	return nil
+}
+
+func (m *mockAgent) InstallSkills(skillsFS fs.FS, selected []string) error {
+	return nil
+}
+
+func (m *mockAgent) InstallOrchestrator(orchestratorFS fs.FS) error {
+	return nil
+}
+
+func (m *mockAgent) SupportsOutputStyles() bool {
+	return false
+}
+
+func (m *mockAgent) WriteOutputStyle(preset *persona.Preset) error {
+	return nil
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TestRunAgentConfigSequence_Context7AfterHive
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestRunAgentConfigSequence_Context7AfterHive verifies Context7 is configured
+// AFTER Hive in the wizard sequence (Spec R1).
+func TestRunAgentConfigSequence_Context7AfterHive(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	mockConfigDir := filepath.Join(tmpHome, ".mock-agent")
+	mock := &mockAgent{
+		name:      "mock",
+		configDir: mockConfigDir,
+	}
+
+	m := Model{
+		Step:      StepAgentConfig,
+		Selected:  make(map[string]bool),
+		SkillList: []skills.Skill{},
+		cfg: &config.AppConfig{
+			APIURL: "https://hivemem.dev",
+			Email:  "test@example.com",
+		},
+		Agents:    []agent.Agent{mock},
+		PersonaFS: testPersonaFS,
+	}
+
+	cmd := runAgentConfigSequence(m)
+	if cmd == nil {
+		t.Fatal("expected non-nil Cmd from runAgentConfigSequence")
+	}
+
+	// Execute the command synchronously
+	msg := cmd()
+	pr, ok := msg.(agentProgressMsg)
+	if !ok {
+		t.Fatalf("expected agentProgressMsg, got %T", msg)
+	}
+
+	if !pr.done {
+		t.Errorf("expected done=true, got done=%v line=%q", pr.done, pr.line)
+	}
+
+	// Verify BOTH hive and context7 were configured
+	if len(mock.mergedEntries) != 2 {
+		t.Fatalf("expected 2 MergeConfig calls (hive + context7), got %d", len(mock.mergedEntries))
+	}
+
+	// Verify ORDER: hive first, context7 second
+	if mock.mergedEntries[0].Name != "hive" {
+		t.Errorf("expected first MergeConfig call to be 'hive', got %q", mock.mergedEntries[0].Name)
+	}
+
+	if mock.mergedEntries[1].Name != "context7" {
+		t.Errorf("expected second MergeConfig call to be 'context7', got %q", mock.mergedEntries[1].Name)
+	}
+
+	// Verify settings.json was written with both entries
+	settingsPath := filepath.Join(mockConfigDir, "settings.json")
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("settings.json not created: %v", err)
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	mcpServers := settings["mcpServers"].(map[string]any)
+	if _, ok := mcpServers["hive"]; !ok {
+		t.Error("hive entry missing from settings.json")
+	}
+	if _, ok := mcpServers["context7"]; !ok {
+		t.Error("context7 entry missing from settings.json")
 	}
 }

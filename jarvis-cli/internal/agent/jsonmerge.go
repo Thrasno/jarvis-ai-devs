@@ -43,7 +43,7 @@ func MergeJSON(base, patch []byte) ([]byte, error) {
 
 // deepMerge recursively merges src into dst.
 // dst is NOT mutated — a new map is returned.
-// For the "hive" key specifically (Jarvis-owned), src always wins.
+// For Jarvis-owned keys ("hive", "context7"), src always wins (full overwrite, no deep merge).
 func deepMerge(dst, src map[string]any) map[string]any {
 	result := make(map[string]any, len(dst))
 
@@ -54,8 +54,8 @@ func deepMerge(dst, src map[string]any) map[string]any {
 
 	// Apply src keys
 	for k, srcVal := range src {
-		// "hive" is always owned by Jarvis — overwrite unconditionally
-		if k == "hive" {
+		// Jarvis-owned keys are always overwritten unconditionally
+		if k == "hive" || k == "context7" {
 			result[k] = srcVal
 			continue
 		}

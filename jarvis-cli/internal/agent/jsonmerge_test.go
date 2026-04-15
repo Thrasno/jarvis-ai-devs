@@ -56,8 +56,8 @@ func TestMergeJSON(t *testing.T) {
 			},
 		},
 		{
-			name: "hive key always overwritten by patch (Jarvis-owned)",
-			base: `{"mcpServers": {"hive": {"command": "OLD", "args": []}}}`,
+			name:  "hive key always overwritten by patch (Jarvis-owned)",
+			base:  `{"mcpServers": {"hive": {"command": "OLD", "args": []}}}`,
 			patch: `{"mcpServers": {"hive": {"command": "NEW", "args": ["updated"]}}}`,
 			check: func(t *testing.T, result map[string]any) {
 				mcp := result["mcpServers"].(map[string]any)
@@ -94,8 +94,8 @@ func TestMergeJSON(t *testing.T) {
 			},
 		},
 		{
-			name: "Claude format (command string + args array) preserved",
-			base: `{"mcpServers": {"existing": {"command": "/bin/tool", "args": ["--flag"], "type": "stdio"}}}`,
+			name:  "Claude format (command string + args array) preserved",
+			base:  `{"mcpServers": {"existing": {"command": "/bin/tool", "args": ["--flag"], "type": "stdio"}}}`,
 			patch: `{"mcpServers": {"hive": {"command": "/bin/bash", "args": ["~/.jarvis/start.sh"], "type": "stdio"}}}`,
 			check: func(t *testing.T, result map[string]any) {
 				mcp := result["mcpServers"].(map[string]any)
@@ -111,8 +111,8 @@ func TestMergeJSON(t *testing.T) {
 			},
 		},
 		{
-			name: "OpenCode format (command array) preserved",
-			base: `{"mcp": {"existing": {"command": ["/bin/tool", "--flag"], "type": "local"}}}`,
+			name:  "OpenCode format (command array) preserved",
+			base:  `{"mcp": {"existing": {"command": ["/bin/tool", "--flag"], "type": "local"}}}`,
 			patch: `{"mcp": {"hive": {"command": ["/go/bin/hive-daemon"], "type": "local", "env": {"KEY": "val"}}}}`,
 			check: func(t *testing.T, result map[string]any) {
 				mcp := result["mcp"].(map[string]any)
@@ -169,5 +169,74 @@ func TestMergeJSON(t *testing.T) {
 				tt.check(t, result)
 			}
 		})
+	}
+}
+
+// TestMergeJSON_Context7JarvisOwned verifies Context7 overwrites user config (jarvis-owned semantics).
+// Spec: R4 — Context7 is always owned by Jarvis, like Hive.
+// This test ensures that user's custom context7 config is COMPLETELY replaced, not deep-merged.
+func TestMergeJSON_Context7JarvisOwned(t *testing.T) {
+	base := `{"mcpServers": {"context7": {"command": "OLD_USER_COMMAND", "args": [], "customKey": "should-be-removed"}}}`
+	patch := `{"mcpServers": {"context7": {"command": "npx", "args": ["-y", "@upstash/context7-mcp"]}}}`
+
+	out, err := MergeJSON([]byte(base), []byte(patch))
+	if err != nil {
+		t.Fatalf("MergeJSON failed: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+
+	mcp := result["mcpServers"].(map[string]any)
+	context7 := mcp["context7"].(map[string]any)
+
+	// Context7 must be FULLY overwritten (Jarvis-owned) — patch wins, no deep merge
+	if context7["command"] != "npx" {
+		t.Errorf("expected context7.command=npx (Jarvis-owned), got %v", context7["command"])
+	}
+
+	args := context7["args"].([]any)
+	if len(args) != 2 || args[0] != "-y" || args[1] != "@upstash/context7-mcp" {
+		t.Errorf("expected context7.args=[-y, @upstash/context7-mcp], got %v", args)
+	}
+
+	// CRITICAL: customKey from user config MUST be removed (full overwrite, not merge)
+	if _, exists := context7["customKey"]; exists {
+		t.Errorf("context7.customKey should NOT exist (Jarvis owns context7 completely), but found: %v", context7["customKey"])
+	}
+}
+
+// TestMergeJSON_Context7JarvisOwned_OpenCodeFormat verifies Context7 ownership with OpenCode remote format.
+// Triangulation: different format (remote URL) with different config structure.
+func TestMergeJSON_Context7JarvisOwned_OpenCodeFormat(t *testing.T) {
+	base := `{"mcp": {"context7": {"type": "local", "url": "http://old-endpoint.com", "enabled": false}}}`
+	patch := `{"mcp": {"context7": {"type": "remote", "url": "https://mcp.context7.com/mcp", "enabled": true}}}`
+
+	out, err := MergeJSON([]byte(base), []byte(patch))
+	if err != nil {
+		t.Fatalf("MergeJSON failed: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+
+	mcp := result["mcp"].(map[string]any)
+	context7 := mcp["context7"].(map[string]any)
+
+	// Context7 must be FULLY overwritten — new values from patch
+	if context7["type"] != "remote" {
+		t.Errorf("expected context7.type=remote, got %v", context7["type"])
+	}
+
+	if context7["url"] != "https://mcp.context7.com/mcp" {
+		t.Errorf("expected context7.url=https://mcp.context7.com/mcp, got %v", context7["url"])
+	}
+
+	if context7["enabled"] != true {
+		t.Errorf("expected context7.enabled=true, got %v", context7["enabled"])
 	}
 }

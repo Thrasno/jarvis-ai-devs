@@ -491,14 +491,24 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			DaemonPath: agent.HiveDaemonBinaryPath(home),
 		}
 
+		// MCP entry for Context7 — auto-configured after Hive.
+		context7Entry := agent.MCPEntry{Name: "context7"}
+
 		// Configure each detected agent.
 		var configuredAgents []string
 		for _, a := range m.Agents {
 			agentName := a.Name()
 
+			// Configure Hive MCP server
 			if err := a.MergeConfig(entry); err != nil {
 				return agentProgressMsg{line: fmt.Sprintf("[%s] MCP config FAILED: %v", agentName, err), done: false}
 			}
+
+			// Configure Context7 MCP server (auto-config, non-blocking)
+			if err := a.MergeConfig(context7Entry); err != nil {
+				return agentProgressMsg{line: fmt.Sprintf("[%s] Context7 config FAILED: %v", agentName, err), done: false}
+			}
+
 			if err := a.WriteInstructions(layer1, layer2, skillInfos); err != nil {
 				return agentProgressMsg{line: fmt.Sprintf("[%s] Instructions FAILED: %v", agentName, err), done: false}
 			}
