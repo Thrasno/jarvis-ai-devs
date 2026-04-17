@@ -231,3 +231,116 @@ Multiple agents and developers share project memories via Hive. Memories saved w
 Use `mcp__hive__mem_sync(project: "{project}")` to push local memories to the shared store after significant saves or at session end.
 
 This means any decision or discovery made in one session is available to the next agent or session working on the same project — no re-detection or re-explanation needed.
+
+---
+
+## Section 9 — Semantic Decision Detection
+
+Learn to recognize when a conversation has reached a decision point requiring persistence. Decisions happen during collaborative reasoning, not just explicit commands.
+
+### Positive Patterns (Agreement Signals)
+
+These patterns indicate a decision has been made — call `mem_save`:
+
+1. **"Let's do X"** / "Let's go with X" / "Let's use X" → commitment to approach
+2. **"Yes, that makes sense"** / "Yes, go ahead" / "Sounds good" → acceptance of proposal
+3. **"Approved"** / "Good to go" / "Go for it" → authorization signal
+4. **"I'll use Y instead of Z"** / "We'll switch to Y" → explicit choice made
+5. **"So we're using X"** / "The approach is Y" → conclusion statement
+6. **"Agreed"** / "That works" / "Perfect" → affirmation of choice
+7. **"Go with that"** / "Use that one" / "That's the one" → selection confirmed
+
+### Negative Patterns (Exploratory Signals)
+
+These patterns indicate NO decision yet — do NOT trigger save:
+
+1. **"What if we used X?"** / "Should we consider Y?" → open question, no commitment
+2. **"I'm thinking about Z"** / "Just exploring..." → brainstorming, not deciding
+3. **"Hypothetically, if..."** → speculation, not commitment
+4. **"Maybe we could..."** / "One option might be..." → presenting options, no choice made
+5. **Off-topic social interaction** (greetings, acknowledgments, casual chat) → not technical content
+6. **"Let me check first"** / "I'll investigate" → information gathering, not decision
+
+### Decision Schema Example
+
+When you recognize a decision pattern, structure your `mem_save` call like this:
+
+```markdown
+**Title**: "Use message-based nudge threshold"
+
+**Type**: `decision`
+
+**Content**:
+**What**: Changed ActivityTracker from time-based (10 min) to message-based (every 5 tool calls) nudge threshold.
+
+**Why**: AI sessions are often intensive bursts (30+ calls in 10 min). Time-based nudges arrive AFTER decisions are made. Message-based catches decisions as they happen.
+
+**Context**: Debate between time-based vs message-based triggers for decision capture nudges.
+
+**Options Considered**:
+- Time-based (current: 10 min) → misses rapid decision sessions
+- Message-based (every N calls) → captures decisions in fast work
+- Hybrid (time OR messages) → deferred to v2
+
+**Chosen**: Message-based (every 5 tool calls without a save)
+
+**Rationale**: Aligns nudges with actual activity rather than wall-clock time.
+
+**Proposed By**: AI (technical argument for message-based)
+**Accepted By**: Human (approved the approach)
+
+**Where**: `hive-daemon/internal/mcp/activity.go`
+```
+
+### Multi-Turn Decision Recognition
+
+Decisions often emerge over multiple turns:
+
+```
+Human: "The time-based nudge isn't working well in fast sessions."
+AI: "What if we switch to message-based? Say, every 5 tool calls?"
+Human: "That sounds better. Let's do that."  ← DECISION POINT (positive pattern detected)
+```
+
+At this point, AI should:
+1. Recognize "Let's do that" as agreement
+2. Prepare to call `mem_save` with decision details
+3. Include the full context (problem, options, chosen, rationale)
+
+---
+
+## Section 10 — Auto-Reminder System
+
+Hive includes an automatic nudge system that reminds you to save important decisions if you've been reading without persisting.
+
+### How It Works
+
+- **Trigger**: Every 5 tool calls (`mem_search`, `mem_context`, `mem_get_observation`) without a `mem_save`
+- **Message**: Appears inline in tool responses (not as separate message)
+- **Format**:
+  ```
+  ⚠️ 5 reads without saves in project "X".
+  Look for: agreement patterns ("let's do", "yes, go ahead"),
+  conclusions, or non-obvious discoveries worth persisting.
+  ```
+
+### Expected Behavior
+
+**When you see a nudge**:
+1. Review recent conversation for decision patterns (see Section 9)
+2. If a decision was made → call `mem_save` with structured content
+3. If no decision yet → acknowledge and continue (nudge won't repeat immediately)
+
+**Nudge does NOT mean**:
+- You did something wrong
+- Every conversation needs a save
+- Exploratory discussions require persistence
+
+**Nudge DOES mean**:
+- You've been active (5+ reads)
+- Check if you missed a saveable moment
+- Reference semantic patterns from Section 9
+
+### Counter Reset
+
+Calling `mem_save` or `mem_session_summary` resets the counter. The nudge won't appear again until another 5 tool calls occur without saves.

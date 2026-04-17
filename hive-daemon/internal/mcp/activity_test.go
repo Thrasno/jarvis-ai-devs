@@ -139,3 +139,91 @@ func TestActivityTracker_SessionStats_EmptyProject(t *testing.T) {
 		t.Errorf("expected empty stats for empty project string, got: %s", stats)
 	}
 }
+
+func TestActivityTracker_MessageBasedNudge_AtFiveReads(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	tracker := hivemcp.NewActivityTrackerWithClock(func() time.Time { return now })
+
+	// Simulate exactly 5 tool calls with 0 saves
+	for i := 0; i < 5; i++ {
+		tracker.RecordToolCall("proj")
+	}
+
+	// Should nudge even with NO time elapsed (message-based, not time-based)
+	nudge := tracker.NudgeIfNeeded("proj")
+	if nudge == "" {
+		t.Error("expected message-based nudge after 5 tool calls with 0 saves")
+	}
+	if !strings.Contains(nudge, "5 reads") {
+		t.Errorf("nudge should mention '5 reads', got: %s", nudge)
+	}
+}
+
+func TestActivityTracker_MessageBasedNudge_AtTenReads(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	tracker := hivemcp.NewActivityTrackerWithClock(func() time.Time { return now })
+
+	// Simulate 10 tool calls with 0 saves (should trigger at 5 and 10)
+	for i := 0; i < 10; i++ {
+		tracker.RecordToolCall("proj")
+	}
+
+	nudge := tracker.NudgeIfNeeded("proj")
+	if nudge == "" {
+		t.Error("expected message-based nudge after 10 tool calls with 0 saves")
+	}
+	if !strings.Contains(nudge, "10 reads") {
+		t.Errorf("nudge should mention '10 reads', got: %s", nudge)
+	}
+}
+
+func TestActivityTracker_MessageBasedNudge_NoNudgeAtFourReads(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	tracker := hivemcp.NewActivityTrackerWithClock(func() time.Time { return now })
+
+	// Simulate 4 tool calls — below the 5-read threshold
+	for i := 0; i < 4; i++ {
+		tracker.RecordToolCall("proj")
+	}
+
+	nudge := tracker.NudgeIfNeeded("proj")
+	if nudge != "" {
+		t.Errorf("expected no nudge before 5-read threshold, got: %s", nudge)
+	}
+}
+
+func TestActivityTracker_MessageBasedNudge_SaveResetsCounter(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	tracker := hivemcp.NewActivityTrackerWithClock(func() time.Time { return now })
+
+	// 3 reads, 1 save, 2 more reads = 5 total but only 2 since last save
+	tracker.RecordToolCall("proj")
+	tracker.RecordToolCall("proj")
+	tracker.RecordToolCall("proj")
+	tracker.RecordSave("proj")
+	tracker.RecordToolCall("proj")
+	tracker.RecordToolCall("proj")
+
+	// Should NOT nudge — only 2 reads since last save
+	nudge := tracker.NudgeIfNeeded("proj")
+	if nudge != "" {
+		t.Errorf("expected no nudge when reads since save < 5, got: %s", nudge)
+	}
+}
+
+func TestActivityTracker_MessageBasedNudge_IncludesSemanticPatterns(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	tracker := hivemcp.NewActivityTrackerWithClock(func() time.Time { return now })
+
+	for i := 0; i < 5; i++ {
+		tracker.RecordToolCall("proj")
+	}
+
+	nudge := tracker.NudgeIfNeeded("proj")
+	if !strings.Contains(nudge, "let's do") {
+		t.Errorf("nudge should reference semantic patterns, got: %s", nudge)
+	}
+	if !strings.Contains(nudge, "yes, go ahead") {
+		t.Errorf("nudge should reference semantic patterns, got: %s", nudge)
+	}
+}

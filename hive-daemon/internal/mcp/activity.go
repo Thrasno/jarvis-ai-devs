@@ -84,10 +84,10 @@ func (a *ActivityTracker) RecordSave(project string) {
 // NudgeIfNeeded returns a nudge message if the agent hasn't saved recently
 // despite being active. Returns "" if no nudge is warranted.
 //
-// Nudge conditions (ALL must be true):
-//   - time since last save > 10 minutes
-//   - toolCalls > saves (more reads than writes)
-//   - toolCalls >= 3 (minimum activity threshold)
+// Nudge conditions (ANY must be true):
+//   - message-based: (toolCalls - saves) % 5 == 0 AND (toolCalls - saves) > 0
+//   - time-based: time since last save > 10 minutes AND toolCalls >= 3
+//   - AND in both cases: toolCalls > saves (more reads than writes)
 func (a *ActivityTracker) NudgeIfNeeded(project string) string {
 	if project == "" {
 		return ""
@@ -99,20 +99,35 @@ func (a *ActivityTracker) NudgeIfNeeded(project string) string {
 		return ""
 	}
 
-	sinceLastSave := a.now().Sub(pa.lastSave)
-	if sinceLastSave <= 10*time.Minute {
-		return ""
-	}
-	if pa.toolCalls <= pa.saves || pa.toolCalls < 3 {
+	// Common precondition: must have more reads than writes
+	if pa.toolCalls <= pa.saves {
 		return ""
 	}
 
-	minutes := int(sinceLastSave.Minutes())
-	return fmt.Sprintf(
-		"\n\n⚠️ No mem_save calls for project %q in %d minutes. "+
-			"Did you make any decisions, fix bugs, or discover something worth persisting?",
-		project, minutes,
-	)
+	readsSinceLastSave := pa.toolCalls - pa.saves
+
+	// Message-based nudge: every 5 reads without saves
+	if readsSinceLastSave > 0 && readsSinceLastSave%5 == 0 {
+		return fmt.Sprintf(
+			"\n\n⚠️ %d reads without saves in project %q. "+
+				"Look for: agreement patterns (\"let's do\", \"yes, go ahead\"), "+
+				"conclusions, or non-obvious discoveries worth persisting.",
+			readsSinceLastSave, project,
+		)
+	}
+
+	// Time-based nudge (existing behavior)
+	sinceLastSave := a.now().Sub(pa.lastSave)
+	if sinceLastSave > 10*time.Minute && pa.toolCalls >= 3 {
+		minutes := int(sinceLastSave.Minutes())
+		return fmt.Sprintf(
+			"\n\n⚠️ No mem_save calls for project %q in %d minutes. "+
+				"Did you make any decisions, fix bugs, or discover something worth persisting?",
+			project, minutes,
+		)
+	}
+
+	return ""
 }
 
 // SessionStats returns a summary line for session summary responses.
