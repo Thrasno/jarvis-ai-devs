@@ -729,7 +729,218 @@ func TestPostgresMemoryRepository_PullSince(t *testing.T) {
 	}
 }
 
+// TestPostgresMemoryRepository_List verifies List with filters and pagination.
+func TestPostgresMemoryRepository_List(t *testing.T) {
+	pool, cleanup := startPostgres(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+
+	// Create test fixtures
+	now := time.Now()
+	mem1 := &model.Memory{
+		SyncID:    "550e8400-e29b-41d4-a716-446655441001",
+		Project:   "list-test",
+		Category:  model.CatDecision,
+		Title:     "First Memory",
+		Content:   "First content",
+		CreatedBy: "user1",
+		CreatedAt: now.Add(-2 * time.Hour),
+		UpdatedAt: now.Add(-2 * time.Hour),
+	}
+	mem2 := &model.Memory{
+		SyncID:    "550e8400-e29b-41d4-a716-446655441002",
+		Project:   "list-test",
+		Category:  model.CatBugfix,
+		Title:     "Second Memory",
+		Content:   "Second content",
+		CreatedBy: "user1",
+		CreatedAt: now.Add(-1 * time.Hour),
+		UpdatedAt: now.Add(-1 * time.Hour),
+	}
+	mem3 := &model.Memory{
+		SyncID:    "550e8400-e29b-41d4-a716-446655441003",
+		Project:   "other-project",
+		Category:  model.CatDecision,
+		Title:     "Other Project Memory",
+		Content:   "Other content",
+		CreatedBy: "user2",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	_, err := repo.Create(ctx, mem1)
+	require.NoError(t, err)
+	_, err = repo.Create(ctx, mem2)
+	require.NoError(t, err)
+	_, err = repo.Create(ctx, mem3)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name      string
+		filter    model.MemoryFilter
+		wantCount int
+		wantFirst string
+	}{
+		{
+			name: "list all for project",
+			filter: model.MemoryFilter{
+				Project: "list-test",
+				Limit:   10,
+				Offset:  0,
+			},
+			wantCount: 2,
+			wantFirst: "Second Memory", // DESC order by created_at
+		},
+		{
+			name: "filter by category",
+			filter: model.MemoryFilter{
+				Project:  "list-test",
+				Category: ptr(model.CatDecision),
+				Limit:    10,
+				Offset:   0,
+			},
+			wantCount: 1,
+			wantFirst: "First Memory",
+		},
+		{
+			name: "pagination with limit",
+			filter: model.MemoryFilter{
+				Project: "list-test",
+				Limit:   1,
+				Offset:  0,
+			},
+			wantCount: 1,
+			wantFirst: "Second Memory",
+		},
+		{
+			name: "pagination with offset",
+			filter: model.MemoryFilter{
+				Project: "list-test",
+				Limit:   10,
+				Offset:  1,
+			},
+			wantCount: 1,
+			wantFirst: "First Memory",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results, err := repo.List(ctx, tt.filter)
+
+			require.NoError(t, err)
+			assert.Len(t, results, tt.wantCount)
+
+			if tt.wantCount > 0 {
+				assert.Equal(t, tt.wantFirst, results[0].Title)
+			}
+		})
+	}
+}
+
+// TestPostgresMemoryRepository_Count verifies Count with filters.
+func TestPostgresMemoryRepository_Count(t *testing.T) {
+	pool, cleanup := startPostgres(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+
+	// Create test fixtures
+	now := time.Now()
+	mem1 := &model.Memory{
+		SyncID:    "550e8400-e29b-41d4-a716-446655442001",
+		Project:   "count-test",
+		Category:  model.CatDecision,
+		Title:     "Decision 1",
+		Content:   "Content 1",
+		CreatedBy: "user1",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	mem2 := &model.Memory{
+		SyncID:    "550e8400-e29b-41d4-a716-446655442002",
+		Project:   "count-test",
+		Category:  model.CatBugfix,
+		Title:     "Bugfix 1",
+		Content:   "Content 2",
+		CreatedBy: "user1",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	mem3 := &model.Memory{
+		SyncID:    "550e8400-e29b-41d4-a716-446655442003",
+		Project:   "count-test",
+		Category:  model.CatDecision,
+		Title:     "Decision 2",
+		Content:   "Content 3",
+		CreatedBy: "user1",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	_, err := repo.Create(ctx, mem1)
+	require.NoError(t, err)
+	_, err = repo.Create(ctx, mem2)
+	require.NoError(t, err)
+	_, err = repo.Create(ctx, mem3)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name      string
+		filter    model.MemoryFilter
+		wantCount int64
+	}{
+		{
+			name: "count all for project",
+			filter: model.MemoryFilter{
+				Project: "count-test",
+			},
+			wantCount: 3,
+		},
+		{
+			name: "count by category decision",
+			filter: model.MemoryFilter{
+				Project:  "count-test",
+				Category: ptr(model.CatDecision),
+			},
+			wantCount: 2,
+		},
+		{
+			name: "count by category bugfix",
+			filter: model.MemoryFilter{
+				Project:  "count-test",
+				Category: ptr(model.CatBugfix),
+			},
+			wantCount: 1,
+		},
+		{
+			name: "count non-existent project",
+			filter: model.MemoryFilter{
+				Project: "non-existent",
+			},
+			wantCount: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			count, err := repo.Count(ctx, tt.filter)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantCount, count)
+		})
+	}
+}
+
 // Helper function to create string pointers
 func stringPtr(s string) *string {
 	return &s
+}
+
+// Helper function to create MemoryCategory pointers
+func ptr(c model.MemoryCategory) *model.MemoryCategory {
+	return &c
 }

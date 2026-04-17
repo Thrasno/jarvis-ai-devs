@@ -447,3 +447,76 @@ func TestPostgresUserRepository_GetByUsername(t *testing.T) {
 		})
 	}
 }
+
+// TestPostgresUserRepository_CountAdmins verifies counting admin users.
+func TestPostgresUserRepository_CountAdmins(t *testing.T) {
+	pool, cleanup := startPostgres(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresUserRepository(pool)
+
+	// Initially should have no admins
+	count, err := repo.CountAdmins(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "should start with 0 admins")
+
+	// Create users with different levels
+	admin1 := &model.User{
+		Username: "admin1",
+		Email:    "admin1@test.com",
+		Password: "hashed1",
+		Level:    model.LevelAdmin,
+		IsActive: true,
+	}
+	admin2 := &model.User{
+		Username: "admin2",
+		Email:    "admin2@test.com",
+		Password: "hashed2",
+		Level:    model.LevelAdmin,
+		IsActive: true,
+	}
+	member := &model.User{
+		Username: "member",
+		Email:    "member@test.com",
+		Password: "hashed3",
+		Level:    model.LevelMember,
+		IsActive: true,
+	}
+	viewer := &model.User{
+		Username: "viewer",
+		Email:    "viewer@test.com",
+		Password: "hashed4",
+		Level:    model.LevelViewer,
+		IsActive: true,
+	}
+
+	createdAdmin1, err := repo.Create(ctx, admin1)
+	require.NoError(t, err)
+
+	// After one admin
+	count, err = repo.CountAdmins(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "should have 1 admin")
+
+	// Create more users
+	_, err = repo.Create(ctx, admin2)
+	require.NoError(t, err)
+	_, err = repo.Create(ctx, member)
+	require.NoError(t, err)
+	_, err = repo.Create(ctx, viewer)
+	require.NoError(t, err)
+
+	// Should only count admins, not other levels
+	count, err = repo.CountAdmins(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 2, count, "should have 2 admins, ignoring member and viewer")
+
+	// Deactivate one admin - count should decrease (CountAdmins filters is_active = true)
+	err = repo.Deactivate(ctx, createdAdmin1.ID)
+	require.NoError(t, err)
+
+	count, err = repo.CountAdmins(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "should only count active admins")
+}
