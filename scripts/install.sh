@@ -67,10 +67,10 @@ get_latest_version() {
 
     if [ "$http_code" = "404" ]; then
         rm -f "$response_file"
-        error "No releases publicadas en ${REPO} (endpoint releases/latest devolvió 404).
-Probá una versión explícita: JARVIS_INSTALL_VERSION=vX.Y.Z
-O cambiá de repo: JARVIS_INSTALL_REPO=owner/repo
-Si todavía no hay artifacts públicos, instalá desde source en este repo."
+        error "No hay releases publicadas en ${REPO} (el endpoint releases/latest devolvió 404).
+Prueba una versión explícita: JARVIS_INSTALL_VERSION=vX.Y.Z
+O usa otro repositorio: JARVIS_INSTALL_REPO=owner/repo
+Si todavía no hay artefactos públicos, instala desde el código fuente en este repositorio."
     fi
 
     if [ "$http_code" != "200" ]; then

@@ -46,7 +46,7 @@ function Get-LatestVersion {
     } catch {
         $statusCode = $_.Exception.Response.StatusCode.value__
         if ($statusCode -eq 404) {
-            Write-Err "No releases publicadas en $REPO (releases/latest devolvio 404). Usa `\$env:JARVIS_INSTALL_VERSION='vX.Y.Z'` o `\$env:JARVIS_INSTALL_REPO='owner/repo'`. Si todavia no hay artifacts publicos, instala desde source en este repo."
+            Write-Err "No hay releases publicadas en $REPO (releases/latest devolvio 404). Usa `\$env:JARVIS_INSTALL_VERSION='vX.Y.Z'` o `\$env:JARVIS_INSTALL_REPO='owner/repo'`. Si todavia no hay artefactos publicos, instala desde el codigo fuente en este repositorio."
         }
         Write-Err "No se pudo obtener la ultima version desde $latestUrl (HTTP $statusCode)"
     }
