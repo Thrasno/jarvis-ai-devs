@@ -1,0 +1,91 @@
+version: 2
+
+project_name: jarvis-dev
+
+before:
+  hooks:
+    - go mod tidy -C jarvis-cli
+    - go mod tidy -C hive-daemon
+
+builds:
+  # ============================================================
+  # jarvis — CLI + wizard para usuarios
+  # ============================================================
+  - id: jarvis
+    main: ./cmd/jarvis
+    dir: jarvis-cli
+    binary: jarvis
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+  # ============================================================
+  # hive-daemon — MCP server local
+  # ============================================================
+  - id: hive-daemon
+    main: ./cmd/hive-daemon
+    dir: hive-daemon
+    binary: hive-daemon
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  # Archivos separados para cada binario
+  - id: jarvis-archive
+    builds:
+      - jarvis
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "jarvis_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+  - id: hive-daemon-archive
+    builds:
+      - hive-daemon
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "hive-daemon_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+release:
+  github:
+    owner: Thrasno
+    name: jarvis-dev
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"

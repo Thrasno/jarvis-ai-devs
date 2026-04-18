@@ -39,6 +39,18 @@ vendor/
 *.test
 *.out
 
+# Go compiled binaries (without extension)
+jarvis-cli/jarvis
+hive-daemon/hive-daemon
+hive-api/hive-api
+
+# Claude Code worktrees
+.claude/
+
+# Local memory exports
+HiveMemories/
+memories.json
+
 # Archives (extracted content should be tracked, not zips)
 *.zip
 *.tar.gz
