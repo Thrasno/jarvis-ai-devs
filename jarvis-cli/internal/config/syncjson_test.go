@@ -54,3 +54,37 @@ func TestWriteSyncCredentials_PreservesAutoSync(t *testing.T) {
 		t.Fatalf("expected updated credentials, got: %s", body)
 	}
 }
+
+func TestWriteSyncCredentials_LeavesPreviousFileWhenUpdateFails(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	jarvisDir := filepath.Join(tmpHome, ".jarvis")
+	if err := os.MkdirAll(jarvisDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(jarvisDir, "sync.json")
+	original := `{"api_url":"https://hivemem.dev","email":"old@example.com","password":"old"}`
+	if err := os.WriteFile(path, []byte(original), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make destination directory read-only so atomic rename/write fails.
+	if err := os.Chmod(jarvisDir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(jarvisDir, 0755) })
+
+	err := WriteSyncCredentials("https://hivemem.dev", "new@example.com", "newpass")
+	if err == nil {
+		t.Fatal("expected write failure when destination directory is read-only")
+	}
+
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read sync.json after failure: %v", readErr)
+	}
+	if string(data) != original {
+		t.Fatalf("expected original sync.json content preserved on failure, got: %s", string(data))
+	}
+}

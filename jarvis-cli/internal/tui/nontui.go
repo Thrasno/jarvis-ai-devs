@@ -26,10 +26,14 @@ func RunNoTUI(wcfg WizardConfig) error {
 // runNoTUI is the testable implementation that accepts any io.Reader as input.
 func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	scanner := bufio.NewScanner(input)
-	cfg := &config.AppConfig{APIURL: config.DefaultAPIURL}
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	mode := cfg.ConfigStatus()
 
 	// ── Step 1: HiveLocal ─────────────────────────────────────────────────────
-	fmt.Println("=== Jarvis-Dev Setup [1/5] Local Memory Database ===")
+	fmt.Println("=== Jarvis-Dev Setup [1/6] Local Memory Database ===")
 	fmt.Println("Creating ~/.jarvis/memory.db ...")
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -50,13 +54,30 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	fmt.Println("Done.")
 
 	// ── Step 2: HiveCloud ─────────────────────────────────────────────────────
-	fmt.Println("\n=== Jarvis-Dev Setup [2/5] Hive Cloud Authentication ===")
-	fmt.Print("Email (press Enter to skip): ")
-	email := readLine(scanner)
+	header := "\n=== Jarvis-Dev Setup [2/6] Hive Cloud Authentication ==="
+	if mode == config.ConfigStatusReconfigure {
+		header = "\n=== Jarvis-Dev Reconfigure [2/6] Hive Cloud Authentication ==="
+	}
+	fmt.Println(header)
+	currentEmail := ""
+	if cfg.Cloud != nil {
+		currentEmail = strings.TrimSpace(cfg.Cloud.Email)
+	}
+	if currentEmail == "" {
+		fmt.Print("Email (press Enter to skip): ")
+	} else {
+		fmt.Printf("Email [%s] (Enter keeps current): ", currentEmail)
+	}
+	email := strings.TrimSpace(readLine(scanner))
+	if email == "" {
+		email = currentEmail
+	}
+	var pendingPassword string
 
 	if email != "" {
-		fmt.Print("Password: ")
+		fmt.Print("Password (Enter keeps existing sync credentials): ")
 		password := readLine(scanner)
+		pendingPassword = password
 		fmt.Printf("Authenticating as %s ...\n", email)
 		c := apiclient.New(cfg.APIURL)
 		resp, loginErr := c.Login(email, password)
@@ -64,24 +85,38 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 			fmt.Printf("Warning: authentication failed: %v\n", loginErr)
 			fmt.Println("Skipping cloud auth. You can re-authenticate with 'jarvis login'.")
 		} else {
-			cfg.Email = strings.TrimSpace(resp.User.Email)
-			if cfg.Email == "" {
-				cfg.Email = email
+			resolved := strings.TrimSpace(resp.User.Email)
+			if resolved == "" {
+				resolved = email
 			}
-			fmt.Printf("Authenticated as %s.\n", cfg.Email)
-			if err := writeSyncJSON(cfg.APIURL, email, password); err != nil {
-				return fmt.Errorf("write sync.json: %w", err)
+			if cfg.Cloud == nil {
+				cfg.Cloud = &config.CloudConfig{}
 			}
+			cfg.Cloud.Email = resolved
+			cfg.Cloud.SyncConfigured = true
+			cfg.Email = resolved
+			fmt.Printf("Authenticated as %s.\n", resolved)
 		}
 	} else {
 		fmt.Println("Skipping cloud auth.")
 	}
 
 	// ── Step 3: Persona ───────────────────────────────────────────────────────
-	fmt.Println("\n=== Jarvis-Dev Setup [3/5] Select Persona Preset ===")
+	fmt.Println("\n=== Jarvis-Dev Setup [3/6] Select Persona Preset ===")
 	presets, err := persona.ListPresets(wcfg.PersonaFS)
 	if err != nil {
 		return fmt.Errorf("list presets: %w", err)
+	}
+	defaultPreset := cfg.PersonaPreset
+	if defaultPreset == "" {
+		defaultPreset = cfg.Preset
+	}
+	defaultIdx := 0
+	for i, p := range presets {
+		if p.Name == defaultPreset {
+			defaultIdx = i
+			break
+		}
 	}
 	for i, p := range presets {
 		name := p.DisplayName
@@ -90,20 +125,21 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		}
 		fmt.Printf("  %d) %-20s — %s\n", i+1, name, p.Description)
 	}
-	fmt.Print("Select preset number (default: 1): ")
+	fmt.Printf("Select preset number (default: %d): ", defaultIdx+1)
 	choice := readLine(scanner)
-	selectedPreset := 0
+	selectedPreset := defaultIdx
 	if choice != "" {
 		n := 0
 		if _, scanErr := fmt.Sscanf(choice, "%d", &n); scanErr == nil && n >= 1 && n <= len(presets) {
 			selectedPreset = n - 1
 		}
 	}
-	cfg.Preset = presets[selectedPreset].Name
-	fmt.Printf("Selected: %s\n", cfg.Preset)
+	cfg.PersonaPreset = presets[selectedPreset].Name
+	cfg.Preset = cfg.PersonaPreset
+	fmt.Printf("Selected: %s\n", cfg.PersonaPreset)
 
-	// ── Step 4: Skills ────────────────────────────────────────────────────────
-	fmt.Println("\n=== Jarvis-Dev Setup [4/5] Select Skills ===")
+	// ── Step 4: Extra Skills ──────────────────────────────────────────────────
+	fmt.Println("\n=== Jarvis-Dev Setup [4/6] Select Extra Skills ===")
 	skillList, err := skills.ListSkills(wcfg.SkillsFS)
 	if err != nil {
 		return fmt.Errorf("list skills: %w", err)
@@ -115,15 +151,45 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 			fmt.Printf("  [core] %s — %s\n", s.Name, s.Description)
 			continue
 		}
-		fmt.Printf("Install %s — %s? [y/N]: ", s.Name, s.Description)
+		defaultYes := false
+		for _, id := range cfg.SelectedSkills {
+			if id == s.ID {
+				defaultYes = true
+				break
+			}
+		}
+		if defaultYes {
+			selected[s.ID] = true
+			fmt.Printf("Install %s — %s? [Y/n]: ", s.Name, s.Description)
+		} else {
+			fmt.Printf("Install %s — %s? [y/N]: ", s.Name, s.Description)
+		}
 		ans := strings.ToLower(strings.TrimSpace(readLine(scanner)))
+		if ans == "" && defaultYes {
+			selected[s.ID] = true
+		}
 		if ans == "y" || ans == "yes" {
 			selected[s.ID] = true
 		}
+		if ans == "n" || ans == "no" {
+			selected[s.ID] = false
+		}
 	}
 
-	// ── Step 5: AgentConfig ───────────────────────────────────────────────────
-	fmt.Println("\n=== Jarvis-Dev Setup [5/5] Configure AI Agents ===")
+	// ── Step 5: Review/Apply ──────────────────────────────────────────────────
+	fmt.Println("\n=== Jarvis-Dev Setup [5/6] Review & Apply ===")
+	fmt.Printf("Mode: %s\n", mode)
+	fmt.Printf("Persona: %s\n", cfg.PersonaPreset)
+	fmt.Printf("Cloud: %s\n", strings.TrimSpace(cfg.Email))
+	fmt.Print("Apply these changes now? [Y/n]: ")
+	applyAnswer := strings.ToLower(strings.TrimSpace(readLine(scanner)))
+	if applyAnswer == "n" || applyAnswer == "no" {
+		fmt.Println("Aborted before apply. Existing config remains unchanged.")
+		return nil
+	}
+
+	// ── Step 6: AgentConfig ───────────────────────────────────────────────────
+	fmt.Println("\n=== Jarvis-Dev Setup [6/6] Configure AI Agents ===")
 	agents := agent.Detect(wcfg.TemplateFS)
 	if len(agents) == 0 {
 		fmt.Println("No agents detected. Install Claude Code or OpenCode and re-run jarvis.")
@@ -158,8 +224,8 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	// Build Layer1 + Layer2 content.
 	layer1 := config.Layer1Content()
 	var layer2 string
-	if cfg.Preset != "" {
-		if preset, loadErr := persona.LoadPreset(wcfg.PersonaFS, cfg.Preset); loadErr == nil {
+	if cfg.PersonaPreset != "" {
+		if preset, loadErr := persona.LoadPreset(wcfg.PersonaFS, cfg.PersonaPreset); loadErr == nil {
 			layer2 = persona.RenderLayer2(preset)
 		}
 	}
@@ -171,26 +237,64 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	}
 	context7Entry := agent.MCPEntry{Name: "context7"}
 
+	results := configureWizardAgents(agents, entry, context7Entry, layer1, layer2, skillInfos, skillsSubFS, selectedIDs)
 	var configuredAgents []string
-	for _, a := range agents {
-		agentName := a.Name()
-		fmt.Printf("Configuring %s ...\n", agentName)
-
-		if err := configureWizardAgent(a, entry, context7Entry, layer1, layer2, skillInfos, skillsSubFS, selectedIDs); err != nil {
-			return fmt.Errorf("configure %s: %w", agentName, err)
+	for _, res := range results {
+		fmt.Printf("Configuring %s ...\n", res.AgentName)
+		if res.Err != nil {
+			return fmt.Errorf("configure %s: %w", res.AgentName, res.Err)
 		}
-		fmt.Printf("  %s configured.\n", agentName)
-		configuredAgents = append(configuredAgents, agentName)
+		fmt.Printf("  %s configured.\n", res.AgentName)
+		configuredAgents = append(configuredAgents, res.AgentName)
 	}
 
-	// Save config.
+	// Stage sync.json first, then commit canonical config atomically.
+	if strings.TrimSpace(cfg.Email) != "" && strings.TrimSpace(pendingPassword) != "" {
+		if err := writeSyncJSON(cfg.APIURL, cfg.Email, pendingPassword); err != nil {
+			return fmt.Errorf("write sync.json: %w", err)
+		}
+	}
+
 	cfg.ConfiguredAgents = configuredAgents
+	cfg.SchemaVersion = 2
+	cfg.Install.Mode = string(config.ConfigStatusReconfigure)
+	cfg.Install.Completed = true
+	if cfg.Install.Agents == nil {
+		cfg.Install.Agents = map[string]config.AgentState{}
+	}
+	for _, res := range results {
+		cfg.Install.Agents[res.AgentName] = res.State
+	}
+
+	selectedSet := make(map[string]bool)
+	for _, id := range cfg.SelectedSkills {
+		selectedSet[id] = true
+	}
+	for _, s := range skillList {
+		if s.IsCore {
+			selectedSet[s.ID] = true
+			continue
+		}
+		if selected[s.ID] {
+			selectedSet[s.ID] = true
+		} else {
+			delete(selectedSet, s.ID)
+		}
+	}
+	var selectedIDsForConfig []string
+	for id, on := range selectedSet {
+		if on {
+			selectedIDsForConfig = append(selectedIDsForConfig, id)
+		}
+	}
+	cfg.SelectedSkills = selectedIDsForConfig
 	cfg.Version = "1.0.0"
 	if saveErr := config.Save(cfg); saveErr != nil {
 		return fmt.Errorf("save config: %w", saveErr)
 	}
 
-	fmt.Println("\nSetup complete!")
+	fmt.Println("\nConfiguration applied successfully!")
+	fmt.Println("Existing choices were updated safely and persisted atomically.")
 	fmt.Println("Next: restart Claude Code or OpenCode.")
 	fmt.Println("Use mem_sync in your agent only when you want a manual cloud sync.")
 	return nil

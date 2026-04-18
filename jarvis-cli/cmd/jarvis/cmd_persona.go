@@ -70,6 +70,7 @@ var personaSetCmd = &cobra.Command{
 		if loadErr != nil {
 			return fmt.Errorf("load config: %w", loadErr)
 		}
+		cfg.PersonaPreset = presetName
 		cfg.Preset = presetName
 		if saveErr := config.Save(cfg); saveErr != nil {
 			return fmt.Errorf("save config: %w", saveErr)

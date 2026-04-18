@@ -2,13 +2,18 @@
 # =============================================================================
 # Jarvis Installer — Linux / macOS
 # =============================================================================
-# Uso: curl -sSL https://raw.githubusercontent.com/Thrasno/jarvis-dev/main/scripts/install.sh | bash
+# Uso: curl -sSL https://raw.githubusercontent.com/Thrasno/jarvis-ai-devs/main/scripts/install.sh | bash
+# Overrides opcionales:
+#   JARVIS_INSTALL_REPO=owner/repo       (default: Thrasno/jarvis-ai-devs)
+#   JARVIS_INSTALL_VERSION=vX.Y.Z        (si se define, no consulta releases/latest)
 # =============================================================================
 
 set -e
 
-REPO="Thrasno/jarvis-dev"
+DEFAULT_REPO="Thrasno/jarvis-ai-devs"
+REPO="${JARVIS_INSTALL_REPO:-$DEFAULT_REPO}"
 INSTALL_DIR="/usr/local/bin"
+VERSION_OVERRIDE="${JARVIS_INSTALL_VERSION:-}"
 
 # Colores
 RED='\033[0;31m'
@@ -48,12 +53,38 @@ detect_platform() {
 # Obtener última versión desde GitHub API
 # -----------------------------------------------------------------------------
 get_latest_version() {
-    VERSION=$(curl -sSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-    
-    if [ -z "$VERSION" ]; then
-        error "No se pudo obtener la última versión. ¿Hay releases publicadas?"
+    if [ -n "$VERSION_OVERRIDE" ]; then
+        VERSION="$VERSION_OVERRIDE"
+        info "Usando versión explícita: ${VERSION}"
+        return
     fi
-    
+
+    local api_url="https://api.github.com/repos/${REPO}/releases/latest"
+    local response_file
+    response_file=$(mktemp)
+    local http_code
+    http_code=$(curl -sS -o "$response_file" -w "%{http_code}" "$api_url" || true)
+
+    if [ "$http_code" = "404" ]; then
+        rm -f "$response_file"
+        error "No releases publicadas en ${REPO} (endpoint releases/latest devolvió 404).
+Probá una versión explícita: JARVIS_INSTALL_VERSION=vX.Y.Z
+O cambiá de repo: JARVIS_INSTALL_REPO=owner/repo
+Si todavía no hay artifacts públicos, instalá desde source en este repo."
+    fi
+
+    if [ "$http_code" != "200" ]; then
+        rm -f "$response_file"
+        error "No se pudo obtener la última versión desde ${api_url} (HTTP ${http_code})."
+    fi
+
+    VERSION=$(grep '"tag_name":' "$response_file" | sed -E 's/.*"([^"]+)".*/\1/')
+    rm -f "$response_file"
+
+    if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+        error "La respuesta de GitHub no incluyó tag_name válido para ${REPO}."
+    fi
+
     info "Última versión: ${VERSION}"
 }
 
@@ -130,7 +161,7 @@ main() {
     echo -e "${GREEN}Instalación completada!${NC}"
     echo "=============================================="
     echo ""
-    echo "Siguiente paso: ejecuta 'jarvis' para iniciar el wizard"
+    echo "Siguiente paso: ejecuta 'jarvis' para configurar o reconfigurar este equipo"
     echo ""
 }
 

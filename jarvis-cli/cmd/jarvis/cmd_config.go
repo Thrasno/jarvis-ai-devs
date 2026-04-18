@@ -51,7 +51,7 @@ func runConfigView() error {
 	}
 
 	fmt.Println("Current configuration:")
-	fmt.Printf("  %-20s %s\n", "preset:", cfg.Preset)
+	fmt.Printf("  %-20s %s\n", "preset:", cfg.PersonaPreset)
 	fmt.Printf("  %-20s %s\n", "api_url:", cfg.APIURL)
 	fmt.Printf("  %-20s %s\n", "email:", cfg.Email)
 	fmt.Printf("  %-20s %s\n", "configured_agents:", agents)
@@ -68,10 +68,15 @@ func runConfigSet(key, value string) error {
 
 	switch key {
 	case "preset":
+		cfg.PersonaPreset = value
 		cfg.Preset = value
 	case "api_url":
 		cfg.APIURL = value
 	case "email":
+		if cfg.Cloud == nil {
+			cfg.Cloud = &config.CloudConfig{}
+		}
+		cfg.Cloud.Email = value
 		cfg.Email = value
 	default:
 		return fmt.Errorf("unknown key %q — settable keys: %s", key, strings.Join(settableKeys, ", "))

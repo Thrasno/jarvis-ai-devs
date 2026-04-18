@@ -1,13 +1,18 @@
 # =============================================================================
 # Jarvis Installer — Windows PowerShell
 # =============================================================================
-# Uso: irm https://raw.githubusercontent.com/Thrasno/jarvis-dev/main/scripts/install.ps1 | iex
+# Uso: irm https://raw.githubusercontent.com/Thrasno/jarvis-ai-devs/main/scripts/install.ps1 | iex
+# Overrides opcionales:
+#   $env:JARVIS_INSTALL_REPO = "owner/repo"   (default: Thrasno/jarvis-ai-devs)
+#   $env:JARVIS_INSTALL_VERSION = "vX.Y.Z"    (si se define, no consulta releases/latest)
 # =============================================================================
 
 $ErrorActionPreference = "Stop"
 
-$REPO = "Thrasno/jarvis-dev"
+$DEFAULT_REPO = "Thrasno/jarvis-ai-devs"
+$REPO = if ($env:JARVIS_INSTALL_REPO) { $env:JARVIS_INSTALL_REPO } else { $DEFAULT_REPO }
 $INSTALL_DIR = "$env:LOCALAPPDATA\Programs\jarvis"
+$VERSION_OVERRIDE = $env:JARVIS_INSTALL_VERSION
 
 function Write-Info { param($msg) Write-Host "[INFO] $msg" -ForegroundColor Green }
 function Write-Warn { param($msg) Write-Host "[WARN] $msg" -ForegroundColor Yellow }
@@ -29,11 +34,26 @@ function Get-Architecture {
 # Obtener última versión desde GitHub API
 # -----------------------------------------------------------------------------
 function Get-LatestVersion {
-    $response = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases/latest" -UseBasicParsing
+    if ($VERSION_OVERRIDE) {
+        Write-Info "Usando version explicita: $VERSION_OVERRIDE"
+        return $VERSION_OVERRIDE
+    }
+
+    $latestUrl = "https://api.github.com/repos/$REPO/releases/latest"
+
+    try {
+        $response = Invoke-RestMethod -Uri $latestUrl -UseBasicParsing
+    } catch {
+        $statusCode = $_.Exception.Response.StatusCode.value__
+        if ($statusCode -eq 404) {
+            Write-Err "No releases publicadas en $REPO (releases/latest devolvio 404). Usa `\$env:JARVIS_INSTALL_VERSION='vX.Y.Z'` o `\$env:JARVIS_INSTALL_REPO='owner/repo'`. Si todavia no hay artifacts publicos, instala desde source en este repo."
+        }
+        Write-Err "No se pudo obtener la ultima version desde $latestUrl (HTTP $statusCode)"
+    }
+
     $version = $response.tag_name
-    
     if (-not $version) {
-        Write-Err "No se pudo obtener la ultima version"
+        Write-Err "La respuesta de GitHub no incluyo tag_name valido para $REPO"
     }
     
     Write-Info "Ultima version: $version"
@@ -113,7 +133,7 @@ function Main {
     Write-Host "Instalacion completada!" -ForegroundColor Green
     Write-Host "==============================================" -ForegroundColor Green
     Write-Host ""
-    Write-Host "Siguiente paso: ejecuta 'jarvis' para iniciar el wizard"
+    Write-Host "Siguiente paso: ejecuta 'jarvis' para configurar o reconfigurar este equipo"
     Write-Host ""
 }
 

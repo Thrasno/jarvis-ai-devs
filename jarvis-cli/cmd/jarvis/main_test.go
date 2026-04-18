@@ -91,7 +91,7 @@ func TestVersion_ShowsVersion(t *testing.T) {
 	}
 }
 
-func TestStatus_WhenConfigured(t *testing.T) {
+func TestRootCommand_WhenConfigured_EntersWizard(t *testing.T) {
 	if _, err := os.Stat(jarvisBin); os.IsNotExist(err) {
 		t.Skip("jarvis binary not available")
 	}
@@ -111,12 +111,50 @@ func TestStatus_WhenConfigured(t *testing.T) {
 
 	out, code := runJarvis(t, home)
 	if code != 0 {
-		t.Errorf("expected exit code 0 for status run, got %d\noutput: %s", code, out)
+		t.Errorf("expected exit code 0 for rerun wizard, got %d\noutput: %s", code, out)
+	}
+	if strings.Contains(out, "Jarvis-Dev configured") {
+		t.Errorf("expected wizard flow, got status output:\n%s", out)
+	}
+	if !strings.Contains(out, "Setup") {
+		t.Errorf("expected setup wizard output, got:\n%s", out)
+	}
+}
+
+func TestRootCommand_WhenFullyConfiguredV2_StillEntersWizard(t *testing.T) {
+	if _, err := os.Stat(jarvisBin); os.IsNotExist(err) {
+		t.Skip("jarvis binary not available")
 	}
 
-	// Output must contain the email from our config.
-	if !strings.Contains(out, email) {
-		t.Errorf("expected status output to contain email %q, got:\n%s", email, out)
+	home := t.TempDir()
+	configYAML := strings.Join([]string{
+		"schema_version: 2",
+		"api_url: https://hivemem.dev",
+		"persona_preset: argentino",
+		"selected_skills:",
+		"  - core-memory",
+		"configured_agents:",
+		"  - claude",
+		"install:",
+		"  completed: true",
+		"  mode: reconfigure",
+		"  agents:",
+		"    claude:",
+		"      configured: true",
+		"      instructions_path: /tmp/CLAUDE.md",
+		"      config_path: /tmp/settings.json",
+	}, "\n")
+	writeConfig(t, home, configYAML)
+
+	out, code := runJarvis(t, home)
+	if code != 0 {
+		t.Errorf("expected exit code 0 for rerun wizard, got %d\noutput: %s", code, out)
+	}
+	if strings.Contains(out, "Jarvis-Dev configured") {
+		t.Errorf("expected wizard flow for fully configured v2, got status output:\n%s", out)
+	}
+	if !strings.Contains(out, "Setup") {
+		t.Errorf("expected setup/reconfigure wizard output, got:\n%s", out)
 	}
 }
 
@@ -133,25 +171,19 @@ func writeConfig(t *testing.T, home, content string) {
 	}
 }
 
-// TestStatus_ShowsPresetAndEmail verifies that running jarvis when configured
-// prints both the email and preset from config.yaml.
-func TestStatus_ShowsPresetAndEmail(t *testing.T) {
+// TestRootCommand_FreshInstall_EntersWizard verifies bare jarvis launches setup flow.
+func TestRootCommand_FreshInstall_EntersWizard(t *testing.T) {
 	if _, err := os.Stat(jarvisBin); os.IsNotExist(err) {
 		t.Skip("jarvis binary not available")
 	}
 
 	home := t.TempDir()
-	writeConfig(t, home, "email: test@example.com\napi_url: https://hivemem.dev\npreset: argentino\n")
-
 	out, code := runJarvis(t, home)
 	if code != 0 {
 		t.Errorf("expected exit code 0, got %d\noutput: %s", code, out)
 	}
-	if !strings.Contains(out, "test@example.com") {
-		t.Errorf("expected output to contain email 'test@example.com', got:\n%s", out)
-	}
-	if !strings.Contains(out, "argentino") {
-		t.Errorf("expected output to contain preset 'argentino', got:\n%s", out)
+	if !strings.Contains(out, "Setup") {
+		t.Errorf("expected setup wizard output, got:\n%s", out)
 	}
 }
 
@@ -248,4 +280,78 @@ func TestNoTUI_FirstRun_RequiresInput(t *testing.T) {
 		}
 	}
 	// Non-zero exit is also acceptable (no input = incomplete wizard). Test passes.
+}
+
+func TestDocsContract_BareJarvisEntrypoint(t *testing.T) {
+	root := "/home/andres/Desarrollo/Proyectos/jarvis-dev"
+
+	readmeBytes, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatalf("read README.md: %v", err)
+	}
+	readme := strings.ToLower(string(readmeBytes))
+	if !strings.Contains(readme, "jarvis") {
+		t.Fatalf("README should document jarvis entrypoint")
+	}
+
+	prdBytes, err := os.ReadFile(filepath.Join(root, "docs", "PRD.md"))
+	if err != nil {
+		t.Fatalf("read docs/PRD.md: %v", err)
+	}
+	prd := strings.ToLower(string(prdBytes))
+	if strings.Contains(prd, "jarvis install") {
+		t.Fatalf("docs/PRD.md must not document 'jarvis install' as primary path")
+	}
+	if !strings.Contains(prd, "`jarvis`") && !strings.Contains(prd, "jarvis") {
+		t.Fatalf("docs/PRD.md should mention bare jarvis as setup/reconfiguration path")
+	}
+}
+
+func TestDocsContract_PublicInstallerIsHonestAndOverridable(t *testing.T) {
+	root := "/home/andres/Desarrollo/Proyectos/jarvis-dev"
+
+	installShBytes, err := os.ReadFile(filepath.Join(root, "scripts", "install.sh"))
+	if err != nil {
+		t.Fatalf("read scripts/install.sh: %v", err)
+	}
+	installSh := string(installShBytes)
+	if !strings.Contains(installSh, "Thrasno/jarvis-ai-devs") {
+		t.Fatalf("scripts/install.sh must default to the public repo Thrasno/jarvis-ai-devs")
+	}
+	if !strings.Contains(installSh, "JARVIS_INSTALL_REPO") {
+		t.Fatalf("scripts/install.sh must allow repo override via JARVIS_INSTALL_REPO")
+	}
+	if !strings.Contains(installSh, "JARVIS_INSTALL_VERSION") {
+		t.Fatalf("scripts/install.sh must allow version override via JARVIS_INSTALL_VERSION")
+	}
+	if !strings.Contains(strings.ToLower(installSh), "no releases") {
+		t.Fatalf("scripts/install.sh must provide explicit no-releases guidance")
+	}
+
+	installPs1Bytes, err := os.ReadFile(filepath.Join(root, "scripts", "install.ps1"))
+	if err != nil {
+		t.Fatalf("read scripts/install.ps1: %v", err)
+	}
+	installPs1 := string(installPs1Bytes)
+	if !strings.Contains(installPs1, "Thrasno/jarvis-ai-devs") {
+		t.Fatalf("scripts/install.ps1 must default to the public repo Thrasno/jarvis-ai-devs")
+	}
+	if !strings.Contains(installPs1, "JARVIS_INSTALL_REPO") {
+		t.Fatalf("scripts/install.ps1 must allow repo override via JARVIS_INSTALL_REPO")
+	}
+	if !strings.Contains(installPs1, "JARVIS_INSTALL_VERSION") {
+		t.Fatalf("scripts/install.ps1 must allow version override via JARVIS_INSTALL_VERSION")
+	}
+
+	readmeBytes, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatalf("read README.md: %v", err)
+	}
+	readme := strings.ToLower(string(readmeBytes))
+	if !strings.Contains(readme, "raw.githubusercontent.com/thrasno/jarvis-ai-devs/main/scripts/install.sh") {
+		t.Fatalf("README.md must document the public installer URL")
+	}
+	if !strings.Contains(readme, "jarvis_install_repo") || !strings.Contains(readme, "jarvis_install_version") {
+		t.Fatalf("README.md must document installer repo/version overrides")
+	}
 }

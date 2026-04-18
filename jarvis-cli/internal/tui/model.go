@@ -23,7 +23,7 @@ const (
 	StepHiveCloud
 	// StepPersona selects a persona preset.
 	StepPersona
-	// StepSkills multi-selects skill files to install.
+	// StepSkills selects optional skill files.
 	StepSkills
 	// StepAgentConfig configures all detected AI agents.
 	StepAgentConfig
@@ -31,11 +31,16 @@ const (
 	StepDone
 )
 
+// StepExtraSkills aliases StepSkills to keep explicit naming in tests/UX.
+const StepExtraSkills = StepSkills
+
 // Model is the root Bubbletea model for the jarvis-cli wizard.
 // It holds all state across all 5 wizard steps.
 type Model struct {
 	// Current step in the wizard.
 	Step Step
+	// Mode describes setup intent: setup, reconfigure, recover.
+	Mode string
 
 	// Embedded FSes passed in from the root package (assets.PersonaFS, etc.).
 	PersonaFS  embed.FS
@@ -90,19 +95,36 @@ type WizardConfig struct {
 // noTUI is forwarded for informational purposes only (callers bypass the TUI when true).
 func NewModel(wcfg WizardConfig, noTUI bool) Model {
 	m := Model{
-		Step:      StepHiveLocal,
-		PersonaFS: wcfg.PersonaFS,
-		SkillsFS:  wcfg.SkillsFS,
+		Step:       StepHiveLocal,
+		Mode:       string(config.ConfigStatusSetup),
+		PersonaFS:  wcfg.PersonaFS,
+		SkillsFS:   wcfg.SkillsFS,
 		TemplateFS: wcfg.TemplateFS,
-		Selected:  make(map[string]bool),
-		cfg:       &config.AppConfig{APIURL: config.DefaultAPIURL},
-		noTUI:     noTUI,
+		Selected:   make(map[string]bool),
+		cfg:        &config.AppConfig{APIURL: config.DefaultAPIURL},
+		noTUI:      noTUI,
+	}
+
+	if loaded, err := config.Load(); err == nil {
+		m.cfg = loaded
+		m.Mode = string(loaded.ConfigStatus())
+		if loaded.Cloud != nil {
+			m.Email = loaded.Cloud.Email
+		}
 	}
 
 	// Pre-load persona presets. Ignore errors — view will show them.
 	presets, err := persona.ListPresets(m.PersonaFS)
 	if err == nil {
 		m.Presets = presets
+		if m.cfg != nil {
+			for i, p := range presets {
+				if p.Name == m.cfg.PersonaPreset {
+					m.presetCur = i
+					break
+				}
+			}
+		}
 	}
 
 	// Pre-load skills, pre-select core skills.
@@ -112,7 +134,36 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 		for _, s := range skillList {
 			if s.IsCore {
 				m.Selected[s.ID] = true
+				continue
 			}
+			if m.cfg != nil {
+				for _, id := range m.cfg.SelectedSkills {
+					if id == s.ID {
+						m.Selected[s.ID] = true
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if m.cfg != nil {
+		if m.cfg.SelectedSkills == nil {
+			m.cfg.SelectedSkills = []string{}
+		}
+		if m.cfg.Install.Agents == nil {
+			m.cfg.Install.Agents = map[string]config.AgentState{}
+		}
+	}
+
+	if m.cfg == nil {
+		m.cfg = &config.AppConfig{APIURL: config.DefaultAPIURL}
+	}
+
+	// Ensure core skills are always selected.
+	for _, s := range m.SkillList {
+		if s.IsCore {
+			m.Selected[s.ID] = true
 		}
 	}
 

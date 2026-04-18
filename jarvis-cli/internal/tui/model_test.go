@@ -80,6 +80,42 @@ func TestNewModel_DefaultsToHiveLocal(t *testing.T) {
 	}
 }
 
+func TestNewModel_PrefillsExistingConfigAndMode(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	cfg := &config.AppConfig{
+		SchemaVersion:    2,
+		APIURL:           config.DefaultAPIURL,
+		PersonaPreset:    "fixture",
+		SelectedSkills:   []string{"fixture-skill"},
+		Cloud:            &config.CloudConfig{Email: "prefill@example.com"},
+		ConfiguredAgents: []string{"claude"},
+		Install: config.InstallState{
+			Completed: true,
+			Mode:      "reconfigure",
+			Agents: map[string]config.AgentState{
+				"claude": {Configured: true, InstructionsPath: "/tmp/CLAUDE.md", ConfigPath: "/tmp/settings.json"},
+			},
+		},
+	}
+	if err := config.Save(cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	m := NewModel(testWizardConfig(), false)
+
+	if m.Mode != "reconfigure" {
+		t.Fatalf("expected mode reconfigure, got %q", m.Mode)
+	}
+	if m.Email != "prefill@example.com" {
+		t.Fatalf("expected prefilled email, got %q", m.Email)
+	}
+	if m.cfg == nil || m.cfg.PersonaPreset != "fixture" {
+		t.Fatalf("expected prefilled persona preset fixture, got %+v", m.cfg)
+	}
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // TestStep_HiveLocal_AdvancesOnEnter
 // ──────────────────────────────────────────────────────────────────────────────
@@ -223,11 +259,11 @@ func TestStep_Persona_SelectAndAdvance(t *testing.T) {
 	// Press Enter — selects presets[0] ("preset-0").
 	m = sendKey(m, tea.KeyEnter)
 
-	if m.Step != StepSkills {
-		t.Errorf("expected StepSkills after Enter, got %v", m.Step)
+	if m.Step != StepExtraSkills {
+		t.Errorf("expected StepExtraSkills after Enter, got %v", m.Step)
 	}
-	if m.cfg.Preset != "preset-0" {
-		t.Errorf("expected cfg.Preset=preset-0, got %q", m.cfg.Preset)
+	if m.cfg.PersonaPreset != "preset-0" {
+		t.Errorf("expected cfg.PersonaPreset=preset-0, got %q", m.cfg.PersonaPreset)
 	}
 }
 

@@ -12,7 +12,6 @@ import (
 	"github.com/spf13/cobra"
 
 	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/tui"
 )
 
@@ -25,13 +24,7 @@ with persistent memory (Hive), persona selection, and embedded skills.
 Run without arguments to launch the setup wizard.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		noTUI, _ := cmd.Flags().GetBool("no-tui")
-
-		if !config.IsConfigured() {
-			// First run — launch the setup wizard.
-			return runWizard(noTUI)
-		}
-		// Already configured — show status.
-		return runStatus()
+		return runWizard(noTUI)
 	},
 }
 
@@ -63,27 +56,4 @@ func runWizard(noTUI bool) error {
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
-}
-
-// runStatus prints the current jarvis configuration summary.
-func runStatus() error {
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	fmt.Printf("Jarvis-Dev configured\n")
-	fmt.Printf("  Email:   %s\n", cfg.Email)
-	fmt.Printf("  Preset:  %s\n", cfg.Preset)
-	fmt.Printf("  API:     %s\n", cfg.APIURL)
-	if len(cfg.ConfiguredAgents) > 0 {
-		fmt.Printf("  Agents:  ")
-		for i, a := range cfg.ConfiguredAgents {
-			if i > 0 {
-				fmt.Print(", ")
-			}
-			fmt.Print(a)
-		}
-		fmt.Println()
-	}
-	return nil
 }

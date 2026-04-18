@@ -47,57 +47,49 @@ func writeCfg(t *testing.T, home, content string) {
 	}
 }
 
-// TestRunStatus_InProcess calls runStatus() directly (in-process) so that Go's
-// coverage counter can see the execution.
-func TestRunStatus_InProcess(t *testing.T) {
+// TestRunWizard_InProcess verifies root flow uses wizard semantics.
+func TestRunWizard_InProcess(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
 	writeCfg(t, home, "email: inprocess@example.com\napi_url: https://hivemem.dev\npreset: neutra\n")
 
 	out := captureStdout(t, func() {
-		if err := runStatus(); err != nil {
-			t.Errorf("runStatus returned error: %v", err)
+		if err := runWizard(true); err != nil {
+			t.Errorf("runWizard returned error: %v", err)
 		}
 	})
 
-	if !strings.Contains(out, "inprocess@example.com") {
-		t.Errorf("expected email in output, got:\n%s", out)
-	}
-	if !strings.Contains(out, "neutra") {
-		t.Errorf("expected preset in output, got:\n%s", out)
+	if !strings.Contains(out, "Setup") {
+		t.Errorf("expected wizard setup output, got:\n%s", out)
 	}
 }
 
-// TestRunStatus_ConfiguredAgents_InProcess verifies that configured_agents appear
-// in the runStatus output.
-func TestRunStatus_ConfiguredAgents_InProcess(t *testing.T) {
+// TestRunWizard_ConfiguredAgents_InProcess verifies wizard still runs for reruns.
+func TestRunWizard_ConfiguredAgents_InProcess(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
 	writeCfg(t, home, "email: a@b.com\napi_url: https://hivemem.dev\npreset: tony-stark\nconfigured_agents:\n  - claude-code\n  - opencode\n")
 
 	out := captureStdout(t, func() {
-		if err := runStatus(); err != nil {
-			t.Errorf("runStatus: %v", err)
+		if err := runWizard(true); err != nil {
+			t.Errorf("runWizard: %v", err)
 		}
 	})
 
-	if !strings.Contains(out, "claude-code") {
-		t.Errorf("expected 'claude-code' in output:\n%s", out)
+	if !strings.Contains(out, "Setup") {
+		t.Errorf("expected setup wizard output:\n%s", out)
 	}
 }
 
-// TestRunStatus_NoConfig_InProcess verifies that runStatus returns an error when
-// config.yaml is absent (rather than panicking or hanging).
-func TestRunStatus_NoConfig_InProcess(t *testing.T) {
+// TestRunWizard_NoConfig_InProcess verifies runWizard works from fresh state.
+func TestRunWizard_NoConfig_InProcess(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	// No config file — Load() should return an error propagated by runStatus.
-	err := runStatus()
-	if err == nil {
-		// Some config loaders return an empty config rather than an error.
-		// Accept either outcome as long as it doesn't panic.
+	err := runWizard(true)
+	if err != nil {
+		t.Fatalf("runWizard with no config should not fail: %v", err)
 	}
 }
 
@@ -275,7 +267,7 @@ func TestRunInit_InProcess(t *testing.T) {
 //
 //  1. HiveCloud: email → empty (skip cloud auth)
 //  2. Persona:   choice → empty (default preset 0)
-//  3-6. 4 optional skills → empty (default N — decline install)
+//     3-6. 4 optional skills → empty (default N — decline install)
 //
 // No agents are detected because HOME is a fresh tmpdir with no .claude or opencode dirs.
 func TestRunWizard_NoTUI_SkipsAuth(t *testing.T) {
@@ -306,7 +298,7 @@ func TestRunWizard_NoTUI_SkipsAuth(t *testing.T) {
 		}
 	})
 
-	if !strings.Contains(out, "Setup complete") {
-		t.Errorf("expected 'Setup complete' in output, got:\n%s", out)
+	if !strings.Contains(out, "Configuration applied successfully") {
+		t.Errorf("expected apply confirmation in output, got:\n%s", out)
 	}
 }

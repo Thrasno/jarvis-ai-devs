@@ -56,7 +56,7 @@ func WriteSyncCredentials(apiURL, email, password string) error {
 		return fmt.Errorf("marshal sync.json: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := atomicWriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("write sync.json: %w", err)
 	}
 	return nil

@@ -47,9 +47,16 @@ func TestIsConfigured_ReturnsTrueWhenValid(t *testing.T) {
 	isolateHome(t)
 
 	cfg := &AppConfig{
-		Email:  "tony@stark.io",
-		APIURL: DefaultAPIURL,
-		Preset: "tony-stark",
+		SchemaVersion:  2,
+		APIURL:         DefaultAPIURL,
+		PersonaPreset:  "tony-stark",
+		SelectedSkills: []string{"core-memory"},
+		Install: InstallState{
+			Completed: true,
+			Agents: map[string]AgentState{
+				"claude": {Configured: true, InstructionsPath: "/tmp/CLAUDE.md"},
+			},
+		},
 	}
 	if err := Save(cfg); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -70,8 +77,10 @@ func TestSave_CreatesDirectoryIfMissing(t *testing.T) {
 	}
 
 	cfg := &AppConfig{
-		Email:  "pepper@stark.io",
-		APIURL: DefaultAPIURL,
+		SchemaVersion:  2,
+		APIURL:         DefaultAPIURL,
+		PersonaPreset:  "argentino",
+		SelectedSkills: []string{"core-memory"},
 	}
 	if err := Save(cfg); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -92,11 +101,21 @@ func TestSave_RoundTrip(t *testing.T) {
 	isolateHome(t)
 
 	original := &AppConfig{
-		Email:            "rhodey@war.machine",
+		SchemaVersion:    2,
 		APIURL:           "https://custom.api.example.com",
-		Preset:           "tony-stark",
+		PersonaPreset:    "tony-stark",
+		SelectedSkills:   []string{"core-memory", "testing"},
 		ConfiguredAgents: []string{"claude", "opencode"},
-		Version:          "2.0.0",
+		Cloud:            &CloudConfig{Email: "rhodey@war.machine", SyncConfigured: true},
+		Install: InstallState{
+			Mode:      "reconfigure",
+			Completed: true,
+			Agents: map[string]AgentState{
+				"claude":   {Configured: true, InstructionsPath: "/a", ConfigPath: "/b"},
+				"opencode": {Configured: true, InstructionsPath: "/c", ConfigPath: "/d"},
+			},
+		},
+		Version: "2.0.0",
 	}
 
 	if err := Save(original); err != nil {
@@ -108,14 +127,17 @@ func TestSave_RoundTrip(t *testing.T) {
 		t.Fatalf("Load after Save: %v", err)
 	}
 
-	if loaded.Email != original.Email {
-		t.Errorf("Email: got %q, want %q", loaded.Email, original.Email)
+	if loaded.Cloud == nil || loaded.Cloud.Email != original.Cloud.Email {
+		t.Errorf("Cloud.Email: got %#v, want %q", loaded.Cloud, original.Cloud.Email)
 	}
 	if loaded.APIURL != original.APIURL {
 		t.Errorf("APIURL: got %q, want %q", loaded.APIURL, original.APIURL)
 	}
-	if loaded.Preset != original.Preset {
-		t.Errorf("Preset: got %q, want %q", loaded.Preset, original.Preset)
+	if loaded.PersonaPreset != original.PersonaPreset {
+		t.Errorf("PersonaPreset: got %q, want %q", loaded.PersonaPreset, original.PersonaPreset)
+	}
+	if len(loaded.SelectedSkills) != len(original.SelectedSkills) {
+		t.Fatalf("SelectedSkills length: got %d, want %d", len(loaded.SelectedSkills), len(original.SelectedSkills))
 	}
 	if loaded.Version != original.Version {
 		t.Errorf("Version: got %q, want %q", loaded.Version, original.Version)
@@ -130,6 +152,78 @@ func TestSave_RoundTrip(t *testing.T) {
 					i, loaded.ConfiguredAgents[i], a)
 			}
 		}
+	}
+}
+
+func TestLoad_MigratesLegacyV1ConfigToV2(t *testing.T) {
+	home := isolateHome(t)
+	legacy := strings.Join([]string{
+		"api_url: https://hivemem.dev",
+		"email: legacy@example.com",
+		"preset: argentino",
+		"configured_agents:",
+		"  - claude",
+	}, "\n")
+	if err := os.MkdirAll(filepath.Join(home, ".jarvis"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".jarvis", "config.yaml"), []byte(legacy), 0644); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load legacy config: %v", err)
+	}
+
+	if cfg.SchemaVersion != 2 {
+		t.Fatalf("expected schema_version=2 after migration, got %d", cfg.SchemaVersion)
+	}
+	if cfg.Cloud == nil || cfg.Cloud.Email != "legacy@example.com" {
+		t.Fatalf("expected migrated cloud email, got %#v", cfg.Cloud)
+	}
+	if cfg.PersonaPreset != "argentino" {
+		t.Fatalf("expected migrated persona_preset=argentino, got %q", cfg.PersonaPreset)
+	}
+	if len(cfg.ConfiguredAgents) != 1 || cfg.ConfiguredAgents[0] != "claude" {
+		t.Fatalf("expected migrated configured_agents=[claude], got %v", cfg.ConfiguredAgents)
+	}
+}
+
+func TestConfigStatus_ReadyWithoutCloudEmail(t *testing.T) {
+	cfg := &AppConfig{
+		SchemaVersion:  2,
+		APIURL:         DefaultAPIURL,
+		PersonaPreset:  "argentino",
+		SelectedSkills: []string{"core-memory"},
+		Install: InstallState{
+			Completed: true,
+			Agents: map[string]AgentState{
+				"claude": {Configured: true, InstructionsPath: "/tmp/CLAUDE.md", ConfigPath: "/tmp/settings.json"},
+			},
+		},
+	}
+
+	if !cfg.IsReadyForReconfigure() {
+		t.Fatal("expected IsReadyForReconfigure=true for complete local config without cloud email")
+	}
+	if got := cfg.ConfigStatus(); got != ConfigStatusReconfigure {
+		t.Fatalf("expected ConfigStatusReconfigure, got %q", got)
+	}
+}
+
+func TestConfigStatus_RecoverWhenPartiallyConfigured(t *testing.T) {
+	cfg := &AppConfig{
+		SchemaVersion: 2,
+		APIURL:        DefaultAPIURL,
+		Install:       InstallState{Completed: true},
+	}
+
+	if cfg.IsReadyForReconfigure() {
+		t.Fatal("expected IsReadyForReconfigure=false when required local fields are missing")
+	}
+	if got := cfg.ConfigStatus(); got != ConfigStatusRecover {
+		t.Fatalf("expected ConfigStatusRecover for partial state, got %q", got)
 	}
 }
 

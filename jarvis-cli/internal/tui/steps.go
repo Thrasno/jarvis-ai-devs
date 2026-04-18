@@ -72,7 +72,7 @@ func updateHiveLocal(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func viewHiveLocal(m Model) string {
 	var sb strings.Builder
-	sb.WriteString(stepHeader(1, 5, "Local Memory Database"))
+	sb.WriteString(stepHeader(1, 6, "Local Memory Database"))
 	sb.WriteString("This will create " + headerStyle.Render("~/.jarvis/memory.db") + " for local persistent memory.\n")
 	sb.WriteString("The hive-daemon MCP server manages the SQLite schema.\n\n")
 	if m.Err != nil {
@@ -158,12 +158,13 @@ func (m Model) handleLoginResult(msg loginResultMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.APIToken = msg.token
-	m.cfg.Email = msg.email
-	// Write sync.json so hive-daemon can pick up the creds.
-	if err := writeSyncJSON(m.cfg.APIURL, m.Email, m.Password); err != nil {
-		m.Err = fmt.Errorf("write sync.json: %w", err)
-		return m, nil
+	if m.cfg.Cloud == nil {
+		m.cfg.Cloud = &config.CloudConfig{}
 	}
+	m.cfg.Cloud.Email = msg.email
+	m.cfg.Cloud.SyncConfigured = true
+	m.Email = msg.email
+	m.cfg.Email = msg.email
 	m.Err = nil
 	m.Step = StepPersona
 	return m, nil
@@ -203,7 +204,11 @@ func handleStepMsg(m Model, msg tea.Msg) (Model, bool, tea.Cmd) {
 
 func viewHiveCloud(m Model) string {
 	var sb strings.Builder
-	sb.WriteString(stepHeader(2, 5, "Hive Cloud Authentication"))
+	title := "Hive Cloud Authentication"
+	if m.Mode == string(config.ConfigStatusReconfigure) {
+		title = "Hive Cloud Authentication (Reconfigure)"
+	}
+	sb.WriteString(stepHeader(2, 6, title))
 	sb.WriteString("Connect to Hive Cloud for team memory sync (press Esc to skip).\n\n")
 
 	// Email field
@@ -262,7 +267,7 @@ func updatePersona(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyEnter:
 		if len(m.Presets) == 0 {
-			m.Step = StepSkills
+			m.Step = StepExtraSkills
 			return m, nil
 		}
 		selected := m.Presets[m.presetCur]
@@ -271,8 +276,9 @@ func updatePersona(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.customEdit = true
 			return m, nil
 		}
+		m.cfg.PersonaPreset = selected.Name
 		m.cfg.Preset = selected.Name
-		m.Step = StepSkills
+		m.Step = StepExtraSkills
 	}
 	return m, nil
 }
@@ -285,10 +291,11 @@ func updatePersonaCustomEdit(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.Err = err
 			return m, nil
 		}
+		m.cfg.PersonaPreset = "custom"
 		m.cfg.Preset = "custom"
 		m.customEdit = false
 		m.Err = nil
-		m.Step = StepSkills
+		m.Step = StepExtraSkills
 	case tea.KeyEsc:
 		m.customEdit = false
 		m.Err = nil
@@ -306,7 +313,7 @@ func updatePersonaCustomEdit(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func viewPersona(m Model) string {
 	var sb strings.Builder
-	sb.WriteString(stepHeader(3, 5, "Select Persona Preset"))
+	sb.WriteString(stepHeader(3, 6, "Select Persona Preset"))
 
 	if m.customEdit {
 		sb.WriteString(headerStyle.Render("Custom YAML Editor") + "\n")
@@ -398,8 +405,8 @@ func updateSkills(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func viewSkills(m Model) string {
 	var sb strings.Builder
-	sb.WriteString(stepHeader(4, 5, "Select Skills to Install"))
-	sb.WriteString(dimStyle.Render("Core skills (locked) are always installed.") + "\n\n")
+	sb.WriteString(stepHeader(4, 6, "Select Extra Skills"))
+	sb.WriteString(dimStyle.Render("Core skills (locked) are always installed. Select optional extras here.") + "\n\n")
 
 	cur := m.presetCur
 	for i, s := range m.SkillList {
@@ -431,8 +438,8 @@ func viewSkills(m Model) string {
 
 // agentProgressMsg reports a single status line from the agent config sequence.
 type agentProgressMsg struct {
-	line string
-	done bool
+	line   string
+	done   bool
 	failed bool
 }
 
@@ -482,8 +489,8 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		// Build Layer1 + Layer2 content.
 		layer1 := config.Layer1Content()
 		var layer2 string
-		if m.cfg.Preset != "" && m.cfg.Preset != "custom" {
-			if preset, err := persona.LoadPreset(m.PersonaFS, m.cfg.Preset); err == nil {
+		if m.cfg.PersonaPreset != "" && m.cfg.PersonaPreset != "custom" {
+			if preset, err := persona.LoadPreset(m.PersonaFS, m.cfg.PersonaPreset); err == nil {
 				layer2 = persona.RenderLayer2(preset)
 			}
 		} else if m.CustomYAML != "" {
@@ -500,19 +507,41 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		// MCP entry for Context7 — auto-configured after Hive.
 		context7Entry := agent.MCPEntry{Name: "context7"}
 
-		// Configure each detected agent.
+		// Configure each detected agent and collect structured outcomes.
+		results := configureWizardAgents(m.Agents, entry, context7Entry, layer1, layer2, skillInfos, skillsSubFS, selectedIDs)
 		var configuredAgents []string
-		for _, a := range m.Agents {
-			agentName := a.Name()
-
-			if err := configureWizardAgent(a, entry, context7Entry, layer1, layer2, skillInfos, skillsSubFS, selectedIDs); err != nil {
-				return agentProgressMsg{line: fmt.Sprintf("[%s] Configuration FAILED: %v", agentName, err), done: true, failed: true}
+		for _, res := range results {
+			if res.Err != nil {
+				return agentProgressMsg{line: fmt.Sprintf("[%s] Configuration FAILED: %v", res.AgentName, res.Err), done: true, failed: true}
 			}
-			configuredAgents = append(configuredAgents, agentName)
+			configuredAgents = append(configuredAgents, res.AgentName)
 		}
 
-		// Save config.
+		// Stage sync.json before canonical config commit.
+		if strings.TrimSpace(m.Email) != "" && strings.TrimSpace(m.Password) != "" {
+			if err := writeSyncJSON(m.cfg.APIURL, m.Email, m.Password); err != nil {
+				return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: write sync.json: %v", err), done: true, failed: true}
+			}
+			if m.cfg.Cloud == nil {
+				m.cfg.Cloud = &config.CloudConfig{}
+			}
+			m.cfg.Cloud.Email = strings.TrimSpace(m.Email)
+			m.cfg.Cloud.SyncConfigured = true
+			m.cfg.Email = m.cfg.Cloud.Email
+		}
+
+		// Save canonical config as the final commit step.
+		m.cfg.SchemaVersion = 2
 		m.cfg.ConfiguredAgents = configuredAgents
+		m.cfg.SelectedSkills = selectedIDs
+		m.cfg.Install.Mode = string(config.ConfigStatusReconfigure)
+		m.cfg.Install.Completed = true
+		if m.cfg.Install.Agents == nil {
+			m.cfg.Install.Agents = map[string]config.AgentState{}
+		}
+		for _, res := range results {
+			m.cfg.Install.Agents[res.AgentName] = res.State
+		}
 		m.cfg.Version = "1.0.0"
 		if err := config.Save(m.cfg); err != nil {
 			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: save config: %v", err), done: true, failed: true}
@@ -556,7 +585,7 @@ func buildSkillInfoList(m Model) []config.SkillInfo {
 
 func viewAgentConfig(m Model) string {
 	var sb strings.Builder
-	sb.WriteString(stepHeader(5, 5, "Configure AI Agents"))
+	sb.WriteString(stepHeader(5, 6, "Review & Apply Configuration"))
 
 	if len(m.agentProgress) == 0 {
 		agentNames := make([]string, 0, len(m.Agents))
@@ -569,7 +598,7 @@ func viewAgentConfig(m Model) string {
 		} else {
 			sb.WriteString("Detected agents: " + strings.Join(agentNames, ", ") + "\n\n")
 		}
-		sb.WriteString(dimStyle.Render("Press Enter to configure all agents."))
+		sb.WriteString(dimStyle.Render("Press Enter to apply changes (agent files + config)."))
 		return sb.String()
 	}
 
@@ -605,7 +634,11 @@ func updateDone(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func viewDone(m Model) string {
 	var sb strings.Builder
-	sb.WriteString(titleStyle.Render("Jarvis-Dev Setup Complete!") + "\n\n")
+	if m.Mode == string(config.ConfigStatusReconfigure) {
+		sb.WriteString(titleStyle.Render("Jarvis-Dev Reconfiguration Complete!") + "\n\n")
+	} else {
+		sb.WriteString(titleStyle.Render("Jarvis-Dev Setup Complete!") + "\n\n")
+	}
 	sb.WriteString(successStyle.Render("Your AI coding environment is configured.") + "\n\n")
 	sb.WriteString(headerStyle.Render("Next Steps:") + "\n")
 	sb.WriteString("  1. Restart Claude Code or OpenCode to load the new MCP config.\n")

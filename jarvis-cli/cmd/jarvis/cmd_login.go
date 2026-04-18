@@ -56,6 +56,11 @@ var loginCmd = &cobra.Command{
 		}
 
 		// Update config.
+		if cfg.Cloud == nil {
+			cfg.Cloud = &config.CloudConfig{}
+		}
+		cfg.Cloud.Email = resolvedEmail
+		cfg.Cloud.SyncConfigured = true
 		cfg.Email = resolvedEmail
 		if saveErr := config.Save(cfg); saveErr != nil {
 			return fmt.Errorf("save config: %w", saveErr)

@@ -82,6 +82,45 @@ func TestRunNoTUI_SelectsSkill(t *testing.T) {
 	}
 }
 
+func TestRunNoTUI_RerunKeepsExistingSelectionsOnBlankInput(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("PATH", "")
+
+	seed := &config.AppConfig{
+		SchemaVersion:    2,
+		APIURL:           config.DefaultAPIURL,
+		PersonaPreset:    "fixture",
+		SelectedSkills:   []string{"fixture-skill"},
+		ConfiguredAgents: []string{},
+		Install: config.InstallState{
+			Mode:      "reconfigure",
+			Completed: true,
+			Agents:    map[string]config.AgentState{},
+		},
+	}
+	if err := config.Save(seed); err != nil {
+		t.Fatalf("save seed config: %v", err)
+	}
+
+	// email keep blank, persona keep default, extra skills keep defaults.
+	input := strings.NewReader("\n\n\n")
+	if err := runNoTUI(testWizardConfig(), input); err != nil {
+		t.Fatalf("runNoTUI rerun: %v", err)
+	}
+
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config after rerun: %v", err)
+	}
+	if loaded.PersonaPreset != "fixture" {
+		t.Fatalf("expected persona preset to remain fixture, got %q", loaded.PersonaPreset)
+	}
+	if len(loaded.SelectedSkills) != 1 || loaded.SelectedSkills[0] != "fixture-skill" {
+		t.Fatalf("expected existing selected skills preserved, got %v", loaded.SelectedSkills)
+	}
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // TestRunAgentConfigSequence_NoAgents
 // ──────────────────────────────────────────────────────────────────────────────

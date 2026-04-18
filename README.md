@@ -64,6 +64,27 @@ from `jarvis-cli/`.
 
 ## Installation
 
+### Public installer (recommended when releases exist)
+
+Linux/macOS:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Thrasno/jarvis-ai-devs/main/scripts/install.sh | bash
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/Thrasno/jarvis-ai-devs/main/scripts/install.ps1 | iex
+```
+
+Optional overrides:
+
+- `JARVIS_INSTALL_REPO=owner/repo` to fetch artifacts from another repository.
+- `JARVIS_INSTALL_VERSION=vX.Y.Z` to force a specific release tag (skip `releases/latest`).
+
+If no public releases are published yet, installer scripts will fail fast with explicit guidance. In that case, use the from-source path below.
+
 ### From source
 
 Build each binary from its module:
@@ -75,6 +96,18 @@ Build each binary from its module:
 ### Release artifacts
 
 The repository includes `.goreleaser.yaml` to package multi-platform binaries for the main CLI and daemon components.
+
+### Single installer contract
+
+After installing binaries (from source or release scripts), the canonical entrypoint is:
+
+```bash
+jarvis
+```
+
+- First run: launches full setup wizard.
+- Re-run: launches reconfiguration wizard with previous values prefilled.
+- Advanced commands (`jarvis persona`, `jarvis login`, `jarvis config`, etc.) remain optional power-user paths.
 
 ## Project status
 
