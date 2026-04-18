@@ -22,7 +22,9 @@ type claudeCommandRunner func(name string, args ...string) (string, error)
 
 // ClaudeAgent implements Agent for Anthropic's Claude Code CLI.
 // Config dir: ~/.claude/
-// MCP registration contract: `claude mcp add --transport stdio --scope user <name> -- <command> [args...]` (persists in ~/.claude.json)
+// MCP registration contract (persists in ~/.claude.json):
+//   - Hive (local daemon): `claude mcp add --transport stdio --scope user hive -- <daemon-path>`
+//   - Context7 (remote HTTP): `claude mcp add --transport http --scope user context7 https://mcp.context7.com/mcp`
 // Settings file (non-MCP): ~/.claude/settings.json (e.g. outputStyle)
 // Instructions file: ~/.claude/CLAUDE.md
 // Skills dir: ~/.claude/skills/
@@ -60,9 +62,7 @@ func (a *ClaudeAgent) skillsDir() string {
 	return filepath.Join(a.ConfigDir(), "skills")
 }
 
-// MergeConfig registers MCP servers via the native Claude CLI contract:
-//
-//	claude mcp add --transport stdio --scope user <name> -- <command> [args...]
+// MergeConfig registers MCP servers via the native Claude CLI contract.
 //
 // For idempotent reruns/update behavior, it first checks existence via:
 //
@@ -75,15 +75,15 @@ func (a *ClaudeAgent) skillsDir() string {
 // If absent, it skips remove and continues directly to add.
 // settings.json remains reserved for non-MCP settings (e.g. outputStyle).
 func (a *ClaudeAgent) MergeConfig(entry MCPEntry) error {
-	addArgs := []string{"mcp", "add", "--transport", "stdio", "--scope", "user", entry.Name, "--"}
+	addArgs := []string{"mcp", "add"}
 
 	if entry.Name == "hive" {
 		if strings.TrimSpace(entry.DaemonPath) == "" {
 			return fmt.Errorf("hive daemon path is required")
 		}
-		addArgs = append(addArgs, entry.DaemonPath)
+		addArgs = append(addArgs, "--transport", "stdio", "--scope", "user", entry.Name, "--", entry.DaemonPath)
 	} else if entry.Name == "context7" {
-		addArgs = append(addArgs, "npx", "-y", "@upstash/context7-mcp")
+		addArgs = append(addArgs, "--transport", "http", "--scope", "user", entry.Name, "https://mcp.context7.com/mcp")
 	} else {
 		return fmt.Errorf("unknown MCP entry name: %s", entry.Name)
 	}

@@ -177,7 +177,7 @@ func TestMergeJSON(t *testing.T) {
 // This test ensures that user's custom context7 config is COMPLETELY replaced, not deep-merged.
 func TestMergeJSON_Context7JarvisOwned(t *testing.T) {
 	base := `{"mcpServers": {"context7": {"command": "OLD_USER_COMMAND", "args": [], "customKey": "should-be-removed"}}}`
-	patch := `{"mcpServers": {"context7": {"command": "npx", "args": ["-y", "@upstash/context7-mcp"]}}}`
+	patch := `{"mcpServers": {"context7": {"transport": "http", "url": "https://mcp.context7.com/mcp"}}}`
 
 	out, err := MergeJSON([]byte(base), []byte(patch))
 	if err != nil {
@@ -193,13 +193,12 @@ func TestMergeJSON_Context7JarvisOwned(t *testing.T) {
 	context7 := mcp["context7"].(map[string]any)
 
 	// Context7 must be FULLY overwritten (Jarvis-owned) — patch wins, no deep merge
-	if context7["command"] != "npx" {
-		t.Errorf("expected context7.command=npx (Jarvis-owned), got %v", context7["command"])
+	if context7["transport"] != "http" {
+		t.Errorf("expected context7.transport=http (Jarvis-owned), got %v", context7["transport"])
 	}
 
-	args := context7["args"].([]any)
-	if len(args) != 2 || args[0] != "-y" || args[1] != "@upstash/context7-mcp" {
-		t.Errorf("expected context7.args=[-y, @upstash/context7-mcp], got %v", args)
+	if context7["url"] != "https://mcp.context7.com/mcp" {
+		t.Errorf("expected context7.url=https://mcp.context7.com/mcp, got %v", context7["url"])
 	}
 
 	// CRITICAL: customKey from user config MUST be removed (full overwrite, not merge)

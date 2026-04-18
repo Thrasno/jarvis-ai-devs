@@ -396,7 +396,7 @@ func TestClaudeAgent_MergeConfig_Context7_UsesNativeClaudeCLI(t *testing.T) {
 
 	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "get", "context7")
 	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "remove", "--scope", "user", "context7")
-	assertClaudeCall(t, runner.calls[2], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "context7", "--", "npx", "-y", "@upstash/context7-mcp")
+	assertClaudeCall(t, runner.calls[2], "claude", "mcp", "add", "--transport", "http", "--scope", "user", "context7", "https://mcp.context7.com/mcp")
 }
 
 func TestClaudeAgent_MergeConfig_Hive_UsesNativeClaudeCLI(t *testing.T) {
@@ -435,10 +435,10 @@ func TestClaudeAgent_MergeConfig_Context7_IdempotentViaRemoveThenAdd(t *testing.
 	}
 	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "get", "context7")
 	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "remove", "--scope", "user", "context7")
-	assertClaudeCall(t, runner.calls[2], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "context7", "--", "npx", "-y", "@upstash/context7-mcp")
+	assertClaudeCall(t, runner.calls[2], "claude", "mcp", "add", "--transport", "http", "--scope", "user", "context7", "https://mcp.context7.com/mcp")
 	assertClaudeCall(t, runner.calls[3], "claude", "mcp", "get", "context7")
 	assertClaudeCall(t, runner.calls[4], "claude", "mcp", "remove", "--scope", "user", "context7")
-	assertClaudeCall(t, runner.calls[5], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "context7", "--", "npx", "-y", "@upstash/context7-mcp")
+	assertClaudeCall(t, runner.calls[5], "claude", "mcp", "add", "--transport", "http", "--scope", "user", "context7", "https://mcp.context7.com/mcp")
 }
 
 func TestClaudeAgent_MergeConfig_FirstInstallMissingGetSkipsRemove(t *testing.T) {
@@ -457,7 +457,7 @@ func TestClaudeAgent_MergeConfig_FirstInstallMissingGetSkipsRemove(t *testing.T)
 		t.Fatalf("expected get+add when first install has no MCP entry, got %d", len(runner.calls))
 	}
 	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "get", "context7")
-	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "context7", "--", "npx", "-y", "@upstash/context7-mcp")
+	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--transport", "http", "--scope", "user", "context7", "https://mcp.context7.com/mcp")
 }
 
 func TestClaudeAgent_MergeConfig_FirstInstallMissingGet_WithGenericExitError(t *testing.T) {
@@ -476,7 +476,7 @@ func TestClaudeAgent_MergeConfig_FirstInstallMissingGet_WithGenericExitError(t *
 		t.Fatalf("expected get+add when get reports missing entry, got %d", len(runner.calls))
 	}
 	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "get", "context7")
-	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "context7", "--", "npx", "-y", "@upstash/context7-mcp")
+	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--transport", "http", "--scope", "user", "context7", "https://mcp.context7.com/mcp")
 }
 
 func TestClaudeAgent_MergeConfig_GetFailureIsReturned(t *testing.T) {
