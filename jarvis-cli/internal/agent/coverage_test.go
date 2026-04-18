@@ -74,7 +74,7 @@ func TestClaudeAgent_IsInstalled_True(t *testing.T) {
 }
 
 // TestClaudeAgent_MergeConfig_UsesNativeCLI verifies MergeConfig shells out to
-// `claude mcp add --transport stdio --scope user ... -- ...` (with remove-then-add idempotent behavior).
+// `claude mcp add --transport stdio --scope user ... -- ...` (with get->conditional remove->add idempotent behavior).
 func TestClaudeAgent_MergeConfig_UsesNativeCLI(t *testing.T) {
 	runner := &stubClaudeRunner{}
 	a := &ClaudeAgent{runCommand: runner.run}
@@ -84,16 +84,17 @@ func TestClaudeAgent_MergeConfig_UsesNativeCLI(t *testing.T) {
 		t.Fatalf("MergeConfig: %v", err)
 	}
 
-	if len(runner.calls) != 2 {
-		t.Fatalf("expected remove+add calls, got %d", len(runner.calls))
+	if len(runner.calls) != 3 {
+		t.Fatalf("expected get+remove+add calls, got %d", len(runner.calls))
 	}
-	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "remove", "--scope", "user", "hive")
-	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "hive", "--", "/usr/local/bin/hive-daemon")
+	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "get", "hive")
+	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "remove", "--scope", "user", "hive")
+	assertClaudeCall(t, runner.calls[2], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "hive", "--", "/usr/local/bin/hive-daemon")
 }
 
-// TestClaudeAgent_MergeConfig_RemoveNotFoundStillAdds verifies that a missing
-// MCP server during remove does not block subsequent add.
-func TestClaudeAgent_MergeConfig_RemoveNotFoundStillAdds(t *testing.T) {
+// TestClaudeAgent_MergeConfig_GetNotFoundStillAdds verifies that a missing
+// MCP server during get does not block subsequent add.
+func TestClaudeAgent_MergeConfig_GetNotFoundStillAdds(t *testing.T) {
 	runner := &stubClaudeRunner{
 		responses: []stubClaudeResponse{{out: "not found", err: os.ErrNotExist}},
 	}
@@ -104,8 +105,9 @@ func TestClaudeAgent_MergeConfig_RemoveNotFoundStillAdds(t *testing.T) {
 	}
 
 	if len(runner.calls) != 2 {
-		t.Fatalf("expected remove+add calls, got %d", len(runner.calls))
+		t.Fatalf("expected get+add calls, got %d", len(runner.calls))
 	}
+	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "get", "hive")
 	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "hive", "--", "/usr/bin/hive")
 }
 

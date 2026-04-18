@@ -390,12 +390,13 @@ func TestClaudeAgent_MergeConfig_Context7_UsesNativeClaudeCLI(t *testing.T) {
 		t.Fatalf("MergeConfig(context7) failed: %v", err)
 	}
 
-	if len(runner.calls) != 2 {
-		t.Fatalf("expected remove+add calls, got %d", len(runner.calls))
+	if len(runner.calls) != 3 {
+		t.Fatalf("expected get+remove+add calls, got %d", len(runner.calls))
 	}
 
-	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "remove", "--scope", "user", "context7")
-	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "context7", "--", "npx", "-y", "@upstash/context7-mcp")
+	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "get", "context7")
+	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "remove", "--scope", "user", "context7")
+	assertClaudeCall(t, runner.calls[2], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "context7", "--", "npx", "-y", "@upstash/context7-mcp")
 }
 
 func TestClaudeAgent_MergeConfig_Hive_UsesNativeClaudeCLI(t *testing.T) {
@@ -407,12 +408,13 @@ func TestClaudeAgent_MergeConfig_Hive_UsesNativeClaudeCLI(t *testing.T) {
 		t.Fatalf("MergeConfig(hive) failed: %v", err)
 	}
 
-	if len(runner.calls) != 2 {
-		t.Fatalf("expected remove+add calls, got %d", len(runner.calls))
+	if len(runner.calls) != 3 {
+		t.Fatalf("expected get+remove+add calls, got %d", len(runner.calls))
 	}
 
-	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "remove", "--scope", "user", "hive")
-	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "hive", "--", "/usr/local/bin/hive-daemon")
+	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "get", "hive")
+	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "remove", "--scope", "user", "hive")
+	assertClaudeCall(t, runner.calls[2], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "hive", "--", "/usr/local/bin/hive-daemon")
 }
 
 // Spec R5: Idempotency/update behavior — reruns replace MCP entries safely.
@@ -428,16 +430,18 @@ func TestClaudeAgent_MergeConfig_Context7_IdempotentViaRemoveThenAdd(t *testing.
 		t.Fatalf("second MergeConfig(context7) failed: %v", err)
 	}
 
-	if len(runner.calls) != 4 {
-		t.Fatalf("expected 4 calls for two runs (remove+add twice), got %d", len(runner.calls))
+	if len(runner.calls) != 6 {
+		t.Fatalf("expected 6 calls for two runs (get+remove+add twice), got %d", len(runner.calls))
 	}
-	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "remove", "--scope", "user", "context7")
-	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "context7", "--", "npx", "-y", "@upstash/context7-mcp")
-	assertClaudeCall(t, runner.calls[2], "claude", "mcp", "remove", "--scope", "user", "context7")
-	assertClaudeCall(t, runner.calls[3], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "context7", "--", "npx", "-y", "@upstash/context7-mcp")
+	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "get", "context7")
+	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "remove", "--scope", "user", "context7")
+	assertClaudeCall(t, runner.calls[2], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "context7", "--", "npx", "-y", "@upstash/context7-mcp")
+	assertClaudeCall(t, runner.calls[3], "claude", "mcp", "get", "context7")
+	assertClaudeCall(t, runner.calls[4], "claude", "mcp", "remove", "--scope", "user", "context7")
+	assertClaudeCall(t, runner.calls[5], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "context7", "--", "npx", "-y", "@upstash/context7-mcp")
 }
 
-func TestClaudeAgent_MergeConfig_IgnoreMissingOnRemove(t *testing.T) {
+func TestClaudeAgent_MergeConfig_FirstInstallMissingGetSkipsRemove(t *testing.T) {
 	runner := &stubClaudeRunner{
 		responses: []stubClaudeResponse{
 			{out: "Error: MCP server 'context7' not found", err: os.ErrNotExist},
@@ -446,15 +450,17 @@ func TestClaudeAgent_MergeConfig_IgnoreMissingOnRemove(t *testing.T) {
 	agent := &ClaudeAgent{runCommand: runner.run}
 
 	if err := agent.MergeConfig(MCPEntry{Name: "context7"}); err != nil {
-		t.Fatalf("expected remove not-found to be tolerated, got: %v", err)
+		t.Fatalf("expected missing get to skip remove and still add, got: %v", err)
 	}
 
 	if len(runner.calls) != 2 {
-		t.Fatalf("expected remove+add even when remove is missing, got %d", len(runner.calls))
+		t.Fatalf("expected get+add when first install has no MCP entry, got %d", len(runner.calls))
 	}
+	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "get", "context7")
+	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "context7", "--", "npx", "-y", "@upstash/context7-mcp")
 }
 
-func TestClaudeAgent_MergeConfig_IgnoreMissingOnRemove_WithGenericExitError(t *testing.T) {
+func TestClaudeAgent_MergeConfig_FirstInstallMissingGet_WithGenericExitError(t *testing.T) {
 	runner := &stubClaudeRunner{
 		responses: []stubClaudeResponse{
 			{out: "No server named 'context7' exists in user scope", err: errors.New("exit status 1")},
@@ -463,18 +469,37 @@ func TestClaudeAgent_MergeConfig_IgnoreMissingOnRemove_WithGenericExitError(t *t
 	agent := &ClaudeAgent{runCommand: runner.run}
 
 	if err := agent.MergeConfig(MCPEntry{Name: "context7"}); err != nil {
-		t.Fatalf("expected remove missing-entry error to be tolerated, got: %v", err)
+		t.Fatalf("expected missing get marker to be tolerated, got: %v", err)
 	}
 
 	if len(runner.calls) != 2 {
-		t.Fatalf("expected remove+add even when remove reports missing entry, got %d", len(runner.calls))
+		t.Fatalf("expected get+add when get reports missing entry, got %d", len(runner.calls))
 	}
+	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "get", "context7")
 	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "context7", "--", "npx", "-y", "@upstash/context7-mcp")
 }
 
-func TestClaudeAgent_MergeConfig_RemoveFailureIsReturned(t *testing.T) {
+func TestClaudeAgent_MergeConfig_GetFailureIsReturned(t *testing.T) {
 	runner := &stubClaudeRunner{
 		responses: []stubClaudeResponse{
+			{out: "permission denied", err: os.ErrPermission},
+		},
+	}
+	agent := &ClaudeAgent{runCommand: runner.run}
+
+	err := agent.MergeConfig(MCPEntry{Name: "context7"})
+	if err == nil {
+		t.Fatal("expected get error, got nil")
+	}
+	if !strings.Contains(err.Error(), "get claude mcp context7") {
+		t.Fatalf("expected wrapped get error, got: %v", err)
+	}
+}
+
+func TestClaudeAgent_MergeConfig_RemoveFailureAfterGetIsReturned(t *testing.T) {
+	runner := &stubClaudeRunner{
+		responses: []stubClaudeResponse{
+			{out: "{\"name\":\"context7\"}", err: nil},
 			{out: "permission denied", err: os.ErrPermission},
 		},
 	}

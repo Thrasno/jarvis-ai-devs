@@ -64,11 +64,15 @@ func (a *ClaudeAgent) skillsDir() string {
 //
 //	claude mcp add --transport stdio --scope user <name> -- <command> [args...]
 //
-// For idempotent reruns/update behavior, it first attempts:
+// For idempotent reruns/update behavior, it first checks existence via:
+//
+//	claude mcp get <name>
+//
+// If present, it removes the existing entry using:
 //
 //	claude mcp remove --scope user <name>
 //
-// and ignores "not found" remove errors.
+// If absent, it skips remove and continues directly to add.
 // settings.json remains reserved for non-MCP settings (e.g. outputStyle).
 func (a *ClaudeAgent) MergeConfig(entry MCPEntry) error {
 	addArgs := []string{"mcp", "add", "--transport", "stdio", "--scope", "user", entry.Name, "--"}
@@ -84,9 +88,20 @@ func (a *ClaudeAgent) MergeConfig(entry MCPEntry) error {
 		return fmt.Errorf("unknown MCP entry name: %s", entry.Name)
 	}
 
-	removeOut, err := a.commandRunner()("claude", "mcp", "remove", "--scope", "user", entry.Name)
-	if err != nil && !isMissingClaudeMCP(removeOut, err) {
-		return fmt.Errorf("remove existing claude mcp %s: %w", entry.Name, err)
+	getOut, err := a.commandRunner()("claude", "mcp", "get", entry.Name)
+	if err != nil {
+		if !isMissingClaudeMCP(getOut, err) {
+			return fmt.Errorf("get claude mcp %s: %w", entry.Name, err)
+		}
+	} else {
+		removeOut, removeErr := a.commandRunner()("claude", "mcp", "remove", "--scope", "user", entry.Name)
+		if removeErr != nil {
+			reason := strings.TrimSpace(removeOut)
+			if reason != "" {
+				return fmt.Errorf("remove existing claude mcp %s: %w: %s", entry.Name, removeErr, reason)
+			}
+			return fmt.Errorf("remove existing claude mcp %s: %w", entry.Name, removeErr)
+		}
 	}
 
 	addOut, err := a.commandRunner()("claude", addArgs...)
