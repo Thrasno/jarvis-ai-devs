@@ -305,8 +305,8 @@ func TestDocsContract_BareJarvisEntrypoint(t *testing.T) {
 	if !strings.Contains(prd, "`jarvis`") && !strings.Contains(prd, "jarvis") {
 		t.Fatalf("docs/PRD.md should mention bare jarvis as setup/reconfiguration path")
 	}
-	if !strings.Contains(prd, "claude mcp add --scope user hive") || !strings.Contains(prd, "claude mcp add --scope user context7") {
-		t.Fatalf("docs/PRD.md must document Claude MCP registration via 'claude mcp add --scope user'")
+	if !strings.Contains(prd, "claude mcp add --transport stdio --scope user hive --") || !strings.Contains(prd, "claude mcp add --transport stdio --scope user context7 --") {
+		t.Fatalf("docs/PRD.md must document Claude MCP registration via 'claude mcp add --transport stdio --scope user <name> -- ...'")
 	}
 	if !strings.Contains(prd, "~/.claude.json") {
 		t.Fatalf("docs/PRD.md must document ~/.claude.json as the Claude MCP state contract")

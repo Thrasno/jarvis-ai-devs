@@ -74,7 +74,7 @@ func TestClaudeAgent_IsInstalled_True(t *testing.T) {
 }
 
 // TestClaudeAgent_MergeConfig_UsesNativeCLI verifies MergeConfig shells out to
-// `claude mcp add --scope user ...` (with remove-then-add idempotent behavior).
+// `claude mcp add --transport stdio --scope user ... -- ...` (with remove-then-add idempotent behavior).
 func TestClaudeAgent_MergeConfig_UsesNativeCLI(t *testing.T) {
 	runner := &stubClaudeRunner{}
 	a := &ClaudeAgent{runCommand: runner.run}
@@ -88,7 +88,7 @@ func TestClaudeAgent_MergeConfig_UsesNativeCLI(t *testing.T) {
 		t.Fatalf("expected remove+add calls, got %d", len(runner.calls))
 	}
 	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "remove", "--scope", "user", "hive")
-	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--scope", "user", "hive", "/usr/local/bin/hive-daemon")
+	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "hive", "--", "/usr/local/bin/hive-daemon")
 }
 
 // TestClaudeAgent_MergeConfig_RemoveNotFoundStillAdds verifies that a missing
@@ -106,7 +106,7 @@ func TestClaudeAgent_MergeConfig_RemoveNotFoundStillAdds(t *testing.T) {
 	if len(runner.calls) != 2 {
 		t.Fatalf("expected remove+add calls, got %d", len(runner.calls))
 	}
-	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--scope", "user", "hive", "/usr/bin/hive")
+	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "hive", "--", "/usr/bin/hive")
 }
 
 // TestClaudeAgent_InstallSkills writes skill SKILL.md files to ~/.claude/skills/.

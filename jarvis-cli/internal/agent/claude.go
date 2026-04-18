@@ -22,7 +22,7 @@ type claudeCommandRunner func(name string, args ...string) (string, error)
 
 // ClaudeAgent implements Agent for Anthropic's Claude Code CLI.
 // Config dir: ~/.claude/
-// MCP registration contract: `claude mcp add --scope user ...` (persists in ~/.claude.json)
+// MCP registration contract: `claude mcp add --transport stdio --scope user <name> -- <command> [args...]` (persists in ~/.claude.json)
 // Settings file (non-MCP): ~/.claude/settings.json (e.g. outputStyle)
 // Instructions file: ~/.claude/CLAUDE.md
 // Skills dir: ~/.claude/skills/
@@ -62,7 +62,7 @@ func (a *ClaudeAgent) skillsDir() string {
 
 // MergeConfig registers MCP servers via the native Claude CLI contract:
 //
-//	claude mcp add --scope user <name> <command> [args...]
+//	claude mcp add --transport stdio --scope user <name> -- <command> [args...]
 //
 // For idempotent reruns/update behavior, it first attempts:
 //
@@ -71,7 +71,7 @@ func (a *ClaudeAgent) skillsDir() string {
 // and ignores "not found" remove errors.
 // settings.json remains reserved for non-MCP settings (e.g. outputStyle).
 func (a *ClaudeAgent) MergeConfig(entry MCPEntry) error {
-	addArgs := []string{"mcp", "add", "--scope", "user", entry.Name}
+	addArgs := []string{"mcp", "add", "--transport", "stdio", "--scope", "user", entry.Name, "--"}
 
 	if entry.Name == "hive" {
 		if strings.TrimSpace(entry.DaemonPath) == "" {
@@ -119,7 +119,7 @@ func isMissingClaudeMCP(output string, err error) bool {
 		return true
 	}
 	lower := strings.ToLower(output + "\n" + err.Error())
-	markers := []string{"not found", "does not exist", "no mcp server", "unknown mcp"}
+	markers := []string{"not found", "does not exist", "no mcp server", "unknown mcp", "no server named", "no server configured"}
 	for _, marker := range markers {
 		if strings.Contains(lower, marker) {
 			return true
