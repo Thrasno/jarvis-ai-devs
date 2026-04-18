@@ -83,7 +83,7 @@ Optional overrides:
 - `JARVIS_INSTALL_REPO=owner/repo` to fetch artifacts from another repository.
 - `JARVIS_INSTALL_VERSION=vX.Y.Z` to force a specific release tag (skip `releases/latest`).
 
-If no public releases are published yet, installer scripts will fail fast with explicit guidance. In that case, use the from-source path below.
+If no public releases are published yet, installer scripts will fail fast with explicit guidance. They also retry transient GitHub/CDN 5xx/429 failures with backoff and validate artifact content before extraction to avoid HTML/error-page unpack attempts. In that case, use the from-source path below.
 
 ### From source
 

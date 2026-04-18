@@ -327,6 +327,15 @@ func TestDocsContract_PublicInstallerIsHonestAndOverridable(t *testing.T) {
 	if !strings.Contains(strings.ToLower(installSh), "no releases") {
 		t.Fatalf("scripts/install.sh must provide explicit no-releases guidance")
 	}
+	if !strings.Contains(installSh, "download_with_retry") || !strings.Contains(installSh, "backoff") {
+		t.Fatalf("scripts/install.sh must include retry/backoff for transient download failures")
+	}
+	if !strings.Contains(installSh, "tar -tzf") {
+		t.Fatalf("scripts/install.sh must validate tar.gz payload before extraction")
+	}
+	if !strings.Contains(strings.ToLower(installSh), "content-type") {
+		t.Fatalf("scripts/install.sh must validate response content to avoid extracting HTML/error pages")
+	}
 
 	installPs1Bytes, err := os.ReadFile(filepath.Join(root, "scripts", "install.ps1"))
 	if err != nil {
@@ -341,6 +350,15 @@ func TestDocsContract_PublicInstallerIsHonestAndOverridable(t *testing.T) {
 	}
 	if !strings.Contains(installPs1, "JARVIS_INSTALL_VERSION") {
 		t.Fatalf("scripts/install.ps1 must allow version override via JARVIS_INSTALL_VERSION")
+	}
+	if !strings.Contains(installPs1, "Invoke-WebRequestWithRetry") || !strings.Contains(strings.ToLower(installPs1), "backoff") {
+		t.Fatalf("scripts/install.ps1 must include retry/backoff for transient download failures")
+	}
+	if !strings.Contains(installPs1, "Test-ZipArchive") {
+		t.Fatalf("scripts/install.ps1 must validate zip payload before extraction")
+	}
+	if !strings.Contains(strings.ToLower(installPs1), "content-type") {
+		t.Fatalf("scripts/install.ps1 must validate response content to avoid extracting HTML/error pages")
 	}
 
 	readmeBytes, err := os.ReadFile(filepath.Join(root, "README.md"))
