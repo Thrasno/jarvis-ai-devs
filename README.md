@@ -27,7 +27,7 @@ Ecosistema de desarrollo asistido por IA diseñado para 8 desarrolladores del eq
 **Arquitectura**: Hybrid Local + Central (hub-and-spoke)
 - SQLite local en cada dev (offline-first, performance)
 - PostgreSQL central en VPS (fuente de verdad compartida)
-- Sincronización manual en v1: `jarvis sync`
+- Sincronización manual en v1: tool MCP `mem_sync` (el comando `jarvis sync` es informativo/no-op)
 - Guardado automático (IA decide qué es digno de memoria)
 - Tracking de usuario: `created_by`, `updated_by`, historial completo
 
@@ -78,7 +78,7 @@ Ecosistema de desarrollo asistido por IA diseñado para 8 desarrolladores del eq
 | Decisión | Rationale |
 |----------|-----------|
 | **NO usar Engram de base** | Control total del stack, API REST convencional familiar para equipo PHP |
-| **Sync manual v1** | Validar approach antes de automatizar |
+| **Sync manual v1** | Ejecutar `mem_sync` cuando se necesite; `jarvis sync` solo informa estado del flujo |
 | **Guardado automático** | IA suficientemente autónoma, usuario NO debe indicar |
 | **PostgreSQL (no ElasticSearch)** | `tsvector` + GIN index suficiente para v1 |
 | **Markdown checklist (no TUI)** | Más simple, portable, familiar |

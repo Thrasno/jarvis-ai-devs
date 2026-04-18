@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -315,24 +316,56 @@ func TestDetect_WithClaudeInstalled(t *testing.T) {
 // HiveDaemonBinaryPath tests
 // ──────────────────────────────────────────────────────────────────────────────
 
-// TestHiveDaemonBinaryPath_DefaultGOPATH uses ~/go/bin when GOPATH is unset.
-func TestHiveDaemonBinaryPath_DefaultGOPATH(t *testing.T) {
-	t.Setenv("GOPATH", "")
-	got := HiveDaemonBinaryPath("/home/user")
-	if !strings.HasPrefix(got, "/home/user/go/bin/") {
-		t.Errorf("expected path under ~/go/bin, got %q", got)
+// TestHiveDaemonBinaryPath_InstallerThenPATH verifies installer path is preferred
+// when present, otherwise PATH is used.
+func TestHiveDaemonBinaryPath_InstallerThenPATH(t *testing.T) {
+	tmpDir := t.TempDir()
+	binaryName := "hive-daemon"
+	if runtime.GOOS == "windows" {
+		binaryName = "hive-daemon.exe"
 	}
-	if !strings.Contains(got, "hive-daemon") {
-		t.Errorf("expected 'hive-daemon' in path, got %q", got)
+	binaryPath := filepath.Join(tmpDir, binaryName)
+	if err := os.WriteFile(binaryPath, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PATH", tmpDir)
+	t.Setenv("GOPATH", "")
+
+	got := HiveDaemonBinaryPath("/home/user")
+	installerPath := installerManagedHivePath(binaryName)
+	if isExecutableBinary(installerPath) {
+		if got != installerPath {
+			t.Errorf("expected installer binary %q, got %q", installerPath, got)
+		}
+		return
+	}
+
+	if got != binaryPath {
+		t.Errorf("expected PATH binary %q, got %q", binaryPath, got)
 	}
 }
 
-// TestHiveDaemonBinaryPath_CustomGOPATH respects GOPATH env var.
-func TestHiveDaemonBinaryPath_CustomGOPATH(t *testing.T) {
-	t.Setenv("GOPATH", "/custom/gopath")
+// TestHiveDaemonBinaryPath_FallbackDefaults verifies installer-path fallback.
+func TestHiveDaemonBinaryPath_FallbackDefaults(t *testing.T) {
+	t.Setenv("PATH", "")
+	t.Setenv("GOPATH", "")
+
 	got := HiveDaemonBinaryPath("/home/user")
-	if !strings.HasPrefix(got, "/custom/gopath/bin/") {
-		t.Errorf("expected path under /custom/gopath/bin, got %q", got)
+	if runtime.GOOS == "windows" {
+		want := filepath.Join("/usr/local/bin", "hive-daemon.exe")
+		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+			want = filepath.Join(localAppData, "Programs", "jarvis", "hive-daemon.exe")
+		}
+		if got != want {
+			t.Errorf("expected fallback %q, got %q", want, got)
+		}
+		return
+	}
+
+	want := "/usr/local/bin/hive-daemon"
+	if got != want {
+		t.Errorf("expected fallback %q, got %q", want, got)
 	}
 }
 

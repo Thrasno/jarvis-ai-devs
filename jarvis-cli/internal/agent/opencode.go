@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
@@ -67,12 +68,13 @@ func (a *OpenCodeAgent) MergeConfig(entry MCPEntry) error {
 			"type":    "local",
 		}
 
-		// Only add env block if credentials are provided
-		if entry.APIURL != "" || entry.Email != "" || entry.Password != "" {
+		// Only add env when credentials are complete.
+		// Partial env blocks can override ~/.jarvis/sync.json and break daemon precedence.
+		if hasCompleteHiveCloudCreds(entry) {
 			hiveCfg["env"] = map[string]string{
-				"HIVE_API_URL":      entry.APIURL,
-				"HIVE_API_EMAIL":    entry.Email,
-				"HIVE_API_PASSWORD": entry.Password,
+				"HIVE_API_URL":      strings.TrimSpace(entry.APIURL),
+				"HIVE_API_EMAIL":    strings.TrimSpace(entry.Email),
+				"HIVE_API_PASSWORD": strings.TrimSpace(entry.Password),
 			}
 		}
 
@@ -112,6 +114,12 @@ func (a *OpenCodeAgent) MergeConfig(entry MCPEntry) error {
 	}
 
 	return writeFileAtomic(a.settingsPath(), merged, 0644)
+}
+
+func hasCompleteHiveCloudCreds(entry MCPEntry) bool {
+	return strings.TrimSpace(entry.APIURL) != "" &&
+		strings.TrimSpace(entry.Email) != "" &&
+		strings.TrimSpace(entry.Password) != ""
 }
 
 // WriteInstructions writes ~/.config/opencode/AGENTS.md with Layer1+Layer2 sentinel blocks.

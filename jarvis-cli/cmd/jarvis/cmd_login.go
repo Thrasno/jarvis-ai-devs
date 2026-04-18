@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -51,27 +50,24 @@ var loginCmd = &cobra.Command{
 		if loginErr != nil {
 			return fmt.Errorf("authentication failed: %w", loginErr)
 		}
+		resolvedEmail := strings.TrimSpace(resp.User.Email)
+		if resolvedEmail == "" {
+			resolvedEmail = email
+		}
 
 		// Update config.
-		cfg.Email = resp.User.Email
+		cfg.Email = resolvedEmail
 		if saveErr := config.Save(cfg); saveErr != nil {
 			return fmt.Errorf("save config: %w", saveErr)
 		}
 
-		// Write sync.json with new credentials.
+		// Write sync.json with new credentials (preserving supported optional settings).
 		// token is intentionally excluded — hive-daemon uses DisallowUnknownFields().
-		home, homeErr := os.UserHomeDir()
-		if homeErr != nil {
-			return fmt.Errorf("get home dir: %w", homeErr)
-		}
-		syncJSON := fmt.Sprintf(`{"api_url":%q,"email":%q,"password":%q}`,
-			cfg.APIURL, email, password)
-		syncPath := filepath.Join(home, ".jarvis", "sync.json")
-		if writeErr := os.WriteFile(syncPath, []byte(syncJSON), 0600); writeErr != nil {
-			return fmt.Errorf("write sync.json: %w", writeErr)
+		if writeErr := config.WriteSyncCredentials(cfg.APIURL, email, password); writeErr != nil {
+			return writeErr
 		}
 
-		fmt.Printf("Authenticated as %s. Credentials saved.\n", resp.User.Email)
+		fmt.Printf("Authenticated as %s. Credentials saved.\n", resolvedEmail)
 		return nil
 	},
 }

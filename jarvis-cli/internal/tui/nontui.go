@@ -64,9 +64,14 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 			fmt.Printf("Warning: authentication failed: %v\n", loginErr)
 			fmt.Println("Skipping cloud auth. You can re-authenticate with 'jarvis login'.")
 		} else {
-			cfg.Email = resp.User.Email
+			cfg.Email = strings.TrimSpace(resp.User.Email)
+			if cfg.Email == "" {
+				cfg.Email = email
+			}
 			fmt.Printf("Authenticated as %s.\n", cfg.Email)
-			_ = writeSyncJSON(cfg.APIURL, email, password)
+			if err := writeSyncJSON(cfg.APIURL, email, password); err != nil {
+				return fmt.Errorf("write sync.json: %w", err)
+			}
 		}
 	} else {
 		fmt.Println("Skipping cloud auth.")
@@ -162,31 +167,17 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	// Point MCP directly to the binary — credentials are read from ~/.jarvis/sync.json.
 	entry := agent.MCPEntry{
 		Name:       "hive",
-		APIURL:     cfg.APIURL,
-		Email:      cfg.Email,
 		DaemonPath: agent.HiveDaemonBinaryPath(home),
 	}
+	context7Entry := agent.MCPEntry{Name: "context7"}
 
 	var configuredAgents []string
 	for _, a := range agents {
 		agentName := a.Name()
 		fmt.Printf("Configuring %s ...\n", agentName)
 
-		if mergeErr := a.MergeConfig(entry); mergeErr != nil {
-			fmt.Printf("  MCP config failed: %v\n", mergeErr)
-			continue
-		}
-		if instrErr := a.WriteInstructions(layer1, layer2, skillInfos); instrErr != nil {
-			fmt.Printf("  Instructions failed: %v\n", instrErr)
-			continue
-		}
-		if skillErr := a.InstallSkills(skillsSubFS, selectedIDs); skillErr != nil {
-			fmt.Printf("  Skills install failed: %v\n", skillErr)
-			continue
-		}
-		if orchErr := a.InstallOrchestrator(jarvis.OrchestratorFS); orchErr != nil {
-			fmt.Printf("  Orchestrator install failed: %v\n", orchErr)
-			continue
+		if err := configureWizardAgent(a, entry, context7Entry, layer1, layer2, skillInfos, skillsSubFS, selectedIDs); err != nil {
+			return fmt.Errorf("configure %s: %w", agentName, err)
 		}
 		fmt.Printf("  %s configured.\n", agentName)
 		configuredAgents = append(configuredAgents, agentName)
@@ -200,7 +191,8 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	}
 
 	fmt.Println("\nSetup complete!")
-	fmt.Println("Next: restart Claude Code or OpenCode, then run 'jarvis sync'.")
+	fmt.Println("Next: restart Claude Code or OpenCode.")
+	fmt.Println("Use mem_sync in your agent only when you want a manual cloud sync.")
 	return nil
 }
 

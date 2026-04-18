@@ -768,7 +768,9 @@ func TestHandleStepMsg_LoginResult_Error(t *testing.T) {
 func TestHandleStepMsg_LoginResult_Success(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
-	// writeSyncJSON ignores its own error, so .jarvis dir doesn't need to pre-exist.
+	if err := os.MkdirAll(filepath.Join(tmpHome, ".jarvis"), 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	m := Model{
 		Step:     StepHiveCloud,
@@ -831,6 +833,26 @@ func TestHandleStepMsg_AgentProgress_Done(t *testing.T) {
 	}
 }
 
+// TestHandleStepMsg_AgentProgress_Failed verifies failed progress sets model error.
+func TestHandleStepMsg_AgentProgress_Failed(t *testing.T) {
+	m := Model{
+		Step:     StepAgentConfig,
+		Selected: make(map[string]bool),
+		cfg:      &config.AppConfig{},
+	}
+	msg := agentProgressMsg{line: "[claude] Configuration FAILED: boom", done: true, failed: true}
+	updated, handled, _ := handleStepMsg(m, msg)
+	if !handled {
+		t.Error("expected agentProgressMsg to be handled")
+	}
+	if updated.Err == nil {
+		t.Fatal("expected Err to be set on failed progress")
+	}
+	if !updated.agentDone {
+		t.Error("expected agentDone=true when done=true")
+	}
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // TestHandleStepMsg_UnknownMsg
 // ──────────────────────────────────────────────────────────────────────────────
@@ -871,5 +893,35 @@ func TestWriteSyncJSON(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "user@example.com") {
 		t.Errorf("expected email in sync.json, got: %s", data)
+	}
+}
+
+func TestWriteSyncJSON_PreservesAutoSync(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	jarvisDir := filepath.Join(tmpHome, ".jarvis")
+	if err := os.MkdirAll(jarvisDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	seed := `{"api_url":"https://old.dev","email":"old@example.com","password":"old","auto_sync":true}`
+	if err := os.WriteFile(filepath.Join(jarvisDir, "sync.json"), []byte(seed), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeSyncJSON("https://hivemem.dev", "user@example.com", "s3cr3t"); err != nil {
+		t.Fatalf("writeSyncJSON: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(jarvisDir, "sync.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	if !strings.Contains(body, `"auto_sync":true`) {
+		t.Fatalf("expected auto_sync to be preserved, got: %s", body)
+	}
+	if !strings.Contains(body, "user@example.com") {
+		t.Fatalf("expected updated credentials, got: %s", body)
 	}
 }

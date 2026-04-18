@@ -263,8 +263,9 @@ graph TB
 - Auth: JWT con GitLab tokens
 
 **C) Sync Service**:
-- Manual en v1: `jarvis sync`
-- Auto-sync: Backlog para v2+
+- Manual en v1: tool MCP `mem_sync`
+- `jarvis sync`: comando informativo/no-op (no ejecuta push/pull)
+- Auto-sync: opcional vía `~/.jarvis/sync.json` (`auto_sync: true`)
 
 **Ventajas**:
 - Offline-first (dev trabaja sin internet)
@@ -432,11 +433,11 @@ jarvis mem recent --limit 10
 # Ver memoria específica
 jarvis mem show mem_1234567890
 
-# Sincronizar
-jarvis sync
+# Sync manual desde el agente (MCP)
+mem_sync
 
-# Ver status de sync
-jarvis sync status
+# Estado/ayuda del flujo de sync desde CLI
+jarvis sync
 
 # Ver progreso de onboarding
 jarvis progress
@@ -450,13 +451,13 @@ jarvis mem history mem_1234567890
 **Push (Local → Central)**:
 1. Dev guarda observation con `scope: project`
 2. Local marca como `synced: 0` (pending)
-3. Comando `jarvis sync` detecta pending
+3. Tool `mem_sync` detecta pending
 4. POST a `/sync` con memorias pendientes
 5. Central guarda con metadata (`created_by`, `synced_at`)
 6. Local marca `synced: 1`
 
 **Pull (Central → Local)**:
-1. `jarvis sync` consulta: "¿Nuevas desde last_sync?"
+1. `mem_sync` consulta: "¿Nuevas desde last_sync?"
 2. Central responde con memorias nuevas/actualizadas
 3. Local inserta/actualiza en SQLite
 4. Local actualiza `last_sync` timestamp

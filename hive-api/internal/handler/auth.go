@@ -41,12 +41,33 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	if err != nil {
 		// Distinguimos los errores de dominio para mapear al código HTTP correcto.
 		// ErrUserInactive → 403: el usuario existe pero está desactivado (no es un problema de credenciales).
-		// Resto → 401: credenciales incorrectas u otro error de autenticación.
+		// ErrInvalidCredentials → 401: email/password no coinciden.
+		// Resto → 500: fallo interno (DB/JWT/etc).
 		if errors.Is(err, service.ErrUserInactive) {
 			c.JSON(http.StatusForbidden, model.ErrorResponse{Error: err.Error()})
 			return
 		}
-		c.JSON(http.StatusUnauthorized, model.ErrorResponse{Error: err.Error()})
+		if errors.Is(err, service.ErrInvalidCredentials) {
+			c.JSON(http.StatusUnauthorized, model.ErrorResponse{Error: err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "internal server error"})
+		return
+	}
+
+	claims, err := h.svc.ValidateToken(token)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "internal server error"})
+		return
+	}
+
+	user, err := h.svc.GetCurrentUser(c.Request.Context(), claims.Subject)
+	if err != nil {
+		if errors.Is(err, service.ErrUserInactive) {
+			c.JSON(http.StatusForbidden, model.ErrorResponse{Error: err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "internal server error"})
 		return
 	}
 
@@ -54,7 +75,14 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	c.JSON(http.StatusOK, model.LoginResponse{
 		Token:     token,
 		ExpiresAt: time.Now().Add(jwtTTL),
-		User:      model.UserResponse{},
+		User: model.UserResponse{
+			ID:        user.ID,
+			Username:  user.Username,
+			Email:     user.Email,
+			Level:     user.Level,
+			IsActive:  user.IsActive,
+			CreatedAt: user.CreatedAt,
+		},
 	})
 }
 

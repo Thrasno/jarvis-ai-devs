@@ -69,9 +69,21 @@ func doAuthRequest(t *testing.T, deps RouterDeps, method, path string, body inte
 // --- Login tests ---
 
 func TestLogin_Success(t *testing.T) {
+	user := &model.User{
+		ID:       "user-uuid-123",
+		Username: "testuser",
+		Email:    "user@test.com",
+		Level:    model.LevelMember,
+		IsActive: true,
+	}
+
 	authSvc := &mockAuthSvc{}
 	authSvc.On("Login", context.Background(), "user@test.com", "password123").
 		Return("jwt-token-abc", nil)
+	authSvc.On("ValidateToken", "jwt-token-abc").Return(&model.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: "user-uuid-123"},
+	}, nil)
+	authSvc.On("GetCurrentUser", context.Background(), "user-uuid-123").Return(user, nil)
 
 	deps := RouterDeps{
 		AuthSvc:   authSvc,
@@ -89,6 +101,9 @@ func TestLogin_Success(t *testing.T) {
 	var resp map[string]interface{}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "jwt-token-abc", resp["token"])
+	userResp, ok := resp["user"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "user@test.com", userResp["email"])
 	authSvc.AssertExpectations(t)
 }
 
@@ -108,7 +123,7 @@ func TestLogin_InvalidBody(t *testing.T) {
 func TestLogin_InvalidCredentials(t *testing.T) {
 	authSvc := &mockAuthSvc{}
 	authSvc.On("Login", context.Background(), "bad@test.com", "wrongpass").
-		Return("", errors.New("credenciales inválidas"))
+		Return("", service.ErrInvalidCredentials)
 
 	deps := RouterDeps{
 		AuthSvc:   authSvc,
@@ -123,6 +138,27 @@ func TestLogin_InvalidCredentials(t *testing.T) {
 	})
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	authSvc.AssertExpectations(t)
+}
+
+func TestLogin_InternalServerError(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("Login", context.Background(), "ops@test.com", "password123").
+		Return("", errors.New("db timeout"))
+
+	deps := RouterDeps{
+		AuthSvc:   authSvc,
+		MemorySvc: &mockMemorySvc{},
+		SyncSvc:   &mockSyncSvc{},
+		AdminSvc:  &mockAdminSvc{},
+	}
+
+	w := doRequest(t, deps, http.MethodPost, "/auth/login", map[string]string{
+		"email":    "ops@test.com",
+		"password": "password123",
+	})
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	authSvc.AssertExpectations(t)
 }
 

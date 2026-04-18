@@ -2227,16 +2227,15 @@ Skills available:
 
 ### jarvis sync
 
-**Purpose**: Manual sync with Hive Cloud (auto-sync normally handles this)
+**Purpose**: Informative command (no-op) for current sync workflow
 
 **Usage**:
 ```bash
 $ jarvis sync
 
-🔄 Syncing with Hive Cloud...
-↓ Pulled: 5 memories
-↑ Pushed: 3 memories
-✓ Sync completed
+jarvis sync is a no-op: sync is handled through hive-daemon MCP tools.
+By default, run mem_sync in Claude Code/OpenCode when you want a manual cloud sync.
+Automatic background sync only runs when auto_sync is explicitly enabled.
 ```
 
 ---
@@ -2489,7 +2488,7 @@ Configuring OpenCode...
   ✓ ~/.config/opencode/skills/ populated
 
 Installing hive-daemon...
-  ✓ Binary installed: ~/go/bin/hive-daemon
+  ✓ Binary installed: /usr/local/bin/hive-daemon (Unix)
   ✓ systemd service enabled (auto-start on login)
   ✓ Config created: ~/.jarvis/config.yaml
 
@@ -2499,6 +2498,11 @@ Next: run 'jarvis login' to connect to Hive Cloud
 **What it installs**:
 1. `jarvis` CLI binary
 2. `hive-daemon` (systemd service, auto-start)
+
+**Runtime resolution order (jarvis-cli)**:
+1. Installer-managed path (`/usr/local/bin/hive-daemon` on Unix, `%LOCALAPPDATA%\Programs\jarvis\hive-daemon.exe` on Windows)
+2. `PATH`
+3. Legacy `$GOPATH/bin` or `~/go/bin`
 3. Config files in `~/.jarvis/`
 4. Agent configs for each detected AI agent (Claude Code, OpenCode)
 5. Skills copied to each agent's skills directory
@@ -2678,7 +2682,7 @@ func TestSDD_CompleteFlow(t *testing.T) {
 
 **Week 13-14: CLI Commands**
 - [ ] jarvis init
-- [ ] jarvis sync (manual)
+- [ ] jarvis sync (informational no-op) + manual sync vía `mem_sync`
 - [ ] jarvis timeline (TUI)
 - [ ] jarvis login
 - [ ] jarvis persona set

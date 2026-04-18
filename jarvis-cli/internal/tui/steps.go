@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -143,7 +144,11 @@ func loginCmd(apiURL, email, password string) tea.Cmd {
 		if err != nil {
 			return loginResultMsg{err: err}
 		}
-		return loginResultMsg{token: resp.Token, email: resp.User.Email}
+		resolvedEmail := strings.TrimSpace(resp.User.Email)
+		if resolvedEmail == "" {
+			resolvedEmail = email
+		}
+		return loginResultMsg{token: resp.Token, email: resolvedEmail}
 	}
 }
 
@@ -154,9 +159,12 @@ func (m Model) handleLoginResult(msg loginResultMsg) (tea.Model, tea.Cmd) {
 	}
 	m.APIToken = msg.token
 	m.cfg.Email = msg.email
-	m.Err = nil
 	// Write sync.json so hive-daemon can pick up the creds.
-	_ = writeSyncJSON(m.cfg.APIURL, m.Email, m.Password)
+	if err := writeSyncJSON(m.cfg.APIURL, m.Email, m.Password); err != nil {
+		m.Err = fmt.Errorf("write sync.json: %w", err)
+		return m, nil
+	}
+	m.Err = nil
 	m.Step = StepPersona
 	return m, nil
 }
@@ -166,14 +174,7 @@ func (m Model) handleLoginResult(msg loginResultMsg) (tea.Model, tea.Cmd) {
 // excluded because hive-daemon's syncFileConfig uses DisallowUnknownFields()
 // and manages the token internally after login.
 func writeSyncJSON(apiURL, email, password string) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-	content := fmt.Sprintf(`{"api_url":%q,"email":%q,"password":%q}`,
-		apiURL, email, password)
-	path := filepath.Join(home, ".jarvis", "sync.json")
-	return os.WriteFile(path, []byte(content), 0600)
+	return config.WriteSyncCredentials(apiURL, email, password)
 }
 
 // Override Update to also handle loginResultMsg (needs to be wired in root Update).
@@ -188,6 +189,9 @@ func handleStepMsg(m Model, msg tea.Msg) (Model, bool, tea.Cmd) {
 	if m.Step == StepAgentConfig {
 		if pr, ok := msg.(agentProgressMsg); ok {
 			m.agentProgress = append(m.agentProgress, pr.line)
+			if pr.failed {
+				m.Err = errors.New(pr.line)
+			}
 			if pr.done {
 				m.agentDone = true
 			}
@@ -429,16 +433,20 @@ func viewSkills(m Model) string {
 type agentProgressMsg struct {
 	line string
 	done bool
+	failed bool
 }
 
 func updateAgentConfig(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEnter:
-		if len(m.agentProgress) == 0 {
+		if len(m.agentProgress) == 0 || (m.agentDone && m.Err != nil) {
 			// First Enter: start the config sequence.
+			m.agentProgress = nil
+			m.agentDone = false
+			m.Err = nil
 			return m, runAgentConfigCmd(m)
 		}
-		if m.agentDone {
+		if m.agentDone && m.Err == nil {
 			m.Step = StepDone
 		}
 	}
@@ -462,7 +470,7 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		// Build the sub-FS rooted at embed/skills for InstallSkills.
 		skillsSubFS, err := fs.Sub(jarvis.SkillsFS, "embed/skills")
 		if err != nil {
-			return agentProgressMsg{line: fmt.Sprintf("Skills FS error: %v", err), done: true}
+			return agentProgressMsg{line: fmt.Sprintf("Skills FS error: %v", err), done: true, failed: true}
 		}
 
 		// Build the list of selected skill IDs.
@@ -486,8 +494,6 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		// Credentials are read by hive-daemon from ~/.jarvis/sync.json (written above).
 		entry := agent.MCPEntry{
 			Name:       "hive",
-			APIURL:     m.cfg.APIURL,
-			Email:      m.cfg.Email,
 			DaemonPath: agent.HiveDaemonBinaryPath(home),
 		}
 
@@ -499,24 +505,8 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		for _, a := range m.Agents {
 			agentName := a.Name()
 
-			// Configure Hive MCP server
-			if err := a.MergeConfig(entry); err != nil {
-				return agentProgressMsg{line: fmt.Sprintf("[%s] MCP config FAILED: %v", agentName, err), done: false}
-			}
-
-			// Configure Context7 MCP server (auto-config, non-blocking)
-			if err := a.MergeConfig(context7Entry); err != nil {
-				return agentProgressMsg{line: fmt.Sprintf("[%s] Context7 config FAILED: %v", agentName, err), done: false}
-			}
-
-			if err := a.WriteInstructions(layer1, layer2, skillInfos); err != nil {
-				return agentProgressMsg{line: fmt.Sprintf("[%s] Instructions FAILED: %v", agentName, err), done: false}
-			}
-			if err := a.InstallSkills(skillsSubFS, selectedIDs); err != nil {
-				return agentProgressMsg{line: fmt.Sprintf("[%s] Skills install FAILED: %v", agentName, err), done: false}
-			}
-			if err := a.InstallOrchestrator(jarvis.OrchestratorFS); err != nil {
-				return agentProgressMsg{line: fmt.Sprintf("[%s] Orchestrator install FAILED: %v", agentName, err), done: false}
+			if err := configureWizardAgent(a, entry, context7Entry, layer1, layer2, skillInfos, skillsSubFS, selectedIDs); err != nil {
+				return agentProgressMsg{line: fmt.Sprintf("[%s] Configuration FAILED: %v", agentName, err), done: true, failed: true}
 			}
 			configuredAgents = append(configuredAgents, agentName)
 		}
@@ -524,7 +514,9 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		// Save config.
 		m.cfg.ConfiguredAgents = configuredAgents
 		m.cfg.Version = "1.0.0"
-		_ = config.Save(m.cfg)
+		if err := config.Save(m.cfg); err != nil {
+			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: save config: %v", err), done: true, failed: true}
+		}
 
 		summary := fmt.Sprintf("Configuration complete. Agents configured: %s", strings.Join(configuredAgents, ", "))
 		if len(configuredAgents) == 0 {
@@ -586,8 +578,12 @@ func viewAgentConfig(m Model) string {
 	}
 
 	if m.agentDone {
-		sb.WriteString("\n" + successStyle.Render("All done!") + "\n")
-		sb.WriteString(dimStyle.Render("Press Enter to see the summary."))
+		if m.Err != nil {
+			sb.WriteString("\n" + errorStyle.Render("Setup failed. Press Enter to retry."))
+		} else {
+			sb.WriteString("\n" + successStyle.Render("All done!") + "\n")
+			sb.WriteString(dimStyle.Render("Press Enter to see the summary."))
+		}
 	}
 	return sb.String()
 }
@@ -613,8 +609,8 @@ func viewDone(m Model) string {
 	sb.WriteString(successStyle.Render("Your AI coding environment is configured.") + "\n\n")
 	sb.WriteString(headerStyle.Render("Next Steps:") + "\n")
 	sb.WriteString("  1. Restart Claude Code or OpenCode to load the new MCP config.\n")
-	sb.WriteString("  2. Run " + headerStyle.Render("'jarvis sync'") + " to pull team memories.\n")
-	sb.WriteString("  3. Use " + headerStyle.Render("'jarvis persona set <preset>'") + " to change persona.\n\n")
+	sb.WriteString("  2. Use " + headerStyle.Render("'jarvis persona set <preset>'") + " to change persona.\n")
+	sb.WriteString("  3. Use mem_sync in your agent only when you want a manual cloud sync.\n\n")
 	sb.WriteString(dimStyle.Render("Press Enter or q to exit."))
 	return sb.String()
 }

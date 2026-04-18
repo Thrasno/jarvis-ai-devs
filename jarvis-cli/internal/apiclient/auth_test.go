@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -14,6 +15,7 @@ func TestLogin(t *testing.T) {
 		password   string
 		serverFunc func(w http.ResponseWriter, r *http.Request)
 		wantErr    bool
+		wantErrHas string
 		checkResp  func(t *testing.T, resp *LoginResponse)
 	}{
 		{
@@ -51,18 +53,36 @@ func TestLogin(t *testing.T) {
 			email:    "bad@example.com",
 			password: "wrong",
 			serverFunc: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "credenciales inválidas"})
 			},
-			wantErr: true,
+			wantErr:    true,
+			wantErrHas: "invalid credentials",
+		},
+		{
+			name:     "inactive user returns actionable error",
+			email:    "inactive@example.com",
+			password: "secret",
+			serverFunc: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "usuario inactivo"})
+			},
+			wantErr:    true,
+			wantErrHas: "inactive",
 		},
 		{
 			name:     "server error returns error",
 			email:    "user@example.com",
 			password: "pass",
 			serverFunc: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal server error"})
 			},
-			wantErr: true,
+			wantErr:    true,
+			wantErrHas: "server error",
 		},
 	}
 
@@ -77,6 +97,9 @@ func TestLogin(t *testing.T) {
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
+				}
+				if tt.wantErrHas != "" && !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tt.wantErrHas)) {
+					t.Fatalf("expected error containing %q, got %q", tt.wantErrHas, err.Error())
 				}
 				return
 			}

@@ -10,9 +10,9 @@ var syncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Sync memories with Hive Cloud",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("Sync is managed by hive-daemon (MCP server).")
-		fmt.Println("To sync manually, use the mem_sync tool within Claude Code or OpenCode.")
-		fmt.Println("The hive-daemon runs as an MCP server and handles sync automatically.")
+		fmt.Println("jarvis sync is a no-op: sync is handled through hive-daemon MCP tools.")
+		fmt.Println("By default, run mem_sync in Claude Code/OpenCode when you want a manual cloud sync.")
+		fmt.Println("Automatic background sync only runs when auto_sync is explicitly enabled.")
 		return nil
 	},
 }

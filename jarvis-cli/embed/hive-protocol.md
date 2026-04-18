@@ -93,4 +93,8 @@ Hive includes an automatic nudge system that reminds you to save when you've bee
 
 ## AUTO-SYNC
 
-Memories are automatically synchronized to the cloud after each save. No user action is required.
+Cloud sync is NOT always automatic.
+
+- Default mode: manual sync using `mem_sync` when needed.
+- Optional mode: background auto-sync only when `auto_sync` (or `HIVE_AUTO_SYNC`) is explicitly enabled.
+- `jarvis sync` does not perform transport sync; use MCP tools inside your agent.

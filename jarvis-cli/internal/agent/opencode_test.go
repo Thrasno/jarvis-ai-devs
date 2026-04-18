@@ -222,3 +222,82 @@ func TestOpenCodeAgent_MergeConfig_Context7_Idempotent(t *testing.T) {
 		t.Errorf("expected exactly 1 MCP server, got %d: %v", len(mcp), mcp)
 	}
 }
+
+func TestOpenCodeAgent_MergeConfig_Hive_SkipsPartialEnv(t *testing.T) {
+	tmpHome := t.TempDir()
+	agent := &OpenCodeAgent{home: tmpHome}
+
+	settingsPath := filepath.Join(tmpHome, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatalf("create opencode dir: %v", err)
+	}
+	if err := os.WriteFile(settingsPath, []byte(`{}`), 0644); err != nil {
+		t.Fatalf("write opencode.json: %v", err)
+	}
+
+	err := agent.MergeConfig(MCPEntry{
+		Name:       "hive",
+		DaemonPath: "/usr/local/bin/hive-daemon",
+		APIURL:     "https://hivemem.dev",
+		Email:      "user@example.com",
+		// Password intentionally missing.
+	})
+	if err != nil {
+		t.Fatalf("MergeConfig(hive) failed: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read opencode.json: %v", err)
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal opencode.json: %v", err)
+	}
+
+	hive := settings["mcp"].(map[string]any)["hive"].(map[string]any)
+	if _, ok := hive["env"]; ok {
+		t.Fatalf("expected no env block for partial creds, got: %v", hive["env"])
+	}
+}
+
+func TestOpenCodeAgent_MergeConfig_Hive_IncludesEnvWhenComplete(t *testing.T) {
+	tmpHome := t.TempDir()
+	agent := &OpenCodeAgent{home: tmpHome}
+
+	settingsPath := filepath.Join(tmpHome, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatalf("create opencode dir: %v", err)
+	}
+	if err := os.WriteFile(settingsPath, []byte(`{}`), 0644); err != nil {
+		t.Fatalf("write opencode.json: %v", err)
+	}
+
+	err := agent.MergeConfig(MCPEntry{
+		Name:       "hive",
+		DaemonPath: "/usr/local/bin/hive-daemon",
+		APIURL:     "https://hivemem.dev",
+		Email:      "user@example.com",
+		Password:   "s3cr3t",
+	})
+	if err != nil {
+		t.Fatalf("MergeConfig(hive) failed: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read opencode.json: %v", err)
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal opencode.json: %v", err)
+	}
+
+	hive := settings["mcp"].(map[string]any)["hive"].(map[string]any)
+	env := hive["env"].(map[string]any)
+	if env["HIVE_API_PASSWORD"] != "s3cr3t" {
+		t.Fatalf("expected complete env, got: %v", env)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -41,6 +42,10 @@ type UserResponse struct {
 	Level    string `json:"level"`
 }
 
+type apiErrorResponse struct {
+	Error string `json:"error"`
+}
+
 // New creates a new Hive API client for the given base URL.
 func New(baseURL string) *Client {
 	return &Client{
@@ -65,11 +70,24 @@ func (c *Client) Login(email, password string) (*LoginResponse, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("invalid credentials — check your email and password")
-	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status from /auth/login: %d", resp.StatusCode)
+		apiErr := decodeAPIError(resp)
+		switch resp.StatusCode {
+		case http.StatusUnauthorized:
+			return nil, fmt.Errorf("invalid credentials — check your email and password")
+		case http.StatusForbidden:
+			if strings.Contains(strings.ToLower(apiErr), "inactivo") || strings.Contains(strings.ToLower(apiErr), "inactive") {
+				return nil, fmt.Errorf("your account is inactive — contact your workspace admin")
+			}
+			return nil, fmt.Errorf("access denied: %s", apiErr)
+		case http.StatusInternalServerError:
+			return nil, fmt.Errorf("server error during login — try again in a moment")
+		default:
+			if apiErr != "" {
+				return nil, fmt.Errorf("unexpected status from /auth/login: %d (%s)", resp.StatusCode, apiErr)
+			}
+			return nil, fmt.Errorf("unexpected status from /auth/login: %d", resp.StatusCode)
+		}
 	}
 
 	var loginResp LoginResponse
@@ -81,6 +99,14 @@ func (c *Client) Login(email, password string) (*LoginResponse, error) {
 	c.Token = loginResp.Token
 
 	return &loginResp, nil
+}
+
+func decodeAPIError(resp *http.Response) string {
+	var payload apiErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.Error)
 }
 
 // Me validates the current token by calling GET /auth/me.
