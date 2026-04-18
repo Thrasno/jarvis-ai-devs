@@ -2,7 +2,7 @@
 # =============================================================================
 # Jarvis Installer — Linux / macOS
 # =============================================================================
-# Uso: curl -sSL https://raw.githubusercontent.com/Thrasno/jarvis-ai-devs/main/scripts/install.sh | bash
+# Uso: curl -sSL https://raw.githubusercontent.com/Thrasno/jarvis-ai-devs/master/scripts/install.sh | bash
 # Overrides opcionales:
 #   JARVIS_INSTALL_REPO=owner/repo       (default: Thrasno/jarvis-ai-devs)
 #   JARVIS_INSTALL_VERSION=vX.Y.Z        (si se define, no consulta releases/latest)

@@ -1,7 +1,7 @@
 # =============================================================================
 # Jarvis Installer — Windows PowerShell
 # =============================================================================
-# Uso: irm https://raw.githubusercontent.com/Thrasno/jarvis-ai-devs/main/scripts/install.ps1 | iex
+# Uso: irm https://raw.githubusercontent.com/Thrasno/jarvis-ai-devs/master/scripts/install.ps1 | iex
 # Overrides opcionales:
 #   $env:JARVIS_INSTALL_REPO = "owner/repo"   (default: Thrasno/jarvis-ai-devs)
 #   $env:JARVIS_INSTALL_VERSION = "vX.Y.Z"    (si se define, no consulta releases/latest)

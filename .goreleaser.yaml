@@ -85,7 +85,7 @@ changelog:
 release:
   github:
     owner: Thrasno
-    name: jarvis-dev
+    name: jarvis-ai-devs
   draft: false
   prerelease: auto
   name_template: "v{{.Version}}"

@@ -348,7 +348,7 @@ func TestDocsContract_PublicInstallerIsHonestAndOverridable(t *testing.T) {
 		t.Fatalf("read README.md: %v", err)
 	}
 	readme := strings.ToLower(string(readmeBytes))
-	if !strings.Contains(readme, "raw.githubusercontent.com/thrasno/jarvis-ai-devs/main/scripts/install.sh") {
+	if !strings.Contains(readme, "raw.githubusercontent.com/thrasno/jarvis-ai-devs/master/scripts/install.sh") {
 		t.Fatalf("README.md must document the public installer URL")
 	}
 	if !strings.Contains(readme, "jarvis_install_repo") || !strings.Contains(readme, "jarvis_install_version") {

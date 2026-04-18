@@ -69,13 +69,13 @@ from `jarvis-cli/`.
 Linux/macOS:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Thrasno/jarvis-ai-devs/main/scripts/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/Thrasno/jarvis-ai-devs/master/scripts/install.sh | bash
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/Thrasno/jarvis-ai-devs/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/Thrasno/jarvis-ai-devs/master/scripts/install.ps1 | iex
 ```
 
 Optional overrides:
