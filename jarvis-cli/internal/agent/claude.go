@@ -2,9 +2,11 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"unicode"
@@ -16,20 +18,23 @@ import (
 // Ensure ClaudeAgent implements Agent at compile time.
 var _ Agent = (*ClaudeAgent)(nil)
 
+type claudeCommandRunner func(name string, args ...string) (string, error)
+
 // ClaudeAgent implements Agent for Anthropic's Claude Code CLI.
 // Config dir: ~/.claude/
-// MCP files: ~/.claude/mcp/*.json
-// Settings file (non-MCP): ~/.claude/settings.json
+// MCP registration contract: `claude mcp add --scope user ...` (persists in ~/.claude.json)
+// Settings file (non-MCP): ~/.claude/settings.json (e.g. outputStyle)
 // Instructions file: ~/.claude/CLAUDE.md
 // Skills dir: ~/.claude/skills/
 type ClaudeAgent struct {
 	home        string
 	templatesFS fs.FS
+	runCommand  claudeCommandRunner
 }
 
 func newClaudeAgent(fsys fs.FS) *ClaudeAgent {
 	home, _ := os.UserHomeDir()
-	return &ClaudeAgent{home: home, templatesFS: fsys}
+	return &ClaudeAgent{home: home, templatesFS: fsys, runCommand: runCommandCombinedOutput}
 }
 
 func (a *ClaudeAgent) Name() string { return "claude" }
@@ -55,44 +60,72 @@ func (a *ClaudeAgent) skillsDir() string {
 	return filepath.Join(a.ConfigDir(), "skills")
 }
 
-func (a *ClaudeAgent) mcpDir() string {
-	return filepath.Join(a.ConfigDir(), "mcp")
-}
-
-func (a *ClaudeAgent) mcpEntryPath(name string) string {
-	return filepath.Join(a.mcpDir(), name+".json")
-}
-
-// MergeConfig writes MCP entries to dedicated files under ~/.claude/mcp/.
-// Supported entries: "hive" (local daemon), "context7" (npx remote package).
-// Claude format: command is a string, args is an array.
+// MergeConfig registers MCP servers via the native Claude CLI contract:
+//
+//	claude mcp add --scope user <name> <command> [args...]
+//
+// For idempotent reruns/update behavior, it first attempts:
+//
+//	claude mcp remove --scope user <name>
+//
+// and ignores "not found" remove errors.
 // settings.json remains reserved for non-MCP settings (e.g. outputStyle).
 func (a *ClaudeAgent) MergeConfig(entry MCPEntry) error {
-	var patch map[string]any
+	addArgs := []string{"mcp", "add", "--scope", "user", entry.Name}
 
 	if entry.Name == "hive" {
-		// Build the hive MCP payload for Claude MCP file format.
-		patch = map[string]any{
-			"command": entry.DaemonPath,
-			"args":    []string{},
-			"type":    "stdio",
+		if strings.TrimSpace(entry.DaemonPath) == "" {
+			return fmt.Errorf("hive daemon path is required")
 		}
+		addArgs = append(addArgs, entry.DaemonPath)
 	} else if entry.Name == "context7" {
-		// Build the Context7 MCP payload for Claude format (npx local mode).
-		patch = map[string]any{
-			"command": "npx",
-			"args":    []string{"-y", "@upstash/context7-mcp"},
-		}
+		addArgs = append(addArgs, "npx", "-y", "@upstash/context7-mcp")
 	} else {
 		return fmt.Errorf("unknown MCP entry name: %s", entry.Name)
 	}
 
-	patchBytes, err := json.MarshalIndent(patch, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal claude mcp patch: %w", err)
+	removeOut, err := a.commandRunner()("claude", "mcp", "remove", "--scope", "user", entry.Name)
+	if err != nil && !isMissingClaudeMCP(removeOut, err) {
+		return fmt.Errorf("remove existing claude mcp %s: %w", entry.Name, err)
 	}
 
-	return writeFileAtomic(a.mcpEntryPath(entry.Name), patchBytes, 0644)
+	addOut, err := a.commandRunner()("claude", addArgs...)
+	if err != nil {
+		reason := strings.TrimSpace(addOut)
+		if reason != "" {
+			return fmt.Errorf("add claude mcp %s: %w: %s", entry.Name, err, reason)
+		}
+		return fmt.Errorf("add claude mcp %s: %w", entry.Name, err)
+	}
+
+	return nil
+}
+
+func (a *ClaudeAgent) commandRunner() claudeCommandRunner {
+	if a.runCommand != nil {
+		return a.runCommand
+	}
+	return runCommandCombinedOutput
+}
+
+func runCommandCombinedOutput(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func isMissingClaudeMCP(output string, err error) bool {
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	lower := strings.ToLower(output + "\n" + err.Error())
+	markers := []string{"not found", "does not exist", "no mcp server", "unknown mcp"}
+	for _, marker := range markers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // WriteInstructions writes ~/.claude/CLAUDE.md with Layer1+Layer2 sentinel blocks.

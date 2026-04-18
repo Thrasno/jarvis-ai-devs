@@ -73,57 +73,40 @@ func TestClaudeAgent_IsInstalled_True(t *testing.T) {
 	}
 }
 
-// TestClaudeAgent_MergeConfig_CreatesMCPFile verifies MergeConfig creates
-// ~/.claude/mcp/hive.json with hive payload.
-func TestClaudeAgent_MergeConfig_CreatesMCPFile(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-	if err := os.MkdirAll(filepath.Join(tmpHome, ".claude"), 0755); err != nil {
-		t.Fatal(err)
-	}
+// TestClaudeAgent_MergeConfig_UsesNativeCLI verifies MergeConfig shells out to
+// `claude mcp add --scope user ...` (with remove-then-add idempotent behavior).
+func TestClaudeAgent_MergeConfig_UsesNativeCLI(t *testing.T) {
+	runner := &stubClaudeRunner{}
+	a := &ClaudeAgent{runCommand: runner.run}
 
-	a := newClaudeAgent(emptyFS)
 	entry := MCPEntry{Name: "hive", DaemonPath: "/usr/local/bin/hive-daemon"}
 	if err := a.MergeConfig(entry); err != nil {
 		t.Fatalf("MergeConfig: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(tmpHome, ".claude", "mcp", "hive.json"))
-	if err != nil {
-		t.Fatal("hive.json not created:", err)
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected remove+add calls, got %d", len(runner.calls))
 	}
-	if !bytes.Contains(data, []byte("hive-daemon")) {
-		t.Errorf("expected hive payload in hive.json, got:\n%s", data)
-	}
+	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "remove", "--scope", "user", "hive")
+	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--scope", "user", "hive", "/usr/local/bin/hive-daemon")
 }
 
-// TestClaudeAgent_MergeConfig_PreservesExistingSettings verifies MergeConfig
-// does not modify settings.json when registering MCP files.
-func TestClaudeAgent_MergeConfig_PreservesExistingSettings(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-	if err := os.MkdirAll(filepath.Join(tmpHome, ".claude"), 0755); err != nil {
-		t.Fatal(err)
+// TestClaudeAgent_MergeConfig_RemoveNotFoundStillAdds verifies that a missing
+// MCP server during remove does not block subsequent add.
+func TestClaudeAgent_MergeConfig_RemoveNotFoundStillAdds(t *testing.T) {
+	runner := &stubClaudeRunner{
+		responses: []stubClaudeResponse{{out: "not found", err: os.ErrNotExist}},
 	}
+	a := &ClaudeAgent{runCommand: runner.run}
 
-	existing := `{"outputStyle":"Argentino"}`
-	settingsPath := filepath.Join(tmpHome, ".claude", "settings.json")
-	if err := os.WriteFile(settingsPath, []byte(existing), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	a := newClaudeAgent(emptyFS)
 	if err := a.MergeConfig(MCPEntry{Name: "hive", DaemonPath: "/usr/bin/hive"}); err != nil {
-		t.Fatal(err)
+		t.Fatalf("MergeConfig: %v", err)
 	}
 
-	data, _ := os.ReadFile(settingsPath)
-	if !bytes.Contains(data, []byte("outputStyle")) {
-		t.Error("expected pre-existing outputStyle key to be preserved")
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected remove+add calls, got %d", len(runner.calls))
 	}
-	if bytes.Contains(data, []byte("mcpServers")) {
-		t.Error("settings.json must not be used as MCP registration surface")
-	}
+	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--scope", "user", "hive", "/usr/bin/hive")
 }
 
 // TestClaudeAgent_InstallSkills writes skill SKILL.md files to ~/.claude/skills/.

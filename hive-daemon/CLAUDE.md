@@ -14,7 +14,7 @@ for this project. Engram remains available for other projects.
 
 ## Revert
 
-To disable Hive and return to Engram: remove `~/.claude/mcp/hive.json`.
+To disable Hive and return to Engram: run `claude mcp remove --scope user hive`.
 All Engram data is untouched in its original location.
 
 ## Development Rules

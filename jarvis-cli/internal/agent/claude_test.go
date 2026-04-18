@@ -380,100 +380,46 @@ func TestClaudeAgent_WriteOutputStyle_NilNotes(t *testing.T) {
 	}
 }
 
-// TestClaudeAgent_MergeConfig_Context7 verifies Context7 MCP is written
-// to ~/.claude/mcp/context7.json using Claude's per-file MCP contract.
-func TestClaudeAgent_MergeConfig_Context7(t *testing.T) {
-	tmpHome := t.TempDir()
-	agent := &ClaudeAgent{home: tmpHome}
+func TestClaudeAgent_MergeConfig_Context7_UsesNativeClaudeCLI(t *testing.T) {
+	runner := &stubClaudeRunner{}
+	agent := &ClaudeAgent{runCommand: runner.run}
 
-	// Call MergeConfig with context7 entry
 	entry := MCPEntry{Name: "context7"}
-	err := agent.MergeConfig(entry)
-	if err != nil {
+	if err := agent.MergeConfig(entry); err != nil {
 		t.Fatalf("MergeConfig(context7) failed: %v", err)
 	}
 
-	// Read and verify ~/.claude/mcp/context7.json
-	mcpPath := filepath.Join(tmpHome, ".claude", "mcp", "context7.json")
-	data, err := os.ReadFile(mcpPath)
-	if err != nil {
-		t.Fatalf("read context7 mcp file: %v", err)
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected remove+add calls, got %d", len(runner.calls))
 	}
 
-	var settings map[string]any
-	if err := json.Unmarshal(data, &settings); err != nil {
-		t.Fatalf("unmarshal context7 mcp file: %v", err)
-	}
-
-	if settings["command"] != "npx" {
-		t.Errorf("expected command=npx, got %v", settings["command"])
-	}
-
-	args, ok := settings["args"].([]any)
-	if !ok {
-		t.Fatalf("expected args to be array, got %T", settings["args"])
-	}
-
-	if len(args) != 2 || args[0] != "-y" || args[1] != "@upstash/context7-mcp" {
-		t.Errorf("expected args=[-y, @upstash/context7-mcp], got %v", args)
-	}
+	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "remove", "--scope", "user", "context7")
+	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--scope", "user", "context7", "npx", "-y", "@upstash/context7-mcp")
 }
 
-// TestClaudeAgent_MergeConfig_Context7_PreservesSettings verifies MergeConfig
-// does not use settings.json as an MCP registration surface.
-func TestClaudeAgent_MergeConfig_Context7_PreservesSettings(t *testing.T) {
-	tmpHome := t.TempDir()
-	agent := &ClaudeAgent{home: tmpHome}
+func TestClaudeAgent_MergeConfig_Hive_UsesNativeClaudeCLI(t *testing.T) {
+	runner := &stubClaudeRunner{}
+	agent := &ClaudeAgent{runCommand: runner.run}
 
-	// Create settings.json with non-MCP settings.
-	settingsPath := filepath.Join(tmpHome, ".claude", "settings.json")
-	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
-		t.Fatalf("create .claude dir: %v", err)
+	entry := MCPEntry{Name: "hive", DaemonPath: "/usr/local/bin/hive-daemon"}
+	if err := agent.MergeConfig(entry); err != nil {
+		t.Fatalf("MergeConfig(hive) failed: %v", err)
 	}
 
-	existingSettings := `{
-		"outputStyle": "Argentino"
-	}`
-	if err := os.WriteFile(settingsPath, []byte(existingSettings), 0644); err != nil {
-		t.Fatalf("write settings.json: %v", err)
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected remove+add calls, got %d", len(runner.calls))
 	}
 
-	// Add Context7
-	entry := MCPEntry{Name: "context7"}
-	err := agent.MergeConfig(entry)
-	if err != nil {
-		t.Fatalf("MergeConfig(context7) failed: %v", err)
-	}
-
-	// Read and verify
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
-		t.Fatalf("read settings.json: %v", err)
-	}
-
-	var settings map[string]any
-	if err := json.Unmarshal(data, &settings); err != nil {
-		t.Fatalf("unmarshal settings.json: %v", err)
-	}
-
-	// Verify outputStyle preserved and no mcpServers injected.
-	if settings["outputStyle"] != "Argentino" {
-		t.Errorf("outputStyle was lost, expected Argentino, got %v", settings["outputStyle"])
-	}
-	if _, ok := settings["mcpServers"]; ok {
-		t.Error("settings.json must not be used to register MCP servers")
-	}
+	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "remove", "--scope", "user", "hive")
+	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--scope", "user", "hive", "/usr/local/bin/hive-daemon")
 }
 
-// TestClaudeAgent_MergeConfig_Context7_Idempotent verifies running MergeConfig twice doesn't duplicate entries.
-// Spec R5: Idempotency — no duplication on re-run.
-func TestClaudeAgent_MergeConfig_Context7_Idempotent(t *testing.T) {
-	tmpHome := t.TempDir()
-	agent := &ClaudeAgent{home: tmpHome}
+// Spec R5: Idempotency/update behavior — reruns replace MCP entries safely.
+func TestClaudeAgent_MergeConfig_Context7_IdempotentViaRemoveThenAdd(t *testing.T) {
+	runner := &stubClaudeRunner{}
+	agent := &ClaudeAgent{runCommand: runner.run}
 
 	entry := MCPEntry{Name: "context7"}
-
-	// Run MergeConfig TWICE
 	if err := agent.MergeConfig(entry); err != nil {
 		t.Fatalf("first MergeConfig(context7) failed: %v", err)
 	}
@@ -481,53 +427,85 @@ func TestClaudeAgent_MergeConfig_Context7_Idempotent(t *testing.T) {
 		t.Fatalf("second MergeConfig(context7) failed: %v", err)
 	}
 
-	// Verify only ONE context7 entry exists
-	mcpPath := filepath.Join(tmpHome, ".claude", "mcp", "context7.json")
-	data, err := os.ReadFile(mcpPath)
-	if err != nil {
-		t.Fatalf("read context7 mcp file: %v", err)
+	if len(runner.calls) != 4 {
+		t.Fatalf("expected 4 calls for two runs (remove+add twice), got %d", len(runner.calls))
+	}
+	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "remove", "--scope", "user", "context7")
+	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--scope", "user", "context7", "npx", "-y", "@upstash/context7-mcp")
+	assertClaudeCall(t, runner.calls[2], "claude", "mcp", "remove", "--scope", "user", "context7")
+	assertClaudeCall(t, runner.calls[3], "claude", "mcp", "add", "--scope", "user", "context7", "npx", "-y", "@upstash/context7-mcp")
+}
+
+func TestClaudeAgent_MergeConfig_IgnoreMissingOnRemove(t *testing.T) {
+	runner := &stubClaudeRunner{
+		responses: []stubClaudeResponse{
+			{out: "Error: MCP server 'context7' not found", err: os.ErrNotExist},
+		},
+	}
+	agent := &ClaudeAgent{runCommand: runner.run}
+
+	if err := agent.MergeConfig(MCPEntry{Name: "context7"}); err != nil {
+		t.Fatalf("expected remove not-found to be tolerated, got: %v", err)
 	}
 
-	var settings map[string]any
-	if err := json.Unmarshal(data, &settings); err != nil {
-		t.Fatalf("unmarshal context7 mcp file: %v", err)
-	}
-
-	// Verify still correct format after re-run
-	if settings["command"] != "npx" {
-		t.Errorf("expected command=npx after re-run, got %v", settings["command"])
-	}
-
-	// File-level MCP contract should only contain this server payload.
-	if _, ok := settings["mcpServers"]; ok {
-		t.Error("mcpServers must not appear in per-server mcp files")
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected remove+add even when remove is missing, got %d", len(runner.calls))
 	}
 }
 
-func TestClaudeAgent_MergeConfig_Hive_WritesDedicatedMCPFile(t *testing.T) {
-	tmpHome := t.TempDir()
-	agent := &ClaudeAgent{home: tmpHome}
-
-	entry := MCPEntry{Name: "hive", DaemonPath: "/usr/local/bin/hive-daemon"}
-	if err := agent.MergeConfig(entry); err != nil {
-		t.Fatalf("MergeConfig(hive) failed: %v", err)
+func TestClaudeAgent_MergeConfig_RemoveFailureIsReturned(t *testing.T) {
+	runner := &stubClaudeRunner{
+		responses: []stubClaudeResponse{
+			{out: "permission denied", err: os.ErrPermission},
+		},
 	}
+	agent := &ClaudeAgent{runCommand: runner.run}
 
-	hivePath := filepath.Join(tmpHome, ".claude", "mcp", "hive.json")
-	data, err := os.ReadFile(hivePath)
-	if err != nil {
-		t.Fatalf("read hive mcp file: %v", err)
+	err := agent.MergeConfig(MCPEntry{Name: "context7"})
+	if err == nil {
+		t.Fatal("expected remove error, got nil")
 	}
+	if !strings.Contains(err.Error(), "remove existing claude mcp context7") {
+		t.Fatalf("expected wrapped remove error, got: %v", err)
+	}
+}
 
-	var payload map[string]any
-	if err := json.Unmarshal(data, &payload); err != nil {
-		t.Fatalf("unmarshal hive mcp file: %v", err)
-	}
+type stubClaudeCall struct {
+	name string
+	args []string
+}
 
-	if payload["command"] != "/usr/local/bin/hive-daemon" {
-		t.Errorf("hive command = %v, want /usr/local/bin/hive-daemon", payload["command"])
+type stubClaudeResponse struct {
+	out string
+	err error
+}
+
+type stubClaudeRunner struct {
+	calls     []stubClaudeCall
+	responses []stubClaudeResponse
+}
+
+func (s *stubClaudeRunner) run(name string, args ...string) (string, error) {
+	s.calls = append(s.calls, stubClaudeCall{name: name, args: append([]string(nil), args...)})
+	if len(s.responses) == 0 {
+		return "", nil
 	}
-	if payload["type"] != "stdio" {
-		t.Errorf("hive type = %v, want stdio", payload["type"])
+	resp := s.responses[0]
+	s.responses = s.responses[1:]
+	return resp.out, resp.err
+}
+
+func assertClaudeCall(t *testing.T, call stubClaudeCall, wantName string, wantArgs ...string) {
+	t.Helper()
+	if call.name != wantName {
+		t.Fatalf("command name = %q, want %q", call.name, wantName)
+	}
+	if len(call.args) != len(wantArgs) {
+		t.Fatalf("args length = %d, want %d; got=%v", len(call.args), len(wantArgs), call.args)
+	}
+	for i := range wantArgs {
+		if call.args[i] != wantArgs[i] {
+			t.Fatalf("arg[%d] = %q, want %q; full=%v", i, call.args[i], wantArgs[i], call.args)
+		}
 	}
 }
