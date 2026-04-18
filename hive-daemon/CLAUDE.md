@@ -14,7 +14,7 @@ for this project. Engram remains available for other projects.
 
 ## Revert
 
-To disable Hive and return to Engram: remove the `"hive"` entry from `~/.claude/settings.json`.
+To disable Hive and return to Engram: remove `~/.claude/mcp/hive.json`.
 All Engram data is untouched in its original location.
 
 ## Development Rules

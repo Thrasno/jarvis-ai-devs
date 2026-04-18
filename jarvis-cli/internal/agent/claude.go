@@ -18,7 +18,8 @@ var _ Agent = (*ClaudeAgent)(nil)
 
 // ClaudeAgent implements Agent for Anthropic's Claude Code CLI.
 // Config dir: ~/.claude/
-// Settings file: ~/.claude/settings.json
+// MCP files: ~/.claude/mcp/*.json
+// Settings file (non-MCP): ~/.claude/settings.json
 // Instructions file: ~/.claude/CLAUDE.md
 // Skills dir: ~/.claude/skills/
 type ClaudeAgent struct {
@@ -54,55 +55,44 @@ func (a *ClaudeAgent) skillsDir() string {
 	return filepath.Join(a.ConfigDir(), "skills")
 }
 
-// MergeConfig adds MCP entries to ~/.claude/settings.json based on entry.Name.
+func (a *ClaudeAgent) mcpDir() string {
+	return filepath.Join(a.ConfigDir(), "mcp")
+}
+
+func (a *ClaudeAgent) mcpEntryPath(name string) string {
+	return filepath.Join(a.mcpDir(), name+".json")
+}
+
+// MergeConfig writes MCP entries to dedicated files under ~/.claude/mcp/.
 // Supported entries: "hive" (local daemon), "context7" (npx remote package).
 // Claude format: command is a string, args is an array.
-// Uses deep merge to preserve all existing config keys.
+// settings.json remains reserved for non-MCP settings (e.g. outputStyle).
 func (a *ClaudeAgent) MergeConfig(entry MCPEntry) error {
 	var patch map[string]any
 
 	if entry.Name == "hive" {
-		// Build the hive MCP patch for Claude format
+		// Build the hive MCP payload for Claude MCP file format.
 		patch = map[string]any{
-			"mcpServers": map[string]any{
-				"hive": map[string]any{
-					"command": entry.DaemonPath,
-					"args":    []string{},
-					"type":    "stdio",
-				},
-			},
+			"command": entry.DaemonPath,
+			"args":    []string{},
+			"type":    "stdio",
 		}
 	} else if entry.Name == "context7" {
-		// Build the Context7 MCP patch for Claude format (npx local mode)
+		// Build the Context7 MCP payload for Claude format (npx local mode).
 		patch = map[string]any{
-			"mcpServers": map[string]any{
-				"context7": map[string]any{
-					"command": "npx",
-					"args":    []any{"-y", "@upstash/context7-mcp"},
-				},
-			},
+			"command": "npx",
+			"args":    []string{"-y", "@upstash/context7-mcp"},
 		}
 	} else {
 		return fmt.Errorf("unknown MCP entry name: %s", entry.Name)
 	}
 
-	patchBytes, err := json.Marshal(patch)
+	patchBytes, err := json.MarshalIndent(patch, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal hive MCP patch: %w", err)
+		return fmt.Errorf("marshal claude mcp patch: %w", err)
 	}
 
-	// Read existing settings (empty object if not found)
-	existingBytes, err := readFileOrEmpty(a.settingsPath())
-	if err != nil {
-		return fmt.Errorf("read settings.json: %w", err)
-	}
-
-	merged, err := MergeJSON(existingBytes, patchBytes)
-	if err != nil {
-		return fmt.Errorf("merge settings.json: %w", err)
-	}
-
-	return writeFileAtomic(a.settingsPath(), merged, 0644)
+	return writeFileAtomic(a.mcpEntryPath(entry.Name), patchBytes, 0644)
 }
 
 // WriteInstructions writes ~/.claude/CLAUDE.md with Layer1+Layer2 sentinel blocks.

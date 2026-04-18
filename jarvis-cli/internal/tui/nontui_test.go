@@ -121,6 +121,27 @@ func TestRunNoTUI_RerunKeepsExistingSelectionsOnBlankInput(t *testing.T) {
 	}
 }
 
+func TestBuildSkillSelectionPlan_PHPPromptControlsPHPSkills(t *testing.T) {
+	skillList := []skills.Skill{
+		{ID: "phpunit-testing", Name: "PHPUnit Testing", IsCore: false},
+		{ID: "laravel-architecture", Name: "Laravel Architecture", IsCore: false},
+	}
+
+	plan := buildSkillSelectionPlan(skillList, []string{"phpunit-testing", "laravel-architecture"})
+	if len(plan.Prompts) != 1 {
+		t.Fatalf("expected one PHP prompt, got %d", len(plan.Prompts))
+	}
+	if plan.Prompts[0].Label != "PHP" {
+		t.Fatalf("expected PHP label, got %q", plan.Prompts[0].Label)
+	}
+
+	for _, id := range []string{"phpunit-testing", "laravel-architecture"} {
+		if !plan.Selected[id] {
+			t.Fatalf("expected %s selected from existing config", id)
+		}
+	}
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // TestRunAgentConfigSequence_NoAgents
 // ──────────────────────────────────────────────────────────────────────────────

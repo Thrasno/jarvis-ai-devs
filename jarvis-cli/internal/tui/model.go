@@ -61,8 +61,9 @@ type Model struct {
 	customEdit bool   // true when in inline custom YAML edit mode
 
 	// Skills (Step 4).
-	SkillList []skills.Skill
-	Selected  map[string]bool
+	SkillList    []skills.Skill
+	SkillPrompts []skillPrompt
+	Selected     map[string]bool
 
 	// AgentConfig (Step 5).
 	Agents        []agent.Agent
@@ -131,20 +132,13 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 	skillList, err := skills.ListSkills(m.SkillsFS)
 	if err == nil {
 		m.SkillList = skillList
-		for _, s := range skillList {
-			if s.IsCore {
-				m.Selected[s.ID] = true
-				continue
-			}
-			if m.cfg != nil {
-				for _, id := range m.cfg.SelectedSkills {
-					if id == s.ID {
-						m.Selected[s.ID] = true
-						break
-					}
-				}
-			}
+		var existing []string
+		if m.cfg != nil {
+			existing = m.cfg.SelectedSkills
 		}
+		plan := buildSkillSelectionPlan(skillList, existing)
+		m.SkillPrompts = plan.Prompts
+		m.Selected = plan.Selected
 	}
 
 	if m.cfg != nil {
@@ -158,13 +152,6 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 
 	if m.cfg == nil {
 		m.cfg = &config.AppConfig{APIURL: config.DefaultAPIURL}
-	}
-
-	// Ensure core skills are always selected.
-	for _, s := range m.SkillList {
-		if s.IsCore {
-			m.Selected[s.ID] = true
-		}
 	}
 
 	// Detect installed agents (inject TemplatesFS for WriteInstructions rendering).

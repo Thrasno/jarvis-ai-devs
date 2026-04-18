@@ -73,8 +73,9 @@ func TestClaudeAgent_IsInstalled_True(t *testing.T) {
 	}
 }
 
-// TestClaudeAgent_MergeConfig_CreatesSettings verifies MergeConfig creates settings.json with hive entry.
-func TestClaudeAgent_MergeConfig_CreatesSettings(t *testing.T) {
+// TestClaudeAgent_MergeConfig_CreatesMCPFile verifies MergeConfig creates
+// ~/.claude/mcp/hive.json with hive payload.
+func TestClaudeAgent_MergeConfig_CreatesMCPFile(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	if err := os.MkdirAll(filepath.Join(tmpHome, ".claude"), 0755); err != nil {
@@ -87,24 +88,25 @@ func TestClaudeAgent_MergeConfig_CreatesSettings(t *testing.T) {
 		t.Fatalf("MergeConfig: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(tmpHome, ".claude", "settings.json"))
+	data, err := os.ReadFile(filepath.Join(tmpHome, ".claude", "mcp", "hive.json"))
 	if err != nil {
-		t.Fatal("settings.json not created:", err)
+		t.Fatal("hive.json not created:", err)
 	}
-	if !bytes.Contains(data, []byte("hive")) {
-		t.Errorf("expected 'hive' key in settings.json, got:\n%s", data)
+	if !bytes.Contains(data, []byte("hive-daemon")) {
+		t.Errorf("expected hive payload in hive.json, got:\n%s", data)
 	}
 }
 
-// TestClaudeAgent_MergeConfig_PreservesExistingKeys verifies deep merge keeps prior MCP servers.
-func TestClaudeAgent_MergeConfig_PreservesExistingKeys(t *testing.T) {
+// TestClaudeAgent_MergeConfig_PreservesExistingSettings verifies MergeConfig
+// does not modify settings.json when registering MCP files.
+func TestClaudeAgent_MergeConfig_PreservesExistingSettings(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	if err := os.MkdirAll(filepath.Join(tmpHome, ".claude"), 0755); err != nil {
 		t.Fatal(err)
 	}
 
-	existing := `{"mcpServers":{"engram":{"command":"engram","type":"stdio"}}}`
+	existing := `{"outputStyle":"Argentino"}`
 	settingsPath := filepath.Join(tmpHome, ".claude", "settings.json")
 	if err := os.WriteFile(settingsPath, []byte(existing), 0644); err != nil {
 		t.Fatal(err)
@@ -116,11 +118,11 @@ func TestClaudeAgent_MergeConfig_PreservesExistingKeys(t *testing.T) {
 	}
 
 	data, _ := os.ReadFile(settingsPath)
-	if !bytes.Contains(data, []byte("engram")) {
-		t.Error("expected pre-existing 'engram' key to be preserved after merge")
+	if !bytes.Contains(data, []byte("outputStyle")) {
+		t.Error("expected pre-existing outputStyle key to be preserved")
 	}
-	if !bytes.Contains(data, []byte("hive")) {
-		t.Error("expected new 'hive' key to be present after merge")
+	if bytes.Contains(data, []byte("mcpServers")) {
+		t.Error("settings.json must not be used as MCP registration surface")
 	}
 }
 

@@ -305,6 +305,12 @@ func TestDocsContract_BareJarvisEntrypoint(t *testing.T) {
 	if !strings.Contains(prd, "`jarvis`") && !strings.Contains(prd, "jarvis") {
 		t.Fatalf("docs/PRD.md should mention bare jarvis as setup/reconfiguration path")
 	}
+	if !strings.Contains(prd, "~/.claude/mcp/hive.json") || !strings.Contains(prd, "~/.claude/mcp/context7.json") {
+		t.Fatalf("docs/PRD.md must document Claude MCP files under ~/.claude/mcp/")
+	}
+	if strings.Contains(prd, "~/.claude/settings.json updated (hive-daemon mcp") {
+		t.Fatalf("docs/PRD.md must not describe settings.json as Claude MCP registration surface")
+	}
 }
 
 func TestDocsContract_PublicInstallerIsHonestAndOverridable(t *testing.T) {

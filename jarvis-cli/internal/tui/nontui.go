@@ -144,35 +144,28 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("list skills: %w", err)
 	}
-	selected := make(map[string]bool)
-	for _, s := range skillList {
-		if s.IsCore {
-			selected[s.ID] = true
-			fmt.Printf("  [core] %s — %s\n", s.Name, s.Description)
-			continue
-		}
+	plan := buildSkillSelectionPlan(skillList, cfg.SelectedSkills)
+	selected := plan.Selected
+	for _, prompt := range plan.Prompts {
 		defaultYes := false
-		for _, id := range cfg.SelectedSkills {
-			if id == s.ID {
-				defaultYes = true
-				break
-			}
+		if len(prompt.SkillIDs) > 0 {
+			defaultYes = selected[prompt.SkillIDs[0]]
 		}
 		if defaultYes {
-			selected[s.ID] = true
-			fmt.Printf("Install %s — %s? [Y/n]: ", s.Name, s.Description)
+			fmt.Printf("Install %s — %s? [Y/n]: ", prompt.Label, prompt.Description)
 		} else {
-			fmt.Printf("Install %s — %s? [y/N]: ", s.Name, s.Description)
+			fmt.Printf("Install %s — %s? [y/N]: ", prompt.Label, prompt.Description)
 		}
 		ans := strings.ToLower(strings.TrimSpace(readLine(scanner)))
-		if ans == "" && defaultYes {
-			selected[s.ID] = true
-		}
+		next := defaultYes
 		if ans == "y" || ans == "yes" {
-			selected[s.ID] = true
+			next = true
 		}
 		if ans == "n" || ans == "no" {
-			selected[s.ID] = false
+			next = false
+		}
+		for _, id := range prompt.SkillIDs {
+			selected[id] = next
 		}
 	}
 

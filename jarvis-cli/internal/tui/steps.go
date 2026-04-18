@@ -358,7 +358,7 @@ func updateSkills(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Find the index of the currently highlighted skill.
 	// We track cursor in the same field reusing presetCur for simplicity.
 	cur := m.presetCur
-	if cur >= len(m.SkillList) {
+	if cur >= len(m.SkillPrompts) {
 		cur = 0
 	}
 
@@ -368,7 +368,7 @@ func updateSkills(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.presetCur = cur - 1
 		}
 	case tea.KeyDown:
-		if cur < len(m.SkillList)-1 {
+		if cur < len(m.SkillPrompts)-1 {
 			m.presetCur = cur + 1
 		}
 	case tea.KeyRunes:
@@ -378,23 +378,24 @@ func updateSkills(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.presetCur = cur - 1
 			}
 		case "j":
-			if cur < len(m.SkillList)-1 {
+			if cur < len(m.SkillPrompts)-1 {
 				m.presetCur = cur + 1
 			}
 		case " ":
-			// Toggle selection (core skills cannot be toggled off).
-			if cur < len(m.SkillList) {
-				s := m.SkillList[cur]
-				if !s.IsCore {
-					m.Selected[s.ID] = !m.Selected[s.ID]
+			if cur < len(m.SkillPrompts) {
+				prompt := m.SkillPrompts[cur]
+				next := !m.Selected[prompt.SkillIDs[0]]
+				for _, id := range prompt.SkillIDs {
+					m.Selected[id] = next
 				}
 			}
 		}
 	case tea.KeySpace:
-		if cur < len(m.SkillList) {
-			s := m.SkillList[cur]
-			if !s.IsCore {
-				m.Selected[s.ID] = !m.Selected[s.ID]
+		if cur < len(m.SkillPrompts) {
+			prompt := m.SkillPrompts[cur]
+			next := !m.Selected[prompt.SkillIDs[0]]
+			for _, id := range prompt.SkillIDs {
+				m.Selected[id] = next
 			}
 		}
 	case tea.KeyEnter:
@@ -406,26 +407,25 @@ func updateSkills(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func viewSkills(m Model) string {
 	var sb strings.Builder
 	sb.WriteString(stepHeader(4, 6, "Select Extra Skills"))
-	sb.WriteString(dimStyle.Render("Core skills (locked) are always installed. Select optional extras here.") + "\n\n")
+	sb.WriteString(dimStyle.Render("Required/default skills are installed automatically. Select only stack-specific extras.") + "\n\n")
 
 	cur := m.presetCur
-	for i, s := range m.SkillList {
+	for i, prompt := range m.SkillPrompts {
 		check := "[ ]"
-		if m.Selected[s.ID] || s.IsCore {
+		if len(prompt.SkillIDs) > 0 && m.Selected[prompt.SkillIDs[0]] {
 			check = "[x]"
 		}
-		lock := ""
-		if s.IsCore {
-			lock = dimStyle.Render(" (core)")
-		}
 
-		line := fmt.Sprintf("%s %s%s — %s", check, s.Name, lock, s.Description)
+		line := fmt.Sprintf("%s %s — %s", check, prompt.Label, prompt.Description)
 		if i == cur {
 			line = selectedStyle.Render("> " + line)
 		} else {
 			line = "  " + line
 		}
 		sb.WriteString(line + "\n")
+	}
+	if len(m.SkillPrompts) == 0 {
+		sb.WriteString(dimStyle.Render("No stack-specific skill prompts available for this catalog.") + "\n")
 	}
 
 	sb.WriteString("\n" + dimStyle.Render("↑/↓ or j/k: navigate  Space: toggle  Enter: confirm"))

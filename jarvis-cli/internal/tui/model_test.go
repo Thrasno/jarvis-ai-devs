@@ -49,15 +49,81 @@ func buildPersonaModel(n int) Model {
 
 // buildSkillsModel returns a Model at StepSkills with one core and one optional skill.
 func buildSkillsModel() Model {
+	plans := buildSkillSelectionPlan([]skills.Skill{
+		{ID: "hive", Name: "Hive", IsCore: true},
+		{ID: "go-testing", Name: "Go Testing", IsCore: false},
+	}, nil)
+
 	return Model{
 		Step: StepSkills,
 		SkillList: []skills.Skill{
-			{ID: "core-skill", Name: "Core Skill", IsCore: true},
-			{ID: "optional-skill", Name: "Optional Skill", IsCore: false},
+			{ID: "hive", Name: "Hive", IsCore: true},
+			{ID: "go-testing", Name: "Go Testing", IsCore: false},
 		},
-		Selected: map[string]bool{
-			"core-skill": true, // pre-selected because it is core
-		},
+		Selected:     plans.Selected,
+		SkillPrompts: plans.Prompts,
+	}
+}
+
+func TestBuildSkillSelectionPlan_OnlyPromptsStackSpecificSkills(t *testing.T) {
+	skillList := []skills.Skill{
+		{ID: "hive", Name: "Hive", IsCore: true},
+		{ID: "branch-pr", Name: "Branch & PR", IsCore: false},
+		{ID: "issue-creation", Name: "Issue Creation", IsCore: false},
+		{ID: "zoho-deluge", Name: "Zoho Deluge", IsCore: false},
+		{ID: "phpunit-testing", Name: "PHPUnit Testing", IsCore: false},
+		{ID: "laravel-architecture", Name: "Laravel Architecture", IsCore: false},
+		{ID: "go-testing", Name: "Go Testing", IsCore: false},
+	}
+
+	plan := buildSkillSelectionPlan(skillList, nil)
+
+	if len(plan.Prompts) != 3 {
+		t.Fatalf("expected exactly 3 interactive prompts, got %d", len(plan.Prompts))
+	}
+
+	if plan.Prompts[0].Label != "Zoho-Deluge" {
+		t.Fatalf("expected first prompt to be Zoho-Deluge, got %q", plan.Prompts[0].Label)
+	}
+	if plan.Prompts[1].Label != "PHP" {
+		t.Fatalf("expected second prompt to be PHP, got %q", plan.Prompts[1].Label)
+	}
+	if plan.Prompts[2].Label != "Go Testing" {
+		t.Fatalf("expected third prompt to be Go Testing, got %q", plan.Prompts[2].Label)
+	}
+
+	// Non stack-specific skills must be auto-enabled and not shown interactively.
+	if !plan.Selected["branch-pr"] || !plan.Selected["issue-creation"] {
+		t.Fatalf("expected non stack-specific skills to be auto-selected: %+v", plan.Selected)
+	}
+}
+
+func TestViewSkills_DoesNotLeakLargeCatalog(t *testing.T) {
+	skillList := []skills.Skill{
+		{ID: "hive", Name: "Hive", IsCore: true},
+		{ID: "branch-pr", Name: "Branch & PR", IsCore: false},
+		{ID: "issue-creation", Name: "Issue Creation", IsCore: false},
+		{ID: "zoho-deluge", Name: "Zoho Deluge", IsCore: false},
+		{ID: "phpunit-testing", Name: "PHPUnit Testing", IsCore: false},
+		{ID: "laravel-architecture", Name: "Laravel Architecture", IsCore: false},
+		{ID: "go-testing", Name: "Go Testing", IsCore: false},
+		{ID: "judgment-day", Name: "Judgment Day", IsCore: false},
+	}
+
+	plan := buildSkillSelectionPlan(skillList, nil)
+	m := Model{
+		Step:         StepSkills,
+		SkillList:    skillList,
+		Selected:     plan.Selected,
+		SkillPrompts: plan.Prompts,
+	}
+
+	v := viewSkills(m)
+	if !strings.Contains(v, "Zoho-Deluge") || !strings.Contains(v, "PHP") || !strings.Contains(v, "Go Testing") {
+		t.Fatalf("expected stack-specific prompts in view, got:\n%s", v)
+	}
+	if strings.Contains(v, "Judgment Day") || strings.Contains(v, "Branch & PR") {
+		t.Fatalf("view leaked non-interactive catalog skills:\n%s", v)
 	}
 }
 
@@ -199,23 +265,23 @@ func TestStep_Persona_CursorNavigation(t *testing.T) {
 // TestStep_Skills_Toggle verifies that Space toggles a non-core skill on and off.
 func TestStep_Skills_Toggle(t *testing.T) {
 	m := buildSkillsModel()
-	// Move cursor to index 1 (optional-skill).
-	m.presetCur = 1
+	// Move cursor to index 0 (go-testing prompt).
+	m.presetCur = 0
 
-	if m.Selected["optional-skill"] {
-		t.Fatal("optional-skill should not be selected initially")
+	if m.Selected["go-testing"] {
+		t.Fatal("go-testing should not be selected initially")
 	}
 
 	// Toggle on.
 	m = sendRune(m, " ")
-	if !m.Selected["optional-skill"] {
-		t.Error("expected optional-skill to be selected after Space")
+	if !m.Selected["go-testing"] {
+		t.Error("expected go-testing to be selected after Space")
 	}
 
 	// Toggle off.
 	m = sendRune(m, " ")
-	if m.Selected["optional-skill"] {
-		t.Error("expected optional-skill to be deselected after second Space")
+	if m.Selected["go-testing"] {
+		t.Error("expected go-testing to be deselected after second Space")
 	}
 }
 
@@ -227,17 +293,17 @@ func TestStep_Skills_Toggle(t *testing.T) {
 // does NOT deselect it.
 func TestStep_Skills_CoreAlwaysSelected(t *testing.T) {
 	m := buildSkillsModel()
-	// Cursor at 0 = core-skill.
+	// Cursor at 0 = go-testing prompt.
 	m.presetCur = 0
 
-	if !m.Selected["core-skill"] {
-		t.Fatal("core-skill should be pre-selected")
+	if m.Selected["go-testing"] {
+		t.Fatal("go-testing should start unselected")
 	}
 
-	// Space should be a no-op for core skills.
+	// Space toggles interactive prompt on.
 	m = sendRune(m, " ")
-	if !m.Selected["core-skill"] {
-		t.Error("core-skill must remain selected after Space (it is a core skill)")
+	if !m.Selected["go-testing"] {
+		t.Error("go-testing should toggle on")
 	}
 }
 
@@ -291,21 +357,21 @@ func TestStep_Skills_EnterAdvances(t *testing.T) {
 // TestStep_Skills_CoreSkillAlwaysInSelected
 // ──────────────────────────────────────────────────────────────────────────────
 
-// TestStep_Skills_CoreSkillAlwaysInSelected verifies that toggling a core skill
-// via KeySpace (tea.KeySpace type) does not remove it from Selected.
-func TestStep_Skills_CoreSkillAlwaysInSelected(t *testing.T) {
+// TestStep_Skills_KeySpaceTogglesPrompt verifies KeySpace toggles the selected
+// stack-specific prompt.
+func TestStep_Skills_KeySpaceTogglesPrompt(t *testing.T) {
 	m := buildSkillsModel()
-	// Cursor at 0 = core-skill.
+	// Cursor at 0 = go-testing prompt.
 	m.presetCur = 0
 
-	if !m.Selected["core-skill"] {
-		t.Fatal("core-skill should be pre-selected")
+	if m.Selected["go-testing"] {
+		t.Fatal("go-testing should start unselected")
 	}
 
-	// Send KeySpace (the key type, not a rune) — core skill must remain selected.
+	// Send KeySpace (the key type, not a rune).
 	m = sendKey(m, tea.KeySpace)
-	if !m.Selected["core-skill"] {
-		t.Error("core-skill must remain selected after KeySpace (it is a core skill)")
+	if !m.Selected["go-testing"] {
+		t.Error("go-testing must be selected after KeySpace")
 	}
 }
 
