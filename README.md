@@ -1,147 +1,81 @@
-# Jarvis-Dev: Ecosistema IA para Equipo Conpas
+# Jarvis Dev
 
-> **Estado**: Fase de Análisis Pre-PRD (pausado 2026-04-09)
+Jarvis Dev is an open development ecosystem for AI-assisted engineering workflows. It combines a CLI, a local memory daemon, and a central API to help teams keep context, structure execution, and reduce repeated decisions.
 
-## Resumen Ejecutivo
+## What is included
 
-Ecosistema de desarrollo asistido por IA diseñado para 8 desarrolladores del equipo Conpas, especializado en stack Zoho/PHP con memoria compartida cross-team y QA manual mejorado.
+- **`jarvis-cli/`**: user-facing CLI and workflow entrypoint.
+- **`hive-daemon/`**: local service for offline-first memory operations.
+- **`hive-api/`**: central API service for shared memory and sync.
 
-## Contexto
+## Core capabilities
 
-- **Equipo**: 8 desarrolladores (3 avanzados, 5 en distintos niveles)
-- **Stack**: Zoho (SaaS primario), PHP (volumetría alta), GitLab (self-hosted)
-- **Licencias**: Claude Teams (8 seats) compradas por 1 año
-- **Infraestructura**: 3 VPS (apps PHP), 1 VPS (GitLab)
+- **Shared memory model**
+  - Local-first storage with optional central synchronization.
+  - Timeline-style observations with `personal` and `project` scopes.
+- **Structured SDD workflow**
+  - Spec-driven phases (`explore`, `propose`, `spec`, `design`, `tasks`, `apply`, `verify`, `archive`).
+- **Context-aware project detection**
+  - Detects stack and project metadata for better defaults and skill selection.
+- **Persona + skill system**
+  - Configurable communication/workflow presets and reusable skill packs.
 
-## Problemas a Resolver
+## High-level architecture
 
-1. **Falta de estandarización**: Cada desarrollador programa "como le da la gana"
-2. **QA/Testing débil**: Zoho es SaaS sin test runners, tests 100% manuales
-3. **Memoria NO compartida**: Conocimiento en silos, decisiones se pierden
-4. **Adopción heterogénea**: 5 devs nunca usaron IA, necesitan onboarding
+```text
+jarvis (CLI)
+   |
+   +--> hive-daemon (local SQLite, offline-first)
+   |
+   +--> hive-api (central service, PostgreSQL)
+```
 
-## Soluciones Diseñadas
+The CLI can operate with local memory only, or with a hybrid local+central setup.
 
-### 1. Sistema de Memoria Compartida (Prioridad A - CRÍTICO)
+## Quickstart (development)
 
-**Arquitectura**: Hybrid Local + Central (hub-and-spoke)
-- SQLite local en cada dev (offline-first, performance)
-- PostgreSQL central en VPS (fuente de verdad compartida)
-- Sincronización manual en v1: tool MCP `mem_sync` (el comando `jarvis sync` es informativo/no-op)
-- Guardado automático (IA decide qué es digno de memoria)
-- Tracking de usuario: `created_by`, `updated_by`, historial completo
+### 1) Start API dependencies
 
-**Scopes**:
-- `personal`: Solo local, NO sincroniza (preferencias personales)
-- `project`: Sincroniza al central (decisiones, bugs, arquitectura)
+```bash
+docker compose -f hive-api/deploy/docker-compose.yml up -d
+```
 
-**Nombres propuestos**: Cortex, Nexus, Bitácora (pendiente decisión)
+### 2) Run services locally
 
-### 2. Manual QA Protocol (Prioridad C - IMPORTANTE)
+```bash
+go run ./cmd/server
+```
 
-**Realidad Zoho**: SaaS sin ejecución local → tests 100% manuales
+from `hive-api/`, and:
 
-**Nueva fase SDD**: `sdd-qa` (bloqueante, NO se salta con fast-forward)
-1. IA analiza código generado
-2. IA propone mejoras (si las hay)
-3. IA genera checklist Markdown de pruebas manuales
-   - Inputs de ejemplo
-   - Pasos a seguir
-   - Resultados esperados
-   - Edge cases
-4. Usuario ejecuta en Zoho, marca pass/fail
-5. Si fail → vuelve a `sdd-apply` con detalles
-6. Si todo pass → permite `sdd-verify` → `sdd-archive`
+```bash
+go run ./cmd/hive-daemon
+```
 
-### 3. Onboarding Progresivo (Feature diferenciador)
+from `hive-daemon/`.
 
-**3 niveles automáticos** basados en tareas completadas:
+### 3) Run CLI
 
-| Nivel | Rango | Restricciones |
-|-------|-------|---------------|
-| **Beginner** | 0-10 tasks | Solo `complexity: low`, max 3 archivos, NO fast-forward |
-| **Intermediate** | 11-30 tasks | Hasta `complexity: medium`, max 8 archivos, fast-forward con warnings |
-| **Advanced** | 30+ tasks | Sin restricciones |
+```bash
+go run ./cmd/jarvis --help
+```
 
-**Tracking**: `user-stats/{username}` con contador, QA success rate, avg duration
+from `jarvis-cli/`.
 
-### 4. Sistema de Persona (2 Capas)
+## Installation
 
-**Layer 1 (Base Inmutable)**: Comportamiento, expertise, skills, workflow → Definido por Conpas, NO editable
+### From source
 
-**Layer 2 (User Preset)**: Tono, idioma, analogías, estilo → Editable con validación
+Build each binary from its module:
 
-**Presets**: X cantidad + opción Custom (usuario edita MD, sistema valida estructura)
+- `jarvis-cli/cmd/jarvis`
+- `hive-daemon/cmd/hive-daemon`
+- `hive-api/cmd/server`
 
-## Decisiones Arquitectónicas Clave
+### Release artifacts
 
-| Decisión | Rationale |
-|----------|-----------|
-| **NO usar Engram de base** | Control total del stack, API REST convencional familiar para equipo PHP |
-| **Sync manual v1** | Ejecutar `mem_sync` cuando se necesite; `jarvis sync` solo informa estado del flujo |
-| **Guardado automático** | IA suficientemente autónoma, usuario NO debe indicar |
-| **PostgreSQL (no ElasticSearch)** | `tsvector` + GIN index suficiente para v1 |
-| **Markdown checklist (no TUI)** | Más simple, portable, familiar |
-| **TDD Manual (no test runners)** | Zoho SaaS = deal-breaker para testing automatizado |
+The repository includes `.goreleaser.yaml` to package multi-platform binaries for the main CLI and daemon components.
 
-## Tecnologías Propuestas
+## Project status
 
-**Sistema de Memoria** (pendiente decisión de stack):
-- **Opción A**: Backend Laravel 10 (PHP 8.2+), CLI PHP
-- **Opción B**: Backend Gin (Go), CLI Go (binario portable)
-
-**Base de datos**:
-- Central: PostgreSQL 15+ con FTS (`tsvector` + GIN index)
-- Local: SQLite 3
-
-**Auth**: JWT con GitLab tokens
-
-## Estado Actual
-
-### Completado ✅
-- Análisis profundo de gentle-ai (referencia arquitectónica)
-- Captura de requerimientos (2 rondas de preguntas/respuestas)
-- Diseño de arquitectura de memoria compartida
-- Diseño de fase `sdd-qa` con Manual QA Protocol
-- Diseño de onboarding progresivo
-- Propuesta de API REST convencional
-
-### Pendiente 🔲
-- Decidir nombre del sistema de memoria
-- Decidir stack (PHP vs Go)
-- Confirmar umbrales de niveles onboarding
-- Escribir PRD completo
-- Diseño detallado de componentes
-- Implementación (4 MVPs)
-
-## Próximos Pasos
-
-1. **Usuario responda pendientes**:
-   - Nombre del sistema (Cortex, Nexus, Bitácora, otro)
-   - Stack backend/CLI (PHP vs Go)
-   - Umbrales de niveles (OK con 0-10, 11-30, 30+?)
-
-2. **Ejecutar `/sdd-new jarvis-dev-prd`**: PRD completo (~800 líneas)
-
-3. **Fase de implementación**:
-   - MVP 1: Memoria compartida funcionando
-   - MVP 2: Fase `sdd-qa`
-   - MVP 3: Onboarding progresivo
-   - MVP 4: Sistema de Persona
-
-## Documentación
-
-- **[Análisis Completo](docs/ANALYSIS.md)**: Documento consolidado con todos los requerimientos y decisiones
-- **[Memorias](docs/memories/)**: Observaciones individuales guardadas durante el análisis
-
-## Prioridades
-
-1. **A (CRÍTICO)**: Memoria compartida cross-team funcionando YA
-2. **C (IMPORTANTE)**: QA/testing manual mejorado (checklist + bloqueante)
-3. **B (DESEABLE)**: Estandarización de código (linters, formatters)
-
----
-
-**Última actualización**: 2026-04-09  
-**Proyecto pausado**: Temporalmente por otras tareas  
-**Contacto**: CTO Conpas
+This repository is under active development. APIs, commands, and workflow details may evolve as the platform matures.

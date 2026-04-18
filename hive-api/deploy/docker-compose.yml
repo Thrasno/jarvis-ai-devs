@@ -15,9 +15,9 @@ services:
   postgres:
     image: postgres:15-alpine
     environment:
-      POSTGRES_USER: hive
-      POSTGRES_PASSWORD: hivepass
-      POSTGRES_DB: hivedb
+      POSTGRES_USER: ${POSTGRES_USER:-hive}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-example_postgres_password_change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-hivedb}
     ports:
       - "5432:5432"
     volumes:
@@ -27,7 +27,7 @@ services:
     healthcheck:
       # pg_isready verifica que PostgreSQL acepta conexiones.
       # interval/timeout/retries: el api service espera a que esto pase antes de arrancar.
-      test: ["CMD-SHELL", "pg_isready -U hive -d hivedb"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hive} -d ${POSTGRES_DB:-hivedb}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -42,8 +42,8 @@ services:
     ports:
       - "8080:8080"
     environment:
-      DATABASE_URL: postgres://hive:hivepass@postgres:5432/hivedb
-      JWT_SECRET: cambia-este-secreto-en-produccion-minimo-32chars
+      DATABASE_URL: postgres://${POSTGRES_USER:-hive}:${POSTGRES_PASSWORD:-example_postgres_password_change_me}@postgres:5432/${POSTGRES_DB:-hivedb}
+      JWT_SECRET: ${JWT_SECRET:-example_jwt_secret_change_me_min_32_chars}
       PORT: "8080"
       GIN_MODE: debug   # debug para desarrollo, release para prod
     depends_on:

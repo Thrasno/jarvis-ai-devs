@@ -55,3 +55,12 @@ memories.json
 *.zip
 *.tar.gz
 *.rar
+
+# Internal/private workspace artifacts (keep local, do not publish)
+.engram/
+.atl/
+docs/memories/
+docs/EXECUTIVE_PROPOSAL.md
+docs/INFRASTRUCTURE.md
+docs/ANALYSIS.md
+docs/PRD.md

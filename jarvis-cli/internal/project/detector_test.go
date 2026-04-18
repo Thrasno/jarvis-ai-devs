@@ -117,11 +117,11 @@ func TestDetectProject_WithGitRemote(t *testing.T) {
 
 	// Set up a git repo with an HTTPS remote.
 	mustExec(t, dir, "git", "init")
-	mustExec(t, dir, "git", "remote", "add", "origin", "https://github.com/Thrasno/conpas-erp.git")
+	mustExec(t, dir, "git", "remote", "add", "origin", "https://github.com/example/acme-erp.git")
 
 	got := DetectProject(dir)
-	if got != "conpas-erp" {
-		t.Errorf("DetectProject = %q, want %q", got, "conpas-erp")
+	if got != "acme-erp" {
+		t.Errorf("DetectProject = %q, want %q", got, "acme-erp")
 	}
 }
 
@@ -133,7 +133,7 @@ func TestDetectProject_SSHRemote(t *testing.T) {
 	dir := t.TempDir()
 
 	mustExec(t, dir, "git", "init")
-	mustExec(t, dir, "git", "remote", "add", "origin", "git@github.com:Thrasno/my-app.git")
+	mustExec(t, dir, "git", "remote", "add", "origin", "git@github.com:example/my-app.git")
 
 	got := DetectProject(dir)
 	if got != "my-app" {
@@ -209,9 +209,9 @@ func TestExtractRepoName(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"https://github.com/Thrasno/conpas-erp.git", "conpas-erp"},
-		{"git@github.com:Thrasno/conpas-erp.git", "conpas-erp"},
-		{"https://github.com/Thrasno/my-app", "my-app"},
+		{"https://github.com/example/acme-erp.git", "acme-erp"},
+		{"git@github.com:example/acme-erp.git", "acme-erp"},
+		{"https://github.com/example/my-app", "my-app"},
 		{"git@gitlab.com:org/project.git", "project"},
 		{"", ""},
 	}
