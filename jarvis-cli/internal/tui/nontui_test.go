@@ -48,8 +48,8 @@ func TestRunNoTUI_SkipsAuthAndDefaultsPersona(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("PATH", "") // no agents detected
 
-	// 3 readline calls: email, persona choice, fixture-skill (optional).
-	input := strings.NewReader("\n\n\n")
+	// scope, persona choice, optional skill prompt, explicit apply confirmation.
+	input := strings.NewReader("\n\nyes\n")
 
 	err := runNoTUI(testWizardConfig(), input)
 	if err != nil {
@@ -74,8 +74,8 @@ func TestRunNoTUI_SelectsSkill(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("PATH", "")
 
-	// email=skip, persona=default, fixture-skill=yes
-	input := strings.NewReader("\n\ny\n")
+	// scope=default, persona=default, fixture-skill=yes, apply=yes
+	input := strings.NewReader("\n\nyes\n")
 
 	if err := runNoTUI(testWizardConfig(), input); err != nil {
 		t.Fatalf("runNoTUI with skill selected: %v", err)
@@ -103,8 +103,8 @@ func TestRunNoTUI_RerunKeepsExistingSelectionsOnBlankInput(t *testing.T) {
 		t.Fatalf("save seed config: %v", err)
 	}
 
-	// email keep blank, persona keep default, extra skills keep defaults.
-	input := strings.NewReader("\n\n\n")
+	// scope keep default, persona keep default, extra skills keep defaults, apply=yes.
+	input := strings.NewReader("\n\nyes\n")
 	if err := runNoTUI(testWizardConfig(), input); err != nil {
 		t.Fatalf("runNoTUI rerun: %v", err)
 	}
@@ -321,5 +321,50 @@ func TestRunAgentConfigSequence_Context7AfterHive(t *testing.T) {
 	}
 	if _, ok := mcpServers["context7"]; !ok {
 		t.Error("context7 entry missing from settings.json")
+	}
+}
+
+func TestRunNoTUI_LocalOnlyPurgesStoredCredentialsOnApply(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("PATH", "")
+
+	jarvisDir := filepath.Join(tmpHome, ".jarvis")
+	if err := os.MkdirAll(jarvisDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jarvisDir, "sync.json"), []byte(`{"email":"old@example.com"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	seed := &config.AppConfig{Scope: config.ScopeLocalCloud, Cloud: &config.CloudConfig{Email: "old@example.com", SyncConfigured: true}, Email: "old@example.com", APIURL: config.DefaultAPIURL}
+	if err := config.Save(seed); err != nil {
+		t.Fatalf("save seed config: %v", err)
+	}
+
+	// scope=local-only, persona default, skill default, apply=yes.
+	input := strings.NewReader("local-only\n\nyes\n")
+	if err := runNoTUI(testWizardConfig(), input); err != nil {
+		t.Fatalf("runNoTUI local-only: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(jarvisDir, "sync.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected sync.json removed in local-only apply, got err=%v", err)
+	}
+}
+
+func TestRunNoTUI_CancelBeforeApplyKeepsNoLocalArtifacts(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("PATH", "")
+
+	// scope local-only, persona default, optional skill prompts default, apply=no.
+	input := strings.NewReader("local-only\n\nno\n")
+	if err := runNoTUI(testWizardConfig(), input); err != nil {
+		t.Fatalf("runNoTUI cancel review: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmpHome, ".jarvis", "memory.db")); !os.IsNotExist(err) {
+		t.Fatalf("expected no memory.db when canceling before apply, got err=%v", err)
 	}
 }

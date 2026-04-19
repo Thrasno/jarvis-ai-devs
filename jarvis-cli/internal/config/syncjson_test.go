@@ -88,3 +88,34 @@ func TestWriteSyncCredentials_LeavesPreviousFileWhenUpdateFails(t *testing.T) {
 		t.Fatalf("expected original sync.json content preserved on failure, got: %s", string(data))
 	}
 }
+
+func TestDeleteSyncCredentials_RemovesExistingFile(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	jarvisDir := filepath.Join(tmpHome, ".jarvis")
+	if err := os.MkdirAll(jarvisDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(jarvisDir, "sync.json")
+	if err := os.WriteFile(path, []byte(`{"email":"old@example.com"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := DeleteSyncCredentials(); err != nil {
+		t.Fatalf("DeleteSyncCredentials: %v", err)
+	}
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected sync.json deleted, stat err: %v", err)
+	}
+}
+
+func TestDeleteSyncCredentials_IdempotentWhenMissing(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	if err := DeleteSyncCredentials(); err != nil {
+		t.Fatalf("DeleteSyncCredentials missing file should not fail: %v", err)
+	}
+}

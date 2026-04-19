@@ -227,6 +227,52 @@ func TestConfigStatus_RecoverWhenPartiallyConfigured(t *testing.T) {
 	}
 }
 
+func TestLoad_DefaultsScopeFromLegacyCloudState(t *testing.T) {
+	home := isolateHome(t)
+	legacy := strings.Join([]string{
+		"api_url: https://hivemem.dev",
+		"email: legacy@example.com",
+	}, "\n")
+	if err := os.MkdirAll(filepath.Join(home, ".jarvis"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".jarvis", "config.yaml"), []byte(legacy), 0644); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load legacy config: %v", err)
+	}
+
+	if cfg.Scope != ScopeLocalCloud {
+		t.Fatalf("expected scope=%q from legacy cloud state, got %q", ScopeLocalCloud, cfg.Scope)
+	}
+}
+
+func TestLoad_DefaultsScopeToLocalOnlyWithoutCloudState(t *testing.T) {
+	home := isolateHome(t)
+	legacy := strings.Join([]string{
+		"api_url: https://hivemem.dev",
+		"persona_preset: argentino",
+	}, "\n")
+	if err := os.MkdirAll(filepath.Join(home, ".jarvis"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".jarvis", "config.yaml"), []byte(legacy), 0644); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load legacy config: %v", err)
+	}
+
+	if cfg.Scope != ScopeLocalOnly {
+		t.Fatalf("expected scope=%q without cloud state, got %q", ScopeLocalOnly, cfg.Scope)
+	}
+}
+
 func TestLoad_ReturnsErrorWhenFileCorrupt(t *testing.T) {
 	home := isolateHome(t)
 

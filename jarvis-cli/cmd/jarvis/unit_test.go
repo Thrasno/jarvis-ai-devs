@@ -275,7 +275,7 @@ func TestRunWizard_NoTUI_SkipsAuth(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("PATH", "") // prevent opencode binary detection
 
-	input := "\n\n\n\n\n\n" // 6 empty lines
+	input := "\n\n\n\n\nyes\n" // scope, persona, 3 skill prompts, apply=yes
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("os.Pipe: %v", err)

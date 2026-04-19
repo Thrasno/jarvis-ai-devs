@@ -18,6 +18,8 @@ import (
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
 )
 
+const localOnlyReviewWarning = "Se ha seleccionado modo local, se borrará cualquier credencial almacenada sobre hive-api"
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Style helpers
 // ──────────────────────────────────────────────────────────────────────────────
@@ -37,48 +39,58 @@ func stepHeader(step, total int, title string) string {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Step 1: HiveLocal
+// Step 1: Scope
 // ──────────────────────────────────────────────────────────────────────────────
 
-func updateHiveLocal(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func updateScope(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
+	case tea.KeyUp:
+		m.Scope = config.ScopeLocalOnly
+		m.cfg.Scope = m.Scope
+	case tea.KeyDown:
+		m.Scope = config.ScopeLocalCloud
+		m.cfg.Scope = m.Scope
+	case tea.KeyRunes:
+		switch string(msg.Runes) {
+		case "k":
+			m.Scope = config.ScopeLocalOnly
+			m.cfg.Scope = m.Scope
+		case "j":
+			m.Scope = config.ScopeLocalCloud
+			m.cfg.Scope = m.Scope
+		}
 	case tea.KeyEnter:
-		// Create ~/.jarvis directory and touch the SQLite placeholder.
-		home, err := os.UserHomeDir()
-		if err != nil {
-			m.Err = fmt.Errorf("cannot determine home dir: %w", err)
-			return m, nil
-		}
-		jarvisDir := filepath.Join(home, ".jarvis")
-		if err := os.MkdirAll(jarvisDir, 0755); err != nil {
-			m.Err = fmt.Errorf("create ~/.jarvis: %w", err)
-			return m, nil
-		}
-		// Touch memory.db — hive-daemon manages the actual SQLite schema.
-		dbPath := filepath.Join(jarvisDir, "memory.db")
-		if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
-			f, createErr := os.Create(dbPath)
-			if createErr != nil {
-				m.Err = fmt.Errorf("create memory.db: %w", createErr)
-				return m, nil
-			}
-			f.Close()
-		}
 		m.Err = nil
-		m.Step = StepHiveCloud
+		if m.Scope == config.ScopeLocalCloud {
+			m.Step = StepHiveCloud
+		} else {
+			m.Step = StepPersona
+		}
 	}
 	return m, nil
 }
 
-func viewHiveLocal(m Model) string {
+func viewScope(m Model) string {
 	var sb strings.Builder
-	sb.WriteString(stepHeader(1, 6, "Local Memory Database"))
-	sb.WriteString("This will create " + headerStyle.Render("~/.jarvis/memory.db") + " for local persistent memory.\n")
-	sb.WriteString("The hive-daemon MCP server manages the SQLite schema.\n\n")
+	sb.WriteString(stepHeader(1, 6, "Setup Scope"))
+	sb.WriteString("Elegí el alcance del setup (sin side effects hasta Apply).\n\n")
+
+	localLine := "  local-only"
+	cloudLine := "  local+cloud"
+	if m.Scope == config.ScopeLocalOnly {
+		localLine = selectedStyle.Render("> local-only")
+		cloudLine = dimStyle.Render("  local+cloud")
+	} else {
+		localLine = dimStyle.Render("  local-only")
+		cloudLine = selectedStyle.Render("> local+cloud")
+	}
+	sb.WriteString(localLine + "\n")
+	sb.WriteString(cloudLine + "\n\n")
+	sb.WriteString(dimStyle.Render("local-only: setup local sin cloud. local+cloud: incluye auth/enlace cloud.") + "\n")
 	if m.Err != nil {
 		sb.WriteString(errorStyle.Render("Error: "+m.Err.Error()) + "\n\n")
 	}
-	sb.WriteString(dimStyle.Render("Press Enter to continue, Ctrl+C to exit"))
+	sb.WriteString(dimStyle.Render("↑/↓ o j/k: cambiar  Enter: continuar  Ctrl+C: salir"))
 	return sb.String()
 }
 
@@ -187,7 +199,7 @@ func handleStepMsg(m Model, msg tea.Msg) (Model, bool, tea.Cmd) {
 			return updated.(Model), true, cmd
 		}
 	}
-	if m.Step == StepAgentConfig {
+	if m.Step == StepApply {
 		if pr, ok := msg.(agentProgressMsg); ok {
 			m.agentProgress = append(m.agentProgress, pr.line)
 			if pr.failed {
@@ -399,7 +411,7 @@ func updateSkills(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case tea.KeyEnter:
-		m.Step = StepAgentConfig
+		m.Step = StepReview
 	}
 	return m, nil
 }
@@ -433,7 +445,7 @@ func viewSkills(m Model) string {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Step 5: AgentConfig
+// Step 5: Review
 // ──────────────────────────────────────────────────────────────────────────────
 
 // agentProgressMsg reports a single status line from the agent config sequence.
@@ -443,11 +455,51 @@ type agentProgressMsg struct {
 	failed bool
 }
 
-func updateAgentConfig(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func updateReview(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyUp:
+		if m.reviewChoice > 0 {
+			m.reviewChoice--
+		}
+	case tea.KeyDown:
+		if m.reviewChoice < 2 {
+			m.reviewChoice++
+		}
+	case tea.KeyRunes:
+		switch string(msg.Runes) {
+		case "k":
+			if m.reviewChoice > 0 {
+				m.reviewChoice--
+			}
+		case "j":
+			if m.reviewChoice < 2 {
+				m.reviewChoice++
+			}
+		}
+	case tea.KeyEnter:
+		switch m.reviewChoice {
+		case 0: // Back
+			m.Step = StepSkills
+			return m, nil
+		case 1: // Cancel
+			m.Done = true
+			return m, tea.Quit
+		case 2: // Apply
+			m.Step = StepApply
+			m.agentProgress = nil
+			m.agentDone = false
+			m.Err = nil
+			return m, runAgentConfigCmd(m)
+		}
+	}
+	return m, nil
+}
+
+// Step 6: Apply
+func updateApply(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEnter:
 		if len(m.agentProgress) == 0 || (m.agentDone && m.Err != nil) {
-			// First Enter: start the config sequence.
 			m.agentProgress = nil
 			m.agentDone = false
 			m.Err = nil
@@ -517,10 +569,15 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			configuredAgents = append(configuredAgents, res.AgentName)
 		}
 
-		// Stage sync.json before canonical config commit.
-		if strings.TrimSpace(m.Email) != "" && strings.TrimSpace(m.Password) != "" {
+		if m.Scope == config.ScopeLocalOnly {
+			if err := config.DeleteSyncCredentials(); err != nil {
+				return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: cleanup local credentials: %v. Ver docs/setup-recovery.md", err), done: true, failed: true}
+			}
+			m.cfg.Cloud = nil
+			m.cfg.Email = ""
+		} else if strings.TrimSpace(m.Email) != "" && strings.TrimSpace(m.Password) != "" {
 			if err := writeSyncJSON(m.cfg.APIURL, m.Email, m.Password); err != nil {
-				return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: write sync.json: %v", err), done: true, failed: true}
+				return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: write sync.json: %v. Ver docs/setup-recovery.md", err), done: true, failed: true}
 			}
 			if m.cfg.Cloud == nil {
 				m.cfg.Cloud = &config.CloudConfig{}
@@ -530,8 +587,26 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			m.cfg.Email = m.cfg.Cloud.Email
 		}
 
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: home dir: %v. Ver docs/setup-recovery.md", err), done: true, failed: true}
+		}
+		jarvisDir := filepath.Join(homeDir, ".jarvis")
+		if err := os.MkdirAll(jarvisDir, 0755); err != nil {
+			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: create ~/.jarvis: %v. Ver docs/setup-recovery.md", err), done: true, failed: true}
+		}
+		dbPath := filepath.Join(jarvisDir, "memory.db")
+		if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
+			f, createErr := os.Create(dbPath)
+			if createErr != nil {
+				return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: create memory.db: %v. Ver docs/setup-recovery.md", createErr), done: true, failed: true}
+			}
+			_ = f.Close()
+		}
+
 		// Save canonical config as the final commit step.
 		m.cfg.SchemaVersion = 2
+		m.cfg.Scope = m.Scope
 		m.cfg.ConfiguredAgents = configuredAgents
 		m.cfg.SelectedSkills = selectedIDs
 		m.cfg.Install.Mode = string(config.ConfigStatusReconfigure)
@@ -544,7 +619,7 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		}
 		m.cfg.Version = "1.0.0"
 		if err := config.Save(m.cfg); err != nil {
-			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: save config: %v", err), done: true, failed: true}
+			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: save config: %v. Ver docs/setup-recovery.md", err), done: true, failed: true}
 		}
 
 		summary := fmt.Sprintf("Configuration complete. Agents configured: %s", strings.Join(configuredAgents, ", "))
@@ -583,9 +658,39 @@ func buildSkillInfoList(m Model) []config.SkillInfo {
 	return infos
 }
 
-func viewAgentConfig(m Model) string {
+func viewReview(m Model) string {
 	var sb strings.Builder
-	sb.WriteString(stepHeader(5, 6, "Review & Apply Configuration"))
+	sb.WriteString(stepHeader(5, 6, "Review & Apply"))
+	sb.WriteString(headerStyle.Render("Resumen de configuración") + "\n")
+
+	sb.WriteString(fmt.Sprintf("Scope: %s", m.Scope))
+	if m.Scope == config.ScopeLocalOnly {
+		sb.WriteString("  " + errorStyle.Render(localOnlyReviewWarning))
+	}
+	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("Persona: %s\n", m.cfg.PersonaPreset))
+	if m.Scope == config.ScopeLocalCloud {
+		sb.WriteString(fmt.Sprintf("Cloud email: %s\n", strings.TrimSpace(m.Email)))
+	} else {
+		sb.WriteString("Cloud email: (omitido por alcance local-only)\n")
+	}
+
+	choices := []string{"Back", "Cancel", "Apply"}
+	for i, opt := range choices {
+		line := "  " + opt
+		if i == m.reviewChoice {
+			line = selectedStyle.Render("> " + opt)
+		}
+		sb.WriteString(line + "\n")
+	}
+
+	sb.WriteString("\n" + dimStyle.Render("↑/↓ o j/k: navegar  Enter: confirmar"))
+	return sb.String()
+}
+
+func viewApply(m Model) string {
+	var sb strings.Builder
+	sb.WriteString(stepHeader(6, 6, "Apply"))
 
 	if len(m.agentProgress) == 0 {
 		agentNames := make([]string, 0, len(m.Agents))
@@ -598,7 +703,7 @@ func viewAgentConfig(m Model) string {
 		} else {
 			sb.WriteString("Detected agents: " + strings.Join(agentNames, ", ") + "\n\n")
 		}
-		sb.WriteString(dimStyle.Render("Press Enter to apply changes (agent files + config)."))
+		sb.WriteString(dimStyle.Render("Press Enter para ejecutar apply."))
 		return sb.String()
 	}
 

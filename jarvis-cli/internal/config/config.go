@@ -26,6 +26,13 @@ const currentSchemaVersion = 2
 
 type ConfigStatus string
 
+type SetupScope string
+
+const (
+	ScopeLocalOnly  SetupScope = "local-only"
+	ScopeLocalCloud SetupScope = "local+cloud"
+)
+
 const (
 	ConfigStatusSetup       ConfigStatus = "setup"
 	ConfigStatusReconfigure ConfigStatus = "reconfigure"
@@ -66,6 +73,7 @@ type AppConfig struct {
 	// ConfiguredAgents lists agents that have been fully configured by the wizard.
 	ConfiguredAgents []string     `mapstructure:"configured_agents" yaml:"configured_agents"`
 	Cloud            *CloudConfig `mapstructure:"cloud" yaml:"cloud,omitempty"`
+	Scope            SetupScope   `mapstructure:"scope" yaml:"scope,omitempty"`
 	Install          InstallState `mapstructure:"install" yaml:"install,omitempty"`
 
 	// Legacy compatibility fields (v1 schema). These are normalized on load.
@@ -91,6 +99,7 @@ func defaultConfig() *AppConfig {
 		APIURL:           DefaultAPIURL,
 		PersonaPreset:    "argentino",
 		SelectedSkills:   []string{},
+		Scope:            ScopeLocalOnly,
 		ConfiguredAgents: []string{},
 		Install: InstallState{
 			Mode:   string(ConfigStatusSetup),
@@ -241,10 +250,31 @@ func normalizeAndMigrate(cfg *AppConfig) {
 	}
 	cfg.Preset = cfg.PersonaPreset
 
+	switch cfg.Scope {
+	case ScopeLocalOnly, ScopeLocalCloud:
+		// valid value
+	default:
+		if hasStoredCloudLink(cfg) {
+			cfg.Scope = ScopeLocalCloud
+		} else {
+			cfg.Scope = ScopeLocalOnly
+		}
+	}
+
 	if cfg.Install.Mode == "" {
 		cfg.Install.Mode = string(cfg.ConfigStatus())
 	}
 	cfg.Install.Completed = cfg.IsReadyForReconfigure()
+}
+
+func hasStoredCloudLink(cfg *AppConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.Cloud == nil {
+		return false
+	}
+	return strings.TrimSpace(cfg.Cloud.Email) != "" || cfg.Cloud.SyncConfigured
 }
 
 func applyEnvOverrides(cfg *AppConfig) *AppConfig {

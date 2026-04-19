@@ -186,8 +186,8 @@ func TestNewModel_PrefillsExistingConfigAndMode(t *testing.T) {
 // TestStep_HiveLocal_AdvancesOnEnter
 // ──────────────────────────────────────────────────────────────────────────────
 
-// TestStep_HiveLocal_AdvancesOnEnter verifies that pressing Enter on StepHiveLocal
-// creates ~/.jarvis/memory.db and advances the model to StepHiveCloud.
+// TestStep_HiveLocal_AdvancesOnEnter verifies that pressing Enter on StepScope
+// does not create local artifacts pre-apply and advances according to scope.
 func TestStep_HiveLocal_AdvancesOnEnter(t *testing.T) {
 	// Redirect HOME so we don't touch the real user directory.
 	tmpHome := t.TempDir()
@@ -195,6 +195,8 @@ func TestStep_HiveLocal_AdvancesOnEnter(t *testing.T) {
 
 	m := Model{
 		Step:     StepHiveLocal,
+		Scope:    config.ScopeLocalOnly,
+		cfg:      &config.AppConfig{Scope: config.ScopeLocalOnly},
 		Selected: make(map[string]bool),
 	}
 
@@ -204,14 +206,14 @@ func TestStep_HiveLocal_AdvancesOnEnter(t *testing.T) {
 	if m2.Err != nil {
 		t.Fatalf("unexpected error after Enter: %v", m2.Err)
 	}
-	if m2.Step != StepHiveCloud {
-		t.Errorf("expected StepHiveCloud after Enter, got %v", m2.Step)
+	if m2.Step != StepPersona {
+		t.Errorf("expected StepPersona after Enter in local-only scope, got %v", m2.Step)
 	}
 
-	// ~/.jarvis/memory.db must be created.
+	// ~/.jarvis/memory.db must NOT be created before apply.
 	dbPath := filepath.Join(tmpHome, ".jarvis", "memory.db")
-	if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
-		t.Error("expected memory.db to be created but it was not found")
+	if _, statErr := os.Stat(dbPath); !os.IsNotExist(statErr) {
+		t.Error("expected memory.db to NOT be created before apply")
 	}
 }
 
@@ -762,15 +764,15 @@ func TestSkillsSelectedList_ReturnsOnlySelected(t *testing.T) {
 
 // TestUpdateAgentConfig_Enter_StartsSequence verifies that the first Enter on
 // StepAgentConfig (empty progress) returns a non-nil Cmd to start the sequence.
-func TestUpdateAgentConfig_Enter_StartsSequence(t *testing.T) {
+func TestUpdateApply_Enter_StartsSequence(t *testing.T) {
 	m := Model{
-		Step:     StepAgentConfig,
+		Step:     StepApply,
 		Selected: make(map[string]bool),
 		cfg:      &config.AppConfig{},
 	}
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Error("expected non-nil cmd after first Enter on StepAgentConfig")
+		t.Error("expected non-nil cmd after first Enter on StepApply")
 	}
 }
 
@@ -780,9 +782,9 @@ func TestUpdateAgentConfig_Enter_StartsSequence(t *testing.T) {
 
 // TestUpdateAgentConfig_Enter_WhenDone_AdvancesToStepDone verifies that Enter
 // when agentDone=true advances to StepDone.
-func TestUpdateAgentConfig_Enter_WhenDone_AdvancesToStepDone(t *testing.T) {
+func TestUpdateApply_Enter_WhenDone_AdvancesToStepDone(t *testing.T) {
 	m := Model{
-		Step:          StepAgentConfig,
+		Step:          StepApply,
 		Selected:      make(map[string]bool),
 		cfg:           &config.AppConfig{},
 		agentProgress: []string{"configured claude"},
@@ -901,7 +903,7 @@ func TestHandleStepMsg_LoginResult_Success(t *testing.T) {
 // TestHandleStepMsg_AgentProgress verifies that agentProgressMsg is appended to progress list.
 func TestHandleStepMsg_AgentProgress(t *testing.T) {
 	m := Model{
-		Step:     StepAgentConfig,
+		Step:     StepApply,
 		Selected: make(map[string]bool),
 		cfg:      &config.AppConfig{},
 	}
@@ -921,7 +923,7 @@ func TestHandleStepMsg_AgentProgress(t *testing.T) {
 // TestHandleStepMsg_AgentProgress_Done verifies that agentProgressMsg with done=true sets agentDone.
 func TestHandleStepMsg_AgentProgress_Done(t *testing.T) {
 	m := Model{
-		Step:     StepAgentConfig,
+		Step:     StepApply,
 		Selected: make(map[string]bool),
 		cfg:      &config.AppConfig{},
 	}
@@ -938,7 +940,7 @@ func TestHandleStepMsg_AgentProgress_Done(t *testing.T) {
 // TestHandleStepMsg_AgentProgress_Failed verifies failed progress sets model error.
 func TestHandleStepMsg_AgentProgress_Failed(t *testing.T) {
 	m := Model{
-		Step:     StepAgentConfig,
+		Step:     StepApply,
 		Selected: make(map[string]bool),
 		cfg:      &config.AppConfig{},
 	}
@@ -952,6 +954,306 @@ func TestHandleStepMsg_AgentProgress_Failed(t *testing.T) {
 	}
 	if !updated.agentDone {
 		t.Error("expected agentDone=true when done=true")
+	}
+}
+
+func TestViewReview_LocalOnlyShowsExactWarning(t *testing.T) {
+	m := Model{
+		Step:         StepReview,
+		Scope:        config.ScopeLocalOnly,
+		reviewChoice: 2,
+		cfg:          &config.AppConfig{PersonaPreset: "fixture"},
+	}
+
+	view := viewReview(m)
+	if !strings.Contains(view, localOnlyReviewWarning) {
+		t.Fatalf("expected exact local-only warning in review, got:\n%s", view)
+	}
+}
+
+func TestViewReview_BoundedPolishKeepsCheckpointLayout(t *testing.T) {
+	tests := []struct {
+		name              string
+		scope             config.SetupScope
+		email             string
+		expectCloudLine   string
+		expectWarning     bool
+		unexpectedWarning bool
+	}{
+		{
+			name:              "local-only includes warning and omitted cloud label",
+			scope:             config.ScopeLocalOnly,
+			email:             "",
+			expectCloudLine:   "Cloud email: (omitido por alcance local-only)",
+			expectWarning:     true,
+			unexpectedWarning: false,
+		},
+		{
+			name:              "local+cloud keeps cloud summary without warning",
+			scope:             config.ScopeLocalCloud,
+			email:             "dev@example.com",
+			expectCloudLine:   "Cloud email: dev@example.com",
+			expectWarning:     false,
+			unexpectedWarning: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := Model{
+				Step:         StepReview,
+				Scope:        tt.scope,
+				Email:        tt.email,
+				reviewChoice: 2,
+				cfg:          &config.AppConfig{PersonaPreset: "fixture"},
+			}
+
+			view := viewReview(m)
+
+			for _, mustContain := range []string{
+				"Jarvis-Dev Setup  [5/6]  Review & Apply",
+				"Resumen de configuración",
+				"Scope:",
+				"Persona: fixture",
+				tt.expectCloudLine,
+				"Back",
+				"Cancel",
+				"Apply",
+				"↑/↓ o j/k: navegar  Enter: confirmar",
+			} {
+				if !strings.Contains(view, mustContain) {
+					t.Fatalf("expected review view to contain %q, got:\n%s", mustContain, view)
+				}
+			}
+
+			if tt.expectWarning && !strings.Contains(view, localOnlyReviewWarning) {
+				t.Fatalf("expected local-only warning in review view, got:\n%s", view)
+			}
+			if tt.unexpectedWarning && strings.Contains(view, localOnlyReviewWarning) {
+				t.Fatalf("did not expect local-only warning for scope %q, got:\n%s", tt.scope, view)
+			}
+		})
+	}
+}
+
+func TestRunAgentConfigSequence_FailureMessageReferencesRecoveryWithoutRollbackClaim(t *testing.T) {
+	tests := []struct {
+		name     string
+		scope    config.SetupScope
+		email    string
+		password string
+		apiURL   string
+	}{
+		{
+			name:   "local-only cleanup failure points to manual recovery",
+			scope:  config.ScopeLocalOnly,
+			apiURL: config.DefaultAPIURL,
+		},
+		{
+			name:     "local+cloud sync write failure points to manual recovery",
+			scope:    config.ScopeLocalCloud,
+			email:    "dev@example.com",
+			password: "secret",
+			apiURL:   config.DefaultAPIURL,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			homeAsFile := filepath.Join(tmpDir, "home-file")
+			if err := os.WriteFile(homeAsFile, []byte("not-a-directory"), 0600); err != nil {
+				t.Fatalf("seed fake HOME file: %v", err)
+			}
+			t.Setenv("HOME", homeAsFile)
+
+			m := Model{
+				Step:     StepApply,
+				Scope:    tt.scope,
+				Email:    tt.email,
+				Password: tt.password,
+				cfg:      &config.AppConfig{APIURL: tt.apiURL},
+				Selected: map[string]bool{},
+			}
+
+			cmd := runAgentConfigSequence(m)
+			if cmd == nil {
+				t.Fatal("expected non-nil command")
+			}
+
+			msg := cmd()
+			progress, ok := msg.(agentProgressMsg)
+			if !ok {
+				t.Fatalf("expected agentProgressMsg, got %T", msg)
+			}
+			if !progress.done || !progress.failed {
+				t.Fatalf("expected done=true and failed=true, got done=%v failed=%v line=%q", progress.done, progress.failed, progress.line)
+			}
+			if !strings.Contains(progress.line, "Ver docs/setup-recovery.md") {
+				t.Fatalf("expected manual recovery pointer in failure message, got %q", progress.line)
+			}
+			if strings.Contains(strings.ToLower(progress.line), "rollback") {
+				t.Fatalf("failure message must not claim automatic rollback, got %q", progress.line)
+			}
+		})
+	}
+}
+
+func TestUpdateReview_BackCancelApply(t *testing.T) {
+	tests := []struct {
+		name         string
+		choice       int
+		expectStep   Step
+		expectDone   bool
+		expectCmdNil bool
+	}{
+		{name: "back", choice: 0, expectStep: StepSkills, expectDone: false, expectCmdNil: true},
+		{name: "cancel", choice: 1, expectStep: StepReview, expectDone: true, expectCmdNil: false},
+		{name: "apply", choice: 2, expectStep: StepApply, expectDone: false, expectCmdNil: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := Model{Step: StepReview, reviewChoice: tt.choice, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
+			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			m2 := updated.(Model)
+			if m2.Step != tt.expectStep {
+				t.Fatalf("step: got %v want %v", m2.Step, tt.expectStep)
+			}
+			if m2.Done != tt.expectDone {
+				t.Fatalf("done: got %v want %v", m2.Done, tt.expectDone)
+			}
+			if (cmd == nil) != tt.expectCmdNil {
+				t.Fatalf("cmd nil: got %v want %v", cmd == nil, tt.expectCmdNil)
+			}
+		})
+	}
+}
+
+func TestUpdateReview_BackCancel_NoApplyArtifactsCreated(t *testing.T) {
+	tests := []struct {
+		name       string
+		reviewSlot int
+		expectDone bool
+		expectStep Step
+	}{
+		{name: "back keeps wizard editable", reviewSlot: 0, expectDone: false, expectStep: StepSkills},
+		{name: "cancel exits without apply", reviewSlot: 1, expectDone: true, expectStep: StepReview},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpHome := t.TempDir()
+			t.Setenv("HOME", tmpHome)
+
+			jarvisDir := filepath.Join(tmpHome, ".jarvis")
+			if err := os.MkdirAll(jarvisDir, 0755); err != nil {
+				t.Fatalf("mkdir jarvis dir: %v", err)
+			}
+			seedSync := `{"api_url":"https://old.dev","email":"old@example.com","password":"old"}`
+			syncPath := filepath.Join(jarvisDir, "sync.json")
+			if err := os.WriteFile(syncPath, []byte(seedSync), 0600); err != nil {
+				t.Fatalf("seed sync.json: %v", err)
+			}
+
+			m := Model{
+				Step:         StepReview,
+				reviewChoice: tt.reviewSlot,
+				Scope:        config.ScopeLocalCloud,
+				Email:        "dev@example.com",
+				Password:     "secret",
+				cfg:          &config.AppConfig{APIURL: config.DefaultAPIURL, Scope: config.ScopeLocalCloud},
+				Selected:     map[string]bool{},
+			}
+
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			m2 := updated.(Model)
+			if m2.Step != tt.expectStep {
+				t.Fatalf("step: got %v want %v", m2.Step, tt.expectStep)
+			}
+			if m2.Done != tt.expectDone {
+				t.Fatalf("done: got %v want %v", m2.Done, tt.expectDone)
+			}
+
+			if _, err := os.Stat(filepath.Join(jarvisDir, "memory.db")); !os.IsNotExist(err) {
+				t.Fatalf("expected no memory.db before apply confirmation, got err=%v", err)
+			}
+
+			syncBody, err := os.ReadFile(syncPath)
+			if err != nil {
+				t.Fatalf("read sync.json: %v", err)
+			}
+			if string(syncBody) != seedSync {
+				t.Fatalf("sync.json changed before apply confirmation, got %s", string(syncBody))
+			}
+		})
+	}
+}
+
+func TestRunAgentConfigSequence_LocalCloudHappyPathPersistsCloudArtifacts(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	cfg := &config.AppConfig{APIURL: config.DefaultAPIURL}
+	m := Model{
+		Step:     StepApply,
+		Scope:    config.ScopeLocalCloud,
+		Email:    "happy@example.com",
+		Password: "secret",
+		cfg:      cfg,
+		Selected: map[string]bool{},
+	}
+
+	cmd := runAgentConfigSequence(m)
+	if cmd == nil {
+		t.Fatal("expected non-nil command")
+	}
+
+	msg := cmd()
+	progress, ok := msg.(agentProgressMsg)
+	if !ok {
+		t.Fatalf("expected agentProgressMsg, got %T", msg)
+	}
+	if !progress.done || progress.failed {
+		t.Fatalf("expected successful completion, got done=%v failed=%v line=%q", progress.done, progress.failed, progress.line)
+	}
+
+	jarvisDir := filepath.Join(tmpHome, ".jarvis")
+	syncPath := filepath.Join(jarvisDir, "sync.json")
+	syncBody, err := os.ReadFile(syncPath)
+	if err != nil {
+		t.Fatalf("expected sync.json in local+cloud apply, got err=%v", err)
+	}
+	if !strings.Contains(string(syncBody), `"email":"happy@example.com"`) {
+		t.Fatalf("expected sync.json email from apply, got: %s", string(syncBody))
+	}
+	if !strings.Contains(string(syncBody), `"password":"secret"`) {
+		t.Fatalf("expected sync.json password from apply, got: %s", string(syncBody))
+	}
+
+	if _, err := os.Stat(filepath.Join(jarvisDir, "memory.db")); err != nil {
+		t.Fatalf("expected memory.db created during apply, got err=%v", err)
+	}
+
+	if cfg.Cloud == nil {
+		t.Fatal("expected cloud linkage in config after local+cloud apply")
+	}
+	if cfg.Cloud.Email != "happy@example.com" || !cfg.Cloud.SyncConfigured {
+		t.Fatalf("unexpected cloud linkage after apply: %+v", cfg.Cloud)
+	}
+	if cfg.Email != "happy@example.com" {
+		t.Fatalf("expected cfg.Email updated, got %q", cfg.Email)
+	}
+
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("load persisted config: %v", err)
+	}
+	if loaded.Scope != config.ScopeLocalCloud {
+		t.Fatalf("expected persisted scope local+cloud, got %q", loaded.Scope)
+	}
+	if loaded.Cloud == nil || loaded.Cloud.Email != "happy@example.com" {
+		t.Fatalf("expected persisted cloud linkage, got %+v", loaded.Cloud)
 	}
 }
 

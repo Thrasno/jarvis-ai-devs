@@ -61,3 +61,17 @@ func WriteSyncCredentials(apiURL, email, password string) error {
 	}
 	return nil
 }
+
+// DeleteSyncCredentials removes ~/.jarvis/sync.json if it exists.
+// The operation is idempotent and succeeds when the file is already missing.
+func DeleteSyncCredentials() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(home, ".jarvis", "sync.json")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete sync.json: %w", err)
+	}
+	return nil
+}

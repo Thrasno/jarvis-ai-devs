@@ -32,26 +32,21 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	}
 	mode := cfg.ConfigStatus()
 
-	// ── Step 1: HiveLocal ─────────────────────────────────────────────────────
-	fmt.Println("=== Jarvis-Dev Setup [1/6] Local Memory Database ===")
-	fmt.Println("Creating ~/.jarvis/memory.db ...")
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("get home dir: %w", err)
+	// ── Step 1: Scope ─────────────────────────────────────────────────────────
+	fmt.Println("=== Jarvis-Dev Setup [1/6] Scope ===")
+	fmt.Printf("Scope [local-only/local+cloud] (default: %s): ", cfg.Scope)
+	scopeInput := strings.TrimSpace(readLine(scanner))
+	scope := cfg.Scope
+	if scope == "" {
+		scope = config.ScopeLocalOnly
 	}
-	jarvisDir := filepath.Join(home, ".jarvis")
-	if err := os.MkdirAll(jarvisDir, 0755); err != nil {
-		return fmt.Errorf("create ~/.jarvis: %w", err)
+	if scopeInput == string(config.ScopeLocalOnly) {
+		scope = config.ScopeLocalOnly
 	}
-	dbPath := filepath.Join(jarvisDir, "memory.db")
-	if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
-		f, createErr := os.Create(dbPath)
-		if createErr != nil {
-			return fmt.Errorf("create memory.db: %w", createErr)
-		}
-		f.Close()
+	if scopeInput == string(config.ScopeLocalCloud) {
+		scope = config.ScopeLocalCloud
 	}
-	fmt.Println("Done.")
+	cfg.Scope = scope
 
 	// ── Step 2: HiveCloud ─────────────────────────────────────────────────────
 	header := "\n=== Jarvis-Dev Setup [2/6] Hive Cloud Authentication ==="
@@ -63,42 +58,48 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	if cfg.Cloud != nil {
 		currentEmail = strings.TrimSpace(cfg.Cloud.Email)
 	}
-	if currentEmail == "" {
-		fmt.Print("Email (press Enter to skip): ")
-	} else {
-		fmt.Printf("Email [%s] (Enter keeps current): ", currentEmail)
-	}
-	email := strings.TrimSpace(readLine(scanner))
-	if email == "" {
-		email = currentEmail
-	}
+	email := ""
 	var pendingPassword string
 
-	if email != "" {
-		fmt.Print("Password (Enter keeps existing sync credentials): ")
-		password := readLine(scanner)
-		pendingPassword = password
-		fmt.Printf("Authenticating as %s ...\n", email)
-		c := apiclient.New(cfg.APIURL)
-		resp, loginErr := c.Login(email, password)
-		if loginErr != nil {
-			fmt.Printf("Warning: authentication failed: %v\n", loginErr)
-			fmt.Println("Skipping cloud auth. You can re-authenticate with 'jarvis login'.")
+	if cfg.Scope == config.ScopeLocalCloud {
+		if currentEmail == "" {
+			fmt.Print("Email (press Enter to skip): ")
 		} else {
-			resolved := strings.TrimSpace(resp.User.Email)
-			if resolved == "" {
-				resolved = email
+			fmt.Printf("Email [%s] (Enter keeps current): ", currentEmail)
+		}
+		email = strings.TrimSpace(readLine(scanner))
+		if email == "" {
+			email = currentEmail
+		}
+
+		if email != "" {
+			fmt.Print("Password (Enter keeps existing sync credentials): ")
+			password := readLine(scanner)
+			pendingPassword = password
+			fmt.Printf("Authenticating as %s ...\n", email)
+			c := apiclient.New(cfg.APIURL)
+			resp, loginErr := c.Login(email, password)
+			if loginErr != nil {
+				fmt.Printf("Warning: authentication failed: %v\n", loginErr)
+				fmt.Println("Skipping cloud auth. You can re-authenticate with 'jarvis login'.")
+			} else {
+				resolved := strings.TrimSpace(resp.User.Email)
+				if resolved == "" {
+					resolved = email
+				}
+				if cfg.Cloud == nil {
+					cfg.Cloud = &config.CloudConfig{}
+				}
+				cfg.Cloud.Email = resolved
+				cfg.Cloud.SyncConfigured = true
+				cfg.Email = resolved
+				fmt.Printf("Authenticated as %s.\n", resolved)
 			}
-			if cfg.Cloud == nil {
-				cfg.Cloud = &config.CloudConfig{}
-			}
-			cfg.Cloud.Email = resolved
-			cfg.Cloud.SyncConfigured = true
-			cfg.Email = resolved
-			fmt.Printf("Authenticated as %s.\n", resolved)
+		} else {
+			fmt.Println("Skipping cloud auth.")
 		}
 	} else {
-		fmt.Println("Skipping cloud auth.")
+		fmt.Println("Scope local-only: cloud auth omitido.")
 	}
 
 	// ── Step 3: Persona ───────────────────────────────────────────────────────
@@ -171,18 +172,26 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 
 	// ── Step 5: Review/Apply ──────────────────────────────────────────────────
 	fmt.Println("\n=== Jarvis-Dev Setup [5/6] Review & Apply ===")
+	fmt.Printf("Scope: %s\n", cfg.Scope)
+	if cfg.Scope == config.ScopeLocalOnly {
+		fmt.Println(localOnlyReviewWarning)
+	}
 	fmt.Printf("Mode: %s\n", mode)
 	fmt.Printf("Persona: %s\n", cfg.PersonaPreset)
 	fmt.Printf("Cloud: %s\n", strings.TrimSpace(cfg.Email))
-	fmt.Print("Apply these changes now? [Y/n]: ")
+	fmt.Print("Apply these changes now? [type 'yes' to continue]: ")
 	applyAnswer := strings.ToLower(strings.TrimSpace(readLine(scanner)))
-	if applyAnswer == "n" || applyAnswer == "no" {
+	if applyAnswer != "y" && applyAnswer != "yes" {
 		fmt.Println("Aborted before apply. Existing config remains unchanged.")
 		return nil
 	}
 
-	// ── Step 6: AgentConfig ───────────────────────────────────────────────────
+	// ── Step 6: Apply ─────────────────────────────────────────────────────────
 	fmt.Println("\n=== Jarvis-Dev Setup [6/6] Configure AI Agents ===")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("get home dir: %w", err)
+	}
 	agents := agent.Detect(wcfg.TemplateFS)
 	if len(agents) == 0 {
 		fmt.Println("No agents detected. Install Claude Code or OpenCode and re-run jarvis.")
@@ -241,15 +250,34 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		configuredAgents = append(configuredAgents, res.AgentName)
 	}
 
-	// Stage sync.json first, then commit canonical config atomically.
-	if strings.TrimSpace(cfg.Email) != "" && strings.TrimSpace(pendingPassword) != "" {
-		if err := writeSyncJSON(cfg.APIURL, cfg.Email, pendingPassword); err != nil {
-			return fmt.Errorf("write sync.json: %w", err)
+	if cfg.Scope == config.ScopeLocalOnly {
+		if err := config.DeleteSyncCredentials(); err != nil {
+			return fmt.Errorf("cleanup cloud credentials: %w. Ver docs/setup-recovery.md", err)
 		}
+		cfg.Cloud = nil
+		cfg.Email = ""
+	} else if strings.TrimSpace(cfg.Email) != "" && strings.TrimSpace(pendingPassword) != "" {
+		if err := writeSyncJSON(cfg.APIURL, cfg.Email, pendingPassword); err != nil {
+			return fmt.Errorf("write sync.json: %w. Ver docs/setup-recovery.md", err)
+		}
+	}
+
+	jarvisDir := filepath.Join(home, ".jarvis")
+	if err := os.MkdirAll(jarvisDir, 0755); err != nil {
+		return fmt.Errorf("create ~/.jarvis: %w. Ver docs/setup-recovery.md", err)
+	}
+	dbPath := filepath.Join(jarvisDir, "memory.db")
+	if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
+		f, createErr := os.Create(dbPath)
+		if createErr != nil {
+			return fmt.Errorf("create memory.db: %w. Ver docs/setup-recovery.md", createErr)
+		}
+		_ = f.Close()
 	}
 
 	cfg.ConfiguredAgents = configuredAgents
 	cfg.SchemaVersion = 2
+	cfg.Scope = scope
 	cfg.Install.Mode = string(config.ConfigStatusReconfigure)
 	cfg.Install.Completed = true
 	if cfg.Install.Agents == nil {
