@@ -52,11 +52,12 @@ type AdminService interface {
 // Pasar un struct en lugar de N parámetros hace que el constructor sea legible
 // y fácil de extender sin romper código existente.
 type RouterDeps struct {
-	AuthSvc   AuthService
-	MemorySvc MemoryService
-	SyncSvc   SyncService
-	AdminSvc  AdminService
-	DB        DBPinger // puede ser nil en tests unitarios
+	AuthSvc        AuthService
+	MemorySvc      MemoryService
+	SyncSvc        SyncService
+	AdminSvc       AdminService
+	DB             DBPinger // puede ser nil en tests unitarios
+	AllowedOrigins []string // orígenes permitidos para CORS (e.g. ["https://hive.hivemem.dev"])
 }
 
 // NewRouter construye y configura el router Gin con todas las rutas y middlewares.
@@ -81,6 +82,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 
 	// Middlewares globales: recovery primero (captura panics en todos los handlers)
 	r.Use(middleware.Recovery())
+	r.Use(middleware.CORS(deps.AllowedOrigins))
 
 	// Instanciamos los handlers con sus dependencias
 	authH := NewAuthHandler(deps.AuthSvc)

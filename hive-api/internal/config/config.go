@@ -13,6 +13,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 // Config agrupa toda la configuración que necesita la aplicación.
@@ -37,6 +38,11 @@ type Config struct {
 	// "release" → silencioso, para producción
 	// Default: "release"
 	GinMode string
+
+	// AllowedOrigins es la lista de orígenes permitidos para CORS.
+	// Se configura con CORS_ALLOWED_ORIGINS (valores separados por coma).
+	// Default: "https://hive.hivemem.dev"
+	AllowedOrigins []string
 }
 
 // Load lee las variables de entorno y devuelve una Config válida.
@@ -46,11 +52,20 @@ type Config struct {
 // normalmente terminar el proceso con os.Exit(1). Separamos la validación
 // de la terminación para poder testear la validación sin matar el proceso.
 func Load() (*Config, error) {
+	rawOrigins := getEnvWithDefault("CORS_ALLOWED_ORIGINS", "https://hive.hivemem.dev")
+	var origins []string
+	for _, o := range strings.Split(rawOrigins, ",") {
+		if trimmed := strings.TrimSpace(o); trimmed != "" {
+			origins = append(origins, trimmed)
+		}
+	}
+
 	cfg := &Config{
-		DatabaseURL: os.Getenv("DATABASE_URL"),
-		JWTSecret:   os.Getenv("JWT_SECRET"),
-		Port:        getEnvWithDefault("PORT", "8080"),
-		GinMode:     getEnvWithDefault("GIN_MODE", "release"),
+		DatabaseURL:    os.Getenv("DATABASE_URL"),
+		JWTSecret:      os.Getenv("JWT_SECRET"),
+		Port:           getEnvWithDefault("PORT", "8080"),
+		GinMode:        getEnvWithDefault("GIN_MODE", "release"),
+		AllowedOrigins: origins,
 	}
 
 	// Validamos cada campo requerido.

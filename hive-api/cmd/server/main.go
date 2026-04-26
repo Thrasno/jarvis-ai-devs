@@ -31,22 +31,24 @@ import (
 // Separamos la construcción del router de la conexión a BD para poder
 // testear el router sin necesitar PostgreSQL real (db puede ser nil en tests).
 type buildAppDeps struct {
-	authSvc   handler.AuthService
-	memorySvc handler.MemoryService
-	syncSvc   handler.SyncService
-	adminSvc  handler.AdminService
-	db        handler.DBPinger // nil en tests unitarios → health skip DB check
+	authSvc        handler.AuthService
+	memorySvc      handler.MemoryService
+	syncSvc        handler.SyncService
+	adminSvc       handler.AdminService
+	db             handler.DBPinger // nil en tests unitarios → health skip DB check
+	allowedOrigins []string
 }
 
 // buildApp construye el router Gin con todas las dependencias inyectadas.
 // Es la función que los tests usan directamente — no necesita BD real.
 func buildApp(deps buildAppDeps) *gin.Engine {
 	return handler.NewRouter(handler.RouterDeps{
-		AuthSvc:   deps.authSvc,
-		MemorySvc: deps.memorySvc,
-		SyncSvc:   deps.syncSvc,
-		AdminSvc:  deps.adminSvc,
-		DB:        deps.db,
+		AuthSvc:        deps.authSvc,
+		MemorySvc:      deps.memorySvc,
+		SyncSvc:        deps.syncSvc,
+		AdminSvc:       deps.adminSvc,
+		DB:             deps.db,
+		AllowedOrigins: deps.allowedOrigins,
 	})
 }
 
@@ -66,11 +68,12 @@ func wireServices(pool *pgxpool.Pool, cfg *config.Config) buildAppDeps {
 	adminSvc := service.NewAdminService(userRepo, memRepo)
 
 	return buildAppDeps{
-		authSvc:   authSvc,
-		memorySvc: memorySvc,
-		syncSvc:   syncSvc,
-		adminSvc:  adminSvc,
-		db:        pool, // pgxpool.Pool implementa DBPinger (tiene Ping(ctx) error)
+		authSvc:        authSvc,
+		memorySvc:      memorySvc,
+		syncSvc:        syncSvc,
+		adminSvc:       adminSvc,
+		db:             pool, // pgxpool.Pool implementa DBPinger (tiene Ping(ctx) error)
+		allowedOrigins: cfg.AllowedOrigins,
 	}
 }
 
