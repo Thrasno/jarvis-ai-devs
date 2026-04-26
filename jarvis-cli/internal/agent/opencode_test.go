@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
 )
@@ -299,5 +300,37 @@ func TestOpenCodeAgent_MergeConfig_Hive_IncludesEnvWhenComplete(t *testing.T) {
 	env := hive["env"].(map[string]any)
 	if env["HIVE_API_PASSWORD"] != "s3cr3t" {
 		t.Fatalf("expected complete env, got: %v", env)
+	}
+}
+
+func TestOpenCodeAgent_ClearOutputStyle_NoOp(t *testing.T) {
+	tmpHome := t.TempDir()
+	a := &OpenCodeAgent{home: tmpHome}
+	if err := a.ClearOutputStyle("anything"); err != nil {
+		t.Fatalf("ClearOutputStyle should be no-op: %v", err)
+	}
+}
+
+func TestOpenCodeAgent_InstallOrchestrator_WritesToConfigDir(t *testing.T) {
+	tmpHome := t.TempDir()
+	a := &OpenCodeAgent{home: tmpHome}
+	if err := os.MkdirAll(a.ConfigDir(), 0755); err != nil {
+		t.Fatalf("create opencode dir: %v", err)
+	}
+
+	orchestratorFS := fstest.MapFS{
+		"embed/orchestrator/sdd-orchestrator.md": {Data: []byte("# opencode orchestrator\n")},
+	}
+
+	if err := a.InstallOrchestrator(orchestratorFS); err != nil {
+		t.Fatalf("InstallOrchestrator: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(a.ConfigDir(), "sdd-orchestrator.md"))
+	if err != nil {
+		t.Fatalf("read installed orchestrator: %v", err)
+	}
+	if string(content) == "" {
+		t.Fatal("expected orchestrator content to be written")
 	}
 }

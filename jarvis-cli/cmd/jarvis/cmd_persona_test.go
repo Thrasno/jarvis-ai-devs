@@ -11,6 +11,107 @@ import (
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
 )
 
+func TestPersonaSetCmd_UsesResolverAndPipeline_ForBuiltinAndUserPreset(t *testing.T) {
+	tests := []struct {
+		name              string
+		inputSlug         string
+		expectedSlug      string
+		expectedSource    string
+		seedUserPresetYML string
+	}{
+		{
+			name:           "builtin preset stores builtin source",
+			inputSlug:      "Neutra",
+			expectedSlug:   "neutra",
+			expectedSource: "builtin",
+		},
+		{
+			name:           "user preset stores user source",
+			inputSlug:      "Mi Persona",
+			expectedSlug:   "mi-persona",
+			expectedSource: "user",
+			seedUserPresetYML: `name: mi-persona
+display_name: Mi Persona
+description: Persona de usuario para tests
+tone:
+  formality: casual
+  directness: high
+  humor: warm
+  language: es-ar
+communication_style:
+  verbosity: high
+  show_alternatives: true
+  challenge_assumptions: true
+characteristic_phrases:
+  greetings: ["che"]
+  confirmations: ["dale"]
+  transitions: ["a ver"]
+  sign_offs: ["vamos"]
+notes: |
+  ## Voice & Tone
+  Habla claro y directo.
+
+  ## Behavior Rules
+  Priorizá claridad y ejemplos.
+
+  ## Collaboration Protocol
+  Confirmá supuestos antes de avanzar.
+
+  ## Boundaries
+  No inventes datos.
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tempHome := t.TempDir()
+			t.Setenv("HOME", tempHome)
+
+			if err := os.MkdirAll(filepath.Join(tempHome, ".claude"), 0o755); err != nil {
+				t.Fatalf("create .claude dir: %v", err)
+			}
+
+			if tt.seedUserPresetYML != "" {
+				if _, err := persona.SaveUserPresetFile(tt.expectedSlug, []byte(tt.seedUserPresetYML)); err != nil {
+					t.Fatalf("seed user preset: %v", err)
+				}
+			}
+
+			if err := config.Save(&config.AppConfig{
+				PersonaPreset:       "argentino",
+				PersonaPresetSource: "user",
+				Preset:              "argentino",
+			}); err != nil {
+				t.Fatalf("seed config: %v", err)
+			}
+
+			if err := personaSetCmd.RunE(personaSetCmd, []string{tt.inputSlug}); err != nil {
+				t.Fatalf("persona set returned error: %v", err)
+			}
+
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatalf("load config after persona set: %v", err)
+			}
+
+			if cfg.PersonaPreset != tt.expectedSlug {
+				t.Fatalf("persona_preset = %q, want %q", cfg.PersonaPreset, tt.expectedSlug)
+			}
+			if cfg.PersonaPresetSource != tt.expectedSource {
+				t.Fatalf("persona_preset_source = %q, want %q", cfg.PersonaPresetSource, tt.expectedSource)
+			}
+
+			if _, err := os.Stat(filepath.Join(tempHome, ".claude", "CLAUDE.md")); err != nil {
+				t.Fatalf("expected CLAUDE.md to exist: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(tempHome, ".claude", "settings.json")); err != nil {
+				t.Fatalf("expected settings.json to exist: %v", err)
+			}
+		})
+	}
+}
+
 // TestPersonaSetCmd_ClaudeAgent_CreatesOutputStyle verifies that when persona set
 // is called with ClaudeAgent (which supports output-styles), both CLAUDE.md and
 // the output-style file are created.

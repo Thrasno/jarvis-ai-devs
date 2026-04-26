@@ -3,6 +3,8 @@ package persona
 import (
 	"fmt"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // requiredTopLevelKeys are the fields that every preset YAML must contain.
@@ -48,7 +50,7 @@ func validatePresetMap(raw map[string]any) error {
 	// Check for protected Layer1 fields
 	for _, key := range layer1ProtectedFields {
 		if _, ok := raw[key]; ok {
-			return fmt.Errorf("Layer 1 field %q is not allowed in presets — it belongs to the immutable Layer 1 protocol", key)
+			return fmt.Errorf("layer 1 field %q is not allowed in presets — it belongs to the immutable Layer 1 protocol", key)
 		}
 	}
 
@@ -102,4 +104,31 @@ func isAllowedLanguage(lang string) bool {
 		}
 	}
 	return false
+}
+
+// ValidatePreset enforces preset double normalization:
+// 1) structural YAML schema
+// 2) editorial notes template
+func ValidatePreset(content []byte) error {
+	var raw map[string]any
+	if err := yaml.Unmarshal(content, &raw); err != nil {
+		return fmt.Errorf("invalid YAML: %w", err)
+	}
+
+	if err := validatePresetMap(raw); err != nil {
+		return err
+	}
+
+	if notesValue, exists := raw["notes"]; exists {
+		notes, ok := notesValue.(string)
+		if !ok {
+			return fmt.Errorf("field 'notes' must be a string")
+		}
+
+		if err := ValidateNotesTemplate(notes); err != nil {
+			return fmt.Errorf("invalid notes template: %w", err)
+		}
+	}
+
+	return nil
 }

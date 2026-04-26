@@ -299,6 +299,47 @@ func TestDetect_WithClaudeInstalled(t *testing.T) {
 	}
 }
 
+func TestDetect_WithOpenCodeConfigDirInstalled(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("PATH", "")
+	if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "opencode"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	agents := Detect(emptyFS)
+	if len(agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(agents))
+	}
+	if agents[0].Name() != "opencode" {
+		t.Fatalf("expected opencode agent, got %q", agents[0].Name())
+	}
+}
+
+func TestDetect_WithOpenCodeBinaryInPath(t *testing.T) {
+	tmpHome := t.TempDir()
+	tmpBin := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("PATH", tmpBin)
+
+	binaryName := "opencode"
+	if runtime.GOOS == "windows" {
+		binaryName = "opencode.exe"
+	}
+	binaryPath := filepath.Join(tmpBin, binaryName)
+	if err := os.WriteFile(binaryPath, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	agents := Detect(emptyFS)
+	if len(agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(agents))
+	}
+	if agents[0].Name() != "opencode" {
+		t.Fatalf("expected opencode agent from PATH fallback, got %q", agents[0].Name())
+	}
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // HiveDaemonBinaryPath tests
 // ──────────────────────────────────────────────────────────────────────────────

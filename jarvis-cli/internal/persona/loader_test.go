@@ -249,7 +249,19 @@ characteristic_phrases:
   greetings: ["Hi"]
   confirmations: ["Done"]
 notes: |
-  Some freeform persona notes here.
+  # Custom With Notes
+
+  ## Core Principle
+
+  Be precise and practical.
+
+  ## Behavior
+
+  1. Explain tradeoffs when relevant.
+
+  ## When Asking Questions
+
+  Ask one question and stop.
 `
 	if err := ValidateCustom([]byte(yaml)); err != nil {
 		t.Fatalf("ValidateCustom rejected preset with 'notes' field: %v", err)

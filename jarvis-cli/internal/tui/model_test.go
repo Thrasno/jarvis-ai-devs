@@ -3,6 +3,8 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -805,10 +807,11 @@ func TestUpdateApply_Enter_WhenDone_AdvancesToStepDone(t *testing.T) {
 // and Backspace removes the last character when in custom edit mode.
 func TestUpdatePersonaCustomEdit_RuneInput(t *testing.T) {
 	m := Model{
-		Step:       StepPersona,
-		Selected:   make(map[string]bool),
-		cfg:        &config.AppConfig{},
-		customEdit: true,
+		Step:        StepPersona,
+		Selected:    make(map[string]bool),
+		cfg:         &config.AppConfig{},
+		customEdit:  true,
+		customField: 2,
 	}
 	m = sendRune(m, "n")
 	m = sendRune(m, "a")
@@ -837,6 +840,96 @@ func TestUpdatePersonaCustomEdit_EscCancels(t *testing.T) {
 	m = sendKey(m, tea.KeyEsc)
 	if m.customEdit {
 		t.Error("expected customEdit=false after Esc")
+	}
+}
+
+func TestUpdatePersonaCustomEdit_CtrlS_PersistsCustomAsUserPreset(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	m := Model{
+		Step:              StepPersona,
+		Selected:          make(map[string]bool),
+		cfg:               &config.AppConfig{},
+		PersonaFS:         testPersonaFS,
+		customEdit:        true,
+		customPresetName:  "Mi Persona",
+		customDisplayName: "Mi Persona Display",
+		CustomYAML: `tone:
+  formality: neutral
+  directness: direct
+  humor: none
+  language: en-us
+communication_style:
+  verbosity: concise
+  show_alternatives: true
+  challenge_assumptions: true
+characteristic_phrases:
+  greetings: ["hello"]
+  confirmations: ["ok"]
+notes: |
+  # Custom Persona
+
+  ## Core Principle
+  Keep it concrete.
+
+  ## Behavior
+  Be direct.
+
+  ## When Asking Questions
+  Ask one question and stop.
+`,
+	}
+
+	m = sendKey(m, tea.KeyCtrlS)
+	if m.Err != nil {
+		t.Fatalf("expected Ctrl+S custom creation to succeed, got %v", m.Err)
+	}
+	if m.cfg.PersonaPreset == "custom" {
+		t.Fatalf("expected persisted custom slug identity, got legacy %q", m.cfg.PersonaPreset)
+	}
+	if m.cfg.PersonaPreset != "mi-persona" {
+		t.Fatalf("expected canonical custom slug mi-persona, got %q", m.cfg.PersonaPreset)
+	}
+	if m.cfg.PersonaPresetSource != string(persona.PresetSourceUser) {
+		t.Fatalf("expected persona_preset_source=user, got %q", m.cfg.PersonaPresetSource)
+	}
+	if m.Step != StepExtraSkills {
+		t.Fatalf("expected to advance to extra skills after valid custom save, got %v", m.Step)
+	}
+
+	customPath := filepath.Join(tmpHome, ".jarvis", "personas", "mi-persona.yaml")
+	if _, err := os.Stat(customPath); err != nil {
+		t.Fatalf("expected custom preset file %s, got err=%v", customPath, err)
+	}
+}
+
+func TestUpdatePersonaCustomEdit_CtrlS_BlocksInvalidCustomYAML(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	m := Model{
+		Step:              StepPersona,
+		Selected:          make(map[string]bool),
+		cfg:               &config.AppConfig{},
+		PersonaFS:         testPersonaFS,
+		customEdit:        true,
+		customPresetName:  "Broken Persona",
+		customDisplayName: "Broken Persona Display",
+		CustomYAML:        "name: [",
+	}
+
+	m = sendKey(m, tea.KeyCtrlS)
+	if m.Err == nil {
+		t.Fatal("expected validation error for invalid custom YAML")
+	}
+	if m.Step != StepPersona {
+		t.Fatalf("expected to stay on persona step when custom YAML is invalid, got %v", m.Step)
+	}
+
+	customPath := filepath.Join(tmpHome, ".jarvis", "personas", "broken-persona.yaml")
+	if _, err := os.Stat(customPath); !os.IsNotExist(err) {
+		t.Fatalf("expected no persisted file for invalid custom YAML, got err=%v", err)
 	}
 }
 
@@ -1327,5 +1420,282 @@ func TestWriteSyncJSON_PreservesAutoSync(t *testing.T) {
 	}
 	if !strings.Contains(body, "user@example.com") {
 		t.Fatalf("expected updated credentials, got: %s", body)
+	}
+}
+
+func TestNewModel_EmptyStoredScopeFallsBackToLocalOnly(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	cfg := &config.AppConfig{
+		SchemaVersion: 2,
+		APIURL:        config.DefaultAPIURL,
+		Scope:         "",
+	}
+	if err := config.Save(cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	m := NewModel(testWizardConfig(), false)
+	if m.Scope != config.ScopeLocalOnly {
+		t.Fatalf("expected fallback scope local-only, got %q", m.Scope)
+	}
+}
+
+func TestUpdate_DefaultMessageNoOp(t *testing.T) {
+	m := Model{Step: StepScope, Scope: config.ScopeLocalOnly, cfg: &config.AppConfig{Scope: config.ScopeLocalOnly}}
+	updated, cmd := m.Update(struct{ Name string }{Name: "unknown"})
+	if cmd != nil {
+		t.Fatalf("expected nil cmd for unknown message, got %v", cmd)
+	}
+	m2 := updated.(Model)
+	if m2.Step != StepScope || m2.Scope != config.ScopeLocalOnly {
+		t.Fatalf("unexpected state mutation on unknown message: %+v", m2)
+	}
+}
+
+func TestLoginCmd_SuccessAndErrorPaths(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"token":"abc","user":{"email":"resolved@example.com"}}`))
+		}))
+		defer server.Close()
+
+		msg := loginCmd(server.URL, "input@example.com", "secret")()
+		res, ok := msg.(loginResultMsg)
+		if !ok {
+			t.Fatalf("expected loginResultMsg, got %T", msg)
+		}
+		if res.err != nil {
+			t.Fatalf("unexpected login error: %v", res.err)
+		}
+		if res.token != "abc" || res.email != "resolved@example.com" {
+			t.Fatalf("unexpected login result: %+v", res)
+		}
+	})
+
+	t.Run("error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer server.Close()
+
+		msg := loginCmd(server.URL, "input@example.com", "wrong")()
+		res, ok := msg.(loginResultMsg)
+		if !ok {
+			t.Fatalf("expected loginResultMsg, got %T", msg)
+		}
+		if res.err == nil {
+			t.Fatal("expected login error for unauthorized response")
+		}
+	})
+}
+
+func TestViewApply_States(t *testing.T) {
+	t.Run("no agents waiting for enter", func(t *testing.T) {
+		m := Model{Step: StepApply}
+		v := viewApply(m)
+		if !strings.Contains(v, "No agents detected") {
+			t.Fatalf("expected no-agent message, got:\n%s", v)
+		}
+	})
+
+	t.Run("failed apply suggests retry", func(t *testing.T) {
+		m := Model{Step: StepApply, agentProgress: []string{"Configuration FAILED"}, agentDone: true, Err: errors.New("boom")}
+		v := viewApply(m)
+		if !strings.Contains(v, "Press Enter to retry") {
+			t.Fatalf("expected retry hint, got:\n%s", v)
+		}
+	})
+}
+
+func TestUpdateScope_KeyPaths(t *testing.T) {
+	m := Model{Step: StepScope, Scope: config.ScopeLocalOnly, cfg: &config.AppConfig{Scope: config.ScopeLocalOnly}}
+
+	updated, _ := updateScope(m, tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	if m.Scope != config.ScopeLocalCloud {
+		t.Fatalf("expected scope local+cloud after KeyDown, got %q", m.Scope)
+	}
+
+	updated, _ = updateScope(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	m = updated.(Model)
+	if m.Scope != config.ScopeLocalOnly {
+		t.Fatalf("expected scope local-only after k, got %q", m.Scope)
+	}
+
+	updated, _ = updateScope(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m = updated.(Model)
+	if m.Scope != config.ScopeLocalCloud {
+		t.Fatalf("expected scope local+cloud after j, got %q", m.Scope)
+	}
+
+	updated, _ = updateScope(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.Step != StepHiveCloud {
+		t.Fatalf("expected StepHiveCloud for local+cloud, got %v", m.Step)
+	}
+}
+
+func TestRunAgentConfigCmd_ReturnsStartingMessage(t *testing.T) {
+	cmd := runAgentConfigCmd(Model{})
+	if cmd == nil {
+		t.Fatal("expected command")
+	}
+	msg := cmd()
+	progress, ok := msg.(agentProgressMsg)
+	if !ok {
+		t.Fatalf("expected agentProgressMsg, got %T", msg)
+	}
+	if !strings.Contains(progress.line, "Starting agent configuration") {
+		t.Fatalf("unexpected start message: %q", progress.line)
+	}
+}
+
+func TestBuildSkillInfoList_SelectedAndCore(t *testing.T) {
+	m := Model{
+		SkillList: []skills.Skill{
+			{ID: "hive", Name: "Hive", Description: "core", IsCore: true},
+			{ID: "go-testing", Name: "Go Testing", Description: "go", Trigger: "go", IsCore: false},
+			{ID: "phpunit-testing", Name: "PHPUnit", Description: "php", IsCore: false},
+		},
+		Selected: map[string]bool{"go-testing": true},
+	}
+
+	infos := buildSkillInfoList(m)
+	if len(infos) != 2 {
+		t.Fatalf("expected core + selected skill infos, got %d", len(infos))
+	}
+}
+
+func TestViewPersona_Branches(t *testing.T) {
+	t.Run("custom edit view shows form", func(t *testing.T) {
+		m := Model{Step: StepPersona, customEdit: true, customPresetName: "mi-persona", customDisplayName: "Mi Persona", CustomYAML: "name: mi-persona"}
+		v := viewPersona(m)
+		if !strings.Contains(v, "Custom Preset Creation") {
+			t.Fatalf("expected custom creation header, got:\n%s", v)
+		}
+	})
+
+	t.Run("no presets branch shows fallback", func(t *testing.T) {
+		m := Model{Step: StepPersona, Presets: nil}
+		v := viewPersona(m)
+		if !strings.Contains(v, "No presets loaded") {
+			t.Fatalf("expected no presets warning, got:\n%s", v)
+		}
+	})
+}
+
+func TestUpdatePersona_EnterCustomStartsEditMode(t *testing.T) {
+	m := Model{
+		Step:     StepPersona,
+		cfg:      &config.AppConfig{},
+		Selected: map[string]bool{},
+		Presets: []persona.Preset{
+			{Name: "custom", DisplayName: "Custom"},
+		},
+	}
+
+	updated, _ := updatePersona(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m2 := updated.(Model)
+	if !m2.customEdit {
+		t.Fatal("expected custom edit mode enabled")
+	}
+	if m2.customField != 0 {
+		t.Fatalf("expected custom field reset to 0, got %d", m2.customField)
+	}
+}
+
+func TestUpdatePersona_ResolveFailureFallsBackToBuiltinSlug(t *testing.T) {
+	m := Model{
+		Step:      StepPersona,
+		cfg:       &config.AppConfig{},
+		Selected:  map[string]bool{},
+		PersonaFS: testPersonaFS,
+		Presets: []persona.Preset{
+			{Name: "non-existent-preset", DisplayName: "Missing"},
+		},
+	}
+
+	updated, _ := updatePersona(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m2 := updated.(Model)
+	if m2.cfg.PersonaPreset != "non-existent-preset" {
+		t.Fatalf("expected fallback persona slug, got %q", m2.cfg.PersonaPreset)
+	}
+	if m2.cfg.PersonaPresetSource != string(persona.PresetSourceBuiltin) {
+		t.Fatalf("expected builtin source fallback, got %q", m2.cfg.PersonaPresetSource)
+	}
+}
+
+func TestUpdatePersonaCustomEdit_KeyNavigationAndMutation(t *testing.T) {
+	m := Model{
+		Step:              StepPersona,
+		customEdit:        true,
+		customField:       0,
+		customPresetName:  "abc",
+		customDisplayName: "DEF",
+		CustomYAML:        "line",
+	}
+
+	updated, _ := updatePersonaCustomEdit(m, tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.customField != 1 {
+		t.Fatalf("expected custom field to move to 1, got %d", m.customField)
+	}
+
+	updated, _ = updatePersonaCustomEdit(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.customField != 2 {
+		t.Fatalf("expected enter to move to yaml field, got %d", m.customField)
+	}
+
+	updated, _ = updatePersonaCustomEdit(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if !strings.HasSuffix(m.CustomYAML, "\n") {
+		t.Fatalf("expected enter on yaml field to append newline, got %q", m.CustomYAML)
+	}
+
+	m.customField = 0
+	updated, _ = updatePersonaCustomEdit(m, tea.KeyMsg{Type: tea.KeyBackspace})
+	m = updated.(Model)
+	if m.customPresetName != "ab" {
+		t.Fatalf("expected preset name backspace applied, got %q", m.customPresetName)
+	}
+
+	m.customField = 1
+	updated, _ = updatePersonaCustomEdit(m, tea.KeyMsg{Type: tea.KeyBackspace})
+	m = updated.(Model)
+	if m.customDisplayName != "DE" {
+		t.Fatalf("expected display name backspace applied, got %q", m.customDisplayName)
+	}
+}
+
+func TestUpdateSkills_OutOfRangeCursorAndGroupToggle(t *testing.T) {
+	m := Model{
+		Step:      StepSkills,
+		presetCur: 99,
+		Selected:  map[string]bool{"phpunit-testing": false, "laravel-architecture": false},
+		SkillPrompts: []skillPrompt{
+			{Label: "PHP", SkillIDs: []string{"phpunit-testing", "laravel-architecture"}},
+		},
+	}
+
+	updated, _ := updateSkills(m, tea.KeyMsg{Type: tea.KeySpace})
+	m2 := updated.(Model)
+	if !m2.Selected["phpunit-testing"] || !m2.Selected["laravel-architecture"] {
+		t.Fatalf("expected grouped prompt to toggle all ids, got %+v", m2.Selected)
+	}
+}
+
+func TestUpdateDone_IgnoresNonQuitRune(t *testing.T) {
+	m := Model{Step: StepDone}
+	updated, cmd := updateDone(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m2 := updated.(Model)
+	if m2.Done {
+		t.Fatal("expected non-quit rune to keep Done=false")
+	}
+	if cmd != nil {
+		t.Fatalf("expected nil command for non-quit rune, got %v", cmd)
 	}
 }

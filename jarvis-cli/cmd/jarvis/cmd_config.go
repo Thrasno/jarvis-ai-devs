@@ -6,7 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
 )
 
 // settableKeys lists the config keys that users are allowed to change.
@@ -68,8 +70,14 @@ func runConfigSet(key, value string) error {
 
 	switch key {
 	case "preset":
-		cfg.PersonaPreset = value
-		cfg.Preset = value
+		resolved, err := persona.ResolvePreset(jarvis.PersonaFS, value)
+		if err != nil {
+			return fmt.Errorf("invalid preset %q: %w", value, err)
+		}
+		cfg.PersonaPreset = resolved.Slug
+		cfg.Preset = resolved.Slug
+		cfg.PersonaPresetSource = string(resolved.Source)
+		value = resolved.Slug
 	case "api_url":
 		cfg.APIURL = value
 	case "email":

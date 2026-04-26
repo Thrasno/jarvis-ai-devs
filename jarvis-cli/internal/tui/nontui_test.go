@@ -1,9 +1,13 @@
 package tui
 
 import (
+	"bufio"
 	"embed"
 	"encoding/json"
+	"errors"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,6 +122,55 @@ func TestRunNoTUI_RerunKeepsExistingSelectionsOnBlankInput(t *testing.T) {
 	}
 	if len(loaded.SelectedSkills) != 1 || loaded.SelectedSkills[0] != "fixture-skill" {
 		t.Fatalf("expected existing selected skills preserved, got %v", loaded.SelectedSkills)
+	}
+}
+
+func TestRunNoTUI_CustomPresetPersistsUserFileAndCanonicalIdentity(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("PATH", "")
+
+	// scope default, choose custom option, provide name/display, keep generated YAML,
+	// default optional skills answer, apply=yes.
+	input := strings.NewReader("\n2\nmi persona\nMi Persona Display\n\nyes\n")
+
+	if err := runNoTUI(testWizardConfig(), input); err != nil {
+		t.Fatalf("runNoTUI custom preset: %v", err)
+	}
+
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.PersonaPreset != "mi-persona" {
+		t.Fatalf("expected canonical custom slug mi-persona, got %q", loaded.PersonaPreset)
+	}
+	if loaded.PersonaPresetSource != string(persona.PresetSourceUser) {
+		t.Fatalf("expected persona_preset_source=user, got %q", loaded.PersonaPresetSource)
+	}
+
+	customPath := filepath.Join(tmpHome, ".jarvis", "personas", "mi-persona.yaml")
+	if _, err := os.Stat(customPath); err != nil {
+		t.Fatalf("expected custom preset file %s, got err=%v", customPath, err)
+	}
+}
+
+func TestRunNoTUI_CustomPresetInvalidYAMLBlocksContinuation(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("PATH", "")
+
+	// scope default, choose custom option, provide name/display, invalid YAML override.
+	input := strings.NewReader("\n2\nbroken persona\nBroken Persona\nname: [\n")
+
+	err := runNoTUI(testWizardConfig(), input)
+	if err == nil {
+		t.Fatal("expected error when custom YAML is invalid")
+	}
+
+	customPath := filepath.Join(tmpHome, ".jarvis", "personas", "broken-persona.yaml")
+	if _, statErr := os.Stat(customPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected invalid custom preset not to be persisted, got err=%v", statErr)
 	}
 }
 
@@ -245,6 +298,16 @@ func (m *mockAgent) WriteOutputStyle(preset *persona.Preset) error {
 	return nil
 }
 
+func (m *mockAgent) ClearOutputStyle(name string) error {
+	return nil
+}
+
+type failingMockAgent struct{ mockAgent }
+
+func (m *failingMockAgent) MergeConfig(entry agent.MCPEntry) error {
+	return errors.New("boom merge")
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // TestRunAgentConfigSequence_Context7AfterHive
 // ──────────────────────────────────────────────────────────────────────────────
@@ -366,5 +429,203 @@ func TestRunNoTUI_CancelBeforeApplyKeepsNoLocalArtifacts(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(tmpHome, ".jarvis", "memory.db")); !os.IsNotExist(err) {
 		t.Fatalf("expected no memory.db when canceling before apply, got err=%v", err)
+	}
+}
+
+func TestRunNoTUI_LocalCloudAuthFailureContinuesToApply(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("PATH", "")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "bad creds"})
+	}))
+	defer server.Close()
+
+	seed := &config.AppConfig{APIURL: server.URL, Scope: config.ScopeLocalOnly}
+	if err := config.Save(seed); err != nil {
+		t.Fatalf("save seed config: %v", err)
+	}
+
+	// scope local+cloud + credentials (auth fails), then persona default, skill default, apply yes.
+	input := strings.NewReader("local+cloud\nuser@example.com\nwrong-password\n\nyes\n")
+	if err := runNoTUI(testWizardConfig(), input); err != nil {
+		t.Fatalf("runNoTUI should continue on auth failure: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmpHome, ".jarvis", "config.yaml")); err != nil {
+		t.Fatalf("expected config.yaml persisted even on auth failure: %v", err)
+	}
+}
+
+func TestReadLine_ReturnsEmptyWhenScannerExhausted(t *testing.T) {
+	scanner := bufio.NewScanner(strings.NewReader(""))
+	if got := readLine(scanner); got != "" {
+		t.Fatalf("expected empty string on exhausted scanner, got %q", got)
+	}
+}
+
+func TestRunNoTUI_UsesStdinWrapper(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("PATH", "")
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	origStdin := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = origStdin })
+
+	if _, err := w.WriteString("\n\nyes\n"); err != nil {
+		t.Fatalf("write stdin fixture: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close write pipe: %v", err)
+	}
+
+	if err := RunNoTUI(testWizardConfig()); err != nil {
+		t.Fatalf("RunNoTUI wrapper: %v", err)
+	}
+}
+
+func TestRunNoTUI_LocalCloudSuccessfulAuthWritesSyncJSON(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("PATH", "")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token": "jwt-token",
+			"user":  map[string]string{"email": "resolved@example.com"},
+		})
+	}))
+	defer server.Close()
+
+	seed := &config.AppConfig{APIURL: server.URL, Scope: config.ScopeLocalOnly}
+	if err := config.Save(seed); err != nil {
+		t.Fatalf("save seed config: %v", err)
+	}
+
+	input := strings.NewReader("local+cloud\nuser@example.com\nsecret\n\nyes\n")
+	if err := runNoTUI(testWizardConfig(), input); err != nil {
+		t.Fatalf("runNoTUI local+cloud success: %v", err)
+	}
+
+	syncPath := filepath.Join(tmpHome, ".jarvis", "sync.json")
+	if _, err := os.Stat(syncPath); err != nil {
+		t.Fatalf("expected sync.json written on local+cloud success, got %v", err)
+	}
+}
+
+func TestRunNoTUI_AgentConfigurationFailureReturnsError(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("PATH", "")
+
+	originalDetect := detectInstalledAgents
+	detectInstalledAgents = func(fsys fs.FS) []agent.Agent {
+		return []agent.Agent{&failingMockAgent{mockAgent{name: "failing-agent", configDir: filepath.Join(tmpHome, ".mock")}}}
+	}
+	t.Cleanup(func() { detectInstalledAgents = originalDetect })
+
+	err := runNoTUI(testWizardConfig(), strings.NewReader("\n\nyes\n"))
+	if err == nil {
+		t.Fatal("expected runNoTUI to return configuration error")
+	}
+	if !strings.Contains(err.Error(), "configure failing-agent") {
+		t.Fatalf("expected wrapped configure error, got %v", err)
+	}
+}
+
+func TestRunNoTUI_LocalCloudLoginWithoutResolvedEmailFallsBackToInput(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("PATH", "")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token": "jwt-token",
+			"user":  map[string]string{"email": ""},
+		})
+	}))
+	defer server.Close()
+
+	seed := &config.AppConfig{APIURL: server.URL, Scope: config.ScopeLocalOnly}
+	if err := config.Save(seed); err != nil {
+		t.Fatalf("save seed config: %v", err)
+	}
+
+	input := strings.NewReader("local+cloud\ninput@example.com\nsecret\n\nyes\n")
+	if err := runNoTUI(testWizardConfig(), input); err != nil {
+		t.Fatalf("runNoTUI local+cloud blank resolved email: %v", err)
+	}
+
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("load persisted config: %v", err)
+	}
+	if loaded.Email != "input@example.com" {
+		t.Fatalf("expected fallback to entered email, got %q", loaded.Email)
+	}
+}
+
+func TestRunNoTUI_LoadConfigError(t *testing.T) {
+	originalLoad := loadAppConfig
+	loadAppConfig = func() (*config.AppConfig, error) {
+		return nil, errors.New("boom load")
+	}
+	t.Cleanup(func() { loadAppConfig = originalLoad })
+
+	err := runNoTUI(testWizardConfig(), strings.NewReader(""))
+	if err == nil {
+		t.Fatal("expected load config error")
+	}
+	if !strings.Contains(err.Error(), "load config") {
+		t.Fatalf("expected wrapped load config error, got %v", err)
+	}
+}
+
+func TestRunNoTUI_ListPresetsError(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("PATH", "")
+
+	originalList := listPersonaPresets
+	listPersonaPresets = func(fsys embed.FS) ([]persona.Preset, error) {
+		return nil, errors.New("preset list failed")
+	}
+	t.Cleanup(func() { listPersonaPresets = originalList })
+
+	err := runNoTUI(testWizardConfig(), strings.NewReader("\n"))
+	if err == nil {
+		t.Fatal("expected list presets error")
+	}
+	if !strings.Contains(err.Error(), "list presets") {
+		t.Fatalf("expected wrapped list presets error, got %v", err)
+	}
+}
+
+func TestRunNoTUI_ListSkillsError(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("PATH", "")
+
+	originalList := listAvailableSkills
+	listAvailableSkills = func(fsys embed.FS) ([]skills.Skill, error) {
+		return nil, errors.New("skills list failed")
+	}
+	t.Cleanup(func() { listAvailableSkills = originalList })
+
+	err := runNoTUI(testWizardConfig(), strings.NewReader("\n\n"))
+	if err == nil {
+		t.Fatal("expected list skills error")
+	}
+	if !strings.Contains(err.Error(), "list skills") {
+		t.Fatalf("expected wrapped list skills error, got %v", err)
 	}
 }

@@ -38,7 +38,7 @@ func WriteRegistry(dir, projectName string, stack Stack, skills []string) error 
 		return fmt.Errorf("write temp registry: %w", err)
 	}
 	if err := os.Rename(tmp, registryPath); err != nil {
-		os.Remove(tmp) // best-effort cleanup
+		_ = os.Remove(tmp) // best-effort cleanup
 		return fmt.Errorf("finalize registry: %w", err)
 	}
 	return nil

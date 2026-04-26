@@ -45,15 +45,21 @@ type Model struct {
 	SkillsFS   embed.FS
 	TemplateFS embed.FS
 
-	Email    string
-	Password string
-	APIToken string
+	Email       string
+	Password    string
+	APIToken    string
 	activeField int
 
-	Presets    []persona.Preset
-	presetCur  int
-	CustomYAML string
-	customEdit bool
+	Presets              []persona.Preset
+	presetCur            int
+	CustomYAML           string
+	customEdit           bool
+	customField          int
+	customPresetName     string
+	customDisplayName    string
+	selectedPreset       *persona.ResolvedPreset
+	previousPresetSlug   string
+	previousPresetSource persona.PresetSource
 
 	SkillList    []skills.Skill
 	SkillPrompts []skillPrompt
@@ -110,7 +116,12 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 
 	presets, err := persona.ListPresets(m.PersonaFS)
 	if err == nil {
-		m.Presets = presets
+		m.Presets = append(m.Presets, presets...)
+		m.Presets = append(m.Presets, persona.Preset{
+			Name:        "custom",
+			DisplayName: "Custom (crear nuevo)",
+			Description: "Creá un preset propio con slug y display name, validado y persistido en ~/.jarvis/personas/<slug>.yaml.",
+		})
 		if m.cfg != nil {
 			for i, p := range presets {
 				if p.Name == m.cfg.PersonaPreset {
@@ -143,6 +154,13 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 		m.cfg.Install.Agents = map[string]config.AgentState{}
 	}
 	m.cfg.Scope = m.Scope
+	m.previousPresetSlug = m.cfg.PersonaPreset
+	switch m.cfg.PersonaPresetSource {
+	case string(persona.PresetSourceUser):
+		m.previousPresetSource = persona.PresetSourceUser
+	default:
+		m.previousPresetSource = persona.PresetSourceBuiltin
+	}
 
 	m.Agents = agent.Detect(wcfg.TemplateFS)
 

@@ -67,6 +67,9 @@ type AppConfig struct {
 	APIURL string `mapstructure:"api_url" yaml:"api_url"`
 	// PersonaPreset is the active persona preset name.
 	PersonaPreset string `mapstructure:"persona_preset" yaml:"persona_preset,omitempty"`
+	// PersonaPresetSource identifies where PersonaPreset was resolved from.
+	// Allowed values: "builtin" or "user".
+	PersonaPresetSource string `mapstructure:"persona_preset_source" yaml:"persona_preset_source,omitempty"`
 	// SelectedSkills stores selected skill IDs.
 	SelectedSkills []string `mapstructure:"selected_skills" yaml:"selected_skills,omitempty"`
 
@@ -95,12 +98,13 @@ func ConfigPath() (string, error) {
 
 func defaultConfig() *AppConfig {
 	return &AppConfig{
-		SchemaVersion:    currentSchemaVersion,
-		APIURL:           DefaultAPIURL,
-		PersonaPreset:    "argentino",
-		SelectedSkills:   []string{},
-		Scope:            ScopeLocalOnly,
-		ConfiguredAgents: []string{},
+		SchemaVersion:       currentSchemaVersion,
+		APIURL:              DefaultAPIURL,
+		PersonaPreset:       "argentino",
+		PersonaPresetSource: "builtin",
+		SelectedSkills:      []string{},
+		Scope:               ScopeLocalOnly,
+		ConfiguredAgents:    []string{},
 		Install: InstallState{
 			Mode:   string(ConfigStatusSetup),
 			Agents: map[string]AgentState{},
@@ -239,6 +243,14 @@ func normalizeAndMigrate(cfg *AppConfig) {
 		cfg.PersonaPreset = "argentino"
 	}
 
+	source := strings.ToLower(strings.TrimSpace(cfg.PersonaPresetSource))
+	switch source {
+	case "builtin", "user":
+		cfg.PersonaPresetSource = source
+	default:
+		cfg.PersonaPresetSource = "builtin"
+	}
+
 	if cfg.Cloud == nil && strings.TrimSpace(cfg.Email) != "" {
 		cfg.Cloud = &CloudConfig{Email: strings.TrimSpace(cfg.Email)}
 	}
@@ -349,7 +361,9 @@ func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
 	if err != nil {
 		return fmt.Errorf("open parent dir: %w", err)
 	}
-	defer d.Close()
+	defer func() {
+		_ = d.Close()
+	}()
 	if err := d.Sync(); err != nil {
 		return fmt.Errorf("fsync parent dir: %w", err)
 	}

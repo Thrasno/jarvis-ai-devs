@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
 )
@@ -323,7 +324,9 @@ func TestClaudeAgent_WriteOutputStyle_ReadOnlyFilesystem(t *testing.T) {
 	if err := os.Chmod(outputStylesDir, 0444); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(outputStylesDir, 0755) // Restore for cleanup
+	t.Cleanup(func() {
+		_ = os.Chmod(outputStylesDir, 0755)
+	})
 
 	agent := newClaudeAgent(emptyFS)
 	preset := &persona.Preset{
@@ -378,6 +381,84 @@ func TestClaudeAgent_WriteOutputStyle_NilNotes(t *testing.T) {
 	parts := strings.Split(content, "---")
 	if len(parts) < 3 {
 		t.Error("output-style missing closing frontmatter delimiter")
+	}
+}
+
+func TestClaudeAgent_ClearOutputStyle_RemovesOldFileAndSettingsReference(t *testing.T) {
+	tmpHome := t.TempDir()
+	agent := &ClaudeAgent{home: tmpHome}
+
+	outputStylesDir := filepath.Join(tmpHome, ".claude", "output-styles")
+	if err := os.MkdirAll(outputStylesDir, 0o755); err != nil {
+		t.Fatalf("create output styles dir: %v", err)
+	}
+	oldStylePath := filepath.Join(outputStylesDir, "Argentino.md")
+	if err := os.WriteFile(oldStylePath, []byte("legacy style"), 0o644); err != nil {
+		t.Fatalf("write old output style: %v", err)
+	}
+
+	settingsPath := filepath.Join(tmpHome, ".claude", "settings.json")
+	settingsJSON := `{"outputStyle":"Argentino","theme":"dark"}`
+	if err := os.WriteFile(settingsPath, []byte(settingsJSON), 0o644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	if err := agent.ClearOutputStyle("Argentino"); err != nil {
+		t.Fatalf("ClearOutputStyle() failed: %v", err)
+	}
+
+	if _, err := os.Stat(oldStylePath); !os.IsNotExist(err) {
+		t.Fatalf("expected old output style file to be deleted, stat err=%v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal settings.json: %v", err)
+	}
+	if _, ok := settings["outputStyle"]; ok {
+		t.Fatalf("expected outputStyle key to be removed, got %v", settings["outputStyle"])
+	}
+	if settings["theme"] != "dark" {
+		t.Fatalf("expected unrelated settings to remain unchanged")
+	}
+}
+
+func TestClaudeAgent_ClearOutputStyle_LeavesDifferentOutputStyleSettingUntouched(t *testing.T) {
+	tmpHome := t.TempDir()
+	agent := &ClaudeAgent{home: tmpHome}
+
+	outputStylesDir := filepath.Join(tmpHome, ".claude", "output-styles")
+	if err := os.MkdirAll(outputStylesDir, 0o755); err != nil {
+		t.Fatalf("create output styles dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outputStylesDir, "Argentino.md"), []byte("legacy"), 0o644); err != nil {
+		t.Fatalf("write old output style: %v", err)
+	}
+
+	settingsPath := filepath.Join(tmpHome, ".claude", "settings.json")
+	settingsJSON := `{"outputStyle":"TonyStark"}`
+	if err := os.WriteFile(settingsPath, []byte(settingsJSON), 0o644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	if err := agent.ClearOutputStyle("Argentino"); err != nil {
+		t.Fatalf("ClearOutputStyle() failed: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal settings.json: %v", err)
+	}
+	if settings["outputStyle"] != "TonyStark" {
+		t.Fatalf("outputStyle should remain TonyStark, got %v", settings["outputStyle"])
 	}
 }
 
@@ -511,6 +592,128 @@ func TestClaudeAgent_MergeConfig_RemoveFailureAfterGetIsReturned(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "remove existing claude mcp context7") {
 		t.Fatalf("expected wrapped remove error, got: %v", err)
+	}
+}
+
+func TestClaudeAgent_MergeConfig_ValidationAndAddFailures(t *testing.T) {
+	t.Run("unknown entry name returns validation error", func(t *testing.T) {
+		agent := &ClaudeAgent{runCommand: (&stubClaudeRunner{}).run}
+		err := agent.MergeConfig(MCPEntry{Name: "unknown"})
+		if err == nil || !strings.Contains(err.Error(), "unknown MCP entry name") {
+			t.Fatalf("expected unknown entry validation error, got %v", err)
+		}
+	})
+
+	t.Run("hive requires daemon path", func(t *testing.T) {
+		agent := &ClaudeAgent{runCommand: (&stubClaudeRunner{}).run}
+		err := agent.MergeConfig(MCPEntry{Name: "hive", DaemonPath: "   "})
+		if err == nil || !strings.Contains(err.Error(), "hive daemon path is required") {
+			t.Fatalf("expected hive daemon path validation error, got %v", err)
+		}
+	})
+
+	t.Run("add failure includes runner reason", func(t *testing.T) {
+		runner := &stubClaudeRunner{
+			responses: []stubClaudeResponse{
+				{out: "Error: MCP server 'context7' not found", err: os.ErrNotExist},
+				{out: "network unreachable", err: errors.New("exit status 1")},
+			},
+		}
+		agent := &ClaudeAgent{runCommand: runner.run}
+		err := agent.MergeConfig(MCPEntry{Name: "context7"})
+		if err == nil {
+			t.Fatal("expected add failure, got nil")
+		}
+		if !strings.Contains(err.Error(), "add claude mcp context7") || !strings.Contains(err.Error(), "network unreachable") {
+			t.Fatalf("expected wrapped add error with runner reason, got %v", err)
+		}
+	})
+}
+
+func TestClaudeAgent_CommandRunnerFallbackAndCombinedOutput(t *testing.T) {
+	a := &ClaudeAgent{}
+	runner := a.commandRunner()
+	out, err := runner("sh", "-c", "printf ok")
+	if err != nil {
+		t.Fatalf("fallback commandRunner should execute commands, got error %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("unexpected fallback output %q", out)
+	}
+}
+
+func TestRunCommandCombinedOutput_SuccessAndFailure(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		out, err := runCommandCombinedOutput("sh", "-c", "printf hello")
+		if err != nil {
+			t.Fatalf("expected success, got %v", err)
+		}
+		if out != "hello" {
+			t.Fatalf("unexpected output %q", out)
+		}
+	})
+
+	t.Run("failure keeps combined output", func(t *testing.T) {
+		out, err := runCommandCombinedOutput("sh", "-c", "printf boom && exit 7")
+		if err == nil {
+			t.Fatal("expected non-nil error for exit status 7")
+		}
+		if out != "boom" {
+			t.Fatalf("expected combined output to be returned, got %q", out)
+		}
+	})
+}
+
+func TestClaudeAgent_ClearOutputStyle_BranchCoverage(t *testing.T) {
+	t.Run("blank style name is no-op", func(t *testing.T) {
+		a := &ClaudeAgent{home: t.TempDir()}
+		if err := a.ClearOutputStyle("   "); err != nil {
+			t.Fatalf("expected nil on blank style name, got %v", err)
+		}
+	})
+
+	t.Run("malformed settings returns decode error", func(t *testing.T) {
+		home := t.TempDir()
+		a := &ClaudeAgent{home: home}
+		settingsPath := filepath.Join(home, ".claude", "settings.json")
+		if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+			t.Fatalf("mkdir settings dir: %v", err)
+		}
+		if err := os.WriteFile(settingsPath, []byte("{"), 0o644); err != nil {
+			t.Fatalf("write malformed settings: %v", err)
+		}
+
+		err := a.ClearOutputStyle("Argentino")
+		if err == nil || !strings.Contains(err.Error(), "decode settings.json") {
+			t.Fatalf("expected decode settings.json error, got %v", err)
+		}
+	})
+}
+
+func TestClaudeAgent_InstallOrchestrator_WritesToConfigDir(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	a := newClaudeAgent(testTemplatesFS)
+	if err := os.MkdirAll(a.ConfigDir(), 0755); err != nil {
+		t.Fatalf("create claude dir: %v", err)
+	}
+
+	orchestratorFS := fstest.MapFS{
+		"embed/orchestrator/sdd-orchestrator.md": {Data: []byte("# orchestrator\n")},
+	}
+
+	if err := a.InstallOrchestrator(orchestratorFS); err != nil {
+		t.Fatalf("InstallOrchestrator: %v", err)
+	}
+
+	dest := filepath.Join(a.ConfigDir(), "sdd-orchestrator.md")
+	content, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read installed orchestrator: %v", err)
+	}
+	if !strings.Contains(string(content), "orchestrator") {
+		t.Fatalf("unexpected orchestrator content: %q", string(content))
 	}
 }
 

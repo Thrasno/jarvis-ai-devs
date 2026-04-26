@@ -62,6 +62,10 @@ type Agent interface {
 	// For ClaudeAgent, writes to ~/.claude/output-styles/{TitleCaseName}.md and patches
 	// settings.json with {"outputStyle": "{TitleCaseName}"}.
 	WriteOutputStyle(preset *persona.Preset) error
+
+	// ClearOutputStyle removes a previously generated output-style artifact and clears
+	// the settings reference when it points to the provided style name.
+	ClearOutputStyle(name string) error
 }
 
 // Detect returns all agents detected as installed on the current system.

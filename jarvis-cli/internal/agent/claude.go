@@ -25,6 +25,7 @@ type claudeCommandRunner func(name string, args ...string) (string, error)
 // MCP registration contract (persists in ~/.claude.json):
 //   - Hive (local daemon): `claude mcp add --transport stdio --scope user hive -- <daemon-path>`
 //   - Context7 (remote HTTP): `claude mcp add --transport http --scope user context7 https://mcp.context7.com/mcp`
+//
 // Settings file (non-MCP): ~/.claude/settings.json (e.g. outputStyle)
 // Instructions file: ~/.claude/CLAUDE.md
 // Skills dir: ~/.claude/skills/
@@ -77,14 +78,15 @@ func (a *ClaudeAgent) skillsDir() string {
 func (a *ClaudeAgent) MergeConfig(entry MCPEntry) error {
 	addArgs := []string{"mcp", "add"}
 
-	if entry.Name == "hive" {
+	switch entry.Name {
+	case "hive":
 		if strings.TrimSpace(entry.DaemonPath) == "" {
 			return fmt.Errorf("hive daemon path is required")
 		}
 		addArgs = append(addArgs, "--transport", "stdio", "--scope", "user", entry.Name, "--", entry.DaemonPath)
-	} else if entry.Name == "context7" {
+	case "context7":
 		addArgs = append(addArgs, "--transport", "http", "--scope", "user", entry.Name, "https://mcp.context7.com/mcp")
-	} else {
+	default:
 		return fmt.Errorf("unknown MCP entry name: %s", entry.Name)
 	}
 
@@ -237,6 +239,50 @@ func (a *ClaudeAgent) WriteOutputStyle(preset *persona.Preset) error {
 	}
 
 	return writeFileAtomic(a.settingsPath(), merged, 0644)
+}
+
+// ClearOutputStyle removes the named output-style file and clears the settings
+// outputStyle reference if it currently points to that style.
+func (a *ClaudeAgent) ClearOutputStyle(name string) error {
+	styleName := strings.TrimSpace(name)
+	if styleName == "" {
+		return nil
+	}
+
+	outputStylePath := filepath.Join(a.ConfigDir(), "output-styles", styleName+".md")
+	if err := os.Remove(outputStylePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove output-style file: %w", err)
+	}
+
+	settingsBytes, err := readFileOrEmpty(a.settingsPath())
+	if err != nil {
+		return fmt.Errorf("read settings.json: %w", err)
+	}
+	if len(strings.TrimSpace(string(settingsBytes))) == 0 {
+		return nil
+	}
+
+	settings := map[string]any{}
+	if err := json.Unmarshal(settingsBytes, &settings); err != nil {
+		return fmt.Errorf("decode settings.json: %w", err)
+	}
+
+	current, ok := settings["outputStyle"].(string)
+	if !ok || current != styleName {
+		return nil
+	}
+
+	delete(settings, "outputStyle")
+	cleanBytes, err := json.Marshal(settings)
+	if err != nil {
+		return fmt.Errorf("marshal settings.json: %w", err)
+	}
+
+	if err := writeFileAtomic(a.settingsPath(), cleanBytes, 0644); err != nil {
+		return fmt.Errorf("write settings.json: %w", err)
+	}
+
+	return nil
 }
 
 // toTitleCase converts a persona name to TitleCase format for output-style file naming.

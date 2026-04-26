@@ -68,7 +68,9 @@ func (c *Client) Login(email, password string) (*LoginResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("POST /auth/login: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		apiErr := decodeAPIError(resp)
@@ -125,7 +127,9 @@ func (c *Client) Me() (*UserResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("GET /auth/me: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, fmt.Errorf("token invalid or expired — run 'jarvis login' to re-authenticate")
@@ -140,31 +144,4 @@ func (c *Client) Me() (*UserResponse, error) {
 	}
 
 	return &user, nil
-}
-
-// doJSON performs an HTTP request and decodes the JSON response into target.
-// Used internally for requests that need custom headers.
-func (c *Client) doJSON(req *http.Request, target any) error {
-	req.Header.Set("Content-Type", "application/json")
-	if c.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Token)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("http request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("API error %d", resp.StatusCode)
-	}
-
-	if target != nil {
-		if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
-			return fmt.Errorf("decode response: %w", err)
-		}
-	}
-
-	return nil
 }

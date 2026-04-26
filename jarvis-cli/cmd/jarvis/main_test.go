@@ -30,13 +30,13 @@ func TestMain(m *testing.M) {
 		cmd2.Stdout = os.Stdout
 		cmd2.Stderr = os.Stderr
 		if err2 := cmd2.Run(); err2 != nil {
-			os.Stderr.WriteString("SKIP: could not build jarvis binary: " + err2.Error() + "\n")
+			_, _ = os.Stderr.WriteString("SKIP: could not build jarvis binary: " + err2.Error() + "\n")
 			os.Exit(0) // Skip (not fail) if binary can't be built in this environment.
 		}
 	}
 
 	code := m.Run()
-	os.Remove(jarvisBin)
+	_ = os.Remove(jarvisBin)
 	os.Exit(code)
 }
 
@@ -265,7 +265,9 @@ func TestNoTUI_FirstRun_RequiresInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open /dev/null: %v", err)
 	}
-	defer devNull.Close()
+	defer func() {
+		_ = devNull.Close()
+	}()
 	cmd.Stdin = devNull
 
 	out, execErr := cmd.CombinedOutput()

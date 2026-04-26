@@ -24,14 +24,18 @@ func captureStdout(t *testing.T, fn func()) string {
 
 	fn()
 
-	w.Close()
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer pipe: %v", err)
+	}
 	os.Stdout = orig
 
 	var buf bytes.Buffer
 	if _, err := io.Copy(&buf, r); err != nil {
 		t.Fatalf("copy pipe: %v", err)
 	}
-	r.Close()
+	if err := r.Close(); err != nil {
+		t.Fatalf("close reader pipe: %v", err)
+	}
 	return buf.String()
 }
 
@@ -170,6 +174,94 @@ func TestRunConfigSet_Preset_InProcess(t *testing.T) {
 	}
 }
 
+func TestRunConfigSet_Preset_Valid_DoesNotApplyAgentsOrMutateArtifacts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	writeCfg(t, home, "persona_preset: neutra\npersona_preset_source: builtin\npreset: neutra\napi_url: https://hivemem.dev\n")
+
+	agentsPath := filepath.Join(home, ".claude", "CLAUDE.md")
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	outputStylePath := filepath.Join(home, ".claude", "output-styles", "Neutra.md")
+
+	if err := os.MkdirAll(filepath.Dir(outputStylePath), 0o755); err != nil {
+		t.Fatalf("mkdir output-styles dir: %v", err)
+	}
+
+	const beforeInstructions = "# Existing instructions\n"
+	const beforeSettings = `{"outputStyle":"Neutra"}`
+	const beforeOutputStyle = "# Existing style\n"
+
+	if err := os.WriteFile(agentsPath, []byte(beforeInstructions), 0o644); err != nil {
+		t.Fatalf("write CLAUDE.md: %v", err)
+	}
+	if err := os.WriteFile(settingsPath, []byte(beforeSettings), 0o644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+	if err := os.WriteFile(outputStylePath, []byte(beforeOutputStyle), 0o644); err != nil {
+		t.Fatalf("write output-style file: %v", err)
+	}
+
+	if err := configSetCmd.RunE(configSetCmd, []string{"preset", "argentino"}); err != nil {
+		t.Fatalf("configSetCmd.RunE valid preset: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "CLAUDE instructions", path: agentsPath, want: beforeInstructions},
+		{name: "settings", path: settingsPath, want: beforeSettings},
+		{name: "output-style", path: outputStylePath, want: beforeOutputStyle},
+	} {
+		content, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatalf("read %s: %v", tc.name, err)
+		}
+		if string(content) != tc.want {
+			t.Fatalf("%s was mutated by config set preset; got %q want %q", tc.name, string(content), tc.want)
+		}
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config after valid preset set: %v", err)
+	}
+	if cfg.PersonaPreset != "argentino" || cfg.Preset != "argentino" {
+		t.Fatalf("expected canonical preset argentino, got persona=%q preset=%q", cfg.PersonaPreset, cfg.Preset)
+	}
+	if cfg.PersonaPresetSource != "builtin" {
+		t.Fatalf("expected builtin source, got %q", cfg.PersonaPresetSource)
+	}
+}
+
+func TestRunConfigSet_Preset_InvalidSlug_DoesNotMutateState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeCfg(t, home, "persona_preset: neutra\npersona_preset_source: builtin\npreset: neutra\napi_url: https://hivemem.dev\n")
+
+	err := configSetCmd.RunE(configSetCmd, []string{"preset", "preset-inexistente"})
+	if err == nil {
+		t.Fatal("expected error for invalid preset slug")
+	}
+
+	cfg, loadErr := config.Load()
+	if loadErr != nil {
+		t.Fatalf("load config after failed set: %v", loadErr)
+	}
+
+	if cfg.PersonaPreset != "neutra" {
+		t.Fatalf("persona_preset mutated on failure: got %q want %q", cfg.PersonaPreset, "neutra")
+	}
+	if cfg.Preset != "neutra" {
+		t.Fatalf("preset mutated on failure: got %q want %q", cfg.Preset, "neutra")
+	}
+	if cfg.PersonaPresetSource != "builtin" {
+		t.Fatalf("persona_preset_source mutated on failure: got %q want %q", cfg.PersonaPresetSource, "builtin")
+	}
+}
+
 // TestRunConfigSet_APIUrl_InProcess verifies configSetCmd updates the api_url key.
 func TestRunConfigSet_APIUrl_InProcess(t *testing.T) {
 	home := t.TempDir()
@@ -283,13 +375,17 @@ func TestRunWizard_NoTUI_SkipsAuth(t *testing.T) {
 	if _, err := io.WriteString(w, input); err != nil {
 		t.Fatalf("write pipe: %v", err)
 	}
-	w.Close()
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer pipe: %v", err)
+	}
 
 	origStdin := os.Stdin
 	os.Stdin = r
 	defer func() {
 		os.Stdin = origStdin
-		r.Close()
+		if err := r.Close(); err != nil {
+			t.Fatalf("close reader pipe: %v", err)
+		}
 	}()
 
 	out := captureStdout(t, func() {

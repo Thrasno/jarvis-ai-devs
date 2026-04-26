@@ -15,6 +15,7 @@ func TestAgentInterfaceExtension(t *testing.T) {
 	var _ interface {
 		SupportsOutputStyles() bool
 		WriteOutputStyle(*persona.Preset) error
+		ClearOutputStyle(string) error
 	} = (Agent)(nil)
 
 	// If we reach here, the interface has the required methods

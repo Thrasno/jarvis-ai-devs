@@ -10,8 +10,6 @@ import (
 	"io/fs"
 	"strings"
 	"unicode"
-
-	"gopkg.in/yaml.v3"
 )
 
 // Tone describes the communication tone settings of a persona.
@@ -55,21 +53,15 @@ type Preset struct {
 // fs must be the root-package PersonaFS (embed/personas directory embedded at root).
 // name must be one of the 7 built-in preset names (e.g. "argentino", "tony-stark").
 func LoadPreset(fsys embed.FS, name string) (*Preset, error) {
-	// Normalize: replace spaces with hyphens, lowercase
-	name = strings.ToLower(strings.ReplaceAll(name, " ", "-"))
-
-	data, err := fsys.ReadFile("embed/personas/" + name + ".yaml")
+	resolved, err := ResolvePreset(fsys, name)
 	if err != nil {
-		available := listPresetNames(fsys)
-		return nil, fmt.Errorf("preset %q not found (available: %s)", name, strings.Join(available, ", "))
+		return nil, err
+	}
+	if resolved.Source != PresetSourceBuiltin {
+		return nil, fmt.Errorf("preset %q is not a built-in preset", NormalizeSlug(name))
 	}
 
-	var preset Preset
-	if err := yaml.Unmarshal(data, &preset); err != nil {
-		return nil, fmt.Errorf("parse preset %q: %w", name, err)
-	}
-
-	return &preset, nil
+	return resolved.Preset, nil
 }
 
 // ListPresets returns all built-in presets loaded from the provided embed.FS.
@@ -90,7 +82,7 @@ func ListPresets(fsys embed.FS) ([]Preset, error) {
 
 // listPresetNames returns the names of all built-in presets by scanning the provided embed.FS.
 // Template files (*.tmpl) are excluded.
-func listPresetNames(fsys embed.FS) []string {
+func listPresetNames(fsys fs.FS) []string {
 	var names []string
 	_ = fs.WalkDir(fsys, "embed/personas", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -112,12 +104,7 @@ func listPresetNames(fsys embed.FS) []string {
 // Returns a descriptive error if required fields are missing or Layer1 fields
 // are present (Layer1 fields must not be overridden via persona presets).
 func ValidateCustom(content []byte) error {
-	var raw map[string]any
-	if err := yaml.Unmarshal(content, &raw); err != nil {
-		return fmt.Errorf("invalid YAML: %w", err)
-	}
-
-	return validatePresetMap(raw)
+	return ValidatePreset(content)
 }
 
 // RenderLayer2 renders a Layer2 markdown block from a preset.
@@ -125,14 +112,14 @@ func ValidateCustom(content []byte) error {
 func RenderLayer2(preset *Preset) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("## Persona: %s\n\n", preset.DisplayName))
-	sb.WriteString(fmt.Sprintf("%s\n\n", preset.Description))
+	fmt.Fprintf(&sb, "## Persona: %s\n\n", preset.DisplayName)
+	fmt.Fprintf(&sb, "%s\n\n", preset.Description)
 
 	sb.WriteString("### Tone\n")
-	sb.WriteString(fmt.Sprintf("- **Formality**: %s\n", preset.Tone.Formality))
-	sb.WriteString(fmt.Sprintf("- **Directness**: %s\n", preset.Tone.Directness))
-	sb.WriteString(fmt.Sprintf("- **Humor**: %s\n", preset.Tone.Humor))
-	sb.WriteString(fmt.Sprintf("- **Language**: %s\n\n", preset.Tone.Language))
+	fmt.Fprintf(&sb, "- **Formality**: %s\n", preset.Tone.Formality)
+	fmt.Fprintf(&sb, "- **Directness**: %s\n", preset.Tone.Directness)
+	fmt.Fprintf(&sb, "- **Humor**: %s\n", preset.Tone.Humor)
+	fmt.Fprintf(&sb, "- **Language**: %s\n\n", preset.Tone.Language)
 
 	sb.WriteString("### Communication Style\n")
 	if preset.CommunicationStyle.ShowAlternatives {
@@ -141,7 +128,7 @@ func RenderLayer2(preset *Preset) string {
 	if preset.CommunicationStyle.ChallengeAssumptions {
 		sb.WriteString("- Challenge user assumptions when incorrect\n")
 	}
-	sb.WriteString(fmt.Sprintf("- Verbosity: %s\n\n", preset.CommunicationStyle.Verbosity))
+	fmt.Fprintf(&sb, "- Verbosity: %s\n\n", preset.CommunicationStyle.Verbosity)
 
 	if len(preset.CharacteristicPhrases.Greetings) > 0 {
 		sb.WriteString("### Characteristic Phrases\n")
@@ -171,8 +158,8 @@ func RenderOutputStyle(preset *Preset) string {
 
 	// YAML frontmatter
 	sb.WriteString("---\n")
-	sb.WriteString(fmt.Sprintf("name: %s\n", titleCaseName))
-	sb.WriteString(fmt.Sprintf("description: %s\n", preset.Description))
+	fmt.Fprintf(&sb, "name: %s\n", titleCaseName)
+	fmt.Fprintf(&sb, "description: %s\n", preset.Description)
 	sb.WriteString("keep-coding-instructions: true\n")
 	sb.WriteString("---\n")
 

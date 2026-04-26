@@ -190,6 +190,66 @@ func TestLoad_MigratesLegacyV1ConfigToV2(t *testing.T) {
 	}
 }
 
+func TestLoad_DefaultsPersonaPresetSourceToBuiltinForLegacyConfig(t *testing.T) {
+	home := isolateHome(t)
+	legacy := strings.Join([]string{
+		"api_url: https://hivemem.dev",
+		"persona_preset: argentino",
+	}, "\n")
+	if err := os.MkdirAll(filepath.Join(home, ".jarvis"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".jarvis", "config.yaml"), []byte(legacy), 0644); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load legacy config: %v", err)
+	}
+
+	if cfg.PersonaPresetSource != "builtin" {
+		t.Fatalf("expected persona_preset_source=builtin, got %q", cfg.PersonaPresetSource)
+	}
+}
+
+func TestLoad_NormalizesPersonaPresetSourceValues(t *testing.T) {
+	tests := []struct {
+		name     string
+		rawValue string
+		want     string
+	}{
+		{name: "valid user source", rawValue: " user ", want: "user"},
+		{name: "invalid source falls back to builtin", rawValue: "external", want: "builtin"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := isolateHome(t)
+			raw := strings.Join([]string{
+				"api_url: https://hivemem.dev",
+				"persona_preset: custom-mentor",
+				"persona_preset_source: " + tt.rawValue,
+			}, "\n")
+			if err := os.MkdirAll(filepath.Join(home, ".jarvis"), 0755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(home, ".jarvis", "config.yaml"), []byte(raw), 0644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+
+			if cfg.PersonaPresetSource != tt.want {
+				t.Fatalf("PersonaPresetSource = %q, want %q", cfg.PersonaPresetSource, tt.want)
+			}
+		})
+	}
+}
+
 func TestConfigStatus_ReadyWithoutCloudEmail(t *testing.T) {
 	cfg := &AppConfig{
 		SchemaVersion:  2,
@@ -290,6 +350,52 @@ func TestLoad_ReturnsErrorWhenFileCorrupt(t *testing.T) {
 	_, err := Load()
 	if err == nil {
 		t.Fatal("expected Load() to return an error for corrupt YAML, got nil")
+	}
+}
+
+func TestSave_ReturnsErrorOnNilConfig(t *testing.T) {
+	isolateHome(t)
+	err := Save(nil)
+	if err == nil || !strings.Contains(err.Error(), "config is nil") {
+		t.Fatalf("expected nil-config error, got %v", err)
+	}
+}
+
+func TestLoad_DefaultConfigRespectsEnvOverride(t *testing.T) {
+	isolateHome(t)
+	t.Setenv("JARVIS_API_URL", "https://override.example")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.APIURL != "https://override.example" {
+		t.Fatalf("expected APIURL override, got %q", cfg.APIURL)
+	}
+}
+
+func TestConfigStatusSetupWhenConfigNil(t *testing.T) {
+	var cfg *AppConfig
+	if got := cfg.ConfigStatus(); got != ConfigStatusSetup {
+		t.Fatalf("expected ConfigStatusSetup for nil cfg, got %q", got)
+	}
+}
+
+func TestIsReadyForReconfigure_FailsWhenConfiguredAgentStateMissing(t *testing.T) {
+	cfg := &AppConfig{
+		SchemaVersion:    2,
+		APIURL:           DefaultAPIURL,
+		PersonaPreset:    "argentino",
+		SelectedSkills:   []string{"core-memory"},
+		ConfiguredAgents: []string{"claude"},
+		Install: InstallState{
+			Completed: true,
+			Agents:    map[string]AgentState{},
+		},
+	}
+
+	if cfg.IsReadyForReconfigure() {
+		t.Fatal("expected IsReadyForReconfigure=false when configured agent state is missing")
 	}
 }
 

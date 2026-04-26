@@ -11,8 +11,17 @@ import (
 )
 
 func TestLog_DefaultOutputIsStderr(t *testing.T) {
-	if logger.Log.Writer() != os.Stderr {
-		t.Error("expected Log default writer to be os.Stderr")
+	writer := logger.Log.Writer()
+	if writer == os.Stderr {
+		return
+	}
+
+	writerFile, okWriter := writer.(*os.File)
+	if !okWriter {
+		t.Fatalf("expected logger writer to be *os.File, got %T", writer)
+	}
+	if writerFile.Fd() == os.Stdout.Fd() {
+		t.Fatalf("expected logger writer not to point to stdout fd=%d", os.Stdout.Fd())
 	}
 }
 

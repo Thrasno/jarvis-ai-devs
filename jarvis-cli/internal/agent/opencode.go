@@ -60,7 +60,8 @@ func (a *OpenCodeAgent) skillsDir() string {
 func (a *OpenCodeAgent) MergeConfig(entry MCPEntry) error {
 	var patch map[string]any
 
-	if entry.Name == "hive" {
+	switch entry.Name {
+	case "hive":
 		// Build the hive MCP patch for OpenCode format
 		// command is an array, env vars carry credentials
 		hiveCfg := map[string]any{
@@ -83,7 +84,7 @@ func (a *OpenCodeAgent) MergeConfig(entry MCPEntry) error {
 				"hive": hiveCfg,
 			},
 		}
-	} else if entry.Name == "context7" {
+	case "context7":
 		// Build the Context7 MCP patch for OpenCode format (remote mode)
 		patch = map[string]any{
 			"mcp": map[string]any{
@@ -94,7 +95,7 @@ func (a *OpenCodeAgent) MergeConfig(entry MCPEntry) error {
 				},
 			},
 		}
-	} else {
+	default:
 		return fmt.Errorf("unknown MCP entry name: %s", entry.Name)
 	}
 
@@ -199,5 +200,11 @@ func (a *OpenCodeAgent) SupportsOutputStyles() bool {
 // WriteOutputStyle is a no-op for OpenCodeAgent since OpenCode doesn't support
 // output-styles. Returns nil to allow graceful handling in mixed agent environments.
 func (a *OpenCodeAgent) WriteOutputStyle(preset *persona.Preset) error {
+	return nil
+}
+
+// ClearOutputStyle is a no-op for OpenCodeAgent since OpenCode has no
+// output-style artifact contract to clean.
+func (a *OpenCodeAgent) ClearOutputStyle(name string) error {
 	return nil
 }

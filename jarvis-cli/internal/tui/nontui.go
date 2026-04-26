@@ -17,6 +17,13 @@ import (
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/skills"
 )
 
+var (
+	loadAppConfig         = config.Load
+	listPersonaPresets    = persona.ListPresets
+	listAvailableSkills   = skills.ListSkills
+	detectInstalledAgents = agent.Detect
+)
+
 // RunNoTUI executes the full wizard using plain readline-style prompts.
 // Used when --no-tui flag is set or when stdin is not a terminal.
 func RunNoTUI(wcfg WizardConfig) error {
@@ -26,9 +33,14 @@ func RunNoTUI(wcfg WizardConfig) error {
 // runNoTUI is the testable implementation that accepts any io.Reader as input.
 func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	scanner := bufio.NewScanner(input)
-	cfg, err := config.Load()
+	cfg, err := loadAppConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+	previousPresetSlug := cfg.PersonaPreset
+	previousPresetSource := persona.PresetSourceBuiltin
+	if strings.TrimSpace(cfg.PersonaPresetSource) == string(persona.PresetSourceUser) {
+		previousPresetSource = persona.PresetSourceUser
 	}
 	mode := cfg.ConfigStatus()
 
@@ -104,10 +116,15 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 
 	// ── Step 3: Persona ───────────────────────────────────────────────────────
 	fmt.Println("\n=== Jarvis-Dev Setup [3/6] Select Persona Preset ===")
-	presets, err := persona.ListPresets(wcfg.PersonaFS)
+	presets, err := listPersonaPresets(wcfg.PersonaFS)
 	if err != nil {
 		return fmt.Errorf("list presets: %w", err)
 	}
+	presets = append(presets, persona.Preset{
+		Name:        "custom",
+		DisplayName: "Custom (crear nuevo)",
+		Description: "Creá un preset propio con slug y display name, validado y persistido en ~/.jarvis/personas/<slug>.yaml.",
+	})
 	defaultPreset := cfg.PersonaPreset
 	if defaultPreset == "" {
 		defaultPreset = cfg.Preset
@@ -135,13 +152,31 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 			selectedPreset = n - 1
 		}
 	}
-	cfg.PersonaPreset = presets[selectedPreset].Name
-	cfg.Preset = cfg.PersonaPreset
-	fmt.Printf("Selected: %s\n", cfg.PersonaPreset)
+	selectedPersona := presets[selectedPreset]
+	var customDraft *customPresetDraft
+	if selectedPersona.Name == "custom" {
+		fmt.Print("Custom preset name (slug base): ")
+		name := readLine(scanner)
+		fmt.Print("Custom display name: ")
+		displayName := readLine(scanner)
+		fmt.Print("Custom YAML override (optional, single line; Enter keeps generated base): ")
+		yamlOverride := readLine(scanner)
+		customDraft = &customPresetDraft{Name: name, DisplayName: displayName, YAML: yamlOverride}
+	}
+
+	resolvedPreset, err := resolveWizardPresetSelection(wcfg.PersonaFS, selectedPersona.Name, customDraft)
+	if err != nil {
+		return fmt.Errorf("resolve selected preset: %w", err)
+	}
+
+	cfg.PersonaPreset = resolvedPreset.Slug
+	cfg.Preset = resolvedPreset.Slug
+	cfg.PersonaPresetSource = string(resolvedPreset.Source)
+	fmt.Printf("Selected: %s (%s)\n", resolvedPreset.Slug, resolvedPreset.Source)
 
 	// ── Step 4: Extra Skills ──────────────────────────────────────────────────
 	fmt.Println("\n=== Jarvis-Dev Setup [4/6] Select Extra Skills ===")
-	skillList, err := skills.ListSkills(wcfg.SkillsFS)
+	skillList, err := listAvailableSkills(wcfg.SkillsFS)
 	if err != nil {
 		return fmt.Errorf("list skills: %w", err)
 	}
@@ -192,7 +227,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("get home dir: %w", err)
 	}
-	agents := agent.Detect(wcfg.TemplateFS)
+	agents := detectInstalledAgents(wcfg.TemplateFS)
 	if len(agents) == 0 {
 		fmt.Println("No agents detected. Install Claude Code or OpenCode and re-run jarvis.")
 	}
@@ -223,15 +258,6 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		}
 	}
 
-	// Build Layer1 + Layer2 content.
-	layer1 := config.Layer1Content()
-	var layer2 string
-	if cfg.PersonaPreset != "" {
-		if preset, loadErr := persona.LoadPreset(wcfg.PersonaFS, cfg.PersonaPreset); loadErr == nil {
-			layer2 = persona.RenderLayer2(preset)
-		}
-	}
-
 	// Point MCP directly to the binary — credentials are read from ~/.jarvis/sync.json.
 	entry := agent.MCPEntry{
 		Name:       "hive",
@@ -239,7 +265,12 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	}
 	context7Entry := agent.MCPEntry{Name: "context7"}
 
-	results := configureWizardAgents(agents, entry, context7Entry, layer1, layer2, skillInfos, skillsSubFS, selectedIDs)
+	results := configureWizardAgents(agents, entry, context7Entry, resolvedPreset, wizardPresetApplyContext{
+		Layer1:               config.Layer1Content(),
+		Skills:               skillInfos,
+		PreviousPresetSlug:   previousPresetSlug,
+		PreviousPresetSource: previousPresetSource,
+	}, skillsSubFS, selectedIDs)
 	var configuredAgents []string
 	for _, res := range results {
 		fmt.Printf("Configuring %s ...\n", res.AgentName)

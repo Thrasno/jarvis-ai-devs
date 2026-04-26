@@ -75,8 +75,8 @@ func viewScope(m Model) string {
 	sb.WriteString(stepHeader(1, 6, "Setup Scope"))
 	sb.WriteString("Elegí el alcance del setup (sin side effects hasta Apply).\n\n")
 
-	localLine := "  local-only"
-	cloudLine := "  local+cloud"
+	var localLine string
+	var cloudLine string
 	if m.Scope == config.ScopeLocalOnly {
 		localLine = selectedStyle.Render("> local-only")
 		cloudLine = dimStyle.Render("  local+cloud")
@@ -224,7 +224,7 @@ func viewHiveCloud(m Model) string {
 	sb.WriteString("Connect to Hive Cloud for team memory sync (press Esc to skip).\n\n")
 
 	// Email field
-	emailLabel := "Email:    "
+	var emailLabel string
 	if m.activeField == 0 {
 		emailLabel = selectedStyle.Render("> Email:  ")
 	} else {
@@ -284,12 +284,25 @@ func updatePersona(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		selected := m.Presets[m.presetCur]
 		if selected.Name == "custom" {
-			// Enter inline YAML edit mode.
+			// Enter custom creation mode.
 			m.customEdit = true
+			m.customField = 0
+			m.Err = nil
 			return m, nil
 		}
-		m.cfg.PersonaPreset = selected.Name
-		m.cfg.Preset = selected.Name
+		resolved, err := resolveWizardPresetSelection(m.PersonaFS, selected.Name, nil)
+		if err == nil {
+			m.selectedPreset = resolved
+			m.cfg.PersonaPreset = resolved.Slug
+			m.cfg.Preset = resolved.Slug
+			m.cfg.PersonaPresetSource = string(resolved.Source)
+		} else {
+			m.selectedPreset = nil
+			m.cfg.PersonaPreset = selected.Name
+			m.cfg.Preset = selected.Name
+			m.cfg.PersonaPresetSource = string(persona.PresetSourceBuiltin)
+		}
+		m.Err = nil
 		m.Step = StepExtraSkills
 	}
 	return m, nil
@@ -297,14 +310,22 @@ func updatePersona(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func updatePersonaCustomEdit(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
+	case tea.KeyTab, tea.KeyShiftTab:
+		m.customField = (m.customField + 1) % 3
 	case tea.KeyCtrlS:
-		// Validate and confirm custom YAML.
-		if err := persona.ValidateCustom([]byte(m.CustomYAML)); err != nil {
+		resolved, err := resolveWizardPresetSelection(m.PersonaFS, "custom", &customPresetDraft{
+			Name:        m.customPresetName,
+			DisplayName: m.customDisplayName,
+			YAML:        m.CustomYAML,
+		})
+		if err != nil {
 			m.Err = err
 			return m, nil
 		}
-		m.cfg.PersonaPreset = "custom"
-		m.cfg.Preset = "custom"
+		m.selectedPreset = resolved
+		m.cfg.PersonaPreset = resolved.Slug
+		m.cfg.Preset = resolved.Slug
+		m.cfg.PersonaPresetSource = string(resolved.Source)
 		m.customEdit = false
 		m.Err = nil
 		m.Step = StepExtraSkills
@@ -312,13 +333,35 @@ func updatePersonaCustomEdit(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.customEdit = false
 		m.Err = nil
 	case tea.KeyRunes:
-		m.CustomYAML += string(msg.Runes)
+		switch m.customField {
+		case 0:
+			m.customPresetName += string(msg.Runes)
+		case 1:
+			m.customDisplayName += string(msg.Runes)
+		default:
+			m.CustomYAML += string(msg.Runes)
+		}
 	case tea.KeyBackspace:
-		if len(m.CustomYAML) > 0 {
-			m.CustomYAML = m.CustomYAML[:len(m.CustomYAML)-1]
+		switch m.customField {
+		case 0:
+			if len(m.customPresetName) > 0 {
+				m.customPresetName = m.customPresetName[:len(m.customPresetName)-1]
+			}
+		case 1:
+			if len(m.customDisplayName) > 0 {
+				m.customDisplayName = m.customDisplayName[:len(m.customDisplayName)-1]
+			}
+		default:
+			if len(m.CustomYAML) > 0 {
+				m.CustomYAML = m.CustomYAML[:len(m.CustomYAML)-1]
+			}
 		}
 	case tea.KeyEnter:
-		m.CustomYAML += "\n"
+		if m.customField < 2 {
+			m.customField++
+		} else {
+			m.CustomYAML += "\n"
+		}
 	}
 	return m, nil
 }
@@ -328,11 +371,26 @@ func viewPersona(m Model) string {
 	sb.WriteString(stepHeader(3, 6, "Select Persona Preset"))
 
 	if m.customEdit {
-		sb.WriteString(headerStyle.Render("Custom YAML Editor") + "\n")
-		sb.WriteString(dimStyle.Render("Ctrl+S: confirm  Esc: cancel") + "\n\n")
+		sb.WriteString(headerStyle.Render("Custom Preset Creation") + "\n")
+		sb.WriteString(dimStyle.Render("Tab: cambiar campo  Enter: siguiente/corte de línea  Ctrl+S: confirmar  Esc: cancelar") + "\n\n")
 		if m.Err != nil {
 			sb.WriteString(errorStyle.Render("Validation error: "+m.Err.Error()) + "\n\n")
 		}
+
+		nameLabel := "  Name (slug base): " + m.customPresetName
+		displayLabel := "  Display name: " + m.customDisplayName
+		yamlLabel := "  YAML draft:"
+		switch m.customField {
+		case 0:
+			nameLabel = selectedStyle.Render("> Name (slug base): " + m.customPresetName)
+		case 1:
+			displayLabel = selectedStyle.Render("> Display name: " + m.customDisplayName)
+		default:
+			yamlLabel = selectedStyle.Render("> YAML draft:")
+		}
+		sb.WriteString(nameLabel + "\n")
+		sb.WriteString(displayLabel + "\n\n")
+		sb.WriteString(yamlLabel + "\n")
 		sb.WriteString(m.CustomYAML)
 		sb.WriteString("_")
 		return sb.String()
@@ -538,15 +596,24 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		// Build SkillInfo list from registry for template rendering.
 		skillInfos := buildSkillInfoList(m)
 
-		// Build Layer1 + Layer2 content.
-		layer1 := config.Layer1Content()
-		var layer2 string
-		if m.cfg.PersonaPreset != "" && m.cfg.PersonaPreset != "custom" {
-			if preset, err := persona.LoadPreset(m.PersonaFS, m.cfg.PersonaPreset); err == nil {
-				layer2 = persona.RenderLayer2(preset)
+		var resolved *persona.ResolvedPreset
+		if len(m.Agents) > 0 {
+			var err error
+			resolved, err = ensureResolvedPresetForApply(m)
+			if err != nil {
+				return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: resolve preset %q: %v", m.cfg.PersonaPreset, err), done: true, failed: true}
 			}
-		} else if m.CustomYAML != "" {
-			layer2 = m.CustomYAML
+		}
+
+		previousSlug := m.previousPresetSlug
+		if previousSlug == "" {
+			if m.cfg != nil {
+				previousSlug = m.cfg.PersonaPreset
+			}
+		}
+		previousSource := m.previousPresetSource
+		if previousSource == "" && m.cfg != nil && strings.TrimSpace(m.cfg.PersonaPresetSource) == string(persona.PresetSourceUser) {
+			previousSource = persona.PresetSourceUser
 		}
 
 		// MCP entry for hive-daemon — point directly to the binary.
@@ -560,7 +627,12 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		context7Entry := agent.MCPEntry{Name: "context7"}
 
 		// Configure each detected agent and collect structured outcomes.
-		results := configureWizardAgents(m.Agents, entry, context7Entry, layer1, layer2, skillInfos, skillsSubFS, selectedIDs)
+		results := configureWizardAgents(m.Agents, entry, context7Entry, resolved, wizardPresetApplyContext{
+			Layer1:               config.Layer1Content(),
+			Skills:               skillInfos,
+			PreviousPresetSlug:   previousSlug,
+			PreviousPresetSource: previousSource,
+		}, skillsSubFS, selectedIDs)
 		var configuredAgents []string
 		for _, res := range results {
 			if res.Err != nil {
@@ -630,6 +702,33 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 	}
 }
 
+func ensureResolvedPresetForApply(m Model) (*persona.ResolvedPreset, error) {
+	if m.selectedPreset != nil {
+		return m.selectedPreset, nil
+	}
+
+	requested := ""
+	if m.cfg != nil {
+		requested = strings.TrimSpace(m.cfg.PersonaPreset)
+	}
+	if requested == "" {
+		presets, err := persona.ListPresets(m.PersonaFS)
+		if err == nil && len(presets) > 0 {
+			requested = presets[0].Name
+		}
+	}
+	if requested == "" {
+		return nil, fmt.Errorf("no preset selected")
+	}
+
+	resolved, err := resolveWizardPresetSelection(m.PersonaFS, requested, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return resolved, nil
+}
+
 // buildSelectedIDs returns a slice of skill IDs for all selected and core skills.
 // Used to pass to InstallSkills(skillsFS, selected).
 func buildSelectedIDs(m Model) []string {
@@ -663,14 +762,14 @@ func viewReview(m Model) string {
 	sb.WriteString(stepHeader(5, 6, "Review & Apply"))
 	sb.WriteString(headerStyle.Render("Resumen de configuración") + "\n")
 
-	sb.WriteString(fmt.Sprintf("Scope: %s", m.Scope))
+	fmt.Fprintf(&sb, "Scope: %s", m.Scope)
 	if m.Scope == config.ScopeLocalOnly {
 		sb.WriteString("  " + errorStyle.Render(localOnlyReviewWarning))
 	}
 	sb.WriteString("\n")
-	sb.WriteString(fmt.Sprintf("Persona: %s\n", m.cfg.PersonaPreset))
+	fmt.Fprintf(&sb, "Persona: %s\n", m.cfg.PersonaPreset)
 	if m.Scope == config.ScopeLocalCloud {
-		sb.WriteString(fmt.Sprintf("Cloud email: %s\n", strings.TrimSpace(m.Email)))
+		fmt.Fprintf(&sb, "Cloud email: %s\n", strings.TrimSpace(m.Email))
 	} else {
 		sb.WriteString("Cloud email: (omitido por alcance local-only)\n")
 	}
