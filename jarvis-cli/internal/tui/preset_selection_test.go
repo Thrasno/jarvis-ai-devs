@@ -295,3 +295,86 @@ func TestDefaultCustomPreset_FallsBackWithoutNeutralPreset(t *testing.T) {
 		t.Fatalf("language = %q, want en-us", p.Tone.Language)
 	}
 }
+
+func TestDefaultCustomPreset_FallsBackWhenNeutralTemplateIsPartialOrInvalid(t *testing.T) {
+	personaFS := fstest.MapFS{
+		"embed/personas/neutra.yaml": &fstest.MapFile{Data: []byte(`
+name: neutra
+display_name: Neutra
+description: Broken neutral persona
+tone:
+  formality: ""
+  directness: direct
+  humor: none
+  language: not-allowed
+communication_style:
+  verbosity: ""
+  show_alternatives: true
+  challenge_assumptions: true
+characteristic_phrases:
+  greetings: []
+  confirmations: []
+notes: ""
+`)},
+	}
+
+	p := defaultCustomPreset(personaFS, "fallback", "Fallback")
+
+	if p.Tone.Language != "en-us" {
+		t.Fatalf("language = %q, want en-us from hardcoded fallback", p.Tone.Language)
+	}
+	if p.Tone.Formality != "neutral" {
+		t.Fatalf("formality = %q, want neutral from hardcoded fallback", p.Tone.Formality)
+	}
+	if got := len(p.CharacteristicPhrases.Greetings); got == 0 {
+		t.Fatal("expected hardcoded fallback greetings when neutral is partial/invalid")
+	}
+	if got := len(p.CharacteristicPhrases.Confirmations); got == 0 {
+		t.Fatal("expected hardcoded fallback confirmations when neutral is partial/invalid")
+	}
+}
+
+func TestCreateWizardCustomPreset_SucceedsWhenNeutralTemplateIsInvalid(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	personaFS := fstest.MapFS{
+		"embed/personas/neutra.yaml": &fstest.MapFile{Data: []byte(`
+name: neutra
+display_name: Neutra
+description: Broken neutral persona
+tone:
+  formality: neutral
+  directness: direct
+  humor: none
+  language: not-allowed
+communication_style:
+  verbosity: concise
+  show_alternatives: true
+  challenge_assumptions: true
+characteristic_phrases:
+  greetings: ["Hola"]
+  confirmations: ["Bien"]
+notes: |
+  ## Core Principle
+  Broken by invalid language.
+
+  ## Behavior
+  Keep consistency.
+
+  ## When Asking Questions
+  Ask one thing.
+`)},
+	}
+
+	resolved, err := createWizardCustomPreset(personaFS, customPresetDraft{
+		Name:        "Mi Persona",
+		DisplayName: "Mi Persona",
+	})
+	if err != nil {
+		t.Fatalf("createWizardCustomPreset with invalid neutral should fallback and succeed, got: %v", err)
+	}
+	if resolved.Source != persona.PresetSourceUser {
+		t.Fatalf("source = %q, want user", resolved.Source)
+	}
+}

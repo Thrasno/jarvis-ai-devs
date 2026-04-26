@@ -117,7 +117,9 @@ func defaultCustomPreset(personaFS fs.FS, slug, displayName string) persona.Pres
 		base.Name = slug
 		base.DisplayName = displayName
 		base.Description = fmt.Sprintf("Custom preset %s created from wizard.", displayName)
-		return base
+		if customPresetFallbackIsValid(base) {
+			return base
+		}
 	}
 
 	return persona.Preset{
@@ -153,4 +155,23 @@ Use direct language, verify assumptions, and include tradeoffs when relevant.
 Ask one specific question and stop until the user answers.
 `,
 	}
+}
+
+func customPresetFallbackIsValid(p persona.Preset) bool {
+	if strings.TrimSpace(p.Tone.Formality) == "" ||
+		strings.TrimSpace(p.Tone.Directness) == "" ||
+		strings.TrimSpace(p.Tone.Humor) == "" ||
+		strings.TrimSpace(p.Tone.Language) == "" ||
+		strings.TrimSpace(p.CommunicationStyle.Verbosity) == "" ||
+		len(p.CharacteristicPhrases.Greetings) == 0 ||
+		len(p.CharacteristicPhrases.Confirmations) == 0 {
+		return false
+	}
+
+	content, err := yaml.Marshal(p)
+	if err != nil {
+		return false
+	}
+
+	return persona.ValidatePreset(content) == nil
 }
