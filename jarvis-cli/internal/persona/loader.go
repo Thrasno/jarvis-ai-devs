@@ -8,6 +8,8 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"path/filepath"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -83,9 +85,12 @@ func ListPresets(fsys embed.FS) ([]Preset, error) {
 // listPresetNames returns the names of all built-in presets by scanning the provided embed.FS.
 // Template files (*.tmpl) are excluded.
 func listPresetNames(fsys fs.FS) []string {
-	var names []string
+	namesSet := make(map[string]struct{})
 	_ = fs.WalkDir(fsys, "embed/personas", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
+			return nil
+		}
+		if filepath.ToSlash(filepath.Dir(path)) != "embed/personas" {
 			return nil
 		}
 		if !strings.HasSuffix(path, ".yaml") || strings.HasSuffix(path, ".yaml.tmpl") {
@@ -94,9 +99,17 @@ func listPresetNames(fsys fs.FS) []string {
 		// Extract name from filename (strip directory and .yaml extension)
 		base := d.Name()
 		name := strings.TrimSuffix(base, ".yaml")
-		names = append(names, name)
+		if err := validatePresetSlug(name); err != nil {
+			return nil
+		}
+		namesSet[name] = struct{}{}
 		return nil
 	})
+	names := make([]string, 0, len(namesSet))
+	for name := range namesSet {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	return names
 }
 

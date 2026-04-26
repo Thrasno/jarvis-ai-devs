@@ -40,8 +40,8 @@ func NormalizeSlug(slug string) string {
 // built-in presets first, then user-defined presets at ~/.jarvis/personas/<slug>.yaml.
 func ResolvePreset(fsys fs.FS, slug string) (*ResolvedPreset, error) {
 	normalized := NormalizeSlug(slug)
-	if normalized == "" {
-		return nil, fmt.Errorf("preset slug cannot be empty")
+	if err := validatePresetSlug(normalized); err != nil {
+		return nil, err
 	}
 
 	builtinPath := filepath.ToSlash(filepath.Join("embed", "personas", normalized+".yaml"))

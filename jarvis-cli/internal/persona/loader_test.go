@@ -2,6 +2,7 @@ package persona
 
 import (
 	"testing"
+	"testing/fstest"
 
 	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
 )
@@ -57,6 +58,41 @@ func TestListPresets(t *testing.T) {
 		if p.Name == "" {
 			t.Error("preset with empty name found")
 		}
+	}
+}
+
+func TestListPresetNames_HardensTopLevelAndSlugContract(t *testing.T) {
+	fsys := fstest.MapFS{
+		"embed/personas/neutra.yaml":             &fstest.MapFile{Data: []byte("name: neutra")},
+		"embed/personas/tony-stark.yaml":         &fstest.MapFile{Data: []byte("name: tony-stark")},
+		"embed/personas/ignore_me.yaml":          &fstest.MapFile{Data: []byte("name: ignore-me")},
+		"embed/personas/nested/should-skip.yaml": &fstest.MapFile{Data: []byte("name: should-skip")},
+		"embed/personas/template.yaml.tmpl":      &fstest.MapFile{Data: []byte("template")},
+		"embed/personas/UPPERCASE.yaml":          &fstest.MapFile{Data: []byte("name: upper")},
+		"embed/personas/contains.dot.yaml":       &fstest.MapFile{Data: []byte("name: dot")},
+		"embed/personas/spaces name.yaml":        &fstest.MapFile{Data: []byte("name: spaced")},
+	}
+
+	names := listPresetNames(fsys)
+	want := []string{"neutra", "tony-stark"}
+
+	if len(names) != len(want) {
+		t.Fatalf("listPresetNames len = %d, want %d (%v)", len(names), len(want), names)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("listPresetNames[%d] = %q, want %q (all=%v)", i, names[i], want[i], names)
+		}
+	}
+}
+
+func TestResolvePreset_RejectsInvalidSlugPathSeparators(t *testing.T) {
+	_, err := ResolvePreset(jarvis.PersonaFS, "../neutra")
+	if err == nil {
+		t.Fatal("ResolvePreset expected invalid slug error, got nil")
+	}
+	if got := err.Error(); !contains(got, "path separators are not allowed") {
+		t.Fatalf("ResolvePreset error = %q, want path separator validation", got)
 	}
 }
 
