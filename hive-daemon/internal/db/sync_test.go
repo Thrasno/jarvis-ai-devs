@@ -51,7 +51,9 @@ func TestSyncDB_GetLastSync(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			db := setupTestDB(t)
-			defer db.Close()
+			t.Cleanup(func() {
+				require.NoError(t, db.Close())
+			})
 
 			tt.setupData(db)
 
@@ -91,7 +93,9 @@ func TestSyncDB_SetLastSync(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			db := setupTestDB(t)
-			defer db.Close()
+			t.Cleanup(func() {
+				require.NoError(t, db.Close())
+			})
 
 			// First save
 			err := db.SetLastSync(tt.project, tt.time1)
@@ -149,7 +153,9 @@ func TestSyncDB_JWT(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			db := setupTestDB(t)
-			defer db.Close()
+			t.Cleanup(func() {
+				require.NoError(t, db.Close())
+			})
 
 			err := db.SetJWT(tt.token, tt.expiresAt)
 			require.NoError(t, err)
@@ -167,7 +173,9 @@ func TestSyncDB_JWT(t *testing.T) {
 // TestSyncDB_JWT_UpdateExisting tests that SetJWT updates existing JWT.
 func TestSyncDB_JWT_UpdateExisting(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
 
 	// First JWT
 	token1 := "token1"
@@ -202,7 +210,9 @@ func setupTestDB(t *testing.T) *DB {
 // TestSyncDB_NoJWT tests GetJWT when no JWT exists.
 func TestSyncDB_NoJWT(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
 
 	got := db.GetJWT()
 	assert.Empty(t, got, "expected empty JWT when none stored")
@@ -288,7 +298,9 @@ func TestSyncDB_GetUnsynced(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			db := setupTestDB(t)
-			defer db.Close()
+			t.Cleanup(func() {
+				require.NoError(t, db.Close())
+			})
 
 			expectedSyncIDs := tt.setupData(db)
 
@@ -307,7 +319,9 @@ func TestSyncDB_GetUnsynced(t *testing.T) {
 // TestSyncDB_MarkSynced tests marking a memory as synced.
 func TestSyncDB_MarkSynced(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
 
 	// Create unsynced memory
 	mem := createTestMemory("test-project")
@@ -387,7 +401,9 @@ func TestSyncDB_SaveFromRemote(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			db := setupTestDB(t)
-			defer db.Close()
+			t.Cleanup(func() {
+				require.NoError(t, db.Close())
+			})
 
 			tt.setupData(db)
 

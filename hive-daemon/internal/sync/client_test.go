@@ -35,7 +35,7 @@ func TestClient_Login(t *testing.T) {
 					"token":      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test",
 					"expires_at": time.Now().Add(24 * time.Hour).Format(time.RFC3339),
 				}
-				json.NewEncoder(w).Encode(resp)
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
 			},
 			wantErr:   false,
 			wantToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test",
@@ -44,7 +44,8 @@ func TestClient_Login(t *testing.T) {
 			name: "login failure with 401",
 			serverHandler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusUnauthorized)
-				w.Write([]byte("invalid credentials"))
+				_, err := w.Write([]byte("invalid credentials"))
+				require.NoError(t, err)
 			},
 			wantErr: true,
 		},
@@ -52,7 +53,8 @@ func TestClient_Login(t *testing.T) {
 			name: "login failure with 500",
 			serverHandler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte("server error"))
+				_, err := w.Write([]byte("server error"))
+				require.NoError(t, err)
 			},
 			wantErr: true,
 		},
@@ -124,7 +126,7 @@ func TestClient_Sync(t *testing.T) {
 					},
 					Conflicts: 0,
 				}
-				json.NewEncoder(w).Encode(resp)
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
 			},
 			toSend: []*models.Memory{
 				createTestSyncMemory("local-sync-1"),
@@ -144,7 +146,7 @@ func TestClient_Sync(t *testing.T) {
 					Pulled:    []apiMemory{},
 					Conflicts: 0,
 				}
-				json.NewEncoder(w).Encode(resp)
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
 			},
 			toSend:     []*models.Memory{},
 			lastSync:   nil,
@@ -162,7 +164,7 @@ func TestClient_Sync(t *testing.T) {
 
 				w.WriteHeader(http.StatusOK)
 				resp := syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}
-				json.NewEncoder(w).Encode(resp)
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
 			},
 			toSend: []*models.Memory{},
 			lastSync: func() *time.Time {
@@ -222,7 +224,8 @@ func TestClient_Sync_AuthFailure(t *testing.T) {
 			name: "401 unauthorized returns auth error",
 			serverHandler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusUnauthorized)
-				w.Write([]byte("token expired"))
+				_, err := w.Write([]byte("token expired"))
+				require.NoError(t, err)
 			},
 			wantErr:        true,
 			wantErrContain: "401",
@@ -231,7 +234,8 @@ func TestClient_Sync_AuthFailure(t *testing.T) {
 			name: "403 forbidden returns auth error",
 			serverHandler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusForbidden)
-				w.Write([]byte("insufficient permissions"))
+				_, err := w.Write([]byte("insufficient permissions"))
+				require.NoError(t, err)
 			},
 			wantErr:        true,
 			wantErrContain: "403",
@@ -240,7 +244,8 @@ func TestClient_Sync_AuthFailure(t *testing.T) {
 			name: "500 server error returns error",
 			serverHandler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte("internal server error"))
+				_, err := w.Write([]byte("internal server error"))
+				require.NoError(t, err)
 			},
 			wantErr:        true,
 			wantErrContain: "500",

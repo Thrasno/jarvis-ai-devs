@@ -124,7 +124,7 @@ func memSaveHandler(store MemoryStore, syncer SyncRunner, cfg *hivesync.Config, 
 		// Guard: reject content exceeding MaxObservationLength runes (Unicode-safe).
 		if runeCount := utf8.RuneCountInString(p.Content); runeCount > MaxObservationLength {
 			return toolError(fmt.Errorf(
-				"content too long: %d runes (max %d). Summarize or split into multiple observations.",
+				"content too long: %d runes (max %d). Summarize or split into multiple observations",
 				runeCount, MaxObservationLength,
 			)), nil
 		}
@@ -239,7 +239,7 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 		// Guard: same 50K rune limit as memSaveHandler.
 		if runeCount := utf8.RuneCountInString(p.Content); runeCount > MaxObservationLength {
 			return toolError(fmt.Errorf(
-				"content too long: %d runes (max %d). Summarize or split into multiple observations.",
+				"content too long: %d runes (max %d). Summarize or split into multiple observations",
 				runeCount, MaxObservationLength,
 			)), nil
 		}

@@ -102,7 +102,7 @@ func TestSyncer_Run(t *testing.T) {
 							},
 							Conflicts: 0,
 						}
-						json.NewEncoder(w).Encode(resp)
+						require.NoError(t, json.NewEncoder(w).Encode(resp))
 					}
 				},
 			},
@@ -124,14 +124,15 @@ func TestSyncer_Run(t *testing.T) {
 			},
 			serverHandlers: []http.HandlerFunc{
 				func(w http.ResponseWriter, r *http.Request) {
-					if r.URL.Path == "/auth/login" {
+					switch r.URL.Path {
+					case "/auth/login":
 						w.WriteHeader(http.StatusOK)
 						resp := map[string]interface{}{
 							"token":      "fresh-token",
 							"expires_at": time.Now().Add(24 * time.Hour).Format(time.RFC3339),
 						}
-						json.NewEncoder(w).Encode(resp)
-					} else if r.URL.Path == "/sync" {
+						require.NoError(t, json.NewEncoder(w).Encode(resp))
+					case "/sync":
 						// Verify token is present
 						assert.Contains(t, r.Header.Get("Authorization"), "Bearer fresh-token")
 						w.WriteHeader(http.StatusOK)
@@ -140,7 +141,7 @@ func TestSyncer_Run(t *testing.T) {
 							Pulled:    []apiMemory{},
 							Conflicts: 0,
 						}
-						json.NewEncoder(w).Encode(resp)
+						require.NoError(t, json.NewEncoder(w).Encode(resp))
 					}
 				},
 			},
@@ -167,7 +168,7 @@ func TestSyncer_Run(t *testing.T) {
 							Pulled:    []apiMemory{},
 							Conflicts: 0,
 						}
-						json.NewEncoder(w).Encode(resp)
+						require.NoError(t, json.NewEncoder(w).Encode(resp))
 					}
 				},
 			},
@@ -196,7 +197,7 @@ func TestSyncer_Run(t *testing.T) {
 
 						w.WriteHeader(http.StatusOK)
 						resp := syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}
-						json.NewEncoder(w).Encode(resp)
+						require.NoError(t, json.NewEncoder(w).Encode(resp))
 					}
 				},
 			},
@@ -259,26 +260,28 @@ func TestSyncer_Run_AuthFailureRetry(t *testing.T) {
 	loginAttempts := 0
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/auth/login" {
+		switch r.URL.Path {
+		case "/auth/login":
 			loginAttempts++
 			w.WriteHeader(http.StatusOK)
 			resp := map[string]interface{}{
 				"token":      "refreshed-token",
 				"expires_at": time.Now().Add(24 * time.Hour).Format(time.RFC3339),
 			}
-			json.NewEncoder(w).Encode(resp)
-		} else if r.URL.Path == "/sync" {
+			require.NoError(t, json.NewEncoder(w).Encode(resp))
+		case "/sync":
 			syncAttempts++
 			// First attempt fails with 401, second succeeds
 			if syncAttempts == 1 {
 				w.WriteHeader(http.StatusUnauthorized)
-				w.Write([]byte("token expired"))
+				_, err := w.Write([]byte("token expired"))
+				require.NoError(t, err)
 			} else {
 				// Verify we got the refreshed token
 				assert.Contains(t, r.Header.Get("Authorization"), "Bearer refreshed-token")
 				w.WriteHeader(http.StatusOK)
 				resp := syncResponse{Pushed: 1, Pulled: []apiMemory{}, Conflicts: 0}
-				json.NewEncoder(w).Encode(resp)
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
 			}
 		}
 	}))
@@ -319,7 +322,8 @@ func TestSyncer_Run_PersistentError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/sync" {
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("database error"))
+			_, err := w.Write([]byte("database error"))
+			require.NoError(t, err)
 		}
 	}))
 	defer server.Close()

@@ -59,6 +59,8 @@ memories.json
 # Internal/private workspace artifacts (keep local, do not publish)
 .engram/
 .atl/
+sdd/
+test-report*.json
 docs/memories/
 docs/EXECUTIVE_PROPOSAL.md
 docs/INFRASTRUCTURE.md
