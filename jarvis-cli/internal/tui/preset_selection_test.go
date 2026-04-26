@@ -2,6 +2,8 @@ package tui
 
 import (
 	"embed"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -184,6 +186,46 @@ func TestCreateWizardCustomPreset_PersistsAndResolvesUserSource(t *testing.T) {
 	customPath := filepath.Join(home, ".jarvis", "personas", "mi-persona.yaml")
 	if _, err := os.Stat(customPath); err != nil {
 		t.Fatalf("expected persisted custom preset %s, err=%v", customPath, err)
+	}
+}
+
+func TestCreateWizardCustomPreset_PostSaveResolveFailureIncludesRecoveryGuidance(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	originalResolver := resolvePresetForWizard
+	resolvePresetForWizard = func(personaFS fs.FS, slug string) (*persona.ResolvedPreset, error) {
+		if persona.NormalizeSlug(slug) == "mi-persona" {
+			return nil, fmt.Errorf("forced resolve failure")
+		}
+		return persona.ResolvePreset(personaFS, slug)
+	}
+	t.Cleanup(func() {
+		resolvePresetForWizard = originalResolver
+	})
+
+	_, err := createWizardCustomPreset(testPersonaFS, customPresetDraft{
+		Name:        "Mi Persona",
+		DisplayName: "Mi Persona",
+	})
+	if err == nil {
+		t.Fatal("expected post-save resolve failure")
+	}
+
+	wantPath := filepath.Join(home, ".jarvis", "personas", "mi-persona.yaml")
+	checks := []string{
+		"custom preset \"mi-persona\" was saved",
+		wantPath,
+		"Recovery: exit this form and select \"mi-persona\" from the preset list",
+	}
+	for _, want := range checks {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want contains %q", err.Error(), want)
+		}
+	}
+
+	if _, statErr := os.Stat(wantPath); statErr != nil {
+		t.Fatalf("expected custom preset persisted despite resolve failure, err=%v", statErr)
 	}
 }
 

@@ -15,6 +15,8 @@ type customPresetDraft struct {
 	YAML        string
 }
 
+var resolvePresetForWizard = persona.ResolvePreset
+
 func resolveWizardPresetSelection(personaFS fs.FS, requestedSlug string, custom *customPresetDraft) (*persona.ResolvedPreset, error) {
 	normalized := persona.NormalizeSlug(requestedSlug)
 	if normalized == "custom" {
@@ -24,7 +26,7 @@ func resolveWizardPresetSelection(personaFS fs.FS, requestedSlug string, custom 
 		return createWizardCustomPreset(personaFS, *custom)
 	}
 
-	return persona.ResolvePreset(personaFS, normalized)
+	return resolvePresetForWizard(personaFS, normalized)
 }
 
 func createWizardCustomPreset(personaFS fs.FS, draft customPresetDraft) (*persona.ResolvedPreset, error) {
@@ -58,19 +60,24 @@ func createWizardCustomPreset(personaFS fs.FS, draft customPresetDraft) (*person
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	if _, err := persona.SaveUserPresetFile(slug, content); err != nil {
+	savedPath, err := persona.SaveUserPresetFile(slug, content)
+	if err != nil {
 		return nil, fmt.Errorf("persist custom preset %q: %w", slug, err)
 	}
 
-	resolved, err := persona.ResolvePreset(personaFS, slug)
+	resolved, err := resolvePresetForWizard(personaFS, slug)
 	if err != nil {
-		return nil, fmt.Errorf("resolve persisted custom preset %q: %w", slug, err)
+		return nil, customPresetRecoveryError(slug, savedPath, fmt.Errorf("resolve persisted custom preset: %w", err))
 	}
 	if resolved.Source != persona.PresetSourceUser {
-		return nil, fmt.Errorf("custom preset %q did not resolve as user source", slug)
+		return nil, customPresetRecoveryError(slug, savedPath, fmt.Errorf("resolved persisted custom preset as %q source", resolved.Source))
 	}
 
 	return resolved, nil
+}
+
+func customPresetRecoveryError(slug, savedPath string, cause error) error {
+	return fmt.Errorf("custom preset %q was saved to %s, but it could not be loaded automatically (%v). Recovery: exit this form and select %q from the preset list, or inspect/delete that file and retry", slug, savedPath, cause, slug)
 }
 
 func buildCustomPresetContent(personaFS fs.FS, slug, displayName, customYAML string) ([]byte, error) {
@@ -105,7 +112,7 @@ func buildCustomPresetContent(personaFS fs.FS, slug, displayName, customYAML str
 }
 
 func defaultCustomPreset(personaFS fs.FS, slug, displayName string) persona.Preset {
-	if neutral, err := persona.ResolvePreset(personaFS, "neutra"); err == nil && neutral != nil && neutral.Preset != nil {
+	if neutral, err := resolvePresetForWizard(personaFS, "neutra"); err == nil && neutral != nil && neutral.Preset != nil {
 		base := *neutral.Preset
 		base.Name = slug
 		base.DisplayName = displayName

@@ -374,7 +374,7 @@ func viewPersona(m Model) string {
 		sb.WriteString(headerStyle.Render("Custom Preset Creation") + "\n")
 		sb.WriteString(dimStyle.Render("Tab: cambiar campo  Enter: siguiente/corte de línea  Ctrl+S: confirmar  Esc: cancelar") + "\n\n")
 		if m.Err != nil {
-			sb.WriteString(errorStyle.Render("Validation error: "+m.Err.Error()) + "\n\n")
+			sb.WriteString(errorStyle.Render("Error: "+m.Err.Error()) + "\n\n")
 		}
 
 		nameLabel := "  Name (slug base): " + m.customPresetName
