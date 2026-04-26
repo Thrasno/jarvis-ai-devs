@@ -5,7 +5,7 @@ tone:
   formality: neutral
   directness: direct
   humor: none
-  language: en
+  language: en-us
 communication_style:
   verbosity: concise
   show_alternatives: false

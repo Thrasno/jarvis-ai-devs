@@ -37,7 +37,7 @@ tone:
   formality: casual
   directness: high
   humor: warm
-  language: es-ar
+  language: es-rioplatense
 communication_style:
   verbosity: high
   show_alternatives: true

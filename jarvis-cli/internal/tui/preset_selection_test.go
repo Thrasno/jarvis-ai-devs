@@ -126,7 +126,7 @@ tone:
   formality: neutral
   directness: direct
   humor: none
-  language: es
+  language: es-neutro
 communication_style:
   verbosity: concise
   show_alternatives: true
