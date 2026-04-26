@@ -15,6 +15,8 @@ type customPresetDraft struct {
 	YAML        string
 }
 
+const maxCustomPresetYAMLBytes = 64 * 1024
+
 var resolvePresetForWizard = persona.ResolvePreset
 
 func resolveWizardPresetSelection(personaFS fs.FS, requestedSlug string, custom *customPresetDraft) (*persona.ResolvedPreset, error) {
@@ -90,6 +92,10 @@ func buildCustomPresetContent(personaFS fs.FS, slug, displayName, customYAML str
 		return content, nil
 	}
 
+	if err := validateCustomPresetYAMLSize(customYAML); err != nil {
+		return nil, err
+	}
+
 	var raw map[string]any
 	if err := yaml.Unmarshal([]byte(customYAML), &raw); err != nil {
 		return nil, fmt.Errorf("invalid YAML: %w", err)
@@ -109,6 +115,13 @@ func buildCustomPresetContent(personaFS fs.FS, slug, displayName, customYAML str
 		return nil, fmt.Errorf("marshal custom preset %q: %w", slug, err)
 	}
 	return content, nil
+}
+
+func validateCustomPresetYAMLSize(customYAML string) error {
+	if len(customYAML) > maxCustomPresetYAMLBytes {
+		return fmt.Errorf("custom YAML exceeds size limit (%d bytes maximum)", maxCustomPresetYAMLBytes)
+	}
+	return nil
 }
 
 func defaultCustomPreset(personaFS fs.FS, slug, displayName string) persona.Preset {

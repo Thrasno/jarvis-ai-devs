@@ -339,7 +339,12 @@ func updatePersonaCustomEdit(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 1:
 			m.customDisplayName += string(msg.Runes)
 		default:
-			m.CustomYAML += string(msg.Runes)
+			candidate := m.CustomYAML + string(msg.Runes)
+			if err := validateCustomPresetYAMLSize(candidate); err != nil {
+				m.Err = err
+				return m, nil
+			}
+			m.CustomYAML = candidate
 		}
 	case tea.KeyBackspace:
 		switch m.customField {
@@ -360,7 +365,12 @@ func updatePersonaCustomEdit(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.customField < 2 {
 			m.customField++
 		} else {
-			m.CustomYAML += "\n"
+			candidate := m.CustomYAML + "\n"
+			if err := validateCustomPresetYAMLSize(candidate); err != nil {
+				m.Err = err
+				return m, nil
+			}
+			m.CustomYAML = candidate
 		}
 	}
 	return m, nil

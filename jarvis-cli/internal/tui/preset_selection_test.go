@@ -74,6 +74,7 @@ func TestCreateWizardCustomPreset_ValidationErrors(t *testing.T) {
 		{name: "name normalizes to empty slug", draft: customPresetDraft{Name: "---", DisplayName: "X"}, wantErr: "resolves to empty slug"},
 		{name: "missing display name", draft: customPresetDraft{Name: "x"}, wantErr: "display name is required"},
 		{name: "reserved custom slug", draft: customPresetDraft{Name: "custom", DisplayName: "Custom"}, wantErr: "reserved"},
+		{name: "yaml too large", draft: customPresetDraft{Name: "x", DisplayName: "X", YAML: strings.Repeat("a", maxCustomPresetYAMLBytes+1)}, wantErr: "exceeds size limit"},
 		{name: "invalid yaml", draft: customPresetDraft{Name: "x", DisplayName: "X", YAML: "name: ["}, wantErr: "invalid YAML"},
 		{name: "schema validation fails", draft: customPresetDraft{Name: "x", DisplayName: "X", YAML: "name: x\ndisplay_name: X\ndescription: bad\nnotes: hi\n"}, wantErr: "validation failed"},
 		{name: "builtin slug collision rejected", draft: customPresetDraft{Name: "Fixture", DisplayName: "Fixture"}, wantErr: "collides with built-in preset slug"},

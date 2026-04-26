@@ -825,6 +825,29 @@ func TestUpdatePersonaCustomEdit_RuneInput(t *testing.T) {
 	}
 }
 
+func TestUpdatePersonaCustomEdit_RuneInput_EnforcesYAMLSizeLimit(t *testing.T) {
+	m := Model{
+		Step:        StepPersona,
+		Selected:    make(map[string]bool),
+		cfg:         &config.AppConfig{},
+		customEdit:  true,
+		customField: 2,
+		CustomYAML:  strings.Repeat("a", maxCustomPresetYAMLBytes),
+	}
+
+	m = sendRune(m, "b")
+
+	if m.Err == nil {
+		t.Fatal("expected size-limit error when YAML exceeds maximum")
+	}
+	if !strings.Contains(m.Err.Error(), "exceeds size limit") {
+		t.Fatalf("error = %q, want contains size limit message", m.Err.Error())
+	}
+	if len(m.CustomYAML) != maxCustomPresetYAMLBytes {
+		t.Fatalf("expected YAML to remain at %d bytes, got %d", maxCustomPresetYAMLBytes, len(m.CustomYAML))
+	}
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // TestUpdatePersonaCustomEdit_EscCancels
 // ──────────────────────────────────────────────────────────────────────────────
