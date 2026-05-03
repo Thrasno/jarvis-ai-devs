@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	hivemcp "github.com/Thrasno/jarvis-dev/hive-daemon/internal/mcp"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
 	hivesync "github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -605,6 +606,105 @@ func TestMemSessionSummary_ContentTooLong_ReturnsError(t *testing.T) {
 	body := textContent(t, res)
 	if !strings.Contains(body, "60000 runes (max 50000)") {
 		t.Errorf("error should mention rune count, got: %s", body)
+	}
+}
+
+// ─── mem_save_prompt ──────────────────────────────────────────────────────
+
+// connectWithPrompts creates a server+client pair using the given PromptStore.
+func connectWithPrompts(t *testing.T, ps *mockStore) *sdkmcp.ClientSession {
+	t.Helper()
+	ctx := context.Background()
+	server := hivemcp.NewServer(&mockStore{}, nil, nil, nil, ps)
+	t1, t2 := sdkmcp.NewInMemoryTransports()
+	if _, err := server.Connect(ctx, t1, nil); err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "test", Version: "1"}, nil)
+	session, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	return session
+}
+
+// TS-MCP-1: valid content returns id and created_at
+func TestMemSavePrompt_ValidContent_ReturnsIDAndCreatedAt(t *testing.T) {
+	ps := &mockStore{
+		savePromptFn: func(_ context.Context, content string) (*models.Prompt, error) {
+			return &models.Prompt{ID: 7, Content: content, CreatedAt: time.Now()}, nil
+		},
+	}
+	session := connectWithPrompts(t, ps)
+
+	res := callTool(t, session, "mem_save_prompt", map[string]any{"content": "explain goroutines"})
+
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", textContent(t, res))
+	}
+	body := textContent(t, res)
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if id, ok := resp["id"]; !ok || id == nil {
+		t.Error("response missing 'id'")
+	}
+	if ca, ok := resp["created_at"]; !ok || ca == nil {
+		t.Error("response missing 'created_at'")
+	}
+}
+
+// TS-MCP-2: empty content returns IsError=true, SavePrompt NOT called
+func TestMemSavePrompt_EmptyContent_ReturnsError(t *testing.T) {
+	called := false
+	ps := &mockStore{
+		savePromptFn: func(_ context.Context, _ string) (*models.Prompt, error) {
+			called = true
+			return &models.Prompt{ID: 1, CreatedAt: time.Now()}, nil
+		},
+	}
+	session := connectWithPrompts(t, ps)
+
+	res := callTool(t, session, "mem_save_prompt", map[string]any{"content": ""})
+
+	if !res.IsError {
+		t.Error("expected IsError=true for empty content")
+	}
+	if called {
+		t.Error("SavePrompt should NOT be called for empty content")
+	}
+}
+
+// TS-MCP-3: whitespace content returns IsError=true
+func TestMemSavePrompt_WhitespaceContent_ReturnsError(t *testing.T) {
+	session := connectWithPrompts(t, &mockStore{})
+
+	res := callTool(t, session, "mem_save_prompt", map[string]any{"content": "\n\t  "})
+
+	if !res.IsError {
+		t.Error("expected IsError=true for whitespace content")
+	}
+}
+
+// TS-MCP-4: store error returns IsError=true with "save failed"
+func TestMemSavePrompt_StoreError_ReturnsError(t *testing.T) {
+	ps := &mockStore{
+		savePromptFn: func(_ context.Context, _ string) (*models.Prompt, error) {
+			return nil, errors.New("db connection closed")
+		},
+	}
+	session := connectWithPrompts(t, ps)
+
+	res := callTool(t, session, "mem_save_prompt", map[string]any{"content": "valid content"})
+
+	if !res.IsError {
+		t.Error("expected IsError=true when store returns error")
+	}
+	body := textContent(t, res)
+	if !strings.Contains(body, "save failed") {
+		t.Errorf("error message should contain 'save failed', got: %s", body)
 	}
 }
 
