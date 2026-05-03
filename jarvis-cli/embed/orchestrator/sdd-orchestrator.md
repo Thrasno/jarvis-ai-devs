@@ -1,5 +1,11 @@
 # Agent Teams Lite — Orchestrator Instructions
 
+## Runtime Contract Invariants
+
+- Canonical runtime contract version and phase→model assignments are owned by `internal/sddruntime`.
+- This file must stay semantically aligned with that contract (for orchestrator-facing behavior), but verification authority is the runtime contract/verifier, not duplicated literals elsewhere.
+- Skill registry fallback path is `.jarvis/skill-registry.md`.
+
 Bind this to the dedicated `sdd-orchestrator` agent or rule only. Do NOT apply it to executor phase agents such as `sdd-apply` or `sdd-verify`.
 
 ## Agent Teams Orchestrator
@@ -31,6 +37,76 @@ Anti-patterns — these ALWAYS inflate context without need:
 ## SDD Workflow (Spec-Driven Development)
 
 SDD is the structured planning layer for substantial changes.
+
+### Runtime Activation Policy (Explicit Override First)
+
+Decision order for SDD activation is mandatory and deterministic:
+
+1. Detect explicit override commands first.
+2. Execute the explicit command with optional warning-only pushback.
+3. Run complexity heuristics only when there is no explicit command.
+
+Decision model contract:
+- `force_sdd`
+- `force_inline`
+- `recommendation_only`
+
+Never block direct user commands. Warnings are advisory only (`warning-only`) and do not prevent execution.
+
+#### Explicit bilingual override vocabulary (v1)
+
+- SDD overrides: `use sdd`, `usa sdd`, `let's use sdd`, `quiero sdd`
+- Inline overrides: `do it inline`, `do it directly`, `hacelo directo`, `sin sdd`
+
+Normalization before matching (deterministic):
+1. Convert to lowercase
+2. Strip leading/trailing whitespace
+3. Collapse internal whitespace runs (multiple spaces/tabs) to single space
+4. Remove accents: á→a, é→e, í→i, ó→o, ú→u, ñ→n (Spanish accent map)
+5. Remove leading/trailing punctuation ONLY from the ENTIRE normalized phrase (NOT internal punctuation):
+   - Strip punctuation characters (.,!?;:) ONLY when they are the very first or very last character of the fully normalized string
+   - NEVER strip punctuation between words, inside the phrase, or in the middle of the string
+   - Example: "use sdd!" → "use sdd" (trailing ! removed), but "let's use sdd" → "let's use sdd" (apostrophe inside phrase preserved)
+6. Perform exact phrase match against normalized vocabulary list
+
+Order dependency: accent removal happens BEFORE punctuation stripping. Normalization is applied left-to-right (steps 1→6) with no backtracking.
+
+#### Conservative complexity heuristics (only for `recommendation_only`)
+
+Treat SDD as recommended only for clearly high-complexity requests, based on signals like:
+- multiple deliverables
+- cross-file or cross-system impact
+- non-trivial coordination/regression risk
+
+Default mixed/unclear complexity to inline recommendation. Avoid over-triggering SDD.
+
+Canonical acceptance fixtures:
+- low: `trivial copy tweak` → `recommendation_only` with inline recommendation
+- medium: `single-file bugfix` → `recommendation_only` with inline recommendation
+- high: `multi-artifact feature` → `recommendation_only` with SDD recommendation
+
+Scope guardrail: this policy is orchestration behavior specification ONLY. This policy must not redesign runtime hardening, installer/runtime verification, or `internal/sddruntime` internals. No runtime activation engine code is written as part of this change. Runtime verification belongs to `internal/sddruntime` contract/verifier.
+
+#### Trivial explicit-SDD handling (non-blocking recommendation)
+
+When a request is clearly trivial (single-file tweak, typo fix, copy-paste task) but the user explicitly asks for SDD:
+1. Offer inline/direct as lower-friction guidance in the FIRST response only
+2. Present as suggestion, NOT as blocker: "This looks simple — we could do it inline. Want to proceed with SDD anyway?"
+3. If user responds with ANY SDD-triggering phrase again (`use sdd`, `usa sdd`, `let's use sdd`, `quiero sdd`, `continue`, `yes`, `proceed`), immediately start SDD flow without further pushback
+4. Do NOT repeat the inline suggestion in subsequent turns
+
+Reconfirmation detector (what counts as user confirming SDD):
+
+IMPORTANT: Reconfirmation detection uses the SAME normalization pipeline (steps 1-6 above) as explicit override detection.
+
+Categories of reconfirmation phrases (all normalized before matching):
+- Exact match: any normalized SDD override phrase from vocabulary (`use sdd`, `usa sdd`, etc.)
+- Affirmative intent: `yes`, `si`, `continue`, `continua`, `proceed`, `dale`, `ok`
+- Negation of inline: `no, use sdd`, `sin inline`, `not inline`
+
+After reconfirmation is detected, behavior transitions to full SDD mode:
+- Stop suggesting inline alternatives
+- Proceed with sdd-init check → sdd-new or requested phase
 
 ### Artifact Store Policy
 

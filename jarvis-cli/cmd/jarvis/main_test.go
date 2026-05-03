@@ -387,3 +387,29 @@ func TestDocsContract_PublicInstallerIsHonestAndOverridable(t *testing.T) {
 		t.Fatalf("README.md must document installer repo/version overrides")
 	}
 }
+
+func TestDocsContract_PRDExplicitSDDActivationFlow(t *testing.T) {
+	root := "/home/andres/Desarrollo/Proyectos/jarvis-dev"
+
+	prdBytes, err := os.ReadFile(filepath.Join(root, "docs", "PRD.md"))
+	if err != nil {
+		t.Fatalf("read docs/PRD.md: %v", err)
+	}
+	prd := strings.ToLower(string(prdBytes))
+
+	required := []string{
+		"force_sdd",
+		"force_inline",
+		"recommendation_only",
+		"warning-only",
+		"use sdd",
+		"usa sdd",
+		"do it inline",
+		"hacelo directo",
+	}
+	for _, token := range required {
+		if !strings.Contains(prd, token) {
+			t.Fatalf("docs/PRD.md must include explicit sdd activation token/phrase %q", token)
+		}
+	}
+}

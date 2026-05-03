@@ -103,24 +103,32 @@ Do not skip step 1. Without it, everything done before compaction is lost from m
 - Call `mem_sync` after significant session work to trigger bidirectional cloud sync
 - Team memory: memories with `project` scope are shared across all team members via hive-api
 
-### SDD Orchestrator (model assignments)
+### SDD Runtime Contract Notes
 
-| Phase | Model |
-|-------|-------|
-| orchestrator | opus |
-| sdd-explore | sonnet |
-| sdd-propose | opus |
-| sdd-spec | sonnet |
-| sdd-design | opus |
-| sdd-tasks | sonnet |
-| sdd-apply | sonnet |
-| sdd-verify | sonnet |
-| sdd-archive | haiku |
+Model assignments and runtime ownership invariants are contract-owned and validated by `internal/sddruntime`.
+Do not duplicate phase→model tables in this file; defer to the canonical runtime contract used by setup/runtime verification.
 
 Sub-agent launch pattern: delegate reads of 4+ files, multi-file writes, and test runs to sub-agents. Resolve skills from the registry ONCE per session, cache compact rules, inject into sub-agent prompts as `## Project Standards (auto-resolved)`. Sub-agents do NOT read SKILL.md files — rules arrive pre-digested.
 
 SDD DAG with sdd-qa: `proposal → specs → tasks → apply → sdd-qa → verify → archive`
 (sdd-qa = manual behavior acceptance between apply and verify)
+
+### SDD Activation Policy (Runtime Entry)
+
+CANONICAL SOURCE: `jarvis-cli/embed/orchestrator/sdd-orchestrator.md` section "Runtime Activation Policy (Explicit Override First)"
+
+This file DEFERS to the orchestrator for:
+- Normalization pipeline specification (deterministic steps, accent map, punctuation scope)
+- Override vocabulary (bilingual phrases, exact strings)
+- Decision order contract (explicit first, heuristics second)
+- Reconfirmation detection rules (same normalization as explicit detection)
+
+Layer1 summary (for quick reference only — orchestrator is authoritative):
+- `complexity_check` is recommendation-only guidance, never an enforcement switch.
+- Explicit user command takes precedence over heuristic recommendations.
+- Decision order is mandatory and deterministic: explicit override parsing first, complexity heuristics second.
+- Warning-only pushback is allowed for risk/overhead framing, but direct user command execution is never blocked.
+- Normalization rules and vocabulary must match canonical source exactly (see orchestrator section for deterministic normalization steps).
 
 ## Skills (Auto-load based on context)
 
