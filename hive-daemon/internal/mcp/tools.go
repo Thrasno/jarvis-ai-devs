@@ -17,7 +17,7 @@ import (
 // Unicode-safe: a Japanese character counts as 1 rune even though it is 3 bytes.
 const MaxObservationLength = 50_000
 
-func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncStore, syncer SyncRunner, cfg *hivesync.Config, activity *ActivityTracker) {
+func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncStore, syncer SyncRunner, cfg *hivesync.Config, activity *ActivityTracker, prompts PromptStore) {
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_save",
 		Description: "Save a memory observation to Hive persistent storage",
@@ -99,6 +99,18 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncS
 			}
 		}`),
 	}, memSyncHandler(syncStore, syncer))
+
+	s.AddTool(&sdkmcp.Tool{
+		Name:        "mem_save_prompt",
+		Description: "Persist a user prompt to the local Hive database for future recall and analysis",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"required": ["content"],
+			"properties": {
+				"content": {"type": "string", "description": "The user prompt text to persist"}
+			}
+		}`),
+	}, memSavePromptHandler(prompts))
 }
 
 // ─── Handlers ──────────────────────────────────────────────────────────────
@@ -296,6 +308,31 @@ func memContextHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.Tool
 		return &sdkmcp.CallToolResult{
 			Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: formatted}},
 		}, nil
+	}
+}
+
+func memSavePromptHandler(prompts PromptStore) sdkmcp.ToolHandler {
+	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+		var p struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(req.Params.Arguments, &p); err != nil {
+			return toolError(fmt.Errorf("invalid params: %w", err)), nil
+		}
+		if strings.TrimSpace(p.Content) == "" {
+			return toolError(fmt.Errorf("content is required")), nil
+		}
+		if prompts == nil {
+			return toolError(fmt.Errorf("prompts store not configured")), nil
+		}
+		prompt, err := prompts.SavePrompt(ctx, p.Content)
+		if err != nil {
+			return toolError(fmt.Errorf("save failed: %w", err)), nil
+		}
+		return toolJSON(map[string]any{
+			"id":         prompt.ID,
+			"created_at": prompt.CreatedAt.Format(time.RFC3339),
+		})
 	}
 }
 

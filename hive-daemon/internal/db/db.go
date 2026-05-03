@@ -65,6 +65,37 @@ END;
 CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
     DELETE FROM memories_fts WHERE rowid=old.id;
 END;
+
+CREATE TABLE IF NOT EXISTS user_prompts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    content    TEXT    NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    synced_at  DATETIME
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS user_prompts_fts USING fts5(
+    content,
+    content='user_prompts',
+    content_rowid='id',
+    tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS user_prompts_ai AFTER INSERT ON user_prompts BEGIN
+    INSERT INTO user_prompts_fts(rowid, content)
+    VALUES (new.id, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS user_prompts_au AFTER UPDATE ON user_prompts BEGIN
+    INSERT INTO user_prompts_fts(user_prompts_fts, rowid, content)
+    VALUES ('delete', old.id, old.content);
+    INSERT INTO user_prompts_fts(rowid, content)
+    VALUES (new.id, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS user_prompts_ad AFTER DELETE ON user_prompts BEGIN
+    INSERT INTO user_prompts_fts(user_prompts_fts, rowid, content)
+    VALUES ('delete', old.id, old.content);
+END;
 `
 
 // DB wraps an SQLite connection with schema validation.
@@ -122,7 +153,10 @@ func initSchema(sqlDB *sql.DB) error {
 // validateSchema verifies that all FTS5 triggers exist in sqlite_master.
 // Returns an error if any trigger is missing (indicates schema corruption).
 func validateSchema(sqlDB *sql.DB) error {
-	triggers := []string{"memories_ai", "memories_au", "memories_ad"}
+	triggers := []string{
+		"memories_ai", "memories_au", "memories_ad",
+		"user_prompts_ai", "user_prompts_au", "user_prompts_ad",
+	}
 	for _, trigger := range triggers {
 		var name string
 		err := sqlDB.QueryRow(
