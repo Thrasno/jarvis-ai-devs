@@ -291,6 +291,10 @@ func (m *mockAgent) InstallOrchestrator(orchestratorFS fs.FS) error {
 	return nil
 }
 
+func (m *mockAgent) InstallPromptHook(hooksFS fs.FS) error {
+	return nil
+}
+
 func (m *mockAgent) SupportsOutputStyles() bool {
 	return false
 }

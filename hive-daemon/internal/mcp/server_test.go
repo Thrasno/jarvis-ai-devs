@@ -12,12 +12,16 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// mockStore implements hivemcp.MemoryStore for testing.
+// Ensure mockStore implements hivemcp.PromptStore at compile time.
+var _ hivemcp.PromptStore = (*mockStore)(nil)
+
+// mockStore implements hivemcp.MemoryStore and hivemcp.PromptStore for testing.
 type mockStore struct {
 	saveMemoryFn   func(*models.Memory) (int64, error)
 	getMemoryFn    func(int64) (*models.Memory, error)
 	listMemoriesFn func(string, int) ([]*models.Memory, error)
 	searchFn       func(string, string, string, int) ([]*models.Memory, error)
+	savePromptFn   func(context.Context, string) (*models.Prompt, error)
 }
 
 func (m *mockStore) SaveMemory(mem *models.Memory) (int64, error) {
@@ -48,6 +52,13 @@ func (m *mockStore) Search(query, project, category string, limit int) ([]*model
 	return []*models.Memory{}, nil
 }
 
+func (m *mockStore) SavePrompt(ctx context.Context, content string) (*models.Prompt, error) {
+	if m.savePromptFn != nil {
+		return m.savePromptFn(ctx, content)
+	}
+	return &models.Prompt{ID: 1, CreatedAt: time.Now()}, nil
+}
+
 // connectTestServer creates a server+client pair using in-memory transport.
 func connectTestServer(t *testing.T, store hivemcp.MemoryStore) *sdkmcp.ClientSession {
 	t.Helper()
@@ -59,7 +70,7 @@ func connectTestServerWithSync(t *testing.T, store hivemcp.MemoryStore, cfg *hiv
 	t.Helper()
 	ctx := context.Background()
 
-	server := hivemcp.NewServer(store, nil, syncer, cfg)
+	server := hivemcp.NewServer(store, nil, syncer, cfg, &mockStore{})
 
 	t1, t2 := sdkmcp.NewInMemoryTransports()
 	if _, err := server.Connect(ctx, t1, nil); err != nil {
@@ -115,7 +126,7 @@ func (m *mockSyncer) lastProject() string {
 	return m.syncCalls[len(m.syncCalls)-1].project
 }
 
-func TestNewServer_RegistersFiveTools(t *testing.T) {
+func TestNewServer_RegistersSevenTools(t *testing.T) {
 	session := connectTestServer(t, &mockStore{})
 	ctx := context.Background()
 
@@ -125,6 +136,8 @@ func TestNewServer_RegistersFiveTools(t *testing.T) {
 		"mem_get_observation": false,
 		"mem_session_summary": false,
 		"mem_context":         false,
+		"mem_sync":            false,
+		"mem_save_prompt":     false,
 	}
 
 	for tool, err := range session.Tools(ctx, nil) {

@@ -333,6 +333,58 @@ func (a *ClaudeAgent) InstallOrchestrator(orchestratorFS fs.FS) error {
 	return installOrchestrator(destPath, orchestratorFS)
 }
 
+// InstallPromptHook writes the Hive UserPromptSubmit hook for Claude Code.
+// It copies the shell script to ~/.claude/hive-hooks/user-prompt-submit.sh
+// and patches ~/.claude/settings.json to register the hook.
+func (a *ClaudeAgent) InstallPromptHook(hooksFS fs.FS) error {
+	hookDir := filepath.Join(a.ConfigDir(), "hive-hooks")
+	if err := os.MkdirAll(hookDir, 0755); err != nil {
+		return fmt.Errorf("create hive-hooks dir: %w", err)
+	}
+
+	scriptPath := filepath.Join(hookDir, "user-prompt-submit.sh")
+	content, err := fs.ReadFile(hooksFS, "embed/hooks/claude/user-prompt-submit.sh")
+	if err != nil {
+		return fmt.Errorf("read hook script: %w", err)
+	}
+	if err := writeFileAtomic(scriptPath, content, 0755); err != nil {
+		return fmt.Errorf("write hook script: %w", err)
+	}
+
+	patch := map[string]any{
+		"hooks": map[string]any{
+			"UserPromptSubmit": []any{
+				map[string]any{
+					"name": "hive-prompt-capture",
+					"hooks": []any{
+						map[string]any{
+							"type":    "command",
+							"command": scriptPath,
+							"timeout": 2,
+						},
+					},
+				},
+			},
+		},
+	}
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("marshal hook patch: %w", err)
+	}
+
+	existing, err := readFileOrEmpty(a.settingsPath())
+	if err != nil {
+		return fmt.Errorf("read settings.json: %w", err)
+	}
+
+	merged, err := MergeJSON(existing, patchBytes)
+	if err != nil {
+		return fmt.Errorf("merge settings.json: %w", err)
+	}
+
+	return writeFileAtomic(a.settingsPath(), merged, 0644)
+}
+
 // readFileOrEmpty reads a file's contents or returns an empty byte slice if not found.
 func readFileOrEmpty(path string) ([]byte, error) {
 	data, err := os.ReadFile(path)

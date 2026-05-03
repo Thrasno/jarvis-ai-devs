@@ -58,12 +58,46 @@ CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-    UPDATE memories_fts SET title=new.title, content=new.content, tags=new.tags
-    WHERE rowid=new.id;
+    INSERT INTO memories_fts(memories_fts, rowid, title, content, tags)
+    VALUES ('delete', old.id, old.title, old.content, old.tags);
+    INSERT INTO memories_fts(rowid, title, content, tags)
+    VALUES (new.id, new.title, new.content, new.tags);
 END;
 
 CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-    DELETE FROM memories_fts WHERE rowid=old.id;
+    INSERT INTO memories_fts(memories_fts, rowid, title, content, tags)
+    VALUES ('delete', old.id, old.title, old.content, old.tags);
+END;
+
+CREATE TABLE IF NOT EXISTS user_prompts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    content    TEXT    NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    synced_at  DATETIME
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS user_prompts_fts USING fts5(
+    content,
+    content='user_prompts',
+    content_rowid='id',
+    tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS user_prompts_ai AFTER INSERT ON user_prompts BEGIN
+    INSERT INTO user_prompts_fts(rowid, content)
+    VALUES (new.id, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS user_prompts_au AFTER UPDATE ON user_prompts BEGIN
+    INSERT INTO user_prompts_fts(user_prompts_fts, rowid, content)
+    VALUES ('delete', old.id, old.content);
+    INSERT INTO user_prompts_fts(rowid, content)
+    VALUES (new.id, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS user_prompts_ad AFTER DELETE ON user_prompts BEGIN
+    INSERT INTO user_prompts_fts(user_prompts_fts, rowid, content)
+    VALUES ('delete', old.id, old.content);
 END;
 `
 
@@ -112,6 +146,12 @@ func initSchema(sqlDB *sql.DB) error {
 		`ALTER TABLE memories ADD COLUMN synced_at DATETIME`,
 		// Backfill: copiar created_at a updated_at para las filas pre-migración.
 		`UPDATE memories SET updated_at = created_at WHERE updated_at = '1970-01-01 00:00:00'`,
+		// Fix FTS5 content-table triggers: UPDATE y DELETE FROM no funcionan en FTS5.
+		// Se deben usar drop+recreate para bases de datos existentes con los triggers incorrectos.
+		`DROP TRIGGER IF EXISTS memories_au`,
+		`DROP TRIGGER IF EXISTS memories_ad`,
+		`CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN INSERT INTO memories_fts(memories_fts, rowid, title, content, tags) VALUES ('delete', old.id, old.title, old.content, old.tags); INSERT INTO memories_fts(rowid, title, content, tags) VALUES (new.id, new.title, new.content, new.tags); END`,
+		`CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN INSERT INTO memories_fts(memories_fts, rowid, title, content, tags) VALUES ('delete', old.id, old.title, old.content, old.tags); END`,
 	}
 	for _, m := range migrations {
 		_, _ = sqlDB.Exec(m) // ignoramos error si la columna ya existe
@@ -122,7 +162,10 @@ func initSchema(sqlDB *sql.DB) error {
 // validateSchema verifies that all FTS5 triggers exist in sqlite_master.
 // Returns an error if any trigger is missing (indicates schema corruption).
 func validateSchema(sqlDB *sql.DB) error {
-	triggers := []string{"memories_ai", "memories_au", "memories_ad"}
+	triggers := []string{
+		"memories_ai", "memories_au", "memories_ad",
+		"user_prompts_ai", "user_prompts_au", "user_prompts_ad",
+	}
 	for _, trigger := range triggers {
 		var name string
 		err := sqlDB.QueryRow(

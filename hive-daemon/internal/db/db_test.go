@@ -113,3 +113,27 @@ func TestInitSchema_ClosedDB_ReturnsError(t *testing.T) {
 		t.Error("initSchema() should return error on closed DB")
 	}
 }
+
+func TestValidateSchema_SixTriggersAfterOpen(t *testing.T) {
+	d, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+
+	triggers := []string{
+		"memories_ai", "memories_au", "memories_ad",
+		"user_prompts_ai", "user_prompts_au", "user_prompts_ad",
+	}
+	for _, trigger := range triggers {
+		t.Run(trigger, func(t *testing.T) {
+			var name string
+			err := d.sqlDB.QueryRow(
+				"SELECT name FROM sqlite_master WHERE type='trigger' AND name=?", trigger,
+			).Scan(&name)
+			if err != nil {
+				t.Errorf("trigger %q not found: %v", trigger, err)
+			}
+		})
+	}
+}

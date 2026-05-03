@@ -204,6 +204,24 @@ func (a *OpenCodeAgent) InstallOrchestrator(orchestratorFS fs.FS) error {
 	return installOrchestrator(destPath, orchestratorFS)
 }
 
+// InstallPromptHook writes the Hive OpenCode TypeScript plugin to
+// ~/.config/opencode/plugins/hive.ts. OpenCode auto-loads plugins from
+// this directory — no opencode.json registration needed.
+func (a *OpenCodeAgent) InstallPromptHook(hooksFS fs.FS) error {
+	pluginDir := filepath.Join(a.ConfigDir(), "plugins")
+	if err := os.MkdirAll(pluginDir, 0755); err != nil {
+		return fmt.Errorf("create plugins dir: %w", err)
+	}
+
+	content, err := fs.ReadFile(hooksFS, "embed/hooks/opencode/hive.ts")
+	if err != nil {
+		return fmt.Errorf("read opencode plugin: %w", err)
+	}
+
+	dest := filepath.Join(pluginDir, "hive.ts")
+	return writeFileAtomic(dest, content, 0644)
+}
+
 // SupportsOutputStyles returns false for OpenCodeAgent since OpenCode
 // does not have native output-style support.
 func (a *OpenCodeAgent) SupportsOutputStyles() bool {

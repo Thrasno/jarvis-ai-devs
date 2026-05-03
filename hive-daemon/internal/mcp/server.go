@@ -9,6 +9,11 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// PromptStore is the interface used by mem_save_prompt to persist user prompts.
+type PromptStore interface {
+	SavePrompt(ctx context.Context, content string) (*models.Prompt, error)
+}
+
 // MemoryStore es la interfaz que usan los handlers para acceder a la BD local.
 type MemoryStore interface {
 	SaveMemory(mem *models.Memory) (int64, error)
@@ -27,25 +32,27 @@ type SyncRunner interface {
 // syncStore puede ser nil — en ese caso mem_sync no puede hacer lazy init.
 // syncer puede ser nil — se inicializa lazy en la primera llamada a mem_sync.
 // cfg puede ser nil — en ese caso AutoSync está deshabilitado.
-func NewServer(store MemoryStore, syncStore hivesync.SyncStore, syncer SyncRunner, cfg *hivesync.Config) *sdkmcp.Server {
-	return NewServerWithConfig(store, syncStore, syncer, cfg)
+// prompts puede ser nil — en ese caso mem_save_prompt devuelve error.
+func NewServer(store MemoryStore, syncStore hivesync.SyncStore, syncer SyncRunner, cfg *hivesync.Config, prompts PromptStore) *sdkmcp.Server {
+	return NewServerWithConfig(store, syncStore, syncer, cfg, prompts)
 }
 
 // NewServerWithConfig crea un servidor con configuración personalizada para testing.
 // cfg puede ser nil — en ese caso AutoSync está deshabilitado.
-func NewServerWithConfig(store MemoryStore, syncStore hivesync.SyncStore, syncer SyncRunner, cfg *hivesync.Config) *sdkmcp.Server {
+// prompts puede ser nil — en ese caso mem_save_prompt devuelve error.
+func NewServerWithConfig(store MemoryStore, syncStore hivesync.SyncStore, syncer SyncRunner, cfg *hivesync.Config, prompts PromptStore) *sdkmcp.Server {
 	s := sdkmcp.NewServer(&sdkmcp.Implementation{
 		Name:    "hive-daemon",
 		Version: "1.0.0",
 	}, nil)
 
 	activity := NewActivityTracker()
-	registerTools(s, store, syncStore, syncer, cfg, activity)
+	registerTools(s, store, syncStore, syncer, cfg, activity, prompts)
 
 	syncStatus := "sin sync"
 	if syncer != nil {
 		syncStatus = "sync activo"
 	}
-	logger.Log.Printf("hive-daemon MCP server ready (6 tools, %s)", syncStatus)
+	logger.Log.Printf("hive-daemon MCP server ready (7 tools, %s)", syncStatus)
 	return s
 }

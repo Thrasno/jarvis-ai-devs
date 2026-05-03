@@ -3,9 +3,14 @@ package main
 import (
 	"context"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/httpapi"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
 	hivemcp "github.com/Thrasno/jarvis-dev/hive-daemon/internal/mcp"
 	hivesync "github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
@@ -13,6 +18,9 @@ import (
 )
 
 func main() {
+	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	dbPath := dbFilePath()
 
 	store, err := db.Open(dbPath)
@@ -37,11 +45,39 @@ func main() {
 		logger.Log.Printf("sync desactivado (define HIVE_API_URL/HIVE_API_EMAIL/HIVE_API_PASSWORD o crea ~/.jarvis/sync.json)")
 	}
 
-	server := hivemcp.NewServer(store, store, syncer, cfg)
+	httpDone := make(chan struct{})
+	go func() {
+		defer close(httpDone)
+		srv := httpapi.NewServer(httpAddr(), store)
+		if err := srv.Start(rootCtx); err != nil {
+			logger.Log.Printf("http server stopped: %v (mcp continues)", err)
+		}
+	}()
 
-	if err := server.Run(context.Background(), &sdkmcp.StdioTransport{}); err != nil {
-		logger.Log.Fatalf("server stopped: %v", err)
+	server := hivemcp.NewServer(store, store, syncer, cfg, store)
+
+	runErr := server.Run(rootCtx, &sdkmcp.StdioTransport{})
+
+	// Always wait for HTTP goroutine before closing DB or exiting.
+	<-httpDone
+
+	if runErr != nil {
+		logger.Log.Fatalf("server stopped: %v", runErr)
 	}
+}
+
+// httpAddr returns the address for the HTTP server, preferring HIVE_HTTP_PORT env var
+// (default 7438).
+func httpAddr() string {
+	port := os.Getenv("HIVE_HTTP_PORT")
+	if strings.TrimSpace(port) == "" {
+		return "127.0.0.1:7438"
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		logger.Log.Fatalf("invalid HIVE_HTTP_PORT %q: must be a number between 1 and 65535", port)
+	}
+	return "127.0.0.1:" + port
 }
 
 // dbFilePath returns the SQLite path, preferring HIVE_DB_PATH env var

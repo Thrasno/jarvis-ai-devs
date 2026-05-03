@@ -47,6 +47,9 @@ func configureWizardAgent(
 	if err := a.InstallOrchestrator(jarvis.OrchestratorFS); err != nil {
 		return fmt.Errorf("install orchestrator: %w", err)
 	}
+	if err := a.InstallPromptHook(jarvis.HooksFS); err != nil {
+		return fmt.Errorf("install prompt hook: %w", err)
+	}
 	return nil
 }
 
