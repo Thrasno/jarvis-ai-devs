@@ -16,12 +16,12 @@ type ObservedArtifact struct {
 }
 
 type ObservedRuntime struct {
-	Manifest        RuntimeManifestState
-	RegistryPath    string
-	ModelAssignments map[string]string
+	Manifest                 RuntimeManifestState
+	RegistryPath             string
+	ModelAssignments         map[string]string
 	ResolvedModelAssignments map[string]string
-	Artifacts       map[string]ObservedArtifact
-	NonOwnedChanges []string
+	Artifacts                map[string]ObservedArtifact
+	NonOwnedChanges          []string
 }
 
 func Verify(agent string, observed ObservedRuntime) IntegrityReport {
@@ -139,9 +139,30 @@ func verifyRegistryInvariant(report *IntegrityReport, contract Contract, observe
 }
 
 func verifyModelInvariants(report *IntegrityReport, contract Contract, observed ObservedRuntime) {
-	expectedAssignments := contract.ModelAssignments
-	if len(observed.ResolvedModelAssignments) > 0 {
-		expectedAssignments = observed.ResolvedModelAssignments
+	platform, err := platformForAgent(report.Agent)
+	if err != nil {
+		report.AddCheck(CheckResult{
+			Key:        "invariant.model.platform",
+			Status:     StatusFail,
+			DriftClass: DriftOwned,
+			Expected:   "supported platform",
+			Observed:   report.Agent,
+			Message:    "unsupported agent platform for model assignment verification",
+		})
+		return
+	}
+
+	expectedAssignments, err := DefaultAssignmentsForPlatform(platform)
+	if err != nil {
+		report.AddCheck(CheckResult{
+			Key:        "invariant.model.platform",
+			Status:     StatusFail,
+			DriftClass: DriftOwned,
+			Expected:   "supported platform",
+			Observed:   string(platform),
+			Message:    "unable to derive platform default model assignments",
+		})
+		return
 	}
 
 	for _, phase := range contract.Phases {
@@ -187,12 +208,12 @@ func verifyManagedArtifacts(report *IntegrityReport, contract Contract, observed
 		}
 
 		report.AddCheck(CheckResult{
-			Key:       fmt.Sprintf("artifact.%s.present", artifact.ID),
-			Status:    status,
+			Key:        fmt.Sprintf("artifact.%s.present", artifact.ID),
+			Status:     status,
 			DriftClass: drift,
-			Expected:  "present",
-			Observed:  observedLabel(entry.Exists),
-			Message:   message,
+			Expected:   "present",
+			Observed:   observedLabel(entry.Exists),
+			Message:    message,
 		})
 	}
 }

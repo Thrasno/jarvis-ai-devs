@@ -37,7 +37,10 @@ func observeRuntime(configDir string, plan sddruntime.RuntimePlan) (sddruntime.O
 		manifestVersion = plan.Contract.Version
 	}
 
-	modelAssignments := cloneModelAssignments(plan.Contract.ModelAssignments)
+	modelAssignments, err := resolvedAssignmentsForAgent(plan.Agent)
+	if err != nil {
+		return sddruntime.ObservedRuntime{}, err
+	}
 	observedAssignments, err := observeOrchestratorModelAssignments(configDir, plan.Paths)
 	if err != nil {
 		return sddruntime.ObservedRuntime{}, err
@@ -58,10 +61,10 @@ func observeRuntime(configDir string, plan sddruntime.RuntimePlan) (sddruntime.O
 			ContractVersion:    manifestVersion,
 			ManagedArtifactIDs: presentIDs,
 		},
-		RegistryPath:              plan.Contract.RegistryPath,
-		ModelAssignments:          modelAssignments,
-		ResolvedModelAssignments:  resolvedAssignments,
-		Artifacts:                 artifacts,
+		RegistryPath:             plan.Contract.RegistryPath,
+		ModelAssignments:         modelAssignments,
+		ResolvedModelAssignments: resolvedAssignments,
+		Artifacts:                artifacts,
 	}, nil
 }
 
@@ -109,19 +112,21 @@ func resolvedAssignmentsForAgent(agent string) (map[string]string, error) {
 		return nil, err
 	}
 
-	resolved := sddruntime.ResolvePhaseModels(cfg)
-	contract := sddruntime.DefaultContract()
-	assignments := make(map[string]string, len(contract.Phases))
-	for _, phase := range contract.Phases {
-		selection := resolved[phase]
-		if platform == sddruntime.PlatformClaude {
-			assignments[phase] = selection.Claude
-			continue
-		}
-		assignments[phase] = selection.OpenCode
+	defaults, err := sddruntime.DefaultAssignmentsForPlatform(platform)
+	if err != nil {
+		return nil, err
 	}
 
-	return assignments, nil
+	resolved := sddruntime.ResolvePhaseModels(cfg)
+	for phase, selection := range resolved {
+		if platform == sddruntime.PlatformClaude {
+			defaults[phase] = selection.Claude
+			continue
+		}
+		defaults[phase] = selection.OpenCode
+	}
+
+	return defaults, nil
 }
 
 func platformForAgent(agent string) (sddruntime.Platform, error) {
@@ -170,12 +175,4 @@ func observeArtifact(configDir string, paths sddruntime.RuntimePaths, artifact s
 	default:
 		return sddruntime.ObservedArtifact{}, fmt.Errorf("unsupported managed artifact id %q", artifact.ID)
 	}
-}
-
-func cloneModelAssignments(src map[string]string) map[string]string {
-	cloned := make(map[string]string, len(src))
-	for k, v := range src {
-		cloned[k] = v
-	}
-	return cloned
 }

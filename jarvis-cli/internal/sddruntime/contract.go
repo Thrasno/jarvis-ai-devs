@@ -8,11 +8,13 @@ const (
 )
 
 type Contract struct {
-	Version          string
-	RegistryPath     string
-	Phases           []string
-	PlatformCatalogs map[Platform][]string
+	Version            string
+	RegistryPath       string
+	Phases             []string
+	PlatformCatalogs   map[Platform][]string
 	DefaultPhaseModels map[string]config.PhaseModelSelection
+	// ModelAssignments is retained as legacy compatibility data.
+	// Production fallback/verification behavior must derive defaults from DefaultPhaseModels.
 	ModelAssignments map[string]string
 	ManagedArtifacts []ManagedArtifact
 }
@@ -25,10 +27,10 @@ const (
 )
 
 type ManagedArtifact struct {
-	ID            string
-	RelativePath  string
-	Scope         OwnershipScope
-	Markers       [2]string
+	ID             string
+	RelativePath   string
+	Scope          OwnershipScope
+	Markers        [2]string
 	ExpectedSHA256 string
 }
 

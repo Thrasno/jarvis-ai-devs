@@ -17,7 +17,7 @@ func TestVerify_PassReportForCompliantRuntime(t *testing.T) {
 			ContractVersion:    plan.Contract.Version,
 			ManagedArtifactIDs: []string{"instructions", "orchestrator", "skills"},
 		},
-		RegistryPath: plan.Contract.RegistryPath,
+		RegistryPath:     plan.Contract.RegistryPath,
 		ModelAssignments: cloneModelAssignments(plan.Contract.ModelAssignments),
 		Artifacts: map[string]ObservedArtifact{
 			"instructions": {Exists: true, MarkersValid: true},
@@ -75,15 +75,14 @@ func TestVerify_FailsOnContradictoryInvariantMismatch(t *testing.T) {
 	}
 }
 
-func TestVerify_UsesResolvedAssignmentsWhenProvided(t *testing.T) {
+func TestVerify_IgnoresLegacyResolvedAssignments(t *testing.T) {
 	tests := []struct {
 		name           string
-		observedApply   string
-		resolvedApply   string
-		expectedStatus  IntegrityStatus
+		observedApply  string
+		expectedStatus IntegrityStatus
 	}{
-		{name: "fails on resolved drift", observedApply: "sonnet", resolvedApply: "haiku", expectedStatus: StatusFail},
-		{name: "passes on resolved match", observedApply: "haiku", resolvedApply: "haiku", expectedStatus: StatusPass},
+		{name: "passes when observed matches platform defaults even if resolved map stale", observedApply: "sonnet", expectedStatus: StatusPass},
+		{name: "fails on observed drift regardless of resolved map", observedApply: "haiku", expectedStatus: StatusFail},
 	}
 
 	for _, tt := range tests {
@@ -92,7 +91,7 @@ func TestVerify_UsesResolvedAssignmentsWhenProvided(t *testing.T) {
 			observed.ResolvedModelAssignments = map[string]string{
 				"default":      "sonnet",
 				"orchestrator": "opus",
-				"sdd-apply":    tt.resolvedApply,
+				"sdd-apply":    "stale-legacy-value",
 			}
 			observed.ModelAssignments["sdd-apply"] = tt.observedApply
 
@@ -105,13 +104,29 @@ func TestVerify_UsesResolvedAssignmentsWhenProvided(t *testing.T) {
 			if check == nil {
 				t.Fatal("expected invariant.model.sdd-apply check")
 			}
-			if check.Expected != tt.resolvedApply {
-				t.Fatalf("expected value = %q, want %q", check.Expected, tt.resolvedApply)
+			if check.Expected != "sonnet" {
+				t.Fatalf("expected value = %q, want %q", check.Expected, "sonnet")
 			}
 			if check.Observed != tt.observedApply {
 				t.Fatalf("observed value = %q, want %q", check.Observed, tt.observedApply)
 			}
 		})
+	}
+}
+
+func TestVerify_FailsDeterministicallyForUnsupportedAgent(t *testing.T) {
+	observed := compliantObservedRuntime(t)
+
+	report := Verify("gemini", observed)
+	if report.Status != StatusFail {
+		t.Fatalf("expected fail status, got %q", report.Status)
+	}
+	check := findCheckByKey(report.Checks, "invariant.model.platform")
+	if check == nil {
+		t.Fatal("expected invariant.model.platform check")
+	}
+	if check.DriftClass != DriftOwned {
+		t.Fatalf("expected owned drift class, got %q", check.DriftClass)
 	}
 }
 
@@ -216,7 +231,7 @@ func compliantObservedRuntime(t *testing.T) ObservedRuntime {
 			ContractVersion:    plan.Contract.Version,
 			ManagedArtifactIDs: []string{"instructions", "orchestrator", "skills"},
 		},
-		RegistryPath: plan.Contract.RegistryPath,
+		RegistryPath:     plan.Contract.RegistryPath,
 		ModelAssignments: cloneModelAssignments(plan.Contract.ModelAssignments),
 		Artifacts: map[string]ObservedArtifact{
 			"instructions": {Exists: true, MarkersValid: true},

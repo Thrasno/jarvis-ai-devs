@@ -204,6 +204,57 @@ func TestObserveRuntime_ParsesRenderedOrchestratorAssignments(t *testing.T) {
 	}
 }
 
+func TestObserveRuntime_FallbackIgnoresStaleLegacyContractAssignments(t *testing.T) {
+	tests := []struct {
+		name      string
+		agent     string
+		wantPhase string
+		wantModel string
+	}{
+		{name: "opencode fallback derives from platform defaults", agent: "opencode", wantPhase: "sdd-apply", wantModel: "sonnet"},
+		{name: "claude fallback derives from platform defaults", agent: "claude", wantPhase: "orchestrator", wantModel: "opus"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			configDir := home
+
+			if err := os.MkdirAll(configDir, 0755); err != nil {
+				t.Fatalf("mkdir config dir: %v", err)
+			}
+
+			plan, err := runtimePlanFor(tt.agent)
+			if err != nil {
+				t.Fatalf("runtimePlanFor returned error: %v", err)
+			}
+			plan.Contract.ModelAssignments = map[string]string{
+				"sdd-apply":    "stale-legacy-value",
+				"orchestrator": "stale-legacy-value",
+			}
+
+			if err := os.WriteFile(configDir+"/"+"sdd-orchestrator.md", []byte("# no table"), 0644); err != nil {
+				t.Fatalf("write orchestrator artifact: %v", err)
+			}
+			if err := os.WriteFile(configDir+"/"+"AGENTS.md", []byte("<!-- jarvis:layer1:start -->\nX\n<!-- jarvis:layer1:end -->"), 0644); err != nil {
+				t.Fatalf("write instructions artifact: %v", err)
+			}
+			if err := os.MkdirAll(configDir+"/skills", 0755); err != nil {
+				t.Fatalf("mkdir skills dir: %v", err)
+			}
+
+			observed, err := observeRuntime(configDir, plan)
+			if err != nil {
+				t.Fatalf("observeRuntime returned error: %v", err)
+			}
+
+			if got := observed.ModelAssignments[tt.wantPhase]; got != tt.wantModel {
+				t.Fatalf("phase %q model = %q, want %q", tt.wantPhase, got, tt.wantModel)
+			}
+		})
+	}
+}
+
 func checkStatusByKey(checks []sddruntime.CheckResult, key string) sddruntime.IntegrityStatus {
 	for _, check := range checks {
 		if check.Key == key {

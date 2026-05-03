@@ -8,8 +8,8 @@ import (
 
 func TestResolvePhaseModels(t *testing.T) {
 	tests := []struct {
-		name string
-		cfg  *config.AppConfig
+		name   string
+		cfg    *config.AppConfig
 		assert func(t *testing.T, got map[string]config.PhaseModelSelection)
 	}{
 		{
@@ -47,7 +47,7 @@ func TestResolvePhaseModels(t *testing.T) {
 			name: "unknown phase and invalid catalog values are normalized",
 			cfg: &config.AppConfig{SDD: config.SDDConfig{PhaseModels: map[string]config.PhaseModelSelection{
 				"unknown-phase": {OpenCode: "sonnet", Claude: "sonnet"},
-				"sdd-apply":    {OpenCode: "NOT-IN-CATALOG", Claude: "ALSO-BAD"},
+				"sdd-apply":     {OpenCode: "NOT-IN-CATALOG", Claude: "ALSO-BAD"},
 			}}},
 			assert: func(t *testing.T, got map[string]config.PhaseModelSelection) {
 				t.Helper()
@@ -66,6 +66,41 @@ func TestResolvePhaseModels(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := ResolvePhaseModels(tt.cfg)
 			tt.assert(t, got)
+		})
+	}
+}
+
+func TestDefaultAssignmentsForPlatform(t *testing.T) {
+	tests := []struct {
+		name      string
+		platform  Platform
+		wantPhase string
+		wantModel string
+		wantErr   bool
+	}{
+		{name: "opencode defaults", platform: PlatformOpenCode, wantPhase: "sdd-apply", wantModel: "sonnet"},
+		{name: "claude defaults", platform: PlatformClaude, wantPhase: "orchestrator", wantModel: "opus"},
+		{name: "unsupported platform errors", platform: Platform("gemini"), wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := DefaultAssignmentsForPlatform(tt.platform)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error for unsupported platform")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("DefaultAssignmentsForPlatform returned error: %v", err)
+			}
+			if len(got) != len(DefaultContract().Phases) {
+				t.Fatalf("expected %d phases, got %d", len(DefaultContract().Phases), len(got))
+			}
+			if got[tt.wantPhase] != tt.wantModel {
+				t.Fatalf("phase %q model = %q, want %q", tt.wantPhase, got[tt.wantPhase], tt.wantModel)
+			}
 		})
 	}
 }
