@@ -325,12 +325,11 @@ func (a *ClaudeAgent) InstallSkills(skillsFS fs.FS, selected []string) error {
 	return installSkillsFromFS(dir, skillsFS, selected)
 }
 
-// InstallOrchestrator installs sdd-orchestrator.md to ~/.claude/.
-// orchestratorFS must be a sub-FS rooted at the embed/orchestrator directory.
+// InstallOrchestrator installs rendered sdd-orchestrator.md to ~/.claude/.
 // Idempotent: existing file is overwritten silently.
-func (a *ClaudeAgent) InstallOrchestrator(orchestratorFS fs.FS) error {
+func (a *ClaudeAgent) InstallOrchestrator(orchestratorContent []byte) error {
 	destPath := filepath.Join(a.ConfigDir(), "sdd-orchestrator.md")
-	return installOrchestrator(destPath, orchestratorFS)
+	return installOrchestrator(destPath, orchestratorContent)
 }
 
 // InstallPromptHook writes the Hive UserPromptSubmit hook for Claude Code.

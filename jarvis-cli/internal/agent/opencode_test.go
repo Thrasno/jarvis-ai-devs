@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"testing/fstest"
 
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
 )
@@ -318,11 +317,7 @@ func TestOpenCodeAgent_InstallOrchestrator_WritesToConfigDir(t *testing.T) {
 		t.Fatalf("create opencode dir: %v", err)
 	}
 
-	orchestratorFS := fstest.MapFS{
-		"embed/orchestrator/sdd-orchestrator.md": {Data: []byte("# opencode orchestrator\n")},
-	}
-
-	if err := a.InstallOrchestrator(orchestratorFS); err != nil {
+	if err := a.InstallOrchestrator([]byte("# opencode orchestrator\n")); err != nil {
 		t.Fatalf("InstallOrchestrator: %v", err)
 	}
 

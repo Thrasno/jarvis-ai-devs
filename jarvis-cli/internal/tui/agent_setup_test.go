@@ -63,7 +63,7 @@ func (a *setupAgentStub) InstallSkills(fs.FS, []string) error {
 	return a.installSkillsErr
 }
 
-func (a *setupAgentStub) InstallOrchestrator(fs.FS) error {
+func (a *setupAgentStub) InstallOrchestrator([]byte) error {
 	return a.installOrchErr
 }
 
@@ -89,7 +89,7 @@ func TestConfigureWizardAgent_ErrorPropagation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := configureWizardAgent(tt.agent, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil)
+			err := configureWizardAgent(tt.agent, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil)
 			if err == nil {
 				t.Fatalf("configureWizardAgent expected error containing %q", tt.wantErr)
 			}
@@ -112,8 +112,8 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 		{
 			name: "stops on first setup failure",
 			agents: []agent.Agent{
-				&setupAgentStub{name: "a", mergeErrAt: 1},
-				&setupAgentStub{name: "b"},
+				&setupAgentStub{name: "claude", mergeErrAt: 1},
+				&setupAgentStub{name: "opencode"},
 			},
 			resolved:       nil,
 			wantLen:        1,
@@ -123,8 +123,8 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 		{
 			name: "returns configured results when no preset to apply",
 			agents: []agent.Agent{
-				&setupAgentStub{name: "a"},
-				&setupAgentStub{name: "b"},
+				&setupAgentStub{name: "claude"},
+				&setupAgentStub{name: "opencode"},
 			},
 			resolved:       nil,
 			wantLen:        2,
@@ -133,8 +133,8 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 		{
 			name: "pipeline error is attached to last result",
 			agents: []agent.Agent{
-				&setupAgentStub{name: "a"},
-				&setupAgentStub{name: "b", writeInstructionsErr: errors.New("instruction fail")},
+				&setupAgentStub{name: "claude"},
+				&setupAgentStub{name: "opencode", writeInstructionsErr: errors.New("instruction fail")},
 			},
 			resolved:       &persona.ResolvedPreset{Slug: "neutra", Source: persona.PresetSourceBuiltin, Preset: &persona.Preset{Name: "neutra", DisplayName: "Neutra", Description: "x", Tone: persona.Tone{Formality: "neutral", Directness: "direct", Humor: "none", Language: "en-us"}, CommunicationStyle: persona.CommunicationStyle{Verbosity: "concise"}, CharacteristicPhrases: persona.CharacteristicPhrases{Greetings: []string{"Hi"}, Confirmations: []string{"OK"}}}},
 			wantLen:        2,
@@ -145,7 +145,7 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			results := configureWizardAgents(tt.agents, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, tt.resolved, wizardPresetApplyContext{}, testSkillsFS, nil)
+			results := configureWizardAgents(tt.agents, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, tt.resolved, wizardPresetApplyContext{}, testSkillsFS, nil)
 			if len(results) != tt.wantLen {
 				t.Fatalf("len(results) = %d, want %d", len(results), tt.wantLen)
 			}
@@ -171,6 +171,12 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 }
 
 func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
+	contract := sddruntime.DefaultContract()
+	assignments := make(map[string]string, len(contract.ModelAssignments))
+	for k, v := range contract.ModelAssignments {
+		assignments[k] = v
+	}
+
 	passObserved := sddruntime.ObservedRuntime{
 		Manifest: sddruntime.RuntimeManifestState{
 			Present:            true,
@@ -178,11 +184,7 @@ func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
 			ManagedArtifactIDs: []string{"instructions", "orchestrator", "skills"},
 		},
 		RegistryPath: sddruntime.DefaultRegistryPath,
-		ModelAssignments: map[string]string{
-			"orchestrator": "opus",
-			"sdd-apply":    "sonnet",
-			"default":      "sonnet",
-		},
+		ModelAssignments: assignments,
 		Artifacts: map[string]sddruntime.ObservedArtifact{
 			"instructions": {Exists: true, MarkersValid: true},
 			"orchestrator": {Exists: true},
@@ -219,7 +221,7 @@ func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			results := configureWizardAgents([]agent.Agent{tt.agent}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil)
+			results := configureWizardAgents([]agent.Agent{tt.agent}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil)
 			if len(results) != 1 {
 				t.Fatalf("len(results) = %d, want 1", len(results))
 			}

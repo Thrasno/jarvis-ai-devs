@@ -19,6 +19,7 @@ type ObservedRuntime struct {
 	Manifest        RuntimeManifestState
 	RegistryPath    string
 	ModelAssignments map[string]string
+	ResolvedModelAssignments map[string]string
 	Artifacts       map[string]ObservedArtifact
 	NonOwnedChanges []string
 }
@@ -29,9 +30,7 @@ func Verify(agent string, observed ObservedRuntime) IntegrityReport {
 
 	verifyManifest(&report, contract, observed.Manifest)
 	verifyRegistryInvariant(&report, contract, observed.RegistryPath)
-	verifyModelInvariant(&report, contract, observed.ModelAssignments, "orchestrator")
-	verifyModelInvariant(&report, contract, observed.ModelAssignments, "sdd-apply")
-	verifyModelInvariant(&report, contract, observed.ModelAssignments, "default")
+	verifyModelInvariants(&report, contract, observed)
 	verifyManagedArtifacts(&report, contract, observed.Artifacts)
 	verifyNonOwnedDrift(&report, observed.NonOwnedChanges)
 
@@ -139,28 +138,35 @@ func verifyRegistryInvariant(report *IntegrityReport, contract Contract, observe
 	})
 }
 
-func verifyModelInvariant(report *IntegrityReport, contract Contract, observed map[string]string, phase string) {
-	expected, ok := contract.ModelAssignments[phase]
-	if !ok {
-		return
+func verifyModelInvariants(report *IntegrityReport, contract Contract, observed ObservedRuntime) {
+	expectedAssignments := contract.ModelAssignments
+	if len(observed.ResolvedModelAssignments) > 0 {
+		expectedAssignments = observed.ResolvedModelAssignments
 	}
 
-	observedValue := observed[phase]
-	status := StatusPass
-	message := fmt.Sprintf("model assignment invariant matches for %s", phase)
-	if observedValue != expected {
-		status = StatusFail
-		message = fmt.Sprintf("model assignment mismatch for contract-owned phase %s", phase)
-	}
+	for _, phase := range contract.Phases {
+		expected, ok := expectedAssignments[phase]
+		if !ok {
+			continue
+		}
 
-	report.AddCheck(CheckResult{
-		Key:        fmt.Sprintf("invariant.model.%s", phase),
-		Status:     status,
-		DriftClass: driftClassFromStatus(status),
-		Expected:   expected,
-		Observed:   observedValue,
-		Message:    message,
-	})
+		observedValue := observed.ModelAssignments[phase]
+		status := StatusPass
+		message := fmt.Sprintf("model assignment invariant matches for %s", phase)
+		if observedValue != expected {
+			status = StatusFail
+			message = fmt.Sprintf("model assignment mismatch for contract-owned phase %s", phase)
+		}
+
+		report.AddCheck(CheckResult{
+			Key:        fmt.Sprintf("invariant.model.%s", phase),
+			Status:     status,
+			DriftClass: driftClassFromStatus(status),
+			Expected:   expected,
+			Observed:   observedValue,
+			Message:    message,
+		})
+	}
 }
 
 func verifyManagedArtifacts(report *IntegrityReport, contract Contract, observed map[string]ObservedArtifact) {

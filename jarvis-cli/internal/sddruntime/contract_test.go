@@ -42,6 +42,24 @@ func TestDefaultContract_HasCanonicalInvariants(t *testing.T) {
 			},
 		},
 		{
+			name: "phase catalogs and defaults include required platforms",
+			fn: func(t *testing.T, c Contract) {
+				t.Helper()
+				if len(c.Phases) == 0 || c.Phases[0] != "default" {
+					t.Fatalf("expected ordered phases with default first, got %v", c.Phases)
+				}
+				if len(c.PlatformCatalogs[PlatformOpenCode]) == 0 {
+					t.Fatal("expected non-empty OpenCode catalog")
+				}
+				if len(c.PlatformCatalogs[PlatformClaude]) == 0 {
+					t.Fatal("expected non-empty Claude catalog")
+				}
+				if _, ok := c.DefaultPhaseModels["default"]; !ok {
+					t.Fatal("expected default phase entry in cross-platform defaults")
+				}
+			},
+		},
+		{
 			name: "managed artifact catalog includes instructions orchestrator and skills",
 			fn: func(t *testing.T, c Contract) {
 				t.Helper()

@@ -48,10 +48,9 @@ type Agent interface {
 	// Install is idempotent: existing files are overwritten silently.
 	InstallSkills(skillsFS fs.FS, selected []string) error
 
-	// InstallOrchestrator installs sdd-orchestrator.md to the agent's config directory.
-	// orchestratorFS must be a sub-FS rooted at the embed/orchestrator directory.
+	// InstallOrchestrator installs rendered sdd-orchestrator.md content to the agent's config directory.
 	// Install is idempotent: existing file is overwritten silently.
-	InstallOrchestrator(orchestratorFS fs.FS) error
+	InstallOrchestrator(orchestratorContent []byte) error
 
 	// SupportsOutputStyles returns true if the agent supports native output-styles.
 	// Claude Code supports this via ~/.claude/output-styles/ and settings.json.

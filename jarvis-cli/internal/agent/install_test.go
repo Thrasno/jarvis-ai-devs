@@ -129,11 +129,7 @@ func TestInstallOrchestrator_CreatesFile(t *testing.T) {
 	dest := t.TempDir()
 	destFile := filepath.Join(dest, "sdd-orchestrator.md")
 
-	testFS := fstest.MapFS{
-		"embed/orchestrator/sdd-orchestrator.md": {Data: []byte("# SDD Orchestrator\nContent here")},
-	}
-
-	err := installOrchestrator(destFile, testFS)
+	err := installOrchestrator(destFile, []byte("# SDD Orchestrator\nContent here"))
 	if err != nil {
 		t.Fatalf("installOrchestrator: %v", err)
 	}
@@ -144,17 +140,7 @@ func TestInstallOrchestrator_CreatesFile(t *testing.T) {
 // TestInstallOrchestrator_ReturnsErrorOnMissingFile verifies that installOrchestrator
 // returns an error when the orchestrator file is missing from the embedded FS.
 func TestInstallOrchestrator_ReturnsErrorOnMissingFile(t *testing.T) {
-	dest := t.TempDir()
-	destFile := filepath.Join(dest, "sdd-orchestrator.md")
-
-	testFS := fstest.MapFS{
-		// Empty FS - no orchestrator file
-	}
-
-	err := installOrchestrator(destFile, testFS)
-	if err == nil {
-		t.Error("expected error when orchestrator file is missing, got nil")
-	}
+	t.Skip("file-read behavior moved to caller; installOrchestrator now writes provided rendered content")
 }
 
 // TestInstallOrchestrator_Idempotent verifies that calling installOrchestrator twice
@@ -163,20 +149,28 @@ func TestInstallOrchestrator_Idempotent(t *testing.T) {
 	dest := t.TempDir()
 	destFile := filepath.Join(dest, "sdd-orchestrator.md")
 
-	testFS := fstest.MapFS{
-		"embed/orchestrator/sdd-orchestrator.md": {Data: []byte("# Orchestrator")},
-	}
-
 	// First call.
-	if err := installOrchestrator(destFile, testFS); err != nil {
+	if err := installOrchestrator(destFile, []byte("# Orchestrator")); err != nil {
 		t.Fatalf("first installOrchestrator: %v", err)
 	}
 
 	// Second call (idempotency check).
-	if err := installOrchestrator(destFile, testFS); err != nil {
+	if err := installOrchestrator(destFile, []byte("# Orchestrator")); err != nil {
 		t.Fatalf("second installOrchestrator: %v", err)
 	}
 
 	// Content must be exactly what was written, not appended.
 	assertFileContent(t, destFile, "# Orchestrator")
+}
+
+func TestInstallOrchestrator_WritesRenderedContent(t *testing.T) {
+	dest := t.TempDir()
+	destFile := filepath.Join(dest, "sdd-orchestrator.md")
+
+	rendered := []byte("| sdd-apply | opus |\n")
+	if err := installOrchestrator(destFile, rendered); err != nil {
+		t.Fatalf("installOrchestrator: %v", err)
+	}
+
+	assertFileContent(t, destFile, "| sdd-apply | opus |\n")
 }

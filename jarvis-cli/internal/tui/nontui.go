@@ -14,6 +14,7 @@ import (
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/apiclient"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/skills"
 )
 
@@ -205,8 +206,33 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		}
 	}
 
-	// ── Step 5: Review/Apply ──────────────────────────────────────────────────
-	fmt.Println("\n=== Jarvis-Dev Setup [5/6] Review & Apply ===")
+	// ── Step 5: SDD Phase Models ──────────────────────────────────────────────
+	fmt.Println("\n=== Jarvis-Dev Setup [5/7] SDD Phase Models ===")
+	resolvedPhaseModels := sddruntime.ResolvePhaseModels(cfg)
+	applyPhaseModelEdits := func() {
+		contract := sddruntime.DefaultContract()
+		for _, phase := range contract.Phases {
+			current := resolvedPhaseModels[phase]
+			fmt.Printf("%s [opencode=%s claude=%s]\n", phase, current.OpenCode, current.Claude)
+			fmt.Printf("  OpenCode model [%s] (Enter keeps): ", current.OpenCode)
+			opencodeInput := strings.ToLower(strings.TrimSpace(readLine(scanner)))
+			fmt.Printf("  Claude model [%s] (Enter keeps): ", current.Claude)
+			claudeInput := strings.ToLower(strings.TrimSpace(readLine(scanner)))
+			row := current
+			row.OpenCode = normalizePlatformValueForPrompt(opencodeInput, current.OpenCode, contract.PlatformCatalogs[sddruntime.PlatformOpenCode])
+			row.Claude = normalizePlatformValueForPrompt(claudeInput, current.Claude, contract.PlatformCatalogs[sddruntime.PlatformClaude])
+			resolvedPhaseModels[phase] = row
+		}
+ 	}
+	if cfg.SDD.PhaseModels == nil {
+		cfg.SDD.PhaseModels = map[string]config.PhaseModelSelection{}
+	}
+	for phase, row := range resolvedPhaseModels {
+		cfg.SDD.PhaseModels[phase] = row
+	}
+
+	// ── Step 6: Review/Apply ──────────────────────────────────────────────────
+	fmt.Println("\n=== Jarvis-Dev Setup [6/7] Review & Apply ===")
 	fmt.Printf("Scope: %s\n", cfg.Scope)
 	if cfg.Scope == config.ScopeLocalOnly {
 		fmt.Println(localOnlyReviewWarning)
@@ -214,15 +240,23 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	fmt.Printf("Mode: %s\n", mode)
 	fmt.Printf("Persona: %s\n", cfg.PersonaPreset)
 	fmt.Printf("Cloud: %s\n", strings.TrimSpace(cfg.Email))
-	fmt.Print("Apply these changes now? [type 'yes' to continue]: ")
+	fmt.Print("Apply these changes now? [type 'yes' to continue, 'edit' to edit phase models]: ")
 	applyAnswer := strings.ToLower(strings.TrimSpace(readLine(scanner)))
+	if applyAnswer == "edit" {
+		applyPhaseModelEdits()
+		for phase, row := range resolvedPhaseModels {
+			cfg.SDD.PhaseModels[phase] = row
+		}
+		fmt.Print("Apply these changes now? [type 'yes' to continue]: ")
+		applyAnswer = strings.ToLower(strings.TrimSpace(readLine(scanner)))
+	}
 	if applyAnswer != "y" && applyAnswer != "yes" {
 		fmt.Println("Aborted before apply. Existing config remains unchanged.")
 		return nil
 	}
 
-	// ── Step 6: Apply ─────────────────────────────────────────────────────────
-	fmt.Println("\n=== Jarvis-Dev Setup [6/6] Configure AI Agents ===")
+	// ── Step 7: Apply ─────────────────────────────────────────────────────────
+	fmt.Println("\n=== Jarvis-Dev Setup [7/7] Configure AI Agents ===")
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("get home dir: %w", err)
@@ -265,7 +299,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	}
 	context7Entry := agent.MCPEntry{Name: "context7"}
 
-	results := configureWizardAgents(agents, entry, context7Entry, resolvedPreset, wizardPresetApplyContext{
+	results := configureWizardAgents(agents, cfg, entry, context7Entry, resolvedPreset, wizardPresetApplyContext{
 		Layer1:               config.Layer1Content(),
 		Skills:               skillInfos,
 		PreviousPresetSlug:   previousPresetSlug,
@@ -358,4 +392,16 @@ func readLine(scanner *bufio.Scanner) string {
 		return strings.TrimSpace(scanner.Text())
 	}
 	return ""
+}
+
+func normalizePlatformValueForPrompt(input, fallback string, catalog []string) string {
+	if input == "" {
+		return fallback
+	}
+	for _, item := range catalog {
+		if input == item {
+			return input
+		}
+	}
+	return fallback
 }

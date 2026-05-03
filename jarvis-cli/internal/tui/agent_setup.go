@@ -30,6 +30,7 @@ type wizardPresetApplyContext struct {
 // for both TUI and no-TUI wizards.
 func configureWizardAgent(
 	a agent.Agent,
+	cfg *config.AppConfig,
 	hiveEntry agent.MCPEntry,
 	context7Entry agent.MCPEntry,
 	skillsSubFS fs.FS,
@@ -44,7 +45,15 @@ func configureWizardAgent(
 	if err := a.InstallSkills(skillsSubFS, selectedIDs); err != nil {
 		return fmt.Errorf("install skills: %w", err)
 	}
-	if err := a.InstallOrchestrator(jarvis.OrchestratorFS); err != nil {
+	orchestratorTemplate, err := fs.ReadFile(jarvis.OrchestratorFS, "embed/orchestrator/sdd-orchestrator.md")
+	if err != nil {
+		return fmt.Errorf("read orchestrator template: %w", err)
+	}
+	renderedOrchestrator, err := sddruntime.RenderOrchestrator(a.Name(), cfg, string(orchestratorTemplate))
+	if err != nil {
+		return fmt.Errorf("render orchestrator: %w", err)
+	}
+	if err := a.InstallOrchestrator([]byte(renderedOrchestrator)); err != nil {
 		return fmt.Errorf("install orchestrator: %w", err)
 	}
 	if err := a.InstallPromptHook(jarvis.HooksFS); err != nil {
@@ -58,6 +67,7 @@ func configureWizardAgent(
 // committing canonical config and still report the failing agent explicitly.
 func configureWizardAgents(
 	agents []agent.Agent,
+	cfg *config.AppConfig,
 	hiveEntry agent.MCPEntry,
 	context7Entry agent.MCPEntry,
 	resolvedPreset *persona.ResolvedPreset,
@@ -74,7 +84,7 @@ func configureWizardAgents(
 				ConfigPath: a.ConfigDir(),
 			},
 		}
-		if err := configureWizardAgent(a, hiveEntry, context7Entry, skillsSubFS, selectedIDs); err != nil {
+		if err := configureWizardAgent(a, cfg, hiveEntry, context7Entry, skillsSubFS, selectedIDs); err != nil {
 			res.Err = err
 			results = append(results, res)
 			return results

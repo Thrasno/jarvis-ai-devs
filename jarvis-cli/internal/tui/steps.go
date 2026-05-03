@@ -16,6 +16,7 @@ import (
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/apiclient"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/sddruntime"
 )
 
 const localOnlyReviewWarning = "Se ha seleccionado modo local, se borrará cualquier credencial almacenada sobre hive-api"
@@ -72,7 +73,7 @@ func updateScope(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func viewScope(m Model) string {
 	var sb strings.Builder
-	sb.WriteString(stepHeader(1, 6, "Setup Scope"))
+	sb.WriteString(stepHeader(1, 7, "Setup Scope"))
 	sb.WriteString("Elegí el alcance del setup (sin side effects hasta Apply).\n\n")
 
 	var localLine string
@@ -220,7 +221,7 @@ func viewHiveCloud(m Model) string {
 	if m.Mode == string(config.ConfigStatusReconfigure) {
 		title = "Hive Cloud Authentication (Reconfigure)"
 	}
-	sb.WriteString(stepHeader(2, 6, title))
+	sb.WriteString(stepHeader(2, 7, title))
 	sb.WriteString("Connect to Hive Cloud for team memory sync (press Esc to skip).\n\n")
 
 	// Email field
@@ -378,7 +379,7 @@ func updatePersonaCustomEdit(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func viewPersona(m Model) string {
 	var sb strings.Builder
-	sb.WriteString(stepHeader(3, 6, "Select Persona Preset"))
+	sb.WriteString(stepHeader(3, 7, "Select Persona Preset"))
 
 	if m.customEdit {
 		sb.WriteString(headerStyle.Render("Custom Preset Creation") + "\n")
@@ -479,14 +480,18 @@ func updateSkills(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case tea.KeyEnter:
-		m.Step = StepReview
+		if len(m.Agents) == 0 {
+			m.Step = StepReview
+		} else {
+			m.Step = StepPhaseModels
+		}
 	}
 	return m, nil
 }
 
 func viewSkills(m Model) string {
 	var sb strings.Builder
-	sb.WriteString(stepHeader(4, 6, "Select Extra Skills"))
+	sb.WriteString(stepHeader(4, 7, "Select Extra Skills"))
 	sb.WriteString(dimStyle.Render("Required/default skills are installed automatically. Select only stack-specific extras.") + "\n\n")
 
 	cur := m.presetCur
@@ -509,6 +514,121 @@ func viewSkills(m Model) string {
 	}
 
 	sb.WriteString("\n" + dimStyle.Render("↑/↓ or j/k: navigate  Space: toggle  Enter: confirm"))
+	return sb.String()
+}
+
+type phaseModelRow struct {
+	Phase    string
+	OpenCode string
+	Claude   string
+}
+
+func updatePhaseModels(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if len(m.phaseModelRows) == 0 {
+		m = initializePhaseModelEditor(m)
+	}
+	switch msg.Type {
+	case tea.KeyUp:
+		if m.phaseModelActiveRow > 0 {
+			m.phaseModelActiveRow--
+		}
+	case tea.KeyDown:
+		if m.phaseModelActiveRow < len(m.phaseModelRows)-1 {
+			m.phaseModelActiveRow++
+		}
+	case tea.KeyLeft:
+		if m.phaseModelActiveCol > 1 {
+			m.phaseModelActiveCol--
+		}
+	case tea.KeyRight:
+		if m.phaseModelActiveCol < 2 {
+			m.phaseModelActiveCol++
+		}
+	case tea.KeyEnter, tea.KeySpace:
+		m = cycleActivePhaseModel(m)
+	case tea.KeyRunes:
+		switch string(msg.Runes) {
+		case "a":
+			m = applyAllForActiveColumn(m)
+		case " ":
+			m = cycleActivePhaseModel(m)
+		}
+	case tea.KeyEsc:
+		m.Step = StepSkills
+	case tea.KeyTab:
+		m.Step = StepReview
+	}
+	persistPhaseModelRows(&m)
+	return m, nil
+}
+
+func cycleActivePhaseModel(m Model) Model {
+	if m.phaseModelActiveCol == 0 || len(m.phaseModelRows) == 0 {
+		return m
+	}
+	row := &m.phaseModelRows[m.phaseModelActiveRow]
+	if m.phaseModelActiveCol == 1 {
+		row.OpenCode = nextCatalogValue(row.OpenCode, m.phaseModelOpenCode)
+	} else {
+		row.Claude = nextCatalogValue(row.Claude, m.phaseModelClaude)
+	}
+	return m
+}
+
+func applyAllForActiveColumn(m Model) Model {
+	if m.phaseModelActiveCol == 0 || len(m.phaseModelRows) == 0 {
+		return m
+	}
+	active := m.phaseModelRows[m.phaseModelActiveRow]
+	for i := range m.phaseModelRows {
+		if m.phaseModelActiveCol == 1 {
+			m.phaseModelRows[i].OpenCode = active.OpenCode
+		} else {
+			m.phaseModelRows[i].Claude = active.Claude
+		}
+	}
+	return m
+}
+
+func nextCatalogValue(current string, catalog []string) string {
+	if len(catalog) == 0 {
+		return current
+	}
+	for i, item := range catalog {
+		if item == current {
+			return catalog[(i+1)%len(catalog)]
+		}
+	}
+	return catalog[0]
+}
+
+func persistPhaseModelRows(m *Model) {
+	if m == nil || m.cfg == nil {
+		return
+	}
+	if m.cfg.SDD.PhaseModels == nil {
+		m.cfg.SDD.PhaseModels = map[string]config.PhaseModelSelection{}
+	}
+	for _, row := range m.phaseModelRows {
+		m.cfg.SDD.PhaseModels[row.Phase] = config.PhaseModelSelection{OpenCode: row.OpenCode, Claude: row.Claude}
+	}
+}
+
+func viewPhaseModels(m Model) string {
+	var sb strings.Builder
+	sb.WriteString(stepHeader(5, 7, "SDD Phase Models"))
+	sb.WriteString("Editá un único mapa de modelos por fase (phase, OpenCode, Claude).\n\n")
+	sb.WriteString(headerStyle.Render("phase                 OpenCode   Claude") + "\n")
+	for i, row := range m.phaseModelRows {
+		line := fmt.Sprintf("%-20s %-10s %-10s", row.Phase, row.OpenCode, row.Claude)
+		if i == m.phaseModelActiveRow {
+			line = selectedStyle.Render("> " + line)
+		} else {
+			line = "  " + line
+		}
+		sb.WriteString(line + "\n")
+	}
+	sb.WriteString("\n" + dimStyle.Render("↑/↓ row  ←/→ column  Enter/Space cycle  a apply-all active column  Tab review  Esc back"))
 	return sb.String()
 }
 
@@ -547,7 +667,7 @@ func updateReview(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEnter:
 		switch m.reviewChoice {
 		case 0: // Back
-			m.Step = StepSkills
+			m.Step = StepPhaseModels
 			return m, nil
 		case 1: // Cancel
 			m.Done = true
@@ -637,7 +757,7 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		context7Entry := agent.MCPEntry{Name: "context7"}
 
 		// Configure each detected agent and collect structured outcomes.
-		results := configureWizardAgents(m.Agents, entry, context7Entry, resolved, wizardPresetApplyContext{
+		results := configureWizardAgents(m.Agents, m.cfg, entry, context7Entry, resolved, wizardPresetApplyContext{
 			Layer1:               config.Layer1Content(),
 			Skills:               skillInfos,
 			PreviousPresetSlug:   previousSlug,
@@ -769,7 +889,7 @@ func buildSkillInfoList(m Model) []config.SkillInfo {
 
 func viewReview(m Model) string {
 	var sb strings.Builder
-	sb.WriteString(stepHeader(5, 6, "Review & Apply"))
+	sb.WriteString(stepHeader(6, 7, "Review & Apply"))
 	sb.WriteString(headerStyle.Render("Resumen de configuración") + "\n")
 
 	fmt.Fprintf(&sb, "Scope: %s", m.Scope)
@@ -782,6 +902,13 @@ func viewReview(m Model) string {
 		fmt.Fprintf(&sb, "Cloud email: %s\n", strings.TrimSpace(m.Email))
 	} else {
 		sb.WriteString("Cloud email: (omitido por alcance local-only)\n")
+	}
+
+	resolved := sddruntime.ResolvePhaseModels(m.cfg)
+	sb.WriteString("SDD phase models:\n")
+	for _, phase := range sddruntime.DefaultContract().Phases {
+		sel := resolved[phase]
+		fmt.Fprintf(&sb, "- %s: opencode=%s, claude=%s\n", phase, sel.OpenCode, sel.Claude)
 	}
 
 	choices := []string{"Back", "Cancel", "Apply"}
@@ -799,7 +926,7 @@ func viewReview(m Model) string {
 
 func viewApply(m Model) string {
 	var sb strings.Builder
-	sb.WriteString(stepHeader(6, 6, "Apply"))
+	sb.WriteString(stepHeader(7, 7, "Apply"))
 
 	if len(m.agentProgress) == 0 {
 		agentNames := make([]string, 0, len(m.Agents))

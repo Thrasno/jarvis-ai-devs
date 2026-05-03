@@ -7,11 +7,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/skills"
@@ -311,6 +313,66 @@ func TestStep_Skills_CoreAlwaysSelected(t *testing.T) {
 	}
 }
 
+func TestStep_Skills_EnterAdvancesToPhaseModels(t *testing.T) {
+	m := buildSkillsModel()
+	m.Agents = []agent.Agent{&mockAgent{name: "mock", configDir: t.TempDir()}}
+
+	m = sendKey(m, tea.KeyEnter)
+
+	if m.Step != StepPhaseModels {
+		t.Fatalf("expected StepPhaseModels after skills Enter, got %v", m.Step)
+	}
+}
+
+func TestStep_PhaseModels_ApplyAllAndCycling(t *testing.T) {
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
+	m = initializePhaseModelEditor(m)
+
+	if m.phaseModelActiveCol != 1 {
+		t.Fatalf("expected initial active column OpenCode(1), got %d", m.phaseModelActiveCol)
+	}
+
+	// Move to next model in OpenCode catalog then apply-all.
+	m = sendKey(m, tea.KeyEnter)
+	current := m.phaseModelRows[m.phaseModelActiveRow].OpenCode
+	m = sendRune(m, "a")
+
+	for _, row := range m.phaseModelRows {
+		if row.OpenCode != current {
+			t.Fatalf("expected OpenCode apply-all value %q, got %q", current, row.OpenCode)
+		}
+	}
+
+	// Move to Claude column and ensure OpenCode stays unchanged while Claude cycles.
+	m = sendKey(m, tea.KeyRight)
+	beforeOpenCode := m.phaseModelRows[m.phaseModelActiveRow].OpenCode
+	beforeClaude := m.phaseModelRows[m.phaseModelActiveRow].Claude
+	m = sendKey(m, tea.KeySpace)
+	after := m.phaseModelRows[m.phaseModelActiveRow]
+	if after.OpenCode != beforeOpenCode {
+		t.Fatalf("expected OpenCode unchanged while editing Claude column")
+	}
+	if after.Claude == beforeClaude {
+		t.Fatalf("expected Claude to cycle to next catalog value")
+	}
+}
+
+func TestViewReview_IncludesPhaseModelAssignments(t *testing.T) {
+	m := Model{Step: StepReview, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
+	m = initializePhaseModelEditor(m)
+	m.phaseModelRows[0].OpenCode = "haiku"
+	m.phaseModelRows[0].Claude = "opus"
+	phase := m.phaseModelRows[0].Phase
+
+	v := viewReview(m)
+	if !strings.Contains(v, "SDD phase models") {
+		t.Fatalf("expected review to include SDD phase models section, got:\n%s", v)
+	}
+	if !strings.Contains(v, phase) || !strings.Contains(v, "haiku") || !strings.Contains(v, "opus") {
+		t.Fatalf("expected review to include edited phase assignment, got:\n%s", v)
+	}
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // TestStep_Persona_SelectAndAdvance
 // ──────────────────────────────────────────────────────────────────────────────
@@ -342,9 +404,10 @@ func TestStep_Persona_SelectAndAdvance(t *testing.T) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 // TestStep_Skills_EnterAdvances verifies that pressing Enter at StepSkills
-// advances the model to StepAgentConfig.
+// advances the model to StepPhaseModels.
 func TestStep_Skills_EnterAdvances(t *testing.T) {
 	m := buildSkillsModel()
+	m.Agents = []agent.Agent{&mockAgent{name: "mock", configDir: t.TempDir()}}
 
 	if m.Step != StepSkills {
 		t.Fatalf("expected StepSkills, got %v", m.Step)
@@ -352,8 +415,74 @@ func TestStep_Skills_EnterAdvances(t *testing.T) {
 
 	m = sendKey(m, tea.KeyEnter)
 
-	if m.Step != StepAgentConfig {
-		t.Errorf("expected StepAgentConfig after Enter, got %v", m.Step)
+	if m.Step != StepPhaseModels {
+		t.Errorf("expected StepPhaseModels after Enter, got %v", m.Step)
+	}
+}
+
+func TestStep_Skills_EnterSkipsPhaseModelsWhenRuntimeManagedFlowUnavailable(t *testing.T) {
+	tests := []struct {
+		name     string
+		agents   []agent.Agent
+		expectTo Step
+	}{
+		{name: "no agents configured", agents: nil, expectTo: StepReview},
+		{name: "runtime managed available", agents: []agent.Agent{&mockAgent{name: "mock", configDir: t.TempDir()}}, expectTo: StepPhaseModels},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := buildSkillsModel()
+			m.Agents = tt.agents
+
+			m = sendKey(m, tea.KeyEnter)
+
+			if m.Step != tt.expectTo {
+				t.Fatalf("expected step %v, got %v", tt.expectTo, m.Step)
+			}
+		})
+	}
+}
+
+func TestPhaseModelsView_V1HasNoProfileCRUDOrSwitchActions(t *testing.T) {
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
+	m = initializePhaseModelEditor(m)
+
+	view := strings.ToLower(viewPhaseModels(m))
+	blocked := []string{"profile", "profiles", "create", "list", "switch"}
+	for _, token := range blocked {
+		if strings.Contains(view, token) {
+			t.Fatalf("phase-model view must not expose v1 profile actions; found %q in:\n%s", token, view)
+		}
+	}
+}
+
+func TestStep_PhaseModels_RejectsCrossCatalogInvalidValuesInTUIEditingPath(t *testing.T) {
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
+	m = initializePhaseModelEditor(m)
+
+	if len(m.phaseModelOpenCode) == 0 || len(m.phaseModelClaude) == 0 {
+		t.Fatal("expected both platform catalogs to be non-empty")
+	}
+
+	const opencodeInvalid = "__invalid-opencode-model__"
+	const claudeInvalid = "__invalid-claude-model__"
+
+	// Inject an invalid value into OpenCode cell and ensure cycle rejects/fixes it.
+	m.phaseModelActiveRow = 0
+	m.phaseModelActiveCol = 1
+	m.phaseModelRows[0].OpenCode = opencodeInvalid
+	m = sendKey(m, tea.KeyEnter)
+	if !slices.Contains(m.phaseModelOpenCode, m.phaseModelRows[0].OpenCode) {
+		t.Fatalf("expected OpenCode value normalized to OpenCode catalog, got %q", m.phaseModelRows[0].OpenCode)
+	}
+
+	// Inject an invalid value into Claude cell and ensure cycle rejects/fixes it.
+	m.phaseModelActiveCol = 2
+	m.phaseModelRows[0].Claude = claudeInvalid
+	m = sendKey(m, tea.KeyEnter)
+	if !slices.Contains(m.phaseModelClaude, m.phaseModelRows[0].Claude) {
+		t.Fatalf("expected Claude value normalized to Claude catalog, got %q", m.phaseModelRows[0].Claude)
 	}
 }
 
@@ -1127,7 +1256,7 @@ func TestViewReview_BoundedPolishKeepsCheckpointLayout(t *testing.T) {
 			view := viewReview(m)
 
 			for _, mustContain := range []string{
-				"Jarvis-Dev Setup  [5/6]  Review & Apply",
+				"Jarvis-Dev Setup  [6/7]  Review & Apply",
 				"Resumen de configuración",
 				"Scope:",
 				"Persona: fixture",
@@ -1223,7 +1352,7 @@ func TestUpdateReview_BackCancelApply(t *testing.T) {
 		expectDone   bool
 		expectCmdNil bool
 	}{
-		{name: "back", choice: 0, expectStep: StepSkills, expectDone: false, expectCmdNil: true},
+		{name: "back", choice: 0, expectStep: StepPhaseModels, expectDone: false, expectCmdNil: true},
 		{name: "cancel", choice: 1, expectStep: StepReview, expectDone: true, expectCmdNil: false},
 		{name: "apply", choice: 2, expectStep: StepApply, expectDone: false, expectCmdNil: false},
 	}
@@ -1253,7 +1382,7 @@ func TestUpdateReview_BackCancel_NoApplyArtifactsCreated(t *testing.T) {
 		expectDone bool
 		expectStep Step
 	}{
-		{name: "back keeps wizard editable", reviewSlot: 0, expectDone: false, expectStep: StepSkills},
+		{name: "back keeps wizard editable", reviewSlot: 0, expectDone: false, expectStep: StepPhaseModels},
 		{name: "cancel exits without apply", reviewSlot: 1, expectDone: true, expectStep: StepReview},
 	}
 

@@ -175,6 +175,30 @@ func TestRunNoTUI_CustomPresetInvalidYAMLBlocksContinuation(t *testing.T) {
 	}
 }
 
+func TestRunNoTUI_PersistsEditedPhaseModels(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("PATH", "")
+
+	// scope default, persona default, skills default,
+	// request phase editor from review using 'edit', set default.claude=haiku, keep rest, then apply yes.
+	input := strings.NewReader("\n\n" + "edit\n" + "\nhaiku\n" + strings.Repeat("\n", 18) + "yes\nyes\n")
+
+	if err := runNoTUI(testWizardConfig(), input); err != nil {
+		t.Fatalf("runNoTUI phase models: %v", err)
+	}
+
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	resolved := sddruntime.ResolvePhaseModels(loaded)
+	if resolved["default"].Claude != "haiku" {
+		t.Fatalf("expected default.claude=haiku after no-tui edit, got %q", resolved["default"].Claude)
+	}
+}
+
 func TestBuildSkillSelectionPlan_PHPPromptControlsPHPSkills(t *testing.T) {
 	skillList := []skills.Skill{
 		{ID: "phpunit-testing", Name: "PHPUnit Testing", IsCore: false},
@@ -287,7 +311,7 @@ func (m *mockAgent) InstallSkills(skillsFS fs.FS, selected []string) error {
 	return nil
 }
 
-func (m *mockAgent) InstallOrchestrator(orchestratorFS fs.FS) error {
+func (m *mockAgent) InstallOrchestrator(orchestratorContent []byte) error {
 	return nil
 }
 

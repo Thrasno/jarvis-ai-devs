@@ -10,6 +10,7 @@ import (
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/skills"
 )
 
@@ -21,6 +22,7 @@ const (
 	StepHiveCloud
 	StepPersona
 	StepSkills
+	StepPhaseModels
 	StepReview
 	StepApply
 	StepDone
@@ -69,6 +71,12 @@ type Model struct {
 	agentProgress []string
 	agentDone     bool
 	reviewChoice  int
+
+	phaseModelRows       []phaseModelRow
+	phaseModelActiveRow  int
+	phaseModelActiveCol  int
+	phaseModelOpenCode   []string
+	phaseModelClaude     []string
 
 	cfg *config.AppConfig
 
@@ -163,6 +171,7 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 	}
 
 	m.Agents = agent.Detect(wcfg.TemplateFS)
+	m = initializePhaseModelEditor(m)
 
 	return m
 }
@@ -209,6 +218,8 @@ func (m Model) updateStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return updatePersona(m, msg)
 	case StepSkills:
 		return updateSkills(m, msg)
+	case StepPhaseModels:
+		return updatePhaseModels(m, msg)
 	case StepReview:
 		return updateReview(m, msg)
 	case StepApply:
@@ -229,6 +240,8 @@ func (m Model) View() string {
 		return viewPersona(m)
 	case StepSkills:
 		return viewSkills(m)
+	case StepPhaseModels:
+		return viewPhaseModels(m)
 	case StepReview:
 		return viewReview(m)
 	case StepApply:
@@ -237,4 +250,28 @@ func (m Model) View() string {
 		return viewDone(m)
 	}
 	return ""
+}
+
+func initializePhaseModelEditor(m Model) Model {
+	contract := sddruntime.DefaultContract()
+	resolved := sddruntime.ResolvePhaseModels(m.cfg)
+	m.phaseModelRows = make([]phaseModelRow, 0, len(contract.Phases))
+	for _, phase := range contract.Phases {
+		sel := resolved[phase]
+		m.phaseModelRows = append(m.phaseModelRows, phaseModelRow{Phase: phase, OpenCode: sel.OpenCode, Claude: sel.Claude})
+	}
+	m.phaseModelOpenCode = append([]string(nil), contract.PlatformCatalogs[sddruntime.PlatformOpenCode]...)
+	m.phaseModelClaude = append([]string(nil), contract.PlatformCatalogs[sddruntime.PlatformClaude]...)
+	if m.phaseModelActiveCol == 0 {
+		m.phaseModelActiveCol = 1
+	}
+	if m.cfg != nil {
+		if m.cfg.SDD.PhaseModels == nil {
+			m.cfg.SDD.PhaseModels = map[string]config.PhaseModelSelection{}
+		}
+		for _, row := range m.phaseModelRows {
+			m.cfg.SDD.PhaseModels[row.Phase] = config.PhaseModelSelection{OpenCode: row.OpenCode, Claude: row.Claude}
+		}
+	}
+	return m
 }

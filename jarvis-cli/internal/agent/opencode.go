@@ -196,12 +196,11 @@ func (a *OpenCodeAgent) InstallSkills(skillsFS fs.FS, selected []string) error {
 	return installSkillsFromFS(dir, skillsFS, selected)
 }
 
-// InstallOrchestrator installs sdd-orchestrator.md to ~/.config/opencode/.
-// orchestratorFS must be a sub-FS rooted at the embed/orchestrator directory.
+// InstallOrchestrator installs rendered sdd-orchestrator.md to ~/.config/opencode/.
 // Idempotent: existing file is overwritten silently.
-func (a *OpenCodeAgent) InstallOrchestrator(orchestratorFS fs.FS) error {
+func (a *OpenCodeAgent) InstallOrchestrator(orchestratorContent []byte) error {
 	destPath := filepath.Join(a.ConfigDir(), "sdd-orchestrator.md")
-	return installOrchestrator(destPath, orchestratorFS)
+	return installOrchestrator(destPath, orchestratorContent)
 }
 
 // InstallPromptHook writes the Hive OpenCode TypeScript plugin to

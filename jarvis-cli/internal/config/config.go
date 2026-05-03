@@ -59,6 +59,17 @@ type InstallState struct {
 	Agents    map[string]AgentState `mapstructure:"agents" yaml:"agents,omitempty"`
 }
 
+// PhaseModelSelection stores per-platform model aliases for a single SDD phase.
+type PhaseModelSelection struct {
+	OpenCode string `mapstructure:"opencode" yaml:"opencode,omitempty"`
+	Claude   string `mapstructure:"claude" yaml:"claude,omitempty"`
+}
+
+// SDDConfig stores persisted SDD runtime preferences.
+type SDDConfig struct {
+	PhaseModels map[string]PhaseModelSelection `mapstructure:"phase_models" yaml:"phase_models,omitempty"`
+}
+
 // AppConfig holds all Jarvis-CLI configuration.
 type AppConfig struct {
 	SchemaVersion int `mapstructure:"schema_version" yaml:"schema_version"`
@@ -78,6 +89,7 @@ type AppConfig struct {
 	Cloud            *CloudConfig `mapstructure:"cloud" yaml:"cloud,omitempty"`
 	Scope            SetupScope   `mapstructure:"scope" yaml:"scope,omitempty"`
 	Install          InstallState `mapstructure:"install" yaml:"install,omitempty"`
+	SDD              SDDConfig    `mapstructure:"sdd" yaml:"sdd,omitempty"`
 
 	// Legacy compatibility fields (v1 schema). These are normalized on load.
 	Email  string `mapstructure:"email" yaml:"email,omitempty"`
@@ -235,6 +247,11 @@ func normalizeAndMigrate(cfg *AppConfig) {
 	if cfg.SelectedSkills == nil {
 		cfg.SelectedSkills = []string{}
 	}
+	if cfg.SDD.PhaseModels == nil {
+		cfg.SDD.PhaseModels = map[string]PhaseModelSelection{}
+	} else {
+		cfg.SDD.PhaseModels = normalizePhaseModelsMap(cfg.SDD.PhaseModels)
+	}
 
 	if strings.TrimSpace(cfg.PersonaPreset) == "" {
 		cfg.PersonaPreset = strings.TrimSpace(cfg.Preset)
@@ -277,6 +294,20 @@ func normalizeAndMigrate(cfg *AppConfig) {
 		cfg.Install.Mode = string(cfg.ConfigStatus())
 	}
 	cfg.Install.Completed = cfg.IsReadyForReconfigure()
+}
+
+func normalizePhaseModelsMap(in map[string]PhaseModelSelection) map[string]PhaseModelSelection {
+	out := make(map[string]PhaseModelSelection, len(in))
+	for rawPhase, sel := range in {
+		phase := strings.ToLower(strings.TrimSpace(rawPhase))
+		if phase == "" {
+			continue
+		}
+		sel.OpenCode = strings.ToLower(strings.TrimSpace(sel.OpenCode))
+		sel.Claude = strings.ToLower(strings.TrimSpace(sel.Claude))
+		out[phase] = sel
+	}
+	return out
 }
 
 func hasStoredCloudLink(cfg *AppConfig) bool {

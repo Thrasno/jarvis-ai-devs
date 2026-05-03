@@ -333,6 +333,52 @@ func TestLoad_DefaultsScopeToLocalOnlyWithoutCloudState(t *testing.T) {
 	}
 }
 
+func TestLoad_InitializesSDDPhaseModelsContainerForLegacyConfig(t *testing.T) {
+	home := isolateHome(t)
+	legacy := strings.Join([]string{
+		"api_url: https://hivemem.dev",
+		"persona_preset: argentino",
+	}, "\n")
+	if err := os.MkdirAll(filepath.Join(home, ".jarvis"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".jarvis", "config.yaml"), []byte(legacy), 0644); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.SDD.PhaseModels == nil {
+		t.Fatal("expected SDD.PhaseModels to be initialized")
+	}
+}
+
+func TestSaveLoad_PersistsSDDPhaseModels(t *testing.T) {
+	isolateHome(t)
+	cfg := defaultConfig()
+	cfg.SDD.PhaseModels = map[string]PhaseModelSelection{
+		"default": {OpenCode: "sonnet", Claude: "haiku"},
+		"sdd-apply": {OpenCode: "opus", Claude: "sonnet"},
+	}
+
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	got := loaded.SDD.PhaseModels["sdd-apply"]
+	if got.OpenCode != "opus" || got.Claude != "sonnet" {
+		t.Fatalf("unexpected sdd-apply phase models: %+v", got)
+	}
+}
+
 func TestLoad_ReturnsErrorWhenFileCorrupt(t *testing.T) {
 	home := isolateHome(t)
 

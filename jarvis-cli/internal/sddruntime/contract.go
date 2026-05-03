@@ -1,5 +1,7 @@
 package sddruntime
 
+import "github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
+
 const (
 	DefaultContractVersion = "2026.05"
 	DefaultRegistryPath    = ".jarvis/skill-registry.md"
@@ -8,9 +10,19 @@ const (
 type Contract struct {
 	Version          string
 	RegistryPath     string
+	Phases           []string
+	PlatformCatalogs map[Platform][]string
+	DefaultPhaseModels map[string]config.PhaseModelSelection
 	ModelAssignments map[string]string
 	ManagedArtifacts []ManagedArtifact
 }
+
+type Platform string
+
+const (
+	PlatformOpenCode Platform = "opencode"
+	PlatformClaude   Platform = "claude"
+)
 
 type ManagedArtifact struct {
 	ID            string
@@ -31,6 +43,34 @@ func DefaultContract() Contract {
 	return Contract{
 		Version:      DefaultContractVersion,
 		RegistryPath: DefaultRegistryPath,
+		Phases: []string{
+			"default",
+			"orchestrator",
+			"sdd-explore",
+			"sdd-propose",
+			"sdd-spec",
+			"sdd-design",
+			"sdd-tasks",
+			"sdd-apply",
+			"sdd-verify",
+			"sdd-archive",
+		},
+		PlatformCatalogs: map[Platform][]string{
+			PlatformOpenCode: []string{"opus", "sonnet", "haiku"},
+			PlatformClaude:   []string{"opus", "sonnet", "haiku"},
+		},
+		DefaultPhaseModels: map[string]config.PhaseModelSelection{
+			"orchestrator": {OpenCode: "opus", Claude: "opus"},
+			"sdd-explore":  {OpenCode: "sonnet", Claude: "sonnet"},
+			"sdd-propose":  {OpenCode: "opus", Claude: "opus"},
+			"sdd-spec":     {OpenCode: "sonnet", Claude: "sonnet"},
+			"sdd-design":   {OpenCode: "opus", Claude: "opus"},
+			"sdd-tasks":    {OpenCode: "sonnet", Claude: "sonnet"},
+			"sdd-apply":    {OpenCode: "sonnet", Claude: "sonnet"},
+			"sdd-verify":   {OpenCode: "sonnet", Claude: "sonnet"},
+			"sdd-archive":  {OpenCode: "haiku", Claude: "haiku"},
+			"default":      {OpenCode: "sonnet", Claude: "sonnet"},
+		},
 		ModelAssignments: map[string]string{
 			"orchestrator": "opus",
 			"sdd-explore":  "sonnet",

@@ -46,10 +46,7 @@ func TestClaudeAgent_ObserveRuntime_ProducesVerifierInput(t *testing.T) {
 		t.Fatalf("WriteInstructions: %v", err)
 	}
 
-	orchestratorFS := fstest.MapFS{
-		"embed/orchestrator/sdd-orchestrator.md": {Data: []byte("# orchestrator")},
-	}
-	if err := a.InstallOrchestrator(orchestratorFS); err != nil {
+	if err := a.InstallOrchestrator([]byte("# orchestrator")); err != nil {
 		t.Fatalf("InstallOrchestrator: %v", err)
 	}
 
@@ -81,10 +78,7 @@ func TestOpenCodeAgent_ObserveRuntime_ProducesVerifierInput(t *testing.T) {
 		t.Fatalf("WriteInstructions: %v", err)
 	}
 
-	orchestratorFS := fstest.MapFS{
-		"embed/orchestrator/sdd-orchestrator.md": {Data: []byte("# orchestrator")},
-	}
-	if err := a.InstallOrchestrator(orchestratorFS); err != nil {
+	if err := a.InstallOrchestrator([]byte("# orchestrator")); err != nil {
 		t.Fatalf("InstallOrchestrator: %v", err)
 	}
 
@@ -118,8 +112,7 @@ func TestAdapters_RuntimeObservation_EquivalentContractSemantics(t *testing.T) {
 		if err := a.WriteInstructions("# Layer1", "# Layer2", nil); err != nil {
 			t.Fatalf("WriteInstructions for %s: %v", a.Name(), err)
 		}
-		orchestratorFS := fstest.MapFS{"embed/orchestrator/sdd-orchestrator.md": {Data: []byte("# orchestrator")}}
-		if err := a.InstallOrchestrator(orchestratorFS); err != nil {
+		if err := a.InstallOrchestrator([]byte("# orchestrator")); err != nil {
 			t.Fatalf("InstallOrchestrator for %s: %v", a.Name(), err)
 		}
 		skillsFS := fstest.MapFS{"_shared/SKILL.md": {Data: []byte("# shared")}}
@@ -152,6 +145,62 @@ func TestAdapters_RuntimeObservation_EquivalentContractSemantics(t *testing.T) {
 	}
 	if checkStatusByKey(claudeReport.Checks, "artifact.orchestrator.present") != checkStatusByKey(opencodeReport.Checks, "artifact.orchestrator.present") {
 		t.Fatalf("orchestrator artifact status mismatch across adapters")
+	}
+}
+
+func TestObserveRuntime_ParsesRenderedOrchestratorAssignments(t *testing.T) {
+	tests := []struct {
+		name             string
+		orchestratorBody string
+		wantApplyModel   string
+	}{
+		{
+			name: "reads explicit assignment from table",
+			orchestratorBody: `# test
+| Phase | Default Model | Reason |
+|-------|---------------|--------|
+| default | sonnet | baseline |
+| orchestrator | opus | coordination |
+| sdd-apply | haiku | implementation |
+`,
+			wantApplyModel: "haiku",
+		},
+		{
+			name:             "falls back to contract when table is missing",
+			orchestratorBody: "# test\nNo model table",
+			wantApplyModel:   "sonnet",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			a := &OpenCodeAgent{home: home, templatesFS: testTemplatesFS}
+
+			if err := os.MkdirAll(a.ConfigDir(), 0755); err != nil {
+				t.Fatalf("mkdir config dir: %v", err)
+			}
+
+			if err := a.InstallOrchestrator([]byte(tt.orchestratorBody)); err != nil {
+				t.Fatalf("InstallOrchestrator: %v", err)
+			}
+			if err := a.WriteInstructions("# Layer1", "# Layer2", nil); err != nil {
+				t.Fatalf("WriteInstructions: %v", err)
+			}
+			skillsFS := fstest.MapFS{"_shared/SKILL.md": {Data: []byte("# shared")}}
+			if err := a.InstallSkills(skillsFS, nil); err != nil {
+				t.Fatalf("InstallSkills: %v", err)
+			}
+
+			observed, err := a.ObserveRuntime()
+			if err != nil {
+				t.Fatalf("ObserveRuntime: %v", err)
+			}
+
+			if got := observed.ModelAssignments["sdd-apply"]; got != tt.wantApplyModel {
+				t.Fatalf("sdd-apply model = %q, want %q", got, tt.wantApplyModel)
+			}
+		})
 	}
 }
 

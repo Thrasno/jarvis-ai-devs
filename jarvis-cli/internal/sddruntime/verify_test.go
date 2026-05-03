@@ -18,11 +18,7 @@ func TestVerify_PassReportForCompliantRuntime(t *testing.T) {
 			ManagedArtifactIDs: []string{"instructions", "orchestrator", "skills"},
 		},
 		RegistryPath: plan.Contract.RegistryPath,
-		ModelAssignments: map[string]string{
-			"orchestrator": "opus",
-			"sdd-apply":    "sonnet",
-			"default":      "sonnet",
-		},
+		ModelAssignments: cloneModelAssignments(plan.Contract.ModelAssignments),
 		Artifacts: map[string]ObservedArtifact{
 			"instructions": {Exists: true, MarkersValid: true},
 			"orchestrator": {Exists: true},
@@ -76,6 +72,46 @@ func TestVerify_FailsOnContradictoryInvariantMismatch(t *testing.T) {
 	}
 	if check.Observed != ".jarvis/other-registry.md" {
 		t.Fatalf("unexpected observed value: %q", check.Observed)
+	}
+}
+
+func TestVerify_UsesResolvedAssignmentsWhenProvided(t *testing.T) {
+	tests := []struct {
+		name           string
+		observedApply   string
+		resolvedApply   string
+		expectedStatus  IntegrityStatus
+	}{
+		{name: "fails on resolved drift", observedApply: "sonnet", resolvedApply: "haiku", expectedStatus: StatusFail},
+		{name: "passes on resolved match", observedApply: "haiku", resolvedApply: "haiku", expectedStatus: StatusPass},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			observed := compliantObservedRuntime(t)
+			observed.ResolvedModelAssignments = map[string]string{
+				"default":      "sonnet",
+				"orchestrator": "opus",
+				"sdd-apply":    tt.resolvedApply,
+			}
+			observed.ModelAssignments["sdd-apply"] = tt.observedApply
+
+			report := Verify("claude", observed)
+			if report.Status != tt.expectedStatus {
+				t.Fatalf("expected status %q, got %q", tt.expectedStatus, report.Status)
+			}
+
+			check := findCheckByKey(report.Checks, "invariant.model.sdd-apply")
+			if check == nil {
+				t.Fatal("expected invariant.model.sdd-apply check")
+			}
+			if check.Expected != tt.resolvedApply {
+				t.Fatalf("expected value = %q, want %q", check.Expected, tt.resolvedApply)
+			}
+			if check.Observed != tt.observedApply {
+				t.Fatalf("observed value = %q, want %q", check.Observed, tt.observedApply)
+			}
+		})
 	}
 }
 
@@ -181,17 +217,21 @@ func compliantObservedRuntime(t *testing.T) ObservedRuntime {
 			ManagedArtifactIDs: []string{"instructions", "orchestrator", "skills"},
 		},
 		RegistryPath: plan.Contract.RegistryPath,
-		ModelAssignments: map[string]string{
-			"orchestrator": "opus",
-			"sdd-apply":    "sonnet",
-			"default":      "sonnet",
-		},
+		ModelAssignments: cloneModelAssignments(plan.Contract.ModelAssignments),
 		Artifacts: map[string]ObservedArtifact{
 			"instructions": {Exists: true, MarkersValid: true},
 			"orchestrator": {Exists: true},
 			"skills":       {Exists: true},
 		},
 	}
+}
+
+func cloneModelAssignments(src map[string]string) map[string]string {
+	out := make(map[string]string, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }
 
 func findCheckByKey(checks []CheckResult, key string) *CheckResult {
