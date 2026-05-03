@@ -322,6 +322,12 @@ func memSavePromptHandler(prompts PromptStore) sdkmcp.ToolHandler {
 		if strings.TrimSpace(p.Content) == "" {
 			return toolError(fmt.Errorf("content is required")), nil
 		}
+		if runeCount := utf8.RuneCountInString(p.Content); runeCount > MaxObservationLength {
+			return toolError(fmt.Errorf(
+				"content too long: %d runes (max %d). Summarize the prompt before saving",
+				runeCount, MaxObservationLength,
+			)), nil
+		}
 		if prompts == nil {
 			return toolError(fmt.Errorf("prompts store not configured")), nil
 		}

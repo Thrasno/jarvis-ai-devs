@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -44,7 +45,9 @@ func main() {
 		logger.Log.Printf("sync desactivado (define HIVE_API_URL/HIVE_API_EMAIL/HIVE_API_PASSWORD o crea ~/.jarvis/sync.json)")
 	}
 
+	httpDone := make(chan struct{})
 	go func() {
+		defer close(httpDone)
 		srv := httpapi.NewServer(httpAddr(), store)
 		if err := srv.Start(rootCtx); err != nil {
 			logger.Log.Printf("http server stopped: %v (mcp continues)", err)
@@ -53,8 +56,13 @@ func main() {
 
 	server := hivemcp.NewServer(store, store, syncer, cfg, store)
 
-	if err := server.Run(rootCtx, &sdkmcp.StdioTransport{}); err != nil {
-		logger.Log.Fatalf("server stopped: %v", err)
+	runErr := server.Run(rootCtx, &sdkmcp.StdioTransport{})
+
+	// Always wait for HTTP goroutine before closing DB or exiting.
+	<-httpDone
+
+	if runErr != nil {
+		logger.Log.Fatalf("server stopped: %v", runErr)
 	}
 }
 
@@ -63,9 +71,13 @@ func main() {
 func httpAddr() string {
 	port := os.Getenv("HIVE_HTTP_PORT")
 	if strings.TrimSpace(port) == "" {
-		port = "7438"
+		return "127.0.0.1:7438"
 	}
-	return "0.0.0.0:" + port
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		logger.Log.Fatalf("invalid HIVE_HTTP_PORT %q: must be a number between 1 and 65535", port)
+	}
+	return "127.0.0.1:" + port
 }
 
 // dbFilePath returns the SQLite path, preferring HIVE_DB_PATH env var
