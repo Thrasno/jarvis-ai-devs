@@ -16,6 +16,7 @@ import (
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/skills"
 )
 
@@ -300,6 +301,31 @@ func (m *mockAgent) WriteOutputStyle(preset *persona.Preset) error {
 
 func (m *mockAgent) ClearOutputStyle(name string) error {
 	return nil
+}
+
+func (m *mockAgent) RuntimePlan() (sddruntime.RuntimePlan, error) {
+	return sddruntime.Build("claude")
+}
+
+func (m *mockAgent) ObserveRuntime() (sddruntime.ObservedRuntime, error) {
+	return sddruntime.ObservedRuntime{
+		Manifest: sddruntime.RuntimeManifestState{
+			Present:            true,
+			ContractVersion:    sddruntime.DefaultContractVersion,
+			ManagedArtifactIDs: []string{"instructions", "orchestrator", "skills"},
+		},
+		RegistryPath: sddruntime.DefaultRegistryPath,
+		ModelAssignments: map[string]string{
+			"orchestrator": "opus",
+			"sdd-apply":    "sonnet",
+			"default":      "sonnet",
+		},
+		Artifacts: map[string]sddruntime.ObservedArtifact{
+			"instructions": {Exists: true, MarkersValid: true},
+			"orchestrator": {Exists: true},
+			"skills":       {Exists: true},
+		},
+	}, nil
 }
 
 type failingMockAgent struct{ mockAgent }

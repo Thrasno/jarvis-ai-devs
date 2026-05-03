@@ -13,6 +13,7 @@ import (
 
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/sddruntime"
 )
 
 // Ensure ClaudeAgent implements Agent at compile time.
@@ -41,6 +42,18 @@ func newClaudeAgent(fsys fs.FS) *ClaudeAgent {
 }
 
 func (a *ClaudeAgent) Name() string { return "claude" }
+
+func (a *ClaudeAgent) RuntimePlan() (sddruntime.RuntimePlan, error) {
+	return runtimePlanFor(a.Name())
+}
+
+func (a *ClaudeAgent) ObserveRuntime() (sddruntime.ObservedRuntime, error) {
+	plan, err := a.RuntimePlan()
+	if err != nil {
+		return sddruntime.ObservedRuntime{}, err
+	}
+	return observeRuntime(a.ConfigDir(), plan)
+}
 
 func (a *ClaudeAgent) IsInstalled() bool {
 	_, err := os.Stat(a.ConfigDir())

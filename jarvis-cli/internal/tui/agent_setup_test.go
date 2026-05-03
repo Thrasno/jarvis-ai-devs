@@ -9,6 +9,7 @@ import (
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/sddruntime"
 )
 
 type setupAgentStub struct {
@@ -18,6 +19,11 @@ type setupAgentStub struct {
 	installOrchErr       error
 	writeInstructionsErr error
 	outputStyleErr       error
+	observeRuntime       sddruntime.ObservedRuntime
+	observeRuntimeErr    error
+	runtimePlan          sddruntime.RuntimePlan
+	runtimePlanErr       error
+	observeCalls         int
 
 	mergeCalls int
 }
@@ -27,6 +33,19 @@ func (a *setupAgentStub) IsInstalled() bool             { return true }
 func (a *setupAgentStub) ConfigDir() string             { return "/tmp/" + a.name }
 func (a *setupAgentStub) SupportsOutputStyles() bool    { return true }
 func (a *setupAgentStub) ClearOutputStyle(string) error { return nil }
+func (a *setupAgentStub) RuntimePlan() (sddruntime.RuntimePlan, error) {
+	if a.runtimePlanErr != nil {
+		return sddruntime.RuntimePlan{}, a.runtimePlanErr
+	}
+	return a.runtimePlan, nil
+}
+func (a *setupAgentStub) ObserveRuntime() (sddruntime.ObservedRuntime, error) {
+	a.observeCalls++
+	if a.observeRuntimeErr != nil {
+		return sddruntime.ObservedRuntime{}, a.observeRuntimeErr
+	}
+	return a.observeRuntime, nil
+}
 
 func (a *setupAgentStub) MergeConfig(entry agent.MCPEntry) error {
 	a.mergeCalls++
@@ -142,6 +161,83 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 			}
 			if got := last.Err.Error(); !strings.Contains(got, tt.wantErrSubstr) {
 				t.Fatalf("last error = %q, want contains %q", got, tt.wantErrSubstr)
+			}
+		})
+	}
+}
+
+func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
+	passObserved := sddruntime.ObservedRuntime{
+		Manifest: sddruntime.RuntimeManifestState{
+			Present:            true,
+			ContractVersion:    sddruntime.DefaultContractVersion,
+			ManagedArtifactIDs: []string{"instructions", "orchestrator", "skills"},
+		},
+		RegistryPath: sddruntime.DefaultRegistryPath,
+		ModelAssignments: map[string]string{
+			"orchestrator": "opus",
+			"sdd-apply":    "sonnet",
+			"default":      "sonnet",
+		},
+		Artifacts: map[string]sddruntime.ObservedArtifact{
+			"instructions": {Exists: true, MarkersValid: true},
+			"orchestrator": {Exists: true},
+			"skills":       {Exists: true},
+		},
+	}
+
+	tests := []struct {
+		name          string
+		agent         *setupAgentStub
+		wantConfigured bool
+		wantErrSubstr string
+	}{
+		{
+			name: "fails setup when owned drift is detected",
+			agent: &setupAgentStub{
+				name: "claude",
+				observeRuntime: sddruntime.ObservedRuntime{
+					Manifest: sddruntime.RuntimeManifestState{Present: false},
+				},
+			},
+			wantConfigured: false,
+			wantErrSubstr:  "checks=manifest.present",
+		},
+		{
+			name: "keeps setup successful for pass report",
+			agent: &setupAgentStub{
+				name:          "opencode",
+				observeRuntime: passObserved,
+			},
+			wantConfigured: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results := configureWizardAgents([]agent.Agent{tt.agent}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil)
+			if len(results) != 1 {
+				t.Fatalf("len(results) = %d, want 1", len(results))
+			}
+
+			got := results[0]
+			if got.State.Configured != tt.wantConfigured {
+				t.Fatalf("configured = %v, want %v", got.State.Configured, tt.wantConfigured)
+			}
+			if tt.wantErrSubstr == "" {
+				if got.Err != nil {
+					t.Fatalf("unexpected error: %v", got.Err)
+				}
+				if tt.agent.observeCalls == 0 {
+					t.Fatalf("observe runtime was not called")
+				}
+				return
+			}
+			if got.Err == nil {
+				t.Fatalf("expected error containing %q", tt.wantErrSubstr)
+			}
+			if !strings.Contains(got.Err.Error(), tt.wantErrSubstr) {
+				t.Fatalf("error = %q, want contains %q", got.Err.Error(), tt.wantErrSubstr)
 			}
 		})
 	}

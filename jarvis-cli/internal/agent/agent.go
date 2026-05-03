@@ -8,6 +8,7 @@ import (
 
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/sddruntime"
 )
 
 // MCPEntry represents a single MCP server entry to be merged into an agent's config.
@@ -66,6 +67,13 @@ type Agent interface {
 	// ClearOutputStyle removes a previously generated output-style artifact and clears
 	// the settings reference when it points to the provided style name.
 	ClearOutputStyle(name string) error
+
+	// RuntimePlan returns the canonical runtime contract plan for this agent.
+	RuntimePlan() (sddruntime.RuntimePlan, error)
+
+	// ObserveRuntime collects adapter-normalized runtime state consumed by the
+	// canonical sddruntime verifier.
+	ObserveRuntime() (sddruntime.ObservedRuntime, error)
 }
 
 // Detect returns all agents detected as installed on the current system.

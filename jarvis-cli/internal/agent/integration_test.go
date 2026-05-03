@@ -520,3 +520,155 @@ func TestProtocolInjection_ProtocolContentCorrect(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteInstructions_ReapplyRewritesManagedAndPreservesUserContent(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		agent Agent
+		path string
+	}{
+		{name: "claude", agent: &ClaudeAgent{home: t.TempDir(), templatesFS: testTemplatesFS}, path: "CLAUDE.md"},
+		{name: "opencode", agent: &OpenCodeAgent{home: t.TempDir(), templatesFS: testTemplatesFS}, path: "AGENTS.md"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.MkdirAll(tc.agent.ConfigDir(), 0755); err != nil {
+				t.Fatalf("mkdir config dir: %v", err)
+			}
+
+			const (
+				layer1 = "# managed layer1"
+				layer2 = "# managed layer2"
+			)
+			if err := tc.agent.WriteInstructions(layer1, layer2, nil); err != nil {
+				t.Fatalf("first WriteInstructions: %v", err)
+			}
+
+			instructionsPath := filepath.Join(tc.agent.ConfigDir(), tc.path)
+			seeded := "# user-header\n" +
+				Layer1Start + "\nSTALE-L1\n" + Layer1End + "\n" +
+				"# user-middle\n" +
+				Layer2Start + "\nSTALE-L2\n" + Layer2End + "\n" +
+				"# user-footer\n"
+			if err := os.WriteFile(instructionsPath, []byte(seeded), 0644); err != nil {
+				t.Fatalf("seed instructions: %v", err)
+			}
+
+			if err := tc.agent.WriteInstructions(layer1, layer2, nil); err != nil {
+				t.Fatalf("reapply WriteInstructions: %v", err)
+			}
+
+			updatedBytes, err := os.ReadFile(instructionsPath)
+			if err != nil {
+				t.Fatalf("read instructions: %v", err)
+			}
+			updated := string(updatedBytes)
+
+			if strings.Contains(updated, "STALE-L1") || strings.Contains(updated, "STALE-L2") {
+				t.Fatalf("managed stale content was not rewritten")
+			}
+			if !strings.Contains(updated, layer1) || !strings.Contains(updated, layer2) {
+				t.Fatalf("managed content not restored to expected values")
+			}
+			for _, userLine := range []string{"# user-header", "# user-middle", "# user-footer"} {
+				if !strings.Contains(updated, userLine) {
+					t.Fatalf("user content outside managed boundaries lost: %s", userLine)
+				}
+			}
+		})
+	}
+}
+
+func TestWriteInstructions_ReapplyIsIdempotentOnCompliantInstall(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		agent Agent
+		path string
+	}{
+		{name: "claude", agent: &ClaudeAgent{home: t.TempDir(), templatesFS: testTemplatesFS}, path: "CLAUDE.md"},
+		{name: "opencode", agent: &OpenCodeAgent{home: t.TempDir(), templatesFS: testTemplatesFS}, path: "AGENTS.md"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.MkdirAll(tc.agent.ConfigDir(), 0755); err != nil {
+				t.Fatalf("mkdir config dir: %v", err)
+			}
+
+			const (
+				layer1 = "# managed layer1"
+				layer2 = "# managed layer2"
+			)
+			if err := tc.agent.WriteInstructions(layer1, layer2, nil); err != nil {
+				t.Fatalf("first WriteInstructions: %v", err)
+			}
+
+			instructionsPath := filepath.Join(tc.agent.ConfigDir(), tc.path)
+			first, err := os.ReadFile(instructionsPath)
+			if err != nil {
+				t.Fatalf("read first instructions: %v", err)
+			}
+
+			if err := tc.agent.WriteInstructions(layer1, layer2, nil); err != nil {
+				t.Fatalf("second WriteInstructions: %v", err)
+			}
+
+			second, err := os.ReadFile(instructionsPath)
+			if err != nil {
+				t.Fatalf("read second instructions: %v", err)
+			}
+
+			if string(first) != string(second) {
+				t.Fatalf("reapply is not idempotent for compliant installation")
+			}
+		})
+	}
+}
+
+func TestWriteInstructions_ReapplyDeterministicallyRegeneratesPartialManagedState(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		agent Agent
+		path string
+	}{
+		{name: "claude", agent: &ClaudeAgent{home: t.TempDir(), templatesFS: testTemplatesFS}, path: "CLAUDE.md"},
+		{name: "opencode", agent: &OpenCodeAgent{home: t.TempDir(), templatesFS: testTemplatesFS}, path: "AGENTS.md"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.MkdirAll(tc.agent.ConfigDir(), 0755); err != nil {
+				t.Fatalf("mkdir config dir: %v", err)
+			}
+
+			const (
+				layer1 = "# managed layer1"
+				layer2 = "# managed layer2"
+			)
+			if err := tc.agent.WriteInstructions(layer1, layer2, nil); err != nil {
+				t.Fatalf("first WriteInstructions: %v", err)
+			}
+
+			instructionsPath := filepath.Join(tc.agent.ConfigDir(), tc.path)
+			baselineBytes, err := os.ReadFile(instructionsPath)
+			if err != nil {
+				t.Fatalf("read baseline instructions: %v", err)
+			}
+			baseline := string(baselineBytes)
+
+			partial := strings.Replace(baseline, Layer2End, "", 1)
+			if err := os.WriteFile(instructionsPath, []byte(partial), 0644); err != nil {
+				t.Fatalf("write partial instructions: %v", err)
+			}
+
+			if err := tc.agent.WriteInstructions(layer1, layer2, nil); err != nil {
+				t.Fatalf("reapply WriteInstructions from partial state: %v", err)
+			}
+
+			regeneratedBytes, err := os.ReadFile(instructionsPath)
+			if err != nil {
+				t.Fatalf("read regenerated instructions: %v", err)
+			}
+
+			regenerated := string(regeneratedBytes)
+			if regenerated != baseline {
+				t.Fatalf("regenerated managed state is not deterministic")
+			}
+		})
+	}
+}
