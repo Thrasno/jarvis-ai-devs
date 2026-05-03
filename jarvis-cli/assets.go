@@ -23,3 +23,8 @@ var TemplatesFS embed.FS
 //
 //go:embed all:embed/orchestrator
 var OrchestratorFS embed.FS
+
+// HooksFS contains the embedded prompt-capture hook files.
+//
+//go:embed all:embed/hooks
+var HooksFS embed.FS

@@ -67,6 +67,10 @@ func (a *setupAgentStub) InstallOrchestrator(fs.FS) error {
 	return a.installOrchErr
 }
 
+func (a *setupAgentStub) InstallPromptHook(fs.FS) error {
+	return nil
+}
+
 func (a *setupAgentStub) WriteOutputStyle(*persona.Preset) error {
 	return a.outputStyleErr
 }

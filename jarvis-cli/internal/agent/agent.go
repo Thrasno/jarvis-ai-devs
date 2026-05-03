@@ -74,6 +74,11 @@ type Agent interface {
 	// ObserveRuntime collects adapter-normalized runtime state consumed by the
 	// canonical sddruntime verifier.
 	ObserveRuntime() (sddruntime.ObservedRuntime, error)
+
+	// InstallPromptHook installs the prompt-capture hook that automatically POSTs
+	// user prompts to the hive-daemon HTTP endpoint (port HIVE_HTTP_PORT, default 7438).
+	// hooksFS must be a sub-FS rooted at embed/hooks.
+	InstallPromptHook(hooksFS fs.FS) error
 }
 
 // Detect returns all agents detected as installed on the current system.

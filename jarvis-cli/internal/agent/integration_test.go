@@ -521,6 +521,224 @@ func TestProtocolInjection_ProtocolContentCorrect(t *testing.T) {
 	}
 }
 
+// ── T-CLI-1: InstallPromptHook tests ─────────────────────────────────────────
+
+// testHooksFS is a minimal in-memory FS that mirrors embed/hooks/ for tests.
+var testHooksFS = fstest.MapFS{
+	"embed/hooks/claude/user-prompt-submit.sh": {Data: []byte("#!/bin/bash\nprintf '{}\n'")},
+	"embed/hooks/opencode/hive.ts":             {Data: []byte("export const Hive = {}")},
+}
+
+// TestClaudeAgent_InstallPromptHook verifies that InstallPromptHook:
+//   - writes the shell script as executable
+//   - patches settings.json with a UserPromptSubmit hook entry
+//   - is idempotent (hook appears exactly once after two calls)
+//   - preserves pre-existing UserPromptSubmit entries (R-9 mitigation)
+func TestClaudeAgent_InstallPromptHook(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+
+	a := &ClaudeAgent{home: home, templatesFS: testTemplatesFS}
+
+	// First call — must create everything from scratch.
+	if err := a.InstallPromptHook(testHooksFS); err != nil {
+		t.Fatalf("first InstallPromptHook: %v", err)
+	}
+
+	scriptPath := filepath.Join(claudeDir, "hive-hooks", "user-prompt-submit.sh")
+
+	// Script must exist.
+	info, err := os.Stat(scriptPath)
+	if err != nil {
+		t.Fatalf("script not found at %s: %v", scriptPath, err)
+	}
+
+	// Script must be executable (at least one execute bit set).
+	if info.Mode()&0100 == 0 {
+		t.Errorf("script is not executable: mode=%v", info.Mode())
+	}
+
+	// settings.json must exist and be valid JSON.
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("settings.json not found: %v", err)
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatalf("settings.json is invalid JSON: %v", err)
+	}
+
+	// hooks.UserPromptSubmit must be an array with at least one entry containing type=command.
+	hooks, ok := settings["hooks"].(map[string]any)
+	if !ok {
+		t.Fatal("settings.json missing 'hooks' object")
+	}
+	ups, ok := hooks["UserPromptSubmit"].([]any)
+	if !ok || len(ups) == 0 {
+		t.Fatal("settings.json missing hooks.UserPromptSubmit array")
+	}
+
+	foundCommand := false
+	for _, entry := range ups {
+		entryMap, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		innerHooks, ok := entryMap["hooks"].([]any)
+		if !ok {
+			continue
+		}
+		for _, h := range innerHooks {
+			hMap, ok := h.(map[string]any)
+			if !ok {
+				continue
+			}
+			if hMap["type"] == "command" {
+				if hMap["command"] == scriptPath {
+					foundCommand = true
+				}
+			}
+		}
+	}
+	if !foundCommand {
+		t.Errorf("no UserPromptSubmit hook entry with type=command pointing to %s", scriptPath)
+	}
+
+	// Second call — must be idempotent (hook appears exactly once).
+	if err := a.InstallPromptHook(testHooksFS); err != nil {
+		t.Fatalf("second InstallPromptHook: %v", err)
+	}
+
+	raw2, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings.json after second call: %v", err)
+	}
+	var settings2 map[string]any
+	if err := json.Unmarshal(raw2, &settings2); err != nil {
+		t.Fatalf("settings.json invalid JSON after second call: %v", err)
+	}
+	hooks2 := settings2["hooks"].(map[string]any)
+	ups2 := hooks2["UserPromptSubmit"].([]any)
+
+	hiveCount := 0
+	for _, entry := range ups2 {
+		entryMap, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		if entryMap["name"] == "hive-prompt-capture" {
+			hiveCount++
+		}
+	}
+	if hiveCount != 1 {
+		t.Errorf("idempotency: expected exactly 1 hive-prompt-capture entry, got %d", hiveCount)
+	}
+}
+
+// TestClaudeAgent_InstallPromptHook_PreservesExistingHooks verifies that
+// pre-existing UserPromptSubmit entries are NOT removed (R-9 mitigation).
+func TestClaudeAgent_InstallPromptHook_PreservesExistingHooks(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+
+	// Pre-seed settings.json with an existing hook.
+	existing := map[string]any{
+		"hooks": map[string]any{
+			"UserPromptSubmit": []any{
+				map[string]any{
+					"name": "my-existing-hook",
+					"hooks": []any{
+						map[string]any{
+							"type":    "command",
+							"command": "/usr/local/bin/my-hook",
+						},
+					},
+				},
+			},
+		},
+	}
+	existingBytes, _ := json.MarshalIndent(existing, "", "  ")
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(settingsPath, existingBytes, 0644); err != nil {
+		t.Fatalf("write pre-existing settings.json: %v", err)
+	}
+
+	a := &ClaudeAgent{home: home, templatesFS: testTemplatesFS}
+	if err := a.InstallPromptHook(testHooksFS); err != nil {
+		t.Fatalf("InstallPromptHook: %v", err)
+	}
+
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	hooks := settings["hooks"].(map[string]any)
+	ups := hooks["UserPromptSubmit"].([]any)
+
+	// Both the original hook AND the new hive hook must be present.
+	foundExisting := false
+	foundHive := false
+	for _, entry := range ups {
+		entryMap, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch entryMap["name"] {
+		case "my-existing-hook":
+			foundExisting = true
+		case "hive-prompt-capture":
+			foundHive = true
+		}
+	}
+
+	if !foundExisting {
+		t.Error("pre-existing hook 'my-existing-hook' was removed — R-9 violation")
+	}
+	if !foundHive {
+		t.Error("hive-prompt-capture hook not found after InstallPromptHook")
+	}
+}
+
+// TestOpenCodeAgent_InstallPromptHook verifies that InstallPromptHook writes
+// the TypeScript plugin to ~/.config/opencode/plugins/hive.ts.
+func TestOpenCodeAgent_InstallPromptHook(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	a := &OpenCodeAgent{home: home}
+
+	if err := a.InstallPromptHook(testHooksFS); err != nil {
+		t.Fatalf("InstallPromptHook: %v", err)
+	}
+
+	pluginPath := filepath.Join(home, ".config", "opencode", "plugins", "hive.ts")
+	data, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatalf("plugin not found at %s: %v", pluginPath, err)
+	}
+
+	if string(data) != "export const Hive = {}" {
+		t.Errorf("plugin content mismatch: got %q", string(data))
+	}
+}
+
 func TestWriteInstructions_ReapplyRewritesManagedAndPreservesUserContent(t *testing.T) {
 	for _, tc := range []struct {
 		name string
