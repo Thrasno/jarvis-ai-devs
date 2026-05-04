@@ -632,13 +632,13 @@ func connectWithPrompts(t *testing.T, ps *mockStore) *sdkmcp.ClientSession {
 // TS-MCP-1: valid content returns id and created_at
 func TestMemSavePrompt_ValidContent_ReturnsIDAndCreatedAt(t *testing.T) {
 	ps := &mockStore{
-		savePromptFn: func(_ context.Context, content string) (*models.Prompt, error) {
+		savePromptFn: func(_ context.Context, _, content string) (*models.Prompt, error) {
 			return &models.Prompt{ID: 7, Content: content, CreatedAt: time.Now()}, nil
 		},
 	}
 	session := connectWithPrompts(t, ps)
 
-	res := callTool(t, session, "mem_save_prompt", map[string]any{"content": "explain goroutines"})
+	res := callTool(t, session, "mem_save_prompt", map[string]any{"content": "explain goroutines", "project": "jarvis-dev"})
 
 	if res.IsError {
 		t.Fatalf("expected success, got error: %s", textContent(t, res))
@@ -660,14 +660,14 @@ func TestMemSavePrompt_ValidContent_ReturnsIDAndCreatedAt(t *testing.T) {
 func TestMemSavePrompt_EmptyContent_ReturnsError(t *testing.T) {
 	called := false
 	ps := &mockStore{
-		savePromptFn: func(_ context.Context, _ string) (*models.Prompt, error) {
+		savePromptFn: func(_ context.Context, _, _ string) (*models.Prompt, error) {
 			called = true
 			return &models.Prompt{ID: 1, CreatedAt: time.Now()}, nil
 		},
 	}
 	session := connectWithPrompts(t, ps)
 
-	res := callTool(t, session, "mem_save_prompt", map[string]any{"content": ""})
+	res := callTool(t, session, "mem_save_prompt", map[string]any{"content": "", "project": "jarvis-dev"})
 
 	if !res.IsError {
 		t.Error("expected IsError=true for empty content")
@@ -681,7 +681,7 @@ func TestMemSavePrompt_EmptyContent_ReturnsError(t *testing.T) {
 func TestMemSavePrompt_WhitespaceContent_ReturnsError(t *testing.T) {
 	session := connectWithPrompts(t, &mockStore{})
 
-	res := callTool(t, session, "mem_save_prompt", map[string]any{"content": "\n\t  "})
+	res := callTool(t, session, "mem_save_prompt", map[string]any{"content": "\n\t  ", "project": "jarvis-dev"})
 
 	if !res.IsError {
 		t.Error("expected IsError=true for whitespace content")
@@ -691,13 +691,13 @@ func TestMemSavePrompt_WhitespaceContent_ReturnsError(t *testing.T) {
 // TS-MCP-4: store error returns IsError=true with "save failed"
 func TestMemSavePrompt_StoreError_ReturnsError(t *testing.T) {
 	ps := &mockStore{
-		savePromptFn: func(_ context.Context, _ string) (*models.Prompt, error) {
+		savePromptFn: func(_ context.Context, _, _ string) (*models.Prompt, error) {
 			return nil, errors.New("db connection closed")
 		},
 	}
 	session := connectWithPrompts(t, ps)
 
-	res := callTool(t, session, "mem_save_prompt", map[string]any{"content": "valid content"})
+	res := callTool(t, session, "mem_save_prompt", map[string]any{"content": "valid content", "project": "jarvis-dev"})
 
 	if !res.IsError {
 		t.Error("expected IsError=true when store returns error")
@@ -800,5 +800,307 @@ func TestMemContext_NoResults_ReturnsNoMemoriesMessage(t *testing.T) {
 	body := textContent(t, res)
 	if !strings.Contains(body, "No memories found") {
 		t.Errorf("expected no-memories message, got: %s", body)
+	}
+}
+
+// connectTestServerFull creates a server+client pair with separate memory and prompt stores.
+func connectTestServerFull(t *testing.T, mem hivemcp.MemoryStore, ps hivemcp.PromptStore) *sdkmcp.ClientSession {
+	t.Helper()
+	ctx := context.Background()
+	server := hivemcp.NewServer(mem, nil, nil, nil, ps)
+	t1, t2 := sdkmcp.NewInMemoryTransports()
+	if _, err := server.Connect(ctx, t1, nil); err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "test", Version: "1"}, nil)
+	session, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	return session
+}
+
+// ─── T-MCP-2: memContextHandler with recent prompts ───────────────────────
+
+func TestMemContext_WithRecentPrompts_IncludesPromptsSection(t *testing.T) {
+	memStore := &mockStore{
+		listMemoriesFn: func(_ string, _ int) ([]*models.Memory, error) {
+			return []*models.Memory{
+				{ID: 1, Title: "A memory", Project: "proj", Content: "mem content", Category: "decision"},
+			}, nil
+		},
+	}
+	promptStore := &mockStore{
+		listRecentPromptsFn: func(_ context.Context, _ string, _ int) ([]*models.Prompt, error) {
+			return []*models.Prompt{
+				{ID: 1, Content: "explain goroutines", CreatedAt: time.Now()},
+			}, nil
+		},
+	}
+	session := connectTestServerFull(t, memStore, promptStore)
+
+	res := callTool(t, session, "mem_context", map[string]any{"project": "proj"})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	body := textContent(t, res)
+	if !strings.Contains(body, "### Recent User Prompts") {
+		t.Errorf("response should contain '### Recent User Prompts', got: %s", body)
+	}
+	if !strings.Contains(body, "explain goroutines") {
+		t.Errorf("response should contain prompt content, got: %s", body)
+	}
+}
+
+func TestMemContext_EmptyPrompts_NoPromptsSection(t *testing.T) {
+	memStore := &mockStore{
+		listMemoriesFn: func(_ string, _ int) ([]*models.Memory, error) {
+			return []*models.Memory{
+				{ID: 1, Title: "A memory", Project: "proj", Content: "mem content", Category: "decision"},
+			}, nil
+		},
+	}
+	promptStore := &mockStore{
+		listRecentPromptsFn: func(_ context.Context, _ string, _ int) ([]*models.Prompt, error) {
+			return []*models.Prompt{}, nil
+		},
+	}
+	session := connectTestServerFull(t, memStore, promptStore)
+
+	res := callTool(t, session, "mem_context", map[string]any{"project": "proj"})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	body := textContent(t, res)
+	if strings.Contains(body, "### Recent User Prompts") {
+		t.Errorf("response should NOT contain '### Recent User Prompts' when no prompts, got: %s", body)
+	}
+}
+
+func TestMemContext_ListRecentPromptsError_ContinuesWithMemories(t *testing.T) {
+	memStore := &mockStore{
+		listMemoriesFn: func(_ string, _ int) ([]*models.Memory, error) {
+			return []*models.Memory{
+				{ID: 1, Title: "A memory", Project: "proj", Content: "mem content", Category: "decision"},
+			}, nil
+		},
+	}
+	promptStore := &mockStore{
+		listRecentPromptsFn: func(_ context.Context, _ string, _ int) ([]*models.Prompt, error) {
+			return nil, errors.New("db error")
+		},
+	}
+	session := connectTestServerFull(t, memStore, promptStore)
+
+	res := callTool(t, session, "mem_context", map[string]any{"project": "proj"})
+
+	if res.IsError {
+		t.Fatalf("prompt store error should not fail the handler, got: %s", textContent(t, res))
+	}
+	body := textContent(t, res)
+	if !strings.Contains(body, "A memory") {
+		t.Errorf("memories should still be present when prompts fail, got: %s", body)
+	}
+}
+
+func TestMemContext_PromptsBeforeMemories(t *testing.T) {
+	memStore := &mockStore{
+		listMemoriesFn: func(_ string, _ int) ([]*models.Memory, error) {
+			return []*models.Memory{
+				{ID: 1, Title: "A memory", Project: "proj", Content: "mem content", Category: "decision"},
+			}, nil
+		},
+	}
+	promptStore := &mockStore{
+		listRecentPromptsFn: func(_ context.Context, _ string, _ int) ([]*models.Prompt, error) {
+			return []*models.Prompt{
+				{ID: 1, Content: "user prompt content", CreatedAt: time.Now()},
+			}, nil
+		},
+	}
+	session := connectTestServerFull(t, memStore, promptStore)
+
+	res := callTool(t, session, "mem_context", map[string]any{"project": "proj"})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	body := textContent(t, res)
+
+	promptsIdx := strings.Index(body, "### Recent User Prompts")
+	memoryIdx := strings.Index(body, "### [1]")
+	if promptsIdx == -1 {
+		t.Fatal("missing '### Recent User Prompts' section")
+	}
+	if memoryIdx == -1 {
+		t.Fatal("missing memory section '### [1]'")
+	}
+	if promptsIdx >= memoryIdx {
+		t.Errorf("prompts section (idx %d) should appear before memories (idx %d)", promptsIdx, memoryIdx)
+	}
+}
+
+func TestMemContext_PassesMaxRecentPromptsAsLimit(t *testing.T) {
+	var gotLimit int
+	memStore := &mockStore{
+		listMemoriesFn: func(_ string, _ int) ([]*models.Memory, error) {
+			return []*models.Memory{}, nil
+		},
+	}
+	promptStore := &mockStore{
+		listRecentPromptsFn: func(_ context.Context, _ string, limit int) ([]*models.Prompt, error) {
+			gotLimit = limit
+			return nil, nil
+		},
+	}
+	session := connectTestServerFull(t, memStore, promptStore)
+
+	callTool(t, session, "mem_context", map[string]any{"project": "proj"})
+
+	if gotLimit != hivemcp.MaxRecentPrompts {
+		t.Errorf("limit passed to ListRecentPrompts = %d, want MaxRecentPrompts (%d)", gotLimit, hivemcp.MaxRecentPrompts)
+	}
+}
+
+func TestMemContext_PromptContentTruncatedAt200Runes(t *testing.T) {
+	longContent := strings.Repeat("a", 250)
+	memStore := &mockStore{
+		listMemoriesFn: func(_ string, _ int) ([]*models.Memory, error) {
+			return []*models.Memory{}, nil
+		},
+	}
+	promptStore := &mockStore{
+		listRecentPromptsFn: func(_ context.Context, _ string, _ int) ([]*models.Prompt, error) {
+			return []*models.Prompt{
+				{ID: 1, Content: longContent, CreatedAt: time.Now()},
+			}, nil
+		},
+	}
+	session := connectTestServerFull(t, memStore, promptStore)
+
+	res := callTool(t, session, "mem_context", map[string]any{"project": "proj"})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	body := textContent(t, res)
+	if !strings.Contains(body, "...") {
+		t.Errorf("long prompt content should be truncated with '...', got: %s", body)
+	}
+	// The full 250-char content should NOT appear
+	if strings.Contains(body, longContent) {
+		t.Errorf("full 250-rune content should not appear in response, got: %s", body)
+	}
+}
+
+// TS-MCP-5: nil store returns IsError=true immediately
+func TestMemSavePrompt_NilStore_ReturnsError(t *testing.T) {
+	ctx := context.Background()
+	server := hivemcp.NewServer(&mockStore{}, nil, nil, nil, nil)
+	t1, t2 := sdkmcp.NewInMemoryTransports()
+	if _, err := server.Connect(ctx, t1, nil); err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "test", Version: "1"}, nil)
+	session, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	res := callTool(t, session, "mem_save_prompt", map[string]any{"content": "any content", "project": "jarvis-dev"})
+
+	if !res.IsError {
+		t.Error("expected IsError=true when prompts store is nil")
+	}
+}
+
+// TS-MCP-6: content exceeding 50000 runes returns error
+func TestMemSavePrompt_ContentTooLong_ReturnsError(t *testing.T) {
+	session := connectWithPrompts(t, &mockStore{})
+
+	content := strings.Repeat("a", 50001)
+	res := callTool(t, session, "mem_save_prompt", map[string]any{"content": content, "project": "jarvis-dev"})
+
+	if !res.IsError {
+		t.Error("expected IsError=true for content exceeding 50000 runes")
+	}
+	body := textContent(t, res)
+	if !strings.Contains(body, "50001 runes (max 50000)") {
+		t.Errorf("error should mention rune count, got: %s", body)
+	}
+}
+
+// ─── T-MCP-3: mem_save_prompt with project ────────────────────────────────
+
+func TestMemSavePrompt_WithProject_PassesProjectToStore(t *testing.T) {
+	var gotProject string
+	ps := &mockStore{
+		savePromptFn: func(_ context.Context, project, _ string) (*models.Prompt, error) {
+			gotProject = project
+			return &models.Prompt{ID: 1, Project: project, CreatedAt: time.Now()}, nil
+		},
+	}
+	session := connectWithPrompts(t, ps)
+
+	res := callTool(t, session, "mem_save_prompt", map[string]any{
+		"content": "explain goroutines",
+		"project": "jarvis-dev",
+	})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	if gotProject != "jarvis-dev" {
+		t.Errorf("project passed to store = %q, want 'jarvis-dev'", gotProject)
+	}
+}
+
+func TestMemSavePrompt_WhitespaceProject_ReturnsError(t *testing.T) {
+	called := false
+	ps := &mockStore{
+		savePromptFn: func(_ context.Context, _, _ string) (*models.Prompt, error) {
+			called = true
+			return &models.Prompt{ID: 1, CreatedAt: time.Now()}, nil
+		},
+	}
+	session := connectWithPrompts(t, ps)
+
+	res := callTool(t, session, "mem_save_prompt", map[string]any{
+		"content": "explain goroutines",
+		"project": "   \t\n  ",
+	})
+
+	if !res.IsError {
+		t.Error("expected IsError=true when project is whitespace-only")
+	}
+	if called {
+		t.Error("SavePrompt should NOT be called when project is whitespace-only")
+	}
+}
+
+func TestMemSavePrompt_WithoutProject_ReturnsError(t *testing.T) {
+	called := false
+	ps := &mockStore{
+		savePromptFn: func(_ context.Context, _, _ string) (*models.Prompt, error) {
+			called = true
+			return &models.Prompt{ID: 1, CreatedAt: time.Now()}, nil
+		},
+	}
+	session := connectWithPrompts(t, ps)
+
+	res := callTool(t, session, "mem_save_prompt", map[string]any{
+		"content": "explain goroutines",
+		// no project
+	})
+
+	if !res.IsError {
+		t.Error("expected IsError=true when project is omitted")
+	}
+	if called {
+		t.Error("SavePrompt should NOT be called when project is missing")
 	}
 }

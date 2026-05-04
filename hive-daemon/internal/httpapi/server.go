@@ -15,9 +15,9 @@ import (
 )
 
 // PromptStore is the minimal interface httpapi needs.
-// Identical in shape to mcp.PromptStore — *db.DB satisfies both via structural typing.
+// *db.DB satisfies this via structural typing.
 type PromptStore interface {
-	SavePrompt(ctx context.Context, content string) (*models.Prompt, error)
+	SavePrompt(ctx context.Context, project, content string) (*models.Prompt, error)
 }
 
 // Server handles HTTP requests for the Hive prompt-capture endpoint.
@@ -83,6 +83,7 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB
 	var body struct {
 		Content string `json:"content"`
+		Project string `json:"project"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		var maxErr *http.MaxBytesError
@@ -102,6 +103,12 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if strings.TrimSpace(body.Project) == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "project is required"})
+		return
+	}
+
 	const maxPromptRunes = 50_000
 	if utf8.RuneCountInString(body.Content) > maxPromptRunes {
 		w.WriteHeader(http.StatusRequestEntityTooLarge)
@@ -109,7 +116,7 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prompt, err := s.prompts.SavePrompt(r.Context(), body.Content)
+	prompt, err := s.prompts.SavePrompt(r.Context(), body.Project, body.Content)
 	if err != nil {
 		logger.Log.Printf("save prompt: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)

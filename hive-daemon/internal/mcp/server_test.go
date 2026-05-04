@@ -17,11 +17,12 @@ var _ hivemcp.PromptStore = (*mockStore)(nil)
 
 // mockStore implements hivemcp.MemoryStore and hivemcp.PromptStore for testing.
 type mockStore struct {
-	saveMemoryFn   func(*models.Memory) (int64, error)
-	getMemoryFn    func(int64) (*models.Memory, error)
-	listMemoriesFn func(string, int) ([]*models.Memory, error)
-	searchFn       func(string, string, string, int) ([]*models.Memory, error)
-	savePromptFn   func(context.Context, string) (*models.Prompt, error)
+	saveMemoryFn        func(*models.Memory) (int64, error)
+	getMemoryFn         func(int64) (*models.Memory, error)
+	listMemoriesFn      func(string, int) ([]*models.Memory, error)
+	searchFn            func(string, string, string, int) ([]*models.Memory, error)
+	savePromptFn        func(context.Context, string, string) (*models.Prompt, error)
+	listRecentPromptsFn func(context.Context, string, int) ([]*models.Prompt, error)
 }
 
 func (m *mockStore) SaveMemory(mem *models.Memory) (int64, error) {
@@ -52,11 +53,18 @@ func (m *mockStore) Search(query, project, category string, limit int) ([]*model
 	return []*models.Memory{}, nil
 }
 
-func (m *mockStore) SavePrompt(ctx context.Context, content string) (*models.Prompt, error) {
+func (m *mockStore) SavePrompt(ctx context.Context, project, content string) (*models.Prompt, error) {
 	if m.savePromptFn != nil {
-		return m.savePromptFn(ctx, content)
+		return m.savePromptFn(ctx, project, content)
 	}
-	return &models.Prompt{ID: 1, CreatedAt: time.Now()}, nil
+	return &models.Prompt{ID: 1, Project: project, CreatedAt: time.Now()}, nil
+}
+
+func (m *mockStore) ListRecentPrompts(ctx context.Context, project string, limit int) ([]*models.Prompt, error) {
+	if m.listRecentPromptsFn != nil {
+		return m.listRecentPromptsFn(ctx, project, limit)
+	}
+	return nil, nil
 }
 
 // connectTestServer creates a server+client pair using in-memory transport.

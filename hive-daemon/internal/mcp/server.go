@@ -9,9 +9,11 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// PromptStore is the interface used by mem_save_prompt to persist user prompts.
+// PromptStore is the interface used by mem_save_prompt to persist user prompts
+// and by mem_context to list recent prompts for a project.
 type PromptStore interface {
-	SavePrompt(ctx context.Context, content string) (*models.Prompt, error)
+	SavePrompt(ctx context.Context, project, content string) (*models.Prompt, error)
+	ListRecentPrompts(ctx context.Context, project string, limit int) ([]*models.Prompt, error)
 }
 
 // MemoryStore es la interfaz que usan los handlers para acceder a la BD local.

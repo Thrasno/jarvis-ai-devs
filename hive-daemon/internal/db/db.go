@@ -3,7 +3,9 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
+	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
 	_ "modernc.org/sqlite"
 )
 
@@ -71,6 +73,8 @@ END;
 
 CREATE TABLE IF NOT EXISTS user_prompts (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    sync_id    TEXT    NOT NULL DEFAULT '',
+    project    TEXT    NOT NULL DEFAULT '',
     content    TEXT    NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     synced_at  DATETIME
@@ -152,9 +156,19 @@ func initSchema(sqlDB *sql.DB) error {
 		`DROP TRIGGER IF EXISTS memories_ad`,
 		`CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN INSERT INTO memories_fts(memories_fts, rowid, title, content, tags) VALUES ('delete', old.id, old.title, old.content, old.tags); INSERT INTO memories_fts(rowid, title, content, tags) VALUES (new.id, new.title, new.content, new.tags); END`,
 		`CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN INSERT INTO memories_fts(memories_fts, rowid, title, content, tags) VALUES ('delete', old.id, old.title, old.content, old.tags); END`,
+		// user_prompts: add project and sync_id columns for context filtering
+		`ALTER TABLE user_prompts ADD COLUMN project TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE user_prompts ADD COLUMN sync_id TEXT NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_user_prompts_project_created ON user_prompts(project, created_at DESC)`,
 	}
 	for _, m := range migrations {
-		_, _ = sqlDB.Exec(m) // ignoramos error si la columna ya existe
+		if _, err := sqlDB.Exec(m); err != nil {
+			errMsg := strings.ToLower(err.Error())
+			if strings.Contains(errMsg, "duplicate column name") || strings.Contains(errMsg, "already has column named") {
+				continue // column already exists — safe to ignore
+			}
+			logger.Log.Printf("warn: migration failed: %v — sql: %.120s", err, m)
+		}
 	}
 	return nil
 }
