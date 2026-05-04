@@ -13,16 +13,17 @@ type DriftClass string
 const (
 	DriftOwned    DriftClass = "owned"
 	DriftNonOwned DriftClass = "non-owned"
+	DriftUnknown  DriftClass = "unknown"
 	DriftNone     DriftClass = "none"
 )
 
 type CheckResult struct {
-	Key       string
-	Status    IntegrityStatus
+	Key        string
+	Status     IntegrityStatus
 	DriftClass DriftClass
-	Expected  string
-	Observed  string
-	Message   string
+	Expected   string
+	Observed   string
+	Message    string
 }
 
 type IntegrityReport struct {

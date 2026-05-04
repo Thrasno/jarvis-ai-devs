@@ -66,11 +66,40 @@ func TestDefaultContract_HasCanonicalInvariants(t *testing.T) {
 				if len(c.ManagedArtifacts) == 0 {
 					t.Fatal("managed artifact catalog should not be empty")
 				}
-				mustContain := []string{"instructions", "orchestrator", "skills"}
+				mustContain := []string{"instructions", "orchestrator", "skills", "prompt_hook", "settings", "output_style", "output_style_settings"}
 				for _, id := range mustContain {
 					if !hasArtifactID(c.ManagedArtifacts, id) {
 						t.Fatalf("managed artifacts must contain id %q", id)
 					}
+				}
+			},
+		},
+		{
+			name: "managed artifacts declare lifecycle ownership scopes",
+			fn: func(t *testing.T, c Contract) {
+				t.Helper()
+				for _, artifact := range c.ManagedArtifacts {
+					switch artifact.Scope {
+					case OwnershipFile, OwnershipBlock, OwnershipJSONPath, OwnershipLogical:
+						// valid
+					default:
+						t.Fatalf("artifact %q has unsupported scope %q", artifact.ID, artifact.Scope)
+					}
+				}
+			},
+		},
+		{
+			name: "version metadata is present for lifecycle consumers",
+			fn: func(t *testing.T, c Contract) {
+				t.Helper()
+				if c.JarvisVersion == "" {
+					t.Fatal("jarvis_version must be present")
+				}
+				if c.ContractVersion == "" {
+					t.Fatal("contract_version must be present")
+				}
+				if c.ProviderSchemaVersion == "" {
+					t.Fatal("provider_schema_version must be present")
 				}
 			},
 		},

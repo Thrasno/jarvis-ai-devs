@@ -22,6 +22,7 @@ type ObservedRuntime struct {
 	ResolvedModelAssignments map[string]string
 	Artifacts                map[string]ObservedArtifact
 	NonOwnedChanges          []string
+	UnknownChanges           []string
 }
 
 func Verify(agent string, observed ObservedRuntime) IntegrityReport {
@@ -33,8 +34,25 @@ func Verify(agent string, observed ObservedRuntime) IntegrityReport {
 	verifyModelInvariants(&report, contract, observed)
 	verifyManagedArtifacts(&report, contract, observed.Artifacts)
 	verifyNonOwnedDrift(&report, observed.NonOwnedChanges)
+	verifyUnknownDrift(&report, observed.UnknownChanges)
 
 	return report
+}
+
+func verifyUnknownDrift(report *IntegrityReport, notes []string) {
+	if len(notes) == 0 {
+		return
+	}
+
+	report.AddCheck(CheckResult{
+		Key:        "drift.unknown",
+		Status:     StatusWarn,
+		DriftClass: DriftUnknown,
+		Expected:   "no unknown changes",
+		Observed:   "unknown changes detected",
+		Message:    "unknown changes detected; manual inspection required",
+	})
+	report.Notes = append(report.Notes, notes...)
 }
 
 func verifyManifest(report *IntegrityReport, contract Contract, manifest RuntimeManifestState) {
@@ -82,7 +100,7 @@ func verifyManifest(report *IntegrityReport, contract Contract, manifest Runtime
 }
 
 func verifyManagedArtifactCatalog(report *IntegrityReport, contract Contract, observedIDs []string) {
-	expectedIDs := managedArtifactIDs(contract.ManagedArtifacts)
+	expectedIDs := requiredManagedArtifactIDs(contract.ManagedArtifacts)
 	observedSet := make(map[string]struct{}, len(observedIDs))
 	for _, id := range observedIDs {
 		observedSet[id] = struct{}{}
@@ -110,6 +128,16 @@ func verifyManagedArtifactCatalog(report *IntegrityReport, contract Contract, ob
 		Observed:   fmt.Sprintf("%d/%d", len(observedSet), len(expectedIDs)),
 		Message:    message,
 	})
+}
+
+func requiredManagedArtifactIDs(artifacts []ManagedArtifact) []string {
+	ids := make([]string, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if artifact.Required {
+			ids = append(ids, artifact.ID)
+		}
+	}
+	return ids
 }
 
 func managedArtifactIDs(artifacts []ManagedArtifact) []string {
@@ -193,6 +221,9 @@ func verifyModelInvariants(report *IntegrityReport, contract Contract, observed 
 func verifyManagedArtifacts(report *IntegrityReport, contract Contract, observed map[string]ObservedArtifact) {
 	for _, artifact := range contract.ManagedArtifacts {
 		entry := observed[artifact.ID]
+		if !artifact.Required && !entry.Exists {
+			continue
+		}
 		status := StatusPass
 		drift := DriftNone
 		message := "managed artifact present"
