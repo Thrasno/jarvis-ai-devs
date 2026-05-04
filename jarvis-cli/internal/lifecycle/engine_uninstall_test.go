@@ -1,0 +1,101 @@
+package lifecycle
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestEngineUninstall_RejectsUnsupportedModes(t *testing.T) {
+	tests := []struct {
+		name string
+		mode string
+	}{
+		{name: "soft mode", mode: "soft"},
+		{name: "purge mode", mode: "purge"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"claude": &fakeProviderAdapter{name: "claude"}}, HomeDir: t.TempDir()})
+
+			_, err := engine.Uninstall("claude", tt.mode)
+			if err == nil {
+				t.Fatal("expected unsupported mode error")
+			}
+			var lerr *LifecycleError
+			if !errors.As(err, &lerr) || lerr.Code != "unsupported_uninstall_mode" {
+				t.Fatalf("expected unsupported_uninstall_mode, got %v", err)
+			}
+		})
+	}
+}
+
+func TestEngineUninstall_BacksUpBeforeMutationsAndVerifiesAfter(t *testing.T) {
+	home := t.TempDir()
+	adapter := &fakeProviderAdapter{
+		name: "claude",
+		observed: ObservedProviderState{},
+	}
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"claude": adapter}, HomeDir: home})
+
+	result, err := engine.Uninstall("claude", "provider")
+	if err != nil {
+		t.Fatalf("Uninstall returned error: %v", err)
+	}
+	if adapter.applyCalls == 0 {
+		t.Fatal("expected uninstall to mutate managed assets")
+	}
+	if len(adapter.applyStages) == 0 || adapter.applyStages[0] != "backup-complete" {
+		t.Fatalf("expected backup before uninstall apply, got stages=%v", adapter.applyStages)
+	}
+	if adapter.verifyCalls < 1 {
+		t.Fatalf("expected uninstall post-verify gate to run, verify calls=%d", adapter.verifyCalls)
+	}
+	if result.Applied == 0 {
+		t.Fatal("expected uninstall result to report applied operations")
+	}
+}
+
+func TestEngineUninstall_AllModeCleansLedgerAfterSuccessfulVerify(t *testing.T) {
+	home := t.TempDir()
+	adapter := &fakeProviderAdapter{name: "claude", observed: ObservedProviderState{}}
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"claude": adapter}, HomeDir: home})
+
+	if _, _, err := engine.ledger.LoadOrBootstrap("claude"); err != nil {
+		t.Fatalf("bootstrap ledger: %v", err)
+	}
+
+	result, err := engine.Uninstall("claude", "all")
+	if err != nil {
+		t.Fatalf("Uninstall all returned error: %v", err)
+	}
+	if !result.LedgerRemoved {
+		t.Fatal("expected all mode uninstall to remove ledger")
+	}
+	if _, err := os.Stat(engine.ledger.path()); err == nil {
+		t.Fatal("expected ledger file to be removed after all uninstall")
+	}
+}
+
+func TestEngineUninstall_UsesOwnedBoundariesOnly(t *testing.T) {
+	home := t.TempDir()
+	adapter := &fakeProviderAdapter{name: "opencode", observed: ObservedProviderState{}}
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"opencode": adapter}, HomeDir: home})
+
+	_, err := engine.Uninstall("opencode", "provider")
+	if err != nil {
+		t.Fatalf("Uninstall returned error: %v", err)
+	}
+	for _, applied := range adapter.appliedAssets {
+		if applied == "non-owned-custom-section" {
+			t.Fatalf("uninstall must not touch non-owned boundary, got %q", applied)
+		}
+	}
+	for _, target := range adapter.backupTargetPaths {
+		if filepath.Clean(target) == "non-owned-custom-section" {
+			t.Fatalf("backup targets must be managed-only, got %q", target)
+		}
+	}
+}

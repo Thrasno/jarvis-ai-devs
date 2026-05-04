@@ -8,11 +8,14 @@ const (
 )
 
 type Contract struct {
-	Version            string
-	RegistryPath       string
-	Phases             []string
-	PlatformCatalogs   map[Platform][]string
-	DefaultPhaseModels map[string]config.PhaseModelSelection
+	Version               string
+	JarvisVersion         string
+	ContractVersion       string
+	ProviderSchemaVersion string
+	RegistryPath          string
+	Phases                []string
+	PlatformCatalogs      map[Platform][]string
+	DefaultPhaseModels    map[string]config.PhaseModelSelection
 	// ModelAssignments is retained as legacy compatibility data.
 	// Production fallback/verification behavior must derive defaults from DefaultPhaseModels.
 	ModelAssignments map[string]string
@@ -29,6 +32,7 @@ const (
 type ManagedArtifact struct {
 	ID             string
 	RelativePath   string
+	Required       bool
 	Scope          OwnershipScope
 	Markers        [2]string
 	ExpectedSHA256 string
@@ -37,14 +41,19 @@ type ManagedArtifact struct {
 type OwnershipScope string
 
 const (
-	OwnershipFile  OwnershipScope = "file"
-	OwnershipBlock OwnershipScope = "block"
+	OwnershipFile     OwnershipScope = "file"
+	OwnershipBlock    OwnershipScope = "block"
+	OwnershipJSONPath OwnershipScope = "json_path"
+	OwnershipLogical  OwnershipScope = "logical"
 )
 
 func DefaultContract() Contract {
 	return Contract{
-		Version:      DefaultContractVersion,
-		RegistryPath: DefaultRegistryPath,
+		Version:               DefaultContractVersion,
+		JarvisVersion:         "dev",
+		ContractVersion:       DefaultContractVersion,
+		ProviderSchemaVersion: "v1",
+		RegistryPath:          DefaultRegistryPath,
 		Phases: []string{
 			"default",
 			"orchestrator",
@@ -86,9 +95,13 @@ func DefaultContract() Contract {
 			"default":      "sonnet",
 		},
 		ManagedArtifacts: []ManagedArtifact{
-			{ID: "instructions", Scope: OwnershipBlock, Markers: [2]string{"<!-- jarvis:layer1:start -->", "<!-- jarvis:layer1:end -->"}},
-			{ID: "orchestrator", RelativePath: "sdd-orchestrator.md", Scope: OwnershipFile},
-			{ID: "skills", RelativePath: "skills/", Scope: OwnershipFile},
+			{ID: "instructions", Required: true, Scope: OwnershipBlock, Markers: [2]string{"<!-- jarvis:layer1:start -->", "<!-- jarvis:layer1:end -->"}},
+			{ID: "orchestrator", Required: true, RelativePath: "sdd-orchestrator.md", Scope: OwnershipFile},
+			{ID: "skills", Required: true, RelativePath: "skills/", Scope: OwnershipFile},
+			{ID: "settings", RelativePath: "settings.json", Scope: OwnershipJSONPath},
+			{ID: "output_style_settings", RelativePath: "settings.json", Scope: OwnershipJSONPath},
+			{ID: "output_style", RelativePath: "output-styles/", Scope: OwnershipFile},
+			{ID: "prompt_hook", RelativePath: "hive-hooks/", Scope: OwnershipLogical},
 		},
 	}
 }

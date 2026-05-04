@@ -1,31 +1,66 @@
-# Setup Recovery Guide (Manual)
+# Setup Recovery + Managed Lifecycle Guide
 
-Este documento describe cómo recuperar el entorno cuando `jarvis setup` falla de forma parcial.
+Este documento cubre recuperación de setup y la semántica final del lifecycle managed en v1 (Claude Code + OpenCode).
 
-> No existe rollback automático en este flujo.
+## Alcance v1 y reglas duras
 
-## 1) Identificar el estado parcial
+- Providers soportados: `claude`, `opencode`, `all`.
+- Overwrite policy: **solo** dentro de boundaries explícitamente managed.
+- `mem_sync`: fuera de scope (no participa de verify/doctor/reconcile/backup/restore/uninstall).
+- Cualquier mutación managed (`reconcile`, `uninstall`) exige backup previo y verificación posterior.
 
-Revisá si existen estos artefactos:
+## Comandos lifecycle (v1)
 
-- `~/.jarvis/config.yaml`
-- `~/.jarvis/memory.db`
-- `~/.jarvis/sync.json`
-- Configuración de agentes (Claude/OpenCode) en sus directorios locales
+### `jarvis verify --provider claude|opencode|all`
+- Read-only.
+- Valida contrato, ledger y artefactos managed.
+- Clasifica drift en `owned`, `non-owned`, `unknown`.
 
-## 2) Restaurar credenciales cloud (si corresponde)
+### `jarvis doctor --provider ...`
+- Read-only.
+- Ejecuta verify + plan de remediación.
+- Marca pasos como `auto-safe` o `manual-required`.
 
-Si elegiste `local-only`, el apply elimina credenciales almacenadas de Hive Cloud (`sync.json`).
+### `jarvis reconcile --provider ... --yes` (o `--dry-run`)
+- Aplica solo drift `owned`.
+- Crea snapshot antes del primer write.
+- Ejecuta post-verify; si falla, devuelve error estructurado con acción sugerida de restore.
 
-Si querés volver a modo cloud:
+### `jarvis backup --provider ...`
+- Ejecuta snapshot explícito para assets managed del provider.
+- Guarda archive comprimido + manifest versionado con checksums.
 
-1. Ejecutá `jarvis setup` nuevamente.
-2. Elegí scope `local+cloud`.
-3. Autenticá con email/password en el paso de cloud.
+### `jarvis restore --provider ... --snapshot <id>`
+- Valida manifest + checksums + allowed roots (`~/.claude`, `~/.config/opencode`, `~/.jarvis`).
+- Bloquea path traversal/roots no permitidos antes de escribir.
 
-## 3) Limpiar estado local roto
+### `jarvis uninstall --provider ... --yes` (o `--dry-run`)
+- v1 **no** soporta `--soft` ni `--purge`.
+- Requiere backup previo y post-verify.
+- En modo `all`, limpia ledger managed al finalizar correctamente.
 
-Si querés resetear completamente:
+## Error envelope esperado
+
+Los comandos lifecycle devuelven errores estructurados con:
+- `code`
+- `asset`
+- `scope`
+- `stage`
+- `next_action`
+
+Esto permite automatizar handling en CI/scripts sin parseo frágil de strings libres.
+
+## Rollout / recuperación de setup parcial
+
+1. **Diagnóstico inicial**: correr `jarvis verify --provider all`.
+2. **Plan**: correr `jarvis doctor --provider all` y revisar pasos.
+3. **Backup preventivo extra (opcional)**: `jarvis backup --provider all`.
+4. **Reparación**: `jarvis reconcile --provider all --yes`.
+5. **Si algo sale mal**: `jarvis restore --provider <p> --snapshot <id>` y volver a verificar.
+
+## Limpieza manual extrema (último recurso)
+
+Si necesitás reset completo local:
 
 ```bash
 rm -f ~/.jarvis/config.yaml
@@ -33,18 +68,9 @@ rm -f ~/.jarvis/sync.json
 rm -f ~/.jarvis/memory.db
 ```
 
-Luego corré de nuevo:
+Luego:
 
 ```bash
 jarvis setup
+jarvis verify --provider all
 ```
-
-## 4) Limpiar configuración de agentes (si quedó inconsistente)
-
-Si la configuración de un agente quedó a medio aplicar, eliminá manualmente las entradas MCP/instructions del agente afectado y corré `jarvis setup` otra vez.
-
-## 5) Reintento recomendado
-
-1. Confirmá el scope correcto (`local-only` o `local+cloud`).
-2. Verificá credenciales cloud solo si usás `local+cloud`.
-3. Aplicá nuevamente y revisá salida final.

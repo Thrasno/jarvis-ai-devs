@@ -49,6 +49,9 @@ func TestClaudeAgent_ObserveRuntime_ProducesVerifierInput(t *testing.T) {
 	if err := a.InstallOrchestrator([]byte("# orchestrator")); err != nil {
 		t.Fatalf("InstallOrchestrator: %v", err)
 	}
+	if err := installOptionalManagedArtifacts(a.ConfigDir()); err != nil {
+		t.Fatalf("install optional managed artifacts: %v", err)
+	}
 
 	skillsFS := fstest.MapFS{"_shared/SKILL.md": {Data: []byte("# shared")}}
 	if err := a.InstallSkills(skillsFS, nil); err != nil {
@@ -81,6 +84,9 @@ func TestOpenCodeAgent_ObserveRuntime_ProducesVerifierInput(t *testing.T) {
 	if err := a.InstallOrchestrator([]byte("# orchestrator")); err != nil {
 		t.Fatalf("InstallOrchestrator: %v", err)
 	}
+	if err := installOptionalManagedArtifacts(a.ConfigDir()); err != nil {
+		t.Fatalf("install optional managed artifacts: %v", err)
+	}
 
 	skillsFS := fstest.MapFS{"_shared/SKILL.md": {Data: []byte("# shared")}}
 	if err := a.InstallSkills(skillsFS, nil); err != nil {
@@ -95,6 +101,33 @@ func TestOpenCodeAgent_ObserveRuntime_ProducesVerifierInput(t *testing.T) {
 	report := sddruntime.Verify(a.Name(), observed)
 	if report.Status != sddruntime.StatusPass {
 		t.Fatalf("expected verifier pass, got %q", report.Status)
+	}
+}
+
+func TestOpenCodeAgent_ObserveRuntime_ManifestUsesRequiredArtifactsOnly(t *testing.T) {
+	home := t.TempDir()
+	a := &OpenCodeAgent{home: home, templatesFS: testTemplatesFS}
+
+	if err := os.MkdirAll(a.ConfigDir(), 0755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := a.WriteInstructions("# Layer1", "# Layer2", nil); err != nil {
+		t.Fatalf("WriteInstructions: %v", err)
+	}
+	if err := a.InstallOrchestrator([]byte("# orchestrator")); err != nil {
+		t.Fatalf("InstallOrchestrator: %v", err)
+	}
+	skillsFS := fstest.MapFS{"_shared/SKILL.md": {Data: []byte("# shared")}}
+	if err := a.InstallSkills(skillsFS, nil); err != nil {
+		t.Fatalf("InstallSkills: %v", err)
+	}
+
+	observed, err := a.ObserveRuntime()
+	if err != nil {
+		t.Fatalf("ObserveRuntime: %v", err)
+	}
+	if !observed.Manifest.Present {
+		t.Fatalf("expected manifest present with required artifacts installed, got false (ids=%v)", observed.Manifest.ManagedArtifactIDs)
 	}
 }
 
@@ -114,6 +147,9 @@ func TestAdapters_RuntimeObservation_EquivalentContractSemantics(t *testing.T) {
 		}
 		if err := a.InstallOrchestrator([]byte("# orchestrator")); err != nil {
 			t.Fatalf("InstallOrchestrator for %s: %v", a.Name(), err)
+		}
+		if err := installOptionalManagedArtifacts(a.ConfigDir()); err != nil {
+			t.Fatalf("install optional managed artifacts for %s: %v", a.Name(), err)
 		}
 		skillsFS := fstest.MapFS{"_shared/SKILL.md": {Data: []byte("# shared")}}
 		if err := a.InstallSkills(skillsFS, nil); err != nil {
@@ -187,6 +223,9 @@ func TestObserveRuntime_ParsesRenderedOrchestratorAssignments(t *testing.T) {
 			if err := a.WriteInstructions("# Layer1", "# Layer2", nil); err != nil {
 				t.Fatalf("WriteInstructions: %v", err)
 			}
+			if err := installOptionalManagedArtifacts(a.ConfigDir()); err != nil {
+				t.Fatalf("install optional managed artifacts: %v", err)
+			}
 			skillsFS := fstest.MapFS{"_shared/SKILL.md": {Data: []byte("# shared")}}
 			if err := a.InstallSkills(skillsFS, nil); err != nil {
 				t.Fatalf("InstallSkills: %v", err)
@@ -242,6 +281,9 @@ func TestObserveRuntime_FallbackIgnoresStaleLegacyContractAssignments(t *testing
 			if err := os.MkdirAll(configDir+"/skills", 0755); err != nil {
 				t.Fatalf("mkdir skills dir: %v", err)
 			}
+			if err := installOptionalManagedArtifacts(configDir); err != nil {
+				t.Fatalf("install optional managed artifacts: %v", err)
+			}
 
 			observed, err := observeRuntime(configDir, plan)
 			if err != nil {
@@ -262,4 +304,20 @@ func checkStatusByKey(checks []sddruntime.CheckResult, key string) sddruntime.In
 		}
 	}
 	return ""
+}
+
+func installOptionalManagedArtifacts(configDir string) error {
+	if err := os.WriteFile(configDir+"/settings.json", []byte(`{"statusLine":{"type":"command","command":"echo ok"}}`), 0644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(configDir+"/opencode.json", []byte(`{"model":"sonnet"}`), 0644); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(configDir+"/output-styles", 0755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(configDir+"/hive-hooks", 0755); err != nil {
+		return err
+	}
+	return nil
 }

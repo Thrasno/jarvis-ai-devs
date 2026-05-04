@@ -31,7 +31,22 @@ func observeRuntime(configDir string, plan sddruntime.RuntimePlan) (sddruntime.O
 		}
 	}
 
-	manifestPresent := len(presentIDs) == len(plan.Contract.ManagedArtifacts)
+	requiredCount := 0
+	for _, managed := range plan.Contract.ManagedArtifacts {
+		if managed.Required {
+			requiredCount++
+		}
+	}
+	requiredPresent := 0
+	for _, managed := range plan.Contract.ManagedArtifacts {
+		if !managed.Required {
+			continue
+		}
+		if artifacts[managed.ID].Exists {
+			requiredPresent++
+		}
+	}
+	manifestPresent := requiredPresent == requiredCount
 	manifestVersion := ""
 	if manifestPresent {
 		manifestVersion = plan.Contract.Version
@@ -170,6 +185,36 @@ func observeArtifact(configDir string, paths sddruntime.RuntimePaths, artifact s
 		}
 		if err != nil {
 			return sddruntime.ObservedArtifact{}, fmt.Errorf("stat skills artifact: %w", err)
+		}
+		return sddruntime.ObservedArtifact{Exists: stat.IsDir()}, nil
+	case "settings", "output_style_settings":
+		settingsPath := filepath.Join(configDir, filepath.Base(paths.Settings))
+		_, err := os.Stat(settingsPath)
+		if os.IsNotExist(err) {
+			return sddruntime.ObservedArtifact{Exists: false}, nil
+		}
+		if err != nil {
+			return sddruntime.ObservedArtifact{}, fmt.Errorf("stat settings artifact: %w", err)
+		}
+		return sddruntime.ObservedArtifact{Exists: true}, nil
+	case "output_style":
+		stylesPath := filepath.Join(configDir, filepath.Base(filepath.Clean(artifact.RelativePath)))
+		stat, err := os.Stat(stylesPath)
+		if os.IsNotExist(err) {
+			return sddruntime.ObservedArtifact{Exists: false}, nil
+		}
+		if err != nil {
+			return sddruntime.ObservedArtifact{}, fmt.Errorf("stat output_style artifact: %w", err)
+		}
+		return sddruntime.ObservedArtifact{Exists: stat.IsDir()}, nil
+	case "prompt_hook":
+		hooksPath := filepath.Join(configDir, filepath.Base(filepath.Clean(artifact.RelativePath)))
+		stat, err := os.Stat(hooksPath)
+		if os.IsNotExist(err) {
+			return sddruntime.ObservedArtifact{Exists: false}, nil
+		}
+		if err != nil {
+			return sddruntime.ObservedArtifact{}, fmt.Errorf("stat prompt_hook artifact: %w", err)
 		}
 		return sddruntime.ObservedArtifact{Exists: stat.IsDir()}, nil
 	default:
