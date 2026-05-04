@@ -17,16 +17,16 @@ import (
 )
 
 type mockPromptStore struct {
-	savePromptFn func(ctx context.Context, content string) (*models.Prompt, error)
+	savePromptFn func(ctx context.Context, project, content string) (*models.Prompt, error)
 	called       bool
 }
 
-func (m *mockPromptStore) SavePrompt(ctx context.Context, content string) (*models.Prompt, error) {
+func (m *mockPromptStore) SavePrompt(ctx context.Context, project, content string) (*models.Prompt, error) {
 	m.called = true
 	if m.savePromptFn != nil {
-		return m.savePromptFn(ctx, content)
+		return m.savePromptFn(ctx, project, content)
 	}
-	return &models.Prompt{ID: 42, Content: content, CreatedAt: time.Now()}, nil
+	return &models.Prompt{ID: 42, Project: project, Content: content, CreatedAt: time.Now()}, nil
 }
 
 func newTestServer(store *mockPromptStore) *httpapi.Server {
@@ -38,7 +38,7 @@ func TestPostPrompts_ValidContent_Returns201(t *testing.T) {
 	store := &mockPromptStore{}
 	srv := httpapi.NewServer("127.0.0.1:0", store)
 
-	body := `{"content": "fix the auth bug"}`
+	body := `{"content": "fix the auth bug", "project": "jarvis-dev"}`
 	req := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -85,7 +85,7 @@ func TestPostPrompts_WhitespaceContent_Returns400(t *testing.T) {
 	store := &mockPromptStore{}
 	srv := newTestServer(store)
 
-	body := `{"content": "   "}`
+	body := `{"content": "   ", "project": "jarvis-dev"}`
 	req := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -103,13 +103,13 @@ func TestPostPrompts_WhitespaceContent_Returns400(t *testing.T) {
 // TS-HTTP-4: DB error returns 500, error message is "internal error" (NOT the DB error)
 func TestPostPrompts_DBError_Returns500WithGenericMessage(t *testing.T) {
 	store := &mockPromptStore{
-		savePromptFn: func(ctx context.Context, content string) (*models.Prompt, error) {
+		savePromptFn: func(ctx context.Context, project, content string) (*models.Prompt, error) {
 			return nil, errors.New("some internal db error")
 		},
 	}
 	srv := newTestServer(store)
 
-	body := `{"content": "valid content"}`
+	body := `{"content": "valid content", "project": "jarvis-dev"}`
 	req := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -194,7 +194,7 @@ func TestServer_StartsAndAcceptsConnections(t *testing.T) {
 	// Give server time to start
 	time.Sleep(50 * time.Millisecond)
 
-	resp, err := http.Post("http://"+addr+"/prompts", "application/json", bytes.NewBufferString(`{"content":"hello"}`))
+	resp, err := http.Post("http://"+addr+"/prompts", "application/json", bytes.NewBufferString(`{"content":"hello","project":"jarvis-dev"}`))
 	if err != nil {
 		t.Fatalf("POST failed: %v", err)
 	}
@@ -211,5 +211,89 @@ func TestServer_StartsAndAcceptsConnections(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("server did not shut down")
+	}
+}
+
+// ─── T-HTTP-1: project field ───────────────────────────────────────────────
+
+func TestPostPrompts_WithProject_PassesProjectToStore(t *testing.T) {
+	var gotProject string
+	store := &mockPromptStore{
+		savePromptFn: func(_ context.Context, project, _ string) (*models.Prompt, error) {
+			gotProject = project
+			return &models.Prompt{ID: 1, Project: project, CreatedAt: time.Now()}, nil
+		},
+	}
+	srv := newTestServer(store)
+
+	body := `{"content": "explain goroutines", "project": "jarvis-dev"}`
+	req := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", rr.Code)
+	}
+	if gotProject != "jarvis-dev" {
+		t.Errorf("project passed to store = %q, want 'jarvis-dev'", gotProject)
+	}
+}
+
+func TestPostPrompts_WithoutProject_Returns400(t *testing.T) {
+	store := &mockPromptStore{}
+	srv := newTestServer(store)
+
+	body := `{"content": "explain goroutines"}`
+	req := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+	if store.called {
+		t.Error("SavePrompt should NOT be called when project is missing")
+	}
+}
+
+func TestPostPrompts_WhitespaceOnlyProject_Returns400(t *testing.T) {
+	store := &mockPromptStore{}
+	srv := newTestServer(store)
+
+	body := `{"content": "some content", "project": "   \t\n  "}`
+	req := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for whitespace-only project, got %d", rr.Code)
+	}
+	if store.called {
+		t.Error("SavePrompt should NOT be called when project is whitespace-only")
+	}
+}
+
+func TestPostPrompts_EmptyProjectString_Returns400(t *testing.T) {
+	store := &mockPromptStore{}
+	srv := newTestServer(store)
+
+	body := `{"content": "some content", "project": ""}`
+	req := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty project string, got %d", rr.Code)
+	}
+	if store.called {
+		t.Error("SavePrompt should NOT be called when project is empty")
 	}
 }

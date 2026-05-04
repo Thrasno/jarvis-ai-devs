@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
 	hivesync "github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -16,6 +17,9 @@ import (
 // MaxObservationLength is the maximum allowed content size in runes (not bytes).
 // Unicode-safe: a Japanese character counts as 1 rune even though it is 3 bytes.
 const MaxObservationLength = 50_000
+
+// MaxRecentPrompts is the maximum number of recent user prompts to include in mem_context.
+const MaxRecentPrompts = 10
 
 func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncStore, syncer SyncRunner, cfg *hivesync.Config, activity *ActivityTracker, prompts PromptStore) {
 	s.AddTool(&sdkmcp.Tool{
@@ -86,7 +90,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncS
 				"limit":   {"type": "integer", "description": "Max results (default 20)"}
 			}
 		}`),
-	}, memContextHandler(store, activity))
+	}, memContextHandler(store, prompts, activity))
 
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_sync",
@@ -105,9 +109,10 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncS
 		Description: "Persist a user prompt to the local Hive database for future recall and analysis",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
-			"required": ["content"],
+			"required": ["content", "project"],
 			"properties": {
-				"content": {"type": "string", "description": "The user prompt text to persist"}
+				"content": {"type": "string", "description": "The user prompt text to persist"},
+				"project": {"type": "string", "description": "Project identifier"}
 			}
 		}`),
 	}, memSavePromptHandler(prompts))
@@ -279,8 +284,8 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 	}
 }
 
-func memContextHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.ToolHandler {
-	return func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+func memContextHandler(store MemoryStore, prompts PromptStore, activity *ActivityTracker) sdkmcp.ToolHandler {
+	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 		var p struct {
 			Project string `json:"project"`
 			Limit   int    `json:"limit"`
@@ -302,7 +307,17 @@ func memContextHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.Tool
 			results = []*models.Memory{}
 		}
 
-		formatted := formatContext(results, p.Project)
+		var recentPrompts []*models.Prompt
+		if prompts != nil {
+			recentPrompts, err = prompts.ListRecentPrompts(ctx, p.Project, MaxRecentPrompts)
+			if err != nil {
+				// Log and continue — prompt fetch failure should not break mem_context
+				logger.Log.Printf("warn: list recent prompts: %v", err)
+				recentPrompts = nil
+			}
+		}
+
+		formatted := formatContext(recentPrompts, results, p.Project)
 		formatted += activity.NudgeIfNeeded(p.Project)
 
 		return &sdkmcp.CallToolResult{
@@ -313,8 +328,12 @@ func memContextHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.Tool
 
 func memSavePromptHandler(prompts PromptStore) sdkmcp.ToolHandler {
 	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+		if prompts == nil {
+			return toolError(fmt.Errorf("prompts store not configured")), nil
+		}
 		var p struct {
 			Content string `json:"content"`
+			Project string `json:"project"`
 		}
 		if err := json.Unmarshal(req.Params.Arguments, &p); err != nil {
 			return toolError(fmt.Errorf("invalid params: %w", err)), nil
@@ -322,16 +341,16 @@ func memSavePromptHandler(prompts PromptStore) sdkmcp.ToolHandler {
 		if strings.TrimSpace(p.Content) == "" {
 			return toolError(fmt.Errorf("content is required")), nil
 		}
+		if strings.TrimSpace(p.Project) == "" {
+			return toolError(fmt.Errorf("project is required")), nil
+		}
 		if runeCount := utf8.RuneCountInString(p.Content); runeCount > MaxObservationLength {
 			return toolError(fmt.Errorf(
 				"content too long: %d runes (max %d). Summarize the prompt before saving",
 				runeCount, MaxObservationLength,
 			)), nil
 		}
-		if prompts == nil {
-			return toolError(fmt.Errorf("prompts store not configured")), nil
-		}
-		prompt, err := prompts.SavePrompt(ctx, p.Content)
+		prompt, err := prompts.SavePrompt(ctx, p.Project, p.Content)
 		if err != nil {
 			return toolError(fmt.Errorf("save failed: %w", err)), nil
 		}
@@ -344,14 +363,27 @@ func memSavePromptHandler(prompts PromptStore) sdkmcp.ToolHandler {
 
 // ─── Formatters ────────────────────────────────────────────────────────────
 
-// formatContext renders memories as compact markdown with truncated previews.
+// formatContext renders recent prompts (if any) followed by memories as compact markdown.
+// Prompts are prepended as a "### Recent User Prompts" section.
 // Returns a footer with count and hint to use mem_get_observation.
-func formatContext(memories []*models.Memory, project string) string {
-	if len(memories) == 0 {
-		return fmt.Sprintf("No memories found for project %q.", project)
+func formatContext(recentPrompts []*models.Prompt, memories []*models.Memory, project string) string {
+	var b strings.Builder
+
+	// Prepend recent user prompts section when available
+	if len(recentPrompts) > 0 {
+		b.WriteString("### Recent User Prompts\n")
+		for _, p := range recentPrompts {
+			content := truncateRunes(p.Content, 200)
+			fmt.Fprintf(&b, "- %s — %s\n", p.CreatedAt.Format("2006-01-02 15:04"), content)
+		}
+		b.WriteString("\n")
 	}
 
-	var b strings.Builder
+	if len(memories) == 0 {
+		b.WriteString(fmt.Sprintf("No memories found for project %q.", project))
+		return b.String()
+	}
+
 	for _, m := range memories {
 		// Header: ### [ID] Title (category)
 		fmt.Fprintf(&b, "### [%d] %s (%s)\n", m.ID, m.Title, m.Category)
