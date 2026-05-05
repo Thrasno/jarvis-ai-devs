@@ -189,7 +189,7 @@ func TestClient_Sync(t *testing.T) {
 			}
 			client := newClient(cfg)
 
-			resp, err := client.sync(context.Background(), "test-token", "test-project", tt.toSend, tt.lastSync)
+			resp, err := client.sync(context.Background(), "test-token", "test-project", tt.toSend, []*models.Prompt{}, tt.lastSync)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -264,7 +264,7 @@ func TestClient_Sync_AuthFailure(t *testing.T) {
 			}
 			client := newClient(cfg)
 
-			_, err := client.sync(context.Background(), "invalid-token", "test-project", []*models.Memory{}, nil)
+			_, err := client.sync(context.Background(), "invalid-token", "test-project", []*models.Memory{}, []*models.Prompt{}, nil)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -273,6 +273,98 @@ func TestClient_Sync_AuthFailure(t *testing.T) {
 				assert.NoError(t, err)
 			}
 		})
+	}
+}
+
+// TestClient_Sync_WithPrompts tests that prompts are serialized into the request payload.
+func TestClient_Sync_WithPrompts(t *testing.T) {
+	tests := []struct {
+		name              string
+		prompts           []*models.Prompt
+		wantPromptsPushed int
+		serverAssert      func(t *testing.T, req syncRequest)
+	}{
+		{
+			name: "3 prompts are sent in payload",
+			prompts: []*models.Prompt{
+				createTestPrompt("sync-1", "proj", "first prompt"),
+				createTestPrompt("sync-2", "proj", "second prompt"),
+				createTestPrompt("sync-3", "proj", "third prompt"),
+			},
+			wantPromptsPushed: 3,
+			serverAssert: func(t *testing.T, req syncRequest) {
+				t.Helper()
+				if len(req.Prompts) != 3 {
+					t.Errorf("expected 3 prompts in request, got %d", len(req.Prompts))
+				}
+				if req.Prompts[0].SyncID != "sync-1" {
+					t.Errorf("expected SyncID %q, got %q", "sync-1", req.Prompts[0].SyncID)
+				}
+				if req.Prompts[0].Content != "first prompt" {
+					t.Errorf("expected Content %q, got %q", "first prompt", req.Prompts[0].Content)
+				}
+				if req.Prompts[1].SyncID != "sync-2" {
+					t.Errorf("expected SyncID %q, got %q", "sync-2", req.Prompts[1].SyncID)
+				}
+			},
+		},
+		{
+			name:              "0 prompts — field omitted from payload",
+			prompts:           []*models.Prompt{},
+			wantPromptsPushed: 0,
+			serverAssert: func(t *testing.T, req syncRequest) {
+				t.Helper()
+				if len(req.Prompts) != 0 {
+					t.Errorf("expected 0 prompts in request, got %d", len(req.Prompts))
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/sync" {
+					var req syncRequest
+					err := json.NewDecoder(r.Body).Decode(&req)
+					require.NoError(t, err)
+					tt.serverAssert(t, req)
+
+					w.WriteHeader(http.StatusOK)
+					resp := syncResponse{
+						Pushed:        0,
+						Pulled:        []apiMemory{},
+						Conflicts:     0,
+						PromptsPushed: tt.wantPromptsPushed,
+					}
+					require.NoError(t, json.NewEncoder(w).Encode(resp))
+				}
+			}))
+			defer server.Close()
+
+			cfg := &Config{
+				APIURL:   server.URL,
+				Email:    "test@example.com",
+				Password: "password123",
+			}
+			c := newClient(cfg)
+
+			resp, err := c.sync(context.Background(), "test-token", "test-project", []*models.Memory{}, tt.prompts, nil)
+			require.NoError(t, err)
+			if resp.PromptsPushed != tt.wantPromptsPushed {
+				t.Errorf("expected PromptsPushed=%d, got %d", tt.wantPromptsPushed, resp.PromptsPushed)
+			}
+		})
+	}
+}
+
+// createTestPrompt creates a test prompt for sync operations.
+func createTestPrompt(syncID, project, content string) *models.Prompt {
+	return &models.Prompt{
+		SyncID:    syncID,
+		Project:   project,
+		Content:   content,
+		CreatedAt: time.Now().UTC(),
 	}
 }
 

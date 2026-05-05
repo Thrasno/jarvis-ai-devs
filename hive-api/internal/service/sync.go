@@ -34,12 +34,14 @@ type SyncService interface {
 }
 
 type syncService struct {
-	repo repository.MemoryRepository
+	repo       repository.MemoryRepository
+	promptRepo repository.PromptRepository
 }
 
-// NewSyncService crea el SyncService con el repositorio inyectado.
-func NewSyncService(repo repository.MemoryRepository) SyncService {
-	return &syncService{repo: repo}
+// NewSyncService crea el SyncService con los repositorios inyectados.
+// memRepo gestiona memorias; promptRepo gestiona user-prompts.
+func NewSyncService(memRepo repository.MemoryRepository, promptRepo repository.PromptRepository) SyncService {
+	return &syncService{repo: memRepo, promptRepo: promptRepo}
 }
 
 // Push procesa el batch de memorias del cliente.
@@ -94,9 +96,33 @@ func (s *syncService) Push(ctx context.Context, req model.SyncRequest, userID st
 		}
 	}
 
+	// --- Fase de prompts ---
+	// Iteramos los user-prompts del request y los persistimos de forma idempotente.
+	// El repositorio usa ON CONFLICT DO NOTHING — si el sync_id ya existe, no hace nada.
+	// PromptsPushed cuenta solo los Upsert que resultaron en INSERT (saved=true).
+	// Re-sync de prompts ya conocidos no incrementa el contador.
+	var promptsPushed int
+	for _, payload := range req.Prompts {
+		p := &model.Prompt{
+			SyncID:    payload.SyncID,
+			Project:   payload.Project,
+			Content:   payload.Content,
+			CreatedBy: userID,
+			CreatedAt: payload.CreatedAt,
+		}
+		saved, err := s.promptRepo.Upsert(ctx, p)
+		if err != nil {
+			return nil, err
+		}
+		if saved {
+			promptsPushed++
+		}
+	}
+
 	return &model.SyncResponse{
-		Pushed:    pushed,
-		Conflicts: conflicts,
+		Pushed:        pushed,
+		Conflicts:     conflicts,
+		PromptsPushed: promptsPushed,
 	}, nil
 }
 

@@ -281,6 +281,170 @@ func TestCreateMemoryRequest_Validation(t *testing.T) {
 	}
 }
 
+// TestSyncPromptPayload_Validation tests field validation for SyncPromptPayload.
+// Covers spec scenarios S6 (empty content rejected) and S7 (invalid UUID rejected).
+func TestSyncPromptPayload_Validation(t *testing.T) {
+	t.Parallel()
+
+	validSyncID := "550e8400-e29b-41d4-a716-446655440099"
+
+	tests := []struct {
+		name      string
+		payload   SyncPromptPayload
+		wantValid bool
+		wantError string
+	}{
+		{
+			name: "valid payload with all required fields",
+			payload: SyncPromptPayload{
+				SyncID:  validSyncID,
+				Project: "test-project",
+				Content: "Some useful prompt content",
+			},
+			wantValid: true,
+		},
+		{
+			// S6: empty content must be rejected with validation error
+			name: "invalid empty content rejected",
+			payload: SyncPromptPayload{
+				SyncID:  validSyncID,
+				Project: "test-project",
+				Content: "",
+			},
+			wantValid: false,
+			wantError: "Content",
+		},
+		{
+			// S7: invalid UUID sync_id must be rejected
+			name: "invalid sync_id format rejected",
+			payload: SyncPromptPayload{
+				SyncID:  "not-a-uuid",
+				Project: "test-project",
+				Content: "Some content",
+			},
+			wantValid: false,
+			wantError: "SyncID",
+		},
+		{
+			// S7: missing sync_id must be rejected
+			name: "missing sync_id rejected",
+			payload: SyncPromptPayload{
+				SyncID:  "",
+				Project: "test-project",
+				Content: "Some content",
+			},
+			wantValid: false,
+			wantError: "SyncID",
+		},
+		{
+			// Missing project must be rejected
+			name: "missing project rejected",
+			payload: SyncPromptPayload{
+				SyncID:  validSyncID,
+				Project: "",
+				Content: "Some content",
+			},
+			wantValid: false,
+			wantError: "Project",
+		},
+		{
+			// Project exceeding max=100 must be rejected
+			name: "project name too long rejected",
+			payload: SyncPromptPayload{
+				SyncID:  validSyncID,
+				Project: string(make([]byte, 101)), // 101 chars, max is 100
+				Content: "Some content",
+			},
+			wantValid: false,
+			wantError: "Project",
+		},
+		{
+			// FIX-6: content exceeding max=50000 chars must be rejected.
+			// 50000 matches MaxObservationLength in daemon mcp/tools.go.
+			name: "content too long rejected",
+			payload: SyncPromptPayload{
+				SyncID:  validSyncID,
+				Project: "test-project",
+				Content: string(make([]byte, 50001)), // 50001 chars, max is 50000
+			},
+			wantValid: false,
+			wantError: "Content",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateStruct(tt.payload)
+
+			if tt.wantValid {
+				assert.NoError(t, err, "expected valid payload")
+			} else {
+				assert.Error(t, err, "expected validation error")
+				if tt.wantError != "" {
+					assert.Contains(t, err.Error(), tt.wantError, "error should mention field")
+				}
+			}
+		})
+	}
+}
+
+// TestSyncRequest_BackwardCompat tests that SyncRequest without prompts field is valid
+// and that PromptsPushed in SyncResponse defaults to zero.
+// Covers spec scenario S9: old daemon (no prompts field) → prompts_pushed=0.
+func TestSyncRequest_BackwardCompat(t *testing.T) {
+	t.Parallel()
+
+	t.Run("SyncRequest without prompts field is valid", func(t *testing.T) {
+		t.Parallel()
+
+		req := SyncRequest{
+			Project: "test-project",
+			// Prompts field omitted — old daemon behavior
+		}
+
+		err := validateStruct(req)
+		assert.NoError(t, err, "SyncRequest without prompts should be valid (backward compat)")
+		assert.Nil(t, req.Prompts, "Prompts should be nil when not provided")
+	})
+
+	t.Run("SyncResponse PromptsPushed defaults to zero", func(t *testing.T) {
+		t.Parallel()
+
+		// SyncResponse with no PromptsPushed set → zero value
+		resp := SyncResponse{
+			Pushed:    3,
+			Pulled:    nil,
+			Conflicts: 0,
+		}
+
+		// PromptsPushed should be zero when not explicitly set (S9)
+		assert.Equal(t, 0, resp.PromptsPushed, "PromptsPushed should default to 0")
+	})
+
+	t.Run("SyncRequest with prompts field is valid", func(t *testing.T) {
+		t.Parallel()
+
+		// S10: new daemon with prompts — both sync in one round-trip
+		validSyncID := "550e8400-e29b-41d4-a716-446655440088"
+		req := SyncRequest{
+			Project: "test-project",
+			Prompts: []SyncPromptPayload{
+				{
+					SyncID:  validSyncID,
+					Project: "test-project",
+					Content: "A useful prompt",
+				},
+			},
+		}
+
+		err := validateStruct(req)
+		assert.NoError(t, err, "SyncRequest with prompts should be valid")
+		assert.Len(t, req.Prompts, 1, "Prompts should contain 1 entry")
+	})
+}
+
 // TestSyncMemoryPayload_Validation tests field validation for SyncMemoryPayload.
 func TestSyncMemoryPayload_Validation(t *testing.T) {
 	t.Parallel()
