@@ -60,11 +60,12 @@ func wireServices(pool *pgxpool.Pool, cfg *config.Config) buildAppDeps {
 	// (interfaces definidas en repository/)
 	userRepo := repository.NewPostgresUserRepository(pool)
 	memRepo := repository.NewPostgresMemoryRepository(pool)
+	promptRepo := repository.NewPostgresPromptRepository(pool)
 
 	// Servicios — lógica de negocio, inyectamos los repositorios
 	authSvc := service.NewAuthService(userRepo, cfg.JWTSecret)
 	memorySvc := service.NewMemoryService(memRepo)
-	syncSvc := service.NewSyncService(memRepo)
+	syncSvc := service.NewSyncService(memRepo, promptRepo)
 	adminSvc := service.NewAdminService(userRepo, memRepo)
 
 	return buildAppDeps{
@@ -97,7 +98,11 @@ func main() {
 	defer pool.Close()
 
 	if err := repository.RunMigrations(pool, migrations.InitialSQL); err != nil {
-		log.Fatalf("migraciones fallaron: %v", err)
+		log.Fatalf("migración 001 falló: %v", err)
+	}
+
+	if err := repository.RunMigrations(pool, migrations.UserPromptsSQL); err != nil {
+		log.Fatalf("migración 002 falló: %v", err)
 	}
 
 	log.Println("✓ PostgreSQL conectado y migraciones ejecutadas")

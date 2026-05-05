@@ -44,10 +44,34 @@ type SyncRequest struct {
 	// cada elemento del slice (no solo que el slice exista).
 	Memories []SyncMemoryPayload `json:"memories" binding:"max=100,dive"`
 
+	// Prompts es el batch de user-prompts a enviar al servidor.
+	// Opcional — daemons antiguos no envían este campo (backward-compat).
+	// binding:"max=100" rechaza más de 100 por request (S8).
+	// binding:"dive" valida cada elemento del slice.
+	Prompts []SyncPromptPayload `json:"prompts" binding:"max=100,dive"`
+
 	// LastSync es opcional (puntero). Si es nil, el servidor devolverá
 	// TODAS las memorias del proyecto en el pull. Si tiene valor,
 	// solo devuelve las memorias más nuevas que esa fecha.
 	LastSync *time.Time `json:"last_sync"`
+}
+
+// SyncPromptPayload es la forma de cada prompt dentro de un SyncRequest.
+// Refleja los campos que hive-daemon almacena localmente para user-prompts.
+type SyncPromptPayload struct {
+	// SyncID es el UUID generado por el daemon, garantiza idempotencia en el sync (S3).
+	// binding:"required,uuid" valida que sea un UUID válido (S7).
+	SyncID string `json:"sync_id" binding:"required,uuid"`
+
+	// Project identifica a qué proyecto pertenece el prompt (S5).
+	Project string `json:"project" binding:"required,max=100"`
+
+	// Content es el texto del prompt. No puede estar vacío (S6) ni superar 50000 chars.
+	// 50000 coincide con MaxObservationLength del daemon (mcp/tools.go).
+	Content string `json:"content" binding:"required,max=50000"`
+
+	// CreatedAt es cuándo se creó el prompt en el daemon (opcional).
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // SyncMemoryPayload es la forma de cada memoria dentro de un SyncRequest.

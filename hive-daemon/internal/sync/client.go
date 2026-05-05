@@ -61,10 +61,19 @@ func (c *client) login(ctx context.Context) (token string, expiresAt time.Time, 
 	return result.Token, result.ExpiresAt, nil
 }
 
+// promptPayload es el formato que espera hive-api para cada prompt de usuario.
+type promptPayload struct {
+	SyncID    string    `json:"sync_id"`
+	Project   string    `json:"project"`
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // syncRequest es el payload que enviamos a POST /sync.
 type syncRequest struct {
 	Project  string          `json:"project"`
 	Memories []memoryPayload `json:"memories"`
+	Prompts  []promptPayload `json:"prompts,omitempty"`
 	LastSync *time.Time      `json:"last_sync,omitempty"`
 }
 
@@ -87,9 +96,10 @@ type memoryPayload struct {
 
 // syncResponse es lo que devuelve hive-api tras el sync.
 type syncResponse struct {
-	Pushed    int           `json:"pushed"`
-	Pulled    []apiMemory   `json:"pulled"`
-	Conflicts int           `json:"conflicts"`
+	Pushed        int         `json:"pushed"`
+	Pulled        []apiMemory `json:"pulled"`
+	Conflicts     int         `json:"conflicts"`
+	PromptsPushed int         `json:"prompts_pushed"`
 }
 
 // apiMemory es la forma que usa hive-api para devolver memorias.
@@ -110,9 +120,9 @@ type apiMemory struct {
 	ImpactScore   float32   `json:"impact_score"`
 }
 
-// sync envía memorias locales y recibe las del servidor para un proyecto.
+// sync envía memorias y prompts locales, y recibe las memorias del servidor para un proyecto.
 func (c *client) sync(ctx context.Context, token, project string,
-	toSend []*models.Memory, lastSync *time.Time) (*syncResponse, error) {
+	toSend []*models.Memory, prompts []*models.Prompt, lastSync *time.Time) (*syncResponse, error) {
 
 	payloads := make([]memoryPayload, 0, len(toSend))
 	for _, m := range toSend {
@@ -131,9 +141,20 @@ func (c *client) sync(ctx context.Context, token, project string,
 		})
 	}
 
+	promptPayloads := make([]promptPayload, 0, len(prompts))
+	for _, p := range prompts {
+		promptPayloads = append(promptPayloads, promptPayload{
+			SyncID:    p.SyncID,
+			Project:   p.Project,
+			Content:   p.Content,
+			CreatedAt: p.CreatedAt,
+		})
+	}
+
 	reqBody, err := json.Marshal(syncRequest{
 		Project:  project,
 		Memories: payloads,
+		Prompts:  promptPayloads,
 		LastSync: lastSync,
 	})
 	if err != nil {
