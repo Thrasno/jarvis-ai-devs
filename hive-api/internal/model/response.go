@@ -33,7 +33,7 @@ type UserResponse struct {
 }
 
 // SyncResponse es la respuesta del POST /sync.
-// Resume cuántas memorias se procesaron y devuelve las que el cliente no tenía.
+// Resume cuántas memorias y prompts se procesaron y devuelve las que el cliente no tenía.
 type SyncResponse struct {
 	// Pushed: cuántas memorias del cliente se guardaron (nuevas o actualizadas).
 	Pushed int `json:"pushed"`
@@ -45,6 +45,11 @@ type SyncResponse struct {
 	// Conflicts: memorias que el cliente intentó actualizar pero el servidor
 	// tenía una versión más reciente (last-write-wins, servidor ganó).
 	Conflicts int `json:"conflicts"`
+
+	// PromptsPushed: cuántos user-prompts se insertaron en esta sincronización.
+	// Es 0 cuando el daemon no envía prompts (S9: backward-compat con daemons viejos).
+	// Refleja el conteo real de upserts exitosos (S11).
+	PromptsPushed int `json:"prompts_pushed"`
 }
 
 // ListMemoriesResponse es la respuesta del GET /memories.

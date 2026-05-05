@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
 )
 
@@ -18,14 +19,17 @@ type SyncStore interface {
 	SetLastSync(project string, at time.Time) error
 	GetJWT() string
 	SetJWT(token string, expiresAt time.Time) error
+	GetUnsyncedPrompts(ctx context.Context, project string) ([]*models.Prompt, error)
+	MarkPromptSynced(ctx context.Context, syncID string, at time.Time) error
 }
 
 // Result resume los resultados de un sync.
 type Result struct {
-	Pushed    int
-	Pulled    int
-	Conflicts int
-	Project   string
+	Pushed        int
+	Pulled        int
+	Conflicts     int
+	PromptsPushed int
+	Project       string
 }
 
 // Syncer orquesta el ciclo completo de sincronización para un proyecto.
@@ -62,6 +66,13 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 		return nil, fmt.Errorf("obtener memorias no sincronizadas: %w", err)
 	}
 
+	// Paso 2b: prompts locales pendientes de sync (non-fatal si falla)
+	unsyncedPrompts, err := s.store.GetUnsyncedPrompts(ctx, project)
+	if err != nil {
+		logger.Log.Printf("warn: obtener prompts no sincronizados: %v", err)
+		unsyncedPrompts = nil
+	}
+
 	// Paso 3 + 4: sync bidireccional con el servidor
 	lastSync, _ := s.store.GetLastSync(project)
 	var lastSyncPtr *time.Time
@@ -69,22 +80,29 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 		lastSyncPtr = &lastSync
 	}
 
-	resp, err := s.client.sync(ctx, token, project, unsynced, lastSyncPtr)
+	resp, err := s.client.sync(ctx, token, project, unsynced, unsyncedPrompts, lastSyncPtr)
 	if err != nil {
 		return nil, fmt.Errorf("sync con servidor: %w", err)
 	}
 
-	// Paso 5a: marcamos como sincronizadas las que enviamos
+	// Paso 5a: marcamos como sincronizadas las memorias que enviamos
 	now := time.Now()
 	for _, m := range unsynced {
 		if err := s.store.MarkSynced(m.SyncID, now); err != nil {
 			// No abortamos — mejor tener datos duplicados que perder el sync
 			// En el próximo sync, el servidor los rechazará por sync_id duplicado
-			_ = err
+			logger.Log.Printf("warn: MarkSynced %s: %v", m.SyncID, err)
 		}
 	}
 
-	// Paso 5b: guardamos las memorias que nos mandó el servidor
+	// Paso 5b: marcamos como sincronizados los prompts que enviamos (non-fatal)
+	for _, p := range unsyncedPrompts {
+		if err := s.store.MarkPromptSynced(ctx, p.SyncID, now); err != nil {
+			logger.Log.Printf("warn: MarkPromptSynced %s: %v", p.SyncID, err)
+		}
+	}
+
+	// Paso 5c: guardamos las memorias que nos mandó el servidor
 	for _, remote := range resp.Pulled {
 		mem := &models.Memory{
 			SyncID:        remote.SyncID,
@@ -106,10 +124,11 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 	_ = s.store.SetLastSync(project, now)
 
 	return &Result{
-		Pushed:    resp.Pushed,
-		Pulled:    len(resp.Pulled),
-		Conflicts: resp.Conflicts,
-		Project:   project,
+		Pushed:        resp.Pushed,
+		Pulled:        len(resp.Pulled),
+		Conflicts:     resp.Conflicts,
+		PromptsPushed: resp.PromptsPushed,
+		Project:       project,
 	}, nil
 }
 

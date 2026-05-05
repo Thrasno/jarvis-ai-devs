@@ -541,3 +541,263 @@ func TestListRecentPrompts_SyncedAtIsScanned(t *testing.T) {
 	}
 }
 
+// ─── GetUnsyncedPrompts tests ─────────────────────────────────────────────
+
+func TestGetUnsyncedPrompts_ReturnsOnlyUnsyncedForProject(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+
+	ctx := context.Background()
+
+	// Save 3 prompts for proj-A, 1 for proj-B
+	p1, err := d.SavePrompt(ctx, "proj-A", "first prompt")
+	if err != nil {
+		t.Fatalf("SavePrompt 1: %v", err)
+	}
+	_, err = d.SavePrompt(ctx, "proj-A", "second prompt")
+	if err != nil {
+		t.Fatalf("SavePrompt 2: %v", err)
+	}
+	_, err = d.SavePrompt(ctx, "proj-B", "other project prompt")
+	if err != nil {
+		t.Fatalf("SavePrompt proj-B: %v", err)
+	}
+
+	// Mark p1 as synced
+	sqlDB := d.RawDB()
+	now := time.Now().UTC().Truncate(time.Second)
+	_, err = sqlDB.ExecContext(ctx, "UPDATE user_prompts SET synced_at=? WHERE id=?", now.Format("2006-01-02 15:04:05"), p1.ID)
+	if err != nil {
+		t.Fatalf("UPDATE synced_at: %v", err)
+	}
+
+	result, err := d.GetUnsyncedPrompts(ctx, "proj-A")
+	if err != nil {
+		t.Fatalf("GetUnsyncedPrompts: %v", err)
+	}
+	// Only 1 unsynced for proj-A (p1 is synced, proj-B is excluded)
+	if len(result) != 1 {
+		t.Errorf("expected 1 unsynced prompt for proj-A, got %d", len(result))
+	}
+	if result[0].SyncedAt != nil {
+		t.Error("expected SyncedAt == nil for unsynced prompt")
+	}
+	if result[0].Project != "proj-A" {
+		t.Errorf("expected project 'proj-A', got %q", result[0].Project)
+	}
+}
+
+func TestGetUnsyncedPrompts_AllSynced_ReturnsEmpty(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+
+	ctx := context.Background()
+	p, err := d.SavePrompt(ctx, "proj", "content")
+	if err != nil {
+		t.Fatalf("SavePrompt: %v", err)
+	}
+
+	sqlDB := d.RawDB()
+	now := time.Now().UTC().Truncate(time.Second)
+	_, err = sqlDB.ExecContext(ctx, "UPDATE user_prompts SET synced_at=? WHERE id=?", now.Format("2006-01-02 15:04:05"), p.ID)
+	if err != nil {
+		t.Fatalf("UPDATE synced_at: %v", err)
+	}
+
+	result, err := d.GetUnsyncedPrompts(ctx, "proj")
+	if err != nil {
+		t.Fatalf("GetUnsyncedPrompts: %v", err)
+	}
+	if len(result) != 0 {
+		t.Errorf("expected 0 unsynced prompts (all synced), got %d", len(result))
+	}
+}
+
+func TestGetUnsyncedPrompts_OrderedByCreatedAtAsc(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+
+	ctx := context.Background()
+	sqlDB := d.RawDB()
+
+	// Insert rows with explicitly distinct created_at timestamps
+	base := time.Now().Truncate(time.Second)
+	for i := 0; i < 3; i++ {
+		ts := base.Add(time.Duration(i) * time.Second).Format("2006-01-02 15:04:05")
+		_, err := sqlDB.ExecContext(ctx, `INSERT INTO user_prompts (sync_id, project, content, created_at) VALUES (?, 'proj', 'prompt', ?)`,
+			uuid.NewString(), ts)
+		if err != nil {
+			t.Fatalf("insert row %d: %v", i, err)
+		}
+	}
+
+	result, err := d.GetUnsyncedPrompts(ctx, "proj")
+	if err != nil {
+		t.Fatalf("GetUnsyncedPrompts: %v", err)
+	}
+	if len(result) != 3 {
+		t.Fatalf("expected 3 unsynced prompts, got %d", len(result))
+	}
+
+	// Verify ascending order (oldest first)
+	for i := 1; i < len(result); i++ {
+		if result[i].CreatedAt.Before(result[i-1].CreatedAt) {
+			t.Errorf("prompts not in ascending order: index %d (%v) is before index %d (%v)",
+				i, result[i].CreatedAt, i-1, result[i-1].CreatedAt)
+		}
+	}
+}
+
+// ─── MarkPromptSynced tests ───────────────────────────────────────────────
+
+func TestMarkPromptSynced_SetsSyncedAt(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+
+	ctx := context.Background()
+	p, err := d.SavePrompt(ctx, "proj", "content")
+	if err != nil {
+		t.Fatalf("SavePrompt: %v", err)
+	}
+	if p.SyncedAt != nil {
+		t.Fatal("expected SyncedAt == nil before marking synced")
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	err = d.MarkPromptSynced(ctx, p.SyncID, now)
+	if err != nil {
+		t.Fatalf("MarkPromptSynced: %v", err)
+	}
+
+	// Verify via GetUnsyncedPrompts: after marking, the prompt should not appear
+	remaining, err := d.GetUnsyncedPrompts(ctx, "proj")
+	if err != nil {
+		t.Fatalf("GetUnsyncedPrompts after mark: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Errorf("expected 0 unsynced after MarkPromptSynced, got %d", len(remaining))
+	}
+
+	// Also verify via DB that synced_at is non-NULL
+	sqlDB := d.RawDB()
+	var syncedAtStr *string
+	err = sqlDB.QueryRowContext(ctx, "SELECT synced_at FROM user_prompts WHERE sync_id=?", p.SyncID).Scan(&syncedAtStr)
+	if err != nil {
+		t.Fatalf("query synced_at: %v", err)
+	}
+	if syncedAtStr == nil {
+		t.Fatal("expected synced_at to be non-NULL after MarkPromptSynced")
+	}
+}
+
+func TestMarkPromptSynced_RemovesFromUnsynced(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+
+	ctx := context.Background()
+	p, err := d.SavePrompt(ctx, "proj", "content")
+	if err != nil {
+		t.Fatalf("SavePrompt: %v", err)
+	}
+
+	// Before marking: 1 unsynced
+	before, err := d.GetUnsyncedPrompts(ctx, "proj")
+	if err != nil {
+		t.Fatalf("GetUnsyncedPrompts before: %v", err)
+	}
+	if len(before) != 1 {
+		t.Fatalf("expected 1 unsynced before marking, got %d", len(before))
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := d.MarkPromptSynced(ctx, p.SyncID, now); err != nil {
+		t.Fatalf("MarkPromptSynced: %v", err)
+	}
+
+	// After marking: 0 unsynced
+	after, err := d.GetUnsyncedPrompts(ctx, "proj")
+	if err != nil {
+		t.Fatalf("GetUnsyncedPrompts after: %v", err)
+	}
+	if len(after) != 0 {
+		t.Errorf("expected 0 unsynced after marking, got %d", len(after))
+	}
+
+	// ctx used only in setup above
+	_ = ctx
+}
+
+// FIX-2: rows with sync_id='' must be excluded from GetUnsyncedPrompts.
+// Old rows created before UUID generation have sync_id=''. The server rejects
+// them with 400 (UUID validation), so they must never reach the sync pipeline.
+func TestGetUnsyncedPrompts_ExcludesEmptySyncID(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+
+	ctx := context.Background()
+	sqlDB := d.RawDB()
+
+	// Insert a legacy row with sync_id = '' directly (bypasses SavePrompt which always generates a UUID).
+	_, err = sqlDB.ExecContext(ctx,
+		`INSERT INTO user_prompts (sync_id, project, content, created_at) VALUES (?, 'proj', 'legacy prompt', CURRENT_TIMESTAMP)`,
+		"",
+	)
+	if err != nil {
+		t.Fatalf("insert legacy row with empty sync_id: %v", err)
+	}
+
+	// Insert a valid row with a proper UUID for contrast.
+	_, err = d.SavePrompt(ctx, "proj", "valid prompt")
+	if err != nil {
+		t.Fatalf("SavePrompt: %v", err)
+	}
+
+	result, err := d.GetUnsyncedPrompts(ctx, "proj")
+	if err != nil {
+		t.Fatalf("GetUnsyncedPrompts: %v", err)
+	}
+
+	// Only the valid-UUID row should be returned; the empty-sync_id row must be excluded.
+	if len(result) != 1 {
+		t.Errorf("expected 1 unsynced prompt (empty sync_id excluded), got %d", len(result))
+	}
+	if len(result) == 1 && result[0].SyncID == "" {
+		t.Error("returned row has empty sync_id — exclusion filter is not working")
+	}
+}
+
+// FIX-5: MarkPromptSynced with a non-existent syncID must return nil (non-fatal).
+func TestMarkPromptSynced_NonExistentSyncID_ReturnsNil(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+
+	ctx := context.Background()
+
+	// Call MarkPromptSynced with a UUID that doesn't exist in the DB.
+	err = d.MarkPromptSynced(ctx, "non-existent-uuid-1234-5678-abcd-ef0123456789", time.Now())
+	if err != nil {
+		t.Errorf("MarkPromptSynced on non-existent syncID should return nil, got: %v", err)
+	}
+}
+

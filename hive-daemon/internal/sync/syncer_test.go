@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,11 +16,15 @@ import (
 
 // mockSyncStore implements the SyncStore interface for testing.
 type mockSyncStore struct {
-	unsynced        []*models.Memory
-	lastSync        time.Time
-	jwt             string
-	markedSynced    []string
-	savedFromRemote []*models.Memory
+	unsynced             []*models.Memory
+	lastSync             time.Time
+	jwt                  string
+	markedSynced         []string
+	savedFromRemote      []*models.Memory
+	unsyncedPrompts      []*models.Prompt
+	unsyncedPromptsErr   error
+	markedPromptSynced   []string
+	markPromptSyncedErr  error
 }
 
 func (m *mockSyncStore) GetUnsynced(project string) ([]*models.Memory, error) {
@@ -54,17 +59,28 @@ func (m *mockSyncStore) SetJWT(token string, expiresAt time.Time) error {
 	return nil
 }
 
+func (m *mockSyncStore) GetUnsyncedPrompts(ctx context.Context, project string) ([]*models.Prompt, error) {
+	return m.unsyncedPrompts, m.unsyncedPromptsErr
+}
+
+func (m *mockSyncStore) MarkPromptSynced(ctx context.Context, syncID string, at time.Time) error {
+	m.markedPromptSynced = append(m.markedPromptSynced, syncID)
+	return m.markPromptSyncedErr
+}
+
 // TestSyncer_Run tests the complete sync cycle.
 func TestSyncer_Run(t *testing.T) {
 	tests := []struct {
-		name                string
-		setupStore          func() *mockSyncStore
-		serverHandlers      []http.HandlerFunc
-		wantErr             bool
-		wantPushed          int
-		wantPulled          int
-		wantMarkedSynced    int
-		wantSavedFromRemote int
+		name                  string
+		setupStore            func() *mockSyncStore
+		serverHandlers        []http.HandlerFunc
+		wantErr               bool
+		wantPushed            int
+		wantPulled            int
+		wantPromptsPushed     int
+		wantMarkedSynced      int
+		wantSavedFromRemote   int
+		wantMarkedPromptCount int
 	}{
 		{
 			name: "successful sync with valid JWT",
@@ -106,11 +122,13 @@ func TestSyncer_Run(t *testing.T) {
 					}
 				},
 			},
-			wantErr:             false,
-			wantPushed:          2,
-			wantPulled:          1,
-			wantMarkedSynced:    2,
-			wantSavedFromRemote: 1,
+			wantErr:               false,
+			wantPushed:            2,
+			wantPulled:            1,
+			wantPromptsPushed:     0,
+			wantMarkedSynced:      2,
+			wantSavedFromRemote:   1,
+			wantMarkedPromptCount: 0,
 		},
 		{
 			name: "sync with no JWT triggers login then sync",
@@ -145,11 +163,13 @@ func TestSyncer_Run(t *testing.T) {
 					}
 				},
 			},
-			wantErr:             false,
-			wantPushed:          1,
-			wantPulled:          0,
-			wantMarkedSynced:    1,
-			wantSavedFromRemote: 0,
+			wantErr:               false,
+			wantPushed:            1,
+			wantPulled:            0,
+			wantPromptsPushed:     0,
+			wantMarkedSynced:      1,
+			wantSavedFromRemote:   0,
+			wantMarkedPromptCount: 0,
 		},
 		{
 			name: "sync with empty unsynced list",
@@ -172,11 +192,13 @@ func TestSyncer_Run(t *testing.T) {
 					}
 				},
 			},
-			wantErr:             false,
-			wantPushed:          0,
-			wantPulled:          0,
-			wantMarkedSynced:    0,
-			wantSavedFromRemote: 0,
+			wantErr:               false,
+			wantPushed:            0,
+			wantPulled:            0,
+			wantPromptsPushed:     0,
+			wantMarkedSynced:      0,
+			wantSavedFromRemote:   0,
+			wantMarkedPromptCount: 0,
 		},
 		{
 			name: "sync with lastSync timestamp",
@@ -201,11 +223,81 @@ func TestSyncer_Run(t *testing.T) {
 					}
 				},
 			},
-			wantErr:             false,
-			wantPushed:          0,
-			wantPulled:          0,
-			wantMarkedSynced:    0,
-			wantSavedFromRemote: 0,
+			wantErr:               false,
+			wantPushed:            0,
+			wantPulled:            0,
+			wantPromptsPushed:     0,
+			wantMarkedSynced:      0,
+			wantSavedFromRemote:   0,
+			wantMarkedPromptCount: 0,
+		},
+		// S1: 3 unsynced prompts → PromptsPushed=3, MarkPromptSynced called 3 times
+		{
+			name: "S1: 3 unsynced prompts are pushed and marked synced",
+			setupStore: func() *mockSyncStore {
+				return &mockSyncStore{
+					jwt:      "valid-token",
+					unsynced: []*models.Memory{},
+					unsyncedPrompts: []*models.Prompt{
+						createTestPrompt("p-sync-1", "test-project", "first prompt"),
+						createTestPrompt("p-sync-2", "test-project", "second prompt"),
+						createTestPrompt("p-sync-3", "test-project", "third prompt"),
+					},
+				}
+			},
+			serverHandlers: []http.HandlerFunc{
+				func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/sync" {
+						w.WriteHeader(http.StatusOK)
+						resp := syncResponse{
+							Pushed:        0,
+							Pulled:        []apiMemory{},
+							Conflicts:     0,
+							PromptsPushed: 3,
+						}
+						require.NoError(t, json.NewEncoder(w).Encode(resp))
+					}
+				},
+			},
+			wantErr:               false,
+			wantPushed:            0,
+			wantPulled:            0,
+			wantPromptsPushed:     3,
+			wantMarkedSynced:      0,
+			wantSavedFromRemote:   0,
+			wantMarkedPromptCount: 3,
+		},
+		// S2: 0 unsynced prompts → PromptsPushed=0, no MarkPromptSynced calls
+		{
+			name: "S2: 0 unsynced prompts → PromptsPushed=0 no mark calls",
+			setupStore: func() *mockSyncStore {
+				return &mockSyncStore{
+					jwt:             "valid-token",
+					unsynced:        []*models.Memory{},
+					unsyncedPrompts: []*models.Prompt{},
+				}
+			},
+			serverHandlers: []http.HandlerFunc{
+				func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/sync" {
+						w.WriteHeader(http.StatusOK)
+						resp := syncResponse{
+							Pushed:        0,
+							Pulled:        []apiMemory{},
+							Conflicts:     0,
+							PromptsPushed: 0,
+						}
+						require.NoError(t, json.NewEncoder(w).Encode(resp))
+					}
+				},
+			},
+			wantErr:               false,
+			wantPushed:            0,
+			wantPulled:            0,
+			wantPromptsPushed:     0,
+			wantMarkedSynced:      0,
+			wantSavedFromRemote:   0,
+			wantMarkedPromptCount: 0,
 		},
 	}
 
@@ -237,11 +329,13 @@ func TestSyncer_Run(t *testing.T) {
 				assert.NoError(t, err)
 				assert.Equal(t, tt.wantPushed, result.Pushed)
 				assert.Equal(t, tt.wantPulled, result.Pulled)
+				assert.Equal(t, tt.wantPromptsPushed, result.PromptsPushed, "wrong PromptsPushed count")
 				assert.Equal(t, "test-project", result.Project)
 
 				// Verify store interactions
 				assert.Len(t, store.markedSynced, tt.wantMarkedSynced, "wrong number of memories marked as synced")
 				assert.Len(t, store.savedFromRemote, tt.wantSavedFromRemote, "wrong number of remote memories saved")
+				assert.Len(t, store.markedPromptSynced, tt.wantMarkedPromptCount, "wrong number of prompts marked as synced")
 			}
 		})
 	}
@@ -340,4 +434,47 @@ func TestSyncer_Run_PersistentError(t *testing.T) {
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "500", "error should mention status code")
+}
+
+// TestSyncer_MarkPromptSyncedError_NonFatal tests that a MarkPromptSynced error
+// does not abort the Sync operation (S4 scenario).
+func TestSyncer_MarkPromptSyncedError_NonFatal(t *testing.T) {
+	store := &mockSyncStore{
+		jwt:      "valid-token",
+		unsynced: []*models.Memory{},
+		unsyncedPrompts: []*models.Prompt{
+			createTestPrompt("p-sync-1", "test-project", "prompt one"),
+			createTestPrompt("p-sync-2", "test-project", "prompt two"),
+		},
+		markPromptSyncedErr: fmt.Errorf("db write failure"),
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sync" {
+			w.WriteHeader(http.StatusOK)
+			resp := syncResponse{
+				Pushed:        0,
+				Pulled:        []apiMemory{},
+				Conflicts:     0,
+				PromptsPushed: 2,
+			}
+			require.NoError(t, json.NewEncoder(w).Encode(resp))
+		}
+	}))
+	defer server.Close()
+
+	cfg := &Config{
+		APIURL:   server.URL,
+		Email:    "test@example.com",
+		Password: "password123",
+	}
+
+	syncer := New(cfg, store)
+
+	result, err := syncer.Sync(context.Background(), "test-project")
+
+	// Sync must succeed even if MarkPromptSynced fails
+	assert.NoError(t, err, "Sync should succeed even when MarkPromptSynced errors")
+	assert.NotNil(t, result)
+	assert.Equal(t, 2, result.PromptsPushed, "PromptsPushed should reflect server response")
 }

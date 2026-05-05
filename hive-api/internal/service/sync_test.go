@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -13,11 +14,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newTestSyncService(t *testing.T) (service.SyncService, *repository.MockMemoryRepository) {
+func newTestSyncService(t *testing.T) (service.SyncService, *repository.MockMemoryRepository, *repository.MockPromptRepository) {
 	t.Helper()
-	mockRepo := &repository.MockMemoryRepository{}
-	svc := service.NewSyncService(mockRepo)
-	return svc, mockRepo
+	mockMemRepo := &repository.MockMemoryRepository{}
+	mockPromptRepo := &repository.MockPromptRepository{}
+	svc := service.NewSyncService(mockMemRepo, mockPromptRepo)
+	return svc, mockMemRepo, mockPromptRepo
 }
 
 // makePayload construye un SyncMemoryPayload mínimo para tests.
@@ -59,7 +61,7 @@ func expectedMem(payload model.SyncMemoryPayload, userID string) *model.Memory {
 
 // TestSync_Push_NewMemory verifica la Rama 1: sync_id desconocido → INSERT.
 func TestSync_Push_NewMemory(t *testing.T) {
-	svc, mockRepo := newTestSyncService(t)
+	svc, mockRepo, _ := newTestSyncService(t)
 	ctx := context.Background()
 
 	payload := makePayload("client-sync-id-new", time.Now())
@@ -84,7 +86,7 @@ func TestSync_Push_NewMemory(t *testing.T) {
 
 // TestSync_Push_UpdateWins verifica la Rama 4: cliente tiene versión más nueva → UPDATE.
 func TestSync_Push_UpdateWins(t *testing.T) {
-	svc, mockRepo := newTestSyncService(t)
+	svc, mockRepo, _ := newTestSyncService(t)
 	ctx := context.Background()
 
 	payload := makePayload("sync-id-existing", time.Now())
@@ -110,7 +112,7 @@ func TestSync_Push_UpdateWins(t *testing.T) {
 // TestSync_Push_Conflict verifica las Ramas 2 y 3: el servidor rechaza la memoria del cliente.
 // Upsert devuelve (nil, false, nil) → nil = servidor ganó.
 func TestSync_Push_Conflict(t *testing.T) {
-	svc, mockRepo := newTestSyncService(t)
+	svc, mockRepo, _ := newTestSyncService(t)
 	ctx := context.Background()
 
 	payload := makePayload("sync-id-conflict", time.Now().Add(-1*time.Hour))
@@ -134,7 +136,7 @@ func TestSync_Push_Conflict(t *testing.T) {
 
 // TestSync_Push_Mixed verifica el caso realista: batch con mix de inserts, updates y conflictos.
 func TestSync_Push_Mixed(t *testing.T) {
-	svc, mockRepo := newTestSyncService(t)
+	svc, mockRepo, _ := newTestSyncService(t)
 	ctx := context.Background()
 
 	p1 := makePayload("id-new", time.Now())
@@ -169,7 +171,7 @@ func TestSync_Push_Mixed(t *testing.T) {
 
 // TestSync_Pull_FirstSync verifica el primer sync (since = zero time) → devuelve todo.
 func TestSync_Pull_FirstSync(t *testing.T) {
-	svc, mockRepo := newTestSyncService(t)
+	svc, mockRepo, _ := newTestSyncService(t)
 	ctx := context.Background()
 
 	serverMems := []*model.Memory{
@@ -191,7 +193,7 @@ func TestSync_Pull_FirstSync(t *testing.T) {
 
 // TestSync_Pull_WithExclusions verifica que los sync_ids excluidos no se devuelven.
 func TestSync_Pull_WithExclusions(t *testing.T) {
-	svc, mockRepo := newTestSyncService(t)
+	svc, mockRepo, _ := newTestSyncService(t)
 	ctx := context.Background()
 
 	since := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -208,4 +210,141 @@ func TestSync_Pull_WithExclusions(t *testing.T) {
 	assert.Len(t, mems, 1)
 	assert.Equal(t, "sync-c", mems[0].SyncID)
 	mockRepo.AssertExpectations(t)
+}
+
+// --- Tests de prompts en Push ---
+
+// makePromptPayload construye un SyncPromptPayload mínimo para tests.
+func makePromptPayload(syncID string) model.SyncPromptPayload {
+	return model.SyncPromptPayload{
+		SyncID:    syncID,
+		Project:   "jarvis-dev",
+		Content:   "Be concise and direct",
+		CreatedAt: time.Now(),
+	}
+}
+
+// expectedPrompt construye el *model.Prompt que el service pasa a promptRepo.Upsert.
+// Debe coincidir EXACTAMENTE con lo que construye Push() — si cambia la lógica allí,
+// hay que actualizar esto también.
+func expectedPrompt(payload model.SyncPromptPayload, userID string) *model.Prompt {
+	return &model.Prompt{
+		SyncID:    payload.SyncID,
+		Project:   payload.Project,
+		Content:   payload.Content,
+		CreatedBy: userID,
+		CreatedAt: payload.CreatedAt,
+	}
+}
+
+// TestSync_Push_Prompts_ThreePrompts verifica S11: 3 prompts nuevos → PromptsPushed=3.
+// Solo Upsert con saved=true (INSERT real) incrementa PromptsPushed.
+func TestSync_Push_Prompts_ThreePrompts(t *testing.T) {
+	svc, _, mockPromptRepo := newTestSyncService(t)
+	ctx := context.Background()
+
+	p1 := makePromptPayload("prompt-sync-id-1")
+	p2 := makePromptPayload("prompt-sync-id-2")
+	p3 := makePromptPayload("prompt-sync-id-3")
+
+	e1 := expectedPrompt(p1, "user-1")
+	e2 := expectedPrompt(p2, "user-1")
+	e3 := expectedPrompt(p3, "user-1")
+
+	// Todos se procesan (nuevos inserts)
+	mockPromptRepo.On("Upsert", ctx, e1).Return(true, nil)
+	mockPromptRepo.On("Upsert", ctx, e2).Return(true, nil)
+	mockPromptRepo.On("Upsert", ctx, e3).Return(true, nil)
+
+	req := model.SyncRequest{
+		Project:  "jarvis-dev",
+		Memories: []model.SyncMemoryPayload{},
+		Prompts:  []model.SyncPromptPayload{p1, p2, p3},
+	}
+
+	resp, err := svc.Push(ctx, req, "user-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, 3, resp.PromptsPushed)
+	assert.Equal(t, 0, resp.Pushed)
+	mockPromptRepo.AssertExpectations(t)
+}
+
+// TestSync_Push_Prompts_Zero verifica S9 (backward-compat): 0 prompts → PromptsPushed=0.
+// Un daemon antiguo que no envía el campo prompts no llama a promptRepo.Upsert en absoluto.
+func TestSync_Push_Prompts_Zero(t *testing.T) {
+	svc, _, mockPromptRepo := newTestSyncService(t)
+	ctx := context.Background()
+
+	// Sin prompts en el request — Upsert NO debe llamarse
+	req := model.SyncRequest{
+		Project:  "jarvis-dev",
+		Memories: []model.SyncMemoryPayload{},
+		Prompts:  nil,
+	}
+
+	resp, err := svc.Push(ctx, req, "user-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, 0, resp.PromptsPushed)
+	// mockPromptRepo.Upsert nunca fue llamado — AssertExpectations verifica eso
+	mockPromptRepo.AssertExpectations(t)
+}
+
+// TestSync_Push_Prompts_UpsertError verifica que un error en promptRepo.Upsert
+// se propaga al caller sin continuar iterando.
+func TestSync_Push_Prompts_UpsertError(t *testing.T) {
+	svc, _, mockPromptRepo := newTestSyncService(t)
+	ctx := context.Background()
+
+	p1 := makePromptPayload("prompt-will-fail")
+	e1 := expectedPrompt(p1, "user-1")
+
+	dbErr := errors.New("connection refused")
+	mockPromptRepo.On("Upsert", ctx, e1).Return(false, dbErr)
+
+	req := model.SyncRequest{
+		Project:  "jarvis-dev",
+		Memories: []model.SyncMemoryPayload{},
+		Prompts:  []model.SyncPromptPayload{p1},
+	}
+
+	resp, err := svc.Push(ctx, req, "user-1")
+
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	mockPromptRepo.AssertExpectations(t)
+}
+
+// FIX-3 + FIX-8: When Upsert returns saved=false (duplicate), PromptsPushed must NOT increment.
+// Batch: 2 new prompts (saved=true) + 1 duplicate (saved=false) → PromptsPushed=2, not 3.
+func TestSync_Push_Prompts_DuplicateDoesNotIncrementCounter(t *testing.T) {
+	svc, _, mockPromptRepo := newTestSyncService(t)
+	ctx := context.Background()
+
+	p1 := makePromptPayload("prompt-new-1")
+	p2 := makePromptPayload("prompt-new-2")
+	p3 := makePromptPayload("prompt-duplicate")
+
+	e1 := expectedPrompt(p1, "user-1")
+	e2 := expectedPrompt(p2, "user-1")
+	e3 := expectedPrompt(p3, "user-1")
+
+	// p1 and p2 are new inserts; p3 is a duplicate (ON CONFLICT DO NOTHING → saved=false)
+	mockPromptRepo.On("Upsert", ctx, e1).Return(true, nil)
+	mockPromptRepo.On("Upsert", ctx, e2).Return(true, nil)
+	mockPromptRepo.On("Upsert", ctx, e3).Return(false, nil)
+
+	req := model.SyncRequest{
+		Project:  "jarvis-dev",
+		Memories: []model.SyncMemoryPayload{},
+		Prompts:  []model.SyncPromptPayload{p1, p2, p3},
+	}
+
+	resp, err := svc.Push(ctx, req, "user-1")
+
+	require.NoError(t, err)
+	// Only 2 actual inserts → PromptsPushed=2, not 3
+	assert.Equal(t, 2, resp.PromptsPushed, "duplicate prompt must not increment PromptsPushed")
+	mockPromptRepo.AssertExpectations(t)
 }

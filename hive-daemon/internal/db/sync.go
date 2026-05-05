@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
 )
 
@@ -16,7 +17,7 @@ func (d *DB) GetUnsynced(project string) ([]*models.Memory, error) {
 SELECT id, sync_id, project, topic_key, category, title, content, tags, files_affected,
        created_by, created_at, updated_at, synced_at, confidence, impact_score
 FROM memories
-WHERE synced_at IS NULL`
+WHERE synced_at IS NULL AND sync_id != ''`
 
 	args := []any{}
 	if project != "" {
@@ -44,11 +45,17 @@ WHERE synced_at IS NULL`
 
 // MarkSynced marca una memoria como sincronizada con el servidor.
 func (d *DB) MarkSynced(syncID string, at time.Time) error {
-	_, err := d.sqlDB.Exec(
+	result, err := d.sqlDB.Exec(
 		`UPDATE memories SET synced_at = ? WHERE sync_id = ?`,
 		at.UTC().Format("2006-01-02 15:04:05"), syncID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		logger.Log.Printf("warn: MarkSynced: no row found for sync_id %s", syncID)
+	}
+	return nil
 }
 
 // SaveFromRemote guarda una memoria recibida del servidor (pull).
