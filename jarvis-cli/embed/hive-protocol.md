@@ -51,6 +51,13 @@ Also search PROACTIVELY when:
 - User mentions a topic you have no context on
 - User's FIRST message references the project, a feature, or a problem — call `mem_search` with keywords from their message to check for prior work before responding
 
+## SDD ARTIFACT BOUNDARY (MVP CONTRACT)
+
+- Reserved namespace: `sdd/{change}/{artifact}` is for automated SDD artifacts only.
+- General/conversational memory MUST use non-`sdd/` topics.
+- General memory entries MUST NOT overwrite or reuse reserved SDD artifact topic keys.
+- In `hybrid` mode, artifact payload semantics must remain equivalent across both destinations.
+
 ## SESSION CLOSE PROTOCOL (mandatory)
 
 Before ending a session or saying "done" / "listo" / "that's it", call `mem_session_summary`:

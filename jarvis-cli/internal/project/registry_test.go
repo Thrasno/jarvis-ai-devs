@@ -114,3 +114,67 @@ func TestWriteRegistry_CustomAbsent(t *testing.T) {
 		t.Error("expected ## Custom Skills section to be appended when absent")
 	}
 }
+
+func TestCanonicalRegistryPaths_DualReadSingleWrite(t *testing.T) {
+	paths := CanonicalRegistryPaths()
+
+	if paths.WritePath != ".jarvis/skill-registry.md" {
+		t.Fatalf("write path mismatch: got %q", paths.WritePath)
+	}
+
+	wantRead := []string{".jarvis/skill-registry.md", ".atl/skill-registry.md"}
+	if len(paths.ReadPaths) != len(wantRead) {
+		t.Fatalf("read paths len mismatch: got %v want %v", paths.ReadPaths, wantRead)
+	}
+	for i := range wantRead {
+		if paths.ReadPaths[i] != wantRead[i] {
+			t.Fatalf("read path mismatch at %d: got %q want %q", i, paths.ReadPaths[i], wantRead[i])
+		}
+	}
+}
+
+func TestResolveRegistryReadPath_PrefersCanonicalFallsBackLegacy(t *testing.T) {
+	t.Run("canonical exists", func(t *testing.T) {
+		dir := t.TempDir()
+		canonical := filepath.Join(dir, ".jarvis", "skill-registry.md")
+		if err := os.MkdirAll(filepath.Dir(canonical), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(canonical, []byte("canonical"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		resolved, source, err := ResolveRegistryReadPath(dir)
+		if err != nil {
+			t.Fatalf("ResolveRegistryReadPath error = %v", err)
+		}
+		if resolved != canonical {
+			t.Fatalf("resolved path mismatch: got %q want %q", resolved, canonical)
+		}
+		if source != RegistrySourceCanonical {
+			t.Fatalf("source mismatch: got %q want %q", source, RegistrySourceCanonical)
+		}
+	})
+
+	t.Run("legacy fallback", func(t *testing.T) {
+		dir := t.TempDir()
+		legacy := filepath.Join(dir, ".atl", "skill-registry.md")
+		if err := os.MkdirAll(filepath.Dir(legacy), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(legacy, []byte("legacy"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		resolved, source, err := ResolveRegistryReadPath(dir)
+		if err != nil {
+			t.Fatalf("ResolveRegistryReadPath error = %v", err)
+		}
+		if resolved != legacy {
+			t.Fatalf("resolved path mismatch: got %q want %q", resolved, legacy)
+		}
+		if source != RegistrySourceLegacy {
+			t.Fatalf("source mismatch: got %q want %q", source, RegistrySourceLegacy)
+		}
+	})
+}

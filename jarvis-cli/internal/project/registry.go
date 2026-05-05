@@ -11,14 +11,52 @@ const (
 	suggestedHeader = "## Suggested Skills"
 	customHeader    = "## Custom Skills"
 	defaultCustom   = "## Custom Skills\n\n<!-- Add your project-specific skills here -->\n"
+	canonicalPath   = ".jarvis/skill-registry.md"
+	legacyPathATL   = ".atl/skill-registry.md"
 )
+
+type RegistrySource string
+
+const (
+	RegistrySourceCanonical RegistrySource = "canonical"
+	RegistrySourceLegacy    RegistrySource = "legacy"
+	RegistrySourceDefault   RegistrySource = "default"
+)
+
+type RegistryPaths struct {
+	WritePath string
+	ReadPaths []string
+}
+
+func CanonicalRegistryPaths() RegistryPaths {
+	return RegistryPaths{
+		WritePath: canonicalPath,
+		ReadPaths: []string{canonicalPath, legacyPathATL},
+	}
+}
+
+func ResolveRegistryReadPath(dir string) (string, RegistrySource, error) {
+	paths := CanonicalRegistryPaths()
+	for i, rel := range paths.ReadPaths {
+		abs := filepath.Join(dir, rel)
+		if _, err := os.Stat(abs); err == nil {
+			if i == 0 {
+				return abs, RegistrySourceCanonical, nil
+			}
+			return abs, RegistrySourceLegacy, nil
+		}
+	}
+
+	return filepath.Join(dir, paths.WritePath), RegistrySourceDefault, nil
+}
 
 // WriteRegistry creates or updates .jarvis/skill-registry.md in dir.
 // The Suggested Skills section is always regenerated from the provided skills list.
 // The Custom Skills section is preserved as-is if it already exists.
 // The write is atomic: a .tmp file is written first, then renamed into place.
 func WriteRegistry(dir, projectName string, stack Stack, skills []string) error {
-	registryPath := filepath.Join(dir, ".jarvis", "skill-registry.md")
+	paths := CanonicalRegistryPaths()
+	registryPath := filepath.Join(dir, paths.WritePath)
 
 	if err := os.MkdirAll(filepath.Dir(registryPath), 0755); err != nil {
 		return fmt.Errorf("create .jarvis dir: %w", err)

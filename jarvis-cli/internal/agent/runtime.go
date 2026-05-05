@@ -69,6 +69,20 @@ func observeRuntime(configDir string, plan sddruntime.RuntimePlan) (sddruntime.O
 		return sddruntime.ObservedRuntime{}, err
 	}
 
+	promptSources, err := sddruntime.DefaultPromptContract(plan.Agent, "orchestrator").OrderedRequiredSources()
+	if err != nil {
+		return sddruntime.ObservedRuntime{}, err
+	}
+	promptSourceIDs := make([]string, 0, len(promptSources))
+	for _, source := range promptSources {
+		promptSourceIDs = append(promptSourceIDs, source.ID)
+	}
+
+	storeContract, err := sddruntime.ResolveRuntimeStoreContract(sddruntime.StoreModeHive)
+	if err != nil {
+		return sddruntime.ObservedRuntime{}, err
+	}
+
 	return sddruntime.ObservedRuntime{
 		Manifest: sddruntime.RuntimeManifestState{
 			Present:            manifestPresent,
@@ -77,6 +91,12 @@ func observeRuntime(configDir string, plan sddruntime.RuntimePlan) (sddruntime.O
 			ManagedArtifactIDs: presentIDs,
 		},
 		RegistryPath:             plan.Contract.RegistryPath,
+		PromptSourceIDs:          promptSourceIDs,
+		StoreMode:                string(storeContract.Mode),
+		StoreReadFrom:            storeContract.ReadFrom,
+		StoreWriteTo:             storeContract.WriteTo,
+		ArtifactTopics:           []string{"sdd/runtime/verify"},
+		GeneralMemoryTopics:      []string{"runtime/notes"},
 		ModelAssignments:         modelAssignments,
 		ResolvedModelAssignments: resolvedAssignments,
 		Artifacts:                artifacts,

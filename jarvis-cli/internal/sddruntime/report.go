@@ -5,7 +5,7 @@ type IntegrityStatus string
 const (
 	StatusPass IntegrityStatus = "pass"
 	StatusWarn IntegrityStatus = "warn"
-	StatusFail IntegrityStatus = "fail"
+	StatusFail IntegrityStatus = "blocked"
 )
 
 type DriftClass string

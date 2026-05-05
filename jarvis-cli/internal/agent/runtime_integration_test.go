@@ -2,6 +2,7 @@ package agent
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -182,6 +183,66 @@ func TestAdapters_RuntimeObservation_EquivalentContractSemantics(t *testing.T) {
 	if checkStatusByKey(claudeReport.Checks, "artifact.orchestrator.present") != checkStatusByKey(opencodeReport.Checks, "artifact.orchestrator.present") {
 		t.Fatalf("orchestrator artifact status mismatch across adapters")
 	}
+
+	parityKeys := []string{
+		"invariant.prompt.required_sources_order",
+		"invariant.store.mode",
+		"invariant.store.read_targets",
+		"invariant.store.write_targets",
+		"invariant.memory.artifact_topics_boundary",
+		"invariant.memory.general_topics_boundary",
+	}
+	for _, key := range parityKeys {
+		if checkStatusByKey(claudeReport.Checks, key) != checkStatusByKey(opencodeReport.Checks, key) {
+			t.Fatalf("parity check %q status mismatch across adapters", key)
+		}
+	}
+}
+
+func TestAdapters_RuntimeObservation_ParityFailureIsSymmetricForLayerRoleDrift(t *testing.T) {
+	base := sddruntime.ObservedRuntime{
+		Manifest: sddruntime.RuntimeManifestState{
+			Present:            true,
+			ContractVersion:    sddruntime.DefaultContract().Version,
+			ManagedArtifactIDs: []string{"instructions", "orchestrator", "skills"},
+		},
+		RegistryPath:        sddruntime.DefaultContract().RegistryPath,
+		PromptSourceIDs:     []string{"layer2.persona", "layer1.behavior", "skill.sdd-orchestrator", "registry.compact-rules", "protocol.hive"},
+		StoreMode:           "hybrid",
+		StoreReadFrom:       []string{"hive", "openspec"},
+		StoreWriteTo:        []string{"hive", "openspec"},
+		ArtifactTopics:      []string{"sdd/jarvis-agent-parity-vs-gentle/spec"},
+		GeneralMemoryTopics: []string{"runtime/notes"},
+		ModelAssignments: map[string]string{
+			"default":      "sonnet",
+			"orchestrator": "opus",
+			"sdd-apply":    "sonnet",
+		},
+		Artifacts: map[string]sddruntime.ObservedArtifact{
+			"instructions": {Exists: true, MarkersValid: true},
+			"orchestrator": {Exists: true},
+			"skills":       {Exists: true},
+		},
+	}
+
+	claudeReport := sddruntime.Verify("claude", base)
+	opencodeReport := sddruntime.Verify("opencode", base)
+
+	for _, report := range []struct {
+		name string
+		r    sddruntime.IntegrityReport
+	}{
+		{name: "claude", r: claudeReport},
+		{name: "opencode", r: opencodeReport},
+	} {
+		if report.r.Status != sddruntime.StatusFail {
+			t.Fatalf("%s expected blocked status for layer-role parity drift, got %q", report.name, report.r.Status)
+		}
+		check := checkStatusByKey(report.r.Checks, "invariant.prompt.required_sources_order")
+		if check != sddruntime.StatusFail {
+			t.Fatalf("%s expected required source ordering check fail, got %q", report.name, check)
+		}
+	}
 }
 
 func TestObserveRuntime_ParsesRenderedOrchestratorAssignments(t *testing.T) {
@@ -292,6 +353,56 @@ func TestObserveRuntime_FallbackIgnoresStaleLegacyContractAssignments(t *testing
 
 			if got := observed.ModelAssignments[tt.wantPhase]; got != tt.wantModel {
 				t.Fatalf("phase %q model = %q, want %q", tt.wantPhase, got, tt.wantModel)
+			}
+		})
+	}
+}
+
+func TestObserveRuntime_UsesConfiguredStoreModeContract(t *testing.T) {
+	tests := []struct {
+		name      string
+		storeMode string
+		wantRead  []string
+		wantWrite []string
+	}{
+		{name: "hive", storeMode: "hive", wantRead: []string{"hive"}, wantWrite: []string{"hive"}},
+		{name: "openspec", storeMode: "openspec", wantRead: []string{"openspec"}, wantWrite: []string{"openspec"}},
+		{name: "hybrid", storeMode: "hybrid", wantRead: []string{"hive", "openspec"}, wantWrite: []string{"hive", "openspec"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("JARVIS_SDD_STORE_MODE", tt.storeMode)
+
+			home := t.TempDir()
+			a := &OpenCodeAgent{home: home, templatesFS: testTemplatesFS}
+			if err := os.MkdirAll(a.ConfigDir(), 0755); err != nil {
+				t.Fatalf("mkdir config dir: %v", err)
+			}
+			if err := a.WriteInstructions("# Layer1", "# Layer2", nil); err != nil {
+				t.Fatalf("WriteInstructions: %v", err)
+			}
+			if err := a.InstallOrchestrator([]byte("# orchestrator")); err != nil {
+				t.Fatalf("InstallOrchestrator: %v", err)
+			}
+			skillsFS := fstest.MapFS{"_shared/SKILL.md": {Data: []byte("# shared")}}
+			if err := a.InstallSkills(skillsFS, nil); err != nil {
+				t.Fatalf("InstallSkills: %v", err)
+			}
+
+			observed, err := a.ObserveRuntime()
+			if err != nil {
+				t.Fatalf("ObserveRuntime: %v", err)
+			}
+
+			if observed.StoreMode != tt.storeMode {
+				t.Fatalf("StoreMode = %q, want %q", observed.StoreMode, tt.storeMode)
+			}
+			if got := strings.Join(observed.StoreReadFrom, ","); got != strings.Join(tt.wantRead, ",") {
+				t.Fatalf("StoreReadFrom = %v, want %v", observed.StoreReadFrom, tt.wantRead)
+			}
+			if got := strings.Join(observed.StoreWriteTo, ","); got != strings.Join(tt.wantWrite, ",") {
+				t.Fatalf("StoreWriteTo = %v, want %v", observed.StoreWriteTo, tt.wantWrite)
 			}
 		})
 	}

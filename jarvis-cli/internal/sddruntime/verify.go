@@ -1,6 +1,9 @@
 package sddruntime
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 type RuntimeManifestState struct {
 	Present            bool
@@ -18,6 +21,12 @@ type ObservedArtifact struct {
 type ObservedRuntime struct {
 	Manifest                 RuntimeManifestState
 	RegistryPath             string
+	PromptSourceIDs          []string
+	StoreMode                string
+	StoreReadFrom            []string
+	StoreWriteTo             []string
+	ArtifactTopics           []string
+	GeneralMemoryTopics      []string
 	ModelAssignments         map[string]string
 	ResolvedModelAssignments map[string]string
 	Artifacts                map[string]ObservedArtifact
@@ -30,13 +39,88 @@ func Verify(agent string, observed ObservedRuntime) IntegrityReport {
 	report := NewIntegrityReport(agent, contract)
 
 	verifyManifest(&report, contract, observed.Manifest)
+	verifyPromptInvariants(&report, observed)
+	verifyStoreInvariants(&report, observed)
 	verifyRegistryInvariant(&report, contract, observed.RegistryPath)
+	verifyMemoryTopicInvariants(&report, observed)
 	verifyModelInvariants(&report, contract, observed)
 	verifyManagedArtifacts(&report, contract, observed.Artifacts)
 	verifyNonOwnedDrift(&report, observed.NonOwnedChanges)
 	verifyUnknownDrift(&report, observed.UnknownChanges)
 
 	return report
+}
+
+func verifyPromptInvariants(report *IntegrityReport, observed ObservedRuntime) {
+	expectedSources, err := DefaultPromptContract(report.Agent, "orchestrator").OrderedRequiredSources()
+	if err != nil {
+		report.AddCheck(CheckResult{Key: "invariant.prompt.required_sources_order", Status: StatusFail, DriftClass: DriftOwned, Expected: "canonical ordered required source ids", Observed: "prompt contract resolution error", Message: "failed to resolve canonical prompt contract"})
+		return
+	}
+
+	expectedIDs := make([]string, 0, len(expectedSources))
+	for _, source := range expectedSources {
+		expectedIDs = append(expectedIDs, source.ID)
+	}
+
+	status := StatusPass
+	message := "prompt source composition invariant matches canonical required ordering"
+	if strings.Join(observed.PromptSourceIDs, "|") != strings.Join(expectedIDs, "|") {
+		status = StatusFail
+		message = "prompt source composition drift detected (missing/extra/reordered sources)"
+	}
+
+	report.AddCheck(CheckResult{Key: "invariant.prompt.required_sources_order", Status: status, DriftClass: driftClassFromStatus(status), Expected: strings.Join(expectedIDs, ","), Observed: strings.Join(observed.PromptSourceIDs, ","), Message: message})
+}
+
+func verifyStoreInvariants(report *IntegrityReport, observed ObservedRuntime) {
+	resolved, err := ResolveStoreContract(observed.StoreMode)
+	if err != nil {
+		report.AddCheck(CheckResult{Key: "invariant.store.mode", Status: StatusFail, DriftClass: DriftOwned, Expected: "hive|openspec|hybrid", Observed: observed.StoreMode, Message: "store mode drift: unsupported mode"})
+		return
+	}
+
+	readStatus := StatusPass
+	readMsg := "store contract read targets match mode contract"
+	if strings.Join(observed.StoreReadFrom, "|") != strings.Join(resolved.ReadFrom, "|") {
+		readStatus = StatusFail
+		readMsg = "store contract read-target drift detected"
+	}
+	report.AddCheck(CheckResult{Key: "invariant.store.read_targets", Status: readStatus, DriftClass: driftClassFromStatus(readStatus), Expected: strings.Join(resolved.ReadFrom, ","), Observed: strings.Join(observed.StoreReadFrom, ","), Message: readMsg})
+
+	writeStatus := StatusPass
+	writeMsg := "store contract write targets match mode contract"
+	if strings.Join(observed.StoreWriteTo, "|") != strings.Join(resolved.WriteTo, "|") {
+		writeStatus = StatusFail
+		writeMsg = "store contract write-target drift detected"
+	}
+	report.AddCheck(CheckResult{Key: "invariant.store.write_targets", Status: writeStatus, DriftClass: driftClassFromStatus(writeStatus), Expected: strings.Join(resolved.WriteTo, ","), Observed: strings.Join(observed.StoreWriteTo, ","), Message: writeMsg})
+
+	report.AddCheck(CheckResult{Key: "invariant.store.mode", Status: StatusPass, DriftClass: DriftNone, Expected: "hive|openspec|hybrid", Observed: string(resolved.Mode), Message: "store mode invariant accepted"})
+}
+
+func verifyMemoryTopicInvariants(report *IntegrityReport, observed ObservedRuntime) {
+	artifactStatus := StatusPass
+	artifactObserved := "all topics valid"
+	for _, topic := range observed.ArtifactTopics {
+		if !IsSDDArtifactTopic(topic) {
+			artifactStatus = StatusFail
+			artifactObserved = topic
+			break
+		}
+	}
+	report.AddCheck(CheckResult{Key: "invariant.memory.artifact_topics_boundary", Status: artifactStatus, DriftClass: driftClassFromStatus(artifactStatus), Expected: "sdd/{change}/{artifact}", Observed: artifactObserved, Message: "artifact memory topics must stay within SDD artifact topic boundary"})
+
+	generalStatus := StatusPass
+	generalObserved := "no sdd/* topic leakage"
+	for _, topic := range observed.GeneralMemoryTopics {
+		if IsSDDArtifactTopic(topic) || strings.HasPrefix(topic, "sdd/") {
+			generalStatus = StatusFail
+			generalObserved = topic
+			break
+		}
+	}
+	report.AddCheck(CheckResult{Key: "invariant.memory.general_topics_boundary", Status: generalStatus, DriftClass: driftClassFromStatus(generalStatus), Expected: "non-sdd topics", Observed: generalObserved, Message: "general memory topics must not reuse reserved sdd artifact namespace"})
 }
 
 func verifyUnknownDrift(report *IntegrityReport, notes []string) {

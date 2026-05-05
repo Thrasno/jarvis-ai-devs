@@ -46,13 +46,23 @@ func (e *Engine) Verify(provider string) (VerifyResult, error) {
 	if err != nil {
 		return VerifyResult{}, err
 	}
+	storeContract, err := sddruntime.ResolveRuntimeStoreContract(sddruntime.StoreModeHive)
+	if err != nil {
+		return VerifyResult{}, err
+	}
 	report := sddruntime.Verify(provider, sddruntime.ObservedRuntime{
-		Manifest:         sddruntime.RuntimeManifestState{Present: true, ContractVersion: sddruntime.DefaultContract().Version, ManagedArtifactIDs: []string{"instructions", "orchestrator", "skills"}},
-		RegistryPath:     sddruntime.DefaultContract().RegistryPath,
-		ModelAssignments: sddruntime.DefaultContract().ModelAssignments,
-		Artifacts:        observed.Artifacts,
-		NonOwnedChanges:  observed.NonOwnedChanges,
-		UnknownChanges:   observed.UnknownChanges,
+		Manifest:            sddruntime.RuntimeManifestState{Present: true, ContractVersion: sddruntime.DefaultContract().Version, ManagedArtifactIDs: []string{"instructions", "orchestrator", "skills"}},
+		RegistryPath:        sddruntime.DefaultContract().RegistryPath,
+		PromptSourceIDs:     []string{"layer1.behavior", "layer2.persona", "skill.sdd-orchestrator", "registry.compact-rules", "protocol.hive"},
+		StoreMode:           string(storeContract.Mode),
+		StoreReadFrom:       storeContract.ReadFrom,
+		StoreWriteTo:        storeContract.WriteTo,
+		ArtifactTopics:      []string{"sdd/runtime/verify"},
+		GeneralMemoryTopics: []string{"runtime/notes"},
+		ModelAssignments:    sddruntime.DefaultContract().ModelAssignments,
+		Artifacts:           observed.Artifacts,
+		NonOwnedChanges:     observed.NonOwnedChanges,
+		UnknownChanges:      observed.UnknownChanges,
 	})
 	return VerifyResult{Status: report.Status, Report: report}, nil
 }

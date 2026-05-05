@@ -18,6 +18,12 @@ func TestVerify_PassReportForCompliantRuntime(t *testing.T) {
 			ManagedArtifactIDs: []string{"instructions", "orchestrator", "skills"},
 		},
 		RegistryPath:     plan.Contract.RegistryPath,
+		PromptSourceIDs:  []string{"layer1.behavior", "layer2.persona", "skill.sdd-orchestrator", "registry.compact-rules", "protocol.hive"},
+		StoreMode:        "hybrid",
+		StoreReadFrom:    []string{"hive", "openspec"},
+		StoreWriteTo:     []string{"hive", "openspec"},
+		ArtifactTopics:   []string{"sdd/jarvis-agent-parity-vs-gentle/spec"},
+		GeneralMemoryTopics: []string{"runtime/notes"},
 		ModelAssignments: cloneModelAssignments(plan.Contract.ModelAssignments),
 		Artifacts: map[string]ObservedArtifact{
 			"instructions": {Exists: true, MarkersValid: true},
@@ -72,6 +78,84 @@ func TestVerify_FailsOnContradictoryInvariantMismatch(t *testing.T) {
 	}
 	if check.Observed != ".jarvis/other-registry.md" {
 		t.Fatalf("unexpected observed value: %q", check.Observed)
+	}
+}
+
+func TestVerify_ParityInvariants_PromptStoreRegistryAndMemoryBoundaries(t *testing.T) {
+	tests := []struct {
+		name            string
+		mutate          func(*ObservedRuntime)
+		wantStatus      IntegrityStatus
+		wantFailedCheck string
+	}{
+		{
+			name:       "passes when parity invariants are canonical",
+			mutate:     func(*ObservedRuntime) {},
+			wantStatus: StatusPass,
+		},
+		{
+			name: "fails when prompt source order drifts",
+			mutate: func(observed *ObservedRuntime) {
+				observed.PromptSourceIDs = []string{"layer2.persona", "layer1.behavior", "skill.sdd-orchestrator", "registry.compact-rules", "protocol.hive"}
+			},
+			wantStatus:      StatusFail,
+			wantFailedCheck: "invariant.prompt.required_sources_order",
+		},
+		{
+			name: "fails when store mode is unsupported",
+			mutate: func(observed *ObservedRuntime) {
+				observed.StoreMode = "sqlite"
+			},
+			wantStatus:      StatusFail,
+			wantFailedCheck: "invariant.store.mode",
+		},
+		{
+			name: "fails when registry path uses legacy alias",
+			mutate: func(observed *ObservedRuntime) {
+				observed.RegistryPath = ".atl/skill-registry.md"
+			},
+			wantStatus:      StatusFail,
+			wantFailedCheck: "invariant.registry_path",
+		},
+		{
+			name: "fails when general-memory topics leak into reserved sdd namespace",
+			mutate: func(observed *ObservedRuntime) {
+				observed.GeneralMemoryTopics = append(observed.GeneralMemoryTopics, "sdd/jarvis-agent-parity-vs-gentle/spec")
+			},
+			wantStatus:      StatusFail,
+			wantFailedCheck: "invariant.memory.general_topics_boundary",
+		},
+		{
+			name: "fails when artifact topic escapes metadata boundary contract",
+			mutate: func(observed *ObservedRuntime) {
+				observed.ArtifactTopics = []string{"sdd/jarvis-agent-parity-vs-gentle/spec/v2"}
+			},
+			wantStatus:      StatusFail,
+			wantFailedCheck: "invariant.memory.artifact_topics_boundary",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			observed := compliantObservedRuntime(t)
+			tt.mutate(&observed)
+
+			report := Verify("opencode", observed)
+			if report.Status != tt.wantStatus {
+				t.Fatalf("expected status %q, got %q", tt.wantStatus, report.Status)
+			}
+			if tt.wantFailedCheck == "" {
+				return
+			}
+
+			check := findCheckByKey(report.Checks, tt.wantFailedCheck)
+			if check == nil {
+				t.Fatalf("expected check %q", tt.wantFailedCheck)
+			}
+			if check.Status != StatusFail {
+				t.Fatalf("expected check %q status fail, got %q", tt.wantFailedCheck, check.Status)
+			}
+		})
 	}
 }
 
@@ -232,6 +316,12 @@ func compliantObservedRuntime(t *testing.T) ObservedRuntime {
 			ManagedArtifactIDs: []string{"instructions", "orchestrator", "skills"},
 		},
 		RegistryPath:     plan.Contract.RegistryPath,
+		PromptSourceIDs:  []string{"layer1.behavior", "layer2.persona", "skill.sdd-orchestrator", "registry.compact-rules", "protocol.hive"},
+		StoreMode:        "hybrid",
+		StoreReadFrom:    []string{"hive", "openspec"},
+		StoreWriteTo:     []string{"hive", "openspec"},
+		ArtifactTopics:   []string{"sdd/jarvis-agent-parity-vs-gentle/spec", "sdd/jarvis-agent-parity-vs-gentle/design"},
+		GeneralMemoryTopics: []string{"architecture/runtime-parity", "discovery/agent-tests"},
 		ModelAssignments: cloneModelAssignments(plan.Contract.ModelAssignments),
 		Artifacts: map[string]ObservedArtifact{
 			"instructions": {Exists: true, MarkersValid: true},

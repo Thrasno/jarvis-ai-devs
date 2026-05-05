@@ -201,6 +201,12 @@ func TestIntegrityReport_AddCheckEscalatesStatusBySeverity(t *testing.T) {
 	}
 }
 
+func TestIntegrityStatus_CriticalTokenIsBlocked(t *testing.T) {
+	if got := string(StatusFail); got != "blocked" {
+		t.Fatalf("critical gate token = %q, want %q", got, "blocked")
+	}
+}
+
 func hasArtifactID(items []ManagedArtifact, id string) bool {
 	for _, item := range items {
 		if item.ID == id {

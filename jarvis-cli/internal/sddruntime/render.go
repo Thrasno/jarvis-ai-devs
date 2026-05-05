@@ -41,7 +41,7 @@ func Build(agent string) (RuntimePlan, error) {
 			Registry:     contract.RegistryPath,
 		}
 	default:
-		return RuntimePlan{}, fmt.Errorf("unsupported agent %q", agent)
+		return RuntimePlan{}, fmt.Errorf("%w %q", ErrUnsupportedAgent, agent)
 	}
 
 	return plan, nil
@@ -97,7 +97,7 @@ func platformForAgent(agent string) (Platform, error) {
 	case "claude":
 		return PlatformClaude, nil
 	default:
-		return "", fmt.Errorf("unsupported agent %q", agent)
+		return "", fmt.Errorf("%w %q", ErrUnsupportedAgent, agent)
 	}
 }
 

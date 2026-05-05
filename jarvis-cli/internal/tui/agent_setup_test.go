@@ -184,6 +184,18 @@ func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
 			ManagedArtifactIDs: []string{"instructions", "orchestrator", "skills"},
 		},
 		RegistryPath: sddruntime.DefaultRegistryPath,
+		PromptSourceIDs: []string{
+			"layer1.behavior",
+			"layer2.persona",
+			"skill.sdd-orchestrator",
+			"registry.compact-rules",
+			"protocol.hive",
+		},
+		StoreMode:           "hybrid",
+		StoreReadFrom:       []string{"hive", "openspec"},
+		StoreWriteTo:        []string{"hive", "openspec"},
+		ArtifactTopics:      []string{"sdd/runtime/verify"},
+		GeneralMemoryTopics: []string{"runtime/notes"},
 		ModelAssignments: assignments,
 		Artifacts: map[string]sddruntime.ObservedArtifact{
 			"instructions": {Exists: true, MarkersValid: true},

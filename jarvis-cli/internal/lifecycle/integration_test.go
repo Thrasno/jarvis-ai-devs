@@ -25,7 +25,7 @@ func TestLifecycleMatrix_VerifyDoctorReconcileBackupRestoreUninstall(t *testing.
 	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"claude": adapter}, HomeDir: home})
 
 	if verifyResult, err := engine.Verify("claude"); err != nil || verifyResult.Status != sddruntime.StatusFail {
-		t.Fatalf("Verify() status=%q err=%v, want fail and nil error", verifyResult.Status, err)
+		t.Fatalf("Verify() status=%q err=%v, want blocked and nil error", verifyResult.Status, err)
 	}
 	plan, err := engine.Doctor("claude")
 	if err != nil {
