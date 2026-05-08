@@ -5,8 +5,9 @@ package sanitize
 
 import "regexp"
 
-// labelSafeRegex matches characters that are NOT valid in a sanitized label.
-var labelSafeRegex = regexp.MustCompile(`[^a-z0-9-]+`)
+// labelSafeRegex matches a single character that is NOT valid in a sanitized label.
+// Uses single-char match (no '+') so each invalid char maps to one '-', preserving count.
+var labelSafeRegex = regexp.MustCompile(`[^a-z0-9-]`)
 
 // Result is the outcome of a Strip call. Count is the number of OUTERMOST
 // private blocks replaced. Nested inner blocks contribute zero to Count.
