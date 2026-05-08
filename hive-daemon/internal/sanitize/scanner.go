@@ -66,13 +66,13 @@ func scan(s string) (clean string, count int) {
 			if nextOpen != -1 && nextOpen < nextClose {
 				// Nested open comes before close — descend.
 				depth++
-				innerTagEnd := strings.IndexByte(s[nextOpen:], '>')
+				innerTagEnd := findOpenTagEnd(s, nextOpen)
 				if innerTagEnd == -1 {
 					// Malformed inner tag — treat outer as orphan.
 					closeAt = -1
 					break
 				}
-				k = nextOpen + innerTagEnd + 1
+				k = innerTagEnd + 1
 				continue
 			}
 

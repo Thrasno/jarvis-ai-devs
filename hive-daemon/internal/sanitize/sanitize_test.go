@@ -215,6 +215,15 @@ func TestStripPhase2(t *testing.T) {
 			wantClean: "a [REDACTED]",
 			wantCount: 1,
 		},
+		{
+			// Regression for W-01: nested inner tag whose label contains '>'
+			// inside quotes must not confuse depth tracking. Without quote-aware
+			// scanning of the inner open tag, the outer block would close early.
+			name:      "#31 nested inner with label containing > inside quotes",
+			input:     `<private label="outer">a <private label="a>b">inner</private> tail</private>`,
+			wantClean: "[REDACTED:outer]",
+			wantCount: 1,
+		},
 	}
 
 	for _, tc := range tests {
