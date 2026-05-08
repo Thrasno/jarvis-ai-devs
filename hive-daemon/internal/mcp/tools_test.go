@@ -1487,6 +1487,10 @@ func TestMemSessionSummary_PrivateTagInContent_StripsAndReturnsCount(t *testing.
 	if saved.Content != "## Goal\nFixed [REDACTED] bug" {
 		t.Errorf("stored content = %q, want %q", saved.Content, "## Goal\nFixed [REDACTED] bug")
 	}
+	// Title must be derived from stripped content — never the raw input.
+	if strings.Contains(saved.Title, "secret") || strings.Contains(saved.Title, "<private>") {
+		t.Errorf("title leaked raw content: got %q", saved.Title)
+	}
 
 	// The first content item should be parseable JSON containing stripped fields.
 	raw := textContent(t, res)
@@ -1513,6 +1517,42 @@ func TestMemSessionSummary_PrivateTagInContent_StripsAndReturnsCount(t *testing.
 	}
 	if count := body["stripped_count"]; count != float64(1) {
 		t.Errorf("stripped_count = %v, want 1", count)
+	}
+}
+
+// T-06a-9: memSaveHandler — 2-level nested blocks pass correctly through handler boundary
+func TestMemSave_NestedPrivateBlocks_StripsAndReturnsCount(t *testing.T) {
+	var saved *models.Memory
+	store := &mockStore{
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			saved = m
+			return 1, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_save", map[string]any{
+		"title":   "Nested test",
+		"content": "before <private>outer <private>inner</private> tail</private> after",
+		"type":    "decision",
+		"project": "proj",
+	})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	if saved == nil {
+		t.Fatal("SaveMemory was not called")
+	}
+	if saved.Content != "before [REDACTED] after" {
+		t.Errorf("stored content = %q, want %q", saved.Content, "before [REDACTED] after")
+	}
+	body := decodeJSONResponse(t, res)
+	if stripped := body["stripped"]; stripped != true {
+		t.Errorf("stripped = %v, want true", stripped)
+	}
+	if count := body["stripped_count"]; count != float64(1) {
+		t.Errorf("stripped_count = %v, want 1 (nested blocks count as 1 outermost)", count)
 	}
 }
 
