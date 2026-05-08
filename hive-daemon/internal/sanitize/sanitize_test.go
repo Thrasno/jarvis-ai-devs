@@ -133,6 +133,103 @@ func TestStrip(t *testing.T) {
 	}
 }
 
+// TestStripPhase2 covers nested blocks and orphan tag handling.
+func TestStripPhase2(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantClean string
+		wantCount int
+	}{
+		{
+			name:      "#17 2-level nest no labels",
+			input:     "<private>a <private>b</private> c</private>",
+			wantClean: "[REDACTED]",
+			wantCount: 1,
+		},
+		{
+			name:      "#18 2-level nest outer+inner labelled -> outer label wins",
+			input:     `<private label="outer">a<private label="inner">b</private>c</private>`,
+			wantClean: "[REDACTED:outer]",
+			wantCount: 1,
+		},
+		{
+			name:      "#19 2-level nest outer no label inner labelled -> bare marker",
+			input:     `<private>a<private label="inner">b</private>c</private>`,
+			wantClean: "[REDACTED]",
+			wantCount: 1,
+		},
+		{
+			name:      "#20 2-level nest outer labelled inner no label -> outer label",
+			input:     `<private label="outer">a<private>b</private>c</private>`,
+			wantClean: "[REDACTED:outer]",
+			wantCount: 1,
+		},
+		{
+			name:      "#21 3-level nest",
+			input:     "<private>a <private>b <private>c</private> d</private> e</private>",
+			wantClean: "[REDACTED]",
+			wantCount: 1,
+		},
+		{
+			name:      "#22 nested + adjacent sibling -> count=2",
+			input:     "<private>a <private>b</private> c</private> X <private>d</private>",
+			wantClean: "[REDACTED] X [REDACTED]",
+			wantCount: 2,
+		},
+		{
+			name:      "#24 orphan open no close -> strip to EOF count=1",
+			input:     "hi <private>no close",
+			wantClean: "hi [REDACTED]",
+			wantCount: 1,
+		},
+		{
+			name:      "#25 orphan close no open -> literal text count=0",
+			input:     "hello </private> world",
+			wantClean: "hello </private> world",
+			wantCount: 0,
+		},
+		{
+			name:      "#26 mixed orphan close + valid block -> count=1",
+			input:     "</private> then <private>secret</private>",
+			wantClean: "</private> then [REDACTED]",
+			wantCount: 1,
+		},
+		{
+			name:      "#27 idempotency: marker not re-processed",
+			input:     "a [REDACTED] b",
+			wantClean: "a [REDACTED] b",
+			wantCount: 0,
+		},
+		{
+			name: "#28 label injection via </private> inside attr -> sanitized slug no leak",
+			// label="</private>" -> sanitizeLabel lowercases, replaces '<', '/', '>' each with '-'
+			// -> "--private-"; inner content "x" is NOT leaked.
+			input:     `<private label="</private>">x</private>`,
+			wantClean: "[REDACTED:--private-]",
+			wantCount: 1,
+		},
+		{
+			name:      "#29 tag-like substring without close angle -> orphan open",
+			input:     "a <private no-angle",
+			wantClean: "a [REDACTED]",
+			wantCount: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := sanitize.Strip(tc.input)
+			if r.Clean != tc.wantClean {
+				t.Errorf("Clean: got %q, want %q", r.Clean, tc.wantClean)
+			}
+			if r.Count != tc.wantCount {
+				t.Errorf("Count: got %d, want %d", r.Count, tc.wantCount)
+			}
+		})
+	}
+}
+
 // TestSanitizeLabel tests label normalization via Strip's observable output.
 // We test sanitizeLabel indirectly through Strip since it's unexported.
 func TestSanitizeLabel(t *testing.T) {

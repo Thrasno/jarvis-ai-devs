@@ -32,8 +32,8 @@ func scan(s string) (clean string, count int) {
 		// Copy text before the open tag verbatim.
 		out.WriteString(s[i:j])
 
-		// Locate end of opening tag '>'.
-		tagEnd := strings.IndexByte(s[j:], '>')
+		// Locate end of opening tag '>'. Must skip '>' inside quoted attribute values.
+		tagEnd := findOpenTagEnd(s, j)
 		if tagEnd == -1 {
 			// No closing '>' — orphan open: consume to EOF, emit marker, done.
 			label := sanitizeLabel(extractLabel(s[j:]))
@@ -41,7 +41,6 @@ func scan(s string) (clean string, count int) {
 			count++
 			break
 		}
-		tagEnd = j + tagEnd // absolute position of '>'
 
 		// Extract label from the opening tag span.
 		label := sanitizeLabel(extractLabel(s[j : tagEnd+1]))
@@ -172,6 +171,24 @@ func extractLabel(tagSpan string) string {
 		return ""
 	}
 	return m[1]
+}
+
+// findOpenTagEnd returns the absolute index of '>' that terminates the opening
+// tag starting at pos. It skips '>' characters that appear inside quoted
+// attribute values (e.g. label="</private>"). Returns -1 if no unquoted '>' found.
+func findOpenTagEnd(s string, pos int) int {
+	inQuote := false
+	for i := pos; i < len(s); i++ {
+		c := s[i]
+		if c == '"' {
+			inQuote = !inQuote
+			continue
+		}
+		if !inQuote && c == '>' {
+			return i
+		}
+	}
+	return -1
 }
 
 // isSpace reports whether b is an ASCII whitespace byte.
