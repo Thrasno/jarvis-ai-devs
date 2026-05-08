@@ -1473,8 +1473,10 @@ func TestMemSessionSummary_PrivateTagInContent_StripsAndReturnsCount(t *testing.
 	}
 	session := connectTestServer(t, store)
 
+	// Private tag MUST be on line 1 so titleFromContent encounters it.
+	// If title were derived from raw (un-stripped) content, the secret would leak into Title.
 	res := callTool(t, session, "mem_session_summary", map[string]any{
-		"content": "## Goal\nFixed <private>my-token</private> bug",
+		"content": "<private>my-token-secret</private> in title\nrest of content",
 		"project": "jarvis-dev",
 	})
 
@@ -1484,11 +1486,15 @@ func TestMemSessionSummary_PrivateTagInContent_StripsAndReturnsCount(t *testing.
 	if saved == nil {
 		t.Fatal("SaveMemory was not called")
 	}
-	if saved.Content != "## Goal\nFixed [REDACTED] bug" {
-		t.Errorf("stored content = %q, want %q", saved.Content, "## Goal\nFixed [REDACTED] bug")
+	wantContent := "[REDACTED] in title\nrest of content"
+	if saved.Content != wantContent {
+		t.Errorf("stored content = %q, want %q", saved.Content, wantContent)
 	}
 	// Title must be derived from stripped content — never the raw input.
-	if strings.Contains(saved.Title, "secret") || strings.Contains(saved.Title, "<private>") {
+	// Needle is the ACTUAL secret used in the fixture. A regressed implementation
+	// that derives title from raw content would produce "my-token-secret in title"
+	// and trigger this assertion.
+	if strings.Contains(saved.Title, "my-token-secret") || strings.Contains(saved.Title, "<private>") {
 		t.Errorf("title leaked raw content: got %q", saved.Title)
 	}
 
