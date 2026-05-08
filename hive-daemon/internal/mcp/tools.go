@@ -11,6 +11,7 @@ import (
 
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/sanitize"
 	hivesync "github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -147,9 +148,15 @@ func memSaveHandler(store MemoryStore, syncer SyncRunner, cfg *hivesync.Config, 
 			)), nil
 		}
 
+		// Strip private tags from title and content at the handler boundary.
+		// TopicKey is intentionally excluded — see design ADR-3.
+		titleRes := sanitize.Strip(p.Title)
+		contentRes := sanitize.Strip(p.Content)
+		strippedCount := titleRes.Count + contentRes.Count
+
 		mem := &models.Memory{
-			Title:         p.Title,
-			Content:       p.Content,
+			Title:         titleRes.Clean,
+			Content:       contentRes.Clean,
 			Category:      p.Type,
 			Project:       p.Project,
 			TopicKey:      p.TopicKey,
@@ -175,7 +182,12 @@ func memSaveHandler(store MemoryStore, syncer SyncRunner, cfg *hivesync.Config, 
 			}()
 		}
 
-		return toolJSON(map[string]any{"id": id, "status": "saved"})
+		return toolJSON(map[string]any{
+			"id":            id,
+			"status":        "saved",
+			"stripped":      strippedCount > 0,
+			"stripped_count": strippedCount,
+		})
 	}
 }
 
@@ -264,9 +276,12 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 			)), nil
 		}
 
+		// Strip private tags from content. Title is derived from stripped content (ADR-6).
+		contentRes := sanitize.Strip(p.Content)
+
 		mem := &models.Memory{
-			Title:    titleFromContent(p.Content),
-			Content:  p.Content,
+			Title:    titleFromContent(contentRes.Clean),
+			Content:  contentRes.Clean,
 			Category: "session_summary",
 			Project:  p.Project,
 		}
@@ -278,8 +293,16 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 
 		activity.RecordSave(p.Project)
 
-		responseText := fmt.Sprintf(`{"id":%d,"status":"saved"}`, id)
-		responseText += activity.SessionStats(p.Project)
+		jsonBytes, err := json.Marshal(map[string]any{
+			"id":            id,
+			"status":        "saved",
+			"stripped":      contentRes.Count > 0,
+			"stripped_count": contentRes.Count,
+		})
+		if err != nil {
+			return toolError(fmt.Errorf("marshal response: %w", err)), nil
+		}
+		responseText := string(jsonBytes) + activity.SessionStats(p.Project)
 
 		return &sdkmcp.CallToolResult{
 			Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: responseText}},
@@ -353,13 +376,19 @@ func memSavePromptHandler(prompts PromptStore) sdkmcp.ToolHandler {
 				runeCount, MaxObservationLength,
 			)), nil
 		}
-		prompt, err := prompts.SavePrompt(ctx, p.Project, p.Content)
+
+		// Strip private tags from content at the handler boundary.
+		contentRes := sanitize.Strip(p.Content)
+
+		prompt, err := prompts.SavePrompt(ctx, p.Project, contentRes.Clean)
 		if err != nil {
 			return toolError(fmt.Errorf("save failed: %w", err)), nil
 		}
 		return toolJSON(map[string]any{
-			"id":         prompt.ID,
-			"created_at": prompt.CreatedAt.Format(time.RFC3339),
+			"id":            prompt.ID,
+			"created_at":    prompt.CreatedAt.Format(time.RFC3339),
+			"stripped":      contentRes.Count > 0,
+			"stripped_count": contentRes.Count,
 		})
 	}
 }

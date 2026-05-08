@@ -1318,8 +1318,8 @@ func TestMemSave_PrivateTagInContent_StripsAndReturnsCount(t *testing.T) {
 	if saved == nil {
 		t.Fatal("SaveMemory was not called")
 	}
-	if saved.Content != "token:  end" {
-		t.Errorf("stored content = %q, want %q", saved.Content, "token:  end")
+	if saved.Content != "token: [REDACTED] end" {
+		t.Errorf("stored content = %q, want %q", saved.Content, "token: [REDACTED] end")
 	}
 	body := decodeJSONResponse(t, res)
 	if stripped := body["stripped"]; stripped != true {

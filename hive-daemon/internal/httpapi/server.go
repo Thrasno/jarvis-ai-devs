@@ -12,6 +12,7 @@ import (
 
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/sanitize"
 )
 
 // PromptStore is the minimal interface httpapi needs.
@@ -116,7 +117,10 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prompt, err := s.prompts.SavePrompt(r.Context(), body.Project, body.Content)
+	// Strip private tags from content at the handler boundary.
+	contentRes := sanitize.Strip(body.Content)
+
+	prompt, err := s.prompts.SavePrompt(r.Context(), body.Project, contentRes.Clean)
 	if err != nil {
 		logger.Log.Printf("save prompt: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -126,7 +130,9 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"id":         prompt.ID,
-		"created_at": prompt.CreatedAt.Format(time.RFC3339),
+		"id":            prompt.ID,
+		"created_at":    prompt.CreatedAt.Format(time.RFC3339),
+		"stripped":      contentRes.Count > 0,
+		"stripped_count": contentRes.Count,
 	})
 }
