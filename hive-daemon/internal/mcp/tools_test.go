@@ -1263,3 +1263,298 @@ func TestMemSavePrompt_WithoutProject_ReturnsError(t *testing.T) {
 		t.Error("SavePrompt should NOT be called when project is missing")
 	}
 }
+
+// ─── T-06: Private-tag stripping — handler integration tests ─────────────────
+
+// T-06a-1: memSaveHandler — no private tags → stripped: false, stripped_count: 0
+func TestMemSave_NoPrivateTags_ReturnsStrippedFalse(t *testing.T) {
+	store := &mockStore{
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			return 42, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_save", map[string]any{
+		"title":   "Clean Title",
+		"content": "No private tags here",
+		"type":    "decision",
+		"project": "proj",
+	})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	body := decodeJSONResponse(t, res)
+	if stripped, ok := body["stripped"]; !ok || stripped != false {
+		t.Errorf("stripped = %v, want false", body["stripped"])
+	}
+	if count, ok := body["stripped_count"]; !ok || count != float64(0) {
+		t.Errorf("stripped_count = %v, want 0", body["stripped_count"])
+	}
+}
+
+// T-06a-2: memSaveHandler — private tag in content → stored stripped, response stripped: true, stripped_count: 1
+func TestMemSave_PrivateTagInContent_StripsAndReturnsCount(t *testing.T) {
+	var saved *models.Memory
+	store := &mockStore{
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			saved = m
+			return 1, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_save", map[string]any{
+		"title":   "My Note",
+		"content": "token: <private>secret123</private> end",
+		"type":    "decision",
+		"project": "proj",
+	})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	if saved == nil {
+		t.Fatal("SaveMemory was not called")
+	}
+	if saved.Content != "token:  end" {
+		t.Errorf("stored content = %q, want %q", saved.Content, "token:  end")
+	}
+	body := decodeJSONResponse(t, res)
+	if stripped := body["stripped"]; stripped != true {
+		t.Errorf("stripped = %v, want true", stripped)
+	}
+	if count := body["stripped_count"]; count != float64(1) {
+		t.Errorf("stripped_count = %v, want 1", count)
+	}
+}
+
+// T-06a-3: memSaveHandler — private blocks in title (1) AND content (2) → stripped_count: 3
+func TestMemSave_PrivateTagsInTitleAndContent_AggregatesCounts(t *testing.T) {
+	var saved *models.Memory
+	store := &mockStore{
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			saved = m
+			return 1, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_save", map[string]any{
+		"title":   "title <private>X</private>",
+		"content": "<private>A</private> and <private>B</private>",
+		"type":    "decision",
+		"project": "proj",
+	})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	if saved == nil {
+		t.Fatal("SaveMemory was not called")
+	}
+	if saved.Title != "title [REDACTED]" {
+		t.Errorf("stored title = %q, want %q", saved.Title, "title [REDACTED]")
+	}
+	if saved.Content != "[REDACTED] and [REDACTED]" {
+		t.Errorf("stored content = %q, want %q", saved.Content, "[REDACTED] and [REDACTED]")
+	}
+	body := decodeJSONResponse(t, res)
+	if stripped := body["stripped"]; stripped != true {
+		t.Errorf("stripped = %v, want true", stripped)
+	}
+	if count := body["stripped_count"]; count != float64(3) {
+		t.Errorf("stripped_count = %v, want 3", count)
+	}
+}
+
+// T-06a-4: memSaveHandler — topic_key containing <private> → NOT stripped, stored verbatim
+func TestMemSave_TopicKeyWithPrivateTag_NotStripped(t *testing.T) {
+	var saved *models.Memory
+	store := &mockStore{
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			saved = m
+			return 1, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	topicKey := "sdd/<private>foo</private>/key"
+	res := callTool(t, session, "mem_save", map[string]any{
+		"title":     "title",
+		"content":   "clean content",
+		"type":      "decision",
+		"project":   "proj",
+		"topic_key": topicKey,
+	})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	if saved == nil {
+		t.Fatal("SaveMemory was not called")
+	}
+	if saved.TopicKey == nil || *saved.TopicKey != topicKey {
+		t.Errorf("stored topic_key = %v, want %q (must not be modified)", saved.TopicKey, topicKey)
+	}
+	// Content has no tags → stripped_count: 0
+	body := decodeJSONResponse(t, res)
+	if count := body["stripped_count"]; count != float64(0) {
+		t.Errorf("stripped_count = %v, want 0 (topic_key must not be counted)", count)
+	}
+}
+
+// T-06a-5: memSavePromptHandler — private tag in content → stripped on persistence, response has stripped/stripped_count
+func TestMemSavePrompt_PrivateTagInContent_StripsAndReturnsCount(t *testing.T) {
+	var savedContent string
+	ps := &mockStore{
+		savePromptFn: func(_ context.Context, _, content string) (*models.Prompt, error) {
+			savedContent = content
+			return &models.Prompt{ID: 5, Content: content, CreatedAt: time.Now()}, nil
+		},
+	}
+	session := connectWithPrompts(t, ps)
+
+	res := callTool(t, session, "mem_save_prompt", map[string]any{
+		"content": "my token <private>tok123</private> here",
+		"project": "proj",
+	})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	if savedContent != "my token [REDACTED] here" {
+		t.Errorf("stored content = %q, want %q", savedContent, "my token [REDACTED] here")
+	}
+	body := decodeJSONResponse(t, res)
+	if stripped := body["stripped"]; stripped != true {
+		t.Errorf("stripped = %v, want true", stripped)
+	}
+	if count := body["stripped_count"]; count != float64(1) {
+		t.Errorf("stripped_count = %v, want 1", count)
+	}
+}
+
+// T-06a-6: memSavePromptHandler — no private tags → stripped: false, stripped_count: 0
+func TestMemSavePrompt_NoPrivateTags_ReturnsStrippedFalse(t *testing.T) {
+	ps := &mockStore{
+		savePromptFn: func(_ context.Context, _, content string) (*models.Prompt, error) {
+			return &models.Prompt{ID: 1, Content: content, CreatedAt: time.Now()}, nil
+		},
+	}
+	session := connectWithPrompts(t, ps)
+
+	res := callTool(t, session, "mem_save_prompt", map[string]any{
+		"content": "plain content with no tags",
+		"project": "proj",
+	})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	body := decodeJSONResponse(t, res)
+	if stripped := body["stripped"]; stripped != false {
+		t.Errorf("stripped = %v, want false", stripped)
+	}
+	if count := body["stripped_count"]; count != float64(0) {
+		t.Errorf("stripped_count = %v, want 0", count)
+	}
+}
+
+// T-06a-7: memSessionSummaryHandler — private tag in content → stripped, response has stripped/stripped_count
+func TestMemSessionSummary_PrivateTagInContent_StripsAndReturnsCount(t *testing.T) {
+	var saved *models.Memory
+	store := &mockStore{
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			saved = m
+			return 10, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_session_summary", map[string]any{
+		"content": "## Goal\nFixed <private>my-token</private> bug",
+		"project": "jarvis-dev",
+	})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	if saved == nil {
+		t.Fatal("SaveMemory was not called")
+	}
+	if saved.Content != "## Goal\nFixed [REDACTED] bug" {
+		t.Errorf("stored content = %q, want %q", saved.Content, "## Goal\nFixed [REDACTED] bug")
+	}
+
+	// The first content item should be parseable JSON containing stripped fields.
+	raw := textContent(t, res)
+	// The response is JSON + optional footer from SessionStats. Parse just the JSON prefix.
+	var jsonPart string
+	for i, c := range raw {
+		if c == '\n' && i > 0 {
+			jsonPart = raw[:i]
+			break
+		}
+	}
+	if jsonPart == "" {
+		jsonPart = raw
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(jsonPart), &body); err != nil {
+		// Try the full text as JSON (no footer case)
+		if err2 := json.Unmarshal([]byte(raw), &body); err2 != nil {
+			t.Fatalf("response is not valid JSON: %v — raw: %s", err, raw)
+		}
+	}
+	if stripped := body["stripped"]; stripped != true {
+		t.Errorf("stripped = %v, want true", stripped)
+	}
+	if count := body["stripped_count"]; count != float64(1) {
+		t.Errorf("stripped_count = %v, want 1", count)
+	}
+}
+
+// T-06a-8: memSessionSummaryHandler — no private tags → stripped: false, stripped_count: 0 (always present)
+func TestMemSessionSummary_NoPrivateTags_ReturnsStrippedFalse(t *testing.T) {
+	store := &mockStore{
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			return 10, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_session_summary", map[string]any{
+		"content": "## Goal\nImplemented feature",
+		"project": "jarvis-dev",
+	})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+
+	raw := textContent(t, res)
+	var jsonPart string
+	for i, c := range raw {
+		if c == '\n' && i > 0 {
+			jsonPart = raw[:i]
+			break
+		}
+	}
+	if jsonPart == "" {
+		jsonPart = raw
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(jsonPart), &body); err != nil {
+		if err2 := json.Unmarshal([]byte(raw), &body); err2 != nil {
+			t.Fatalf("response is not valid JSON: %v — raw: %s", err, raw)
+		}
+	}
+	if stripped, ok := body["stripped"]; !ok || stripped != false {
+		t.Errorf("stripped = %v, want false", body["stripped"])
+	}
+	if count, ok := body["stripped_count"]; !ok || count != float64(0) {
+		t.Errorf("stripped_count = %v, want 0", body["stripped_count"])
+	}
+}

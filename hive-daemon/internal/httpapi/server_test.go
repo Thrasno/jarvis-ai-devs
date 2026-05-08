@@ -297,3 +297,68 @@ func TestPostPrompts_EmptyProjectString_Returns400(t *testing.T) {
 		t.Error("SavePrompt should NOT be called when project is empty")
 	}
 }
+
+// ─── T-06b: /prompts HTTP endpoint private-tag stripping ─────────────────────
+
+// T-06b-1: POST /prompts with private tag in content → stored stripped, response includes stripped/stripped_count
+func TestPostPrompts_PrivateTagInContent_StripsAndReturnsCount(t *testing.T) {
+	var savedContent string
+	store := &mockPromptStore{
+		savePromptFn: func(_ context.Context, _, content string) (*models.Prompt, error) {
+			savedContent = content
+			return &models.Prompt{ID: 9, Content: content, CreatedAt: time.Now()}, nil
+		},
+	}
+	srv := newTestServer(store)
+
+	body := `{"content": "token <private>secret</private> end", "project": "jarvis-dev"}`
+	req := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	if savedContent != "token [REDACTED] end" {
+		t.Errorf("stored content = %q, want %q", savedContent, "token [REDACTED] end")
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if stripped := resp["stripped"]; stripped != true {
+		t.Errorf("stripped = %v, want true", stripped)
+	}
+	if count := resp["stripped_count"]; count != float64(1) {
+		t.Errorf("stripped_count = %v, want 1", count)
+	}
+}
+
+// T-06b-2: POST /prompts with no private tags → stripped: false, stripped_count: 0 (always present)
+func TestPostPrompts_NoPrivateTags_ReturnsStrippedFalse(t *testing.T) {
+	store := &mockPromptStore{}
+	srv := newTestServer(store)
+
+	body := `{"content": "plain content", "project": "jarvis-dev"}`
+	req := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", rr.Code)
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if stripped, ok := resp["stripped"]; !ok || stripped != false {
+		t.Errorf("stripped = %v, want false", resp["stripped"])
+	}
+	if count, ok := resp["stripped_count"]; !ok || count != float64(0) {
+		t.Errorf("stripped_count = %v, want 0", resp["stripped_count"])
+	}
+}
