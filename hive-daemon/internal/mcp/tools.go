@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -168,7 +169,9 @@ func memSaveHandler(store MemoryStore, syncer SyncRunner, cfg *hivesync.Config, 
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
-				_, _ = syncer.Sync(ctx, p.Project) // fire-and-forget
+				if _, err := syncer.Sync(ctx, p.Project); err != nil && !isQuietSyncBlocker(err) {
+					logger.Log.Printf("warn: autosync %s: %v", p.Project, err)
+				}
 			}()
 		}
 
@@ -501,6 +504,22 @@ func memSyncHandler(syncStore hivesync.SyncStore, syncer SyncRunner) sdkmcp.Tool
 
 		result, err := syncer.Sync(ctx, p.Project)
 		if err != nil {
+			if errors.Is(err, hivesync.ErrSyncInFlight) {
+				return toolJSON(map[string]any{
+					"project": p.Project,
+					"status":  "in_flight",
+				})
+			}
+
+			var backoffErr *hivesync.BackoffError
+			if errors.As(err, &backoffErr) {
+				return toolJSON(map[string]any{
+					"project":  p.Project,
+					"retry_at": backoffErr.RetryAt.UTC().Format(time.RFC3339),
+					"status":   "backoff",
+				})
+			}
+
 			return toolError(fmt.Errorf("sync failed: %w", err)), nil
 		}
 
@@ -512,6 +531,14 @@ func memSyncHandler(syncStore hivesync.SyncStore, syncer SyncRunner) sdkmcp.Tool
 			"status":    "ok",
 		})
 	}
+}
+
+func isQuietSyncBlocker(err error) bool {
+	if errors.Is(err, hivesync.ErrSyncInFlight) {
+		return true
+	}
+	var backoffErr *hivesync.BackoffError
+	return errors.As(err, &backoffErr)
 }
 
 // titleFromContent extracts the first non-empty line from markdown content,

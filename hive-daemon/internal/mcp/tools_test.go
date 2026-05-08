@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +15,30 @@ import (
 	hivesync "github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+type scriptedSyncer struct {
+	mu      sync.Mutex
+	result  *hivesync.Result
+	err     error
+	project string
+	calls   int
+}
+
+func (s *scriptedSyncer) Sync(context.Context, string) (*hivesync.Result, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	if s.result != nil {
+		return s.result, s.err
+	}
+	return &hivesync.Result{Project: s.project}, s.err
+}
+
+func (s *scriptedSyncer) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
 
 func callTool(t *testing.T, session *sdkmcp.ClientSession, name string, args map[string]any) *sdkmcp.CallToolResult {
 	t.Helper()
@@ -36,6 +62,15 @@ func textContent(t *testing.T, res *sdkmcp.CallToolResult) string {
 		t.Fatalf("expected *TextContent, got %T", res.Content[0])
 	}
 	return tc.Text
+}
+
+func decodeJSONResponse(t *testing.T, res *sdkmcp.CallToolResult) map[string]any {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal([]byte(textContent(t, res)), &body); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	return body
 }
 
 // ─── mem_save ──────────────────────────────────────────────────────────────
@@ -373,6 +408,130 @@ func TestMemSave_WithNilConfig_DoesNotCallSync(t *testing.T) {
 
 	if syncer.callCount() != 0 {
 		t.Errorf("syncer.Sync should NOT have been called when cfg is nil, got %d calls", syncer.callCount())
+	}
+}
+
+func TestMemSave_WithAutoSyncEnabled_SwallowsTypedBlockersQuietly(t *testing.T) {
+	t.Parallel()
+
+	store := &mockStore{
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			return 1, nil
+		},
+	}
+	cases := []struct {
+		name   string
+		syncer *scriptedSyncer
+	}{
+		{
+			name:   "in flight skip",
+			syncer: &scriptedSyncer{err: fmt.Errorf("skip: %w", hivesync.ErrSyncInFlight)},
+		},
+		{
+			name: "backoff skip",
+			syncer: &scriptedSyncer{err: &hivesync.BackoffError{
+				Project: "test-proj",
+				RetryAt: time.Date(2026, time.May, 8, 12, 0, 0, 0, time.UTC),
+			}},
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &hivesync.Config{AutoSync: true}
+			session := connectTestServerWithSync(t, store, cfg, tt.syncer)
+
+			res := callTool(t, session, "mem_save", map[string]any{
+				"title":   "Test Memory",
+				"content": "content",
+				"type":    "architecture",
+				"project": "test-proj",
+			})
+
+			if res.IsError {
+				t.Fatalf("expected quiet autosync skip, got error: %s", textContent(t, res))
+			}
+
+			time.Sleep(50 * time.Millisecond)
+
+			if got := tt.syncer.callCount(); got != 1 {
+				t.Fatalf("syncer.Sync call count = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestMemSync_ReturnsStructuredStatuses(t *testing.T) {
+	t.Parallel()
+
+	retryAt := time.Date(2026, time.May, 8, 12, 30, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		syncer     *scriptedSyncer
+		wantError  bool
+		wantStatus string
+		wantRetry  string
+	}{
+		{
+			name: "ok",
+			syncer: &scriptedSyncer{result: &hivesync.Result{
+				Pushed:    2,
+				Pulled:    1,
+				Conflicts: 0,
+				Project:   "test-proj",
+			}},
+			wantStatus: "ok",
+		},
+		{
+			name:       "in flight",
+			syncer:     &scriptedSyncer{err: fmt.Errorf("blocked: %w", hivesync.ErrSyncInFlight)},
+			wantStatus: "in_flight",
+		},
+		{
+			name: "backoff",
+			syncer: &scriptedSyncer{err: &hivesync.BackoffError{
+				Project: "test-proj",
+				RetryAt: retryAt,
+			}},
+			wantStatus: "backoff",
+			wantRetry:  retryAt.Format(time.RFC3339),
+		},
+		{
+			name:      "sync failure",
+			syncer:    &scriptedSyncer{err: errors.New("boom")},
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session := connectTestServerWithSync(t, &mockStore{}, nil, tt.syncer)
+
+			res := callTool(t, session, "mem_sync", map[string]any{"project": "test-proj"})
+
+			if res.IsError != tt.wantError {
+				t.Fatalf("IsError = %v, want %v; body=%s", res.IsError, tt.wantError, textContent(t, res))
+			}
+
+			if tt.wantError {
+				return
+			}
+
+			body := decodeJSONResponse(t, res)
+			if got := body["status"]; got != tt.wantStatus {
+				t.Fatalf("status = %v, want %q", got, tt.wantStatus)
+			}
+			if got := body["project"]; got != "test-proj" {
+				t.Fatalf("project = %v, want test-proj", got)
+			}
+			if tt.wantRetry != "" {
+				if got := body["retry_at"]; got != tt.wantRetry {
+					t.Fatalf("retry_at = %v, want %q", got, tt.wantRetry)
+				}
+			} else if _, ok := body["retry_at"]; ok {
+				t.Fatalf("retry_at should be omitted, got %v", body["retry_at"])
+			}
+		})
 	}
 }
 

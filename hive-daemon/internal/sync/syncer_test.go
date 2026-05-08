@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/db"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,15 +20,20 @@ import (
 
 // mockSyncStore implements the SyncStore interface for testing.
 type mockSyncStore struct {
-	unsynced             []*models.Memory
-	lastSync             time.Time
-	jwt                  string
-	markedSynced         []string
-	savedFromRemote      []*models.Memory
-	unsyncedPrompts      []*models.Prompt
-	unsyncedPromptsErr   error
-	markedPromptSynced   []string
-	markPromptSyncedErr  error
+	mu                  sync.Mutex
+	unsynced            []*models.Memory
+	lastSync            time.Time
+	jwt                 string
+	markedSynced        []string
+	savedFromRemote     []*models.Memory
+	unsyncedPrompts     []*models.Prompt
+	unsyncedPromptsErr  error
+	markedPromptSynced  []string
+	markPromptSyncedErr error
+	healthByProject     map[string]db.SyncHealth
+	recordAttemptCalls  []string
+	recordSuccessCalls  []string
+	recordFailureCalls  []string
 }
 
 func (m *mockSyncStore) GetUnsynced(project string) ([]*models.Memory, error) {
@@ -32,11 +41,15 @@ func (m *mockSyncStore) GetUnsynced(project string) ([]*models.Memory, error) {
 }
 
 func (m *mockSyncStore) MarkSynced(syncID string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.markedSynced = append(m.markedSynced, syncID)
 	return nil
 }
 
 func (m *mockSyncStore) SaveFromRemote(mem *models.Memory) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.savedFromRemote = append(m.savedFromRemote, mem)
 	return nil
 }
@@ -46,7 +59,66 @@ func (m *mockSyncStore) GetLastSync(project string) (time.Time, error) {
 }
 
 func (m *mockSyncStore) SetLastSync(project string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.lastSync = at
+	return nil
+}
+
+func (m *mockSyncStore) GetSyncHealth(project string) (db.SyncHealth, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.healthByProject == nil {
+		return db.SyncHealth{Project: project}, nil
+	}
+	health, ok := m.healthByProject[project]
+	if !ok {
+		return db.SyncHealth{Project: project}, nil
+	}
+	return health, nil
+}
+
+func (m *mockSyncStore) RecordSyncAttempt(project string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recordAttemptCalls = append(m.recordAttemptCalls, project)
+	health := m.getHealthLocked(project)
+	health.LastAttemptAt = at
+	m.healthByProject[project] = health
+	return nil
+}
+
+func (m *mockSyncStore) RecordSyncSuccess(project string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recordSuccessCalls = append(m.recordSuccessCalls, project)
+	health := m.getHealthLocked(project)
+	health.LastAttemptAt = at
+	health.LastSuccessAt = at
+	health.LastFailureAt = time.Time{}
+	health.ConsecutiveFailures = 0
+	health.BackoffUntil = time.Time{}
+	health.LastError = ""
+	m.healthByProject[project] = health
+	m.lastSync = at
+	return nil
+}
+
+func (m *mockSyncStore) RecordSyncFailure(project string, at time.Time, consecutiveFailures int, backoffUntil time.Time, syncErr error) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recordFailureCalls = append(m.recordFailureCalls, project)
+	health := m.getHealthLocked(project)
+	health.LastAttemptAt = at
+	health.LastFailureAt = at
+	health.ConsecutiveFailures = consecutiveFailures
+	health.BackoffUntil = backoffUntil
+	if syncErr != nil {
+		health.LastError = sanitizeRecordedSyncError(syncErr)
+	} else {
+		health.LastError = ""
+	}
+	m.healthByProject[project] = health
 	return nil
 }
 
@@ -64,8 +136,39 @@ func (m *mockSyncStore) GetUnsyncedPrompts(ctx context.Context, project string) 
 }
 
 func (m *mockSyncStore) MarkPromptSynced(ctx context.Context, syncID string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.markedPromptSynced = append(m.markedPromptSynced, syncID)
 	return m.markPromptSyncedErr
+}
+
+func (m *mockSyncStore) getHealthLocked(project string) db.SyncHealth {
+	if m.healthByProject == nil {
+		m.healthByProject = make(map[string]db.SyncHealth)
+	}
+	health, ok := m.healthByProject[project]
+	if !ok {
+		health = db.SyncHealth{Project: project}
+	}
+	return health
+}
+
+func sanitizeRecordedSyncError(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	message := err.Error()
+	for _, prefix := range []string{"login failed (", "sync failed ("} {
+		if len(message) >= len(prefix) && message[:len(prefix)] == prefix {
+			head, _, found := strings.Cut(strings.TrimSpace(message), ":")
+			if found {
+				return strings.TrimSpace(head)
+			}
+		}
+	}
+
+	return strings.TrimSpace(message)
 }
 
 // TestSyncer_Run tests the complete sync cycle.
@@ -477,4 +580,257 @@ func TestSyncer_MarkPromptSyncedError_NonFatal(t *testing.T) {
 	assert.NoError(t, err, "Sync should succeed even when MarkPromptSynced errors")
 	assert.NotNil(t, result)
 	assert.Equal(t, 2, result.PromptsPushed, "PromptsPushed should reflect server response")
+}
+
+func TestSyncer_Sync_HealthLifecycle(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name                     string
+		health                   db.SyncHealth
+		jitter                   time.Duration
+		serverStatus             int
+		serverBody               string
+		wantErr                  string
+		wantFailures             int
+		wantBackoff              time.Duration
+		wantLastError            string
+		wantLastErrorNotContains string
+		wantLastSuccessAt        time.Time
+		wantLastFailureAt        time.Time
+		wantRecordSuccessCalls   int
+		wantRecordFailureCalls   int
+	}{
+		{
+			name: "success resets persisted failure state",
+			health: db.SyncHealth{
+				Project:             "test-project",
+				ConsecutiveFailures: 3,
+				BackoffUntil:        baseNow.Add(-time.Minute),
+				LastFailureAt:       baseNow.Add(-2 * time.Minute),
+				LastError:           "old failure",
+			},
+			serverStatus:           http.StatusOK,
+			serverBody:             `{"pushed":0,"pulled":[],"conflicts":0}`,
+			wantFailures:           0,
+			wantBackoff:            0,
+			wantLastSuccessAt:      baseNow,
+			wantRecordSuccessCalls: 1,
+		},
+		{
+			name:                     "repeated failures grow with jitter and sanitize health",
+			health:                   db.SyncHealth{Project: "test-project", ConsecutiveFailures: 1},
+			jitter:                   10 * time.Second,
+			serverStatus:             http.StatusInternalServerError,
+			serverBody:               "upstream exploded\nsecond line",
+			wantErr:                  "sync con servidor",
+			wantFailures:             2,
+			wantBackoff:              70 * time.Second,
+			wantLastError:            "sync failed (500)",
+			wantLastErrorNotContains: "upstream exploded",
+			wantLastFailureAt:        baseNow,
+			wantRecordFailureCalls:   1,
+		},
+		{
+			name:                     "backoff delay never exceeds cap even with jitter",
+			health:                   db.SyncHealth{Project: "test-project", ConsecutiveFailures: 10},
+			jitter:                   3 * time.Minute,
+			serverStatus:             http.StatusInternalServerError,
+			serverBody:               "still failing",
+			wantErr:                  "sync con servidor",
+			wantFailures:             11,
+			wantBackoff:              15 * time.Minute,
+			wantLastError:            "sync failed (500)",
+			wantLastErrorNotContains: "still failing",
+			wantLastFailureAt:        baseNow,
+			wantRecordFailureCalls:   1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &mockSyncStore{
+				jwt:             "valid-token",
+				unsynced:        []*models.Memory{},
+				healthByProject: map[string]db.SyncHealth{"test-project": tt.health},
+			}
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/sync" {
+					t.Fatalf("unexpected path %s", r.URL.Path)
+				}
+				w.WriteHeader(tt.serverStatus)
+				_, err := w.Write([]byte(tt.serverBody))
+				require.NoError(t, err)
+			}))
+			defer server.Close()
+
+			syncer := newTestSyncer(&Config{
+				APIURL:   server.URL,
+				Email:    "test@example.com",
+				Password: "password123",
+			}, store, syncDeps{
+				now:    func() time.Time { return baseNow },
+				jitter: func(max time.Duration) time.Duration { return tt.jitter },
+			})
+
+			result, err := syncer.Sync(context.Background(), "test-project")
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.Nil(t, result)
+			} else {
+				require.NoError(t, err)
+				assert.NotNil(t, result)
+			}
+
+			health, healthErr := store.GetSyncHealth("test-project")
+			require.NoError(t, healthErr)
+			assert.Equal(t, tt.wantFailures, health.ConsecutiveFailures)
+			assert.Equal(t, tt.wantLastSuccessAt, health.LastSuccessAt)
+			assert.Equal(t, tt.wantLastFailureAt, health.LastFailureAt)
+			if tt.wantBackoff == 0 {
+				assert.True(t, health.BackoffUntil.IsZero())
+			} else {
+				assert.Equal(t, baseNow.Add(tt.wantBackoff), health.BackoffUntil)
+			}
+			assert.Len(t, store.recordSuccessCalls, tt.wantRecordSuccessCalls)
+			assert.Len(t, store.recordFailureCalls, tt.wantRecordFailureCalls)
+			if tt.wantLastError == "" {
+				assert.Empty(t, health.LastError)
+			} else {
+				assert.Equal(t, tt.wantLastError, health.LastError)
+				if tt.wantLastErrorNotContains != "" {
+					assert.NotContains(t, health.LastError, tt.wantLastErrorNotContains)
+				}
+			}
+		})
+	}
+}
+
+func TestSyncer_Sync_RespectsPersistedBackoffAfterRestart(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{
+		jwt:      "valid-token",
+		unsynced: []*models.Memory{},
+		healthByProject: map[string]db.SyncHealth{
+			"test-project": {
+				Project:             "test-project",
+				ConsecutiveFailures: 2,
+				BackoffUntil:        baseNow.Add(5 * time.Minute),
+			},
+		},
+	}
+
+	var syncCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		syncCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, err := w.Write([]byte(`{"pushed":0,"pulled":[],"conflicts":0}`))
+		require.NoError(t, err)
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{
+		APIURL:   server.URL,
+		Email:    "test@example.com",
+		Password: "password123",
+	}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	result, err := syncer.Sync(context.Background(), "test-project")
+	require.Error(t, err)
+	assert.Nil(t, result)
+	assert.ErrorIs(t, err, ErrSyncBackoff)
+
+	var backoffErr *BackoffError
+	require.ErrorAs(t, err, &backoffErr)
+	assert.Equal(t, baseNow.Add(5*time.Minute), backoffErr.RetryAt)
+	assert.Zero(t, syncCalls.Load())
+	assert.Empty(t, store.recordAttemptCalls)
+	assert.Empty(t, store.recordSuccessCalls)
+	assert.Empty(t, store.recordFailureCalls)
+}
+
+func TestSyncer_Sync_InFlightIsolation(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name          string
+		firstProject  string
+		secondProject string
+		wantSecondErr error
+		wantSyncCalls int32
+	}{
+		{
+			name:          "same project rejects second in-flight call",
+			firstProject:  "alpha",
+			secondProject: "alpha",
+			wantSecondErr: ErrSyncInFlight,
+			wantSyncCalls: 1,
+		},
+		{
+			name:          "different project stays isolated",
+			firstProject:  "alpha",
+			secondProject: "beta",
+			wantSyncCalls: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &mockSyncStore{jwt: "valid-token", unsynced: []*models.Memory{}}
+
+			started := make(chan struct{}, 2)
+			release := make(chan struct{})
+			var syncCalls atomic.Int32
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				syncCalls.Add(1)
+				started <- struct{}{}
+				<-release
+				w.WriteHeader(http.StatusOK)
+				_, err := w.Write([]byte(`{"pushed":0,"pulled":[],"conflicts":0}`))
+				require.NoError(t, err)
+			}))
+			defer server.Close()
+
+			syncer := newTestSyncer(&Config{
+				APIURL:   server.URL,
+				Email:    "test@example.com",
+				Password: "password123",
+			}, store, syncDeps{
+				now:    func() time.Time { return baseNow },
+				jitter: func(max time.Duration) time.Duration { return 0 },
+			})
+
+			firstDone := make(chan error, 1)
+			go func() {
+				_, err := syncer.Sync(context.Background(), tt.firstProject)
+				firstDone <- err
+			}()
+
+			<-started
+			if tt.wantSecondErr != nil {
+				_, secondErr := syncer.Sync(context.Background(), tt.secondProject)
+				require.Error(t, secondErr)
+				assert.ErrorIs(t, secondErr, tt.wantSecondErr)
+				close(release)
+			} else {
+				secondDone := make(chan error, 1)
+				go func() {
+					_, err := syncer.Sync(context.Background(), tt.secondProject)
+					secondDone <- err
+				}()
+				<-started
+				close(release)
+				require.NoError(t, <-secondDone)
+			}
+
+			require.NoError(t, <-firstDone)
+			assert.Equal(t, tt.wantSyncCalls, syncCalls.Load())
+		})
+	}
 }

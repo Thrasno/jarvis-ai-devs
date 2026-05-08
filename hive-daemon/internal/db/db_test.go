@@ -1,7 +1,14 @@
 package db
 
 import (
+	"database/sql"
+	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	_ "modernc.org/sqlite"
 )
 
 func TestOpen_InMemory(t *testing.T) {
@@ -134,6 +141,101 @@ func TestValidateSchema_SixTriggersAfterOpen(t *testing.T) {
 			if err != nil {
 				t.Errorf("trigger %q not found: %v", trigger, err)
 			}
+		})
+	}
+}
+
+func TestOpen_MigratesLegacySyncStateHealthColumns(t *testing.T) {
+	tests := []struct {
+		name         string
+		seedRows     func(t *testing.T, sqlDB *sql.DB)
+		assertHealth func(t *testing.T, d *DB)
+	}{
+		{
+			name: "existing auth and sync rows keep values and gain defaults",
+			seedRows: func(t *testing.T, sqlDB *sql.DB) {
+				_, err := sqlDB.Exec(`
+				CREATE TABLE sync_state (
+					project TEXT PRIMARY KEY,
+					last_sync_at DATETIME,
+					jwt_token TEXT,
+					jwt_expires_at DATETIME
+				);
+				INSERT INTO sync_state (project, last_sync_at, jwt_token, jwt_expires_at)
+				VALUES ('__auth__', NULL, 'jwt-token', '2030-01-02 03:04:05');
+				INSERT INTO sync_state (project, last_sync_at)
+				VALUES ('project-a', '2026-05-08 10:00:00');
+				`)
+				require.NoError(t, err)
+			},
+			assertHealth: func(t *testing.T, d *DB) {
+				assert.Equal(t, "jwt-token", d.GetJWT())
+
+				lastSync, err := d.GetLastSync("project-a")
+				require.NoError(t, err)
+				assert.Equal(t, time.Date(2026, 5, 8, 10, 0, 0, 0, time.UTC), lastSync)
+
+				health, err := d.GetSyncHealth("project-a")
+				require.NoError(t, err)
+				assert.Equal(t, "project-a", health.Project)
+				assert.Zero(t, health.ConsecutiveFailures)
+				assert.True(t, health.LastAttemptAt.IsZero())
+				assert.True(t, health.LastSuccessAt.IsZero())
+				assert.True(t, health.LastFailureAt.IsZero())
+				assert.True(t, health.BackoffUntil.IsZero())
+				assert.Empty(t, health.LastError)
+
+				authHealth, err := d.GetSyncHealth("__auth__")
+				require.NoError(t, err)
+				assert.Equal(t, "__auth__", authHealth.Project)
+				assert.Zero(t, authHealth.ConsecutiveFailures)
+				assert.Empty(t, authHealth.LastError)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			dbPath := filepath.Join(tmpDir, "legacy-sync-state.db")
+
+			sqlDB, err := sql.Open("sqlite", dbPath)
+			require.NoError(t, err)
+			_, err = sqlDB.Exec("CREATE TABLE memories (id INTEGER PRIMARY KEY AUTOINCREMENT, sync_id TEXT NOT NULL, project TEXT NOT NULL, topic_key TEXT, category TEXT NOT NULL DEFAULT '', title TEXT NOT NULL, content TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', files_affected TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL DEFAULT 'unknown', created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, confidence TEXT NOT NULL DEFAULT '', impact_score INTEGER NOT NULL DEFAULT 0)")
+			require.NoError(t, err)
+			_, err = sqlDB.Exec("CREATE VIRTUAL TABLE memories_fts USING fts5(title, content, tags, content='memories', content_rowid='id', tokenize='unicode61')")
+			require.NoError(t, err)
+			_, err = sqlDB.Exec("CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN INSERT INTO memories_fts(rowid, title, content, tags) VALUES (new.id, new.title, new.content, new.tags); END")
+			require.NoError(t, err)
+			_, err = sqlDB.Exec("CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN INSERT INTO memories_fts(memories_fts, rowid, title, content, tags) VALUES ('delete', old.id, old.title, old.content, old.tags); INSERT INTO memories_fts(rowid, title, content, tags) VALUES (new.id, new.title, new.content, new.tags); END")
+			require.NoError(t, err)
+			_, err = sqlDB.Exec("CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN INSERT INTO memories_fts(memories_fts, rowid, title, content, tags) VALUES ('delete', old.id, old.title, old.content, old.tags); END")
+			require.NoError(t, err)
+			_, err = sqlDB.Exec("CREATE TABLE user_prompts (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, synced_at DATETIME)")
+			require.NoError(t, err)
+			_, err = sqlDB.Exec("CREATE VIRTUAL TABLE user_prompts_fts USING fts5(content, content='user_prompts', content_rowid='id', tokenize='unicode61')")
+			require.NoError(t, err)
+			_, err = sqlDB.Exec("CREATE TRIGGER user_prompts_ai AFTER INSERT ON user_prompts BEGIN INSERT INTO user_prompts_fts(rowid, content) VALUES (new.id, new.content); END")
+			require.NoError(t, err)
+			_, err = sqlDB.Exec("CREATE TRIGGER user_prompts_au AFTER UPDATE ON user_prompts BEGIN INSERT INTO user_prompts_fts(user_prompts_fts, rowid, content) VALUES ('delete', old.id, old.content); INSERT INTO user_prompts_fts(rowid, content) VALUES (new.id, new.content); END")
+			require.NoError(t, err)
+			_, err = sqlDB.Exec("CREATE TRIGGER user_prompts_ad AFTER DELETE ON user_prompts BEGIN INSERT INTO user_prompts_fts(user_prompts_fts, rowid, content) VALUES ('delete', old.id, old.content); END")
+			require.NoError(t, err)
+
+			tt.seedRows(t, sqlDB)
+			require.NoError(t, sqlDB.Close())
+
+			d, err := Open(dbPath)
+			require.NoError(t, err)
+			defer func() { require.NoError(t, d.Close()) }()
+
+			for _, column := range []string{"last_attempt_at", "last_success_at", "last_failure_at", "consecutive_failures", "backoff_until", "last_error"} {
+				var name string
+				err = d.sqlDB.QueryRow("SELECT name FROM pragma_table_info('sync_state') WHERE name = ?", column).Scan(&name)
+				require.NoErrorf(t, err, "column %s should exist after migration", column)
+			}
+
+			tt.assertHealth(t, d)
 		})
 	}
 }

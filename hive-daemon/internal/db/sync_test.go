@@ -196,6 +196,255 @@ func TestSyncDB_JWT_UpdateExisting(t *testing.T) {
 	assert.Equal(t, token2, got)
 }
 
+func TestSyncDB_GetSyncHealth(t *testing.T) {
+	tests := []struct {
+		name      string
+		project   string
+		setupData func(t *testing.T, d *DB)
+		assertion func(t *testing.T, got SyncHealth)
+	}{
+		{
+			name:    "missing project returns zero health",
+			project: "missing-project",
+			setupData: func(t *testing.T, d *DB) {
+				t.Helper()
+			},
+			assertion: func(t *testing.T, got SyncHealth) {
+				assert.Equal(t, "missing-project", got.Project)
+				assert.True(t, got.LastAttemptAt.IsZero())
+				assert.True(t, got.LastSuccessAt.IsZero())
+				assert.True(t, got.LastFailureAt.IsZero())
+				assert.True(t, got.BackoffUntil.IsZero())
+				assert.Zero(t, got.ConsecutiveFailures)
+				assert.Empty(t, got.LastError)
+			},
+		},
+		{
+			name:    "reads persisted failure health",
+			project: "project-a",
+			setupData: func(t *testing.T, d *DB) {
+				t.Helper()
+				attemptAt := time.Date(2026, 5, 8, 11, 0, 0, 0, time.UTC)
+				backoffUntil := attemptAt.Add(2 * time.Minute)
+				err := d.RecordSyncFailure("project-a", attemptAt, 3, backoffUntil, assert.AnError)
+				require.NoError(t, err)
+			},
+			assertion: func(t *testing.T, got SyncHealth) {
+				assert.Equal(t, "project-a", got.Project)
+				assert.Equal(t, time.Date(2026, 5, 8, 11, 0, 0, 0, time.UTC), got.LastAttemptAt)
+				assert.Equal(t, time.Date(2026, 5, 8, 11, 0, 0, 0, time.UTC), got.LastFailureAt)
+				assert.Equal(t, time.Date(2026, 5, 8, 11, 2, 0, 0, time.UTC), got.BackoffUntil)
+				assert.Equal(t, 3, got.ConsecutiveFailures)
+				assert.Equal(t, assert.AnError.Error(), got.LastError)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			t.Cleanup(func() {
+				require.NoError(t, db.Close())
+			})
+
+			tt.setupData(t, db)
+
+			got, err := db.GetSyncHealth(tt.project)
+			require.NoError(t, err)
+			tt.assertion(t, got)
+		})
+	}
+}
+
+func TestSyncDB_RecordSyncHealthLifecycle(t *testing.T) {
+	tests := []struct {
+		name      string
+		record    func(t *testing.T, d *DB, at time.Time)
+		assertion func(t *testing.T, d *DB, at time.Time)
+	}{
+		{
+			name: "record attempt keeps prior failure state",
+			record: func(t *testing.T, d *DB, at time.Time) {
+				t.Helper()
+				require.NoError(t, d.RecordSyncFailure("project-a", at.Add(-time.Minute), 2, at.Add(3*time.Minute), assert.AnError))
+				require.NoError(t, d.RecordSyncAttempt("project-a", at))
+			},
+			assertion: func(t *testing.T, d *DB, at time.Time) {
+				t.Helper()
+				got, err := d.GetSyncHealth("project-a")
+				require.NoError(t, err)
+				assert.Equal(t, at, got.LastAttemptAt)
+				assert.Equal(t, at.Add(-time.Minute), got.LastFailureAt)
+				assert.Equal(t, at.Add(3*time.Minute), got.BackoffUntil)
+				assert.Equal(t, 2, got.ConsecutiveFailures)
+			},
+		},
+		{
+			name: "record success updates last sync and clears failures",
+			record: func(t *testing.T, d *DB, at time.Time) {
+				t.Helper()
+				require.NoError(t, d.RecordSyncFailure("project-a", at.Add(-time.Minute), 4, at.Add(5*time.Minute), assert.AnError))
+				require.NoError(t, d.RecordSyncSuccess("project-a", at))
+			},
+			assertion: func(t *testing.T, d *DB, at time.Time) {
+				t.Helper()
+				got, err := d.GetSyncHealth("project-a")
+				require.NoError(t, err)
+				assert.Equal(t, at, got.LastAttemptAt)
+				assert.Equal(t, at, got.LastSuccessAt)
+				assert.True(t, got.LastFailureAt.IsZero())
+				assert.True(t, got.BackoffUntil.IsZero())
+				assert.Zero(t, got.ConsecutiveFailures)
+				assert.Empty(t, got.LastError)
+
+				lastSync, err := d.GetLastSync("project-a")
+				require.NoError(t, err)
+				assert.Equal(t, at, lastSync)
+			},
+		},
+		{
+			name: "record failure sanitizes and caps stored error",
+			record: func(t *testing.T, d *DB, at time.Time) {
+				t.Helper()
+				message := "  boom\n\x00" + string([]rune{'世'}) + string([]rune{'界'})
+				for i := 0; i < 600; i++ {
+					message += "x"
+				}
+				require.NoError(t, d.RecordSyncFailure("project-a", at, 5, at.Add(15*time.Minute), assert.AnError))
+				require.NoError(t, d.RecordSyncFailure("project-a", at, 5, at.Add(15*time.Minute), wrappedError(message)))
+			},
+			assertion: func(t *testing.T, d *DB, at time.Time) {
+				t.Helper()
+				got, err := d.GetSyncHealth("project-a")
+				require.NoError(t, err)
+				assert.Equal(t, at, got.LastAttemptAt)
+				assert.Equal(t, at, got.LastFailureAt)
+				assert.Equal(t, at.Add(15*time.Minute), got.BackoffUntil)
+				assert.Equal(t, 5, got.ConsecutiveFailures)
+				assert.NotContains(t, got.LastError, "\x00")
+				assert.NotContains(t, got.LastError, "\n")
+				assert.LessOrEqual(t, len([]rune(got.LastError)), 500)
+				assert.Contains(t, got.LastError, "boom")
+			},
+		},
+		{
+			name: "record failure strips raw server body payload",
+			record: func(t *testing.T, d *DB, at time.Time) {
+				t.Helper()
+				require.NoError(t, d.RecordSyncFailure("project-a", at, 2, at.Add(70*time.Second), wrappedError("sync failed (500): upstream exploded\nsecond line")))
+			},
+			assertion: func(t *testing.T, d *DB, at time.Time) {
+				t.Helper()
+				got, err := d.GetSyncHealth("project-a")
+				require.NoError(t, err)
+				assert.Equal(t, "sync failed (500)", got.LastError)
+				assert.NotContains(t, got.LastError, "upstream exploded")
+				assert.NotContains(t, got.LastError, "second line")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			t.Cleanup(func() {
+				require.NoError(t, db.Close())
+			})
+
+			at := time.Date(2026, 5, 8, 11, 30, 0, 0, time.UTC)
+			tt.record(t, db, at)
+			tt.assertion(t, db, at)
+		})
+	}
+}
+
+func TestSyncDB_HealthWritesKeepJWTAndLastSyncCompatible(t *testing.T) {
+	tests := []struct {
+		name      string
+		setupData func(t *testing.T, d *DB)
+		record    func(t *testing.T, d *DB, at time.Time)
+		wantJWT   string
+		assertion func(t *testing.T, health SyncHealth)
+	}{
+		{
+			name: "failure write preserves jwt auth row",
+			setupData: func(t *testing.T, d *DB) {
+				t.Helper()
+				require.NoError(t, d.SetJWT("jwt-token", time.Now().Add(2*time.Hour)))
+			},
+			record: func(t *testing.T, d *DB, at time.Time) {
+				t.Helper()
+				require.NoError(t, d.RecordSyncFailure("project-a", at, 2, at.Add(time.Minute), assert.AnError))
+			},
+			wantJWT: "jwt-token",
+			assertion: func(t *testing.T, health SyncHealth) {
+				assert.Equal(t, 2, health.ConsecutiveFailures)
+				assert.Equal(t, assert.AnError.Error(), health.LastError)
+			},
+		},
+		{
+			name: "last sync write preserves project health row",
+			setupData: func(t *testing.T, d *DB) {
+				t.Helper()
+				require.NoError(t, d.RecordSyncFailure("project-a", time.Date(2026, 5, 8, 11, 0, 0, 0, time.UTC), 3, time.Date(2026, 5, 8, 11, 5, 0, 0, time.UTC), assert.AnError))
+			},
+			record: func(t *testing.T, d *DB, at time.Time) {
+				t.Helper()
+				require.NoError(t, d.SetLastSync("project-a", at))
+			},
+			assertion: func(t *testing.T, health SyncHealth) {
+				assert.Equal(t, 3, health.ConsecutiveFailures)
+				assert.Equal(t, time.Date(2026, 5, 8, 11, 5, 0, 0, time.UTC), health.BackoffUntil)
+				assert.Equal(t, assert.AnError.Error(), health.LastError)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			t.Cleanup(func() {
+				require.NoError(t, db.Close())
+			})
+
+			tt.setupData(t, db)
+			at := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+			tt.record(t, db, at)
+
+			assert.Equal(t, tt.wantJWT, db.GetJWT())
+
+			health, err := db.GetSyncHealth("project-a")
+			require.NoError(t, err)
+			if tt.assertion != nil {
+				tt.assertion(t, health)
+			}
+		})
+	}
+}
+
+func TestSyncDB_GetSyncHealth_RestartSafeBackoffRead(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "restart-safe.db")
+
+	db, err := Open(dbPath)
+	require.NoError(t, err)
+
+	at := time.Date(2026, 5, 8, 13, 0, 0, 0, time.UTC)
+	require.NoError(t, db.RecordSyncFailure("project-a", at, 4, at.Add(10*time.Minute), assert.AnError))
+	require.NoError(t, db.Close())
+
+	reopened, err := Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, reopened.Close())
+	})
+
+	got, err := reopened.GetSyncHealth("project-a")
+	require.NoError(t, err)
+	assert.Equal(t, at.Add(10*time.Minute), got.BackoffUntil)
+	assert.Equal(t, 4, got.ConsecutiveFailures)
+	assert.Equal(t, assert.AnError.Error(), got.LastError)
+}
+
 // setupTestDB creates a temporary SQLite database for testing.
 func setupTestDB(t *testing.T) *DB {
 	tmpDir := t.TempDir()
@@ -436,4 +685,10 @@ func createTestMemory(project string) *models.Memory {
 		Confidence:    "high",
 		ImpactScore:   5,
 	}
+}
+
+type wrappedError string
+
+func (e wrappedError) Error() string {
+	return string(e)
 }

@@ -37,7 +37,13 @@ CREATE TABLE IF NOT EXISTS sync_state (
     project         TEXT PRIMARY KEY,
     last_sync_at    DATETIME,
     jwt_token       TEXT,
-    jwt_expires_at  DATETIME
+	jwt_expires_at  DATETIME,
+	last_attempt_at DATETIME,
+	last_success_at DATETIME,
+	last_failure_at DATETIME,
+	consecutive_failures INTEGER NOT NULL DEFAULT 0,
+	backoff_until   DATETIME,
+	last_error      TEXT NOT NULL DEFAULT ''
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_topic_key
@@ -160,6 +166,12 @@ func initSchema(sqlDB *sql.DB) error {
 		`ALTER TABLE user_prompts ADD COLUMN project TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE user_prompts ADD COLUMN sync_id TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_user_prompts_project_created ON user_prompts(project, created_at DESC)`,
+		`ALTER TABLE sync_state ADD COLUMN last_attempt_at DATETIME`,
+		`ALTER TABLE sync_state ADD COLUMN last_success_at DATETIME`,
+		`ALTER TABLE sync_state ADD COLUMN last_failure_at DATETIME`,
+		`ALTER TABLE sync_state ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE sync_state ADD COLUMN backoff_until DATETIME`,
+		`ALTER TABLE sync_state ADD COLUMN last_error TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, m := range migrations {
 		if _, err := sqlDB.Exec(m); err != nil {

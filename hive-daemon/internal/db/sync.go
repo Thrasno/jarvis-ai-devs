@@ -4,11 +4,25 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
 )
+
+const maxSyncLastErrorRunes = 500
+
+type SyncHealth struct {
+	Project             string
+	LastAttemptAt       time.Time
+	LastSuccessAt       time.Time
+	LastFailureAt       time.Time
+	BackoffUntil        time.Time
+	ConsecutiveFailures int
+	LastError           string
+}
 
 // GetUnsynced devuelve todas las memorias que aún no se han enviado al servidor
 // (synced_at IS NULL). Son las que hay que incluir en el próximo push.
@@ -105,13 +119,78 @@ func (d *DB) GetLastSync(project string) (time.Time, error) {
 
 // SetLastSync actualiza el timestamp del último sync para un proyecto.
 func (d *DB) SetLastSync(project string, at time.Time) error {
-	_, err := d.sqlDB.Exec(`
-INSERT INTO sync_state (project, last_sync_at)
-VALUES (?, ?)
-ON CONFLICT(project) DO UPDATE SET last_sync_at = excluded.last_sync_at`,
-		project, at.UTC().Format("2006-01-02 15:04:05"),
+	return d.upsertSyncState(project, syncStateUpdate{
+		lastSyncAt: timePtr(at),
+	})
+}
+
+func (d *DB) GetSyncHealth(project string) (SyncHealth, error) {
+	var (
+		health                                SyncHealth
+		lastAttempt, lastSuccess, lastFailure sql.NullString
+		backoffUntil                          sql.NullString
+		lastError                             sql.NullString
+		consecutiveFailures                   sql.NullInt64
 	)
-	return err
+
+	health.Project = project
+	err := d.sqlDB.QueryRow(`
+SELECT last_attempt_at, last_success_at, last_failure_at, consecutive_failures, backoff_until, last_error
+FROM sync_state WHERE project = ?`, project).Scan(
+		&lastAttempt,
+		&lastSuccess,
+		&lastFailure,
+		&consecutiveFailures,
+		&backoffUntil,
+		&lastError,
+	)
+	if err == sql.ErrNoRows {
+		return health, nil
+	}
+	if err != nil {
+		return SyncHealth{}, err
+	}
+
+	health.LastAttemptAt = parseNullTime(lastAttempt)
+	health.LastSuccessAt = parseNullTime(lastSuccess)
+	health.LastFailureAt = parseNullTime(lastFailure)
+	health.BackoffUntil = parseNullTime(backoffUntil)
+	if consecutiveFailures.Valid {
+		health.ConsecutiveFailures = int(consecutiveFailures.Int64)
+	}
+	if lastError.Valid {
+		health.LastError = lastError.String
+	}
+
+	return health, nil
+}
+
+func (d *DB) RecordSyncAttempt(project string, at time.Time) error {
+	return d.upsertSyncState(project, syncStateUpdate{
+		lastAttemptAt: timePtr(at),
+	})
+}
+
+func (d *DB) RecordSyncSuccess(project string, at time.Time) error {
+	return d.upsertSyncState(project, syncStateUpdate{
+		lastSyncAt:          timePtr(at),
+		lastAttemptAt:       timePtr(at),
+		lastSuccessAt:       timePtr(at),
+		clearLastFailureAt:  true,
+		consecutiveFailures: intPtr(0),
+		clearBackoffUntil:   true,
+		lastError:           stringPtr(""),
+	})
+}
+
+func (d *DB) RecordSyncFailure(project string, at time.Time, consecutiveFailures int, backoffUntil time.Time, syncErr error) error {
+	return d.upsertSyncState(project, syncStateUpdate{
+		lastAttemptAt:       timePtr(at),
+		lastFailureAt:       timePtr(at),
+		consecutiveFailures: intPtr(consecutiveFailures),
+		backoffUntil:        timePtr(backoffUntil),
+		lastError:           stringPtr(sanitizeSyncLastError(syncErr)),
+	})
 }
 
 // GetJWT devuelve el JWT almacenado si aún es válido (margen de 1 hora).
@@ -195,6 +274,135 @@ func parseTimeStr(s string) (time.Time, error) {
 		t, err = time.Parse(time.RFC3339, s)
 	}
 	return t, err
+}
+
+type syncStateUpdate struct {
+	lastSyncAt          *string
+	lastAttemptAt       *string
+	lastSuccessAt       *string
+	lastFailureAt       *string
+	clearLastFailureAt  bool
+	consecutiveFailures *int
+	backoffUntil        *string
+	clearBackoffUntil   bool
+	lastError           *string
+}
+
+func (d *DB) upsertSyncState(project string, update syncStateUpdate) error {
+	if _, err := d.sqlDB.Exec(`
+INSERT OR IGNORE INTO sync_state (project, consecutive_failures, last_error)
+VALUES (?, 0, '')`, project); err != nil {
+		return err
+	}
+
+	_, err := d.sqlDB.Exec(`
+UPDATE sync_state SET
+	last_sync_at = COALESCE(?, last_sync_at),
+	last_attempt_at = COALESCE(?, last_attempt_at),
+	last_success_at = COALESCE(?, last_success_at),
+	last_failure_at = CASE
+		WHEN ? THEN NULL
+		ELSE COALESCE(?, last_failure_at)
+	END,
+	consecutive_failures = COALESCE(?, consecutive_failures),
+	backoff_until = CASE
+		WHEN ? THEN NULL
+		ELSE COALESCE(?, backoff_until)
+	END,
+	last_error = COALESCE(?, last_error)
+WHERE project = ?`,
+		nullableString(update.lastSyncAt),
+		nullableString(update.lastAttemptAt),
+		nullableString(update.lastSuccessAt),
+		update.clearLastFailureAt,
+		nullableString(update.lastFailureAt),
+		nullableInt(update.consecutiveFailures),
+		update.clearBackoffUntil,
+		nullableString(update.backoffUntil),
+		nullableString(update.lastError),
+		project,
+	)
+	return err
+}
+
+func parseNullTime(value sql.NullString) time.Time {
+	if !value.Valid || value.String == "" {
+		return time.Time{}
+	}
+	parsed, err := parseTimeStr(value.String)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
+}
+
+func timePtr(value time.Time) *string {
+	if value.IsZero() {
+		return nil
+	}
+	formatted := value.UTC().Format("2006-01-02 15:04:05")
+	return &formatted
+}
+
+func intPtr(value int) *int {
+	return &value
+}
+
+func stringPtr(value string) *string {
+	return &value
+}
+
+func nullableString(value *string) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func nullableInt(value *int) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func sanitizeSyncLastError(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	trimmed := strings.TrimSpace(stripHTTPErrorBody(err.Error()))
+	if trimmed == "" {
+		return ""
+	}
+
+	var builder strings.Builder
+	count := 0
+	for _, r := range trimmed {
+		if unicode.IsControl(r) {
+			continue
+		}
+		builder.WriteRune(r)
+		count++
+		if count >= maxSyncLastErrorRunes {
+			break
+		}
+	}
+
+	return strings.TrimSpace(builder.String())
+}
+
+func stripHTTPErrorBody(message string) string {
+	trimmed := strings.TrimSpace(message)
+	for _, prefix := range []string{"login failed (", "sync failed ("} {
+		if strings.HasPrefix(trimmed, prefix) {
+			head, _, found := strings.Cut(trimmed, ":")
+			if found {
+				return strings.TrimSpace(head)
+			}
+		}
+	}
+	return trimmed
 }
 
 func orNil(s []string) []string {
