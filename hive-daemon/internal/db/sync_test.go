@@ -695,6 +695,7 @@ func createTestMemory(project string) *models.Memory {
 // Remote-pulled rows must be persisted exactly as received.
 func TestSyncDB_SaveFromRemote_ContentWithPrivateTag_StoredVerbatim(t *testing.T) {
 	rawContent := "secret: <private>tok123</private> end"
+	rawTitle := "title <private>label</private> tail"
 
 	db := setupTestDB(t)
 	t.Cleanup(func() {
@@ -703,48 +704,25 @@ func TestSyncDB_SaveFromRemote_ContentWithPrivateTag_StoredVerbatim(t *testing.T
 
 	mem := createTestMemory("remote-project")
 	mem.SyncID = "regression-no-strip"
+	mem.Title = rawTitle
 	mem.Content = rawContent
 
-	err := db.SaveFromRemote(mem)
+	require.NoError(t, db.SaveFromRemote(mem))
+
+	// Read back the row directly by sync_id. SaveFromRemote marks rows synced
+	// immediately, so GetUnsynced won't surface them — query the DB whitebox.
+	var gotTitle, gotContent string
+	err := db.sqlDB.QueryRow(
+		`SELECT title, content FROM memories WHERE sync_id = ?`,
+		mem.SyncID,
+	).Scan(&gotTitle, &gotContent)
 	require.NoError(t, err)
 
-	// Retrieve and assert content is stored verbatim — no stripping.
-	unsynced, err := db.GetUnsynced("remote-project")
-	require.NoError(t, err)
-	require.Len(t, unsynced, 0, "SaveFromRemote marks row as synced; no unsynced rows expected")
-
-	// Use GetMemory by iterating GetUnsynced won't work since SaveFromRemote marks as synced.
-	// Instead, verify via direct ListMemories or a raw check.
-	// We'll save another memory via SaveMemory to get an ID, then verify the remote one via title lookup.
-	// Actually the simplest approach: ListMemories returns all memories including remote ones.
-	allDB := setupTestDB(t)
-	t.Cleanup(func() { _ = allDB.Close() })
-
-	mem2 := createTestMemory("remote-project")
-	mem2.SyncID = "regression-no-strip-2"
-	mem2.Content = rawContent
-	require.NoError(t, allDB.SaveFromRemote(mem2))
-
-	// Use GetUnsynced with empty project to find all, but SaveFromRemote marks as synced.
-	// Use a direct approach: save via SaveMemory to get id, then GetMemory.
-	checkDB := setupTestDB(t)
-	t.Cleanup(func() { _ = checkDB.Close() })
-
-	mem3 := createTestMemory("remote-project")
-	mem3.SyncID = "regression-check"
-	mem3.Content = rawContent
-	require.NoError(t, checkDB.SaveFromRemote(mem3))
-
-	// SaveFromRemote marks as synced. Retrieve via SaveMemory + GetMemory to verify content.
-	localMem := createTestMemory("remote-project")
-	localMem.Content = rawContent
-	id, err := checkDB.SaveMemory(localMem)
-	require.NoError(t, err)
-
-	got, err := checkDB.GetMemory(id)
-	require.NoError(t, err)
-	if got.Content != rawContent {
-		t.Errorf("content via SaveMemory = %q, want verbatim %q (control check)", got.Content, rawContent)
+	if gotContent != rawContent {
+		t.Errorf("content stored = %q, want verbatim %q", gotContent, rawContent)
+	}
+	if gotTitle != rawTitle {
+		t.Errorf("title stored = %q, want verbatim %q", gotTitle, rawTitle)
 	}
 }
 
