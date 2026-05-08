@@ -3,7 +3,6 @@ package sanitize
 import (
 	"bytes"
 	"regexp"
-	"strings"
 )
 
 // labelAttrRegex extracts the optional label attribute from a SINGLE opening
@@ -111,13 +110,14 @@ func scan(s string) (clean string, count int) {
 // followed by '>' or whitespace, starting at pos. Returns -1 if not found.
 func indexOfPrivateOpen(s string, pos int) int {
 	const tag = "<private"
-	lower := strings.ToLower(s)
+	lower := toLower(s)
 	for i := pos; i <= len(s)-len(tag); i++ {
 		if lower[i:i+len(tag)] == tag {
 			// Must be followed by '>' or whitespace (or end of string is malformed
 			// but we handle that via tagEnd == -1 check).
 			if i+len(tag) >= len(s) {
-				continue
+				// <private occupies the last 8 bytes — treat as orphan open.
+				return i
 			}
 			next := s[i+len(tag)]
 			if next == '>' || isSpace(next) {
@@ -132,7 +132,7 @@ func indexOfPrivateOpen(s string, pos int) int {
 // (with optional whitespace before '>'), starting at pos. Returns -1 if not found.
 func indexOfPrivateClose(s string, pos int) int {
 	const tag = "</private"
-	lower := strings.ToLower(s)
+	lower := toLower(s)
 	for i := pos; i <= len(s)-len(tag); i++ {
 		if lower[i:i+len(tag)] == tag {
 			// Find the closing '>'.

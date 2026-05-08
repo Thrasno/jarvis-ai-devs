@@ -224,6 +224,45 @@ func TestStripPhase2(t *testing.T) {
 			wantClean: "[REDACTED:outer]",
 			wantCount: 1,
 		},
+		{
+			name:      "#32 invalid UTF-8 byte before tag still strips",
+			input:     "\x80<private>secret</private>",
+			wantClean: "\x80[REDACTED]",
+			wantCount: 1,
+		},
+		{
+			name:      "#33 invalid UTF-8 byte 0xff before tag still strips",
+			input:     "\xff<private>secret</private>",
+			wantClean: "\xff[REDACTED]",
+			wantCount: 1,
+		},
+		{
+			name:      "#34 invalid UTF-8 in middle still strips both blocks",
+			input:     "<private>a</private>\x80<private>b</private>",
+			wantClean: "[REDACTED]\x80[REDACTED]",
+			wantCount: 2,
+		},
+		{
+			name:      "#35 invalid UTF-8 after orphan-open marker emitted",
+			input:     "before \x80 <private>no close",
+			wantClean: "before \x80 [REDACTED]",
+			wantCount: 1,
+		},
+		{
+			name:      "#36 <private at exact EOF treated as orphan open",
+			input:     "leak the rest <private",
+			wantClean: "leak the rest [REDACTED]",
+			wantCount: 1,
+		},
+		{
+			// Documents fail-closed behavior: unmatched quote in label causes
+			// findOpenTagEnd to return -1, and the rest of the input is consumed
+			// as an orphan open. Privacy is preserved (over-redact, not leak).
+			name:      "#37 unmatched quote in label fails closed (consume rest)",
+			input:     `prefix <private label="unclosed>secret content</private> tail`,
+			wantClean: "prefix [REDACTED]",
+			wantCount: 1,
+		},
 	}
 
 	for _, tc := range tests {
