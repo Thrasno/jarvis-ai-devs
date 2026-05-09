@@ -69,12 +69,28 @@ type promptPayload struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// sessionPayload es el formato de sesión en el wire protocol.
+// Procesado ANTES de memories[] en push y pull (Decision 11: FK ordering).
+type sessionPayload struct {
+	ID        string     `json:"id"`
+	SyncID    string     `json:"sync_id"`
+	Project   string     `json:"project"`
+	Directory string     `json:"directory"`
+	DevID     string     `json:"dev_id"`
+	Client    string     `json:"client"`
+	StartedAt time.Time  `json:"started_at"`
+	EndedAt   *time.Time `json:"ended_at,omitempty"`
+	Summary   *string    `json:"summary,omitempty"`
+}
+
 // syncRequest es el payload que enviamos a POST /sync.
+// Sessions precede a memories para satisfacer la FK memories.session_id → sessions(id).
 type syncRequest struct {
-	Project  string          `json:"project"`
-	Memories []memoryPayload `json:"memories"`
-	Prompts  []promptPayload `json:"prompts,omitempty"`
-	LastSync *time.Time      `json:"last_sync,omitempty"`
+	Project  string           `json:"project"`
+	Sessions []sessionPayload `json:"sessions"`
+	Memories []memoryPayload  `json:"memories"`
+	Prompts  []promptPayload  `json:"prompts,omitempty"`
+	LastSync *time.Time       `json:"last_sync,omitempty"`
 }
 
 // memoryPayload es el formato que espera hive-api para cada memoria.
@@ -92,14 +108,19 @@ type memoryPayload struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 	Confidence    float32  `json:"confidence"`
 	ImpactScore   float32  `json:"impact_score"`
+	// SessionID enables explicit attribution end-to-end. Empty string is dropped
+	// by omitempty so legacy daemons stay backward-compatible on the wire.
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // syncResponse es lo que devuelve hive-api tras el sync.
+// PulledSessions se aplica ANTES de Pulled para satisfacer la FK.
 type syncResponse struct {
-	Pushed        int         `json:"pushed"`
-	Pulled        []apiMemory `json:"pulled"`
-	Conflicts     int         `json:"conflicts"`
-	PromptsPushed int         `json:"prompts_pushed"`
+	Pushed         int              `json:"pushed"`
+	Pulled         []apiMemory      `json:"pulled"`
+	Conflicts      int              `json:"conflicts"`
+	PromptsPushed  int              `json:"prompts_pushed"`
+	PulledSessions []sessionPayload `json:"pulled_sessions,omitempty"`
 }
 
 // apiMemory es la forma que usa hive-api para devolver memorias.
@@ -118,11 +139,28 @@ type apiMemory struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 	Confidence    float32   `json:"confidence"`
 	ImpactScore   float32   `json:"impact_score"`
+	SessionID     string    `json:"session_id,omitempty"`
 }
 
-// sync envía memorias y prompts locales, y recibe las memorias del servidor para un proyecto.
+// sync envía sesiones, memorias y prompts locales, y recibe del servidor para un proyecto.
+// sessions se serializa ANTES de memories (Decision 11: FK ordering).
 func (c *client) sync(ctx context.Context, token, project string,
-	toSend []*models.Memory, prompts []*models.Prompt, lastSync *time.Time) (*syncResponse, error) {
+	sessions []*models.Session, toSend []*models.Memory, prompts []*models.Prompt, lastSync *time.Time) (*syncResponse, error) {
+
+	sessionPayloads := make([]sessionPayload, 0, len(sessions))
+	for _, s := range sessions {
+		sessionPayloads = append(sessionPayloads, sessionPayload{
+			ID:        s.ID,
+			SyncID:    s.SyncID,
+			Project:   s.Project,
+			Directory: s.Directory,
+			DevID:     s.DevID,
+			Client:    s.Client,
+			StartedAt: s.StartedAt,
+			EndedAt:   s.EndedAt,
+			Summary:   nilStringPtr(s.Summary),
+		})
+	}
 
 	payloads := make([]memoryPayload, 0, len(toSend))
 	for _, m := range toSend {
@@ -138,6 +176,7 @@ func (c *client) sync(ctx context.Context, token, project string,
 			CreatedBy:     m.CreatedBy,
 			CreatedAt:     m.CreatedAt,
 			UpdatedAt:     m.UpdatedAt,
+			SessionID:     m.SessionID,
 		})
 	}
 
@@ -153,6 +192,7 @@ func (c *client) sync(ctx context.Context, token, project string,
 
 	reqBody, err := json.Marshal(syncRequest{
 		Project:  project,
+		Sessions: sessionPayloads,
 		Memories: payloads,
 		Prompts:  promptPayloads,
 		LastSync: lastSync,
@@ -193,4 +233,11 @@ func orEmpty(s []string) []string {
 		return []string{}
 	}
 	return s
+}
+
+func nilStringPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }

@@ -189,7 +189,7 @@ func TestClient_Sync(t *testing.T) {
 			}
 			client := newClient(cfg)
 
-			resp, err := client.sync(context.Background(), "test-token", "test-project", tt.toSend, []*models.Prompt{}, tt.lastSync)
+			resp, err := client.sync(context.Background(), "test-token", "test-project", []*models.Session{}, tt.toSend, []*models.Prompt{}, tt.lastSync)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -264,7 +264,7 @@ func TestClient_Sync_AuthFailure(t *testing.T) {
 			}
 			client := newClient(cfg)
 
-			_, err := client.sync(context.Background(), "invalid-token", "test-project", []*models.Memory{}, []*models.Prompt{}, nil)
+			_, err := client.sync(context.Background(), "invalid-token", "test-project", []*models.Session{}, []*models.Memory{}, []*models.Prompt{}, nil)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -349,7 +349,7 @@ func TestClient_Sync_WithPrompts(t *testing.T) {
 			}
 			c := newClient(cfg)
 
-			resp, err := c.sync(context.Background(), "test-token", "test-project", []*models.Memory{}, tt.prompts, nil)
+			resp, err := c.sync(context.Background(), "test-token", "test-project", []*models.Session{}, []*models.Memory{}, tt.prompts, nil)
 			require.NoError(t, err)
 			if resp.PromptsPushed != tt.wantPromptsPushed {
 				t.Errorf("expected PromptsPushed=%d, got %d", tt.wantPromptsPushed, resp.PromptsPushed)

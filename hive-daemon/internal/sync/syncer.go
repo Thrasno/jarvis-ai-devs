@@ -40,6 +40,11 @@ type SyncStore interface {
 	SetJWT(token string, expiresAt time.Time) error
 	GetUnsyncedPrompts(ctx context.Context, project string) ([]*models.Prompt, error)
 	MarkPromptSynced(ctx context.Context, syncID string, at time.Time) error
+
+	// Session sync methods — added in Slice 4 (T4.1 + T4.2).
+	ListUnsyncedSessions(project string) ([]*models.Session, error)
+	MarkSessionSynced(id string, at time.Time) error
+	SaveSessionFromRemote(s *models.Session) error
 }
 
 type BackoffError struct {
@@ -159,7 +164,14 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 		return nil, fmt.Errorf("obtener memorias no sincronizadas: %w", err)
 	}
 
-	// Paso 2b: prompts locales pendientes de sync (non-fatal si falla)
+	// Paso 2b: sesiones locales pendientes de sync (non-fatal si falla)
+	unsyncedSessions, err := s.store.ListUnsyncedSessions(project)
+	if err != nil {
+		logger.Log.Printf("warn: obtener sesiones no sincronizadas: %v", err)
+		unsyncedSessions = nil
+	}
+
+	// Paso 2c: prompts locales pendientes de sync (non-fatal si falla)
 	unsyncedPrompts, err := s.store.GetUnsyncedPrompts(ctx, project)
 	if err != nil {
 		logger.Log.Printf("warn: obtener prompts no sincronizados: %v", err)
@@ -173,7 +185,7 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 		lastSyncPtr = &lastSync
 	}
 
-	resp, err := s.client.sync(ctx, token, project, unsynced, unsyncedPrompts, lastSyncPtr)
+	resp, err := s.client.sync(ctx, token, project, unsyncedSessions, unsynced, unsyncedPrompts, lastSyncPtr)
 	if err != nil {
 		if recordErr := s.recordFailure(project, health, now, err); recordErr != nil {
 			return nil, recordErr
@@ -181,7 +193,14 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 		return nil, fmt.Errorf("sync con servidor: %w", err)
 	}
 
-	// Paso 5a: marcamos como sincronizadas las memorias que enviamos
+	// Paso 5a: marcamos como sincronizadas las sesiones que enviamos
+	for _, sess := range unsyncedSessions {
+		if err := s.store.MarkSessionSynced(sess.ID, now); err != nil {
+			logger.Log.Printf("warn: MarkSessionSynced %s: %v", sess.ID, err)
+		}
+	}
+
+	// Paso 5b: marcamos como sincronizadas las memorias que enviamos
 	for _, m := range unsynced {
 		if err := s.store.MarkSynced(m.SyncID, now); err != nil {
 			// No abortamos — mejor tener datos duplicados que perder el sync
@@ -190,14 +209,36 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 		}
 	}
 
-	// Paso 5b: marcamos como sincronizados los prompts que enviamos (non-fatal)
+	// Paso 5c: marcamos como sincronizados los prompts que enviamos (non-fatal)
 	for _, p := range unsyncedPrompts {
 		if err := s.store.MarkPromptSynced(ctx, p.SyncID, now); err != nil {
 			logger.Log.Printf("warn: MarkPromptSynced %s: %v", p.SyncID, err)
 		}
 	}
 
-	// Paso 5c: guardamos las memorias que nos mandó el servidor
+	// Paso 5d: guardamos las sesiones que nos mandó el servidor (BEFORE memories — FK ordering)
+	for _, remote := range resp.PulledSessions {
+		sess := &models.Session{
+			ID:        remote.ID,
+			SyncID:    remote.SyncID,
+			Project:   remote.Project,
+			Directory: remote.Directory,
+			DevID:     remote.DevID,
+			Client:    remote.Client,
+			StartedAt: remote.StartedAt,
+			EndedAt:   remote.EndedAt,
+		}
+		if remote.Summary != nil {
+			sess.Summary = *remote.Summary
+		}
+		// R2-CRIT-3 — non-fatal but observable: log persistence failures so silent
+		// drops surface in the daemon log instead of vanishing into discarded errors.
+		if err := s.store.SaveSessionFromRemote(sess); err != nil {
+			logger.Log.Printf("warn: SaveSessionFromRemote %s: %v", remote.ID, err)
+		}
+	}
+
+	// Paso 5e: guardamos las memorias que nos mandó el servidor
 	for _, remote := range resp.Pulled {
 		mem := &models.Memory{
 			SyncID:        remote.SyncID,
@@ -211,8 +252,11 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 			CreatedBy:     remote.CreatedBy,
 			CreatedAt:     remote.CreatedAt,
 			UpdatedAt:     remote.UpdatedAt,
+			SessionID:     remote.SessionID,
 		}
-		_ = s.store.SaveFromRemote(mem) // errores no son fatales
+		if err := s.store.SaveFromRemote(mem); err != nil {
+			logger.Log.Printf("warn: SaveFromRemote %s: %v", remote.SyncID, err)
+		}
 	}
 
 	// Paso 6: actualizamos el timestamp del último sync exitoso

@@ -60,10 +60,10 @@ func TestBuildFTS5Query_EmptyReturnsEmpty(t *testing.T) {
 func TestSearch_FindsByTitle(t *testing.T) {
 	d := openTestDB(t)
 
-	if _, err := d.SaveMemory(newMemory("proj", "JWT Authentication", "content A")); err != nil {
+	if _, err := saveTestMemory(t, d, newMemory("proj", "JWT Authentication", "content A")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.SaveMemory(newMemory("proj", "Unrelated topic", "content B")); err != nil {
+	if _, err := saveTestMemory(t, d, newMemory("proj", "Unrelated topic", "content B")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -81,6 +81,7 @@ func TestSearch_FindsByTitle(t *testing.T) {
 
 func TestSearch_FindsByContent(t *testing.T) {
 	d := openTestDB(t)
+	ensureManualSaveSessions(t, d, "proj")
 
 	mem := newMemory("proj", "Architecture Notes", "We use SQLite for persistent storage")
 	if _, err := d.SaveMemory(mem); err != nil {
@@ -99,7 +100,7 @@ func TestSearch_FindsByContent(t *testing.T) {
 func TestSearch_SpecialCharactersNocrash(t *testing.T) {
 	d := openTestDB(t)
 
-	if _, err := d.SaveMemory(newMemory("proj", "Title", "content")); err != nil {
+	if _, err := saveTestMemory(t, d, newMemory("proj", "Title", "content")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -119,11 +120,11 @@ func TestSearch_EmptyQuery_ReturnsAllForProject(t *testing.T) {
 	d := openTestDB(t)
 
 	for i := 0; i < 3; i++ {
-		if _, err := d.SaveMemory(newMemory("proj", "mem", "content")); err != nil {
+		if _, err := saveTestMemory(t, d, newMemory("proj", "mem", "content")); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := d.SaveMemory(newMemory("other", "other mem", "content")); err != nil {
+	if _, err := saveTestMemory(t, d, newMemory("other", "other mem", "content")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -139,10 +140,10 @@ func TestSearch_EmptyQuery_ReturnsAllForProject(t *testing.T) {
 func TestSearch_ProjectFilter_IsolatesResults(t *testing.T) {
 	d := openTestDB(t)
 
-	if _, err := d.SaveMemory(newMemory("foo", "Auth System", "jwt")); err != nil {
+	if _, err := saveTestMemory(t, d, newMemory("foo", "Auth System", "jwt")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.SaveMemory(newMemory("bar", "Auth System", "jwt")); err != nil {
+	if _, err := saveTestMemory(t, d, newMemory("bar", "Auth System", "jwt")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -161,10 +162,10 @@ func TestSearch_ProjectFilter_IsolatesResults(t *testing.T) {
 func TestSearch_NoProjectFilter_SearchesAll(t *testing.T) {
 	d := openTestDB(t)
 
-	if _, err := d.SaveMemory(newMemory("foo", "Auth System", "content")); err != nil {
+	if _, err := saveTestMemory(t, d, newMemory("foo", "Auth System", "content")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.SaveMemory(newMemory("bar", "Auth System", "content")); err != nil {
+	if _, err := saveTestMemory(t, d, newMemory("bar", "Auth System", "content")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -181,11 +182,11 @@ func TestSearch_BM25_TitleRanksAboveContent(t *testing.T) {
 	d := openTestDB(t)
 
 	// Term only in content → should rank lower
-	if _, err := d.SaveMemory(newMemory("proj", "Generic Title", "SQLite is the database engine")); err != nil {
+	if _, err := saveTestMemory(t, d, newMemory("proj", "Generic Title", "SQLite is the database engine")); err != nil {
 		t.Fatal(err)
 	}
 	// Term in title → should rank higher
-	if _, err := d.SaveMemory(newMemory("proj", "SQLite Architecture", "generic description here")); err != nil {
+	if _, err := saveTestMemory(t, d, newMemory("proj", "SQLite Architecture", "generic description here")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -205,7 +206,7 @@ func TestSearch_RespectsLimit(t *testing.T) {
 	d := openTestDB(t)
 
 	for i := 0; i < 5; i++ {
-		if _, err := d.SaveMemory(newMemory("proj", "Auth topic", "content")); err != nil {
+		if _, err := saveTestMemory(t, d, newMemory("proj", "Auth topic", "content")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -221,6 +222,7 @@ func TestSearch_RespectsLimit(t *testing.T) {
 
 func TestSearch_CategoryFilter(t *testing.T) {
 	d := openTestDB(t)
+	ensureManualSaveSessions(t, d, "proj")
 
 	// Save observations of two different categories
 	archMem := newMemory("proj", "Auth Design", "jwt authentication system")
@@ -273,6 +275,7 @@ func TestSearch_CategoryFilter(t *testing.T) {
 
 func TestFTS_TriggerRollback_ACIDCompliance(t *testing.T) {
 	d := openTestDB(t)
+	ensureManualSaveSessions(t, d, "proj")
 
 	tx, err := d.sqlDB.Begin()
 	if err != nil {
@@ -282,9 +285,9 @@ func TestFTS_TriggerRollback_ACIDCompliance(t *testing.T) {
 	// Insert within transaction — trigger memories_ai should fire
 	_, err = tx.Exec(`
 		INSERT INTO memories
-			(sync_id, project, title, content, tags, files_affected, created_by, created_at)
+			(sync_id, project, title, content, tags, files_affected, created_by, created_at, session_id)
 		VALUES
-			('acid-test-uuid', 'proj', 'ACID Rollback Test', 'unique rollback content', '[]', '[]', 'test', CURRENT_TIMESTAMP)
+			('acid-test-uuid', 'proj', 'ACID Rollback Test', 'unique rollback content', '[]', '[]', 'test', CURRENT_TIMESTAMP, 'manual-save-proj')
 	`)
 	if err != nil {
 		_ = tx.Rollback()
@@ -325,12 +328,14 @@ func TestFTS_TriggerRollback_ACIDCompliance(t *testing.T) {
 
 func TestFTS_InsertSync_MemoryAppearsinFTS(t *testing.T) {
 	d := openTestDB(t)
+	ensureManualSaveSessions(t, d, "proj")
 
 	mem := &models.Memory{
-		Project: "proj",
-		Title:   "Unique FTS Sync Test",
-		Content: "verifying trigger sync",
-		Tags:    []string{"fts", "trigger"},
+		Project:   "proj",
+		Title:     "Unique FTS Sync Test",
+		Content:   "verifying trigger sync",
+		Tags:      []string{"fts", "trigger"},
+		SessionID: "manual-save-proj",
 	}
 	if _, err := d.SaveMemory(mem); err != nil {
 		t.Fatal(err)

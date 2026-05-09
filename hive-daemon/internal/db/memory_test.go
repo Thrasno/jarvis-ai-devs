@@ -17,12 +17,43 @@ func openTestDB(t *testing.T) *DB {
 	return d
 }
 
-// helper para construir una Memory mínima válida
+// ensureManualSaveSessions guarantees a manual-save sentinel session exists for
+// each project so direct SaveMemory calls satisfy the FK introduced in CRIT-5.
+// Idempotent — INSERT OR IGNORE.
+func ensureManualSaveSessions(t *testing.T, d *DB, projects ...string) {
+	t.Helper()
+	for _, p := range projects {
+		if _, err := d.EnsureManualSaveSession(p); err != nil {
+			t.Fatalf("ensureManualSaveSessions(%q): %v", p, err)
+		}
+	}
+}
+
+// saveTestMemory wraps SaveMemory after ensuring the manual-save session for
+// mem.Project exists. Tests that bypass the MCP handler (which normally does
+// this via EnsureManualSaveSession) use this to satisfy the FK.
+func saveTestMemory(t *testing.T, d *DB, mem *models.Memory) (int64, error) {
+	t.Helper()
+	if mem.SessionID == "" {
+		mem.SessionID = "manual-save-" + mem.Project
+	}
+	if _, err := d.EnsureManualSaveSession(mem.Project); err != nil {
+		t.Fatalf("ensure manual-save session for %q: %v", mem.Project, err)
+	}
+	return d.SaveMemory(mem)
+}
+
+// helper para construir una Memory mínima válida.
+// SessionID is pre-set to the manual-save sentinel id so direct SaveMemory
+// calls satisfy the FK NOT NULL contract enforced post-Slice 4 (CRIT-5). The
+// MCP handler resolves this via EnsureManualSaveSession; tests bypassing the
+// handler must provide it explicitly.
 func newMemory(project, title, content string) *models.Memory {
 	return &models.Memory{
-		Project: project,
-		Title:   title,
-		Content: content,
+		Project:   project,
+		Title:     title,
+		Content:   content,
+		SessionID: "manual-save-" + project,
 	}
 }
 
@@ -31,7 +62,7 @@ func newMemory(project, title, content string) *models.Memory {
 func TestSaveMemory_CreatesNewRow(t *testing.T) {
 	d := openTestDB(t)
 
-	id, err := d.SaveMemory(newMemory("proj", "Title", "Content"))
+	id, err := saveTestMemory(t, d, newMemory("proj", "Title", "Content"))
 	if err != nil {
 		t.Fatalf("SaveMemory() failed: %v", err)
 	}
@@ -43,7 +74,7 @@ func TestSaveMemory_CreatesNewRow(t *testing.T) {
 func TestSaveMemory_PopulatesSyncIDAndCreatedBy(t *testing.T) {
 	d := openTestDB(t)
 
-	id, err := d.SaveMemory(newMemory("proj", "Title", "Content"))
+	id, err := saveTestMemory(t, d, newMemory("proj", "Title", "Content"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,13 +96,15 @@ func TestSaveMemory_PopulatesSyncIDAndCreatedBy(t *testing.T) {
 
 func TestSaveMemory_TopicKeyUpsert(t *testing.T) {
 	d := openTestDB(t)
+	ensureManualSaveSessions(t, d, "proj")
 
 	key := "arch/auth"
 	mem := &models.Memory{
-		Project:  "proj",
-		Title:    "Original",
-		Content:  "Original content",
-		TopicKey: &key,
+		Project:   "proj",
+		Title:     "Original",
+		Content:   "Original content",
+		TopicKey:  &key,
+		SessionID: "manual-save-proj",
 	}
 
 	id1, err := d.SaveMemory(mem)
@@ -111,6 +144,7 @@ func TestSaveMemory_TopicKeyUpsert(t *testing.T) {
 
 func TestSaveMemory_NullTopicKeyAlwaysInserts(t *testing.T) {
 	d := openTestDB(t)
+	ensureManualSaveSessions(t, d, "proj")
 
 	mem := newMemory("proj", "Title", "Content") // no topic_key → nil
 
@@ -147,6 +181,7 @@ func TestSaveMemory_ValidationError(t *testing.T) {
 
 func TestSaveMemory_StoresTags(t *testing.T) {
 	d := openTestDB(t)
+	ensureManualSaveSessions(t, d, "proj")
 
 	mem := newMemory("proj", "Title", "Content")
 	mem.Tags = []string{"go", "sqlite", "mcp"}
@@ -173,6 +208,7 @@ func TestSaveMemory_StoresTags(t *testing.T) {
 
 func TestGetMemory_ReturnsAllFields(t *testing.T) {
 	d := openTestDB(t)
+	ensureManualSaveSessions(t, d, "proj")
 
 	key := "sdd/spec"
 	mem := &models.Memory{
@@ -185,6 +221,7 @@ func TestGetMemory_ReturnsAllFields(t *testing.T) {
 		FilesAffected: []string{"main.go"},
 		Confidence:    "high",
 		ImpactScore:   90,
+		SessionID:     "manual-save-proj",
 	}
 
 	id, err := d.SaveMemory(mem)
@@ -241,11 +278,11 @@ func TestListMemories_ProjectFilter(t *testing.T) {
 	d := openTestDB(t)
 
 	for i := 0; i < 3; i++ {
-		if _, err := d.SaveMemory(newMemory("foo", "foo mem", "c")); err != nil {
+		if _, err := saveTestMemory(t, d, newMemory("foo", "foo mem", "c")); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := d.SaveMemory(newMemory("bar", "bar mem", "c")); err != nil {
+	if _, err := saveTestMemory(t, d, newMemory("bar", "bar mem", "c")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -267,7 +304,7 @@ func TestListMemories_RespectsLimit(t *testing.T) {
 	d := openTestDB(t)
 
 	for i := 0; i < 5; i++ {
-		if _, err := d.SaveMemory(newMemory("proj", "mem", "c")); err != nil {
+		if _, err := saveTestMemory(t, d, newMemory("proj", "mem", "c")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -286,7 +323,7 @@ func TestListMemories_OrderByCreatedAtDesc(t *testing.T) {
 
 	titles := []string{"first", "second", "third"}
 	for _, title := range titles {
-		if _, err := d.SaveMemory(newMemory("proj", title, "c")); err != nil {
+		if _, err := saveTestMemory(t, d, newMemory("proj", title, "c")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -313,5 +350,51 @@ func TestListMemories_EmptyProject_ReturnsEmpty(t *testing.T) {
 	}
 	if len(results) != 0 {
 		t.Errorf("expected 0 results for unknown project, got %d", len(results))
+	}
+}
+
+// R2-WARN-1 — GetMemory and ListMemories must include session_id in their SELECT
+// projections AND scan it into models.Memory. Otherwise local read paths (mcp tools
+// `mem_get_observation`, `mem_context`) silently strip attribution.
+
+func TestGetMemory_ReturnsSessionID(t *testing.T) {
+	d := openTestDB(t)
+
+	mem := newMemory("r2w1-proj", "Title", "Content")
+	mem.SessionID = "manual-save-r2w1-proj"
+	id, err := saveTestMemory(t, d, mem)
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	got, err := d.GetMemory(id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.SessionID != "manual-save-r2w1-proj" {
+		t.Errorf("GetMemory.SessionID = %q, want %q",
+			got.SessionID, "manual-save-r2w1-proj")
+	}
+}
+
+func TestListMemories_ReturnsSessionID(t *testing.T) {
+	d := openTestDB(t)
+
+	mem := newMemory("r2w1-list", "Title", "Content")
+	mem.SessionID = "manual-save-r2w1-list"
+	if _, err := saveTestMemory(t, d, mem); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	results, err := d.ListMemories("r2w1-list", 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d, want 1", len(results))
+	}
+	if results[0].SessionID != "manual-save-r2w1-list" {
+		t.Errorf("ListMemories[0].SessionID = %q, want %q",
+			results[0].SessionID, "manual-save-r2w1-list")
 	}
 }

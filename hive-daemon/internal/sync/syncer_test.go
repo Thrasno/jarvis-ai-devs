@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,20 +21,24 @@ import (
 
 // mockSyncStore implements the SyncStore interface for testing.
 type mockSyncStore struct {
-	mu                  sync.Mutex
-	unsynced            []*models.Memory
-	lastSync            time.Time
-	jwt                 string
-	markedSynced        []string
-	savedFromRemote     []*models.Memory
-	unsyncedPrompts     []*models.Prompt
-	unsyncedPromptsErr  error
-	markedPromptSynced  []string
-	markPromptSyncedErr error
-	healthByProject     map[string]db.SyncHealth
-	recordAttemptCalls  []string
-	recordSuccessCalls  []string
-	recordFailureCalls  []string
+	mu                     sync.Mutex
+	unsynced               []*models.Memory
+	lastSync               time.Time
+	jwt                    string
+	markedSynced           []string
+	savedFromRemote        []*models.Memory
+	unsyncedPrompts        []*models.Prompt
+	unsyncedPromptsErr     error
+	markedPromptSynced     []string
+	markPromptSyncedErr    error
+	healthByProject        map[string]db.SyncHealth
+	recordAttemptCalls     []string
+	recordSuccessCalls     []string
+	recordFailureCalls     []string
+	unsyncedSessions       []*models.Session
+	unsyncedSessionsErr    error
+	markedSessionSynced    []string
+	savedSessionsFromRemote []*models.Session
 }
 
 func (m *mockSyncStore) GetUnsynced(project string) ([]*models.Memory, error) {
@@ -140,6 +145,26 @@ func (m *mockSyncStore) MarkPromptSynced(ctx context.Context, syncID string, at 
 	defer m.mu.Unlock()
 	m.markedPromptSynced = append(m.markedPromptSynced, syncID)
 	return m.markPromptSyncedErr
+}
+
+func (m *mockSyncStore) ListUnsyncedSessions(project string) ([]*models.Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.unsyncedSessions, m.unsyncedSessionsErr
+}
+
+func (m *mockSyncStore) MarkSessionSynced(id string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.markedSessionSynced = append(m.markedSessionSynced, id)
+	return nil
+}
+
+func (m *mockSyncStore) SaveSessionFromRemote(s *models.Session) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.savedSessionsFromRemote = append(m.savedSessionsFromRemote, s)
+	return nil
 }
 
 func (m *mockSyncStore) getHealthLocked(project string) db.SyncHealth {
@@ -442,6 +467,83 @@ func TestSyncer_Run(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSyncer_Push_IncludesSessionsBeforeMemories verifies T4.1 + T4.2:
+// - sessions[] is present in the push body and precedes memories[] (field order)
+// - after a successful sync, sessions are marked synced
+// - pulled sessions from server are saved to local DB before pulled memories
+func TestSyncer_Push_IncludesSessionsBeforeMemories(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	sess := &models.Session{
+		ID:        "manual-save-test-project",
+		SyncID:    "aaaabbbb-cccc-dddd-eeee-ffffaaaabbbb",
+		Project:   "test-project",
+		Directory: "",
+		DevID:     "dev@host",
+		Client:    "manual",
+		StartedAt: now.Add(-time.Hour),
+	}
+
+	store := &mockSyncStore{
+		jwt:              "valid-token",
+		unsynced:         []*models.Memory{createTestSyncMemory("local-mem-1")},
+		unsyncedSessions: []*models.Session{sess},
+	}
+
+	// capture order: sessions must appear in request body before memories
+	type orderCapture struct {
+		raw string
+	}
+	var captured orderCapture
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sync" {
+			body, _ := io.ReadAll(r.Body)
+			captured.raw = string(body)
+
+			w.WriteHeader(http.StatusOK)
+			resp := syncResponse{
+				Pushed:         1,
+				Pulled:         []apiMemory{},
+				Conflicts:      0,
+				PulledSessions: []sessionPayload{{
+					ID:        "remote-sess-1",
+					SyncID:    "11112222-3333-4444-5555-666677778888",
+					Project:   "test-project",
+					Directory: "",
+					DevID:     "other-dev",
+					Client:    "claude-code",
+					StartedAt: now.Add(-2 * time.Hour),
+				}},
+			}
+			require.NoError(t, json.NewEncoder(w).Encode(resp))
+		}
+	}))
+	defer server.Close()
+
+	cfg := &Config{APIURL: server.URL, Email: "t@t.com", Password: "pass"}
+	syncer := New(cfg, store)
+
+	result, err := syncer.Sync(context.Background(), "test-project")
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.Pushed)
+
+	// Assert sessions field appears before memories in JSON body
+	sessIdx := strings.Index(captured.raw, `"sessions"`)
+	memIdx := strings.Index(captured.raw, `"memories"`)
+	require.True(t, sessIdx >= 0, "sessions key must be present in push body")
+	require.True(t, memIdx >= 0, "memories key must be present in push body")
+	assert.Less(t, sessIdx, memIdx, "sessions must precede memories in JSON body")
+
+	// Assert unsynced session was marked synced after push
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	assert.Contains(t, store.markedSessionSynced, sess.ID, "pushed session must be marked synced")
+
+	// Assert pulled session was saved before memories
+	assert.Len(t, store.savedSessionsFromRemote, 1, "pulled session should be saved")
+	assert.Equal(t, "remote-sess-1", store.savedSessionsFromRemote[0].ID)
 }
 
 // TestSyncer_Run_AuthFailureRetry tests 401 handling with token refresh and retry.
@@ -754,6 +856,80 @@ func TestSyncer_Sync_RespectsPersistedBackoffAfterRestart(t *testing.T) {
 	assert.Empty(t, store.recordFailureCalls)
 }
 
+// TestSyncer_RoundTrip_SessionPushThenPull verifies T4.6:
+// Daemon A creates a session and pushes; Daemon B (fresh store) pulls and
+// has the session saved locally. Uses httptest — no real subprocesses.
+func TestSyncer_RoundTrip_SessionPushThenPull(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	sess := &models.Session{
+		ID:        "manual-save-round-trip",
+		SyncID:    "ccccdddd-eeee-ffff-0000-111122223333",
+		Project:   "round-trip-project",
+		Directory: "",
+		DevID:     "dev@host",
+		Client:    "claude-code",
+		StartedAt: now.Add(-30 * time.Minute),
+	}
+
+	// Daemon A store: has the unsynced session
+	storeA := &mockSyncStore{
+		jwt:              "token-a",
+		unsynced:         []*models.Memory{},
+		unsyncedSessions: []*models.Session{sess},
+	}
+
+	// Daemon B store: starts empty
+	storeB := &mockSyncStore{jwt: "token-b"}
+
+	// Server tracks what was pushed and serves it on pull
+	var pushedSessions []sessionPayload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync" {
+			return
+		}
+		var req syncRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// Record sessions pushed by Daemon A
+		pushedSessions = append(pushedSessions, req.Sessions...)
+
+		w.WriteHeader(http.StatusOK)
+		resp := syncResponse{
+			Pushed:         0,
+			Pulled:         []apiMemory{},
+			Conflicts:      0,
+			PulledSessions: pushedSessions, // server returns them in pull
+		}
+		require.NoError(t, json.NewEncoder(w).Encode(resp))
+	}))
+	defer server.Close()
+
+	cfg := &Config{APIURL: server.URL, Email: "t@t.com", Password: "pass"}
+
+	// Daemon A pushes (session goes to server)
+	syncerA := New(cfg, storeA)
+	_, err := syncerA.Sync(context.Background(), "round-trip-project")
+	require.NoError(t, err, "Daemon A sync must succeed")
+
+	// Verify Daemon A marked session as synced
+	storeA.mu.Lock()
+	assert.Contains(t, storeA.markedSessionSynced, sess.ID, "Daemon A should mark session synced")
+	storeA.mu.Unlock()
+
+	// Daemon B pulls (receives the session)
+	syncerB := New(cfg, storeB)
+	_, err = syncerB.Sync(context.Background(), "round-trip-project")
+	require.NoError(t, err, "Daemon B sync must succeed")
+
+	// Verify Daemon B saved the pulled session
+	storeB.mu.Lock()
+	defer storeB.mu.Unlock()
+	require.Len(t, storeB.savedSessionsFromRemote, 1, "Daemon B should save pulled session")
+	assert.Equal(t, sess.ID, storeB.savedSessionsFromRemote[0].ID)
+}
+
 func TestSyncer_Sync_InFlightIsolation(t *testing.T) {
 	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
 
@@ -833,4 +1009,89 @@ func TestSyncer_Sync_InFlightIsolation(t *testing.T) {
 			assert.Equal(t, tt.wantSyncCalls, syncCalls.Load())
 		})
 	}
+}
+
+// CRIT-2 — wire payload must carry session_id end-to-end.
+// Without these, daemon→server pushes drop session_id and pulled rows arrive sessionless.
+
+func TestSyncer_Push_MemoryPayloadIncludesSessionID(t *testing.T) {
+	mem := createTestSyncMemory("local-with-session")
+	mem.SessionID = "sess-abc"
+
+	store := &mockSyncStore{
+		jwt:      "valid-token",
+		unsynced: []*models.Memory{mem},
+	}
+
+	var capturedBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync" {
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		capturedBody = string(body)
+
+		w.WriteHeader(http.StatusOK)
+		resp := syncResponse{Pushed: 1, Pulled: []apiMemory{}, Conflicts: 0}
+		require.NoError(t, json.NewEncoder(w).Encode(resp))
+	}))
+	defer server.Close()
+
+	cfg := &Config{APIURL: server.URL, Email: "t@t.com", Password: "pass"}
+	syncer := New(cfg, store)
+
+	_, err := syncer.Sync(context.Background(), "test-project")
+	require.NoError(t, err)
+
+	assert.Contains(t, capturedBody, `"session_id":"sess-abc"`,
+		"push body must carry session_id so the server attributes the memory")
+}
+
+func TestSyncer_Pull_MemoryPayloadCarriesSessionID(t *testing.T) {
+	store := &mockSyncStore{jwt: "valid-token"}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync" {
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		// Server returns a memory with session_id set; daemon must round-trip it
+		// onto the local model so SaveFromRemote stores it.
+		resp := map[string]any{
+			"pushed":    0,
+			"conflicts": 0,
+			"pulled": []map[string]any{
+				{
+					"id":           "remote-id-1",
+					"sync_id":      "pulled-with-session",
+					"project":      "test-project",
+					"category":     "test",
+					"title":        "Pulled",
+					"content":      "remote content",
+					"tags":         []string{},
+					"files_affected": []string{},
+					"created_by":   "remote-user",
+					"created_at":   time.Now().UTC().Format(time.RFC3339),
+					"updated_at":   time.Now().UTC().Format(time.RFC3339),
+					"confidence":   0.0,
+					"impact_score": 0.0,
+					"session_id":   "remote-sess-7",
+				},
+			},
+		}
+		require.NoError(t, json.NewEncoder(w).Encode(resp))
+	}))
+	defer server.Close()
+
+	cfg := &Config{APIURL: server.URL, Email: "t@t.com", Password: "pass"}
+	syncer := New(cfg, store)
+
+	_, err := syncer.Sync(context.Background(), "test-project")
+	require.NoError(t, err)
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	require.Len(t, store.savedFromRemote, 1)
+	assert.Equal(t, "remote-sess-7", store.savedFromRemote[0].SessionID,
+		"pulled memory must carry session_id into local DB so attribution survives the round trip")
 }

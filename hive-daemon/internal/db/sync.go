@@ -29,7 +29,7 @@ type SyncHealth struct {
 func (d *DB) GetUnsynced(project string) ([]*models.Memory, error) {
 	q := `
 SELECT id, sync_id, project, topic_key, category, title, content, tags, files_affected,
-       created_by, created_at, updated_at, synced_at, confidence, impact_score
+       created_by, created_at, updated_at, synced_at, confidence, impact_score, session_id
 FROM memories
 WHERE synced_at IS NULL AND sync_id != ''`
 
@@ -75,6 +75,10 @@ func (d *DB) MarkSynced(syncID string, at time.Time) error {
 // SaveFromRemote guarda una memoria recibida del servidor (pull).
 // La marca como ya sincronizada para no reenviarla en el próximo push.
 // INSERT OR IGNORE: si el sync_id ya existe localmente, no tocamos nada.
+//
+// R2-CRIT-3 — si la memoria llega sin session_id (legacy o bug del servidor),
+// resolvemos defensivamente a `manual-save-{project}` para que el INSERT no quede
+// silenciosamente descartado por la combinación de NOT NULL + INSERT OR IGNORE.
 func (d *DB) SaveFromRemote(mem *models.Memory) error {
 	tagsJSON, err := json.Marshal(orNil(mem.Tags))
 	if err != nil {
@@ -89,15 +93,27 @@ func (d *DB) SaveFromRemote(mem *models.Memory) error {
 	createdAt := mem.CreatedAt.UTC().Format("2006-01-02 15:04:05")
 	updatedAt := mem.UpdatedAt.UTC().Format("2006-01-02 15:04:05")
 
+	// R2-CRIT-3: resolve session_id BEFORE the INSERT. memories.session_id is NOT NULL,
+	// and `INSERT OR IGNORE` would silently drop the row on any constraint failure.
+	sessionID := mem.SessionID
+	if sessionID == "" {
+		resolved, err := d.EnsureManualSaveSession(mem.Project)
+		if err != nil {
+			return fmt.Errorf("ensure manual-save session for remote insert: %w", err)
+		}
+		sessionID = resolved
+		logger.Log.Printf("warn: SaveFromRemote(%s) had empty session_id; lazy-resolved to %q", mem.SyncID, sessionID)
+	}
+
 	_, err = d.sqlDB.Exec(`
 INSERT OR IGNORE INTO memories
     (sync_id, project, topic_key, category, title, content, tags, files_affected,
-     created_by, created_at, updated_at, synced_at, confidence, impact_score)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     created_by, created_at, updated_at, synced_at, confidence, impact_score, session_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		mem.SyncID, mem.Project, mem.TopicKey, mem.Category,
 		mem.Title, mem.Content, string(tagsJSON), string(filesJSON),
 		mem.CreatedBy, createdAt, updatedAt, now,
-		mem.Confidence, mem.ImpactScore,
+		mem.Confidence, mem.ImpactScore, sessionID,
 	)
 	return err
 }
@@ -237,6 +253,7 @@ func scanSyncRow(s syncScanner) (*models.Memory, error) {
 		createdAtStr string
 		updatedAtStr string
 		syncedAtStr  sql.NullString
+		sessionID    sql.NullString
 	)
 
 	err := s.Scan(
@@ -244,7 +261,7 @@ func scanSyncRow(s syncScanner) (*models.Memory, error) {
 		&mem.Category, &mem.Title, &mem.Content,
 		&tagsJSON, &filesJSON,
 		&mem.CreatedBy, &createdAtStr, &updatedAtStr, &syncedAtStr,
-		&mem.Confidence, &mem.ImpactScore,
+		&mem.Confidence, &mem.ImpactScore, &sessionID,
 	)
 	if err != nil {
 		return nil, err
@@ -252,6 +269,9 @@ func scanSyncRow(s syncScanner) (*models.Memory, error) {
 
 	if topicKey.Valid {
 		mem.TopicKey = &topicKey.String
+	}
+	if sessionID.Valid {
+		mem.SessionID = sessionID.String
 	}
 
 	mem.CreatedAt, _ = parseTimeStr(createdAtStr)

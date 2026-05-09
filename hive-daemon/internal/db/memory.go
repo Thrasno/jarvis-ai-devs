@@ -33,12 +33,18 @@ func (d *DB) SaveMemory(mem *models.Memory) (int64, error) {
 	createdBy := detectUsername()
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")
 
+	// session_id is stored as NULL when empty (FK references sessions.id).
+	var sessionID sql.NullString
+	if mem.SessionID != "" {
+		sessionID = sql.NullString{String: mem.SessionID, Valid: true}
+	}
+
 	const q = `
 INSERT INTO memories
     (sync_id, project, topic_key, category, title, content, tags, files_affected,
-     created_by, created_at, confidence, impact_score)
+     created_by, created_at, confidence, impact_score, session_id)
 VALUES
-    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(project, topic_key) WHERE topic_key IS NOT NULL
 DO UPDATE SET
     title          = excluded.title,
@@ -47,14 +53,15 @@ DO UPDATE SET
     tags           = excluded.tags,
     files_affected = excluded.files_affected,
     confidence     = excluded.confidence,
-    impact_score   = excluded.impact_score
+    impact_score   = excluded.impact_score,
+    session_id     = excluded.session_id
 RETURNING id`
 
 	var id int64
 	err = d.sqlDB.QueryRow(q,
 		syncID, mem.Project, mem.TopicKey, mem.Category,
 		mem.Title, mem.Content, tagsJSON, filesJSON,
-		createdBy, now, mem.Confidence, mem.ImpactScore,
+		createdBy, now, mem.Confidence, mem.ImpactScore, sessionID,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("save memory: %w", err)
@@ -67,7 +74,7 @@ RETURNING id`
 func (d *DB) GetMemory(id int64) (*models.Memory, error) {
 	const q = `
 SELECT id, sync_id, project, topic_key, category, title, content, tags, files_affected,
-       created_by, created_at, confidence, impact_score
+       created_by, created_at, confidence, impact_score, session_id
 FROM memories WHERE id = ?`
 
 	row := d.sqlDB.QueryRow(q, id)
@@ -85,7 +92,7 @@ FROM memories WHERE id = ?`
 func (d *DB) ListMemories(project string, limit int) ([]*models.Memory, error) {
 	const q = `
 SELECT id, sync_id, project, topic_key, category, title, content, tags, files_affected,
-       created_by, created_at, confidence, impact_score
+       created_by, created_at, confidence, impact_score, session_id
 FROM memories
 WHERE project = ?
 ORDER BY created_at DESC, id DESC
@@ -130,7 +137,7 @@ func scanMemory(s scanner) (*models.Memory, error) {
 		&mem.Category, &mem.Title, &mem.Content,
 		&tagsJSON, &filesJSON,
 		&mem.CreatedBy, &createdAtStr,
-		&mem.Confidence, &mem.ImpactScore,
+		&mem.Confidence, &mem.ImpactScore, &mem.SessionID,
 	)
 	if err != nil {
 		return nil, err

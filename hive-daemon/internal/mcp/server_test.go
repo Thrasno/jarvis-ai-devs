@@ -2,6 +2,8 @@ package mcp_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -15,14 +17,23 @@ import (
 // Ensure mockStore implements hivemcp.PromptStore at compile time.
 var _ hivemcp.PromptStore = (*mockStore)(nil)
 
+// Ensure mockStore implements hivemcp.MemoryStore at compile time.
+// This compile-time check is the RED trigger for T2.1: adding new interface methods
+// here causes compilation failure until the interface and all callers are updated.
+var _ hivemcp.MemoryStore = (*mockStore)(nil)
+
 // mockStore implements hivemcp.MemoryStore and hivemcp.PromptStore for testing.
 type mockStore struct {
-	saveMemoryFn        func(*models.Memory) (int64, error)
-	getMemoryFn         func(int64) (*models.Memory, error)
-	listMemoriesFn      func(string, int) ([]*models.Memory, error)
-	searchFn            func(string, string, string, int) ([]*models.Memory, error)
-	savePromptFn        func(context.Context, string, string) (*models.Prompt, error)
-	listRecentPromptsFn func(context.Context, string, int) ([]*models.Prompt, error)
+	saveMemoryFn              func(*models.Memory) (int64, error)
+	getMemoryFn               func(int64) (*models.Memory, error)
+	listMemoriesFn            func(string, int) ([]*models.Memory, error)
+	searchFn                  func(string, string, string, int) ([]*models.Memory, error)
+	savePromptFn              func(context.Context, string, string) (*models.Prompt, error)
+	listRecentPromptsFn       func(context.Context, string, int) ([]*models.Prompt, error)
+	createSessionFn           func(id, project, directory, devID, client string) error
+	endSessionFn              func(id, summary string) error
+	getSessionFn              func(id string) (*models.Session, error)
+	ensureManualSaveSessionFn func(project string) (string, error)
 }
 
 func (m *mockStore) SaveMemory(mem *models.Memory) (int64, error) {
@@ -65,6 +76,34 @@ func (m *mockStore) ListRecentPrompts(ctx context.Context, project string, limit
 		return m.listRecentPromptsFn(ctx, project, limit)
 	}
 	return nil, nil
+}
+
+func (m *mockStore) CreateSession(id, project, directory, devID, client string) error {
+	if m.createSessionFn != nil {
+		return m.createSessionFn(id, project, directory, devID, client)
+	}
+	return nil
+}
+
+func (m *mockStore) EndSession(id, summary string) error {
+	if m.endSessionFn != nil {
+		return m.endSessionFn(id, summary)
+	}
+	return nil
+}
+
+func (m *mockStore) GetSession(id string) (*models.Session, error) {
+	if m.getSessionFn != nil {
+		return m.getSessionFn(id)
+	}
+	return nil, errors.New("session not found")
+}
+
+func (m *mockStore) EnsureManualSaveSession(project string) (string, error) {
+	if m.ensureManualSaveSessionFn != nil {
+		return m.ensureManualSaveSessionFn(project)
+	}
+	return "manual-save-" + project, nil
 }
 
 // connectTestServer creates a server+client pair using in-memory transport.
@@ -134,7 +173,7 @@ func (m *mockSyncer) lastProject() string {
 	return m.syncCalls[len(m.syncCalls)-1].project
 }
 
-func TestNewServer_RegistersSevenTools(t *testing.T) {
+func TestNewServer_RegistersNineTools(t *testing.T) {
 	session := connectTestServer(t, &mockStore{})
 	ctx := context.Background()
 
@@ -146,18 +185,82 @@ func TestNewServer_RegistersSevenTools(t *testing.T) {
 		"mem_context":         false,
 		"mem_sync":            false,
 		"mem_save_prompt":     false,
+		"mem_session_start":   false,
+		"mem_session_end":     false,
+	}
+
+	var total int
+	for tool, err := range session.Tools(ctx, nil) {
+		if err != nil {
+			t.Fatalf("Tools() iteration error: %v", err)
+		}
+		expectedTools[tool.Name] = true
+		total++
+	}
+
+	for name, found := range expectedTools {
+		if !found {
+			t.Errorf("tool %q not registered", name)
+		}
+	}
+
+	if total != 9 {
+		t.Errorf("total registered tools = %d, want 9", total)
+	}
+}
+
+// TestMemSave_SessionIDIsOptionalInSchema verifies session_id is declared as a property
+// but NOT in required[] for mem_save, mem_save_prompt, and mem_session_summary.
+// Design Decision 7: session_id must be discoverable by MCP clients inspecting the schema,
+// while remaining optional so legacy clients without session_id still work.
+func TestMemSave_SessionIDIsOptionalInSchema(t *testing.T) {
+	session := connectTestServer(t, &mockStore{})
+	ctx := context.Background()
+
+	targetTools := map[string]bool{
+		"mem_save":            false,
+		"mem_save_prompt":     false,
+		"mem_session_summary": false,
 	}
 
 	for tool, err := range session.Tools(ctx, nil) {
 		if err != nil {
 			t.Fatalf("Tools() iteration error: %v", err)
 		}
-		expectedTools[tool.Name] = true
+		if _, ok := targetTools[tool.Name]; !ok {
+			continue
+		}
+		targetTools[tool.Name] = true
+
+		// InputSchema arrives as map[string]any from the client (JSON-decoded).
+		// We re-encode and decode to extract required[] and properties.
+		schemaBytes, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatalf("tool %q: cannot marshal InputSchema: %v", tool.Name, err)
+		}
+		var schema struct {
+			Required   []string               `json:"required"`
+			Properties map[string]interface{} `json:"properties"`
+		}
+		if err := json.Unmarshal(schemaBytes, &schema); err != nil {
+			t.Fatalf("tool %q: InputSchema is not valid JSON: %v", tool.Name, err)
+		}
+
+		for _, req := range schema.Required {
+			if req == "session_id" {
+				t.Errorf("tool %q: session_id must NOT be in required[], but it is", tool.Name)
+			}
+		}
+
+		// session_id must be declared in properties so MCP clients can discover it
+		if _, declared := schema.Properties["session_id"]; !declared {
+			t.Errorf("tool %q: session_id must be declared in properties, but it is absent", tool.Name)
+		}
 	}
 
-	for name, found := range expectedTools {
+	for name, found := range targetTools {
 		if !found {
-			t.Errorf("tool %q not registered", name)
+			t.Errorf("tool %q not found during schema check", name)
 		}
 	}
 }

@@ -8,6 +8,91 @@ import (
 	hivemcp "github.com/Thrasno/jarvis-dev/hive-daemon/internal/mcp"
 )
 
+// ─── T2.7: Per-session ActivityTracker methods ────────────────────────────
+
+func TestActivityTracker_ClearSession_RemovesSessionState(t *testing.T) {
+	tracker := hivemcp.NewActivityTracker()
+
+	tracker.RecordToolCall("sess-abc")
+	tracker.RecordSave("sess-abc")
+
+	// After clear, NudgeIfNeeded should return "" (no state for that key)
+	tracker.ClearSession("sess-abc")
+
+	// Verify by recording reads that would normally trigger a nudge —
+	// since ClearSession wiped the state, the counter resets to 0.
+	for i := 0; i < 5; i++ {
+		tracker.RecordToolCall("sess-abc")
+	}
+	// After 5 reads from a fresh state: NudgeIfNeeded SHOULD fire at exactly 5.
+	// This confirms ClearSession truly reset the state (not that the counter grew from prev values).
+	nudge := tracker.NudgeIfNeeded("sess-abc")
+	if nudge == "" {
+		t.Error("after ClearSession + 5 reads, nudge should fire as if fresh (counter reset)")
+	}
+}
+
+func TestActivityTracker_ClearSession_EmptyID_DoesNotPanic(t *testing.T) {
+	tracker := hivemcp.NewActivityTracker()
+	// Must not panic
+	tracker.ClearSession("")
+}
+
+func TestActivityTracker_ClearSession_UnknownID_DoesNotPanic(t *testing.T) {
+	tracker := hivemcp.NewActivityTracker()
+	// Must not panic on unknown session
+	tracker.ClearSession("never-tracked")
+}
+
+func TestActivityTracker_PerSessionIsolation(t *testing.T) {
+	tracker := hivemcp.NewActivityTracker()
+
+	// CRIT-6: per-session tracking is independent of per-project tracking.
+	// Record activity for session-A and session-B via the per-session API.
+	for i := 0; i < 3; i++ {
+		tracker.RecordToolCallForSession("session-A")
+	}
+	for i := 0; i < 10; i++ {
+		tracker.RecordToolCallForSession("session-B")
+	}
+
+	// Recording project-level activity must NOT contaminate session-level state.
+	tracker.RecordToolCall("some-project")
+
+	// ClearSession removes the per-session entry, leaving session-B untouched.
+	tracker.ClearSession("session-A")
+
+	// session-B's per-session counters should still reflect 10 reads.
+	if got := tracker.SessionToolCalls("session-B"); got != 10 {
+		t.Errorf("session-B tool calls = %d, want 10", got)
+	}
+	// session-A's counters should reset to 0 after ClearSession.
+	if got := tracker.SessionToolCalls("session-A"); got != 0 {
+		t.Errorf("session-A tool calls after clear = %d, want 0", got)
+	}
+}
+
+// CRIT-6 — mem_session_start MUST record per-session activity (not just per-project).
+// The previous code called RecordToolCall(p.Project) which keyed activity by project,
+// so ClearSession(sessionID) never matched and per-session tracking was a fiction.
+func TestActivityTracker_RecordToolCallForSession_KeyedBySessionID(t *testing.T) {
+	tracker := hivemcp.NewActivityTracker()
+
+	tracker.RecordToolCallForSession("sess-1")
+	tracker.RecordToolCallForSession("sess-1")
+	tracker.RecordToolCallForSession("sess-2")
+
+	if got := tracker.SessionToolCalls("sess-1"); got != 2 {
+		t.Errorf("sess-1 calls = %d, want 2", got)
+	}
+	if got := tracker.SessionToolCalls("sess-2"); got != 1 {
+		t.Errorf("sess-2 calls = %d, want 1", got)
+	}
+	if got := tracker.SessionToolCalls("never-seen"); got != 0 {
+		t.Errorf("unknown session calls = %d, want 0", got)
+	}
+}
+
 func TestActivityTracker_NudgeAfterInactivity(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	tracker := hivemcp.NewActivityTrackerWithClock(func() time.Time { return now })

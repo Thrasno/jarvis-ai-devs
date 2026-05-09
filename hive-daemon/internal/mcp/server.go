@@ -22,6 +22,12 @@ type MemoryStore interface {
 	GetMemory(id int64) (*models.Memory, error)
 	ListMemories(project string, limit int) ([]*models.Memory, error)
 	Search(query, project, category string, limit int) ([]*models.Memory, error)
+
+	// Session lifecycle — added in Slice 2
+	CreateSession(id, project, directory, devID, client string) error
+	EndSession(id, summary string) error
+	GetSession(id string) (*models.Session, error)
+	EnsureManualSaveSession(project string) (string, error)
 }
 
 // SyncRunner es la interfaz que usa el tool mem_sync.
@@ -55,6 +61,6 @@ func NewServerWithConfig(store MemoryStore, syncStore hivesync.SyncStore, syncer
 	if syncer != nil {
 		syncStatus = "sync activo"
 	}
-	logger.Log.Printf("hive-daemon MCP server ready (7 tools, %s)", syncStatus)
+	logger.Log.Printf("hive-daemon MCP server ready (9 tools, %s)", syncStatus)
 	return s
 }

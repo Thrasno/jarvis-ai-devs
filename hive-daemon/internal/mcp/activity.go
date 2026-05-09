@@ -14,12 +14,24 @@ type projectActivity struct {
 	saves        int
 }
 
+// sessionActivity tracks tool call/save/prompt activity per session_id, kept in
+// a namespace separate from the per-project map so per-session and per-project
+// counters don't contaminate each other (CRIT-6).
+type sessionActivity struct {
+	lastToolCall  time.Time
+	lastSave      time.Time
+	toolCalls     int
+	saves         int
+	currentPrompt string
+}
+
 // ActivityTracker monitors per-project tool usage and generates nudges
 // when the agent hasn't saved in a while despite being active.
 // Thread-safe — all methods acquire the mutex.
 type ActivityTracker struct {
 	mu       sync.Mutex
 	projects map[string]*projectActivity
+	sessions map[string]*sessionActivity
 	now      func() time.Time // injectable for testing
 }
 
@@ -27,6 +39,7 @@ type ActivityTracker struct {
 func NewActivityTracker() *ActivityTracker {
 	return &ActivityTracker{
 		projects: make(map[string]*projectActivity),
+		sessions: make(map[string]*sessionActivity),
 		now:      time.Now,
 	}
 }
@@ -35,6 +48,7 @@ func NewActivityTracker() *ActivityTracker {
 func NewActivityTrackerWithClock(now func() time.Time) *ActivityTracker {
 	return &ActivityTracker{
 		projects: make(map[string]*projectActivity),
+		sessions: make(map[string]*sessionActivity),
 		now:      now,
 	}
 }
@@ -128,6 +142,112 @@ func (a *ActivityTracker) NudgeIfNeeded(project string) string {
 	}
 
 	return ""
+}
+
+// ClearSession removes per-session tracking state for the given session ID.
+// Called when a session ends so stale activity data is not retained.
+// CRIT-6: this clears the dedicated sessions map (separate namespace from
+// per-project counters).
+func (a *ActivityTracker) ClearSession(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.sessions, sessionID)
+}
+
+// getOrCreateSession returns the activity state for a session, creating if needed.
+// Caller must hold a.mu.
+func (a *ActivityTracker) getOrCreateSession(sessionID string) *sessionActivity {
+	sa, ok := a.sessions[sessionID]
+	if !ok {
+		now := a.now()
+		sa = &sessionActivity{
+			lastToolCall: now,
+			lastSave:     now,
+		}
+		a.sessions[sessionID] = sa
+	}
+	return sa
+}
+
+// RecordToolCallForSession increments the per-session tool call counter.
+// Independent of per-project tracking (CRIT-6).
+func (a *ActivityTracker) RecordToolCallForSession(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	sa := a.getOrCreateSession(sessionID)
+	sa.toolCalls++
+	sa.lastToolCall = a.now()
+}
+
+// RecordSaveForSession increments the per-session save counter.
+func (a *ActivityTracker) RecordSaveForSession(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	sa := a.getOrCreateSession(sessionID)
+	sa.saves++
+	sa.lastSave = a.now()
+}
+
+// RecordPromptForSession stores the most-recent prompt content for a session.
+func (a *ActivityTracker) RecordPromptForSession(sessionID, content string) {
+	if sessionID == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	sa := a.getOrCreateSession(sessionID)
+	sa.currentPrompt = content
+}
+
+// CurrentPromptForSession returns the most-recent prompt for a session, or "".
+func (a *ActivityTracker) CurrentPromptForSession(sessionID string) string {
+	if sessionID == "" {
+		return ""
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	sa, ok := a.sessions[sessionID]
+	if !ok {
+		return ""
+	}
+	return sa.currentPrompt
+}
+
+// SessionToolCalls returns the per-session tool call count, or 0 if unknown.
+func (a *ActivityTracker) SessionToolCalls(sessionID string) int {
+	if sessionID == "" {
+		return 0
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	sa, ok := a.sessions[sessionID]
+	if !ok {
+		return 0
+	}
+	return sa.toolCalls
+}
+
+// SessionSaves returns the per-session save count, or 0 if unknown.
+func (a *ActivityTracker) SessionSaves(sessionID string) int {
+	if sessionID == "" {
+		return 0
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	sa, ok := a.sessions[sessionID]
+	if !ok {
+		return 0
+	}
+	return sa.saves
 }
 
 // SessionStats returns a summary line for session summary responses.

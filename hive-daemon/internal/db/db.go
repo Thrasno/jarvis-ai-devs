@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS memories (
     updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     synced_at       DATETIME,
     confidence      TEXT NOT NULL DEFAULT '',
-    impact_score    INTEGER NOT NULL DEFAULT 0
+    impact_score    INTEGER NOT NULL DEFAULT 0,
+    session_id      TEXT NOT NULL REFERENCES sessions(id)
 );
 
 -- sync_state guarda el JWT y el timestamp del último sync por proyecto.
@@ -52,6 +53,12 @@ WHERE topic_key IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project);
 CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at DESC);
+-- R2-WARN-3 — UNIQUE on sync_id makes INSERT OR IGNORE actually deduplicate
+-- re-pulls. Without it, the same remote memory could be inserted multiple times.
+-- Postgres has the equivalent constraint on memories.sync_id; this is the parity.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_sync_id ON memories(sync_id) WHERE sync_id != '';
+-- idx_memories_session is created AFTER migrateMemoriesAddSessionID runs so the
+-- column always exists. See initSchema. Suspect-A / FR-D-2.
 
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
     title, content, tags,
@@ -76,6 +83,34 @@ CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
     INSERT INTO memories_fts(memories_fts, rowid, title, content, tags)
     VALUES ('delete', old.id, old.title, old.content, old.tags);
 END;
+
+-- ─── sessions ────────────────────────────────────────────────────────────────
+-- Tracks explicit sessions (mem_session_start/end) and implicit manual-save-*
+-- sessions created by the lazy fallback path.
+-- R2-WARN-2 — sync_id es UNIQUE para paridad con Postgres (Decisión 2). Esto
+-- garantiza que reenvíos idempotentes desde el daemon no producen filas duplicadas.
+CREATE TABLE IF NOT EXISTS sessions (
+    id          TEXT PRIMARY KEY,
+    sync_id     TEXT NOT NULL UNIQUE,
+    project     TEXT NOT NULL,
+    directory   TEXT NOT NULL DEFAULT '',
+    dev_id      TEXT NOT NULL,
+    client      TEXT NOT NULL,
+    started_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ended_at    DATETIME,
+    summary     TEXT,
+    synced_at   DATETIME,
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_project    ON sessions(project);
+CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_dev_id     ON sessions(dev_id);
+-- idx_sessions_sync_id mirrors Postgres and accelerates conflict-target lookups.
+-- The UNIQUE constraint above already implies an index, but we declare it explicitly
+-- under a stable name so daemon/server queries can rely on the same name.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_sync_id ON sessions(sync_id);
 
 CREATE TABLE IF NOT EXISTS user_prompts (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,8 +177,19 @@ func (d *DB) Close() error {
 	return d.sqlDB.Close()
 }
 
+// RawDB exposes the underlying *sql.DB. Used by test packages outside db/ that
+// need to seed rows directly (e.g. cmd/hive-daemon tests seeding stale sessions).
+func (d *DB) RawDB() *sql.DB { return d.sqlDB }
+
 func initSchema(sqlDB *sql.DB) error {
 	if _, err := sqlDB.Exec(schema); err != nil {
+		// R3-FIX-4 — UNIQUE-constraint failures during schema bootstrap on legacy
+		// DBs indicate duplicate sync_id values exist that block the retrofit.
+		// Surface an actionable error rather than letting the cryptic SQLite text
+		// reach operators.
+		if isUniqueSyncIDFailure(err) {
+			return wrapUniqueSyncIDError(err, "sessions/memories")
+		}
 		return fmt.Errorf("exec schema: %w", err)
 	}
 	// Migraciones incrementales: añadimos columnas si no existen todavía.
@@ -172,6 +218,13 @@ func initSchema(sqlDB *sql.DB) error {
 		`ALTER TABLE sync_state ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE sync_state ADD COLUMN backoff_until DATETIME`,
 		`ALTER TABLE sync_state ADD COLUMN last_error TEXT NOT NULL DEFAULT ''`,
+		// Additive index — safe to run on any DB including those migrated pre-Slice 2.
+		`CREATE INDEX IF NOT EXISTS idx_sessions_dev_id ON sessions(dev_id)`,
+		// R2-WARN-2 — UNIQUE index on sessions.sync_id for Postgres parity. UNIQUE
+		// added to base schema; this migration retrofits existing DBs that were
+		// created without the constraint. If duplicate sync_ids already exist, the
+		// CREATE INDEX fails and we log+continue (caller may need to dedupe manually).
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_sync_id ON sessions(sync_id)`,
 	}
 	for _, m := range migrations {
 		if _, err := sqlDB.Exec(m); err != nil {
@@ -179,10 +232,292 @@ func initSchema(sqlDB *sql.DB) error {
 			if strings.Contains(errMsg, "duplicate column name") || strings.Contains(errMsg, "already has column named") {
 				continue // column already exists — safe to ignore
 			}
+			// R3-FIX-4 — UNIQUE retrofit failure on idx_sessions_sync_id is NOT
+			// recoverable: continuing means the daemon runs without the dedup
+			// guarantee R2-WARN-2 promised. Fail loudly. (R4-FIX-6 removed the
+			// idx_memories_sync_id branch — that index is created inside
+			// migrateMemoriesAddSessionID, never in this slice.)
+			if isUniqueSyncIDFailure(err) && strings.Contains(m, "idx_sessions_sync_id") {
+				return wrapUniqueSyncIDError(err, "sessions")
+			}
 			logger.Log.Printf("warn: migration failed: %v — sql: %.120s", err, m)
 		}
 	}
+
+	if err := migrateMemoriesAddSessionID(sqlDB); err != nil {
+		return fmt.Errorf("migrate memories session_id: %w", err)
+	}
+
+	// Suspect-A — idx_memories_session is required by FR-D-2. Create after the
+	// session_id migration runs so the column always exists by this point. Safe
+	// on fresh install (column declared in base schema) and on migrated DBs.
+	if _, err := sqlDB.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id)`); err != nil {
+		return fmt.Errorf("create idx_memories_session: %w", err)
+	}
+
 	return nil
+}
+
+// migrateMemoriesAddSessionID performs the recreate-table dance for memories,
+// adding session_id NOT NULL. Gated by PRAGMA user_version — skips if already 2.
+//
+// Order of operations (must be atomic in a transaction):
+//  1. Insert sentinel sessions per project (INSERT OR IGNORE).
+//  2. Set session_id on existing memories (UPDATE via temp column or direct).
+//  3. CREATE memories_new with session_id NOT NULL + FK.
+//  4. Copy all rows from memories → memories_new.
+//  5. Drop memories_fts, memories_ai/au/ad triggers, memories table.
+//  6. Rename memories_new → memories.
+//  7. Recreate memories_fts + all three triggers (must match schema const exactly).
+//  8. SET PRAGMA user_version = 2.
+func migrateMemoriesAddSessionID(sqlDB *sql.DB) error {
+	var version int
+	if err := sqlDB.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return fmt.Errorf("read user_version: %w", err)
+	}
+	if version >= 2 {
+		return nil // already migrated
+	}
+
+	// Check whether memories table already has session_id — detects fresh installs
+	// where the CREATE TABLE IF NOT EXISTS in schema already includes session_id.
+	var hasSessionID int
+	_ = sqlDB.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name='session_id'`,
+	).Scan(&hasSessionID)
+	if hasSessionID > 0 {
+		// Fresh install: memories was created with session_id already.
+		// Bump version so we skip on next open.
+		if _, err := sqlDB.Exec("PRAGMA user_version = 2"); err != nil {
+			return fmt.Errorf("set user_version: %w", err)
+		}
+		return nil
+	}
+
+	// --- recreate-table dance inside a single transaction ---
+	tx, err := sqlDB.Begin()
+	if err != nil {
+		return fmt.Errorf("begin migration tx: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	// Disable FK enforcement during the dance — we re-enable after rename.
+	if _, err = tx.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("disable foreign_keys: %w", err)
+	}
+
+	if err = insertSentinelSessions(tx); err != nil {
+		return err
+	}
+
+	// Step 3: create the new table with session_id NOT NULL + FK.
+	if _, err = tx.Exec(`CREATE TABLE memories_new (
+		id             INTEGER PRIMARY KEY AUTOINCREMENT,
+		sync_id        TEXT NOT NULL,
+		project        TEXT NOT NULL,
+		topic_key      TEXT,
+		category       TEXT NOT NULL DEFAULT '',
+		title          TEXT NOT NULL,
+		content        TEXT NOT NULL,
+		tags           TEXT NOT NULL DEFAULT '[]',
+		files_affected TEXT NOT NULL DEFAULT '[]',
+		created_by     TEXT NOT NULL DEFAULT 'unknown',
+		created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		synced_at      DATETIME,
+		confidence     TEXT NOT NULL DEFAULT '',
+		impact_score   INTEGER NOT NULL DEFAULT 0,
+		session_id     TEXT NOT NULL REFERENCES sessions(id)
+	)`); err != nil {
+		return fmt.Errorf("create memories_new: %w", err)
+	}
+
+	// Step 4: copy rows; session_id is already set by insertSentinelSessions backfill.
+	// We use a temp column trick: the backfill UPDATE ran on the old table which
+	// does NOT have session_id yet. We compute it inline in the SELECT.
+	if _, err = tx.Exec(`
+		INSERT INTO memories_new
+		    (id, sync_id, project, topic_key, category, title, content, tags,
+		     files_affected, created_by, created_at, updated_at, synced_at,
+		     confidence, impact_score, session_id)
+		SELECT id, sync_id, project, topic_key, category, title, content, tags,
+		       files_affected, created_by, created_at, updated_at, synced_at,
+		       confidence, impact_score,
+		       'legacy-pre-lifecycle-' || project
+		FROM memories
+	`); err != nil {
+		return fmt.Errorf("copy memories to memories_new: %w", err)
+	}
+
+	// Step 5: drop FTS virtual table, triggers, and old table.
+	// Trigger drop order: ai/au/ad, then fts, then table.
+	for _, stmt := range []string{
+		"DROP TRIGGER IF EXISTS memories_ai",
+		"DROP TRIGGER IF EXISTS memories_au",
+		"DROP TRIGGER IF EXISTS memories_ad",
+		"DROP TABLE IF EXISTS memories_fts",
+		"DROP TABLE memories",
+	} {
+		if _, err = tx.Exec(stmt); err != nil {
+			return fmt.Errorf("drop step (%s): %w", stmt, err)
+		}
+	}
+
+	// Step 6: rename.
+	if _, err = tx.Exec("ALTER TABLE memories_new RENAME TO memories"); err != nil {
+		return fmt.Errorf("rename memories_new: %w", err)
+	}
+
+	// Recreate indexes that were on the old table. Also ensure idx_sessions_dev_id
+	// and idx_memories_session exist (they may be missing on DBs migrated before
+	// these indexes were added — Suspect-A: idx_memories_session is required by FR-D-2).
+	for _, stmt := range []string{
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_topic_key
+		 ON memories(project, topic_key) WHERE topic_key IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_dev_id ON sessions(dev_id)`,
+		// R2-WARN-3 — recreated table needs the UNIQUE INDEX too.
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_sync_id ON memories(sync_id) WHERE sync_id != ''`,
+	} {
+		if _, err = tx.Exec(stmt); err != nil {
+			// R4-FIX-5 — UNIQUE-on-sync_id failure here means a pre-Slice2 DB
+			// has duplicate memories.sync_id values. Surface the actionable
+			// cleanup hint instead of "recreate index: constraint failed: ...".
+			if isUniqueSyncIDFailure(err) {
+				return wrapUniqueSyncIDError(err, "memories")
+			}
+			return fmt.Errorf("recreate index: %w", err)
+		}
+	}
+
+	// Step 7: recreate FTS5 virtual table + all three triggers.
+	// These must match the schema const exactly to keep validateSchema happy.
+	for _, stmt := range []string{
+		`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+			title, content, tags,
+			content='memories', content_rowid='id', tokenize='unicode61'
+		)`,
+		`INSERT INTO memories_fts(memories_fts) VALUES('rebuild')`,
+		`CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+			INSERT INTO memories_fts(rowid, title, content, tags)
+			VALUES (new.id, new.title, new.content, new.tags);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+			INSERT INTO memories_fts(memories_fts, rowid, title, content, tags)
+			VALUES ('delete', old.id, old.title, old.content, old.tags);
+			INSERT INTO memories_fts(rowid, title, content, tags)
+			VALUES (new.id, new.title, new.content, new.tags);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+			INSERT INTO memories_fts(memories_fts, rowid, title, content, tags)
+			VALUES ('delete', old.id, old.title, old.content, old.tags);
+		END`,
+	} {
+		if _, err = tx.Exec(stmt); err != nil {
+			return fmt.Errorf("recreate fts/trigger: %w", err)
+		}
+	}
+
+	// Re-enable FK enforcement.
+	if _, err = tx.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		return fmt.Errorf("re-enable foreign_keys: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration tx: %w", err)
+	}
+
+	// Step 8: bump schema version outside the transaction (PRAGMA ignores transactions).
+	if _, err = sqlDB.Exec("PRAGMA user_version = 2"); err != nil {
+		return fmt.Errorf("set user_version: %w", err)
+	}
+
+	return nil
+}
+
+// insertSentinelSessions inserts one legacy-pre-lifecycle-{project} session per
+// distinct project found in memories, then backfills memories.session_id.
+// Uses INSERT OR IGNORE so re-running is safe.
+func insertSentinelSessions(tx *sql.Tx) error {
+	rows, err := tx.Query(
+		`SELECT project, MIN(created_at) FROM memories GROUP BY project`,
+	)
+	if err != nil {
+		return fmt.Errorf("query projects: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type sentinelRow struct {
+		project   string
+		minCreate string
+	}
+	var sentinels []sentinelRow
+	for rows.Next() {
+		var s sentinelRow
+		if err := rows.Scan(&s.project, &s.minCreate); err != nil {
+			return fmt.Errorf("scan project row: %w", err)
+		}
+		sentinels = append(sentinels, s)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate projects: %w", err)
+	}
+
+	for _, s := range sentinels {
+		id := "legacy-pre-lifecycle-" + s.project
+		_, err := tx.Exec(`
+			INSERT OR IGNORE INTO sessions
+			    (id, sync_id, project, directory, dev_id, client, started_at, ended_at, summary)
+			VALUES (?, lower(hex(randomblob(16))), ?, '', 'legacy', 'legacy', ?,
+			        CURRENT_TIMESTAMP,
+			        'Backfilled placeholder for memories created before session lifecycle.')
+		`, id, s.project, s.minCreate)
+		if err != nil {
+			return fmt.Errorf("insert sentinel for %q: %w", s.project, err)
+		}
+	}
+
+	return nil
+}
+
+// isUniqueSyncIDFailure reports whether err is a SQLite UNIQUE-constraint
+// violation against a sync_id column. R3-FIX-4 — these happen when retrofitting
+// a UNIQUE index onto a pre-R2 sessions/memories table that already contains
+// duplicate sync_ids. We surface them as fatal rather than swallowing the
+// retrofit and silently regressing the dedup guarantee.
+func isUniqueSyncIDFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "unique") {
+		return false
+	}
+	return strings.Contains(msg, "sync_id")
+}
+
+// wrapUniqueSyncIDError returns an actionable fatal error explaining the manual
+// cleanup operators must perform before reopening the daemon DB. The `table`
+// argument selects the SELECT hint shown to the operator (sessions vs memories);
+// callers that don't know which table failed pass "sessions/memories".
+func wrapUniqueSyncIDError(err error, table string) error {
+	if table == "" {
+		table = "sessions/memories"
+	}
+	hint := table
+	if table == "sessions/memories" {
+		hint = "sessions"
+	}
+	return fmt.Errorf(
+		"duplicate sync_id values exist in %s table; manual cleanup required before upgrading. "+
+			"Run: SELECT sync_id, COUNT(*) FROM %s GROUP BY sync_id HAVING COUNT(*) > 1; "+
+			"underlying error: %w", table, hint, err)
 }
 
 // validateSchema verifies that all FTS5 triggers exist in sqlite_master.

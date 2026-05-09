@@ -22,6 +22,9 @@ type Memory struct {
 	SyncedAt      *time.Time `json:"synced_at"` // nil = pendiente de sync
 	Confidence    string     `json:"confidence"`
 	ImpactScore   int        `json:"impact_score"`
+	// SessionID links this memory to a lifecycle session. Set by the MCP handler
+	// (either explicit from the caller or resolved via EnsureManualSaveSession).
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // Validate checks that all required fields are present.

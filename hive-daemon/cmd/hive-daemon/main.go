@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/db"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/httpapi"
@@ -54,6 +55,14 @@ func main() {
 		}
 	}()
 
+	closed, err := runStartup(store)
+	if err != nil {
+		logger.Log.Fatalf("startup: %v", err)
+	}
+	if closed > 0 {
+		logger.Log.Printf("auto-closed %d stale session(s)", closed)
+	}
+
 	server := hivemcp.NewServer(store, store, syncer, cfg, store)
 
 	runErr := server.Run(rootCtx, &sdkmcp.StdioTransport{})
@@ -78,6 +87,12 @@ func httpAddr() string {
 		logger.Log.Fatalf("invalid HIVE_HTTP_PORT %q: must be a number between 1 and 65535", port)
 	}
 	return "127.0.0.1:" + port
+}
+
+// runStartup runs pre-server initialization hooks and returns the number of
+// stale sessions that were auto-closed. Extracted for testability.
+func runStartup(store *db.DB) (int64, error) {
+	return store.AutoCloseStale(24*time.Hour, time.Now)
 }
 
 // dbFilePath returns the SQLite path, preferring HIVE_DB_PATH env var

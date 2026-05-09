@@ -25,6 +25,36 @@ const MaxRecentPrompts = 10
 
 func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncStore, syncer SyncRunner, cfg *hivesync.Config, activity *ActivityTracker, prompts PromptStore) {
 	s.AddTool(&sdkmcp.Tool{
+		Name:        "mem_session_start",
+		Description: "Start a new named session to track tool calls and memory saves under a single lifecycle.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"required": ["id", "project", "directory", "dev_id", "client"],
+			"properties": {
+				"id":        {"type": "string", "description": "Caller-provided session ID (UUID recommended)"},
+				"project":   {"type": "string", "description": "Project identifier"},
+				"directory": {"type": "string", "description": "Working directory for this session"},
+				"dev_id":    {"type": "string", "description": "Developer identity (e.g. from HIVE_DEV_ID env var)"},
+				"client":    {"type": "string", "description": "Client identifier (e.g. 'claude-code', 'opencode')"},
+				"session_id": {"type": "string", "description": "Unused — present for schema symmetry only"}
+			}
+		}`),
+	}, memSessionStartHandler(store, activity))
+
+	s.AddTool(&sdkmcp.Tool{
+		Name:        "mem_session_end",
+		Description: "End an active session. Records ended_at and optional summary.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"required": ["id"],
+			"properties": {
+				"id":      {"type": "string", "description": "Session ID to close"},
+				"summary": {"type": "string", "description": "Optional final session summary"}
+			}
+		}`),
+	}, memSessionEndHandler(store, activity))
+
+	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_save",
 		Description: "Save a memory observation to Hive persistent storage",
 		InputSchema: json.RawMessage(`{
@@ -37,7 +67,8 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncS
 				"project":       {"type": "string", "description": "Project identifier"},
 				"topic_key":     {"type": "string", "description": "Stable key for upsert (e.g. 'arch/auth-model')"},
 				"tags":          {"type": "array", "items": {"type": "string"}},
-				"files_affected":{"type": "array", "items": {"type": "string"}}
+				"files_affected":{"type": "array", "items": {"type": "string"}},
+				"session_id":    {"type": "string", "description": "Optional session ID; absent triggers lazy manual-save fallback"}
 			}
 		}`),
 	}, memSaveHandler(store, syncer, cfg, activity))
@@ -76,8 +107,9 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncS
 			"type": "object",
 			"required": ["content", "project"],
 			"properties": {
-				"content": {"type": "string", "description": "Session summary in markdown"},
-				"project": {"type": "string", "description": "Project identifier"}
+				"content":    {"type": "string", "description": "Session summary in markdown"},
+				"project":    {"type": "string", "description": "Project identifier"},
+				"session_id": {"type": "string", "description": "Optional session ID; absent triggers lazy manual-save fallback"}
 			}
 		}`),
 	}, memSessionSummaryHandler(store, activity))
@@ -113,14 +145,89 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncS
 			"type": "object",
 			"required": ["content", "project"],
 			"properties": {
-				"content": {"type": "string", "description": "The user prompt text to persist"},
-				"project": {"type": "string", "description": "Project identifier"}
+				"content":    {"type": "string", "description": "The user prompt text to persist"},
+				"project":    {"type": "string", "description": "Project identifier"},
+				"session_id": {"type": "string", "description": "Optional session ID; absent triggers lazy manual-save fallback"}
 			}
 		}`),
-	}, memSavePromptHandler(prompts))
+	}, memSavePromptHandler(store, prompts, activity))
 }
 
 // ─── Handlers ──────────────────────────────────────────────────────────────
+
+func memSessionStartHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.ToolHandler {
+	return func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+		var p struct {
+			ID        string `json:"id"`
+			Project   string `json:"project"`
+			Directory string `json:"directory"`
+			DevID     string `json:"dev_id"`
+			Client    string `json:"client"`
+		}
+		if err := json.Unmarshal(req.Params.Arguments, &p); err != nil {
+			return toolError(fmt.Errorf("invalid params: %w", err)), nil
+		}
+		if p.ID == "" {
+			return toolError(fmt.Errorf("id is required")), nil
+		}
+		if p.DevID == "" {
+			return toolError(fmt.Errorf("dev_id is required")), nil
+		}
+		if p.Client == "" {
+			return toolError(fmt.Errorf("client is required")), nil
+		}
+
+		if err := store.CreateSession(p.ID, p.Project, p.Directory, p.DevID, p.Client); err != nil {
+			return toolError(fmt.Errorf("create session failed: %w", err)), nil
+		}
+
+		// CRIT-6: record activity in BOTH namespaces — per-session (real attribution)
+		// and per-project (legacy nudge logic depends on project-keyed counters).
+		activity.RecordToolCallForSession(p.ID)
+		activity.RecordToolCall(p.Project)
+
+		return toolJSON(map[string]any{
+			"session_id": p.ID,
+			"started_at": time.Now().UTC().Format(time.RFC3339),
+		})
+	}
+}
+
+func memSessionEndHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.ToolHandler {
+	return func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+		var p struct {
+			ID      string `json:"id"`
+			Summary string `json:"summary"`
+		}
+		if err := json.Unmarshal(req.Params.Arguments, &p); err != nil {
+			return toolError(fmt.Errorf("invalid params: %w", err)), nil
+		}
+		if p.ID == "" {
+			return toolError(fmt.Errorf("id is required")), nil
+		}
+
+		// Validate session exists and is open before ending it.
+		sess, err := store.GetSession(p.ID)
+		if err != nil {
+			return toolError(fmt.Errorf("session %q not found", p.ID)), nil
+		}
+		if sess.EndedAt != nil {
+			return toolError(fmt.Errorf("session %q already ended at %s", p.ID, sess.EndedAt.UTC().Format(time.RFC3339))), nil
+		}
+
+		if err := store.EndSession(p.ID, p.Summary); err != nil {
+			return toolError(fmt.Errorf("end session failed: %w", err)), nil
+		}
+
+		activity.ClearSession(p.ID)
+
+		endedAt := time.Now().UTC().Format(time.RFC3339)
+		return toolJSON(map[string]any{
+			"session_id": p.ID,
+			"ended_at":   endedAt,
+		})
+	}
+}
 
 func memSaveHandler(store MemoryStore, syncer SyncRunner, cfg *hivesync.Config, activity *ActivityTracker) sdkmcp.ToolHandler {
 	return func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
@@ -132,12 +239,19 @@ func memSaveHandler(store MemoryStore, syncer SyncRunner, cfg *hivesync.Config, 
 			TopicKey      *string  `json:"topic_key"`
 			Tags          []string `json:"tags"`
 			FilesAffected []string `json:"files_affected"`
+			SessionID     string   `json:"session_id"`
 		}
 		if err := json.Unmarshal(req.Params.Arguments, &p); err != nil {
 			return toolError(fmt.Errorf("invalid params: %w", err)), nil
 		}
 		if p.Title == "" || p.Content == "" || p.Project == "" {
 			return toolError(fmt.Errorf("title, content, and project are required")), nil
+		}
+
+		// Lazy session fallback: when session_id is absent, resolve via EnsureManualSaveSession.
+		sessionID, err := resolveSessionID(p.SessionID, p.Project, store)
+		if err != nil {
+			return toolError(fmt.Errorf("resolve session: %w", err)), nil
 		}
 
 		// Guard: reject content exceeding MaxObservationLength runes (Unicode-safe).
@@ -162,6 +276,7 @@ func memSaveHandler(store MemoryStore, syncer SyncRunner, cfg *hivesync.Config, 
 			TopicKey:      p.TopicKey,
 			Tags:          p.Tags,
 			FilesAffected: p.FilesAffected,
+			SessionID:     sessionID,
 		}
 
 		id, err := store.SaveMemory(mem)
@@ -169,6 +284,9 @@ func memSaveHandler(store MemoryStore, syncer SyncRunner, cfg *hivesync.Config, 
 			return toolError(fmt.Errorf("save failed: %w", err)), nil
 		}
 
+		// CRIT-6: per-session save counter mirrors the project counter so callers
+		// querying SessionSaves(sessionID) see real attribution post-fix.
+		activity.RecordSaveForSession(sessionID)
 		activity.RecordSave(p.Project)
 
 		// Auto-sync: spawn background goroutine if enabled
@@ -255,8 +373,9 @@ func memGetObservationHandler(store MemoryStore, activity *ActivityTracker) sdkm
 func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.ToolHandler {
 	return func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 		var p struct {
-			Content string `json:"content"`
-			Project string `json:"project"`
+			Content   string `json:"content"`
+			Project   string `json:"project"`
+			SessionID string `json:"session_id"`
 		}
 		if err := json.Unmarshal(req.Params.Arguments, &p); err != nil {
 			return toolError(fmt.Errorf("invalid params: %w", err)), nil
@@ -276,14 +395,35 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 			)), nil
 		}
 
+		// When session_id is explicit: validate the session is open before saving.
+		// When absent: lazy fallback to manual-save-{project}.
+		var effectiveSessionID string
+		if p.SessionID != "" {
+			sess, err := store.GetSession(p.SessionID)
+			if err != nil {
+				return toolError(fmt.Errorf("session %q not found", p.SessionID)), nil
+			}
+			if sess.EndedAt != nil {
+				return toolError(fmt.Errorf("session %q already ended at %s", p.SessionID, sess.EndedAt.UTC().Format(time.RFC3339))), nil
+			}
+			effectiveSessionID = p.SessionID
+		} else {
+			var err error
+			effectiveSessionID, err = store.EnsureManualSaveSession(p.Project)
+			if err != nil {
+				return toolError(fmt.Errorf("resolve session: %w", err)), nil
+			}
+		}
+
 		// Strip private tags from content. Title is derived from stripped content (ADR-6).
 		contentRes := sanitize.Strip(p.Content)
 
 		mem := &models.Memory{
-			Title:    titleFromContent(contentRes.Clean),
-			Content:  contentRes.Clean,
-			Category: "session_summary",
-			Project:  p.Project,
+			Title:     titleFromContent(contentRes.Clean),
+			Content:   contentRes.Clean,
+			Category:  "session_summary",
+			Project:   p.Project,
+			SessionID: effectiveSessionID,
 		}
 
 		id, err := store.SaveMemory(mem)
@@ -291,12 +431,14 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 			return toolError(fmt.Errorf("save failed: %w", err)), nil
 		}
 
+		// CRIT-6: per-session save counter for mem_session_summary.
+		activity.RecordSaveForSession(effectiveSessionID)
 		activity.RecordSave(p.Project)
 
 		jsonBytes, err := json.Marshal(map[string]any{
-			"id":            id,
-			"status":        "saved",
-			"stripped":      contentRes.Count > 0,
+			"id":             id,
+			"status":         "saved",
+			"stripped":       contentRes.Count > 0,
 			"stripped_count": contentRes.Count,
 		})
 		if err != nil {
@@ -352,14 +494,15 @@ func memContextHandler(store MemoryStore, prompts PromptStore, activity *Activit
 	}
 }
 
-func memSavePromptHandler(prompts PromptStore) sdkmcp.ToolHandler {
+func memSavePromptHandler(store MemoryStore, prompts PromptStore, activity *ActivityTracker) sdkmcp.ToolHandler {
 	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 		if prompts == nil {
 			return toolError(fmt.Errorf("prompts store not configured")), nil
 		}
 		var p struct {
-			Content string `json:"content"`
-			Project string `json:"project"`
+			Content   string `json:"content"`
+			Project   string `json:"project"`
+			SessionID string `json:"session_id"`
 		}
 		if err := json.Unmarshal(req.Params.Arguments, &p); err != nil {
 			return toolError(fmt.Errorf("invalid params: %w", err)), nil
@@ -377,6 +520,12 @@ func memSavePromptHandler(prompts PromptStore) sdkmcp.ToolHandler {
 			)), nil
 		}
 
+		// Lazy session fallback — same pattern as memSaveHandler.
+		sessionID, err := resolveSessionID(p.SessionID, p.Project, store)
+		if err != nil {
+			return toolError(fmt.Errorf("resolve session: %w", err)), nil
+		}
+
 		// Strip private tags from content at the handler boundary.
 		contentRes := sanitize.Strip(p.Content)
 
@@ -384,10 +533,13 @@ func memSavePromptHandler(prompts PromptStore) sdkmcp.ToolHandler {
 		if err != nil {
 			return toolError(fmt.Errorf("save failed: %w", err)), nil
 		}
+		// CRIT-6: per-session prompt capture so CurrentPromptForSession works.
+		activity.RecordPromptForSession(sessionID, contentRes.Clean)
+		activity.RecordSaveForSession(sessionID)
 		return toolJSON(map[string]any{
-			"id":            prompt.ID,
-			"created_at":    prompt.CreatedAt.Format(time.RFC3339),
-			"stripped":      contentRes.Count > 0,
+			"id":             prompt.ID,
+			"created_at":     prompt.CreatedAt.Format(time.RFC3339),
+			"stripped":       contentRes.Count > 0,
 			"stripped_count": contentRes.Count,
 		})
 	}
@@ -560,6 +712,17 @@ func memSyncHandler(syncStore hivesync.SyncStore, syncer SyncRunner) sdkmcp.Tool
 			"status":    "ok",
 		})
 	}
+}
+
+// resolveSessionID returns the effective session ID for a save operation.
+// When explicit is non-empty it is used directly; otherwise EnsureManualSaveSession
+// is called to lazily create (or return) the always-open 'manual-save-{project}' session.
+// This mirrors engram's handleSave lazy-dispatch pattern (internal/mcp/mcp.go:765-792).
+func resolveSessionID(explicit, project string, store MemoryStore) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	return store.EnsureManualSaveSession(project)
 }
 
 func isQuietSyncBlocker(err error) bool {

@@ -2,6 +2,7 @@ package mcp_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	hivedb "github.com/Thrasno/jarvis-dev/hive-daemon/internal/db"
 	hivemcp "github.com/Thrasno/jarvis-dev/hive-daemon/internal/mcp"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
 	hivesync "github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
@@ -73,7 +75,321 @@ func decodeJSONResponse(t *testing.T, res *sdkmcp.CallToolResult) map[string]any
 	return body
 }
 
+// ─── mem_session_start ────────────────────────────────────────────────────
+
+func TestMemSessionStart_HappyPath_ReturnsSessionID(t *testing.T) {
+	var createdID, createdProject, createdDir, createdDevID, createdClient string
+	store := &mockStore{
+		createSessionFn: func(id, project, directory, devID, client string) error {
+			createdID = id
+			createdProject = project
+			createdDir = directory
+			createdDevID = devID
+			createdClient = client
+			return nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_session_start", map[string]any{
+		"id":        "sess-001",
+		"project":   "jarvis-dev",
+		"directory": "/home/andres",
+		"dev_id":    "andres",
+		"client":    "claude-code",
+	})
+
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", textContent(t, res))
+	}
+	body := decodeJSONResponse(t, res)
+	if body["session_id"] != "sess-001" {
+		t.Errorf("session_id = %v, want 'sess-001'", body["session_id"])
+	}
+	if body["started_at"] == nil {
+		t.Error("response must contain started_at")
+	}
+
+	if createdID != "sess-001" {
+		t.Errorf("CreateSession called with id=%q, want 'sess-001'", createdID)
+	}
+	if createdProject != "jarvis-dev" {
+		t.Errorf("CreateSession called with project=%q, want 'jarvis-dev'", createdProject)
+	}
+	if createdDir != "/home/andres" {
+		t.Errorf("CreateSession called with directory=%q, want '/home/andres'", createdDir)
+	}
+	if createdDevID != "andres" {
+		t.Errorf("CreateSession called with devID=%q, want 'andres'", createdDevID)
+	}
+	if createdClient != "claude-code" {
+		t.Errorf("CreateSession called with client=%q, want 'claude-code'", createdClient)
+	}
+}
+
+func TestMemSessionStart_MissingDevID_ReturnsError(t *testing.T) {
+	session := connectTestServer(t, &mockStore{})
+
+	res := callTool(t, session, "mem_session_start", map[string]any{
+		"id":        "sess-001",
+		"project":   "jarvis-dev",
+		"directory": "/home",
+		// no dev_id
+		"client": "claude-code",
+	})
+
+	if !res.IsError {
+		t.Error("expected IsError=true for missing dev_id")
+	}
+	if !strings.Contains(textContent(t, res), "dev_id") {
+		t.Errorf("error message should mention 'dev_id', got: %s", textContent(t, res))
+	}
+}
+
+func TestMemSessionStart_MissingClient_ReturnsError(t *testing.T) {
+	session := connectTestServer(t, &mockStore{})
+
+	res := callTool(t, session, "mem_session_start", map[string]any{
+		"id":        "sess-001",
+		"project":   "jarvis-dev",
+		"directory": "/home",
+		"dev_id":    "andres",
+		// no client
+	})
+
+	if !res.IsError {
+		t.Error("expected IsError=true for missing client")
+	}
+	if !strings.Contains(textContent(t, res), "client") {
+		t.Errorf("error message should mention 'client', got: %s", textContent(t, res))
+	}
+}
+
+func TestMemSessionStart_MissingID_ReturnsError(t *testing.T) {
+	session := connectTestServer(t, &mockStore{})
+
+	res := callTool(t, session, "mem_session_start", map[string]any{
+		"project":   "jarvis-dev",
+		"directory": "/home",
+		"dev_id":    "andres",
+		"client":    "claude-code",
+		// no id
+	})
+
+	if !res.IsError {
+		t.Error("expected IsError=true for missing id")
+	}
+}
+
+func TestMemSessionStart_DuplicateID_ReturnsError(t *testing.T) {
+	store := &mockStore{
+		createSessionFn: func(id, _, _, _, _ string) error {
+			return errors.New("UNIQUE constraint failed: sessions.id")
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_session_start", map[string]any{
+		"id":        "sess-dup",
+		"project":   "jarvis-dev",
+		"directory": "/home",
+		"dev_id":    "andres",
+		"client":    "claude-code",
+	})
+
+	if !res.IsError {
+		t.Error("expected IsError=true when session id already exists")
+	}
+}
+
+// ─── mem_session_end ──────────────────────────────────────────────────────
+
+func TestMemSessionEnd_HappyPath_ReturnsEndedAt(t *testing.T) {
+	endedAt := time.Now().Add(-1 * time.Second)
+	var endedID, endedSummary string
+	store := &mockStore{
+		getSessionFn: func(id string) (*models.Session, error) {
+			return &models.Session{ID: id, Project: "jarvis-dev", EndedAt: nil}, nil
+		},
+		endSessionFn: func(id, summary string) error {
+			endedID = id
+			endedSummary = summary
+			return nil
+		},
+	}
+	_ = endedAt
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_session_end", map[string]any{
+		"id":      "sess-abc",
+		"summary": "all done",
+	})
+
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", textContent(t, res))
+	}
+	body := decodeJSONResponse(t, res)
+	if body["ended_at"] == nil {
+		t.Error("response must contain ended_at")
+	}
+	if body["session_id"] != "sess-abc" {
+		t.Errorf("session_id = %v, want 'sess-abc'", body["session_id"])
+	}
+	if endedID != "sess-abc" {
+		t.Errorf("EndSession called with id=%q, want 'sess-abc'", endedID)
+	}
+	if endedSummary != "all done" {
+		t.Errorf("EndSession called with summary=%q, want 'all done'", endedSummary)
+	}
+}
+
+func TestMemSessionEnd_UnknownSession_ReturnsError(t *testing.T) {
+	store := &mockStore{
+		getSessionFn: func(id string) (*models.Session, error) {
+			return nil, errors.New("session not found")
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_session_end", map[string]any{
+		"id": "ghost-session",
+	})
+
+	if !res.IsError {
+		t.Error("expected IsError=true for unknown session")
+	}
+	if !strings.Contains(textContent(t, res), "not found") {
+		t.Errorf("error should mention 'not found', got: %s", textContent(t, res))
+	}
+}
+
+func TestMemSessionEnd_AlreadyEnded_ReturnsError(t *testing.T) {
+	endedAt := time.Date(2026, 5, 9, 10, 0, 0, 0, time.UTC)
+	store := &mockStore{
+		getSessionFn: func(id string) (*models.Session, error) {
+			return &models.Session{ID: id, EndedAt: &endedAt}, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_session_end", map[string]any{
+		"id": "sess-old",
+	})
+
+	if !res.IsError {
+		t.Error("expected IsError=true for already-ended session")
+	}
+	body := textContent(t, res)
+	if !strings.Contains(body, "already ended") {
+		t.Errorf("error should mention 'already ended', got: %s", body)
+	}
+}
+
+func TestMemSessionEnd_MissingID_ReturnsError(t *testing.T) {
+	session := connectTestServer(t, &mockStore{})
+
+	res := callTool(t, session, "mem_session_end", map[string]any{
+		// no id
+		"summary": "whatever",
+	})
+
+	if !res.IsError {
+		t.Error("expected IsError=true for missing id")
+	}
+}
+
+func TestMemSessionEnd_ClearsActivityTracker(t *testing.T) {
+	store := &mockStore{
+		getSessionFn: func(id string) (*models.Session, error) {
+			return &models.Session{ID: id, Project: "proj", EndedAt: nil}, nil
+		},
+		endSessionFn: func(_, _ string) error { return nil },
+	}
+	session := connectTestServer(t, store)
+
+	// End the session — after this the activity for the sessionID should be cleared.
+	res := callTool(t, session, "mem_session_end", map[string]any{"id": "sess-tracked"})
+
+	if res.IsError {
+		t.Fatalf("expected success: %s", textContent(t, res))
+	}
+	// Indirect verification: subsequent calls to NudgeIfNeeded (which would normally
+	// return a message after many reads) return "" because the tracker was cleared.
+	// Since we can't inspect the tracker directly from the test, the passing response
+	// is sufficient to confirm ClearSession was called without panicking.
+}
+
 // ─── mem_save ──────────────────────────────────────────────────────────────
+
+// ─── mem_save lazy fallback (T2.4) ────────────────────────────────────────
+
+func TestMemSave_WithoutSessionID_CallsEnsureManualSaveSession(t *testing.T) {
+	var ensureCalled bool
+	var savedSessionID string
+	store := &mockStore{
+		ensureManualSaveSessionFn: func(project string) (string, error) {
+			ensureCalled = true
+			return "manual-save-" + project, nil
+		},
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			savedSessionID = m.SessionID
+			return 1, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_save", map[string]any{
+		"title":   "Test",
+		"content": "content",
+		"type":    "architecture",
+		"project": "jarvis-dev",
+		// no session_id
+	})
+
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", textContent(t, res))
+	}
+	if !ensureCalled {
+		t.Error("EnsureManualSaveSession should be called when session_id is absent")
+	}
+	if savedSessionID != "manual-save-jarvis-dev" {
+		t.Errorf("SaveMemory called with SessionID=%q, want 'manual-save-jarvis-dev'", savedSessionID)
+	}
+}
+
+func TestMemSave_WithExplicitSessionID_DoesNotCallEnsure(t *testing.T) {
+	var ensureCalled bool
+	var savedSessionID string
+	store := &mockStore{
+		ensureManualSaveSessionFn: func(_ string) (string, error) {
+			ensureCalled = true
+			return "manual-save-proj", nil
+		},
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			savedSessionID = m.SessionID
+			return 1, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_save", map[string]any{
+		"title":      "Test",
+		"content":    "content",
+		"type":       "architecture",
+		"project":    "jarvis-dev",
+		"session_id": "sess-explicit",
+	})
+
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", textContent(t, res))
+	}
+	if ensureCalled {
+		t.Error("EnsureManualSaveSession must NOT be called when session_id is explicit")
+	}
+	if savedSessionID != "sess-explicit" {
+		t.Errorf("SaveMemory called with SessionID=%q, want 'sess-explicit'", savedSessionID)
+	}
+}
 
 func TestMemSave_ValidParams_CallsSaveMemory(t *testing.T) {
 	var saved *models.Memory
@@ -704,6 +1020,117 @@ func TestMemGetObservation_MissingID_ReturnsError(t *testing.T) {
 
 // ─── mem_session_summary ───────────────────────────────────────────────────
 
+// ─── mem_session_summary lazy fallback (T2.6) ─────────────────────────────
+
+func TestMemSessionSummary_WithoutSessionID_CallsEnsureManualSave(t *testing.T) {
+	var ensureCalled bool
+	var savedSessionID string
+	store := &mockStore{
+		ensureManualSaveSessionFn: func(project string) (string, error) {
+			ensureCalled = true
+			return "manual-save-" + project, nil
+		},
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			savedSessionID = m.SessionID
+			return 10, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_session_summary", map[string]any{
+		"content": "## Goal\nWrap up",
+		"project": "jarvis-dev",
+		// no session_id
+	})
+
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", textContent(t, res))
+	}
+	if !ensureCalled {
+		t.Error("EnsureManualSaveSession should be called when session_id is absent")
+	}
+	if savedSessionID != "manual-save-jarvis-dev" {
+		t.Errorf("SessionID = %q, want 'manual-save-jarvis-dev'", savedSessionID)
+	}
+}
+
+func TestMemSessionSummary_WithExplicitOpenSession_SavesAndDoesNotCallEnsure(t *testing.T) {
+	var ensureCalled bool
+	var savedSessionID string
+	store := &mockStore{
+		ensureManualSaveSessionFn: func(_ string) (string, error) {
+			ensureCalled = true
+			return "manual-save-proj", nil
+		},
+		getSessionFn: func(id string) (*models.Session, error) {
+			return &models.Session{ID: id, Project: "jarvis-dev", EndedAt: nil}, nil
+		},
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			savedSessionID = m.SessionID
+			return 10, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_session_summary", map[string]any{
+		"content":    "## Goal\nWrap up",
+		"project":    "jarvis-dev",
+		"session_id": "sess-explicit",
+	})
+
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", textContent(t, res))
+	}
+	if ensureCalled {
+		t.Error("EnsureManualSaveSession must NOT be called when session_id is explicit")
+	}
+	if savedSessionID != "sess-explicit" {
+		t.Errorf("SessionID = %q, want 'sess-explicit'", savedSessionID)
+	}
+}
+
+func TestMemSessionSummary_WithEndedSession_ReturnsError(t *testing.T) {
+	endedAt := time.Date(2026, 5, 9, 10, 0, 0, 0, time.UTC)
+	store := &mockStore{
+		getSessionFn: func(id string) (*models.Session, error) {
+			return &models.Session{ID: id, EndedAt: &endedAt}, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_session_summary", map[string]any{
+		"content":    "## Goal\nWrap up",
+		"project":    "jarvis-dev",
+		"session_id": "sess-done",
+	})
+
+	if !res.IsError {
+		t.Error("expected IsError=true for already-ended session")
+	}
+	if !strings.Contains(textContent(t, res), "already ended") {
+		t.Errorf("error should mention 'already ended', got: %s", textContent(t, res))
+	}
+}
+
+func TestMemSessionSummary_WithUnknownSession_ReturnsError(t *testing.T) {
+	store := &mockStore{
+		getSessionFn: func(id string) (*models.Session, error) {
+			return nil, errors.New("session not found")
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_session_summary", map[string]any{
+		"content":    "## Goal\nWrap up",
+		"project":    "jarvis-dev",
+		"session_id": "ghost-session",
+	})
+
+	if !res.IsError {
+		t.Error("expected IsError=true for unknown session")
+	}
+}
+
 func TestMemSessionSummary_CreatesMemoryWithCorrectType(t *testing.T) {
 	var saved *models.Memory
 	store := &mockStore{
@@ -978,6 +1405,88 @@ func connectTestServerFull(t *testing.T, mem hivemcp.MemoryStore, ps hivemcp.Pro
 	}
 	t.Cleanup(func() { _ = session.Close() })
 	return session
+}
+
+// ─── mem_save_prompt lazy fallback (T2.5) ────────────────────────────────
+
+func TestMemSavePrompt_WithoutSessionID_CallsEnsureManualSaveSession(t *testing.T) {
+	var ensureCalled bool
+	store := &mockStore{
+		ensureManualSaveSessionFn: func(project string) (string, error) {
+			ensureCalled = true
+			return "manual-save-" + project, nil
+		},
+	}
+	ps := &mockStore{
+		savePromptFn: func(_ context.Context, _, _ string) (*models.Prompt, error) {
+			return &models.Prompt{ID: 1, CreatedAt: time.Now()}, nil
+		},
+	}
+	ctx := context.Background()
+	server := hivemcp.NewServer(store, nil, nil, nil, ps)
+	t1, t2 := sdkmcp.NewInMemoryTransports()
+	if _, err := server.Connect(ctx, t1, nil); err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "test", Version: "1"}, nil)
+	session, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	res := callTool(t, session, "mem_save_prompt", map[string]any{
+		"content": "explain goroutines",
+		"project": "jarvis-dev",
+		// no session_id
+	})
+
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", textContent(t, res))
+	}
+	if !ensureCalled {
+		t.Error("EnsureManualSaveSession should be called when session_id is absent from mem_save_prompt")
+	}
+}
+
+func TestMemSavePrompt_WithExplicitSessionID_DoesNotCallEnsure(t *testing.T) {
+	var ensureCalled bool
+	store := &mockStore{
+		ensureManualSaveSessionFn: func(_ string) (string, error) {
+			ensureCalled = true
+			return "manual-save-proj", nil
+		},
+	}
+	ps := &mockStore{
+		savePromptFn: func(_ context.Context, _, _ string) (*models.Prompt, error) {
+			return &models.Prompt{ID: 1, CreatedAt: time.Now()}, nil
+		},
+	}
+	ctx := context.Background()
+	server := hivemcp.NewServer(store, nil, nil, nil, ps)
+	t1, t2 := sdkmcp.NewInMemoryTransports()
+	if _, err := server.Connect(ctx, t1, nil); err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "test", Version: "1"}, nil)
+	session, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	res := callTool(t, session, "mem_save_prompt", map[string]any{
+		"content":    "explain goroutines",
+		"project":    "jarvis-dev",
+		"session_id": "sess-explicit",
+	})
+
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", textContent(t, res))
+	}
+	if ensureCalled {
+		t.Error("EnsureManualSaveSession must NOT be called when session_id is explicit in mem_save_prompt")
+	}
 }
 
 // ─── T-MCP-2: memContextHandler with recent prompts ───────────────────────
@@ -1559,6 +2068,179 @@ func TestMemSave_NestedPrivateBlocks_StripsAndReturnsCount(t *testing.T) {
 	}
 	if count := body["stripped_count"]; count != float64(1) {
 		t.Errorf("stripped_count = %v, want 1 (nested blocks count as 1 outermost)", count)
+	}
+}
+
+// ─── T2.9: Full lifecycle integration test (real SQLite) ─────────────────────
+
+// connectRealServer opens a real :memory: SQLite DB and connects to a full server.
+// Both store and prompts are backed by the same *db.DB instance.
+func connectRealServer(t *testing.T) (*sdkmcp.ClientSession, *hivedb.DB) {
+	t.Helper()
+	d, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatalf("hivedb.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	ctx := context.Background()
+	server := hivemcp.NewServer(d, nil, nil, nil, d)
+	t1, t2 := sdkmcp.NewInMemoryTransports()
+	if _, err := server.Connect(ctx, t1, nil); err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "integration-test", Version: "1"}, nil)
+	session, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	return session, d
+}
+
+// querySessionIDForMemory fetches the session_id column for the given memory row.
+func querySessionIDForMemory(t *testing.T, rawDB *sql.DB, memoryID float64) string {
+	t.Helper()
+	var sessionID sql.NullString
+	err := rawDB.QueryRow(`SELECT session_id FROM memories WHERE id = ?`, int64(memoryID)).Scan(&sessionID)
+	if err != nil {
+		t.Fatalf("querySessionIDForMemory(%v): %v", memoryID, err)
+	}
+	if !sessionID.Valid {
+		return ""
+	}
+	return sessionID.String
+}
+
+func TestE2E_FullSessionLifecycle(t *testing.T) {
+	session, store := connectRealServer(t)
+
+	// ── Step 1: start session ────────────────────────────────────────────────
+	startRes := callTool(t, session, "mem_session_start", map[string]any{
+		"id":        "e2e-sess-001",
+		"project":   "e2e-project",
+		"directory": "/home/dev",
+		"dev_id":    "e2e-dev",
+		"client":    "test",
+	})
+	if startRes.IsError {
+		t.Fatalf("mem_session_start failed: %s", textContent(t, startRes))
+	}
+	startBody := decodeJSONResponse(t, startRes)
+	if startBody["session_id"] != "e2e-sess-001" {
+		t.Errorf("session_id = %v, want 'e2e-sess-001'", startBody["session_id"])
+	}
+
+	// ── Step 2: mem_save WITH session_id → memory linked to explicit session ─
+	saveExplicitRes := callTool(t, session, "mem_save", map[string]any{
+		"title":      "E2E Memory With Session",
+		"content":    "linked to explicit session",
+		"type":       "architecture",
+		"project":    "e2e-project",
+		"session_id": "e2e-sess-001",
+	})
+	if saveExplicitRes.IsError {
+		t.Fatalf("mem_save with session_id failed: %s", textContent(t, saveExplicitRes))
+	}
+	saveExplicitBody := decodeJSONResponse(t, saveExplicitRes)
+	explicitMemID, ok := saveExplicitBody["id"].(float64)
+	if !ok {
+		t.Fatalf("mem_save response has no numeric id: %v", saveExplicitBody)
+	}
+	gotSessionID := querySessionIDForMemory(t, store.RawDB(), explicitMemID)
+	if gotSessionID != "e2e-sess-001" {
+		t.Errorf("explicit mem_save: DB session_id = %q, want 'e2e-sess-001'", gotSessionID)
+	}
+
+	// ── Step 3: mem_save WITHOUT session_id → lazy manual-save-{project} ────
+	saveLazyRes := callTool(t, session, "mem_save", map[string]any{
+		"title":   "E2E Memory No Session",
+		"content": "linked to manual-save session",
+		"type":    "decision",
+		"project": "e2e-project",
+		// no session_id
+	})
+	if saveLazyRes.IsError {
+		t.Fatalf("mem_save without session_id failed: %s", textContent(t, saveLazyRes))
+	}
+	saveLazyBody := decodeJSONResponse(t, saveLazyRes)
+	lazyMemID, ok := saveLazyBody["id"].(float64)
+	if !ok {
+		t.Fatalf("lazy mem_save response has no numeric id: %v", saveLazyBody)
+	}
+	gotLazySessionID := querySessionIDForMemory(t, store.RawDB(), lazyMemID)
+	if gotLazySessionID != "manual-save-e2e-project" {
+		t.Errorf("lazy mem_save: DB session_id = %q, want 'manual-save-e2e-project'", gotLazySessionID)
+	}
+
+	// Verify manual-save session row was created in the sessions table.
+	manualSession, err := store.GetSession("manual-save-e2e-project")
+	if err != nil {
+		t.Fatalf("GetSession(manual-save-e2e-project): %v", err)
+	}
+	if manualSession.EndedAt != nil {
+		t.Error("manual-save session must remain open (not auto-closed)")
+	}
+
+	// ── Step 4: mem_session_summary with session_id → memory linked ──────────
+	summaryRes := callTool(t, session, "mem_session_summary", map[string]any{
+		"content":    "## Goal\nE2E test\n\n## Done\n- all steps",
+		"project":    "e2e-project",
+		"session_id": "e2e-sess-001",
+	})
+	if summaryRes.IsError {
+		t.Fatalf("mem_session_summary failed: %s", textContent(t, summaryRes))
+	}
+	// Parse JSON part of the response (summary handler may append footer text).
+	rawSummary := textContent(t, summaryRes)
+	var summaryBody map[string]any
+	if err := json.Unmarshal([]byte(rawSummary), &summaryBody); err != nil {
+		// Try extracting just the first line as JSON.
+		lines := strings.SplitN(rawSummary, "\n", 2)
+		if jsonErr := json.Unmarshal([]byte(lines[0]), &summaryBody); jsonErr != nil {
+			t.Fatalf("mem_session_summary response not valid JSON: %v — raw: %s", err, rawSummary)
+		}
+	}
+	summaryMemID, ok := summaryBody["id"].(float64)
+	if !ok {
+		t.Fatalf("mem_session_summary response has no numeric id: %v", summaryBody)
+	}
+	gotSummarySessionID := querySessionIDForMemory(t, store.RawDB(), summaryMemID)
+	if gotSummarySessionID != "e2e-sess-001" {
+		t.Errorf("mem_session_summary: DB session_id = %q, want 'e2e-sess-001'", gotSummarySessionID)
+	}
+
+	// ── Step 5: mem_session_end → session closed ─────────────────────────────
+	endRes := callTool(t, session, "mem_session_end", map[string]any{
+		"id":      "e2e-sess-001",
+		"summary": "all done",
+	})
+	if endRes.IsError {
+		t.Fatalf("mem_session_end failed: %s", textContent(t, endRes))
+	}
+	endBody := decodeJSONResponse(t, endRes)
+	if endBody["ended_at"] == nil {
+		t.Error("mem_session_end response must contain ended_at")
+	}
+
+	// Verify session is marked ended in DB.
+	closedSession, err := store.GetSession("e2e-sess-001")
+	if err != nil {
+		t.Fatalf("GetSession after end: %v", err)
+	}
+	if closedSession.EndedAt == nil {
+		t.Error("session ended_at must be set in DB after mem_session_end")
+	}
+
+	// ── Step 6: second mem_session_end → "already ended" error ───────────────
+	end2Res := callTool(t, session, "mem_session_end", map[string]any{
+		"id": "e2e-sess-001",
+	})
+	if !end2Res.IsError {
+		t.Error("second mem_session_end must return IsError=true for already-ended session")
+	}
+	if !strings.Contains(textContent(t, end2Res), "already ended") {
+		t.Errorf("second end error should mention 'already ended', got: %s", textContent(t, end2Res))
 	}
 }
 

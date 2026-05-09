@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/db"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -65,7 +67,7 @@ func spawnDaemon(t *testing.T) *sdkmcp.ClientSession {
 
 // ─── 6.1 Startup ───────────────────────────────────────────────────────────
 
-func TestDaemon_Starts_AndRegisters7Tools(t *testing.T) {
+func TestDaemon_Starts_AndRegisters9Tools(t *testing.T) {
 	session := spawnDaemon(t)
 	ctx := context.Background()
 
@@ -77,8 +79,8 @@ func TestDaemon_Starts_AndRegisters7Tools(t *testing.T) {
 		toolNames = append(toolNames, tool.Name)
 	}
 
-	if len(toolNames) != 7 {
-		t.Errorf("expected 7 tools, got %d: %v", len(toolNames), toolNames)
+	if len(toolNames) != 9 {
+		t.Errorf("expected 9 tools, got %d: %v", len(toolNames), toolNames)
 	}
 }
 
@@ -196,6 +198,76 @@ func TestE2E_SaveAndSearch(t *testing.T) {
 	}
 	if !strings.Contains(body, "### [") {
 		t.Errorf("search result should contain markdown headers, got: %s", body)
+	}
+}
+
+// ─── 6.4 AutoCloseStale wiring (SC-17) ─────────────────────────────────────
+
+// seedSessionAt inserts a session row with a specific started_at via raw SQL.
+// Only used in tests within this package (package main).
+func seedSessionAt(t *testing.T, sqlDB *sql.DB, id, project string, startedAt time.Time) {
+	t.Helper()
+	_, err := sqlDB.Exec(
+		`INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at)
+		 VALUES (?, lower(hex(randomblob(16))), ?, '/d', 'dev', 'cli', ?)`,
+		id, project, startedAt.UTC().Format("2006-01-02 15:04:05"),
+	)
+	if err != nil {
+		t.Fatalf("seedSessionAt(%q): %v", id, err)
+	}
+}
+
+// TestRunStartup_ClosesStaleSession verifies that runStartup calls AutoCloseStale,
+// closing sessions older than 24h before the MCP server accepts connections (SC-17).
+func TestRunStartup_ClosesStaleSession(t *testing.T) {
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	rawDB := store.RawDB()
+	seedSessionAt(t, rawDB, "sess-stale-wiring", "proj", time.Now().Add(-48*time.Hour))
+
+	closed, err := runStartup(store)
+	if err != nil {
+		t.Fatalf("runStartup: %v", err)
+	}
+	if closed == 0 {
+		t.Error("runStartup should have auto-closed the stale session but closed=0")
+	}
+
+	sess, err := store.GetSession("sess-stale-wiring")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if sess.EndedAt == nil {
+		t.Error("stale session ended_at should be set after runStartup")
+	}
+}
+
+// TestRunStartup_ManualSaveSessionExempt verifies manual-save sessions are NOT closed.
+func TestRunStartup_ManualSaveSessionExempt(t *testing.T) {
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	rawDB := store.RawDB()
+	seedSessionAt(t, rawDB, "manual-save-proj", "proj", time.Now().Add(-7*24*time.Hour))
+
+	_, err = runStartup(store)
+	if err != nil {
+		t.Fatalf("runStartup: %v", err)
+	}
+
+	sess, err := store.GetSession("manual-save-proj")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if sess.EndedAt != nil {
+		t.Error("manual-save session must NOT be auto-closed by runStartup")
 	}
 }
 
