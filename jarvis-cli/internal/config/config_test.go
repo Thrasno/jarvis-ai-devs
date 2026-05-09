@@ -480,8 +480,9 @@ func TestLayer1Content_ContainsAllRequiredSections(t *testing.T) {
 		"Accomplished",
 		"Next Steps",
 		"Relevant Files",
-		// SDD with sdd-qa
-		"sdd-qa",
+		// SDD DAG without retired QA gate
+		"SDD DAG: `proposal → specs → tasks → apply → verify → archive`",
+		"Apply-progress continuity",
 		// Hive-specific
 		"mem_sync",
 		"project",
@@ -512,5 +513,15 @@ func TestLayer1Content_NoEngramReferences(t *testing.T) {
 	}
 	if strings.Contains(content, "engram") {
 		t.Error("Layer1Content must not contain 'engram' (old memory system reference)")
+	}
+}
+
+func TestLayer1Content_NoRetiredSDDQAReferences(t *testing.T) {
+	content := Layer1Content()
+
+	for _, forbidden := range []string{"sdd-qa", "qa-signoff", "qa-checklist"} {
+		if strings.Contains(content, forbidden) {
+			t.Errorf("Layer1Content must not contain retired QA gate reference %q", forbidden)
+		}
 	}
 }

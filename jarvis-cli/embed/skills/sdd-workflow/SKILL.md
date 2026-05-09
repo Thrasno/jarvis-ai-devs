@@ -16,12 +16,10 @@ SDD is the structured planning layer for non-trivial changes. Never skip phases 
 ## Dependency Graph
 
 ```
-proposal → specs ──→ tasks → apply → sdd-qa → verify → archive
+proposal → specs ──→ tasks → apply → verify → archive
                 ↑
               design
 ```
-
-sdd-qa runs AFTER apply and BEFORE verify. It is never skippable.
 
 ## Phases
 
@@ -33,9 +31,8 @@ sdd-qa runs AFTER apply and BEFORE verify. It is never skippable.
 | Design | `/sdd-design` | architecture decisions | proposal |
 | Tasks | `/sdd-tasks` | implementation checklist | spec + design |
 | Apply | `/sdd-apply` | code + tests | tasks + spec + design |
-| QA | `/sdd-qa` | [AUTO]/[MANUAL] checklist | spec + apply-progress |
 | Verify | `/sdd-verify` | pass/fail report | spec + tasks |
-| Archive | `/sdd-archive` | closed artifact | all phases + qa-signoff |
+| Archive | `/sdd-archive` | closed artifact | spec + design + tasks + apply-progress + verify-report |
 
 ## Step 0 — Resolve Persistence Mode
 
@@ -56,8 +53,6 @@ All four persistence modes are supported. Resolve mode at session start:
 - `sdd/{change-name}/design`
 - `sdd/{change-name}/tasks`
 - `sdd/{change-name}/apply-progress`
-- `sdd/{change-name}/qa-checklist`
-- `sdd/{change-name}/qa-signoff`
 - `sdd/{change-name}/verify-report`
 - `sdd/{change-name}/archive-report`
 
@@ -67,8 +62,6 @@ All four persistence modes are supported. Resolve mode at session start:
 - **Spec first**: requirements and scenarios BEFORE any code
 - **Design = decisions**: record WHY, not just WHAT
 - **Tasks = checklist**: each task is independently implementable and testable
-- **sdd-qa is MANDATORY**: runs after apply, before verify. Never skip for any reason
-- **Archive requires qa-signoff**: sdd-archive will block if sdd-qa has not been completed
 - **Verify against spec**: sdd-verify reads the original spec, not the code
 - **Archive always**: close the loop, update main spec if delta spec was used
 
@@ -88,6 +81,5 @@ All four persistence modes are supported. Resolve mode at session start:
 | sdd-design | proposal (required), spec (optional) | sdd/{change}/design |
 | sdd-tasks | spec + design (required) | sdd/{change}/tasks |
 | sdd-apply | tasks + spec + design | sdd/{change}/apply-progress |
-| sdd-qa | spec + apply-progress | sdd/{change}/qa-checklist, qa-signoff |
 | sdd-verify | spec + tasks | sdd/{change}/verify-report |
-| sdd-archive | all artifacts + qa-signoff | sdd/{change}/archive-report |
+| sdd-archive | spec + design + tasks + apply-progress + verify-report | sdd/{change}/archive-report |

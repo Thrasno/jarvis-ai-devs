@@ -32,7 +32,7 @@ type Skill struct {
 	// Content holds the raw Markdown content of the skill's SKILL.md file.
 	Content []byte
 
-	// Path is the relative path within embed/skills/ (e.g. "sdd-qa/SKILL.md").
+	// Path is the relative path within embed/skills/ (e.g. "sdd-verify/SKILL.md").
 	Path string
 }
 
@@ -44,20 +44,18 @@ var coreSkillIDs = map[string]bool{
 	"sdd-apply":    true,
 	"sdd-verify":   true,
 	"sdd-archive":  true,
-	"sdd-qa":       true,
 }
 
 // skillMeta provides human-readable metadata for each skill ID.
 var skillMeta = map[string]struct{ name, description, trigger string }{
-	"sdd-workflow":         {name: "SDD Workflow", description: "Spec-Driven Development lifecycle: proposal → spec → design → tasks → apply → sdd-qa → verify → archive", trigger: "SDD workflow phase"},
-	"hive":                 {name: "Hive Memory", description: "Persistent memory protocol: when to save, how to search, session summary triggers", trigger: "Using engram memory"},
+	"sdd-workflow":         {name: "SDD Workflow", description: "Spec-Driven Development lifecycle: proposal → spec → design → tasks → apply → verify → archive", trigger: "SDD workflow phase"},
+	"hive":                 {name: "Hive Memory", description: "Persistent memory protocol: when to save, how to search, session summary triggers", trigger: "Using Hive memory"},
 	"sdd-explore":          {name: "SDD Explore", description: "Investigate ideas and compare approaches before committing to a change", trigger: "When exploring ideas"},
 	"sdd-propose":          {name: "SDD Propose", description: "Create a structured change proposal with intent, scope, and success criteria", trigger: "When creating proposals"},
 	"sdd-spec":             {name: "SDD Spec", description: "Write delta requirements and Given/When/Then scenarios for a change", trigger: "When writing specs"},
 	"sdd-design":           {name: "SDD Design", description: "Document architecture decisions and technical approach with rationale", trigger: "When designing architecture"},
 	"sdd-tasks":            {name: "SDD Tasks", description: "Break down a change into a concrete, ordered implementation checklist", trigger: "When creating task lists"},
 	"sdd-apply":            {name: "SDD Apply", description: "Implement tasks following specs and design; supports Strict TDD mode", trigger: "When implementing tasks"},
-	"sdd-qa":               {name: "SDD QA", description: "Run mixed [AUTO]/[MANUAL] QA checklist; mandatory before sdd-verify", trigger: "When running QA checks"},
 	"sdd-verify":           {name: "SDD Verify", description: "Verify implementation against specs with structural and behavioral checks", trigger: "When verifying implementation"},
 	"sdd-archive":          {name: "SDD Archive", description: "Merge delta specs to main specs and close the SDD change cycle", trigger: "When archiving changes"},
 	"sdd-init":             {name: "SDD Init", description: "Detect project stack, testing capabilities, and initialize SDD context", trigger: "When initializing SDD"},

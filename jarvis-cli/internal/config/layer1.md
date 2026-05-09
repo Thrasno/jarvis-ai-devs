@@ -110,8 +110,8 @@ Do not duplicate phase→model tables in this file; defer to the canonical runti
 
 Sub-agent launch pattern: delegate reads of 4+ files, multi-file writes, and test runs to sub-agents. Resolve skills from the registry ONCE per session, cache compact rules, inject into sub-agent prompts as `## Project Standards (auto-resolved)`. Sub-agents do NOT read SKILL.md files — rules arrive pre-digested.
 
-SDD DAG with sdd-qa: `proposal → specs → tasks → apply → sdd-qa → verify → archive`
-(sdd-qa = manual behavior acceptance between apply and verify)
+SDD DAG: `proposal → specs → tasks → apply → verify → archive`
+Apply-progress continuity is mandatory across chained apply batches: read existing `sdd/{change-name}/apply-progress`, merge it, and persist the combined artifact.
 
 ### SDD Activation Policy (Runtime Entry)
 

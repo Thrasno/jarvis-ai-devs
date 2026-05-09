@@ -4,6 +4,8 @@ import (
 	"embed"
 	"io/fs"
 	"testing"
+
+	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
 )
 
 // wrapAsEmbedFS wraps a fstest.MapFS into a minimal embed.FS-compatible structure
@@ -25,13 +27,13 @@ func TestRegistry_SkillIDFromDirectoryName(t *testing.T) {
 		t.Fatalf("listSkillsFromFS: %v", err)
 	}
 
-	// Find sdd-qa in the results.
+	// Find sdd-apply in the results.
 	var found bool
 	for _, s := range skills {
-		if s.ID == "sdd-qa" {
+		if s.ID == "sdd-apply" {
 			found = true
-			if s.Path != "sdd-qa/SKILL.md" {
-				t.Errorf("expected Path=sdd-qa/SKILL.md, got %q", s.Path)
+			if s.Path != "sdd-apply/SKILL.md" {
+				t.Errorf("expected Path=sdd-apply/SKILL.md, got %q", s.Path)
 			}
 		}
 		if s.ID == "SKILL" {
@@ -39,7 +41,27 @@ func TestRegistry_SkillIDFromDirectoryName(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("expected skill with ID=sdd-qa, not found")
+		t.Error("expected skill with ID=sdd-apply, not found")
+	}
+}
+
+func TestRegistry_ListSkillsOmitsRetiredSDDQA(t *testing.T) {
+	skills, err := ListSkills(jarvis.SkillsFS)
+	if err != nil {
+		t.Fatalf("ListSkills: %v", err)
+	}
+
+	for _, s := range skills {
+		if s.ID == "sdd-qa" {
+			t.Fatal("expected retired sdd-qa skill to be absent from embedded registry")
+		}
+	}
+
+	if _, exists := coreSkillIDs["sdd-qa"]; exists {
+		t.Fatal("expected retired sdd-qa skill to be removed from core skills")
+	}
+	if _, exists := skillMeta["sdd-qa"]; exists {
+		t.Fatal("expected retired sdd-qa skill to be removed from registry metadata")
 	}
 }
 
@@ -96,19 +118,18 @@ func TestRegistry_SharedNotRegistered(t *testing.T) {
 }
 
 // TestRegistry_SkillMetaCount verifies that skillMeta contains entries for all
-// expected skills (23 total: 9 SDD core + 5 domain + 4 workflow + 5 new).
+// expected shipped skills after the retired sdd-qa removal.
 func TestRegistry_SkillMetaCount(t *testing.T) {
 	expectedSkills := []string{
-		// 9 SDD core
+		// SDD/Hive
 		"sdd-workflow", "hive", "sdd-explore", "sdd-propose", "sdd-spec",
-		"sdd-design", "sdd-tasks", "sdd-apply", "sdd-qa", "sdd-verify",
+		"sdd-design", "sdd-tasks", "sdd-apply", "sdd-verify",
 		"sdd-archive", "sdd-init",
-		// 5 domain-specific
+		// Domain-specific
 		"zoho-deluge", "laravel-architecture", "phpunit-testing", "git-workflow",
-		// 4 workflow
-		"branch-pr", "issue-creation",
-		// 5 new from gentle-ai
-		"go-testing", "judgment-day", "sdd-onboard", "skill-creator", "skill-registry",
+		// Workflow + product helpers already shipped
+		"branch-pr", "issue-creation", "go-testing", "judgment-day",
+		"sdd-onboard", "skill-creator", "skill-registry",
 	}
 
 	if len(skillMeta) != len(expectedSkills) {

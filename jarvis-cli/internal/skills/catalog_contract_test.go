@@ -2,6 +2,8 @@ package skills
 
 import (
 	"fmt"
+	"io/fs"
+	"os"
 	"strings"
 	"testing"
 
@@ -219,10 +221,84 @@ func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *test
 	}
 }
 
+func TestCatalogContract_SDDFilesDoNotReferenceRetiredQAGates(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		path      string
+		required  []string
+		forbidden []string
+	}{
+		{
+			path:     "embed/skills/sdd-workflow/SKILL.md",
+			required: []string{"tasks → apply → verify → archive", "sdd/{change-name}/verify-report", "sdd/{change-name}/archive-report"},
+			forbidden: []string{"sdd-qa", "qa-signoff", "qa-checklist"},
+		},
+		{
+			path:      "embed/skills/hive/SKILL.md",
+			required:  []string{"`sdd/{change}/verify-report`", "`sdd/{change}/archive-report`"},
+			forbidden: []string{"qa-signoff", "qa-checklist", "sdd-qa"},
+		},
+		{
+			path:      "embed/skills/_shared/hive-convention.md",
+			required:  []string{"`sdd/{change}/verify-report`", "`sdd/{change}/archive-report`"},
+			forbidden: []string{"qa-signoff", "qa-checklist", "sdd-qa"},
+		},
+		{
+			path:      "embed/orchestrator/sdd-orchestrator.md",
+			required:  []string{"proposal -> specs --> tasks -> apply -> verify -> archive", "`hive` — default when available; persistent memory across sessions"},
+			forbidden: []string{"engram-convention.md", "sdd-qa", "qa-signoff"},
+		},
+		{
+			path:      "internal/config/layer1.md",
+			required:  []string{"SDD DAG: `proposal → specs → tasks → apply → verify → archive`", "Apply-progress continuity"},
+			forbidden: []string{"sdd-qa", "qa-signoff"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.path, func(t *testing.T) {
+			content := readLocalOrEmbeddedAsset(t, tc.path)
+
+			for _, snippet := range tc.required {
+				if !strings.Contains(content, snippet) {
+					t.Fatalf("expected %s to contain %q", tc.path, snippet)
+				}
+			}
+
+			for _, snippet := range tc.forbidden {
+				if strings.Contains(content, snippet) {
+					t.Fatalf("expected %s not to contain %q", tc.path, snippet)
+				}
+			}
+		})
+	}
+
+	if _, err := fs.Stat(jarvis.SkillsFS, "embed/skills/sdd-qa/SKILL.md"); err == nil {
+		t.Fatal("expected embedded sdd-qa skill to be deleted")
+	}
+}
+
 func readEmbeddedSkillAsset(t *testing.T, path string) string {
 	t.Helper()
 
 	content, err := jarvis.SkillsFS.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q): %v", path, err)
+	}
+
+	return string(content)
+}
+
+func readLocalOrEmbeddedAsset(t *testing.T, path string) string {
+	t.Helper()
+
+	if strings.HasPrefix(path, "embed/skills/") {
+		return readEmbeddedSkillAsset(t, path)
+	}
+
+	const repoRoot = "/home/andres/Desarrollo/Proyectos/jarvis-dev/jarvis-cli"
+	content, err := os.ReadFile(repoRoot + "/" + path)
 	if err != nil {
 		t.Fatalf("ReadFile(%q): %v", path, err)
 	}

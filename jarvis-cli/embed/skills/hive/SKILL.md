@@ -156,8 +156,6 @@ Format: `{domain}/{identifier}` or `{domain}/{change}/{phase}`
 | `sdd/{change}/design` | Technical design and architecture decisions |
 | `sdd/{change}/tasks` | Implementation task checklist |
 | `sdd/{change}/apply-progress` | Apply phase progress |
-| `sdd/{change}/qa-checklist` | QA checklist with [AUTO]/[MANUAL] items |
-| `sdd/{change}/qa-signoff` | QA sign-off confirmation |
 | `sdd/{change}/verify-report` | Verification report |
 | `sdd/{change}/archive-report` | Archive report with artifact IDs |
 | `sdd/{project}/testing-capabilities` | Detected test runner and coverage tools |
