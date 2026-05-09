@@ -136,7 +136,7 @@ Meta-commands (type directly — orchestrator handles them, won't appear in auto
 
 Before executing ANY SDD command (`/sdd-new`, `/sdd-ff`, `/sdd-continue`, `/sdd-explore`, `/sdd-apply`, `/sdd-verify`, `/sdd-archive`), check if `sdd-init` has been run for this project:
 
-1. Search Engram: `mem_search(query: "sdd-init/{project}", project: "{project}")`
+1. Search Hive: `mem_search(query: "sdd-init/{project}", project: "{project}")`
 2. If found → init was done, proceed normally
 3. If NOT found → run `sdd-init` FIRST (delegate to sdd-init sub-agent), THEN proceed with the requested command
 
@@ -172,7 +172,7 @@ When the user invokes `/sdd-new`, `/sdd-ff`, or `/sdd-continue` for the first ti
 
 - **`hive`**: Fast, no files created. Artifacts live in hive memory only. Best for solo work and quick iteration. Note: re-running a phase overwrites the previous version (no history).
 - **`openspec`**: File-based. Creates `openspec/` directory with full artifact trail. Committable, shareable with team, full git history.
-- **`hybrid`**: Both — files for team sharing + engram for cross-session recovery. Higher token cost.
+- **`hybrid`**: Both — files for team sharing + Hive for cross-session recovery. Higher token cost.
 
 If the user doesn't specify, detect: if hive memory is available → default to `hive`. Otherwise → `none`.
 
@@ -204,13 +204,13 @@ Read this table at session start (or before first delegation), cache it for the 
 
 ### Sub-Agent Launch Pattern
 
-ALL sub-agent launch prompts that involve reading, writing, or reviewing code MUST include pre-resolved **compact rules** from the skill registry. Follow the **Skill Resolver Protocol** (`~/.claude/skills/_shared/skill-resolver.md`).
+ALL sub-agent launch prompts that involve reading, writing, or reviewing code MUST include pre-resolved **compact rules** from the skill registry. Follow the **Skill Resolver Protocol** shipped in `_shared/skill-resolver.md`.
 
 The orchestrator resolves skills from the registry ONCE (at session start or first delegation), caches the compact rules, and injects matching rules into each sub-agent's prompt. Also reads the Model Assignments table once per session, caches `phase → alias`, includes that alias in every Agent tool call via `model`.
 
 Orchestrator skill resolution (do once per session):
 1. `mem_search(query: "skill-registry", project: "{project}")` → `mem_get_observation(id)` for full registry content
-2. Fallback: read `.atl/skill-registry.md` if engram not available
+2. Fallback: read `.atl/skill-registry.md` if Hive is not available
 3. Cache the **Compact Rules** section and the **User Skills** trigger table
 4. If no registry exists, warn user and proceed without project-specific standards
 
@@ -235,9 +235,9 @@ Sub-agents get a fresh context with NO memory. The orchestrator controls context
 
 #### Non-SDD Tasks (general delegation)
 
-- Read context: orchestrator searches engram (`mem_search`) for relevant prior context and passes it in the sub-agent prompt. Sub-agent does NOT search engram itself.
-- Write context: sub-agent MUST save significant discoveries, decisions, or bug fixes to engram via `mem_save` before returning. Sub-agent has full detail — save before returning, not after.
-- Always add to sub-agent prompt: `"If you make important discoveries, decisions, or fix bugs, save them to engram via mem_save with project: '{project}'."`
+- Read context: orchestrator searches Hive (`mem_search`) for relevant prior context and passes it in the sub-agent prompt. Sub-agent does NOT search Hive itself.
+- Write context: sub-agent MUST save significant discoveries, decisions, or bug fixes to Hive via `mem_save` before returning. Sub-agent has full detail — save before returning, not after.
+- Always add to sub-agent prompt: `"If you make important discoveries, decisions, or fix bugs, save them to Hive via mem_save with project: '{project}'."`
 - Skills: orchestrator resolves compact rules from the registry and injects them as `## Project Standards (auto-resolved)` in the sub-agent prompt. Sub-agents do NOT read SKILL.md files or the registry — they receive rules pre-digested.
 
 #### SDD Phases
@@ -279,7 +279,7 @@ When launching `sdd-apply` for a continuation batch (not the first batch):
 
 This prevents progress loss across batches. The sub-agent is responsible for read-merge-write, but the orchestrator MUST tell it that previous progress exists.
 
-#### Engram Topic Key Format
+#### Hive Topic Key Format
 
 | Artifact | Topic Key |
 |----------|-----------|

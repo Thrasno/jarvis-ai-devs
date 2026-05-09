@@ -1,3 +1,5 @@
+<!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/chained-pr/references/chaining-details.md -->
+
 # Chained PR Details
 
 ## Strategy Notes

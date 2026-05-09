@@ -4,6 +4,10 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -247,7 +251,7 @@ func TestCatalogContract_SDDFilesDoNotReferenceRetiredQAGates(t *testing.T) {
 		{
 			path:      "embed/orchestrator/sdd-orchestrator.md",
 			required:  []string{"proposal -> specs --> tasks -> apply -> verify -> archive", "`hive` — default when available; persistent memory across sessions"},
-			forbidden: []string{"engram-convention.md", "sdd-qa", "qa-signoff"},
+			forbidden: []string{"engram-convention.md", "sdd-qa", "qa-signoff", "~/.claude/skills", "~/.config/opencode/skills"},
 		},
 		{
 			path:      "internal/config/layer1.md",
@@ -276,6 +280,90 @@ func TestCatalogContract_SDDFilesDoNotReferenceRetiredQAGates(t *testing.T) {
 
 	if _, err := fs.Stat(jarvis.SkillsFS, "embed/skills/sdd-qa/SKILL.md"); err == nil {
 		t.Fatal("expected embedded sdd-qa skill to be deleted")
+	}
+}
+
+func TestCatalogContract_EmbeddedProductAssetsAvoidLocalRuntimeSkillPaths(t *testing.T) {
+	t.Parallel()
+
+	testCases := []string{
+		"embed/orchestrator/sdd-orchestrator.md",
+		"embed/skills/skill-registry/SKILL.md",
+		"embed/skills/judgment-day/SKILL.md",
+		"embed/skills/sdd-apply/strict-tdd.md",
+	}
+
+	for _, path := range testCases {
+		t.Run(path, func(t *testing.T) {
+			content := readLocalOrEmbeddedAsset(t, path)
+
+			for _, forbidden := range []string{"~/", "engram", "Engram"} {
+				if strings.Contains(content, forbidden) {
+					t.Fatalf("expected %s not to contain stale runtime wording %q", path, forbidden)
+				}
+			}
+		})
+	}
+}
+
+func TestCatalogContract_EmbeddedSkillMarkdownReferencesResolve(t *testing.T) {
+	t.Parallel()
+
+	referencePattern := regexp.MustCompile(`\[[^\]]+\]\(([^)]+\.md)\)|` + "`" + `([^` + "`" + `]+\.md)` + "`")
+	allowedGeneratedOrRuntimeReferences := map[string]bool{
+		".atl/skill-registry.md":           true,
+		"atl/skill-registry.md":            true,
+		".jarvis/skill-registry.md":        true,
+		"jarvis/skill-registry.md":         true,
+		"AGENTS.md":                        true,
+		"agents.md":                        true,
+		"CLAUDE.md":                        true,
+		"GEMINI.md":                        true,
+		"copilot-instructions.md":          true,
+		"SKILL.md":                         true,
+		".github/PULL_REQUEST_TEMPLATE.md": true,
+		"github/PULL_REQUEST_TEMPLATE.md":  true,
+		"exploration.md":                   true,
+		"proposal.md":                      true,
+		"design.md":                        true,
+		"tasks.md":                         true,
+		"verify-report.md":                 true,
+		"spec.md":                          true,
+		"openspec/config.yaml":             true,
+		"openspec/config.md":               true,
+		"openspec/changes/{change-name}/proposal.md":      true,
+		"openspec/changes/{change-name}/design.md":        true,
+		"openspec/changes/{change-name}/tasks.md":         true,
+		"openspec/changes/{change-name}/verify-report.md": true,
+	}
+
+	err := fs.WalkDir(jarvis.SkillsFS, "embed/skills", func(filePath string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() || !strings.HasSuffix(filePath, ".md") {
+			return walkErr
+		}
+
+		content := readEmbeddedSkillAsset(t, filePath)
+		matches := referencePattern.FindAllStringSubmatch(content, -1)
+		for _, match := range matches {
+			reference := strings.TrimSpace(firstNonEmpty(match[1], match[2]))
+			reference = strings.Trim(reference, " ,;:")
+			if reference == "" || shouldAllowGeneratedMarkdownReference(reference, allowedGeneratedOrRuntimeReferences) {
+				continue
+			}
+
+			resolved, ok := resolveEmbeddedMarkdownReference(filePath, reference)
+			if !ok {
+				t.Fatalf("%s references non-local markdown %q without explicit allowlist entry", filePath, reference)
+			}
+			if _, statErr := fs.Stat(jarvis.SkillsFS, resolved); statErr != nil {
+				t.Fatalf("%s references %q resolved to %s, but embedded file is missing: %v", filePath, reference, resolved, statErr)
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir(embed/skills): %v", err)
 	}
 }
 
@@ -358,6 +446,7 @@ func TestCatalogContract_ChainedPRReferencesAreEmbeddedRecursively(t *testing.T)
 	content := readEmbeddedSkillAsset(t, referencePath)
 
 	requiredSnippets := []string{
+		"Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/chained-pr/references/chaining-details.md",
 		"# Chained PR Details",
 		"## Feature Branch Chain",
 		"## Chain Context Section",
@@ -389,11 +478,64 @@ func readLocalOrEmbeddedAsset(t *testing.T, path string) string {
 		return readEmbeddedSkillAsset(t, path)
 	}
 
-	const repoRoot = "/home/andres/Desarrollo/Proyectos/jarvis-dev/jarvis-cli"
+	repoRoot := repositoryRoot(t)
 	content, err := os.ReadFile(repoRoot + "/" + path)
 	if err != nil {
 		t.Fatalf("ReadFile(%q): %v", path, err)
 	}
 
 	return string(content)
+}
+
+func repositoryRoot(t *testing.T) string {
+	t.Helper()
+
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func shouldAllowGeneratedMarkdownReference(reference string, allowlist map[string]bool) bool {
+	if strings.HasPrefix(reference, "http://") || strings.HasPrefix(reference, "https://") {
+		return true
+	}
+	if allowlist[reference] || allowlist[path.Base(reference)] {
+		return true
+	}
+	for _, generatedPrefix := range []string{"openspec/", "specs/", "changes/", "archive/", "path/to/", "{project-root}/"} {
+		if strings.HasPrefix(reference, generatedPrefix) {
+			return true
+		}
+	}
+	return strings.Contains(reference, "{") || strings.Contains(reference, "...")
+}
+
+func resolveEmbeddedMarkdownReference(sourcePath, reference string) (string, bool) {
+	cleanReference := path.Clean(reference)
+	switch {
+	case strings.HasPrefix(cleanReference, "../") || strings.HasPrefix(cleanReference, "./"):
+		return path.Clean(path.Join(path.Dir(sourcePath), cleanReference)), true
+	case strings.HasPrefix(cleanReference, "_shared/"):
+		return "embed/skills/" + cleanReference, true
+	case strings.HasPrefix(cleanReference, "skills/"):
+		return "embed/" + cleanReference, true
+	case strings.HasPrefix(cleanReference, "references/"):
+		return path.Clean(path.Join(path.Dir(sourcePath), cleanReference)), true
+	case !strings.Contains(cleanReference, "/") && strings.HasSuffix(cleanReference, ".md"):
+		return path.Clean(path.Join(path.Dir(sourcePath), cleanReference)), true
+	default:
+		return "", false
+	}
 }
