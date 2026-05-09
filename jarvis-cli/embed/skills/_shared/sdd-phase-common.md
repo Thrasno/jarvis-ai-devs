@@ -1,60 +1,113 @@
-# SDD Phase Common — Shared Instructions for All SDD Phases
+<!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/_shared/sdd-phase-common.md (tag v1.26.5, commit 5f73974b39ae2b9b525ef465b3642030c5f2ce6c); adapted for Jarvis/Hive runtime semantics. -->
 
-## Section A — Load Project Standards
+# SDD Phase — Common Protocol
 
-The orchestrator has already resolved and injected project-specific coding standards as "Project Standards" in your prompt. Apply them throughout your work. Do not re-read skill files or the registry yourself — rules arrive pre-digested from the orchestrator.
+Boilerplate identical across all SDD phase skills. Sub-agents MUST load this alongside their phase-specific SKILL.md.
 
-## Section B — How to Load Context from Hive
+Executor boundary: every SDD phase agent is an EXECUTOR, not an orchestrator. Do the phase work yourself. Do NOT launch sub-agents, do NOT call `delegate`/`task`, and do NOT bounce work back unless the phase skill explicitly says to stop and report a blocker.
 
-Use this two-step process for any artifact you need to read:
+## A. Skill Loading
 
-1. Call `mcp__hive__mem_search(query: "{topic_key}", project: "{project}")` to find the observation ID.
-2. Call `mcp__hive__mem_get_observation(id: {id})` to get the FULL content.
+1. Check if the orchestrator injected a `## Project Standards (auto-resolved)` block in your launch prompt. If yes, follow those rules — they are pre-digested compact rules from the skill registry. **Do NOT read any SKILL.md files.**
+2. If no Project Standards block was provided, check for `SKILL: Load` instructions. If present, load those exact skill files.
+3. If neither was provided, search for the skill registry as a fallback:
+   a. `mcp__hive__mem_search(query: "skill-registry", project: "{project}")` — if found, `mcp__hive__mem_get_observation(id)` for full content
+   b. Fallback: read `.atl/skill-registry.md` from the project root if it exists
+   c. From the registry's **Compact Rules** section, apply rules whose triggers match your current task.
+4. If no registry exists, proceed with your phase skill only.
 
-Search results are ALWAYS truncated. Step 2 is REQUIRED — never assume you have the full content from search alone.
+NOTE: the preferred path is (1) — compact rules pre-injected by the orchestrator. Paths (2) and (3) are fallbacks for backwards compatibility. Searching the registry is SKILL LOADING, not delegation. If `## Project Standards` is present, IGNORE any `SKILL: Load` instructions — they are redundant.
 
-## Section C — How to Save Artifacts to Hive
+## B. Artifact Retrieval (Hive Mode)
 
-When saving an SDD artifact:
+**CRITICAL**: `mcp__hive__mem_search` returns 300-char PREVIEWS, not full content. You MUST call `mcp__hive__mem_get_observation(id)` for EVERY artifact. **Skipping this produces wrong output.**
 
-1. Call `mcp__hive__mem_save` with:
-   - `title`: "Phase: {change-name}" (e.g., "Spec: user-auth-flow")
-   - `topic_key`: per SDD convention (e.g., `sdd/{change-name}/spec`)
-   - `type`: `architecture`
-   - `project`: {project name} — REQUIRED, never omit
-   - `content`: full artifact text
-
-Same `topic_key` = upsert (safe to call multiple times, only the last version is kept).
-
-## Section D — Result Contract (ALL phases MUST return this)
-
-Every SDD phase MUST return this exact envelope to the orchestrator:
+**Run all searches in parallel** — do NOT search sequentially.
 
 ```
-status: complete | partial | blocked | needs-confirmation | error
-executive_summary: [2-3 sentences describing what was done]
-artifacts: { {phase}: "{topic_key}" }
-next_recommended: {name of next phase}
-risks: [list of risks or "none"]
-skill_resolution: injected | fallback-registry | fallback-path | none
+mcp__hive__mem_search(query: "sdd/{change-name}/{artifact-type}", project: "{project}") → save ID
 ```
 
-- `status: blocked` — a prerequisite is missing and the phase cannot proceed
-- `status: needs-confirmation` — the phase has paused and needs a user decision before continuing
-- `skill_resolution`: report whether compact rules were injected (`injected`), came from a fallback source, or were absent (`none`)
+Then **run all retrievals in parallel**:
 
-## Phase Dependency Table
+```
+mcp__hive__mem_get_observation(id: {saved_id}) → full content (REQUIRED)
+```
 
-| Phase | Required Inputs | Writes |
-|-------|----------------|--------|
-| sdd-explore | sdd-init/{project} (optional) | sdd/{change}/explore |
-| sdd-propose | explore (optional) | sdd/{change}/proposal |
-| sdd-spec | proposal (required) | sdd/{change}/spec |
-| sdd-design | proposal (required), spec (optional) | sdd/{change}/design |
-| sdd-tasks | spec (required), design (required) | sdd/{change}/tasks |
-| sdd-apply | tasks (required), spec, design | sdd/{change}/apply-progress |
-| sdd-qa | spec, apply-progress | sdd/{change}/qa-checklist, qa-signoff |
-| sdd-verify | spec (required), tasks | sdd/{change}/verify-report |
-| sdd-archive | all artifacts + qa-signoff | sdd/{change}/archive-report |
+Do NOT use search previews as source material.
 
-If a required input is missing, return `status: blocked` with a message naming the missing artifact.
+## C. Artifact Persistence
+
+Every phase that produces an artifact MUST persist it. Skipping this BREAKS the pipeline — downstream phases will not find your output.
+
+Supported artifact store modes for Jarvis skill/runtime instructions: `hive | openspec | hybrid | none`.
+
+### Hive mode
+
+```
+mcp__hive__mem_save(
+  title: "sdd/{change-name}/{artifact-type}",
+  topic_key: "sdd/{change-name}/{artifact-type}",
+  type: "architecture",
+  project: "{project}",
+  capture_prompt: false,
+  content: "{your full artifact markdown}"
+)
+```
+
+`topic_key` enables upserts — saving again updates, not duplicates.
+`capture_prompt: false` is mandatory for SDD artifacts because they are automated pipeline outputs, not human/proactive memory saves. Set it when the Hive tool schema supports it; if an older schema rejects or does not expose the field, omit it rather than failing.
+
+### OpenSpec mode
+
+File was already written during the phase's main step. No additional action needed.
+
+### Hybrid mode
+
+Do BOTH: write the file to the filesystem AND call `mcp__hive__mem_save` as above.
+
+### None mode
+
+Return result inline only. Do not write any files or call `mcp__hive__mem_save`.
+
+## D. Return Envelope
+
+Every phase MUST return a structured envelope to the orchestrator:
+
+- `status`: `success`, `partial`, or `blocked`
+- `executive_summary`: 1-3 sentence summary of what was done
+- `detailed_report`: (optional) full phase output, or omit if already inline
+- `artifacts`: list of artifact keys/paths written
+- `next_recommended`: the next SDD phase to run, or `none`
+- `risks`: risks discovered, or `None`
+- `skill_resolution`: how skills were loaded — `injected` (received Project Standards from orchestrator), `fallback-registry` (self-loaded from registry), `fallback-path` (loaded via `SKILL: Load` path), or `none` (no skills loaded)
+
+The literal contract line is: `status`: `success`, `partial`, or `blocked`.
+
+Example:
+
+```markdown
+**Status**: success
+**Summary**: Proposal created for `{change-name}`. Defined scope, approach, and rollback plan.
+**Artifacts**: Hive `sdd/{change-name}/proposal` | `openspec/changes/{change-name}/proposal.md`
+**Next**: sdd-spec or sdd-design
+**Risks**: None
+**Skill Resolution**: injected — 3 skills (react-19, typescript, tailwind-4)
+(other values: `fallback-registry`, `fallback-path`, or `none — no registry found`)
+```
+
+## E. Review Workload Guard
+
+SDD must protect reviewer cognitive load, not only generate tasks.
+
+- The default PR review budget is **400 changed lines** (`additions + deletions`).
+- The orchestrator MUST cache a delivery strategy at session start: `ask-on-risk` (default), `auto-chain`, `single-pr`, or `exception-ok`.
+- The orchestrator MUST pass `delivery_strategy` to `sdd-tasks` and the resolved decision to `sdd-apply`.
+- `sdd-tasks` MUST forecast whether the planned work may exceed that budget.
+- The forecast MUST include exact plain-text guard lines: `Decision needed before apply: Yes|No`, `Chained PRs recommended: Yes|No`, and `400-line budget risk: Low|Medium|High`.
+- If the forecast is high, `sdd-tasks` MUST recommend chained or stacked PRs using deliverable work units.
+- `sdd-apply` MUST NOT start oversized work unless the delivery strategy resolves to chained/stacked PR slices or explicitly accepted `size:exception`.
+- Each chained PR slice must have a clear start, clear finish, autonomous scope, verification, and reasonable rollback.
+- In a Feature Branch Chain, PR #1 targets the feature/tracker branch and later child PRs target the immediate previous PR branch; if GitHub shows previous slices in a child diff, retarget/rebase until the diff is clean.
+
+This guard exists to reduce reviewer burnout and keep implementation delivery safe. Do not treat it as optional process noise.
