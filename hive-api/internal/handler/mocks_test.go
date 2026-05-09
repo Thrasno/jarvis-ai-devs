@@ -94,12 +94,12 @@ func (m *mockSyncSvc) Push(ctx context.Context, req model.SyncRequest, userID st
 	return args.Get(0).(*model.SyncResponse), args.Error(1)
 }
 
-func (m *mockSyncSvc) Pull(ctx context.Context, project string, since time.Time, excludeSyncIDs []string) ([]*model.Memory, error) {
+func (m *mockSyncSvc) PullAll(ctx context.Context, project string, since time.Time, excludeSyncIDs []string) (*model.PullResult, error) {
 	args := m.Called(ctx, project, since, excludeSyncIDs)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).([]*model.Memory), args.Error(1)
+	return args.Get(0).(*model.PullResult), args.Error(1)
 }
 
 // --- AdminService mock ---

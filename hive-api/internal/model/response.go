@@ -32,6 +32,18 @@ type UserResponse struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// SyncSessionPayload (response side) se usa en pulled_sessions.
+// Reutiliza los campos de SyncSessionPayload del request (mismo wire format).
+type SyncSessionResponse = SyncSessionPayload
+
+// PullResult agrupa sesiones y memorias devueltas por un pull incremental.
+// Las sesiones van ANTES que las memorias — el daemon receptor las inserta primero
+// para satisfacer la FK memories.session_id → sessions(id).
+type PullResult struct {
+	Sessions []*Session
+	Memories []*Memory
+}
+
 // SyncResponse es la respuesta del POST /sync.
 // Resume cuántas memorias y prompts se procesaron y devuelve las que el cliente no tenía.
 type SyncResponse struct {
@@ -50,6 +62,10 @@ type SyncResponse struct {
 	// Es 0 cuando el daemon no envía prompts (S9: backward-compat con daemons viejos).
 	// Refleja el conteo real de upserts exitosos (S11).
 	PromptsPushed int `json:"prompts_pushed"`
+
+	// PulledSessions: sesiones del servidor que el cliente no tenía.
+	// Procesadas por el daemon ANTES de las pulled memories para satisfacer la FK.
+	PulledSessions []SyncSessionResponse `json:"pulled_sessions,omitempty"`
 }
 
 // ListMemoriesResponse es la respuesta del GET /memories.

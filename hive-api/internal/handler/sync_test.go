@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-dev/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-dev/hive-api/internal/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -36,9 +37,9 @@ func TestSync_Success(t *testing.T) {
 	// Push es llamado con el request y el userID del token
 	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
 		Return(syncResp, nil)
-	// Pull es llamado para obtener memorias del servidor
-	syncSvc.On("Pull", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).
-		Return([]*model.Memory{}, nil)
+	// PullAll es llamado para obtener sesiones + memorias del servidor
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).
+		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
 
 	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
 		map[string]interface{}{
@@ -93,8 +94,8 @@ func TestSync_WithPrompts(t *testing.T) {
 	syncSvc := &mockSyncSvc{}
 	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
 		Return(syncResp, nil)
-	syncSvc.On("Pull", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).
-		Return([]*model.Memory{}, nil)
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).
+		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
 
 	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
 		map[string]interface{}{
@@ -123,6 +124,87 @@ func TestSync_WithPrompts(t *testing.T) {
 	syncSvc.AssertExpectations(t)
 }
 
+// ─── T4.10 SC-15: pulled_sessions present in sync response ───────────────────
+
+// TestSyncHandler_Pull_IncludesSessions verifies SC-15: when the server has sessions
+// newer than last_sync, the response body contains pulled_sessions[] non-empty.
+// This is the spec contract assertion for FR-S-5.
+func TestSyncHandler_Pull_IncludesSessions(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	pullResult := &model.PullResult{
+		Sessions: []*model.Session{
+			{ID: "sess-server-1", Project: "jarvis-dev", DevID: "dev", Client: "claude-code"},
+		},
+		Memories: []*model.Memory{
+			{ID: "mem-srv-1", SyncID: "aaaa0000-0000-0000-0000-000000000001"},
+		},
+	}
+	syncResp := &model.SyncResponse{Pushed: 0, Pulled: []*model.Memory{}}
+
+	syncSvc := &mockSyncSvc{}
+	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
+		Return(syncResp, nil)
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).
+		Return(pullResult, nil)
+
+	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
+		map[string]interface{}{
+			"project":   "jarvis-dev",
+			"memories":  []interface{}{},
+			"last_sync": time.Now().Add(-time.Hour).Format(time.RFC3339),
+		}, "valid-token")
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp model.SyncResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp.PulledSessions, 1, "pulled_sessions must be populated from server sessions")
+	assert.Equal(t, "sess-server-1", resp.PulledSessions[0].ID)
+	require.Len(t, resp.Pulled, 1)
+	assert.Equal(t, "aaaa0000-0000-0000-0000-000000000001", resp.Pulled[0].SyncID)
+	syncSvc.AssertExpectations(t)
+}
+
+// R2-CRIT-6 — Push validation errors must map to 4xx, not 500. Project mismatch
+// and unknown-session are user input errors (the daemon needs to fix its payload),
+// not server faults.
+
+func TestHandlerSync_Push_ProjectMismatch_Returns400(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	syncSvc := &mockSyncSvc{}
+	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
+		Return(nil, service.ErrSessionProjectMismatch)
+
+	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
+		map[string]interface{}{
+			"project":  "this",
+			"memories": []interface{}{},
+		}, "valid-token")
+
+	assert.Equal(t, http.StatusBadRequest, w.Code, "project mismatch must be 400, not 500")
+}
+
+func TestHandlerSync_Push_UnknownSession_Returns400(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	syncSvc := &mockSyncSvc{}
+	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
+		Return(nil, service.ErrSessionNotFound)
+
+	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
+		map[string]interface{}{
+			"project":  "jarvis-dev",
+			"memories": []interface{}{},
+		}, "valid-token")
+
+	assert.Equal(t, http.StatusBadRequest, w.Code, "unknown session_id must be 400, not 500")
+}
+
 // TestSync_NoPrompts verifica S9 (backward-compat): un cliente antiguo que no envía
 // el campo prompts recibe prompts_pushed=0 en la respuesta.
 func TestSync_NoPrompts(t *testing.T) {
@@ -139,8 +221,8 @@ func TestSync_NoPrompts(t *testing.T) {
 	syncSvc := &mockSyncSvc{}
 	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
 		Return(syncResp, nil)
-	syncSvc.On("Pull", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).
-		Return([]*model.Memory{}, nil)
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).
+		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
 
 	// Daemon antiguo: no incluye el campo "prompts" en el body
 	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",

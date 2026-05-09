@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/Thrasno/jarvis-dev/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-dev/hive-api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -46,12 +48,18 @@ func (h *SyncHandler) Sync(c *gin.Context) {
 	// pushResp contiene estadísticas (pushed, conflicts).
 	pushResp, err := h.svc.Push(c.Request.Context(), req, userID)
 	if err != nil {
+		// R2-CRIT-6 — clasificar errores de validación del push como 4xx (no 500).
+		// El daemon necesita ajustar su payload, no es una falla del servidor.
+		if errors.Is(err, service.ErrSessionProjectMismatch) || errors.Is(err, service.ErrSessionNotFound) {
+			c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "error en sincronización"})
 		return
 	}
 
 	// --- Pull phase ---
-	// Obtenemos las memorias del servidor que el cliente no tiene.
+	// Obtenemos sesiones Y memorias del servidor que el cliente no tiene.
 	// Usamos last_sync como punto de corte temporal.
 	// Si no viene last_sync, usamos el tiempo cero → el servidor devuelve todo.
 	var since time.Time
@@ -65,20 +73,38 @@ func (h *SyncHandler) Sync(c *gin.Context) {
 		excludeIDs = append(excludeIDs, m.SyncID)
 	}
 
-	pulled, err := h.svc.Pull(c.Request.Context(), req.Project, since, excludeIDs)
+	pullResult, err := h.svc.PullAll(c.Request.Context(), req.Project, since, excludeIDs)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "error en pull de memorias"})
 		return
 	}
 
+	// Map []*model.Session → []model.SyncSessionResponse (wire format for the daemon).
+	pulledSessions := make([]model.SyncSessionResponse, 0, len(pullResult.Sessions))
+	for _, s := range pullResult.Sessions {
+		pulledSessions = append(pulledSessions, model.SyncSessionResponse{
+			ID:        s.ID,
+			SyncID:    s.SyncID,
+			Project:   s.Project,
+			Directory: s.Directory,
+			DevID:     s.DevID,
+			Client:    s.Client,
+			StartedAt: s.StartedAt,
+			EndedAt:   s.EndedAt,
+			Summary:   s.Summary,
+		})
+	}
+
+	pulled := pullResult.Memories
 	if pulled == nil {
 		pulled = []*model.Memory{}
 	}
 
 	c.JSON(http.StatusOK, model.SyncResponse{
-		Pushed:        pushResp.Pushed,
-		Pulled:        pulled,
-		Conflicts:     pushResp.Conflicts,
-		PromptsPushed: pushResp.PromptsPushed,
+		Pushed:         pushResp.Pushed,
+		Pulled:         pulled,
+		Conflicts:      pushResp.Conflicts,
+		PromptsPushed:  pushResp.PromptsPushed,
+		PulledSessions: pulledSessions,
 	})
 }

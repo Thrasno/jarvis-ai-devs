@@ -31,12 +31,22 @@ type CreateMemoryRequest struct {
 
 	Confidence  *float32 `json:"confidence"`
 	ImpactScore *float32 `json:"impact_score"`
+
+	// SessionID es opcional. Cuando se omite, el service resuelve `manual-save-{project}`
+	// vía SessionRepository.EnsureManualSaveSession para cumplir el FK NOT NULL en
+	// memories.session_id (R2-CRIT-2 + paridad con el sync resolver).
+	SessionID *string `json:"session_id,omitempty"`
 }
 
 // SyncRequest es el body del POST /sync.
 // Contiene un batch de memorias a subir y el timestamp del último sync.
 type SyncRequest struct {
 	Project string `json:"project" binding:"required"`
+
+	// Sessions es el batch de sesiones a enviar al servidor.
+	// Opcional — daemons anteriores a Slice 4 no envían este campo.
+	// Procesado ANTES de memories para satisfacer la FK memories.session_id.
+	Sessions []SyncSessionPayload `json:"sessions" binding:"max=100,dive"`
 
 	// Memories es el batch de memorias a enviar al servidor.
 	// binding:"max=100" rechaza con 400 si vienen más de 100.
@@ -54,6 +64,19 @@ type SyncRequest struct {
 	// TODAS las memorias del proyecto en el pull. Si tiene valor,
 	// solo devuelve las memorias más nuevas que esa fecha.
 	LastSync *time.Time `json:"last_sync"`
+}
+
+// SyncSessionPayload es el formato de sesión en el wire protocol de sync.
+type SyncSessionPayload struct {
+	ID        string     `json:"id"        binding:"required"`
+	SyncID    string     `json:"sync_id"   binding:"required"`
+	Project   string     `json:"project"   binding:"required"`
+	Directory string     `json:"directory"`
+	DevID     string     `json:"dev_id"    binding:"required"`
+	Client    string     `json:"client"    binding:"required"`
+	StartedAt time.Time  `json:"started_at"`
+	EndedAt   *time.Time `json:"ended_at"`
+	Summary   *string    `json:"summary"`
 }
 
 // SyncPromptPayload es la forma de cada prompt dentro de un SyncRequest.
@@ -91,6 +114,9 @@ type SyncMemoryPayload struct {
 	UpdatedAt     time.Time      `json:"updated_at"`
 	Confidence    float32        `json:"confidence"`
 	ImpactScore   float32        `json:"impact_score"`
+	// SessionID is optional — absent on old daemons (backward-compat).
+	// Server fills it via lazy manual-save-{project} fallback when empty.
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // SetLevelRequest es el body del POST /admin/users/:username/level.

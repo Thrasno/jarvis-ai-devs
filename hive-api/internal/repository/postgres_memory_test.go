@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-dev/hive-api/internal/model"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,11 +16,13 @@ import (
 // - Memoria válida → se crea con ID y synced_at generados
 // - Memoria con campos requeridos faltantes → error
 func TestPostgresMemoryRepository_Create(t *testing.T) {
-	pool, cleanup := startPostgres(t)
+	pool, cleanup := startPostgresWithSessions(t)
 	defer cleanup()
 
 	ctx := context.Background()
 	repo := NewPostgresMemoryRepository(pool)
+
+	sessID := ensureManualSavePtr(t, pool, "test-project")
 
 	now := time.Now()
 	validSyncID := "550e8400-e29b-41d4-a716-446655440001"
@@ -46,6 +49,7 @@ func TestPostgresMemoryRepository_Create(t *testing.T) {
 				UpdatedAt:     now,
 				Confidence:    0.8,
 				ImpactScore:   0.9,
+				SessionID:     sessID,
 			},
 			wantErr: false,
 		},
@@ -65,6 +69,7 @@ func TestPostgresMemoryRepository_Create(t *testing.T) {
 				UpdatedAt:     now,
 				Confidence:    1.0,
 				ImpactScore:   0.5,
+				SessionID:     sessID,
 			},
 			wantErr: false,
 		},
@@ -128,7 +133,7 @@ func TestPostgresMemoryRepository_Create(t *testing.T) {
 // - ID existente → memoria encontrada
 // - ID no existente → error ErrNotFound
 func TestPostgresMemoryRepository_GetByID(t *testing.T) {
-	pool, cleanup := startPostgres(t)
+	pool, cleanup := startPostgresWithSessions(t)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -150,6 +155,7 @@ func TestPostgresMemoryRepository_GetByID(t *testing.T) {
 		UpdatedAt:     now,
 		Confidence:    0.95,
 		ImpactScore:   0.8,
+		SessionID:     ensureManualSavePtr(t, pool, "test-project"),
 	}
 	created, err := repo.Create(ctx, testMemory)
 	require.NoError(t, err)
@@ -202,7 +208,7 @@ func TestPostgresMemoryRepository_GetByID(t *testing.T) {
 func TestPostgresMemoryRepository_Delete(t *testing.T) {
 	t.Skip("Delete method not implemented in current design - memories may be immutable")
 
-	pool, cleanup := startPostgres(t)
+	pool, cleanup := startPostgresWithSessions(t)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -266,11 +272,14 @@ func TestPostgresMemoryRepository_Delete(t *testing.T) {
 // - Búsqueda con caracteres especiales → sanitiza correctamente sin error SQL
 // - Búsqueda sin resultados → devuelve slice vacío
 func TestPostgresMemoryRepository_Search(t *testing.T) {
-	pool, cleanup := startPostgres(t)
+	pool, cleanup := startPostgresWithSessions(t)
 	defer cleanup()
 
 	ctx := context.Background()
 	repo := NewPostgresMemoryRepository(pool)
+
+	searchSess := ensureManualSavePtr(t, pool, "search-test")
+	otherSess := ensureManualSavePtr(t, pool, "other-project")
 
 	now := time.Now()
 
@@ -288,6 +297,7 @@ func TestPostgresMemoryRepository_Search(t *testing.T) {
 			UpdatedAt:   now,
 			Confidence:  0.9,
 			ImpactScore: 0.8,
+			SessionID:   searchSess,
 		},
 		{
 			SyncID:      "550e8400-e29b-41d4-a716-446655440031",
@@ -301,6 +311,7 @@ func TestPostgresMemoryRepository_Search(t *testing.T) {
 			UpdatedAt:   now,
 			Confidence:  0.85,
 			ImpactScore: 0.7,
+			SessionID:   searchSess,
 		},
 		{
 			SyncID:      "550e8400-e29b-41d4-a716-446655440032",
@@ -314,6 +325,7 @@ func TestPostgresMemoryRepository_Search(t *testing.T) {
 			UpdatedAt:   now,
 			Confidence:  0.75,
 			ImpactScore: 0.6,
+			SessionID:   otherSess,
 		},
 	}
 
@@ -397,11 +409,13 @@ func TestPostgresMemoryRepository_Search(t *testing.T) {
 // 4. Existe sync_id + incoming.UpdatedAt > existing → UPDATE (cliente gana)
 // Extra: topic_key duplicado en diferentes scopes → registros separados
 func TestPostgresMemoryRepository_Upsert(t *testing.T) {
-	pool, cleanup := startPostgres(t)
+	pool, cleanup := startPostgresWithSessions(t)
 	defer cleanup()
 
 	ctx := context.Background()
 	repo := NewPostgresMemoryRepository(pool)
+
+	upsertSess := ensureManualSavePtr(t, pool, "upsert-test")
 
 	baseTime := time.Now().Add(-1 * time.Hour)
 
@@ -430,6 +444,7 @@ func TestPostgresMemoryRepository_Upsert(t *testing.T) {
 				UpdatedAt:   baseTime,
 				Confidence:  0.8,
 				ImpactScore: 0.7,
+				SessionID:   upsertSess,
 			},
 			expectCreated: true,
 			expectUpdated: false,
@@ -449,6 +464,7 @@ func TestPostgresMemoryRepository_Upsert(t *testing.T) {
 					UpdatedAt:   baseTime,
 					Confidence:  0.9,
 					ImpactScore: 0.8,
+					SessionID:   upsertSess,
 				}
 				created, err := repo.Create(ctx, mem)
 				require.NoError(t, err)
@@ -466,6 +482,7 @@ func TestPostgresMemoryRepository_Upsert(t *testing.T) {
 				UpdatedAt:   baseTime.Add(1 * time.Hour), // Más reciente
 				Confidence:  0.5,
 				ImpactScore: 0.3,
+				SessionID:   upsertSess,
 			},
 			expectCreated: false,
 			expectUpdated: false, // Content NO cambia (se devuelve el existente)
@@ -486,6 +503,7 @@ func TestPostgresMemoryRepository_Upsert(t *testing.T) {
 					UpdatedAt:   baseTime.Add(2 * time.Hour), // Servidor tiene versión más reciente
 					Confidence:  0.9,
 					ImpactScore: 0.8,
+					SessionID:   upsertSess,
 				}
 				created, err := repo.Create(ctx, mem)
 				require.NoError(t, err)
@@ -503,6 +521,7 @@ func TestPostgresMemoryRepository_Upsert(t *testing.T) {
 				UpdatedAt:   baseTime.Add(1 * time.Hour), // Cliente tiene versión más vieja
 				Confidence:  0.5,
 				ImpactScore: 0.3,
+				SessionID:   upsertSess,
 			},
 			expectCreated: false,
 			expectUpdated: false, // Contenido NO debe cambiar
@@ -523,6 +542,7 @@ func TestPostgresMemoryRepository_Upsert(t *testing.T) {
 					UpdatedAt:   baseTime.Add(1 * time.Hour),
 					Confidence:  0.7,
 					ImpactScore: 0.6,
+					SessionID:   upsertSess,
 				}
 				created, err := repo.Create(ctx, mem)
 				require.NoError(t, err)
@@ -540,6 +560,7 @@ func TestPostgresMemoryRepository_Upsert(t *testing.T) {
 				UpdatedAt:   baseTime.Add(3 * time.Hour), // Cliente más reciente
 				Confidence:  0.95,
 				ImpactScore: 0.9,
+				SessionID:   upsertSess,
 			},
 			expectCreated: false,
 			expectUpdated: true,
@@ -603,11 +624,13 @@ func TestPostgresMemoryRepository_Upsert(t *testing.T) {
 // - Timestamp después de algunas → devuelve solo las más nuevas
 // - Timestamp después de todas → devuelve slice vacío
 func TestPostgresMemoryRepository_PullSince(t *testing.T) {
-	pool, cleanup := startPostgres(t)
+	pool, cleanup := startPostgresWithSessions(t)
 	defer cleanup()
 
 	ctx := context.Background()
 	repo := NewPostgresMemoryRepository(pool)
+
+	pullSess := ensureManualSavePtr(t, pool, "pullsince-test")
 
 	baseTime := time.Now().Add(-3 * time.Hour)
 
@@ -648,6 +671,7 @@ func TestPostgresMemoryRepository_PullSince(t *testing.T) {
 			UpdatedAt:   m.createdAt,
 			Confidence:  0.8,
 			ImpactScore: 0.7,
+			SessionID:   pullSess,
 		}
 		created, err := repo.Create(ctx, mem)
 		require.NoError(t, err)
@@ -731,11 +755,14 @@ func TestPostgresMemoryRepository_PullSince(t *testing.T) {
 
 // TestPostgresMemoryRepository_List verifies List with filters and pagination.
 func TestPostgresMemoryRepository_List(t *testing.T) {
-	pool, cleanup := startPostgres(t)
+	pool, cleanup := startPostgresWithSessions(t)
 	defer cleanup()
 
 	ctx := context.Background()
 	repo := NewPostgresMemoryRepository(pool)
+
+	listSess := ensureManualSavePtr(t, pool, "list-test")
+	otherSess := ensureManualSavePtr(t, pool, "other-project")
 
 	// Create test fixtures
 	now := time.Now()
@@ -748,6 +775,7 @@ func TestPostgresMemoryRepository_List(t *testing.T) {
 		CreatedBy: "user1",
 		CreatedAt: now.Add(-2 * time.Hour),
 		UpdatedAt: now.Add(-2 * time.Hour),
+		SessionID: listSess,
 	}
 	mem2 := &model.Memory{
 		SyncID:    "550e8400-e29b-41d4-a716-446655441002",
@@ -758,6 +786,7 @@ func TestPostgresMemoryRepository_List(t *testing.T) {
 		CreatedBy: "user1",
 		CreatedAt: now.Add(-1 * time.Hour),
 		UpdatedAt: now.Add(-1 * time.Hour),
+		SessionID: listSess,
 	}
 	mem3 := &model.Memory{
 		SyncID:    "550e8400-e29b-41d4-a716-446655441003",
@@ -768,6 +797,7 @@ func TestPostgresMemoryRepository_List(t *testing.T) {
 		CreatedBy: "user2",
 		CreatedAt: now,
 		UpdatedAt: now,
+		SessionID: otherSess,
 	}
 
 	_, err := repo.Create(ctx, mem1)
@@ -842,11 +872,13 @@ func TestPostgresMemoryRepository_List(t *testing.T) {
 
 // TestPostgresMemoryRepository_Count verifies Count with filters.
 func TestPostgresMemoryRepository_Count(t *testing.T) {
-	pool, cleanup := startPostgres(t)
+	pool, cleanup := startPostgresWithSessions(t)
 	defer cleanup()
 
 	ctx := context.Background()
 	repo := NewPostgresMemoryRepository(pool)
+
+	countSess := ensureManualSavePtr(t, pool, "count-test")
 
 	// Create test fixtures
 	now := time.Now()
@@ -859,6 +891,7 @@ func TestPostgresMemoryRepository_Count(t *testing.T) {
 		CreatedBy: "user1",
 		CreatedAt: now,
 		UpdatedAt: now,
+		SessionID: countSess,
 	}
 	mem2 := &model.Memory{
 		SyncID:    "550e8400-e29b-41d4-a716-446655442002",
@@ -869,6 +902,7 @@ func TestPostgresMemoryRepository_Count(t *testing.T) {
 		CreatedBy: "user1",
 		CreatedAt: now,
 		UpdatedAt: now,
+		SessionID: countSess,
 	}
 	mem3 := &model.Memory{
 		SyncID:    "550e8400-e29b-41d4-a716-446655442003",
@@ -879,6 +913,7 @@ func TestPostgresMemoryRepository_Count(t *testing.T) {
 		CreatedBy: "user1",
 		CreatedAt: now,
 		UpdatedAt: now,
+		SessionID: countSess,
 	}
 
 	_, err := repo.Create(ctx, mem1)
@@ -943,4 +978,155 @@ func stringPtr(s string) *string {
 // Helper function to create MemoryCategory pointers
 func ptr(c model.MemoryCategory) *model.MemoryCategory {
 	return &c
+}
+
+// ensureManualSavePtr creates the manual-save session for the project (idempotent)
+// and returns a *string pointing at its id. Used in memory tests to satisfy the
+// memories.session_id NOT NULL FK constraint post-Slice 4 / R2-CRIT-5.
+func ensureManualSavePtr(t *testing.T, pool *pgxpool.Pool, project string) *string {
+	t.Helper()
+	sessRepo := NewPostgresSessionRepository(pool)
+	id, err := sessRepo.EnsureManualSaveSession(context.Background(), project)
+	require.NoError(t, err)
+	return &id
+}
+
+// CRIT-7 — postgres_memory.go must persist session_id end-to-end.
+// Without these, after the migration's NOT NULL flip every Push fails with
+// "null value in column session_id" and the feature is unusable.
+
+func TestPostgresMemoryRepository_Create_PersistsSessionID(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	memRepo := NewPostgresMemoryRepository(pool)
+	sessRepo := NewPostgresSessionRepository(pool)
+
+	// Pre-create the session so the FK is valid.
+	sessID, err := sessRepo.EnsureManualSaveSession(ctx, "crit7-proj")
+	require.NoError(t, err)
+
+	now := time.Now()
+	mem := &model.Memory{
+		SyncID:    "550e8400-0000-1111-2222-000000000077",
+		Project:   "crit7-proj",
+		Category:  model.CatDecision,
+		Title:     "CRIT-7 row",
+		Content:   "with session id",
+		CreatedBy: "tester",
+		CreatedAt: now,
+		UpdatedAt: now,
+		SessionID: &sessID,
+	}
+
+	created, err := memRepo.Create(ctx, mem)
+	require.NoError(t, err)
+
+	var stored string
+	err = pool.QueryRow(ctx,
+		`SELECT session_id FROM memories WHERE id = $1`, created.ID,
+	).Scan(&stored)
+	require.NoError(t, err)
+	assert.Equal(t, sessID, stored,
+		"session_id must be persisted on INSERT — without this, NOT NULL flip rejects all pushes")
+}
+
+func TestPostgresMemoryRepository_PullSince_ReturnsSessionID(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	memRepo := NewPostgresMemoryRepository(pool)
+	sessRepo := NewPostgresSessionRepository(pool)
+
+	sessID, err := sessRepo.EnsureManualSaveSession(ctx, "crit7-pull")
+	require.NoError(t, err)
+
+	now := time.Now()
+	_, err = memRepo.Create(ctx, &model.Memory{
+		SyncID:    "550e8400-0000-2222-3333-000000000077",
+		Project:   "crit7-pull",
+		Category:  model.CatDecision,
+		Title:     "Pull test",
+		Content:   "content",
+		CreatedBy: "tester",
+		CreatedAt: now,
+		UpdatedAt: now,
+		SessionID: &sessID,
+	})
+	require.NoError(t, err)
+
+	pulled, err := memRepo.PullSince(ctx, "crit7-pull", time.Time{}, nil)
+	require.NoError(t, err)
+	require.Len(t, pulled, 1)
+	require.NotNil(t, pulled[0].SessionID, "PullSince must return session_id")
+	assert.Equal(t, sessID, *pulled[0].SessionID)
+}
+
+// R2-CRIT-1 — List/Search/PullSince SELECT projections must include session_id so
+// scanMemoryRows (which expects 17 columns) does not crash with pgx column-count error.
+
+func TestPostgresMemoryRepository_List_ReturnsSessionID(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	memRepo := NewPostgresMemoryRepository(pool)
+	sessRepo := NewPostgresSessionRepository(pool)
+
+	sessID, err := sessRepo.EnsureManualSaveSession(ctx, "r2c1-list")
+	require.NoError(t, err)
+
+	now := time.Now()
+	_, err = memRepo.Create(ctx, &model.Memory{
+		SyncID:    "550e8400-0000-3333-4444-000000000001",
+		Project:   "r2c1-list",
+		Category:  model.CatDecision,
+		Title:     "List test",
+		Content:   "content",
+		CreatedBy: "tester",
+		CreatedAt: now,
+		UpdatedAt: now,
+		SessionID: &sessID,
+	})
+	require.NoError(t, err)
+
+	listed, err := memRepo.List(ctx, model.MemoryFilter{Project: "r2c1-list", Limit: 10})
+	require.NoError(t, err, "List must not crash on column-count mismatch")
+	require.Len(t, listed, 1)
+	require.NotNil(t, listed[0].SessionID, "List must return session_id")
+	assert.Equal(t, sessID, *listed[0].SessionID)
+}
+
+func TestPostgresMemoryRepository_Search_ReturnsSessionID(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	memRepo := NewPostgresMemoryRepository(pool)
+	sessRepo := NewPostgresSessionRepository(pool)
+
+	sessID, err := sessRepo.EnsureManualSaveSession(ctx, "r2c1-search")
+	require.NoError(t, err)
+
+	now := time.Now()
+	_, err = memRepo.Create(ctx, &model.Memory{
+		SyncID:    "550e8400-0000-3333-4444-000000000002",
+		Project:   "r2c1-search",
+		Category:  model.CatDecision,
+		Title:     "uniqueterm zaffre",
+		Content:   "match content",
+		CreatedBy: "tester",
+		CreatedAt: now,
+		UpdatedAt: now,
+		SessionID: &sessID,
+	})
+	require.NoError(t, err)
+
+	results, err := memRepo.Search(ctx, "zaffre", model.MemoryFilter{Project: "r2c1-search", Limit: 10})
+	require.NoError(t, err, "Search must not crash on column-count mismatch")
+	require.Len(t, results, 1)
+	require.NotNil(t, results[0].SessionID, "Search must return session_id")
+	assert.Equal(t, sessID, *results[0].SessionID)
 }

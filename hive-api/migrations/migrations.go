@@ -30,3 +30,10 @@ var InitialSQL string
 //
 //go:embed 002_user_prompts.sql
 var UserPromptsSQL string
+
+// SessionsSQL es el contenido de la migración 003: tabla sessions (con columnas
+// directory, created_at, updated_at), backfill de sentinelas 'legacy-pre-lifecycle-{project}',
+// columna memories.session_id y el flip final a NOT NULL con FK hacia sessions(id) (T4.7).
+//
+//go:embed 003_sessions.sql
+var SessionsSQL string

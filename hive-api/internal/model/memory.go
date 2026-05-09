@@ -73,7 +73,12 @@ type Memory struct {
 	Tags          []string `json:"tags"`
 	FilesAffected []string `json:"files_affected"`
 
-	CreatedBy string    `json:"created_by"`
+	CreatedBy string  `json:"created_by"`
+	// SessionID links this memory to a session. Set by the sync handler
+	// (populated from payload.SessionID or lazy-created manual-save-{project}).
+	// Nullable until Slice 4 T4.7 sets NOT NULL on the column.
+	SessionID *string `json:"session_id,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 

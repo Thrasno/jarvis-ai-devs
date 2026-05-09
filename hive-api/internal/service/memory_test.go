@@ -8,6 +8,7 @@ import (
 	"github.com/Thrasno/jarvis-dev/hive-api/internal/repository"
 	"github.com/Thrasno/jarvis-dev/hive-api/internal/service"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -15,8 +16,21 @@ import (
 func newTestMemoryService(t *testing.T) (service.MemoryService, *repository.MockMemoryRepository) {
 	t.Helper()
 	mockRepo := &repository.MockMemoryRepository{}
-	svc := service.NewMemoryService(mockRepo)
+	mockSessionRepo := &repository.MockSessionRepository{}
+	// Existing tests don't trigger the lazy-fallback path; allow it to be called 0+ times.
+	mockSessionRepo.On("EnsureManualSaveSession", mock.Anything, mock.Anything).
+		Return("manual-save-jarvis-dev", nil).Maybe()
+	svc := service.NewMemoryService(mockRepo, mockSessionRepo)
 	return svc, mockRepo
+}
+
+// newTestMemoryServiceWithSession exposes the session mock for R2-CRIT-2 tests.
+func newTestMemoryServiceWithSession(t *testing.T) (service.MemoryService, *repository.MockMemoryRepository, *repository.MockSessionRepository) {
+	t.Helper()
+	mockRepo := &repository.MockMemoryRepository{}
+	mockSessionRepo := &repository.MockSessionRepository{}
+	svc := service.NewMemoryService(mockRepo, mockSessionRepo)
+	return svc, mockRepo, mockSessionRepo
 }
 
 // TestCreateMemory_Success verifica que Create hace el lookup de sync_id primero
@@ -69,6 +83,223 @@ func TestCreateMemory_DuplicateSyncID(t *testing.T) {
 	assert.ErrorIs(t, err, service.ErrSyncIDExists)
 	assert.Equal(t, "existing-uuid", result.ID)
 	mockRepo.AssertExpectations(t)
+}
+
+// R2-CRIT-2 — service.Create must mirror sync resolver: empty SessionID lazily
+// resolves to manual-save-{project} BEFORE repo.Create. Direct REST POST /memories
+// otherwise fails the memories.session_id NOT NULL constraint.
+
+func TestCreateMemory_WithoutSessionID_LazyCreatesManualSave(t *testing.T) {
+	svc, mockRepo, mockSessionRepo := newTestMemoryServiceWithSession(t)
+	ctx := context.Background()
+
+	input := &model.Memory{
+		SyncID:   "r2c2-sync-1",
+		Project:  "myproj",
+		Title:    "No session",
+		Content:  "content",
+		Category: model.CatDecision,
+	}
+
+	mockRepo.On("GetBySyncID", ctx, "r2c2-sync-1").Return(nil, nil)
+	mockSessionRepo.On("EnsureManualSaveSession", ctx, "myproj").
+		Return("manual-save-myproj", nil).Once()
+	mockRepo.On("Create", ctx, mock.MatchedBy(func(m *model.Memory) bool {
+		return m.SessionID != nil && *m.SessionID == "manual-save-myproj"
+	})).Return(&model.Memory{ID: "saved-1", SessionID: stringPtrSvc("manual-save-myproj")}, nil)
+
+	result, err := svc.Create(ctx, input)
+	require.NoError(t, err)
+	require.NotNil(t, result.SessionID)
+	assert.Equal(t, "manual-save-myproj", *result.SessionID)
+	mockSessionRepo.AssertExpectations(t)
+	mockRepo.AssertExpectations(t)
+}
+
+func TestCreateMemory_WithExplicitSessionID_NoLazyCreate(t *testing.T) {
+	svc, mockRepo, mockSessionRepo := newTestMemoryServiceWithSession(t)
+	ctx := context.Background()
+
+	provided := "sess-explicit-99"
+	input := &model.Memory{
+		SyncID:    "r2c2-sync-2",
+		Project:   "myproj",
+		Title:     "Explicit",
+		Content:   "content",
+		Category:  model.CatDecision,
+		SessionID: &provided,
+	}
+
+	mockRepo.On("GetBySyncID", ctx, "r2c2-sync-2").Return(nil, nil)
+	// R3-FIX-2: explicit non-sentinel sessions are now validated via GetSession;
+	// the session must exist AND its project must match the request project.
+	mockSessionRepo.On("GetSession", ctx, provided).Return(&model.Session{
+		ID:      provided,
+		Project: "myproj",
+	}, nil)
+	// EnsureManualSaveSession MUST NOT be called when caller already supplied session_id.
+	mockRepo.On("Create", ctx, mock.MatchedBy(func(m *model.Memory) bool {
+		return m.SessionID != nil && *m.SessionID == "sess-explicit-99"
+	})).Return(&model.Memory{ID: "saved-2", SessionID: &provided}, nil)
+
+	_, err := svc.Create(ctx, input)
+	require.NoError(t, err)
+	mockSessionRepo.AssertNotCalled(t, "EnsureManualSaveSession", mock.Anything, mock.Anything)
+	mockRepo.AssertExpectations(t)
+}
+
+// stringPtrSvc avoids an import-cycle with the repository tests' helper.
+func stringPtrSvc(s string) *string { return &s }
+
+// R3-FIX-2 — POST /memories MUST validate that the explicit session_id belongs
+// to the same project as the memory. Without this, the direct REST path leaks
+// memories across projects (the sync path was already protected via
+// resolveSessionID; the REST path was not).
+
+func TestCreateMemory_ManualSaveOtherProjectRejected(t *testing.T) {
+	svc, mockRepo, mockSessionRepo := newTestMemoryServiceWithSession(t)
+	ctx := context.Background()
+
+	other := "manual-save-other"
+	input := &model.Memory{
+		SyncID:    "r3f2-sync-1",
+		Project:   "this",
+		Title:     "Cross-project leak attempt",
+		Content:   "content",
+		Category:  model.CatDecision,
+		SessionID: &other,
+	}
+
+	mockRepo.On("GetBySyncID", ctx, "r3f2-sync-1").Return(nil, nil)
+
+	_, err := svc.Create(ctx, input)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, service.ErrSessionProjectMismatch)
+	mockRepo.AssertNotCalled(t, "Create")
+	mockSessionRepo.AssertNotCalled(t, "EnsureManualSaveSession", mock.Anything, mock.Anything)
+}
+
+func TestCreateMemory_LegacySentinelOtherProjectRejected(t *testing.T) {
+	svc, mockRepo, mockSessionRepo := newTestMemoryServiceWithSession(t)
+	ctx := context.Background()
+
+	other := "legacy-pre-lifecycle-other"
+	input := &model.Memory{
+		SyncID:    "r3f2-sync-2",
+		Project:   "this",
+		Title:     "Legacy sentinel cross-project",
+		Content:   "content",
+		Category:  model.CatDecision,
+		SessionID: &other,
+	}
+
+	mockRepo.On("GetBySyncID", ctx, "r3f2-sync-2").Return(nil, nil)
+
+	_, err := svc.Create(ctx, input)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, service.ErrSessionProjectMismatch)
+	mockRepo.AssertNotCalled(t, "Create")
+	mockSessionRepo.AssertNotCalled(t, "EnsureManualSaveSession", mock.Anything, mock.Anything)
+}
+
+func TestCreateMemory_RegularSessionDifferentProjectRejected(t *testing.T) {
+	svc, mockRepo, mockSessionRepo := newTestMemoryServiceWithSession(t)
+	ctx := context.Background()
+
+	regular := "sess-uuid-regular"
+	input := &model.Memory{
+		SyncID:    "r3f2-sync-3",
+		Project:   "this",
+		Title:     "Regular session cross-project",
+		Content:   "content",
+		Category:  model.CatDecision,
+		SessionID: &regular,
+	}
+
+	mockRepo.On("GetBySyncID", ctx, "r3f2-sync-3").Return(nil, nil)
+	mockSessionRepo.On("GetSession", ctx, regular).Return(&model.Session{
+		ID:      regular,
+		Project: "different-project",
+	}, nil)
+
+	_, err := svc.Create(ctx, input)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, service.ErrSessionProjectMismatch)
+	mockRepo.AssertNotCalled(t, "Create")
+}
+
+func TestCreateMemory_ManualSaveSameProjectAccepted(t *testing.T) {
+	svc, mockRepo, mockSessionRepo := newTestMemoryServiceWithSession(t)
+	ctx := context.Background()
+
+	matching := "manual-save-this"
+	input := &model.Memory{
+		SyncID:    "r3f2-sync-4",
+		Project:   "this",
+		Title:     "OK",
+		Content:   "content",
+		Category:  model.CatDecision,
+		SessionID: &matching,
+	}
+
+	mockRepo.On("GetBySyncID", ctx, "r3f2-sync-4").Return(nil, nil)
+	mockSessionRepo.On("EnsureManualSaveSession", ctx, "this").Return("manual-save-this", nil).Once()
+	mockRepo.On("Create", ctx, mock.MatchedBy(func(m *model.Memory) bool {
+		return m.SessionID != nil && *m.SessionID == "manual-save-this"
+	})).Return(&model.Memory{ID: "saved-r3f2-4"}, nil)
+
+	_, err := svc.Create(ctx, input)
+	require.NoError(t, err)
+}
+
+func TestCreateMemory_RegularSessionSameProjectAccepted(t *testing.T) {
+	svc, mockRepo, mockSessionRepo := newTestMemoryServiceWithSession(t)
+	ctx := context.Background()
+
+	regular := "sess-uuid-ok"
+	input := &model.Memory{
+		SyncID:    "r3f2-sync-5",
+		Project:   "this",
+		Title:     "OK regular",
+		Content:   "content",
+		Category:  model.CatDecision,
+		SessionID: &regular,
+	}
+
+	mockRepo.On("GetBySyncID", ctx, "r3f2-sync-5").Return(nil, nil)
+	mockSessionRepo.On("GetSession", ctx, regular).Return(&model.Session{
+		ID:      regular,
+		Project: "this",
+	}, nil)
+	mockRepo.On("Create", ctx, mock.MatchedBy(func(m *model.Memory) bool {
+		return m.SessionID != nil && *m.SessionID == regular
+	})).Return(&model.Memory{ID: "saved-r3f2-5"}, nil)
+
+	_, err := svc.Create(ctx, input)
+	require.NoError(t, err)
+}
+
+func TestCreateMemory_RegularSessionUnknownReturnsErrSessionNotFound(t *testing.T) {
+	svc, mockRepo, mockSessionRepo := newTestMemoryServiceWithSession(t)
+	ctx := context.Background()
+
+	missing := "sess-uuid-missing"
+	input := &model.Memory{
+		SyncID:    "r3f2-sync-6",
+		Project:   "this",
+		Title:     "Unknown session",
+		Content:   "content",
+		Category:  model.CatDecision,
+		SessionID: &missing,
+	}
+
+	mockRepo.On("GetBySyncID", ctx, "r3f2-sync-6").Return(nil, nil)
+	mockSessionRepo.On("GetSession", ctx, missing).Return(nil, repository.ErrNotFound)
+
+	_, err := svc.Create(ctx, input)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, service.ErrSessionNotFound)
+	mockRepo.AssertNotCalled(t, "Create")
 }
 
 // TestGetByID_Success verifica recuperación por ID.

@@ -49,6 +49,7 @@ func (h *MemoryHandler) Create(c *gin.Context) {
 		CreatedBy:     userID,
 		Confidence:    derefFloat32(req.Confidence),
 		ImpactScore:   derefFloat32(req.ImpactScore),
+		SessionID:     req.SessionID,
 	}
 
 	created, err := h.svc.Create(c.Request.Context(), mem)
@@ -57,6 +58,12 @@ func (h *MemoryHandler) Create(c *gin.Context) {
 		// El daemon puede reenviar el mismo sync_id sin preocuparse por duplicados.
 		if errors.Is(err, service.ErrSyncIDExists) {
 			c.JSON(http.StatusOK, created)
+			return
+		}
+		// R3-FIX-2: cross-project session attribution failures and unknown sessions
+		// are caller errors (4xx), not server faults.
+		if errors.Is(err, service.ErrSessionProjectMismatch) || errors.Is(err, service.ErrSessionNotFound) {
+			c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: err.Error()})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "error al crear memoria"})

@@ -107,6 +107,105 @@ func TestCreateMemory_DuplicateSyncID(t *testing.T) {
 	memSvc.AssertExpectations(t)
 }
 
+// R2-CRIT-2 — POST /memories must propagate session_id end-to-end. Without this
+// (and the lazy-fallback in the service), every direct REST POST after the
+// memories.session_id NOT NULL flip fails with an FK violation.
+
+func TestHandlerMemory_Create_WithExplicitSessionID_UsesIt(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	created := &model.Memory{ID: "mem-uuid-explicit"}
+	memSvc := &mockMemorySvc{}
+	memSvc.On("Create", context.Background(), mock.MatchedBy(func(m *model.Memory) bool {
+		return m.SessionID != nil && *m.SessionID == "sess-explicit-1"
+	})).Return(created, nil)
+
+	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodPost, "/memories",
+		map[string]interface{}{
+			"sync_id":    "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+			"project":    "jarvis-dev",
+			"category":   "decision",
+			"title":      "Explicit session",
+			"content":    "Some content",
+			"session_id": "sess-explicit-1",
+		}, "valid-token")
+
+	assert.Equal(t, http.StatusCreated, w.Code)
+	memSvc.AssertExpectations(t)
+}
+
+func TestHandlerMemory_Create_WithoutSessionID_PropagatesNil(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	created := &model.Memory{ID: "mem-uuid-no-sess"}
+	memSvc := &mockMemorySvc{}
+	// When session_id is omitted, the handler must NOT fabricate one — the service
+	// is responsible for the lazy-fallback. Handler passes through what arrived.
+	memSvc.On("Create", context.Background(), mock.MatchedBy(func(m *model.Memory) bool {
+		return m.SessionID == nil
+	})).Return(created, nil)
+
+	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodPost, "/memories",
+		map[string]interface{}{
+			"sync_id":  "b1b2c3d4-e5f6-7890-abcd-ef1234567890",
+			"project":  "jarvis-dev",
+			"category": "decision",
+			"title":    "No session",
+			"content":  "Some content",
+		}, "valid-token")
+
+	assert.Equal(t, http.StatusCreated, w.Code)
+	memSvc.AssertExpectations(t)
+}
+
+// R3-FIX-2 — handler must classify ErrSessionProjectMismatch as 400, not 500.
+func TestHandlerMemory_Create_SessionMismatch_Returns400(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	memSvc := &mockMemorySvc{}
+	memSvc.On("Create", context.Background(), mock.AnythingOfType("*model.Memory")).
+		Return(nil, service.ErrSessionProjectMismatch)
+
+	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodPost, "/memories",
+		map[string]interface{}{
+			"sync_id":    "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+			"project":    "this",
+			"category":   "decision",
+			"title":      "cross-project",
+			"content":    "Some content",
+			"session_id": "manual-save-other",
+		}, "valid-token")
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	memSvc.AssertExpectations(t)
+}
+
+// R3-FIX-2 — handler must classify ErrSessionNotFound as 400, not 500.
+func TestHandlerMemory_Create_SessionNotFound_Returns400(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	memSvc := &mockMemorySvc{}
+	memSvc.On("Create", context.Background(), mock.AnythingOfType("*model.Memory")).
+		Return(nil, service.ErrSessionNotFound)
+
+	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodPost, "/memories",
+		map[string]interface{}{
+			"sync_id":    "a1b2c3d4-e5f6-7890-abcd-ef1234567891",
+			"project":    "this",
+			"category":   "decision",
+			"title":      "ghost session",
+			"content":    "Some content",
+			"session_id": "sess-uuid-ghost",
+		}, "valid-token")
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	memSvc.AssertExpectations(t)
+}
+
 func TestCreateMemory_ServiceError(t *testing.T) {
 	authSvc := &mockAuthSvc{}
 	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)

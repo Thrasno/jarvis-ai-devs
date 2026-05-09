@@ -51,7 +51,11 @@ func startPostgres(t *testing.T) (*pgxpool.Pool, func()) {
 	pool, err := pgxpool.New(ctx, connStr)
 	require.NoError(t, err, "Failed to create connection pool")
 
-	// Ejecutar migraciones embebidas
+	// Ejecutar SOLO la migración 001 — `startPostgres` mantiene su contrato histórico
+	// (base schema sin session_id). Tests de migración 003 dependen de este punto de
+	// partida para insertar memorias sin session_id antes de ejecutar 003.
+	// Tests que requieren el schema completo (con sessions/session_id NOT NULL) deben
+	// usar `startPostgresWithSessions`.
 	_, err = pool.Exec(ctx, migrations.InitialSQL)
 	require.NoError(t, err, "Failed to run migrations")
 
@@ -71,10 +75,27 @@ func startPostgres(t *testing.T) (*pgxpool.Pool, func()) {
 //
 // Esto es MÁS RÁPIDO que recrear el contenedor para cada test,
 // y garantiza aislamiento entre tests sin state bleed.
+//
+// R3-FIX-3 — sessions is included so subtests asserting session counts don't
+// inherit rows from prior subtests. The DO block tolerates pools created via
+// `startPostgres` (only migration 001, no sessions table) AND pools created
+// via `startPostgresWithSessions` (full schema). CASCADE handles the FK chain.
 func truncateTables(ctx context.Context, pool *pgxpool.Pool) error {
 	const q = `
-		TRUNCATE TABLE users, memories RESTART IDENTITY CASCADE;
-	`
+DO $$
+DECLARE
+    has_sessions boolean;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'sessions'
+    ) INTO has_sessions;
+    IF has_sessions THEN
+        EXECUTE 'TRUNCATE TABLE users, sessions, memories RESTART IDENTITY CASCADE';
+    ELSE
+        EXECUTE 'TRUNCATE TABLE users, memories RESTART IDENTITY CASCADE';
+    END IF;
+END $$;`
 	_, err := pool.Exec(ctx, q)
 	if err != nil {
 		return fmt.Errorf("truncate tables: %w", err)
@@ -130,4 +151,29 @@ func TestTruncateTables(t *testing.T) {
 	err = pool.QueryRow(ctx, "SELECT COUNT(*) FROM users").Scan(&count)
 	require.NoError(t, err)
 	assert.Equal(t, 0, count)
+}
+
+// R3-FIX-3 — truncateTables MUST also clear sessions so subtests don't bleed
+// session rows (and the FK chain to memories is reset cleanly).
+func TestTruncateTables_TruncatesSessions(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	_, err := pool.Exec(ctx, `
+		INSERT INTO sessions (id, sync_id, project, dev_id, client)
+		VALUES ('r3f3-sess', '99999999-0000-0000-0000-000000000001', 'p', 'd', 'c')
+	`)
+	require.NoError(t, err)
+
+	var count int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT COUNT(*) FROM sessions`).Scan(&count))
+	require.Equal(t, 1, count)
+
+	err = truncateTables(ctx, pool)
+	require.NoError(t, err)
+
+	require.NoError(t, pool.QueryRow(ctx, `SELECT COUNT(*) FROM sessions`).Scan(&count))
+	assert.Equal(t, 0, count, "truncateTables must also clear sessions (R3-FIX-3)")
 }

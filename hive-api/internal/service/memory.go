@@ -37,19 +37,18 @@ type MemoryService interface {
 }
 
 type memoryService struct {
-	repo repository.MemoryRepository
+	repo        repository.MemoryRepository
+	sessionRepo repository.SessionRepository
 }
 
-// NewMemoryService crea un MemoryService con el repositorio inyectado.
-func NewMemoryService(repo repository.MemoryRepository) MemoryService {
-	return &memoryService{repo: repo}
+// NewMemoryService crea un MemoryService con los repositorios inyectados.
+// sessionRepo se requiere para resolver el lazy-fallback `manual-save-{project}`
+// cuando el caller no envía session_id (R2-CRIT-2).
+func NewMemoryService(repo repository.MemoryRepository, sessionRepo repository.SessionRepository) MemoryService {
+	return &memoryService{repo: repo, sessionRepo: sessionRepo}
 }
 
 func (s *memoryService) Create(ctx context.Context, mem *model.Memory) (*model.Memory, error) {
-	// Verificamos si ya existe una memoria con este sync_id.
-	// Si existe → devolvemos la existente con ErrSyncIDExists (idempotencia).
-	// El handler interpreta este "error" como HTTP 200 en lugar de 201.
-	// Esto garantiza que el mismo sync del daemon no crea duplicados.
 	existing, err := s.repo.GetBySyncID(ctx, mem.SyncID)
 	if err != nil {
 		return nil, err
@@ -57,6 +56,20 @@ func (s *memoryService) Create(ctx context.Context, mem *model.Memory) (*model.M
 	if existing != nil {
 		return existing, ErrSyncIDExists
 	}
+
+	// R3-FIX-2: validate cross-project attribution. Was R2-CRIT-2's lazy-fallback
+	// only — now also rejects manual-save-{other}, legacy-pre-lifecycle-{other},
+	// and regular sessions whose project differs from mem.Project.
+	incoming := ""
+	if mem.SessionID != nil {
+		incoming = *mem.SessionID
+	}
+	resolved, err := validateSessionAttribution(ctx, s.sessionRepo, incoming, mem.Project)
+	if err != nil {
+		return nil, err
+	}
+	mem.SessionID = &resolved
+
 	return s.repo.Create(ctx, mem)
 }
 
