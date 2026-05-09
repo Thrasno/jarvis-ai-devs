@@ -230,8 +230,8 @@ func TestCatalogContract_SDDFilesDoNotReferenceRetiredQAGates(t *testing.T) {
 		forbidden []string
 	}{
 		{
-			path:     "embed/skills/sdd-workflow/SKILL.md",
-			required: []string{"tasks → apply → verify → archive", "sdd/{change-name}/verify-report", "sdd/{change-name}/archive-report"},
+			path:      "embed/skills/sdd-workflow/SKILL.md",
+			required:  []string{"tasks → apply → verify → archive", "sdd/{change-name}/verify-report", "sdd/{change-name}/archive-report"},
 			forbidden: []string{"sdd-qa", "qa-signoff", "qa-checklist"},
 		},
 		{
@@ -276,6 +276,98 @@ func TestCatalogContract_SDDFilesDoNotReferenceRetiredQAGates(t *testing.T) {
 
 	if _, err := fs.Stat(jarvis.SkillsFS, "embed/skills/sdd-qa/SKILL.md"); err == nil {
 		t.Fatal("expected embedded sdd-qa skill to be deleted")
+	}
+}
+
+func TestCatalogContract_ComplementarySkillsMatchUpstreamContract(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		path     string
+		required []string
+	}{
+		{
+			name: "chained-pr",
+			path: "embed/skills/chained-pr/SKILL.md",
+			required: []string{
+				"name: chained-pr",
+				"PRs over 400 lines, stacked PRs, review slices",
+				"## Activation Contract",
+				"Feature Branch Chain",
+				"[references/chaining-details.md](references/chaining-details.md)",
+			},
+		},
+		{
+			name: "work-unit-commits",
+			path: "embed/skills/work-unit-commits/SKILL.md",
+			required: []string{
+				"name: work-unit-commits",
+				"Plan commits as reviewable work units",
+				"## Work Unit Checklist",
+				"Keep tests with code",
+				"## SDD Relationship",
+			},
+		},
+		{
+			name: "comment-writer",
+			path: "embed/skills/comment-writer/SKILL.md",
+			required: []string{
+				"name: comment-writer",
+				"Write warm, direct collaboration comments",
+				"## Voice Rules",
+				"Match thread language",
+				"No em dashes",
+			},
+		},
+		{
+			name: "cognitive-doc-design",
+			path: "embed/skills/cognitive-doc-design/SKILL.md",
+			required: []string{
+				"name: cognitive-doc-design",
+				"Design docs that reduce cognitive load",
+				"## Critical Patterns",
+				"Progressive disclosure",
+				"## PR and Review Docs",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			content := readEmbeddedSkillAsset(t, tc.path)
+
+			sourceStamp := fmt.Sprintf("Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/%s/SKILL.md", tc.name)
+			if !strings.Contains(content, sourceStamp) {
+				t.Fatalf("expected %s to contain source stamp %q", tc.path, sourceStamp)
+			}
+
+			for _, snippet := range tc.required {
+				if !strings.Contains(content, snippet) {
+					t.Fatalf("expected %s to contain %q", tc.path, snippet)
+				}
+			}
+		})
+	}
+}
+
+func TestCatalogContract_ChainedPRReferencesAreEmbeddedRecursively(t *testing.T) {
+	t.Parallel()
+
+	const referencePath = "embed/skills/chained-pr/references/chaining-details.md"
+	content := readEmbeddedSkillAsset(t, referencePath)
+
+	requiredSnippets := []string{
+		"# Chained PR Details",
+		"## Feature Branch Chain",
+		"## Chain Context Section",
+		"📍 #NNN This PR",
+	}
+
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(content, snippet) {
+			t.Fatalf("expected %s to contain %q", referencePath, snippet)
+		}
 	}
 }
 

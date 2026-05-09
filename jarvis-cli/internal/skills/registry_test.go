@@ -3,6 +3,7 @@ package skills
 import (
 	"embed"
 	"io/fs"
+	"strings"
 	"testing"
 
 	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
@@ -125,6 +126,8 @@ func TestRegistry_SkillMetaCount(t *testing.T) {
 		"sdd-workflow", "hive", "sdd-explore", "sdd-propose", "sdd-spec",
 		"sdd-design", "sdd-tasks", "sdd-apply", "sdd-verify",
 		"sdd-archive", "sdd-init",
+		// Complementary upstream workflow helpers
+		"chained-pr", "work-unit-commits", "comment-writer", "cognitive-doc-design",
 		// Domain-specific
 		"zoho-deluge", "laravel-architecture", "phpunit-testing", "git-workflow",
 		// Workflow + product helpers already shipped
@@ -150,6 +153,41 @@ func TestRegistry_SkillMetaCount(t *testing.T) {
 		}
 		if meta.trigger == "" {
 			t.Errorf("skill %q has empty trigger", id)
+		}
+	}
+}
+
+func TestRegistry_ComplementarySkillsAreShippedAndDiscoverable(t *testing.T) {
+	skills, err := ListSkills(jarvis.SkillsFS)
+	if err != nil {
+		t.Fatalf("ListSkills: %v", err)
+	}
+
+	byID := make(map[string]Skill, len(skills))
+	for _, skill := range skills {
+		byID[skill.ID] = skill
+	}
+
+	expected := map[string]string{
+		"chained-pr":           "PRs over 400 lines",
+		"work-unit-commits":    "Plan commits as reviewable work units",
+		"comment-writer":       "Write warm, direct collaboration comments",
+		"cognitive-doc-design": "Design docs that reduce cognitive load",
+	}
+
+	for id, descriptionSnippet := range expected {
+		skill, exists := byID[id]
+		if !exists {
+			t.Fatalf("expected embedded registry to include complementary skill %q", id)
+		}
+		if skill.IsCore {
+			t.Fatalf("expected complementary skill %q not to be marked core", id)
+		}
+		if !strings.Contains(skill.Description, descriptionSnippet) {
+			t.Fatalf("expected %q description to contain %q, got %q", id, descriptionSnippet, skill.Description)
+		}
+		if skill.Trigger == "" {
+			t.Fatalf("expected %q trigger metadata to be populated", id)
 		}
 	}
 }
