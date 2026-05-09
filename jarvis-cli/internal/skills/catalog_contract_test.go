@@ -139,6 +139,18 @@ func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *test
 				"Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.",
 			},
 		},
+		{
+			name: "sdd-apply",
+			path: "embed/skills/sdd-apply/SKILL.md",
+			required: []string{
+				"disable-model-invocation: true",
+				"user-invocable: false",
+				"Read Previous Apply-Progress (if exists)",
+				"There is no silent fallback.",
+				"Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.",
+			},
+			forbidden: []string{"Ready for sdd-qa", "next_recommended: sdd-qa"},
+		},
 	}
 
 	for _, tc := range testCases {
