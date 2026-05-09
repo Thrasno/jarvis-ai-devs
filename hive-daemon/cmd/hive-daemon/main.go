@@ -14,6 +14,7 @@ import (
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/httpapi"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
 	hivemcp "github.com/Thrasno/jarvis-dev/hive-daemon/internal/mcp"
+	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/project"
 	hivesync "github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -31,6 +32,12 @@ func main() {
 	defer func() { _ = store.Close() }()
 
 	logger.Log.Printf("database: %s", dbPath)
+
+	recoveryTTL, err := project.ParseRecoveryTokenTTL(os.Getenv("HIVE_RECOVERY_TOKEN_TTL"))
+	if err != nil {
+		logger.Log.Fatalf("invalid HIVE_RECOVERY_TOKEN_TTL: %v", err)
+	}
+	project.SetDefaultRecoveryTokenTTL(recoveryTTL)
 
 	// Sync es opcional — solo se activa si están las variables de entorno.
 	// Sin ellas, hive-daemon funciona en modo local puro (igual que antes).

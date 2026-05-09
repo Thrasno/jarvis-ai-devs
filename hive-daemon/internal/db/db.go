@@ -144,6 +144,20 @@ CREATE TRIGGER IF NOT EXISTS user_prompts_ad AFTER DELETE ON user_prompts BEGIN
     INSERT INTO user_prompts_fts(user_prompts_fts, rowid, content)
     VALUES ('delete', old.id, old.content);
 END;
+
+CREATE TABLE IF NOT EXISTS recovery_tokens (
+    token             TEXT PRIMARY KEY,
+    reason            TEXT NOT NULL,
+    requested_project TEXT NOT NULL,
+    selected_project  TEXT NOT NULL DEFAULT '',
+    candidates_json   TEXT NOT NULL,
+    context_hash      TEXT NOT NULL,
+    created_at        DATETIME NOT NULL,
+    expires_at        DATETIME NOT NULL,
+    consumed_at       DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_recovery_tokens_expires ON recovery_tokens(expires_at);
 `
 
 // DB wraps an SQLite connection with schema validation.

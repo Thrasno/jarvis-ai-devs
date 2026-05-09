@@ -37,6 +37,9 @@ type mockStore struct {
 	ensureManualSaveSessionFn func(project string) (string, error)
 	knownProjectsFn           func(context.Context) ([]project.KnownProject, error)
 	sessionProjectFn          func(context.Context, string) (string, error)
+	createRecoveryTokenFn     func(context.Context, project.TokenRequest) (string, error)
+	validateRecoveryTokenFn   func(context.Context, project.TokenValidation) error
+	consumeRecoveryTokenFn    func(context.Context, project.TokenValidation) error
 }
 
 func (m *mockStore) SaveMemory(mem *models.Memory) (int64, error) {
@@ -128,6 +131,30 @@ func (m *mockStore) SessionProject(ctx context.Context, sessionID string) (strin
 	return "", project.ErrSessionNotFound
 }
 
+func (m *mockStore) CreateRecoveryToken(ctx context.Context, req project.TokenRequest) (string, error) {
+	if m.createRecoveryTokenFn != nil {
+		return m.createRecoveryTokenFn(ctx, req)
+	}
+	return "recovery-token", nil
+}
+
+func (m *mockStore) ConsumeRecoveryToken(ctx context.Context, validation project.TokenValidation) error {
+	if err := m.ValidateRecoveryToken(ctx, validation); err != nil {
+		return err
+	}
+	if m.consumeRecoveryTokenFn != nil {
+		return m.consumeRecoveryTokenFn(ctx, validation)
+	}
+	return nil
+}
+
+func (m *mockStore) ValidateRecoveryToken(ctx context.Context, validation project.TokenValidation) error {
+	if m.validateRecoveryTokenFn != nil {
+		return m.validateRecoveryTokenFn(ctx, validation)
+	}
+	return nil
+}
+
 // connectTestServer creates a server+client pair using in-memory transport.
 func connectTestServer(t *testing.T, store hivemcp.MemoryStore) *sdkmcp.ClientSession {
 	t.Helper()
@@ -137,9 +164,19 @@ func connectTestServer(t *testing.T, store hivemcp.MemoryStore) *sdkmcp.ClientSe
 // connectTestServerWithSync creates a server+client pair with optional sync config and syncer.
 func connectTestServerWithSync(t *testing.T, store hivemcp.MemoryStore, cfg *hivesync.Config, syncer hivemcp.SyncRunner) *sdkmcp.ClientSession {
 	t.Helper()
+	return connectTestServerWithConfigAndPrompts(t, store, cfg, syncer, &mockStore{})
+}
+
+func connectTestServerWithPrompts(t *testing.T, store *mockStore) *sdkmcp.ClientSession {
+	t.Helper()
+	return connectTestServerWithConfigAndPrompts(t, store, nil, nil, store)
+}
+
+func connectTestServerWithConfigAndPrompts(t *testing.T, store hivemcp.MemoryStore, cfg *hivesync.Config, syncer hivemcp.SyncRunner, prompts hivemcp.PromptStore) *sdkmcp.ClientSession {
+	t.Helper()
 	ctx := context.Background()
 
-	server := hivemcp.NewServer(store, nil, syncer, cfg, &mockStore{})
+	server := hivemcp.NewServer(store, nil, syncer, cfg, prompts)
 
 	t1, t2 := sdkmcp.NewInMemoryTransports()
 	if _, err := server.Connect(ctx, t1, nil); err != nil {

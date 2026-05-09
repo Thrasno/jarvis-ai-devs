@@ -69,7 +69,9 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncS
 				"topic_key":     {"type": "string", "description": "Stable key for upsert (e.g. 'arch/auth-model')"},
 				"tags":          {"type": "array", "items": {"type": "string"}},
 				"files_affected":{"type": "array", "items": {"type": "string"}},
-				"session_id":    {"type": "string", "description": "Optional session ID; absent triggers lazy manual-save fallback"}
+				"session_id":    {"type": "string", "description": "Optional session ID; absent triggers lazy manual-save fallback"},
+				"recovery_token": {"type": "string", "description": "Recovery token returned by an ambiguous project response"},
+				"project_choice_reason": {"type": "string", "description": "Original ambiguous project/context used when retrying with recovery_token"}
 			}
 		}`),
 	}, memSaveHandler(store, syncer, cfg, activity))
@@ -110,7 +112,9 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncS
 			"properties": {
 				"content":    {"type": "string", "description": "Session summary in markdown"},
 				"project":    {"type": "string", "description": "Project identifier"},
-				"session_id": {"type": "string", "description": "Optional session ID; absent triggers lazy manual-save fallback"}
+				"session_id": {"type": "string", "description": "Optional session ID; absent triggers lazy manual-save fallback"},
+				"recovery_token": {"type": "string", "description": "Recovery token returned by an ambiguous project response"},
+				"project_choice_reason": {"type": "string", "description": "Original ambiguous project/context used when retrying with recovery_token"}
 			}
 		}`),
 	}, memSessionSummaryHandler(store, activity))
@@ -148,7 +152,9 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncS
 			"properties": {
 				"content":    {"type": "string", "description": "The user prompt text to persist"},
 				"project":    {"type": "string", "description": "Project identifier"},
-				"session_id": {"type": "string", "description": "Optional session ID; absent triggers lazy manual-save fallback"}
+				"session_id": {"type": "string", "description": "Optional session ID; absent triggers lazy manual-save fallback"},
+				"recovery_token": {"type": "string", "description": "Recovery token returned by an ambiguous project response"},
+				"project_choice_reason": {"type": "string", "description": "Original ambiguous project/context used when retrying with recovery_token"}
 			}
 		}`),
 	}, memSavePromptHandler(store, prompts, activity))
@@ -233,14 +239,16 @@ func memSessionEndHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.T
 func memSaveHandler(store MemoryStore, syncer SyncRunner, cfg *hivesync.Config, activity *ActivityTracker) sdkmcp.ToolHandler {
 	return func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 		var p struct {
-			Title         string   `json:"title"`
-			Content       string   `json:"content"`
-			Type          string   `json:"type"`
-			Project       string   `json:"project"`
-			TopicKey      *string  `json:"topic_key"`
-			Tags          []string `json:"tags"`
-			FilesAffected []string `json:"files_affected"`
-			SessionID     string   `json:"session_id"`
+			Title               string   `json:"title"`
+			Content             string   `json:"content"`
+			Type                string   `json:"type"`
+			Project             string   `json:"project"`
+			TopicKey            *string  `json:"topic_key"`
+			Tags                []string `json:"tags"`
+			FilesAffected       []string `json:"files_affected"`
+			SessionID           string   `json:"session_id"`
+			RecoveryToken       string   `json:"recovery_token"`
+			ProjectChoiceReason string   `json:"project_choice_reason"`
 		}
 		if err := json.Unmarshal(req.Params.Arguments, &p); err != nil {
 			return toolError(fmt.Errorf("invalid params: %w", err)), nil
@@ -249,7 +257,7 @@ func memSaveHandler(store MemoryStore, syncer SyncRunner, cfg *hivesync.Config, 
 			return toolError(fmt.Errorf("title, content, and project are required")), nil
 		}
 
-		resolved, err := project.ValidateWriteProject(context.Background(), store, project.WriteInput{Project: p.Project, SessionID: p.SessionID})
+		resolved, err := project.ValidateWriteProject(context.Background(), store, project.WriteInput{Project: p.Project, SessionID: p.SessionID, RecoveryToken: p.RecoveryToken, ProjectChoiceReason: p.ProjectChoiceReason})
 		if err != nil {
 			return toolValidationError(err), nil
 		}
@@ -380,9 +388,11 @@ func memGetObservationHandler(store MemoryStore, activity *ActivityTracker) sdkm
 func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.ToolHandler {
 	return func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 		var p struct {
-			Content   string `json:"content"`
-			Project   string `json:"project"`
-			SessionID string `json:"session_id"`
+			Content             string `json:"content"`
+			Project             string `json:"project"`
+			SessionID           string `json:"session_id"`
+			RecoveryToken       string `json:"recovery_token"`
+			ProjectChoiceReason string `json:"project_choice_reason"`
 		}
 		if err := json.Unmarshal(req.Params.Arguments, &p); err != nil {
 			return toolError(fmt.Errorf("invalid params: %w", err)), nil
@@ -394,7 +404,7 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 			return toolError(fmt.Errorf("project is required")), nil
 		}
 
-		resolved, err := project.ValidateWriteProject(context.Background(), store, project.WriteInput{Project: p.Project, SessionID: p.SessionID})
+		resolved, err := project.ValidateWriteProject(context.Background(), store, project.WriteInput{Project: p.Project, SessionID: p.SessionID, RecoveryToken: p.RecoveryToken, ProjectChoiceReason: p.ProjectChoiceReason})
 		if err != nil {
 			return toolValidationError(err), nil
 		}
@@ -513,9 +523,11 @@ func memSavePromptHandler(store MemoryStore, prompts PromptStore, activity *Acti
 			return toolError(fmt.Errorf("prompts store not configured")), nil
 		}
 		var p struct {
-			Content   string `json:"content"`
-			Project   string `json:"project"`
-			SessionID string `json:"session_id"`
+			Content             string `json:"content"`
+			Project             string `json:"project"`
+			SessionID           string `json:"session_id"`
+			RecoveryToken       string `json:"recovery_token"`
+			ProjectChoiceReason string `json:"project_choice_reason"`
 		}
 		if err := json.Unmarshal(req.Params.Arguments, &p); err != nil {
 			return toolError(fmt.Errorf("invalid params: %w", err)), nil
@@ -533,7 +545,7 @@ func memSavePromptHandler(store MemoryStore, prompts PromptStore, activity *Acti
 			)), nil
 		}
 
-		resolved, err := project.ValidateWriteProject(ctx, store, project.WriteInput{Project: p.Project, SessionID: p.SessionID})
+		resolved, err := project.ValidateWriteProject(ctx, store, project.WriteInput{Project: p.Project, SessionID: p.SessionID, RecoveryToken: p.RecoveryToken, ProjectChoiceReason: p.ProjectChoiceReason})
 		if err != nil {
 			return toolValidationError(err), nil
 		}

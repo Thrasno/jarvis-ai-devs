@@ -599,6 +599,111 @@ func TestMemSave_UnknownProjectReturnsStructuredErrorWithoutGhostWrite(t *testin
 	}
 }
 
+func TestMemSavePrompt_AmbiguousProjectReturnsRecoveryTokenAndBlocksSave(t *testing.T) {
+	t.Parallel()
+
+	var promptCalled bool
+	store := &mockStore{
+		knownProjectsFn: func(context.Context) ([]project.KnownProject, error) {
+			return []project.KnownProject{{Name: "jarvis-dev"}, {Name: "jarvis.dev"}}, nil
+		},
+		createRecoveryTokenFn: func(_ context.Context, req project.TokenRequest) (string, error) {
+			if req.RequestedProject != "jarvis dev" {
+				t.Fatalf("requested project = %q, want jarvis dev", req.RequestedProject)
+			}
+			return "retry-token", nil
+		},
+		savePromptFn: func(context.Context, string, string) (*models.Prompt, error) {
+			promptCalled = true
+			return &models.Prompt{ID: 1}, nil
+		},
+	}
+	session := connectTestServerWithPrompts(t, store)
+
+	res := callTool(t, session, "mem_save_prompt", map[string]any{
+		"content": "prompt",
+		"project": "jarvis dev",
+	})
+
+	if !res.IsError {
+		t.Fatal("expected IsError=true for ambiguous project")
+	}
+	body := decodeJSONResponse(t, res)
+	if body["error_code"] != string(project.CodeProjectAmbiguous) || body["recovery_token"] != "retry-token" {
+		t.Fatalf("body = %v, want ambiguous retry-token", body)
+	}
+	if promptCalled {
+		t.Fatal("SavePrompt must not be called after ambiguity")
+	}
+}
+
+func TestMemSavePrompt_RecoveryTokenRetryConsumesTokenAndSaves(t *testing.T) {
+	t.Parallel()
+
+	var consumed project.TokenValidation
+	var savedProject string
+	store := &mockStore{
+		knownProjectsFn: func(context.Context) ([]project.KnownProject, error) {
+			return []project.KnownProject{{Name: "jarvis-dev"}}, nil
+		},
+		consumeRecoveryTokenFn: func(_ context.Context, validation project.TokenValidation) error {
+			consumed = validation
+			return nil
+		},
+		savePromptFn: func(_ context.Context, projectName, _ string) (*models.Prompt, error) {
+			savedProject = projectName
+			return &models.Prompt{ID: 5, Project: projectName, CreatedAt: time.Now()}, nil
+		},
+	}
+	session := connectTestServerWithPrompts(t, store)
+
+	res := callTool(t, session, "mem_save_prompt", map[string]any{
+		"content":               "prompt",
+		"project":               "jarvis-dev",
+		"recovery_token":        "retry-token",
+		"project_choice_reason": "jarvis dev",
+	})
+
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", textContent(t, res))
+	}
+	if consumed.Token != "retry-token" || consumed.SelectedProject != "jarvis-dev" {
+		t.Fatalf("consumed = %+v, want retry-token for jarvis-dev", consumed)
+	}
+	if savedProject != "jarvis-dev" {
+		t.Fatalf("saved project = %q, want jarvis-dev", savedProject)
+	}
+}
+
+func TestMemSavePrompt_ExpiredRecoveryTokenReturnsStructuredError(t *testing.T) {
+	t.Parallel()
+
+	store := &mockStore{
+		knownProjectsFn: func(context.Context) ([]project.KnownProject, error) {
+			return []project.KnownProject{{Name: "jarvis-dev"}}, nil
+		},
+		consumeRecoveryTokenFn: func(context.Context, project.TokenValidation) error {
+			return project.ErrRecoveryTokenExpired
+		},
+	}
+	session := connectTestServerWithPrompts(t, store)
+
+	res := callTool(t, session, "mem_save_prompt", map[string]any{
+		"content":               "prompt",
+		"project":               "jarvis-dev",
+		"recovery_token":        "expired-token",
+		"project_choice_reason": "jarvis dev",
+	})
+
+	if !res.IsError {
+		t.Fatal("expected IsError=true for expired recovery token")
+	}
+	body := decodeJSONResponse(t, res)
+	if body["error_code"] != string(project.CodeRecoveryTokenExpired) {
+		t.Fatalf("error_code = %v, want %q; body=%v", body["error_code"], project.CodeRecoveryTokenExpired, body)
+	}
+}
+
 // ─── Auto-Sync Tests ───────────────────────────────────────────────────────
 
 func TestMemSave_WithAutoSyncDisabled_DoesNotCallSync(t *testing.T) {

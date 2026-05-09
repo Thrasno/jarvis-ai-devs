@@ -23,7 +23,10 @@ type mockPromptStore struct {
 }
 
 type mockProjectStore struct {
-	known []project.KnownProject
+	known                   []project.KnownProject
+	createRecoveryTokenFn   func(context.Context, project.TokenRequest) (string, error)
+	validateRecoveryTokenFn func(context.Context, project.TokenValidation) error
+	consumeRecoveryTokenFn  func(context.Context, project.TokenValidation) error
 }
 
 func (m mockProjectStore) KnownProjects(context.Context) ([]project.KnownProject, error) {
@@ -32,6 +35,30 @@ func (m mockProjectStore) KnownProjects(context.Context) ([]project.KnownProject
 
 func (m mockProjectStore) SessionProject(context.Context, string) (string, error) {
 	return "", project.ErrSessionNotFound
+}
+
+func (m mockProjectStore) CreateRecoveryToken(ctx context.Context, req project.TokenRequest) (string, error) {
+	if m.createRecoveryTokenFn != nil {
+		return m.createRecoveryTokenFn(ctx, req)
+	}
+	return "recovery-token", nil
+}
+
+func (m mockProjectStore) ConsumeRecoveryToken(ctx context.Context, validation project.TokenValidation) error {
+	if err := m.ValidateRecoveryToken(ctx, validation); err != nil {
+		return err
+	}
+	if m.consumeRecoveryTokenFn != nil {
+		return m.consumeRecoveryTokenFn(ctx, validation)
+	}
+	return nil
+}
+
+func (m mockProjectStore) ValidateRecoveryToken(ctx context.Context, validation project.TokenValidation) error {
+	if m.validateRecoveryTokenFn != nil {
+		return m.validateRecoveryTokenFn(ctx, validation)
+	}
+	return nil
 }
 
 func (m *mockPromptStore) SavePrompt(ctx context.Context, project, content string) (*models.Prompt, error) {
@@ -320,6 +347,81 @@ func TestPostPrompts_NormalizedCollisionReturnsAmbiguousErrorAndBlocksSave(t *te
 	}
 	if store.called {
 		t.Fatal("SavePrompt must not be called after project validation failure")
+	}
+}
+
+func TestPostPrompts_AmbiguousProjectReturnsRecoveryTokenAndBlocksSave(t *testing.T) {
+	t.Parallel()
+
+	store := &mockPromptStore{}
+	srv := httpapi.NewServerWithProjectStore("127.0.0.1:0", store, mockProjectStore{
+		known: []project.KnownProject{
+			{Name: "jarvis-dev", Directory: "/work/jarvis-dev"},
+			{Name: "jarvis.dev", Directory: "/work/jarvis-dot-dev"},
+		},
+		createRecoveryTokenFn: func(_ context.Context, req project.TokenRequest) (string, error) {
+			if req.RequestedProject != "jarvis dev" {
+				t.Fatalf("requested project = %q, want jarvis dev", req.RequestedProject)
+			}
+			return "retry-token", nil
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewBufferString(`{"content":"explain goroutines","project":"jarvis dev"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		ErrorCode     string `json:"error_code"`
+		RecoveryToken string `json:"recovery_token"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if resp.ErrorCode != string(project.CodeProjectAmbiguous) || resp.RecoveryToken != "retry-token" {
+		t.Fatalf("response = %+v, want ambiguous with retry-token", resp)
+	}
+	if store.called {
+		t.Fatal("SavePrompt must not be called after ambiguity")
+	}
+}
+
+func TestPostPrompts_RecoveryTokenRetryConsumesTokenAndSavesChosenProject(t *testing.T) {
+	t.Parallel()
+
+	var consumed project.TokenValidation
+	var savedProject string
+	store := &mockPromptStore{savePromptFn: func(_ context.Context, projectName, _ string) (*models.Prompt, error) {
+		savedProject = projectName
+		return &models.Prompt{ID: 7, Project: projectName, CreatedAt: time.Now()}, nil
+	}}
+	srv := httpapi.NewServerWithProjectStore("127.0.0.1:0", store, mockProjectStore{
+		known: []project.KnownProject{{Name: "jarvis-dev"}},
+		consumeRecoveryTokenFn: func(_ context.Context, validation project.TokenValidation) error {
+			consumed = validation
+			return nil
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewBufferString(`{"content":"chosen","project":"jarvis-dev","recovery_token":"retry-token","project_choice_reason":"jarvis dev"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	if consumed.Token != "retry-token" || consumed.SelectedProject != "jarvis-dev" {
+		t.Fatalf("consumed = %+v, want retry-token for jarvis-dev", consumed)
+	}
+	if savedProject != "jarvis-dev" {
+		t.Fatalf("saved project = %q, want jarvis-dev", savedProject)
 	}
 }
 

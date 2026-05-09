@@ -89,8 +89,10 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB
 	var body struct {
-		Content string `json:"content"`
-		Project string `json:"project"`
+		Content             string `json:"content"`
+		Project             string `json:"project"`
+		RecoveryToken       string `json:"recovery_token"`
+		ProjectChoiceReason string `json:"project_choice_reason"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		var maxErr *http.MaxBytesError
@@ -124,7 +126,7 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.projects != nil {
-		resolved, err := project.ValidateWriteProject(r.Context(), s.projects, project.WriteInput{Project: body.Project})
+		resolved, err := project.ValidateWriteProject(r.Context(), s.projects, project.WriteInput{Project: body.Project, RecoveryToken: body.RecoveryToken, ProjectChoiceReason: body.ProjectChoiceReason})
 		if err != nil {
 			writeProjectValidationError(w, err)
 			return

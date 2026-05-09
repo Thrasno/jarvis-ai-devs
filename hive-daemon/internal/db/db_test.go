@@ -35,6 +35,32 @@ func TestOpen_MemoriesTableExists(t *testing.T) {
 	}
 }
 
+func TestOpen_RecoveryTokensTableAndExpiryIndexExist(t *testing.T) {
+	d, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+
+	for _, tt := range []struct {
+		kind string
+		name string
+	}{
+		{kind: "table", name: "recovery_tokens"},
+		{kind: "index", name: "idx_recovery_tokens_expires"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var name string
+			err := d.sqlDB.QueryRow(
+				"SELECT name FROM sqlite_master WHERE type=? AND name=?", tt.kind, tt.name,
+			).Scan(&name)
+			if err != nil {
+				t.Fatalf("%s %q not found: %v", tt.kind, tt.name, err)
+			}
+		})
+	}
+}
+
 func TestOpen_FTSTableExists(t *testing.T) {
 	d, err := Open(":memory:")
 	if err != nil {
