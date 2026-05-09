@@ -49,7 +49,7 @@ func main() {
 	httpDone := make(chan struct{})
 	go func() {
 		defer close(httpDone)
-		srv := httpapi.NewServer(httpAddr(), store)
+		srv := httpapi.NewServerWithProjectStore(httpAddr(), store, store)
 		if err := srv.Start(rootCtx); err != nil {
 			logger.Log.Printf("http server stopped: %v (mcp continues)", err)
 		}

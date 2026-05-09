@@ -158,6 +158,19 @@ func TestStdoutPurity(t *testing.T) {
 func TestE2E_SaveAndSearch(t *testing.T) {
 	session := spawnDaemon(t)
 	ctx := context.Background()
+	startRes, err := session.CallTool(ctx, &sdkmcp.CallToolParams{
+		Name: "mem_session_start",
+		Arguments: map[string]any{
+			"id":        "e2e-save-search-session",
+			"project":   "e2e-test",
+			"directory": t.TempDir(),
+			"dev_id":    "test-dev",
+			"client":    "test",
+		},
+	})
+	if err != nil || startRes.IsError {
+		t.Fatalf("mem_session_start failed: err=%v isError=%v", err, startRes.IsError)
+	}
 
 	// Save a memory
 	saveRes, err := session.CallTool(ctx, &sdkmcp.CallToolParams{
@@ -274,6 +287,19 @@ func TestRunStartup_ManualSaveSessionExempt(t *testing.T) {
 func TestE2E_TopicKeyUpsert(t *testing.T) {
 	session := spawnDaemon(t)
 	ctx := context.Background()
+	startRes, err := session.CallTool(ctx, &sdkmcp.CallToolParams{
+		Name: "mem_session_start",
+		Arguments: map[string]any{
+			"id":        "e2e-topic-upsert-session",
+			"project":   "e2e-test",
+			"directory": t.TempDir(),
+			"dev_id":    "test-dev",
+			"client":    "test",
+		},
+	})
+	if err != nil || startRes.IsError {
+		t.Fatalf("mem_session_start failed: err=%v isError=%v", err, startRes.IsError)
+	}
 
 	args := map[string]any{
 		"title":     "Auth Design v1",

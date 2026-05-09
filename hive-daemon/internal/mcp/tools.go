@@ -11,6 +11,7 @@ import (
 
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/project"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/sanitize"
 	hivesync "github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -248,6 +249,12 @@ func memSaveHandler(store MemoryStore, syncer SyncRunner, cfg *hivesync.Config, 
 			return toolError(fmt.Errorf("title, content, and project are required")), nil
 		}
 
+		resolved, err := project.ValidateWriteProject(context.Background(), store, project.WriteInput{Project: p.Project, SessionID: p.SessionID})
+		if err != nil {
+			return toolValidationError(err), nil
+		}
+		p.Project = resolved.Project
+
 		// Lazy session fallback: when session_id is absent, resolve via EnsureManualSaveSession.
 		sessionID, err := resolveSessionID(p.SessionID, p.Project, store)
 		if err != nil {
@@ -301,9 +308,9 @@ func memSaveHandler(store MemoryStore, syncer SyncRunner, cfg *hivesync.Config, 
 		}
 
 		return toolJSON(map[string]any{
-			"id":            id,
-			"status":        "saved",
-			"stripped":      strippedCount > 0,
+			"id":             id,
+			"status":         "saved",
+			"stripped":       strippedCount > 0,
 			"stripped_count": strippedCount,
 		})
 	}
@@ -386,6 +393,12 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 		if p.Project == "" {
 			return toolError(fmt.Errorf("project is required")), nil
 		}
+
+		resolved, err := project.ValidateWriteProject(context.Background(), store, project.WriteInput{Project: p.Project, SessionID: p.SessionID})
+		if err != nil {
+			return toolValidationError(err), nil
+		}
+		p.Project = resolved.Project
 
 		// Guard: same 50K rune limit as memSaveHandler.
 		if runeCount := utf8.RuneCountInString(p.Content); runeCount > MaxObservationLength {
@@ -520,6 +533,12 @@ func memSavePromptHandler(store MemoryStore, prompts PromptStore, activity *Acti
 			)), nil
 		}
 
+		resolved, err := project.ValidateWriteProject(ctx, store, project.WriteInput{Project: p.Project, SessionID: p.SessionID})
+		if err != nil {
+			return toolValidationError(err), nil
+		}
+		p.Project = resolved.Project
+
 		// Lazy session fallback — same pattern as memSaveHandler.
 		sessionID, err := resolveSessionID(p.SessionID, p.Project, store)
 		if err != nil {
@@ -641,6 +660,19 @@ func toolError(err error) *sdkmcp.CallToolResult {
 	r := &sdkmcp.CallToolResult{}
 	r.SetError(err)
 	return r
+}
+
+func toolValidationError(err error) *sdkmcp.CallToolResult {
+	var validationErr *project.ValidationError
+	if !errors.As(err, &validationErr) {
+		return toolError(err)
+	}
+	result, marshalErr := toolJSON(validationErr)
+	if marshalErr != nil {
+		return toolError(marshalErr)
+	}
+	result.IsError = true
+	return result
 }
 
 func toolJSON(v any) (*sdkmcp.CallToolResult, error) {

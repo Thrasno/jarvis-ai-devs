@@ -14,6 +14,7 @@ import (
 	hivedb "github.com/Thrasno/jarvis-dev/hive-daemon/internal/db"
 	hivemcp "github.com/Thrasno/jarvis-dev/hive-daemon/internal/mcp"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/project"
 	hivesync "github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -553,6 +554,48 @@ func TestMemSave_ContentAtLimit_IsAccepted(t *testing.T) {
 	}
 	if saved == nil {
 		t.Error("SaveMemory should have been called for content at limit")
+	}
+}
+
+func TestMemSave_UnknownProjectReturnsStructuredErrorWithoutGhostWrite(t *testing.T) {
+	t.Parallel()
+
+	var saveCalled bool
+	var ensureCalled bool
+	store := &mockStore{
+		knownProjectsFn: func(context.Context) ([]project.KnownProject, error) {
+			return []project.KnownProject{{Name: "jarvis-dev"}}, nil
+		},
+		ensureManualSaveSessionFn: func(project string) (string, error) {
+			ensureCalled = true
+			return "manual-save-" + project, nil
+		},
+		saveMemoryFn: func(*models.Memory) (int64, error) {
+			saveCalled = true
+			return 1, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_save", map[string]any{
+		"title":   "Ghost",
+		"content": "should not persist",
+		"type":    "architecture",
+		"project": "ghost-project",
+	})
+
+	if !res.IsError {
+		t.Fatal("expected IsError=true for unknown project")
+	}
+	body := decodeJSONResponse(t, res)
+	if got := body["error_code"]; got != string(project.CodeProjectUnknown) {
+		t.Fatalf("error_code = %v, want %q; body=%v", got, project.CodeProjectUnknown, body)
+	}
+	if ensureCalled {
+		t.Fatal("EnsureManualSaveSession must not create a ghost session after validation failure")
+	}
+	if saveCalled {
+		t.Fatal("SaveMemory must not be called after validation failure")
 	}
 }
 
@@ -1163,6 +1206,42 @@ func TestMemSessionSummary_CreatesMemoryWithCorrectType(t *testing.T) {
 	}
 }
 
+func TestMemSessionSummary_SessionProjectMismatchReturnsStructuredError(t *testing.T) {
+	t.Parallel()
+
+	var saveCalled bool
+	store := &mockStore{
+		knownProjectsFn: func(context.Context) ([]project.KnownProject, error) {
+			return []project.KnownProject{{Name: "alpha"}, {Name: "beta"}}, nil
+		},
+		sessionProjectFn: func(context.Context, string) (string, error) {
+			return "alpha", nil
+		},
+		saveMemoryFn: func(*models.Memory) (int64, error) {
+			saveCalled = true
+			return 10, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_session_summary", map[string]any{
+		"content":    "## Goal\nWrap up",
+		"project":    "beta",
+		"session_id": "sess-alpha",
+	})
+
+	if !res.IsError {
+		t.Fatal("expected IsError=true for session/project mismatch")
+	}
+	body := decodeJSONResponse(t, res)
+	if got := body["error_code"]; got != string(project.CodeProjectSessionMismatch) {
+		t.Fatalf("error_code = %v, want %q; body=%v", got, project.CodeProjectSessionMismatch, body)
+	}
+	if saveCalled {
+		t.Fatal("SaveMemory must not be called after session mismatch")
+	}
+}
+
 func TestMemSessionSummary_MissingContent_ReturnsError(t *testing.T) {
 	session := connectTestServer(t, &mockStore{})
 
@@ -1724,6 +1803,40 @@ func TestMemSavePrompt_WithProject_PassesProjectToStore(t *testing.T) {
 	}
 	if gotProject != "jarvis-dev" {
 		t.Errorf("project passed to store = %q, want 'jarvis-dev'", gotProject)
+	}
+}
+
+func TestMemSavePrompt_UnknownProjectReturnsStructuredErrorWithoutPromptWrite(t *testing.T) {
+	t.Parallel()
+
+	var savePromptCalled bool
+	store := &mockStore{
+		knownProjectsFn: func(context.Context) ([]project.KnownProject, error) {
+			return []project.KnownProject{{Name: "jarvis-dev"}}, nil
+		},
+	}
+	prompts := &mockStore{
+		savePromptFn: func(context.Context, string, string) (*models.Prompt, error) {
+			savePromptCalled = true
+			return &models.Prompt{ID: 1, CreatedAt: time.Now()}, nil
+		},
+	}
+	session := connectTestServerFull(t, store, prompts)
+
+	res := callTool(t, session, "mem_save_prompt", map[string]any{
+		"content": "explain goroutines",
+		"project": "ghost-project",
+	})
+
+	if !res.IsError {
+		t.Fatal("expected IsError=true for unknown project")
+	}
+	body := decodeJSONResponse(t, res)
+	if got := body["error_code"]; got != string(project.CodeProjectUnknown) {
+		t.Fatalf("error_code = %v, want %q; body=%v", got, project.CodeProjectUnknown, body)
+	}
+	if savePromptCalled {
+		t.Fatal("SavePrompt must not be called after validation failure")
 	}
 }
 

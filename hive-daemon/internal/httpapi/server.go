@@ -12,6 +12,7 @@ import (
 
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/project"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/sanitize"
 )
 
@@ -23,14 +24,19 @@ type PromptStore interface {
 
 // Server handles HTTP requests for the Hive prompt-capture endpoint.
 type Server struct {
-	addr    string
-	prompts PromptStore
-	mux     *http.ServeMux
+	addr     string
+	prompts  PromptStore
+	projects project.Store
+	mux      *http.ServeMux
 }
 
 // NewServer constructs a Server bound to addr.
 func NewServer(addr string, prompts PromptStore) *Server {
-	s := &Server{addr: addr, prompts: prompts}
+	return NewServerWithProjectStore(addr, prompts, nil)
+}
+
+func NewServerWithProjectStore(addr string, prompts PromptStore, projects project.Store) *Server {
+	s := &Server{addr: addr, prompts: prompts, projects: projects}
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("/prompts", s.handlePrompts)
 	return s
@@ -117,6 +123,15 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.projects != nil {
+		resolved, err := project.ValidateWriteProject(r.Context(), s.projects, project.WriteInput{Project: body.Project})
+		if err != nil {
+			writeProjectValidationError(w, err)
+			return
+		}
+		body.Project = resolved.Project
+	}
+
 	// Strip private tags from content at the handler boundary.
 	contentRes := sanitize.Strip(body.Content)
 
@@ -130,9 +145,21 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"id":            prompt.ID,
-		"created_at":    prompt.CreatedAt.Format(time.RFC3339),
-		"stripped":      contentRes.Count > 0,
+		"id":             prompt.ID,
+		"created_at":     prompt.CreatedAt.Format(time.RFC3339),
+		"stripped":       contentRes.Count > 0,
 		"stripped_count": contentRes.Count,
 	})
+}
+
+func writeProjectValidationError(w http.ResponseWriter, err error) {
+	var validationErr *project.ValidationError
+	if !errors.As(err, &validationErr) {
+		logger.Log.Printf("validate project: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal error"})
+		return
+	}
+	w.WriteHeader(http.StatusBadRequest)
+	_ = json.NewEncoder(w).Encode(validationErr)
 }

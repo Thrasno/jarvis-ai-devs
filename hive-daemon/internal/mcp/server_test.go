@@ -10,6 +10,7 @@ import (
 
 	hivemcp "github.com/Thrasno/jarvis-dev/hive-daemon/internal/mcp"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/project"
 	hivesync "github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -34,6 +35,8 @@ type mockStore struct {
 	endSessionFn              func(id, summary string) error
 	getSessionFn              func(id string) (*models.Session, error)
 	ensureManualSaveSessionFn func(project string) (string, error)
+	knownProjectsFn           func(context.Context) ([]project.KnownProject, error)
+	sessionProjectFn          func(context.Context, string) (string, error)
 }
 
 func (m *mockStore) SaveMemory(mem *models.Memory) (int64, error) {
@@ -104,6 +107,25 @@ func (m *mockStore) EnsureManualSaveSession(project string) (string, error) {
 		return m.ensureManualSaveSessionFn(project)
 	}
 	return "manual-save-" + project, nil
+}
+
+func (m *mockStore) KnownProjects(ctx context.Context) ([]project.KnownProject, error) {
+	if m.knownProjectsFn != nil {
+		return m.knownProjectsFn(ctx)
+	}
+	return []project.KnownProject{
+		{Name: "proj"},
+		{Name: "jarvis-dev"},
+		{Name: "test-proj"},
+		{Name: "e2e-project"},
+	}, nil
+}
+
+func (m *mockStore) SessionProject(ctx context.Context, sessionID string) (string, error) {
+	if m.sessionProjectFn != nil {
+		return m.sessionProjectFn(ctx, sessionID)
+	}
+	return "", project.ErrSessionNotFound
 }
 
 // connectTestServer creates a server+client pair using in-memory transport.

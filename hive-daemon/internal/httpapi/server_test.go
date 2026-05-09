@@ -14,11 +14,24 @@ import (
 
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/httpapi"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/project"
 )
 
 type mockPromptStore struct {
 	savePromptFn func(ctx context.Context, project, content string) (*models.Prompt, error)
 	called       bool
+}
+
+type mockProjectStore struct {
+	known []project.KnownProject
+}
+
+func (m mockProjectStore) KnownProjects(context.Context) ([]project.KnownProject, error) {
+	return m.known, nil
+}
+
+func (m mockProjectStore) SessionProject(context.Context, string) (string, error) {
+	return "", project.ErrSessionNotFound
 }
 
 func (m *mockPromptStore) SavePrompt(ctx context.Context, project, content string) (*models.Prompt, error) {
@@ -238,6 +251,75 @@ func TestPostPrompts_WithProject_PassesProjectToStore(t *testing.T) {
 	}
 	if gotProject != "jarvis-dev" {
 		t.Errorf("project passed to store = %q, want 'jarvis-dev'", gotProject)
+	}
+}
+
+func TestPostPrompts_UnknownProjectReturnsErrorCodeAndBlocksSave(t *testing.T) {
+	t.Parallel()
+
+	store := &mockPromptStore{}
+	srv := httpapi.NewServerWithProjectStore("127.0.0.1:0", store, mockProjectStore{
+		known: []project.KnownProject{{Name: "jarvis-dev"}},
+	})
+
+	body := `{"content": "explain goroutines", "project": "ghost-project"}`
+	req := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if got := resp["error_code"]; got != string(project.CodeProjectUnknown) {
+		t.Fatalf("error_code = %v, want %q; body=%v", got, project.CodeProjectUnknown, resp)
+	}
+	if store.called {
+		t.Fatal("SavePrompt must not be called after project validation failure")
+	}
+}
+
+func TestPostPrompts_NormalizedCollisionReturnsAmbiguousErrorAndBlocksSave(t *testing.T) {
+	t.Parallel()
+
+	store := &mockPromptStore{}
+	srv := httpapi.NewServerWithProjectStore("127.0.0.1:0", store, mockProjectStore{
+		known: []project.KnownProject{
+			{Name: "jarvis-dev", Directory: "/work/jarvis-dev"},
+			{Name: "jarvis.dev", Directory: "/work/jarvis-dot-dev"},
+		},
+	})
+
+	body := `{"content": "explain goroutines", "project": "jarvis dev"}`
+	req := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		ErrorCode  string              `json:"error_code"`
+		Candidates []project.Candidate `json:"candidates"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if resp.ErrorCode != string(project.CodeProjectAmbiguous) {
+		t.Fatalf("error_code = %q, want %q", resp.ErrorCode, project.CodeProjectAmbiguous)
+	}
+	if len(resp.Candidates) != 2 {
+		t.Fatalf("candidate count = %d, want 2; candidates=%v", len(resp.Candidates), resp.Candidates)
+	}
+	if store.called {
+		t.Fatal("SavePrompt must not be called after project validation failure")
 	}
 }
 

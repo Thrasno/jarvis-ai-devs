@@ -5,6 +5,7 @@ import (
 
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/project"
 	hivesync "github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -28,6 +29,9 @@ type MemoryStore interface {
 	EndSession(id, summary string) error
 	GetSession(id string) (*models.Session, error)
 	EnsureManualSaveSession(project string) (string, error)
+
+	KnownProjects(ctx context.Context) ([]project.KnownProject, error)
+	SessionProject(ctx context.Context, sessionID string) (string, error)
 }
 
 // SyncRunner es la interfaz que usa el tool mem_sync.
