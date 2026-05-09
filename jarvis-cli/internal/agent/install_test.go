@@ -1,81 +1,86 @@
 package agent
 
 import (
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
 
-// TestInstallSkillsFromFS_CreatesDirectoryStructure verifies that nested skill files
-// are installed at the correct paths under the destination directory.
-func TestInstallSkillsFromFS_CreatesDirectoryStructure(t *testing.T) {
-	dest := t.TempDir()
-
-	testFS := fstest.MapFS{
-		"test-skill-a/SKILL.md": {Data: []byte("# Skill A")},
-		"test-skill-b/SKILL.md": {Data: []byte("# Skill B")},
-		"test-skill-b/extra.md": {Data: []byte("# Extra")},
+func TestInstallSkillsFromFS(t *testing.T) {
+	testCases := []struct {
+		name      string
+		fsys      fs.FS
+		selected  []string
+		wantFiles map[string]string
+		wantPaths []string
+		absentDir string
+		wantErr   string
+	}{
+		{
+			name:     "installs selected skills shared files and nested references",
+			fsys: fstest.MapFS{
+				"selected-skill/SKILL.md":                       {Data: []byte("# Skill")},
+				"selected-skill/references/examples.md":         {Data: []byte("reference example")},
+				"selected-skill/references/nested/deep-link.md": {Data: []byte("deep link")},
+				"selected-skill/templates/snippet.txt":          {Data: []byte("snippet")},
+				"other-skill/SKILL.md":                          {Data: []byte("# Other")},
+				"_shared/hive-convention.md":                    {Data: []byte("shared convention")},
+			},
+			selected: []string{"selected-skill"},
+			wantFiles: map[string]string{
+				"selected-skill/SKILL.md":                       "# Skill",
+				"selected-skill/references/examples.md":         "reference example",
+				"selected-skill/references/nested/deep-link.md": "deep link",
+				"selected-skill/templates/snippet.txt":          "snippet",
+				"_shared/hive-convention.md":                    "shared convention",
+			},
+			wantPaths: []string{
+				"_shared/hive-convention.md",
+				"selected-skill/SKILL.md",
+				"selected-skill/references/examples.md",
+				"selected-skill/references/nested/deep-link.md",
+				"selected-skill/templates/snippet.txt",
+			},
+			absentDir: "other-skill",
+		},
+		{
+			name:     "returns read errors with path context",
+			fsys:     brokenReadFS{},
+			selected: []string{"selected-skill"},
+			wantErr:  "read skill file selected-skill/SKILL.md",
+		},
 	}
 
-	err := installSkillsFromFS(dest, testFS, []string{"test-skill-a", "test-skill-b"})
-	if err != nil {
-		t.Fatalf("installSkillsFromFS: %v", err)
-	}
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			dest := t.TempDir()
 
-	// test-skill-a/SKILL.md
-	assertFileContent(t, filepath.Join(dest, "test-skill-a", "SKILL.md"), "# Skill A")
-	// test-skill-b/SKILL.md
-	assertFileContent(t, filepath.Join(dest, "test-skill-b", "SKILL.md"), "# Skill B")
-	// test-skill-b/extra.md (supporting file, still installed)
-	assertFileContent(t, filepath.Join(dest, "test-skill-b", "extra.md"), "# Extra")
-}
+			err := installSkillsFromFS(dest, tt.fsys, tt.selected)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatal("expected installSkillsFromFS to fail")
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("expected error to include %q, got %q", tt.wantErr, err)
+				}
+				return
+			}
 
-// TestInstallSkillsFromFS_SharedFilesInstalled verifies that _shared/ files are
-// always installed, even when "_shared" is not in the selected list.
-func TestInstallSkillsFromFS_SharedFilesInstalled(t *testing.T) {
-	dest := t.TempDir()
+			if err != nil {
+				t.Fatalf("installSkillsFromFS: %v", err)
+			}
 
-	testFS := fstest.MapFS{
-		"test-skill/SKILL.md":    {Data: []byte("# Skill")},
-		"_shared/shared-file.md": {Data: []byte("# Shared")},
-	}
-
-	// Note: "_shared" is NOT in the selected list.
-	err := installSkillsFromFS(dest, testFS, []string{"test-skill"})
-	if err != nil {
-		t.Fatalf("installSkillsFromFS: %v", err)
-	}
-
-	// _shared/shared-file.md must be installed even though not in selected.
-	assertFileContent(t, filepath.Join(dest, "_shared", "shared-file.md"), "# Shared")
-	// test-skill/SKILL.md must also be installed.
-	assertFileContent(t, filepath.Join(dest, "test-skill", "SKILL.md"), "# Skill")
-}
-
-// TestInstallSkillsFromFS_UnselectedSkillsSkipped verifies that skills not in
-// the selected list are not installed.
-func TestInstallSkillsFromFS_UnselectedSkillsSkipped(t *testing.T) {
-	dest := t.TempDir()
-
-	testFS := fstest.MapFS{
-		"skill-a/SKILL.md": {Data: []byte("# Skill A")},
-		"skill-b/SKILL.md": {Data: []byte("# Skill B")},
-		"skill-c/SKILL.md": {Data: []byte("# Skill C")},
-	}
-
-	err := installSkillsFromFS(dest, testFS, []string{"skill-a", "skill-b"})
-	if err != nil {
-		t.Fatalf("installSkillsFromFS: %v", err)
-	}
-
-	// skill-a and skill-b must be installed.
-	assertFileExists(t, filepath.Join(dest, "skill-a", "SKILL.md"))
-	assertFileExists(t, filepath.Join(dest, "skill-b", "SKILL.md"))
-
-	// skill-c must NOT be installed.
-	if _, err := os.Stat(filepath.Join(dest, "skill-c")); !os.IsNotExist(err) {
-		t.Errorf("expected skill-c directory to not exist, but it does (or stat error: %v)", err)
+			assertInstalledFiles(t, dest, tt.wantFiles)
+			assertInstalledRelativePaths(t, dest, tt.wantPaths)
+			if tt.absentDir != "" {
+				assertDirectoryAbsent(t, filepath.Join(dest, tt.absentDir))
+			}
+		})
 	}
 }
 
@@ -102,6 +107,21 @@ func TestInstallSkillsFromFS_Idempotent(t *testing.T) {
 	assertFileContent(t, filepath.Join(dest, "my-skill", "SKILL.md"), "# My Skill")
 }
 
+type brokenReadFS struct{}
+
+func (brokenReadFS) Open(name string) (fs.File, error) {
+	switch name {
+	case ".", "selected-skill":
+		return fstest.MapFS{
+			"selected-skill/SKILL.md": {},
+		}.Open(name)
+	case "selected-skill/SKILL.md":
+		return nil, fmt.Errorf("boom reading %s", name)
+	}
+
+	return nil, fmt.Errorf("boom reading %s", name)
+}
+
 // assertFileContent reads the file at path and asserts its content equals expected.
 func assertFileContent(t *testing.T, path, expected string) {
 	t.Helper()
@@ -120,6 +140,50 @@ func assertFileExists(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("expected file at %s to exist, got: %v", path, err)
+	}
+}
+
+func assertInstalledFiles(t *testing.T, dest string, want map[string]string) {
+	t.Helper()
+	for relPath, content := range want {
+		assertFileContent(t, filepath.Join(dest, filepath.FromSlash(relPath)), content)
+	}
+}
+
+func assertDirectoryAbsent(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to be absent, got err=%v", path, err)
+	}
+}
+
+func assertInstalledRelativePaths(t *testing.T, dest string, want []string) {
+	t.Helper()
+
+	var got []string
+	err := filepath.WalkDir(dest, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(dest, path)
+		if err != nil {
+			return err
+		}
+		got = append(got, filepath.ToSlash(relPath))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk installed files: %v", err)
+	}
+
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("installed files mismatch\n got: %v\nwant: %v", got, want)
 	}
 }
 

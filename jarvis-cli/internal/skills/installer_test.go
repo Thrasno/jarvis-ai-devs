@@ -4,9 +4,43 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 
 	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
 )
+
+func TestInstallSelected_RecursivelyInstallsSkillTrees(t *testing.T) {
+	dir := t.TempDir()
+
+	fsys := fstest.MapFS{
+		"embed/skills/hive/SKILL.md":                                  {Data: []byte("# Hive")},
+		"embed/skills/sdd-workflow/SKILL.md":                          {Data: []byte("# Workflow")},
+		"embed/skills/sdd-init/SKILL.md":                              {Data: []byte("# Init")},
+		"embed/skills/sdd-apply/SKILL.md":                             {Data: []byte("# Apply")},
+		"embed/skills/sdd-verify/SKILL.md":                            {Data: []byte("# Verify")},
+		"embed/skills/sdd-archive/SKILL.md":                           {Data: []byte("# Archive")},
+		"embed/skills/sdd-qa/SKILL.md":                                {Data: []byte("# QA")},
+		"embed/skills/custom-skill/SKILL.md":                          {Data: []byte("# Custom")},
+		"embed/skills/custom-skill/references/examples.md":            {Data: []byte("ref example")},
+		"embed/skills/custom-skill/references/nested/advanced.md":     {Data: []byte("advanced ref")},
+		"embed/skills/custom-skill/templates/snippet.txt":             {Data: []byte("snippet")},
+		"embed/skills/_shared/hive-convention.md":                     {Data: []byte("shared convention")},
+		"embed/skills/unselected-skill/SKILL.md":                      {Data: []byte("# Unselected")},
+		"embed/skills/unselected-skill/references/should-not-copy.md": {Data: []byte("skip me")},
+	}
+
+	if err := InstallSelected(fsys, dir, []string{"custom-skill"}); err != nil {
+		t.Fatalf("InstallSelected failed: %v", err)
+	}
+
+	assertInstalledSkillFile(t, dir, "custom-skill/SKILL.md", "# Custom")
+	assertInstalledSkillFile(t, dir, "custom-skill/references/examples.md", "ref example")
+	assertInstalledSkillFile(t, dir, "custom-skill/references/nested/advanced.md", "advanced ref")
+	assertInstalledSkillFile(t, dir, "custom-skill/templates/snippet.txt", "snippet")
+	assertInstalledSkillFile(t, dir, "_shared/hive-convention.md", "shared convention")
+
+	assertPathAbsent(t, filepath.Join(dir, "unselected-skill"))
+}
 
 func TestInstallSelected(t *testing.T) {
 	t.Run("installs selected skills and core skills", func(t *testing.T) {
@@ -117,5 +151,23 @@ func TestListSkills(t *testing.T) {
 
 	if coreCount < 2 {
 		t.Errorf("expected at least 2 core skills, got %d", coreCount)
+	}
+}
+
+func assertInstalledSkillFile(t *testing.T, dir, relPath, expected string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(relPath)))
+	if err != nil {
+		t.Fatalf("read %s: %v", relPath, err)
+	}
+	if string(data) != expected {
+		t.Fatalf("content mismatch for %s: got %q want %q", relPath, string(data), expected)
+	}
+}
+
+func assertPathAbsent(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to be absent, got err=%v", path, err)
 	}
 }

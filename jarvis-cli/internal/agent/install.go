@@ -21,6 +21,9 @@ func installSkillsFromFS(destDir string, skillsFS fs.FS, selected []string) erro
 
 	return fs.WalkDir(skillsFS, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			if path != "." {
+				return fmt.Errorf("read skill file %s: %w", path, err)
+			}
 			return err
 		}
 		if path == "." {
