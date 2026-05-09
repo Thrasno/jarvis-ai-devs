@@ -1,150 +1,237 @@
 ---
 name: sdd-tasks
-description: >
-  Break down a change into an implementation task checklist.
-  Trigger: When the orchestrator launches you to create or update the task breakdown for a change.
+description: "Break an SDD change into implementation tasks. Trigger: orchestrator launches task planning for a change."
+disable-model-invocation: true
+user-invocable: false
 license: MIT
 metadata:
   author: gentleman-programming
-  version: "3.0"
+  version: "2.0"
 ---
 
-## Step 0 — Resolve Persistence Mode
-
-1. **Default**: Hive (`mcp__hive__*` tools)
-2. **Override**: openspec or hybrid — if user explicitly requests it
-3. **Fallback**: openspec — if Hive tools are unavailable and user did not specify
-4. **None**: only if user explicitly requests it
-
-Carry this decision through all steps. Do not re-evaluate mid-skill.
+<!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/sdd-tasks/SKILL.md (tag v1.26.5, commit 5f73974b39ae2b9b525ef465b3642030c5f2ce6c); adapted for Jarvis/Hive runtime semantics. -->
 
 ## Purpose
 
-You are a sub-agent responsible for creating the TASK BREAKDOWN. You take the proposal, specs, and design, then produce a concrete implementation checklist organized by phase.
+You are a sub-agent responsible for creating the TASK BREAKDOWN. You take the proposal, specs, and design, then produce a `tasks.md` with concrete, actionable implementation steps organized by phase.
 
 ## What You Receive
 
 From the orchestrator:
 - Change name
-- Project name
+- Artifact store mode (`hive | openspec | hybrid | none`)
+- Delivery strategy (`ask-on-risk | auto-chain | single-pr | exception-ok`)
+
+## Execution and Persistence Contract
+
+> Follow **Section B** (retrieval) and **Section C** (persistence) from `skills/_shared/sdd-phase-common.md`.
+
+- **hive**: Read `sdd/{change-name}/proposal` (required), `sdd/{change-name}/spec` (required), `sdd/{change-name}/design` (required). Save as `sdd/{change-name}/tasks`.
+- **openspec**: Read and follow `skills/_shared/openspec-convention.md`.
+- **hybrid**: Follow BOTH conventions — persist to Hive AND write `tasks.md` to filesystem. Retrieve dependencies from Hive (primary) with filesystem fallback.
+- **none**: Return result only. Never create or modify project files.
 
 ## What to Do
 
-### Step 1: Retrieve Dependencies
-
-If mode is Hive:
-1. Call `mcp__hive__mem_search` with query `sdd/{change-name}/spec` and project name.
-2. Call `mcp__hive__mem_get_observation(id)` — required, search results are truncated. This is your spec.
-3. Repeat for `sdd/{change-name}/design` — required.
-4. Also load `sdd/{change-name}/proposal` for context.
-
-If mode is openspec: read `openspec/changes/{change-name}/proposal.md`, `openspec/changes/{change-name}/specs/`, and `openspec/changes/{change-name}/design.md`.
-
-If mode is none: use the content passed in the prompt.
+### Step 1: Load Skills
+Follow **Section A** from `skills/_shared/sdd-phase-common.md`.
 
 ### Step 2: Analyze the Design
 
 From the design document, identify:
-- All files that need to be created, modified, or deleted
+- All files that need to be created/modified/deleted
 - The dependency order (what must come first)
 - Testing requirements per component
 
-**Invocation scope rule**: If a task requires reading more than 5 files AND writing more than 3 files, split it into two tasks.
+### Step 3: Write tasks.md
 
-### Step 3: Write Task Breakdown
+**IF mode is `openspec` or `hybrid`:** Create the task file:
 
-If mode is openspec or hybrid: create `openspec/changes/{change-name}/tasks.md`.
+```
+openspec/changes/{change-name}/
+├── proposal.md
+├── specs/
+├── design.md
+└── tasks.md               ← You create this
+```
 
-If mode is Hive or none: compose in memory.
+**IF mode is `hive` or `none`:** Do NOT create any `openspec/` directories or files. Compose the tasks content in memory — you will persist it in Step 4.
+
+#### Task File Format
 
 ```markdown
 # Tasks: {Change Title}
 
+## Review Workload Forecast
+
+| Field | Value |
+|-------|-------|
+| Estimated changed lines | <rough estimate or range> |
+| 400-line budget risk | Low / Medium / High |
+| Chained PRs recommended | Yes / No |
+| Suggested split | <single PR or PR 1 → PR 2 → PR 3> |
+| Delivery strategy | <ask-on-risk / auto-chain / single-pr / exception-ok> |
+| Chain strategy | <stacked-to-main / feature-branch-chain / size-exception / pending> |
+
+Decision needed before apply: <Yes|No>
+Chained PRs recommended: <Yes|No>
+Chain strategy: <stacked-to-main|feature-branch-chain|size-exception|pending>
+400-line budget risk: <Low|Medium|High>
+
+### Suggested Work Units
+
+| Unit | Goal | Likely PR | Notes |
+|------|------|-----------|-------|
+| 1 | <standalone deliverable> | PR 1 | <base branch; tests/docs included> |
+| 2 | <standalone deliverable> | PR 2 | <immediate parent/base branch boundary; depends on PR 1 or independent> |
+
 ## Phase 1: {Phase Name} (e.g., Infrastructure / Foundation)
 
-- [ ] T-01 {Concrete action — what file, what change}
-- [ ] T-02 {Concrete action}
+- [ ] 1.1 {Concrete action — what file, what change}
+- [ ] 1.2 {Concrete action}
+- [ ] 1.3 {Concrete action}
 
 ## Phase 2: {Phase Name} (e.g., Core Implementation)
 
-- [ ] T-03 {Concrete action}
-- [ ] T-04 {Concrete action}
+- [ ] 2.1 {Concrete action}
+- [ ] 2.2 {Concrete action}
+- [ ] 2.3 {Concrete action}
+- [ ] 2.4 {Concrete action}
 
 ## Phase 3: {Phase Name} (e.g., Testing / Verification)
 
-- [ ] T-05 {Write tests for ...}
-- [ ] T-06 {Verify integration between ...}
-```
+- [ ] 3.1 {Write tests for ...}
+- [ ] 3.2 {Write tests for ...}
+- [ ] 3.3 {Verify integration between ...}
 
-**If project has strict_tdd: true**, every implementation task gets subtasks:
-- RED: write a failing test first
-- GREEN: write minimum implementation to pass it
-- REFACTOR: clean up keeping tests green
+## Phase 4: {Phase Name} (e.g., Cleanup / Documentation)
+
+- [ ] 4.1 {Update docs/comments}
+- [ ] 4.2 {Remove temporary code}
+```
 
 ### Task Writing Rules
 
-| Criteria | Example | Anti-example |
-|----------|---------|--------------|
-| Specific | "Create `internal/auth/middleware.go` with JWT validation" | "Add auth" |
-| Actionable | "Add `ValidateToken()` method to `AuthService`" | "Handle tokens" |
-| Verifiable | "Test: `POST /login` returns 401 without token" | "Make sure it works" |
-| Small | One file or one logical unit of work | "Implement the feature" |
+Each task MUST be:
+
+| Criteria | Example ✅ | Anti-example ❌ |
+|----------|-----------|----------------|
+| **Specific** | "Create `internal/auth/middleware.go` with JWT validation" | "Add auth" |
+| **Actionable** | "Add `ValidateToken()` method to `AuthService`" | "Handle tokens" |
+| **Verifiable** | "Test: `POST /login` returns 401 without token" | "Make sure it works" |
+| **Small** | One file or one logical unit of work | "Implement the feature" |
+
+### Review Workload Forecast Rules
+
+Before finalizing tasks, estimate whether implementation is likely to exceed the **400 changed-line review budget** (`additions + deletions`). This is a planning guard, not an exact diff count.
+
+Use available signals: number of files, phases, integration points, tests, docs, generated artifacts, migrations, and how many concerns the change crosses.
+
+If the estimate is **High** or likely above 400 lines:
+
+1. Mark `Chained PRs recommended` as `Yes`.
+2. Split tasks into **work units** that can become chained or stacked PRs.
+3. Each suggested PR must have a clear start, clear finish, verification, and autonomous scope.
+4. **Ask the user which chain strategy to use** (this is a team decision):
+   - **Stacked PRs to main** — each PR merges to main in order. Fast iteration, fix on the go. Best for speed-first teams and independent slices.
+   - **Feature Branch Chain** — the feature/tracker branch accumulates the final integration; PR #1 targets the tracker branch, later PRs target the immediate previous PR branch so each child diff stays focused. Only the tracker merges to main. Best for rollback control and coordinated releases.
+   - **size:exception** — keep it as a single PR with maintainer approval. Best for generated code, migrations, or vendor diffs.
+5. Cache the user's choice and set `Decision needed before apply` from delivery strategy:
+   - `ask-on-risk`: `Yes` — orchestrator asks before apply.
+   - `auto-chain`: `No` — orchestrator proceeds with the first slice using the chosen chain strategy.
+   - `single-pr`: `Yes` — orchestrator must require `size:exception` before apply.
+   - `exception-ok`: `No` — maintainer has accepted `size:exception`.
+
+Do not bury this in prose. Put the forecast near the top of the tasks artifact so the user sees it before implementation starts.
+
+The forecast MUST include these exact plain-text lines so downstream guards can match them literally:
+
+```text
+Decision needed before apply: Yes|No
+Chained PRs recommended: Yes|No
+Chain strategy: stacked-to-main|feature-branch-chain|size-exception|pending
+400-line budget risk: Low|Medium|High
+```
+
+You may keep the table for readability, but the plain-text lines are the guard contract.
+
+For `feature-branch-chain`, suggested work units SHOULD name the intended base boundary: PR #1 base = feature/tracker branch; PR #2 base = PR #1 branch; PR #3 base = PR #2 branch. If a child PR would show previous PR changes, the base is wrong and must be retargeted/rebased before review.
+
+### Phase Organization Guidelines
+
+```
+Phase 1: Foundation / Infrastructure
+  └─ New types, interfaces, database changes, config
+  └─ Things other tasks depend on
+
+Phase 2: Core Implementation
+  └─ Main logic, business rules, core behavior
+  └─ The meat of the change
+
+Phase 3: Integration / Wiring
+  └─ Connect components, routes, UI wiring
+  └─ Make everything work together
+
+Phase 4: Testing
+  └─ Unit tests, integration tests, e2e tests
+  └─ Verify against spec scenarios
+
+Phase 5: Cleanup (if needed)
+  └─ Documentation, remove dead code, polish
+```
 
 ### Step 4: Persist Artifact
 
-This step is MANDATORY. Do not skip it.
+**This step is MANDATORY — do NOT skip it.**
 
-If mode is Hive:
-1. Call `mcp__hive__mem_save` with:
-   - title: "Tasks: {change-name}"
-   - topic_key: `sdd/{change-name}/tasks`
-   - type: architecture
-   - project: {project}
-   - content: full task list
-
-If mode is openspec: write `openspec/changes/{change-name}/tasks.md`.
-
-If mode is hybrid: both Hive and filesystem.
-
-If mode is none: return inline only.
+Follow **Section C** from `skills/_shared/sdd-phase-common.md`.
+- artifact: `tasks`
+- topic_key: `sdd/{change-name}/tasks`
+- type: `architecture`
 
 ### Step 5: Return Summary
+
+Return to the orchestrator:
 
 ```markdown
 ## Tasks Created
 
 **Change**: {change-name}
+**Location**: `openspec/changes/{change-name}/tasks.md` (openspec/hybrid) | Hive `sdd/{change-name}/tasks` (hive) | inline (none)
 
 ### Breakdown
 | Phase | Tasks | Focus |
 |-------|-------|-------|
 | Phase 1 | {N} | {Phase name} |
 | Phase 2 | {N} | {Phase name} |
+| Phase 3 | {N} | {Phase name} |
 | Total | {N} | |
 
 ### Implementation Order
 {Brief description of the recommended order and why}
 
+### Review Workload Forecast
+- Estimated changed lines: {estimate or range}
+- 400-line budget risk: {Low | Medium | High}
+- Chained PRs recommended: {Yes | No}
+- Delivery strategy: {ask-on-risk | auto-chain | single-pr | exception-ok}
+- Decision needed before apply: {Yes | No}
+- Suggested work-unit PR split: {brief list or "Not needed"}
+
 ### Next Step
-Ready for implementation (sdd-apply).
-```
-
-## Result Contract
-
-```
-status: complete | blocked | error
-executive_summary: [2-3 sentences]
-artifacts: { tasks: "sdd/{change-name}/tasks" }
-next_recommended: sdd-apply
-risks: [list or "none"]
-skill_resolution: injected | fallback-registry | fallback-path | none
+{Ready for implementation (sdd-apply) OR ask the user whether to use chained PRs before sdd-apply.}
 ```
 
 ## Rules
 
 - ALWAYS reference concrete file paths in tasks
-- Tasks MUST be ordered by dependency — Phase 1 tasks should not depend on Phase 2
+- Tasks MUST be ordered by dependency — Phase 1 tasks shouldn't depend on Phase 2
 - Testing tasks should reference specific scenarios from the specs
 - Each task should be completable in ONE session (if a task feels too big, split it)
+- Use hierarchical numbering: 1.1, 1.2, 2.1, 2.2, etc.
 - NEVER include vague tasks like "implement feature" or "add tests"
-- Each task: 1-2 lines max
+- Apply any `rules.tasks` from `openspec/config.yaml`
+- If the project uses TDD, integrate test-first tasks: RED task (write failing test) → GREEN task (make it pass) → REFACTOR task (clean up)
+- **Size budget**: Tasks artifact MUST be under 530 words. Each task: 1-2 lines max. Use checklist format, not paragraphs.
+- **Review workload guard**: ALWAYS include the Review Workload Forecast. If likely above 400 changed lines, recommend chained PRs and honor the received delivery strategy for whether a decision/exception is needed before apply.
+- Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.

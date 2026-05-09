@@ -128,6 +128,17 @@ func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *test
 				"Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.",
 			},
 		},
+		{
+			name: "sdd-tasks",
+			path: "embed/skills/sdd-tasks/SKILL.md",
+			required: []string{
+				"disable-model-invocation: true",
+				"user-invocable: false",
+				"## Review Workload Forecast",
+				"Chain strategy: <stacked-to-main|feature-branch-chain|size-exception|pending>",
+				"Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.",
+			},
+		},
 	}
 
 	for _, tc := range testCases {
