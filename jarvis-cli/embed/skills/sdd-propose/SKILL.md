@@ -1,59 +1,62 @@
 ---
 name: sdd-propose
-description: >
-  Create a change proposal with intent, scope, and approach.
-  Trigger: When the orchestrator launches you to create or update a proposal for a change.
+description: "Create an SDD change proposal with intent, scope, and approach. Trigger: orchestrator launches proposal work for a change."
+disable-model-invocation: true
+user-invocable: false
 license: MIT
 metadata:
   author: gentleman-programming
-  version: "3.0"
+  version: "2.0"
 ---
 
-## Step 0 — Resolve Persistence Mode
-
-1. **Default**: Hive (`mcp__hive__*` tools)
-2. **Override**: openspec or hybrid — if user explicitly requests it
-3. **Fallback**: openspec — if Hive tools are unavailable and user did not specify
-4. **None**: only if user explicitly requests it
-
-Carry this decision through all steps. Do not re-evaluate mid-skill.
+<!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/sdd-propose/SKILL.md (tag v1.26.5, commit 5f73974b39ae2b9b525ef465b3642030c5f2ce6c); adapted for Jarvis/Hive runtime semantics. -->
 
 ## Purpose
 
-You are a sub-agent responsible for creating PROPOSALS. You take the exploration analysis (or direct user input) and produce a structured proposal document.
+You are a sub-agent responsible for creating PROPOSALS. You take the exploration analysis (or direct user input) and produce a structured `proposal.md` document inside the change folder.
 
 ## What You Receive
 
 From the orchestrator:
 - Change name (e.g., "add-dark-mode")
 - Exploration analysis (from sdd-explore) OR direct user description
+- Artifact store mode (`hive | openspec | hybrid | none`)
+
+## Execution and Persistence Contract
+
+> Follow **Section B** (retrieval) and **Section C** (persistence) from `skills/_shared/sdd-phase-common.md`.
+
+- **hive**: Read `sdd/{change-name}/explore` (optional) and `sdd-init/{project}` (optional). Save artifact as `sdd/{change-name}/proposal`.
+- **openspec**: Read and follow `skills/_shared/openspec-convention.md`.
+- **hybrid**: Follow BOTH conventions — persist to Hive AND write to filesystem. Retrieve dependencies from Hive (primary) with filesystem fallback.
+- **none**: Return result only. Never create or modify project files.
+- Never force `openspec/` creation unless user requested file-based persistence or mode is `hybrid`.
 
 ## What to Do
 
-### Step 1: Retrieve Context
+### Step 1: Load Skills
+Follow **Section A** from `skills/_shared/sdd-phase-common.md`.
 
-If mode is Hive:
-1. Call `mcp__hive__mem_search` with query `sdd/{change-name}/explore` and project name.
-2. Call `mcp__hive__mem_get_observation(id)` for full content.
-3. Also load `sdd-init/{project}` for project context.
+### Step 2: Create Change Directory
 
-If mode is openspec: read `openspec/changes/{change-name}/` for exploration notes and `openspec/config.yaml` for project context.
+**IF mode is `openspec` or `hybrid`:** create the change folder structure:
 
-If mode is none: use the context passed in the prompt.
+```
+openspec/changes/{change-name}/
+└── proposal.md
+```
 
-### Step 2: Create Directory (openspec/hybrid only)
+**IF mode is `hive` or `none`:** Do NOT create any `openspec/` directories. Skip this step.
 
-If mode is openspec or hybrid: create `openspec/changes/{change-name}/proposal.md`.
+### Step 3: Read Existing Specs
 
-If mode is Hive or none: do NOT create any openspec directories.
+**IF mode is `openspec` or `hybrid`:** If `openspec/specs/` has relevant specs, read them to understand current behavior that this change might affect.
 
-### Step 3: Read Existing Specs (openspec/hybrid only)
+**IF mode is `hive`:** Existing context was already retrieved from Hive in the Persistence Contract. Skip filesystem reads.
 
-If mode is openspec or hybrid: read `openspec/specs/` for relevant existing specs to understand current behavior this change might affect.
+**IF mode is `none`:** Skip — no existing specs to read.
 
-### Step 4: Write Proposal
-
-Compose the proposal document with this structure:
+### Step 4: Write proposal.md
 
 ```markdown
 # Proposal: {Change Title}
@@ -68,10 +71,29 @@ Be specific about the user need or technical debt being addressed.}
 ### In Scope
 - {Concrete deliverable 1}
 - {Concrete deliverable 2}
+- {Concrete deliverable 3}
 
 ### Out of Scope
 - {What we're explicitly NOT doing}
 - {Future work that's related but deferred}
+
+## Capabilities
+
+> This section is the CONTRACT between proposal and specs phases.
+> The sdd-spec agent reads this to know exactly which spec files to create or update.
+> Research `openspec/specs/` before filling this in.
+
+### New Capabilities
+<!-- Capabilities being introduced. Each becomes a new `openspec/specs/<name>/spec.md`.
+     Use kebab-case names (e.g., user-auth, data-export, api-rate-limiting).
+     Leave empty if no new capabilities. -->
+- `<capability-name>`: <brief description of what this capability covers>
+
+### Modified Capabilities
+<!-- Existing capabilities whose REQUIREMENTS are changing (not just implementation).
+     Only list here if spec-level behavior changes. Each needs a delta spec.
+     Use existing spec names from openspec/specs/. Leave empty if none. -->
+- `<existing-capability-name>`: <what requirement is changing>
 
 ## Approach
 
@@ -94,38 +116,34 @@ Reference the recommended approach from exploration if available.}
 
 {How to revert if something goes wrong. Be specific.}
 
+## Dependencies
+
+- {External dependency or prerequisite, if any}
+
 ## Success Criteria
 
 - [ ] {How do we know this change succeeded?}
 - [ ] {Measurable outcome}
 ```
 
-Size budget: Proposal MUST be under 400 words. Trim the Approach section first if over budget. Never trim Intent, Scope, or Success Criteria.
-
 ### Step 5: Persist Artifact
 
-This step is MANDATORY. Do not skip it.
+**This step is MANDATORY — do NOT skip it.**
 
-If mode is Hive:
-1. Call `mcp__hive__mem_save` with:
-   - title: "Proposal: {change-name}"
-   - topic_key: `sdd/{change-name}/proposal`
-   - type: architecture
-   - project: {project}
-   - content: the full proposal text
-
-If mode is openspec: write `openspec/changes/{change-name}/proposal.md`.
-
-If mode is hybrid: both Hive and filesystem.
-
-If mode is none: return inline as markdown in response body — call no persistence tool.
+Follow **Section C** from `skills/_shared/sdd-phase-common.md`.
+- artifact: `proposal`
+- topic_key: `sdd/{change-name}/proposal`
+- type: `architecture`
 
 ### Step 6: Return Summary
+
+Return to the orchestrator:
 
 ```markdown
 ## Proposal Created
 
 **Change**: {change-name}
+**Location**: `openspec/changes/{change-name}/proposal.md` (openspec/hybrid) | Hive `sdd/{change-name}/proposal` (hive) | inline (none)
 
 ### Summary
 - **Intent**: {one-line summary}
@@ -137,21 +155,18 @@ If mode is none: return inline as markdown in response body — call no persiste
 Ready for specs (sdd-spec) or design (sdd-design).
 ```
 
-## Result Contract
-
-```
-status: complete | blocked | error
-executive_summary: [2-3 sentences]
-artifacts: { proposal: "sdd/{change-name}/proposal" }
-next_recommended: sdd-spec
-risks: [list or "none"]
-skill_resolution: injected | fallback-registry | fallback-path | none
-```
-
 ## Rules
 
+- In `openspec` mode, ALWAYS create the `proposal.md` file
+- If the change directory already exists with a proposal, READ it first and UPDATE it
+- Keep the proposal CONCISE - it's a thinking tool, not a novel
 - Every proposal MUST have a rollback plan
 - Every proposal MUST have success criteria
 - Use concrete file paths in "Affected Areas" when possible
-- Keep proposal CONCISE — it is a thinking tool, not a novel
-- If change directory already exists with a proposal, READ it first and UPDATE it
+- Apply any `rules.proposal` from `openspec/config.yaml`
+- **ALWAYS fill in the Capabilities section** — this is the contract with sdd-spec. Research `openspec/specs/` first to use correct existing capability names.
+- New Capabilities → each will become `openspec/specs/<name>/spec.md` (new full spec)
+- Modified Capabilities → each will become a delta spec in the change folder
+- If nothing changes at the spec level (pure refactor, config change), explicitly write "None" under both sub-sections — don't leave them as template placeholders
+- **Size budget**: Proposal artifact MUST be under 450 words. Use bullet points and tables over prose. Headers organize, not explain.
+- Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.

@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -64,6 +65,102 @@ func TestCatalogContract_SharedSDDPhaseCommonCarriesVerifiedSourceAndNoLegacyEng
 
 	if !strings.Contains(content, "`hive | openspec | hybrid | none`") {
 		t.Fatalf("expected %s to document Jarvis runtime store modes", sharedPhaseCommonPath)
+	}
+}
+
+func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name      string
+		path      string
+		required  []string
+		forbidden []string
+	}{
+		{
+			name: "sdd-init",
+			path: "embed/skills/sdd-init/SKILL.md",
+			required: []string{
+				"disable-model-invocation: true",
+				"user-invocable: false",
+				"Artifact store modes supported by Jarvis skills: `hive | openspec | hybrid | none`.",
+				"`../_shared/hive-convention.md`",
+				"capture_prompt: false",
+			},
+		},
+		{
+			name: "sdd-explore",
+			path: "embed/skills/sdd-explore/SKILL.md",
+			required: []string{
+				"disable-model-invocation: true",
+				"user-invocable: false",
+				"Execution and Persistence Contract",
+				"Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.",
+			},
+		},
+		{
+			name: "sdd-propose",
+			path: "embed/skills/sdd-propose/SKILL.md",
+			required: []string{
+				"disable-model-invocation: true",
+				"user-invocable: false",
+				"## Capabilities",
+				"Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.",
+			},
+		},
+		{
+			name: "sdd-spec",
+			path: "embed/skills/sdd-spec/SKILL.md",
+			required: []string{
+				"disable-model-invocation: true",
+				"user-invocable: false",
+				"MODIFIED requirements MUST be the FULL block",
+				"Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.",
+			},
+		},
+		{
+			name: "sdd-design",
+			path: "embed/skills/sdd-design/SKILL.md",
+			required: []string{
+				"disable-model-invocation: true",
+				"user-invocable: false",
+				"## Migration / Rollout",
+				"Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			content := readEmbeddedSkillAsset(t, tc.path)
+
+			sourceStamp := fmt.Sprintf("Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/%s/SKILL.md", tc.name)
+			if !strings.Contains(content, sourceStamp) {
+				t.Fatalf("expected %s to contain source stamp %q", tc.path, sourceStamp)
+			}
+
+			if !strings.Contains(content, "adapted for Jarvis/Hive") {
+				t.Fatalf("expected %s to record Jarvis/Hive adaptation", tc.path)
+			}
+
+			for _, snippet := range tc.required {
+				if !strings.Contains(content, snippet) {
+					t.Fatalf("expected %s to contain %q", tc.path, snippet)
+				}
+			}
+
+			for _, snippet := range append([]string{
+				"~/.claude/skills",
+				"~/.config/opencode/skills",
+				"mcp__engram__",
+				"engram-convention.md",
+				"Artifact store mode (`engram | openspec | hybrid | none`)",
+			}, tc.forbidden...) {
+				if strings.Contains(content, snippet) {
+					t.Fatalf("expected %s not to contain %q", tc.path, snippet)
+				}
+			}
+		})
 	}
 }
 

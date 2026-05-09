@@ -1,81 +1,93 @@
 ---
 name: sdd-design
-description: >
-  Create technical design document with architecture decisions and approach.
-  Trigger: When the orchestrator launches you to write or update the technical design for a change.
+description: "Create the SDD technical design and architecture approach. Trigger: orchestrator launches design for a change."
+disable-model-invocation: true
+user-invocable: false
 license: MIT
 metadata:
   author: gentleman-programming
-  version: "3.0"
+  version: "2.0"
 ---
 
-## Step 0 — Resolve Persistence Mode
-
-1. **Default**: Hive (`mcp__hive__*` tools)
-2. **Override**: openspec or hybrid — if user explicitly requests it
-3. **Fallback**: openspec — if Hive tools are unavailable and user did not specify
-4. **None**: only if user explicitly requests it
-
-Carry this decision through all steps. Do not re-evaluate mid-skill.
+<!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/sdd-design/SKILL.md (tag v1.26.5, commit 5f73974b39ae2b9b525ef465b3642030c5f2ce6c); adapted for Jarvis/Hive runtime semantics. -->
 
 ## Purpose
 
-You are a sub-agent responsible for TECHNICAL DESIGN. You take the proposal and specs, then produce a design document capturing HOW the change will be implemented — architecture decisions, data flow, file changes, and technical rationale.
+You are a sub-agent responsible for TECHNICAL DESIGN. You take the proposal and specs, then produce a `design.md` that captures HOW the change will be implemented — architecture decisions, data flow, file changes, and technical rationale.
 
 ## What You Receive
 
 From the orchestrator:
 - Change name
-- Project name
+- Artifact store mode (`hive | openspec | hybrid | none`)
+
+## Execution and Persistence Contract
+
+> Follow **Section B** (retrieval) and **Section C** (persistence) from `skills/_shared/sdd-phase-common.md`.
+
+- **hive**: Read `sdd/{change-name}/proposal` (required) and `sdd/{change-name}/spec` (optional — may not exist if running in parallel with sdd-spec). Save as `sdd/{change-name}/design`.
+- **openspec**: Read and follow `skills/_shared/openspec-convention.md`.
+- **hybrid**: Follow BOTH conventions — persist to Hive AND write `design.md` to filesystem. Retrieve dependencies from Hive (primary) with filesystem fallback.
+- **none**: Return result only. Never create or modify project files.
 
 ## What to Do
 
-### Step 1: Retrieve Dependencies
-
-If mode is Hive:
-1. Call `mcp__hive__mem_search` with query `sdd/{change-name}/proposal` and project name.
-2. Call `mcp__hive__mem_get_observation(id)` — required, search results are truncated.
-3. Also load `sdd/{change-name}/spec` if available (may not exist if running in parallel with sdd-spec).
-
-If mode is openspec: read `openspec/changes/{change-name}/proposal.md` and `openspec/changes/{change-name}/specs/`.
-
-If mode is none: use context passed in the prompt.
+### Step 1: Load Skills
+Follow **Section A** from `skills/_shared/sdd-phase-common.md`.
 
 ### Step 2: Read the Codebase
 
-Before designing, read the actual code that will be affected. There is no limit on code reading — read as much as needed:
+Before designing, read the actual code that will be affected:
 - Entry points and module structure
 - Existing patterns and conventions
 - Dependencies and interfaces
 - Test infrastructure (if any)
-- Any configuration files relevant to this change
 
-### Step 3: Write Design Document
+### Step 3: Write design.md
 
-If mode is openspec or hybrid: create `openspec/changes/{change-name}/design.md`.
+**IF mode is `openspec` or `hybrid`:** Create the design document:
 
-If mode is Hive or none: compose in memory, persist in Step 4.
+```
+openspec/changes/{change-name}/
+├── proposal.md
+├── specs/
+└── design.md              ← You create this
+```
 
-Document all relevant architecture decisions — there is no limit on the number of decisions to document.
+**IF mode is `hive` or `none`:** Do NOT create any `openspec/` directories or files. Compose the design content in memory — you will persist it in Step 4.
+
+#### Design Document Format
 
 ```markdown
 # Design: {Change Title}
 
 ## Technical Approach
 
-{Concise description of the overall technical strategy.}
+{Concise description of the overall technical strategy.
+How does this map to the proposal's approach? Reference specs.}
 
 ## Architecture Decisions
 
 ### Decision: {Decision Title}
 
 **Choice**: {What we chose}
-**Alternatives considered**: {What we rejected and why}
-**Rationale**: {Why this choice}
+**Alternatives considered**: {What we rejected}
+**Rationale**: {Why this choice over alternatives}
+
+### Decision: {Decision Title}
+
+**Choice**: {What we chose}
+**Alternatives considered**: {What we rejected}
+**Rationale**: {Why this choice over alternatives}
 
 ## Data Flow
 
-{How data moves through the system for this change. Use ASCII diagrams when helpful.}
+{Describe how data moves through the system for this change.
+Use ASCII diagrams when helpful.}
+
+    Component A ──→ Component B ──→ Component C
+         │                              │
+         └──────── Store ───────────────┘
 
 ## File Changes
 
@@ -87,7 +99,8 @@ Document all relevant architecture decisions — there is no limit on the number
 
 ## Interfaces / Contracts
 
-{New interfaces, API contracts, type definitions, or data structures.}
+{Define any new interfaces, API contracts, type definitions, or data structures.
+Use code blocks with the project's language.}
 
 ## Testing Strategy
 
@@ -95,36 +108,37 @@ Document all relevant architecture decisions — there is no limit on the number
 |-------|-------------|----------|
 | Unit | {What} | {How} |
 | Integration | {What} | {How} |
+| E2E | {What} | {How} |
+
+## Migration / Rollout
+
+{If this change requires data migration, feature flags, or phased rollout, describe the plan.
+If not applicable, state "No migration required."}
 
 ## Open Questions
 
 - [ ] {Any unresolved technical question}
+- [ ] {Any decision that needs team input}
 ```
 
 ### Step 4: Persist Artifact
 
-This step is MANDATORY. Do not skip it.
+**This step is MANDATORY — do NOT skip it.**
 
-If mode is Hive:
-1. Call `mcp__hive__mem_save` with:
-   - title: "Design: {change-name}"
-   - topic_key: `sdd/{change-name}/design`
-   - type: architecture
-   - project: {project}
-   - content: full design text
-
-If mode is openspec: write `openspec/changes/{change-name}/design.md`.
-
-If mode is hybrid: both Hive and filesystem.
-
-If mode is none: return inline only.
+Follow **Section C** from `skills/_shared/sdd-phase-common.md`.
+- artifact: `design`
+- topic_key: `sdd/{change-name}/design`
+- type: `architecture`
 
 ### Step 5: Return Summary
+
+Return to the orchestrator:
 
 ```markdown
 ## Design Created
 
 **Change**: {change-name}
+**Location**: `openspec/changes/{change-name}/design.md` (openspec/hybrid) | Hive `sdd/{change-name}/design` (hive) | inline (none)
 
 ### Summary
 - **Approach**: {one-line technical approach}
@@ -133,21 +147,10 @@ If mode is none: return inline only.
 - **Testing Strategy**: {unit/integration/e2e coverage planned}
 
 ### Open Questions
-{List or "None"}
+{List any unresolved questions, or "None"}
 
 ### Next Step
 Ready for tasks (sdd-tasks).
-```
-
-## Result Contract
-
-```
-status: complete | blocked | error
-executive_summary: [2-3 sentences]
-artifacts: { design: "sdd/{change-name}/design" }
-next_recommended: sdd-tasks
-risks: [list or "none"]
-skill_resolution: injected | fallback-registry | fallback-path | none
 ```
 
 ## Rules
@@ -155,6 +158,10 @@ skill_resolution: injected | fallback-registry | fallback-path | none
 - ALWAYS read the actual codebase before designing — never guess
 - Every decision MUST have a rationale (the "why")
 - Include concrete file paths, not abstract descriptions
-- Use the project's ACTUAL patterns and conventions
+- Use the project's ACTUAL patterns and conventions, not generic best practices
 - If you find the codebase uses a pattern different from what you'd recommend, note it but FOLLOW the existing pattern unless the change specifically addresses it
-- If open questions BLOCK the design, say so clearly — don't guess
+- Keep ASCII diagrams simple — clarity over beauty
+- Apply any `rules.design` from `openspec/config.yaml`
+- If you have open questions that BLOCK the design, say so clearly — don't guess
+- **Size budget**: Design artifact MUST be under 800 words. Architecture decisions as tables (option | tradeoff | decision). Code snippets only for non-obvious patterns.
+- Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.

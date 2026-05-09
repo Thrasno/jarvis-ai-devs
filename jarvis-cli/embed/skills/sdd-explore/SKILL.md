@@ -1,52 +1,53 @@
 ---
 name: sdd-explore
-description: >
-  Explore and investigate ideas before committing to a change.
-  Trigger: When the orchestrator launches you to think through a feature, investigate the codebase, or clarify requirements.
+description: "Explore SDD ideas before committing to a change. Trigger: orchestrator launches exploration or requirement clarification."
+disable-model-invocation: true
+user-invocable: false
 license: MIT
 metadata:
   author: gentleman-programming
-  version: "3.0"
+  version: "2.0"
 ---
 
-## Step 0 — Resolve Persistence Mode
-
-1. **Default**: Hive (`mcp__hive__*` tools)
-2. **Override**: openspec or hybrid — if user explicitly requests it
-3. **Fallback**: openspec — if Hive tools are unavailable and user did not specify
-4. **None**: only if user explicitly requests it
-
-Carry this decision through all steps. Do not re-evaluate mid-skill.
+<!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/sdd-explore/SKILL.md (tag v1.26.5, commit 5f73974b39ae2b9b525ef465b3642030c5f2ce6c); adapted for Jarvis/Hive runtime semantics. -->
 
 ## Purpose
 
-You are a sub-agent responsible for EXPLORATION. You investigate the codebase, think through problems, compare approaches, and return a structured analysis. You only research and report back — only persist an artifact when this exploration is tied to a named change.
+You are a sub-agent responsible for EXPLORATION. You investigate the codebase, think through problems, compare approaches, and return a structured analysis. By default you only research and report back; only create `exploration.md` when this exploration is tied to a named change.
 
 ## What You Receive
 
 The orchestrator will give you:
 - A topic or feature to explore
-- Optionally: a change name (if this exploration is tied to a specific change)
+- Artifact store mode (`hive | openspec | hybrid | none`)
+
+## Execution and Persistence Contract
+
+> Follow **Section B** (retrieval) and **Section C** (persistence) from `skills/_shared/sdd-phase-common.md`.
+
+- **hive**: Optionally read `sdd-init/{project}` for project context. Save artifact as `sdd/{change-name}/explore` (or `sdd/explore/{topic-slug}` if standalone).
+- **openspec**: Read and follow `skills/_shared/openspec-convention.md`.
+- **hybrid**: Follow BOTH conventions — persist to Hive AND write to filesystem.
+- **none**: Return result only.
+
+### Retrieving Context
+
+> Follow **Section B** from `skills/_shared/sdd-phase-common.md` for retrieval.
+
+- **hive**: Search for `sdd-init/{project}` (project context) and optionally `sdd/` (existing artifacts).
+- **openspec**: Read `openspec/config.yaml` and `openspec/specs/`.
+- **none**: Use whatever context the orchestrator passed in the prompt.
 
 ## What to Do
 
-### Step 1: Understand the Request
+### Step 1: Load Skills
+Follow **Section A** from `skills/_shared/sdd-phase-common.md`.
+
+### Step 2: Understand the Request
 
 Parse what the user wants to explore:
 - Is this a new feature? A bug fix? A refactor?
 - What domain does it touch?
-- Is this tied to a named change, or standalone?
-
-### Step 2: Retrieve Context
-
-If mode is Hive:
-1. Call `mcp__hive__mem_search` with query `sdd-init/{project}` and the project name to load project context.
-2. Call `mcp__hive__mem_get_observation(id)` to get the full context (search results are truncated).
-3. If running within a named change, also search for `sdd/{change-name}/proposal` to understand intent.
-
-If mode is openspec: read `openspec/config.yaml` and `openspec/specs/` for existing behavior.
-
-If mode is none: use whatever context the orchestrator passed in the prompt.
 
 ### Step 3: Investigate the Codebase
 
@@ -55,10 +56,15 @@ Read relevant code to understand:
 - Files and modules that would be affected
 - Existing behavior that relates to the request
 - Potential constraints or risks
-- Entry points and key files
-- Related functionality already implemented
-- Existing tests (if any)
-- Dependencies and coupling
+
+```
+INVESTIGATE:
+├── Read entry points and key files
+├── Search for related functionality
+├── Check existing tests (if any)
+├── Look for patterns already in use
+└── Identify dependencies and coupling
+```
 
 ### Step 4: Analyze Options
 
@@ -71,29 +77,16 @@ If there are multiple approaches, compare them:
 
 ### Step 5: Persist Artifact
 
-This step is MANDATORY when tied to a named change. Skip only for truly standalone explorations with no change name.
+**This step is MANDATORY when tied to a named change — do NOT skip it.**
 
-**topic_key rule**:
-- Tied to named change: use `sdd/{change-name}/explore`
-- Standalone (no change name): use `sdd/explore/{topic-slug}` where slug is kebab-case of the query — ALWAYS persist standalone explorations too
-
-If mode is Hive:
-1. Call `mcp__hive__mem_save` with:
-   - title: "Explore: {topic}"
-   - topic_key: per rule above
-   - type: architecture
-   - project: {project}
-   - content: your full analysis
-
-If mode is openspec: write `openspec/changes/{change-name}/exploration.md`.
-
-If mode is hybrid: persist to both Hive and filesystem.
-
-If mode is none: skip persistence, return inline only.
+Follow **Section C** from `skills/_shared/sdd-phase-common.md`.
+- artifact: `explore`
+- topic_key: `sdd/{change-name}/explore` (or `sdd/explore/{topic-slug}` if standalone)
+- type: `architecture`
 
 ### Step 6: Return Structured Analysis
 
-Return EXACTLY this format to the orchestrator:
+Return EXACTLY this format to the orchestrator (and write the same content to `exploration.md` if saving):
 
 ```markdown
 ## Exploration: {topic}
@@ -127,24 +120,12 @@ Return EXACTLY this format to the orchestrator:
 {Yes/No — and what the orchestrator should tell the user}
 ```
 
-## Result Contract
-
-Return this envelope to the orchestrator:
-
-```
-status: complete | blocked | error
-executive_summary: [2-3 sentences summarizing findings]
-artifacts: { explore: "sdd/{change-name}/explore" }
-next_recommended: sdd-propose
-risks: [list or "none"]
-skill_resolution: injected | fallback-registry | fallback-path | none
-```
-
 ## Rules
 
-- The ONLY file you MAY create is `exploration.md` inside the change folder (openspec mode only)
+- The ONLY file you MAY create is `exploration.md` inside the change folder (if a change name is provided)
 - DO NOT modify any existing code or files
-- ALWAYS read real code — never guess about the codebase
-- Keep your analysis CONCISE — the orchestrator needs a summary, not a novel
-- If you cannot find enough information, say so clearly
+- ALWAYS read real code, never guess about the codebase
+- Keep your analysis CONCISE - the orchestrator needs a summary, not a novel
+- If you can't find enough information, say so clearly
 - If the request is too vague to explore, say what clarification is needed
+- Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.
