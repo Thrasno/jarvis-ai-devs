@@ -151,6 +151,17 @@ func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *test
 			},
 			forbidden: []string{"Ready for sdd-qa", "next_recommended: sdd-qa"},
 		},
+		{
+			name: "sdd-verify",
+			path: "embed/skills/sdd-verify/SKILL.md",
+			required: []string{
+				"disable-model-invocation: true",
+				"user-invocable: false",
+				"Activation Contract",
+				"strict-tdd-verify.md",
+				"Return the Section D envelope from `../_shared/sdd-phase-common.md`.",
+			},
+		},
 	}
 
 	for _, tc := range testCases {

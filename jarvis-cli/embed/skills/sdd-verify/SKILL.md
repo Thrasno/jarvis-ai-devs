@@ -1,229 +1,61 @@
 ---
 name: sdd-verify
-description: >
-  Validate that implementation matches specs, design, and tasks.
-  Trigger: When the orchestrator launches you to verify a completed (or partially completed) change.
+description: "Trigger: SDD verification phase, verify change. Execute tests and prove implementation matches specs, design, and tasks."
+disable-model-invocation: true
+user-invocable: false
 license: MIT
 metadata:
   author: gentleman-programming
-  version: "4.0"
+  version: "3.0"
 ---
 
-## Step 0 — Resolve Persistence Mode
+<!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/sdd-verify/SKILL.md (tag v1.26.5, commit 5f73974b39ae2b9b525ef465b3642030c5f2ce6c); adapted for Jarvis/Hive runtime semantics. -->
 
-1. **Default**: Hive (`mcp__hive__*` tools)
-2. **Override**: openspec or hybrid — if user explicitly requests it
-3. **Fallback**: openspec — if Hive tools are unavailable and user did not specify
-4. **None**: only if user explicitly requests it
+## Activation Contract
 
-Carry this decision through all steps. Do not re-evaluate mid-skill.
+Run when the orchestrator launches verification for an SDD change. You are the quality gate: prove completion with source inspection plus real execution evidence.
 
-## Terminology (MANDATORY — use consistently throughout)
+## Hard Rules
 
-- **Structural check**: reading source code to find evidence of implementation. No execution required. This is static analysis.
-- **Behavioral check**: executing code, tests, or commands to verify runtime behavior. Requires a running process or test runner.
+- Read proposal, spec, design, and tasks before judging implementation.
+- Execute relevant tests; static analysis alone is never verification.
+- A spec scenario is compliant only when a covering test passed at runtime.
+- Compare specs first, design second, task completion third.
+- Do not fix issues; report them for the orchestrator/user.
+- Persist `verify-report` according to mode: Hive, openspec file, hybrid both, or inline-only for `none`.
+- If Strict TDD is active, load `strict-tdd-verify.md` from this skill directory; if inactive, never load it.
+- Return the Section D envelope from `../_shared/sdd-phase-common.md`.
 
-Never use "validation" and "verification" interchangeably for different concepts within the same document.
+## Decision Gates
 
-## Purpose
+| Condition | Action |
+|---|---|
+| Orchestrator says `STRICT TDD MODE IS ACTIVE` | Treat as authoritative. |
+| Cached/config `strict_tdd: true` and runner exists | Strict TDD verify; load module. |
+| Strict TDD false or no runner | Standard verify; skip TDD checks. |
+| Task incomplete | CRITICAL for core task, WARNING for cleanup task. |
+| Test command exits non-zero | CRITICAL. |
+| Spec scenario has no passing covering test | CRITICAL `UNTESTED` or `FAILING`. |
+| Design deviation exists | WARNING unless it breaks a spec. |
 
-You are a sub-agent responsible for VERIFICATION. You are the quality gate. Your job is to prove — with real execution evidence — that the implementation is complete, correct, and behaviorally compliant with the specs.
+## Execution Steps
 
-## What You Receive
+1. Load relevant skills via shared SDD Section A.
+2. Retrieve artifacts via shared Section B for the active persistence mode.
+3. Resolve testing/TDD mode from cached capabilities, config, or project files.
+4. Count completed and incomplete tasks.
+5. Map each spec requirement/scenario to implementation evidence and tests.
+6. Check design decisions against changed code.
+7. Run test, build/type-check, and coverage commands when available.
+8. Build the behavioral compliance matrix from actual test results.
+9. Persist and return the verification report.
 
-From the orchestrator:
-- Change name
-- Project name
-- Project context (including strict_tdd setting and test_runner)
+## Output Contract
 
-## What to Do
+Return `## Verification Report` with change, mode, completeness table, build/tests/coverage evidence, spec compliance matrix, correctness table, design coherence table, issues grouped as CRITICAL/WARNING/SUGGESTION, and final verdict `PASS`, `PASS WITH WARNINGS`, or `FAIL`.
 
-### Step 1: Retrieve Dependencies
+## References
 
-If mode is Hive:
-1. Call `mcp__hive__mem_search` with query `sdd/{change-name}/spec` and project name.
-2. Call `mcp__hive__mem_get_observation(id)` — required, search results are truncated. This is your primary reference.
-3. Also load `sdd/{change-name}/tasks` and `sdd/{change-name}/design`.
-
-If mode is openspec: read spec files, tasks.md, and design.md from `openspec/changes/{change-name}/`.
-
-### Step 2: Check Completeness
-
-Perform a structural check of task completion:
-- Read the task list
-- Count total tasks, completed tasks, and incomplete tasks
-- Flag CRITICAL if any core implementation tasks are incomplete
-- Flag WARNING if only cleanup tasks are incomplete
-
-### Step 3: Structural Check — Spec Compliance
-
-For each spec requirement, search the codebase for evidence of implementation. This is a structural check (no execution).
-
-How to perform a structural check:
-1. Identify key concepts implied by the requirement: function names, types, routes, data structures
-2. Search the codebase for those names and patterns
-3. Read matching files to confirm implementation matches spec intent
-4. Record the finding as one of:
-   - PRESENT: found at {file}:{line}
-   - MISSING: no evidence found
-   - UNCERTAIN: partial evidence (describe what was found and what is missing)
-
-For each scenario in the spec:
-- Is the GIVEN precondition handled in code? (structural check)
-- Is the WHEN action implemented? (structural check)
-- Is the THEN outcome produced? (structural check)
-
-Flag CRITICAL if a requirement is MISSING. Flag WARNING if a scenario is UNCERTAIN.
-
-### Step 4: Design Coherence Check (Structural)
-
-For each architecture decision in the design document, verify via structural check:
-- Was the chosen approach actually used?
-- Were rejected alternatives accidentally implemented?
-- Do actual file changes match the "File Changes" table?
-
-Flag WARNING if a deviation is found (may be a valid improvement).
-
-### Step 5: TDD Compliance (Strict TDD only)
-
-Skip this step entirely if project context has strict_tdd: false or no test runner.
-
-If strict_tdd is true:
-- Verify every implementation file has a corresponding test file
-- Verify tests were written before implementation (check git history if available)
-- Flag CRITICAL if implementation files exist without tests
-
-### Step 6: Behavioral Check — Test Execution
-
-This is a behavioral check. Execute the project's test runner.
-
-Detect test runner from project context (from sdd-init output). If not in context, detect from:
-- `go.mod` present → `go test ./...`
-- `package.json` scripts.test → `npm test`
-- `pytest` in dependencies → `pytest`
-- `Makefile` with test target → `make test`
-
-Execute the test command. Capture:
-- Total tests run
-- Passed count
-- Failed count and names
-- Skipped count
-- Exit code
-
-Flag CRITICAL if exit code is not 0 (any test failed).
-
-### Step 7: Build Check (Behavioral)
-
-This is a behavioral check. Execute the build or type-check command.
-
-Detect from project context or detect from codebase:
-- `go.mod` → `go build ./...`
-- `package.json` with build script → `npm run build`
-- `tsconfig.json` → `tsc --noEmit`
-
-Execute and capture exit code and errors.
-
-Flag CRITICAL if build fails.
-
-### Step 8: Spec Compliance Matrix (Behavioral)
-
-Cross-reference every spec scenario against actual test run results.
-
-For each requirement and scenario:
-1. Find tests that cover this scenario (by name, description, or file path)
-2. Look up that test's result from Step 6 output
-3. Assign compliance status:
-   - COMPLIANT: test exists AND passed
-   - FAILING: test exists BUT failed (CRITICAL)
-   - UNTESTED: no test found for this scenario (CRITICAL)
-   - PARTIAL: test exists, passes, but covers only part of the scenario (WARNING)
-
-A spec scenario is only COMPLIANT when there is a test that passed proving the behavior at runtime. Code existing in the codebase is NOT sufficient evidence.
-
-### Step 9: Persist Verification Report
-
-This step is MANDATORY. Do not skip it.
-
-If mode is Hive:
-1. Call `mcp__hive__mem_save` with:
-   - title: "Verify report: {change-name}"
-   - topic_key: `sdd/{change-name}/verify-report`
-   - type: architecture
-   - project: {project}
-   - content: full verification report
-
-If mode is openspec: write `openspec/changes/{change-name}/verify-report.md`.
-
-If mode is hybrid: both.
-
-If mode is none: return inline only.
-
-### Step 10: Return Summary
-
-```markdown
-## Verification Report
-
-**Change**: {change-name}
-**Mode**: {Strict TDD | Standard}
-
-### Completeness
-| Metric | Value |
-|--------|-------|
-| Tasks total | {N} |
-| Tasks complete | {N} |
-| Tasks incomplete | {N} |
-
-### Build & Tests
-**Build**: PASS / FAIL
-**Tests**: {N} passed / {N} failed / {N} skipped
-
-### Spec Compliance Matrix
-
-| Requirement | Scenario | Test | Result |
-|-------------|----------|------|--------|
-| {REQ name} | {Scenario} | `{test file}` | COMPLIANT |
-| {REQ name} | {Scenario} | (none found) | UNTESTED |
-
-### Correctness (Structural)
-| Requirement | Status | Evidence |
-|------------|--------|----------|
-| {Req name} | PRESENT | {file}:{line} |
-| {Req name} | MISSING | no evidence found |
-
-### Issues Found
-
-**CRITICAL** (must fix before archive):
-{List or "None"}
-
-**WARNING** (should fix):
-{List or "None"}
-
-**SUGGESTION** (nice to have):
-{List or "None"}
-
-### Verdict
-{PASS / PASS WITH WARNINGS / FAIL}
-```
-
-## Result Contract
-
-```
-status: complete | blocked | error
-executive_summary: [2-3 sentences]
-artifacts: { verify-report: "sdd/{change-name}/verify-report" }
-next_recommended: sdd-archive
-risks: [list or "none"]
-skill_resolution: injected | fallback-registry | fallback-path | none
-```
-
-## Rules
-
-- ALWAYS read the actual source code — do not trust summaries
-- ALWAYS execute tests — structural analysis alone is not verification
-- A spec scenario is only COMPLIANT when a test that covers it has PASSED
-- Compare against SPECS first (behavioral correctness), DESIGN second (structural correctness)
-- Be objective — report what IS, not what should be
-- CRITICAL issues = must fix before archive
-- WARNINGS = should fix but will not block
-- SUGGESTIONS = improvements, not blockers
-- DO NOT fix any issues — only report them
+- [references/report-format.md](references/report-format.md) — full report template, compliance statuses, and command evidence fields.
+- [strict-tdd-verify.md](strict-tdd-verify.md) — load only when Strict TDD is active.
+- `../_shared/sdd-phase-common.md` — skill loading, retrieval, persistence, and return envelope.
