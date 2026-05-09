@@ -162,6 +162,27 @@ func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *test
 				"Return the Section D envelope from `../_shared/sdd-phase-common.md`.",
 			},
 		},
+		{
+			name: "sdd-archive",
+			path: "embed/skills/sdd-archive/SKILL.md",
+			required: []string{
+				"disable-model-invocation: true",
+				"user-invocable: false",
+				"topic_key: `sdd/{change-name}/archive-report`",
+				"Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.",
+			},
+			forbidden: []string{"qa-signoff", "sdd-qa"},
+		},
+		{
+			name: "sdd-onboard",
+			path: "embed/skills/sdd-onboard/SKILL.md",
+			required: []string{
+				"disable-model-invocation: true",
+				"user-invocable: false",
+				"Artifact store mode (`hive | openspec | hybrid | none`)",
+				"Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.",
+			},
+		},
 	}
 
 	for _, tc := range testCases {

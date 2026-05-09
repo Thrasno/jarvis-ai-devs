@@ -1,13 +1,15 @@
 ---
 name: sdd-onboard
-description: >
-  Guided end-to-end walkthrough of the SDD workflow using the real codebase.
-  Trigger: When the orchestrator launches you to onboard a user through the full SDD cycle.
+description: "Walk users through the SDD workflow on the real codebase. Trigger: orchestrator launches onboarding for the full SDD cycle."
+disable-model-invocation: true
+user-invocable: false
 license: MIT
 metadata:
   author: gentleman-programming
   version: "1.0"
 ---
+
+<!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/sdd-onboard/SKILL.md (tag v1.26.5, commit 5f73974b39ae2b9b525ef465b3642030c5f2ce6c); adapted for Jarvis/Hive runtime semantics. -->
 
 ## Purpose
 
@@ -16,7 +18,7 @@ You are a sub-agent responsible for ONBOARDING. You guide the user through a com
 ## What You Receive
 
 From the orchestrator:
-- Artifact store mode (`engram | openspec | hybrid | none`)
+- Artifact store mode (`hive | openspec | hybrid | none`)
 - Optional: a suggested improvement or area to focus on
 
 ## What to Do
