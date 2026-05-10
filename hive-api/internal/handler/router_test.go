@@ -4,9 +4,9 @@
 // escribir la response) y no devuelve nada — escribe la respuesta directamente.
 //
 // La responsabilidad del handler es EXACTAMENTE:
-//   1. Leer y validar la request (path params, query params, body JSON)
-//   2. Llamar al servicio correspondiente
-//   3. Traducir el resultado (o error) a HTTP (código de estado + JSON body)
+//  1. Leer y validar la request (path params, query params, body JSON)
+//  2. Llamar al servicio correspondiente
+//  3. Traducir el resultado (o error) a HTTP (código de estado + JSON body)
 //
 // El handler NO tiene lógica de negocio — eso vive en los services.
 package handler
@@ -59,6 +59,7 @@ func TestRouter_RoutesRegistered(t *testing.T) {
 		"GET:/memories/search",
 		"GET:/memories/:id",
 		"POST:/sync",
+		"GET:/admin/audit-logs",
 		"GET:/admin/users",
 		"POST:/admin/users/:username/level",
 		"POST:/admin/users/:username/deactivate",
@@ -67,6 +68,23 @@ func TestRouter_RoutesRegistered(t *testing.T) {
 	for _, route := range expectedRoutes {
 		assert.True(t, routeMap[route], "ruta no registrada: %s", route)
 	}
+}
+
+func TestRouter_AdminAuditLogsRequiresAuth(t *testing.T) {
+	r := NewRouter(RouterDeps{
+		AuthSvc:   &mockAuthSvc{},
+		MemorySvc: &mockMemorySvc{},
+		SyncSvc:   &mockSyncSvc{},
+		AdminSvc:  &mockAdminSvc{},
+	})
+
+	w := httptest.NewRecorder()
+	req, err := http.NewRequest(http.MethodGet, "/admin/audit-logs", nil)
+	require.NoError(t, err)
+
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
 // TestRouter_SearchBeforeByID verifica que /memories/search esté registrada

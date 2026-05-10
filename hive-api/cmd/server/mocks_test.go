@@ -89,14 +89,14 @@ func (m *mockAdmin) ListUsers(ctx context.Context) ([]*model.User, error) {
 	}
 	return args.Get(0).([]*model.User), args.Error(1)
 }
-func (m *mockAdmin) SetLevel(ctx context.Context, username string, newLevel model.UserLevel) error {
-	return m.Called(ctx, username, newLevel).Error(0)
+func (m *mockAdmin) SetLevel(ctx context.Context, actor model.AdminActor, username string, newLevel model.UserLevel) error {
+	return m.Called(ctx, actor, username, newLevel).Error(0)
 }
-func (m *mockAdmin) GrantAdmin(ctx context.Context, username string) error {
-	return m.Called(ctx, username).Error(0)
+func (m *mockAdmin) GrantAdmin(ctx context.Context, actor model.AdminActor, username string) error {
+	return m.Called(ctx, actor, username).Error(0)
 }
-func (m *mockAdmin) Deactivate(ctx context.Context, username string) error {
-	return m.Called(ctx, username).Error(0)
+func (m *mockAdmin) Deactivate(ctx context.Context, actor model.AdminActor, username string) error {
+	return m.Called(ctx, actor, username).Error(0)
 }
 func (m *mockAdmin) GetStats(ctx context.Context) (*model.AdminStatsResponse, error) {
 	args := m.Called(ctx)
@@ -104,4 +104,8 @@ func (m *mockAdmin) GetStats(ctx context.Context) (*model.AdminStatsResponse, er
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*model.AdminStatsResponse), args.Error(1)
+}
+func (m *mockAdmin) ListAuditLogs(ctx context.Context, filter model.AuditFilter) (model.AuditListResponse, error) {
+	args := m.Called(ctx, filter)
+	return args.Get(0).(model.AuditListResponse), args.Error(1)
 }

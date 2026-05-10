@@ -12,6 +12,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Thrasno/jarvis-dev/hive-api/internal/config"
+	"github.com/Thrasno/jarvis-dev/hive-api/internal/handler"
+	"github.com/Thrasno/jarvis-dev/hive-api/internal/repository"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,4 +48,33 @@ func TestBuildApp_HealthEndpoint(t *testing.T) {
 
 	app.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestWireServices_InjectsAuditRepositoryIntoAdminAndSyncServices(t *testing.T) {
+	auditRepo := &repository.MockAuditRepository{}
+	factories := defaultServiceFactories()
+	factories.newUserRepo = func(*pgxpool.Pool) repository.UserRepository { return nil }
+	factories.newMemoryRepo = func(*pgxpool.Pool) repository.MemoryRepository { return nil }
+	factories.newPromptRepo = func(*pgxpool.Pool) repository.PromptRepository { return nil }
+	factories.newSessionRepo = func(*pgxpool.Pool) repository.SessionRepository { return nil }
+	factories.newAuditRepo = func(*pgxpool.Pool) repository.AuditRepository { return auditRepo }
+	factories.newTxManager = func(*pgxpool.Pool) repository.TxManager { return nil }
+	factories.newAuthService = func(repository.UserRepository, string) handler.AuthService { return &mockAuth{} }
+	factories.newMemoryService = func(repository.MemoryRepository, repository.SessionRepository) handler.MemoryService {
+		return &mockMemory{}
+	}
+	factories.newSyncService = func(_ repository.MemoryRepository, _ repository.PromptRepository, _ repository.SessionRepository, got repository.AuditRepository) handler.SyncService {
+		require.Same(t, auditRepo, got)
+		return &mockSync{}
+	}
+	factories.newAdminService = func(_ repository.UserRepository, _ repository.MemoryRepository, got repository.AuditRepository, _ repository.TxManager) handler.AdminService {
+		require.Same(t, auditRepo, got)
+		return &mockAdmin{}
+	}
+
+	deps := wireServicesWithFactories(nil, &config.Config{AllowedOrigins: []string{"https://app.example"}}, factories)
+
+	require.NotNil(t, deps.syncSvc)
+	require.NotNil(t, deps.adminSvc)
+	assert.Equal(t, []string{"https://app.example"}, deps.allowedOrigins)
 }

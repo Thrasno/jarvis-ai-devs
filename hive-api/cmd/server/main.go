@@ -39,6 +39,42 @@ type buildAppDeps struct {
 	allowedOrigins []string
 }
 
+type serviceFactories struct {
+	newUserRepo      func(*pgxpool.Pool) repository.UserRepository
+	newMemoryRepo    func(*pgxpool.Pool) repository.MemoryRepository
+	newPromptRepo    func(*pgxpool.Pool) repository.PromptRepository
+	newSessionRepo   func(*pgxpool.Pool) repository.SessionRepository
+	newAuditRepo     func(*pgxpool.Pool) repository.AuditRepository
+	newTxManager     func(*pgxpool.Pool) repository.TxManager
+	newAuthService   func(repository.UserRepository, string) handler.AuthService
+	newMemoryService func(repository.MemoryRepository, repository.SessionRepository) handler.MemoryService
+	newSyncService   func(repository.MemoryRepository, repository.PromptRepository, repository.SessionRepository, repository.AuditRepository) handler.SyncService
+	newAdminService  func(repository.UserRepository, repository.MemoryRepository, repository.AuditRepository, repository.TxManager) handler.AdminService
+}
+
+func defaultServiceFactories() serviceFactories {
+	return serviceFactories{
+		newUserRepo:    repository.NewPostgresUserRepository,
+		newMemoryRepo:  repository.NewPostgresMemoryRepository,
+		newPromptRepo:  repository.NewPostgresPromptRepository,
+		newSessionRepo: repository.NewPostgresSessionRepository,
+		newAuditRepo:   repository.NewPostgresAuditRepository,
+		newTxManager:   repository.NewPostgresTxManager,
+		newAuthService: func(userRepo repository.UserRepository, jwtSecret string) handler.AuthService {
+			return service.NewAuthService(userRepo, jwtSecret)
+		},
+		newMemoryService: func(memRepo repository.MemoryRepository, sessionRepo repository.SessionRepository) handler.MemoryService {
+			return service.NewMemoryService(memRepo, sessionRepo)
+		},
+		newSyncService: func(memRepo repository.MemoryRepository, promptRepo repository.PromptRepository, sessionRepo repository.SessionRepository, auditRepo repository.AuditRepository) handler.SyncService {
+			return service.NewSyncService(memRepo, promptRepo, sessionRepo, auditRepo)
+		},
+		newAdminService: func(userRepo repository.UserRepository, memRepo repository.MemoryRepository, auditRepo repository.AuditRepository, tx repository.TxManager) handler.AdminService {
+			return service.NewAdminService(userRepo, memRepo, auditRepo, tx)
+		},
+	}
+}
+
 // buildApp construye el router Gin con todas las dependencias inyectadas.
 // Es la función que los tests usan directamente — no necesita BD real.
 func buildApp(deps buildAppDeps) *gin.Engine {
@@ -56,18 +92,24 @@ func buildApp(deps buildAppDeps) *gin.Engine {
 // Este es el único lugar donde creamos las implementaciones concretas.
 // Todo el resto del código solo conoce interfaces.
 func wireServices(pool *pgxpool.Pool, cfg *config.Config) buildAppDeps {
+	return wireServicesWithFactories(pool, cfg, defaultServiceFactories())
+}
+
+func wireServicesWithFactories(pool *pgxpool.Pool, cfg *config.Config, factories serviceFactories) buildAppDeps {
 	// Repositorios — implementaciones concretas de PostgreSQL
 	// (interfaces definidas en repository/)
-	userRepo := repository.NewPostgresUserRepository(pool)
-	memRepo := repository.NewPostgresMemoryRepository(pool)
-	promptRepo := repository.NewPostgresPromptRepository(pool)
-	sessionRepo := repository.NewPostgresSessionRepository(pool)
+	userRepo := factories.newUserRepo(pool)
+	memRepo := factories.newMemoryRepo(pool)
+	promptRepo := factories.newPromptRepo(pool)
+	sessionRepo := factories.newSessionRepo(pool)
+	auditRepo := factories.newAuditRepo(pool)
+	txManager := factories.newTxManager(pool)
 
 	// Servicios — lógica de negocio, inyectamos los repositorios
-	authSvc := service.NewAuthService(userRepo, cfg.JWTSecret)
-	memorySvc := service.NewMemoryService(memRepo, sessionRepo)
-	syncSvc := service.NewSyncService(memRepo, promptRepo, sessionRepo)
-	adminSvc := service.NewAdminService(userRepo, memRepo)
+	authSvc := factories.newAuthService(userRepo, cfg.JWTSecret)
+	memorySvc := factories.newMemoryService(memRepo, sessionRepo)
+	syncSvc := factories.newSyncService(memRepo, promptRepo, sessionRepo, auditRepo)
+	adminSvc := factories.newAdminService(userRepo, memRepo, auditRepo, txManager)
 
 	return buildAppDeps{
 		authSvc:        authSvc,
@@ -108,6 +150,10 @@ func main() {
 
 	if err := repository.RunMigrations(pool, migrations.SessionsSQL); err != nil {
 		log.Fatalf("migración 003 falló: %v", err)
+	}
+
+	if err := repository.RunMigrations(pool, migrations.AuditLogsSQL); err != nil {
+		log.Fatalf("migración 004 falló: %v", err)
 	}
 
 	log.Println("✓ PostgreSQL conectado y migraciones ejecutadas")

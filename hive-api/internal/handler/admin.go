@@ -3,11 +3,14 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/Thrasno/jarvis-dev/hive-api/internal/model"
 	"github.com/Thrasno/jarvis-dev/hive-api/internal/repository"
 	"github.com/Thrasno/jarvis-dev/hive-api/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // AdminHandler maneja los endpoints de administración.
@@ -37,6 +40,24 @@ func (h *AdminHandler) ListUsers(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"users": users})
 }
 
+func (h *AdminHandler) ListAuditLogs(c *gin.Context) {
+	filter, err := auditFilterFromQuery(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	resp, err := h.svc.ListAuditLogs(c.Request.Context(), filter)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "error al obtener auditoría"})
+		return
+	}
+	if resp.AuditLogs == nil {
+		resp.AuditLogs = []*model.AuditEntry{}
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
 // SetLevel maneja POST /admin/users/:username/level.
 // Cambia el nivel de acceso de un usuario.
 //
@@ -64,7 +85,7 @@ func (h *AdminHandler) SetLevel(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.SetLevel(c.Request.Context(), username, req.Level); err != nil {
+	if err := h.svc.SetLevel(c.Request.Context(), adminActorFromCtx(c), username, req.Level); err != nil {
 		switch {
 		case errors.Is(err, repository.ErrNotFound):
 			c.JSON(http.StatusNotFound, model.ErrorResponse{Error: "usuario no encontrado"})
@@ -96,7 +117,7 @@ func (h *AdminHandler) GrantAdmin(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.GrantAdmin(c.Request.Context(), username); err != nil {
+	if err := h.svc.GrantAdmin(c.Request.Context(), adminActorFromCtx(c), username); err != nil {
 		switch {
 		case errors.Is(err, repository.ErrNotFound):
 			c.JSON(http.StatusNotFound, model.ErrorResponse{Error: "usuario no encontrado"})
@@ -116,7 +137,7 @@ func (h *AdminHandler) GrantAdmin(c *gin.Context) {
 func (h *AdminHandler) Deactivate(c *gin.Context) {
 	username := c.Param("username")
 
-	if err := h.svc.Deactivate(c.Request.Context(), username); err != nil {
+	if err := h.svc.Deactivate(c.Request.Context(), adminActorFromCtx(c), username); err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			c.JSON(http.StatusNotFound, model.ErrorResponse{Error: "usuario no encontrado"})
 			return
@@ -141,3 +162,81 @@ func (h *AdminHandler) GetStats(c *gin.Context) {
 }
 
 // claimsFromCtx — definido en memory.go (mismo paquete handler, sin duplicar)
+
+func adminActorFromCtx(c *gin.Context) model.AdminActor {
+	claims := claimsFromCtx(c)
+	if claims == nil {
+		return model.AdminActor{}
+	}
+	return model.AdminActor{UserID: claims.Subject, Username: claims.Username}
+}
+
+func auditFilterFromQuery(c *gin.Context) (model.AuditFilter, error) {
+	filter := model.AuditFilter{}
+	if value := c.Query("project"); value != "" {
+		filter.Project = &value
+	}
+	if value := c.Query("actor_user_id"); value != "" {
+		if _, err := uuid.Parse(value); err != nil {
+			return model.AuditFilter{}, errors.New("actor_user_id debe ser un UUID válido")
+		}
+		filter.ActorUserID = &value
+	}
+	if value := c.Query("action"); value != "" {
+		action := model.AuditAction(value)
+		filter.Action = &action
+	}
+	if value := c.Query("outcome"); value != "" {
+		outcome := model.AuditOutcome(value)
+		filter.Outcome = &outcome
+	}
+	since, err := parseAuditTimeQuery(c, "since")
+	if err != nil {
+		return model.AuditFilter{}, err
+	}
+	filter.Since = since
+	until, err := parseAuditTimeQuery(c, "until")
+	if err != nil {
+		return model.AuditFilter{}, err
+	}
+	filter.Until = until
+	if since != nil && until != nil && since.After(*until) {
+		return model.AuditFilter{}, errors.New("since debe ser anterior o igual a until")
+	}
+	limit, err := parseAuditIntQuery(c, "limit")
+	if err != nil {
+		return model.AuditFilter{}, err
+	}
+	filter.Limit = limit
+	offset, err := parseAuditIntQuery(c, "offset")
+	if err != nil {
+		return model.AuditFilter{}, err
+	}
+	filter.Offset = offset
+	return filter.Normalize(), nil
+}
+
+func parseAuditTimeQuery(c *gin.Context, key string) (*time.Time, error) {
+	value := c.Query(key)
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return nil, errors.New(key + " debe tener formato RFC3339")
+	}
+	parsed = parsed.UTC()
+	return &parsed, nil
+}
+
+func parseAuditIntQuery(c *gin.Context, key string) (int, error) {
+	value := c.Query(key)
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, errors.New(key + " debe ser un entero")
+	}
+	return parsed, nil
+}

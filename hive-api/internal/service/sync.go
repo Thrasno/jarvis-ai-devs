@@ -27,10 +27,10 @@ var (
 // y el servidor central.
 //
 // Protocolo de sync:
-//   1. El daemon envía sus memorias locales (Push).
-//      El servidor decide cuáles acepta según el algoritmo de 4 ramas.
-//   2. El servidor envía las memorias que el daemon no tiene (Pull).
-//      El daemon las guarda en su SQLite local.
+//  1. El daemon envía sus memorias locales (Push).
+//     El servidor decide cuáles acepta según el algoritmo de 4 ramas.
+//  2. El servidor envía las memorias que el daemon no tiene (Pull).
+//     El daemon las guarda en su SQLite local.
 //
 // Push y Pull son independientes: el daemon puede hacer solo Push, solo Pull,
 // o ambos en secuencia. El orden recomendado es Push primero, luego Pull,
@@ -52,13 +52,14 @@ type syncService struct {
 	repo        repository.MemoryRepository
 	promptRepo  repository.PromptRepository
 	sessionRepo repository.SessionRepository
+	auditRepo   repository.AuditRepository
 }
 
 // NewSyncService crea el SyncService con los repositorios inyectados.
 // memRepo gestiona memorias; promptRepo gestiona user-prompts;
 // sessionRepo gestiona sesiones (requerido para ordering FK en push).
-func NewSyncService(memRepo repository.MemoryRepository, promptRepo repository.PromptRepository, sessionRepo repository.SessionRepository) SyncService {
-	return &syncService{repo: memRepo, promptRepo: promptRepo, sessionRepo: sessionRepo}
+func NewSyncService(memRepo repository.MemoryRepository, promptRepo repository.PromptRepository, sessionRepo repository.SessionRepository, auditRepo repository.AuditRepository) SyncService {
+	return &syncService{repo: memRepo, promptRepo: promptRepo, sessionRepo: sessionRepo, auditRepo: auditRepo}
 }
 
 // Push procesa el batch de memorias del cliente.
@@ -67,10 +68,11 @@ func NewSyncService(memRepo repository.MemoryRepository, promptRepo repository.P
 // Sessions se procesan PRIMERO para satisfacer la FK memories.session_id → sessions(id).
 //
 // Para memories:
-//   Upsert devuelve (mem, true,  nil) → fue INSERT       → pushed++
-//   Upsert devuelve (mem, false, nil) → fue UPDATE       → pushed++
-//   Upsert devuelve (nil, false, nil) → fue SKIP         → conflicts++
-//   Upsert devuelve (_,   _,    err)  → error de BD      → propagamos error
+//
+//	Upsert devuelve (mem, true,  nil) → fue INSERT       → pushed++
+//	Upsert devuelve (mem, false, nil) → fue UPDATE       → pushed++
+//	Upsert devuelve (nil, false, nil) → fue SKIP         → conflicts++
+//	Upsert devuelve (_,   _,    err)  → error de BD      → propagamos error
 //
 // El campo CreatedBy se asigna aquí, en el service — el repositorio no sabe
 // quién está haciendo el sync. Ese dato viene del JWT (validado por el middleware).
@@ -175,11 +177,25 @@ func (s *syncService) Push(ctx context.Context, req model.SyncRequest, userID st
 		}
 	}
 
-	return &model.SyncResponse{
+	resp := &model.SyncResponse{
 		Pushed:        pushed,
 		Conflicts:     conflicts,
 		PromptsPushed: promptsPushed,
-	}, nil
+	}
+	s.emitSyncAudit(ctx, req.Project, userID, pushed, conflicts, promptsPushed)
+	return resp, nil
+}
+
+func (s *syncService) emitSyncAudit(ctx context.Context, project, userID string, pushed, conflicts, promptsPushed int) {
+	if s.auditRepo == nil {
+		return
+	}
+
+	for _, entry := range buildSyncAuditEntries(project, userID, pushed, conflicts, promptsPushed) {
+		if err := s.auditRepo.Insert(ctx, entry); err != nil {
+			log.Printf("warn: failed to insert sync audit event action=%q project=%q: %v", entry.Action, project, err)
+		}
+	}
 }
 
 // PullAll devuelve sesiones y memorias actualizadas después de 'since'.

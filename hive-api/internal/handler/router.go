@@ -42,10 +42,11 @@ type SyncService interface {
 // AdminService define las operaciones de administración.
 type AdminService interface {
 	ListUsers(ctx context.Context) ([]*model.User, error)
-	SetLevel(ctx context.Context, username string, newLevel model.UserLevel) error
-	GrantAdmin(ctx context.Context, username string) error
-	Deactivate(ctx context.Context, username string) error
+	SetLevel(ctx context.Context, actor model.AdminActor, username string, newLevel model.UserLevel) error
+	GrantAdmin(ctx context.Context, actor model.AdminActor, username string) error
+	Deactivate(ctx context.Context, actor model.AdminActor, username string) error
 	GetStats(ctx context.Context) (*model.AdminStatsResponse, error)
+	ListAuditLogs(ctx context.Context, filter model.AuditFilter) (model.AuditListResponse, error)
 }
 
 // RouterDeps agrupa las dependencias del router.
@@ -77,6 +78,7 @@ type RouterDeps struct {
 //	POST /admin/users/:username/grant-admin           — RequireAuth + RequireAdmin
 //	POST /admin/users/:username/deactivate            — RequireAuth + RequireAdmin
 //	GET  /admin/stats                                 — RequireAuth + RequireAdmin
+//	GET  /admin/audit-logs                            — RequireAuth + RequireAdmin
 func NewRouter(deps RouterDeps) *gin.Engine {
 	r := gin.New()
 
@@ -114,6 +116,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 	// Rutas de admin — RequireAuth + RequireAdmin
 	admin := r.Group("/admin", middleware.RequireAuth(deps.AuthSvc), middleware.RequireAdmin())
 	{
+		admin.GET("/audit-logs", adminH.ListAuditLogs)
 		admin.GET("/users", adminH.ListUsers)
 		admin.GET("/stats", adminH.GetStats)
 		admin.POST("/users/:username/level", adminH.SetLevel)

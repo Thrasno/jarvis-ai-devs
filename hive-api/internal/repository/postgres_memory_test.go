@@ -22,8 +22,6 @@ func TestPostgresMemoryRepository_Create(t *testing.T) {
 	ctx := context.Background()
 	repo := NewPostgresMemoryRepository(pool)
 
-	sessID := ensureManualSavePtr(t, pool, "test-project")
-
 	now := time.Now()
 	validSyncID := "550e8400-e29b-41d4-a716-446655440001"
 
@@ -49,7 +47,6 @@ func TestPostgresMemoryRepository_Create(t *testing.T) {
 				UpdatedAt:     now,
 				Confidence:    0.8,
 				ImpactScore:   0.9,
-				SessionID:     sessID,
 			},
 			wantErr: false,
 		},
@@ -69,7 +66,6 @@ func TestPostgresMemoryRepository_Create(t *testing.T) {
 				UpdatedAt:     now,
 				Confidence:    1.0,
 				ImpactScore:   0.5,
-				SessionID:     sessID,
 			},
 			wantErr: false,
 		},
@@ -80,6 +76,9 @@ func TestPostgresMemoryRepository_Create(t *testing.T) {
 			// Limpiar tablas antes de cada caso
 			err := truncateTables(ctx, pool)
 			require.NoError(t, err)
+
+			// truncateTables also clears sessions; recreate the FK target per subtest.
+			tt.memory.SessionID = ensureManualSavePtr(t, pool, tt.memory.Project)
 
 			created, err := repo.Create(ctx, tt.memory)
 
@@ -573,6 +572,10 @@ func TestPostgresMemoryRepository_Upsert(t *testing.T) {
 			// Limpiar tablas antes de cada caso
 			err := truncateTables(ctx, pool)
 			require.NoError(t, err)
+
+			// truncateTables also clears sessions; recreate the FK target per subtest.
+			upsertSess = ensureManualSavePtr(t, pool, tt.incoming.Project)
+			tt.incoming.SessionID = upsertSess
 
 			// Setup: crear memoria previa si existe
 			var existing *model.Memory

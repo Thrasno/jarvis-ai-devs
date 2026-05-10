@@ -116,18 +116,18 @@ func (m *mockAdminSvc) ListUsers(ctx context.Context) ([]*model.User, error) {
 	return args.Get(0).([]*model.User), args.Error(1)
 }
 
-func (m *mockAdminSvc) SetLevel(ctx context.Context, username string, newLevel model.UserLevel) error {
-	args := m.Called(ctx, username, newLevel)
+func (m *mockAdminSvc) SetLevel(ctx context.Context, actor model.AdminActor, username string, newLevel model.UserLevel) error {
+	args := m.Called(ctx, actor, username, newLevel)
 	return args.Error(0)
 }
 
-func (m *mockAdminSvc) GrantAdmin(ctx context.Context, username string) error {
-	args := m.Called(ctx, username)
+func (m *mockAdminSvc) GrantAdmin(ctx context.Context, actor model.AdminActor, username string) error {
+	args := m.Called(ctx, actor, username)
 	return args.Error(0)
 }
 
-func (m *mockAdminSvc) Deactivate(ctx context.Context, username string) error {
-	args := m.Called(ctx, username)
+func (m *mockAdminSvc) Deactivate(ctx context.Context, actor model.AdminActor, username string) error {
+	args := m.Called(ctx, actor, username)
 	return args.Error(0)
 }
 
@@ -137,6 +137,11 @@ func (m *mockAdminSvc) GetStats(ctx context.Context) (*model.AdminStatsResponse,
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*model.AdminStatsResponse), args.Error(1)
+}
+
+func (m *mockAdminSvc) ListAuditLogs(ctx context.Context, filter model.AuditFilter) (model.AuditListResponse, error) {
+	args := m.Called(ctx, filter)
+	return args.Get(0).(model.AuditListResponse), args.Error(1)
 }
 
 // --- DBPinger mock ---

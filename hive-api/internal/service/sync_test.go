@@ -23,7 +23,7 @@ func newTestSyncService(t *testing.T) (service.SyncService, *repository.MockMemo
 	// Maybe() allows the call to happen 0 or more times without failing expectations.
 	mockSessionRepo.On("EnsureManualSaveSession", mock.Anything, mock.Anything).
 		Return("manual-save-jarvis-dev", nil).Maybe()
-	svc := service.NewSyncService(mockMemRepo, mockPromptRepo, mockSessionRepo)
+	svc := service.NewSyncService(mockMemRepo, mockPromptRepo, mockSessionRepo, nil)
 	return svc, mockMemRepo, mockPromptRepo
 }
 
@@ -32,8 +32,20 @@ func newTestSyncServiceWithSession(t *testing.T) (service.SyncService, *reposito
 	mockMemRepo := &repository.MockMemoryRepository{}
 	mockPromptRepo := &repository.MockPromptRepository{}
 	mockSessionRepo := &repository.MockSessionRepository{}
-	svc := service.NewSyncService(mockMemRepo, mockPromptRepo, mockSessionRepo)
+	svc := service.NewSyncService(mockMemRepo, mockPromptRepo, mockSessionRepo, nil)
 	return svc, mockMemRepo, mockPromptRepo, mockSessionRepo
+}
+
+func newTestSyncServiceWithAudit(t *testing.T) (service.SyncService, *repository.MockMemoryRepository, *repository.MockPromptRepository, *repository.MockAuditRepository) {
+	t.Helper()
+	mockMemRepo := &repository.MockMemoryRepository{}
+	mockPromptRepo := &repository.MockPromptRepository{}
+	mockSessionRepo := &repository.MockSessionRepository{}
+	mockAuditRepo := &repository.MockAuditRepository{}
+	mockSessionRepo.On("EnsureManualSaveSession", mock.Anything, mock.Anything).
+		Return("manual-save-jarvis-dev", nil).Maybe()
+	svc := service.NewSyncService(mockMemRepo, mockPromptRepo, mockSessionRepo, mockAuditRepo)
+	return svc, mockMemRepo, mockPromptRepo, mockAuditRepo
 }
 
 // makePayload construye un SyncMemoryPayload mínimo para tests.
@@ -189,6 +201,121 @@ func TestSync_Push_Mixed(t *testing.T) {
 	assert.Equal(t, 2, resp.Pushed)    // p1 (insert) + p2 (update)
 	assert.Equal(t, 1, resp.Conflicts) // p3 rechazada
 	mockRepo.AssertExpectations(t)
+}
+
+func TestSync_Push_AuditFailureDoesNotFailSync(t *testing.T) {
+	svc, mockRepo, mockPromptRepo, mockAuditRepo := newTestSyncServiceWithAudit(t)
+	ctx := context.Background()
+
+	payload := makePayload("sync-id-audit-best-effort", time.Now())
+	expected := expectedMem(payload, "user-1")
+	saved := &model.Memory{ID: "server-uuid", SyncID: payload.SyncID}
+	auditErr := errors.New("audit insert failed")
+
+	mockRepo.On("Upsert", ctx, expected).Return(saved, true, nil)
+	mockPromptRepo.On("Upsert", ctx, mock.MatchedBy(func(p *model.Prompt) bool {
+		return p.SyncID == "prompt-1" && p.Project == "jarvis-dev" && p.CreatedBy == "user-1"
+	})).Return(true, nil)
+	mockAuditRepo.On("Insert", ctx, mock.MatchedBy(func(entry *model.AuditEntry) bool {
+		return entry.Action == model.AuditActionSyncPush &&
+			entry.Outcome == model.AuditOutcomeSuccess &&
+			entry.EntryCount == 2 &&
+			entry.ActorUserID != nil && *entry.ActorUserID == "user-1" &&
+			entry.Project != nil && *entry.Project == "jarvis-dev" &&
+			entry.Metadata["pushed_count"] == 1 &&
+			entry.Metadata["conflict_count"] == 0 &&
+			entry.Metadata["prompt_count"] == 1
+	})).Return(auditErr)
+
+	req := model.SyncRequest{
+		Project:  "jarvis-dev",
+		Memories: []model.SyncMemoryPayload{payload},
+		Prompts: []model.SyncPromptPayload{{
+			SyncID:    "prompt-1",
+			Project:   "jarvis-dev",
+			Content:   "prompt content",
+			CreatedAt: time.Now(),
+		}},
+	}
+
+	resp, err := svc.Push(ctx, req, "user-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, resp.Pushed)
+	assert.Equal(t, 0, resp.Conflicts)
+	assert.Equal(t, 1, resp.PromptsPushed)
+	mockRepo.AssertExpectations(t)
+	mockPromptRepo.AssertExpectations(t)
+	mockAuditRepo.AssertExpectations(t)
+}
+
+func TestSync_Push_AuditReceivesBatchCountsForPushAndConflict(t *testing.T) {
+	svc, mockRepo, mockPromptRepo, mockAuditRepo := newTestSyncServiceWithAudit(t)
+	ctx := context.Background()
+
+	pushedPayload := makePayload("sync-id-pushed", time.Now())
+	conflictPayload := makePayload("sync-id-conflict-audit", time.Now().Add(-time.Hour))
+
+	mockRepo.On("Upsert", ctx, expectedMem(pushedPayload, "user-1")).
+		Return(&model.Memory{ID: "server-uuid", SyncID: pushedPayload.SyncID}, true, nil)
+	mockRepo.On("Upsert", ctx, expectedMem(conflictPayload, "user-1")).
+		Return(nil, false, nil)
+	mockPromptRepo.On("Upsert", ctx, mock.MatchedBy(func(p *model.Prompt) bool {
+		return p.SyncID == "prompt-1" && p.Project == "jarvis-dev" && p.CreatedBy == "user-1"
+	})).Return(true, nil)
+
+	mockAuditRepo.On("Insert", ctx, mock.MatchedBy(func(entry *model.AuditEntry) bool {
+		return entry.Action == model.AuditActionSyncPush &&
+			entry.Outcome == model.AuditOutcomeSuccess &&
+			entry.EntryCount == 3 &&
+			entry.ReasonCode == nil &&
+			entry.Metadata["pushed_count"] == 1 &&
+			entry.Metadata["conflict_count"] == 1 &&
+			entry.Metadata["prompt_count"] == 1 &&
+			entry.Metadata["content"] == nil &&
+			entry.Metadata["sync_id"] == nil &&
+			entry.Metadata["title"] == nil &&
+			entry.Metadata["memories"] == nil &&
+			entry.Metadata["prompts"] == nil &&
+			entry.Metadata["raw_payload"] == nil
+	})).Return(nil).Once()
+	mockAuditRepo.On("Insert", ctx, mock.MatchedBy(func(entry *model.AuditEntry) bool {
+		return entry.Action == model.AuditActionSyncConflict &&
+			entry.Outcome == model.AuditOutcomeConflict &&
+			entry.EntryCount == 1 &&
+			entry.ReasonCode != nil && *entry.ReasonCode == "memory_conflict" &&
+			entry.Metadata["pushed_count"] == 1 &&
+			entry.Metadata["conflict_count"] == 1 &&
+			entry.Metadata["prompt_count"] == 1 &&
+			entry.Metadata["reason_code"] == "memory_conflict" &&
+			entry.Metadata["content"] == nil &&
+			entry.Metadata["sync_id"] == nil &&
+			entry.Metadata["title"] == nil &&
+			entry.Metadata["memories"] == nil &&
+			entry.Metadata["prompts"] == nil &&
+			entry.Metadata["raw_payload"] == nil
+	})).Return(nil).Once()
+
+	req := model.SyncRequest{
+		Project:  "jarvis-dev",
+		Memories: []model.SyncMemoryPayload{pushedPayload, conflictPayload},
+		Prompts: []model.SyncPromptPayload{{
+			SyncID:    "prompt-1",
+			Project:   "jarvis-dev",
+			Content:   "prompt content",
+			CreatedAt: time.Now(),
+		}},
+	}
+
+	resp, err := svc.Push(ctx, req, "user-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, resp.Pushed)
+	assert.Equal(t, 1, resp.Conflicts)
+	assert.Equal(t, 1, resp.PromptsPushed)
+	mockRepo.AssertExpectations(t)
+	mockPromptRepo.AssertExpectations(t)
+	mockAuditRepo.AssertExpectations(t)
 }
 
 // --- Tests de PullAll (memorias) ---
@@ -470,11 +597,11 @@ func TestSync_Push_ManualSaveSessionUpsert(t *testing.T) {
 	sess := makeSyncSessionPayload("manual-save-jarvis-dev", "aaaabbbb-0000-0000-0000-000000000001")
 
 	expectedSession := &model.Session{
-		ID:        "manual-save-jarvis-dev",
-		SyncID:    sess.SyncID,
-		Project:   "jarvis-dev",
-		DevID:     "dev@host",
-		Client:    "claude-code",
+		ID:      "manual-save-jarvis-dev",
+		SyncID:  sess.SyncID,
+		Project: "jarvis-dev",
+		DevID:   "dev@host",
+		Client:  "claude-code",
 	}
 	mockSessionRepo.On("UpsertSession", ctx, expectedSession).Return(nil)
 

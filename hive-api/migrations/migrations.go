@@ -37,3 +37,9 @@ var UserPromptsSQL string
 //
 //go:embed 003_sessions.sql
 var SessionsSQL string
+
+// AuditLogsSQL es el contenido de la migración 004: tabla audit_logs con
+// metadata JSONB e índices para filtros admin y orden determinístico.
+//
+//go:embed 004_audit_logs.sql
+var AuditLogsSQL string

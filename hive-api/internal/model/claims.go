@@ -28,3 +28,8 @@ type Claims struct {
 	// el middleware admin pueda verificarlo sin tocar la DB en cada request.
 	Level UserLevel `json:"level"`
 }
+
+type AdminActor struct {
+	UserID   string
+	Username string
+}
