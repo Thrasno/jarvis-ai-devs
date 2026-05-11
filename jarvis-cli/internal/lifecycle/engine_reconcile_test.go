@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/sddruntime"
@@ -68,6 +69,130 @@ func TestEngineReconcile_BlocksNonOwnedMutations(t *testing.T) {
 	}
 	if adapter.applyNonOwnedCount != 0 {
 		t.Fatalf("expected non-owned ops to be blocked, applied=%d", adapter.applyNonOwnedCount)
+	}
+}
+
+func TestEngineReconcile_AppliesOnlyAutoSafeOwnedSteps(t *testing.T) {
+	home := t.TempDir()
+	adapter := &fakeProviderAdapter{
+		name: "claude",
+		observed: ObservedProviderState{
+			Artifacts: map[string]sddruntime.ObservedArtifact{
+				"instructions": {Exists: false},
+				"orchestrator": {Exists: true},
+				"skills":       {Exists: true},
+			},
+			NonOwnedChanges: []string{"custom user section"},
+			UnknownChanges:  []string{"unmapped runtime drift"},
+		},
+	}
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"claude": adapter}, HomeDir: home})
+
+	result, err := engine.Reconcile("claude")
+	if err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+
+	if result.Applied != 1 {
+		t.Fatalf("applied = %d, want 1", result.Applied)
+	}
+	if len(adapter.appliedAssets) != 1 || adapter.appliedAssets[0] != "instructions" {
+		t.Fatalf("expected only auto-safe owned instructions to apply, got %v", adapter.appliedAssets)
+	}
+	if len(adapter.backupTargetPaths) != 1 || adapter.backupTargetPaths[0] != "instructions" {
+		t.Fatalf("expected backup only for applied owned asset, got %v", adapter.backupTargetPaths)
+	}
+	if result.ManualRequired != 2 {
+		t.Fatalf("manual-required count = %d, want 2", result.ManualRequired)
+	}
+	if len(result.SkippedNonOwned) == 0 {
+		t.Fatal("expected non-owned notes to remain reported")
+	}
+	if adapter.applyNonOwnedCount != 0 {
+		t.Fatalf("expected non-owned ops to be blocked, applied=%d", adapter.applyNonOwnedCount)
+	}
+}
+
+func TestEngineReconcile_ReportsFailClassManualRequiredWithoutApplyOrBackup(t *testing.T) {
+	home := t.TempDir()
+	ledgerPath := filepath.Join(home, ".jarvis", "managed-state.json")
+	if err := os.MkdirAll(filepath.Dir(ledgerPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	ledger := `{"version":"v1","jarvis_version":"dev","contract_version":"2026.05","provider_schema_version":"v0"}`
+	if err := os.WriteFile(ledgerPath, []byte(ledger), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	adapter := &fakeProviderAdapter{
+		name: "claude",
+		observed: ObservedProviderState{Artifacts: map[string]sddruntime.ObservedArtifact{
+			"instructions": {Exists: true, MarkersValid: true},
+			"orchestrator": {Exists: true},
+			"skills":       {Exists: true},
+		}},
+	}
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"claude": adapter}, HomeDir: home})
+
+	result, err := engine.Reconcile("claude")
+	if err != nil {
+		t.Fatalf("Reconcile must return reportable manual-required result, got error: %v", err)
+	}
+
+	if result.Applied != 0 {
+		t.Fatalf("applied = %d, want 0", result.Applied)
+	}
+	if result.ManualRequired != 1 {
+		t.Fatalf("manual-required count = %d, want 1", result.ManualRequired)
+	}
+	if adapter.applyCalls != 0 {
+		t.Fatalf("manual-only reconcile must not apply mutations; calls=%d", adapter.applyCalls)
+	}
+	if len(adapter.backupTargetPaths) != 0 {
+		t.Fatalf("manual-only reconcile must not prepare backups; targets=%v", adapter.backupTargetPaths)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".jarvis", "backups")); !os.IsNotExist(err) {
+		t.Fatalf("manual-only reconcile must not create backup artifacts; stat err=%v", err)
+	}
+}
+
+func TestEngineReconcileDryRun_UsesDoctorPlanWithoutApplyOrBackup(t *testing.T) {
+	home := t.TempDir()
+	adapter := &fakeProviderAdapter{
+		name: "claude",
+		observed: ObservedProviderState{
+			Artifacts: map[string]sddruntime.ObservedArtifact{
+				"instructions": {Exists: false},
+				"orchestrator": {Exists: true},
+				"skills":       {Exists: true},
+			},
+			NonOwnedChanges: []string{"custom user section"},
+		},
+	}
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"claude": adapter}, HomeDir: home})
+
+	dryRunPlan, err := engine.ReconcileDryRun("claude")
+	if err != nil {
+		t.Fatalf("ReconcileDryRun returned error: %v", err)
+	}
+	doctorPlan, err := engine.Doctor("claude")
+	if err != nil {
+		t.Fatalf("Doctor returned error: %v", err)
+	}
+
+	if !reflect.DeepEqual(dryRunPlan, doctorPlan) {
+		t.Fatalf("dry-run plan must match doctor-derived apply plan:\ndryRun=%#v\ndoctor=%#v", dryRunPlan, doctorPlan)
+	}
+	if !dryRunPlan.ReadOnly {
+		t.Fatal("dry-run plan must be read-only preview metadata")
+	}
+	if adapter.applyCalls != 0 {
+		t.Fatalf("dry-run must not apply mutations; calls=%d", adapter.applyCalls)
+	}
+	if len(adapter.backupTargetPaths) != 0 {
+		t.Fatalf("dry-run must not prepare backups; targets=%v", adapter.backupTargetPaths)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".jarvis", "backups")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run must not create backup artifacts; stat err=%v", err)
 	}
 }
 

@@ -51,6 +51,29 @@ func (s LedgerStore) LoadOrBootstrap(provider string) (Ledger, bool, error) {
 	return ledger, false, nil
 }
 
+func (s LedgerStore) LoadReadOnly(provider string) (Ledger, bool, error) {
+	path := s.path()
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return defaultLedger(), true, nil
+	}
+	if err != nil {
+		return Ledger{}, false, fmt.Errorf("read ledger: %w", err)
+	}
+
+	var ledger Ledger
+	if err := json.Unmarshal(raw, &ledger); err != nil {
+		return Ledger{}, false, fmt.Errorf("decode ledger: %w", err)
+	}
+	if ledger.Version != ledgerVersion {
+		return Ledger{}, false, fmt.Errorf("incompatible ledger version %q", ledger.Version)
+	}
+	if ledger.ProviderSchemaVersion == "" {
+		ledger.ProviderSchemaVersion = providerSchemaFor(provider)
+	}
+	return ledger, false, nil
+}
+
 func (s LedgerStore) save(ledger Ledger) error {
 	path := s.path()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

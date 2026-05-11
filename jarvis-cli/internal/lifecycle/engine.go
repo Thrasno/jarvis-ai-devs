@@ -2,6 +2,8 @@ package lifecycle
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/sddruntime"
 )
@@ -22,11 +24,21 @@ func NewEngine(deps EngineDeps) *Engine {
 }
 
 func (e *Engine) Verify(provider string) (VerifyResult, error) {
+	return e.verify(provider, true)
+}
+
+func (e *Engine) verify(provider string, bootstrapLedger bool) (VerifyResult, error) {
 	adapter, ok := e.adapters[provider]
 	if !ok {
 		return VerifyResult{}, fmt.Errorf("unsupported provider %q", provider)
 	}
-	ledger, _, err := e.ledger.LoadOrBootstrap(provider)
+	var ledger Ledger
+	var err error
+	if bootstrapLedger {
+		ledger, _, err = e.ledger.LoadOrBootstrap(provider)
+	} else {
+		ledger, _, err = e.ledger.LoadReadOnly(provider)
+	}
 	if err != nil {
 		return VerifyResult{}, err
 	}
@@ -78,8 +90,14 @@ func (e *Engine) Reconcile(provider string) (ReconcileResult, error) {
 	}
 
 	owned := make([]DoctorStep, 0, len(plan.Steps))
+	manualRequired := 0
+	skippedNonOwned := []string{}
 	for _, step := range plan.Steps {
-		if step.SafetyClass == "non-owned" {
+		if !step.SafeToAutoApply || step.SafetyClass != "auto-safe" || step.AssetID == "" {
+			manualRequired++
+			if step.ReasonCode == "non_owned_drift" {
+				skippedNonOwned = append(skippedNonOwned, step.NextAction)
+			}
 			continue
 		}
 		owned = append(owned, step)
@@ -100,6 +118,9 @@ func (e *Engine) Reconcile(provider string) (ReconcileResult, error) {
 			return ReconcileResult{}, NewLifecycleError("apply_failed", "", "logical", "apply", "restore last snapshot and retry", err)
 		}
 	}
+	if len(owned) == 0 {
+		return ReconcileResult{Applied: 0, ManualRequired: manualRequired, SkippedNonOwned: skippedNonOwned}, nil
+	}
 
 	verifyResult, err := e.Verify(provider)
 	if err != nil {
@@ -108,7 +129,14 @@ func (e *Engine) Reconcile(provider string) (ReconcileResult, error) {
 	if verifyResult.Status == sddruntime.StatusFail {
 		return ReconcileResult{}, NewLifecycleError("post_verify_failed", "", "logical", "post_verify", "run restore using latest snapshot", fmt.Errorf("status %s", verifyResult.Status))
 	}
-	return ReconcileResult{Applied: len(owned), SkippedNonOwned: verifyResult.Report.Notes}, nil
+	if len(skippedNonOwned) == 0 {
+		skippedNonOwned = verifyResult.Report.Notes
+	}
+	return ReconcileResult{Applied: len(owned), ManualRequired: manualRequired, SkippedNonOwned: skippedNonOwned}, nil
+}
+
+func (e *Engine) ReconcileDryRun(provider string) (DoctorPlan, error) {
+	return e.Doctor(provider)
 }
 
 func (e *Engine) Restore(provider, snapshotID string) (RestoreResult, error) {
@@ -206,22 +234,94 @@ func managedUninstallSteps() []DoctorStep {
 	contract := sddruntime.DefaultContract()
 	steps := make([]DoctorStep, 0, len(contract.ManagedArtifacts))
 	for _, artifact := range contract.ManagedArtifacts {
-		steps = append(steps, DoctorStep{AssetID: artifact.ID, SafetyClass: "auto-safe", BackupNeeded: true})
+		steps = append(steps, DoctorStep{AssetID: artifact.ID, Class: "owned", SafetyClass: "auto-safe", SafeToAutoApply: true, BackupNeeded: true})
 	}
 	return steps
 }
 
 func (e *Engine) Doctor(provider string) (DoctorPlan, error) {
-	verifyResult, err := e.Verify(provider)
+	verifyResult, err := e.verify(provider, false)
 	if err != nil {
 		return DoctorPlan{}, err
 	}
-	plan := DoctorPlan{ReadOnly: true, Steps: []DoctorStep{}}
+	plan := DoctorPlan{Provider: provider, Status: verifyResult.Status, ReadOnly: true, Steps: []DoctorStep{}}
 	for _, check := range verifyResult.Report.Checks {
-		if check.DriftClass != sddruntime.DriftOwned || check.Status == sddruntime.StatusPass {
+		if check.Status == sddruntime.StatusPass || check.DriftClass == sddruntime.DriftNone {
 			continue
 		}
-		plan.Steps = append(plan.Steps, DoctorStep{AssetID: check.Key, SafetyClass: "auto-safe", BackupNeeded: true})
+		plan.Steps = append(plan.Steps, doctorStepFromCheck(check))
 	}
+	sort.SliceStable(plan.Steps, func(i, j int) bool {
+		left := plan.Steps[i]
+		right := plan.Steps[j]
+		if left.CheckKey != right.CheckKey {
+			return left.CheckKey < right.CheckKey
+		}
+		return left.AssetID < right.AssetID
+	})
 	return plan, nil
+}
+
+func doctorStepFromCheck(check sddruntime.CheckResult) DoctorStep {
+	step := DoctorStep{
+		CheckKey:    check.Key,
+		Class:       "manual-required",
+		SafetyClass: "manual-required",
+		NextAction:  "review diagnosis and repair manually before rerunning doctor",
+	}
+
+	switch check.DriftClass {
+	case sddruntime.DriftOwned:
+		assetID, ok := managedArtifactAssetID(check.Key)
+		if ok {
+			step.AssetID = assetID
+			step.ReasonCode = managedArtifactReasonCode(check)
+			step.Class = "owned"
+			step.SafetyClass = "auto-safe"
+			step.SafeToAutoApply = true
+			step.BackupNeeded = true
+			step.NextAction = "restore managed artifact from Jarvis managed runtime state"
+			return step
+		}
+		if check.Key == "ledger.provider_schema_version" {
+			step.ReasonCode = "provider_schema_mismatch"
+			step.NextAction = "run managed-state migration before reconcile"
+			return step
+		}
+		step.ReasonCode = "manual_invariant_drift"
+		step.NextAction = "inspect owned invariant drift and repair manually"
+		return step
+	case sddruntime.DriftNonOwned:
+		step.ReasonCode = "non_owned_drift"
+		step.SafetyClass = "non-owned"
+		step.NextAction = "preserve user-owned changes and repair manually if needed"
+		return step
+	case sddruntime.DriftUnknown:
+		step.ReasonCode = "unknown_drift"
+		step.NextAction = "inspect unknown runtime drift before applying managed repairs"
+		return step
+	default:
+		step.ReasonCode = "unknown_drift"
+		return step
+	}
+}
+
+func managedArtifactAssetID(checkKey string) (string, bool) {
+	const prefix = "artifact."
+	const suffix = ".present"
+	if !strings.HasPrefix(checkKey, prefix) || !strings.HasSuffix(checkKey, suffix) {
+		return "", false
+	}
+	assetID := strings.TrimSuffix(strings.TrimPrefix(checkKey, prefix), suffix)
+	if assetID == "" {
+		return "", false
+	}
+	return assetID, true
+}
+
+func managedArtifactReasonCode(check sddruntime.CheckResult) string {
+	if check.Observed == "missing" {
+		return "managed_artifact_missing"
+	}
+	return "managed_artifact_boundary_invalid"
 }

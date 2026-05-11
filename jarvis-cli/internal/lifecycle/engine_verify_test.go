@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -102,6 +103,147 @@ func TestEngineDoctor_ReturnsReadOnlyPlan(t *testing.T) {
 	}
 	if plan.ReadOnly != true {
 		t.Fatal("doctor plan must be read-only")
+	}
+	if adapter.applyCalls != 0 {
+		t.Fatalf("doctor must not mutate state; apply calls = %d", adapter.applyCalls)
+	}
+}
+
+func TestEngineDoctor_DoesNotBootstrapMissingLedger(t *testing.T) {
+	home := t.TempDir()
+	ledgerPath := filepath.Join(home, ".jarvis", "managed-state.json")
+	adapter := &fakeProviderAdapter{
+		name: "opencode",
+		observed: ObservedProviderState{
+			Artifacts: map[string]sddruntime.ObservedArtifact{
+				"instructions": {Exists: true, MarkersValid: true},
+				"orchestrator": {Exists: false},
+				"skills":       {Exists: true},
+			},
+		},
+	}
+
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"opencode": adapter}, HomeDir: home})
+	plan, err := engine.Doctor("opencode")
+	if err != nil {
+		t.Fatalf("Doctor returned error: %v", err)
+	}
+
+	if !plan.ReadOnly {
+		t.Fatal("doctor plan must be marked read-only")
+	}
+	if len(plan.Steps) == 0 {
+		t.Fatal("doctor must still report diagnosis without bootstrapping the ledger")
+	}
+	if _, err := os.Stat(ledgerPath); !os.IsNotExist(err) {
+		t.Fatalf("doctor must not create lifecycle ledger at %s; stat err=%v", ledgerPath, err)
+	}
+	if _, err := os.Stat(filepath.Dir(ledgerPath)); !os.IsNotExist(err) {
+		t.Fatalf("doctor must not create lifecycle state directory; stat err=%v", err)
+	}
+	if adapter.applyCalls != 0 {
+		t.Fatalf("doctor must not apply mutations; apply calls = %d", adapter.applyCalls)
+	}
+}
+
+func TestEngineDoctor_DoesNotPersistMissingProviderSchema(t *testing.T) {
+	home := t.TempDir()
+	ledgerPath := filepath.Join(home, ".jarvis", "managed-state.json")
+	if err := os.MkdirAll(filepath.Dir(ledgerPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	ledger := []byte(`{"version":"v1","jarvis_version":"dev","contract_version":"2026.05"}`)
+	if err := os.WriteFile(ledgerPath, ledger, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	adapter := &fakeProviderAdapter{
+		name: "claude",
+		observed: ObservedProviderState{Artifacts: map[string]sddruntime.ObservedArtifact{
+			"instructions": {Exists: true, MarkersValid: true},
+			"orchestrator": {Exists: false},
+			"skills":       {Exists: true},
+		}},
+	}
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"claude": adapter}, HomeDir: home})
+
+	plan, err := engine.Doctor("claude")
+	if err != nil {
+		t.Fatalf("Doctor returned error: %v", err)
+	}
+
+	if !plan.ReadOnly {
+		t.Fatal("doctor plan must be marked read-only")
+	}
+	if len(plan.Steps) == 0 {
+		t.Fatal("doctor must still diagnose drift when ledger schema is missing")
+	}
+	after, err := os.ReadFile(ledgerPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(after) != string(ledger) {
+		t.Fatalf("doctor must not persist provider schema defaults; before=%s after=%s", string(ledger), string(after))
+	}
+	if adapter.applyCalls != 0 {
+		t.Fatalf("doctor must not apply mutations; apply calls = %d", adapter.applyCalls)
+	}
+}
+
+func TestEngineDoctor_ReturnsDeterministicStructuredDiagnosis(t *testing.T) {
+	adapter := &fakeProviderAdapter{
+		name: "claude",
+		observed: ObservedProviderState{
+			Artifacts: map[string]sddruntime.ObservedArtifact{
+				"skills":       {Exists: false},
+				"instructions": {Exists: false},
+				"orchestrator": {Exists: true},
+			},
+			NonOwnedChanges: []string{"custom user note"},
+			UnknownChanges:  []string{"unexpected runtime file"},
+		},
+	}
+
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"claude": adapter}, HomeDir: t.TempDir()})
+	first, err := engine.Doctor("claude")
+	if err != nil {
+		t.Fatalf("Doctor returned error: %v", err)
+	}
+	second, err := engine.Doctor("claude")
+	if err != nil {
+		t.Fatalf("Doctor returned error on repeated run: %v", err)
+	}
+
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("doctor plan must be deterministic across repeated runs:\nfirst=%#v\nsecond=%#v", first, second)
+	}
+	if first.Provider != "claude" {
+		t.Fatalf("plan provider = %q, want claude", first.Provider)
+	}
+	if first.Status != sddruntime.StatusFail {
+		t.Fatalf("plan status = %q, want %q", first.Status, sddruntime.StatusFail)
+	}
+	wantOrder := []string{"artifact.instructions.present", "artifact.skills.present", "drift.non_owned", "drift.unknown"}
+	if len(first.Steps) != len(wantOrder) {
+		t.Fatalf("steps len = %d, want %d: %#v", len(first.Steps), len(wantOrder), first.Steps)
+	}
+	for i, wantKey := range wantOrder {
+		step := first.Steps[i]
+		if step.CheckKey != wantKey {
+			t.Fatalf("step[%d] check key = %q, want %q", i, step.CheckKey, wantKey)
+		}
+		if step.ReasonCode == "" || step.Class == "" || step.NextAction == "" {
+			t.Fatalf("step[%d] missing structured fields: %#v", i, step)
+		}
+	}
+
+	if first.Steps[0].ReasonCode != "managed_artifact_missing" || first.Steps[0].Class != "owned" || !first.Steps[0].SafeToAutoApply {
+		t.Fatalf("owned missing artifact has wrong diagnosis: %#v", first.Steps[0])
+	}
+	if first.Steps[2].ReasonCode != "non_owned_drift" || first.Steps[2].Class != "manual-required" || first.Steps[2].SafeToAutoApply {
+		t.Fatalf("non-owned drift must require manual action: %#v", first.Steps[2])
+	}
+	if first.Steps[3].ReasonCode != "unknown_drift" || first.Steps[3].Class != "manual-required" || first.Steps[3].SafeToAutoApply {
+		t.Fatalf("unknown drift must require manual action: %#v", first.Steps[3])
 	}
 	if adapter.applyCalls != 0 {
 		t.Fatalf("doctor must not mutate state; apply calls = %d", adapter.applyCalls)

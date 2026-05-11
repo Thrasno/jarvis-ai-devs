@@ -2,7 +2,9 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/lifecycle"
@@ -19,11 +21,91 @@ func TestLifecycleCommands_AreWiredInRoot(t *testing.T) {
 	}
 }
 
+func TestRunReconcileDryRun_RendersDoctorDerivedPlan(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatalf("MkdirAll .claude: %v", err)
+	}
+
+	cmd := &cobra.Command{}
+	cmd.Flags().String("provider", "claude", "")
+	cmd.Flags().Bool("dry-run", false, "")
+	cmd.Flags().Bool("yes", false, "")
+	if err := cmd.Flags().Set("provider", "claude"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("set dry-run: %v", err)
+	}
+
+	var runErr error
+	out := captureStdout(t, func() {
+		runErr = runReconcile(cmd, nil)
+	})
+	if runErr != nil {
+		t.Fatalf("runReconcile returned error: %v", runErr)
+	}
+
+	for _, want := range []string{
+		"dry-run: reconcile plan generated (no mutations)",
+		"provider=claude",
+		"read_only=true",
+		"check_key=artifact.instructions.present",
+		"reason_code=managed_artifact_missing",
+		"class=owned",
+		"safety_class=auto-safe",
+		"safe_to_auto_apply=true",
+		"next_action=restore managed artifact from Jarvis managed runtime state",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("dry-run output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunDoctor_RendersAdditiveStructuredDiagnosis(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatalf("MkdirAll .claude: %v", err)
+	}
+
+	cmd := &cobra.Command{}
+	cmd.Flags().String("provider", "claude", "")
+	if err := cmd.Flags().Set("provider", "claude"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
+
+	var runErr error
+	out := captureStdout(t, func() {
+		runErr = runDoctor(cmd, nil)
+	})
+	if runErr != nil {
+		t.Fatalf("runDoctor returned error: %v", runErr)
+	}
+
+	for _, want := range []string{
+		"doctor: read-only diagnosis",
+		"provider=claude",
+		"read_only=true",
+		"reason_code=managed_artifact_missing",
+		"next_action=restore managed artifact from Jarvis managed runtime state",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("doctor output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestLifecycleCommandValidation(t *testing.T) {
 	if _, err := os.Stat(jarvisBin); os.IsNotExist(err) {
 		t.Skip("jarvis binary not available")
 	}
 	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatalf("MkdirAll .claude: %v", err)
+	}
 
 	tests := []struct {
 		name    string

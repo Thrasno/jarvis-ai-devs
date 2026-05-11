@@ -151,8 +151,10 @@ func (a *lifecycleAgentAdapter) resolveManagedTarget(assetID string) (path strin
 		return "", false, fmt.Errorf("unsupported managed asset %q", assetID)
 	}
 
-	abs := filepath.Join(a.agent.ConfigDir(), rel)
-	if !strings.HasPrefix(abs, a.agent.ConfigDir()) {
+	configDir := filepath.Clean(a.agent.ConfigDir())
+	abs := filepath.Clean(filepath.Join(configDir, rel))
+	insideConfig, err := filepath.Rel(configDir, abs)
+	if err != nil || insideConfig == ".." || strings.HasPrefix(insideConfig, ".."+string(filepath.Separator)) {
 		return "", false, fmt.Errorf("asset path escapes provider config dir: %s", abs)
 	}
 	return abs, strings.HasSuffix(rel, "/") || strings.HasSuffix(rel, string(filepath.Separator)), nil

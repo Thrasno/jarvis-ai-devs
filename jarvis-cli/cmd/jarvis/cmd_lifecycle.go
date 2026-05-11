@@ -48,7 +48,14 @@ func runVerify(cmd *cobra.Command, _ []string) error {
 }
 func runDoctor(cmd *cobra.Command, _ []string) error {
 	opts := mustLifecycleOpts(cmd)
-	return runPerProvider(cmd, opts.provider, func(engine *lifecycle.Engine, provider string) error { _, err := engine.Doctor(provider); return err })
+	return runPerProvider(cmd, opts.provider, func(engine *lifecycle.Engine, provider string) error {
+		plan, err := engine.Doctor(provider)
+		if err != nil {
+			return err
+		}
+		printDoctorPlan("doctor: read-only diagnosis", plan)
+		return nil
+	})
 }
 func runBackup(cmd *cobra.Command, _ []string) error {
 	opts := mustLifecycleOpts(cmd)
@@ -68,16 +75,46 @@ func runReconcile(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if opts.dryRun {
-		fmt.Println("dry-run: reconcile plan generated (no mutations)")
-		return nil
+		return runPerProvider(cmd, opts.provider, func(engine *lifecycle.Engine, provider string) error {
+			plan, err := engine.ReconcileDryRun(provider)
+			if err != nil {
+				return err
+			}
+			printDoctorPlan("dry-run: reconcile plan generated (no mutations)", plan)
+			return nil
+		})
 	}
 	if !opts.yes {
 		return fmt.Errorf("reconcile requires --yes to mutate managed assets (or use --dry-run)")
 	}
 	return runPerProvider(cmd, opts.provider, func(engine *lifecycle.Engine, provider string) error {
-		_, err := engine.Reconcile(provider)
-		return err
+		result, err := engine.Reconcile(provider)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("reconcile: provider=%s applied=%d manual_required=%d skipped_non_owned=%d\n", provider, result.Applied, result.ManualRequired, len(result.SkippedNonOwned))
+		return nil
 	})
+}
+
+func printDoctorPlan(header string, plan lifecycle.DoctorPlan) {
+	if header != "" {
+		fmt.Println(header)
+	}
+	fmt.Printf("provider=%s status=%s read_only=%t steps=%d\n", plan.Provider, plan.Status, plan.ReadOnly, len(plan.Steps))
+	for i, step := range plan.Steps {
+		fmt.Printf("step=%d check_key=%s asset_id=%s reason_code=%s class=%s safety_class=%s safe_to_auto_apply=%t backup_needed=%t next_action=%s\n",
+			i+1,
+			step.CheckKey,
+			step.AssetID,
+			step.ReasonCode,
+			step.Class,
+			step.SafetyClass,
+			step.SafeToAutoApply,
+			step.BackupNeeded,
+			step.NextAction,
+		)
+	}
 }
 
 func runRestore(cmd *cobra.Command, _ []string) error {

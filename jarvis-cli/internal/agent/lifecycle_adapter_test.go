@@ -3,11 +3,15 @@ package agent
 import (
 	"archive/tar"
 	"compress/gzip"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/lifecycle"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/sddruntime"
 )
 
 func TestLifecycleAdapter_BackupTargetsResolveProviderPaths(t *testing.T) {
@@ -94,6 +98,44 @@ func TestLifecycleAdapter_RestoreRejectsPathOutsideAllowedRoots(t *testing.T) {
 		t.Fatal("expected restore to reject path outside allowed roots")
 	}
 }
+
+func TestLifecycleAdapter_BackupTargetsRejectPrefixEscapingManagedAsset(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), ".claude")
+	plan := sddruntime.RuntimePlan{
+		Agent: "claude",
+		Contract: sddruntime.Contract{ManagedArtifacts: []sddruntime.ManagedArtifact{
+			{ID: "escape", RelativePath: "../.claude-evil/file.md"},
+		}},
+	}
+	adapter := NewLifecycleAdapter(&stubLifecycleAgent{name: "claude", configDir: configDir, plan: plan})
+
+	_, err := adapter.BackupTargets([]lifecycle.DoctorStep{{AssetID: "escape"}})
+	if err == nil {
+		t.Fatal("expected backup target resolution to reject managed asset path escaping provider config dir")
+	}
+}
+
+type stubLifecycleAgent struct {
+	name      string
+	configDir string
+	plan      sddruntime.RuntimePlan
+}
+
+func (a *stubLifecycleAgent) Name() string                                               { return a.name }
+func (a *stubLifecycleAgent) IsInstalled() bool                                          { return true }
+func (a *stubLifecycleAgent) ConfigDir() string                                          { return a.configDir }
+func (a *stubLifecycleAgent) MergeConfig(MCPEntry) error                                 { return nil }
+func (a *stubLifecycleAgent) WriteInstructions(string, string, []config.SkillInfo) error { return nil }
+func (a *stubLifecycleAgent) InstallSkills(fs.FS, []string) error                        { return nil }
+func (a *stubLifecycleAgent) InstallOrchestrator([]byte) error                           { return nil }
+func (a *stubLifecycleAgent) SupportsOutputStyles() bool                                 { return false }
+func (a *stubLifecycleAgent) WriteOutputStyle(*persona.Preset) error                     { return nil }
+func (a *stubLifecycleAgent) ClearOutputStyle(string) error                              { return nil }
+func (a *stubLifecycleAgent) RuntimePlan() (sddruntime.RuntimePlan, error)               { return a.plan, nil }
+func (a *stubLifecycleAgent) ObserveRuntime() (sddruntime.ObservedRuntime, error) {
+	return sddruntime.ObservedRuntime{}, nil
+}
+func (a *stubLifecycleAgent) InstallPromptHook(fs.FS) error { return nil }
 
 func writeSingleFileArchive(archivePath, absolutePath string, content []byte) (err error) {
 	f, err := os.Create(archivePath)

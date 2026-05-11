@@ -25,14 +25,21 @@ type VerifyResult struct {
 }
 
 type DoctorStep struct {
-	AssetID      string
-	SafetyClass  string
-	BackupNeeded bool
+	CheckKey        string `json:"check_key"`
+	AssetID         string `json:"asset_id"`
+	ReasonCode      string `json:"reason_code"`
+	Class           string `json:"class"`
+	SafetyClass     string `json:"safety_class"`
+	SafeToAutoApply bool   `json:"safe_to_auto_apply"`
+	BackupNeeded    bool   `json:"backup_needed"`
+	NextAction      string `json:"next_action"`
 }
 
 type DoctorPlan struct {
-	ReadOnly bool
-	Steps    []DoctorStep
+	Provider string                     `json:"provider"`
+	Status   sddruntime.IntegrityStatus `json:"status"`
+	ReadOnly bool                       `json:"read_only"`
+	Steps    []DoctorStep               `json:"steps"`
 }
 
 type LifecycleError struct {
@@ -58,8 +65,9 @@ func (e *LifecycleError) Error() string {
 func (e *LifecycleError) Unwrap() error { return e.Err }
 
 type ReconcileResult struct {
-	Applied         int
-	SkippedNonOwned []string
+	Applied         int      `json:"applied"`
+	ManualRequired  int      `json:"manual_required"`
+	SkippedNonOwned []string `json:"skipped_non_owned"`
 }
 
 type RestoreResult struct {
