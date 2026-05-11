@@ -68,6 +68,6 @@ func NewServerWithConfig(store MemoryStore, syncStore hivesync.SyncStore, syncer
 	if syncer != nil {
 		syncStatus = "sync activo"
 	}
-	logger.Log.Printf("hive-daemon MCP server ready (9 tools, %s)", syncStatus)
+	logger.Log.Printf("hive-daemon MCP server ready (10 tools, %s)", syncStatus)
 	return s
 }

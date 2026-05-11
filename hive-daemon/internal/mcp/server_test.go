@@ -232,20 +232,21 @@ func (m *mockSyncer) lastProject() string {
 	return m.syncCalls[len(m.syncCalls)-1].project
 }
 
-func TestNewServer_RegistersNineTools(t *testing.T) {
+func TestNewServer_RegistersTenTools(t *testing.T) {
 	session := connectTestServer(t, &mockStore{})
 	ctx := context.Background()
 
 	expectedTools := map[string]bool{
-		"mem_save":            false,
-		"mem_search":          false,
-		"mem_get_observation": false,
-		"mem_session_summary": false,
-		"mem_context":         false,
-		"mem_sync":            false,
-		"mem_save_prompt":     false,
-		"mem_session_start":   false,
-		"mem_session_end":     false,
+		"mem_save":              false,
+		"mem_search":            false,
+		"mem_get_observation":   false,
+		"mem_session_summary":   false,
+		"mem_context":           false,
+		"mem_sync":              false,
+		"mem_save_prompt":       false,
+		"mem_session_start":     false,
+		"mem_session_end":       false,
+		"mem_suggest_topic_key": false,
 	}
 
 	var total int
@@ -263,8 +264,71 @@ func TestNewServer_RegistersNineTools(t *testing.T) {
 		}
 	}
 
-	if total != 9 {
-		t.Errorf("total registered tools = %d, want 9", total)
+	if total != 10 {
+		t.Errorf("total registered tools = %d, want 10", total)
+	}
+}
+
+func TestMemSuggestTopicKey_RequiresTitleAndTypeInSchema(t *testing.T) {
+	session := connectTestServer(t, &mockStore{})
+	ctx := context.Background()
+
+	var found bool
+	for tool, err := range session.Tools(ctx, nil) {
+		if err != nil {
+			t.Fatalf("Tools() iteration error: %v", err)
+		}
+		if tool.Name != "mem_suggest_topic_key" {
+			continue
+		}
+		found = true
+
+		schemaBytes, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatalf("cannot marshal InputSchema: %v", err)
+		}
+		var schema struct {
+			Required   []string               `json:"required"`
+			Properties map[string]interface{} `json:"properties"`
+		}
+		if err := json.Unmarshal(schemaBytes, &schema); err != nil {
+			t.Fatalf("InputSchema is not valid JSON: %v", err)
+		}
+
+		required := map[string]bool{}
+		for _, name := range schema.Required {
+			required[name] = true
+		}
+		for _, name := range []string{"title", "type"} {
+			if !required[name] {
+				t.Errorf("required[] missing %q", name)
+			}
+			if _, ok := schema.Properties[name]; !ok {
+				t.Errorf("properties missing %q", name)
+			}
+		}
+
+		typeProp, ok := schema.Properties["type"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("properties.type = %T, want object", schema.Properties["type"])
+		}
+		enumValues, ok := typeProp["enum"].([]interface{})
+		if !ok {
+			t.Fatalf("properties.type.enum = %T, want array", typeProp["enum"])
+		}
+		wantEnum := []string{"architecture", "bugfix", "decision", "pattern", "config", "discovery", "preference"}
+		if len(enumValues) != len(wantEnum) {
+			t.Fatalf("properties.type.enum length = %d, want %d", len(enumValues), len(wantEnum))
+		}
+		for i, want := range wantEnum {
+			if enumValues[i] != want {
+				t.Errorf("properties.type.enum[%d] = %v, want %q", i, enumValues[i], want)
+			}
+		}
+	}
+
+	if !found {
+		t.Fatal("mem_suggest_topic_key not found during schema check")
 	}
 }
 

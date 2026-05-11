@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	hivedb "github.com/Thrasno/jarvis-dev/hive-daemon/internal/db"
 	hivemcp "github.com/Thrasno/jarvis-dev/hive-daemon/internal/mcp"
@@ -74,6 +75,218 @@ func decodeJSONResponse(t *testing.T, res *sdkmcp.CallToolResult) map[string]any
 		t.Fatalf("response is not valid JSON: %v", err)
 	}
 	return body
+}
+
+// ─── mem_suggest_topic_key ────────────────────────────────────────────────
+
+func TestMemSuggestTopicKey_ReturnsDeterministicTopicKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		title string
+		typ   string
+		want  string
+	}{
+		{
+			name:  "basic architecture title",
+			title: "JWT auth middleware refactor",
+			typ:   "architecture",
+			want:  "architecture/jwt-auth-middleware-refactor",
+		},
+		{
+			name:  "canonical n plus one bugfix",
+			title: "Fix N+1 query in UserList",
+			typ:   "bugfix",
+			want:  "bugfix/fix-n-plus-one-query-in-user-list",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			session := connectTestServer(t, &mockStore{})
+			res := callTool(t, session, "mem_suggest_topic_key", map[string]any{
+				"title": tt.title,
+				"type":  tt.typ,
+			})
+
+			if res.IsError {
+				t.Fatalf("expected success, got error: %s", textContent(t, res))
+			}
+			body := decodeJSONResponse(t, res)
+			if got := body["topic_key"]; got != tt.want {
+				t.Fatalf("topic_key = %v, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMemSuggestTopicKey_ValidatesRequiredInputs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		args        map[string]any
+		wantMessage string
+	}{
+		{
+			name:        "empty title",
+			args:        map[string]any{"title": "", "type": "architecture"},
+			wantMessage: "title",
+		},
+		{
+			name:        "whitespace title",
+			args:        map[string]any{"title": " \n\t ", "type": "architecture"},
+			wantMessage: "title",
+		},
+		{
+			name:        "empty type",
+			args:        map[string]any{"title": "Useful memory", "type": ""},
+			wantMessage: "type",
+		},
+		{
+			name:        "unknown type",
+			args:        map[string]any{"title": "Useful memory", "type": "manual"},
+			wantMessage: "type",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			session := connectTestServer(t, &mockStore{})
+			res := callTool(t, session, "mem_suggest_topic_key", tt.args)
+
+			if !res.IsError {
+				t.Fatalf("expected IsError=true")
+			}
+			if !strings.Contains(textContent(t, res), tt.wantMessage) {
+				t.Fatalf("error = %q, want message containing %q", textContent(t, res), tt.wantMessage)
+			}
+		})
+	}
+}
+
+func TestMemSuggestTopicKey_NormalizesSeparatorsAndCapsSlug(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		title    string
+		typ      string
+		want     string
+		wantType string
+	}{
+		{
+			name:  "collapses mixed separators",
+			title: "Auth---Flow / Token_refresh: cleanup!!!",
+			typ:   "pattern",
+			want:  "pattern/auth-flow-token-refresh-cleanup",
+		},
+		{
+			name:     "truncates slug only",
+			title:    "This title has many words and keeps going beyond the sixty character slug limit by design",
+			typ:      "decision",
+			wantType: "decision",
+		},
+		{
+			name:  "truncates unicode slug at rune boundary",
+			title: strings.Repeat("a", 59) + "ñ extra",
+			typ:   "discovery",
+			want:  "discovery/" + strings.Repeat("a", 59) + "ñ",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			session := connectTestServer(t, &mockStore{})
+			res := callTool(t, session, "mem_suggest_topic_key", map[string]any{
+				"title": tt.title,
+				"type":  tt.typ,
+			})
+
+			if res.IsError {
+				t.Fatalf("expected success, got error: %s", textContent(t, res))
+			}
+			body := decodeJSONResponse(t, res)
+			got, ok := body["topic_key"].(string)
+			if !ok {
+				t.Fatalf("topic_key = %T, want string", body["topic_key"])
+			}
+			if tt.want != "" && got != tt.want {
+				t.Fatalf("topic_key = %q, want %q", got, tt.want)
+			}
+			if tt.wantType != "" {
+				prefix := tt.wantType + "/"
+				if !strings.HasPrefix(got, prefix) {
+					t.Fatalf("topic_key = %q, want prefix %q", got, prefix)
+				}
+				slug := strings.TrimPrefix(got, prefix)
+				if !utf8.ValidString(slug) {
+					t.Fatalf("slug must be valid UTF-8; slug=%q", slug)
+				}
+				if runeCount := utf8.RuneCountInString(slug); runeCount > 60 {
+					t.Fatalf("slug length = %d runes, want <= 60; slug=%q", runeCount, slug)
+				}
+			}
+		})
+	}
+}
+
+func TestMemSuggestTopicKey_HasNoPersistenceOrSyncSideEffects(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args map[string]any
+	}{
+		{
+			name: "success",
+			args: map[string]any{"title": "Stable auth decision", "type": "decision"},
+		},
+		{
+			name: "validation failure",
+			args: map[string]any{"title": "Stable auth decision", "type": "manual"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var saveCalled, ensureCalled bool
+			store := &mockStore{
+				saveMemoryFn: func(*models.Memory) (int64, error) {
+					saveCalled = true
+					return 1, nil
+				},
+				ensureManualSaveSessionFn: func(project string) (string, error) {
+					ensureCalled = true
+					return "manual-save-" + project, nil
+				},
+			}
+			syncer := &mockSyncer{}
+			cfg := &hivesync.Config{AutoSync: true}
+			session := connectTestServerWithSync(t, store, cfg, syncer)
+
+			_ = callTool(t, session, "mem_suggest_topic_key", tt.args)
+
+			if saveCalled {
+				t.Fatal("SaveMemory must not be called")
+			}
+			if ensureCalled {
+				t.Fatal("EnsureManualSaveSession must not be called")
+			}
+			if syncer.callCount() != 0 {
+				t.Fatalf("Sync must not be called, got %d calls", syncer.callCount())
+			}
+		})
+	}
 }
 
 // ─── mem_session_start ────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
@@ -75,6 +76,19 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncS
 			}
 		}`),
 	}, memSaveHandler(store, syncer, cfg, activity))
+
+	s.AddTool(&sdkmcp.Tool{
+		Name:        "mem_suggest_topic_key",
+		Description: "Suggest a deterministic topic_key for a memory title and supported type without persisting anything.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"required": ["title", "type"],
+			"properties": {
+				"title": {"type": "string", "description": "Memory title to normalize into a slug"},
+				"type":  {"type": "string", "enum": ["architecture", "bugfix", "decision", "pattern", "config", "discovery", "preference"], "description": "Supported category: architecture, bugfix, decision, pattern, config, discovery, preference"}
+			}
+		}`),
+	}, memSuggestTopicKeyHandler())
 
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_search",
@@ -320,6 +334,37 @@ func memSaveHandler(store MemoryStore, syncer SyncRunner, cfg *hivesync.Config, 
 			"status":         "saved",
 			"stripped":       strippedCount > 0,
 			"stripped_count": strippedCount,
+		})
+	}
+}
+
+func memSuggestTopicKeyHandler() sdkmcp.ToolHandler {
+	return func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+		var p struct {
+			Title string `json:"title"`
+			Type  string `json:"type"`
+		}
+		if err := json.Unmarshal(req.Params.Arguments, &p); err != nil {
+			return toolError(fmt.Errorf("invalid params: %w", err)), nil
+		}
+
+		title := strings.TrimSpace(p.Title)
+		if title == "" {
+			return toolError(fmt.Errorf("title is required")), nil
+		}
+
+		topicType := strings.TrimSpace(p.Type)
+		if !isSupportedTopicKeyType(topicType) {
+			return toolError(fmt.Errorf("type must be one of: architecture, bugfix, decision, pattern, config, discovery, preference")), nil
+		}
+
+		slug := slugFromTitle(title)
+		if slug == "" {
+			return toolError(fmt.Errorf("title must contain at least one alphanumeric character")), nil
+		}
+
+		return toolJSON(map[string]any{
+			"topic_key": topicType + "/" + slug,
 		})
 	}
 }
@@ -664,6 +709,87 @@ func truncateRunes(s string, maxRunes int) string {
 		count++
 	}
 	return s // no truncation needed
+}
+
+const maxTopicKeySlugLength = 60
+
+var supportedTopicKeyTypes = map[string]struct{}{
+	"architecture": {},
+	"bugfix":       {},
+	"decision":     {},
+	"pattern":      {},
+	"config":       {},
+	"discovery":    {},
+	"preference":   {},
+}
+
+func isSupportedTopicKeyType(topicType string) bool {
+	_, ok := supportedTopicKeyTypes[topicType]
+	return ok
+}
+
+func slugFromTitle(title string) string {
+	text := splitCamelCaseBoundaries(title)
+	text = strings.ToLower(text)
+	text = strings.ReplaceAll(text, "n+1", "n plus one")
+
+	var b strings.Builder
+	lastWasHyphen := true
+	for _, r := range text {
+		switch {
+		case r == '+':
+			writeSlugWord(&b, "plus", &lastWasHyphen)
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			b.WriteRune(r)
+			lastWasHyphen = false
+		default:
+			writeSlugHyphen(&b, &lastWasHyphen)
+		}
+	}
+
+	slug := strings.Trim(b.String(), "-")
+	return truncateSlugRunes(slug, maxTopicKeySlugLength)
+}
+
+func truncateSlugRunes(slug string, maxRunes int) string {
+	if utf8.RuneCountInString(slug) <= maxRunes {
+		return slug
+	}
+
+	runeCount := 0
+	for i := range slug {
+		if runeCount == maxRunes {
+			return strings.TrimRight(slug[:i], "-")
+		}
+		runeCount++
+	}
+	return strings.TrimRight(slug, "-")
+}
+
+func splitCamelCaseBoundaries(s string) string {
+	var b strings.Builder
+	var prev rune
+	for i, r := range s {
+		if i > 0 && unicode.IsLower(prev) && unicode.IsUpper(r) {
+			b.WriteByte(' ')
+		}
+		b.WriteRune(r)
+		prev = r
+	}
+	return b.String()
+}
+
+func writeSlugWord(b *strings.Builder, word string, lastWasHyphen *bool) {
+	writeSlugHyphen(b, lastWasHyphen)
+	b.WriteString(word)
+	*lastWasHyphen = false
+}
+
+func writeSlugHyphen(b *strings.Builder, lastWasHyphen *bool) {
+	if !*lastWasHyphen {
+		b.WriteByte('-')
+		*lastWasHyphen = true
+	}
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────

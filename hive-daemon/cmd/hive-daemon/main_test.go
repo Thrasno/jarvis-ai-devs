@@ -67,7 +67,7 @@ func spawnDaemon(t *testing.T) *sdkmcp.ClientSession {
 
 // ─── 6.1 Startup ───────────────────────────────────────────────────────────
 
-func TestDaemon_Starts_AndRegisters9Tools(t *testing.T) {
+func TestDaemon_Starts_AndRegisters10Tools(t *testing.T) {
 	session := spawnDaemon(t)
 	ctx := context.Background()
 
@@ -79,8 +79,8 @@ func TestDaemon_Starts_AndRegisters9Tools(t *testing.T) {
 		toolNames = append(toolNames, tool.Name)
 	}
 
-	if len(toolNames) != 9 {
-		t.Errorf("expected 9 tools, got %d: %v", len(toolNames), toolNames)
+	if len(toolNames) != 10 {
+		t.Errorf("expected 10 tools, got %d: %v", len(toolNames), toolNames)
 	}
 }
 
