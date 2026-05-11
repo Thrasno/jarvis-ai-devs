@@ -73,6 +73,7 @@ func main() {
 	server := hivemcp.NewServer(store, store, syncer, cfg, store)
 
 	runErr := server.Run(rootCtx, &sdkmcp.StdioTransport{})
+	stop()
 
 	// Always wait for HTTP goroutine before closing DB or exiting.
 	<-httpDone

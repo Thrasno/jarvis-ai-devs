@@ -124,6 +124,111 @@ func TestSync_WithPrompts(t *testing.T) {
 	syncSvc.AssertExpectations(t)
 }
 
+func TestSync_MutationProtocolV2ResponseIncludesCursorAndMutationFields(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	occurredAt := time.Date(2026, 5, 11, 14, 30, 0, 0, time.UTC)
+	syncResp := &model.SyncResponse{
+		Pushed:        1,
+		Pulled:        []*model.Memory{},
+		Conflicts:     0,
+		PromptsPushed: 0,
+		NextMutationCursor: &model.MutationCursor{
+			Sequence: 42,
+			EventID:  "evt-next-42",
+		},
+		PulledMutations: []model.MutationEnvelope{
+			{
+				EventID:      "evt-41",
+				EntityType:   model.MutationEntityMemory,
+				EntitySyncID: "mem-sync-41",
+				Project:      "jarvis-dev",
+				Op:           model.MutationOpDelete,
+				Sequence:     41,
+				OccurredAt:   occurredAt,
+			},
+		},
+		CompatibilityMode: model.CompatibilityModeMutationV2,
+	}
+	syncSvc := &mockSyncSvc{}
+	syncSvc.On("Push", context.Background(), mock.MatchedBy(func(req model.SyncRequest) bool {
+		return req.ProtocolVersion == model.MutationProtocolVersion &&
+			req.MutationCursor != nil &&
+			req.MutationCursor.Sequence == 40 &&
+			req.MutationCursor.EventID == "evt-40"
+	}), "user-uuid-123").Return(syncResp, nil)
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).
+		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
+
+	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
+		map[string]interface{}{
+			"project":          "jarvis-dev",
+			"protocol_version": model.MutationProtocolVersion,
+			"mutation_cursor": map[string]interface{}{
+				"sequence": float64(40),
+				"event_id": "evt-40",
+			},
+			"memories": []interface{}{},
+		}, "valid-token")
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, model.CompatibilityModeMutationV2, body["compatibility_mode"])
+
+	nextCursor, ok := body["next_mutation_cursor"].(map[string]interface{})
+	require.True(t, ok, "next_mutation_cursor must be a JSON object")
+	assert.Equal(t, float64(42), nextCursor["sequence"])
+	assert.Equal(t, "evt-next-42", nextCursor["event_id"])
+
+	mutations, ok := body["pulled_mutations"].([]interface{})
+	require.True(t, ok, "pulled_mutations must use the stable JSON field name")
+	require.Len(t, mutations, 1)
+
+	mutation, ok := mutations[0].(map[string]interface{})
+	require.True(t, ok, "pulled_mutations[0] must be a JSON object")
+	assert.Equal(t, "evt-41", mutation["event_id"])
+	assert.Equal(t, "mem-sync-41", mutation["entity_sync_id"])
+	assert.Equal(t, model.MutationEntityMemory, mutation["entity_type"])
+	assert.Equal(t, string(model.MutationOpDelete), mutation["op"])
+	assert.Equal(t, occurredAt.Format(time.RFC3339Nano), mutation["occurred_at"])
+	syncSvc.AssertExpectations(t)
+}
+
+func TestSync_LegacyResponseOmitsAbsentMutationProtocolV2Fields(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	syncResp := &model.SyncResponse{
+		Pushed:    1,
+		Pulled:    []*model.Memory{},
+		Conflicts: 0,
+	}
+	syncSvc := &mockSyncSvc{}
+	syncSvc.On("Push", context.Background(), mock.MatchedBy(func(req model.SyncRequest) bool {
+		return req.ProtocolVersion == 0 && req.MutationCursor == nil && len(req.Mutations) == 0
+	}), "user-uuid-123").Return(syncResp, nil)
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).
+		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
+
+	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
+		map[string]interface{}{
+			"project":  "jarvis-dev",
+			"memories": []interface{}{},
+		}, "valid-token")
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.NotContains(t, body, "next_mutation_cursor")
+	assert.NotContains(t, body, "pulled_mutations")
+	assert.NotContains(t, body, "compatibility_mode")
+	syncSvc.AssertExpectations(t)
+}
+
 // ─── T4.10 SC-15: pulled_sessions present in sync response ───────────────────
 
 // TestSyncHandler_Pull_IncludesSessions verifies SC-15: when the server has sessions

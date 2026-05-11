@@ -45,6 +45,7 @@ SELECT m.id, m.sync_id, m.project, m.topic_key, m.category, m.title, m.content,
 FROM memories m
 JOIN memories_fts f ON m.id = f.rowid
 WHERE f.memories_fts MATCH ?
+  AND m.deleted_at IS NULL
   AND (? = '' OR m.project = ?)
   AND (? = '' OR m.category = ?)
 ORDER BY bm25(memories_fts, 10, 5, 1)
@@ -78,7 +79,8 @@ func (d *DB) searchAllForProject(project, category string, limit int) ([]*models
 SELECT id, sync_id, project, topic_key, category, title, content,
        tags, files_affected, created_by, created_at, confidence, impact_score, session_id
 FROM memories
-WHERE (? = '' OR project = ?)
+WHERE deleted_at IS NULL
+  AND (? = '' OR project = ?)
   AND (? = '' OR category = ?)
 ORDER BY created_at DESC, id DESC
 LIMIT ?`

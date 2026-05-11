@@ -64,6 +64,11 @@ type SyncRequest struct {
 	// TODAS las memorias del proyecto en el pull. Si tiene valor,
 	// solo devuelve las memorias más nuevas que esa fecha.
 	LastSync *time.Time `json:"last_sync"`
+
+	// Mutation sync v2 fields. Legacy clients omit these and keep the row-state path.
+	ProtocolVersion int                `json:"protocol_version,omitempty"`
+	MutationCursor  *MutationCursor    `json:"mutation_cursor,omitempty"`
+	Mutations       []MutationEnvelope `json:"mutations,omitempty" binding:"max=100,dive"`
 }
 
 // SyncSessionPayload es el formato de sesión en el wire protocol de sync.

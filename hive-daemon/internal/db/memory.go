@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	"github.com/google/uuid"
 )
 
 // SaveMemory persists a memory to the database.
@@ -32,19 +32,41 @@ func (d *DB) SaveMemory(mem *models.Memory) (int64, error) {
 	syncID := uuid.New().String()
 	createdBy := detectUsername()
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	op := MutationOpCreate
 
-	// session_id is stored as NULL when empty (FK references sessions.id).
 	var sessionID sql.NullString
 	if mem.SessionID != "" {
 		sessionID = sql.NullString{String: mem.SessionID, Valid: true}
 	}
 
+	tx, err := d.sqlDB.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin save memory: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if mem.TopicKey != nil {
+		var existingSyncID string
+		var deletedAt sql.NullString
+		err := tx.QueryRow(`SELECT sync_id, deleted_at FROM memories WHERE project = ? AND topic_key = ?`, mem.Project, *mem.TopicKey).Scan(&existingSyncID, &deletedAt)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return 0, fmt.Errorf("check existing memory: %w", err)
+		}
+		if err == nil {
+			if deletedAt.Valid {
+				return 0, fmt.Errorf("memory is deleted; explicit restore required before update")
+			}
+			syncID = existingSyncID
+			op = MutationOpUpdate
+		}
+	}
+
 	const q = `
 INSERT INTO memories
     (sync_id, project, topic_key, category, title, content, tags, files_affected,
-     created_by, created_at, confidence, impact_score, session_id)
+     created_by, created_at, updated_at, confidence, impact_score, session_id)
 VALUES
-    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(project, topic_key) WHERE topic_key IS NOT NULL
 DO UPDATE SET
     title          = excluded.title,
@@ -54,28 +76,46 @@ DO UPDATE SET
     files_affected = excluded.files_affected,
     confidence     = excluded.confidence,
     impact_score   = excluded.impact_score,
-    session_id     = excluded.session_id
-RETURNING id`
+    session_id     = excluded.session_id,
+    updated_at     = excluded.updated_at,
+    synced_at      = NULL
+RETURNING id, sync_id`
 
 	var id int64
-	err = d.sqlDB.QueryRow(q,
+	err = tx.QueryRow(q,
 		syncID, mem.Project, mem.TopicKey, mem.Category,
 		mem.Title, mem.Content, tagsJSON, filesJSON,
-		createdBy, now, mem.Confidence, mem.ImpactScore, sessionID,
-	).Scan(&id)
+		createdBy, now, now, mem.Confidence, mem.ImpactScore, sessionID,
+	).Scan(&id, &syncID)
 	if err != nil {
 		return 0, fmt.Errorf("save memory: %w", err)
+	}
+	if err := insertMemoryMutation(tx, memoryMutationRecord{
+		EventID:      uuid.New().String(),
+		EntitySyncID: syncID,
+		Project:      mem.Project,
+		Op:           op,
+		OccurredAt:   now,
+		ActorID:      createdBy,
+		Payload: mutationPayload{
+			Memory: memoryPayloadFromModel(mem, syncID, createdBy, time.Now().UTC()),
+		},
+	}); err != nil {
+		return 0, fmt.Errorf("journal memory mutation: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit save memory: %w", err)
 	}
 	return id, nil
 }
 
-// GetMemory retrieves a memory by its id.
-// Returns an error if not found.
+// GetMemory retrieves an active memory by its id.
+// Returns an error if not found or tombstoned.
 func (d *DB) GetMemory(id int64) (*models.Memory, error) {
 	const q = `
 SELECT id, sync_id, project, topic_key, category, title, content, tags, files_affected,
        created_by, created_at, confidence, impact_score, session_id
-FROM memories WHERE id = ?`
+FROM memories WHERE id = ? AND deleted_at IS NULL`
 
 	row := d.sqlDB.QueryRow(q, id)
 	mem, err := scanMemory(row)
@@ -88,13 +128,13 @@ FROM memories WHERE id = ?`
 	return mem, nil
 }
 
-// ListMemories returns memories for a project, ordered by created_at DESC.
+// ListMemories returns active memories for a project, ordered by created_at DESC.
 func (d *DB) ListMemories(project string, limit int) ([]*models.Memory, error) {
 	const q = `
 SELECT id, sync_id, project, topic_key, category, title, content, tags, files_affected,
        created_by, created_at, confidence, impact_score, session_id
 FROM memories
-WHERE project = ?
+WHERE project = ? AND deleted_at IS NULL
 ORDER BY created_at DESC, id DESC
 LIMIT ?`
 
@@ -118,12 +158,148 @@ LIMIT ?`
 	return results, nil
 }
 
+type DeletedMemory struct {
+	Memory       *models.Memory
+	DeletedAt    time.Time
+	DeletedBy    string
+	DeleteReason string
+	RestoredAt   time.Time
+}
+
+func (d *DB) GetDeletedMemory(id int64) (*DeletedMemory, error) {
+	const q = `
+SELECT id, sync_id, project, topic_key, category, title, content, tags, files_affected,
+       created_by, created_at, confidence, impact_score, session_id,
+       deleted_at, deleted_by, delete_reason, restored_at
+FROM memories WHERE id = ? AND deleted_at IS NOT NULL`
+
+	var deletedAt, deletedBy, reason, restoredAt sql.NullString
+	mem, err := scanMemoryWithExtra(d.sqlDB.QueryRow(q, id), &deletedAt, &deletedBy, &reason, &restoredAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("deleted memory not found: id=%d", id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get deleted memory: %w", err)
+	}
+
+	deleted := &DeletedMemory{Memory: mem}
+	if deletedAt.Valid {
+		deleted.DeletedAt, _ = parseTimeStr(deletedAt.String)
+	}
+	if deletedBy.Valid {
+		deleted.DeletedBy = deletedBy.String
+	}
+	if reason.Valid {
+		deleted.DeleteReason = reason.String
+	}
+	if restoredAt.Valid {
+		deleted.RestoredAt, _ = parseTimeStr(restoredAt.String)
+	}
+	return deleted, nil
+}
+
+func (d *DB) DeleteMemory(id int64, actorID, reason string) error {
+	if actorID == "" {
+		actorID = detectUsername()
+	}
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	tx, err := d.sqlDB.Begin()
+	if err != nil {
+		return fmt.Errorf("begin delete memory: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var syncID, project string
+	err = tx.QueryRow(`SELECT sync_id, project FROM memories WHERE id = ? AND deleted_at IS NULL`, id).Scan(&syncID, &project)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("memory not found or already deleted: id=%d", id)
+	}
+	if err != nil {
+		return fmt.Errorf("load memory for delete: %w", err)
+	}
+
+	result, err := tx.Exec(`
+UPDATE memories
+SET deleted_at = ?, deleted_by = ?, delete_reason = ?, restored_at = NULL, updated_at = ?, synced_at = NULL
+WHERE id = ? AND deleted_at IS NULL`, now, actorID, reason, now, id)
+	if err != nil {
+		return fmt.Errorf("delete memory: %w", err)
+	}
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		return fmt.Errorf("memory not found or already deleted: id=%d", id)
+	}
+
+	if err := insertMemoryMutation(tx, memoryMutationRecord{
+		EventID:      uuid.New().String(),
+		EntitySyncID: syncID,
+		Project:      project,
+		Op:           MutationOpDelete,
+		OccurredAt:   now,
+		ActorID:      actorID,
+		Payload: mutationPayload{
+			Tombstone: &MutationTombstonePayload{DeletedAt: parseTimeOrZero(now), DeletedBy: actorID, Reason: reason},
+		},
+	}); err != nil {
+		return fmt.Errorf("journal delete mutation: %w", err)
+	}
+	return tx.Commit()
+}
+
+func (d *DB) RestoreMemory(id int64, actorID string) error {
+	if actorID == "" {
+		actorID = detectUsername()
+	}
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	tx, err := d.sqlDB.Begin()
+	if err != nil {
+		return fmt.Errorf("begin restore memory: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var syncID, project string
+	err = tx.QueryRow(`SELECT sync_id, project FROM memories WHERE id = ? AND deleted_at IS NOT NULL`, id).Scan(&syncID, &project)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("memory not deleted: id=%d", id)
+	}
+	if err != nil {
+		return fmt.Errorf("load memory for restore: %w", err)
+	}
+
+	result, err := tx.Exec(`
+UPDATE memories
+SET deleted_at = NULL, deleted_by = NULL, delete_reason = NULL, restored_at = ?, updated_at = ?, synced_at = NULL
+WHERE id = ? AND deleted_at IS NOT NULL`, now, now, id)
+	if err != nil {
+		return fmt.Errorf("restore memory: %w", err)
+	}
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		return fmt.Errorf("memory not deleted: id=%d", id)
+	}
+
+	if err := insertMemoryMutation(tx, memoryMutationRecord{
+		EventID:      uuid.New().String(),
+		EntitySyncID: syncID,
+		Project:      project,
+		Op:           MutationOpRestore,
+		OccurredAt:   now,
+		ActorID:      actorID,
+		Payload:      mutationPayload{},
+	}); err != nil {
+		return fmt.Errorf("journal restore mutation: %w", err)
+	}
+	return tx.Commit()
+}
+
 // scanner is satisfied by both *sql.Row and *sql.Rows.
 type scanner interface {
 	Scan(dest ...any) error
 }
 
 func scanMemory(s scanner) (*models.Memory, error) {
+	return scanMemoryWithExtra(s)
+}
+
+func scanMemoryWithExtra(s scanner, extra ...any) (*models.Memory, error) {
 	var (
 		mem          models.Memory
 		topicKey     sql.NullString
@@ -132,13 +308,15 @@ func scanMemory(s scanner) (*models.Memory, error) {
 		createdAtStr string
 	)
 
-	err := s.Scan(
+	dest := []any{
 		&mem.ID, &mem.SyncID, &mem.Project, &topicKey,
 		&mem.Category, &mem.Title, &mem.Content,
 		&tagsJSON, &filesJSON,
 		&mem.CreatedBy, &createdAtStr,
 		&mem.Confidence, &mem.ImpactScore, &mem.SessionID,
-	)
+	}
+	dest = append(dest, extra...)
+	err := s.Scan(dest...)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +334,6 @@ func scanMemory(s scanner) (*models.Memory, error) {
 
 	mem.CreatedAt, err = time.Parse("2006-01-02 15:04:05", createdAtStr)
 	if err != nil {
-		// Try RFC3339 fallback (some SQLite versions)
 		mem.CreatedAt, _ = time.Parse(time.RFC3339, createdAtStr)
 	}
 
@@ -172,4 +349,12 @@ func marshalStringSlice(s []string) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+func parseTimeOrZero(value string) time.Time {
+	parsed, err := parseTimeStr(value)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
 }

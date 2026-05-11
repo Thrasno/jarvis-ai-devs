@@ -15,7 +15,7 @@ import (
 )
 
 // startPostgresWithSessions inicia un contenedor PostgreSQL y ejecuta las tres migraciones
-// (001 initial, 002 user_prompts, 003 sessions). Retorna el pool y cleanup.
+// (001 initial, 002 user_prompts, 003 sessions, 005 memory mutations). Retorna el pool y cleanup.
 //
 // R2-CRIT-5 — toda llamada que asume el schema completo (sessions table +
 // memories.session_id NOT NULL + FK) DEBE usar este helper. `startPostgres` aplica
@@ -31,6 +31,9 @@ func startPostgresWithSessions(t *testing.T) (*pgxpool.Pool, func()) {
 
 	err = RunMigrations(pool, migrations.SessionsSQL)
 	require.NoError(t, err, "failed to run migration 003")
+
+	err = RunMigrations(pool, migrations.MemoryMutationsSQL)
+	require.NoError(t, err, "failed to run migration 005")
 
 	return pool, cleanup
 }

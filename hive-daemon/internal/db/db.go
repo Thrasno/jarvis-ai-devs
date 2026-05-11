@@ -27,6 +27,10 @@ CREATE TABLE IF NOT EXISTS memories (
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     synced_at       DATETIME,
+    deleted_at      DATETIME,
+    deleted_by      TEXT,
+    delete_reason   TEXT,
+    restored_at     DATETIME,
     confidence      TEXT NOT NULL DEFAULT '',
     impact_score    INTEGER NOT NULL DEFAULT 0,
     session_id      TEXT NOT NULL REFERENCES sessions(id)
@@ -111,6 +115,33 @@ CREATE INDEX IF NOT EXISTS idx_sessions_dev_id     ON sessions(dev_id);
 -- The UNIQUE constraint above already implies an index, but we declare it explicitly
 -- under a stable name so daemon/server queries can rely on the same name.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_sync_id ON sessions(sync_id);
+
+CREATE TABLE IF NOT EXISTS memory_mutations (
+    sequence       INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id       TEXT NOT NULL UNIQUE,
+    entity_type    TEXT NOT NULL DEFAULT 'memory',
+    entity_sync_id TEXT NOT NULL,
+    project        TEXT NOT NULL,
+    op             TEXT NOT NULL,
+    occurred_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    actor_id       TEXT NOT NULL DEFAULT '',
+    base_updated_at DATETIME,
+    payload_json   TEXT NOT NULL DEFAULT '{}',
+    synced_at      DATETIME
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_mutations_event_id ON memory_mutations(event_id);
+CREATE INDEX IF NOT EXISTS idx_memory_mutations_project_unsynced ON memory_mutations(project, sequence) WHERE synced_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_memory_mutations_entity ON memory_mutations(entity_type, entity_sync_id, sequence);
+
+CREATE TABLE IF NOT EXISTS mutation_cursors (
+    consumer       TEXT NOT NULL,
+    project        TEXT NOT NULL,
+    sequence       INTEGER NOT NULL DEFAULT 0,
+    event_id       TEXT NOT NULL DEFAULT '',
+    updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (consumer, project)
+);
 
 CREATE TABLE IF NOT EXISTS user_prompts (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -214,6 +245,10 @@ func initSchema(sqlDB *sql.DB) error {
 		// Usamos epoch como placeholder; las rows existentes se actualizan abajo.
 		`ALTER TABLE memories ADD COLUMN updated_at DATETIME NOT NULL DEFAULT '1970-01-01 00:00:00'`,
 		`ALTER TABLE memories ADD COLUMN synced_at DATETIME`,
+		`ALTER TABLE memories ADD COLUMN deleted_at DATETIME`,
+		`ALTER TABLE memories ADD COLUMN deleted_by TEXT`,
+		`ALTER TABLE memories ADD COLUMN delete_reason TEXT`,
+		`ALTER TABLE memories ADD COLUMN restored_at DATETIME`,
 		// Backfill: copiar created_at a updated_at para las filas pre-migración.
 		`UPDATE memories SET updated_at = created_at WHERE updated_at = '1970-01-01 00:00:00'`,
 		// Fix FTS5 content-table triggers: UPDATE y DELETE FROM no funcionan en FTS5.
@@ -239,6 +274,12 @@ func initSchema(sqlDB *sql.DB) error {
 		// created without the constraint. If duplicate sync_ids already exist, the
 		// CREATE INDEX fails and we log+continue (caller may need to dedupe manually).
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_sync_id ON sessions(sync_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_project_active ON memories(project, created_at DESC) WHERE deleted_at IS NULL`,
+		`CREATE TABLE IF NOT EXISTS memory_mutations (sequence INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE, entity_type TEXT NOT NULL DEFAULT 'memory', entity_sync_id TEXT NOT NULL, project TEXT NOT NULL, op TEXT NOT NULL, occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, actor_id TEXT NOT NULL DEFAULT '', base_updated_at DATETIME, payload_json TEXT NOT NULL DEFAULT '{}', synced_at DATETIME)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_mutations_event_id ON memory_mutations(event_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_mutations_project_unsynced ON memory_mutations(project, sequence) WHERE synced_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_mutations_entity ON memory_mutations(entity_type, entity_sync_id, sequence)`,
+		`CREATE TABLE IF NOT EXISTS mutation_cursors (consumer TEXT NOT NULL, project TEXT NOT NULL, sequence INTEGER NOT NULL DEFAULT 0, event_id TEXT NOT NULL DEFAULT '', updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (consumer, project))`,
 	}
 	for _, m := range migrations {
 		if _, err := sqlDB.Exec(m); err != nil {
@@ -343,6 +384,10 @@ func migrateMemoriesAddSessionID(sqlDB *sql.DB) error {
 		created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		synced_at      DATETIME,
+		deleted_at     DATETIME,
+		deleted_by     TEXT,
+		delete_reason  TEXT,
+		restored_at    DATETIME,
 		confidence     TEXT NOT NULL DEFAULT '',
 		impact_score   INTEGER NOT NULL DEFAULT 0,
 		session_id     TEXT NOT NULL REFERENCES sessions(id)
@@ -357,9 +402,11 @@ func migrateMemoriesAddSessionID(sqlDB *sql.DB) error {
 		INSERT INTO memories_new
 		    (id, sync_id, project, topic_key, category, title, content, tags,
 		     files_affected, created_by, created_at, updated_at, synced_at,
+		     deleted_at, deleted_by, delete_reason, restored_at,
 		     confidence, impact_score, session_id)
 		SELECT id, sync_id, project, topic_key, category, title, content, tags,
 		       files_affected, created_by, created_at, updated_at, synced_at,
+		       NULL, NULL, NULL, NULL,
 		       confidence, impact_score,
 		       'legacy-pre-lifecycle-' || project
 		FROM memories
@@ -394,6 +441,7 @@ func migrateMemoriesAddSessionID(sqlDB *sql.DB) error {
 		 ON memories(project, topic_key) WHERE topic_key IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_project_active ON memories(project, created_at DESC) WHERE deleted_at IS NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_dev_id ON sessions(dev_id)`,
 		// R2-WARN-3 — recreated table needs the UNIQUE INDEX too.

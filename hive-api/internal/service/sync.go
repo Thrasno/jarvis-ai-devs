@@ -109,8 +109,14 @@ func (s *syncService) Push(ctx context.Context, req model.SyncRequest, userID st
 
 	// ─── Fase 2: memories ─────────────────────────────────────────────────────
 	var pushed, conflicts int
+	mutationProtocolCapable := req.ProtocolVersion >= model.MutationProtocolVersion
+	mutationProtocolAuthoritative := mutationProtocolCapable && len(req.Mutations) > 0
 
 	for _, payload := range req.Memories {
+		if mutationProtocolAuthoritative {
+			continue
+		}
+
 		// Resolve session_id for this memory (T4.4 + T4.5).
 		sessionID, err := s.resolveSessionID(ctx, payload.SessionID, req.Project, inPayloadSessions)
 		if err != nil {
@@ -177,13 +183,73 @@ func (s *syncService) Push(ctx context.Context, req model.SyncRequest, userID st
 		}
 	}
 
+	var pulledMutations []model.MutationEnvelope
+	var nextMutationCursor *model.MutationCursor
+	compatibilityMode := ""
+	if mutationProtocolAuthoritative {
+		compatibilityMode = model.CompatibilityModeMutationV2
+		for _, mutation := range req.Mutations {
+			if mutationProjectMismatch(mutation, req.Project) {
+				conflicts++
+				continue
+			}
+
+			result, err := s.repo.ApplyMemoryMutation(ctx, mutation)
+			if err != nil {
+				if errors.Is(err, repository.ErrMemoryTombstoned) || errors.Is(err, repository.ErrNotFound) {
+					conflicts++
+					continue
+				}
+				return nil, err
+			}
+			if result == nil {
+				continue
+			}
+			if result.Applied {
+				pushed++
+			}
+			if result.Rejected {
+				conflicts++
+			}
+		}
+
+		cursor := model.MutationCursor{}
+		if req.MutationCursor != nil {
+			cursor = *req.MutationCursor
+		}
+		batch, err := s.repo.ListMemoryMutations(ctx, req.Project, cursor, 100)
+		if err != nil {
+			return nil, err
+		}
+		if batch != nil {
+			pulledMutations = batch.Events
+			next := batch.Next
+			nextMutationCursor = &next
+		}
+	} else if mutationProtocolCapable {
+		compatibilityMode = model.CompatibilityModeLegacy
+	}
+
 	resp := &model.SyncResponse{
-		Pushed:        pushed,
-		Conflicts:     conflicts,
-		PromptsPushed: promptsPushed,
+		Pushed:             pushed,
+		Conflicts:          conflicts,
+		PromptsPushed:      promptsPushed,
+		PulledMutations:    pulledMutations,
+		NextMutationCursor: nextMutationCursor,
+		CompatibilityMode:  compatibilityMode,
 	}
 	s.emitSyncAudit(ctx, req.Project, userID, pushed, conflicts, promptsPushed)
 	return resp, nil
+}
+
+func mutationProjectMismatch(mutation model.MutationEnvelope, requestProject string) bool {
+	if mutation.Project != requestProject {
+		return true
+	}
+	if mutation.Memory != nil && mutation.Memory.Project != "" && mutation.Memory.Project != requestProject {
+		return true
+	}
+	return false
 }
 
 func (s *syncService) emitSyncAudit(ctx context.Context, project, userID string, pushed, conflicts, promptsPushed int) {

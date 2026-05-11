@@ -687,6 +687,583 @@ func TestSyncDB_SaveFromRemote(t *testing.T) {
 	}
 }
 
+func TestSyncDB_PendingMutationsLifecycle(t *testing.T) {
+	tests := []struct {
+		name    string
+		project string
+		wantOps []MutationOp
+	}{
+		{
+			name:    "filters unsynced mutations by project in deterministic order",
+			project: "mut-project-a",
+			wantOps: []MutationOp{MutationOpCreate, MutationOpDelete},
+		},
+		{
+			name:    "empty project returns all unsynced mutations",
+			project: "",
+			wantOps: []MutationOp{MutationOpCreate, MutationOpDelete, MutationOpCreate},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			t.Cleanup(func() { require.NoError(t, db.Close()) })
+			require.NoError(t, db.CreateSession("manual-save-mut-project-a", "mut-project-a", "", "test", "test"))
+			require.NoError(t, db.CreateSession("manual-save-mut-project-b", "mut-project-b", "", "test", "test"))
+
+			idA, err := db.SaveMemory(createTestMemory("mut-project-a"))
+			require.NoError(t, err)
+			require.NoError(t, db.DeleteMemory(idA, "tester", "cleanup"))
+			_, err = db.SaveMemory(createTestMemory("mut-project-b"))
+			require.NoError(t, err)
+
+			got, err := db.GetPendingMutations(tt.project, 10)
+			require.NoError(t, err)
+			require.Len(t, got, len(tt.wantOps))
+			for i, wantOp := range tt.wantOps {
+				assert.Equal(t, wantOp, got[i].Op)
+				assert.NotZero(t, got[i].Sequence)
+				assert.NotEmpty(t, got[i].EventID)
+				if got[i].Memory != nil {
+					assert.Equal(t, got[i].EntitySyncID, got[i].Memory.SyncID)
+					assert.Equal(t, got[i].Project, got[i].Memory.Project)
+					assert.False(t, got[i].Memory.CreatedAt.IsZero())
+					assert.False(t, got[i].Memory.UpdatedAt.IsZero())
+				}
+			}
+
+			require.NoError(t, db.MarkMutationsSynced([]string{got[0].EventID}, time.Date(2026, 5, 11, 10, 0, 0, 0, time.UTC)))
+			after, err := db.GetPendingMutations(tt.project, 10)
+			require.NoError(t, err)
+			require.Len(t, after, len(tt.wantOps)-1)
+			assert.NotEqual(t, got[0].EventID, after[0].EventID)
+		})
+	}
+}
+
+func TestSyncDB_MutationCursorHelpers(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     func(t *testing.T, db *DB)
+		consumer  string
+		project   string
+		want      MutationCursor
+		assertion func(t *testing.T, db *DB)
+	}{
+		{
+			name:     "missing cursor returns zero value",
+			setup:    func(t *testing.T, db *DB) {},
+			consumer: "hive-api",
+			project:  "cursor-project-a",
+			want:     MutationCursor{},
+		},
+		{
+			name: "insert cursor persists sequence and event id",
+			setup: func(t *testing.T, db *DB) {
+				require.NoError(t, db.SetMutationCursor("hive-api", "cursor-project-a", MutationCursor{Sequence: 12, EventID: "evt-12"}, time.Date(2026, 5, 11, 17, 0, 0, 0, time.UTC)))
+			},
+			consumer: "hive-api",
+			project:  "cursor-project-a",
+			want:     MutationCursor{Sequence: 12, EventID: "evt-12"},
+		},
+		{
+			name: "update cursor replaces sequence and event id",
+			setup: func(t *testing.T, db *DB) {
+				require.NoError(t, db.SetMutationCursor("hive-api", "cursor-project-a", MutationCursor{Sequence: 12, EventID: "evt-12"}, time.Date(2026, 5, 11, 17, 0, 0, 0, time.UTC)))
+				require.NoError(t, db.SetMutationCursor("hive-api", "cursor-project-a", MutationCursor{Sequence: 13, EventID: "evt-13"}, time.Date(2026, 5, 11, 17, 5, 0, 0, time.UTC)))
+			},
+			consumer: "hive-api",
+			project:  "cursor-project-a",
+			want:     MutationCursor{Sequence: 13, EventID: "evt-13"},
+		},
+		{
+			name: "cursor is isolated by project",
+			setup: func(t *testing.T, db *DB) {
+				require.NoError(t, db.SetMutationCursor("hive-api", "cursor-project-a", MutationCursor{Sequence: 21, EventID: "evt-a-21"}, time.Date(2026, 5, 11, 17, 10, 0, 0, time.UTC)))
+				require.NoError(t, db.SetMutationCursor("hive-api", "cursor-project-b", MutationCursor{Sequence: 22, EventID: "evt-b-22"}, time.Date(2026, 5, 11, 17, 10, 0, 0, time.UTC)))
+			},
+			consumer: "hive-api",
+			project:  "cursor-project-b",
+			want:     MutationCursor{Sequence: 22, EventID: "evt-b-22"},
+			assertion: func(t *testing.T, db *DB) {
+				got, err := db.GetMutationCursor("hive-api", "cursor-project-a")
+				require.NoError(t, err)
+				assert.Equal(t, MutationCursor{Sequence: 21, EventID: "evt-a-21"}, got)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+			tt.setup(t, db)
+
+			got, err := db.GetMutationCursor(tt.consumer, tt.project)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+
+			if tt.assertion != nil {
+				tt.assertion(t, db)
+			}
+		})
+	}
+}
+
+func TestSyncDB_MutationCursorHelpersReturnDBErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		call    func(*DB) error
+		wantErr string
+	}{
+		{
+			name: "get cursor on closed database returns wrapped db error",
+			call: func(db *DB) error {
+				_, err := db.GetMutationCursor("hive-api", "cursor-project")
+				return err
+			},
+			wantErr: "get mutation cursor",
+		},
+		{
+			name: "set cursor on closed database returns wrapped db error",
+			call: func(db *DB) error {
+				return db.SetMutationCursor("hive-api", "cursor-project", MutationCursor{Sequence: 44, EventID: "evt-44"}, time.Date(2026, 5, 11, 18, 0, 0, 0, time.UTC))
+			},
+			wantErr: "set mutation cursor",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			require.NoError(t, db.Close())
+
+			err := tt.call(db)
+
+			require.Error(t, err)
+			assert.ErrorContains(t, err, tt.wantErr)
+			assert.ErrorContains(t, err, "database is closed")
+		})
+	}
+}
+
+func TestSyncDB_ApplyRemoteMutationIdempotent(t *testing.T) {
+	db := setupTestDB(t)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+	event := MutationEnvelope{
+		EventID:      "remote-event-1",
+		EntityType:   "memory",
+		EntitySyncID: "remote-memory-1",
+		Project:      "remote-mut-project",
+		Op:           MutationOpCreate,
+		Sequence:     7,
+		OccurredAt:   time.Date(2026, 5, 11, 10, 0, 0, 0, time.UTC),
+		Memory: &MutationMemoryPayload{
+			Title:     "Remote title",
+			Content:   "Remote content",
+			Category:  "remote",
+			CreatedBy: "remote-user",
+			SessionID: "manual-save-remote-mut-project",
+		},
+	}
+
+	applied, err := db.ApplyRemoteMutation(event)
+	require.NoError(t, err)
+	assert.True(t, applied)
+
+	applied, err = db.ApplyRemoteMutation(event)
+	require.NoError(t, err)
+	assert.False(t, applied, "duplicate event_id must be idempotent")
+
+	var memoryCount, mutationCount int
+	require.NoError(t, db.sqlDB.QueryRow(`SELECT COUNT(*) FROM memories WHERE sync_id = ?`, event.EntitySyncID).Scan(&memoryCount))
+	require.NoError(t, db.sqlDB.QueryRow(`SELECT COUNT(*) FROM memory_mutations WHERE event_id = ?`, event.EventID).Scan(&mutationCount))
+	assert.Equal(t, 1, memoryCount)
+	assert.Equal(t, 1, mutationCount)
+}
+
+func TestSyncDB_ApplyRemoteMutationNonCreateBranches(t *testing.T) {
+	baseTime := time.Date(2026, 5, 11, 11, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name      string
+		seed      func(t *testing.T, db *DB) (memoryID int64, syncID string)
+		event     func(syncID string) MutationEnvelope
+		wantApply bool
+		wantErr   string
+		assertion func(t *testing.T, db *DB, memoryID int64, syncID string)
+	}{
+		{
+			name: "delete tombstones active local memory and duplicate replay is idempotent",
+			seed: seedRemoteApplyMemory("remote-delete-project"),
+			event: func(syncID string) MutationEnvelope {
+				return MutationEnvelope{
+					EventID:      "remote-delete-event",
+					EntityType:   "memory",
+					EntitySyncID: syncID,
+					Project:      "remote-delete-project",
+					Op:           MutationOpDelete,
+					OccurredAt:   baseTime,
+					ActorID:      "remote-user",
+					Tombstone: &MutationTombstonePayload{
+						DeletedAt: baseTime.Add(-time.Minute),
+						DeletedBy: "remote-user",
+						Reason:    "remote cleanup",
+					},
+				}
+			},
+			wantApply: true,
+			assertion: func(t *testing.T, db *DB, memoryID int64, syncID string) {
+				_, err := db.GetMemory(memoryID)
+				assert.Error(t, err)
+
+				deleted, err := db.GetDeletedMemory(memoryID)
+				require.NoError(t, err)
+				assert.Equal(t, "remote-user", deleted.DeletedBy)
+				assert.Equal(t, "remote cleanup", deleted.DeleteReason)
+				assert.WithinDuration(t, baseTime.Add(-time.Minute), deleted.DeletedAt, time.Second)
+
+				appliedAgain, err := db.ApplyRemoteMutation(MutationEnvelope{
+					EventID:      "remote-delete-event",
+					EntityType:   "memory",
+					EntitySyncID: syncID,
+					Project:      "remote-delete-project",
+					Op:           MutationOpDelete,
+					OccurredAt:   baseTime,
+				})
+				require.NoError(t, err)
+				assert.False(t, appliedAgain)
+
+				var mutationCount int
+				require.NoError(t, db.sqlDB.QueryRow(`SELECT COUNT(*) FROM memory_mutations WHERE event_id = ?`, "remote-delete-event").Scan(&mutationCount))
+				assert.Equal(t, 1, mutationCount)
+			},
+		},
+		{
+			name: "restore clears tombstone metadata and normal reads work",
+			seed: func(t *testing.T, db *DB) (int64, string) {
+				t.Helper()
+				memoryID, syncID := seedRemoteApplyMemory("remote-restore-project")(t, db)
+				require.NoError(t, db.DeleteMemory(memoryID, "local-user", "local cleanup"))
+				return memoryID, syncID
+			},
+			event: func(syncID string) MutationEnvelope {
+				return MutationEnvelope{
+					EventID:      "remote-restore-event",
+					EntityType:   "memory",
+					EntitySyncID: syncID,
+					Project:      "remote-restore-project",
+					Op:           MutationOpRestore,
+					OccurredAt:   baseTime.Add(time.Minute),
+					ActorID:      "remote-user",
+				}
+			},
+			wantApply: true,
+			assertion: func(t *testing.T, db *DB, memoryID int64, syncID string) {
+				active, err := db.GetMemory(memoryID)
+				require.NoError(t, err)
+				assert.Equal(t, syncID, active.SyncID)
+
+				_, err = db.GetDeletedMemory(memoryID)
+				assert.Error(t, err)
+
+				var deletedAt, deletedBy, reason sql.NullString
+				require.NoError(t, db.sqlDB.QueryRow(`SELECT deleted_at, deleted_by, delete_reason FROM memories WHERE sync_id = ?`, syncID).Scan(&deletedAt, &deletedBy, &reason))
+				assert.False(t, deletedAt.Valid)
+				assert.False(t, deletedBy.Valid)
+				assert.False(t, reason.Valid)
+			},
+		},
+		{
+			name: "update active memory applies payload and records mutation",
+			seed: seedRemoteApplyMemory("remote-update-project"),
+			event: func(syncID string) MutationEnvelope {
+				return MutationEnvelope{
+					EventID:      "remote-update-event",
+					EntityType:   "memory",
+					EntitySyncID: syncID,
+					Project:      "remote-update-project",
+					Op:           MutationOpUpdate,
+					OccurredAt:   baseTime.Add(90 * time.Second),
+					Memory: &MutationMemoryPayload{
+						Title:         "Remote updated title",
+						Content:       "Remote updated content",
+						Category:      "remote-update",
+						Tags:          []string{"remote", "update"},
+						FilesAffected: []string{"sync.go"},
+						CreatedBy:     "remote-user",
+						Confidence:    "medium",
+						ImpactScore:   7,
+						SessionID:     "manual-save-remote-update-project",
+					},
+				}
+			},
+			wantApply: true,
+			assertion: func(t *testing.T, db *DB, memoryID int64, syncID string) {
+				active, err := db.GetMemory(memoryID)
+				require.NoError(t, err)
+				assert.Equal(t, "Remote updated title", active.Title)
+				assert.Equal(t, "Remote updated content", active.Content)
+				assert.Equal(t, "remote-update", active.Category)
+				assert.Equal(t, []string{"remote", "update"}, active.Tags)
+
+				var mutationCount int
+				require.NoError(t, db.sqlDB.QueryRow(`SELECT COUNT(*) FROM memory_mutations WHERE event_id = ? AND op = ?`, "remote-update-event", string(MutationOpUpdate)).Scan(&mutationCount))
+				assert.Equal(t, 1, mutationCount)
+			},
+		},
+		{
+			name: "update on tombstone is rejected and does not alter tombstone row",
+			seed: func(t *testing.T, db *DB) (int64, string) {
+				t.Helper()
+				memoryID, syncID := seedRemoteApplyMemory("remote-update-tombstone-project")(t, db)
+				require.NoError(t, db.DeleteMemory(memoryID, "local-user", "keep tombstone"))
+				return memoryID, syncID
+			},
+			event: func(syncID string) MutationEnvelope {
+				return MutationEnvelope{
+					EventID:      "remote-update-tombstone-event",
+					EntityType:   "memory",
+					EntitySyncID: syncID,
+					Project:      "remote-update-tombstone-project",
+					Op:           MutationOpUpdate,
+					OccurredAt:   baseTime.Add(2 * time.Minute),
+					Memory: &MutationMemoryPayload{
+						Title:     "Remote update should not apply",
+						Content:   "remote content",
+						Category:  "remote",
+						CreatedBy: "remote-user",
+						SessionID: "manual-save-remote-update-tombstone-project",
+					},
+				}
+			},
+			wantErr: "explicit restore required before update",
+			assertion: func(t *testing.T, db *DB, memoryID int64, syncID string) {
+				deleted, err := db.GetDeletedMemory(memoryID)
+				require.NoError(t, err)
+				assert.Equal(t, "Test Memory", deleted.Memory.Title)
+				assert.Equal(t, "keep tombstone", deleted.DeleteReason)
+
+				var mutationCount int
+				require.NoError(t, db.sqlDB.QueryRow(`SELECT COUNT(*) FROM memory_mutations WHERE event_id = ?`, "remote-update-tombstone-event").Scan(&mutationCount))
+				assert.Equal(t, 0, mutationCount)
+			},
+		},
+		{
+			name: "update missing row returns diagnosable error and records no mutation",
+			seed: func(t *testing.T, db *DB) (int64, string) {
+				t.Helper()
+				return 0, "missing-update-sync-id"
+			},
+			event: func(syncID string) MutationEnvelope {
+				return MutationEnvelope{
+					EventID:      "remote-update-missing-event",
+					EntityType:   "memory",
+					EntitySyncID: syncID,
+					Project:      "remote-update-missing-project",
+					Op:           MutationOpUpdate,
+					OccurredAt:   baseTime,
+					Memory: &MutationMemoryPayload{
+						Title:     "Remote update missing",
+						Content:   "remote content",
+						Category:  "remote",
+						CreatedBy: "remote-user",
+						SessionID: "manual-save-remote-update-missing-project",
+					},
+				}
+			},
+			wantErr: "memory not found",
+			assertion: func(t *testing.T, db *DB, memoryID int64, syncID string) {
+				var memoryCount, mutationCount int
+				require.NoError(t, db.sqlDB.QueryRow(`SELECT COUNT(*) FROM memories WHERE sync_id = ?`, syncID).Scan(&memoryCount))
+				require.NoError(t, db.sqlDB.QueryRow(`SELECT COUNT(*) FROM memory_mutations WHERE event_id = ?`, "remote-update-missing-event").Scan(&mutationCount))
+				assert.Equal(t, 0, memoryCount)
+				assert.Equal(t, 0, mutationCount)
+			},
+		},
+		{
+			name: "delete missing row returns diagnosable error and records no mutation",
+			seed: func(t *testing.T, db *DB) (int64, string) {
+				t.Helper()
+				return 0, "missing-delete-sync-id"
+			},
+			event: func(syncID string) MutationEnvelope {
+				return MutationEnvelope{
+					EventID:      "remote-delete-missing-event",
+					EntityType:   "memory",
+					EntitySyncID: syncID,
+					Project:      "remote-delete-missing-project",
+					Op:           MutationOpDelete,
+					OccurredAt:   baseTime,
+				}
+			},
+			wantErr: "memory not found",
+			assertion: func(t *testing.T, db *DB, memoryID int64, syncID string) {
+				var mutationCount int
+				require.NoError(t, db.sqlDB.QueryRow(`SELECT COUNT(*) FROM memory_mutations WHERE event_id = ?`, "remote-delete-missing-event").Scan(&mutationCount))
+				assert.Equal(t, 0, mutationCount)
+			},
+		},
+		{
+			name: "restore missing row returns diagnosable error and records no mutation",
+			seed: func(t *testing.T, db *DB) (int64, string) {
+				t.Helper()
+				return 0, "missing-restore-sync-id"
+			},
+			event: func(syncID string) MutationEnvelope {
+				return MutationEnvelope{
+					EventID:      "remote-restore-missing-event",
+					EntityType:   "memory",
+					EntitySyncID: syncID,
+					Project:      "remote-restore-missing-project",
+					Op:           MutationOpRestore,
+					OccurredAt:   baseTime,
+				}
+			},
+			wantErr: "memory not deleted",
+			assertion: func(t *testing.T, db *DB, memoryID int64, syncID string) {
+				var mutationCount int
+				require.NoError(t, db.sqlDB.QueryRow(`SELECT COUNT(*) FROM memory_mutations WHERE event_id = ?`, "remote-restore-missing-event").Scan(&mutationCount))
+				assert.Equal(t, 0, mutationCount)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+			memoryID, syncID := tt.seed(t, db)
+			applied, err := db.ApplyRemoteMutation(tt.event(syncID))
+
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.ErrorContains(t, err, tt.wantErr)
+				assert.False(t, applied)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantApply, applied)
+			}
+
+			tt.assertion(t, db, memoryID, syncID)
+		})
+	}
+}
+
+func TestSyncDB_ApplyRemoteMutationValidationErrors(t *testing.T) {
+	validMemory := &MutationMemoryPayload{
+		Title:     "Remote title",
+		Content:   "Remote content",
+		Category:  "remote",
+		CreatedBy: "remote-user",
+		SessionID: "manual-save-validation-project",
+	}
+
+	tests := []struct {
+		name    string
+		event   MutationEnvelope
+		wantErr string
+	}{
+		{
+			name: "missing event id",
+			event: MutationEnvelope{
+				EntityType:   "memory",
+				EntitySyncID: "validation-sync-id",
+				Project:      "validation-project",
+				Op:           MutationOpCreate,
+				Memory:       validMemory,
+			},
+			wantErr: "event_id is required",
+		},
+		{
+			name: "unsupported entity type",
+			event: MutationEnvelope{
+				EventID:      "validation-unsupported-entity",
+				EntityType:   "note",
+				EntitySyncID: "validation-sync-id",
+				Project:      "validation-project",
+				Op:           MutationOpCreate,
+				Memory:       validMemory,
+			},
+			wantErr: "unsupported mutation entity_type",
+		},
+		{
+			name: "missing entity sync id",
+			event: MutationEnvelope{
+				EventID:    "validation-missing-sync-id",
+				EntityType: "memory",
+				Project:    "validation-project",
+				Op:         MutationOpCreate,
+				Memory:     validMemory,
+			},
+			wantErr: "entity_sync_id is required",
+		},
+		{
+			name: "missing project",
+			event: MutationEnvelope{
+				EventID:      "validation-missing-project",
+				EntityType:   "memory",
+				EntitySyncID: "validation-sync-id",
+				Op:           MutationOpCreate,
+				Memory:       validMemory,
+			},
+			wantErr: "project is required",
+		},
+		{
+			name: "missing memory payload",
+			event: MutationEnvelope{
+				EventID:      "validation-missing-memory",
+				EntityType:   "memory",
+				EntitySyncID: "validation-sync-id",
+				Project:      "validation-project",
+				Op:           MutationOpUpdate,
+			},
+			wantErr: "memory payload required",
+		},
+		{
+			name: "unsupported operation",
+			event: MutationEnvelope{
+				EventID:      "validation-unsupported-op",
+				EntityType:   "memory",
+				EntitySyncID: "validation-sync-id",
+				Project:      "validation-project",
+				Op:           MutationOp("archive"),
+			},
+			wantErr: "unsupported mutation op",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+			applied, err := db.ApplyRemoteMutation(tt.event)
+
+			require.Error(t, err)
+			assert.ErrorContains(t, err, tt.wantErr)
+			assert.False(t, applied)
+		})
+	}
+}
+
+func seedRemoteApplyMemory(project string) func(t *testing.T, db *DB) (int64, string) {
+	return func(t *testing.T, db *DB) (int64, string) {
+		t.Helper()
+		require.NoError(t, db.CreateSession("manual-save-"+project, project, "", "test", "test"))
+		memoryID, err := db.SaveMemory(createTestMemory(project))
+		require.NoError(t, err)
+
+		var syncID string
+		require.NoError(t, db.sqlDB.QueryRow(`SELECT sync_id FROM memories WHERE id = ?`, memoryID).Scan(&syncID))
+		return memoryID, syncID
+	}
+}
+
 // createTestMemory is a helper to create a test Memory struct.
 // Note: SyncID is left empty and will be auto-generated by SaveMemory.
 // SessionID is populated with the manual-save sentinel so direct SaveMemory

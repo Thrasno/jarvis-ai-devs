@@ -879,3 +879,238 @@ func TestSyncService_Push_SessionInPayloadProjectMismatch_Rejected(t *testing.T)
 	// any partial commit of the cross-project session row.
 	mockSessionRepo.AssertNotCalled(t, "UpsertSession", mock.Anything, mock.Anything)
 }
+
+func TestSyncService_Push_MutationProtocolV2AppliesBatchAndPreservesLegacyCounts(t *testing.T) {
+	svc, mockRepo, mockPromptRepo := newTestSyncService(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	legacyPayload := makePayload("legacy-sync-id", now)
+
+	mutation := model.MutationEnvelope{
+		EventID:      "950e8400-e29b-41d4-a716-446655440001",
+		EntityType:   model.MutationEntityMemory,
+		EntitySyncID: "950e8400-e29b-41d4-a716-446655440101",
+		Project:      "jarvis-dev",
+		Op:           model.MutationOpDelete,
+		OccurredAt:   now,
+		Tombstone:    &model.TombstonePayload{DeletedAt: now, DeletedBy: "daemon-user", Reason: "obsolete"},
+	}
+	mockRepo.On("ApplyMemoryMutation", ctx, mutation).
+		Return(&model.MutationApplyResult{EventID: mutation.EventID, Op: model.MutationOpDelete, Applied: true}, nil)
+	mockRepo.On("ListMemoryMutations", ctx, "jarvis-dev", model.MutationCursor{Sequence: 41, EventID: "previous"}, 100).
+		Return(&model.MutationBatch{Events: []model.MutationEnvelope{{EventID: "remote-event", Op: model.MutationOpUpdate, Sequence: 42}}, Next: model.MutationCursor{Sequence: 42, EventID: "remote-event"}}, nil)
+
+	req := model.SyncRequest{
+		Project:         "jarvis-dev",
+		ProtocolVersion: 2,
+		MutationCursor:  &model.MutationCursor{Sequence: 41, EventID: "previous"},
+		Memories:        []model.SyncMemoryPayload{legacyPayload},
+		Mutations:       []model.MutationEnvelope{mutation},
+	}
+
+	resp, err := svc.Push(ctx, req, "user-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, resp.Pushed, "v2 mutations are authoritative; legacy memories are skipped when mutations are present")
+	assert.Equal(t, 0, resp.Conflicts)
+	assert.Equal(t, model.CompatibilityModeMutationV2, resp.CompatibilityMode)
+	require.NotNil(t, resp.NextMutationCursor)
+	assert.Equal(t, int64(42), resp.NextMutationCursor.Sequence)
+	require.Len(t, resp.PulledMutations, 1)
+	assert.Equal(t, "remote-event", resp.PulledMutations[0].EventID)
+	mockRepo.AssertNotCalled(t, "Upsert", mock.Anything, mock.Anything)
+	mockRepo.AssertExpectations(t)
+	mockPromptRepo.AssertExpectations(t)
+}
+
+func TestSyncService_Push_MutationProtocolV2EmptyMutationsReturnsLegacyMode(t *testing.T) {
+	svc, mockRepo, mockPromptRepo := newTestSyncService(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	legacyPayload := makePayload("legacy-empty-mutations-sync-id", now)
+
+	mockRepo.On("Upsert", ctx, expectedMem(legacyPayload, "user-1")).
+		Return(&model.Memory{ID: "server-uuid", SyncID: legacyPayload.SyncID}, true, nil)
+
+	resp, err := svc.Push(ctx, model.SyncRequest{
+		Project:         "jarvis-dev",
+		ProtocolVersion: model.MutationProtocolVersion,
+		MutationCursor:  &model.MutationCursor{Sequence: 41, EventID: "previous"},
+		Memories:        []model.SyncMemoryPayload{legacyPayload},
+		Mutations:       []model.MutationEnvelope{},
+	}, "user-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, resp.Pushed)
+	assert.Equal(t, 0, resp.Conflicts)
+	assert.Equal(t, model.CompatibilityModeLegacy, resp.CompatibilityMode, "API must report the legacy path it actually processed so daemons ack legacy rows")
+	assert.Nil(t, resp.NextMutationCursor)
+	assert.Empty(t, resp.PulledMutations)
+	mockRepo.AssertNotCalled(t, "ApplyMemoryMutation", mock.Anything, mock.Anything)
+	mockRepo.AssertNotCalled(t, "ListMemoryMutations", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	mockRepo.AssertExpectations(t)
+	mockPromptRepo.AssertExpectations(t)
+}
+
+func TestSyncService_Push_MutationProtocolV2SkipsLegacyRowsWhenMutationRejectsTombstone(t *testing.T) {
+	svc, mockRepo, _ := newTestSyncService(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	legacyPayload := makePayload("tombstoned-sync-id", now.Add(2*time.Minute))
+	legacyPayload.Title = "stale row title"
+	legacyPayload.Content = "stale row content"
+
+	mutation := model.MutationEnvelope{
+		EventID:      "960e8400-e29b-41d4-a716-446655440001",
+		EntityType:   model.MutationEntityMemory,
+		EntitySyncID: legacyPayload.SyncID,
+		Project:      "jarvis-dev",
+		Op:           model.MutationOpUpdate,
+		OccurredAt:   now.Add(2 * time.Minute),
+		Memory:       &model.MemoryPayload{SyncID: legacyPayload.SyncID, Project: "jarvis-dev", Category: model.CatDecision, Title: "stale row title", Content: "stale row content", UpdatedAt: now.Add(2 * time.Minute)},
+	}
+	mockRepo.On("ApplyMemoryMutation", ctx, mutation).Return(nil, repository.ErrMemoryTombstoned)
+	mockRepo.On("ListMemoryMutations", ctx, "jarvis-dev", model.MutationCursor{}, 100).
+		Return(&model.MutationBatch{Events: []model.MutationEnvelope{}, Next: model.MutationCursor{}}, nil)
+
+	resp, err := svc.Push(ctx, model.SyncRequest{
+		Project:         "jarvis-dev",
+		ProtocolVersion: model.MutationProtocolVersion,
+		Memories:        []model.SyncMemoryPayload{legacyPayload},
+		Mutations:       []model.MutationEnvelope{mutation},
+	}, "user-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, 0, resp.Pushed)
+	assert.Equal(t, 1, resp.Conflicts, "update on tombstone must be classified as rejected/conflict")
+	assert.Equal(t, model.CompatibilityModeMutationV2, resp.CompatibilityMode)
+	mockRepo.AssertNotCalled(t, "Upsert", mock.Anything, mock.Anything)
+	mockRepo.AssertExpectations(t)
+}
+
+func TestSyncService_Push_MutationProtocolV2RejectsCrossProjectMutations(t *testing.T) {
+	svc, mockRepo, _ := newTestSyncService(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	mutation := model.MutationEnvelope{
+		EventID:      "970e8400-e29b-41d4-a716-446655440001",
+		EntityType:   model.MutationEntityMemory,
+		EntitySyncID: "970e8400-e29b-41d4-a716-446655440101",
+		Project:      "other-project",
+		Op:           model.MutationOpCreate,
+		OccurredAt:   now,
+		Memory:       &model.MemoryPayload{SyncID: "970e8400-e29b-41d4-a716-446655440101", Project: "other-project", Category: model.CatDecision, Title: "wrong project", Content: "must not apply", UpdatedAt: now},
+	}
+	mockRepo.On("ListMemoryMutations", ctx, "jarvis-dev", model.MutationCursor{}, 100).
+		Return(&model.MutationBatch{Events: []model.MutationEnvelope{}, Next: model.MutationCursor{}}, nil)
+
+	resp, err := svc.Push(ctx, model.SyncRequest{Project: "jarvis-dev", ProtocolVersion: model.MutationProtocolVersion, Mutations: []model.MutationEnvelope{mutation}}, "user-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, 0, resp.Pushed)
+	assert.Equal(t, 1, resp.Conflicts, "cross-project mutation must be rejected/classified")
+	mockRepo.AssertNotCalled(t, "ApplyMemoryMutation", mock.Anything, mock.Anything)
+	mockRepo.AssertExpectations(t)
+}
+
+func TestSyncService_Push_MutationProtocolV2RejectsNestedMemoryProjectMismatch(t *testing.T) {
+	svc, mockRepo, _ := newTestSyncService(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	mutation := model.MutationEnvelope{
+		EventID:      "970e8400-e29b-41d4-a716-446655440002",
+		EntityType:   model.MutationEntityMemory,
+		EntitySyncID: "970e8400-e29b-41d4-a716-446655440102",
+		Project:      "jarvis-dev",
+		Op:           model.MutationOpCreate,
+		OccurredAt:   now,
+		Memory: &model.MemoryPayload{
+			SyncID:    "970e8400-e29b-41d4-a716-446655440102",
+			Project:   "other-project",
+			Category:  model.CatDecision,
+			Title:     "nested wrong project",
+			Content:   "must not apply or journal",
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	}
+	mockRepo.On("ListMemoryMutations", ctx, "jarvis-dev", model.MutationCursor{}, 100).
+		Return(&model.MutationBatch{Events: []model.MutationEnvelope{}, Next: model.MutationCursor{}}, nil)
+
+	resp, err := svc.Push(ctx, model.SyncRequest{Project: "jarvis-dev", ProtocolVersion: model.MutationProtocolVersion, Mutations: []model.MutationEnvelope{mutation}}, "user-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, 0, resp.Pushed)
+	assert.Equal(t, 1, resp.Conflicts, "nested memory project mismatch must be classified without fake apply")
+	mockRepo.AssertNotCalled(t, "ApplyMemoryMutation", mock.Anything, mock.Anything)
+	mockRepo.AssertExpectations(t)
+}
+
+func TestSyncService_Push_MutationProtocolV2ClassifiesRejectedAndDuplicateEvents(t *testing.T) {
+	svc, mockRepo, _ := newTestSyncService(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	tests := []struct {
+		name      string
+		result    *model.MutationApplyResult
+		wantPush  int
+		wantConfl int
+	}{
+		{
+			name:      "duplicate replay is safe but not applied again",
+			result:    &model.MutationApplyResult{EventID: "dup", Op: model.MutationOpDelete, Duplicate: true, Applied: false},
+			wantPush:  0,
+			wantConfl: 0,
+		},
+		{
+			name:      "rejected update is counted as conflict",
+			result:    &model.MutationApplyResult{EventID: "reject", Op: model.MutationOpUpdate, Applied: false, Rejected: true, Reason: "memory tombstoned"},
+			wantPush:  0,
+			wantConfl: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mutation := model.MutationEnvelope{
+				EventID:      tt.result.EventID,
+				EntityType:   model.MutationEntityMemory,
+				EntitySyncID: "950e8400-e29b-41d4-a716-446655440102",
+				Project:      "jarvis-dev",
+				Op:           tt.result.Op,
+				OccurredAt:   now,
+			}
+			mockRepo.On("ApplyMemoryMutation", ctx, mutation).Return(tt.result, nil).Once()
+			mockRepo.On("ListMemoryMutations", ctx, "jarvis-dev", model.MutationCursor{}, 100).
+				Return(&model.MutationBatch{Events: []model.MutationEnvelope{}, Next: model.MutationCursor{}}, nil).Once()
+
+			resp, err := svc.Push(ctx, model.SyncRequest{Project: "jarvis-dev", ProtocolVersion: 2, Mutations: []model.MutationEnvelope{mutation}}, "user-1")
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantPush, resp.Pushed)
+			assert.Equal(t, tt.wantConfl, resp.Conflicts)
+			assert.Equal(t, model.CompatibilityModeMutationV2, resp.CompatibilityMode)
+		})
+	}
+	mockRepo.AssertExpectations(t)
+}
+
+func TestSyncService_Push_LegacyRequestDoesNotCallMutationRepository(t *testing.T) {
+	svc, mockRepo, _ := newTestSyncService(t)
+	ctx := context.Background()
+	payload := makePayload("legacy-only-sync-id", time.Now())
+	mockRepo.On("Upsert", ctx, expectedMem(payload, "user-1")).Return(&model.Memory{ID: "server-uuid", SyncID: payload.SyncID}, true, nil)
+
+	resp, err := svc.Push(ctx, model.SyncRequest{Project: "jarvis-dev", Memories: []model.SyncMemoryPayload{payload}}, "user-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, resp.Pushed)
+	assert.Empty(t, resp.CompatibilityMode)
+	mockRepo.AssertNotCalled(t, "ApplyMemoryMutation", mock.Anything, mock.Anything)
+	mockRepo.AssertNotCalled(t, "ListMemoryMutations", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}

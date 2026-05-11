@@ -15,8 +15,8 @@ type ErrorResponse struct {
 // LoginResponse es la respuesta del POST /auth/login.
 // Devuelve el token JWT y los datos básicos del usuario (sin password).
 type LoginResponse struct {
-	Token     string    `json:"token"`
-	ExpiresAt time.Time `json:"expires_at"`
+	Token     string       `json:"token"`
+	ExpiresAt time.Time    `json:"expires_at"`
 	User      UserResponse `json:"user"`
 }
 
@@ -66,7 +66,17 @@ type SyncResponse struct {
 	// PulledSessions: sesiones del servidor que el cliente no tenía.
 	// Procesadas por el daemon ANTES de las pulled memories para satisfacer la FK.
 	PulledSessions []SyncSessionResponse `json:"pulled_sessions,omitempty"`
+
+	NextMutationCursor *MutationCursor    `json:"next_mutation_cursor,omitempty"`
+	PulledMutations    []MutationEnvelope `json:"pulled_mutations,omitempty"`
+	CompatibilityMode  string             `json:"compatibility_mode,omitempty"`
 }
+
+const MutationProtocolVersion = 2
+
+const CompatibilityModeLegacy = "legacy-row-state"
+
+const CompatibilityModeMutationV2 = "mutation-sync-v2"
 
 // ListMemoriesResponse es la respuesta del GET /memories.
 // Incluye los datos de paginación para que el cliente sepa cuántas páginas hay.
@@ -94,8 +104,8 @@ type HealthResponse struct {
 
 // AdminStatsResponse es la respuesta del GET /admin/stats.
 type AdminStatsResponse struct {
-	Users    UserStats    `json:"users"`
-	Memories MemoryStats  `json:"memories"`
+	Users    UserStats   `json:"users"`
+	Memories MemoryStats `json:"memories"`
 }
 
 // UserStats agrupa las estadísticas de usuarios.
@@ -107,10 +117,10 @@ type UserStats struct {
 
 // MemoryStats agrupa las estadísticas de memorias.
 type MemoryStats struct {
-	Total        int64          `json:"total"`
-	ByProject    []ProjectCount `json:"by_project"`
+	Total        int64           `json:"total"`
+	ByProject    []ProjectCount  `json:"by_project"`
 	ByCategory   []CategoryCount `json:"by_category"`
-	LastSyncedAt *time.Time     `json:"last_synced_at"` // puntero: puede ser null si no hay memorias
+	LastSyncedAt *time.Time      `json:"last_synced_at"` // puntero: puede ser null si no hay memorias
 }
 
 // ProjectCount es un par proyecto → número de memorias.

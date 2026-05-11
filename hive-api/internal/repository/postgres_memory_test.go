@@ -2,10 +2,12 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/Thrasno/jarvis-dev/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-dev/hive-api/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -198,6 +200,42 @@ func TestPostgresMemoryRepository_GetByID(t *testing.T) {
 			assert.Equal(t, created.FilesAffected, found.FilesAffected)
 		})
 	}
+}
+
+func TestPostgresMemoryRepository_GetByID_HidesTombstones(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+	sessionID := ensureManualSavePtr(t, pool, "getbyid-tombstone")
+	now := time.Now().UTC()
+
+	created, err := repo.Create(ctx, &model.Memory{
+		SyncID:    "550e8400-e29b-41d4-a716-446655440011",
+		Project:   "getbyid-tombstone",
+		TopicKey:  stringPtr("test/getbyid-tombstone"),
+		Category:  model.CatArchitecture,
+		Title:     "hidden tombstone",
+		Content:   "this content must not be exposed by default reads",
+		CreatedBy: "test-user",
+		CreatedAt: now,
+		UpdatedAt: now,
+		SessionID: sessionID,
+	})
+	require.NoError(t, err)
+
+	deletedAt := now.Add(time.Minute)
+	_, err = pool.Exec(ctx, `
+		UPDATE memories
+		SET deleted_at = $1, deleted_by = $2, delete_reason = $3
+		WHERE id = $4`, deletedAt, "tester", "default read filter", created.ID)
+	require.NoError(t, err)
+
+	found, err := repo.GetByID(ctx, created.ID)
+
+	require.ErrorIs(t, err, ErrNotFound)
+	assert.Nil(t, found, "normal GetByID must not expose tombstoned memories")
 }
 
 // TestPostgresMemoryRepository_Delete verifica que podemos eliminar memorias.
@@ -983,6 +1021,20 @@ func ptr(c model.MemoryCategory) *model.MemoryCategory {
 	return &c
 }
 
+func assertNoMemoryMutationRow(t *testing.T, pool *pgxpool.Pool, eventID string) {
+	t.Helper()
+	var count int
+	require.NoError(t, pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM memory_mutations WHERE event_id = $1`, eventID).Scan(&count))
+	assert.Equal(t, 0, count, "rejected mutation must not create a fake journal event")
+}
+
+func assertNoMemoryRow(t *testing.T, pool *pgxpool.Pool, syncID string) {
+	t.Helper()
+	var count int
+	require.NoError(t, pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM memories WHERE sync_id = $1`, syncID).Scan(&count))
+	assert.Equal(t, 0, count, "rejected mutation must not create or mutate a memory row")
+}
+
 // ensureManualSavePtr creates the manual-save session for the project (idempotent)
 // and returns a *string pointing at its id. Used in memory tests to satisfy the
 // memories.session_id NOT NULL FK constraint post-Slice 4 / R2-CRIT-5.
@@ -1132,4 +1184,737 @@ func TestPostgresMemoryRepository_Search_ReturnsSessionID(t *testing.T) {
 	require.Len(t, results, 1)
 	require.NotNil(t, results[0].SessionID, "Search must return session_id")
 	assert.Equal(t, sessID, *results[0].SessionID)
+}
+
+func TestMigration005_MemoryTombstonesAndMutationJournal(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, RunMigrations(pool, migrations.MemoryMutationsSQL))
+
+	t.Run("memory tombstone columns exist", func(t *testing.T) {
+		columns := map[string]string{}
+		rows, err := pool.Query(ctx, `
+			SELECT column_name, data_type
+			FROM information_schema.columns
+			WHERE table_schema = 'public'
+			  AND table_name = 'memories'
+			  AND column_name IN ('deleted_at', 'deleted_by', 'delete_reason', 'restored_at')
+		`)
+		require.NoError(t, err)
+		defer rows.Close()
+
+		for rows.Next() {
+			var name, dataType string
+			require.NoError(t, rows.Scan(&name, &dataType))
+			columns[name] = dataType
+		}
+		require.NoError(t, rows.Err())
+
+		assert.Equal(t, "timestamp with time zone", columns["deleted_at"])
+		assert.Equal(t, "character varying", columns["deleted_by"])
+		assert.Equal(t, "text", columns["delete_reason"])
+		assert.Equal(t, "timestamp with time zone", columns["restored_at"])
+	})
+
+	t.Run("memory_mutations schema enforces event identity and ordering", func(t *testing.T) {
+		var tableExists bool
+		require.NoError(t, pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.tables
+				WHERE table_schema = 'public' AND table_name = 'memory_mutations'
+			)
+		`).Scan(&tableExists))
+		assert.True(t, tableExists)
+
+		columns := map[string]bool{}
+		rows, err := pool.Query(ctx, `
+			SELECT column_name
+			FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'memory_mutations'
+		`)
+		require.NoError(t, err)
+		defer rows.Close()
+
+		for rows.Next() {
+			var name string
+			require.NoError(t, rows.Scan(&name))
+			columns[name] = true
+		}
+		require.NoError(t, rows.Err())
+
+		for _, required := range []string{"sequence", "event_id", "entity_type", "entity_sync_id", "project", "op", "occurred_at", "memory", "tombstone"} {
+			assert.True(t, columns[required], "memory_mutations.%s should exist", required)
+		}
+
+		var eventUnique bool
+		require.NoError(t, pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM pg_indexes
+				WHERE schemaname = 'public'
+				  AND tablename = 'memory_mutations'
+				  AND indexdef ILIKE '%UNIQUE%'
+				  AND indexdef ILIKE '%event_id%'
+			)
+		`).Scan(&eventUnique))
+		assert.True(t, eventUnique, "event_id must be unique for idempotency")
+	})
+
+	t.Run("mutation cursor table and journal indexes exist", func(t *testing.T) {
+		var cursorTableExists bool
+		require.NoError(t, pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.tables
+				WHERE table_schema = 'public' AND table_name = 'mutation_cursors'
+			)
+		`).Scan(&cursorTableExists))
+		assert.True(t, cursorTableExists)
+
+		indexes := map[string]bool{}
+		rows, err := pool.Query(ctx, `
+			SELECT indexname
+			FROM pg_indexes
+			WHERE schemaname = 'public'
+			  AND tablename IN ('memories', 'memory_mutations', 'mutation_cursors')
+		`)
+		require.NoError(t, err)
+		defer rows.Close()
+
+		for rows.Next() {
+			var name string
+			require.NoError(t, rows.Scan(&name))
+			indexes[name] = true
+		}
+		require.NoError(t, rows.Err())
+
+		assert.True(t, indexes["idx_memories_active_project"], "active memory reads need tombstone-aware index")
+		assert.True(t, indexes["idx_memory_mutations_project_sequence_event"], "cursor pulls need deterministic ordering index")
+		assert.True(t, indexes["idx_memory_mutations_entity"], "entity conflict checks need journal lookup index")
+	})
+}
+
+func TestPostgresMemoryRepository_ApplyMemoryMutation_IdempotencyAndTombstones(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, RunMigrations(pool, migrations.MemoryMutationsSQL))
+	repo := NewPostgresMemoryRepository(pool)
+	sessionID := ensureManualSavePtr(t, pool, "mutation-test")
+	base := time.Now().UTC().Add(-time.Hour)
+
+	create := model.MutationEnvelope{
+		EventID:      "650e8400-e29b-41d4-a716-446655440001",
+		EntityType:   model.MutationEntityMemory,
+		EntitySyncID: "650e8400-e29b-41d4-a716-446655440101",
+		Project:      "mutation-test",
+		Op:           model.MutationOpCreate,
+		OccurredAt:   base,
+		Memory: &model.MemoryPayload{
+			SyncID:    "650e8400-e29b-41d4-a716-446655440101",
+			Project:   "mutation-test",
+			TopicKey:  stringPtr("mutation/topic"),
+			Category:  model.CatDecision,
+			Title:     "created",
+			Content:   "created content",
+			CreatedBy: "daemon-user",
+			CreatedAt: base,
+			UpdatedAt: base,
+			SessionID: *sessionID,
+		},
+	}
+
+	created, err := repo.ApplyMemoryMutation(ctx, create)
+	require.NoError(t, err)
+	assert.True(t, created.Applied)
+	assert.False(t, created.Duplicate)
+	assert.Equal(t, model.MutationOpCreate, created.Op)
+
+	duplicate, err := repo.ApplyMemoryMutation(ctx, create)
+	require.NoError(t, err)
+	assert.False(t, duplicate.Applied, "duplicate event must not apply state twice")
+	assert.True(t, duplicate.Duplicate, "duplicate event_id must be idempotent")
+
+	mutations, err := repo.ListMemoryMutations(ctx, "mutation-test", model.MutationCursor{}, 10)
+	require.NoError(t, err)
+	require.Len(t, mutations.Events, 1)
+	assert.Equal(t, create.EventID, mutations.Events[0].EventID)
+	assert.Equal(t, int64(1), mutations.Next.Sequence)
+
+	deleteEvent := model.MutationEnvelope{
+		EventID:      "650e8400-e29b-41d4-a716-446655440002",
+		EntityType:   model.MutationEntityMemory,
+		EntitySyncID: create.EntitySyncID,
+		Project:      "mutation-test",
+		Op:           model.MutationOpDelete,
+		OccurredAt:   base.Add(10 * time.Minute),
+		Tombstone: &model.TombstonePayload{
+			DeletedAt: base.Add(10 * time.Minute),
+			DeletedBy: "daemon-user",
+			Reason:    "obsolete",
+		},
+	}
+	deleted, err := repo.ApplyMemoryMutation(ctx, deleteEvent)
+	require.NoError(t, err)
+	assert.True(t, deleted.Applied)
+
+	found, err := repo.GetBySyncID(ctx, create.EntitySyncID)
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	require.NotNil(t, found.DeletedAt)
+	assert.Equal(t, "daemon-user", stringValue(found.DeletedBy))
+	assert.Equal(t, "obsolete", stringValue(found.DeleteReason))
+
+	listed, err := repo.List(ctx, model.MemoryFilter{Project: "mutation-test", Limit: 10})
+	require.NoError(t, err)
+	assert.Empty(t, listed, "default reads must hide tombstones")
+}
+
+func TestPostgresMemoryRepository_ApplyMemoryMutation_RejectsInvalidStateTransitions(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, RunMigrations(pool, migrations.MemoryMutationsSQL))
+	repo := NewPostgresMemoryRepository(pool)
+	sessionID := ensureManualSavePtr(t, pool, "transition-test")
+	now := time.Now().UTC()
+
+	created, err := repo.Create(ctx, &model.Memory{
+		SyncID:    "750e8400-e29b-41d4-a716-446655440101",
+		Project:   "transition-test",
+		TopicKey:  stringPtr("transition/topic"),
+		Category:  model.CatDecision,
+		Title:     "active",
+		Content:   "active content",
+		CreatedBy: "tester",
+		CreatedAt: now,
+		UpdatedAt: now,
+		SessionID: sessionID,
+	})
+	require.NoError(t, err)
+
+	deleteEvent := model.MutationEnvelope{
+		EventID:      "750e8400-e29b-41d4-a716-446655440001",
+		EntityType:   model.MutationEntityMemory,
+		EntitySyncID: created.SyncID,
+		Project:      "transition-test",
+		Op:           model.MutationOpDelete,
+		OccurredAt:   now.Add(time.Minute),
+		Tombstone:    &model.TombstonePayload{DeletedAt: now.Add(time.Minute), DeletedBy: "tester", Reason: "cleanup"},
+	}
+	_, err = repo.ApplyMemoryMutation(ctx, deleteEvent)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name      string
+		mutation  model.MutationEnvelope
+		wantError error
+	}{
+		{
+			name: "update on tombstone is rejected and does not silently restore",
+			mutation: model.MutationEnvelope{
+				EventID:      "750e8400-e29b-41d4-a716-446655440002",
+				EntityType:   model.MutationEntityMemory,
+				EntitySyncID: created.SyncID,
+				Project:      "transition-test",
+				Op:           model.MutationOpUpdate,
+				OccurredAt:   now.Add(2 * time.Minute),
+				Memory:       &model.MemoryPayload{SyncID: created.SyncID, Project: "transition-test", Category: model.CatDecision, Title: "bad update", Content: "bad", UpdatedAt: now.Add(2 * time.Minute), SessionID: *sessionID},
+			},
+			wantError: ErrMemoryTombstoned,
+		},
+		{
+			name: "update missing row returns not found",
+			mutation: model.MutationEnvelope{
+				EventID:      "750e8400-e29b-41d4-a716-446655440003",
+				EntityType:   model.MutationEntityMemory,
+				EntitySyncID: "750e8400-e29b-41d4-a716-446655440999",
+				Project:      "transition-test",
+				Op:           model.MutationOpUpdate,
+				OccurredAt:   now.Add(3 * time.Minute),
+				Memory:       &model.MemoryPayload{SyncID: "750e8400-e29b-41d4-a716-446655440999", Project: "transition-test", Category: model.CatDecision, Title: "missing", Content: "missing", UpdatedAt: now.Add(3 * time.Minute), SessionID: *sessionID},
+			},
+			wantError: ErrNotFound,
+		},
+		{
+			name: "delete missing row returns not found",
+			mutation: model.MutationEnvelope{
+				EventID:      "750e8400-e29b-41d4-a716-446655440004",
+				EntityType:   model.MutationEntityMemory,
+				EntitySyncID: "750e8400-e29b-41d4-a716-446655440998",
+				Project:      "transition-test",
+				Op:           model.MutationOpDelete,
+				OccurredAt:   now.Add(4 * time.Minute),
+				Tombstone:    &model.TombstonePayload{DeletedAt: now.Add(4 * time.Minute), DeletedBy: "tester", Reason: "missing"},
+			},
+			wantError: ErrNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := repo.ApplyMemoryMutation(ctx, tt.mutation)
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, tt.wantError), "expected %v, got %v", tt.wantError, err)
+		})
+	}
+
+	found, err := repo.GetBySyncID(ctx, created.SyncID)
+	require.NoError(t, err)
+	require.NotNil(t, found.DeletedAt)
+	assert.Equal(t, "cleanup", stringValue(found.DeleteReason))
+
+	batch, err := repo.ListMemoryMutations(ctx, "transition-test", model.MutationCursor{}, 10)
+	require.NoError(t, err)
+	require.Len(t, batch.Events, 1, "only the accepted delete setup should be journaled")
+	assert.Equal(t, deleteEvent.EventID, batch.Events[0].EventID)
+	assert.Equal(t, model.MutationOpDelete, batch.Events[0].Op)
+}
+
+func TestPostgresMemoryRepository_ApplyMemoryMutation_RejectsNestedMemoryProjectMismatchWithoutJournal(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, RunMigrations(pool, migrations.MemoryMutationsSQL))
+	repo := NewPostgresMemoryRepository(pool)
+	sessionID := ensureManualSavePtr(t, pool, "nested-other-project")
+	now := time.Now().UTC()
+
+	mutation := model.MutationEnvelope{
+		EventID:      "7a0e8400-e29b-41d4-a716-446655440001",
+		EntityType:   model.MutationEntityMemory,
+		EntitySyncID: "7a0e8400-e29b-41d4-a716-446655440101",
+		Project:      "envelope-project",
+		Op:           model.MutationOpCreate,
+		OccurredAt:   now,
+		Memory: &model.MemoryPayload{
+			SyncID:    "7a0e8400-e29b-41d4-a716-446655440101",
+			Project:   "nested-other-project",
+			Category:  model.CatDecision,
+			Title:     "wrong nested project",
+			Content:   "must not be inserted",
+			CreatedBy: "tester",
+			CreatedAt: now,
+			UpdatedAt: now,
+			SessionID: *sessionID,
+		},
+	}
+
+	result, err := repo.ApplyMemoryMutation(ctx, mutation)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.Applied)
+	assert.True(t, result.Rejected)
+	assert.Contains(t, result.Reason, "project mismatch")
+	assertNoMemoryMutationRow(t, pool, mutation.EventID)
+	assertNoMemoryRow(t, pool, mutation.EntitySyncID)
+}
+
+func TestPostgresMemoryRepository_ApplyMemoryMutation_RejectsCrossProjectExistingRowWithoutMutation(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, RunMigrations(pool, migrations.MemoryMutationsSQL))
+	repo := NewPostgresMemoryRepository(pool)
+	sessionID := ensureManualSavePtr(t, pool, "owner-project")
+	now := time.Now().UTC()
+
+	created, err := repo.Create(ctx, &model.Memory{
+		SyncID:    "7b0e8400-e29b-41d4-a716-446655440101",
+		Project:   "owner-project",
+		TopicKey:  stringPtr("owner/topic"),
+		Category:  model.CatDecision,
+		Title:     "owner title",
+		Content:   "owner content",
+		CreatedBy: "owner",
+		CreatedAt: now,
+		UpdatedAt: now,
+		SessionID: sessionID,
+	})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name     string
+		mutation model.MutationEnvelope
+	}{
+		{
+			name: "update cannot cross project boundary by sync_id",
+			mutation: model.MutationEnvelope{
+				EventID:      "7b0e8400-e29b-41d4-a716-446655440001",
+				EntityType:   model.MutationEntityMemory,
+				EntitySyncID: created.SyncID,
+				Project:      "attacker-project",
+				Op:           model.MutationOpUpdate,
+				OccurredAt:   now.Add(time.Minute),
+				Memory:       &model.MemoryPayload{SyncID: created.SyncID, Project: "attacker-project", Category: model.CatBugfix, Title: "attacker update", Content: "mutated", UpdatedAt: now.Add(time.Minute)},
+			},
+		},
+		{
+			name: "delete cannot cross project boundary by sync_id",
+			mutation: model.MutationEnvelope{
+				EventID:      "7b0e8400-e29b-41d4-a716-446655440002",
+				EntityType:   model.MutationEntityMemory,
+				EntitySyncID: created.SyncID,
+				Project:      "attacker-project",
+				Op:           model.MutationOpDelete,
+				OccurredAt:   now.Add(2 * time.Minute),
+				Tombstone:    &model.TombstonePayload{DeletedAt: now.Add(2 * time.Minute), DeletedBy: "attacker", Reason: "cross-project"},
+			},
+		},
+		{
+			name: "restore cannot cross project boundary by sync_id",
+			mutation: model.MutationEnvelope{
+				EventID:      "7b0e8400-e29b-41d4-a716-446655440003",
+				EntityType:   model.MutationEntityMemory,
+				EntitySyncID: created.SyncID,
+				Project:      "attacker-project",
+				Op:           model.MutationOpRestore,
+				OccurredAt:   now.Add(3 * time.Minute),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := repo.ApplyMemoryMutation(ctx, tt.mutation)
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			assert.False(t, result.Applied)
+			assert.True(t, result.Rejected)
+			assert.Contains(t, result.Reason, "project mismatch")
+			assertNoMemoryMutationRow(t, pool, tt.mutation.EventID)
+
+			stored, err := repo.GetBySyncID(ctx, created.SyncID)
+			require.NoError(t, err)
+			require.NotNil(t, stored)
+			assert.Equal(t, "owner-project", stored.Project)
+			assert.Equal(t, "owner title", stored.Title)
+			assert.Equal(t, "owner content", stored.Content)
+			assert.Nil(t, stored.DeletedAt)
+			assert.Nil(t, stored.RestoredAt)
+		})
+	}
+}
+
+func TestPostgresMemoryRepository_ApplyMemoryMutation_RejectedUpdateDoesNotMutateTombstone(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+	sessionID := ensureManualSavePtr(t, pool, "tombstone-stale-update")
+	now := time.Now().UTC()
+
+	created, err := repo.Create(ctx, &model.Memory{
+		SyncID:    "760e8400-e29b-41d4-a716-446655440101",
+		Project:   "tombstone-stale-update",
+		TopicKey:  stringPtr("tombstone/update"),
+		Category:  model.CatDecision,
+		Title:     "authoritative tombstone",
+		Content:   "delete wins content",
+		CreatedBy: "tester",
+		CreatedAt: now,
+		UpdatedAt: now,
+		SessionID: sessionID,
+	})
+	require.NoError(t, err)
+
+	deleteEvent := model.MutationEnvelope{
+		EventID:      "760e8400-e29b-41d4-a716-446655440001",
+		EntityType:   model.MutationEntityMemory,
+		EntitySyncID: created.SyncID,
+		Project:      "tombstone-stale-update",
+		Op:           model.MutationOpDelete,
+		OccurredAt:   now.Add(time.Minute),
+		Tombstone:    &model.TombstonePayload{DeletedAt: now.Add(time.Minute), DeletedBy: "tester", Reason: "delete wins"},
+	}
+	_, err = repo.ApplyMemoryMutation(ctx, deleteEvent)
+	require.NoError(t, err)
+
+	staleUpdate := model.MutationEnvelope{
+		EventID:      "760e8400-e29b-41d4-a716-446655440002",
+		EntityType:   model.MutationEntityMemory,
+		EntitySyncID: created.SyncID,
+		Project:      "tombstone-stale-update",
+		Op:           model.MutationOpUpdate,
+		OccurredAt:   now.Add(2 * time.Minute),
+		Memory:       &model.MemoryPayload{SyncID: created.SyncID, Project: "tombstone-stale-update", TopicKey: stringPtr("tombstone/update"), Category: model.CatBugfix, Title: "stale row title", Content: "stale row content", UpdatedAt: now.Add(2 * time.Minute), SessionID: *sessionID},
+	}
+	_, err = repo.ApplyMemoryMutation(ctx, staleUpdate)
+	require.ErrorIs(t, err, ErrMemoryTombstoned)
+
+	found, err := repo.GetBySyncID(ctx, created.SyncID)
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	assert.Equal(t, "authoritative tombstone", found.Title)
+	assert.Equal(t, "delete wins content", found.Content)
+	require.NotNil(t, found.DeletedAt)
+	assert.Equal(t, "delete wins", stringValue(found.DeleteReason))
+
+	batch, err := repo.ListMemoryMutations(ctx, "tombstone-stale-update", model.MutationCursor{}, 10)
+	require.NoError(t, err)
+	require.Len(t, batch.Events, 1, "rejected stale update must not be journaled or ackable")
+	assert.Equal(t, deleteEvent.EventID, batch.Events[0].EventID)
+}
+
+func TestPostgresMemoryRepository_ApplyMemoryMutation_CreateAndUpdateEventIDsRecorded(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+	sessionID := ensureManualSavePtr(t, pool, "create-update-journal")
+	now := time.Now().UTC()
+	syncID := "770e8400-e29b-41d4-a716-446655440101"
+
+	mutations := []model.MutationEnvelope{
+		{
+			EventID:      "770e8400-e29b-41d4-a716-446655440001",
+			EntityType:   model.MutationEntityMemory,
+			EntitySyncID: syncID,
+			Project:      "create-update-journal",
+			Op:           model.MutationOpCreate,
+			OccurredAt:   now,
+			Memory:       &model.MemoryPayload{SyncID: syncID, Project: "create-update-journal", TopicKey: stringPtr("journal/topic"), Category: model.CatDecision, Title: "created by mutation", Content: "create content", CreatedBy: "tester", CreatedAt: now, UpdatedAt: now, SessionID: *sessionID},
+		},
+		{
+			EventID:      "770e8400-e29b-41d4-a716-446655440002",
+			EntityType:   model.MutationEntityMemory,
+			EntitySyncID: syncID,
+			Project:      "create-update-journal",
+			Op:           model.MutationOpUpdate,
+			OccurredAt:   now.Add(time.Minute),
+			Memory:       &model.MemoryPayload{SyncID: syncID, Project: "create-update-journal", TopicKey: stringPtr("journal/topic"), Category: model.CatPattern, Title: "updated by mutation", Content: "update content", UpdatedAt: now.Add(time.Minute), SessionID: *sessionID},
+		},
+	}
+
+	for _, mutation := range mutations {
+		result, err := repo.ApplyMemoryMutation(ctx, mutation)
+		require.NoError(t, err)
+		require.True(t, result.Applied)
+		assert.Equal(t, mutation.EventID, result.EventID)
+	}
+
+	batch, err := repo.ListMemoryMutations(ctx, "create-update-journal", model.MutationCursor{}, 10)
+	require.NoError(t, err)
+	require.Len(t, batch.Events, 2)
+	assert.Equal(t, mutations[0].EventID, batch.Events[0].EventID)
+	assert.Equal(t, model.MutationOpCreate, batch.Events[0].Op)
+	assert.Equal(t, mutations[1].EventID, batch.Events[1].EventID)
+	assert.Equal(t, model.MutationOpUpdate, batch.Events[1].Op)
+
+	found, err := repo.GetBySyncID(ctx, syncID)
+	require.NoError(t, err)
+	assert.Equal(t, "updated by mutation", found.Title)
+	assert.Equal(t, "update content", found.Content)
+}
+
+func TestPostgresMemoryRepository_ApplyMemoryMutation_RestoreClearsTombstone(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, RunMigrations(pool, migrations.MemoryMutationsSQL))
+	repo := NewPostgresMemoryRepository(pool)
+	sessionID := ensureManualSavePtr(t, pool, "restore-test")
+	now := time.Now().UTC()
+
+	created, err := repo.Create(ctx, &model.Memory{
+		SyncID:    "850e8400-e29b-41d4-a716-446655440101",
+		Project:   "restore-test",
+		TopicKey:  stringPtr("restore/topic"),
+		Category:  model.CatDecision,
+		Title:     "before",
+		Content:   "before content",
+		CreatedBy: "tester",
+		CreatedAt: now,
+		UpdatedAt: now,
+		SessionID: sessionID,
+	})
+	require.NoError(t, err)
+
+	_, err = repo.ApplyMemoryMutation(ctx, model.MutationEnvelope{
+		EventID:      "850e8400-e29b-41d4-a716-446655440001",
+		EntityType:   model.MutationEntityMemory,
+		EntitySyncID: created.SyncID,
+		Project:      "restore-test",
+		Op:           model.MutationOpDelete,
+		OccurredAt:   now.Add(time.Minute),
+		Tombstone:    &model.TombstonePayload{DeletedAt: now.Add(time.Minute), DeletedBy: "tester", Reason: "cleanup"},
+	})
+	require.NoError(t, err)
+
+	restored, err := repo.ApplyMemoryMutation(ctx, model.MutationEnvelope{
+		EventID:      "850e8400-e29b-41d4-a716-446655440002",
+		EntityType:   model.MutationEntityMemory,
+		EntitySyncID: created.SyncID,
+		Project:      "restore-test",
+		Op:           model.MutationOpRestore,
+		OccurredAt:   now.Add(2 * time.Minute),
+		Memory:       &model.MemoryPayload{SyncID: created.SyncID, Project: "restore-test", Category: model.CatDecision, Title: "after", Content: "after content", UpdatedAt: now.Add(2 * time.Minute), SessionID: *sessionID},
+	})
+	require.NoError(t, err)
+	assert.True(t, restored.Applied)
+
+	found, err := repo.GetBySyncID(ctx, created.SyncID)
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	assert.Nil(t, found.DeletedAt)
+	assert.Nil(t, found.DeletedBy)
+	assert.Nil(t, found.DeleteReason)
+	require.NotNil(t, found.RestoredAt)
+	assert.Equal(t, "after", found.Title)
+
+	listed, err := repo.List(ctx, model.MemoryFilter{Project: "restore-test", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	assert.Equal(t, "after", listed[0].Title)
+}
+
+func TestPostgresMemoryRepository_ApplyMemoryMutation_RestoreThenNormalUpdate(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+	sessionID := ensureManualSavePtr(t, pool, "restore-update-test")
+	now := time.Now().UTC()
+	syncID := "950e8400-e29b-41d4-a716-446655440101"
+
+	created, err := repo.Create(ctx, &model.Memory{
+		SyncID:    syncID,
+		Project:   "restore-update-test",
+		TopicKey:  stringPtr("restore-update/topic"),
+		Category:  model.CatDecision,
+		Title:     "before delete",
+		Content:   "before delete content",
+		CreatedBy: "tester",
+		CreatedAt: now,
+		UpdatedAt: now,
+		SessionID: sessionID,
+	})
+	require.NoError(t, err)
+
+	mutations := []model.MutationEnvelope{
+		{
+			EventID:      "950e8400-e29b-41d4-a716-446655440001",
+			EntityType:   model.MutationEntityMemory,
+			EntitySyncID: created.SyncID,
+			Project:      "restore-update-test",
+			Op:           model.MutationOpDelete,
+			OccurredAt:   now.Add(time.Minute),
+			Tombstone:    &model.TombstonePayload{DeletedAt: now.Add(time.Minute), DeletedBy: "tester", Reason: "temporary cleanup"},
+		},
+		{
+			EventID:      "950e8400-e29b-41d4-a716-446655440002",
+			EntityType:   model.MutationEntityMemory,
+			EntitySyncID: created.SyncID,
+			Project:      "restore-update-test",
+			Op:           model.MutationOpRestore,
+			OccurredAt:   now.Add(2 * time.Minute),
+			Memory:       &model.MemoryPayload{SyncID: created.SyncID, Project: "restore-update-test", TopicKey: stringPtr("restore-update/topic"), Category: model.CatDecision, Title: "restored", Content: "restored content", UpdatedAt: now.Add(2 * time.Minute), SessionID: *sessionID},
+		},
+		{
+			EventID:      "950e8400-e29b-41d4-a716-446655440003",
+			EntityType:   model.MutationEntityMemory,
+			EntitySyncID: created.SyncID,
+			Project:      "restore-update-test",
+			Op:           model.MutationOpUpdate,
+			OccurredAt:   now.Add(3 * time.Minute),
+			Memory:       &model.MemoryPayload{SyncID: created.SyncID, Project: "restore-update-test", TopicKey: stringPtr("restore-update/topic"), Category: model.CatBugfix, Title: "updated after restore", Content: "normal update after restore", UpdatedAt: now.Add(3 * time.Minute), SessionID: *sessionID},
+		},
+	}
+
+	for _, mutation := range mutations {
+		result, err := repo.ApplyMemoryMutation(ctx, mutation)
+		require.NoError(t, err, "mutation %s should apply", mutation.Op)
+		assert.True(t, result.Applied, "mutation %s should change state", mutation.Op)
+	}
+
+	found, err := repo.GetBySyncID(ctx, created.SyncID)
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	assert.Equal(t, "updated after restore", found.Title)
+	assert.Equal(t, "normal update after restore", found.Content)
+	assert.Equal(t, model.CatBugfix, found.Category)
+	assert.Nil(t, found.DeletedAt, "normal update after restore must not leave tombstone state")
+	assert.Nil(t, found.DeletedBy)
+	assert.Nil(t, found.DeleteReason)
+	require.NotNil(t, found.RestoredAt, "restore marker should remain diagnosable after later updates")
+
+	listed, err := repo.List(ctx, model.MemoryFilter{Project: "restore-update-test", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	assert.Equal(t, "updated after restore", listed[0].Title)
+
+	batch, err := repo.ListMemoryMutations(ctx, "restore-update-test", model.MutationCursor{}, 10)
+	require.NoError(t, err)
+	require.Len(t, batch.Events, 3)
+	assert.Equal(t, []model.MutationOp{model.MutationOpDelete, model.MutationOpRestore, model.MutationOpUpdate}, []model.MutationOp{batch.Events[0].Op, batch.Events[1].Op, batch.Events[2].Op})
+}
+
+func TestPostgresMemoryRepository_ApplyMemoryMutation_DoesNotWriteAuditLogs(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, RunMigrations(pool, migrations.AuditLogsSQL))
+	repo := NewPostgresMemoryRepository(pool)
+	sessionID := ensureManualSavePtr(t, pool, "domain-journal-test")
+	now := time.Now().UTC()
+	syncID := "a50e8400-e29b-41d4-a716-446655440101"
+
+	var auditBefore int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT COUNT(*) FROM audit_logs`).Scan(&auditBefore))
+
+	domainMutations := []model.MutationEnvelope{
+		{
+			EventID:      "a50e8400-e29b-41d4-a716-446655440001",
+			EntityType:   model.MutationEntityMemory,
+			EntitySyncID: syncID,
+			Project:      "domain-journal-test",
+			Op:           model.MutationOpCreate,
+			OccurredAt:   now,
+			Memory:       &model.MemoryPayload{SyncID: syncID, Project: "domain-journal-test", TopicKey: stringPtr("domain-journal/topic"), Category: model.CatDecision, Title: "domain create", Content: "create content", CreatedBy: "tester", CreatedAt: now, UpdatedAt: now, SessionID: *sessionID},
+		},
+		{
+			EventID:      "a50e8400-e29b-41d4-a716-446655440002",
+			EntityType:   model.MutationEntityMemory,
+			EntitySyncID: syncID,
+			Project:      "domain-journal-test",
+			Op:           model.MutationOpDelete,
+			OccurredAt:   now.Add(time.Minute),
+			Tombstone:    &model.TombstonePayload{DeletedAt: now.Add(time.Minute), DeletedBy: "tester", Reason: "domain tombstone"},
+		},
+	}
+
+	for _, mutation := range domainMutations {
+		result, err := repo.ApplyMemoryMutation(ctx, mutation)
+		require.NoError(t, err)
+		assert.True(t, result.Applied)
+	}
+
+	batch, err := repo.ListMemoryMutations(ctx, "domain-journal-test", model.MutationCursor{}, 10)
+	require.NoError(t, err)
+	require.Len(t, batch.Events, 2, "accepted domain mutations must be recorded in memory_mutations")
+	assert.Equal(t, model.MutationOpCreate, batch.Events[0].Op)
+	assert.Equal(t, model.MutationOpDelete, batch.Events[1].Op)
+
+	var auditAfter int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT COUNT(*) FROM audit_logs`).Scan(&auditAfter))
+	assert.Equal(t, auditBefore, auditAfter, "domain mutation journaling must not use operational audit_logs")
+}
+
+func stringValue(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

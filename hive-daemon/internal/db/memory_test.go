@@ -1,9 +1,14 @@
 package db
 
 import (
+	"database/sql"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // helper para abrir DB en test y limpiar al final
@@ -397,4 +402,166 @@ func TestListMemories_ReturnsSessionID(t *testing.T) {
 		t.Errorf("ListMemories[0].SessionID = %q, want %q",
 			results[0].SessionID, "manual-save-r2w1-list")
 	}
+}
+
+func TestMemorySoftDeleteBehavior(t *testing.T) {
+	tests := []struct {
+		name   string
+		assert func(t *testing.T, d *DB, id int64)
+	}{
+		{
+			name: "delete hides from default reads and exposes tombstone metadata",
+			assert: func(t *testing.T, d *DB, id int64) {
+				require.NoError(t, d.DeleteMemory(id, "tester", "duplicate"))
+
+				_, err := d.GetMemory(id)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "memory not found")
+
+				listed, err := d.ListMemories("soft-delete", 10)
+				require.NoError(t, err)
+				assert.Empty(t, listed)
+
+				deleted, err := d.GetDeletedMemory(id)
+				require.NoError(t, err)
+				assert.Equal(t, "Title", deleted.Memory.Title)
+				assert.Equal(t, "tester", deleted.DeletedBy)
+				assert.Equal(t, "duplicate", deleted.DeleteReason)
+				assert.False(t, deleted.DeletedAt.IsZero())
+			},
+		},
+		{
+			name: "normal topic update does not restore tombstone",
+			assert: func(t *testing.T, d *DB, id int64) {
+				key := "soft/delete/topic"
+				require.NoError(t, d.DeleteMemory(id, "tester", "obsolete"))
+
+				_, err := d.SaveMemory(&models.Memory{
+					Project:   "soft-delete",
+					TopicKey:  &key,
+					Title:     "Updated",
+					Content:   "Updated content",
+					SessionID: "manual-save-soft-delete",
+				})
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "explicit restore")
+
+				deleted, err := d.GetDeletedMemory(id)
+				require.NoError(t, err)
+				assert.Equal(t, "Title", deleted.Memory.Title)
+				assert.False(t, deleted.DeletedAt.IsZero())
+			},
+		},
+		{
+			name: "restore reactivates and clears current tombstone fields",
+			assert: func(t *testing.T, d *DB, id int64) {
+				require.NoError(t, d.DeleteMemory(id, "tester", "obsolete"))
+				require.NoError(t, d.RestoreMemory(id, "tester"))
+
+				got, err := d.GetMemory(id)
+				require.NoError(t, err)
+				assert.Equal(t, "Title", got.Title)
+
+				var deletedAt, deletedBy, deleteReason sql.NullString
+				var restoredAt string
+				err = d.sqlDB.QueryRow(
+					`SELECT deleted_at, deleted_by, delete_reason, restored_at FROM memories WHERE id = ?`, id,
+				).Scan(&deletedAt, &deletedBy, &deleteReason, &restoredAt)
+				require.NoError(t, err)
+				assert.False(t, deletedAt.Valid)
+				assert.False(t, deletedBy.Valid)
+				assert.False(t, deleteReason.Valid)
+				assert.NotEmpty(t, restoredAt)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := openTestDB(t)
+			key := "soft/delete/topic"
+			id, err := saveTestMemory(t, d, &models.Memory{
+				Project:   "soft-delete",
+				TopicKey:  &key,
+				Title:     "Title",
+				Content:   "Content",
+				SessionID: "manual-save-soft-delete",
+			})
+			require.NoError(t, err)
+
+			tt.assert(t, d, id)
+		})
+	}
+}
+
+func TestMemoryMutationsJournaledTransactionally(t *testing.T) {
+	d := openTestDB(t)
+	key := "journal/topic"
+	id, err := saveTestMemory(t, d, &models.Memory{
+		Project:   "journal-project",
+		TopicKey:  &key,
+		Title:     "Created",
+		Content:   "Content",
+		SessionID: "manual-save-journal-project",
+	})
+	require.NoError(t, err)
+
+	_, err = d.SaveMemory(&models.Memory{
+		Project:   "journal-project",
+		TopicKey:  &key,
+		Title:     "Updated",
+		Content:   "Updated content",
+		SessionID: "manual-save-journal-project",
+	})
+	require.NoError(t, err)
+	require.NoError(t, d.DeleteMemory(id, "tester", "done"))
+	require.NoError(t, d.RestoreMemory(id, "tester"))
+
+	rows, err := d.sqlDB.Query(`SELECT op, entity_sync_id, project, event_id FROM memory_mutations ORDER BY sequence ASC`)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, rows.Close()) }()
+
+	var ops []string
+	var syncID string
+	for rows.Next() {
+		var op, entitySyncID, project, eventID string
+		require.NoError(t, rows.Scan(&op, &entitySyncID, &project, &eventID))
+		ops = append(ops, op)
+		assert.Equal(t, "journal-project", project)
+		assert.NotEmpty(t, entitySyncID)
+		assert.NotEmpty(t, eventID)
+		if syncID == "" {
+			syncID = entitySyncID
+		}
+		assert.Equal(t, syncID, entitySyncID)
+	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, []string{"create", "update", "delete", "restore"}, ops)
+
+	err = d.DeleteMemory(999999, "tester", "missing")
+	require.Error(t, err)
+	assert.True(t, strings.Contains(err.Error(), "memory not found"))
+
+	var deleteCount int
+	require.NoError(t, d.sqlDB.QueryRow(`SELECT COUNT(*) FROM memory_mutations WHERE op = 'delete'`).Scan(&deleteCount))
+	assert.Equal(t, 1, deleteCount, "failed delete must not leave a committed journal row")
+}
+
+func TestMemoryRestoreRequiresDeletedRow(t *testing.T) {
+	d := openTestDB(t)
+	id, err := saveTestMemory(t, d, newMemory("restore-project", "Active", "Content"))
+	require.NoError(t, err)
+
+	err = d.RestoreMemory(id, "tester")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not deleted")
+
+	var count int
+	require.NoError(t, d.sqlDB.QueryRow(`SELECT COUNT(*) FROM memory_mutations WHERE op = 'restore'`).Scan(&count))
+	assert.Equal(t, 0, count)
+}
+
+func assertRecentTime(t *testing.T, got time.Time) {
+	t.Helper()
+	assert.WithinDuration(t, time.Now().UTC(), got, 5*time.Second)
 }

@@ -62,4 +62,7 @@ type MemoryRepository interface {
 	// (para no devolverlas de vuelta en el mismo sync).
 	// Si since es el tiempo cero (time.Time{}), devuelve todas las memorias del proyecto.
 	PullSince(ctx context.Context, project string, since time.Time, excludeSyncIDs []string) ([]*model.Memory, error)
+
+	ApplyMemoryMutation(ctx context.Context, mutation model.MutationEnvelope) (*model.MutationApplyResult, error)
+	ListMemoryMutations(ctx context.Context, project string, cursor model.MutationCursor, limit int) (*model.MutationBatch, error)
 }

@@ -156,6 +156,10 @@ func main() {
 		log.Fatalf("migración 004 falló: %v", err)
 	}
 
+	if err := repository.RunMigrations(pool, migrations.MemoryMutationsSQL); err != nil {
+		log.Fatalf("migración 005 falló: %v", err)
+	}
+
 	log.Println("✓ PostgreSQL conectado y migraciones ejecutadas")
 
 	// --- Paso 3: Servidor ---

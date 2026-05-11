@@ -61,6 +61,39 @@ func TestOpen_RecoveryTokensTableAndExpiryIndexExist(t *testing.T) {
 	}
 }
 
+func TestOpen_MemoryTombstoneAndMutationSchemaExist(t *testing.T) {
+	d := openTestDB(t)
+
+	for _, column := range []string{"deleted_at", "deleted_by", "delete_reason", "restored_at"} {
+		t.Run("memories column "+column, func(t *testing.T) {
+			var name string
+			err := d.sqlDB.QueryRow(
+				"SELECT name FROM pragma_table_info('memories') WHERE name = ?", column,
+			).Scan(&name)
+			require.NoErrorf(t, err, "column %s should exist", column)
+		})
+	}
+
+	for _, tt := range []struct {
+		kind string
+		name string
+	}{
+		{kind: "table", name: "memory_mutations"},
+		{kind: "table", name: "mutation_cursors"},
+		{kind: "index", name: "idx_memory_mutations_event_id"},
+		{kind: "index", name: "idx_memory_mutations_project_unsynced"},
+		{kind: "index", name: "idx_memory_mutations_entity"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var name string
+			err := d.sqlDB.QueryRow(
+				"SELECT name FROM sqlite_master WHERE type = ? AND name = ?", tt.kind, tt.name,
+			).Scan(&name)
+			require.NoErrorf(t, err, "%s %s should exist", tt.kind, tt.name)
+		})
+	}
+}
+
 func TestOpen_FTSTableExists(t *testing.T) {
 	d, err := Open(":memory:")
 	if err != nil {

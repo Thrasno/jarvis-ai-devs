@@ -60,9 +60,9 @@ type Memory struct {
 	// Cuando es nil, cada guardado crea una entrada nueva e inmutable.
 	TopicKey *string `json:"topic_key,omitempty"`
 
-	Category      MemoryCategory `json:"category"`
-	Title         string         `json:"title"`
-	Content       string         `json:"content"`
+	Category MemoryCategory `json:"category"`
+	Title    string         `json:"title"`
+	Content  string         `json:"content"`
 
 	// Tags y FilesAffected son slices de strings.
 	// En Go, []string es una lista de tamaño variable (como array en PHP).
@@ -73,7 +73,7 @@ type Memory struct {
 	Tags          []string `json:"tags"`
 	FilesAffected []string `json:"files_affected"`
 
-	CreatedBy string  `json:"created_by"`
+	CreatedBy string `json:"created_by"`
 	// SessionID links this memory to a session. Set by the sync handler
 	// (populated from payload.SessionID or lazy-created manual-save-{project}).
 	// Nullable until Slice 4 T4.7 sets NOT NULL on the column.
@@ -96,6 +96,80 @@ type Memory struct {
 	// SyncedAt es el momento en que el servidor recibió esta memoria.
 	// Server-only: el cliente no lo envía, lo recibe de vuelta.
 	SyncedAt time.Time `json:"synced_at"`
+
+	// Tombstone metadata. Nil deleted_at means the memory is active.
+	DeletedAt    *time.Time `json:"deleted_at,omitempty"`
+	DeletedBy    *string    `json:"deleted_by,omitempty"`
+	DeleteReason *string    `json:"delete_reason,omitempty"`
+	RestoredAt   *time.Time `json:"restored_at,omitempty"`
+}
+
+type MutationOp string
+
+const (
+	MutationOpCreate  MutationOp = "create"
+	MutationOpUpdate  MutationOp = "update"
+	MutationOpDelete  MutationOp = "delete"
+	MutationOpRestore MutationOp = "restore"
+)
+
+const MutationEntityMemory = "memory"
+
+type MutationCursor struct {
+	Sequence int64  `json:"sequence"`
+	EventID  string `json:"event_id"`
+}
+
+type TombstonePayload struct {
+	DeletedAt time.Time `json:"deleted_at"`
+	DeletedBy string    `json:"deleted_by,omitempty"`
+	Reason    string    `json:"reason,omitempty"`
+}
+
+type MemoryPayload struct {
+	SyncID        string         `json:"sync_id"`
+	Project       string         `json:"project"`
+	TopicKey      *string        `json:"topic_key,omitempty"`
+	Category      MemoryCategory `json:"category"`
+	Title         string         `json:"title"`
+	Content       string         `json:"content"`
+	Tags          []string       `json:"tags"`
+	FilesAffected []string       `json:"files_affected"`
+	CreatedBy     string         `json:"created_by"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	Confidence    float32        `json:"confidence"`
+	ImpactScore   float32        `json:"impact_score"`
+	SessionID     string         `json:"session_id,omitempty"`
+}
+
+type MutationEnvelope struct {
+	EventID       string            `json:"event_id"`
+	EntityType    string            `json:"entity_type"`
+	EntitySyncID  string            `json:"entity_sync_id"`
+	Project       string            `json:"project"`
+	Op            MutationOp        `json:"op"`
+	Sequence      int64             `json:"sequence"`
+	OccurredAt    time.Time         `json:"occurred_at"`
+	ActorID       string            `json:"actor_id,omitempty"`
+	BaseUpdatedAt *time.Time        `json:"base_updated_at,omitempty"`
+	Memory        *MemoryPayload    `json:"memory,omitempty"`
+	Tombstone     *TombstonePayload `json:"tombstone,omitempty"`
+}
+
+type MutationApplyResult struct {
+	EventID   string     `json:"event_id"`
+	Op        MutationOp `json:"op"`
+	Applied   bool       `json:"applied"`
+	Duplicate bool       `json:"duplicate"`
+	Rejected  bool       `json:"rejected"`
+	Reason    string     `json:"reason,omitempty"`
+	Sequence  int64      `json:"sequence,omitempty"`
+}
+
+type MutationBatch struct {
+	Events []MutationEnvelope `json:"events"`
+	Next   MutationCursor     `json:"next"`
 }
 
 // MemoryFilter agrupa los parámetros para filtrar y paginar memorias.

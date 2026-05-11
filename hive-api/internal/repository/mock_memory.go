@@ -77,11 +77,14 @@ func (m *MockMemoryRepository) Search(ctx context.Context, query string, filter 
 
 // Upsert es el más complejo porque devuelve 3 valores.
 // En el test configuramos con:
-//   mockRepo.On("Upsert", ctx, mem).Return(savedMem, true, nil)
+//
+//	mockRepo.On("Upsert", ctx, mem).Return(savedMem, true, nil)
+//
 // Los tres valores mapean exactamente a las 3 posiciones de args:
-//   args.Get(0) → *model.Memory (la memoria guardada, o nil)
-//   args.Bool(1) → bool (true = fue INSERT, false = UPDATE o SKIP)
-//   args.Error(2) → error
+//
+//	args.Get(0) → *model.Memory (la memoria guardada, o nil)
+//	args.Bool(1) → bool (true = fue INSERT, false = UPDATE o SKIP)
+//	args.Error(2) → error
 func (m *MockMemoryRepository) Upsert(ctx context.Context, mem *model.Memory) (*model.Memory, bool, error) {
 	args := m.Called(ctx, mem)
 	if args.Get(0) == nil {
@@ -96,4 +99,20 @@ func (m *MockMemoryRepository) PullSince(ctx context.Context, project string, si
 		return nil, args.Error(1)
 	}
 	return args.Get(0).([]*model.Memory), args.Error(1)
+}
+
+func (m *MockMemoryRepository) ApplyMemoryMutation(ctx context.Context, mutation model.MutationEnvelope) (*model.MutationApplyResult, error) {
+	args := m.Called(ctx, mutation)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.MutationApplyResult), args.Error(1)
+}
+
+func (m *MockMemoryRepository) ListMemoryMutations(ctx context.Context, project string, cursor model.MutationCursor, limit int) (*model.MutationBatch, error) {
+	args := m.Called(ctx, project, cursor, limit)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.MutationBatch), args.Error(1)
 }

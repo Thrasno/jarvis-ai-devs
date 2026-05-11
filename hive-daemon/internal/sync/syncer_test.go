@@ -21,24 +21,31 @@ import (
 
 // mockSyncStore implements the SyncStore interface for testing.
 type mockSyncStore struct {
-	mu                     sync.Mutex
-	unsynced               []*models.Memory
-	lastSync               time.Time
-	jwt                    string
-	markedSynced           []string
-	savedFromRemote        []*models.Memory
-	unsyncedPrompts        []*models.Prompt
-	unsyncedPromptsErr     error
-	markedPromptSynced     []string
-	markPromptSyncedErr    error
-	healthByProject        map[string]db.SyncHealth
-	recordAttemptCalls     []string
-	recordSuccessCalls     []string
-	recordFailureCalls     []string
-	unsyncedSessions       []*models.Session
-	unsyncedSessionsErr    error
-	markedSessionSynced    []string
+	mu                      sync.Mutex
+	unsynced                []*models.Memory
+	lastSync                time.Time
+	jwt                     string
+	markedSynced            []string
+	savedFromRemote         []*models.Memory
+	unsyncedPrompts         []*models.Prompt
+	unsyncedPromptsErr      error
+	markedPromptSynced      []string
+	markPromptSyncedErr     error
+	healthByProject         map[string]db.SyncHealth
+	recordAttemptCalls      []string
+	recordSuccessCalls      []string
+	recordFailureCalls      []string
+	unsyncedSessions        []*models.Session
+	unsyncedSessionsErr     error
+	markedSessionSynced     []string
 	savedSessionsFromRemote []*models.Session
+	pendingMutations        []db.MutationEnvelope
+	markedMutationsSynced   []string
+	markMutationsSyncedErr  error
+	appliedRemoteMutations  []db.MutationEnvelope
+	applyRemoteMutationErr  error
+	mutationCursor          db.MutationCursor
+	setMutationCursors      []db.MutationCursor
 }
 
 func (m *mockSyncStore) GetUnsynced(project string) ([]*models.Memory, error) {
@@ -164,6 +171,46 @@ func (m *mockSyncStore) SaveSessionFromRemote(s *models.Session) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.savedSessionsFromRemote = append(m.savedSessionsFromRemote, s)
+	return nil
+}
+
+func (m *mockSyncStore) GetPendingMutations(project string, limit int) ([]db.MutationEnvelope, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]db.MutationEnvelope(nil), m.pendingMutations...), nil
+}
+
+func (m *mockSyncStore) MarkMutationsSynced(eventIDs []string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.markMutationsSyncedErr != nil {
+		return m.markMutationsSyncedErr
+	}
+	m.markedMutationsSynced = append(m.markedMutationsSynced, eventIDs...)
+	return nil
+}
+
+func (m *mockSyncStore) ApplyRemoteMutation(event db.MutationEnvelope) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.applyRemoteMutationErr != nil {
+		return false, m.applyRemoteMutationErr
+	}
+	m.appliedRemoteMutations = append(m.appliedRemoteMutations, event)
+	return true, nil
+}
+
+func (m *mockSyncStore) GetMutationCursor(consumer, project string) (db.MutationCursor, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.mutationCursor, nil
+}
+
+func (m *mockSyncStore) SetMutationCursor(consumer, project string, cursor db.MutationCursor, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mutationCursor = cursor
+	m.setMutationCursors = append(m.setMutationCursors, cursor)
 	return nil
 }
 
@@ -504,9 +551,9 @@ func TestSyncer_Push_IncludesSessionsBeforeMemories(t *testing.T) {
 
 			w.WriteHeader(http.StatusOK)
 			resp := syncResponse{
-				Pushed:         1,
-				Pulled:         []apiMemory{},
-				Conflicts:      0,
+				Pushed:    1,
+				Pulled:    []apiMemory{},
+				Conflicts: 0,
 				PulledSessions: []sessionPayload{{
 					ID:        "remote-sess-1",
 					SyncID:    "11112222-3333-4444-5555-666677778888",
@@ -1062,20 +1109,20 @@ func TestSyncer_Pull_MemoryPayloadCarriesSessionID(t *testing.T) {
 			"conflicts": 0,
 			"pulled": []map[string]any{
 				{
-					"id":           "remote-id-1",
-					"sync_id":      "pulled-with-session",
-					"project":      "test-project",
-					"category":     "test",
-					"title":        "Pulled",
-					"content":      "remote content",
-					"tags":         []string{},
+					"id":             "remote-id-1",
+					"sync_id":        "pulled-with-session",
+					"project":        "test-project",
+					"category":       "test",
+					"title":          "Pulled",
+					"content":        "remote content",
+					"tags":           []string{},
 					"files_affected": []string{},
-					"created_by":   "remote-user",
-					"created_at":   time.Now().UTC().Format(time.RFC3339),
-					"updated_at":   time.Now().UTC().Format(time.RFC3339),
-					"confidence":   0.0,
-					"impact_score": 0.0,
-					"session_id":   "remote-sess-7",
+					"created_by":     "remote-user",
+					"created_at":     time.Now().UTC().Format(time.RFC3339),
+					"updated_at":     time.Now().UTC().Format(time.RFC3339),
+					"confidence":     0.0,
+					"impact_score":   0.0,
+					"session_id":     "remote-sess-7",
 				},
 			},
 		}
@@ -1094,4 +1141,359 @@ func TestSyncer_Pull_MemoryPayloadCarriesSessionID(t *testing.T) {
 	require.Len(t, store.savedFromRemote, 1)
 	assert.Equal(t, "remote-sess-7", store.savedFromRemote[0].SessionID,
 		"pulled memory must carry session_id into local DB so attribution survives the round trip")
+}
+
+func TestSyncer_Sync_MutationProtocolV2PushPullAndCursor(t *testing.T) {
+	now := time.Date(2026, 5, 11, 15, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{
+		jwt:            "valid-token",
+		mutationCursor: db.MutationCursor{Sequence: 4, EventID: "evt-4"},
+		pendingMutations: []db.MutationEnvelope{{
+			EventID:      "evt-local-5",
+			EntityType:   "memory",
+			EntitySyncID: "mem-local-5",
+			Project:      "test-project",
+			Op:           db.MutationOpUpdate,
+			Sequence:     5,
+			OccurredAt:   now,
+			Memory: &db.MutationMemoryPayload{
+				Category:    "architecture",
+				Title:       "Local update",
+				Content:     "content",
+				CreatedBy:   "tester",
+				Confidence:  "high",
+				ImpactScore: 7,
+			},
+		}},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/sync", r.URL.Path)
+		var req syncRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		assert.Equal(t, mutationProtocolVersion, req.ProtocolVersion)
+		require.NotNil(t, req.MutationCursor)
+		assert.Equal(t, int64(4), req.MutationCursor.Sequence)
+		require.Len(t, req.Mutations, 1)
+		assert.Equal(t, "evt-local-5", req.Mutations[0].EventID)
+
+		resp := syncResponse{
+			Pushed:            1,
+			Pulled:            []apiMemory{},
+			Conflicts:         0,
+			CompatibilityMode: compatibilityModeMutationV2,
+			NextMutationCursor: &db.MutationCursor{
+				Sequence: 6,
+				EventID:  "evt-remote-6",
+			},
+			PulledMutations: []db.MutationEnvelope{{
+				EventID:      "evt-remote-6",
+				EntityType:   "memory",
+				EntitySyncID: "mem-remote-6",
+				Project:      "test-project",
+				Op:           db.MutationOpRestore,
+				Sequence:     6,
+				OccurredAt:   now.Add(time.Minute),
+			}},
+		}
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(resp))
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return now },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	result, err := syncer.Sync(context.Background(), "test-project")
+	require.NoError(t, err)
+	assert.Equal(t, compatibilityModeMutationV2, result.CompatibilityMode)
+	assert.Equal(t, 1, result.MutationsPushed)
+	assert.Equal(t, 1, result.MutationsPulled)
+	assert.Equal(t, int64(6), result.MutationCursor.Sequence)
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	assert.Equal(t, []string{"evt-local-5"}, store.markedMutationsSynced)
+	require.Len(t, store.appliedRemoteMutations, 1)
+	assert.Equal(t, "evt-remote-6", store.appliedRemoteMutations[0].EventID)
+	require.Len(t, store.setMutationCursors, 1)
+	assert.Equal(t, "evt-remote-6", store.setMutationCursors[0].EventID)
+}
+
+func TestSyncer_Sync_MutationProtocolV2DoesNotAckLegacyRowsInMixedBatch(t *testing.T) {
+	now := time.Date(2026, 5, 11, 18, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{
+		jwt: "valid-token",
+		unsynced: []*models.Memory{
+			createTestSyncMemory("legacy-only-unsynced"),
+		},
+		pendingMutations: []db.MutationEnvelope{{
+			EventID:      "evt-local-v2",
+			EntityType:   "memory",
+			EntitySyncID: "mutation-backed-memory",
+			Project:      "test-project",
+			Op:           db.MutationOpUpdate,
+			Sequence:     7,
+			OccurredAt:   now,
+		}},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req syncRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		assert.Equal(t, mutationProtocolVersion, req.ProtocolVersion)
+		require.Len(t, req.Memories, 1)
+		assert.Equal(t, "legacy-only-unsynced", req.Memories[0].SyncID)
+		require.Len(t, req.Mutations, 1)
+		assert.Equal(t, "evt-local-v2", req.Mutations[0].EventID)
+
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{
+			Pushed:            0,
+			Pulled:            []apiMemory{},
+			Conflicts:         0,
+			CompatibilityMode: compatibilityModeMutationV2,
+			NextMutationCursor: &db.MutationCursor{
+				Sequence: 7,
+				EventID:  "evt-local-v2",
+			},
+		}))
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return now },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	result, err := syncer.Sync(context.Background(), "test-project")
+	require.NoError(t, err)
+	assert.Equal(t, compatibilityModeMutationV2, result.CompatibilityMode)
+	assert.Equal(t, 1, result.MutationsPushed)
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	assert.Equal(t, []string{"evt-local-v2"}, store.markedMutationsSynced, "accepted v2 mutations should be acked")
+	assert.Empty(t, store.markedSynced, "legacy-only memories must remain unsynced when v2 response skipped memories[]")
+}
+
+func TestSyncer_Sync_MutationProtocolV2EmptyMutationsAcksLegacyRowsInLegacyMode(t *testing.T) {
+	now := time.Date(2026, 5, 11, 18, 30, 0, 0, time.UTC)
+	store := &mockSyncStore{
+		jwt: "valid-token",
+		unsynced: []*models.Memory{
+			createTestSyncMemory("legacy-empty-mutations-unsynced"),
+		},
+		pendingMutations: []db.MutationEnvelope{},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req syncRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		assert.Equal(t, mutationProtocolVersion, req.ProtocolVersion)
+		require.Len(t, req.Memories, 1)
+		assert.Equal(t, "legacy-empty-mutations-unsynced", req.Memories[0].SyncID)
+		assert.Empty(t, req.Mutations, "v2-capable daemon may send an empty mutation batch during upgrade")
+
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{
+			Pushed:            1,
+			Pulled:            []apiMemory{},
+			Conflicts:         0,
+			CompatibilityMode: compatibilityModeLegacy,
+		}))
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return now },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	result, err := syncer.Sync(context.Background(), "test-project")
+	require.NoError(t, err)
+	assert.Equal(t, compatibilityModeLegacy, result.CompatibilityMode)
+	assert.Zero(t, result.MutationsPushed)
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	assert.Equal(t, []string{"legacy-empty-mutations-unsynced"}, store.markedSynced, "legacy rows must be acked when API confirms it processed row-state sync")
+	assert.Empty(t, store.markedMutationsSynced)
+	assert.Empty(t, store.setMutationCursors)
+}
+
+func TestSyncer_Sync_MutationProtocolErrorPathsDoNotAckPendingMutations(t *testing.T) {
+	now := time.Date(2026, 5, 11, 17, 30, 0, 0, time.UTC)
+	pendingMutation := db.MutationEnvelope{
+		EventID:      "evt-local-error",
+		EntityType:   "memory",
+		EntitySyncID: "mem-local-error",
+		Project:      "test-project",
+		Op:           db.MutationOpUpdate,
+		Sequence:     9,
+		OccurredAt:   now,
+	}
+
+	tests := []struct {
+		name                 string
+		server               func(t *testing.T) *httptest.Server
+		store                *mockSyncStore
+		wantErr              string
+		wantRecordedLastErr  string
+		wantRecordFailures   int
+		wantSetCursorCount   int
+		wantAppliedMutations int
+	}{
+		{
+			name: "server sync failure leaves pending journal unacked and records sanitized status",
+			store: &mockSyncStore{
+				jwt:              "valid-token",
+				pendingMutations: []db.MutationEnvelope{pendingMutation},
+			},
+			server: func(t *testing.T) *httptest.Server {
+				t.Helper()
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					var req syncRequest
+					require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+					require.Len(t, req.Mutations, 1)
+					assert.Equal(t, "evt-local-error", req.Mutations[0].EventID)
+
+					w.WriteHeader(http.StatusInternalServerError)
+					_, err := w.Write([]byte("upstream exploded\nwith internals"))
+					require.NoError(t, err)
+				}))
+			},
+			wantErr:             "sync con servidor",
+			wantRecordedLastErr: "sync failed (500)",
+			wantRecordFailures:  1,
+		},
+		{
+			name: "mark synced failure leaves pending journal unacked and records failure status",
+			store: &mockSyncStore{
+				jwt:                    "valid-token",
+				pendingMutations:       []db.MutationEnvelope{pendingMutation},
+				markMutationsSyncedErr: assert.AnError,
+			},
+			server: func(t *testing.T) *httptest.Server {
+				t.Helper()
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusOK)
+					require.NoError(t, json.NewEncoder(w).Encode(syncResponse{
+						Pushed:            1,
+						Pulled:            []apiMemory{},
+						CompatibilityMode: compatibilityModeMutationV2,
+						NextMutationCursor: &db.MutationCursor{
+							Sequence: 9,
+							EventID:  "evt-local-error",
+						},
+					}))
+				}))
+			},
+			wantErr:             "marcar mutaciones sincronizadas",
+			wantRecordedLastErr: assert.AnError.Error(),
+			wantRecordFailures:  1,
+			wantSetCursorCount:  1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := tt.server(t)
+			defer server.Close()
+
+			syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, tt.store, syncDeps{
+				now:    func() time.Time { return now },
+				jitter: func(max time.Duration) time.Duration { return 0 },
+			})
+
+			result, err := syncer.Sync(context.Background(), "test-project")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Nil(t, result)
+
+			tt.store.mu.Lock()
+			defer tt.store.mu.Unlock()
+			assert.Empty(t, tt.store.markedMutationsSynced, "pending mutations must remain retryable until v2 ack is durably recorded")
+			assert.Len(t, tt.store.recordFailureCalls, tt.wantRecordFailures)
+			assert.Len(t, tt.store.recordSuccessCalls, 0)
+			assert.Len(t, tt.store.setMutationCursors, tt.wantSetCursorCount)
+			assert.Len(t, tt.store.appliedRemoteMutations, tt.wantAppliedMutations)
+			health := tt.store.getHealthLocked("test-project")
+			assert.Equal(t, 1, health.ConsecutiveFailures)
+			assert.Equal(t, now, health.LastFailureAt)
+			assert.Equal(t, tt.wantRecordedLastErr, health.LastError)
+		})
+	}
+}
+
+func TestSyncer_Sync_DoesNotAdvanceMutationCursorWhenPulledApplyFails(t *testing.T) {
+	now := time.Date(2026, 5, 11, 15, 30, 0, 0, time.UTC)
+	store := &mockSyncStore{
+		jwt:                    "valid-token",
+		pendingMutations:       []db.MutationEnvelope{{EventID: "evt-local-1", EntityType: "memory", EntitySyncID: "mem-local-1", Project: "test-project", Op: db.MutationOpDelete, Sequence: 1, OccurredAt: now}},
+		applyRemoteMutationErr: assert.AnError,
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{
+			Pushed:             1,
+			Pulled:             []apiMemory{},
+			CompatibilityMode:  compatibilityModeMutationV2,
+			NextMutationCursor: &db.MutationCursor{Sequence: 2, EventID: "evt-remote-2"},
+			PulledMutations:    []db.MutationEnvelope{{EventID: "evt-remote-2", EntityType: "memory", EntitySyncID: "mem-remote-2", Project: "test-project", Op: db.MutationOpDelete, Sequence: 2, OccurredAt: now}},
+		}))
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return now },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	result, err := syncer.Sync(context.Background(), "test-project")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "aplicar mutación remota")
+	assert.Nil(t, result)
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	assert.Empty(t, store.markedMutationsSynced, "local mutations are not acked until pulled mutations apply cleanly")
+	assert.Empty(t, store.setMutationCursors, "cursor must advance only after successful local apply")
+}
+
+func TestSyncer_Sync_LegacyFallbackDoesNotAckMutationJournal(t *testing.T) {
+	now := time.Date(2026, 5, 11, 16, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{
+		jwt:              "valid-token",
+		pendingMutations: []db.MutationEnvelope{{EventID: "evt-local-legacy", EntityType: "memory", EntitySyncID: "mem-local-legacy", Project: "test-project", Op: db.MutationOpDelete, Sequence: 3, OccurredAt: now}},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req syncRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		assert.Equal(t, mutationProtocolVersion, req.ProtocolVersion)
+		assert.Len(t, req.Mutations, 1)
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return now },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	result, err := syncer.Sync(context.Background(), "test-project")
+	require.NoError(t, err)
+	assert.Equal(t, compatibilityModeLegacy, result.CompatibilityMode)
+	assert.Zero(t, result.MutationsPushed, "legacy fallback must not report v2 mutation journal push success")
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	assert.Empty(t, store.markedMutationsSynced)
+	assert.Empty(t, store.appliedRemoteMutations)
+	assert.Empty(t, store.setMutationCursors)
 }

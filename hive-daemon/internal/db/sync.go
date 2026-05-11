@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -24,6 +25,116 @@ type SyncHealth struct {
 	LastError           string
 }
 
+type MutationOp string
+
+const (
+	MutationOpCreate  MutationOp = "create"
+	MutationOpUpdate  MutationOp = "update"
+	MutationOpDelete  MutationOp = "delete"
+	MutationOpRestore MutationOp = "restore"
+)
+
+type MutationEnvelope struct {
+	EventID       string                    `json:"event_id"`
+	EntityType    string                    `json:"entity_type"`
+	EntitySyncID  string                    `json:"entity_sync_id"`
+	Project       string                    `json:"project"`
+	Op            MutationOp                `json:"op"`
+	Sequence      int64                     `json:"sequence"`
+	OccurredAt    time.Time                 `json:"occurred_at"`
+	ActorID       string                    `json:"actor_id,omitempty"`
+	BaseUpdatedAt *time.Time                `json:"base_updated_at,omitempty"`
+	Memory        *MutationMemoryPayload    `json:"memory,omitempty"`
+	Tombstone     *MutationTombstonePayload `json:"tombstone,omitempty"`
+}
+
+type MutationCursor struct {
+	Sequence int64  `json:"sequence"`
+	EventID  string `json:"event_id"`
+}
+
+type MutationMemoryPayload struct {
+	SyncID        string    `json:"sync_id"`
+	Project       string    `json:"project"`
+	TopicKey      *string   `json:"topic_key,omitempty"`
+	Category      string    `json:"category"`
+	Title         string    `json:"title"`
+	Content       string    `json:"content"`
+	Tags          []string  `json:"tags"`
+	FilesAffected []string  `json:"files_affected"`
+	CreatedBy     string    `json:"created_by"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	Confidence    string    `json:"confidence"`
+	ImpactScore   int       `json:"impact_score"`
+	SessionID     string    `json:"session_id,omitempty"`
+}
+
+type MutationTombstonePayload struct {
+	DeletedAt time.Time `json:"deleted_at"`
+	DeletedBy string    `json:"deleted_by,omitempty"`
+	Reason    string    `json:"reason,omitempty"`
+}
+
+type memoryMutationRecord struct {
+	EventID      string
+	EntitySyncID string
+	Project      string
+	Op           MutationOp
+	OccurredAt   string
+	ActorID      string
+	Payload      mutationPayload
+}
+
+type mutationPayload struct {
+	Memory    *MutationMemoryPayload    `json:"memory,omitempty"`
+	Tombstone *MutationTombstonePayload `json:"tombstone,omitempty"`
+}
+
+func memoryPayloadFromModel(mem *models.Memory, syncID, createdBy string, occurredAt time.Time) *MutationMemoryPayload {
+	createdAt := mem.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = occurredAt
+	}
+	updatedAt := occurredAt
+	if !mem.UpdatedAt.IsZero() {
+		updatedAt = mem.UpdatedAt
+	}
+	if createdBy == "" {
+		createdBy = mem.CreatedBy
+	}
+	return &MutationMemoryPayload{
+		SyncID:        syncID,
+		Project:       mem.Project,
+		TopicKey:      mem.TopicKey,
+		Category:      mem.Category,
+		Title:         mem.Title,
+		Content:       mem.Content,
+		Tags:          orNil(mem.Tags),
+		FilesAffected: orNil(mem.FilesAffected),
+		CreatedBy:     createdBy,
+		CreatedAt:     createdAt,
+		UpdatedAt:     updatedAt,
+		Confidence:    mem.Confidence,
+		ImpactScore:   mem.ImpactScore,
+		SessionID:     mem.SessionID,
+	}
+}
+
+func insertMemoryMutation(tx *sql.Tx, record memoryMutationRecord) error {
+	payload, err := json.Marshal(record.Payload)
+	if err != nil {
+		return fmt.Errorf("marshal mutation payload: %w", err)
+	}
+	_, err = tx.Exec(`
+INSERT INTO memory_mutations
+    (event_id, entity_type, entity_sync_id, project, op, occurred_at, actor_id, payload_json)
+VALUES (?, 'memory', ?, ?, ?, ?, ?, ?)`,
+		record.EventID, record.EntitySyncID, record.Project, string(record.Op), record.OccurredAt, record.ActorID, string(payload),
+	)
+	return err
+}
+
 // GetUnsynced devuelve todas las memorias que aún no se han enviado al servidor
 // (synced_at IS NULL). Son las que hay que incluir en el próximo push.
 func (d *DB) GetUnsynced(project string) ([]*models.Memory, error) {
@@ -31,7 +142,7 @@ func (d *DB) GetUnsynced(project string) ([]*models.Memory, error) {
 SELECT id, sync_id, project, topic_key, category, title, content, tags, files_affected,
        created_by, created_at, updated_at, synced_at, confidence, impact_score, session_id
 FROM memories
-WHERE synced_at IS NULL AND sync_id != ''`
+WHERE synced_at IS NULL AND sync_id != '' AND deleted_at IS NULL`
 
 	args := []any{}
 	if project != "" {
@@ -70,6 +181,249 @@ func (d *DB) MarkSynced(syncID string, at time.Time) error {
 		logger.Log.Printf("warn: MarkSynced: no row found for sync_id %s", syncID)
 	}
 	return nil
+}
+
+func (d *DB) GetPendingMutations(project string, limit int) ([]MutationEnvelope, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	q := `
+SELECT sequence, event_id, entity_type, entity_sync_id, project, op, occurred_at, actor_id, base_updated_at, payload_json
+FROM memory_mutations
+WHERE synced_at IS NULL`
+	args := []any{}
+	if project != "" {
+		q += ` AND project = ?`
+		args = append(args, project)
+	}
+	q += ` ORDER BY sequence ASC, event_id ASC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := d.sqlDB.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("get pending mutations: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var mutations []MutationEnvelope
+	for rows.Next() {
+		mutation, err := scanMutationEnvelope(rows)
+		if err != nil {
+			return nil, err
+		}
+		mutations = append(mutations, mutation)
+	}
+	return mutations, rows.Err()
+}
+
+func (d *DB) MarkMutationsSynced(eventIDs []string, at time.Time) error {
+	if len(eventIDs) == 0 {
+		return nil
+	}
+	tx, err := d.sqlDB.Begin()
+	if err != nil {
+		return fmt.Errorf("begin mark mutations synced: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	formatted := at.UTC().Format("2006-01-02 15:04:05")
+	for _, eventID := range eventIDs {
+		if _, err := tx.Exec(`UPDATE memory_mutations SET synced_at = ? WHERE event_id = ?`, formatted, eventID); err != nil {
+			return fmt.Errorf("mark mutation synced %s: %w", eventID, err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (d *DB) GetMutationCursor(consumer, project string) (MutationCursor, error) {
+	var cursor MutationCursor
+	err := d.sqlDB.QueryRow(`
+SELECT sequence, event_id
+FROM mutation_cursors
+WHERE consumer = ? AND project = ?`, consumer, project).Scan(&cursor.Sequence, &cursor.EventID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return MutationCursor{}, nil
+	}
+	if err != nil {
+		return MutationCursor{}, fmt.Errorf("get mutation cursor: %w", err)
+	}
+	return cursor, nil
+}
+
+func (d *DB) SetMutationCursor(consumer, project string, cursor MutationCursor, at time.Time) error {
+	_, err := d.sqlDB.Exec(`
+INSERT INTO mutation_cursors (consumer, project, sequence, event_id, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(consumer, project) DO UPDATE SET
+    sequence = excluded.sequence,
+    event_id = excluded.event_id,
+    updated_at = excluded.updated_at`,
+		consumer, project, cursor.Sequence, cursor.EventID, at.UTC().Format("2006-01-02 15:04:05"),
+	)
+	if err != nil {
+		return fmt.Errorf("set mutation cursor: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
+	if event.EventID == "" {
+		return false, fmt.Errorf("event_id is required")
+	}
+	if event.EntityType == "" {
+		event.EntityType = "memory"
+	}
+	if event.EntityType != "memory" {
+		return false, fmt.Errorf("unsupported mutation entity_type %q", event.EntityType)
+	}
+	if event.EntitySyncID == "" {
+		return false, fmt.Errorf("entity_sync_id is required")
+	}
+	if event.Project == "" {
+		return false, fmt.Errorf("project is required")
+	}
+	if event.OccurredAt.IsZero() {
+		event.OccurredAt = time.Now().UTC()
+	}
+
+	tx, err := d.sqlDB.Begin()
+	if err != nil {
+		return false, fmt.Errorf("begin apply remote mutation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var existing string
+	err = tx.QueryRow(`SELECT event_id FROM memory_mutations WHERE event_id = ?`, event.EventID).Scan(&existing)
+	if err == nil {
+		return false, nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("check remote mutation idempotency: %w", err)
+	}
+
+	switch event.Op {
+	case MutationOpCreate:
+		if event.Memory == nil {
+			return false, fmt.Errorf("memory payload required for %s mutation", event.Op)
+		}
+		if err := ensureMutationSession(tx, event.Project, event.Memory.SessionID); err != nil {
+			return false, err
+		}
+		createdAt := event.OccurredAt.UTC().Format("2006-01-02 15:04:05")
+		var existingID int64
+		lookupErr := tx.QueryRow(`SELECT id FROM memories WHERE sync_id = ?`, event.EntitySyncID).Scan(&existingID)
+		if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+			return false, fmt.Errorf("lookup remote memory: %w", lookupErr)
+		}
+		if errors.Is(lookupErr, sql.ErrNoRows) {
+			_, err = tx.Exec(`
+INSERT INTO memories
+    (sync_id, project, topic_key, category, title, content, tags, files_affected,
+     created_by, created_at, updated_at, synced_at, confidence, impact_score, session_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				event.EntitySyncID, event.Project, event.Memory.TopicKey, event.Memory.Category,
+				event.Memory.Title, event.Memory.Content, mustMarshalStrings(event.Memory.Tags), mustMarshalStrings(event.Memory.FilesAffected),
+				event.Memory.CreatedBy, createdAt, createdAt, createdAt, event.Memory.Confidence, event.Memory.ImpactScore, event.Memory.SessionID,
+			)
+		} else {
+			_, err = tx.Exec(`
+UPDATE memories SET
+    topic_key = ?, category = ?, title = ?, content = ?, tags = ?, files_affected = ?,
+    updated_at = ?, synced_at = ?, confidence = ?, impact_score = ?, session_id = ?
+WHERE sync_id = ?`,
+				event.Memory.TopicKey, event.Memory.Category, event.Memory.Title, event.Memory.Content,
+				mustMarshalStrings(event.Memory.Tags), mustMarshalStrings(event.Memory.FilesAffected),
+				createdAt, createdAt, event.Memory.Confidence, event.Memory.ImpactScore, event.Memory.SessionID,
+				event.EntitySyncID,
+			)
+		}
+	case MutationOpUpdate:
+		if event.Memory == nil {
+			return false, fmt.Errorf("memory payload required for %s mutation", event.Op)
+		}
+		createdAt := event.OccurredAt.UTC().Format("2006-01-02 15:04:05")
+		var existingID int64
+		var deletedAt sql.NullString
+		lookupErr := tx.QueryRow(`SELECT id, deleted_at FROM memories WHERE sync_id = ?`, event.EntitySyncID).Scan(&existingID, &deletedAt)
+		if errors.Is(lookupErr, sql.ErrNoRows) {
+			return false, fmt.Errorf("memory not found for update: sync_id=%s", event.EntitySyncID)
+		}
+		if lookupErr != nil {
+			return false, fmt.Errorf("lookup remote memory: %w", lookupErr)
+		}
+		if deletedAt.Valid {
+			return false, fmt.Errorf("memory is deleted; explicit restore required before update")
+		}
+		if err := ensureMutationSession(tx, event.Project, event.Memory.SessionID); err != nil {
+			return false, err
+		}
+		_, err = tx.Exec(`
+UPDATE memories SET
+    topic_key = ?, category = ?, title = ?, content = ?, tags = ?, files_affected = ?,
+    updated_at = ?, synced_at = ?, confidence = ?, impact_score = ?, session_id = ?
+WHERE sync_id = ? AND deleted_at IS NULL`,
+			event.Memory.TopicKey, event.Memory.Category, event.Memory.Title, event.Memory.Content,
+			mustMarshalStrings(event.Memory.Tags), mustMarshalStrings(event.Memory.FilesAffected),
+			createdAt, createdAt, event.Memory.Confidence, event.Memory.ImpactScore, event.Memory.SessionID,
+			event.EntitySyncID,
+		)
+	case MutationOpDelete:
+		deletedAt := event.OccurredAt.UTC().Format("2006-01-02 15:04:05")
+		deletedBy := event.ActorID
+		reason := ""
+		if event.Tombstone != nil {
+			if !event.Tombstone.DeletedAt.IsZero() {
+				deletedAt = event.Tombstone.DeletedAt.UTC().Format("2006-01-02 15:04:05")
+			}
+			deletedBy = event.Tombstone.DeletedBy
+			reason = event.Tombstone.Reason
+		}
+		var result sql.Result
+		result, err = tx.Exec(`UPDATE memories SET deleted_at = ?, deleted_by = ?, delete_reason = ?, restored_at = NULL, updated_at = ?, synced_at = ? WHERE sync_id = ?`, deletedAt, deletedBy, reason, deletedAt, deletedAt, event.EntitySyncID)
+		if err == nil {
+			if rows, _ := result.RowsAffected(); rows == 0 {
+				return false, fmt.Errorf("memory not found for delete: sync_id=%s", event.EntitySyncID)
+			}
+		}
+	case MutationOpRestore:
+		restoredAt := event.OccurredAt.UTC().Format("2006-01-02 15:04:05")
+		var result sql.Result
+		result, err = tx.Exec(`UPDATE memories SET deleted_at = NULL, deleted_by = NULL, delete_reason = NULL, restored_at = ?, updated_at = ?, synced_at = ? WHERE sync_id = ? AND deleted_at IS NOT NULL`, restoredAt, restoredAt, restoredAt, event.EntitySyncID)
+		if err == nil {
+			if rows, _ := result.RowsAffected(); rows == 0 {
+				return false, fmt.Errorf("memory not deleted for restore: sync_id=%s", event.EntitySyncID)
+			}
+		}
+	default:
+		return false, fmt.Errorf("unsupported mutation op %q", event.Op)
+	}
+	if err != nil {
+		return false, fmt.Errorf("apply remote %s mutation: %w", event.Op, err)
+	}
+
+	payload := mutationPayload{}
+	if event.Memory != nil {
+		payload.Memory = event.Memory
+	}
+	if event.Tombstone != nil {
+		payload.Tombstone = &MutationTombstonePayload{
+			DeletedAt: event.Tombstone.DeletedAt,
+			DeletedBy: event.Tombstone.DeletedBy,
+			Reason:    event.Tombstone.Reason,
+		}
+	}
+	if err := insertMemoryMutation(tx, memoryMutationRecord{
+		EventID:      event.EventID,
+		EntitySyncID: event.EntitySyncID,
+		Project:      event.Project,
+		Op:           event.Op,
+		OccurredAt:   event.OccurredAt.UTC().Format("2006-01-02 15:04:05"),
+		ActorID:      event.ActorID,
+		Payload:      payload,
+	}); err != nil {
+		return false, fmt.Errorf("record remote mutation: %w", err)
+	}
+	return true, tx.Commit()
 }
 
 // SaveFromRemote guarda una memoria recibida del servidor (pull).
@@ -286,6 +640,72 @@ func scanSyncRow(s syncScanner) (*models.Memory, error) {
 	_ = json.Unmarshal([]byte(filesJSON), &mem.FilesAffected)
 
 	return &mem, nil
+}
+
+func scanMutationEnvelope(s syncScanner) (MutationEnvelope, error) {
+	var (
+		mutation      MutationEnvelope
+		op            string
+		occurredAtStr string
+		baseUpdatedAt sql.NullString
+		payloadJSON   string
+	)
+	err := s.Scan(
+		&mutation.Sequence,
+		&mutation.EventID,
+		&mutation.EntityType,
+		&mutation.EntitySyncID,
+		&mutation.Project,
+		&op,
+		&occurredAtStr,
+		&mutation.ActorID,
+		&baseUpdatedAt,
+		&payloadJSON,
+	)
+	if err != nil {
+		return MutationEnvelope{}, fmt.Errorf("scan mutation row: %w", err)
+	}
+	mutation.Op = MutationOp(op)
+	mutation.OccurredAt, _ = parseTimeStr(occurredAtStr)
+	if baseUpdatedAt.Valid {
+		parsed, err := parseTimeStr(baseUpdatedAt.String)
+		if err == nil {
+			mutation.BaseUpdatedAt = &parsed
+		}
+	}
+	var payload struct {
+		Memory    *MutationMemoryPayload    `json:"memory"`
+		Tombstone *MutationTombstonePayload `json:"tombstone"`
+	}
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err == nil {
+		mutation.Memory = payload.Memory
+		mutation.Tombstone = payload.Tombstone
+	}
+	return mutation, nil
+}
+
+func ensureMutationSession(tx *sql.Tx, project, sessionID string) error {
+	if sessionID == "" {
+		sessionID = "manual-save-" + project
+	}
+	_, err := tx.Exec(`
+INSERT OR IGNORE INTO sessions
+    (id, sync_id, project, directory, dev_id, client, started_at, ended_at, summary)
+VALUES (?, lower(hex(randomblob(16))), ?, '', 'remote', 'remote', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'Remote mutation fallback session.')`,
+		sessionID, project,
+	)
+	if err != nil {
+		return fmt.Errorf("ensure mutation session: %w", err)
+	}
+	return nil
+}
+
+func mustMarshalStrings(values []string) string {
+	encoded, err := json.Marshal(orNil(values))
+	if err != nil {
+		return "[]"
+	}
+	return string(encoded)
 }
 
 func parseTimeStr(s string) (time.Time, error) {

@@ -9,8 +9,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/db"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
 )
+
+const mutationProtocolVersion = 2
 
 // client es el HTTP client que habla con hive-api.
 type client struct {
@@ -86,28 +89,31 @@ type sessionPayload struct {
 // syncRequest es el payload que enviamos a POST /sync.
 // Sessions precede a memories para satisfacer la FK memories.session_id → sessions(id).
 type syncRequest struct {
-	Project  string           `json:"project"`
-	Sessions []sessionPayload `json:"sessions"`
-	Memories []memoryPayload  `json:"memories"`
-	Prompts  []promptPayload  `json:"prompts,omitempty"`
-	LastSync *time.Time       `json:"last_sync,omitempty"`
+	Project         string                `json:"project"`
+	Sessions        []sessionPayload      `json:"sessions"`
+	Memories        []memoryPayload       `json:"memories"`
+	Prompts         []promptPayload       `json:"prompts,omitempty"`
+	LastSync        *time.Time            `json:"last_sync,omitempty"`
+	ProtocolVersion int                   `json:"protocol_version,omitempty"`
+	MutationCursor  *db.MutationCursor    `json:"mutation_cursor,omitempty"`
+	Mutations       []db.MutationEnvelope `json:"mutations,omitempty"`
 }
 
 // memoryPayload es el formato que espera hive-api para cada memoria.
 type memoryPayload struct {
-	SyncID        string   `json:"sync_id"`
-	Project       string   `json:"project"`
-	TopicKey      *string  `json:"topic_key,omitempty"`
-	Category      string   `json:"category"`
-	Title         string   `json:"title"`
-	Content       string   `json:"content"`
-	Tags          []string `json:"tags"`
-	FilesAffected []string `json:"files_affected"`
-	CreatedBy     string   `json:"created_by"`
+	SyncID        string    `json:"sync_id"`
+	Project       string    `json:"project"`
+	TopicKey      *string   `json:"topic_key,omitempty"`
+	Category      string    `json:"category"`
+	Title         string    `json:"title"`
+	Content       string    `json:"content"`
+	Tags          []string  `json:"tags"`
+	FilesAffected []string  `json:"files_affected"`
+	CreatedBy     string    `json:"created_by"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
-	Confidence    float32  `json:"confidence"`
-	ImpactScore   float32  `json:"impact_score"`
+	Confidence    float32   `json:"confidence"`
+	ImpactScore   float32   `json:"impact_score"`
 	// SessionID enables explicit attribution end-to-end. Empty string is dropped
 	// by omitempty so legacy daemons stay backward-compatible on the wire.
 	SessionID string `json:"session_id,omitempty"`
@@ -116,11 +122,14 @@ type memoryPayload struct {
 // syncResponse es lo que devuelve hive-api tras el sync.
 // PulledSessions se aplica ANTES de Pulled para satisfacer la FK.
 type syncResponse struct {
-	Pushed         int              `json:"pushed"`
-	Pulled         []apiMemory      `json:"pulled"`
-	Conflicts      int              `json:"conflicts"`
-	PromptsPushed  int              `json:"prompts_pushed"`
-	PulledSessions []sessionPayload `json:"pulled_sessions,omitempty"`
+	Pushed             int                   `json:"pushed"`
+	Pulled             []apiMemory           `json:"pulled"`
+	Conflicts          int                   `json:"conflicts"`
+	PromptsPushed      int                   `json:"prompts_pushed"`
+	PulledSessions     []sessionPayload      `json:"pulled_sessions,omitempty"`
+	NextMutationCursor *db.MutationCursor    `json:"next_mutation_cursor,omitempty"`
+	PulledMutations    []db.MutationEnvelope `json:"pulled_mutations,omitempty"`
+	CompatibilityMode  string                `json:"compatibility_mode,omitempty"`
 }
 
 // apiMemory es la forma que usa hive-api para devolver memorias.
@@ -145,7 +154,8 @@ type apiMemory struct {
 // sync envía sesiones, memorias y prompts locales, y recibe del servidor para un proyecto.
 // sessions se serializa ANTES de memories (Decision 11: FK ordering).
 func (c *client) sync(ctx context.Context, token, project string,
-	sessions []*models.Session, toSend []*models.Memory, prompts []*models.Prompt, lastSync *time.Time) (*syncResponse, error) {
+	sessions []*models.Session, toSend []*models.Memory, prompts []*models.Prompt, lastSync *time.Time,
+	mutations []db.MutationEnvelope, mutationCursor *db.MutationCursor) (*syncResponse, error) {
 
 	sessionPayloads := make([]sessionPayload, 0, len(sessions))
 	for _, s := range sessions {
@@ -191,11 +201,14 @@ func (c *client) sync(ctx context.Context, token, project string,
 	}
 
 	reqBody, err := json.Marshal(syncRequest{
-		Project:  project,
-		Sessions: sessionPayloads,
-		Memories: payloads,
-		Prompts:  promptPayloads,
-		LastSync: lastSync,
+		Project:         project,
+		Sessions:        sessionPayloads,
+		Memories:        payloads,
+		Prompts:         promptPayloads,
+		LastSync:        lastSync,
+		ProtocolVersion: mutationProtocolVersion,
+		MutationCursor:  mutationCursor,
+		Mutations:       mutations,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal sync request: %w", err)

@@ -137,6 +137,61 @@ func TestSearch_EmptyQuery_ReturnsAllForProject(t *testing.T) {
 	}
 }
 
+func TestSearch_ExcludesSoftDeletedMemoriesFromDefaultReads(t *testing.T) {
+	d := openTestDB(t)
+
+	active := newMemory("proj", "Active FTS Tombstone", "searchable tombstone content")
+	active.Category = "architecture"
+	if _, err := saveTestMemory(t, d, active); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted := newMemory("proj", "Deleted FTS Tombstone", "searchable tombstone content")
+	deleted.Category = "architecture"
+	deletedID, err := saveTestMemory(t, d, deleted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DeleteMemory(deletedID, "tester", "verify search hides tombstones"); err != nil {
+		t.Fatalf("DeleteMemory() failed: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		query    string
+		category string
+	}{
+		{name: "fts term search", query: "searchable", category: "architecture"},
+		{name: "empty search lists active memories", query: "", category: "architecture"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results, err := d.Search(tt.query, "proj", tt.category, 10)
+			if err != nil {
+				t.Fatalf("Search(%q, %q, %q) failed: %v", tt.query, "proj", tt.category, err)
+			}
+			if len(results) != 1 {
+				t.Fatalf("expected only the active memory, got %d results", len(results))
+			}
+			if results[0].Title != "Active FTS Tombstone" {
+				t.Fatalf("default search returned %q, want active memory only", results[0].Title)
+			}
+		})
+	}
+
+	deletedRead, err := d.GetDeletedMemory(deletedID)
+	if err != nil {
+		t.Fatalf("GetDeletedMemory(%d) failed: %v", deletedID, err)
+	}
+	if deletedRead.Memory.Title != "Deleted FTS Tombstone" {
+		t.Fatalf("deleted read title = %q, want deleted tombstone", deletedRead.Memory.Title)
+	}
+	if deletedRead.DeletedBy != "tester" {
+		t.Fatalf("deleted read actor = %q, want tester", deletedRead.DeletedBy)
+	}
+}
+
 func TestSearch_ProjectFilter_IsolatesResults(t *testing.T) {
 	d := openTestDB(t)
 

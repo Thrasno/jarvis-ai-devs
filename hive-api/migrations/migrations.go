@@ -43,3 +43,9 @@ var SessionsSQL string
 //
 //go:embed 004_audit_logs.sql
 var AuditLogsSQL string
+
+// MemoryMutationsSQL es la migración 005: tombstones en memories y journal
+// de dominio memory_mutations. No reemplaza ni reutiliza audit_logs.
+//
+//go:embed 005_memory_mutations.sql
+var MemoryMutationsSQL string

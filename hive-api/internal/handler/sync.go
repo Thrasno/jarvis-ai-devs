@@ -101,10 +101,13 @@ func (h *SyncHandler) Sync(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, model.SyncResponse{
-		Pushed:         pushResp.Pushed,
-		Pulled:         pulled,
-		Conflicts:      pushResp.Conflicts,
-		PromptsPushed:  pushResp.PromptsPushed,
-		PulledSessions: pulledSessions,
+		Pushed:             pushResp.Pushed,
+		Pulled:             pulled,
+		Conflicts:          pushResp.Conflicts,
+		PromptsPushed:      pushResp.PromptsPushed,
+		PulledSessions:     pulledSessions,
+		NextMutationCursor: pushResp.NextMutationCursor,
+		PulledMutations:    pushResp.PulledMutations,
+		CompatibilityMode:  pushResp.CompatibilityMode,
 	})
 }

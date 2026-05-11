@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/db"
 	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -189,7 +190,7 @@ func TestClient_Sync(t *testing.T) {
 			}
 			client := newClient(cfg)
 
-			resp, err := client.sync(context.Background(), "test-token", "test-project", []*models.Session{}, tt.toSend, []*models.Prompt{}, tt.lastSync)
+			resp, err := client.sync(context.Background(), "test-token", "test-project", []*models.Session{}, tt.toSend, []*models.Prompt{}, tt.lastSync, nil, nil)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -264,7 +265,7 @@ func TestClient_Sync_AuthFailure(t *testing.T) {
 			}
 			client := newClient(cfg)
 
-			_, err := client.sync(context.Background(), "invalid-token", "test-project", []*models.Session{}, []*models.Memory{}, []*models.Prompt{}, nil)
+			_, err := client.sync(context.Background(), "invalid-token", "test-project", []*models.Session{}, []*models.Memory{}, []*models.Prompt{}, nil, nil, nil)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -349,13 +350,93 @@ func TestClient_Sync_WithPrompts(t *testing.T) {
 			}
 			c := newClient(cfg)
 
-			resp, err := c.sync(context.Background(), "test-token", "test-project", []*models.Session{}, []*models.Memory{}, tt.prompts, nil)
+			resp, err := c.sync(context.Background(), "test-token", "test-project", []*models.Session{}, []*models.Memory{}, tt.prompts, nil, nil, nil)
 			require.NoError(t, err)
 			if resp.PromptsPushed != tt.wantPromptsPushed {
 				t.Errorf("expected PromptsPushed=%d, got %d", tt.wantPromptsPushed, resp.PromptsPushed)
 			}
 		})
 	}
+}
+
+func TestClient_Sync_MutationProtocolV2PayloadAndResponse(t *testing.T) {
+	now := time.Date(2026, 5, 11, 14, 0, 0, 0, time.UTC)
+	cursor := &db.MutationCursor{Sequence: 7, EventID: "evt-7"}
+	pending := []db.MutationEnvelope{{
+		EventID:      "evt-local-8",
+		EntityType:   "memory",
+		EntitySyncID: "mem-local-1",
+		Project:      "test-project",
+		Op:           db.MutationOpDelete,
+		Sequence:     8,
+		OccurredAt:   now,
+		Tombstone: &db.MutationTombstonePayload{
+			DeletedAt: now,
+			DeletedBy: "tester",
+			Reason:    "cleanup",
+		},
+	}}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/sync", r.URL.Path)
+		var req syncRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		assert.Equal(t, mutationProtocolVersion, req.ProtocolVersion)
+		require.NotNil(t, req.MutationCursor)
+		assert.Equal(t, int64(7), req.MutationCursor.Sequence)
+		assert.Equal(t, "evt-7", req.MutationCursor.EventID)
+		require.Len(t, req.Mutations, 1)
+		assert.Equal(t, "evt-local-8", req.Mutations[0].EventID)
+		assert.Equal(t, db.MutationOpDelete, req.Mutations[0].Op)
+		require.NotNil(t, req.Mutations[0].Tombstone)
+		assert.Equal(t, "cleanup", req.Mutations[0].Tombstone.Reason)
+
+		resp := map[string]any{
+			"pushed":             1,
+			"pulled":             []any{},
+			"conflicts":          0,
+			"compatibility_mode": "mutation-sync-v2",
+			"next_mutation_cursor": map[string]any{
+				"sequence": float64(9),
+				"event_id": "evt-remote-9",
+			},
+			"pulled_mutations": []map[string]any{{
+				"event_id":       "evt-remote-9",
+				"entity_type":    "memory",
+				"entity_sync_id": "mem-remote-1",
+				"project":        "test-project",
+				"op":             "restore",
+				"sequence":       9,
+				"occurred_at":    now.Format(time.RFC3339),
+			}},
+		}
+		require.NoError(t, json.NewEncoder(w).Encode(resp))
+	}))
+	defer server.Close()
+
+	c := newClient(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"})
+	resp, err := c.sync(context.Background(), "test-token", "test-project", []*models.Session{}, nil, nil, nil, pending, cursor)
+	require.NoError(t, err)
+	assert.Equal(t, "mutation-sync-v2", resp.CompatibilityMode)
+	require.NotNil(t, resp.NextMutationCursor)
+	assert.Equal(t, int64(9), resp.NextMutationCursor.Sequence)
+	require.Len(t, resp.PulledMutations, 1)
+	assert.Equal(t, "evt-remote-9", resp.PulledMutations[0].EventID)
+}
+
+func TestClient_Sync_LegacyResponseLeavesMutationProtocolFieldsEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+	}))
+	defer server.Close()
+
+	c := newClient(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"})
+	resp, err := c.sync(context.Background(), "test-token", "test-project", []*models.Session{}, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+	assert.Empty(t, resp.CompatibilityMode)
+	assert.Nil(t, resp.NextMutationCursor)
+	assert.Empty(t, resp.PulledMutations)
 }
 
 // createTestPrompt creates a test prompt for sync operations.

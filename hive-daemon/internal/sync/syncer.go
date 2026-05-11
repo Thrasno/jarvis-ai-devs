@@ -14,9 +14,12 @@ import (
 )
 
 const (
-	backoffBaseDelay = 30 * time.Second
-	backoffMaxDelay  = 15 * time.Minute
-	backoffJitterPct = 4
+	backoffBaseDelay            = 30 * time.Second
+	backoffMaxDelay             = 15 * time.Minute
+	backoffJitterPct            = 4
+	mutationCursorConsumerAPI   = "hive-api"
+	compatibilityModeLegacy     = "legacy-row-state"
+	compatibilityModeMutationV2 = "mutation-sync-v2"
 )
 
 var (
@@ -45,6 +48,12 @@ type SyncStore interface {
 	ListUnsyncedSessions(project string) ([]*models.Session, error)
 	MarkSessionSynced(id string, at time.Time) error
 	SaveSessionFromRemote(s *models.Session) error
+
+	GetPendingMutations(project string, limit int) ([]db.MutationEnvelope, error)
+	MarkMutationsSynced(eventIDs []string, at time.Time) error
+	ApplyRemoteMutation(event db.MutationEnvelope) (bool, error)
+	GetMutationCursor(consumer, project string) (db.MutationCursor, error)
+	SetMutationCursor(consumer, project string, cursor db.MutationCursor, at time.Time) error
 }
 
 type BackoffError struct {
@@ -62,11 +71,15 @@ func (e *BackoffError) Unwrap() error {
 
 // Result resume los resultados de un sync.
 type Result struct {
-	Pushed        int
-	Pulled        int
-	Conflicts     int
-	PromptsPushed int
-	Project       string
+	Pushed            int
+	Pulled            int
+	Conflicts         int
+	PromptsPushed     int
+	Project           string
+	MutationsPushed   int
+	MutationsPulled   int
+	CompatibilityMode string
+	MutationCursor    db.MutationCursor
 }
 
 // Syncer orquesta el ciclo completo de sincronización para un proyecto.
@@ -178,6 +191,23 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 		unsyncedPrompts = nil
 	}
 
+	// Paso 2d: mutaciones locales pendientes para protocolo v2.
+	pendingMutations, err := s.store.GetPendingMutations(project, 100)
+	if err != nil {
+		if recordErr := s.recordFailure(project, health, now, err); recordErr != nil {
+			return nil, recordErr
+		}
+		return nil, fmt.Errorf("obtener mutaciones pendientes: %w", err)
+	}
+
+	mutationCursor, err := s.store.GetMutationCursor(mutationCursorConsumerAPI, project)
+	if err != nil {
+		if recordErr := s.recordFailure(project, health, now, err); recordErr != nil {
+			return nil, recordErr
+		}
+		return nil, fmt.Errorf("obtener cursor de mutaciones: %w", err)
+	}
+
 	// Paso 3 + 4: sync bidireccional con el servidor
 	lastSync, _ := s.store.GetLastSync(project)
 	var lastSyncPtr *time.Time
@@ -185,12 +215,17 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 		lastSyncPtr = &lastSync
 	}
 
-	resp, err := s.client.sync(ctx, token, project, unsyncedSessions, unsynced, unsyncedPrompts, lastSyncPtr)
+	resp, err := s.client.sync(ctx, token, project, unsyncedSessions, unsynced, unsyncedPrompts, lastSyncPtr, pendingMutations, &mutationCursor)
 	if err != nil {
 		if recordErr := s.recordFailure(project, health, now, err); recordErr != nil {
 			return nil, recordErr
 		}
 		return nil, fmt.Errorf("sync con servidor: %w", err)
+	}
+
+	compatibilityMode := compatibilityModeLegacy
+	if resp.CompatibilityMode != "" {
+		compatibilityMode = resp.CompatibilityMode
 	}
 
 	// Paso 5a: marcamos como sincronizadas las sesiones que enviamos
@@ -200,12 +235,16 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 		}
 	}
 
-	// Paso 5b: marcamos como sincronizadas las memorias que enviamos
-	for _, m := range unsynced {
-		if err := s.store.MarkSynced(m.SyncID, now); err != nil {
-			// No abortamos — mejor tener datos duplicados que perder el sync
-			// En el próximo sync, el servidor los rechazará por sync_id duplicado
-			logger.Log.Printf("warn: MarkSynced %s: %v", m.SyncID, err)
+	// Paso 5b: marcamos como sincronizadas las memorias legacy solo cuando
+	// el servidor confirmó el modo row-state. En v2, hive-api ignora memories[]
+	// cuando procesa mutations[], así que ackear filas legacy acá perdería datos.
+	if compatibilityMode == compatibilityModeLegacy {
+		for _, m := range unsynced {
+			if err := s.store.MarkSynced(m.SyncID, now); err != nil {
+				// No abortamos — mejor tener datos duplicados que perder el sync
+				// En el próximo sync, el servidor los rechazará por sync_id duplicado
+				logger.Log.Printf("warn: MarkSynced %s: %v", m.SyncID, err)
+			}
 		}
 	}
 
@@ -259,18 +298,67 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 		}
 	}
 
+	mutationsPushed := 0
+	mutationsPulled := 0
+	if resp.CompatibilityMode == compatibilityModeMutationV2 {
+		for _, remoteMutation := range resp.PulledMutations {
+			applied, err := s.store.ApplyRemoteMutation(remoteMutation)
+			if err != nil {
+				if recordErr := s.recordFailure(project, health, now, err); recordErr != nil {
+					return nil, recordErr
+				}
+				return nil, fmt.Errorf("aplicar mutación remota %s: %w", remoteMutation.EventID, err)
+			}
+			if applied {
+				mutationsPulled++
+			}
+		}
+
+		if resp.NextMutationCursor != nil {
+			if err := s.store.SetMutationCursor(mutationCursorConsumerAPI, project, *resp.NextMutationCursor, now); err != nil {
+				if recordErr := s.recordFailure(project, health, now, err); recordErr != nil {
+					return nil, recordErr
+				}
+				return nil, fmt.Errorf("guardar cursor de mutaciones: %w", err)
+			}
+			mutationCursor = *resp.NextMutationCursor
+		}
+
+		if err := s.store.MarkMutationsSynced(mutationEventIDs(pendingMutations), now); err != nil {
+			if recordErr := s.recordFailure(project, health, now, err); recordErr != nil {
+				return nil, recordErr
+			}
+			return nil, fmt.Errorf("marcar mutaciones sincronizadas: %w", err)
+		}
+		mutationsPushed = len(pendingMutations)
+	}
+
 	// Paso 6: actualizamos el timestamp del último sync exitoso
 	if err := s.store.RecordSyncSuccess(project, now); err != nil {
 		return nil, fmt.Errorf("registrar éxito de sync: %w", err)
 	}
 
 	return &Result{
-		Pushed:        resp.Pushed,
-		Pulled:        len(resp.Pulled),
-		Conflicts:     resp.Conflicts,
-		PromptsPushed: resp.PromptsPushed,
-		Project:       project,
+		Pushed:            resp.Pushed,
+		Pulled:            len(resp.Pulled),
+		Conflicts:         resp.Conflicts,
+		PromptsPushed:     resp.PromptsPushed,
+		Project:           project,
+		MutationsPushed:   mutationsPushed,
+		MutationsPulled:   mutationsPulled,
+		CompatibilityMode: compatibilityMode,
+		MutationCursor:    mutationCursor,
 	}, nil
+}
+
+func mutationEventIDs(mutations []db.MutationEnvelope) []string {
+	ids := make([]string, 0, len(mutations))
+	for _, mutation := range mutations {
+		if mutation.EventID != "" {
+			ids = append(ids, mutation.EventID)
+		}
+	}
+	return ids
 }
 
 func (s *Syncer) tryStart(project string) bool {
