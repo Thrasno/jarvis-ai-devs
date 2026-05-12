@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"time"
 	"unicode"
@@ -838,9 +839,7 @@ func memSyncHandler(syncStore hivesync.SyncStore, syncer SyncRunner) sdkmcp.Tool
 			}
 		}
 		if syncer == nil {
-			return toolError(fmt.Errorf(
-				"sync not configured — set HIVE_API_URL, HIVE_API_EMAIL, HIVE_API_PASSWORD env vars or create ~/.jarvis/sync.json (chmod 600)",
-			)), nil
+			return toolError(errors.New(syncNotConfiguredMessage(runtime.GOOS))), nil
 		}
 
 		var p struct {
@@ -882,6 +881,14 @@ func memSyncHandler(syncStore hivesync.SyncStore, syncer SyncRunner) sdkmcp.Tool
 			"status":    "ok",
 		})
 	}
+}
+
+func syncNotConfiguredMessage(goos string) string {
+	if goos == "windows" {
+		return "sync not configured — set HIVE_API_URL, HIVE_API_EMAIL, HIVE_API_PASSWORD env vars or create ~/.jarvis/sync.json. On Windows, secure the config file with your user account permissions."
+	}
+
+	return "sync not configured — set HIVE_API_URL, HIVE_API_EMAIL, HIVE_API_PASSWORD env vars or create ~/.jarvis/sync.json (chmod 600)"
 }
 
 // resolveSessionID returns the effective session ID for a save operation.
