@@ -1,8 +1,6 @@
 package config
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -48,10 +46,5 @@ func TestMVPContract_HiveProtocol_DocumentsSDDBoundary(t *testing.T) {
 
 func readFileForMVP(t *testing.T, rel string) string {
 	t.Helper()
-	root := "/home/andres/Desarrollo/Proyectos/jarvis-dev/jarvis-cli"
-	b, err := os.ReadFile(filepath.Join(root, rel))
-	if err != nil {
-		t.Fatalf("read %s: %v", rel, err)
-	}
-	return string(b)
+	return readConfigTestFile(t, rel)
 }

@@ -426,19 +426,21 @@ func TestMigration_Idempotent(t *testing.T) {
 
 func TestCreateSession_HappyPath(t *testing.T) {
 	d := openTestDB(t)
+	directory := t.TempDir()
 
-	err := d.CreateSession("sess-001", "jarvis-dev", "/home/andres", "andres", "claude-code")
+	err := d.CreateSession("sess-001", "jarvis-dev", directory, "andres", "claude-code")
 	require.NoError(t, err)
 
-	var id, project, devID, client string
+	var id, project, gotDirectory, devID, client string
 	var endedAt sql.NullString
 	err = d.sqlDB.QueryRow(
-		`SELECT id, project, dev_id, client, ended_at FROM sessions WHERE id = ?`, "sess-001",
-	).Scan(&id, &project, &devID, &client, &endedAt)
+		`SELECT id, project, directory, dev_id, client, ended_at FROM sessions WHERE id = ?`, "sess-001",
+	).Scan(&id, &project, &gotDirectory, &devID, &client, &endedAt)
 	require.NoError(t, err)
 
 	assert.Equal(t, "sess-001", id)
 	assert.Equal(t, "jarvis-dev", project)
+	assert.Equal(t, directory, gotDirectory)
 	assert.Equal(t, "andres", devID)
 	assert.Equal(t, "claude-code", client)
 	assert.False(t, endedAt.Valid, "ended_at should be NULL for a new session")
@@ -446,8 +448,9 @@ func TestCreateSession_HappyPath(t *testing.T) {
 
 func TestGetSession_HappyPath(t *testing.T) {
 	d := openTestDB(t)
+	directory := t.TempDir()
 
-	require.NoError(t, d.CreateSession("sess-get", "proj", "/dir", "dev", "cli"))
+	require.NoError(t, d.CreateSession("sess-get", "proj", directory, "dev", "cli"))
 
 	sess, err := d.GetSession("sess-get")
 	require.NoError(t, err)
@@ -455,7 +458,7 @@ func TestGetSession_HappyPath(t *testing.T) {
 
 	assert.Equal(t, "sess-get", sess.ID)
 	assert.Equal(t, "proj", sess.Project)
-	assert.Equal(t, "/dir", sess.Directory)
+	assert.Equal(t, directory, sess.Directory)
 	assert.Equal(t, "dev", sess.DevID)
 	assert.Equal(t, "cli", sess.Client)
 	assert.Nil(t, sess.EndedAt, "EndedAt should be nil for an open session")
@@ -471,7 +474,7 @@ func TestGetSession_NotFound_ReturnsErrSessionNotFound(t *testing.T) {
 func TestEndSession_HappyPath(t *testing.T) {
 	d := openTestDB(t)
 
-	require.NoError(t, d.CreateSession("sess-end", "proj", "/dir", "dev", "cli"))
+	require.NoError(t, d.CreateSession("sess-end", "proj", t.TempDir(), "dev", "cli"))
 
 	err := d.EndSession("sess-end", "all done")
 	require.NoError(t, err)
@@ -484,10 +487,11 @@ func TestEndSession_HappyPath(t *testing.T) {
 
 func TestListSessions_HappyPath(t *testing.T) {
 	d := openTestDB(t)
+	dirRoot := t.TempDir()
 
-	require.NoError(t, d.CreateSession("ls-1", "projA", "/d1", "dev", "cli"))
-	require.NoError(t, d.CreateSession("ls-2", "projA", "/d2", "dev", "cli"))
-	require.NoError(t, d.CreateSession("ls-3", "projB", "/d3", "dev", "cli"))
+	require.NoError(t, d.CreateSession("ls-1", "projA", filepath.Join(dirRoot, "d1"), "dev", "cli"))
+	require.NoError(t, d.CreateSession("ls-2", "projA", filepath.Join(dirRoot, "d2"), "dev", "cli"))
+	require.NoError(t, d.CreateSession("ls-3", "projB", filepath.Join(dirRoot, "d3"), "dev", "cli"))
 
 	sessions, err := d.ListSessions("projA", 10)
 	require.NoError(t, err)
@@ -535,6 +539,7 @@ func TestEnsureManualSaveSession_IdempotentOnSecondCall(t *testing.T) {
 
 func TestAutoCloseStale_ClosesOldSessions(t *testing.T) {
 	d := openTestDB(t)
+	directory := t.TempDir()
 
 	now := time.Now().UTC()
 	staleTime := now.Add(-48 * time.Hour)
@@ -545,8 +550,8 @@ func TestAutoCloseStale_ClosesOldSessions(t *testing.T) {
 		t.Helper()
 		_, err := d.sqlDB.Exec(
 			`INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at)
-			 VALUES (?, ?, 'proj', '/d', 'dev', 'cli', ?)`,
-			id, "sync-"+id, started,
+			 VALUES (?, ?, 'proj', ?, 'dev', 'cli', ?)`,
+			id, "sync-"+id, directory, started,
 		)
 		require.NoError(t, err)
 	}
