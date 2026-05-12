@@ -64,6 +64,79 @@ func TestClaudeAgent_SupportsOutputStyles(t *testing.T) {
 	}
 }
 
+func TestResolveClaudePromptHook_SelectsOSSpecificAsset(t *testing.T) {
+	tests := []struct {
+		name      string
+		goos      string
+		script    string
+		wantAsset string
+		wantFile  string
+		wantCmd   string
+		wantPerm  os.FileMode
+	}{
+		{
+			name:      "linux keeps shell hook",
+			goos:      "linux",
+			script:    "/home/alice/.claude/hive-hooks/user-prompt-submit.sh",
+			wantAsset: "embed/hooks/claude/user-prompt-submit.sh",
+			wantFile:  "user-prompt-submit.sh",
+			wantCmd:   "/home/alice/.claude/hive-hooks/user-prompt-submit.sh",
+			wantPerm:  0755,
+		},
+		{
+			name:      "darwin keeps shell hook",
+			goos:      "darwin",
+			script:    "/Users/alice/.claude/hive-hooks/user-prompt-submit.sh",
+			wantAsset: "embed/hooks/claude/user-prompt-submit.sh",
+			wantFile:  "user-prompt-submit.sh",
+			wantCmd:   "/Users/alice/.claude/hive-hooks/user-prompt-submit.sh",
+			wantPerm:  0755,
+		},
+		{
+			name:      "windows uses powershell hook",
+			goos:      "windows",
+			script:    `C:\\Users\\Alice\\.claude\\hive-hooks\\user-prompt-submit.ps1`,
+			wantAsset: "embed/hooks/claude/user-prompt-submit.ps1",
+			wantFile:  "user-prompt-submit.ps1",
+			wantCmd:   `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\\Users\\Alice\\.claude\\hive-hooks\\user-prompt-submit.ps1"`,
+			wantPerm:  0644,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveClaudePromptHook(tt.goos, tt.script)
+
+			if got.assetPath != tt.wantAsset {
+				t.Errorf("assetPath = %q, want %q", got.assetPath, tt.wantAsset)
+			}
+			if got.filename != tt.wantFile {
+				t.Errorf("filename = %q, want %q", got.filename, tt.wantFile)
+			}
+			if got.command != tt.wantCmd {
+				t.Errorf("command = %q, want %q", got.command, tt.wantCmd)
+			}
+			if got.perm != tt.wantPerm {
+				t.Errorf("perm = %v, want %v", got.perm, tt.wantPerm)
+			}
+		})
+	}
+}
+
+func TestResolveClaudePromptHook_QuotesWindowsPathWithSpaces(t *testing.T) {
+	script := `C:\\Users\\Alice Smith\\App Data\\Claude\\hive-hooks\\user-prompt-submit.ps1`
+
+	spec := resolveClaudePromptHook("windows", script)
+
+	want := `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\\Users\\Alice Smith\\App Data\\Claude\\hive-hooks\\user-prompt-submit.ps1"`
+	if spec.command != want {
+		t.Fatalf("command = %q, want %q", spec.command, want)
+	}
+	if !strings.Contains(spec.command, `-File "C:\\Users\\Alice Smith`) {
+		t.Fatalf("command does not quote -File path with spaces: %q", spec.command)
+	}
+}
+
 // TestClaudeAgent_WriteOutputStyle verifies the output-style file is written
 // to the correct path with correct content (SPEC-003).
 func TestClaudeAgent_WriteOutputStyle(t *testing.T) {

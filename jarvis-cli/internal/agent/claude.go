@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"unicode"
 
@@ -20,6 +21,15 @@ import (
 var _ Agent = (*ClaudeAgent)(nil)
 
 type claudeCommandRunner func(name string, args ...string) (string, error)
+
+var claudeRuntimeGOOS = runtime.GOOS
+
+type claudePromptHookSpec struct {
+	assetPath string
+	filename  string
+	command   string
+	perm      os.FileMode
+}
 
 // ClaudeAgent implements Agent for Anthropic's Claude Code CLI.
 // Config dir: ~/.claude/
@@ -333,7 +343,7 @@ func (a *ClaudeAgent) InstallOrchestrator(orchestratorContent []byte) error {
 }
 
 // InstallPromptHook writes the Hive UserPromptSubmit hook for Claude Code.
-// It copies the shell script to ~/.claude/hive-hooks/user-prompt-submit.sh
+// It copies the OS-specific script to ~/.claude/hive-hooks/
 // and patches ~/.claude/settings.json to register the hook.
 func (a *ClaudeAgent) InstallPromptHook(hooksFS fs.FS) error {
 	hookDir := filepath.Join(a.ConfigDir(), "hive-hooks")
@@ -341,12 +351,14 @@ func (a *ClaudeAgent) InstallPromptHook(hooksFS fs.FS) error {
 		return fmt.Errorf("create hive-hooks dir: %w", err)
 	}
 
-	scriptPath := filepath.Join(hookDir, "user-prompt-submit.sh")
-	content, err := fs.ReadFile(hooksFS, "embed/hooks/claude/user-prompt-submit.sh")
+	filename := claudePromptHookFilename(claudeRuntimeGOOS)
+	scriptPath := filepath.Join(hookDir, filename)
+	spec := resolveClaudePromptHook(claudeRuntimeGOOS, scriptPath)
+	content, err := fs.ReadFile(hooksFS, spec.assetPath)
 	if err != nil {
 		return fmt.Errorf("read hook script: %w", err)
 	}
-	if err := writeFileAtomic(scriptPath, content, 0755); err != nil {
+	if err := writeFileAtomic(scriptPath, content, spec.perm); err != nil {
 		return fmt.Errorf("write hook script: %w", err)
 	}
 
@@ -358,7 +370,7 @@ func (a *ClaudeAgent) InstallPromptHook(hooksFS fs.FS) error {
 					"hooks": []any{
 						map[string]any{
 							"type":    "command",
-							"command": scriptPath,
+							"command": spec.command,
 							"timeout": 2,
 						},
 					},
@@ -382,6 +394,35 @@ func (a *ClaudeAgent) InstallPromptHook(hooksFS fs.FS) error {
 	}
 
 	return writeFileAtomic(a.settingsPath(), merged, 0644)
+}
+
+func claudePromptHookFilename(goos string) string {
+	if goos == "windows" {
+		return "user-prompt-submit.ps1"
+	}
+	return "user-prompt-submit.sh"
+}
+
+func resolveClaudePromptHook(goos, scriptPath string) claudePromptHookSpec {
+	if goos == "windows" {
+		return claudePromptHookSpec{
+			assetPath: "embed/hooks/claude/user-prompt-submit.ps1",
+			filename:  "user-prompt-submit.ps1",
+			command:   `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "` + escapePowerShellFilePath(scriptPath) + `"`,
+			perm:      0644,
+		}
+	}
+
+	return claudePromptHookSpec{
+		assetPath: "embed/hooks/claude/user-prompt-submit.sh",
+		filename:  "user-prompt-submit.sh",
+		command:   scriptPath,
+		perm:      0755,
+	}
+}
+
+func escapePowerShellFilePath(path string) string {
+	return strings.ReplaceAll(path, `"`, `\"`)
 }
 
 // readFileOrEmpty reads a file's contents or returns an empty byte slice if not found.
