@@ -1,20 +1,13 @@
 package config
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func readPolicyFile(t *testing.T, rel string) string {
 	t.Helper()
-	root := "/home/andres/Desarrollo/Proyectos/jarvis-dev/jarvis-cli"
-	b, err := os.ReadFile(filepath.Join(root, rel))
-	if err != nil {
-		t.Fatalf("read %s: %v", rel, err)
-	}
-	return strings.ToLower(string(b))
+	return strings.ToLower(readConfigTestFile(t, rel))
 }
 
 func TestSDDOrchestrator_ActivationPolicyContract(t *testing.T) {
@@ -160,13 +153,13 @@ func TestSDDActivationPolicy_Layer1DriftGuard(t *testing.T) {
 	// Orchestrator uses "decision order" while layer1 uses "precedence" — both valid
 	orchestratorConcepts := []string{"recommendation", "explicit", "warning", "decision order"}
 	layer1Concepts := []string{"recommendation", "explicit", "warning", "precedence"}
-	
+
 	for _, concept := range orchestratorConcepts {
 		if !strings.Contains(orchestrator, concept) {
 			t.Fatalf("orchestrator missing core decision concept: %q", concept)
 		}
 	}
-	
+
 	for _, concept := range layer1Concepts {
 		if !strings.Contains(layer1, concept) {
 			t.Fatalf("layer1.md missing core decision concept: %q (drift from orchestrator)", concept)

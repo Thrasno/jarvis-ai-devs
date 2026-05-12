@@ -292,6 +292,7 @@ func TestMemSuggestTopicKey_HasNoPersistenceOrSyncSideEffects(t *testing.T) {
 // ─── mem_session_start ────────────────────────────────────────────────────
 
 func TestMemSessionStart_HappyPath_ReturnsSessionID(t *testing.T) {
+	directory := t.TempDir()
 	var createdID, createdProject, createdDir, createdDevID, createdClient string
 	store := &mockStore{
 		createSessionFn: func(id, project, directory, devID, client string) error {
@@ -308,7 +309,7 @@ func TestMemSessionStart_HappyPath_ReturnsSessionID(t *testing.T) {
 	res := callTool(t, session, "mem_session_start", map[string]any{
 		"id":        "sess-001",
 		"project":   "jarvis-dev",
-		"directory": "/home/andres",
+		"directory": directory,
 		"dev_id":    "andres",
 		"client":    "claude-code",
 	})
@@ -330,8 +331,8 @@ func TestMemSessionStart_HappyPath_ReturnsSessionID(t *testing.T) {
 	if createdProject != "jarvis-dev" {
 		t.Errorf("CreateSession called with project=%q, want 'jarvis-dev'", createdProject)
 	}
-	if createdDir != "/home/andres" {
-		t.Errorf("CreateSession called with directory=%q, want '/home/andres'", createdDir)
+	if createdDir != directory {
+		t.Errorf("CreateSession called with directory=%q, want %q", createdDir, directory)
 	}
 	if createdDevID != "andres" {
 		t.Errorf("CreateSession called with devID=%q, want 'andres'", createdDevID)
@@ -347,7 +348,7 @@ func TestMemSessionStart_MissingDevID_ReturnsError(t *testing.T) {
 	res := callTool(t, session, "mem_session_start", map[string]any{
 		"id":        "sess-001",
 		"project":   "jarvis-dev",
-		"directory": "/home",
+		"directory": t.TempDir(),
 		// no dev_id
 		"client": "claude-code",
 	})
@@ -366,7 +367,7 @@ func TestMemSessionStart_MissingClient_ReturnsError(t *testing.T) {
 	res := callTool(t, session, "mem_session_start", map[string]any{
 		"id":        "sess-001",
 		"project":   "jarvis-dev",
-		"directory": "/home",
+		"directory": t.TempDir(),
 		"dev_id":    "andres",
 		// no client
 	})
@@ -384,7 +385,7 @@ func TestMemSessionStart_MissingID_ReturnsError(t *testing.T) {
 
 	res := callTool(t, session, "mem_session_start", map[string]any{
 		"project":   "jarvis-dev",
-		"directory": "/home",
+		"directory": t.TempDir(),
 		"dev_id":    "andres",
 		"client":    "claude-code",
 		// no id
@@ -406,7 +407,7 @@ func TestMemSessionStart_DuplicateID_ReturnsError(t *testing.T) {
 	res := callTool(t, session, "mem_session_start", map[string]any{
 		"id":        "sess-dup",
 		"project":   "jarvis-dev",
-		"directory": "/home",
+		"directory": t.TempDir(),
 		"dev_id":    "andres",
 		"client":    "claude-code",
 	})
@@ -2545,12 +2546,13 @@ func querySessionIDForMemory(t *testing.T, rawDB *sql.DB, memoryID float64) stri
 
 func TestE2E_FullSessionLifecycle(t *testing.T) {
 	session, store := connectRealServer(t)
+	directory := t.TempDir()
 
 	// ── Step 1: start session ────────────────────────────────────────────────
 	startRes := callTool(t, session, "mem_session_start", map[string]any{
 		"id":        "e2e-sess-001",
 		"project":   "e2e-project",
-		"directory": "/home/dev",
+		"directory": directory,
 		"dev_id":    "e2e-dev",
 		"client":    "test",
 	})
