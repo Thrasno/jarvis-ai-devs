@@ -525,8 +525,9 @@ func TestProtocolInjection_ProtocolContentCorrect(t *testing.T) {
 
 // testHooksFS is a minimal in-memory FS that mirrors embed/hooks/ for tests.
 var testHooksFS = fstest.MapFS{
-	"embed/hooks/claude/user-prompt-submit.sh": {Data: []byte("#!/bin/bash\nprintf '{}\n'")},
-	"embed/hooks/opencode/hive.ts":             {Data: []byte("export const Hive = {}")},
+	"embed/hooks/claude/user-prompt-submit.sh":  {Data: []byte("#!/bin/bash\nprintf '{}\n'")},
+	"embed/hooks/claude/user-prompt-submit.ps1": {Data: []byte("Write-Output '{}'\n")},
+	"embed/hooks/opencode/hive.ts":              {Data: []byte("export const Hive = {}")},
 }
 
 // TestClaudeAgent_InstallPromptHook verifies that InstallPromptHook:
@@ -642,6 +643,155 @@ func TestClaudeAgent_InstallPromptHook(t *testing.T) {
 	}
 }
 
+func TestClaudeAgent_InstallPromptHook_WindowsRegistersPowerShellHook(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	withClaudeGOOS(t, "windows")
+
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+
+	a := &ClaudeAgent{home: home, templatesFS: testTemplatesFS}
+	if err := a.InstallPromptHook(testHooksFS); err != nil {
+		t.Fatalf("InstallPromptHook: %v", err)
+	}
+
+	scriptPath := filepath.Join(claudeDir, "hive-hooks", "user-prompt-submit.ps1")
+	if _, err := os.Stat(scriptPath); err != nil {
+		t.Fatalf("PowerShell hook not found at %s: %v", scriptPath, err)
+	}
+
+	command := claudeHookCommandFromSettings(t, filepath.Join(claudeDir, "settings.json"))
+	want := `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "` + scriptPath + `"`
+	if command != want {
+		t.Fatalf("hook command = %q, want %q", command, want)
+	}
+}
+
+func TestClaudeAgent_InstallPromptHook_WindowsPreservesExistingHooksAndIsIdempotent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	withClaudeGOOS(t, "windows")
+
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+
+	existing := map[string]any{
+		"env": map[string]any{"KEEP_ME": "yes"},
+		"hooks": map[string]any{
+			"UserPromptSubmit": []any{
+				map[string]any{
+					"name": "my-existing-windows-hook",
+					"hooks": []any{
+						map[string]any{"type": "command", "command": `C:\\Tools\\existing.ps1`},
+					},
+				},
+			},
+		},
+	}
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	existingBytes, _ := json.MarshalIndent(existing, "", "  ")
+	if err := os.WriteFile(settingsPath, existingBytes, 0644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	a := &ClaudeAgent{home: home, templatesFS: testTemplatesFS}
+	if err := a.InstallPromptHook(testHooksFS); err != nil {
+		t.Fatalf("first InstallPromptHook: %v", err)
+	}
+	if err := a.InstallPromptHook(testHooksFS); err != nil {
+		t.Fatalf("second InstallPromptHook: %v", err)
+	}
+
+	settings := readSettingsMap(t, settingsPath)
+	if env, ok := settings["env"].(map[string]any); !ok || env["KEEP_ME"] != "yes" {
+		t.Fatalf("unrelated top-level settings were not preserved: %#v", settings["env"])
+	}
+
+	hooks := settings["hooks"].(map[string]any)
+	ups := hooks["UserPromptSubmit"].([]any)
+	foundExisting := false
+	hiveCount := 0
+	for _, entry := range ups {
+		entryMap, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch entryMap["name"] {
+		case "my-existing-windows-hook":
+			foundExisting = true
+		case "hive-prompt-capture":
+			hiveCount++
+		}
+	}
+	if !foundExisting {
+		t.Fatal("existing Windows hook was not preserved")
+	}
+	if hiveCount != 1 {
+		t.Fatalf("expected exactly one hive-prompt-capture hook after rerun, got %d", hiveCount)
+	}
+}
+
+func withClaudeGOOS(t *testing.T, goos string) {
+	t.Helper()
+	previous := claudeRuntimeGOOS
+	claudeRuntimeGOOS = goos
+	t.Cleanup(func() { claudeRuntimeGOOS = previous })
+}
+
+func claudeHookCommandFromSettings(t *testing.T, settingsPath string) string {
+	t.Helper()
+	settings := readSettingsMap(t, settingsPath)
+	hooks, ok := settings["hooks"].(map[string]any)
+	if !ok {
+		t.Fatal("settings.json missing hooks object")
+	}
+	ups, ok := hooks["UserPromptSubmit"].([]any)
+	if !ok {
+		t.Fatal("settings.json missing UserPromptSubmit hooks")
+	}
+	for _, entry := range ups {
+		entryMap, ok := entry.(map[string]any)
+		if !ok || entryMap["name"] != "hive-prompt-capture" {
+			continue
+		}
+		innerHooks, ok := entryMap["hooks"].([]any)
+		if !ok {
+			t.Fatal("hive-prompt-capture missing inner hooks")
+		}
+		for _, hook := range innerHooks {
+			hookMap, ok := hook.(map[string]any)
+			if !ok || hookMap["type"] != "command" {
+				continue
+			}
+			command, ok := hookMap["command"].(string)
+			if !ok {
+				t.Fatalf("command is not a string: %#v", hookMap["command"])
+			}
+			return command
+		}
+	}
+	t.Fatal("hive-prompt-capture command hook not found")
+	return ""
+}
+
+func readSettingsMap(t *testing.T, settingsPath string) map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatalf("settings.json is invalid JSON: %v", err)
+	}
+	return settings
+}
+
 // TestClaudeAgent_InstallPromptHook_PreservesExistingHooks verifies that
 // pre-existing UserPromptSubmit entries are NOT removed (R-9 mitigation).
 func TestClaudeAgent_InstallPromptHook_PreservesExistingHooks(t *testing.T) {
@@ -741,9 +891,9 @@ func TestOpenCodeAgent_InstallPromptHook(t *testing.T) {
 
 func TestWriteInstructions_ReapplyRewritesManagedAndPreservesUserContent(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name  string
 		agent Agent
-		path string
+		path  string
 	}{
 		{name: "claude", agent: &ClaudeAgent{home: t.TempDir(), templatesFS: testTemplatesFS}, path: "CLAUDE.md"},
 		{name: "opencode", agent: &OpenCodeAgent{home: t.TempDir(), templatesFS: testTemplatesFS}, path: "AGENTS.md"},
@@ -798,9 +948,9 @@ func TestWriteInstructions_ReapplyRewritesManagedAndPreservesUserContent(t *test
 
 func TestWriteInstructions_ReapplyIsIdempotentOnCompliantInstall(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name  string
 		agent Agent
-		path string
+		path  string
 	}{
 		{name: "claude", agent: &ClaudeAgent{home: t.TempDir(), templatesFS: testTemplatesFS}, path: "CLAUDE.md"},
 		{name: "opencode", agent: &OpenCodeAgent{home: t.TempDir(), templatesFS: testTemplatesFS}, path: "AGENTS.md"},
@@ -842,9 +992,9 @@ func TestWriteInstructions_ReapplyIsIdempotentOnCompliantInstall(t *testing.T) {
 
 func TestWriteInstructions_ReapplyDeterministicallyRegeneratesPartialManagedState(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name  string
 		agent Agent
-		path string
+		path  string
 	}{
 		{name: "claude", agent: &ClaudeAgent{home: t.TempDir(), templatesFS: testTemplatesFS}, path: "CLAUDE.md"},
 		{name: "opencode", agent: &OpenCodeAgent{home: t.TempDir(), templatesFS: testTemplatesFS}, path: "AGENTS.md"},
