@@ -123,7 +123,16 @@ func (s BackupStore) ValidateSnapshot(manifest BackupManifest) error {
 	}
 
 	for _, entry := range manifest.Entries {
-		got, ok := checksums[entry.Path]
+		entryKey := archiveChecksumKey(entry.Path)
+		got, ok := checksums[entryKey]
+		if !ok {
+			for _, legacyKey := range legacyArchiveChecksumKeys(entry.Path) {
+				got, ok = checksums[legacyKey]
+				if ok {
+					break
+				}
+			}
+		}
 		if !ok {
 			return fmt.Errorf("missing archive entry for %q", entry.Path)
 		}
@@ -224,14 +233,96 @@ func (s BackupStore) writeArchive(archivePath string, targets []BackupTarget) er
 }
 
 func archivePathName(path string) string {
-	return strings.TrimPrefix(filepath.Clean(path), string(os.PathSeparator))
+	key := archiveChecksumKey(path)
+	if strings.HasPrefix(key, "/") && !strings.HasPrefix(key, "//") {
+		return strings.TrimPrefix(key, "/")
+	}
+	return key
 }
 
 func restoreArchivePath(path string) string {
-	if strings.HasPrefix(path, string(os.PathSeparator)) {
-		return filepath.Clean(path)
+	return archiveChecksumKey(path)
+}
+
+func archiveChecksumKey(path string) string {
+	normalized := strings.ReplaceAll(path, `\`, "/")
+
+	root := "/"
+	rest := normalized
+	if strings.HasPrefix(normalized, "//") {
+		root = "//"
+		rest = strings.TrimLeft(normalized, "/")
+	} else if len(normalized) >= 2 && isWindowsDrivePrefix(normalized[:2]) {
+		root = normalized[:2]
+		rest = strings.TrimPrefix(normalized[2:], "/")
+	} else {
+		rest = strings.TrimLeft(normalized, "/")
 	}
-	return string(os.PathSeparator) + filepath.Clean(path)
+
+	cleaned := cleanArchiveSegments(rest)
+	if root == "//" {
+		if cleaned == "" {
+			return root
+		}
+		return root + cleaned
+	}
+	if isWindowsDrivePrefix(root) {
+		if cleaned == "" {
+			return root
+		}
+		return root + "/" + cleaned
+	}
+	if cleaned == "" {
+		return root
+	}
+	return root + cleaned
+}
+
+func legacyArchiveChecksumKeys(path string) []string {
+	if hasParentArchiveSegment(path) {
+		return nil
+	}
+
+	key := archiveChecksumKey(path)
+	if strings.HasPrefix(key, "//") {
+		return []string{"/" + strings.TrimPrefix(key, "//")}
+	}
+	return nil
+}
+
+func cleanArchiveSegments(path string) string {
+	parts := strings.Split(path, "/")
+	stack := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		default:
+			stack = append(stack, part)
+		}
+	}
+	return strings.Join(stack, "/")
+}
+
+func hasParentArchiveSegment(path string) bool {
+	for _, part := range strings.Split(strings.ReplaceAll(path, `\`, "/"), "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+func isWindowsDrivePrefix(prefix string) bool {
+	if len(prefix) != 2 || prefix[1] != ':' {
+		return false
+	}
+	c := prefix[0]
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 }
 
 func canonicalizePath(path string) (string, error) {
