@@ -73,10 +73,20 @@ Esto permite automatizar handling en CI/scripts sin parseo frágil de strings li
 
 Si necesitás reset completo local:
 
+### Linux/macOS (Bash)
+
 ```bash
 rm -f ~/.jarvis/config.yaml
 rm -f ~/.jarvis/sync.json
 rm -f ~/.jarvis/memory.db
+```
+
+### Windows (PowerShell)
+
+```powershell
+Remove-Item -Force "$HOME/.jarvis/config.yaml" -ErrorAction SilentlyContinue
+Remove-Item -Force "$HOME/.jarvis/sync.json" -ErrorAction SilentlyContinue
+Remove-Item -Force "$HOME/.jarvis/memory.db" -ErrorAction SilentlyContinue
 ```
 
 Luego:
