@@ -97,7 +97,7 @@ func TestInstallSelected(t *testing.T) {
 
 	t.Run("installs all skills when all selected", func(t *testing.T) {
 		dir := t.TempDir()
-		allIDs := []string{"zoho-deluge", "laravel-architecture", "phpunit-testing", "git-workflow"}
+		allIDs := []string{"zoho-deluge", "laravel-architecture", "phpunit-testing", "git-workflow", "skill-creator", "qa-checklist"}
 
 		if err := InstallSelected(jarvis.SkillsFS, dir, allIDs); err != nil {
 			t.Fatalf("InstallSelected failed: %v", err)
@@ -219,6 +219,18 @@ func TestInstallSelected_ErrorPaths(t *testing.T) {
 	}
 }
 
+func TestInstallSelected_InstallsQAChecklistAndSkillCreatorWhenConfigured(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := InstallSelected(jarvis.SkillsFS, dir, []string{"qa-checklist", "skill-creator"}); err != nil {
+		t.Fatalf("InstallSelected failed: %v", err)
+	}
+
+	assertInstalledSkillFileContains(t, dir, "qa-checklist/SKILL.md", "## Output Contract")
+	assertInstalledSkillFileContains(t, dir, "skill-creator/SKILL.md", "## Output Contract")
+	assertInstalledSkillFileContains(t, dir, "skill-creator/references/quality-loop.md", "# Skill Quality Loop")
+}
+
 func TestListSkills(t *testing.T) {
 	skills, err := ListSkills(jarvis.SkillsFS)
 	if err != nil {
@@ -253,6 +265,17 @@ func assertInstalledSkillFile(t *testing.T, dir, relPath, expected string) {
 	}
 	if string(data) != expected {
 		t.Fatalf("content mismatch for %s: got %q want %q", relPath, string(data), expected)
+	}
+}
+
+func assertInstalledSkillFileContains(t *testing.T, dir, relPath, expected string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(relPath)))
+	if err != nil {
+		t.Fatalf("read %s: %v", relPath, err)
+	}
+	if !strings.Contains(string(data), expected) {
+		t.Fatalf("expected %s to contain %q, got:\n%s", relPath, expected, string(data))
 	}
 }
 

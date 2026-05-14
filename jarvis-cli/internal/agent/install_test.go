@@ -22,7 +22,7 @@ func TestInstallSkillsFromFS(t *testing.T) {
 		wantErr   string
 	}{
 		{
-			name:     "installs selected skills shared files and nested references",
+			name: "installs selected skills shared files and nested references",
 			fsys: fstest.MapFS{
 				"selected-skill/SKILL.md":                       {Data: []byte("# Skill")},
 				"selected-skill/references/examples.md":         {Data: []byte("reference example")},
@@ -47,6 +47,28 @@ func TestInstallSkillsFromFS(t *testing.T) {
 				"selected-skill/templates/snippet.txt",
 			},
 			absentDir: "other-skill",
+		},
+		{
+			name: "installs qa checklist and skill creator when selected",
+			fsys: fstest.MapFS{
+				"qa-checklist/SKILL.md":                          {Data: []byte("# QA Checklist")},
+				"skill-creator/SKILL.md":                         {Data: []byte("# Skill Creator")},
+				"skill-creator/references/quality-loop.md":       {Data: []byte("quality loop")},
+				"unselected-skill/SKILL.md":                      {Data: []byte("# Other")},
+				"unselected-skill/references/should-not-copy.md": {Data: []byte("skip")},
+			},
+			selected: []string{"qa-checklist", "skill-creator"},
+			wantFiles: map[string]string{
+				"qa-checklist/SKILL.md":                    "# QA Checklist",
+				"skill-creator/SKILL.md":                   "# Skill Creator",
+				"skill-creator/references/quality-loop.md": "quality loop",
+			},
+			wantPaths: []string{
+				"qa-checklist/SKILL.md",
+				"skill-creator/SKILL.md",
+				"skill-creator/references/quality-loop.md",
+			},
+			absentDir: "unselected-skill",
 		},
 		{
 			name:     "returns read errors with path context",

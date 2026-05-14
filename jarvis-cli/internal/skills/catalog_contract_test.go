@@ -460,6 +460,68 @@ func TestCatalogContract_ChainedPRReferencesAreEmbeddedRecursively(t *testing.T)
 	}
 }
 
+func TestCatalogContract_SkillCreatorUsesCompactLLMFirstContract(t *testing.T) {
+	t.Parallel()
+
+	content := readEmbeddedSkillAsset(t, "embed/skills/skill-creator/SKILL.md")
+
+	requiredSnippets := []string{
+		"name: skill-creator",
+		"description: \"Trigger: new skills, agent instructions, documenting AI usage patterns.",
+		"## Activation Contract",
+		"## Hard Rules",
+		"## Decision Gates",
+		"## Execution Steps",
+		"## Output Contract",
+		"[references/quality-loop.md](references/quality-loop.md)",
+	}
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(content, snippet) {
+			t.Fatalf("expected skill-creator to contain %q", snippet)
+		}
+	}
+
+	for _, forbidden := range []string{"\n## Keywords", "description: >", "WebSearch", "Task", "sdd-qa", "qa-signoff"} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("expected compact skill-creator not to contain %q", forbidden)
+		}
+	}
+}
+
+func TestCatalogContract_QAChecklistOutputContractAndSDDBoundaries(t *testing.T) {
+	t.Parallel()
+
+	content := readEmbeddedSkillAsset(t, "embed/skills/qa-checklist/SKILL.md")
+	lowerContent := strings.ToLower(content)
+
+	requiredSnippets := []string{
+		"name: qa-checklist",
+		"batería de pruebas",
+		"checklist de pruebas",
+		"QA checklist",
+		"test checklist",
+		"## Output Contract",
+		"Manual QA checklist",
+		"Automated test recommendations",
+		"Risks and edge cases",
+		"Assumptions and questions",
+		"not executed",
+		"not verification evidence",
+		"sdd-verify",
+	}
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(content, snippet) {
+			t.Fatalf("expected qa-checklist to contain %q", snippet)
+		}
+	}
+
+	for _, forbidden := range []string{"sdd-qa", "qa-signoff", "qa phase", "final verification", "verification passed", "tests passed"} {
+		if strings.Contains(lowerContent, forbidden) {
+			t.Fatalf("expected qa-checklist not to imply QA-as-verification with %q", forbidden)
+		}
+	}
+}
+
 func readEmbeddedSkillAsset(t *testing.T, path string) string {
 	t.Helper()
 

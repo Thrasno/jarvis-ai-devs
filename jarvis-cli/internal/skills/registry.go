@@ -72,8 +72,9 @@ var skillMeta = map[string]struct{ name, description, trigger string }{
 	"comment-writer":       {name: "Comment Writer", description: "Write warm, direct collaboration comments for PRs, issues, reviews, and async updates", trigger: "When writing PR feedback, issue replies, reviews, Slack messages, or GitHub comments"},
 	"cognitive-doc-design": {name: "Cognitive Doc Design", description: "Design docs that reduce cognitive load for guides, READMEs, RFCs, onboarding, architecture, and reviews", trigger: "When writing guides, READMEs, RFCs, onboarding, architecture, or review-facing docs"},
 	"sdd-onboard":          {name: "SDD Onboard", description: "Guided end-to-end walkthrough of SDD workflow", trigger: "When onboarding user through full SDD cycle"},
-	"skill-creator":        {name: "Skill Creator", description: "Creates new AI agent skills following the Agent Skills spec", trigger: "When creating a new skill or documenting patterns for AI"},
+	"skill-creator":        {name: "Skill Creator", description: "Create LLM-first skills with valid frontmatter, local references, and concise trigger-rich descriptions", trigger: "When creating new skills, agent instructions, or documenting AI usage patterns"},
 	"skill-registry":       {name: "Skill Registry", description: "Create or update the skill registry for the current project", trigger: "When user says update skills, skill registry, or after installing skills"},
+	"qa-checklist":         {name: "QA Checklist", description: "On-demand QA checklist and test checklist planning with manual QA and automated test recommendations", trigger: "When user asks for batería de pruebas, checklist de pruebas, qué pruebas debería hacer, QA checklist, or test checklist"},
 }
 
 // ListSkills returns all available embedded skills with their metadata and content.

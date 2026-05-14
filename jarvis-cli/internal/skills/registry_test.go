@@ -132,7 +132,7 @@ func TestRegistry_SkillMetaCount(t *testing.T) {
 		"zoho-deluge", "laravel-architecture", "phpunit-testing", "git-workflow",
 		// Workflow + product helpers already shipped
 		"branch-pr", "issue-creation", "go-testing", "judgment-day",
-		"sdd-onboard", "skill-creator", "skill-registry",
+		"sdd-onboard", "skill-creator", "skill-registry", "qa-checklist",
 	}
 
 	if len(skillMeta) != len(expectedSkills) {
@@ -153,6 +153,34 @@ func TestRegistry_SkillMetaCount(t *testing.T) {
 		}
 		if meta.trigger == "" {
 			t.Errorf("skill %q has empty trigger", id)
+		}
+	}
+}
+
+func TestRegistry_QAChecklistIsDiscoverableButNotCore(t *testing.T) {
+	skills, err := ListSkills(jarvis.SkillsFS)
+	if err != nil {
+		t.Fatalf("ListSkills: %v", err)
+	}
+
+	var qa Skill
+	for _, skill := range skills {
+		if skill.ID == "qa-checklist" {
+			qa = skill
+			break
+		}
+	}
+	if qa.ID == "" {
+		t.Fatal("expected qa-checklist to be present in embedded skill registry")
+	}
+	if qa.IsCore {
+		t.Fatal("expected qa-checklist to be selectable and non-core, not always installed")
+	}
+
+	metadata := strings.ToLower(qa.Description + " " + qa.Trigger)
+	for _, phrase := range []string{"qa checklist", "test checklist", "checklist de pruebas", "batería de pruebas"} {
+		if !strings.Contains(metadata, phrase) {
+			t.Fatalf("expected qa-checklist metadata to include trigger phrase %q; got description=%q trigger=%q", phrase, qa.Description, qa.Trigger)
 		}
 	}
 }
