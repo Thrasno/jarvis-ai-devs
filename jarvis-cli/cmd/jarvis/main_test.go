@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -26,7 +27,9 @@ func TestMain(m *testing.M) {
 	if err := buildCmd.Run(); err != nil {
 		// Fall back: try building from the directory directly.
 		cmd2 := exec.Command("go", "build", "-o", jarvisBin, ".")
-		cmd2.Dir = "/home/andres/Desarrollo/Proyectos/jarvis-dev/jarvis-cli/cmd/jarvis"
+		if _, filename, _, ok := runtime.Caller(0); ok {
+			cmd2.Dir = filepath.Dir(filename)
+		}
 		cmd2.Stdout = os.Stdout
 		cmd2.Stderr = os.Stderr
 		if err2 := cmd2.Run(); err2 != nil {
@@ -171,6 +174,61 @@ func writeConfig(t *testing.T, home, content string) {
 	}
 }
 
+func TestDocsContract_SourceRepoRootIsPortable(t *testing.T) {
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get wd: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf("restore wd: %v", err)
+		}
+	})
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("chdir temp: %v", err)
+	}
+
+	root := sourceRepoRoot(t)
+	if _, err := os.Stat(filepath.Join(root, "README.md")); err != nil {
+		t.Fatalf("source repo root must contain README.md: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "docs", "PRD.md")); err != nil {
+		t.Fatalf("source repo root must contain docs/PRD.md: %v", err)
+	}
+}
+
+func sourceRepoRoot(t *testing.T) string {
+	t.Helper()
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve current test file path")
+	}
+	root, ok := sourceRepoRootFrom(filename)
+	if !ok {
+		t.Fatalf("could not resolve repository root from %s", filename)
+	}
+	return root
+}
+
+func sourceRepoRootFrom(filename string) (string, bool) {
+	dir := filepath.Dir(filename)
+	for {
+		if fileExists(filepath.Join(dir, "README.md")) && fileExists(filepath.Join(dir, "docs", "PRD.md")) && fileExists(filepath.Join(dir, "jarvis-cli", "go.mod")) {
+			return dir, true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 // TestRootCommand_FreshInstall_EntersWizard verifies bare jarvis launches setup flow.
 func TestRootCommand_FreshInstall_EntersWizard(t *testing.T) {
 	if _, err := os.Stat(jarvisBin); os.IsNotExist(err) {
@@ -285,7 +343,7 @@ func TestNoTUI_FirstRun_RequiresInput(t *testing.T) {
 }
 
 func TestDocsContract_BareJarvisEntrypoint(t *testing.T) {
-	root := "/home/andres/Desarrollo/Proyectos/jarvis-dev"
+	root := sourceRepoRoot(t)
 
 	readmeBytes, err := os.ReadFile(filepath.Join(root, "README.md"))
 	if err != nil {
@@ -322,7 +380,7 @@ func TestDocsContract_BareJarvisEntrypoint(t *testing.T) {
 }
 
 func TestDocsContract_PublicInstallerIsHonestAndOverridable(t *testing.T) {
-	root := "/home/andres/Desarrollo/Proyectos/jarvis-dev"
+	root := sourceRepoRoot(t)
 
 	installShBytes, err := os.ReadFile(filepath.Join(root, "scripts", "install.sh"))
 	if err != nil {
@@ -388,8 +446,75 @@ func TestDocsContract_PublicInstallerIsHonestAndOverridable(t *testing.T) {
 	}
 }
 
+func TestDocsContract_ReleaseRolloutReconfigurationFlow(t *testing.T) {
+	root := sourceRepoRoot(t)
+
+	readmeBytes, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatalf("read README.md: %v", err)
+	}
+	readme := strings.ToLower(string(readmeBytes))
+
+	requiredReadmePhrases := []string{
+		"release rollout and reconfiguration",
+		"explicit team channel",
+		"normal install/update channel",
+		"complete ecosystem pack",
+		"jarvis` + `hive-daemon`",
+		"embedded assets",
+		"rerun `jarvis`",
+	}
+	for _, phrase := range requiredReadmePhrases {
+		if !strings.Contains(readme, phrase) {
+			t.Fatalf("README.md must document release rollout contract phrase %q", phrase)
+		}
+	}
+
+	checklistBytes, err := os.ReadFile(filepath.Join(root, "docs", "release-rollout-contract-checklist.md"))
+	if err != nil {
+		t.Fatalf("read docs/release-rollout-contract-checklist.md: %v", err)
+	}
+	checklist := strings.ToLower(string(checklistBytes))
+	for _, phrase := range []string{
+		"release announcement contract",
+		"ecosystem pack invariant",
+		"post-update reconfiguration entry point",
+		"boundary preservation for sync semantics",
+		"scripts/install.sh",
+		"scripts/install.ps1",
+		".goreleaser.yaml",
+		"jarvis-cli/cmd/jarvis/main.go",
+	} {
+		if !strings.Contains(checklist, phrase) {
+			t.Fatalf("release rollout checklist must include proof point %q", phrase)
+		}
+	}
+}
+
+func TestDocsContract_NoForbiddenReleaseCommandsInPrimaryDocs(t *testing.T) {
+	root := sourceRepoRoot(t)
+	primaryDocs := []string{
+		"README.md",
+		filepath.Join("docs", "setup-recovery.md"),
+		filepath.Join("docs", "PRD.md"),
+		filepath.Join("docs", "release-rollout-contract-checklist.md"),
+	}
+	for _, doc := range primaryDocs {
+		contentBytes, err := os.ReadFile(filepath.Join(root, doc))
+		if err != nil {
+			t.Fatalf("read %s: %v", doc, err)
+		}
+		content := strings.ToLower(string(contentBytes))
+		for _, forbidden := range []string{"jarvis setup", "jarvis update", "jarvis upgrade"} {
+			if strings.Contains(content, forbidden) && !strings.Contains(content, "nonexistent") && !strings.Contains(content, "inexistentes") {
+				t.Fatalf("%s must not instruct nonexistent command %q", doc, forbidden)
+			}
+		}
+	}
+}
+
 func TestDocsContract_PRDExplicitSDDActivationFlow(t *testing.T) {
-	root := "/home/andres/Desarrollo/Proyectos/jarvis-dev"
+	root := sourceRepoRoot(t)
 
 	prdBytes, err := os.ReadFile(filepath.Join(root, "docs", "PRD.md"))
 	if err != nil {

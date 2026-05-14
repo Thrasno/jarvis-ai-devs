@@ -97,6 +97,16 @@ Build each binary from its module:
 
 The repository includes `.goreleaser.yaml` to package multi-platform binaries for the main CLI and daemon components.
 
+### Release rollout and reconfiguration
+
+Every Jarvis release is a complete ecosystem pack. A rollout is valid only when the release is announced, applied through the normal release channel, and then reconfigured locally from the new embedded assets.
+
+1. **Announce the release**: publish the release notice in an explicit team channel (physical notice, Teams, mailing list, or equivalent) before treating rollout as started.
+2. **Apply the release through the normal install/update channel**: use the release scripts or the team-approved package channel. The channel must install or update the full pack: `jarvis` + `hive-daemon` + version-matched embedded assets.
+3. **Rerun `jarvis`**: after the update finishes, execute root `jarvis` so the setup/reconfiguration wizard reapplies managed configuration from the release you just installed.
+
+Do not use or document nonexistent release commands such as `jarvis update`, `jarvis upgrade`, or `jarvis setup`. Release rollout governs ecosystem installation and reconfiguration only; Hive ↔ Hive API sync remains a separate product behavior.
+
 ### Single installer contract
 
 After installing binaries (from source or release scripts), the canonical entrypoint is:

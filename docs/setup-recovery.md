@@ -69,6 +69,23 @@ Esto permite automatizar handling en CI/scripts sin parseo frágil de strings li
 4. **Reparación**: `jarvis reconcile --provider all --yes`.
 5. **Si algo sale mal**: `jarvis restore --provider <p> --snapshot <id>` y volver a verificar.
 
+## Reconfiguración después de una release
+
+Una release de Jarvis se trata como un **ecosystem pack completo**: el canal normal de instalación/actualización debe instalar o actualizar `jarvis`, `hive-daemon` y los assets embebidos versionados de esa release.
+
+Flujo operativo:
+
+1. El maintainer anuncia la release en un canal explícito del equipo (aviso físico, Teams, mailing list o equivalente).
+2. Cada developer aplica la release por el canal normal de instalación/actualización.
+3. Cada developer ejecuta `jarvis` para reaplicar configuración managed desde los assets embebidos nuevos.
+4. Si hay drift o setup parcial, se usa el flujo de lifecycle de esta guía (`verify`, `doctor`, `backup`, `reconcile`, `restore`).
+
+### Checklist de drift de comandos
+
+- Comando canónico para setup/reconfiguración: `jarvis` sin subcomando.
+- No documentar comandos inexistentes de release o setup.
+- El rollout de release no cambia la semántica de sync Hive ↔ Hive API; sync sigue siendo una responsabilidad separada del producto.
+
 ## Limpieza manual extrema (último recurso)
 
 Si necesitás reset completo local:
@@ -92,6 +109,6 @@ Remove-Item -Force "$HOME/.jarvis/memory.db" -ErrorAction SilentlyContinue
 Luego:
 
 ```bash
-jarvis setup
+jarvis
 jarvis verify --provider all
 ```
