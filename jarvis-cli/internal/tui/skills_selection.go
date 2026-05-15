@@ -1,6 +1,6 @@
 package tui
 
-import "github.com/Thrasno/jarvis-dev/jarvis-cli/internal/skills"
+import "github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
 
 type skillPrompt struct {
 	Label       string

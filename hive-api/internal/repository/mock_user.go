@@ -4,7 +4,7 @@ package repository
 //
 // Los mocks viven en el mismo paquete que las interfaces para que cualquier
 // test del proyecto pueda importarlos con:
-//   import "github.com/Thrasno/jarvis-dev/hive-api/internal/repository"
+//   import "github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
 //   mockRepo := &repository.MockUserRepository{}
 //
 // No tienen el sufijo _test.go porque necesitan ser importables desde
@@ -13,7 +13,7 @@ package repository
 import (
 	"context"
 
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
 	"github.com/stretchr/testify/mock"
 )
 

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 )
 
 func TestEngineVerify_ClassifiesOwnedNonOwnedUnknownWithoutMutation(t *testing.T) {

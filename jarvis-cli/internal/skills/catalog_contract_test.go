@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 )
 
 const sharedPhaseCommonPath = "embed/skills/_shared/sdd-phase-common.md"

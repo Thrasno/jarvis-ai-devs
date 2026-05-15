@@ -7,11 +7,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/agent"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/sddruntime"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/skills"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
 )
 
 // Step identifies the current wizard step.
@@ -72,11 +72,11 @@ type Model struct {
 	agentDone     bool
 	reviewChoice  int
 
-	phaseModelRows       []phaseModelRow
-	phaseModelActiveRow  int
-	phaseModelActiveCol  int
-	phaseModelOpenCode   []string
-	phaseModelClaude     []string
+	phaseModelRows      []phaseModelRow
+	phaseModelActiveRow int
+	phaseModelActiveCol int
+	phaseModelOpenCode  []string
+	phaseModelClaude    []string
 
 	cfg *config.AppConfig
 

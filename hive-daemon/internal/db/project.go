@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/project"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 )
 
 func (d *DB) KnownProjects(ctx context.Context) ([]project.KnownProject, error) {

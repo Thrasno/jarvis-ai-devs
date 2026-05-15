@@ -11,8 +11,8 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
-	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/tui"
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/tui"
 )
 
 var rootCmd = &cobra.Command{

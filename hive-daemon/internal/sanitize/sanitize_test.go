@@ -4,16 +4,16 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/sanitize"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sanitize"
 )
 
 // TestStrip covers all scanner cases (Phase 1 non-nested + Phase 2 nested/orphan).
 func TestStrip(t *testing.T) {
 	tests := []struct {
-		name       string
-		input      string
-		wantClean  string
-		wantCount  int
+		name      string
+		input     string
+		wantClean string
+		wantCount int
 	}{
 		// --- Phase 1: non-nested cases ---
 		{

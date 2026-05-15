@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"

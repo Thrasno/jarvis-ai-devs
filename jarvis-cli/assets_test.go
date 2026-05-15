@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/agent"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 )
 
 // TestPersonaFS_NotEmpty verifies that the embedded persona assets are present.

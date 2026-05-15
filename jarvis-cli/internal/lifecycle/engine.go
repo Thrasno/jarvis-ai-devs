@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 )
 
 type EngineDeps struct {

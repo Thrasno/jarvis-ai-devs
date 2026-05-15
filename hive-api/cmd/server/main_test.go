@@ -12,9 +12,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/config"
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/handler"
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/repository"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/handler"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -1,4 +1,4 @@
-module github.com/Thrasno/jarvis-dev/hive-api
+module github.com/Thrasno/jarvis-ai-devs/hive-api
 
 go 1.26.2
 

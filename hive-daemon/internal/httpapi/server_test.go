@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/httpapi"
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/project"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/httpapi"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 )
 
 type mockPromptStore struct {

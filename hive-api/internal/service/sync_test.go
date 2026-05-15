@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/model"
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/repository"
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/service"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"

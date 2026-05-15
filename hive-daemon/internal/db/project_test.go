@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	hivedb "github.com/Thrasno/jarvis-dev/hive-daemon/internal/db"
+	hivedb "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
 )
 
 func TestKnownProjects_ReturnsDistinctProjectsFromWriteTables(t *testing.T) {

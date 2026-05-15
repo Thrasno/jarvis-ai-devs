@@ -3,7 +3,7 @@ package lifecycle
 import (
 	"os"
 
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 )
 
 type ProviderAdapter interface {
@@ -15,18 +15,18 @@ type ProviderAdapter interface {
 }
 
 type fakeProviderAdapter struct {
-	name       string
-	observed   ObservedProviderState
-	observeErr error
-	applyErr   error
-	restoreErr error
-	applyCalls int
-	applyStages []string
-	verifyCalls int
+	name               string
+	observed           ObservedProviderState
+	observeErr         error
+	applyErr           error
+	restoreErr         error
+	applyCalls         int
+	applyStages        []string
+	verifyCalls        int
 	applyNonOwnedCount int
-	restoreWrites int
-	appliedAssets []string
-	backupTargetPaths []string
+	restoreWrites      int
+	appliedAssets      []string
+	backupTargetPaths  []string
 }
 
 func (f *fakeProviderAdapter) Name() string {

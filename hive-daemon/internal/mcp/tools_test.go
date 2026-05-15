@@ -12,11 +12,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	hivedb "github.com/Thrasno/jarvis-dev/hive-daemon/internal/db"
-	hivemcp "github.com/Thrasno/jarvis-dev/hive-daemon/internal/mcp"
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/project"
-	hivesync "github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
+	hivedb "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	hivemcp "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/mcp"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
+	hivesync "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

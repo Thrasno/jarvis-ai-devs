@@ -15,8 +15,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/model"
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/repository"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -67,7 +67,7 @@ type AuthService interface {
 type authService struct {
 	userRepo  repository.UserRepository // inyectado — cualquier implementación sirve
 	jwtSecret []byte                    // clave para firmar/verificar JWT
-	jwtTTL   time.Duration             // cuánto tiempo es válido un token
+	jwtTTL    time.Duration             // cuánto tiempo es válido un token
 }
 
 // NewAuthService crea un nuevo AuthService con sus dependencias inyectadas.
@@ -82,7 +82,7 @@ func NewAuthService(userRepo repository.UserRepository, jwtSecret string) AuthSe
 	return &authService{
 		userRepo:  userRepo,
 		jwtSecret: []byte(jwtSecret),
-		jwtTTL:   30 * 24 * time.Hour, // los tokens duran 30 días (spec)
+		jwtTTL:    30 * 24 * time.Hour, // los tokens duran 30 días (spec)
 	}
 }
 

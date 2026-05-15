@@ -1,4 +1,4 @@
-module github.com/Thrasno/jarvis-dev/jarvis-cli
+module github.com/Thrasno/jarvis-ai-devs/jarvis-cli
 
 go 1.26.2
 

@@ -7,8 +7,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/model"
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/repository"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
 )
 
 // Sentinel errors surfaced by Push for handler-level 4xx classification (R2-CRIT-6).

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 )
 
 // wrapAsEmbedFS wraps a fstest.MapFS into a minimal embed.FS-compatible structure

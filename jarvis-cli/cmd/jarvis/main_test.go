@@ -21,7 +21,7 @@ func TestMain(m *testing.M) {
 	// We build relative to cmd/jarvis to ensure the correct package.
 	buildCmd := exec.Command("go", "build",
 		"-o", jarvisBin,
-		"github.com/Thrasno/jarvis-dev/jarvis-cli/cmd/jarvis")
+		"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/cmd/jarvis")
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr
 	if err := buildCmd.Run(); err != nil {

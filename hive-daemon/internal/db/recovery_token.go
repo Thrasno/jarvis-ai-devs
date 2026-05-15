@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/project"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 )
 
 func (d *DB) CreateRecoveryToken(ctx context.Context, req project.TokenRequest) (string, error) {

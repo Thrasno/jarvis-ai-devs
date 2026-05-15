@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 	_ "modernc.org/sqlite"
 )
 

@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/model"
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/repository"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
 )
 
 // ErrSyncIDExists se devuelve cuando se intenta crear una memoria con un sync_id

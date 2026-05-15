@@ -8,7 +8,7 @@ package config_test
 import (
 	"testing"
 
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -11,11 +11,11 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/project"
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/sanitize"
-	hivesync "github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sanitize"
+	hivesync "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

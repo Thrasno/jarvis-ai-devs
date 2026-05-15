@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 )
 
 // TestToTitleCase verifies the toTitleCase helper converts persona names

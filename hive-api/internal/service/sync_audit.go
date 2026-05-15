@@ -1,6 +1,6 @@
 package service
 
-import "github.com/Thrasno/jarvis-dev/hive-api/internal/model"
+import "github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
 
 const syncConflictReasonCode = "memory_conflict"
 

@@ -1,4 +1,4 @@
-module github.com/Thrasno/jarvis-dev/hive-daemon
+module github.com/Thrasno/jarvis-ai-devs/hive-daemon
 
 go 1.26.2
 

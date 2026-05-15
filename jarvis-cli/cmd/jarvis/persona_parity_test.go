@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/tui"
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/tui"
 )
 
 type personaFlowSnapshot struct {

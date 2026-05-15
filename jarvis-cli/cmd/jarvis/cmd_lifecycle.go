@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/agent"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/lifecycle"
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/lifecycle"
 	"github.com/spf13/cobra"
 )
 

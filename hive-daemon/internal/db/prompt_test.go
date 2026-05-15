@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
 )
 
 // ─── Schema tests ──────────────────────────────────────────────────────────
@@ -800,4 +800,3 @@ func TestMarkPromptSynced_NonExistentSyncID_ReturnsNil(t *testing.T) {
 		t.Errorf("MarkPromptSynced on non-existent syncID should return nil, got: %v", err)
 	}
 }
-

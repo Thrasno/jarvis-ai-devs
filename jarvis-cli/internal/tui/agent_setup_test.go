@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/agent"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 )
 
 type setupAgentStub struct {
@@ -196,7 +196,7 @@ func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
 		StoreWriteTo:        []string{"hive", "openspec"},
 		ArtifactTopics:      []string{"sdd/runtime/verify"},
 		GeneralMemoryTopics: []string{"runtime/notes"},
-		ModelAssignments: assignments,
+		ModelAssignments:    assignments,
 		Artifacts: map[string]sddruntime.ObservedArtifact{
 			"instructions": {Exists: true, MarkersValid: true},
 			"orchestrator": {Exists: true},
@@ -205,10 +205,10 @@ func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
 	}
 
 	tests := []struct {
-		name          string
-		agent         *setupAgentStub
+		name           string
+		agent          *setupAgentStub
 		wantConfigured bool
-		wantErrSubstr string
+		wantErrSubstr  string
 	}{
 		{
 			name: "fails setup when owned drift is detected",
@@ -224,7 +224,7 @@ func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
 		{
 			name: "keeps setup successful for pass report",
 			agent: &setupAgentStub{
-				name:          "opencode",
+				name:           "opencode",
 				observeRuntime: passObserved,
 			},
 			wantConfigured: true,

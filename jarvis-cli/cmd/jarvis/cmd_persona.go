@@ -6,11 +6,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/agent"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/skills"
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
 )
 
 var personaCmd = &cobra.Command{

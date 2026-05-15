@@ -1,6 +1,6 @@
 package sddruntime
 
-import "github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
+import "github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 
 const (
 	DefaultContractVersion = "2026.05"

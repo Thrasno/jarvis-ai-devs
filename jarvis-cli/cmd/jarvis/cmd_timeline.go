@@ -3,7 +3,7 @@ package main
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/tui"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/tui"
 )
 
 var timelineCmd = &cobra.Command{

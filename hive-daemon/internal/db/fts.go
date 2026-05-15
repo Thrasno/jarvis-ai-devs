@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 )
 
 // buildFTS5Query sanitizes a user query for safe use in FTS5 MATCH expressions.

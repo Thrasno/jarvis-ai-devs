@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 

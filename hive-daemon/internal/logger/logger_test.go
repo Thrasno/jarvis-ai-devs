@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 )
 
 func TestLog_DefaultOutputIsStderr(t *testing.T) {

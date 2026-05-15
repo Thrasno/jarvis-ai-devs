@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

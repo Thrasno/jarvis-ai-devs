@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 )
 
 // TestAgentInterfaceExtension verifies that the Agent interface includes

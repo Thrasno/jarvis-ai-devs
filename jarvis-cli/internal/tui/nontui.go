@@ -9,13 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/agent"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/apiclient"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/persona"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/sddruntime"
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/skills"
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/apiclient"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
 )
 
 var (
@@ -223,7 +223,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 			row.Claude = normalizePlatformValueForPrompt(claudeInput, current.Claude, contract.PlatformCatalogs[sddruntime.PlatformClaude])
 			resolvedPhaseModels[phase] = row
 		}
- 	}
+	}
 	if cfg.SDD.PhaseModels == nil {
 		cfg.SDD.PhaseModels = map[string]config.PhaseModelSelection{}
 	}

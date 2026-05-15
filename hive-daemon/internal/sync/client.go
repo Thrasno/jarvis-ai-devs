@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/db"
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 )
 
 const mutationProtocolVersion = 2

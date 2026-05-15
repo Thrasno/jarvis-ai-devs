@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/lifecycle"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/lifecycle"
 	"github.com/spf13/cobra"
 )
 

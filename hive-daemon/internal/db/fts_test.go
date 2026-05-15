@@ -3,7 +3,7 @@ package db
 import (
 	"testing"
 
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 )
 
 // ─── 4.1 Query Sanitization ────────────────────────────────────────────────

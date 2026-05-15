@@ -9,8 +9,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 )
 
 func (d *DB) SavePrompt(ctx context.Context, project, content string) (*models.Prompt, error) {

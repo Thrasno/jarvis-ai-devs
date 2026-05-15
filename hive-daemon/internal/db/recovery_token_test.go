@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	hivedb "github.com/Thrasno/jarvis-dev/hive-daemon/internal/db"
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/project"
+	hivedb "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 )
 
 func TestRecoveryTokens_ArePersistedAcrossReopenAndConsumedOnce(t *testing.T) {

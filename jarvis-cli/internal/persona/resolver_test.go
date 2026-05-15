@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 )
 
 func TestNormalizeSlug(t *testing.T) {
@@ -53,12 +53,12 @@ notes: |
 `
 
 	tests := []struct {
-		name           string
-		requestedSlug  string
+		name            string
+		requestedSlug   string
 		setupUserPreset bool
-		wantSource     PresetSource
-		wantSlug       string
-		wantErr        bool
+		wantSource      PresetSource
+		wantSlug        string
+		wantErr         bool
 	}{
 		{
 			name:          "resolve builtin slug",

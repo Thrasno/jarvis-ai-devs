@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	hivemcp "github.com/Thrasno/jarvis-dev/hive-daemon/internal/mcp"
+	hivemcp "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/mcp"
 )
 
 // ─── T2.7: Per-session ActivityTracker methods ────────────────────────────

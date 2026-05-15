@@ -10,10 +10,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/project"
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/sanitize"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sanitize"
 )
 
 // PromptStore is the minimal interface httpapi needs.

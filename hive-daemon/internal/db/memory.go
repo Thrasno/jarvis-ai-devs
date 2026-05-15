@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/google/uuid"
 )
 

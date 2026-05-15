@@ -18,11 +18,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/config"
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/handler"
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/repository"
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/service"
-	"github.com/Thrasno/jarvis-dev/hive-api/migrations"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/handler"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/service"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/migrations"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )

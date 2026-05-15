@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 )
 
 // ErrSessionNotFound is returned when a requested session does not exist.

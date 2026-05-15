@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/project"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/project"
 )
 
 var initCmd = &cobra.Command{

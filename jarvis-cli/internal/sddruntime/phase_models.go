@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 )
 
 // DefaultAssignmentsForPlatform returns the contract default phase->model assignments for a platform.

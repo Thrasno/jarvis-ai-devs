@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
 )
 
 // MemoryRepository define todas las operaciones de base de datos para memorias.

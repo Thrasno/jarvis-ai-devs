@@ -10,12 +10,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/db"
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/httpapi"
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/logger"
-	hivemcp "github.com/Thrasno/jarvis-dev/hive-daemon/internal/mcp"
-	"github.com/Thrasno/jarvis-dev/hive-daemon/internal/project"
-	hivesync "github.com/Thrasno/jarvis-dev/hive-daemon/internal/sync"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/httpapi"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
+	hivemcp "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/mcp"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
+	hivesync "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

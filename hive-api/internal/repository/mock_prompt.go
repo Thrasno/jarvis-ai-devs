@@ -11,7 +11,7 @@ package repository
 import (
 	"context"
 
-	"github.com/Thrasno/jarvis-dev/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
 	"github.com/stretchr/testify/mock"
 )
 

@@ -3,7 +3,7 @@ package sddruntime
 import (
 	"testing"
 
-	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 )
 
 func TestResolvePhaseModels(t *testing.T) {

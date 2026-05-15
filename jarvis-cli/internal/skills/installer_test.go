@@ -9,7 +9,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 )
 
 func TestInstallSelected_RecursivelyInstallsSkillTrees(t *testing.T) {
