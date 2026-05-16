@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -35,7 +36,7 @@ func TestEngineUninstall_RejectsUnsupportedModes(t *testing.T) {
 func TestEngineUninstall_BacksUpBeforeMutationsAndVerifiesAfter(t *testing.T) {
 	home := t.TempDir()
 	adapter := &fakeProviderAdapter{
-		name: "claude",
+		name:     "claude",
 		observed: ObservedProviderState{},
 	}
 	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"claude": adapter}, HomeDir: home})
@@ -76,6 +77,28 @@ func TestEngineUninstall_AllModeCleansLedgerAfterSuccessfulVerify(t *testing.T) 
 	}
 	if _, err := os.Stat(engine.ledger.path()); err == nil {
 		t.Fatal("expected ledger file to be removed after all uninstall")
+	}
+}
+
+func TestEngineUninstall_AllModeKeepsLedgerWhenAnyProviderFails(t *testing.T) {
+	home := t.TempDir()
+	claude := &fakeProviderAdapter{name: "claude", observed: ObservedProviderState{}}
+	opencode := &fakeProviderAdapter{name: "opencode", observed: ObservedProviderState{}, applyErr: errors.New("opencode uninstall failed")}
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"claude": claude, "opencode": opencode}, HomeDir: home})
+
+	if _, _, err := engine.ledger.LoadOrBootstrap("claude"); err != nil {
+		t.Fatalf("bootstrap ledger: %v", err)
+	}
+
+	_, err := engine.Uninstall("all", "all")
+	if err == nil || !strings.Contains(err.Error(), "opencode uninstall failed") {
+		t.Fatalf("expected failing provider error, got %v", err)
+	}
+	if claude.applyCalls != 1 || opencode.applyCalls != 1 {
+		t.Fatalf("expected all-mode uninstall to attempt providers before ledger cleanup, claude=%d opencode=%d", claude.applyCalls, opencode.applyCalls)
+	}
+	if _, err := os.Stat(engine.ledger.path()); err != nil {
+		t.Fatalf("ledger must remain when all-provider uninstall is only partially complete: %v", err)
 	}
 }
 

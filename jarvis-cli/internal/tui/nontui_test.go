@@ -68,6 +68,20 @@ func TestRunNoTUI_SkipsAuthAndDefaultsPersona(t *testing.T) {
 	}
 }
 
+func TestNewModel_NoTUIFallbackStartsWizardNotCockpit(t *testing.T) {
+	m := NewModel(testWizardConfig(), true)
+
+	if m.Screen != ScreenWizard {
+		t.Fatalf("expected no-TUI fallback model to stay on wizard screen, got %v", m.Screen)
+	}
+	if m.Step != StepScope {
+		t.Fatalf("expected no-TUI fallback to start at StepScope, got %v", m.Step)
+	}
+	if strings.Contains(m.View(), "Install/Reconfigure") {
+		t.Fatalf("no-TUI fallback must not render cockpit menu, got:\n%s", m.View())
+	}
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // TestRunNoTUI_SelectsSkill
 // ──────────────────────────────────────────────────────────────────────────────

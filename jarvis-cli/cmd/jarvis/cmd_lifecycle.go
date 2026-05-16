@@ -28,6 +28,10 @@ var (
 	uninstallCmd = &cobra.Command{Use: "uninstall", Short: "Remove managed lifecycle assets", RunE: runUninstall}
 )
 
+var uninstallLifecycle = func(engine *lifecycle.Engine, provider, mode string) (lifecycle.UninstallResult, error) {
+	return engine.Uninstall(provider, mode)
+}
+
 func initLifecycleCommands() {
 	for _, cmd := range []*cobra.Command{verifyCmd, doctorCmd, reconcileCmd, backupCmd, restoreCmd, uninstallCmd} {
 		cmd.Flags().String("provider", "all", "provider to target: claude|opencode|all")
@@ -149,12 +153,12 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 	if !opts.yes {
 		return fmt.Errorf("uninstall requires --yes to mutate managed assets (or use --dry-run)")
 	}
-	mode := "provider"
 	if opts.provider == "all" {
-		mode = "all"
+		_, err := uninstallLifecycle(newLifecycleEngine(), "all", "all")
+		return err
 	}
 	return runPerProvider(cmd, opts.provider, func(engine *lifecycle.Engine, provider string) error {
-		_, err := engine.Uninstall(provider, mode)
+		_, err := uninstallLifecycle(engine, provider, "provider")
 		return err
 	})
 }

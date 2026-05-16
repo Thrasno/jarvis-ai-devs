@@ -69,6 +69,173 @@ func buildSkillsModel() Model {
 	}
 }
 
+func TestNewCockpitModel_StartsAtCockpitNotWizard(t *testing.T) {
+	m := NewCockpitModel(testWizardConfig())
+
+	if m.Screen != ScreenCockpit {
+		t.Fatalf("expected first screen cockpit, got %v", m.Screen)
+	}
+	if m.Step != StepScope {
+		t.Fatalf("expected wizard to remain staged at StepScope, got %v", m.Step)
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "Install/Reconfigure") {
+		t.Fatalf("expected cockpit action in first view, got:\n%s", view)
+	}
+	if strings.Contains(view, "Jarvis-Dev Setup") {
+		t.Fatalf("cockpit first view must not auto-enter setup wizard, got:\n%s", view)
+	}
+}
+
+func TestCockpitInstallReconfigureEntersWizard(t *testing.T) {
+	m := NewCockpitModel(testWizardConfig())
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m2 := updated.(Model)
+
+	if cmd != nil {
+		t.Fatalf("expected entering wizard to be synchronous, got cmd %T", cmd)
+	}
+	if m2.Screen != ScreenWizard {
+		t.Fatalf("expected Install/Reconfigure to enter wizard screen, got %v", m2.Screen)
+	}
+	if m2.Step != StepScope {
+		t.Fatalf("expected wizard to start at StepScope, got %v", m2.Step)
+	}
+	if !strings.Contains(m2.View(), "Jarvis-Dev Setup") {
+		t.Fatalf("expected wizard view after install action, got:\n%s", m2.View())
+	}
+}
+
+func TestCockpitExitQuits(t *testing.T) {
+	m := NewCockpitModel(testWizardConfig())
+	m.cockpitCursor = len(CockpitActions()) - 1
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m2 := updated.(Model)
+
+	if !m2.Done {
+		t.Fatal("expected Exit action to mark model done")
+	}
+	if cmd == nil {
+		t.Fatal("expected Exit action to return tea.Quit command")
+	}
+}
+
+func TestCockpitNavigationHelpersWrapAtMenuBoundaries(t *testing.T) {
+	total := len(CockpitActions())
+	last := total - 1
+
+	tests := []struct {
+		name string
+		move func(current, total int) int
+		from int
+		want int
+	}{
+		{name: "previous wraps from first action to last", move: previousCockpitIndex, from: 0, want: last},
+		{name: "previous moves to prior action", move: previousCockpitIndex, from: 3, want: 2},
+		{name: "previous treats negative cursor as before first", move: previousCockpitIndex, from: -1, want: last},
+		{name: "next wraps from last action to first", move: nextCockpitIndex, from: last, want: 0},
+		{name: "next moves to following action", move: nextCockpitIndex, from: 3, want: 4},
+		{name: "next treats oversized cursor as after last", move: nextCockpitIndex, from: total + 1, want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.move(tt.from, total); got != tt.want {
+				t.Fatalf("expected cursor %d, got %d", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestCockpitNavigationKeysMoveSelectionAndWrap(t *testing.T) {
+	total := len(CockpitActions())
+	last := total - 1
+	m := NewCockpitModel(testWizardConfig())
+
+	m = sendKey(m, tea.KeyUp)
+	if m.cockpitCursor != last {
+		t.Fatalf("expected up from first action to wrap to cursor %d, got %d", last, m.cockpitCursor)
+	}
+	if !strings.Contains(m.View(), "> Exit") {
+		t.Fatalf("expected wrapped selection to be visible on Exit, got:\n%s", m.View())
+	}
+
+	m = sendKey(m, tea.KeyDown)
+	if m.cockpitCursor != 0 {
+		t.Fatalf("expected down from last action to wrap to cursor 0, got %d", m.cockpitCursor)
+	}
+	if !strings.Contains(m.View(), "> Install/Reconfigure") {
+		t.Fatalf("expected wrapped selection to be visible on Install/Reconfigure, got:\n%s", m.View())
+	}
+
+	m = sendRune(m, "j")
+	if m.cockpitCursor != 1 {
+		t.Fatalf("expected j to move to cursor 1, got %d", m.cockpitCursor)
+	}
+	m = sendRune(m, "k")
+	if m.cockpitCursor != 0 {
+		t.Fatalf("expected k to move back to cursor 0, got %d", m.cockpitCursor)
+	}
+}
+
+func TestCockpitIgnoresUnsupportedNavigationKeys(t *testing.T) {
+	m := NewCockpitModel(testWizardConfig())
+	m.cockpitCursor = 2
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatalf("expected unsupported cockpit key to return no command, got %T", cmd)
+	}
+	if m.cockpitCursor != 2 || m.Screen != ScreenCockpit || m.Done {
+		t.Fatalf("unsupported cockpit key changed state: cursor=%d screen=%v done=%v", m.cockpitCursor, m.Screen, m.Done)
+	}
+
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatalf("expected empty rune cockpit key to return no command, got %T", cmd)
+	}
+	if m.cockpitCursor != 2 || m.Screen != ScreenCockpit || m.Done {
+		t.Fatalf("empty rune cockpit key changed state: cursor=%d screen=%v done=%v", m.cockpitCursor, m.Screen, m.Done)
+	}
+}
+
+func TestCockpitQKeyQuitsWithoutSelectingAction(t *testing.T) {
+	m := NewCockpitModel(testWizardConfig())
+	m.cockpitCursor = 1
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	m = updated.(Model)
+
+	if !m.Done {
+		t.Fatal("expected q to mark cockpit model done")
+	}
+	if cmd == nil {
+		t.Fatal("expected q to return tea.Quit command")
+	}
+	if m.Screen != ScreenCockpit || m.cockpitMessage != "" {
+		t.Fatalf("q should quit from cockpit without selecting an action: screen=%v message=%q", m.Screen, m.cockpitMessage)
+	}
+}
+
+func TestCockpitView_RenderContractUsesTextLogoAndNoBackgroundFill(t *testing.T) {
+	m := NewCockpitModel(testWizardConfig())
+
+	view := m.View()
+	if !strings.Contains(view, strings.TrimSpace(CockpitLogo())) {
+		t.Fatalf("expected rendered cockpit to include embedded text logo, got:\n%s", view)
+	}
+	for _, forbidden := range []string{"\x1b[4", "\x1b[10", "\x1b[48;", "\x1b]1337", "\x1b_G", "PNG"} {
+		if strings.Contains(view, forbidden) {
+			t.Fatalf("cockpit view must stay text-only and avoid background/image protocols; found %q in:\n%s", forbidden, view)
+		}
+	}
+}
+
 func TestBuildSkillSelectionPlan_OnlyPromptsStackSpecificSkills(t *testing.T) {
 	skillList := []skills.Skill{
 		{ID: "hive", Name: "Hive", IsCore: true},

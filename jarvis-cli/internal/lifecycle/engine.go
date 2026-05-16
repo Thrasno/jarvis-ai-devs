@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -20,6 +21,11 @@ type Engine struct {
 }
 
 func NewEngine(deps EngineDeps) *Engine {
+	if deps.HomeDir == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			deps.HomeDir = home
+		}
+	}
 	return &Engine{adapters: deps.Adapters, ledger: NewLedgerStore(deps.HomeDir), backups: NewBackupStore(deps.HomeDir)}
 }
 
@@ -186,6 +192,38 @@ func (e *Engine) Backup(provider, sourceOperation string) (string, error) {
 }
 
 func (e *Engine) Uninstall(provider, mode string) (UninstallResult, error) {
+	if provider == "all" && mode == "all" {
+		return e.uninstallAllProviders()
+	}
+	return e.uninstallProvider(provider, mode)
+}
+
+func (e *Engine) uninstallAllProviders() (UninstallResult, error) {
+	providers := make([]string, 0, len(e.adapters))
+	for provider := range e.adapters {
+		providers = append(providers, provider)
+	}
+	sort.Strings(providers)
+
+	var result UninstallResult
+	for _, provider := range providers {
+		providerResult, err := e.uninstallProvider(provider, "provider")
+		if err != nil {
+			return UninstallResult{}, err
+		}
+		result.Applied += providerResult.Applied
+		if providerResult.VerifyStatus == sddruntime.StatusFail || result.VerifyStatus == "" {
+			result.VerifyStatus = providerResult.VerifyStatus
+		}
+	}
+	if err := e.ledger.remove(); err != nil {
+		return UninstallResult{}, NewLifecycleError("ledger_cleanup_failed", "", "logical", "cleanup", "remove ledger manually and retry", err)
+	}
+	result.LedgerRemoved = true
+	return result, nil
+}
+
+func (e *Engine) uninstallProvider(provider, mode string) (UninstallResult, error) {
 	adapter, ok := e.adapters[provider]
 	if !ok {
 		return UninstallResult{}, fmt.Errorf("unsupported provider %q", provider)
