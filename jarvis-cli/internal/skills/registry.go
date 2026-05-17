@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -34,6 +35,17 @@ type Skill struct {
 
 	// Path is the relative path within embed/skills/ (e.g. "sdd-verify/SKILL.md").
 	Path string
+}
+
+// RegistryRow is the deterministic, registry-ready view of a skill.
+type RegistryRow struct {
+	ID           string
+	Name         string
+	Description  string
+	Trigger      string
+	Path         string
+	CompactRules string
+	IsCore       bool
 }
 
 // coreSkillIDs lists the skills that are always installed.
@@ -75,6 +87,29 @@ var skillMeta = map[string]struct{ name, description, trigger string }{
 	"skill-creator":        {name: "Skill Creator", description: "Create LLM-first skills with valid frontmatter, local references, and concise trigger-rich descriptions", trigger: "When creating new skills, agent instructions, or documenting AI usage patterns"},
 	"skill-registry":       {name: "Skill Registry", description: "Create or update the skill registry for the current project", trigger: "When user says update skills, skill registry, or after installing skills"},
 	"qa-checklist":         {name: "QA Checklist", description: "On-demand QA checklist and test checklist planning with manual QA and automated test recommendations", trigger: "When user asks for batería de pruebas, checklist de pruebas, qué pruebas debería hacer, QA checklist, or test checklist"},
+}
+
+var compactRuleMeta = map[string]string{
+	"sdd-workflow":         "Use the SDD phase order and persist phase artifacts.",
+	"hive":                 "Search memory for past context and save significant discoveries.",
+	"sdd-explore":          "Clarify goals and tradeoffs before committing to a change.",
+	"sdd-propose":          "Define intent, scope, risks, and success criteria before implementation.",
+	"sdd-spec":             "Write behavior as requirements with concrete scenarios.",
+	"sdd-design":           "Record architecture decisions, alternatives, and affected files.",
+	"sdd-tasks":            "Break implementation into reviewable, testable work units.",
+	"sdd-apply":            "Follow assigned tasks, specs, design, and Strict TDD when enabled.",
+	"sdd-verify":           "Run verification against specs, tasks, and project test commands.",
+	"sdd-archive":          "Archive completed changes by syncing accepted spec deltas.",
+	"sdd-init":             "Detect stack, testing capabilities, and project conventions.",
+	"go-testing":           "Use gofmt, targeted go test cycles, and go vet for confidence.",
+	"branch-pr":            "Check for an issue first, create a review-focused PR from a focused branch, keep a clean diff, and include verification evidence.",
+	"issue-creation":       "Search existing issues first, define the problem, clear scope, acceptance criteria, and labels before creating the GitHub issue.",
+	"chained-pr":           "Split work over 400 lines into stacked PRs or chained review slices, each with one focused goal, tests, and a clear rollback boundary.",
+	"work-unit-commits":    "Plan commits as reviewable work units, keep tests and docs with code, avoid mixed concerns, and preserve a clean review narrative.",
+	"comment-writer":       "Write warm and direct comments: state the decision, explain the reason, give one actionable next step, and avoid vague praise or blame.",
+	"cognitive-doc-design": "Structure docs around audience, task, and decision points; reduce reader cognitive load with clear headings, examples, and review-ready summaries.",
+	"skill-registry":       "Refresh the registry when installed skills or conventions change.",
+	"skill-creator":        "Create trigger-rich LLM skills with valid frontmatter and local references.",
 }
 
 // ListSkills returns all available embedded skills with their metadata and content.
@@ -140,6 +175,42 @@ func ListSkills(fsys embed.FS) ([]Skill, error) {
 	}
 
 	return skills, nil
+}
+
+// RegistryRows returns skills sorted by ID with concise registry metadata.
+func RegistryRows(skills []Skill) []RegistryRow {
+	rows := make([]RegistryRow, 0, len(skills))
+	seen := make(map[string]bool, len(skills))
+	for _, skill := range skills {
+		if seen[skill.ID] {
+			continue
+		}
+		seen[skill.ID] = true
+		rows = append(rows, RegistryRow{
+			ID:           skill.ID,
+			Name:         skill.Name,
+			Description:  skill.Description,
+			Trigger:      skill.Trigger,
+			Path:         skill.Path,
+			CompactRules: compactRuleFor(skill),
+			IsCore:       skill.IsCore,
+		})
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].ID < rows[j].ID
+	})
+	return rows
+}
+
+func compactRuleFor(skill Skill) string {
+	if rule, ok := compactRuleMeta[skill.ID]; ok {
+		return rule
+	}
+	if skill.Trigger != "" {
+		return "Load when: " + skill.Trigger + "."
+	}
+	return "Read this skill when its topic matches the current task."
 }
 
 // GetSkill returns a single skill by ID, or an error if not found.

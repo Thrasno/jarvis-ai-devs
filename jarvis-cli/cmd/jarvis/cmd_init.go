@@ -7,7 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/project"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/skills"
 )
 
 var initCmd = &cobra.Command{
@@ -35,7 +37,12 @@ any custom skills you have added.`,
 func runInit(dir string) error {
 	projectName := project.DetectProject(dir)
 	stack := project.DetectStack(dir)
-	skills := project.SkillsForStack(stack)
+	suggestedSkills := project.SkillsForStack(stack)
+	embeddedSkills, err := skills.ListSkills(jarvis.SkillsFS)
+	if err != nil {
+		return fmt.Errorf("list embedded skills: %w", err)
+	}
+	registrySkills := toProjectRegistrySkills(skills.RegistryRows(embeddedSkills))
 
 	fmt.Println("Detecting project...")
 	fmt.Printf("✓ Project: %s\n", projectName)
@@ -43,13 +50,29 @@ func runInit(dir string) error {
 	fmt.Println()
 	fmt.Println("Scaffolding .jarvis/...")
 
-	if err := project.WriteRegistry(dir, projectName, stack, skills); err != nil {
+	if err := project.WriteRegistry(dir, projectName, stack, suggestedSkills, registrySkills); err != nil {
 		return fmt.Errorf("write skill registry: %w", err)
 	}
 
 	fmt.Println("✓ Skill registry created: .jarvis/skill-registry.md")
-	fmt.Printf("✓ Skills:  %s\n", strings.Join(skills, ", "))
+	fmt.Printf("✓ Skills:  %s\n", strings.Join(suggestedSkills, ", "))
 	fmt.Println()
 	fmt.Println("commit .jarvis/ to share with your team")
 	return nil
+}
+
+func toProjectRegistrySkills(rows []skills.RegistryRow) []project.RegistrySkill {
+	registrySkills := make([]project.RegistrySkill, 0, len(rows))
+	for _, row := range rows {
+		registrySkills = append(registrySkills, project.RegistrySkill{
+			ID:           row.ID,
+			Name:         row.Name,
+			Description:  row.Description,
+			Trigger:      row.Trigger,
+			Path:         row.Path,
+			CompactRules: row.CompactRules,
+			IsCore:       row.IsCore,
+		})
+	}
+	return registrySkills
 }

@@ -220,6 +220,140 @@ func TestRegistry_ComplementarySkillsAreShippedAndDiscoverable(t *testing.T) {
 	}
 }
 
+func TestRegistryRows_WorkflowSkillsExposeRegistryMetadata(t *testing.T) {
+	skills, err := ListSkills(jarvis.SkillsFS)
+	if err != nil {
+		t.Fatalf("ListSkills: %v", err)
+	}
+
+	rows := RegistryRows(skills)
+	byID := make(map[string]RegistryRow, len(rows))
+	for _, row := range rows {
+		if _, exists := byID[row.ID]; exists {
+			t.Fatalf("duplicate registry row for skill %q", row.ID)
+		}
+		byID[row.ID] = row
+	}
+
+	for _, id := range []string{"work-unit-commits", "chained-pr", "cognitive-doc-design", "branch-pr", "issue-creation", "comment-writer"} {
+		row, exists := byID[id]
+		if !exists {
+			t.Fatalf("expected workflow skill %q to be registry-ready", id)
+		}
+		if row.Name == "" || row.Trigger == "" || row.Path == "" || row.CompactRules == "" {
+			t.Fatalf("workflow skill %q missing registry metadata: %+v", id, row)
+		}
+		if !strings.HasSuffix(row.Path, "/SKILL.md") {
+			t.Fatalf("workflow skill %q path must point at packaged SKILL.md, got %q", id, row.Path)
+		}
+	}
+}
+
+func TestRegistryRows_WorkflowSkillsExposeActionableCompactRules(t *testing.T) {
+	skills, err := ListSkills(jarvis.SkillsFS)
+	if err != nil {
+		t.Fatalf("ListSkills: %v", err)
+	}
+
+	rows := RegistryRows(skills)
+	byID := make(map[string]RegistryRow, len(rows))
+	for _, row := range rows {
+		byID[row.ID] = row
+	}
+
+	wantPhrases := map[string][]string{
+		"work-unit-commits":    {"Plan commits", "reviewable work units", "keep tests and docs with code"},
+		"chained-pr":           {"Split work over 400 lines", "stacked PRs", "review slices"},
+		"cognitive-doc-design": {"Structure docs", "reader cognitive load", "audience"},
+		"branch-pr":            {"Check for an issue first", "review-focused PR", "clean diff"},
+		"issue-creation":       {"Search existing issues first", "acceptance criteria", "clear scope"},
+		"comment-writer":       {"warm and direct", "state the decision", "actionable next step"},
+	}
+
+	for id, phrases := range wantPhrases {
+		row, exists := byID[id]
+		if !exists {
+			t.Fatalf("expected workflow skill %q to be registry-ready", id)
+		}
+		if len(row.CompactRules) < 90 {
+			t.Fatalf("compact rules for %q are too thin: %q", id, row.CompactRules)
+		}
+		for _, phrase := range phrases {
+			if !strings.Contains(row.CompactRules, phrase) {
+				t.Fatalf("compact rules for %q must contain actionable phrase %q, got %q", id, phrase, row.CompactRules)
+			}
+		}
+	}
+}
+
+func TestRegistryRows_DoesNotDuplicateSkillCreator(t *testing.T) {
+	skills, err := ListSkills(jarvis.SkillsFS)
+	if err != nil {
+		t.Fatalf("ListSkills: %v", err)
+	}
+
+	rows := RegistryRows(skills)
+	count := 0
+	for _, row := range rows {
+		if row.ID == "skill-creator" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one skill-creator registry row, got %d", count)
+	}
+}
+
+func TestRegistryRows_UsesDeterministicFallbackCompactRules(t *testing.T) {
+	rows := RegistryRows([]Skill{
+		{ID: "unknown-with-trigger", Name: "Unknown With Trigger", Trigger: "When a custom topic appears", Path: "unknown-with-trigger/SKILL.md"},
+		{ID: "unknown-without-trigger", Name: "Unknown Without Trigger", Path: "unknown-without-trigger/SKILL.md"},
+	})
+
+	if len(rows) != 2 {
+		t.Fatalf("expected two registry rows, got %d", len(rows))
+	}
+
+	byID := make(map[string]RegistryRow, len(rows))
+	for _, row := range rows {
+		byID[row.ID] = row
+	}
+
+	if got, want := byID["unknown-with-trigger"].CompactRules, "Load when: When a custom topic appears."; got != want {
+		t.Fatalf("trigger fallback compact rule = %q, want %q", got, want)
+	}
+	if got, want := byID["unknown-without-trigger"].CompactRules, "Read this skill when its topic matches the current task."; got != want {
+		t.Fatalf("default fallback compact rule = %q, want %q", got, want)
+	}
+}
+
+func TestGetSkillReturnsEmbeddedSkillByID(t *testing.T) {
+	skill, err := GetSkill(jarvis.SkillsFS, "go-testing")
+	if err != nil {
+		t.Fatalf("GetSkill existing skill: %v", err)
+	}
+
+	if skill.ID != "go-testing" {
+		t.Fatalf("skill ID = %q, want %q", skill.ID, "go-testing")
+	}
+	if skill.Name != "Go Testing" {
+		t.Fatalf("skill name = %q, want %q", skill.Name, "Go Testing")
+	}
+	if skill.Path != "go-testing/SKILL.md" {
+		t.Fatalf("skill path = %q, want %q", skill.Path, "go-testing/SKILL.md")
+	}
+}
+
+func TestGetSkillReturnsNotFoundError(t *testing.T) {
+	_, err := GetSkill(jarvis.SkillsFS, "missing-skill")
+	if err == nil {
+		t.Fatal("expected not found error for missing skill")
+	}
+	if !strings.Contains(err.Error(), `skill "missing-skill" not found`) {
+		t.Fatalf("expected missing skill error, got %v", err)
+	}
+}
+
 // TestRegistry_TriggerFieldPopulated verifies that Trigger field is populated
 // for skills with metadata.
 func TestRegistry_TriggerFieldPopulated(t *testing.T) {

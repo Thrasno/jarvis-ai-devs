@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -26,6 +27,16 @@ const (
 type RegistryPaths struct {
 	WritePath string
 	ReadPaths []string
+}
+
+type RegistrySkill struct {
+	ID           string
+	Name         string
+	Description  string
+	Trigger      string
+	Path         string
+	CompactRules string
+	IsCore       bool
 }
 
 func CanonicalRegistryPaths() RegistryPaths {
@@ -54,7 +65,7 @@ func ResolveRegistryReadPath(dir string) (string, RegistrySource, error) {
 // The Suggested Skills section is always regenerated from the provided skills list.
 // The Custom Skills section is preserved as-is if it already exists.
 // The write is atomic: a .tmp file is written first, then renamed into place.
-func WriteRegistry(dir, projectName string, stack Stack, skills []string) error {
+func WriteRegistry(dir, projectName string, stack Stack, skills []string, richSkills ...[]RegistrySkill) error {
 	paths := CanonicalRegistryPaths()
 	registryPath := filepath.Join(dir, paths.WritePath)
 
@@ -62,13 +73,23 @@ func WriteRegistry(dir, projectName string, stack Stack, skills []string) error 
 		return fmt.Errorf("create .jarvis dir: %w", err)
 	}
 
-	// Preserve custom skills from an existing file, if any.
+	// Preserve custom skills from an existing canonical file, or import legacy
+	// custom skills only when the canonical registry does not exist yet.
 	customSection := defaultCustom
 	if existing, err := os.ReadFile(registryPath); err == nil {
 		customSection = extractCustomSection(string(existing))
+	} else if os.IsNotExist(err) {
+		legacyRegistryPath := filepath.Join(dir, legacyPathATL)
+		if existing, err := os.ReadFile(legacyRegistryPath); err == nil {
+			customSection = extractCustomSection(string(existing))
+		}
 	}
 
-	content := buildRegistryContent(projectName, stack, skills, customSection)
+	var registrySkills []RegistrySkill
+	if len(richSkills) > 0 {
+		registrySkills = richSkills[0]
+	}
+	content := buildRegistryContent(projectName, stack, skills, registrySkills, customSection)
 
 	// Atomic write: write to .tmp, then rename.
 	tmp := registryPath + ".tmp"
@@ -93,7 +114,7 @@ func extractCustomSection(content string) string {
 }
 
 // buildRegistryContent generates the full skill-registry.md content.
-func buildRegistryContent(projectName string, stack Stack, skills []string, customSection string) string {
+func buildRegistryContent(projectName string, stack Stack, skills []string, richSkills []RegistrySkill, customSection string) string {
 	var sb strings.Builder
 
 	sb.WriteString("# Skill Registry — ")
@@ -101,16 +122,80 @@ func buildRegistryContent(projectName string, stack Stack, skills []string, cust
 	sb.WriteString("\n\n")
 	sb.WriteString("**Stack**: ")
 	sb.WriteString(string(stack))
+	sb.WriteString("\n")
+	sb.WriteString("Canonical registry path: `.jarvis/skill-registry.md`")
 	sb.WriteString("\n\n---\n\n")
 	sb.WriteString(suggestedHeader)
 	sb.WriteString("\n\n")
 	for _, skill := range skills {
-		sb.WriteString("- **")
+		sb.WriteString("- `")
 		sb.WriteString(skill)
-		sb.WriteString("**\n")
+		sb.WriteString("`\n")
 	}
+
+	rows := sortedRegistrySkills(richSkills)
+	if len(rows) > 0 {
+		sb.WriteString("\n---\n\n")
+		sb.WriteString("## Installed Skills\n\n")
+		sb.WriteString("| Skill | Trigger | Path | Type |\n")
+		sb.WriteString("|-------|---------|------|------|\n")
+		for _, skill := range rows {
+			typeLabel := "optional"
+			if skill.IsCore {
+				typeLabel = "core"
+			}
+			sb.WriteString("| ")
+			sb.WriteString(registryDisplayName(skill))
+			sb.WriteString(" | ")
+			sb.WriteString(escapeTableCell(skill.Trigger))
+			sb.WriteString(" | `")
+			sb.WriteString(skill.Path)
+			sb.WriteString("` | ")
+			sb.WriteString(typeLabel)
+			sb.WriteString(" |\n")
+		}
+
+		sb.WriteString("\n---\n\n")
+		sb.WriteString("## Compact Rules\n\n")
+		for _, skill := range rows {
+			if skill.CompactRules == "" {
+				continue
+			}
+			sb.WriteString("- **")
+			sb.WriteString(skill.ID)
+			sb.WriteString("**: ")
+			sb.WriteString(skill.CompactRules)
+			sb.WriteString("\n")
+		}
+	}
+
+	sb.WriteString("\n---\n\n")
+	sb.WriteString("## Project Conventions\n\n")
+	sb.WriteString("- Generated sections are deterministic; customize only from `## Custom Skills` onward.\n")
+	sb.WriteString("- Keep `.jarvis/skill-registry.md` committed so the team resolves the same skills.\n")
+	sb.WriteString("- Re-run `jarvis init` after changing stack or installed skill metadata.\n")
+
 	sb.WriteString("\n---\n\n")
 	sb.WriteString(customSection)
 
 	return sb.String()
+}
+
+func sortedRegistrySkills(skills []RegistrySkill) []RegistrySkill {
+	rows := append([]RegistrySkill(nil), skills...)
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].ID < rows[j].ID
+	})
+	return rows
+}
+
+func registryDisplayName(skill RegistrySkill) string {
+	if skill.Name != "" {
+		return escapeTableCell(skill.Name)
+	}
+	return escapeTableCell(skill.ID)
+}
+
+func escapeTableCell(value string) string {
+	return strings.ReplaceAll(value, "|", "\\|")
 }
