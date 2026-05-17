@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/project"
+	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/sddruntime"
 )
 
 const sharedPhaseCommonPath = "embed/skills/_shared/sdd-phase-common.md"
@@ -358,6 +360,228 @@ func TestCatalogContract_EmbeddedDocsUseJarvisRegistryAsCanonicalPath(t *testing
 	}
 	if checked == 0 {
 		t.Fatal("expected at least one explicit legacy .atl/skill-registry.md fallback reference to be covered")
+	}
+}
+
+func TestCatalogContract_EmbeddedProtocolsUsePathInjectedSkillResolution(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		path      string
+		required  []string
+		forbidden []string
+	}{
+		{
+			path: "embed/skills/_shared/skill-resolver.md",
+			required: []string{
+				"## Skills to load before work",
+				"exact `SKILL.md` paths",
+				"paths-injected",
+				".atl/skill-registry.md` only as a legacy read fallback",
+			},
+			forbidden: []string{"Project Standards (auto-resolved)", "Copy matching compact rule blocks"},
+		},
+		{
+			path: "embed/skills/_shared/sdd-phase-common.md",
+			required: []string{
+				"## Skills to load before work",
+				"read those exact `SKILL.md` files before task-specific work",
+				"paths-injected",
+			},
+			forbidden: []string{"Project Standards (auto-resolved)", "Do NOT read any SKILL.md files", "`injected`"},
+		},
+		{
+			path: "embed/orchestrator/sdd-orchestrator.md",
+			required: []string{
+				"## Skills to load before work",
+				"exact `SKILL.md` paths",
+				"paths-injected",
+			},
+			forbidden: []string{"Project Standards (auto-resolved)", "injects compact rules"},
+		},
+		{
+			path: "embed/skills/judgment-day/SKILL.md",
+			required: []string{
+				"## Skills to load before work",
+				"exact `SKILL.md` paths",
+				"paths-injected",
+			},
+			forbidden: []string{"Project Standards", "compact rules"},
+		},
+		{
+			path: "embed/skills/judgment-day/references/prompts-and-formats.md",
+			required: []string{
+				"## Skills to load before work",
+				"/absolute/or/repo-resolved/path/to/",
+				"Skill Resolution: {paths-injected|fallback-registry|fallback-path|none}",
+			},
+			forbidden: []string{"Project Standards (auto-resolved)", "{injected|fallback-registry"},
+		},
+		{
+			path: "internal/config/layer1.md",
+			required: []string{
+				"## Skills to load before work",
+				"orchestrator resolves skills from the registry",
+				"passes exact `SKILL.md` paths",
+				"Sub-agents read those exact files before task-specific work",
+				"skill_resolution: paths-injected",
+			},
+			forbidden: []string{"Project Standards (auto-resolved)", "cache compact rules", "Sub-agents do NOT read SKILL.md files"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.path, func(t *testing.T) {
+			content := readLocalOrEmbeddedAsset(t, tc.path)
+
+			for _, snippet := range tc.required {
+				if !strings.Contains(content, snippet) {
+					t.Fatalf("expected %s to contain %q", tc.path, snippet)
+				}
+			}
+
+			for _, snippet := range tc.forbidden {
+				if strings.Contains(content, snippet) {
+					t.Fatalf("expected %s not to contain legacy path-injection drift %q", tc.path, snippet)
+				}
+			}
+		})
+	}
+}
+
+func TestCatalogContract_RegistryPromptAndProtocolStayPathInjected(t *testing.T) {
+	registryPaths := project.CanonicalRegistryPaths()
+	contract := sddruntime.DefaultPromptContract("opencode", "sdd-apply")
+	sources, err := contract.OrderedRequiredSources()
+	if err != nil {
+		t.Fatalf("OrderedRequiredSources(): %v", err)
+	}
+
+	var registrySource sddruntime.PromptSource
+	for _, source := range sources {
+		if source.Layer == sddruntime.LayerRegistry {
+			registrySource = source
+			break
+		}
+	}
+	if registrySource.ID == "" {
+		t.Fatal("expected registry source in default prompt contract")
+	}
+	if registrySource.ID != sddruntime.RegistrySkillIndexSourceID {
+		t.Fatalf("registry source ID = %q, want %q", registrySource.ID, sddruntime.RegistrySkillIndexSourceID)
+	}
+	if registrySource.Path != registryPaths.WritePath {
+		t.Fatalf("registry source path = %q, want canonical registry path %q", registrySource.Path, registryPaths.WritePath)
+	}
+	layerName := string(registrySource.Layer)
+	if strings.Contains(layerName, "rule") || !strings.Contains(layerName, "skill_index") {
+		t.Fatalf("registry prompt layer must describe the skill-index contract, got %q", layerName)
+	}
+
+	skills, err := ListSkills(jarvis.SkillsFS)
+	if err != nil {
+		t.Fatalf("ListSkills(): %v", err)
+	}
+	rows := RegistryRows(skills)
+	if len(rows) == 0 {
+		t.Fatal("expected embedded skills to produce registry rows")
+	}
+
+	projectRows := make([]project.RegistrySkill, 0, len(rows))
+	for _, row := range rows {
+		projectRows = append(projectRows, project.RegistrySkill{
+			ID:           row.ID,
+			Name:         row.Name,
+			Description:  row.Description,
+			Trigger:      row.Trigger,
+			Scope:        row.Scope,
+			Path:         row.Path,
+			CompactRules: row.CompactRules,
+		})
+	}
+
+	dir := t.TempDir()
+	if err := project.WriteRegistry(dir, "contract-project", project.StackGo, []string{"sdd-workflow", "hive", "go-testing"}, projectRows); err != nil {
+		t.Fatalf("WriteRegistry(): %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, registryPaths.WritePath))
+	if err != nil {
+		t.Fatalf("read generated registry: %v", err)
+	}
+	registry := string(content)
+
+	required := []string{
+		"Canonical registry path: `.jarvis/skill-registry.md`",
+		"| Skill | Trigger / Description | Scope | Path |",
+		"| SDD Apply | When implementing tasks — Implement tasks following specs and design; supports Strict TDD mode | core | `sdd-apply/SKILL.md` |",
+		"| Go Testing | When writing Go tests, using teatest, or adding test coverage — Go testing patterns including Bubbletea TUI testing | optional | `go-testing/SKILL.md` |",
+		"## Compact Rules (Transitional Metadata)",
+		"Compact rules are compatibility metadata; the skill index path rows above are the primary instruction contract.",
+	}
+	for _, snippet := range required {
+		if !strings.Contains(registry, snippet) {
+			t.Fatalf("expected generated registry to contain %q, got:\n%s", snippet, registry)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"| Skill | Trigger | Path | Type |",
+		"## Compact Rules\n",
+		"Project Standards (auto-resolved)",
+		"Sub-agents do NOT read SKILL.md files",
+	} {
+		if strings.Contains(registry, forbidden) {
+			t.Fatalf("generated registry drifted back to legacy injection contract %q in:\n%s", forbidden, registry)
+		}
+	}
+}
+
+func TestCatalogContract_SkillRegistryDocsAreIndexFirstAndPathFirst(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		path      string
+		required  []string
+		forbidden []string
+	}{
+		{
+			path: "embed/skills/skill-registry/SKILL.md",
+			required: []string{
+				"index-first",
+				"path-first",
+				"| Skill | Trigger / Description | Scope | Path |",
+				"## Skills to load before work",
+				"Compact rules are transitional compatibility metadata",
+			},
+			forbidden: []string{"Project Standards (auto-resolved)", "Sub-agents do NOT read", "compact rules are the MOST IMPORTANT"},
+		},
+		{
+			path: "embed/skills/sdd-init/references/init-details.md",
+			required: []string{
+				"index-first and path-first",
+				"Skill, Trigger / Description, Scope, and Path",
+				"exact `SKILL.md` path",
+			},
+			forbidden: []string{"compact rules as 5-15 actionable lines", "Sub-agents do NOT read"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.path, func(t *testing.T) {
+			content := readLocalOrEmbeddedAsset(t, tc.path)
+
+			for _, snippet := range tc.required {
+				if !strings.Contains(content, snippet) {
+					t.Fatalf("expected %s to contain %q", tc.path, snippet)
+				}
+			}
+
+			for _, snippet := range tc.forbidden {
+				if strings.Contains(content, snippet) {
+					t.Fatalf("expected %s not to contain registry contract drift %q", tc.path, snippet)
+				}
+			}
+		})
 	}
 }
 
