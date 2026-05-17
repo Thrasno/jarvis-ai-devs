@@ -306,6 +306,84 @@ func TestCatalogContract_EmbeddedProductAssetsAvoidLocalRuntimeSkillPaths(t *tes
 	}
 }
 
+func TestCatalogContract_EmbeddedDocsUseJarvisRegistryAsCanonicalPath(t *testing.T) {
+	t.Parallel()
+
+	requiredCanonicalReferences := []string{
+		"embed/skills/skill-registry/SKILL.md",
+		"embed/skills/_shared/skill-resolver.md",
+		"embed/skills/_shared/sdd-phase-common.md",
+		"embed/skills/sdd-init/SKILL.md",
+		"embed/skills/sdd-init/references/init-details.md",
+		"embed/orchestrator/sdd-orchestrator.md",
+	}
+	for _, filePath := range requiredCanonicalReferences {
+		content := readLocalOrEmbeddedAsset(t, filePath)
+		if !strings.Contains(content, ".jarvis/skill-registry.md") {
+			t.Fatalf("expected %s to prefer .jarvis/skill-registry.md", filePath)
+		}
+	}
+
+	resolver := readLocalOrEmbeddedAsset(t, "embed/skills/_shared/skill-resolver.md")
+	if !strings.Contains(resolver, ".atl/skill-registry.md") || !strings.Contains(strings.ToLower(resolver), "legacy read fallback") {
+		t.Fatal("expected shared skill resolver to document .atl/skill-registry.md only as a legacy read fallback")
+	}
+
+	checked := 0
+	err := fs.WalkDir(jarvis.SkillsFS, "embed", func(filePath string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() || !strings.HasSuffix(filePath, ".md") {
+			return walkErr
+		}
+
+		content := readEmbeddedSkillAsset(t, filePath)
+		if !strings.Contains(content, ".atl/skill-registry.md") {
+			return nil
+		}
+
+		checked++
+		for _, line := range strings.Split(content, "\n") {
+			if !strings.Contains(line, ".atl/skill-registry.md") {
+				continue
+			}
+			lowerLine := strings.ToLower(line)
+			if !strings.Contains(lowerLine, "legacy") || !strings.Contains(lowerLine, "fallback") {
+				t.Fatalf("expected %s to mention .atl/skill-registry.md only as explicit legacy fallback, got line %q", filePath, line)
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir(embed): %v", err)
+	}
+	if checked == 0 {
+		t.Fatal("expected at least one explicit legacy .atl/skill-registry.md fallback reference to be covered")
+	}
+}
+
+func TestCatalogContract_SkillRegistryDoesNotIgnoreJarvisDirectory(t *testing.T) {
+	t.Parallel()
+
+	content := readLocalOrEmbeddedAsset(t, "embed/skills/skill-registry/SKILL.md")
+	lowerContent := strings.ToLower(content)
+
+	for _, forbidden := range []string{
+		"add `.jarvis/` to the project's `.gitignore`",
+		"add .jarvis/ to the project's .gitignore",
+		"ignore `.jarvis/`",
+		"ignore .jarvis/",
+	} {
+		if strings.Contains(lowerContent, forbidden) {
+			t.Fatalf("skill-registry must not tell agents to ignore .jarvis/: found %q", forbidden)
+		}
+	}
+
+	if !strings.Contains(content, ".jarvis/skill-registry.md`) is intended to be committed/shared") &&
+		!strings.Contains(content, ".jarvis/skill-registry.md` is intended to be committed/shared") {
+		t.Fatal("expected skill-registry to state .jarvis/skill-registry.md is committed/shared")
+	}
+}
+
 func TestCatalogContract_EmbeddedSkillMarkdownReferencesResolve(t *testing.T) {
 	t.Parallel()
 
@@ -419,11 +497,44 @@ func TestCatalogContract_ComplementarySkillsMatchUpstreamContract(t *testing.T) 
 				"## PR and Review Docs",
 			},
 		},
+		{
+			name: "branch-pr",
+			path: "embed/skills/branch-pr/SKILL.md",
+			required: []string{
+				"name: branch-pr",
+				"Create Gentle AI pull requests with issue-first checks",
+				"Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/branch-pr/SKILL.md",
+				"adapted for Jarvis packaging",
+				"Every PR MUST link an approved issue",
+				"No `Co-Authored-By` trailers",
+			},
+		},
+		{
+			name: "issue-creation",
+			path: "embed/skills/issue-creation/SKILL.md",
+			required: []string{
+				"name: issue-creation",
+				"Create Gentle AI issues with issue-first checks",
+				"Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/issue-creation/SKILL.md",
+				"adapted for Jarvis packaging",
+				"Every issue gets `status:needs-review` automatically",
+				"A maintainer MUST add `status:approved`",
+			},
+		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			content := readEmbeddedSkillAsset(t, tc.path)
+			if _, err := fs.Stat(jarvis.SkillsFS, tc.path); err != nil {
+				t.Fatalf("expected workflow skill path %s to be embedded: %v", tc.path, err)
+			}
+			if !strings.HasPrefix(content, "---\n") || !strings.Contains(content, "\n---\n") {
+				t.Fatalf("expected %s to include YAML frontmatter", tc.path)
+			}
+			if !strings.Contains(content, "license: Apache-2.0") {
+				t.Fatalf("expected %s to preserve Apache-2.0 frontmatter license", tc.path)
+			}
 
 			sourceStamp := fmt.Sprintf("Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/%s/SKILL.md", tc.name)
 			if !strings.Contains(content, sourceStamp) {

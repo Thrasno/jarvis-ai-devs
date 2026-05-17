@@ -1,13 +1,15 @@
 ---
 name: branch-pr
 description: >
-  PR creation workflow for Agent Teams Lite following the issue-first enforcement system.
+  Create Gentle AI pull requests with issue-first checks for Jarvis-packaged workflows.
   Trigger: When creating a pull request, opening a PR, or preparing changes for review.
 license: Apache-2.0
 metadata:
   author: gentleman-programming
   version: "2.0"
 ---
+
+<!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/branch-pr/SKILL.md; adapted for Jarvis packaging. -->
 
 ## When to Use
 

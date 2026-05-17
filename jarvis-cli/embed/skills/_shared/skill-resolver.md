@@ -12,6 +12,7 @@ First, search Hive for the registry:
 
 If Hive is unavailable or the registry is not found in Hive:
 - Fallback: read `.jarvis/skill-registry.md` from the project root.
+- If `.jarvis/skill-registry.md` does not exist, read `.atl/skill-registry.md` only as a legacy read fallback.
 
 If neither source is available:
 - Warn the user: "No skill registry found. Sub-agents will not receive project-specific standards."
@@ -44,6 +45,8 @@ If the orchestrator receives `fallback-*` or `none` in any return value: re-read
 
 ## Registry Location
 
-`.jarvis/skill-registry.md` in the project root — NOT `.atl/` or any other path.
+`.jarvis/skill-registry.md` in the project root is the canonical registry path.
+
+If the canonical registry does not exist, `.atl/skill-registry.md` is allowed only as a legacy read fallback. Do not use `.atl/skill-registry.md` as the canonical or write path.
 
 The registry is written by `sdd-init` during project initialization. It is infrastructure, not an SDD artifact.

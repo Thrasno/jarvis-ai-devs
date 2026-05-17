@@ -1,7 +1,7 @@
 ---
 name: skill-registry
 description: >
-  Create or update the skill registry for the current project. Scans user skills and project conventions, writes .atl/skill-registry.md, and saves to Hive if available.
+  Create or update the skill registry for the current project. Scans user skills and project conventions, writes .jarvis/skill-registry.md, and saves to Hive if available.
   Trigger: When user says "update skills", "skill registry", "actualizar skills", "update registry", or after installing/removing skills.
 license: MIT
 metadata:
@@ -144,10 +144,10 @@ Read the convention files listed above for project-specific patterns and rules. 
 
 #### A. Always write the file (guaranteed availability):
 
-Create the `.atl/` directory in the project root if it doesn't exist, then write:
+Create the `.jarvis/` directory in the project root if it doesn't exist, then write:
 
 ```
-.atl/skill-registry.md
+.jarvis/skill-registry.md
 ```
 
 #### B. If Hive is available, also save to Hive (cross-session bonus):
@@ -170,7 +170,7 @@ mem_save(
 ## Skill Registry Updated
 
 **Project**: {project name}
-**Location**: .atl/skill-registry.md
+**Location**: .jarvis/skill-registry.md
 **Hive**: {saved / not available}
 
 ### User Skills Found
@@ -191,11 +191,11 @@ To update after installing/removing skills, run this again.
 
 ## Rules
 
-- ALWAYS write `.atl/skill-registry.md` regardless of any SDD persistence mode
+- ALWAYS write `.jarvis/skill-registry.md` regardless of any SDD persistence mode
 - ALWAYS save to Hive if the `mem_save` tool is available
 - SKIP `sdd-*`, `_shared`, and `skill-registry` directories when scanning
 - Read SKILL.md files (respecting the 200-line guard in Step 1) to generate accurate compact rules — this is a build-time cost, not a runtime cost
 - Compact rules MUST be 5-15 lines per skill — concise, actionable, no fluff
 - Include ALL convention index files found (not just the first)
 - If no skills or conventions are found, write an empty registry (so sub-agents don't waste time searching)
-- Add `.atl/` to the project's `.gitignore` if it exists and `.atl` is not already listed
+- `.jarvis/skill-registry.md` is intended to be committed/shared as the project-local team registry; legacy or local-only artifacts must not be treated as canonical

@@ -12,7 +12,7 @@ Executor boundary: every SDD phase agent is an EXECUTOR, not an orchestrator. Do
 2. If no Project Standards block was provided, check for `SKILL: Load` instructions. If present, load those exact skill files.
 3. If neither was provided, search for the skill registry as a fallback:
    a. `mcp__hive__mem_search(query: "skill-registry", project: "{project}")` — if found, `mcp__hive__mem_get_observation(id)` for full content
-   b. Fallback: read `.atl/skill-registry.md` from the project root if it exists
+   b. Fallback: read `.jarvis/skill-registry.md` from the project root if it exists; `.atl/skill-registry.md` is a legacy read fallback only
    c. From the registry's **Compact Rules** section, apply rules whose triggers match your current task.
 4. If no registry exists, proceed with your phase skill only.
 

@@ -11,6 +11,7 @@
 
 ## Skill Registry Scan Rules
 
+- Write the generated project registry to `.jarvis/skill-registry.md`; `.atl/skill-registry.md` is only a legacy read fallback if retained by runtime compatibility code.
 - Scan user skills in known provider global skill directories and project skills in workspace skill directories.
 - Skip `sdd-*`, `_shared`, and `skill-registry`; deduplicate by skill name, preferring project-level skills over user-level skills.
 - Read each selected `SKILL.md`; if it exceeds 200 lines, focus on frontmatter plus Critical Patterns / Rules sections.

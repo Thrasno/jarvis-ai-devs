@@ -210,7 +210,7 @@ The orchestrator resolves skills from the registry ONCE (at session start or fir
 
 Orchestrator skill resolution (do once per session):
 1. `mem_search(query: "skill-registry", project: "{project}")` → `mem_get_observation(id)` for full registry content
-2. Fallback: read `.atl/skill-registry.md` if Hive is not available
+2. Fallback: read `.jarvis/skill-registry.md` if Hive is not available; `.atl/skill-registry.md` is a legacy read fallback only
 3. Cache the **Compact Rules** section and the **User Skills** trigger table
 4. If no registry exists, warn user and proceed without project-specific standards
 

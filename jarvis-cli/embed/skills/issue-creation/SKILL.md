@@ -1,13 +1,15 @@
 ---
 name: issue-creation
 description: >
-  Issue creation workflow for Agent Teams Lite following the issue-first enforcement system.
+  Create Gentle AI issues with issue-first checks for Jarvis-packaged workflows.
   Trigger: When creating a GitHub issue, reporting a bug, or requesting a feature.
 license: Apache-2.0
 metadata:
   author: gentleman-programming
   version: "1.0"
 ---
+
+<!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/issue-creation/SKILL.md; adapted for Jarvis packaging. -->
 
 ## When to Use
 
@@ -23,7 +25,7 @@ Use this skill when:
 1. **Blank issues are disabled** — MUST use a template (bug report or feature request)
 2. **Every issue gets `status:needs-review` automatically** on creation
 3. **A maintainer MUST add `status:approved`** before any PR can be opened
-4. **Questions go to [Discussions](https://github.com/Gentleman-Programming/agent-teams-lite/discussions)**, not issues
+4. **Questions go to project Discussions when available**, not issues
 
 ---
 
