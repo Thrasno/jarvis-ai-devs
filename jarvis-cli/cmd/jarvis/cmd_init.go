@@ -69,6 +69,7 @@ func toProjectRegistrySkills(rows []skills.RegistryRow) []project.RegistrySkill 
 			Name:         row.Name,
 			Description:  row.Description,
 			Trigger:      row.Trigger,
+			Scope:        row.Scope,
 			Path:         row.Path,
 			CompactRules: row.CompactRules,
 			IsCore:       row.IsCore,

@@ -240,11 +240,24 @@ func TestRegistryRows_WorkflowSkillsExposeRegistryMetadata(t *testing.T) {
 		if !exists {
 			t.Fatalf("expected workflow skill %q to be registry-ready", id)
 		}
-		if row.Name == "" || row.Trigger == "" || row.Path == "" || row.CompactRules == "" {
+		if row.Name == "" || row.Trigger == "" || row.Description == "" || row.Path == "" || row.Scope == "" || row.CompactRules == "" {
 			t.Fatalf("workflow skill %q missing registry metadata: %+v", id, row)
 		}
 		if !strings.HasSuffix(row.Path, "/SKILL.md") {
 			t.Fatalf("workflow skill %q path must point at packaged SKILL.md, got %q", id, row.Path)
+		}
+		if row.Scope != "optional" {
+			t.Fatalf("workflow skill %q scope = %q, want optional", id, row.Scope)
+		}
+	}
+
+	for _, id := range []string{"sdd-workflow", "hive", "sdd-init", "sdd-apply", "sdd-verify", "sdd-archive"} {
+		row, exists := byID[id]
+		if !exists {
+			t.Fatalf("expected core skill %q to be registry-ready", id)
+		}
+		if row.Scope != "core" {
+			t.Fatalf("core skill %q scope = %q, want core", id, row.Scope)
 		}
 	}
 }

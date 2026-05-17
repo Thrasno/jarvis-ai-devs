@@ -43,6 +43,7 @@ type RegistryRow struct {
 	Name         string
 	Description  string
 	Trigger      string
+	Scope        string
 	Path         string
 	CompactRules string
 	IsCore       bool
@@ -191,6 +192,7 @@ func RegistryRows(skills []Skill) []RegistryRow {
 			Name:         skill.Name,
 			Description:  skill.Description,
 			Trigger:      skill.Trigger,
+			Scope:        scopeFor(skill.IsCore),
 			Path:         skill.Path,
 			CompactRules: compactRuleFor(skill),
 			IsCore:       skill.IsCore,
@@ -201,6 +203,13 @@ func RegistryRows(skills []Skill) []RegistryRow {
 		return rows[i].ID < rows[j].ID
 	})
 	return rows
+}
+
+func scopeFor(isCore bool) string {
+	if isCore {
+		return "core"
+	}
+	return "optional"
 }
 
 func compactRuleFor(skill Skill) string {

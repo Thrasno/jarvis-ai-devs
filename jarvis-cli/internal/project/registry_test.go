@@ -38,9 +38,11 @@ func TestWriteRegistry_FirstRun(t *testing.T) {
 		"- `hive`",
 		"- `go-testing`",
 		"## Installed Skills",
-		"| Skill | Trigger | Path | Type |",
-		"| Go Testing | When writing Go tests | `go-testing/SKILL.md` | optional |",
-		"## Compact Rules",
+		"| Skill | Trigger / Description | Scope | Path |",
+		"| Go Testing | When writing Go tests — Go testing patterns | optional | `go-testing/SKILL.md` |",
+		"| Hive Memory | Using Hive memory — Persistent memory protocol | core | `hive/SKILL.md` |",
+		"## Compact Rules (Transitional Metadata)",
+		"Compact rules are compatibility metadata; the skill index path rows above are the primary instruction contract.",
 		"- **hive**: Search memory before recall",
 		"## Project Conventions",
 		"- Generated sections are deterministic; customize only from `## Custom Skills` onward.",
@@ -53,6 +55,16 @@ func TestWriteRegistry_FirstRun(t *testing.T) {
 
 	if strings.Index(content, "| Go Testing |") > strings.Index(content, "| Hive Memory |") {
 		t.Fatalf("expected installed skills to be sorted deterministically by skill ID, got:\n%s", content)
+	}
+
+	for _, forbidden := range []string{
+		"| Skill | Trigger | Path | Type |",
+		"| Go Testing | When writing Go tests | `go-testing/SKILL.md` | optional |",
+		"## Compact Rules\n",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("registry must use index-first/path-first schema, but found legacy content %q in:\n%s", forbidden, content)
+		}
 	}
 }
 
@@ -173,6 +185,36 @@ func TestWriteRegistry_ImportsLegacyCustomSectionWhenCanonicalAbsent(t *testing.
 	}
 	if strings.Contains(content, "- `old`") {
 		t.Fatalf("legacy generated suggestions must not be imported, got:\n%s", content)
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
+		t.Fatalf("legacy registry should remain read fallback only, not be removed or rewritten: %v", err)
+	}
+}
+
+func TestWriteRegistry_WritesCanonicalOnlyWhenLegacyExists(t *testing.T) {
+	dir := t.TempDir()
+	legacyPath := filepath.Join(dir, ".atl", "skill-registry.md")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	legacyBefore := "# Legacy Registry\n\n## Custom Skills\n\n- **legacy-custom**\n"
+	if err := os.WriteFile(legacyPath, []byte(legacyBefore), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteRegistry(dir, "canonical-project", StackGo, []string{"sdd-workflow"}, []RegistrySkill{{ID: "sdd-workflow", Name: "SDD Workflow", Description: "Spec-Driven Development lifecycle", Trigger: "SDD workflow phase", Path: "sdd-workflow/SKILL.md", IsCore: true}}); err != nil {
+		t.Fatalf("WriteRegistry: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, ".jarvis", "skill-registry.md")); err != nil {
+		t.Fatalf("expected canonical registry to be written: %v", err)
+	}
+	legacyAfter, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatalf("read legacy registry: %v", err)
+	}
+	if string(legacyAfter) != legacyBefore {
+		t.Fatalf("legacy registry must remain read fallback only; got %q want %q", string(legacyAfter), legacyBefore)
 	}
 }
 

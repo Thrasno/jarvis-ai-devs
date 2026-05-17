@@ -341,14 +341,23 @@ func TestRunInit_InProcess(t *testing.T) {
 	registry := string(registryData)
 	for _, want := range []string{
 		"## Installed Skills",
-		"| Skill | Trigger | Path | Type |",
-		"| Go Testing | When writing Go tests, using teatest, or adding test coverage | `go-testing/SKILL.md` | optional |",
-		"## Compact Rules",
+		"| Skill | Trigger / Description | Scope | Path |",
+		"| Go Testing | When writing Go tests, using teatest, or adding test coverage — Go testing patterns including Bubbletea TUI testing | optional | `go-testing/SKILL.md` |",
+		"## Compact Rules (Transitional Metadata)",
+		"Compact rules are compatibility metadata; the skill index path rows above are the primary instruction contract.",
 		"## Project Conventions",
 		"Canonical registry path: `.jarvis/skill-registry.md`",
 	} {
 		if !strings.Contains(registry, want) {
 			t.Fatalf("expected rich registry content %q, got:\n%s", want, registry)
+		}
+	}
+	for _, forbidden := range []string{
+		"| Skill | Trigger | Path | Type |",
+		"| Go Testing | When writing Go tests, using teatest, or adding test coverage | `go-testing/SKILL.md` | optional |",
+	} {
+		if strings.Contains(registry, forbidden) {
+			t.Fatalf("registry must not use legacy compact-rule-primary schema %q, got:\n%s", forbidden, registry)
 		}
 	}
 

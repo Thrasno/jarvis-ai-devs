@@ -34,6 +34,7 @@ type RegistrySkill struct {
 	Name         string
 	Description  string
 	Trigger      string
+	Scope        string
 	Path         string
 	CompactRules string
 	IsCore       bool
@@ -137,26 +138,24 @@ func buildRegistryContent(projectName string, stack Stack, skills []string, rich
 	if len(rows) > 0 {
 		sb.WriteString("\n---\n\n")
 		sb.WriteString("## Installed Skills\n\n")
-		sb.WriteString("| Skill | Trigger | Path | Type |\n")
-		sb.WriteString("|-------|---------|------|------|\n")
+		sb.WriteString("| Skill | Trigger / Description | Scope | Path |\n")
+		sb.WriteString("|-------|-----------------------|-------|------|\n")
 		for _, skill := range rows {
-			typeLabel := "optional"
-			if skill.IsCore {
-				typeLabel = "core"
-			}
 			sb.WriteString("| ")
 			sb.WriteString(registryDisplayName(skill))
 			sb.WriteString(" | ")
-			sb.WriteString(escapeTableCell(skill.Trigger))
+			sb.WriteString(registryTriggerDescription(skill))
+			sb.WriteString(" | ")
+			sb.WriteString(registryScope(skill))
 			sb.WriteString(" | `")
 			sb.WriteString(skill.Path)
-			sb.WriteString("` | ")
-			sb.WriteString(typeLabel)
+			sb.WriteString("`")
 			sb.WriteString(" |\n")
 		}
 
 		sb.WriteString("\n---\n\n")
-		sb.WriteString("## Compact Rules\n\n")
+		sb.WriteString("## Compact Rules (Transitional Metadata)\n\n")
+		sb.WriteString("Compact rules are compatibility metadata; the skill index path rows above are the primary instruction contract.\n\n")
 		for _, skill := range rows {
 			if skill.CompactRules == "" {
 				continue
@@ -179,6 +178,31 @@ func buildRegistryContent(projectName string, stack Stack, skills []string, rich
 	sb.WriteString(customSection)
 
 	return sb.String()
+}
+
+func registryTriggerDescription(skill RegistrySkill) string {
+	trigger := strings.TrimSpace(skill.Trigger)
+	description := strings.TrimSpace(skill.Description)
+	switch {
+	case trigger != "" && description != "":
+		return escapeTableCell(trigger + " — " + description)
+	case trigger != "":
+		return escapeTableCell(trigger)
+	case description != "":
+		return escapeTableCell(description)
+	default:
+		return ""
+	}
+}
+
+func registryScope(skill RegistrySkill) string {
+	if skill.Scope != "" {
+		return escapeTableCell(skill.Scope)
+	}
+	if skill.IsCore {
+		return "core"
+	}
+	return "optional"
 }
 
 func sortedRegistrySkills(skills []RegistrySkill) []RegistrySkill {
