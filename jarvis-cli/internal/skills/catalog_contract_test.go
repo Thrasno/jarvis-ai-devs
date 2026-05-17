@@ -376,6 +376,7 @@ func TestCatalogContract_EmbeddedProtocolsUsePathInjectedSkillResolution(t *test
 			required: []string{
 				"## Skills to load before work",
 				"exact `SKILL.md` paths",
+				"`.jarvis/skills/<skill>/SKILL.md`",
 				"paths-injected",
 				".atl/skill-registry.md` only as a legacy read fallback",
 			},
@@ -395,6 +396,7 @@ func TestCatalogContract_EmbeddedProtocolsUsePathInjectedSkillResolution(t *test
 			required: []string{
 				"## Skills to load before work",
 				"exact `SKILL.md` paths",
+				"`.jarvis/skills/<skill>/SKILL.md`",
 				"paths-injected",
 			},
 			forbidden: []string{"Project Standards (auto-resolved)", "injects compact rules"},
@@ -513,8 +515,8 @@ func TestCatalogContract_RegistryPromptAndProtocolStayPathInjected(t *testing.T)
 	required := []string{
 		"Canonical registry path: `.jarvis/skill-registry.md`",
 		"| Skill | Trigger / Description | Scope | Path |",
-		"| SDD Apply | When implementing tasks — Implement tasks following specs and design; supports Strict TDD mode | core | `sdd-apply/SKILL.md` |",
-		"| Go Testing | When writing Go tests, using teatest, or adding test coverage — Go testing patterns including Bubbletea TUI testing | optional | `go-testing/SKILL.md` |",
+		"| SDD Apply | When implementing tasks — Implement tasks following specs and design; supports Strict TDD mode | core | `.jarvis/skills/sdd-apply/SKILL.md` |",
+		"| Go Testing | When writing Go tests, using teatest, or adding test coverage — Go testing patterns including Bubbletea TUI testing | optional | `.jarvis/skills/go-testing/SKILL.md` |",
 		"## Compact Rules (Transitional Metadata)",
 		"Compact rules are compatibility metadata; the skill index path rows above are the primary instruction contract.",
 	}
@@ -526,6 +528,7 @@ func TestCatalogContract_RegistryPromptAndProtocolStayPathInjected(t *testing.T)
 
 	for _, forbidden := range []string{
 		"| Skill | Trigger | Path | Type |",
+		"| SDD Apply | When implementing tasks — Implement tasks following specs and design; supports Strict TDD mode | core | `sdd-apply/SKILL.md` |",
 		"## Compact Rules\n",
 		"Project Standards (auto-resolved)",
 		"Sub-agents do NOT read SKILL.md files",
@@ -550,6 +553,7 @@ func TestCatalogContract_SkillRegistryDocsAreIndexFirstAndPathFirst(t *testing.T
 				"index-first",
 				"path-first",
 				"| Skill | Trigger / Description | Scope | Path |",
+				".jarvis/skills/<skill>/SKILL.md",
 				"## Skills to load before work",
 				"Compact rules are transitional compatibility metadata",
 			},
@@ -560,6 +564,7 @@ func TestCatalogContract_SkillRegistryDocsAreIndexFirstAndPathFirst(t *testing.T
 			required: []string{
 				"index-first and path-first",
 				"Skill, Trigger / Description, Scope, and Path",
+				".jarvis/skills/<skill>/SKILL.md",
 				"exact `SKILL.md` path",
 			},
 			forbidden: []string{"compact rules as 5-15 actionable lines", "Sub-agents do NOT read"},

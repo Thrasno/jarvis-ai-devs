@@ -39,8 +39,8 @@ func TestWriteRegistry_FirstRun(t *testing.T) {
 		"- `go-testing`",
 		"## Installed Skills",
 		"| Skill | Trigger / Description | Scope | Path |",
-		"| Go Testing | When writing Go tests — Go testing patterns | optional | `go-testing/SKILL.md` |",
-		"| Hive Memory | Using Hive memory — Persistent memory protocol | core | `hive/SKILL.md` |",
+		"| Go Testing | When writing Go tests — Go testing patterns | optional | `.jarvis/skills/go-testing/SKILL.md` |",
+		"| Hive Memory | Using Hive memory — Persistent memory protocol | core | `.jarvis/skills/hive/SKILL.md` |",
 		"## Compact Rules (Transitional Metadata)",
 		"Compact rules are compatibility metadata; the skill index path rows above are the primary instruction contract.",
 		"- **hive**: Search memory before recall",
@@ -59,6 +59,7 @@ func TestWriteRegistry_FirstRun(t *testing.T) {
 
 	for _, forbidden := range []string{
 		"| Skill | Trigger | Path | Type |",
+		"| Go Testing | When writing Go tests — Go testing patterns | optional | `go-testing/SKILL.md` |",
 		"| Go Testing | When writing Go tests | `go-testing/SKILL.md` | optional |",
 		"## Compact Rules\n",
 	} {

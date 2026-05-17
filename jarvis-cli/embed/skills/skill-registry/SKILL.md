@@ -108,12 +108,12 @@ See `_shared/skill-resolver.md` for the full resolution protocol.
 
 | Skill | Trigger / Description | Scope | Path |
 |-------|-----------------------|-------|------|
-| {skill name} | {trigger from frontmatter} | {core or optional} | {full path to SKILL.md} |
+| {skill name} | {trigger from frontmatter} | {core or optional} | {.jarvis/skills/<skill>/SKILL.md or another loadable SKILL.md path} |
 | ... | ... | ... |
 
 ## Compact Rules
 
-Compact rules are transitional compatibility metadata only. Delegators use the skill index above for runtime path injection.
+Compact rules are transitional compatibility metadata only. Delegators use the skill index above for runtime path injection. Jarvis built-in skills are copied under `.jarvis/skills/<skill>/SKILL.md` so registry paths are project-local and readable.
 
 ### {skill-name-1}
 - Rule 1
