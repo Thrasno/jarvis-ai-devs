@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The orchestrator uses this protocol to find project-specific coding standards and inject them into sub-agent prompts BEFORE task-specific instructions. Sub-agents receive rules pre-digested — they do NOT read SKILL.md files or the registry themselves.
+The orchestrator uses this protocol to find project-specific skills and inject exact `SKILL.md` paths into sub-agent prompts BEFORE task-specific instructions. Sub-agents read the full skill files themselves before task-specific work.
 
 ## Step 1 — Find Registry
 
@@ -20,28 +20,28 @@ If neither source is available:
 
 ## Step 2 — Match Skills
 
-From the registry's Compact Rules section, match relevant rules by:
+From the registry's skill index, match relevant skills by:
 
 - **Code context**: file extensions or paths the sub-agent will touch (e.g., `.go`, `internal/agent/`, `.md`)
 - **Task context**: what actions it will perform (e.g., "review", "PR creation", "Go testing", "writing specs")
 
-Select all matching compact rule blocks.
+Select all matching skill rows and capture their exact `SKILL.md` paths.
 
-## Step 3 — Inject Compact Rules
+## Step 3 — Inject Skill Paths
 
-Copy matching compact rule blocks into the sub-agent prompt as a `## Project Standards (auto-resolved)` section. Place this section BEFORE the sub-agent's task-specific instructions.
+Copy matching exact `SKILL.md` paths into the sub-agent prompt as a `## Skills to load before work` section. Place this section BEFORE the sub-agent's task-specific instructions.
 
-The sub-agent receives rules as text, not file paths. It does NOT read SKILL.md files. It does NOT read the registry. Rules arrive pre-digested. This is compaction-safe because each delegation re-reads the registry if the cache is lost.
+The sub-agent receives file paths, reads each `SKILL.md`, and reports how paths were resolved. Compact rules may exist as transitional metadata only; they are not the authoritative instruction contract.
 
 ## Skill Resolution Feedback
 
 Every sub-agent return value MUST include a `skill_resolution` field:
-- `injected` — compact rules were successfully passed in the prompt
-- `fallback-registry` — rules came from `.jarvis/skill-registry.md` (Hive was unavailable)
+- `paths-injected` — exact `SKILL.md` paths were successfully passed in the prompt and read before work
+- `fallback-registry` — exact `SKILL.md` paths came from `.jarvis/skill-registry.md` (Hive was unavailable)
 - `fallback-path` — rules came from a direct file path fallback
 - `none` — no rules were found or injected
 
-If the orchestrator receives `fallback-*` or `none` in any return value: re-read the registry immediately and inject compact rules in all subsequent delegations. This is a self-correction mechanism — do NOT ignore fallback reports.
+If the orchestrator receives `fallback-*` or `none` in any return value: re-read the registry immediately and inject exact `SKILL.md` paths in all subsequent delegations. This is a self-correction mechanism — do NOT ignore fallback reports.
 
 ## Registry Location
 

@@ -207,7 +207,7 @@ func TestAdapters_RuntimeObservation_ParityFailureIsSymmetricForLayerRoleDrift(t
 			ManagedArtifactIDs: []string{"instructions", "orchestrator", "skills"},
 		},
 		RegistryPath:        sddruntime.DefaultContract().RegistryPath,
-		PromptSourceIDs:     []string{"layer2.persona", "layer1.behavior", "skill.sdd-orchestrator", "registry.compact-rules", "protocol.hive"},
+		PromptSourceIDs:     []string{"layer2.persona", "layer1.behavior", "skill.sdd-orchestrator", "registry.skill-index", "protocol.hive"},
 		StoreMode:           "hybrid",
 		StoreReadFrom:       []string{"hive", "openspec"},
 		StoreWriteTo:        []string{"hive", "openspec"},

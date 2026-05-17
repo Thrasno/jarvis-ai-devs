@@ -68,10 +68,14 @@ func (e *Engine) verify(provider string, bootstrapLedger bool) (VerifyResult, er
 	if err != nil {
 		return VerifyResult{}, err
 	}
+	promptSourceIDs, err := sddruntime.DefaultPromptSourceIDs(provider, "orchestrator")
+	if err != nil {
+		return VerifyResult{}, err
+	}
 	report := sddruntime.Verify(provider, sddruntime.ObservedRuntime{
 		Manifest:            sddruntime.RuntimeManifestState{Present: true, ContractVersion: sddruntime.DefaultContract().Version, ManagedArtifactIDs: []string{"instructions", "orchestrator", "skills"}},
 		RegistryPath:        sddruntime.DefaultContract().RegistryPath,
-		PromptSourceIDs:     []string{"layer1.behavior", "layer2.persona", "skill.sdd-orchestrator", "registry.compact-rules", "protocol.hive"},
+		PromptSourceIDs:     promptSourceIDs,
 		StoreMode:           string(storeContract.Mode),
 		StoreReadFrom:       storeContract.ReadFrom,
 		StoreWriteTo:        storeContract.WriteTo,

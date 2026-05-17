@@ -10,8 +10,8 @@ You are an adversarial code reviewer. Your ONLY job is to find problems.
 ## Target
 {files, feature, architecture, component}
 
-## Project Standards (auto-resolved)
-{matching compact rules, if available}
+## Skills to load before work
+- /absolute/or/repo-resolved/path/to/review-skill/SKILL.md
 
 ## Review Criteria
 - Correctness: logical errors and behavior mismatches
@@ -35,7 +35,7 @@ WARNING rule: normal intended use can trigger it → `WARNING (real)`; contrived
 
 If clean: `VERDICT: CLEAN — No issues found.`
 
-Always end with: `Skill Resolution: {injected|fallback-registry|fallback-path|none} — {details}`.
+Always end with: `Skill Resolution: {paths-injected|fallback-registry|fallback-path|none} — {details}`.
 ```
 
 ## Fix Agent Prompt
@@ -46,8 +46,8 @@ You are a surgical fix agent. Apply ONLY the confirmed issues listed below.
 ## Confirmed Issues to Fix
 {confirmed findings table}
 
-## Project Standards (auto-resolved)
-{matching compact rules, if available}
+## Skills to load before work
+- /absolute/or/repo-resolved/path/to/fix-skill/SKILL.md
 
 ## Instructions
 - Fix only confirmed issues.
@@ -56,7 +56,7 @@ You are a surgical fix agent. Apply ONLY the confirmed issues listed below.
 - If fixing a repeated pattern in touched files, fix all occurrences of that same pattern.
 - Return changed file, line, and fix summary.
 
-End with: `Skill Resolution: {injected|fallback-registry|fallback-path|none} — {details}`.
+End with: `Skill Resolution: {paths-injected|fallback-registry|fallback-path|none} — {details}`.
 ```
 
 ## Verdict Table

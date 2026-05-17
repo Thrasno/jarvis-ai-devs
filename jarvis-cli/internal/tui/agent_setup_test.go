@@ -188,7 +188,7 @@ func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
 			"layer1.behavior",
 			"layer2.persona",
 			"skill.sdd-orchestrator",
-			"registry.compact-rules",
+			"registry.skill-index",
 			"protocol.hive",
 		},
 		StoreMode:           "hybrid",
@@ -196,7 +196,7 @@ func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
 		StoreWriteTo:        []string{"hive", "openspec"},
 		ArtifactTopics:      []string{"sdd/runtime/verify"},
 		GeneralMemoryTopics: []string{"runtime/notes"},
-		ModelAssignments: assignments,
+		ModelAssignments:    assignments,
 		Artifacts: map[string]sddruntime.ObservedArtifact{
 			"instructions": {Exists: true, MarkersValid: true},
 			"orchestrator": {Exists: true},
@@ -205,10 +205,10 @@ func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
 	}
 
 	tests := []struct {
-		name          string
-		agent         *setupAgentStub
+		name           string
+		agent          *setupAgentStub
 		wantConfigured bool
-		wantErrSubstr string
+		wantErrSubstr  string
 	}{
 		{
 			name: "fails setup when owned drift is detected",
@@ -224,7 +224,7 @@ func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
 		{
 			name: "keeps setup successful for pass report",
 			agent: &setupAgentStub{
-				name:          "opencode",
+				name:           "opencode",
 				observeRuntime: passObserved,
 			},
 			wantConfigured: true,

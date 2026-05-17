@@ -108,7 +108,14 @@ Do not skip step 1. Without it, everything done before compaction is lost from m
 Model assignments and runtime ownership invariants are contract-owned and validated by `internal/sddruntime`.
 Do not duplicate phase→model tables in this file; defer to the canonical runtime contract used by setup/runtime verification.
 
-Sub-agent launch pattern: delegate reads of 4+ files, multi-file writes, and test runs to sub-agents. Resolve skills from the registry ONCE per session, cache compact rules, inject into sub-agent prompts as `## Project Standards (auto-resolved)`. Sub-agents do NOT read SKILL.md files — rules arrive pre-digested.
+Sub-agent launch pattern: delegate reads of 4+ files, multi-file writes, and test runs to sub-agents. The orchestrator resolves skills from the registry and passes exact `SKILL.md` paths under:
+
+```markdown
+## Skills to load before work
+- /absolute/or/repo-resolved/path/to/skill/SKILL.md
+```
+
+Sub-agents read those exact files before task-specific work and report `skill_resolution: paths-injected` when loading succeeds. Compact summaries may exist only as transitional metadata; they are not the primary skill contract.
 
 SDD DAG: `proposal → specs → tasks → apply → verify → archive`
 Apply-progress continuity is mandatory across chained apply batches: read existing `sdd/{change-name}/apply-progress`, merge it, and persist the combined artifact.

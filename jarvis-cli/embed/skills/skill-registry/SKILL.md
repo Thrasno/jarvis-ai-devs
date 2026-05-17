@@ -11,7 +11,7 @@ metadata:
 
 ## Purpose
 
-You generate or update the **skill registry** — a catalog of all available skills with **compact rules** (pre-digested, 5-15 line summaries) that any delegator injects directly into sub-agent prompts. Sub-agents do NOT read the registry or individual SKILL.md files — they receive compact rules pre-resolved in their launch prompt.
+You generate or update the **skill registry** — an index-first, path-first catalog of all available skills. Delegators inject exact `SKILL.md` paths into sub-agent prompts under `## Skills to load before work`, and sub-agents read those skill files before task-specific work.
 
 This is the foundation of the **Skill Resolver Protocol** (see `_shared/skill-resolver.md`). The registry is built ONCE (expensive), then read cheaply at every delegation.
 
@@ -48,8 +48,8 @@ This is the foundation of the **Skill Resolver Protocol** (see `_shared/skill-re
 5. For each skill found, read the **full SKILL.md** (if a SKILL.md exceeds 200 lines, focus on the frontmatter and Critical Patterns / Rules sections only) to extract:
    - `name` field (from frontmatter)
    - `description` field → extract the trigger text (after "Trigger:" in the description)
-   - **Compact rules** — the actionable patterns and constraints (see Step 1b)
-6. Build a table of: Trigger | Skill Name | Full Path
+   - Optional compact compatibility notes — the actionable patterns and constraints (see Step 1b)
+6. Build a table of: Skill | Trigger / Description | Scope | Path
 
 ### Step 1b: Generate Compact Rules
 
@@ -79,7 +79,7 @@ Format per skill:
 - Metadata: export metadata object from page/layout, no <Head> component
 ```
 
-**The compact rules are the MOST IMPORTANT output of this skill.** They are what sub-agents actually receive. Invest time making them accurate and concise.
+Compact rules are transitional compatibility metadata. The skill index rows and exact `SKILL.md` paths are the authoritative runtime contract.
 
 ### Step 2: Scan Project Conventions
 
@@ -100,20 +100,20 @@ Build the registry markdown:
 ```markdown
 # Skill Registry
 
-**Delegator use only.** Any agent that launches sub-agents reads this registry to resolve compact rules, then injects them directly into sub-agent prompts. Sub-agents do NOT read this registry or individual SKILL.md files.
+**Delegator use only.** Any agent that launches sub-agents reads this registry to resolve exact `SKILL.md` paths, then injects them into sub-agent prompts under `## Skills to load before work`.
 
 See `_shared/skill-resolver.md` for the full resolution protocol.
 
 ## User Skills
 
-| Trigger | Skill | Path |
-|---------|-------|------|
-| {trigger from frontmatter} | {skill name} | {full path to SKILL.md} |
+| Skill | Trigger / Description | Scope | Path |
+|-------|-----------------------|-------|------|
+| {skill name} | {trigger from frontmatter} | {core or optional} | {full path to SKILL.md} |
 | ... | ... | ... |
 
 ## Compact Rules
 
-Pre-digested rules per skill. Delegators copy matching blocks into sub-agent prompts as `## Project Standards (auto-resolved)`.
+Compact rules are transitional compatibility metadata only. Delegators use the skill index above for runtime path injection.
 
 ### {skill-name-1}
 - Rule 1
