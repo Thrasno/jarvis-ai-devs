@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	jarvis "github.com/Thrasno/jarvis-dev/jarvis-cli"
 	"github.com/Thrasno/jarvis-dev/jarvis-cli/internal/config"
 )
 
@@ -343,6 +344,7 @@ func TestRunInit_InProcess(t *testing.T) {
 		"## Installed Skills",
 		"| Skill | Trigger / Description | Scope | Path |",
 		"| Go Testing | When writing Go tests, using teatest, or adding test coverage — Go testing patterns including Bubbletea TUI testing | optional | `.jarvis/skills/go-testing/SKILL.md` |",
+		"| Skill Improver | When improving skills, auditing skills, refactoring skills, or checking skill quality — Audit and upgrade existing LLM-first skills against style and safety contracts | optional | `.jarvis/skills/skill-improver/SKILL.md` |",
 		"## Compact Rules (Transitional Metadata)",
 		"Compact rules are compatibility metadata; the skill index path rows above are the primary instruction contract.",
 		"## Project Conventions",
@@ -369,6 +371,21 @@ func TestRunInit_InProcess(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected generated registry path to be loadable at %s: %v", path, err)
 		}
+	}
+	skillImproverPath := filepath.Join(dir, ".jarvis", "skills", "skill-improver", "SKILL.md")
+	skillImproverData, err := os.ReadFile(skillImproverPath)
+	if err != nil {
+		t.Fatalf("expected generated registry path to be loadable at %s: %v", skillImproverPath, err)
+	}
+	if strings.TrimSpace(string(skillImproverData)) == "" {
+		t.Fatalf("expected copied skill-improver skill at %s to be non-empty", skillImproverPath)
+	}
+	embeddedSkillImprover, err := jarvis.SkillsFS.ReadFile("embed/skills/skill-improver/SKILL.md")
+	if err != nil {
+		t.Fatalf("read embedded skill-improver skill: %v", err)
+	}
+	if !bytes.Equal(skillImproverData, embeddedSkillImprover) {
+		t.Fatalf("expected copied skill-improver skill to match embedded content")
 	}
 
 	// Verify CLI output contains the commit reminder.

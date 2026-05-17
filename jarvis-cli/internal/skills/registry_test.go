@@ -132,7 +132,7 @@ func TestRegistry_SkillMetaCount(t *testing.T) {
 		"zoho-deluge", "laravel-architecture", "phpunit-testing", "git-workflow",
 		// Workflow + product helpers already shipped
 		"branch-pr", "issue-creation", "go-testing", "judgment-day",
-		"sdd-onboard", "skill-creator", "skill-registry", "qa-checklist",
+		"sdd-onboard", "skill-creator", "skill-improver", "skill-registry", "qa-checklist",
 	}
 
 	if len(skillMeta) != len(expectedSkills) {
@@ -220,6 +220,36 @@ func TestRegistry_ComplementarySkillsAreShippedAndDiscoverable(t *testing.T) {
 	}
 }
 
+func TestRegistry_SkillImproverIsShippedDiscoverableAndOptional(t *testing.T) {
+	skills, err := ListSkills(jarvis.SkillsFS)
+	if err != nil {
+		t.Fatalf("ListSkills: %v", err)
+	}
+
+	byID := make(map[string]Skill, len(skills))
+	for _, skill := range skills {
+		byID[skill.ID] = skill
+	}
+
+	skill, exists := byID["skill-improver"]
+	if !exists {
+		t.Fatal("expected embedded registry to include skill-improver")
+	}
+	if skill.IsCore {
+		t.Fatal("expected skill-improver to be optional, not core")
+	}
+	if skill.Path != "skill-improver/SKILL.md" {
+		t.Fatalf("skill-improver path = %q, want skill-improver/SKILL.md", skill.Path)
+	}
+
+	metadata := strings.ToLower(skill.Name + " " + skill.Description + " " + skill.Trigger)
+	for _, phrase := range []string{"skill improver", "audit", "improving skills", "skill quality"} {
+		if !strings.Contains(metadata, phrase) {
+			t.Fatalf("expected skill-improver metadata to include %q; got name=%q description=%q trigger=%q", phrase, skill.Name, skill.Description, skill.Trigger)
+		}
+	}
+}
+
 func TestRegistryRows_WorkflowSkillsExposeRegistryMetadata(t *testing.T) {
 	skills, err := ListSkills(jarvis.SkillsFS)
 	if err != nil {
@@ -235,7 +265,7 @@ func TestRegistryRows_WorkflowSkillsExposeRegistryMetadata(t *testing.T) {
 		byID[row.ID] = row
 	}
 
-	for _, id := range []string{"work-unit-commits", "chained-pr", "cognitive-doc-design", "branch-pr", "issue-creation", "comment-writer"} {
+	for _, id := range []string{"work-unit-commits", "chained-pr", "cognitive-doc-design", "branch-pr", "issue-creation", "comment-writer", "skill-improver"} {
 		row, exists := byID[id]
 		if !exists {
 			t.Fatalf("expected workflow skill %q to be registry-ready", id)
@@ -281,6 +311,7 @@ func TestRegistryRows_WorkflowSkillsExposeActionableCompactRules(t *testing.T) {
 		"branch-pr":            {"Check for an issue first", "review-focused PR", "clean diff"},
 		"issue-creation":       {"Search existing issues first", "acceptance criteria", "clear scope"},
 		"comment-writer":       {"warm and direct", "state the decision", "actionable next step"},
+		"skill-improver":       {"Audit existing skills", "style guide", "explicit user approval"},
 	}
 
 	for id, phrases := range wantPhrases {

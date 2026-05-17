@@ -828,6 +828,55 @@ func TestCatalogContract_SkillCreatorUsesCompactLLMFirstContract(t *testing.T) {
 	}
 }
 
+func TestCatalogContract_SkillImproverIsPackagedWithSafetyContract(t *testing.T) {
+	t.Parallel()
+
+	const skillPath = "embed/skills/skill-improver/SKILL.md"
+	content := readEmbeddedSkillAsset(t, skillPath)
+	lowerContent := strings.ToLower(content)
+
+	if _, err := fs.Stat(jarvis.SkillsFS, skillPath); err != nil {
+		t.Fatalf("expected skill-improver path %s to be embedded: %v", skillPath, err)
+	}
+	if !strings.HasPrefix(content, "---\n") || !strings.Contains(content, "\n---\n") {
+		t.Fatalf("expected %s to include YAML frontmatter", skillPath)
+	}
+
+	requiredSnippets := []string{
+		"name: skill-improver",
+		"Trigger: improve skills, audit skills, refactor skills, skill quality",
+		"license: Apache-2.0",
+		"Packaged for Jarvis skill registry and path-injected loading",
+		"## Activation Contract",
+		"## Hard Safety Rules",
+		"Audit existing skills against the style guide",
+		"explicit user approval before modifying any skill file",
+		"Default to audit-only mode",
+		"Style Guide Checks",
+		".jarvis/skill-registry.md",
+		".jarvis/skills/<skill>/SKILL.md",
+	}
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(content, snippet) {
+			t.Fatalf("expected skill-improver to contain %q", snippet)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"rewrite skills without approval",
+		"modify skill files without approval",
+		"automatically mutate user skills",
+		"auto-mutate user skills",
+		"autonomously rewrite",
+		"~/.claude/skills",
+		"~/.config/opencode/skills",
+	} {
+		if strings.Contains(lowerContent, forbidden) {
+			t.Fatalf("expected skill-improver not to allow unsafe or local-runtime wording %q", forbidden)
+		}
+	}
+}
+
 func TestCatalogContract_QAChecklistOutputContractAndSDDBoundaries(t *testing.T) {
 	t.Parallel()
 

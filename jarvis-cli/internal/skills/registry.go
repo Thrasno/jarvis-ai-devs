@@ -86,6 +86,7 @@ var skillMeta = map[string]struct{ name, description, trigger string }{
 	"cognitive-doc-design": {name: "Cognitive Doc Design", description: "Design docs that reduce cognitive load for guides, READMEs, RFCs, onboarding, architecture, and reviews", trigger: "When writing guides, READMEs, RFCs, onboarding, architecture, or review-facing docs"},
 	"sdd-onboard":          {name: "SDD Onboard", description: "Guided end-to-end walkthrough of SDD workflow", trigger: "When onboarding user through full SDD cycle"},
 	"skill-creator":        {name: "Skill Creator", description: "Create LLM-first skills with valid frontmatter, local references, and concise trigger-rich descriptions", trigger: "When creating new skills, agent instructions, or documenting AI usage patterns"},
+	"skill-improver":       {name: "Skill Improver", description: "Audit and upgrade existing LLM-first skills against style and safety contracts", trigger: "When improving skills, auditing skills, refactoring skills, or checking skill quality"},
 	"skill-registry":       {name: "Skill Registry", description: "Create or update the skill registry for the current project", trigger: "When user says update skills, skill registry, or after installing skills"},
 	"qa-checklist":         {name: "QA Checklist", description: "On-demand QA checklist and test checklist planning with manual QA and automated test recommendations", trigger: "When user asks for batería de pruebas, checklist de pruebas, qué pruebas debería hacer, QA checklist, or test checklist"},
 }
@@ -111,6 +112,7 @@ var compactRuleMeta = map[string]string{
 	"cognitive-doc-design": "Structure docs around audience, task, and decision points; reduce reader cognitive load with clear headings, examples, and review-ready summaries.",
 	"skill-registry":       "Refresh the registry when installed skills or conventions change.",
 	"skill-creator":        "Create trigger-rich LLM skills with valid frontmatter and local references.",
+	"skill-improver":       "Audit existing skills against the style guide, report quality and safety gaps, and require explicit user approval before changing any skill file.",
 }
 
 // ListSkills returns all available embedded skills with their metadata and content.
