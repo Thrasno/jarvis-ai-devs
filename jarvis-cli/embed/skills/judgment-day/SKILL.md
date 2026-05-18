@@ -15,7 +15,7 @@ Load this skill only when the user explicitly asks for Judgment Day, dual/advers
 
 ## Hard Rules
 
-- Resolve project skills before launching agents: read the skill registry, match compact rules by target files/task, and inject the same `Project Standards` block into both judge prompts and fix prompts.
+- Resolve project skills before launching agents: read the skill registry, match exact `SKILL.md` paths by target files/task, and inject the same `## Skills to load before work` block into both judge prompts and fix prompts.
 - Launch **two blind judges in parallel** with identical target and criteria; never review the code yourself.
 - Wait for both judges before synthesis; never accept a partial verdict.
 - Classify warnings as `WARNING (real)` only if normal intended use can trigger them; otherwise downgrade to INFO as `WARNING (theoretical)`.
@@ -38,7 +38,7 @@ Load this skill only when the user explicitly asks for Judgment Day, dual/advers
 ## Execution Steps
 
 1. Confirm target and optional custom criteria.
-2. Resolve compact project standards from registry or warn if missing.
+2. Resolve exact `SKILL.md` paths from registry or warn if missing; agents should report `paths-injected` when they read injected paths.
 3. Start Judge A and Judge B concurrently via delegation.
 4. Synthesize findings into confirmed, suspect, contradiction, and INFO buckets.
 5. Ask before Round 1 fixes; delegate a separate fix agent for confirmed approved fixes only.

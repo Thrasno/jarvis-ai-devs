@@ -11,11 +11,14 @@
 
 ## Skill Registry Scan Rules
 
+- Write the generated project registry to `.jarvis/skill-registry.md`; `.atl/skill-registry.md` is only a legacy read fallback if retained by runtime compatibility code.
+- Render the registry as index-first and path-first: every skill row includes Skill, Trigger / Description, Scope, and Path.
+- For Jarvis built-in skills, copy embedded skill files into `.jarvis/skills/` and render project-local paths such as `.jarvis/skills/<skill>/SKILL.md`; do not render unresolved embedded-relative paths like `go-testing/SKILL.md`.
 - Scan user skills in known provider global skill directories and project skills in workspace skill directories.
 - Skip `sdd-*`, `_shared`, and `skill-registry`; deduplicate by skill name, preferring project-level skills over user-level skills.
 - Read each selected `SKILL.md`; if it exceeds 200 lines, focus on frontmatter plus Critical Patterns / Rules sections.
-- Extract `name`, trigger text from `description`, full `SKILL.md` path, and compact rules.
-- Generate compact rules as 5-15 actionable lines per skill: constraints, key patterns, breaking changes, and gotchas only. Do not include purpose, motivation, installation steps, full examples, or fluff.
+- Extract `name`, trigger text from `description`, scope, and exact `SKILL.md` path.
+- Treat compact rules as optional transitional metadata; runtime prompt injection uses exact skill paths as the primary contract.
 - Scan project convention files: `agents.md`, `AGENTS.md`, project-level `CLAUDE.md`, `.cursorrules`, `GEMINI.md`, and `copilot-instructions.md`.
 - For index files such as `AGENTS.md`, extract referenced file paths and include both the index and referenced files in the registry.
 

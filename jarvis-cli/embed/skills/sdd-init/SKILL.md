@@ -22,7 +22,7 @@ Run this phase when the orchestrator/user asks to initialize SDD in a project. Y
 - In `openspec` mode, follow `../_shared/openspec-convention.md` and write file artifacts.
 - In `hybrid` mode, write both openspec files and Hive observations.
 - Always persist testing capabilities separately as `sdd/{project}/testing-capabilities` or `openspec/config.yaml` `testing:`.
-- Always build `.atl/skill-registry.md`; also save `skill-registry` to Hive when available.
+- Always build `.jarvis/skill-registry.md`; also save `skill-registry` to Hive when available.
 - Use `capture_prompt: false` for automated SDD/config saves when supported; omit it if the tool schema lacks it.
 - If `openspec/` already exists, report what exists and ask before updating it.
 - Artifact store modes supported by Jarvis skills: `hive | openspec | hybrid | none`.
@@ -45,7 +45,7 @@ Run this phase when the orchestrator/user asks to initialize SDD in a project. Y
 2. Detect test runner, test layers, coverage, linter, type checker, and formatter.
 3. Resolve Strict TDD from agent marker, `openspec/config.yaml`, detected runner fallback, or no-runner fallback.
 4. Initialize persistence for the resolved mode.
-5. Build `.atl/skill-registry.md` using the skill-registry scan rules.
+5. Build `.jarvis/skill-registry.md` using the skill-registry scan rules.
 6. Persist testing capabilities and project context.
 7. Return the structured initialization envelope.
 

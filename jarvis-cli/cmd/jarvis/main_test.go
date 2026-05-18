@@ -7,6 +7,10 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/tui"
 )
 
 // jarvisBin is the path to the compiled binary built by TestMain.
@@ -79,6 +83,19 @@ func TestHelp_ExitsZero(t *testing.T) {
 	}
 }
 
+func TestRootCommandHelpDescribesCockpitFirstTTYAndFallback(t *testing.T) {
+	help := rootCmd.Long
+	if !strings.Contains(help, "cockpit") {
+		t.Fatalf("root help should describe cockpit-first TTY behavior, got:\n%s", help)
+	}
+	if !strings.Contains(help, "no-TUI") || !strings.Contains(help, "non-TTY") || !strings.Contains(help, "setup wizard") {
+		t.Fatalf("root help should preserve no-TUI/non-TTY setup fallback wording, got:\n%s", help)
+	}
+	if strings.Contains(help, "Run without arguments to launch the setup wizard.") {
+		t.Fatalf("root help must not claim bare jarvis always launches setup wizard, got:\n%s", help)
+	}
+}
+
 func TestVersion_ShowsVersion(t *testing.T) {
 	if _, err := os.Stat(jarvisBin); os.IsNotExist(err) {
 		t.Skip("jarvis binary not available")
@@ -121,6 +138,66 @@ func TestRootCommand_WhenConfigured_EntersWizard(t *testing.T) {
 	}
 	if !strings.Contains(out, "Setup") {
 		t.Errorf("expected setup wizard output, got:\n%s", out)
+	}
+}
+
+func TestRunWizard_TTYRoutesToCockpit(t *testing.T) {
+	originalTerminal := terminalIsTTY
+	originalRunTUI := runTUIProgram
+	originalRunNoTUI := runNoTUIWizard
+	t.Cleanup(func() {
+		terminalIsTTY = originalTerminal
+		runTUIProgram = originalRunTUI
+		runNoTUIWizard = originalRunNoTUI
+	})
+
+	terminalIsTTY = func() bool { return true }
+	runNoTUIWizard = func(tui.WizardConfig) error {
+		t.Fatal("TTY route must not call RunNoTUI")
+		return nil
+	}
+	runTUIProgram = func(m tea.Model) error {
+		view := m.View()
+		if !strings.Contains(view, "Install/Reconfigure") {
+			t.Fatalf("expected TTY route to start cockpit view, got:\n%s", view)
+		}
+		if strings.Contains(view, "Jarvis-Dev Setup") {
+			t.Fatalf("TTY route must not auto-enter setup wizard, got:\n%s", view)
+		}
+		return nil
+	}
+
+	if err := runWizard(false); err != nil {
+		t.Fatalf("runWizard TTY route: %v", err)
+	}
+}
+
+func TestRunWizard_NoTUIFlagPreservesFallback(t *testing.T) {
+	originalTerminal := terminalIsTTY
+	originalRunTUI := runTUIProgram
+	originalRunNoTUI := runNoTUIWizard
+	t.Cleanup(func() {
+		terminalIsTTY = originalTerminal
+		runTUIProgram = originalRunTUI
+		runNoTUIWizard = originalRunNoTUI
+	})
+
+	calledNoTUI := false
+	terminalIsTTY = func() bool { return true }
+	runTUIProgram = func(tea.Model) error {
+		t.Fatal("--no-tui route must not start cockpit TUI")
+		return nil
+	}
+	runNoTUIWizard = func(tui.WizardConfig) error {
+		calledNoTUI = true
+		return nil
+	}
+
+	if err := runWizard(true); err != nil {
+		t.Fatalf("runWizard --no-tui route: %v", err)
+	}
+	if !calledNoTUI {
+		t.Fatal("expected --no-tui route to call RunNoTUI fallback")
 	}
 }
 

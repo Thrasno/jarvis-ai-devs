@@ -21,7 +21,8 @@ var rootCmd = &cobra.Command{
 	Long: `Jarvis-Dev configures your AI coding environment (Claude Code, OpenCode)
 with persistent memory (Hive), persona selection, and embedded skills.
 
-Run without arguments to launch the setup wizard.`,
+Run without arguments in a TTY to launch the cockpit. In --no-TUI or non-TTY
+mode, Jarvis falls back to the setup wizard prompts.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		noTUI, _ := cmd.Flags().GetBool("no-tui")
 		return runWizard(noTUI)
@@ -41,6 +42,18 @@ func main() {
 	}
 }
 
+var terminalIsTTY = func() bool {
+	return isatty.IsTerminal(os.Stdin.Fd())
+}
+
+var runNoTUIWizard = tui.RunNoTUI
+
+var runTUIProgram = func(m tea.Model) error {
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	_, err := p.Run()
+	return err
+}
+
 // runWizard launches the 5-step wizard, using TUI or plain readline depending on flags/TTY.
 func runWizard(noTUI bool) error {
 	wcfg := tui.WizardConfig{
@@ -49,12 +62,10 @@ func runWizard(noTUI bool) error {
 		TemplateFS: jarvis.TemplatesFS,
 	}
 
-	if noTUI || !isatty.IsTerminal(os.Stdin.Fd()) {
-		return tui.RunNoTUI(wcfg)
+	if noTUI || !terminalIsTTY() {
+		return runNoTUIWizard(wcfg)
 	}
 
-	m := tui.NewModel(wcfg, false)
-	p := tea.NewProgram(m, tea.WithAltScreen())
-	_, err := p.Run()
-	return err
+	m := tui.NewCockpitModel(wcfg)
+	return runTUIProgram(m)
 }

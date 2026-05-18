@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 )
 
@@ -334,8 +335,57 @@ func TestRunInit_InProcess(t *testing.T) {
 
 	// Verify the registry file was created.
 	registryPath := filepath.Join(dir, ".jarvis", "skill-registry.md")
-	if _, err := os.Stat(registryPath); err != nil {
+	registryData, err := os.ReadFile(registryPath)
+	if err != nil {
 		t.Errorf("expected .jarvis/skill-registry.md to exist: %v", err)
+	}
+	registry := string(registryData)
+	for _, want := range []string{
+		"## Installed Skills",
+		"| Skill | Trigger / Description | Scope | Path |",
+		"| Go Testing | When writing Go tests, using teatest, or adding test coverage — Go testing patterns including Bubbletea TUI testing | optional | `.jarvis/skills/go-testing/SKILL.md` |",
+		"| Skill Improver | When improving skills, auditing skills, refactoring skills, or checking skill quality — Audit and upgrade existing LLM-first skills against style and safety contracts | optional | `.jarvis/skills/skill-improver/SKILL.md` |",
+		"## Compact Rules (Transitional Metadata)",
+		"Compact rules are compatibility metadata; the skill index path rows above are the primary instruction contract.",
+		"## Project Conventions",
+		"Canonical registry path: `.jarvis/skill-registry.md`",
+	} {
+		if !strings.Contains(registry, want) {
+			t.Fatalf("expected rich registry content %q, got:\n%s", want, registry)
+		}
+	}
+	for _, forbidden := range []string{
+		"| Skill | Trigger | Path | Type |",
+		"| Go Testing | When writing Go tests, using teatest, or adding test coverage | `go-testing/SKILL.md` | optional |",
+		"| Go Testing | When writing Go tests, using teatest, or adding test coverage — Go testing patterns including Bubbletea TUI testing | optional | `go-testing/SKILL.md` |",
+	} {
+		if strings.Contains(registry, forbidden) {
+			t.Fatalf("registry must not use legacy compact-rule-primary schema %q, got:\n%s", forbidden, registry)
+		}
+	}
+
+	for _, path := range []string{
+		filepath.Join(dir, ".jarvis", "skills", "go-testing", "SKILL.md"),
+		filepath.Join(dir, ".jarvis", "skills", "sdd-apply", "SKILL.md"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected generated registry path to be loadable at %s: %v", path, err)
+		}
+	}
+	skillImproverPath := filepath.Join(dir, ".jarvis", "skills", "skill-improver", "SKILL.md")
+	skillImproverData, err := os.ReadFile(skillImproverPath)
+	if err != nil {
+		t.Fatalf("expected generated registry path to be loadable at %s: %v", skillImproverPath, err)
+	}
+	if strings.TrimSpace(string(skillImproverData)) == "" {
+		t.Fatalf("expected copied skill-improver skill at %s to be non-empty", skillImproverPath)
+	}
+	embeddedSkillImprover, err := jarvis.SkillsFS.ReadFile("embed/skills/skill-improver/SKILL.md")
+	if err != nil {
+		t.Fatalf("read embedded skill-improver skill: %v", err)
+	}
+	if !bytes.Equal(skillImproverData, embeddedSkillImprover) {
+		t.Fatalf("expected copied skill-improver skill to match embedded content")
 	}
 
 	// Verify CLI output contains the commit reminder.
@@ -349,6 +399,46 @@ func TestRunInit_InProcess(t *testing.T) {
 	}
 	if !strings.Contains(out, "go-testing") {
 		t.Errorf("expected 'go-testing' skill in output:\n%s", out)
+	}
+}
+
+func TestInitCmdRunEUsesCurrentWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", "") // prevent git from resolving a remote
+
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/initcmd\n"), 0644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	previousDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get current working directory: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir to temp project: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(previousDir); err != nil {
+			t.Fatalf("restore working directory: %v", err)
+		}
+	})
+
+	out := captureStdout(t, func() {
+		if err := initCmd.RunE(initCmd, nil); err != nil {
+			t.Errorf("initCmd.RunE: %v", err)
+		}
+	})
+
+	registryData, err := os.ReadFile(filepath.Join(dir, ".jarvis", "skill-registry.md"))
+	if err != nil {
+		t.Fatalf("expected init command to write registry in current directory: %v", err)
+	}
+	registry := string(registryData)
+	if !strings.Contains(registry, "Canonical registry path: `.jarvis/skill-registry.md`") {
+		t.Fatalf("expected canonical registry metadata from init command, got:\n%s", registry)
+	}
+	if !strings.Contains(out, "✓ Skill registry created: .jarvis/skill-registry.md") {
+		t.Fatalf("expected init command success output, got:\n%s", out)
 	}
 }
 

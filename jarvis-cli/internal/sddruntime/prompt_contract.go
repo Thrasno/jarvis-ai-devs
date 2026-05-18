@@ -11,7 +11,7 @@ const (
 	Layer1Behavior PromptLayer = "layer1_behavior"
 	Layer2Persona  PromptLayer = "layer2_persona"
 	LayerSkillRule PromptLayer = "skill_rule"
-	LayerRegistry  PromptLayer = "registry_rule"
+	LayerRegistry  PromptLayer = "registry_skill_index"
 	LayerProtocol  PromptLayer = "protocol_rule"
 )
 
@@ -21,6 +21,8 @@ const (
 	RoleBehavioralInstruction SourceRole = "behavioral_instruction"
 	RoleStylePersona          SourceRole = "style_persona"
 )
+
+const RegistrySkillIndexSourceID = "registry.skill-index"
 
 type PromptSource struct {
 	ID          string
@@ -45,7 +47,7 @@ func DefaultPromptContract(agent, phase string) PromptContract {
 			{ID: "layer1.behavior", Layer: Layer1Behavior, Path: "jarvis-cli/internal/config/layer1.md", Required: true, Order: 1, ContentRole: RoleBehavioralInstruction},
 			{ID: "layer2.persona", Layer: Layer2Persona, Path: "persona", Required: true, Order: 2, ContentRole: RoleStylePersona},
 			{ID: fmt.Sprintf("skill.%s", canonicalSkillPhase(phase)), Layer: LayerSkillRule, Path: "skills", Required: true, Order: 3, ContentRole: RoleBehavioralInstruction},
-			{ID: "registry.compact-rules", Layer: LayerRegistry, Path: ".jarvis/skill-registry.md", Required: true, Order: 4, ContentRole: RoleBehavioralInstruction},
+			{ID: RegistrySkillIndexSourceID, Layer: LayerRegistry, Path: ".jarvis/skill-registry.md", Required: true, Order: 4, ContentRole: RoleBehavioralInstruction},
 			{ID: "protocol.hive", Layer: LayerProtocol, Path: "jarvis-cli/embed/hive-protocol.md", Required: true, Order: 5, ContentRole: RoleBehavioralInstruction},
 		},
 	}
@@ -73,6 +75,19 @@ func (c PromptContract) OrderedRequiredSources() ([]PromptSource, error) {
 	})
 
 	return sources, nil
+}
+
+func DefaultPromptSourceIDs(agent, phase string) ([]string, error) {
+	sources, err := DefaultPromptContract(agent, phase).OrderedRequiredSources()
+	if err != nil {
+		return nil, err
+	}
+
+	ids := make([]string, 0, len(sources))
+	for _, source := range sources {
+		ids = append(ids, source.ID)
+	}
+	return ids, nil
 }
 
 func canonicalSkillPhase(phase string) string {

@@ -188,7 +188,7 @@ func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
 			"layer1.behavior",
 			"layer2.persona",
 			"skill.sdd-orchestrator",
-			"registry.compact-rules",
+			"registry.skill-index",
 			"protocol.hive",
 		},
 		StoreMode:           "hybrid",

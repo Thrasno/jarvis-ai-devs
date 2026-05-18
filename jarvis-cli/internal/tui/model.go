@@ -37,11 +37,20 @@ const (
 // StepExtraSkills aliases StepSkills to keep explicit naming in tests/UX.
 const StepExtraSkills = StepSkills
 
+// Screen identifies the root TUI surface currently receiving input.
+type Screen int
+
+const (
+	ScreenWizard Screen = iota
+	ScreenCockpit
+)
+
 // Model is the root Bubbletea model for the jarvis-cli wizard.
 type Model struct {
-	Step  Step
-	Mode  string
-	Scope config.SetupScope
+	Screen Screen
+	Step   Step
+	Mode   string
+	Scope  config.SetupScope
 
 	PersonaFS  embed.FS
 	SkillsFS   embed.FS
@@ -87,6 +96,17 @@ type Model struct {
 	height int
 
 	noTUI bool
+
+	cockpitCursor         int
+	cockpitMessage        string
+	cockpitRunner         cockpitRunner
+	cockpitMode           cockpitMode
+	cockpitAction         CockpitActionID
+	cockpitProviderCursor int
+	cockpitProvider       string
+	cockpitInput          string
+	cockpitSnapshot       string
+	cockpitPlan           string
 }
 
 // WizardConfig carries FSes needed to run the wizard, injected by main.
@@ -99,6 +119,7 @@ type WizardConfig struct {
 // NewModel creates a fresh wizard model at StepScope.
 func NewModel(wcfg WizardConfig, noTUI bool) Model {
 	m := Model{
+		Screen:     ScreenWizard,
 		Step:       StepScope,
 		Mode:       string(config.ConfigStatusSetup),
 		Scope:      config.ScopeLocalOnly,
@@ -176,6 +197,18 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 	return m
 }
 
+// NewCockpitModel creates the cockpit-first root model used by bare TTY runs.
+func NewCockpitModel(wcfg WizardConfig) Model {
+	m := NewModel(wcfg, false)
+	m.Screen = ScreenCockpit
+	m.Step = StepScope
+	m.cockpitCursor = 0
+	m.cockpitMessage = ""
+	m.cockpitRunner = defaultCockpitRunner{}
+	m.cockpitMode = cockpitModeMenu
+	return m
+}
+
 func (m Model) Init() tea.Cmd { return nil }
 
 // Update routes incoming messages to the per-step handler.
@@ -188,6 +221,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyCtrlC {
 			return m, tea.Quit
+		}
+		if m.Screen == ScreenCockpit {
+			return updateCockpit(m, msg)
 		}
 		return m.updateStep(msg)
 	case errMsg:
@@ -231,6 +267,10 @@ func (m Model) updateStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
+	if m.Screen == ScreenCockpit {
+		return viewCockpit(m)
+	}
+
 	switch m.Step {
 	case StepScope:
 		return viewScope(m)

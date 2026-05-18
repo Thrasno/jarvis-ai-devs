@@ -52,15 +52,10 @@ func Verify(agent string, observed ObservedRuntime) IntegrityReport {
 }
 
 func verifyPromptInvariants(report *IntegrityReport, observed ObservedRuntime) {
-	expectedSources, err := DefaultPromptContract(report.Agent, "orchestrator").OrderedRequiredSources()
+	expectedIDs, err := DefaultPromptSourceIDs(report.Agent, "orchestrator")
 	if err != nil {
 		report.AddCheck(CheckResult{Key: "invariant.prompt.required_sources_order", Status: StatusFail, DriftClass: DriftOwned, Expected: "canonical ordered required source ids", Observed: "prompt contract resolution error", Message: "failed to resolve canonical prompt contract"})
 		return
-	}
-
-	expectedIDs := make([]string, 0, len(expectedSources))
-	for _, source := range expectedSources {
-		expectedIDs = append(expectedIDs, source.ID)
 	}
 
 	status := StatusPass

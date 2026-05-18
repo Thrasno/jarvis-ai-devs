@@ -11,17 +11,17 @@ func TestDefaultPromptContract_ComposesCanonicalRequiredSourcesInOrder(t *testin
 		wantOrder []int
 	}{
 		{
-			name:    "claude orchestrator composition",
-			agent:   "claude",
-			phase:   "orchestrator",
-			wantIDs: []string{"layer1.behavior", "layer2.persona", "skill.sdd-orchestrator", "registry.compact-rules", "protocol.hive"},
+			name:      "claude orchestrator composition",
+			agent:     "claude",
+			phase:     "orchestrator",
+			wantIDs:   []string{"layer1.behavior", "layer2.persona", "skill.sdd-orchestrator", "registry.skill-index", "protocol.hive"},
 			wantOrder: []int{1, 2, 3, 4, 5},
 		},
 		{
-			name:    "opencode apply composition",
-			agent:   "opencode",
-			phase:   "sdd-apply",
-			wantIDs: []string{"layer1.behavior", "layer2.persona", "skill.sdd-apply", "registry.compact-rules", "protocol.hive"},
+			name:      "opencode apply composition",
+			agent:     "opencode",
+			phase:     "sdd-apply",
+			wantIDs:   []string{"layer1.behavior", "layer2.persona", "skill.sdd-apply", "registry.skill-index", "protocol.hive"},
 			wantOrder: []int{1, 2, 3, 4, 5},
 		},
 	}
@@ -58,7 +58,7 @@ func TestPromptContract_OrderedRequiredSourcesRejectsMissingRequiredSource(t *te
 			{ID: "layer1.behavior", Required: true, Order: 1},
 			{ID: "layer2.persona", Required: true, Order: 2},
 			{ID: "skill.sdd-spec", Required: false, Order: 3},
-			{ID: "registry.compact-rules", Required: true, Order: 4},
+			{ID: "registry.skill-index", Required: true, Order: 4},
 			{ID: "protocol.hive", Required: true, Order: 5},
 		},
 	}
@@ -67,4 +67,29 @@ func TestPromptContract_OrderedRequiredSourcesRejectsMissingRequiredSource(t *te
 	if err == nil {
 		t.Fatal("expected error for missing required source")
 	}
+}
+
+func TestDefaultPromptContract_UsesPathFirstRegistrySource(t *testing.T) {
+	contract := DefaultPromptContract("opencode", "sdd-apply")
+	sources, err := contract.OrderedRequiredSources()
+	if err != nil {
+		t.Fatalf("OrderedRequiredSources() error = %v", err)
+	}
+
+	for _, source := range sources {
+		if source.ID == "registry.compact-rules" {
+			t.Fatalf("registry source must not use legacy compact-rules id: %+v", source)
+		}
+		if source.Layer == LayerRegistry {
+			if source.ID != "registry.skill-index" {
+				t.Fatalf("registry source id = %q, want registry.skill-index", source.ID)
+			}
+			if source.Path != ".jarvis/skill-registry.md" {
+				t.Fatalf("registry source path = %q, want .jarvis/skill-registry.md", source.Path)
+			}
+			return
+		}
+	}
+
+	t.Fatal("expected registry source in default prompt contract")
 }

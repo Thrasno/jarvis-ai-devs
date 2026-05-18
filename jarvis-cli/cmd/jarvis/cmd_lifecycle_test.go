@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -148,6 +149,67 @@ func TestRunPerProvider_AllFansOutDeterministically(t *testing.T) {
 	}
 }
 
+func TestRunUninstall_AllProviderMutationUsesAtomicLifecyclePath(t *testing.T) {
+	cmd := lifecycleCommandForTest(t, "all", true, false)
+
+	var calls []string
+	originalUninstall := uninstallLifecycle
+	uninstallLifecycle = func(_ *lifecycle.Engine, provider, mode string) (lifecycle.UninstallResult, error) {
+		calls = append(calls, fmt.Sprintf("%s/%s", provider, mode))
+		return lifecycle.UninstallResult{}, nil
+	}
+	t.Cleanup(func() { uninstallLifecycle = originalUninstall })
+
+	if err := runUninstall(cmd, nil); err != nil {
+		t.Fatalf("runUninstall returned error: %v", err)
+	}
+
+	want := []string{"all/all"}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("uninstall calls mismatch: got %v want %v", calls, want)
+	}
+}
+
+func TestRunUninstall_ProviderSpecificMutationKeepsProviderPath(t *testing.T) {
+	for _, provider := range []string{"claude", "opencode"} {
+		t.Run(provider, func(t *testing.T) {
+			cmd := lifecycleCommandForTest(t, provider, true, false)
+
+			var calls []string
+			originalUninstall := uninstallLifecycle
+			uninstallLifecycle = func(_ *lifecycle.Engine, provider, mode string) (lifecycle.UninstallResult, error) {
+				calls = append(calls, fmt.Sprintf("%s/%s", provider, mode))
+				return lifecycle.UninstallResult{}, nil
+			}
+			t.Cleanup(func() { uninstallLifecycle = originalUninstall })
+
+			if err := runUninstall(cmd, nil); err != nil {
+				t.Fatalf("runUninstall returned error: %v", err)
+			}
+
+			want := []string{provider + "/provider"}
+			if !reflect.DeepEqual(calls, want) {
+				t.Fatalf("uninstall calls mismatch: got %v want %v", calls, want)
+			}
+		})
+	}
+}
+
+func TestRunUninstall_DryRunDoesNotInvokeLifecycle(t *testing.T) {
+	cmd := lifecycleCommandForTest(t, "all", false, true)
+
+	originalUninstall := uninstallLifecycle
+	uninstallLifecycle = func(_ *lifecycle.Engine, provider, mode string) (lifecycle.UninstallResult, error) {
+		t.Fatalf("dry-run invoked uninstall provider=%s mode=%s", provider, mode)
+		return lifecycle.UninstallResult{}, nil
+	}
+	t.Cleanup(func() { uninstallLifecycle = originalUninstall })
+
+	if err := runUninstall(cmd, nil); err != nil {
+		t.Fatalf("runUninstall returned error: %v", err)
+	}
+}
+
 func TestRunLifecycleMutatingCommands_ValidateBeforeEngineInvocation(t *testing.T) {
 	tests := []struct {
 		name string
@@ -204,4 +266,28 @@ func TestRunLifecycleMutatingCommands_ValidateBeforeEngineInvocation(t *testing.
 			}
 		})
 	}
+}
+
+func lifecycleCommandForTest(t *testing.T, provider string, yes, dryRun bool) *cobra.Command {
+	t.Helper()
+	c := &cobra.Command{}
+	c.Flags().String("provider", "all", "")
+	c.Flags().Bool("soft", false, "")
+	c.Flags().Bool("purge", false, "")
+	c.Flags().Bool("dry-run", false, "")
+	c.Flags().Bool("yes", false, "")
+	if err := c.Flags().Set("provider", provider); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
+	if yes {
+		if err := c.Flags().Set("yes", "true"); err != nil {
+			t.Fatalf("set yes: %v", err)
+		}
+	}
+	if dryRun {
+		if err := c.Flags().Set("dry-run", "true"); err != nil {
+			t.Fatalf("set dry-run: %v", err)
+		}
+	}
+	return c
 }
