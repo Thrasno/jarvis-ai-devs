@@ -219,6 +219,10 @@ func updateCockpitLogin(m Model, key keyInput) Model {
 		m.cockpitMessage = "Email and password are required."
 		return m
 	}
+	if !strings.Contains(email, "@") {
+		m.cockpitMessage = "Email inválido — falta '@'. Si el teclado no escribe '@', cierra y ejecuta: jarvis --no-tui"
+		return m
+	}
 	resolvedEmail, err := m.runner().LoginHiveCloud(context.Background(), email, password)
 	if err != nil {
 		return cockpitError(m, "Hive Cloud Login", err)

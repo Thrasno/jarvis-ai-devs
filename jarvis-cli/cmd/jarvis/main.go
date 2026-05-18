@@ -43,7 +43,9 @@ func main() {
 }
 
 var terminalIsTTY = func() bool {
-	return isatty.IsTerminal(os.Stdin.Fd())
+	return isatty.IsTerminal(os.Stdin.Fd()) ||
+		isatty.IsCygwinTerminal(os.Stdin.Fd()) ||
+		isatty.IsTerminal(os.Stderr.Fd())
 }
 
 var runNoTUIWizard = tui.RunNoTUI

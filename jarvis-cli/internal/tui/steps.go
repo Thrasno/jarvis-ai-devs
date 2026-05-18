@@ -120,6 +120,10 @@ func updateHiveCloud(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.Step = StepPersona
 			return m, nil
 		}
+		if !strings.Contains(m.Email, "@") {
+			m.Err = fmt.Errorf("email inválido — falta '@'. Tip: si el teclado no escribe '@', usa jarvis --no-tui")
+			return m, nil
+		}
 		return m, loginCmd(m.cfg.APIURL, m.Email, m.Password)
 	case tea.KeyRunes:
 		if m.activeField == 0 {
