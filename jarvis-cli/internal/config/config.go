@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -395,8 +396,10 @@ func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
 	defer func() {
 		_ = d.Close()
 	}()
-	if err := d.Sync(); err != nil {
-		return fmt.Errorf("fsync parent dir: %w", err)
+	if runtime.GOOS != "windows" {
+		if err := d.Sync(); err != nil {
+			return fmt.Errorf("fsync parent dir: %w", err)
+		}
 	}
 
 	cleanup = false
