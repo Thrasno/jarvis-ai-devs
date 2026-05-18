@@ -55,7 +55,7 @@ function Invoke-WebRequestWithRetry {
             $contentType = Get-ContentTypeFromHeaders $response.Headers
             if ($response.StatusCode -eq 200) {
                 if ($contentType -like "text/html*" -or $contentType -like "application/json*") {
-                    Write-Err "Descarga invalida para $Label: el servidor devolvio content-type=$contentType en lugar del artefacto esperado. URI: $Uri"
+                    Write-Err "Descarga invalida para ${Label}: el servidor devolvio content-type=$contentType en lugar del artefacto esperado. URI: $Uri"
                 }
                 return $response
             }
@@ -212,7 +212,7 @@ function Install-Binary {
     $response = Invoke-WebRequestWithRetry -Uri $url -OutFile $zipPath -Label $Name
     $contentType = Get-ContentTypeFromHeaders $response.Headers
     if ($contentType -like "text/html*" -or $contentType -like "application/json*") {
-        Write-Err "Descarga invalida para $Name: content-type=$contentType (probable pagina HTML o error de API)."
+        Write-Err "Descarga invalida para ${Name}: content-type=$contentType (probable pagina HTML o error de API)."
     }
 
     if (-not (Test-ZipArchive -ZipPath $zipPath)) {
