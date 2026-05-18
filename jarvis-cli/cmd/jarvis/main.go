@@ -42,10 +42,11 @@ func main() {
 	}
 }
 
+var stdinIsTerminal = func() bool { return isatty.IsTerminal(os.Stdin.Fd()) }
+var stdinIsCygwinTerminal = func() bool { return isatty.IsCygwinTerminal(os.Stdin.Fd()) }
+
 var terminalIsTTY = func() bool {
-	return isatty.IsTerminal(os.Stdin.Fd()) ||
-		isatty.IsCygwinTerminal(os.Stdin.Fd()) ||
-		isatty.IsTerminal(os.Stderr.Fd())
+	return stdinIsTerminal() || stdinIsCygwinTerminal()
 }
 
 var runNoTUIWizard = tui.RunNoTUI

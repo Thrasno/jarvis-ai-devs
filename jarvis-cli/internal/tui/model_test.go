@@ -934,6 +934,30 @@ func TestUpdateHiveCloud_EmptyEmailEnterSkipsToPersona(t *testing.T) {
 	}
 }
 
+func TestUpdateHiveCloud_InvalidEmailDoesNotLogin(t *testing.T) {
+	m := Model{
+		Step:        StepHiveCloud,
+		Selected:    make(map[string]bool),
+		cfg:         &config.AppConfig{},
+		Email:       "invalid-email",
+		Password:    "secret",
+		activeField: 1,
+	}
+
+	updated, cmd := updateHiveCloud(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	if cmd != nil {
+		t.Fatal("invalid email must not start login command")
+	}
+	if m.Err == nil || !strings.Contains(m.Err.Error(), "falta '@'") {
+		t.Fatalf("expected invalid email error, got %v", m.Err)
+	}
+	if m.Step != StepHiveCloud {
+		t.Fatalf("invalid email must stay on Hive Cloud step, got %v", m.Step)
+	}
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // TestUpdateHiveCloud_EscSkipsToPersona
 // ──────────────────────────────────────────────────────────────────────────────

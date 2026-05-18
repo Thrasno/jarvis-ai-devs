@@ -188,6 +188,21 @@ func TestCockpitHandlers_HiveCloudLoginRequiresCredentialsAllowsBackspaceAndSurf
 	assertViewContains(t, m.View(), "Hive Cloud Login error", "cloud unavailable", "Enter: return")
 }
 
+func TestCockpitHandlers_HiveCloudLoginRejectsInvalidEmail(t *testing.T) {
+	runner := &fakeCockpitRunner{}
+	m := newCockpitHandlerTestModel(runner)
+	m = selectCockpitAction(t, m, CockpitActionHiveCloudLogin)
+	m = typeCockpitText(m, "invalid-email")
+	m = sendCockpitKey(m, tea.KeyEnter)
+	m = typeCockpitText(m, "secret")
+	m = sendCockpitKey(m, tea.KeyEnter)
+
+	if len(runner.calls) != 0 {
+		t.Fatalf("invalid email must not call runner: %v", runner.calls)
+	}
+	assertViewContains(t, m.View(), "Email inválido", "falta '@'")
+}
+
 func TestCockpitHandlers_ConfigShowsReadOnlyStructuredResultAndReturnsToMenu(t *testing.T) {
 	runner := &fakeCockpitRunner{configSummary: "preset=argentino\napi_url=https://hivemem.dev\nemail=dev@example.com"}
 	m := newCockpitHandlerTestModel(runner)

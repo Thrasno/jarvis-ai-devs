@@ -172,6 +172,37 @@ func TestRunWizard_TTYRoutesToCockpit(t *testing.T) {
 	}
 }
 
+func TestTerminalIsTTY_UsesOnlyStdinTerminalSignals(t *testing.T) {
+	originalStdinTerminal := stdinIsTerminal
+	originalStdinCygwinTerminal := stdinIsCygwinTerminal
+	t.Cleanup(func() {
+		stdinIsTerminal = originalStdinTerminal
+		stdinIsCygwinTerminal = originalStdinCygwinTerminal
+	})
+
+	tests := []struct {
+		name     string
+		stdinTTY bool
+		cygwin   bool
+		want     bool
+	}{
+		{name: "regular stdin tty", stdinTTY: true, want: true},
+		{name: "cygwin stdin terminal", cygwin: true, want: true},
+		{name: "piped stdin", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stdinIsTerminal = func() bool { return tt.stdinTTY }
+			stdinIsCygwinTerminal = func() bool { return tt.cygwin }
+
+			if got := terminalIsTTY(); got != tt.want {
+				t.Fatalf("terminalIsTTY() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunWizard_NoTUIFlagPreservesFallback(t *testing.T) {
 	originalTerminal := terminalIsTTY
 	originalRunTUI := runTUIProgram
