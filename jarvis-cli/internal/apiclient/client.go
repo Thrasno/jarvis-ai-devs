@@ -178,12 +178,17 @@ func loginStatusClass(statusCode int) string {
 
 // NormalizeLoginEmail trims and validates the login email before it reaches the API.
 func NormalizeLoginEmail(input string) (string, error) {
-	email := strings.TrimSpace(input)
+	email := strings.TrimSpace(strings.ReplaceAll(input, "\x00", ""))
 	if email == "" {
 		return "", invalidLoginEmailError("")
 	}
 	if strings.ContainsAny(email, " \t\r\n") {
 		return "", invalidLoginEmailError("")
+	}
+	for _, r := range email {
+		if r < 0x20 || r == 0x7f {
+			return "", invalidLoginEmailError("")
+		}
 	}
 	if strings.Count(email, "@") != 1 {
 		return "", invalidLoginEmailError("")

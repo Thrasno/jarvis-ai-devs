@@ -183,6 +183,49 @@ func TestLogin_NormalizesEmailAndPreservesPassword(t *testing.T) {
 	}
 }
 
+func TestLogin_StripsNULFromEmailAndPreservesPassword(t *testing.T) {
+	var request LoginRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/auth/login" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"token":"abc","user":{"email":"ancarco_1@hotmail.com"}}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	_, err := client.Login("ancarco_1\x00\x00@hotmail.com", " secret \n")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if request.Email != "ancarco_1@hotmail.com" {
+		t.Fatalf("email NULs were not stripped in request: %q", request.Email)
+	}
+	if request.Password != " secret \n" {
+		t.Fatalf("password bytes were not preserved: %q", request.Password)
+	}
+}
+
+func TestNormalizeLoginEmail_StripsNULAndRejectsOtherControls(t *testing.T) {
+	email, err := NormalizeLoginEmail("ancarco_1\x00\x00@hotmail.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if email != "ancarco_1@hotmail.com" {
+		t.Fatalf("expected NUL-stripped email, got %q", email)
+	}
+
+	if _, err := NormalizeLoginEmail("ancarco_1\x01@hotmail.com"); err == nil {
+		t.Fatal("expected non-NUL control character to be rejected")
+	}
+}
+
 func TestLogin_BackendEmailTag400ReturnsFriendlyEmailError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -250,6 +293,34 @@ func TestLoginDebug_EnabledLogsNormalizedEmailWithoutPassword(t *testing.T) {
 	}
 	if !strings.Contains(logText, `email_runes=[U+0074 U+0072`) {
 		t.Fatalf("expected rune diagnostics in debug log, got:\n%s", logText)
+	}
+	if strings.Contains(logText, "secret-password") {
+		t.Fatalf("debug log must not contain password, got:\n%s", logText)
+	}
+}
+
+func TestLoginDebug_BeforePostStripsNULFromEmail(t *testing.T) {
+	tmp := t.TempDir()
+	setLoginDebugTempDir(t, tmp)
+	t.Setenv("JARVIS_LOGIN_DEBUG", "true")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"token":"abc","user":{"email":"ancarco_1@hotmail.com"}}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	_, err := client.Login("ancarco_1\x00\x00@hotmail.com", "secret-password")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	logText := readLoginDebugLog(t, tmp)
+	if !strings.Contains(logText, `event=before_post`) || !strings.Contains(logText, `email="ancarco_1@hotmail.com"`) {
+		t.Fatalf("expected NUL-stripped email before POST in debug log, got:\n%s", logText)
+	}
+	if strings.Contains(logText, "\\x00") || strings.Contains(logText, "U+0000") {
+		t.Fatalf("debug log must not contain NUL diagnostics after normalization, got:\n%s", logText)
 	}
 	if strings.Contains(logText, "secret-password") {
 		t.Fatalf("debug log must not contain password, got:\n%s", logText)
