@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -14,6 +16,8 @@ import (
 const defaultTimeout = 15 * time.Second
 
 const invalidLoginEmailMessage = "Email inválido. Ingresa un email válido, por ejemplo usuario@dominio.com."
+
+const loginDebugLogFile = "jarvis-login-debug.log"
 
 // Client is a minimal HTTP client for the Hive Cloud API.
 type Client struct {
@@ -64,21 +68,27 @@ func New(baseURL string) *Client {
 func (c *Client) Login(email, password string) (*LoginResponse, error) {
 	normalizedEmail, err := NormalizeLoginEmail(email)
 	if err != nil {
+		safeEmail := safeLoginDebugEmail(email)
+		c.logLoginDebug("local_validation_failed", safeEmail, len(safeEmail), 0, "invalid_email")
 		return nil, err
 	}
 
 	body, err := json.Marshal(LoginRequest{Email: normalizedEmail, Password: password})
 	if err != nil {
+		c.logLoginDebug("marshal_failed", normalizedEmail, len(normalizedEmail), 0, "marshal_error")
 		return nil, fmt.Errorf("marshal login request: %w", err)
 	}
 
+	c.logLoginDebug("before_post", normalizedEmail, len(normalizedEmail), 0, "")
 	resp, err := c.httpClient.Post(c.BaseURL+"/auth/login", "application/json", bytes.NewReader(body))
 	if err != nil {
+		c.logLoginDebug("post_failed", normalizedEmail, len(normalizedEmail), 0, "network_error")
 		return nil, fmt.Errorf("POST /auth/login: %w", err)
 	}
 	defer func() {
 		_ = resp.Body.Close()
 	}()
+	c.logLoginDebug("response", normalizedEmail, len(normalizedEmail), resp.StatusCode, loginStatusClass(resp.StatusCode))
 
 	if resp.StatusCode != http.StatusOK {
 		apiErr := decodeAPIError(resp)
@@ -105,6 +115,7 @@ func (c *Client) Login(email, password string) (*LoginResponse, error) {
 
 	var loginResp LoginResponse
 	if err := json.NewDecoder(resp.Body).Decode(&loginResp); err != nil {
+		c.logLoginDebug("decode_failed", normalizedEmail, len(normalizedEmail), resp.StatusCode, "decode_error")
 		return nil, fmt.Errorf("decode login response: %w", err)
 	}
 
@@ -112,6 +123,57 @@ func (c *Client) Login(email, password string) (*LoginResponse, error) {
 	c.Token = loginResp.Token
 
 	return &loginResp, nil
+}
+
+func (c *Client) logLoginDebug(event, email string, emailBytes int, statusCode int, class string) {
+	if !loginDebugEnabled() {
+		return
+	}
+
+	path := filepath.Join(os.TempDir(), loginDebugLogFile)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	_, _ = fmt.Fprintf(f, "%s event=%s base_url=%q email=%q email_bytes=%d email_runes=%s status=%d class=%s\n",
+		time.Now().UTC().Format(time.RFC3339Nano), event, c.BaseURL, email, emailBytes, loginDebugRunes(email), statusCode, class)
+}
+
+func loginDebugEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("JARVIS_LOGIN_DEBUG"))) {
+	case "1", "true":
+		return true
+	default:
+		return false
+	}
+}
+
+func safeLoginDebugEmail(email string) string {
+	email = strings.TrimSpace(email)
+	if isSafeEmailForError(email) {
+		return email
+	}
+	return ""
+}
+
+func loginDebugRunes(email string) string {
+	if email == "" {
+		return "[]"
+	}
+	parts := make([]string, 0, len(email))
+	for _, r := range email {
+		parts = append(parts, fmt.Sprintf("%U", r))
+	}
+	return "[" + strings.Join(parts, " ") + "]"
+}
+
+func loginStatusClass(statusCode int) string {
+	if statusCode >= 200 && statusCode <= 299 {
+		return "ok"
+	}
+	return fmt.Sprintf("http_%d", statusCode)
 }
 
 // NormalizeLoginEmail trims and validates the login email before it reaches the API.

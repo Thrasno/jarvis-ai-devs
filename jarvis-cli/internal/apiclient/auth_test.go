@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -203,6 +205,119 @@ func TestLogin_BackendEmailTag400ReturnsFriendlyEmailError(t *testing.T) {
 	if strings.Contains(err.Error(), "jarvis --no-tui") {
 		t.Fatalf("invalid email error must not recommend no-TUI fallback: %v", err)
 	}
+}
+
+func TestLoginDebug_DisabledCreatesNoTempLogFile(t *testing.T) {
+	tmp := t.TempDir()
+	setLoginDebugTempDir(t, tmp)
+	t.Setenv("JARVIS_LOGIN_DEBUG", "")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"token":"abc","user":{"email":"user@example.com"}}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	_, err := client.Login(" user@example.com ", "secret-password")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, loginDebugLogFile)); !os.IsNotExist(err) {
+		t.Fatalf("expected no debug log file, stat error: %v", err)
+	}
+}
+
+func TestLoginDebug_EnabledLogsNormalizedEmailWithoutPassword(t *testing.T) {
+	tmp := t.TempDir()
+	setLoginDebugTempDir(t, tmp)
+	t.Setenv("JARVIS_LOGIN_DEBUG", "true")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"token":"abc","user":{"email":"trimmed@example.com"}}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	_, err := client.Login("  trimmed@example.com\t", "secret-password")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	logText := readLoginDebugLog(t, tmp)
+	if !strings.Contains(logText, `event=before_post`) || !strings.Contains(logText, `email="trimmed@example.com"`) {
+		t.Fatalf("expected normalized email before POST in debug log, got:\n%s", logText)
+	}
+	if !strings.Contains(logText, `email_runes=[U+0074 U+0072`) {
+		t.Fatalf("expected rune diagnostics in debug log, got:\n%s", logText)
+	}
+	if strings.Contains(logText, "secret-password") {
+		t.Fatalf("debug log must not contain password, got:\n%s", logText)
+	}
+}
+
+func TestLoginDebug_LogsBackendStatusAndLocalInvalidEmail(t *testing.T) {
+	t.Run("backend status", func(t *testing.T) {
+		tmp := t.TempDir()
+		setLoginDebugTempDir(t, tmp)
+		t.Setenv("JARVIS_LOGIN_DEBUG", "1")
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"bad credentials"}`))
+		}))
+		defer server.Close()
+
+		client := New(server.URL)
+		_, err := client.Login("user@example.com", "secret-password")
+		if err == nil {
+			t.Fatal("expected login error")
+		}
+
+		logText := readLoginDebugLog(t, tmp)
+		if !strings.Contains(logText, `event=response`) || !strings.Contains(logText, `status=401`) || !strings.Contains(logText, `class=http_401`) {
+			t.Fatalf("expected backend status diagnostics, got:\n%s", logText)
+		}
+		if strings.Contains(logText, "secret-password") || strings.Contains(logText, "bad credentials") {
+			t.Fatalf("debug log must not contain password or response body, got:\n%s", logText)
+		}
+	})
+
+	t.Run("local invalid email", func(t *testing.T) {
+		tmp := t.TempDir()
+		setLoginDebugTempDir(t, tmp)
+		t.Setenv("JARVIS_LOGIN_DEBUG", "1")
+
+		client := New("https://api.example.test")
+		_, err := client.Login("invalid-email", "secret-password")
+		if err == nil {
+			t.Fatal("expected local validation error")
+		}
+
+		logText := readLoginDebugLog(t, tmp)
+		if !strings.Contains(logText, `event=local_validation_failed`) || !strings.Contains(logText, `email="invalid-email"`) || !strings.Contains(logText, `class=invalid_email`) {
+			t.Fatalf("expected local invalid-email diagnostics, got:\n%s", logText)
+		}
+		if strings.Contains(logText, "secret-password") {
+			t.Fatalf("debug log must not contain password, got:\n%s", logText)
+		}
+	})
+}
+
+func setLoginDebugTempDir(t *testing.T, tmp string) {
+	t.Helper()
+	t.Setenv("TMPDIR", tmp)
+	t.Setenv("TMP", tmp)
+	t.Setenv("TEMP", tmp)
+}
+
+func readLoginDebugLog(t *testing.T, tmp string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(tmp, loginDebugLogFile))
+	if err != nil {
+		t.Fatalf("read debug log: %v", err)
+	}
+	return string(b)
 }
 
 func TestMe(t *testing.T) {
