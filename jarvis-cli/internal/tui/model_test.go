@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -935,26 +936,86 @@ func TestUpdateHiveCloud_EmptyEmailEnterSkipsToPersona(t *testing.T) {
 }
 
 func TestUpdateHiveCloud_InvalidEmailDoesNotLogin(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		email string
+	}{
+		{name: "missing at", email: "invalid-email"},
+		{name: "missing domain dot", email: "user@example"},
+		{name: "embedded whitespace", email: "user @example.com"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := Model{
+				Step:        StepHiveCloud,
+				Selected:    make(map[string]bool),
+				cfg:         &config.AppConfig{},
+				Email:       tt.email,
+				Password:    "secret",
+				activeField: 1,
+			}
+
+			updated, cmd := updateHiveCloud(m, tea.KeyMsg{Type: tea.KeyEnter})
+			m = updated.(Model)
+
+			if cmd != nil {
+				t.Fatal("invalid email must not start login command")
+			}
+			if m.Err == nil || !strings.Contains(m.Err.Error(), "usuario@dominio.com") {
+				t.Fatalf("expected friendly invalid email error, got %v", m.Err)
+			}
+			if strings.Contains(m.Err.Error(), "jarvis --no-tui") {
+				t.Fatalf("invalid email error must not recommend no-TUI fallback: %v", m.Err)
+			}
+			if m.Step != StepHiveCloud {
+				t.Fatalf("invalid email must stay on Hive Cloud step, got %v", m.Step)
+			}
+		})
+	}
+}
+
+func TestUpdateHiveCloud_TrimsEmailBeforeLogin(t *testing.T) {
+	var request struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode login request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"token":"abc","user":{"email":""}}`))
+	}))
+	t.Cleanup(server.Close)
+
 	m := Model{
 		Step:        StepHiveCloud,
 		Selected:    make(map[string]bool),
-		cfg:         &config.AppConfig{},
-		Email:       "invalid-email",
-		Password:    "secret",
+		cfg:         &config.AppConfig{APIURL: server.URL},
+		Email:       "  input@example.com  ",
+		Password:    " secret ",
 		activeField: 1,
 	}
 
 	updated, cmd := updateHiveCloud(m, tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
-
-	if cmd != nil {
-		t.Fatal("invalid email must not start login command")
+	if cmd == nil {
+		t.Fatal("valid email must start login command")
 	}
-	if m.Err == nil || !strings.Contains(m.Err.Error(), "falta '@'") {
-		t.Fatalf("expected invalid email error, got %v", m.Err)
+	if m.Email != "input@example.com" {
+		t.Fatalf("expected model email normalized before login, got %q", m.Email)
 	}
-	if m.Step != StepHiveCloud {
-		t.Fatalf("invalid email must stay on Hive Cloud step, got %v", m.Step)
+	res, ok := cmd().(loginResultMsg)
+	if !ok {
+		t.Fatalf("expected loginResultMsg")
+	}
+	if res.err != nil {
+		t.Fatalf("unexpected login error: %v", res.err)
+	}
+	if request.Email != "input@example.com" {
+		t.Fatalf("expected trimmed email sent to login, got %q", request.Email)
+	}
+	if request.Password != " secret " {
+		t.Fatalf("wizard password must not be trimmed, got %q", request.Password)
 	}
 }
 

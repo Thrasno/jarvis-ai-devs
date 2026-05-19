@@ -142,6 +142,8 @@ func TestCockpitHandlers_HiveCloudLoginPromptsCredentialsAndReturnsToMenu(t *tes
 	runner := &fakeCockpitRunner{loginEmail: "resolved@example.com"}
 	m := newCockpitHandlerTestModel(runner)
 	m = selectCockpitAction(t, m, CockpitActionHiveCloudLogin)
+	m.Email = ""
+	m.Password = ""
 
 	if m.Screen == ScreenWizard || m.Step == StepPersona {
 		t.Fatalf("login action must stay cockpit-native, got screen=%v step=%v", m.Screen, m.Step)
@@ -166,6 +168,8 @@ func TestCockpitHandlers_HiveCloudLoginRequiresCredentialsAllowsBackspaceAndSurf
 	runner := &fakeCockpitRunner{loginErr: errors.New("cloud unavailable")}
 	m := newCockpitHandlerTestModel(runner)
 	m = selectCockpitAction(t, m, CockpitActionHiveCloudLogin)
+	m.Email = ""
+	m.Password = ""
 	m = sendCockpitKey(m, tea.KeyEnter)
 	m = sendCockpitKey(m, tea.KeyEnter)
 
@@ -176,6 +180,8 @@ func TestCockpitHandlers_HiveCloudLoginRequiresCredentialsAllowsBackspaceAndSurf
 
 	m = newCockpitHandlerTestModel(runner)
 	m = selectCockpitAction(t, m, CockpitActionHiveCloudLogin)
+	m.Email = ""
+	m.Password = ""
 	m = typeCockpitText(m, "user@example.comm")
 	m = sendCockpitKey(m, tea.KeyBackspace)
 	m = sendCockpitKey(m, tea.KeyEnter)
@@ -189,18 +195,83 @@ func TestCockpitHandlers_HiveCloudLoginRequiresCredentialsAllowsBackspaceAndSurf
 }
 
 func TestCockpitHandlers_HiveCloudLoginRejectsInvalidEmail(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		email string
+	}{
+		{name: "missing at", email: "invalid-email"},
+		{name: "missing domain dot", email: "user@example"},
+		{name: "embedded whitespace", email: "user @example.com"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &fakeCockpitRunner{}
+			m := newCockpitHandlerTestModel(runner)
+			m = selectCockpitAction(t, m, CockpitActionHiveCloudLogin)
+			m.Email = ""
+			m.Password = ""
+			m = typeCockpitText(m, tt.email)
+			m = sendCockpitKey(m, tea.KeyEnter)
+			m = typeCockpitText(m, "secret")
+			m = sendCockpitKey(m, tea.KeyEnter)
+
+			if len(runner.calls) != 0 {
+				t.Fatalf("invalid email must not call runner: %v", runner.calls)
+			}
+			view := m.View()
+			assertViewContains(t, view, "Email inválido", "usuario@dominio.com")
+			if strings.Contains(view, "jarvis --no-tui") {
+				t.Fatalf("invalid email error must not recommend no-TUI fallback:\n%s", view)
+			}
+		})
+	}
+}
+
+func TestCockpitHandlers_HiveCloudLoginTrimsEmailBeforeLogin(t *testing.T) {
 	runner := &fakeCockpitRunner{}
 	m := newCockpitHandlerTestModel(runner)
 	m = selectCockpitAction(t, m, CockpitActionHiveCloudLogin)
-	m = typeCockpitText(m, "invalid-email")
-	m = sendCockpitKey(m, tea.KeyEnter)
-	m = typeCockpitText(m, "secret")
+	m.Email = "  input@example.com  "
+	m.activeField = 1
+	m.Password = " secret "
 	m = sendCockpitKey(m, tea.KeyEnter)
 
-	if len(runner.calls) != 0 {
-		t.Fatalf("invalid email must not call runner: %v", runner.calls)
+	if got, want := runner.calls, []string{"login:input@example.com: secret "}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected login calls: got %v want %v", got, want)
 	}
-	assertViewContains(t, m.View(), "Email inválido", "falta '@'")
+}
+
+func TestNormalizeHiveCloudEmail_SharedSemantics(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{name: "trims valid email", input: "  usuario@dominio.com\t", want: "usuario@dominio.com"},
+		{name: "empty stays empty", input: "  ", want: ""},
+		{name: "missing at", input: "usuario", wantErr: true},
+		{name: "missing domain dot", input: "usuario@dominio", wantErr: true},
+		{name: "embedded whitespace", input: "usuario @dominio.com", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeHiveCloudEmail(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				if !strings.Contains(err.Error(), "usuario@dominio.com") || strings.Contains(err.Error(), "jarvis --no-tui") {
+					t.Fatalf("unexpected error text: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("got %q want %q", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestCockpitHandlers_ConfigShowsReadOnlyStructuredResultAndReturnsToMenu(t *testing.T) {

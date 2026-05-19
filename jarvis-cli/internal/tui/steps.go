@@ -115,16 +115,18 @@ func updateHiveCloud(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		// Enter on password field: attempt login.
-		if m.Email == "" {
+		email, err := normalizeHiveCloudEmail(m.Email)
+		if err != nil {
+			m.Err = err
+			return m, nil
+		}
+		if email == "" {
 			// Skip cloud auth entirely.
 			m.Step = StepPersona
 			return m, nil
 		}
-		if !strings.Contains(m.Email, "@") {
-			m.Err = fmt.Errorf("email inválido — falta '@'. Tip: si el teclado no escribe '@', usa jarvis --no-tui")
-			return m, nil
-		}
-		return m, loginCmd(m.cfg.APIURL, m.Email, m.Password)
+		m.Email = email
+		return m, loginCmd(m.cfg.APIURL, email, m.Password)
 	case tea.KeyRunes:
 		if m.activeField == 0 {
 			m.Email += string(msg.Runes)

@@ -213,14 +213,14 @@ func updateCockpitLogin(m Model, key keyInput) Model {
 		m.activeField = 1
 		return m
 	}
-	email := strings.TrimSpace(m.Email)
-	password := strings.TrimSpace(m.Password)
-	if email == "" || password == "" {
-		m.cockpitMessage = "Email and password are required."
+	email, err := normalizeHiveCloudEmail(m.Email)
+	if err != nil {
+		m.cockpitMessage = err.Error()
 		return m
 	}
-	if !strings.Contains(email, "@") {
-		m.cockpitMessage = "Email inválido — falta '@'. Si el teclado no escribe '@', cierra y ejecuta: jarvis --no-tui"
+	password := m.Password
+	if email == "" || password == "" {
+		m.cockpitMessage = "Email and password are required."
 		return m
 	}
 	resolvedEmail, err := m.runner().LoginHiveCloud(context.Background(), email, password)
