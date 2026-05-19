@@ -55,6 +55,36 @@ func TestWriteSyncCredentials_PreservesAutoSync(t *testing.T) {
 	}
 }
 
+func TestWriteSyncCredentials_ReturnsParseErrorForEmptyExistingFile(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	jarvisDir := filepath.Join(tmpHome, ".jarvis")
+	if err := os.MkdirAll(jarvisDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(jarvisDir, "sync.json")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := WriteSyncCredentials("https://hivemem.dev", "new@example.com", "newpass")
+	if err == nil {
+		t.Fatal("expected parse error for empty existing sync.json")
+	}
+	if !strings.Contains(err.Error(), "parse existing sync.json") {
+		t.Fatalf("expected parse error, got: %v", err)
+	}
+
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read sync.json after failure: %v", readErr)
+	}
+	if len(data) != 0 {
+		t.Fatalf("expected empty sync.json preserved after parse failure, got: %q", string(data))
+	}
+}
+
 func TestWriteSyncCredentials_LeavesPreviousFileWhenUpdateFails(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
