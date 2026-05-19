@@ -114,6 +114,97 @@ func TestLogin(t *testing.T) {
 	}
 }
 
+func TestLogin_InvalidEmailReturnsLocalErrorWithoutCallingServer(t *testing.T) {
+	tests := []struct {
+		name  string
+		email string
+	}{
+		{name: "empty", email: "  "},
+		{name: "missing at", email: "invalid-email"},
+		{name: "missing domain dot", email: "user@example"},
+		{name: "embedded whitespace", email: "user @example.com"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			client := New(server.URL)
+			_, err := client.Login(tt.email, "secret")
+			if err == nil {
+				t.Fatal("expected local validation error")
+			}
+			if called {
+				t.Fatal("invalid email must not call server")
+			}
+			if !strings.Contains(err.Error(), "usuario@dominio.com") {
+				t.Fatalf("expected friendly email example, got %q", err.Error())
+			}
+			if strings.Contains(err.Error(), "jarvis --no-tui") {
+				t.Fatalf("invalid email error must not recommend no-TUI fallback: %v", err)
+			}
+		})
+	}
+}
+
+func TestLogin_NormalizesEmailAndPreservesPassword(t *testing.T) {
+	var request LoginRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/auth/login" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"token":"abc","user":{"email":"trimmed@example.com"}}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	_, err := client.Login("  trimmed@example.com\t", " secret \n")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if request.Email != "trimmed@example.com" {
+		t.Fatalf("email was not normalized in request: %q", request.Email)
+	}
+	if request.Password != " secret \n" {
+		t.Fatalf("password bytes were not preserved: %q", request.Password)
+	}
+}
+
+func TestLogin_BackendEmailTag400ReturnsFriendlyEmailError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Key: 'LoginRequest.Email' Error:Field validation for 'Email' failed on the 'email' tag"})
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	_, err := client.Login("  user@example.com  ", "secret")
+	if err == nil {
+		t.Fatal("expected friendly validation error")
+	}
+	if !strings.Contains(err.Error(), `"user@example.com"`) || !strings.Contains(err.Error(), "usuario@dominio.com") {
+		t.Fatalf("expected friendly sanitized email error, got %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("error must not include password: %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "jarvis --no-tui") {
+		t.Fatalf("invalid email error must not recommend no-TUI fallback: %v", err)
+	}
+}
+
 func TestMe(t *testing.T) {
 	tests := []struct {
 		name       string

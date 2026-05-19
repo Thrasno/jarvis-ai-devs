@@ -4,6 +4,7 @@ package apiclient
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -11,6 +12,8 @@ import (
 )
 
 const defaultTimeout = 15 * time.Second
+
+const invalidLoginEmailMessage = "Email inválido. Ingresa un email válido, por ejemplo usuario@dominio.com."
 
 // Client is a minimal HTTP client for the Hive Cloud API.
 type Client struct {
@@ -59,7 +62,12 @@ func New(baseURL string) *Client {
 // Login authenticates with the Hive Cloud API and returns a token.
 // Returns a descriptive error on 401 (wrong credentials) or network failures.
 func (c *Client) Login(email, password string) (*LoginResponse, error) {
-	body, err := json.Marshal(LoginRequest{Email: email, Password: password})
+	normalizedEmail, err := NormalizeLoginEmail(email)
+	if err != nil {
+		return nil, err
+	}
+
+	body, err := json.Marshal(LoginRequest{Email: normalizedEmail, Password: password})
 	if err != nil {
 		return nil, fmt.Errorf("marshal login request: %w", err)
 	}
@@ -85,6 +93,9 @@ func (c *Client) Login(email, password string) (*LoginResponse, error) {
 		case http.StatusInternalServerError:
 			return nil, fmt.Errorf("server error during login — try again in a moment")
 		default:
+			if resp.StatusCode == http.StatusBadRequest && isBackendEmailValidationError(apiErr) {
+				return nil, invalidLoginEmailError(normalizedEmail)
+			}
 			if apiErr != "" {
 				return nil, fmt.Errorf("unexpected status from /auth/login: %d (%s)", resp.StatusCode, apiErr)
 			}
@@ -101,6 +112,52 @@ func (c *Client) Login(email, password string) (*LoginResponse, error) {
 	c.Token = loginResp.Token
 
 	return &loginResp, nil
+}
+
+// NormalizeLoginEmail trims and validates the login email before it reaches the API.
+func NormalizeLoginEmail(input string) (string, error) {
+	email := strings.TrimSpace(input)
+	if email == "" {
+		return "", invalidLoginEmailError("")
+	}
+	if strings.ContainsAny(email, " \t\r\n") {
+		return "", invalidLoginEmailError("")
+	}
+	if strings.Count(email, "@") != 1 {
+		return "", invalidLoginEmailError("")
+	}
+	local, domain, _ := strings.Cut(email, "@")
+	if local == "" || domain == "" || !strings.Contains(domain, ".") {
+		return "", invalidLoginEmailError("")
+	}
+	if strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") || strings.Contains(domain, "..") {
+		return "", invalidLoginEmailError("")
+	}
+	return email, nil
+}
+
+func invalidLoginEmailError(email string) error {
+	if isSafeEmailForError(email) {
+		return fmt.Errorf("Email inválido %q. Ingresa un email válido, por ejemplo usuario@dominio.com.", email)
+	}
+	return errors.New(invalidLoginEmailMessage)
+}
+
+func isSafeEmailForError(email string) bool {
+	if email == "" || len(email) > 120 {
+		return false
+	}
+	for _, r := range email {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func isBackendEmailValidationError(apiErr string) bool {
+	lower := strings.ToLower(apiErr)
+	return strings.Contains(lower, "loginrequest.email") && strings.Contains(lower, "email") && strings.Contains(lower, "tag")
 }
 
 func decodeAPIError(resp *http.Response) string {
