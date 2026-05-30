@@ -192,12 +192,12 @@ Each phase returns: `status`, `executive_summary`, `artifacts`, `next_recommende
 <!-- gentle-ai:sdd-model-assignments -->
 ## Model Assignments
 
-Read this table at session start (or before first delegation), cache it for the session, and pass the mapped alias in every Agent tool call via the `model` parameter. If a phase is missing, use the `default` row. If you lack access to the assigned model, substitute `sonnet` and continue.
+Read this table at session start (or before first delegation), cache it for the session, and pass the mapped model assignment in every Agent tool call via the `model` parameter. Values may be legacy aliases or provider-qualified OpenCode models (`provider/model`). Treat `Effort` as a separate reasoning/thinking hint for runtimes that support it; do not append it to the model value. If a phase is missing, use the `default` row. If you lack access to the assigned model or effort, substitute `sonnet`/default effort and continue.
 
-| Phase | Default Model | Reason |
-|-------|---------------|--------|
+| Phase | Default Model | Effort | Reason |
+|-------|---------------|--------|--------|
 {{- range .ModelRows }}
-| {{ .Phase }} | {{ .Model }} | {{ .Reason }} |
+| {{ .Phase }} | {{ .Model }} | {{ .Effort }} | {{ .Reason }} |
 {{- end }}
 
 <!-- /gentle-ai:sdd-model-assignments -->
@@ -206,7 +206,7 @@ Read this table at session start (or before first delegation), cache it for the 
 
 ALL sub-agent launch prompts that involve reading, writing, or reviewing code MUST include pre-resolved exact `SKILL.md` paths from the skill registry. Follow the **Skill Resolver Protocol** shipped in `_shared/skill-resolver.md`.
 
-The orchestrator resolves skills from the registry ONCE (at session start or first delegation), caches exact `SKILL.md` paths, and injects matching paths into each sub-agent's prompt. Also reads the Model Assignments table once per session, caches `phase → alias`, includes that alias in every Agent tool call via `model`.
+The orchestrator resolves skills from the registry ONCE (at session start or first delegation), caches exact `SKILL.md` paths, and injects matching paths into each sub-agent's prompt. Also reads the Model Assignments table once per session, caches `phase → model assignment`, includes that assignment in every Agent tool call via `model`.
 
 Orchestrator skill resolution (do once per session):
 1. `mem_search(query: "skill-registry", project: "{project}")` → `mem_get_observation(id)` for full registry content

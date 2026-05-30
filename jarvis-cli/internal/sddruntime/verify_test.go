@@ -159,14 +159,56 @@ func TestVerify_ParityInvariants_PromptStoreRegistryAndMemoryBoundaries(t *testi
 	}
 }
 
-func TestVerify_IgnoresLegacyResolvedAssignments(t *testing.T) {
+func TestVerify_UsesResolvedConfiguredAssignmentsWhenPresent(t *testing.T) {
+	observed := compliantObservedRuntime(t)
+	observed.ResolvedModelAssignments = map[string]string{
+		"sdd-apply": "openai/gpt-5.1-codex-max",
+	}
+	observed.ModelAssignments["sdd-apply"] = "openai/gpt-5.1-codex-max"
+
+	report := Verify("opencode", observed)
+	if report.Status != StatusPass {
+		t.Fatalf("expected status pass, got %q", report.Status)
+	}
+
+	check := findCheckByKey(report.Checks, "invariant.model.sdd-apply")
+	if check == nil {
+		t.Fatal("expected invariant.model.sdd-apply check")
+	}
+	if check.Expected != "openai/gpt-5.1-codex-max" || check.Observed != "openai/gpt-5.1-codex-max" {
+		t.Fatalf("unexpected check expected/observed: %+v", *check)
+	}
+}
+
+func TestVerify_FailsWhenObservedDoesNotMatchResolvedConfiguredAssignments(t *testing.T) {
+	observed := compliantObservedRuntime(t)
+	observed.ResolvedModelAssignments = map[string]string{
+		"sdd-apply": "openai/gpt-5.1-codex-max",
+	}
+	observed.ModelAssignments["sdd-apply"] = "sonnet"
+
+	report := Verify("opencode", observed)
+	if report.Status != StatusFail {
+		t.Fatalf("expected status fail, got %q", report.Status)
+	}
+
+	check := findCheckByKey(report.Checks, "invariant.model.sdd-apply")
+	if check == nil {
+		t.Fatal("expected invariant.model.sdd-apply check")
+	}
+	if check.Expected != "openai/gpt-5.1-codex-max" || check.Observed != "sonnet" {
+		t.Fatalf("unexpected check expected/observed: %+v", *check)
+	}
+}
+
+func TestVerify_UsesPlatformDefaultsWhenResolvedAssignmentsAreAbsent(t *testing.T) {
 	tests := []struct {
 		name           string
 		observedApply  string
 		expectedStatus IntegrityStatus
 	}{
-		{name: "passes when observed matches platform defaults even if resolved map stale", observedApply: "sonnet", expectedStatus: StatusPass},
-		{name: "fails on observed drift regardless of resolved map", observedApply: "haiku", expectedStatus: StatusFail},
+		{name: "passes when observed matches platform defaults with no resolved phase", observedApply: "sonnet", expectedStatus: StatusPass},
+		{name: "fails on observed drift with no resolved phase", observedApply: "haiku", expectedStatus: StatusFail},
 	}
 
 	for _, tt := range tests {
@@ -175,7 +217,6 @@ func TestVerify_IgnoresLegacyResolvedAssignments(t *testing.T) {
 			observed.ResolvedModelAssignments = map[string]string{
 				"default":      "sonnet",
 				"orchestrator": "opus",
-				"sdd-apply":    "stale-legacy-value",
 			}
 			observed.ModelAssignments["sdd-apply"] = tt.observedApply
 

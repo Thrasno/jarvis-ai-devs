@@ -3,6 +3,7 @@ package sddruntime
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"text/template"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
@@ -50,6 +51,7 @@ func Build(agent string) (RuntimePlan, error) {
 type modelAssignmentRow struct {
 	Phase  string
 	Model  string
+	Effort string
 	Reason string
 }
 
@@ -65,16 +67,14 @@ func RenderOrchestrator(agent string, cfg *config.AppConfig, templateContent str
 		return "", err
 	}
 
-	resolved := ResolvePhaseModels(cfg)
+	assignments, err := ResolveAssignmentsForPlatform(platform, cfg)
+	if err != nil {
+		return "", err
+	}
 	contract := DefaultContract()
 	rows := make([]modelAssignmentRow, 0, len(contract.Phases))
 	for _, phase := range contract.Phases {
-		selection := resolved[phase]
-		model := selection.OpenCode
-		if platform == PlatformClaude {
-			model = selection.Claude
-		}
-		rows = append(rows, modelAssignmentRow{Phase: phase, Model: model, Reason: phaseReason(phase)})
+		rows = append(rows, modelAssignmentRow{Phase: phase, Model: assignments[phase], Effort: assignmentEffort(platform, cfg, phase), Reason: phaseReason(phase)})
 	}
 
 	tmpl, err := template.New("sdd-orchestrator").Parse(templateContent)
@@ -88,6 +88,21 @@ func RenderOrchestrator(agent string, cfg *config.AppConfig, templateContent str
 	}
 
 	return out.String(), nil
+}
+
+func assignmentEffort(platform Platform, cfg *config.AppConfig, phase string) string {
+	if platform != PlatformOpenCode || cfg == nil || cfg.SDD.OpenCodePhaseModels == nil {
+		return "-"
+	}
+	assignment := cfg.SDD.OpenCodePhaseModels[phase]
+	if strings.TrimSpace(assignment.ProviderID) == "" || strings.TrimSpace(assignment.ModelID) == "" {
+		return "-"
+	}
+	effort := strings.TrimSpace(assignment.Effort)
+	if effort == "" {
+		return "-"
+	}
+	return effort
 }
 
 func platformForAgent(agent string) (Platform, error) {

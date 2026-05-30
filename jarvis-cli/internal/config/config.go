@@ -66,9 +66,17 @@ type PhaseModelSelection struct {
 	Claude   string `mapstructure:"claude" yaml:"claude,omitempty"`
 }
 
+// OpenCodeModelAssignment stores a provider-qualified OpenCode model assignment for a single SDD phase.
+type OpenCodeModelAssignment struct {
+	ProviderID string `mapstructure:"provider_id" yaml:"provider_id,omitempty"`
+	ModelID    string `mapstructure:"model_id" yaml:"model_id,omitempty"`
+	Effort     string `mapstructure:"effort" yaml:"effort,omitempty"`
+}
+
 // SDDConfig stores persisted SDD runtime preferences.
 type SDDConfig struct {
-	PhaseModels map[string]PhaseModelSelection `mapstructure:"phase_models" yaml:"phase_models,omitempty"`
+	PhaseModels         map[string]PhaseModelSelection     `mapstructure:"phase_models" yaml:"phase_models,omitempty"`
+	OpenCodePhaseModels map[string]OpenCodeModelAssignment `mapstructure:"opencode_phase_models" yaml:"opencode_phase_models,omitempty"`
 }
 
 // AppConfig holds all Jarvis-CLI configuration.
@@ -253,6 +261,11 @@ func normalizeAndMigrate(cfg *AppConfig) {
 	} else {
 		cfg.SDD.PhaseModels = normalizePhaseModelsMap(cfg.SDD.PhaseModels)
 	}
+	if cfg.SDD.OpenCodePhaseModels == nil {
+		cfg.SDD.OpenCodePhaseModels = map[string]OpenCodeModelAssignment{}
+	} else {
+		cfg.SDD.OpenCodePhaseModels = normalizeOpenCodePhaseModelsMap(cfg.SDD.OpenCodePhaseModels)
+	}
 
 	if strings.TrimSpace(cfg.PersonaPreset) == "" {
 		cfg.PersonaPreset = strings.TrimSpace(cfg.Preset)
@@ -307,6 +320,21 @@ func normalizePhaseModelsMap(in map[string]PhaseModelSelection) map[string]Phase
 		sel.OpenCode = strings.ToLower(strings.TrimSpace(sel.OpenCode))
 		sel.Claude = strings.ToLower(strings.TrimSpace(sel.Claude))
 		out[phase] = sel
+	}
+	return out
+}
+
+func normalizeOpenCodePhaseModelsMap(in map[string]OpenCodeModelAssignment) map[string]OpenCodeModelAssignment {
+	out := make(map[string]OpenCodeModelAssignment, len(in))
+	for rawPhase, assignment := range in {
+		phase := strings.ToLower(strings.TrimSpace(rawPhase))
+		if phase == "" {
+			continue
+		}
+		assignment.ProviderID = strings.TrimSpace(assignment.ProviderID)
+		assignment.ModelID = strings.TrimSpace(assignment.ModelID)
+		assignment.Effort = strings.TrimSpace(assignment.Effort)
+		out[phase] = assignment
 	}
 	return out
 }

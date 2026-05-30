@@ -37,6 +37,39 @@ func TestRenderOrchestrator_AssignmentsUseResolvedCrossPlatformMap(t *testing.T)
 	}
 }
 
+func TestRenderOrchestrator_OpenCodeUsesProviderQualifiedAssignments(t *testing.T) {
+	template := `## Model Assignments
+| Phase | Default Model | Effort | Reason |
+|-------|---------------|--------|--------|
+{{- range .ModelRows }}
+| {{ .Phase }} | {{ .Model }} | {{ .Effort }} | {{ .Reason }} |
+{{- end }}`
+
+	cfg := &config.AppConfig{}
+	cfg.SDD.PhaseModels = map[string]config.PhaseModelSelection{
+		"sdd-apply": {OpenCode: "opus", Claude: "haiku"},
+	}
+	cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
+		"sdd-apply": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"},
+	}
+
+	opencodeContent, err := RenderOrchestrator("opencode", cfg, template)
+	if err != nil {
+		t.Fatalf("RenderOrchestrator opencode error: %v", err)
+	}
+	claudeContent, err := RenderOrchestrator("claude", cfg, template)
+	if err != nil {
+		t.Fatalf("RenderOrchestrator claude error: %v", err)
+	}
+
+	if !strings.Contains(opencodeContent, "| sdd-apply | openai/gpt-5.1-codex-max | high |") {
+		t.Fatalf("expected opencode provider-qualified assignment with effort, got:\n%s", opencodeContent)
+	}
+	if !strings.Contains(claudeContent, "| sdd-apply | haiku | - |") {
+		t.Fatalf("expected Claude to keep Claude alias without OpenCode effort, got:\n%s", claudeContent)
+	}
+}
+
 func TestRenderOrchestrator_RejectsUnsupportedAgent(t *testing.T) {
 	_, err := RenderOrchestrator("cursor", &config.AppConfig{}, "{{ range .ModelRows }}{{ end }}")
 	if err == nil {

@@ -274,6 +274,10 @@ func verifyModelInvariants(report *IntegrityReport, contract Contract, observed 
 
 	for _, phase := range contract.Phases {
 		expected, ok := expectedAssignments[phase]
+		if configured := strings.TrimSpace(observed.ResolvedModelAssignments[phase]); configured != "" {
+			expected = configured
+			ok = true
+		}
 		if !ok {
 			continue
 		}

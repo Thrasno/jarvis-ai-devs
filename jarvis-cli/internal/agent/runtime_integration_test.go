@@ -2,10 +2,12 @@ package agent
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
 
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 )
 
@@ -102,6 +104,59 @@ func TestOpenCodeAgent_ObserveRuntime_ProducesVerifierInput(t *testing.T) {
 	report := sddruntime.Verify(a.Name(), observed)
 	if report.Status != sddruntime.StatusPass {
 		t.Fatalf("expected verifier pass, got %q", report.Status)
+	}
+}
+
+func TestObserveRuntime_ParsesProviderQualifiedAssignmentsWithoutLowercasingModel(t *testing.T) {
+	plan, err := sddruntime.Build("opencode")
+	if err != nil {
+		t.Fatalf("Build opencode: %v", err)
+	}
+	configDir := t.TempDir()
+	orchestrator := `| Phase | Default Model | Reason |
+|-------|---------------|--------|
+| sdd-apply | OpenAI/GPT-5.1-Codex-Max | Implementation |`
+	if err := os.WriteFile(filepath.Join(configDir, filepath.Base(plan.Paths.Orchestrator)), []byte(orchestrator), 0644); err != nil {
+		t.Fatalf("write orchestrator: %v", err)
+	}
+
+	observed, err := observeRuntime(configDir, plan)
+	if err != nil {
+		t.Fatalf("observeRuntime: %v", err)
+	}
+	if got := observed.ModelAssignments["sdd-apply"]; got != "OpenAI/GPT-5.1-Codex-Max" {
+		t.Fatalf("parsed assignment = %q, want case-preserving provider/model", got)
+	}
+}
+
+func TestObserveRuntime_FallbackUsesConfiguredOpenCodeProviderQualifiedAssignments(t *testing.T) {
+	previousLoad := loadAppConfig
+	loadAppConfig = func() (*config.AppConfig, error) {
+		cfg := &config.AppConfig{}
+		cfg.SDD.PhaseModels = map[string]config.PhaseModelSelection{
+			"sdd-apply": {OpenCode: "opus", Claude: "haiku"},
+		}
+		cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
+			"sdd-apply": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max"},
+		}
+		return cfg, nil
+	}
+	t.Cleanup(func() { loadAppConfig = previousLoad })
+
+	plan, err := sddruntime.Build("opencode")
+	if err != nil {
+		t.Fatalf("Build opencode: %v", err)
+	}
+	observed, err := observeRuntime(t.TempDir(), plan)
+	if err != nil {
+		t.Fatalf("observeRuntime: %v", err)
+	}
+
+	if got := observed.ModelAssignments["sdd-apply"]; got != "openai/gpt-5.1-codex-max" {
+		t.Fatalf("sdd-apply observed assignment = %q, want provider-qualified assignment", got)
+	}
+	if got := observed.ResolvedModelAssignments["sdd-apply"]; got != "openai/gpt-5.1-codex-max" {
+		t.Fatalf("sdd-apply resolved assignment = %q, want provider-qualified assignment", got)
 	}
 }
 

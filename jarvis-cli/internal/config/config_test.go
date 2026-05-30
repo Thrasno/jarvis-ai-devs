@@ -360,7 +360,7 @@ func TestSaveLoad_PersistsSDDPhaseModels(t *testing.T) {
 	isolateHome(t)
 	cfg := defaultConfig()
 	cfg.SDD.PhaseModels = map[string]PhaseModelSelection{
-		"default": {OpenCode: "sonnet", Claude: "haiku"},
+		"default":   {OpenCode: "sonnet", Claude: "haiku"},
 		"sdd-apply": {OpenCode: "opus", Claude: "sonnet"},
 	}
 
@@ -376,6 +376,32 @@ func TestSaveLoad_PersistsSDDPhaseModels(t *testing.T) {
 	got := loaded.SDD.PhaseModels["sdd-apply"]
 	if got.OpenCode != "opus" || got.Claude != "sonnet" {
 		t.Fatalf("unexpected sdd-apply phase models: %+v", got)
+	}
+}
+
+func TestSaveLoad_PersistsOpenCodePhaseModelAssignments(t *testing.T) {
+	isolateHome(t)
+	cfg := defaultConfig()
+	cfg.SDD.OpenCodePhaseModels = map[string]OpenCodeModelAssignment{
+		"sdd-apply": {
+			ProviderID: "openai",
+			ModelID:    "gpt-5.1-codex-max",
+			Effort:     "high",
+		},
+	}
+
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	got := loaded.SDD.OpenCodePhaseModels["sdd-apply"]
+	if got.ProviderID != "openai" || got.ModelID != "gpt-5.1-codex-max" || got.Effort != "high" {
+		t.Fatalf("unexpected OpenCode assignment: %+v", got)
 	}
 }
 
