@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
@@ -19,10 +20,11 @@ import (
 )
 
 var (
-	loadAppConfig         = config.Load
-	listPersonaPresets    = persona.ListPresets
-	listAvailableSkills   = skills.ListSkills
-	detectInstalledAgents = agent.Detect
+	loadAppConfig                   = config.Load
+	listPersonaPresets              = persona.ListPresets
+	listAvailableSkills             = skills.ListSkills
+	detectInstalledAgents           = agent.Detect
+	noTUIStdout           io.Writer = os.Stdout
 )
 
 // RunNoTUI executes the full wizard using plain readline-style prompts.
@@ -209,23 +211,47 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	// ── Step 5: SDD Phase Models ──────────────────────────────────────────────
 	fmt.Println("\n=== Jarvis-Dev Setup [5/7] SDD Phase Models ===")
 	resolvedPhaseModels := sddruntime.ResolvePhaseModels(cfg)
+	opencodeAssignments := discoverOpenCodePhaseModelOptions()
 	applyPhaseModelEdits := func() {
 		contract := sddruntime.DefaultContract()
+		printOpenCodeAssignmentOptions(opencodeAssignments)
+		if cfg.SDD.OpenCodePhaseModels == nil {
+			cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{}
+		}
 		for _, phase := range contract.Phases {
 			current := resolvedPhaseModels[phase]
 			fmt.Printf("%s [opencode=%s claude=%s]\n", phase, current.OpenCode, current.Claude)
-			fmt.Printf("  OpenCode model [%s] (Enter keeps): ", current.OpenCode)
-			opencodeInput := strings.ToLower(strings.TrimSpace(readLine(scanner)))
+			if len(opencodeAssignments) > 0 {
+				currentAssignment := cfg.SDD.OpenCodePhaseModels[phase]
+				fmt.Printf("  OpenCode provider/model [%s] (Enter keeps, number selects): ", openCodeAssignmentPromptValue(currentAssignment, current.OpenCode))
+				opencodeInput := strings.TrimSpace(readLine(scanner))
+				if assignment, ok := selectOpenCodeAssignmentForPrompt(opencodeInput, opencodeAssignments); ok {
+					if assignment.ProviderID == "" || assignment.ModelID == "" {
+						delete(cfg.SDD.OpenCodePhaseModels, phase)
+					} else {
+						cfg.SDD.OpenCodePhaseModels[phase] = assignment
+					}
+				}
+			} else {
+				fmt.Printf("  OpenCode model [%s] (Enter keeps): ", current.OpenCode)
+				opencodeInput := strings.ToLower(strings.TrimSpace(readLine(scanner)))
+				if opencodeInput != "" {
+					current.OpenCode = normalizePlatformValueForPrompt(opencodeInput, current.OpenCode, contract.PlatformCatalogs[sddruntime.PlatformOpenCode])
+					delete(cfg.SDD.OpenCodePhaseModels, phase)
+				}
+			}
 			fmt.Printf("  Claude model [%s] (Enter keeps): ", current.Claude)
 			claudeInput := strings.ToLower(strings.TrimSpace(readLine(scanner)))
 			row := current
-			row.OpenCode = normalizePlatformValueForPrompt(opencodeInput, current.OpenCode, contract.PlatformCatalogs[sddruntime.PlatformOpenCode])
 			row.Claude = normalizePlatformValueForPrompt(claudeInput, current.Claude, contract.PlatformCatalogs[sddruntime.PlatformClaude])
 			resolvedPhaseModels[phase] = row
 		}
 	}
 	if cfg.SDD.PhaseModels == nil {
 		cfg.SDD.PhaseModels = map[string]config.PhaseModelSelection{}
+	}
+	if cfg.SDD.OpenCodePhaseModels == nil {
+		cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{}
 	}
 	for phase, row := range resolvedPhaseModels {
 		cfg.SDD.PhaseModels[phase] = row
@@ -240,6 +266,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	fmt.Printf("Mode: %s\n", mode)
 	fmt.Printf("Persona: %s\n", cfg.PersonaPreset)
 	fmt.Printf("Cloud: %s\n", strings.TrimSpace(cfg.Email))
+	printNoTUIPhaseModelReview(resolvedPhaseModels, cfg.SDD.OpenCodePhaseModels)
 	fmt.Print("Apply these changes now? [type 'yes' to continue, 'edit' to edit phase models]: ")
 	applyAnswer := strings.ToLower(strings.TrimSpace(readLine(scanner)))
 	if applyAnswer == "edit" {
@@ -247,6 +274,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		for phase, row := range resolvedPhaseModels {
 			cfg.SDD.PhaseModels[phase] = row
 		}
+		printNoTUIPhaseModelReview(resolvedPhaseModels, cfg.SDD.OpenCodePhaseModels)
 		fmt.Print("Apply these changes now? [type 'yes' to continue]: ")
 		applyAnswer = strings.ToLower(strings.TrimSpace(readLine(scanner)))
 	}
@@ -392,6 +420,77 @@ func readLine(scanner *bufio.Scanner) string {
 		return strings.TrimSpace(scanner.Text())
 	}
 	return ""
+}
+
+func printNoTUIPhaseModelReview(resolved map[string]config.PhaseModelSelection, assignments map[string]config.OpenCodeModelAssignment) {
+	fmt.Fprintln(noTUIStdout, "SDD phase models:")
+	for _, phase := range sddruntime.DefaultContract().Phases {
+		sel := resolved[phase]
+		opencodeDisplay := sel.OpenCode
+		effortDisplay := ""
+		if assignment := assignments[phase]; assignment.ProviderID != "" && assignment.ModelID != "" {
+			opencodeDisplay = assignment.ProviderID + "/" + assignment.ModelID
+			if strings.TrimSpace(assignment.Effort) != "" {
+				effortDisplay = ", effort=" + strings.TrimSpace(assignment.Effort)
+			}
+		}
+		fmt.Fprintf(noTUIStdout, "- %s: opencode=%s%s, claude=%s\n", phase, opencodeDisplay, effortDisplay, sel.Claude)
+	}
+}
+
+func printOpenCodeAssignmentOptions(options []config.OpenCodeModelAssignment) {
+	options = providerOnlyOpenCodeAssignments(options)
+	if len(options) == 0 {
+		return
+	}
+	fmt.Fprintln(noTUIStdout, "Available OpenCode provider/model options:")
+	fmt.Fprintln(noTUIStdout, "  0) legacy")
+	for i, option := range options {
+		fmt.Fprintf(noTUIStdout, "  %d) %s\n", i+1, openCodeAssignmentPromptValue(option, ""))
+	}
+}
+
+func providerOnlyOpenCodeAssignments(options []config.OpenCodeModelAssignment) []config.OpenCodeModelAssignment {
+	out := make([]config.OpenCodeModelAssignment, 0, len(options))
+	for _, option := range options {
+		if option.ProviderID == "" || option.ModelID == "" {
+			continue
+		}
+		out = append(out, option)
+	}
+	return out
+}
+
+func openCodeAssignmentPromptValue(assignment config.OpenCodeModelAssignment, legacyAlias string) string {
+	if assignment.ProviderID != "" && assignment.ModelID != "" {
+		display := assignment.ProviderID + "/" + assignment.ModelID
+		if strings.TrimSpace(assignment.Effort) != "" {
+			display += " (effort=" + strings.TrimSpace(assignment.Effort) + ")"
+		}
+		return display
+	}
+	if strings.TrimSpace(legacyAlias) != "" {
+		return "legacy=" + strings.TrimSpace(legacyAlias)
+	}
+	return "none"
+}
+
+func selectOpenCodeAssignmentForPrompt(input string, options []config.OpenCodeModelAssignment) (config.OpenCodeModelAssignment, bool) {
+	if input == "" {
+		return config.OpenCodeModelAssignment{}, false
+	}
+	if strings.EqualFold(strings.TrimSpace(input), "legacy") {
+		return config.OpenCodeModelAssignment{}, true
+	}
+	options = providerOnlyOpenCodeAssignments(options)
+	selected, err := strconv.Atoi(input)
+	if err != nil || selected < 0 || selected > len(options) {
+		return config.OpenCodeModelAssignment{}, false
+	}
+	if selected == 0 {
+		return config.OpenCodeModelAssignment{}, true
+	}
+	return options[selected-1], true
 }
 
 func normalizePlatformValueForPrompt(input, fallback string, catalog []string) string {

@@ -524,9 +524,10 @@ func viewSkills(m Model) string {
 }
 
 type phaseModelRow struct {
-	Phase    string
-	OpenCode string
-	Claude   string
+	Phase              string
+	OpenCode           string
+	OpenCodeAssignment config.OpenCodeModelAssignment
+	Claude             string
 }
 
 func updatePhaseModels(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -574,7 +575,11 @@ func cycleActivePhaseModel(m Model) Model {
 	}
 	row := &m.phaseModelRows[m.phaseModelActiveRow]
 	if m.phaseModelActiveCol == 1 {
-		row.OpenCode = nextCatalogValue(row.OpenCode, m.phaseModelOpenCode)
+		if len(m.phaseModelOpenCodeAssignments) > 0 {
+			row.OpenCodeAssignment = nextOpenCodeAssignment(row.OpenCodeAssignment, m.phaseModelOpenCodeAssignments)
+		} else {
+			row.OpenCode = nextCatalogValue(row.OpenCode, m.phaseModelOpenCode)
+		}
 	} else {
 		row.Claude = nextCatalogValue(row.Claude, m.phaseModelClaude)
 	}
@@ -589,6 +594,7 @@ func applyAllForActiveColumn(m Model) Model {
 	for i := range m.phaseModelRows {
 		if m.phaseModelActiveCol == 1 {
 			m.phaseModelRows[i].OpenCode = active.OpenCode
+			m.phaseModelRows[i].OpenCodeAssignment = active.OpenCodeAssignment
 		} else {
 			m.phaseModelRows[i].Claude = active.Claude
 		}
@@ -608,6 +614,18 @@ func nextCatalogValue(current string, catalog []string) string {
 	return catalog[0]
 }
 
+func nextOpenCodeAssignment(current config.OpenCodeModelAssignment, catalog []config.OpenCodeModelAssignment) config.OpenCodeModelAssignment {
+	if len(catalog) == 0 {
+		return current
+	}
+	for i, item := range catalog {
+		if item == current {
+			return catalog[(i+1)%len(catalog)]
+		}
+	}
+	return catalog[0]
+}
+
 func persistPhaseModelRows(m *Model) {
 	if m == nil || m.cfg == nil {
 		return
@@ -615,18 +633,37 @@ func persistPhaseModelRows(m *Model) {
 	if m.cfg.SDD.PhaseModels == nil {
 		m.cfg.SDD.PhaseModels = map[string]config.PhaseModelSelection{}
 	}
+	if m.cfg.SDD.OpenCodePhaseModels == nil {
+		m.cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{}
+	}
 	for _, row := range m.phaseModelRows {
 		m.cfg.SDD.PhaseModels[row.Phase] = config.PhaseModelSelection{OpenCode: row.OpenCode, Claude: row.Claude}
+		if row.OpenCodeAssignment.ProviderID != "" && row.OpenCodeAssignment.ModelID != "" {
+			m.cfg.SDD.OpenCodePhaseModels[row.Phase] = row.OpenCodeAssignment
+		} else {
+			delete(m.cfg.SDD.OpenCodePhaseModels, row.Phase)
+		}
 	}
+}
+
+func phaseModelOpenCodeDisplay(row phaseModelRow) string {
+	if row.OpenCodeAssignment.ProviderID != "" && row.OpenCodeAssignment.ModelID != "" {
+		display := row.OpenCodeAssignment.ProviderID + "/" + row.OpenCodeAssignment.ModelID
+		if strings.TrimSpace(row.OpenCodeAssignment.Effort) != "" {
+			display += " (effort=" + strings.TrimSpace(row.OpenCodeAssignment.Effort) + ")"
+		}
+		return display
+	}
+	return row.OpenCode
 }
 
 func viewPhaseModels(m Model) string {
 	var sb strings.Builder
 	sb.WriteString(stepHeader(5, 7, "SDD Phase Models"))
 	sb.WriteString("Editá un único mapa de modelos por fase (phase, OpenCode, Claude).\n\n")
-	sb.WriteString(headerStyle.Render("phase                 OpenCode   Claude") + "\n")
+	sb.WriteString(headerStyle.Render("phase                 OpenCode             Claude") + "\n")
 	for i, row := range m.phaseModelRows {
-		line := fmt.Sprintf("%-20s %-10s %-10s", row.Phase, row.OpenCode, row.Claude)
+		line := fmt.Sprintf("%-20s %-20s %-10s", row.Phase, phaseModelOpenCodeDisplay(row), row.Claude)
 		if i == m.phaseModelActiveRow {
 			line = selectedStyle.Render("> " + line)
 		} else {
@@ -914,7 +951,15 @@ func viewReview(m Model) string {
 	sb.WriteString("SDD phase models:\n")
 	for _, phase := range sddruntime.DefaultContract().Phases {
 		sel := resolved[phase]
-		fmt.Fprintf(&sb, "- %s: opencode=%s, claude=%s\n", phase, sel.OpenCode, sel.Claude)
+		opencodeDisplay := sel.OpenCode
+		effortDisplay := ""
+		if assignment := m.cfg.SDD.OpenCodePhaseModels[phase]; assignment.ProviderID != "" && assignment.ModelID != "" {
+			opencodeDisplay = assignment.ProviderID + "/" + assignment.ModelID
+			if strings.TrimSpace(assignment.Effort) != "" {
+				effortDisplay = ", effort=" + strings.TrimSpace(assignment.Effort)
+			}
+		}
+		fmt.Fprintf(&sb, "- %s: opencode=%s%s, claude=%s\n", phase, opencodeDisplay, effortDisplay, sel.Claude)
 	}
 
 	choices := []string{"Back", "Cancel", "Apply"}
