@@ -91,6 +91,7 @@ type Model struct {
 	phaseModelOpenCode            []string
 	phaseModelClaude              []string
 	phaseModelOpenCodeAssignments []config.OpenCodeModelAssignment
+	phaseModelOpenCodeDiagnostics []string
 
 	cfg *config.AppConfig
 
@@ -300,7 +301,9 @@ func (m Model) View() string {
 func initializePhaseModelEditor(m Model) Model {
 	contract := sddruntime.DefaultContract()
 	resolved := sddruntime.ResolvePhaseModels(m.cfg)
+	openCodePhaseModelDiscoveryDiagnostics = nil
 	m.phaseModelOpenCodeAssignments = ensureOpenCodeLegacyOption(discoverOpenCodePhaseModelOptions())
+	m.phaseModelOpenCodeDiagnostics = append([]string(nil), openCodePhaseModelDiscoveryDiagnostics...)
 	m.phaseModelRows = make([]phaseModelRow, 0, len(contract.Phases))
 	for _, phase := range contract.Phases {
 		sel := resolved[phase]
@@ -339,11 +342,16 @@ func ensureOpenCodeLegacyOption(options []config.OpenCodeModelAssignment) []conf
 	return out
 }
 
+var openCodePhaseModelDiscoveryDiagnostics []string
+
 var discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
+	openCodePhaseModelDiscoveryDiagnostics = nil
 	result, err := opencode.DiscoverAvailableProviders(opencode.ResolvePaths(defaultOpenCodePathRoots()), nil)
 	if err != nil {
+		openCodePhaseModelDiscoveryDiagnostics = []string{"OpenCode provider/model discovery unavailable: " + err.Error()}
 		return nil
 	}
+	openCodePhaseModelDiscoveryDiagnostics = append([]string(nil), result.Diagnostics...)
 	return openCodePhaseModelOptionsFromDiscovery(result)
 }
 

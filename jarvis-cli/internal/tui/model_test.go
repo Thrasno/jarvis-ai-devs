@@ -321,7 +321,7 @@ func TestNewModel_DefaultsToHiveLocal(t *testing.T) {
 
 func TestNewModel_PrefillsExistingConfigAndMode(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setTestHome(t, tmpHome)
 
 	cfg := &config.AppConfig{
 		SchemaVersion:    2,
@@ -364,7 +364,7 @@ func TestNewModel_PrefillsExistingConfigAndMode(t *testing.T) {
 func TestStep_HiveLocal_AdvancesOnEnter(t *testing.T) {
 	// Redirect HOME so we don't touch the real user directory.
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setTestHome(t, tmpHome)
 
 	m := Model{
 		Step:     StepHiveLocal,
@@ -615,6 +615,23 @@ func TestStep_PhaseModels_KeepsStoredOpenCodeProviderModelAssignmentWhenDiscover
 
 	if got := m.cfg.SDD.OpenCodePhaseModels[phase]; got.ProviderID != "openai" || got.ModelID != "gpt-5.1-codex-max" {
 		t.Fatalf("expected stored assignment kept when discovery unavailable, got %+v", got)
+	}
+}
+
+func TestStep_PhaseModels_ShowsOpenCodeDiscoveryDiagnostics(t *testing.T) {
+	previousDiscover := discoverOpenCodePhaseModelOptions
+	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
+		openCodePhaseModelDiscoveryDiagnostics = []string{"OpenCode settings file /home/me/.config/opencode/opencode.jsonc uses unsupported JSONC"}
+		return nil
+	}
+	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
+
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
+	m = initializePhaseModelEditor(m)
+
+	view := viewPhaseModels(m)
+	if !strings.Contains(view, "unsupported JSONC") {
+		t.Fatalf("expected OpenCode discovery diagnostic in phase model view, got:\n%s", view)
 	}
 }
 
@@ -1411,7 +1428,7 @@ func TestUpdatePersonaCustomEdit_EscCancels(t *testing.T) {
 
 func TestUpdatePersonaCustomEdit_CtrlS_PersistsCustomAsUserPreset(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setTestHome(t, tmpHome)
 
 	m := Model{
 		Step:              StepPersona,
@@ -1472,7 +1489,7 @@ notes: |
 
 func TestUpdatePersonaCustomEdit_CtrlS_BlocksInvalidCustomYAML(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setTestHome(t, tmpHome)
 
 	m := Model{
 		Step:              StepPersona,
@@ -1530,7 +1547,7 @@ func TestHandleStepMsg_LoginResult_Error(t *testing.T) {
 // TestHandleStepMsg_LoginResult_Success verifies successful login advances to StepPersona.
 func TestHandleStepMsg_LoginResult_Success(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setTestHome(t, tmpHome)
 	if err := os.MkdirAll(filepath.Join(tmpHome, ".jarvis"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -1724,7 +1741,7 @@ func TestRunAgentConfigSequence_FailureMessageReferencesRecoveryWithoutRollbackC
 			if err := os.WriteFile(homeAsFile, []byte("not-a-directory"), 0600); err != nil {
 				t.Fatalf("seed fake HOME file: %v", err)
 			}
-			t.Setenv("HOME", homeAsFile)
+			setTestHome(t, homeAsFile)
 
 			m := Model{
 				Step:     StepApply,
@@ -1803,7 +1820,7 @@ func TestUpdateReview_BackCancel_NoApplyArtifactsCreated(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpHome := t.TempDir()
-			t.Setenv("HOME", tmpHome)
+			setTestHome(t, tmpHome)
 
 			jarvisDir := filepath.Join(tmpHome, ".jarvis")
 			if err := os.MkdirAll(jarvisDir, 0755); err != nil {
@@ -1851,7 +1868,7 @@ func TestUpdateReview_BackCancel_NoApplyArtifactsCreated(t *testing.T) {
 
 func TestRunAgentConfigSequence_LocalCloudHappyPathPersistsCloudArtifacts(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setTestHome(t, tmpHome)
 
 	cfg := &config.AppConfig{APIURL: config.DefaultAPIURL}
 	m := Model{
@@ -1936,7 +1953,7 @@ func TestHandleStepMsg_UnknownMsg(t *testing.T) {
 // TestWriteSyncJSON verifies that sync credentials are written to ~/.jarvis/sync.json.
 func TestWriteSyncJSON(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setTestHome(t, tmpHome)
 	if err := os.MkdirAll(filepath.Join(tmpHome, ".jarvis"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -1961,7 +1978,7 @@ func TestWriteSyncJSON(t *testing.T) {
 
 func TestWriteSyncJSON_PreservesAutoSync(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setTestHome(t, tmpHome)
 	jarvisDir := filepath.Join(tmpHome, ".jarvis")
 	if err := os.MkdirAll(jarvisDir, 0755); err != nil {
 		t.Fatal(err)
@@ -1991,7 +2008,7 @@ func TestWriteSyncJSON_PreservesAutoSync(t *testing.T) {
 
 func TestNewModel_EmptyStoredScopeFallsBackToLocalOnly(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setTestHome(t, tmpHome)
 
 	cfg := &config.AppConfig{
 		SchemaVersion: 2,

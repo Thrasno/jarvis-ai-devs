@@ -211,7 +211,11 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	// ── Step 5: SDD Phase Models ──────────────────────────────────────────────
 	fmt.Println("\n=== Jarvis-Dev Setup [5/7] SDD Phase Models ===")
 	resolvedPhaseModels := sddruntime.ResolvePhaseModels(cfg)
+	openCodePhaseModelDiscoveryDiagnostics = nil
 	opencodeAssignments := discoverOpenCodePhaseModelOptions()
+	for _, diagnostic := range openCodePhaseModelDiscoveryDiagnostics {
+		fmt.Fprintln(noTUIStdout, diagnostic)
+	}
 	applyPhaseModelEdits := func() {
 		contract := sddruntime.DefaultContract()
 		printOpenCodeAssignmentOptions(opencodeAssignments)

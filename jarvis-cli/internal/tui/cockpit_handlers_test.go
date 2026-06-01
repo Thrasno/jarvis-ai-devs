@@ -416,7 +416,7 @@ func TestCockpitHandlers_BackupErrorAndConfirmTypingFailuresStaySafe(t *testing.
 }
 
 func TestDefaultCockpitRunner_ConfigSummaryUsesStructuredReadOnlyFields(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	cfg := &config.AppConfig{
 		SchemaVersion:    2,
 		APIURL:           "https://hivemem.dev",
@@ -498,7 +498,7 @@ func TestDefaultCockpitRunner_UninstallAllReportsLedgerTruthfully(t *testing.T) 
 func TestDefaultCockpitRunner_LifecycleEngineUsesHomeDirectoryForManagedState(t *testing.T) {
 	home := t.TempDir()
 	work := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	previousWD, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("get working directory: %v", err)
@@ -520,7 +520,7 @@ func TestDefaultCockpitRunner_LifecycleEngineUsesHomeDirectoryForManagedState(t 
 
 func TestDefaultCockpitRunner_LoginHiveCloudWritesConfigAndSyncCredentials(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	var request struct {
 		Email    string `json:"email"`
@@ -569,7 +569,7 @@ func TestDefaultCockpitRunner_LoginHiveCloudWritesConfigAndSyncCredentials(t *te
 }
 
 func TestDefaultCockpitRunner_LoginHiveCloudFallsBackToInputEmailWhenResponseEmailIsBlank(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"token":"tok","user":{"email":""}}`))
@@ -589,7 +589,7 @@ func TestDefaultCockpitRunner_LoginHiveCloudFallsBackToInputEmailWhenResponseEma
 }
 
 func TestDefaultCockpitRunner_LoginHiveCloudSurfacesAuthErrorsWithoutPersistingCloudState(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"bad credentials"}`, http.StatusUnauthorized)
 	}))
@@ -612,7 +612,7 @@ func TestDefaultCockpitRunner_LoginHiveCloudSurfacesAuthErrorsWithoutPersistingC
 }
 
 func TestDefaultCockpitRunner_ApplyPersonaPresetPersistsConfigAndWritesAgentArtifacts(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	if err := config.Save(&config.AppConfig{SchemaVersion: 2, PersonaPreset: "old", PersonaPresetSource: "builtin"}); err != nil {
 		t.Fatalf("save config fixture: %v", err)
 	}
@@ -665,7 +665,7 @@ func TestDefaultCockpitRunner_ApplyPersonaPresetSurfacesResolverErrors(t *testin
 }
 
 func TestDefaultCockpitRunner_LifecycleDefaultsReturnUnsupportedProviderWithoutMutation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	runner := defaultCockpitRunner{}
 	if _, err := runner.Doctor(context.Background(), "missing"); err == nil || !strings.Contains(err.Error(), `unsupported provider "missing"`) {
 		t.Fatalf("expected unsupported provider doctor error, got %v", err)

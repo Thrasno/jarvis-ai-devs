@@ -76,18 +76,83 @@ func TestDiscoverAvailableProviders_ReturnsSettingsParseErrorFromFirstExistingCa
 	dir := t.TempDir()
 	modelsPath := filepath.Join(dir, "models.json")
 	settingsPath := filepath.Join(dir, "opencode.json")
+	jsoncPath := filepath.Join(dir, "opencode.jsonc")
 	writeFile(t, modelsPath, `{"openai": {"env": ["OPENAI_API_KEY"], "models": {"gpt": {}}}}`)
 	writeFile(t, settingsPath, `{not-json`)
+	writeFile(t, jsoncPath, `{"provider":{"openai":{}}}`)
 
 	_, err := DiscoverAvailableProviders(Paths{
-		ModelsJSON:   []string{modelsPath},
-		SettingsJSON: []string{settingsPath},
+		ModelsJSON:    []string{modelsPath},
+		SettingsJSON:  []string{settingsPath},
+		SettingsJSONC: []string{jsoncPath},
 	}, func(string) string { return "set" })
 	if err == nil {
 		t.Fatal("expected settings parse error")
 	}
 	if !strings.Contains(err.Error(), "parse OpenCode settings") {
 		t.Fatalf("expected settings parse diagnostic, got %v", err)
+	}
+}
+
+func TestDiscoverAvailableProviders_ReportsUnsupportedJSONCSettingsWithoutParsing(t *testing.T) {
+	dir := t.TempDir()
+	modelsPath := filepath.Join(dir, "models.json")
+	jsoncPath := filepath.Join(dir, "opencode.jsonc")
+	writeFile(t, modelsPath, `{"openai": {"env": ["OPENAI_API_KEY"], "models": {"gpt": {}}}}`)
+	writeFile(t, jsoncPath, `{
+		// JSONC is intentionally unsupported by jarvis discovery.
+		"provider": {"openai": {}}
+	}`)
+
+	result, err := DiscoverAvailableProviders(Paths{
+		ModelsJSON:    []string{modelsPath},
+		SettingsJSON:  []string{filepath.Join(dir, "missing-opencode.json")},
+		SettingsJSONC: []string{jsoncPath},
+	}, func(name string) string {
+		if name == "OPENAI_API_KEY" {
+			return "set"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("DiscoverAvailableProviders JSONC only: %v", err)
+	}
+	if result.SettingsPath != "" {
+		t.Fatalf("settings source = %q, want empty for unsupported JSONC", result.SettingsPath)
+	}
+	if len(result.Diagnostics) != 1 || !strings.Contains(result.Diagnostics[0], "unsupported JSONC") || !strings.Contains(result.Diagnostics[0], jsoncPath) {
+		t.Fatalf("unexpected diagnostics: %#v", result.Diagnostics)
+	}
+	if got, want := providerIDs(result.Providers), []string{"openai"}; !sameStrings(got, want) {
+		t.Fatalf("provider ids = %#v, want %#v", got, want)
+	}
+}
+
+func TestDiscoverAvailableProviders_JSONSettingsWinsOverJSONC(t *testing.T) {
+	dir := t.TempDir()
+	modelsPath := filepath.Join(dir, "models.json")
+	settingsPath := filepath.Join(dir, "opencode.json")
+	jsoncPath := filepath.Join(dir, "opencode.jsonc")
+	writeFile(t, modelsPath, `{"openai": {"models": {"gpt": {}}}, "anthropic": {"models": {"claude": {}}}}`)
+	writeFile(t, settingsPath, `{"provider": {"openai": {}}}`)
+	writeFile(t, jsoncPath, `{not-jsonc-is-not-read`)
+
+	result, err := DiscoverAvailableProviders(Paths{
+		ModelsJSON:    []string{modelsPath},
+		SettingsJSON:  []string{settingsPath},
+		SettingsJSONC: []string{jsoncPath},
+	}, func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("DiscoverAvailableProviders JSON wins: %v", err)
+	}
+	if result.SettingsPath != settingsPath {
+		t.Fatalf("settings source = %q, want %q", result.SettingsPath, settingsPath)
+	}
+	if len(result.Diagnostics) != 0 {
+		t.Fatalf("expected no JSONC diagnostic when JSON exists, got %#v", result.Diagnostics)
+	}
+	if got, want := providerIDs(result.Providers), []string{"openai"}; !sameStrings(got, want) {
+		t.Fatalf("provider ids = %#v, want %#v", got, want)
 	}
 }
 

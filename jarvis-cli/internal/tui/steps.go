@@ -30,6 +30,7 @@ var (
 	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
 	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
+	warningStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
 	successStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	headerStyle   = lipgloss.NewStyle().Bold(true).Underline(true)
 )
@@ -661,6 +662,12 @@ func viewPhaseModels(m Model) string {
 	var sb strings.Builder
 	sb.WriteString(stepHeader(5, 7, "SDD Phase Models"))
 	sb.WriteString("Editá un único mapa de modelos por fase (phase, OpenCode, Claude).\n\n")
+	for _, diagnostic := range m.phaseModelOpenCodeDiagnostics {
+		sb.WriteString(warningStyle.Render(diagnostic) + "\n")
+	}
+	if len(m.phaseModelOpenCodeDiagnostics) > 0 {
+		sb.WriteString("\n")
+	}
 	sb.WriteString(headerStyle.Render("phase                 OpenCode             Claude") + "\n")
 	for i, row := range m.phaseModelRows {
 		line := fmt.Sprintf("%-20s %-20s %-10s", row.Phase, phaseModelOpenCodeDisplay(row), row.Claude)

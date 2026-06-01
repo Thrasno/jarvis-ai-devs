@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestResolvePaths_UsesOSStandardRootsBeforeLegacyDotPaths(t *testing.T) {
+func TestResolvePaths_UsesLegacyDotPathsBeforeOSStandardRoots(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
 	cache := filepath.Join(t.TempDir(), "cache")
 	config := filepath.Join(t.TempDir(), "config")
@@ -19,16 +19,20 @@ func TestResolvePaths_UsesOSStandardRootsBeforeLegacyDotPaths(t *testing.T) {
 	})
 
 	assertCandidates(t, paths.ModelsJSON, []string{
-		filepath.Join(cache, "opencode", "models.json"),
 		filepath.Join(home, ".cache", "opencode", "models.json"),
+		filepath.Join(cache, "opencode", "models.json"),
 	})
 	assertCandidates(t, paths.SettingsJSON, []string{
-		filepath.Join(config, "opencode", "opencode.json"),
 		filepath.Join(home, ".config", "opencode", "opencode.json"),
+		filepath.Join(config, "opencode", "opencode.json"),
+	})
+	assertCandidates(t, paths.SettingsJSONC, []string{
+		filepath.Join(home, ".config", "opencode", "opencode.jsonc"),
+		filepath.Join(config, "opencode", "opencode.jsonc"),
 	})
 	assertCandidates(t, paths.AuthJSON, []string{
-		filepath.Join(data, "opencode", "auth.json"),
 		filepath.Join(home, ".local", "share", "opencode", "auth.json"),
+		filepath.Join(data, "opencode", "auth.json"),
 	})
 }
 
@@ -42,6 +46,9 @@ func TestResolvePaths_FallsBackToLegacyDotPathsWhenStandardRootsMissing(t *testi
 	})
 	assertCandidates(t, paths.SettingsJSON, []string{
 		filepath.Join(home, ".config", "opencode", "opencode.json"),
+	})
+	assertCandidates(t, paths.SettingsJSONC, []string{
+		filepath.Join(home, ".config", "opencode", "opencode.jsonc"),
 	})
 	assertCandidates(t, paths.AuthJSON, []string{
 		filepath.Join(home, ".local", "share", "opencode", "auth.json"),

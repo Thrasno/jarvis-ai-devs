@@ -31,8 +31,7 @@ var testTemplatesFS fs.FS = fstest.MapFS{
 
 // TestClaudeAgent_Name verifies the agent identifier string.
 func TestClaudeAgent_Name(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t)
 	a := newClaudeAgent(emptyFS)
 	if a.Name() != "claude" {
 		t.Errorf("expected 'claude', got %q", a.Name())
@@ -41,8 +40,7 @@ func TestClaudeAgent_Name(t *testing.T) {
 
 // TestClaudeAgent_ConfigDir verifies ConfigDir returns ~/.claude relative to HOME.
 func TestClaudeAgent_ConfigDir(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 	a := newClaudeAgent(emptyFS)
 	expected := filepath.Join(tmpHome, ".claude")
 	if a.ConfigDir() != expected {
@@ -52,8 +50,7 @@ func TestClaudeAgent_ConfigDir(t *testing.T) {
 
 // TestClaudeAgent_IsInstalled_False verifies IsInstalled returns false when .claude is absent.
 func TestClaudeAgent_IsInstalled_False(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t)
 	a := newClaudeAgent(emptyFS)
 	if a.IsInstalled() {
 		t.Error("expected not installed in a fresh tmpdir with no .claude dir")
@@ -62,8 +59,7 @@ func TestClaudeAgent_IsInstalled_False(t *testing.T) {
 
 // TestClaudeAgent_IsInstalled_True verifies IsInstalled returns true when .claude dir exists.
 func TestClaudeAgent_IsInstalled_True(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 	if err := os.MkdirAll(filepath.Join(tmpHome, ".claude"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -113,8 +109,7 @@ func TestClaudeAgent_MergeConfig_GetNotFoundStillAdds(t *testing.T) {
 
 // TestClaudeAgent_InstallSkills writes skill SKILL.md files to ~/.claude/skills/.
 func TestClaudeAgent_InstallSkills(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 	if err := os.MkdirAll(filepath.Join(tmpHome, ".claude"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -143,8 +138,7 @@ func TestClaudeAgent_InstallSkills(t *testing.T) {
 
 // TestOpenCodeAgent_Name verifies the agent identifier string.
 func TestOpenCodeAgent_Name(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t)
 	a := newOpenCodeAgent(emptyFS)
 	if a.Name() != "opencode" {
 		t.Errorf("expected 'opencode', got %q", a.Name())
@@ -153,8 +147,7 @@ func TestOpenCodeAgent_Name(t *testing.T) {
 
 // TestOpenCodeAgent_IsInstalled_False verifies not installed when config dir absent.
 func TestOpenCodeAgent_IsInstalled_False(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t)
 	a := newOpenCodeAgent(emptyFS)
 	if a.IsInstalled() {
 		t.Error("expected not installed in fresh tmpdir")
@@ -163,8 +156,7 @@ func TestOpenCodeAgent_IsInstalled_False(t *testing.T) {
 
 // TestOpenCodeAgent_IsInstalled_True verifies installed when ~/.config/opencode exists.
 func TestOpenCodeAgent_IsInstalled_True(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 	if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "opencode"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -176,8 +168,7 @@ func TestOpenCodeAgent_IsInstalled_True(t *testing.T) {
 
 // TestOpenCodeAgent_MergeConfig_CreatesSettings verifies MergeConfig creates opencode.json with hive entry.
 func TestOpenCodeAgent_MergeConfig_CreatesSettings(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 	if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "opencode"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -204,8 +195,7 @@ func TestOpenCodeAgent_MergeConfig_CreatesSettings(t *testing.T) {
 
 // TestOpenCodeAgent_MergeConfig_NoCredentials verifies MergeConfig without credentials omits env block.
 func TestOpenCodeAgent_MergeConfig_NoCredentials(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 	if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "opencode"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -225,8 +215,7 @@ func TestOpenCodeAgent_MergeConfig_NoCredentials(t *testing.T) {
 
 // TestOpenCodeAgent_WriteInstructions writes AGENTS.md with sentinel blocks.
 func TestOpenCodeAgent_WriteInstructions(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 	if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "opencode"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -248,8 +237,7 @@ func TestOpenCodeAgent_WriteInstructions(t *testing.T) {
 
 // TestOpenCodeAgent_InstallSkills writes skill SKILL.md files to opencode skills dir.
 func TestOpenCodeAgent_InstallSkills(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 	if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "opencode"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -272,8 +260,7 @@ func TestOpenCodeAgent_InstallSkills(t *testing.T) {
 
 // TestDetect_NoAgents verifies Detect returns empty slice when nothing is installed.
 func TestDetect_NoAgents(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t)
 	t.Setenv("PATH", "") // no opencode binary available
 	agents := Detect(emptyFS)
 	if len(agents) != 0 {
@@ -283,8 +270,7 @@ func TestDetect_NoAgents(t *testing.T) {
 
 // TestDetect_WithClaudeInstalled verifies Detect returns the claude agent.
 func TestDetect_WithClaudeInstalled(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 	t.Setenv("PATH", "") // no opencode binary
 	if err := os.MkdirAll(filepath.Join(tmpHome, ".claude"), 0755); err != nil {
 		t.Fatal(err)
@@ -300,8 +286,7 @@ func TestDetect_WithClaudeInstalled(t *testing.T) {
 }
 
 func TestDetect_WithOpenCodeConfigDirInstalled(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 	t.Setenv("PATH", "")
 	if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "opencode"), 0755); err != nil {
 		t.Fatal(err)
@@ -317,9 +302,8 @@ func TestDetect_WithOpenCodeConfigDirInstalled(t *testing.T) {
 }
 
 func TestDetect_WithOpenCodeBinaryInPath(t *testing.T) {
-	tmpHome := t.TempDir()
+	isolateTestHome(t)
 	tmpBin := t.TempDir()
-	t.Setenv("HOME", tmpHome)
 	t.Setenv("PATH", tmpBin)
 
 	binaryName := "opencode"
@@ -436,8 +420,7 @@ func TestReadFileOrEmpty_ExistingFile(t *testing.T) {
 // WriteInstructions replaces (not appends) when an existing file has no Jarvis markers.
 // UNIT-01 from spec.
 func TestClaudeAgent_WriteInstructions_ReplacesFileWithNoSentinels(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 	claudeDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
 		t.Fatal(err)
@@ -483,8 +466,7 @@ func TestClaudeAgent_WriteInstructions_ReplacesFileWithNoSentinels(t *testing.T)
 // TestOpenCodeAgent_WriteInstructions_ReplacesFileWithNoSentinels is the symmetric
 // test for OpenCodeAgent. UNIT-01 symmetric from spec.
 func TestOpenCodeAgent_WriteInstructions_ReplacesFileWithNoSentinels(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 	agentsDir := filepath.Join(home, ".config", "opencode")
 	if err := os.MkdirAll(agentsDir, 0755); err != nil {
 		t.Fatal(err)
@@ -527,8 +509,7 @@ func TestOpenCodeAgent_WriteInstructions_ReplacesFileWithNoSentinels(t *testing.
 // TestClaudeAgent_WriteInstructions_PatchesExistingFile verifies that
 // WriteInstructions patches in-place when sentinels already exist. UNIT-02 from spec.
 func TestClaudeAgent_WriteInstructions_PatchesExistingFile(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 	claudeDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
 		t.Fatal(err)

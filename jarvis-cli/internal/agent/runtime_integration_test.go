@@ -326,6 +326,8 @@ func TestObserveRuntime_ParsesRenderedOrchestratorAssignments(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			stubRuntimeConfig(t, defaultRuntimeConfig())
+
 			home := t.TempDir()
 			a := &OpenCodeAgent{home: home, templatesFS: testTemplatesFS}
 
@@ -372,6 +374,8 @@ func TestObserveRuntime_FallbackIgnoresStaleLegacyContractAssignments(t *testing
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			stubRuntimeConfig(t, defaultRuntimeConfig())
+
 			home := t.TempDir()
 			configDir := home
 

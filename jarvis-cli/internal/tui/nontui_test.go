@@ -50,8 +50,7 @@ func testWizardConfig() WizardConfig {
 //
 // This exercises RunNoTUI, runNoTUI, and readLine end-to-end.
 func TestRunNoTUI_SkipsAuthAndDefaultsPersona(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 	t.Setenv("PATH", "") // no agents detected
 
 	// scope, persona choice, optional skill prompt, explicit apply confirmation.
@@ -90,8 +89,7 @@ func TestNewModel_NoTUIFallbackStartsWizardNotCockpit(t *testing.T) {
 // TestRunNoTUI_SelectsSkill verifies that answering 'y' for the optional skill
 // installs it (no crash, no error).
 func TestRunNoTUI_SelectsSkill(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t)
 	t.Setenv("PATH", "")
 
 	// scope=default, persona=default, fixture-skill=yes, apply=yes
@@ -103,8 +101,7 @@ func TestRunNoTUI_SelectsSkill(t *testing.T) {
 }
 
 func TestRunNoTUI_RerunKeepsExistingSelectionsOnBlankInput(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t)
 	t.Setenv("PATH", "")
 
 	seed := &config.AppConfig{
@@ -142,8 +139,7 @@ func TestRunNoTUI_RerunKeepsExistingSelectionsOnBlankInput(t *testing.T) {
 }
 
 func TestRunNoTUI_CustomPresetPersistsUserFileAndCanonicalIdentity(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 	t.Setenv("PATH", "")
 
 	// scope default, choose custom option, provide name/display, keep generated YAML,
@@ -172,8 +168,7 @@ func TestRunNoTUI_CustomPresetPersistsUserFileAndCanonicalIdentity(t *testing.T)
 }
 
 func TestRunNoTUI_CustomPresetInvalidYAMLBlocksContinuation(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 	t.Setenv("PATH", "")
 
 	// scope default, choose custom option, provide name/display, invalid YAML override.
@@ -217,8 +212,7 @@ func TestRunNoTUI_PrintsOpenCodeProviderModelOptionsBeforeNumericSelection(t *te
 	}
 	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
 
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t)
 	t.Setenv("PATH", "")
 
 	input := strings.NewReader("\n\n" + "edit\n" + "1\n\n" + strings.Repeat("\n", 18) + "yes\n")
@@ -233,6 +227,30 @@ func TestRunNoTUI_PrintsOpenCodeProviderModelOptionsBeforeNumericSelection(t *te
 
 	if !strings.Contains(output.String(), "1) openai/gpt-5.1-codex-max") {
 		t.Fatalf("expected numbered OpenCode provider/model option in output, got:\n%s", output.String())
+	}
+}
+
+func TestRunNoTUI_PrintsOpenCodeDiscoveryDiagnostics(t *testing.T) {
+	isolateTestHome(t)
+	t.Setenv("PATH", "")
+
+	previousDiscover := discoverOpenCodePhaseModelOptions
+	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
+		openCodePhaseModelDiscoveryDiagnostics = []string{"OpenCode settings file /home/me/.config/opencode/opencode.jsonc uses unsupported JSONC"}
+		return nil
+	}
+	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
+
+	var output bytes.Buffer
+	previousStdout := noTUIStdout
+	noTUIStdout = &output
+	t.Cleanup(func() { noTUIStdout = previousStdout })
+
+	if err := runNoTUI(testWizardConfig(), strings.NewReader("\n\nno\n")); err != nil {
+		t.Fatalf("runNoTUI: %v", err)
+	}
+	if !strings.Contains(output.String(), "unsupported JSONC") {
+		t.Fatalf("expected OpenCode discovery diagnostic in no-TUI output, got:\n%s", output.String())
 	}
 }
 
@@ -305,8 +323,7 @@ func TestRunNoTUI_KeepsExistingOpenCodeProviderAssignmentWhenDiscoveryUnavailabl
 	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment { return nil }
 	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
 
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t)
 	t.Setenv("PATH", "")
 
 	seed := &config.AppConfig{
@@ -343,8 +360,7 @@ func TestRunNoTUI_LegacySelectionDeletesExistingOpenCodeProviderAssignment(t *te
 	}
 	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
 
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t)
 	t.Setenv("PATH", "")
 
 	seed := &config.AppConfig{SchemaVersion: 2, APIURL: config.DefaultAPIURL, PersonaPreset: "fixture"}
@@ -375,8 +391,7 @@ func TestRunNoTUI_PersistsEditedOpenCodeProviderModelAssignment(t *testing.T) {
 	}
 	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
 
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t)
 	t.Setenv("PATH", "")
 
 	// scope default, persona default, skills default,
@@ -401,8 +416,7 @@ func TestRunNoTUI_PersistsEditedOpenCodeProviderModelAssignment(t *testing.T) {
 }
 
 func TestRunNoTUI_PersistsEditedPhaseModels(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t)
 	t.Setenv("PATH", "")
 
 	// scope default, persona default, skills default,
@@ -453,8 +467,7 @@ func TestBuildSkillSelectionPlan_PHPPromptControlsPHPSkills(t *testing.T) {
 // (without Bubbletea runtime) to verify it completes with done=true when there
 // are no agents to configure.
 func TestRunAgentConfigSequence_NoAgents(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t)
 
 	m := Model{
 		Step:     StepAgentConfig,
@@ -594,8 +607,7 @@ func (m *failingMockAgent) MergeConfig(entry agent.MCPEntry) error {
 // TestRunAgentConfigSequence_Context7AfterHive verifies Context7 is configured
 // AFTER Hive in the wizard sequence (Spec R1).
 func TestRunAgentConfigSequence_Context7AfterHive(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 
 	mockConfigDir := filepath.Join(tmpHome, ".mock-agent")
 	mock := &mockAgent{
@@ -667,8 +679,7 @@ func TestRunAgentConfigSequence_Context7AfterHive(t *testing.T) {
 }
 
 func TestRunNoTUI_LocalOnlyPurgesStoredCredentialsOnApply(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 	t.Setenv("PATH", "")
 
 	jarvisDir := filepath.Join(tmpHome, ".jarvis")
@@ -696,8 +707,7 @@ func TestRunNoTUI_LocalOnlyPurgesStoredCredentialsOnApply(t *testing.T) {
 }
 
 func TestRunNoTUI_CancelBeforeApplyKeepsNoLocalArtifacts(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 	t.Setenv("PATH", "")
 
 	// scope local-only, persona default, optional skill prompts default, apply=no.
@@ -712,8 +722,7 @@ func TestRunNoTUI_CancelBeforeApplyKeepsNoLocalArtifacts(t *testing.T) {
 }
 
 func TestRunNoTUI_LocalCloudAuthFailureContinuesToApply(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 	t.Setenv("PATH", "")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -746,8 +755,7 @@ func TestReadLine_ReturnsEmptyWhenScannerExhausted(t *testing.T) {
 }
 
 func TestRunNoTUI_UsesStdinWrapper(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t)
 	t.Setenv("PATH", "")
 
 	r, w, err := os.Pipe()
@@ -771,8 +779,7 @@ func TestRunNoTUI_UsesStdinWrapper(t *testing.T) {
 }
 
 func TestRunNoTUI_LocalCloudSuccessfulAuthWritesSyncJSON(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 	t.Setenv("PATH", "")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -801,8 +808,7 @@ func TestRunNoTUI_LocalCloudSuccessfulAuthWritesSyncJSON(t *testing.T) {
 }
 
 func TestRunNoTUI_AgentConfigurationFailureReturnsError(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 	t.Setenv("PATH", "")
 
 	originalDetect := detectInstalledAgents
@@ -821,8 +827,7 @@ func TestRunNoTUI_AgentConfigurationFailureReturnsError(t *testing.T) {
 }
 
 func TestRunNoTUI_LocalCloudLoginWithoutResolvedEmailFallsBackToInput(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t)
 	t.Setenv("PATH", "")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -870,8 +875,7 @@ func TestRunNoTUI_LoadConfigError(t *testing.T) {
 }
 
 func TestRunNoTUI_ListPresetsError(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t)
 	t.Setenv("PATH", "")
 
 	originalList := listPersonaPresets
@@ -890,8 +894,7 @@ func TestRunNoTUI_ListPresetsError(t *testing.T) {
 }
 
 func TestRunNoTUI_ListSkillsError(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t)
 	t.Setenv("PATH", "")
 
 	originalList := listAvailableSkills
