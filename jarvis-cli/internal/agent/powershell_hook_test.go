@@ -96,6 +96,34 @@ func TestClaudePowerShellPromptHook_PostRunsInBackground(t *testing.T) {
 	}
 }
 
+func TestClaudePowerShellPromptHook_ResolvesFallbackPowerShellDynamically(t *testing.T) {
+	script, err := os.ReadFile(claudePowerShellHookScriptPath(t))
+	if err != nil {
+		t.Fatalf("read PowerShell hook: %v", err)
+	}
+
+	text := string(script)
+	legacyExecutable := "powershell" + ".exe"
+	if strings.Contains(strings.ToLower(text), legacyExecutable) {
+		t.Fatalf("PowerShell hook must not hardcode %s", legacyExecutable)
+	}
+	if !strings.Contains(text, "function Resolve-PowerShellExecutable") {
+		t.Fatal("PowerShell hook should centralize executable resolution")
+	}
+	if !strings.Contains(text, "(Get-Process -Id $PID).Path") {
+		t.Fatal("PowerShell hook should prefer the current PowerShell executable")
+	}
+	if !strings.Contains(text, "foreach ($candidate in @('pwsh', 'powershell'))") {
+		t.Fatal("PowerShell hook should resolve pwsh/powershell dynamically")
+	}
+	if !strings.Contains(text, "Get-Command -Name $candidate") {
+		t.Fatal("PowerShell hook should use Get-Command for fallback executable lookup")
+	}
+	if !strings.Contains(text, "Start-Process -FilePath $powerShellPath") {
+		t.Fatal("PowerShell hook fallback should start the dynamically resolved executable")
+	}
+}
+
 func TestClaudePowerShellPromptHook_DoesNotBlockWhenWorkerHTTPStalls(t *testing.T) {
 	powershell := requirePowerShell(t)
 	scriptPath := claudePowerShellHookScriptPath(t)
