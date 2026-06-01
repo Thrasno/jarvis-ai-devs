@@ -58,6 +58,10 @@ memories.json
 
 # Internal/private workspace artifacts (keep local, do not publish)
 .atl/
+.pi/
+.pi-lens/
+**/.pi-lens/
+/context.md
 sdd/
 test-report*.json
 docs/memories/

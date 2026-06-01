@@ -127,7 +127,7 @@ func parseOrchestratorAssignments(content string) map[string]string {
 			continue
 		}
 		phase := strings.ToLower(strings.TrimSpace(parts[1]))
-		model := strings.ToLower(strings.TrimSpace(parts[2]))
+		model := strings.TrimSpace(parts[2])
 		if phase == "" || model == "" || phase == "phase" || model == "default model" {
 			continue
 		}
@@ -147,21 +147,7 @@ func resolvedAssignmentsForAgent(agent string) (map[string]string, error) {
 		return nil, err
 	}
 
-	defaults, err := sddruntime.DefaultAssignmentsForPlatform(platform)
-	if err != nil {
-		return nil, err
-	}
-
-	resolved := sddruntime.ResolvePhaseModels(cfg)
-	for phase, selection := range resolved {
-		if platform == sddruntime.PlatformClaude {
-			defaults[phase] = selection.Claude
-			continue
-		}
-		defaults[phase] = selection.OpenCode
-	}
-
-	return defaults, nil
+	return sddruntime.ResolveAssignmentsForPlatform(platform, cfg)
 }
 
 func platformForAgent(agent string) (sddruntime.Platform, error) {

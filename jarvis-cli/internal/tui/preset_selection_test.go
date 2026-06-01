@@ -35,8 +35,7 @@ func TestResolveWizardPresetSelection(t *testing.T) {
 		},
 	}
 
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateTestHome(t)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -80,8 +79,7 @@ func TestCreateWizardCustomPreset_ValidationErrors(t *testing.T) {
 		{name: "builtin slug collision rejected", draft: customPresetDraft{Name: "Fixture", DisplayName: "Fixture"}, wantErr: "collides with built-in preset slug"},
 	}
 
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateTestHome(t)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -97,8 +95,7 @@ func TestCreateWizardCustomPreset_ValidationErrors(t *testing.T) {
 }
 
 func TestCreateWizardCustomPreset_BuiltinCollisionDoesNotPersistUserFile(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 
 	_, err := createWizardCustomPreset(testPersonaFS, customPresetDraft{
 		Name:        "Fixture",
@@ -166,8 +163,7 @@ notes: |
 }
 
 func TestCreateWizardCustomPreset_PersistsAndResolvesUserSource(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 
 	resolved, err := createWizardCustomPreset(testPersonaFS, customPresetDraft{
 		Name:        "Mi Persona",
@@ -191,8 +187,7 @@ func TestCreateWizardCustomPreset_PersistsAndResolvesUserSource(t *testing.T) {
 }
 
 func TestCreateWizardCustomPreset_PostSaveResolveFailureIncludesRecoveryGuidance(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 
 	originalResolver := resolvePresetForWizard
 	resolvePresetForWizard = func(personaFS fs.FS, slug string) (*persona.ResolvedPreset, error) {
@@ -336,8 +331,7 @@ notes: ""
 }
 
 func TestCreateWizardCustomPreset_SucceedsWhenNeutralTemplateIsInvalid(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateTestHome(t)
 
 	personaFS := fstest.MapFS{
 		"embed/personas/neutra.yaml": &fstest.MapFile{Data: []byte(`

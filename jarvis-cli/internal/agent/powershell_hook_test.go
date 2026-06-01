@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -71,6 +72,85 @@ func TestClaudePowerShellPromptHook_RequestFailurePrintsEmptyJSONAndExitsZero(t 
 	}
 }
 
+func TestClaudePowerShellPromptHook_PostRunsInBackground(t *testing.T) {
+	script, err := os.ReadFile(claudePowerShellHookScriptPath(t))
+	if err != nil {
+		t.Fatalf("read PowerShell hook: %v", err)
+	}
+
+	text := string(script)
+	if !strings.Contains(text, "[Diagnostics.Process]::Start") {
+		t.Fatal("PowerShell hook must dispatch prompt POST in a detached background process")
+	}
+	if !strings.Contains(text, "$processInfo.UseShellExecute = $true") {
+		t.Fatal("PowerShell hook worker must not inherit captured stdio handles")
+	}
+	if !strings.Contains(text, "Invoke-RestMethod -Uri `$TargetUri") {
+		t.Fatal("background process should receive the target URI instead of posting from the foreground hook")
+	}
+	if strings.Contains(text, "Invoke-RestMethod -Uri $uri") {
+		t.Fatal("PowerShell hook must not synchronously POST from the foreground hook")
+	}
+	if !strings.Contains(text, "-TimeoutSec 1") {
+		t.Fatal("background prompt POST should retain a short timeout")
+	}
+}
+
+func TestClaudePowerShellPromptHook_ResolvesFallbackPowerShellDynamically(t *testing.T) {
+	script, err := os.ReadFile(claudePowerShellHookScriptPath(t))
+	if err != nil {
+		t.Fatalf("read PowerShell hook: %v", err)
+	}
+
+	text := string(script)
+	legacyExecutable := "powershell" + ".exe"
+	if strings.Contains(strings.ToLower(text), legacyExecutable) {
+		t.Fatalf("PowerShell hook must not hardcode %s", legacyExecutable)
+	}
+	if !strings.Contains(text, "function Resolve-PowerShellExecutable") {
+		t.Fatal("PowerShell hook should centralize executable resolution")
+	}
+	if !strings.Contains(text, "(Get-Process -Id $PID).Path") {
+		t.Fatal("PowerShell hook should prefer the current PowerShell executable")
+	}
+	if !strings.Contains(text, "foreach ($candidate in @('pwsh', 'powershell'))") {
+		t.Fatal("PowerShell hook should resolve pwsh/powershell dynamically")
+	}
+	if !strings.Contains(text, "Get-Command -Name $candidate") {
+		t.Fatal("PowerShell hook should use Get-Command for fallback executable lookup")
+	}
+	if !strings.Contains(text, "Start-Process -FilePath $powerShellPath") {
+		t.Fatal("PowerShell hook fallback should start the dynamically resolved executable")
+	}
+}
+
+func TestClaudePowerShellPromptHook_DoesNotBlockWhenWorkerHTTPStalls(t *testing.T) {
+	powershell := requirePowerShell(t)
+	scriptPath := claudePowerShellHookScriptPath(t)
+	_, port := startStallingPromptServer(t, 3*time.Second)
+
+	cmd := powerShellHookCommand(t, powershell, scriptPath)
+	cmd.Env = append(cmd.Environ(), "HIVE_HTTP_PORT="+port)
+	cmd.Stdin = strings.NewReader(`{"prompt":"do not block on stalled worker"}`)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	started := time.Now()
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("PowerShell hook should exit 0 when worker stalls, got: %v; stderr=%q", err, stderr.String())
+	}
+	elapsed := time.Since(started)
+	if elapsed > 1500*time.Millisecond {
+		t.Fatalf("PowerShell hook blocked for %s; stdout=%q stderr=%q", elapsed, stdout.String(), stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "{}" {
+		t.Fatalf("stdout = %q, want {}", stdout.String())
+	}
+}
+
 func requirePowerShell(t *testing.T) string {
 	t.Helper()
 	for _, candidate := range []string{"pwsh", "powershell"} {
@@ -129,6 +209,34 @@ func startPromptCaptureServer(t *testing.T, received chan<- string) (*http.Serve
 		}
 	}()
 	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split listener address %q: %v", listener.Addr().String(), err)
+	}
+	return server, port
+}
+
+func startStallingPromptServer(t *testing.T, stall time.Duration) (*http.Server, string) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen on local stalling prompt endpoint: %v", err)
+	}
+
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(stall)
+			w.WriteHeader(http.StatusAccepted)
+		}),
+	}
+
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("stalling prompt server: %v", err)
+		}
+	}()
+	t.Cleanup(func() { _ = server.Close() })
 
 	_, port, err := net.SplitHostPort(listener.Addr().String())
 	if err != nil {

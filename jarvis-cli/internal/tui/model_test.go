@@ -16,6 +16,7 @@ import (
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/opencode"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
 )
@@ -320,7 +321,7 @@ func TestNewModel_DefaultsToHiveLocal(t *testing.T) {
 
 func TestNewModel_PrefillsExistingConfigAndMode(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setTestHome(t, tmpHome)
 
 	cfg := &config.AppConfig{
 		SchemaVersion:    2,
@@ -363,7 +364,7 @@ func TestNewModel_PrefillsExistingConfigAndMode(t *testing.T) {
 func TestStep_HiveLocal_AdvancesOnEnter(t *testing.T) {
 	// Redirect HOME so we don't touch the real user directory.
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setTestHome(t, tmpHome)
 
 	m := Model{
 		Step:     StepHiveLocal,
@@ -525,6 +526,165 @@ func TestStep_PhaseModels_ApplyAllAndCycling(t *testing.T) {
 	}
 }
 
+func TestPhaseModelOpenCodeDisplay_IncludesEffortWhenPresent(t *testing.T) {
+	row := phaseModelRow{
+		OpenCode: "sonnet",
+		OpenCodeAssignment: config.OpenCodeModelAssignment{
+			ProviderID: "openai",
+			ModelID:    "gpt-5.1-codex-max",
+			Effort:     "high",
+		},
+	}
+
+	if got, want := phaseModelOpenCodeDisplay(row), "openai/gpt-5.1-codex-max (effort=high)"; got != want {
+		t.Fatalf("phaseModelOpenCodeDisplay = %q, want %q", got, want)
+	}
+}
+
+func TestStep_PhaseModels_PersistsOpenCodeProviderModelAssignment(t *testing.T) {
+	previousDiscover := discoverOpenCodePhaseModelOptions
+	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
+		return []config.OpenCodeModelAssignment{
+			{ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"},
+		}
+	}
+	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
+
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
+	m = initializePhaseModelEditor(m)
+	m.phaseModelActiveRow = 0
+	m.phaseModelActiveCol = 1
+	phase := m.phaseModelRows[0].Phase
+	legacyAlias := m.cfg.SDD.PhaseModels[phase].OpenCode
+
+	m = sendKey(m, tea.KeyEnter)
+
+	assignment := m.cfg.SDD.OpenCodePhaseModels[phase]
+	if assignment.ProviderID != "openai" || assignment.ModelID != "gpt-5.1-codex-max" || assignment.Effort != "high" {
+		t.Fatalf("unexpected OpenCode assignment: %+v", assignment)
+	}
+	if got := m.cfg.SDD.PhaseModels[phase].OpenCode; got != legacyAlias {
+		t.Fatalf("legacy OpenCode alias changed: got %q, want %q", got, legacyAlias)
+	}
+}
+
+func TestStep_PhaseModels_ClearsOpenCodeProviderModelAssignmentWhenCyclingToLegacy(t *testing.T) {
+	previousDiscover := discoverOpenCodePhaseModelOptions
+	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
+		return []config.OpenCodeModelAssignment{{ProviderID: "openai", ModelID: "gpt-5.1-codex-max"}}
+	}
+	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
+
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
+	m.cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
+		"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max"},
+	}
+	m = initializePhaseModelEditor(m)
+	m.phaseModelActiveRow = 0
+	m.phaseModelActiveCol = 1
+	phase := m.phaseModelRows[0].Phase
+
+	m = sendKey(m, tea.KeyEnter)
+
+	if got := m.phaseModelRows[0].OpenCodeAssignment; got.ProviderID != "" || got.ModelID != "" {
+		t.Fatalf("expected row assignment cleared by legacy option, got %+v", got)
+	}
+	if _, ok := m.cfg.SDD.OpenCodePhaseModels[phase]; ok {
+		t.Fatalf("expected config assignment deleted by legacy option, got %#v", m.cfg.SDD.OpenCodePhaseModels)
+	}
+	if display := phaseModelOpenCodeDisplay(m.phaseModelRows[0]); strings.Contains(display, "openai/") {
+		t.Fatalf("expected legacy display to hide provider assignment, got %q", display)
+	}
+}
+
+func TestStep_PhaseModels_KeepsStoredOpenCodeProviderModelAssignmentWhenDiscoveryUnavailable(t *testing.T) {
+	previousDiscover := discoverOpenCodePhaseModelOptions
+	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment { return nil }
+	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
+
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
+	m.cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
+		"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max"},
+	}
+	m = initializePhaseModelEditor(m)
+	m.phaseModelActiveRow = 0
+	m.phaseModelActiveCol = 1
+	phase := m.phaseModelRows[0].Phase
+
+	m = sendKey(m, tea.KeyEnter)
+
+	if got := m.cfg.SDD.OpenCodePhaseModels[phase]; got.ProviderID != "openai" || got.ModelID != "gpt-5.1-codex-max" {
+		t.Fatalf("expected stored assignment kept when discovery unavailable, got %+v", got)
+	}
+}
+
+func TestStep_PhaseModels_ShowsOpenCodeDiscoveryDiagnostics(t *testing.T) {
+	previousDiscover := discoverOpenCodePhaseModelOptions
+	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
+		openCodePhaseModelDiscoveryDiagnostics = []string{"OpenCode settings file /home/me/.config/opencode/opencode.jsonc uses unsupported JSONC"}
+		return nil
+	}
+	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
+
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
+	m = initializePhaseModelEditor(m)
+
+	view := viewPhaseModels(m)
+	if !strings.Contains(view, "unsupported JSONC") {
+		t.Fatalf("expected OpenCode discovery diagnostic in phase model view, got:\n%s", view)
+	}
+}
+
+func TestStep_PhaseModels_UsesStoredOpenCodeProviderModelAssignment(t *testing.T) {
+	previousDiscover := discoverOpenCodePhaseModelOptions
+	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
+		return []config.OpenCodeModelAssignment{
+			{ProviderID: "openai", ModelID: "gpt-5.1-codex-max"},
+		}
+	}
+	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
+
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}}
+	m.cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
+		"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max"},
+	}
+	m = initializePhaseModelEditor(m)
+
+	if got := m.phaseModelRows[0].OpenCodeAssignment; got.ProviderID != "openai" || got.ModelID != "gpt-5.1-codex-max" {
+		t.Fatalf("stored assignment not loaded into row: %+v", got)
+	}
+}
+
+func TestOpenCodePhaseModelOptionsFromDiscovery_SortsProvidersModelsAndEfforts(t *testing.T) {
+	result := opencode.DiscoveryResult{Providers: []opencode.AvailableProvider{
+		{Provider: opencode.Provider{ID: "openai", Models: map[string]opencode.Model{"z-model": {ID: "z-model"}, "a-model": {ID: "a-model", Reasoning: true}}}},
+		{Provider: opencode.Provider{ID: "anthropic", Models: map[string]opencode.Model{"claude": {ID: "claude", Reasoning: true}}}},
+	}}
+
+	got := openCodePhaseModelOptionsFromDiscovery(result)
+	want := []config.OpenCodeModelAssignment{
+		{},
+		{ProviderID: "anthropic", ModelID: "claude"},
+		{ProviderID: "anthropic", ModelID: "claude", Effort: "high"},
+		{ProviderID: "anthropic", ModelID: "claude", Effort: "max"},
+		{ProviderID: "openai", ModelID: "a-model"},
+		{ProviderID: "openai", ModelID: "a-model", Effort: "minimal"},
+		{ProviderID: "openai", ModelID: "a-model", Effort: "low"},
+		{ProviderID: "openai", ModelID: "a-model", Effort: "medium"},
+		{ProviderID: "openai", ModelID: "a-model", Effort: "high"},
+		{ProviderID: "openai", ModelID: "a-model", Effort: "xhigh"},
+		{ProviderID: "openai", ModelID: "z-model"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("option count = %d, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("option[%d] = %+v, want %+v; all=%#v", i, got[i], want[i], got)
+		}
+	}
+}
+
 func TestViewReview_IncludesPhaseModelAssignments(t *testing.T) {
 	m := Model{Step: StepReview, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
 	m = initializePhaseModelEditor(m)
@@ -538,6 +698,21 @@ func TestViewReview_IncludesPhaseModelAssignments(t *testing.T) {
 	}
 	if !strings.Contains(v, phase) || !strings.Contains(v, "haiku") || !strings.Contains(v, "opus") {
 		t.Fatalf("expected review to include edited phase assignment, got:\n%s", v)
+	}
+}
+
+func TestViewReview_IncludesOpenCodeProviderModelAssignments(t *testing.T) {
+	m := Model{Step: StepReview, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
+	m = initializePhaseModelEditor(m)
+	phase := m.phaseModelRows[0].Phase
+	m.cfg.SDD.OpenCodePhaseModels[phase] = config.OpenCodeModelAssignment{ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"}
+
+	v := viewReview(m)
+	if !strings.Contains(v, "opencode=openai/gpt-5.1-codex-max") {
+		t.Fatalf("expected review to include provider-qualified OpenCode assignment, got:\n%s", v)
+	}
+	if !strings.Contains(v, "effort=high") {
+		t.Fatalf("expected review to include OpenCode effort, got:\n%s", v)
 	}
 }
 
@@ -626,6 +801,10 @@ func TestPhaseModelsView_V1HasNoProfileCRUDOrSwitchActions(t *testing.T) {
 }
 
 func TestStep_PhaseModels_RejectsCrossCatalogInvalidValuesInTUIEditingPath(t *testing.T) {
+	previousDiscover := discoverOpenCodePhaseModelOptions
+	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment { return nil }
+	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
+
 	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
 	m = initializePhaseModelEditor(m)
 
@@ -1249,7 +1428,7 @@ func TestUpdatePersonaCustomEdit_EscCancels(t *testing.T) {
 
 func TestUpdatePersonaCustomEdit_CtrlS_PersistsCustomAsUserPreset(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setTestHome(t, tmpHome)
 
 	m := Model{
 		Step:              StepPersona,
@@ -1310,7 +1489,7 @@ notes: |
 
 func TestUpdatePersonaCustomEdit_CtrlS_BlocksInvalidCustomYAML(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setTestHome(t, tmpHome)
 
 	m := Model{
 		Step:              StepPersona,
@@ -1368,7 +1547,7 @@ func TestHandleStepMsg_LoginResult_Error(t *testing.T) {
 // TestHandleStepMsg_LoginResult_Success verifies successful login advances to StepPersona.
 func TestHandleStepMsg_LoginResult_Success(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setTestHome(t, tmpHome)
 	if err := os.MkdirAll(filepath.Join(tmpHome, ".jarvis"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -1562,7 +1741,7 @@ func TestRunAgentConfigSequence_FailureMessageReferencesRecoveryWithoutRollbackC
 			if err := os.WriteFile(homeAsFile, []byte("not-a-directory"), 0600); err != nil {
 				t.Fatalf("seed fake HOME file: %v", err)
 			}
-			t.Setenv("HOME", homeAsFile)
+			setTestHome(t, homeAsFile)
 
 			m := Model{
 				Step:     StepApply,
@@ -1641,7 +1820,7 @@ func TestUpdateReview_BackCancel_NoApplyArtifactsCreated(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpHome := t.TempDir()
-			t.Setenv("HOME", tmpHome)
+			setTestHome(t, tmpHome)
 
 			jarvisDir := filepath.Join(tmpHome, ".jarvis")
 			if err := os.MkdirAll(jarvisDir, 0755); err != nil {
@@ -1689,7 +1868,7 @@ func TestUpdateReview_BackCancel_NoApplyArtifactsCreated(t *testing.T) {
 
 func TestRunAgentConfigSequence_LocalCloudHappyPathPersistsCloudArtifacts(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setTestHome(t, tmpHome)
 
 	cfg := &config.AppConfig{APIURL: config.DefaultAPIURL}
 	m := Model{
@@ -1774,7 +1953,7 @@ func TestHandleStepMsg_UnknownMsg(t *testing.T) {
 // TestWriteSyncJSON verifies that sync credentials are written to ~/.jarvis/sync.json.
 func TestWriteSyncJSON(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setTestHome(t, tmpHome)
 	if err := os.MkdirAll(filepath.Join(tmpHome, ".jarvis"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -1799,7 +1978,7 @@ func TestWriteSyncJSON(t *testing.T) {
 
 func TestWriteSyncJSON_PreservesAutoSync(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setTestHome(t, tmpHome)
 	jarvisDir := filepath.Join(tmpHome, ".jarvis")
 	if err := os.MkdirAll(jarvisDir, 0755); err != nil {
 		t.Fatal(err)
@@ -1829,7 +2008,7 @@ func TestWriteSyncJSON_PreservesAutoSync(t *testing.T) {
 
 func TestNewModel_EmptyStoredScopeFallsBackToLocalOnly(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setTestHome(t, tmpHome)
 
 	cfg := &config.AppConfig{
 		SchemaVersion: 2,

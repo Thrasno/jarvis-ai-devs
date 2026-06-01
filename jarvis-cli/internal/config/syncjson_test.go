@@ -3,13 +3,13 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestWriteSyncCredentials_CreatesFile(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateHome(t)
 
 	if err := WriteSyncCredentials("https://hivemem.dev", "user@example.com", "s3cr3t"); err != nil {
 		t.Fatalf("WriteSyncCredentials: %v", err)
@@ -26,8 +26,7 @@ func TestWriteSyncCredentials_CreatesFile(t *testing.T) {
 }
 
 func TestWriteSyncCredentials_PreservesAutoSync(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateHome(t)
 	jarvisDir := filepath.Join(tmpHome, ".jarvis")
 	if err := os.MkdirAll(jarvisDir, 0755); err != nil {
 		t.Fatal(err)
@@ -56,9 +55,7 @@ func TestWriteSyncCredentials_PreservesAutoSync(t *testing.T) {
 }
 
 func TestWriteSyncCredentials_ReturnsParseErrorForEmptyExistingFile(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-	t.Setenv("USERPROFILE", tmpHome)
+	tmpHome := isolateHome(t)
 	jarvisDir := filepath.Join(tmpHome, ".jarvis")
 	if err := os.MkdirAll(jarvisDir, 0755); err != nil {
 		t.Fatal(err)
@@ -86,8 +83,11 @@ func TestWriteSyncCredentials_ReturnsParseErrorForEmptyExistingFile(t *testing.T
 }
 
 func TestWriteSyncCredentials_LeavesPreviousFileWhenUpdateFails(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows chmod does not make the destination directory reliably read-only")
+	}
+
+	tmpHome := isolateHome(t)
 	jarvisDir := filepath.Join(tmpHome, ".jarvis")
 	if err := os.MkdirAll(jarvisDir, 0755); err != nil {
 		t.Fatal(err)
@@ -120,8 +120,7 @@ func TestWriteSyncCredentials_LeavesPreviousFileWhenUpdateFails(t *testing.T) {
 }
 
 func TestDeleteSyncCredentials_RemovesExistingFile(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateHome(t)
 	jarvisDir := filepath.Join(tmpHome, ".jarvis")
 	if err := os.MkdirAll(jarvisDir, 0755); err != nil {
 		t.Fatal(err)
@@ -142,8 +141,7 @@ func TestDeleteSyncCredentials_RemovesExistingFile(t *testing.T) {
 }
 
 func TestDeleteSyncCredentials_IdempotentWhenMissing(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateHome(t)
 
 	if err := DeleteSyncCredentials(); err != nil {
 		t.Fatalf("DeleteSyncCredentials missing file should not fail: %v", err)

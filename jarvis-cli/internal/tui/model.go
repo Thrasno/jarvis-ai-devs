@@ -4,11 +4,15 @@ package tui
 
 import (
 	"embed"
+	"os"
+	"path/filepath"
+	"sort"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/opencode"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
@@ -81,11 +85,13 @@ type Model struct {
 	agentDone     bool
 	reviewChoice  int
 
-	phaseModelRows      []phaseModelRow
-	phaseModelActiveRow int
-	phaseModelActiveCol int
-	phaseModelOpenCode  []string
-	phaseModelClaude    []string
+	phaseModelRows                []phaseModelRow
+	phaseModelActiveRow           int
+	phaseModelActiveCol           int
+	phaseModelOpenCode            []string
+	phaseModelClaude              []string
+	phaseModelOpenCodeAssignments []config.OpenCodeModelAssignment
+	phaseModelOpenCodeDiagnostics []string
 
 	cfg *config.AppConfig
 
@@ -295,10 +301,17 @@ func (m Model) View() string {
 func initializePhaseModelEditor(m Model) Model {
 	contract := sddruntime.DefaultContract()
 	resolved := sddruntime.ResolvePhaseModels(m.cfg)
+	openCodePhaseModelDiscoveryDiagnostics = nil
+	m.phaseModelOpenCodeAssignments = ensureOpenCodeLegacyOption(discoverOpenCodePhaseModelOptions())
+	m.phaseModelOpenCodeDiagnostics = append([]string(nil), openCodePhaseModelDiscoveryDiagnostics...)
 	m.phaseModelRows = make([]phaseModelRow, 0, len(contract.Phases))
 	for _, phase := range contract.Phases {
 		sel := resolved[phase]
-		m.phaseModelRows = append(m.phaseModelRows, phaseModelRow{Phase: phase, OpenCode: sel.OpenCode, Claude: sel.Claude})
+		row := phaseModelRow{Phase: phase, OpenCode: sel.OpenCode, Claude: sel.Claude}
+		if m.cfg != nil && m.cfg.SDD.OpenCodePhaseModels != nil {
+			row.OpenCodeAssignment = m.cfg.SDD.OpenCodePhaseModels[phase]
+		}
+		m.phaseModelRows = append(m.phaseModelRows, row)
 	}
 	m.phaseModelOpenCode = append([]string(nil), contract.PlatformCatalogs[sddruntime.PlatformOpenCode]...)
 	m.phaseModelClaude = append([]string(nil), contract.PlatformCatalogs[sddruntime.PlatformClaude]...)
@@ -309,9 +322,76 @@ func initializePhaseModelEditor(m Model) Model {
 		if m.cfg.SDD.PhaseModels == nil {
 			m.cfg.SDD.PhaseModels = map[string]config.PhaseModelSelection{}
 		}
+		if m.cfg.SDD.OpenCodePhaseModels == nil {
+			m.cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{}
+		}
 		for _, row := range m.phaseModelRows {
 			m.cfg.SDD.PhaseModels[row.Phase] = config.PhaseModelSelection{OpenCode: row.OpenCode, Claude: row.Claude}
 		}
 	}
 	return m
+}
+
+func ensureOpenCodeLegacyOption(options []config.OpenCodeModelAssignment) []config.OpenCodeModelAssignment {
+	if len(options) == 0 || options[0] == (config.OpenCodeModelAssignment{}) {
+		return options
+	}
+	out := make([]config.OpenCodeModelAssignment, 0, len(options)+1)
+	out = append(out, config.OpenCodeModelAssignment{})
+	out = append(out, options...)
+	return out
+}
+
+var openCodePhaseModelDiscoveryDiagnostics []string
+
+var discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
+	openCodePhaseModelDiscoveryDiagnostics = nil
+	result, err := opencode.DiscoverAvailableProviders(opencode.ResolvePaths(defaultOpenCodePathRoots()), nil)
+	if err != nil {
+		openCodePhaseModelDiscoveryDiagnostics = []string{"OpenCode provider/model discovery unavailable: " + err.Error()}
+		return nil
+	}
+	openCodePhaseModelDiscoveryDiagnostics = append([]string(nil), result.Diagnostics...)
+	return openCodePhaseModelOptionsFromDiscovery(result)
+}
+
+func defaultOpenCodePathRoots() opencode.PathRoots {
+	home, _ := os.UserHomeDir()
+	cache, _ := os.UserCacheDir()
+	configDir, _ := os.UserConfigDir()
+	data := os.Getenv("XDG_DATA_HOME")
+	if data == "" && home != "" {
+		data = filepath.Join(home, ".local", "share")
+	}
+	return opencode.PathRoots{HomeDir: home, CacheDir: cache, ConfigDir: configDir, DataDir: data}
+}
+
+func openCodePhaseModelOptionsFromDiscovery(result opencode.DiscoveryResult) []config.OpenCodeModelAssignment {
+	providers := append([]opencode.AvailableProvider(nil), result.Providers...)
+	sort.Slice(providers, func(i, j int) bool {
+		return providers[i].Provider.ID < providers[j].Provider.ID
+	})
+	options := []config.OpenCodeModelAssignment{}
+	for _, available := range providers {
+		providerID := available.Provider.ID
+		modelsByID := map[string]opencode.Model{}
+		modelIDs := make([]string, 0, len(available.Provider.Models))
+		for modelID, model := range available.Provider.Models {
+			if model.ID != "" {
+				modelID = model.ID
+			}
+			if modelID != "" {
+				model.ID = modelID
+				modelsByID[modelID] = model
+				modelIDs = append(modelIDs, modelID)
+			}
+		}
+		sort.Strings(modelIDs)
+		for _, modelID := range modelIDs {
+			for _, effort := range opencode.EffortOptions(providerID, modelsByID[modelID]) {
+				options = append(options, config.OpenCodeModelAssignment{ProviderID: providerID, ModelID: modelID, Effort: effort})
+			}
+		}
+	}
+	return ensureOpenCodeLegacyOption(options)
 }

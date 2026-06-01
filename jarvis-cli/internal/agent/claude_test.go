@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -346,8 +347,7 @@ func TestClaudeAgent_WriteOutputStyle_SettingsJsonNotExists(t *testing.T) {
 // TestClaudeAgent_WriteOutputStyle_MalformedSettings verifies that malformed
 // settings.json returns a descriptive error (SPEC-008).
 func TestClaudeAgent_WriteOutputStyle_MalformedSettings(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 
 	claudeDir := filepath.Join(tmpHome, ".claude")
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
@@ -381,8 +381,11 @@ func TestClaudeAgent_WriteOutputStyle_MalformedSettings(t *testing.T) {
 // TestClaudeAgent_WriteOutputStyle_ReadOnlyFilesystem verifies that write
 // failures return descriptive errors (SPEC-008).
 func TestClaudeAgent_WriteOutputStyle_ReadOnlyFilesystem(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows chmod does not make the output styles directory reliably read-only")
+	}
+
+	tmpHome := isolateTestHome(t)
 
 	claudeDir := filepath.Join(tmpHome, ".claude")
 	outputStylesDir := filepath.Join(claudeDir, "output-styles")
@@ -421,8 +424,7 @@ func TestClaudeAgent_WriteOutputStyle_ReadOnlyFilesystem(t *testing.T) {
 // TestClaudeAgent_WriteOutputStyle_NilNotes verifies that nil or empty Notes
 // field does not cause panic (SPEC-008).
 func TestClaudeAgent_WriteOutputStyle_NilNotes(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateTestHome(t)
 
 	agent := newClaudeAgent(emptyFS)
 	preset := &persona.Preset{
@@ -705,7 +707,8 @@ func TestClaudeAgent_MergeConfig_ValidationAndAddFailures(t *testing.T) {
 func TestClaudeAgent_CommandRunnerFallbackAndCombinedOutput(t *testing.T) {
 	a := &ClaudeAgent{}
 	runner := a.commandRunner()
-	out, err := runner("sh", "-c", "printf ok")
+	name, args := testCommand(t, "ok")
+	out, err := runner(name, args...)
 	if err != nil {
 		t.Fatalf("fallback commandRunner should execute commands, got error %v", err)
 	}
@@ -716,7 +719,8 @@ func TestClaudeAgent_CommandRunnerFallbackAndCombinedOutput(t *testing.T) {
 
 func TestRunCommandCombinedOutput_SuccessAndFailure(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
-		out, err := runCommandCombinedOutput("sh", "-c", "printf hello")
+		name, args := testCommand(t, "hello")
+		out, err := runCommandCombinedOutput(name, args...)
 		if err != nil {
 			t.Fatalf("expected success, got %v", err)
 		}
@@ -726,7 +730,8 @@ func TestRunCommandCombinedOutput_SuccessAndFailure(t *testing.T) {
 	})
 
 	t.Run("failure keeps combined output", func(t *testing.T) {
-		out, err := runCommandCombinedOutput("sh", "-c", "printf boom && exit 7")
+		name, args := testCommand(t, "boom-fail")
+		out, err := runCommandCombinedOutput(name, args...)
 		if err == nil {
 			t.Fatal("expected non-nil error for exit status 7")
 		}
@@ -734,6 +739,32 @@ func TestRunCommandCombinedOutput_SuccessAndFailure(t *testing.T) {
 			t.Fatalf("expected combined output to be returned, got %q", out)
 		}
 	})
+}
+
+func testCommand(t *testing.T, mode string) (string, []string) {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	t.Setenv("JARVIS_AGENT_TEST_COMMAND", mode)
+	return exe, []string{"-test.run=TestAgentCommandHelperProcess", "--"}
+}
+
+func TestAgentCommandHelperProcess(t *testing.T) {
+	switch os.Getenv("JARVIS_AGENT_TEST_COMMAND") {
+	case "ok":
+		_, _ = os.Stdout.WriteString("ok")
+		os.Exit(0)
+	case "hello":
+		_, _ = os.Stdout.WriteString("hello")
+		os.Exit(0)
+	case "boom-fail":
+		_, _ = os.Stdout.WriteString("boom")
+		os.Exit(7)
+	default:
+		return
+	}
 }
 
 func TestClaudeAgent_ClearOutputStyle_BranchCoverage(t *testing.T) {
@@ -763,8 +794,7 @@ func TestClaudeAgent_ClearOutputStyle_BranchCoverage(t *testing.T) {
 }
 
 func TestClaudeAgent_InstallOrchestrator_WritesToConfigDir(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t)
 
 	a := newClaudeAgent(testTemplatesFS)
 	if err := os.MkdirAll(a.ConfigDir(), 0755); err != nil {

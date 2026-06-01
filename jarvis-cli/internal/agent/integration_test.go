@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -168,7 +169,7 @@ func TestMergeJSON_Idempotent(t *testing.T) {
 
 func TestClaudeAgent_WriteInstructions_CreatesSentinels(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	// Create ~/.claude directory so IsInstalled() would be true.
 	claudeDir := filepath.Join(home, ".claude")
@@ -209,7 +210,7 @@ func TestClaudeAgent_WriteInstructions_CreatesSentinels(t *testing.T) {
 
 func TestClaudeAgent_WriteInstructions_PatchesLayer2Only(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	claudeDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
@@ -256,7 +257,7 @@ func TestClaudeAgent_WriteInstructions_PatchesLayer2Only(t *testing.T) {
 
 func TestOpenCodeAgent_InstallSkills_CreatesSkillDirs(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	a := &OpenCodeAgent{home: home}
 
@@ -295,7 +296,7 @@ func TestOpenCodeAgent_InstallSkills_CreatesSkillDirs(t *testing.T) {
 // the Hive protocol with jarvis:hive-protocol markers on first sync.
 func TestProtocolInjection_FirstSync(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	// Create ~/.claude directory so IsInstalled() would be true.
 	claudeDir := filepath.Join(home, ".claude")
@@ -342,7 +343,7 @@ func TestProtocolInjection_FirstSync(t *testing.T) {
 // twice produces the same result (no duplicate markers).
 func TestProtocolInjection_Idempotency(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	claudeDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
@@ -397,7 +398,7 @@ func TestProtocolInjection_Idempotency(t *testing.T) {
 // the new jarvis:hive-protocol markers.
 func TestProtocolInjection_CleansUpOldMarkers(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	claudeDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
@@ -464,7 +465,7 @@ More content
 // Hive protocol content is correctly injected between the markers.
 func TestProtocolInjection_ProtocolContentCorrect(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	claudeDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
@@ -536,8 +537,12 @@ var testHooksFS = fstest.MapFS{
 //   - is idempotent (hook appears exactly once after two calls)
 //   - preserves pre-existing UserPromptSubmit entries (R-9 mitigation)
 func TestClaudeAgent_InstallPromptHook(t *testing.T) {
+	previousGOOS := claudeRuntimeGOOS
+	claudeRuntimeGOOS = "linux"
+	t.Cleanup(func() { claudeRuntimeGOOS = previousGOOS })
+
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	claudeDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
@@ -559,8 +564,8 @@ func TestClaudeAgent_InstallPromptHook(t *testing.T) {
 		t.Fatalf("script not found at %s: %v", scriptPath, err)
 	}
 
-	// Script must be executable (at least one execute bit set).
-	if info.Mode()&0100 == 0 {
+	// Script must be executable on Unix; Windows does not preserve POSIX execute bits.
+	if runtime.GOOS != "windows" && info.Mode()&0100 == 0 {
 		t.Errorf("script is not executable: mode=%v", info.Mode())
 	}
 
@@ -645,7 +650,7 @@ func TestClaudeAgent_InstallPromptHook(t *testing.T) {
 
 func TestClaudeAgent_InstallPromptHook_WindowsRegistersPowerShellHook(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	withClaudeGOOS(t, "windows")
 
 	claudeDir := filepath.Join(home, ".claude")
@@ -672,7 +677,7 @@ func TestClaudeAgent_InstallPromptHook_WindowsRegistersPowerShellHook(t *testing
 
 func TestClaudeAgent_InstallPromptHook_WindowsPreservesExistingHooksAndIsIdempotent(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	withClaudeGOOS(t, "windows")
 
 	claudeDir := filepath.Join(home, ".claude")
@@ -796,7 +801,7 @@ func readSettingsMap(t *testing.T, settingsPath string) map[string]any {
 // pre-existing UserPromptSubmit entries are NOT removed (R-9 mitigation).
 func TestClaudeAgent_InstallPromptHook_PreservesExistingHooks(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	claudeDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
@@ -870,7 +875,7 @@ func TestClaudeAgent_InstallPromptHook_PreservesExistingHooks(t *testing.T) {
 // the TypeScript plugin to ~/.config/opencode/plugins/hive.ts.
 func TestOpenCodeAgent_InstallPromptHook(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	a := &OpenCodeAgent{home: home}
 
