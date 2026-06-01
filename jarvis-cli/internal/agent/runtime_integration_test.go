@@ -160,6 +160,116 @@ func TestObserveRuntime_FallbackUsesConfiguredOpenCodeProviderQualifiedAssignmen
 	}
 }
 
+func TestOpenCodeAgent_ObserveRuntimeWithConfigUsesPendingAssignments(t *testing.T) {
+	stubRuntimeConfig(t, defaultRuntimeConfig())
+
+	pendingCfg := defaultRuntimeConfig()
+	pendingCfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
+		"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"},
+	}
+
+	home := t.TempDir()
+	a := &OpenCodeAgent{home: home, templatesFS: testTemplatesFS}
+	if err := os.MkdirAll(a.ConfigDir(), 0755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := a.WriteInstructions("# Layer1", "# Layer2", nil); err != nil {
+		t.Fatalf("WriteInstructions: %v", err)
+	}
+
+	const orchestratorTemplate = `| Phase | Default Model | Effort | Reason |
+|-------|---------------|--------|--------|
+{{ range .ModelRows }}| {{ .Phase }} | {{ .Model }} | {{ .Effort }} | {{ .Reason }} |
+{{ end }}`
+	rendered, err := sddruntime.RenderOrchestrator(a.Name(), pendingCfg, orchestratorTemplate)
+	if err != nil {
+		t.Fatalf("RenderOrchestrator: %v", err)
+	}
+	if err := a.InstallOrchestrator([]byte(rendered)); err != nil {
+		t.Fatalf("InstallOrchestrator: %v", err)
+	}
+	skillsFS := fstest.MapFS{"_shared/SKILL.md": {Data: []byte("# shared")}}
+	if err := a.InstallSkills(skillsFS, nil); err != nil {
+		t.Fatalf("InstallSkills: %v", err)
+	}
+
+	staleObserved, err := a.ObserveRuntime()
+	if err != nil {
+		t.Fatalf("ObserveRuntime with stale disk config: %v", err)
+	}
+	staleReport := sddruntime.Verify(a.Name(), staleObserved)
+	if got := checkStatusByKey(staleReport.Checks, "invariant.model.default"); got != sddruntime.StatusFail {
+		t.Fatalf("stale disk/default config check status = %q, want fail", got)
+	}
+
+	observed, err := a.ObserveRuntimeWithConfig(pendingCfg)
+	if err != nil {
+		t.Fatalf("ObserveRuntimeWithConfig: %v", err)
+	}
+	if got := observed.ResolvedModelAssignments["default"]; got != "openai/gpt-5.1-codex-max" {
+		t.Fatalf("resolved default assignment = %q, want pending provider-qualified model", got)
+	}
+	report := sddruntime.Verify(a.Name(), observed)
+	if report.Status != sddruntime.StatusPass {
+		t.Fatalf("expected verifier pass with pending config, got %q (default check %q)", report.Status, checkStatusByKey(report.Checks, "invariant.model.default"))
+	}
+}
+
+func TestClaudeAgent_ObserveRuntimeWithConfigUsesPendingAssignments(t *testing.T) {
+	stubRuntimeConfig(t, defaultRuntimeConfig())
+
+	pendingCfg := defaultRuntimeConfig()
+	pendingCfg.SDD.PhaseModels = map[string]config.PhaseModelSelection{
+		"default": {Claude: "haiku"},
+	}
+
+	home := t.TempDir()
+	a := &ClaudeAgent{home: home, templatesFS: testTemplatesFS}
+	if err := os.MkdirAll(a.ConfigDir(), 0755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := a.WriteInstructions("# Layer1", "# Layer2", nil); err != nil {
+		t.Fatalf("WriteInstructions: %v", err)
+	}
+
+	const orchestratorTemplate = `| Phase | Default Model | Effort | Reason |
+|-------|---------------|--------|--------|
+{{ range .ModelRows }}| {{ .Phase }} | {{ .Model }} | {{ .Effort }} | {{ .Reason }} |
+{{ end }}`
+	rendered, err := sddruntime.RenderOrchestrator(a.Name(), pendingCfg, orchestratorTemplate)
+	if err != nil {
+		t.Fatalf("RenderOrchestrator: %v", err)
+	}
+	if err := a.InstallOrchestrator([]byte(rendered)); err != nil {
+		t.Fatalf("InstallOrchestrator: %v", err)
+	}
+	skillsFS := fstest.MapFS{"_shared/SKILL.md": {Data: []byte("# shared")}}
+	if err := a.InstallSkills(skillsFS, nil); err != nil {
+		t.Fatalf("InstallSkills: %v", err)
+	}
+
+	staleObserved, err := a.ObserveRuntime()
+	if err != nil {
+		t.Fatalf("ObserveRuntime with stale disk config: %v", err)
+	}
+	staleReport := sddruntime.Verify(a.Name(), staleObserved)
+	if got := checkStatusByKey(staleReport.Checks, "invariant.model.default"); got != sddruntime.StatusFail {
+		t.Fatalf("stale disk/default config check status = %q, want fail", got)
+	}
+
+	observed, err := a.ObserveRuntimeWithConfig(pendingCfg)
+	if err != nil {
+		t.Fatalf("ObserveRuntimeWithConfig: %v", err)
+	}
+	if got := observed.ResolvedModelAssignments["default"]; got != "haiku" {
+		t.Fatalf("resolved default assignment = %q, want pending claude model", got)
+	}
+	report := sddruntime.Verify(a.Name(), observed)
+	if report.Status != sddruntime.StatusPass {
+		t.Fatalf("expected verifier pass with pending config, got %q (default check %q)", report.Status, checkStatusByKey(report.Checks, "invariant.model.default"))
+	}
+}
+
 func TestOpenCodeAgent_ObserveRuntime_ManifestUsesRequiredArtifactsOnly(t *testing.T) {
 	home := t.TempDir()
 	a := &OpenCodeAgent{home: home, templatesFS: testTemplatesFS}

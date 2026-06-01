@@ -58,11 +58,15 @@ func (a *ClaudeAgent) RuntimePlan() (sddruntime.RuntimePlan, error) {
 }
 
 func (a *ClaudeAgent) ObserveRuntime() (sddruntime.ObservedRuntime, error) {
+	return a.ObserveRuntimeWithConfig(nil)
+}
+
+func (a *ClaudeAgent) ObserveRuntimeWithConfig(cfg *config.AppConfig) (sddruntime.ObservedRuntime, error) {
 	plan, err := a.RuntimePlan()
 	if err != nil {
 		return sddruntime.ObservedRuntime{}, err
 	}
-	return observeRuntime(a.ConfigDir(), plan)
+	return observeRuntimeWithConfig(a.ConfigDir(), plan, cfg)
 }
 
 func (a *ClaudeAgent) IsInstalled() bool {

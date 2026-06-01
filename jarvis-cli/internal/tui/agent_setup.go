@@ -114,7 +114,7 @@ func configureWizardAgents(
 	}
 
 	for i, a := range agents {
-		if err := verifyConfiguredAgentRuntime(a); err != nil {
+		if err := verifyConfiguredAgentRuntime(a, cfg); err != nil {
 			results[i].State.Configured = false
 			results[i].Err = err
 			return results
@@ -124,8 +124,8 @@ func configureWizardAgents(
 	return results
 }
 
-func verifyConfiguredAgentRuntime(a agent.Agent) error {
-	observed, err := a.ObserveRuntime()
+func verifyConfiguredAgentRuntime(a agent.Agent, cfg *config.AppConfig) error {
+	observed, err := agent.ObserveRuntimeWithConfig(a, cfg)
 	if err != nil {
 		return fmt.Errorf("runtime verification observe failed: %w", err)
 	}

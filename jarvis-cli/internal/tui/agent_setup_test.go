@@ -13,17 +13,18 @@ import (
 )
 
 type setupAgentStub struct {
-	name                 string
-	mergeErrAt           int
-	installSkillsErr     error
-	installOrchErr       error
-	writeInstructionsErr error
-	outputStyleErr       error
-	observeRuntime       sddruntime.ObservedRuntime
-	observeRuntimeErr    error
-	runtimePlan          sddruntime.RuntimePlan
-	runtimePlanErr       error
-	observeCalls         int
+	name                  string
+	mergeErrAt            int
+	installSkillsErr      error
+	installOrchErr        error
+	writeInstructionsErr  error
+	outputStyleErr        error
+	observeRuntime        sddruntime.ObservedRuntime
+	observeRuntimeErr     error
+	runtimePlan           sddruntime.RuntimePlan
+	runtimePlanErr        error
+	installedOrchestrator string
+	observeCalls          int
 
 	mergeCalls int
 }
@@ -47,6 +48,19 @@ func (a *setupAgentStub) ObserveRuntime() (sddruntime.ObservedRuntime, error) {
 	return a.observeRuntime, nil
 }
 
+type setupConfigAwareAgentStub struct {
+	*setupAgentStub
+	observeRuntimeWithConfig func(*config.AppConfig) (sddruntime.ObservedRuntime, error)
+}
+
+func (a *setupConfigAwareAgentStub) ObserveRuntimeWithConfig(cfg *config.AppConfig) (sddruntime.ObservedRuntime, error) {
+	if a.observeRuntimeWithConfig != nil {
+		a.observeCalls++
+		return a.observeRuntimeWithConfig(cfg)
+	}
+	return a.ObserveRuntime()
+}
+
 func (a *setupAgentStub) MergeConfig(entry agent.MCPEntry) error {
 	a.mergeCalls++
 	if a.mergeErrAt > 0 && a.mergeCalls == a.mergeErrAt {
@@ -63,7 +77,8 @@ func (a *setupAgentStub) InstallSkills(fs.FS, []string) error {
 	return a.installSkillsErr
 }
 
-func (a *setupAgentStub) InstallOrchestrator([]byte) error {
+func (a *setupAgentStub) InstallOrchestrator(content []byte) error {
+	a.installedOrchestrator = string(content)
 	return a.installOrchErr
 }
 
@@ -258,5 +273,108 @@ func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
 				t.Fatalf("error = %q, want contains %q", got.Err.Error(), tt.wantErrSubstr)
 			}
 		})
+	}
+}
+
+func TestVerifyConfiguredAgentRuntime_NilConfigFallsBackToObservedRuntime(t *testing.T) {
+	assignments, err := sddruntime.DefaultAssignmentsForPlatform(sddruntime.PlatformClaude)
+	if err != nil {
+		t.Fatalf("resolve default assignments: %v", err)
+	}
+	a := &setupAgentStub{
+		name:           "claude",
+		observeRuntime: passingRuntimeObservation(t, "claude", assignments, nil),
+	}
+
+	if err := verifyConfiguredAgentRuntime(a, nil); err != nil {
+		t.Fatalf("verifyConfiguredAgentRuntime with nil config returned error: %v", err)
+	}
+	if a.observeCalls != 1 {
+		t.Fatalf("observe calls = %d, want 1", a.observeCalls)
+	}
+}
+
+func TestConfigureWizardAgents_RuntimeVerificationUsesPendingConfigForOpenCodeDefault(t *testing.T) {
+	pendingCfg := &config.AppConfig{}
+	pendingCfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
+		"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"},
+	}
+
+	pendingAssignments, err := sddruntime.ResolveAssignmentsForPlatform(sddruntime.PlatformOpenCode, pendingCfg)
+	if err != nil {
+		t.Fatalf("resolve pending assignments: %v", err)
+	}
+	staleAssignments, err := sddruntime.DefaultAssignmentsForPlatform(sddruntime.PlatformOpenCode)
+	if err != nil {
+		t.Fatalf("resolve stale assignments: %v", err)
+	}
+
+	staleObserved := passingRuntimeObservation(t, "opencode", pendingAssignments, staleAssignments)
+	a := &setupConfigAwareAgentStub{
+		setupAgentStub: &setupAgentStub{
+			name:           "opencode",
+			observeRuntime: staleObserved,
+		},
+	}
+	a.observeRuntimeWithConfig = func(cfg *config.AppConfig) (sddruntime.ObservedRuntime, error) {
+		resolved, err := sddruntime.ResolveAssignmentsForPlatform(sddruntime.PlatformOpenCode, cfg)
+		if err != nil {
+			return sddruntime.ObservedRuntime{}, err
+		}
+		observed := staleObserved
+		observed.ResolvedModelAssignments = resolved
+		return observed, nil
+	}
+
+	results := configureWizardAgents([]agent.Agent{a}, pendingCfg, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil)
+	if len(results) != 1 {
+		t.Fatalf("len(results) = %d, want 1", len(results))
+	}
+	if results[0].Err != nil {
+		t.Fatalf("unexpected verification error with pending config: %v", results[0].Err)
+	}
+	if !results[0].State.Configured {
+		t.Fatalf("configured = false, want true")
+	}
+	if !strings.Contains(a.installedOrchestrator, "| default | openai/gpt-5.1-codex-max |") {
+		t.Fatalf("rendered orchestrator did not use pending default assignment:\n%s", a.installedOrchestrator)
+	}
+	if a.observeCalls == 0 {
+		t.Fatalf("observe runtime was not called")
+	}
+}
+
+func passingRuntimeObservation(t *testing.T, agentName string, modelAssignments, resolvedAssignments map[string]string) sddruntime.ObservedRuntime {
+	t.Helper()
+	promptIDs, err := sddruntime.DefaultPromptSourceIDs(agentName, "orchestrator")
+	if err != nil {
+		t.Fatalf("default prompt source ids: %v", err)
+	}
+	storeContract, err := sddruntime.ResolveRuntimeStoreContract(sddruntime.StoreModeHive)
+	if err != nil {
+		t.Fatalf("resolve store contract: %v", err)
+	}
+	contract := sddruntime.DefaultContract()
+
+	return sddruntime.ObservedRuntime{
+		Manifest: sddruntime.RuntimeManifestState{
+			Present:            true,
+			ContractVersion:    contract.Version,
+			ManagedArtifactIDs: []string{"instructions", "orchestrator", "skills"},
+		},
+		RegistryPath:             contract.RegistryPath,
+		PromptSourceIDs:          promptIDs,
+		StoreMode:                string(storeContract.Mode),
+		StoreReadFrom:            storeContract.ReadFrom,
+		StoreWriteTo:             storeContract.WriteTo,
+		ArtifactTopics:           []string{"sdd/runtime/verify"},
+		GeneralMemoryTopics:      []string{"runtime/notes"},
+		ModelAssignments:         modelAssignments,
+		ResolvedModelAssignments: resolvedAssignments,
+		Artifacts: map[string]sddruntime.ObservedArtifact{
+			"instructions": {Exists: true, MarkersValid: true},
+			"orchestrator": {Exists: true},
+			"skills":       {Exists: true},
+		},
 	}
 }

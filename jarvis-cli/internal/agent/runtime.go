@@ -16,7 +16,41 @@ func runtimePlanFor(name string) (sddruntime.RuntimePlan, error) {
 	return sddruntime.Build(name)
 }
 
+type runtimeObserverWithConfig interface {
+	ObserveRuntimeWithConfig(*config.AppConfig) (sddruntime.ObservedRuntime, error)
+}
+
+// ObserveRuntimeWithConfig collects adapter-normalized runtime state using cfg
+// as the pending expected model-assignment source when the adapter supports it.
+func ObserveRuntimeWithConfig(a Agent, cfg *config.AppConfig) (sddruntime.ObservedRuntime, error) {
+	if observer, ok := a.(runtimeObserverWithConfig); ok {
+		return observer.ObserveRuntimeWithConfig(cfg)
+	}
+
+	observed, err := a.ObserveRuntime()
+	if err != nil {
+		return sddruntime.ObservedRuntime{}, err
+	}
+	if cfg == nil {
+		return observed, nil
+	}
+
+	resolvedAssignments, err := resolvedAssignmentsForAgentWithConfig(a.Name(), cfg)
+	if err != nil {
+		return sddruntime.ObservedRuntime{}, err
+	}
+	observed.ResolvedModelAssignments = resolvedAssignments
+	if len(observed.ModelAssignments) == 0 {
+		observed.ModelAssignments = resolvedAssignments
+	}
+	return observed, nil
+}
+
 func observeRuntime(configDir string, plan sddruntime.RuntimePlan) (sddruntime.ObservedRuntime, error) {
+	return observeRuntimeWithConfig(configDir, plan, nil)
+}
+
+func observeRuntimeWithConfig(configDir string, plan sddruntime.RuntimePlan, cfg *config.AppConfig) (sddruntime.ObservedRuntime, error) {
 	artifacts := map[string]sddruntime.ObservedArtifact{}
 	presentIDs := make([]string, 0, len(plan.Contract.ManagedArtifacts))
 
@@ -52,21 +86,17 @@ func observeRuntime(configDir string, plan sddruntime.RuntimePlan) (sddruntime.O
 		manifestVersion = plan.Contract.Version
 	}
 
-	modelAssignments, err := resolvedAssignmentsForAgent(plan.Agent)
+	resolvedAssignments, err := resolvedAssignmentsForAgentWithConfig(plan.Agent, cfg)
 	if err != nil {
 		return sddruntime.ObservedRuntime{}, err
 	}
+	modelAssignments := resolvedAssignments
 	observedAssignments, err := observeOrchestratorModelAssignments(configDir, plan.Paths)
 	if err != nil {
 		return sddruntime.ObservedRuntime{}, err
 	}
 	if len(observedAssignments) > 0 {
 		modelAssignments = observedAssignments
-	}
-
-	resolvedAssignments, err := resolvedAssignmentsForAgent(plan.Agent)
-	if err != nil {
-		return sddruntime.ObservedRuntime{}, err
 	}
 
 	promptSources, err := sddruntime.DefaultPromptContract(plan.Agent, "orchestrator").OrderedRequiredSources()
@@ -137,9 +167,16 @@ func parseOrchestratorAssignments(content string) map[string]string {
 }
 
 func resolvedAssignmentsForAgent(agent string) (map[string]string, error) {
-	cfg, err := loadAppConfig()
-	if err != nil {
-		return nil, fmt.Errorf("load config for runtime verification: %w", err)
+	return resolvedAssignmentsForAgentWithConfig(agent, nil)
+}
+
+func resolvedAssignmentsForAgentWithConfig(agent string, cfg *config.AppConfig) (map[string]string, error) {
+	var err error
+	if cfg == nil {
+		cfg, err = loadAppConfig()
+		if err != nil {
+			return nil, fmt.Errorf("load config for runtime verification: %w", err)
+		}
 	}
 
 	platform, err := platformForAgent(agent)
