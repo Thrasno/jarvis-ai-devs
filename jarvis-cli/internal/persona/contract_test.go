@@ -12,8 +12,7 @@ import (
 
 func TestPresetContract(t *testing.T) {
 	t.Run("resolver canonicalizes slug and source", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
+		isolateTestHome(t)
 
 		userYAML := []byte(`name: mi-persona
 display_name: Mi Persona
@@ -177,8 +176,7 @@ notes: |
 	})
 
 	t.Run("apply pipeline keeps no-mix semantics and persists canonical slug+source", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
+		home := isolateTestHome(t)
 
 		userYAML := []byte(`name: mi-persona
 display_name: Mi Persona

@@ -65,8 +65,7 @@ notes: |
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tempHome := t.TempDir()
-			t.Setenv("HOME", tempHome)
+			tempHome := isolateTestHome(t)
 
 			if err := os.MkdirAll(filepath.Join(tempHome, ".claude"), 0o755); err != nil {
 				t.Fatalf("create .claude dir: %v", err)
@@ -117,8 +116,7 @@ notes: |
 // the output-style file are created.
 func TestPersonaSetCmd_ClaudeAgent_CreatesOutputStyle(t *testing.T) {
 	// Setup temp directories
-	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
+	tempHome := isolateTestHome(t)
 	tempClaudeDir := filepath.Join(tempHome, ".claude")
 
 	// Create ClaudeAgent config directory
@@ -203,8 +201,7 @@ func TestPersonaSetCmd_ClaudeAgent_CreatesOutputStyle(t *testing.T) {
 // AGENTS.md is created and no output-style files are written.
 func TestPersonaSetCmd_OpenCodeAgent_NoOutputStyle(t *testing.T) {
 	// Setup temp directories
-	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
+	tempHome := isolateTestHome(t)
 	tempOpenCodeDir := filepath.Join(tempHome, ".config", "opencode")
 
 	// Create OpenCodeAgent config directory

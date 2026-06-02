@@ -41,7 +41,7 @@ func TestWizardAndPersonaSet_Parity_FinalConfigAndArtifacts(t *testing.T) {
 
 func runWizardNoTUIAndCaptureSnapshot(t *testing.T, home string, targetPreset string) personaFlowSnapshot {
 	t.Helper()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	t.Setenv("PATH", "")
 
 	if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o755); err != nil {
@@ -73,7 +73,7 @@ func runWizardNoTUIAndCaptureSnapshot(t *testing.T, home string, targetPreset st
 
 func runPersonaSetAndCaptureSnapshot(t *testing.T, home string, targetPreset string, selectedSkills []string) personaFlowSnapshot {
 	t.Helper()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	t.Setenv("PATH", "")
 
 	if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o755); err != nil {

@@ -54,8 +54,7 @@ func writeCfg(t *testing.T, home, content string) {
 
 // TestRunWizard_InProcess verifies root flow uses wizard semantics.
 func TestRunWizard_InProcess(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 
 	writeCfg(t, home, "email: inprocess@example.com\napi_url: https://hivemem.dev\npreset: neutra\n")
 
@@ -72,8 +71,7 @@ func TestRunWizard_InProcess(t *testing.T) {
 
 // TestRunWizard_ConfiguredAgents_InProcess verifies wizard still runs for reruns.
 func TestRunWizard_ConfiguredAgents_InProcess(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 
 	writeCfg(t, home, "email: a@b.com\napi_url: https://hivemem.dev\npreset: tony-stark\nconfigured_agents:\n  - claude-code\n  - opencode\n")
 
@@ -90,8 +88,7 @@ func TestRunWizard_ConfiguredAgents_InProcess(t *testing.T) {
 
 // TestRunWizard_NoConfig_InProcess verifies runWizard works from fresh state.
 func TestRunWizard_NoConfig_InProcess(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateTestHome(t)
 	err := runWizard(true)
 	if err != nil {
 		t.Fatalf("runWizard with no config should not fail: %v", err)
@@ -117,8 +114,7 @@ func TestSyncCmd_RunE_InProcess(t *testing.T) {
 
 // TestRunConfigView_InProcess verifies configCmd prints all config fields.
 func TestRunConfigView_InProcess(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 	writeCfg(t, home, "preset: tony-stark\napi_url: https://hivemem.dev\nemail: user@example.com\nconfigured_agents:\n  - claude\nversion: 1.0.0\n")
 
 	out := captureStdout(t, func() {
@@ -136,8 +132,7 @@ func TestRunConfigView_InProcess(t *testing.T) {
 
 // TestRunConfigView_NoConfig_InProcess verifies configCmd works even without a config file.
 func TestRunConfigView_NoConfig_InProcess(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateTestHome(t)
 	// No config file — should show defaults without error.
 	out := captureStdout(t, func() {
 		if err := configCmd.RunE(configCmd, nil); err != nil {
@@ -151,8 +146,7 @@ func TestRunConfigView_NoConfig_InProcess(t *testing.T) {
 
 // TestRunConfigSet_Preset_InProcess verifies configSetCmd updates the preset key.
 func TestRunConfigSet_Preset_InProcess(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 	writeCfg(t, home, "preset: argentino\napi_url: https://hivemem.dev\nemail: user@example.com\n")
 
 	out := captureStdout(t, func() {
@@ -176,8 +170,7 @@ func TestRunConfigSet_Preset_InProcess(t *testing.T) {
 }
 
 func TestRunConfigSet_Preset_Valid_DoesNotApplyAgentsOrMutateArtifacts(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 
 	writeCfg(t, home, "persona_preset: neutra\npersona_preset_source: builtin\npreset: neutra\napi_url: https://hivemem.dev\n")
 
@@ -238,8 +231,7 @@ func TestRunConfigSet_Preset_Valid_DoesNotApplyAgentsOrMutateArtifacts(t *testin
 }
 
 func TestRunConfigSet_Preset_InvalidSlug_DoesNotMutateState(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 	writeCfg(t, home, "persona_preset: neutra\npersona_preset_source: builtin\npreset: neutra\napi_url: https://hivemem.dev\n")
 
 	err := configSetCmd.RunE(configSetCmd, []string{"preset", "preset-inexistente"})
@@ -265,8 +257,7 @@ func TestRunConfigSet_Preset_InvalidSlug_DoesNotMutateState(t *testing.T) {
 
 // TestRunConfigSet_APIUrl_InProcess verifies configSetCmd updates the api_url key.
 func TestRunConfigSet_APIUrl_InProcess(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 	writeCfg(t, home, "preset: neutra\napi_url: https://hivemem.dev\nemail: user@example.com\n")
 
 	out := captureStdout(t, func() {
@@ -281,8 +272,7 @@ func TestRunConfigSet_APIUrl_InProcess(t *testing.T) {
 
 // TestRunConfigSet_Email_InProcess verifies configSetCmd updates the email key.
 func TestRunConfigSet_Email_InProcess(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 	writeCfg(t, home, "preset: neutra\napi_url: https://hivemem.dev\nemail: old@example.com\n")
 
 	captureStdout(t, func() {
@@ -299,8 +289,7 @@ func TestRunConfigSet_Email_InProcess(t *testing.T) {
 
 // TestRunConfigSet_InvalidKey_InProcess verifies configSetCmd returns error for unknown keys.
 func TestRunConfigSet_InvalidKey_InProcess(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 	writeCfg(t, home, "preset: neutra\napi_url: https://hivemem.dev\nemail: user@example.com\n")
 
 	err := configSetCmd.RunE(configSetCmd, []string{"version", "2.0.0"})
@@ -453,8 +442,7 @@ func TestInitCmdRunEUsesCurrentWorkingDirectory(t *testing.T) {
 //
 // No agents are detected because HOME is a fresh tmpdir with no .claude or opencode dirs.
 func TestRunWizard_NoTUI_SkipsAuth(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t)
 	t.Setenv("PATH", "") // prevent opencode binary detection
 
 	input := "\n\n\n\n\nyes\n" // scope, persona, 3 skill prompts, apply=yes

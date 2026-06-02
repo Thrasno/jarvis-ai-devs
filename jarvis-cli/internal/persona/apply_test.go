@@ -210,8 +210,7 @@ func TestApplyPresetPipeline_ErrorPaths(t *testing.T) {
 }
 
 func TestApplyPresetPipeline_PersistConfigAndSourceNormalization(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateTestHome(t)
 
 	seed := &config.AppConfig{
 		Preset:              "argentino",

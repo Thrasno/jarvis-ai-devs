@@ -82,8 +82,7 @@ notes: |
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			home := t.TempDir()
-			t.Setenv("HOME", home)
+			home := isolateTestHome(t)
 
 			if tt.setupUserPreset {
 				presetPath := filepath.Join(home, ".jarvis", "personas", "custom-mentor.yaml")

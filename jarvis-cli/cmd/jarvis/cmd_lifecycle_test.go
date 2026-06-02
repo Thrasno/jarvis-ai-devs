@@ -23,8 +23,7 @@ func TestLifecycleCommands_AreWiredInRoot(t *testing.T) {
 }
 
 func TestRunReconcileDryRun_RendersDoctorDerivedPlan(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
 		t.Fatalf("MkdirAll .claude: %v", err)
 	}
@@ -66,8 +65,7 @@ func TestRunReconcileDryRun_RendersDoctorDerivedPlan(t *testing.T) {
 }
 
 func TestRunDoctor_RendersAdditiveStructuredDiagnosis(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
 		t.Fatalf("MkdirAll .claude: %v", err)
 	}
