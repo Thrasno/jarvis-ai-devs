@@ -487,10 +487,10 @@ func updateSkills(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case tea.KeyEnter:
-		if len(m.Agents) == 0 {
-			m.Step = StepReview
-		} else {
+		if hasPhaseModelRuntimeTarget(m.Agents) {
 			m.Step = StepPhaseModels
+		} else {
+			m.Step = StepReview
 		}
 	}
 	return m, nil
@@ -535,6 +535,10 @@ func updatePhaseModels(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if len(m.phaseModelRows) == 0 {
 		m = initializePhaseModelEditor(m)
 	}
+	if m.phaseModelMode != phaseModelModeList {
+		return updatePhaseModelPicker(m, msg), nil
+	}
+	changed := false
 	switch msg.Type {
 	case tea.KeyUp:
 		if m.phaseModelActiveRow > 0 {
@@ -545,33 +549,231 @@ func updatePhaseModels(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.phaseModelActiveRow++
 		}
 	case tea.KeyLeft:
-		if m.phaseModelActiveCol > 1 {
+		if m.phaseModelActiveCol == phaseModelClaudeColumn && m.phaseModelHasOpenCode {
 			m.phaseModelActiveCol--
 		}
 	case tea.KeyRight:
-		if m.phaseModelActiveCol < 2 {
+		if m.phaseModelActiveCol == phaseModelOpenCodeColumn && m.phaseModelHasClaude {
 			m.phaseModelActiveCol++
 		}
-	case tea.KeyEnter, tea.KeySpace:
+	case tea.KeyEnter:
+		m, changed = openOrCycleActivePhaseModel(m)
+	case tea.KeySpace:
 		m = cycleActivePhaseModel(m)
+		changed = true
 	case tea.KeyRunes:
 		switch string(msg.Runes) {
 		case "a":
 			m = applyAllForActiveColumn(m)
+			changed = true
 		case " ":
 			m = cycleActivePhaseModel(m)
+			changed = true
 		}
 	case tea.KeyEsc:
 		m.Step = StepSkills
 	case tea.KeyTab:
 		m.Step = StepReview
 	}
-	persistPhaseModelRows(&m)
+	if changed {
+		persistPhaseModelRows(&m)
+	}
 	return m, nil
 }
 
+func updatePhaseModelPicker(m Model, msg tea.KeyMsg) Model {
+	switch m.phaseModelMode {
+	case phaseModelModeOpenCodeProvider:
+		return updateOpenCodeProviderPicker(m, msg)
+	case phaseModelModeOpenCodeModel:
+		return updateOpenCodeModelPicker(m, msg)
+	case phaseModelModeOpenCodeEffort:
+		return updateOpenCodeEffortPicker(m, msg)
+	case phaseModelModeClaudeModel:
+		return updateClaudeModelPicker(m, msg)
+	default:
+		m.phaseModelMode = phaseModelModeList
+		return m
+	}
+}
+
+func openOrCycleActivePhaseModel(m Model) (Model, bool) {
+	if m.phaseModelColumnEnabled(m.phaseModelActiveCol) && m.phaseModelActiveCol == phaseModelOpenCodeColumn && len(m.phaseModelOpenCodeProviders) > 0 {
+		m.phaseModelMode = phaseModelModeOpenCodeProvider
+		m.phaseModelProviderCursor = clampIndex(m.phaseModelProviderCursor, len(m.phaseModelOpenCodeProviders))
+		m.phaseModelModelCursor = 0
+		m.phaseModelEffortCursor = 0
+		m.phaseModelModelSearch = ""
+		m.phaseModelPendingOpenCode = config.OpenCodeModelAssignment{}
+		return m, false
+	}
+	if m.phaseModelColumnEnabled(m.phaseModelActiveCol) && m.phaseModelActiveCol == phaseModelClaudeColumn && len(m.phaseModelClaude) > 0 {
+		m.phaseModelMode = phaseModelModeClaudeModel
+		m.phaseModelModelCursor = catalogIndex(m.phaseModelRows[m.phaseModelActiveRow].Claude, m.phaseModelClaude)
+		return m, false
+	}
+	m = cycleActivePhaseModel(m)
+	return m, true
+}
+
+func updateOpenCodeProviderPicker(m Model, msg tea.KeyMsg) Model {
+	switch msg.Type {
+	case tea.KeyUp:
+		if m.phaseModelProviderCursor > 0 {
+			m.phaseModelProviderCursor--
+		}
+	case tea.KeyDown:
+		if m.phaseModelProviderCursor < len(m.phaseModelOpenCodeProviders)-1 {
+			m.phaseModelProviderCursor++
+		}
+	case tea.KeyEnter:
+		m.phaseModelProviderCursor = clampIndex(m.phaseModelProviderCursor, len(m.phaseModelOpenCodeProviders))
+		m.phaseModelModelCursor = 0
+		m.phaseModelModelSearch = ""
+		m.phaseModelMode = phaseModelModeOpenCodeModel
+	case tea.KeyEsc:
+		m.phaseModelMode = phaseModelModeList
+	}
+	return m
+}
+
+func updateOpenCodeModelPicker(m Model, msg tea.KeyMsg) Model {
+	models := currentOpenCodeModelOptions(m)
+	switch msg.Type {
+	case tea.KeyUp:
+		if m.phaseModelModelCursor > 0 {
+			m.phaseModelModelCursor--
+		}
+	case tea.KeyDown:
+		if m.phaseModelModelCursor < len(models)-1 {
+			m.phaseModelModelCursor++
+		}
+	case tea.KeyBackspace:
+		if len(m.phaseModelModelSearch) > 0 {
+			m.phaseModelModelSearch = m.phaseModelModelSearch[:len(m.phaseModelModelSearch)-1]
+			m.phaseModelModelCursor = 0
+		}
+	case tea.KeyCtrlU:
+		m.phaseModelModelSearch = ""
+		m.phaseModelModelCursor = 0
+	case tea.KeyRunes:
+		m.phaseModelModelSearch += string(msg.Runes)
+		m.phaseModelModelCursor = 0
+	case tea.KeyEnter:
+		if len(models) == 0 {
+			return m
+		}
+		selected := models[clampIndex(m.phaseModelModelCursor, len(models))]
+		m.phaseModelPendingOpenCode = config.OpenCodeModelAssignment{ProviderID: selected.ProviderID, ModelID: selected.Model.ID}
+		efforts := phaseModelEffortOptions(selected.ProviderID, selected.Model)
+		if len(efforts) > 1 {
+			m.phaseModelEffortCursor = 0
+			m.phaseModelMode = phaseModelModeOpenCodeEffort
+			return m
+		}
+		m = commitPendingOpenCodePhaseModel(m)
+	case tea.KeyEsc:
+		m.phaseModelMode = phaseModelModeOpenCodeProvider
+	}
+	return m
+}
+
+func updateOpenCodeEffortPicker(m Model, msg tea.KeyMsg) Model {
+	efforts := currentOpenCodeEffortOptions(m)
+	switch msg.Type {
+	case tea.KeyUp:
+		if m.phaseModelEffortCursor > 0 {
+			m.phaseModelEffortCursor--
+		}
+	case tea.KeyDown:
+		if m.phaseModelEffortCursor < len(efforts)-1 {
+			m.phaseModelEffortCursor++
+		}
+	case tea.KeyEnter:
+		if len(efforts) > 0 {
+			m.phaseModelPendingOpenCode.Effort = efforts[clampIndex(m.phaseModelEffortCursor, len(efforts))]
+		}
+		m = commitPendingOpenCodePhaseModel(m)
+	case tea.KeyEsc:
+		m.phaseModelMode = phaseModelModeOpenCodeModel
+	}
+	return m
+}
+
+func updateClaudeModelPicker(m Model, msg tea.KeyMsg) Model {
+	switch msg.Type {
+	case tea.KeyUp:
+		if m.phaseModelModelCursor > 0 {
+			m.phaseModelModelCursor--
+		}
+	case tea.KeyDown:
+		if m.phaseModelModelCursor < len(m.phaseModelClaude)-1 {
+			m.phaseModelModelCursor++
+		}
+	case tea.KeyEnter:
+		if len(m.phaseModelClaude) > 0 {
+			m.phaseModelRows[m.phaseModelActiveRow].Claude = m.phaseModelClaude[clampIndex(m.phaseModelModelCursor, len(m.phaseModelClaude))]
+			persistPhaseModelRows(&m)
+		}
+		m.phaseModelMode = phaseModelModeList
+	case tea.KeyEsc:
+		m.phaseModelMode = phaseModelModeList
+	}
+	return m
+}
+
+func currentOpenCodeModelOptions(m Model) []openCodeModelOption {
+	if len(m.phaseModelOpenCodeProviders) == 0 {
+		return nil
+	}
+	provider := m.phaseModelOpenCodeProviders[clampIndex(m.phaseModelProviderCursor, len(m.phaseModelOpenCodeProviders))]
+	return filterOpenCodeModelOptions(provider.Models, m.phaseModelModelSearch)
+}
+
+func currentOpenCodeEffortOptions(m Model) []string {
+	if m.phaseModelPendingOpenCode.ProviderID == "" || m.phaseModelPendingOpenCode.ModelID == "" {
+		return nil
+	}
+	models := currentOpenCodeModelOptions(m)
+	for _, model := range models {
+		if model.ProviderID == m.phaseModelPendingOpenCode.ProviderID && model.Model.ID == m.phaseModelPendingOpenCode.ModelID {
+			return phaseModelEffortOptions(model.ProviderID, model.Model)
+		}
+	}
+	return nil
+}
+
+func commitPendingOpenCodePhaseModel(m Model) Model {
+	if m.phaseModelPendingOpenCode.ProviderID != "" && m.phaseModelPendingOpenCode.ModelID != "" {
+		m.phaseModelRows[m.phaseModelActiveRow].OpenCodeAssignment = m.phaseModelPendingOpenCode
+		persistPhaseModelRows(&m)
+	}
+	m.phaseModelPendingOpenCode = config.OpenCodeModelAssignment{}
+	m.phaseModelMode = phaseModelModeList
+	return m
+}
+
+func clampIndex(index, length int) int {
+	if length <= 0 || index < 0 {
+		return 0
+	}
+	if index >= length {
+		return length - 1
+	}
+	return index
+}
+
+func catalogIndex(current string, catalog []string) int {
+	for i, item := range catalog {
+		if item == current {
+			return i
+		}
+	}
+	return 0
+}
+
 func cycleActivePhaseModel(m Model) Model {
-	if m.phaseModelActiveCol == 0 || len(m.phaseModelRows) == 0 {
+	if m.phaseModelActiveCol == 0 || len(m.phaseModelRows) == 0 || !m.phaseModelColumnEnabled(m.phaseModelActiveCol) {
 		return m
 	}
 	row := &m.phaseModelRows[m.phaseModelActiveRow]
@@ -588,7 +790,7 @@ func cycleActivePhaseModel(m Model) Model {
 }
 
 func applyAllForActiveColumn(m Model) Model {
-	if m.phaseModelActiveCol == 0 || len(m.phaseModelRows) == 0 {
+	if m.phaseModelActiveCol == 0 || len(m.phaseModelRows) == 0 || !m.phaseModelColumnEnabled(m.phaseModelActiveCol) {
 		return m
 	}
 	active := m.phaseModelRows[m.phaseModelActiveRow]
@@ -659,18 +861,41 @@ func phaseModelOpenCodeDisplay(row phaseModelRow) string {
 }
 
 func viewPhaseModels(m Model) string {
+	if m.phaseModelMode != phaseModelModeList {
+		return viewPhaseModelPicker(m)
+	}
+
 	var sb strings.Builder
 	sb.WriteString(stepHeader(5, 7, "SDD Phase Models"))
-	sb.WriteString("Editá un único mapa de modelos por fase (phase, OpenCode, Claude).\n\n")
+	if !m.phaseModelHasOpenCode && !m.phaseModelHasClaude {
+		sb.WriteString("No Claude Code or OpenCode runtime target detected. Phase model editing is unavailable.\n\n")
+		sb.WriteString(dimStyle.Render("Tab review  Esc back"))
+		return sb.String()
+	}
+	sb.WriteString("Editá los modelos por fase para los agentes runtime detectados.\n\n")
 	for _, diagnostic := range m.phaseModelOpenCodeDiagnostics {
 		sb.WriteString(warningStyle.Render(diagnostic) + "\n")
 	}
 	if len(m.phaseModelOpenCodeDiagnostics) > 0 {
 		sb.WriteString("\n")
 	}
-	sb.WriteString(headerStyle.Render("phase                 OpenCode             Claude") + "\n")
+	header := "phase"
+	if m.phaseModelHasOpenCode {
+		header += "                 OpenCode"
+	}
+	if m.phaseModelHasClaude {
+		header += "             Claude"
+	}
+	sb.WriteString(headerStyle.Render(header) + "\n")
 	for i, row := range m.phaseModelRows {
-		line := fmt.Sprintf("%-20s %-20s %-10s", row.Phase, phaseModelOpenCodeDisplay(row), row.Claude)
+		parts := []string{fmt.Sprintf("%-20s", row.Phase)}
+		if m.phaseModelHasOpenCode {
+			parts = append(parts, fmt.Sprintf("%-20s", phaseModelOpenCodeDisplay(row)))
+		}
+		if m.phaseModelHasClaude {
+			parts = append(parts, fmt.Sprintf("%-10s", row.Claude))
+		}
+		line := strings.Join(parts, " ")
 		if i == m.phaseModelActiveRow {
 			line = selectedStyle.Render("> " + line)
 		} else {
@@ -678,8 +903,64 @@ func viewPhaseModels(m Model) string {
 		}
 		sb.WriteString(line + "\n")
 	}
-	sb.WriteString("\n" + dimStyle.Render("↑/↓ row  ←/→ column  Enter/Space cycle  a apply-all active column  Tab review  Esc back"))
+	sb.WriteString("\n" + dimStyle.Render("↑/↓ row  ←/→ column  Enter: edit picker  Space: cycle legacy option  a apply-all active column  Tab review  Esc back"))
 	return sb.String()
+}
+
+func viewPhaseModelPicker(m Model) string {
+	var sb strings.Builder
+	sb.WriteString(stepHeader(5, 7, "SDD Phase Models"))
+	switch m.phaseModelMode {
+	case phaseModelModeOpenCodeProvider:
+		sb.WriteString(headerStyle.Render("Select OpenCode provider") + "\n\n")
+		for i, provider := range m.phaseModelOpenCodeProviders {
+			writePickerLine(&sb, i == m.phaseModelProviderCursor, provider.DisplayName())
+		}
+		sb.WriteString("\n" + dimStyle.Render("↑/↓: navigate  Enter: select provider  Esc: back"))
+	case phaseModelModeOpenCodeModel:
+		sb.WriteString(headerStyle.Render("Select OpenCode model") + "\n")
+		sb.WriteString("Search: " + m.phaseModelModelSearch + "\n\n")
+		models := currentOpenCodeModelOptions(m)
+		if len(models) == 0 {
+			sb.WriteString(dimStyle.Render("No models match the current search.") + "\n")
+		}
+		for i, model := range models {
+			label := model.Model.ID
+			if strings.TrimSpace(model.Model.Name) != "" {
+				label += " — " + strings.TrimSpace(model.Model.Name)
+			}
+			writePickerLine(&sb, i == m.phaseModelModelCursor, label)
+		}
+		sb.WriteString("\n" + dimStyle.Render("Type to search  Backspace: delete  Ctrl+U: clear  Enter: select model  Esc: providers"))
+	case phaseModelModeOpenCodeEffort:
+		sb.WriteString(headerStyle.Render("Select OpenCode effort") + "\n\n")
+		efforts := currentOpenCodeEffortOptions(m)
+		for i, effort := range efforts {
+			label := effort
+			if label == "" {
+				label = "default"
+			}
+			writePickerLine(&sb, i == m.phaseModelEffortCursor, label)
+		}
+		sb.WriteString("\n" + dimStyle.Render("↑/↓: navigate  Enter: confirm effort  Esc: models"))
+	case phaseModelModeClaudeModel:
+		sb.WriteString(headerStyle.Render("Select Claude model") + "\n\n")
+		for i, model := range m.phaseModelClaude {
+			writePickerLine(&sb, i == m.phaseModelModelCursor, model)
+		}
+		sb.WriteString("\n" + dimStyle.Render("↑/↓: navigate  Enter: select model  Esc: back"))
+	default:
+		return viewPhaseModels(Model{Step: m.Step, cfg: m.cfg, phaseModelRows: m.phaseModelRows, phaseModelHasOpenCode: m.phaseModelHasOpenCode, phaseModelHasClaude: m.phaseModelHasClaude})
+	}
+	return sb.String()
+}
+
+func writePickerLine(sb *strings.Builder, selected bool, label string) {
+	if selected {
+		sb.WriteString(selectedStyle.Render("> "+label) + "\n")
+		return
+	}
+	sb.WriteString("  " + label + "\n")
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -717,7 +998,11 @@ func updateReview(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEnter:
 		switch m.reviewChoice {
 		case 0: // Back
-			m.Step = StepPhaseModels
+			if hasPhaseModelRuntimeTarget(m.Agents) {
+				m.Step = StepPhaseModels
+			} else {
+				m.Step = StepSkills
+			}
 			return m, nil
 		case 1: // Cancel
 			m.Done = true

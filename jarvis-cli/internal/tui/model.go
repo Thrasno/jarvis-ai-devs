@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -92,6 +93,15 @@ type Model struct {
 	phaseModelClaude              []string
 	phaseModelOpenCodeAssignments []config.OpenCodeModelAssignment
 	phaseModelOpenCodeDiagnostics []string
+	phaseModelHasOpenCode         bool
+	phaseModelHasClaude           bool
+	phaseModelMode                phaseModelMode
+	phaseModelProviderCursor      int
+	phaseModelModelCursor         int
+	phaseModelEffortCursor        int
+	phaseModelModelSearch         string
+	phaseModelOpenCodeProviders   []openCodeProviderOption
+	phaseModelPendingOpenCode     config.OpenCodeModelAssignment
 
 	cfg *config.AppConfig
 
@@ -113,6 +123,39 @@ type Model struct {
 	cockpitInput          string
 	cockpitSnapshot       string
 	cockpitPlan           string
+}
+
+type phaseModelMode int
+
+const (
+	phaseModelModeList phaseModelMode = iota
+	phaseModelModeOpenCodeProvider
+	phaseModelModeOpenCodeModel
+	phaseModelModeOpenCodeEffort
+	phaseModelModeClaudeModel
+)
+
+const (
+	phaseModelNoColumn       = 0
+	phaseModelOpenCodeColumn = 1
+	phaseModelClaudeColumn   = 2
+)
+
+type openCodeProviderOption struct {
+	Provider opencode.Provider
+	Models   []openCodeModelOption
+}
+
+func (o openCodeProviderOption) DisplayName() string {
+	if strings.TrimSpace(o.Provider.Name) != "" {
+		return strings.TrimSpace(o.Provider.Name)
+	}
+	return o.Provider.ID
+}
+
+type openCodeModelOption struct {
+	ProviderID string
+	Model      opencode.Model
 }
 
 // WizardConfig carries FSes needed to run the wizard, injected by main.
@@ -302,8 +345,17 @@ func initializePhaseModelEditor(m Model) Model {
 	contract := sddruntime.DefaultContract()
 	resolved := sddruntime.ResolvePhaseModels(m.cfg)
 	openCodePhaseModelDiscoveryDiagnostics = nil
-	m.phaseModelOpenCodeAssignments = ensureOpenCodeLegacyOption(discoverOpenCodePhaseModelOptions())
-	m.phaseModelOpenCodeDiagnostics = append([]string(nil), openCodePhaseModelDiscoveryDiagnostics...)
+	openCodePhaseModelProviderOptions = nil
+	m.phaseModelHasOpenCode, m.phaseModelHasClaude = detectPhaseModelAgentTargets(m.Agents)
+	if m.phaseModelHasOpenCode {
+		m.phaseModelOpenCodeAssignments = ensureOpenCodeLegacyOption(discoverOpenCodePhaseModelOptions())
+		m.phaseModelOpenCodeProviders = append([]openCodeProviderOption(nil), openCodePhaseModelProviderOptions...)
+		m.phaseModelOpenCodeDiagnostics = append([]string(nil), openCodePhaseModelDiscoveryDiagnostics...)
+	} else {
+		m.phaseModelOpenCodeAssignments = nil
+		m.phaseModelOpenCodeProviders = nil
+		m.phaseModelOpenCodeDiagnostics = nil
+	}
 	m.phaseModelRows = make([]phaseModelRow, 0, len(contract.Phases))
 	for _, phase := range contract.Phases {
 		sel := resolved[phase]
@@ -315,8 +367,8 @@ func initializePhaseModelEditor(m Model) Model {
 	}
 	m.phaseModelOpenCode = append([]string(nil), contract.PlatformCatalogs[sddruntime.PlatformOpenCode]...)
 	m.phaseModelClaude = append([]string(nil), contract.PlatformCatalogs[sddruntime.PlatformClaude]...)
-	if m.phaseModelActiveCol == 0 {
-		m.phaseModelActiveCol = 1
+	if m.phaseModelActiveCol == phaseModelNoColumn || !m.phaseModelColumnEnabled(m.phaseModelActiveCol) {
+		m.phaseModelActiveCol = m.firstPhaseModelColumn()
 	}
 	if m.cfg != nil {
 		if m.cfg.SDD.PhaseModels == nil {
@@ -332,6 +384,46 @@ func initializePhaseModelEditor(m Model) Model {
 	return m
 }
 
+func hasPhaseModelRuntimeTarget(agents []agent.Agent) bool {
+	hasOpenCode, hasClaude := detectPhaseModelAgentTargets(agents)
+	return hasOpenCode || hasClaude
+}
+
+func detectPhaseModelAgentTargets(agents []agent.Agent) (bool, bool) {
+	hasOpenCode := false
+	hasClaude := false
+	for _, a := range agents {
+		switch strings.ToLower(strings.TrimSpace(a.Name())) {
+		case "opencode":
+			hasOpenCode = true
+		case "claude":
+			hasClaude = true
+		}
+	}
+	return hasOpenCode, hasClaude
+}
+
+func (m Model) firstPhaseModelColumn() int {
+	if m.phaseModelHasOpenCode {
+		return phaseModelOpenCodeColumn
+	}
+	if m.phaseModelHasClaude {
+		return phaseModelClaudeColumn
+	}
+	return phaseModelNoColumn
+}
+
+func (m Model) phaseModelColumnEnabled(col int) bool {
+	switch col {
+	case phaseModelOpenCodeColumn:
+		return m.phaseModelHasOpenCode
+	case phaseModelClaudeColumn:
+		return m.phaseModelHasClaude
+	default:
+		return false
+	}
+}
+
 func ensureOpenCodeLegacyOption(options []config.OpenCodeModelAssignment) []config.OpenCodeModelAssignment {
 	if len(options) == 0 || options[0] == (config.OpenCodeModelAssignment{}) {
 		return options
@@ -343,6 +435,7 @@ func ensureOpenCodeLegacyOption(options []config.OpenCodeModelAssignment) []conf
 }
 
 var openCodePhaseModelDiscoveryDiagnostics []string
+var openCodePhaseModelProviderOptions []openCodeProviderOption
 
 var discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
 	openCodePhaseModelDiscoveryDiagnostics = nil
@@ -352,7 +445,59 @@ var discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment 
 		return nil
 	}
 	openCodePhaseModelDiscoveryDiagnostics = append([]string(nil), result.Diagnostics...)
+	openCodePhaseModelProviderOptions = openCodeProviderOptionsFromDiscovery(result)
 	return openCodePhaseModelOptionsFromDiscovery(result)
+}
+
+func openCodeProviderOptionsFromDiscovery(result opencode.DiscoveryResult) []openCodeProviderOption {
+	providers := append([]opencode.AvailableProvider(nil), result.Providers...)
+	sort.Slice(providers, func(i, j int) bool {
+		return providers[i].Provider.ID < providers[j].Provider.ID
+	})
+	options := make([]openCodeProviderOption, 0, len(providers))
+	for _, available := range providers {
+		providerID := available.Provider.ID
+		modelIDs := make([]string, 0, len(available.Provider.Models))
+		modelsByID := map[string]opencode.Model{}
+		for modelID, model := range available.Provider.Models {
+			if model.ID != "" {
+				modelID = model.ID
+			}
+			if modelID == "" {
+				continue
+			}
+			model.ID = modelID
+			modelsByID[modelID] = model
+			modelIDs = append(modelIDs, modelID)
+		}
+		sort.Strings(modelIDs)
+		models := make([]openCodeModelOption, 0, len(modelIDs))
+		for _, modelID := range modelIDs {
+			models = append(models, openCodeModelOption{ProviderID: providerID, Model: modelsByID[modelID]})
+		}
+		options = append(options, openCodeProviderOption{Provider: available.Provider, Models: models})
+	}
+	return options
+}
+
+func filterOpenCodeModelOptions(models []openCodeModelOption, query string) []openCodeModelOption {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return append([]openCodeModelOption(nil), models...)
+	}
+	filtered := []openCodeModelOption{}
+	for _, model := range models {
+		id := strings.ToLower(model.Model.ID)
+		name := strings.ToLower(model.Model.Name)
+		if strings.Contains(id, query) || strings.Contains(name, query) {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
+}
+
+func phaseModelEffortOptions(providerID string, model opencode.Model) []string {
+	return opencode.EffortOptions(providerID, model)
 }
 
 func defaultOpenCodePathRoots() opencode.PathRoots {

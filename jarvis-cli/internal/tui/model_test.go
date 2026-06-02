@@ -484,7 +484,7 @@ func TestStep_Skills_CoreAlwaysSelected(t *testing.T) {
 
 func TestStep_Skills_EnterAdvancesToPhaseModels(t *testing.T) {
 	m := buildSkillsModel()
-	m.Agents = []agent.Agent{&mockAgent{name: "mock", configDir: t.TempDir()}}
+	m.Agents = []agent.Agent{&mockAgent{name: "claude", configDir: t.TempDir()}}
 
 	m = sendKey(m, tea.KeyEnter)
 
@@ -494,15 +494,18 @@ func TestStep_Skills_EnterAdvancesToPhaseModels(t *testing.T) {
 }
 
 func TestStep_PhaseModels_ApplyAllAndCycling(t *testing.T) {
-	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
+		&mockAgent{name: "opencode", configDir: t.TempDir()},
+		&mockAgent{name: "claude", configDir: t.TempDir()},
+	}}
 	m = initializePhaseModelEditor(m)
 
 	if m.phaseModelActiveCol != 1 {
 		t.Fatalf("expected initial active column OpenCode(1), got %d", m.phaseModelActiveCol)
 	}
 
-	// Move to next model in OpenCode catalog then apply-all.
-	m = sendKey(m, tea.KeyEnter)
+	// Move to next legacy model in OpenCode catalog then apply-all.
+	m = sendKey(m, tea.KeySpace)
 	current := m.phaseModelRows[m.phaseModelActiveRow].OpenCode
 	m = sendRune(m, "a")
 
@@ -550,7 +553,9 @@ func TestStep_PhaseModels_PersistsOpenCodeProviderModelAssignment(t *testing.T) 
 	}
 	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
 
-	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
+		&mockAgent{name: "opencode", configDir: t.TempDir()},
+	}}
 	m = initializePhaseModelEditor(m)
 	m.phaseModelActiveRow = 0
 	m.phaseModelActiveCol = 1
@@ -575,7 +580,9 @@ func TestStep_PhaseModels_ClearsOpenCodeProviderModelAssignmentWhenCyclingToLega
 	}
 	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
 
-	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
+		&mockAgent{name: "opencode", configDir: t.TempDir()},
+	}}
 	m.cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
 		"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max"},
 	}
@@ -602,7 +609,9 @@ func TestStep_PhaseModels_KeepsStoredOpenCodeProviderModelAssignmentWhenDiscover
 	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment { return nil }
 	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
 
-	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
+		&mockAgent{name: "opencode", configDir: t.TempDir()},
+	}}
 	m.cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
 		"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max"},
 	}
@@ -626,7 +635,9 @@ func TestStep_PhaseModels_ShowsOpenCodeDiscoveryDiagnostics(t *testing.T) {
 	}
 	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
 
-	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
+		&mockAgent{name: "opencode", configDir: t.TempDir()},
+	}}
 	m = initializePhaseModelEditor(m)
 
 	view := viewPhaseModels(m)
@@ -644,7 +655,9 @@ func TestStep_PhaseModels_UsesStoredOpenCodeProviderModelAssignment(t *testing.T
 	}
 	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
 
-	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}}
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Agents: []agent.Agent{
+		&mockAgent{name: "opencode", configDir: t.TempDir()},
+	}}
 	m.cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
 		"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max"},
 	}
@@ -685,6 +698,280 @@ func TestOpenCodePhaseModelOptionsFromDiscovery_SortsProvidersModelsAndEfforts(t
 	}
 }
 
+func TestOpenCodeProviderOptionsFromDiscovery_GroupsSortsFiltersAndDerivesEffort(t *testing.T) {
+	result := opencode.DiscoveryResult{Providers: []opencode.AvailableProvider{
+		{Provider: opencode.Provider{ID: "openai", Name: "OpenAI", Models: map[string]opencode.Model{
+			"z-model": {ID: "z-model", Name: "Zed"},
+			"a-model": {ID: "a-model", Name: "Alpha", Reasoning: true},
+		}}},
+		{Provider: opencode.Provider{ID: "anthropic", Name: "Anthropic", Models: map[string]opencode.Model{
+			"claude": {ID: "claude", Name: "Claude Sonnet", Reasoning: true},
+		}}},
+	}}
+
+	options := openCodeProviderOptionsFromDiscovery(result)
+	if len(options) != 2 {
+		t.Fatalf("expected two provider groups, got %#v", options)
+	}
+	if got, want := options[0].Provider.ID, "anthropic"; got != want {
+		t.Fatalf("first provider ID = %q, want %q", got, want)
+	}
+	if got, want := options[1].DisplayName(), "OpenAI"; got != want {
+		t.Fatalf("provider display = %q, want %q", got, want)
+	}
+
+	models := filterOpenCodeModelOptions(options[1].Models, "alp")
+	if len(models) != 1 || models[0].Model.ID != "a-model" {
+		t.Fatalf("expected search to match only a-model by name, got %#v", models)
+	}
+	if len(filterOpenCodeModelOptions(options[1].Models, "missing")) != 0 {
+		t.Fatalf("expected no models for unmatched query")
+	}
+
+	efforts := phaseModelEffortOptions(options[1].Provider.ID, models[0].Model)
+	wantEfforts := []string{"", "minimal", "low", "medium", "high", "xhigh"}
+	if !slices.Equal(efforts, wantEfforts) {
+		t.Fatalf("efforts = %#v, want %#v", efforts, wantEfforts)
+	}
+}
+
+func TestInitializePhaseModelEditor_GatesColumnsByDetectedAgentWithoutJDTargets(t *testing.T) {
+	previousDiscover := discoverOpenCodePhaseModelOptions
+	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment { return nil }
+	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
+
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
+		&mockAgent{name: "claude", configDir: t.TempDir()},
+		&mockAgent{name: "judgment-day", configDir: t.TempDir()},
+	}}
+	m = initializePhaseModelEditor(m)
+
+	if !m.phaseModelHasClaude {
+		t.Fatal("expected Claude column enabled when Claude agent is detected")
+	}
+	if m.phaseModelHasOpenCode {
+		t.Fatal("expected OpenCode column disabled when OpenCode agent is not detected")
+	}
+	if m.phaseModelActiveCol != phaseModelClaudeColumn {
+		t.Fatalf("expected active column to move to Claude, got %d", m.phaseModelActiveCol)
+	}
+}
+
+func TestViewPhaseModels_RendersPickerModes(t *testing.T) {
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
+		&mockAgent{name: "opencode", configDir: t.TempDir()},
+		&mockAgent{name: "claude", configDir: t.TempDir()},
+	}}
+	m = initializePhaseModelEditor(m)
+	m.phaseModelOpenCodeProviders = testOpenCodeProviderOptions()
+	m.phaseModelClaude = []string{"claude-haiku", "claude-sonnet"}
+
+	tests := []struct {
+		name    string
+		mode    phaseModelMode
+		prepare func(*Model)
+		want    []string
+	}{
+		{name: "opencode provider", mode: phaseModelModeOpenCodeProvider, want: []string{"Select OpenCode provider", "OpenAI"}},
+		{name: "opencode model", mode: phaseModelModeOpenCodeModel, want: []string{"Select OpenCode model", "Search:", "plain", "reasoning"}},
+		{name: "opencode effort", mode: phaseModelModeOpenCodeEffort, prepare: func(m *Model) {
+			m.phaseModelPendingOpenCode = config.OpenCodeModelAssignment{ProviderID: "openai", ModelID: "reasoning"}
+		}, want: []string{"Select OpenCode effort", "minimal", "high"}},
+		{name: "claude model", mode: phaseModelModeClaudeModel, want: []string{"Select Claude model", "claude-haiku", "claude-sonnet"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			candidate := m
+			candidate.phaseModelMode = tt.mode
+			if tt.prepare != nil {
+				tt.prepare(&candidate)
+			}
+
+			view := viewPhaseModels(candidate)
+			for _, want := range tt.want {
+				if !strings.Contains(view, want) {
+					t.Fatalf("expected picker view to contain %q, got:\n%s", want, view)
+				}
+			}
+		})
+	}
+}
+
+func TestInitializePhaseModelEditor_SkipsOpenCodeDiscoveryWhenOpenCodeUnavailable(t *testing.T) {
+	called := false
+	previousDiscover := discoverOpenCodePhaseModelOptions
+	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
+		called = true
+		openCodePhaseModelDiscoveryDiagnostics = []string{"must not show"}
+		return []config.OpenCodeModelAssignment{{ProviderID: "openai", ModelID: "gpt"}}
+	}
+	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
+
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
+		&mockAgent{name: "claude", configDir: t.TempDir()},
+	}}
+	m.cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
+		"default": {ProviderID: "stored", ModelID: "kept"},
+	}
+
+	m = initializePhaseModelEditor(m)
+
+	if called {
+		t.Fatal("OpenCode discovery must not run when OpenCode agent is unavailable")
+	}
+	if len(m.phaseModelOpenCodeDiagnostics) != 0 || strings.Contains(viewPhaseModels(m), "must not show") {
+		t.Fatalf("expected OpenCode diagnostics suppressed, got diagnostics=%v view=\n%s", m.phaseModelOpenCodeDiagnostics, viewPhaseModels(m))
+	}
+	if got := m.cfg.SDD.OpenCodePhaseModels["default"]; got.ProviderID != "stored" || got.ModelID != "kept" {
+		t.Fatalf("stored OpenCode assignment must be preserved, got %+v", got)
+	}
+}
+
+func TestStepSkills_EnterSkipsPhaseModelsWithoutRuntimeModelTarget(t *testing.T) {
+	tests := []struct {
+		name   string
+		agents []agent.Agent
+	}{
+		{name: "no agents", agents: nil},
+		{name: "judgment day only", agents: []agent.Agent{&mockAgent{name: "judgment-day", configDir: t.TempDir()}}},
+		{name: "non model runtime agent", agents: []agent.Agent{&mockAgent{name: "mock", configDir: t.TempDir()}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := buildSkillsModel()
+			m.Agents = tt.agents
+
+			m = sendKey(m, tea.KeyEnter)
+
+			if m.Step != StepReview {
+				t.Fatalf("expected StepReview, got %v", m.Step)
+			}
+		})
+	}
+}
+
+func TestViewPhaseModels_RendersOnlyDetectedRuntimeTargetColumnsAndUpdatedHelp(t *testing.T) {
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
+		&mockAgent{name: "claude", configDir: t.TempDir()},
+	}}
+	m = initializePhaseModelEditor(m)
+
+	view := viewPhaseModels(m)
+	if strings.Contains(view, "OpenCode") {
+		t.Fatalf("Claude-only phase model view must not render OpenCode column, got:\n%s", view)
+	}
+	if !strings.Contains(view, "phase") || !strings.Contains(view, "Claude") {
+		t.Fatalf("expected phase and Claude columns, got:\n%s", view)
+	}
+	if strings.Contains(view, "Enter/Space cycle") {
+		t.Fatalf("help text must not claim Enter/Space cycle after picker flow change, got:\n%s", view)
+	}
+}
+
+func testOpenCodeProviderOptions() []openCodeProviderOption {
+	return []openCodeProviderOption{{
+		Provider: opencode.Provider{ID: "openai", Name: "OpenAI"},
+		Models: []openCodeModelOption{
+			{ProviderID: "openai", Model: opencode.Model{ID: "plain", Name: "Plain"}},
+			{ProviderID: "openai", Model: opencode.Model{ID: "reasoning", Name: "Reasoning", Reasoning: true}},
+		},
+	}}
+}
+
+func TestStepPhaseModels_OpenCodeProviderModelEffortPersistsOnlyAfterConfirm(t *testing.T) {
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
+		&mockAgent{name: "opencode", configDir: t.TempDir()},
+	}}
+	m = initializePhaseModelEditor(m)
+	m.phaseModelOpenCodeProviders = testOpenCodeProviderOptions()
+	phase := m.phaseModelRows[0].Phase
+
+	m = sendKey(m, tea.KeyEnter)
+	if m.phaseModelMode != phaseModelModeOpenCodeProvider {
+		t.Fatalf("expected provider mode after Enter on OpenCode cell, got %v", m.phaseModelMode)
+	}
+	m = sendKey(m, tea.KeyEnter)
+	if m.phaseModelMode != phaseModelModeOpenCodeModel {
+		t.Fatalf("expected model mode after provider confirm, got %v", m.phaseModelMode)
+	}
+	m.phaseModelModelCursor = 1
+	m = sendKey(m, tea.KeyEnter)
+	if m.phaseModelMode != phaseModelModeOpenCodeEffort {
+		t.Fatalf("expected effort mode for reasoning model, got %v", m.phaseModelMode)
+	}
+	if _, ok := m.cfg.SDD.OpenCodePhaseModels[phase]; ok {
+		t.Fatalf("expected no persistence before effort confirmation, got %#v", m.cfg.SDD.OpenCodePhaseModels)
+	}
+	m.phaseModelEffortCursor = 4
+	m = sendKey(m, tea.KeyEnter)
+
+	assignment := m.cfg.SDD.OpenCodePhaseModels[phase]
+	if assignment.ProviderID != "openai" || assignment.ModelID != "reasoning" || assignment.Effort != "high" {
+		t.Fatalf("unexpected persisted assignment: %+v", assignment)
+	}
+	if m.phaseModelMode != phaseModelModeList {
+		t.Fatalf("expected return to list mode after commit, got %v", m.phaseModelMode)
+	}
+}
+
+func TestStepPhaseModels_OpenCodeModelWithoutEffortCommitsDirectlyAndEscPreservesPendingContext(t *testing.T) {
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
+		&mockAgent{name: "opencode", configDir: t.TempDir()},
+	}}
+	m = initializePhaseModelEditor(m)
+	m.phaseModelOpenCodeProviders = testOpenCodeProviderOptions()
+	phase := m.phaseModelRows[0].Phase
+
+	m = sendKey(m, tea.KeyEnter)
+	m = sendKey(m, tea.KeyEnter)
+	m.phaseModelModelCursor = 1
+	m = sendKey(m, tea.KeyEnter)
+	m = sendKey(m, tea.KeyEsc)
+	if m.phaseModelMode != phaseModelModeOpenCodeModel {
+		t.Fatalf("expected Esc from effort to return to model picker, got %v", m.phaseModelMode)
+	}
+	if m.phaseModelPendingOpenCode.ProviderID != "openai" || m.phaseModelPendingOpenCode.ModelID != "reasoning" {
+		t.Fatalf("expected pending provider/model preserved after Esc, got %+v", m.phaseModelPendingOpenCode)
+	}
+	if _, ok := m.cfg.SDD.OpenCodePhaseModels[phase]; ok {
+		t.Fatalf("expected Esc from effort not to persist assignment, got %#v", m.cfg.SDD.OpenCodePhaseModels)
+	}
+
+	m.phaseModelModelCursor = 0
+	m = sendKey(m, tea.KeyEnter)
+	assignment := m.cfg.SDD.OpenCodePhaseModels[phase]
+	if assignment.ProviderID != "openai" || assignment.ModelID != "plain" || assignment.Effort != "" {
+		t.Fatalf("expected direct commit for model without effort, got %+v", assignment)
+	}
+}
+
+func TestStepPhaseModels_ClaudePickerUsesClaudeCatalogOnly(t *testing.T) {
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
+		&mockAgent{name: "claude", configDir: t.TempDir()},
+	}}
+	m = initializePhaseModelEditor(m)
+	m.phaseModelClaude = []string{"claude-haiku", "claude-sonnet"}
+	m.phaseModelOpenCode = []string{"opencode-only"}
+	m.phaseModelActiveCol = phaseModelClaudeColumn
+	phase := m.phaseModelRows[0].Phase
+
+	m = sendKey(m, tea.KeyEnter)
+	if m.phaseModelMode != phaseModelModeClaudeModel {
+		t.Fatalf("expected Claude picker mode, got %v", m.phaseModelMode)
+	}
+	m.phaseModelModelCursor = 1
+	m = sendKey(m, tea.KeyEnter)
+
+	if got := m.cfg.SDD.PhaseModels[phase].Claude; got != "claude-sonnet" {
+		t.Fatalf("expected Claude assignment from Claude catalog, got %q", got)
+	}
+	if got := m.cfg.SDD.PhaseModels[phase].OpenCode; got == "opencode-only" {
+		t.Fatalf("Claude selection must not use or rewrite OpenCode catalog, got OpenCode %q", got)
+	}
+}
+
 func TestViewReview_IncludesPhaseModelAssignments(t *testing.T) {
 	m := Model{Step: StepReview, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
 	m = initializePhaseModelEditor(m)
@@ -713,6 +1000,32 @@ func TestViewReview_IncludesOpenCodeProviderModelAssignments(t *testing.T) {
 	}
 	if !strings.Contains(v, "effort=high") {
 		t.Fatalf("expected review to include OpenCode effort, got:\n%s", v)
+	}
+}
+
+func TestStepReview_BackRoutesByRuntimeModelTarget(t *testing.T) {
+	tests := []struct {
+		name   string
+		agents []agent.Agent
+		want   Step
+	}{
+		{name: "no runtime model target returns to skills", agents: nil, want: StepSkills},
+		{name: "judgment day only returns to skills", agents: []agent.Agent{&mockAgent{name: "judgment-day", configDir: t.TempDir()}}, want: StepSkills},
+		{name: "claude runtime target returns to phase models", agents: []agent.Agent{&mockAgent{name: "claude", configDir: t.TempDir()}}, want: StepPhaseModels},
+		{name: "opencode runtime target returns to phase models", agents: []agent.Agent{&mockAgent{name: "opencode", configDir: t.TempDir()}}, want: StepPhaseModels},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := Model{Step: StepReview, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: tt.agents}
+			m.reviewChoice = 0
+
+			m = sendKey(m, tea.KeyEnter)
+
+			if m.Step != tt.want {
+				t.Fatalf("expected Back to route to %v, got %v", tt.want, m.Step)
+			}
+		})
 	}
 }
 
@@ -750,7 +1063,7 @@ func TestStep_Persona_SelectAndAdvance(t *testing.T) {
 // advances the model to StepPhaseModels.
 func TestStep_Skills_EnterAdvances(t *testing.T) {
 	m := buildSkillsModel()
-	m.Agents = []agent.Agent{&mockAgent{name: "mock", configDir: t.TempDir()}}
+	m.Agents = []agent.Agent{&mockAgent{name: "claude", configDir: t.TempDir()}}
 
 	if m.Step != StepSkills {
 		t.Fatalf("expected StepSkills, got %v", m.Step)
@@ -770,7 +1083,7 @@ func TestStep_Skills_EnterSkipsPhaseModelsWhenRuntimeManagedFlowUnavailable(t *t
 		expectTo Step
 	}{
 		{name: "no agents configured", agents: nil, expectTo: StepReview},
-		{name: "runtime managed available", agents: []agent.Agent{&mockAgent{name: "mock", configDir: t.TempDir()}}, expectTo: StepPhaseModels},
+		{name: "runtime managed available", agents: []agent.Agent{&mockAgent{name: "claude", configDir: t.TempDir()}}, expectTo: StepPhaseModels},
 	}
 
 	for _, tt := range tests {
@@ -788,7 +1101,10 @@ func TestStep_Skills_EnterSkipsPhaseModelsWhenRuntimeManagedFlowUnavailable(t *t
 }
 
 func TestPhaseModelsView_V1HasNoProfileCRUDOrSwitchActions(t *testing.T) {
-	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
+		&mockAgent{name: "opencode", configDir: t.TempDir()},
+		&mockAgent{name: "claude", configDir: t.TempDir()},
+	}}
 	m = initializePhaseModelEditor(m)
 
 	view := strings.ToLower(viewPhaseModels(m))
@@ -805,7 +1121,10 @@ func TestStep_PhaseModels_RejectsCrossCatalogInvalidValuesInTUIEditingPath(t *te
 	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment { return nil }
 	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
 
-	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
+		&mockAgent{name: "opencode", configDir: t.TempDir()},
+		&mockAgent{name: "claude", configDir: t.TempDir()},
+	}}
 	m = initializePhaseModelEditor(m)
 
 	if len(m.phaseModelOpenCode) == 0 || len(m.phaseModelClaude) == 0 {
@@ -819,7 +1138,7 @@ func TestStep_PhaseModels_RejectsCrossCatalogInvalidValuesInTUIEditingPath(t *te
 	m.phaseModelActiveRow = 0
 	m.phaseModelActiveCol = 1
 	m.phaseModelRows[0].OpenCode = opencodeInvalid
-	m = sendKey(m, tea.KeyEnter)
+	m = sendKey(m, tea.KeySpace)
 	if !slices.Contains(m.phaseModelOpenCode, m.phaseModelRows[0].OpenCode) {
 		t.Fatalf("expected OpenCode value normalized to OpenCode catalog, got %q", m.phaseModelRows[0].OpenCode)
 	}
@@ -827,7 +1146,7 @@ func TestStep_PhaseModels_RejectsCrossCatalogInvalidValuesInTUIEditingPath(t *te
 	// Inject an invalid value into Claude cell and ensure cycle rejects/fixes it.
 	m.phaseModelActiveCol = 2
 	m.phaseModelRows[0].Claude = claudeInvalid
-	m = sendKey(m, tea.KeyEnter)
+	m = sendKey(m, tea.KeySpace)
 	if !slices.Contains(m.phaseModelClaude, m.phaseModelRows[0].Claude) {
 		t.Fatalf("expected Claude value normalized to Claude catalog, got %q", m.phaseModelRows[0].Claude)
 	}
@@ -1783,7 +2102,7 @@ func TestUpdateReview_BackCancelApply(t *testing.T) {
 		expectDone   bool
 		expectCmdNil bool
 	}{
-		{name: "back", choice: 0, expectStep: StepPhaseModels, expectDone: false, expectCmdNil: true},
+		{name: "back", choice: 0, expectStep: StepSkills, expectDone: false, expectCmdNil: true},
 		{name: "cancel", choice: 1, expectStep: StepReview, expectDone: true, expectCmdNil: false},
 		{name: "apply", choice: 2, expectStep: StepApply, expectDone: false, expectCmdNil: false},
 	}
@@ -1813,7 +2132,7 @@ func TestUpdateReview_BackCancel_NoApplyArtifactsCreated(t *testing.T) {
 		expectDone bool
 		expectStep Step
 	}{
-		{name: "back keeps wizard editable", reviewSlot: 0, expectDone: false, expectStep: StepPhaseModels},
+		{name: "back keeps wizard editable", reviewSlot: 0, expectDone: false, expectStep: StepSkills},
 		{name: "cancel exits without apply", reviewSlot: 1, expectDone: true, expectStep: StepReview},
 	}
 
