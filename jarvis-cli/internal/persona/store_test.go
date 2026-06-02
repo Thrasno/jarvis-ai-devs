@@ -35,8 +35,7 @@ func (f *stubTempFile) Name() string {
 }
 
 func TestUserPresetStore_SaveAndLoad(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 
 	const slug = "Custom Mentor"
 	const content = "name: custom-mentor\nnotes: |\n  ## Core Principle\n"
@@ -69,8 +68,7 @@ func TestUserPresetStore_SaveAndLoad(t *testing.T) {
 }
 
 func TestUserPresetDir_UsesHome(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 
 	dir, err := UserPresetDir()
 	if err != nil {
@@ -84,8 +82,7 @@ func TestUserPresetDir_UsesHome(t *testing.T) {
 }
 
 func TestUserPresetStore_RejectsPathTraversal(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateTestHome(t)
 
 	tests := []struct {
 		name string
@@ -145,8 +142,7 @@ func TestValidatePresetSlug(t *testing.T) {
 }
 
 func TestLoadUserPresetFile_MissingFile(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateTestHome(t)
 
 	_, _, err := LoadUserPresetFile("missing")
 	if err == nil {
@@ -158,8 +154,7 @@ func TestLoadUserPresetFile_MissingFile(t *testing.T) {
 }
 
 func TestUserPresetPath_NormalizesSlugAndKeepsCanonicalDir(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 
 	path, err := userPresetPath(" Custom Mentor ")
 	if err != nil {
@@ -173,8 +168,7 @@ func TestUserPresetPath_NormalizesSlugAndKeepsCanonicalDir(t *testing.T) {
 }
 
 func TestSaveUserPresetFile_FailsWhenJarvisPathIsFile(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 
 	jarvisPath := filepath.Join(home, ".jarvis")
 	if err := os.WriteFile(jarvisPath, []byte("not-a-dir"), 0o644); err != nil {
@@ -191,19 +185,13 @@ func TestSaveUserPresetFile_FailsWhenJarvisPathIsFile(t *testing.T) {
 }
 
 func TestSaveUserPresetFile_FailsWhenCreateTempCannotWrite(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateTestHome(t)
 
-	dir := filepath.Join(home, ".jarvis", "personas")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir personas dir: %v", err)
+	original := newTempPresetFile
+	t.Cleanup(func() { newTempPresetFile = original })
+	newTempPresetFile = func(_, _ string) (tempPresetFile, error) {
+		return nil, errors.New("boom create temp")
 	}
-	if err := os.Chmod(dir, 0o555); err != nil {
-		t.Fatalf("chmod personas read-only: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.Chmod(dir, 0o755)
-	})
 
 	_, err := SaveUserPresetFile("mentor", []byte("name: mentor\n"))
 	if err == nil {
@@ -215,8 +203,7 @@ func TestSaveUserPresetFile_FailsWhenCreateTempCannotWrite(t *testing.T) {
 }
 
 func TestSaveUserPresetFile_FailsWhenDestinationIsDirectory(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 
 	targetPath := filepath.Join(home, ".jarvis", "personas", "mentor.yaml")
 	if err := os.MkdirAll(targetPath, 0o755); err != nil {
@@ -233,8 +220,7 @@ func TestSaveUserPresetFile_FailsWhenDestinationIsDirectory(t *testing.T) {
 }
 
 func TestSaveUserPresetFile_FailsWhenTempWriteFails(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 
 	original := newTempPresetFile
 	t.Cleanup(func() { newTempPresetFile = original })
@@ -252,8 +238,7 @@ func TestSaveUserPresetFile_FailsWhenTempWriteFails(t *testing.T) {
 }
 
 func TestSaveUserPresetFile_FailsWhenTempSyncFails(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 
 	original := newTempPresetFile
 	t.Cleanup(func() { newTempPresetFile = original })
@@ -271,8 +256,7 @@ func TestSaveUserPresetFile_FailsWhenTempSyncFails(t *testing.T) {
 }
 
 func TestSaveUserPresetFile_FailsWhenTempCloseFails(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateTestHome(t)
 
 	original := newTempPresetFile
 	t.Cleanup(func() { newTempPresetFile = original })

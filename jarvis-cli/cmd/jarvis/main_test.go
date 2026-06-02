@@ -14,10 +14,20 @@ import (
 )
 
 // jarvisBin is the path to the compiled binary built by TestMain.
-var jarvisBin = "/tmp/jarvis-test-bin"
+var jarvisBin string
 
 // TestMain compiles the binary once for all integration tests in this package.
 func TestMain(m *testing.M) {
+	binDir, err := os.MkdirTemp("", "jarvis-test-bin-*")
+	if err != nil {
+		_, _ = os.Stderr.WriteString("FAIL: could not create jarvis test binary dir: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+	jarvisBin = filepath.Join(binDir, "jarvis-test-bin")
+	if runtime.GOOS == "windows" {
+		jarvisBin += ".exe"
+	}
+
 	// Build the binary into a temp path.
 	cmd := exec.Command("go", "build", "-o", jarvisBin, "./")
 	cmd.Dir = filepath.Join(os.Getenv("PWD"), "../../..")
@@ -43,7 +53,7 @@ func TestMain(m *testing.M) {
 	}
 
 	code := m.Run()
-	_ = os.Remove(jarvisBin)
+	_ = os.RemoveAll(binDir)
 	os.Exit(code)
 }
 
@@ -53,9 +63,7 @@ func TestMain(m *testing.M) {
 func runJarvis(t *testing.T, home string, args ...string) (string, int) {
 	t.Helper()
 	cmd := exec.Command(jarvisBin, args...)
-	if home != "" {
-		cmd.Env = append(os.Environ(), "HOME="+home)
-	}
+	cmd.Env = testHomeEnv(home)
 	out, err := cmd.CombinedOutput()
 	exitCode := 0
 	if err != nil {
@@ -425,7 +433,7 @@ func TestNoTUI_FirstRun_RequiresInput(t *testing.T) {
 
 	// Run with --no-tui and /dev/null as stdin so no input is provided.
 	cmd := exec.Command(jarvisBin, "--no-tui")
-	cmd.Env = append(os.Environ(), "HOME="+home)
+	cmd.Env = testHomeEnv(home)
 
 	devNull, err := os.Open(os.DevNull)
 	if err != nil {

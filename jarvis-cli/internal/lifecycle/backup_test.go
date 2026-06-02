@@ -5,8 +5,10 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -243,6 +245,9 @@ func TestBackupStore_ValidateManifestRejectsSymlinkEscape(t *testing.T) {
 	}
 	symlinked := filepath.Join(root, "evil")
 	if err := os.Symlink("/etc", symlinked); err != nil {
+		if runtime.GOOS == "windows" && isWindowsSymlinkPrivilegeError(err) {
+			t.Skipf("Windows symlink privilege unavailable: %v", err)
+		}
 		t.Fatalf("symlink: %v", err)
 	}
 
@@ -256,6 +261,17 @@ func TestBackupStore_ValidateManifestRejectsSymlinkEscape(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected symlink escape validation error")
 	}
+}
+
+func isWindowsSymlinkPrivilegeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var linkErr *os.LinkError
+	if errors.As(err, &linkErr) {
+		return strings.Contains(linkErr.Err.Error(), "privilege")
+	}
+	return strings.Contains(err.Error(), "privilege")
 }
 
 func writeTestArchive(t *testing.T, name string, content []byte) string {
