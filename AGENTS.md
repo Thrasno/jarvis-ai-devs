@@ -184,6 +184,29 @@ Never commit:
 - If a change is likely to exceed roughly 400 changed lines, split it into reviewable work units or ask for an explicit size exception.
 - Keep tests and implementation changes together when they belong to the same behavior.
 
+## Release Workflow Rules
+
+When the user asks to "saca release beta", "generar beta", or equivalent:
+
+- Use the fixed beta channel `v0.0.1-beta`.
+- Do not create a new beta version unless explicitly requested.
+- Move `v0.0.1-beta` to the current source commit.
+- Regenerate the GitHub release assets through the Release workflow.
+- If existing release assets conflict, delete the existing GitHub release, keep the updated tag, and rerun the workflow.
+- Verify the release is recreated as a prerelease with fresh `jarvis` and `hive-daemon` assets.
+- Follow `docs/release-runbook.md` for exact commands and verification.
+
+When the user asks to "saca release PROD", "generar release de produccion", or equivalent:
+
+- Do not reuse `v0.0.1-beta`.
+- Create a new immutable production release tag.
+- Choose the next semantic version based on the implemented changes:
+  - patch for fixes or safe improvements,
+  - minor for meaningful features or product additions,
+  - major for breaking changes, migration-heavy changes, or major architecture shifts.
+- Inspect recent commits since the last production release before choosing the version.
+- Follow `docs/release-runbook.md` for exact commands and verification.
+
 ## Forbidden Actions
 
 Agents must not:
