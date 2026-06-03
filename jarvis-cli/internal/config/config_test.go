@@ -483,7 +483,7 @@ func TestIsReadyForReconfigure_FailsWhenConfiguredAgentStateMissing(t *testing.T
 }
 
 // TestLayer1Content_ContainsAllRequiredSections verifies that Layer1Content includes
-// all 10 required sections of the full Hive protocol (R2).
+// behavior-only runtime guardrails while deferring protocol details to protocol.hive.
 func TestLayer1Content_ContainsAllRequiredSections(t *testing.T) {
 	content := Layer1Content()
 
@@ -493,38 +493,31 @@ func TestLayer1Content_ContainsAllRequiredSections(t *testing.T) {
 		"git remote get-url origin",
 		"basename",
 		`"default"`,
-		// PROACTIVE SAVE TRIGGERS + self-check
-		"PROACTIVE SAVE TRIGGERS",
-		"Self-check after EVERY task",
-		// mem_save format fields
+		// Canonical Hive protocol boundary
+		"Hive Protocol Source Boundary",
+		"protocol.hive",
+		"jarvis-cli/embed/hive-protocol.md",
+		"Layer1 MUST NOT duplicate the Hive protocol body",
+		// Contextual skill loading guardrail
+		"Contextual Skill Loading Self-Check",
+		"Before every response",
+		"matches an installed skill",
+		"load that skill before task-specific work",
+		// Persona/artifact language guardrail
+		"Persona Scope and Artifact Language",
+		"Persona voice applies only to direct user replies",
+		"Generated technical artifacts default to English",
+		"Hive",
+		"jarvis CLI",
+		".jarvis/skill-registry.md",
+		".jarvis/skills/<skill>/SKILL.md",
+		// Hive-specific behavior summary
 		"scope",
-		"topic_key",
-		"What",
-		"Why",
-		"Where",
-		"Learned",
-		// Topic update rules
-		"Different topics MUST NOT overwrite",
-		"mem_suggest_topic_key",
-		// Search protocol
-		"mem_context",
-		"mem_get_observation",
-		// Session close protocol
-		"SESSION CLOSE PROTOCOL",
-		"mem_session_summary",
-		"Goal",
-		"Discoveries",
-		"Accomplished",
-		"Next Steps",
-		"Relevant Files",
 		// SDD DAG without retired QA gate
 		"SDD DAG: `proposal → specs → tasks → apply → verify → archive`",
 		"Apply-progress continuity",
 		// Hive-specific
-		"mem_sync",
 		"project",
-		// Core tool
-		"mem_save",
 	}
 
 	for _, want := range required {
@@ -533,10 +526,10 @@ func TestLayer1Content_ContainsAllRequiredSections(t *testing.T) {
 		}
 	}
 
-	// AFTER COMPACTION — case-insensitive check
-	lowerContent := strings.ToLower(content)
-	if !strings.Contains(lowerContent, "after compaction") {
-		t.Error("Layer1Content missing 'AFTER COMPACTION' section (case-insensitive)")
+	for _, protocolBodyMarker := range []string{"PROACTIVE SAVE TRIGGERS", "SESSION CLOSE PROTOCOL", "FORMAT FOR mem_save"} {
+		if strings.Contains(content, protocolBodyMarker) {
+			t.Errorf("Layer1Content must not duplicate protocol.hive body marker %q", protocolBodyMarker)
+		}
 	}
 }
 

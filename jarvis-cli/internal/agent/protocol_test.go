@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -263,4 +266,33 @@ func TestGetHiveProtocol(t *testing.T) {
 	if !strings.Contains(protocol, "mem_save") {
 		t.Error("Protocol should mention mem_save tool")
 	}
+}
+
+func TestGetHiveProtocol_UsesRootCanonicalEmbeddedSource(t *testing.T) {
+	protocol := getHiveProtocol()
+	canonical := readAgentTestFile(t, "embed", "hive-protocol.md")
+
+	if protocol != canonical {
+		t.Fatal("getHiveProtocol() must load the canonical embed/hive-protocol.md source, not an internal duplicate")
+	}
+	if !strings.Contains(protocol, "## SDD ARTIFACT BOUNDARY (MVP CONTRACT)") {
+		t.Fatal("canonical Hive protocol must preserve the SDD artifact boundary section")
+	}
+}
+
+func readAgentTestFile(t *testing.T, parts ...string) string {
+	t.Helper()
+
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve current test file")
+	}
+
+	moduleRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	path := filepath.Join(append([]string{moduleRoot}, parts...)...)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
 }

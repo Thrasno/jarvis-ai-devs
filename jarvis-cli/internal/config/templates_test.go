@@ -148,3 +148,36 @@ Skills: {{range .Skills}}{{.Name}} {{end}}
 		t.Error("expected Skills to be rendered")
 	}
 }
+
+func TestLayer1Content_DoesNotDuplicateHiveProtocol(t *testing.T) {
+	layer1 := Layer1Content()
+
+	for _, duplicatedProtocolMarker := range []string{
+		"## Hive Persistent Memory — Protocol",
+		"PROACTIVE SAVE TRIGGERS",
+		"FORMAT FOR mem_save",
+		"SESSION CLOSE PROTOCOL",
+	} {
+		if strings.Contains(layer1, duplicatedProtocolMarker) {
+			t.Fatalf("layer1.md must not duplicate canonical protocol.hive content; found %q", duplicatedProtocolMarker)
+		}
+	}
+}
+
+func TestLayer1Content_IncludesRuntimeGuardrailSelfChecks(t *testing.T) {
+	layer1 := Layer1Content()
+
+	required := []string{
+		"## Contextual Skill Loading Self-Check",
+		"Before every response, check whether the request matches an installed skill",
+		"## Persona Scope and Artifact Language",
+		"Persona voice applies only to direct user replies",
+		"Generated technical artifacts default to English",
+	}
+
+	for _, phrase := range required {
+		if !strings.Contains(layer1, phrase) {
+			t.Fatalf("layer1.md missing guardrail phrase %q", phrase)
+		}
+	}
+}

@@ -26,6 +26,10 @@ type wizardPresetApplyContext struct {
 	PreviousPresetSource persona.PresetSource
 }
 
+type generatedConfigAgent interface {
+	MergeGeneratedConfig(*config.AppConfig) error
+}
+
 // configureWizardAgent applies the same MCP + instruction + skills setup flow
 // for both TUI and no-TUI wizards.
 func configureWizardAgent(
@@ -41,6 +45,11 @@ func configureWizardAgent(
 	}
 	if err := a.MergeConfig(context7Entry); err != nil {
 		return fmt.Errorf("context7 MCP config: %w", err)
+	}
+	if generatedAgent, ok := a.(generatedConfigAgent); ok {
+		if err := generatedAgent.MergeGeneratedConfig(cfg); err != nil {
+			return fmt.Errorf("generated config guardrails: %w", err)
+		}
 	}
 	if err := a.InstallSkills(skillsSubFS, selectedIDs); err != nil {
 		return fmt.Errorf("install skills: %w", err)

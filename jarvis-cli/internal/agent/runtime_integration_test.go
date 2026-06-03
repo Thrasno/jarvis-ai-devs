@@ -215,6 +215,40 @@ func TestOpenCodeAgent_ObserveRuntimeWithConfigUsesPendingAssignments(t *testing
 	}
 }
 
+func TestOpenCodeAgent_MergeGeneratedConfigKeepsRuntimeVerificationPassing(t *testing.T) {
+	cfg := defaultRuntimeConfig()
+	cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
+		"orchestrator": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"},
+	}
+	home := t.TempDir()
+	a := &OpenCodeAgent{home: home, templatesFS: testTemplatesFS}
+	if err := os.MkdirAll(a.ConfigDir(), 0755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := a.MergeGeneratedConfig(cfg); err != nil {
+		t.Fatalf("MergeGeneratedConfig: %v", err)
+	}
+	if err := a.WriteInstructions("# Layer1", "# Layer2", nil); err != nil {
+		t.Fatalf("WriteInstructions: %v", err)
+	}
+	if err := a.InstallOrchestrator([]byte("# orchestrator")); err != nil {
+		t.Fatalf("InstallOrchestrator: %v", err)
+	}
+	if err := installOptionalManagedArtifacts(a.ConfigDir()); err != nil {
+		t.Fatalf("install optional artifacts: %v", err)
+	}
+	if err := a.InstallSkills(fstest.MapFS{"_shared/SKILL.md": {Data: []byte("# shared")}}, nil); err != nil {
+		t.Fatalf("InstallSkills: %v", err)
+	}
+	observed, err := a.ObserveRuntimeWithConfig(cfg)
+	if err != nil {
+		t.Fatalf("ObserveRuntimeWithConfig: %v", err)
+	}
+	if report := sddruntime.Verify(a.Name(), observed); report.Status != sddruntime.StatusPass {
+		t.Fatalf("expected verifier pass after generated config merge, got %q", report.Status)
+	}
+}
+
 func TestClaudeAgent_ObserveRuntimeWithConfigUsesPendingAssignments(t *testing.T) {
 	stubRuntimeConfig(t, defaultRuntimeConfig())
 

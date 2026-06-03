@@ -1,19 +1,15 @@
 package agent
 
 import (
-	_ "embed"
 	"strings"
-)
 
-// hiveProtocol contains the embedded Hive protocol markdown content.
-//
-//go:embed hive-protocol.md
-var hiveProtocol string
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
+)
 
 // getHiveProtocol returns the embedded Hive protocol content.
 // This content is injected into agent instruction files.
 func getHiveProtocol() string {
-	return hiveProtocol
+	return jarvis.HiveProtocol
 }
 
 // Protocol injection markers for Hive memory protocol.
