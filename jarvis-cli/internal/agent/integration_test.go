@@ -8,6 +8,10 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 )
 
 // ── Real-world JSON fixtures ──────────────────────────────────────────────────
@@ -1043,5 +1047,174 @@ func TestWriteInstructions_ReapplyDeterministicallyRegeneratesPartialManagedStat
 				t.Fatalf("regenerated managed state is not deterministic")
 			}
 		})
+	}
+}
+
+func TestGeneratedRuntimeAcceptance_RenderedArtifactsProveGuardrails(t *testing.T) {
+	preset, err := persona.LoadPreset(jarvis.PersonaFS, "argentino")
+	if err != nil {
+		t.Fatalf("LoadPreset: %v", err)
+	}
+	layer1 := config.Layer1Content()
+	layer2 := persona.RenderLayer2(preset)
+	skills := []config.SkillInfo{{Name: "sdd-apply", Description: "Implement SDD tasks", Trigger: "implementing SDD tasks"}}
+
+	for _, tc := range []struct {
+		name  string
+		agent Agent
+		file  string
+	}{
+		{name: "claude", agent: &ClaudeAgent{home: t.TempDir(), templatesFS: jarvis.TemplatesFS}, file: "CLAUDE.md"},
+		{name: "opencode", agent: &OpenCodeAgent{home: t.TempDir(), templatesFS: jarvis.TemplatesFS}, file: "AGENTS.md"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.MkdirAll(tc.agent.ConfigDir(), 0755); err != nil {
+				t.Fatalf("mkdir config dir: %v", err)
+			}
+			if err := tc.agent.WriteInstructions(layer1, layer2, skills); err != nil {
+				t.Fatalf("WriteInstructions: %v", err)
+			}
+
+			renderedBytes, err := os.ReadFile(filepath.Join(tc.agent.ConfigDir(), tc.file))
+			if err != nil {
+				t.Fatalf("read rendered instructions: %v", err)
+			}
+			rendered := string(renderedBytes)
+			if got := strings.Count(rendered, HiveProtocolStart); got != 1 {
+				t.Fatalf("Hive protocol start marker count = %d, want 1\n%s", got, rendered)
+			}
+			if got := strings.Count(rendered, HiveProtocolEnd); got != 1 {
+				t.Fatalf("Hive protocol end marker count = %d, want 1\n%s", got, rendered)
+			}
+			if got := strings.Count(rendered, "# Hive Persistent Memory — Protocol"); got != 1 {
+				t.Fatalf("Hive protocol body count = %d, want 1\n%s", got, rendered)
+			}
+			if got := strings.Count(rendered, "Persona Scope (CRITICAL)"); got != 1 {
+				t.Fatalf("persona scope guardrail count = %d, want 1\n%s", got, rendered)
+			}
+			assertNoGeneratedProductMemoryBackendWording(t, rendered)
+		})
+	}
+}
+
+func TestGeneratedRuntimeAcceptance_ConfigArtifactsProveRolloutSafety(t *testing.T) {
+	openCodeHome := t.TempDir()
+	openCode := &OpenCodeAgent{home: openCodeHome, templatesFS: jarvis.TemplatesFS}
+	if err := os.MkdirAll(openCode.ConfigDir(), 0755); err != nil {
+		t.Fatalf("mkdir opencode dir: %v", err)
+	}
+	if err := openCode.MergeGeneratedConfig(defaultRuntimeConfig()); err != nil {
+		t.Fatalf("OpenCode MergeGeneratedConfig: %v", err)
+	}
+	opencodeSettings := readJSONFile(t, filepath.Join(openCode.ConfigDir(), "opencode.json"))
+	if opencodeSettings["share"] != "disabled" {
+		t.Fatalf("OpenCode share = %v, want disabled", opencodeSettings["share"])
+	}
+	if opencodeSettings["default_agent"] != "sdd-orchestrator" {
+		t.Fatalf("OpenCode default_agent = %v, want sdd-orchestrator", opencodeSettings["default_agent"])
+	}
+	assertOpenCodeGlobalPermissionGuards(t, opencodeSettings)
+	agents := opencodeSettings["agent"].(map[string]any)
+	orchestrator := agents["sdd-orchestrator"].(map[string]any)
+	if orchestrator["mode"] != "primary" {
+		t.Fatalf("sdd-orchestrator mode = %v, want primary", orchestrator["mode"])
+	}
+	taskPerm := orchestrator["permission"].(map[string]any)["task"].(map[string]any)
+	if taskPerm["sdd-orchestrator"] == "allow" {
+		t.Fatal("sdd-orchestrator must not allow task delegation to itself")
+	}
+	for _, allowed := range append(openCodeSDDSubagents(), openCodeJudgmentDaySubagents()...) {
+		if _, ok := agents[allowed]; !ok {
+			t.Fatalf("sdd-orchestrator allows undefined task target %q", allowed)
+		}
+		if taskPerm[allowed] != "allow" {
+			t.Fatalf("sdd-orchestrator task permission for %s = %v, want allow", allowed, taskPerm[allowed])
+		}
+	}
+	for target, permission := range taskPerm {
+		if permission != "allow" || target == "*" {
+			continue
+		}
+		if _, ok := agents[target]; !ok {
+			t.Fatalf("sdd-orchestrator task permission allows undefined agent %q", target)
+		}
+	}
+	assertOpenCodeSubagentsHiddenAndMode(t, agents, openCodeSDDSubagents())
+	assertOpenCodeSubagentsHiddenAndMode(t, agents, openCodeJudgmentDaySubagents())
+	assertNoGeneratedProductMemoryBackendWording(t, string(mustMarshalJSON(t, opencodeSettings)))
+
+	claudeHome := t.TempDir()
+	claude := &ClaudeAgent{home: claudeHome, templatesFS: testTemplatesFS}
+	if err := os.MkdirAll(claude.ConfigDir(), 0755); err != nil {
+		t.Fatalf("mkdir claude dir: %v", err)
+	}
+	if err := claude.InstallPromptHook(testHooksFS); err != nil {
+		t.Fatalf("InstallPromptHook: %v", err)
+	}
+	if err := claude.MergeGeneratedConfig(defaultRuntimeConfig()); err != nil {
+		t.Fatalf("Claude MergeGeneratedConfig: %v", err)
+	}
+	claudeSettings := readJSONFile(t, filepath.Join(claude.ConfigDir(), "settings.json"))
+	permissions := claudeSettings["permissions"].(map[string]any)
+	if countScalar(permissions["allow"].([]any), "Bash(go test:*)") != 1 {
+		t.Fatalf("Claude permissions.allow must include go test exactly once: %#v", permissions["allow"])
+	}
+	if countScalar(permissions["deny"].([]any), "Read(**/.env*)") != 1 {
+		t.Fatalf("Claude permissions.deny must include env read guard exactly once: %#v", permissions["deny"])
+	}
+	hooks := claudeSettings["hooks"].(map[string]any)
+	hookEntries := hooks["UserPromptSubmit"].([]any)
+	foundHiveHook := false
+	for _, entry := range hookEntries {
+		entryMap, ok := entry.(map[string]any)
+		if ok && entryMap["name"] == "hive-prompt-capture" {
+			foundHiveHook = true
+		}
+	}
+	if !foundHiveHook {
+		t.Fatalf("Claude settings must preserve existing Hive prompt-capture hook: %#v", hookEntries)
+	}
+	assertNoGeneratedProductMemoryBackendWording(t, string(mustMarshalJSON(t, claudeSettings)))
+}
+
+func assertOpenCodeGlobalPermissionGuards(t *testing.T, settings map[string]any) {
+	t.Helper()
+	permissions := settings["permission"].(map[string]any)
+	bash := permissions["bash"].(map[string]any)
+	for _, guard := range []string{"git push --force*", "git reset --hard*", "git clean -fdx*", "rm -rf /*"} {
+		if bash[guard] != "ask" {
+			t.Fatalf("OpenCode global bash guard %q = %v, want ask", guard, bash[guard])
+		}
+	}
+	read := permissions["read"].(map[string]any)
+	for _, guard := range []string{"**/.env*", "**/*secret*", "**/*token*", "**/*credential*", "**/id_rsa*"} {
+		if read[guard] != "deny" {
+			t.Fatalf("OpenCode global read guard %q = %v, want deny", guard, read[guard])
+		}
+	}
+}
+
+func assertOpenCodeSubagentsHiddenAndMode(t *testing.T, agents map[string]any, names []string) {
+	t.Helper()
+	for _, name := range names {
+		agent, ok := agents[name].(map[string]any)
+		if !ok {
+			t.Fatalf("OpenCode subagent %q is not defined", name)
+		}
+		if agent["mode"] != "subagent" {
+			t.Fatalf("OpenCode subagent %q mode = %v, want subagent", name, agent["mode"])
+		}
+		if agent["hidden"] != true {
+			t.Fatalf("OpenCode subagent %q hidden = %v, want true", name, agent["hidden"])
+		}
+	}
+}
+
+func assertNoGeneratedProductMemoryBackendWording(t *testing.T, content string) {
+	t.Helper()
+	for _, forbidden := range []string{"Engram", "engram"} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("generated Jarvis artifact leaked forbidden memory backend wording %q\n%s", forbidden, content)
+		}
 	}
 }

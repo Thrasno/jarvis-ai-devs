@@ -23,6 +23,57 @@ var testTemplatesFS fs.FS = fstest.MapFS{
 	"embed/templates/AGENTS.md.tmpl": {
 		Data: []byte("<!-- JARVIS:LAYER1:START -->\n{{.Layer1}}\n<!-- JARVIS:LAYER1:END -->\n\n<!-- JARVIS:LAYER2:START -->\n{{.Layer2}}\n<!-- JARVIS:LAYER2:END -->\n"),
 	},
+	"embed/templates/opencode.json.tmpl": {
+		Data: []byte(`{
+{{- if .IncludeSchema }}
+  "$schema": {{json .SchemaURL}},
+{{- end }}
+  "share": "disabled",
+  "default_agent": "sdd-orchestrator",
+  "permission": {
+    "bash": {"*": "allow", "git push --force*": "ask", "git reset --hard*": "ask", "git clean -fdx*": "ask", "rm -rf /*": "ask"},
+    "read": {"*": "allow", "**/.env*": "deny", "**/*secret*": "deny", "**/*token*": "deny", "**/*credential*": "deny", "**/id_rsa*": "deny"}
+  },
+  "agent": {
+    "sdd-orchestrator": {
+      "description": "Primary Jarvis SDD orchestrator. Delegates SDD and Judgment Day work to explicit subagents only.",
+      "mode": "primary",
+      "model": {{json .OrchestratorModel}},
+{{- if .OrchestratorVariant }}
+      "variant": {{json .OrchestratorVariant}},
+{{- end }}
+      "prompt": "Read and follow ` + "`" + `~/.config/opencode/sdd-orchestrator.md` + "`" + ` and Jarvis runtime instructions before orchestrating. Generated technical artifacts must be English and preserve Jarvis/Hive naming.",
+      "permission": {"task": {"*": "deny"{{range .TaskAllows}}, {{json .}}: "allow"{{end}}}}
+    }{{if .Agents}},{{end}}
+{{- range .Agents }}
+    {{json .Name}}: {
+      "description": {{json .Description}},
+      "mode": {{json .Mode}},
+      "hidden": {{json .Hidden}},
+      "model": {{json .Model}},
+{{- if .Variant }}
+      "variant": {{json .Variant}},
+{{- end }}
+      "prompt": {{json .Prompt}},
+      "permission": {{.Permission}}
+    }{{if not .Last}},{{end}}
+{{- end }}
+  }
+}`),
+	},
+}
+
+func TestTestTemplatesFS_CoversGeneratedConfigTemplate(t *testing.T) {
+	templateBytes, err := fs.ReadFile(testTemplatesFS, "embed/templates/opencode.json.tmpl")
+	if err != nil {
+		t.Fatalf("testTemplatesFS must include OpenCode generated config template fixture: %v", err)
+	}
+	template := string(templateBytes)
+	for _, required := range []string{"\"share\": \"disabled\"", "sdd-orchestrator", "{{json .OrchestratorModel}}"} {
+		if !strings.Contains(template, required) {
+			t.Fatalf("OpenCode generated config fixture missing %q\n%s", required, template)
+		}
+	}
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
