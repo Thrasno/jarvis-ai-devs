@@ -1,6 +1,7 @@
 package sddruntime
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
@@ -67,6 +68,20 @@ func TestResolvePhaseModels(t *testing.T) {
 			got := ResolvePhaseModels(tt.cfg)
 			tt.assert(t, got)
 		})
+	}
+}
+
+func TestResolveOpenCodeProviderQualifiedAssignments_DefaultsAreProviderQualified(t *testing.T) {
+	got, err := ResolveOpenCodeProviderQualifiedAssignments(nil)
+	if err != nil {
+		t.Fatalf("ResolveOpenCodeProviderQualifiedAssignments: %v", err)
+	}
+
+	for _, phase := range DefaultContract().Phases {
+		model := got[phase]
+		if !strings.Contains(model, "/") {
+			t.Fatalf("phase %q OpenCode model = %q, want provider-qualified provider/model", phase, model)
+		}
 	}
 }
 

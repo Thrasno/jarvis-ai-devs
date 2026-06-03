@@ -212,6 +212,7 @@ Never commit:
 - Keep changes reviewable.
 - If a change is likely to exceed roughly 400 changed lines, split it into reviewable work units or ask for an explicit size exception.
 - Keep tests and implementation changes together when they belong to the same behavior.
+- GitHub comments, including issue comments, PR comments, and review comments, must be bilingual: English first, followed by normative Spanish from Spain.
 
 ## Release Workflow Rules
 

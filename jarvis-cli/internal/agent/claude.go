@@ -90,6 +90,68 @@ func (a *ClaudeAgent) skillsDir() string {
 	return filepath.Join(a.ConfigDir(), "skills")
 }
 
+// MergeGeneratedConfig installs Jarvis-owned Claude Code settings that are not
+// MCP registrations. It deep-merges permission guardrails while preserving
+// outputStyle, the Hive prompt-capture hook, and user-owned settings. The
+// optional skill-registry refresh hook is intentionally not emitted.
+func (a *ClaudeAgent) MergeGeneratedConfig(_ *config.AppConfig) error {
+	existing, err := readFileOrEmpty(a.settingsPath())
+	if err != nil {
+		return fmt.Errorf("read settings.json: %w", err)
+	}
+	includeDefaultMode, err := shouldIncludeClaudeDefaultMode(existing)
+	if err != nil {
+		return fmt.Errorf("inspect settings.json permissions: %w", err)
+	}
+
+	permissions := map[string]any{
+		"allow": []any{
+			"Bash(git status:*)",
+			"Bash(git diff:*)",
+			"Bash(go test:*)",
+		},
+		"deny": []any{
+			"Read(**/.env*)",
+			"Read(**/*secret*)",
+			"Read(**/*token*)",
+			"Read(**/*credential*)",
+			"Read(**/id_rsa*)",
+			"Bash(rm -rf /*)",
+			"Bash(git clean -fdx:*)",
+			"Bash(git reset --hard:*)",
+		},
+	}
+	if includeDefaultMode {
+		permissions["defaultMode"] = "default"
+	}
+	patch := map[string]any{"permissions": permissions}
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("marshal Claude generated settings patch: %w", err)
+	}
+	merged, err := MergeJSON(existing, patchBytes)
+	if err != nil {
+		return fmt.Errorf("merge settings.json generated config: %w", err)
+	}
+	return writeFileAtomic(a.settingsPath(), merged, 0644)
+}
+
+func shouldIncludeClaudeDefaultMode(existing []byte) (bool, error) {
+	if len(strings.TrimSpace(string(existing))) == 0 {
+		return true, nil
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(existing, &decoded); err != nil {
+		return false, err
+	}
+	permissions, ok := decoded["permissions"].(map[string]any)
+	if !ok {
+		return true, nil
+	}
+	_, exists := permissions["defaultMode"]
+	return !exists, nil
+}
+
 // MergeConfig registers MCP servers via the native Claude CLI contract.
 //
 // For idempotent reruns/update behavior, it first checks existence via:
@@ -438,23 +500,53 @@ func readFileOrEmpty(path string) ([]byte, error) {
 	return data, err
 }
 
-// writeFileAtomic writes data to path atomically via a temp file + rename.
-// This prevents partial writes on crash.
+// writeFileAtomic writes data to path via a same-directory temp file and replace.
+// On Windows, os.Rename cannot reliably overwrite an existing destination, so
+// the existing file is removed before the final rename when needed.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create dir %s: %w", dir, err)
 	}
 
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
-		return fmt.Errorf("write temp file: %w", err)
+	writePerm := perm
+	if info, err := os.Stat(path); err == nil {
+		writePerm = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat destination file: %w", err)
 	}
 
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Chmod(writePerm); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove destination file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("atomic rename: %w", err)
 	}
+	cleanup = false
 
 	return nil
 }

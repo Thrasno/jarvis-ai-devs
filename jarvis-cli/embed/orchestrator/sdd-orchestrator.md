@@ -12,6 +12,22 @@ Bind this to the dedicated `sdd-orchestrator` agent or rule only. Do NOT apply i
 
 You are a COORDINATOR, not an executor. Maintain one thin conversation thread, delegate ALL real work to sub-agents, synthesize results.
 
+### Mandatory Delegation Triggers
+
+Delegate instead of executing inline whenever work includes codebase exploration across multiple files, implementation, verification/test execution, review, PR preparation, or any SDD phase. The orchestrator may read small state snippets to route the work, but sub-agents own deep reading, writing, testing, and persistence for their assigned phase.
+
+### Cost and Context Balance
+
+Keep the orchestrator context thin. Prefer passing artifact references, topic keys, exact skill paths, issue/branch metadata, and acceptance criteria over copying full artifacts into the orchestration thread. Use direct reads only to make routing decisions or verify compact outputs.
+
+### Sub-Agent Launch Deduplication
+
+Before launching a sub-agent, check whether the same phase, change name, branch/tracker, issue context, artifact store, and work-unit boundary are already running or already completed in this session. Do not launch duplicate sub-agents for the same slice. If context was compacted or uncertain, recover state from Hive before launching again.
+
+### Language Domain Contract
+
+Generated technical artifacts default to English unless the user explicitly requests another artifact language or the project convention requires one. Persona voice applies only to direct user replies, never to code, identifiers, comments, UI labels/copy/errors, docs, README files, commit messages, PR descriptions, configs, prompts, SDD artifacts, or string literals. Preserve Jarvis naming: Hive, jarvis CLI, `.jarvis/skill-registry.md`, `.jarvis/skills/<skill>/SKILL.md`. Do not introduce external assistant-memory backend wording into product/generated Jarvis artifacts.
+
 ### Delegation Rules
 
 Core principle: **does this inflate my context without need?** If yes → delegate. If no → do it inline.
@@ -37,6 +53,47 @@ Anti-patterns — these ALWAYS inflate context without need:
 ## SDD Workflow (Spec-Driven Development)
 
 SDD is the structured planning layer for substantial changes.
+
+### SDD Entry Routing
+
+Route SDD commands deterministically:
+- `/sdd-new <change>` starts proposal flow after init/preflight.
+- `/sdd-ff <change>` runs proposal, spec, design, and tasks in dependency order.
+- `/sdd-continue [change]` resumes from the next incomplete dependency-ready phase.
+- `/sdd-apply`, `/sdd-verify`, and `/sdd-archive` are delegated to their dedicated phase agents with the full phase launch envelope.
+
+Do not execute phase work inline. The orchestrator resolves state, launches the correct sub-agent, then summarizes the sub-agent result.
+
+### SDD Session Preflight
+
+Before the first SDD phase launch in a session, resolve and cache:
+- project name and working directory;
+- execution mode (`interactive` or `auto`);
+- artifact store mode (`hive`, `openspec`, `hybrid`, or `none`);
+- change name and current dependency graph state;
+- strict TDD status and test command from cached testing capabilities;
+- issue context, branch/tracker branch, delivery strategy, review budget, and chain strategy when relevant;
+- exact `SKILL.md` paths from the skill registry;
+- phase model assignments from the Model Assignments table below.
+
+Forward these values to every SDD sub-agent prompt. If a value is unknown and changes review scope, persistence, branch targeting, or TDD behavior, stop and resolve it before launch.
+
+### Review Workload Guard
+
+Before `sdd-apply`, inspect the tasks artifact for review workload forecast, estimated changed lines, chained PR recommendation, and any `Decision needed before apply` flag. If the work may exceed the configured review budget and no delivery path is resolved, stop and ask for a chain strategy or explicit size exception before launching apply. Do not let child PRs target `main` directly when a feature-branch chain is active.
+
+### Delivery Strategy
+
+Forward the resolved delivery strategy to apply and verify agents:
+- `single-pr` only when the work is within budget or the prompt explicitly records `size:exception`;
+- `force-chained` / `auto-chain` when the change is split into reviewable work units;
+- `exception-ok` only when the maintainer explicitly accepts the oversized review.
+
+Each apply batch must state its PR boundary, rollback scope, verification plan, and estimated review budget impact.
+
+### Chain Strategy
+
+When the strategy is `feature-branch-chain`, keep the tracker branch as the integration branch and keep it draft/no-merge until all child PRs are reviewed. Child PR #1 targets the tracker branch; later child PRs target the immediate previous child branch. When the strategy is `stacked-to-main`, each child targets the previous child branch or `main` after its predecessor merges. Do not mix chain strategies within one change.
 
 ### Runtime Activation Policy (Explicit Override First)
 
