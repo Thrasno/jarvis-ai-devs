@@ -399,3 +399,53 @@ func TestMergeJSON_DoesNotPanicOnNonComparableArrayItems(t *testing.T) {
 		t.Fatalf("expected plugin tuple arrays to append safely, got %#v", plugins)
 	}
 }
+
+func TestMergeJSON_PreservesExistingPermissionValues(t *testing.T) {
+	base := `{
+		"permission": {
+			"bash": {"*": "ask", "git reset --hard*": "deny", "rm -rf *": "allow"},
+			"task": {"context7": "deny", "hive": "ask"},
+			"read": {"*": "deny"}
+		},
+		"agent": {
+			"sdd-apply": {"permission": {"bash": {"*": "deny", "go test *": "ask"}}}
+		}
+	}`
+	patch := `{
+		"permission": {
+			"bash": {"*": "allow", "git reset --hard*": "ask", "git push --force*": "ask", "rm -rf *": "deny"},
+			"task": {"context7": "allow", "hive": "allow"},
+			"read": {"*": "allow", "**/.env*": "deny"}
+		},
+		"agent": {
+			"sdd-apply": {"permission": {"bash": {"*": "ask", "go test *": "allow", "go vet *": "allow"}}}
+		}
+	}`
+
+	out, err := MergeJSON([]byte(base), []byte(patch))
+	if err != nil {
+		t.Fatalf("MergeJSON: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	permission := result["permission"].(map[string]any)
+	bash := permission["bash"].(map[string]any)
+	if bash["*"] != "ask" || bash["git reset --hard*"] != "deny" || bash["git push --force*"] != "ask" || bash["rm -rf *"] != "deny" {
+		t.Fatalf("unexpected bash permission merge: %#v", bash)
+	}
+	read := permission["read"].(map[string]any)
+	if read["*"] != "deny" || read["**/.env*"] != "deny" {
+		t.Fatalf("unexpected read permission merge: %#v", read)
+	}
+	task := permission["task"].(map[string]any)
+	if task["context7"] != "deny" || task["hive"] != "ask" {
+		t.Fatalf("unexpected task permission merge: %#v", task)
+	}
+	agentPerm := result["agent"].(map[string]any)["sdd-apply"].(map[string]any)["permission"].(map[string]any)["bash"].(map[string]any)
+	if agentPerm["*"] != "deny" || agentPerm["go test *"] != "ask" || agentPerm["go vet *"] != "allow" {
+		t.Fatalf("unexpected agent permission merge: %#v", agentPerm)
+	}
+}

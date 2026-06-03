@@ -46,6 +46,10 @@ func MergeJSON(base, patch []byte) ([]byte, error) {
 // dst is NOT mutated — a new map is returned.
 // For Jarvis-owned keys ("hive", "context7"), src always wins (full overwrite, no deep merge).
 func deepMerge(dst, src map[string]any) map[string]any {
+	return deepMergeWithContext(dst, src, false)
+}
+
+func deepMergeWithContext(dst, src map[string]any, inPermission bool) map[string]any {
 	result := make(map[string]any, len(dst))
 
 	// Copy all dst keys first
@@ -55,8 +59,11 @@ func deepMerge(dst, src map[string]any) map[string]any {
 
 	// Apply src keys
 	for k, srcVal := range src {
-		// Jarvis-owned keys are always overwritten unconditionally
-		if k == "hive" || k == "context7" {
+		mergePermission := inPermission || k == "permission"
+
+		// Jarvis-owned keys are always overwritten unconditionally, except inside
+		// permission trees where user-owned local guardrails must win.
+		if !mergePermission && (k == "hive" || k == "context7") {
 			result[k] = srcVal
 			continue
 		}
@@ -73,7 +80,7 @@ func deepMerge(dst, src map[string]any) map[string]any {
 		dstMap, dstIsMap := dstVal.(map[string]any)
 
 		if srcIsMap && dstIsMap {
-			result[k] = deepMerge(dstMap, srcMap)
+			result[k] = deepMergeWithContext(dstMap, srcMap, mergePermission)
 			continue
 		}
 
@@ -85,11 +92,26 @@ func deepMerge(dst, src map[string]any) map[string]any {
 			continue
 		}
 
+		if mergePermission && isStrictPermissionValue(dstVal) {
+			// Permission entries are local guardrails. Generated defaults fill gaps
+			// but must not weaken stricter user-owned ask/deny values on rerun.
+			// Existing allow values may still be tightened by generated ask/deny rules.
+			continue
+		}
+
 		// Scalar: patch wins
 		result[k] = srcVal
 	}
 
 	return result
+}
+
+func isStrictPermissionValue(value any) bool {
+	permission, ok := value.(string)
+	if !ok {
+		return false
+	}
+	return permission == "ask" || permission == "deny"
 }
 
 // mergeArrays appends items from src that are not already present in dst.
@@ -137,7 +159,7 @@ func deepMergeNamedArrayItem(dst, src map[string]any) map[string]any {
 		srcMap, srcIsMap := srcVal.(map[string]any)
 		dstMap, dstIsMap := dstVal.(map[string]any)
 		if srcIsMap && dstIsMap {
-			result[k] = deepMerge(dstMap, srcMap)
+			result[k] = deepMergeWithContext(dstMap, srcMap, k == "permission")
 			continue
 		}
 		srcArr, srcIsArr := srcVal.([]any)
