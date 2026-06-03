@@ -28,3 +28,8 @@ var OrchestratorFS embed.FS
 //
 //go:embed all:embed/hooks
 var HooksFS embed.FS
+
+// HiveProtocol contains the canonical Hive memory protocol injected into agent instructions.
+//
+//go:embed embed/hive-protocol.md
+var HiveProtocol string
