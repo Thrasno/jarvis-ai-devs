@@ -92,6 +92,35 @@ Before changing architecture, check how the change affects:
 - diagnostics/doctor flows,
 - Todoist backlog integration.
 
+## Generated Artifacts vs Sources
+
+User-machine agent configuration is generated, not hand-edited.
+
+Generated artifacts include:
+
+- `~/.claude/CLAUDE.md`,
+- `~/.claude/settings.json`,
+- Claude output-style files,
+- `~/.config/opencode/opencode.json`,
+- injected Hive protocol blocks.
+
+These artifacts are produced by `jarvis init`, `jarvis persona`, and related CLI flows.
+
+Sources of truth are:
+
+- templates and embedded assets in `jarvis-cli/embed/`,
+- render/merge adapters in `jarvis-cli/internal/agent/`,
+- persona handling in `jarvis-cli/internal/persona/`,
+- prompt/runtime contracts in `jarvis-cli/internal/sddruntime/`.
+
+Rules:
+
+- Never fix behavior by editing generated files directly.
+- Change the source of truth, then regenerate and verify the rendered output.
+- Config emitters must deep-merge; never clobber user-owned keys.
+- New content must land in the correct layer and pass the layer/role validator.
+- Persona voice must never leak into generated artifacts.
+
 ## Development Rules
 
 - Favor correctness, maintainability, and clear concepts over speed.
