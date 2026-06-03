@@ -1050,6 +1050,105 @@ func TestWriteInstructions_ReapplyDeterministicallyRegeneratesPartialManagedStat
 	}
 }
 
+// ── Orchestrator import injection tests ──────────────────────────────────────
+
+// TestClaudeAgent_WriteInstructions_InjectsOrchestratorImport verifies that
+// WriteInstructions injects the @./sdd-orchestrator.md block inside
+// <!-- jarvis:orchestrator-import --> markers in CLAUDE.md.
+func TestClaudeAgent_WriteInstructions_InjectsOrchestratorImport(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+
+	a := &ClaudeAgent{home: home, templatesFS: testTemplatesFS}
+	if err := a.WriteInstructions("# Layer1", "# Layer2", nil); err != nil {
+		t.Fatalf("WriteInstructions: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(claudeDir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	content := string(data)
+
+	// OrchestratorImportStart and OrchestratorImportEnd markers must be present.
+	if !strings.Contains(content, OrchestratorImportStart) {
+		t.Errorf("CLAUDE.md missing %q marker", OrchestratorImportStart)
+	}
+	if !strings.Contains(content, OrchestratorImportEnd) {
+		t.Errorf("CLAUDE.md missing %q marker", OrchestratorImportEnd)
+	}
+
+	// The @import line must appear between the markers.
+	startIdx := strings.Index(content, OrchestratorImportStart)
+	endIdx := strings.Index(content, OrchestratorImportEnd)
+	if startIdx == -1 || endIdx == -1 || endIdx <= startIdx {
+		t.Fatalf("orchestrator import markers not found or malformed in CLAUDE.md")
+	}
+	between := content[startIdx+len(OrchestratorImportStart) : endIdx]
+	if !strings.Contains(between, "@./sdd-orchestrator.md") {
+		t.Errorf("CLAUDE.md orchestrator import block must contain '@./sdd-orchestrator.md', got: %q", between)
+	}
+}
+
+// TestClaudeAgent_WriteInstructions_OrchestratorImportIdempotent verifies that
+// running WriteInstructions twice produces exactly one orchestrator-import block.
+func TestClaudeAgent_WriteInstructions_OrchestratorImportIdempotent(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+
+	a := &ClaudeAgent{home: home, templatesFS: testTemplatesFS}
+
+	if err := a.WriteInstructions("# Layer1", "# Layer2", nil); err != nil {
+		t.Fatalf("first WriteInstructions: %v", err)
+	}
+	if err := a.WriteInstructions("# Layer1", "# Layer2", nil); err != nil {
+		t.Fatalf("second WriteInstructions: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(claudeDir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	content := string(data)
+
+	startCount := strings.Count(content, OrchestratorImportStart)
+	if startCount != 1 {
+		t.Errorf("expected exactly 1 %q marker, got %d", OrchestratorImportStart, startCount)
+	}
+	endCount := strings.Count(content, OrchestratorImportEnd)
+	if endCount != 1 {
+		t.Errorf("expected exactly 1 %q marker, got %d", OrchestratorImportEnd, endCount)
+	}
+}
+
+// TestOpenCodeJSONTemplate_OrchestratorPromptUsesFileInjection verifies that the
+// embedded opencode.json.tmpl uses {file:./sdd-orchestrator.md} for the
+// sdd-orchestrator agent prompt field.
+func TestOpenCodeJSONTemplate_OrchestratorPromptUsesFileInjection(t *testing.T) {
+	templateBytes, err := os.ReadFile("../../embed/templates/opencode.json.tmpl")
+	if err != nil {
+		t.Skipf("opencode.json.tmpl not found at embed path (may not exist yet): %v", err)
+	}
+	template := string(templateBytes)
+
+	if !strings.Contains(template, `"prompt": "{file:./sdd-orchestrator.md}"`) {
+		t.Errorf("opencode.json.tmpl sdd-orchestrator agent prompt must be {file:./sdd-orchestrator.md}, got template:\n%s", template)
+	}
+	if strings.Contains(template, "Read and follow") {
+		t.Errorf("opencode.json.tmpl must not contain old prose prompt 'Read and follow'")
+	}
+}
+
 func TestGeneratedRuntimeAcceptance_RenderedArtifactsProveGuardrails(t *testing.T) {
 	preset, err := persona.LoadPreset(jarvis.PersonaFS, "argentino")
 	if err != nil {

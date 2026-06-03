@@ -16,6 +16,7 @@ var emptyFS fs.FS = fstest.MapFS{}
 
 // testTemplatesFS is a minimal in-memory FS with stub templates for WriteInstructions tests.
 // It mirrors the root TemplatesFS path structure: embed/templates/{CLAUDE,AGENTS}.md.tmpl
+// and embed/templates/opencode.json.tmpl.
 var testTemplatesFS fs.FS = fstest.MapFS{
 	"embed/templates/CLAUDE.md.tmpl": {
 		Data: []byte("<!-- JARVIS:LAYER1:START -->\n{{.Layer1}}\n<!-- JARVIS:LAYER1:END -->\n\n<!-- JARVIS:LAYER2:START -->\n{{.Layer2}}\n<!-- JARVIS:LAYER2:END -->\n"),
@@ -42,7 +43,7 @@ var testTemplatesFS fs.FS = fstest.MapFS{
 {{- if .OrchestratorVariant }}
       "variant": {{json .OrchestratorVariant}},
 {{- end }}
-      "prompt": "Read and follow ` + "`" + `~/.config/opencode/sdd-orchestrator.md` + "`" + ` and Jarvis runtime instructions before orchestrating. Generated technical artifacts must be English and preserve Jarvis/Hive naming.",
+      "prompt": "{file:./sdd-orchestrator.md}",
       "permission": {"task": {"*": "deny"{{range .TaskAllows}}, {{json .}}: "allow"{{end}}}}
     }{{if .Agents}},{{end}}
 {{- range .Agents }}
@@ -73,6 +74,13 @@ func TestTestTemplatesFS_CoversGeneratedConfigTemplate(t *testing.T) {
 		if !strings.Contains(template, required) {
 			t.Fatalf("OpenCode generated config fixture missing %q\n%s", required, template)
 		}
+	}
+	// Verify the prompt uses the file-injection form, not the old prose link.
+	if !strings.Contains(template, `"prompt": "{file:./sdd-orchestrator.md}"`) {
+		t.Fatalf("OpenCode generated config fixture must use {file:./sdd-orchestrator.md} prompt, not old prose link\n%s", template)
+	}
+	if strings.Contains(template, "Read and follow") {
+		t.Fatalf("OpenCode generated config fixture must not contain old prose prompt 'Read and follow'\n%s", template)
 	}
 }
 

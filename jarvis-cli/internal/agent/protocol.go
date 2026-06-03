@@ -29,6 +29,16 @@ const (
 	// OldEngramEnd marks the end of the legacy gentle-ai engram protocol section.
 	// This marker is used for cleanup during migration to the new Jarvis protocol.
 	OldEngramEnd = "<!-- /gentle-ai:engram-protocol -->"
+
+	// OrchestratorImportStart marks the beginning of the orchestrator @import block in CLAUDE.md.
+	OrchestratorImportStart = "<!-- jarvis:orchestrator-import -->"
+
+	// OrchestratorImportEnd marks the end of the orchestrator @import block in CLAUDE.md.
+	OrchestratorImportEnd = "<!-- /jarvis:orchestrator-import -->"
+
+	// OldOrchestratorLinkLine is the legacy prose line referencing sdd-orchestrator.md
+	// that was injected by older versions of Jarvis into CLAUDE.md.
+	OldOrchestratorLinkLine = "For detailed SDD orchestration logic, see: [sdd-orchestrator.md](./sdd-orchestrator.md)"
 )
 
 // CleanupOldProtocol removes all occurrences of the legacy gentle-ai:engram-protocol
@@ -57,6 +67,59 @@ func CleanupOldProtocol(content string) string {
 	}
 
 	return result
+}
+
+// CleanupOldOrchestratorLink removes the legacy prose line that referenced sdd-orchestrator.md
+// from CLAUDE.md. The line was added by older Jarvis versions and is replaced by the
+// <!-- jarvis:orchestrator-import --> @import block in newer installs.
+// Surrounding blank lines are normalized so at most one blank line remains where the line was.
+func CleanupOldOrchestratorLink(content string) string {
+	// Split into lines for accurate line-level removal.
+	lines := strings.Split(content, "\n")
+	result := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == OldOrchestratorLinkLine {
+			// Remove this line. Also collapse any double blank line that results:
+			// if both the line before and after the removed line are blank,
+			// skip one of them to avoid a double blank line.
+			if len(result) > 0 && result[len(result)-1] == "" && i+1 < len(lines) && strings.TrimSpace(lines[i+1]) == "" {
+				// The line before was blank and the next line is also blank — skip the next line too.
+				i++
+			}
+			continue
+		}
+		result = append(result, lines[i])
+	}
+	return strings.Join(result, "\n")
+}
+
+// InjectOrchestratorImport upserts the <!-- jarvis:orchestrator-import --> block in CLAUDE.md.
+// If the markers already exist, the content between them is replaced with @./sdd-orchestrator.md.
+// If the markers do not exist, the full block is appended at EOF.
+// This function is idempotent: running it twice produces the same result.
+func InjectOrchestratorImport(content string) string {
+	start := strings.Index(content, OrchestratorImportStart)
+	end := strings.Index(content, OrchestratorImportEnd)
+
+	importBlock := OrchestratorImportStart + "\n@./sdd-orchestrator.md\n" + OrchestratorImportEnd
+
+	// Case 1: Both markers exist — replace content between them.
+	if start != -1 && end != -1 && end > start {
+		before := content[:start]
+		after := content[end+len(OrchestratorImportEnd):]
+		return before + importBlock + after
+	}
+
+	// Case 1b: Orphaned start marker (no matching end) — strip it before appending.
+	if start != -1 && (end == -1 || end <= start) {
+		content = content[:start] + content[start+len(OrchestratorImportStart):]
+	}
+
+	// Case 2: No markers — append at EOF.
+	if len(content) > 0 && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	return content + importBlock + "\n"
 }
 
 // InjectProtocol injects or replaces the Hive protocol content in agent instruction files.

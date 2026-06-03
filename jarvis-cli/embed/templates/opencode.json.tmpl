@@ -16,7 +16,7 @@
 {{- if .OrchestratorVariant }}
       "variant": {{json .OrchestratorVariant}},
 {{- end }}
-      "prompt": "Read and follow `~/.config/opencode/sdd-orchestrator.md` and Jarvis runtime instructions before orchestrating. Generated technical artifacts must be English and preserve Jarvis/Hive naming.",
+      "prompt": "{file:./sdd-orchestrator.md}",
       "permission": {"task": {"*": "deny"{{range .TaskAllows}}, {{json .}}: "allow"{{end}}}}
     }{{if .Agents}},{{end}}
 {{- range .Agents }}

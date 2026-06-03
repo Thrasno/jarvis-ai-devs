@@ -279,6 +279,10 @@ func (a *ClaudeAgent) WriteInstructions(layer1, layer2 string, skills []config.S
 	content = CleanupOldProtocol(content)
 	content = InjectProtocol(content, getHiveProtocol())
 
+	// Clean up legacy orchestrator prose link and upsert the @import block
+	content = CleanupOldOrchestratorLink(content)
+	content = InjectOrchestratorImport(content)
+
 	return writeFileAtomic(path, []byte(content), 0644)
 }
 
