@@ -323,6 +323,46 @@ func TestRenderLayer2_RendersPersonaScopeGuardrailForBuiltinsAndCustom(t *testin
 	}
 }
 
+func TestRenderLayer2_IgnoresStructuredSectionsInsideStrippedPersonaScopeBlock(t *testing.T) {
+	preset := &Preset{
+		Name:        "custom-stale-scope",
+		DisplayName: "Custom Stale Scope",
+		Description: "Custom persona with stale scoped notes.",
+		Tone: Tone{
+			Formality:  "balanced",
+			Directness: "high",
+			Humor:      "warm",
+			Language:   "en-us",
+		},
+		CommunicationStyle: CommunicationStyle{Verbosity: "concise"},
+		CharacteristicPhrases: CharacteristicPhrases{
+			Greetings:     []string{"Hello"},
+			Confirmations: []string{"Done"},
+		},
+		Notes: "<!-- gentle-ai:persona-scope -->\n## Tone\n\nStale tone override.\n\n## Communication Style\n\nStale communication override.\n\n## Characteristic Phrases\n\nStale phrases override.\n<!-- /gentle-ai:persona-scope -->",
+	}
+
+	rendered := RenderLayer2(preset)
+	for _, required := range []string{
+		"### Tone",
+		"- **Formality**: balanced",
+		"### Communication Style",
+		"- Verbosity: concise",
+		"### Characteristic Phrases",
+		"**Greetings**: Hello",
+		"**Confirmations**: Done",
+	} {
+		if !strings.Contains(rendered, required) {
+			t.Fatalf("RenderLayer2() missing canonical structured output %q\n%s", required, rendered)
+		}
+	}
+	for _, stale := range []string{"Stale tone override.", "Stale communication override.", "Stale phrases override."} {
+		if strings.Contains(rendered, stale) {
+			t.Fatalf("RenderLayer2() must strip stale persona-scope content %q\n%s", stale, rendered)
+		}
+	}
+}
+
 func TestRenderLayer2_AvoidsDuplicatingStructuredSectionsRepeatedByNotes(t *testing.T) {
 	presets, err := ListPresets(jarvis.PersonaFS)
 	if err != nil {

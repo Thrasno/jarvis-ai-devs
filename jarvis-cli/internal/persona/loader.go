@@ -129,7 +129,7 @@ func RenderLayer2(preset *Preset) string {
 	fmt.Fprintf(&sb, "## Persona: %s\n\n", preset.DisplayName)
 	fmt.Fprintf(&sb, "%s\n\n", preset.Description)
 
-	if !notesHasStructuredSection(preset.Notes, "Tone") {
+	if !notesHasStructuredSection(notes, "Tone") {
 		sb.WriteString("### Tone\n")
 		fmt.Fprintf(&sb, "- **Formality**: %s\n", preset.Tone.Formality)
 		fmt.Fprintf(&sb, "- **Directness**: %s\n", preset.Tone.Directness)
@@ -137,7 +137,7 @@ func RenderLayer2(preset *Preset) string {
 		fmt.Fprintf(&sb, "- **Language**: %s\n\n", preset.Tone.Language)
 	}
 
-	if !notesHasStructuredSection(preset.Notes, "Communication Style") {
+	if !notesHasStructuredSection(notes, "Communication Style") {
 		sb.WriteString("### Communication Style\n")
 		if preset.CommunicationStyle.ShowAlternatives {
 			sb.WriteString("- Always propose alternatives with tradeoffs\n")
@@ -152,7 +152,7 @@ func RenderLayer2(preset *Preset) string {
 		sb.WriteString("\n")
 	}
 
-	if len(preset.CharacteristicPhrases.Greetings) > 0 && !notesHasStructuredSection(preset.Notes, "Characteristic Phrases") {
+	if len(preset.CharacteristicPhrases.Greetings) > 0 && !notesHasStructuredSection(notes, "Characteristic Phrases") {
 		sb.WriteString("### Characteristic Phrases\n")
 		sb.WriteString("**Greetings**: " + strings.Join(preset.CharacteristicPhrases.Greetings, " / ") + "\n")
 		sb.WriteString("**Confirmations**: " + strings.Join(preset.CharacteristicPhrases.Confirmations, " / ") + "\n")
