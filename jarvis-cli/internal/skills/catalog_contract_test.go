@@ -758,7 +758,7 @@ func TestCatalogContract_ComplementarySkillsMatchUpstreamContract(t *testing.T) 
 			if _, err := fs.Stat(jarvis.SkillsFS, tc.path); err != nil {
 				t.Fatalf("expected workflow skill path %s to be embedded: %v", tc.path, err)
 			}
-			if !strings.HasPrefix(content, "---\n") || !strings.Contains(content, "\n---\n") {
+			if !hasYAMLFrontmatter(content) {
 				t.Fatalf("expected %s to include YAML frontmatter", tc.path)
 			}
 			if !strings.Contains(content, "license: Apache-2.0") {
@@ -838,7 +838,7 @@ func TestCatalogContract_SkillImproverIsPackagedWithSafetyContract(t *testing.T)
 	if _, err := fs.Stat(jarvis.SkillsFS, skillPath); err != nil {
 		t.Fatalf("expected skill-improver path %s to be embedded: %v", skillPath, err)
 	}
-	if !strings.HasPrefix(content, "---\n") || !strings.Contains(content, "\n---\n") {
+	if !hasYAMLFrontmatter(content) {
 		t.Fatalf("expected %s to include YAML frontmatter", skillPath)
 	}
 
@@ -920,6 +920,11 @@ func readEmbeddedSkillAsset(t *testing.T, path string) string {
 	}
 
 	return string(content)
+}
+
+func hasYAMLFrontmatter(content string) bool {
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	return strings.HasPrefix(normalized, "---\n") && strings.Contains(normalized, "\n---\n")
 }
 
 func readLocalOrEmbeddedAsset(t *testing.T, path string) string {

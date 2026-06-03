@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -245,6 +248,129 @@ Footer content`
 	}
 }
 
+func TestCleanupOldOrchestratorLink(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "no legacy line — no-op",
+			content: "some content\nmore content",
+			want:    "some content\nmore content",
+		},
+		{
+			name:    "empty content — no-op",
+			content: "",
+			want:    "",
+		},
+		{
+			name: "line in middle of content",
+			content: "before\nFor detailed SDD orchestration logic, see: [sdd-orchestrator.md](./sdd-orchestrator.md)\nafter",
+			want:    "before\nafter",
+		},
+		{
+			name: "line at start of content",
+			content: "For detailed SDD orchestration logic, see: [sdd-orchestrator.md](./sdd-orchestrator.md)\nafter",
+			want:    "after",
+		},
+		{
+			name: "line at end of content",
+			content: "before\nFor detailed SDD orchestration logic, see: [sdd-orchestrator.md](./sdd-orchestrator.md)",
+			want:    "before",
+		},
+		{
+			name: "line surrounded by blank lines — collapses double blank",
+			content: "before\n\nFor detailed SDD orchestration logic, see: [sdd-orchestrator.md](./sdd-orchestrator.md)\n\nafter",
+			want:    "before\n\nafter",
+		},
+		{
+			name: "line with blank line before only",
+			content: "before\n\nFor detailed SDD orchestration logic, see: [sdd-orchestrator.md](./sdd-orchestrator.md)\nafter",
+			want:    "before\n\nafter",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CleanupOldOrchestratorLink(tt.content)
+			if got != tt.want {
+				t.Errorf("CleanupOldOrchestratorLink() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInjectOrchestratorImport(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "empty content — appends block",
+			content: "",
+			want:    "<!-- jarvis:orchestrator-import -->\n@./sdd-orchestrator.md\n<!-- /jarvis:orchestrator-import -->\n",
+		},
+		{
+			name:    "no markers — appends block at EOF",
+			content: "existing content\n",
+			want:    "existing content\n<!-- jarvis:orchestrator-import -->\n@./sdd-orchestrator.md\n<!-- /jarvis:orchestrator-import -->\n",
+		},
+		{
+			name:    "content without trailing newline — appends with newline",
+			content: "existing content",
+			want:    "existing content\n<!-- jarvis:orchestrator-import -->\n@./sdd-orchestrator.md\n<!-- /jarvis:orchestrator-import -->\n",
+		},
+		{
+			name: "markers exist — replaces content between them",
+			content: "before\n<!-- jarvis:orchestrator-import -->\nold content\n<!-- /jarvis:orchestrator-import -->\nafter",
+			want:    "before\n<!-- jarvis:orchestrator-import -->\n@./sdd-orchestrator.md\n<!-- /jarvis:orchestrator-import -->\nafter",
+		},
+		{
+			name: "markers exist with same content — idempotent",
+			content: "before\n<!-- jarvis:orchestrator-import -->\n@./sdd-orchestrator.md\n<!-- /jarvis:orchestrator-import -->\nafter",
+			want:    "before\n<!-- jarvis:orchestrator-import -->\n@./sdd-orchestrator.md\n<!-- /jarvis:orchestrator-import -->\nafter",
+		},
+		{
+			name:    "orphaned start marker — stripped before appending",
+			content: "before\n<!-- jarvis:orchestrator-import -->\norphaned content\n",
+			want:    "before\n\norphaned content\n<!-- jarvis:orchestrator-import -->\n@./sdd-orchestrator.md\n<!-- /jarvis:orchestrator-import -->\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := InjectOrchestratorImport(tt.content)
+			if got != tt.want {
+				t.Errorf("InjectOrchestratorImport() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInjectOrchestratorImport_Idempotent(t *testing.T) {
+	content := "Some existing content\n"
+
+	// First injection
+	result1 := InjectOrchestratorImport(content)
+
+	// Second injection on same result
+	result2 := InjectOrchestratorImport(result1)
+
+	if result1 != result2 {
+		t.Errorf("InjectOrchestratorImport is not idempotent.\nFirst:  %q\nSecond: %q", result1, result2)
+	}
+
+	// Verify markers appear exactly once
+	if count := strings.Count(result2, OrchestratorImportStart); count != 1 {
+		t.Errorf("expected exactly 1 %q marker, got %d", OrchestratorImportStart, count)
+	}
+	if count := strings.Count(result2, OrchestratorImportEnd); count != 1 {
+		t.Errorf("expected exactly 1 %q marker, got %d", OrchestratorImportEnd, count)
+	}
+}
+
 func TestGetHiveProtocol(t *testing.T) {
 	protocol := getHiveProtocol()
 
@@ -263,4 +389,33 @@ func TestGetHiveProtocol(t *testing.T) {
 	if !strings.Contains(protocol, "mem_save") {
 		t.Error("Protocol should mention mem_save tool")
 	}
+}
+
+func TestGetHiveProtocol_UsesRootCanonicalEmbeddedSource(t *testing.T) {
+	protocol := getHiveProtocol()
+	canonical := readAgentTestFile(t, "embed", "hive-protocol.md")
+
+	if protocol != canonical {
+		t.Fatal("getHiveProtocol() must load the canonical embed/hive-protocol.md source, not an internal duplicate")
+	}
+	if !strings.Contains(protocol, "## SDD ARTIFACT BOUNDARY (MVP CONTRACT)") {
+		t.Fatal("canonical Hive protocol must preserve the SDD artifact boundary section")
+	}
+}
+
+func readAgentTestFile(t *testing.T, parts ...string) string {
+	t.Helper()
+
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve current test file")
+	}
+
+	moduleRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	path := filepath.Join(append([]string{moduleRoot}, parts...)...)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
 }

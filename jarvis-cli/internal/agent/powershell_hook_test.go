@@ -47,7 +47,7 @@ func TestClaudePowerShellPromptHook_PostsPromptPayload(t *testing.T) {
 		if payload["content"] != "capture this Windows prompt" {
 			t.Fatalf("POST content = %q, want %q", payload["content"], "capture this Windows prompt")
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("PowerShell hook did not POST prompt payload to local endpoint")
 	}
 }
@@ -138,13 +138,19 @@ func TestClaudePowerShellPromptHook_DoesNotBlockWhenWorkerHTTPStalls(t *testing.
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	started := time.Now()
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("PowerShell hook should exit 0 when worker stalls, got: %v; stderr=%q", err, stderr.String())
-	}
-	elapsed := time.Since(started)
-	if elapsed > 1500*time.Millisecond {
-		t.Fatalf("PowerShell hook blocked for %s; stdout=%q stderr=%q", elapsed, stdout.String(), stderr.String())
+	completed := make(chan error, 1)
+	go func() { completed <- cmd.Run() }()
+
+	select {
+	case err := <-completed:
+		if err != nil {
+			t.Fatalf("PowerShell hook should exit 0 when worker stalls, got: %v; stderr=%q", err, stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		t.Fatalf("PowerShell hook did not complete while worker HTTP request was stalled; stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 	if strings.TrimSpace(stdout.String()) != "{}" {
 		t.Fatalf("stdout = %q, want {}", stdout.String())

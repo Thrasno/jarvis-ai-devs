@@ -1,6 +1,12 @@
 package sddruntime
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+)
 
 func TestDefaultPromptContract_ComposesCanonicalRequiredSourcesInOrder(t *testing.T) {
 	tests := []struct {
@@ -92,4 +98,36 @@ func TestDefaultPromptContract_UsesPathFirstRegistrySource(t *testing.T) {
 	}
 
 	t.Fatal("expected registry source in default prompt contract")
+}
+
+func TestDefaultPromptContract_UsesRealCanonicalSourcePaths(t *testing.T) {
+	contract := DefaultPromptContract("opencode", "sdd-apply")
+	sources, err := contract.OrderedRequiredSources()
+	if err != nil {
+		t.Fatalf("OrderedRequiredSources() error = %v", err)
+	}
+
+	for _, source := range sources {
+		switch source.ID {
+		case "layer1.behavior", "protocol.hive":
+			path := strings.TrimPrefix(source.Path, "jarvis-cli/")
+			if _, err := os.Stat(filepath.Join(sddRuntimeTestModuleRoot(t), path)); err != nil {
+				t.Fatalf("source %s path %q must exist: %v", source.ID, source.Path, err)
+			}
+		}
+	}
+
+	if _, err := os.Stat(filepath.Join(sddRuntimeTestModuleRoot(t), "internal", "agent", "hive-protocol.md")); err == nil {
+		t.Fatal("internal/agent/hive-protocol.md must not exist; protocol.hive must be the single canonical source")
+	}
+}
+
+func sddRuntimeTestModuleRoot(t *testing.T) string {
+	t.Helper()
+
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve current test file")
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 }
