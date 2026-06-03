@@ -12,6 +12,28 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 )
 
+func TestWriteFileAtomic_OverwritesExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode.json")
+	if err := os.WriteFile(path, []byte(`{"old":true}`), 0600); err != nil {
+		t.Fatalf("write existing file: %v", err)
+	}
+
+	if err := writeFileAtomic(path, []byte(`{"new":true}`), 0644); err != nil {
+		t.Fatalf("writeFileAtomic: %v", err)
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read replaced file: %v", err)
+	}
+	if string(content) != `{"new":true}` {
+		t.Fatalf("content = %q, want replacement content", content)
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temp file should not remain after replacement, stat error: %v", err)
+	}
+}
+
 // TestToTitleCase verifies the toTitleCase helper converts persona names
 // to TitleCase format for output-style file naming (SPEC-006).
 func TestToTitleCase(t *testing.T) {
@@ -534,6 +556,106 @@ func TestClaudeAgent_ClearOutputStyle_LeavesDifferentOutputStyleSettingUntouched
 	if settings["outputStyle"] != "TonyStark" {
 		t.Fatalf("outputStyle should remain TonyStark, got %v", settings["outputStyle"])
 	}
+}
+
+func TestClaudeAgent_MergeGeneratedConfig_DeepMergesPermissionsAndPreservesHooks(t *testing.T) {
+	tmpHome := t.TempDir()
+	a := &ClaudeAgent{home: tmpHome}
+	settingsPath := filepath.Join(tmpHome, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatalf("create .claude dir: %v", err)
+	}
+	existing := `{
+		"outputStyle": "Argentino",
+		"theme": "dark",
+		"permissions": {
+			"defaultMode": "acceptEdits",
+			"allow": ["Bash(go test:*)"],
+			"deny": ["Read(**/private-notes.md)"]
+		},
+		"hooks": {
+			"UserPromptSubmit": [
+				{"name": "hive-prompt-capture", "hooks": [{"type": "command", "command": "/home/me/.claude/hive-hooks/user-prompt-submit.sh", "timeout": 2}]}
+			]
+		}
+	}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	if err := a.MergeGeneratedConfig(defaultRuntimeConfig()); err != nil {
+		t.Fatalf("MergeGeneratedConfig: %v", err)
+	}
+	if err := a.MergeGeneratedConfig(defaultRuntimeConfig()); err != nil {
+		t.Fatalf("MergeGeneratedConfig rerun: %v", err)
+	}
+
+	settings := readJSONFile(t, settingsPath)
+	if settings["outputStyle"] != "Argentino" || settings["theme"] != "dark" {
+		t.Fatalf("unrelated user settings were not preserved: %#v", settings)
+	}
+	permissions := settings["permissions"].(map[string]any)
+	if permissions["defaultMode"] != "acceptEdits" {
+		t.Fatalf("existing defaultMode should remain user-owned, got %v", permissions["defaultMode"])
+	}
+	allow := permissions["allow"].([]any)
+	if countScalar(allow, "Bash(go test:*)") != 1 || countScalar(allow, "Bash(git status:*)") != 1 {
+		t.Fatalf("permissions.allow not deep-merged idempotently: %#v", allow)
+	}
+	deny := permissions["deny"].([]any)
+	for _, expected := range []string{"Read(**/.env*)", "Read(**/*secret*)", "Bash(rm -rf /*)", "Bash(git clean -fdx:*)"} {
+		if countScalar(deny, expected) != 1 {
+			t.Fatalf("permissions.deny missing or duplicated %q: %#v", expected, deny)
+		}
+	}
+	hooks := settings["hooks"].(map[string]any)
+	ups := hooks["UserPromptSubmit"].([]any)
+	if len(ups) != 1 {
+		t.Fatalf("expected existing hive prompt hook to be preserved without duplicate hooks, got %#v", ups)
+	}
+	if strings.Contains(string(mustMarshalJSON(t, settings)), "skill-registry") {
+		t.Fatalf("optional Claude skill-registry refresh hook must not be emitted: %#v", settings)
+	}
+}
+
+func TestClaudeAgent_MergeGeneratedConfig_SetsConservativeDefaultModeWhenMissing(t *testing.T) {
+	tmpHome := t.TempDir()
+	a := &ClaudeAgent{home: tmpHome}
+	settingsPath := filepath.Join(tmpHome, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatalf("create .claude dir: %v", err)
+	}
+	if err := os.WriteFile(settingsPath, []byte(`{}`), 0644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	if err := a.MergeGeneratedConfig(defaultRuntimeConfig()); err != nil {
+		t.Fatalf("MergeGeneratedConfig: %v", err)
+	}
+	settings := readJSONFile(t, settingsPath)
+	permissions := settings["permissions"].(map[string]any)
+	if permissions["defaultMode"] != "default" {
+		t.Fatalf("defaultMode = %v, want conservative default", permissions["defaultMode"])
+	}
+}
+
+func countScalar(items []any, want string) int {
+	count := 0
+	for _, item := range items {
+		if item == want {
+			count++
+		}
+	}
+	return count
+}
+
+func mustMarshalJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	out, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal JSON: %v", err)
+	}
+	return out
 }
 
 func TestClaudeAgent_MergeConfig_Context7_UsesNativeClaudeCLI(t *testing.T) {
