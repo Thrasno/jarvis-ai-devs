@@ -68,6 +68,69 @@ func ResolveAssignmentsForPlatform(platform Platform, cfg *config.AppConfig) (ma
 	return assignments, nil
 }
 
+// ResolveOpenCodeProviderQualifiedAssignments returns OpenCode phase assignments
+// suitable for opencode.json generation, where agent model values must use the
+// provider/model form required by OpenCode config schema.
+func ResolveOpenCodeProviderQualifiedAssignments(cfg *config.AppConfig) (map[string]string, error) {
+	assignments, err := ResolveAssignmentsForPlatform(PlatformOpenCode, cfg)
+	if err != nil {
+		return nil, err
+	}
+	for phase, model := range assignments {
+		assignments[phase] = resolveOpenCodeModelID(model)
+	}
+	return assignments, nil
+}
+
+func resolveOpenCodeModelID(model string) string {
+	model = strings.TrimSpace(model)
+	if strings.Contains(model, "/") {
+		return model
+	}
+	switch strings.ToLower(model) {
+	case "opus":
+		return "anthropic/claude-opus-4-1"
+	case "sonnet":
+		return "anthropic/claude-sonnet-4-5"
+	case "haiku":
+		return "anthropic/claude-haiku-4-5"
+	default:
+		return model
+	}
+}
+
+// ResolveVariantsForPlatform returns phase->variant assignments for providers that
+// support variant selection. Currently only OpenCode persists model effort as the
+// agent variant; other platforms intentionally return empty variants.
+func ResolveVariantsForPlatform(platform Platform, cfg *config.AppConfig) (map[string]string, error) {
+	contract := DefaultContract()
+	variants := make(map[string]string, len(contract.Phases))
+	for _, phase := range contract.Phases {
+		variants[phase] = ""
+	}
+
+	if platform != PlatformOpenCode {
+		if platform != PlatformClaude {
+			return nil, fmt.Errorf("unsupported platform %q", platform)
+		}
+		return variants, nil
+	}
+	if cfg == nil || cfg.SDD.OpenCodePhaseModels == nil {
+		return variants, nil
+	}
+	for rawPhase, assignment := range cfg.SDD.OpenCodePhaseModels {
+		phase := strings.ToLower(strings.TrimSpace(rawPhase))
+		if _, ok := contract.DefaultPhaseModels[phase]; !ok {
+			continue
+		}
+		if strings.TrimSpace(assignment.ProviderID) == "" || strings.TrimSpace(assignment.ModelID) == "" {
+			continue
+		}
+		variants[phase] = strings.TrimSpace(assignment.Effort)
+	}
+	return variants, nil
+}
+
 // ResolvePhaseModels merges persisted config values with contract defaults.
 // It guarantees all known phases are returned and values are valid per platform catalog.
 func ResolvePhaseModels(cfg *config.AppConfig) map[string]config.PhaseModelSelection {

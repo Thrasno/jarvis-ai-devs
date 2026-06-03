@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 )
 
 // MergeJSON performs a deep merge of patch into base.
@@ -11,7 +12,7 @@ import (
 //   - For objects (map[string]any): patch keys are merged into base recursively.
 //     The special key "hive" (Jarvis-managed) is always overwritten by patch.
 //   - For arrays ([]any): patch items are appended if not already present.
-//     Presence is determined by matching on "name" or "type" identity key.
+//     Presence is determined by matching on stable "name" identity for objects.
 //   - All other scalar values: patch wins.
 //   - Missing keys in base are added from patch.
 //   - Existing base keys NOT in patch are preserved unchanged.
@@ -92,13 +93,19 @@ func deepMerge(dst, src map[string]any) map[string]any {
 }
 
 // mergeArrays appends items from src that are not already present in dst.
-// Identity is determined by matching "name" or "type" fields (for objects),
-// or by direct equality (for scalars).
+// Identity is determined by matching stable "name" fields for objects, or by
+// deep equality for scalars/arrays/objects without identity.
 func mergeArrays(dst, src []any) []any {
 	result := make([]any, len(dst))
 	copy(result, dst)
 
 	for _, srcItem := range src {
+		if idx := findArrayIdentity(result, srcItem); idx >= 0 {
+			if merged, ok := mergeArrayItems(result[idx], srcItem); ok {
+				result[idx] = merged
+			}
+			continue
+		}
 		if !arrayContains(result, srcItem) {
 			result = append(result, srcItem)
 		}
@@ -107,30 +114,67 @@ func mergeArrays(dst, src []any) []any {
 	return result
 }
 
-// arrayContains returns true if arr contains an item matching item.
-// For map items, matching is done by "name" or "type" field.
-func arrayContains(arr []any, item any) bool {
-	itemMap, itemIsMap := item.(map[string]any)
+func mergeArrayItems(dst, src any) (any, bool) {
+	dstMap, dstIsMap := dst.(map[string]any)
+	srcMap, srcIsMap := src.(map[string]any)
+	if !dstIsMap || !srcIsMap {
+		return dst, false
+	}
+	return deepMergeNamedArrayItem(dstMap, srcMap), true
+}
 
+func deepMergeNamedArrayItem(dst, src map[string]any) map[string]any {
+	result := make(map[string]any, len(dst))
+	for k, v := range dst {
+		result[k] = v
+	}
+	for k, srcVal := range src {
+		dstVal, exists := result[k]
+		if !exists {
+			result[k] = srcVal
+			continue
+		}
+		srcMap, srcIsMap := srcVal.(map[string]any)
+		dstMap, dstIsMap := dstVal.(map[string]any)
+		if srcIsMap && dstIsMap {
+			result[k] = deepMerge(dstMap, srcMap)
+			continue
+		}
+		srcArr, srcIsArr := srcVal.([]any)
+		dstArr, dstIsArr := dstVal.([]any)
+		if srcIsArr && dstIsArr {
+			result[k] = mergeArrays(dstArr, srcArr)
+			continue
+		}
+		result[k] = srcVal
+	}
+	return result
+}
+
+func findArrayIdentity(arr []any, item any) int {
+	itemMap, itemIsMap := item.(map[string]any)
+	if !itemIsMap {
+		return -1
+	}
+	for i, existing := range arr {
+		existingMap, existingIsMap := existing.(map[string]any)
+		if !existingIsMap {
+			continue
+		}
+		itemVal, iOk := itemMap["name"]
+		existingVal, eOk := existingMap["name"]
+		if iOk && eOk && reflect.DeepEqual(itemVal, existingVal) {
+			return i
+		}
+	}
+	return -1
+}
+
+// arrayContains returns true if arr contains an item equal to item.
+func arrayContains(arr []any, item any) bool {
 	for _, existing := range arr {
-		if itemIsMap {
-			existingMap, existingIsMap := existing.(map[string]any)
-			if !existingIsMap {
-				continue
-			}
-			// Match by "name" field first, then "type"
-			for _, key := range []string{"name", "type"} {
-				itemVal, iOk := itemMap[key]
-				existingVal, eOk := existingMap[key]
-				if iOk && eOk && itemVal == existingVal {
-					return true
-				}
-			}
-		} else {
-			// Scalar comparison
-			if existing == item {
-				return true
-			}
+		if reflect.DeepEqual(existing, item) {
+			return true
 		}
 	}
 

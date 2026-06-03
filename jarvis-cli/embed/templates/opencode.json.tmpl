@@ -1,0 +1,36 @@
+{
+{{- if .IncludeSchema }}
+  "$schema": {{json .SchemaURL}},
+{{- end }}
+  "share": "disabled",
+  "default_agent": "sdd-orchestrator",
+  "permission": {
+    "bash": {"*": "allow", "git push --force*": "ask", "git reset --hard*": "ask", "git clean -fdx*": "ask", "rm -rf /*": "ask"},
+    "read": {"*": "allow", "**/.env*": "deny", "**/*secret*": "deny", "**/*token*": "deny", "**/*credential*": "deny", "**/id_rsa*": "deny"}
+  },
+  "agent": {
+    "sdd-orchestrator": {
+      "description": "Primary Jarvis SDD orchestrator. Delegates SDD and Judgment Day work to explicit subagents only.",
+      "mode": "primary",
+      "model": {{json .OrchestratorModel}},
+{{- if .OrchestratorVariant }}
+      "variant": {{json .OrchestratorVariant}},
+{{- end }}
+      "prompt": "Read and follow `~/.config/opencode/sdd-orchestrator.md` and Jarvis runtime instructions before orchestrating. Generated technical artifacts must be English and preserve Jarvis/Hive naming.",
+      "permission": {"task": {"*": "deny"{{range .TaskAllows}}, {{json .}}: "allow"{{end}}}}
+    }{{if .Agents}},{{end}}
+{{- range .Agents }}
+    {{json .Name}}: {
+      "description": {{json .Description}},
+      "mode": {{json .Mode}},
+      "hidden": {{json .Hidden}},
+      "model": {{json .Model}},
+{{- if .Variant }}
+      "variant": {{json .Variant}},
+{{- end }}
+      "prompt": {{json .Prompt}},
+      "permission": {{.Permission}}
+    }{{if not .Last}},{{end}}
+{{- end }}
+  }
+}

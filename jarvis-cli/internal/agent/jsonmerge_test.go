@@ -239,3 +239,163 @@ func TestMergeJSON_Context7JarvisOwned_OpenCodeFormat(t *testing.T) {
 		t.Errorf("expected context7.enabled=true, got %v", context7["enabled"])
 	}
 }
+
+func TestMergeJSON_DeepMergesNamedArrayObjectsIdempotently(t *testing.T) {
+	base := `{
+		"hooks": {
+			"UserPromptSubmit": [
+				{"name": "hive-prompt-capture", "hooks": [{"type": "command", "command": "OLD", "timeout": 1}]},
+				{"name": "user-hook", "hooks": [{"type": "command", "command": "USER"}]}
+			]
+		}
+	}`
+	patch := `{
+		"hooks": {
+			"UserPromptSubmit": [
+				{"name": "hive-prompt-capture", "hooks": [{"type": "command", "command": "NEW", "timeout": 2}]}
+			]
+		}
+	}`
+
+	first, err := MergeJSON([]byte(base), []byte(patch))
+	if err != nil {
+		t.Fatalf("first MergeJSON: %v", err)
+	}
+	second, err := MergeJSON(first, []byte(patch))
+	if err != nil {
+		t.Fatalf("second MergeJSON: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(second, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	entries := result["hooks"].(map[string]any)["UserPromptSubmit"].([]any)
+	if len(entries) != 2 {
+		t.Fatalf("expected one Jarvis hook plus one user hook, got %#v", entries)
+	}
+	for _, entry := range entries {
+		entryMap := entry.(map[string]any)
+		if entryMap["name"] != "hive-prompt-capture" {
+			continue
+		}
+		inner := entryMap["hooks"].([]any)
+		if len(inner) != 2 {
+			t.Fatalf("expected nested unnamed same-type hooks to be preserved, got %#v", inner)
+		}
+		commands := map[string]bool{}
+		for _, raw := range inner {
+			command := raw.(map[string]any)
+			commands[command["command"].(string)] = true
+		}
+		if !commands["OLD"] || !commands["NEW"] {
+			t.Fatalf("expected old and new nested hooks to be preserved, got %#v", inner)
+		}
+		return
+	}
+	t.Fatal("hive-prompt-capture hook missing after merge")
+}
+
+func TestMergeJSON_NamedParentAppendsNestedUnnamedSameTypeObjects(t *testing.T) {
+	base := `{
+		"hooks": {
+			"UserPromptSubmit": [
+				{"name": "hive-prompt-capture", "hooks": [{"type": "command", "command": "USER", "timeout": 1}]}
+			]
+		}
+	}`
+	patch := `{
+		"hooks": {
+			"UserPromptSubmit": [
+				{"name": "hive-prompt-capture", "hooks": [{"type": "command", "command": "JARVIS", "timeout": 2}]}
+			]
+		}
+	}`
+
+	out, err := MergeJSON([]byte(base), []byte(patch))
+	if err != nil {
+		t.Fatalf("MergeJSON: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	parents := result["hooks"].(map[string]any)["UserPromptSubmit"].([]any)
+	if len(parents) != 1 {
+		t.Fatalf("expected named parent to merge by name, got %#v", parents)
+	}
+	nested := parents[0].(map[string]any)["hooks"].([]any)
+	if len(nested) != 2 {
+		t.Fatalf("expected nested unnamed same-type objects to append, got %#v", nested)
+	}
+	first := nested[0].(map[string]any)
+	if first["command"] != "USER" || first["timeout"] != float64(1) {
+		t.Fatalf("user-owned nested command was overwritten: %#v", first)
+	}
+}
+
+func TestMergeJSON_AppendsScalarArraysWithoutDuplicates(t *testing.T) {
+	base := `{"permissions": {"allow": ["Bash(go test:*)"]}}`
+	patch := `{"permissions": {"allow": ["Bash(go test:*)", "Bash(git status:*)"]}}`
+
+	first, err := MergeJSON([]byte(base), []byte(patch))
+	if err != nil {
+		t.Fatalf("first MergeJSON: %v", err)
+	}
+	second, err := MergeJSON(first, []byte(patch))
+	if err != nil {
+		t.Fatalf("second MergeJSON: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(second, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	allow := result["permissions"].(map[string]any)["allow"].([]any)
+	if len(allow) != 2 {
+		t.Fatalf("expected two unique allow entries, got %#v", allow)
+	}
+}
+
+func TestMergeJSON_AppendsUnnamedSameTypeObjects(t *testing.T) {
+	base := `{"hooks":{"UserPromptSubmit":[{"type":"command","command":"USER","timeout":1}]}}`
+	patch := `{"hooks":{"UserPromptSubmit":[{"type":"command","command":"JARVIS","timeout":2}]}}`
+
+	out, err := MergeJSON([]byte(base), []byte(patch))
+	if err != nil {
+		t.Fatalf("MergeJSON: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	hooks := result["hooks"].(map[string]any)["UserPromptSubmit"].([]any)
+	if len(hooks) != 2 {
+		t.Fatalf("expected unnamed same-type objects to append, got %#v", hooks)
+	}
+	first := hooks[0].(map[string]any)
+	if first["command"] != "USER" || first["timeout"] != float64(1) {
+		t.Fatalf("user-owned hook was overwritten: %#v", first)
+	}
+}
+
+func TestMergeJSON_DoesNotPanicOnNonComparableArrayItems(t *testing.T) {
+	base := `{"plugin":[["opencode-user-plugin",{"enabled":true}]]}`
+	patch := `{"plugin":[["opencode-jarvis-plugin",{"enabled":true}]]}`
+
+	out, err := MergeJSON([]byte(base), []byte(patch))
+	if err != nil {
+		t.Fatalf("MergeJSON: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	plugins := result["plugin"].([]any)
+	if len(plugins) != 2 {
+		t.Fatalf("expected plugin tuple arrays to append safely, got %#v", plugins)
+	}
+}
