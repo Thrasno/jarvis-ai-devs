@@ -295,12 +295,13 @@ func TestDocsContract_SourceRepoRootIsPortable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get wd: %v", err)
 	}
+	tempDir := t.TempDir()
 	t.Cleanup(func() {
 		if err := os.Chdir(originalWD); err != nil {
 			t.Fatalf("restore wd: %v", err)
 		}
 	})
-	if err := os.Chdir(t.TempDir()); err != nil {
+	if err := os.Chdir(tempDir); err != nil {
 		t.Fatalf("chdir temp: %v", err)
 	}
 
