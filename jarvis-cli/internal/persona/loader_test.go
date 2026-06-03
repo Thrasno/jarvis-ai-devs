@@ -323,6 +323,46 @@ func TestRenderLayer2_RendersPersonaScopeGuardrailForBuiltinsAndCustom(t *testin
 	}
 }
 
+func TestRenderLayer2_IgnoresStructuredSectionsInsideStrippedPersonaScopeBlock(t *testing.T) {
+	preset := &Preset{
+		Name:        "custom-stale-scope",
+		DisplayName: "Custom Stale Scope",
+		Description: "Custom persona with stale scoped notes.",
+		Tone: Tone{
+			Formality:  "balanced",
+			Directness: "high",
+			Humor:      "warm",
+			Language:   "en-us",
+		},
+		CommunicationStyle: CommunicationStyle{Verbosity: "concise"},
+		CharacteristicPhrases: CharacteristicPhrases{
+			Greetings:     []string{"Hello"},
+			Confirmations: []string{"Done"},
+		},
+		Notes: "<!-- gentle-ai:persona-scope -->\n## Tone\n\nStale tone override.\n\n## Communication Style\n\nStale communication override.\n\n## Characteristic Phrases\n\nStale phrases override.\n<!-- /gentle-ai:persona-scope -->",
+	}
+
+	rendered := RenderLayer2(preset)
+	for _, required := range []string{
+		"### Tone",
+		"- **Formality**: balanced",
+		"### Communication Style",
+		"- Verbosity: concise",
+		"### Characteristic Phrases",
+		"**Greetings**: Hello",
+		"**Confirmations**: Done",
+	} {
+		if !strings.Contains(rendered, required) {
+			t.Fatalf("RenderLayer2() missing canonical structured output %q\n%s", required, rendered)
+		}
+	}
+	for _, stale := range []string{"Stale tone override.", "Stale communication override.", "Stale phrases override."} {
+		if strings.Contains(rendered, stale) {
+			t.Fatalf("RenderLayer2() must strip stale persona-scope content %q\n%s", stale, rendered)
+		}
+	}
+}
+
 func TestRenderLayer2_AvoidsDuplicatingStructuredSectionsRepeatedByNotes(t *testing.T) {
 	presets, err := ListPresets(jarvis.PersonaFS)
 	if err != nil {
@@ -354,6 +394,68 @@ func TestRenderLayer2_AvoidsDuplicatingStructuredSectionsRepeatedByNotes(t *test
 				t.Fatalf("RenderLayer2(%q) must preserve structured challenge-assumptions behavior even when notes define Communication Style\n%s", preset.Name, rendered)
 			}
 		})
+	}
+}
+
+func TestRenderLayer2_RendersCanonicalSectionsWhenOnlyStalePersonaScopeHadStructuredSections(t *testing.T) {
+	preset := &Preset{
+		Name:        "custom-stale-scope",
+		DisplayName: "Custom Stale Scope",
+		Description: "Custom persona with stale renderer-owned sections in persona scope notes.",
+		Tone: Tone{
+			Formality:  "balanced",
+			Directness: "high",
+			Humor:      "dry",
+			Language:   "en-us",
+		},
+		CommunicationStyle: CommunicationStyle{
+			Verbosity:            "concise",
+			ShowAlternatives:     true,
+			ChallengeAssumptions: true,
+		},
+		CharacteristicPhrases: CharacteristicPhrases{
+			Greetings:     []string{"Hello"},
+			Confirmations: []string{"Done"},
+			SignOffs:      []string{"Bye"},
+		},
+		Notes: `<!-- gentle-ai:persona-scope -->
+## Tone
+
+Stale tone content that must be stripped.
+
+## Communication Style
+
+Stale communication content that must be stripped.
+
+## Characteristic Phrases
+
+Stale phrases content that must be stripped.
+<!-- /gentle-ai:persona-scope -->
+
+## Core Principle
+
+Keep the current notes.`,
+	}
+
+	rendered := RenderLayer2(preset)
+
+	for _, required := range []string{
+		"### Tone",
+		"- **Formality**: balanced",
+		"### Communication Style",
+		"- Always propose alternatives with tradeoffs",
+		"### Characteristic Phrases",
+		"**Greetings**: Hello",
+		"Keep the current notes.",
+	} {
+		if !strings.Contains(rendered, required) {
+			t.Fatalf("RenderLayer2 missing canonical content %q\n%s", required, rendered)
+		}
+	}
+	for _, stale := range []string{"Stale tone content", "Stale communication content", "Stale phrases content"} {
+		if strings.Contains(rendered, stale) {
+			t.Fatalf("RenderLayer2 must strip stale persona-scope content %q\n%s", stale, rendered)
+		}
 	}
 }
 

@@ -471,6 +471,48 @@ func TestOpenCodeAgent_MergeGeneratedConfig_DefaultModelsAreProviderQualified(t 
 	}
 }
 
+func TestOpenCodeAgent_MergeGeneratedConfig_PreservesExistingPermissionGuardrails(t *testing.T) {
+	tmpHome := t.TempDir()
+	a := &OpenCodeAgent{home: tmpHome, templatesFS: testTemplatesFS}
+	settingsPath := filepath.Join(tmpHome, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatalf("create opencode dir: %v", err)
+	}
+	existing := `{
+		"permission": {
+			"bash": {"*": "ask", "git push --force*": "deny"},
+			"read": {"*": "deny", "**/*secret*": "deny"}
+		}
+	}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0644); err != nil {
+		t.Fatalf("write opencode.json: %v", err)
+	}
+
+	if err := a.MergeGeneratedConfig(defaultRuntimeConfig()); err != nil {
+		t.Fatalf("MergeGeneratedConfig: %v", err)
+	}
+	if err := a.MergeGeneratedConfig(defaultRuntimeConfig()); err != nil {
+		t.Fatalf("MergeGeneratedConfig rerun: %v", err)
+	}
+
+	settings := readJSONFile(t, settingsPath)
+	permission := settings["permission"].(map[string]any)
+	bash := permission["bash"].(map[string]any)
+	if bash["*"] != "ask" || bash["git push --force*"] != "deny" {
+		t.Fatalf("existing bash guardrails were not preserved: %#v", bash)
+	}
+	if bash["git reset --hard*"] != "ask" {
+		t.Fatalf("missing generated bash guardrail: %#v", bash)
+	}
+	read := permission["read"].(map[string]any)
+	if read["*"] != "deny" || read["**/*secret*"] != "deny" {
+		t.Fatalf("existing read guardrails were not preserved: %#v", read)
+	}
+	if read["**/.env*"] != "deny" {
+		t.Fatalf("missing generated read guardrail: %#v", read)
+	}
+}
+
 func readJSONFile(t *testing.T, path string) map[string]any {
 	t.Helper()
 	raw, err := os.ReadFile(path)
