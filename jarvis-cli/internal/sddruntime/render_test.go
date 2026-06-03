@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 )
 
@@ -74,5 +75,43 @@ func TestRenderOrchestrator_RejectsUnsupportedAgent(t *testing.T) {
 	_, err := RenderOrchestrator("cursor", &config.AppConfig{}, "{{ range .ModelRows }}{{ end }}")
 	if err == nil {
 		t.Fatal("expected error for unsupported agent")
+	}
+}
+
+func TestRenderOrchestrator_IncludesPhaseLaunchGuardrailsWithoutDuplicatingRuntimePolicy(t *testing.T) {
+	templateContent, err := jarvis.OrchestratorFS.ReadFile("embed/orchestrator/sdd-orchestrator.md")
+	if err != nil {
+		t.Fatalf("read orchestrator template: %v", err)
+	}
+
+	content, err := RenderOrchestrator("opencode", &config.AppConfig{}, string(templateContent))
+	if err != nil {
+		t.Fatalf("RenderOrchestrator error: %v", err)
+	}
+
+	for _, required := range []string{
+		"Runtime Activation Policy",
+		"Mandatory Delegation Triggers",
+		"Cost and Context Balance",
+		"Sub-Agent Launch Deduplication",
+		"Review Workload Guard",
+		"Delivery Strategy",
+		"Chain Strategy",
+		"Language Domain Contract",
+		"SDD Entry Routing",
+		"SDD Session Preflight",
+		"artifact store",
+		"strict TDD",
+		"review budget",
+		"branch/tracker",
+		"issue context",
+	} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("rendered orchestrator missing %q\n%s", required, content)
+		}
+	}
+
+	if got := strings.Count(content, "## Model Assignments"); got != 1 {
+		t.Fatalf("rendered orchestrator model assignment table count = %d, want 1", got)
 	}
 }

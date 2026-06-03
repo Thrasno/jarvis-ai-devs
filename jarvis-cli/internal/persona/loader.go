@@ -124,26 +124,35 @@ func ValidateCustom(content []byte) error {
 // This is the content that goes between the LAYER2 sentinel markers.
 func RenderLayer2(preset *Preset) string {
 	var sb strings.Builder
+	notes := withoutPersonaScopeGuardrail(preset.Notes)
 
 	fmt.Fprintf(&sb, "## Persona: %s\n\n", preset.DisplayName)
 	fmt.Fprintf(&sb, "%s\n\n", preset.Description)
 
-	sb.WriteString("### Tone\n")
-	fmt.Fprintf(&sb, "- **Formality**: %s\n", preset.Tone.Formality)
-	fmt.Fprintf(&sb, "- **Directness**: %s\n", preset.Tone.Directness)
-	fmt.Fprintf(&sb, "- **Humor**: %s\n", preset.Tone.Humor)
-	fmt.Fprintf(&sb, "- **Language**: %s\n\n", preset.Tone.Language)
-
-	sb.WriteString("### Communication Style\n")
-	if preset.CommunicationStyle.ShowAlternatives {
-		sb.WriteString("- Always propose alternatives with tradeoffs\n")
+	if !notesHasStructuredSection(preset.Notes, "Tone") {
+		sb.WriteString("### Tone\n")
+		fmt.Fprintf(&sb, "- **Formality**: %s\n", preset.Tone.Formality)
+		fmt.Fprintf(&sb, "- **Directness**: %s\n", preset.Tone.Directness)
+		fmt.Fprintf(&sb, "- **Humor**: %s\n", preset.Tone.Humor)
+		fmt.Fprintf(&sb, "- **Language**: %s\n\n", preset.Tone.Language)
 	}
-	if preset.CommunicationStyle.ChallengeAssumptions {
-		sb.WriteString("- Challenge user assumptions when incorrect\n")
-	}
-	fmt.Fprintf(&sb, "- Verbosity: %s\n\n", preset.CommunicationStyle.Verbosity)
 
-	if len(preset.CharacteristicPhrases.Greetings) > 0 {
+	if !notesHasStructuredSection(preset.Notes, "Communication Style") {
+		sb.WriteString("### Communication Style\n")
+		if preset.CommunicationStyle.ShowAlternatives {
+			sb.WriteString("- Always propose alternatives with tradeoffs\n")
+		}
+		if preset.CommunicationStyle.ChallengeAssumptions {
+			sb.WriteString("- Challenge user assumptions when incorrect\n")
+		}
+		fmt.Fprintf(&sb, "- Verbosity: %s\n\n", preset.CommunicationStyle.Verbosity)
+	} else if hasStructuredCommunicationBehavior(preset) {
+		sb.WriteString("### Behavioral Rules\n")
+		writeStructuredCommunicationBehavior(&sb, preset)
+		sb.WriteString("\n")
+	}
+
+	if len(preset.CharacteristicPhrases.Greetings) > 0 && !notesHasStructuredSection(preset.Notes, "Characteristic Phrases") {
 		sb.WriteString("### Characteristic Phrases\n")
 		sb.WriteString("**Greetings**: " + strings.Join(preset.CharacteristicPhrases.Greetings, " / ") + "\n")
 		sb.WriteString("**Confirmations**: " + strings.Join(preset.CharacteristicPhrases.Confirmations, " / ") + "\n")
@@ -152,10 +161,13 @@ func RenderLayer2(preset *Preset) string {
 		}
 	}
 
-	if preset.Notes != "" {
+	if notes != "" {
 		sb.WriteString("\n---\n")
-		sb.WriteString(preset.Notes)
+		sb.WriteString(notes)
 	}
+
+	sb.WriteString("\n\n")
+	sb.WriteString(personaScopeGuardrail)
 
 	return sb.String()
 }
@@ -165,6 +177,7 @@ func RenderLayer2(preset *Preset) string {
 // Implements SPEC-002.
 func RenderOutputStyle(preset *Preset) string {
 	var sb strings.Builder
+	notes := withoutPersonaScopeGuardrail(preset.Notes)
 
 	// Convert name to TitleCase (e.g., "tony-stark" -> "TonyStark")
 	titleCaseName := toTitleCase(preset.Name)
@@ -176,13 +189,83 @@ func RenderOutputStyle(preset *Preset) string {
 	sb.WriteString("keep-coding-instructions: true\n")
 	sb.WriteString("---\n")
 
-	// Append Notes after frontmatter
-	if preset.Notes != "" {
-		sb.WriteString("\n")
-		sb.WriteString(preset.Notes)
+	// Append Notes after frontmatter, then append fixed guardrails last so
+	// preset-provided instructions cannot override renderer-owned scope rules.
+	sb.WriteString("\n")
+	if notes != "" {
+		sb.WriteString(notes)
+		sb.WriteString("\n\n")
 	}
+	sb.WriteString(personaScopeGuardrail)
 
 	return sb.String()
+}
+
+func hasStructuredCommunicationBehavior(preset *Preset) bool {
+	return preset.CommunicationStyle.ShowAlternatives ||
+		preset.CommunicationStyle.ChallengeAssumptions ||
+		preset.CommunicationStyle.Verbosity != ""
+}
+
+func writeStructuredCommunicationBehavior(sb *strings.Builder, preset *Preset) {
+	if preset.CommunicationStyle.ShowAlternatives {
+		sb.WriteString("- Always propose alternatives with tradeoffs\n")
+	}
+	if preset.CommunicationStyle.ChallengeAssumptions {
+		sb.WriteString("- Challenge user assumptions when incorrect\n")
+	}
+	if preset.CommunicationStyle.Verbosity != "" {
+		fmt.Fprintf(sb, "- Verbosity: %s\n", preset.CommunicationStyle.Verbosity)
+	}
+}
+
+func notesHasStructuredSection(notes, section string) bool {
+	return strings.Contains(notes, "## "+section)
+}
+
+func withoutPersonaScopeGuardrail(notes string) string {
+	notes = stripMarkedPersonaScopeBlocks(notes)
+	notes = strings.ReplaceAll(notes, personaScopeGuardrail, "")
+	for strings.Contains(notes, "## Persona Scope (CRITICAL)") {
+		notes = stripMarkdownSection(notes, "## Persona Scope (CRITICAL)")
+	}
+	return strings.TrimSpace(notes)
+}
+
+func stripMarkedPersonaScopeBlocks(content string) string {
+	const startMarker = "<!-- gentle-ai:persona-scope -->"
+	const endMarker = "<!-- /gentle-ai:persona-scope -->"
+
+	for {
+		start := strings.Index(content, startMarker)
+		if start == -1 {
+			return content
+		}
+
+		endSearchStart := start + len(startMarker)
+		end := strings.Index(content[endSearchStart:], endMarker)
+		if end == -1 {
+			return content
+		}
+
+		end = endSearchStart + end + len(endMarker)
+		content = content[:start] + content[end:]
+	}
+}
+
+func stripMarkdownSection(content, heading string) string {
+	start := strings.Index(content, heading)
+	if start == -1 {
+		return content
+	}
+
+	sectionEnd := len(content)
+	searchStart := start + len(heading)
+	if next := strings.Index(content[searchStart:], "\n## "); next != -1 {
+		sectionEnd = searchStart + next
+	}
+
+	return content[:start] + content[sectionEnd:]
 }
 
 // toTitleCase converts a persona name to TitleCase format.

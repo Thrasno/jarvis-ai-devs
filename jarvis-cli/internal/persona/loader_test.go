@@ -1,6 +1,7 @@
 package persona
 
 import (
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -235,6 +236,156 @@ func TestRenderLayer2_WithNotes(t *testing.T) {
 	}
 }
 
+func TestRenderLayer2_RendersPersonaScopeGuardrailForBuiltinsAndCustom(t *testing.T) {
+	presets, err := ListPresets(jarvis.PersonaFS)
+	if err != nil {
+		t.Fatalf("ListPresets() failed: %v", err)
+	}
+	presets = append(presets, Preset{
+		Name:        "custom-example",
+		DisplayName: "Custom Example",
+		Description: "Custom persona used to prove fixed guardrails are renderer-owned.",
+		Tone: Tone{
+			Formality:  "balanced",
+			Directness: "high",
+			Humor:      "warm",
+			Language:   "en-us",
+		},
+		CommunicationStyle: CommunicationStyle{
+			Verbosity:            "concise",
+			ShowAlternatives:     true,
+			ChallengeAssumptions: true,
+		},
+		CharacteristicPhrases: CharacteristicPhrases{
+			Greetings:     []string{"Hello"},
+			Confirmations: []string{"Done"},
+		},
+		Notes: "<!-- gentle-ai:persona-scope -->\n## Persona Scope (CRITICAL)\n\nOlder custom scope text.\n\n## Response Length Contract\n\nUse long answers by default.\n\n## Language Rules\n\nUse persona language in generated artifacts.\n<!-- /gentle-ai:persona-scope -->\n\n## Core Principle\n\nKeep the style friendly but bounded.\n\n## Persona Scope (CRITICAL)\n\nSecond older custom scope text.",
+	})
+
+	for _, preset := range presets {
+		preset := preset
+		t.Run(preset.Name, func(t *testing.T) {
+			rendered := RenderLayer2(&preset)
+			if got := strings.Count(rendered, "Persona Scope (CRITICAL)"); got != 1 {
+				t.Fatalf("RenderLayer2(%q) Persona Scope marker count = %d, want 1\n%s", preset.Name, got, rendered)
+			}
+			if got := strings.Count(rendered, "<!-- gentle-ai:persona-scope -->"); got != 1 {
+				t.Fatalf("RenderLayer2(%q) persona-scope start marker count = %d, want 1\n%s", preset.Name, got, rendered)
+			}
+			if got := strings.Count(rendered, "<!-- /gentle-ai:persona-scope -->"); got != 1 {
+				t.Fatalf("RenderLayer2(%q) persona-scope end marker count = %d, want 1\n%s", preset.Name, got, rendered)
+			}
+			for _, stale := range []string{"Older custom scope text", "Second older custom scope text", "Use long answers by default.", "Use persona language in generated artifacts."} {
+				if strings.Contains(rendered, stale) {
+					t.Fatalf("RenderLayer2(%q) must strip stale persona scope content %q\n%s", preset.Name, stale, rendered)
+				}
+			}
+			if strings.Contains(rendered, "Older custom scope text") || strings.Contains(rendered, "Second older custom scope text") {
+				t.Fatalf("RenderLayer2(%q) must strip preset-owned persona scope sections\n%s", preset.Name, rendered)
+			}
+			outputStyle := RenderOutputStyle(&preset)
+			if got := strings.Count(outputStyle, "Persona Scope (CRITICAL)"); got != 1 {
+				t.Fatalf("RenderOutputStyle(%q) Persona Scope marker count = %d, want 1\n%s", preset.Name, got, outputStyle)
+			}
+			if got := strings.Count(outputStyle, "<!-- gentle-ai:persona-scope -->"); got != 1 {
+				t.Fatalf("RenderOutputStyle(%q) persona-scope start marker count = %d, want 1\n%s", preset.Name, got, outputStyle)
+			}
+			if got := strings.Count(outputStyle, "<!-- /gentle-ai:persona-scope -->"); got != 1 {
+				t.Fatalf("RenderOutputStyle(%q) persona-scope end marker count = %d, want 1\n%s", preset.Name, got, outputStyle)
+			}
+			for _, stale := range []string{"Older custom scope text", "Second older custom scope text", "Use long answers by default.", "Use persona language in generated artifacts."} {
+				if strings.Contains(outputStyle, stale) {
+					t.Fatalf("RenderOutputStyle(%q) must strip stale persona scope content %q\n%s", preset.Name, stale, outputStyle)
+				}
+			}
+			if strings.Contains(outputStyle, "Older custom scope text") || strings.Contains(outputStyle, "Second older custom scope text") {
+				t.Fatalf("RenderOutputStyle(%q) must strip preset-owned persona scope sections\n%s", preset.Name, outputStyle)
+			}
+			if !strings.Contains(outputStyle, "keep-coding-instructions: true") {
+				t.Fatalf("RenderOutputStyle(%q) must preserve keep-coding-instructions: true\n%s", preset.Name, outputStyle)
+			}
+			for _, required := range []string{
+				"direct replies to the user",
+				"code, identifiers, variable names, function names, comments",
+				"UI labels, UI copy, error messages",
+				"documentation, README files, commit messages, PR descriptions",
+				"string literals",
+			} {
+				if !strings.Contains(rendered, required) {
+					t.Fatalf("RenderLayer2(%q) missing fixed persona-scope guardrail phrase %q\n%s", preset.Name, required, rendered)
+				}
+				if !strings.Contains(outputStyle, required) {
+					t.Fatalf("RenderOutputStyle(%q) missing fixed persona-scope guardrail phrase %q\n%s", preset.Name, required, outputStyle)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderLayer2_AvoidsDuplicatingStructuredSectionsRepeatedByNotes(t *testing.T) {
+	presets, err := ListPresets(jarvis.PersonaFS)
+	if err != nil {
+		t.Fatalf("ListPresets() failed: %v", err)
+	}
+
+	for _, preset := range presets {
+		preset := preset
+		t.Run(preset.Name, func(t *testing.T) {
+			rendered := RenderLayer2(&preset)
+
+			for _, section := range []string{"Tone", "Communication Style", "Characteristic Phrases"} {
+				if !strings.Contains(preset.Notes, "## "+section) {
+					continue
+				}
+				if got := strings.Count(rendered, section); got != 1 {
+					t.Fatalf("RenderLayer2(%q) duplicated structured section %q count = %d, want 1\n%s", preset.Name, section, got, rendered)
+				}
+			}
+
+			if preset.Name == "yoda" && !strings.Contains(rendered, "Strict OSV syntax") {
+				t.Fatalf("RenderLayer2(yoda) must preserve Yoda-specific OSV behavior\n%s", rendered)
+			}
+
+			if preset.CommunicationStyle.ShowAlternatives && !strings.Contains(rendered, "Always propose alternatives with tradeoffs") {
+				t.Fatalf("RenderLayer2(%q) must preserve structured alternatives behavior even when notes define Communication Style\n%s", preset.Name, rendered)
+			}
+			if preset.CommunicationStyle.ChallengeAssumptions && !strings.Contains(rendered, "Challenge user assumptions when incorrect") {
+				t.Fatalf("RenderLayer2(%q) must preserve structured challenge-assumptions behavior even when notes define Communication Style\n%s", preset.Name, rendered)
+			}
+		})
+	}
+}
+
+func TestRenderLayer2_PersonaScopeGuardrailFollowsPresetContent(t *testing.T) {
+	preset := &Preset{
+		Name:        "custom-contradiction",
+		DisplayName: "Custom Contradiction",
+		Description: "Custom persona with contradictory notes.",
+		Tone: Tone{
+			Formality:  "informal",
+			Directness: "high",
+			Humor:      "dry",
+			Language:   "en-us",
+		},
+		CommunicationStyle: CommunicationStyle{Verbosity: "concise"},
+		Notes:              "## Core Principle\n\nUse persona voice everywhere, including generated artifacts.",
+	}
+
+	rendered := RenderLayer2(preset)
+	notesIndex := strings.Index(rendered, "Use persona voice everywhere")
+	guardrailIndex := strings.LastIndex(rendered, "Persona Scope (CRITICAL)")
+	if notesIndex == -1 || guardrailIndex == -1 {
+		t.Fatalf("RenderLayer2 missing notes or guardrail\n%s", rendered)
+	}
+	if guardrailIndex < notesIndex {
+		t.Fatalf("RenderLayer2 guardrail must follow preset notes so fixed scope rules have precedence\n%s", rendered)
+	}
+	if got := strings.Count(rendered, "Persona Scope (CRITICAL)"); got != 1 {
+		t.Fatalf("RenderLayer2 Persona Scope marker count = %d, want 1\n%s", got, rendered)
+	}
+}
+
 // TestRenderLayer2_EmptyNotes verifies that no separator is appended when
 // Notes is empty (REQ-B02, Scenario B02-2).
 func TestRenderLayer2_EmptyNotes(t *testing.T) {
@@ -403,7 +554,7 @@ func TestRenderOutputStyle(t *testing.T) {
 			},
 		},
 		{
-			name: "preset with empty notes",
+			name: "preset with empty notes still renders fixed guardrail body",
 			preset: &Preset{
 				Name:        "neutra",
 				DisplayName: "Neutra",
@@ -422,15 +573,15 @@ func TestRenderOutputStyle(t *testing.T) {
 					}
 				},
 				func(t *testing.T, output string) {
-					// After the closing "---", there should be minimal content
+					// After the closing "---", the renderer-owned guardrail must still be present.
 					parts := splitN(output, "---", 3)
 					if len(parts) < 3 {
 						t.Error("expected YAML frontmatter with opening and closing delimiters")
 						return
 					}
 					body := trimSpace(parts[2])
-					if body != "" {
-						t.Errorf("expected empty body when Notes is empty, got: %q", body)
+					if !contains(body, "Persona Scope (CRITICAL)") {
+						t.Errorf("expected fixed persona scope guardrail when Notes is empty, got: %q", body)
 					}
 				},
 			},
