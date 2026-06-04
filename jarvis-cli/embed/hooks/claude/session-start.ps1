@@ -2,6 +2,11 @@
 # Injects memory protocol instructions as additionalContext before the first prompt.
 # Always exits 0 and emits valid JSON — never blocks Claude Code.
 
+# Primary injection path: this hook fires unconditionally at session start, pre-creates
+# .first-prompt-done, and injects additionalContext before the first user prompt.
+# The first-prompt branch in user-prompt-submit.{ps1,sh} acts as a fallback when this
+# hook is NOT installed (e.g. older Claude Code builds without SessionStart support).
+
 $ErrorActionPreference = 'SilentlyContinue'
 
 $stateFile = Join-Path $PSScriptRoot '.first-prompt-done'

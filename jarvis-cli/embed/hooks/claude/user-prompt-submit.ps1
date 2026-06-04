@@ -84,9 +84,23 @@ try {
     }
 }
 
+# First-prompt injection design:
+# When SessionStart hook is installed: session-start.{ps1,sh} pre-creates .first-prompt-done
+# before any user prompt, so this branch is never reached — sessionStart is the primary
+# injection path.
+# When SessionStart is NOT installed (e.g. older Claude Code builds): this branch fires on
+# the first prompt and acts as the fallback injection mechanism.
 $stateFile = Join-Path $PSScriptRoot '.first-prompt-done'
-if (-not (Test-Path $stateFile)) {
-    try { [System.IO.File]::WriteAllText($stateFile, [datetime]::UtcNow.ToString('o')) } catch {}
+$created = $false
+try {
+    $stream = [System.IO.File]::Open($stateFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    $writer = [System.IO.StreamWriter]::new($stream)
+    $writer.Write([datetime]::UtcNow.ToString('o'))
+    $writer.Close()
+    $stream.Close()
+    $created = $true
+} catch {}
+if ($created) {
     $msg = 'Memory protocol is active. FIRST ACTION: call mem_context to load session memory before responding to the user.'
     Write-Output (@{ systemMessage = $msg } | ConvertTo-Json -Compress)
 } else {

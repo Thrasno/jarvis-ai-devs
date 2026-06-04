@@ -18,10 +18,15 @@ if [ -n "$PROMPT" ]; then
   fi
 fi
 
+# First-prompt injection design:
+# When SessionStart hook is installed: session-start.{ps1,sh} pre-creates .first-prompt-done
+# before any user prompt, so this branch is never reached — sessionStart is the primary
+# injection path.
+# When SessionStart is NOT installed (e.g. older Claude Code builds): this branch fires on
+# the first prompt and acts as the fallback injection mechanism.
 STATE_FILE="$(dirname "$0")/.first-prompt-done"
-if [ ! -f "$STATE_FILE" ]; then
-    date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE_FILE" 2>/dev/null || true
-    jq -n '{"systemMessage": "Memory protocol is active. FIRST ACTION: call mem_context to load session memory before responding to the user."}'
+if ( set -C; date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE_FILE" ) 2>/dev/null; then
+    jq -n '{"systemMessage": "Memory protocol is active. FIRST ACTION: call mem_context to load session memory before responding to the user."}' 2>/dev/null || printf '{"systemMessage":"Memory protocol is active. FIRST ACTION: call mem_context to load session memory before responding to the user."}\n'
 else
     printf '{}\n'
 fi

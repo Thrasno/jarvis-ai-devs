@@ -539,6 +539,147 @@ var testHooksFS = fstest.MapFS{
 	"embed/hooks/opencode/hive.ts":              {Data: []byte("export const Hive = {}")},
 }
 
+// TestClaudeAgent_InstallSessionHooks verifies that InstallSessionHooks:
+//   - writes session-start and session-stop script files to ~/.claude/hive-hooks/
+//   - patches settings.json with SessionStart and Stop hook entries
+func TestClaudeAgent_InstallSessionHooks(t *testing.T) {
+	previousGOOS := claudeRuntimeGOOS
+	claudeRuntimeGOOS = "linux"
+	t.Cleanup(func() { claudeRuntimeGOOS = previousGOOS })
+
+	home := t.TempDir()
+	setTestHome(t, home)
+
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+
+	a := &ClaudeAgent{home: home, templatesFS: testTemplatesFS}
+	if err := a.InstallSessionHooks(testHooksFS); err != nil {
+		t.Fatalf("InstallSessionHooks: %v", err)
+	}
+
+	hookDir := filepath.Join(claudeDir, "hive-hooks")
+
+	// session-start script must exist.
+	startScript := filepath.Join(hookDir, "session-start.sh")
+	if _, err := os.Stat(startScript); err != nil {
+		t.Fatalf("session-start script not found at %s: %v", startScript, err)
+	}
+
+	// session-stop script must exist.
+	stopScript := filepath.Join(hookDir, "session-stop.sh")
+	if _, err := os.Stat(stopScript); err != nil {
+		t.Fatalf("session-stop script not found at %s: %v", stopScript, err)
+	}
+
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	settings := readSettingsMap(t, settingsPath)
+
+	hooks, ok := settings["hooks"].(map[string]any)
+	if !ok {
+		t.Fatal("settings.json missing 'hooks' object")
+	}
+
+	// SessionStart entry must be present.
+	sessionStart, ok := hooks["SessionStart"].([]any)
+	if !ok || len(sessionStart) == 0 {
+		t.Fatal("settings.json missing hooks.SessionStart array")
+	}
+	foundStart := false
+	for _, entry := range sessionStart {
+		if entryMap, ok := entry.(map[string]any); ok && entryMap["name"] == "hive-session-start" {
+			foundStart = true
+		}
+	}
+	if !foundStart {
+		t.Error("hive-session-start entry not found in SessionStart hooks")
+	}
+
+	// Stop entry must be present.
+	stop, ok := hooks["Stop"].([]any)
+	if !ok || len(stop) == 0 {
+		t.Fatal("settings.json missing hooks.Stop array")
+	}
+	foundStop := false
+	for _, entry := range stop {
+		if entryMap, ok := entry.(map[string]any); ok && entryMap["name"] == "hive-session-stop" {
+			foundStop = true
+		}
+	}
+	if !foundStop {
+		t.Error("hive-session-stop entry not found in Stop hooks")
+	}
+}
+
+// TestClaudeAgent_InstallSessionHooks_Idempotent verifies that calling
+// InstallSessionHooks twice leaves exactly one hive-session-start entry under
+// SessionStart and exactly one hive-session-stop entry under Stop.
+func TestClaudeAgent_InstallSessionHooks_Idempotent(t *testing.T) {
+	previousGOOS := claudeRuntimeGOOS
+	claudeRuntimeGOOS = "linux"
+	t.Cleanup(func() { claudeRuntimeGOOS = previousGOOS })
+
+	home := t.TempDir()
+	setTestHome(t, home)
+
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+
+	a := &ClaudeAgent{home: home, templatesFS: testTemplatesFS}
+
+	// First call.
+	if err := a.InstallSessionHooks(testHooksFS); err != nil {
+		t.Fatalf("first InstallSessionHooks: %v", err)
+	}
+
+	// Second call — must be idempotent.
+	if err := a.InstallSessionHooks(testHooksFS); err != nil {
+		t.Fatalf("second InstallSessionHooks: %v", err)
+	}
+
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	settings := readSettingsMap(t, settingsPath)
+
+	hooks, ok := settings["hooks"].(map[string]any)
+	if !ok {
+		t.Fatal("settings.json missing 'hooks' object")
+	}
+
+	// Exactly one hive-session-start entry.
+	sessionStart, ok := hooks["SessionStart"].([]any)
+	if !ok {
+		t.Fatal("settings.json missing hooks.SessionStart array")
+	}
+	startCount := 0
+	for _, entry := range sessionStart {
+		if entryMap, ok := entry.(map[string]any); ok && entryMap["name"] == "hive-session-start" {
+			startCount++
+		}
+	}
+	if startCount != 1 {
+		t.Errorf("idempotency: expected exactly 1 hive-session-start entry, got %d", startCount)
+	}
+
+	// Exactly one hive-session-stop entry.
+	stop, ok := hooks["Stop"].([]any)
+	if !ok {
+		t.Fatal("settings.json missing hooks.Stop array")
+	}
+	stopCount := 0
+	for _, entry := range stop {
+		if entryMap, ok := entry.(map[string]any); ok && entryMap["name"] == "hive-session-stop" {
+			stopCount++
+		}
+	}
+	if stopCount != 1 {
+		t.Errorf("idempotency: expected exactly 1 hive-session-stop entry, got %d", stopCount)
+	}
+}
+
 // TestClaudeAgent_InstallPromptHook verifies that InstallPromptHook:
 //   - writes the shell script as executable
 //   - patches settings.json with a UserPromptSubmit hook entry

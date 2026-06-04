@@ -160,6 +160,47 @@ func TestClaudePowerShellPromptHook_DoesNotBlockWhenWorkerHTTPStalls(t *testing.
 	}
 }
 
+func TestClaudePowerShellPromptHook_FirstPromptInjectsSystemMessage(t *testing.T) {
+	powershell := requirePowerShell(t)
+	scriptPath := claudePowerShellHookScriptPath(t)
+
+	stateFile := filepath.Join(filepath.Dir(scriptPath), ".first-prompt-done")
+	// Ensure the state file does not exist before the test.
+	_ = os.Remove(stateFile)
+	t.Cleanup(func() {
+		if err := os.Remove(stateFile); err != nil && !os.IsNotExist(err) {
+			t.Logf("first-prompt test cleanup: %v", err)
+		}
+	})
+
+	port := unusedLocalPort(t)
+	cmd := powerShellHookCommand(t, powershell, scriptPath)
+	cmd.Env = append(cmd.Environ(), "HIVE_HTTP_PORT="+port)
+	cmd.Stdin = strings.NewReader(`{"prompt":"first user prompt"}`)
+
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("PowerShell hook failed on first prompt: %v", err)
+	}
+
+	out := strings.TrimSpace(stdout.String())
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v; stdout=%q", err, out)
+	}
+
+	if _, ok := result["systemMessage"]; !ok {
+		t.Fatalf("stdout missing 'systemMessage' key on first prompt; got %q", out)
+	}
+
+	if _, err := os.Stat(stateFile); err != nil {
+		t.Fatalf(".first-prompt-done was not created after first prompt: %v", err)
+	}
+}
+
 func requirePowerShell(t *testing.T) string {
 	t.Helper()
 	for _, candidate := range []string{"pwsh", "powershell"} {
@@ -280,5 +321,9 @@ func ensureFirstPromptDone(t *testing.T, scriptPath string) {
 	if err := os.WriteFile(stateFile, []byte("test"), 0644); err != nil {
 		t.Fatalf("ensureFirstPromptDone: write state file: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Remove(stateFile) })
+	t.Cleanup(func() {
+		if err := os.Remove(stateFile); err != nil && !os.IsNotExist(err) {
+			t.Logf("ensureFirstPromptDone cleanup: %v", err)
+		}
+	})
 }
