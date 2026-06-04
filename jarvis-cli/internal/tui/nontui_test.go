@@ -557,6 +557,8 @@ func (m *mockAgent) InstallPromptHook(hooksFS fs.FS) error {
 	return nil
 }
 
+func (m *mockAgent) InstallSessionHooks(fs.FS) error { return nil }
+
 func (m *mockAgent) SupportsOutputStyles() bool {
 	return false
 }

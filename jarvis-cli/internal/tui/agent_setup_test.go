@@ -86,6 +86,8 @@ func (a *setupAgentStub) InstallPromptHook(fs.FS) error {
 	return nil
 }
 
+func (a *setupAgentStub) InstallSessionHooks(fs.FS) error { return nil }
+
 func (a *setupAgentStub) WriteOutputStyle(*persona.Preset) error {
 	return a.outputStyleErr
 }

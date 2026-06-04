@@ -135,7 +135,8 @@ func (a *stubLifecycleAgent) RuntimePlan() (sddruntime.RuntimePlan, error)      
 func (a *stubLifecycleAgent) ObserveRuntime() (sddruntime.ObservedRuntime, error) {
 	return sddruntime.ObservedRuntime{}, nil
 }
-func (a *stubLifecycleAgent) InstallPromptHook(fs.FS) error { return nil }
+func (a *stubLifecycleAgent) InstallPromptHook(fs.FS) error    { return nil }
+func (a *stubLifecycleAgent) InstallSessionHooks(fs.FS) error { return nil }
 
 func writeSingleFileArchive(archivePath, absolutePath string, content []byte) (err error) {
 	f, err := os.Create(archivePath)

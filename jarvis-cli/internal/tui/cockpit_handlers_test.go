@@ -887,4 +887,5 @@ func (f *fakePersonaAgent) RuntimePlan() (sddruntime.RuntimePlan, error) {
 func (f *fakePersonaAgent) ObserveRuntime() (sddruntime.ObservedRuntime, error) {
 	return sddruntime.ObservedRuntime{}, nil
 }
-func (f *fakePersonaAgent) InstallPromptHook(fs.FS) error { return nil }
+func (f *fakePersonaAgent) InstallPromptHook(fs.FS) error    { return nil }
+func (f *fakePersonaAgent) InstallSessionHooks(fs.FS) error { return nil }

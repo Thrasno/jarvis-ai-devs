@@ -17,6 +17,10 @@ When you detect any of these contexts, IMMEDIATELY load the corresponding skill 
 {{end}}
 Load skills BEFORE writing code. Apply ALL patterns. Multiple skills can apply simultaneously.
 
+## SDD Evaluation (always-on)
+
+Before responding to any development request, evaluate it against the SDD complexity heuristics in `sdd-orchestrator.md`. If ≥2 signals are present (multiple deliverables / cross-file impact / coordination risk), emit a SDD recommendation and STOP — do not implement until the user responds. If ≤1 signal, proceed inline.
+
 <!-- jarvis:orchestrator-import -->
 @./sdd-orchestrator.md
 <!-- /jarvis:orchestrator-import -->
