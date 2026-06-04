@@ -495,6 +495,9 @@ func (a *OpenCodeAgent) InstallPromptHook(hooksFS fs.FS) error {
 	return writeFileAtomic(dest, content, 0644)
 }
 
+// InstallSessionHooks is a no-op for OpenCode — session memory is handled by the Hive TypeScript plugin.
+func (a *OpenCodeAgent) InstallSessionHooks(_ fs.FS) error { return nil }
+
 // SupportsOutputStyles returns false for OpenCodeAgent since OpenCode
 // does not have native output-style support.
 func (a *OpenCodeAgent) SupportsOutputStyles() bool {

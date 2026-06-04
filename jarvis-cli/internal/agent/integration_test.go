@@ -532,6 +532,10 @@ func TestProtocolInjection_ProtocolContentCorrect(t *testing.T) {
 var testHooksFS = fstest.MapFS{
 	"embed/hooks/claude/user-prompt-submit.sh":  {Data: []byte("#!/bin/bash\nprintf '{}\n'")},
 	"embed/hooks/claude/user-prompt-submit.ps1": {Data: []byte("Write-Output '{}'\n")},
+	"embed/hooks/claude/session-start.sh":       {Data: []byte("#!/bin/bash\nprintf '{\"additionalContext\":\"test\"}\n'")},
+	"embed/hooks/claude/session-start.ps1":      {Data: []byte("Write-Output '{\"additionalContext\":\"test\"}'\n")},
+	"embed/hooks/claude/session-stop.sh":        {Data: []byte("#!/bin/bash\nprintf '{}\n'")},
+	"embed/hooks/claude/session-stop.ps1":       {Data: []byte("Write-Output '{}'\n")},
 	"embed/hooks/opencode/hive.ts":              {Data: []byte("export const Hive = {}")},
 }
 

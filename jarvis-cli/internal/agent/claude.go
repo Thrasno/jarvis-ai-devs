@@ -495,6 +495,94 @@ func escapePowerShellFilePath(path string) string {
 	return strings.ReplaceAll(path, `"`, `\"`)
 }
 
+// InstallSessionHooks installs the Hive SessionStart and Stop hooks for Claude Code.
+// It copies OS-specific scripts to ~/.claude/hive-hooks/ and patches settings.json.
+func (a *ClaudeAgent) InstallSessionHooks(hooksFS fs.FS) error {
+	hookDir := filepath.Join(a.ConfigDir(), "hive-hooks")
+	if err := os.MkdirAll(hookDir, 0755); err != nil {
+		return fmt.Errorf("create hive-hooks dir: %w", err)
+	}
+
+	startSpec := resolveClaudeSessionHook(claudeRuntimeGOOS, "session-start", hookDir)
+	stopSpec := resolveClaudeSessionHook(claudeRuntimeGOOS, "session-stop", hookDir)
+
+	for _, spec := range []claudePromptHookSpec{startSpec, stopSpec} {
+		content, err := fs.ReadFile(hooksFS, spec.assetPath)
+		if err != nil {
+			return fmt.Errorf("read hook script %s: %w", spec.assetPath, err)
+		}
+		if err := writeFileAtomic(filepath.Join(hookDir, spec.filename), content, spec.perm); err != nil {
+			return fmt.Errorf("write hook script %s: %w", spec.filename, err)
+		}
+	}
+
+	patch := map[string]any{
+		"hooks": map[string]any{
+			"SessionStart": []any{
+				map[string]any{
+					"name": "hive-session-start",
+					"hooks": []any{
+						map[string]any{
+							"type":    "command",
+							"command": startSpec.command,
+							"timeout": 5,
+						},
+					},
+				},
+			},
+			"Stop": []any{
+				map[string]any{
+					"name": "hive-session-stop",
+					"hooks": []any{
+						map[string]any{
+							"type":    "command",
+							"command": stopSpec.command,
+							"timeout": 2,
+						},
+					},
+				},
+			},
+		},
+	}
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("marshal session hooks patch: %w", err)
+	}
+
+	existing, err := readFileOrEmpty(a.settingsPath())
+	if err != nil {
+		return fmt.Errorf("read settings.json: %w", err)
+	}
+
+	merged, err := MergeJSON(existing, patchBytes)
+	if err != nil {
+		return fmt.Errorf("merge settings.json: %w", err)
+	}
+
+	return writeFileAtomic(a.settingsPath(), merged, 0644)
+}
+
+func resolveClaudeSessionHook(goos, name, hookDir string) claudePromptHookSpec {
+	if goos == "windows" {
+		filename := name + ".ps1"
+		scriptPath := filepath.Join(hookDir, filename)
+		return claudePromptHookSpec{
+			assetPath: "embed/hooks/claude/" + filename,
+			filename:  filename,
+			command:   `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "` + escapePowerShellFilePath(scriptPath) + `"`,
+			perm:      0644,
+		}
+	}
+	filename := name + ".sh"
+	scriptPath := filepath.Join(hookDir, filename)
+	return claudePromptHookSpec{
+		assetPath: "embed/hooks/claude/" + filename,
+		filename:  filename,
+		command:   scriptPath,
+		perm:      0755,
+	}
+}
+
 // readFileOrEmpty reads a file's contents or returns an empty byte slice if not found.
 func readFileOrEmpty(path string) ([]byte, error) {
 	data, err := os.ReadFile(path)

@@ -128,19 +128,36 @@ Normalization before matching (deterministic):
 
 Order dependency: accent removal happens BEFORE punctuation stripping. Normalization is applied left-to-right (steps 1→6) with no backtracking.
 
-#### Conservative complexity heuristics (only for `recommendation_only`)
+#### Complexity heuristics (only for `recommendation_only`)
 
-Treat SDD as recommended only for clearly high-complexity requests, based on signals like:
-- multiple deliverables
-- cross-file or cross-system impact
-- non-trivial coordination/regression risk
+Evaluate every development request against these three signals before responding:
 
-Default mixed/unclear complexity to inline recommendation. Avoid over-triggering SDD.
+- **S1** multiple deliverables — more than one file, module, or output artifact
+- **S2** cross-file or cross-system impact — touches more than one concern, layer, or component
+- **S3** non-trivial coordination or regression risk — ordering constraints, shared state, or integration surface
+
+Decision rule (deterministic, no exceptions):
+- ≥2 signals present → **SDD recommendation required**
+- ≤1 signal present → proceed inline, no recommendation
 
 Canonical acceptance fixtures:
-- low: `trivial copy tweak` → `recommendation_only` with inline recommendation
-- medium: `single-file bugfix` → `recommendation_only` with inline recommendation
-- high: `multi-artifact feature` → `recommendation_only` with SDD recommendation
+- `trivial copy tweak` → 0 signals → inline, no SDD recommendation
+- `single-file bugfix` → ≤1 signal → inline, no SDD recommendation
+- `multi-artifact feature` → S1 + S2 + S3 → SDD recommendation required
+- `crear app de gestión de fichajes desde 0` → S1 + S2 + S3 → SDD recommendation required
+- `renombrá esta variable` → 0 signals → inline, no SDD recommendation
+
+#### `recommendation_only` pause contract
+
+When heuristics result in a SDD recommendation:
+
+1. Emit the recommendation in one sentence, naming the signals that fired. Example: "This request looks like a candidate for SDD (multiple deliverables, cross-file impact). Want to run the full SDD flow or go direct?"
+2. **STOP. Do not write any code, plan, or implementation until the user responds explicitly.**
+3. Accepted responses:
+   - Any SDD trigger phrase → start SDD flow (sdd-init check → sdd-new)
+   - Any inline override phrase → proceed inline, no further mention of SDD
+   - Ambiguous affirmative without clear direction → ask once: "SDD or direct?"
+4. This pause contract applies equally in Claude Code and OpenCode. `sdd-orchestrator.md` is the single source of truth for both runtimes — no runtime-specific divergence.
 
 Scope guardrail: this policy is orchestration behavior specification ONLY. This policy must not redesign runtime hardening, installer/runtime verification, or `internal/sddruntime` internals. No runtime activation engine code is written as part of this change. Runtime verification belongs to `internal/sddruntime` contract/verifier.
 

@@ -18,5 +18,11 @@ if [ -n "$PROMPT" ]; then
   fi
 fi
 
-printf '{}\n'
+STATE_FILE="$(dirname "$0")/.first-prompt-done"
+if [ ! -f "$STATE_FILE" ]; then
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE_FILE" 2>/dev/null || true
+    jq -n '{"systemMessage": "Memory protocol is active. FIRST ACTION: call mem_context to load session memory before responding to the user."}'
+else
+    printf '{}\n'
+fi
 exit 0

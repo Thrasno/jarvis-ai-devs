@@ -68,6 +68,9 @@ func configureWizardAgent(
 	if err := a.InstallPromptHook(jarvis.HooksFS); err != nil {
 		return fmt.Errorf("install prompt hook: %w", err)
 	}
+	if err := a.InstallSessionHooks(jarvis.HooksFS); err != nil {
+		return fmt.Errorf("install session hooks: %w", err)
+	}
 	return nil
 }
 

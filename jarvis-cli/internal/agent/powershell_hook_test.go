@@ -19,6 +19,7 @@ import (
 func TestClaudePowerShellPromptHook_PostsPromptPayload(t *testing.T) {
 	powershell := requirePowerShell(t)
 	scriptPath := claudePowerShellHookScriptPath(t)
+	ensureFirstPromptDone(t, scriptPath)
 
 	received := make(chan string, 1)
 	server, port := startPromptCaptureServer(t, received)
@@ -55,6 +56,7 @@ func TestClaudePowerShellPromptHook_PostsPromptPayload(t *testing.T) {
 func TestClaudePowerShellPromptHook_RequestFailurePrintsEmptyJSONAndExitsZero(t *testing.T) {
 	powershell := requirePowerShell(t)
 	scriptPath := claudePowerShellHookScriptPath(t)
+	ensureFirstPromptDone(t, scriptPath)
 	port := unusedLocalPort(t)
 
 	cmd := powerShellHookCommand(t, powershell, scriptPath)
@@ -127,6 +129,7 @@ func TestClaudePowerShellPromptHook_ResolvesFallbackPowerShellDynamically(t *tes
 func TestClaudePowerShellPromptHook_DoesNotBlockWhenWorkerHTTPStalls(t *testing.T) {
 	powershell := requirePowerShell(t)
 	scriptPath := claudePowerShellHookScriptPath(t)
+	ensureFirstPromptDone(t, scriptPath)
 	_, port := startStallingPromptServer(t, 3*time.Second)
 
 	cmd := powerShellHookCommand(t, powershell, scriptPath)
@@ -265,4 +268,17 @@ func unusedLocalPort(t *testing.T) string {
 		t.Fatalf("split unused local port: %v", err)
 	}
 	return port
+}
+
+// ensureFirstPromptDone creates the .first-prompt-done state file next to the
+// hook script so that runtime tests that exercise POST / non-blocking behavior
+// are not affected by the first-prompt injection path. The file is removed by
+// a t.Cleanup so it does not linger in the source tree after the test run.
+func ensureFirstPromptDone(t *testing.T, scriptPath string) {
+	t.Helper()
+	stateFile := filepath.Join(filepath.Dir(scriptPath), ".first-prompt-done")
+	if err := os.WriteFile(stateFile, []byte("test"), 0644); err != nil {
+		t.Fatalf("ensureFirstPromptDone: write state file: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(stateFile) })
 }

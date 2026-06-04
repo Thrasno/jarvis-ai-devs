@@ -84,5 +84,12 @@ try {
     }
 }
 
-Write-Output '{}'
+$stateFile = Join-Path $PSScriptRoot '.first-prompt-done'
+if (-not (Test-Path $stateFile)) {
+    try { [System.IO.File]::WriteAllText($stateFile, [datetime]::UtcNow.ToString('o')) } catch {}
+    $msg = 'Memory protocol is active. FIRST ACTION: call mem_context to load session memory before responding to the user.'
+    Write-Output (@{ systemMessage = $msg } | ConvertTo-Json -Compress)
+} else {
+    Write-Output '{}'
+}
 exit 0

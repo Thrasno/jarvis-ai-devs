@@ -78,6 +78,10 @@ type Agent interface {
 	// user prompts to the hive-daemon HTTP endpoint (port HIVE_HTTP_PORT, default 7438).
 	// hooksFS must be a sub-FS rooted at embed/hooks.
 	InstallPromptHook(hooksFS fs.FS) error
+
+	// InstallSessionHooks installs SessionStart and Stop hooks for Hive memory injection.
+	// hooksFS must be a sub-FS rooted at embed/hooks.
+	InstallSessionHooks(hooksFS fs.FS) error
 }
 
 // Detect returns all agents detected as installed on the current system.
