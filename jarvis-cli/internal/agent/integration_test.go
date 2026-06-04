@@ -602,6 +602,9 @@ func TestClaudeAgent_InstallSessionHooks(t *testing.T) {
 	if !ok || len(stop) == 0 {
 		t.Fatal("settings.json missing hooks.Stop array")
 	}
+	if _, ok := hooks["SessionEnd"]; ok {
+		t.Fatal("settings.json must not register hive-session-stop under SessionEnd")
+	}
 	foundStop := false
 	for _, entry := range stop {
 		if entryMap, ok := entry.(map[string]any); ok && entryMap["name"] == "hive-session-stop" {

@@ -137,6 +137,7 @@ Evaluate every development request against these three signals before responding
 - **S3** non-trivial coordination or regression risk — ordering constraints, shared state, or integration surface
 
 Decision rule (deterministic, no exceptions):
+- Count only signals that are clearly present; mixed or unclear complexity defaults to inline recommendation.
 - ≥2 signals present → **SDD recommendation required**
 - ≤1 signal present → proceed inline, no recommendation
 

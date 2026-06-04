@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -164,7 +165,7 @@ func TestClaudePowerShellPromptHook_FirstPromptInjectsSystemMessage(t *testing.T
 	powershell := requirePowerShell(t)
 	scriptPath := claudePowerShellHookScriptPath(t)
 
-	stateFile := filepath.Join(filepath.Dir(scriptPath), ".first-prompt-done")
+	stateFile := claudePowerShellSessionStateFile(t, "powershell-first-prompt-test")
 	// Ensure the state file does not exist before the test.
 	_ = os.Remove(stateFile)
 	t.Cleanup(func() {
@@ -175,7 +176,7 @@ func TestClaudePowerShellPromptHook_FirstPromptInjectsSystemMessage(t *testing.T
 
 	port := unusedLocalPort(t)
 	cmd := powerShellHookCommand(t, powershell, scriptPath)
-	cmd.Env = append(cmd.Environ(), "HIVE_HTTP_PORT="+port)
+	cmd.Env = append(cmd.Environ(), "HIVE_HTTP_PORT="+port, "HIVE_CLAUDE_SESSION_ID=powershell-first-prompt-test")
 	cmd.Stdin = strings.NewReader(`{"prompt":"first user prompt"}`)
 
 	var stdout bytes.Buffer
@@ -197,7 +198,77 @@ func TestClaudePowerShellPromptHook_FirstPromptInjectsSystemMessage(t *testing.T
 	}
 
 	if _, err := os.Stat(stateFile); err != nil {
-		t.Fatalf(".first-prompt-done was not created after first prompt: %v", err)
+		t.Fatalf("session-scoped first prompt marker was not created after first prompt: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(scriptPath), ".first-prompt-done")); !os.IsNotExist(err) {
+		t.Fatalf("script-local .first-prompt-done marker should not exist, stat error: %v", err)
+	}
+}
+
+func TestClaudePowerShellHooks_NoMetadataFallbackUsesParentProcessMarker(t *testing.T) {
+	powershell := requirePowerShell(t)
+	sessionStartPath := claudePowerShellHookScriptPath(t, "session-start.ps1")
+	userPromptPath := claudePowerShellHookScriptPath(t, "user-prompt-submit.ps1")
+	sessionStopPath := claudePowerShellHookScriptPath(t, "session-stop.ps1")
+
+	stateFile := claudePowerShellSessionStateFile(t, "ppid-"+strconv.Itoa(os.Getpid()))
+	_ = os.Remove(stateFile)
+	t.Cleanup(func() {
+		if err := os.Remove(stateFile); err != nil && !os.IsNotExist(err) {
+			t.Logf("parent-process fallback cleanup: %v", err)
+		}
+	})
+
+	startCmd := powerShellHookCommand(t, powershell, sessionStartPath)
+	startCmd.Stdin = strings.NewReader(`{}`)
+	if output, err := startCmd.CombinedOutput(); err != nil {
+		t.Fatalf("SessionStart hook failed: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(stateFile); err != nil {
+		t.Fatalf("SessionStart did not create parent-process fallback marker %q: %v", stateFile, err)
+	}
+
+	promptCmd := powerShellHookCommand(t, powershell, userPromptPath)
+	promptCmd.Env = append(promptCmd.Environ(), "HIVE_HTTP_PORT="+unusedLocalPort(t))
+	promptCmd.Stdin = strings.NewReader(`{"prompt":"same fallback session"}`)
+	var promptStdout bytes.Buffer
+	promptCmd.Stdout = &promptStdout
+	if err := promptCmd.Run(); err != nil {
+		t.Fatalf("UserPromptSubmit hook failed: %v", err)
+	}
+	if strings.TrimSpace(promptStdout.String()) != "{}" {
+		t.Fatalf("UserPromptSubmit did not reuse parent-process fallback marker; stdout=%q", promptStdout.String())
+	}
+
+	stopCmd := powerShellHookCommand(t, powershell, sessionStopPath)
+	stopCmd.Stdin = strings.NewReader(`{}`)
+	if output, err := stopCmd.CombinedOutput(); err != nil {
+		t.Fatalf("Stop hook failed: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(stateFile); !os.IsNotExist(err) {
+		t.Fatalf("Stop did not remove parent-process fallback marker, stat error: %v", err)
+	}
+}
+
+func TestClaudePowerShellHooks_NoMetadataFallbackIsNotCurrentPIDOnly(t *testing.T) {
+	for _, script := range []string{"session-start.ps1", "session-stop.ps1", "user-prompt-submit.ps1"} {
+		t.Run(script, func(t *testing.T) {
+			content, err := os.ReadFile(claudePowerShellHookScriptPath(t, script))
+			if err != nil {
+				t.Fatalf("read hook: %v", err)
+			}
+			text := string(content)
+			if !strings.Contains(text, "ParentProcessId") {
+				t.Fatalf("%s should prefer the parent process for no-metadata fallback", script)
+			}
+			resolveSessionID := text
+			if idx := strings.Index(text, "function Resolve-HiveFallbackSessionId"); idx >= 0 {
+				resolveSessionID = text[:idx]
+			}
+			if strings.Contains(resolveSessionID, "return \"ppid-$PID\"") {
+				t.Fatalf("%s should not use current PID as the immediate no-metadata fallback", script)
+			}
+		})
 	}
 }
 
@@ -213,13 +284,17 @@ func requirePowerShell(t *testing.T) string {
 	return ""
 }
 
-func claudePowerShellHookScriptPath(t *testing.T) string {
+func claudePowerShellHookScriptPath(t *testing.T, scripts ...string) string {
 	t.Helper()
+	script := "user-prompt-submit.ps1"
+	if len(scripts) > 0 {
+		script = scripts[0]
+	}
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("resolve current test file path")
 	}
-	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", "embed", "hooks", "claude", "user-prompt-submit.ps1"))
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", "embed", "hooks", "claude", script))
 }
 
 func powerShellHookCommand(t *testing.T, powershell, scriptPath string) *exec.Cmd {
@@ -311,13 +386,15 @@ func unusedLocalPort(t *testing.T) string {
 	return port
 }
 
-// ensureFirstPromptDone creates the .first-prompt-done state file next to the
-// hook script so that runtime tests that exercise POST / non-blocking behavior
-// are not affected by the first-prompt injection path. The file is removed by
-// a t.Cleanup so it does not linger in the source tree after the test run.
+// ensureFirstPromptDone creates the session-scoped state file so runtime tests
+// that exercise POST / non-blocking behavior are not affected by the first-prompt
+// injection path. The file is removed by t.Cleanup so it does not linger after
+// the test run.
 func ensureFirstPromptDone(t *testing.T, scriptPath string) {
 	t.Helper()
-	stateFile := filepath.Join(filepath.Dir(scriptPath), ".first-prompt-done")
+	sessionID := "powershell-prompt-hook-test"
+	t.Setenv("HIVE_CLAUDE_SESSION_ID", sessionID)
+	stateFile := claudePowerShellSessionStateFile(t, sessionID)
 	if err := os.WriteFile(stateFile, []byte("test"), 0644); err != nil {
 		t.Fatalf("ensureFirstPromptDone: write state file: %v", err)
 	}
@@ -326,4 +403,25 @@ func ensureFirstPromptDone(t *testing.T, scriptPath string) {
 			t.Logf("ensureFirstPromptDone cleanup: %v", err)
 		}
 	})
+}
+
+func claudePowerShellSessionStateFile(t *testing.T, sessionID string) string {
+	t.Helper()
+	stateRoot := filepath.Join(os.TempDir(), "jarvis-hive", "claude-hooks")
+	if err := os.MkdirAll(stateRoot, 0755); err != nil {
+		t.Fatalf("create state root: %v", err)
+	}
+	safeSessionID := strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '.' || r == '-' {
+			return r
+		}
+		return '_'
+	}, sessionID)
+	if len(safeSessionID) > 160 {
+		safeSessionID = safeSessionID[:160]
+	}
+	if strings.TrimSpace(safeSessionID) == "" {
+		safeSessionID = "unknown"
+	}
+	return filepath.Join(stateRoot, "first-prompt-"+safeSessionID+".done")
 }

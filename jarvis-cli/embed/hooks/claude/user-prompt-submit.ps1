@@ -84,13 +84,61 @@ try {
     }
 }
 
+function Resolve-HiveSessionId {
+    param([object]$Payload)
+
+    foreach ($name in @('HIVE_CLAUDE_SESSION_ID', 'CLAUDE_SESSION_ID', 'SESSION_ID')) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+    }
+
+    if ($null -ne $Payload) {
+        foreach ($name in @('session_id', 'sessionId', 'transcript_path', 'transcriptPath')) {
+            if ($Payload.PSObject.Properties.Name -contains $name) {
+                $value = [string]$Payload.$name
+                if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+            }
+        }
+        if ($Payload.PSObject.Properties.Name -contains 'session' -and $null -ne $Payload.session) {
+            if ($Payload.session.PSObject.Properties.Name -contains 'id') {
+                $value = [string]$Payload.session.id
+                if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+            }
+        }
+    }
+
+    return Resolve-HiveFallbackSessionId
+}
+
+function Resolve-HiveFallbackSessionId {
+    try {
+        $process = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $PID"
+        if ($null -ne $process -and $null -ne $process.ParentProcessId) {
+            return "ppid-$($process.ParentProcessId)"
+        }
+    } catch {}
+
+    return "ppid-$PID"
+}
+
+function Get-HiveSessionStateFile {
+    param([object]$Payload)
+
+    $sessionId = Resolve-HiveSessionId -Payload $Payload
+    $safeSessionId = [regex]::Replace($sessionId, '[^A-Za-z0-9_.-]', '_')
+    if ($safeSessionId.Length -gt 160) { $safeSessionId = $safeSessionId.Substring(0, 160) }
+    if ([string]::IsNullOrWhiteSpace($safeSessionId)) { $safeSessionId = 'unknown' }
+    $stateRoot = Join-Path ([IO.Path]::GetTempPath()) 'jarvis-hive/claude-hooks'
+    try { [IO.Directory]::CreateDirectory($stateRoot) | Out-Null } catch {}
+    return Join-Path $stateRoot "first-prompt-$safeSessionId.done"
+}
+
 # First-prompt injection design:
-# When SessionStart hook is installed: session-start.{ps1,sh} pre-creates .first-prompt-done
-# before any user prompt, so this branch is never reached — sessionStart is the primary
-# injection path.
-# When SessionStart is NOT installed (e.g. older Claude Code builds): this branch fires on
-# the first prompt and acts as the fallback injection mechanism.
-$stateFile = Join-Path $PSScriptRoot '.first-prompt-done'
+# When SessionStart is installed, session-start.{ps1,sh} creates this session-scoped
+# marker in temp storage before any user prompt, so this branch is skipped. When
+# SessionStart is unavailable, this branch creates the marker for the current session
+# and acts as the fallback injection mechanism.
+$stateFile = Get-HiveSessionStateFile -Payload $payload
 $created = $false
 try {
     $stream = [System.IO.File]::Open($stateFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
