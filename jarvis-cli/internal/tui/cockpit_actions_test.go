@@ -83,7 +83,7 @@ func TestCockpitActions_DispatchContractIsStableAndExtensible(t *testing.T) {
 }
 
 func TestCockpitLogo_LoadsEmbeddedTextAssetCopiedFromDesignSource(t *testing.T) {
-	source, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "design", "nexus-logo-braille-64col.txt"))
+	source, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "branding", "design", "nexus-logo-braille-64col.txt"))
 	if err != nil {
 		t.Fatalf("read design source logo: %v", err)
 	}

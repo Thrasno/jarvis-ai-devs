@@ -64,7 +64,7 @@ from `jarvis-cli/`.
 
 ## Installation
 
-### Public installer (recommended when releases exist)
+### Public installer (latest production release)
 
 Linux/macOS:
 
@@ -82,6 +82,19 @@ Optional overrides:
 
 - `JARVIS_INSTALL_REPO=owner/repo` to fetch artifacts from another repository.
 - `JARVIS_INSTALL_VERSION=vX.Y.Z` to force a specific release tag (skip `releases/latest`).
+- `JARVIS_INSTALL_VERSION=beta` to install the current public beta prerelease.
+
+Beta examples:
+
+```bash
+export JARVIS_INSTALL_VERSION=beta
+curl -sSL https://raw.githubusercontent.com/Thrasno/jarvis-ai-devs/master/scripts/install.sh | bash
+```
+
+```powershell
+$env:JARVIS_INSTALL_VERSION = "beta"
+irm https://raw.githubusercontent.com/Thrasno/jarvis-ai-devs/master/scripts/install.ps1 | iex
+```
 
 If no public releases are published yet, installer scripts will fail fast with explicit guidance. They also retry transient GitHub/CDN 5xx/429 failures with backoff and validate artifact content before extraction to avoid HTML/error-page unpack attempts. In that case, use the from-source path below.
 
@@ -95,7 +108,7 @@ Build each binary from its module:
 
 ### Release artifacts
 
-The repository includes `.goreleaser.yaml` to package multi-platform binaries for the main CLI and daemon components.
+The repository includes `.goreleaser.yaml` to package multi-platform binaries for the main CLI and daemon components. Linux artifacts are validated across modules; Windows CI validates the CLI and PowerShell syntax. macOS artifacts are best effort from GoReleaser.
 
 ### Release rollout and reconfiguration
 

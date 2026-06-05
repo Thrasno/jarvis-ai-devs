@@ -3,13 +3,14 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "v*.*.*"
 
 permissions:
   contents: write
 
 jobs:
   goreleaser:
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -17,13 +18,27 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Validate production tag
+        shell: bash
+        run: |
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Production releases require an immutable vX.Y.Z tag. Got: ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version-file: jarvis-cli/go.mod
           cache-dependency-path: |
             jarvis-cli/go.sum
             hive-daemon/go.sum
+
+      - name: Check GoReleaser config
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: check
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6

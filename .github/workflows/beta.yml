@@ -1,0 +1,125 @@
+name: Beta Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: beta-release
+  cancel-in-progress: false
+
+env:
+  INTERNAL_BETA_TAG: v0.0.1-beta
+  PUBLIC_BETA_TAG: beta
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Verify beta source is remote master
+        shell: bash
+        run: |
+          git fetch origin +refs/heads/master:refs/remotes/origin/master --prune
+          remote_master="$(git rev-parse origin/master)"
+          current_commit="$(git rev-parse HEAD)"
+          if [[ "${current_commit}" != "${remote_master}" ]]; then
+            echo "Beta releases must be published from origin/master." >&2
+            echo "HEAD=${current_commit}" >&2
+            echo "origin/master=${remote_master}" >&2
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: jarvis-cli/go.mod
+          cache-dependency-path: |
+            jarvis-cli/go.sum
+            hive-daemon/go.sum
+
+      - name: Move internal beta tag
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "${INTERNAL_BETA_TAG}"
+          git push origin "refs/tags/${INTERNAL_BETA_TAG}" --force
+          test "$(git rev-list -n 1 "${INTERNAL_BETA_TAG}")" = "$(git rev-parse HEAD)"
+
+      - name: Delete previous internal beta release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete "${INTERNAL_BETA_TAG}" --yes || true
+
+      - name: Check GoReleaser config
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: check
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: v0.0.1-beta
+
+      - name: Publish public beta release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          rm -rf public-beta-assets
+          mkdir -p public-beta-assets
+          gh release download "${INTERNAL_BETA_TAG}" --dir public-beta-assets
+
+          INTERNAL_VERSION="${INTERNAL_BETA_TAG#v}"
+          PUBLIC_VERSION="${PUBLIC_BETA_TAG#v}"
+          for asset in public-beta-assets/*; do
+            filename="$(basename "${asset}")"
+            renamed="public-beta-assets/${filename//$INTERNAL_VERSION/$PUBLIC_VERSION}"
+            if [[ "${asset}" != "${renamed}" ]]; then
+              mv "${asset}" "${renamed}"
+            fi
+          done
+          if [[ -f public-beta-assets/checksums.txt ]]; then
+            sed -i "s/${INTERNAL_VERSION//./\\.}/${PUBLIC_VERSION}/g" public-beta-assets/checksums.txt
+            if grep -Fq "${INTERNAL_VERSION}" public-beta-assets/checksums.txt; then
+              echo "checksums.txt still references ${INTERNAL_VERSION}" >&2
+              exit 1
+            fi
+            (cd public-beta-assets && sha256sum -c checksums.txt)
+          fi
+
+          gh release delete "${PUBLIC_BETA_TAG}" --yes || true
+          git tag -f "${PUBLIC_BETA_TAG}"
+          git push origin "refs/tags/${PUBLIC_BETA_TAG}" --force
+          gh release create "${PUBLIC_BETA_TAG}" public-beta-assets/* \
+            --target "$(git rev-parse HEAD)" \
+            --title "${PUBLIC_BETA_TAG}" \
+            --notes "Mutable beta release for $(git rev-parse --short HEAD)." \
+            --prerelease \
+            --latest=false
+
+      - name: Verify public beta release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          test "$(git rev-list -n 1 "${PUBLIC_BETA_TAG}")" = "$(git rev-parse HEAD)"
+          release_target=$(gh release view "${PUBLIC_BETA_TAG}" --json targetCommitish --jq '.targetCommitish')
+          test "${release_target}" = "$(git rev-parse HEAD)"
+          gh release view "${PUBLIC_BETA_TAG}" --json tagName,isPrerelease,isLatest,targetCommitish,assets
+          gh release view "${PUBLIC_BETA_TAG}" --json assets --jq '.assets[].name' | tee assets.txt
+          grep -q '^jarvis_beta_' assets.txt
+          grep -q '^hive-daemon_beta_' assets.txt

@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go (${{ matrix.module }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            module: jarvis-cli
+          - os: ubuntu-latest
+            module: hive-daemon
+          - os: ubuntu-latest
+            module: hive-api
+          - os: windows-latest
+            module: jarvis-cli
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - name: Test
+        working-directory: ${{ matrix.module }}
+        run: go test ./...
+
+      - name: Vet
+        working-directory: ${{ matrix.module }}
+        run: go vet ./...
+
+  shell-hooks:
+    name: Shell hooks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate shell syntax
+        shell: bash
+        run: |
+          mapfile -t files < <(find scripts jarvis-cli/embed/hooks -type f -name '*.sh' | sort)
+          for file in "${files[@]}"; do
+            echo "bash -n ${file}"
+            bash -n "${file}"
+          done
+
+  powershell-hooks:
+    name: PowerShell hooks
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path "scripts", "jarvis-cli/embed/hooks" -Recurse -Filter "*.ps1" -File | Sort-Object FullName
+          foreach ($file in $files) {
+            Write-Host "Parsing $($file.FullName)"
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref] $tokens, [ref] $errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | Format-List | Out-String | Write-Host
+              exit 1
+            }
+          }

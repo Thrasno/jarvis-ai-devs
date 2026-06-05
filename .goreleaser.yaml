@@ -9,7 +9,7 @@ before:
 
 builds:
   # ============================================================
-  # jarvis — CLI + wizard para usuarios
+  # jarvis — user-facing CLI and setup wizard
   # ============================================================
   - id: jarvis
     main: ./cmd/jarvis
@@ -28,7 +28,7 @@ builds:
       - -s -w -X main.version={{.Version}}
 
   # ============================================================
-  # hive-daemon — MCP server local
+  # hive-daemon — local MCP server
   # ============================================================
   - id: hive-daemon
     main: ./cmd/hive-daemon
@@ -47,7 +47,7 @@ builds:
       - -s -w -X main.version={{.Version}}
 
 archives:
-  # Archivos separados para cada binario
+  # Separate archives for each binary.
   - id: jarvis-archive
     builds:
       - jarvis
@@ -88,4 +88,4 @@ release:
     name: jarvis-ai-devs
   draft: false
   prerelease: auto
-  name_template: "v{{.Version}}"
+  name_template: "{{ .Tag }}"

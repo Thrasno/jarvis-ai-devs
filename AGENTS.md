@@ -218,17 +218,17 @@ Never commit:
 
 When the user asks to "saca release beta", "generar beta", or equivalent:
 
-- Use the fixed beta channel `v0.0.1-beta`.
-- Do not create a new beta version unless explicitly requested.
-- Move `v0.0.1-beta` to the current source commit.
-- Regenerate the GitHub release assets through the Release workflow.
-- If existing release assets conflict, delete the existing GitHub release, keep the updated tag, and rerun the workflow.
-- Verify the release is recreated as a prerelease with fresh `jarvis` and `hive-daemon` assets.
+- Use the fixed public beta channel `beta`.
+- Do not create a new public beta version unless explicitly requested.
+- Use the internal GoReleaser-compatible prerelease tag documented in `docs/release-runbook.md` only as build input.
+- Regenerate the GitHub release assets through the Beta Release workflow.
+- Verify the `beta` release is recreated as a prerelease with fresh `jarvis` and `hive-daemon` assets.
+- Verify tester install commands still work with `JARVIS_INSTALL_VERSION=beta`.
 - Follow `docs/release-runbook.md` for exact commands and verification.
 
 When the user asks to "saca release PROD", "generar release de produccion", or equivalent:
 
-- Do not reuse `v0.0.1-beta`.
+- Do not reuse the public `beta` channel or the internal beta prerelease tag.
 - Create a new immutable production release tag.
 - Choose the next semantic version based on the implemented changes:
   - patch for fixes or safe improvements,
