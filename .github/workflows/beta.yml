@@ -119,7 +119,7 @@ jobs:
           test "$(git rev-list -n 1 "${PUBLIC_BETA_TAG}")" = "$(git rev-parse HEAD)"
           release_target=$(gh release view "${PUBLIC_BETA_TAG}" --json targetCommitish --jq '.targetCommitish')
           test "${release_target}" = "$(git rev-parse HEAD)"
-          gh release view "${PUBLIC_BETA_TAG}" --json tagName,isPrerelease,isLatest,targetCommitish,assets
+          gh release view "${PUBLIC_BETA_TAG}" --json tagName,isPrerelease,targetCommitish,assets
           gh release view "${PUBLIC_BETA_TAG}" --json assets --jq '.assets[].name' | tee assets.txt
           grep -q '^jarvis_beta_' assets.txt
           grep -q '^hive-daemon_beta_' assets.txt

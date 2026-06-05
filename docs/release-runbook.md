@@ -37,7 +37,7 @@ Use this path when the user asks for a beta release, beta update, or equivalent 
    ```bash
    git ls-remote origin refs/heads/master refs/tags/beta refs/tags/beta^{} refs/tags/v0.0.1-beta refs/tags/v0.0.1-beta^{}
    gh run view <run-id> --json headSha,url
-   gh release view beta --json tagName,targetCommitish,name,isPrerelease,isLatest,isDraft,publishedAt,url,assets
+   gh release view beta --json tagName,targetCommitish,name,isPrerelease,isDraft,publishedAt,url,assets
    ```
 
    Compare the remote `origin/master` commit, workflow `headSha`, public `beta` release target/tag, and remote tag refs. Do not rely on a local `git rev-list beta` unless tags were fetched first.
