@@ -223,5 +223,5 @@ func readRepoFile(t *testing.T, path string) string {
 	if err != nil {
 		t.Fatalf("read repo file %s: %v", path, err)
 	}
-	return string(content)
+	return strings.ReplaceAll(string(content), "\r\n", "\n")
 }
