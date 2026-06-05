@@ -26,7 +26,7 @@ const MaxObservationLength = 50_000
 // MaxRecentPrompts is the maximum number of recent user prompts to include in mem_context.
 const MaxRecentPrompts = 10
 
-func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncStore, syncer SyncRunner, cfg *hivesync.Config, activity *ActivityTracker, prompts PromptStore) {
+func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime, activity *ActivityTracker, prompts PromptStore) {
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_session_start",
 		Description: "Start a new named session to track tool calls and memory saves under a single lifecycle.",
@@ -76,7 +76,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncS
 				"project_choice_reason": {"type": "string", "description": "Original ambiguous project/context used when retrying with recovery_token"}
 			}
 		}`),
-	}, memSaveHandler(store, syncer, cfg, activity))
+	}, memSaveHandler(store, syncRuntime, activity))
 
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_suggest_topic_key",
@@ -156,7 +156,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncStore hivesync.SyncS
 				"project": {"type": "string", "description": "Project to sync (e.g. 'jarvis-dev')"}
 			}
 		}`),
-	}, memSyncHandler(syncStore, syncer))
+	}, memSyncHandler(syncRuntime))
 
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_save_prompt",
@@ -251,7 +251,7 @@ func memSessionEndHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.T
 	}
 }
 
-func memSaveHandler(store MemoryStore, syncer SyncRunner, cfg *hivesync.Config, activity *ActivityTracker) sdkmcp.ToolHandler {
+func memSaveHandler(store MemoryStore, syncRuntime *syncRuntime, activity *ActivityTracker) sdkmcp.ToolHandler {
 	return func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 		var p struct {
 			Title               string   `json:"title"`
@@ -319,8 +319,12 @@ func memSaveHandler(store MemoryStore, syncer SyncRunner, cfg *hivesync.Config, 
 		activity.RecordSaveForSession(sessionID)
 		activity.RecordSave(p.Project)
 
-		// Auto-sync: spawn background goroutine if enabled
-		if cfg != nil && cfg.AutoSync && syncer != nil {
+		autosyncStatus := "disabled"
+		syncer, syncStatus, syncConfigErr := syncRuntime.current()
+		if syncConfigErr != nil {
+			autosyncStatus = "config_error"
+		} else if syncStatus.AutoSync && syncer != nil {
+			autosyncStatus = "queued"
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
@@ -331,10 +335,14 @@ func memSaveHandler(store MemoryStore, syncer SyncRunner, cfg *hivesync.Config, 
 		}
 
 		return toolJSON(map[string]any{
-			"id":             id,
-			"status":         "saved",
-			"stripped":       strippedCount > 0,
-			"stripped_count": strippedCount,
+			"id":                     id,
+			"status":                 "saved",
+			"stripped":               strippedCount > 0,
+			"stripped_count":         strippedCount,
+			"autosync_status":        autosyncStatus,
+			"autosync_config_source": syncStatus.Source,
+			"auto_sync":              syncStatus.AutoSync,
+			"autosync_warnings":      syncStatus.Warnings,
 		})
 	}
 }
@@ -820,19 +828,12 @@ func toolJSON(v any) (*sdkmcp.CallToolResult, error) {
 	}, nil
 }
 
-func memSyncHandler(syncStore hivesync.SyncStore, syncer SyncRunner) sdkmcp.ToolHandler {
-	// syncer se captura por referencia — la inicialización lazy persiste entre llamadas.
+func memSyncHandler(syncRuntime *syncRuntime) sdkmcp.ToolHandler {
+	// syncRuntime lazy-loads config and recreates the syncer when credentials change.
 	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
-		// Lazy init: si el daemon arrancó sin las vars (proceso en caché, env tardío),
-		// intentamos cargarlas ahora en cada llamada hasta que estén disponibles.
-		if syncer == nil && syncStore != nil {
-			cfg, err := hivesync.Load()
-			if err != nil {
-				return toolError(fmt.Errorf("sync config error: %w", err)), nil
-			}
-			if cfg != nil {
-				syncer = hivesync.New(cfg, syncStore)
-			}
+		syncer, syncStatus, err := syncRuntime.current()
+		if err != nil {
+			return toolError(fmt.Errorf("sync config error: %w", err)), nil
 		}
 		if syncer == nil {
 			return toolError(errors.New(syncNotConfiguredMessage(runtime.GOOS))), nil
@@ -852,17 +853,21 @@ func memSyncHandler(syncStore hivesync.SyncStore, syncer SyncRunner) sdkmcp.Tool
 		if err != nil {
 			if errors.Is(err, hivesync.ErrSyncInFlight) {
 				return toolJSON(map[string]any{
-					"project": p.Project,
-					"status":  "in_flight",
+					"project":       p.Project,
+					"status":        "in_flight",
+					"config_source": syncStatus.Source,
+					"auto_sync":     syncStatus.AutoSync,
 				})
 			}
 
 			var backoffErr *hivesync.BackoffError
 			if errors.As(err, &backoffErr) {
 				return toolJSON(map[string]any{
-					"project":  p.Project,
-					"retry_at": backoffErr.RetryAt.UTC().Format(time.RFC3339),
-					"status":   "backoff",
+					"project":       p.Project,
+					"retry_at":      backoffErr.RetryAt.UTC().Format(time.RFC3339),
+					"status":        "backoff",
+					"config_source": syncStatus.Source,
+					"auto_sync":     syncStatus.AutoSync,
 				})
 			}
 
@@ -870,11 +875,14 @@ func memSyncHandler(syncStore hivesync.SyncStore, syncer SyncRunner) sdkmcp.Tool
 		}
 
 		return toolJSON(map[string]any{
-			"pushed":    result.Pushed,
-			"pulled":    result.Pulled,
-			"conflicts": result.Conflicts,
-			"project":   result.Project,
-			"status":    "ok",
+			"pushed":          result.Pushed,
+			"pulled":          result.Pulled,
+			"conflicts":       result.Conflicts,
+			"project":         result.Project,
+			"status":          "ok",
+			"config_source":   syncStatus.Source,
+			"auto_sync":       syncStatus.AutoSync,
+			"config_warnings": syncStatus.Warnings,
 		})
 	}
 }

@@ -23,6 +23,9 @@ func TestWriteSyncCredentials_CreatesFile(t *testing.T) {
 	if !strings.Contains(string(data), `"email":"user@example.com"`) {
 		t.Fatalf("expected written email, got: %s", string(data))
 	}
+	if strings.Contains(string(data), "auto_sync") {
+		t.Fatalf("expected new credentials to keep auto_sync omitted/disabled, got: %s", string(data))
+	}
 }
 
 func TestWriteSyncCredentials_PreservesAutoSync(t *testing.T) {
