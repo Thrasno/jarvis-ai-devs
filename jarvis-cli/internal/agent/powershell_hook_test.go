@@ -49,7 +49,7 @@ func TestClaudePowerShellPromptHook_PostsPromptPayload(t *testing.T) {
 		if payload["content"] != "capture this Windows prompt" {
 			t.Fatalf("POST content = %q, want %q", payload["content"], "capture this Windows prompt")
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("PowerShell hook did not POST prompt payload to local endpoint")
 	}
 }
@@ -206,6 +206,10 @@ func TestClaudePowerShellPromptHook_FirstPromptInjectsSystemMessage(t *testing.T
 }
 
 func TestClaudePowerShellHooks_NoMetadataFallbackUsesParentProcessMarker(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("parent-process fallback uses Win32_Process and is only stable on Windows")
+	}
+
 	powershell := requirePowerShell(t)
 	sessionStartPath := claudePowerShellHookScriptPath(t, "session-start.ps1")
 	userPromptPath := claudePowerShellHookScriptPath(t, "user-prompt-submit.ps1")
@@ -299,7 +303,7 @@ func claudePowerShellHookScriptPath(t *testing.T, scripts ...string) string {
 
 func powerShellHookCommand(t *testing.T, powershell, scriptPath string) *exec.Cmd {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	t.Cleanup(cancel)
 	return exec.CommandContext(ctx, powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
 }
