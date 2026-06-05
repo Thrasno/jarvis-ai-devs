@@ -49,7 +49,7 @@ builds:
 archives:
   # Separate archives for each binary.
   - id: jarvis-archive
-    builds:
+    ids:
       - jarvis
     formats:
       - tar.gz
@@ -60,7 +60,7 @@ archives:
     name_template: "jarvis_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
   - id: hive-daemon-archive
-    builds:
+    ids:
       - hive-daemon
     formats:
       - tar.gz
