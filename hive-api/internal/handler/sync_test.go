@@ -62,6 +62,91 @@ func TestSync_InvalidBody(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+func TestSync_LegacyMemoryMetadataFieldsDoNotBreakBinding(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	syncResp := &model.SyncResponse{Pushed: 1, Pulled: []*model.Memory{}, Conflicts: 0}
+	syncSvc := &mockSyncSvc{}
+	syncSvc.On("Push", context.Background(), mock.MatchedBy(func(req model.SyncRequest) bool {
+		return len(req.Memories) == 1 && req.Memories[0].SyncID == "11111111-1111-1111-1111-111111111111"
+	}), "user-uuid-123").Return(syncResp, nil)
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).
+		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
+
+	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
+		map[string]interface{}{
+			"project": "jarvis-dev",
+			"memories": []interface{}{
+				map[string]interface{}{
+					"sync_id":        "11111111-1111-1111-1111-111111111111",
+					"project":        "jarvis-dev",
+					"category":       "decision",
+					"title":          "Legacy metadata",
+					"content":        "Compatibility payload",
+					"created_by":     "daemon-user",
+					"confidence":     "high",
+					"impact_score":   7,
+					"created_at":     time.Now().UTC().Format(time.RFC3339),
+					"updated_at":     time.Now().UTC().Format(time.RFC3339),
+					"tags":           []interface{}{},
+					"files_affected": []interface{}{},
+				},
+			},
+		}, "valid-token")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	syncSvc.AssertExpectations(t)
+}
+
+func TestSync_LegacyMutationMetadataFieldsDoNotBreakBinding(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	syncResp := &model.SyncResponse{Pushed: 1, Pulled: []*model.Memory{}, Conflicts: 0}
+	syncSvc := &mockSyncSvc{}
+	syncSvc.On("Push", context.Background(), mock.MatchedBy(func(req model.SyncRequest) bool {
+		return len(req.Mutations) == 1 && req.Mutations[0].EntitySyncID == "22222222-2222-2222-2222-222222222222"
+	}), "user-uuid-123").Return(syncResp, nil)
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).
+		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
+
+	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
+		map[string]interface{}{
+			"project":          "jarvis-dev",
+			"protocol_version": model.MutationProtocolVersion,
+			"memories":         []interface{}{},
+			"mutations": []interface{}{
+				map[string]interface{}{
+					"event_id":       "evt-legacy-metadata",
+					"entity_type":    model.MutationEntityMemory,
+					"entity_sync_id": "22222222-2222-2222-2222-222222222222",
+					"project":        "jarvis-dev",
+					"op":             string(model.MutationOpCreate),
+					"sequence":       1,
+					"occurred_at":    time.Now().UTC().Format(time.RFC3339),
+					"memory": map[string]interface{}{
+						"sync_id":        "22222222-2222-2222-2222-222222222222",
+						"project":        "jarvis-dev",
+						"category":       "decision",
+						"title":          "Legacy mutation metadata",
+						"content":        "Compatibility payload",
+						"created_by":     "daemon-user",
+						"confidence":     "high",
+						"impact_score":   7,
+						"created_at":     time.Now().UTC().Format(time.RFC3339),
+						"updated_at":     time.Now().UTC().Format(time.RFC3339),
+						"tags":           []interface{}{},
+						"files_affected": []interface{}{},
+					},
+				},
+			},
+		}, "valid-token")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	syncSvc.AssertExpectations(t)
+}
+
 func TestSync_ServiceError(t *testing.T) {
 	authSvc := &mockAuthSvc{}
 	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)

@@ -87,8 +87,6 @@ func expectedMem(payload model.SyncMemoryPayload, userID string) *model.Memory {
 		CreatedBy:     userID, // el service sobreescribe con el userID del JWT
 		CreatedAt:     payload.CreatedAt,
 		UpdatedAt:     payload.UpdatedAt,
-		Confidence:    payload.Confidence,
-		ImpactScore:   payload.ImpactScore,
 		SessionID:     sessID,
 	}
 }

@@ -20,7 +20,6 @@ func TestMemory_JSONRoundTrip(t *testing.T) {
 		Tags:          []string{"auth", "jwt"},
 		FilesAffected: []string{"internal/auth/auth.go"},
 		CreatedBy:     "andres",
-		ImpactScore:   80,
 	}
 
 	data, err := json.Marshal(mem)

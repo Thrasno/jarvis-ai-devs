@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -995,8 +996,6 @@ func TestSyncDB_ApplyRemoteMutationNonCreateBranches(t *testing.T) {
 						Tags:          []string{"remote", "update"},
 						FilesAffected: []string{"sync.go"},
 						CreatedBy:     "remote-user",
-						Confidence:    "medium",
-						ImpactScore:   7,
 						SessionID:     "manual-save-remote-update-project",
 					},
 				}
@@ -1280,10 +1279,30 @@ func createTestMemory(project string) *models.Memory {
 		CreatedBy:     "test-user",
 		CreatedAt:     time.Now().UTC(),
 		UpdatedAt:     time.Now().UTC(),
-		Confidence:    "high",
-		ImpactScore:   5,
 		SessionID:     "manual-save-" + project,
 	}
+}
+
+func TestSyncDB_SaveMemoryMutationPayload_OmitsLegacyMetadataFields(t *testing.T) {
+	db := setupTestDB(t)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+
+	project := "metadata-cleanup"
+	require.NoError(t, db.CreateSession("manual-save-"+project, project, "", "test", "test"))
+	_, err := db.SaveMemory(createTestMemory(project))
+	require.NoError(t, err)
+
+	var payloadJSON string
+	require.NoError(t, db.sqlDB.QueryRow(`SELECT payload_json FROM memory_mutations ORDER BY sequence DESC LIMIT 1`).Scan(&payloadJSON))
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal([]byte(payloadJSON), &payload))
+	memory, ok := payload["memory"].(map[string]any)
+	require.True(t, ok, "mutation payload must include a memory object")
+	assert.NotContains(t, memory, "confidence")
+	assert.NotContains(t, memory, "impact_score")
 }
 
 // ─── T-06c: SaveFromRemote non-stripping regression ──────────────────────────

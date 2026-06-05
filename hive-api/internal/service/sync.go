@@ -138,8 +138,6 @@ func (s *syncService) Push(ctx context.Context, req model.SyncRequest, userID st
 			CreatedBy:     userID, // sobreescribimos con el ID del JWT, no el del payload
 			CreatedAt:     payload.CreatedAt,
 			UpdatedAt:     payload.UpdatedAt,
-			Confidence:    payload.Confidence,
-			ImpactScore:   payload.ImpactScore,
 			SessionID:     sessionID,
 		}
 

@@ -36,7 +36,7 @@ func (c MemoryCategory) IsValid() bool {
 //
 // Compatibilidad con hive-daemon:
 // Los campos base (SyncID, Project, TopicKey, Category, Title, Content,
-// Tags, FilesAffected, CreatedBy, CreatedAt, Confidence, ImpactScore)
+// Tags, FilesAffected, CreatedBy, CreatedAt)
 // son idénticos a los del daemon SQLite.
 // Los campos nuevos (UpdatedAt, Origin, SyncedAt) son aditivos —
 // Go ignora campos desconocidos al deserializar JSON, así que el daemon
@@ -81,11 +81,6 @@ type Memory struct {
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-
-	// Confidence e ImpactScore son float32 (número decimal de 32 bits).
-	// Equivalen a REAL en PostgreSQL. Rango 0.0 a 1.0.
-	Confidence  float32 `json:"confidence"`
-	ImpactScore float32 `json:"impact_score"`
 
 	// Origin identifica qué daemon/usuario envió esta memoria al servidor.
 	// Es server-only: el servidor lo establece al recibir el sync.
@@ -138,8 +133,6 @@ type MemoryPayload struct {
 	CreatedBy     string         `json:"created_by"`
 	CreatedAt     time.Time      `json:"created_at"`
 	UpdatedAt     time.Time      `json:"updated_at"`
-	Confidence    float32        `json:"confidence"`
-	ImpactScore   float32        `json:"impact_score"`
 	SessionID     string         `json:"session_id,omitempty"`
 }
 
