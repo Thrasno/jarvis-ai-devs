@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/governance"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/httpapi"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 	hivemcp "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/mcp"
@@ -56,7 +57,7 @@ func main() {
 	httpDone := make(chan struct{})
 	go func() {
 		defer close(httpDone)
-		srv := httpapi.NewServerWithProjectStore(httpAddr(), store, store)
+		srv := httpapi.NewServerWithProjectStoreAndGovernance(httpAddr(), store, store, governance.NewService(store))
 		if err := srv.Start(rootCtx); err != nil {
 			logger.Log.Printf("http server stopped: %v (mcp continues)", err)
 		}

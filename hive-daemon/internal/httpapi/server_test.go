@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/governance"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/httpapi"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
@@ -605,4 +607,199 @@ func TestPostPrompts_NoPrivateTags_ReturnsStrippedFalse(t *testing.T) {
 	if count, ok := resp["stripped_count"]; !ok || count != float64(0) {
 		t.Errorf("stripped_count = %v, want 0", resp["stripped_count"])
 	}
+}
+
+func TestGovernanceGETEndpointsReturnReadOnlyViews(t *testing.T) {
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.CreateSession("sess-alpha", "alpha", "/repo/alpha", "dev", "test"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if _, err := store.SaveMemory(&models.Memory{Project: "alpha", Title: "Active", Content: "content", SessionID: "sess-alpha"}); err != nil {
+		t.Fatalf("SaveMemory: %v", err)
+	}
+	if err := store.RecordSyncFailure("alpha", time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC), 2, time.Date(2026, 6, 6, 12, 5, 0, 0, time.UTC), errors.New("sync failed (503): upstream body")); err != nil {
+		t.Fatalf("RecordSyncFailure: %v", err)
+	}
+	before := readHTTPGovernanceCounters(t, store)
+
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", store, governance.NewService(store))
+
+	for _, tt := range []struct {
+		path      string
+		wantField string
+	}{
+		{path: "/governance/projects", wantField: "projects"},
+		{path: "/governance/projects/alpha", wantField: "project"},
+		{path: "/governance/memories?project=alpha", wantField: "memories"},
+		{path: "/governance/health", wantField: "projects"},
+	} {
+		t.Run(tt.path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			rr := httptest.NewRecorder()
+
+			srv.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+			}
+			var resp map[string]any
+			if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+				t.Fatalf("response not valid JSON: %v", err)
+			}
+			if _, ok := resp[tt.wantField]; !ok {
+				t.Fatalf("response missing %q: %v", tt.wantField, resp)
+			}
+			if tt.path == "/governance/health" {
+				projects := resp["projects"].([]any)
+				health := projects[0].(map[string]any)
+				if _, ok := health["consecutive_failures"]; !ok {
+					t.Fatalf("health response missing snake_case field: %v", health)
+				}
+				if _, ok := health["ConsecutiveFailures"]; ok {
+					t.Fatalf("health response leaked Go field name: %v", health)
+				}
+			}
+			if tt.path == "/governance/memories?project=alpha" {
+				memories := resp["memories"].([]any)
+				memory := memories[0].(map[string]any)
+				if _, ok := memory["deleted_at"]; ok {
+					t.Fatalf("active memory response must omit deleted_at: %v", memory)
+				}
+			}
+		})
+	}
+
+	after := readHTTPGovernanceCounters(t, store)
+	if before != after {
+		t.Fatalf("GET governance endpoints mutated state: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestGovernanceEndpointStatusMapping(t *testing.T) {
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.CreateSession("sess-alpha", "alpha", "/repo/alpha", "dev", "test"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", store, governance.NewService(store))
+
+	for _, tt := range []struct {
+		name string
+		path string
+		want int
+	}{
+		{name: "project detail rejects blank name", path: "/governance/projects/%20", want: http.StatusBadRequest},
+		{name: "project detail returns not found for unknown project", path: "/governance/projects/missing", want: http.StatusNotFound},
+		{name: "memories require project query", path: "/governance/memories", want: http.StatusBadRequest},
+		{name: "memories reject blank project query", path: "/governance/memories?project=+", want: http.StatusBadRequest},
+		{name: "memories return not found for unknown project", path: "/governance/memories?project=missing", want: http.StatusNotFound},
+		{name: "memories reject malformed limit", path: "/governance/memories?project=alpha&limit=bogus", want: http.StatusBadRequest},
+		{name: "memories reject huge limit", path: "/governance/memories?project=alpha&limit=501", want: http.StatusBadRequest},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			rr := httptest.NewRecorder()
+
+			srv.ServeHTTP(rr, req)
+
+			if rr.Code != tt.want {
+				t.Fatalf("expected %d, got %d — body: %s", tt.want, rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestGovernanceMemoriesLimitContract(t *testing.T) {
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.CreateSession("sess-alpha", "alpha", "/repo/alpha", "dev", "test"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := store.SaveMemory(&models.Memory{Project: "alpha", Title: "Memory", Content: "content", SessionID: "sess-alpha"}); err != nil {
+			t.Fatalf("SaveMemory: %v", err)
+		}
+	}
+
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", store, governance.NewService(store))
+
+	for _, tt := range []struct {
+		name string
+		path string
+		want int
+	}{
+		{name: "explicit positive limit is honored", path: "/governance/memories?project=alpha&limit=1", want: 1},
+		{name: "zero limit uses default", path: "/governance/memories?project=alpha&limit=0", want: 2},
+		{name: "negative limit uses default", path: "/governance/memories?project=alpha&limit=-1", want: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			rr := httptest.NewRecorder()
+
+			srv.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+			}
+			var resp struct {
+				Memories []map[string]any `json:"memories"`
+			}
+			if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+				t.Fatalf("response not valid JSON: %v", err)
+			}
+			if len(resp.Memories) != tt.want {
+				t.Fatalf("memories len = %d, want %d; body: %s", len(resp.Memories), tt.want, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestGovernanceEndpointsRejectNonGETMethods(t *testing.T) {
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", store, governance.NewService(store))
+
+	req := httptest.NewRequest(http.MethodPost, "/governance/projects", nil)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", rr.Code)
+	}
+}
+
+func readHTTPGovernanceCounters(t *testing.T, d *db.DB) governanceCountersHTTP {
+	t.Helper()
+	var got governanceCountersHTTP
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM memories`).Scan(&got.MemoryCount); err != nil {
+		t.Fatalf("count memories: %v", err)
+	}
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM memory_mutations`).Scan(&got.MutationCount); err != nil {
+		t.Fatalf("count mutations: %v", err)
+	}
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM sync_state`).Scan(&got.SyncRows); err != nil {
+		t.Fatalf("count sync_state: %v", err)
+	}
+	return got
+}
+
+type governanceCountersHTTP struct {
+	MemoryCount   int
+	MutationCount int
+	SyncRows      int
 }

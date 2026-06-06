@@ -7,14 +7,21 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/governance"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sanitize"
+)
+
+const (
+	defaultGovernanceMemoryLimit = 100
+	maxGovernanceMemoryLimit     = 500
 )
 
 // PromptStore is the minimal interface httpapi needs.
@@ -23,12 +30,20 @@ type PromptStore interface {
 	SavePrompt(ctx context.Context, project, content string) (*models.Prompt, error)
 }
 
+type GovernanceService interface {
+	Projects(context.Context) ([]governance.Project, error)
+	Project(context.Context, string) (governance.Project, error)
+	Memories(context.Context, governance.MemoryFilter) ([]governance.Memory, error)
+	Health(context.Context) ([]governance.Health, error)
+}
+
 // Server handles HTTP requests for the Hive prompt-capture endpoint.
 type Server struct {
-	addr     string
-	prompts  PromptStore
-	projects project.Store
-	mux      *http.ServeMux
+	addr       string
+	prompts    PromptStore
+	projects   project.Store
+	governance GovernanceService
+	mux        *http.ServeMux
 }
 
 // NewServer constructs a Server bound to addr.
@@ -37,9 +52,23 @@ func NewServer(addr string, prompts PromptStore) *Server {
 }
 
 func NewServerWithProjectStore(addr string, prompts PromptStore, projects project.Store) *Server {
-	s := &Server{addr: addr, prompts: prompts, projects: projects}
+	return NewServerWithProjectStoreAndGovernance(addr, prompts, projects, nil)
+}
+
+func NewServerWithGovernance(addr string, prompts PromptStore, governance GovernanceService) *Server {
+	return NewServerWithProjectStoreAndGovernance(addr, prompts, nil, governance)
+}
+
+func NewServerWithProjectStoreAndGovernance(addr string, prompts PromptStore, projects project.Store, governance GovernanceService) *Server {
+	s := &Server{addr: addr, prompts: prompts, projects: projects, governance: governance}
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("/prompts", s.handlePrompts)
+	if governance != nil {
+		s.mux.HandleFunc("/governance/projects", s.handleGovernanceProjects)
+		s.mux.HandleFunc("/governance/projects/", s.handleGovernanceProject)
+		s.mux.HandleFunc("/governance/memories", s.handleGovernanceMemories)
+		s.mux.HandleFunc("/governance/health", s.handleGovernanceHealth)
+	}
 	return s
 }
 
@@ -183,4 +212,131 @@ func writeProjectValidationError(w http.ResponseWriter, err error) {
 	}
 	w.WriteHeader(http.StatusBadRequest)
 	_ = json.NewEncoder(w).Encode(validationErr)
+}
+
+func (s *Server) handleGovernanceProjects(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	projects, err := s.governance.Projects(r.Context())
+	if err != nil {
+		writeInternalError(w, "governance projects", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"projects": projects})
+}
+
+func (s *Server) handleGovernanceProject(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	name := strings.TrimPrefix(r.URL.Path, "/governance/projects/")
+	project, err := s.governance.Project(r.Context(), name)
+	if err != nil {
+		writeGovernanceError(w, "governance project", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"project": project})
+}
+
+func (s *Server) handleGovernanceMemories(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	limit, err := parseGovernanceMemoryLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	includeDeleted, err := parseOptionalBool(r.URL.Query().Get("include_deleted"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	memories, err := s.governance.Memories(r.Context(), governance.MemoryFilter{
+		Project:        r.URL.Query().Get("project"),
+		IncludeDeleted: includeDeleted,
+		Limit:          limit,
+	})
+	if err != nil {
+		writeGovernanceError(w, "governance memories", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"memories": memories})
+}
+
+func (s *Server) handleGovernanceHealth(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	health, err := s.governance.Health(r.Context())
+	if err != nil {
+		writeInternalError(w, "governance health", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"projects": health})
+}
+
+func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == method {
+		return true
+	}
+	w.WriteHeader(http.StatusMethodNotAllowed)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+	return false
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeInternalError(w http.ResponseWriter, source string, err error) {
+	logger.Log.Printf("%s: %v", source, err)
+	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+}
+
+func writeGovernanceError(w http.ResponseWriter, source string, err error) {
+	status := http.StatusInternalServerError
+	errorMessage := "internal error"
+	if errors.Is(err, governance.ErrProjectRequired) {
+		status = http.StatusBadRequest
+		errorMessage = "project is required"
+	} else if errors.Is(err, governance.ErrProjectNotFound) {
+		status = http.StatusNotFound
+		errorMessage = "project not found"
+	} else {
+		logger.Log.Printf("%s: %v", source, err)
+	}
+	writeJSON(w, status, map[string]string{"error": errorMessage})
+}
+
+func parseGovernanceMemoryLimit(raw string) (int, error) {
+	if strings.TrimSpace(raw) == "" {
+		return defaultGovernanceMemoryLimit, nil
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("limit must be an integer")
+	}
+	if limit <= 0 {
+		return defaultGovernanceMemoryLimit, nil
+	}
+	if limit > maxGovernanceMemoryLimit {
+		return 0, fmt.Errorf("limit must be <= %d", maxGovernanceMemoryLimit)
+	}
+	return limit, nil
+}
+
+func parseOptionalBool(raw string) (bool, error) {
+	if strings.TrimSpace(raw) == "" {
+		return false, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("include_deleted must be a boolean")
+	}
+	return value, nil
 }
