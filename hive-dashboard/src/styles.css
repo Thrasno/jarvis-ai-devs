@@ -1,0 +1,12 @@
+:root { color: #172033; background: #f6f8fb; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+body { margin: 0; }
+#app { min-height: 100vh; display: grid; place-items: center; padding: 2rem; }
+.shell { width: min(920px, 100%); }
+.login-card { width: min(420px, 100%); }
+.card, header { background: white; border: 1px solid #d9e0ea; border-radius: 18px; box-shadow: 0 20px 60px rgb(23 32 51 / 8%); padding: 2rem; }
+.eyebrow { color: #536179; font-size: .78rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+label { display: grid; gap: .4rem; margin-block: 1rem; }
+input, button { border-radius: 10px; font: inherit; padding: .8rem 1rem; }
+input { border: 1px solid #c6cfdb; }
+button { background: #2147ff; border: 0; color: white; cursor: pointer; font-weight: 700; }
+header { margin-bottom: 1rem; }
