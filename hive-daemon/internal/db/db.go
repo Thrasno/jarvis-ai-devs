@@ -189,6 +189,19 @@ CREATE TABLE IF NOT EXISTS recovery_tokens (
 );
 
 CREATE INDEX IF NOT EXISTS idx_recovery_tokens_expires ON recovery_tokens(expires_at);
+
+CREATE TABLE IF NOT EXISTS hive_warnings (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    severity         TEXT NOT NULL,
+    source           TEXT NOT NULL,
+    message          TEXT NOT NULL,
+    resolution_state TEXT NOT NULL DEFAULT 'active' CHECK (resolution_state IN ('active', 'resolved')),
+    resolved_at      DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_hive_warnings_created_at ON hive_warnings(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_hive_warnings_resolution_state ON hive_warnings(resolution_state, created_at DESC);
 `
 
 // DB wraps an SQLite connection with schema validation.
