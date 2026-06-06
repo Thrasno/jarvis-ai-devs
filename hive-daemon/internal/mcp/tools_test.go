@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1244,6 +1245,46 @@ func TestMemSearch_CallsSearch_ReturnsResults(t *testing.T) {
 	}
 	if !strings.Contains(body, "results for") {
 		t.Errorf("response should contain the footer with result count, got: %s", body)
+	}
+}
+
+func TestMemSearch_DoesNotExposeLegacyImpactMetadata(t *testing.T) {
+	legacyMemory := &models.Memory{
+		ID:        1,
+		Title:     "Legacy Metadata",
+		Content:   "legacy payload should not affect search formatting",
+		Project:   "proj",
+		Category:  "architecture",
+		CreatedAt: time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC),
+	}
+	setLegacyImpactScoreIfPresent(t, legacyMemory, 9)
+
+	store := &mockStore{
+		searchFn: func(query, project, category string, limit int) ([]*models.Memory, error) {
+			return []*models.Memory{legacyMemory}, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_search", map[string]any{
+		"query":   "legacy",
+		"project": "proj",
+	})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	body := textContent(t, res)
+	if strings.Contains(body, "⭐") || strings.Contains(body, "impact_score") || strings.Contains(body, "confidence") {
+		t.Fatalf("search output exposed legacy metadata, got: %s", body)
+	}
+}
+
+func setLegacyImpactScoreIfPresent(t *testing.T, mem *models.Memory, score int64) {
+	t.Helper()
+	field := reflect.ValueOf(mem).Elem().FieldByName("ImpactScore")
+	if field.IsValid() && field.CanSet() {
+		field.SetInt(score)
 	}
 }
 

@@ -224,8 +224,6 @@ func TestGetMemory_ReturnsAllFields(t *testing.T) {
 		Category:      "architecture",
 		Tags:          []string{"go"},
 		FilesAffected: []string{"main.go"},
-		Confidence:    "high",
-		ImpactScore:   90,
 		SessionID:     "manual-save-proj",
 	}
 
@@ -253,12 +251,6 @@ func TestGetMemory_ReturnsAllFields(t *testing.T) {
 	}
 	if got.Category != "architecture" {
 		t.Errorf("Category: got %q", got.Category)
-	}
-	if got.Confidence != "high" {
-		t.Errorf("Confidence: got %q", got.Confidence)
-	}
-	if got.ImpactScore != 90 {
-		t.Errorf("ImpactScore: got %d, want 90", got.ImpactScore)
 	}
 	if got.CreatedAt.IsZero() {
 		t.Error("CreatedAt should not be zero")

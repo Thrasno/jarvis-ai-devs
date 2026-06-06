@@ -29,8 +29,8 @@ func (r *postgresMemoryRepository) Create(ctx context.Context, mem *model.Memory
 		INSERT INTO memories
 			(sync_id, project, topic_key, category, title, content,
 			 tags, files_affected, created_by, created_at, updated_at,
-			 origin, confidence, impact_score, session_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+			 origin, session_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		RETURNING id, synced_at`
 
 	tagsJSON, err := json.Marshal(orEmptySlice(mem.Tags))
@@ -46,7 +46,7 @@ func (r *postgresMemoryRepository) Create(ctx context.Context, mem *model.Memory
 		mem.SyncID, mem.Project, mem.TopicKey, mem.Category,
 		mem.Title, mem.Content, tagsJSON, filesJSON,
 		mem.CreatedBy, mem.CreatedAt, mem.UpdatedAt,
-		mem.Origin, mem.Confidence, mem.ImpactScore, mem.SessionID,
+		mem.Origin, mem.SessionID,
 	)
 
 	err = row.Scan(&mem.ID, &mem.SyncedAt)
@@ -60,7 +60,7 @@ func (r *postgresMemoryRepository) Create(ctx context.Context, mem *model.Memory
 func (r *postgresMemoryRepository) GetByID(ctx context.Context, id string) (*model.Memory, error) {
 	const q = `SELECT id, sync_id, project, topic_key, category, title, content,
 	                  tags, files_affected, created_by, created_at, updated_at,
-	                  origin, synced_at, confidence, impact_score, session_id,
+	                  origin, synced_at, session_id,
 	                  deleted_at, deleted_by, delete_reason, restored_at
 	           FROM memories WHERE id = $1 AND deleted_at IS NULL`
 	return r.scanMemory(ctx, q, id)
@@ -71,7 +71,7 @@ func (r *postgresMemoryRepository) GetByID(ctx context.Context, id string) (*mod
 func (r *postgresMemoryRepository) GetBySyncID(ctx context.Context, syncID string) (*model.Memory, error) {
 	const q = `SELECT id, sync_id, project, topic_key, category, title, content,
 	                  tags, files_affected, created_by, created_at, updated_at,
-	                  origin, synced_at, confidence, impact_score, session_id,
+	                  origin, synced_at, session_id,
 	                  deleted_at, deleted_by, delete_reason, restored_at
 	           FROM memories WHERE sync_id = $1`
 	mem, err := r.scanMemory(ctx, q, syncID)
@@ -106,7 +106,7 @@ func (r *postgresMemoryRepository) List(ctx context.Context, filter model.Memory
 
 	q := fmt.Sprintf(`SELECT id, sync_id, project, topic_key, category, title, content,
 	                         tags, files_affected, created_by, created_at, updated_at,
-	                         origin, synced_at, confidence, impact_score, session_id,
+	                         origin, synced_at, session_id,
 	                         deleted_at, deleted_by, delete_reason, restored_at
 	                  FROM memories WHERE 1=1 %s
 	                  ORDER BY synced_at DESC LIMIT $1 OFFSET $2`, where)
@@ -162,7 +162,7 @@ func (r *postgresMemoryRepository) Search(ctx context.Context, query string, fil
 
 	q := fmt.Sprintf(`SELECT id, sync_id, project, topic_key, category, title, content,
 	                         tags, files_affected, created_by, created_at, updated_at,
-	                         origin, synced_at, confidence, impact_score, session_id,
+	                         origin, synced_at, session_id,
 	                         deleted_at, deleted_by, delete_reason, restored_at
 	                  FROM memories
 	                  WHERE search_vector @@ plainto_tsquery('simple', $1) AND deleted_at IS NULL %s
@@ -219,11 +219,11 @@ func (r *postgresMemoryRepository) update(ctx context.Context, id string, mem *m
 	const q = `UPDATE memories
 	           SET topic_key=$1, category=$2, title=$3, content=$4,
 	               tags=$5, files_affected=$6, updated_at=$7,
-	               confidence=$8, impact_score=$9, session_id=$10, synced_at=now()
-	           WHERE id=$11
+	               session_id=$8, synced_at=now()
+	           WHERE id=$9
 	           RETURNING id, sync_id, project, topic_key, category, title, content,
 	                     tags, files_affected, created_by, created_at, updated_at,
-	                     origin, synced_at, confidence, impact_score, session_id,
+	                     origin, synced_at, session_id,
 	                     deleted_at, deleted_by, delete_reason, restored_at`
 
 	tagsJSON, _ := json.Marshal(orEmptySlice(mem.Tags))
@@ -232,7 +232,7 @@ func (r *postgresMemoryRepository) update(ctx context.Context, id string, mem *m
 	row := r.pool.QueryRow(ctx, q,
 		mem.TopicKey, mem.Category, mem.Title, mem.Content,
 		tagsJSON, filesJSON, mem.UpdatedAt,
-		mem.Confidence, mem.ImpactScore, mem.SessionID, id,
+		mem.SessionID, id,
 	)
 
 	return scanMemoryRow(row)
@@ -258,7 +258,7 @@ func (r *postgresMemoryRepository) PullSince(ctx context.Context, project string
 
 	q := fmt.Sprintf(`SELECT id, sync_id, project, topic_key, category, title, content,
 	                         tags, files_affected, created_by, created_at, updated_at,
-	                         origin, synced_at, confidence, impact_score, session_id,
+	                         origin, synced_at, session_id,
 	                         deleted_at, deleted_by, delete_reason, restored_at
 	                  FROM memories WHERE %s ORDER BY synced_at ASC`, where)
 
@@ -422,11 +422,11 @@ func (r *postgresMemoryRepository) applyCreateMutation(ctx context.Context, tx m
 	_, err = tx.Exec(ctx, `
 		INSERT INTO memories
 			(sync_id, project, topic_key, category, title, content, tags, files_affected,
-			 created_by, created_at, updated_at, confidence, impact_score, session_id, synced_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now())`,
+			 created_by, created_at, updated_at, session_id, synced_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now())`,
 		mem.SyncID, mem.Project, mem.TopicKey, mem.Category, mem.Title, mem.Content,
 		tagsJSON, filesJSON, mem.CreatedBy, mem.CreatedAt, mem.UpdatedAt,
-		mem.Confidence, mem.ImpactScore, mem.SessionID)
+		mem.SessionID)
 	if err != nil {
 		return false, wrapPgError(err, "apply create memory mutation")
 	}
@@ -468,10 +468,10 @@ func (r *postgresMemoryRepository) applyUpdateMutation(ctx context.Context, tx m
 		UPDATE memories
 		SET topic_key=$1, category=$2, title=$3, content=$4,
 		    tags=$5, files_affected=$6, updated_at=$7,
-		    confidence=$8, impact_score=$9, session_id=COALESCE(NULLIF($10, ''), session_id), synced_at=now()
-		WHERE sync_id=$11 AND project=$12 AND deleted_at IS NULL`,
+		    session_id=COALESCE(NULLIF($8, ''), session_id), synced_at=now()
+		WHERE sync_id=$9 AND project=$10 AND deleted_at IS NULL`,
 		mem.TopicKey, mem.Category, mem.Title, mem.Content, tagsJSON, filesJSON,
-		mem.UpdatedAt, mem.Confidence, mem.ImpactScore, mem.SessionID, mutation.EntitySyncID, mutation.Project)
+		mem.UpdatedAt, mem.SessionID, mutation.EntitySyncID, mutation.Project)
 	if err != nil {
 		return false, wrapPgError(err, "apply update memory mutation")
 	}
@@ -531,11 +531,11 @@ func (r *postgresMemoryRepository) applyRestoreMutation(ctx context.Context, tx 
 			UPDATE memories
 			SET topic_key=$1, category=$2, title=$3, content=$4,
 			    tags=$5, files_affected=$6, updated_at=$7,
-			    confidence=$8, impact_score=$9, session_id=COALESCE(NULLIF($10, ''), session_id),
-			    deleted_at=NULL, deleted_by=NULL, delete_reason=NULL, restored_at=$11, synced_at=now()
-			WHERE sync_id=$12 AND project=$13`,
+			    session_id=COALESCE(NULLIF($8, ''), session_id),
+			    deleted_at=NULL, deleted_by=NULL, delete_reason=NULL, restored_at=$9, synced_at=now()
+			WHERE sync_id=$10 AND project=$11`,
 			mem.TopicKey, mem.Category, mem.Title, mem.Content, tagsJSON, filesJSON,
-			mem.UpdatedAt, mem.Confidence, mem.ImpactScore, mem.SessionID, mutation.OccurredAt, mutation.EntitySyncID, mutation.Project)
+			mem.UpdatedAt, mem.SessionID, mutation.OccurredAt, mutation.EntitySyncID, mutation.Project)
 		if err != nil {
 			return false, wrapPgError(err, "apply restore memory mutation")
 		}
@@ -579,7 +579,7 @@ func insertMemoryMutation(ctx context.Context, tx mutationTx, mutation model.Mut
 func memoryBySyncIDForUpdate(ctx context.Context, tx mutationTx, syncID string) (*model.Memory, error) {
 	row := tx.QueryRow(ctx, `SELECT id, sync_id, project, topic_key, category, title, content,
 		                         tags, files_affected, created_by, created_at, updated_at,
-		                         origin, synced_at, confidence, impact_score, session_id,
+		                         origin, synced_at, session_id,
 		                         deleted_at, deleted_by, delete_reason, restored_at
 		                  FROM memories WHERE sync_id = $1 FOR UPDATE`, syncID)
 	mem, err := scanMemoryRow(row)
@@ -609,8 +609,6 @@ func memoryFromPayload(payload *model.MemoryPayload) *model.Memory {
 		CreatedBy:     payload.CreatedBy,
 		CreatedAt:     payload.CreatedAt,
 		UpdatedAt:     payload.UpdatedAt,
-		Confidence:    payload.Confidence,
-		ImpactScore:   payload.ImpactScore,
 		SessionID:     sessionID,
 	}
 }
@@ -641,7 +639,7 @@ func scanMemoryRow(row pgx.Row) (*model.Memory, error) {
 		&tagsRaw, &filesRaw,
 		&mem.CreatedBy, &mem.CreatedAt, &mem.UpdatedAt,
 		&mem.Origin, &mem.SyncedAt,
-		&mem.Confidence, &mem.ImpactScore, &mem.SessionID,
+		&mem.SessionID,
 		&mem.DeletedAt, &mem.DeletedBy, &mem.DeleteReason, &mem.RestoredAt,
 	)
 	if err != nil {
@@ -671,7 +669,7 @@ func (r *postgresMemoryRepository) scanMemoryRows(rows pgx.Rows) ([]*model.Memor
 			&tagsRaw, &filesRaw,
 			&mem.CreatedBy, &mem.CreatedAt, &mem.UpdatedAt,
 			&mem.Origin, &mem.SyncedAt,
-			&mem.Confidence, &mem.ImpactScore, &mem.SessionID,
+			&mem.SessionID,
 			&mem.DeletedAt, &mem.DeletedBy, &mem.DeleteReason, &mem.RestoredAt,
 		)
 		if err != nil {

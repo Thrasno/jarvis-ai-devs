@@ -121,8 +121,6 @@ func TestClient_Sync(t *testing.T) {
 							CreatedBy:     "server-user",
 							CreatedAt:     time.Now().UTC(),
 							UpdatedAt:     time.Now().UTC(),
-							Confidence:    0.85,
-							ImpactScore:   8.0,
 						},
 					},
 					Conflicts: 0,
@@ -211,6 +209,30 @@ func TestClient_Sync(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClient_SyncRequest_OmitsLegacyMetadataFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+
+		memories, ok := body["memories"].([]any)
+		require.True(t, ok, "memories must be encoded as a JSON array")
+		require.Len(t, memories, 1)
+
+		memory, ok := memories[0].(map[string]any)
+		require.True(t, ok, "memory payload must be encoded as a JSON object")
+		assert.NotContains(t, memory, "confidence")
+		assert.NotContains(t, memory, "impact_score")
+
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 1, Pulled: []apiMemory{}, Conflicts: 0}))
+	}))
+	defer server.Close()
+
+	c := newClient(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"})
+	_, err := c.sync(context.Background(), "test-token", "test-project", []*models.Session{}, []*models.Memory{createTestSyncMemory("local-sync-metadata")}, []*models.Prompt{}, nil, nil, nil)
+	require.NoError(t, err)
 }
 
 // TestClient_Sync_AuthFailure tests that 401 errors are properly propagated.
@@ -462,7 +484,5 @@ func createTestSyncMemory(syncID string) *models.Memory {
 		CreatedBy:     "test-user",
 		CreatedAt:     time.Now().UTC(),
 		UpdatedAt:     time.Now().UTC(),
-		Confidence:    "high",
-		ImpactScore:   5,
 	}
 }

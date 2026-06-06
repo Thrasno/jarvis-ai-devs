@@ -112,8 +112,6 @@ type memoryPayload struct {
 	CreatedBy     string    `json:"created_by"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
-	Confidence    float32   `json:"confidence"`
-	ImpactScore   float32   `json:"impact_score"`
 	// SessionID enables explicit attribution end-to-end. Empty string is dropped
 	// by omitempty so legacy daemons stay backward-compatible on the wire.
 	SessionID string `json:"session_id,omitempty"`
@@ -146,8 +144,6 @@ type apiMemory struct {
 	CreatedBy     string    `json:"created_by"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
-	Confidence    float32   `json:"confidence"`
-	ImpactScore   float32   `json:"impact_score"`
 	SessionID     string    `json:"session_id,omitempty"`
 }
 

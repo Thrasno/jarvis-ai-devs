@@ -677,12 +677,8 @@ func formatSearchResults(memories []*models.Memory, query string) string {
 
 	var b strings.Builder
 	for _, m := range memories {
-		// Header with impact score if non-zero
-		if m.ImpactScore > 0 {
-			fmt.Fprintf(&b, "### [%d] %s (%s) ⭐%d\n", m.ID, m.Title, m.Category, m.ImpactScore)
-		} else {
-			fmt.Fprintf(&b, "### [%d] %s (%s)\n", m.ID, m.Title, m.Category)
-		}
+		// Header: ### [ID] Title (category)
+		fmt.Fprintf(&b, "### [%d] %s (%s)\n", m.ID, m.Title, m.Category)
 
 		// Metadata: _project | YYYY-MM-DD_
 		fmt.Fprintf(&b, "_%s | %s_\n", m.Project, m.CreatedAt.Format("2006-01-02"))

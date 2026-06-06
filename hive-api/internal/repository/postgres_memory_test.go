@@ -47,8 +47,6 @@ func TestPostgresMemoryRepository_Create(t *testing.T) {
 				CreatedBy:     "test-user",
 				CreatedAt:     now,
 				UpdatedAt:     now,
-				Confidence:    0.8,
-				ImpactScore:   0.9,
 			},
 			wantErr: false,
 		},
@@ -66,8 +64,6 @@ func TestPostgresMemoryRepository_Create(t *testing.T) {
 				CreatedBy:     "test-user",
 				CreatedAt:     now,
 				UpdatedAt:     now,
-				Confidence:    1.0,
-				ImpactScore:   0.5,
 			},
 			wantErr: false,
 		},
@@ -100,8 +96,6 @@ func TestPostgresMemoryRepository_Create(t *testing.T) {
 			assert.Equal(t, tt.memory.Content, created.Content)
 			assert.Equal(t, tt.memory.Category, created.Category)
 			assert.Equal(t, tt.memory.CreatedBy, created.CreatedBy)
-			assert.Equal(t, tt.memory.Confidence, created.Confidence)
-			assert.Equal(t, tt.memory.ImpactScore, created.ImpactScore)
 
 			// Verificar que los timestamps se preservan
 			assert.WithinDuration(t, tt.memory.CreatedAt, created.CreatedAt, time.Second)
@@ -154,8 +148,6 @@ func TestPostgresMemoryRepository_GetByID(t *testing.T) {
 		CreatedBy:     "test-user",
 		CreatedAt:     now,
 		UpdatedAt:     now,
-		Confidence:    0.95,
-		ImpactScore:   0.8,
 		SessionID:     ensureManualSavePtr(t, pool, "test-project"),
 	}
 	created, err := repo.Create(ctx, testMemory)
@@ -254,16 +246,14 @@ func TestPostgresMemoryRepository_Delete(t *testing.T) {
 	// Crear una memoria de prueba
 	now := time.Now()
 	testMemory := &model.Memory{
-		SyncID:      "550e8400-e29b-41d4-a716-446655440020",
-		Project:     "test-project",
-		Category:    model.CatPattern,
-		Title:       "Pattern to Delete",
-		Content:     "This will be deleted",
-		CreatedBy:   "test-user",
-		CreatedAt:   now,
-		UpdatedAt:   now,
-		Confidence:  0.5,
-		ImpactScore: 0.3,
+		SyncID:    "550e8400-e29b-41d4-a716-446655440020",
+		Project:   "test-project",
+		Category:  model.CatPattern,
+		Title:     "Pattern to Delete",
+		Content:   "This will be deleted",
+		CreatedBy: "test-user",
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	created, err := repo.Create(ctx, testMemory)
 	require.NoError(t, err)
@@ -323,46 +313,40 @@ func TestPostgresMemoryRepository_Search(t *testing.T) {
 	// Crear memorias de prueba con contenido específico para búsqueda
 	memories := []*model.Memory{
 		{
-			SyncID:      "550e8400-e29b-41d4-a716-446655440030",
-			Project:     "search-test",
-			Category:    model.CatArchitecture,
-			Title:       "PostgreSQL Database Architecture",
-			Content:     "We decided to use PostgreSQL for its FTS capabilities",
-			Tags:        []string{"database", "architecture"},
-			CreatedBy:   "test-user",
-			CreatedAt:   now,
-			UpdatedAt:   now,
-			Confidence:  0.9,
-			ImpactScore: 0.8,
-			SessionID:   searchSess,
+			SyncID:    "550e8400-e29b-41d4-a716-446655440030",
+			Project:   "search-test",
+			Category:  model.CatArchitecture,
+			Title:     "PostgreSQL Database Architecture",
+			Content:   "We decided to use PostgreSQL for its FTS capabilities",
+			Tags:      []string{"database", "architecture"},
+			CreatedBy: "test-user",
+			CreatedAt: now,
+			UpdatedAt: now,
+			SessionID: searchSess,
 		},
 		{
-			SyncID:      "550e8400-e29b-41d4-a716-446655440031",
-			Project:     "search-test",
-			Category:    model.CatDecision,
-			Title:       "API Authentication Strategy",
-			Content:     "JWT tokens with refresh mechanism for API auth",
-			Tags:        []string{"security", "api"},
-			CreatedBy:   "test-user",
-			CreatedAt:   now,
-			UpdatedAt:   now,
-			Confidence:  0.85,
-			ImpactScore: 0.7,
-			SessionID:   searchSess,
+			SyncID:    "550e8400-e29b-41d4-a716-446655440031",
+			Project:   "search-test",
+			Category:  model.CatDecision,
+			Title:     "API Authentication Strategy",
+			Content:   "JWT tokens with refresh mechanism for API auth",
+			Tags:      []string{"security", "api"},
+			CreatedBy: "test-user",
+			CreatedAt: now,
+			UpdatedAt: now,
+			SessionID: searchSess,
 		},
 		{
-			SyncID:      "550e8400-e29b-41d4-a716-446655440032",
-			Project:     "other-project",
-			Category:    model.CatPattern,
-			Title:       "Repository Pattern Implementation",
-			Content:     "Using repository pattern for database abstraction",
-			Tags:        []string{"pattern", "architecture"},
-			CreatedBy:   "test-user",
-			CreatedAt:   now,
-			UpdatedAt:   now,
-			Confidence:  0.75,
-			ImpactScore: 0.6,
-			SessionID:   otherSess,
+			SyncID:    "550e8400-e29b-41d4-a716-446655440032",
+			Project:   "other-project",
+			Category:  model.CatPattern,
+			Title:     "Repository Pattern Implementation",
+			Content:   "Using repository pattern for database abstraction",
+			Tags:      []string{"pattern", "architecture"},
+			CreatedBy: "test-user",
+			CreatedAt: now,
+			UpdatedAt: now,
+			SessionID: otherSess,
 		},
 	}
 
@@ -470,18 +454,16 @@ func TestPostgresMemoryRepository_Upsert(t *testing.T) {
 				return nil // No hay setup previo
 			},
 			incoming: &model.Memory{
-				SyncID:      "550e8400-e29b-41d4-a716-446655440040",
-				Project:     "upsert-test",
-				TopicKey:    stringPtr("test/new"),
-				Category:    model.CatDecision,
-				Title:       "New Decision",
-				Content:     "This is a new memory",
-				CreatedBy:   "test-user",
-				CreatedAt:   baseTime,
-				UpdatedAt:   baseTime,
-				Confidence:  0.8,
-				ImpactScore: 0.7,
-				SessionID:   upsertSess,
+				SyncID:    "550e8400-e29b-41d4-a716-446655440040",
+				Project:   "upsert-test",
+				TopicKey:  stringPtr("test/new"),
+				Category:  model.CatDecision,
+				Title:     "New Decision",
+				Content:   "This is a new memory",
+				CreatedBy: "test-user",
+				CreatedAt: baseTime,
+				UpdatedAt: baseTime,
+				SessionID: upsertSess,
 			},
 			expectCreated: true,
 			expectUpdated: false,
@@ -490,36 +472,32 @@ func TestPostgresMemoryRepository_Upsert(t *testing.T) {
 			name: "branch 2: sync_id exists + topic_key NULL → SKIP (immutable)",
 			setup: func() *model.Memory {
 				mem := &model.Memory{
-					SyncID:      "550e8400-e29b-41d4-a716-446655440041",
-					Project:     "upsert-test",
-					TopicKey:    nil, // Memoria inmutable
-					Category:    model.CatBugfix,
-					Title:       "Immutable Bug Fix",
-					Content:     "Original content",
-					CreatedBy:   "test-user",
-					CreatedAt:   baseTime,
-					UpdatedAt:   baseTime,
-					Confidence:  0.9,
-					ImpactScore: 0.8,
-					SessionID:   upsertSess,
+					SyncID:    "550e8400-e29b-41d4-a716-446655440041",
+					Project:   "upsert-test",
+					TopicKey:  nil, // Memoria inmutable
+					Category:  model.CatBugfix,
+					Title:     "Immutable Bug Fix",
+					Content:   "Original content",
+					CreatedBy: "test-user",
+					CreatedAt: baseTime,
+					UpdatedAt: baseTime,
+					SessionID: upsertSess,
 				}
 				created, err := repo.Create(ctx, mem)
 				require.NoError(t, err)
 				return created
 			},
 			incoming: &model.Memory{
-				SyncID:      "550e8400-e29b-41d4-a716-446655440041", // Mismo sync_id
-				Project:     "upsert-test",
-				TopicKey:    nil,
-				Category:    model.CatBugfix,
-				Title:       "Attempted Update",
-				Content:     "This should NOT be saved",
-				CreatedBy:   "test-user",
-				CreatedAt:   baseTime,
-				UpdatedAt:   baseTime.Add(1 * time.Hour), // Más reciente
-				Confidence:  0.5,
-				ImpactScore: 0.3,
-				SessionID:   upsertSess,
+				SyncID:    "550e8400-e29b-41d4-a716-446655440041", // Mismo sync_id
+				Project:   "upsert-test",
+				TopicKey:  nil,
+				Category:  model.CatBugfix,
+				Title:     "Attempted Update",
+				Content:   "This should NOT be saved",
+				CreatedBy: "test-user",
+				CreatedAt: baseTime,
+				UpdatedAt: baseTime.Add(1 * time.Hour), // Más reciente
+				SessionID: upsertSess,
 			},
 			expectCreated: false,
 			expectUpdated: false, // Content NO cambia (se devuelve el existente)
@@ -529,36 +507,32 @@ func TestPostgresMemoryRepository_Upsert(t *testing.T) {
 			name: "branch 3: sync_id exists + incoming.UpdatedAt <= existing → SKIP (server wins)",
 			setup: func() *model.Memory {
 				mem := &model.Memory{
-					SyncID:      "550e8400-e29b-41d4-a716-446655440042",
-					Project:     "upsert-test",
-					TopicKey:    stringPtr("test/server-wins"),
-					Category:    model.CatArchitecture,
-					Title:       "Server Version",
-					Content:     "Server has the latest version",
-					CreatedBy:   "test-user",
-					CreatedAt:   baseTime,
-					UpdatedAt:   baseTime.Add(2 * time.Hour), // Servidor tiene versión más reciente
-					Confidence:  0.9,
-					ImpactScore: 0.8,
-					SessionID:   upsertSess,
+					SyncID:    "550e8400-e29b-41d4-a716-446655440042",
+					Project:   "upsert-test",
+					TopicKey:  stringPtr("test/server-wins"),
+					Category:  model.CatArchitecture,
+					Title:     "Server Version",
+					Content:   "Server has the latest version",
+					CreatedBy: "test-user",
+					CreatedAt: baseTime,
+					UpdatedAt: baseTime.Add(2 * time.Hour), // Servidor tiene versión más reciente
+					SessionID: upsertSess,
 				}
 				created, err := repo.Create(ctx, mem)
 				require.NoError(t, err)
 				return created
 			},
 			incoming: &model.Memory{
-				SyncID:      "550e8400-e29b-41d4-a716-446655440042",
-				Project:     "upsert-test",
-				TopicKey:    stringPtr("test/server-wins"),
-				Category:    model.CatArchitecture,
-				Title:       "Client Outdated Version",
-				Content:     "Client has outdated content",
-				CreatedBy:   "test-user",
-				CreatedAt:   baseTime,
-				UpdatedAt:   baseTime.Add(1 * time.Hour), // Cliente tiene versión más vieja
-				Confidence:  0.5,
-				ImpactScore: 0.3,
-				SessionID:   upsertSess,
+				SyncID:    "550e8400-e29b-41d4-a716-446655440042",
+				Project:   "upsert-test",
+				TopicKey:  stringPtr("test/server-wins"),
+				Category:  model.CatArchitecture,
+				Title:     "Client Outdated Version",
+				Content:   "Client has outdated content",
+				CreatedBy: "test-user",
+				CreatedAt: baseTime,
+				UpdatedAt: baseTime.Add(1 * time.Hour), // Cliente tiene versión más vieja
+				SessionID: upsertSess,
 			},
 			expectCreated: false,
 			expectUpdated: false, // Contenido NO debe cambiar
@@ -568,36 +542,32 @@ func TestPostgresMemoryRepository_Upsert(t *testing.T) {
 			name: "branch 4: sync_id exists + incoming.UpdatedAt > existing → UPDATE (client wins)",
 			setup: func() *model.Memory {
 				mem := &model.Memory{
-					SyncID:      "550e8400-e29b-41d4-a716-446655440043",
-					Project:     "upsert-test",
-					TopicKey:    stringPtr("test/client-wins"),
-					Category:    model.CatPattern,
-					Title:       "Old Pattern",
-					Content:     "Old content that will be updated",
-					CreatedBy:   "test-user",
-					CreatedAt:   baseTime,
-					UpdatedAt:   baseTime.Add(1 * time.Hour),
-					Confidence:  0.7,
-					ImpactScore: 0.6,
-					SessionID:   upsertSess,
+					SyncID:    "550e8400-e29b-41d4-a716-446655440043",
+					Project:   "upsert-test",
+					TopicKey:  stringPtr("test/client-wins"),
+					Category:  model.CatPattern,
+					Title:     "Old Pattern",
+					Content:   "Old content that will be updated",
+					CreatedBy: "test-user",
+					CreatedAt: baseTime,
+					UpdatedAt: baseTime.Add(1 * time.Hour),
+					SessionID: upsertSess,
 				}
 				created, err := repo.Create(ctx, mem)
 				require.NoError(t, err)
 				return created
 			},
 			incoming: &model.Memory{
-				SyncID:      "550e8400-e29b-41d4-a716-446655440043",
-				Project:     "upsert-test",
-				TopicKey:    stringPtr("test/client-wins"),
-				Category:    model.CatPattern,
-				Title:       "Updated Pattern",
-				Content:     "New content from client",
-				CreatedBy:   "test-user",
-				CreatedAt:   baseTime,
-				UpdatedAt:   baseTime.Add(3 * time.Hour), // Cliente más reciente
-				Confidence:  0.95,
-				ImpactScore: 0.9,
-				SessionID:   upsertSess,
+				SyncID:    "550e8400-e29b-41d4-a716-446655440043",
+				Project:   "upsert-test",
+				TopicKey:  stringPtr("test/client-wins"),
+				Category:  model.CatPattern,
+				Title:     "Updated Pattern",
+				Content:   "New content from client",
+				CreatedBy: "test-user",
+				CreatedAt: baseTime,
+				UpdatedAt: baseTime.Add(3 * time.Hour), // Cliente más reciente
+				SessionID: upsertSess,
 			},
 			expectCreated: false,
 			expectUpdated: true,
@@ -702,17 +672,15 @@ func TestPostgresMemoryRepository_PullSince(t *testing.T) {
 	var createdMemories []*model.Memory
 	for _, m := range memories {
 		mem := &model.Memory{
-			SyncID:      m.syncID,
-			Project:     "pullsince-test",
-			Category:    model.CatDecision,
-			Title:       "Test Memory",
-			Content:     m.content,
-			CreatedBy:   "test-user",
-			CreatedAt:   m.createdAt,
-			UpdatedAt:   m.createdAt,
-			Confidence:  0.8,
-			ImpactScore: 0.7,
-			SessionID:   pullSess,
+			SyncID:    m.syncID,
+			Project:   "pullsince-test",
+			Category:  model.CatDecision,
+			Title:     "Test Memory",
+			Content:   m.content,
+			CreatedBy: "test-user",
+			CreatedAt: m.createdAt,
+			UpdatedAt: m.createdAt,
+			SessionID: pullSess,
 		}
 		created, err := repo.Create(ctx, mem)
 		require.NoError(t, err)

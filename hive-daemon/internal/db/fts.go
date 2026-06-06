@@ -41,7 +41,7 @@ func (d *DB) Search(query, project, category string, limit int) ([]*models.Memor
 
 	const q = `
 SELECT m.id, m.sync_id, m.project, m.topic_key, m.category, m.title, m.content,
-       m.tags, m.files_affected, m.created_by, m.created_at, m.confidence, m.impact_score, m.session_id
+	   m.tags, m.files_affected, m.created_by, m.created_at, m.session_id
 FROM memories m
 JOIN memories_fts f ON m.id = f.rowid
 WHERE f.memories_fts MATCH ?
@@ -77,7 +77,7 @@ LIMIT ?`
 func (d *DB) searchAllForProject(project, category string, limit int) ([]*models.Memory, error) {
 	const q = `
 SELECT id, sync_id, project, topic_key, category, title, content,
-       tags, files_affected, created_by, created_at, confidence, impact_score, session_id
+	   tags, files_affected, created_by, created_at, session_id
 FROM memories
 WHERE deleted_at IS NULL
   AND (? = '' OR project = ?)

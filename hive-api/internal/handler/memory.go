@@ -47,8 +47,6 @@ func (h *MemoryHandler) Create(c *gin.Context) {
 		Tags:          req.Tags,
 		FilesAffected: req.FilesAffected,
 		CreatedBy:     userID,
-		Confidence:    derefFloat32(req.Confidence),
-		ImpactScore:   derefFloat32(req.ImpactScore),
 		SessionID:     req.SessionID,
 	}
 
@@ -174,12 +172,4 @@ func claimsFromCtx(c *gin.Context) *model.Claims {
 	}
 	claims, _ := raw.(*model.Claims)
 	return claims
-}
-
-// derefFloat32 desreferencia un *float32, devolviendo 0 si es nil.
-func derefFloat32(f *float32) float32 {
-	if f == nil {
-		return 0
-	}
-	return *f
 }

@@ -63,29 +63,27 @@ func (d *DB) SaveMemory(mem *models.Memory) (int64, error) {
 
 	const q = `
 INSERT INTO memories
-    (sync_id, project, topic_key, category, title, content, tags, files_affected,
-     created_by, created_at, updated_at, confidence, impact_score, session_id)
+	(sync_id, project, topic_key, category, title, content, tags, files_affected,
+	 created_by, created_at, updated_at, session_id)
 VALUES
-    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(project, topic_key) WHERE topic_key IS NOT NULL
 DO UPDATE SET
-    title          = excluded.title,
-    content        = excluded.content,
-    category       = excluded.category,
-    tags           = excluded.tags,
-    files_affected = excluded.files_affected,
-    confidence     = excluded.confidence,
-    impact_score   = excluded.impact_score,
-    session_id     = excluded.session_id,
-    updated_at     = excluded.updated_at,
-    synced_at      = NULL
+	title          = excluded.title,
+	content        = excluded.content,
+	category       = excluded.category,
+	tags           = excluded.tags,
+	files_affected = excluded.files_affected,
+	session_id     = excluded.session_id,
+	updated_at     = excluded.updated_at,
+	synced_at      = NULL
 RETURNING id, sync_id`
 
 	var id int64
 	err = tx.QueryRow(q,
 		syncID, mem.Project, mem.TopicKey, mem.Category,
 		mem.Title, mem.Content, tagsJSON, filesJSON,
-		createdBy, now, now, mem.Confidence, mem.ImpactScore, sessionID,
+		createdBy, now, now, sessionID,
 	).Scan(&id, &syncID)
 	if err != nil {
 		return 0, fmt.Errorf("save memory: %w", err)
@@ -114,7 +112,7 @@ RETURNING id, sync_id`
 func (d *DB) GetMemory(id int64) (*models.Memory, error) {
 	const q = `
 SELECT id, sync_id, project, topic_key, category, title, content, tags, files_affected,
-       created_by, created_at, confidence, impact_score, session_id
+	   created_by, created_at, session_id
 FROM memories WHERE id = ? AND deleted_at IS NULL`
 
 	row := d.sqlDB.QueryRow(q, id)
@@ -132,7 +130,7 @@ FROM memories WHERE id = ? AND deleted_at IS NULL`
 func (d *DB) ListMemories(project string, limit int) ([]*models.Memory, error) {
 	const q = `
 SELECT id, sync_id, project, topic_key, category, title, content, tags, files_affected,
-       created_by, created_at, confidence, impact_score, session_id
+	   created_by, created_at, session_id
 FROM memories
 WHERE project = ? AND deleted_at IS NULL
 ORDER BY created_at DESC, id DESC
@@ -169,8 +167,8 @@ type DeletedMemory struct {
 func (d *DB) GetDeletedMemory(id int64) (*DeletedMemory, error) {
 	const q = `
 SELECT id, sync_id, project, topic_key, category, title, content, tags, files_affected,
-       created_by, created_at, confidence, impact_score, session_id,
-       deleted_at, deleted_by, delete_reason, restored_at
+	   created_by, created_at, session_id,
+	   deleted_at, deleted_by, delete_reason, restored_at
 FROM memories WHERE id = ? AND deleted_at IS NOT NULL`
 
 	var deletedAt, deletedBy, reason, restoredAt sql.NullString
@@ -313,7 +311,7 @@ func scanMemoryWithExtra(s scanner, extra ...any) (*models.Memory, error) {
 		&mem.Category, &mem.Title, &mem.Content,
 		&tagsJSON, &filesJSON,
 		&mem.CreatedBy, &createdAtStr,
-		&mem.Confidence, &mem.ImpactScore, &mem.SessionID,
+		&mem.SessionID,
 	}
 	dest = append(dest, extra...)
 	err := s.Scan(dest...)

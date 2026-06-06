@@ -65,8 +65,6 @@ type MutationMemoryPayload struct {
 	CreatedBy     string    `json:"created_by"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
-	Confidence    string    `json:"confidence"`
-	ImpactScore   int       `json:"impact_score"`
 	SessionID     string    `json:"session_id,omitempty"`
 }
 
@@ -115,8 +113,6 @@ func memoryPayloadFromModel(mem *models.Memory, syncID, createdBy string, occurr
 		CreatedBy:     createdBy,
 		CreatedAt:     createdAt,
 		UpdatedAt:     updatedAt,
-		Confidence:    mem.Confidence,
-		ImpactScore:   mem.ImpactScore,
 		SessionID:     mem.SessionID,
 	}
 }
@@ -140,7 +136,7 @@ VALUES (?, 'memory', ?, ?, ?, ?, ?, ?)`,
 func (d *DB) GetUnsynced(project string) ([]*models.Memory, error) {
 	q := `
 SELECT id, sync_id, project, topic_key, category, title, content, tags, files_affected,
-       created_by, created_at, updated_at, synced_at, confidence, impact_score, session_id
+	   created_by, created_at, updated_at, synced_at, session_id
 FROM memories
 WHERE synced_at IS NULL AND sync_id != '' AND deleted_at IS NULL`
 
@@ -318,22 +314,22 @@ func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
 		if errors.Is(lookupErr, sql.ErrNoRows) {
 			_, err = tx.Exec(`
 INSERT INTO memories
-    (sync_id, project, topic_key, category, title, content, tags, files_affected,
-     created_by, created_at, updated_at, synced_at, confidence, impact_score, session_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	(sync_id, project, topic_key, category, title, content, tags, files_affected,
+	 created_by, created_at, updated_at, synced_at, session_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				event.EntitySyncID, event.Project, event.Memory.TopicKey, event.Memory.Category,
 				event.Memory.Title, event.Memory.Content, mustMarshalStrings(event.Memory.Tags), mustMarshalStrings(event.Memory.FilesAffected),
-				event.Memory.CreatedBy, createdAt, createdAt, createdAt, event.Memory.Confidence, event.Memory.ImpactScore, event.Memory.SessionID,
+				event.Memory.CreatedBy, createdAt, createdAt, createdAt, event.Memory.SessionID,
 			)
 		} else {
 			_, err = tx.Exec(`
 UPDATE memories SET
-    topic_key = ?, category = ?, title = ?, content = ?, tags = ?, files_affected = ?,
-    updated_at = ?, synced_at = ?, confidence = ?, impact_score = ?, session_id = ?
+	topic_key = ?, category = ?, title = ?, content = ?, tags = ?, files_affected = ?,
+	updated_at = ?, synced_at = ?, session_id = ?
 WHERE sync_id = ?`,
 				event.Memory.TopicKey, event.Memory.Category, event.Memory.Title, event.Memory.Content,
 				mustMarshalStrings(event.Memory.Tags), mustMarshalStrings(event.Memory.FilesAffected),
-				createdAt, createdAt, event.Memory.Confidence, event.Memory.ImpactScore, event.Memory.SessionID,
+				createdAt, createdAt, event.Memory.SessionID,
 				event.EntitySyncID,
 			)
 		}
@@ -359,12 +355,12 @@ WHERE sync_id = ?`,
 		}
 		_, err = tx.Exec(`
 UPDATE memories SET
-    topic_key = ?, category = ?, title = ?, content = ?, tags = ?, files_affected = ?,
-    updated_at = ?, synced_at = ?, confidence = ?, impact_score = ?, session_id = ?
+	topic_key = ?, category = ?, title = ?, content = ?, tags = ?, files_affected = ?,
+	updated_at = ?, synced_at = ?, session_id = ?
 WHERE sync_id = ? AND deleted_at IS NULL`,
 			event.Memory.TopicKey, event.Memory.Category, event.Memory.Title, event.Memory.Content,
 			mustMarshalStrings(event.Memory.Tags), mustMarshalStrings(event.Memory.FilesAffected),
-			createdAt, createdAt, event.Memory.Confidence, event.Memory.ImpactScore, event.Memory.SessionID,
+			createdAt, createdAt, event.Memory.SessionID,
 			event.EntitySyncID,
 		)
 	case MutationOpDelete:
@@ -461,13 +457,12 @@ func (d *DB) SaveFromRemote(mem *models.Memory) error {
 
 	_, err = d.sqlDB.Exec(`
 INSERT OR IGNORE INTO memories
-    (sync_id, project, topic_key, category, title, content, tags, files_affected,
-     created_by, created_at, updated_at, synced_at, confidence, impact_score, session_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	(sync_id, project, topic_key, category, title, content, tags, files_affected,
+	 created_by, created_at, updated_at, synced_at, session_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		mem.SyncID, mem.Project, mem.TopicKey, mem.Category,
 		mem.Title, mem.Content, string(tagsJSON), string(filesJSON),
-		mem.CreatedBy, createdAt, updatedAt, now,
-		mem.Confidence, mem.ImpactScore, sessionID,
+		mem.CreatedBy, createdAt, updatedAt, now, sessionID,
 	)
 	return err
 }
@@ -615,7 +610,7 @@ func scanSyncRow(s syncScanner) (*models.Memory, error) {
 		&mem.Category, &mem.Title, &mem.Content,
 		&tagsJSON, &filesJSON,
 		&mem.CreatedBy, &createdAtStr, &updatedAtStr, &syncedAtStr,
-		&mem.Confidence, &mem.ImpactScore, &sessionID,
+		&sessionID,
 	)
 	if err != nil {
 		return nil, err

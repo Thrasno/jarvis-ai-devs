@@ -29,9 +29,6 @@ type CreateMemoryRequest struct {
 	Tags          []string `json:"tags"`
 	FilesAffected []string `json:"files_affected"`
 
-	Confidence  *float32 `json:"confidence"`
-	ImpactScore *float32 `json:"impact_score"`
-
 	// SessionID es opcional. Cuando se omite, el service resuelve `manual-save-{project}`
 	// vía SessionRepository.EnsureManualSaveSession para cumplir el FK NOT NULL en
 	// memories.session_id (R2-CRIT-2 + paridad con el sync resolver).
@@ -117,8 +114,6 @@ type SyncMemoryPayload struct {
 	CreatedBy     string         `json:"created_by"      binding:"required"`
 	CreatedAt     time.Time      `json:"created_at"`
 	UpdatedAt     time.Time      `json:"updated_at"`
-	Confidence    float32        `json:"confidence"`
-	ImpactScore   float32        `json:"impact_score"`
 	// SessionID is optional — absent on old daemons (backward-compat).
 	// Server fills it via lazy manual-save-{project} fallback when empty.
 	SessionID string `json:"session_id,omitempty"`
