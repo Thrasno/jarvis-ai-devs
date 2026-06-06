@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"path/filepath"
@@ -445,6 +446,30 @@ func TestSyncDB_GetSyncHealth_RestartSafeBackoffRead(t *testing.T) {
 	assert.Equal(t, at.Add(10*time.Minute), got.BackoffUntil)
 	assert.Equal(t, 4, got.ConsecutiveFailures)
 	assert.Equal(t, assert.AnError.Error(), got.LastError)
+}
+
+func TestSyncDB_ListGovernanceSyncHealth(t *testing.T) {
+	db := setupTestDB(t)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+
+	recoveredAt := time.Date(2026, 6, 6, 10, 0, 0, 0, time.UTC)
+	failedAt := time.Date(2026, 6, 6, 11, 0, 0, 0, time.UTC)
+	require.NoError(t, db.RecordSyncSuccess("alpha", recoveredAt))
+	require.NoError(t, db.RecordSyncFailure("beta", failedAt, 3, failedAt.Add(5*time.Minute), wrappedError("sync failed (503): upstream body")))
+	require.NoError(t, db.SetJWT("token", time.Now().Add(2*time.Hour)))
+
+	got, err := db.ListGovernanceSyncHealth(context.Background())
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+
+	assert.Equal(t, "alpha", got[0].Project)
+	assert.Equal(t, recoveredAt, got[0].LastSuccessAt)
+	assert.Zero(t, got[0].ConsecutiveFailures)
+	assert.Equal(t, "beta", got[1].Project)
+	assert.Equal(t, 3, got[1].ConsecutiveFailures)
+	assert.Equal(t, "sync failed (503)", got[1].LastError)
 }
 
 // setupTestDB creates a temporary SQLite database for testing.
