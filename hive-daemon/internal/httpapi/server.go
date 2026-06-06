@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -50,6 +51,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // Start launches the HTTP listener as a goroutine and wires ctx cancellation
 // to graceful Shutdown. Returns nil on clean shutdown.
 func (s *Server) Start(ctx context.Context) error {
+	if !isLoopbackAddr(s.addr) {
+		return fmt.Errorf("http server requires a loopback address: %s", s.addr)
+	}
+
 	srv := &http.Server{
 		Addr:              s.addr,
 		Handler:           s.mux,
@@ -76,6 +81,20 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 		return fmt.Errorf("http listen: %w", err)
 	}
+}
+
+// Governance HTTP is intentionally local-only for this phase: callers reach the
+// daemon through a loopback listener rather than a bearer-token boundary.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || strings.TrimSpace(host) == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {

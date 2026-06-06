@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -251,6 +252,65 @@ func TestServer_StartsAndAcceptsConnections(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("server did not shut down")
+	}
+}
+
+func TestServer_StartRejectsNonLoopbackAddress(t *testing.T) {
+	t.Parallel()
+
+	for _, addr := range []string{"0.0.0.0:0", "[::]:0"} {
+		t.Run(addr, func(t *testing.T) {
+			t.Parallel()
+
+			store := &mockPromptStore{}
+			srv := httpapi.NewServer(addr, store)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+
+			err := srv.Start(ctx)
+			if err == nil {
+				t.Fatal("expected non-loopback address to be rejected")
+			}
+			if !strings.Contains(err.Error(), "loopback") {
+				t.Fatalf("expected loopback boundary error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestServer_StartAcceptsLoopbackAddresses(t *testing.T) {
+	t.Parallel()
+
+	for _, addr := range []string{"localhost:0", "[::1]:0"} {
+		t.Run(addr, func(t *testing.T) {
+			t.Parallel()
+			if addr == "[::1]:0" {
+				listener, err := net.Listen("tcp", addr)
+				if err != nil {
+					t.Skipf("IPv6 loopback is not available: %v", err)
+				}
+				requireNoErrorClose(t, listener)
+			}
+
+			store := &mockPromptStore{}
+			srv := httpapi.NewServer(addr, store)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			time.AfterFunc(25*time.Millisecond, cancel)
+
+			if err := srv.Start(ctx); err != nil {
+				t.Fatalf("expected loopback address %s to be accepted, got %v", addr, err)
+			}
+		})
+	}
+}
+
+func requireNoErrorClose(t *testing.T, listener net.Listener) {
+	t.Helper()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
 	}
 }
 
