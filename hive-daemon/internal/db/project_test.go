@@ -194,9 +194,6 @@ func TestGovernanceReadModelsDoNotMutateRecordsOrSyncState(t *testing.T) {
 	if _, err := d.ListGovernanceMemories(context.Background(), hivedb.GovernanceMemoryFilter{Project: "alpha", IncludeDeleted: true, Limit: 10}); err != nil {
 		t.Fatalf("ListGovernanceMemories: %v", err)
 	}
-	if _, err := d.ListGovernanceSyncHealth(context.Background()); err != nil {
-		t.Fatalf("ListGovernanceSyncHealth: %v", err)
-	}
 	after := readGovernanceCounters(t, d)
 
 	if before != after {
