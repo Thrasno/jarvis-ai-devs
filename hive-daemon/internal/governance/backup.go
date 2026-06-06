@@ -23,7 +23,17 @@ const (
 	backupManifestFile = "manifest.json"
 )
 
-var ErrBackupLocationUnsafe = errors.New("backup root must be outside the live database directory")
+var (
+	ErrBackupIDRequired           = errors.New("backup id is required")
+	ErrBackupConfirmationRequired = errors.New("backup restore confirmation is required")
+	ErrBackupConfirmationMismatch = errors.New("backup restore confirmation mismatch")
+	ErrBackupNotFound             = errors.New("backup not found")
+	ErrBackupIDUnsafe             = errors.New("backup id is unsafe")
+	ErrBackupLocationUnsafe       = errors.New("backup root must be outside the live database directory")
+	ErrBackupArchiveInvalid       = errors.New("backup archive integrity check failed")
+)
+
+const RestoreStatusCoordinationRequired = "coordination_required"
 
 type BackupManifest struct {
 	ID           string    `json:"id"`
@@ -33,6 +43,21 @@ type BackupManifest struct {
 	ManifestPath string    `json:"manifest_path"`
 	Checksum     string    `json:"checksum"`
 	SizeBytes    int64     `json:"size_bytes"`
+}
+
+type RestoreRequest struct {
+	BackupID     string `json:"backup_id"`
+	Confirmation string `json:"confirmation"`
+}
+
+type RestoreResult struct {
+	BackupID              string    `json:"backup_id"`
+	DBPath                string    `json:"db_path"`
+	RestoredAt            time.Time `json:"restored_at,omitempty"`
+	ArchivePath           string    `json:"archive_path"`
+	Status                string    `json:"status,omitempty"`
+	RequiresDaemonRestart bool      `json:"requires_daemon_restart,omitempty"`
+	Message               string    `json:"message,omitempty"`
 }
 
 type BackupStore struct {
@@ -64,6 +89,10 @@ func DefaultBackupRoot(dbPath string) string {
 		name = "hive"
 	}
 	return filepath.Join(filepath.Dir(dbDir), "."+name+"-hive-backups")
+}
+
+func RestoreConfirmation(backupID string) string {
+	return "RESTORE " + strings.TrimSpace(backupID)
 }
 
 func (s *BackupStore) Create(ctx context.Context) (BackupManifest, error) {
@@ -140,6 +169,83 @@ func (s *BackupStore) List(ctx context.Context) ([]BackupManifest, error) {
 	return backups, nil
 }
 
+func (s *BackupStore) PlanRestore(ctx context.Context, req RestoreRequest) (RestoreResult, error) {
+	backup, expectedArchivePath, err := s.validateRestore(ctx, req)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	checksum, size, err := checksumFileWithSHA256(expectedArchivePath)
+	if err != nil {
+		return RestoreResult{}, fmt.Errorf("validate restore db backup: %w", err)
+	}
+	if err := verifyArchiveIntegrity(backup, checksum, size); err != nil {
+		return RestoreResult{}, err
+	}
+	return RestoreResult{
+		BackupID:              backup.ID,
+		DBPath:                s.dbPath,
+		ArchivePath:           expectedArchivePath,
+		Status:                RestoreStatusCoordinationRequired,
+		RequiresDaemonRestart: true,
+		Message:               "restore archive validated; stop/restart daemon coordination is required before replacing the live database",
+	}, nil
+}
+
+func (s *BackupStore) validateRestore(ctx context.Context, req RestoreRequest) (BackupManifest, string, error) {
+	if err := ctx.Err(); err != nil {
+		return BackupManifest{}, "", err
+	}
+	id := strings.TrimSpace(req.BackupID)
+	confirmation := strings.TrimSpace(req.Confirmation)
+	if id == "" {
+		return BackupManifest{}, "", ErrBackupIDRequired
+	}
+	if !isSafeBackupID(id) {
+		return BackupManifest{}, "", fmt.Errorf("%w: %s", ErrBackupIDUnsafe, id)
+	}
+	if confirmation == "" {
+		return BackupManifest{}, "", ErrBackupConfirmationRequired
+	}
+	if confirmation != RestoreConfirmation(id) {
+		return BackupManifest{}, "", ErrBackupConfirmationMismatch
+	}
+	backup, err := s.backup(id)
+	if err != nil {
+		return BackupManifest{}, "", err
+	}
+	backupDir := filepath.Join(s.backupRoot, id)
+	expectedArchivePath := filepath.Join(backupDir, backupArchiveFile)
+	if err := verifyManifestArchivePath(backup.ArchivePath, expectedArchivePath); err != nil {
+		return BackupManifest{}, "", err
+	}
+	return backup, expectedArchivePath, nil
+}
+
+func (s *BackupStore) backup(id string) (BackupManifest, error) {
+	if !isSafeBackupID(id) {
+		return BackupManifest{}, fmt.Errorf("%w: %s", ErrBackupIDUnsafe, id)
+	}
+	path := filepath.Join(s.backupRoot, id, backupManifestFile)
+	backup, err := readBackupManifest(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return BackupManifest{}, fmt.Errorf("%w: %s", ErrBackupNotFound, id)
+	}
+	return backup, err
+}
+
+func isSafeBackupID(id string) bool {
+	if id == "" || id == "." || id == ".." || filepath.IsAbs(id) || strings.ContainsAny(id, `/\`) {
+		return false
+	}
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func readBackupManifest(path string) (BackupManifest, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -150,6 +256,27 @@ func readBackupManifest(path string) (BackupManifest, error) {
 		return BackupManifest{}, fmt.Errorf("decode backup manifest: %w", err)
 	}
 	return backup, nil
+}
+
+func verifyManifestArchivePath(manifestArchivePath, expectedArchivePath string) error {
+	if filepath.Clean(manifestArchivePath) != filepath.Clean(expectedArchivePath) {
+		return fmt.Errorf("%w: archive path does not match selected backup", ErrBackupArchiveInvalid)
+	}
+	return nil
+}
+
+func verifyArchiveIntegrity(backup BackupManifest, checksum string, size int64) error {
+	manifestChecksum := strings.TrimSpace(backup.Checksum)
+	if manifestChecksum == "" {
+		return fmt.Errorf("%w: missing checksum", ErrBackupArchiveInvalid)
+	}
+	if !strings.EqualFold(checksum, manifestChecksum) {
+		return fmt.Errorf("%w: checksum mismatch", ErrBackupArchiveInvalid)
+	}
+	if backup.SizeBytes >= 0 && size != backup.SizeBytes {
+		return fmt.Errorf("%w: size mismatch", ErrBackupArchiveInvalid)
+	}
+	return nil
 }
 
 func ensureBackupRootOutsideDBDir(dbPath, backupRoot string) error {
@@ -174,6 +301,9 @@ func ensureBackupRootOutsideDBDir(dbPath, backupRoot string) error {
 
 func checksumFileWithSHA256(path string) (string, int64, error) {
 	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", 0, fmt.Errorf("%w: archive is missing", ErrBackupArchiveInvalid)
+	}
 	if err != nil {
 		return "", 0, fmt.Errorf("open archive file: %w", err)
 	}
