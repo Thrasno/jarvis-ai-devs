@@ -982,6 +982,16 @@ func TestMemSave_WithAutoSyncEnabled_CallsSyncInBackground(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", textContent(t, res))
 	}
+	body := decodeJSONResponse(t, res)
+	if got := body["autosync_status"]; got != "queued" {
+		t.Fatalf("autosync_status = %v, want queued", got)
+	}
+	if got := body["autosync_config_source"]; got != "injected" {
+		t.Fatalf("autosync_config_source = %v, want injected", got)
+	}
+	if got := body["auto_sync"]; got != true {
+		t.Fatalf("auto_sync = %v, want true", got)
+	}
 
 	// Wait for background goroutine to complete (with reasonable timeout)
 	time.Sleep(200 * time.Millisecond)
@@ -1202,6 +1212,12 @@ func TestMemSync_ReturnsStructuredStatuses(t *testing.T) {
 			}
 			if got := body["project"]; got != "test-proj" {
 				t.Fatalf("project = %v, want test-proj", got)
+			}
+			if got := body["config_source"]; got != "none" {
+				t.Fatalf("config_source = %v, want none", got)
+			}
+			if got := body["auto_sync"]; got != false {
+				t.Fatalf("auto_sync = %v, want false", got)
 			}
 			if tt.wantRetry != "" {
 				if got := body["retry_at"]; got != tt.wantRetry {

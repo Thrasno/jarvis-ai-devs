@@ -339,6 +339,89 @@ func TestAutoSyncFieldLoading(t *testing.T) {
 	}
 }
 
+func TestLoadWithStatus_PartialEnvFallsBackToValidFile(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("HIVE_API_URL", "https://stale-env.example.com")
+	dir := t.TempDir()
+	path := writeFile(t, dir, `{"api_url":"https://file.example.com","email":"file@example.com","password":"filepass","auto_sync":true}`, 0600)
+	withConfigPath(t, path)
+
+	cfg, status, err := LoadWithStatus()
+	if err != nil {
+		t.Fatalf("LoadWithStatus() error = %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("LoadWithStatus() config = nil, want file config")
+	}
+	if cfg.APIURL != "https://file.example.com" {
+		t.Fatalf("APIURL = %q, want file config URL", cfg.APIURL)
+	}
+	if !status.Configured {
+		t.Fatal("status.Configured = false, want true")
+	}
+	if status.Source != "file" {
+		t.Fatalf("status.Source = %q, want file", status.Source)
+	}
+	if !status.AutoSync {
+		t.Fatal("status.AutoSync = false, want true from file")
+	}
+	if len(status.Warnings) == 0 || !contains(status.Warnings[0], "incomplete hive sync env") {
+		t.Fatalf("status.Warnings = %v, want incomplete env warning", status.Warnings)
+	}
+}
+
+func TestLoadWithStatus_CompleteEnvOverridesFile(t *testing.T) {
+	t.Setenv("HIVE_API_URL", "https://env.example.com")
+	t.Setenv("HIVE_API_EMAIL", "env@example.com")
+	t.Setenv("HIVE_API_PASSWORD", "envpass")
+	t.Setenv("HIVE_AUTO_SYNC", "1")
+	dir := t.TempDir()
+	path := writeFile(t, dir, `{"api_url":"https://file.example.com","email":"file@example.com","password":"filepass","auto_sync":false}`, 0600)
+	withConfigPath(t, path)
+
+	cfg, status, err := LoadWithStatus()
+	if err != nil {
+		t.Fatalf("LoadWithStatus() error = %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("LoadWithStatus() config = nil, want env config")
+	}
+	if cfg.APIURL != "https://env.example.com" {
+		t.Fatalf("APIURL = %q, want env config URL", cfg.APIURL)
+	}
+	if status.Source != "env" {
+		t.Fatalf("status.Source = %q, want env", status.Source)
+	}
+	if !status.AutoSync {
+		t.Fatal("status.AutoSync = false, want true from HIVE_AUTO_SYNC=1")
+	}
+	if len(status.Warnings) != 0 {
+		t.Fatalf("status.Warnings = %v, want none", status.Warnings)
+	}
+}
+
+func TestLoadWithStatus_NoConfigReportsObservableDisabledState(t *testing.T) {
+	clearEnv(t)
+	withConfigPath(t, filepath.Join(t.TempDir(), "missing-sync.json"))
+
+	cfg, status, err := LoadWithStatus()
+	if err != nil {
+		t.Fatalf("LoadWithStatus() error = %v", err)
+	}
+	if cfg != nil {
+		t.Fatalf("LoadWithStatus() config = %+v, want nil", cfg)
+	}
+	if status.Configured {
+		t.Fatal("status.Configured = true, want false")
+	}
+	if status.Source != "none" {
+		t.Fatalf("status.Source = %q, want none", status.Source)
+	}
+	if status.AutoSync {
+		t.Fatal("status.AutoSync = true, want false")
+	}
+}
+
 // contains es un helper para no importar strings en los tests.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||

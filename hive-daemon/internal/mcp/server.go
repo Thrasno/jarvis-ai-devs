@@ -62,7 +62,8 @@ func NewServerWithConfig(store MemoryStore, syncStore hivesync.SyncStore, syncer
 	}, nil)
 
 	activity := NewActivityTracker()
-	registerTools(s, store, syncStore, syncer, cfg, activity, prompts)
+	syncRuntime := newSyncRuntime(syncStore, syncer, cfg)
+	registerTools(s, store, syncRuntime, activity, prompts)
 
 	syncStatus := "sin sync"
 	if syncer != nil {

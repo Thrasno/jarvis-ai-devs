@@ -174,9 +174,14 @@ func connectTestServerWithPrompts(t *testing.T, store *mockStore) *sdkmcp.Client
 
 func connectTestServerWithConfigAndPrompts(t *testing.T, store hivemcp.MemoryStore, cfg *hivesync.Config, syncer hivemcp.SyncRunner, prompts hivemcp.PromptStore) *sdkmcp.ClientSession {
 	t.Helper()
+	return connectTestServerWithRuntime(t, store, nil, cfg, syncer, prompts)
+}
+
+func connectTestServerWithRuntime(t *testing.T, store hivemcp.MemoryStore, syncStore hivesync.SyncStore, cfg *hivesync.Config, syncer hivemcp.SyncRunner, prompts hivemcp.PromptStore) *sdkmcp.ClientSession {
+	t.Helper()
 	ctx := context.Background()
 
-	server := hivemcp.NewServer(store, nil, syncer, cfg, prompts)
+	server := hivemcp.NewServer(store, syncStore, syncer, cfg, prompts)
 
 	t1, t2 := sdkmcp.NewInMemoryTransports()
 	if _, err := server.Connect(ctx, t1, nil); err != nil {

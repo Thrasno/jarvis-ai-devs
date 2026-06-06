@@ -21,6 +21,19 @@ type Config struct {
 	AutoSync bool   // Enable automatic background sync after each mem_save (default: false)
 }
 
+type SyncConfigStatus struct {
+	Configured bool     `json:"configured"`
+	Source     string   `json:"source"`
+	AutoSync   bool     `json:"auto_sync"`
+	Warnings   []string `json:"warnings,omitempty"`
+}
+
+const (
+	ConfigSourceEnv  = "env"
+	ConfigSourceFile = "file"
+	ConfigSourceNone = "none"
+)
+
 // configFilePath es una función variable para que los tests puedan sustituirla.
 // En producción apunta a defaultConfigPath.
 var configFilePath = defaultConfigPath
@@ -158,15 +171,49 @@ func loadFromFile() (*Config, bool, error) {
 }
 
 // Load carga la configuración desde variables de entorno o desde ~/.jarvis/sync.json.
-// El orden de precedencia es: env vars > archivo de configuración.
+// El orden de precedencia es: env vars completas > archivo de configuración.
 // Devuelve nil si no está configurado (sync desactivado).
-// Devuelve error si está parcialmente configurado (evita confusión).
+// Devuelve error si no hay una configuración completa utilizable.
 func Load() (*Config, error) {
+	cfg, _, err := LoadWithStatus()
+	return cfg, err
+}
+
+func LoadWithStatus() (*Config, SyncConfigStatus, error) {
 	if cfg, ok, err := loadFromEnv(); ok || err != nil {
-		return cfg, err
+		if err == nil {
+			return cfg, statusForConfig(ConfigSourceEnv, cfg, nil), nil
+		}
+
+		cfg, fileOK, fileErr := loadFromFile()
+		if fileErr == nil && fileOK {
+			warning := fmt.Sprintf("incomplete hive sync env ignored because file config is available: %v", err)
+			return cfg, statusForConfig(ConfigSourceFile, cfg, []string{warning}), nil
+		}
+		if fileErr != nil {
+			return nil, SyncConfigStatus{Configured: false, Source: ConfigSourceFile}, fmt.Errorf("%w; file config error: %v", err, fileErr)
+		}
+		return nil, SyncConfigStatus{Configured: false, Source: ConfigSourceNone}, err
 	}
+
 	if cfg, ok, err := loadFromFile(); ok || err != nil {
-		return cfg, err
+		if err != nil {
+			return nil, SyncConfigStatus{Configured: false, Source: ConfigSourceFile}, err
+		}
+		return cfg, statusForConfig(ConfigSourceFile, cfg, nil), nil
 	}
-	return nil, nil
+
+	return nil, SyncConfigStatus{Configured: false, Source: ConfigSourceNone, AutoSync: false}, nil
+}
+
+func statusForConfig(source string, cfg *Config, warnings []string) SyncConfigStatus {
+	status := SyncConfigStatus{
+		Configured: cfg != nil,
+		Source:     source,
+		Warnings:   warnings,
+	}
+	if cfg != nil {
+		status.AutoSync = cfg.AutoSync
+	}
+	return status
 }
