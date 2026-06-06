@@ -65,6 +65,8 @@ type BackupStore struct {
 	backupRoot string
 	now        func() time.Time
 	snapshot   backupSnapshotter
+	rename     func(string, string) error
+	remove     func(string) error
 }
 
 type backupSnapshotter func(context.Context, string, string) (string, int64, error)
@@ -73,7 +75,7 @@ func NewBackupStore(dbPath, backupRoot string) *BackupStore {
 	if strings.TrimSpace(backupRoot) == "" {
 		backupRoot = DefaultBackupRoot(dbPath)
 	}
-	return &BackupStore{dbPath: dbPath, backupRoot: backupRoot, now: time.Now, snapshot: copyFileSnapshot}
+	return &BackupStore{dbPath: dbPath, backupRoot: backupRoot, now: time.Now, snapshot: copyFileSnapshot, rename: os.Rename, remove: os.Remove}
 }
 
 func NewSQLiteBackupStore(dbPath, backupRoot string, sqlDB *sql.DB) *BackupStore {
@@ -191,6 +193,40 @@ func (s *BackupStore) PlanRestore(ctx context.Context, req RestoreRequest) (Rest
 	}, nil
 }
 
+func (s *BackupStore) Restore(ctx context.Context, req RestoreRequest) (RestoreResult, error) {
+	if err := ctx.Err(); err != nil {
+		return RestoreResult{}, err
+	}
+	backup, expectedArchivePath, err := s.validateRestore(ctx, req)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	stagedPath, checksum, size, err := stageRestoreArchive(expectedArchivePath, filepath.Dir(s.dbPath))
+	if err != nil {
+		return RestoreResult{}, fmt.Errorf("restore db backup: %w", err)
+	}
+	cleanupStage := true
+	defer func() {
+		if cleanupStage {
+			_ = os.Remove(stagedPath)
+		}
+	}()
+	if err := verifyArchiveIntegrity(backup, checksum, size); err != nil {
+		return RestoreResult{}, err
+	}
+	quarantinedSidecars, err := s.quarantineSQLiteSidecars()
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	if err := s.rename(stagedPath, s.dbPath); err != nil {
+		restoreSQLiteSidecars(s.rename, quarantinedSidecars)
+		return RestoreResult{}, fmt.Errorf("replace live db with staged restore: %w", err)
+	}
+	cleanupStage = false
+	removeQuarantinedSQLiteSidecars(s.remove, quarantinedSidecars)
+	return RestoreResult{BackupID: backup.ID, DBPath: s.dbPath, RestoredAt: s.now().UTC(), ArchivePath: expectedArchivePath}, nil
+}
+
 func (s *BackupStore) validateRestore(ctx context.Context, req RestoreRequest) (BackupManifest, string, error) {
 	if err := ctx.Err(); err != nil {
 		return BackupManifest{}, "", err
@@ -263,6 +299,27 @@ func verifyManifestArchivePath(manifestArchivePath, expectedArchivePath string) 
 		return fmt.Errorf("%w: archive path does not match selected backup", ErrBackupArchiveInvalid)
 	}
 	return nil
+}
+
+func stageRestoreArchive(archivePath, liveDBDir string) (string, string, int64, error) {
+	staged, err := os.CreateTemp(liveDBDir, ".memory.db.restore-*")
+	if err != nil {
+		return "", "", 0, fmt.Errorf("create staged restore file: %w", err)
+	}
+	stagedPath := staged.Name()
+	if err := staged.Close(); err != nil {
+		_ = os.Remove(stagedPath)
+		return "", "", 0, fmt.Errorf("close staged restore file: %w", err)
+	}
+	checksum, size, err := copyFileWithSHA256(archivePath, stagedPath)
+	if err != nil {
+		_ = os.Remove(stagedPath)
+		if errors.Is(err, os.ErrNotExist) {
+			return "", "", 0, fmt.Errorf("%w: archive is missing", ErrBackupArchiveInvalid)
+		}
+		return "", "", 0, err
+	}
+	return stagedPath, checksum, size, nil
 }
 
 func verifyArchiveIntegrity(backup BackupManifest, checksum string, size int64) error {
@@ -338,6 +395,50 @@ func sqliteVacuumIntoSnapshot(sqlDB *sql.DB) backupSnapshotter {
 			return "", 0, fmt.Errorf("snapshot sqlite database: %w", err)
 		}
 		return checksumFileWithSHA256(dstPath)
+	}
+}
+
+type quarantinedSQLiteSidecar struct {
+	livePath       string
+	quarantinePath string
+}
+
+func (s *BackupStore) quarantineSQLiteSidecars() ([]quarantinedSQLiteSidecar, error) {
+	sidecars := make([]quarantinedSQLiteSidecar, 0, 2)
+	for _, suffix := range []string{"-wal", "-shm"} {
+		livePath := s.dbPath + suffix
+		if _, err := os.Stat(livePath); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			restoreSQLiteSidecars(s.rename, sidecars)
+			return nil, fmt.Errorf("inspect sqlite sidecar %s: %w", suffix, err)
+		}
+
+		quarantinePath := sqliteSidecarQuarantinePath(livePath)
+		if err := s.rename(livePath, quarantinePath); err != nil {
+			restoreSQLiteSidecars(s.rename, sidecars)
+			return nil, fmt.Errorf("quarantine sqlite sidecar %s: %w", suffix, err)
+		}
+		sidecars = append(sidecars, quarantinedSQLiteSidecar{livePath: livePath, quarantinePath: quarantinePath})
+	}
+	return sidecars, nil
+}
+
+func sqliteSidecarQuarantinePath(livePath string) string {
+	dir := filepath.Dir(livePath)
+	name := filepath.Base(livePath)
+	return filepath.Join(dir, "."+name+".restore-quarantine-"+uuid.NewString())
+}
+
+func restoreSQLiteSidecars(rename func(string, string) error, sidecars []quarantinedSQLiteSidecar) {
+	for i := len(sidecars) - 1; i >= 0; i-- {
+		_ = rename(sidecars[i].quarantinePath, sidecars[i].livePath)
+	}
+}
+
+func removeQuarantinedSQLiteSidecars(remove func(string) error, sidecars []quarantinedSQLiteSidecar) {
+	for _, sidecar := range sidecars {
+		_ = remove(sidecar.quarantinePath)
 	}
 }
 
