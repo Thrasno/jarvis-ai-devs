@@ -230,6 +230,12 @@ verify_installation() {
     else
         warn "hive-daemon no está en el PATH"
     fi
+
+    if command -v hive &> /dev/null; then
+        echo -e "${GREEN}✓${NC} hive: $(which hive)"
+    else
+        warn "hive no está en el PATH"
+    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -247,6 +253,7 @@ main() {
     
     download_binary "jarvis"
     download_binary "hive-daemon"
+    download_binary "hive"
     
     echo ""
     verify_installation
