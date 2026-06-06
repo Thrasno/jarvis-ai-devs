@@ -3,6 +3,9 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    # 03:00 UTC daily — full CI safety net for the ecosystem.
+    - cron: "0 3 * * *"
 
 permissions:
   contents: read
