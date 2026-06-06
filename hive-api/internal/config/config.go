@@ -43,6 +43,10 @@ type Config struct {
 	// Se configura con CORS_ALLOWED_ORIGINS (valores separados por coma).
 	// Default: "https://hive.hivemem.dev"
 	AllowedOrigins []string
+
+	// DashboardAssetsDir es el directorio opcional con los assets compilados del dashboard.
+	// Si está vacío, hive-api no registra rutas estáticas para /dashboard.
+	DashboardAssetsDir string
 }
 
 // Load lee las variables de entorno y devuelve una Config válida.
@@ -61,11 +65,12 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		DatabaseURL:    os.Getenv("DATABASE_URL"),
-		JWTSecret:      os.Getenv("JWT_SECRET"),
-		Port:           getEnvWithDefault("PORT", "8080"),
-		GinMode:        getEnvWithDefault("GIN_MODE", "release"),
-		AllowedOrigins: origins,
+		DatabaseURL:        os.Getenv("DATABASE_URL"),
+		JWTSecret:          os.Getenv("JWT_SECRET"),
+		Port:               getEnvWithDefault("PORT", "8080"),
+		GinMode:            getEnvWithDefault("GIN_MODE", "release"),
+		AllowedOrigins:     origins,
+		DashboardAssetsDir: strings.TrimSpace(os.Getenv("DASHBOARD_ASSETS_DIR")),
 	}
 
 	// Validamos cada campo requerido.

@@ -14,6 +14,8 @@ package handler
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -23,6 +25,102 @@ import (
 
 func init() {
 	gin.SetMode(gin.TestMode)
+}
+
+func TestRouter_DashboardServesConfiguredAssets(t *testing.T) {
+	dashboardDir := t.TempDir()
+	assetsDir := filepath.Join(dashboardDir, "assets")
+	require.NoError(t, os.Mkdir(assetsDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dashboardDir, "index.html"), []byte("<html>Hive Dashboard</html>"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(assetsDir, "app.js"), []byte("console.log('dashboard')"), 0o644))
+
+	r := newTestRouterWithDashboard(dashboardDir)
+
+	t.Run("dashboard entry returns index html", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req, err := http.NewRequest(http.MethodGet, "/dashboard", nil)
+		require.NoError(t, err)
+
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Contains(t, w.Body.String(), "Hive Dashboard")
+	})
+
+	t.Run("deep dashboard route falls back to index html", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req, err := http.NewRequest(http.MethodGet, "/dashboard/admin/users", nil)
+		require.NoError(t, err)
+
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Contains(t, w.Body.String(), "Hive Dashboard")
+	})
+
+	t.Run("asset route returns static asset", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req, err := http.NewRequest(http.MethodGet, "/dashboard/assets/app.js", nil)
+		require.NoError(t, err)
+
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Contains(t, w.Body.String(), "console.log('dashboard')")
+	})
+}
+
+func TestRouter_DashboardDisabledReturnsJSONNotHTML(t *testing.T) {
+	r := newTestRouterWithDashboard("")
+
+	w := httptest.NewRecorder()
+	req, err := http.NewRequest(http.MethodGet, "/dashboard", nil)
+	require.NoError(t, err)
+
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.Equal(t, "application/json; charset=utf-8", w.Header().Get("Content-Type"))
+	assert.JSONEq(t, `{"error":"not found"}`, w.Body.String())
+}
+
+func TestRouter_ReservedAPIPrefixesReturnJSONNotDashboardHTML(t *testing.T) {
+	dashboardDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dashboardDir, "index.html"), []byte("<html>Hive Dashboard</html>"), 0o644))
+	r := newTestRouterWithDashboard(dashboardDir)
+
+	paths := []string{
+		"/auth/unknown",
+		"/admin/unknown",
+		"/memories/unknown/path",
+		"/sync/unknown",
+		"/health/unknown",
+	}
+
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req, err := http.NewRequest(http.MethodGet, path, nil)
+			require.NoError(t, err)
+
+			r.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusNotFound, w.Code)
+			assert.Equal(t, "application/json; charset=utf-8", w.Header().Get("Content-Type"))
+			assert.JSONEq(t, `{"error":"not found"}`, w.Body.String())
+			assert.NotContains(t, w.Body.String(), "Hive Dashboard")
+		})
+	}
+}
+
+func newTestRouterWithDashboard(dashboardAssetsDir string) *gin.Engine {
+	return NewRouter(RouterDeps{
+		AuthSvc:            &mockAuthSvc{},
+		MemorySvc:          &mockMemorySvc{},
+		SyncSvc:            &mockSyncSvc{},
+		AdminSvc:           &mockAdminSvc{},
+		DashboardAssetsDir: dashboardAssetsDir,
+	})
 }
 
 // TestRouter_RoutesRegistered verifica que todas las rutas estén registradas

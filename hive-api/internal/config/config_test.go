@@ -6,6 +6,7 @@ package config_test
 // Es la forma más realista de testear: si funciona desde fuera, funciona.
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/config"
@@ -47,6 +48,19 @@ func TestLoad_DefaultValues(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "8080", cfg.Port)
 	assert.Equal(t, "release", cfg.GinMode)
+	assert.Empty(t, cfg.DashboardAssetsDir)
+}
+
+func TestLoad_DashboardAssetsDir(t *testing.T) {
+	dashboardDir := filepath.Join(t.TempDir(), "dashboard-dist")
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/hive")
+	t.Setenv("JWT_SECRET", "esta-clave-tiene-mas-de-treinta-y-dos-caracteres")
+	t.Setenv("DASHBOARD_ASSETS_DIR", dashboardDir)
+
+	cfg, err := config.Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, dashboardDir, cfg.DashboardAssetsDir)
 }
 
 // TestLoad_MissingDatabaseURL verifica que Load() falla si falta DATABASE_URL.
