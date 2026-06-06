@@ -3,12 +3,15 @@ package httpapi_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -763,6 +766,241 @@ func TestGovernanceMemoriesLimitContract(t *testing.T) {
 				t.Fatalf("memories len = %d, want %d; body: %s", len(resp.Memories), tt.want, rr.Body.String())
 			}
 		})
+	}
+}
+
+func TestGovernanceBackupHTTPContracts(t *testing.T) {
+	tempDir := t.TempDir()
+	dbDir := filepath.Join(tempDir, "live-db")
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	dbPath := filepath.Join(dbDir, "memory.db")
+	if err := os.WriteFile(dbPath, []byte("live http backup"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	backupStore := governance.NewBackupStore(dbPath, filepath.Join(tempDir, "hive-backups"))
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, governance.NewServiceWithBackup(nil, backupStore))
+
+	createReq := httptest.NewRequest(http.MethodPost, "/governance/backups", nil)
+	createRR := httptest.NewRecorder()
+	srv.ServeHTTP(createRR, createReq)
+
+	if createRR.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d — body: %s", createRR.Code, createRR.Body.String())
+	}
+	var createResp struct {
+		Backup governance.BackupManifest `json:"backup"`
+	}
+	if err := json.NewDecoder(createRR.Body).Decode(&createResp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if createResp.Backup.ID == "" {
+		t.Fatal("backup response missing id")
+	}
+	if rel, err := filepath.Rel(dbDir, createResp.Backup.ArchivePath); err != nil || rel == "." || (!strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)) {
+		t.Fatalf("backup archive must be outside db dir; rel=%q err=%v", rel, err)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/governance/backups", nil)
+	listRR := httptest.NewRecorder()
+	srv.ServeHTTP(listRR, listReq)
+
+	if listRR.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", listRR.Code, listRR.Body.String())
+	}
+	var listResp struct {
+		Backups []governance.BackupManifest `json:"backups"`
+	}
+	if err := json.NewDecoder(listRR.Body).Decode(&listResp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if len(listResp.Backups) != 1 || listResp.Backups[0].ID != createResp.Backup.ID {
+		t.Fatalf("backups = %+v, want one backup %q", listResp.Backups, createResp.Backup.ID)
+	}
+}
+
+func TestGovernanceBackupHTTPCreatesSQLiteSnapshotIncludingWALData(t *testing.T) {
+	tempDir := t.TempDir()
+	dbDir := filepath.Join(tempDir, "live-db")
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	dbPath := filepath.Join(dbDir, "memory.db")
+	store, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.CreateSession("sess-http-backup", "alpha", dbDir, "dev", "test"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if _, err := store.SaveMemory(&models.Memory{Project: "alpha", Title: "HTTP WAL snapshot", Content: "committed through daemon", SessionID: "sess-http-backup"}); err != nil {
+		t.Fatalf("SaveMemory: %v", err)
+	}
+
+	backupStore := governance.NewSQLiteBackupStore(dbPath, filepath.Join(tempDir, "hive-backups"), store.RawDB())
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, governance.NewServiceWithBackup(store, backupStore))
+	req := httptest.NewRequest(http.MethodPost, "/governance/backups", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Backup governance.BackupManifest `json:"backup"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	backupDB, err := sql.Open("sqlite", resp.Backup.ArchivePath)
+	if err != nil {
+		t.Fatalf("Open backup: %v", err)
+	}
+	t.Cleanup(func() { _ = backupDB.Close() })
+	var got string
+	if err := backupDB.QueryRow(`SELECT content FROM memories WHERE title = 'HTTP WAL snapshot'`).Scan(&got); err != nil {
+		t.Fatalf("query backup: %v", err)
+	}
+	if got != "committed through daemon" {
+		t.Fatalf("backup content = %q, want committed through daemon", got)
+	}
+}
+
+func TestGovernanceBackupsMethodNotAllowedIncludesAllowHeader(t *testing.T) {
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, governance.NewServiceWithBackup(nil, nil))
+	req := httptest.NewRequest(http.MethodPut, "/governance/backups", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", rr.Code)
+	}
+	if got, want := rr.Header().Get("Allow"), "GET, POST"; got != want {
+		t.Fatalf("Allow header = %q, want %q", got, want)
+	}
+}
+
+func TestGovernanceRestoresMethodNotAllowedIncludesAllowHeader(t *testing.T) {
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, governance.NewServiceWithBackup(nil, nil))
+	req := httptest.NewRequest(http.MethodGet, "/governance/restores", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", rr.Code)
+	}
+	if got, want := rr.Header().Get("Allow"), http.MethodPost; got != want {
+		t.Fatalf("Allow header = %q, want %q", got, want)
+	}
+}
+
+func TestGovernanceRestoreHTTPRequiresExplicitSelectionAndConfirmation(t *testing.T) {
+	tempDir := t.TempDir()
+	dbDir := filepath.Join(tempDir, "live-db")
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	dbPath := filepath.Join(dbDir, "memory.db")
+	if err := os.WriteFile(dbPath, []byte("restorable http db"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	backupStore := governance.NewBackupStore(dbPath, filepath.Join(tempDir, "hive-backups"))
+	backup, err := backupStore.Create(context.Background())
+	if err != nil {
+		t.Fatalf("Create backup: %v", err)
+	}
+	if err := os.WriteFile(dbPath, []byte("corrupted http db"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, governance.NewServiceWithBackup(nil, backupStore))
+
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{name: "missing backup selection", body: fmt.Sprintf(`{"confirmation":%q}`, governance.RestoreConfirmation(backup.ID))},
+		{name: "confirmation mismatch", body: fmt.Sprintf(`{"backup_id":%q,"confirmation":"RESTORE wrong-backup"}`, backup.ID)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/governance/restores", bytes.NewBufferString(tt.body))
+			rr := httptest.NewRecorder()
+
+			srv.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d — body: %s", rr.Code, rr.Body.String())
+			}
+			contents, err := os.ReadFile(dbPath)
+			if err != nil {
+				t.Fatalf("ReadFile: %v", err)
+			}
+			if string(contents) != "corrupted http db" {
+				t.Fatalf("restore should not mutate db on rejected request; got %q", contents)
+			}
+		})
+	}
+
+	body := fmt.Sprintf(`{"backup_id":%q,"confirmation":%q}`, backup.ID, governance.RestoreConfirmation(backup.ID))
+	req := httptest.NewRequest(http.MethodPost, "/governance/restores", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Restore governance.RestoreResult `json:"restore"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if resp.Restore.Status != governance.RestoreStatusCoordinationRequired {
+		t.Fatalf("restore status = %q, want %q", resp.Restore.Status, governance.RestoreStatusCoordinationRequired)
+	}
+	if !resp.Restore.RequiresDaemonRestart {
+		t.Fatal("restore response must require daemon stop/restart coordination")
+	}
+	contents, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(contents) != "corrupted http db" {
+		t.Fatalf("HTTP restore plan must not mutate live db; got %q", contents)
+	}
+}
+
+func TestGovernanceRestoreHTTPMapsArchiveIntegrityFailuresToConflict(t *testing.T) {
+	tempDir := t.TempDir()
+	dbDir := filepath.Join(tempDir, "live-db")
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	dbPath := filepath.Join(dbDir, "memory.db")
+	if err := os.WriteFile(dbPath, []byte("restorable http db"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	backupStore := governance.NewBackupStore(dbPath, filepath.Join(tempDir, "hive-backups"))
+	backup, err := backupStore.Create(context.Background())
+	if err != nil {
+		t.Fatalf("Create backup: %v", err)
+	}
+	if err := os.WriteFile(backup.ArchivePath, []byte("tampered"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, governance.NewServiceWithBackup(nil, backupStore))
+
+	body := fmt.Sprintf(`{"backup_id":%q,"confirmation":%q}`, backup.ID, governance.RestoreConfirmation(backup.ID))
+	req := httptest.NewRequest(http.MethodPost, "/governance/restores", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d — body: %s", rr.Code, rr.Body.String())
 	}
 }
 

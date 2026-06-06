@@ -31,12 +31,23 @@ type readStore interface {
 	ListGovernanceSyncHealth(context.Context) ([]db.SyncHealth, error)
 }
 
+type backupStore interface {
+	List(context.Context) ([]BackupManifest, error)
+	Create(context.Context) (BackupManifest, error)
+	PlanRestore(context.Context, RestoreRequest) (RestoreResult, error)
+}
+
 type Service struct {
-	store readStore
+	store  readStore
+	backup backupStore
 }
 
 func NewService(store readStore) *Service {
 	return &Service{store: store}
+}
+
+func NewServiceWithBackup(store readStore, backup backupStore) *Service {
+	return &Service{store: store, backup: backup}
 }
 
 func (s *Service) Projects(ctx context.Context) ([]Project, error) {
@@ -69,6 +80,27 @@ func (s *Service) Memories(ctx context.Context, filter MemoryFilter) ([]Memory, 
 
 func (s *Service) Health(ctx context.Context) ([]Health, error) {
 	return s.store.ListGovernanceSyncHealth(ctx)
+}
+
+func (s *Service) Backups(ctx context.Context) ([]BackupManifest, error) {
+	if s.backup == nil {
+		return nil, ErrBackupStoreRequired
+	}
+	return s.backup.List(ctx)
+}
+
+func (s *Service) CreateBackup(ctx context.Context) (BackupManifest, error) {
+	if s.backup == nil {
+		return BackupManifest{}, ErrBackupStoreRequired
+	}
+	return s.backup.Create(ctx)
+}
+
+func (s *Service) RestoreBackup(ctx context.Context, req RestoreRequest) (RestoreResult, error) {
+	if s.backup == nil {
+		return RestoreResult{}, ErrBackupStoreRequired
+	}
+	return s.backup.PlanRestore(ctx, req)
 }
 
 func mapProjectError(err error) error {

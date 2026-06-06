@@ -24,6 +24,7 @@ const (
 )
 
 var (
+	ErrBackupStoreRequired        = errors.New("backup store is not configured")
 	ErrBackupIDRequired           = errors.New("backup id is required")
 	ErrBackupConfirmationRequired = errors.New("backup restore confirmation is required")
 	ErrBackupConfirmationMismatch = errors.New("backup restore confirmation mismatch")

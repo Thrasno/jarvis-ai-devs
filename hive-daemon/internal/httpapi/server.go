@@ -35,6 +35,9 @@ type GovernanceService interface {
 	Project(context.Context, string) (governance.Project, error)
 	Memories(context.Context, governance.MemoryFilter) ([]governance.Memory, error)
 	Health(context.Context) ([]governance.Health, error)
+	Backups(context.Context) ([]governance.BackupManifest, error)
+	CreateBackup(context.Context) (governance.BackupManifest, error)
+	RestoreBackup(context.Context, governance.RestoreRequest) (governance.RestoreResult, error)
 }
 
 // Server handles HTTP requests for the Hive prompt-capture endpoint.
@@ -68,6 +71,8 @@ func NewServerWithProjectStoreAndGovernance(addr string, prompts PromptStore, pr
 		s.mux.HandleFunc("/governance/projects/", s.handleGovernanceProject)
 		s.mux.HandleFunc("/governance/memories", s.handleGovernanceMemories)
 		s.mux.HandleFunc("/governance/health", s.handleGovernanceHealth)
+		s.mux.HandleFunc("/governance/backups", s.handleGovernanceBackups)
+		s.mux.HandleFunc("/governance/restores", s.handleGovernanceRestores)
 	}
 	return s
 }
@@ -277,14 +282,63 @@ func (s *Server) handleGovernanceHealth(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"projects": health})
 }
 
+func (s *Server) handleGovernanceBackups(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		backups, err := s.governance.Backups(r.Context())
+		if err != nil {
+			writeBackupError(w, "governance backups", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"backups": backups})
+	case http.MethodPost:
+		backup, err := s.governance.CreateBackup(r.Context())
+		if err != nil {
+			writeBackupError(w, "governance backup create", err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"backup": backup})
+	default:
+		writeMethodNotAllowed(w, http.MethodGet, http.MethodPost)
+	}
+}
+
+func (s *Server) handleGovernanceRestores(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body governance.RestoreRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	restore, err := s.governance.RestoreBackup(r.Context(), body)
+	if err != nil {
+		writeBackupError(w, "governance restore", err)
+		return
+	}
+	status := http.StatusOK
+	if restore.Status == governance.RestoreStatusCoordinationRequired {
+		status = http.StatusAccepted
+	}
+	writeJSON(w, status, map[string]any{"restore": restore})
+}
+
 func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method == method {
 		return true
 	}
+	writeMethodNotAllowed(w, method)
+	return false
+}
+
+func writeMethodNotAllowed(w http.ResponseWriter, methods ...string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Allow", strings.Join(methods, ", "))
 	w.WriteHeader(http.StatusMethodNotAllowed)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
-	return false
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
@@ -308,6 +362,40 @@ func writeGovernanceError(w http.ResponseWriter, source string, err error) {
 		status = http.StatusNotFound
 		errorMessage = "project not found"
 	} else {
+		logger.Log.Printf("%s: %v", source, err)
+	}
+	writeJSON(w, status, map[string]string{"error": errorMessage})
+}
+
+func writeBackupError(w http.ResponseWriter, source string, err error) {
+	status := http.StatusInternalServerError
+	errorMessage := "internal error"
+	switch {
+	case errors.Is(err, governance.ErrBackupStoreRequired):
+		status = http.StatusServiceUnavailable
+		errorMessage = "backup store is not configured"
+	case errors.Is(err, governance.ErrBackupIDRequired):
+		status = http.StatusBadRequest
+		errorMessage = "backup_id is required"
+	case errors.Is(err, governance.ErrBackupConfirmationRequired):
+		status = http.StatusBadRequest
+		errorMessage = "confirmation is required"
+	case errors.Is(err, governance.ErrBackupConfirmationMismatch):
+		status = http.StatusBadRequest
+		errorMessage = "confirmation mismatch"
+	case errors.Is(err, governance.ErrBackupNotFound):
+		status = http.StatusNotFound
+		errorMessage = "backup not found"
+	case errors.Is(err, governance.ErrBackupIDUnsafe):
+		status = http.StatusBadRequest
+		errorMessage = "backup_id is invalid"
+	case errors.Is(err, governance.ErrBackupLocationUnsafe):
+		status = http.StatusBadRequest
+		errorMessage = "backup root must be outside the live database directory"
+	case errors.Is(err, governance.ErrBackupArchiveInvalid):
+		status = http.StatusConflict
+		errorMessage = "backup archive integrity check failed"
+	default:
 		logger.Log.Printf("%s: %v", source, err)
 	}
 	writeJSON(w, status, map[string]string{"error": errorMessage})
