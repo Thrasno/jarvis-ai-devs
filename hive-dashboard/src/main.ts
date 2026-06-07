@@ -1,17 +1,23 @@
-import { createApiClient, type ApiClient } from './api/client'
-import { createSessionStore, type AuthState } from './auth/session'
+import { createApiClient, type ApiClient, type AuditLogList, type MemoryList, type MemorySearch, type User } from './api/client'
+import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
 import { renderAuditSync } from './views/AuditSync'
 import { renderMemories } from './views/Memories'
 import { renderOverview, type OverviewData, type ViewState } from './views/Overview'
 import { renderUsers } from './views/Users'
 import './styles.css'
 
-type DashboardData = OverviewData & {
-  users: Parameters<typeof renderUsers>[0] extends ViewState<infer T> ? T : never
-  memories: Parameters<typeof renderMemories>[0] extends ViewState<infer T> ? T : never
-  audit: Parameters<typeof renderAuditSync>[0] extends ViewState<infer T> ? T : never
+export const DEFAULT_MEMORY_SEARCH_QUERY = 'dashboard'
+
+export type UsersData = { users: User[] }
+export type MemoriesData = { recent: MemoryList; search: MemorySearch }
+export type AuditSyncData = AuditLogList
+export type LoadedDashboardData = {
+  overview: ViewState<OverviewData>
+  users: ViewState<UsersData>
+  memories: ViewState<MemoriesData>
+  audit: ViewState<AuditSyncData>
 }
-type DashboardState = ViewState<DashboardData>
+export type DashboardState = { status: 'loading' } | { status: 'ready'; data: LoadedDashboardData }
 
 type AppActions = {
   onLogin(email: string, password: string): Promise<void> | void
@@ -68,14 +74,16 @@ function renderShell(container: HTMLElement, state: Extract<AuthState, { status:
 function renderAdminView(routePath: string, state: DashboardState, actions: AppActions): HTMLElement {
   const wrapper = document.createElement('article')
   wrapper.append(nav(actions))
-  const ready = state.status === 'ready' ? state.data : null
-  const stateFor = <T>(data: T | null): ViewState<T> => state.status === 'error' ? state : ready ? { status: 'ready', data: data as T } : { status: 'loading' }
   const path = routePath.replace(/\/$/, '')
-  if (path.endsWith('/users')) wrapper.append(renderUsers(stateFor(ready?.users ?? null)))
-  else if (path.endsWith('/memories')) wrapper.append(renderMemories(stateFor(ready?.memories ?? null)))
-  else if (path.endsWith('/audit-sync')) wrapper.append(renderAuditSync(stateFor(ready?.audit ?? null)))
-  else wrapper.append(renderOverview(stateFor(ready ? { health: ready.health, stats: ready.stats } : null)))
+  if (path.endsWith('/users')) wrapper.append(renderUsers(stateFor(state, 'users')))
+  else if (path.endsWith('/memories')) wrapper.append(renderMemories(stateFor(state, 'memories')))
+  else if (path.endsWith('/audit-sync')) wrapper.append(renderAuditSync(stateFor(state, 'audit')))
+  else wrapper.append(renderOverview(stateFor(state, 'overview')))
   return wrapper
+}
+
+function stateFor<K extends keyof LoadedDashboardData>(state: DashboardState, key: K): LoadedDashboardData[K] | { status: 'loading' } {
+  return state.status === 'ready' ? state.data[key] : { status: 'loading' }
 }
 
 function nav(actions: AppActions): HTMLElement {
@@ -95,28 +103,49 @@ function nav(actions: AppActions): HTMLElement {
   return node
 }
 
-async function loadDashboard(api: ApiClient, token: string): Promise<DashboardState> {
-  try {
-    const [health, stats, users, recent, search, audit] = await Promise.all([
-      api.health(), api.adminStats(token), api.adminUsers(token), api.memories(token, { limit: 5 }), api.searchMemories(token, 'dashboard', { limit: 5 }), api.auditLogs(token, { limit: 10 })
-    ])
-    return { status: 'ready', data: { health, stats, users, memories: { recent, search }, audit } }
-  } catch (error) {
-    return { status: 'error', message: error instanceof Error ? error.message : 'dashboard data unavailable' }
+export async function loadDashboard(api: ApiClient, token: string): Promise<DashboardState> {
+  const [health, stats, users, recent, search, audit] = await Promise.allSettled([
+    api.health(), api.adminStats(token), api.adminUsers(token), api.memories(token, { limit: 5 }), api.searchMemories(token, DEFAULT_MEMORY_SEARCH_QUERY, { limit: 5 }), api.auditLogs(token, { limit: 10 })
+  ])
+  return {
+    status: 'ready',
+    data: {
+      overview: combinedState(health, stats, (health, stats) => ({ health, stats })),
+      users: settledState(users),
+      memories: combinedState(recent, search, (recent, search) => ({ recent, search })),
+      audit: settledState(audit)
+    }
   }
 }
 
-const root = document.getElementById('app')
-if (root) {
-  const api = createApiClient()
-  const session = createSessionStore({ api })
+function settledState<T>(result: PromiseSettledResult<T>): ViewState<T> {
+  return result.status === 'fulfilled' ? { status: 'ready', data: result.value } : { status: 'error', message: messageFor(result.reason) }
+}
+
+function combinedState<A, B, T>(first: PromiseSettledResult<A>, second: PromiseSettledResult<B>, combine: (first: A, second: B) => T): ViewState<T> {
+  if (first.status === 'rejected') return { status: 'error', message: messageFor(first.reason) }
+  if (second.status === 'rejected') return { status: 'error', message: messageFor(second.reason) }
+  return { status: 'ready', data: combine(first.value, second.value) }
+}
+
+function messageFor(error: unknown): string {
+  return error instanceof Error ? error.message : 'dashboard data unavailable'
+}
+
+type StartOptions = { api?: ApiClient; session?: SessionStore }
+
+export function startDashboardApp(root: HTMLElement, options: StartOptions = {}): void {
+  const api = options.api ?? createApiClient()
+  const session = options.session ?? createSessionStore({ api })
   let dashboard: DashboardState = { status: 'loading' }
+  let loadVersion = 0
   const rerender = (state: AuthState) => renderApp(root, state, actions, dashboard)
   const actions: AppActions = {
     async onLogin(email, password) {
       await setState(await session.login(email, password))
     },
     onLogout() {
+      loadVersion += 1
       dashboard = { status: 'loading' }
       rerender(session.logout())
     },
@@ -127,13 +156,23 @@ if (root) {
   }
 
   async function setState(state: AuthState): Promise<void> {
+    const version = loadVersion + 1
+    loadVersion = version
     rerender(state)
     if (state.status === 'authenticated' && state.user.level === 'admin') {
-      dashboard = await loadDashboard(api, state.token)
-      rerender(state)
+      const loaded = await loadDashboard(api, state.token)
+      const current = session.getState()
+      if (version !== loadVersion || current.status !== 'authenticated' || current.token !== state.token) return
+      dashboard = loaded
+      rerender(current)
     }
   }
 
   window.addEventListener('popstate', () => rerender(session.getState()))
   session.bootstrap().then(setState)
+}
+
+const root = document.getElementById('app')
+if (root) {
+  startDashboardApp(root)
 }
