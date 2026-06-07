@@ -57,7 +57,8 @@ func main() {
 	httpDone := make(chan struct{})
 	go func() {
 		defer close(httpDone)
-		srv := httpapi.NewServerWithProjectStoreAndGovernance(httpAddr(), store, store, governance.NewService(store))
+		backupStore := governance.NewSQLiteBackupStore(dbPath, "", store.RawDB())
+		srv := httpapi.NewServerWithProjectStoreAndGovernance(httpAddr(), store, store, governance.NewServiceWithBackup(store, backupStore))
 		if err := srv.Start(rootCtx); err != nil {
 			logger.Log.Printf("http server stopped: %v (mcp continues)", err)
 		}

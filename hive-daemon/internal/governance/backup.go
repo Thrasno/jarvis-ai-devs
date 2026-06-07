@@ -23,7 +23,18 @@ const (
 	backupManifestFile = "manifest.json"
 )
 
-var ErrBackupLocationUnsafe = errors.New("backup root must be outside the live database directory")
+var (
+	ErrBackupStoreRequired        = errors.New("backup store is not configured")
+	ErrBackupIDRequired           = errors.New("backup id is required")
+	ErrBackupConfirmationRequired = errors.New("backup restore confirmation is required")
+	ErrBackupConfirmationMismatch = errors.New("backup restore confirmation mismatch")
+	ErrBackupNotFound             = errors.New("backup not found")
+	ErrBackupIDUnsafe             = errors.New("backup id is unsafe")
+	ErrBackupLocationUnsafe       = errors.New("backup root must be outside the live database directory")
+	ErrBackupArchiveInvalid       = errors.New("backup archive integrity check failed")
+)
+
+const RestoreStatusCoordinationRequired = "coordination_required"
 
 type BackupManifest struct {
 	ID           string    `json:"id"`
@@ -35,11 +46,28 @@ type BackupManifest struct {
 	SizeBytes    int64     `json:"size_bytes"`
 }
 
+type RestoreRequest struct {
+	BackupID     string `json:"backup_id"`
+	Confirmation string `json:"confirmation"`
+}
+
+type RestoreResult struct {
+	BackupID              string    `json:"backup_id"`
+	DBPath                string    `json:"db_path"`
+	RestoredAt            time.Time `json:"restored_at,omitempty"`
+	ArchivePath           string    `json:"archive_path"`
+	Status                string    `json:"status,omitempty"`
+	RequiresDaemonRestart bool      `json:"requires_daemon_restart,omitempty"`
+	Message               string    `json:"message,omitempty"`
+}
+
 type BackupStore struct {
 	dbPath     string
 	backupRoot string
 	now        func() time.Time
 	snapshot   backupSnapshotter
+	rename     func(string, string) error
+	remove     func(string) error
 }
 
 type backupSnapshotter func(context.Context, string, string) (string, int64, error)
@@ -48,7 +76,7 @@ func NewBackupStore(dbPath, backupRoot string) *BackupStore {
 	if strings.TrimSpace(backupRoot) == "" {
 		backupRoot = DefaultBackupRoot(dbPath)
 	}
-	return &BackupStore{dbPath: dbPath, backupRoot: backupRoot, now: time.Now, snapshot: copyFileSnapshot}
+	return &BackupStore{dbPath: dbPath, backupRoot: backupRoot, now: time.Now, snapshot: copyFileSnapshot, rename: os.Rename, remove: os.Remove}
 }
 
 func NewSQLiteBackupStore(dbPath, backupRoot string, sqlDB *sql.DB) *BackupStore {
@@ -64,6 +92,10 @@ func DefaultBackupRoot(dbPath string) string {
 		name = "hive"
 	}
 	return filepath.Join(filepath.Dir(dbDir), "."+name+"-hive-backups")
+}
+
+func RestoreConfirmation(backupID string) string {
+	return "RESTORE " + strings.TrimSpace(backupID)
 }
 
 func (s *BackupStore) Create(ctx context.Context) (BackupManifest, error) {
@@ -140,6 +172,150 @@ func (s *BackupStore) List(ctx context.Context) ([]BackupManifest, error) {
 	return backups, nil
 }
 
+func (s *BackupStore) PlanRestore(ctx context.Context, req RestoreRequest) (RestoreResult, error) {
+	backup, expectedArchivePath, err := s.validateRestore(ctx, req)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	if err := s.validateArchive(ctx, backup, expectedArchivePath); err != nil {
+		return RestoreResult{}, err
+	}
+	return RestoreResult{
+		BackupID:              backup.ID,
+		DBPath:                s.dbPath,
+		ArchivePath:           expectedArchivePath,
+		Status:                RestoreStatusCoordinationRequired,
+		RequiresDaemonRestart: true,
+		Message:               "restore archive validated; stop/restart daemon coordination is required before replacing the live database",
+	}, nil
+}
+
+func (s *BackupStore) ValidateArchive(ctx context.Context, backupID string) (BackupManifest, error) {
+	if err := ctx.Err(); err != nil {
+		return BackupManifest{}, err
+	}
+	id := strings.TrimSpace(backupID)
+	if id == "" {
+		return BackupManifest{}, ErrBackupIDRequired
+	}
+	if !isSafeBackupID(id) {
+		return BackupManifest{}, fmt.Errorf("%w: %s", ErrBackupIDUnsafe, id)
+	}
+	backup, err := s.backup(id)
+	if err != nil {
+		return BackupManifest{}, err
+	}
+	backupDir := filepath.Join(s.backupRoot, id)
+	expectedArchivePath := filepath.Join(backupDir, backupArchiveFile)
+	if err := verifyManifestArchivePath(backup.ArchivePath, expectedArchivePath); err != nil {
+		return BackupManifest{}, err
+	}
+	if err := s.validateArchive(ctx, backup, expectedArchivePath); err != nil {
+		return BackupManifest{}, err
+	}
+	return backup, nil
+}
+
+func (s *BackupStore) Restore(ctx context.Context, req RestoreRequest) (RestoreResult, error) {
+	if err := ctx.Err(); err != nil {
+		return RestoreResult{}, err
+	}
+	backup, expectedArchivePath, err := s.validateRestore(ctx, req)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	stagedPath, checksum, size, err := stageRestoreArchive(expectedArchivePath, filepath.Dir(s.dbPath))
+	if err != nil {
+		return RestoreResult{}, fmt.Errorf("restore db backup: %w", err)
+	}
+	cleanupStage := true
+	defer func() {
+		if cleanupStage {
+			_ = os.Remove(stagedPath)
+		}
+	}()
+	if err := verifyArchiveIntegrity(backup, checksum, size); err != nil {
+		return RestoreResult{}, err
+	}
+	quarantinedSidecars, err := s.quarantineSQLiteSidecars()
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	if err := s.rename(stagedPath, s.dbPath); err != nil {
+		restoreSQLiteSidecars(s.rename, quarantinedSidecars)
+		return RestoreResult{}, fmt.Errorf("replace live db with staged restore: %w", err)
+	}
+	cleanupStage = false
+	removeQuarantinedSQLiteSidecars(s.remove, quarantinedSidecars)
+	return RestoreResult{BackupID: backup.ID, DBPath: s.dbPath, RestoredAt: s.now().UTC(), ArchivePath: expectedArchivePath}, nil
+}
+
+func (s *BackupStore) validateRestore(ctx context.Context, req RestoreRequest) (BackupManifest, string, error) {
+	if err := ctx.Err(); err != nil {
+		return BackupManifest{}, "", err
+	}
+	id := strings.TrimSpace(req.BackupID)
+	confirmation := strings.TrimSpace(req.Confirmation)
+	if id == "" {
+		return BackupManifest{}, "", ErrBackupIDRequired
+	}
+	if !isSafeBackupID(id) {
+		return BackupManifest{}, "", fmt.Errorf("%w: %s", ErrBackupIDUnsafe, id)
+	}
+	if confirmation == "" {
+		return BackupManifest{}, "", ErrBackupConfirmationRequired
+	}
+	if confirmation != RestoreConfirmation(id) {
+		return BackupManifest{}, "", ErrBackupConfirmationMismatch
+	}
+	backup, err := s.backup(id)
+	if err != nil {
+		return BackupManifest{}, "", err
+	}
+	backupDir := filepath.Join(s.backupRoot, id)
+	expectedArchivePath := filepath.Join(backupDir, backupArchiveFile)
+	if err := verifyManifestArchivePath(backup.ArchivePath, expectedArchivePath); err != nil {
+		return BackupManifest{}, "", err
+	}
+	return backup, expectedArchivePath, nil
+}
+
+func (s *BackupStore) validateArchive(ctx context.Context, backup BackupManifest, archivePath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	checksum, size, err := checksumFileWithSHA256(archivePath)
+	if err != nil {
+		return fmt.Errorf("validate backup archive: %w", err)
+	}
+	return verifyArchiveIntegrity(backup, checksum, size)
+}
+
+func (s *BackupStore) backup(id string) (BackupManifest, error) {
+	if !isSafeBackupID(id) {
+		return BackupManifest{}, fmt.Errorf("%w: %s", ErrBackupIDUnsafe, id)
+	}
+	path := filepath.Join(s.backupRoot, id, backupManifestFile)
+	backup, err := readBackupManifest(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return BackupManifest{}, fmt.Errorf("%w: %s", ErrBackupNotFound, id)
+	}
+	return backup, err
+}
+
+func isSafeBackupID(id string) bool {
+	if id == "" || id == "." || id == ".." || filepath.IsAbs(id) || strings.ContainsAny(id, `/\`) {
+		return false
+	}
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func readBackupManifest(path string) (BackupManifest, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -150,6 +326,48 @@ func readBackupManifest(path string) (BackupManifest, error) {
 		return BackupManifest{}, fmt.Errorf("decode backup manifest: %w", err)
 	}
 	return backup, nil
+}
+
+func verifyManifestArchivePath(manifestArchivePath, expectedArchivePath string) error {
+	if filepath.Clean(manifestArchivePath) != filepath.Clean(expectedArchivePath) {
+		return fmt.Errorf("%w: archive path does not match selected backup", ErrBackupArchiveInvalid)
+	}
+	return nil
+}
+
+func stageRestoreArchive(archivePath, liveDBDir string) (string, string, int64, error) {
+	staged, err := os.CreateTemp(liveDBDir, ".memory.db.restore-*")
+	if err != nil {
+		return "", "", 0, fmt.Errorf("create staged restore file: %w", err)
+	}
+	stagedPath := staged.Name()
+	if err := staged.Close(); err != nil {
+		_ = os.Remove(stagedPath)
+		return "", "", 0, fmt.Errorf("close staged restore file: %w", err)
+	}
+	checksum, size, err := copyFileWithSHA256(archivePath, stagedPath)
+	if err != nil {
+		_ = os.Remove(stagedPath)
+		if errors.Is(err, os.ErrNotExist) {
+			return "", "", 0, fmt.Errorf("%w: archive is missing", ErrBackupArchiveInvalid)
+		}
+		return "", "", 0, err
+	}
+	return stagedPath, checksum, size, nil
+}
+
+func verifyArchiveIntegrity(backup BackupManifest, checksum string, size int64) error {
+	manifestChecksum := strings.TrimSpace(backup.Checksum)
+	if manifestChecksum == "" {
+		return fmt.Errorf("%w: missing checksum", ErrBackupArchiveInvalid)
+	}
+	if !strings.EqualFold(checksum, manifestChecksum) {
+		return fmt.Errorf("%w: checksum mismatch", ErrBackupArchiveInvalid)
+	}
+	if backup.SizeBytes >= 0 && size != backup.SizeBytes {
+		return fmt.Errorf("%w: size mismatch", ErrBackupArchiveInvalid)
+	}
+	return nil
 }
 
 func ensureBackupRootOutsideDBDir(dbPath, backupRoot string) error {
@@ -174,6 +392,9 @@ func ensureBackupRootOutsideDBDir(dbPath, backupRoot string) error {
 
 func checksumFileWithSHA256(path string) (string, int64, error) {
 	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", 0, fmt.Errorf("%w: archive is missing", ErrBackupArchiveInvalid)
+	}
 	if err != nil {
 		return "", 0, fmt.Errorf("open archive file: %w", err)
 	}
@@ -208,6 +429,50 @@ func sqliteVacuumIntoSnapshot(sqlDB *sql.DB) backupSnapshotter {
 			return "", 0, fmt.Errorf("snapshot sqlite database: %w", err)
 		}
 		return checksumFileWithSHA256(dstPath)
+	}
+}
+
+type quarantinedSQLiteSidecar struct {
+	livePath       string
+	quarantinePath string
+}
+
+func (s *BackupStore) quarantineSQLiteSidecars() ([]quarantinedSQLiteSidecar, error) {
+	sidecars := make([]quarantinedSQLiteSidecar, 0, 2)
+	for _, suffix := range []string{"-wal", "-shm"} {
+		livePath := s.dbPath + suffix
+		if _, err := os.Stat(livePath); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			restoreSQLiteSidecars(s.rename, sidecars)
+			return nil, fmt.Errorf("inspect sqlite sidecar %s: %w", suffix, err)
+		}
+
+		quarantinePath := sqliteSidecarQuarantinePath(livePath)
+		if err := s.rename(livePath, quarantinePath); err != nil {
+			restoreSQLiteSidecars(s.rename, sidecars)
+			return nil, fmt.Errorf("quarantine sqlite sidecar %s: %w", suffix, err)
+		}
+		sidecars = append(sidecars, quarantinedSQLiteSidecar{livePath: livePath, quarantinePath: quarantinePath})
+	}
+	return sidecars, nil
+}
+
+func sqliteSidecarQuarantinePath(livePath string) string {
+	dir := filepath.Dir(livePath)
+	name := filepath.Base(livePath)
+	return filepath.Join(dir, "."+name+".restore-quarantine-"+uuid.NewString())
+}
+
+func restoreSQLiteSidecars(rename func(string, string) error, sidecars []quarantinedSQLiteSidecar) {
+	for i := len(sidecars) - 1; i >= 0; i-- {
+		_ = rename(sidecars[i].quarantinePath, sidecars[i].livePath)
+	}
+}
+
+func removeQuarantinedSQLiteSidecars(remove func(string) error, sidecars []quarantinedSQLiteSidecar) {
+	for _, sidecar := range sidecars {
+		_ = remove(sidecar.quarantinePath)
 	}
 }
 
