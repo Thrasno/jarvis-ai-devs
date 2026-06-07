@@ -7,6 +7,7 @@ Jarvis Dev is an open development ecosystem for AI-assisted engineering workflow
 - **`jarvis-cli/`**: user-facing CLI and workflow entrypoint.
 - **`hive-daemon/`**: local service for offline-first memory operations.
 - **`hive-api/`**: central API service for shared memory and sync.
+- **`hive-dashboard/`**: static admin dashboard source served by `hive-api` when enabled.
 
 ## Core capabilities
 
@@ -39,6 +40,8 @@ The CLI can operate with local memory only, or with a hybrid local+central setup
 ```bash
 docker compose -f hive-api/deploy/docker-compose.yml up -d
 ```
+
+The same Compose stack can build and serve the optional Hive API dashboard at `/dashboard`; see [`docs/hive-api-dashboard.md`](docs/hive-api-dashboard.md).
 
 ### 2) Run services locally
 
