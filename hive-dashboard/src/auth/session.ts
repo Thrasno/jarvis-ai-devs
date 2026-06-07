@@ -2,7 +2,7 @@ import { type ApiClient, createApiClient, type User } from '../api/client'
 
 export const sessionTokenKey = 'hive-dashboard.jwt'
 export type AuthState =
-  | { status: 'anonymous' }
+  | { status: 'anonymous'; error?: string }
   | { status: 'authenticated'; token: string; user: User }
 
 export type SessionStore = {
@@ -40,7 +40,8 @@ export function createSessionStore(options: { api?: ApiClient; storage?: Storage
     async bootstrap() {
       const token = storage.getItem(sessionTokenKey)
       if (!token) {
-        return clear()
+        state = { status: 'anonymous' }
+        return state
       }
       try {
         return setAuthenticated(token, await api.currentUser(token))

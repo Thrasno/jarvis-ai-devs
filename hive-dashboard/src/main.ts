@@ -1,4 +1,4 @@
-import { createSessionStore, type AuthState } from './auth/session'
+import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
 import './styles.css'
 
 type AppActions = {
@@ -8,15 +8,16 @@ type AppActions = {
 
 export function renderApp(container: HTMLElement, state: AuthState, actions: AppActions): void {
   container.replaceChildren()
-  state.status === 'anonymous' ? renderLogin(container, actions) : renderShell(container, state, actions)
+  state.status === 'anonymous' ? renderLogin(container, state, actions) : renderShell(container, state, actions)
 }
 
-function renderLogin(container: HTMLElement, actions: AppActions): void {
+function renderLogin(container: HTMLElement, state: Extract<AuthState, { status: 'anonymous' }>, actions: AppActions): void {
   const form = document.createElement('form')
   form.className = 'card login-card'
   form.innerHTML = `
     <p class="eyebrow">Hive API</p>
     <h1>Sign in to Hive API</h1>
+    ${state.error ? `<p role="alert">${escapeHtml(state.error)}</p>` : ''}
     <label>Email<input name="email" type="email" autocomplete="email" required /></label>
     <label>Password<input name="password" type="password" autocomplete="current-password" required /></label>
     <button type="submit">Sign in</button>
@@ -55,16 +56,47 @@ function renderShell(container: HTMLElement, state: Extract<AuthState, { status:
 
 const root = document.getElementById('app')
 if (root) {
-  const session = createSessionStore()
+  startApp(root)
+}
+
+export function startApp(root: HTMLElement, session: SessionStore = createSessionStore()): void {
   const rerender = (state: AuthState) => renderApp(root, state, actions)
   const actions: AppActions = {
     async onLogin(email, password) {
-      rerender(await session.login(email, password))
+      try {
+        rerender(await session.login(email, password))
+      } catch (error) {
+        rerender({ status: 'anonymous', error: loginErrorMessage(error) })
+      }
     },
     onLogout() {
       rerender(session.logout())
     }
   }
 
-  session.bootstrap().then(rerender)
+  session
+    .bootstrap()
+    .then(rerender)
+    .catch(() => rerender({ status: 'anonymous', error: 'Unable to restore your session. Please sign in again.' }))
+}
+
+function loginErrorMessage(error: unknown): string {
+  return error instanceof Error && error.message
+    ? error.message
+    : 'Unable to sign in. Check your credentials and try again.'
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"]/g, (character) => {
+    switch (character) {
+      case '&':
+        return '&amp;'
+      case '<':
+        return '&lt;'
+      case '>':
+        return '&gt;'
+      default:
+        return '&quot;'
+    }
+  })
 }
