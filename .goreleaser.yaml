@@ -28,6 +28,25 @@ builds:
       - -s -w -X main.version={{.Version}}
 
   # ============================================================
+  # hive — local governance CLI
+  # ============================================================
+  - id: hive
+    main: ./cmd/hive
+    dir: jarvis-cli
+    binary: hive
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+  # ============================================================
   # hive-daemon — local MCP server
   # ============================================================
   - id: hive-daemon
@@ -69,6 +88,17 @@ archives:
         formats:
           - zip
     name_template: "hive-daemon_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+  - id: hive-archive
+    ids:
+      - hive
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "hive_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   name_template: "checksums.txt"

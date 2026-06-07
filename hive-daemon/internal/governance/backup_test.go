@@ -175,6 +175,184 @@ func TestBackupStorePlanRestoreRejectsArchiveIntegrityFailures(t *testing.T) {
 	}
 }
 
+func TestBackupStoreRestoreRequiresExplicitSelectionAndConfirmation(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	dbDir := filepath.Join(tempDir, "live-db")
+	require.NoError(t, os.MkdirAll(dbDir, 0o755))
+	dbPath := filepath.Join(dbDir, "memory.db")
+	require.NoError(t, os.WriteFile(dbPath, []byte("before restore"), 0o600))
+
+	store := NewBackupStore(dbPath, filepath.Join(tempDir, "hive-backups"))
+	backup, err := store.Create(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(dbPath, []byte("after corruption"), 0o600))
+
+	_, err = store.Restore(context.Background(), RestoreRequest{Confirmation: RestoreConfirmation(backup.ID)})
+	require.ErrorIs(t, err, ErrBackupIDRequired)
+	requireDBFileContent(t, dbPath, "after corruption")
+
+	_, err = store.Restore(context.Background(), RestoreRequest{BackupID: backup.ID, Confirmation: "RESTORE wrong-backup"})
+	require.ErrorIs(t, err, ErrBackupConfirmationMismatch)
+	requireDBFileContent(t, dbPath, "after corruption")
+
+	restored, err := store.Restore(context.Background(), RestoreRequest{BackupID: backup.ID, Confirmation: RestoreConfirmation(backup.ID)})
+	require.NoError(t, err)
+	require.Equal(t, backup.ID, restored.BackupID)
+	requireDBFileContent(t, dbPath, "before restore")
+}
+
+func TestBackupStoreRestoreRejectsArchiveIntegrityFailuresWithoutMutatingLiveDB(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(BackupManifest) BackupManifest
+	}{
+		{name: "checksum mismatch", mutate: func(backup BackupManifest) BackupManifest {
+			require.NoError(t, os.WriteFile(backup.ArchivePath, []byte("tampered backup archive"), 0o600))
+			return backup
+		}},
+		{name: "size mismatch", mutate: func(backup BackupManifest) BackupManifest {
+			backup.SizeBytes++
+			require.NoError(t, writeBackupManifest(backup))
+			return backup
+		}},
+		{name: "missing archive", mutate: func(backup BackupManifest) BackupManifest {
+			require.NoError(t, os.Remove(backup.ArchivePath))
+			return backup
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			dbDir := filepath.Join(tempDir, "live-db")
+			require.NoError(t, os.MkdirAll(dbDir, 0o755))
+			dbPath := filepath.Join(dbDir, "memory.db")
+			require.NoError(t, os.WriteFile(dbPath, []byte("trusted backup source"), 0o600))
+			store := NewBackupStore(dbPath, filepath.Join(tempDir, "hive-backups"))
+			backup, err := store.Create(context.Background())
+			require.NoError(t, err)
+			backup = tt.mutate(backup)
+			require.NoError(t, os.WriteFile(dbPath, []byte("current live db"), 0o600))
+
+			_, err = store.Restore(context.Background(), RestoreRequest{BackupID: backup.ID, Confirmation: RestoreConfirmation(backup.ID)})
+
+			require.Error(t, err)
+			requireDBFileContent(t, dbPath, "current live db")
+		})
+	}
+}
+
+func TestBackupStoreRestoreRemovesSQLiteSidecarsAfterReplacingDB(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	dbDir := filepath.Join(tempDir, "live-db")
+	require.NoError(t, os.MkdirAll(dbDir, 0o755))
+	dbPath := filepath.Join(dbDir, "memory.db")
+	require.NoError(t, os.WriteFile(dbPath, []byte("backup source"), 0o600))
+
+	store := NewBackupStore(dbPath, filepath.Join(tempDir, "hive-backups"))
+	backup, err := store.Create(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(dbPath, []byte("current live db"), 0o600))
+	require.NoError(t, os.WriteFile(dbPath+"-wal", []byte("stale wal"), 0o600))
+	require.NoError(t, os.WriteFile(dbPath+"-shm", []byte("stale shm"), 0o600))
+
+	_, err = store.Restore(context.Background(), RestoreRequest{BackupID: backup.ID, Confirmation: RestoreConfirmation(backup.ID)})
+
+	require.NoError(t, err)
+	require.NoFileExists(t, dbPath+"-wal")
+	require.NoFileExists(t, dbPath+"-shm")
+	requireDBFileContent(t, dbPath, "backup source")
+}
+
+func TestBackupStoreRestorePreservesSQLiteSidecarsWhenReplaceFails(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	dbDir := filepath.Join(tempDir, "live-db")
+	require.NoError(t, os.MkdirAll(dbDir, 0o755))
+	dbPath := filepath.Join(dbDir, "memory.db")
+	require.NoError(t, os.WriteFile(dbPath, []byte("backup source"), 0o600))
+
+	store := NewBackupStore(dbPath, filepath.Join(tempDir, "hive-backups"))
+	backup, err := store.Create(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(dbPath, []byte("current live db"), 0o600))
+	require.NoError(t, os.WriteFile(dbPath+"-wal", []byte("committed wal"), 0o600))
+	require.NoError(t, os.WriteFile(dbPath+"-shm", []byte("shared memory"), 0o600))
+	store.rename = func(oldPath, newPath string) error {
+		if newPath == dbPath {
+			return os.ErrPermission
+		}
+		return os.Rename(oldPath, newPath)
+	}
+
+	_, err = store.Restore(context.Background(), RestoreRequest{BackupID: backup.ID, Confirmation: RestoreConfirmation(backup.ID)})
+
+	require.Error(t, err)
+	requireDBFileContent(t, dbPath, "current live db")
+	requireDBFileContent(t, dbPath+"-wal", "committed wal")
+	requireDBFileContent(t, dbPath+"-shm", "shared memory")
+}
+
+func TestBackupStoreRestorePreservesLiveDBAndSidecarsWhenSidecarMoveFails(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	dbDir := filepath.Join(tempDir, "live-db")
+	require.NoError(t, os.MkdirAll(dbDir, 0o755))
+	dbPath := filepath.Join(dbDir, "memory.db")
+	require.NoError(t, os.WriteFile(dbPath, []byte("backup source"), 0o600))
+
+	store := NewBackupStore(dbPath, filepath.Join(tempDir, "hive-backups"))
+	backup, err := store.Create(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(dbPath, []byte("current live db"), 0o600))
+	require.NoError(t, os.WriteFile(dbPath+"-wal", []byte("committed wal"), 0o600))
+	require.NoError(t, os.WriteFile(dbPath+"-shm", []byte("shared memory"), 0o600))
+	store.rename = func(oldPath, newPath string) error {
+		if oldPath == dbPath+"-wal" {
+			return os.ErrPermission
+		}
+		return os.Rename(oldPath, newPath)
+	}
+
+	_, err = store.Restore(context.Background(), RestoreRequest{BackupID: backup.ID, Confirmation: RestoreConfirmation(backup.ID)})
+
+	require.Error(t, err)
+	requireDBFileContent(t, dbPath, "current live db")
+	requireDBFileContent(t, dbPath+"-wal", "committed wal")
+	requireDBFileContent(t, dbPath+"-shm", "shared memory")
+}
+
+func TestBackupStoreRestoreDoesNotFailWhenQuarantinedSidecarCleanupFails(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	dbDir := filepath.Join(tempDir, "live-db")
+	require.NoError(t, os.MkdirAll(dbDir, 0o755))
+	dbPath := filepath.Join(dbDir, "memory.db")
+	require.NoError(t, os.WriteFile(dbPath, []byte("backup source"), 0o600))
+
+	store := NewBackupStore(dbPath, filepath.Join(tempDir, "hive-backups"))
+	backup, err := store.Create(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(dbPath, []byte("current live db"), 0o600))
+	require.NoError(t, os.WriteFile(dbPath+"-wal", []byte("stale wal"), 0o600))
+	require.NoError(t, os.WriteFile(dbPath+"-shm", []byte("stale shm"), 0o600))
+	store.remove = func(string) error { return os.ErrPermission }
+
+	_, err = store.Restore(context.Background(), RestoreRequest{BackupID: backup.ID, Confirmation: RestoreConfirmation(backup.ID)})
+
+	require.NoError(t, err)
+	require.NoFileExists(t, dbPath+"-wal")
+	require.NoFileExists(t, dbPath+"-shm")
+	requireDBFileContent(t, dbPath, "backup source")
+}
+
 func TestBackupStoreListSkipsPartialOrCorruptBackupEntries(t *testing.T) {
 	t.Parallel()
 
