@@ -29,10 +29,12 @@ const (
 	GuardOperationDelete  = "delete"
 	GuardOperationRestore = "restore"
 	GuardOperationArchive = "archive"
+	GuardOperationMerge   = "merge"
 	GuardTargetMemory     = "memory"
 	GuardTargetProject    = "project"
 
 	projectArchiveCloudHandoffNote = "Local project archive completed. No cloud project mutation was performed; review Hive API/dashboard handoff separately if shared project state must change."
+	projectMergeCloudHandoffNote   = "Local project merge metadata recorded. No cloud project mutation was performed; review Hive API/dashboard handoff separately if shared project state must change."
 
 	destructiveBackupFreshness = 10 * time.Minute
 )
@@ -48,6 +50,7 @@ type readStore interface {
 	GetGovernanceProject(context.Context, string) (db.GovernanceProject, error)
 	ListGovernanceMemories(context.Context, db.GovernanceMemoryFilter) ([]db.GovernanceMemory, error)
 	ListGovernanceSyncHealth(context.Context) ([]db.SyncHealth, error)
+	ListHiveWarnings(db.HiveWarningFilter) ([]db.HiveWarning, error)
 }
 
 type backupStore interface {
@@ -64,6 +67,10 @@ type memoryMutationStore interface {
 
 type projectArchiveStore interface {
 	ArchiveGovernanceProject(ctx context.Context, project, actorID, reason string, archivedAt time.Time) (bool, error)
+}
+
+type projectMergeStore interface {
+	MergeGovernanceProject(ctx context.Context, source, target, actorID, reason string, mergedAt time.Time) (bool, error)
 }
 
 type GuardRequest struct {
@@ -96,6 +103,25 @@ type ProjectArchiveResult struct {
 	Operation        string `json:"operation"`
 	TargetType       string `json:"target_type"`
 	Project          string `json:"project"`
+	BackupID         string `json:"backup_id"`
+	Mutated          bool   `json:"mutated"`
+	CloudHandoffNote string `json:"cloud_handoff_note"`
+}
+
+type ProjectMergeRequest struct {
+	SourceProject string `json:"source_project"`
+	TargetProject string `json:"target_project"`
+	BackupID      string `json:"backup_id"`
+	Confirmation  string `json:"confirmation"`
+	ActorID       string `json:"actor_id,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+}
+
+type ProjectMergeResult struct {
+	Operation        string `json:"operation"`
+	TargetType       string `json:"target_type"`
+	SourceProject    string `json:"source_project"`
+	TargetProject    string `json:"target_project"`
 	BackupID         string `json:"backup_id"`
 	Mutated          bool   `json:"mutated"`
 	CloudHandoffNote string `json:"cloud_handoff_note"`
@@ -145,6 +171,24 @@ func (s *Service) Memories(ctx context.Context, filter MemoryFilter) ([]Memory, 
 
 func (s *Service) Health(ctx context.Context) ([]Health, error) {
 	return s.store.ListGovernanceSyncHealth(ctx)
+}
+
+func (s *Service) Warnings(ctx context.Context, filter WarningFilter) ([]Warning, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s.store == nil {
+		return nil, fmt.Errorf("warning store is not configured")
+	}
+	warnings, err := s.store.ListHiveWarnings(db.HiveWarningFilter{ResolutionState: strings.TrimSpace(filter.ResolutionState)})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]Warning, 0, len(warnings))
+	for _, warning := range warnings {
+		result = append(result, warningFromDB(warning))
+	}
+	return result, nil
 }
 
 func (s *Service) Backups(ctx context.Context) ([]BackupManifest, error) {
@@ -237,12 +281,57 @@ func (s *Service) ExecuteProjectArchive(ctx context.Context, req ProjectArchiveR
 	}, nil
 }
 
+func (s *Service) ExecuteProjectMerge(ctx context.Context, req ProjectMergeRequest) (ProjectMergeResult, error) {
+	source := strings.TrimSpace(req.SourceProject)
+	target := strings.TrimSpace(req.TargetProject)
+	if source == "" || target == "" {
+		return ProjectMergeResult{}, ErrProjectRequired
+	}
+	if source == target {
+		return ProjectMergeResult{}, db.ErrGovernanceProjectMergeInvalid
+	}
+	if req.SourceProject != source || req.TargetProject != target {
+		return ProjectMergeResult{}, ErrDestructiveConfirmationMismatch
+	}
+	backupID, err := s.requireFreshBackup(ctx, req.BackupID)
+	if err != nil {
+		return ProjectMergeResult{}, err
+	}
+	if req.Confirmation == "" {
+		return ProjectMergeResult{}, ErrDestructiveConfirmationRequired
+	}
+	if req.Confirmation != ProjectMergeConfirmation(source, target) {
+		return ProjectMergeResult{}, ErrDestructiveConfirmationMismatch
+	}
+	merger, ok := s.store.(projectMergeStore)
+	if !ok {
+		return ProjectMergeResult{}, ErrDestructiveMutationStoreRequired
+	}
+	mutated, err := merger.MergeGovernanceProject(ctx, source, target, req.ActorID, req.Reason, s.currentTime().UTC())
+	if err != nil {
+		return ProjectMergeResult{}, mapProjectError(err)
+	}
+	return ProjectMergeResult{
+		Operation:        GuardOperationMerge,
+		TargetType:       GuardTargetProject,
+		SourceProject:    source,
+		TargetProject:    target,
+		BackupID:         backupID,
+		Mutated:          mutated,
+		CloudHandoffNote: projectMergeCloudHandoffNote,
+	}, nil
+}
+
 func GuardConfirmation(operation, targetType string, targetID int64) string {
 	return fmt.Sprintf("%s %s %d", strings.ToUpper(normalizeGuardPart(operation)), normalizeGuardPart(targetType), targetID)
 }
 
 func ProjectArchiveConfirmation(project string) string {
 	return fmt.Sprintf("%s %s %s", strings.ToUpper(GuardOperationArchive), GuardTargetProject, strings.TrimSpace(project))
+}
+
+func ProjectMergeConfirmation(source, target string) string {
+	return fmt.Sprintf("%s %s %s INTO %s", strings.ToUpper(GuardOperationMerge), GuardTargetProject, strings.TrimSpace(source), strings.TrimSpace(target))
 }
 
 func (s *Service) requireFreshBackup(ctx context.Context, backupID string) (string, error) {
