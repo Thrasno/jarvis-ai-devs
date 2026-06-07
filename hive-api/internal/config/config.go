@@ -13,6 +13,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -92,7 +93,40 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("JWT_SECRET debe tener al menos 32 bytes (tiene %d)", len(cfg.JWTSecret))
 	}
 
+	if err := validateDashboardAssetsDir(cfg.DashboardAssetsDir); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+func validateDashboardAssetsDir(dir string) error {
+	if dir == "" {
+		return nil
+	}
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("DASHBOARD_ASSETS_DIR is invalid: directory %q is not accessible: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("DASHBOARD_ASSETS_DIR is invalid: %q is not a directory", dir)
+	}
+
+	indexPath := filepath.Join(dir, "index.html")
+	indexInfo, err := os.Lstat(indexPath)
+	if err != nil {
+		return fmt.Errorf("DASHBOARD_ASSETS_DIR is invalid: index.html is not accessible: %w", err)
+	}
+	if indexInfo.Mode()&os.ModeSymlink != 0 || !indexInfo.Mode().IsRegular() {
+		return fmt.Errorf("DASHBOARD_ASSETS_DIR is invalid: index.html must be a regular file")
+	}
+
+	file, err := os.Open(indexPath)
+	if err != nil {
+		return fmt.Errorf("DASHBOARD_ASSETS_DIR is invalid: index.html is not readable: %w", err)
+	}
+	return file.Close()
 }
 
 // getEnvWithDefault lee una variable de entorno y devuelve el valor por defecto

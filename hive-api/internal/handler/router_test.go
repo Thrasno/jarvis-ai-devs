@@ -84,6 +84,83 @@ func TestRouter_DashboardDisabledReturnsJSONNotHTML(t *testing.T) {
 	assert.JSONEq(t, `{"error":"not found"}`, w.Body.String())
 }
 
+func TestRouter_DashboardMissingIndexReturnsJSONNotHTML(t *testing.T) {
+	dashboardDir := t.TempDir()
+	r := newTestRouterWithDashboard(dashboardDir)
+
+	paths := []string{
+		"/dashboard",
+		"/dashboard/admin/users",
+	}
+
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req, err := http.NewRequest(http.MethodGet, path, nil)
+			require.NoError(t, err)
+
+			r.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusNotFound, w.Code)
+			assert.Equal(t, "application/json; charset=utf-8", w.Header().Get("Content-Type"))
+			assert.JSONEq(t, `{"error":"not found"}`, w.Body.String())
+		})
+	}
+}
+
+func TestRouter_DashboardRejectsAssetTraversalAttempts(t *testing.T) {
+	dashboardDir := t.TempDir()
+	assetsDir := filepath.Join(dashboardDir, "assets")
+	require.NoError(t, os.Mkdir(assetsDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dashboardDir, "index.html"), []byte("<html>Hive Dashboard</html>"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(assetsDir, "app.js"), []byte("console.log('dashboard')"), 0o644))
+	r := newTestRouterWithDashboard(dashboardDir)
+
+	paths := []string{
+		"/dashboard/assets/../index.html",
+		"/dashboard/assets/%2e%2e/index.html",
+		"/dashboard/assets/%2e%2e/assets/app.js",
+	}
+
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req, err := http.NewRequest(http.MethodGet, path, nil)
+			require.NoError(t, err)
+
+			r.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusNotFound, w.Code)
+			assert.Equal(t, "application/json; charset=utf-8", w.Header().Get("Content-Type"))
+			assert.JSONEq(t, `{"error":"not found"}`, w.Body.String())
+			assert.NotContains(t, w.Body.String(), "Hive Dashboard")
+			assert.NotContains(t, w.Body.String(), "console.log('dashboard')")
+		})
+	}
+}
+
+func TestRouter_DashboardRejectsSymlinkAssetFiles(t *testing.T) {
+	dashboardDir := t.TempDir()
+	assetsDir := filepath.Join(dashboardDir, "assets")
+	require.NoError(t, os.Mkdir(assetsDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dashboardDir, "index.html"), []byte("<html>Hive Dashboard</html>"), 0o644))
+	targetAsset := filepath.Join(dashboardDir, "target.js")
+	require.NoError(t, os.WriteFile(targetAsset, []byte("console.log('target')"), 0o644))
+	require.NoError(t, os.Symlink(targetAsset, filepath.Join(assetsDir, "linked.js")))
+	r := newTestRouterWithDashboard(dashboardDir)
+
+	w := httptest.NewRecorder()
+	req, err := http.NewRequest(http.MethodGet, "/dashboard/assets/linked.js", nil)
+	require.NoError(t, err)
+
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.Equal(t, "application/json; charset=utf-8", w.Header().Get("Content-Type"))
+	assert.JSONEq(t, `{"error":"not found"}`, w.Body.String())
+	assert.NotContains(t, w.Body.String(), "console.log('target')")
+}
+
 func TestRouter_ReservedAPIPrefixesReturnJSONNotDashboardHTML(t *testing.T) {
 	dashboardDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dashboardDir, "index.html"), []byte("<html>Hive Dashboard</html>"), 0o644))
