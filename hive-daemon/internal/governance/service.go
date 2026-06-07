@@ -50,6 +50,7 @@ type backupStore interface {
 	List(context.Context) ([]BackupManifest, error)
 	Create(context.Context) (BackupManifest, error)
 	PlanRestore(context.Context, RestoreRequest) (RestoreResult, error)
+	ValidateArchive(context.Context, string) (BackupManifest, error)
 }
 
 type memoryMutationStore interface {
@@ -202,6 +203,9 @@ func (s *Service) requireFreshBackup(ctx context.Context, backupID string) (stri
 		createdAt := backup.CreatedAt.UTC()
 		if createdAt.IsZero() || createdAt.After(now) || now.Sub(createdAt) > destructiveBackupFreshness {
 			return "", ErrDestructiveBackupRequired
+		}
+		if _, err := s.backup.ValidateArchive(ctx, backupID); err != nil {
+			return "", err
 		}
 		return backup.ID, nil
 	}

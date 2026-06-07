@@ -3,6 +3,8 @@ package governance
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -201,6 +203,65 @@ func TestServiceGuardedMemoryOperationsMutateOnlySelectedLocalTarget(t *testing.
 	require.NotEqual(t, requireMemorySyncID(t, store, deletedNeighborID), restoreMutation.EntitySyncID)
 }
 
+func TestServiceGuardedMemoryOperationsBlockInvalidBackupArchiveBeforeMutation(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		operation  string
+		invalidate func(t *testing.T, backup BackupManifest)
+	}{
+		{
+			name:      "delete with missing archive",
+			operation: GuardOperationDelete,
+			invalidate: func(t *testing.T, backup BackupManifest) {
+				t.Helper()
+				require.NoError(t, os.Remove(backup.ArchivePath))
+			},
+		},
+		{
+			name:      "restore with corrupt archive",
+			operation: GuardOperationRestore,
+			invalidate: func(t *testing.T, backup BackupManifest) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(backup.ArchivePath, []byte("tampered archive"), 0o600))
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store, backupStore := newGovernanceServiceBackupTestStore(t)
+			memoryID := saveGovernanceServiceTestMemory(t, store, "alpha", "Guard target")
+			if tt.operation == GuardOperationRestore {
+				require.NoError(t, store.DeleteMemory(memoryID, "tester", "prepare restore target"))
+			}
+			backup, err := backupStore.Create(context.Background())
+			require.NoError(t, err)
+			tt.invalidate(t, backup)
+
+			beforeMutations := requirePendingMemoryMutations(t, store)
+			service := NewServiceWithBackup(store, backupStore)
+			service.now = func() time.Time { return backup.CreatedAt.Add(time.Minute) }
+
+			_, err = service.ExecuteGuard(context.Background(), GuardRequest{
+				Operation:    tt.operation,
+				TargetType:   GuardTargetMemory,
+				TargetID:     memoryID,
+				BackupID:     backup.ID,
+				Confirmation: GuardConfirmation(tt.operation, GuardTargetMemory, memoryID),
+				ActorID:      "tester",
+				Reason:       "guarded test",
+			})
+
+			require.ErrorIs(t, err, ErrBackupArchiveInvalid)
+			if tt.operation == GuardOperationRestore {
+				requireMemoryDeleted(t, store, memoryID)
+			} else {
+				requireMemoryActive(t, store, memoryID)
+			}
+			afterMutations := requirePendingMemoryMutations(t, store)
+			require.Len(t, afterMutations, len(beforeMutations), "invalid backup archive must block before mutation journaling")
+		})
+	}
+}
+
 type fakeGuardBackupStore struct {
 	backups []BackupManifest
 }
@@ -215,6 +276,28 @@ func (f fakeGuardBackupStore) Create(context.Context) (BackupManifest, error) {
 
 func (f fakeGuardBackupStore) PlanRestore(context.Context, RestoreRequest) (RestoreResult, error) {
 	return RestoreResult{}, errors.New("not implemented")
+}
+
+func (f fakeGuardBackupStore) ValidateArchive(_ context.Context, backupID string) (BackupManifest, error) {
+	for _, backup := range f.backups {
+		if backup.ID == backupID {
+			return backup, nil
+		}
+	}
+	return BackupManifest{}, ErrBackupNotFound
+}
+
+func newGovernanceServiceBackupTestStore(t *testing.T) (*db.DB, *BackupStore) {
+	t.Helper()
+	tempDir := t.TempDir()
+	dbDir := filepath.Join(tempDir, "live-db")
+	require.NoError(t, os.MkdirAll(dbDir, 0o755))
+	dbPath := filepath.Join(dbDir, "memory.db")
+	store, err := db.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	backupStore := NewSQLiteBackupStore(dbPath, filepath.Join(tempDir, "hive-backups"), store.RawDB())
+	return store, backupStore
 }
 
 func saveGovernanceServiceTestMemory(t *testing.T, store *db.DB, project, title string) int64 {
