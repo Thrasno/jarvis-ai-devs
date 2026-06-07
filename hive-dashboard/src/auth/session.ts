@@ -1,5 +1,7 @@
 import { type ApiClient, createApiClient, type User } from '../api/client'
 
+type AuthApi = Pick<ApiClient, 'login' | 'currentUser'>
+
 export const sessionTokenKey = 'hive-dashboard.jwt'
 export type AuthState =
   | { status: 'anonymous' }
@@ -12,7 +14,7 @@ export type SessionStore = {
   logout(): AuthState
 }
 
-export function createSessionStore(options: { api?: ApiClient; storage?: Storage } = {}): SessionStore {
+export function createSessionStore(options: { api?: AuthApi; storage?: Storage } = {}): SessionStore {
   const api = options.api ?? createApiClient()
   const storage = options.storage ?? sessionStorage
   let state: AuthState = { status: 'anonymous' }
