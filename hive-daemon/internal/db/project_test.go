@@ -3,6 +3,7 @@ package db_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -204,6 +205,92 @@ func TestGovernanceReadModelsDoNotMutateRecordsOrSyncState(t *testing.T) {
 	}
 }
 
+func TestArchiveGovernanceProjectIsIdempotentAndPreservesFirstAuditMetadata(t *testing.T) {
+	t.Parallel()
+
+	d, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	saveGovernanceTestMemory(t, d, "alpha", "Archived memory")
+	if err := d.RecordSyncFailure("alpha", time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC), 2, time.Date(2026, 6, 6, 12, 5, 0, 0, time.UTC), sql.ErrConnDone); err != nil {
+		t.Fatalf("RecordSyncFailure: %v", err)
+	}
+	firstArchivedAt := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	secondArchivedAt := time.Date(2026, 6, 7, 13, 0, 0, 0, time.UTC)
+	beforeCounters := readGovernanceCounters(t, d)
+	beforeSyncState := readGovernanceSyncState(t, d, "alpha")
+
+	firstMutated, err := d.ArchiveGovernanceProject(context.Background(), "alpha", "first-actor", "first reason", firstArchivedAt)
+	if err != nil {
+		t.Fatalf("ArchiveGovernanceProject first: %v", err)
+	}
+	if !firstMutated {
+		t.Fatal("ArchiveGovernanceProject first mutated = false, want true")
+	}
+	secondMutated, err := d.ArchiveGovernanceProject(context.Background(), "alpha", "second-actor", "second reason", secondArchivedAt)
+	if err != nil {
+		t.Fatalf("ArchiveGovernanceProject second: %v", err)
+	}
+	if secondMutated {
+		t.Fatal("ArchiveGovernanceProject second mutated = true, want false for idempotent retry")
+	}
+
+	detail, err := d.GetGovernanceProject(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("GetGovernanceProject: %v", err)
+	}
+	if !detail.Archived || detail.ArchivedAt == nil {
+		t.Fatalf("project should be archived with timestamp: %+v", detail)
+	}
+	if !detail.ArchivedAt.Equal(firstArchivedAt) {
+		t.Fatalf("ArchivedAt = %v, want first archive time %v", detail.ArchivedAt, firstArchivedAt)
+	}
+	if detail.ArchivedBy != "first-actor" || detail.ArchiveReason != "first reason" {
+		t.Fatalf("archive audit metadata = by:%q reason:%q, want first actor/reason", detail.ArchivedBy, detail.ArchiveReason)
+	}
+	afterCounters := readGovernanceCounters(t, d)
+	if afterCounters.MemoryCount != beforeCounters.MemoryCount || afterCounters.MutationCount != beforeCounters.MutationCount || afterCounters.SyncRows != beforeCounters.SyncRows {
+		t.Fatalf("archive mutated memory/sync counters: before=%+v after=%+v", beforeCounters, afterCounters)
+	}
+	afterSyncState := readGovernanceSyncState(t, d, "alpha")
+	if afterSyncState != beforeSyncState {
+		t.Fatalf("archive mutated sync_state: before=%+v after=%+v", beforeSyncState, afterSyncState)
+	}
+}
+
+func TestArchiveGovernanceProjectRejectsUnknownProjectWithoutMetadataMutation(t *testing.T) {
+	t.Parallel()
+
+	d, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	saveGovernanceTestMemory(t, d, "alpha", "Known memory")
+	beforeCounters := readGovernanceCounters(t, d)
+	beforeGovernanceRows := readProjectGovernanceRows(t, d)
+
+	mutated, err := d.ArchiveGovernanceProject(context.Background(), "missing", "actor", "reason", time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC))
+	if mutated {
+		t.Fatal("ArchiveGovernanceProject mutated unknown project, want false")
+	}
+	if !errors.Is(err, hivedb.ErrGovernanceProjectNotFound) {
+		t.Fatalf("ArchiveGovernanceProject error = %v, want ErrGovernanceProjectNotFound", err)
+	}
+	afterCounters := readGovernanceCounters(t, d)
+	if afterCounters != beforeCounters {
+		t.Fatalf("unknown project archive mutated counters: before=%+v after=%+v", beforeCounters, afterCounters)
+	}
+	afterGovernanceRows := readProjectGovernanceRows(t, d)
+	if afterGovernanceRows != beforeGovernanceRows {
+		t.Fatalf("unknown project archive mutated governance metadata rows: before=%d after=%d", beforeGovernanceRows, afterGovernanceRows)
+	}
+}
+
 func saveGovernanceTestMemory(t *testing.T, d *hivedb.DB, projectName, title string) int64 {
 	t.Helper()
 	if _, err := d.EnsureManualSaveSession(projectName); err != nil {
@@ -222,6 +309,16 @@ type governanceCounters struct {
 	SyncRows      int
 }
 
+type governanceSyncState struct {
+	LastAttemptAt       string
+	LastSuccessAt       string
+	LastFailureAt       string
+	ConsecutiveFailures int
+	BackoffUntil        string
+	LastError           string
+	LastSyncAt          string
+}
+
 func readGovernanceCounters(t *testing.T, d *hivedb.DB) governanceCounters {
 	t.Helper()
 	var got governanceCounters
@@ -235,4 +332,26 @@ func readGovernanceCounters(t *testing.T, d *hivedb.DB) governanceCounters {
 		t.Fatalf("count sync_state: %v", err)
 	}
 	return got
+}
+
+func readGovernanceSyncState(t *testing.T, d *hivedb.DB, project string) governanceSyncState {
+	t.Helper()
+	var got governanceSyncState
+	if err := d.RawDB().QueryRow(`
+SELECT COALESCE(last_attempt_at, ''), COALESCE(last_success_at, ''), COALESCE(last_failure_at, ''),
+       consecutive_failures, COALESCE(backoff_until, ''), last_error, COALESCE(last_sync_at, '')
+FROM sync_state
+WHERE project = ?`, project).Scan(&got.LastAttemptAt, &got.LastSuccessAt, &got.LastFailureAt, &got.ConsecutiveFailures, &got.BackoffUntil, &got.LastError, &got.LastSyncAt); err != nil {
+		t.Fatalf("read sync_state: %v", err)
+	}
+	return got
+}
+
+func readProjectGovernanceRows(t *testing.T, d *hivedb.DB) int {
+	t.Helper()
+	var rows int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM hive_project_governance`).Scan(&rows); err != nil {
+		t.Fatalf("count project governance rows: %v", err)
+	}
+	return rows
 }

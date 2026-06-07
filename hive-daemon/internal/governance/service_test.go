@@ -262,8 +262,159 @@ func TestServiceGuardedMemoryOperationsBlockInvalidBackupArchiveBeforeMutation(t
 	}
 }
 
+func TestServiceGuardedProjectArchiveBlocksWithoutFreshUsableBackupOrExactConfirmation(t *testing.T) {
+	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+
+	for _, tt := range []struct {
+		name         string
+		backups      []BackupManifest
+		backupID     string
+		validateErr  error
+		confirmation string
+		wantErr      error
+	}{
+		{
+			name:         "no fresh backup",
+			backupID:     "missing-backup",
+			confirmation: ProjectArchiveConfirmation("alpha"),
+			wantErr:      ErrDestructiveBackupRequired,
+		},
+		{
+			name:         "stale backup",
+			backups:      []BackupManifest{{ID: "stale-backup", CreatedAt: now.Add(-destructiveBackupFreshness - time.Second)}},
+			backupID:     "stale-backup",
+			confirmation: ProjectArchiveConfirmation("alpha"),
+			wantErr:      ErrDestructiveBackupRequired,
+		},
+		{
+			name:         "backup one second in the future",
+			backups:      []BackupManifest{{ID: "future-backup", CreatedAt: now.Add(time.Second)}},
+			backupID:     "future-backup",
+			confirmation: ProjectArchiveConfirmation("alpha"),
+			wantErr:      ErrDestructiveBackupRequired,
+		},
+		{
+			name:         "invalid backup archive",
+			backups:      []BackupManifest{{ID: "fresh-backup", CreatedAt: now.Add(-time.Minute)}},
+			backupID:     "fresh-backup",
+			validateErr:  ErrBackupArchiveInvalid,
+			confirmation: ProjectArchiveConfirmation("alpha"),
+			wantErr:      ErrBackupArchiveInvalid,
+		},
+		{
+			name:         "confirmation with trailing whitespace",
+			backups:      []BackupManifest{{ID: "fresh-backup", CreatedAt: now.Add(-time.Minute)}},
+			backupID:     "fresh-backup",
+			confirmation: ProjectArchiveConfirmation("alpha") + " ",
+			wantErr:      ErrDestructiveConfirmationMismatch,
+		},
+		{
+			name:         "confirmation mismatch",
+			backups:      []BackupManifest{{ID: "fresh-backup", CreatedAt: now.Add(-time.Minute)}},
+			backupID:     "fresh-backup",
+			confirmation: "ARCHIVE project beta",
+			wantErr:      ErrDestructiveConfirmationMismatch,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := db.Open(":memory:")
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, store.Close()) })
+			memoryID := saveGovernanceServiceTestMemory(t, store, "alpha", "Selected project memory")
+
+			beforeMutations := requirePendingMemoryMutations(t, store)
+			service := NewServiceWithBackup(store, fakeGuardBackupStore{backups: tt.backups, validateErr: tt.validateErr})
+			service.now = func() time.Time { return now }
+
+			_, err = service.ExecuteProjectArchive(context.Background(), ProjectArchiveRequest{
+				Project:      "alpha",
+				BackupID:     tt.backupID,
+				Confirmation: tt.confirmation,
+				ActorID:      "tester",
+				Reason:       "local cleanup",
+			})
+
+			require.ErrorIs(t, err, tt.wantErr)
+			detail, detailErr := service.Project(context.Background(), "alpha")
+			require.NoError(t, detailErr)
+			require.False(t, detail.Archived)
+			require.Nil(t, detail.ArchivedAt)
+			requireMemoryActive(t, store, memoryID)
+			afterMutations := requirePendingMemoryMutations(t, store)
+			require.Len(t, afterMutations, len(beforeMutations), "failed project archive guard must not journal memory mutations")
+		})
+	}
+}
+
+func TestServiceGuardedProjectArchiveMutatesOnlySelectedLocalProjectAndReturnsCloudHandoffNote(t *testing.T) {
+	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	alphaMemoryID := saveGovernanceServiceTestMemory(t, store, "alpha", "Alpha memory")
+	betaMemoryID := saveGovernanceServiceTestMemory(t, store, "beta", "Beta memory")
+
+	beforeMutations := requirePendingMemoryMutations(t, store)
+	service := NewServiceWithBackup(store, fakeGuardBackupStore{backups: []BackupManifest{{ID: "fresh-backup", CreatedAt: now.Add(-time.Minute)}}})
+	service.now = func() time.Time { return now }
+
+	result, err := service.ExecuteProjectArchive(context.Background(), ProjectArchiveRequest{
+		Project:      "alpha",
+		BackupID:     "fresh-backup",
+		Confirmation: ProjectArchiveConfirmation("alpha"),
+		ActorID:      "tester",
+		Reason:       "archive local duplicate",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, GuardOperationArchive, result.Operation)
+	require.Equal(t, GuardTargetProject, result.TargetType)
+	require.Equal(t, "alpha", result.Project)
+	require.Equal(t, "fresh-backup", result.BackupID)
+	require.True(t, result.Mutated)
+	require.Contains(t, result.CloudHandoffNote, "No cloud project mutation was performed")
+
+	alpha, err := service.Project(context.Background(), "alpha")
+	require.NoError(t, err)
+	require.True(t, alpha.Archived)
+	require.NotNil(t, alpha.ArchivedAt)
+	require.Equal(t, now, alpha.ArchivedAt.UTC())
+	require.Equal(t, "tester", alpha.ArchivedBy)
+	require.Equal(t, "archive local duplicate", alpha.ArchiveReason)
+
+	beta, err := service.Project(context.Background(), "beta")
+	require.NoError(t, err)
+	require.False(t, beta.Archived)
+	requireMemoryActive(t, store, alphaMemoryID)
+	requireMemoryActive(t, store, betaMemoryID)
+	afterFirstArchiveMutations := requirePendingMemoryMutations(t, store)
+	require.Len(t, afterFirstArchiveMutations, len(beforeMutations), "local project archive must not enqueue cloud/shared memory mutations")
+
+	service.now = func() time.Time { return now.Add(2 * time.Minute) }
+	secondResult, err := service.ExecuteProjectArchive(context.Background(), ProjectArchiveRequest{
+		Project:      "alpha",
+		BackupID:     "fresh-backup",
+		Confirmation: ProjectArchiveConfirmation("alpha"),
+		ActorID:      "second-tester",
+		Reason:       "retry should not rewrite audit metadata",
+	})
+	require.NoError(t, err)
+	require.False(t, secondResult.Mutated)
+
+	alphaAfterRetry, err := service.Project(context.Background(), "alpha")
+	require.NoError(t, err)
+	require.True(t, alphaAfterRetry.Archived)
+	require.NotNil(t, alphaAfterRetry.ArchivedAt)
+	require.Equal(t, now, alphaAfterRetry.ArchivedAt.UTC())
+	require.Equal(t, "tester", alphaAfterRetry.ArchivedBy)
+	require.Equal(t, "archive local duplicate", alphaAfterRetry.ArchiveReason)
+	afterRetryMutations := requirePendingMemoryMutations(t, store)
+	require.Len(t, afterRetryMutations, len(afterFirstArchiveMutations), "re-archiving must not enqueue memory mutation journal entries")
+}
+
 type fakeGuardBackupStore struct {
-	backups []BackupManifest
+	backups     []BackupManifest
+	validateErr error
 }
 
 func (f fakeGuardBackupStore) List(context.Context) ([]BackupManifest, error) {
@@ -281,6 +432,9 @@ func (f fakeGuardBackupStore) PlanRestore(context.Context, RestoreRequest) (Rest
 func (f fakeGuardBackupStore) ValidateArchive(_ context.Context, backupID string) (BackupManifest, error) {
 	for _, backup := range f.backups {
 		if backup.ID == backupID {
+			if f.validateErr != nil {
+				return BackupManifest{}, f.validateErr
+			}
 			return backup, nil
 		}
 	}

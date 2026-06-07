@@ -28,7 +28,11 @@ var (
 const (
 	GuardOperationDelete  = "delete"
 	GuardOperationRestore = "restore"
+	GuardOperationArchive = "archive"
 	GuardTargetMemory     = "memory"
+	GuardTargetProject    = "project"
+
+	projectArchiveCloudHandoffNote = "Local project archive completed. No cloud project mutation was performed; review Hive API/dashboard handoff separately if shared project state must change."
 
 	destructiveBackupFreshness = 10 * time.Minute
 )
@@ -58,6 +62,10 @@ type memoryMutationStore interface {
 	RestoreMemory(id int64, actorID string) error
 }
 
+type projectArchiveStore interface {
+	ArchiveGovernanceProject(ctx context.Context, project, actorID, reason string, archivedAt time.Time) (bool, error)
+}
+
 type GuardRequest struct {
 	Operation    string `json:"operation"`
 	TargetType   string `json:"target_type"`
@@ -74,6 +82,23 @@ type GuardResult struct {
 	TargetID   int64  `json:"target_id"`
 	BackupID   string `json:"backup_id"`
 	Mutated    bool   `json:"mutated"`
+}
+
+type ProjectArchiveRequest struct {
+	Project      string `json:"project"`
+	BackupID     string `json:"backup_id"`
+	Confirmation string `json:"confirmation"`
+	ActorID      string `json:"actor_id,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+}
+
+type ProjectArchiveResult struct {
+	Operation        string `json:"operation"`
+	TargetType       string `json:"target_type"`
+	Project          string `json:"project"`
+	BackupID         string `json:"backup_id"`
+	Mutated          bool   `json:"mutated"`
+	CloudHandoffNote string `json:"cloud_handoff_note"`
 }
 
 type Service struct {
@@ -179,8 +204,45 @@ func (s *Service) ExecuteGuard(ctx context.Context, req GuardRequest) (GuardResu
 	return GuardResult{Operation: operation, TargetType: targetType, TargetID: req.TargetID, BackupID: backupID, Mutated: true}, nil
 }
 
+func (s *Service) ExecuteProjectArchive(ctx context.Context, req ProjectArchiveRequest) (ProjectArchiveResult, error) {
+	project := strings.TrimSpace(req.Project)
+	if project == "" {
+		return ProjectArchiveResult{}, ErrProjectRequired
+	}
+	backupID, err := s.requireFreshBackup(ctx, req.BackupID)
+	if err != nil {
+		return ProjectArchiveResult{}, err
+	}
+	if req.Confirmation == "" {
+		return ProjectArchiveResult{}, ErrDestructiveConfirmationRequired
+	}
+	if req.Confirmation != ProjectArchiveConfirmation(project) {
+		return ProjectArchiveResult{}, ErrDestructiveConfirmationMismatch
+	}
+	archiver, ok := s.store.(projectArchiveStore)
+	if !ok {
+		return ProjectArchiveResult{}, ErrDestructiveMutationStoreRequired
+	}
+	mutated, err := archiver.ArchiveGovernanceProject(ctx, project, req.ActorID, req.Reason, s.currentTime().UTC())
+	if err != nil {
+		return ProjectArchiveResult{}, mapProjectError(err)
+	}
+	return ProjectArchiveResult{
+		Operation:        GuardOperationArchive,
+		TargetType:       GuardTargetProject,
+		Project:          project,
+		BackupID:         backupID,
+		Mutated:          mutated,
+		CloudHandoffNote: projectArchiveCloudHandoffNote,
+	}, nil
+}
+
 func GuardConfirmation(operation, targetType string, targetID int64) string {
 	return fmt.Sprintf("%s %s %d", strings.ToUpper(normalizeGuardPart(operation)), normalizeGuardPart(targetType), targetID)
+}
+
+func ProjectArchiveConfirmation(project string) string {
+	return fmt.Sprintf("%s %s %s", strings.ToUpper(GuardOperationArchive), GuardTargetProject, strings.TrimSpace(project))
 }
 
 func (s *Service) requireFreshBackup(ctx context.Context, backupID string) (string, error) {

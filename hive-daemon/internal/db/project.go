@@ -17,13 +17,17 @@ var (
 )
 
 type GovernanceProject struct {
-	Name               string    `json:"name"`
-	Directory          string    `json:"directory"`
-	ActiveMemoryCount  int       `json:"active_memory_count"`
-	DeletedMemoryCount int       `json:"deleted_memory_count"`
-	SessionCount       int       `json:"session_count"`
-	PromptCount        int       `json:"prompt_count"`
-	LastActivityAt     time.Time `json:"last_activity_at"`
+	Name               string     `json:"name"`
+	Directory          string     `json:"directory"`
+	ActiveMemoryCount  int        `json:"active_memory_count"`
+	DeletedMemoryCount int        `json:"deleted_memory_count"`
+	SessionCount       int        `json:"session_count"`
+	PromptCount        int        `json:"prompt_count"`
+	LastActivityAt     time.Time  `json:"last_activity_at"`
+	Archived           bool       `json:"archived"`
+	ArchivedAt         *time.Time `json:"archived_at,omitempty"`
+	ArchivedBy         string     `json:"archived_by,omitempty"`
+	ArchiveReason      string     `json:"archive_reason,omitempty"`
 }
 
 type GovernanceMemory struct {
@@ -168,6 +172,35 @@ WHERE project = ?`
 	return memories, rows.Err()
 }
 
+func (d *DB) ArchiveGovernanceProject(ctx context.Context, name, actorID, reason string, archivedAt time.Time) (bool, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false, ErrGovernanceProjectRequired
+	}
+	if _, err := d.GetGovernanceProject(ctx, name); err != nil {
+		return false, err
+	}
+	if actorID == "" {
+		actorID = detectUsername()
+	}
+	if archivedAt.IsZero() {
+		archivedAt = time.Now().UTC()
+	}
+	result, err := d.sqlDB.ExecContext(ctx, `
+INSERT INTO hive_project_governance (project, archived_at, archived_by, archive_reason)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(project) DO NOTHING`,
+		name, archivedAt.UTC().Format("2006-01-02 15:04:05"), actorID, reason)
+	if err != nil {
+		return false, fmt.Errorf("archive governance project: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("archive governance project rows affected: %w", err)
+	}
+	return rowsAffected > 0, nil
+}
+
 const governanceProjectsQuery = `
 WITH project_names AS (
     SELECT project FROM sessions WHERE project != ''
@@ -205,22 +238,32 @@ SELECT project_names.project,
        COALESCE(memory_counts.deleted_count, 0),
        COALESCE(session_counts.session_count, 0),
        COALESCE(prompt_counts.prompt_count, 0),
-       COALESCE(activity.last_activity_at, '')
+       COALESCE(activity.last_activity_at, ''),
+       project_governance.archived_at,
+       COALESCE(project_governance.archived_by, ''),
+       COALESCE(project_governance.archive_reason, '')
 FROM project_names
 LEFT JOIN directories ON directories.project = project_names.project
 LEFT JOIN memory_counts ON memory_counts.project = project_names.project
 LEFT JOIN session_counts ON session_counts.project = project_names.project
 LEFT JOIN prompt_counts ON prompt_counts.project = project_names.project
-LEFT JOIN activity ON activity.project = project_names.project`
+LEFT JOIN activity ON activity.project = project_names.project
+LEFT JOIN hive_project_governance AS project_governance ON project_governance.project = project_names.project`
 
 func scanGovernanceProject(scanner interface{ Scan(...any) error }) (GovernanceProject, error) {
 	var project GovernanceProject
 	var lastActivity string
-	if err := scanner.Scan(&project.Name, &project.Directory, &project.ActiveMemoryCount, &project.DeletedMemoryCount, &project.SessionCount, &project.PromptCount, &lastActivity); err != nil {
+	var archivedAt sql.NullString
+	if err := scanner.Scan(&project.Name, &project.Directory, &project.ActiveMemoryCount, &project.DeletedMemoryCount, &project.SessionCount, &project.PromptCount, &lastActivity, &archivedAt, &project.ArchivedBy, &project.ArchiveReason); err != nil {
 		return GovernanceProject{}, err
 	}
 	if lastActivity != "" {
 		project.LastActivityAt, _ = parseTimeStr(lastActivity)
+	}
+	if archivedAt.Valid && archivedAt.String != "" {
+		project.Archived = true
+		parsed, _ := parseTimeStr(archivedAt.String)
+		project.ArchivedAt = &parsed
 	}
 	return project, nil
 }
