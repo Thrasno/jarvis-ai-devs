@@ -72,9 +72,13 @@ func TestWireServices_InjectsAuditRepositoryIntoAdminAndSyncServices(t *testing.
 		return &mockAdmin{}
 	}
 
-	deps := wireServicesWithFactories(nil, &config.Config{AllowedOrigins: []string{"https://app.example"}}, factories)
+	deps := wireServicesWithFactories(nil, &config.Config{
+		AllowedOrigins:     []string{"https://app.example"},
+		DashboardAssetsDir: "/app/dashboard",
+	}, factories)
 
 	require.NotNil(t, deps.syncSvc)
 	require.NotNil(t, deps.adminSvc)
 	assert.Equal(t, []string{"https://app.example"}, deps.allowedOrigins)
+	assert.Equal(t, "/app/dashboard", deps.dashboardAssetsDir)
 }

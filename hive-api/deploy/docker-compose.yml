@@ -1,12 +1,10 @@
-# Docker Compose para desarrollo local y staging.
-# NO usar en producción — para prod usar el Dockerfile directamente
-# con un gestor de secretos real (Vault, AWS Secrets Manager, etc.)
+# Docker Compose for local development and staging.
+# Do not use this file for production. Production should provide secrets through
+# a real secret manager such as Vault or AWS Secrets Manager.
 #
-# Uso:
-#   docker compose -f deploy/docker-compose.yml up
-#   docker compose -f deploy/docker-compose.yml down -v  (borra volumes también)
-
-version: "3.9"
+# Usage:
+#   docker compose -f hive-api/deploy/docker-compose.yml up --build
+#   docker compose -f hive-api/deploy/docker-compose.yml down -v  (also removes volumes)
 
 services:
   # ============================================================
@@ -21,12 +19,11 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      # Volumen nombrado — los datos persisten entre reinicios de contenedor.
-      # "docker compose down" no borra este volumen. "docker compose down -v" sí.
+      # Named volume: data persists across container restarts.
+      # "docker compose down" keeps it; "docker compose down -v" removes it.
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      # pg_isready verifica que PostgreSQL acepta conexiones.
-      # interval/timeout/retries: el api service espera a que esto pase antes de arrancar.
+      # pg_isready verifies that PostgreSQL accepts connections before api starts.
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hive} -d ${POSTGRES_DB:-hivedb}"]
       interval: 5s
       timeout: 5s
@@ -37,18 +34,21 @@ services:
   # ============================================================
   api:
     build:
-      context: ..        # contexto = raíz del módulo (hive-api/)
-      dockerfile: deploy/Dockerfile
+      context: ../..        # repository root context includes hive-api/ and hive-dashboard/
+      dockerfile: hive-api/deploy/Dockerfile
+      args:
+        TARGETOS: ${TARGETOS:-linux}
+        TARGETARCH: ${TARGETARCH:-amd64}
     ports:
       - "8080:8080"
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-hive}:${POSTGRES_PASSWORD:-example_postgres_password_change_me}@postgres:5432/${POSTGRES_DB:-hivedb}
-      JWT_SECRET: ${JWT_SECRET:-example_jwt_secret_change_me_min_32_chars}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required and must be at least 32 characters}
       PORT: "8080"
-      GIN_MODE: debug   # debug para desarrollo, release para prod
+      GIN_MODE: ${GIN_MODE:-release}
     depends_on:
       postgres:
-        # Solo arranca api cuando postgres esté healthy (pg_isready pasó)
+        # Start api only after the postgres healthcheck passes.
         condition: service_healthy
     restart: on-failure
 
