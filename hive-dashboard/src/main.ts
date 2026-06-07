@@ -25,17 +25,18 @@ type AppActions = {
   onNavigate?(path: string): void
 }
 
-export function renderApp(container: HTMLElement, state: AuthState, actions: AppActions, dashboard: DashboardState = { status: 'loading' }, routePath = window.location.pathname): void {
+export function renderApp(container: HTMLElement, state: AuthState, actions: AppActions, dashboard: DashboardState = { status: 'loading' }, routePath = window.location.pathname, loginError = ''): void {
   container.replaceChildren()
-  state.status === 'anonymous' ? renderLogin(container, actions) : renderShell(container, state, actions, dashboard, routePath)
+  state.status === 'anonymous' ? renderLogin(container, actions, loginError) : renderShell(container, state, actions, dashboard, routePath)
 }
 
-function renderLogin(container: HTMLElement, actions: AppActions): void {
+function renderLogin(container: HTMLElement, actions: AppActions, loginError: string): void {
   const form = document.createElement('form')
   form.className = 'card login-card'
   form.innerHTML = `
     <p class="eyebrow">Hive API</p>
     <h1>Sign in to Hive API</h1>
+    ${loginError ? `<p class="error" role="alert">${escapeHtml(loginError)}</p>` : ''}
     <label>Email<input name="email" type="email" autocomplete="email" required /></label>
     <label>Password<input name="password" type="password" autocomplete="current-password" required /></label>
     <button type="submit">Sign in</button>
@@ -132,6 +133,14 @@ function messageFor(error: unknown): string {
   return error instanceof Error ? error.message : 'dashboard data unavailable'
 }
 
+function loginMessageFor(error: unknown): string {
+  return error instanceof Error ? error.message : 'Unable to sign in'
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char] ?? char))
+}
+
 type StartOptions = { api?: ApiClient; session?: SessionStore }
 
 export function startDashboardApp(root: HTMLElement, options: StartOptions = {}): void {
@@ -139,14 +148,22 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
   const session = options.session ?? createSessionStore({ api })
   let dashboard: DashboardState = { status: 'loading' }
   let loadVersion = 0
-  const rerender = (state: AuthState) => renderApp(root, state, actions, dashboard)
+  let loginError = ''
+  const rerender = (state: AuthState) => renderApp(root, state, actions, dashboard, window.location.pathname, loginError)
   const actions: AppActions = {
     async onLogin(email, password) {
-      await setState(await session.login(email, password))
+      loginError = ''
+      try {
+        await setState(await session.login(email, password))
+      } catch (error) {
+        loginError = loginMessageFor(error)
+        rerender({ status: 'anonymous' })
+      }
     },
     onLogout() {
       loadVersion += 1
       dashboard = { status: 'loading' }
+      loginError = ''
       rerender(session.logout())
     },
     onNavigate(path) {
@@ -169,7 +186,10 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
   }
 
   window.addEventListener('popstate', () => rerender(session.getState()))
-  session.bootstrap().then(setState)
+  session.bootstrap().then(setState).catch(() => {
+    loginError = ''
+    rerender({ status: 'anonymous' })
+  })
 }
 
 const root = document.getElementById('app')

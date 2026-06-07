@@ -78,6 +78,37 @@ describe('dashboard shell', () => {
     expect(container.textContent).not.toContain('API status ok')
   })
 
+  it('shows login errors and keeps the login form after failed sign in', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'anonymous' })
+    vi.mocked(session.login).mockRejectedValue(new Error('invalid credentials'))
+
+    startDashboardApp(container, { api: fakeApi(), session })
+    await Promise.resolve()
+    container.querySelector<HTMLInputElement>('input[name="email"]')!.value = 'admin@example.com'
+    container.querySelector<HTMLInputElement>('input[name="password"]')!.value = 'wrong-password'
+    container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await Promise.resolve()
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe('invalid credentials')
+    expect(container.querySelector('h1')?.textContent).toBe('Sign in to Hive API')
+    expect(container.querySelector('input[name="email"]')).not.toBeNull()
+  })
+
+  it('renders a recoverable login form when bootstrap rejects', async () => {
+    const container = document.createElement('main')
+    const session = fakeSessionStore({ status: 'anonymous' })
+    vi.mocked(session.bootstrap).mockRejectedValue(new Error('storage unavailable'))
+
+    startDashboardApp(container, { api: fakeApi(), session })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(container.querySelector('h1')?.textContent).toBe('Sign in to Hive API')
+    expect(container.querySelector('input[name="email"]')).not.toBeNull()
+  })
+
   it('keeps successful dashboard panels visible when one endpoint fails', async () => {
     const dashboard = await loadDashboard(fakeApi({ stats: Promise.reject(new Error('stats unavailable')) }), 'jwt-token')
 
