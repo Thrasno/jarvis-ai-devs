@@ -17,8 +17,11 @@ RUN npm run build
 # ============================================================
 # Stage 2: Hive API builder
 # ============================================================
-# Use the official Go Alpine image to produce a static Linux binary.
+# Use the official Go Alpine image to produce a static binary for the target platform.
 FROM golang:1.26-alpine AS api-builder
+
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
 
 WORKDIR /app/hive-api
 
@@ -30,33 +33,30 @@ COPY hive-api/ ./
 
 # -ldflags="-w -s" strips debug/symbol tables for a smaller runtime binary.
 # CGO_ENABLED=0 keeps the binary static for the distroless runtime image.
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -ldflags="-w -s" -o hive-api ./cmd/server/
 
 # ============================================================
 # Stage 3: Runtime
 # ============================================================
-# distroless/static-debian12 es una imagen sin shell, sin package manager,
-# sin ninguna herramienta — solo el runtime mínimo para ejecutar Go estático.
-# Es ~2MB. Tiene ventajas de seguridad enormes: si alguien logra RCE,
-# no tiene nada disponible (ni sh, ni curl, ni ls).
-FROM gcr.io/distroless/static-debian12
+# distroless/static-debian12:nonroot has no shell or package manager and runs as
+# the built-in nonroot user by default.
+FROM gcr.io/distroless/static-debian12:nonroot
 
 WORKDIR /app
 
-# Copiamos solo el binario compilado desde la etapa builder.
-# La imagen final no tiene el código fuente, ni las herramientas de Go.
 # Copy only the API binary and compiled dashboard assets.
-COPY --from=api-builder /app/hive-api/hive-api .
-COPY --from=dashboard-builder /app/hive-dashboard/dist ./dashboard
+COPY --from=api-builder --chown=nonroot:nonroot --chmod=0755 /app/hive-api/hive-api .
+COPY --from=dashboard-builder --chown=nonroot:nonroot --chmod=0755 /app/hive-dashboard/dist ./dashboard
 
 # Enables the existing hive-api static serving configuration.
 ENV DASHBOARD_ASSETS_DIR=/app/dashboard
 
-# Puerto en el que escucha el servidor (configurable por env var PORT).
+# Port used by the API server. Override with PORT when needed.
 EXPOSE 8080
 
-# El binario es el único proceso del contenedor.
-# Usamos la forma JSON (exec form) para que el proceso sea PID 1 —
-# esto garantiza que reciba las señales del OS (SIGTERM en kubectl delete pod).
+# Keep the runtime explicit even though the image tag already defaults to nonroot.
+USER nonroot:nonroot
+
+# The binary is the only container process. Exec form keeps signal handling direct.
 ENTRYPOINT ["/app/hive-api"]
