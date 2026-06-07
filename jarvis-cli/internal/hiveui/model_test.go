@@ -150,6 +150,21 @@ func TestQuitKeysReturnTeaQuit(t *testing.T) {
 	}
 }
 
+func TestProjectArchiveCtrlCReturnsTeaQuitBeforeSubmit(t *testing.T) {
+	executor := &fakeProjectArchiveExecutor{note: "No cloud project mutation was performed."}
+	m := NewModelWithSnapshotAndProjectArchiveExecutor(projectArchiveSnapshot(), executor)
+	m = sendKey(m, tea.KeyEnter)
+	m = sendRune(m, 'a')
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("cmd is nil, want tea.Quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("cmd() = %T, want tea.QuitMsg", cmd())
+	}
+}
+
 func TestBackReturnsToThePreviousReadOnlyState(t *testing.T) {
 	m := NewModelWithSnapshot(sampleNavigationSnapshot())
 	m = sendKey(m, tea.KeyEnter)
@@ -586,6 +601,122 @@ func TestMemoryDetailDoesNotAdvertiseDeleteWithoutGuardExecutor(t *testing.T) {
 	}
 }
 
+func TestProjectArchiveRequiresBackupAndExactConfirmationBeforeDispatch(t *testing.T) {
+	executor := &fakeProjectArchiveExecutor{note: "No cloud project mutation was performed."}
+	m := NewModelWithSnapshotAndProjectArchiveExecutor(projectArchiveSnapshot(), executor)
+	m = sendKey(m, tea.KeyEnter)
+
+	assertContains(t, m.View(), "a archive guarded by backup ID and exact confirmation")
+	m = sendRune(m, 'a')
+	assertContains(t, m.View(), "guarded project archive", "target alpha", "Backup ID is required", "Type exactly: ARCHIVE project alpha", "esc back", "ctrl-c quit")
+	assertNotContains(t, m.View(), "q quit")
+
+	m = sendKey(m, tea.KeyEnter)
+	if len(executor.requests) != 0 {
+		t.Fatalf("dispatch count = %d, want 0 without backup", len(executor.requests))
+	}
+	assertContains(t, m.View(), "Backup ID is required before guarded project archive")
+
+	m = sendText(m, "backup-archive")
+	m = sendKey(m, tea.KeyEnter)
+	m = sendText(m, "ARCHIVE project alpha ")
+	m = sendKey(m, tea.KeyEnter)
+	if len(executor.requests) != 0 {
+		t.Fatalf("dispatch count = %d, want 0 when confirmation has trailing space", len(executor.requests))
+	}
+	assertContains(t, m.View(), "Confirmation mismatch. Type the phrase exactly; input is not trimmed")
+
+	m = sendKey(m, tea.KeyBackspace)
+	m = submitProjectArchiveAndApplyResult(t, m)
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("dispatch count = %d, want 1", len(executor.requests))
+	}
+	request := executor.requests[0]
+	if request.Project != "alpha" || request.BackupID != "backup-archive" || request.Confirmation != "ARCHIVE project alpha" {
+		t.Fatalf("request = %#v, want guarded project archive with exact confirmation", request)
+	}
+	assertContains(t, m.View(), "Project alpha archive completed locally with backup backup-archive", "Cloud handoff: No cloud project mutation was performed.")
+}
+
+func TestProjectArchiveConfirmationCanContainLowercaseQ(t *testing.T) {
+	executor := &fakeProjectArchiveExecutor{note: "No cloud project mutation was performed."}
+	snapshot := projectArchiveSnapshot()
+	snapshot.Projects[0].Name = "query-service"
+	snapshot.Memories[0].Project = "query-service"
+	snapshot.Memories[1].Project = "query-service"
+	m := NewModelWithSnapshotAndProjectArchiveExecutor(snapshot, executor)
+
+	m = sendKey(m, tea.KeyEnter)
+	m = sendRune(m, 'a')
+	m = sendText(m, "backup-archive")
+	m = sendKey(m, tea.KeyEnter)
+
+	for _, r := range "ARCHIVE project query-service" {
+		updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		if cmd != nil {
+			t.Fatalf("typing confirmation rune %q returned cmd, want form input without global quit", r)
+		}
+		m = updated.(Model)
+	}
+	m = submitProjectArchiveAndApplyResult(t, m)
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("dispatch count = %d, want 1", len(executor.requests))
+	}
+	request := executor.requests[0]
+	if request.Project != "query-service" || request.BackupID != "backup-archive" || request.Confirmation != "ARCHIVE project query-service" {
+		t.Fatalf("request = %#v, want guarded project archive with lowercase q in confirmation", request)
+	}
+	assertContains(t, m.View(), "Project query-service archive completed locally")
+}
+
+func TestProjectArchivePendingBlocksDuplicateEscReopenAndStaleResult(t *testing.T) {
+	executor := &fakeProjectArchiveExecutor{note: "No cloud project mutation was performed."}
+	m := readyProjectArchive(executor)
+
+	updated, firstCmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if firstCmd == nil {
+		t.Fatal("first cmd is nil, want project archive dispatch")
+	}
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyEsc}, {Type: tea.KeyRunes, Runes: []rune{'a'}}, {Type: tea.KeyRunes, Runes: []rune{'q'}}, {Type: tea.KeyCtrlC}} {
+		var cmd tea.Cmd
+		updated, cmd = updated.Update(key)
+		if cmd != nil {
+			t.Fatalf("pending key %v returned cmd, want blocked", key.Type)
+		}
+	}
+	m = updated.(Model)
+	if m.Screen() != ScreenProjectArchive {
+		t.Fatalf("screen = %v, want project archive while pending", m.Screen())
+	}
+	assertContains(t, m.View(), "Wait for the result before leaving or submitting again")
+	assertNotContains(t, m.View(), "esc back", "q quit", "j/k move", "enter open")
+
+	updated, _ = updated.Update(projectArchiveResultMsg{project: "beta", backupID: "backup-archive"})
+	m = updated.(Model)
+	if !m.projectArchiveSubmitting {
+		t.Fatal("projectArchiveSubmitting = false, want current pending archive to remain pending")
+	}
+
+	updated, _ = updated.Update(firstCmd())
+	m = updated.(Model)
+	if m.projectArchiveSubmitting {
+		t.Fatal("projectArchiveSubmitting = true, want matching result to clear pending archive")
+	}
+	assertContains(t, m.View(), "Project alpha archive completed locally")
+}
+
+func TestProjectArchiveDoesNotAdvertiseWithoutExecutor(t *testing.T) {
+	m := sendKey(NewModelWithSnapshot(projectArchiveSnapshot()), tea.KeyEnter)
+	assertNotContains(t, m.View(), "archive guarded", "guarded project archive")
+
+	m = sendRune(m, 'a')
+	if m.Screen() != ScreenProjects {
+		t.Fatalf("screen = %v, want projects", m.Screen())
+	}
+}
+
 func TestUnsyncedCountDoesNotUseWarningTextOrConsecutiveFailures(t *testing.T) {
 	m := NewModelWithSnapshot(Snapshot{
 		DashboardState: DashboardDegraded,
@@ -634,6 +765,25 @@ func openMemoryDetail(m Model) Model {
 	return m
 }
 
+func readyProjectArchive(executor *fakeProjectArchiveExecutor) Model {
+	m := NewModelWithSnapshotAndProjectArchiveExecutor(projectArchiveSnapshot(), executor)
+	m = sendKey(m, tea.KeyEnter)
+	m = sendRune(m, 'a')
+	m = sendText(m, "backup-archive")
+	m = sendKey(m, tea.KeyEnter)
+	return sendText(m, "ARCHIVE project alpha")
+}
+
+func submitProjectArchiveAndApplyResult(t *testing.T, m Model) Model {
+	t.Helper()
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("cmd is nil, want project archive dispatch")
+	}
+	updated, _ = updated.Update(cmd())
+	return updated.(Model)
+}
+
 func readyGuardedMemoryDelete(executor *fakeGuardExecutor) Model {
 	m := openGuardedMemoryDelete(NewModelWithSnapshotAndGuardExecutor(guardedMemorySnapshot(), executor))
 	m = sendText(m, "backup-1")
@@ -661,6 +811,14 @@ func submitGuardAndApplyResult(t *testing.T, m Model) Model {
 func guardedMemorySnapshot() Snapshot {
 	snapshot := sampleNavigationSnapshot()
 	snapshot.Memories[0].ID = 7
+	return snapshot
+}
+
+func projectArchiveSnapshot() Snapshot {
+	snapshot := sampleNavigationSnapshot()
+	snapshot.Projects[0].Name = "alpha"
+	snapshot.Memories[0].Project = "alpha"
+	snapshot.Memories[1].Project = "alpha"
 	return snapshot
 }
 
@@ -718,4 +876,14 @@ type fakeGuardExecutor struct {
 func (f *fakeGuardExecutor) ExecuteGuard(_ context.Context, request hiveclient.GuardRequest) (hiveclient.GuardResult, error) {
 	f.requests = append(f.requests, request)
 	return hiveclient.GuardResult{Operation: request.Operation, TargetType: request.TargetType, TargetID: request.TargetID, BackupID: request.BackupID, Mutated: true}, nil
+}
+
+type fakeProjectArchiveExecutor struct {
+	requests []hiveclient.ProjectArchiveRequest
+	note     string
+}
+
+func (f *fakeProjectArchiveExecutor) ArchiveProject(_ context.Context, request hiveclient.ProjectArchiveRequest) (hiveclient.ProjectArchiveResult, error) {
+	f.requests = append(f.requests, request)
+	return hiveclient.ProjectArchiveResult{Operation: "archive", TargetType: "project", Project: request.Project, BackupID: request.BackupID, Mutated: true, CloudHandoffNote: f.note}, nil
 }

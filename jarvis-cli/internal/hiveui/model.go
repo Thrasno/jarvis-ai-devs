@@ -34,10 +34,15 @@ const (
 	ScreenAPIHealth
 	ScreenAPIConfig
 	ScreenMemoryGuard
+	ScreenProjectArchive
 )
 
 type GuardExecutor interface {
 	ExecuteGuard(context.Context, hiveclient.GuardRequest) (hiveclient.GuardResult, error)
+}
+
+type ProjectArchiveExecutor interface {
+	ArchiveProject(context.Context, hiveclient.ProjectArchiveRequest) (hiveclient.ProjectArchiveResult, error)
 }
 
 type Snapshot struct {
@@ -69,6 +74,13 @@ type Model struct {
 	guardStep         memoryGuardStep
 	guardSubmitting   bool
 	guardMemory       hiveclient.Memory
+
+	projectArchiveExecutor     ProjectArchiveExecutor
+	projectArchiveProject      hiveclient.Project
+	projectArchiveBackupID     string
+	projectArchiveConfirmation string
+	projectArchiveStep         memoryGuardStep
+	projectArchiveSubmitting   bool
 }
 
 type memoryGuardStep int
@@ -87,6 +99,13 @@ type memoryGuardResultMsg struct {
 	err        error
 }
 
+type projectArchiveResultMsg struct {
+	project  string
+	backupID string
+	result   hiveclient.ProjectArchiveResult
+	err      error
+}
+
 func NewModelWithSnapshot(snapshot Snapshot) Model {
 	if snapshot.DaemonURL == "" {
 		snapshot.DaemonURL = "http://127.0.0.1:7438"
@@ -100,15 +119,33 @@ func NewModelWithSnapshotAndGuardExecutor(snapshot Snapshot, executor GuardExecu
 	return m
 }
 
+func NewModelWithSnapshotAndProjectArchiveExecutor(snapshot Snapshot, executor ProjectArchiveExecutor) Model {
+	m := NewModelWithSnapshot(snapshot)
+	m.projectArchiveExecutor = executor
+	return m
+}
+
 func (m Model) Init() tea.Cmd { return nil }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if result, ok := msg.(memoryGuardResultMsg); ok {
 		return m.applyMemoryGuardResult(result), nil
 	}
+	if result, ok := msg.(projectArchiveResultMsg); ok {
+		return m.applyProjectArchiveResult(result), nil
+	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
+	}
+	if m.screen == ScreenProjectArchive && m.projectArchiveSubmitting {
+		return m.updateProjectArchive(key)
+	}
+	if m.screen == ScreenProjectArchive {
+		if key.Type == tea.KeyCtrlC {
+			return m, tea.Quit
+		}
+		return m.updateProjectArchive(key)
 	}
 	if key.Type == tea.KeyCtrlC || runeKey(key, 'q') {
 		return m, tea.Quit
@@ -124,6 +161,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.startMemoryGuard("delete")
 	case m.screen == ScreenMemoryDetail && runeKey(key, 'r') && m.selectedMemory().Deleted:
 		m = m.startMemoryGuard("restore")
+	case m.screen == ScreenProjects && runeKey(key, 'a') && m.projectArchiveExecutor != nil:
+		m = m.startProjectArchive()
 	case runeKey(key, 't'):
 		m.screen = ScreenTimeline
 	case runeKey(key, 'w'):
@@ -171,6 +210,8 @@ func (m Model) View() string {
 		return m.apiConfigView()
 	case ScreenMemoryGuard:
 		return m.memoryGuardView()
+	case ScreenProjectArchive:
+		return m.projectArchiveView()
 	}
 
 	var sb strings.Builder
@@ -278,6 +319,8 @@ func (m Model) back() Model {
 		}
 	case ScreenMemoryGuard:
 		m.screen = ScreenMemoryDetail
+	case ScreenProjectArchive:
+		m.screen = ScreenProjects
 	case ScreenProjectMemories:
 		m.screen = ScreenProjects
 	case ScreenTimeline:
@@ -305,6 +348,9 @@ func (m Model) projectsView() string {
 	}
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
+	}
+	if m.projectArchiveExecutor != nil && len(m.snapshot.Projects) > 0 {
+		sb.WriteString("a archive guarded by backup ID and exact confirmation\n")
 	}
 	sb.WriteString("j/k move  enter open  t timeline  esc back  q quit")
 	return sb.String()
@@ -502,6 +548,140 @@ func (m Model) memoryGuardView() string {
 
 func memoryGuardConfirmationPhrase(operation string, memory hiveclient.Memory) string {
 	return fmt.Sprintf("%s memory %d", strings.ToUpper(operation), memory.ID)
+}
+
+func (m Model) startProjectArchive() Model {
+	if m.projectArchiveExecutor == nil || len(m.snapshot.Projects) == 0 {
+		return m
+	}
+	m.screen = ScreenProjectArchive
+	m.projectArchiveProject = m.selectedProject()
+	m.projectArchiveBackupID = ""
+	m.projectArchiveConfirmation = ""
+	m.projectArchiveStep = memoryGuardBackupID
+	m.projectArchiveSubmitting = false
+	m.message = ""
+	return m
+}
+
+func (m Model) updateProjectArchive(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.projectArchiveSubmitting {
+		m.message = "Guarded project archive is already pending through hive-daemon. Wait for the result before leaving or submitting again."
+		return m, nil
+	}
+	switch {
+	case key.Type == tea.KeyEsc:
+		m = m.back()
+		m.message = ""
+		return m, nil
+	case key.Type == tea.KeyBackspace:
+		m = m.removeProjectArchiveRune()
+		return m, nil
+	case key.Type == tea.KeyEnter:
+		return m.submitProjectArchive()
+	case key.Type == tea.KeySpace:
+		m = m.appendProjectArchiveText(" ")
+		return m, nil
+	case key.Type == tea.KeyRunes:
+		m = m.appendProjectArchiveText(string(key.Runes))
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) submitProjectArchive() (tea.Model, tea.Cmd) {
+	if m.projectArchiveStep == memoryGuardBackupID {
+		if strings.TrimSpace(m.projectArchiveBackupID) == "" {
+			m.message = "Backup ID is required before guarded project archive."
+			return m, nil
+		}
+		m.projectArchiveStep = memoryGuardConfirmation
+		m.message = ""
+		return m, nil
+	}
+	expected := projectArchiveConfirmationPhrase(m.projectArchiveProject.Name)
+	if m.projectArchiveConfirmation != expected {
+		m.message = "Confirmation mismatch. Type the phrase exactly; input is not trimmed."
+		return m, nil
+	}
+	if m.projectArchiveExecutor == nil {
+		m.message = "Guarded project archive is unavailable without a daemon command boundary."
+		return m, nil
+	}
+	executor := m.projectArchiveExecutor
+	request := hiveclient.ProjectArchiveRequest{Project: m.projectArchiveProject.Name, BackupID: strings.TrimSpace(m.projectArchiveBackupID), Confirmation: m.projectArchiveConfirmation}
+	m.projectArchiveSubmitting = true
+	return m, func() tea.Msg {
+		result, err := executor.ArchiveProject(context.Background(), request)
+		return projectArchiveResultMsg{project: request.Project, backupID: request.BackupID, result: result, err: err}
+	}
+}
+
+func (m Model) applyProjectArchiveResult(msg projectArchiveResultMsg) Model {
+	if !m.projectArchiveSubmitting || msg.project != m.projectArchiveProject.Name || msg.backupID != strings.TrimSpace(m.projectArchiveBackupID) {
+		return m
+	}
+	m.screen = ScreenProjects
+	m.projectArchiveSubmitting = false
+	if msg.err != nil {
+		m.message = fmt.Sprintf("Project %s archive failed through hive-daemon: %v", msg.project, msg.err)
+		return m
+	}
+	status := "already archived locally"
+	if msg.result.Mutated {
+		status = "archive completed locally"
+	}
+	m.message = fmt.Sprintf("Project %s %s with backup %s.", msg.project, status, msg.backupID)
+	if strings.TrimSpace(msg.result.CloudHandoffNote) != "" {
+		m.message += " Cloud handoff: " + msg.result.CloudHandoffNote
+	}
+	return m
+}
+
+func (m Model) appendProjectArchiveText(text string) Model {
+	if m.projectArchiveStep == memoryGuardBackupID {
+		m.projectArchiveBackupID += text
+		return m
+	}
+	m.projectArchiveConfirmation += text
+	return m
+}
+
+func (m Model) removeProjectArchiveRune() Model {
+	if m.projectArchiveStep == memoryGuardBackupID {
+		m.projectArchiveBackupID = trimLastRune(m.projectArchiveBackupID)
+		return m
+	}
+	m.projectArchiveConfirmation = trimLastRune(m.projectArchiveConfirmation)
+	return m
+}
+
+func (m Model) projectArchiveView() string {
+	project := m.projectArchiveProject.Name
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "guarded project archive\ntarget %s\n", project)
+	fmt.Fprintf(&sb, "Backup ID is required: %s\n", visibleInput(m.projectArchiveBackupID))
+	fmt.Fprintf(&sb, "Confirmation must match exactly. Type exactly: %s\n", projectArchiveConfirmationPhrase(project))
+	if m.projectArchiveStep == memoryGuardConfirmation {
+		fmt.Fprintf(&sb, "confirmation: %s\n", visibleInput(m.projectArchiveConfirmation))
+	}
+	if m.projectArchiveSubmitting {
+		sb.WriteString("Guarded project archive is pending through hive-daemon. Submit is disabled until the result returns.\n")
+	}
+	if m.message != "" {
+		fmt.Fprintf(&sb, "%s\n", m.message)
+	}
+	sb.WriteString("No archive will run until both fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation.\n")
+	if m.projectArchiveSubmitting {
+		sb.WriteString("waiting for hive-daemon result")
+	} else {
+		sb.WriteString("esc back  ctrl-c quit")
+	}
+	return sb.String()
+}
+
+func projectArchiveConfirmationPhrase(project string) string {
+	return "ARCHIVE project " + project
 }
 
 func deletedMemoryMarker(memory hiveclient.Memory) string {
