@@ -270,6 +270,7 @@ function Main {
     
     Install-Binary -Name "jarvis" -Version $version -Arch $arch
     Install-Binary -Name "hive-daemon" -Version $version -Arch $arch
+    Install-Binary -Name "hive" -Version $version -Arch $arch
     
     Add-ToPath
     
