@@ -209,7 +209,7 @@ func (c *Client) Warnings(ctx context.Context) ([]Warning, error) {
 	var body struct {
 		Warnings []Warning `json:"warnings"`
 	}
-	if err := c.get(ctx, "/governance/warnings", nil, &body, true); err != nil {
+	if err := c.get(ctx, "/governance/warnings", nil, &body, false); err != nil {
 		return nil, err
 	}
 	return body.Warnings, nil

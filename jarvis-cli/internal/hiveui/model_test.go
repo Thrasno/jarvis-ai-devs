@@ -193,7 +193,10 @@ func TestReadOnlyNavigationOpensProjectsMemoriesDetailAndTimeline(t *testing.T) 
 		t.Fatalf("screen = %v, want projects", m.Screen())
 	}
 	assertContains(t, m.View(), "dashboard / projects", "core-api", "web-client", "3481", "n/a", "2m ago")
-	assertNotContains(t, m.View(), "merge", "archive", "delete")
+	assertNotContains(t, m.View(), "merge", "merge guarded", "guarded project merge", "archive", "delete")
+	if m = sendRune(m, 'm'); m.Screen() != ScreenProjects {
+		t.Fatalf("screen = %v, want projects", m.Screen())
+	}
 
 	m = sendKey(m, tea.KeyEnter)
 	if m.Screen() != ScreenProjectMemories {
@@ -717,6 +720,105 @@ func TestProjectArchiveDoesNotAdvertiseWithoutExecutor(t *testing.T) {
 	}
 }
 
+func TestProjectMergeRequiresTargetBackupAndExactConfirmationBeforeDispatch(t *testing.T) {
+	executor := &fakeProjectMergeExecutor{note: "No direct cloud project mutation was performed."}
+	m := openProjectMerge(executor)
+
+	assertContains(t, m.View(), "m merge guarded by backup ID and exact confirmation")
+	m = sendRune(m, 'm')
+	assertContains(t, m.View(), "guarded project merge", "source alpha", "Target project is required", "Backup ID is required", "No merge will run until all fields pass guards")
+
+	m = sendKey(m, tea.KeyEnter)
+	assertNoProjectMergeDispatch(t, executor, "without target")
+	assertContains(t, m.View(), "Target project is required before guarded project merge")
+
+	m = sendText(m, "beta")
+	m = sendKey(m, tea.KeyEnter)
+	m = sendKey(m, tea.KeyEnter)
+	assertNoProjectMergeDispatch(t, executor, "without backup")
+	assertContains(t, m.View(), "Backup ID is required before guarded project merge")
+
+	m = sendText(m, "backup-merge")
+	m = sendKey(m, tea.KeyEnter)
+	assertContains(t, m.View(), "Type exactly: MERGE project alpha INTO beta")
+
+	m = sendText(m, "MERGE project alpha INTO beta ")
+	m = sendKey(m, tea.KeyEnter)
+	assertNoProjectMergeDispatch(t, executor, "when confirmation has trailing space")
+	assertContains(t, m.View(), "Confirmation mismatch. Type the phrase exactly; input is not trimmed")
+
+	m = sendKey(m, tea.KeyBackspace)
+	m = submitProjectMergeAndApplyResult(t, m)
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("dispatch count = %d, want 1", len(executor.requests))
+	}
+	request := executor.requests[0]
+	if request.SourceProject != "alpha" || request.TargetProject != "beta" || request.BackupID != "backup-merge" || request.Confirmation != "MERGE project alpha INTO beta" {
+		t.Fatalf("request = %#v, want guarded project merge with exact confirmation", request)
+	}
+	assertContains(t, m.View(), "Project alpha merge into beta recorded locally with backup backup-merge", "Cloud handoff: No direct cloud project mutation was performed.")
+}
+
+func TestProjectMergePreflightRejectsInvalidTargetOrBackupBeforeDispatch(t *testing.T) {
+	tests := []struct {
+		name       string
+		target     string
+		backup     string
+		wantReason string
+	}{
+		{"same source and target", "alpha", "", "Source and target project must be different before guarded project merge"},
+		{"unknown target", "gamma", "", "Target project gamma is not in the current snapshot before guarded project merge"},
+		{"unknown backup", "beta", "missing-backup", "Backup ID missing-backup is not in the current snapshot before guarded project merge"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			executor := &fakeProjectMergeExecutor{}
+			m := sendText(sendRune(openProjectMerge(executor), 'm'), tt.target)
+			m = sendKey(m, tea.KeyEnter)
+			if tt.backup != "" {
+				m = sendKey(sendText(m, tt.backup), tea.KeyEnter)
+			}
+			assertNoProjectMergeDispatch(t, executor, tt.name)
+			assertContains(t, m.View(), tt.wantReason)
+		})
+	}
+}
+
+func TestProjectMergePendingBlocksDuplicateEscReopenQuitAndStaleResult(t *testing.T) {
+	executor := &fakeProjectMergeExecutor{note: "No direct cloud project mutation was performed."}
+	m := readyProjectMerge(executor)
+
+	updated, firstCmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if firstCmd == nil {
+		t.Fatal("first cmd is nil, want project merge dispatch")
+	}
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyEsc}, {Type: tea.KeyRunes, Runes: []rune{'m'}}, {Type: tea.KeyRunes, Runes: []rune{'q'}}, {Type: tea.KeyCtrlC}} {
+		var cmd tea.Cmd
+		updated, cmd = updated.Update(key)
+		if cmd != nil {
+			t.Fatalf("pending key %v returned cmd, want blocked", key.Type)
+		}
+	}
+	m = updated.(Model)
+	if m.Screen() != ScreenProjectMerge {
+		t.Fatalf("screen = %v, want project merge while pending", m.Screen())
+	}
+	assertContains(t, m.View(), "Wait for the result before leaving or submitting again")
+	assertNotContains(t, m.View(), "esc back", "q quit", "j/k move", "enter open")
+	updated, _ = updated.Update(projectMergeResultMsg{sourceProject: "alpha", targetProject: "gamma", backupID: "backup-merge"})
+	m = updated.(Model)
+	if !m.projectMergeSubmitting {
+		t.Fatal("projectMergeSubmitting = false, want current pending merge to remain pending")
+	}
+	updated, _ = updated.Update(firstCmd())
+	m = updated.(Model)
+	if m.projectMergeSubmitting {
+		t.Fatal("projectMergeSubmitting = true, want matching result to clear pending merge")
+	}
+	assertContains(t, m.View(), "Project alpha merge into beta recorded locally")
+}
+
 func TestUnsyncedCountDoesNotUseWarningTextOrConsecutiveFailures(t *testing.T) {
 	m := NewModelWithSnapshot(Snapshot{
 		DashboardState: DashboardDegraded,
@@ -744,6 +846,17 @@ func sendText(m Model, text string) Model {
 		m = sendRune(m, r)
 	}
 	return m
+}
+
+func openProjectMerge(executor *fakeProjectMergeExecutor) Model {
+	return sendKey(NewModelWithSnapshotAndProjectMergeExecutor(projectMergeSnapshot(), executor), tea.KeyEnter)
+}
+
+func assertNoProjectMergeDispatch(t *testing.T, executor *fakeProjectMergeExecutor, reason string) {
+	t.Helper()
+	if len(executor.requests) != 0 {
+		t.Fatalf("dispatch count = %d, want 0 %s", len(executor.requests), reason)
+	}
 }
 
 func openGuardedMemoryDelete(m Model) Model {
@@ -774,11 +887,31 @@ func readyProjectArchive(executor *fakeProjectArchiveExecutor) Model {
 	return sendText(m, "ARCHIVE project alpha")
 }
 
+func readyProjectMerge(executor *fakeProjectMergeExecutor) Model {
+	m := openProjectMerge(executor)
+	m = sendRune(m, 'm')
+	m = sendText(m, "beta")
+	m = sendKey(m, tea.KeyEnter)
+	m = sendText(m, "backup-merge")
+	m = sendKey(m, tea.KeyEnter)
+	return sendText(m, "MERGE project alpha INTO beta")
+}
+
 func submitProjectArchiveAndApplyResult(t *testing.T, m Model) Model {
 	t.Helper()
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("cmd is nil, want project archive dispatch")
+	}
+	updated, _ = updated.Update(cmd())
+	return updated.(Model)
+}
+
+func submitProjectMergeAndApplyResult(t *testing.T, m Model) Model {
+	t.Helper()
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("cmd is nil, want project merge dispatch")
 	}
 	updated, _ = updated.Update(cmd())
 	return updated.(Model)
@@ -819,6 +952,14 @@ func projectArchiveSnapshot() Snapshot {
 	snapshot.Projects[0].Name = "alpha"
 	snapshot.Memories[0].Project = "alpha"
 	snapshot.Memories[1].Project = "alpha"
+	return snapshot
+}
+
+func projectMergeSnapshot() Snapshot {
+	snapshot := projectArchiveSnapshot()
+	snapshot.Projects[1].Name = "beta"
+	snapshot.Memories[2].Project = "beta"
+	snapshot.Backups = append(snapshot.Backups, hiveclient.Backup{ID: "backup-merge"})
 	return snapshot
 }
 
@@ -886,4 +1027,14 @@ type fakeProjectArchiveExecutor struct {
 func (f *fakeProjectArchiveExecutor) ArchiveProject(_ context.Context, request hiveclient.ProjectArchiveRequest) (hiveclient.ProjectArchiveResult, error) {
 	f.requests = append(f.requests, request)
 	return hiveclient.ProjectArchiveResult{Operation: "archive", TargetType: "project", Project: request.Project, BackupID: request.BackupID, Mutated: true, CloudHandoffNote: f.note}, nil
+}
+
+type fakeProjectMergeExecutor struct {
+	requests []hiveclient.ProjectMergeRequest
+	note     string
+}
+
+func (f *fakeProjectMergeExecutor) MergeProject(_ context.Context, request hiveclient.ProjectMergeRequest) (hiveclient.ProjectMergeResult, error) {
+	f.requests = append(f.requests, request)
+	return hiveclient.ProjectMergeResult{Operation: "merge", TargetType: "project", SourceProject: request.SourceProject, TargetProject: request.TargetProject, BackupID: request.BackupID, Mutated: true, CloudHandoffNote: f.note}, nil
 }

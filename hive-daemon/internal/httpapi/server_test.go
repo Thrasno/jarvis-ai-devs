@@ -683,6 +683,82 @@ func TestGovernanceGETEndpointsReturnReadOnlyViews(t *testing.T) {
 	}
 }
 
+func TestGovernanceWarningsEndpointReturnsPersistedWarnings(t *testing.T) {
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	warning, err := store.SaveHiveWarning(db.HiveWarningInput{
+		Severity: "warning",
+		Source:   "startup",
+		Message:  "daemon started with degraded sync config",
+	})
+	if err != nil {
+		t.Fatalf("SaveHiveWarning: %v", err)
+	}
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", store, governance.NewService(store))
+	req := httptest.NewRequest(http.MethodGet, "/governance/warnings", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	rawBody := rr.Body.Bytes()
+	var resp struct {
+		Warnings []governance.Warning `json:"warnings"`
+	}
+	if err := json.Unmarshal(rawBody, &resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if len(resp.Warnings) != 1 {
+		t.Fatalf("warnings len = %d, want 1; body: %s", len(resp.Warnings), rr.Body.String())
+	}
+	got := resp.Warnings[0]
+	if got.ID != warning.ID || got.Severity != "warning" || got.Source != "startup" || got.Message != "daemon started with degraded sync config" || got.ResolutionState != "active" {
+		t.Fatalf("warning = %+v, want persisted warning row", got)
+	}
+	var raw map[string][]map[string]any
+	if err := json.Unmarshal(rawBody, &raw); err != nil {
+		t.Fatalf("response not valid raw JSON: %v", err)
+	}
+	if _, ok := raw["warnings"][0]["resolution_state"]; !ok {
+		t.Fatalf("warning response missing snake_case resolution_state field: %v", raw)
+	}
+	if _, ok := raw["warnings"][0]["ResolutionState"]; ok {
+		t.Fatalf("warning response leaked Go field name: %v", raw)
+	}
+}
+
+func TestGovernanceWarningsEndpointMapsStoreErrorsSafely(t *testing.T) {
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", store, governance.NewService(store))
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/governance/warnings", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if resp["error"] != "internal error" {
+		t.Fatalf("error = %q, want generic internal error", resp["error"])
+	}
+}
+
 func TestGovernanceEndpointStatusMapping(t *testing.T) {
 	store, err := db.Open(":memory:")
 	if err != nil {
