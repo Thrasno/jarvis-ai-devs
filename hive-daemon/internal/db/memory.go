@@ -11,6 +11,12 @@ import (
 	"github.com/google/uuid"
 )
 
+var (
+	ErrMemoryNotFound       = errors.New("memory not found")
+	ErrMemoryAlreadyDeleted = errors.New("memory already deleted")
+	ErrMemoryNotDeleted     = errors.New("memory not deleted")
+)
+
 // SaveMemory persists a memory to the database.
 // When topic_key is set, it upserts (UPDATE on conflict with same project+topic_key).
 // When topic_key is nil, it always inserts a new row.
@@ -208,12 +214,16 @@ func (d *DB) DeleteMemory(id int64, actorID, reason string) error {
 	defer func() { _ = tx.Rollback() }()
 
 	var syncID, project string
-	err = tx.QueryRow(`SELECT sync_id, project FROM memories WHERE id = ? AND deleted_at IS NULL`, id).Scan(&syncID, &project)
+	var deletedAt sql.NullString
+	err = tx.QueryRow(`SELECT sync_id, project, deleted_at FROM memories WHERE id = ?`, id).Scan(&syncID, &project, &deletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("memory not found or already deleted: id=%d", id)
+		return fmt.Errorf("%w: id=%d", ErrMemoryNotFound, id)
 	}
 	if err != nil {
 		return fmt.Errorf("load memory for delete: %w", err)
+	}
+	if deletedAt.Valid {
+		return fmt.Errorf("%w: id=%d", ErrMemoryAlreadyDeleted, id)
 	}
 
 	result, err := tx.Exec(`
@@ -224,7 +234,7 @@ WHERE id = ? AND deleted_at IS NULL`, now, actorID, reason, now, id)
 		return fmt.Errorf("delete memory: %w", err)
 	}
 	if rows, _ := result.RowsAffected(); rows == 0 {
-		return fmt.Errorf("memory not found or already deleted: id=%d", id)
+		return fmt.Errorf("%w: id=%d", ErrMemoryAlreadyDeleted, id)
 	}
 
 	if err := insertMemoryMutation(tx, memoryMutationRecord{
@@ -255,12 +265,16 @@ func (d *DB) RestoreMemory(id int64, actorID string) error {
 	defer func() { _ = tx.Rollback() }()
 
 	var syncID, project string
-	err = tx.QueryRow(`SELECT sync_id, project FROM memories WHERE id = ? AND deleted_at IS NOT NULL`, id).Scan(&syncID, &project)
+	var deletedAt sql.NullString
+	err = tx.QueryRow(`SELECT sync_id, project, deleted_at FROM memories WHERE id = ?`, id).Scan(&syncID, &project, &deletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("memory not deleted: id=%d", id)
+		return fmt.Errorf("%w: id=%d", ErrMemoryNotFound, id)
 	}
 	if err != nil {
 		return fmt.Errorf("load memory for restore: %w", err)
+	}
+	if !deletedAt.Valid {
+		return fmt.Errorf("%w: id=%d", ErrMemoryNotDeleted, id)
 	}
 
 	result, err := tx.Exec(`
@@ -271,7 +285,7 @@ WHERE id = ? AND deleted_at IS NOT NULL`, now, now, id)
 		return fmt.Errorf("restore memory: %w", err)
 	}
 	if rows, _ := result.RowsAffected(); rows == 0 {
-		return fmt.Errorf("memory not deleted: id=%d", id)
+		return fmt.Errorf("%w: id=%d", ErrMemoryNotDeleted, id)
 	}
 
 	if err := insertMemoryMutation(tx, memoryMutationRecord{

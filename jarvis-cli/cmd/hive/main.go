@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +18,9 @@ type governanceClient interface {
 	Memories(context.Context, hiveclient.MemoryFilter) ([]hiveclient.Memory, error)
 	Warnings(context.Context) ([]hiveclient.Warning, error)
 	Backups(context.Context) ([]hiveclient.Backup, error)
+	ExecuteGuard(context.Context, hiveclient.GuardRequest) (hiveclient.GuardResult, error)
+	ArchiveProject(context.Context, hiveclient.ProjectArchiveRequest) (hiveclient.ProjectArchiveResult, error)
+	MergeProject(context.Context, hiveclient.ProjectMergeRequest) (hiveclient.ProjectMergeResult, error)
 }
 
 func main() {
@@ -34,7 +37,7 @@ func main() {
 
 func NewRootCommand(client governanceClient) *cobra.Command {
 	cmd := &cobra.Command{Use: "hive", Short: "Local Hive governance CLI", SilenceErrors: true, SilenceUsage: true}
-	cmd.AddCommand(statusCommand(client), projectsCommand(client), memoriesCommand(client), warningsCommand(client), backupsCommand(client))
+	cmd.AddCommand(statusCommand(client), projectsCommand(client), projectCommand(client), memoriesCommand(client), memoryCommand(client), warningsCommand(client), backupsCommand(client))
 	return cmd
 }
 
@@ -102,10 +105,6 @@ func memoriesCommand(client governanceClient) *cobra.Command {
 func warningsCommand(client governanceClient) *cobra.Command {
 	return &cobra.Command{Use: "warnings", Short: "List local Hive warnings", RunE: func(cmd *cobra.Command, _ []string) error {
 		warnings, err := client.Warnings(cmd.Context())
-		if errors.Is(err, hiveclient.ErrNotAvailable) {
-			fmt.Fprintln(cmd.OutOrStdout(), "Hive warnings are not available from this daemon yet")
-			return nil
-		}
 		if err != nil {
 			return err
 		}
@@ -135,6 +134,128 @@ func backupsCommand(client governanceClient) *cobra.Command {
 		}
 		return nil
 	}}
+}
+
+func memoryCommand(client governanceClient) *cobra.Command {
+	cmd := &cobra.Command{Use: "memory", Short: "Run guarded local memory operations"}
+	cmd.AddCommand(memoryGuardCommand(client, "delete"), memoryGuardCommand(client, "restore"))
+	return cmd
+}
+
+func projectCommand(client governanceClient) *cobra.Command {
+	cmd := &cobra.Command{Use: "project", Short: "Run guarded local project operations"}
+	cmd.AddCommand(projectArchiveCommand(client), projectMergeCommand(client))
+	return cmd
+}
+
+func projectArchiveCommand(client governanceClient) *cobra.Command {
+	var backupID, confirmation, actorID, reason string
+	cmd := &cobra.Command{Use: "archive <project>", Short: "Run a guarded local project archive", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		projectName := strings.TrimSpace(args[0])
+		if projectName == "" {
+			return fmt.Errorf("project is required")
+		}
+		if !cmd.Flags().Changed("backup-id") {
+			return fmt.Errorf("--backup-id is required for hive project archive")
+		}
+		if strings.TrimSpace(backupID) == "" {
+			return fmt.Errorf("--backup-id is required for hive project archive")
+		}
+		if !cmd.Flags().Changed("confirmation") {
+			return fmt.Errorf("--confirmation is required for hive project archive")
+		}
+		expectedConfirmation := "ARCHIVE project " + projectName
+		if confirmation != expectedConfirmation {
+			return fmt.Errorf("confirmation must match exactly: %s", expectedConfirmation)
+		}
+		result, err := client.ArchiveProject(cmd.Context(), hiveclient.ProjectArchiveRequest{Project: projectName, BackupID: backupID, Confirmation: confirmation, ActorID: actorID, Reason: reason})
+		if err != nil {
+			return err
+		}
+		status := "already archived"
+		if result.Mutated {
+			status = "archive completed"
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "project %s %s with backup %s\n", result.Project, status, result.BackupID)
+		fmt.Fprintf(cmd.OutOrStdout(), "Cloud handoff: %s\n", result.CloudHandoffNote)
+		return nil
+	}}
+	cmd.Flags().StringVar(&backupID, "backup-id", "", "fresh Hive backup id for the destructive operation")
+	cmd.Flags().StringVar(&confirmation, "confirmation", "", "exact confirmation required by the daemon guard")
+	cmd.Flags().StringVar(&actorID, "actor-id", "", "human or operator id recorded for the local mutation")
+	cmd.Flags().StringVar(&reason, "reason", "", "reason recorded for the local project archive")
+	return cmd
+}
+
+func projectMergeCommand(client governanceClient) *cobra.Command {
+	var backupID, confirmation, actorID, reason string
+	cmd := &cobra.Command{Use: "merge <source> <target>", Short: "Run a guarded local project merge", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+		sourceProject := strings.TrimSpace(args[0])
+		targetProject := strings.TrimSpace(args[1])
+		if sourceProject == "" || targetProject == "" {
+			return fmt.Errorf("source and target projects are required")
+		}
+		if sourceProject == targetProject {
+			return fmt.Errorf("source and target projects must differ")
+		}
+		if !cmd.Flags().Changed("backup-id") {
+			return fmt.Errorf("--backup-id is required for hive project merge")
+		}
+		if strings.TrimSpace(backupID) == "" {
+			return fmt.Errorf("--backup-id is required for hive project merge")
+		}
+		if !cmd.Flags().Changed("confirmation") {
+			return fmt.Errorf("--confirmation is required for hive project merge")
+		}
+		expectedConfirmation := "MERGE project " + sourceProject + " INTO " + targetProject
+		if confirmation != expectedConfirmation {
+			return fmt.Errorf("confirmation must match exactly: %s", expectedConfirmation)
+		}
+		result, err := client.MergeProject(cmd.Context(), hiveclient.ProjectMergeRequest{SourceProject: sourceProject, TargetProject: targetProject, BackupID: backupID, Confirmation: confirmation, ActorID: actorID, Reason: reason})
+		if err != nil {
+			return err
+		}
+		status := "already merged"
+		if result.Mutated {
+			status = "merge into " + result.TargetProject + " completed"
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "project %s %s with backup %s\n", result.SourceProject, status, result.BackupID)
+		fmt.Fprintf(cmd.OutOrStdout(), "Cloud handoff: %s\n", result.CloudHandoffNote)
+		return nil
+	}}
+	cmd.Flags().StringVar(&backupID, "backup-id", "", "fresh Hive backup id for the destructive operation")
+	cmd.Flags().StringVar(&confirmation, "confirmation", "", "exact confirmation required by the daemon guard")
+	cmd.Flags().StringVar(&actorID, "actor-id", "", "human or operator id recorded for the local mutation")
+	cmd.Flags().StringVar(&reason, "reason", "", "reason recorded for the local project merge")
+	return cmd
+}
+
+func memoryGuardCommand(client governanceClient, operation string) *cobra.Command {
+	var backupID, confirmation, actorID, reason string
+	cmd := &cobra.Command{Use: operation + " <id>", Short: "Run a guarded local memory " + operation, Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		id, err := strconv.ParseInt(args[0], 10, 64)
+		if err != nil || id <= 0 {
+			return fmt.Errorf("memory id must be a positive integer")
+		}
+		if !cmd.Flags().Changed("backup-id") {
+			return fmt.Errorf("--backup-id is required for hive memory %s", operation)
+		}
+		if !cmd.Flags().Changed("confirmation") {
+			return fmt.Errorf("--confirmation is required for hive memory %s", operation)
+		}
+		result, err := client.ExecuteGuard(cmd.Context(), hiveclient.GuardRequest{Operation: operation, TargetType: "memory", TargetID: id, BackupID: backupID, Confirmation: confirmation, ActorID: actorID, Reason: reason})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "memory %d %s completed with backup %s\n", result.TargetID, result.Operation, result.BackupID)
+		fmt.Fprintln(cmd.OutOrStdout(), "Cloud handoff: local mutation uses the normal sync pipeline; no direct cloud mutation was attempted.")
+		return nil
+	}}
+	cmd.Flags().StringVar(&backupID, "backup-id", "", "fresh Hive backup id for the destructive operation")
+	cmd.Flags().StringVar(&confirmation, "confirmation", "", "exact confirmation required by the daemon guard")
+	cmd.Flags().StringVar(&actorID, "actor-id", "", "human or operator id recorded for the local mutation")
+	cmd.Flags().StringVar(&reason, "reason", "", "reason recorded for delete operations")
+	return cmd
 }
 
 func formatTime(t time.Time) string {
