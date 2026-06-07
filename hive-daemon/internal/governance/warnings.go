@@ -10,13 +10,13 @@ import (
 )
 
 type Warning struct {
-	ID              int64
-	CreatedAt       time.Time
-	Severity        string
-	Source          string
-	Message         string
-	ResolutionState string
-	ResolvedAt      *time.Time
+	ID              int64      `json:"id"`
+	CreatedAt       time.Time  `json:"created_at"`
+	Severity        string     `json:"severity"`
+	Source          string     `json:"source"`
+	Message         string     `json:"message"`
+	ResolutionState string     `json:"resolution_state"`
+	ResolvedAt      *time.Time `json:"resolved_at"`
 }
 
 type WarningInput struct {

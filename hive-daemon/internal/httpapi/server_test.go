@@ -683,6 +683,82 @@ func TestGovernanceGETEndpointsReturnReadOnlyViews(t *testing.T) {
 	}
 }
 
+func TestGovernanceWarningsEndpointReturnsPersistedWarnings(t *testing.T) {
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	warning, err := store.SaveHiveWarning(db.HiveWarningInput{
+		Severity: "warning",
+		Source:   "startup",
+		Message:  "daemon started with degraded sync config",
+	})
+	if err != nil {
+		t.Fatalf("SaveHiveWarning: %v", err)
+	}
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", store, governance.NewService(store))
+	req := httptest.NewRequest(http.MethodGet, "/governance/warnings", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	rawBody := rr.Body.Bytes()
+	var resp struct {
+		Warnings []governance.Warning `json:"warnings"`
+	}
+	if err := json.Unmarshal(rawBody, &resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if len(resp.Warnings) != 1 {
+		t.Fatalf("warnings len = %d, want 1; body: %s", len(resp.Warnings), rr.Body.String())
+	}
+	got := resp.Warnings[0]
+	if got.ID != warning.ID || got.Severity != "warning" || got.Source != "startup" || got.Message != "daemon started with degraded sync config" || got.ResolutionState != "active" {
+		t.Fatalf("warning = %+v, want persisted warning row", got)
+	}
+	var raw map[string][]map[string]any
+	if err := json.Unmarshal(rawBody, &raw); err != nil {
+		t.Fatalf("response not valid raw JSON: %v", err)
+	}
+	if _, ok := raw["warnings"][0]["resolution_state"]; !ok {
+		t.Fatalf("warning response missing snake_case resolution_state field: %v", raw)
+	}
+	if _, ok := raw["warnings"][0]["ResolutionState"]; ok {
+		t.Fatalf("warning response leaked Go field name: %v", raw)
+	}
+}
+
+func TestGovernanceWarningsEndpointMapsStoreErrorsSafely(t *testing.T) {
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", store, governance.NewService(store))
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/governance/warnings", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if resp["error"] != "internal error" {
+		t.Fatalf("error = %q, want generic internal error", resp["error"])
+	}
+}
+
 func TestGovernanceEndpointStatusMapping(t *testing.T) {
 	store, err := db.Open(":memory:")
 	if err != nil {
@@ -1239,6 +1315,232 @@ func TestGovernanceGuardExecuteHTTPMapsRestoreTargetStateErrors(t *testing.T) {
 	}
 }
 
+func TestGovernanceProjectArchiveHTTPArchivesLocalProjectWithCloudHandoffNote(t *testing.T) {
+	store, backup, srv := newHTTPGuardTestServer(t)
+	saveHTTPGuardMemoryInProject(t, store, "alpha", "project-archive-alpha")
+	saveHTTPGuardMemoryInProject(t, store, "beta", "project-archive-beta")
+	body := fmt.Sprintf(`{"backup_id":%q,"confirmation":%q,"actor_id":"tester","reason":"cleanup"}`, backup.ID, governance.ProjectArchiveConfirmation("alpha"))
+	req := httptest.NewRequest(http.MethodPost, "/governance/projects/alpha/archive", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Result governance.ProjectArchiveResult `json:"result"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if !resp.Result.Mutated || resp.Result.Project != "alpha" || resp.Result.BackupID != backup.ID {
+		t.Fatalf("archive result = %+v, want mutated alpha with backup %s", resp.Result, backup.ID)
+	}
+	if !strings.Contains(resp.Result.CloudHandoffNote, "No cloud project mutation") {
+		t.Fatalf("cloud handoff note = %q, want explicit no-cloud mutation note", resp.Result.CloudHandoffNote)
+	}
+	alpha, err := store.GetGovernanceProject(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("GetGovernanceProject alpha: %v", err)
+	}
+	beta, err := store.GetGovernanceProject(context.Background(), "beta")
+	if err != nil {
+		t.Fatalf("GetGovernanceProject beta: %v", err)
+	}
+	if !alpha.Archived || beta.Archived {
+		t.Fatalf("archive state alpha=%t beta=%t, want selected local project only", alpha.Archived, beta.Archived)
+	}
+}
+
+func TestGovernanceProjectDetailHTTPAllowsEscapedSlashProjectName(t *testing.T) {
+	store, _, srv := newHTTPGuardTestServer(t)
+	saveHTTPGuardMemoryInProject(t, store, "alpha/archive", "project-detail-alpha-archive")
+	req := httptest.NewRequest(http.MethodGet, "/governance/projects/alpha%2Farchive", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Project governance.Project `json:"project"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if resp.Project.Name != "alpha/archive" {
+		t.Fatalf("project name = %q, want alpha/archive", resp.Project.Name)
+	}
+}
+
+func TestGovernanceProjectArchiveHTTPDecodesEscapedProjectNameOnce(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		projectName string
+		escapedPath string
+	}{
+		{name: "slash project name", projectName: "alpha/archive", escapedPath: "alpha%2Farchive"},
+		{name: "literal percent escape text", projectName: "literal%2Ftext", escapedPath: "literal%252Ftext"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store, backup, srv := newHTTPGuardTestServer(t)
+			saveHTTPGuardMemoryInProject(t, store, tt.projectName, "project-archive-"+strings.ReplaceAll(tt.name, " ", "-"))
+			body := fmt.Sprintf(`{"backup_id":%q,"confirmation":%q,"actor_id":"tester","reason":"cleanup"}`, backup.ID, governance.ProjectArchiveConfirmation(tt.projectName))
+			req := httptest.NewRequest(http.MethodPost, "/governance/projects/"+tt.escapedPath+"/archive", bytes.NewBufferString(body))
+			rr := httptest.NewRecorder()
+
+			srv.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+			}
+			var resp struct {
+				Result governance.ProjectArchiveResult `json:"result"`
+			}
+			if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+				t.Fatalf("response not valid JSON: %v", err)
+			}
+			if resp.Result.Project != tt.projectName || !resp.Result.Mutated {
+				t.Fatalf("archive result = %+v, want mutated project %q", resp.Result, tt.projectName)
+			}
+			project, err := store.GetGovernanceProject(context.Background(), tt.projectName)
+			if err != nil {
+				t.Fatalf("GetGovernanceProject %q: %v", tt.projectName, err)
+			}
+			if !project.Archived {
+				t.Fatalf("project %q was not archived", tt.projectName)
+			}
+		})
+	}
+}
+
+func TestGovernanceProjectArchiveHTTPMismatchPreservesExactConfirmationAndDoesNotMutate(t *testing.T) {
+	store, backup, srv := newHTTPGuardTestServer(t)
+	saveHTTPGuardMemoryInProject(t, store, "alpha", "project-archive-mismatch")
+	before := readProjectGovernanceRowsHTTP(t, store)
+	body := fmt.Sprintf(`{"backup_id":%q,"confirmation":"%s "}`, backup.ID, governance.ProjectArchiveConfirmation("alpha"))
+	req := httptest.NewRequest(http.MethodPost, "/governance/projects/alpha/archive", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "confirmation mismatch") {
+		t.Fatalf("body = %s, want confirmation mismatch", rr.Body.String())
+	}
+	after := readProjectGovernanceRowsHTTP(t, store)
+	if after != before {
+		t.Fatalf("mismatched archive confirmation mutated governance rows: before=%d after=%d", before, after)
+	}
+}
+
+func TestGovernanceProjectMergeHTTPRecordsLocalMetadataWithCloudHandoffNote(t *testing.T) {
+	store, backup, srv := newHTTPGuardTestServer(t)
+	sourceMemoryID := saveHTTPGuardMemoryInProject(t, store, "alpha", "project-merge-alpha")
+	targetMemoryID := saveHTTPGuardMemoryInProject(t, store, "beta", "project-merge-beta")
+	body := fmt.Sprintf(`{"backup_id":%q,"confirmation":%q,"actor_id":"tester","reason":"dedupe"}`, backup.ID, governance.ProjectMergeConfirmation("alpha", "beta"))
+	req := httptest.NewRequest(http.MethodPost, "/governance/projects/alpha/merge/beta", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Result governance.ProjectMergeResult `json:"result"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if !resp.Result.Mutated || resp.Result.SourceProject != "alpha" || resp.Result.TargetProject != "beta" || resp.Result.BackupID != backup.ID {
+		t.Fatalf("merge result = %+v, want mutated alpha into beta with backup %s", resp.Result, backup.ID)
+	}
+	if !strings.Contains(resp.Result.CloudHandoffNote, "No cloud project mutation") {
+		t.Fatalf("cloud handoff note = %q, want explicit no-cloud mutation note", resp.Result.CloudHandoffNote)
+	}
+	alpha, err := store.GetGovernanceProject(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("GetGovernanceProject alpha: %v", err)
+	}
+	beta, err := store.GetGovernanceProject(context.Background(), "beta")
+	if err != nil {
+		t.Fatalf("GetGovernanceProject beta: %v", err)
+	}
+	if !alpha.Merged || alpha.MergeTarget != "beta" || beta.Merged {
+		t.Fatalf("merge state alpha=%+v beta=%+v, want source metadata only", alpha, beta)
+	}
+	if got := requireHTTPMemoryProject(t, store, sourceMemoryID); got != "alpha" {
+		t.Fatalf("source memory project = %q, want alpha", got)
+	}
+	if got := requireHTTPMemoryProject(t, store, targetMemoryID); got != "beta" {
+		t.Fatalf("target memory project = %q, want beta", got)
+	}
+}
+
+func TestGovernanceProjectMergeHTTPDecodesEscapedProjectNamesOnce(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		source        string
+		target        string
+		escapedSource string
+		escapedTarget string
+	}{
+		{name: "slash project names", source: "alpha/source", target: "beta/target", escapedSource: "alpha%2Fsource", escapedTarget: "beta%2Ftarget"},
+		{name: "literal percent escape text", source: "literal%2Fsource", target: "literal%2Ftarget", escapedSource: "literal%252Fsource", escapedTarget: "literal%252Ftarget"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store, backup, srv := newHTTPGuardTestServer(t)
+			saveHTTPGuardMemoryInProject(t, store, tt.source, "project-merge-source-"+strings.ReplaceAll(tt.name, " ", "-"))
+			saveHTTPGuardMemoryInProject(t, store, tt.target, "project-merge-target-"+strings.ReplaceAll(tt.name, " ", "-"))
+			body := fmt.Sprintf(`{"backup_id":%q,"confirmation":%q}`, backup.ID, governance.ProjectMergeConfirmation(tt.source, tt.target))
+			req := httptest.NewRequest(http.MethodPost, "/governance/projects/"+tt.escapedSource+"/merge/"+tt.escapedTarget, bytes.NewBufferString(body))
+			rr := httptest.NewRecorder()
+
+			srv.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+			}
+			var resp struct {
+				Result governance.ProjectMergeResult `json:"result"`
+			}
+			if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+				t.Fatalf("response not valid JSON: %v", err)
+			}
+			if resp.Result.SourceProject != tt.source || resp.Result.TargetProject != tt.target || !resp.Result.Mutated {
+				t.Fatalf("merge result = %+v, want %q into %q", resp.Result, tt.source, tt.target)
+			}
+		})
+	}
+}
+
+func TestGovernanceProjectMergeHTTPMismatchDoesNotMutate(t *testing.T) {
+	store, backup, srv := newHTTPGuardTestServer(t)
+	saveHTTPGuardMemoryInProject(t, store, "alpha", "project-merge-mismatch-alpha")
+	saveHTTPGuardMemoryInProject(t, store, "beta", "project-merge-mismatch-beta")
+	before := readProjectGovernanceRowsHTTP(t, store)
+	body := fmt.Sprintf(`{"backup_id":%q,"confirmation":"%s "}`, backup.ID, governance.ProjectMergeConfirmation("alpha", "beta"))
+	req := httptest.NewRequest(http.MethodPost, "/governance/projects/alpha/merge/beta", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "confirmation mismatch") {
+		t.Fatalf("body = %s, want confirmation mismatch", rr.Body.String())
+	}
+	if after := readProjectGovernanceRowsHTTP(t, store); after != before {
+		t.Fatalf("mismatched merge confirmation mutated governance rows: before=%d after=%d", before, after)
+	}
+}
+
 func TestGovernanceEndpointsRejectNonGETMethods(t *testing.T) {
 	store, err := db.Open(":memory:")
 	if err != nil {
@@ -1279,15 +1581,28 @@ func newHTTPGuardTestServer(t *testing.T) (*db.DB, governance.BackupManifest, *h
 }
 
 func saveHTTPGuardMemory(t *testing.T, store *db.DB, sessionID string) int64 {
+	return saveHTTPGuardMemoryInProject(t, store, "alpha", sessionID)
+}
+
+func saveHTTPGuardMemoryInProject(t *testing.T, store *db.DB, projectName, sessionID string) int64 {
 	t.Helper()
-	if err := store.CreateSession(sessionID, "alpha", t.TempDir(), "dev", "test"); err != nil {
+	if err := store.CreateSession(sessionID, projectName, t.TempDir(), "dev", "test"); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	memoryID, err := store.SaveMemory(&models.Memory{Project: "alpha", Title: "Guarded state", Content: "state", SessionID: sessionID})
+	memoryID, err := store.SaveMemory(&models.Memory{Project: projectName, Title: "Guarded state", Content: "state", SessionID: sessionID})
 	if err != nil {
 		t.Fatalf("SaveMemory: %v", err)
 	}
 	return memoryID
+}
+
+func readProjectGovernanceRowsHTTP(t *testing.T, store *db.DB) int {
+	t.Helper()
+	var count int
+	if err := store.RawDB().QueryRow(`SELECT COUNT(*) FROM hive_project_governance`).Scan(&count); err != nil {
+		t.Fatalf("count project governance rows: %v", err)
+	}
+	return count
 }
 
 func readHTTPGovernanceCounters(t *testing.T, d *db.DB) governanceCountersHTTP {
@@ -1303,6 +1618,15 @@ func readHTTPGovernanceCounters(t *testing.T, d *db.DB) governanceCountersHTTP {
 		t.Fatalf("count sync_state: %v", err)
 	}
 	return got
+}
+
+func requireHTTPMemoryProject(t *testing.T, d *db.DB, id int64) string {
+	t.Helper()
+	var projectName string
+	if err := d.RawDB().QueryRow(`SELECT project FROM memories WHERE id = ?`, id).Scan(&projectName); err != nil {
+		t.Fatalf("query memory project: %v", err)
+	}
+	return projectName
 }
 
 type governanceCountersHTTP struct {
