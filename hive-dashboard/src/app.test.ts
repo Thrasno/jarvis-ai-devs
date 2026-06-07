@@ -73,6 +73,7 @@ describe('dashboard shell', () => {
     health.resolve({ status: 'ok', db: 'connected', version: '1.0.0' })
     await Promise.resolve()
     await Promise.resolve()
+    await Promise.resolve()
 
     expect(container.querySelector('h1')?.textContent).toBe('Sign in to Hive API')
     expect(container.textContent).not.toContain('API status ok')

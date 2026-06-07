@@ -9,7 +9,6 @@ export function renderMemories(state: ViewState<{ recent: MemoryList; search: Me
     text('Recent memories'),
     list(describe(state.data.recent.memories), 'No recent memories found'),
     text(`Default search: "${state.data.search.query}"`),
-    text(`Search results for "${state.data.search.query}"`),
     list(describe(state.data.search.memories), `No memories matched "${state.data.search.query}"`)
   )
 }
