@@ -21,6 +21,7 @@ type governanceClient interface {
 	Backups(context.Context) ([]hiveclient.Backup, error)
 	ExecuteGuard(context.Context, hiveclient.GuardRequest) (hiveclient.GuardResult, error)
 	ArchiveProject(context.Context, hiveclient.ProjectArchiveRequest) (hiveclient.ProjectArchiveResult, error)
+	MergeProject(context.Context, hiveclient.ProjectMergeRequest) (hiveclient.ProjectMergeResult, error)
 }
 
 func main() {
@@ -148,7 +149,7 @@ func memoryCommand(client governanceClient) *cobra.Command {
 
 func projectCommand(client governanceClient) *cobra.Command {
 	cmd := &cobra.Command{Use: "project", Short: "Run guarded local project operations"}
-	cmd.AddCommand(projectArchiveCommand(client))
+	cmd.AddCommand(projectArchiveCommand(client), projectMergeCommand(client))
 	return cmd
 }
 
@@ -188,6 +189,49 @@ func projectArchiveCommand(client governanceClient) *cobra.Command {
 	cmd.Flags().StringVar(&confirmation, "confirmation", "", "exact confirmation required by the daemon guard")
 	cmd.Flags().StringVar(&actorID, "actor-id", "", "human or operator id recorded for the local mutation")
 	cmd.Flags().StringVar(&reason, "reason", "", "reason recorded for the local project archive")
+	return cmd
+}
+
+func projectMergeCommand(client governanceClient) *cobra.Command {
+	var backupID, confirmation, actorID, reason string
+	cmd := &cobra.Command{Use: "merge <source> <target>", Short: "Run a guarded local project merge", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+		sourceProject := strings.TrimSpace(args[0])
+		targetProject := strings.TrimSpace(args[1])
+		if sourceProject == "" || targetProject == "" {
+			return fmt.Errorf("source and target projects are required")
+		}
+		if sourceProject == targetProject {
+			return fmt.Errorf("source and target projects must differ")
+		}
+		if !cmd.Flags().Changed("backup-id") {
+			return fmt.Errorf("--backup-id is required for hive project merge")
+		}
+		if strings.TrimSpace(backupID) == "" {
+			return fmt.Errorf("--backup-id is required for hive project merge")
+		}
+		if !cmd.Flags().Changed("confirmation") {
+			return fmt.Errorf("--confirmation is required for hive project merge")
+		}
+		expectedConfirmation := "MERGE project " + sourceProject + " INTO " + targetProject
+		if confirmation != expectedConfirmation {
+			return fmt.Errorf("confirmation must match exactly: %s", expectedConfirmation)
+		}
+		result, err := client.MergeProject(cmd.Context(), hiveclient.ProjectMergeRequest{SourceProject: sourceProject, TargetProject: targetProject, BackupID: backupID, Confirmation: confirmation, ActorID: actorID, Reason: reason})
+		if err != nil {
+			return err
+		}
+		status := "already merged"
+		if result.Mutated {
+			status = "merge into " + result.TargetProject + " completed"
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "project %s %s with backup %s\n", result.SourceProject, status, result.BackupID)
+		fmt.Fprintf(cmd.OutOrStdout(), "Cloud handoff: %s\n", result.CloudHandoffNote)
+		return nil
+	}}
+	cmd.Flags().StringVar(&backupID, "backup-id", "", "fresh Hive backup id for the destructive operation")
+	cmd.Flags().StringVar(&confirmation, "confirmation", "", "exact confirmation required by the daemon guard")
+	cmd.Flags().StringVar(&actorID, "actor-id", "", "human or operator id recorded for the local mutation")
+	cmd.Flags().StringVar(&reason, "reason", "", "reason recorded for the local project merge")
 	return cmd
 }
 

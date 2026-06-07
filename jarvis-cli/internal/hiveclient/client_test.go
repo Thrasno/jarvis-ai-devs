@@ -113,6 +113,56 @@ func TestClientArchivesProjectEscapesProjectNameInPath(t *testing.T) {
 	}
 }
 
+func TestClientMergesProjectWithExactConfirmation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/governance/projects/alpha/merge/beta" {
+			t.Fatalf("request = %s %s, want POST /governance/projects/alpha/merge/beta", r.Method, r.URL.Path)
+		}
+		var req ProjectMergeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.SourceProject != "alpha" || req.TargetProject != "beta" || req.BackupID != "backup-1" || req.Confirmation != " MERGE project alpha INTO beta " || req.ActorID != "tester" || req.Reason != "dedupe" {
+			t.Fatalf("merge request = %+v, want exact project merge payload", req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"operation":"merge","target_type":"project","source_project":"alpha","target_project":"beta","backup_id":"backup-1","mutated":true,"cloud_handoff_note":"Local project merge metadata recorded. No cloud project mutation was performed."}}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := client.MergeProject(context.Background(), ProjectMergeRequest{SourceProject: "alpha", TargetProject: "beta", BackupID: "backup-1", Confirmation: " MERGE project alpha INTO beta ", ActorID: "tester", Reason: "dedupe"})
+	if err != nil {
+		t.Fatalf("MergeProject: %v", err)
+	}
+	if !result.Mutated || result.SourceProject != "alpha" || result.TargetProject != "beta" || result.CloudHandoffNote == "" {
+		t.Fatalf("merge result = %+v, want local merge result with cloud handoff note", result)
+	}
+}
+
+func TestClientMergesProjectEscapesSourceAndTargetNames(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.RequestURI != "/governance/projects/team%2Fsource/merge/literal%252Ftarget" {
+			t.Fatalf("request = %s %s, want escaped source and target merge path", r.Method, r.RequestURI)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"operation":"merge","target_type":"project","source_project":"team/source","target_project":"literal%2Ftarget","backup_id":"backup-1","mutated":true}}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.MergeProject(context.Background(), ProjectMergeRequest{SourceProject: "team/source", TargetProject: "literal%2Ftarget", BackupID: "backup-1", Confirmation: "MERGE project team/source INTO literal%2Ftarget"})
+	if err != nil {
+		t.Fatalf("MergeProject: %v", err)
+	}
+}
+
 func TestClientExecuteGuardReturnsDaemonGuardError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

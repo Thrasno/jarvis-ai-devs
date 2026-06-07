@@ -231,6 +231,68 @@ func TestHiveProjectArchiveCommandRejectsNonExactConfirmationBeforeDaemonCall(t 
 	}
 }
 
+func TestHiveProjectMergeCommandUsesDaemonClient(t *testing.T) {
+	client := &fakeHiveClient{}
+	out, err := executeHiveCommand(t, NewRootCommand(client), "project", "merge", "alpha", "beta", "--backup-id", "backup-1", "--confirmation", "MERGE project alpha INTO beta", "--actor-id", "tester", "--reason", "dedupe")
+	if err != nil {
+		t.Fatalf("project merge command: %v", err)
+	}
+	if client.mergeRequest.SourceProject != "alpha" || client.mergeRequest.TargetProject != "beta" || client.mergeRequest.BackupID != "backup-1" || client.mergeRequest.Confirmation != "MERGE project alpha INTO beta" || client.mergeRequest.ActorID != "tester" || client.mergeRequest.Reason != "dedupe" {
+		t.Fatalf("merge request = %+v, want project merge request from CLI flags", client.mergeRequest)
+	}
+	if !strings.Contains(out, "project alpha merge into beta completed") || !strings.Contains(out, "direct cloud mutation") {
+		t.Fatalf("merge output = %q, want local merge result and cloud handoff note", out)
+	}
+}
+
+func TestHiveProjectMergeCommandRequiresBackupIDAndConfirmationLocally(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "missing backup id", args: []string{"project", "merge", "alpha", "beta", "--confirmation", "MERGE project alpha INTO beta"}, wantErr: "--backup-id is required"},
+		{name: "empty backup id", args: []string{"project", "merge", "alpha", "beta", "--backup-id", "", "--confirmation", "MERGE project alpha INTO beta"}, wantErr: "--backup-id is required"},
+		{name: "missing confirmation", args: []string{"project", "merge", "alpha", "beta", "--backup-id", "backup-1"}, wantErr: "--confirmation is required"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &fakeHiveClient{}
+			out, err := executeHiveCommand(t, NewRootCommand(client), tt.args...)
+			if err == nil {
+				t.Fatal("project merge command error = nil, want local required flag error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("project merge command error = %v, want %q", err, tt.wantErr)
+			}
+			if out != "" {
+				t.Fatalf("project merge command output = %q, want no noisy usage output", out)
+			}
+			if client.mergeCalled {
+				t.Fatal("project merge command called daemon client without required local flags")
+			}
+		})
+	}
+}
+
+func TestHiveProjectMergeCommandRejectsNonExactConfirmationBeforeDaemonCall(t *testing.T) {
+	client := &fakeHiveClient{}
+	out, err := executeHiveCommand(t, NewRootCommand(client), "project", "merge", "alpha", "beta", "--backup-id", "backup-1", "--confirmation", " MERGE project alpha INTO beta ")
+	if err == nil {
+		t.Fatal("project merge command error = nil, want exact confirmation error")
+	}
+	if !strings.Contains(err.Error(), "confirmation must match exactly") {
+		t.Fatalf("project merge command error = %v, want exact confirmation error", err)
+	}
+	if out != "" {
+		t.Fatalf("project merge command output = %q, want no noisy usage output", out)
+	}
+	if client.mergeCalled {
+		t.Fatal("project merge command called daemon client with non-exact confirmation")
+	}
+}
+
 func executeHiveCommand(t *testing.T, cmd *cobra.Command, args ...string) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
@@ -251,9 +313,11 @@ type fakeHiveClient struct {
 	memoryFilter   hiveclient.MemoryFilter
 	guardRequest   hiveclient.GuardRequest
 	archiveRequest hiveclient.ProjectArchiveRequest
+	mergeRequest   hiveclient.ProjectMergeRequest
 	memoriesCalled bool
 	guardCalled    bool
 	archiveCalled  bool
+	mergeCalled    bool
 }
 
 func (f *fakeHiveClient) Status(context.Context) ([]hiveclient.Health, error) { return f.health, nil }
@@ -281,4 +345,9 @@ func (f *fakeHiveClient) ArchiveProject(_ context.Context, req hiveclient.Projec
 	f.archiveCalled = true
 	f.archiveRequest = req
 	return hiveclient.ProjectArchiveResult{Operation: "archive", TargetType: "project", Project: req.Project, BackupID: req.BackupID, Mutated: true, CloudHandoffNote: "Local project archive completed. No direct cloud mutation was performed."}, nil
+}
+func (f *fakeHiveClient) MergeProject(_ context.Context, req hiveclient.ProjectMergeRequest) (hiveclient.ProjectMergeResult, error) {
+	f.mergeCalled = true
+	f.mergeRequest = req
+	return hiveclient.ProjectMergeResult{Operation: "merge", TargetType: "project", SourceProject: req.SourceProject, TargetProject: req.TargetProject, BackupID: req.BackupID, Mutated: true, CloudHandoffNote: "Local project merge metadata recorded. No direct cloud mutation was performed."}, nil
 }

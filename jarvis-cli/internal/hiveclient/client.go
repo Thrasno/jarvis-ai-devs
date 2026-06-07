@@ -130,6 +130,25 @@ type ProjectArchiveResult struct {
 	CloudHandoffNote string `json:"cloud_handoff_note"`
 }
 
+type ProjectMergeRequest struct {
+	SourceProject string `json:"source_project"`
+	TargetProject string `json:"target_project"`
+	BackupID      string `json:"backup_id"`
+	Confirmation  string `json:"confirmation"`
+	ActorID       string `json:"actor_id,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+}
+
+type ProjectMergeResult struct {
+	Operation        string `json:"operation"`
+	TargetType       string `json:"target_type"`
+	SourceProject    string `json:"source_project"`
+	TargetProject    string `json:"target_project"`
+	BackupID         string `json:"backup_id"`
+	Mutated          bool   `json:"mutated"`
+	CloudHandoffNote string `json:"cloud_handoff_note"`
+}
+
 func NewFromEnv() (*Client, error) {
 	baseURL := strings.TrimSpace(os.Getenv("HIVE_DAEMON_URL"))
 	if baseURL == "" {
@@ -224,6 +243,21 @@ func (c *Client) ArchiveProject(ctx context.Context, req ProjectArchiveRequest) 
 	}
 	if err := c.post(ctx, "/governance/projects/"+url.PathEscape(project)+"/archive", req, &body); err != nil {
 		return ProjectArchiveResult{}, err
+	}
+	return body.Result, nil
+}
+
+func (c *Client) MergeProject(ctx context.Context, req ProjectMergeRequest) (ProjectMergeResult, error) {
+	source := strings.TrimSpace(req.SourceProject)
+	target := strings.TrimSpace(req.TargetProject)
+	req.SourceProject = source
+	req.TargetProject = target
+	var body struct {
+		Result ProjectMergeResult `json:"result"`
+	}
+	path := "/governance/projects/" + url.PathEscape(source) + "/merge/" + url.PathEscape(target)
+	if err := c.post(ctx, path, req, &body); err != nil {
+		return ProjectMergeResult{}, err
 	}
 	return body.Result, nil
 }

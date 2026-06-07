@@ -42,6 +42,7 @@ type GovernanceService interface {
 	RestoreBackup(context.Context, governance.RestoreRequest) (governance.RestoreResult, error)
 	ExecuteGuard(context.Context, governance.GuardRequest) (governance.GuardResult, error)
 	ExecuteProjectArchive(context.Context, governance.ProjectArchiveRequest) (governance.ProjectArchiveResult, error)
+	ExecuteProjectMerge(context.Context, governance.ProjectMergeRequest) (governance.ProjectMergeResult, error)
 }
 
 // Server handles HTTP requests for the Hive prompt-capture endpoint.
@@ -238,6 +239,20 @@ func (s *Server) handleGovernanceProjects(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleGovernanceProject(w http.ResponseWriter, r *http.Request) {
 	escapedName := strings.TrimPrefix(r.URL.EscapedPath(), "/governance/projects/")
+	if mergeParts := strings.SplitN(escapedName, "/merge/", 2); len(mergeParts) == 2 {
+		sourceProject, err := url.PathUnescape(mergeParts[0])
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "source project is invalid"})
+			return
+		}
+		targetProject, err := url.PathUnescape(mergeParts[1])
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "target project is invalid"})
+			return
+		}
+		s.handleGovernanceProjectMerge(w, r, sourceProject, targetProject)
+		return
+	}
 	if strings.HasSuffix(escapedName, "/archive") {
 		projectName, err := url.PathUnescape(strings.TrimSuffix(escapedName, "/archive"))
 		if err != nil {
@@ -277,6 +292,26 @@ func (s *Server) handleGovernanceProjectArchive(w http.ResponseWriter, r *http.R
 	result, err := s.governance.ExecuteProjectArchive(r.Context(), body)
 	if err != nil {
 		writeGuardError(w, "governance project archive", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"result": result})
+}
+
+func (s *Server) handleGovernanceProjectMerge(w http.ResponseWriter, r *http.Request, sourceProject, targetProject string) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body governance.ProjectMergeRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	body.SourceProject = sourceProject
+	body.TargetProject = targetProject
+	result, err := s.governance.ExecuteProjectMerge(r.Context(), body)
+	if err != nil {
+		writeGuardError(w, "governance project merge", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"result": result})
@@ -497,6 +532,15 @@ func writeGuardError(w http.ResponseWriter, source string, err error) {
 	case errors.Is(err, db.ErrMemoryNotDeleted):
 		status = http.StatusConflict
 		errorMessage = "memory is not deleted"
+	case errors.Is(err, db.ErrGovernanceProjectMergeInvalid):
+		status = http.StatusBadRequest
+		errorMessage = "project merge source and target must differ"
+	case errors.Is(err, db.ErrGovernanceProjectArchived):
+		status = http.StatusConflict
+		errorMessage = "project is archived"
+	case errors.Is(err, db.ErrGovernanceProjectMergeConflict):
+		status = http.StatusConflict
+		errorMessage = "project merge conflicts with existing local project governance metadata"
 	default:
 		logger.Log.Printf("%s: %v", source, err)
 	}
