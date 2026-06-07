@@ -3,6 +3,7 @@ package hiveui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -67,8 +68,8 @@ func TestDashboardShowsReadOnlyActionsAndBlocksDestructiveEntries(t *testing.T) 
 
 func TestDashboardHelpOnlyAdvertisesImplementedKeys(t *testing.T) {
 	view := NewModelWithSnapshot(Snapshot{DashboardState: DashboardHealthy}).View()
-	assertContains(t, view, "j/k move", "enter read-only notice", "q quit")
-	assertNotContains(t, view, "r retry", "enter open", "w warnings", "g health", "c config")
+	assertContains(t, view, "j/k move", "enter open", "q quit")
+	assertNotContains(t, view, "r retry", "w warnings", "g health", "c config")
 }
 
 func TestQuitKeysReturnTeaQuit(t *testing.T) {
@@ -95,7 +96,7 @@ func TestQuitKeysReturnTeaQuit(t *testing.T) {
 
 func TestEnterOnReadOnlyPlaceholdersSetsExplicitStatusWithoutMutation(t *testing.T) {
 	for index, action := range dashboardActions() {
-		if action.disabled {
+		if action.disabled || action.label == "Project viewer" {
 			continue
 		}
 		t.Run(action.label, func(t *testing.T) {
@@ -109,7 +110,85 @@ func TestEnterOnReadOnlyPlaceholdersSetsExplicitStatusWithoutMutation(t *testing
 			if m.cursor != index {
 				t.Fatalf("cursor = %d, want %d", m.cursor, index)
 			}
-			assertContains(t, m.View(), "Navigation is not available in this read-only TUI slice", "No local Hive state was changed")
+			assertContains(t, m.View(), action.label+" is not available in this navigation sub-slice", "No local Hive state was changed")
+		})
+	}
+}
+
+func TestBackReturnsToThePreviousReadOnlyState(t *testing.T) {
+	m := NewModelWithSnapshot(sampleNavigationSnapshot())
+	m = sendKey(m, tea.KeyEnter)
+	m = sendKey(m, tea.KeyEnter)
+	m = sendKey(m, tea.KeyEnter)
+
+	m = sendKey(m, tea.KeyEsc)
+	if m.Screen() != ScreenProjectMemories {
+		t.Fatalf("screen = %v, want project memories", m.Screen())
+	}
+	m = sendKey(m, tea.KeyEsc)
+	if m.Screen() != ScreenProjects {
+		t.Fatalf("screen = %v, want projects", m.Screen())
+	}
+	m = sendKey(m, tea.KeyEsc)
+	if m.Screen() != ScreenDashboard {
+		t.Fatalf("screen = %v, want dashboard", m.Screen())
+	}
+}
+
+func TestReadOnlyNavigationOpensProjectsMemoriesAndDetail(t *testing.T) {
+	m := NewModelWithSnapshot(sampleNavigationSnapshot())
+
+	m = sendKey(m, tea.KeyEnter)
+	if m.Screen() != ScreenProjects {
+		t.Fatalf("screen = %v, want projects", m.Screen())
+	}
+	assertContains(t, m.View(), "dashboard / projects", "core-api", "web-client", "3481", "n/a", "2m ago")
+	assertNotContains(t, m.View(), "merge", "archive", "delete")
+
+	m = sendKey(m, tea.KeyEnter)
+	if m.Screen() != ScreenProjectMemories {
+		t.Fatalf("screen = %v, want project memories", m.Screen())
+	}
+	assertContains(t, m.View(), "dashboard / projects / core-api", "Use exponential backoff", "decision", "2d")
+	assertNotContains(t, m.View(), "delete")
+
+	m = sendKey(m, tea.KeyEnter)
+	if m.Screen() != ScreenMemoryDetail {
+		t.Fatalf("screen = %v, want memory detail", m.Screen())
+	}
+	assertContains(t, m.View(), "core-api / mem_8f3a91c0", "sync synced", "Content preview is not available from the read-only daemon snapshot")
+	assertNotContains(t, m.View(), "copy body", "delete")
+}
+
+func TestEnterOnEmptyProjectListsDoesNotOpenFakeDetail(t *testing.T) {
+	tests := []struct {
+		name  string
+		model Model
+		want  Screen
+	}{
+		{
+			name:  "empty projects stays on projects",
+			model: Model{snapshot: Snapshot{DashboardState: DashboardHealthy}, screen: ScreenProjects},
+			want:  ScreenProjects,
+		},
+		{
+			name: "empty memories stays on project memories",
+			model: Model{
+				snapshot: Snapshot{DashboardState: DashboardHealthy, Projects: []hiveclient.Project{{Name: "empty-project"}}},
+				screen:   ScreenProjectMemories,
+			},
+			want: ScreenProjectMemories,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := sendKey(tt.model, tea.KeyEnter)
+			if m.Screen() != tt.want {
+				t.Fatalf("screen = %v, want %v", m.Screen(), tt.want)
+			}
+			assertContains(t, m.View(), "No item is available to open")
+			assertNotContains(t, m.View(), "Content preview is not available from the read-only daemon snapshot")
 		})
 	}
 }
@@ -161,6 +240,24 @@ func TestUnsyncedCountDoesNotUseWarningTextOrConsecutiveFailures(t *testing.T) {
 func sendKey(m Model, key tea.KeyType) Model {
 	updated, _ := m.Update(tea.KeyMsg{Type: key})
 	return updated.(Model)
+}
+
+func sampleNavigationSnapshot() Snapshot {
+	base := time.Now().Add(-47 * time.Hour).UTC()
+	return Snapshot{
+		DashboardState: DashboardDegraded,
+		Projects: []hiveclient.Project{
+			{Name: "core-api", ActiveMemoryCount: 3481, DeletedMemoryCount: 4, LastActivityAt: time.Now().Add(-2 * time.Minute)},
+			{Name: "web-client", ActiveMemoryCount: 642, LastActivityAt: base.Add(-time.Hour)},
+		},
+		Memories: []hiveclient.Memory{
+			{SyncID: "mem_8f3a91c0", Project: "core-api", Category: "decision", Title: "Use exponential backoff", CreatedBy: "mcp", CreatedAt: base, Deleted: false},
+			{SyncID: "mem_503", Project: "core-api", Category: "bugfix", Title: "Fix retry storm", CreatedBy: "mcp", CreatedAt: base.Add(-7 * time.Minute), Deleted: false},
+			{SyncID: "mem_web", Project: "web-client", Category: "pattern", Title: "Use presenter boundary", CreatedAt: base.Add(-time.Hour), Deleted: false},
+		},
+		Health:   []hiveclient.Health{{Project: "core-api", LastSuccessAt: base.Add(-2 * time.Hour), LastFailureAt: base.Add(-6 * time.Minute), BackoffUntil: base.Add(time.Hour), ConsecutiveFailures: 12, LastError: "401 unauthorized"}},
+		Warnings: []hiveclient.Warning{{Severity: "critical", Source: "CONFIG-401", Message: "Hive API rejected credentials", ResolutionState: "active", CreatedAt: base}},
+	}
 }
 
 func assertContains(t *testing.T, view string, wants ...string) {
