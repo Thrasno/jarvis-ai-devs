@@ -1,6 +1,7 @@
 package hiveui
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -302,6 +303,131 @@ func TestTimelineZeroCreatedAtRendersUnavailable(t *testing.T) {
 	assertNotContains(t, view, "00:00")
 }
 
+func TestGuardedMemoryDeleteRequiresBackupAndExactConfirmationBeforeDispatch(t *testing.T) {
+	executor := &fakeGuardExecutor{}
+	m := NewModelWithSnapshotAndGuardExecutor(guardedMemorySnapshot(), executor)
+	m = openGuardedMemoryDelete(m)
+
+	assertContains(t, m.View(), "guarded memory delete", "target mem_8f3a91c0", "Backup ID is required", "Confirmation must match exactly", "No delete will run until both fields pass guards")
+
+	m = sendKey(m, tea.KeyEnter)
+	if len(executor.requests) != 0 {
+		t.Fatalf("dispatch count = %d, want 0 without backup", len(executor.requests))
+	}
+	assertContains(t, m.View(), "Backup ID is required before guarded delete")
+
+	m = sendText(m, "backup-1")
+	m = sendKey(m, tea.KeyEnter)
+	assertContains(t, m.View(), "Type exactly: DELETE memory 7")
+
+	m = sendText(m, "DELETE memory 7 ")
+	m = sendKey(m, tea.KeyEnter)
+	if len(executor.requests) != 0 {
+		t.Fatalf("dispatch count = %d, want 0 when confirmation has trailing space", len(executor.requests))
+	}
+	assertContains(t, m.View(), "Confirmation mismatch. Type the phrase exactly; input is not trimmed")
+
+	m = sendKey(m, tea.KeyBackspace)
+	m = submitGuardAndApplyResult(t, m)
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("dispatch count = %d, want 1", len(executor.requests))
+	}
+	request := executor.requests[0]
+	if request.Operation != "delete" || request.TargetType != "memory" || request.TargetID != 7 || request.BackupID != "backup-1" || request.Confirmation != "DELETE memory 7" {
+		t.Fatalf("request = %#v, want guarded memory delete with exact confirmation", request)
+	}
+	assertContains(t, m.View(), "Guarded memory delete dispatched through hive-daemon", "No direct SQLite or cloud mutation was performed by the TUI")
+}
+
+func TestGuardedMemoryDeletePendingBlocksDuplicateEscAndReopen(t *testing.T) {
+	executor := &fakeGuardExecutor{}
+	m := readyGuardedMemoryDelete(executor)
+
+	updated, firstCmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if firstCmd == nil {
+		t.Fatal("first cmd is nil, want guarded delete dispatch")
+	}
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyEsc}, {Type: tea.KeyRunes, Runes: []rune{'d'}}} {
+		var cmd tea.Cmd
+		updated, cmd = updated.Update(key)
+		if cmd != nil {
+			t.Fatalf("pending key %v returned cmd, want blocked", key.Type)
+		}
+	}
+	m = updated.(Model)
+	if m.Screen() != ScreenMemoryGuard {
+		t.Fatalf("screen = %v, want memory guard while delete is pending", m.Screen())
+	}
+	assertContains(t, m.View(), "Wait for the result before leaving or submitting again")
+	assertNotContains(t, m.View(), "esc back")
+
+	if len(executor.requests) != 0 {
+		t.Fatalf("dispatch count before async command runs = %d, want 0", len(executor.requests))
+	}
+
+	updated, _ = updated.Update(firstCmd())
+	m = updated.(Model)
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("dispatch count = %d, want 1", len(executor.requests))
+	}
+	assertContains(t, m.View(), "Guarded memory delete dispatched through hive-daemon")
+}
+
+func TestStaleMemoryGuardResultDoesNotClearCurrentPendingDelete(t *testing.T) {
+	executor := &fakeGuardExecutor{}
+	m := readyGuardedMemoryDelete(executor)
+
+	updated, firstCmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if firstCmd == nil {
+		t.Fatal("first cmd is nil, want guarded delete dispatch")
+	}
+
+	stale := memoryGuardResultMsg{operation: "delete", targetType: "memory", targetID: 99, backupID: "backup-older"}
+	updated, _ = updated.Update(stale)
+	m = updated.(Model)
+	if m.Screen() != ScreenMemoryGuard {
+		t.Fatalf("screen = %v, want memory guard after stale result", m.Screen())
+	}
+	if !m.guardSubmitting {
+		t.Fatal("guardSubmitting = false, want current pending delete to remain pending")
+	}
+
+	updated, _ = updated.Update(firstCmd())
+	m = updated.(Model)
+	if m.guardSubmitting {
+		t.Fatal("guardSubmitting = true, want matching result to clear pending delete")
+	}
+	assertContains(t, m.View(), "Guarded memory delete dispatched through hive-daemon")
+}
+
+func TestMemoryGuardEscWithPartialInputDoesNotDispatch(t *testing.T) {
+	executor := &fakeGuardExecutor{}
+	m := NewModelWithSnapshotAndGuardExecutor(guardedMemorySnapshot(), executor)
+	m = openGuardedMemoryDelete(m)
+	m = sendText(m, "partial-backup")
+	m = sendKey(m, tea.KeyEsc)
+
+	if m.Screen() != ScreenMemoryDetail {
+		t.Fatalf("screen = %v, want memory detail", m.Screen())
+	}
+	if len(executor.requests) != 0 {
+		t.Fatalf("dispatch count = %d, want 0", len(executor.requests))
+	}
+}
+
+func TestMemoryDetailDoesNotAdvertiseDeleteWithoutGuardExecutor(t *testing.T) {
+	m := NewModelWithSnapshot(guardedMemorySnapshot())
+	m = openMemoryDetail(m)
+
+	assertNotContains(t, m.View(), "d delete", "guarded memory delete")
+	m = sendRune(m, 'd')
+	if m.Screen() != ScreenMemoryDetail {
+		t.Fatalf("screen = %v, want memory detail", m.Screen())
+	}
+}
+
 func TestUnsyncedCountDoesNotUseWarningTextOrConsecutiveFailures(t *testing.T) {
 	m := NewModelWithSnapshot(Snapshot{
 		DashboardState: DashboardDegraded,
@@ -322,6 +448,49 @@ func sendKey(m Model, key tea.KeyType) Model {
 func sendRune(m Model, r rune) Model {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	return updated.(Model)
+}
+
+func sendText(m Model, text string) Model {
+	for _, r := range text {
+		m = sendRune(m, r)
+	}
+	return m
+}
+
+func openGuardedMemoryDelete(m Model) Model {
+	m = openMemoryDetail(m)
+	m = sendRune(m, 'd')
+	return m
+}
+
+func openMemoryDetail(m Model) Model {
+	m = sendKey(m, tea.KeyEnter)
+	m = sendKey(m, tea.KeyEnter)
+	m = sendKey(m, tea.KeyEnter)
+	return m
+}
+
+func readyGuardedMemoryDelete(executor *fakeGuardExecutor) Model {
+	m := openGuardedMemoryDelete(NewModelWithSnapshotAndGuardExecutor(guardedMemorySnapshot(), executor))
+	m = sendText(m, "backup-1")
+	m = sendKey(m, tea.KeyEnter)
+	return sendText(m, "DELETE memory 7")
+}
+
+func submitGuardAndApplyResult(t *testing.T, m Model) Model {
+	t.Helper()
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("cmd is nil, want guarded delete dispatch")
+	}
+	updated, _ = updated.Update(cmd())
+	return updated.(Model)
+}
+
+func guardedMemorySnapshot() Snapshot {
+	snapshot := sampleNavigationSnapshot()
+	snapshot.Memories[0].ID = 7
+	return snapshot
 }
 
 func sampleNavigationSnapshot() Snapshot {
@@ -364,3 +533,12 @@ func assertNotContains(t *testing.T, view string, wants ...string) {
 type assertErr string
 
 func (e assertErr) Error() string { return string(e) }
+
+type fakeGuardExecutor struct {
+	requests []hiveclient.GuardRequest
+}
+
+func (f *fakeGuardExecutor) ExecuteGuard(_ context.Context, request hiveclient.GuardRequest) (hiveclient.GuardResult, error) {
+	f.requests = append(f.requests, request)
+	return hiveclient.GuardResult{Operation: request.Operation, TargetType: request.TargetType, TargetID: request.TargetID, BackupID: request.BackupID, Mutated: true}, nil
+}

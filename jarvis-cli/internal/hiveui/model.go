@@ -1,6 +1,7 @@
 package hiveui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -32,7 +33,12 @@ const (
 	ScreenBackupDetail
 	ScreenAPIHealth
 	ScreenAPIConfig
+	ScreenMemoryGuard
 )
+
+type GuardExecutor interface {
+	ExecuteGuard(context.Context, hiveclient.GuardRequest) (hiveclient.GuardResult, error)
+}
 
 type Snapshot struct {
 	DashboardState DashboardState
@@ -55,6 +61,30 @@ type Model struct {
 	backupIndex  int
 	detailReturn Screen
 	message      string
+
+	guardExecutor     GuardExecutor
+	guardOperation    string
+	guardBackupID     string
+	guardConfirmation string
+	guardStep         memoryGuardStep
+	guardSubmitting   bool
+	guardMemory       hiveclient.Memory
+}
+
+type memoryGuardStep int
+
+const (
+	memoryGuardBackupID memoryGuardStep = iota
+	memoryGuardConfirmation
+)
+
+type memoryGuardResultMsg struct {
+	operation  string
+	targetType string
+	targetID   int64
+	backupID   string
+	result     hiveclient.GuardResult
+	err        error
 }
 
 func NewModelWithSnapshot(snapshot Snapshot) Model {
@@ -64,19 +94,34 @@ func NewModelWithSnapshot(snapshot Snapshot) Model {
 	return Model{snapshot: snapshot}
 }
 
+func NewModelWithSnapshotAndGuardExecutor(snapshot Snapshot, executor GuardExecutor) Model {
+	m := NewModelWithSnapshot(snapshot)
+	m.guardExecutor = executor
+	return m
+}
+
 func (m Model) Init() tea.Cmd { return nil }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if result, ok := msg.(memoryGuardResultMsg); ok {
+		return m.applyMemoryGuardResult(result), nil
+	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
 	}
+	if key.Type == tea.KeyCtrlC || runeKey(key, 'q') {
+		return m, tea.Quit
+	}
+	if m.screen == ScreenMemoryGuard {
+		return m.updateMemoryGuard(key)
+	}
 	m.message = ""
 	switch {
-	case key.Type == tea.KeyCtrlC || runeKey(key, 'q'):
-		return m, tea.Quit
 	case key.Type == tea.KeyEsc || key.Type == tea.KeyBackspace:
 		m = m.back()
+	case m.screen == ScreenMemoryDetail && runeKey(key, 'd'):
+		m = m.startMemoryGuard("delete")
 	case runeKey(key, 't'):
 		m.screen = ScreenTimeline
 	case runeKey(key, 'w'):
@@ -122,6 +167,8 @@ func (m Model) View() string {
 		return m.apiHealthView()
 	case ScreenAPIConfig:
 		return m.apiConfigView()
+	case ScreenMemoryGuard:
+		return m.memoryGuardView()
 	}
 
 	var sb strings.Builder
@@ -227,6 +274,8 @@ func (m Model) back() Model {
 		} else {
 			m.screen = ScreenProjectMemories
 		}
+	case ScreenMemoryGuard:
+		m.screen = ScreenMemoryDetail
 	case ScreenProjectMemories:
 		m.screen = ScreenProjects
 	case ScreenTimeline:
@@ -289,8 +338,178 @@ func (m Model) memoryDetailView() string {
 	fmt.Fprintf(&sb, "project %s  sync %s\n", memory.Project, syncText(memory))
 	fmt.Fprintf(&sb, "type %s  source %s\n", emptyDash(memory.Category), emptyDash(memory.CreatedBy))
 	sb.WriteString("Content preview is not available from the read-only daemon snapshot.\n")
+	if m.guardExecutor != nil && memory.ID != 0 {
+		sb.WriteString("d delete guarded by backup ID and exact confirmation\n")
+	}
+	if m.message != "" {
+		fmt.Fprintf(&sb, "%s\n", m.message)
+	}
 	sb.WriteString("esc back  q quit")
 	return sb.String()
+}
+
+func (m Model) startMemoryGuard(operation string) Model {
+	if m.guardExecutor == nil {
+		return m
+	}
+	if m.guardSubmitting {
+		m.screen = ScreenMemoryGuard
+		m.message = "Guarded memory delete is already pending through hive-daemon. Wait for the result before leaving or submitting again."
+		return m
+	}
+	memory := m.selectedMemory()
+	if memory.ID == 0 {
+		m.message = "Memory numeric ID is required before guarded delete can be dispatched."
+		return m
+	}
+	m.screen = ScreenMemoryGuard
+	m.guardOperation = operation
+	m.guardMemory = memory
+	m.guardStep = memoryGuardBackupID
+	m.guardBackupID = ""
+	m.guardConfirmation = ""
+	m.guardSubmitting = false
+	m.message = ""
+	return m
+}
+
+func (m Model) updateMemoryGuard(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.guardSubmitting {
+		m.message = "Guarded memory delete is already pending through hive-daemon. Wait for the result before leaving or submitting again."
+		return m, nil
+	}
+	switch {
+	case key.Type == tea.KeyEsc:
+		m = m.back()
+		m.message = ""
+		return m, nil
+	case key.Type == tea.KeyBackspace:
+		m = m.removeGuardRune()
+		return m, nil
+	case key.Type == tea.KeyEnter:
+		return m.submitMemoryGuard()
+	case key.Type == tea.KeySpace:
+		m = m.appendGuardText(" ")
+		return m, nil
+	case key.Type == tea.KeyRunes:
+		m = m.appendGuardText(string(key.Runes))
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) submitMemoryGuard() (tea.Model, tea.Cmd) {
+	m.message = ""
+	if m.guardSubmitting {
+		m.message = "Guarded memory delete is already pending through hive-daemon."
+		return m, nil
+	}
+	if m.guardStep == memoryGuardBackupID {
+		if strings.TrimSpace(m.guardBackupID) == "" {
+			m.message = "Backup ID is required before guarded delete."
+			return m, nil
+		}
+		m.guardStep = memoryGuardConfirmation
+		return m, nil
+	}
+	expected := memoryGuardConfirmationPhrase(m.guardOperation, m.guardMemory)
+	if m.guardConfirmation != expected {
+		m.message = "Confirmation mismatch. Type the phrase exactly; input is not trimmed."
+		return m, nil
+	}
+	if m.guardExecutor == nil {
+		m.message = "Guarded memory delete is unavailable without a daemon command boundary."
+		return m, nil
+	}
+	executor := m.guardExecutor
+	request := hiveclient.GuardRequest{
+		Operation:    m.guardOperation,
+		TargetType:   "memory",
+		TargetID:     m.guardMemory.ID,
+		BackupID:     strings.TrimSpace(m.guardBackupID),
+		Confirmation: m.guardConfirmation,
+	}
+	m.guardSubmitting = true
+	return m, func() tea.Msg {
+		result, err := executor.ExecuteGuard(context.Background(), request)
+		return memoryGuardResultMsg{operation: request.Operation, targetType: request.TargetType, targetID: request.TargetID, backupID: request.BackupID, result: result, err: err}
+	}
+}
+
+func (m Model) applyMemoryGuardResult(msg memoryGuardResultMsg) Model {
+	if !m.guardSubmitting || msg.operation != m.guardOperation || msg.targetType != "memory" || msg.targetID != m.guardMemory.ID || msg.backupID != strings.TrimSpace(m.guardBackupID) {
+		return m
+	}
+	m.screen = ScreenMemoryDetail
+	m.guardSubmitting = false
+	if msg.err != nil {
+		m.message = fmt.Sprintf("Guarded memory %s failed through hive-daemon: %v", msg.operation, msg.err)
+		return m
+	}
+	m.message = fmt.Sprintf("Guarded memory %s dispatched through hive-daemon. No direct SQLite or cloud mutation was performed by the TUI.", msg.operation)
+	return m
+}
+
+func (m Model) appendGuardText(text string) Model {
+	if m.guardStep == memoryGuardBackupID {
+		m.guardBackupID += text
+		return m
+	}
+	m.guardConfirmation += text
+	return m
+}
+
+func (m Model) removeGuardRune() Model {
+	if m.guardStep == memoryGuardBackupID {
+		m.guardBackupID = trimLastRune(m.guardBackupID)
+		return m
+	}
+	m.guardConfirmation = trimLastRune(m.guardConfirmation)
+	return m
+}
+
+func (m Model) memoryGuardView() string {
+	memory := m.guardMemory
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "guarded memory %s\n", m.guardOperation)
+	fmt.Fprintf(&sb, "target %s\n", memoryKey(memory))
+	fmt.Fprintf(&sb, "Backup ID is required: %s\n", visibleInput(m.guardBackupID))
+	fmt.Fprintf(&sb, "Confirmation must match exactly. Type exactly: %s\n", memoryGuardConfirmationPhrase(m.guardOperation, memory))
+	if m.guardStep == memoryGuardConfirmation {
+		fmt.Fprintf(&sb, "confirmation: %s\n", visibleInput(m.guardConfirmation))
+	}
+	if m.guardSubmitting {
+		sb.WriteString("Guarded memory delete is pending through hive-daemon. Submit is disabled until the result returns.\n")
+	}
+	if m.message != "" {
+		fmt.Fprintf(&sb, "%s\n", m.message)
+	}
+	sb.WriteString("No delete will run until both fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation.\n")
+	if m.guardSubmitting {
+		sb.WriteString("q quit")
+	} else {
+		sb.WriteString("esc back  q quit")
+	}
+	return sb.String()
+}
+
+func memoryGuardConfirmationPhrase(operation string, memory hiveclient.Memory) string {
+	return fmt.Sprintf("%s memory %d", strings.ToUpper(operation), memory.ID)
+}
+
+func visibleInput(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
+}
+
+func trimLastRune(value string) string {
+	if value == "" {
+		return ""
+	}
+	runes := []rune(value)
+	return string(runes[:len(runes)-1])
 }
 
 func (m Model) timelineView() string {
