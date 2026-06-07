@@ -189,6 +189,30 @@ CREATE TABLE IF NOT EXISTS recovery_tokens (
 );
 
 CREATE INDEX IF NOT EXISTS idx_recovery_tokens_expires ON recovery_tokens(expires_at);
+
+CREATE TABLE IF NOT EXISTS hive_warnings (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    severity         TEXT NOT NULL,
+    source           TEXT NOT NULL,
+    message          TEXT NOT NULL,
+    resolution_state TEXT NOT NULL DEFAULT 'active' CHECK (resolution_state IN ('active', 'resolved')),
+    resolved_at      DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_hive_warnings_created_at ON hive_warnings(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_hive_warnings_resolution_state ON hive_warnings(resolution_state, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS hive_project_governance (
+    project        TEXT PRIMARY KEY,
+    archived_at    DATETIME,
+    archived_by    TEXT NOT NULL DEFAULT '',
+    archive_reason TEXT NOT NULL DEFAULT '',
+    merge_target   TEXT NOT NULL DEFAULT '',
+    merged_at      DATETIME,
+    merged_by      TEXT NOT NULL DEFAULT '',
+    merge_reason   TEXT NOT NULL DEFAULT ''
+);
 `
 
 // DB wraps an SQLite connection with schema validation.
@@ -280,6 +304,11 @@ func initSchema(sqlDB *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_memory_mutations_project_unsynced ON memory_mutations(project, sequence) WHERE synced_at IS NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_mutations_entity ON memory_mutations(entity_type, entity_sync_id, sequence)`,
 		`CREATE TABLE IF NOT EXISTS mutation_cursors (consumer TEXT NOT NULL, project TEXT NOT NULL, sequence INTEGER NOT NULL DEFAULT 0, event_id TEXT NOT NULL DEFAULT '', updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (consumer, project))`,
+		`CREATE TABLE IF NOT EXISTS hive_project_governance (project TEXT PRIMARY KEY, archived_at DATETIME, archived_by TEXT NOT NULL DEFAULT '', archive_reason TEXT NOT NULL DEFAULT '', merge_target TEXT NOT NULL DEFAULT '', merged_at DATETIME, merged_by TEXT NOT NULL DEFAULT '', merge_reason TEXT NOT NULL DEFAULT '')`,
+		`ALTER TABLE hive_project_governance ADD COLUMN merge_target TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE hive_project_governance ADD COLUMN merged_at DATETIME`,
+		`ALTER TABLE hive_project_governance ADD COLUMN merged_by TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE hive_project_governance ADD COLUMN merge_reason TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, m := range migrations {
 		if _, err := sqlDB.Exec(m); err != nil {
