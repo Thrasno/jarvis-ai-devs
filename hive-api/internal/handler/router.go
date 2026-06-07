@@ -2,6 +2,11 @@ package handler
 
 import (
 	"context"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/middleware"
@@ -53,12 +58,13 @@ type AdminService interface {
 // Pasar un struct en lugar de N parámetros hace que el constructor sea legible
 // y fácil de extender sin romper código existente.
 type RouterDeps struct {
-	AuthSvc        AuthService
-	MemorySvc      MemoryService
-	SyncSvc        SyncService
-	AdminSvc       AdminService
-	DB             DBPinger // puede ser nil en tests unitarios
-	AllowedOrigins []string // orígenes permitidos para CORS (e.g. ["https://hive.hivemem.dev"])
+	AuthSvc            AuthService
+	MemorySvc          MemoryService
+	SyncSvc            SyncService
+	AdminSvc           AdminService
+	DB                 DBPinger // puede ser nil en tests unitarios
+	AllowedOrigins     []string // orígenes permitidos para CORS (e.g. ["https://hive.hivemem.dev"])
+	DashboardAssetsDir string   // directorio con assets compilados para servir /dashboard
 }
 
 // NewRouter construye y configura el router Gin con todas las rutas y middlewares.
@@ -124,5 +130,93 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		admin.POST("/users/:username/deactivate", adminH.Deactivate)
 	}
 
+	registerDashboardRoutes(r, deps.DashboardAssetsDir)
+	r.NoRoute(jsonNotFound)
+
 	return r
+}
+
+func registerDashboardRoutes(r *gin.Engine, dashboardAssetsDir string) {
+	dashboardAssetsDir = strings.TrimSpace(dashboardAssetsDir)
+	if dashboardAssetsDir == "" {
+		return
+	}
+
+	serve := dashboardHandler(dashboardAssetsDir)
+	r.GET("/dashboard", serve)
+	r.GET("/dashboard/*path", serve)
+}
+
+func dashboardHandler(dashboardAssetsDir string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if isDashboardAssetTraversal(c.Request.URL.Path) || isDashboardAssetTraversal(c.Request.URL.EscapedPath()) {
+			jsonNotFound(c)
+			return
+		}
+
+		relPath := strings.TrimPrefix(c.Param("path"), "/")
+		cleanPath := filepath.Clean(relPath)
+		if cleanPath == "." {
+			serveDashboardIndex(c, dashboardAssetsDir)
+			return
+		}
+
+		if cleanPath == "assets" || strings.HasPrefix(cleanPath, "assets/") {
+			serveDashboardAsset(c, dashboardAssetsDir, cleanPath)
+			return
+		}
+
+		if cleanPath == ".." || strings.HasPrefix(cleanPath, "../") {
+			jsonNotFound(c)
+			return
+		}
+
+		serveDashboardIndex(c, dashboardAssetsDir)
+	}
+}
+
+func serveDashboardIndex(c *gin.Context, dashboardAssetsDir string) {
+	indexPath := filepath.Join(dashboardAssetsDir, "index.html")
+	if !regularFileExists(indexPath) {
+		jsonNotFound(c)
+		return
+	}
+
+	c.File(indexPath)
+}
+
+func serveDashboardAsset(c *gin.Context, dashboardAssetsDir, cleanPath string) {
+	assetPath := filepath.Join(dashboardAssetsDir, cleanPath)
+	if !regularFileExists(assetPath) {
+		jsonNotFound(c)
+		return
+	}
+
+	c.File(assetPath)
+}
+
+func regularFileExists(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode()&os.ModeSymlink == 0 && info.Mode().IsRegular()
+}
+
+func isDashboardAssetTraversal(rawPath string) bool {
+	path, err := url.PathUnescape(rawPath)
+	if err != nil {
+		path = rawPath
+	}
+	if !strings.HasPrefix(path, "/dashboard/assets/") {
+		return false
+	}
+
+	for _, segment := range strings.Split(path, "/") {
+		if segment == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+func jsonNotFound(c *gin.Context) {
+	c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 }

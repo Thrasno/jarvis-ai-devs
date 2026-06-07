@@ -31,12 +31,13 @@ import (
 // Separamos la construcción del router de la conexión a BD para poder
 // testear el router sin necesitar PostgreSQL real (db puede ser nil en tests).
 type buildAppDeps struct {
-	authSvc        handler.AuthService
-	memorySvc      handler.MemoryService
-	syncSvc        handler.SyncService
-	adminSvc       handler.AdminService
-	db             handler.DBPinger // nil en tests unitarios → health skip DB check
-	allowedOrigins []string
+	authSvc            handler.AuthService
+	memorySvc          handler.MemoryService
+	syncSvc            handler.SyncService
+	adminSvc           handler.AdminService
+	db                 handler.DBPinger // nil en tests unitarios → health skip DB check
+	allowedOrigins     []string
+	dashboardAssetsDir string
 }
 
 type serviceFactories struct {
@@ -79,12 +80,13 @@ func defaultServiceFactories() serviceFactories {
 // Es la función que los tests usan directamente — no necesita BD real.
 func buildApp(deps buildAppDeps) *gin.Engine {
 	return handler.NewRouter(handler.RouterDeps{
-		AuthSvc:        deps.authSvc,
-		MemorySvc:      deps.memorySvc,
-		SyncSvc:        deps.syncSvc,
-		AdminSvc:       deps.adminSvc,
-		DB:             deps.db,
-		AllowedOrigins: deps.allowedOrigins,
+		AuthSvc:            deps.authSvc,
+		MemorySvc:          deps.memorySvc,
+		SyncSvc:            deps.syncSvc,
+		AdminSvc:           deps.adminSvc,
+		DB:                 deps.db,
+		AllowedOrigins:     deps.allowedOrigins,
+		DashboardAssetsDir: deps.dashboardAssetsDir,
 	})
 }
 
@@ -112,12 +114,13 @@ func wireServicesWithFactories(pool *pgxpool.Pool, cfg *config.Config, factories
 	adminSvc := factories.newAdminService(userRepo, memRepo, auditRepo, txManager)
 
 	return buildAppDeps{
-		authSvc:        authSvc,
-		memorySvc:      memorySvc,
-		syncSvc:        syncSvc,
-		adminSvc:       adminSvc,
-		db:             pool, // pgxpool.Pool implementa DBPinger (tiene Ping(ctx) error)
-		allowedOrigins: cfg.AllowedOrigins,
+		authSvc:            authSvc,
+		memorySvc:          memorySvc,
+		syncSvc:            syncSvc,
+		adminSvc:           adminSvc,
+		db:                 pool, // pgxpool.Pool implementa DBPinger (tiene Ping(ctx) error)
+		allowedOrigins:     cfg.AllowedOrigins,
+		dashboardAssetsDir: cfg.DashboardAssetsDir,
 	}
 }
 
