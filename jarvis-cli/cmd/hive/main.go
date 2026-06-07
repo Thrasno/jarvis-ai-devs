@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -106,10 +105,6 @@ func memoriesCommand(client governanceClient) *cobra.Command {
 func warningsCommand(client governanceClient) *cobra.Command {
 	return &cobra.Command{Use: "warnings", Short: "List local Hive warnings", RunE: func(cmd *cobra.Command, _ []string) error {
 		warnings, err := client.Warnings(cmd.Context())
-		if errors.Is(err, hiveclient.ErrNotAvailable) {
-			fmt.Fprintln(cmd.OutOrStdout(), "Hive warnings are not available from this daemon yet")
-			return nil
-		}
 		if err != nil {
 			return err
 		}

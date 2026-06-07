@@ -56,14 +56,14 @@ func TestHiveReadOnlyCommandsUseDaemonClient(t *testing.T) {
 	}
 }
 
-func TestHiveWarningsCommandReportsNotAvailableClearly(t *testing.T) {
+func TestHiveWarningsCommandPropagatesDaemonErrors(t *testing.T) {
 	client := &fakeHiveClient{warningsErr: hiveclient.ErrNotAvailable}
 	out, err := executeHiveCommand(t, NewRootCommand(client), "warnings")
-	if err != nil {
-		t.Fatalf("warnings command should not fail when endpoint is unavailable: %v", err)
+	if err == nil {
+		t.Fatal("warnings command error = nil, want daemon error")
 	}
-	if !strings.Contains(out, "warnings are not available") {
-		t.Fatalf("warnings output = %q, want explicit not-available message", out)
+	if out != "" {
+		t.Fatalf("warnings output = %q, want no fallback unavailable message", out)
 	}
 }
 

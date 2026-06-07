@@ -37,6 +37,7 @@ type GovernanceService interface {
 	Project(context.Context, string) (governance.Project, error)
 	Memories(context.Context, governance.MemoryFilter) ([]governance.Memory, error)
 	Health(context.Context) ([]governance.Health, error)
+	Warnings(context.Context, governance.WarningFilter) ([]governance.Warning, error)
 	Backups(context.Context) ([]governance.BackupManifest, error)
 	CreateBackup(context.Context) (governance.BackupManifest, error)
 	RestoreBackup(context.Context, governance.RestoreRequest) (governance.RestoreResult, error)
@@ -76,6 +77,7 @@ func NewServerWithProjectStoreAndGovernance(addr string, prompts PromptStore, pr
 		s.mux.HandleFunc("/governance/projects/", s.handleGovernanceProject)
 		s.mux.HandleFunc("/governance/memories", s.handleGovernanceMemories)
 		s.mux.HandleFunc("/governance/health", s.handleGovernanceHealth)
+		s.mux.HandleFunc("/governance/warnings", s.handleGovernanceWarnings)
 		s.mux.HandleFunc("/governance/backups", s.handleGovernanceBackups)
 		s.mux.HandleFunc("/governance/restores", s.handleGovernanceRestores)
 		s.mux.HandleFunc("/governance/guards/execute", s.handleGovernanceGuardExecute)
@@ -353,6 +355,20 @@ func (s *Server) handleGovernanceHealth(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"projects": health})
+}
+
+func (s *Server) handleGovernanceWarnings(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	warnings, err := s.governance.Warnings(r.Context(), governance.WarningFilter{
+		ResolutionState: r.URL.Query().Get("resolution_state"),
+	})
+	if err != nil {
+		writeInternalError(w, "governance warnings", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"warnings": warnings})
 }
 
 func (s *Server) handleGovernanceBackups(w http.ResponseWriter, r *http.Request) {
