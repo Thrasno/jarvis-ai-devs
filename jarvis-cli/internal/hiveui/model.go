@@ -27,6 +27,11 @@ const (
 	ScreenProjectMemories
 	ScreenMemoryDetail
 	ScreenTimeline
+	ScreenWarnings
+	ScreenBackups
+	ScreenBackupDetail
+	ScreenAPIHealth
+	ScreenAPIConfig
 )
 
 type Snapshot struct {
@@ -36,6 +41,7 @@ type Snapshot struct {
 	Memories       []hiveclient.Memory
 	Health         []hiveclient.Health
 	Warnings       []hiveclient.Warning
+	Backups        []hiveclient.Backup
 	LoadError      error
 }
 
@@ -45,6 +51,8 @@ type Model struct {
 	cursor       int
 	projectIndex int
 	memoryIndex  int
+	warningIndex int
+	backupIndex  int
 	detailReturn Screen
 	message      string
 }
@@ -71,6 +79,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.back()
 	case runeKey(key, 't'):
 		m.screen = ScreenTimeline
+	case runeKey(key, 'w'):
+		m.screen = ScreenWarnings
+	case runeKey(key, 'b'):
+		m.screen = ScreenBackups
+	case runeKey(key, 'g'):
+		m.screen = ScreenAPIHealth
+	case runeKey(key, 'c'):
+		m.screen = ScreenAPIConfig
 	case key.Type == tea.KeyDown || runeKey(key, 'j'):
 		m = m.move(1)
 	case key.Type == tea.KeyUp || runeKey(key, 'k'):
@@ -96,6 +112,16 @@ func (m Model) View() string {
 		return m.memoryDetailView()
 	case ScreenTimeline:
 		return m.timelineView()
+	case ScreenWarnings:
+		return m.warningsView()
+	case ScreenBackups:
+		return m.backupsView()
+	case ScreenBackupDetail:
+		return m.backupDetailView()
+	case ScreenAPIHealth:
+		return m.apiHealthView()
+	case ScreenAPIConfig:
+		return m.apiConfigView()
 	}
 
 	var sb strings.Builder
@@ -119,7 +145,7 @@ func (m Model) View() string {
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}
-	sb.WriteString("j/k move  enter open  q quit")
+	sb.WriteString("j/k move  enter open  w warnings  g health  c config  b backups  q quit")
 	return sb.String()
 }
 
@@ -129,6 +155,10 @@ func (m Model) move(delta int) Model {
 		m.projectIndex = wrapIndex(m.projectIndex+delta, len(m.snapshot.Projects))
 	case ScreenProjectMemories, ScreenTimeline:
 		m.memoryIndex = wrapIndex(m.memoryIndex+delta, len(m.projectMemories()))
+	case ScreenWarnings:
+		m.warningIndex = wrapIndex(m.warningIndex+delta, len(m.snapshot.Warnings))
+	case ScreenBackups:
+		m.backupIndex = wrapIndex(m.backupIndex+delta, len(m.snapshot.Backups))
 	default:
 		m.cursor = wrapIndex(m.cursor+delta, len(dashboardActions()))
 	}
@@ -154,6 +184,14 @@ func (m Model) open() Model {
 		m.screen = ScreenMemoryDetail
 		return m
 	}
+	if m.screen == ScreenBackups {
+		if len(m.snapshot.Backups) == 0 {
+			m.message = "No item is available to inspect."
+			return m
+		}
+		m.screen = ScreenBackupDetail
+		return m
+	}
 	if m.screen != ScreenDashboard {
 		return m
 	}
@@ -167,6 +205,14 @@ func (m Model) open() Model {
 		m.screen = ScreenProjects
 	case "Project timeline":
 		m.screen = ScreenTimeline
+	case "Hive API config":
+		m.screen = ScreenAPIConfig
+	case "Hive API health":
+		m.screen = ScreenAPIHealth
+	case "Memory warnings":
+		m.screen = ScreenWarnings
+	case "Backup snapshots":
+		m.screen = ScreenBackups
 	default:
 		m.message = action.label + " is not available in this navigation sub-slice. No local Hive state was changed."
 	}
@@ -184,6 +230,10 @@ func (m Model) back() Model {
 	case ScreenProjectMemories:
 		m.screen = ScreenProjects
 	case ScreenTimeline:
+		m.screen = ScreenDashboard
+	case ScreenBackupDetail:
+		m.screen = ScreenBackups
+	case ScreenWarnings, ScreenBackups, ScreenAPIHealth, ScreenAPIConfig:
 		m.screen = ScreenDashboard
 	case ScreenProjects:
 		m.screen = ScreenDashboard
@@ -268,6 +318,78 @@ func (m Model) timelineView() string {
 	return sb.String()
 }
 
+func (m Model) warningsView() string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "memory warnings\t%d active\n", activeWarnings(m.snapshot.Warnings))
+	if len(m.snapshot.Warnings) == 0 {
+		sb.WriteString("No warnings are available in the current read-only snapshot.\n")
+	}
+	for i, warning := range m.snapshot.Warnings {
+		mark := "  "
+		if i == m.warningIndex {
+			mark = "▌ "
+		}
+		fmt.Fprintf(&sb, "%s%s  %s  %s  %s  %s\n", mark, emptyDash(warning.Severity), emptyDash(warning.Source), warning.Message, emptyDash(warning.ResolutionState), formatDateTime(warning.CreatedAt))
+	}
+	sb.WriteString("j/k move  esc back  q quit")
+	return sb.String()
+}
+
+func (m Model) backupsView() string {
+	var sb strings.Builder
+	sb.WriteString("backup snapshots\n")
+	if len(m.snapshot.Backups) == 0 {
+		sb.WriteString("No backups are available in the current read-only snapshot.\n")
+	}
+	for i, backup := range m.snapshot.Backups {
+		mark := "  "
+		if i == m.backupIndex {
+			mark = "▌ "
+		}
+		fmt.Fprintf(&sb, "%s%s  %s  %s  %s\n", mark, backup.ID, relativeTime(backup.CreatedAt), byteSize(backup.SizeBytes), backupMetadataStatus(backup))
+	}
+	if m.message != "" {
+		fmt.Fprintf(&sb, "\n%s\n", m.message)
+	}
+	sb.WriteString("enter inspect  esc back  q quit\nNo restore action is available in this read-only TUI slice.")
+	return sb.String()
+}
+
+func (m Model) backupDetailView() string {
+	backup := m.selectedBackup()
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "backup detail\n%s\n", backup.ID)
+	fmt.Fprintf(&sb, "created %s\n", formatDateTime(backup.CreatedAt))
+	fmt.Fprintf(&sb, "archive %s\n", presentValue(backup.ArchivePath, "archive"))
+	fmt.Fprintf(&sb, "manifest %s\n", presentValue(backup.ManifestPath, "metadata"))
+	fmt.Fprintf(&sb, "checksum %s\n", presentValue(backup.Checksum, "checksum"))
+	sb.WriteString("status validity unknown\n")
+	fmt.Fprintf(&sb, "size %s\n", byteSize(backup.SizeBytes))
+	sb.WriteString("Read-only inspection only.\nesc back  q quit")
+	return sb.String()
+}
+
+func (m Model) apiHealthView() string {
+	var sb strings.Builder
+	sb.WriteString("hive api health\n")
+	if len(m.snapshot.Health) == 0 {
+		sb.WriteString("Health details are not available in the current read-only snapshot.\n")
+	}
+	for _, health := range m.snapshot.Health {
+		fmt.Fprintf(&sb, "%s  %s\n", emptyDash(health.Project), healthState(health))
+		fmt.Fprintf(&sb, "last error %s\n", emptyDash(health.LastError))
+		fmt.Fprintf(&sb, "consecutive failures %d\n", health.ConsecutiveFailures)
+		fmt.Fprintf(&sb, "backoff %s\n", formatDateTime(health.BackoffUntil))
+		fmt.Fprintf(&sb, "last success %s  last failure %s\n", formatDateTime(health.LastSuccessAt), formatDateTime(health.LastFailureAt))
+	}
+	sb.WriteString("w warnings  c config  esc back  q quit")
+	return sb.String()
+}
+
+func (m Model) apiConfigView() string {
+	return "hive api config\nRead-only snapshot\nAPI configuration endpoint is not available from the current daemon client contract.\nSecrets are never displayed, echoed, or inferred by this TUI.\nesc back  q quit"
+}
+
 type dashboardAction struct {
 	label       string
 	description string
@@ -281,10 +403,10 @@ func dashboardActions() []dashboardAction {
 		{"Merge projects", "destructive operation deferred", true},
 		{"Delete projects", "destructive operation deferred", true},
 		{"Delete memories", "destructive operation deferred", true},
-		{"Hive API config", "read-only state deferred", false},
-		{"Hive API health", "read-only state deferred", false},
-		{"Memory warnings", "read-only state deferred", false},
-		{"Backup / Restore", "restore execution deferred", true},
+		{"Hive API config", "read-only configuration state", false},
+		{"Hive API health", "connectivity and sync health", false},
+		{"Memory warnings", "triage active warnings", false},
+		{"Backup snapshots", "inspect snapshots of memory.db", false},
 	}
 }
 
@@ -376,6 +498,72 @@ func (m Model) selectedMemory() hiveclient.Memory {
 		return hiveclient.Memory{Project: m.selectedProject().Name, SyncID: "-"}
 	}
 	return memories[wrapIndex(m.memoryIndex, len(memories))]
+}
+
+func (m Model) selectedBackup() hiveclient.Backup {
+	if len(m.snapshot.Backups) == 0 {
+		return hiveclient.Backup{ID: "-"}
+	}
+	return m.snapshot.Backups[wrapIndex(m.backupIndex, len(m.snapshot.Backups))]
+}
+
+func activeWarnings(warnings []hiveclient.Warning) int {
+	active := 0
+	for _, warning := range warnings {
+		if strings.EqualFold(warning.ResolutionState, "active") || warning.ResolutionState == "" {
+			active++
+		}
+	}
+	return active
+}
+
+func backupMetadataStatus(backup hiveclient.Backup) string {
+	if strings.TrimSpace(backup.Checksum) != "" {
+		return "checksum present"
+	}
+	if strings.TrimSpace(backup.ArchivePath) != "" {
+		return "archive present"
+	}
+	if strings.TrimSpace(backup.ManifestPath) != "" {
+		return "metadata present"
+	}
+	return "validity unknown"
+}
+
+func presentValue(value, label string) string {
+	if strings.TrimSpace(value) == "" {
+		return label + " missing"
+	}
+	return label + " present (" + value + ")"
+}
+
+func healthState(health hiveclient.Health) string {
+	if strings.Contains(strings.ToLower(health.LastError), "401") {
+		return "auth failed"
+	}
+	if strings.TrimSpace(health.LastError) != "" || health.ConsecutiveFailures > 0 {
+		return "degraded"
+	}
+	return "healthy"
+}
+
+func byteSize(bytes int64) string {
+	if bytes <= 0 {
+		return "n/a"
+	}
+	const unit = 1000
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	value := float64(bytes)
+	units := []string{"KB", "MB", "GB"}
+	for _, suffix := range units {
+		value /= unit
+		if value < unit {
+			return fmt.Sprintf("%.1f %s", value, suffix)
+		}
+	}
+	return fmt.Sprintf("%.1f TB", value/unit)
 }
 
 func wrapIndex(index, length int) int {

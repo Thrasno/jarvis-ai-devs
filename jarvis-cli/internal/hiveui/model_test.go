@@ -54,7 +54,7 @@ func TestDashboardStatesRenderReferenceCatalogStates(t *testing.T) {
 
 func TestDashboardShowsReadOnlyActionsAndBlocksDestructiveEntries(t *testing.T) {
 	m := NewModelWithSnapshot(Snapshot{DashboardState: DashboardHealthy})
-	assertContains(t, m.View(), "Project viewer", "Memory warnings", "Backup / Restore (disabled)", "Merge projects (disabled)", "Delete memories (disabled)")
+	assertContains(t, m.View(), "Project viewer", "Memory warnings", "Backup snapshots", "Merge projects (disabled)", "Delete memories (disabled)")
 
 	m = sendKey(m, tea.KeyDown)
 	m = sendKey(m, tea.KeyDown)
@@ -68,8 +68,63 @@ func TestDashboardShowsReadOnlyActionsAndBlocksDestructiveEntries(t *testing.T) 
 
 func TestDashboardHelpOnlyAdvertisesImplementedKeys(t *testing.T) {
 	view := NewModelWithSnapshot(Snapshot{DashboardState: DashboardHealthy}).View()
-	assertContains(t, view, "j/k move", "enter open", "q quit")
-	assertNotContains(t, view, "r retry", "w warnings", "g health", "c config")
+	assertContains(t, view, "j/k move", "enter open", "w warnings", "g health", "c config", "b backups", "q quit")
+	assertNotContains(t, view, "r retry", "restore")
+}
+
+func TestAuxiliaryShortcutsOpenReadOnlyStates(t *testing.T) {
+	tests := []struct {
+		name string
+		key  rune
+		want Screen
+		text []string
+	}{
+		{name: "warnings", key: 'w', want: ScreenWarnings, text: []string{"memory warnings", "CONFIG-401", "critical", "Hive API rejected credentials", "active", "esc back"}},
+		{name: "backups", key: 'b', want: ScreenBackups, text: []string{"backup snapshots", "hive-20260606-143601", "4.1 MB", "checksum present", "enter inspect", "No restore action is available"}},
+		{name: "api health", key: 'g', want: ScreenAPIHealth, text: []string{"hive api health", "core-api", "auth failed", "401 unauthorized", "consecutive failures 12", "backoff"}},
+		{name: "api config", key: 'c', want: ScreenAPIConfig, text: []string{"hive api config", "Read-only snapshot", "API configuration endpoint is not available", "Secrets are never displayed"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := sendRune(NewModelWithSnapshot(sampleNavigationSnapshot()), tt.key)
+			if m.Screen() != tt.want {
+				t.Fatalf("screen = %v, want %v", m.Screen(), tt.want)
+			}
+			assertContains(t, m.View(), tt.text...)
+			assertNotContains(t, m.View(), "dismiss", "resolve", "save", "toggle", "R restore", "create backup")
+		})
+	}
+}
+
+func TestWarningsAndBackupsRenderHonestEmptyStates(t *testing.T) {
+	m := sendRune(NewModelWithSnapshot(Snapshot{DashboardState: DashboardHealthy}), 'w')
+	assertContains(t, m.View(), "memory warnings", "No warnings are available in the current read-only snapshot")
+
+	m = sendRune(NewModelWithSnapshot(Snapshot{DashboardState: DashboardHealthy}), 'b')
+	assertContains(t, m.View(), "backup snapshots", "No backups are available in the current read-only snapshot")
+}
+
+func TestBackupInspectIsReadOnlyAndDoesNotAdvertiseRestore(t *testing.T) {
+	m := sendRune(NewModelWithSnapshot(sampleNavigationSnapshot()), 'b')
+	m = sendKey(m, tea.KeyEnter)
+
+	if m.Screen() != ScreenBackupDetail {
+		t.Fatalf("screen = %v, want backup detail", m.Screen())
+	}
+	assertContains(t, m.View(), "backup detail", "hive-20260606-143601", "archive present (/tmp/hive-20260606-143601.db)", "checksum present (sha256:abc)", "status validity unknown", "Read-only inspection only")
+	assertNotContains(t, m.View(), "valid\n", "restore", "delete", "create backup")
+}
+
+func TestBackupDetailEscReturnsToBackups(t *testing.T) {
+	m := sendRune(NewModelWithSnapshot(sampleNavigationSnapshot()), 'b')
+	m = sendKey(m, tea.KeyEnter)
+	m = sendKey(m, tea.KeyEsc)
+
+	if m.Screen() != ScreenBackups {
+		t.Fatalf("screen = %v, want backups", m.Screen())
+	}
+	assertContains(t, m.View(), "backup snapshots", "hive-20260606-143601")
 }
 
 func TestQuitKeysReturnTeaQuit(t *testing.T) {
@@ -149,10 +204,9 @@ func TestReadOnlyNavigationOpensProjectsMemoriesDetailAndTimeline(t *testing.T) 
 
 func TestDestructiveEntriesAreDisabledAndDoNotMutate(t *testing.T) {
 	wantDisabled := map[string]bool{
-		"Merge projects":   true,
-		"Delete projects":  true,
-		"Delete memories":  true,
-		"Backup / Restore": true,
+		"Merge projects":  true,
+		"Delete projects": true,
+		"Delete memories": true,
 	}
 
 	for index, action := range dashboardActions() {
@@ -285,6 +339,7 @@ func sampleNavigationSnapshot() Snapshot {
 		},
 		Health:   []hiveclient.Health{{Project: "core-api", LastSuccessAt: base.Add(-2 * time.Hour), LastFailureAt: base.Add(-6 * time.Minute), BackoffUntil: base.Add(time.Hour), ConsecutiveFailures: 12, LastError: "401 unauthorized"}},
 		Warnings: []hiveclient.Warning{{Severity: "critical", Source: "CONFIG-401", Message: "Hive API rejected credentials", ResolutionState: "active", CreatedAt: base}},
+		Backups:  []hiveclient.Backup{{ID: "hive-20260606-143601", CreatedAt: time.Now().Add(-2 * time.Minute), ArchivePath: "/tmp/hive-20260606-143601.db", Checksum: "sha256:abc", SizeBytes: 4_100_000}},
 	}
 }
 
