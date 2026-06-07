@@ -120,8 +120,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Type == tea.KeyEsc || key.Type == tea.KeyBackspace:
 		m = m.back()
-	case m.screen == ScreenMemoryDetail && runeKey(key, 'd'):
+	case m.screen == ScreenMemoryDetail && runeKey(key, 'd') && !m.selectedMemory().Deleted:
 		m = m.startMemoryGuard("delete")
+	case m.screen == ScreenMemoryDetail && runeKey(key, 'r') && m.selectedMemory().Deleted:
+		m = m.startMemoryGuard("restore")
 	case runeKey(key, 't'):
 		m.screen = ScreenTimeline
 	case runeKey(key, 'w'):
@@ -321,7 +323,7 @@ func (m Model) projectMemoriesView() string {
 		if i == m.memoryIndex {
 			mark = "▌ "
 		}
-		fmt.Fprintf(&sb, "%s%s  %s  %s\n", mark, emptyDash(memory.Category), memory.Title, relativeTime(memory.CreatedAt))
+		fmt.Fprintf(&sb, "%s%s  %s%s  %s\n", mark, emptyDash(memory.Category), memory.Title, deletedMemoryMarker(memory), relativeTime(memory.CreatedAt))
 	}
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
@@ -336,9 +338,14 @@ func (m Model) memoryDetailView() string {
 	fmt.Fprintf(&sb, "%s / %s\n", memory.Project, memoryKey(memory))
 	fmt.Fprintf(&sb, "id %s  created %s\n", memoryKey(memory), formatDateTime(memory.CreatedAt))
 	fmt.Fprintf(&sb, "project %s  sync %s\n", memory.Project, syncText(memory))
+	if memory.Deleted {
+		sb.WriteString("status deleted\n")
+	}
 	fmt.Fprintf(&sb, "type %s  source %s\n", emptyDash(memory.Category), emptyDash(memory.CreatedBy))
 	sb.WriteString("Content preview is not available from the read-only daemon snapshot.\n")
-	if m.guardExecutor != nil && memory.ID != 0 {
+	if m.guardExecutor != nil && memory.ID != 0 && memory.Deleted {
+		sb.WriteString("r restore guarded by backup ID and exact confirmation\n")
+	} else if m.guardExecutor != nil && memory.ID != 0 {
 		sb.WriteString("d delete guarded by backup ID and exact confirmation\n")
 	}
 	if m.message != "" {
@@ -354,12 +361,12 @@ func (m Model) startMemoryGuard(operation string) Model {
 	}
 	if m.guardSubmitting {
 		m.screen = ScreenMemoryGuard
-		m.message = "Guarded memory delete is already pending through hive-daemon. Wait for the result before leaving or submitting again."
+		m.message = fmt.Sprintf("Guarded memory %s is already pending through hive-daemon. Wait for the result before leaving or submitting again.", m.guardOperation)
 		return m
 	}
 	memory := m.selectedMemory()
 	if memory.ID == 0 {
-		m.message = "Memory numeric ID is required before guarded delete can be dispatched."
+		m.message = fmt.Sprintf("Memory numeric ID is required before guarded %s can be dispatched.", operation)
 		return m
 	}
 	m.screen = ScreenMemoryGuard
@@ -375,7 +382,7 @@ func (m Model) startMemoryGuard(operation string) Model {
 
 func (m Model) updateMemoryGuard(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.guardSubmitting {
-		m.message = "Guarded memory delete is already pending through hive-daemon. Wait for the result before leaving or submitting again."
+		m.message = fmt.Sprintf("Guarded memory %s is already pending through hive-daemon. Wait for the result before leaving or submitting again.", m.guardOperation)
 		return m, nil
 	}
 	switch {
@@ -401,12 +408,12 @@ func (m Model) updateMemoryGuard(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) submitMemoryGuard() (tea.Model, tea.Cmd) {
 	m.message = ""
 	if m.guardSubmitting {
-		m.message = "Guarded memory delete is already pending through hive-daemon."
+		m.message = fmt.Sprintf("Guarded memory %s is already pending through hive-daemon.", m.guardOperation)
 		return m, nil
 	}
 	if m.guardStep == memoryGuardBackupID {
 		if strings.TrimSpace(m.guardBackupID) == "" {
-			m.message = "Backup ID is required before guarded delete."
+			m.message = fmt.Sprintf("Backup ID is required before guarded %s.", m.guardOperation)
 			return m, nil
 		}
 		m.guardStep = memoryGuardConfirmation
@@ -418,7 +425,7 @@ func (m Model) submitMemoryGuard() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.guardExecutor == nil {
-		m.message = "Guarded memory delete is unavailable without a daemon command boundary."
+		m.message = fmt.Sprintf("Guarded memory %s is unavailable without a daemon command boundary.", m.guardOperation)
 		return m, nil
 	}
 	executor := m.guardExecutor
@@ -479,12 +486,12 @@ func (m Model) memoryGuardView() string {
 		fmt.Fprintf(&sb, "confirmation: %s\n", visibleInput(m.guardConfirmation))
 	}
 	if m.guardSubmitting {
-		sb.WriteString("Guarded memory delete is pending through hive-daemon. Submit is disabled until the result returns.\n")
+		fmt.Fprintf(&sb, "Guarded memory %s is pending through hive-daemon. Submit is disabled until the result returns.\n", m.guardOperation)
 	}
 	if m.message != "" {
 		fmt.Fprintf(&sb, "%s\n", m.message)
 	}
-	sb.WriteString("No delete will run until both fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation.\n")
+	fmt.Fprintf(&sb, "No %s will run until both fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation.\n", m.guardOperation)
 	if m.guardSubmitting {
 		sb.WriteString("q quit")
 	} else {
@@ -495,6 +502,13 @@ func (m Model) memoryGuardView() string {
 
 func memoryGuardConfirmationPhrase(operation string, memory hiveclient.Memory) string {
 	return fmt.Sprintf("%s memory %d", strings.ToUpper(operation), memory.ID)
+}
+
+func deletedMemoryMarker(memory hiveclient.Memory) string {
+	if memory.Deleted {
+		return " [deleted]"
+	}
+	return ""
 }
 
 func visibleInput(value string) string {
@@ -528,7 +542,7 @@ func (m Model) timelineView() string {
 		if i == m.memoryIndex {
 			mark = "▌ "
 		}
-		fmt.Fprintf(&sb, "%s%s  %s  %s\n", mark, timelineTimeText(memory.CreatedAt), emptyDash(memory.Category), memory.Title)
+		fmt.Fprintf(&sb, "%s%s  %s  %s%s\n", mark, timelineTimeText(memory.CreatedAt), emptyDash(memory.Category), memory.Title, deletedMemoryMarker(memory))
 	}
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
@@ -704,7 +718,7 @@ func (m Model) projectMemories() []hiveclient.Memory {
 	project := m.selectedProject().Name
 	memories := make([]hiveclient.Memory, 0, len(m.snapshot.Memories))
 	for _, memory := range m.snapshot.Memories {
-		if memory.Project == project && !memory.Deleted {
+		if memory.Project == project {
 			memories = append(memories, memory)
 		}
 	}

@@ -203,6 +203,74 @@ func TestReadOnlyNavigationOpensProjectsMemoriesDetailAndTimeline(t *testing.T) 
 	assertContains(t, m.View(), "timeline / core-api", "2d ago", "Use exponential backoff")
 }
 
+func TestDeletedMemoriesAreVisuallyDistinguishedInListsAndDetail(t *testing.T) {
+	m := NewModelWithSnapshot(deletedGuardedMemorySnapshot())
+	m = sendKey(m, tea.KeyEnter)
+	m = sendKey(m, tea.KeyEnter)
+
+	assertContains(t, m.View(), "Use exponential backoff [deleted]")
+
+	m = sendKey(m, tea.KeyEnter)
+	assertContains(t, m.View(), "status deleted")
+
+	m = sendKey(m, tea.KeyEsc)
+	m = sendKey(m, tea.KeyEsc)
+	m = sendRune(m, 't')
+	assertContains(t, m.View(), "Use exponential backoff [deleted]")
+}
+
+func TestMemoryDetailAdvertisesCorrectGuardActionForMemoryStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		snapshot   Snapshot
+		wantAction rune
+		wantText   string
+		guardText  string
+		blockKey   rune
+		blockText  string
+	}{
+		{
+			name:       "active memory advertises delete only",
+			snapshot:   guardedMemorySnapshot(),
+			wantAction: 'd',
+			wantText:   "d delete guarded by backup ID and exact confirmation",
+			guardText:  "guarded memory delete",
+			blockKey:   'r',
+			blockText:  "r restore",
+		},
+		{
+			name:       "deleted memory advertises restore only",
+			snapshot:   deletedGuardedMemorySnapshot(),
+			wantAction: 'r',
+			wantText:   "r restore guarded by backup ID and exact confirmation",
+			guardText:  "guarded memory restore",
+			blockKey:   'd',
+			blockText:  "d delete",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			executor := &fakeGuardExecutor{}
+			m := openMemoryDetail(NewModelWithSnapshotAndGuardExecutor(tt.snapshot, executor))
+
+			assertContains(t, m.View(), tt.wantText)
+			assertNotContains(t, m.View(), tt.blockText)
+
+			blocked := sendRune(m, tt.blockKey)
+			if blocked.Screen() != ScreenMemoryDetail {
+				t.Fatalf("screen after blocked key = %v, want memory detail", blocked.Screen())
+			}
+
+			opened := sendRune(m, tt.wantAction)
+			if opened.Screen() != ScreenMemoryGuard {
+				t.Fatalf("screen after action key = %v, want memory guard", opened.Screen())
+			}
+			assertContains(t, opened.View(), tt.guardText)
+		})
+	}
+}
+
 func TestDestructiveEntriesAreDisabledAndDoNotMutate(t *testing.T) {
 	wantDisabled := map[string]bool{
 		"Merge projects":  true,
@@ -402,6 +470,80 @@ func TestStaleMemoryGuardResultDoesNotClearCurrentPendingDelete(t *testing.T) {
 	assertContains(t, m.View(), "Guarded memory delete dispatched through hive-daemon")
 }
 
+func TestGuardedMemoryRestoreRequiresBackupAndExactConfirmationBeforeDispatch(t *testing.T) {
+	executor := &fakeGuardExecutor{}
+	m := NewModelWithSnapshotAndGuardExecutor(deletedGuardedMemorySnapshot(), executor)
+	m = openGuardedMemoryRestore(m)
+
+	assertContains(t, m.View(), "guarded memory restore", "target mem_8f3a91c0", "Backup ID is required", "Confirmation must match exactly", "No restore will run until both fields pass guards")
+
+	m = sendKey(m, tea.KeyEnter)
+	if len(executor.requests) != 0 {
+		t.Fatalf("dispatch count = %d, want 0 without backup", len(executor.requests))
+	}
+	assertContains(t, m.View(), "Backup ID is required before guarded restore")
+
+	m = sendText(m, "backup-2")
+	m = sendKey(m, tea.KeyEnter)
+	assertContains(t, m.View(), "Type exactly: RESTORE memory 7")
+
+	m = sendText(m, "RESTORE memory 7 ")
+	m = sendKey(m, tea.KeyEnter)
+	if len(executor.requests) != 0 {
+		t.Fatalf("dispatch count = %d, want 0 when confirmation has trailing space", len(executor.requests))
+	}
+	assertContains(t, m.View(), "Confirmation mismatch. Type the phrase exactly; input is not trimmed")
+
+	m = sendKey(m, tea.KeyBackspace)
+	m = submitGuardAndApplyResult(t, m)
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("dispatch count = %d, want 1", len(executor.requests))
+	}
+	request := executor.requests[0]
+	if request.Operation != "restore" || request.TargetType != "memory" || request.TargetID != 7 || request.BackupID != "backup-2" || request.Confirmation != "RESTORE memory 7" {
+		t.Fatalf("request = %#v, want guarded memory restore with exact confirmation", request)
+	}
+	assertContains(t, m.View(), "Guarded memory restore dispatched through hive-daemon", "No direct SQLite or cloud mutation was performed by the TUI")
+}
+
+func TestGuardedMemoryRestorePendingBlocksDuplicateEscReopenAndStaleResult(t *testing.T) {
+	executor := &fakeGuardExecutor{}
+	m := readyGuardedMemoryRestore(executor)
+
+	updated, firstCmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if firstCmd == nil {
+		t.Fatal("first cmd is nil, want guarded restore dispatch")
+	}
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyEsc}, {Type: tea.KeyRunes, Runes: []rune{'r'}}} {
+		var cmd tea.Cmd
+		updated, cmd = updated.Update(key)
+		if cmd != nil {
+			t.Fatalf("pending key %v returned cmd, want blocked", key.Type)
+		}
+	}
+	m = updated.(Model)
+	if m.Screen() != ScreenMemoryGuard {
+		t.Fatalf("screen = %v, want memory guard while restore is pending", m.Screen())
+	}
+	assertContains(t, m.View(), "Wait for the result before leaving or submitting again")
+	assertNotContains(t, m.View(), "esc back")
+
+	stale := memoryGuardResultMsg{operation: "delete", targetType: "memory", targetID: 7, backupID: "backup-2"}
+	updated, _ = updated.Update(stale)
+	m = updated.(Model)
+	if !m.guardSubmitting {
+		t.Fatal("guardSubmitting = false, want current pending restore to remain pending")
+	}
+
+	updated, _ = updated.Update(firstCmd())
+	m = updated.(Model)
+	if m.guardSubmitting {
+		t.Fatal("guardSubmitting = true, want matching result to clear pending restore")
+	}
+	assertContains(t, m.View(), "Guarded memory restore dispatched through hive-daemon")
+}
+
 func TestMemoryGuardEscWithPartialInputDoesNotDispatch(t *testing.T) {
 	executor := &fakeGuardExecutor{}
 	m := NewModelWithSnapshotAndGuardExecutor(guardedMemorySnapshot(), executor)
@@ -418,13 +560,29 @@ func TestMemoryGuardEscWithPartialInputDoesNotDispatch(t *testing.T) {
 }
 
 func TestMemoryDetailDoesNotAdvertiseDeleteWithoutGuardExecutor(t *testing.T) {
-	m := NewModelWithSnapshot(guardedMemorySnapshot())
-	m = openMemoryDetail(m)
+	tests := []struct {
+		name     string
+		snapshot Snapshot
+	}{
+		{name: "active memory does not advertise delete", snapshot: guardedMemorySnapshot()},
+		{name: "deleted memory does not advertise restore", snapshot: deletedGuardedMemorySnapshot()},
+	}
 
-	assertNotContains(t, m.View(), "d delete", "guarded memory delete")
-	m = sendRune(m, 'd')
-	if m.Screen() != ScreenMemoryDetail {
-		t.Fatalf("screen = %v, want memory detail", m.Screen())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModelWithSnapshot(tt.snapshot)
+			m = openMemoryDetail(m)
+
+			assertNotContains(t, m.View(), "d delete", "r restore", "guarded memory delete", "guarded memory restore")
+			m = sendRune(m, 'd')
+			if m.Screen() != ScreenMemoryDetail {
+				t.Fatalf("screen = %v, want memory detail", m.Screen())
+			}
+			m = sendRune(m, 'r')
+			if m.Screen() != ScreenMemoryDetail {
+				t.Fatalf("screen = %v, want memory detail after restore key without executor", m.Screen())
+			}
+		})
 	}
 }
 
@@ -463,6 +621,12 @@ func openGuardedMemoryDelete(m Model) Model {
 	return m
 }
 
+func openGuardedMemoryRestore(m Model) Model {
+	m = openMemoryDetail(m)
+	m = sendRune(m, 'r')
+	return m
+}
+
 func openMemoryDetail(m Model) Model {
 	m = sendKey(m, tea.KeyEnter)
 	m = sendKey(m, tea.KeyEnter)
@@ -475,6 +639,13 @@ func readyGuardedMemoryDelete(executor *fakeGuardExecutor) Model {
 	m = sendText(m, "backup-1")
 	m = sendKey(m, tea.KeyEnter)
 	return sendText(m, "DELETE memory 7")
+}
+
+func readyGuardedMemoryRestore(executor *fakeGuardExecutor) Model {
+	m := openGuardedMemoryRestore(NewModelWithSnapshotAndGuardExecutor(deletedGuardedMemorySnapshot(), executor))
+	m = sendText(m, "backup-2")
+	m = sendKey(m, tea.KeyEnter)
+	return sendText(m, "RESTORE memory 7")
 }
 
 func submitGuardAndApplyResult(t *testing.T, m Model) Model {
@@ -490,6 +661,12 @@ func submitGuardAndApplyResult(t *testing.T, m Model) Model {
 func guardedMemorySnapshot() Snapshot {
 	snapshot := sampleNavigationSnapshot()
 	snapshot.Memories[0].ID = 7
+	return snapshot
+}
+
+func deletedGuardedMemorySnapshot() Snapshot {
+	snapshot := guardedMemorySnapshot()
+	snapshot.Memories[0].Deleted = true
 	return snapshot
 }
 
