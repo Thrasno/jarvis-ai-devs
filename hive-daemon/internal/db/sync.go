@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -16,13 +17,13 @@ import (
 const maxSyncLastErrorRunes = 500
 
 type SyncHealth struct {
-	Project             string
-	LastAttemptAt       time.Time
-	LastSuccessAt       time.Time
-	LastFailureAt       time.Time
-	BackoffUntil        time.Time
-	ConsecutiveFailures int
-	LastError           string
+	Project             string    `json:"project"`
+	LastAttemptAt       time.Time `json:"last_attempt_at"`
+	LastSuccessAt       time.Time `json:"last_success_at"`
+	LastFailureAt       time.Time `json:"last_failure_at"`
+	BackoffUntil        time.Time `json:"backoff_until"`
+	ConsecutiveFailures int       `json:"consecutive_failures"`
+	LastError           string    `json:"last_error"`
 }
 
 type MutationOp string
@@ -530,6 +531,28 @@ FROM sync_state WHERE project = ?`, project).Scan(
 	return health, nil
 }
 
+func (d *DB) ListGovernanceSyncHealth(ctx context.Context) ([]SyncHealth, error) {
+	rows, err := d.sqlDB.QueryContext(ctx, `
+SELECT project, last_attempt_at, last_success_at, last_failure_at, consecutive_failures, backoff_until, last_error
+FROM sync_state
+WHERE project != '__auth__'
+ORDER BY project`)
+	if err != nil {
+		return nil, fmt.Errorf("list governance sync health: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var health []SyncHealth
+	for rows.Next() {
+		item, err := scanSyncHealth(rows)
+		if err != nil {
+			return nil, err
+		}
+		health = append(health, item)
+	}
+	return health, rows.Err()
+}
+
 func (d *DB) RecordSyncAttempt(project string, at time.Time) error {
 	return d.upsertSyncState(project, syncStateUpdate{
 		lastAttemptAt: timePtr(at),
@@ -591,6 +614,30 @@ ON CONFLICT(project) DO UPDATE SET
 
 type syncScanner interface {
 	Scan(...any) error
+}
+
+func scanSyncHealth(s syncScanner) (SyncHealth, error) {
+	var (
+		health                                SyncHealth
+		lastAttempt, lastSuccess, lastFailure sql.NullString
+		backoffUntil                          sql.NullString
+		lastError                             sql.NullString
+		consecutiveFailures                   sql.NullInt64
+	)
+	if err := s.Scan(&health.Project, &lastAttempt, &lastSuccess, &lastFailure, &consecutiveFailures, &backoffUntil, &lastError); err != nil {
+		return SyncHealth{}, fmt.Errorf("scan sync health: %w", err)
+	}
+	health.LastAttemptAt = parseNullTime(lastAttempt)
+	health.LastSuccessAt = parseNullTime(lastSuccess)
+	health.LastFailureAt = parseNullTime(lastFailure)
+	health.BackoffUntil = parseNullTime(backoffUntil)
+	if consecutiveFailures.Valid {
+		health.ConsecutiveFailures = int(consecutiveFailures.Int64)
+	}
+	if lastError.Valid {
+		health.LastError = lastError.String
+	}
+	return health, nil
 }
 
 func scanSyncRow(s syncScanner) (*models.Memory, error) {
