@@ -50,6 +50,7 @@ type readStore interface {
 	GetGovernanceProject(context.Context, string) (db.GovernanceProject, error)
 	ListGovernanceMemories(context.Context, db.GovernanceMemoryFilter) ([]db.GovernanceMemory, error)
 	ListGovernanceSyncHealth(context.Context) ([]db.SyncHealth, error)
+	ListHiveWarnings(db.HiveWarningFilter) ([]db.HiveWarning, error)
 }
 
 type backupStore interface {
@@ -170,6 +171,24 @@ func (s *Service) Memories(ctx context.Context, filter MemoryFilter) ([]Memory, 
 
 func (s *Service) Health(ctx context.Context) ([]Health, error) {
 	return s.store.ListGovernanceSyncHealth(ctx)
+}
+
+func (s *Service) Warnings(ctx context.Context, filter WarningFilter) ([]Warning, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s.store == nil {
+		return nil, fmt.Errorf("warning store is not configured")
+	}
+	warnings, err := s.store.ListHiveWarnings(db.HiveWarningFilter{ResolutionState: strings.TrimSpace(filter.ResolutionState)})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]Warning, 0, len(warnings))
+	for _, warning := range warnings {
+		result = append(result, warningFromDB(warning))
+	}
+	return result, nil
 }
 
 func (s *Service) Backups(ctx context.Context) ([]BackupManifest, error) {
