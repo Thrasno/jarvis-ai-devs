@@ -26,6 +26,7 @@ const (
 	ScreenProjects
 	ScreenProjectMemories
 	ScreenMemoryDetail
+	ScreenTimeline
 )
 
 type Snapshot struct {
@@ -44,6 +45,7 @@ type Model struct {
 	cursor       int
 	projectIndex int
 	memoryIndex  int
+	detailReturn Screen
 	message      string
 }
 
@@ -67,6 +69,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case key.Type == tea.KeyEsc || key.Type == tea.KeyBackspace:
 		m = m.back()
+	case runeKey(key, 't'):
+		m.screen = ScreenTimeline
 	case key.Type == tea.KeyDown || runeKey(key, 'j'):
 		m = m.move(1)
 	case key.Type == tea.KeyUp || runeKey(key, 'k'):
@@ -90,6 +94,8 @@ func (m Model) View() string {
 		return m.projectMemoriesView()
 	case ScreenMemoryDetail:
 		return m.memoryDetailView()
+	case ScreenTimeline:
+		return m.timelineView()
 	}
 
 	var sb strings.Builder
@@ -121,7 +127,7 @@ func (m Model) move(delta int) Model {
 	switch m.screen {
 	case ScreenProjects:
 		m.projectIndex = wrapIndex(m.projectIndex+delta, len(m.snapshot.Projects))
-	case ScreenProjectMemories:
+	case ScreenProjectMemories, ScreenTimeline:
 		m.memoryIndex = wrapIndex(m.memoryIndex+delta, len(m.projectMemories()))
 	default:
 		m.cursor = wrapIndex(m.cursor+delta, len(dashboardActions()))
@@ -139,11 +145,12 @@ func (m Model) open() Model {
 		m.memoryIndex = 0
 		return m
 	}
-	if m.screen == ScreenProjectMemories {
+	if m.screen == ScreenProjectMemories || m.screen == ScreenTimeline {
 		if len(m.projectMemories()) == 0 {
 			m.message = "No item is available to open."
 			return m
 		}
+		m.detailReturn = m.screen
 		m.screen = ScreenMemoryDetail
 		return m
 	}
@@ -158,6 +165,8 @@ func (m Model) open() Model {
 	switch action.label {
 	case "Project viewer":
 		m.screen = ScreenProjects
+	case "Project timeline":
+		m.screen = ScreenTimeline
 	default:
 		m.message = action.label + " is not available in this navigation sub-slice. No local Hive state was changed."
 	}
@@ -167,9 +176,15 @@ func (m Model) open() Model {
 func (m Model) back() Model {
 	switch m.screen {
 	case ScreenMemoryDetail:
-		m.screen = ScreenProjectMemories
+		if m.detailReturn == ScreenTimeline {
+			m.screen = ScreenTimeline
+		} else {
+			m.screen = ScreenProjectMemories
+		}
 	case ScreenProjectMemories:
 		m.screen = ScreenProjects
+	case ScreenTimeline:
+		m.screen = ScreenDashboard
 	case ScreenProjects:
 		m.screen = ScreenDashboard
 	}
@@ -190,7 +205,7 @@ func (m Model) projectsView() string {
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}
-	sb.WriteString("j/k move  enter open  esc back  q quit")
+	sb.WriteString("j/k move  enter open  t timeline  esc back  q quit")
 	return sb.String()
 }
 
@@ -212,7 +227,7 @@ func (m Model) projectMemoriesView() string {
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}
-	sb.WriteString("j/k move  enter open  esc back  q quit")
+	sb.WriteString("j/k move  enter open  t timeline  esc back  q quit")
 	return sb.String()
 }
 
@@ -228,6 +243,31 @@ func (m Model) memoryDetailView() string {
 	return sb.String()
 }
 
+func (m Model) timelineView() string {
+	memories := m.projectMemories()
+	project := m.selectedProject().Name
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "timeline / %s\t%d entries\n", project, len(memories))
+	lastDay := ""
+	for i, memory := range memories {
+		day := timelineDateText(memory.CreatedAt)
+		if day != lastDay {
+			fmt.Fprintf(&sb, "┄ %s\n", day)
+			lastDay = day
+		}
+		mark := "  "
+		if i == m.memoryIndex {
+			mark = "▌ "
+		}
+		fmt.Fprintf(&sb, "%s%s  %s  %s\n", mark, timelineTimeText(memory.CreatedAt), emptyDash(memory.Category), memory.Title)
+	}
+	if m.message != "" {
+		fmt.Fprintf(&sb, "\n%s\n", m.message)
+	}
+	sb.WriteString("j/k move  enter open  esc back  q quit")
+	return sb.String()
+}
+
 type dashboardAction struct {
 	label       string
 	description string
@@ -237,7 +277,7 @@ type dashboardAction struct {
 func dashboardActions() []dashboardAction {
 	return []dashboardAction{
 		{"Project viewer", "browse projects and memories", false},
-		{"Project timeline", "read-only placeholder; navigation deferred", false},
+		{"Project timeline", "chronological project memories", false},
 		{"Merge projects", "destructive operation deferred", true},
 		{"Delete projects", "destructive operation deferred", true},
 		{"Delete memories", "destructive operation deferred", true},
@@ -388,6 +428,20 @@ func formatDateTime(t time.Time) string {
 		return "-"
 	}
 	return t.UTC().Format("2006-01-02 15:04")
+}
+
+func timelineDateText(t time.Time) string {
+	if t.IsZero() {
+		return "n/a"
+	}
+	return relativeTime(t)
+}
+
+func timelineTimeText(t time.Time) string {
+	if t.IsZero() {
+		return "n/a"
+	}
+	return t.Format("15:04")
 }
 
 func emptyDash(value string) string {

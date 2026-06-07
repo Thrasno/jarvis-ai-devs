@@ -94,27 +94,6 @@ func TestQuitKeysReturnTeaQuit(t *testing.T) {
 	}
 }
 
-func TestEnterOnReadOnlyPlaceholdersSetsExplicitStatusWithoutMutation(t *testing.T) {
-	for index, action := range dashboardActions() {
-		if action.disabled || action.label == "Project viewer" {
-			continue
-		}
-		t.Run(action.label, func(t *testing.T) {
-			m := NewModelWithSnapshot(Snapshot{DashboardState: DashboardHealthy})
-			m.cursor = index
-			m = sendKey(m, tea.KeyEnter)
-
-			if m.Screen() != ScreenDashboard {
-				t.Fatalf("screen = %v, want dashboard", m.Screen())
-			}
-			if m.cursor != index {
-				t.Fatalf("cursor = %d, want %d", m.cursor, index)
-			}
-			assertContains(t, m.View(), action.label+" is not available in this navigation sub-slice", "No local Hive state was changed")
-		})
-	}
-}
-
 func TestBackReturnsToThePreviousReadOnlyState(t *testing.T) {
 	m := NewModelWithSnapshot(sampleNavigationSnapshot())
 	m = sendKey(m, tea.KeyEnter)
@@ -135,7 +114,7 @@ func TestBackReturnsToThePreviousReadOnlyState(t *testing.T) {
 	}
 }
 
-func TestReadOnlyNavigationOpensProjectsMemoriesAndDetail(t *testing.T) {
+func TestReadOnlyNavigationOpensProjectsMemoriesDetailAndTimeline(t *testing.T) {
 	m := NewModelWithSnapshot(sampleNavigationSnapshot())
 
 	m = sendKey(m, tea.KeyEnter)
@@ -158,39 +137,14 @@ func TestReadOnlyNavigationOpensProjectsMemoriesAndDetail(t *testing.T) {
 	}
 	assertContains(t, m.View(), "core-api / mem_8f3a91c0", "sync synced", "Content preview is not available from the read-only daemon snapshot")
 	assertNotContains(t, m.View(), "copy body", "delete")
-}
 
-func TestEnterOnEmptyProjectListsDoesNotOpenFakeDetail(t *testing.T) {
-	tests := []struct {
-		name  string
-		model Model
-		want  Screen
-	}{
-		{
-			name:  "empty projects stays on projects",
-			model: Model{snapshot: Snapshot{DashboardState: DashboardHealthy}, screen: ScreenProjects},
-			want:  ScreenProjects,
-		},
-		{
-			name: "empty memories stays on project memories",
-			model: Model{
-				snapshot: Snapshot{DashboardState: DashboardHealthy, Projects: []hiveclient.Project{{Name: "empty-project"}}},
-				screen:   ScreenProjectMemories,
-			},
-			want: ScreenProjectMemories,
-		},
+	m = sendKey(m, tea.KeyEsc)
+	m = sendKey(m, tea.KeyEsc)
+	m = sendRune(m, 't')
+	if m.Screen() != ScreenTimeline {
+		t.Fatalf("screen = %v, want timeline", m.Screen())
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			m := sendKey(tt.model, tea.KeyEnter)
-			if m.Screen() != tt.want {
-				t.Fatalf("screen = %v, want %v", m.Screen(), tt.want)
-			}
-			assertContains(t, m.View(), "No item is available to open")
-			assertNotContains(t, m.View(), "Content preview is not available from the read-only daemon snapshot")
-		})
-	}
+	assertContains(t, m.View(), "timeline / core-api", "2d ago", "Use exponential backoff")
 }
 
 func TestDestructiveEntriesAreDisabledAndDoNotMutate(t *testing.T) {
@@ -225,6 +179,75 @@ func TestDestructiveEntriesAreDisabledAndDoNotMutate(t *testing.T) {
 	}
 }
 
+func TestTimelineDetailBackReturnsToTimeline(t *testing.T) {
+	m := NewModelWithSnapshot(sampleNavigationSnapshot())
+	m = sendRune(m, 't')
+	m = sendKey(m, tea.KeyEnter)
+
+	if m.Screen() != ScreenMemoryDetail {
+		t.Fatalf("screen = %v, want memory detail", m.Screen())
+	}
+
+	m = sendKey(m, tea.KeyEsc)
+	if m.Screen() != ScreenTimeline {
+		t.Fatalf("screen = %v, want timeline", m.Screen())
+	}
+}
+
+func TestEnterOnEmptyListsDoesNotOpenFakeDetail(t *testing.T) {
+	tests := []struct {
+		name  string
+		model Model
+		want  Screen
+	}{
+		{
+			name:  "empty projects stays on projects",
+			model: Model{snapshot: Snapshot{DashboardState: DashboardHealthy}, screen: ScreenProjects},
+			want:  ScreenProjects,
+		},
+		{
+			name: "empty memories stays on project memories",
+			model: Model{
+				snapshot: Snapshot{DashboardState: DashboardHealthy, Projects: []hiveclient.Project{{Name: "empty-project"}}},
+				screen:   ScreenProjectMemories,
+			},
+			want: ScreenProjectMemories,
+		},
+		{
+			name: "empty timeline stays on timeline",
+			model: Model{
+				snapshot: Snapshot{DashboardState: DashboardHealthy, Projects: []hiveclient.Project{{Name: "empty-project"}}},
+				screen:   ScreenTimeline,
+			},
+			want: ScreenTimeline,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := sendKey(tt.model, tea.KeyEnter)
+			if m.Screen() != tt.want {
+				t.Fatalf("screen = %v, want %v", m.Screen(), tt.want)
+			}
+			assertContains(t, m.View(), "No item is available to open")
+			assertNotContains(t, m.View(), "Content preview is not available from the read-only daemon snapshot")
+		})
+	}
+}
+
+func TestTimelineZeroCreatedAtRendersUnavailable(t *testing.T) {
+	m := NewModelWithSnapshot(Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects:       []hiveclient.Project{{Name: "core-api", ActiveMemoryCount: 1}},
+		Memories:       []hiveclient.Memory{{SyncID: "mem_zero", Project: "core-api", Category: "decision", Title: "Missing timestamp"}},
+	})
+	m = sendRune(m, 't')
+
+	view := m.View()
+	assertContains(t, view, "┄ n/a", "n/a  decision  Missing timestamp")
+	assertNotContains(t, view, "00:00")
+}
+
 func TestUnsyncedCountDoesNotUseWarningTextOrConsecutiveFailures(t *testing.T) {
 	m := NewModelWithSnapshot(Snapshot{
 		DashboardState: DashboardDegraded,
@@ -239,6 +262,11 @@ func TestUnsyncedCountDoesNotUseWarningTextOrConsecutiveFailures(t *testing.T) {
 
 func sendKey(m Model, key tea.KeyType) Model {
 	updated, _ := m.Update(tea.KeyMsg{Type: key})
+	return updated.(Model)
+}
+
+func sendRune(m Model, r rune) Model {
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	return updated.(Model)
 }
 
