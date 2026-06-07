@@ -2,6 +2,7 @@ package hiveclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,155 @@ func TestClientListsProjectsFromGovernanceEndpoint(t *testing.T) {
 	}
 	if len(projects) != 1 || projects[0].Name != "alpha" || projects[0].ActiveMemoryCount != 3 {
 		t.Fatalf("projects = %+v, want alpha with 3 active memories", projects)
+	}
+}
+
+func TestClientExecutesGuardWithExactConfirmation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/governance/guards/execute" {
+			t.Fatalf("request = %s %s, want POST /governance/guards/execute", r.Method, r.URL.Path)
+		}
+		var req GuardRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.BackupID != "backup-1" || req.Confirmation != " DELETE memory 7 " || req.TargetID != 7 {
+			t.Fatalf("guard request = %+v, want exact backup and confirmation forwarded", req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"operation":"delete","target_type":"memory","target_id":7,"backup_id":"backup-1","mutated":true}}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := client.ExecuteGuard(context.Background(), GuardRequest{Operation: "delete", TargetType: "memory", TargetID: 7, BackupID: "backup-1", Confirmation: " DELETE memory 7 "})
+	if err != nil {
+		t.Fatalf("ExecuteGuard: %v", err)
+	}
+	if !result.Mutated || result.Operation != "delete" || result.TargetID != 7 {
+		t.Fatalf("guard result = %+v, want delete mutation result", result)
+	}
+}
+
+func TestClientArchivesProjectWithExactConfirmation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/governance/projects/alpha/archive" {
+			t.Fatalf("request = %s %s, want POST /governance/projects/alpha/archive", r.Method, r.URL.Path)
+		}
+		var req ProjectArchiveRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.Project != "alpha" || req.BackupID != "backup-1" || req.Confirmation != " ARCHIVE project alpha " || req.ActorID != "tester" || req.Reason != "cleanup" {
+			t.Fatalf("archive request = %+v, want exact project archive payload", req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"operation":"archive","target_type":"project","project":"alpha","backup_id":"backup-1","mutated":true,"cloud_handoff_note":"Local project archive completed. No cloud project mutation was performed."}}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := client.ArchiveProject(context.Background(), ProjectArchiveRequest{Project: "alpha", BackupID: "backup-1", Confirmation: " ARCHIVE project alpha ", ActorID: "tester", Reason: "cleanup"})
+	if err != nil {
+		t.Fatalf("ArchiveProject: %v", err)
+	}
+	if !result.Mutated || result.Project != "alpha" || result.CloudHandoffNote == "" {
+		t.Fatalf("archive result = %+v, want local archive result with cloud handoff note", result)
+	}
+}
+
+func TestClientArchivesProjectEscapesProjectNameInPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.RequestURI != "/governance/projects/team%2Falpha%20project/archive" {
+			t.Fatalf("request = %s %s, want POST /governance/projects/team%%2Falpha%%20project/archive", r.Method, r.RequestURI)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"operation":"archive","target_type":"project","project":"team/alpha project","backup_id":"backup-1","mutated":true}}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.ArchiveProject(context.Background(), ProjectArchiveRequest{Project: "team/alpha project", BackupID: "backup-1", Confirmation: "ARCHIVE project team/alpha project"})
+	if err != nil {
+		t.Fatalf("ArchiveProject: %v", err)
+	}
+}
+
+func TestClientMergesProjectWithExactConfirmation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/governance/projects/alpha/merge/beta" {
+			t.Fatalf("request = %s %s, want POST /governance/projects/alpha/merge/beta", r.Method, r.URL.Path)
+		}
+		var req ProjectMergeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.SourceProject != "alpha" || req.TargetProject != "beta" || req.BackupID != "backup-1" || req.Confirmation != " MERGE project alpha INTO beta " || req.ActorID != "tester" || req.Reason != "dedupe" {
+			t.Fatalf("merge request = %+v, want exact project merge payload", req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"operation":"merge","target_type":"project","source_project":"alpha","target_project":"beta","backup_id":"backup-1","mutated":true,"cloud_handoff_note":"Local project merge metadata recorded. No cloud project mutation was performed."}}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := client.MergeProject(context.Background(), ProjectMergeRequest{SourceProject: "alpha", TargetProject: "beta", BackupID: "backup-1", Confirmation: " MERGE project alpha INTO beta ", ActorID: "tester", Reason: "dedupe"})
+	if err != nil {
+		t.Fatalf("MergeProject: %v", err)
+	}
+	if !result.Mutated || result.SourceProject != "alpha" || result.TargetProject != "beta" || result.CloudHandoffNote == "" {
+		t.Fatalf("merge result = %+v, want local merge result with cloud handoff note", result)
+	}
+}
+
+func TestClientMergesProjectEscapesSourceAndTargetNames(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.RequestURI != "/governance/projects/team%2Fsource/merge/literal%252Ftarget" {
+			t.Fatalf("request = %s %s, want escaped source and target merge path", r.Method, r.RequestURI)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"operation":"merge","target_type":"project","source_project":"team/source","target_project":"literal%2Ftarget","backup_id":"backup-1","mutated":true}}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.MergeProject(context.Background(), ProjectMergeRequest{SourceProject: "team/source", TargetProject: "literal%2Ftarget", BackupID: "backup-1", Confirmation: "MERGE project team/source INTO literal%2Ftarget"})
+	if err != nil {
+		t.Fatalf("MergeProject: %v", err)
+	}
+}
+
+func TestClientExecuteGuardReturnsDaemonGuardError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"confirmation mismatch"}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.ExecuteGuard(context.Background(), GuardRequest{Operation: "delete", TargetType: "memory", TargetID: 7, BackupID: "backup-1", Confirmation: " DELETE memory 7 "})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest || apiErr.Message != "confirmation mismatch" {
+		t.Fatalf("ExecuteGuard error = %#v, want APIError 400 with confirmation mismatch", err)
 	}
 }
 
@@ -73,7 +223,7 @@ func TestClientListsMemoriesWithFilters(t *testing.T) {
 	}
 }
 
-func TestClientWarningsReportNotAvailableOnMissingEndpoint(t *testing.T) {
+func TestClientWarningsReturnsDaemonErrorOnMissingEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.NotFoundHandler())
 	defer server.Close()
 
@@ -83,8 +233,9 @@ func TestClientWarningsReportNotAvailableOnMissingEndpoint(t *testing.T) {
 	}
 
 	_, err = client.Warnings(context.Background())
-	if !errors.Is(err, ErrNotAvailable) {
-		t.Fatalf("Warnings error = %v, want ErrNotAvailable", err)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("Warnings error = %#v, want APIError 404", err)
 	}
 }
 
