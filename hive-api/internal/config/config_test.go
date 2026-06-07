@@ -6,6 +6,7 @@ package config_test
 // Es la forma más realista de testear: si funciona desde fuera, funciona.
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -53,6 +54,8 @@ func TestLoad_DefaultValues(t *testing.T) {
 
 func TestLoad_DashboardAssetsDir(t *testing.T) {
 	dashboardDir := filepath.Join(t.TempDir(), "dashboard-dist")
+	require.NoError(t, os.Mkdir(dashboardDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dashboardDir, "index.html"), []byte("<html>Hive Dashboard</html>"), 0o644))
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/hive")
 	t.Setenv("JWT_SECRET", "esta-clave-tiene-mas-de-treinta-y-dos-caracteres")
 	t.Setenv("DASHBOARD_ASSETS_DIR", dashboardDir)
@@ -61,6 +64,61 @@ func TestLoad_DashboardAssetsDir(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, dashboardDir, cfg.DashboardAssetsDir)
+}
+
+func TestLoad_DashboardAssetsDirValidation(t *testing.T) {
+	baseDir := t.TempDir()
+	validIndex := filepath.Join(baseDir, "valid-index.html")
+	require.NoError(t, os.WriteFile(validIndex, []byte("<html>Hive Dashboard</html>"), 0o644))
+
+	validDir := filepath.Join(baseDir, "valid")
+	require.NoError(t, os.Mkdir(validDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(validDir, "index.html"), []byte("<html>Hive Dashboard</html>"), 0o644))
+
+	missingIndexDir := filepath.Join(baseDir, "missing-index")
+	require.NoError(t, os.Mkdir(missingIndexDir, 0o755))
+
+	indexDirectoryDir := filepath.Join(baseDir, "index-directory")
+	require.NoError(t, os.Mkdir(indexDirectoryDir, 0o755))
+	require.NoError(t, os.Mkdir(filepath.Join(indexDirectoryDir, "index.html"), 0o755))
+
+	symlinkIndexDir := filepath.Join(baseDir, "symlink-index")
+	require.NoError(t, os.Mkdir(symlinkIndexDir, 0o755))
+	require.NoError(t, os.Symlink(validIndex, filepath.Join(symlinkIndexDir, "index.html")))
+
+	unreadableIndexDir := filepath.Join(baseDir, "unreadable-index")
+	require.NoError(t, os.Mkdir(unreadableIndexDir, 0o755))
+	unreadableIndexPath := filepath.Join(unreadableIndexDir, "index.html")
+	require.NoError(t, os.WriteFile(unreadableIndexPath, []byte("<html>Hive Dashboard</html>"), 0o644))
+	require.NoError(t, os.Chmod(unreadableIndexPath, 0o000))
+	t.Cleanup(func() {
+		_ = os.Chmod(unreadableIndexPath, 0o644)
+	})
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "missing directory", path: filepath.Join(baseDir, "missing")},
+		{name: "path is file", path: validIndex},
+		{name: "missing index", path: missingIndexDir},
+		{name: "index is directory", path: indexDirectoryDir},
+		{name: "index is symlink", path: symlinkIndexDir},
+		{name: "index is unreadable", path: unreadableIndexDir},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/hive")
+			t.Setenv("JWT_SECRET", "esta-clave-tiene-mas-de-treinta-y-dos-caracteres")
+			t.Setenv("DASHBOARD_ASSETS_DIR", tt.path)
+
+			_, err := config.Load()
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "DASHBOARD_ASSETS_DIR")
+		})
+	}
 }
 
 // TestLoad_MissingDatabaseURL verifica que Load() falla si falta DATABASE_URL.

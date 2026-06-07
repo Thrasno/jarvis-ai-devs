@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -148,6 +149,11 @@ func registerDashboardRoutes(r *gin.Engine, dashboardAssetsDir string) {
 
 func dashboardHandler(dashboardAssetsDir string) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if isDashboardAssetTraversal(c.Request.URL.Path) || isDashboardAssetTraversal(c.Request.URL.EscapedPath()) {
+			jsonNotFound(c)
+			return
+		}
+
 		relPath := strings.TrimPrefix(c.Param("path"), "/")
 		cleanPath := filepath.Clean(relPath)
 		if cleanPath == "." {
@@ -190,8 +196,25 @@ func serveDashboardAsset(c *gin.Context, dashboardAssetsDir, cleanPath string) {
 }
 
 func regularFileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode()&os.ModeSymlink == 0 && info.Mode().IsRegular()
+}
+
+func isDashboardAssetTraversal(rawPath string) bool {
+	path, err := url.PathUnescape(rawPath)
+	if err != nil {
+		path = rawPath
+	}
+	if !strings.HasPrefix(path, "/dashboard/assets/") {
+		return false
+	}
+
+	for _, segment := range strings.Split(path, "/") {
+		if segment == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func jsonNotFound(c *gin.Context) {

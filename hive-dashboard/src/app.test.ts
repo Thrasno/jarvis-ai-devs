@@ -16,6 +16,25 @@ describe('dashboard shell', () => {
     expect(container.textContent).not.toContain('daemon')
   })
 
+  it('shows a useful error and keeps the login form when login fails', async () => {
+    const container = document.createElement('main')
+    const session = fakeSessionStore({ status: 'anonymous' })
+    vi.mocked(session.login).mockRejectedValue(new Error('invalid credentials'))
+
+    startDashboardApp(container, { api: fakeApi(), session })
+    await Promise.resolve()
+    container.querySelector<HTMLInputElement>('input[name="email"]')!.value = 'admin@example.com'
+    container.querySelector<HTMLInputElement>('input[name="password"]')!.value = 'wrong'
+
+    container.querySelector('form')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(session.login).toHaveBeenCalledWith('admin@example.com', 'wrong')
+    expect(container.querySelector('h1')?.textContent).toBe('Sign in to Hive API')
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('invalid credentials')
+  })
+
   it('denies admin shell content to a non-admin identity', () => {
     const container = document.createElement('main')
     const memberUser = { ...adminUser, level: 'member' as const, username: 'member' }
@@ -79,24 +98,6 @@ describe('dashboard shell', () => {
     expect(container.textContent).not.toContain('API status ok')
   })
 
-  it('shows login errors and keeps the login form after failed sign in', async () => {
-    const container = document.createElement('main')
-    document.body.append(container)
-    const session = fakeSessionStore({ status: 'anonymous' })
-    vi.mocked(session.login).mockRejectedValue(new Error('invalid credentials'))
-
-    startDashboardApp(container, { api: fakeApi(), session })
-    await Promise.resolve()
-    container.querySelector<HTMLInputElement>('input[name="email"]')!.value = 'admin@example.com'
-    container.querySelector<HTMLInputElement>('input[name="password"]')!.value = 'wrong-password'
-    container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-    await Promise.resolve()
-
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe('invalid credentials')
-    expect(container.querySelector('h1')?.textContent).toBe('Sign in to Hive API')
-    expect(container.querySelector('input[name="email"]')).not.toBeNull()
-  })
-
   it('renders a recoverable login form when bootstrap rejects', async () => {
     const container = document.createElement('main')
     const session = fakeSessionStore({ status: 'anonymous' })
@@ -108,6 +109,7 @@ describe('dashboard shell', () => {
 
     expect(container.querySelector('h1')?.textContent).toBe('Sign in to Hive API')
     expect(container.querySelector('input[name="email"]')).not.toBeNull()
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Unable to restore your session')
   })
 
   it('keeps successful dashboard panels visible when one endpoint fails', async () => {
@@ -132,7 +134,7 @@ function fakeSessionStore(initial: ReturnType<SessionStore['getState']>): Sessio
   let state = initial
   return {
     getState: () => state,
-    login: vi.fn(),
+    login: vi.fn(async () => state),
     bootstrap: vi.fn(async () => state),
     logout: vi.fn(() => {
       state = { status: 'anonymous' }

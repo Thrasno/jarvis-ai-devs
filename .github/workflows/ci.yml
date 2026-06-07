@@ -63,6 +63,10 @@ jobs:
         working-directory: hive-dashboard
         run: npm ci
 
+      - name: Lint
+        working-directory: hive-dashboard
+        run: npm run lint
+
       - name: Test
         working-directory: hive-dashboard
         run: npm test
@@ -70,10 +74,6 @@ jobs:
       - name: Build
         working-directory: hive-dashboard
         run: npm run build
-
-      - name: Lint
-        working-directory: hive-dashboard
-        run: npm run lint
 
   shell-hooks:
     name: Shell hooks

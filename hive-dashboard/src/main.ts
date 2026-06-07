@@ -25,18 +25,18 @@ type AppActions = {
   onNavigate?(path: string): void
 }
 
-export function renderApp(container: HTMLElement, state: AuthState, actions: AppActions, dashboard: DashboardState = { status: 'loading' }, routePath = window.location.pathname, loginError = ''): void {
+export function renderApp(container: HTMLElement, state: AuthState, actions: AppActions, dashboard: DashboardState = { status: 'loading' }, routePath = window.location.pathname): void {
   container.replaceChildren()
-  state.status === 'anonymous' ? renderLogin(container, actions, loginError) : renderShell(container, state, actions, dashboard, routePath)
+  state.status === 'anonymous' ? renderLogin(container, state, actions) : renderShell(container, state, actions, dashboard, routePath)
 }
 
-function renderLogin(container: HTMLElement, actions: AppActions, loginError: string): void {
+function renderLogin(container: HTMLElement, state: Extract<AuthState, { status: 'anonymous' }>, actions: AppActions): void {
   const form = document.createElement('form')
   form.className = 'card login-card'
   form.innerHTML = `
     <p class="eyebrow">Hive API</p>
     <h1>Sign in to Hive API</h1>
-    ${loginError ? `<p class="error" role="alert">${escapeHtml(loginError)}</p>` : ''}
+    ${state.error ? `<p class="error" role="alert">${escapeHtml(state.error)}</p>` : ''}
     <label>Email<input name="email" type="email" autocomplete="email" required /></label>
     <label>Password<input name="password" type="password" autocomplete="current-password" required /></label>
     <button type="submit">Sign in</button>
@@ -133,12 +133,12 @@ function messageFor(error: unknown): string {
   return error instanceof Error ? error.message : 'dashboard data unavailable'
 }
 
-function loginMessageFor(error: unknown): string {
-  return error instanceof Error ? error.message : 'Unable to sign in'
+function loginErrorMessage(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : 'Unable to sign in. Check your credentials and try again.'
 }
 
 function escapeHtml(value: string): string {
-  return value.replace(/[&<>"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char] ?? char))
+  return value.replace(/[&<>\"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char] ?? char))
 }
 
 type StartOptions = { api?: ApiClient; session?: SessionStore }
@@ -148,22 +148,18 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
   const session = options.session ?? createSessionStore({ api })
   let dashboard: DashboardState = { status: 'loading' }
   let loadVersion = 0
-  let loginError = ''
-  const rerender = (state: AuthState) => renderApp(root, state, actions, dashboard, window.location.pathname, loginError)
+  const rerender = (state: AuthState) => renderApp(root, state, actions, dashboard, window.location.pathname)
   const actions: AppActions = {
     async onLogin(email, password) {
-      loginError = ''
       try {
         await setState(await session.login(email, password))
       } catch (error) {
-        loginError = loginMessageFor(error)
-        rerender({ status: 'anonymous' })
+        rerender({ status: 'anonymous', error: loginErrorMessage(error) })
       }
     },
     onLogout() {
       loadVersion += 1
       dashboard = { status: 'loading' }
-      loginError = ''
       rerender(session.logout())
     },
     onNavigate(path) {
@@ -186,10 +182,10 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
   }
 
   window.addEventListener('popstate', () => rerender(session.getState()))
-  session.bootstrap().then(setState).catch(() => {
-    loginError = ''
-    rerender({ status: 'anonymous' })
-  })
+  session
+    .bootstrap()
+    .then(setState)
+    .catch(() => rerender({ status: 'anonymous', error: 'Unable to restore your session. Please sign in again.' }))
 }
 
 const root = document.getElementById('app')
