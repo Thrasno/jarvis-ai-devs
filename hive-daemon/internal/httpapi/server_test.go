@@ -1004,6 +1004,241 @@ func TestGovernanceRestoreHTTPMapsArchiveIntegrityFailuresToConflict(t *testing.
 	}
 }
 
+func TestGovernanceGuardExecuteHTTPDeletesMemoryThroughDaemonService(t *testing.T) {
+	tempDir := t.TempDir()
+	dbDir := filepath.Join(tempDir, "live-db")
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	dbPath := filepath.Join(dbDir, "memory.db")
+	store, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.CreateSession("sess-guard-delete", "alpha", tempDir, "dev", "test"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	memoryID, err := store.SaveMemory(&models.Memory{Project: "alpha", Title: "Guarded delete", Content: "delete me", SessionID: "sess-guard-delete"})
+	if err != nil {
+		t.Fatalf("SaveMemory: %v", err)
+	}
+	backupStore := governance.NewSQLiteBackupStore(dbPath, filepath.Join(tempDir, "hive-backups"), store.RawDB())
+	backup, err := backupStore.Create(context.Background())
+	if err != nil {
+		t.Fatalf("Create backup: %v", err)
+	}
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, governance.NewServiceWithBackup(store, backupStore))
+	body := fmt.Sprintf(`{"operation":"delete","target_type":"memory","target_id":%d,"backup_id":%q,"confirmation":%q,"actor_id":"tester","reason":"cleanup"}`, memoryID, backup.ID, governance.GuardConfirmation(governance.GuardOperationDelete, governance.GuardTargetMemory, memoryID))
+	req := httptest.NewRequest(http.MethodPost, "/governance/guards/execute", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Result governance.GuardResult `json:"result"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if !resp.Result.Mutated || resp.Result.TargetID != memoryID || resp.Result.BackupID != backup.ID {
+		t.Fatalf("guard result = %+v, want mutated memory %d with backup %s", resp.Result, memoryID, backup.ID)
+	}
+	var deletedAt sql.NullString
+	if err := store.RawDB().QueryRow(`SELECT deleted_at FROM memories WHERE id = ?`, memoryID).Scan(&deletedAt); err != nil {
+		t.Fatalf("query memory: %v", err)
+	}
+	if !deletedAt.Valid {
+		t.Fatal("memory was not deleted by guarded HTTP execution")
+	}
+}
+
+func TestGovernanceGuardExecuteHTTPMismatchDoesNotMutate(t *testing.T) {
+	tempDir := t.TempDir()
+	dbDir := filepath.Join(tempDir, "live-db")
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	dbPath := filepath.Join(dbDir, "memory.db")
+	store, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.CreateSession("sess-guard-mismatch", "alpha", tempDir, "dev", "test"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	memoryID, err := store.SaveMemory(&models.Memory{Project: "alpha", Title: "Guarded mismatch", Content: "keep me", SessionID: "sess-guard-mismatch"})
+	if err != nil {
+		t.Fatalf("SaveMemory: %v", err)
+	}
+	backupStore := governance.NewSQLiteBackupStore(dbPath, filepath.Join(tempDir, "hive-backups"), store.RawDB())
+	backup, err := backupStore.Create(context.Background())
+	if err != nil {
+		t.Fatalf("Create backup: %v", err)
+	}
+	before := readHTTPGovernanceCounters(t, store)
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, governance.NewServiceWithBackup(store, backupStore))
+	body := fmt.Sprintf(`{"operation":"delete","target_type":"memory","target_id":%d,"backup_id":%q,"confirmation":" DELETE memory %d "}`, memoryID, backup.ID, memoryID)
+	req := httptest.NewRequest(http.MethodPost, "/governance/guards/execute", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	after := readHTTPGovernanceCounters(t, store)
+	if before != after {
+		t.Fatalf("mismatch mutated state: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestGovernanceGuardExecuteHTTPInvalidBackupArchiveDoesNotMutate(t *testing.T) {
+	tempDir := t.TempDir()
+	dbDir := filepath.Join(tempDir, "live-db")
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	dbPath := filepath.Join(dbDir, "memory.db")
+	store, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.CreateSession("sess-guard-invalid-backup", "alpha", tempDir, "dev", "test"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	memoryID, err := store.SaveMemory(&models.Memory{Project: "alpha", Title: "Guarded invalid backup", Content: "keep me", SessionID: "sess-guard-invalid-backup"})
+	if err != nil {
+		t.Fatalf("SaveMemory: %v", err)
+	}
+	backupStore := governance.NewSQLiteBackupStore(dbPath, filepath.Join(tempDir, "hive-backups"), store.RawDB())
+	backup, err := backupStore.Create(context.Background())
+	if err != nil {
+		t.Fatalf("Create backup: %v", err)
+	}
+	if err := os.Remove(backup.ArchivePath); err != nil {
+		t.Fatalf("Remove backup archive: %v", err)
+	}
+	before := readHTTPGovernanceCounters(t, store)
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, governance.NewServiceWithBackup(store, backupStore))
+	body := fmt.Sprintf(`{"operation":"delete","target_type":"memory","target_id":%d,"backup_id":%q,"confirmation":%q}`, memoryID, backup.ID, governance.GuardConfirmation(governance.GuardOperationDelete, governance.GuardTargetMemory, memoryID))
+	req := httptest.NewRequest(http.MethodPost, "/governance/guards/execute", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "backup archive integrity check failed") {
+		t.Fatalf("body = %s, want archive integrity error", rr.Body.String())
+	}
+	after := readHTTPGovernanceCounters(t, store)
+	if before != after {
+		t.Fatalf("invalid backup archive mutated state: before=%+v after=%+v", before, after)
+	}
+	var deletedAt sql.NullString
+	if err := store.RawDB().QueryRow(`SELECT deleted_at FROM memories WHERE id = ?`, memoryID).Scan(&deletedAt); err != nil {
+		t.Fatalf("query memory: %v", err)
+	}
+	if deletedAt.Valid {
+		t.Fatal("memory was deleted despite invalid backup archive")
+	}
+}
+
+func TestGovernanceGuardExecuteHTTPMapsDeleteTargetStateErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		prepareID  func(t *testing.T, store *db.DB) int64
+		wantStatus int
+		wantError  string
+	}{
+		{
+			name:       "missing memory",
+			prepareID:  func(t *testing.T, store *db.DB) int64 { return 9999 },
+			wantStatus: http.StatusNotFound,
+			wantError:  "memory not found",
+		},
+		{
+			name: "already deleted memory",
+			prepareID: func(t *testing.T, store *db.DB) int64 {
+				id := saveHTTPGuardMemory(t, store, "delete-state")
+				if err := store.DeleteMemory(id, "tester", "already deleted"); err != nil {
+					t.Fatalf("DeleteMemory: %v", err)
+				}
+				return id
+			},
+			wantStatus: http.StatusConflict,
+			wantError:  "memory already deleted",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, backup, srv := newHTTPGuardTestServer(t)
+			memoryID := tt.prepareID(t, store)
+			body := fmt.Sprintf(`{"operation":"delete","target_type":"memory","target_id":%d,"backup_id":%q,"confirmation":%q}`, memoryID, backup.ID, governance.GuardConfirmation(governance.GuardOperationDelete, governance.GuardTargetMemory, memoryID))
+			req := httptest.NewRequest(http.MethodPost, "/governance/guards/execute", bytes.NewBufferString(body))
+			rr := httptest.NewRecorder()
+
+			srv.ServeHTTP(rr, req)
+
+			if rr.Code != tt.wantStatus {
+				t.Fatalf("expected %d, got %d — body: %s", tt.wantStatus, rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), tt.wantError) {
+				t.Fatalf("body = %s, want %q", rr.Body.String(), tt.wantError)
+			}
+		})
+	}
+}
+
+func TestGovernanceGuardExecuteHTTPMapsRestoreTargetStateErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		prepareID  func(t *testing.T, store *db.DB) int64
+		wantStatus int
+		wantError  string
+	}{
+		{
+			name:       "missing memory",
+			prepareID:  func(t *testing.T, store *db.DB) int64 { return 9999 },
+			wantStatus: http.StatusNotFound,
+			wantError:  "memory not found",
+		},
+		{
+			name:       "active memory",
+			prepareID:  func(t *testing.T, store *db.DB) int64 { return saveHTTPGuardMemory(t, store, "restore-state") },
+			wantStatus: http.StatusConflict,
+			wantError:  "memory is not deleted",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, backup, srv := newHTTPGuardTestServer(t)
+			memoryID := tt.prepareID(t, store)
+			body := fmt.Sprintf(`{"operation":"restore","target_type":"memory","target_id":%d,"backup_id":%q,"confirmation":%q}`, memoryID, backup.ID, governance.GuardConfirmation(governance.GuardOperationRestore, governance.GuardTargetMemory, memoryID))
+			req := httptest.NewRequest(http.MethodPost, "/governance/guards/execute", bytes.NewBufferString(body))
+			rr := httptest.NewRecorder()
+
+			srv.ServeHTTP(rr, req)
+
+			if rr.Code != tt.wantStatus {
+				t.Fatalf("expected %d, got %d — body: %s", tt.wantStatus, rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), tt.wantError) {
+				t.Fatalf("body = %s, want %q", rr.Body.String(), tt.wantError)
+			}
+		})
+	}
+}
+
 func TestGovernanceEndpointsRejectNonGETMethods(t *testing.T) {
 	store, err := db.Open(":memory:")
 	if err != nil {
@@ -1019,6 +1254,40 @@ func TestGovernanceEndpointsRejectNonGETMethods(t *testing.T) {
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", rr.Code)
 	}
+}
+
+func newHTTPGuardTestServer(t *testing.T) (*db.DB, governance.BackupManifest, *httpapi.Server) {
+	t.Helper()
+	tempDir := t.TempDir()
+	dbDir := filepath.Join(tempDir, "live-db")
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	dbPath := filepath.Join(dbDir, "memory.db")
+	store, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	backupStore := governance.NewSQLiteBackupStore(dbPath, filepath.Join(tempDir, "hive-backups"), store.RawDB())
+	backup, err := backupStore.Create(context.Background())
+	if err != nil {
+		t.Fatalf("Create backup: %v", err)
+	}
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, governance.NewServiceWithBackup(store, backupStore))
+	return store, backup, srv
+}
+
+func saveHTTPGuardMemory(t *testing.T, store *db.DB, sessionID string) int64 {
+	t.Helper()
+	if err := store.CreateSession(sessionID, "alpha", t.TempDir(), "dev", "test"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	memoryID, err := store.SaveMemory(&models.Memory{Project: "alpha", Title: "Guarded state", Content: "state", SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("SaveMemory: %v", err)
+	}
+	return memoryID
 }
 
 func readHTTPGovernanceCounters(t *testing.T, d *db.DB) governanceCountersHTTP {

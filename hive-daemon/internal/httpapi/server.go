@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/governance"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
@@ -38,6 +39,7 @@ type GovernanceService interface {
 	Backups(context.Context) ([]governance.BackupManifest, error)
 	CreateBackup(context.Context) (governance.BackupManifest, error)
 	RestoreBackup(context.Context, governance.RestoreRequest) (governance.RestoreResult, error)
+	ExecuteGuard(context.Context, governance.GuardRequest) (governance.GuardResult, error)
 }
 
 // Server handles HTTP requests for the Hive prompt-capture endpoint.
@@ -73,6 +75,7 @@ func NewServerWithProjectStoreAndGovernance(addr string, prompts PromptStore, pr
 		s.mux.HandleFunc("/governance/health", s.handleGovernanceHealth)
 		s.mux.HandleFunc("/governance/backups", s.handleGovernanceBackups)
 		s.mux.HandleFunc("/governance/restores", s.handleGovernanceRestores)
+		s.mux.HandleFunc("/governance/guards/execute", s.handleGovernanceGuardExecute)
 	}
 	return s
 }
@@ -325,6 +328,24 @@ func (s *Server) handleGovernanceRestores(w http.ResponseWriter, r *http.Request
 	writeJSON(w, status, map[string]any{"restore": restore})
 }
 
+func (s *Server) handleGovernanceGuardExecute(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body governance.GuardRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	result, err := s.governance.ExecuteGuard(r.Context(), body)
+	if err != nil {
+		writeGuardError(w, "governance guard execute", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"result": result})
+}
+
 func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method == method {
@@ -395,6 +416,46 @@ func writeBackupError(w http.ResponseWriter, source string, err error) {
 	case errors.Is(err, governance.ErrBackupArchiveInvalid):
 		status = http.StatusConflict
 		errorMessage = "backup archive integrity check failed"
+	default:
+		logger.Log.Printf("%s: %v", source, err)
+	}
+	writeJSON(w, status, map[string]string{"error": errorMessage})
+}
+
+func writeGuardError(w http.ResponseWriter, source string, err error) {
+	status := http.StatusInternalServerError
+	errorMessage := "internal error"
+	switch {
+	case errors.Is(err, governance.ErrDestructiveBackupRequired):
+		status = http.StatusBadRequest
+		errorMessage = "fresh backup is required before destructive operation"
+	case errors.Is(err, governance.ErrBackupArchiveInvalid):
+		status = http.StatusConflict
+		errorMessage = "backup archive integrity check failed"
+	case errors.Is(err, governance.ErrDestructiveConfirmationRequired):
+		status = http.StatusBadRequest
+		errorMessage = "confirmation is required"
+	case errors.Is(err, governance.ErrDestructiveConfirmationMismatch):
+		status = http.StatusBadRequest
+		errorMessage = "confirmation mismatch"
+	case errors.Is(err, governance.ErrDestructiveTargetRequired):
+		status = http.StatusBadRequest
+		errorMessage = "target is required"
+	case errors.Is(err, governance.ErrDestructiveOperationUnsupported):
+		status = http.StatusBadRequest
+		errorMessage = "destructive operation is unsupported"
+	case errors.Is(err, governance.ErrBackupStoreRequired), errors.Is(err, governance.ErrDestructiveMutationStoreRequired):
+		status = http.StatusServiceUnavailable
+		errorMessage = "destructive operation guard is not configured"
+	case errors.Is(err, db.ErrMemoryNotFound):
+		status = http.StatusNotFound
+		errorMessage = "memory not found"
+	case errors.Is(err, db.ErrMemoryAlreadyDeleted):
+		status = http.StatusConflict
+		errorMessage = "memory already deleted"
+	case errors.Is(err, db.ErrMemoryNotDeleted):
+		status = http.StatusConflict
+		errorMessage = "memory is not deleted"
 	default:
 		logger.Log.Printf("%s: %v", source, err)
 	}
