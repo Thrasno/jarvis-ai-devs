@@ -3,6 +3,8 @@ package db_test
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -201,6 +203,255 @@ func TestGovernanceReadModelsDoNotMutateRecordsOrSyncState(t *testing.T) {
 	}
 }
 
+func TestArchiveGovernanceProjectIsIdempotentAndPreservesFirstAuditMetadata(t *testing.T) {
+	t.Parallel()
+
+	d, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	saveGovernanceTestMemory(t, d, "alpha", "Archived memory")
+	if err := d.RecordSyncFailure("alpha", time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC), 2, time.Date(2026, 6, 6, 12, 5, 0, 0, time.UTC), sql.ErrConnDone); err != nil {
+		t.Fatalf("RecordSyncFailure: %v", err)
+	}
+	firstArchivedAt := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	secondArchivedAt := time.Date(2026, 6, 7, 13, 0, 0, 0, time.UTC)
+	beforeCounters := readGovernanceCounters(t, d)
+	beforeSyncState := readGovernanceSyncState(t, d, "alpha")
+
+	firstMutated, err := d.ArchiveGovernanceProject(context.Background(), "alpha", "first-actor", "first reason", firstArchivedAt)
+	if err != nil {
+		t.Fatalf("ArchiveGovernanceProject first: %v", err)
+	}
+	if !firstMutated {
+		t.Fatal("ArchiveGovernanceProject first mutated = false, want true")
+	}
+	secondMutated, err := d.ArchiveGovernanceProject(context.Background(), "alpha", "second-actor", "second reason", secondArchivedAt)
+	if err != nil {
+		t.Fatalf("ArchiveGovernanceProject second: %v", err)
+	}
+	if secondMutated {
+		t.Fatal("ArchiveGovernanceProject second mutated = true, want false for idempotent retry")
+	}
+
+	detail, err := d.GetGovernanceProject(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("GetGovernanceProject: %v", err)
+	}
+	if !detail.Archived || detail.ArchivedAt == nil {
+		t.Fatalf("project should be archived with timestamp: %+v", detail)
+	}
+	if !detail.ArchivedAt.Equal(firstArchivedAt) {
+		t.Fatalf("ArchivedAt = %v, want first archive time %v", detail.ArchivedAt, firstArchivedAt)
+	}
+	if detail.ArchivedBy != "first-actor" || detail.ArchiveReason != "first reason" {
+		t.Fatalf("archive audit metadata = by:%q reason:%q, want first actor/reason", detail.ArchivedBy, detail.ArchiveReason)
+	}
+	afterCounters := readGovernanceCounters(t, d)
+	if afterCounters.MemoryCount != beforeCounters.MemoryCount || afterCounters.MutationCount != beforeCounters.MutationCount || afterCounters.SyncRows != beforeCounters.SyncRows {
+		t.Fatalf("archive mutated memory/sync counters: before=%+v after=%+v", beforeCounters, afterCounters)
+	}
+	afterSyncState := readGovernanceSyncState(t, d, "alpha")
+	if afterSyncState != beforeSyncState {
+		t.Fatalf("archive mutated sync_state: before=%+v after=%+v", beforeSyncState, afterSyncState)
+	}
+}
+
+func TestArchiveGovernanceProjectRejectsUnknownProjectWithoutMetadataMutation(t *testing.T) {
+	t.Parallel()
+
+	d, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	saveGovernanceTestMemory(t, d, "alpha", "Known memory")
+	beforeCounters := readGovernanceCounters(t, d)
+	beforeGovernanceRows := readProjectGovernanceRows(t, d)
+
+	mutated, err := d.ArchiveGovernanceProject(context.Background(), "missing", "actor", "reason", time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC))
+	if mutated {
+		t.Fatal("ArchiveGovernanceProject mutated unknown project, want false")
+	}
+	if !errors.Is(err, hivedb.ErrGovernanceProjectNotFound) {
+		t.Fatalf("ArchiveGovernanceProject error = %v, want ErrGovernanceProjectNotFound", err)
+	}
+	afterCounters := readGovernanceCounters(t, d)
+	if afterCounters != beforeCounters {
+		t.Fatalf("unknown project archive mutated counters: before=%+v after=%+v", beforeCounters, afterCounters)
+	}
+	afterGovernanceRows := readProjectGovernanceRows(t, d)
+	if afterGovernanceRows != beforeGovernanceRows {
+		t.Fatalf("unknown project archive mutated governance metadata rows: before=%d after=%d", beforeGovernanceRows, afterGovernanceRows)
+	}
+}
+
+func TestArchiveGovernanceProjectRejectsMergedProjectWithoutSilentNoop(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	seedGovernanceMergeProjects(t, d)
+	mergeGovernanceProjectForTest(t, d, "alpha", "beta")
+	before := readGovernanceSnapshot(t, d, "alpha")
+
+	mutated, err := d.ArchiveGovernanceProject(context.Background(), "alpha", "archive-actor", "archive reason", time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC))
+
+	if mutated {
+		t.Fatal("ArchiveGovernanceProject mutated merged project, want false")
+	}
+	if !errors.Is(err, hivedb.ErrGovernanceProjectMergeConflict) {
+		t.Fatalf("ArchiveGovernanceProject error = %v, want ErrGovernanceProjectMergeConflict", err)
+	}
+	requireGovernanceSnapshot(t, d, "alpha", before, "archive merged project")
+}
+
+func TestMergeGovernanceProjectIsIdempotentAndPreservesFirstAuditMetadata(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	sourceMemoryID, targetMemoryID := seedGovernanceMergeProjects(t, d)
+	firstMergedAt := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	beforeCounters := readGovernanceCounters(t, d)
+	beforeSyncState := readGovernanceSyncState(t, d, "alpha")
+
+	if mutated, err := d.MergeGovernanceProject(context.Background(), "alpha", "beta", "first-actor", "first reason", firstMergedAt); err != nil || !mutated {
+		t.Fatalf("MergeGovernanceProject first mutated=%v err=%v, want true nil", mutated, err)
+	}
+	if mutated, err := d.MergeGovernanceProject(context.Background(), "alpha", "beta", "second-actor", "second reason", time.Date(2026, 6, 7, 13, 0, 0, 0, time.UTC)); err != nil || mutated {
+		t.Fatalf("MergeGovernanceProject second mutated=%v err=%v, want false nil", mutated, err)
+	}
+
+	requireProjectMerged(t, d, "alpha", "beta", firstMergedAt)
+
+	target, err := d.GetGovernanceProject(context.Background(), "beta")
+	if err != nil {
+		t.Fatalf("GetGovernanceProject target: %v", err)
+	}
+	if target.Merged || target.MergeTarget != "" {
+		t.Fatalf("target project merge metadata = %+v, want unmerged", target)
+	}
+	if gotProject := requireMemoryProject(t, d, sourceMemoryID); gotProject != "alpha" {
+		t.Fatalf("source memory project = %q, want alpha", gotProject)
+	}
+	if gotProject := requireMemoryProject(t, d, targetMemoryID); gotProject != "beta" {
+		t.Fatalf("target memory project = %q, want beta", gotProject)
+	}
+	if afterCounters := readGovernanceCounters(t, d); afterCounters != beforeCounters {
+		t.Fatalf("merge mutated memory/sync counters: before=%+v after=%+v", beforeCounters, afterCounters)
+	}
+	if afterSyncState := readGovernanceSyncState(t, d, "alpha"); afterSyncState != beforeSyncState {
+		t.Fatalf("merge mutated sync_state: before=%+v after=%+v", beforeSyncState, afterSyncState)
+	}
+}
+
+func TestMergeGovernanceProjectRetryIgnoresCurrentTargetLifecycle(t *testing.T) {
+	t.Parallel()
+
+	for name, setup := range map[string]func(*testing.T, *hivedb.DB){
+		"target later merged":   func(t *testing.T, d *hivedb.DB) { mergeGovernanceProjectForTest(t, d, "beta", "gamma") },
+		"target later archived": func(t *testing.T, d *hivedb.DB) { archiveGovernanceProjectForTest(t, d, "beta") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := openGovernanceTestDB(t)
+			seedGovernanceMergeProjects(t, d)
+			firstMergedAt := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
+			if mutated, err := d.MergeGovernanceProject(context.Background(), "alpha", "beta", "first-actor", "first reason", firstMergedAt); err != nil || !mutated {
+				t.Fatalf("MergeGovernanceProject alpha->beta setup mutated=%v err=%v, want true nil", mutated, err)
+			}
+			setup(t, d)
+			before := readGovernanceSnapshot(t, d, "alpha")
+			mutated, err := d.MergeGovernanceProject(context.Background(), "alpha", "beta", "retry-actor", "retry reason", time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC))
+
+			if err != nil {
+				t.Fatalf("MergeGovernanceProject retry: %v", err)
+			}
+			if mutated {
+				t.Fatal("MergeGovernanceProject retry mutated = true, want false")
+			}
+			requireProjectMerged(t, d, "alpha", "beta", firstMergedAt)
+			requireGovernanceSnapshot(t, d, "alpha", before, "merge retry")
+		})
+	}
+}
+
+func TestMergeGovernanceProjectRejectsInvalidProjectsWithoutMutation(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name    string
+		setup   func(*testing.T, *hivedb.DB)
+		source  string
+		target  string
+		wantErr error
+	}{
+		{name: "missing source", source: "missing", target: "beta", wantErr: hivedb.ErrGovernanceProjectNotFound},
+		{name: "missing target", source: "alpha", target: "missing", wantErr: hivedb.ErrGovernanceProjectNotFound},
+		{name: "same source and target", source: "alpha", target: "alpha", wantErr: hivedb.ErrGovernanceProjectMergeInvalid},
+		{name: "archived source", source: "alpha", target: "beta", wantErr: hivedb.ErrGovernanceProjectArchived, setup: func(t *testing.T, d *hivedb.DB) { archiveGovernanceProjectForTest(t, d, "alpha") }},
+		{name: "archived target", source: "alpha", target: "beta", wantErr: hivedb.ErrGovernanceProjectArchived, setup: func(t *testing.T, d *hivedb.DB) { archiveGovernanceProjectForTest(t, d, "beta") }},
+		{name: "target already merged", source: "alpha", target: "beta", wantErr: hivedb.ErrGovernanceProjectMergeConflict, setup: func(t *testing.T, d *hivedb.DB) { mergeGovernanceProjectForTest(t, d, "beta", "gamma") }},
+		{name: "source already merged into different target", source: "alpha", target: "beta", wantErr: hivedb.ErrGovernanceProjectMergeConflict, setup: func(t *testing.T, d *hivedb.DB) { mergeGovernanceProjectForTest(t, d, "alpha", "gamma") }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d := openGovernanceTestDB(t)
+
+			seedGovernanceMergeProjects(t, d)
+			if tt.setup != nil {
+				tt.setup(t, d)
+			}
+
+			before := readGovernanceSnapshot(t, d, "alpha")
+
+			mutated, err := d.MergeGovernanceProject(context.Background(), tt.source, tt.target, "tester", "new", time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC))
+			if mutated {
+				t.Fatal("MergeGovernanceProject mutated invalid merge, want false")
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("MergeGovernanceProject error = %v, want %v", err, tt.wantErr)
+			}
+			requireGovernanceSnapshot(t, d, "alpha", before, "invalid merge")
+		})
+	}
+}
+
+func openGovernanceTestDB(t *testing.T) *hivedb.DB {
+	t.Helper()
+	d, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	return d
+}
+
+func seedGovernanceMergeProjects(t *testing.T, d *hivedb.DB) (int64, int64) {
+	t.Helper()
+	sourceID := saveGovernanceTestMemory(t, d, "alpha", "Alpha memory")
+	targetID := saveGovernanceTestMemory(t, d, "beta", "Beta memory")
+	saveGovernanceTestMemory(t, d, "gamma", "Gamma memory")
+	if err := d.RecordSyncFailure("alpha", time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC), 2, time.Date(2026, 6, 6, 12, 5, 0, 0, time.UTC), sql.ErrConnDone); err != nil {
+		t.Fatalf("RecordSyncFailure: %v", err)
+	}
+	return sourceID, targetID
+}
+
+func archiveGovernanceProjectForTest(t *testing.T, d *hivedb.DB, project string) {
+	t.Helper()
+	if _, err := d.ArchiveGovernanceProject(context.Background(), project, "actor", "old", time.Date(2026, 6, 7, 11, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("ArchiveGovernanceProject setup: %v", err)
+	}
+}
+
+func mergeGovernanceProjectForTest(t *testing.T, d *hivedb.DB, source, target string) {
+	t.Helper()
+	if _, err := d.MergeGovernanceProject(context.Background(), source, target, "actor", "old", time.Date(2026, 6, 7, 11, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("MergeGovernanceProject setup: %v", err)
+	}
+}
+
 func saveGovernanceTestMemory(t *testing.T, d *hivedb.DB, projectName, title string) int64 {
 	t.Helper()
 	if _, err := d.EnsureManualSaveSession(projectName); err != nil {
@@ -213,10 +464,56 @@ func saveGovernanceTestMemory(t *testing.T, d *hivedb.DB, projectName, title str
 	return id
 }
 
+func requireProjectMerged(t *testing.T, d *hivedb.DB, project, target string, mergedAt time.Time) {
+	t.Helper()
+	detail, err := d.GetGovernanceProject(context.Background(), project)
+	if err != nil {
+		t.Fatalf("GetGovernanceProject %s: %v", project, err)
+	}
+	if !detail.Merged || detail.MergeTarget != target || detail.MergedAt == nil || !detail.MergedAt.Equal(mergedAt) || detail.MergedBy != "first-actor" || detail.MergeReason != "first reason" {
+		t.Fatalf("project merge metadata = %+v, want %s->%s first audit", detail, project, target)
+	}
+}
+
+func requireMemoryProject(t *testing.T, d *hivedb.DB, id int64) string {
+	t.Helper()
+	var project string
+	if err := d.RawDB().QueryRow(`SELECT project FROM memories WHERE id = ?`, id).Scan(&project); err != nil {
+		t.Fatalf("read memory project: %v", err)
+	}
+	return project
+}
+
 type governanceCounters struct {
 	MemoryCount   int
 	MutationCount int
 	SyncRows      int
+}
+
+type governanceSyncState struct {
+	LastAttemptAt       string
+	LastSuccessAt       string
+	LastFailureAt       string
+	ConsecutiveFailures int
+	BackoffUntil        string
+	LastError           string
+	LastSyncAt          string
+}
+
+func readGovernanceSnapshot(t *testing.T, d *hivedb.DB, project string) string {
+	t.Helper()
+	detail, err := d.GetGovernanceProject(context.Background(), project)
+	if err != nil {
+		t.Fatalf("GetGovernanceProject snapshot: %v", err)
+	}
+	return fmt.Sprintf("%+v|%t|%v|%s|%s|%t|%s|%v|%s|%s|%+v", readGovernanceCounters(t, d), detail.Archived, detail.ArchivedAt, detail.ArchivedBy, detail.ArchiveReason, detail.Merged, detail.MergeTarget, detail.MergedAt, detail.MergedBy, detail.MergeReason, readGovernanceSyncState(t, d, project))
+}
+
+func requireGovernanceSnapshot(t *testing.T, d *hivedb.DB, project string, before, label string) {
+	t.Helper()
+	if after := readGovernanceSnapshot(t, d, project); after != before {
+		t.Fatalf("%s mutated governance state: before=%+v after=%+v", label, before, after)
+	}
 }
 
 func readGovernanceCounters(t *testing.T, d *hivedb.DB) governanceCounters {
@@ -232,4 +529,26 @@ func readGovernanceCounters(t *testing.T, d *hivedb.DB) governanceCounters {
 		t.Fatalf("count sync_state: %v", err)
 	}
 	return got
+}
+
+func readGovernanceSyncState(t *testing.T, d *hivedb.DB, project string) governanceSyncState {
+	t.Helper()
+	var got governanceSyncState
+	if err := d.RawDB().QueryRow(`
+SELECT COALESCE(last_attempt_at, ''), COALESCE(last_success_at, ''), COALESCE(last_failure_at, ''),
+       consecutive_failures, COALESCE(backoff_until, ''), last_error, COALESCE(last_sync_at, '')
+FROM sync_state
+WHERE project = ?`, project).Scan(&got.LastAttemptAt, &got.LastSuccessAt, &got.LastFailureAt, &got.ConsecutiveFailures, &got.BackoffUntil, &got.LastError, &got.LastSyncAt); err != nil {
+		t.Fatalf("read sync_state: %v", err)
+	}
+	return got
+}
+
+func readProjectGovernanceRows(t *testing.T, d *hivedb.DB) int {
+	t.Helper()
+	var rows int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM hive_project_governance`).Scan(&rows); err != nil {
+		t.Fatalf("count project governance rows: %v", err)
+	}
+	return rows
 }
