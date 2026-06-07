@@ -177,11 +177,7 @@ func (s *BackupStore) PlanRestore(ctx context.Context, req RestoreRequest) (Rest
 	if err != nil {
 		return RestoreResult{}, err
 	}
-	checksum, size, err := checksumFileWithSHA256(expectedArchivePath)
-	if err != nil {
-		return RestoreResult{}, fmt.Errorf("validate restore db backup: %w", err)
-	}
-	if err := verifyArchiveIntegrity(backup, checksum, size); err != nil {
+	if err := s.validateArchive(ctx, backup, expectedArchivePath); err != nil {
 		return RestoreResult{}, err
 	}
 	return RestoreResult{
@@ -192,6 +188,32 @@ func (s *BackupStore) PlanRestore(ctx context.Context, req RestoreRequest) (Rest
 		RequiresDaemonRestart: true,
 		Message:               "restore archive validated; stop/restart daemon coordination is required before replacing the live database",
 	}, nil
+}
+
+func (s *BackupStore) ValidateArchive(ctx context.Context, backupID string) (BackupManifest, error) {
+	if err := ctx.Err(); err != nil {
+		return BackupManifest{}, err
+	}
+	id := strings.TrimSpace(backupID)
+	if id == "" {
+		return BackupManifest{}, ErrBackupIDRequired
+	}
+	if !isSafeBackupID(id) {
+		return BackupManifest{}, fmt.Errorf("%w: %s", ErrBackupIDUnsafe, id)
+	}
+	backup, err := s.backup(id)
+	if err != nil {
+		return BackupManifest{}, err
+	}
+	backupDir := filepath.Join(s.backupRoot, id)
+	expectedArchivePath := filepath.Join(backupDir, backupArchiveFile)
+	if err := verifyManifestArchivePath(backup.ArchivePath, expectedArchivePath); err != nil {
+		return BackupManifest{}, err
+	}
+	if err := s.validateArchive(ctx, backup, expectedArchivePath); err != nil {
+		return BackupManifest{}, err
+	}
+	return backup, nil
 }
 
 func (s *BackupStore) Restore(ctx context.Context, req RestoreRequest) (RestoreResult, error) {
@@ -256,6 +278,17 @@ func (s *BackupStore) validateRestore(ctx context.Context, req RestoreRequest) (
 		return BackupManifest{}, "", err
 	}
 	return backup, expectedArchivePath, nil
+}
+
+func (s *BackupStore) validateArchive(ctx context.Context, backup BackupManifest, archivePath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	checksum, size, err := checksumFileWithSHA256(archivePath)
+	if err != nil {
+		return fmt.Errorf("validate backup archive: %w", err)
+	}
+	return verifyArchiveIntegrity(backup, checksum, size)
 }
 
 func (s *BackupStore) backup(id string) (BackupManifest, error) {
