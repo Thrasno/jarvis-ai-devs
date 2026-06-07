@@ -12,8 +12,11 @@ import (
 )
 
 var (
-	ErrGovernanceProjectRequired = errors.New("project is required")
-	ErrGovernanceProjectNotFound = errors.New("governance project not found")
+	ErrGovernanceProjectRequired      = errors.New("project is required")
+	ErrGovernanceProjectNotFound      = errors.New("governance project not found")
+	ErrGovernanceProjectArchived      = errors.New("governance project is archived")
+	ErrGovernanceProjectMergeInvalid  = errors.New("governance project merge source and target must differ")
+	ErrGovernanceProjectMergeConflict = errors.New("governance project already merged into another target")
 )
 
 type GovernanceProject struct {
@@ -28,6 +31,11 @@ type GovernanceProject struct {
 	ArchivedAt         *time.Time `json:"archived_at,omitempty"`
 	ArchivedBy         string     `json:"archived_by,omitempty"`
 	ArchiveReason      string     `json:"archive_reason,omitempty"`
+	Merged             bool       `json:"merged"`
+	MergeTarget        string     `json:"merge_target,omitempty"`
+	MergedAt           *time.Time `json:"merged_at,omitempty"`
+	MergedBy           string     `json:"merged_by,omitempty"`
+	MergeReason        string     `json:"merge_reason,omitempty"`
 }
 
 type GovernanceMemory struct {
@@ -177,8 +185,15 @@ func (d *DB) ArchiveGovernanceProject(ctx context.Context, name, actorID, reason
 	if name == "" {
 		return false, ErrGovernanceProjectRequired
 	}
-	if _, err := d.GetGovernanceProject(ctx, name); err != nil {
+	project, err := d.GetGovernanceProject(ctx, name)
+	if err != nil {
 		return false, err
+	}
+	if project.Archived {
+		return false, nil
+	}
+	if project.Merged {
+		return false, ErrGovernanceProjectMergeConflict
 	}
 	if actorID == "" {
 		actorID = detectUsername()
@@ -189,7 +204,12 @@ func (d *DB) ArchiveGovernanceProject(ctx context.Context, name, actorID, reason
 	result, err := d.sqlDB.ExecContext(ctx, `
 INSERT INTO hive_project_governance (project, archived_at, archived_by, archive_reason)
 VALUES (?, ?, ?, ?)
-ON CONFLICT(project) DO NOTHING`,
+ON CONFLICT(project) DO UPDATE SET
+    archived_at = excluded.archived_at,
+    archived_by = excluded.archived_by,
+    archive_reason = excluded.archive_reason
+WHERE hive_project_governance.archived_at IS NULL
+  AND hive_project_governance.merged_at IS NULL`,
 		name, archivedAt.UTC().Format("2006-01-02 15:04:05"), actorID, reason)
 	if err != nil {
 		return false, fmt.Errorf("archive governance project: %w", err)
@@ -198,7 +218,146 @@ ON CONFLICT(project) DO NOTHING`,
 	if err != nil {
 		return false, fmt.Errorf("archive governance project rows affected: %w", err)
 	}
+	if rowsAffected == 0 {
+		current, err := d.GetGovernanceProject(ctx, name)
+		if err != nil {
+			return false, err
+		}
+		if current.Archived {
+			return false, nil
+		}
+		if current.Merged {
+			return false, ErrGovernanceProjectMergeConflict
+		}
+	}
 	return rowsAffected > 0, nil
+}
+
+func (d *DB) MergeGovernanceProject(ctx context.Context, source, target, actorID, reason string, mergedAt time.Time) (bool, error) {
+	source = strings.TrimSpace(source)
+	target = strings.TrimSpace(target)
+	if source == "" || target == "" {
+		return false, ErrGovernanceProjectRequired
+	}
+	if source == target {
+		return false, ErrGovernanceProjectMergeInvalid
+	}
+
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin merge governance project: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	sourceProject, err := getGovernanceProjectTx(ctx, tx, source)
+	if err != nil {
+		return false, err
+	}
+	if sourceProject.Merged {
+		if sourceProject.MergeTarget == target {
+			return false, nil
+		}
+		return false, ErrGovernanceProjectMergeConflict
+	}
+	targetProject, err := getGovernanceProjectTx(ctx, tx, target)
+	if err != nil {
+		return false, err
+	}
+	if sourceProject.Archived || targetProject.Archived {
+		return false, ErrGovernanceProjectArchived
+	}
+	if targetProject.Merged {
+		return false, ErrGovernanceProjectMergeConflict
+	}
+	if actorID == "" {
+		actorID = detectUsername()
+	}
+	if mergedAt.IsZero() {
+		mergedAt = time.Now().UTC()
+	}
+
+	var existingTarget, existingMergedAt string
+	err = tx.QueryRowContext(ctx, `
+SELECT merge_target, COALESCE(merged_at, '')
+FROM hive_project_governance
+WHERE project = ?`, source).Scan(&existingTarget, &existingMergedAt)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("read merge governance project: %w", err)
+	}
+	if existingMergedAt != "" {
+		if existingTarget == target {
+			return false, nil
+		}
+		return false, ErrGovernanceProjectMergeConflict
+	}
+
+	result, err := tx.ExecContext(ctx, `
+INSERT INTO hive_project_governance (project, merge_target, merged_at, merged_by, merge_reason)
+SELECT ?, ?, ?, ?, ?
+WHERE EXISTS (SELECT 1 FROM sessions WHERE project = ? UNION SELECT 1 FROM memories WHERE project = ? UNION SELECT 1 FROM user_prompts WHERE project = ?)
+  AND EXISTS (SELECT 1 FROM sessions WHERE project = ? UNION SELECT 1 FROM memories WHERE project = ? UNION SELECT 1 FROM user_prompts WHERE project = ?)
+  AND NOT EXISTS (SELECT 1 FROM hive_project_governance WHERE project = ? AND archived_at IS NOT NULL)
+  AND NOT EXISTS (SELECT 1 FROM hive_project_governance WHERE project = ? AND (archived_at IS NOT NULL OR merged_at IS NOT NULL))
+ON CONFLICT(project) DO UPDATE SET
+    merge_target = excluded.merge_target,
+    merged_at = excluded.merged_at,
+    merged_by = excluded.merged_by,
+    merge_reason = excluded.merge_reason
+WHERE hive_project_governance.archived_at IS NULL
+  AND hive_project_governance.merged_at IS NULL
+  AND EXISTS (SELECT 1 FROM sessions WHERE project = ? UNION SELECT 1 FROM memories WHERE project = ? UNION SELECT 1 FROM user_prompts WHERE project = ?)
+  AND NOT EXISTS (SELECT 1 FROM hive_project_governance WHERE project = ? AND (archived_at IS NOT NULL OR merged_at IS NOT NULL))`,
+		source, target, mergedAt.UTC().Format("2006-01-02 15:04:05"), actorID, reason,
+		source, source, source, target, target, target, source, target,
+		target, target, target, target)
+	if err != nil {
+		return false, fmt.Errorf("merge governance project: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("merge governance project rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		currentSource, err := getGovernanceProjectTx(ctx, tx, source)
+		if err != nil {
+			return false, err
+		}
+		if currentSource.Merged && currentSource.MergeTarget == target {
+			return false, nil
+		}
+		if currentSource.Merged {
+			return false, ErrGovernanceProjectMergeConflict
+		}
+		if currentSource.Archived {
+			return false, ErrGovernanceProjectArchived
+		}
+		currentTarget, err := getGovernanceProjectTx(ctx, tx, target)
+		if err != nil {
+			return false, err
+		}
+		if currentTarget.Archived {
+			return false, ErrGovernanceProjectArchived
+		}
+		if currentTarget.Merged {
+			return false, ErrGovernanceProjectMergeConflict
+		}
+		return false, ErrGovernanceProjectMergeConflict
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit merge governance project: %w", err)
+	}
+	return rowsAffected > 0, nil
+}
+
+func getGovernanceProjectTx(ctx context.Context, tx *sql.Tx, name string) (GovernanceProject, error) {
+	project, err := scanGovernanceProject(tx.QueryRowContext(ctx, governanceProjectsQuery+` WHERE project_names.project = ?`, name))
+	if errors.Is(err, sql.ErrNoRows) {
+		return GovernanceProject{}, fmt.Errorf("%w: %s", ErrGovernanceProjectNotFound, name)
+	}
+	if err != nil {
+		return GovernanceProject{}, err
+	}
+	return project, nil
 }
 
 const governanceProjectsQuery = `
@@ -241,7 +400,11 @@ SELECT project_names.project,
        COALESCE(activity.last_activity_at, ''),
        project_governance.archived_at,
        COALESCE(project_governance.archived_by, ''),
-       COALESCE(project_governance.archive_reason, '')
+       COALESCE(project_governance.archive_reason, ''),
+       COALESCE(project_governance.merge_target, ''),
+       project_governance.merged_at,
+       COALESCE(project_governance.merged_by, ''),
+       COALESCE(project_governance.merge_reason, '')
 FROM project_names
 LEFT JOIN directories ON directories.project = project_names.project
 LEFT JOIN memory_counts ON memory_counts.project = project_names.project
@@ -253,8 +416,8 @@ LEFT JOIN hive_project_governance AS project_governance ON project_governance.pr
 func scanGovernanceProject(scanner interface{ Scan(...any) error }) (GovernanceProject, error) {
 	var project GovernanceProject
 	var lastActivity string
-	var archivedAt sql.NullString
-	if err := scanner.Scan(&project.Name, &project.Directory, &project.ActiveMemoryCount, &project.DeletedMemoryCount, &project.SessionCount, &project.PromptCount, &lastActivity, &archivedAt, &project.ArchivedBy, &project.ArchiveReason); err != nil {
+	var archivedAt, mergedAt sql.NullString
+	if err := scanner.Scan(&project.Name, &project.Directory, &project.ActiveMemoryCount, &project.DeletedMemoryCount, &project.SessionCount, &project.PromptCount, &lastActivity, &archivedAt, &project.ArchivedBy, &project.ArchiveReason, &project.MergeTarget, &mergedAt, &project.MergedBy, &project.MergeReason); err != nil {
 		return GovernanceProject{}, err
 	}
 	if lastActivity != "" {
@@ -264,6 +427,11 @@ func scanGovernanceProject(scanner interface{ Scan(...any) error }) (GovernanceP
 		project.Archived = true
 		parsed, _ := parseTimeStr(archivedAt.String)
 		project.ArchivedAt = &parsed
+	}
+	if mergedAt.Valid && mergedAt.String != "" {
+		project.Merged = true
+		parsed, _ := parseTimeStr(mergedAt.String)
+		project.MergedAt = &parsed
 	}
 	return project, nil
 }
