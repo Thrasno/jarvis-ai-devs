@@ -63,6 +63,56 @@ func TestClientExecutesGuardWithExactConfirmation(t *testing.T) {
 	}
 }
 
+func TestClientArchivesProjectWithExactConfirmation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/governance/projects/alpha/archive" {
+			t.Fatalf("request = %s %s, want POST /governance/projects/alpha/archive", r.Method, r.URL.Path)
+		}
+		var req ProjectArchiveRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.Project != "alpha" || req.BackupID != "backup-1" || req.Confirmation != " ARCHIVE project alpha " || req.ActorID != "tester" || req.Reason != "cleanup" {
+			t.Fatalf("archive request = %+v, want exact project archive payload", req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"operation":"archive","target_type":"project","project":"alpha","backup_id":"backup-1","mutated":true,"cloud_handoff_note":"Local project archive completed. No cloud project mutation was performed."}}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := client.ArchiveProject(context.Background(), ProjectArchiveRequest{Project: "alpha", BackupID: "backup-1", Confirmation: " ARCHIVE project alpha ", ActorID: "tester", Reason: "cleanup"})
+	if err != nil {
+		t.Fatalf("ArchiveProject: %v", err)
+	}
+	if !result.Mutated || result.Project != "alpha" || result.CloudHandoffNote == "" {
+		t.Fatalf("archive result = %+v, want local archive result with cloud handoff note", result)
+	}
+}
+
+func TestClientArchivesProjectEscapesProjectNameInPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.RequestURI != "/governance/projects/team%2Falpha%20project/archive" {
+			t.Fatalf("request = %s %s, want POST /governance/projects/team%%2Falpha%%20project/archive", r.Method, r.RequestURI)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"operation":"archive","target_type":"project","project":"team/alpha project","backup_id":"backup-1","mutated":true}}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.ArchiveProject(context.Background(), ProjectArchiveRequest{Project: "team/alpha project", BackupID: "backup-1", Confirmation: "ARCHIVE project team/alpha project"})
+	if err != nil {
+		t.Fatalf("ArchiveProject: %v", err)
+	}
+}
+
 func TestClientExecuteGuardReturnsDaemonGuardError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

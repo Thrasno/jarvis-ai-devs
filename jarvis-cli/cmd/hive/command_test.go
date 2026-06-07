@@ -167,6 +167,70 @@ func TestHiveMemoryGuardCommandPreservesConfirmationWhitespace(t *testing.T) {
 	}
 }
 
+func TestHiveProjectArchiveCommandUsesDaemonClient(t *testing.T) {
+	client := &fakeHiveClient{}
+	out, err := executeHiveCommand(t, NewRootCommand(client), "project", "archive", "alpha", "--backup-id", "backup-1", "--confirmation", "ARCHIVE project alpha", "--actor-id", "tester", "--reason", "cleanup")
+	if err != nil {
+		t.Fatalf("project archive command: %v", err)
+	}
+	if client.archiveRequest.Project != "alpha" || client.archiveRequest.BackupID != "backup-1" || client.archiveRequest.Confirmation != "ARCHIVE project alpha" || client.archiveRequest.ActorID != "tester" || client.archiveRequest.Reason != "cleanup" {
+		t.Fatalf("archive request = %+v, want project archive request from CLI flags", client.archiveRequest)
+	}
+	if !strings.Contains(out, "project alpha archive completed") || !strings.Contains(out, "direct cloud mutation") {
+		t.Fatalf("archive output = %q, want local archive result and cloud handoff note", out)
+	}
+}
+
+func TestHiveProjectArchiveCommandRequiresBackupIDAndConfirmationLocally(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "missing backup id", args: []string{"project", "archive", "alpha", "--confirmation", "ARCHIVE project alpha"}, wantErr: "--backup-id is required"},
+		{name: "empty backup id", args: []string{"project", "archive", "alpha", "--backup-id", "", "--confirmation", "ARCHIVE project alpha"}, wantErr: "--backup-id is required"},
+		{name: "whitespace backup id", args: []string{"project", "archive", "alpha", "--backup-id", "  \t  ", "--confirmation", "ARCHIVE project alpha"}, wantErr: "--backup-id is required"},
+		{name: "missing confirmation", args: []string{"project", "archive", "alpha", "--backup-id", "backup-1"}, wantErr: "--confirmation is required"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &fakeHiveClient{}
+			out, err := executeHiveCommand(t, NewRootCommand(client), tt.args...)
+			if err == nil {
+				t.Fatal("project archive command error = nil, want local required flag error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("project archive command error = %v, want %q", err, tt.wantErr)
+			}
+			if out != "" {
+				t.Fatalf("project archive command output = %q, want no noisy usage output", out)
+			}
+			if client.archiveCalled {
+				t.Fatal("project archive command called daemon client without required local flags")
+			}
+		})
+	}
+}
+
+func TestHiveProjectArchiveCommandRejectsNonExactConfirmationBeforeDaemonCall(t *testing.T) {
+	client := &fakeHiveClient{}
+	confirmation := "  ARCHIVE project alpha  "
+	out, err := executeHiveCommand(t, NewRootCommand(client), "project", "archive", "alpha", "--backup-id", "backup-1", "--confirmation", confirmation)
+	if err == nil {
+		t.Fatal("project archive command error = nil, want exact confirmation error")
+	}
+	if !strings.Contains(err.Error(), "confirmation must match exactly") {
+		t.Fatalf("project archive command error = %v, want exact confirmation error", err)
+	}
+	if out != "" {
+		t.Fatalf("project archive command output = %q, want no noisy usage output", out)
+	}
+	if client.archiveCalled {
+		t.Fatal("project archive command called daemon client with non-exact confirmation")
+	}
+}
+
 func executeHiveCommand(t *testing.T, cmd *cobra.Command, args ...string) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
@@ -186,8 +250,10 @@ type fakeHiveClient struct {
 	warningsErr    error
 	memoryFilter   hiveclient.MemoryFilter
 	guardRequest   hiveclient.GuardRequest
+	archiveRequest hiveclient.ProjectArchiveRequest
 	memoriesCalled bool
 	guardCalled    bool
+	archiveCalled  bool
 }
 
 func (f *fakeHiveClient) Status(context.Context) ([]hiveclient.Health, error) { return f.health, nil }
@@ -210,4 +276,9 @@ func (f *fakeHiveClient) ExecuteGuard(_ context.Context, req hiveclient.GuardReq
 	f.guardCalled = true
 	f.guardRequest = req
 	return hiveclient.GuardResult{Operation: req.Operation, TargetType: req.TargetType, TargetID: req.TargetID, BackupID: req.BackupID, Mutated: true}, nil
+}
+func (f *fakeHiveClient) ArchiveProject(_ context.Context, req hiveclient.ProjectArchiveRequest) (hiveclient.ProjectArchiveResult, error) {
+	f.archiveCalled = true
+	f.archiveRequest = req
+	return hiveclient.ProjectArchiveResult{Operation: "archive", TargetType: "project", Project: req.Project, BackupID: req.BackupID, Mutated: true, CloudHandoffNote: "Local project archive completed. No direct cloud mutation was performed."}, nil
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -40,6 +41,7 @@ type GovernanceService interface {
 	CreateBackup(context.Context) (governance.BackupManifest, error)
 	RestoreBackup(context.Context, governance.RestoreRequest) (governance.RestoreResult, error)
 	ExecuteGuard(context.Context, governance.GuardRequest) (governance.GuardResult, error)
+	ExecuteProjectArchive(context.Context, governance.ProjectArchiveRequest) (governance.ProjectArchiveResult, error)
 }
 
 // Server handles HTTP requests for the Hive prompt-capture endpoint.
@@ -235,16 +237,49 @@ func (s *Server) handleGovernanceProjects(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleGovernanceProject(w http.ResponseWriter, r *http.Request) {
+	escapedName := strings.TrimPrefix(r.URL.EscapedPath(), "/governance/projects/")
+	if strings.HasSuffix(escapedName, "/archive") {
+		projectName, err := url.PathUnescape(strings.TrimSuffix(escapedName, "/archive"))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is invalid"})
+			return
+		}
+		s.handleGovernanceProjectArchive(w, r, projectName)
+		return
+	}
+	name, err := url.PathUnescape(escapedName)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is invalid"})
+		return
+	}
 	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
-	name := strings.TrimPrefix(r.URL.Path, "/governance/projects/")
 	project, err := s.governance.Project(r.Context(), name)
 	if err != nil {
 		writeGovernanceError(w, "governance project", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"project": project})
+}
+
+func (s *Server) handleGovernanceProjectArchive(w http.ResponseWriter, r *http.Request, projectName string) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body governance.ProjectArchiveRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	body.Project = projectName
+	result, err := s.governance.ExecuteProjectArchive(r.Context(), body)
+	if err != nil {
+		writeGuardError(w, "governance project archive", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"result": result})
 }
 
 func (s *Server) handleGovernanceMemories(w http.ResponseWriter, r *http.Request) {
@@ -429,6 +464,12 @@ func writeGuardError(w http.ResponseWriter, source string, err error) {
 	case errors.Is(err, governance.ErrDestructiveBackupRequired):
 		status = http.StatusBadRequest
 		errorMessage = "fresh backup is required before destructive operation"
+	case errors.Is(err, governance.ErrProjectRequired):
+		status = http.StatusBadRequest
+		errorMessage = "project is required"
+	case errors.Is(err, governance.ErrProjectNotFound):
+		status = http.StatusNotFound
+		errorMessage = "project not found"
 	case errors.Is(err, governance.ErrBackupArchiveInvalid):
 		status = http.StatusConflict
 		errorMessage = "backup archive integrity check failed"

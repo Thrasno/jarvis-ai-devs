@@ -113,6 +113,23 @@ type GuardResult struct {
 	Mutated    bool   `json:"mutated"`
 }
 
+type ProjectArchiveRequest struct {
+	Project      string `json:"project"`
+	BackupID     string `json:"backup_id"`
+	Confirmation string `json:"confirmation"`
+	ActorID      string `json:"actor_id,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+}
+
+type ProjectArchiveResult struct {
+	Operation        string `json:"operation"`
+	TargetType       string `json:"target_type"`
+	Project          string `json:"project"`
+	BackupID         string `json:"backup_id"`
+	Mutated          bool   `json:"mutated"`
+	CloudHandoffNote string `json:"cloud_handoff_note"`
+}
+
 func NewFromEnv() (*Client, error) {
 	baseURL := strings.TrimSpace(os.Getenv("HIVE_DAEMON_URL"))
 	if baseURL == "" {
@@ -199,9 +216,21 @@ func (c *Client) ExecuteGuard(ctx context.Context, guard GuardRequest) (GuardRes
 	return body.Result, nil
 }
 
+func (c *Client) ArchiveProject(ctx context.Context, req ProjectArchiveRequest) (ProjectArchiveResult, error) {
+	project := strings.TrimSpace(req.Project)
+	req.Project = project
+	var body struct {
+		Result ProjectArchiveResult `json:"result"`
+	}
+	if err := c.post(ctx, "/governance/projects/"+url.PathEscape(project)+"/archive", req, &body); err != nil {
+		return ProjectArchiveResult{}, err
+	}
+	return body.Result, nil
+}
+
 func (c *Client) get(ctx context.Context, path string, query url.Values, out any, notAvailableOn404 bool) error {
 	u := *c.baseURL
-	u.Path = path
+	setURLPath(&u, path)
 	u.RawQuery = query.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
@@ -231,7 +260,7 @@ func (c *Client) post(ctx context.Context, path string, payload, out any) error 
 		return err
 	}
 	u := *c.baseURL
-	u.Path = path
+	setURLPath(&u, path)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -250,4 +279,14 @@ func (c *Client) post(ctx context.Context, path string, payload, out any) error 
 		return &APIError{StatusCode: resp.StatusCode, Message: body.Error}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func setURLPath(u *url.URL, path string) {
+	decodedPath, err := url.PathUnescape(path)
+	if err != nil || decodedPath == path {
+		u.Path = path
+		return
+	}
+	u.Path = decodedPath
+	u.RawPath = path
 }

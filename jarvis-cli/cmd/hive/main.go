@@ -20,6 +20,7 @@ type governanceClient interface {
 	Warnings(context.Context) ([]hiveclient.Warning, error)
 	Backups(context.Context) ([]hiveclient.Backup, error)
 	ExecuteGuard(context.Context, hiveclient.GuardRequest) (hiveclient.GuardResult, error)
+	ArchiveProject(context.Context, hiveclient.ProjectArchiveRequest) (hiveclient.ProjectArchiveResult, error)
 }
 
 func main() {
@@ -36,7 +37,7 @@ func main() {
 
 func NewRootCommand(client governanceClient) *cobra.Command {
 	cmd := &cobra.Command{Use: "hive", Short: "Local Hive governance CLI", SilenceErrors: true, SilenceUsage: true}
-	cmd.AddCommand(statusCommand(client), projectsCommand(client), memoriesCommand(client), memoryCommand(client), warningsCommand(client), backupsCommand(client))
+	cmd.AddCommand(statusCommand(client), projectsCommand(client), projectCommand(client), memoriesCommand(client), memoryCommand(client), warningsCommand(client), backupsCommand(client))
 	return cmd
 }
 
@@ -142,6 +143,51 @@ func backupsCommand(client governanceClient) *cobra.Command {
 func memoryCommand(client governanceClient) *cobra.Command {
 	cmd := &cobra.Command{Use: "memory", Short: "Run guarded local memory operations"}
 	cmd.AddCommand(memoryGuardCommand(client, "delete"), memoryGuardCommand(client, "restore"))
+	return cmd
+}
+
+func projectCommand(client governanceClient) *cobra.Command {
+	cmd := &cobra.Command{Use: "project", Short: "Run guarded local project operations"}
+	cmd.AddCommand(projectArchiveCommand(client))
+	return cmd
+}
+
+func projectArchiveCommand(client governanceClient) *cobra.Command {
+	var backupID, confirmation, actorID, reason string
+	cmd := &cobra.Command{Use: "archive <project>", Short: "Run a guarded local project archive", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		projectName := strings.TrimSpace(args[0])
+		if projectName == "" {
+			return fmt.Errorf("project is required")
+		}
+		if !cmd.Flags().Changed("backup-id") {
+			return fmt.Errorf("--backup-id is required for hive project archive")
+		}
+		if strings.TrimSpace(backupID) == "" {
+			return fmt.Errorf("--backup-id is required for hive project archive")
+		}
+		if !cmd.Flags().Changed("confirmation") {
+			return fmt.Errorf("--confirmation is required for hive project archive")
+		}
+		expectedConfirmation := "ARCHIVE project " + projectName
+		if confirmation != expectedConfirmation {
+			return fmt.Errorf("confirmation must match exactly: %s", expectedConfirmation)
+		}
+		result, err := client.ArchiveProject(cmd.Context(), hiveclient.ProjectArchiveRequest{Project: projectName, BackupID: backupID, Confirmation: confirmation, ActorID: actorID, Reason: reason})
+		if err != nil {
+			return err
+		}
+		status := "already archived"
+		if result.Mutated {
+			status = "archive completed"
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "project %s %s with backup %s\n", result.Project, status, result.BackupID)
+		fmt.Fprintf(cmd.OutOrStdout(), "Cloud handoff: %s\n", result.CloudHandoffNote)
+		return nil
+	}}
+	cmd.Flags().StringVar(&backupID, "backup-id", "", "fresh Hive backup id for the destructive operation")
+	cmd.Flags().StringVar(&confirmation, "confirmation", "", "exact confirmation required by the daemon guard")
+	cmd.Flags().StringVar(&actorID, "actor-id", "", "human or operator id recorded for the local mutation")
+	cmd.Flags().StringVar(&reason, "reason", "", "reason recorded for the local project archive")
 	return cmd
 }
 
