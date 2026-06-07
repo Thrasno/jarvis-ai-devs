@@ -1,0 +1,50 @@
+# Production Compose file for hive-api and the Hive Dashboard.
+#
+# This file is intended for a single VPS deployment where:
+# - PostgreSQL runs in Compose with a named volume.
+# - hive-api is exposed only on localhost.
+# - A reverse proxy such as Caddy or Nginx terminates HTTPS.
+# - Secrets come from a local .env file that is never committed.
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    build:
+      # Repository root context is required because the Dockerfile builds both:
+      # - hive-api/
+      # - hive-dashboard/
+      context: ../..
+      dockerfile: hive-api/deploy/Dockerfile
+      args:
+        TARGETOS: ${TARGETOS:-linux}
+        TARGETARCH: ${TARGETARCH:-amd64}
+    ports:
+      # Bind only to localhost. Public traffic should go through the reverse proxy.
+      - "127.0.0.1:${PORT:-8080}:8080"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required and must be at least 32 characters}
+      PORT: "8080"
+      GIN_MODE: ${GIN_MODE:-release}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
