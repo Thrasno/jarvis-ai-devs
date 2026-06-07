@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ type governanceClient interface {
 	Memories(context.Context, hiveclient.MemoryFilter) ([]hiveclient.Memory, error)
 	Warnings(context.Context) ([]hiveclient.Warning, error)
 	Backups(context.Context) ([]hiveclient.Backup, error)
+	ExecuteGuard(context.Context, hiveclient.GuardRequest) (hiveclient.GuardResult, error)
 }
 
 func main() {
@@ -34,7 +36,7 @@ func main() {
 
 func NewRootCommand(client governanceClient) *cobra.Command {
 	cmd := &cobra.Command{Use: "hive", Short: "Local Hive governance CLI", SilenceErrors: true, SilenceUsage: true}
-	cmd.AddCommand(statusCommand(client), projectsCommand(client), memoriesCommand(client), warningsCommand(client), backupsCommand(client))
+	cmd.AddCommand(statusCommand(client), projectsCommand(client), memoriesCommand(client), memoryCommand(client), warningsCommand(client), backupsCommand(client))
 	return cmd
 }
 
@@ -135,6 +137,40 @@ func backupsCommand(client governanceClient) *cobra.Command {
 		}
 		return nil
 	}}
+}
+
+func memoryCommand(client governanceClient) *cobra.Command {
+	cmd := &cobra.Command{Use: "memory", Short: "Run guarded local memory operations"}
+	cmd.AddCommand(memoryGuardCommand(client, "delete"), memoryGuardCommand(client, "restore"))
+	return cmd
+}
+
+func memoryGuardCommand(client governanceClient, operation string) *cobra.Command {
+	var backupID, confirmation, actorID, reason string
+	cmd := &cobra.Command{Use: operation + " <id>", Short: "Run a guarded local memory " + operation, Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		id, err := strconv.ParseInt(args[0], 10, 64)
+		if err != nil || id <= 0 {
+			return fmt.Errorf("memory id must be a positive integer")
+		}
+		if !cmd.Flags().Changed("backup-id") {
+			return fmt.Errorf("--backup-id is required for hive memory %s", operation)
+		}
+		if !cmd.Flags().Changed("confirmation") {
+			return fmt.Errorf("--confirmation is required for hive memory %s", operation)
+		}
+		result, err := client.ExecuteGuard(cmd.Context(), hiveclient.GuardRequest{Operation: operation, TargetType: "memory", TargetID: id, BackupID: backupID, Confirmation: confirmation, ActorID: actorID, Reason: reason})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "memory %d %s completed with backup %s\n", result.TargetID, result.Operation, result.BackupID)
+		fmt.Fprintln(cmd.OutOrStdout(), "Cloud handoff: local mutation uses the normal sync pipeline; no direct cloud mutation was attempted.")
+		return nil
+	}}
+	cmd.Flags().StringVar(&backupID, "backup-id", "", "fresh Hive backup id for the destructive operation")
+	cmd.Flags().StringVar(&confirmation, "confirmation", "", "exact confirmation required by the daemon guard")
+	cmd.Flags().StringVar(&actorID, "actor-id", "", "human or operator id recorded for the local mutation")
+	cmd.Flags().StringVar(&reason, "reason", "", "reason recorded for delete operations")
+	return cmd
 }
 
 func formatTime(t time.Time) string {

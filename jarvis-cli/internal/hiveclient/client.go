@@ -1,6 +1,7 @@
 package hiveclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -94,6 +95,24 @@ type Backup struct {
 	SizeBytes    int64     `json:"size_bytes"`
 }
 
+type GuardRequest struct {
+	Operation    string `json:"operation"`
+	TargetType   string `json:"target_type"`
+	TargetID     int64  `json:"target_id"`
+	BackupID     string `json:"backup_id"`
+	Confirmation string `json:"confirmation"`
+	ActorID      string `json:"actor_id,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+}
+
+type GuardResult struct {
+	Operation  string `json:"operation"`
+	TargetType string `json:"target_type"`
+	TargetID   int64  `json:"target_id"`
+	BackupID   string `json:"backup_id"`
+	Mutated    bool   `json:"mutated"`
+}
+
 func NewFromEnv() (*Client, error) {
 	baseURL := strings.TrimSpace(os.Getenv("HIVE_DAEMON_URL"))
 	if baseURL == "" {
@@ -170,6 +189,16 @@ func (c *Client) Backups(ctx context.Context) ([]Backup, error) {
 	return body.Backups, nil
 }
 
+func (c *Client) ExecuteGuard(ctx context.Context, guard GuardRequest) (GuardResult, error) {
+	var body struct {
+		Result GuardResult `json:"result"`
+	}
+	if err := c.post(ctx, "/governance/guards/execute", guard, &body); err != nil {
+		return GuardResult{}, err
+	}
+	return body.Result, nil
+}
+
 func (c *Client) get(ctx context.Context, path string, query url.Values, out any, notAvailableOn404 bool) error {
 	u := *c.baseURL
 	u.Path = path
@@ -186,6 +215,33 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, out any
 	if resp.StatusCode == http.StatusNotFound && notAvailableOn404 {
 		return ErrNotAvailable
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var body struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		return &APIError{StatusCode: resp.StatusCode, Message: body.Error}
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (c *Client) post(ctx context.Context, path string, payload, out any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	u := *c.baseURL
+	u.Path = path
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var body struct {
 			Error string `json:"error"`

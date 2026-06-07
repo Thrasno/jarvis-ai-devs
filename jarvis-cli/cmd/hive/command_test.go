@@ -95,6 +95,78 @@ func TestHiveMemoriesCommandRequiresProjectLocally(t *testing.T) {
 	}
 }
 
+func TestHiveMemoryGuardCommandsUseDaemonClient(t *testing.T) {
+	client := &fakeHiveClient{}
+	deleteOut, err := executeHiveCommand(t, NewRootCommand(client), "memory", "delete", "7", "--backup-id", "backup-1", "--confirmation", "DELETE memory 7", "--actor-id", "tester", "--reason", "cleanup")
+	if err != nil {
+		t.Fatalf("memory delete command: %v", err)
+	}
+	if client.guardRequest.Operation != "delete" || client.guardRequest.TargetType != "memory" || client.guardRequest.TargetID != 7 || client.guardRequest.BackupID != "backup-1" || client.guardRequest.Confirmation != "DELETE memory 7" || client.guardRequest.ActorID != "tester" || client.guardRequest.Reason != "cleanup" {
+		t.Fatalf("guard request = %+v, want delete request from CLI flags", client.guardRequest)
+	}
+	if !strings.Contains(deleteOut, "memory 7 delete completed") || !strings.Contains(deleteOut, "no direct cloud mutation") {
+		t.Fatalf("delete output = %q, want local result and cloud handoff note", deleteOut)
+	}
+
+	restoreOut, err := executeHiveCommand(t, NewRootCommand(client), "memory", "restore", "7", "--backup-id", "backup-2", "--confirmation", "RESTORE memory 7")
+	if err != nil {
+		t.Fatalf("memory restore command: %v", err)
+	}
+	if client.guardRequest.Operation != "restore" || client.guardRequest.TargetID != 7 || client.guardRequest.BackupID != "backup-2" || client.guardRequest.Confirmation != "RESTORE memory 7" {
+		t.Fatalf("guard request = %+v, want restore request from CLI flags", client.guardRequest)
+	}
+	if !strings.Contains(restoreOut, "memory 7 restore completed") {
+		t.Fatalf("restore output = %q, want local restore result", restoreOut)
+	}
+}
+
+func TestHiveMemoryGuardCommandsRequireBackupIDAndConfirmationLocally(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "delete missing backup id", args: []string{"memory", "delete", "7", "--confirmation", "DELETE memory 7"}, wantErr: "--backup-id is required"},
+		{name: "delete missing confirmation", args: []string{"memory", "delete", "7", "--backup-id", "backup-1"}, wantErr: "--confirmation is required"},
+		{name: "restore missing backup id", args: []string{"memory", "restore", "7", "--confirmation", "RESTORE memory 7"}, wantErr: "--backup-id is required"},
+		{name: "restore missing confirmation", args: []string{"memory", "restore", "7", "--backup-id", "backup-1"}, wantErr: "--confirmation is required"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &fakeHiveClient{}
+			out, err := executeHiveCommand(t, NewRootCommand(client), tt.args...)
+			if err == nil {
+				t.Fatal("memory guard command error = nil, want local required flag error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("memory guard command error = %v, want %q", err, tt.wantErr)
+			}
+			if out != "" {
+				t.Fatalf("memory guard command output = %q, want no noisy usage output", out)
+			}
+			if client.guardCalled {
+				t.Fatal("memory guard command called daemon client without required local flags")
+			}
+		})
+	}
+}
+
+func TestHiveMemoryGuardCommandPreservesConfirmationWhitespace(t *testing.T) {
+	client := &fakeHiveClient{}
+	confirmation := "  DELETE memory 7  "
+	_, err := executeHiveCommand(t, NewRootCommand(client), "memory", "delete", "7", "--backup-id", "backup-1", "--confirmation", confirmation)
+	if err != nil {
+		t.Fatalf("memory delete command: %v", err)
+	}
+	if !client.guardCalled {
+		t.Fatal("memory delete command did not call daemon client")
+	}
+	if client.guardRequest.Confirmation != confirmation {
+		t.Fatalf("confirmation = %q, want exact value %q", client.guardRequest.Confirmation, confirmation)
+	}
+}
+
 func executeHiveCommand(t *testing.T, cmd *cobra.Command, args ...string) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
@@ -113,7 +185,9 @@ type fakeHiveClient struct {
 	backups        []hiveclient.Backup
 	warningsErr    error
 	memoryFilter   hiveclient.MemoryFilter
+	guardRequest   hiveclient.GuardRequest
 	memoriesCalled bool
+	guardCalled    bool
 }
 
 func (f *fakeHiveClient) Status(context.Context) ([]hiveclient.Health, error) { return f.health, nil }
@@ -132,3 +206,8 @@ func (f *fakeHiveClient) Warnings(context.Context) ([]hiveclient.Warning, error)
 	return f.warnings, nil
 }
 func (f *fakeHiveClient) Backups(context.Context) ([]hiveclient.Backup, error) { return f.backups, nil }
+func (f *fakeHiveClient) ExecuteGuard(_ context.Context, req hiveclient.GuardRequest) (hiveclient.GuardResult, error) {
+	f.guardCalled = true
+	f.guardRequest = req
+	return hiveclient.GuardResult{Operation: req.Operation, TargetType: req.TargetType, TargetID: req.TargetID, BackupID: req.BackupID, Mutated: true}, nil
+}

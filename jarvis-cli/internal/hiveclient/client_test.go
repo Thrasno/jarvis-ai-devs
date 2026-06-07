@@ -2,6 +2,7 @@ package hiveclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,55 @@ func TestClientListsProjectsFromGovernanceEndpoint(t *testing.T) {
 	}
 	if len(projects) != 1 || projects[0].Name != "alpha" || projects[0].ActiveMemoryCount != 3 {
 		t.Fatalf("projects = %+v, want alpha with 3 active memories", projects)
+	}
+}
+
+func TestClientExecutesGuardWithExactConfirmation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/governance/guards/execute" {
+			t.Fatalf("request = %s %s, want POST /governance/guards/execute", r.Method, r.URL.Path)
+		}
+		var req GuardRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.BackupID != "backup-1" || req.Confirmation != " DELETE memory 7 " || req.TargetID != 7 {
+			t.Fatalf("guard request = %+v, want exact backup and confirmation forwarded", req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"operation":"delete","target_type":"memory","target_id":7,"backup_id":"backup-1","mutated":true}}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := client.ExecuteGuard(context.Background(), GuardRequest{Operation: "delete", TargetType: "memory", TargetID: 7, BackupID: "backup-1", Confirmation: " DELETE memory 7 "})
+	if err != nil {
+		t.Fatalf("ExecuteGuard: %v", err)
+	}
+	if !result.Mutated || result.Operation != "delete" || result.TargetID != 7 {
+		t.Fatalf("guard result = %+v, want delete mutation result", result)
+	}
+}
+
+func TestClientExecuteGuardReturnsDaemonGuardError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"confirmation mismatch"}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.ExecuteGuard(context.Background(), GuardRequest{Operation: "delete", TargetType: "memory", TargetID: 7, BackupID: "backup-1", Confirmation: " DELETE memory 7 "})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest || apiErr.Message != "confirmation mismatch" {
+		t.Fatalf("ExecuteGuard error = %#v, want APIError 400 with confirmation mismatch", err)
 	}
 }
 
