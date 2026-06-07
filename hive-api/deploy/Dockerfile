@@ -1,50 +1,62 @@
 # ============================================================
-# Etapa 1: Builder
+# Stage 1: Dashboard builder
 # ============================================================
-# Usamos la imagen oficial de Go con Alpine (Linux minimalista).
-# alpine = imagen muy pequeña (~5MB) sin las librerías glibc de Ubuntu.
-# CGO_ENABLED=0 es CRÍTICO: desactiva CGO para producir un binario estático.
-# Un binario estático no depende de ninguna librería del sistema operativo —
-# funciona en cualquier Linux, incluso en una imagen scratch (sin OS).
-FROM golang:1.26-alpine AS builder
+# The build context is the repository root. Dashboard source remains in the
+# separate hive-dashboard/ module; only compiled assets are copied into the API
+# runtime image.
+FROM node:22-alpine AS dashboard-builder
 
-WORKDIR /app
+WORKDIR /app/hive-dashboard
 
-# Copiamos los archivos de módulo ANTES que el código fuente.
-# Docker cachea capas por cambios. Si solo cambia el código (no las deps),
-# Docker reutiliza la capa de "go mod download" — mucho más rápido.
-COPY go.mod go.sum ./
+COPY hive-dashboard/package.json hive-dashboard/package-lock.json ./
+RUN npm ci
+
+COPY hive-dashboard/ ./
+RUN npm run build
+
+# ============================================================
+# Stage 2: Hive API builder
+# ============================================================
+# Use the official Go Alpine image to produce a static binary for the target platform.
+FROM golang:1.26-alpine AS api-builder
+
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+
+WORKDIR /app/hive-api
+
+# Copy module files before source so Docker can cache dependency downloads.
+COPY hive-api/go.mod hive-api/go.sum ./
 RUN go mod download
 
-# Copiamos el código fuente completo
-COPY . .
+COPY hive-api/ ./
 
-# Compilamos el binario.
-# -ldflags="-w -s" elimina la tabla de debug y el mapa de símbolos del binario.
-# Resultado: binario ~30% más pequeño. Sin impacto en runtime, solo en debugging.
-# CGO_ENABLED=0 garantiza que no haya dependencias dinámicas.
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+# -ldflags="-w -s" strips debug/symbol tables for a smaller runtime binary.
+# CGO_ENABLED=0 keeps the binary static for the distroless runtime image.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -ldflags="-w -s" -o hive-api ./cmd/server/
 
 # ============================================================
-# Etapa 2: Runtime
+# Stage 3: Runtime
 # ============================================================
-# distroless/static-debian12 es una imagen sin shell, sin package manager,
-# sin ninguna herramienta — solo el runtime mínimo para ejecutar Go estático.
-# Es ~2MB. Tiene ventajas de seguridad enormes: si alguien logra RCE,
-# no tiene nada disponible (ni sh, ni curl, ni ls).
-FROM gcr.io/distroless/static-debian12
+# distroless/static-debian12:nonroot has no shell or package manager and runs as
+# the built-in nonroot user by default.
+FROM gcr.io/distroless/static-debian12:nonroot
 
 WORKDIR /app
 
-# Copiamos solo el binario compilado desde la etapa builder.
-# La imagen final no tiene el código fuente, ni las herramientas de Go.
-COPY --from=builder /app/hive-api .
+# Copy only the API binary and compiled dashboard assets.
+COPY --from=api-builder --chown=nonroot:nonroot --chmod=0755 /app/hive-api/hive-api .
+COPY --from=dashboard-builder --chown=nonroot:nonroot --chmod=0755 /app/hive-dashboard/dist ./dashboard
 
-# Puerto en el que escucha el servidor (configurable por env var PORT).
+# Enables the existing hive-api static serving configuration.
+ENV DASHBOARD_ASSETS_DIR=/app/dashboard
+
+# Port used by the API server. Override with PORT when needed.
 EXPOSE 8080
 
-# El binario es el único proceso del contenedor.
-# Usamos la forma JSON (exec form) para que el proceso sea PID 1 —
-# esto garantiza que reciba las señales del OS (SIGTERM en kubectl delete pod).
+# Keep the runtime explicit even though the image tag already defaults to nonroot.
+USER nonroot:nonroot
+
+# The binary is the only container process. Exec form keeps signal handling direct.
 ENTRYPOINT ["/app/hive-api"]

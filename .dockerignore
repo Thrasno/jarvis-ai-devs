@@ -1,0 +1,8 @@
+.git
+.engram
+**/node_modules
+hive-dashboard/dist
+hive-api/hive-api
+*.log
+.env
+.env.local
