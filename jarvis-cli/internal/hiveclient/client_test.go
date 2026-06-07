@@ -223,7 +223,7 @@ func TestClientListsMemoriesWithFilters(t *testing.T) {
 	}
 }
 
-func TestClientWarningsReportNotAvailableOnMissingEndpoint(t *testing.T) {
+func TestClientWarningsReturnsDaemonErrorOnMissingEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.NotFoundHandler())
 	defer server.Close()
 
@@ -233,8 +233,9 @@ func TestClientWarningsReportNotAvailableOnMissingEndpoint(t *testing.T) {
 	}
 
 	_, err = client.Warnings(context.Background())
-	if !errors.Is(err, ErrNotAvailable) {
-		t.Fatalf("Warnings error = %v, want ErrNotAvailable", err)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("Warnings error = %#v, want APIError 404", err)
 	}
 }
 
