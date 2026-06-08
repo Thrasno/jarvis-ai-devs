@@ -17,6 +17,7 @@ var (
 	ErrGovernanceProjectArchived      = errors.New("governance project is archived")
 	ErrGovernanceProjectMergeInvalid  = errors.New("governance project merge source and target must differ")
 	ErrGovernanceProjectMergeConflict = errors.New("governance project already merged into another target")
+	ErrGovernanceMemoryNotFound       = errors.New("governance memory not found")
 )
 
 type GovernanceProject struct {
@@ -27,6 +28,7 @@ type GovernanceProject struct {
 	SessionCount       int        `json:"session_count"`
 	PromptCount        int        `json:"prompt_count"`
 	LastActivityAt     time.Time  `json:"last_activity_at"`
+	UnsyncedCount      int        `json:"unsynced_count"`
 	Archived           bool       `json:"archived"`
 	ArchivedAt         *time.Time `json:"archived_at,omitempty"`
 	ArchivedBy         string     `json:"archived_by,omitempty"`
@@ -45,6 +47,7 @@ type GovernanceMemory struct {
 	TopicKey     *string    `json:"topic_key,omitempty"`
 	Category     string     `json:"category"`
 	Title        string     `json:"title"`
+	Content      string     `json:"content"`
 	CreatedBy    string     `json:"created_by"`
 	CreatedAt    time.Time  `json:"created_at"`
 	SessionID    string     `json:"session_id,omitempty"`
@@ -152,7 +155,7 @@ func (d *DB) ListGovernanceMemories(ctx context.Context, filter GovernanceMemory
 	}
 
 	q := `
-SELECT id, sync_id, project, topic_key, category, title, created_by, created_at, session_id,
+SELECT id, sync_id, project, topic_key, category, title, content, created_by, created_at, session_id,
        deleted_at, deleted_by, delete_reason
 FROM memories
 WHERE project = ?`
@@ -178,6 +181,21 @@ WHERE project = ?`
 		memories = append(memories, memory)
 	}
 	return memories, rows.Err()
+}
+
+func (d *DB) GetGovernanceMemoryByID(ctx context.Context, id int64) (GovernanceMemory, error) {
+	const q = `
+SELECT id, sync_id, project, topic_key, category, title, content, created_by, created_at, session_id,
+       deleted_at, deleted_by, delete_reason
+FROM memories WHERE id = ?`
+	memory, err := scanGovernanceMemory(d.sqlDB.QueryRowContext(ctx, q, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return GovernanceMemory{}, fmt.Errorf("%w: id=%d", ErrGovernanceMemoryNotFound, id)
+	}
+	if err != nil {
+		return GovernanceMemory{}, fmt.Errorf("get governance memory: %w", err)
+	}
+	return memory, nil
 }
 
 func (d *DB) ArchiveGovernanceProject(ctx context.Context, name, actorID, reason string, archivedAt time.Time) (bool, error) {
@@ -390,6 +408,11 @@ WITH project_names AS (
         UNION ALL SELECT project, created_at AS activity_at FROM user_prompts
     )
     GROUP BY project
+), unsynced_counts AS (
+    SELECT project, COUNT(*) AS unsynced_count
+    FROM memories
+    WHERE synced_at IS NULL AND deleted_at IS NULL
+    GROUP BY project
 )
 SELECT project_names.project,
        COALESCE(directories.directory, ''),
@@ -404,20 +427,22 @@ SELECT project_names.project,
        COALESCE(project_governance.merge_target, ''),
        project_governance.merged_at,
        COALESCE(project_governance.merged_by, ''),
-       COALESCE(project_governance.merge_reason, '')
+       COALESCE(project_governance.merge_reason, ''),
+       COALESCE(unsynced_counts.unsynced_count, 0)
 FROM project_names
 LEFT JOIN directories ON directories.project = project_names.project
 LEFT JOIN memory_counts ON memory_counts.project = project_names.project
 LEFT JOIN session_counts ON session_counts.project = project_names.project
 LEFT JOIN prompt_counts ON prompt_counts.project = project_names.project
 LEFT JOIN activity ON activity.project = project_names.project
-LEFT JOIN hive_project_governance AS project_governance ON project_governance.project = project_names.project`
+LEFT JOIN hive_project_governance AS project_governance ON project_governance.project = project_names.project
+LEFT JOIN unsynced_counts ON unsynced_counts.project = project_names.project`
 
 func scanGovernanceProject(scanner interface{ Scan(...any) error }) (GovernanceProject, error) {
 	var project GovernanceProject
 	var lastActivity string
 	var archivedAt, mergedAt sql.NullString
-	if err := scanner.Scan(&project.Name, &project.Directory, &project.ActiveMemoryCount, &project.DeletedMemoryCount, &project.SessionCount, &project.PromptCount, &lastActivity, &archivedAt, &project.ArchivedBy, &project.ArchiveReason, &project.MergeTarget, &mergedAt, &project.MergedBy, &project.MergeReason); err != nil {
+	if err := scanner.Scan(&project.Name, &project.Directory, &project.ActiveMemoryCount, &project.DeletedMemoryCount, &project.SessionCount, &project.PromptCount, &lastActivity, &archivedAt, &project.ArchivedBy, &project.ArchiveReason, &project.MergeTarget, &mergedAt, &project.MergedBy, &project.MergeReason, &project.UnsyncedCount); err != nil {
 		return GovernanceProject{}, err
 	}
 	if lastActivity != "" {
@@ -440,7 +465,7 @@ func scanGovernanceMemory(scanner interface{ Scan(...any) error }) (GovernanceMe
 	var memory GovernanceMemory
 	var topicKey, deletedAt, deletedBy, deleteReason sql.NullString
 	var createdAt string
-	if err := scanner.Scan(&memory.ID, &memory.SyncID, &memory.Project, &topicKey, &memory.Category, &memory.Title, &memory.CreatedBy, &createdAt, &memory.SessionID, &deletedAt, &deletedBy, &deleteReason); err != nil {
+	if err := scanner.Scan(&memory.ID, &memory.SyncID, &memory.Project, &topicKey, &memory.Category, &memory.Title, &memory.Content, &memory.CreatedBy, &createdAt, &memory.SessionID, &deletedAt, &deletedBy, &deleteReason); err != nil {
 		return GovernanceMemory{}, fmt.Errorf("scan governance memory: %w", err)
 	}
 	if topicKey.Valid {

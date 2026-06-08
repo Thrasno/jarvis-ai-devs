@@ -17,6 +17,8 @@ type Health = db.SyncHealth
 var (
 	ErrProjectRequired                  = errors.New("project is required")
 	ErrProjectNotFound                  = errors.New("project not found")
+	ErrMemoryIDRequired                 = errors.New("memory id is required")
+	ErrMemoryNotFound                   = errors.New("memory not found")
 	ErrDestructiveBackupRequired        = errors.New("fresh backup is required before destructive operation")
 	ErrDestructiveConfirmationRequired  = errors.New("destructive operation confirmation is required")
 	ErrDestructiveConfirmationMismatch  = errors.New("destructive operation confirmation mismatch")
@@ -49,6 +51,7 @@ type readStore interface {
 	ListGovernanceProjects(context.Context) ([]db.GovernanceProject, error)
 	GetGovernanceProject(context.Context, string) (db.GovernanceProject, error)
 	ListGovernanceMemories(context.Context, db.GovernanceMemoryFilter) ([]db.GovernanceMemory, error)
+	GetGovernanceMemoryByID(context.Context, int64) (db.GovernanceMemory, error)
 	ListGovernanceSyncHealth(context.Context) ([]db.SyncHealth, error)
 	ListHiveWarnings(db.HiveWarningFilter) ([]db.HiveWarning, error)
 }
@@ -372,6 +375,24 @@ func (s *Service) currentTime() time.Time {
 
 func normalizeGuardPart(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func (s *Service) MemoryByID(ctx context.Context, id int64) (Memory, error) {
+	if id <= 0 {
+		return Memory{}, ErrMemoryIDRequired
+	}
+	memory, err := s.store.GetGovernanceMemoryByID(ctx, id)
+	return memory, mapMemoryError(err)
+}
+
+func mapMemoryError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, db.ErrGovernanceMemoryNotFound) {
+		return fmt.Errorf("%w: %v", ErrMemoryNotFound, err)
+	}
+	return err
 }
 
 func mapProjectError(err error) error {
