@@ -78,84 +78,90 @@ func openTestDB(t *testing.T) *db.DB {
 	return store
 }
 
-func TestApplyStartupSyncConfig_NoConfig_NoWarning(t *testing.T) {
-	store := openTestDB(t)
-	load := func() (*hivesync.Config, hivesync.SyncConfigStatus, error) {
-		return nil, hivesync.SyncConfigStatus{Source: hivesync.ConfigSourceNone}, nil
+func TestApplyStartupSyncConfig(t *testing.T) {
+	tests := []struct {
+		name          string
+		load          func() (*hivesync.Config, hivesync.SyncConfigStatus, error)
+		wantCfgNil    bool
+		wantWarnings  int
+		checkWarnings func(t *testing.T, warnings []db.HiveWarning)
+	}{
+		{
+			name: "no_config_no_warning",
+			load: func() (*hivesync.Config, hivesync.SyncConfigStatus, error) {
+				return nil, hivesync.SyncConfigStatus{Source: hivesync.ConfigSourceNone}, nil
+			},
+			wantCfgNil:   true,
+			wantWarnings: 0,
+		},
+		{
+			name: "load_error_persists_warning",
+			load: func() (*hivesync.Config, hivesync.SyncConfigStatus, error) {
+				return nil, hivesync.SyncConfigStatus{}, fmt.Errorf("malformed sync.json: unexpected EOF")
+			},
+			wantCfgNil:   true,
+			wantWarnings: 1,
+			checkWarnings: func(t *testing.T, warnings []db.HiveWarning) {
+				t.Helper()
+				w := warnings[0]
+				if w.Source != "startup/sync-config" {
+					t.Errorf("source = %q, want %q", w.Source, "startup/sync-config")
+				}
+				if w.Severity != "warning" {
+					t.Errorf("severity = %q, want %q", w.Severity, "warning")
+				}
+				if !strings.Contains(w.Message, "malformed sync.json") {
+					t.Errorf("message %q should mention the original error", w.Message)
+				}
+			},
+		},
+		{
+			name: "status_warnings_persists_all",
+			load: func() (*hivesync.Config, hivesync.SyncConfigStatus, error) {
+				cfg := &hivesync.Config{APIURL: "https://example.com"}
+				status := hivesync.SyncConfigStatus{
+					Configured: true,
+					Source:     hivesync.ConfigSourceFile,
+					Warnings:   []string{"incomplete env ignored: file config used", "auto_sync disabled"},
+				}
+				return cfg, status, nil
+			},
+			wantCfgNil:   false,
+			wantWarnings: 2,
+			checkWarnings: func(t *testing.T, warnings []db.HiveWarning) {
+				t.Helper()
+				for _, w := range warnings {
+					if w.Source != "startup/sync-config" {
+						t.Errorf("source = %q, want %q", w.Source, "startup/sync-config")
+					}
+				}
+			},
+		},
 	}
 
-	cfg := applyStartupSyncConfig(store, load)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := openTestDB(t)
+			cfg := applyStartupSyncConfig(store, tt.load)
 
-	if cfg != nil {
-		t.Errorf("expected nil cfg when no config present, got %+v", cfg)
-	}
-	warnings, err := store.ListHiveWarnings(db.HiveWarningFilter{})
-	if err != nil {
-		t.Fatalf("list warnings: %v", err)
-	}
-	if len(warnings) != 0 {
-		t.Errorf("expected no warnings for missing config, got %d", len(warnings))
-	}
-}
+			if tt.wantCfgNil && cfg != nil {
+				t.Errorf("expected nil cfg, got %+v", cfg)
+			}
+			if !tt.wantCfgNil && cfg == nil {
+				t.Fatal("expected non-nil cfg")
+			}
 
-func TestApplyStartupSyncConfig_LoadError_PersistsWarning(t *testing.T) {
-	store := openTestDB(t)
-	load := func() (*hivesync.Config, hivesync.SyncConfigStatus, error) {
-		return nil, hivesync.SyncConfigStatus{}, fmt.Errorf("malformed sync.json: unexpected EOF")
-	}
-
-	cfg := applyStartupSyncConfig(store, load)
-
-	if cfg != nil {
-		t.Errorf("expected nil cfg on load error, got %+v", cfg)
-	}
-	warnings, err := store.ListHiveWarnings(db.HiveWarningFilter{ResolutionState: "active"})
-	if err != nil {
-		t.Fatalf("list warnings: %v", err)
-	}
-	if len(warnings) != 1 {
-		t.Fatalf("expected 1 warning, got %d", len(warnings))
-	}
-	w := warnings[0]
-	if w.Source != "startup/sync-config" {
-		t.Errorf("warning source = %q, want %q", w.Source, "startup/sync-config")
-	}
-	if w.Severity != "warning" {
-		t.Errorf("warning severity = %q, want %q", w.Severity, "warning")
-	}
-	if !strings.Contains(w.Message, "malformed sync.json") {
-		t.Errorf("warning message %q should mention the original error", w.Message)
-	}
-}
-
-func TestApplyStartupSyncConfig_StatusWarnings_PersistsWarnings(t *testing.T) {
-	store := openTestDB(t)
-	load := func() (*hivesync.Config, hivesync.SyncConfigStatus, error) {
-		cfg := &hivesync.Config{APIURL: "https://example.com"}
-		status := hivesync.SyncConfigStatus{
-			Configured: true,
-			Source:     hivesync.ConfigSourceFile,
-			Warnings:   []string{"incomplete env ignored: file config used", "auto_sync disabled"},
-		}
-		return cfg, status, nil
-	}
-
-	cfg := applyStartupSyncConfig(store, load)
-
-	if cfg == nil {
-		t.Fatal("expected non-nil cfg when load succeeds")
-	}
-	warnings, err := store.ListHiveWarnings(db.HiveWarningFilter{ResolutionState: "active"})
-	if err != nil {
-		t.Fatalf("list warnings: %v", err)
-	}
-	if len(warnings) != 2 {
-		t.Fatalf("expected 2 warnings from status, got %d", len(warnings))
-	}
-	for _, w := range warnings {
-		if w.Source != "startup/sync-config" {
-			t.Errorf("warning source = %q, want %q", w.Source, "startup/sync-config")
-		}
+			warnings, err := store.ListHiveWarnings(db.HiveWarningFilter{ResolutionState: "active"})
+			if err != nil {
+				t.Fatalf("list warnings: %v", err)
+			}
+			if len(warnings) != tt.wantWarnings {
+				t.Fatalf("expected %d warning(s), got %d", tt.wantWarnings, len(warnings))
+			}
+			if tt.checkWarnings != nil {
+				tt.checkWarnings(t, warnings)
+			}
+		})
 	}
 }
 
