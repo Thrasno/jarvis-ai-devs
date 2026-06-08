@@ -1,5 +1,6 @@
 import type { Memory, MemoryList, MemorySearch } from '../api/client'
-import { append, error, list, panel, text, type ViewState } from './Overview'
+import { append, error, list, panel, text } from '../components/dom'
+import type { ViewState } from './Overview'
 
 export function renderMemories(state: ViewState<{ recent: MemoryList; search: MemorySearch }>): HTMLElement {
   const card = panel('Memories')
