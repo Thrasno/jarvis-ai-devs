@@ -98,8 +98,17 @@ estándar (stdio), sin reemplazar al agente.
 
 #### Requirement: Herramientas de guardado y actualización
 
-El sistema SHALL exponer herramientas para que el agente registre y modifique
-decisiones, incluyendo al menos `mem_save`, `mem_update` y `mem_delete`.
+El sistema SHALL exponer `mem_save` para que el agente registre decisiones y
+artefactos. Las observaciones históricas (decision, architecture, bugfix,
+discovery, preference, config, pattern) son append-only — el agente no puede
+sobreescribirlas. Los artefactos vivos (e.g. SDD tasks, apply-progress,
+skill-registry) pueden actualizarse via upsert por `topic_key` usando `mem_save`.
+
+`mem_update` no se expone como herramienta MCP: el upsert por `topic_key` cubre
+el caso de artefactos vivos sin requerir IDs numéricos.
+
+`mem_delete` no se expone como herramienta MCP: el borrado es exclusivamente
+humano, desde CLI/TUI, requiere `reason` explícito, y es siempre soft delete.
 
 ##### Scenario: Registro de una decisión
 

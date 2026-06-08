@@ -65,17 +65,6 @@ mcp__hive__mem_get_observation(id: 42)
 
 ---
 
-### mcp__hive__mem_update
-
-**Purpose**: Update an existing observation by its numeric ID.
-
-**Parameters**:
-- `id` (required): Observation ID to update.
-- `content` (optional): New content to replace existing.
-- Other fields can be updated as needed.
-
-**When to use**: When you need to update task checkboxes, correct a previous save, or append to an existing observation. Most commonly used in sdd-apply to mark tasks `[x]` as complete. Store the tasks observation ID at the start of sdd-apply as `{tasks-obs-id}` and call `mem_update(id: {tasks-obs-id})` after each task.
-
 ---
 
 ### mcp__hive__mem_context

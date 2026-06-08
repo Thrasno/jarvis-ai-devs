@@ -35,9 +35,9 @@ Self-check after EVERY task: "Did I make a decision, fix a bug, learn something 
 
 Topic update rules:
 - Different topics MUST NOT overwrite each other
-- Same topic evolving → use same `topic_key` (upsert)
+- Same topic evolving → use same `topic_key` (upsert via mem_save)
 - Unsure about key → call `mem_suggest_topic_key` first
-- Know exact ID to fix → use `mem_update`
+- Historical observations (decision, architecture, bugfix, discovery, preference, config, pattern) are append-only — never upsert them; save a new observation instead
 
 ## WHEN TO SEARCH MEMORY
 

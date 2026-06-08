@@ -27,9 +27,9 @@ From the orchestrator:
 
 > Follow **Section B** (retrieval) and **Section C** (persistence) from `skills/_shared/sdd-phase-common.md`.
 
-- **hive**: Read `sdd/{change-name}/proposal`, `sdd/{change-name}/spec`, `sdd/{change-name}/design`, `sdd/{change-name}/tasks` (all required — keep tasks ID for updates). Mark tasks complete via `mcp__hive__mem_update(id: {tasks-observation-id}, content: "...")`. Save progress as `sdd/{change-name}/apply-progress`.
+- **hive**: Read `sdd/{change-name}/proposal`, `sdd/{change-name}/spec`, `sdd/{change-name}/design`, `sdd/{change-name}/tasks` (all required). Mark tasks complete via `mcp__hive__mem_save(topic_key: "sdd/{change-name}/tasks", content: "...")` — the topic_key upsert updates the existing tasks artifact. Save progress as `sdd/{change-name}/apply-progress`.
 - **openspec**: Read and follow `skills/_shared/openspec-convention.md`. Update `tasks.md` with `[x]` marks.
-- **hybrid**: Follow BOTH conventions — persist progress to Hive (`mcp__hive__mem_update` for tasks) AND update `tasks.md` with `[x]` marks on filesystem.
+- **hybrid**: Follow BOTH conventions — persist progress to Hive (`mcp__hive__mem_save` with topic_key upsert for tasks) AND update `tasks.md` with `[x]` marks on filesystem.
 - **none**: Return progress only. Do not update project artifacts.
 
 ## What to Do
@@ -147,7 +147,7 @@ Follow **Section C** from `skills/_shared/sdd-phase-common.md`.
 - artifact: `apply-progress`
 - topic_key: `sdd/{change-name}/apply-progress`
 - type: `architecture`
-- Also update the tasks artifact with `[x]` marks via `mcp__hive__mem_update` (hive) or file edit (openspec/hybrid).
+- Also update the tasks artifact with `[x]` marks via `mcp__hive__mem_save` with `topic_key: "sdd/{change-name}/tasks"` (hive) or file edit (openspec/hybrid).
 
 #### Merge Protocol
 
