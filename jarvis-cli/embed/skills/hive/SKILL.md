@@ -65,8 +65,6 @@ mcp__hive__mem_get_observation(id: 42)
 
 ---
 
----
-
 ### mcp__hive__mem_context
 
 **Purpose**: Get recent memory context for a project, ordered by recency. Fast and cheap — check this BEFORE mem_search for "what did we do" queries.

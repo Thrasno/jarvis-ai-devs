@@ -37,7 +37,7 @@ Topic update rules:
 - Different topics MUST NOT overwrite each other
 - Same topic evolving → use same `topic_key` (upsert via mem_save)
 - Unsure about key → call `mem_suggest_topic_key` first
-- Historical observations (decision, architecture, bugfix, discovery, preference, config, pattern) are append-only — never upsert them; save a new observation instead
+- Observations saved WITHOUT a `topic_key` are append-only — never update them by ID; save a new observation instead
 
 ## WHEN TO SEARCH MEMORY
 

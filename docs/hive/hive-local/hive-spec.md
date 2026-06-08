@@ -93,16 +93,16 @@ estándar (stdio), sin reemplazar al agente.
 ##### Scenario: Descubrimiento de herramientas por el agente
 
 - **WHEN** Claude Code u OpenCode se conecta a Hive vía MCP
-- **THEN** el sistema SHALL anunciar aproximadamente 19 herramientas agrupadas en categorías lógicas
+- **THEN** el sistema SHALL anunciar aproximadamente 10 herramientas agrupadas en categorías lógicas
 - **AND** el agente SHALL poder invocar la herramienta adecuada de forma transparente
 
 #### Requirement: Herramientas de guardado y actualización
 
 El sistema SHALL exponer `mem_save` para que el agente registre decisiones y
-artefactos. Las observaciones históricas (decision, architecture, bugfix,
-discovery, preference, config, pattern) son append-only — el agente no puede
-sobreescribirlas. Los artefactos vivos (e.g. SDD tasks, apply-progress,
-skill-registry) pueden actualizarse via upsert por `topic_key` usando `mem_save`.
+artefactos. Las observaciones guardadas sin `topic_key` son append-only — el
+agente no puede sobreescribirlas. Los artefactos vivos (e.g. SDD tasks,
+apply-progress, skill-registry, arquitectura evolutiva) se guardan con `topic_key`
+y pueden actualizarse via upsert usando `mem_save`.
 
 `mem_update` no se expone como herramienta MCP: el upsert por `topic_key` cubre
 el caso de artefactos vivos sin requerir IDs numéricos.
