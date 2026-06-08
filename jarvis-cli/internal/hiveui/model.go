@@ -50,6 +50,10 @@ type ProjectMergeExecutor interface {
 	MergeProject(context.Context, hiveclient.ProjectMergeRequest) (hiveclient.ProjectMergeResult, error)
 }
 
+type MemoryLoader interface {
+	MemoryByID(context.Context, int64) (hiveclient.Memory, error)
+}
+
 type Snapshot struct {
 	DashboardState DashboardState
 	DaemonURL      string
@@ -94,6 +98,11 @@ type Model struct {
 	projectMergeConfirmation string
 	projectMergeStep         projectMergeStep
 	projectMergeSubmitting   bool
+
+	memoryLoader   MemoryLoader
+	memoryContent  string
+	memoryLoading  bool
+	memoryLoadErr  error
 }
 
 type memoryGuardStep int
@@ -135,6 +144,12 @@ type projectMergeResultMsg struct {
 	err           error
 }
 
+type memoryLoadResultMsg struct {
+	id     int64
+	memory hiveclient.Memory
+	err    error
+}
+
 func NewModelWithSnapshot(snapshot Snapshot) Model {
 	if snapshot.DaemonURL == "" {
 		snapshot.DaemonURL = "http://127.0.0.1:7438"
@@ -160,10 +175,11 @@ func NewModelWithSnapshotAndProjectMergeExecutor(snapshot Snapshot, executor Pro
 	return m
 }
 
-func NewModelWithAllExecutors(snapshot Snapshot, guard GuardExecutor, archive ProjectArchiveExecutor, merge ProjectMergeExecutor) Model {
+func NewModelWithAllExecutors(snapshot Snapshot, guard GuardExecutor, archive ProjectArchiveExecutor, merge ProjectMergeExecutor, memory MemoryLoader) Model {
 	m := NewModelWithSnapshotAndGuardExecutor(snapshot, guard)
 	m.projectArchiveExecutor = archive
 	m.projectMergeExecutor = merge
+	m.memoryLoader = memory
 	return m
 }
 
@@ -178,6 +194,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if result, ok := msg.(projectMergeResultMsg); ok {
 		return m.applyProjectMergeResult(result), nil
+	}
+	if result, ok := msg.(memoryLoadResultMsg); ok {
+		return m.applyMemoryLoadResult(result), nil
 	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
@@ -232,6 +251,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.move(-1)
 	case key.Type == tea.KeyEnter:
 		m = m.open()
+		if m.screen == ScreenMemoryDetail && m.memoryLoader != nil {
+			return m.startMemoryLoad()
+		}
 	}
 	return m, nil
 }
@@ -275,7 +297,7 @@ func (m Model) View() string {
 		sb.WriteString(notice + "\n")
 	}
 	fmt.Fprintf(&sb, "daemon running · %s · %s\n", apiStatus(m.snapshot), syncStatus(m.snapshot))
-	fmt.Fprintf(&sb, "projects %d memories %s unsynced %s warnings %d\n", len(m.snapshot.Projects), comma(totalMemories(m.snapshot.Projects)), unsyncedText(m.snapshot), len(m.snapshot.Warnings))
+	fmt.Fprintf(&sb, "projects %d memories %s unsynced %s warnings %d last sync %s\n", len(m.snapshot.Projects), comma(totalMemories(m.snapshot.Projects)), unsyncedText(m.snapshot), len(m.snapshot.Warnings), lastSyncText(m.snapshot))
 	for i, action := range dashboardActions() {
 		mark := "  "
 		if i == m.cursor {
@@ -367,6 +389,9 @@ func (m Model) open() Model {
 func (m Model) back() Model {
 	switch m.screen {
 	case ScreenMemoryDetail:
+		m.memoryContent = ""
+		m.memoryLoading = false
+		m.memoryLoadErr = nil
 		if m.detailReturn == ScreenTimeline {
 			m.screen = ScreenTimeline
 		} else {
@@ -395,13 +420,13 @@ func (m Model) back() Model {
 func (m Model) projectsView() string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "dashboard / projects\t%d projects\n", len(m.snapshot.Projects))
-	sb.WriteString("PROJECT MEMORIES UNSYNCED LAST\n")
+	sb.WriteString("PROJECT MEMORIES UNSYNCED WARNINGS LAST\n")
 	for i, project := range m.snapshot.Projects {
 		mark := "  "
 		if i == m.projectIndex {
 			mark = "▌ "
 		}
-		fmt.Fprintf(&sb, "%s%s %d n/a %s\n", mark, project.Name, project.ActiveMemoryCount, relativeTime(project.LastActivityAt))
+		fmt.Fprintf(&sb, "%s%s %d %d %d %s\n", mark, project.Name, project.ActiveMemoryCount, project.UnsyncedCount, projectWarningCount(m.snapshot, project.Name), relativeTime(project.LastActivityAt))
 	}
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
@@ -448,7 +473,18 @@ func (m Model) memoryDetailView() string {
 		sb.WriteString("status deleted\n")
 	}
 	fmt.Fprintf(&sb, "type %s  source %s\n", emptyDash(memory.Category), emptyDash(memory.CreatedBy))
-	sb.WriteString("Content preview is not available from the read-only daemon snapshot.\n")
+	switch {
+	case m.memoryLoader == nil:
+		sb.WriteString("Content preview is not available from the read-only daemon snapshot.\n")
+	case m.memoryLoading:
+		sb.WriteString("Loading content from hive-daemon...\n")
+	case m.memoryLoadErr != nil:
+		fmt.Fprintf(&sb, "Content failed to load through hive-daemon: %v\n", m.memoryLoadErr)
+	case strings.TrimSpace(m.memoryContent) == "":
+		sb.WriteString("No content recorded for this memory.\n")
+	default:
+		fmt.Fprintf(&sb, "%s\n", m.memoryContent)
+	}
 	if m.guardExecutor != nil && memory.ID != 0 && memory.Deleted {
 		sb.WriteString("r restore guarded by backup ID and exact confirmation\n")
 	} else if m.guardExecutor != nil && memory.ID != 0 {
@@ -560,6 +596,40 @@ func (m Model) applyMemoryGuardResult(msg memoryGuardResultMsg) Model {
 		return m
 	}
 	m.message = fmt.Sprintf("Guarded memory %s dispatched through hive-daemon. No direct SQLite or cloud mutation was performed by the TUI.", msg.operation)
+	return m
+}
+
+func (m Model) startMemoryLoad() (tea.Model, tea.Cmd) {
+	memory := m.selectedMemory()
+	if memory.ID == 0 {
+		m.memoryLoading = false
+		m.memoryContent = ""
+		m.memoryLoadErr = nil
+		return m, nil
+	}
+	loader := m.memoryLoader
+	id := memory.ID
+	m.memoryLoading = true
+	m.memoryContent = ""
+	m.memoryLoadErr = nil
+	return m, func() tea.Msg {
+		loaded, err := loader.MemoryByID(context.Background(), id)
+		return memoryLoadResultMsg{id: id, memory: loaded, err: err}
+	}
+}
+
+func (m Model) applyMemoryLoadResult(msg memoryLoadResultMsg) Model {
+	if !m.memoryLoading || msg.id != m.selectedMemory().ID {
+		return m
+	}
+	m.memoryLoading = false
+	if msg.err != nil {
+		m.memoryLoadErr = msg.err
+		m.memoryContent = ""
+		return m
+	}
+	m.memoryLoadErr = nil
+	m.memoryContent = msg.memory.Content
 	return m
 }
 
@@ -1121,7 +1191,34 @@ func syncStatus(snapshot Snapshot) string {
 }
 
 func unsyncedText(snapshot Snapshot) string {
-	return "n/a"
+	total := 0
+	for _, p := range snapshot.Projects {
+		total += p.UnsyncedCount
+	}
+	return comma(total)
+}
+
+func lastSyncText(snapshot Snapshot) string {
+	var latest time.Time
+	for _, h := range snapshot.Health {
+		if h.LastSuccessAt.After(latest) {
+			latest = h.LastSuccessAt
+		}
+	}
+	if latest.IsZero() {
+		return "never"
+	}
+	return relativeTime(latest)
+}
+
+func projectWarningCount(snapshot Snapshot, projectName string) int {
+	count := 0
+	for _, w := range snapshot.Warnings {
+		if w.Source == projectName {
+			count++
+		}
+	}
+	return count
 }
 
 func totalMemories(projects []hiveclient.Project) int {
