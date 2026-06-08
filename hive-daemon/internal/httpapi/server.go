@@ -36,6 +36,7 @@ type GovernanceService interface {
 	Projects(context.Context) ([]governance.Project, error)
 	Project(context.Context, string) (governance.Project, error)
 	Memories(context.Context, governance.MemoryFilter) ([]governance.Memory, error)
+	MemoryByID(context.Context, int64) (governance.Memory, error)
 	Health(context.Context) ([]governance.Health, error)
 	Warnings(context.Context, governance.WarningFilter) ([]governance.Warning, error)
 	Backups(context.Context) ([]governance.BackupManifest, error)
@@ -76,6 +77,7 @@ func NewServerWithProjectStoreAndGovernance(addr string, prompts PromptStore, pr
 		s.mux.HandleFunc("/governance/projects", s.handleGovernanceProjects)
 		s.mux.HandleFunc("/governance/projects/", s.handleGovernanceProject)
 		s.mux.HandleFunc("/governance/memories", s.handleGovernanceMemories)
+		s.mux.HandleFunc("GET /governance/memories/{id}", s.handleGovernanceMemory)
 		s.mux.HandleFunc("/governance/health", s.handleGovernanceHealth)
 		s.mux.HandleFunc("/governance/warnings", s.handleGovernanceWarnings)
 		s.mux.HandleFunc("/governance/backups", s.handleGovernanceBackups)
@@ -345,6 +347,21 @@ func (s *Server) handleGovernanceMemories(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"memories": memories})
 }
 
+func (s *Server) handleGovernanceMemory(w http.ResponseWriter, r *http.Request) {
+	idRaw := r.PathValue("id")
+	id, err := strconv.ParseInt(strings.TrimSpace(idRaw), 10, 64)
+	if err != nil || id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "memory id must be a positive integer"})
+		return
+	}
+	memory, err := s.governance.MemoryByID(r.Context(), id)
+	if err != nil {
+		writeMemoryError(w, "governance memory", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"memory": memory})
+}
+
 func (s *Server) handleGovernanceHealth(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodGet) {
 		return
@@ -469,6 +486,22 @@ func writeGovernanceError(w http.ResponseWriter, source string, err error) {
 		status = http.StatusNotFound
 		errorMessage = "project not found"
 	} else {
+		logger.Log.Printf("%s: %v", source, err)
+	}
+	writeJSON(w, status, map[string]string{"error": errorMessage})
+}
+
+func writeMemoryError(w http.ResponseWriter, source string, err error) {
+	status := http.StatusInternalServerError
+	errorMessage := "internal error"
+	switch {
+	case errors.Is(err, governance.ErrMemoryIDRequired):
+		status = http.StatusBadRequest
+		errorMessage = "memory id is required"
+	case errors.Is(err, governance.ErrMemoryNotFound):
+		status = http.StatusNotFound
+		errorMessage = "memory not found"
+	default:
 		logger.Log.Printf("%s: %v", source, err)
 	}
 	writeJSON(w, status, map[string]string{"error": errorMessage})

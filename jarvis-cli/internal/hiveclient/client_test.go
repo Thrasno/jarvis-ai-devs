@@ -258,3 +258,76 @@ func TestClientReturnsDaemonErrorMessage(t *testing.T) {
 		t.Fatalf("Backups error = %#v, want APIError 503 with daemon message", err)
 	}
 }
+
+// Task 4.1 — MemoryByID + struct field additions
+
+func TestClient_MemoryByID_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/governance/memories/42" {
+			t.Fatalf("request = %s %s, want GET /governance/memories/42", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"memory":{"id":42,"sync_id":"s-1","project":"alpha","category":"manual","title":"the title","content":"the content","created_by":"tester","created_at":"2026-06-08T10:00:00Z","deleted":false}}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	memory, err := client.MemoryByID(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("MemoryByID: %v", err)
+	}
+	if memory.ID != 42 {
+		t.Fatalf("ID = %d, want 42", memory.ID)
+	}
+	if memory.Title != "the title" {
+		t.Fatalf("Title = %q, want 'the title'", memory.Title)
+	}
+	if memory.Content != "the content" {
+		t.Fatalf("Content = %q, want 'the content'", memory.Content)
+	}
+}
+
+func TestClient_MemoryByID_NotFound_APIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"memory not found"}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.MemoryByID(context.Background(), 999)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("MemoryByID error = %#v, want APIError 404", err)
+	}
+}
+
+func TestClient_ProjectList_UnsyncedCount(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"projects":[{"name":"alpha","directory":"/repo/alpha","active_memory_count":3,"deleted_memory_count":1,"session_count":2,"prompt_count":4,"last_activity_at":"2026-06-06T20:00:00Z","unsynced_count":5}]}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	projects, err := client.Projects(context.Background())
+	if err != nil {
+		t.Fatalf("Projects: %v", err)
+	}
+	if len(projects) != 1 || projects[0].UnsyncedCount != 5 {
+		t.Fatalf("projects[0].UnsyncedCount = %d, want 5; projects=%+v", projects[0].UnsyncedCount, projects)
+	}
+}

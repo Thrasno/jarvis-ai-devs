@@ -46,6 +46,7 @@ type Project struct {
 	SessionCount       int       `json:"session_count"`
 	PromptCount        int       `json:"prompt_count"`
 	LastActivityAt     time.Time `json:"last_activity_at"`
+	UnsyncedCount      int       `json:"unsynced_count"`
 }
 
 type Memory struct {
@@ -54,6 +55,7 @@ type Memory struct {
 	Project   string    `json:"project"`
 	Category  string    `json:"category"`
 	Title     string    `json:"title"`
+	Content   string    `json:"content"`
 	CreatedBy string    `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
 	Deleted   bool      `json:"deleted"`
@@ -203,6 +205,17 @@ func (c *Client) Memories(ctx context.Context, filter MemoryFilter) ([]Memory, e
 		return nil, err
 	}
 	return body.Memories, nil
+}
+
+func (c *Client) MemoryByID(ctx context.Context, id int64) (Memory, error) {
+	var body struct {
+		Memory Memory `json:"memory"`
+	}
+	path := "/governance/memories/" + strconv.FormatInt(id, 10)
+	if err := c.get(ctx, path, nil, &body, false); err != nil {
+		return Memory{}, err
+	}
+	return body.Memory, nil
 }
 
 func (c *Client) Warnings(ctx context.Context) ([]Warning, error) {

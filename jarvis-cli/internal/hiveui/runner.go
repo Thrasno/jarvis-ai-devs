@@ -124,7 +124,7 @@ func RunHiveTUI(ctx context.Context, baseURL string) error {
 	}
 
 	snap := LoadSnapshot(ctx, client, baseURL)
-	m := NewModelWithAllExecutors(snap, client, client, client)
+	m := NewModelWithAllExecutors(snap, client, client, client, client)
 
 	return runProgram(m)
 }

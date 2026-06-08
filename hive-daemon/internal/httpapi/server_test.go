@@ -1634,3 +1634,96 @@ type governanceCountersHTTP struct {
 	MutationCount int
 	SyncRows      int
 }
+
+// Task 3.1 — GET /governance/memories/{id}
+
+func TestHandleGovernanceMemory_200(t *testing.T) {
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.CreateSession("sess-alpha", "alpha", "/repo/alpha", "dev", "test"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	id, err := store.SaveMemory(&models.Memory{Project: "alpha", Title: "detail memory", Content: "rich content", SessionID: "sess-alpha"})
+	if err != nil {
+		t.Fatalf("SaveMemory: %v", err)
+	}
+
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, governance.NewService(store))
+	path := fmt.Sprintf("/governance/memories/%d", id)
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if _, ok := resp["memory"]; !ok {
+		t.Fatalf("response missing 'memory' field: %v", resp)
+	}
+	memory := resp["memory"].(map[string]any)
+	if memory["title"] != "detail memory" {
+		t.Fatalf("title = %v, want 'detail memory'", memory["title"])
+	}
+	if memory["content"] != "rich content" {
+		t.Fatalf("content = %v, want 'rich content'", memory["content"])
+	}
+}
+
+func TestHandleGovernanceMemory_400NonNumeric(t *testing.T) {
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, governance.NewService(store))
+	req := httptest.NewRequest(http.MethodGet, "/governance/memories/abc", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if resp["error"] == "" {
+		t.Fatal("expected error field in response")
+	}
+}
+
+func TestHandleGovernanceMemory_404NotFound(t *testing.T) {
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, governance.NewService(store))
+	req := httptest.NewRequest(http.MethodGet, "/governance/memories/99999", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if resp["error"] == "" {
+		t.Fatal("expected error field in response")
+	}
+}

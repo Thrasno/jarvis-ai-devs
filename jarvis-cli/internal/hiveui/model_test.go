@@ -21,7 +21,7 @@ func TestNewModelWithAllExecutors_WiresAllThreeExecutors(t *testing.T) {
 	snapshot := projectMergeSnapshot() // has alpha+beta projects, backup-merge, memories with ID 7
 	snapshot.Memories[0].ID = 7
 
-	m := NewModelWithAllExecutors(snapshot, guard, archive, merge)
+	m := NewModelWithAllExecutors(snapshot, guard, archive, merge, nil)
 
 	// Assert guard executor is wired: guard hotkey appears in memory detail.
 	detail := openMemoryDetail(m)
@@ -37,7 +37,7 @@ func TestNewModelWithAllExecutors_WiresAllThreeExecutors(t *testing.T) {
 
 func TestNewModelWithAllExecutors_EmptyDaemonURLDefaults(t *testing.T) {
 	snapshot := Snapshot{DaemonURL: ""}
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil)
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, nil)
 	if m.snapshot.DaemonURL != "http://127.0.0.1:7438" {
 		t.Fatalf("DaemonURL = %q, want %q", m.snapshot.DaemonURL, "http://127.0.0.1:7438")
 	}
@@ -64,12 +64,12 @@ func TestDashboardStatesRenderReferenceCatalogStates(t *testing.T) {
 				Projects:       []hiveclient.Project{{Name: "core-api", ActiveMemoryCount: 3481}},
 				Warnings:       []hiveclient.Warning{{Message: "37 memories waiting to sync"}, {Message: "Hive API rejected credentials"}},
 			},
-			want: []string{"dashboard · degraded", "Cloud sync is paused", "api auth failed", "unsynced n/a", "warnings 2"},
+			want: []string{"dashboard · degraded", "Cloud sync is paused", "api auth failed", "unsynced 0", "warnings 2"},
 		},
 		{
 			name:     "local only",
 			snapshot: Snapshot{DashboardState: DashboardLocalOnly, Projects: []hiveclient.Project{{Name: "local", ActiveMemoryCount: 612}}},
-			want:     []string{"dashboard · local-only", "Running local-only", "api not configured", "sync disabled", "unsynced n/a"},
+			want:     []string{"dashboard · local-only", "Running local-only", "api not configured", "sync disabled", "unsynced 0"},
 		},
 		{
 			name:     "daemon unavailable",
@@ -224,7 +224,7 @@ func TestReadOnlyNavigationOpensProjectsMemoriesDetailAndTimeline(t *testing.T) 
 	if m.Screen() != ScreenProjects {
 		t.Fatalf("screen = %v, want projects", m.Screen())
 	}
-	assertContains(t, m.View(), "dashboard / projects", "core-api", "web-client", "3481", "n/a", "2m ago")
+	assertContains(t, m.View(), "dashboard / projects", "core-api", "web-client", "3481", "2m ago")
 	assertNotContains(t, m.View(), "merge", "merge guarded", "guarded project merge", "archive", "delete")
 	if m = sendRune(m, 'm'); m.Screen() != ScreenProjects {
 		t.Fatalf("screen = %v, want projects", m.Screen())
@@ -852,6 +852,8 @@ func TestProjectMergePendingBlocksDuplicateEscReopenQuitAndStaleResult(t *testin
 }
 
 func TestUnsyncedCountDoesNotUseWarningTextOrConsecutiveFailures(t *testing.T) {
+	// Unsynced count comes from project UnsyncedCount, NOT from warning messages
+	// or health consecutive failures. Zero projects → unsynced 0.
 	m := NewModelWithSnapshot(Snapshot{
 		DashboardState: DashboardDegraded,
 		Warnings:       []hiveclient.Warning{{Message: "37 memories waiting to sync"}},
@@ -859,7 +861,7 @@ func TestUnsyncedCountDoesNotUseWarningTextOrConsecutiveFailures(t *testing.T) {
 	})
 
 	view := m.View()
-	assertContains(t, view, "unsynced n/a")
+	assertContains(t, view, "unsynced 0")
 	assertNotContains(t, view, "unsynced 37", "sync 9 behind")
 }
 
@@ -1069,4 +1071,338 @@ type fakeProjectMergeExecutor struct {
 func (f *fakeProjectMergeExecutor) MergeProject(_ context.Context, request hiveclient.ProjectMergeRequest) (hiveclient.ProjectMergeResult, error) {
 	f.requests = append(f.requests, request)
 	return hiveclient.ProjectMergeResult{Operation: "merge", TargetType: "project", SourceProject: request.SourceProject, TargetProject: request.TargetProject, BackupID: request.BackupID, Mutated: true, CloudHandoffNote: f.note}, nil
+}
+
+// Task 5.1 — unsyncedText, lastSyncText, projectWarningCount helpers
+
+func TestUnsyncedText_Sum(t *testing.T) {
+	snapshot := Snapshot{
+		Projects: []hiveclient.Project{
+			{Name: "a", UnsyncedCount: 2},
+			{Name: "b", UnsyncedCount: 0},
+			{Name: "c", UnsyncedCount: 3},
+		},
+	}
+	got := unsyncedText(snapshot)
+	if got != "5" {
+		t.Fatalf("unsyncedText = %q, want %q", got, "5")
+	}
+}
+
+func TestLastSyncText_MaxValue(t *testing.T) {
+	t1 := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC)
+	snapshot := Snapshot{
+		Health: []hiveclient.Health{
+			{Project: "a", LastSuccessAt: t1},
+			{Project: "b", LastSuccessAt: t2},
+		},
+	}
+	got := lastSyncText(snapshot)
+	// t2 is the max; relativeTime will return something non-"never"
+	if got == "never" {
+		t.Fatalf("lastSyncText = %q, want recent time (not 'never')", got)
+	}
+	if got == "" {
+		t.Fatal("lastSyncText returned empty string")
+	}
+}
+
+func TestLastSyncText_EmptyHealth(t *testing.T) {
+	snapshot := Snapshot{}
+	got := lastSyncText(snapshot)
+	if got != "never" {
+		t.Fatalf("lastSyncText = %q, want %q", got, "never")
+	}
+}
+
+func TestLastSyncText_AllZero(t *testing.T) {
+	snapshot := Snapshot{
+		Health: []hiveclient.Health{
+			{Project: "a", LastSuccessAt: time.Time{}},
+		},
+	}
+	got := lastSyncText(snapshot)
+	if got != "never" {
+		t.Fatalf("lastSyncText = %q, want %q", got, "never")
+	}
+}
+
+func TestProjectWarningCount_Match(t *testing.T) {
+	snapshot := Snapshot{
+		Warnings: []hiveclient.Warning{
+			{Source: "proj-a", Message: "w1"},
+			{Source: "proj-a", Message: "w2"},
+			{Source: "proj-b", Message: "w3"},
+		},
+	}
+	got := projectWarningCount(snapshot, "proj-a")
+	if got != 2 {
+		t.Fatalf("projectWarningCount(proj-a) = %d, want 2", got)
+	}
+}
+
+func TestProjectWarningCount_NoMatch(t *testing.T) {
+	snapshot := Snapshot{
+		Warnings: []hiveclient.Warning{
+			{Source: "proj-a", Message: "w1"},
+		},
+	}
+	got := projectWarningCount(snapshot, "proj-c")
+	if got != 0 {
+		t.Fatalf("projectWarningCount(proj-c) = %d, want 0", got)
+	}
+}
+
+// Task 5.2 — projectsView enrichment
+
+func TestProjectsView_ShowsRealUnsyncedCount(t *testing.T) {
+	snapshot := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects: []hiveclient.Project{
+			{Name: "proj-a", ActiveMemoryCount: 5, UnsyncedCount: 4},
+		},
+	}
+	m := NewModelWithSnapshot(snapshot)
+	m = sendKey(m, tea.KeyEnter) // open projects
+	view := m.View()
+	assertContains(t, view, "4")
+	assertNotContains(t, view, "n/a")
+}
+
+func TestProjectsView_ShowsWarningCount(t *testing.T) {
+	snapshot := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects: []hiveclient.Project{
+			{Name: "proj-a", ActiveMemoryCount: 5, UnsyncedCount: 0},
+		},
+		Warnings: []hiveclient.Warning{
+			{Source: "proj-a", Message: "w1"},
+			{Source: "proj-a", Message: "w2"},
+		},
+	}
+	m := NewModelWithSnapshot(snapshot)
+	m = sendKey(m, tea.KeyEnter) // open projects
+	view := m.View()
+	assertContains(t, view, "WARNINGS")
+}
+
+func TestProjectsView_NoNAString(t *testing.T) {
+	snapshot := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects: []hiveclient.Project{
+			{Name: "proj-a", ActiveMemoryCount: 3, UnsyncedCount: 0},
+		},
+	}
+	m := NewModelWithSnapshot(snapshot)
+	m = sendKey(m, tea.KeyEnter) // open projects
+	assertNotContains(t, m.View(), "n/a")
+}
+
+// Task 5.3 — Dashboard header last-sync line
+
+func TestDashboardView_LastSync_WithHealth(t *testing.T) {
+	lastSuccess := time.Now().Add(-5 * time.Minute)
+	snapshot := Snapshot{
+		DashboardState: DashboardHealthy,
+		Health:         []hiveclient.Health{{Project: "a", LastSuccessAt: lastSuccess}},
+	}
+	view := NewModelWithSnapshot(snapshot).View()
+	assertContains(t, view, "last sync")
+	assertNotContains(t, view, "last sync never")
+}
+
+func TestDashboardView_LastSync_EmptyHealth(t *testing.T) {
+	snapshot := Snapshot{DashboardState: DashboardHealthy}
+	view := NewModelWithSnapshot(snapshot).View()
+	assertContains(t, view, "last sync never")
+}
+
+// Task 5.5 — NewModelWithAllExecutors signature change (5th param: MemoryLoader)
+
+func TestNewModelWithAllExecutors_WiresMemoryLoader(t *testing.T) {
+	loader := &fakeMemoryLoader{}
+	snapshot := projectMergeSnapshot()
+	snapshot.Memories[0].ID = 10
+
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, loader)
+	if m.memoryLoader == nil {
+		t.Fatal("memoryLoader should be wired, got nil")
+	}
+}
+
+// Task 5.6 — startMemoryLoad cmd, applyMemoryLoadResult, memoryDetailView states
+
+func TestStartMemoryLoad_EmitsCmd(t *testing.T) {
+	loader := &fakeMemoryLoader{content: "loaded content"}
+	snapshot := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects:       []hiveclient.Project{{Name: "alpha"}},
+		Memories: []hiveclient.Memory{
+			{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"},
+		},
+	}
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, loader)
+	// Navigate: dashboard -> projects -> project memories -> memory detail
+	m = sendKey(m, tea.KeyEnter) // open projects
+	m = sendKey(m, tea.KeyEnter) // open project memories
+	// Now send enter to open memory detail — the enter case should emit a cmd
+	model, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = model.(Model)
+
+	if m.Screen() != ScreenMemoryDetail {
+		t.Fatalf("screen = %v, want ScreenMemoryDetail", m.Screen())
+	}
+	if !m.memoryLoading {
+		t.Fatal("memoryLoading should be true after enter on memory detail")
+	}
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd to be returned for async load")
+	}
+}
+
+func TestApplyMemoryLoadResult_SetsContent(t *testing.T) {
+	snapshot := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects:       []hiveclient.Project{{Name: "alpha"}},
+		Memories: []hiveclient.Memory{
+			{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"},
+		},
+	}
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{})
+	m.screen = ScreenMemoryDetail
+	m.memoryLoading = true
+
+	result := memoryLoadResultMsg{id: 10, memory: hiveclient.Memory{ID: 10, Content: "fetched content"}, err: nil}
+	m = m.applyMemoryLoadResult(result)
+
+	if m.memoryLoading {
+		t.Fatal("memoryLoading should be false after result applied")
+	}
+	if m.memoryContent != "fetched content" {
+		t.Fatalf("memoryContent = %q, want %q", m.memoryContent, "fetched content")
+	}
+	if m.memoryLoadErr != nil {
+		t.Fatalf("memoryLoadErr = %v, want nil", m.memoryLoadErr)
+	}
+}
+
+func TestApplyMemoryLoadResult_IgnoresStale(t *testing.T) {
+	snapshot := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects:       []hiveclient.Project{{Name: "alpha"}},
+		Memories: []hiveclient.Memory{
+			{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"},
+		},
+	}
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{})
+	m.screen = ScreenMemoryDetail
+	m.memoryLoading = true
+	m.memoryContent = ""
+
+	// Result for a different ID (stale)
+	result := memoryLoadResultMsg{id: 99, memory: hiveclient.Memory{ID: 99, Content: "stale content"}, err: nil}
+	m = m.applyMemoryLoadResult(result)
+
+	// Should be ignored — content stays empty
+	if m.memoryContent != "" {
+		t.Fatalf("stale result should be ignored, memoryContent = %q", m.memoryContent)
+	}
+}
+
+func TestApplyMemoryLoadResult_SetsError(t *testing.T) {
+	snapshot := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects:       []hiveclient.Project{{Name: "alpha"}},
+		Memories: []hiveclient.Memory{
+			{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"},
+		},
+	}
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{})
+	m.screen = ScreenMemoryDetail
+	m.memoryLoading = true
+
+	loadErr := assertErr("load failed")
+	result := memoryLoadResultMsg{id: 10, err: loadErr}
+	m = m.applyMemoryLoadResult(result)
+
+	if m.memoryLoading {
+		t.Fatal("memoryLoading should be false after error")
+	}
+	if m.memoryLoadErr == nil {
+		t.Fatal("memoryLoadErr should be set")
+	}
+	if m.memoryContent != "" {
+		t.Fatalf("memoryContent should be empty on error, got %q", m.memoryContent)
+	}
+}
+
+func TestMemoryDetailView_Loading(t *testing.T) {
+	snapshot := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects:       []hiveclient.Project{{Name: "alpha"}},
+		Memories:       []hiveclient.Memory{{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"}},
+	}
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{})
+	m.screen = ScreenMemoryDetail
+	m.memoryLoading = true
+
+	view := m.memoryDetailView()
+	assertContains(t, view, "Loading")
+}
+
+func TestMemoryDetailView_Content(t *testing.T) {
+	snapshot := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects:       []hiveclient.Project{{Name: "alpha"}},
+		Memories:       []hiveclient.Memory{{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"}},
+	}
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{})
+	m.screen = ScreenMemoryDetail
+	m.memoryLoading = false
+	m.memoryContent = "the full content"
+
+	view := m.memoryDetailView()
+	assertContains(t, view, "the full content")
+}
+
+func TestMemoryDetailView_Error(t *testing.T) {
+	snapshot := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects:       []hiveclient.Project{{Name: "alpha"}},
+		Memories:       []hiveclient.Memory{{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"}},
+	}
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{})
+	m.screen = ScreenMemoryDetail
+	m.memoryLoading = false
+	m.memoryLoadErr = assertErr("connection refused")
+
+	view := m.memoryDetailView()
+	assertContains(t, view, "Content failed to load")
+	assertContains(t, view, "connection refused")
+}
+
+func TestMemoryDetailView_NoLoader(t *testing.T) {
+	snapshot := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects:       []hiveclient.Project{{Name: "alpha"}},
+		Memories:       []hiveclient.Memory{{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"}},
+	}
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, nil) // no loader
+	m.screen = ScreenMemoryDetail
+
+	view := m.memoryDetailView()
+	assertContains(t, view, "Content preview is not available from the read-only daemon snapshot.")
+}
+
+type fakeMemoryLoader struct {
+	content string
+	err     error
+}
+
+func (f *fakeMemoryLoader) MemoryByID(_ context.Context, id int64) (hiveclient.Memory, error) {
+	if f.err != nil {
+		return hiveclient.Memory{}, f.err
+	}
+	return hiveclient.Memory{ID: id, Content: f.content}, nil
 }

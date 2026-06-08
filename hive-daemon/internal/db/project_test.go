@@ -552,3 +552,225 @@ func readProjectGovernanceRows(t *testing.T, d *hivedb.DB) int {
 	}
 	return rows
 }
+
+// Task 1.3 — GetGovernanceMemoryByID + ErrGovernanceMemoryNotFound
+
+func TestGetGovernanceMemoryByID_Found(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	if _, err := d.EnsureManualSaveSession("proj-a"); err != nil {
+		t.Fatalf("EnsureManualSaveSession: %v", err)
+	}
+	id, err := d.SaveMemory(&models.Memory{
+		Project:   "proj-a",
+		Title:     "test memory",
+		Content:   "rich content here",
+		SessionID: "manual-save-proj-a",
+	})
+	if err != nil {
+		t.Fatalf("SaveMemory: %v", err)
+	}
+
+	got, err := d.GetGovernanceMemoryByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetGovernanceMemoryByID: %v", err)
+	}
+	if got.ID != id {
+		t.Fatalf("ID = %d, want %d", got.ID, id)
+	}
+	if got.Content != "rich content here" {
+		t.Fatalf("Content = %q, want %q", got.Content, "rich content here")
+	}
+	if got.Title != "test memory" {
+		t.Fatalf("Title = %q, want %q", got.Title, "test memory")
+	}
+}
+
+func TestGetGovernanceMemoryByID_NotFound(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+
+	_, err := d.GetGovernanceMemoryByID(context.Background(), 99999)
+	if err == nil {
+		t.Fatal("expected error for missing memory, got nil")
+	}
+	if !errors.Is(err, hivedb.ErrGovernanceMemoryNotFound) {
+		t.Fatalf("error = %v, want ErrGovernanceMemoryNotFound", err)
+	}
+}
+
+func TestGetGovernanceMemoryByID_EmptyContent(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	if err := d.CreateSession("sess-proj-b", "proj-b", "/repo/proj-b", "dev", "test"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	// Insert directly to bypass domain validation (empty content is allowed at DB level)
+	var id int64
+	err := d.RawDB().QueryRow(`
+INSERT INTO memories (sync_id, project, topic_key, category, title, content, created_by, session_id, created_at, updated_at)
+VALUES ('sync-empty', 'proj-b', NULL, 'manual', 'empty content memory', '', 'tester', 'sess-proj-b', '2026-06-08 10:00:00', '2026-06-08 10:00:00')
+RETURNING id`).Scan(&id)
+	if err != nil {
+		t.Fatalf("insert empty content memory: %v", err)
+	}
+
+	got, err := d.GetGovernanceMemoryByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetGovernanceMemoryByID: %v", err)
+	}
+	if got.Content != "" {
+		t.Fatalf("Content = %q, want empty string", got.Content)
+	}
+}
+
+func TestGetGovernanceMemoryByID_IncludesDeletedMemories(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	id := saveGovernanceTestMemory(t, d, "proj-c", "deleted mem")
+	if err := d.DeleteMemory(id, "tester", "stale"); err != nil {
+		t.Fatalf("DeleteMemory: %v", err)
+	}
+
+	got, err := d.GetGovernanceMemoryByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetGovernanceMemoryByID should include deleted: %v", err)
+	}
+	if !got.Deleted {
+		t.Fatal("expected Deleted=true for soft-deleted memory")
+	}
+}
+
+// Task 1.2 — Content in GovernanceMemory list query
+
+func TestListGovernanceMemories_ContentPopulated(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+
+	if _, err := d.EnsureManualSaveSession("proj-a"); err != nil {
+		t.Fatalf("EnsureManualSaveSession: %v", err)
+	}
+	id, err := d.SaveMemory(&models.Memory{
+		Project:   "proj-a",
+		Title:     "mem with content",
+		Content:   "this is the content body",
+		SessionID: "manual-save-proj-a",
+	})
+	if err != nil {
+		t.Fatalf("SaveMemory: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("SaveMemory returned 0 id")
+	}
+
+	memories, err := d.ListGovernanceMemories(context.Background(), hivedb.GovernanceMemoryFilter{Project: "proj-a", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListGovernanceMemories: %v", err)
+	}
+	if len(memories) != 1 {
+		t.Fatalf("len(memories) = %d, want 1", len(memories))
+	}
+	if memories[0].Content != "this is the content body" {
+		t.Fatalf("Content = %q, want %q", memories[0].Content, "this is the content body")
+	}
+}
+
+// Task 1.1 — UnsyncedCount CTE
+
+func TestListGovernanceProjects_UnsyncedCount(t *testing.T) {
+	t.Parallel()
+
+	t.Run("project with unsynced memories", func(t *testing.T) {
+		t.Parallel()
+		d := openGovernanceTestDB(t)
+
+		// Save 3 memories — all unsynced (synced_at IS NULL)
+		saveGovernanceTestMemory(t, d, "proj-a", "mem1")
+		saveGovernanceTestMemory(t, d, "proj-a", "mem2")
+		saveGovernanceTestMemory(t, d, "proj-a", "mem3")
+
+		projects, err := d.ListGovernanceProjects(context.Background())
+		if err != nil {
+			t.Fatalf("ListGovernanceProjects: %v", err)
+		}
+		got := map[string]hivedb.GovernanceProject{}
+		for _, p := range projects {
+			got[p.Name] = p
+		}
+		if got["proj-a"].UnsyncedCount != 3 {
+			t.Fatalf("proj-a UnsyncedCount = %d, want 3", got["proj-a"].UnsyncedCount)
+		}
+	})
+
+	t.Run("project with no unsynced memories", func(t *testing.T) {
+		t.Parallel()
+		d := openGovernanceTestDB(t)
+
+		id := saveGovernanceTestMemory(t, d, "proj-b", "synced mem")
+		// Mark as synced by setting synced_at
+		if _, err := d.RawDB().Exec(`UPDATE memories SET synced_at = '2026-06-08 10:00:00' WHERE id = ?`, id); err != nil {
+			t.Fatalf("mark synced: %v", err)
+		}
+
+		projects, err := d.ListGovernanceProjects(context.Background())
+		if err != nil {
+			t.Fatalf("ListGovernanceProjects: %v", err)
+		}
+		got := map[string]hivedb.GovernanceProject{}
+		for _, p := range projects {
+			got[p.Name] = p
+		}
+		if got["proj-b"].UnsyncedCount != 0 {
+			t.Fatalf("proj-b UnsyncedCount = %d, want 0", got["proj-b"].UnsyncedCount)
+		}
+	})
+
+	t.Run("project with no memories at all", func(t *testing.T) {
+		t.Parallel()
+		d := openGovernanceTestDB(t)
+
+		// Create a project via session only (no memories)
+		if err := d.CreateSession("sess-empty", "proj-empty", "/repo/empty", "dev", "test"); err != nil {
+			t.Fatalf("CreateSession: %v", err)
+		}
+
+		projects, err := d.ListGovernanceProjects(context.Background())
+		if err != nil {
+			t.Fatalf("ListGovernanceProjects: %v", err)
+		}
+		got := map[string]hivedb.GovernanceProject{}
+		for _, p := range projects {
+			got[p.Name] = p
+		}
+		if got["proj-empty"].UnsyncedCount != 0 {
+			t.Fatalf("proj-empty UnsyncedCount = %d, want 0", got["proj-empty"].UnsyncedCount)
+		}
+	})
+
+	t.Run("soft-deleted memories excluded from unsynced count", func(t *testing.T) {
+		t.Parallel()
+		d := openGovernanceTestDB(t)
+
+		id := saveGovernanceTestMemory(t, d, "proj-c", "deleted mem")
+		if err := d.DeleteMemory(id, "tester", "stale"); err != nil {
+			t.Fatalf("DeleteMemory: %v", err)
+		}
+
+		projects, err := d.ListGovernanceProjects(context.Background())
+		if err != nil {
+			t.Fatalf("ListGovernanceProjects: %v", err)
+		}
+		got := map[string]hivedb.GovernanceProject{}
+		for _, p := range projects {
+			got[p.Name] = p
+		}
+		if got["proj-c"].UnsyncedCount != 0 {
+			t.Fatalf("proj-c UnsyncedCount = %d, want 0 (soft-deleted excluded)", got["proj-c"].UnsyncedCount)
+		}
+	})
+}

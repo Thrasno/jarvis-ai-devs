@@ -706,4 +706,49 @@ type readOnlyTestError string
 
 func (e readOnlyTestError) Error() string { return string(e) }
 
+// Task 2.1 — MemoryByID service method
+
+func TestService_MemoryByID_DelegatesToStore(t *testing.T) {
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	require.NoError(t, store.CreateSession("sess-alpha", "alpha", "/repo/alpha", "dev", "test"))
+	id, err := store.SaveMemory(&models.Memory{Project: "alpha", Title: "delegate memory", Content: "delegate content", SessionID: "sess-alpha"})
+	require.NoError(t, err)
+
+	service := NewService(store)
+	memory, err := service.MemoryByID(context.Background(), id)
+
+	require.NoError(t, err)
+	require.Equal(t, id, memory.ID)
+	require.Equal(t, "delegate memory", memory.Title)
+	require.Equal(t, "delegate content", memory.Content)
+}
+
+func TestService_MemoryByID_PropagatesNotFound(t *testing.T) {
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	service := NewService(store)
+	_, err = service.MemoryByID(context.Background(), 99999)
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrMemoryNotFound)
+}
+
+func TestService_MemoryByID_InvalidID(t *testing.T) {
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	service := NewService(store)
+
+	for _, id := range []int64{0, -1, -100} {
+		_, err := service.MemoryByID(context.Background(), id)
+		require.ErrorIs(t, err, ErrMemoryIDRequired, "id=%d", id)
+	}
+}
+
 const errReadOnlyTest readOnlyTestError = "read-only test failure"
