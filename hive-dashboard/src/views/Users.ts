@@ -1,5 +1,6 @@
 import type { User } from '../api/client'
-import { append, error, list, panel, text, type ViewState } from './Overview'
+import { append, error, list, panel, text } from '../components/dom'
+import type { ViewState } from './Overview'
 
 export function renderUsers(state: ViewState<{ users: User[] }>): HTMLElement {
   const card = panel('Users')

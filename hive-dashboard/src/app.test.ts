@@ -12,7 +12,9 @@ describe('dashboard shell', () => {
     renderApp(container, { status: 'anonymous' }, { onLogin: vi.fn(), onLogout: vi.fn() })
 
     expect(container.querySelector('h1')?.textContent).toBe('Sign in to Hive API')
+    expect(container.querySelector('form')?.getAttribute('data-dashboard-primitive')).toBe('panel')
     expect(container.querySelector('input[name="email"]')?.getAttribute('type')).toBe('email')
+    expect(container.querySelector('button[type="submit"]')?.getAttribute('data-dashboard-primitive')).toBe('control')
     expect(container.textContent).not.toContain('daemon')
   })
 
@@ -51,6 +53,10 @@ describe('dashboard shell', () => {
     renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() })
 
     expect(container.querySelector('h1')?.textContent).toBe('Hive API Dashboard')
+    expect(container.querySelector('[data-dashboard-primitive="page"]')?.textContent).toContain('Hive API Dashboard')
+    expect(container.querySelector('header')?.getAttribute('role')).toBe('banner')
+    expect(container.querySelector('button')?.getAttribute('data-dashboard-primitive')).toBe('control')
+    expect(container.querySelector('nav')?.getAttribute('aria-label')).toBe('Dashboard sections')
     expect(container.querySelector('nav')?.textContent).toContain('Overview')
     expect(container.textContent).toContain('Loading dashboard data')
     expect(container.textContent).not.toContain('daemon')
