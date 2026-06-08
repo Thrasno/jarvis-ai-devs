@@ -1,5 +1,6 @@
 import { createApiClient, type ApiClient, type AuditLogList, type MemoryList, type MemorySearch, type User } from './api/client'
 import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
+import { control } from './components/dom'
 import { renderAuditSync } from './views/AuditSync'
 import { renderMemories } from './views/Memories'
 import { renderOverview, type OverviewData, type ViewState } from './views/Overview'
@@ -32,7 +33,8 @@ export function renderApp(container: HTMLElement, state: AuthState, actions: App
 
 function renderLogin(container: HTMLElement, state: Extract<AuthState, { status: 'anonymous' }>, actions: AppActions): void {
   const form = document.createElement('form')
-  form.className = 'card login-card'
+  form.className = 'dashboard-panel panel login-card'
+  form.dataset.dashboardPrimitive = 'panel'
   form.innerHTML = `
     <p class="eyebrow">Hive API</p>
     <h1>Sign in to Hive API</h1>
@@ -41,6 +43,8 @@ function renderLogin(container: HTMLElement, state: Extract<AuthState, { status:
     <label>Password<input name="password" type="password" autocomplete="current-password" required /></label>
     <button type="submit">Sign in</button>
   `
+  form.querySelector('button')?.classList.add('dashboard-control', 'control')
+  form.querySelector('button')?.setAttribute('data-dashboard-primitive', 'control')
   form.addEventListener('submit', async (event) => {
     event.preventDefault()
     const data = new FormData(form)
@@ -51,23 +55,25 @@ function renderLogin(container: HTMLElement, state: Extract<AuthState, { status:
 
 function renderShell(container: HTMLElement, state: Extract<AuthState, { status: 'authenticated' }>, actions: AppActions, dashboard: DashboardState, routePath: string): void {
   const header = document.createElement('header')
+  header.setAttribute('role', 'banner')
+  header.dataset.dashboardPrimitive = 'panel'
   header.innerHTML = '<p class="eyebrow">Hive API</p><h1>Hive API Dashboard</h1>'
   const identity = document.createElement('p')
   identity.textContent = `Signed in as ${state.user.email}`
-  const logout = document.createElement('button')
-  logout.type = 'button'
-  logout.textContent = 'Sign out'
+  const logout = control('Sign out')
   logout.addEventListener('click', actions.onLogout)
   header.append(identity, logout)
 
   const panel = state.user.level === 'admin' ? renderAdminView(routePath, dashboard, actions) : document.createElement('article')
   if (state.user.level !== 'admin') {
-    panel.className = 'card'
+    panel.className = 'dashboard-panel panel'
+    panel.dataset.dashboardPrimitive = 'panel'
     panel.innerHTML = '<h2>Admin access required</h2><p>This dashboard requires an admin Hive API identity.</p>'
   }
 
   const shell = document.createElement('section')
-  shell.className = 'shell'
+  shell.className = 'dashboard-page shell'
+  shell.dataset.dashboardPrimitive = 'page'
   shell.append(header, panel)
   container.append(shell)
 }
@@ -89,6 +95,7 @@ function stateFor<K extends keyof LoadedDashboardData>(state: DashboardState, ke
 
 function nav(actions: AppActions): HTMLElement {
   const node = document.createElement('nav')
+  node.setAttribute('aria-label', 'Dashboard sections')
   const links = [['Overview', '/dashboard'], ['Users', '/dashboard/users'], ['Memories', '/dashboard/memories'], ['Audit & sync', '/dashboard/audit-sync']]
   for (const [label, href] of links) {
     const link = document.createElement('a')
