@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	hivesync "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -63,6 +64,99 @@ func spawnDaemon(t *testing.T) *sdkmcp.ClientSession {
 	}
 	t.Cleanup(func() { _ = session.Close() })
 	return session
+}
+
+// ─── 6.0 applyStartupSyncConfig ────────────────────────────────────────────
+
+func openTestDB(t *testing.T) *db.DB {
+	t.Helper()
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
+
+func TestApplyStartupSyncConfig_NoConfig_NoWarning(t *testing.T) {
+	store := openTestDB(t)
+	load := func() (*hivesync.Config, hivesync.SyncConfigStatus, error) {
+		return nil, hivesync.SyncConfigStatus{Source: hivesync.ConfigSourceNone}, nil
+	}
+
+	cfg := applyStartupSyncConfig(store, load)
+
+	if cfg != nil {
+		t.Errorf("expected nil cfg when no config present, got %+v", cfg)
+	}
+	warnings, err := store.ListHiveWarnings(db.HiveWarningFilter{})
+	if err != nil {
+		t.Fatalf("list warnings: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("expected no warnings for missing config, got %d", len(warnings))
+	}
+}
+
+func TestApplyStartupSyncConfig_LoadError_PersistsWarning(t *testing.T) {
+	store := openTestDB(t)
+	load := func() (*hivesync.Config, hivesync.SyncConfigStatus, error) {
+		return nil, hivesync.SyncConfigStatus{}, fmt.Errorf("malformed sync.json: unexpected EOF")
+	}
+
+	cfg := applyStartupSyncConfig(store, load)
+
+	if cfg != nil {
+		t.Errorf("expected nil cfg on load error, got %+v", cfg)
+	}
+	warnings, err := store.ListHiveWarnings(db.HiveWarningFilter{ResolutionState: "active"})
+	if err != nil {
+		t.Fatalf("list warnings: %v", err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d", len(warnings))
+	}
+	w := warnings[0]
+	if w.Source != "startup/sync-config" {
+		t.Errorf("warning source = %q, want %q", w.Source, "startup/sync-config")
+	}
+	if w.Severity != "warning" {
+		t.Errorf("warning severity = %q, want %q", w.Severity, "warning")
+	}
+	if !strings.Contains(w.Message, "malformed sync.json") {
+		t.Errorf("warning message %q should mention the original error", w.Message)
+	}
+}
+
+func TestApplyStartupSyncConfig_StatusWarnings_PersistsWarnings(t *testing.T) {
+	store := openTestDB(t)
+	load := func() (*hivesync.Config, hivesync.SyncConfigStatus, error) {
+		cfg := &hivesync.Config{APIURL: "https://example.com"}
+		status := hivesync.SyncConfigStatus{
+			Configured: true,
+			Source:     hivesync.ConfigSourceFile,
+			Warnings:   []string{"incomplete env ignored: file config used", "auto_sync disabled"},
+		}
+		return cfg, status, nil
+	}
+
+	cfg := applyStartupSyncConfig(store, load)
+
+	if cfg == nil {
+		t.Fatal("expected non-nil cfg when load succeeds")
+	}
+	warnings, err := store.ListHiveWarnings(db.HiveWarningFilter{ResolutionState: "active"})
+	if err != nil {
+		t.Fatalf("list warnings: %v", err)
+	}
+	if len(warnings) != 2 {
+		t.Fatalf("expected 2 warnings from status, got %d", len(warnings))
+	}
+	for _, w := range warnings {
+		if w.Source != "startup/sync-config" {
+			t.Errorf("warning source = %q, want %q", w.Source, "startup/sync-config")
+		}
+	}
 }
 
 // ─── 6.1 Startup ───────────────────────────────────────────────────────────

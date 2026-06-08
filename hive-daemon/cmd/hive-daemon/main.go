@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -40,13 +41,10 @@ func main() {
 	}
 	project.SetDefaultRecoveryTokenTTL(recoveryTTL)
 
-	// Sync es opcional — solo se activa si están las variables de entorno.
-	// Sin ellas, hive-daemon funciona en modo local puro (igual que antes).
+	// Sync is optional. Invalid or malformed config is recorded as a persistent
+	// warning and startup continues in local-only mode.
 	var syncer hivemcp.SyncRunner
-	cfg, err := hivesync.Load()
-	if err != nil {
-		logger.Log.Fatalf("sync config error: %v", err)
-	}
+	cfg := applyStartupSyncConfig(store, hivesync.LoadWithStatus)
 	if cfg != nil {
 		syncer = hivesync.New(cfg, store)
 		logger.Log.Printf("sync habilitado → %s", cfg.APIURL)
@@ -103,6 +101,35 @@ func httpAddr() string {
 // stale sessions that were auto-closed. Extracted for testability.
 func runStartup(store *db.DB) (int64, error) {
 	return store.AutoCloseStale(24*time.Hour, time.Now)
+}
+
+// applyStartupSyncConfig loads sync configuration. On error it records a
+// persistent warning and returns nil so startup continues in local-only mode.
+// In-memory warnings from LoadWithStatus (e.g. partial env fallback) are also
+// persisted. The caller is responsible for creating a SyncRunner when cfg is non-nil.
+func applyStartupSyncConfig(store *db.DB, load func() (*hivesync.Config, hivesync.SyncConfigStatus, error)) *hivesync.Config {
+	cfg, status, err := load()
+	if err != nil {
+		logger.Log.Printf("sync config invalid, starting in local-only mode: %v", err)
+		if _, warnErr := store.SaveHiveWarning(db.HiveWarningInput{
+			Severity: "warning",
+			Source:   "startup/sync-config",
+			Message:  fmt.Sprintf("sync config invalid, sync disabled: %v", err),
+		}); warnErr != nil {
+			logger.Log.Printf("could not persist sync config warning: %v", warnErr)
+		}
+		return nil
+	}
+	for _, w := range status.Warnings {
+		if _, warnErr := store.SaveHiveWarning(db.HiveWarningInput{
+			Severity: "warning",
+			Source:   "startup/sync-config",
+			Message:  w,
+		}); warnErr != nil {
+			logger.Log.Printf("could not persist sync config warning: %v", warnErr)
+		}
+	}
+	return cfg
 }
 
 // dbFilePath returns the SQLite path, preferring HIVE_DB_PATH env var
