@@ -160,6 +160,13 @@ func NewModelWithSnapshotAndProjectMergeExecutor(snapshot Snapshot, executor Pro
 	return m
 }
 
+func NewModelWithAllExecutors(snapshot Snapshot, guard GuardExecutor, archive ProjectArchiveExecutor, merge ProjectMergeExecutor) Model {
+	m := NewModelWithSnapshotAndGuardExecutor(snapshot, guard)
+	m.projectArchiveExecutor = archive
+	m.projectMergeExecutor = merge
+	return m
+}
+
 func (m Model) Init() tea.Cmd { return nil }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {

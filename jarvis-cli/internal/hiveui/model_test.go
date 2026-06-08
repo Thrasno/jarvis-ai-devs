@@ -11,6 +11,38 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 )
 
+func TestNewModelWithAllExecutors_WiresAllThreeExecutors(t *testing.T) {
+	guard := &fakeGuardExecutor{}
+	archive := &fakeProjectArchiveExecutor{note: "test"}
+	merge := &fakeProjectMergeExecutor{note: "test"}
+
+	// Build a snapshot that has non-zero memory IDs (required for guard hotkey),
+	// at least two projects (required for merge target), and a backup (required for merge guard).
+	snapshot := projectMergeSnapshot() // has alpha+beta projects, backup-merge, memories with ID 7
+	snapshot.Memories[0].ID = 7
+
+	m := NewModelWithAllExecutors(snapshot, guard, archive, merge)
+
+	// Assert guard executor is wired: guard hotkey appears in memory detail.
+	detail := openMemoryDetail(m)
+	assertContains(t, detail.View(), "d delete guarded by backup ID and exact confirmation")
+
+	// Assert archive executor is wired: 'a' hotkey appears in projects view.
+	projects := sendKey(m, tea.KeyEnter)
+	assertContains(t, projects.View(), "a archive guarded by backup ID and exact confirmation")
+
+	// Assert merge executor is wired: 'm' hotkey appears in projects view.
+	assertContains(t, projects.View(), "m merge guarded by backup ID and exact confirmation")
+}
+
+func TestNewModelWithAllExecutors_EmptyDaemonURLDefaults(t *testing.T) {
+	snapshot := Snapshot{DaemonURL: ""}
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil)
+	if m.snapshot.DaemonURL != "http://127.0.0.1:7438" {
+		t.Fatalf("DaemonURL = %q, want %q", m.snapshot.DaemonURL, "http://127.0.0.1:7438")
+	}
+}
+
 func TestDashboardStatesRenderReferenceCatalogStates(t *testing.T) {
 	tests := []struct {
 		name     string
