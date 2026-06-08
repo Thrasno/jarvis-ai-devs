@@ -4,6 +4,16 @@ This file is the operational contract for AI agents working in this repository.
 
 The goal is not to repeat the README. The goal is to make agents work safely, consistently, and with the right architectural context.
 
+## Agent Instruction File Parity
+
+This repository maintains both `AGENTS.md` and `CLAUDE.md` as real root-level agent instruction files.
+
+When changing repository agent instructions:
+
+- Update both files in the same change.
+- Keep their operational rules equivalent unless a tool-specific difference is explicitly documented.
+- Do not update only one file and leave the other stale.
+
 ## Project Purpose
 
 `jarvis-dev` is an AI-assisted development ecosystem for development teams.
