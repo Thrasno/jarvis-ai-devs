@@ -68,13 +68,15 @@ Resultado esperado:
 ### 4. Verificar el dashboard
 
 ```bash
-curl -I https://hivemem.dev/dashboard/
+curl -i https://hivemem.dev/dashboard/
 ```
 
 Resultado esperado:
 
 - HTTP `200`.
 - `Content-Type` compatible con `text/html`.
+
+No usar `curl -I` para esta comprobación. `curl -I` envía una petición `HEAD`, mientras que las rutas del dashboard están registradas para peticiones `GET` como las del navegador; una comprobación con `HEAD` puede devolver `404` aunque el dashboard esté funcionando.
 
 Luego abrir `https://hivemem.dev/dashboard/` en un navegador y confirmar que la interfaz actualizada carga correctamente.
 
