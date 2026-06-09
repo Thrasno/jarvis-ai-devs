@@ -435,6 +435,8 @@ func TestGuardedMemoryDeleteRequiresBackupAndExactConfirmationBeforeDispatch(t *
 	m = openGuardedMemoryDelete(m)
 
 	assertContains(t, m.View(), "guarded memory delete", "target mem_8f3a91c0", "Backup ID is required", "Confirmation must match exactly", "No delete will run until both fields pass guards")
+	assertContains(t, m.View(), "ctrl-c quit")
+	assertNotContains(t, m.View(), "q quit")
 
 	m = sendKey(m, tea.KeyEnter)
 	if len(executor.requests) != 0 {
@@ -474,7 +476,7 @@ func TestGuardedMemoryDeletePendingBlocksDuplicateEscAndReopen(t *testing.T) {
 	if firstCmd == nil {
 		t.Fatal("first cmd is nil, want guarded delete dispatch")
 	}
-	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyEsc}, {Type: tea.KeyRunes, Runes: []rune{'d'}}} {
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyEsc}, {Type: tea.KeyRunes, Runes: []rune{'d'}}, {Type: tea.KeyCtrlC}, {Type: tea.KeyRunes, Runes: []rune{'q'}}} {
 		var cmd tea.Cmd
 		updated, cmd = updated.Update(key)
 		if cmd != nil {
@@ -486,7 +488,7 @@ func TestGuardedMemoryDeletePendingBlocksDuplicateEscAndReopen(t *testing.T) {
 		t.Fatalf("screen = %v, want memory guard while delete is pending", m.Screen())
 	}
 	assertContains(t, m.View(), "Wait for the result before leaving or submitting again")
-	assertNotContains(t, m.View(), "esc back")
+	assertNotContains(t, m.View(), "esc back", "ctrl-c quit", "q quit")
 
 	if len(executor.requests) != 0 {
 		t.Fatalf("dispatch count before async command runs = %d, want 0", len(executor.requests))
@@ -534,6 +536,8 @@ func TestGuardedMemoryRestoreRequiresBackupAndExactConfirmationBeforeDispatch(t 
 	m = openGuardedMemoryRestore(m)
 
 	assertContains(t, m.View(), "guarded memory restore", "target mem_8f3a91c0", "Backup ID is required", "Confirmation must match exactly", "No restore will run until both fields pass guards")
+	assertContains(t, m.View(), "ctrl-c quit")
+	assertNotContains(t, m.View(), "q quit")
 
 	m = sendKey(m, tea.KeyEnter)
 	if len(executor.requests) != 0 {
@@ -573,7 +577,7 @@ func TestGuardedMemoryRestorePendingBlocksDuplicateEscReopenAndStaleResult(t *te
 	if firstCmd == nil {
 		t.Fatal("first cmd is nil, want guarded restore dispatch")
 	}
-	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyEsc}, {Type: tea.KeyRunes, Runes: []rune{'r'}}} {
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyEsc}, {Type: tea.KeyRunes, Runes: []rune{'r'}}, {Type: tea.KeyCtrlC}, {Type: tea.KeyRunes, Runes: []rune{'q'}}} {
 		var cmd tea.Cmd
 		updated, cmd = updated.Update(key)
 		if cmd != nil {
@@ -585,7 +589,7 @@ func TestGuardedMemoryRestorePendingBlocksDuplicateEscReopenAndStaleResult(t *te
 		t.Fatalf("screen = %v, want memory guard while restore is pending", m.Screen())
 	}
 	assertContains(t, m.View(), "Wait for the result before leaving or submitting again")
-	assertNotContains(t, m.View(), "esc back")
+	assertNotContains(t, m.View(), "esc back", "ctrl-c quit", "q quit")
 
 	stale := memoryGuardResultMsg{operation: "delete", targetType: "memory", targetID: 7, backupID: "backup-2"}
 	updated, _ = updated.Update(stale)
@@ -1098,21 +1102,20 @@ func TestUnsyncedText_Sum(t *testing.T) {
 }
 
 func TestLastSyncText_MaxValue(t *testing.T) {
-	t1 := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
-	t2 := time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC)
+	t1 := time.Now().Add(-48 * time.Hour)
+	t2 := time.Now().Add(-24 * time.Hour)
 	snapshot := Snapshot{
 		Health: []hiveclient.Health{
 			{Project: "a", LastSuccessAt: t1},
 			{Project: "b", LastSuccessAt: t2},
 		},
 	}
+	// t2 is the max; assert the exact value is selected
+	// want is computed first to minimise the TOCTOU window between the two time.Since calls
+	want := relativeTime(t2)
 	got := lastSyncText(snapshot)
-	// t2 is the max; relativeTime will return something non-"never"
-	if got == "never" {
-		t.Fatalf("lastSyncText = %q, want recent time (not 'never')", got)
-	}
-	if got == "" {
-		t.Fatal("lastSyncText returned empty string")
+	if got != want {
+		t.Fatalf("lastSyncText = %q, want %q (relativeTime of t2, the maximum)", got, want)
 	}
 }
 
@@ -1192,7 +1195,9 @@ func TestProjectsView_ShowsWarningCount(t *testing.T) {
 	m := NewModelWithSnapshot(snapshot)
 	m = sendKey(m, tea.KeyEnter) // open projects
 	view := m.View()
-	assertContains(t, view, "WARNINGS")
+	// Assert the row contains proj-a and the column values in order: activeMemories=5, unsynced=0, warningCount=2
+	assertContains(t, view, "proj-a")
+	assertContains(t, view, "5  0  2")
 }
 
 func TestProjectsView_NoNAString(t *testing.T) {
@@ -1413,4 +1418,83 @@ func (f *fakeMemoryLoader) MemoryByID(_ context.Context, id int64) (hiveclient.M
 		return hiveclient.Memory{}, f.err
 	}
 	return hiveclient.Memory{ID: id, Content: f.content}, nil
+}
+
+// TestWindowSizeMsgUpdatesWidth verifies that Update handles tea.WindowSizeMsg
+// and stores the terminal width in m.width.
+func TestWindowSizeMsgUpdatesWidth(t *testing.T) {
+	m := NewModelWithSnapshot(Snapshot{})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	got, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update returned non-Model type %T", updated)
+	}
+	if got.width != 120 {
+		t.Fatalf("width = %d, want 120", got.width)
+	}
+}
+
+// TestTypeBadgeAllCategories verifies that typeBadge returns a non-empty string
+// for each of the 7 defined memory observation types.
+func TestTypeBadgeAllCategories(t *testing.T) {
+	categories := []string{"decision", "bugfix", "pattern", "architecture", "config", "preference", "discovery"}
+	for _, cat := range categories {
+		got := typeBadge(cat)
+		if got == "" {
+			t.Errorf("typeBadge(%q) returned empty string", cat)
+		}
+	}
+}
+
+// TestTypeBadgeCaseInsensitive verifies that typeBadge normalizes input to
+// lowercase before map lookup.
+func TestTypeBadgeCaseInsensitive(t *testing.T) {
+	lower := typeBadge("decision")
+	upper := typeBadge("Decision")
+	if lower != upper {
+		t.Errorf("typeBadge case-sensitivity: typeBadge(\"decision\") = %q, typeBadge(\"Decision\") = %q", lower, upper)
+	}
+}
+
+// TestBorderedPanelMinWidth verifies that borderedPanel does not panic when
+// called with width=0 and returns a non-empty string containing the content.
+func TestBorderedPanelMinWidth(t *testing.T) {
+	result := borderedPanel("x", 0)
+	if result == "" {
+		t.Error("borderedPanel(\"x\", 0) returned empty string")
+	}
+	if !strings.Contains(result, "x") {
+		t.Errorf("borderedPanel(\"x\", 0) = %q, want string containing \"x\"", result)
+	}
+}
+
+func TestMemoryGuardCtrlCReturnsTeaQuitBeforeSubmit(t *testing.T) {
+	executor := &fakeGuardExecutor{}
+	m := NewModelWithSnapshotAndGuardExecutor(guardedMemorySnapshot(), executor)
+	m = openGuardedMemoryDelete(m)
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("cmd is nil, want tea.Quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("cmd() = %T, want tea.QuitMsg", cmd())
+	}
+}
+
+func TestMemoryGuardInputCanContainLowercaseQ(t *testing.T) {
+	executor := &fakeGuardExecutor{}
+	m := NewModelWithSnapshotAndGuardExecutor(guardedMemorySnapshot(), executor)
+	m = openGuardedMemoryDelete(m)
+
+	for _, r := range "backup-q99" {
+		updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		if cmd != nil {
+			t.Fatalf("typing backup ID rune %q returned cmd, want form input without global quit", r)
+		}
+		m = updated.(Model)
+	}
+	if m.guardBackupID != "backup-q99" {
+		t.Fatalf("guardBackupID = %q, want %q", m.guardBackupID, "backup-q99")
+	}
 }
