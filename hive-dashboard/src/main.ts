@@ -113,7 +113,7 @@ function nav(actions: AppActions): HTMLElement {
 
 export async function loadDashboard(api: ApiClient, token: string): Promise<DashboardState> {
   const [health, stats, users, recent, search, audit] = await Promise.allSettled([
-    api.health(), api.adminStats(token), api.adminUsers(token), api.memories(token, { limit: 5 }), api.searchMemories(token, DEFAULT_MEMORY_SEARCH_QUERY, { limit: 5 }), api.auditLogs(token, { limit: 10 })
+    api.health(), api.adminStats(token), api.adminUsers(token), api.memories(token, { limit: 5 }), api.searchMemories(token, { query: DEFAULT_MEMORY_SEARCH_QUERY, limit: 5 }), api.auditLogs(token, { limit: 10 })
   ])
   return {
     status: 'ready',
