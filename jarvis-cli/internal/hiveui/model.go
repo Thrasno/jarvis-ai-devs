@@ -678,24 +678,24 @@ func (m Model) removeGuardRune() Model {
 func (m Model) memoryGuardView() string {
 	memory := m.guardMemory
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "guarded memory %s\n", m.guardOperation)
-	fmt.Fprintf(&sb, "target %s\n", memoryKey(memory))
+	fmt.Fprintf(&sb, "%s\n", titleStyle.Render(fmt.Sprintf("guarded memory %s", m.guardOperation)))
+	fmt.Fprintf(&sb, "%s %s\n", dimTextStyle.Render("target"), memoryKey(memory))
 	fmt.Fprintf(&sb, "Backup ID is required: %s\n", visibleInput(m.guardBackupID))
 	fmt.Fprintf(&sb, "Confirmation must match exactly. Type exactly: %s\n", memoryGuardConfirmationPhrase(m.guardOperation, memory))
 	if m.guardStep == memoryGuardConfirmation {
 		fmt.Fprintf(&sb, "confirmation: %s\n", visibleInput(m.guardConfirmation))
 	}
 	if m.guardSubmitting {
-		fmt.Fprintf(&sb, "Guarded memory %s is pending through hive-daemon. Submit is disabled until the result returns.\n", m.guardOperation)
+		fmt.Fprintf(&sb, "%s\n", guardPending.Render(fmt.Sprintf("Guarded memory %s is pending through hive-daemon. Submit is disabled until the result returns.", m.guardOperation)))
 	}
 	if m.message != "" {
 		fmt.Fprintf(&sb, "%s\n", m.message)
 	}
 	fmt.Fprintf(&sb, "No %s will run until both fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation.\n", m.guardOperation)
 	if m.guardSubmitting {
-		sb.WriteString("q quit")
+		sb.WriteString(helpBarStyle.Render("q quit"))
 	} else {
-		sb.WriteString("esc back  q quit")
+		sb.WriteString(helpBarStyle.Render("esc back  q quit"))
 	}
 	return sb.String()
 }
@@ -813,23 +813,24 @@ func (m Model) removeProjectArchiveRune() Model {
 func (m Model) projectArchiveView() string {
 	project := m.projectArchiveProject.Name
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "guarded project archive\ntarget %s\n", project)
+	sb.WriteString(titleStyle.Render("guarded project archive") + "\n")
+	fmt.Fprintf(&sb, "%s %s\n", dimTextStyle.Render("target"), project)
 	fmt.Fprintf(&sb, "Backup ID is required: %s\n", visibleInput(m.projectArchiveBackupID))
 	fmt.Fprintf(&sb, "Confirmation must match exactly. Type exactly: %s\n", projectArchiveConfirmationPhrase(project))
 	if m.projectArchiveStep == memoryGuardConfirmation {
 		fmt.Fprintf(&sb, "confirmation: %s\n", visibleInput(m.projectArchiveConfirmation))
 	}
 	if m.projectArchiveSubmitting {
-		sb.WriteString("Guarded project archive is pending through hive-daemon. Submit is disabled until the result returns.\n")
+		sb.WriteString(guardPending.Render("Guarded project archive is pending through hive-daemon. Submit is disabled until the result returns.") + "\n")
 	}
 	if m.message != "" {
 		fmt.Fprintf(&sb, "%s\n", m.message)
 	}
 	sb.WriteString("No archive will run until both fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation.\n")
 	if m.projectArchiveSubmitting {
-		sb.WriteString("waiting for hive-daemon result")
+		sb.WriteString(guardPending.Render("waiting for hive-daemon result"))
 	} else {
-		sb.WriteString("esc back  ctrl-c quit")
+		sb.WriteString(helpBarStyle.Render("esc back  ctrl-c quit"))
 	}
 	return sb.String()
 }
@@ -984,7 +985,8 @@ func (m Model) projectMergeView() string {
 	source := strings.TrimSpace(m.projectMergeSource.Name)
 	target := strings.TrimSpace(m.projectMergeTarget)
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "guarded project merge\nsource %s\n", source)
+	sb.WriteString(titleStyle.Render("guarded project merge") + "\n")
+	fmt.Fprintf(&sb, "%s %s\n", dimTextStyle.Render("source"), source)
 	fmt.Fprintf(&sb, "Target project is required: %s\nBackup ID is required: %s\n", visibleInput(m.projectMergeTarget), visibleInput(m.projectMergeBackupID))
 	if target == "" {
 		sb.WriteString("Confirmation must match exactly after target is provided.\n")
@@ -995,16 +997,16 @@ func (m Model) projectMergeView() string {
 		fmt.Fprintf(&sb, "confirmation: %s\n", visibleInput(m.projectMergeConfirmation))
 	}
 	if m.projectMergeSubmitting {
-		sb.WriteString("Guarded project merge is pending through hive-daemon. Submit is disabled until the result returns.\n")
+		sb.WriteString(guardPending.Render("Guarded project merge is pending through hive-daemon. Submit is disabled until the result returns.") + "\n")
 	}
 	if m.message != "" {
 		fmt.Fprintf(&sb, "%s\n", m.message)
 	}
 	sb.WriteString("No merge will run until all fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation.\n")
 	if m.projectMergeSubmitting {
-		sb.WriteString("waiting for hive-daemon result")
+		sb.WriteString(guardPending.Render("waiting for hive-daemon result"))
 	} else {
-		sb.WriteString("esc back  ctrl-c quit")
+		sb.WriteString(helpBarStyle.Render("esc back  ctrl-c quit"))
 	}
 	return sb.String()
 }
@@ -1169,23 +1171,44 @@ func (m Model) backupDetailView() string {
 
 func (m Model) apiHealthView() string {
 	var sb strings.Builder
-	sb.WriteString("hive api health\n")
+	sb.WriteString(titleStyle.Render("hive api health") + "\n")
 	if len(m.snapshot.Health) == 0 {
 		sb.WriteString("Health details are not available in the current read-only snapshot.\n")
 	}
 	for _, health := range m.snapshot.Health {
-		fmt.Fprintf(&sb, "%s  %s\n", emptyDash(health.Project), healthState(health))
-		fmt.Fprintf(&sb, "last error %s\n", emptyDash(health.LastError))
-		fmt.Fprintf(&sb, "consecutive failures %d\n", health.ConsecutiveFailures)
-		fmt.Fprintf(&sb, "backoff %s\n", formatDateTime(health.BackoffUntil))
+		state := healthState(health)
+		badge := healthStateBadge(state)
+		fmt.Fprintf(&sb, "%s  %s\n", emptyDash(health.Project), badge.Render(state))
+		fmt.Fprintf(&sb, "%s %s\n", dimTextStyle.Render("last error"), emptyDash(health.LastError))
+		fmt.Fprintf(&sb, "%s %d\n", dimTextStyle.Render("consecutive failures"), health.ConsecutiveFailures)
+		fmt.Fprintf(&sb, "%s %s\n", dimTextStyle.Render("backoff"), formatDateTime(health.BackoffUntil))
 		fmt.Fprintf(&sb, "last success %s  last failure %s\n", formatDateTime(health.LastSuccessAt), formatDateTime(health.LastFailureAt))
 	}
-	sb.WriteString("w warnings  c config  esc back  q quit")
+	sb.WriteString(helpBarStyle.Render("w warnings  c config  esc back  q quit"))
 	return sb.String()
 }
 
+func healthStateBadge(state string) lipgloss.Style {
+	switch state {
+	case "healthy":
+		return badgeHealthy
+	case "degraded":
+		return badgeDegraded
+	case "auth failed":
+		return badgeCritical
+	default:
+		return badgeOffline
+	}
+}
+
 func (m Model) apiConfigView() string {
-	return "hive api config\nRead-only snapshot\nAPI configuration endpoint is not available from the current daemon client contract.\nSecrets are never displayed, echoed, or inferred by this TUI.\nesc back  q quit"
+	var sb strings.Builder
+	sb.WriteString(titleStyle.Render("hive api config") + "\n")
+	sb.WriteString("Read-only snapshot\n")
+	sb.WriteString(dimTextStyle.Render("API configuration endpoint is not available from the current daemon client contract.") + "\n")
+	sb.WriteString(readOnlyBanner.Render("Secrets are never displayed, echoed, or inferred by this TUI.") + "\n")
+	sb.WriteString(helpBarStyle.Render("esc back  q quit"))
+	return sb.String()
 }
 
 type dashboardAction struct {
