@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -271,6 +272,58 @@ func TestNewServer_RegistersTenTools(t *testing.T) {
 
 	if total != 10 {
 		t.Errorf("total registered tools = %d, want 10", total)
+	}
+}
+
+func TestNewServer_DoesNotExposeMemoryDeleteOrGuardExecuteTools(t *testing.T) {
+	session := connectTestServer(t, &mockStore{})
+	ctx := context.Background()
+
+	bannedNames := []string{
+		"mem_delete",
+		"mem_delete_observation",
+		"mem_delete_memory",
+		"memory_delete",
+		"delete_memory",
+		"mem_bulk_delete",
+		"governance_execute",
+		"guard_execute",
+		"execute_guard",
+		"destructive_execute",
+	}
+	guardExecuteSchemaKeys := []string{"operation", "target_type", "target_id", "backup_id", "confirmation"}
+
+	var total int
+	for tool, err := range session.Tools(ctx, nil) {
+		if err != nil {
+			t.Fatalf("Tools() iteration error: %v", err)
+		}
+		total++
+
+		name := strings.ToLower(tool.Name)
+		for _, banned := range bannedNames {
+			if name == banned {
+				t.Fatalf("MCP tool %q exposes agent-facing memory deletion/guard execution", tool.Name)
+			}
+		}
+		schemaBytes, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatalf("tool %q: cannot marshal InputSchema: %v", tool.Name, err)
+		}
+		schemaText := strings.ToLower(string(schemaBytes))
+		matchedGuardKeys := 0
+		for _, key := range guardExecuteSchemaKeys {
+			if strings.Contains(schemaText, `"`+key+`"`) {
+				matchedGuardKeys++
+			}
+		}
+		if matchedGuardKeys == len(guardExecuteSchemaKeys) {
+			t.Fatalf("MCP tool %q exposes the guarded destructive execute request shape", tool.Name)
+		}
+	}
+
+	if total == 0 {
+		t.Fatal("no MCP tools registered during destructive boundary check")
 	}
 }
 
