@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
@@ -72,6 +73,7 @@ func TestDeriveDashboardState(t *testing.T) {
 // ─── LoadSnapshot ────────────────────────────────────────────────────────────
 
 func TestLoadSnapshot_AllRouteSuccess(t *testing.T) {
+	var memoriesQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/governance/health":
@@ -87,6 +89,7 @@ func TestLoadSnapshot_AllRouteSuccess(t *testing.T) {
 				},
 			})
 		case "/governance/memories":
+			memoriesQuery = r.URL.RawQuery
 			writeJSON(w, map[string]any{
 				"memories": []map[string]any{
 					{"sync_id": "mem_001", "project": "core-api", "title": "Test memory"},
@@ -138,6 +141,9 @@ func TestLoadSnapshot_AllRouteSuccess(t *testing.T) {
 	if snap.DaemonURL != srv.URL {
 		t.Fatalf("DaemonURL = %q, want %q", snap.DaemonURL, srv.URL)
 	}
+	if strings.Contains(memoriesQuery, "include_deleted=true") {
+		t.Fatalf("memories query = %q, want normal TUI load without include_deleted", memoriesQuery)
+	}
 }
 
 func TestLoadSnapshot_StatusTransportError_YieldsDaemonUnavailable(t *testing.T) {
@@ -163,6 +169,7 @@ func TestLoadSnapshot_StatusTransportError_YieldsDaemonUnavailable(t *testing.T)
 
 func TestLoadSnapshot_MemoriesEmptyFilterFallback(t *testing.T) {
 	// Memories endpoint returns 4xx for empty project → fall back to per-project.
+	var memoryQueries []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/governance/health":
@@ -178,6 +185,7 @@ func TestLoadSnapshot_MemoriesEmptyFilterFallback(t *testing.T) {
 				},
 			})
 		case "/governance/memories":
+			memoryQueries = append(memoryQueries, r.URL.RawQuery)
 			project := r.URL.Query().Get("project")
 			if project == "" {
 				// Reject empty-filter call with 400.
@@ -222,6 +230,11 @@ func TestLoadSnapshot_MemoriesEmptyFilterFallback(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected per-project fallback memory mem_proj_a, not found")
+	}
+	for _, query := range memoryQueries {
+		if strings.Contains(query, "include_deleted=true") {
+			t.Fatalf("memories query = %q, want normal fallback load without include_deleted", query)
+		}
 	}
 }
 
