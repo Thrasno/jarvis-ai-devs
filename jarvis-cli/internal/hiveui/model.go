@@ -1033,13 +1033,6 @@ func (m Model) snapshotHasBackup(id string) bool {
 	return false
 }
 
-func deletedMemoryMarker(memory hiveclient.Memory) string {
-	if memory.Deleted {
-		return " [deleted]"
-	}
-	return ""
-}
-
 func visibleInput(value string) string {
 	if value == "" {
 		return "-"
@@ -1485,13 +1478,6 @@ func emptyDash(value string) string {
 		return "-"
 	}
 	return value
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func runeKey(msg tea.KeyMsg, r rune) bool {

@@ -19,6 +19,6 @@ var (
 	badgeWarning      = lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true)
 	badgeCritical     = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
 	timelineSeparator = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	readOnlyBanner    = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Italic(true)
+	readOnlyBanner    = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
 	guardPending      = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
 )
