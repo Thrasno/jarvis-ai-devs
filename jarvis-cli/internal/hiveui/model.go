@@ -262,7 +262,14 @@ func (m Model) Screen() Screen { return m.screen }
 
 func (m Model) View() string {
 	if m.snapshot.DashboardState == DashboardDaemonUnavailable || m.snapshot.LoadError != nil {
-		return fmt.Sprintf("dashboard · offline\nCannot reach hive-daemon\nNo response from %s\nThe local Hive daemon is not running, so the TUI has nothing to read.\nprojects — memories — unsynced n/a warnings —\nq quit", m.snapshot.DaemonURL)
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "%s\n", titleStyle.Render("dashboard · offline"))
+		sb.WriteString(dimTextStyle.Render("Cannot reach hive-daemon") + "\n")
+		fmt.Fprintf(&sb, "%s\n", dimTextStyle.Render(fmt.Sprintf("No response from %s", m.snapshot.DaemonURL)))
+		sb.WriteString(dimTextStyle.Render("The local Hive daemon is not running, so the TUI has nothing to read.") + "\n")
+		sb.WriteString(readOnlyBanner.Render("projects — memories — unsynced n/a warnings —") + "\n")
+		sb.WriteString(helpBarStyle.Render("q quit"))
+		return sb.String()
 	}
 	switch m.screen {
 	case ScreenProjects:
@@ -292,27 +299,31 @@ func (m Model) View() string {
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s\n", dashboardTitle(m.snapshot.DashboardState))
+	fmt.Fprintf(&sb, "%s\n", titleStyle.Render(dashboardTitle(m.snapshot.DashboardState)))
 	if notice := dashboardNotice(m.snapshot); notice != "" {
-		sb.WriteString(notice + "\n")
+		sb.WriteString(dimTextStyle.Render(notice) + "\n")
 	}
 	fmt.Fprintf(&sb, "daemon running · %s · %s\n", apiStatus(m.snapshot), syncStatus(m.snapshot))
-	fmt.Fprintf(&sb, "projects %d memories %s unsynced %s warnings %d last sync %s\n", len(m.snapshot.Projects), comma(totalMemories(m.snapshot.Projects)), unsyncedText(m.snapshot), len(m.snapshot.Warnings), lastSyncText(m.snapshot))
+	fmt.Fprintf(&sb, "%s\n", dimTextStyle.Render(fmt.Sprintf("projects %d memories %s unsynced %s warnings %d last sync %s", len(m.snapshot.Projects), comma(totalMemories(m.snapshot.Projects)), unsyncedText(m.snapshot), len(m.snapshot.Warnings), lastSyncText(m.snapshot))))
 	for i, action := range dashboardActions() {
-		mark := "  "
+		cursor := "  "
 		if i == m.cursor {
-			mark = "▌ "
+			cursor = cursorStyle.Render("▌") + " "
 		}
 		state := ""
 		if action.disabled {
-			state = " (disabled)"
+			state = dimTextStyle.Render(" (disabled)")
 		}
-		fmt.Fprintf(&sb, "%s%s%s — %s\n", mark, action.label, state, action.description)
+		label := action.label
+		if i == m.cursor {
+			label = selectedRowStyle.Render(action.label)
+		}
+		fmt.Fprintf(&sb, "%s%s%s — %s\n", cursor, label, state, action.description)
 	}
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}
-	sb.WriteString("j/k move  enter open  w warnings  g health  c config  b backups  q quit")
+	sb.WriteString(helpBarStyle.Render("j/k move  enter open  w warnings  g health  c config  b backups  q quit"))
 	return sb.String()
 }
 
