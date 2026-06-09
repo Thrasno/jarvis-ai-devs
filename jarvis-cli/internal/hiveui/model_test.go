@@ -435,6 +435,8 @@ func TestGuardedMemoryDeleteRequiresBackupAndExactConfirmationBeforeDispatch(t *
 	m = openGuardedMemoryDelete(m)
 
 	assertContains(t, m.View(), "guarded memory delete", "target mem_8f3a91c0", "Backup ID is required", "Confirmation must match exactly", "No delete will run until both fields pass guards")
+	assertContains(t, m.View(), "ctrl-c quit")
+	assertNotContains(t, m.View(), "q quit")
 
 	m = sendKey(m, tea.KeyEnter)
 	if len(executor.requests) != 0 {
@@ -474,7 +476,7 @@ func TestGuardedMemoryDeletePendingBlocksDuplicateEscAndReopen(t *testing.T) {
 	if firstCmd == nil {
 		t.Fatal("first cmd is nil, want guarded delete dispatch")
 	}
-	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyEsc}, {Type: tea.KeyRunes, Runes: []rune{'d'}}} {
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyEsc}, {Type: tea.KeyRunes, Runes: []rune{'d'}}, {Type: tea.KeyCtrlC}, {Type: tea.KeyRunes, Runes: []rune{'q'}}} {
 		var cmd tea.Cmd
 		updated, cmd = updated.Update(key)
 		if cmd != nil {
@@ -486,7 +488,7 @@ func TestGuardedMemoryDeletePendingBlocksDuplicateEscAndReopen(t *testing.T) {
 		t.Fatalf("screen = %v, want memory guard while delete is pending", m.Screen())
 	}
 	assertContains(t, m.View(), "Wait for the result before leaving or submitting again")
-	assertNotContains(t, m.View(), "esc back")
+	assertNotContains(t, m.View(), "esc back", "ctrl-c quit", "q quit")
 
 	if len(executor.requests) != 0 {
 		t.Fatalf("dispatch count before async command runs = %d, want 0", len(executor.requests))
@@ -534,6 +536,8 @@ func TestGuardedMemoryRestoreRequiresBackupAndExactConfirmationBeforeDispatch(t 
 	m = openGuardedMemoryRestore(m)
 
 	assertContains(t, m.View(), "guarded memory restore", "target mem_8f3a91c0", "Backup ID is required", "Confirmation must match exactly", "No restore will run until both fields pass guards")
+	assertContains(t, m.View(), "ctrl-c quit")
+	assertNotContains(t, m.View(), "q quit")
 
 	m = sendKey(m, tea.KeyEnter)
 	if len(executor.requests) != 0 {
@@ -573,7 +577,7 @@ func TestGuardedMemoryRestorePendingBlocksDuplicateEscReopenAndStaleResult(t *te
 	if firstCmd == nil {
 		t.Fatal("first cmd is nil, want guarded restore dispatch")
 	}
-	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyEsc}, {Type: tea.KeyRunes, Runes: []rune{'r'}}} {
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyEsc}, {Type: tea.KeyRunes, Runes: []rune{'r'}}, {Type: tea.KeyCtrlC}, {Type: tea.KeyRunes, Runes: []rune{'q'}}} {
 		var cmd tea.Cmd
 		updated, cmd = updated.Update(key)
 		if cmd != nil {
@@ -585,7 +589,7 @@ func TestGuardedMemoryRestorePendingBlocksDuplicateEscReopenAndStaleResult(t *te
 		t.Fatalf("screen = %v, want memory guard while restore is pending", m.Screen())
 	}
 	assertContains(t, m.View(), "Wait for the result before leaving or submitting again")
-	assertNotContains(t, m.View(), "esc back")
+	assertNotContains(t, m.View(), "esc back", "ctrl-c quit", "q quit")
 
 	stale := memoryGuardResultMsg{operation: "delete", targetType: "memory", targetID: 7, backupID: "backup-2"}
 	updated, _ = updated.Update(stale)
@@ -1461,5 +1465,36 @@ func TestBorderedPanelMinWidth(t *testing.T) {
 	}
 	if !strings.Contains(result, "x") {
 		t.Errorf("borderedPanel(\"x\", 0) = %q, want string containing \"x\"", result)
+	}
+}
+
+func TestMemoryGuardCtrlCReturnsTeaQuitBeforeSubmit(t *testing.T) {
+	executor := &fakeGuardExecutor{}
+	m := NewModelWithSnapshotAndGuardExecutor(guardedMemorySnapshot(), executor)
+	m = openGuardedMemoryDelete(m)
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("cmd is nil, want tea.Quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("cmd() = %T, want tea.QuitMsg", cmd())
+	}
+}
+
+func TestMemoryGuardInputCanContainLowercaseQ(t *testing.T) {
+	executor := &fakeGuardExecutor{}
+	m := NewModelWithSnapshotAndGuardExecutor(guardedMemorySnapshot(), executor)
+	m = openGuardedMemoryDelete(m)
+
+	for _, r := range "backup-q99" {
+		updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		if cmd != nil {
+			t.Fatalf("typing backup ID rune %q returned cmd, want form input without global quit", r)
+		}
+		m = updated.(Model)
+	}
+	if m.guardBackupID != "backup-q99" {
+		t.Fatalf("guardBackupID = %q, want %q", m.guardBackupID, "backup-q99")
 	}
 }

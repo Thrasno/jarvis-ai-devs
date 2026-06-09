@@ -225,11 +225,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.updateProjectArchive(key)
 	}
+	if m.screen == ScreenMemoryGuard {
+		if key.Type == tea.KeyCtrlC && !m.guardSubmitting {
+			return m, tea.Quit
+		}
+		return m.updateMemoryGuard(key)
+	}
 	if key.Type == tea.KeyCtrlC || runeKey(key, 'q') {
 		return m, tea.Quit
-	}
-	if m.screen == ScreenMemoryGuard {
-		return m.updateMemoryGuard(key)
 	}
 	m.message = ""
 	switch {
@@ -823,10 +826,8 @@ func (m Model) memoryGuardView() string {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}
 	sb.WriteString("\n")
-	if m.guardSubmitting {
-		sb.WriteString(helpBar([]KeyHint{{"q", "quit"}}, "destructive", w))
-	} else {
-		sb.WriteString(helpBar([]KeyHint{{"esc", "back"}, {"q", "quit"}}, "destructive", w))
+	if !m.guardSubmitting {
+		sb.WriteString(helpBar([]KeyHint{{"esc", "back"}, {"ctrl-c", "quit"}}, "destructive", w))
 	}
 	return sb.String()
 }
