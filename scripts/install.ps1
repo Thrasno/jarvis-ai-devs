@@ -231,6 +231,13 @@ function Install-Binary {
         Write-Err "El artefacto de $Name se extrajo pero no contiene $Name.exe"
     }
 
+    $existingProc = Get-Process -Name $Name -ErrorAction SilentlyContinue
+    if ($existingProc) {
+        Write-Info "Deteniendo proceso $Name antes de actualizar..."
+        $existingProc | Stop-Process -Force
+        Start-Sleep -Milliseconds 500
+    }
+
     Move-Item -Path $binaryPath -Destination $INSTALL_DIR -Force
     Remove-Item -Path $tmpDir -Recurse -Force
     
