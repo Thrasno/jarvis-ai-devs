@@ -430,14 +430,18 @@ func (m Model) back() Model {
 
 func (m Model) projectsView() string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "dashboard / projects\t%d projects\n", len(m.snapshot.Projects))
-	sb.WriteString("PROJECT MEMORIES UNSYNCED WARNINGS LAST\n")
+	fmt.Fprintf(&sb, "%s\t%d projects\n", titleStyle.Render("dashboard / projects"), len(m.snapshot.Projects))
+	sb.WriteString(columnHeaderStyle.Render("PROJECT MEMORIES UNSYNCED WARNINGS LAST") + "\n")
 	for i, project := range m.snapshot.Projects {
-		mark := "  "
+		cursor := "  "
 		if i == m.projectIndex {
-			mark = "▌ "
+			cursor = cursorStyle.Render("▌") + " "
 		}
-		fmt.Fprintf(&sb, "%s%s %d %d %d %s\n", mark, project.Name, project.ActiveMemoryCount, project.UnsyncedCount, projectWarningCount(m.snapshot, project.Name), relativeTime(project.LastActivityAt))
+		name := project.Name
+		if i == m.projectIndex {
+			name = selectedRowStyle.Render(project.Name)
+		}
+		fmt.Fprintf(&sb, "%s%s %d %d %d %s\n", cursor, name, project.ActiveMemoryCount, project.UnsyncedCount, projectWarningCount(m.snapshot, project.Name), dimTextStyle.Render(relativeTime(project.LastActivityAt)))
 	}
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
@@ -448,7 +452,7 @@ func (m Model) projectsView() string {
 	if m.projectMergeExecutor != nil && len(m.snapshot.Projects) > 0 {
 		sb.WriteString("m merge guarded by backup ID and exact confirmation\n")
 	}
-	sb.WriteString("j/k move  enter open  t timeline  esc back  q quit")
+	sb.WriteString(helpBarStyle.Render("j/k move  enter open  t timeline  esc back  q quit"))
 	return sb.String()
 }
 
@@ -456,37 +460,45 @@ func (m Model) projectMemoriesView() string {
 	memories := m.projectMemories()
 	project := m.selectedProject().Name
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "dashboard / projects / %s\t%d memories\n", project, len(memories))
+	fmt.Fprintf(&sb, "%s\t%d memories\n", titleStyle.Render(fmt.Sprintf("dashboard / projects / %s", project)), len(memories))
 	if len(memories) == 0 {
 		sb.WriteString("No local Hive memories found for this project\n")
 	}
 	for i, memory := range memories {
-		mark := "  "
+		cursor := "  "
 		if i == m.memoryIndex {
-			mark = "▌ "
+			cursor = cursorStyle.Render("▌") + " "
 		}
-		fmt.Fprintf(&sb, "%s%s  %s%s  %s\n", mark, emptyDash(memory.Category), memory.Title, deletedMemoryMarker(memory), relativeTime(memory.CreatedAt))
+		deleted := ""
+		if memory.Deleted {
+			deleted = " " + badgeDeleted.Render("[deleted]")
+		}
+		title := memory.Title
+		if i == m.memoryIndex {
+			title = selectedRowStyle.Render(memory.Title)
+		}
+		fmt.Fprintf(&sb, "%s%s  %s%s  %s\n", cursor, emptyDash(memory.Category), title, deleted, dimTextStyle.Render(relativeTime(memory.CreatedAt)))
 	}
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}
-	sb.WriteString("j/k move  enter open  t timeline  esc back  q quit")
+	sb.WriteString(helpBarStyle.Render("j/k move  enter open  t timeline  esc back  q quit"))
 	return sb.String()
 }
 
 func (m Model) memoryDetailView() string {
 	memory := m.selectedMemory()
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s / %s\n", memory.Project, memoryKey(memory))
-	fmt.Fprintf(&sb, "id %s  created %s\n", memoryKey(memory), formatDateTime(memory.CreatedAt))
-	fmt.Fprintf(&sb, "project %s  sync %s\n", memory.Project, syncText(memory))
+	fmt.Fprintf(&sb, "%s\n", titleStyle.Render(fmt.Sprintf("%s / %s", memory.Project, memoryKey(memory))))
+	fmt.Fprintf(&sb, "%s %s  %s %s\n", dimTextStyle.Render("id"), memoryKey(memory), dimTextStyle.Render("created"), formatDateTime(memory.CreatedAt))
+	fmt.Fprintf(&sb, "%s %s  %s %s\n", dimTextStyle.Render("project"), memory.Project, dimTextStyle.Render("sync"), syncText(memory))
 	if memory.Deleted {
-		sb.WriteString("status deleted\n")
+		fmt.Fprintf(&sb, "%s\n", badgeDeleted.Render("status deleted"))
 	}
-	fmt.Fprintf(&sb, "type %s  source %s\n", emptyDash(memory.Category), emptyDash(memory.CreatedBy))
+	fmt.Fprintf(&sb, "%s %s  %s %s\n", dimTextStyle.Render("type"), emptyDash(memory.Category), dimTextStyle.Render("source"), emptyDash(memory.CreatedBy))
 	switch {
 	case m.memoryLoader == nil:
-		sb.WriteString("Content preview is not available from the read-only daemon snapshot.\n")
+		sb.WriteString(readOnlyBanner.Render("Content preview is not available from the read-only daemon snapshot.") + "\n")
 	case m.memoryLoading:
 		sb.WriteString("Loading content from hive-daemon...\n")
 	case m.memoryLoadErr != nil:
@@ -504,7 +516,7 @@ func (m Model) memoryDetailView() string {
 	if m.message != "" {
 		fmt.Fprintf(&sb, "%s\n", m.message)
 	}
-	sb.WriteString("esc back  q quit")
+	sb.WriteString(helpBarStyle.Render("esc back  q quit"))
 	return sb.String()
 }
 
