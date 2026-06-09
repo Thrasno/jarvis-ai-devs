@@ -33,7 +33,7 @@ func TestNewModelWithAllExecutors_WiresAllThreeExecutors(t *testing.T) {
 
 	// Assert guard executor is wired: guard hotkey appears in memory detail.
 	detail := openMemoryDetail(m)
-	assertContains(t, detail.View(), "d delete guarded by backup ID and exact confirmation")
+	assertContains(t, detail.View(), "d delete guarded by backup ID, delete reason, and exact confirmation")
 
 	// Assert archive executor is wired: 'a' hotkey appears in projects view.
 	projects := sendKey(m, tea.KeyEnter)
@@ -291,7 +291,7 @@ func TestMemoryDetailAdvertisesCorrectGuardActionForMemoryStatus(t *testing.T) {
 			name:       "active memory advertises delete only",
 			snapshot:   guardedMemorySnapshot(),
 			wantAction: 'd',
-			wantText:   "d delete guarded by backup ID and exact confirmation",
+			wantText:   "d delete guarded by backup ID, delete reason, and exact confirmation",
 			guardText:  "guarded memory delete",
 			blockKey:   'r',
 			blockText:  "r restore",
@@ -434,7 +434,7 @@ func TestGuardedMemoryDeleteRequiresBackupAndExactConfirmationBeforeDispatch(t *
 	m := NewModelWithSnapshotAndGuardExecutor(guardedMemorySnapshot(), executor)
 	m = openGuardedMemoryDelete(m)
 
-	assertContains(t, m.View(), "guarded memory delete", "target mem_8f3a91c0", "Backup ID is required", "Confirmation must match exactly", "No delete will run until both fields pass guards")
+	assertContains(t, m.View(), "guarded memory delete", "target mem_8f3a91c0", "Backup ID is required", "Delete reason is required", "No delete will run until all fields pass guards")
 	assertContains(t, m.View(), "ctrl-c quit")
 	assertNotContains(t, m.View(), "q quit")
 
@@ -445,6 +445,10 @@ func TestGuardedMemoryDeleteRequiresBackupAndExactConfirmationBeforeDispatch(t *
 	assertContains(t, m.View(), "Backup ID is required before guarded delete")
 
 	m = sendText(m, "backup-1")
+	m = sendKey(m, tea.KeyEnter)
+	assertContains(t, m.View(), "Delete reason is required")
+
+	m = sendText(m, "  stale cleanup  ")
 	m = sendKey(m, tea.KeyEnter)
 	assertContains(t, m.View(), "Type exactly: DELETE memory 7")
 
@@ -462,10 +466,75 @@ func TestGuardedMemoryDeleteRequiresBackupAndExactConfirmationBeforeDispatch(t *
 		t.Fatalf("dispatch count = %d, want 1", len(executor.requests))
 	}
 	request := executor.requests[0]
-	if request.Operation != "delete" || request.TargetType != "memory" || request.TargetID != 7 || request.BackupID != "backup-1" || request.Confirmation != "DELETE memory 7" {
+	if request.Operation != "delete" || request.TargetType != "memory" || request.TargetID != 7 || request.BackupID != "backup-1" || request.Confirmation != "DELETE memory 7" || request.Reason != "stale cleanup" {
 		t.Fatalf("request = %#v, want guarded memory delete with exact confirmation", request)
 	}
 	assertContains(t, m.View(), "Guarded memory delete dispatched through hive-daemon", "No direct SQLite or cloud mutation was performed by the TUI")
+}
+
+func TestGuardedMemoryDeleteRejectsMissingReasonBeforeConfirmation(t *testing.T) {
+	executor := &fakeGuardExecutor{}
+	m := openGuardedMemoryDelete(NewModelWithSnapshotAndGuardExecutor(guardedMemorySnapshot(), executor))
+	m = sendText(m, "backup-1")
+	m = sendKey(m, tea.KeyEnter)
+
+	m = sendKey(m, tea.KeyEnter)
+	if len(executor.requests) != 0 {
+		t.Fatalf("dispatch count = %d, want 0 without delete reason", len(executor.requests))
+	}
+	assertContains(t, m.View(), "Delete reason is required before guarded delete")
+	assertNotContains(t, m.View(), "Type exactly: DELETE memory 7")
+
+	m = sendText(m, "   ")
+	m = sendKey(m, tea.KeyEnter)
+	if len(executor.requests) != 0 {
+		t.Fatalf("dispatch count = %d, want 0 with whitespace-only delete reason", len(executor.requests))
+	}
+	assertContains(t, m.View(), "Delete reason is required before guarded delete")
+}
+
+func TestGuardedMemoryDeleteSuccessRemovesMemoryFromNormalSnapshot(t *testing.T) {
+	executor := &fakeGuardExecutor{}
+	m := readyGuardedMemoryDelete(executor)
+	m = submitGuardAndApplyResult(t, m)
+
+	if m.Screen() != ScreenProjectMemories {
+		t.Fatalf("screen = %v, want project memories after delete", m.Screen())
+	}
+	if len(m.snapshot.Memories) != 2 {
+		t.Fatalf("snapshot memories = %d, want 2 after removing deleted memory", len(m.snapshot.Memories))
+	}
+	for _, memory := range m.snapshot.Memories {
+		if memory.ID == 7 || memory.SyncID == "mem_8f3a91c0" {
+			t.Fatalf("deleted memory still present in normal snapshot: %#v", memory)
+		}
+	}
+	if m.snapshot.Projects[0].ActiveMemoryCount != 3480 || m.snapshot.Projects[0].DeletedMemoryCount != 5 {
+		t.Fatalf("project counts = active %d deleted %d, want active 3480 deleted 5", m.snapshot.Projects[0].ActiveMemoryCount, m.snapshot.Projects[0].DeletedMemoryCount)
+	}
+	if totalMemories(m.snapshot.Projects) != 4122 {
+		t.Fatalf("dashboard memory total = %d, want 4122", totalMemories(m.snapshot.Projects))
+	}
+	assertContains(t, m.View(), "Fix retry storm", "Guarded memory delete dispatched through hive-daemon")
+	assertNotContains(t, m.View(), "Use exponential backoff", "[deleted]")
+}
+
+func TestGuardedMemoryDeleteViewUsesHiveVisualSystem(t *testing.T) {
+	m := openGuardedMemoryDelete(NewModelWithSnapshotAndGuardExecutor(guardedMemorySnapshot(), &fakeGuardExecutor{}))
+	view := m.View()
+
+	assertContains(t, view,
+		"guarded memory delete",
+		"destructive",
+		"╭",
+		"IMPACT",
+		"SAFETY",
+		"Backup ID is required: -",
+		"Delete reason is required: -",
+		"esc back",
+		"ctrl-c quit",
+	)
+	assertNotContains(t, view, "q quit")
 }
 
 func TestGuardedMemoryDeletePendingBlocksDuplicateEscAndReopen(t *testing.T) {
@@ -966,6 +1035,8 @@ func submitProjectMergeAndApplyResult(t *testing.T, m Model) Model {
 func readyGuardedMemoryDelete(executor *fakeGuardExecutor) Model {
 	m := openGuardedMemoryDelete(NewModelWithSnapshotAndGuardExecutor(guardedMemorySnapshot(), executor))
 	m = sendText(m, "backup-1")
+	m = sendKey(m, tea.KeyEnter)
+	m = sendText(m, "stale cleanup")
 	m = sendKey(m, tea.KeyEnter)
 	return sendText(m, "DELETE memory 7")
 }

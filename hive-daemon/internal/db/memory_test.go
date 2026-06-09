@@ -486,6 +486,45 @@ func TestMemorySoftDeleteBehavior(t *testing.T) {
 	}
 }
 
+func TestMemorySoftDeleteNormalReadsHideTombstones(t *testing.T) {
+	d := openTestDB(t)
+	activeID, err := saveTestMemory(t, d, newMemory("soft-delete-normal", "Active auth note", "shared auth search term"))
+	require.NoError(t, err)
+	deletedID, err := saveTestMemory(t, d, newMemory("soft-delete-normal", "Deleted auth note", "shared auth search term"))
+	require.NoError(t, err)
+
+	require.NoError(t, d.DeleteMemory(deletedID, "tester", "duplicate entry"))
+
+	_, err = d.GetMemory(deletedID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "memory not found")
+
+	listed, err := d.ListMemories("soft-delete-normal", 10)
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	assert.Equal(t, activeID, listed[0].ID)
+
+	searched, err := d.Search("auth", "soft-delete-normal", "", 10)
+	require.NoError(t, err)
+	require.Len(t, searched, 1)
+	assert.Equal(t, activeID, searched[0].ID)
+
+	deleted, err := d.GetDeletedMemory(deletedID)
+	require.NoError(t, err)
+	assert.Equal(t, "tester", deleted.DeletedBy)
+	assert.Equal(t, "duplicate entry", deleted.DeleteReason)
+	assert.False(t, deleted.DeletedAt.IsZero())
+
+	mutations, err := d.GetPendingMutations("soft-delete-normal", 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, mutations)
+	deleteMutation := mutations[len(mutations)-1]
+	require.Equal(t, MutationOpDelete, deleteMutation.Op)
+	require.NotNil(t, deleteMutation.Tombstone)
+	assert.Equal(t, "tester", deleteMutation.Tombstone.DeletedBy)
+	assert.Equal(t, "duplicate entry", deleteMutation.Tombstone.Reason)
+}
+
 func TestMemoryMutationsJournaledTransactionally(t *testing.T) {
 	d := openTestDB(t)
 	key := "journal/topic"

@@ -42,7 +42,7 @@ func TestClientExecutesGuardWithExactConfirmation(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if req.BackupID != "backup-1" || req.Confirmation != " DELETE memory 7 " || req.TargetID != 7 {
+		if req.BackupID != "backup-1" || req.Confirmation != " DELETE memory 7 " || req.TargetID != 7 || req.Reason != "cleanup reason" {
 			t.Fatalf("guard request = %+v, want exact backup and confirmation forwarded", req)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -54,7 +54,7 @@ func TestClientExecutesGuardWithExactConfirmation(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	result, err := client.ExecuteGuard(context.Background(), GuardRequest{Operation: "delete", TargetType: "memory", TargetID: 7, BackupID: "backup-1", Confirmation: " DELETE memory 7 "})
+	result, err := client.ExecuteGuard(context.Background(), GuardRequest{Operation: "delete", TargetType: "memory", TargetID: 7, BackupID: "backup-1", Confirmation: " DELETE memory 7 ", Reason: "cleanup reason"})
 	if err != nil {
 		t.Fatalf("ExecuteGuard: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestClientListsMemoriesWithFilters(t *testing.T) {
 			t.Fatalf("query = %q, want project/include_deleted/limit filters", r.URL.RawQuery)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"memories":[{"id":7,"sync_id":"sync-7","project":"alpha","category":"decision","title":"Governance boundary","created_by":"agent","created_at":"2026-06-06T20:00:00Z","deleted":true}]}`))
+		_, _ = w.Write([]byte(`{"memories":[{"id":7,"sync_id":"sync-7","project":"alpha","category":"decision","title":"Governance boundary","created_by":"agent","created_at":"2026-06-06T20:00:00Z","deleted":true,"deleted_at":"2026-06-06T21:00:00Z","deleted_by":"tester","delete_reason":"manual cleanup"}]}`))
 	}))
 	defer server.Close()
 
@@ -218,7 +218,7 @@ func TestClientListsMemoriesWithFilters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Memories: %v", err)
 	}
-	if len(memories) != 1 || memories[0].ID != 7 || !memories[0].Deleted {
+	if len(memories) != 1 || memories[0].ID != 7 || !memories[0].Deleted || memories[0].DeletedAt == nil || memories[0].DeletedBy != "tester" || memories[0].DeleteReason != "manual cleanup" {
 		t.Fatalf("memories = %+v, want deleted memory id 7", memories)
 	}
 }

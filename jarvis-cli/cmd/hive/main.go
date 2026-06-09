@@ -92,7 +92,11 @@ func memoriesCommand(client governanceClient) *cobra.Command {
 			return nil
 		}
 		for _, m := range memories {
-			fmt.Fprintf(cmd.OutOrStdout(), "id=%d project=%s category=%s title=%q deleted=%t created_by=%s created_at=%s\n", m.ID, m.Project, m.Category, m.Title, m.Deleted, m.CreatedBy, formatTime(m.CreatedAt))
+			fmt.Fprintf(cmd.OutOrStdout(), "id=%d project=%s category=%s title=%q deleted=%t created_by=%s created_at=%s", m.ID, m.Project, m.Category, m.Title, m.Deleted, m.CreatedBy, formatTime(m.CreatedAt))
+			if includeDeleted && m.Deleted {
+				fmt.Fprintf(cmd.OutOrStdout(), " deleted_at=%s deleted_by=%s delete_reason=%q", formatOptionalTime(m.DeletedAt), emptyDash(m.DeletedBy), m.DeleteReason)
+			}
+			fmt.Fprintln(cmd.OutOrStdout())
 		}
 		return nil
 	}}
@@ -243,6 +247,12 @@ func memoryGuardCommand(client governanceClient, operation string) *cobra.Comman
 		if !cmd.Flags().Changed("confirmation") {
 			return fmt.Errorf("--confirmation is required for hive memory %s", operation)
 		}
+		if operation == "delete" {
+			reason = strings.TrimSpace(reason)
+			if !cmd.Flags().Changed("reason") || reason == "" {
+				return fmt.Errorf("--reason is required for hive memory delete")
+			}
+		}
 		result, err := client.ExecuteGuard(cmd.Context(), hiveclient.GuardRequest{Operation: operation, TargetType: "memory", TargetID: id, BackupID: backupID, Confirmation: confirmation, ActorID: actorID, Reason: reason})
 		if err != nil {
 			return err
@@ -263,6 +273,13 @@ func formatTime(t time.Time) string {
 		return "-"
 	}
 	return t.UTC().Format(time.RFC3339)
+}
+
+func formatOptionalTime(t *time.Time) string {
+	if t == nil {
+		return "-"
+	}
+	return formatTime(*t)
 }
 
 func emptyDash(value string) string {

@@ -66,13 +66,13 @@ func LoadSnapshot(ctx context.Context, c *hiveclient.Client, baseURL string) Sna
 	}
 
 	// Memories: try bulk empty-filter first; fall back to per-project on *APIError.
-	memories, err := c.Memories(ctx, hiveclient.MemoryFilter{IncludeDeleted: true})
+	memories, err := c.Memories(ctx, hiveclient.MemoryFilter{})
 	if err != nil {
 		var apiErr *hiveclient.APIError
 		if isAPIError(err, &apiErr) {
 			// Fall back: load memories per project.
 			for _, p := range snap.Projects {
-				pm, perr := c.Memories(ctx, hiveclient.MemoryFilter{Project: p.Name, IncludeDeleted: true})
+				pm, perr := c.Memories(ctx, hiveclient.MemoryFilter{Project: p.Name})
 				if perr == nil {
 					memories = append(memories, pm...)
 				}

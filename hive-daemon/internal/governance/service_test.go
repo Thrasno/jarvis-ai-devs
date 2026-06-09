@@ -142,6 +142,44 @@ func TestServiceGuardedMemoryDeleteBlocksWithoutFreshBackupOrConfirmation(t *tes
 	}
 }
 
+func TestServiceGuardedMemoryDeleteRequiresReasonBeforeMutation(t *testing.T) {
+	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+
+	for _, tt := range []struct {
+		name   string
+		reason string
+	}{
+		{name: "missing reason", reason: ""},
+		{name: "blank reason", reason: "  \t  "},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := db.Open(":memory:")
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, store.Close()) })
+			memoryID := saveGovernanceServiceTestMemory(t, store, "alpha", "Reason required")
+			beforeMutations := requirePendingMemoryMutations(t, store)
+
+			service := NewServiceWithBackup(store, fakeGuardBackupStore{backups: []BackupManifest{{ID: "fresh-backup", CreatedAt: now.Add(-time.Minute)}}})
+			service.now = func() time.Time { return now }
+
+			_, err = service.ExecuteGuard(context.Background(), GuardRequest{
+				Operation:    GuardOperationDelete,
+				TargetType:   GuardTargetMemory,
+				TargetID:     memoryID,
+				BackupID:     "fresh-backup",
+				Confirmation: GuardConfirmation(GuardOperationDelete, GuardTargetMemory, memoryID),
+				ActorID:      "tester",
+				Reason:       tt.reason,
+			})
+
+			require.ErrorIs(t, err, ErrDestructiveReasonRequired)
+			requireMemoryActive(t, store, memoryID)
+			afterMutations := requirePendingMemoryMutations(t, store)
+			require.Len(t, afterMutations, len(beforeMutations), "missing reason must not create mutation journal entries")
+		})
+	}
+}
+
 func TestServiceGuardedMemoryOperationsMutateOnlySelectedLocalTarget(t *testing.T) {
 	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
 	store, err := db.Open(":memory:")
@@ -165,13 +203,16 @@ func TestServiceGuardedMemoryOperationsMutateOnlySelectedLocalTarget(t *testing.
 		BackupID:     "fresh-backup",
 		Confirmation: GuardConfirmation(GuardOperationDelete, GuardTargetMemory, deleteTargetID),
 		ActorID:      "tester",
-		Reason:       "remove selected local memory",
+		Reason:       "  remove selected local memory  ",
 	})
 	require.NoError(t, err)
 	require.Equal(t, GuardOperationDelete, deleted.Operation)
 	require.Equal(t, deleteTargetID, deleted.TargetID)
 	require.True(t, deleted.Mutated)
 	requireMemoryDeleted(t, store, deleteTargetID)
+	deletedMemory, err := store.GetDeletedMemory(deleteTargetID)
+	require.NoError(t, err)
+	require.Equal(t, "remove selected local memory", deletedMemory.DeleteReason)
 	requireMemoryActive(t, store, activeNeighborID)
 	afterDeleteMutations := requirePendingMemoryMutations(t, store)
 	require.Len(t, afterDeleteMutations, len(beforeDeleteMutations)+1)
@@ -735,6 +776,22 @@ func TestService_MemoryByID_PropagatesNotFound(t *testing.T) {
 	_, err = service.MemoryByID(context.Background(), 99999)
 
 	require.Error(t, err)
+	require.ErrorIs(t, err, ErrMemoryNotFound)
+}
+
+func TestService_MemoryByID_HidesDeletedMemory(t *testing.T) {
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	require.NoError(t, store.CreateSession("sess-alpha", "alpha", "/repo/alpha", "dev", "test"))
+	id, err := store.SaveMemory(&models.Memory{Project: "alpha", Title: "deleted memory", Content: "deleted content", SessionID: "sess-alpha"})
+	require.NoError(t, err)
+	require.NoError(t, store.DeleteMemory(id, "tester", "stale"))
+
+	service := NewService(store)
+	_, err = service.MemoryByID(context.Background(), id)
+
 	require.ErrorIs(t, err, ErrMemoryNotFound)
 }
 
