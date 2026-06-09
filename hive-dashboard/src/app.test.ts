@@ -156,8 +156,12 @@ function fakeApi(overrides: { health?: Promise<Awaited<ReturnType<ApiClient['hea
     health: vi.fn(() => overrides.health ?? Promise.resolve({ status: 'ok', db: 'connected', version: '1.0.0' })),
     adminStats: vi.fn(() => overrides.stats ?? Promise.resolve({ users: { total: 1, active: 1, by_level: { admin: 1 } }, memories: { total: 1, by_project: [], by_category: [], last_synced_at: null } })),
     adminUsers: vi.fn(async () => ({ users: [adminUser] })),
+    setUserLevel: vi.fn(async () => ({ message: 'nivel actualizado' })),
+    grantAdmin: vi.fn(async () => ({ message: 'usuario ascendido a admin' })),
+    deactivateUser: vi.fn(async () => ({ message: 'usuario desactivado' })),
     memories: vi.fn(async () => ({ memories: [], total: 0, limit: 5, offset: 0 })),
     searchMemories: vi.fn(async () => ({ memories: [], total: 0, query: 'dashboard', limit: 5 })),
+    memory: vi.fn(async () => ({ id: 'mem-1', sync_id: 'sync-1', project: 'jarvis-dev', category: 'decision', title: 'Dashboard scope', content: 'No daemon controls', tags: [], files_affected: [], created_by: 'admin-1', created_at: '2026-06-06T20:00:00Z', updated_at: '2026-06-06T20:01:00Z', synced_at: '2026-06-06T20:02:00Z' })),
     auditLogs: vi.fn(async () => ({ audit_logs: [], total: 0, limit: 10, offset: 0 }))
   }
 }

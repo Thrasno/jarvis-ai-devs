@@ -36,9 +36,23 @@ describe('Hive API client', () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ error: 'invalid credentials' }, 401))
     const client = createApiClient({ fetch: fetchMock })
 
-    await expect(client.login('admin@example.com', 'wrong')).rejects.toEqual(
-      new ApiError('invalid credentials', 401)
-    )
+    await expect(client.login('admin@example.com', 'wrong')).rejects.toMatchObject({
+      name: 'ApiError',
+      message: 'invalid credentials',
+      status: 401,
+      code: 'UNAUTHORIZED'
+    })
+  })
+
+  it('normalizes network, non-json, and JSON message API errors', async () => {
+    const networkClient = createApiClient({ fetch: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) })
+    await expect(networkClient.health()).rejects.toMatchObject({ status: 0, code: 'NETWORK_ERROR', message: 'Network request failed' })
+
+    const htmlClient = createApiClient({ fetch: vi.fn().mockResolvedValue(new Response('<h1>Bad gateway</h1>', { status: 502, statusText: 'Bad Gateway', headers: { 'Content-Type': 'text/html' } })) })
+    await expect(htmlClient.health()).rejects.toMatchObject({ status: 502, code: 'NON_JSON_RESPONSE', message: 'Bad Gateway' })
+
+    const jsonClient = createApiClient({ fetch: vi.fn().mockResolvedValue(jsonResponse({ message: 'project is required', code: 'VALIDATION_FAILED', details: { field: 'project' } }, 400)) })
+    await expect(jsonClient.memories('jwt-token')).rejects.toMatchObject({ status: 400, code: 'VALIDATION_FAILED', message: 'project is required', details: { field: 'project' } })
   })
 
   it('loads read-only admin dashboard endpoints with a bearer token', async () => {
@@ -57,22 +71,45 @@ describe('Hive API client', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(3, '/admin/users', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
   })
 
-  it('loads memories, search, and audit logs through existing read-only endpoints', async () => {
+  it('loads memories, memory detail, search, and audit logs through existing read-only endpoints', async () => {
     const memory = { id: 'mem-1', sync_id: 'sync-1', project: 'jarvis-dev', category: 'decision', title: 'Dashboard scope', content: 'No daemon controls', tags: [], files_affected: [], created_by: 'admin-1', created_at: '2026-06-06T20:00:00Z', updated_at: '2026-06-06T20:01:00Z', synced_at: '2026-06-06T20:02:00Z' }
     const audit = { id: 'audit-1', occurred_at: '2026-06-06T20:03:00Z', action: 'sync_push', outcome: 'success', entry_count: 2, metadata: { pushed_count: 2 } }
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ memories: [memory], total: 1, limit: 5, offset: 0 }))
+      .mockResolvedValueOnce(jsonResponse(memory))
       .mockResolvedValueOnce(jsonResponse({ memories: [memory], total: 1, query: 'dashboard scope', limit: 5 }))
-      .mockResolvedValueOnce(jsonResponse({ audit_logs: [audit], total: 1, limit: 10, offset: 0 }))
+      .mockResolvedValueOnce(jsonResponse({ audit_logs: [audit], total: 1, limit: 10, offset: 20 }))
     const client = createApiClient({ fetch: fetchMock })
 
-    await expect(client.memories('jwt-token', { limit: 5 })).resolves.toMatchObject({ total: 1 })
-    await expect(client.searchMemories('jwt-token', 'dashboard scope', { limit: 5 })).resolves.toMatchObject({ query: 'dashboard scope' })
-    await expect(client.auditLogs('jwt-token', { action: 'sync_push', limit: 10 })).resolves.toMatchObject({ total: 1 })
+    await expect(client.memories('jwt-token', { project: 'jarvis-dev', category: 'decision', limit: 5 })).resolves.toMatchObject({ total: 1 })
+    await expect(client.memory('jwt-token', 'mem-1')).resolves.toMatchObject({ id: 'mem-1' })
+    await expect(client.searchMemories('jwt-token', { query: 'dashboard scope', project: 'jarvis-dev', limit: 5 })).resolves.toMatchObject({ query: 'dashboard scope' })
+    await expect(client.auditLogs('jwt-token', { action: 'sync_push', outcome: 'success', since: '2026-06-05T00:00:00Z', limit: 10, offset: 20 })).resolves.toMatchObject({ offset: 20 })
 
-    expect(fetchMock).toHaveBeenNthCalledWith(1, '/memories?limit=5', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
-    expect(fetchMock).toHaveBeenNthCalledWith(2, '/memories/search?query=dashboard+scope&limit=5', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
-    expect(fetchMock).toHaveBeenNthCalledWith(3, '/admin/audit-logs?action=sync_push&limit=10', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/memories?project=jarvis-dev&category=decision&limit=5', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/memories/mem-1', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/memories/search?query=dashboard+scope&project=jarvis-dev&limit=5', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
+    expect(fetchMock).toHaveBeenNthCalledWith(4, '/admin/audit-logs?since=2026-06-05T00%3A00%3A00Z&action=sync_push&outcome=success&limit=10&offset=20', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
+  })
+
+  it('calls existing admin user mutation endpoints with typed bodies', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ message: 'nivel actualizado' }))
+      .mockResolvedValueOnce(jsonResponse({ message: 'usuario ascendido a admin' }))
+      .mockResolvedValueOnce(jsonResponse({ message: 'usuario desactivado' }))
+    const client = createApiClient({ fetch: fetchMock })
+
+    await expect(client.setUserLevel('jwt-token', 'member@example.com', 'member')).resolves.toEqual({ message: 'nivel actualizado' })
+    await expect(client.grantAdmin('jwt-token', 'new-admin')).resolves.toEqual({ message: 'usuario ascendido a admin' })
+    await expect(client.deactivateUser('jwt-token', 'old user')).resolves.toEqual({ message: 'usuario desactivado' })
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/admin/users/member%40example.com/level', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer jwt-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level: 'member' })
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/admin/users/new-admin/grant-admin', { method: 'POST', headers: { Authorization: 'Bearer jwt-token' } })
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/admin/users/old%20user/deactivate', { method: 'POST', headers: { Authorization: 'Bearer jwt-token' } })
   })
 })
 
