@@ -62,6 +62,6 @@ var (
 	badgeHealthy  = lipgloss.NewStyle().Background(colorGreen).Foreground(colorBase).Bold(true).Padding(0, 1)
 	badgeDegraded = lipgloss.NewStyle().Background(colorYellow).Foreground(colorBase).Bold(true).Padding(0, 1)
 	badgeOffline  = lipgloss.NewStyle().Background(colorSurface1).Foreground(colorOverlay2).Padding(0, 1)
-	badgeCritical = lipgloss.NewStyle().Foreground(colorRed).Bold(true)
-	badgeWarning  = lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
+	badgeCritical = lipgloss.NewStyle().Background(colorRed).Foreground(colorBase).Bold(true).Padding(0, 1)
+	badgeWarning  = lipgloss.NewStyle().Background(colorYellow).Foreground(colorBase).Bold(true).Padding(0, 1)
 )

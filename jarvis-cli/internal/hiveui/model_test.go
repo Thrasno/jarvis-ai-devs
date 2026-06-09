@@ -1098,8 +1098,8 @@ func TestUnsyncedText_Sum(t *testing.T) {
 }
 
 func TestLastSyncText_MaxValue(t *testing.T) {
-	t1 := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
-	t2 := time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC)
+	t1 := time.Now().Add(-48 * time.Hour)
+	t2 := time.Now().Add(-24 * time.Hour)
 	snapshot := Snapshot{
 		Health: []hiveclient.Health{
 			{Project: "a", LastSuccessAt: t1},
@@ -1190,9 +1190,9 @@ func TestProjectsView_ShowsWarningCount(t *testing.T) {
 	m := NewModelWithSnapshot(snapshot)
 	m = sendKey(m, tea.KeyEnter) // open projects
 	view := m.View()
-	// Assert the warning count value "2" appears in the row for proj-a, not just the column header
+	// Assert the row contains proj-a and the column values in order: activeMemories=5, unsynced=0, warningCount=2
 	assertContains(t, view, "proj-a")
-	assertContains(t, view, "2")
+	assertContains(t, view, "5  0  2")
 }
 
 func TestProjectsView_NoNAString(t *testing.T) {

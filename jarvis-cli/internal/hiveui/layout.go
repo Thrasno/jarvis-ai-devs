@@ -21,7 +21,7 @@ func sectionHeader(label string, width int) string {
 	prefix := sectionLabelStyle.Render("▸ " + label)
 	// "▸ " = 2 chars + label + " " trailing space before dashes
 	visibleLen := 2 + lipgloss.Width(label) + 1
-	dashes := width - visibleLen - 2
+	dashes := width - visibleLen
 	if dashes < 0 {
 		dashes = 0
 	}
