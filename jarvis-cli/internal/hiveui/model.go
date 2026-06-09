@@ -83,6 +83,7 @@ type Model struct {
 	guardExecutor     GuardExecutor
 	guardOperation    string
 	guardBackupID     string
+	guardReason       string
 	guardConfirmation string
 	guardStep         memoryGuardStep
 	guardSubmitting   bool
@@ -113,6 +114,7 @@ type memoryGuardStep int
 
 const (
 	memoryGuardBackupID memoryGuardStep = iota
+	memoryGuardReason
 	memoryGuardConfirmation
 )
 
@@ -630,7 +632,7 @@ func (m Model) memoryDetailView() string {
 	if m.guardExecutor != nil && memory.ID != 0 && memory.Deleted {
 		sb.WriteString("\nr restore guarded by backup ID and exact confirmation\n")
 	} else if m.guardExecutor != nil && memory.ID != 0 {
-		sb.WriteString("\nd delete guarded by backup ID and exact confirmation\n")
+		sb.WriteString("\nd delete guarded by backup ID, delete reason, and exact confirmation\n")
 	}
 	if m.message != "" {
 		fmt.Fprintf(&sb, "%s\n", m.message)
@@ -659,6 +661,7 @@ func (m Model) startMemoryGuard(operation string) Model {
 	m.guardMemory = memory
 	m.guardStep = memoryGuardBackupID
 	m.guardBackupID = ""
+	m.guardReason = ""
 	m.guardConfirmation = ""
 	m.guardSubmitting = false
 	m.message = ""
@@ -701,6 +704,20 @@ func (m Model) submitMemoryGuard() (tea.Model, tea.Cmd) {
 			m.message = fmt.Sprintf("Backup ID is required before guarded %s.", m.guardOperation)
 			return m, nil
 		}
+		if m.guardOperation == "delete" {
+			m.guardStep = memoryGuardReason
+			return m, nil
+		}
+		m.guardStep = memoryGuardConfirmation
+		return m, nil
+	}
+	if m.guardStep == memoryGuardReason {
+		reason := strings.TrimSpace(m.guardReason)
+		if reason == "" {
+			m.message = "Delete reason is required before guarded delete."
+			return m, nil
+		}
+		m.guardReason = reason
 		m.guardStep = memoryGuardConfirmation
 		return m, nil
 	}
@@ -721,6 +738,9 @@ func (m Model) submitMemoryGuard() (tea.Model, tea.Cmd) {
 		BackupID:     strings.TrimSpace(m.guardBackupID),
 		Confirmation: m.guardConfirmation,
 	}
+	if m.guardOperation == "delete" {
+		request.Reason = strings.TrimSpace(m.guardReason)
+	}
 	m.guardSubmitting = true
 	return m, func() tea.Msg {
 		result, err := executor.ExecuteGuard(context.Background(), request)
@@ -739,6 +759,48 @@ func (m Model) applyMemoryGuardResult(msg memoryGuardResultMsg) Model {
 		return m
 	}
 	m.message = fmt.Sprintf("Guarded memory %s dispatched through hive-daemon. No direct SQLite or cloud mutation was performed by the TUI.", msg.operation)
+	if msg.operation == "delete" {
+		m = m.removeMemoryFromNormalSnapshot(msg.targetID)
+		if m.detailReturn == ScreenTimeline {
+			m.screen = ScreenTimeline
+		} else {
+			m.screen = ScreenProjectMemories
+		}
+		m.memoryContent = ""
+		m.memoryLoading = false
+		m.memoryLoadErr = nil
+	}
+	return m
+}
+
+func (m Model) removeMemoryFromNormalSnapshot(id int64) Model {
+	var deletedProject string
+	memories := m.snapshot.Memories[:0]
+	for _, memory := range m.snapshot.Memories {
+		if memory.ID == id {
+			deletedProject = memory.Project
+			continue
+		}
+		memories = append(memories, memory)
+	}
+	m.snapshot.Memories = memories
+	if deletedProject != "" {
+		for i := range m.snapshot.Projects {
+			if m.snapshot.Projects[i].Name != deletedProject {
+				continue
+			}
+			if m.snapshot.Projects[i].ActiveMemoryCount > 0 {
+				m.snapshot.Projects[i].ActiveMemoryCount--
+			}
+			m.snapshot.Projects[i].DeletedMemoryCount++
+			break
+		}
+	}
+	if len(m.projectMemories()) == 0 {
+		m.memoryIndex = 0
+		return m
+	}
+	m.memoryIndex = wrapIndex(m.memoryIndex, len(m.projectMemories()))
 	return m
 }
 
@@ -777,20 +839,26 @@ func (m Model) applyMemoryLoadResult(msg memoryLoadResultMsg) Model {
 }
 
 func (m Model) appendGuardText(text string) Model {
-	if m.guardStep == memoryGuardBackupID {
+	switch m.guardStep {
+	case memoryGuardBackupID:
 		m.guardBackupID += text
-		return m
+	case memoryGuardReason:
+		m.guardReason += text
+	default:
+		m.guardConfirmation += text
 	}
-	m.guardConfirmation += text
 	return m
 }
 
 func (m Model) removeGuardRune() Model {
-	if m.guardStep == memoryGuardBackupID {
+	switch m.guardStep {
+	case memoryGuardBackupID:
 		m.guardBackupID = trimLastRune(m.guardBackupID)
-		return m
+	case memoryGuardReason:
+		m.guardReason = trimLastRune(m.guardReason)
+	default:
+		m.guardConfirmation = trimLastRune(m.guardConfirmation)
 	}
-	m.guardConfirmation = trimLastRune(m.guardConfirmation)
 	return m
 }
 
@@ -810,14 +878,25 @@ func (m Model) memoryGuardView() string {
 	sb.WriteString(borderedPanel(sectionHeader("IMPACT", panelW)+impactContent, panelW))
 	sb.WriteString("\n")
 
-	// REASON panel
-	reasonContent := fmt.Sprintf("Backup ID is required: %s\n", visibleInput(m.guardBackupID)) +
-		fmt.Sprintf("Confirmation must match exactly. Type exactly: %s\n", memoryGuardConfirmationPhrase(m.guardOperation, memory))
-	if m.guardStep == memoryGuardConfirmation {
-		reasonContent += fmt.Sprintf("confirmation: %s\n", visibleInput(m.guardConfirmation))
+	// SAFETY panel
+	safetyContent := fmt.Sprintf("Backup ID is required: %s\n", visibleInput(m.guardBackupID))
+	if m.guardOperation == "delete" {
+		safetyContent += fmt.Sprintf("Delete reason is required: %s\n", visibleInput(m.guardReason))
 	}
-	reasonContent += fmt.Sprintf("No %s will run until both fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation.", m.guardOperation)
-	sb.WriteString(borderedPanel(sectionHeader("REASON — REQUIRED", panelW)+reasonContent, panelW))
+	if m.guardOperation == "delete" && m.guardStep != memoryGuardConfirmation {
+		safetyContent += "Confirmation must match exactly after backup ID and delete reason are provided.\n"
+	} else {
+		safetyContent += fmt.Sprintf("Confirmation must match exactly. Type exactly: %s\n", memoryGuardConfirmationPhrase(m.guardOperation, memory))
+	}
+	if m.guardStep == memoryGuardConfirmation {
+		safetyContent += fmt.Sprintf("confirmation: %s\n", visibleInput(m.guardConfirmation))
+	}
+	fieldScope := "both fields"
+	if m.guardOperation == "delete" {
+		fieldScope = "all fields"
+	}
+	safetyContent += fmt.Sprintf("No %s will run until %s pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation.", m.guardOperation, fieldScope)
+	sb.WriteString(borderedPanel(sectionHeader("SAFETY", panelW)+safetyContent, panelW))
 
 	if m.guardSubmitting {
 		fmt.Fprintf(&sb, "\n%s\n", guardPending.Render(fmt.Sprintf("Guarded memory %s is pending through hive-daemon. Wait for the result before leaving or submitting again.", m.guardOperation)))
