@@ -1106,9 +1106,10 @@ func TestLastSyncText_MaxValue(t *testing.T) {
 			{Project: "b", LastSuccessAt: t2},
 		},
 	}
-	got := lastSyncText(snapshot)
 	// t2 is the max; assert the exact value is selected
+	// want is computed first to minimise the TOCTOU window between the two time.Since calls
 	want := relativeTime(t2)
+	got := lastSyncText(snapshot)
 	if got != want {
 		t.Fatalf("lastSyncText = %q, want %q (relativeTime of t2, the maximum)", got, want)
 	}
