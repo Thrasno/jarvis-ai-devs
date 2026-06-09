@@ -284,7 +284,7 @@ func (m Model) View() string {
 		glanceContent := dimTextStyle.Render("projects — memories — unsynced n/a warnings —")
 		sb.WriteString(borderedPanel(sectionHeader("AT A GLANCE", panelW)+glanceContent, panelW))
 		sb.WriteString("\n")
-		sb.WriteString(helpBar([]KeyHint{{"r", "retry"}, {"l", "logs"}, {"q", "quit"}}, "offline", w))
+		sb.WriteString(helpBar([]KeyHint{{"q", "quit"}}, "offline", w))
 		return sb.String()
 	}
 	switch m.screen {
@@ -371,7 +371,7 @@ func (m Model) View() string {
 		}
 		var row string
 		if i == m.cursor {
-			row = selectedRow(action.label+state+" — "+dimTextStyle.Render(action.description), panelW-2)
+			row = selectedRow(action.label+state+" — "+dimTextStyle.Render(action.description), panelW-4)
 		} else {
 			row = titleStyle.Render(action.label) + state + " — " + dimTextStyle.Render(action.description)
 		}
@@ -1310,8 +1310,10 @@ func warningStateBadge(state string) lipgloss.Style {
 	switch strings.ToLower(state) {
 	case "resolved":
 		return badgeOffline
-	case "active", "":
+	case "active":
 		return badgeWarning
+	case "":
+		return dimTextStyle
 	default:
 		return dimTextStyle
 	}

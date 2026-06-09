@@ -47,26 +47,21 @@ var (
 	dotOffline  = lipgloss.NewStyle().Foreground(colorOverlay2)
 	dotFailed   = lipgloss.NewStyle().Foreground(colorRed)
 
-	// Type badge map (populated in init)
-	typeBadgeMap map[string]lipgloss.Style
+	// Type badge map
+	typeBadgeMap = map[string]lipgloss.Style{
+		"decision":     lipgloss.NewStyle().Background(colorMauve).Foreground(colorBase).Padding(0, 1),
+		"bugfix":       lipgloss.NewStyle().Background(colorRed).Foreground(colorBase).Padding(0, 1),
+		"pattern":      lipgloss.NewStyle().Background(colorTeal).Foreground(colorBase).Padding(0, 1),
+		"architecture": lipgloss.NewStyle().Background(colorBlue).Foreground(colorBase).Padding(0, 1),
+		"config":       lipgloss.NewStyle().Background(colorPeach).Foreground(colorBase).Padding(0, 1),
+		"preference":   lipgloss.NewStyle().Background(colorFlamingo).Foreground(colorBase).Padding(0, 1),
+		"discovery":    lipgloss.NewStyle().Background(colorGreen).Foreground(colorBase).Padding(0, 1),
+	}
 
 	// Badge aliases used by severity/state helper functions
-	badgeHealthy  = dotHealthy
-	badgeDegraded = dotDegraded
-	badgeOffline  = dotOffline
+	badgeHealthy  = lipgloss.NewStyle().Background(colorGreen).Foreground(colorBase).Bold(true).Padding(0, 1)
+	badgeDegraded = lipgloss.NewStyle().Background(colorYellow).Foreground(colorBase).Bold(true).Padding(0, 1)
+	badgeOffline  = lipgloss.NewStyle().Background(colorSurface1).Foreground(colorOverlay2).Padding(0, 1)
 	badgeCritical = lipgloss.NewStyle().Foreground(colorRed).Bold(true)
 	badgeWarning  = lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
 )
-
-func init() {
-	base := colorBase
-	typeBadgeMap = map[string]lipgloss.Style{
-		"decision":     lipgloss.NewStyle().Background(colorMauve).Foreground(base).Padding(0, 1),
-		"bugfix":       lipgloss.NewStyle().Background(colorRed).Foreground(base).Padding(0, 1),
-		"pattern":      lipgloss.NewStyle().Background(colorTeal).Foreground(base).Padding(0, 1),
-		"architecture": lipgloss.NewStyle().Background(colorBlue).Foreground(base).Padding(0, 1),
-		"config":       lipgloss.NewStyle().Background(colorPeach).Foreground(base).Padding(0, 1),
-		"preference":   lipgloss.NewStyle().Background(colorFlamingo).Foreground(base).Padding(0, 1),
-		"discovery":    lipgloss.NewStyle().Background(colorGreen).Foreground(base).Padding(0, 1),
-	}
-}

@@ -1107,12 +1107,10 @@ func TestLastSyncText_MaxValue(t *testing.T) {
 		},
 	}
 	got := lastSyncText(snapshot)
-	// t2 is the max; relativeTime will return something non-"never"
-	if got == "never" {
-		t.Fatalf("lastSyncText = %q, want recent time (not 'never')", got)
-	}
-	if got == "" {
-		t.Fatal("lastSyncText returned empty string")
+	// t2 is the max; assert the exact value is selected
+	want := relativeTime(t2)
+	if got != want {
+		t.Fatalf("lastSyncText = %q, want %q (relativeTime of t2, the maximum)", got, want)
 	}
 }
 
@@ -1192,7 +1190,9 @@ func TestProjectsView_ShowsWarningCount(t *testing.T) {
 	m := NewModelWithSnapshot(snapshot)
 	m = sendKey(m, tea.KeyEnter) // open projects
 	view := m.View()
-	assertContains(t, view, "WARNINGS")
+	// Assert the warning count value "2" appears in the row for proj-a, not just the column header
+	assertContains(t, view, "proj-a")
+	assertContains(t, view, "2")
 }
 
 func TestProjectsView_NoNAString(t *testing.T) {
