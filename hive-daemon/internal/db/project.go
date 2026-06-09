@@ -187,7 +187,7 @@ func (d *DB) GetGovernanceMemoryByID(ctx context.Context, id int64) (GovernanceM
 	const q = `
 SELECT id, sync_id, project, topic_key, category, title, content, created_by, created_at, session_id,
        deleted_at, deleted_by, delete_reason
-FROM memories WHERE id = ?`
+FROM memories WHERE id = ? AND deleted_at IS NULL`
 	memory, err := scanGovernanceMemory(d.sqlDB.QueryRowContext(ctx, q, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return GovernanceMemory{}, fmt.Errorf("%w: id=%d", ErrGovernanceMemoryNotFound, id)

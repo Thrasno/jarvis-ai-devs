@@ -22,6 +22,7 @@ var (
 	ErrDestructiveBackupRequired        = errors.New("fresh backup is required before destructive operation")
 	ErrDestructiveConfirmationRequired  = errors.New("destructive operation confirmation is required")
 	ErrDestructiveConfirmationMismatch  = errors.New("destructive operation confirmation mismatch")
+	ErrDestructiveReasonRequired        = errors.New("delete reason is required")
 	ErrDestructiveTargetRequired        = errors.New("destructive operation target is required")
 	ErrDestructiveOperationUnsupported  = errors.New("destructive operation is unsupported")
 	ErrDestructiveMutationStoreRequired = errors.New("destructive mutation store is not configured")
@@ -218,11 +219,15 @@ func (s *Service) RestoreBackup(ctx context.Context, req RestoreRequest) (Restor
 func (s *Service) ExecuteGuard(ctx context.Context, req GuardRequest) (GuardResult, error) {
 	operation := normalizeGuardPart(req.Operation)
 	targetType := normalizeGuardPart(req.TargetType)
+	reason := strings.TrimSpace(req.Reason)
 	if req.TargetID <= 0 {
 		return GuardResult{}, ErrDestructiveTargetRequired
 	}
 	if operation != GuardOperationDelete && operation != GuardOperationRestore || targetType != GuardTargetMemory {
 		return GuardResult{}, ErrDestructiveOperationUnsupported
+	}
+	if operation == GuardOperationDelete && reason == "" {
+		return GuardResult{}, ErrDestructiveReasonRequired
 	}
 	backupID, err := s.requireFreshBackup(ctx, req.BackupID)
 	if err != nil {
@@ -240,7 +245,7 @@ func (s *Service) ExecuteGuard(ctx context.Context, req GuardRequest) (GuardResu
 	}
 	switch operation {
 	case GuardOperationDelete:
-		if err := mutator.DeleteMemory(req.TargetID, req.ActorID, req.Reason); err != nil {
+		if err := mutator.DeleteMemory(req.TargetID, req.ActorID, reason); err != nil {
 			return GuardResult{}, err
 		}
 	case GuardOperationRestore:

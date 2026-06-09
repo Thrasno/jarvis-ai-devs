@@ -1158,7 +1158,7 @@ func TestGovernanceGuardExecuteHTTPMismatchDoesNotMutate(t *testing.T) {
 	}
 	before := readHTTPGovernanceCounters(t, store)
 	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, governance.NewServiceWithBackup(store, backupStore))
-	body := fmt.Sprintf(`{"operation":"delete","target_type":"memory","target_id":%d,"backup_id":%q,"confirmation":" DELETE memory %d "}`, memoryID, backup.ID, memoryID)
+	body := fmt.Sprintf(`{"operation":"delete","target_type":"memory","target_id":%d,"backup_id":%q,"confirmation":" DELETE memory %d ","reason":"cleanup"}`, memoryID, backup.ID, memoryID)
 	req := httptest.NewRequest(http.MethodPost, "/governance/guards/execute", bytes.NewBufferString(body))
 	rr := httptest.NewRecorder()
 
@@ -1170,6 +1170,75 @@ func TestGovernanceGuardExecuteHTTPMismatchDoesNotMutate(t *testing.T) {
 	after := readHTTPGovernanceCounters(t, store)
 	if before != after {
 		t.Fatalf("mismatch mutated state: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestGovernanceGuardExecuteHTTPRejectsMissingDeleteReasonBeforeMutation(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		reasonJSON string
+	}{
+		{name: "missing reason", reasonJSON: ""},
+		{name: "blank reason", reasonJSON: `,"reason":"  \t  "`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store, backup, srv := newHTTPGuardTestServer(t)
+			memoryID := saveHTTPGuardMemory(t, store, "reason-required")
+			before := readHTTPGovernanceCounters(t, store)
+			body := fmt.Sprintf(`{"operation":"delete","target_type":"memory","target_id":%d,"backup_id":%q,"confirmation":%q%s}`, memoryID, backup.ID, governance.GuardConfirmation(governance.GuardOperationDelete, governance.GuardTargetMemory, memoryID), tt.reasonJSON)
+			req := httptest.NewRequest(http.MethodPost, "/governance/guards/execute", bytes.NewBufferString(body))
+			rr := httptest.NewRecorder()
+
+			srv.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d — body: %s", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), "delete reason is required") {
+				t.Fatalf("body = %s, want delete reason validation error", rr.Body.String())
+			}
+			after := readHTTPGovernanceCounters(t, store)
+			if before != after {
+				t.Fatalf("missing reason mutated state: before=%+v after=%+v", before, after)
+			}
+			var deletedAt sql.NullString
+			if err := store.RawDB().QueryRow(`SELECT deleted_at FROM memories WHERE id = ?`, memoryID).Scan(&deletedAt); err != nil {
+				t.Fatalf("query memory: %v", err)
+			}
+			if deletedAt.Valid {
+				t.Fatal("memory was deleted despite missing reason")
+			}
+		})
+	}
+}
+
+func TestGovernanceMemoriesHTTPDefaultListExcludesTombstones(t *testing.T) {
+	store, backup, srv := newHTTPGuardTestServer(t)
+	activeID := saveHTTPGuardMemoryInProject(t, store, "normal-list", "normal-list-active")
+	deletedID := saveHTTPGuardMemoryInProject(t, store, "normal-list", "normal-list-deleted")
+	body := fmt.Sprintf(`{"operation":"delete","target_type":"memory","target_id":%d,"backup_id":%q,"confirmation":%q,"reason":"duplicate"}`, deletedID, backup.ID, governance.GuardConfirmation(governance.GuardOperationDelete, governance.GuardTargetMemory, deletedID))
+	deleteReq := httptest.NewRequest(http.MethodPost, "/governance/guards/execute", bytes.NewBufferString(body))
+	deleteRR := httptest.NewRecorder()
+	srv.ServeHTTP(deleteRR, deleteReq)
+	if deleteRR.Code != http.StatusOK {
+		t.Fatalf("delete expected 200, got %d — body: %s", deleteRR.Code, deleteRR.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/governance/memories?project=normal-list", nil)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Memories []governance.Memory `json:"memories"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if len(resp.Memories) != 1 || resp.Memories[0].ID != activeID || resp.Memories[0].ID == deletedID {
+		t.Fatalf("memories = %+v, want only active memory %d", resp.Memories, activeID)
 	}
 }
 
@@ -1202,7 +1271,7 @@ func TestGovernanceGuardExecuteHTTPInvalidBackupArchiveDoesNotMutate(t *testing.
 	}
 	before := readHTTPGovernanceCounters(t, store)
 	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, governance.NewServiceWithBackup(store, backupStore))
-	body := fmt.Sprintf(`{"operation":"delete","target_type":"memory","target_id":%d,"backup_id":%q,"confirmation":%q}`, memoryID, backup.ID, governance.GuardConfirmation(governance.GuardOperationDelete, governance.GuardTargetMemory, memoryID))
+	body := fmt.Sprintf(`{"operation":"delete","target_type":"memory","target_id":%d,"backup_id":%q,"confirmation":%q,"reason":"cleanup"}`, memoryID, backup.ID, governance.GuardConfirmation(governance.GuardOperationDelete, governance.GuardTargetMemory, memoryID))
 	req := httptest.NewRequest(http.MethodPost, "/governance/guards/execute", bytes.NewBufferString(body))
 	rr := httptest.NewRecorder()
 
@@ -1258,7 +1327,7 @@ func TestGovernanceGuardExecuteHTTPMapsDeleteTargetStateErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store, backup, srv := newHTTPGuardTestServer(t)
 			memoryID := tt.prepareID(t, store)
-			body := fmt.Sprintf(`{"operation":"delete","target_type":"memory","target_id":%d,"backup_id":%q,"confirmation":%q}`, memoryID, backup.ID, governance.GuardConfirmation(governance.GuardOperationDelete, governance.GuardTargetMemory, memoryID))
+			body := fmt.Sprintf(`{"operation":"delete","target_type":"memory","target_id":%d,"backup_id":%q,"confirmation":%q,"reason":"cleanup"}`, memoryID, backup.ID, governance.GuardConfirmation(governance.GuardOperationDelete, governance.GuardTargetMemory, memoryID))
 			req := httptest.NewRequest(http.MethodPost, "/governance/guards/execute", bytes.NewBufferString(body))
 			rr := httptest.NewRecorder()
 
@@ -1725,5 +1794,41 @@ func TestHandleGovernanceMemory_404NotFound(t *testing.T) {
 	}
 	if resp["error"] == "" {
 		t.Fatal("expected error field in response")
+	}
+}
+
+func TestHandleGovernanceMemory_404Deleted(t *testing.T) {
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.CreateSession("sess-alpha", "alpha", "/repo/alpha", "dev", "test"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	id, err := store.SaveMemory(&models.Memory{Project: "alpha", Title: "deleted memory", Content: "deleted content", SessionID: "sess-alpha"})
+	if err != nil {
+		t.Fatalf("SaveMemory: %v", err)
+	}
+	if err := store.DeleteMemory(id, "tester", "stale"); err != nil {
+		t.Fatalf("DeleteMemory: %v", err)
+	}
+
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, governance.NewService(store))
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/governance/memories/%d", id), nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if resp["error"] != "memory not found" {
+		t.Fatalf("error = %q, want memory not found", resp["error"])
 	}
 }
