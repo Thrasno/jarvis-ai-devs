@@ -563,6 +563,9 @@ func writeGuardError(w http.ResponseWriter, source string, err error) {
 	case errors.Is(err, governance.ErrDestructiveConfirmationMismatch):
 		status = http.StatusBadRequest
 		errorMessage = "confirmation mismatch"
+	case errors.Is(err, governance.ErrDestructiveReasonRequired):
+		status = http.StatusBadRequest
+		errorMessage = "delete reason is required"
 	case errors.Is(err, governance.ErrDestructiveTargetRequired):
 		status = http.StatusBadRequest
 		errorMessage = "target is required"

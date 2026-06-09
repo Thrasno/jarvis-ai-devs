@@ -50,15 +50,18 @@ type Project struct {
 }
 
 type Memory struct {
-	ID        int64     `json:"id"`
-	SyncID    string    `json:"sync_id"`
-	Project   string    `json:"project"`
-	Category  string    `json:"category"`
-	Title     string    `json:"title"`
-	Content   string    `json:"content"`
-	CreatedBy string    `json:"created_by"`
-	CreatedAt time.Time `json:"created_at"`
-	Deleted   bool      `json:"deleted"`
+	ID           int64      `json:"id"`
+	SyncID       string     `json:"sync_id"`
+	Project      string     `json:"project"`
+	Category     string     `json:"category"`
+	Title        string     `json:"title"`
+	Content      string     `json:"content"`
+	CreatedBy    string     `json:"created_by"`
+	CreatedAt    time.Time  `json:"created_at"`
+	Deleted      bool       `json:"deleted"`
+	DeletedAt    *time.Time `json:"deleted_at,omitempty"`
+	DeletedBy    string     `json:"deleted_by,omitempty"`
+	DeleteReason string     `json:"delete_reason,omitempty"`
 }
 
 type MemoryFilter struct {

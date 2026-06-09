@@ -627,7 +627,7 @@ RETURNING id`).Scan(&id)
 	}
 }
 
-func TestGetGovernanceMemoryByID_IncludesDeletedMemories(t *testing.T) {
+func TestGetGovernanceMemoryByID_ExcludesDeletedMemories(t *testing.T) {
 	t.Parallel()
 
 	d := openGovernanceTestDB(t)
@@ -636,12 +636,12 @@ func TestGetGovernanceMemoryByID_IncludesDeletedMemories(t *testing.T) {
 		t.Fatalf("DeleteMemory: %v", err)
 	}
 
-	got, err := d.GetGovernanceMemoryByID(context.Background(), id)
-	if err != nil {
-		t.Fatalf("GetGovernanceMemoryByID should include deleted: %v", err)
+	_, err := d.GetGovernanceMemoryByID(context.Background(), id)
+	if err == nil {
+		t.Fatal("expected error for deleted memory, got nil")
 	}
-	if !got.Deleted {
-		t.Fatal("expected Deleted=true for soft-deleted memory")
+	if !errors.Is(err, hivedb.ErrGovernanceMemoryNotFound) {
+		t.Fatalf("error = %v, want ErrGovernanceMemoryNotFound", err)
 	}
 }
 

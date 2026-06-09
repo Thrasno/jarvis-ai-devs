@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/spf13/cobra"
@@ -22,9 +23,10 @@ func TestHiveStatusCommandUsesDaemonClient(t *testing.T) {
 }
 
 func TestHiveReadOnlyCommandsUseDaemonClient(t *testing.T) {
+	deletedAt := time.Date(2026, 6, 6, 21, 0, 0, 0, time.UTC)
 	client := &fakeHiveClient{
 		projects: []hiveclient.Project{{Name: "alpha", ActiveMemoryCount: 3, DeletedMemoryCount: 1}},
-		memories: []hiveclient.Memory{{ID: 7, Project: "alpha", Category: "decision", Title: "Governance boundary", Deleted: true}},
+		memories: []hiveclient.Memory{{ID: 7, Project: "alpha", Category: "decision", Title: "Governance boundary", Deleted: true, DeletedAt: &deletedAt, DeletedBy: "tester", DeleteReason: "manual cleanup"}},
 		backups:  []hiveclient.Backup{{ID: "backup-1", ArchivePath: "/tmp/hive-backups/backup-1/memory.db", SizeBytes: 42}},
 	}
 
@@ -43,8 +45,8 @@ func TestHiveReadOnlyCommandsUseDaemonClient(t *testing.T) {
 	if client.memoryFilter.Project != "alpha" || !client.memoryFilter.IncludeDeleted || client.memoryFilter.Limit != 2 {
 		t.Fatalf("memory filter = %+v, want CLI flags forwarded", client.memoryFilter)
 	}
-	if !strings.Contains(memoryOut, "Governance boundary") || !strings.Contains(memoryOut, "deleted=true") {
-		t.Fatalf("memories output = %q, want daemon memory rows", memoryOut)
+	if !strings.Contains(memoryOut, "Governance boundary") || !strings.Contains(memoryOut, "deleted=true") || !strings.Contains(memoryOut, "deleted_at=2026-06-06T21:00:00Z") || !strings.Contains(memoryOut, "deleted_by=tester") || !strings.Contains(memoryOut, `delete_reason="manual cleanup"`) {
+		t.Fatalf("memories output = %q, want daemon memory rows with delete audit metadata", memoryOut)
 	}
 
 	backupOut, err := executeHiveCommand(t, NewRootCommand(client), "backups")
@@ -152,10 +154,39 @@ func TestHiveMemoryGuardCommandsRequireBackupIDAndConfirmationLocally(t *testing
 	}
 }
 
+func TestHiveMemoryDeleteCommandRequiresReasonLocally(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "missing reason", args: []string{"memory", "delete", "7", "--backup-id", "backup-1", "--confirmation", "DELETE memory 7"}},
+		{name: "blank reason", args: []string{"memory", "delete", "7", "--backup-id", "backup-1", "--confirmation", "DELETE memory 7", "--reason", "  \t  "}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &fakeHiveClient{}
+			out, err := executeHiveCommand(t, NewRootCommand(client), tt.args...)
+			if err == nil {
+				t.Fatal("memory delete command error = nil, want local --reason validation error")
+			}
+			if !strings.Contains(err.Error(), "--reason is required for hive memory delete") {
+				t.Fatalf("memory delete command error = %v, want --reason requirement", err)
+			}
+			if out != "" {
+				t.Fatalf("memory delete command output = %q, want no noisy usage output", out)
+			}
+			if client.guardCalled {
+				t.Fatal("memory delete command called daemon client without required reason")
+			}
+		})
+	}
+}
+
 func TestHiveMemoryGuardCommandPreservesConfirmationWhitespace(t *testing.T) {
 	client := &fakeHiveClient{}
 	confirmation := "  DELETE memory 7  "
-	_, err := executeHiveCommand(t, NewRootCommand(client), "memory", "delete", "7", "--backup-id", "backup-1", "--confirmation", confirmation)
+	_, err := executeHiveCommand(t, NewRootCommand(client), "memory", "delete", "7", "--backup-id", "backup-1", "--confirmation", confirmation, "--reason", "manual cleanup")
 	if err != nil {
 		t.Fatalf("memory delete command: %v", err)
 	}
@@ -164,6 +195,9 @@ func TestHiveMemoryGuardCommandPreservesConfirmationWhitespace(t *testing.T) {
 	}
 	if client.guardRequest.Confirmation != confirmation {
 		t.Fatalf("confirmation = %q, want exact value %q", client.guardRequest.Confirmation, confirmation)
+	}
+	if client.guardRequest.Reason != "manual cleanup" {
+		t.Fatalf("reason = %q, want manual cleanup", client.guardRequest.Reason)
 	}
 }
 
