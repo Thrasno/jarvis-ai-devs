@@ -100,10 +100,10 @@ type Model struct {
 	projectMergeStep         projectMergeStep
 	projectMergeSubmitting   bool
 
-	memoryLoader   MemoryLoader
-	memoryContent  string
-	memoryLoading  bool
-	memoryLoadErr  error
+	memoryLoader  MemoryLoader
+	memoryContent string
+	memoryLoading bool
+	memoryLoadErr error
 }
 
 type memoryGuardStep int
