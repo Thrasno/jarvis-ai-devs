@@ -2,14 +2,22 @@ package hiveui
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 )
+
+func TestMain(m *testing.M) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	os.Exit(m.Run())
+}
 
 func TestNewModelWithAllExecutors_WiresAllThreeExecutors(t *testing.T) {
 	guard := &fakeGuardExecutor{}
