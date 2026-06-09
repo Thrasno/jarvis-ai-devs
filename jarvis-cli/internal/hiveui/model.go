@@ -225,11 +225,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.updateProjectArchive(key)
 	}
+	if m.screen == ScreenMemoryGuard {
+		if key.Type == tea.KeyCtrlC && !m.guardSubmitting {
+			return m, tea.Quit
+		}
+		return m.updateMemoryGuard(key)
+	}
 	if key.Type == tea.KeyCtrlC || runeKey(key, 'q') {
 		return m, tea.Quit
-	}
-	if m.screen == ScreenMemoryGuard {
-		return m.updateMemoryGuard(key)
 	}
 	m.message = ""
 	switch {
@@ -270,13 +273,21 @@ func (m Model) Screen() Screen { return m.screen }
 
 func (m Model) View() string {
 	if m.snapshot.DashboardState == DashboardDaemonUnavailable || m.snapshot.LoadError != nil {
+		w := max(m.width, 80)
+		panelW := panelWidth(w)
 		var sb strings.Builder
-		fmt.Fprintf(&sb, "%s\n", titleStyle.Render("dashboard · offline"))
-		sb.WriteString(dimTextStyle.Render("Cannot reach hive-daemon") + "\n")
-		fmt.Fprintf(&sb, "%s\n", dimTextStyle.Render(fmt.Sprintf("No response from %s", m.snapshot.DaemonURL)))
-		sb.WriteString(dimTextStyle.Render("The local Hive daemon is not running, so the TUI has nothing to read.") + "\n")
-		sb.WriteString(readOnlyBanner.Render("projects — memories — unsynced n/a warnings —") + "\n")
-		sb.WriteString(helpBarStyle.Render("q quit"))
+		crumb := breadcrumbStyle.Render("~/.jarvis · hive tui — ") + breadcrumbCurrent.Render("dashboard · offline")
+		sb.WriteString(headerRow(crumb, modeBadge("offline"), w))
+		sb.WriteString("\n")
+		errorContent := statusDot("failed") + " " + dimTextStyle.Render("Cannot reach hive-daemon") + "\n" +
+			dimTextStyle.Render(fmt.Sprintf("No response from %s", m.snapshot.DaemonURL)) + "\n" +
+			dimTextStyle.Render("The local Hive daemon is not running, so the TUI has nothing to read.")
+		sb.WriteString(borderedPanel(sectionHeader("CANNOT REACH HIVE-DAEMON", panelW)+errorContent, panelW))
+		sb.WriteString("\n")
+		glanceContent := dimTextStyle.Render("projects — memories — unsynced n/a warnings —")
+		sb.WriteString(borderedPanel(sectionHeader("AT A GLANCE", panelW)+glanceContent, panelW))
+		sb.WriteString("\n")
+		sb.WriteString(helpBar([]KeyHint{{"q", "quit"}}, "offline", w))
 		return sb.String()
 	}
 	switch m.screen {
@@ -306,13 +317,52 @@ func (m Model) View() string {
 		return m.projectMergeView()
 	}
 
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s\n", titleStyle.Render(dashboardTitle(m.snapshot.DashboardState)))
-	if notice := dashboardNotice(m.snapshot); notice != "" {
-		sb.WriteString(dimTextStyle.Render(notice) + "\n")
+	w := max(m.width, 80)
+	panelW := panelWidth(w)
+
+	// Determine mode for badge and breadcrumb suffix
+	mode := "normal"
+	switch m.snapshot.DashboardState {
+	case DashboardDegraded:
+		mode = "auth failed"
+	case DashboardLocalOnly:
+		mode = "local-only"
 	}
-	fmt.Fprintf(&sb, "daemon running · %s · %s\n", apiStatus(m.snapshot), syncStatus(m.snapshot))
-	fmt.Fprintf(&sb, "%s\n", dimTextStyle.Render(fmt.Sprintf("projects %d memories %s unsynced %s warnings %d last sync %s", len(m.snapshot.Projects), comma(totalMemories(m.snapshot.Projects)), unsyncedText(m.snapshot), len(m.snapshot.Warnings), lastSyncText(m.snapshot))))
+
+	var sb strings.Builder
+	crumb := breadcrumbStyle.Render("~/.jarvis · hive tui — ") + breadcrumbCurrent.Render(dashboardTitle(m.snapshot.DashboardState))
+	sb.WriteString(headerRow(crumb, modeBadge(mode), w))
+	sb.WriteString("\n")
+
+	// Notice panel for degraded / local-only
+	if notice := dashboardNotice(m.snapshot); notice != "" {
+		panelLabel := "NOTICE"
+		if m.snapshot.DashboardState == DashboardLocalOnly {
+			panelLabel = "NOTE"
+		}
+		sb.WriteString(borderedPanel(sectionHeader(panelLabel, panelW)+dimTextStyle.Render(notice), panelW))
+		sb.WriteString("\n")
+	}
+
+	// STATUS panel
+	statusContent := fmt.Sprintf("daemon running · %s · %s", apiStatus(m.snapshot), syncStatus(m.snapshot))
+	sb.WriteString(borderedPanel(sectionHeader("STATUS", panelW)+statusContent, panelW))
+	sb.WriteString("\n")
+
+	// AT A GLANCE panel
+	glanceLine := dimTextStyle.Render(fmt.Sprintf(
+		"projects %d  memories %s  unsynced %s  warnings %d  last sync %s",
+		len(m.snapshot.Projects),
+		comma(totalMemories(m.snapshot.Projects)),
+		unsyncedText(m.snapshot),
+		len(m.snapshot.Warnings),
+		lastSyncText(m.snapshot),
+	))
+	sb.WriteString(borderedPanel(sectionHeader("AT A GLANCE", panelW)+glanceLine, panelW))
+	sb.WriteString("\n")
+
+	// ACTIONS panel
+	var actionsBlock strings.Builder
 	for i, action := range dashboardActions() {
 		cursor := "  "
 		if i == m.cursor {
@@ -322,16 +372,21 @@ func (m Model) View() string {
 		if action.disabled {
 			state = dimTextStyle.Render(" (disabled)")
 		}
-		label := action.label
+		var row string
 		if i == m.cursor {
-			label = selectedRowStyle.Render(action.label)
+			row = selectedRow(action.label+state+" — "+dimTextStyle.Render(action.description), panelW-4)
+		} else {
+			row = titleStyle.Render(action.label) + state + " — " + dimTextStyle.Render(action.description)
 		}
-		fmt.Fprintf(&sb, "%s%s%s — %s\n", cursor, label, state, action.description)
+		actionsBlock.WriteString(cursor + row + "\n")
 	}
+	sb.WriteString(borderedPanel(sectionHeader("ACTIONS", panelW)+actionsBlock.String(), panelW))
+
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}
-	sb.WriteString(helpBarStyle.Render("j/k move  enter open  w warnings  g health  c config  b backups  q quit"))
+	sb.WriteString("\n")
+	sb.WriteString(helpBar([]KeyHint{{"j/k", "move"}, {"enter", "open"}, {"w", "warnings"}, {"g", "health"}, {"c", "config"}, {"b", "backups"}, {"q", "quit"}}, mode, w))
 	return sb.String()
 }
 
@@ -437,40 +492,70 @@ func (m Model) back() Model {
 }
 
 func (m Model) projectsView() string {
+	w := max(m.width, 80)
+	panelW := panelWidth(w)
+
+	crumb := breadcrumbStyle.Render("dashboard / ") + breadcrumbCurrent.Render("projects")
+	countBadge := dimTextStyle.Render(fmt.Sprintf("%d projects", len(m.snapshot.Projects)))
+
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s\t%d projects\n", titleStyle.Render("dashboard / projects"), len(m.snapshot.Projects))
-	sb.WriteString(columnHeaderStyle.Render("PROJECT MEMORIES UNSYNCED WARNINGS LAST") + "\n")
+	sb.WriteString(headerRow(crumb, countBadge, w))
+	sb.WriteString("\n")
+
+	var tableContent strings.Builder
+	tableContent.WriteString(columnHeaderStyle.Render("PROJECT  MEMORIES  UNSYNCED  WARNINGS  LAST") + "\n")
 	for i, project := range m.snapshot.Projects {
 		cursor := "  "
 		if i == m.projectIndex {
 			cursor = cursorStyle.Render("▌") + " "
 		}
-		name := project.Name
+		rowText := fmt.Sprintf("%s  %d  %d  %d  %s",
+			project.Name,
+			project.ActiveMemoryCount,
+			project.UnsyncedCount,
+			projectWarningCount(m.snapshot, project.Name),
+			relativeTime(project.LastActivityAt),
+		)
+		var row string
 		if i == m.projectIndex {
-			name = selectedRowStyle.Render(project.Name)
+			row = selectedRow(rowText, panelW-4)
+		} else {
+			row = rowText
 		}
-		fmt.Fprintf(&sb, "%s%s %d %d %d %s\n", cursor, name, project.ActiveMemoryCount, project.UnsyncedCount, projectWarningCount(m.snapshot, project.Name), dimTextStyle.Render(relativeTime(project.LastActivityAt)))
+		tableContent.WriteString(cursor + row + "\n")
 	}
+	sb.WriteString(borderedPanel(sectionHeader("PROJECTS", panelW)+tableContent.String(), panelW))
+
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}
 	if m.projectArchiveExecutor != nil && len(m.snapshot.Projects) > 0 {
-		sb.WriteString("a archive guarded by backup ID and exact confirmation\n")
+		sb.WriteString("\na archive guarded by backup ID and exact confirmation\n")
 	}
 	if m.projectMergeExecutor != nil && len(m.snapshot.Projects) > 0 {
 		sb.WriteString("m merge guarded by backup ID and exact confirmation\n")
 	}
-	sb.WriteString(helpBarStyle.Render("j/k move  enter open  t timeline  esc back  q quit"))
+	sb.WriteString("\n")
+	sb.WriteString(helpBar([]KeyHint{{"j/k", "move"}, {"⏎", "open"}, {"t", "timeline"}, {"esc", "back"}, {"q", "quit"}}, "normal", w))
 	return sb.String()
 }
 
 func (m Model) projectMemoriesView() string {
 	memories := m.projectMemories()
 	project := m.selectedProject().Name
+	w := max(m.width, 80)
+	panelW := panelWidth(w)
+
+	crumb := breadcrumbStyle.Render("dashboard / projects / ") + breadcrumbCurrent.Render(project)
+	countBadge := dimTextStyle.Render(fmt.Sprintf("%d memories", len(memories)))
+
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s\t%d memories\n", titleStyle.Render(fmt.Sprintf("dashboard / projects / %s", project)), len(memories))
+	sb.WriteString(headerRow(crumb, countBadge, w))
+	sb.WriteString("\n")
+
+	var listContent strings.Builder
 	if len(memories) == 0 {
-		sb.WriteString("No local Hive memories found for this project\n")
+		listContent.WriteString(dimTextStyle.Render("No local Hive memories found for this project") + "\n")
 	}
 	for i, memory := range memories {
 		cursor := "  "
@@ -479,52 +564,79 @@ func (m Model) projectMemoriesView() string {
 		}
 		deleted := ""
 		if memory.Deleted {
-			deleted = " " + badgeDeleted.Render("[deleted]")
+			deleted = " [deleted]"
 		}
-		title := memory.Title
+		rowText := typeBadge(emptyDash(memory.Category)) + "  " + memory.Title + deleted + "  " + dimTextStyle.Render(relativeTime(memory.CreatedAt))
+		var row string
 		if i == m.memoryIndex {
-			title = selectedRowStyle.Render(memory.Title)
+			row = selectedRow(rowText, panelW-4)
+		} else {
+			row = rowText
 		}
-		fmt.Fprintf(&sb, "%s%s  %s%s  %s\n", cursor, emptyDash(memory.Category), title, deleted, dimTextStyle.Render(relativeTime(memory.CreatedAt)))
+		listContent.WriteString(cursor + row + "\n")
 	}
+	sb.WriteString(borderedPanel(sectionHeader("MEMORIES", panelW)+listContent.String(), panelW))
+
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}
-	sb.WriteString(helpBarStyle.Render("j/k move  enter open  t timeline  esc back  q quit"))
+	sb.WriteString("\n")
+	sb.WriteString(helpBar([]KeyHint{{"j/k", "move"}, {"⏎", "open"}, {"t", "timeline"}, {"esc", "back"}, {"q", "quit"}}, "normal", w))
 	return sb.String()
 }
 
 func (m Model) memoryDetailView() string {
 	memory := m.selectedMemory()
+	w := max(m.width, 80)
+	panelW := panelWidth(w)
+
+	crumb := breadcrumbStyle.Render("… / "+memory.Project+" / ") + breadcrumbCurrent.Render(memoryKey(memory))
+
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s\n", titleStyle.Render(fmt.Sprintf("%s / %s", memory.Project, memoryKey(memory))))
-	fmt.Fprintf(&sb, "%s %s  %s %s\n", dimTextStyle.Render("id"), memoryKey(memory), dimTextStyle.Render("created"), formatDateTime(memory.CreatedAt))
-	fmt.Fprintf(&sb, "%s %s  %s %s\n", dimTextStyle.Render("project"), memory.Project, dimTextStyle.Render("sync"), syncText(memory))
+	sb.WriteString(headerRow(crumb, typeBadge(emptyDash(memory.Category)), w))
+	sb.WriteString("\n")
+
+	// METADATA panel
+	metaContent := fmt.Sprintf("%s %s  %s %s\n%s %s  %s %s\n%s %s  %s %s",
+		dimTextStyle.Render("id"), memoryKey(memory),
+		dimTextStyle.Render("created"), formatDateTime(memory.CreatedAt),
+		dimTextStyle.Render("project"), memory.Project,
+		dimTextStyle.Render("sync"), syncText(memory),
+		dimTextStyle.Render("type"), emptyDash(memory.Category),
+		dimTextStyle.Render("source"), emptyDash(memory.CreatedBy),
+	)
 	if memory.Deleted {
-		fmt.Fprintf(&sb, "%s\n", badgeDeleted.Render("status deleted"))
+		metaContent += "\n" + dimTextStyle.Render("status") + " deleted"
 	}
-	fmt.Fprintf(&sb, "%s %s  %s %s\n", dimTextStyle.Render("type"), emptyDash(memory.Category), dimTextStyle.Render("source"), emptyDash(memory.CreatedBy))
+	sb.WriteString(borderedPanel(sectionHeader("METADATA", panelW)+metaContent, panelW))
+	sb.WriteString("\n")
+
+	// CONTENT panel
+	var contentBody string
 	switch {
 	case m.memoryLoader == nil:
-		sb.WriteString(readOnlyBanner.Render("Content preview is not available from the read-only daemon snapshot.") + "\n")
+		contentBody = readOnlyBanner.Render("Content preview is not available from the read-only daemon snapshot.")
 	case m.memoryLoading:
-		sb.WriteString("Loading content from hive-daemon...\n")
+		contentBody = "Loading content from hive-daemon..."
 	case m.memoryLoadErr != nil:
-		fmt.Fprintf(&sb, "Content failed to load through hive-daemon: %v\n", m.memoryLoadErr)
+		contentBody = fmt.Sprintf("Content failed to load through hive-daemon: %v", m.memoryLoadErr)
 	case strings.TrimSpace(m.memoryContent) == "":
-		sb.WriteString("No content recorded for this memory.\n")
+		contentBody = dimTextStyle.Render("No content recorded for this memory.")
 	default:
-		fmt.Fprintf(&sb, "%s\n", m.memoryContent)
+		contentBody = m.memoryContent
 	}
+	sb.WriteString(borderedPanel(sectionHeader("CONTENT", panelW)+contentBody, panelW))
+
 	if m.guardExecutor != nil && memory.ID != 0 && memory.Deleted {
-		sb.WriteString("r restore guarded by backup ID and exact confirmation\n")
+		sb.WriteString("\nr restore guarded by backup ID and exact confirmation\n")
 	} else if m.guardExecutor != nil && memory.ID != 0 {
-		sb.WriteString("d delete guarded by backup ID and exact confirmation\n")
+		sb.WriteString("\nd delete guarded by backup ID and exact confirmation\n")
 	}
 	if m.message != "" {
 		fmt.Fprintf(&sb, "%s\n", m.message)
 	}
-	sb.WriteString(helpBarStyle.Render("esc back  q quit"))
+	sb.WriteString("\n")
+	sb.WriteString(helpBar([]KeyHint{{"esc", "back"}, {"q", "quit"}}, "normal", w))
 	return sb.String()
 }
 
@@ -684,25 +796,38 @@ func (m Model) removeGuardRune() Model {
 
 func (m Model) memoryGuardView() string {
 	memory := m.guardMemory
+	w := max(m.width, 80)
+	panelW := panelWidth(w)
+
+	crumb := breadcrumbCurrent.Render(fmt.Sprintf("guarded memory %s", m.guardOperation))
+
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s\n", titleStyle.Render(fmt.Sprintf("guarded memory %s", m.guardOperation)))
-	fmt.Fprintf(&sb, "%s %s\n", dimTextStyle.Render("target"), memoryKey(memory))
-	fmt.Fprintf(&sb, "Backup ID is required: %s\n", visibleInput(m.guardBackupID))
-	fmt.Fprintf(&sb, "Confirmation must match exactly. Type exactly: %s\n", memoryGuardConfirmationPhrase(m.guardOperation, memory))
+	sb.WriteString(headerRow(crumb, modeBadge("destructive"), w))
+	sb.WriteString("\n")
+
+	// IMPACT panel
+	impactContent := fmt.Sprintf("%s %s", dimTextStyle.Render("target"), memoryKey(memory))
+	sb.WriteString(borderedPanel(sectionHeader("IMPACT", panelW)+impactContent, panelW))
+	sb.WriteString("\n")
+
+	// REASON panel
+	reasonContent := fmt.Sprintf("Backup ID is required: %s\n", visibleInput(m.guardBackupID)) +
+		fmt.Sprintf("Confirmation must match exactly. Type exactly: %s\n", memoryGuardConfirmationPhrase(m.guardOperation, memory))
 	if m.guardStep == memoryGuardConfirmation {
-		fmt.Fprintf(&sb, "confirmation: %s\n", visibleInput(m.guardConfirmation))
+		reasonContent += fmt.Sprintf("confirmation: %s\n", visibleInput(m.guardConfirmation))
 	}
+	reasonContent += fmt.Sprintf("No %s will run until both fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation.", m.guardOperation)
+	sb.WriteString(borderedPanel(sectionHeader("REASON — REQUIRED", panelW)+reasonContent, panelW))
+
 	if m.guardSubmitting {
-		fmt.Fprintf(&sb, "%s\n", guardPending.Render(fmt.Sprintf("Guarded memory %s is pending through hive-daemon. Submit is disabled until the result returns.", m.guardOperation)))
+		fmt.Fprintf(&sb, "\n%s\n", guardPending.Render(fmt.Sprintf("Guarded memory %s is pending through hive-daemon. Wait for the result before leaving or submitting again.", m.guardOperation)))
 	}
 	if m.message != "" {
-		fmt.Fprintf(&sb, "%s\n", m.message)
+		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}
-	fmt.Fprintf(&sb, "No %s will run until both fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation.\n", m.guardOperation)
-	if m.guardSubmitting {
-		sb.WriteString(helpBarStyle.Render("q quit"))
-	} else {
-		sb.WriteString(helpBarStyle.Render("esc back  q quit"))
+	sb.WriteString("\n")
+	if !m.guardSubmitting {
+		sb.WriteString(helpBar([]KeyHint{{"esc", "back"}, {"ctrl-c", "quit"}}, "destructive", w))
 	}
 	return sb.String()
 }
@@ -819,25 +944,38 @@ func (m Model) removeProjectArchiveRune() Model {
 
 func (m Model) projectArchiveView() string {
 	project := m.projectArchiveProject.Name
+	w := max(m.width, 80)
+	panelW := panelWidth(w)
+
+	crumb := breadcrumbCurrent.Render("guarded project archive")
+
 	var sb strings.Builder
-	sb.WriteString(titleStyle.Render("guarded project archive") + "\n")
-	fmt.Fprintf(&sb, "%s %s\n", dimTextStyle.Render("target"), project)
-	fmt.Fprintf(&sb, "Backup ID is required: %s\n", visibleInput(m.projectArchiveBackupID))
-	fmt.Fprintf(&sb, "Confirmation must match exactly. Type exactly: %s\n", projectArchiveConfirmationPhrase(project))
+	sb.WriteString(headerRow(crumb, badgeDestructive.Render("destructive"), w))
+	sb.WriteString("\n")
+
+	// IMPACT panel
+	impactContent := fmt.Sprintf("%s %s", dimTextStyle.Render("target"), project)
+	sb.WriteString(borderedPanel(sectionHeader("IMPACT", panelW)+impactContent, panelW))
+	sb.WriteString("\n")
+
+	// REASON panel
+	reasonContent := fmt.Sprintf("Backup ID is required: %s\n", visibleInput(m.projectArchiveBackupID)) +
+		fmt.Sprintf("Confirmation must match exactly. Type exactly: %s\n", projectArchiveConfirmationPhrase(project))
 	if m.projectArchiveStep == memoryGuardConfirmation {
-		fmt.Fprintf(&sb, "confirmation: %s\n", visibleInput(m.projectArchiveConfirmation))
+		reasonContent += fmt.Sprintf("confirmation: %s\n", visibleInput(m.projectArchiveConfirmation))
 	}
+	reasonContent += "No archive will run until both fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation."
+	sb.WriteString(borderedPanel(sectionHeader("REASON — REQUIRED", panelW)+reasonContent, panelW))
+
 	if m.projectArchiveSubmitting {
-		sb.WriteString(guardPending.Render("Guarded project archive is pending through hive-daemon. Submit is disabled until the result returns.") + "\n")
+		fmt.Fprintf(&sb, "\n%s\n", guardPending.Render("Guarded project archive is pending through hive-daemon. Wait for the result before leaving or submitting again."))
 	}
 	if m.message != "" {
-		fmt.Fprintf(&sb, "%s\n", m.message)
+		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}
-	sb.WriteString("No archive will run until both fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation.\n")
-	if m.projectArchiveSubmitting {
-		sb.WriteString(guardPending.Render("waiting for hive-daemon result"))
-	} else {
-		sb.WriteString(helpBarStyle.Render("esc back  ctrl-c quit"))
+	sb.WriteString("\n")
+	if !m.projectArchiveSubmitting {
+		sb.WriteString(helpBar([]KeyHint{{"esc", "back"}, {"ctrl-c", "quit"}}, "destructive", w))
 	}
 	return sb.String()
 }
@@ -991,29 +1129,46 @@ func (m Model) removeProjectMergeRune() Model {
 func (m Model) projectMergeView() string {
 	source := strings.TrimSpace(m.projectMergeSource.Name)
 	target := strings.TrimSpace(m.projectMergeTarget)
+	w := max(m.width, 80)
+	panelW := panelWidth(w)
+
+	crumb := breadcrumbCurrent.Render("guarded project merge")
+
 	var sb strings.Builder
-	sb.WriteString(titleStyle.Render("guarded project merge") + "\n")
-	fmt.Fprintf(&sb, "%s %s\n", dimTextStyle.Render("source"), source)
-	fmt.Fprintf(&sb, "Target project is required: %s\nBackup ID is required: %s\n", visibleInput(m.projectMergeTarget), visibleInput(m.projectMergeBackupID))
+	sb.WriteString(headerRow(crumb, badgeDestructive.Render("destructive"), w))
+	sb.WriteString("\n")
+
+	// IMPACT PREVIEW panel
+	impactContent := fmt.Sprintf("%s %s", dimTextStyle.Render("source"), source)
+	sb.WriteString(borderedPanel(sectionHeader("IMPACT PREVIEW", panelW)+impactContent, panelW))
+	sb.WriteString("\n")
+
+	// SAFETY panel — multi-step inputs
+	safetyContent := fmt.Sprintf("Target project is required: %s\nBackup ID is required: %s\n",
+		visibleInput(m.projectMergeTarget),
+		visibleInput(m.projectMergeBackupID),
+	)
 	if target == "" {
-		sb.WriteString("Confirmation must match exactly after target is provided.\n")
+		safetyContent += "Confirmation must match exactly after target is provided.\n"
 	} else {
-		fmt.Fprintf(&sb, "Confirmation must match exactly. Type exactly: %s\n", projectMergeConfirmationPhrase(source, target))
+		safetyContent += "Confirmation must match exactly.\n"
+		safetyContent += fmt.Sprintf("Type exactly: %s\n", projectMergeConfirmationPhrase(source, target))
 	}
 	if m.projectMergeStep == projectMergeConfirmation {
-		fmt.Fprintf(&sb, "confirmation: %s\n", visibleInput(m.projectMergeConfirmation))
+		safetyContent += fmt.Sprintf("confirmation: %s\n", visibleInput(m.projectMergeConfirmation))
 	}
+	safetyContent += "No merge will run until all fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation."
+	sb.WriteString(borderedPanel(sectionHeader("SAFETY", panelW)+safetyContent, panelW))
+
 	if m.projectMergeSubmitting {
-		sb.WriteString(guardPending.Render("Guarded project merge is pending through hive-daemon. Submit is disabled until the result returns.") + "\n")
+		fmt.Fprintf(&sb, "\n%s\n", guardPending.Render("Guarded project merge is pending through hive-daemon. Wait for the result before leaving or submitting again."))
 	}
 	if m.message != "" {
-		fmt.Fprintf(&sb, "%s\n", m.message)
+		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}
-	sb.WriteString("No merge will run until all fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation.\n")
-	if m.projectMergeSubmitting {
-		sb.WriteString(guardPending.Render("waiting for hive-daemon result"))
-	} else {
-		sb.WriteString(helpBarStyle.Render("esc back  ctrl-c quit"))
+	sb.WriteString("\n")
+	if !m.projectMergeSubmitting {
+		sb.WriteString(helpBar([]KeyHint{{"esc", "back"}, {"ctrl-c", "quit"}}, "destructive", w))
 	}
 	return sb.String()
 }
@@ -1058,13 +1213,22 @@ func trimLastRune(value string) string {
 func (m Model) timelineView() string {
 	memories := m.projectMemories()
 	project := m.selectedProject().Name
+	w := max(m.width, 80)
+	panelW := panelWidth(w)
+
+	crumb := breadcrumbStyle.Render("timeline / ") + breadcrumbCurrent.Render(project)
+	countBadge := dimTextStyle.Render(fmt.Sprintf("%d entries", len(memories)))
+
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s\t%d entries\n", titleStyle.Render(fmt.Sprintf("timeline / %s", project)), len(memories))
+	sb.WriteString(headerRow(crumb, countBadge, w))
+	sb.WriteString("\n")
+
+	var timelineContent strings.Builder
 	lastDay := ""
 	for i, memory := range memories {
 		day := timelineDateText(memory.CreatedAt)
 		if day != lastDay {
-			fmt.Fprintf(&sb, "%s\n", timelineSeparator.Render(fmt.Sprintf("┄ %s", day)))
+			timelineContent.WriteString(separatorStyle.Render(fmt.Sprintf("┄ %s", day)) + "\n")
 			lastDay = day
 		}
 		cursor := "  "
@@ -1073,26 +1237,47 @@ func (m Model) timelineView() string {
 		}
 		deleted := ""
 		if memory.Deleted {
-			deleted = " " + badgeDeleted.Render("[deleted]")
+			deleted = " [deleted]"
 		}
-		title := memory.Title
+		rowText := dimTextStyle.Render(timelineTimeText(memory.CreatedAt)) + "  " + dimTextStyle.Render(emptyDash(memory.Category)) + "  " + memory.Title + deleted
+		var row string
 		if i == m.memoryIndex {
-			title = selectedRowStyle.Render(memory.Title)
+			row = selectedRow(rowText, panelW-4)
+		} else {
+			row = rowText
 		}
-		fmt.Fprintf(&sb, "%s%s  %s  %s%s\n", cursor, dimTextStyle.Render(timelineTimeText(memory.CreatedAt)), dimTextStyle.Render(emptyDash(memory.Category)), title, deleted)
+		timelineContent.WriteString(cursor + row + "\n")
 	}
+	sb.WriteString(borderedPanel(sectionHeader("TIMELINE", panelW)+timelineContent.String(), panelW))
+
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}
-	sb.WriteString(helpBarStyle.Render("j/k move  enter open  esc back  q quit"))
+	sb.WriteString("\n")
+	sb.WriteString(helpBar([]KeyHint{{"j/k", "move"}, {"⏎", "open"}, {"esc", "back"}, {"q", "quit"}}, "normal", w))
 	return sb.String()
 }
 
 func (m Model) warningsView() string {
+	w := max(m.width, 80)
+	panelW := panelWidth(w)
+
+	activeCount := activeWarnings(m.snapshot.Warnings)
+	crumb := breadcrumbCurrent.Render("memory warnings")
+	var countBadge string
+	if activeCount > 0 {
+		countBadge = lipgloss.NewStyle().Foreground(colorRed).Render(fmt.Sprintf("%d active", activeCount))
+	} else {
+		countBadge = dimTextStyle.Render(fmt.Sprintf("%d active", activeCount))
+	}
+
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s\t%d active\n", titleStyle.Render("memory warnings"), activeWarnings(m.snapshot.Warnings))
+	sb.WriteString(headerRow(crumb, countBadge, w))
+	sb.WriteString("\n")
+
+	var listContent strings.Builder
 	if len(m.snapshot.Warnings) == 0 {
-		sb.WriteString("No warnings are available in the current read-only snapshot.\n")
+		listContent.WriteString(dimTextStyle.Render("No warnings are available in the current read-only snapshot.") + "\n")
 	}
 	for i, warning := range m.snapshot.Warnings {
 		cursor := "  "
@@ -1101,9 +1286,13 @@ func (m Model) warningsView() string {
 		}
 		severity := warningSeverityBadge(warning.Severity).Render(emptyDash(warning.Severity))
 		state := warningStateBadge(warning.ResolutionState).Render(emptyDash(warning.ResolutionState))
-		fmt.Fprintf(&sb, "%s%s  %s  %s  %s  %s\n", cursor, severity, emptyDash(warning.Source), warning.Message, state, dimTextStyle.Render(formatDateTime(warning.CreatedAt)))
+		rowText := severity + "  " + emptyDash(warning.Source) + "  " + warning.Message + "  " + state + "  " + dimTextStyle.Render(formatDateTime(warning.CreatedAt))
+		listContent.WriteString(cursor + rowText + "\n")
 	}
-	sb.WriteString(helpBarStyle.Render("j/k move  esc back  q quit"))
+	sb.WriteString(borderedPanel(sectionHeader("WARNINGS", panelW)+listContent.String(), panelW))
+
+	sb.WriteString("\n")
+	sb.WriteString(helpBar([]KeyHint{{"j/k", "move"}, {"esc", "back"}, {"q", "quit"}}, "normal", w))
 	return sb.String()
 }
 
@@ -1122,69 +1311,126 @@ func warningStateBadge(state string) lipgloss.Style {
 	switch strings.ToLower(state) {
 	case "resolved":
 		return badgeOffline
-	case "active", "":
+	case "active":
 		return badgeWarning
+	case "":
+		return dimTextStyle
 	default:
 		return dimTextStyle
 	}
 }
 
 func (m Model) backupsView() string {
+	w := max(m.width, 80)
+	panelW := panelWidth(w)
+
+	crumb := breadcrumbCurrent.Render("backup snapshots")
+	pathBadge := dimTextStyle.Render("read-only")
+
 	var sb strings.Builder
-	sb.WriteString(titleStyle.Render("backup snapshots") + "\n")
+	sb.WriteString(headerRow(crumb, pathBadge, w))
+	sb.WriteString("\n")
+
+	var tableContent strings.Builder
+	tableContent.WriteString(columnHeaderStyle.Render("SNAPSHOT  WHEN  SIZE  VALID") + "\n")
 	if len(m.snapshot.Backups) == 0 {
-		sb.WriteString("No backups are available in the current read-only snapshot.\n")
+		tableContent.WriteString(dimTextStyle.Render("No backups are available in the current read-only snapshot.") + "\n")
 	}
 	for i, backup := range m.snapshot.Backups {
 		cursor := "  "
 		if i == m.backupIndex {
 			cursor = cursorStyle.Render("▌") + " "
 		}
-		id := backup.ID
+		valid := backupMetadataStatus(backup)
+		rowText := fmt.Sprintf("%s  %s  %s  %s",
+			backup.ID,
+			relativeTime(backup.CreatedAt),
+			byteSize(backup.SizeBytes),
+			valid,
+		)
+		var row string
 		if i == m.backupIndex {
-			id = selectedRowStyle.Render(backup.ID)
+			row = selectedRow(rowText, panelW-4)
+		} else {
+			row = rowText
 		}
-		fmt.Fprintf(&sb, "%s%s  %s  %s  %s\n", cursor, id, dimTextStyle.Render(relativeTime(backup.CreatedAt)), dimTextStyle.Render(byteSize(backup.SizeBytes)), backupMetadataStatus(backup))
+		tableContent.WriteString(cursor + row + "\n")
 	}
+	tableContent.WriteString(readOnlyBanner.Render("No restore action is available in this read-only TUI slice."))
+	sb.WriteString(borderedPanel(sectionHeader("BACKUPS", panelW)+tableContent.String(), panelW))
+
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}
-	sb.WriteString(helpBarStyle.Render("enter inspect  esc back  q quit") + "\n")
-	sb.WriteString(readOnlyBanner.Render("No restore action is available in this read-only TUI slice."))
+	sb.WriteString("\n")
+	sb.WriteString(helpBar([]KeyHint{{"enter", "inspect"}, {"esc", "back"}, {"q", "quit"}}, "normal", w))
 	return sb.String()
 }
 
 func (m Model) backupDetailView() string {
 	backup := m.selectedBackup()
+	w := max(m.width, 80)
+	panelW := panelWidth(w)
+
+	crumb := breadcrumbCurrent.Render("backup detail")
+
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s\n%s\n", titleStyle.Render("backup detail"), backup.ID)
-	fmt.Fprintf(&sb, "%s %s\n", dimTextStyle.Render("created"), formatDateTime(backup.CreatedAt))
-	fmt.Fprintf(&sb, "archive %s\n", presentValue(backup.ArchivePath, "archive"))
-	fmt.Fprintf(&sb, "manifest %s\n", presentValue(backup.ManifestPath, "metadata"))
-	fmt.Fprintf(&sb, "checksum %s\n", presentValue(backup.Checksum, "checksum"))
-	sb.WriteString("status validity unknown\n")
-	fmt.Fprintf(&sb, "%s %s\n", dimTextStyle.Render("size"), byteSize(backup.SizeBytes))
-	sb.WriteString(readOnlyBanner.Render("Read-only inspection only.") + "\n")
-	sb.WriteString(helpBarStyle.Render("esc back  q quit"))
+	sb.WriteString(headerRow(crumb, modeBadge("normal"), w))
+	sb.WriteString("\n")
+
+	detailContent := fmt.Sprintf("%s %s\n%s %s\n%s\n%s\n%s\nstatus validity unknown\n%s %s\n%s",
+		dimTextStyle.Render("id"), backup.ID,
+		dimTextStyle.Render("created"), formatDateTime(backup.CreatedAt),
+		fmt.Sprintf("archive %s", presentValue(backup.ArchivePath, "archive")),
+		fmt.Sprintf("manifest %s", presentValue(backup.ManifestPath, "metadata")),
+		fmt.Sprintf("checksum %s", presentValue(backup.Checksum, "checksum")),
+		dimTextStyle.Render("size"), byteSize(backup.SizeBytes),
+		readOnlyBanner.Render("Read-only inspection only."),
+	)
+	sb.WriteString(borderedPanel(sectionHeader("BACKUP DETAIL", panelW)+detailContent, panelW))
+
+	sb.WriteString("\n")
+	sb.WriteString(helpBar([]KeyHint{{"esc", "back"}, {"q", "quit"}}, "normal", w))
 	return sb.String()
 }
 
 func (m Model) apiHealthView() string {
+	w := max(m.width, 80)
+	panelW := panelWidth(w)
+
+	crumb := breadcrumbCurrent.Render("hive api health")
+
 	var sb strings.Builder
-	sb.WriteString(titleStyle.Render("hive api health") + "\n")
+	sb.WriteString(headerRow(crumb, modeBadge("normal"), w))
+	sb.WriteString("\n")
+
 	if len(m.snapshot.Health) == 0 {
-		sb.WriteString("Health details are not available in the current read-only snapshot.\n")
+		emptyContent := dimTextStyle.Render("Health details are not available in the current read-only snapshot.")
+		sb.WriteString(borderedPanel(sectionHeader("CONNECTIVITY", panelW)+emptyContent, panelW))
+	} else {
+		for _, health := range m.snapshot.Health {
+			state := healthState(health)
+			badge := healthStateBadge(state)
+
+			connectContent := fmt.Sprintf("%s  %s\n%s %s\n%s %d\n%s %s",
+				emptyDash(health.Project), badge.Render(state),
+				dimTextStyle.Render("last error"), emptyDash(health.LastError),
+				dimTextStyle.Render("consecutive failures"), health.ConsecutiveFailures,
+				dimTextStyle.Render("backoff"), formatDateTime(health.BackoffUntil),
+			)
+			sb.WriteString(borderedPanel(sectionHeader("CONNECTIVITY", panelW)+connectContent, panelW))
+			sb.WriteString("\n")
+
+			historyContent := fmt.Sprintf("last success %s  last failure %s",
+				formatDateTime(health.LastSuccessAt),
+				formatDateTime(health.LastFailureAt),
+			)
+			sb.WriteString(borderedPanel(sectionHeader("HISTORY", panelW)+historyContent, panelW))
+		}
 	}
-	for _, health := range m.snapshot.Health {
-		state := healthState(health)
-		badge := healthStateBadge(state)
-		fmt.Fprintf(&sb, "%s  %s\n", emptyDash(health.Project), badge.Render(state))
-		fmt.Fprintf(&sb, "%s %s\n", dimTextStyle.Render("last error"), emptyDash(health.LastError))
-		fmt.Fprintf(&sb, "%s %d\n", dimTextStyle.Render("consecutive failures"), health.ConsecutiveFailures)
-		fmt.Fprintf(&sb, "%s %s\n", dimTextStyle.Render("backoff"), formatDateTime(health.BackoffUntil))
-		fmt.Fprintf(&sb, "last success %s  last failure %s\n", formatDateTime(health.LastSuccessAt), formatDateTime(health.LastFailureAt))
-	}
-	sb.WriteString(helpBarStyle.Render("w warnings  c config  esc back  q quit"))
+
+	sb.WriteString("\n")
+	sb.WriteString(helpBar([]KeyHint{{"w", "warnings"}, {"c", "config"}, {"esc", "back"}, {"q", "quit"}}, "normal", w))
 	return sb.String()
 }
 
@@ -1202,12 +1448,25 @@ func healthStateBadge(state string) lipgloss.Style {
 }
 
 func (m Model) apiConfigView() string {
+	w := max(m.width, 80)
+	panelW := panelWidth(w)
+
+	crumb := breadcrumbCurrent.Render("hive api config")
+
 	var sb strings.Builder
-	sb.WriteString(titleStyle.Render("hive api config") + "\n")
-	sb.WriteString("Read-only snapshot\n")
-	sb.WriteString(dimTextStyle.Render("API configuration endpoint is not available from the current daemon client contract.") + "\n")
-	sb.WriteString(readOnlyBanner.Render("Secrets are never displayed, echoed, or inferred by this TUI.") + "\n")
-	sb.WriteString(helpBarStyle.Render("esc back  q quit"))
+	sb.WriteString(headerRow(crumb, modeBadge("secrets"), w))
+	sb.WriteString("\n")
+
+	endpointContent := "Read-only snapshot\n" +
+		dimTextStyle.Render("API configuration endpoint is not available from the current daemon client contract.")
+	sb.WriteString(borderedPanel(sectionHeader("ENDPOINT", panelW)+endpointContent, panelW))
+	sb.WriteString("\n")
+
+	credContent := readOnlyBanner.Render("Secrets are never displayed, echoed, or inferred by this TUI.")
+	sb.WriteString(borderedPanel(sectionHeader("CREDENTIALS — NEVER SHOWN OR LOGGED", panelW)+credContent, panelW))
+
+	sb.WriteString("\n")
+	sb.WriteString(helpBar([]KeyHint{{"esc", "back"}, {"q", "quit"}}, "secrets", w))
 	return sb.String()
 }
 
