@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 )
@@ -1056,75 +1057,113 @@ func (m Model) timelineView() string {
 	memories := m.projectMemories()
 	project := m.selectedProject().Name
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "timeline / %s\t%d entries\n", project, len(memories))
+	fmt.Fprintf(&sb, "%s\t%d entries\n", titleStyle.Render(fmt.Sprintf("timeline / %s", project)), len(memories))
 	lastDay := ""
 	for i, memory := range memories {
 		day := timelineDateText(memory.CreatedAt)
 		if day != lastDay {
-			fmt.Fprintf(&sb, "┄ %s\n", day)
+			fmt.Fprintf(&sb, "%s\n", timelineSeparator.Render(fmt.Sprintf("┄ %s", day)))
 			lastDay = day
 		}
-		mark := "  "
+		cursor := "  "
 		if i == m.memoryIndex {
-			mark = "▌ "
+			cursor = cursorStyle.Render("▌") + " "
 		}
-		fmt.Fprintf(&sb, "%s%s  %s  %s%s\n", mark, timelineTimeText(memory.CreatedAt), emptyDash(memory.Category), memory.Title, deletedMemoryMarker(memory))
+		deleted := ""
+		if memory.Deleted {
+			deleted = " " + badgeDeleted.Render("[deleted]")
+		}
+		title := memory.Title
+		if i == m.memoryIndex {
+			title = selectedRowStyle.Render(memory.Title)
+		}
+		fmt.Fprintf(&sb, "%s%s  %s  %s%s\n", cursor, dimTextStyle.Render(timelineTimeText(memory.CreatedAt)), dimTextStyle.Render(emptyDash(memory.Category)), title, deleted)
 	}
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}
-	sb.WriteString("j/k move  enter open  esc back  q quit")
+	sb.WriteString(helpBarStyle.Render("j/k move  enter open  esc back  q quit"))
 	return sb.String()
 }
 
 func (m Model) warningsView() string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "memory warnings\t%d active\n", activeWarnings(m.snapshot.Warnings))
+	fmt.Fprintf(&sb, "%s\t%d active\n", titleStyle.Render("memory warnings"), activeWarnings(m.snapshot.Warnings))
 	if len(m.snapshot.Warnings) == 0 {
 		sb.WriteString("No warnings are available in the current read-only snapshot.\n")
 	}
 	for i, warning := range m.snapshot.Warnings {
-		mark := "  "
+		cursor := "  "
 		if i == m.warningIndex {
-			mark = "▌ "
+			cursor = cursorStyle.Render("▌") + " "
 		}
-		fmt.Fprintf(&sb, "%s%s  %s  %s  %s  %s\n", mark, emptyDash(warning.Severity), emptyDash(warning.Source), warning.Message, emptyDash(warning.ResolutionState), formatDateTime(warning.CreatedAt))
+		severity := warningSeverityBadge(warning.Severity).Render(emptyDash(warning.Severity))
+		state := warningStateBadge(warning.ResolutionState).Render(emptyDash(warning.ResolutionState))
+		fmt.Fprintf(&sb, "%s%s  %s  %s  %s  %s\n", cursor, severity, emptyDash(warning.Source), warning.Message, state, dimTextStyle.Render(formatDateTime(warning.CreatedAt)))
 	}
-	sb.WriteString("j/k move  esc back  q quit")
+	sb.WriteString(helpBarStyle.Render("j/k move  esc back  q quit"))
 	return sb.String()
+}
+
+func warningSeverityBadge(severity string) lipgloss.Style {
+	switch strings.ToLower(severity) {
+	case "critical":
+		return badgeCritical
+	case "warning":
+		return badgeWarning
+	default:
+		return dimTextStyle
+	}
+}
+
+func warningStateBadge(state string) lipgloss.Style {
+	switch strings.ToLower(state) {
+	case "resolved":
+		return badgeOffline
+	case "active", "":
+		return badgeWarning
+	default:
+		return dimTextStyle
+	}
 }
 
 func (m Model) backupsView() string {
 	var sb strings.Builder
-	sb.WriteString("backup snapshots\n")
+	sb.WriteString(titleStyle.Render("backup snapshots") + "\n")
 	if len(m.snapshot.Backups) == 0 {
 		sb.WriteString("No backups are available in the current read-only snapshot.\n")
 	}
 	for i, backup := range m.snapshot.Backups {
-		mark := "  "
+		cursor := "  "
 		if i == m.backupIndex {
-			mark = "▌ "
+			cursor = cursorStyle.Render("▌") + " "
 		}
-		fmt.Fprintf(&sb, "%s%s  %s  %s  %s\n", mark, backup.ID, relativeTime(backup.CreatedAt), byteSize(backup.SizeBytes), backupMetadataStatus(backup))
+		id := backup.ID
+		if i == m.backupIndex {
+			id = selectedRowStyle.Render(backup.ID)
+		}
+		fmt.Fprintf(&sb, "%s%s  %s  %s  %s\n", cursor, id, dimTextStyle.Render(relativeTime(backup.CreatedAt)), dimTextStyle.Render(byteSize(backup.SizeBytes)), backupMetadataStatus(backup))
 	}
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}
-	sb.WriteString("enter inspect  esc back  q quit\nNo restore action is available in this read-only TUI slice.")
+	sb.WriteString(helpBarStyle.Render("enter inspect  esc back  q quit") + "\n")
+	sb.WriteString(readOnlyBanner.Render("No restore action is available in this read-only TUI slice."))
 	return sb.String()
 }
 
 func (m Model) backupDetailView() string {
 	backup := m.selectedBackup()
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "backup detail\n%s\n", backup.ID)
-	fmt.Fprintf(&sb, "created %s\n", formatDateTime(backup.CreatedAt))
+	fmt.Fprintf(&sb, "%s\n%s\n", titleStyle.Render("backup detail"), backup.ID)
+	fmt.Fprintf(&sb, "%s %s\n", dimTextStyle.Render("created"), formatDateTime(backup.CreatedAt))
 	fmt.Fprintf(&sb, "archive %s\n", presentValue(backup.ArchivePath, "archive"))
 	fmt.Fprintf(&sb, "manifest %s\n", presentValue(backup.ManifestPath, "metadata"))
 	fmt.Fprintf(&sb, "checksum %s\n", presentValue(backup.Checksum, "checksum"))
 	sb.WriteString("status validity unknown\n")
-	fmt.Fprintf(&sb, "size %s\n", byteSize(backup.SizeBytes))
-	sb.WriteString("Read-only inspection only.\nesc back  q quit")
+	fmt.Fprintf(&sb, "%s %s\n", dimTextStyle.Render("size"), byteSize(backup.SizeBytes))
+	sb.WriteString(readOnlyBanner.Render("Read-only inspection only.") + "\n")
+	sb.WriteString(helpBarStyle.Render("esc back  q quit"))
 	return sb.String()
 }
 
