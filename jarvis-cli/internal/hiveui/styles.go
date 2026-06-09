@@ -50,16 +50,12 @@ var (
 	// Type badge map (populated in init)
 	typeBadgeMap map[string]lipgloss.Style
 
-	// Temporary aliases — removed when Phase B view functions are updated
-	selectedRowStyle  = lipgloss.NewStyle().Background(colorMauve).Foreground(colorBase).Bold(true)
-	helpBarStyle      = helpDescStyle
-	badgeHealthy      = dotHealthy
-	badgeDegraded     = dotDegraded
-	badgeOffline      = dotOffline
-	badgeCritical     = lipgloss.NewStyle().Foreground(colorRed).Bold(true)
-	badgeWarning      = lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
-	badgeDeleted      = lipgloss.NewStyle().Foreground(colorRed)
-	timelineSeparator = separatorStyle
+	// Badge aliases used by severity/state helper functions
+	badgeHealthy  = dotHealthy
+	badgeDegraded = dotDegraded
+	badgeOffline  = dotOffline
+	badgeCritical = lipgloss.NewStyle().Foreground(colorRed).Bold(true)
+	badgeWarning  = lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
 )
 
 func init() {
