@@ -1414,3 +1414,51 @@ func (f *fakeMemoryLoader) MemoryByID(_ context.Context, id int64) (hiveclient.M
 	}
 	return hiveclient.Memory{ID: id, Content: f.content}, nil
 }
+
+// TestWindowSizeMsgUpdatesWidth verifies that Update handles tea.WindowSizeMsg
+// and stores the terminal width in m.width.
+func TestWindowSizeMsgUpdatesWidth(t *testing.T) {
+	m := NewModelWithSnapshot(Snapshot{})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	got, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update returned non-Model type %T", updated)
+	}
+	if got.width != 120 {
+		t.Fatalf("width = %d, want 120", got.width)
+	}
+}
+
+// TestTypeBadgeAllCategories verifies that typeBadge returns a non-empty string
+// for each of the 7 defined memory observation types.
+func TestTypeBadgeAllCategories(t *testing.T) {
+	categories := []string{"decision", "bugfix", "pattern", "architecture", "config", "preference", "discovery"}
+	for _, cat := range categories {
+		got := typeBadge(cat)
+		if got == "" {
+			t.Errorf("typeBadge(%q) returned empty string", cat)
+		}
+	}
+}
+
+// TestTypeBadgeCaseInsensitive verifies that typeBadge normalizes input to
+// lowercase before map lookup.
+func TestTypeBadgeCaseInsensitive(t *testing.T) {
+	lower := typeBadge("decision")
+	upper := typeBadge("Decision")
+	if lower != upper {
+		t.Errorf("typeBadge case-sensitivity: typeBadge(\"decision\") = %q, typeBadge(\"Decision\") = %q", lower, upper)
+	}
+}
+
+// TestBorderedPanelMinWidth verifies that borderedPanel does not panic when
+// called with width=0 and returns a non-empty string containing the content.
+func TestBorderedPanelMinWidth(t *testing.T) {
+	result := borderedPanel("x", 0)
+	if result == "" {
+		t.Error("borderedPanel(\"x\", 0) returned empty string")
+	}
+	if !strings.Contains(result, "x") {
+		t.Errorf("borderedPanel(\"x\", 0) = %q, want string containing \"x\"", result)
+	}
+}

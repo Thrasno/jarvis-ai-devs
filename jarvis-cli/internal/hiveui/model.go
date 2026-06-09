@@ -67,6 +67,9 @@ type Snapshot struct {
 }
 
 type Model struct {
+	// width holds the last known terminal width from tea.WindowSizeMsg.
+	// Zero means no sizing message received yet; views apply an 80-col floor.
+	width        int
 	snapshot     Snapshot
 	screen       Screen
 	cursor       int
@@ -198,6 +201,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if result, ok := msg.(memoryLoadResultMsg); ok {
 		return m.applyMemoryLoadResult(result), nil
+	}
+	if sz, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width = sz.Width
+		return m, nil
 	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
