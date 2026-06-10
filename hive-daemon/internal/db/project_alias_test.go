@@ -56,11 +56,14 @@ func TestAddAlias_TargetIsSourceRejected(t *testing.T) {
 	t.Parallel()
 
 	d := openGovernanceTestDB(t)
-	// Bar -> Baz exists; now try to add Baz -> Bar (cycle)
-	seedAlias(t, d, "Bar", "Baz")
-	err := d.AddAlias(context.Background(), "Baz", "Bar", "local", "cycle attempt")
-	if err == nil {
-		t.Fatal("AddAlias cycle: expected error, got nil")
+	// Qux→Quux exists; Qux is a source. Attempt Fresh→Qux: Qux is already a
+	// source so the cycle guard must fire. Fresh is neither source nor target,
+	// so the bidirectional guard stays silent — only ErrAliasTargetIsSource is
+	// expected here.
+	seedAlias(t, d, "Qux", "Quux")
+	err := d.AddAlias(context.Background(), "Fresh", "Qux", "local", "cycle attempt")
+	if !errors.Is(err, hivedb.ErrAliasTargetIsSource) {
+		t.Fatalf("AddAlias cycle: got %v, want ErrAliasTargetIsSource", err)
 	}
 }
 

@@ -461,22 +461,24 @@ func (d *DB) SaveFromRemote(mem *models.Memory) error {
 	// Resolve alias using a direct SQL query so this function does not depend on
 	// context.Background() via d.ResolveAlias. If mem.Project is a known alias
 	// source, rewrite to the canonical target project name.
+	// Use a local variable to avoid mutating the caller's *models.Memory.
+	project := mem.Project
 	var aliasTarget string
 	aliasErr := d.sqlDB.QueryRow(
-		`SELECT target_project FROM project_aliases WHERE source_project = ? LIMIT 1`, mem.Project,
+		`SELECT target_project FROM project_aliases WHERE source_project = ? LIMIT 1`, project,
 	).Scan(&aliasTarget)
 	if aliasErr != nil && !errors.Is(aliasErr, sql.ErrNoRows) {
 		return fmt.Errorf("SaveFromRemote resolve alias: %w", aliasErr)
 	}
 	if aliasErr == nil {
-		mem.Project = aliasTarget
+		project = aliasTarget
 	}
 
 	// R2-CRIT-3: resolve session_id BEFORE the INSERT. memories.session_id is NOT NULL,
 	// and `INSERT OR IGNORE` would silently drop the row on any constraint failure.
 	sessionID := mem.SessionID
 	if sessionID == "" {
-		resolved, err := d.EnsureManualSaveSession(mem.Project)
+		resolved, err := d.EnsureManualSaveSession(project)
 		if err != nil {
 			return fmt.Errorf("ensure manual-save session for remote insert: %w", err)
 		}
@@ -489,7 +491,7 @@ INSERT OR IGNORE INTO memories
 	(sync_id, project, topic_key, category, title, content, tags, files_affected,
 	 created_by, created_at, updated_at, synced_at, session_id)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		mem.SyncID, mem.Project, mem.TopicKey, mem.Category,
+		mem.SyncID, project, mem.TopicKey, mem.Category,
 		mem.Title, mem.Content, string(tagsJSON), string(filesJSON),
 		mem.CreatedBy, createdAt, updatedAt, now, sessionID,
 	)

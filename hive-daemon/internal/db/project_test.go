@@ -840,6 +840,9 @@ func TestMergeGovernanceProject_RollsBackWhenAddAliasTxFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("MergeGovernanceProject: expected error due to alias chain guard, got nil")
 	}
+	if !errors.Is(err, hivedb.ErrAliasSourceIsTarget) {
+		t.Fatalf("expected ErrAliasSourceIsTarget wrapped in merge error, got: %v", err)
+	}
 
 	// Governance record for A must not exist (rollback must have reverted it).
 	var governanceRows int
