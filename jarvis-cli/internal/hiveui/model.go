@@ -1444,6 +1444,10 @@ func (m Model) submitBatchMergeStep() (tea.Model, tea.Cmd) {
 			m.message = "Backup ID is required before batch merge."
 			return m, nil
 		}
+		if !m.snapshotHasBackup(backupID) {
+			m.message = "backup not found in snapshot"
+			return m, nil
+		}
 		m.mergeStep = mergeStepConfirm
 		return m, nil
 
@@ -1458,8 +1462,10 @@ func (m Model) submitBatchMergeStep() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		executor := m.projectMergeBatchExecutor
+		sourcesCopy := make([]string, len(m.mergeSelectedSources))
+		copy(sourcesCopy, m.mergeSelectedSources)
 		req := hiveclient.ProjectMergeBatchRequest{
-			Sources:      m.mergeSelectedSources,
+			Sources:      sourcesCopy,
 			Target:       m.mergeTarget,
 			BackupID:     strings.TrimSpace(m.mergeBackupID),
 			Confirmation: m.mergeConfirmText,
@@ -1483,12 +1489,13 @@ func (m Model) applyProjectMergeBatchResult(msg projectMergeBatchResultMsg) Mode
 	if !m.mergeBatchSubmitting {
 		return m
 	}
-	if !slicesEqual(msg.sources, m.mergeSelectedSources) || msg.target != m.mergeTarget {
+	if !slicesEqual(msg.sources, m.mergeSelectedSources) || msg.target != m.mergeTarget || msg.backupID != m.mergeBackupID {
 		return m
 	}
 	m.mergeBatchSubmitting = false
 	if msg.err != nil {
 		m.mergeStep = mergeStepConfirm
+		m.mergeConfirmText = ""
 		m.message = fmt.Sprintf("Batch merge failed: %v", msg.err)
 		return m
 	}
