@@ -34,9 +34,9 @@ CREATE TABLE IF NOT EXISTS memories (
 
     project        VARCHAR(100) NOT NULL,
 
-    -- topic_key: nombre estable para memorias que se actualizan.
-    -- NULL = memoria inmutable (cada guardado crea una nueva entrada).
-    -- NOT NULL = memoria que puede ser actualizada con el mismo topic_key.
+    -- topic_key: clave de agrupación/contexto opcional (Issue #119).
+    -- Permite agrupar memorias relacionadas bajo un mismo tema.
+    -- Múltiples filas pueden compartir el mismo topic_key; sync_id es la clave de identidad.
     topic_key      TEXT,
 
     category       VARCHAR(50)  NOT NULL,
@@ -82,9 +82,9 @@ CREATE INDEX IF NOT EXISTS idx_memories_category  ON memories(category);
 CREATE INDEX IF NOT EXISTS idx_memories_synced_at ON memories(synced_at);
 CREATE INDEX IF NOT EXISTS idx_memories_sync_id   ON memories(sync_id);
 
--- Unique parcial: solo una memoria con el mismo topic_key por proyecto.
--- "WHERE topic_key IS NOT NULL" = el constraint solo aplica cuando topic_key existe.
--- Las memorias con topic_key NULL no compiten entre sí (cada una es única por sync_id).
-CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_project_topic_key
+-- Índice parcial por topic_key: agrupa memorias relacionadas para búsqueda eficiente.
+-- topic_key es una clave de agrupación/contexto, no de identidad (Issue #119).
+-- Múltiples memorias pueden compartir el mismo (project, topic_key).
+CREATE INDEX IF NOT EXISTS idx_memories_topic_key
     ON memories(project, topic_key)
     WHERE topic_key IS NOT NULL;

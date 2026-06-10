@@ -53,10 +53,10 @@ type Memory struct {
 
 	Project string `json:"project"`
 
-	// TopicKey es el "nombre estable" de una memoria que puede actualizarse.
+	// TopicKey es la clave de agrupamiento/contexto de una memoria.
 	// Es un puntero (*string) porque puede ser NULL en la base de datos.
-	// Cuando TopicKey tiene valor, guardar con el mismo TopicKey actualiza
-	// la memoria existente en lugar de crear una nueva (upsert).
+	// Cuando TopicKey tiene valor, agrupa memorias relacionadas; cada guardado crea una fila nueva.
+	// sync_id es la clave de idempotencia (Issue #119).
 	// Cuando es nil, cada guardado crea una entrada nueva e inmutable.
 	TopicKey *string `json:"topic_key,omitempty"`
 

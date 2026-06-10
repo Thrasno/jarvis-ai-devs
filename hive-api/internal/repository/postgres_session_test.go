@@ -35,6 +35,10 @@ func startPostgresWithSessions(t *testing.T) (*pgxpool.Pool, func()) {
 	err = RunMigrations(pool, migrations.MemoryMutationsSQL)
 	require.NoError(t, err, "failed to run migration 005")
 
+	// 006: drop UNIQUE constraint on topic_key (Issue #119)
+	err = RunMigrations(pool, migrations.DropTopicKeyUniqueConstraintSQL)
+	require.NoError(t, err, "failed to run migration 006")
+
 	return pool, cleanup
 }
 

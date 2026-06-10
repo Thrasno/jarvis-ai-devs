@@ -1263,6 +1263,55 @@ func TestMigration005_MemoryTombstonesAndMutationJournal(t *testing.T) {
 	})
 }
 
+// TestMigration006_TopicKeyDuplicateSucceeds verifies that after migration 006 is applied,
+// two memories with the same project and topic_key can be inserted without error.
+// Before migration 006, a UNIQUE constraint on (project, topic_key) would reject the second insert.
+func TestMigration006_TopicKeyDuplicateSucceeds(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+
+	sessionID := ensureManualSavePtr(t, pool, "migration006-test")
+	now := time.Now().UTC()
+	topicKey := "shared/topic-key"
+
+	first := &model.Memory{
+		SyncID:    "006e8400-e29b-41d4-a716-000000000001",
+		Project:   "migration006-test",
+		TopicKey:  stringPtr(topicKey),
+		Category:  model.CatDecision,
+		Title:     "First memory with topic key",
+		Content:   "First content",
+		CreatedBy: "tester",
+		CreatedAt: now,
+		UpdatedAt: now,
+		SessionID: sessionID,
+	}
+
+	second := &model.Memory{
+		SyncID:    "006e8400-e29b-41d4-a716-000000000002",
+		Project:   "migration006-test",
+		TopicKey:  stringPtr(topicKey),
+		Category:  model.CatDecision,
+		Title:     "Second memory with same topic key",
+		Content:   "Second content",
+		CreatedBy: "tester",
+		CreatedAt: now.Add(time.Minute),
+		UpdatedAt: now.Add(time.Minute),
+		SessionID: sessionID,
+	}
+
+	createdFirst, err := repo.Create(ctx, first)
+	require.NoError(t, err, "first Create with topic_key must succeed after migration 006")
+
+	createdSecond, err := repo.Create(ctx, second)
+	require.NoError(t, err, "second Create with same topic_key must succeed after migration 006 drops UNIQUE constraint")
+
+	assert.NotEqual(t, createdFirst.ID, createdSecond.ID, "both rows must have distinct IDs")
+}
+
 func TestPostgresMemoryRepository_ApplyMemoryMutation_IdempotencyAndTombstones(t *testing.T) {
 	pool, cleanup := startPostgresWithSessions(t)
 	defer cleanup()
