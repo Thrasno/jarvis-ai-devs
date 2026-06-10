@@ -55,7 +55,7 @@ mcp__hive__mem_save(
 )
 ```
 
-`topic_key` enables upserts — saving again updates, not duplicates.
+`topic_key` groups versions of an artifact; saving again creates a new row; mem_search returns the most recent, which is the authoritative version.
 `capture_prompt: false` is mandatory for SDD artifacts because they are automated pipeline outputs, not human/proactive memory saves. Set it when the Hive tool schema supports it; if an older schema rejects or does not expose the field, omit it rather than failing.
 
 ### OpenSpec mode

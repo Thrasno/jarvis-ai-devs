@@ -11,7 +11,7 @@
 - `content` (required): Full memory content. Markdown OK.
 - `type` (required): `bugfix | decision | architecture | discovery | pattern | config | preference | session_summary`
 - `project` (required): Project identifier. NEVER omit. Example: `"jarvis-dev"`
-- `topic_key` (recommended): Stable key for upsert. Same key overwrites previous observation. Example: `"sdd/my-change/spec"`
+- `topic_key` (recommended): Grouping/context key for related memories. Same topic_key groups related observations; each save is a new row; use the most recent on retrieval. Example: `"sdd/my-change/spec"`
 - `files_affected` (optional): Array of file paths affected
 - `tags` (optional): Array of tags for categorization
 
@@ -154,8 +154,8 @@ Format: `{domain}/{identifier}` or `{domain}/{change}/{phase}`
 
 **Rules**:
 - `project` field is MANDATORY in every `mem_save` call — NEVER omit it
-- Same `topic_key` = upsert (overwrites previous observation for that topic)
-- Different topics MUST use different topic keys — never overwrite a different topic
+- Same `topic_key` groups related observations; each save is a new row; retrieval uses the most recent.
+- Different topics MUST use different topic keys — never use a topic_key that belongs to a different topic
 - When unsure about the right key: call `mcp__hive__mem_suggest_topic_key` first
 
 ---

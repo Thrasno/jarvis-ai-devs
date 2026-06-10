@@ -384,13 +384,16 @@ func TestRunStartup_ManualSaveSessionExempt(t *testing.T) {
 	}
 }
 
-func TestE2E_TopicKeyUpsert(t *testing.T) {
+// TestE2E_TopicKeyAlwaysInserts verifies the new topic_key semantics (Issue #119):
+// saving twice with the same topic_key creates two distinct rows. The second save
+// must return a different id, and both rows should appear in search results.
+func TestE2E_TopicKeyAlwaysInserts(t *testing.T) {
 	session := spawnDaemon(t)
 	ctx := context.Background()
 	startRes, err := session.CallTool(ctx, &sdkmcp.CallToolParams{
 		Name: "mem_session_start",
 		Arguments: map[string]any{
-			"id":        "e2e-topic-upsert-session",
+			"id":        "e2e-topic-insert-session",
 			"project":   "e2e-test",
 			"directory": t.TempDir(),
 			"dev_id":    "test-dev",
@@ -421,7 +424,7 @@ func TestE2E_TopicKeyUpsert(t *testing.T) {
 	}
 	id1 := resp1["id"]
 
-	// Second save with same topic_key — should upsert
+	// Second save with same topic_key — must create a NEW distinct row (Issue #119).
 	args["title"] = "Auth Design v2"
 	args["content"] = "Updated version"
 	r2, err := session.CallTool(ctx, &sdkmcp.CallToolParams{Name: "mem_save", Arguments: args})
@@ -435,26 +438,26 @@ func TestE2E_TopicKeyUpsert(t *testing.T) {
 	}
 	id2 := resp2["id"]
 
-	if id1 != id2 {
-		t.Errorf("topic_key upsert should return same id: id1=%v id2=%v", id1, id2)
+	if id1 == id2 {
+		t.Errorf("two saves with same topic_key must create distinct rows: id1=%v id2=%v", id1, id2)
 	}
 
-	// Verify only 1 result in search
+	// Both rows should appear in search results.
 	searchRes, err := session.CallTool(ctx, &sdkmcp.CallToolParams{
 		Name:      "mem_search",
 		Arguments: map[string]any{"query": "Auth Design", "project": "e2e-test"},
 	})
 	if err != nil || searchRes.IsError {
-		t.Fatal("mem_search failed after upsert")
+		t.Fatal("mem_search failed after two saves")
 	}
 
-	// mem_search now returns markdown, not JSON
 	searchBody := searchRes.Content[0].(*sdkmcp.TextContent).Text
+	// The most recent row (v2) must appear in results.
 	if !strings.Contains(searchBody, "Auth Design v2") {
-		t.Errorf("search result should contain 'Auth Design v2' after upsert, got: %s", searchBody)
+		t.Errorf("search result should contain 'Auth Design v2', got: %s", searchBody)
 	}
-	// Verify upsert worked: only 1 result should appear (1 result footer)
-	if strings.Contains(searchBody, "2 results") {
-		t.Errorf("upsert should leave only 1 result, but got 2 in response: %s", searchBody)
+	// Both rows exist — search should return 2 results (v1 and v2).
+	if !strings.Contains(searchBody, "2 results") {
+		t.Errorf("expected 2 results for two saves with same topic_key, got: %s", searchBody)
 	}
 }

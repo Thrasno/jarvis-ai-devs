@@ -30,11 +30,11 @@ Examples:
 - Correct: `mcp__hive__mem_save(project: "jarvis-dev", ...)`
 - Wrong: `mcp__hive__mem_save(title: "...", content: "...")` — missing project
 
-## Upsert Semantics
+## Grouping Semantics
 
-Saving with the same `topic_key` OVERWRITES the previous observation for that topic. This is intentional — it is how you update an artifact without creating duplicates.
+Saving with the same `topic_key` adds a NEW grouped observation; the previous one is kept. Retrieval surfaces the most recent. This is how you version an artifact — each save is a distinct row.
 
-Rule: **Different topics MUST NOT overwrite each other.** Only save to a topic_key when you are intentionally updating that exact topic.
+Rule: **Different topics MUST NOT share the same topic_key.** Saving with the same topic_key adds a new grouped observation; the previous one is kept. Retrieval surfaces the most recent.
 
 If you are unsure whether your topic_key is correct or conflicts with an existing key: call `mcp__hive__mem_suggest_topic_key` first. It will suggest a key based on existing conventions and warn about conflicts.
 

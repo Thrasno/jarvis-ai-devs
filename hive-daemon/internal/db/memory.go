@@ -17,10 +17,9 @@ var (
 	ErrMemoryNotDeleted     = errors.New("memory not deleted")
 )
 
-// SaveMemory persists a memory to the database.
-// When topic_key is set, it upserts (UPDATE on conflict with same project+topic_key).
-// When topic_key is nil, it always inserts a new row.
-// Returns the row's id.
+// SaveMemory always inserts a new row. topic_key is a grouping/context key, not
+// an identity key — saving twice with the same topic_key creates two distinct
+// rows (Issue #119). sync_id is the idempotency key. Returns the new row's id.
 func (d *DB) SaveMemory(mem *models.Memory) (int64, error) {
 	if err := mem.Validate(); err != nil {
 		return 0, fmt.Errorf("invalid memory: %w", err)
@@ -51,46 +50,20 @@ func (d *DB) SaveMemory(mem *models.Memory) (int64, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if mem.TopicKey != nil {
-		var existingSyncID string
-		var deletedAt sql.NullString
-		err := tx.QueryRow(`SELECT sync_id, deleted_at FROM memories WHERE project = ? AND topic_key = ?`, mem.Project, *mem.TopicKey).Scan(&existingSyncID, &deletedAt)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return 0, fmt.Errorf("check existing memory: %w", err)
-		}
-		if err == nil {
-			if deletedAt.Valid {
-				return 0, fmt.Errorf("memory is deleted; explicit restore required before update")
-			}
-			syncID = existingSyncID
-			op = MutationOpUpdate
-		}
-	}
-
 	const q = `
 INSERT INTO memories
 	(sync_id, project, topic_key, category, title, content, tags, files_affected,
 	 created_by, created_at, updated_at, session_id)
 VALUES
 	(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(project, topic_key) WHERE topic_key IS NOT NULL
-DO UPDATE SET
-	title          = excluded.title,
-	content        = excluded.content,
-	category       = excluded.category,
-	tags           = excluded.tags,
-	files_affected = excluded.files_affected,
-	session_id     = excluded.session_id,
-	updated_at     = excluded.updated_at,
-	synced_at      = NULL
-RETURNING id, sync_id`
+RETURNING id`
 
 	var id int64
 	err = tx.QueryRow(q,
 		syncID, mem.Project, mem.TopicKey, mem.Category,
 		mem.Title, mem.Content, tagsJSON, filesJSON,
 		createdBy, now, now, sessionID,
-	).Scan(&id, &syncID)
+	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("save memory: %w", err)
 	}

@@ -49,3 +49,10 @@ var AuditLogsSQL string
 //
 //go:embed 005_memory_mutations.sql
 var MemoryMutationsSQL string
+
+// DropTopicKeyUniqueConstraintSQL es la migración 006: elimina el índice UNIQUE
+// en memories(project, topic_key) y lo reemplaza por un índice no único.
+// topic_key pasa a ser una clave de agrupación, no de identidad (Issue #119).
+//
+//go:embed 006_drop_topic_key_unique_constraint.sql
+var DropTopicKeyUniqueConstraintSQL string

@@ -2776,3 +2776,58 @@ func TestMemSessionSummary_NoPrivateTags_ReturnsStrippedFalse(t *testing.T) {
 		t.Errorf("stripped_count = %v, want 0", body["stripped_count"])
 	}
 }
+
+// TestMemSave_TopicKeyDescription_NoUpsertWording asserts that the mem_save
+// tool's topic_key parameter description does NOT contain the word "upsert" and
+// DOES contain "grouping" or "context key" (Issue #119).
+func TestMemSave_TopicKeyDescription_NoUpsertWording(t *testing.T) {
+	session := connectTestServer(t, &mockStore{})
+
+	res, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools() failed: %v", err)
+	}
+
+	var memSaveTool *sdkmcp.Tool
+	for _, tool := range res.Tools {
+		if tool.Name == "mem_save" {
+			toolCopy := tool
+			memSaveTool = toolCopy
+			break
+		}
+	}
+	if memSaveTool == nil {
+		t.Fatal("mem_save tool not found in ListTools response")
+	}
+
+	// InputSchema is map[string]any on the client side.
+	schemaBytes, err := json.Marshal(memSaveTool.InputSchema)
+	if err != nil {
+		t.Fatalf("marshal InputSchema: %v", err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(schemaBytes, &schema); err != nil {
+		t.Fatalf("unmarshal InputSchema: %v", err)
+	}
+
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema.properties not found or not a map: %T", schema["properties"])
+	}
+	topicKeyProp, ok := properties["topic_key"].(map[string]any)
+	if !ok {
+		t.Fatalf("topic_key property not found or not a map: %T", properties["topic_key"])
+	}
+	desc, ok := topicKeyProp["description"].(string)
+	if !ok {
+		t.Fatalf("topic_key description not found or not a string: %T", topicKeyProp["description"])
+	}
+
+	descLower := strings.ToLower(desc)
+	if strings.Contains(descLower, "upsert") {
+		t.Errorf("topic_key description must not contain 'upsert'; got: %q", desc)
+	}
+	if !strings.Contains(descLower, "grouping") && !strings.Contains(descLower, "context key") {
+		t.Errorf("topic_key description must contain 'grouping' or 'context key'; got: %q", desc)
+	}
+}
