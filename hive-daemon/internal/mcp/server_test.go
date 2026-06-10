@@ -41,6 +41,7 @@ type mockStore struct {
 	createRecoveryTokenFn     func(context.Context, project.TokenRequest) (string, error)
 	validateRecoveryTokenFn   func(context.Context, project.TokenValidation) error
 	consumeRecoveryTokenFn    func(context.Context, project.TokenValidation) error
+	resolveAliasFn            func(context.Context, string) (string, bool, error)
 }
 
 func (m *mockStore) SaveMemory(mem *models.Memory) (int64, error) {
@@ -154,6 +155,13 @@ func (m *mockStore) ValidateRecoveryToken(ctx context.Context, validation projec
 		return m.validateRecoveryTokenFn(ctx, validation)
 	}
 	return nil
+}
+
+func (m *mockStore) ResolveAlias(ctx context.Context, source string) (string, bool, error) {
+	if m.resolveAliasFn != nil {
+		return m.resolveAliasFn(ctx, source)
+	}
+	return "", false, nil
 }
 
 // connectTestServer creates a server+client pair using in-memory transport.

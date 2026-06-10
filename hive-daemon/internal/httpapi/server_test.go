@@ -67,6 +67,10 @@ func (m mockProjectStore) ValidateRecoveryToken(ctx context.Context, validation 
 	return nil
 }
 
+func (m mockProjectStore) ResolveAlias(_ context.Context, _ string) (string, bool, error) {
+	return "", false, nil
+}
+
 func (m *mockPromptStore) SavePrompt(ctx context.Context, project, content string) (*models.Prompt, error) {
 	m.called = true
 	if m.savePromptFn != nil {

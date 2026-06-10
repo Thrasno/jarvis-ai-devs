@@ -35,6 +35,7 @@ type MemoryStore interface {
 	CreateRecoveryToken(ctx context.Context, req project.TokenRequest) (string, error)
 	ValidateRecoveryToken(ctx context.Context, validation project.TokenValidation) error
 	ConsumeRecoveryToken(ctx context.Context, validation project.TokenValidation) error
+	ResolveAlias(ctx context.Context, project string) (string, bool, error)
 }
 
 // SyncRunner es la interfaz que usa el tool mem_sync.

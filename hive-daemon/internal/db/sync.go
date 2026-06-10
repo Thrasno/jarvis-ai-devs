@@ -289,6 +289,20 @@ func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Resolve alias inside the transaction so the lookup is atomic with the
+	// subsequent writes. If event.Project is a known alias source, rewrite to
+	// the canonical target project name.
+	var aliasTarget string
+	aliasErr := tx.QueryRow(
+		`SELECT target_project FROM project_aliases WHERE source_project = ? LIMIT 1`, event.Project,
+	).Scan(&aliasTarget)
+	if aliasErr != nil && !errors.Is(aliasErr, sql.ErrNoRows) {
+		return false, fmt.Errorf("ApplyRemoteMutation resolve alias: %w", aliasErr)
+	}
+	if aliasErr == nil {
+		event.Project = aliasTarget
+	}
+
 	var existing string
 	err = tx.QueryRow(`SELECT event_id FROM memory_mutations WHERE event_id = ?`, event.EventID).Scan(&existing)
 	if err == nil {
@@ -444,11 +458,32 @@ func (d *DB) SaveFromRemote(mem *models.Memory) error {
 	createdAt := mem.CreatedAt.UTC().Format("2006-01-02 15:04:05")
 	updatedAt := mem.UpdatedAt.UTC().Format("2006-01-02 15:04:05")
 
+	// Resolve alias using a direct SQL query so this function does not depend on
+	// context.Background() via d.ResolveAlias. If mem.Project is a known alias
+	// source, rewrite to the canonical target project name.
+	// Use a local variable to avoid mutating the caller's *models.Memory.
+	project := mem.Project
+	var aliasTarget string
+	aliasErr := d.sqlDB.QueryRow(
+		`SELECT target_project FROM project_aliases WHERE source_project = ? LIMIT 1`, project,
+	).Scan(&aliasTarget)
+	if aliasErr != nil && !errors.Is(aliasErr, sql.ErrNoRows) {
+		return fmt.Errorf("SaveFromRemote resolve alias: %w", aliasErr)
+	}
+	if aliasErr == nil {
+		project = aliasTarget
+		// Note: session_id is kept as-is even when the project is remapped via alias.
+		// The FK on memories.session_id checks ID existence only, not project match.
+		// All memory reads filter by memories.project directly, so the mismatch is harmless.
+		// Remapping sessions on sync receive would require creating artificial sessions
+		// under the target project, which adds noise to KnownProjects and session history.
+	}
+
 	// R2-CRIT-3: resolve session_id BEFORE the INSERT. memories.session_id is NOT NULL,
 	// and `INSERT OR IGNORE` would silently drop the row on any constraint failure.
 	sessionID := mem.SessionID
 	if sessionID == "" {
-		resolved, err := d.EnsureManualSaveSession(mem.Project)
+		resolved, err := d.EnsureManualSaveSession(project)
 		if err != nil {
 			return fmt.Errorf("ensure manual-save session for remote insert: %w", err)
 		}
@@ -461,7 +496,7 @@ INSERT OR IGNORE INTO memories
 	(sync_id, project, topic_key, category, title, content, tags, files_affected,
 	 created_by, created_at, updated_at, synced_at, session_id)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		mem.SyncID, mem.Project, mem.TopicKey, mem.Category,
+		mem.SyncID, project, mem.TopicKey, mem.Category,
 		mem.Title, mem.Content, string(tagsJSON), string(filesJSON),
 		mem.CreatedBy, createdAt, updatedAt, now, sessionID,
 	)

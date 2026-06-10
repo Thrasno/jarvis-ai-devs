@@ -351,7 +351,26 @@ func TestMergeGovernanceProjectRetryIgnoresCurrentTargetLifecycle(t *testing.T) 
 	t.Parallel()
 
 	for name, setup := range map[string]func(*testing.T, *hivedb.DB){
-		"target later merged":   func(t *testing.T, d *hivedb.DB) { mergeGovernanceProjectForTest(t, d, "beta", "gamma") },
+		// "beta later merged" scenario: simulate beta→gamma by writing the governance
+		// row directly, bypassing addAliasTx. The alias chain guard (ErrAliasSourceIsTarget)
+		// now rejects merging a project that is already a target — so the product path
+		// is invalid — but we still need to verify the retry idempotency logic when
+		// the target's lifecycle changes via a raw governance row (e.g. migrated from
+		// a pre-guard state or via a back-door administrative operation).
+		"target later merged": func(t *testing.T, d *hivedb.DB) {
+			t.Helper()
+			_, err := d.RawDB().Exec(`
+INSERT INTO hive_project_governance (project, merge_target, merged_at, merged_by, merge_reason)
+VALUES ('beta', 'gamma', '2026-06-07 11:00:00', 'actor', 'old')
+ON CONFLICT(project) DO UPDATE SET
+    merge_target = excluded.merge_target,
+    merged_at    = excluded.merged_at,
+    merged_by    = excluded.merged_by,
+    merge_reason = excluded.merge_reason`)
+			if err != nil {
+				t.Fatalf("raw insert beta->gamma governance: %v", err)
+			}
+		},
 		"target later archived": func(t *testing.T, d *hivedb.DB) { archiveGovernanceProjectForTest(t, d, "beta") },
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -771,6 +790,153 @@ func TestListGovernanceProjects_UnsyncedCount(t *testing.T) {
 		}
 		if got["proj-c"].UnsyncedCount != 0 {
 			t.Fatalf("proj-c UnsyncedCount = %d, want 0 (soft-deleted excluded)", got["proj-c"].UnsyncedCount)
+		}
+	})
+}
+
+// TestMergeGovernanceProject_CreatesAlias verifies that MergeGovernanceProject
+// creates a persistent local alias atomically with the governance record.
+func TestMergeGovernanceProject_CreatesAlias(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	seedGovernanceMergeProjects(t, d)
+
+	if mutated, err := d.MergeGovernanceProject(context.Background(), "alpha", "beta", "actor", "merge test", time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)); err != nil || !mutated {
+		t.Fatalf("MergeGovernanceProject mutated=%v err=%v, want true nil", mutated, err)
+	}
+
+	target, found, err := d.ResolveAlias(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("ResolveAlias after merge: %v", err)
+	}
+	if !found {
+		t.Fatal("expected alias found=true after merge")
+	}
+	if target != "beta" {
+		t.Fatalf("alias target = %q, want beta", target)
+	}
+}
+
+// TestMergeGovernanceProject_RollsBackWhenAddAliasTxFails verifies that when
+// addAliasTx rejects the alias (because the source is already a target in an
+// existing alias), the deferred rollback reverts the governance record too —
+// no partial state is left behind.
+func TestMergeGovernanceProject_RollsBackWhenAddAliasTxFails(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	// Seed projects A, B, and X so the governance lookup succeeds.
+	saveGovernanceTestMemory(t, d, "A", "A memory")
+	saveGovernanceTestMemory(t, d, "B", "B memory")
+	saveGovernanceTestMemory(t, d, "X", "X memory")
+
+	// Seed alias X→A so that A is already a target.
+	// When MergeGovernanceProject("A", "B", ...) runs, addAliasTx("A", "B", ...)
+	// will hit the bidirectional chain guard and return ErrAliasSourceIsTarget.
+	seedAlias(t, d, "X", "A")
+
+	_, err := d.MergeGovernanceProject(context.Background(), "A", "B", "actor", "test rollback", time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC))
+	if err == nil {
+		t.Fatal("MergeGovernanceProject: expected error due to alias chain guard, got nil")
+	}
+	if !errors.Is(err, hivedb.ErrAliasSourceIsTarget) {
+		t.Fatalf("expected ErrAliasSourceIsTarget wrapped in merge error, got: %v", err)
+	}
+
+	// Governance record for A must not exist (rollback must have reverted it).
+	var governanceRows int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM hive_project_governance WHERE project = 'A'`).Scan(&governanceRows); err != nil {
+		t.Fatalf("count governance rows for A: %v", err)
+	}
+	if governanceRows != 0 {
+		t.Fatalf("hive_project_governance has %d row(s) for A after rollback, want 0", governanceRows)
+	}
+
+	// Alias A→B must not exist (guard fired before insert, and tx rolled back).
+	_, found, resolveErr := d.ResolveAlias(context.Background(), "A")
+	if resolveErr != nil {
+		t.Fatalf("ResolveAlias A: %v", resolveErr)
+	}
+	if found {
+		t.Fatal("alias A→B must not exist after rollback")
+	}
+}
+
+// TestKnownProjects_ExcludesAliasedSources verifies that source_project values
+// that have an active alias are hidden from KnownProjects.
+func TestKnownProjects_ExcludesAliasedSources(t *testing.T) {
+	t.Parallel()
+
+	t.Run("source hidden, target visible after alias creation", func(t *testing.T) {
+		t.Parallel()
+		d := openGovernanceTestDB(t)
+
+		saveGovernanceTestMemory(t, d, "Foo", "Foo memory")
+		saveGovernanceTestMemory(t, d, "Bar", "Bar memory")
+
+		seedAlias(t, d, "Foo", "Bar")
+
+		projects, err := d.KnownProjects(context.Background())
+		if err != nil {
+			t.Fatalf("KnownProjects: %v", err)
+		}
+		got := map[string]bool{}
+		for _, p := range projects {
+			got[p.Name] = true
+		}
+		if got["Foo"] {
+			t.Fatal("KnownProjects contains Foo (aliased source), expected hidden")
+		}
+		if !got["Bar"] {
+			t.Fatal("KnownProjects missing Bar (alias target), expected visible")
+		}
+	})
+
+	t.Run("both projects visible when no alias exists", func(t *testing.T) {
+		t.Parallel()
+		d := openGovernanceTestDB(t)
+
+		saveGovernanceTestMemory(t, d, "Foo", "Foo memory")
+		saveGovernanceTestMemory(t, d, "Bar", "Bar memory")
+
+		projects, err := d.KnownProjects(context.Background())
+		if err != nil {
+			t.Fatalf("KnownProjects: %v", err)
+		}
+		got := map[string]bool{}
+		for _, p := range projects {
+			got[p.Name] = true
+		}
+		if !got["Foo"] {
+			t.Fatal("KnownProjects missing Foo (no alias)")
+		}
+		if !got["Bar"] {
+			t.Fatal("KnownProjects missing Bar (no alias)")
+		}
+	})
+
+	t.Run("source reappears after alias removal", func(t *testing.T) {
+		t.Parallel()
+		d := openGovernanceTestDB(t)
+
+		saveGovernanceTestMemory(t, d, "Foo", "Foo memory")
+		saveGovernanceTestMemory(t, d, "Bar", "Bar memory")
+		seedAlias(t, d, "Foo", "Bar")
+
+		if err := d.RemoveAlias(context.Background(), "Foo"); err != nil {
+			t.Fatalf("RemoveAlias: %v", err)
+		}
+		projects, err := d.KnownProjects(context.Background())
+		if err != nil {
+			t.Fatalf("KnownProjects after removal: %v", err)
+		}
+		got := map[string]bool{}
+		for _, p := range projects {
+			got[p.Name] = true
+		}
+		if !got["Foo"] {
+			t.Fatal("KnownProjects missing Foo after alias removal")
 		}
 	})
 }

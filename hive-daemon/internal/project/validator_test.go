@@ -15,6 +15,7 @@ type fakeStore struct {
 	createdTokens   []project.TokenRequest
 	tokenCandidates []project.Candidate
 	consumeFn       func(context.Context, project.TokenValidation) error
+	aliases         map[string]string // source -> target
 }
 
 func (f fakeStore) KnownProjects(context.Context) ([]project.KnownProject, error) {
@@ -54,6 +55,14 @@ func (f fakeStore) ValidateRecoveryToken(_ context.Context, validation project.T
 		}
 	}
 	return nil
+}
+
+func (f fakeStore) ResolveAlias(_ context.Context, source string) (string, bool, error) {
+	if f.aliases == nil {
+		return "", false, nil
+	}
+	target, ok := f.aliases[source]
+	return target, ok, nil
 }
 
 func candidateIncludesProject(candidates []project.Candidate, selected string) bool {
@@ -124,6 +133,62 @@ func TestValidateWriteProject_ExplicitProjectResolution(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestValidateWriteProject_AliasResolution verifies that a source project that
+// has an active alias is transparently redirected to the target project.
+func TestValidateWriteProject_AliasResolution(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	t.Run("aliased source resolves to target", func(t *testing.T) {
+		t.Parallel()
+		// "Bar" is the real project; "Foo" has an alias pointing to "Bar".
+		// KnownProjects returns only "Bar" (aliased source is hidden).
+		store := &fakeStore{
+			known:   []project.KnownProject{{Name: "Bar"}},
+			aliases: map[string]string{"Foo": "Bar"},
+		}
+		result, err := project.ValidateWriteProject(ctx, store, project.WriteInput{Project: "Foo"})
+		if err != nil {
+			t.Fatalf("ValidateWriteProject: %v", err)
+		}
+		if result.Project != "Bar" {
+			t.Fatalf("resolved project = %q, want Bar", result.Project)
+		}
+	})
+
+	t.Run("non-aliased project resolves normally", func(t *testing.T) {
+		t.Parallel()
+		store := &fakeStore{
+			known:   []project.KnownProject{{Name: "Baz"}},
+			aliases: map[string]string{},
+		}
+		result, err := project.ValidateWriteProject(ctx, store, project.WriteInput{Project: "Baz"})
+		if err != nil {
+			t.Fatalf("ValidateWriteProject: %v", err)
+		}
+		if result.Project != "Baz" {
+			t.Fatalf("resolved project = %q, want Baz", result.Project)
+		}
+	})
+
+	t.Run("unknown project with no alias returns error", func(t *testing.T) {
+		t.Parallel()
+		store := &fakeStore{
+			known:   []project.KnownProject{{Name: "Bar"}},
+			aliases: map[string]string{},
+		}
+		_, err := project.ValidateWriteProject(ctx, store, project.WriteInput{Project: "Ghost"})
+		var validationErr *project.ValidationError
+		if !errors.As(err, &validationErr) {
+			t.Fatalf("error = %T %v, want ValidationError", err, err)
+		}
+		if validationErr.Code != project.CodeProjectUnknown {
+			t.Fatalf("error code = %q, want %q", validationErr.Code, project.CodeProjectUnknown)
+		}
+	})
 }
 
 func TestValidateWriteProject_CanonicalPathAmbiguityFails(t *testing.T) {
