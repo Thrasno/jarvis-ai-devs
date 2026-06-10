@@ -283,6 +283,14 @@ func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
 		event.OccurredAt = time.Now().UTC()
 	}
 
+	// Resolve alias: if event.Project is a known alias source, rewrite to target
+	// before the transaction switch so all ops land under the canonical project name.
+	if target, found, err := d.ResolveAlias(context.Background(), event.Project); err != nil {
+		return false, fmt.Errorf("ApplyRemoteMutation resolve alias: %w", err)
+	} else if found {
+		event.Project = target
+	}
+
 	tx, err := d.sqlDB.Begin()
 	if err != nil {
 		return false, fmt.Errorf("begin apply remote mutation: %w", err)
@@ -431,6 +439,14 @@ WHERE sync_id = ? AND deleted_at IS NULL`,
 // resolvemos defensivamente a `manual-save-{project}` para que el INSERT no quede
 // silenciosamente descartado por la combinación de NOT NULL + INSERT OR IGNORE.
 func (d *DB) SaveFromRemote(mem *models.Memory) error {
+	// Resolve alias: if mem.Project is a known alias source, rewrite to target
+	// before any insert so memories land under the canonical project name.
+	if target, found, err := d.ResolveAlias(context.Background(), mem.Project); err != nil {
+		return fmt.Errorf("SaveFromRemote resolve alias: %w", err)
+	} else if found {
+		mem.Project = target
+	}
+
 	tagsJSON, err := json.Marshal(orNil(mem.Tags))
 	if err != nil {
 		return fmt.Errorf("marshal tags: %w", err)

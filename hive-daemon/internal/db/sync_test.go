@@ -1461,3 +1461,126 @@ func TestSaveFromRemote_EmptySessionID_LazyCreatesManualSave(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, exists)
 }
+
+// TestSaveFromRemote_RemapsAliasedProject verifies that SaveFromRemote rewrites
+// mem.Project to the alias target before inserting.
+func TestSaveFromRemote_RemapsAliasedProject(t *testing.T) {
+	db := setupTestDB(t)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	ctx := context.Background()
+
+	// Seed alias Foo -> Bar.
+	require.NoError(t, db.AddAlias(ctx, "Foo", "Bar", "local", "test"), "AddAlias")
+
+	// Ensure the session exists for the target project so the INSERT doesn't fail.
+	_, sessErr := db.EnsureManualSaveSession("Bar")
+	require.NoError(t, sessErr, "EnsureManualSaveSession Bar")
+
+	mem := &models.Memory{
+		SyncID:    "sync-remap-001",
+		Project:   "Foo",
+		Category:  "manual",
+		Title:     "remote memory",
+		Content:   "content",
+		CreatedBy: "tester",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		SessionID: "manual-save-Bar",
+	}
+	require.NoError(t, db.SaveFromRemote(mem), "SaveFromRemote")
+
+	// Verify the stored row has project = "Bar", not "Foo".
+	var storedProject string
+	err := db.sqlDB.QueryRow(`SELECT project FROM memories WHERE sync_id = ?`, "sync-remap-001").Scan(&storedProject)
+	require.NoError(t, err, "row must exist")
+	assert.Equal(t, "Bar", storedProject, "project must be rewritten to alias target")
+}
+
+// TestSaveFromRemote_NonAliasedProjectStoredAsIs verifies that SaveFromRemote
+// leaves the project unchanged when no alias exists.
+func TestSaveFromRemote_NonAliasedProjectStoredAsIs(t *testing.T) {
+	db := setupTestDB(t)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+	_, sessErr := db.EnsureManualSaveSession("Qux")
+	require.NoError(t, sessErr, "EnsureManualSaveSession Qux")
+
+	mem := &models.Memory{
+		SyncID:    "sync-noalias-001",
+		Project:   "Qux",
+		Category:  "manual",
+		Title:     "no alias memory",
+		Content:   "content",
+		CreatedBy: "tester",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		SessionID: "manual-save-Qux",
+	}
+	require.NoError(t, db.SaveFromRemote(mem), "SaveFromRemote")
+
+	var storedProject string
+	err := db.sqlDB.QueryRow(`SELECT project FROM memories WHERE sync_id = ?`, "sync-noalias-001").Scan(&storedProject)
+	require.NoError(t, err, "row must exist")
+	assert.Equal(t, "Qux", storedProject, "project must be unchanged when no alias exists")
+}
+
+// TestApplyRemoteMutation_RemapsAliasedProject verifies that ApplyRemoteMutation
+// rewrites event.Project to the alias target before insert.
+func TestApplyRemoteMutation_RemapsAliasedProject(t *testing.T) {
+	db := setupTestDB(t)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	ctx := context.Background()
+
+	// Seed alias Foo -> Bar.
+	require.NoError(t, db.AddAlias(ctx, "Foo", "Bar", "local", "test"), "AddAlias")
+
+	mem := &models.Memory{
+		SyncID:    "sync-mut-remap-001",
+		Project:   "Bar",
+		Category:  "manual",
+		Title:     "existing memory",
+		Content:   "content",
+		CreatedBy: "tester",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		SessionID: "manual-save-Bar",
+	}
+	_, ensureErr := db.EnsureManualSaveSession("Bar")
+	require.NoError(t, ensureErr, "EnsureManualSaveSession")
+	_, err := db.sqlDB.Exec(`
+INSERT INTO memories (sync_id, project, category, title, content, created_by, session_id, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, '2026-01-01 00:00:00', '2026-01-01 00:00:00')`,
+		mem.SyncID, mem.Project, mem.Category, mem.Title, mem.Content, mem.CreatedBy, mem.SessionID)
+	require.NoError(t, err, "seed memory")
+
+	// Send an update mutation with project = "Foo" (source alias).
+	occurred := time.Now().UTC()
+	event := MutationEnvelope{
+		EventID:      "evt-remap-001",
+		EntityType:   "memory",
+		EntitySyncID: mem.SyncID,
+		Project:      "Foo", // source alias — should be remapped to "Bar"
+		Op:           MutationOpUpdate,
+		OccurredAt:   occurred,
+		Memory: &MutationMemoryPayload{
+			SyncID:    mem.SyncID,
+			Project:   "Foo",
+			Category:  "manual",
+			Title:     "updated title",
+			Content:   "updated content",
+			CreatedBy: "tester",
+			CreatedAt: occurred,
+			UpdatedAt: occurred,
+			SessionID: mem.SessionID,
+		},
+	}
+	applied, err := db.ApplyRemoteMutation(event)
+	require.NoError(t, err, "ApplyRemoteMutation")
+	assert.True(t, applied, "mutation must be applied")
+
+	// Verify the stored mutation record used "Bar" as the project.
+	var mutProject string
+	err = db.sqlDB.QueryRow(`SELECT project FROM memory_mutations WHERE event_id = ?`, "evt-remap-001").Scan(&mutProject)
+	require.NoError(t, err, "mutation record must exist")
+	assert.Equal(t, "Bar", mutProject, "mutation project must be rewritten to alias target")
+}

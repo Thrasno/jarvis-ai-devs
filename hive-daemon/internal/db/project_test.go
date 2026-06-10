@@ -774,3 +774,105 @@ func TestListGovernanceProjects_UnsyncedCount(t *testing.T) {
 		}
 	})
 }
+
+// TestMergeGovernanceProject_CreatesAlias verifies that MergeGovernanceProject
+// creates a persistent local alias atomically with the governance record.
+func TestMergeGovernanceProject_CreatesAlias(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	seedGovernanceMergeProjects(t, d)
+
+	if mutated, err := d.MergeGovernanceProject(context.Background(), "alpha", "beta", "actor", "merge test", time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)); err != nil || !mutated {
+		t.Fatalf("MergeGovernanceProject mutated=%v err=%v, want true nil", mutated, err)
+	}
+
+	target, found, err := d.ResolveAlias(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("ResolveAlias after merge: %v", err)
+	}
+	if !found {
+		t.Fatal("expected alias found=true after merge")
+	}
+	if target != "beta" {
+		t.Fatalf("alias target = %q, want beta", target)
+	}
+}
+
+// TestKnownProjects_ExcludesAliasedSources verifies that source_project values
+// that have an active alias are hidden from KnownProjects.
+func TestKnownProjects_ExcludesAliasedSources(t *testing.T) {
+	t.Parallel()
+
+	t.Run("source hidden, target visible after alias creation", func(t *testing.T) {
+		t.Parallel()
+		d := openGovernanceTestDB(t)
+
+		saveGovernanceTestMemory(t, d, "Foo", "Foo memory")
+		saveGovernanceTestMemory(t, d, "Bar", "Bar memory")
+
+		seedAlias(t, d, "Foo", "Bar")
+
+		projects, err := d.KnownProjects(context.Background())
+		if err != nil {
+			t.Fatalf("KnownProjects: %v", err)
+		}
+		got := map[string]bool{}
+		for _, p := range projects {
+			got[p.Name] = true
+		}
+		if got["Foo"] {
+			t.Fatal("KnownProjects contains Foo (aliased source), expected hidden")
+		}
+		if !got["Bar"] {
+			t.Fatal("KnownProjects missing Bar (alias target), expected visible")
+		}
+	})
+
+	t.Run("both projects visible when no alias exists", func(t *testing.T) {
+		t.Parallel()
+		d := openGovernanceTestDB(t)
+
+		saveGovernanceTestMemory(t, d, "Foo", "Foo memory")
+		saveGovernanceTestMemory(t, d, "Bar", "Bar memory")
+
+		projects, err := d.KnownProjects(context.Background())
+		if err != nil {
+			t.Fatalf("KnownProjects: %v", err)
+		}
+		got := map[string]bool{}
+		for _, p := range projects {
+			got[p.Name] = true
+		}
+		if !got["Foo"] {
+			t.Fatal("KnownProjects missing Foo (no alias)")
+		}
+		if !got["Bar"] {
+			t.Fatal("KnownProjects missing Bar (no alias)")
+		}
+	})
+
+	t.Run("source reappears after alias removal", func(t *testing.T) {
+		t.Parallel()
+		d := openGovernanceTestDB(t)
+
+		saveGovernanceTestMemory(t, d, "Foo", "Foo memory")
+		saveGovernanceTestMemory(t, d, "Bar", "Bar memory")
+		seedAlias(t, d, "Foo", "Bar")
+
+		if err := d.RemoveAlias(context.Background(), "Foo"); err != nil {
+			t.Fatalf("RemoveAlias: %v", err)
+		}
+		projects, err := d.KnownProjects(context.Background())
+		if err != nil {
+			t.Fatalf("KnownProjects after removal: %v", err)
+		}
+		got := map[string]bool{}
+		for _, p := range projects {
+			got[p.Name] = true
+		}
+		if !got["Foo"] {
+			t.Fatal("KnownProjects missing Foo after alias removal")
+		}
+	})
+}

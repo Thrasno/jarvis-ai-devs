@@ -80,6 +80,9 @@ type Store interface {
 	CreateRecoveryToken(context.Context, TokenRequest) (string, error)
 	ValidateRecoveryToken(context.Context, TokenValidation) error
 	ConsumeRecoveryToken(context.Context, TokenValidation) error
+	// ResolveAlias returns the target project name if the given name is an active
+	// alias source, otherwise returns ("", false, nil).
+	ResolveAlias(context.Context, string) (string, bool, error)
 }
 
 type WriteInput struct {
@@ -172,7 +175,21 @@ func ValidateWriteProjectWithConfig(ctx context.Context, store Store, input Writ
 		return Result{}, &ValidationError{Code: CodeProjectAmbiguous, Message: "project resolution is ambiguous", Candidates: candidates, RecoveryToken: token, ExpiresAt: expiresAt}
 	}
 	if projectName == "" {
-		return Result{}, &ValidationError{Code: CodeProjectUnknown, Message: "project is not known"}
+		// The requested project is not in KnownProjects. Check if it has an active
+		// alias redirect — source projects are hidden from KnownProjects, so the
+		// alias is the recovery path that redirects writes to the target.
+		if strings.TrimSpace(input.Project) != "" {
+			aliasTarget, found, aliasErr := store.ResolveAlias(ctx, strings.TrimSpace(input.Project))
+			if aliasErr != nil {
+				return Result{}, fmt.Errorf("resolve alias: %w", aliasErr)
+			}
+			if found {
+				projectName = aliasTarget
+			}
+		}
+		if projectName == "" {
+			return Result{}, &ValidationError{Code: CodeProjectUnknown, Message: "project is not known"}
+		}
 	}
 
 	if err := validateSessionProject(ctx, store, input.SessionID, projectName); err != nil {

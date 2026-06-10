@@ -75,6 +75,7 @@ func (d *DB) KnownProjects(ctx context.Context) ([]project.KnownProject, error) 
 		SELECT project, MAX(directory) AS directory
 		FROM known
 		WHERE project != ''
+		  AND project NOT IN (SELECT source_project FROM project_aliases)
 		GROUP BY project
 		ORDER BY project`)
 	if err != nil {
@@ -361,6 +362,13 @@ WHERE hive_project_governance.archived_at IS NULL
 		}
 		return false, ErrGovernanceProjectMergeConflict
 	}
+	// Create the local alias atomically within the same transaction.
+	// If alias insert fails the deferred tx.Rollback() reverts both the governance
+	// record and any alias row — no partial state is possible.
+	if err := addAliasTx(ctx, tx, source, target, "local", reason); err != nil {
+		return false, fmt.Errorf("merge governance project alias: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit merge governance project: %w", err)
 	}

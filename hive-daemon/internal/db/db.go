@@ -309,6 +309,19 @@ func initSchema(sqlDB *sql.DB) error {
 		`ALTER TABLE hive_project_governance ADD COLUMN merged_at DATETIME`,
 		`ALTER TABLE hive_project_governance ADD COLUMN merged_by TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE hive_project_governance ADD COLUMN merge_reason TEXT NOT NULL DEFAULT ''`,
+		// project_aliases: durable source→target redirect table. Additive, idempotent.
+		// source_project is the PK (one alias per source). scope supports future
+		// global/cloud aliases without a schema change. No user_version bump needed.
+		`CREATE TABLE IF NOT EXISTS project_aliases (
+			source_project TEXT PRIMARY KEY,
+			target_project TEXT NOT NULL,
+			scope          TEXT NOT NULL DEFAULT 'local',
+			reason         TEXT NOT NULL DEFAULT '',
+			created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			created_by     TEXT NOT NULL DEFAULT '',
+			synced_at      DATETIME
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_project_aliases_target ON project_aliases(target_project)`,
 	}
 	for _, m := range migrations {
 		if _, err := sqlDB.Exec(m); err != nil {
