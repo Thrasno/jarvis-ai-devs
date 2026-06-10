@@ -68,7 +68,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 				"content":       {"type": "string", "description": "Full memory content (markdown OK)"},
 				"type":          {"type": "string", "description": "Category: architecture, decision, bugfix, pattern, discovery, config, preference, session_summary"},
 				"project":       {"type": "string", "description": "Project identifier"},
-				"topic_key":     {"type": "string", "description": "Stable key for upsert (e.g. 'arch/auth-model')"},
+				"topic_key":     {"type": "string", "description": "Grouping/context key for related memories (e.g. 'arch/auth-model'). Every save creates a new row; topic_key groups and aids retrieval — saving twice with the same key creates two distinct rows."},
 				"tags":          {"type": "array", "items": {"type": "string"}},
 				"files_affected":{"type": "array", "items": {"type": "string"}},
 				"session_id":    {"type": "string", "description": "Optional session ID; absent triggers lazy manual-save fallback"},

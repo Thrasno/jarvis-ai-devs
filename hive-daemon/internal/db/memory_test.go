@@ -99,52 +99,205 @@ func TestSaveMemory_PopulatesSyncIDAndCreatedBy(t *testing.T) {
 	}
 }
 
-func TestSaveMemory_TopicKeyUpsert(t *testing.T) {
+// TestSaveMemory_TopicKeyAlwaysInserts asserts that saving twice with the same
+// topic_key creates two distinct rows (Issue #119: topic_key is a grouping key,
+// not an upsert/identity key).
+func TestSaveMemory_TopicKeyAlwaysInserts(t *testing.T) {
 	d := openTestDB(t)
 	ensureManualSaveSessions(t, d, "proj")
 
 	key := "arch/auth"
-	mem := &models.Memory{
+
+	id1, err := d.SaveMemory(&models.Memory{
 		Project:   "proj",
-		Title:     "Original",
-		Content:   "Original content",
+		Title:     "First save",
+		Content:   "First content",
 		TopicKey:  &key,
 		SessionID: "manual-save-proj",
-	}
+	})
+	require.NoError(t, err)
 
-	id1, err := d.SaveMemory(mem)
-	if err != nil {
-		t.Fatalf("first SaveMemory() failed: %v", err)
-	}
+	id2, err := d.SaveMemory(&models.Memory{
+		Project:   "proj",
+		Title:     "Second save",
+		Content:   "Second content",
+		TopicKey:  &key,
+		SessionID: "manual-save-proj",
+	})
+	require.NoError(t, err)
 
-	mem.Title = "Updated"
-	mem.Content = "Updated content"
-	id2, err := d.SaveMemory(mem)
-	if err != nil {
-		t.Fatalf("second SaveMemory() failed: %v", err)
-	}
+	assert.NotEqual(t, id1, id2, "two saves with same topic_key must produce two distinct row ids")
 
-	if id1 != id2 {
-		t.Errorf("upsert should return same id: id1=%d id2=%d", id1, id2)
-	}
-
-	// Verify only 1 row exists
 	var count int
-	if err := d.sqlDB.QueryRow("SELECT COUNT(*) FROM memories WHERE project='proj'").Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	if count != 1 {
-		t.Errorf("expected 1 row after upsert, got %d", count)
-	}
+	require.NoError(t, d.sqlDB.QueryRow(
+		"SELECT COUNT(*) FROM memories WHERE project=? AND topic_key=?", "proj", key,
+	).Scan(&count))
+	assert.Equal(t, 2, count, "expected 2 rows after two saves with same topic_key")
 
-	// Verify content was updated
-	var title string
-	if err := d.sqlDB.QueryRow("SELECT title FROM memories WHERE id=?", id1).Scan(&title); err != nil {
-		t.Fatal(err)
+	// Both mutations must be 'create'.
+	var ops []string
+	rows, err := d.sqlDB.Query(`SELECT op FROM memory_mutations ORDER BY sequence ASC`)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var op string
+		require.NoError(t, rows.Scan(&op))
+		ops = append(ops, op)
 	}
-	if title != "Updated" {
-		t.Errorf("title after upsert = %q, want 'Updated'", title)
+	require.NoError(t, rows.Err())
+	assert.Equal(t, []string{"create", "create"}, ops)
+}
+
+// TestSaveMemory_AlwaysCreatesNewSyncID asserts that each SaveMemory call
+// produces a fresh sync_id, even when using the same topic_key.
+func TestSaveMemory_AlwaysCreatesNewSyncID(t *testing.T) {
+	d := openTestDB(t)
+	ensureManualSaveSessions(t, d, "proj-sync")
+
+	key := "arch/sync-test"
+
+	id1, err := saveTestMemory(t, d, &models.Memory{
+		Project:   "proj-sync",
+		Title:     "First",
+		Content:   "Content",
+		TopicKey:  &key,
+		SessionID: "manual-save-proj-sync",
+	})
+	require.NoError(t, err)
+
+	id2, err := d.SaveMemory(&models.Memory{
+		Project:   "proj-sync",
+		Title:     "Second",
+		Content:   "Content",
+		TopicKey:  &key,
+		SessionID: "manual-save-proj-sync",
+	})
+	require.NoError(t, err)
+
+	var syncID1, syncID2 string
+	require.NoError(t, d.sqlDB.QueryRow("SELECT sync_id FROM memories WHERE id=?", id1).Scan(&syncID1))
+	require.NoError(t, d.sqlDB.QueryRow("SELECT sync_id FROM memories WHERE id=?", id2).Scan(&syncID2))
+
+	assert.NotEmpty(t, syncID1)
+	assert.NotEmpty(t, syncID2)
+	assert.NotEqual(t, syncID1, syncID2, "second save with same topic_key must generate a fresh sync_id")
+
+	// Both mutations must be 'create'.
+	rows, err := d.sqlDB.Query(`SELECT op FROM memory_mutations WHERE project='proj-sync' ORDER BY sequence ASC`)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	var ops []string
+	for rows.Next() {
+		var op string
+		require.NoError(t, rows.Scan(&op))
+		ops = append(ops, op)
 	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, []string{"create", "create"}, ops)
+}
+
+// TestSaveMemory_DeletedTopicKeyDoesNotBlock asserts that a soft-deleted row
+// does not prevent a new SaveMemory with the same topic_key. The new save
+// creates a fresh active row; the deleted tombstone is preserved untouched.
+func TestSaveMemory_DeletedTopicKeyDoesNotBlock(t *testing.T) {
+	d := openTestDB(t)
+
+	key := "deleted/topic"
+	id1, err := saveTestMemory(t, d, &models.Memory{
+		Project:   "del-test",
+		Title:     "Original",
+		Content:   "Content",
+		TopicKey:  &key,
+		SessionID: "manual-save-del-test",
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, d.DeleteMemory(id1, "tester", "obsolete"))
+
+	// Saving again with the same topic_key must succeed.
+	id2, err := d.SaveMemory(&models.Memory{
+		Project:   "del-test",
+		Title:     "New version",
+		Content:   "New content",
+		TopicKey:  &key,
+		SessionID: "manual-save-del-test",
+	})
+	require.NoError(t, err, "SaveMemory must not return an error when prior row is deleted")
+	assert.NotEqual(t, id1, id2)
+
+	// New row must be active (deleted_at IS NULL).
+	var deletedAt sql.NullString
+	require.NoError(t, d.sqlDB.QueryRow("SELECT deleted_at FROM memories WHERE id=?", id2).Scan(&deletedAt))
+	assert.False(t, deletedAt.Valid, "new row must not be tombstoned")
+
+	// Original deleted row must still be tombstoned.
+	var origDeletedAt sql.NullString
+	require.NoError(t, d.sqlDB.QueryRow("SELECT deleted_at FROM memories WHERE id=?", id1).Scan(&origDeletedAt))
+	assert.True(t, origDeletedAt.Valid, "original tombstoned row must remain deleted")
+}
+
+// TestApplyRemoteMutation_UnaffectedByTopicKeyChange verifies that the sync
+// path (ApplyRemoteMutation, keyed by sync_id) is not broken when two rows
+// share the same topic_key.
+func TestApplyRemoteMutation_UnaffectedByTopicKeyChange(t *testing.T) {
+	d := openTestDB(t)
+
+	key := "sdd/shared-topic"
+
+	id1, err := saveTestMemory(t, d, &models.Memory{
+		Project:   "sync-proj",
+		Title:     "Row 1",
+		Content:   "Content 1",
+		TopicKey:  &key,
+		SessionID: "manual-save-sync-proj",
+	})
+	require.NoError(t, err)
+
+	id2, err := d.SaveMemory(&models.Memory{
+		Project:   "sync-proj",
+		Title:     "Row 2",
+		Content:   "Content 2",
+		TopicKey:  &key,
+		SessionID: "manual-save-sync-proj",
+	})
+	require.NoError(t, err)
+
+	assert.NotEqual(t, id1, id2)
+
+	// Get sync_id of first row.
+	var syncID1 string
+	require.NoError(t, d.sqlDB.QueryRow("SELECT sync_id FROM memories WHERE id=?", id1).Scan(&syncID1))
+
+	// ApplyRemoteMutation on the first row's sync_id should succeed.
+	updatedTitle := "Row 1 updated by remote"
+	applied, err := d.ApplyRemoteMutation(MutationEnvelope{
+		EventID:      "evt-remote-test-001",
+		EntityType:   "memory",
+		Op:           MutationOpUpdate,
+		EntitySyncID: syncID1,
+		Project:      "sync-proj",
+		OccurredAt:   time.Now().UTC(),
+		Memory: &MutationMemoryPayload{
+			SyncID:    syncID1,
+			Title:     updatedTitle,
+			Content:   "Content 1 updated",
+			Category:  "architecture",
+			UpdatedAt: time.Now().UTC(),
+			SessionID: "manual-save-sync-proj",
+		},
+	})
+	require.NoError(t, err)
+	assert.True(t, applied, "ApplyRemoteMutation should return applied=true")
+
+	// First row should be updated.
+	got1, err := d.GetMemory(id1)
+	require.NoError(t, err)
+	assert.Equal(t, updatedTitle, got1.Title)
+
+	// Second row must be unchanged.
+	got2, err := d.GetMemory(id2)
+	require.NoError(t, err)
+	assert.Equal(t, "Row 2", got2.Title, "second row with same topic_key must be unaffected")
 }
 
 func TestSaveMemory_NullTopicKeyAlwaysInserts(t *testing.T) {
@@ -423,21 +576,28 @@ func TestMemorySoftDeleteBehavior(t *testing.T) {
 			},
 		},
 		{
-			name: "normal topic update does not restore tombstone",
+			name: "new save with same topic_key after delete creates fresh row, tombstone preserved",
 			assert: func(t *testing.T, d *DB, id int64) {
 				key := "soft/delete/topic"
 				require.NoError(t, d.DeleteMemory(id, "tester", "obsolete"))
 
-				_, err := d.SaveMemory(&models.Memory{
+				// Re-saving with the same topic_key must now SUCCEED (no upsert guard).
+				newID, err := d.SaveMemory(&models.Memory{
 					Project:   "soft-delete",
 					TopicKey:  &key,
-					Title:     "Updated",
-					Content:   "Updated content",
+					Title:     "New version",
+					Content:   "New content",
 					SessionID: "manual-save-soft-delete",
 				})
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), "explicit restore")
+				require.NoError(t, err, "SaveMemory must not fail when prior row is deleted")
+				assert.NotEqual(t, id, newID, "new save must create a distinct row")
 
+				// New row must be active.
+				got, err := d.GetMemory(newID)
+				require.NoError(t, err)
+				assert.Equal(t, "New version", got.Title)
+
+				// Original tombstoned row is still present and deleted.
 				deleted, err := d.GetDeletedMemory(id)
 				require.NoError(t, err)
 				assert.Equal(t, "Title", deleted.Memory.Title)
@@ -528,7 +688,9 @@ func TestMemorySoftDeleteNormalReadsHideTombstones(t *testing.T) {
 func TestMemoryMutationsJournaledTransactionally(t *testing.T) {
 	d := openTestDB(t)
 	key := "journal/topic"
-	id, err := saveTestMemory(t, d, &models.Memory{
+
+	// First save — creates row id1.
+	id1, err := saveTestMemory(t, d, &models.Memory{
 		Project:   "journal-project",
 		TopicKey:  &key,
 		Title:     "Created",
@@ -537,38 +699,48 @@ func TestMemoryMutationsJournaledTransactionally(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = d.SaveMemory(&models.Memory{
+	// Second save with same topic_key — must create a DISTINCT row id2.
+	id2, err := d.SaveMemory(&models.Memory{
 		Project:   "journal-project",
 		TopicKey:  &key,
-		Title:     "Updated",
-		Content:   "Updated content",
+		Title:     "Second",
+		Content:   "Second content",
 		SessionID: "manual-save-journal-project",
 	})
 	require.NoError(t, err)
-	require.NoError(t, d.DeleteMemory(id, "tester", "done"))
-	require.NoError(t, d.RestoreMemory(id, "tester"))
+	require.NotEqual(t, id1, id2, "same topic_key must now create a distinct row")
+
+	// Delete + Restore the second row to complete a coherent entity lifecycle.
+	require.NoError(t, d.DeleteMemory(id2, "tester", "done"))
+	require.NoError(t, d.RestoreMemory(id2, "tester"))
 
 	rows, err := d.sqlDB.Query(`SELECT op, entity_sync_id, project, event_id FROM memory_mutations ORDER BY sequence ASC`)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, rows.Close()) }()
 
 	var ops []string
-	var syncID string
+	var syncIDs []string
 	for rows.Next() {
 		var op, entitySyncID, project, eventID string
 		require.NoError(t, rows.Scan(&op, &entitySyncID, &project, &eventID))
 		ops = append(ops, op)
+		syncIDs = append(syncIDs, entitySyncID)
 		assert.Equal(t, "journal-project", project)
 		assert.NotEmpty(t, entitySyncID)
 		assert.NotEmpty(t, eventID)
-		if syncID == "" {
-			syncID = entitySyncID
-		}
-		assert.Equal(t, syncID, entitySyncID)
 	}
 	require.NoError(t, rows.Err())
-	assert.Equal(t, []string{"create", "update", "delete", "restore"}, ops)
 
+	// Two creates, then delete and restore on the second entity.
+	assert.Equal(t, []string{"create", "create", "delete", "restore"}, ops)
+
+	// The two creates must carry distinct sync_ids.
+	assert.NotEqual(t, syncIDs[0], syncIDs[1], "two creates carry distinct sync_ids")
+	// Delete and restore must reference the second row's sync_id.
+	assert.Equal(t, syncIDs[1], syncIDs[2], "delete references the second row's sync_id")
+	assert.Equal(t, syncIDs[2], syncIDs[3], "restore references the same row")
+
+	// Failed delete must not add a journal row.
 	err = d.DeleteMemory(999999, "tester", "missing")
 	require.Error(t, err)
 	assert.True(t, strings.Contains(err.Error(), "memory not found"))
