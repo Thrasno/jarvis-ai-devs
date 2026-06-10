@@ -29,7 +29,7 @@ func TestNewModelWithAllExecutors_WiresAllThreeExecutors(t *testing.T) {
 	snapshot := projectMergeSnapshot() // has alpha+beta projects, backup-merge, memories with ID 7
 	snapshot.Memories[0].ID = 7
 
-	m := NewModelWithAllExecutors(snapshot, guard, archive, merge, nil)
+	m := NewModelWithAllExecutors(snapshot, guard, archive, merge, nil, nil)
 
 	// Assert guard executor is wired: guard hotkey appears in memory detail.
 	detail := openMemoryDetail(m)
@@ -45,7 +45,7 @@ func TestNewModelWithAllExecutors_WiresAllThreeExecutors(t *testing.T) {
 
 func TestNewModelWithAllExecutors_EmptyDaemonURLDefaults(t *testing.T) {
 	snapshot := Snapshot{DaemonURL: ""}
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, nil)
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, nil, nil)
 	if m.snapshot.DaemonURL != "http://127.0.0.1:7438" {
 		t.Fatalf("DaemonURL = %q, want %q", m.snapshot.DaemonURL, "http://127.0.0.1:7438")
 	}
@@ -1309,7 +1309,7 @@ func TestNewModelWithAllExecutors_WiresMemoryLoader(t *testing.T) {
 	snapshot := projectMergeSnapshot()
 	snapshot.Memories[0].ID = 10
 
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, loader)
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, loader, nil)
 	if m.memoryLoader == nil {
 		t.Fatal("memoryLoader should be wired, got nil")
 	}
@@ -1326,7 +1326,7 @@ func TestStartMemoryLoad_EmitsCmd(t *testing.T) {
 			{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"},
 		},
 	}
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, loader)
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, loader, nil)
 	// Navigate: dashboard -> projects -> project memories -> memory detail
 	m = sendKey(m, tea.KeyEnter) // open projects
 	m = sendKey(m, tea.KeyEnter) // open project memories
@@ -1353,7 +1353,7 @@ func TestApplyMemoryLoadResult_SetsContent(t *testing.T) {
 			{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"},
 		},
 	}
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{})
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{}, nil)
 	m.screen = ScreenMemoryDetail
 	m.memoryLoading = true
 
@@ -1379,7 +1379,7 @@ func TestApplyMemoryLoadResult_IgnoresStale(t *testing.T) {
 			{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"},
 		},
 	}
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{})
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{}, nil)
 	m.screen = ScreenMemoryDetail
 	m.memoryLoading = true
 	m.memoryContent = ""
@@ -1402,7 +1402,7 @@ func TestApplyMemoryLoadResult_SetsError(t *testing.T) {
 			{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"},
 		},
 	}
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{})
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{}, nil)
 	m.screen = ScreenMemoryDetail
 	m.memoryLoading = true
 
@@ -1427,7 +1427,7 @@ func TestMemoryDetailView_Loading(t *testing.T) {
 		Projects:       []hiveclient.Project{{Name: "alpha"}},
 		Memories:       []hiveclient.Memory{{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"}},
 	}
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{})
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{}, nil)
 	m.screen = ScreenMemoryDetail
 	m.memoryLoading = true
 
@@ -1441,7 +1441,7 @@ func TestMemoryDetailView_Content(t *testing.T) {
 		Projects:       []hiveclient.Project{{Name: "alpha"}},
 		Memories:       []hiveclient.Memory{{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"}},
 	}
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{})
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{}, nil)
 	m.screen = ScreenMemoryDetail
 	m.memoryLoading = false
 	m.memoryContent = "the full content"
@@ -1456,7 +1456,7 @@ func TestMemoryDetailView_Error(t *testing.T) {
 		Projects:       []hiveclient.Project{{Name: "alpha"}},
 		Memories:       []hiveclient.Memory{{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"}},
 	}
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{})
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{}, nil)
 	m.screen = ScreenMemoryDetail
 	m.memoryLoading = false
 	m.memoryLoadErr = assertErr("connection refused")
@@ -1472,7 +1472,7 @@ func TestMemoryDetailView_NoLoader(t *testing.T) {
 		Projects:       []hiveclient.Project{{Name: "alpha"}},
 		Memories:       []hiveclient.Memory{{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"}},
 	}
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, nil) // no loader
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, nil, nil) // no loader
 	m.screen = ScreenMemoryDetail
 
 	view := m.memoryDetailView()
@@ -1691,7 +1691,7 @@ func TestBatchMergeConfirm_CorrectPhraseDispatchesAndAdvancesToExecuting(t *test
 	executor := &fakeProjectMergeBatchExecutor{}
 	m := openBatchProjectMergeAtConfirm(executor)
 
-	phrase := mergeBatchConfirmationPhrase(m.mergeSelectedSources, m.mergeTarget)
+	phrase := mergeBatchConfirmationPhrase(m.mergeTarget)
 	m = sendText(m, phrase)
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
@@ -1774,7 +1774,7 @@ func openBatchProjectMergeAtConfirm(executor *fakeProjectMergeBatchExecutor) Mod
 // dispatching and applying a fake result.
 func openBatchProjectMergeAtResult(executor *fakeProjectMergeBatchExecutor) Model {
 	m := openBatchProjectMergeAtConfirm(executor)
-	phrase := mergeBatchConfirmationPhrase(m.mergeSelectedSources, m.mergeTarget)
+	phrase := mergeBatchConfirmationPhrase(m.mergeTarget)
 	m = sendText(m, phrase)
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {

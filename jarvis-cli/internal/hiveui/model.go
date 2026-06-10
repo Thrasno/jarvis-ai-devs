@@ -237,11 +237,12 @@ func NewModelWithSnapshotAndProjectMergeBatchExecutor(snapshot Snapshot, executo
 	return m
 }
 
-func NewModelWithAllExecutors(snapshot Snapshot, guard GuardExecutor, archive ProjectArchiveExecutor, merge ProjectMergeExecutor, memory MemoryLoader) Model {
+func NewModelWithAllExecutors(snapshot Snapshot, guard GuardExecutor, archive ProjectArchiveExecutor, merge ProjectMergeExecutor, memory MemoryLoader, batchMerge ProjectMergeBatchExecutor) Model {
 	m := NewModelWithSnapshotAndGuardExecutor(snapshot, guard)
 	m.projectArchiveExecutor = archive
 	m.projectMergeExecutor = merge
 	m.memoryLoader = memory
+	m.projectMergeBatchExecutor = batchMerge
 	return m
 }
 
@@ -1358,11 +1359,6 @@ func (m Model) updateBatchProjectMerge(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch {
 	case key.Type == tea.KeyEsc:
-		if m.mergeStep == mergeStepResult {
-			m = m.back()
-			m.message = ""
-			return m, nil
-		}
 		m = m.back()
 		m.message = ""
 		return m, nil
@@ -1452,7 +1448,7 @@ func (m Model) submitBatchMergeStep() (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case mergeStepConfirm:
-		expected := mergeBatchConfirmationPhrase(m.mergeSelectedSources, m.mergeTarget)
+		expected := mergeBatchConfirmationPhrase(m.mergeTarget)
 		if m.mergeConfirmText != expected {
 			m.message = "Confirmation mismatch. Type the phrase exactly; input is not trimmed."
 			return m, nil
@@ -1476,7 +1472,7 @@ func (m Model) submitBatchMergeStep() (tea.Model, tea.Cmd) {
 		}
 
 	case mergeStepResult:
-		// enter/esc → return to projects + reload snapshot
+		// enter/esc → return to projects
 		m = m.back()
 		return m, nil
 	}
@@ -1485,6 +1481,9 @@ func (m Model) submitBatchMergeStep() (tea.Model, tea.Cmd) {
 
 func (m Model) applyProjectMergeBatchResult(msg projectMergeBatchResultMsg) Model {
 	if !m.mergeBatchSubmitting {
+		return m
+	}
+	if !slicesEqual(msg.sources, m.mergeSelectedSources) || msg.target != m.mergeTarget {
 		return m
 	}
 	m.mergeBatchSubmitting = false
@@ -1570,7 +1569,7 @@ func targetHasSyncEvidence(snapshot Snapshot, target string) bool {
 }
 
 // mergeBatchConfirmationPhrase returns the exact phrase the user must type.
-func mergeBatchConfirmationPhrase(sources []string, target string) string {
+func mergeBatchConfirmationPhrase(target string) string {
 	return "MERGE projects INTO " + target
 }
 
@@ -1671,7 +1670,7 @@ func (m Model) renderBatchBackupIDPanel(sb *strings.Builder, panelW int) {
 }
 
 func (m Model) renderBatchConfirmPanel(sb *strings.Builder, panelW int) {
-	phrase := mergeBatchConfirmationPhrase(m.mergeSelectedSources, m.mergeTarget)
+	phrase := mergeBatchConfirmationPhrase(m.mergeTarget)
 	content := fmt.Sprintf("Type exactly to confirm: %s\n\nconfirmation: %s\n",
 		phrase,
 		visibleInput(m.mergeConfirmText),
@@ -1700,6 +1699,19 @@ func (m Model) renderBatchResultPanel(sb *strings.Builder, panelW int) {
 		}
 	}
 	sb.WriteString(borderedPanel(sectionHeader("RESULT", panelW)+content.String(), panelW))
+}
+
+// slicesEqual reports whether a and b contain the same strings in the same order.
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // containsString checks if a slice contains the given string.
