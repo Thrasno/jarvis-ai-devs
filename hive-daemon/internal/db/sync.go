@@ -472,6 +472,11 @@ func (d *DB) SaveFromRemote(mem *models.Memory) error {
 	}
 	if aliasErr == nil {
 		project = aliasTarget
+		// Note: session_id is kept as-is even when the project is remapped via alias.
+		// The FK on memories.session_id checks ID existence only, not project match.
+		// All memory reads filter by memories.project directly, so the mismatch is harmless.
+		// Remapping sessions on sync receive would require creating artificial sessions
+		// under the target project, which adds noise to KnownProjects and session history.
 	}
 
 	// R2-CRIT-3: resolve session_id BEFORE the INSERT. memories.session_id is NOT NULL,
