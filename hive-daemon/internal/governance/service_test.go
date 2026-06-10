@@ -974,3 +974,34 @@ func TestExecuteProjectMergeBatch_SyncEvidencePropagated(t *testing.T) {
 	require.True(t, result.HasSyncEvidence, "HasSyncEvidence must be true when store reports synced rows")
 	require.NotEmpty(t, result.CloudHandoffNote, "CloudHandoffNote must be set when HasSyncEvidence is true")
 }
+
+// TestExecuteProjectMergeBatchSyncEvidenceError verifies that a store error from
+// ProjectMergeSyncEvidence propagates as a wrapped error and leaves the result zero.
+func TestExecuteProjectMergeBatchSyncEvidenceError(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	saveGovernanceServiceTestMemory(t, store, "src-see", "src-see mem")
+	saveGovernanceServiceTestMemory(t, store, "dst-see", "dst-see mem")
+
+	sentinel := errors.New("db failure")
+	mock := &mockMergeStore{db: store, syncEvidenceErr: sentinel}
+	svc := NewServiceWithBackup(mock, fakeGuardBackupStore{backups: []BackupManifest{{ID: "see-backup", CreatedAt: now.Add(-time.Minute)}}})
+	svc.now = func() time.Time { return now }
+
+	result, err := svc.ExecuteProjectMergeBatch(context.Background(), ProjectMergeBatchRequest{
+		Sources:      []string{"src-see"},
+		Target:       "dst-see",
+		BackupID:     "see-backup",
+		Confirmation: ProjectMergeBatchConfirmation("dst-see"),
+		ActorID:      "tester",
+		Reason:       "test",
+	})
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, sentinel)
+	require.Contains(t, err.Error(), "sync evidence check")
+	require.Equal(t, ProjectMergeBatchResult{}, result)
+}

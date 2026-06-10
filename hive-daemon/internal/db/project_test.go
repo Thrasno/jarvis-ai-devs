@@ -330,7 +330,7 @@ func TestMergeGovernanceProjectIsIdempotentAndPreservesFirstAuditMetadata(t *tes
 	}
 
 	// Verify via governance row directly (alpha has no rows after physical migration).
-	requireGovernanceMergedRow(t, d, "alpha", "beta", firstMergedAt)
+	requireGovernanceMergedRow(t, d, "alpha", "beta", firstMergedAt, "first-actor")
 
 	target, err := d.GetGovernanceProject(context.Background(), "beta")
 	if err != nil {
@@ -410,7 +410,7 @@ ON CONFLICT(project) DO UPDATE SET
 			if mutated {
 				t.Fatal("MergeGovernanceProject retry mutated = true, want false")
 			}
-			requireGovernanceMergedRow(t, d, "alpha", "beta", firstMergedAt)
+			requireGovernanceMergedRow(t, d, "alpha", "beta", firstMergedAt, "first-actor")
 			afterGov := readGovernanceRowSnapshot(t, d, "alpha")
 			if afterGov != beforeGov {
 				t.Fatalf("merge retry changed governance row: before=%q after=%q", beforeGov, afterGov)
@@ -614,7 +614,7 @@ FROM hive_project_governance WHERE project = ?`, project).Scan(&mergeTarget, &me
 
 // requireGovernanceMergedRow verifies the governance record for source directly
 // without requiring rows in write tables (useful after physical migration).
-func requireGovernanceMergedRow(t *testing.T, d *hivedb.DB, source, target string, mergedAt time.Time) {
+func requireGovernanceMergedRow(t *testing.T, d *hivedb.DB, source, target string, mergedAt time.Time, wantActor string) {
 	t.Helper()
 	var gotTarget, gotMergedAt, gotMergedBy string
 	err := d.RawDB().QueryRow(`
@@ -630,8 +630,8 @@ FROM hive_project_governance WHERE project = ?`, source).Scan(&gotTarget, &gotMe
 	if gotMergedAt != wantAt {
 		t.Fatalf("governance merged_at = %q, want %q", gotMergedAt, wantAt)
 	}
-	if gotMergedBy != "first-actor" {
-		t.Fatalf("governance merged_by = %q, want first-actor", gotMergedBy)
+	if gotMergedBy != wantActor {
+		t.Fatalf("governance merged_by = %q, want %q", gotMergedBy, wantActor)
 	}
 }
 
