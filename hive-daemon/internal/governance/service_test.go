@@ -500,7 +500,7 @@ func TestServiceGuardedProjectMergeBlocksWithoutFreshUsableBackupOrExactConfirma
 			backups:      []BackupManifest{{ID: "fresh-backup", CreatedAt: now.Add(-time.Minute)}},
 			backupID:     "fresh-backup",
 			confirmation: ProjectMergeConfirmation("alpha", "beta"),
-			wantErr:      ErrDestructiveConfirmationMismatch,
+			wantErr:      ErrProjectRequired,
 		},
 		{
 			name:         "target project with trailing whitespace",
@@ -508,7 +508,7 @@ func TestServiceGuardedProjectMergeBlocksWithoutFreshUsableBackupOrExactConfirma
 			backups:      []BackupManifest{{ID: "fresh-backup", CreatedAt: now.Add(-time.Minute)}},
 			backupID:     "fresh-backup",
 			confirmation: ProjectMergeConfirmation("alpha", "beta"),
-			wantErr:      ErrDestructiveConfirmationMismatch,
+			wantErr:      ErrProjectRequired,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -606,20 +606,22 @@ func TestServiceGuardedProjectMergeRecordsLocalMetadataAndReturnsCloudHandoffNot
 	require.True(t, result.Mutated)
 	require.Contains(t, result.CloudHandoffNote, "No cloud project mutation was performed")
 
-	source, err := service.Project(context.Background(), "alpha")
-	require.NoError(t, err)
-	require.True(t, source.Merged)
-	require.Equal(t, "beta", source.MergeTarget)
-	require.NotNil(t, source.MergedAt)
-	require.Equal(t, now, source.MergedAt.UTC())
-	require.Equal(t, "tester", source.MergedBy)
-	require.Equal(t, "local duplicate project", source.MergeReason)
+	// After physical migration alpha has no rows — read governance record directly.
+	var srcMergeTarget, srcMergedAt, srcMergedBy, srcMergeReason string
+	require.NoError(t, store.RawDB().QueryRow(`
+SELECT COALESCE(merge_target,''), COALESCE(merged_at,''), COALESCE(merged_by,''), COALESCE(merge_reason,'')
+FROM hive_project_governance WHERE project = 'alpha'`).Scan(&srcMergeTarget, &srcMergedAt, &srcMergedBy, &srcMergeReason))
+	require.Equal(t, "beta", srcMergeTarget)
+	require.Equal(t, now.UTC().Format("2006-01-02 15:04:05"), srcMergedAt)
+	require.Equal(t, "tester", srcMergedBy)
+	require.Equal(t, "local duplicate project", srcMergeReason)
 
 	target, err := service.Project(context.Background(), "beta")
 	require.NoError(t, err)
 	require.False(t, target.Merged)
 	require.Empty(t, target.MergeTarget)
-	require.Equal(t, "alpha", requireServiceMemoryProject(t, store, sourceMemoryID), "local project merge metadata must not reassign memories in this slice")
+	// Physical migration: source memory now lives under the target project.
+	require.Equal(t, "beta", requireServiceMemoryProject(t, store, sourceMemoryID), "physical merge must reassign source memories to target")
 	require.Equal(t, "beta", requireServiceMemoryProject(t, store, targetMemoryID))
 	afterMutations := requirePendingMemoryMutations(t, store)
 	require.Len(t, afterMutations, len(beforeMutations), "local project merge must not enqueue cloud/shared memory mutations")
@@ -636,11 +638,14 @@ func TestServiceGuardedProjectMergeRecordsLocalMetadataAndReturnsCloudHandoffNot
 	require.NoError(t, err)
 	require.False(t, secondResult.Mutated)
 
-	sourceAfterRetry, err := service.Project(context.Background(), "alpha")
-	require.NoError(t, err)
-	require.Equal(t, now, sourceAfterRetry.MergedAt.UTC())
-	require.Equal(t, "tester", sourceAfterRetry.MergedBy)
-	require.Equal(t, "local duplicate project", sourceAfterRetry.MergeReason)
+	// After physical migration alpha has no rows, read governance record directly.
+	var gotMergedAt, gotMergedBy, gotReason string
+	require.NoError(t, store.RawDB().QueryRow(`
+SELECT COALESCE(merged_at,''), COALESCE(merged_by,''), COALESCE(merge_reason,'')
+FROM hive_project_governance WHERE project = 'alpha'`).Scan(&gotMergedAt, &gotMergedBy, &gotReason))
+	require.Equal(t, now.UTC().Format("2006-01-02 15:04:05"), gotMergedAt, "retry must not rewrite merged_at")
+	require.Equal(t, "tester", gotMergedBy, "retry must not rewrite merged_by")
+	require.Equal(t, "local duplicate project", gotReason, "retry must not rewrite merge_reason")
 	require.Len(t, requirePendingMemoryMutations(t, store), len(afterMutations), "re-merging must not enqueue memory mutation journal entries")
 }
 
@@ -809,3 +814,194 @@ func TestService_MemoryByID_InvalidID(t *testing.T) {
 }
 
 const errReadOnlyTest readOnlyTestError = "read-only test failure"
+
+// ─── Phase 2: Batch merge types + ExecuteProjectMergeBatch ───────────────────
+
+// mockMergeStore is a minimal mock that implements readStore + projectMergeStore +
+// the new ProjectMergeSyncEvidence method for batch service tests.
+type mockMergeStore struct {
+	db              *db.DB
+	mergeCalls      []mockMergeCall
+	syncEvidence    bool
+	syncEvidenceErr error
+}
+
+type mockMergeCall struct {
+	source string
+	err    error
+}
+
+func (m *mockMergeStore) ListGovernanceProjects(ctx context.Context) ([]db.GovernanceProject, error) {
+	return m.db.ListGovernanceProjects(ctx)
+}
+func (m *mockMergeStore) GetGovernanceProject(ctx context.Context, name string) (db.GovernanceProject, error) {
+	return m.db.GetGovernanceProject(ctx, name)
+}
+func (m *mockMergeStore) ListGovernanceMemories(ctx context.Context, f db.GovernanceMemoryFilter) ([]db.GovernanceMemory, error) {
+	return m.db.ListGovernanceMemories(ctx, f)
+}
+func (m *mockMergeStore) GetGovernanceMemoryByID(ctx context.Context, id int64) (db.GovernanceMemory, error) {
+	return m.db.GetGovernanceMemoryByID(ctx, id)
+}
+func (m *mockMergeStore) ListGovernanceSyncHealth(ctx context.Context) ([]db.SyncHealth, error) {
+	return m.db.ListGovernanceSyncHealth(ctx)
+}
+func (m *mockMergeStore) ListHiveWarnings(f db.HiveWarningFilter) ([]db.HiveWarning, error) {
+	return m.db.ListHiveWarnings(f)
+}
+func (m *mockMergeStore) MergeGovernanceProject(ctx context.Context, source, target, actorID, reason string, mergedAt time.Time) (bool, error) {
+	for _, c := range m.mergeCalls {
+		if c.source == source {
+			return c.err == nil, c.err
+		}
+	}
+	// Default: delegate to real DB.
+	return m.db.MergeGovernanceProject(ctx, source, target, actorID, reason, mergedAt)
+}
+func (m *mockMergeStore) ProjectMergeSyncEvidence(ctx context.Context, projects []string) (bool, error) {
+	return m.syncEvidence, m.syncEvidenceErr
+}
+
+// TestExecuteProjectMergeBatch_SerialLoop verifies that the batch method processes
+// sources serially: a failure on one source does not abort others, backup is
+// called exactly once, and per-source results are accurate.
+func TestExecuteProjectMergeBatch_SerialLoop(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	saveGovernanceServiceTestMemory(t, store, "src1", "src1 mem")
+	saveGovernanceServiceTestMemory(t, store, "src2", "src2 mem")
+	saveGovernanceServiceTestMemory(t, store, "src3", "src3 mem")
+	saveGovernanceServiceTestMemory(t, store, "dst-batch", "dst mem")
+
+	// src2 will produce a conflict error.
+	mock := &mockMergeStore{
+		db: store,
+		mergeCalls: []mockMergeCall{
+			{source: "src2", err: db.ErrGovernanceProjectMergeConflict},
+		},
+	}
+	backups := fakeGuardBackupStore{backups: []BackupManifest{{ID: "batch-backup", CreatedAt: now.Add(-time.Minute)}}}
+	svc := NewServiceWithBackup(mock, backups)
+	svc.now = func() time.Time { return now }
+
+	result, err := svc.ExecuteProjectMergeBatch(context.Background(), ProjectMergeBatchRequest{
+		Sources:      []string{"src1", "src2", "src3"},
+		Target:       "dst-batch",
+		BackupID:     "batch-backup",
+		Confirmation: ProjectMergeBatchConfirmation("dst-batch"),
+		ActorID:      "tester",
+		Reason:       "batch consolidation",
+	})
+
+	require.NoError(t, err)
+	require.Len(t, result.Results, 3)
+
+	bySource := map[string]MergeResult{}
+	for _, r := range result.Results {
+		bySource[r.Source] = r
+	}
+	require.True(t, bySource["src1"].Mutated, "src1 must be mutated (merged)")
+	require.Empty(t, bySource["src1"].ErrMsg, "src1 must have no error")
+	require.NotEmpty(t, bySource["src2"].ErrMsg, "src2 must have error")
+	require.False(t, bySource["src2"].Mutated, "src2 must not be mutated")
+	require.True(t, bySource["src3"].Mutated, "src3 must be mutated despite src2 error")
+	require.Empty(t, bySource["src3"].ErrMsg, "src3 must have no error")
+}
+
+// TestExecuteProjectMergeBatch_BackupFailureAborts verifies that a backup failure
+// stops the batch before any merge is attempted.
+func TestExecuteProjectMergeBatch_BackupFailureAborts(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	saveGovernanceServiceTestMemory(t, store, "src-ab", "src-ab mem")
+	saveGovernanceServiceTestMemory(t, store, "dst-ab", "dst-ab mem")
+
+	var mergeCallCount int
+	mock := &mockMergeStore{db: store, mergeCalls: []mockMergeCall{}}
+	_ = mergeCallCount
+
+	// No valid backup — empty backup list.
+	svc := NewServiceWithBackup(mock, fakeGuardBackupStore{backups: nil})
+	svc.now = func() time.Time { return now }
+
+	_, err = svc.ExecuteProjectMergeBatch(context.Background(), ProjectMergeBatchRequest{
+		Sources:      []string{"src-ab"},
+		Target:       "dst-ab",
+		BackupID:     "missing-backup",
+		Confirmation: ProjectMergeBatchConfirmation("dst-ab"),
+		ActorID:      "tester",
+		Reason:       "test",
+	})
+
+	require.ErrorIs(t, err, ErrDestructiveBackupRequired)
+	// Verify src-ab was not merged (row still under src-ab project).
+	var count int
+	require.NoError(t, store.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE project = 'src-ab'`).Scan(&count))
+	require.Equal(t, 1, count, "merge must not run when backup fails")
+}
+
+// TestExecuteProjectMergeBatch_SyncEvidencePropagated verifies that HasSyncEvidence
+// is set on the batch result when the store reports synced rows.
+func TestExecuteProjectMergeBatch_SyncEvidencePropagated(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	saveGovernanceServiceTestMemory(t, store, "src-se", "src-se mem")
+	saveGovernanceServiceTestMemory(t, store, "dst-se", "dst-se mem")
+
+	mock := &mockMergeStore{db: store, syncEvidence: true}
+	svc := NewServiceWithBackup(mock, fakeGuardBackupStore{backups: []BackupManifest{{ID: "se-backup", CreatedAt: now.Add(-time.Minute)}}})
+	svc.now = func() time.Time { return now }
+
+	result, err := svc.ExecuteProjectMergeBatch(context.Background(), ProjectMergeBatchRequest{
+		Sources:      []string{"src-se"},
+		Target:       "dst-se",
+		BackupID:     "se-backup",
+		Confirmation: ProjectMergeBatchConfirmation("dst-se"),
+		ActorID:      "tester",
+		Reason:       "test",
+	})
+
+	require.NoError(t, err)
+	require.True(t, result.HasSyncEvidence, "HasSyncEvidence must be true when store reports synced rows")
+	require.NotEmpty(t, result.CloudHandoffNote, "CloudHandoffNote must be set when HasSyncEvidence is true")
+}
+
+// TestExecuteProjectMergeBatchSyncEvidenceError verifies that a store error from
+// ProjectMergeSyncEvidence propagates as a wrapped error and leaves the result zero.
+func TestExecuteProjectMergeBatchSyncEvidenceError(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	saveGovernanceServiceTestMemory(t, store, "src-see", "src-see mem")
+	saveGovernanceServiceTestMemory(t, store, "dst-see", "dst-see mem")
+
+	sentinel := errors.New("db failure")
+	mock := &mockMergeStore{db: store, syncEvidenceErr: sentinel}
+	svc := NewServiceWithBackup(mock, fakeGuardBackupStore{backups: []BackupManifest{{ID: "see-backup", CreatedAt: now.Add(-time.Minute)}}})
+	svc.now = func() time.Time { return now }
+
+	result, err := svc.ExecuteProjectMergeBatch(context.Background(), ProjectMergeBatchRequest{
+		Sources:      []string{"src-see"},
+		Target:       "dst-see",
+		BackupID:     "see-backup",
+		Confirmation: ProjectMergeBatchConfirmation("dst-see"),
+		ActorID:      "tester",
+		Reason:       "test",
+	})
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, sentinel)
+	require.Contains(t, err.Error(), "sync evidence check")
+	require.Equal(t, ProjectMergeBatchResult{}, result)
+}

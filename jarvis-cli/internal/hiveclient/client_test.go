@@ -182,6 +182,71 @@ func TestClientExecuteGuardReturnsDaemonGuardError(t *testing.T) {
 	}
 }
 
+// Task 4.1 — MergeProjects batch client method
+
+func TestClientMergesProjectsBatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/governance/projects/merge" {
+			t.Fatalf("request = %s %s, want POST /governance/projects/merge", r.Method, r.URL.Path)
+		}
+		var req ProjectMergeBatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if len(req.Sources) != 2 || req.Target != "beta" || req.BackupID != "backup-1" || req.Confirmation != "MERGE projects INTO beta" {
+			t.Fatalf("batch merge request = %+v, want sources=[alpha,gamma] target=beta", req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"operation":"merge","target":"beta","backup_id":"backup-1","results":[{"source":"alpha","target":"beta","mutated":true},{"source":"gamma","target":"beta","mutated":true}],"has_sync_evidence":false}}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := client.MergeProjects(context.Background(), ProjectMergeBatchRequest{
+		Sources:      []string{"alpha", "gamma"},
+		Target:       "beta",
+		BackupID:     "backup-1",
+		Confirmation: "MERGE projects INTO beta",
+	})
+	if err != nil {
+		t.Fatalf("MergeProjects: %v", err)
+	}
+	if result.Target != "beta" || result.BackupID != "backup-1" {
+		t.Fatalf("batch result = %+v, want target=beta backup=backup-1", result)
+	}
+	if len(result.Results) != 2 {
+		t.Fatalf("results len = %d, want 2", len(result.Results))
+	}
+	if !result.Results[0].Mutated || result.Results[0].Source != "alpha" {
+		t.Fatalf("result[0] = %+v, want alpha mutated", result.Results[0])
+	}
+	if !result.Results[1].Mutated || result.Results[1].Source != "gamma" {
+		t.Fatalf("result[1] = %+v, want gamma mutated", result.Results[1])
+	}
+}
+
+func TestClientMergeProjectsBatchAPIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"sources and target are required"}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.MergeProjects(context.Background(), ProjectMergeBatchRequest{Sources: []string{}, Target: "beta", BackupID: "b-1", Confirmation: "MERGE projects INTO beta"})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("MergeProjects error = %#v, want APIError 400", err)
+	}
+}
+
 func TestNewUsesBoundedHTTPTimeout(t *testing.T) {
 	client, err := New("http://127.0.0.1:7438")
 	if err != nil {

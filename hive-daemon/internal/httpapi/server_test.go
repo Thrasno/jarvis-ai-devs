@@ -1536,19 +1536,27 @@ func TestGovernanceProjectMergeHTTPRecordsLocalMetadataWithCloudHandoffNote(t *t
 	if !strings.Contains(resp.Result.CloudHandoffNote, "No cloud project mutation") {
 		t.Fatalf("cloud handoff note = %q, want explicit no-cloud mutation note", resp.Result.CloudHandoffNote)
 	}
-	alpha, err := store.GetGovernanceProject(context.Background(), "alpha")
-	if err != nil {
-		t.Fatalf("GetGovernanceProject alpha: %v", err)
+	// After physical migration alpha has no rows — read governance record directly.
+	var alphaMergeTarget string
+	var alphaIsMerged bool
+	if govErr := store.RawDB().QueryRowContext(context.Background(), `
+SELECT merge_target != '', COALESCE(merge_target,'')
+FROM hive_project_governance WHERE project = 'alpha'`).Scan(&alphaIsMerged, &alphaMergeTarget); govErr != nil {
+		t.Fatalf("read alpha governance: %v", govErr)
+	}
+	if !alphaIsMerged || alphaMergeTarget != "beta" {
+		t.Fatalf("alpha governance: merged=%v target=%q, want merged into beta", alphaIsMerged, alphaMergeTarget)
 	}
 	beta, err := store.GetGovernanceProject(context.Background(), "beta")
 	if err != nil {
 		t.Fatalf("GetGovernanceProject beta: %v", err)
 	}
-	if !alpha.Merged || alpha.MergeTarget != "beta" || beta.Merged {
-		t.Fatalf("merge state alpha=%+v beta=%+v, want source metadata only", alpha, beta)
+	if beta.Merged {
+		t.Fatalf("target project beta must not be merged: %+v", beta)
 	}
-	if got := requireHTTPMemoryProject(t, store, sourceMemoryID); got != "alpha" {
-		t.Fatalf("source memory project = %q, want alpha", got)
+	// Physical migration: source memory is now under beta.
+	if got := requireHTTPMemoryProject(t, store, sourceMemoryID); got != "beta" {
+		t.Fatalf("source memory project = %q, want beta (physical migration)", got)
 	}
 	if got := requireHTTPMemoryProject(t, store, targetMemoryID); got != "beta" {
 		t.Fatalf("target memory project = %q, want beta", got)
@@ -1798,6 +1806,62 @@ func TestHandleGovernanceMemory_404NotFound(t *testing.T) {
 	}
 	if resp["error"] == "" {
 		t.Fatal("expected error field in response")
+	}
+}
+
+// Task 3.1 — POST /governance/projects/merge (batch)
+
+func TestGovernanceProjectMergeBatchHTTPReturnsPerSourceResults(t *testing.T) {
+	store, backup, srv := newHTTPGuardTestServer(t)
+	saveHTTPGuardMemoryInProject(t, store, "alpha", "batch-merge-alpha")
+	saveHTTPGuardMemoryInProject(t, store, "gamma", "batch-merge-gamma")
+	saveHTTPGuardMemoryInProject(t, store, "beta", "batch-merge-beta")
+	body := fmt.Sprintf(`{"sources":["alpha","gamma"],"target":"beta","backup_id":%q,"confirmation":%q,"actor_id":"tester","reason":"dedupe"}`, backup.ID, governance.ProjectMergeBatchConfirmation("beta"))
+	req := httptest.NewRequest(http.MethodPost, "/governance/projects/merge", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Result governance.ProjectMergeBatchResult `json:"result"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if len(resp.Result.Results) != 2 {
+		t.Fatalf("results len = %d, want 2; body: %s", len(resp.Result.Results), rr.Body.String())
+	}
+	for _, r := range resp.Result.Results {
+		if r.ErrMsg != "" {
+			t.Fatalf("result %q has error: %s", r.Source, r.ErrMsg)
+		}
+		if !r.Mutated {
+			t.Fatalf("result %q not mutated", r.Source)
+		}
+	}
+	if resp.Result.Target != "beta" {
+		t.Fatalf("target = %q, want beta", resp.Result.Target)
+	}
+	if resp.Result.BackupID != backup.ID {
+		t.Fatalf("backup_id = %q, want %s", resp.Result.BackupID, backup.ID)
+	}
+}
+
+// Task 3.2 — POST /governance/projects/merge with empty sources returns 400
+
+func TestGovernanceProjectMergeBatchHTTPEmptySourcesReturns400(t *testing.T) {
+	_, backup, srv := newHTTPGuardTestServer(t)
+	body := fmt.Sprintf(`{"sources":[],"target":"beta","backup_id":%q,"confirmation":%q}`, backup.ID, governance.ProjectMergeBatchConfirmation("beta"))
+	req := httptest.NewRequest(http.MethodPost, "/governance/projects/merge", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d — body: %s", rr.Code, rr.Body.String())
 	}
 }
 

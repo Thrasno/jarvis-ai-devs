@@ -204,6 +204,25 @@ func (d *DB) ArchiveGovernanceProject(ctx context.Context, name, actorID, reason
 	if name == "" {
 		return false, ErrGovernanceProjectRequired
 	}
+
+	// Check governance record first — merged projects may have no rows after
+	// physical migration, so we must detect them via the governance table.
+	var govMergedAt, govArchivedAt sql.NullString
+	err := d.sqlDB.QueryRowContext(ctx, `
+SELECT COALESCE(merged_at, ''), COALESCE(archived_at, '')
+FROM hive_project_governance
+WHERE project = ?`, name).Scan(&govMergedAt, &govArchivedAt)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("read governance for archive: %w", err)
+	}
+	if govMergedAt.Valid && govMergedAt.String != "" {
+		return false, ErrGovernanceProjectMergeConflict
+	}
+	if govArchivedAt.Valid && govArchivedAt.String != "" {
+		return false, nil // already archived — idempotent no-op
+	}
+
+	// Project must exist via rows (not just governance record) to be archivable.
 	project, err := d.GetGovernanceProject(ctx, name)
 	if err != nil {
 		return false, err
@@ -268,26 +287,62 @@ func (d *DB) MergeGovernanceProject(ctx context.Context, source, target, actorID
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	sourceProject, err := getGovernanceProjectTx(ctx, tx, source)
-	if err != nil {
-		return false, err
+	// Read governance record for source first. This handles idempotency and
+	// conflict detection without relying on row existence (rows may have already
+	// been moved on a prior partial run or idempotent re-call).
+	var srcMergeTarget, srcMergedAt, srcArchivedAt sql.NullString
+	err = tx.QueryRowContext(ctx, `
+SELECT COALESCE(merge_target, ''), COALESCE(merged_at, ''), COALESCE(archived_at, '')
+FROM hive_project_governance
+WHERE project = ?`, source).Scan(&srcMergeTarget, &srcMergedAt, &srcArchivedAt)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("read source governance: %w", err)
 	}
-	if sourceProject.Merged {
-		if sourceProject.MergeTarget == target {
+	if srcMergedAt.Valid && srcMergedAt.String != "" {
+		// Idempotency: already merged into the same target is a no-op.
+		if srcMergeTarget.String == target {
 			return false, nil
 		}
 		return false, ErrGovernanceProjectMergeConflict
 	}
-	targetProject, err := getGovernanceProjectTx(ctx, tx, target)
-	if err != nil {
-		return false, err
-	}
-	if sourceProject.Archived || targetProject.Archived {
+	if srcArchivedAt.Valid && srcArchivedAt.String != "" {
 		return false, ErrGovernanceProjectArchived
 	}
-	if targetProject.Merged {
+
+	// Source must exist: check for rows in at least one write table.
+	// This guard ensures we don't silently merge a typo project name.
+	var srcExists bool
+	err = tx.QueryRowContext(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM sessions WHERE project = ?
+    UNION ALL SELECT 1 FROM memories WHERE project = ?
+    UNION ALL SELECT 1 FROM user_prompts WHERE project = ?
+    LIMIT 1
+)`, source, source, source).Scan(&srcExists)
+	if err != nil {
+		return false, fmt.Errorf("check source exists: %w", err)
+	}
+	if !srcExists {
+		return false, fmt.Errorf("%w: %s", ErrGovernanceProjectNotFound, source)
+	}
+
+	// Target existence guard removed: physical migration creates the target
+	// implicitly. Only check target lifecycle via governance record.
+	var tgtMergedAt, tgtArchivedAt sql.NullString
+	err = tx.QueryRowContext(ctx, `
+SELECT COALESCE(merged_at, ''), COALESCE(archived_at, '')
+FROM hive_project_governance
+WHERE project = ?`, target).Scan(&tgtMergedAt, &tgtArchivedAt)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("read target governance: %w", err)
+	}
+	if tgtArchivedAt.Valid && tgtArchivedAt.String != "" {
+		return false, ErrGovernanceProjectArchived
+	}
+	if tgtMergedAt.Valid && tgtMergedAt.String != "" {
 		return false, ErrGovernanceProjectMergeConflict
 	}
+
 	if actorID == "" {
 		actorID = detectUsername()
 	}
@@ -295,76 +350,54 @@ func (d *DB) MergeGovernanceProject(ctx context.Context, source, target, actorID
 		mergedAt = time.Now().UTC()
 	}
 
-	var existingTarget, existingMergedAt string
-	err = tx.QueryRowContext(ctx, `
-SELECT merge_target, COALESCE(merged_at, '')
-FROM hive_project_governance
-WHERE project = ?`, source).Scan(&existingTarget, &existingMergedAt)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return false, fmt.Errorf("read merge governance project: %w", err)
-	}
-	if existingMergedAt != "" {
-		if existingTarget == target {
-			return false, nil
-		}
-		return false, ErrGovernanceProjectMergeConflict
-	}
+	mergedAtStr := mergedAt.UTC().Format("2006-01-02 15:04:05")
 
-	result, err := tx.ExecContext(ctx, `
+	// Step (a): migrate memories.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE memories SET project = ? WHERE project = ?`, target, source); err != nil {
+		return false, fmt.Errorf("migrate memories: %w", err)
+	}
+	// Step (b): migrate user_prompts.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE user_prompts SET project = ? WHERE project = ?`, target, source); err != nil {
+		return false, fmt.Errorf("migrate user_prompts: %w", err)
+	}
+	// Step (c): migrate sessions.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE sessions SET project = ? WHERE project = ?`, target, source); err != nil {
+		return false, fmt.Errorf("migrate sessions: %w", err)
+	}
+	// Step (d): migrate pending memory_mutations only (synced ones are cloud-historical).
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE memory_mutations SET project = ? WHERE project = ? AND synced_at IS NULL`,
+		target, source); err != nil {
+		return false, fmt.Errorf("migrate memory_mutations: %w", err)
+	}
+	// Step (e): delete hive_warnings for the source project.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM hive_warnings WHERE source = ?`, source); err != nil {
+		return false, fmt.Errorf("delete hive_warnings: %w", err)
+	}
+	// Step (f): delete sync_state for the source project; never touch __auth__.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM sync_state WHERE project = ? AND project != '__auth__'`, source); err != nil {
+		return false, fmt.Errorf("delete sync_state: %w", err)
+	}
+	// Step (g): governance record upsert — mark source as merged.
+	if _, err := tx.ExecContext(ctx, `
 INSERT INTO hive_project_governance (project, merge_target, merged_at, merged_by, merge_reason)
-SELECT ?, ?, ?, ?, ?
-WHERE EXISTS (SELECT 1 FROM sessions WHERE project = ? UNION SELECT 1 FROM memories WHERE project = ? UNION SELECT 1 FROM user_prompts WHERE project = ?)
-  AND EXISTS (SELECT 1 FROM sessions WHERE project = ? UNION SELECT 1 FROM memories WHERE project = ? UNION SELECT 1 FROM user_prompts WHERE project = ?)
-  AND NOT EXISTS (SELECT 1 FROM hive_project_governance WHERE project = ? AND archived_at IS NOT NULL)
-  AND NOT EXISTS (SELECT 1 FROM hive_project_governance WHERE project = ? AND (archived_at IS NOT NULL OR merged_at IS NOT NULL))
+VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(project) DO UPDATE SET
     merge_target = excluded.merge_target,
-    merged_at = excluded.merged_at,
-    merged_by = excluded.merged_by,
+    merged_at    = excluded.merged_at,
+    merged_by    = excluded.merged_by,
     merge_reason = excluded.merge_reason
 WHERE hive_project_governance.archived_at IS NULL
-  AND hive_project_governance.merged_at IS NULL
-  AND EXISTS (SELECT 1 FROM sessions WHERE project = ? UNION SELECT 1 FROM memories WHERE project = ? UNION SELECT 1 FROM user_prompts WHERE project = ?)
-  AND NOT EXISTS (SELECT 1 FROM hive_project_governance WHERE project = ? AND (archived_at IS NOT NULL OR merged_at IS NOT NULL))`,
-		source, target, mergedAt.UTC().Format("2006-01-02 15:04:05"), actorID, reason,
-		source, source, source, target, target, target, source, target,
-		target, target, target, target)
-	if err != nil {
-		return false, fmt.Errorf("merge governance project: %w", err)
+  AND hive_project_governance.merged_at IS NULL`,
+		source, target, mergedAtStr, actorID, reason); err != nil {
+		return false, fmt.Errorf("upsert governance merge record: %w", err)
 	}
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("merge governance project rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		currentSource, err := getGovernanceProjectTx(ctx, tx, source)
-		if err != nil {
-			return false, err
-		}
-		if currentSource.Merged && currentSource.MergeTarget == target {
-			return false, nil
-		}
-		if currentSource.Merged {
-			return false, ErrGovernanceProjectMergeConflict
-		}
-		if currentSource.Archived {
-			return false, ErrGovernanceProjectArchived
-		}
-		currentTarget, err := getGovernanceProjectTx(ctx, tx, target)
-		if err != nil {
-			return false, err
-		}
-		if currentTarget.Archived {
-			return false, ErrGovernanceProjectArchived
-		}
-		if currentTarget.Merged {
-			return false, ErrGovernanceProjectMergeConflict
-		}
-		return false, ErrGovernanceProjectMergeConflict
-	}
-	// Create the local alias atomically within the same transaction.
-	// If alias insert fails the deferred tx.Rollback() reverts both the governance
-	// record and any alias row — no partial state is possible.
+	// Step (h): alias safety net — write-redirect for stray cloud writes.
 	if err := addAliasTx(ctx, tx, source, target, "local", reason); err != nil {
 		return false, fmt.Errorf("merge governance project alias: %w", err)
 	}
@@ -372,7 +405,31 @@ WHERE hive_project_governance.archived_at IS NULL
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit merge governance project: %w", err)
 	}
-	return rowsAffected > 0, nil
+	return true, nil
+}
+
+// ProjectMergeSyncEvidence reports whether any memory in the given projects has
+// synced_at IS NOT NULL, indicating cloud-synchronized data is present.
+// Used by the batch merge service to populate the cloud guardrail flag.
+func (d *DB) ProjectMergeSyncEvidence(ctx context.Context, projects []string) (bool, error) {
+	if len(projects) == 0 {
+		return false, nil
+	}
+	// Build placeholders: (?, ?, ...)
+	placeholders := make([]string, len(projects))
+	args := make([]any, len(projects))
+	for i, p := range projects {
+		placeholders[i] = "?"
+		args[i] = p
+	}
+	q := `SELECT EXISTS(SELECT 1 FROM memories WHERE project IN (` +
+		strings.Join(placeholders, ",") +
+		`) AND synced_at IS NOT NULL)`
+	var exists int
+	if err := d.sqlDB.QueryRowContext(ctx, q, args...).Scan(&exists); err != nil {
+		return false, fmt.Errorf("project merge sync evidence: %w", err)
+	}
+	return exists == 1, nil
 }
 
 func getGovernanceProjectTx(ctx context.Context, tx *sql.Tx, name string) (GovernanceProject, error) {
