@@ -26,7 +26,7 @@ Self-check after EVERY task: "Did I make a decision, fix a bug, learn something 
 - **title**: Verb + what — short, searchable (e.g. "Fixed N+1 query in UserList")
 - **type**: bugfix | decision | architecture | discovery | pattern | config | preference
 - **scope**: `project` (default) | `personal`
-- **topic_key** (recommended for evolving topics): stable key like `architecture/auth-model`
+- **topic_key** (recommended for evolving topics): grouping/context key like `architecture/auth-model`
 - **content**:
   - **What**: One sentence — what was done
   - **Why**: What motivated it (user request, bug, performance, etc.)
@@ -35,7 +35,7 @@ Self-check after EVERY task: "Did I make a decision, fix a bug, learn something 
 
 Topic update rules:
 - Different topics MUST NOT overwrite each other
-- Same topic evolving → use same `topic_key` (upsert via mem_save)
+- Same topic evolving → reuse the same `topic_key` to group versions; retrieval returns the most recent row.
 - Unsure about key → call `mem_suggest_topic_key` first
 - Observations saved WITHOUT a `topic_key` are append-only — never update them by ID; save a new observation instead
 
@@ -55,7 +55,7 @@ Also search PROACTIVELY when:
 
 - Reserved namespace: `sdd/{change}/{artifact}` is for automated SDD artifacts only.
 - General/conversational memory MUST use non-`sdd/` topics.
-- General memory entries MUST NOT overwrite or reuse reserved SDD artifact topic keys.
+- General memory entries MUST NOT reuse or pollute reserved SDD artifact topic keys.
 - In `hybrid` mode, artifact payload semantics must remain equivalent across both destinations.
 
 ## SESSION CLOSE PROTOCOL (mandatory)
