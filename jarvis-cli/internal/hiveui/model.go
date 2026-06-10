@@ -608,7 +608,7 @@ func (m Model) projectsView() string {
 	if m.projectArchiveExecutor != nil && len(m.snapshot.Projects) > 0 {
 		sb.WriteString("\na archive guarded by backup ID and exact confirmation\n")
 	}
-	if m.projectMergeExecutor != nil && len(m.snapshot.Projects) > 0 {
+	if (m.projectMergeExecutor != nil || m.projectMergeBatchExecutor != nil) && len(m.snapshot.Projects) > 0 {
 		sb.WriteString("m merge guarded by backup ID and exact confirmation\n")
 	}
 	sb.WriteString("\n")
@@ -1489,7 +1489,7 @@ func (m Model) applyProjectMergeBatchResult(msg projectMergeBatchResultMsg) Mode
 	if !m.mergeBatchSubmitting {
 		return m
 	}
-	if !slicesEqual(msg.sources, m.mergeSelectedSources) || msg.target != m.mergeTarget || msg.backupID != m.mergeBackupID {
+	if !slicesEqual(msg.sources, m.mergeSelectedSources) || msg.target != m.mergeTarget || msg.backupID != strings.TrimSpace(m.mergeBackupID) {
 		return m
 	}
 	m.mergeBatchSubmitting = false
