@@ -408,6 +408,30 @@ WHERE hive_project_governance.archived_at IS NULL
 	return true, nil
 }
 
+// ProjectMergeSyncEvidence reports whether any memory in the given projects has
+// synced_at IS NOT NULL, indicating cloud-synchronized data is present.
+// Used by the batch merge service to populate the cloud guardrail flag.
+func (d *DB) ProjectMergeSyncEvidence(ctx context.Context, projects []string) (bool, error) {
+	if len(projects) == 0 {
+		return false, nil
+	}
+	// Build placeholders: (?, ?, ...)
+	placeholders := make([]string, len(projects))
+	args := make([]any, len(projects))
+	for i, p := range projects {
+		placeholders[i] = "?"
+		args[i] = p
+	}
+	q := `SELECT COUNT(*) FROM memories WHERE project IN (` +
+		strings.Join(placeholders, ",") +
+		`) AND synced_at IS NOT NULL LIMIT 1`
+	var count int
+	if err := d.sqlDB.QueryRowContext(ctx, q, args...).Scan(&count); err != nil {
+		return false, fmt.Errorf("project merge sync evidence: %w", err)
+	}
+	return count > 0, nil
+}
+
 func getGovernanceProjectTx(ctx context.Context, tx *sql.Tx, name string) (GovernanceProject, error) {
 	project, err := scanGovernanceProject(tx.QueryRowContext(ctx, governanceProjectsQuery+` WHERE project_names.project = ?`, name))
 	if errors.Is(err, sql.ErrNoRows) {

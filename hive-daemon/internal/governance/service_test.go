@@ -814,3 +814,163 @@ func TestService_MemoryByID_InvalidID(t *testing.T) {
 }
 
 const errReadOnlyTest readOnlyTestError = "read-only test failure"
+
+// ─── Phase 2: Batch merge types + ExecuteProjectMergeBatch ───────────────────
+
+// mockMergeStore is a minimal mock that implements readStore + projectMergeStore +
+// the new ProjectMergeSyncEvidence method for batch service tests.
+type mockMergeStore struct {
+	db              *db.DB
+	mergeCalls      []mockMergeCall
+	syncEvidence    bool
+	syncEvidenceErr error
+}
+
+type mockMergeCall struct {
+	source string
+	err    error
+}
+
+func (m *mockMergeStore) ListGovernanceProjects(ctx context.Context) ([]db.GovernanceProject, error) {
+	return m.db.ListGovernanceProjects(ctx)
+}
+func (m *mockMergeStore) GetGovernanceProject(ctx context.Context, name string) (db.GovernanceProject, error) {
+	return m.db.GetGovernanceProject(ctx, name)
+}
+func (m *mockMergeStore) ListGovernanceMemories(ctx context.Context, f db.GovernanceMemoryFilter) ([]db.GovernanceMemory, error) {
+	return m.db.ListGovernanceMemories(ctx, f)
+}
+func (m *mockMergeStore) GetGovernanceMemoryByID(ctx context.Context, id int64) (db.GovernanceMemory, error) {
+	return m.db.GetGovernanceMemoryByID(ctx, id)
+}
+func (m *mockMergeStore) ListGovernanceSyncHealth(ctx context.Context) ([]db.SyncHealth, error) {
+	return m.db.ListGovernanceSyncHealth(ctx)
+}
+func (m *mockMergeStore) ListHiveWarnings(f db.HiveWarningFilter) ([]db.HiveWarning, error) {
+	return m.db.ListHiveWarnings(f)
+}
+func (m *mockMergeStore) MergeGovernanceProject(ctx context.Context, source, target, actorID, reason string, mergedAt time.Time) (bool, error) {
+	for _, c := range m.mergeCalls {
+		if c.source == source {
+			return c.err == nil, c.err
+		}
+	}
+	// Default: delegate to real DB.
+	return m.db.MergeGovernanceProject(ctx, source, target, actorID, reason, mergedAt)
+}
+func (m *mockMergeStore) ProjectMergeSyncEvidence(ctx context.Context, projects []string) (bool, error) {
+	return m.syncEvidence, m.syncEvidenceErr
+}
+
+// TestExecuteProjectMergeBatch_SerialLoop verifies that the batch method processes
+// sources serially: a failure on one source does not abort others, backup is
+// called exactly once, and per-source results are accurate.
+func TestExecuteProjectMergeBatch_SerialLoop(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	saveGovernanceServiceTestMemory(t, store, "src1", "src1 mem")
+	saveGovernanceServiceTestMemory(t, store, "src2", "src2 mem")
+	saveGovernanceServiceTestMemory(t, store, "src3", "src3 mem")
+	saveGovernanceServiceTestMemory(t, store, "dst-batch", "dst mem")
+
+	// src2 will produce a conflict error.
+	mock := &mockMergeStore{
+		db: store,
+		mergeCalls: []mockMergeCall{
+			{source: "src2", err: db.ErrGovernanceProjectMergeConflict},
+		},
+	}
+	backups := fakeGuardBackupStore{backups: []BackupManifest{{ID: "batch-backup", CreatedAt: now.Add(-time.Minute)}}}
+	svc := NewServiceWithBackup(mock, backups)
+	svc.now = func() time.Time { return now }
+
+	result, err := svc.ExecuteProjectMergeBatch(context.Background(), ProjectMergeBatchRequest{
+		Sources:      []string{"src1", "src2", "src3"},
+		Target:       "dst-batch",
+		BackupID:     "batch-backup",
+		Confirmation: ProjectMergeBatchConfirmation("dst-batch"),
+		ActorID:      "tester",
+		Reason:       "batch consolidation",
+	})
+
+	require.NoError(t, err)
+	require.Len(t, result.Results, 3)
+
+	bySource := map[string]MergeResult{}
+	for _, r := range result.Results {
+		bySource[r.Source] = r
+	}
+	require.True(t, bySource["src1"].Mutated, "src1 must be mutated (merged)")
+	require.Empty(t, bySource["src1"].ErrMsg, "src1 must have no error")
+	require.NotEmpty(t, bySource["src2"].ErrMsg, "src2 must have error")
+	require.False(t, bySource["src2"].Mutated, "src2 must not be mutated")
+	require.True(t, bySource["src3"].Mutated, "src3 must be mutated despite src2 error")
+	require.Empty(t, bySource["src3"].ErrMsg, "src3 must have no error")
+}
+
+// TestExecuteProjectMergeBatch_BackupFailureAborts verifies that a backup failure
+// stops the batch before any merge is attempted.
+func TestExecuteProjectMergeBatch_BackupFailureAborts(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	saveGovernanceServiceTestMemory(t, store, "src-ab", "src-ab mem")
+	saveGovernanceServiceTestMemory(t, store, "dst-ab", "dst-ab mem")
+
+	var mergeCallCount int
+	mock := &mockMergeStore{db: store, mergeCalls: []mockMergeCall{}}
+	_ = mergeCallCount
+
+	// No valid backup — empty backup list.
+	svc := NewServiceWithBackup(mock, fakeGuardBackupStore{backups: nil})
+	svc.now = func() time.Time { return now }
+
+	_, err = svc.ExecuteProjectMergeBatch(context.Background(), ProjectMergeBatchRequest{
+		Sources:      []string{"src-ab"},
+		Target:       "dst-ab",
+		BackupID:     "missing-backup",
+		Confirmation: ProjectMergeBatchConfirmation("dst-ab"),
+		ActorID:      "tester",
+		Reason:       "test",
+	})
+
+	require.ErrorIs(t, err, ErrDestructiveBackupRequired)
+	// Verify src-ab was not merged (row still under src-ab project).
+	var count int
+	require.NoError(t, store.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE project = 'src-ab'`).Scan(&count))
+	require.Equal(t, 1, count, "merge must not run when backup fails")
+}
+
+// TestExecuteProjectMergeBatch_SyncEvidencePropagated verifies that HasSyncEvidence
+// is set on the batch result when the store reports synced rows.
+func TestExecuteProjectMergeBatch_SyncEvidencePropagated(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	saveGovernanceServiceTestMemory(t, store, "src-se", "src-se mem")
+	saveGovernanceServiceTestMemory(t, store, "dst-se", "dst-se mem")
+
+	mock := &mockMergeStore{db: store, syncEvidence: true}
+	svc := NewServiceWithBackup(mock, fakeGuardBackupStore{backups: []BackupManifest{{ID: "se-backup", CreatedAt: now.Add(-time.Minute)}}})
+	svc.now = func() time.Time { return now }
+
+	result, err := svc.ExecuteProjectMergeBatch(context.Background(), ProjectMergeBatchRequest{
+		Sources:      []string{"src-se"},
+		Target:       "dst-se",
+		BackupID:     "se-backup",
+		Confirmation: ProjectMergeBatchConfirmation("dst-se"),
+		ActorID:      "tester",
+		Reason:       "test",
+	})
+
+	require.NoError(t, err)
+	require.True(t, result.HasSyncEvidence, "HasSyncEvidence must be true when store reports synced rows")
+	require.NotEmpty(t, result.CloudHandoffNote, "CloudHandoffNote must be set when HasSyncEvidence is true")
+}

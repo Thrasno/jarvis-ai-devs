@@ -75,6 +75,36 @@ type projectArchiveStore interface {
 
 type projectMergeStore interface {
 	MergeGovernanceProject(ctx context.Context, source, target, actorID, reason string, mergedAt time.Time) (bool, error)
+	ProjectMergeSyncEvidence(ctx context.Context, projects []string) (bool, error)
+}
+
+// MergeResult holds the outcome of a single source→target merge within a batch.
+type MergeResult struct {
+	Source        string `json:"source"`
+	Target        string `json:"target"`
+	AlreadyMerged bool   `json:"already_merged"`
+	Mutated       bool   `json:"mutated"`
+	ErrMsg        string `json:"error,omitempty"`
+}
+
+// ProjectMergeBatchRequest is the input for a multi-source merge batch.
+type ProjectMergeBatchRequest struct {
+	Sources      []string `json:"sources"`
+	Target       string   `json:"target"`
+	BackupID     string   `json:"backup_id"`
+	Confirmation string   `json:"confirmation"`
+	ActorID      string   `json:"actor_id,omitempty"`
+	Reason       string   `json:"reason,omitempty"`
+}
+
+// ProjectMergeBatchResult is the output of a multi-source merge batch.
+type ProjectMergeBatchResult struct {
+	Operation        string        `json:"operation"`
+	Target           string        `json:"target"`
+	BackupID         string        `json:"backup_id"`
+	Results          []MergeResult `json:"results"`
+	HasSyncEvidence  bool          `json:"has_sync_evidence"`
+	CloudHandoffNote string        `json:"cloud_handoff_note,omitempty"`
 }
 
 type GuardRequest struct {
@@ -411,4 +441,100 @@ func mapProjectError(err error) error {
 		return fmt.Errorf("%w: %v", ErrProjectNotFound, err)
 	}
 	return err
+}
+
+// ProjectMergeBatchConfirmation returns the exact confirmation phrase required
+// for a multi-source batch merge. The caller must type this phrase verbatim.
+func ProjectMergeBatchConfirmation(target string) string {
+	return fmt.Sprintf("MERGE projects INTO %s", strings.TrimSpace(target))
+}
+
+// ExecuteProjectMergeBatch takes a single backup, checks for cloud sync evidence,
+// then merges each source into target serially. A failure on one source is
+// recorded in Results and does not prevent the remaining sources from being merged.
+// Top-level errors (backup failure, validation failure) abort the entire batch.
+func (s *Service) ExecuteProjectMergeBatch(ctx context.Context, req ProjectMergeBatchRequest) (ProjectMergeBatchResult, error) {
+	target := strings.TrimSpace(req.Target)
+	if target == "" {
+		return ProjectMergeBatchResult{}, ErrProjectRequired
+	}
+	if len(req.Sources) == 0 {
+		return ProjectMergeBatchResult{}, ErrProjectRequired
+	}
+	// Deduplicate and trim sources.
+	seen := make(map[string]struct{}, len(req.Sources))
+	sources := make([]string, 0, len(req.Sources))
+	for _, s := range req.Sources {
+		s = strings.TrimSpace(s)
+		if s == "" || s == target {
+			continue
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		sources = append(sources, s)
+	}
+	if len(sources) == 0 {
+		return ProjectMergeBatchResult{}, ErrProjectRequired
+	}
+
+	// Validate confirmation phrase.
+	if req.Confirmation == "" {
+		return ProjectMergeBatchResult{}, ErrDestructiveConfirmationRequired
+	}
+	if req.Confirmation != ProjectMergeBatchConfirmation(target) {
+		return ProjectMergeBatchResult{}, ErrDestructiveConfirmationMismatch
+	}
+
+	// Single backup gates the entire batch.
+	backupID, err := s.requireFreshBackup(ctx, req.BackupID)
+	if err != nil {
+		return ProjectMergeBatchResult{}, err
+	}
+
+	merger, ok := s.store.(projectMergeStore)
+	if !ok {
+		return ProjectMergeBatchResult{}, ErrDestructiveMutationStoreRequired
+	}
+
+	// Cloud sync evidence check (once, before loop).
+	allProjects := append(sources, target)
+	hasSyncEvidence, err := merger.ProjectMergeSyncEvidence(ctx, allProjects)
+	if err != nil {
+		return ProjectMergeBatchResult{}, fmt.Errorf("sync evidence check: %w", err)
+	}
+
+	actorID := strings.TrimSpace(req.ActorID)
+	reason := strings.TrimSpace(req.Reason)
+	now := s.currentTime().UTC()
+
+	results := make([]MergeResult, 0, len(sources))
+	for _, source := range sources {
+		mutated, mergeErr := merger.MergeGovernanceProject(ctx, source, target, actorID, reason, now)
+		r := MergeResult{
+			Source:  source,
+			Target:  target,
+			Mutated: mutated,
+		}
+		if mergeErr != nil {
+			r.ErrMsg = mergeErr.Error()
+		} else if !mutated {
+			r.AlreadyMerged = true
+		}
+		results = append(results, r)
+	}
+
+	var cloudNote string
+	if hasSyncEvidence {
+		cloudNote = projectMergeCloudHandoffNote
+	}
+	return ProjectMergeBatchResult{
+		Operation:        GuardOperationMerge,
+		Target:           target,
+		BackupID:         backupID,
+		Results:          results,
+		HasSyncEvidence:  hasSyncEvidence,
+		CloudHandoffNote: cloudNote,
+	}, nil
 }
