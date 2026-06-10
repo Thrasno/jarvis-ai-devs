@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -202,6 +203,158 @@ func TestValidateSchema_SixTriggersAfterOpen(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSchema_NoUniqueTopicKeyIndex asserts that a freshly opened DB does NOT have
+// idx_unique_topic_key and DOES have idx_memories_topic_key as a non-unique index.
+func TestSchema_NoUniqueTopicKeyIndex(t *testing.T) {
+	d, err := Open(":memory:")
+	require.NoError(t, err)
+	defer func() { _ = d.Close() }()
+
+	// The old UNIQUE index must not exist.
+	var oldName string
+	err = d.sqlDB.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_unique_topic_key'`,
+	).Scan(&oldName)
+	require.ErrorIs(t, err, sql.ErrNoRows, "idx_unique_topic_key should not exist on fresh schema")
+
+	// The new non-unique index must exist.
+	var newName string
+	err = d.sqlDB.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_memories_topic_key'`,
+	).Scan(&newName)
+	require.NoError(t, err, "idx_memories_topic_key should exist on fresh schema")
+	assert.Equal(t, "idx_memories_topic_key", newName)
+
+	// The index sql must NOT contain the word "UNIQUE".
+	var idxSQL string
+	err = d.sqlDB.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_memories_topic_key'`,
+	).Scan(&idxSQL)
+	require.NoError(t, err)
+	assert.NotContains(t, strings.ToUpper(idxSQL), "UNIQUE", "idx_memories_topic_key must not be a UNIQUE index")
+}
+
+// TestMigration_UserVersion3_DropsUniqueIndex asserts that a DB already at
+// user_version 2 (with the old UNIQUE idx_unique_topic_key) is migrated to
+// user_version 3, the unique index is removed, the non-unique replacement is
+// created, and existing rows survive.
+func TestMigration_UserVersion3_DropsUniqueIndex(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "legacy-v2.db")
+
+	// NOTE: This fixture is synthetic. A real daemon-produced DB at user_version=2
+	// cannot carry idx_unique_topic_key because migrateMemoriesAddSessionID drops and
+	// recreates the memories table with a non-unique idx_memories_topic_key. This test
+	// guards against manual or external DB manipulation that could reintroduce the
+	// legacy unique index — not a normal production upgrade path.
+
+	// Build a minimal user_version-2 DB that resembles what the daemon creates
+	// after migrateMemoriesAddSessionID: memories table with session_id, plus the
+	// UNIQUE topic_key index and PRAGMA user_version = 2.
+	rawDB, err := sql.Open("sqlite", dbPath)
+	require.NoError(t, err)
+
+	// Create minimal sessions table (required by FK in memories).
+	_, err = rawDB.Exec(`CREATE TABLE sessions (
+		id       TEXT PRIMARY KEY,
+		sync_id  TEXT NOT NULL,
+		project  TEXT NOT NULL,
+		directory TEXT NOT NULL DEFAULT '',
+		dev_id   TEXT NOT NULL,
+		client   TEXT NOT NULL,
+		started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		ended_at   DATETIME,
+		summary    TEXT,
+		synced_at  DATETIME,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	require.NoError(t, err)
+
+	// Create memories table with session_id (user_version 2 layout).
+	_, err = rawDB.Exec(`CREATE TABLE memories (
+		id             INTEGER PRIMARY KEY AUTOINCREMENT,
+		sync_id        TEXT NOT NULL,
+		project        TEXT NOT NULL,
+		topic_key      TEXT,
+		category       TEXT NOT NULL DEFAULT '',
+		title          TEXT NOT NULL,
+		content        TEXT NOT NULL,
+		tags           TEXT NOT NULL DEFAULT '[]',
+		files_affected TEXT NOT NULL DEFAULT '[]',
+		created_by     TEXT NOT NULL DEFAULT 'unknown',
+		created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		synced_at      DATETIME,
+		deleted_at     DATETIME,
+		deleted_by     TEXT,
+		delete_reason  TEXT,
+		restored_at    DATETIME,
+		confidence     TEXT NOT NULL DEFAULT '',
+		impact_score   INTEGER NOT NULL DEFAULT 0,
+		session_id     TEXT NOT NULL REFERENCES sessions(id)
+	)`)
+	require.NoError(t, err)
+
+	// Create the OLD unique index (simulates user_version 2 state).
+	_, err = rawDB.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_topic_key
+		ON memories(project, topic_key) WHERE topic_key IS NOT NULL`)
+	require.NoError(t, err)
+
+	// Insert a sentinel session required by the FK.
+	_, err = rawDB.Exec(`INSERT INTO sessions
+		(id, sync_id, project, directory, dev_id, client)
+		VALUES ('manual-save-test', 'sync-sentinel', 'test', '', 'test', 'test')`)
+	require.NoError(t, err)
+
+	// Insert a row to verify row preservation after migration.
+	_, err = rawDB.Exec(`INSERT INTO memories
+		(sync_id, project, topic_key, title, content, session_id)
+		VALUES ('sync-abc', 'test', 'arch/auth', 'Auth design', 'Content', 'manual-save-test')`)
+	require.NoError(t, err)
+
+	_, err = rawDB.Exec(`PRAGMA user_version = 2`)
+	require.NoError(t, err)
+	require.NoError(t, rawDB.Close())
+
+	// Open via our Open() — this triggers initSchema → migrateMemoriesTopicKeyNonUnique.
+	d, err := Open(dbPath)
+	require.NoError(t, err)
+	defer func() { _ = d.Close() }()
+
+	// user_version must be 3.
+	var version int
+	require.NoError(t, d.sqlDB.QueryRow("PRAGMA user_version").Scan(&version))
+	assert.Equal(t, 3, version, "user_version should be bumped to 3 after migration")
+
+	// Old UNIQUE index must be gone.
+	var oldName string
+	err = d.sqlDB.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_unique_topic_key'`,
+	).Scan(&oldName)
+	require.ErrorIs(t, err, sql.ErrNoRows, "idx_unique_topic_key should be dropped by migration v3")
+
+	// New non-unique index must exist.
+	var newName string
+	err = d.sqlDB.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_memories_topic_key'`,
+	).Scan(&newName)
+	require.NoError(t, err, "idx_memories_topic_key should be created by migration v3")
+	assert.Equal(t, "idx_memories_topic_key", newName)
+
+	// Non-unique: sql must not contain UNIQUE.
+	var idxSQL string
+	require.NoError(t, d.sqlDB.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_memories_topic_key'`,
+	).Scan(&idxSQL))
+	assert.NotContains(t, strings.ToUpper(idxSQL), "UNIQUE")
+
+	// Pre-existing row must still be there.
+	var count int
+	require.NoError(t, d.sqlDB.QueryRow(`SELECT COUNT(*) FROM memories WHERE sync_id = 'sync-abc'`).Scan(&count))
+	assert.Equal(t, 1, count, "existing row must survive migration v3")
 }
 
 func TestOpen_MigratesLegacySyncStateHealthColumns(t *testing.T) {

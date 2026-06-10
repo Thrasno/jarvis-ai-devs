@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS sync_state (
 	last_error      TEXT NOT NULL DEFAULT ''
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_topic_key
+CREATE INDEX IF NOT EXISTS idx_memories_topic_key
 ON memories(project, topic_key)
 WHERE topic_key IS NOT NULL;
 
@@ -352,6 +352,10 @@ func initSchema(sqlDB *sql.DB) error {
 		return fmt.Errorf("create idx_memories_session: %w", err)
 	}
 
+	if err := migrateMemoriesTopicKeyNonUnique(sqlDB); err != nil {
+		return fmt.Errorf("migrate memories topic_key non-unique: %w", err)
+	}
+
 	return nil
 }
 
@@ -479,14 +483,14 @@ func migrateMemoriesAddSessionID(sqlDB *sql.DB) error {
 	// and idx_memories_session exist (they may be missing on DBs migrated before
 	// these indexes were added — Suspect-A: idx_memories_session is required by FR-D-2).
 	for _, stmt := range []string{
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_topic_key
+		`CREATE INDEX IF NOT EXISTS idx_memories_topic_key
 		 ON memories(project, topic_key) WHERE topic_key IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_project_active ON memories(project, created_at DESC) WHERE deleted_at IS NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_dev_id ON sessions(dev_id)`,
-		// R2-WARN-3 — recreated table needs the UNIQUE INDEX too.
+		// R2-WARN-3 — recreated table needs the UNIQUE sync_id index too.
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_sync_id ON memories(sync_id) WHERE sync_id != ''`,
 	} {
 		if _, err = tx.Exec(stmt); err != nil {
@@ -542,6 +546,33 @@ func migrateMemoriesAddSessionID(sqlDB *sql.DB) error {
 		return fmt.Errorf("set user_version: %w", err)
 	}
 
+	return nil
+}
+
+// migrateMemoriesTopicKeyNonUnique drops the legacy UNIQUE index on
+// (project, topic_key) and replaces it with a non-unique index. topic_key is
+// now a grouping/context key, not an identity key (Issue #119). Gated by
+// PRAGMA user_version — skips if already >= 3. Idempotent.
+func migrateMemoriesTopicKeyNonUnique(sqlDB *sql.DB) error {
+	var version int
+	if err := sqlDB.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return fmt.Errorf("read user_version: %w", err)
+	}
+	if version >= 3 {
+		return nil // already migrated
+	}
+	for _, stmt := range []string{
+		`DROP INDEX IF EXISTS idx_unique_topic_key`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_topic_key
+		     ON memories(project, topic_key) WHERE topic_key IS NOT NULL`,
+	} {
+		if _, err := sqlDB.Exec(stmt); err != nil {
+			return fmt.Errorf("topic_key non-unique migration (%.60s): %w", stmt, err)
+		}
+	}
+	if _, err := sqlDB.Exec("PRAGMA user_version = 3"); err != nil {
+		return fmt.Errorf("set user_version: %w", err)
+	}
 	return nil
 }
 
