@@ -518,16 +518,6 @@ func saveGovernanceTestMemory(t *testing.T, d *hivedb.DB, projectName, title str
 	return id
 }
 
-func requireProjectMerged(t *testing.T, d *hivedb.DB, project, target string, mergedAt time.Time) {
-	t.Helper()
-	detail, err := d.GetGovernanceProject(context.Background(), project)
-	if err != nil {
-		t.Fatalf("GetGovernanceProject %s: %v", project, err)
-	}
-	if !detail.Merged || detail.MergeTarget != target || detail.MergedAt == nil || !detail.MergedAt.Equal(mergedAt) || detail.MergedBy != "first-actor" || detail.MergeReason != "first reason" {
-		t.Fatalf("project merge metadata = %+v, want %s->%s first audit", detail, project, target)
-	}
-}
 
 func requireMemoryProject(t *testing.T, d *hivedb.DB, id int64) string {
 	t.Helper()

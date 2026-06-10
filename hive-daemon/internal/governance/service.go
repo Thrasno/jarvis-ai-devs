@@ -329,7 +329,7 @@ func (s *Service) ExecuteProjectMerge(ctx context.Context, req ProjectMergeReque
 		return ProjectMergeResult{}, db.ErrGovernanceProjectMergeInvalid
 	}
 	if req.SourceProject != source || req.TargetProject != target {
-		return ProjectMergeResult{}, ErrDestructiveConfirmationMismatch
+		return ProjectMergeResult{}, ErrProjectRequired
 	}
 	backupID, err := s.requireFreshBackup(ctx, req.BackupID)
 	if err != nil {
@@ -499,7 +499,9 @@ func (s *Service) ExecuteProjectMergeBatch(ctx context.Context, req ProjectMerge
 	}
 
 	// Cloud sync evidence check (once, before loop).
-	allProjects := append(sources, target)
+	allProjects := make([]string, 0, len(sources)+1)
+	allProjects = append(allProjects, sources...)
+	allProjects = append(allProjects, target)
 	hasSyncEvidence, err := merger.ProjectMergeSyncEvidence(ctx, allProjects)
 	if err != nil {
 		return ProjectMergeBatchResult{}, fmt.Errorf("sync evidence check: %w", err)

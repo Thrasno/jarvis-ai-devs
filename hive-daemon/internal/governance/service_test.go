@@ -500,7 +500,7 @@ func TestServiceGuardedProjectMergeBlocksWithoutFreshUsableBackupOrExactConfirma
 			backups:      []BackupManifest{{ID: "fresh-backup", CreatedAt: now.Add(-time.Minute)}},
 			backupID:     "fresh-backup",
 			confirmation: ProjectMergeConfirmation("alpha", "beta"),
-			wantErr:      ErrDestructiveConfirmationMismatch,
+			wantErr:      ErrProjectRequired,
 		},
 		{
 			name:         "target project with trailing whitespace",
@@ -508,7 +508,7 @@ func TestServiceGuardedProjectMergeBlocksWithoutFreshUsableBackupOrExactConfirma
 			backups:      []BackupManifest{{ID: "fresh-backup", CreatedAt: now.Add(-time.Minute)}},
 			backupID:     "fresh-backup",
 			confirmation: ProjectMergeConfirmation("alpha", "beta"),
-			wantErr:      ErrDestructiveConfirmationMismatch,
+			wantErr:      ErrProjectRequired,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

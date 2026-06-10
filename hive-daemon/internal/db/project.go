@@ -422,14 +422,14 @@ func (d *DB) ProjectMergeSyncEvidence(ctx context.Context, projects []string) (b
 		placeholders[i] = "?"
 		args[i] = p
 	}
-	q := `SELECT COUNT(*) FROM memories WHERE project IN (` +
+	q := `SELECT EXISTS(SELECT 1 FROM memories WHERE project IN (` +
 		strings.Join(placeholders, ",") +
-		`) AND synced_at IS NOT NULL LIMIT 1`
-	var count int
-	if err := d.sqlDB.QueryRowContext(ctx, q, args...).Scan(&count); err != nil {
+		`) AND synced_at IS NOT NULL)`
+	var exists int
+	if err := d.sqlDB.QueryRowContext(ctx, q, args...).Scan(&exists); err != nil {
 		return false, fmt.Errorf("project merge sync evidence: %w", err)
 	}
-	return count > 0, nil
+	return exists == 1, nil
 }
 
 func getGovernanceProjectTx(ctx context.Context, tx *sql.Tx, name string) (GovernanceProject, error) {

@@ -285,6 +285,9 @@ func (s *Server) handleGovernanceProject(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleGovernanceProjectMergeBatch(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var body governance.ProjectMergeBatchRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
