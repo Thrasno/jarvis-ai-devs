@@ -51,6 +51,22 @@ type ProjectMergeExecutor interface {
 	MergeProject(context.Context, hiveclient.ProjectMergeRequest) (hiveclient.ProjectMergeResult, error)
 }
 
+// ProjectMergeBatchExecutor executes a multi-source batch merge.
+type ProjectMergeBatchExecutor interface {
+	MergeProjects(context.Context, hiveclient.ProjectMergeBatchRequest) (hiveclient.ProjectMergeBatchResult, error)
+}
+
+// ProjectMergeImpact holds the per-source impact summary computed client-side
+// from the snapshot before dispatching a batch merge.
+type ProjectMergeImpact struct {
+	Source          string
+	Memories        int
+	Sessions        int
+	Prompts         int
+	Unsynced        int
+	HasSyncEvidence bool // true when project has any synced rows
+}
+
 type MemoryLoader interface {
 	MemoryByID(context.Context, int64) (hiveclient.Memory, error)
 }
@@ -104,6 +120,19 @@ type Model struct {
 	projectMergeStep         projectMergeStep
 	projectMergeSubmitting   bool
 
+	// Batch merge (multi-source) fields — used when projectMergeBatchExecutor is set.
+	projectMergeBatchExecutor ProjectMergeBatchExecutor
+	mergeStep                 batchMergeStep
+	mergeSelectedSources      []string
+	mergeTarget               string
+	mergeTargetIsNew          bool
+	mergeImpact               []ProjectMergeImpact
+	mergeSyncEvidence         bool
+	mergeBackupID             string
+	mergeConfirmText          string
+	mergeBatchResult          *hiveclient.ProjectMergeBatchResult
+	mergeBatchSubmitting      bool
+
 	memoryLoader  MemoryLoader
 	memoryContent string
 	memoryLoading bool
@@ -124,6 +153,19 @@ const (
 	projectMergeTarget projectMergeStep = iota
 	projectMergeBackupID
 	projectMergeConfirmation
+)
+
+// batchMergeStep is the step enum for the multi-source merge flow.
+type batchMergeStep int
+
+const (
+	mergeStepSelectSources batchMergeStep = iota
+	mergeStepPickTarget
+	mergeStepImpact
+	mergeStepBackupID
+	mergeStepConfirm
+	mergeStepExecuting
+	mergeStepResult
 )
 
 type memoryGuardResultMsg struct {
@@ -148,6 +190,14 @@ type projectMergeResultMsg struct {
 	backupID      string
 	result        hiveclient.ProjectMergeResult
 	err           error
+}
+
+type projectMergeBatchResultMsg struct {
+	sources  []string
+	target   string
+	backupID string
+	result   hiveclient.ProjectMergeBatchResult
+	err      error
 }
 
 type memoryLoadResultMsg struct {
@@ -181,11 +231,18 @@ func NewModelWithSnapshotAndProjectMergeExecutor(snapshot Snapshot, executor Pro
 	return m
 }
 
-func NewModelWithAllExecutors(snapshot Snapshot, guard GuardExecutor, archive ProjectArchiveExecutor, merge ProjectMergeExecutor, memory MemoryLoader) Model {
+func NewModelWithSnapshotAndProjectMergeBatchExecutor(snapshot Snapshot, executor ProjectMergeBatchExecutor) Model {
+	m := NewModelWithSnapshot(snapshot)
+	m.projectMergeBatchExecutor = executor
+	return m
+}
+
+func NewModelWithAllExecutors(snapshot Snapshot, guard GuardExecutor, archive ProjectArchiveExecutor, merge ProjectMergeExecutor, memory MemoryLoader, batchMerge ProjectMergeBatchExecutor) Model {
 	m := NewModelWithSnapshotAndGuardExecutor(snapshot, guard)
 	m.projectArchiveExecutor = archive
 	m.projectMergeExecutor = merge
 	m.memoryLoader = memory
+	m.projectMergeBatchExecutor = batchMerge
 	return m
 }
 
@@ -201,6 +258,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if result, ok := msg.(projectMergeResultMsg); ok {
 		return m.applyProjectMergeResult(result), nil
 	}
+	if result, ok := msg.(projectMergeBatchResultMsg); ok {
+		return m.applyProjectMergeBatchResult(result), nil
+	}
 	if result, ok := msg.(memoryLoadResultMsg); ok {
 		return m.applyMemoryLoadResult(result), nil
 	}
@@ -211,6 +271,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
+	}
+	if m.screen == ScreenProjectMerge && m.projectMergeBatchExecutor != nil {
+		if key.Type == tea.KeyCtrlC && !m.mergeBatchSubmitting {
+			return m, tea.Quit
+		}
+		return m.updateBatchProjectMerge(key)
 	}
 	if m.screen == ScreenProjectMerge {
 		if key.Type == tea.KeyCtrlC && !m.projectMergeSubmitting {
@@ -246,6 +312,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.startMemoryGuard("restore")
 	case m.screen == ScreenProjects && runeKey(key, 'a') && m.projectArchiveExecutor != nil:
 		m = m.startProjectArchive()
+	case m.screen == ScreenProjects && runeKey(key, 'm') && m.projectMergeBatchExecutor != nil:
+		m = m.startBatchProjectMerge()
 	case m.screen == ScreenProjects && runeKey(key, 'm') && m.projectMergeExecutor != nil:
 		m = m.startProjectMerge()
 	case runeKey(key, 't'):
@@ -316,6 +384,9 @@ func (m Model) View() string {
 	case ScreenProjectArchive:
 		return m.projectArchiveView()
 	case ScreenProjectMerge:
+		if m.projectMergeBatchExecutor != nil {
+			return m.batchProjectMergeView()
+		}
 		return m.projectMergeView()
 	}
 
@@ -479,6 +550,9 @@ func (m Model) back() Model {
 		m.screen = ScreenProjects
 	case ScreenProjectMerge:
 		m.screen = ScreenProjects
+		m.mergeSelectedSources = nil
+		m.mergeBatchResult = nil
+		m.mergeBatchSubmitting = false
 	case ScreenProjectMemories:
 		m.screen = ScreenProjects
 	case ScreenTimeline:
@@ -534,7 +608,7 @@ func (m Model) projectsView() string {
 	if m.projectArchiveExecutor != nil && len(m.snapshot.Projects) > 0 {
 		sb.WriteString("\na archive guarded by backup ID and exact confirmation\n")
 	}
-	if m.projectMergeExecutor != nil && len(m.snapshot.Projects) > 0 {
+	if (m.projectMergeExecutor != nil || m.projectMergeBatchExecutor != nil) && len(m.snapshot.Projects) > 0 {
 		sb.WriteString("m merge guarded by backup ID and exact confirmation\n")
 	}
 	sb.WriteString("\n")
@@ -1254,6 +1328,407 @@ func (m Model) projectMergeView() string {
 
 func projectMergeConfirmationPhrase(source, target string) string {
 	return "MERGE project " + source + " INTO " + target
+}
+
+// ─── Batch multi-source merge flow ──────────────────────────────────────────
+
+func (m Model) startBatchProjectMerge() Model {
+	if m.projectMergeBatchExecutor == nil || len(m.snapshot.Projects) == 0 {
+		return m
+	}
+	m.screen = ScreenProjectMerge
+	m.mergeStep = mergeStepSelectSources
+	m.mergeSelectedSources = nil
+	m.mergeTarget = ""
+	m.mergeTargetIsNew = false
+	m.mergeImpact = nil
+	m.mergeSyncEvidence = false
+	m.mergeBackupID = ""
+	m.mergeConfirmText = ""
+	m.mergeBatchResult = nil
+	m.mergeBatchSubmitting = false
+	m.message = ""
+	return m
+}
+
+// updateBatchProjectMerge handles key events for the multi-source merge flow.
+func (m Model) updateBatchProjectMerge(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.mergeBatchSubmitting {
+		m.message = "Batch merge is already pending through hive-daemon. Wait for the result."
+		return m, nil
+	}
+	switch {
+	case key.Type == tea.KeyEsc:
+		m = m.back()
+		m.message = ""
+		return m, nil
+	case key.Type == tea.KeyEnter:
+		return m.submitBatchMergeStep()
+	case key.Type == tea.KeySpace:
+		if m.mergeStep == mergeStepSelectSources {
+			m = m.toggleMergeSource()
+			return m, nil
+		}
+		// text-input steps — append space
+		m = m.appendBatchMergeText(" ")
+		return m, nil
+	case key.Type == tea.KeyDown:
+		if m.mergeStep == mergeStepSelectSources {
+			m.projectIndex = wrapIndex(m.projectIndex+1, len(m.snapshot.Projects))
+		}
+		return m, nil
+	case key.Type == tea.KeyUp:
+		if m.mergeStep == mergeStepSelectSources {
+			m.projectIndex = wrapIndex(m.projectIndex-1, len(m.snapshot.Projects))
+		}
+		return m, nil
+	case key.Type == tea.KeyBackspace:
+		m = m.removeBatchMergeRune()
+		return m, nil
+	case key.Type == tea.KeyRunes:
+		m = m.appendBatchMergeText(string(key.Runes))
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) toggleMergeSource() Model {
+	project := m.selectedProject().Name
+	for i, s := range m.mergeSelectedSources {
+		if s == project {
+			m.mergeSelectedSources = append(m.mergeSelectedSources[:i], m.mergeSelectedSources[i+1:]...)
+			return m
+		}
+	}
+	m.mergeSelectedSources = append(m.mergeSelectedSources, project)
+	return m
+}
+
+func (m Model) submitBatchMergeStep() (tea.Model, tea.Cmd) {
+	m.message = ""
+	switch m.mergeStep {
+	case mergeStepSelectSources:
+		if len(m.mergeSelectedSources) == 0 {
+			m.message = "Select at least one source project before proceeding."
+			return m, nil
+		}
+		m.mergeStep = mergeStepPickTarget
+		return m, nil
+
+	case mergeStepPickTarget:
+		target := strings.TrimSpace(m.mergeTarget)
+		if target == "" {
+			m.message = "Target project name is required."
+			return m, nil
+		}
+		for _, src := range m.mergeSelectedSources {
+			if src == target {
+				m.message = "Target must not be one of the selected sources."
+				return m, nil
+			}
+		}
+		m.mergeTarget = target
+		m.mergeTargetIsNew = !m.snapshotHasProject(target)
+		m.mergeImpact = computeMergeImpact(m.snapshot, m.mergeSelectedSources)
+		m.mergeSyncEvidence = anyImpactHasSyncEvidence(m.mergeImpact) || targetHasSyncEvidence(m.snapshot, target)
+		m.mergeStep = mergeStepImpact
+		return m, nil
+
+	case mergeStepImpact:
+		m.mergeStep = mergeStepBackupID
+		return m, nil
+
+	case mergeStepBackupID:
+		backupID := strings.TrimSpace(m.mergeBackupID)
+		if backupID == "" {
+			m.message = "Backup ID is required before batch merge."
+			return m, nil
+		}
+		if !m.snapshotHasBackup(backupID) {
+			m.message = "backup not found in snapshot"
+			return m, nil
+		}
+		m.mergeStep = mergeStepConfirm
+		return m, nil
+
+	case mergeStepConfirm:
+		expected := mergeBatchConfirmationPhrase(m.mergeTarget)
+		if m.mergeConfirmText != expected {
+			m.message = "Confirmation mismatch. Type the phrase exactly; input is not trimmed."
+			return m, nil
+		}
+		if m.projectMergeBatchExecutor == nil {
+			m.message = "Batch merge executor is not available."
+			return m, nil
+		}
+		executor := m.projectMergeBatchExecutor
+		sourcesCopy := make([]string, len(m.mergeSelectedSources))
+		copy(sourcesCopy, m.mergeSelectedSources)
+		req := hiveclient.ProjectMergeBatchRequest{
+			Sources:      sourcesCopy,
+			Target:       m.mergeTarget,
+			BackupID:     strings.TrimSpace(m.mergeBackupID),
+			Confirmation: m.mergeConfirmText,
+		}
+		m.mergeStep = mergeStepExecuting
+		m.mergeBatchSubmitting = true
+		return m, func() tea.Msg {
+			result, err := executor.MergeProjects(context.Background(), req)
+			return projectMergeBatchResultMsg{sources: req.Sources, target: req.Target, backupID: req.BackupID, result: result, err: err}
+		}
+
+	case mergeStepResult:
+		// enter/esc → return to projects
+		m = m.back()
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) applyProjectMergeBatchResult(msg projectMergeBatchResultMsg) Model {
+	if !m.mergeBatchSubmitting {
+		return m
+	}
+	if !slicesEqual(msg.sources, m.mergeSelectedSources) || msg.target != m.mergeTarget || msg.backupID != strings.TrimSpace(m.mergeBackupID) {
+		return m
+	}
+	m.mergeBatchSubmitting = false
+	if msg.err != nil {
+		m.mergeStep = mergeStepConfirm
+		m.mergeConfirmText = ""
+		m.message = fmt.Sprintf("Batch merge failed: %v", msg.err)
+		return m
+	}
+	result := msg.result
+	m.mergeBatchResult = &result
+	m.mergeStep = mergeStepResult
+	return m
+}
+
+func (m Model) appendBatchMergeText(text string) Model {
+	switch m.mergeStep {
+	case mergeStepPickTarget:
+		m.mergeTarget += text
+	case mergeStepBackupID:
+		m.mergeBackupID += text
+	case mergeStepConfirm:
+		m.mergeConfirmText += text
+	}
+	return m
+}
+
+func (m Model) removeBatchMergeRune() Model {
+	switch m.mergeStep {
+	case mergeStepPickTarget:
+		m.mergeTarget = trimLastRune(m.mergeTarget)
+	case mergeStepBackupID:
+		m.mergeBackupID = trimLastRune(m.mergeBackupID)
+	case mergeStepConfirm:
+		m.mergeConfirmText = trimLastRune(m.mergeConfirmText)
+	}
+	return m
+}
+
+// computeMergeImpact builds the impact table from the snapshot.
+func computeMergeImpact(snapshot Snapshot, sources []string) []ProjectMergeImpact {
+	impact := make([]ProjectMergeImpact, 0, len(sources))
+	for _, src := range sources {
+		var proj hiveclient.Project
+		for _, p := range snapshot.Projects {
+			if p.Name == src {
+				proj = p
+				break
+			}
+		}
+		synced := proj.ActiveMemoryCount - proj.UnsyncedCount
+		if synced < 0 {
+			synced = 0
+		}
+		impact = append(impact, ProjectMergeImpact{
+			Source:          src,
+			Memories:        proj.ActiveMemoryCount,
+			Sessions:        proj.SessionCount,
+			Prompts:         proj.PromptCount,
+			Unsynced:        proj.UnsyncedCount,
+			HasSyncEvidence: synced > 0,
+		})
+	}
+	return impact
+}
+
+func anyImpactHasSyncEvidence(impacts []ProjectMergeImpact) bool {
+	for _, imp := range impacts {
+		if imp.HasSyncEvidence {
+			return true
+		}
+	}
+	return false
+}
+
+func targetHasSyncEvidence(snapshot Snapshot, target string) bool {
+	for _, p := range snapshot.Projects {
+		if p.Name == target {
+			synced := p.ActiveMemoryCount - p.UnsyncedCount
+			return synced > 0
+		}
+	}
+	return false
+}
+
+// mergeBatchConfirmationPhrase returns the exact phrase the user must type.
+func mergeBatchConfirmationPhrase(target string) string {
+	return "MERGE projects INTO " + target
+}
+
+// batchProjectMergeView renders the multi-source merge screen.
+func (m Model) batchProjectMergeView() string {
+	w := max(m.width, 80)
+	panelW := panelWidth(w)
+
+	crumb := breadcrumbCurrent.Render("batch project merge")
+	var sb strings.Builder
+	sb.WriteString(headerRow(crumb, badgeDestructive.Render("destructive"), w))
+	sb.WriteString("\n")
+
+	switch m.mergeStep {
+	case mergeStepSelectSources:
+		m.renderSelectSourcesPanel(&sb, panelW)
+	case mergeStepPickTarget:
+		m.renderPickTargetPanel(&sb, panelW)
+	case mergeStepImpact:
+		m.renderImpactPanel(&sb, panelW)
+	case mergeStepBackupID:
+		m.renderBatchBackupIDPanel(&sb, panelW)
+	case mergeStepConfirm:
+		m.renderBatchConfirmPanel(&sb, panelW)
+	case mergeStepExecuting:
+		sb.WriteString(borderedPanel(sectionHeader("STATUS", panelW)+guardPending.Render("Batch merge is running through hive-daemon. Please wait."), panelW))
+	case mergeStepResult:
+		m.renderBatchResultPanel(&sb, panelW)
+	}
+
+	if m.message != "" {
+		fmt.Fprintf(&sb, "\n%s\n", m.message)
+	}
+	sb.WriteString("\n")
+	if !m.mergeBatchSubmitting && m.mergeStep != mergeStepResult {
+		sb.WriteString(helpBar([]KeyHint{{"esc", "back"}, {"ctrl-c", "quit"}}, "destructive", w))
+	}
+	if m.mergeStep == mergeStepResult {
+		sb.WriteString(helpBar([]KeyHint{{"enter/esc", "done"}}, "destructive", w))
+	}
+	return sb.String()
+}
+
+func (m Model) renderSelectSourcesPanel(sb *strings.Builder, panelW int) {
+	var content strings.Builder
+	content.WriteString("Select source projects to merge. Space to toggle, enter to confirm.\n\n")
+	for i, project := range m.snapshot.Projects {
+		cursor := "  "
+		if i == m.projectIndex {
+			cursor = cursorStyle.Render("▌") + " "
+		}
+		selected := "[ ] "
+		if containsString(m.mergeSelectedSources, project.Name) {
+			selected = "[x] "
+		}
+		content.WriteString(cursor + selected + project.Name + "\n")
+	}
+	sb.WriteString(borderedPanel(sectionHeader("SELECT SOURCES", panelW)+content.String(), panelW))
+}
+
+func (m Model) renderPickTargetPanel(sb *strings.Builder, panelW int) {
+	selected := strings.Join(m.mergeSelectedSources, ", ")
+	content := fmt.Sprintf("Sources selected: %s\n\nTarget project name: %s\n", selected, visibleInput(m.mergeTarget))
+	sb.WriteString(borderedPanel(sectionHeader("PICK TARGET", panelW)+content, panelW))
+}
+
+func (m Model) renderImpactPanel(sb *strings.Builder, panelW int) {
+	var content strings.Builder
+	content.WriteString(fmt.Sprintf("Target: %s", m.mergeTarget))
+	if m.mergeTargetIsNew {
+		content.WriteString(" (new project — will be created)")
+	}
+	content.WriteString("\n\n")
+	content.WriteString(columnHeaderStyle.Render("SOURCE  MEMORIES  SESSIONS  PROMPTS  UNSYNCED") + "\n")
+	for _, imp := range m.mergeImpact {
+		content.WriteString(fmt.Sprintf("%s  %d  %d  %d  %d\n",
+			imp.Source, imp.Memories, imp.Sessions, imp.Prompts, imp.Unsynced))
+	}
+	sb.WriteString(borderedPanel(sectionHeader("IMPACT", panelW)+content.String(), panelW))
+
+	if m.mergeSyncEvidence {
+		sb.WriteString("\n")
+		guardContent := "One or more source projects contain synced data.\n" +
+			"Before proceeding, notify your admin to handle cloud-side cleanup.\n\n" +
+			dimTextStyle.Render("admin note: The following projects were merged locally and their cloud entries must be reconciled: ") +
+			strings.Join(m.mergeSelectedSources, ", ") + " → " + m.mergeTarget
+		sb.WriteString(borderedPanel(sectionHeader("CLOUD SYNC NOTICE", panelW)+guardContent, panelW))
+	}
+}
+
+func (m Model) renderBatchBackupIDPanel(sb *strings.Builder, panelW int) {
+	content := fmt.Sprintf("Sources: %s → %s\n\nBackup ID required: %s\n",
+		strings.Join(m.mergeSelectedSources, ", "),
+		m.mergeTarget,
+		visibleInput(m.mergeBackupID),
+	)
+	sb.WriteString(borderedPanel(sectionHeader("BACKUP ID", panelW)+content, panelW))
+}
+
+func (m Model) renderBatchConfirmPanel(sb *strings.Builder, panelW int) {
+	phrase := mergeBatchConfirmationPhrase(m.mergeTarget)
+	content := fmt.Sprintf("Type exactly to confirm: %s\n\nconfirmation: %s\n",
+		phrase,
+		visibleInput(m.mergeConfirmText),
+	)
+	sb.WriteString(borderedPanel(sectionHeader("CONFIRM", panelW)+content, panelW))
+}
+
+func (m Model) renderBatchResultPanel(sb *strings.Builder, panelW int) {
+	var content strings.Builder
+	if m.mergeBatchResult == nil {
+		content.WriteString("No result available.\n")
+	} else {
+		content.WriteString(fmt.Sprintf("Target: %s  Backup: %s\n\n", m.mergeBatchResult.Target, m.mergeBatchResult.BackupID))
+		content.WriteString(columnHeaderStyle.Render("SOURCE  TARGET  MUTATED  STATUS") + "\n")
+		for _, r := range m.mergeBatchResult.Results {
+			status := "ok"
+			if r.ErrMsg != "" {
+				status = "error: " + r.ErrMsg
+			} else if r.AlreadyMerged {
+				status = "already merged"
+			}
+			content.WriteString(fmt.Sprintf("%s  %s  %v  %s\n", r.Source, r.Target, r.Mutated, status))
+		}
+		if m.mergeBatchResult.HasSyncEvidence && strings.TrimSpace(m.mergeBatchResult.CloudHandoffNote) != "" {
+			content.WriteString("\n" + dimTextStyle.Render("Cloud handoff: "+m.mergeBatchResult.CloudHandoffNote) + "\n")
+		}
+	}
+	sb.WriteString(borderedPanel(sectionHeader("RESULT", panelW)+content.String(), panelW))
+}
+
+// slicesEqual reports whether a and b contain the same strings in the same order.
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// containsString checks if a slice contains the given string.
+func containsString(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func (m Model) snapshotHasProject(name string) bool {
