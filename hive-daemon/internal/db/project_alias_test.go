@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -90,6 +91,32 @@ func TestAddAlias_IdempotentSameTarget(t *testing.T) {
 	target, found, err := d.ResolveAlias(context.Background(), "Foo")
 	if err != nil || !found || target != "Bar" {
 		t.Fatalf("ResolveAlias after idempotent retry: target=%q found=%v err=%v", target, found, err)
+	}
+}
+
+// TestAddAlias_SourceIsExistingTargetRejected verifies the bidirectional chain
+// guard: if B is already a target (A→B exists), then B cannot become a source
+// in a new alias (B→C must be rejected with ErrAliasSourceIsTarget).
+func TestAddAlias_SourceIsExistingTargetRejected(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	// Seed A→B so B is now a target.
+	seedAlias(t, d, "A", "B")
+
+	// Attempt to add B→C: B is already a target, so this must fail.
+	err := d.AddAlias(context.Background(), "B", "C", "local", "chain attempt")
+	if !errors.Is(err, hivedb.ErrAliasSourceIsTarget) {
+		t.Fatalf("AddAlias source-is-target: got %v, want ErrAliasSourceIsTarget", err)
+	}
+
+	// Confirm B→C was not inserted.
+	_, found, resolveErr := d.ResolveAlias(context.Background(), "B")
+	if resolveErr != nil {
+		t.Fatalf("ResolveAlias B: %v", resolveErr)
+	}
+	if found {
+		t.Fatal("AddAlias source-is-target: alias B→C must not have been inserted")
 	}
 }
 

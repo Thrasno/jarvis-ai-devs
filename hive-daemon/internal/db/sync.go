@@ -283,19 +283,25 @@ func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
 		event.OccurredAt = time.Now().UTC()
 	}
 
-	// Resolve alias: if event.Project is a known alias source, rewrite to target
-	// before the transaction switch so all ops land under the canonical project name.
-	if target, found, err := d.ResolveAlias(context.Background(), event.Project); err != nil {
-		return false, fmt.Errorf("ApplyRemoteMutation resolve alias: %w", err)
-	} else if found {
-		event.Project = target
-	}
-
 	tx, err := d.sqlDB.Begin()
 	if err != nil {
 		return false, fmt.Errorf("begin apply remote mutation: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// Resolve alias inside the transaction so the lookup is atomic with the
+	// subsequent writes. If event.Project is a known alias source, rewrite to
+	// the canonical target project name.
+	var aliasTarget string
+	aliasErr := tx.QueryRow(
+		`SELECT target_project FROM project_aliases WHERE source_project = ? LIMIT 1`, event.Project,
+	).Scan(&aliasTarget)
+	if aliasErr != nil && !errors.Is(aliasErr, sql.ErrNoRows) {
+		return false, fmt.Errorf("ApplyRemoteMutation resolve alias: %w", aliasErr)
+	}
+	if aliasErr == nil {
+		event.Project = aliasTarget
+	}
 
 	var existing string
 	err = tx.QueryRow(`SELECT event_id FROM memory_mutations WHERE event_id = ?`, event.EventID).Scan(&existing)
@@ -439,14 +445,6 @@ WHERE sync_id = ? AND deleted_at IS NULL`,
 // resolvemos defensivamente a `manual-save-{project}` para que el INSERT no quede
 // silenciosamente descartado por la combinación de NOT NULL + INSERT OR IGNORE.
 func (d *DB) SaveFromRemote(mem *models.Memory) error {
-	// Resolve alias: if mem.Project is a known alias source, rewrite to target
-	// before any insert so memories land under the canonical project name.
-	if target, found, err := d.ResolveAlias(context.Background(), mem.Project); err != nil {
-		return fmt.Errorf("SaveFromRemote resolve alias: %w", err)
-	} else if found {
-		mem.Project = target
-	}
-
 	tagsJSON, err := json.Marshal(orNil(mem.Tags))
 	if err != nil {
 		return fmt.Errorf("marshal tags: %w", err)
@@ -459,6 +457,20 @@ func (d *DB) SaveFromRemote(mem *models.Memory) error {
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")
 	createdAt := mem.CreatedAt.UTC().Format("2006-01-02 15:04:05")
 	updatedAt := mem.UpdatedAt.UTC().Format("2006-01-02 15:04:05")
+
+	// Resolve alias using a direct SQL query so this function does not depend on
+	// context.Background() via d.ResolveAlias. If mem.Project is a known alias
+	// source, rewrite to the canonical target project name.
+	var aliasTarget string
+	aliasErr := d.sqlDB.QueryRow(
+		`SELECT target_project FROM project_aliases WHERE source_project = ? LIMIT 1`, mem.Project,
+	).Scan(&aliasTarget)
+	if aliasErr != nil && !errors.Is(aliasErr, sql.ErrNoRows) {
+		return fmt.Errorf("SaveFromRemote resolve alias: %w", aliasErr)
+	}
+	if aliasErr == nil {
+		mem.Project = aliasTarget
+	}
 
 	// R2-CRIT-3: resolve session_id BEFORE the INSERT. memories.session_id is NOT NULL,
 	// and `INSERT OR IGNORE` would silently drop the row on any constraint failure.

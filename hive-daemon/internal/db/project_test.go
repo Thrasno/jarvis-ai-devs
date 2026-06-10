@@ -351,7 +351,26 @@ func TestMergeGovernanceProjectRetryIgnoresCurrentTargetLifecycle(t *testing.T) 
 	t.Parallel()
 
 	for name, setup := range map[string]func(*testing.T, *hivedb.DB){
-		"target later merged":   func(t *testing.T, d *hivedb.DB) { mergeGovernanceProjectForTest(t, d, "beta", "gamma") },
+		// "beta later merged" scenario: simulate beta→gamma by writing the governance
+		// row directly, bypassing addAliasTx. The alias chain guard (ErrAliasSourceIsTarget)
+		// now rejects merging a project that is already a target — so the product path
+		// is invalid — but we still need to verify the retry idempotency logic when
+		// the target's lifecycle changes via a raw governance row (e.g. migrated from
+		// a pre-guard state or via a back-door administrative operation).
+		"target later merged": func(t *testing.T, d *hivedb.DB) {
+			t.Helper()
+			_, err := d.RawDB().Exec(`
+INSERT INTO hive_project_governance (project, merge_target, merged_at, merged_by, merge_reason)
+VALUES ('beta', 'gamma', '2026-06-07 11:00:00', 'actor', 'old')
+ON CONFLICT(project) DO UPDATE SET
+    merge_target = excluded.merge_target,
+    merged_at    = excluded.merged_at,
+    merged_by    = excluded.merged_by,
+    merge_reason = excluded.merge_reason`)
+			if err != nil {
+				t.Fatalf("raw insert beta->gamma governance: %v", err)
+			}
+		},
 		"target later archived": func(t *testing.T, d *hivedb.DB) { archiveGovernanceProjectForTest(t, d, "beta") },
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -796,6 +815,48 @@ func TestMergeGovernanceProject_CreatesAlias(t *testing.T) {
 	}
 	if target != "beta" {
 		t.Fatalf("alias target = %q, want beta", target)
+	}
+}
+
+// TestMergeGovernanceProject_RollsBackWhenAddAliasTxFails verifies that when
+// addAliasTx rejects the alias (because the source is already a target in an
+// existing alias), the deferred rollback reverts the governance record too —
+// no partial state is left behind.
+func TestMergeGovernanceProject_RollsBackWhenAddAliasTxFails(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	// Seed projects A, B, and X so the governance lookup succeeds.
+	saveGovernanceTestMemory(t, d, "A", "A memory")
+	saveGovernanceTestMemory(t, d, "B", "B memory")
+	saveGovernanceTestMemory(t, d, "X", "X memory")
+
+	// Seed alias X→A so that A is already a target.
+	// When MergeGovernanceProject("A", "B", ...) runs, addAliasTx("A", "B", ...)
+	// will hit the bidirectional chain guard and return ErrAliasSourceIsTarget.
+	seedAlias(t, d, "X", "A")
+
+	_, err := d.MergeGovernanceProject(context.Background(), "A", "B", "actor", "test rollback", time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC))
+	if err == nil {
+		t.Fatal("MergeGovernanceProject: expected error due to alias chain guard, got nil")
+	}
+
+	// Governance record for A must not exist (rollback must have reverted it).
+	var governanceRows int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM hive_project_governance WHERE project = 'A'`).Scan(&governanceRows); err != nil {
+		t.Fatalf("count governance rows for A: %v", err)
+	}
+	if governanceRows != 0 {
+		t.Fatalf("hive_project_governance has %d row(s) for A after rollback, want 0", governanceRows)
+	}
+
+	// Alias A→B must not exist (guard fired before insert, and tx rolled back).
+	_, found, resolveErr := d.ResolveAlias(context.Background(), "A")
+	if resolveErr != nil {
+		t.Fatalf("ResolveAlias A: %v", resolveErr)
+	}
+	if found {
+		t.Fatal("alias A→B must not exist after rollback")
 	}
 }
 

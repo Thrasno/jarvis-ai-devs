@@ -20,6 +20,10 @@ var ErrAliasTargetIsSource = errors.New("alias target is already a source; chain
 // pointing to a different target.
 var ErrAliasDuplicateSource = errors.New("alias source already redirects to a different target")
 
+// ErrAliasSourceIsTarget is returned when the proposed source is already a
+// target in an existing alias (bidirectional chain guard).
+var ErrAliasSourceIsTarget = errors.New("alias source is already a target in an existing alias; chained aliases are not allowed")
+
 // ProjectAlias represents a single entry in the project_aliases table.
 type ProjectAlias struct {
 	SourceProject string
@@ -54,6 +58,19 @@ func (d *DB) AddAlias(ctx context.Context, source, target, scope, reason string)
 	if err == nil {
 		// target exists as a source — would create a chain
 		return ErrAliasTargetIsSource
+	}
+
+	// Bidirectional chain guard: reject if source is already a target_project.
+	var existingSource string
+	err = d.sqlDB.QueryRowContext(ctx,
+		`SELECT target_project FROM project_aliases WHERE target_project = ?`, source,
+	).Scan(&existingSource)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("alias source-is-target check: %w", err)
+	}
+	if err == nil {
+		// source is already a target — chaining is not allowed
+		return ErrAliasSourceIsTarget
 	}
 
 	createdBy := detectUsername()
@@ -168,6 +185,19 @@ func addAliasTx(ctx context.Context, tx *sql.Tx, source, target, scope, reason s
 	}
 	if err == nil {
 		return ErrAliasTargetIsSource
+	}
+
+	// Bidirectional chain guard: reject if source is already a target_project.
+	var existingSource string
+	err = tx.QueryRowContext(ctx,
+		`SELECT target_project FROM project_aliases WHERE target_project = ?`, source,
+	).Scan(&existingSource)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("alias source-is-target check (tx): %w", err)
+	}
+	if err == nil {
+		// source is already a target — chaining is not allowed
+		return ErrAliasSourceIsTarget
 	}
 
 	createdBy := detectUsername()
