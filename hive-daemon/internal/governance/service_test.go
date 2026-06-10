@@ -606,20 +606,22 @@ func TestServiceGuardedProjectMergeRecordsLocalMetadataAndReturnsCloudHandoffNot
 	require.True(t, result.Mutated)
 	require.Contains(t, result.CloudHandoffNote, "No cloud project mutation was performed")
 
-	source, err := service.Project(context.Background(), "alpha")
-	require.NoError(t, err)
-	require.True(t, source.Merged)
-	require.Equal(t, "beta", source.MergeTarget)
-	require.NotNil(t, source.MergedAt)
-	require.Equal(t, now, source.MergedAt.UTC())
-	require.Equal(t, "tester", source.MergedBy)
-	require.Equal(t, "local duplicate project", source.MergeReason)
+	// After physical migration alpha has no rows — read governance record directly.
+	var srcMergeTarget, srcMergedAt, srcMergedBy, srcMergeReason string
+	require.NoError(t, store.RawDB().QueryRow(`
+SELECT COALESCE(merge_target,''), COALESCE(merged_at,''), COALESCE(merged_by,''), COALESCE(merge_reason,'')
+FROM hive_project_governance WHERE project = 'alpha'`).Scan(&srcMergeTarget, &srcMergedAt, &srcMergedBy, &srcMergeReason))
+	require.Equal(t, "beta", srcMergeTarget)
+	require.Equal(t, now.UTC().Format("2006-01-02 15:04:05"), srcMergedAt)
+	require.Equal(t, "tester", srcMergedBy)
+	require.Equal(t, "local duplicate project", srcMergeReason)
 
 	target, err := service.Project(context.Background(), "beta")
 	require.NoError(t, err)
 	require.False(t, target.Merged)
 	require.Empty(t, target.MergeTarget)
-	require.Equal(t, "alpha", requireServiceMemoryProject(t, store, sourceMemoryID), "local project merge metadata must not reassign memories in this slice")
+	// Physical migration: source memory now lives under the target project.
+	require.Equal(t, "beta", requireServiceMemoryProject(t, store, sourceMemoryID), "physical merge must reassign source memories to target")
 	require.Equal(t, "beta", requireServiceMemoryProject(t, store, targetMemoryID))
 	afterMutations := requirePendingMemoryMutations(t, store)
 	require.Len(t, afterMutations, len(beforeMutations), "local project merge must not enqueue cloud/shared memory mutations")
@@ -636,11 +638,14 @@ func TestServiceGuardedProjectMergeRecordsLocalMetadataAndReturnsCloudHandoffNot
 	require.NoError(t, err)
 	require.False(t, secondResult.Mutated)
 
-	sourceAfterRetry, err := service.Project(context.Background(), "alpha")
-	require.NoError(t, err)
-	require.Equal(t, now, sourceAfterRetry.MergedAt.UTC())
-	require.Equal(t, "tester", sourceAfterRetry.MergedBy)
-	require.Equal(t, "local duplicate project", sourceAfterRetry.MergeReason)
+	// After physical migration alpha has no rows, read governance record directly.
+	var gotMergedAt, gotMergedBy, gotReason string
+	require.NoError(t, store.RawDB().QueryRow(`
+SELECT COALESCE(merged_at,''), COALESCE(merged_by,''), COALESCE(merge_reason,'')
+FROM hive_project_governance WHERE project = 'alpha'`).Scan(&gotMergedAt, &gotMergedBy, &gotReason))
+	require.Equal(t, now.UTC().Format("2006-01-02 15:04:05"), gotMergedAt, "retry must not rewrite merged_at")
+	require.Equal(t, "tester", gotMergedBy, "retry must not rewrite merged_by")
+	require.Equal(t, "local duplicate project", gotReason, "retry must not rewrite merge_reason")
 	require.Len(t, requirePendingMemoryMutations(t, store), len(afterMutations), "re-merging must not enqueue memory mutation journal entries")
 }
 

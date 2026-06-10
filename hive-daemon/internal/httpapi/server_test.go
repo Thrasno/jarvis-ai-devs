@@ -1536,19 +1536,27 @@ func TestGovernanceProjectMergeHTTPRecordsLocalMetadataWithCloudHandoffNote(t *t
 	if !strings.Contains(resp.Result.CloudHandoffNote, "No cloud project mutation") {
 		t.Fatalf("cloud handoff note = %q, want explicit no-cloud mutation note", resp.Result.CloudHandoffNote)
 	}
-	alpha, err := store.GetGovernanceProject(context.Background(), "alpha")
-	if err != nil {
-		t.Fatalf("GetGovernanceProject alpha: %v", err)
+	// After physical migration alpha has no rows — read governance record directly.
+	var alphaMergeTarget string
+	var alphaIsMerged bool
+	if govErr := store.RawDB().QueryRowContext(context.Background(), `
+SELECT merge_target != '', COALESCE(merge_target,'')
+FROM hive_project_governance WHERE project = 'alpha'`).Scan(&alphaIsMerged, &alphaMergeTarget); govErr != nil {
+		t.Fatalf("read alpha governance: %v", govErr)
+	}
+	if !alphaIsMerged || alphaMergeTarget != "beta" {
+		t.Fatalf("alpha governance: merged=%v target=%q, want merged into beta", alphaIsMerged, alphaMergeTarget)
 	}
 	beta, err := store.GetGovernanceProject(context.Background(), "beta")
 	if err != nil {
 		t.Fatalf("GetGovernanceProject beta: %v", err)
 	}
-	if !alpha.Merged || alpha.MergeTarget != "beta" || beta.Merged {
-		t.Fatalf("merge state alpha=%+v beta=%+v, want source metadata only", alpha, beta)
+	if beta.Merged {
+		t.Fatalf("target project beta must not be merged: %+v", beta)
 	}
-	if got := requireHTTPMemoryProject(t, store, sourceMemoryID); got != "alpha" {
-		t.Fatalf("source memory project = %q, want alpha", got)
+	// Physical migration: source memory is now under beta.
+	if got := requireHTTPMemoryProject(t, store, sourceMemoryID); got != "beta" {
+		t.Fatalf("source memory project = %q, want beta (physical migration)", got)
 	}
 	if got := requireHTTPMemoryProject(t, store, targetMemoryID); got != "beta" {
 		t.Fatalf("target memory project = %q, want beta", got)

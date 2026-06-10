@@ -295,8 +295,11 @@ func TestArchiveGovernanceProjectRejectsMergedProjectWithoutSilentNoop(t *testin
 	d := openGovernanceTestDB(t)
 	seedGovernanceMergeProjects(t, d)
 	mergeGovernanceProjectForTest(t, d, "alpha", "beta")
-	before := readGovernanceSnapshot(t, d, "alpha")
+	// After physical migration, alpha has no rows. Capture governance state directly.
+	beforeGov := readGovernanceRowSnapshot(t, d, "alpha")
 
+	// ArchiveGovernanceProject must detect the merged state via governance record
+	// and return ErrGovernanceProjectMergeConflict even though alpha has no rows.
 	mutated, err := d.ArchiveGovernanceProject(context.Background(), "alpha", "archive-actor", "archive reason", time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC))
 
 	if mutated {
@@ -305,7 +308,10 @@ func TestArchiveGovernanceProjectRejectsMergedProjectWithoutSilentNoop(t *testin
 	if !errors.Is(err, hivedb.ErrGovernanceProjectMergeConflict) {
 		t.Fatalf("ArchiveGovernanceProject error = %v, want ErrGovernanceProjectMergeConflict", err)
 	}
-	requireGovernanceSnapshot(t, d, "alpha", before, "archive merged project")
+	afterGov := readGovernanceRowSnapshot(t, d, "alpha")
+	if afterGov != beforeGov {
+		t.Fatalf("archive merged project changed governance row: before=%q after=%q", beforeGov, afterGov)
+	}
 }
 
 func TestMergeGovernanceProjectIsIdempotentAndPreservesFirstAuditMetadata(t *testing.T) {
@@ -315,7 +321,6 @@ func TestMergeGovernanceProjectIsIdempotentAndPreservesFirstAuditMetadata(t *tes
 	sourceMemoryID, targetMemoryID := seedGovernanceMergeProjects(t, d)
 	firstMergedAt := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
 	beforeCounters := readGovernanceCounters(t, d)
-	beforeSyncState := readGovernanceSyncState(t, d, "alpha")
 
 	if mutated, err := d.MergeGovernanceProject(context.Background(), "alpha", "beta", "first-actor", "first reason", firstMergedAt); err != nil || !mutated {
 		t.Fatalf("MergeGovernanceProject first mutated=%v err=%v, want true nil", mutated, err)
@@ -324,7 +329,8 @@ func TestMergeGovernanceProjectIsIdempotentAndPreservesFirstAuditMetadata(t *tes
 		t.Fatalf("MergeGovernanceProject second mutated=%v err=%v, want false nil", mutated, err)
 	}
 
-	requireProjectMerged(t, d, "alpha", "beta", firstMergedAt)
+	// Verify via governance row directly (alpha has no rows after physical migration).
+	requireGovernanceMergedRow(t, d, "alpha", "beta", firstMergedAt)
 
 	target, err := d.GetGovernanceProject(context.Background(), "beta")
 	if err != nil {
@@ -333,17 +339,28 @@ func TestMergeGovernanceProjectIsIdempotentAndPreservesFirstAuditMetadata(t *tes
 	if target.Merged || target.MergeTarget != "" {
 		t.Fatalf("target project merge metadata = %+v, want unmerged", target)
 	}
-	if gotProject := requireMemoryProject(t, d, sourceMemoryID); gotProject != "alpha" {
-		t.Fatalf("source memory project = %q, want alpha", gotProject)
+	// Physical migration: source memory is now under the target project.
+	if gotProject := requireMemoryProject(t, d, sourceMemoryID); gotProject != "beta" {
+		t.Fatalf("source memory project = %q, want beta (physical migration)", gotProject)
 	}
 	if gotProject := requireMemoryProject(t, d, targetMemoryID); gotProject != "beta" {
 		t.Fatalf("target memory project = %q, want beta", gotProject)
 	}
-	if afterCounters := readGovernanceCounters(t, d); afterCounters != beforeCounters {
-		t.Fatalf("merge mutated memory/sync counters: before=%+v after=%+v", beforeCounters, afterCounters)
+	// Memory and mutation counts are preserved (rows moved, not deleted).
+	afterCounters := readGovernanceCounters(t, d)
+	if afterCounters.MemoryCount != beforeCounters.MemoryCount {
+		t.Fatalf("merge changed memory count: before=%d after=%d", beforeCounters.MemoryCount, afterCounters.MemoryCount)
 	}
-	if afterSyncState := readGovernanceSyncState(t, d, "alpha"); afterSyncState != beforeSyncState {
-		t.Fatalf("merge mutated sync_state: before=%+v after=%+v", beforeSyncState, afterSyncState)
+	if afterCounters.MutationCount != beforeCounters.MutationCount {
+		t.Fatalf("merge changed mutation count: before=%d after=%d", beforeCounters.MutationCount, afterCounters.MutationCount)
+	}
+	// sync_state for alpha must be deleted after physical merge.
+	var alphaSyncRows int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM sync_state WHERE project = 'alpha'`).Scan(&alphaSyncRows); err != nil {
+		t.Fatalf("check alpha sync_state: %v", err)
+	}
+	if alphaSyncRows != 0 {
+		t.Fatal("sync_state for alpha must be deleted after merge")
 	}
 }
 
@@ -381,7 +398,10 @@ ON CONFLICT(project) DO UPDATE SET
 				t.Fatalf("MergeGovernanceProject alpha->beta setup mutated=%v err=%v, want true nil", mutated, err)
 			}
 			setup(t, d)
-			before := readGovernanceSnapshot(t, d, "alpha")
+			// Capture governance state before retry (alpha rows are already in beta,
+			// so use a direct governance-row snapshot instead of GetGovernanceProject).
+			beforeGov := readGovernanceRowSnapshot(t, d, "alpha")
+
 			mutated, err := d.MergeGovernanceProject(context.Background(), "alpha", "beta", "retry-actor", "retry reason", time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC))
 
 			if err != nil {
@@ -390,8 +410,11 @@ ON CONFLICT(project) DO UPDATE SET
 			if mutated {
 				t.Fatal("MergeGovernanceProject retry mutated = true, want false")
 			}
-			requireProjectMerged(t, d, "alpha", "beta", firstMergedAt)
-			requireGovernanceSnapshot(t, d, "alpha", before, "merge retry")
+			requireGovernanceMergedRow(t, d, "alpha", "beta", firstMergedAt)
+			afterGov := readGovernanceRowSnapshot(t, d, "alpha")
+			if afterGov != beforeGov {
+				t.Fatalf("merge retry changed governance row: before=%q after=%q", beforeGov, afterGov)
+			}
 		})
 	}
 }
@@ -407,7 +430,8 @@ func TestMergeGovernanceProjectRejectsInvalidProjectsWithoutMutation(t *testing.
 		wantErr error
 	}{
 		{name: "missing source", source: "missing", target: "beta", wantErr: hivedb.ErrGovernanceProjectNotFound},
-		{name: "missing target", source: "alpha", target: "missing", wantErr: hivedb.ErrGovernanceProjectNotFound},
+		// "missing target" removed: target existence is no longer required (physical migration
+		// creates the target implicitly). A merge to a new project name now succeeds.
 		{name: "same source and target", source: "alpha", target: "alpha", wantErr: hivedb.ErrGovernanceProjectMergeInvalid},
 		{name: "archived source", source: "alpha", target: "beta", wantErr: hivedb.ErrGovernanceProjectArchived, setup: func(t *testing.T, d *hivedb.DB) { archiveGovernanceProjectForTest(t, d, "alpha") }},
 		{name: "archived target", source: "alpha", target: "beta", wantErr: hivedb.ErrGovernanceProjectArchived, setup: func(t *testing.T, d *hivedb.DB) { archiveGovernanceProjectForTest(t, d, "beta") }},
@@ -418,11 +442,15 @@ func TestMergeGovernanceProjectRejectsInvalidProjectsWithoutMutation(t *testing.
 			d := openGovernanceTestDB(t)
 
 			seedGovernanceMergeProjects(t, d)
+
+			// Capture snapshot before setup for cases where setup physically moves rows.
+			// For "source already merged into different target", setup migrates alpha's rows
+			// to gamma, so we must read the governance counters before setup runs.
+			beforeCounters := readGovernanceCounters(t, d)
+
 			if tt.setup != nil {
 				tt.setup(t, d)
 			}
-
-			before := readGovernanceSnapshot(t, d, "alpha")
 
 			mutated, err := d.MergeGovernanceProject(context.Background(), tt.source, tt.target, "tester", "new", time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC))
 			if mutated {
@@ -431,7 +459,14 @@ func TestMergeGovernanceProjectRejectsInvalidProjectsWithoutMutation(t *testing.
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("MergeGovernanceProject error = %v, want %v", err, tt.wantErr)
 			}
-			requireGovernanceSnapshot(t, d, "alpha", before, "invalid merge")
+			// Verify no additional DML happened (counters unchanged from pre-test state).
+			afterCounters := readGovernanceCounters(t, d)
+			if afterCounters.MemoryCount != beforeCounters.MemoryCount {
+				t.Fatalf("invalid merge changed memory count: before=%d after=%d", beforeCounters.MemoryCount, afterCounters.MemoryCount)
+			}
+			if afterCounters.MutationCount != beforeCounters.MutationCount {
+				t.Fatalf("invalid merge changed mutation count: before=%d after=%d", beforeCounters.MutationCount, afterCounters.MutationCount)
+			}
 		})
 	}
 }
@@ -570,6 +605,44 @@ func readProjectGovernanceRows(t *testing.T, d *hivedb.DB) int {
 		t.Fatalf("count project governance rows: %v", err)
 	}
 	return rows
+}
+
+// readGovernanceRowSnapshot returns a string snapshot of the governance record for
+// a project. Unlike readGovernanceSnapshot, it reads directly from
+// hive_project_governance and does not require rows in memories/sessions/user_prompts.
+func readGovernanceRowSnapshot(t *testing.T, d *hivedb.DB, project string) string {
+	t.Helper()
+	var mergeTarget, mergedAt, mergedBy, mergeReason string
+	err := d.RawDB().QueryRow(`
+SELECT COALESCE(merge_target,''), COALESCE(merged_at,''), COALESCE(merged_by,''), COALESCE(merge_reason,'')
+FROM hive_project_governance WHERE project = ?`, project).Scan(&mergeTarget, &mergedAt, &mergedBy, &mergeReason)
+	if err != nil {
+		t.Fatalf("readGovernanceRowSnapshot %s: %v", project, err)
+	}
+	return fmt.Sprintf("target=%s|at=%s|by=%s|reason=%s", mergeTarget, mergedAt, mergedBy, mergeReason)
+}
+
+// requireGovernanceMergedRow verifies the governance record for source directly
+// without requiring rows in write tables (useful after physical migration).
+func requireGovernanceMergedRow(t *testing.T, d *hivedb.DB, source, target string, mergedAt time.Time) {
+	t.Helper()
+	var gotTarget, gotMergedAt, gotMergedBy string
+	err := d.RawDB().QueryRow(`
+SELECT COALESCE(merge_target,''), COALESCE(merged_at,''), COALESCE(merged_by,'')
+FROM hive_project_governance WHERE project = ?`, source).Scan(&gotTarget, &gotMergedAt, &gotMergedBy)
+	if err != nil {
+		t.Fatalf("requireGovernanceMergedRow %s: %v", source, err)
+	}
+	if gotTarget != target {
+		t.Fatalf("governance merge_target = %q, want %q", gotTarget, target)
+	}
+	wantAt := mergedAt.UTC().Format("2006-01-02 15:04:05")
+	if gotMergedAt != wantAt {
+		t.Fatalf("governance merged_at = %q, want %q", gotMergedAt, wantAt)
+	}
+	if gotMergedBy != "first-actor" {
+		t.Fatalf("governance merged_by = %q, want first-actor", gotMergedBy)
+	}
 }
 
 // Task 1.3 — GetGovernanceMemoryByID + ErrGovernanceMemoryNotFound
@@ -860,6 +933,244 @@ func TestMergeGovernanceProject_RollsBackWhenAddAliasTxFails(t *testing.T) {
 	}
 	if found {
 		t.Fatal("alias A→B must not exist after rollback")
+	}
+}
+
+// ─── Phase 1: Physical Row Migration Tests ───────────────────────────────────
+
+// TestMergeGovernanceProject_PhysicalRowMigration verifies that MergeGovernanceProject
+// migrates all rows from source to target in memories, user_prompts, and sessions.
+func TestMergeGovernanceProject_PhysicalRowMigration(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	// Seed source rows in all three tables.
+	srcMemID := saveGovernanceTestMemory(t, d, "src", "Source memory 1")
+	saveGovernanceTestMemory(t, d, "src", "Source memory 2")
+	if err := d.CreateSession("sess-src-1", "src", "/repo/src", "dev", "test"); err != nil {
+		t.Fatalf("CreateSession src: %v", err)
+	}
+	if _, err := d.SavePrompt(context.Background(), "src", "source prompt"); err != nil {
+		t.Fatalf("SavePrompt src: %v", err)
+	}
+	// Seed a target row too (existing target scenario).
+	saveGovernanceTestMemory(t, d, "dst", "Target existing memory")
+
+	mutated, err := d.MergeGovernanceProject(context.Background(), "src", "dst", "actor", "consolidate", time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("MergeGovernanceProject: %v", err)
+	}
+	if !mutated {
+		t.Fatal("MergeGovernanceProject mutated = false, want true")
+	}
+
+	// All source memories must now belong to dst.
+	if got := requireMemoryProject(t, d, srcMemID); got != "dst" {
+		t.Fatalf("source memory project = %q, want dst", got)
+	}
+	// No row should retain project = src in memories.
+	var srcMemCount int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE project = 'src'`).Scan(&srcMemCount); err != nil {
+		t.Fatalf("count src memories: %v", err)
+	}
+	if srcMemCount != 0 {
+		t.Fatalf("memories with project=src after merge: %d, want 0", srcMemCount)
+	}
+	// No session should retain project = src.
+	var srcSessCount int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM sessions WHERE project = 'src'`).Scan(&srcSessCount); err != nil {
+		t.Fatalf("count src sessions: %v", err)
+	}
+	if srcSessCount != 0 {
+		t.Fatalf("sessions with project=src after merge: %d, want 0", srcSessCount)
+	}
+	// No user_prompt should retain project = src.
+	var srcPromptCount int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM user_prompts WHERE project = 'src'`).Scan(&srcPromptCount); err != nil {
+		t.Fatalf("count src user_prompts: %v", err)
+	}
+	if srcPromptCount != 0 {
+		t.Fatalf("user_prompts with project=src after merge: %d, want 0", srcPromptCount)
+	}
+}
+
+// TestMergeGovernanceProject_NewTarget verifies that a merge succeeds when the
+// target project does not yet have any rows (target created implicitly by UPDATE).
+func TestMergeGovernanceProject_NewTarget(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	// Only seed source — no target rows at all.
+	saveGovernanceTestMemory(t, d, "src-new", "Source memory for new target")
+	if err := d.CreateSession("sess-src-new", "src-new", "/repo/src-new", "dev", "test"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	mutated, err := d.MergeGovernanceProject(context.Background(), "src-new", "brand-new-target", "actor", "new target", time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("MergeGovernanceProject to new target: %v", err)
+	}
+	if !mutated {
+		t.Fatal("MergeGovernanceProject mutated = false, want true")
+	}
+
+	// Rows should now be under the new target.
+	var dstCount int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE project = 'brand-new-target'`).Scan(&dstCount); err != nil {
+		t.Fatalf("count dst memories: %v", err)
+	}
+	if dstCount == 0 {
+		t.Fatal("no memories found under brand-new-target after merge")
+	}
+	var srcCount int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE project = 'src-new'`).Scan(&srcCount); err != nil {
+		t.Fatalf("count src memories: %v", err)
+	}
+	if srcCount != 0 {
+		t.Fatalf("memories still under src-new after merge to new target: %d", srcCount)
+	}
+}
+
+// TestMergeGovernanceProject_PendingMutationsMigrated verifies that only
+// memory_mutations with synced_at IS NULL are migrated; synced ones are unchanged.
+func TestMergeGovernanceProject_PendingMutationsMigrated(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	saveGovernanceTestMemory(t, d, "src-mut", "src memory for mutations")
+	saveGovernanceTestMemory(t, d, "dst-mut", "dst memory")
+
+	// Insert a pending mutation (synced_at IS NULL) for src-mut.
+	_, err := d.RawDB().Exec(`
+INSERT INTO memory_mutations (event_id, entity_sync_id, project, op, occurred_at)
+VALUES ('evt-pending-mut', 'sync-pending-mut', 'src-mut', 'save', '2026-06-10 10:00:00')`)
+	if err != nil {
+		t.Fatalf("insert pending mutation: %v", err)
+	}
+	// Insert a synced mutation (synced_at IS NOT NULL) for src-mut.
+	_, err = d.RawDB().Exec(`
+INSERT INTO memory_mutations (event_id, entity_sync_id, project, op, occurred_at, synced_at)
+VALUES ('evt-synced-mut', 'sync-synced-mut', 'src-mut', 'save', '2026-06-10 09:00:00', '2026-06-10 09:05:00')`)
+	if err != nil {
+		t.Fatalf("insert synced mutation: %v", err)
+	}
+
+	if _, err := d.MergeGovernanceProject(context.Background(), "src-mut", "dst-mut", "actor", "reason", time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("MergeGovernanceProject: %v", err)
+	}
+
+	// Pending mutation must now belong to dst-mut.
+	var pendingProject string
+	if err := d.RawDB().QueryRow(`SELECT project FROM memory_mutations WHERE event_id = 'evt-pending-mut'`).Scan(&pendingProject); err != nil {
+		t.Fatalf("read pending mutation project: %v", err)
+	}
+	if pendingProject != "dst-mut" {
+		t.Fatalf("pending mutation project = %q, want dst-mut", pendingProject)
+	}
+	// Synced mutation must remain on src-mut.
+	var syncedProject string
+	if err := d.RawDB().QueryRow(`SELECT project FROM memory_mutations WHERE event_id = 'evt-synced-mut'`).Scan(&syncedProject); err != nil {
+		t.Fatalf("read synced mutation project: %v", err)
+	}
+	if syncedProject != "src-mut" {
+		t.Fatalf("synced mutation project = %q, want src-mut (must not migrate)", syncedProject)
+	}
+}
+
+// TestMergeGovernanceProject_WarningsAndSyncStateDeleted verifies that hive_warnings
+// and sync_state rows for the source are deleted, but the __auth__ row is preserved.
+func TestMergeGovernanceProject_WarningsAndSyncStateDeleted(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	saveGovernanceTestMemory(t, d, "src-ws", "src memory for cleanup test")
+	saveGovernanceTestMemory(t, d, "dst-ws", "dst memory")
+
+	// Insert a warning for src-ws.
+	if _, err := d.RawDB().Exec(`
+INSERT INTO hive_warnings (severity, source, message) VALUES ('warn', 'src-ws', 'test warning')`); err != nil {
+		t.Fatalf("insert hive_warning: %v", err)
+	}
+	// Insert sync_state for src-ws.
+	if err := d.RecordSyncFailure("src-ws", time.Date(2026, 6, 10, 10, 0, 0, 0, time.UTC), 1, time.Date(2026, 6, 10, 10, 1, 0, 0, time.UTC), fmt.Errorf("test failure")); err != nil {
+		t.Fatalf("RecordSyncFailure src-ws: %v", err)
+	}
+	// Insert __auth__ sync_state row (must survive).
+	if _, err := d.RawDB().Exec(`
+INSERT OR IGNORE INTO sync_state (project, last_error) VALUES ('__auth__', '')`); err != nil {
+		t.Fatalf("insert __auth__ sync_state: %v", err)
+	}
+
+	if _, err := d.MergeGovernanceProject(context.Background(), "src-ws", "dst-ws", "actor", "reason", time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("MergeGovernanceProject: %v", err)
+	}
+
+	// hive_warnings for src-ws must be deleted.
+	var warnCount int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM hive_warnings WHERE source = 'src-ws'`).Scan(&warnCount); err != nil {
+		t.Fatalf("count hive_warnings: %v", err)
+	}
+	if warnCount != 0 {
+		t.Fatalf("hive_warnings for src-ws after merge: %d, want 0", warnCount)
+	}
+	// sync_state for src-ws must be deleted.
+	var srcSyncCount int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM sync_state WHERE project = 'src-ws'`).Scan(&srcSyncCount); err != nil {
+		t.Fatalf("count sync_state src-ws: %v", err)
+	}
+	if srcSyncCount != 0 {
+		t.Fatalf("sync_state for src-ws after merge: %d, want 0", srcSyncCount)
+	}
+	// __auth__ row must NOT be deleted.
+	var authCount int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM sync_state WHERE project = '__auth__'`).Scan(&authCount); err != nil {
+		t.Fatalf("count __auth__ sync_state: %v", err)
+	}
+	if authCount != 1 {
+		t.Fatalf("__auth__ sync_state count after merge: %d, want 1", authCount)
+	}
+}
+
+// TestMergeGovernanceProject_RollbackOnFailure verifies that a forced mid-tx failure
+// rolls back all changes, leaving the source rows intact.
+// We use the alias chain guard (ErrAliasSourceIsTarget) to trigger a failure
+// inside the transaction, then verify source state is untouched.
+func TestMergeGovernanceProject_RollbackOnFailure(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	saveGovernanceTestMemory(t, d, "src-rb", "rollback memory")
+	// Pre-seed: X→src-rb alias so src-rb is already a TARGET.
+	// When we try to merge src-rb→beta-rb, addAliasTx fires ErrAliasSourceIsTarget.
+	saveGovernanceTestMemory(t, d, "X-rb", "X memory")
+	seedAlias(t, d, "X-rb", "src-rb")
+	saveGovernanceTestMemory(t, d, "beta-rb", "beta memory")
+
+	var srcCountBefore int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE project = 'src-rb'`).Scan(&srcCountBefore); err != nil {
+		t.Fatalf("count before: %v", err)
+	}
+
+	_, err := d.MergeGovernanceProject(context.Background(), "src-rb", "beta-rb", "actor", "reason", time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC))
+	if err == nil {
+		t.Fatal("MergeGovernanceProject expected error (chain guard), got nil")
+	}
+
+	// Source rows must be intact (rollback verified).
+	var srcCountAfter int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE project = 'src-rb'`).Scan(&srcCountAfter); err != nil {
+		t.Fatalf("count after: %v", err)
+	}
+	if srcCountAfter != srcCountBefore {
+		t.Fatalf("rollback: memories count changed from %d to %d", srcCountBefore, srcCountAfter)
+	}
+	// Governance record must not exist after rollback.
+	var govRows int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM hive_project_governance WHERE project = 'src-rb'`).Scan(&govRows); err != nil {
+		t.Fatalf("count governance rows: %v", err)
+	}
+	if govRows != 0 {
+		t.Fatalf("governance rows after failed merge: %d, want 0", govRows)
 	}
 }
 
