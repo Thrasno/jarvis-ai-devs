@@ -6,6 +6,7 @@ import (
 	"time"
 
 	hivedb "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 )
 
 // seedAlias is a test helper that inserts an alias row directly and fails the
@@ -188,4 +189,74 @@ func TestAddAlias_ForwardCompatScopeGlobal(t *testing.T) {
 	if err != nil || !found || target != "Local" {
 		t.Fatalf("ResolveAlias scope=global: target=%q found=%v err=%v", target, found, err)
 	}
+}
+
+// TestAliasReadPathContract verifies the full alias contract end-to-end:
+// writes to target are visible when searching by target, invisible when
+// searching by source, and source is excluded from KnownProjects.
+//
+// This covers the spec scenario "Search transparently follows alias": the alias
+// system redirects writes to target at save time, so any read by target sees
+// the data while any read by source returns nothing.
+func TestAliasReadPathContract(t *testing.T) {
+	t.Parallel()
+
+	const source = "old-project"
+	const target = "new-project"
+
+	d := openGovernanceTestDB(t)
+
+	// Establish the alias: old-project -> new-project.
+	seedAlias(t, d, source, target)
+
+	// Save a memory directly under the target project, simulating what the
+	// write-redirect path produces when a caller saves with project=source.
+	if _, err := d.EnsureManualSaveSession(target); err != nil {
+		t.Fatalf("EnsureManualSaveSession(%q): %v", target, err)
+	}
+	if _, err := d.SaveMemory(&models.Memory{
+		Project:   target,
+		Title:     "redirected memory",
+		Content:   "stored under target after alias redirect",
+		SessionID: "manual-save-" + target,
+	}); err != nil {
+		t.Fatalf("SaveMemory under target: %v", err)
+	}
+
+	t.Run("search by target returns the memory", func(t *testing.T) {
+		results, err := d.Search("", target, "", 10)
+		if err != nil {
+			t.Fatalf("Search by target: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("Search by target: got %d results, want 1", len(results))
+		}
+	})
+
+	t.Run("search by source returns nothing", func(t *testing.T) {
+		results, err := d.Search("", source, "", 10)
+		if err != nil {
+			t.Fatalf("Search by source: %v", err)
+		}
+		if len(results) != 0 {
+			t.Fatalf("Search by source: got %d results, want 0", len(results))
+		}
+	})
+
+	t.Run("KnownProjects excludes source and includes target", func(t *testing.T) {
+		projects, err := d.KnownProjects(context.Background())
+		if err != nil {
+			t.Fatalf("KnownProjects: %v", err)
+		}
+		found := map[string]bool{}
+		for _, p := range projects {
+			found[p.Name] = true
+		}
+		if found[source] {
+			t.Fatalf("KnownProjects: source %q must not appear (it is an alias source)", source)
+		}
+		if !found[target] {
+			t.Fatalf("KnownProjects: target %q must appear; got %v", target, found)
+		}
+	})
 }
