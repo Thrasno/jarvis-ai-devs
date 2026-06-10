@@ -116,7 +116,53 @@ func (a *OpenCodeAgent) MergeGeneratedConfig(cfg *config.AppConfig) error {
 	if err != nil {
 		return fmt.Errorf("merge opencode.json generated config: %w", err)
 	}
+	merged, err = cleanupOpenCodeGeneratedConfig(merged)
+	if err != nil {
+		return fmt.Errorf("clean opencode.json generated config: %w", err)
+	}
 	return writeFileAtomic(a.settingsPath(), merged, 0644)
+}
+
+func cleanupOpenCodeGeneratedConfig(configBytes []byte) ([]byte, error) {
+	var settings map[string]any
+	if err := json.Unmarshal(configBytes, &settings); err != nil {
+		return nil, err
+	}
+
+	allowedTasks := make(map[string]bool)
+	for _, name := range append(openCodeSDDSubagents(), openCodeJudgmentDaySubagents()...) {
+		allowedTasks[name] = true
+	}
+
+	agents, ok := settings["agent"].(map[string]any)
+	if !ok {
+		return configBytes, nil
+	}
+	orchestrator, ok := agents["sdd-orchestrator"].(map[string]any)
+	if !ok {
+		return configBytes, nil
+	}
+	permission, ok := orchestrator["permission"].(map[string]any)
+	if !ok {
+		return configBytes, nil
+	}
+	task, ok := permission["task"].(map[string]any)
+	if !ok {
+		return configBytes, nil
+	}
+
+	for name, value := range task {
+		permission, ok := value.(string)
+		if ok && permission == "allow" && !allowedTasks[name] {
+			delete(task, name)
+		}
+	}
+
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (a *OpenCodeAgent) renderGeneratedConfigPatch(cfg *config.AppConfig, includeSchema bool) ([]byte, error) {
