@@ -1809,6 +1809,62 @@ func TestHandleGovernanceMemory_404NotFound(t *testing.T) {
 	}
 }
 
+// Task 3.1 — POST /governance/projects/merge (batch)
+
+func TestGovernanceProjectMergeBatchHTTPReturnsPerSourceResults(t *testing.T) {
+	store, backup, srv := newHTTPGuardTestServer(t)
+	saveHTTPGuardMemoryInProject(t, store, "alpha", "batch-merge-alpha")
+	saveHTTPGuardMemoryInProject(t, store, "gamma", "batch-merge-gamma")
+	saveHTTPGuardMemoryInProject(t, store, "beta", "batch-merge-beta")
+	body := fmt.Sprintf(`{"sources":["alpha","gamma"],"target":"beta","backup_id":%q,"confirmation":%q,"actor_id":"tester","reason":"dedupe"}`, backup.ID, governance.ProjectMergeBatchConfirmation("beta"))
+	req := httptest.NewRequest(http.MethodPost, "/governance/projects/merge", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Result governance.ProjectMergeBatchResult `json:"result"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if len(resp.Result.Results) != 2 {
+		t.Fatalf("results len = %d, want 2; body: %s", len(resp.Result.Results), rr.Body.String())
+	}
+	for _, r := range resp.Result.Results {
+		if r.ErrMsg != "" {
+			t.Fatalf("result %q has error: %s", r.Source, r.ErrMsg)
+		}
+		if !r.Mutated {
+			t.Fatalf("result %q not mutated", r.Source)
+		}
+	}
+	if resp.Result.Target != "beta" {
+		t.Fatalf("target = %q, want beta", resp.Result.Target)
+	}
+	if resp.Result.BackupID != backup.ID {
+		t.Fatalf("backup_id = %q, want %s", resp.Result.BackupID, backup.ID)
+	}
+}
+
+// Task 3.2 — POST /governance/projects/merge with empty sources returns 400
+
+func TestGovernanceProjectMergeBatchHTTPEmptySourcesReturns400(t *testing.T) {
+	_, backup, srv := newHTTPGuardTestServer(t)
+	body := fmt.Sprintf(`{"sources":[],"target":"beta","backup_id":%q,"confirmation":%q}`, backup.ID, governance.ProjectMergeBatchConfirmation("beta"))
+	req := httptest.NewRequest(http.MethodPost, "/governance/projects/merge", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestHandleGovernanceMemory_404Deleted(t *testing.T) {
 	store, err := db.Open(":memory:")
 	if err != nil {

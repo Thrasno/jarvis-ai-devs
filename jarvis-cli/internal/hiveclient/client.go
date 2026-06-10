@@ -154,6 +154,35 @@ type ProjectMergeResult struct {
 	CloudHandoffNote string `json:"cloud_handoff_note"`
 }
 
+// ProjectMergeBatchRequest is the input for a multi-source batch merge.
+type ProjectMergeBatchRequest struct {
+	Sources      []string `json:"sources"`
+	Target       string   `json:"target"`
+	BackupID     string   `json:"backup_id"`
+	Confirmation string   `json:"confirmation"`
+	ActorID      string   `json:"actor_id,omitempty"`
+	Reason       string   `json:"reason,omitempty"`
+}
+
+// MergeResult holds the outcome of a single source→target merge within a batch.
+type MergeResult struct {
+	Source        string `json:"source"`
+	Target        string `json:"target"`
+	AlreadyMerged bool   `json:"already_merged"`
+	Mutated       bool   `json:"mutated"`
+	ErrMsg        string `json:"error,omitempty"`
+}
+
+// ProjectMergeBatchResult is the output of a multi-source batch merge.
+type ProjectMergeBatchResult struct {
+	Operation        string        `json:"operation"`
+	Target           string        `json:"target"`
+	BackupID         string        `json:"backup_id"`
+	Results          []MergeResult `json:"results"`
+	HasSyncEvidence  bool          `json:"has_sync_evidence"`
+	CloudHandoffNote string        `json:"cloud_handoff_note,omitempty"`
+}
+
 func NewFromEnv() (*Client, error) {
 	baseURL := strings.TrimSpace(os.Getenv("HIVE_DAEMON_URL"))
 	if baseURL == "" {
@@ -274,6 +303,17 @@ func (c *Client) MergeProject(ctx context.Context, req ProjectMergeRequest) (Pro
 	path := "/governance/projects/" + url.PathEscape(source) + "/merge/" + url.PathEscape(target)
 	if err := c.post(ctx, path, req, &body); err != nil {
 		return ProjectMergeResult{}, err
+	}
+	return body.Result, nil
+}
+
+// MergeProjects sends a multi-source batch merge request to POST /governance/projects/merge.
+func (c *Client) MergeProjects(ctx context.Context, req ProjectMergeBatchRequest) (ProjectMergeBatchResult, error) {
+	var body struct {
+		Result ProjectMergeBatchResult `json:"result"`
+	}
+	if err := c.post(ctx, "/governance/projects/merge", req, &body); err != nil {
+		return ProjectMergeBatchResult{}, err
 	}
 	return body.Result, nil
 }

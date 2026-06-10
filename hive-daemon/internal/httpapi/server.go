@@ -45,6 +45,7 @@ type GovernanceService interface {
 	ExecuteGuard(context.Context, governance.GuardRequest) (governance.GuardResult, error)
 	ExecuteProjectArchive(context.Context, governance.ProjectArchiveRequest) (governance.ProjectArchiveResult, error)
 	ExecuteProjectMerge(context.Context, governance.ProjectMergeRequest) (governance.ProjectMergeResult, error)
+	ExecuteProjectMergeBatch(context.Context, governance.ProjectMergeBatchRequest) (governance.ProjectMergeBatchResult, error)
 }
 
 // Server handles HTTP requests for the Hive prompt-capture endpoint.
@@ -75,6 +76,7 @@ func NewServerWithProjectStoreAndGovernance(addr string, prompts PromptStore, pr
 	s.mux.HandleFunc("/prompts", s.handlePrompts)
 	if governance != nil {
 		s.mux.HandleFunc("/governance/projects", s.handleGovernanceProjects)
+		s.mux.HandleFunc("POST /governance/projects/merge", s.handleGovernanceProjectMergeBatch)
 		s.mux.HandleFunc("/governance/projects/", s.handleGovernanceProject)
 		s.mux.HandleFunc("/governance/memories", s.handleGovernanceMemories)
 		s.mux.HandleFunc("GET /governance/memories/{id}", s.handleGovernanceMemory)
@@ -280,6 +282,21 @@ func (s *Server) handleGovernanceProject(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"project": project})
+}
+
+func (s *Server) handleGovernanceProjectMergeBatch(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body governance.ProjectMergeBatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	result, err := s.governance.ExecuteProjectMergeBatch(r.Context(), body)
+	if err != nil {
+		writeBatchMergeError(w, "governance project merge batch", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"result": result})
 }
 
 func (s *Server) handleGovernanceProjectArchive(w http.ResponseWriter, r *http.Request, projectName string) {
@@ -593,6 +610,31 @@ func writeGuardError(w http.ResponseWriter, source string, err error) {
 	case errors.Is(err, db.ErrGovernanceProjectMergeConflict):
 		status = http.StatusConflict
 		errorMessage = "project merge conflicts with existing local project governance metadata"
+	default:
+		logger.Log.Printf("%s: %v", source, err)
+	}
+	writeJSON(w, status, map[string]string{"error": errorMessage})
+}
+
+func writeBatchMergeError(w http.ResponseWriter, source string, err error) {
+	status := http.StatusInternalServerError
+	errorMessage := "internal error"
+	switch {
+	case errors.Is(err, governance.ErrProjectRequired):
+		status = http.StatusBadRequest
+		errorMessage = "sources and target are required"
+	case errors.Is(err, governance.ErrDestructiveConfirmationRequired):
+		status = http.StatusBadRequest
+		errorMessage = "confirmation is required"
+	case errors.Is(err, governance.ErrDestructiveConfirmationMismatch):
+		status = http.StatusBadRequest
+		errorMessage = "confirmation mismatch"
+	case errors.Is(err, governance.ErrDestructiveBackupRequired):
+		status = http.StatusBadRequest
+		errorMessage = "fresh backup is required before destructive operation"
+	case errors.Is(err, governance.ErrBackupStoreRequired), errors.Is(err, governance.ErrDestructiveMutationStoreRequired):
+		status = http.StatusServiceUnavailable
+		errorMessage = "destructive operation guard is not configured"
 	default:
 		logger.Log.Printf("%s: %v", source, err)
 	}
