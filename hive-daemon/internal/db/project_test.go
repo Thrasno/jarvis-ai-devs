@@ -1164,6 +1164,72 @@ func TestMergeGovernanceProject_RollbackOnFailure(t *testing.T) {
 	}
 }
 
+// TestProjectMergeSyncEvidence exercises the SQLite EXISTS query directly,
+// covering the four cases: no projects, only unsynced, at least one synced,
+// and mixed projects where only one has synced evidence.
+func TestProjectMergeSyncEvidence(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name     string
+		setup    func(*testing.T, *hivedb.DB) []string
+		wantTrue bool
+	}{
+		{
+			name: "no projects — empty slice returns false",
+			setup: func(t *testing.T, d *hivedb.DB) []string {
+				return []string{}
+			},
+			wantTrue: false,
+		},
+		{
+			name: "projects with only unsynced memories — returns false",
+			setup: func(t *testing.T, d *hivedb.DB) []string {
+				saveGovernanceTestMemory(t, d, "proj-unsynced", "mem1")
+				saveGovernanceTestMemory(t, d, "proj-unsynced", "mem2")
+				return []string{"proj-unsynced"}
+			},
+			wantTrue: false,
+		},
+		{
+			name: "project with at least one synced memory — returns true",
+			setup: func(t *testing.T, d *hivedb.DB) []string {
+				id := saveGovernanceTestMemory(t, d, "proj-synced", "synced mem")
+				if _, err := d.RawDB().Exec(`UPDATE memories SET synced_at = '2026-06-08 10:00:00' WHERE id = ?`, id); err != nil {
+					t.Fatalf("mark synced: %v", err)
+				}
+				return []string{"proj-synced"}
+			},
+			wantTrue: true,
+		},
+		{
+			name: "mixed projects — only one has synced evidence — returns true",
+			setup: func(t *testing.T, d *hivedb.DB) []string {
+				saveGovernanceTestMemory(t, d, "proj-clean", "unsynced mem")
+				id := saveGovernanceTestMemory(t, d, "proj-dirty", "synced mem")
+				if _, err := d.RawDB().Exec(`UPDATE memories SET synced_at = '2026-06-08 10:00:00' WHERE id = ?`, id); err != nil {
+					t.Fatalf("mark synced: %v", err)
+				}
+				return []string{"proj-clean", "proj-dirty"}
+			},
+			wantTrue: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			d := openGovernanceTestDB(t)
+			projects := tt.setup(t, d)
+			got, err := d.ProjectMergeSyncEvidence(context.Background(), projects)
+			if err != nil {
+				t.Fatalf("ProjectMergeSyncEvidence: %v", err)
+			}
+			if got != tt.wantTrue {
+				t.Fatalf("ProjectMergeSyncEvidence = %v, want %v", got, tt.wantTrue)
+			}
+		})
+	}
+}
+
 // TestKnownProjects_ExcludesAliasedSources verifies that source_project values
 // that have an active alias are hidden from KnownProjects.
 func TestKnownProjects_ExcludesAliasedSources(t *testing.T) {
