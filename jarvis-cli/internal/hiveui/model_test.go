@@ -1569,3 +1569,266 @@ func TestMemoryGuardInputCanContainLowercaseQ(t *testing.T) {
 		t.Fatalf("guardBackupID = %q, want %q", m.guardBackupID, "backup-q99")
 	}
 }
+
+// ─── Phase 5 RED tests ──────────────────────────────────────────────────────
+
+// Task 5.1 — space toggles source in mergeStepSelectSources
+func TestBatchMergeSelectSources_SpaceTogglesAndEnterAdvances(t *testing.T) {
+	executor := &fakeProjectMergeBatchExecutor{}
+	m := openBatchProjectMerge(executor)
+
+	// should be on mergeStepSelectSources; alpha is cursor row
+	if m.mergeStep != mergeStepSelectSources {
+		t.Fatalf("mergeStep = %v, want mergeStepSelectSources", m.mergeStep)
+	}
+
+	// space selects alpha
+	m = sendSpace(m)
+	if !containsStr(m.mergeSelectedSources, "alpha") {
+		t.Fatalf("mergeSelectedSources = %v, want alpha selected", m.mergeSelectedSources)
+	}
+	assertContains(t, m.View(), "[x] alpha")
+
+	// space again deselects alpha
+	m = sendSpace(m)
+	if containsStr(m.mergeSelectedSources, "alpha") {
+		t.Fatalf("mergeSelectedSources = %v, want alpha deselected", m.mergeSelectedSources)
+	}
+	assertNotContains(t, m.View(), "[x] alpha")
+
+	// select alpha, then move down and select beta
+	m = sendSpace(m) // re-select alpha
+	m = sendKey(m, tea.KeyDown)
+	m = sendSpace(m) // select beta
+	if !containsStr(m.mergeSelectedSources, "alpha") || !containsStr(m.mergeSelectedSources, "beta") {
+		t.Fatalf("mergeSelectedSources = %v, want both alpha and beta", m.mergeSelectedSources)
+	}
+
+	// enter with ≥1 source advances to mergeStepPickTarget
+	m = sendKey(m, tea.KeyEnter)
+	if m.mergeStep != mergeStepPickTarget {
+		t.Fatalf("mergeStep = %v, want mergeStepPickTarget after enter with selections", m.mergeStep)
+	}
+}
+
+// Task 5.2 — enter with zero selections shows validation, does NOT advance
+func TestBatchMergeSelectSources_EnterWithZeroSelectionShowsError(t *testing.T) {
+	executor := &fakeProjectMergeBatchExecutor{}
+	m := openBatchProjectMerge(executor)
+
+	m = sendKey(m, tea.KeyEnter)
+	if m.mergeStep != mergeStepSelectSources {
+		t.Fatalf("mergeStep = %v, want mergeStepSelectSources (no advance with 0 selections)", m.mergeStep)
+	}
+	assertContains(t, m.View(), "Select at least one source project")
+}
+
+// Task 5.3 — mergeStepPickTarget blocks when target equals a selected source
+func TestBatchMergePickTarget_BlocksWhenTargetEqualsSelectedSource(t *testing.T) {
+	executor := &fakeProjectMergeBatchExecutor{}
+	m := openBatchProjectMergeAtPickTarget(executor)
+
+	// type "alpha" (which is in selected sources)
+	m = sendText(m, "alpha")
+	m = sendKey(m, tea.KeyEnter)
+
+	if m.mergeStep != mergeStepPickTarget {
+		t.Fatalf("mergeStep = %v, want mergeStepPickTarget (blocked)", m.mergeStep)
+	}
+	assertContains(t, m.View(), "Target must not be one of the selected sources")
+}
+
+// Task 5.4 — mergeStepImpact renders per-source row + cloud guardrail panel when sync evidence
+func TestBatchMergeImpact_RendersPerSourceRowsAndGuardrailWhenSyncEvidence(t *testing.T) {
+	executor := &fakeProjectMergeBatchExecutor{}
+	m := openBatchProjectMergeAtImpact(executor, true /* syncEvidence */)
+
+	view := m.View()
+	// per-source rows
+	assertContains(t, view, "alpha")
+	// cloud guardrail panel present
+	assertContains(t, view, "CLOUD SYNC NOTICE")
+	assertContains(t, view, "admin note")
+}
+
+func TestBatchMergeImpact_NoGuardrailWhenNoSyncEvidence(t *testing.T) {
+	executor := &fakeProjectMergeBatchExecutor{}
+	m := openBatchProjectMergeAtImpact(executor, false /* no syncEvidence */)
+
+	view := m.View()
+	assertContains(t, view, "alpha")
+	assertNotContains(t, view, "CLOUD SYNC NOTICE")
+}
+
+func TestBatchMergeImpact_EnterAdvancesToBackupID(t *testing.T) {
+	executor := &fakeProjectMergeBatchExecutor{}
+	m := openBatchProjectMergeAtImpact(executor, false)
+
+	m = sendKey(m, tea.KeyEnter)
+	if m.mergeStep != mergeStepBackupID {
+		t.Fatalf("mergeStep = %v, want mergeStepBackupID", m.mergeStep)
+	}
+}
+
+// Task 5.5 — mergeStepConfirm wrong phrase does NOT advance; correct phrase advances
+func TestBatchMergeConfirm_WrongPhraseDoesNotAdvance(t *testing.T) {
+	executor := &fakeProjectMergeBatchExecutor{}
+	m := openBatchProjectMergeAtConfirm(executor)
+
+	m = sendText(m, "wrong phrase")
+	m = sendKey(m, tea.KeyEnter)
+
+	if m.mergeStep != mergeStepConfirm {
+		t.Fatalf("mergeStep = %v, want mergeStepConfirm (blocked)", m.mergeStep)
+	}
+	if executor.callCount != 0 {
+		t.Fatalf("callCount = %d, want 0 (no dispatch with wrong phrase)", executor.callCount)
+	}
+	assertContains(t, m.View(), "Confirmation mismatch")
+}
+
+func TestBatchMergeConfirm_CorrectPhraseDispatchesAndAdvancesToExecuting(t *testing.T) {
+	executor := &fakeProjectMergeBatchExecutor{}
+	m := openBatchProjectMergeAtConfirm(executor)
+
+	phrase := mergeBatchConfirmationPhrase(m.mergeSelectedSources, m.mergeTarget)
+	m = sendText(m, phrase)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("cmd is nil, want batch merge dispatch")
+	}
+}
+
+// Task 5.6 — mergeStepResult renders per-source outcomes; enter → ScreenProjects
+func TestBatchMergeResult_RendersOutcomesAndEnterReturnsToProjects(t *testing.T) {
+	executor := &fakeProjectMergeBatchExecutor{}
+	m := openBatchProjectMergeAtResult(executor)
+
+	view := m.View()
+	assertContains(t, view, "alpha")
+	assertContains(t, view, "beta")
+
+	// enter/esc returns to ScreenProjects
+	m = sendKey(m, tea.KeyEnter)
+	if m.Screen() != ScreenProjects {
+		t.Fatalf("screen = %v, want ScreenProjects after enter on result", m.Screen())
+	}
+}
+
+// ─── Phase 5 helpers ────────────────────────────────────────────────────────
+
+func openBatchProjectMerge(executor *fakeProjectMergeBatchExecutor) Model {
+	m := NewModelWithSnapshotAndProjectMergeBatchExecutor(batchMergeSnapshot(), executor)
+	m = sendKey(m, tea.KeyEnter) // open projects
+	m = sendRune(m, 'm')         // start merge flow
+	return m
+}
+
+// openBatchProjectMergeAtPickTarget positions the model at mergeStepPickTarget
+// with alpha already selected as a source.
+func openBatchProjectMergeAtPickTarget(executor *fakeProjectMergeBatchExecutor) Model {
+	m := openBatchProjectMerge(executor)
+	m = sendSpace(m)             // select alpha
+	m = sendKey(m, tea.KeyEnter) // advance to pick target
+	return m
+}
+
+// openBatchProjectMergeAtImpact positions the model at mergeStepImpact with
+// alpha selected as source and "beta" as target. syncEvidence controls whether
+// the snapshot contains sync evidence for alpha.
+func openBatchProjectMergeAtImpact(executor *fakeProjectMergeBatchExecutor, syncEvidence bool) Model {
+	snap := batchMergeSnapshot()
+	if syncEvidence {
+		// give alpha an unsynced=0 out of 2 total → synced rows exist
+		for i, p := range snap.Projects {
+			if p.Name == "alpha" {
+				snap.Projects[i].UnsyncedCount = 0
+				snap.Projects[i].ActiveMemoryCount = 2
+			}
+		}
+		// add a memory with SyncID for alpha so evidence is non-zero
+		snap.Memories = append(snap.Memories, hiveclient.Memory{
+			ID: 99, Project: "alpha", SyncID: "s-99", Title: "synced mem",
+		})
+	}
+	m := NewModelWithSnapshotAndProjectMergeBatchExecutor(snap, executor)
+	m = sendKey(m, tea.KeyEnter) // open projects
+	m = sendRune(m, 'm')         // start merge
+	m = sendSpace(m)             // select alpha
+	m = sendKey(m, tea.KeyEnter) // advance to pick target
+	m = sendText(m, "beta")      // type target
+	m = sendKey(m, tea.KeyEnter) // advance to impact
+	return m
+}
+
+// openBatchProjectMergeAtConfirm positions the model at mergeStepConfirm.
+func openBatchProjectMergeAtConfirm(executor *fakeProjectMergeBatchExecutor) Model {
+	m := openBatchProjectMergeAtImpact(executor, false)
+	m = sendKey(m, tea.KeyEnter) // advance past impact → backup ID
+	m = sendText(m, "backup-batch")
+	m = sendKey(m, tea.KeyEnter) // advance backup ID → confirm
+	return m
+}
+
+// openBatchProjectMergeAtResult positions the model at mergeStepResult by
+// dispatching and applying a fake result.
+func openBatchProjectMergeAtResult(executor *fakeProjectMergeBatchExecutor) Model {
+	m := openBatchProjectMergeAtConfirm(executor)
+	phrase := mergeBatchConfirmationPhrase(m.mergeSelectedSources, m.mergeTarget)
+	m = sendText(m, phrase)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		return updated.(Model)
+	}
+	updated, _ = updated.Update(cmd())
+	return updated.(Model)
+}
+
+func sendSpace(m Model) Model {
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	return updated.(Model)
+}
+
+func containsStr(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+func batchMergeSnapshot() Snapshot {
+	snap := projectMergeSnapshot()
+	snap.Projects[0].Name = "alpha"
+	snap.Projects[1].Name = "beta"
+	snap.Backups = []hiveclient.Backup{{ID: "backup-batch"}}
+	// Default: all memories unsynced → no sync evidence. This keeps the
+	// no-guardrail test path clean. The sync-evidence test path overrides.
+	snap.Projects[0].UnsyncedCount = snap.Projects[0].ActiveMemoryCount
+	snap.Projects[1].UnsyncedCount = snap.Projects[1].ActiveMemoryCount
+	return snap
+}
+
+type fakeProjectMergeBatchExecutor struct {
+	callCount int
+	result    hiveclient.ProjectMergeBatchResult
+	err       error
+}
+
+func (f *fakeProjectMergeBatchExecutor) MergeProjects(_ context.Context, req hiveclient.ProjectMergeBatchRequest) (hiveclient.ProjectMergeBatchResult, error) {
+	f.callCount++
+	if f.err != nil {
+		return hiveclient.ProjectMergeBatchResult{}, f.err
+	}
+	results := make([]hiveclient.MergeResult, len(req.Sources))
+	for i, src := range req.Sources {
+		results[i] = hiveclient.MergeResult{Source: src, Target: req.Target, Mutated: true}
+	}
+	return hiveclient.ProjectMergeBatchResult{
+		Operation: "batch_merge",
+		Target:    req.Target,
+		BackupID:  req.BackupID,
+		Results:   results,
+	}, nil
+}
