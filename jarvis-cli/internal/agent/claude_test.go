@@ -603,7 +603,7 @@ func TestClaudeAgent_MergeGeneratedConfig_DeepMergesPermissionsAndPreservesHooks
 		t.Fatalf("permissions.allow not deep-merged idempotently: %#v", allow)
 	}
 	deny := permissions["deny"].([]any)
-	for _, expected := range []string{"Read(**/.env*)", "Read(**/*secret*)", "Bash(rm -rf /*)", "Bash(git clean -fdx:*)"} {
+	for _, expected := range []string{"Read(**/.env*)", "Read(*.env)", "Read(**/*.env)", "Read(*.env.*)", "Read(**/*.env.*)", "Read(secrets/**)", "Read(**/*secret*)", "Bash(rm -rf /*)", "Bash(git clean -fdx:*)", "Bash(git push --force*:*)"} {
 		if countScalar(deny, expected) != 1 {
 			t.Fatalf("permissions.deny missing or duplicated %q: %#v", expected, deny)
 		}
@@ -618,7 +618,7 @@ func TestClaudeAgent_MergeGeneratedConfig_DeepMergesPermissionsAndPreservesHooks
 	}
 }
 
-func TestClaudeAgent_MergeGeneratedConfig_SetsConservativeDefaultModeWhenMissing(t *testing.T) {
+func TestClaudeAgent_MergeGeneratedConfig_SetsBypassDefaultModeWhenMissing(t *testing.T) {
 	tmpHome := t.TempDir()
 	a := &ClaudeAgent{home: tmpHome}
 	settingsPath := filepath.Join(tmpHome, ".claude", "settings.json")
@@ -634,8 +634,67 @@ func TestClaudeAgent_MergeGeneratedConfig_SetsConservativeDefaultModeWhenMissing
 	}
 	settings := readJSONFile(t, settingsPath)
 	permissions := settings["permissions"].(map[string]any)
-	if permissions["defaultMode"] != "default" {
-		t.Fatalf("defaultMode = %v, want conservative default", permissions["defaultMode"])
+	if permissions["defaultMode"] != "bypassPermissions" {
+		t.Fatalf("defaultMode = %v, want bypassPermissions", permissions["defaultMode"])
+	}
+	deny := permissions["deny"].([]any)
+	for _, expected := range []string{
+		"Read(.env*)",
+		"Read(**/.env*)",
+		"Read(*.env)",
+		"Read(**/*.env)",
+		"Read(*.env.*)",
+		"Read(**/*.env.*)",
+		"Read(secrets)",
+		"Read(**/secrets)",
+		"Read(secrets/**)",
+		"Read(**/secrets/**)",
+		"Read(secret)",
+		"Read(**/secret)",
+		"Read(secret/**)",
+		"Read(**/secret/**)",
+		"Read(tokens)",
+		"Read(**/tokens)",
+		"Read(tokens/**)",
+		"Read(**/tokens/**)",
+		"Read(token/**)",
+		"Read(token)",
+		"Read(**/token)",
+		"Read(**/token/**)",
+		"Read(credentials)",
+		"Read(**/credentials)",
+		"Read(credentials/**)",
+		"Read(**/credentials/**)",
+		"Read(credential)",
+		"Read(**/credential)",
+		"Read(credential/**)",
+		"Read(**/credential/**)",
+		"Read(*secret*)",
+		"Read(**/*secret*)",
+		"Read(*token*)",
+		"Read(**/*token*)",
+		"Read(*credential*)",
+		"Read(**/*credential*)",
+		"Read(.ssh)",
+		"Read(**/.ssh)",
+		"Read(.ssh/**)",
+		"Read(**/.ssh/**)",
+		"Read(id_rsa*)",
+		"Read(**/id_rsa*)",
+		"Read(id_ed25519*)",
+		"Read(**/id_ed25519*)",
+		"Read(*.pem)",
+		"Read(**/*.pem)",
+		"Read(*.key)",
+		"Read(**/*.key)",
+		"Bash(git push --force*:*)",
+		"Bash(git push --force-with-lease*:*)",
+		"Bash(git push * --force*:*)",
+		"Bash(git push * --force-with-lease*:*)",
+	} {
+		if countScalar(deny, expected) != 1 {
+			t.Fatalf("permissions.deny missing or duplicated %q: %#v", expected, deny)
+		}
 	}
 }
 

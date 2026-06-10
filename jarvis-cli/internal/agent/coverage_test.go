@@ -32,8 +32,8 @@ var testTemplatesFS fs.FS = fstest.MapFS{
   "share": "disabled",
   "default_agent": "sdd-orchestrator",
   "permission": {
-    "bash": {"*": "allow", "git push --force*": "ask", "git reset --hard*": "ask", "git clean -fdx*": "ask", "rm -rf /*": "ask"},
-    "read": {"*": "allow", "**/.env*": "deny", "**/*secret*": "deny", "**/*token*": "deny", "**/*credential*": "deny", "**/id_rsa*": "deny"}
+    "bash": {"*": "allow", "git push --force*": "ask", "git push * --force*": "ask", "git push * --force-with-lease*": "ask", "git reset --hard*": "ask", "git clean -fdx*": "ask", "rm -rf /*": "ask"},
+    "read": {"*": "allow", ".env": "deny", ".env.*": "deny", "*.env": "deny", "**/*.env": "deny", "*.env.*": "deny", "**/*.env.*": "deny", "**/.env*": "deny", "secrets": "deny", "*/secrets": "deny", "**/secrets": "deny", "secrets/**": "deny", "**/secrets/**": "deny", "secret": "deny", "*/secret": "deny", "**/secret": "deny", "secret/**": "deny", "**/secret/**": "deny", "tokens": "deny", "*/tokens": "deny", "**/tokens": "deny", "tokens/**": "deny", "**/tokens/**": "deny", "token": "deny", "*/token": "deny", "**/token": "deny", "token/**": "deny", "**/token/**": "deny", "credentials": "deny", "*/credentials": "deny", "**/credentials": "deny", "credentials/**": "deny", "**/credentials/**": "deny", "credential": "deny", "*/credential": "deny", "**/credential": "deny", "credential/**": "deny", "**/credential/**": "deny", "*secret*": "deny", "**/*secret*": "deny", "*token*": "deny", "**/*token*": "deny", "*credential*": "deny", "**/*credential*": "deny", ".ssh": "deny", "*/.ssh": "deny", "**/.ssh": "deny", ".ssh/*": "deny", "*/.ssh/*": "deny", "**/.ssh/**": "deny", "id_rsa": "deny", "*/id_rsa": "deny", "**/id_rsa*": "deny", "id_ed25519": "deny", "*/id_ed25519": "deny", "**/id_ed25519*": "deny", "*.pem": "deny", "*/*.pem": "deny", "**/*.pem": "deny", "*.key": "deny", "*/*.key": "deny", "**/*.key": "deny"}
   },
   "agent": {
     "sdd-orchestrator": {

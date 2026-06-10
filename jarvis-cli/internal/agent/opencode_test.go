@@ -419,12 +419,16 @@ func TestOpenCodeAgent_MergeGeneratedConfig_RendersTopologyPermissionsAndPreserv
 	}
 	permission := settings["permission"].(map[string]any)
 	bash := permission["bash"].(map[string]any)
-	if bash["*"] != "allow" || bash["git push --force*"] != "ask" || bash["git reset --hard*"] != "ask" {
+	if bash["*"] != "allow" || bash["git push --force*"] != "ask" || bash["git push * --force*"] != "ask" || bash["git push * --force-with-lease*"] != "ask" || bash["git reset --hard*"] != "ask" {
 		t.Fatalf("unexpected bash permissions: %#v", bash)
 	}
 	read := permission["read"].(map[string]any)
-	if read["*"] != "allow" || read["**/.env*"] != "deny" || read["**/*secret*"] != "deny" {
+	if read["*"] != "allow" {
 		t.Fatalf("unexpected read permissions: %#v", read)
+	}
+	assertOpenCodeReadDenyCoverage(t, read)
+	if _, ok := settings["permissions"]; ok {
+		t.Fatalf("OpenCode generated config must use singular permission, got plural permissions key: %#v", settings["permissions"])
 	}
 
 	missingSchemaHome := t.TempDir()
@@ -504,12 +508,116 @@ func TestOpenCodeAgent_MergeGeneratedConfig_PreservesExistingPermissionGuardrail
 	if bash["git reset --hard*"] != "ask" {
 		t.Fatalf("missing generated bash guardrail: %#v", bash)
 	}
+	if bash["git push * --force*"] != "ask" || bash["git push * --force-with-lease*"] != "ask" {
+		t.Fatalf("missing generated later-position force-push guardrail: %#v", bash)
+	}
 	read := permission["read"].(map[string]any)
 	if read["*"] != "deny" || read["**/*secret*"] != "deny" {
 		t.Fatalf("existing read guardrails were not preserved: %#v", read)
 	}
-	if read["**/.env*"] != "deny" {
-		t.Fatalf("missing generated read guardrail: %#v", read)
+	assertOpenCodeReadDenyCoverage(t, read)
+}
+
+func TestOpenCodeAgent_MergeGeneratedConfig_RemovesUnknownOrchestratorTaskAllows(t *testing.T) {
+	tmpHome := t.TempDir()
+	a := &OpenCodeAgent{home: tmpHome, templatesFS: testTemplatesFS}
+	settingsPath := filepath.Join(tmpHome, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatalf("create opencode dir: %v", err)
+	}
+	existing := `{
+		"agent": {
+			"sdd-orchestrator": {
+				"permission": {
+					"task": {
+						"some-random-agent": "allow",
+						"sdd-apply": "allow"
+					}
+				}
+			}
+		}
+	}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0644); err != nil {
+		t.Fatalf("write opencode.json: %v", err)
+	}
+
+	if err := a.MergeGeneratedConfig(defaultRuntimeConfig()); err != nil {
+		t.Fatalf("MergeGeneratedConfig: %v", err)
+	}
+	if err := a.MergeGeneratedConfig(defaultRuntimeConfig()); err != nil {
+		t.Fatalf("MergeGeneratedConfig rerun: %v", err)
+	}
+
+	settings := readJSONFile(t, settingsPath)
+	taskPerm := settings["agent"].(map[string]any)["sdd-orchestrator"].(map[string]any)["permission"].(map[string]any)["task"].(map[string]any)
+	if _, ok := taskPerm["some-random-agent"]; ok {
+		t.Fatalf("unknown orchestrator task allow was preserved: %#v", taskPerm)
+	}
+	if taskPerm["*"] != "deny" || taskPerm["sdd-apply"] != "allow" || taskPerm["jd-judge-a"] != "allow" {
+		t.Fatalf("expected generated orchestrator task allows to remain: %#v", taskPerm)
+	}
+}
+
+func TestOpenCodeAgent_MergeGeneratedConfig_IgnoresMalformedTaskPermissionValues(t *testing.T) {
+	tmpHome := t.TempDir()
+	a := &OpenCodeAgent{home: tmpHome, templatesFS: testTemplatesFS}
+	settingsPath := filepath.Join(tmpHome, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatalf("create opencode dir: %v", err)
+	}
+	existing := `{
+		"agent": {
+			"sdd-orchestrator": {
+				"permission": {
+					"task": {
+						"malformed-array": ["allow"],
+						"malformed-object": {"value": "allow"},
+						"some-random-agent": "allow"
+					}
+				}
+			}
+		}
+	}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0644); err != nil {
+		t.Fatalf("write opencode.json: %v", err)
+	}
+
+	if err := a.MergeGeneratedConfig(defaultRuntimeConfig()); err != nil {
+		t.Fatalf("MergeGeneratedConfig should not panic or fail on malformed task permission values: %v", err)
+	}
+
+	settings := readJSONFile(t, settingsPath)
+	taskPerm := settings["agent"].(map[string]any)["sdd-orchestrator"].(map[string]any)["permission"].(map[string]any)["task"].(map[string]any)
+	if _, ok := taskPerm["some-random-agent"]; ok {
+		t.Fatalf("unknown string allow was preserved: %#v", taskPerm)
+	}
+	if _, ok := taskPerm["malformed-array"]; !ok {
+		t.Fatalf("malformed non-string value should be ignored by cleanup, got: %#v", taskPerm)
+	}
+}
+
+func assertOpenCodeReadDenyCoverage(t *testing.T, read map[string]any) {
+	t.Helper()
+	for _, expected := range []string{
+		".env", ".env.*", "*.env", "**/*.env", "*.env.*", "**/*.env.*", "**/.env*",
+		"secrets", "*/secrets", "**/secrets",
+		"secrets/**", "**/secrets/**", "secret/**", "**/secret/**",
+		"secret", "*/secret", "**/secret",
+		"tokens", "*/tokens", "**/tokens",
+		"tokens/**", "**/tokens/**", "token/**", "**/token/**",
+		"token", "*/token", "**/token",
+		"credentials", "*/credentials", "**/credentials",
+		"credentials/**", "**/credentials/**", "credential/**", "**/credential/**",
+		"credential", "*/credential", "**/credential",
+		"*secret*", "**/*secret*", "*token*", "**/*token*", "*credential*", "**/*credential*",
+		".ssh", "*/.ssh", "**/.ssh",
+		".ssh/*", "*/.ssh/*", "**/.ssh/**",
+		"id_rsa", "*/id_rsa", "**/id_rsa*", "id_ed25519", "*/id_ed25519", "**/id_ed25519*",
+		"*.pem", "*/*.pem", "**/*.pem", "*.key", "*/*.key", "**/*.key",
+	} {
+		if read[expected] != "deny" {
+			t.Fatalf("missing generated read guardrail %q: %#v", expected, read)
+		}
 	}
 }
 
