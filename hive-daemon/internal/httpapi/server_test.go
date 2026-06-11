@@ -2780,7 +2780,9 @@ func TestGetHealthSummary_200Shape(t *testing.T) {
 	}
 }
 
-// TestGetHealthSummary_405MethodNotAllowed verifies that non-GET returns 405.
+// TestGetHealthSummary_405MethodNotAllowed verifies that non-GET requests return 405.
+// The 405 is returned by the Go 1.22 method-constrained mux pattern
+// "GET /governance/health/summary", not by a handler guard.
 func TestGetHealthSummary_405MethodNotAllowed(t *testing.T) {
 	srv := newHealthTestServer(&fakeHealthService{})
 

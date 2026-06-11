@@ -3449,7 +3449,7 @@ func TestSummaryHealthState_AllFiveStates(t *testing.T) {
 			want: "auth failed",
 		},
 		{
-			name: "degraded — unsynced count non-zero triggers degraded",
+			name: "healthy — unsynced count alone does not trigger degraded",
 			summary: hiveclient.SyncSummary{
 				Reachable: true, AuthOK: true, AutoSync: true,
 				ConsecutiveFailures: 0, LastError: "",

@@ -92,17 +92,23 @@ func (h *HealthService) Summary(ctx context.Context) (HealthSummary, error) {
 		return HealthSummary{}, err
 	}
 
+	// Derive AuthOK from sync history BEFORE config block can overwrite LastError.
+	summary.AuthOK = !authError(summary.LastError)
+
 	// Load config for auto_sync and reachability (configured = has APIURL).
-	var cfgErr error
 	cfg, status, cfgErr := h.loader.Load()
 	if cfgErr != nil {
 		logger.Log.Printf("warn: HealthService.Summary: config unavailable: %v", cfgErr)
-		summary.LastError = fmt.Sprintf("config unavailable: %v", cfgErr)
+		// Append config error without losing the sync-derived LastError.
+		if summary.LastError == "" {
+			summary.LastError = fmt.Sprintf("config unavailable: %v", cfgErr)
+		} else {
+			summary.LastError = fmt.Sprintf("%s; config unavailable: %v", summary.LastError, cfgErr)
+		}
 	}
 	summary.AutoSync = status.Configured && cfg != nil && cfg.AutoSync
 
 	configured := cfg != nil && cfg.APIURL != ""
-	summary.AuthOK = !authError(summary.LastError)
 	summary.Reachable = deriveReachable(configured, summary.LastError, !summary.AuthOK)
 
 	return summary, nil

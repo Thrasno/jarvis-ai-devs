@@ -554,7 +554,7 @@ func (d *DB) GetLastSync(project string) (time.Time, error) {
 	err := d.sqlDB.QueryRow(
 		`SELECT last_sync_at FROM sync_state WHERE project = ?`, project,
 	).Scan(&ts)
-	if err == sql.ErrNoRows || !ts.Valid {
+	if errors.Is(err, sql.ErrNoRows) || !ts.Valid {
 		return time.Time{}, nil
 	}
 	if err != nil {
@@ -590,7 +590,7 @@ FROM sync_state WHERE project = ?`, project).Scan(
 		&backoffUntil,
 		&lastError,
 	)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return health, nil
 	}
 	if err != nil {

@@ -2,6 +2,7 @@ package sync_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -60,6 +61,7 @@ func TestHealthService_Summary_States(t *testing.T) {
 		rows           []db.SyncHealth
 		cfg            *hivesync.Config
 		status         hivesync.SyncConfigStatus
+		loaderErr      error
 		wantReachable  bool
 		wantAuthOK     bool
 		wantAutoSync   bool
@@ -178,6 +180,27 @@ func TestHealthService_Summary_States(t *testing.T) {
 			wantLastError: "newer error", // from most-recent failure project
 			wantConsec:    7,
 		},
+		{
+			// R2-1: cfgErr must not mask a DB-derived auth error.
+			// AuthOK must be derived from sync history BEFORE config loading.
+			name: "auth error preserved when config load also fails",
+			rows: []db.SyncHealth{
+				{
+					Project:             "proj-auth",
+					LastFailureAt:       failureAt,
+					ConsecutiveFailures: 2,
+					LastError:           "401 unauthorized",
+				},
+			},
+			cfg:           nil,
+			status:        hivesync.SyncConfigStatus{Configured: false},
+			loaderErr:     errors.New("config load error"),
+			wantReachable: false,
+			wantAuthOK:    false, // must be false — auth error from DB is not masked by cfgErr
+			wantAutoSync:  false,
+			wantLastError: "401 unauthorized; config unavailable: config load error",
+			wantConsec:    2,
+		},
 	}
 
 	for _, tt := range tests {
@@ -191,6 +214,7 @@ func TestHealthService_Summary_States(t *testing.T) {
 			loader := &stubConfigLoader{
 				cfg:    tt.cfg,
 				status: tt.status,
+				err:    tt.loaderErr,
 			}
 
 			svc := hivesync.NewHealthService(store, loader)
