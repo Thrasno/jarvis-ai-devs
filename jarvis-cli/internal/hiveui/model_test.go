@@ -559,9 +559,9 @@ func TestEnterOnEmptyListsDoesNotOpenFakeDetail(t *testing.T) {
 
 func TestTimelineZeroCreatedAtRendersUnavailable(t *testing.T) {
 	m := NewModelWithSnapshot(Snapshot{
-		DashboardState:  DashboardHealthy,
-		Projects:        []hiveclient.Project{{Name: "core-api", ActiveMemoryCount: 1}},
-		Memories:        []hiveclient.Memory{{SyncID: "mem_zero", Project: "core-api", Category: "decision", Title: "Missing timestamp"}},
+		DashboardState:   DashboardHealthy,
+		Projects:         []hiveclient.Project{{Name: "core-api", ActiveMemoryCount: 1}},
+		Memories:         []hiveclient.Memory{{SyncID: "mem_zero", Project: "core-api", Category: "decision", Title: "Missing timestamp"}},
 		TimelineMemories: []hiveclient.Memory{{SyncID: "mem_zero", Project: "core-api", Category: "decision", Title: "Missing timestamp"}},
 	})
 	m = sendRune(m, 't')
@@ -598,8 +598,8 @@ func TestTimelineView_ReadsFromTimelineMemoriesNotProjectMemories(t *testing.T) 
 
 func TestTimelineView_EmptyStateRendersPlaceholder(t *testing.T) {
 	snap := Snapshot{
-		DashboardState:  DashboardHealthy,
-		Projects:        []hiveclient.Project{{Name: "atlas"}},
+		DashboardState:   DashboardHealthy,
+		Projects:         []hiveclient.Project{{Name: "atlas"}},
 		TimelineMemories: []hiveclient.Memory{},
 	}
 	m := Model{snapshot: snap, screen: ScreenTimeline}
@@ -637,8 +637,8 @@ func TestTimelineView_OlderDateGroupAppearsBeforeNewer(t *testing.T) {
 
 func TestTimelineView_HelpBarReferencesProjectFlag(t *testing.T) {
 	snap := Snapshot{
-		DashboardState:  DashboardHealthy,
-		Projects:        []hiveclient.Project{{Name: "atlas"}},
+		DashboardState:   DashboardHealthy,
+		Projects:         []hiveclient.Project{{Name: "atlas"}},
 		TimelineMemories: []hiveclient.Memory{},
 	}
 	m := Model{snapshot: snap, screen: ScreenTimeline}
@@ -1175,9 +1175,9 @@ func TestScreenMemories_ReturnsTimelineMemoriesOnScreenTimeline(t *testing.T) {
 		{SyncID: "m1", Project: "atlas", Category: "note", Title: "A note"},
 	}
 	snap := Snapshot{
-		DashboardState:  DashboardHealthy,
-		Projects:        []hiveclient.Project{{Name: "atlas"}},
-		Memories:        projectMems,
+		DashboardState:   DashboardHealthy,
+		Projects:         []hiveclient.Project{{Name: "atlas"}},
+		Memories:         projectMems,
 		TimelineMemories: timelineMems,
 	}
 	m := Model{snapshot: snap, screen: ScreenTimeline}
@@ -1196,9 +1196,9 @@ func TestScreenMemories_ReturnsProjectMemoriesOnOtherScreens(t *testing.T) {
 		{SyncID: "m1", Project: "atlas", Category: "note", Title: "A note"},
 	}
 	snap := Snapshot{
-		DashboardState:  DashboardHealthy,
-		Projects:        []hiveclient.Project{{Name: "atlas"}},
-		Memories:        projectMems,
+		DashboardState:   DashboardHealthy,
+		Projects:         []hiveclient.Project{{Name: "atlas"}},
+		Memories:         projectMems,
 		TimelineMemories: timelineMems,
 	}
 	m := Model{snapshot: snap, screen: ScreenProjectMemories}
@@ -1217,9 +1217,9 @@ func TestMoveOnScreenTimeline_OperatesOverTimelineMemories(t *testing.T) {
 		{SyncID: "t3", Project: "atlas", Category: "bugfix", Title: "Third"},
 	}
 	snap := Snapshot{
-		DashboardState:  DashboardHealthy,
-		Projects:        []hiveclient.Project{{Name: "atlas"}},
-		Memories:        nil, // no project memories
+		DashboardState:   DashboardHealthy,
+		Projects:         []hiveclient.Project{{Name: "atlas"}},
+		Memories:         nil, // no project memories
 		TimelineMemories: timelineMems,
 	}
 	m := Model{snapshot: snap, screen: ScreenTimeline, memoryIndex: 0}
@@ -1241,8 +1241,8 @@ func TestMoveOnScreenTimeline_OperatesOverTimelineMemories(t *testing.T) {
 
 func TestMoveOnScreenTimeline_NoPanicWhenTimelineEmpty(t *testing.T) {
 	snap := Snapshot{
-		DashboardState:  DashboardHealthy,
-		Projects:        []hiveclient.Project{{Name: "atlas"}},
+		DashboardState:   DashboardHealthy,
+		Projects:         []hiveclient.Project{{Name: "atlas"}},
 		TimelineMemories: []hiveclient.Memory{},
 	}
 	m := Model{snapshot: snap, screen: ScreenTimeline, memoryIndex: 0}
@@ -1258,9 +1258,9 @@ func TestSelectedMemoryOnScreenTimeline_ReadsFromTimelineMemories(t *testing.T) 
 		{SyncID: "t2", Project: "atlas", Category: "architecture", Title: "Second"},
 	}
 	snap := Snapshot{
-		DashboardState:  DashboardHealthy,
-		Projects:        []hiveclient.Project{{Name: "atlas"}},
-		Memories:        nil,
+		DashboardState:   DashboardHealthy,
+		Projects:         []hiveclient.Project{{Name: "atlas"}},
+		Memories:         nil,
 		TimelineMemories: timelineMems,
 	}
 	m := Model{snapshot: snap, screen: ScreenTimeline, memoryIndex: 1}
