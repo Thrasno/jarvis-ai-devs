@@ -2416,3 +2416,283 @@ func TestHandleGovernanceProjectDelete_BadConfirmation(t *testing.T) {
 		t.Fatalf("body = %s, want confirmation mismatch", rr.Body.String())
 	}
 }
+
+// ─── T16: GET /governance/projects/{name}/timeline ────────────────────────────
+
+func newTimelineTestServer(t *testing.T) (*db.DB, *httpapi.Server) {
+	t.Helper()
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, governance.NewService(store))
+	return store, srv
+}
+
+func insertTimelineMemory(t *testing.T, store *db.DB, project, title, category, createdAt string) {
+	t.Helper()
+	if _, err := store.EnsureManualSaveSession(project); err != nil {
+		t.Fatalf("EnsureManualSaveSession: %v", err)
+	}
+	_, err := store.RawDB().Exec(`
+INSERT INTO memories (sync_id, project, category, title, content, created_by, session_id, created_at, updated_at)
+VALUES (?, ?, ?, ?, 'content', 'tester', ?, ?, ?)`,
+		"sync-"+title+"-"+project, project, category, title,
+		"manual-save-"+project, createdAt, createdAt)
+	if err != nil {
+		t.Fatalf("insertTimelineMemory: %v", err)
+	}
+}
+
+// TestHandleGovernanceTimeline_HappyPath verifies that the timeline endpoint
+// returns 200 with only the 5 timeline categories, ordered oldest-first.
+func TestHandleGovernanceTimeline_HappyPath(t *testing.T) {
+	store, srv := newTimelineTestServer(t)
+
+	insertTimelineMemory(t, store, "atlas", "Old decision", "decision", "2026-01-01 10:00:00")
+	insertTimelineMemory(t, store, "atlas", "Middle note", "note", "2026-01-02 10:00:00")
+	insertTimelineMemory(t, store, "atlas", "New bugfix", "bugfix", "2026-01-03 10:00:00")
+
+	req := httptest.NewRequest(http.MethodGet, "/governance/projects/atlas/timeline", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Memories []map[string]any `json:"memories"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	// Only decision and bugfix (not note) should be returned.
+	if len(resp.Memories) != 2 {
+		t.Fatalf("expected 2 timeline memories, got %d: %v", len(resp.Memories), resp.Memories)
+	}
+	// First must be the oldest (ASC order).
+	if resp.Memories[0]["title"] != "Old decision" {
+		t.Fatalf("first memory title = %v, want Old decision (ASC order)", resp.Memories[0]["title"])
+	}
+	if resp.Memories[1]["title"] != "New bugfix" {
+		t.Fatalf("second memory title = %v, want New bugfix", resp.Memories[1]["title"])
+	}
+}
+
+// TestHandleGovernanceTimeline_ProjectNotFound verifies that the timeline
+// endpoint returns 404 for an unknown project.
+func TestHandleGovernanceTimeline_ProjectNotFound(t *testing.T) {
+	_, srv := newTimelineTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/governance/projects/ghost/timeline", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestHandleGovernanceTimeline_WrongMethod verifies that non-GET methods
+// return 405 for the timeline endpoint.
+func TestHandleGovernanceTimeline_WrongMethod(t *testing.T) {
+	store, srv := newTimelineTestServer(t)
+	insertTimelineMemory(t, store, "atlas2", "A decision", "decision", "2026-01-01 10:00:00")
+
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/governance/projects/atlas2/timeline", nil)
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, req)
+			if rr.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("expected 405, got %d for method %s", rr.Code, method)
+			}
+		})
+	}
+}
+
+// TestHandleGovernanceTimeline_EmptyResult verifies that a project with no
+// timeline-category memories returns 200 with an empty array.
+func TestHandleGovernanceTimeline_EmptyResult(t *testing.T) {
+	store, srv := newTimelineTestServer(t)
+	insertTimelineMemory(t, store, "empty-proj", "A note", "note", "2026-01-01 10:00:00")
+
+	req := httptest.NewRequest(http.MethodGet, "/governance/projects/empty-proj/timeline", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Memories []any `json:"memories"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Memories) != 0 {
+		t.Fatalf("expected empty memories array, got %d entries", len(resp.Memories))
+	}
+}
+
+// TestHandleGovernanceMemories_RegressionDescOrder verifies that the existing
+// /governance/memories endpoint is unaffected by the timeline changes:
+// it still returns all types in DESC order.
+func TestHandleGovernanceMemories_RegressionDescOrder(t *testing.T) {
+	store, srv := newTimelineTestServer(t)
+	insertTimelineMemory(t, store, "regress", "Old memory", "decision", "2026-01-01 10:00:00")
+	insertTimelineMemory(t, store, "regress", "Middle memory", "note", "2026-01-02 10:00:00")
+	insertTimelineMemory(t, store, "regress", "New memory", "architecture", "2026-01-03 10:00:00")
+
+	req := httptest.NewRequest(http.MethodGet, "/governance/memories?project=regress", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Memories []map[string]any `json:"memories"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	// All 3 types must be present.
+	if len(resp.Memories) != 3 {
+		t.Fatalf("expected 3 memories, got %d", len(resp.Memories))
+	}
+	// First must be newest (DESC order).
+	if resp.Memories[0]["title"] != "New memory" {
+		t.Fatalf("first memory = %v, want New memory (DESC default for /governance/memories)", resp.Memories[0]["title"])
+	}
+}
+
+// ─── T16 FIX 3: truncation flag in timeline response ─────────────────────────
+
+// stubGovernanceTimeline is a minimal GovernanceService that only implements
+// Timeline. All other methods panic (unused in these tests).
+type stubGovernanceTimeline struct {
+	memories []governance.Memory
+	err      error
+}
+
+func (s *stubGovernanceTimeline) Projects(context.Context) ([]governance.Project, error) {
+	panic("not implemented")
+}
+func (s *stubGovernanceTimeline) Project(context.Context, string) (governance.Project, error) {
+	panic("not implemented")
+}
+func (s *stubGovernanceTimeline) Memories(context.Context, governance.MemoryFilter) ([]governance.Memory, error) {
+	panic("not implemented")
+}
+func (s *stubGovernanceTimeline) MemoryByID(context.Context, int64) (governance.Memory, error) {
+	panic("not implemented")
+}
+func (s *stubGovernanceTimeline) Timeline(_ context.Context, _ string) ([]governance.Memory, error) {
+	return s.memories, s.err
+}
+func (s *stubGovernanceTimeline) Health(context.Context) ([]governance.Health, error) {
+	panic("not implemented")
+}
+func (s *stubGovernanceTimeline) Warnings(context.Context, governance.WarningFilter) ([]governance.Warning, error) {
+	panic("not implemented")
+}
+func (s *stubGovernanceTimeline) Backups(context.Context) ([]governance.BackupManifest, error) {
+	panic("not implemented")
+}
+func (s *stubGovernanceTimeline) CreateBackup(context.Context) (governance.BackupManifest, error) {
+	panic("not implemented")
+}
+func (s *stubGovernanceTimeline) RestoreBackup(context.Context, governance.RestoreRequest) (governance.RestoreResult, error) {
+	panic("not implemented")
+}
+func (s *stubGovernanceTimeline) ExecuteGuard(context.Context, governance.GuardRequest) (governance.GuardResult, error) {
+	panic("not implemented")
+}
+func (s *stubGovernanceTimeline) ExecuteProjectArchive(context.Context, governance.ProjectArchiveRequest) (governance.ProjectArchiveResult, error) {
+	panic("not implemented")
+}
+func (s *stubGovernanceTimeline) ExecuteProjectMerge(context.Context, governance.ProjectMergeRequest) (governance.ProjectMergeResult, error) {
+	panic("not implemented")
+}
+func (s *stubGovernanceTimeline) ExecuteProjectMergeBatch(context.Context, governance.ProjectMergeBatchRequest) (governance.ProjectMergeBatchResult, error) {
+	panic("not implemented")
+}
+func (s *stubGovernanceTimeline) ExecuteProjectDelete(context.Context, governance.ProjectDeleteRequest) (governance.DeleteProjectResult, error) {
+	panic("not implemented")
+}
+
+// TestHandleGovernanceTimeline_HappyPath_TruncatedFalse verifies that when
+// the timeline returns fewer than 500 memories, the response does NOT include
+// a truncated field set to true.
+func TestHandleGovernanceTimeline_HappyPath_TruncatedFalse(t *testing.T) {
+	memories := make([]governance.Memory, 2)
+	memories[0] = governance.Memory{Title: "First"}
+	memories[1] = governance.Memory{Title: "Second"}
+
+	stub := &stubGovernanceTimeline{memories: memories}
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, stub)
+
+	req := httptest.NewRequest(http.MethodGet, "/governance/projects/atlas/timeline", nil)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp struct {
+		Memories  []map[string]any `json:"memories"`
+		Truncated *bool            `json:"truncated,omitempty"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Memories) != 2 {
+		t.Fatalf("expected 2 memories, got %d", len(resp.Memories))
+	}
+	// truncated must be absent (omitempty false) or explicitly false.
+	if resp.Truncated != nil && *resp.Truncated {
+		t.Fatalf("truncated = true, want false or absent for non-truncated result")
+	}
+}
+
+// TestHandleGovernanceTimeline_Truncated verifies that when the service returns
+// exactly 500 memories (the limit), the response includes truncated:true.
+func TestHandleGovernanceTimeline_Truncated(t *testing.T) {
+	memories := make([]governance.Memory, 500)
+	for i := range memories {
+		memories[i] = governance.Memory{Title: fmt.Sprintf("mem-%d", i)}
+	}
+
+	stub := &stubGovernanceTimeline{memories: memories}
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, stub)
+
+	req := httptest.NewRequest(http.MethodGet, "/governance/projects/big-project/timeline", nil)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp struct {
+		Memories  []map[string]any `json:"memories"`
+		Truncated bool             `json:"truncated"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Memories) != 500 {
+		t.Fatalf("expected 500 memories, got %d", len(resp.Memories))
+	}
+	if !resp.Truncated {
+		t.Fatalf("truncated = false, want true when len(memories) == 500")
+	}
+}

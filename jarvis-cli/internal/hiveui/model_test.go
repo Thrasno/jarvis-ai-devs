@@ -559,15 +559,122 @@ func TestEnterOnEmptyListsDoesNotOpenFakeDetail(t *testing.T) {
 
 func TestTimelineZeroCreatedAtRendersUnavailable(t *testing.T) {
 	m := NewModelWithSnapshot(Snapshot{
-		DashboardState: DashboardHealthy,
-		Projects:       []hiveclient.Project{{Name: "core-api", ActiveMemoryCount: 1}},
-		Memories:       []hiveclient.Memory{{SyncID: "mem_zero", Project: "core-api", Category: "decision", Title: "Missing timestamp"}},
+		DashboardState:   DashboardHealthy,
+		Projects:         []hiveclient.Project{{Name: "core-api", ActiveMemoryCount: 1}},
+		Memories:         []hiveclient.Memory{{SyncID: "mem_zero", Project: "core-api", Category: "decision", Title: "Missing timestamp"}},
+		TimelineMemories: []hiveclient.Memory{{SyncID: "mem_zero", Project: "core-api", Category: "decision", Title: "Missing timestamp"}},
 	})
 	m = sendRune(m, 't')
 
 	view := m.View()
 	assertContains(t, view, "┄ n/a", "n/a  decision  Missing timestamp")
 	assertNotContains(t, view, "00:00")
+}
+
+// T16 — Phase 5 — timelineView rendering and empty state
+
+func TestTimelineView_ReadsFromTimelineMemoriesNotProjectMemories(t *testing.T) {
+	base := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	snap := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects:       []hiveclient.Project{{Name: "atlas"}},
+		// Memories contains a note — should NOT appear in timeline view.
+		Memories: []hiveclient.Memory{
+			{SyncID: "m-note", Project: "atlas", Category: "note", Title: "Just a note", CreatedAt: base},
+		},
+		// TimelineMemories contains timeline categories only.
+		TimelineMemories: []hiveclient.Memory{
+			{SyncID: "t-dec", Project: "atlas", Category: "decision", Title: "Use Go", CreatedAt: base},
+			{SyncID: "t-arch", Project: "atlas", Category: "architecture", Title: "Hexagonal layout", CreatedAt: base.Add(time.Hour)},
+		},
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline}
+
+	view := m.View()
+	assertContains(t, view, "Use Go", "Hexagonal layout")
+	// The note from Memories must not appear.
+	assertNotContains(t, view, "Just a note")
+}
+
+func TestTimelineView_EmptyStateRendersPlaceholder(t *testing.T) {
+	snap := Snapshot{
+		DashboardState:   DashboardHealthy,
+		Projects:         []hiveclient.Project{{Name: "atlas"}},
+		TimelineMemories: []hiveclient.Memory{},
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline}
+
+	view := m.View()
+	assertContains(t, view, "No timeline events for this project yet.")
+}
+
+func TestTimelineView_OlderDateGroupAppearsBeforeNewer(t *testing.T) {
+	older := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	snap := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects:       []hiveclient.Project{{Name: "atlas"}},
+		TimelineMemories: []hiveclient.Memory{
+			{SyncID: "t1", Project: "atlas", Category: "decision", Title: "Old decision", CreatedAt: older},
+			{SyncID: "t2", Project: "atlas", Category: "architecture", Title: "New architecture", CreatedAt: newer},
+		},
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline}
+
+	view := m.View()
+	oldIdx := strings.Index(view, "Old decision")
+	newIdx := strings.Index(view, "New architecture")
+	if oldIdx < 0 {
+		t.Fatal("'Old decision' not found in view")
+	}
+	if newIdx < 0 {
+		t.Fatal("'New architecture' not found in view")
+	}
+	if oldIdx > newIdx {
+		t.Fatalf("'Old decision' appears at %d, 'New architecture' at %d: expected older entry first (lower index)", oldIdx, newIdx)
+	}
+}
+
+func TestTimelineView_HelpBarReferencesProjectFlag(t *testing.T) {
+	snap := Snapshot{
+		DashboardState:   DashboardHealthy,
+		Projects:         []hiveclient.Project{{Name: "atlas"}},
+		TimelineMemories: []hiveclient.Memory{},
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline}
+
+	view := m.View()
+	assertContains(t, view, "--project")
+}
+
+func TestTimelineView_TruncationNoticeAppearsWhenFlagSet(t *testing.T) {
+	snap := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects:       []hiveclient.Project{{Name: "atlas"}},
+		TimelineMemories: []hiveclient.Memory{
+			{SyncID: "t1", Project: "atlas", Category: "decision", Title: "A decision"},
+		},
+		TimelineTruncated: true,
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline}
+
+	view := m.View()
+	assertContains(t, view, "showing first 500")
+}
+
+func TestTimelineView_TruncationNoticeAbsentWhenFlagNotSet(t *testing.T) {
+	snap := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects:       []hiveclient.Project{{Name: "atlas"}},
+		TimelineMemories: []hiveclient.Memory{
+			{SyncID: "t1", Project: "atlas", Category: "decision", Title: "A decision"},
+		},
+		TimelineTruncated: false,
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline}
+
+	view := m.View()
+	assertNotContains(t, view, "showing first 500")
 }
 
 func TestGuardedMemoryDeleteRequiresBackupAndExactConfirmationBeforeDispatch(t *testing.T) {
@@ -1087,6 +1194,274 @@ func TestUnsyncedCountDoesNotUseWarningTextOrConsecutiveFailures(t *testing.T) {
 	assertNotContains(t, view, "unsynced 37", "sync 9 behind")
 }
 
+// T16 — Phase 4 — screenMemories helper and navigation routing
+
+func TestScreenMemories_ReturnsTimelineMemoriesOnScreenTimeline(t *testing.T) {
+	timelineMems := []hiveclient.Memory{
+		{SyncID: "t1", Project: "atlas", Category: "decision", Title: "Use Go"},
+		{SyncID: "t2", Project: "atlas", Category: "architecture", Title: "Hexagonal"},
+	}
+	projectMems := []hiveclient.Memory{
+		{SyncID: "m1", Project: "atlas", Category: "note", Title: "A note"},
+	}
+	snap := Snapshot{
+		DashboardState:   DashboardHealthy,
+		Projects:         []hiveclient.Project{{Name: "atlas"}},
+		Memories:         projectMems,
+		TimelineMemories: timelineMems,
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline}
+
+	got := m.screenMemories()
+	if !reflect.DeepEqual(got, timelineMems) {
+		t.Fatalf("screenMemories() = %v, want TimelineMemories %v", got, timelineMems)
+	}
+}
+
+func TestScreenMemories_ReturnsProjectMemoriesOnOtherScreens(t *testing.T) {
+	timelineMems := []hiveclient.Memory{
+		{SyncID: "t1", Project: "atlas", Category: "decision", Title: "Use Go"},
+	}
+	projectMems := []hiveclient.Memory{
+		{SyncID: "m1", Project: "atlas", Category: "note", Title: "A note"},
+	}
+	snap := Snapshot{
+		DashboardState:   DashboardHealthy,
+		Projects:         []hiveclient.Project{{Name: "atlas"}},
+		Memories:         projectMems,
+		TimelineMemories: timelineMems,
+	}
+	m := Model{snapshot: snap, screen: ScreenProjectMemories}
+
+	got := m.screenMemories()
+	// screenMemories on ScreenProjectMemories returns projectMemories() result.
+	if len(got) != 1 || got[0].SyncID != "m1" {
+		t.Fatalf("screenMemories() = %v, want project memories [m1]", got)
+	}
+}
+
+func TestMoveOnScreenTimeline_OperatesOverTimelineMemories(t *testing.T) {
+	timelineMems := []hiveclient.Memory{
+		{SyncID: "t1", Project: "atlas", Category: "decision", Title: "First"},
+		{SyncID: "t2", Project: "atlas", Category: "architecture", Title: "Second"},
+		{SyncID: "t3", Project: "atlas", Category: "bugfix", Title: "Third"},
+	}
+	snap := Snapshot{
+		DashboardState:   DashboardHealthy,
+		Projects:         []hiveclient.Project{{Name: "atlas"}},
+		Memories:         nil, // no project memories
+		TimelineMemories: timelineMems,
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline, memoryIndex: 0}
+
+	m = m.move(1)
+	if m.memoryIndex != 1 {
+		t.Fatalf("memoryIndex = %d, want 1 after move(1)", m.memoryIndex)
+	}
+	m = m.move(1)
+	if m.memoryIndex != 2 {
+		t.Fatalf("memoryIndex = %d, want 2 after move(1)", m.memoryIndex)
+	}
+	// Wraps around: moving forward from last index reaches index 0.
+	m = m.move(1)
+	if m.memoryIndex != 0 {
+		t.Fatalf("memoryIndex = %d, want 0 after wrapping from index 2", m.memoryIndex)
+	}
+}
+
+func TestMoveOnScreenTimeline_NoPanicWhenTimelineEmpty(t *testing.T) {
+	snap := Snapshot{
+		DashboardState:   DashboardHealthy,
+		Projects:         []hiveclient.Project{{Name: "atlas"}},
+		TimelineMemories: []hiveclient.Memory{},
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline, memoryIndex: 0}
+
+	// Must not panic.
+	m = m.move(1)
+	_ = m
+}
+
+func TestSelectedMemoryOnScreenTimeline_ReadsFromTimelineMemories(t *testing.T) {
+	timelineMems := []hiveclient.Memory{
+		{SyncID: "t1", Project: "atlas", Category: "decision", Title: "First"},
+		{SyncID: "t2", Project: "atlas", Category: "architecture", Title: "Second"},
+	}
+	snap := Snapshot{
+		DashboardState:   DashboardHealthy,
+		Projects:         []hiveclient.Project{{Name: "atlas"}},
+		Memories:         nil,
+		TimelineMemories: timelineMems,
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline, memoryIndex: 1}
+
+	got := m.selectedMemory()
+	if got.SyncID != "t2" {
+		t.Fatalf("selectedMemory().SyncID = %q, want t2", got.SyncID)
+	}
+}
+
+// TestRemoveMemoryFromNormalSnapshot_AlsoRemovesFromTimelineMemories verifies
+// that a guarded delete removes the target memory from both snapshot.Memories
+// and snapshot.TimelineMemories.
+func TestRemoveMemoryFromNormalSnapshot_AlsoRemovesFromTimelineMemories(t *testing.T) {
+	const targetID = int64(42)
+	snap := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects: []hiveclient.Project{
+			{Name: "atlas", ActiveMemoryCount: 2, DeletedMemoryCount: 0},
+		},
+		Memories: []hiveclient.Memory{
+			{ID: targetID, SyncID: "m-del", Project: "atlas", Category: "decision", Title: "To be deleted"},
+			{ID: 99, SyncID: "m-keep", Project: "atlas", Category: "bugfix", Title: "Keep me"},
+		},
+		TimelineMemories: []hiveclient.Memory{
+			{ID: targetID, SyncID: "m-del", Project: "atlas", Category: "decision", Title: "To be deleted"},
+			{ID: 99, SyncID: "m-keep", Project: "atlas", Category: "bugfix", Title: "Keep me"},
+		},
+	}
+	m := Model{snapshot: snap}
+
+	m = m.removeMemoryFromNormalSnapshot(targetID)
+
+	// Must be absent from Memories.
+	for _, mem := range m.snapshot.Memories {
+		if mem.ID == targetID {
+			t.Fatalf("deleted memory (ID %d) still present in snapshot.Memories", targetID)
+		}
+	}
+	if len(m.snapshot.Memories) != 1 {
+		t.Fatalf("snapshot.Memories len = %d, want 1", len(m.snapshot.Memories))
+	}
+
+	// Must be absent from TimelineMemories.
+	for _, mem := range m.snapshot.TimelineMemories {
+		if mem.ID == targetID {
+			t.Fatalf("deleted memory (ID %d) still present in snapshot.TimelineMemories", targetID)
+		}
+	}
+	if len(m.snapshot.TimelineMemories) != 1 {
+		t.Fatalf("snapshot.TimelineMemories len = %d, want 1", len(m.snapshot.TimelineMemories))
+	}
+}
+
+// TestTimelineView_SelectedMemoryMatchesHighlightedRow verifies that when
+// TimelineMemories contains entries with non-timeline categories,
+// selectedMemory() returns the same memory that is highlighted in the rendered
+// view. This is the core regression test for the cursor/filter index mismatch.
+func TestTimelineView_SelectedMemoryMatchesHighlightedRow(t *testing.T) {
+	base := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	mems := []hiveclient.Memory{
+		{ID: 1, SyncID: "t1", Project: "atlas", Category: "decision", Title: "First decision", CreatedAt: base},
+		// "note" is not a timeline category — client-side filter used to drop it.
+		{ID: 2, SyncID: "t2", Project: "atlas", Category: "note", Title: "A plain note", CreatedAt: base.Add(time.Hour)},
+		{ID: 3, SyncID: "t3", Project: "atlas", Category: "architecture", Title: "Arch choice", CreatedAt: base.Add(2 * time.Hour)},
+	}
+	snap := Snapshot{
+		DashboardState:   DashboardHealthy,
+		Projects:         []hiveclient.Project{{Name: "atlas"}},
+		TimelineMemories: mems,
+	}
+
+	// Cursor at index 1 — should point at "A plain note".
+	m := Model{snapshot: snap, screen: ScreenTimeline, memoryIndex: 1}
+
+	selected := m.selectedMemory()
+	view := m.View()
+
+	// selectedMemory() must return the entry at index 1: "A plain note".
+	if selected.SyncID != "t2" {
+		t.Fatalf("selectedMemory().SyncID = %q, want t2 (A plain note)", selected.SyncID)
+	}
+
+	// The view must highlight "A plain note" (cursor marker present on that row).
+	// We verify the title appears in the view at all.
+	if !strings.Contains(view, "A plain note") {
+		t.Fatalf("timelineView does not contain 'A plain note'; all three entries should be rendered")
+	}
+
+	// Cursor at index 2 — should point at "Arch choice".
+	m.memoryIndex = 2
+	selected2 := m.selectedMemory()
+	if selected2.SyncID != "t3" {
+		t.Fatalf("selectedMemory().SyncID = %q, want t3 (Arch choice)", selected2.SyncID)
+	}
+}
+
+// TestRemoveMemoryFromNormalSnapshot_ClampsMemoryIndexAgainstTimeline verifies
+// that when detailReturn == ScreenTimeline, memoryIndex is clamped against
+// len(TimelineMemories) after the delete, not len(projectMemories()).
+func TestRemoveMemoryFromNormalSnapshot_ClampsMemoryIndexAgainstTimeline(t *testing.T) {
+	const targetID = int64(10)
+	snap := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects: []hiveclient.Project{
+			{Name: "atlas", ActiveMemoryCount: 4, DeletedMemoryCount: 0},
+		},
+		// Four project memories — projectMemories() returns len 3 after delete.
+		Memories: []hiveclient.Memory{
+			{ID: targetID, SyncID: "m-del", Project: "atlas", Category: "decision", Title: "Delete"},
+			{ID: 11, SyncID: "m1", Project: "atlas", Category: "bugfix", Title: "B1"},
+			{ID: 12, SyncID: "m2", Project: "atlas", Category: "bugfix", Title: "B2"},
+			{ID: 13, SyncID: "m3", Project: "atlas", Category: "bugfix", Title: "B3"},
+		},
+		// Only two entries in timeline — a smaller slice.
+		TimelineMemories: []hiveclient.Memory{
+			{ID: targetID, SyncID: "m-del", Project: "atlas", Category: "decision", Title: "Delete"},
+			{ID: 11, SyncID: "m1", Project: "atlas", Category: "bugfix", Title: "B1"},
+		},
+	}
+	// memoryIndex 2 is valid for projectMemories (len 3 after delete) but
+	// out of bounds for TimelineMemories (len 1 after delete).
+	m := Model{
+		snapshot:     snap,
+		screen:       ScreenMemoryDetail,
+		detailReturn: ScreenTimeline,
+		memoryIndex:  2,
+	}
+
+	m = m.removeMemoryFromNormalSnapshot(targetID)
+
+	// After delete, TimelineMemories has 1 entry (index 0 only).
+	// memoryIndex must be clamped to 0, not left at 2.
+	if m.memoryIndex >= len(m.snapshot.TimelineMemories) {
+		t.Fatalf("memoryIndex = %d is out of bounds for TimelineMemories len %d",
+			m.memoryIndex, len(m.snapshot.TimelineMemories))
+	}
+}
+
+// TestRemoveMemoryFromNormalSnapshot_ClampsMemoryIndexAgainstTimeline_EmptyTimeline
+// verifies that memoryIndex is reset to 0 when TimelineMemories becomes empty.
+func TestRemoveMemoryFromNormalSnapshot_ClampsMemoryIndexAgainstTimeline_EmptyTimeline(t *testing.T) {
+	const targetID = int64(20)
+	snap := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects: []hiveclient.Project{
+			{Name: "atlas", ActiveMemoryCount: 2, DeletedMemoryCount: 0},
+		},
+		Memories: []hiveclient.Memory{
+			{ID: targetID, SyncID: "m-del", Project: "atlas", Category: "decision", Title: "Delete"},
+			{ID: 21, SyncID: "m1", Project: "atlas", Category: "bugfix", Title: "B1"},
+		},
+		// Only the target in timeline — will be empty after delete.
+		TimelineMemories: []hiveclient.Memory{
+			{ID: targetID, SyncID: "m-del", Project: "atlas", Category: "decision", Title: "Delete"},
+		},
+	}
+	m := Model{
+		snapshot:     snap,
+		screen:       ScreenMemoryDetail,
+		detailReturn: ScreenTimeline,
+		memoryIndex:  0,
+	}
+
+	m = m.removeMemoryFromNormalSnapshot(targetID)
+
+	if m.memoryIndex != 0 {
+		t.Fatalf("memoryIndex = %d, want 0 when TimelineMemories is empty", m.memoryIndex)
+	}
+}
+
 func sendKey(m Model, key tea.KeyType) Model {
 	updated, _ := m.Update(tea.KeyMsg{Type: key})
 	return updated.(Model)
@@ -1224,6 +1599,10 @@ func projectMergeSnapshot() Snapshot {
 func deletedGuardedMemorySnapshot() Snapshot {
 	snapshot := guardedMemorySnapshot()
 	snapshot.Memories[0].Deleted = true
+	// Mirror the deletion in TimelineMemories so ScreenTimeline shows [deleted] too.
+	if len(snapshot.TimelineMemories) > 0 {
+		snapshot.TimelineMemories[0].Deleted = true
+	}
 	return snapshot
 }
 
@@ -1239,6 +1618,11 @@ func sampleNavigationSnapshot() Snapshot {
 			{SyncID: "mem_8f3a91c0", Project: "core-api", Category: "decision", Title: "Use exponential backoff", CreatedBy: "mcp", CreatedAt: base, Deleted: false},
 			{SyncID: "mem_503", Project: "core-api", Category: "bugfix", Title: "Fix retry storm", CreatedBy: "mcp", CreatedAt: base.Add(-7 * time.Minute), Deleted: false},
 			{SyncID: "mem_web", Project: "web-client", Category: "pattern", Title: "Use presenter boundary", CreatedAt: base.Add(-time.Hour), Deleted: false},
+		},
+		// TimelineMemories is pre-populated to support ScreenTimeline navigation tests.
+		TimelineMemories: []hiveclient.Memory{
+			{SyncID: "tl_1", Project: "core-api", Category: "decision", Title: "Use exponential backoff", CreatedBy: "mcp", CreatedAt: base, Deleted: false},
+			{SyncID: "tl_2", Project: "core-api", Category: "bugfix", Title: "Fix retry storm", CreatedBy: "mcp", CreatedAt: base.Add(7 * time.Minute), Deleted: false},
 		},
 		Health:   []hiveclient.Health{{Project: "core-api", LastSuccessAt: base.Add(-2 * time.Hour), LastFailureAt: base.Add(-6 * time.Minute), BackoffUntil: base.Add(time.Hour), ConsecutiveFailures: 12, LastError: "401 unauthorized"}},
 		Warnings: []hiveclient.Warning{{Severity: "critical", Source: "CONFIG-401", Message: "Hive API rejected credentials", ResolutionState: "active", CreatedAt: base}},

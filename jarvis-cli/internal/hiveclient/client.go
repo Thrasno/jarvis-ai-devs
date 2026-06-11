@@ -236,17 +236,17 @@ type ConfigUpdateRequest struct {
 // Keep in sync with hive-daemon/internal/httpapi/config.go ConfigStatusResponse.
 // The daemon embeds ConfigStatusResponse directly and adds restart_required.
 type configUpdateWire struct {
-	Configured     bool     `json:"configured"`
-	Source         string   `json:"source"`
-	APIURL         string   `json:"api_url"`
-	Email          string   `json:"email"`
-	PasswordSet    bool     `json:"password_set"`
-	PasswordMasked string   `json:"password_masked"`
-	AutoSync       bool     `json:"auto_sync"`
-	EnvActive      bool     `json:"env_active"`
-	RestartHint    string   `json:"restart_hint,omitempty"`
-	Warnings       []string `json:"warnings,omitempty"`
-	RestartRequired bool    `json:"restart_required"`
+	Configured      bool     `json:"configured"`
+	Source          string   `json:"source"`
+	APIURL          string   `json:"api_url"`
+	Email           string   `json:"email"`
+	PasswordSet     bool     `json:"password_set"`
+	PasswordMasked  string   `json:"password_masked"`
+	AutoSync        bool     `json:"auto_sync"`
+	EnvActive       bool     `json:"env_active"`
+	RestartHint     string   `json:"restart_hint,omitempty"`
+	Warnings        []string `json:"warnings,omitempty"`
+	RestartRequired bool     `json:"restart_required"`
 }
 
 // ConfigUpdateResponse is the structured result of UpdateConfig.
@@ -455,6 +455,29 @@ func (c *Client) TestConnection(ctx context.Context, req ConfigTestRequest) (Con
 		return ConfigTestResult{}, err
 	}
 	return result, nil
+}
+
+// TimelineResult is the structured result of Timeline.
+// Truncated is true when the daemon hit the 500-entry hard limit.
+type TimelineResult struct {
+	Memories  []Memory
+	Truncated bool
+}
+
+// Timeline fetches the category-filtered, ASC-ordered timeline for a project
+// via GET /governance/projects/{name}/timeline.
+// It returns an APIError (with StatusCode 404) when the project does not exist.
+// TimelineResult.Truncated is true when the response signals the 500-entry limit was hit.
+func (c *Client) Timeline(ctx context.Context, project string) (TimelineResult, error) {
+	var body struct {
+		Memories  []Memory `json:"memories"`
+		Truncated bool     `json:"truncated"`
+	}
+	path := "/governance/projects/" + url.PathEscape(project) + "/timeline"
+	if err := c.get(ctx, path, nil, &body, false); err != nil {
+		return TimelineResult{}, err
+	}
+	return TimelineResult{Memories: body.Memories, Truncated: body.Truncated}, nil
 }
 
 // MergeProjects sends a multi-source batch merge request to POST /governance/projects/merge.
