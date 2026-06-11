@@ -86,13 +86,28 @@ func (s *Service) Update(_ context.Context, req ConfigUpdate) (ConfigStatus, err
 	}
 
 	hint := restartHint(status.Source)
-	return buildConfigStatus(cfg, status, hint), nil
+	// Build the returned status from the values that were actually written,
+	// not from the stale cfg loaded before WriteFileConfig.
+	writtenCfg := &Config{
+		APIURL:   toWrite.APIURL,
+		Email:    toWrite.Email,
+		Password: toWrite.Password,
+		AutoSync: toWrite.AutoSync,
+	}
+	writtenStatus := SyncConfigStatus{
+		Configured: true,
+		Source:     ConfigSourceFile,
+		EnvActive:  status.EnvActive,
+		AutoSync:   toWrite.AutoSync,
+		Warnings:   status.Warnings,
+	}
+	return buildConfigStatus(writtenCfg, writtenStatus, hint), nil
 }
 
 // Test validates the request, resolves the effective password, constructs a
 // transient sync client, and attempts to log in. It never writes any file.
 // A connectivity failure is reported as ConfigTestResult{OK: false} — not a Go error.
-func (s *Service) Test(_ context.Context, req ConfigUpdate) (ConfigTestResult, error) {
+func (s *Service) Test(ctx context.Context, req ConfigUpdate) (ConfigTestResult, error) {
 	if err := validateConfigUpdate(req); err != nil {
 		// Validation errors are returned as Go errors so the handler can map to 400.
 		return ConfigTestResult{}, err
@@ -117,10 +132,14 @@ func (s *Service) Test(_ context.Context, req ConfigUpdate) (ConfigTestResult, e
 	}
 	c := newClient(testCfg)
 
-	if loginErr := c.Login(context.Background()); loginErr != nil {
+	if loginErr := c.Login(ctx); loginErr != nil {
 		// Sanitise: never expose the effective password in the message.
+		// Guard the replacement: strings.ReplaceAll with an empty needle mangles every
+		// character boundary, so only replace when there is actually a secret to hide.
 		msg := loginErr.Error()
-		msg = strings.ReplaceAll(msg, effectivePassword, "[REDACTED]")
+		if effectivePassword != "" {
+			msg = strings.ReplaceAll(msg, effectivePassword, "[REDACTED]")
+		}
 		return ConfigTestResult{OK: false, Message: "Connection failed: " + msg}, nil
 	}
 	return ConfigTestResult{OK: true, Message: "Connection succeeded"}, nil
@@ -150,7 +169,7 @@ func buildConfigStatus(cfg *Config, status SyncConfigStatus, hint string) Config
 	cs.Source = status.Source
 	cs.AutoSync = status.AutoSync
 	cs.Warnings = status.Warnings
-	cs.EnvActive = status.Source == ConfigSourceEnv
+	cs.EnvActive = status.EnvActive
 	cs.RestartHint = hint
 
 	if cfg != nil {

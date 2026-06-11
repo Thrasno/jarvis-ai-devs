@@ -1858,7 +1858,7 @@ func TestConfigStatus_200_Unconfigured(t *testing.T) {
 // TestConfigUpdate_200_NewPassword verifies POST /governance/config with a new
 // password returns RestartRequired=true and the file is written correctly.
 func TestConfigUpdate_200_NewPassword(t *testing.T) {
-	const rawSecret = "supersecret"
+	const rawSecret = "newpass"
 	var gotUpdate httpapi.ConfigServiceUpdate
 
 	svc := &fakeConfigService{
@@ -2026,7 +2026,7 @@ func TestConfigUpdate_400_EmptyEmail(t *testing.T) {
 // TestConfigTest_200_Success verifies POST /governance/config/test returns
 // 200 with ok=true on success.
 func TestConfigTest_200_Success(t *testing.T) {
-	const rawSecret = "supersecret"
+	const rawSecret = "realpass"
 
 	svc := &fakeConfigService{
 		testFn: func(_ context.Context, req httpapi.ConfigServiceUpdate) (httpapi.ConfigServiceTestResult, error) {
@@ -2063,7 +2063,7 @@ func TestConfigTest_200_Success(t *testing.T) {
 // TestConfigTest_200_Failure verifies POST /governance/config/test returns
 // 200 with ok=false (NOT an HTTP error) on auth failure, without leaking raw password.
 func TestConfigTest_200_Failure(t *testing.T) {
-	const rawSecret = "supersecret"
+	const rawSecret = "wrongpass"
 
 	svc := &fakeConfigService{
 		testFn: func(_ context.Context, req httpapi.ConfigServiceUpdate) (httpapi.ConfigServiceTestResult, error) {

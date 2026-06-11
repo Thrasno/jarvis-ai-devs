@@ -57,8 +57,7 @@ func (c *client) login(ctx context.Context) (token string, expiresAt time.Time, 
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", time.Time{}, fmt.Errorf("login failed (%d): %s", resp.StatusCode, string(body))
+		return "", time.Time{}, fmt.Errorf("login failed (status %d)", resp.StatusCode)
 	}
 
 	var result struct {
