@@ -83,6 +83,10 @@ func TestClaudeEmbeddedHooks_UseSessionScopedTempMarkers(t *testing.T) {
 }
 
 func TestClaudeEmbeddedUserPromptHook_CapturesPromptWithoutJQ(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix shell hook behavior is covered on Unix runners")
+	}
+
 	for _, tt := range []struct {
 		name   string
 		prompt string
