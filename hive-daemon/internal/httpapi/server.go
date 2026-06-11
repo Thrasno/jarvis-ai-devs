@@ -57,6 +57,7 @@ type Server struct {
 	projects   project.Store
 	governance GovernanceService
 	config     ConfigService
+	health     HealthService
 	mux        *http.ServeMux
 }
 
@@ -73,20 +74,27 @@ func NewServerWithGovernance(addr string, prompts PromptStore, governance Govern
 	return NewServerWithProjectStoreAndGovernance(addr, prompts, nil, governance)
 }
 
+// NewServerWithGovernanceAndHealth constructs a Server with governance and health endpoints.
+// Used when both GovernanceService and HealthService are available.
+func NewServerWithGovernanceAndHealth(addr string, prompts PromptStore, governance GovernanceService, health HealthService) *Server {
+	return NewServerWithAll(addr, prompts, nil, governance, nil, health)
+}
+
 func NewServerWithProjectStoreAndGovernance(addr string, prompts PromptStore, projects project.Store, governance GovernanceService) *Server {
-	return NewServerWithAll(addr, prompts, projects, governance, nil)
+	return NewServerWithAll(addr, prompts, projects, governance, nil, nil)
 }
 
 // NewServerWithConfig constructs a Server with a ConfigService for the
 // three /governance/config* endpoints.
 func NewServerWithConfig(addr string, prompts PromptStore, config ConfigService) *Server {
-	return NewServerWithAll(addr, prompts, nil, nil, config)
+	return NewServerWithAll(addr, prompts, nil, nil, config, nil)
 }
 
 // NewServerWithAll is the canonical constructor. All other constructors
-// delegate to this one.
-func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, governance GovernanceService, config ConfigService) *Server {
-	s := &Server{addr: addr, prompts: prompts, projects: projects, governance: governance, config: config}
+// delegate to this one. The health parameter is nil-safe: when nil, the
+// /governance/health/summary route is not registered.
+func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, governance GovernanceService, config ConfigService, health HealthService) *Server {
+	s := &Server{addr: addr, prompts: prompts, projects: projects, governance: governance, config: config, health: health}
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("/prompts", s.handlePrompts)
 	if governance != nil {
@@ -105,6 +113,9 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 		s.mux.HandleFunc("GET /governance/config/status", s.handleConfigStatus)
 		s.mux.HandleFunc("POST /governance/config", s.handleConfigUpdate)
 		s.mux.HandleFunc("POST /governance/config/test", s.handleConfigTest)
+	}
+	if health != nil {
+		s.mux.HandleFunc("GET /governance/health/summary", s.handleHealthSummary)
 	}
 	return s
 }

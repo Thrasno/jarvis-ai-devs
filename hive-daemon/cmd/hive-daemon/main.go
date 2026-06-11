@@ -58,7 +58,8 @@ func main() {
 		backupStore := governance.NewSQLiteBackupStore(dbPath, "", store.RawDB())
 		govSvc := governance.NewServiceWithBackup(store, backupStore)
 		configSvc := httpapi.NewSyncServiceAdapter(hivesync.NewService())
-		srv := httpapi.NewServerWithAll(httpAddr(), store, store, govSvc, configSvc)
+		healthSvc := httpapi.NewHealthServiceAdapter(hivesync.NewHealthService(store, nil))
+		srv := httpapi.NewServerWithAll(httpAddr(), store, store, govSvc, configSvc, healthSvc)
 		if err := srv.Start(rootCtx); err != nil {
 			logger.Log.Printf("http server stopped: %v (mcp continues)", err)
 		}
