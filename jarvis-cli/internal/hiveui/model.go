@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -150,6 +151,22 @@ type Model struct {
 	memoryContent string
 	memoryLoading bool
 	memoryLoadErr error
+
+	// ScreenAPIConfig form state.
+	configService       ConfigService
+	configAPIURL        string
+	configEmail         string
+	configPassword      string // RAW in model; NEVER passed to View() directly
+	configPasswordDirty bool   // false = still holds masked sentinel; true = user typed a new value
+	configAutoSync      bool
+	configCursor        configField
+	configLoading       bool
+	configSubmitting    bool
+	configTesting       bool
+	configRestartHint   string
+	configEnvActive     bool
+	configTestResult    *hiveclient.ConfigTestResult
+	configLoadErr       error
 }
 
 type memoryGuardStep int
@@ -189,6 +206,47 @@ const (
 	projectPurgeBackupID
 	projectPurgeConfirmation
 )
+
+// configField is the enum of focusable fields and actions on ScreenAPIConfig.
+type configField int
+
+const (
+	configFieldAPIURL   configField = iota // text field: API URL
+	configFieldEmail                       // text field: Email
+	configFieldPassword                    // text field: Password (masked)
+	configFieldAutoSync                    // toggle: AutoSync
+	configFieldTestConn                    // action: Test Connection
+	configFieldSave                        // action: Save
+)
+
+// configFieldCount is the total number of focusable positions in the config form.
+const configFieldCount = 6
+
+// ConfigService is the interface hiveui uses to read and update the Hive API
+// sync configuration. hiveclient.Client satisfies this interface.
+type ConfigService interface {
+	GetConfigStatus(context.Context) (hiveclient.ConfigStatus, error)
+	UpdateConfig(context.Context, hiveclient.ConfigUpdateRequest) (hiveclient.ConfigUpdateResponse, error)
+	TestConnection(context.Context, hiveclient.ConfigTestRequest) (hiveclient.ConfigTestResult, error)
+}
+
+// configStatusLoadedMsg carries the result of a GetConfigStatus call.
+type configStatusLoadedMsg struct {
+	status hiveclient.ConfigStatus
+	err    error
+}
+
+// configSaveResultMsg carries the result of an UpdateConfig call.
+type configSaveResultMsg struct {
+	response hiveclient.ConfigUpdateResponse
+	err      error
+}
+
+// configTestResultMsg carries the result of a TestConnection call.
+type configTestResultMsg struct {
+	result hiveclient.ConfigTestResult
+	err    error
+}
 
 type memoryGuardResultMsg struct {
 	operation  string
@@ -276,6 +334,15 @@ func NewModelWithAllExecutors(snapshot Snapshot, guard GuardExecutor, archive Pr
 	return m
 }
 
+// NewModelWithConfig creates a Model with all executors plus a ConfigService for
+// the interactive ScreenAPIConfig form. Pass a nil ConfigService to fall back to
+// the read-only placeholder view.
+func NewModelWithConfig(snapshot Snapshot, guard GuardExecutor, archive ProjectArchiveExecutor, merge ProjectMergeExecutor, memory MemoryLoader, batchMerge ProjectMergeBatchExecutor, deleteExecutor ProjectDeleteExecutor, config ConfigService) Model {
+	m := NewModelWithAllExecutors(snapshot, guard, archive, merge, memory, batchMerge, deleteExecutor)
+	m.configService = config
+	return m
+}
+
 func (m Model) Init() tea.Cmd { return nil }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -296,6 +363,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if result, ok := msg.(projectDeleteResultMsg); ok {
 		return m.applyProjectDeleteResult(result), nil
+	}
+	if result, ok := msg.(configStatusLoadedMsg); ok {
+		return m.applyConfigStatusLoaded(result), nil
+	}
+	if result, ok := msg.(configSaveResultMsg); ok {
+		return m.applyConfigSaveResult(result), nil
+	}
+	if result, ok := msg.(configTestResultMsg); ok {
+		return m.applyConfigTestResult(result), nil
 	}
 	if sz, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width = sz.Width
@@ -341,6 +417,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.updateMemoryGuard(key)
 	}
+	if m.screen == ScreenAPIConfig {
+		return m.updateAPIConfig(key)
+	}
 	if key.Type == tea.KeyCtrlC || runeKey(key, 'q') {
 		return m, tea.Quit
 	}
@@ -370,6 +449,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.screen = ScreenAPIHealth
 	case runeKey(key, 'c'):
 		m.screen = ScreenAPIConfig
+		return m.startConfigLoad()
 	case key.Type == tea.KeyDown || runeKey(key, 'j'):
 		m = m.move(1)
 	case key.Type == tea.KeyUp || runeKey(key, 'k'):
@@ -378,6 +458,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.open()
 		if m.screen == ScreenMemoryDetail && m.memoryLoader != nil {
 			return m.startMemoryLoad()
+		}
+		if m.screen == ScreenAPIConfig && m.configService != nil {
+			return m.startConfigLoad()
 		}
 	}
 	return m, nil
@@ -616,7 +699,17 @@ func (m Model) back() Model {
 		m.screen = ScreenDashboard
 	case ScreenBackupDetail:
 		m.screen = ScreenBackups
-	case ScreenWarnings, ScreenBackups, ScreenAPIHealth, ScreenAPIConfig:
+	case ScreenAPIConfig:
+		m.screen = ScreenDashboard
+		m.configTestResult = nil
+		m.configSubmitting = false
+		m.configTesting = false
+		m.configPasswordDirty = false
+		m.configRestartHint = ""
+		m.configEnvActive = false
+		m.configLoadErr = nil
+		m.configLoading = false
+	case ScreenWarnings, ScreenBackups, ScreenAPIHealth:
 		m.screen = ScreenDashboard
 	case ScreenProjects:
 		m.screen = ScreenDashboard
@@ -2280,6 +2373,254 @@ func healthStateBadge(state string) lipgloss.Style {
 	}
 }
 
+// maskedInput renders the password value as asterisks for display.
+// The raw value is NEVER passed to this function directly from View() — always
+// use m.configPassword only inside this helper.
+func maskedInput(value string) string {
+	if value == "" {
+		return "-"
+	}
+	count := utf8.RuneCountInString(value)
+	return strings.Repeat("*", count)
+}
+
+// startConfigLoad issues a Cmd to fetch config status from the daemon.
+// It sets configLoading=true so the view renders a loading indicator.
+func (m Model) startConfigLoad() (tea.Model, tea.Cmd) {
+	if m.configService == nil {
+		return m, nil
+	}
+	m.configLoading = true
+	m.configLoadErr = nil
+	svc := m.configService
+	return m, func() tea.Msg {
+		status, err := svc.GetConfigStatus(context.Background())
+		return configStatusLoadedMsg{status: status, err: err}
+	}
+}
+
+// applyConfigStatusLoaded processes the result of a GetConfigStatus call.
+func (m Model) applyConfigStatusLoaded(msg configStatusLoadedMsg) Model {
+	if !m.configLoading {
+		return m
+	}
+	m.configLoading = false
+	if msg.err != nil {
+		m.configLoadErr = msg.err
+		return m
+	}
+	m.configAPIURL = msg.status.APIURL
+	m.configEmail = msg.status.Email
+	m.configPassword = msg.status.PasswordMasked // stores the masked sentinel
+	m.configPasswordDirty = false
+	m.configAutoSync = msg.status.AutoSync
+	m.configEnvActive = msg.status.EnvActive
+	m.configLoadErr = nil
+	return m
+}
+
+// updateAPIConfig handles key events while ScreenAPIConfig is active.
+func (m Model) updateAPIConfig(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Loading: only allow esc/q/ctrl-c.
+	if m.configLoading {
+		switch {
+		case key.Type == tea.KeyCtrlC || runeKey(key, 'q'):
+			return m, tea.Quit
+		case key.Type == tea.KeyEsc:
+			m = m.back()
+			return m, nil
+		}
+		return m, nil
+	}
+
+	// Submitting or testing: block most keys but still allow quit and back.
+	if m.configSubmitting || m.configTesting {
+		switch {
+		case key.Type == tea.KeyCtrlC || runeKey(key, 'q'):
+			return m, tea.Quit
+		case key.Type == tea.KeyEsc:
+			m = m.back()
+			return m, nil
+		}
+		return m, nil
+	}
+
+	switch {
+	case key.Type == tea.KeyCtrlC || runeKey(key, 'q'):
+		return m, tea.Quit
+
+	case key.Type == tea.KeyEsc:
+		m = m.back()
+		return m, nil
+
+	case key.Type == tea.KeyDown || runeKey(key, 'j'):
+		m.configCursor = configField((int(m.configCursor) + 1) % configFieldCount)
+		return m, nil
+
+	case key.Type == tea.KeyUp || runeKey(key, 'k'):
+		m.configCursor = configField((int(m.configCursor) - 1 + configFieldCount) % configFieldCount)
+		return m, nil
+
+	case key.Type == tea.KeyEnter:
+		return m.submitAPIConfigAction()
+
+	case key.Type == tea.KeySpace:
+		if m.configCursor == configFieldAutoSync {
+			m.configAutoSync = !m.configAutoSync
+			return m, nil
+		}
+		if m.configCursor == configFieldAPIURL || m.configCursor == configFieldEmail || m.configCursor == configFieldPassword {
+			m = m.appendConfigFieldRune(' ')
+			return m, nil
+		}
+		return m, nil
+
+	case key.Type == tea.KeyBackspace:
+		m = m.removeConfigFieldRune()
+		return m, nil
+
+	case key.Type == tea.KeyRunes:
+		m = m.appendConfigFieldRune(key.Runes[0])
+		return m, nil
+	}
+	return m, nil
+}
+
+// appendConfigFieldRune appends a rune to the currently focused text field.
+func (m Model) appendConfigFieldRune(r rune) Model {
+	switch m.configCursor {
+	case configFieldAPIURL:
+		m.configAPIURL += string(r)
+	case configFieldEmail:
+		m.configEmail += string(r)
+	case configFieldPassword:
+		m.configPassword += string(r)
+		m.configPasswordDirty = true
+	}
+	return m
+}
+
+// removeConfigFieldRune removes the last rune from the currently focused text field.
+func (m Model) removeConfigFieldRune() Model {
+	switch m.configCursor {
+	case configFieldAPIURL:
+		m.configAPIURL = trimLastRune(m.configAPIURL)
+	case configFieldEmail:
+		m.configEmail = trimLastRune(m.configEmail)
+	case configFieldPassword:
+		m.configPassword = trimLastRune(m.configPassword)
+		if m.configPassword == "" {
+			m.configPasswordDirty = true
+		}
+	}
+	return m
+}
+
+// submitAPIConfigAction handles Enter on the current field/action.
+func (m Model) submitAPIConfigAction() (tea.Model, tea.Cmd) {
+	switch m.configCursor {
+	case configFieldAutoSync:
+		m.configAutoSync = !m.configAutoSync
+		return m, nil
+	case configFieldSave:
+		return m.submitConfigSave()
+	case configFieldTestConn:
+		return m.submitConfigTest()
+	}
+	// For text fields, Enter is a no-op (cursor stays, no navigation).
+	return m, nil
+}
+
+// submitConfigSave validates fields and dispatches an UpdateConfig cmd.
+func (m Model) submitConfigSave() (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(m.configAPIURL) == "" || strings.TrimSpace(m.configEmail) == "" {
+		m.configLoadErr = fmt.Errorf("API URL and Email are required")
+		return m, nil
+	}
+	if m.configService == nil {
+		m.configLoadErr = fmt.Errorf("API configuration service is not available")
+		return m, nil
+	}
+	password := m.configPassword
+	if !m.configPasswordDirty {
+		password = hiveclient.MaskedSecret
+	}
+	req := hiveclient.ConfigUpdateRequest{
+		APIURL:   strings.TrimSpace(m.configAPIURL),
+		Email:    strings.TrimSpace(m.configEmail),
+		Password: password,
+		AutoSync: m.configAutoSync,
+	}
+	m.configSubmitting = true
+	m.configLoadErr = nil
+	svc := m.configService
+	return m, func() tea.Msg {
+		resp, err := svc.UpdateConfig(context.Background(), req)
+		return configSaveResultMsg{response: resp, err: err}
+	}
+}
+
+// applyConfigSaveResult processes the result of an UpdateConfig call.
+func (m Model) applyConfigSaveResult(msg configSaveResultMsg) Model {
+	if !m.configSubmitting {
+		return m
+	}
+	m.configSubmitting = false
+	if msg.err != nil {
+		m.configLoadErr = msg.err
+		return m
+	}
+	m.configRestartHint = msg.response.RestartHint
+	m.configEnvActive = msg.response.EnvActive
+	// Refresh fields from the returned status.
+	m.configAPIURL = msg.response.Status.APIURL
+	m.configEmail = msg.response.Status.Email
+	m.configPassword = msg.response.Status.PasswordMasked
+	m.configPasswordDirty = false
+	m.configAutoSync = msg.response.Status.AutoSync
+	m.configLoadErr = nil
+	return m
+}
+
+// submitConfigTest validates fields and dispatches a TestConnection cmd.
+func (m Model) submitConfigTest() (tea.Model, tea.Cmd) {
+	if m.configService == nil {
+		m.configLoadErr = fmt.Errorf("API configuration service is not available")
+		return m, nil
+	}
+	password := m.configPassword
+	if !m.configPasswordDirty {
+		password = hiveclient.MaskedSecret
+	}
+	req := hiveclient.ConfigTestRequest{
+		APIURL:   strings.TrimSpace(m.configAPIURL),
+		Email:    strings.TrimSpace(m.configEmail),
+		Password: password,
+	}
+	m.configTesting = true
+	m.configLoadErr = nil
+	svc := m.configService
+	return m, func() tea.Msg {
+		result, err := svc.TestConnection(context.Background(), req)
+		return configTestResultMsg{result: result, err: err}
+	}
+}
+
+// applyConfigTestResult processes the result of a TestConnection call.
+func (m Model) applyConfigTestResult(msg configTestResultMsg) Model {
+	if !m.configTesting {
+		return m
+	}
+	m.configTesting = false
+	if msg.err != nil {
+		m.configLoadErr = msg.err
+		return m
+	}
+	result := msg.result
+	m.configTestResult = &result
+	return m
+}
+
 func (m Model) apiConfigView() string {
 	w := max(m.width, 80)
 	panelW := panelWidth(w)
@@ -2290,17 +2631,112 @@ func (m Model) apiConfigView() string {
 	sb.WriteString(headerRow(crumb, modeBadge("secrets"), w))
 	sb.WriteString("\n")
 
-	endpointContent := "Read-only snapshot\n" +
-		dimTextStyle.Render("API configuration endpoint is not available from the current daemon client contract.")
-	sb.WriteString(borderedPanel(sectionHeader("ENDPOINT", panelW)+endpointContent, panelW))
+	// Graceful degradation: no ConfigService available.
+	if m.configService == nil {
+		endpointContent := "Read-only snapshot\n" +
+			dimTextStyle.Render("API configuration is not available from the current daemon client contract.")
+		sb.WriteString(borderedPanel(sectionHeader("ENDPOINT", panelW)+endpointContent, panelW))
+		sb.WriteString("\n")
+		credContent := readOnlyBanner.Render("Secrets are never displayed, echoed, or inferred by this TUI.")
+		sb.WriteString(borderedPanel(sectionHeader("CREDENTIALS — NEVER SHOWN OR LOGGED", panelW)+credContent, panelW))
+		sb.WriteString("\n")
+		sb.WriteString(helpBar([]KeyHint{{"esc", "back"}, {"q", "quit"}}, "secrets", w))
+		return sb.String()
+	}
+
+	// Loading state.
+	if m.configLoading {
+		loadContent := dimTextStyle.Render("Loading config from hive-daemon...")
+		sb.WriteString(borderedPanel(sectionHeader("CONFIG", panelW)+loadContent, panelW))
+		sb.WriteString("\n")
+		sb.WriteString(helpBar([]KeyHint{{"esc", "back"}, {"q", "quit"}}, "secrets", w))
+		return sb.String()
+	}
+
+	// Error state (load failed).
+	if m.configLoadErr != nil {
+		errContent := fmt.Sprintf("Configuration error: %v", m.configLoadErr)
+		sb.WriteString(borderedPanel(sectionHeader("CONFIG ERROR", panelW)+errContent, panelW))
+		sb.WriteString("\n")
+		sb.WriteString(helpBar([]KeyHint{{"esc", "back"}, {"q", "quit"}}, "secrets", w))
+		return sb.String()
+	}
+
+	// Env-active NOTICE: shown when env vars are active (independent of save).
+	if m.configEnvActive {
+		noticeContent := dimTextStyle.Render("Environment variables (HIVE_API_*) are active and override the file config at runtime. Changes saved here will take effect only after restarting hive-daemon with those env vars unset.")
+		sb.WriteString(borderedPanel(sectionHeader("NOTICE — ENV VARS ACTIVE", panelW)+noticeContent, panelW))
+		sb.WriteString("\n")
+	}
+
+	// Form fields.
+	fieldContent := m.renderConfigField(configFieldAPIURL, "API URL", visibleInput(m.configAPIURL), panelW)
+	fieldContent += m.renderConfigField(configFieldEmail, "Email", visibleInput(m.configEmail), panelW)
+	// Password is ALWAYS rendered as masked — never the raw value.
+	fieldContent += m.renderConfigField(configFieldPassword, "Password", maskedInput(m.configPassword), panelW)
+	// AutoSync toggle.
+	autoSyncVal := "[ ] disabled"
+	if m.configAutoSync {
+		autoSyncVal = "[x] enabled"
+	}
+	fieldContent += m.renderConfigField(configFieldAutoSync, "Auto Sync", autoSyncVal, panelW)
+	sb.WriteString(borderedPanel(sectionHeader("CONFIGURATION", panelW)+fieldContent, panelW))
 	sb.WriteString("\n")
 
-	credContent := readOnlyBanner.Render("Secrets are never displayed, echoed, or inferred by this TUI.")
-	sb.WriteString(borderedPanel(sectionHeader("CREDENTIALS — NEVER SHOWN OR LOGGED", panelW)+credContent, panelW))
-
+	// Actions.
+	var actionsContent string
+	testLabel := "Test Connection"
+	if m.configTesting {
+		testLabel = "Testing..."
+	}
+	actionsContent += m.renderConfigField(configFieldTestConn, testLabel, "", panelW)
+	saveLabel := "Save"
+	if m.configSubmitting {
+		saveLabel = "Saving..."
+	}
+	actionsContent += m.renderConfigField(configFieldSave, saveLabel, "", panelW)
+	sb.WriteString(borderedPanel(sectionHeader("ACTIONS", panelW)+actionsContent, panelW))
 	sb.WriteString("\n")
-	sb.WriteString(helpBar([]KeyHint{{"esc", "back"}, {"q", "quit"}}, "secrets", w))
+
+	// Test connection result panel.
+	if m.configTestResult != nil {
+		var resultContent string
+		if m.configTestResult.OK {
+			resultContent = lipgloss.NewStyle().Foreground(lipgloss.Color("#a6e3a1")).Render("Connection succeeded")
+		} else {
+			resultContent = lipgloss.NewStyle().Foreground(lipgloss.Color("#f38ba8")).Render("Connection failed: " + m.configTestResult.Message)
+		}
+		sb.WriteString(borderedPanel(sectionHeader("CONNECTION TEST", panelW)+resultContent, panelW))
+		sb.WriteString("\n")
+	}
+
+	// Restart-required panel: shown after successful save.
+	if m.configRestartHint != "" {
+		restartContent := dimTextStyle.Render(m.configRestartHint)
+		sb.WriteString(borderedPanel(sectionHeader("RESTART REQUIRED", panelW)+restartContent, panelW))
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString(helpBar([]KeyHint{{"j/k", "navigate"}, {"enter", "edit/toggle/action"}, {"space", "toggle"}, {"esc", "back"}, {"q", "quit"}}, "secrets", w))
 	return sb.String()
+}
+
+// renderConfigField renders a single row in the config form with cursor indicator.
+func (m Model) renderConfigField(field configField, label, value string, panelW int) string {
+	cursor := "  "
+	if m.configCursor == field {
+		cursor = cursorStyle.Render("▌") + " "
+	}
+	var row string
+	if value != "" {
+		row = titleStyle.Render(label) + ": " + value
+	} else {
+		row = titleStyle.Render(label)
+	}
+	if m.configCursor == field {
+		row = selectedRow(row, panelW-4)
+	}
+	return cursor + row + "\n"
 }
 
 type dashboardAction struct {

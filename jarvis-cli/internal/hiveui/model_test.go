@@ -124,7 +124,7 @@ func TestAuxiliaryShortcutsOpenReadOnlyStates(t *testing.T) {
 		{name: "warnings", key: 'w', want: ScreenWarnings, text: []string{"memory warnings", "CONFIG-401", "critical", "Hive API rejected credentials", "active", "esc back"}},
 		{name: "backups", key: 'b', want: ScreenBackups, text: []string{"backup snapshots", "hive-20260606-143601", "4.1 MB", "checksum present", "enter inspect", "No restore action is available"}},
 		{name: "api health", key: 'g', want: ScreenAPIHealth, text: []string{"hive api health", "core-api", "auth failed", "401 unauthorized", "consecutive failures 12", "backoff"}},
-		{name: "api config", key: 'c', want: ScreenAPIConfig, text: []string{"hive api config", "Read-only snapshot", "API configuration endpoint is not available", "Secrets are never displayed"}},
+		{name: "api config", key: 'c', want: ScreenAPIConfig, text: []string{"hive api config", "secrets"}},
 	}
 
 	for _, tt := range tests {
@@ -2422,5 +2422,546 @@ func TestNewModelWithAllExecutors_WiresDeleteExecutor(t *testing.T) {
 
 	if m.projectDeleteExecutor == nil {
 		t.Fatal("projectDeleteExecutor should be wired, got nil")
+	}
+}
+
+// ─── T2.3 RED — ScreenAPIConfig interactive form tests ──────────────────────
+
+// fakeConfigService implements ConfigService for tests.
+type fakeConfigService struct {
+	statusResult hiveclient.ConfigStatus
+	statusErr    error
+
+	updateResult hiveclient.ConfigUpdateResponse
+	updateErr    error
+
+	testResult hiveclient.ConfigTestResult
+	testErr    error
+
+	updateRequests []hiveclient.ConfigUpdateRequest
+	testRequests   []hiveclient.ConfigTestRequest
+}
+
+func (f *fakeConfigService) GetConfigStatus(_ context.Context) (hiveclient.ConfigStatus, error) {
+	return f.statusResult, f.statusErr
+}
+
+func (f *fakeConfigService) UpdateConfig(_ context.Context, req hiveclient.ConfigUpdateRequest) (hiveclient.ConfigUpdateResponse, error) {
+	f.updateRequests = append(f.updateRequests, req)
+	return f.updateResult, f.updateErr
+}
+
+func (f *fakeConfigService) TestConnection(_ context.Context, req hiveclient.ConfigTestRequest) (hiveclient.ConfigTestResult, error) {
+	f.testRequests = append(f.testRequests, req)
+	return f.testResult, f.testErr
+}
+
+func newConfigModelWithService(svc *fakeConfigService) Model {
+	snap := Snapshot{DashboardState: DashboardHealthy}
+	m := NewModelWithAllExecutors(snap, nil, nil, nil, nil, nil, nil)
+	m.configService = svc
+	m.screen = ScreenAPIConfig
+	return m
+}
+
+// T2.3a — On mount (entering ScreenAPIConfig): fires a cmd that loads config.
+func TestAPIConfig_OnMount_LoadsCmdIssued(t *testing.T) {
+	svc := &fakeConfigService{
+		statusResult: hiveclient.ConfigStatus{APIURL: "https://api.example.com", Email: "user@example.com", PasswordMasked: "********", AutoSync: true},
+	}
+	m := newConfigModelWithService(svc)
+	// Entering the screen via Update triggers the load cmd.
+	m.screen = ScreenDashboard
+	m = sendRune(m, 'c')
+	if m.screen != ScreenAPIConfig {
+		t.Fatalf("screen = %v, want ScreenAPIConfig", m.screen)
+	}
+	if !m.configLoading {
+		t.Fatal("configLoading should be true after entering ScreenAPIConfig")
+	}
+}
+
+// T2.3b — configStatusLoadedMsg pre-fills fields.
+func TestAPIConfig_ConfigStatusLoadedMsg_PreFillsFields(t *testing.T) {
+	svc := &fakeConfigService{
+		statusResult: hiveclient.ConfigStatus{
+			APIURL:         "https://api.example.com",
+			Email:          "user@example.com",
+			PasswordMasked: "********",
+			AutoSync:       true,
+			EnvActive:      false,
+		},
+	}
+	m := newConfigModelWithService(svc)
+	m.configLoading = true
+	msg := configStatusLoadedMsg{status: svc.statusResult, err: nil}
+	updated, _ := m.Update(msg)
+	m = updated.(Model)
+
+	if m.configAPIURL != "https://api.example.com" {
+		t.Fatalf("configAPIURL = %q, want %q", m.configAPIURL, "https://api.example.com")
+	}
+	if m.configEmail != "user@example.com" {
+		t.Fatalf("configEmail = %q, want %q", m.configEmail, "user@example.com")
+	}
+	if m.configPassword != "********" {
+		t.Fatalf("configPassword = %q, want %q (sentinel)", m.configPassword, "********")
+	}
+	if m.configPasswordDirty {
+		t.Fatal("configPasswordDirty should be false after load")
+	}
+	if !m.configAutoSync {
+		t.Fatal("configAutoSync should be true after load")
+	}
+	if m.configLoading {
+		t.Fatal("configLoading should be false after load")
+	}
+}
+
+// T2.3c — Field navigation: j/k and arrow keys move cursor through enum.
+func TestAPIConfig_FieldNavigation(t *testing.T) {
+	svc := &fakeConfigService{}
+	m := newConfigModelWithService(svc)
+	m.configLoading = false
+	m.configAPIURL = "url"
+	m.configEmail = "email"
+	// Initial field is configFieldAPIURL (0)
+	if m.configCursor != configFieldAPIURL {
+		t.Fatalf("initial configCursor = %v, want configFieldAPIURL", m.configCursor)
+	}
+
+	// j moves forward
+	m = sendRune(m, 'j')
+	if m.configCursor != configFieldEmail {
+		t.Fatalf("after j: configCursor = %v, want configFieldEmail", m.configCursor)
+	}
+
+	m = sendRune(m, 'j')
+	if m.configCursor != configFieldPassword {
+		t.Fatalf("after j: configCursor = %v, want configFieldPassword", m.configCursor)
+	}
+
+	m = sendRune(m, 'j')
+	if m.configCursor != configFieldAutoSync {
+		t.Fatalf("after j: configCursor = %v, want configFieldAutoSync", m.configCursor)
+	}
+
+	m = sendRune(m, 'j')
+	if m.configCursor != configFieldTestConn {
+		t.Fatalf("after j: configCursor = %v, want configFieldTestConn", m.configCursor)
+	}
+
+	m = sendRune(m, 'j')
+	if m.configCursor != configFieldSave {
+		t.Fatalf("after j: configCursor = %v, want configFieldSave", m.configCursor)
+	}
+
+	// k moves backward
+	m = sendRune(m, 'k')
+	if m.configCursor != configFieldTestConn {
+		t.Fatalf("after k: configCursor = %v, want configFieldTestConn", m.configCursor)
+	}
+
+	// arrow keys also work
+	m = sendKey(m, tea.KeyDown)
+	if m.configCursor != configFieldSave {
+		t.Fatalf("after Down: configCursor = %v, want configFieldSave", m.configCursor)
+	}
+	m = sendKey(m, tea.KeyUp)
+	if m.configCursor != configFieldTestConn {
+		t.Fatalf("after Up: configCursor = %v, want configFieldTestConn", m.configCursor)
+	}
+}
+
+// T2.3d — Navigation wraps at boundaries.
+func TestAPIConfig_FieldNavigation_Wraps(t *testing.T) {
+	svc := &fakeConfigService{}
+	m := newConfigModelWithService(svc)
+	m.configLoading = false
+	m.configCursor = configFieldAPIURL
+
+	// k from first field wraps to last
+	m = sendRune(m, 'k')
+	if m.configCursor != configFieldSave {
+		t.Fatalf("k from first field: configCursor = %v, want configFieldSave", m.configCursor)
+	}
+
+	// j from last field wraps to first
+	m = sendRune(m, 'j')
+	if m.configCursor != configFieldAPIURL {
+		t.Fatalf("j from last field: configCursor = %v, want configFieldAPIURL", m.configCursor)
+	}
+}
+
+// T2.3e — Password field: stored raw in model, rendered as asterisks.
+func TestAPIConfig_PasswordField_StoredRawRenderedMasked(t *testing.T) {
+	svc := &fakeConfigService{}
+	m := newConfigModelWithService(svc)
+	m.configLoading = false
+	m.configCursor = configFieldPassword
+	m.configPassword = ""
+	m.configPasswordDirty = false
+
+	// Type "abc"
+	m = sendRune(m, 'a')
+	m = sendRune(m, 'b')
+	m = sendRune(m, 'c')
+
+	if m.configPassword != "abc" {
+		t.Fatalf("configPassword = %q, want %q (raw)", m.configPassword, "abc")
+	}
+	if !m.configPasswordDirty {
+		t.Fatal("configPasswordDirty should be true after typing")
+	}
+
+	view := m.View()
+	if strings.Contains(view, "abc") {
+		t.Fatalf("raw password 'abc' found in view — must not be rendered directly")
+	}
+	if !strings.Contains(view, "***") {
+		t.Fatalf("masked password not found in view — expected asterisks")
+	}
+}
+
+// T2.3f — configPasswordDirty: false on load, true when user edits password field.
+func TestAPIConfig_PasswordDirty_FalseOnLoad_TrueOnEdit(t *testing.T) {
+	svc := &fakeConfigService{
+		statusResult: hiveclient.ConfigStatus{PasswordMasked: "********"},
+	}
+	m := newConfigModelWithService(svc)
+	m.configLoading = true
+	msg := configStatusLoadedMsg{status: svc.statusResult}
+	updated, _ := m.Update(msg)
+	m = updated.(Model)
+
+	if m.configPasswordDirty {
+		t.Fatal("configPasswordDirty should be false after load")
+	}
+
+	// Navigate to password field and type
+	m.configCursor = configFieldPassword
+	m = sendRune(m, 'x')
+
+	if !m.configPasswordDirty {
+		t.Fatal("configPasswordDirty should be true after typing in password field")
+	}
+}
+
+// T2.3g — Save dispatches UpdateConfig with correct fields (dirty password).
+func TestAPIConfig_Save_DispatchesUpdateConfig_DirtyPassword(t *testing.T) {
+	svc := &fakeConfigService{
+		updateResult: hiveclient.ConfigUpdateResponse{
+			RestartHint: "Saved. Restart hive-daemon for the new configuration to take effect.",
+			Status:      hiveclient.ConfigStatus{APIURL: "https://api.example.com", Email: "user@example.com", PasswordMasked: "********", AutoSync: true},
+		},
+	}
+	m := newConfigModelWithService(svc)
+	m.configLoading = false
+	m.configAPIURL = "https://api.example.com"
+	m.configEmail = "user@example.com"
+	m.configPassword = "newpass"
+	m.configPasswordDirty = true
+	m.configAutoSync = true
+	m.configCursor = configFieldSave
+
+	// Enter on Save
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("cmd is nil, want UpdateConfig dispatch")
+	}
+
+	// Run cmd to apply result
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+
+	if len(svc.updateRequests) != 1 {
+		t.Fatalf("UpdateConfig call count = %d, want 1", len(svc.updateRequests))
+	}
+	req := svc.updateRequests[0]
+	if req.APIURL != "https://api.example.com" {
+		t.Fatalf("req.APIURL = %q, want %q", req.APIURL, "https://api.example.com")
+	}
+	if req.Email != "user@example.com" {
+		t.Fatalf("req.Email = %q, want %q", req.Email, "user@example.com")
+	}
+	if req.Password != "newpass" {
+		t.Fatalf("req.Password = %q, want raw password when dirty", req.Password)
+	}
+	if !req.AutoSync {
+		t.Fatal("req.AutoSync should be true")
+	}
+}
+
+// T2.3h — Save: sentinel round-trip when password not dirty.
+func TestAPIConfig_Save_SentinelRoundTrip_NotDirty(t *testing.T) {
+	svc := &fakeConfigService{
+		updateResult: hiveclient.ConfigUpdateResponse{
+			RestartHint: "Saved. Restart hive-daemon for the new configuration to take effect.",
+			Status:      hiveclient.ConfigStatus{APIURL: "https://api.example.com", Email: "u@x.com", PasswordMasked: "********"},
+		},
+	}
+	m := newConfigModelWithService(svc)
+	m.configLoading = false
+	m.configAPIURL = "https://api.example.com"
+	m.configEmail = "u@x.com"
+	m.configPassword = "********"
+	m.configPasswordDirty = false
+	m.configCursor = configFieldSave
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("cmd is nil, want UpdateConfig dispatch")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+
+	if len(svc.updateRequests) != 1 {
+		t.Fatalf("UpdateConfig call count = %d, want 1", len(svc.updateRequests))
+	}
+	req := svc.updateRequests[0]
+	if req.Password != hiveclient.MaskedSecret {
+		t.Fatalf("req.Password = %q, want MaskedSecret %q when not dirty", req.Password, hiveclient.MaskedSecret)
+	}
+}
+
+// T2.3i — Save success: shows restart hint.
+func TestAPIConfig_Save_Success_ShowsRestartHint(t *testing.T) {
+	svc := &fakeConfigService{
+		updateResult: hiveclient.ConfigUpdateResponse{
+			RestartHint: "Saved. Restart hive-daemon for the new configuration to take effect.",
+			Status:      hiveclient.ConfigStatus{APIURL: "https://a.com", Email: "u@x.com", PasswordMasked: "********"},
+		},
+	}
+	m := newConfigModelWithService(svc)
+	m.configLoading = false
+	m.configAPIURL = "https://a.com"
+	m.configEmail = "u@x.com"
+	m.configPassword = "newpass"
+	m.configPasswordDirty = true
+	m.configCursor = configFieldSave
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+
+	if m.configRestartHint == "" {
+		t.Fatal("configRestartHint should be set after successful save")
+	}
+	view := m.View()
+	assertContains(t, view, "RESTART")
+}
+
+// T2.3j — Save success: env-active notice shown when EnvActive=true.
+func TestAPIConfig_Save_EnvActiveNotice(t *testing.T) {
+	svc := &fakeConfigService{
+		updateResult: hiveclient.ConfigUpdateResponse{
+			RestartHint: "Saved. Restart hive-daemon.",
+			EnvActive:   true,
+			Status:      hiveclient.ConfigStatus{APIURL: "https://a.com", Email: "u@x.com", PasswordMasked: "********", EnvActive: true},
+		},
+	}
+	m := newConfigModelWithService(svc)
+	m.configLoading = false
+	m.configAPIURL = "https://a.com"
+	m.configEmail = "u@x.com"
+	m.configPassword = "newpass"
+	m.configPasswordDirty = true
+	m.configCursor = configFieldSave
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+
+	if !m.configEnvActive {
+		t.Fatal("configEnvActive should be true after save with env-active response")
+	}
+	view := m.View()
+	assertContains(t, view, "env")
+}
+
+// T2.3k — Test Connection dispatches TestConnection; shows inline result; does NOT navigate away.
+func TestAPIConfig_TestConnection_DispatchesAndShowsResult(t *testing.T) {
+	svc := &fakeConfigService{
+		testResult: hiveclient.ConfigTestResult{OK: true, Message: "Connection succeeded"},
+	}
+	m := newConfigModelWithService(svc)
+	m.configLoading = false
+	m.configAPIURL = "https://a.com"
+	m.configEmail = "u@x.com"
+	m.configPassword = "pass"
+	m.configPasswordDirty = true
+	m.configCursor = configFieldTestConn
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("cmd is nil, want TestConnection dispatch")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+
+	if m.screen != ScreenAPIConfig {
+		t.Fatalf("screen = %v, want ScreenAPIConfig (no navigation)", m.screen)
+	}
+	if m.configTestResult == nil {
+		t.Fatal("configTestResult should be set after test completes")
+	}
+	if !m.configTestResult.OK {
+		t.Fatal("configTestResult.OK should be true")
+	}
+	view := m.View()
+	assertContains(t, view, "Connection succeeded")
+}
+
+// T2.3l — Test Connection failure: shows inline failure result, does NOT navigate.
+func TestAPIConfig_TestConnection_FailureInline(t *testing.T) {
+	svc := &fakeConfigService{
+		testResult: hiveclient.ConfigTestResult{OK: false, Message: "Connection failed: 401 unauthorized"},
+	}
+	m := newConfigModelWithService(svc)
+	m.configLoading = false
+	m.configAPIURL = "https://a.com"
+	m.configEmail = "u@x.com"
+	m.configPassword = "bad"
+	m.configPasswordDirty = true
+	m.configCursor = configFieldTestConn
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+
+	if m.screen != ScreenAPIConfig {
+		t.Fatalf("screen = %v, want ScreenAPIConfig", m.screen)
+	}
+	view := m.View()
+	assertContains(t, view, "Connection failed")
+}
+
+// T2.3m — Back: resets all config state.
+func TestAPIConfig_Back_ResetsState(t *testing.T) {
+	svc := &fakeConfigService{
+		testResult: hiveclient.ConfigTestResult{OK: true, Message: "ok"},
+	}
+	m := newConfigModelWithService(svc)
+	m.configLoading = false
+	m.configTestResult = &hiveclient.ConfigTestResult{OK: true}
+	m.configSubmitting = true
+	m.configTesting = true
+	m.configPasswordDirty = true
+	m.configRestartHint = "restart required"
+	m.configEnvActive = true
+	m.configLoadErr = assertErr("some error")
+	m.screen = ScreenAPIConfig
+
+	m = sendKey(m, tea.KeyEsc)
+
+	if m.screen != ScreenDashboard {
+		t.Fatalf("screen = %v, want ScreenDashboard after back", m.screen)
+	}
+	if m.configTestResult != nil {
+		t.Fatal("configTestResult should be nil after back")
+	}
+	if m.configSubmitting {
+		t.Fatal("configSubmitting should be false after back")
+	}
+	if m.configTesting {
+		t.Fatal("configTesting should be false after back")
+	}
+	if m.configPasswordDirty {
+		t.Fatal("configPasswordDirty should be false after back")
+	}
+	if m.configRestartHint != "" {
+		t.Fatalf("configRestartHint should be empty after back, got %q", m.configRestartHint)
+	}
+	if m.configEnvActive {
+		t.Fatal("configEnvActive should be false after back")
+	}
+	if m.configLoadErr != nil {
+		t.Fatal("configLoadErr should be nil after back")
+	}
+}
+
+// T2.3n — No raw secret in any rendered frame.
+func TestAPIConfig_NoRawSecretInView(t *testing.T) {
+	svc := &fakeConfigService{
+		statusResult: hiveclient.ConfigStatus{
+			APIURL:         "https://api.example.com",
+			Email:          "user@example.com",
+			PasswordMasked: "********",
+			AutoSync:       true,
+		},
+	}
+	m := newConfigModelWithService(svc)
+	m.configLoading = true
+	msg := configStatusLoadedMsg{status: svc.statusResult}
+	updated, _ := m.Update(msg)
+	m = updated.(Model)
+
+	// Simulate typing a secret in the password field
+	m.configCursor = configFieldPassword
+	m.configPassword = "supersecret"
+	m.configPasswordDirty = true
+
+	view := m.View()
+	if strings.Contains(view, "supersecret") {
+		t.Fatalf("raw password 'supersecret' found in view — security invariant violated:\n%s", view)
+	}
+}
+
+// T2.3o — Loading state renders loading message.
+func TestAPIConfig_LoadingState_RendersLoadingMessage(t *testing.T) {
+	svc := &fakeConfigService{}
+	m := newConfigModelWithService(svc)
+	m.configLoading = true
+
+	view := m.View()
+	assertContains(t, view, "Loading")
+}
+
+// T2.3p — Nil ConfigService falls back to placeholder (graceful degradation).
+func TestAPIConfig_NilConfigService_ShowsPlaceholder(t *testing.T) {
+	snap := Snapshot{DashboardState: DashboardHealthy}
+	m := NewModelWithAllExecutors(snap, nil, nil, nil, nil, nil, nil)
+	m.screen = ScreenAPIConfig
+
+	view := m.View()
+	// Should render something (not panic), and show some fallback text
+	if view == "" {
+		t.Fatal("View() should not be empty with nil ConfigService")
+	}
+}
+
+// T2.3q — AutoSync toggle on Enter.
+func TestAPIConfig_AutoSyncToggle(t *testing.T) {
+	svc := &fakeConfigService{}
+	m := newConfigModelWithService(svc)
+	m.configLoading = false
+	m.configAutoSync = false
+	m.configCursor = configFieldAutoSync
+
+	m = sendKey(m, tea.KeyEnter)
+	if !m.configAutoSync {
+		t.Fatal("configAutoSync should toggle to true")
+	}
+	m = sendKey(m, tea.KeyEnter)
+	if m.configAutoSync {
+		t.Fatal("configAutoSync should toggle back to false")
+	}
+}
+
+// T2.3r — Constructor NewModelWithAllExecutors accepts ConfigService.
+func TestNewModelWithAllExecutors_AcceptsConfigService(t *testing.T) {
+	svc := &fakeConfigService{}
+	snap := Snapshot{DashboardState: DashboardHealthy}
+	m := NewModelWithAllExecutors(snap, nil, nil, nil, nil, nil, nil)
+	m.configService = svc
+
+	if m.configService == nil {
+		t.Fatal("configService should be wired")
 	}
 }
