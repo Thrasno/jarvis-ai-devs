@@ -600,6 +600,7 @@ func (m Model) back() Model {
 		m.screen = ScreenProjects
 	case ScreenProjectPurge:
 		m.screen = ScreenProjects
+		m.projectDeleteProject = hiveclient.Project{}
 		m.projectDeleteStep = projectPurgeSelect
 		m.projectDeleteBackupID = ""
 		m.projectDeleteConfirmation = ""

@@ -2191,6 +2191,7 @@ func TestScreenProjectPurge_PendingBlocksKeysAndStaleResult(t *testing.T) {
 	for _, key := range []tea.KeyMsg{
 		{Type: tea.KeyEnter},
 		{Type: tea.KeyEsc},
+		{Type: tea.KeyCtrlC},
 		{Type: tea.KeyRunes, Runes: []rune{'p'}},
 	} {
 		var cmd tea.Cmd
@@ -2249,6 +2250,25 @@ func TestScreenProjectPurge_BackResetsState(t *testing.T) {
 	}
 	if m.projectDeleteSubmitting {
 		t.Fatalf("projectDeleteSubmitting = true, want false")
+	}
+	if m.projectDeleteProject != (hiveclient.Project{}) {
+		t.Fatalf("projectDeleteProject = %+v, want zero value", m.projectDeleteProject)
+	}
+}
+
+// C10 — ctrl-c returns tea.Quit when not submitting.
+func TestScreenProjectPurge_CtrlCReturnsTeaQuitBeforeSubmit(t *testing.T) {
+	executor := &fakeProjectDeleteExecutor{note: "test"}
+	m := NewModelWithSnapshotAndProjectDeleteExecutor(projectPurgeSnapshot(), executor)
+	m = activatePurgeFromDashboard(m)
+	m = sendKey(m, tea.KeyEnter) // select → backupID
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("cmd is nil, want tea.Quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("cmd() = %T, want tea.QuitMsg", cmd())
 	}
 }
 
