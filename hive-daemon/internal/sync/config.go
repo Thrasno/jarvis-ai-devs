@@ -26,6 +26,11 @@ type SyncConfigStatus struct {
 	Source     string   `json:"source"`
 	AutoSync   bool     `json:"auto_sync"`
 	Warnings   []string `json:"warnings,omitempty"`
+	// EnvActive records whether environment variables were the active runtime
+	// source at load time. Retained separately so callers that overwrite Source
+	// (e.g. Update setting Source to ConfigSourceFile after a write) can still
+	// surface the env-override state in the API response.
+	EnvActive bool `json:"env_active,omitempty"`
 }
 
 const (
@@ -210,6 +215,7 @@ func statusForConfig(source string, cfg *Config, warnings []string) SyncConfigSt
 	status := SyncConfigStatus{
 		Configured: cfg != nil,
 		Source:     source,
+		EnvActive:  source == ConfigSourceEnv,
 		Warnings:   warnings,
 	}
 	if cfg != nil {

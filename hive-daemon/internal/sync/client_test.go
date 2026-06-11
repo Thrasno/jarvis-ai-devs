@@ -461,6 +461,66 @@ func TestClient_Sync_LegacyResponseLeavesMutationProtocolFieldsEmpty(t *testing.
 	assert.Empty(t, resp.PulledMutations)
 }
 
+// TestClient_Login_ExportedWrapper tests the exported Login method which
+// delegates to the private login.
+func TestClient_Login_ExportedWrapper(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler http.HandlerFunc
+		wantErr bool
+	}{
+		{
+			name: "200 response returns nil error",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/auth/login", r.URL.Path)
+				w.WriteHeader(http.StatusOK)
+				resp := map[string]interface{}{
+					"token":      "test-token",
+					"expires_at": "2099-01-01T00:00:00Z",
+				}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			},
+			wantErr: false,
+		},
+		{
+			name: "401 response returns typed error",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte("invalid credentials"))
+			},
+			wantErr: true,
+		},
+		{
+			name: "500 response returns error",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte("server error"))
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(tt.handler)
+			defer srv.Close()
+
+			c := newClient(&Config{
+				APIURL:   srv.URL,
+				Email:    "test@example.com",
+				Password: "password123",
+			})
+
+			err := c.Login(context.Background())
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 // createTestPrompt creates a test prompt for sync operations.
 func createTestPrompt(syncID, project, content string) *models.Prompt {
 	return &models.Prompt{
