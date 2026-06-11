@@ -1408,6 +1408,10 @@ func projectMergeSnapshot() Snapshot {
 func deletedGuardedMemorySnapshot() Snapshot {
 	snapshot := guardedMemorySnapshot()
 	snapshot.Memories[0].Deleted = true
+	// Mirror the deletion in TimelineMemories so ScreenTimeline shows [deleted] too.
+	if len(snapshot.TimelineMemories) > 0 {
+		snapshot.TimelineMemories[0].Deleted = true
+	}
 	return snapshot
 }
 

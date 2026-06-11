@@ -2130,8 +2130,25 @@ func trimLastRune(value string) string {
 	return string(runes[:len(runes)-1])
 }
 
+// timelineCategories is the client-side guard set — mirrors daemon-side filtering.
+var timelineCategories = map[string]bool{
+	"decision":     true,
+	"architecture": true,
+	"discovery":    true,
+	"bugfix":       true,
+	"config":       true,
+}
+
 func (m Model) timelineView() string {
-	memories := m.projectMemories()
+	raw := m.screenMemories()
+	// Client-side guard: filter to timeline categories (defence against stale data).
+	memories := make([]hiveclient.Memory, 0, len(raw))
+	for _, mem := range raw {
+		if timelineCategories[mem.Category] {
+			memories = append(memories, mem)
+		}
+	}
+
 	project := m.selectedProject().Name
 	w := max(m.width, 80)
 	panelW := panelWidth(w)
@@ -2144,6 +2161,9 @@ func (m Model) timelineView() string {
 	sb.WriteString("\n")
 
 	var timelineContent strings.Builder
+	if len(memories) == 0 {
+		timelineContent.WriteString(dimTextStyle.Render("No timeline events for this project yet.") + "\n")
+	}
 	lastDay := ""
 	for i, memory := range memories {
 		day := timelineDateText(memory.CreatedAt)
@@ -2174,7 +2194,7 @@ func (m Model) timelineView() string {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}
 	sb.WriteString("\n")
-	sb.WriteString(helpBar([]KeyHint{{"j/k", "move"}, {"⏎", "open"}, {"esc", "back"}, {"q", "quit"}}, "normal", w))
+	sb.WriteString(helpBar([]KeyHint{{"j/k", "move"}, {"⏎", "open"}, {"esc", "back"}, {"q", "quit"}, {"--project", "jarvis timeline"}}, "normal", w))
 	return sb.String()
 }
 
