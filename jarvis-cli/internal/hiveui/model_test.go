@@ -1271,6 +1271,50 @@ func TestSelectedMemoryOnScreenTimeline_ReadsFromTimelineMemories(t *testing.T) 
 	}
 }
 
+// TestRemoveMemoryFromNormalSnapshot_AlsoRemovesFromTimelineMemories verifies
+// that a guarded delete removes the target memory from both snapshot.Memories
+// and snapshot.TimelineMemories.
+func TestRemoveMemoryFromNormalSnapshot_AlsoRemovesFromTimelineMemories(t *testing.T) {
+	const targetID = int64(42)
+	snap := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects: []hiveclient.Project{
+			{Name: "atlas", ActiveMemoryCount: 2, DeletedMemoryCount: 0},
+		},
+		Memories: []hiveclient.Memory{
+			{ID: targetID, SyncID: "m-del", Project: "atlas", Category: "decision", Title: "To be deleted"},
+			{ID: 99, SyncID: "m-keep", Project: "atlas", Category: "bugfix", Title: "Keep me"},
+		},
+		TimelineMemories: []hiveclient.Memory{
+			{ID: targetID, SyncID: "m-del", Project: "atlas", Category: "decision", Title: "To be deleted"},
+			{ID: 99, SyncID: "m-keep", Project: "atlas", Category: "bugfix", Title: "Keep me"},
+		},
+	}
+	m := Model{snapshot: snap}
+
+	m = m.removeMemoryFromNormalSnapshot(targetID)
+
+	// Must be absent from Memories.
+	for _, mem := range m.snapshot.Memories {
+		if mem.ID == targetID {
+			t.Fatalf("deleted memory (ID %d) still present in snapshot.Memories", targetID)
+		}
+	}
+	if len(m.snapshot.Memories) != 1 {
+		t.Fatalf("snapshot.Memories len = %d, want 1", len(m.snapshot.Memories))
+	}
+
+	// Must be absent from TimelineMemories.
+	for _, mem := range m.snapshot.TimelineMemories {
+		if mem.ID == targetID {
+			t.Fatalf("deleted memory (ID %d) still present in snapshot.TimelineMemories", targetID)
+		}
+	}
+	if len(m.snapshot.TimelineMemories) != 1 {
+		t.Fatalf("snapshot.TimelineMemories len = %d, want 1", len(m.snapshot.TimelineMemories))
+	}
+}
+
 func sendKey(m Model, key tea.KeyType) Model {
 	updated, _ := m.Update(tea.KeyMsg{Type: key})
 	return updated.(Model)

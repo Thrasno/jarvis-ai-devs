@@ -1016,6 +1016,17 @@ func (m Model) removeMemoryFromNormalSnapshot(id int64) Model {
 		memories = append(memories, memory)
 	}
 	m.snapshot.Memories = memories
+
+	// Also remove from TimelineMemories so ScreenTimeline does not show a stale entry.
+	timelineMemories := m.snapshot.TimelineMemories[:0]
+	for _, memory := range m.snapshot.TimelineMemories {
+		if memory.ID == id {
+			continue
+		}
+		timelineMemories = append(timelineMemories, memory)
+	}
+	m.snapshot.TimelineMemories = timelineMemories
+
 	if deletedProject != "" {
 		for i := range m.snapshot.Projects {
 			if m.snapshot.Projects[i].Name != deletedProject {
