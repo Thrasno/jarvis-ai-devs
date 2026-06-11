@@ -1087,6 +1087,113 @@ func TestUnsyncedCountDoesNotUseWarningTextOrConsecutiveFailures(t *testing.T) {
 	assertNotContains(t, view, "unsynced 37", "sync 9 behind")
 }
 
+// T16 — Phase 4 — screenMemories helper and navigation routing
+
+func TestScreenMemories_ReturnsTimelineMemoriesOnScreenTimeline(t *testing.T) {
+	timelineMems := []hiveclient.Memory{
+		{SyncID: "t1", Project: "atlas", Category: "decision", Title: "Use Go"},
+		{SyncID: "t2", Project: "atlas", Category: "architecture", Title: "Hexagonal"},
+	}
+	projectMems := []hiveclient.Memory{
+		{SyncID: "m1", Project: "atlas", Category: "note", Title: "A note"},
+	}
+	snap := Snapshot{
+		DashboardState:  DashboardHealthy,
+		Projects:        []hiveclient.Project{{Name: "atlas"}},
+		Memories:        projectMems,
+		TimelineMemories: timelineMems,
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline}
+
+	got := m.screenMemories()
+	if !reflect.DeepEqual(got, timelineMems) {
+		t.Fatalf("screenMemories() = %v, want TimelineMemories %v", got, timelineMems)
+	}
+}
+
+func TestScreenMemories_ReturnsProjectMemoriesOnOtherScreens(t *testing.T) {
+	timelineMems := []hiveclient.Memory{
+		{SyncID: "t1", Project: "atlas", Category: "decision", Title: "Use Go"},
+	}
+	projectMems := []hiveclient.Memory{
+		{SyncID: "m1", Project: "atlas", Category: "note", Title: "A note"},
+	}
+	snap := Snapshot{
+		DashboardState:  DashboardHealthy,
+		Projects:        []hiveclient.Project{{Name: "atlas"}},
+		Memories:        projectMems,
+		TimelineMemories: timelineMems,
+	}
+	m := Model{snapshot: snap, screen: ScreenProjectMemories}
+
+	got := m.screenMemories()
+	// screenMemories on ScreenProjectMemories returns projectMemories() result.
+	if len(got) != 1 || got[0].SyncID != "m1" {
+		t.Fatalf("screenMemories() = %v, want project memories [m1]", got)
+	}
+}
+
+func TestMoveOnScreenTimeline_OperatesOverTimelineMemories(t *testing.T) {
+	timelineMems := []hiveclient.Memory{
+		{SyncID: "t1", Project: "atlas", Category: "decision", Title: "First"},
+		{SyncID: "t2", Project: "atlas", Category: "architecture", Title: "Second"},
+		{SyncID: "t3", Project: "atlas", Category: "bugfix", Title: "Third"},
+	}
+	snap := Snapshot{
+		DashboardState:  DashboardHealthy,
+		Projects:        []hiveclient.Project{{Name: "atlas"}},
+		Memories:        nil, // no project memories
+		TimelineMemories: timelineMems,
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline, memoryIndex: 0}
+
+	m = m.move(1)
+	if m.memoryIndex != 1 {
+		t.Fatalf("memoryIndex = %d, want 1 after move(1)", m.memoryIndex)
+	}
+	m = m.move(1)
+	if m.memoryIndex != 2 {
+		t.Fatalf("memoryIndex = %d, want 2 after move(1)", m.memoryIndex)
+	}
+	// Wraps around: moving forward from last index reaches index 0.
+	m = m.move(1)
+	if m.memoryIndex != 0 {
+		t.Fatalf("memoryIndex = %d, want 0 after wrapping from index 2", m.memoryIndex)
+	}
+}
+
+func TestMoveOnScreenTimeline_NoPanicWhenTimelineEmpty(t *testing.T) {
+	snap := Snapshot{
+		DashboardState:  DashboardHealthy,
+		Projects:        []hiveclient.Project{{Name: "atlas"}},
+		TimelineMemories: []hiveclient.Memory{},
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline, memoryIndex: 0}
+
+	// Must not panic.
+	m = m.move(1)
+	_ = m
+}
+
+func TestSelectedMemoryOnScreenTimeline_ReadsFromTimelineMemories(t *testing.T) {
+	timelineMems := []hiveclient.Memory{
+		{SyncID: "t1", Project: "atlas", Category: "decision", Title: "First"},
+		{SyncID: "t2", Project: "atlas", Category: "architecture", Title: "Second"},
+	}
+	snap := Snapshot{
+		DashboardState:  DashboardHealthy,
+		Projects:        []hiveclient.Project{{Name: "atlas"}},
+		Memories:        nil,
+		TimelineMemories: timelineMems,
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline, memoryIndex: 1}
+
+	got := m.selectedMemory()
+	if got.SyncID != "t2" {
+		t.Fatalf("selectedMemory().SyncID = %q, want t2", got.SyncID)
+	}
+}
+
 func sendKey(m Model, key tea.KeyType) Model {
 	updated, _ := m.Update(tea.KeyMsg{Type: key})
 	return updated.(Model)
