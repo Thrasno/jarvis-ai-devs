@@ -357,20 +357,21 @@ func (s *Service) ExecuteProjectDelete(ctx context.Context, req ProjectDeleteReq
 	if err != nil {
 		return DeleteProjectResult{}, err
 	}
-	if req.Confirmation == "" {
+	if strings.TrimSpace(req.Confirmation) == "" {
 		return DeleteProjectResult{}, ErrDestructiveConfirmationRequired
 	}
 	if req.Confirmation != ProjectDeleteConfirmation(project) {
 		return DeleteProjectResult{}, ErrDestructiveConfirmationMismatch
 	}
-	if strings.TrimSpace(req.Reason) == "" {
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
 		return DeleteProjectResult{}, ErrDestructiveReasonRequired
 	}
 	deleter, ok := s.store.(projectDeleteStore)
 	if !ok {
 		return DeleteProjectResult{}, ErrDestructiveMutationStoreRequired
 	}
-	rowsDeleted, err := deleter.DeleteGovernanceProject(ctx, project, req.ActorID, req.Reason)
+	rowsDeleted, err := deleter.DeleteGovernanceProject(ctx, project, req.ActorID, reason)
 	if err != nil {
 		// Propagate ErrGovernanceProjectNotArchived as-is (HTTP layer maps to 409).
 		return DeleteProjectResult{}, err

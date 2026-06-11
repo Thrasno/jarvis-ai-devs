@@ -1256,6 +1256,22 @@ func TestDeleteGovernanceProject_ArchivedGuard(t *testing.T) {
 	}
 }
 
+// TestDeleteGovernanceProject_MergedProject verifies that attempting to purge
+// a merged project returns ErrGovernanceProjectMergeConflict (not
+// ErrGovernanceProjectNotArchived) and leaves all rows untouched.
+func TestDeleteGovernanceProject_MergedProject(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	seedGovernanceMergeProjects(t, d)
+	mergeGovernanceProjectForTest(t, d, "alpha", "beta")
+
+	_, err := d.DeleteGovernanceProject(context.Background(), "alpha", "tester", "purge merged")
+	if !errors.Is(err, hivedb.ErrGovernanceProjectMergeConflict) {
+		t.Fatalf("DeleteGovernanceProject on merged project error = %v, want ErrGovernanceProjectMergeConflict", err)
+	}
+}
+
 // TestDeleteGovernanceProject_DeletionOrder verifies the full deletion chain:
 // memory_mutations, project_aliases, memories, user_prompts, sessions,
 // sync_state (except __auth__), hive_warnings, hive_project_governance.

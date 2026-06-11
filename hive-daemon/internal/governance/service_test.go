@@ -1115,6 +1115,31 @@ func TestExecuteProjectDelete_ConfirmationMismatch(t *testing.T) {
 	require.ErrorIs(t, err, ErrDestructiveConfirmationMismatch)
 }
 
+// TestExecuteProjectDelete_WhitespaceOnlyConfirmation verifies that a
+// whitespace-only confirmation string is treated as empty and returns
+// ErrDestructiveConfirmationRequired (not ErrDestructiveConfirmationMismatch).
+func TestExecuteProjectDelete_WhitespaceOnlyConfirmation(t *testing.T) {
+	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	mock := &mockDeleteStore{db: store}
+	svc := NewServiceWithBackup(mock, fakeGuardBackupStore{
+		backups: []BackupManifest{{ID: "fresh-backup", CreatedAt: now.Add(-time.Minute)}},
+	})
+	svc.now = func() time.Time { return now }
+
+	_, err = svc.ExecuteProjectDelete(context.Background(), ProjectDeleteRequest{
+		Project:      "my-project",
+		BackupID:     "fresh-backup",
+		Confirmation: "   ",
+		ActorID:      "tester",
+	})
+
+	require.ErrorIs(t, err, ErrDestructiveConfirmationRequired)
+}
+
 // TestExecuteProjectDelete_EmptyReason verifies that an empty or whitespace-only
 // reason is rejected with ErrDestructiveReasonRequired before the store is called.
 func TestExecuteProjectDelete_EmptyReason(t *testing.T) {

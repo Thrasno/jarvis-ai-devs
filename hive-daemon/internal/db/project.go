@@ -433,11 +433,11 @@ func (d *DB) DeleteGovernanceProject(ctx context.Context, name, actorID, reason 
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Check governance record: project must be archived.
-	var archivedAt sql.NullString
+	// Check governance record: project must be archived (not merged, not live).
+	var mergedAt, archivedAt sql.NullString
 	err = tx.QueryRowContext(ctx,
-		`SELECT COALESCE(archived_at, '') FROM hive_project_governance WHERE project = ?`, name,
-	).Scan(&archivedAt)
+		`SELECT COALESCE(merged_at, ''), COALESCE(archived_at, '') FROM hive_project_governance WHERE project = ?`, name,
+	).Scan(&mergedAt, &archivedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		// No governance row: check whether the project has any data rows at all.
 		// If it does, it exists but was never archived. If not, it was already purged.
@@ -461,6 +461,11 @@ SELECT EXISTS(
 	}
 	if err != nil {
 		return 0, fmt.Errorf("read governance for delete: %w", err)
+	}
+	if mergedAt.Valid && mergedAt.String != "" {
+		// Merged projects must return the merge-conflict sentinel, not not-archived.
+		// Mirrors the guard in ArchiveGovernanceProject.
+		return 0, ErrGovernanceProjectMergeConflict
 	}
 	if !archivedAt.Valid || archivedAt.String == "" {
 		return 0, ErrGovernanceProjectNotArchived
