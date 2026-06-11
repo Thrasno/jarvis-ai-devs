@@ -598,7 +598,7 @@ func (m Model) move(delta int) Model {
 	case ScreenProjects:
 		m.projectIndex = wrapIndex(m.projectIndex+delta, len(m.snapshot.Projects))
 	case ScreenProjectMemories, ScreenTimeline:
-		m.memoryIndex = wrapIndex(m.memoryIndex+delta, len(m.projectMemories()))
+		m.memoryIndex = wrapIndex(m.memoryIndex+delta, len(m.screenMemories()))
 	case ScreenWarnings:
 		m.warningIndex = wrapIndex(m.warningIndex+delta, len(m.snapshot.Warnings))
 	case ScreenBackups:
@@ -620,7 +620,7 @@ func (m Model) open() Model {
 		return m
 	}
 	if m.screen == ScreenProjectMemories || m.screen == ScreenTimeline {
-		if len(m.projectMemories()) == 0 {
+		if len(m.screenMemories()) == 0 {
 			m.message = "No item is available to open."
 			return m
 		}
@@ -2872,8 +2872,18 @@ func (m Model) projectMemories() []hiveclient.Memory {
 	return memories
 }
 
+// screenMemories returns the memory slice that the current screen navigates.
+// On ScreenTimeline it returns TimelineMemories (populated by LoadSnapshot);
+// on all other screens it delegates to projectMemories().
+func (m Model) screenMemories() []hiveclient.Memory {
+	if m.screen == ScreenTimeline {
+		return m.snapshot.TimelineMemories
+	}
+	return m.projectMemories()
+}
+
 func (m Model) selectedMemory() hiveclient.Memory {
-	memories := m.projectMemories()
+	memories := m.screenMemories()
 	if len(memories) == 0 {
 		return hiveclient.Memory{Project: m.selectedProject().Name, SyncID: "-"}
 	}

@@ -1347,6 +1347,11 @@ func sampleNavigationSnapshot() Snapshot {
 			{SyncID: "mem_503", Project: "core-api", Category: "bugfix", Title: "Fix retry storm", CreatedBy: "mcp", CreatedAt: base.Add(-7 * time.Minute), Deleted: false},
 			{SyncID: "mem_web", Project: "web-client", Category: "pattern", Title: "Use presenter boundary", CreatedAt: base.Add(-time.Hour), Deleted: false},
 		},
+		// TimelineMemories is pre-populated to support ScreenTimeline navigation tests.
+		TimelineMemories: []hiveclient.Memory{
+			{SyncID: "tl_1", Project: "core-api", Category: "decision", Title: "Use exponential backoff", CreatedBy: "mcp", CreatedAt: base, Deleted: false},
+			{SyncID: "tl_2", Project: "core-api", Category: "bugfix", Title: "Fix retry storm", CreatedBy: "mcp", CreatedAt: base.Add(7 * time.Minute), Deleted: false},
+		},
 		Health:   []hiveclient.Health{{Project: "core-api", LastSuccessAt: base.Add(-2 * time.Hour), LastFailureAt: base.Add(-6 * time.Minute), BackoffUntil: base.Add(time.Hour), ConsecutiveFailures: 12, LastError: "401 unauthorized"}},
 		Warnings: []hiveclient.Warning{{Severity: "critical", Source: "CONFIG-401", Message: "Hive API rejected credentials", ResolutionState: "active", CreatedAt: base}},
 		Backups:  []hiveclient.Backup{{ID: "hive-20260606-143601", CreatedAt: time.Now().Add(-2 * time.Minute), ArchivePath: "/tmp/hive-20260606-143601.db", Checksum: "sha256:abc", SizeBytes: 4_100_000}},
