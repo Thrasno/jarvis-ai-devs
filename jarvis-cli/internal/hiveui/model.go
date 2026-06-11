@@ -185,7 +185,7 @@ const (
 type projectPurgeStep int
 
 const (
-	projectPurgeSelect  projectPurgeStep = iota
+	projectPurgeSelect projectPurgeStep = iota
 	projectPurgeBackupID
 	projectPurgeConfirmation
 )
@@ -2100,15 +2100,19 @@ func (m Model) warningsView() string {
 	var listContent strings.Builder
 	if len(m.snapshot.Warnings) == 0 {
 		listContent.WriteString(dimTextStyle.Render("No warnings are available in the current read-only snapshot.") + "\n")
+	} else {
+		listContent.WriteString(dimTextStyle.Render("source values are read-only context") + "\n")
+		listContent.WriteString(columnHeaderStyle.Render("SEVERITY  STATE  SOURCE  MESSAGE  CREATED") + "\n")
 	}
 	for i, warning := range m.snapshot.Warnings {
 		cursor := "  "
 		if i == m.warningIndex {
 			cursor = cursorStyle.Render("▌") + " "
 		}
-		severity := warningSeverityBadge(warning.Severity).Render(emptyDash(warning.Severity))
-		state := warningStateBadge(warning.ResolutionState).Render(emptyDash(warning.ResolutionState))
-		rowText := severity + "  " + emptyDash(warning.Source) + "  " + warning.Message + "  " + state + "  " + dimTextStyle.Render(formatDateTime(warning.CreatedAt))
+		rowText := warningRowText(warning)
+		if i == m.warningIndex {
+			rowText = selectedRow(rowText, panelW-4)
+		}
 		listContent.WriteString(cursor + rowText + "\n")
 	}
 	sb.WriteString(borderedPanel(sectionHeader("WARNINGS", panelW)+listContent.String(), panelW))
@@ -2116,6 +2120,13 @@ func (m Model) warningsView() string {
 	sb.WriteString("\n")
 	sb.WriteString(helpBar([]KeyHint{{"j/k", "move"}, {"esc", "back"}, {"q", "quit"}}, "normal", w))
 	return sb.String()
+}
+
+func warningRowText(warning hiveclient.Warning) string {
+	severity := warningSeverityBadge(warning.Severity).Render(emptyDash(warning.Severity))
+	state := warningStateBadge(warning.ResolutionState).Render(emptyDash(warning.ResolutionState))
+	created := dimTextStyle.Render(formatDateTime(warning.CreatedAt))
+	return fmt.Sprintf("%s  %s  %s  %s  %s", severity, state, emptyDash(warning.Source), emptyDash(warning.Message), created)
 }
 
 func warningSeverityBadge(severity string) lipgloss.Style {

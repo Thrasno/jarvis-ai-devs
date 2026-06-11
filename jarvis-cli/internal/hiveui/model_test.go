@@ -3,6 +3,7 @@ package hiveui
 import (
 	"context"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -144,6 +145,147 @@ func TestWarningsAndBackupsRenderHonestEmptyStates(t *testing.T) {
 
 	m = sendRune(NewModelWithSnapshot(Snapshot{DashboardState: DashboardHealthy}), 'b')
 	assertContains(t, m.View(), "backup snapshots", "No backups are available in the current read-only snapshot")
+}
+
+func TestWarningsViewRendersPopulatedActiveAndResolvedRows(t *testing.T) {
+	created := time.Date(2026, 6, 11, 13, 45, 0, 0, time.UTC)
+	resolvedAt := created.Add(2 * time.Hour)
+	m := Model{
+		snapshot: Snapshot{
+			DashboardState: DashboardHealthy,
+			Warnings: []hiveclient.Warning{
+				{Severity: "critical", Source: "CONFIG-401", Message: "Hive API rejected credentials", ResolutionState: "active", CreatedAt: created},
+				{Severity: "warning", Source: "core-api", Message: "37 memories waiting to sync", ResolutionState: "resolved", CreatedAt: created.Add(-time.Hour), ResolvedAt: &resolvedAt},
+			},
+		},
+		screen: ScreenWarnings,
+		width:  140,
+	}
+
+	view := m.View()
+	assertContains(t, view,
+		"memory warnings",
+		"1 active",
+		"critical",
+		"active",
+		"CONFIG-401",
+		"Hive API rejected credentials",
+		formatDateTime(created),
+		"warning",
+		"resolved",
+		"core-api",
+		"37 memories waiting to sync",
+		formatDateTime(created.Add(-time.Hour)),
+	)
+}
+
+func TestWarningsViewUsesNeutralReadOnlySourceSemantics(t *testing.T) {
+	m := Model{
+		snapshot: Snapshot{
+			DashboardState: DashboardHealthy,
+			Warnings:       []hiveclient.Warning{{Severity: "warning", Source: "core-api", Message: "warning from source", ResolutionState: "active", CreatedAt: time.Date(2026, 6, 11, 13, 45, 0, 0, time.UTC)}},
+		},
+		screen: ScreenWarnings,
+		width:  120,
+	}
+
+	view := m.View()
+	assertContains(t, view, "source", "core-api", "warning from source")
+	assertNotContains(t, view,
+		"current project",
+		"Current project",
+		"resolve warning",
+		"dismiss warning",
+		"save warning",
+		"edit warning",
+		"deduplicate",
+		"mutation",
+	)
+}
+
+func TestWarningsViewUsesHiveVisualSystemForSelectedRows(t *testing.T) {
+	created := time.Date(2026, 6, 11, 13, 45, 0, 0, time.UTC)
+	warnings := []hiveclient.Warning{
+		{Severity: "critical", Source: "CONFIG-401", Message: "Hive API rejected credentials", ResolutionState: "active", CreatedAt: created},
+		{Severity: "warning", Source: "sync", Message: "37 memories waiting to sync", ResolutionState: "resolved", CreatedAt: created.Add(-time.Hour)},
+	}
+	m := Model{snapshot: Snapshot{DashboardState: DashboardHealthy, Warnings: warnings}, screen: ScreenWarnings, warningIndex: 1, width: 100}
+
+	view := m.View()
+	panelW := panelWidth(100)
+	expectedSelected := selectedRow(warningRowText(warnings[1]), panelW-4)
+	assertContains(t, view,
+		"memory warnings",
+		"1 active",
+		"WARNINGS",
+		"SEVERITY  STATE  SOURCE  MESSAGE  CREATED",
+		"▌ "+expectedSelected,
+		"j/k move",
+		"esc back",
+		"q quit",
+	)
+}
+
+func TestWarningsUpdateWrapsSelectionAcrossRows(t *testing.T) {
+	m := Model{
+		snapshot: Snapshot{DashboardState: DashboardHealthy, Warnings: []hiveclient.Warning{
+			{Severity: "critical", Source: "CONFIG-401", Message: "first", ResolutionState: "active"},
+			{Severity: "warning", Source: "sync", Message: "second", ResolutionState: "resolved"},
+		}},
+		screen: ScreenWarnings,
+	}
+
+	m = sendRune(m, 'k')
+	if m.warningIndex != 1 {
+		t.Fatalf("warningIndex after k from first row = %d, want 1", m.warningIndex)
+	}
+	m = sendRune(m, 'j')
+	if m.warningIndex != 0 {
+		t.Fatalf("warningIndex after j wraps from last row = %d, want 0", m.warningIndex)
+	}
+	m = sendKey(m, tea.KeyDown)
+	if m.warningIndex != 1 {
+		t.Fatalf("warningIndex after down = %d, want 1", m.warningIndex)
+	}
+	m = sendKey(m, tea.KeyUp)
+	if m.warningIndex != 0 {
+		t.Fatalf("warningIndex after up = %d, want 0", m.warningIndex)
+	}
+}
+
+func TestWarningsEnterIsReadOnlyAndLeavesSnapshotUnchanged(t *testing.T) {
+	snapshot := Snapshot{DashboardState: DashboardHealthy, Warnings: []hiveclient.Warning{
+		{ID: 1, Severity: "critical", Source: "CONFIG-401", Message: "Hive API rejected credentials", ResolutionState: "active", CreatedAt: time.Date(2026, 6, 11, 13, 45, 0, 0, time.UTC)},
+		{ID: 2, Severity: "warning", Source: "sync", Message: "37 memories waiting to sync", ResolutionState: "resolved", CreatedAt: time.Date(2026, 6, 11, 12, 45, 0, 0, time.UTC)},
+	}}
+	m := Model{snapshot: snapshot, screen: ScreenWarnings, warningIndex: 1}
+
+	updated := sendKey(m, tea.KeyEnter)
+	if updated.Screen() != ScreenWarnings {
+		t.Fatalf("screen after enter = %v, want ScreenWarnings", updated.Screen())
+	}
+	if updated.warningIndex != 1 {
+		t.Fatalf("warningIndex after enter = %d, want 1", updated.warningIndex)
+	}
+	if !reflect.DeepEqual(updated.snapshot.Warnings, snapshot.Warnings) {
+		t.Fatalf("warnings changed after enter: got %#v, want %#v", updated.snapshot.Warnings, snapshot.Warnings)
+	}
+	assertContains(t, updated.View(), "j/k move", "esc back", "q quit")
+	assertNotContains(t, updated.View(), "resolve warning", "dismiss warning", "save warning")
+}
+
+func TestWarningsEmptyStateIsHonestAndHasNoWarningRows(t *testing.T) {
+	m := Model{snapshot: Snapshot{DashboardState: DashboardHealthy}, screen: ScreenWarnings}
+
+	view := m.View()
+	assertContains(t, view, "memory warnings", "No warnings are available in the current read-only snapshot")
+	assertNotContains(t, view,
+		"▌",
+		"resolved",
+		"hidden",
+		"dismissed",
+		"no active warnings",
+	)
 }
 
 func TestBackupInspectIsReadOnlyAndDoesNotAdvertiseRestore(t *testing.T) {
@@ -1872,11 +2014,11 @@ func TestScreenProjectPurge_ConfirmMismatch(t *testing.T) {
 	snapshot := projectPurgeSnapshot()
 	m := NewModelWithSnapshotAndProjectDeleteExecutor(snapshot, executor)
 	m = activatePurgeFromDashboard(m)
-	m = sendKey(m, tea.KeyEnter)      // advance to backupID step
+	m = sendKey(m, tea.KeyEnter) // advance to backupID step
 	m = sendText(m, "backup-purge")
-	m = sendKey(m, tea.KeyEnter)      // advance to confirmation step
+	m = sendKey(m, tea.KeyEnter) // advance to confirmation step
 	m = sendText(m, "WRONG phrase")
-	m = sendKey(m, tea.KeyEnter)      // attempt submit
+	m = sendKey(m, tea.KeyEnter) // attempt submit
 
 	if len(executor.requests) != 0 {
 		t.Fatalf("dispatch count = %d, want 0 on mismatch", len(executor.requests))
@@ -1890,9 +2032,9 @@ func TestScreenProjectPurge_Success(t *testing.T) {
 	snapshot := projectPurgeSnapshot()
 	m := NewModelWithSnapshotAndProjectDeleteExecutor(snapshot, executor)
 	m = activatePurgeFromDashboard(m)
-	m = sendKey(m, tea.KeyEnter)       // select → backupID
+	m = sendKey(m, tea.KeyEnter) // select → backupID
 	m = sendText(m, "backup-purge")
-	m = sendKey(m, tea.KeyEnter)       // backupID → confirm
+	m = sendKey(m, tea.KeyEnter) // backupID → confirm
 	m = sendText(m, "PURGE project alpha")
 	m = submitProjectPurgeAndApplyResult(t, m)
 
@@ -2100,9 +2242,9 @@ func TestScreenProjectPurge_ExecutorError(t *testing.T) {
 	snap := projectPurgeSnapshot()
 	m := NewModelWithSnapshotAndProjectDeleteExecutor(snap, executor)
 	m = activatePurgeFromDashboard(m)
-	m = sendKey(m, tea.KeyEnter)      // select → backupID
+	m = sendKey(m, tea.KeyEnter) // select → backupID
 	m = sendText(m, "backup-purge")
-	m = sendKey(m, tea.KeyEnter)      // backupID → confirmation
+	m = sendKey(m, tea.KeyEnter) // backupID → confirmation
 	m = sendText(m, "PURGE project alpha")
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
