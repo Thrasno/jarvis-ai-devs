@@ -1456,29 +1456,49 @@ WHERE source_project = 'other-a' AND target_project = 'other-b'`).Scan(&unrelate
 }
 
 // TestDeleteGovernanceProject_IdempotentRePurge verifies that calling
-// DeleteGovernanceProject on a project that was already purged returns (0, nil).
+// DeleteGovernanceProject on a project that was already purged returns (0, nil),
+// and that calling it on a project name that has never existed also returns (0, nil).
 func TestDeleteGovernanceProject_IdempotentRePurge(t *testing.T) {
 	t.Parallel()
 
-	d := openGovernanceTestDB(t)
-	saveGovernanceTestMemory(t, d, "re-purge", "Memory to purge")
-	archiveGovernanceProjectForTest(t, d, "re-purge")
+	t.Run("already purged project returns (0, nil)", func(t *testing.T) {
+		t.Parallel()
 
-	first, err := d.DeleteGovernanceProject(context.Background(), "re-purge", "tester", "first purge")
-	if err != nil {
-		t.Fatalf("first DeleteGovernanceProject: %v", err)
-	}
-	if first == 0 {
-		t.Fatal("first DeleteGovernanceProject returned 0, want > 0")
-	}
+		d := openGovernanceTestDB(t)
+		saveGovernanceTestMemory(t, d, "re-purge", "Memory to purge")
+		archiveGovernanceProjectForTest(t, d, "re-purge")
 
-	second, err := d.DeleteGovernanceProject(context.Background(), "re-purge", "tester", "second purge")
-	if err != nil {
-		t.Fatalf("second DeleteGovernanceProject: %v", err)
-	}
-	if second != 0 {
-		t.Fatalf("second DeleteGovernanceProject returned %d, want 0 (idempotent)", second)
-	}
+		first, err := d.DeleteGovernanceProject(context.Background(), "re-purge", "tester", "first purge")
+		if err != nil {
+			t.Fatalf("first DeleteGovernanceProject: %v", err)
+		}
+		if first == 0 {
+			t.Fatal("first DeleteGovernanceProject returned 0, want > 0")
+		}
+
+		second, err := d.DeleteGovernanceProject(context.Background(), "re-purge", "tester", "second purge")
+		if err != nil {
+			t.Fatalf("second DeleteGovernanceProject: %v", err)
+		}
+		if second != 0 {
+			t.Fatalf("second DeleteGovernanceProject returned %d, want 0 (idempotent)", second)
+		}
+	})
+
+	t.Run("completely unknown project returns (0, nil)", func(t *testing.T) {
+		t.Parallel()
+
+		d := openGovernanceTestDB(t)
+
+		// "never-existed" has no rows in any table and no governance record.
+		rows, err := d.DeleteGovernanceProject(context.Background(), "never-existed", "tester", "ghost purge")
+		if err != nil {
+			t.Fatalf("DeleteGovernanceProject on unknown project: %v", err)
+		}
+		if rows != 0 {
+			t.Fatalf("DeleteGovernanceProject on unknown project returned %d, want 0", rows)
+		}
+	})
 }
 
 // TestKnownProjects_ExcludesArchived verifies that projects with archived_at

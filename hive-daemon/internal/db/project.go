@@ -416,9 +416,11 @@ WHERE hive_project_governance.archived_at IS NULL
 // is returned. Deletion order: memory_mutations → project_aliases → memories
 // (FTS5 maintained by the memories_ad trigger) → user_prompts → sessions →
 // sync_state (excluding __auth__) → hive_warnings → hive_project_governance.
-// Returns the total count of rows deleted across memories, sessions, user_prompts,
-// memory_mutations, and the governance row. If the project is not found at all
-// (already purged), returns (0, nil) for idempotency.
+// Returns the total count of rows deleted across memory_mutations, project_aliases,
+// memories, user_prompts, sessions, hive_warnings, and the governance row.
+// sync_state rows are deleted but not counted (the __auth__ row is intentionally
+// excluded from deletion and the per-project row count is not meaningful to callers).
+// If the project is not found at all (already purged), returns (0, nil) for idempotency.
 func (d *DB) DeleteGovernanceProject(ctx context.Context, name, actorID, reason string) (int, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -475,10 +477,13 @@ SELECT EXISTS(
 	total += int(n)
 
 	// Step 2: delete project_aliases (both directions).
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM project_aliases WHERE source_project = ? OR target_project = ?`, name, name); err != nil {
+	res, err = tx.ExecContext(ctx,
+		`DELETE FROM project_aliases WHERE source_project = ? OR target_project = ?`, name, name)
+	if err != nil {
 		return 0, fmt.Errorf("delete project_aliases: %w", err)
 	}
+	n, _ = res.RowsAffected()
+	total += int(n)
 
 	// Step 3: delete memories (memories_ad AFTER DELETE trigger maintains FTS5).
 	res, err = tx.ExecContext(ctx, `DELETE FROM memories WHERE project = ?`, name)
@@ -511,9 +516,12 @@ SELECT EXISTS(
 	}
 
 	// Step 7: delete hive_warnings.
-	if _, err := tx.ExecContext(ctx, `DELETE FROM hive_warnings WHERE source = ?`, name); err != nil {
+	res, err = tx.ExecContext(ctx, `DELETE FROM hive_warnings WHERE source = ?`, name)
+	if err != nil {
 		return 0, fmt.Errorf("delete hive_warnings: %w", err)
 	}
+	n, _ = res.RowsAffected()
+	total += int(n)
 
 	// Step 8: delete governance row.
 	res, err = tx.ExecContext(ctx, `DELETE FROM hive_project_governance WHERE project = ?`, name)

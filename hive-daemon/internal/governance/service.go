@@ -363,6 +363,9 @@ func (s *Service) ExecuteProjectDelete(ctx context.Context, req ProjectDeleteReq
 	if req.Confirmation != ProjectDeleteConfirmation(project) {
 		return DeleteProjectResult{}, ErrDestructiveConfirmationMismatch
 	}
+	if strings.TrimSpace(req.Reason) == "" {
+		return DeleteProjectResult{}, ErrDestructiveReasonRequired
+	}
 	deleter, ok := s.store.(projectDeleteStore)
 	if !ok {
 		return DeleteProjectResult{}, ErrDestructiveMutationStoreRequired

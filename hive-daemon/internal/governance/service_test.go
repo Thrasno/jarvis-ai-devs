@@ -1057,6 +1057,7 @@ func TestExecuteProjectDelete_NotArchived(t *testing.T) {
 		BackupID:     "fresh-backup",
 		Confirmation: ProjectDeleteConfirmation("live-project"),
 		ActorID:      "tester",
+		Reason:       "not archived test",
 	})
 
 	require.ErrorIs(t, err, db.ErrGovernanceProjectNotArchived)
@@ -1112,6 +1113,46 @@ func TestExecuteProjectDelete_ConfirmationMismatch(t *testing.T) {
 	})
 
 	require.ErrorIs(t, err, ErrDestructiveConfirmationMismatch)
+}
+
+// TestExecuteProjectDelete_EmptyReason verifies that an empty or whitespace-only
+// reason is rejected with ErrDestructiveReasonRequired before the store is called.
+func TestExecuteProjectDelete_EmptyReason(t *testing.T) {
+	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
+
+	for _, tt := range []struct {
+		name   string
+		reason string
+	}{
+		{name: "missing reason", reason: ""},
+		{name: "blank reason", reason: "   "},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := db.Open(":memory:")
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+			saveGovernanceServiceTestMemory(t, store, "alpha", "Alpha memory")
+			if _, err := store.ArchiveGovernanceProject(context.Background(), "alpha", "actor", "test", now.Add(-time.Hour)); err != nil {
+				t.Fatalf("ArchiveGovernanceProject: %v", err)
+			}
+
+			svc := NewServiceWithBackup(store, fakeGuardBackupStore{
+				backups: []BackupManifest{{ID: "fresh-backup", CreatedAt: now.Add(-time.Minute)}},
+			})
+			svc.now = func() time.Time { return now }
+
+			_, err = svc.ExecuteProjectDelete(context.Background(), ProjectDeleteRequest{
+				Project:      "alpha",
+				BackupID:     "fresh-backup",
+				Confirmation: ProjectDeleteConfirmation("alpha"),
+				ActorID:      "tester",
+				Reason:       tt.reason,
+			})
+
+			require.ErrorIs(t, err, ErrDestructiveReasonRequired)
+		})
+	}
 }
 
 // TestExecuteProjectDelete_Success verifies the happy path: correct confirmation,
