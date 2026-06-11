@@ -559,15 +559,92 @@ func TestEnterOnEmptyListsDoesNotOpenFakeDetail(t *testing.T) {
 
 func TestTimelineZeroCreatedAtRendersUnavailable(t *testing.T) {
 	m := NewModelWithSnapshot(Snapshot{
-		DashboardState: DashboardHealthy,
-		Projects:       []hiveclient.Project{{Name: "core-api", ActiveMemoryCount: 1}},
-		Memories:       []hiveclient.Memory{{SyncID: "mem_zero", Project: "core-api", Category: "decision", Title: "Missing timestamp"}},
+		DashboardState:  DashboardHealthy,
+		Projects:        []hiveclient.Project{{Name: "core-api", ActiveMemoryCount: 1}},
+		Memories:        []hiveclient.Memory{{SyncID: "mem_zero", Project: "core-api", Category: "decision", Title: "Missing timestamp"}},
+		TimelineMemories: []hiveclient.Memory{{SyncID: "mem_zero", Project: "core-api", Category: "decision", Title: "Missing timestamp"}},
 	})
 	m = sendRune(m, 't')
 
 	view := m.View()
 	assertContains(t, view, "┄ n/a", "n/a  decision  Missing timestamp")
 	assertNotContains(t, view, "00:00")
+}
+
+// T16 — Phase 5 — timelineView rendering and empty state
+
+func TestTimelineView_ReadsFromTimelineMemoriesNotProjectMemories(t *testing.T) {
+	base := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	snap := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects:       []hiveclient.Project{{Name: "atlas"}},
+		// Memories contains a note — should NOT appear in timeline view.
+		Memories: []hiveclient.Memory{
+			{SyncID: "m-note", Project: "atlas", Category: "note", Title: "Just a note", CreatedAt: base},
+		},
+		// TimelineMemories contains timeline categories only.
+		TimelineMemories: []hiveclient.Memory{
+			{SyncID: "t-dec", Project: "atlas", Category: "decision", Title: "Use Go", CreatedAt: base},
+			{SyncID: "t-arch", Project: "atlas", Category: "architecture", Title: "Hexagonal layout", CreatedAt: base.Add(time.Hour)},
+		},
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline}
+
+	view := m.View()
+	assertContains(t, view, "Use Go", "Hexagonal layout")
+	// The note from Memories must not appear.
+	assertNotContains(t, view, "Just a note")
+}
+
+func TestTimelineView_EmptyStateRendersPlaceholder(t *testing.T) {
+	snap := Snapshot{
+		DashboardState:  DashboardHealthy,
+		Projects:        []hiveclient.Project{{Name: "atlas"}},
+		TimelineMemories: []hiveclient.Memory{},
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline}
+
+	view := m.View()
+	assertContains(t, view, "No timeline events for this project yet.")
+}
+
+func TestTimelineView_OlderDateGroupAppearsBeforeNewer(t *testing.T) {
+	older := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	snap := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects:       []hiveclient.Project{{Name: "atlas"}},
+		TimelineMemories: []hiveclient.Memory{
+			{SyncID: "t1", Project: "atlas", Category: "decision", Title: "Old decision", CreatedAt: older},
+			{SyncID: "t2", Project: "atlas", Category: "architecture", Title: "New architecture", CreatedAt: newer},
+		},
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline}
+
+	view := m.View()
+	oldIdx := strings.Index(view, "Old decision")
+	newIdx := strings.Index(view, "New architecture")
+	if oldIdx < 0 {
+		t.Fatal("'Old decision' not found in view")
+	}
+	if newIdx < 0 {
+		t.Fatal("'New architecture' not found in view")
+	}
+	if oldIdx > newIdx {
+		t.Fatalf("'Old decision' appears at %d, 'New architecture' at %d: expected older entry first (lower index)", oldIdx, newIdx)
+	}
+}
+
+func TestTimelineView_HelpBarReferencesProjectFlag(t *testing.T) {
+	snap := Snapshot{
+		DashboardState:  DashboardHealthy,
+		Projects:        []hiveclient.Project{{Name: "atlas"}},
+		TimelineMemories: []hiveclient.Memory{},
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline}
+
+	view := m.View()
+	assertContains(t, view, "--project")
 }
 
 func TestGuardedMemoryDeleteRequiresBackupAndExactConfirmationBeforeDispatch(t *testing.T) {
