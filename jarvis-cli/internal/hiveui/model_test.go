@@ -647,6 +647,36 @@ func TestTimelineView_HelpBarReferencesProjectFlag(t *testing.T) {
 	assertContains(t, view, "--project")
 }
 
+func TestTimelineView_TruncationNoticeAppearsWhenFlagSet(t *testing.T) {
+	snap := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects:       []hiveclient.Project{{Name: "atlas"}},
+		TimelineMemories: []hiveclient.Memory{
+			{SyncID: "t1", Project: "atlas", Category: "decision", Title: "A decision"},
+		},
+		TimelineTruncated: true,
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline}
+
+	view := m.View()
+	assertContains(t, view, "showing first 500")
+}
+
+func TestTimelineView_TruncationNoticeAbsentWhenFlagNotSet(t *testing.T) {
+	snap := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects:       []hiveclient.Project{{Name: "atlas"}},
+		TimelineMemories: []hiveclient.Memory{
+			{SyncID: "t1", Project: "atlas", Category: "decision", Title: "A decision"},
+		},
+		TimelineTruncated: false,
+	}
+	m := Model{snapshot: snap, screen: ScreenTimeline}
+
+	view := m.View()
+	assertNotContains(t, view, "showing first 500")
+}
+
 func TestGuardedMemoryDeleteRequiresBackupAndExactConfirmationBeforeDispatch(t *testing.T) {
 	executor := &fakeGuardExecutor{}
 	m := NewModelWithSnapshotAndGuardExecutor(guardedMemorySnapshot(), executor)

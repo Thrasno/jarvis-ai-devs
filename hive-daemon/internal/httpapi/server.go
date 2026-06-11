@@ -378,6 +378,14 @@ func (s *Server) handleGovernanceProjectDelete(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, map[string]any{"result": result})
 }
 
+// timelineResponse is the JSON envelope for the timeline endpoint.
+// Truncated is true when the service hit the 500-entry hard limit, meaning
+// older entries may have been cut off. Callers should surface this to the user.
+type timelineResponse struct {
+	Memories  []governance.Memory `json:"memories"`
+	Truncated bool                `json:"truncated,omitempty"`
+}
+
 func (s *Server) handleGovernanceTimeline(w http.ResponseWriter, r *http.Request, projectName string) {
 	if !requireMethod(w, r, http.MethodGet) {
 		return
@@ -390,7 +398,11 @@ func (s *Server) handleGovernanceTimeline(w http.ResponseWriter, r *http.Request
 	if memories == nil {
 		memories = []governance.Memory{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"memories": memories})
+	resp := timelineResponse{
+		Memories:  memories,
+		Truncated: len(memories) == 500,
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleGovernanceProjectMerge(w http.ResponseWriter, r *http.Request, sourceProject, targetProject string) {

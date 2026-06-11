@@ -368,6 +368,63 @@ func TestLoadSnapshot_TimelineError_LeavesTimelineMemoriesEmpty(t *testing.T) {
 	}
 }
 
+func TestLoadSnapshot_TruncatedTimeline(t *testing.T) {
+	// Build 500 memory entries to simulate a truncated response.
+	truncatedMemories := make([]map[string]any, 500)
+	for i := range truncatedMemories {
+		truncatedMemories[i] = map[string]any{
+			"sync_id":  strings.Repeat("x", 8),
+			"project":  "core-api",
+			"category": "decision",
+			"title":    "Memory entry",
+		}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/governance/health":
+			writeJSON(w, map[string]any{"projects": []map[string]any{
+				{"project": "core-api", "consecutive_failures": 0, "last_error": ""},
+			}})
+		case r.URL.Path == "/governance/projects":
+			writeJSON(w, map[string]any{"projects": []map[string]any{
+				{"name": "core-api", "active_memory_count": 500},
+			}})
+		case r.URL.Path == "/governance/memories":
+			writeJSON(w, map[string]any{"memories": []any{}})
+		case r.URL.Path == "/governance/projects/core-api/timeline":
+			writeJSON(w, map[string]any{
+				"memories":  truncatedMemories,
+				"truncated": true,
+			})
+		case r.URL.Path == "/governance/warnings":
+			writeJSON(w, map[string]any{"warnings": []any{}})
+		case r.URL.Path == "/governance/backups":
+			writeJSON(w, map[string]any{"backups": []any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client, err := hiveclient.New(srv.URL)
+	if err != nil {
+		t.Fatalf("hiveclient.New: %v", err)
+	}
+
+	snap := LoadSnapshot(context.Background(), client, srv.URL, "core-api")
+
+	if snap.LoadError != nil {
+		t.Fatalf("LoadError = %v, want nil", snap.LoadError)
+	}
+	if len(snap.TimelineMemories) != 500 {
+		t.Fatalf("TimelineMemories len = %d, want 500", len(snap.TimelineMemories))
+	}
+	if !snap.TimelineTruncated {
+		t.Fatal("TimelineTruncated = false, want true when server returns truncated:true")
+	}
+}
+
 // ─── RunHiveTUI ──────────────────────────────────────────────────────────────
 
 func TestRunHiveTUI_StubsProgram_AndReturnsNil(t *testing.T) {

@@ -689,18 +689,21 @@ func TestTimeline_SuccessfulFetch(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	memories, err := client.Timeline(context.Background(), "atlas")
+	result, err := client.Timeline(context.Background(), "atlas")
 	if err != nil {
 		t.Fatalf("Timeline: %v", err)
 	}
-	if len(memories) != 2 {
-		t.Fatalf("len(memories) = %d, want 2", len(memories))
+	if len(result.Memories) != 2 {
+		t.Fatalf("len(result.Memories) = %d, want 2", len(result.Memories))
 	}
-	if memories[0].Category != "decision" {
-		t.Fatalf("memories[0].Category = %q, want decision", memories[0].Category)
+	if result.Memories[0].Category != "decision" {
+		t.Fatalf("result.Memories[0].Category = %q, want decision", result.Memories[0].Category)
 	}
-	if memories[1].Category != "architecture" {
-		t.Fatalf("memories[1].Category = %q, want architecture", memories[1].Category)
+	if result.Memories[1].Category != "architecture" {
+		t.Fatalf("result.Memories[1].Category = %q, want architecture", result.Memories[1].Category)
+	}
+	if result.Truncated {
+		t.Fatal("result.Truncated = true, want false for normal result")
 	}
 }
 
@@ -717,13 +720,13 @@ func TestTimeline_ProjectNotFound_ReturnsError(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	memories, err := client.Timeline(context.Background(), "ghost")
+	result, err := client.Timeline(context.Background(), "ghost")
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
 		t.Fatalf("Timeline error = %#v, want APIError 404", err)
 	}
-	if memories != nil {
-		t.Fatalf("memories = %v, want nil on error", memories)
+	if result.Memories != nil {
+		t.Fatalf("result.Memories = %v, want nil on error", result.Memories)
 	}
 }
 
@@ -745,6 +748,51 @@ func TestTimeline_EscapesProjectNameInPath(t *testing.T) {
 	_, err = client.Timeline(context.Background(), "team/atlas")
 	if err != nil {
 		t.Fatalf("Timeline: %v", err)
+	}
+}
+
+func TestTimeline_TruncatedFlag_True(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"memories":[{"id":1,"sync_id":"s-1","project":"atlas","category":"decision","title":"A decision","created_by":"agent","created_at":"2026-06-01T10:00:00Z","deleted":false}],"truncated":true}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := client.Timeline(context.Background(), "atlas")
+	if err != nil {
+		t.Fatalf("Timeline: %v", err)
+	}
+	if len(result.Memories) != 1 {
+		t.Fatalf("len(result.Memories) = %d, want 1", len(result.Memories))
+	}
+	if !result.Truncated {
+		t.Fatal("result.Truncated = false, want true when server returns truncated:true")
+	}
+}
+
+func TestTimeline_TruncatedFlag_False(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"memories":[{"id":2,"sync_id":"s-2","project":"atlas","category":"architecture","title":"Layout","created_by":"agent","created_at":"2026-06-02T10:00:00Z","deleted":false}]}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := client.Timeline(context.Background(), "atlas")
+	if err != nil {
+		t.Fatalf("Timeline: %v", err)
+	}
+	if result.Truncated {
+		t.Fatal("result.Truncated = true, want false when server omits truncated field")
 	}
 }
 

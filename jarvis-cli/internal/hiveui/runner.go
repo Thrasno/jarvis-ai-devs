@@ -87,11 +87,12 @@ func LoadSnapshot(ctx context.Context, c *hiveclient.Client, baseURL string, sel
 
 	// Timeline memories — only when a project is selected.
 	if selectedProject != "" {
-		tm, terr := c.Timeline(ctx, selectedProject)
+		tr, terr := c.Timeline(ctx, selectedProject)
 		if terr != nil {
 			snap.TimelineMemories = []hiveclient.Memory{}
 		} else {
-			snap.TimelineMemories = tm
+			snap.TimelineMemories = tr.Memories
+			snap.TimelineTruncated = tr.Truncated
 		}
 	}
 

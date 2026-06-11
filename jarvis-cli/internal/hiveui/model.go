@@ -79,15 +79,16 @@ type MemoryLoader interface {
 }
 
 type Snapshot struct {
-	DashboardState   DashboardState
-	DaemonURL        string
-	Projects         []hiveclient.Project
-	Memories         []hiveclient.Memory
-	TimelineMemories []hiveclient.Memory
-	Health           []hiveclient.Health
-	Warnings         []hiveclient.Warning
-	Backups          []hiveclient.Backup
-	LoadError        error
+	DashboardState    DashboardState
+	DaemonURL         string
+	Projects          []hiveclient.Project
+	Memories          []hiveclient.Memory
+	TimelineMemories  []hiveclient.Memory
+	TimelineTruncated bool // true when the daemon hit the 500-entry timeline limit
+	Health            []hiveclient.Health
+	Warnings          []hiveclient.Warning
+	Backups           []hiveclient.Backup
+	LoadError         error
 }
 
 type Model struct {
@@ -2202,6 +2203,9 @@ func (m Model) timelineView() string {
 	}
 	sb.WriteString(borderedPanel(sectionHeader("TIMELINE", panelW)+timelineContent.String(), panelW))
 
+	if m.snapshot.TimelineTruncated {
+		sb.WriteString("\n" + dimTextStyle.Render("(showing first 500 events — use mem_search for older entries)") + "\n")
+	}
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}

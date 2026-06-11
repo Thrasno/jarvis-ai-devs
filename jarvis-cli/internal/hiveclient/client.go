@@ -457,18 +457,27 @@ func (c *Client) TestConnection(ctx context.Context, req ConfigTestRequest) (Con
 	return result, nil
 }
 
+// TimelineResult is the structured result of Timeline.
+// Truncated is true when the daemon hit the 500-entry hard limit.
+type TimelineResult struct {
+	Memories  []Memory
+	Truncated bool
+}
+
 // Timeline fetches the category-filtered, ASC-ordered timeline for a project
 // via GET /governance/projects/{name}/timeline.
 // It returns an APIError (with StatusCode 404) when the project does not exist.
-func (c *Client) Timeline(ctx context.Context, project string) ([]Memory, error) {
+// TimelineResult.Truncated is true when the response signals the 500-entry limit was hit.
+func (c *Client) Timeline(ctx context.Context, project string) (TimelineResult, error) {
 	var body struct {
-		Memories []Memory `json:"memories"`
+		Memories  []Memory `json:"memories"`
+		Truncated bool     `json:"truncated"`
 	}
 	path := "/governance/projects/" + url.PathEscape(project) + "/timeline"
 	if err := c.get(ctx, path, nil, &body, false); err != nil {
-		return nil, err
+		return TimelineResult{}, err
 	}
-	return body.Memories, nil
+	return TimelineResult{Memories: body.Memories, Truncated: body.Truncated}, nil
 }
 
 // MergeProjects sends a multi-source batch merge request to POST /governance/projects/merge.
