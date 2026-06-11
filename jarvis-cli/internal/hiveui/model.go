@@ -89,6 +89,9 @@ type Snapshot struct {
 	Warnings          []hiveclient.Warning
 	Backups           []hiveclient.Backup
 	LoadError         error
+	// SyncSummary holds the aggregate sync health from GET /governance/health/summary.
+	// Nil when the daemon predates T14 or the endpoint failed — degrade gracefully.
+	SyncSummary *hiveclient.SyncSummary
 }
 
 type Model struct {
@@ -2367,6 +2370,35 @@ func (m Model) apiHealthView() string {
 	sb.WriteString(headerRow(crumb, modeBadge("normal"), w))
 	sb.WriteString("\n")
 
+	// SUMMARY panel — prepended before per-project panels.
+	if m.snapshot.SyncSummary == nil {
+		emptyContent := dimTextStyle.Render("Sync summary is not available in the current snapshot.")
+		sb.WriteString(borderedPanel(sectionHeader("SUMMARY", panelW)+emptyContent, panelW))
+	} else {
+		s := m.snapshot.SyncSummary
+		state := summaryHealthState(*s)
+		badge := healthStateBadge(state)
+
+		unsyncedLine := fmt.Sprintf("%dm / %dp / %ds",
+			s.UnsyncedMemories,
+			s.UnsyncedPrompts,
+			s.UnsyncedSessions,
+		)
+		summaryContent := fmt.Sprintf("%s  %s\n%s  %s\n%s  %s\n%s  %s",
+			badge.Render(state), "",
+			dimTextStyle.Render("unsynced"), unsyncedLine,
+			dimTextStyle.Render("last sync"), relativeTime(s.LastSuccessAt),
+			dimTextStyle.Render("last error"), emptyDash(s.LastError),
+		)
+		action := summaryActionLine(state)
+		if action != "" {
+			summaryContent += "\n" + action
+		}
+		sb.WriteString(borderedPanel(sectionHeader("SUMMARY", panelW)+summaryContent, panelW))
+		sb.WriteString("\n")
+	}
+
+	// Per-project CONNECTIVITY and HISTORY panels.
 	if len(m.snapshot.Health) == 0 {
 		emptyContent := dimTextStyle.Render("Health details are not available in the current read-only snapshot.")
 		sb.WriteString(borderedPanel(sectionHeader("CONNECTIVITY", panelW)+emptyContent, panelW))
@@ -2406,7 +2438,48 @@ func healthStateBadge(state string) lipgloss.Style {
 	case "auth failed":
 		return badgeCritical
 	default:
+		// covers "unreachable", "sync disabled", and any unknown state
 		return badgeOffline
+	}
+}
+
+// summaryHealthState derives the aggregate TUI state from a SyncSummary.
+// Priority order (evaluated in sequence, first match wins):
+//  1. auth failed  — AuthOK is false
+//  2. unreachable  — not Reachable, but AuthOK is true
+//  3. sync disabled — not AutoSync and not Reachable (never configured)
+//  4. degraded     — Reachable and AuthOK, but ConsecutiveFailures > 0 or LastError non-empty
+//  5. healthy      — all clear
+func summaryHealthState(s hiveclient.SyncSummary) string {
+	if !s.AuthOK {
+		return "auth failed"
+	}
+	if !s.Reachable {
+		if !s.AutoSync {
+			return "sync disabled"
+		}
+		return "unreachable"
+	}
+	if s.ConsecutiveFailures > 0 || strings.TrimSpace(s.LastError) != "" {
+		return "degraded"
+	}
+	return "healthy"
+}
+
+// summaryActionLine returns the context-sensitive suggested action for a summary state.
+// Returns an empty string for "healthy" (no action shown).
+func summaryActionLine(state string) string {
+	switch state {
+	case "auth failed":
+		return dimTextStyle.Render("check credentials (press c)")
+	case "unreachable":
+		return dimTextStyle.Render("verify api_url and network (press c)")
+	case "sync disabled":
+		return dimTextStyle.Render("enable auto-sync (press c)")
+	case "degraded":
+		return dimTextStyle.Render("check error above (press c)")
+	default:
+		return ""
 	}
 }
 

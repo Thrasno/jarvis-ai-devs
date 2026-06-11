@@ -2,6 +2,7 @@ package hiveui
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -108,19 +109,22 @@ func LoadSnapshot(ctx context.Context, c *hiveclient.Client, baseURL string, sel
 		snap.Backups = backups
 	}
 
+	// SyncSummary — optional; nil on old daemon (404) or any error.
+	summary, err := c.GetSyncSummary(ctx)
+	if err == nil {
+		snap.SyncSummary = &summary
+	}
+
 	return snap
 }
 
-// isAPIError checks whether err is of type *hiveclient.APIError and sets target.
+// isAPIError checks whether err (or any error in its chain) is *hiveclient.APIError
+// and sets target. Uses errors.As so wrapped errors are handled correctly.
 func isAPIError(err error, target **hiveclient.APIError) bool {
 	if err == nil {
 		return false
 	}
-	apiErr, ok := err.(*hiveclient.APIError)
-	if ok {
-		*target = apiErr
-	}
-	return ok
+	return errors.As(err, target)
 }
 
 // RunHiveTUI creates a live hiveclient.Client, loads a Snapshot, wires all

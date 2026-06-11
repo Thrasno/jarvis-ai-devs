@@ -512,4 +512,98 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 // Ensure errors package is used (for the transport-error test).
+
+func TestLoadSnapshot_FetchesSyncSummaryWhenEndpointAvailable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/governance/health":
+			writeJSON(w, map[string]any{"projects": []any{}})
+		case "/governance/projects":
+			writeJSON(w, map[string]any{"projects": []any{}})
+		case "/governance/memories":
+			writeJSON(w, map[string]any{"memories": []any{}})
+		case "/governance/warnings":
+			writeJSON(w, map[string]any{"warnings": []any{}})
+		case "/governance/backups":
+			writeJSON(w, map[string]any{"backups": []any{}})
+		case "/governance/health/summary":
+			writeJSON(w, map[string]any{
+				"reachable":            true,
+				"auth_ok":              true,
+				"auto_sync":            true,
+				"last_success_at":      "2026-06-11T10:00:00Z",
+				"last_failure_at":      "0001-01-01T00:00:00Z",
+				"last_error":           "",
+				"unsynced_memories":    2,
+				"unsynced_prompts":     0,
+				"unsynced_sessions":    1,
+				"backoff_until":        "0001-01-01T00:00:00Z",
+				"consecutive_failures": 0,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client, err := hiveclient.New(srv.URL)
+	if err != nil {
+		t.Fatalf("hiveclient.New: %v", err)
+	}
+
+	snap := LoadSnapshot(context.Background(), client, srv.URL, "")
+
+	if snap.LoadError != nil {
+		t.Fatalf("LoadError = %v, want nil", snap.LoadError)
+	}
+	if snap.SyncSummary == nil {
+		t.Fatal("SyncSummary is nil, want non-nil when endpoint available")
+	}
+	if !snap.SyncSummary.Reachable {
+		t.Fatalf("SyncSummary.Reachable = false, want true")
+	}
+	if snap.SyncSummary.UnsyncedMemories != 2 {
+		t.Fatalf("SyncSummary.UnsyncedMemories = %d, want 2", snap.SyncSummary.UnsyncedMemories)
+	}
+}
+
+func TestLoadSnapshot_SyncSummaryIsNilWhenEndpointReturns404(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/governance/health":
+			writeJSON(w, map[string]any{"projects": []any{}})
+		case "/governance/projects":
+			writeJSON(w, map[string]any{"projects": []any{}})
+		case "/governance/memories":
+			writeJSON(w, map[string]any{"memories": []any{}})
+		case "/governance/warnings":
+			writeJSON(w, map[string]any{"warnings": []any{}})
+		case "/governance/backups":
+			writeJSON(w, map[string]any{"backups": []any{}})
+		default:
+			// All unknown paths (including /governance/health/summary) return 404.
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client, err := hiveclient.New(srv.URL)
+	if err != nil {
+		t.Fatalf("hiveclient.New: %v", err)
+	}
+
+	snap := LoadSnapshot(context.Background(), client, srv.URL, "")
+
+	if snap.LoadError != nil {
+		t.Fatalf("LoadError = %v, want nil (404 on health/summary must not fail snapshot)", snap.LoadError)
+	}
+	if snap.SyncSummary != nil {
+		t.Fatalf("SyncSummary = %+v, want nil when endpoint returns 404", snap.SyncSummary)
+	}
+}
+
+// ─── RunHiveTUI ──────────────────────────────────────────────────────────────
+
+
+// Ensure errors package is used (for the transport-error test).
 var _ = errors.New

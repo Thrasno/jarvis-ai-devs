@@ -3382,3 +3382,171 @@ func TestNewModelWithAllExecutors_AcceptsConfigService(t *testing.T) {
 		t.Fatal("configService should be wired")
 	}
 }
+
+// T2.5 — summaryHealthState derivation + SUMMARY panel render tests
+
+func TestSummaryHealthState_AllFiveStates(t *testing.T) {
+	now := time.Now()
+	tests := []struct {
+		name    string
+		summary hiveclient.SyncSummary
+		want    string
+	}{
+		{
+			name: "healthy — reachable, auth ok, no failures",
+			summary: hiveclient.SyncSummary{
+				Reachable: true, AuthOK: true, AutoSync: true,
+				ConsecutiveFailures: 0, LastError: "",
+			},
+			want: "healthy",
+		},
+		{
+			name: "degraded — reachable, auth ok, but has consecutive failures",
+			summary: hiveclient.SyncSummary{
+				Reachable: true, AuthOK: true, AutoSync: true,
+				ConsecutiveFailures: 2, LastError: "timeout",
+			},
+			want: "degraded",
+		},
+		{
+			name: "degraded — reachable, auth ok, last error non-empty",
+			summary: hiveclient.SyncSummary{
+				Reachable: true, AuthOK: true, AutoSync: true,
+				ConsecutiveFailures: 0, LastError: "some transient error",
+			},
+			want: "degraded",
+		},
+		{
+			name: "auth failed — auth_ok false",
+			summary: hiveclient.SyncSummary{
+				Reachable: true, AuthOK: false, AutoSync: true,
+				ConsecutiveFailures: 1, LastError: "401 unauthorized",
+			},
+			want: "auth failed",
+		},
+		{
+			name: "unreachable — not reachable, auth ok",
+			summary: hiveclient.SyncSummary{
+				Reachable: false, AuthOK: true, AutoSync: true,
+				ConsecutiveFailures: 5, LastError: "connection refused",
+			},
+			want: "unreachable",
+		},
+		{
+			name: "sync disabled — not reachable and not auto_sync",
+			summary: hiveclient.SyncSummary{
+				Reachable: false, AuthOK: true, AutoSync: false,
+				ConsecutiveFailures: 0, LastError: "",
+			},
+			want: "sync disabled",
+		},
+		{
+			name: "auth failed takes priority over unreachable",
+			summary: hiveclient.SyncSummary{
+				Reachable: false, AuthOK: false, AutoSync: false,
+				ConsecutiveFailures: 1, LastError: "401 unauthorized",
+			},
+			want: "auth failed",
+		},
+		{
+			name: "healthy — unsynced count alone does not trigger degraded",
+			summary: hiveclient.SyncSummary{
+				Reachable: true, AuthOK: true, AutoSync: true,
+				ConsecutiveFailures: 0, LastError: "",
+				UnsyncedMemories: 5, UnsyncedPrompts: 0, UnsyncedSessions: 0,
+			},
+			want: "healthy",
+		},
+	}
+	_ = now
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := summaryHealthState(tt.summary)
+			if got != tt.want {
+				t.Fatalf("summaryHealthState() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func apiHealthSnapshotWithSummary(s hiveclient.SyncSummary) Snapshot {
+	return Snapshot{
+		DashboardState: DashboardHealthy,
+		SyncSummary:    &s,
+	}
+}
+
+func TestAPIHealthView_SummaryPanel_HealthyState(t *testing.T) {
+	snap := apiHealthSnapshotWithSummary(hiveclient.SyncSummary{
+		Reachable: true, AuthOK: true, AutoSync: true,
+		ConsecutiveFailures: 0, LastError: "",
+		UnsyncedMemories: 0, UnsyncedPrompts: 0, UnsyncedSessions: 0,
+	})
+	m := Model{snapshot: snap, screen: ScreenAPIHealth, width: 120}
+	view := m.View()
+
+	assertContains(t, view, "SUMMARY", "healthy")
+	assertNotContains(t, view, "check credentials", "verify api_url", "enable auto-sync", "check error")
+}
+
+func TestAPIHealthView_SummaryPanel_DegradedState(t *testing.T) {
+	snap := apiHealthSnapshotWithSummary(hiveclient.SyncSummary{
+		Reachable: true, AuthOK: true, AutoSync: true,
+		ConsecutiveFailures: 3, LastError: "connection timeout",
+		UnsyncedMemories: 2, UnsyncedPrompts: 0, UnsyncedSessions: 1,
+	})
+	m := Model{snapshot: snap, screen: ScreenAPIHealth, width: 120}
+	view := m.View()
+
+	assertContains(t, view, "SUMMARY", "degraded", "check error above (press c)", "2m", "0p", "1s")
+}
+
+func TestAPIHealthView_SummaryPanel_AuthFailedState(t *testing.T) {
+	snap := apiHealthSnapshotWithSummary(hiveclient.SyncSummary{
+		Reachable: true, AuthOK: false, AutoSync: true,
+		ConsecutiveFailures: 1, LastError: "401 unauthorized",
+	})
+	m := Model{snapshot: snap, screen: ScreenAPIHealth, width: 120}
+	view := m.View()
+
+	assertContains(t, view, "SUMMARY", "auth failed", "check credentials (press c)")
+}
+
+func TestAPIHealthView_SummaryPanel_UnreachableState(t *testing.T) {
+	snap := apiHealthSnapshotWithSummary(hiveclient.SyncSummary{
+		Reachable: false, AuthOK: true, AutoSync: true,
+		ConsecutiveFailures: 2, LastError: "connection refused",
+	})
+	m := Model{snapshot: snap, screen: ScreenAPIHealth, width: 120}
+	view := m.View()
+
+	assertContains(t, view, "SUMMARY", "unreachable", "verify api_url and network (press c)")
+}
+
+func TestAPIHealthView_SummaryPanel_SyncDisabledState(t *testing.T) {
+	snap := apiHealthSnapshotWithSummary(hiveclient.SyncSummary{
+		Reachable: false, AuthOK: true, AutoSync: false,
+		ConsecutiveFailures: 0, LastError: "",
+	})
+	m := Model{snapshot: snap, screen: ScreenAPIHealth, width: 120}
+	view := m.View()
+
+	assertContains(t, view, "SUMMARY", "sync disabled", "enable auto-sync (press c)")
+}
+
+func TestAPIHealthView_SummaryPanel_NilSummaryShowsFallback(t *testing.T) {
+	snap := Snapshot{
+		DashboardState: DashboardHealthy,
+		SyncSummary:    nil,
+	}
+	m := Model{snapshot: snap, screen: ScreenAPIHealth, width: 120}
+	view := m.View()
+
+	assertContains(t, view, "SUMMARY")
+	// Must show graceful fallback, not panic
+	if view == "" {
+		t.Fatal("View() must not be empty when SyncSummary is nil")
+	}
+	assertContains(t, view, "not available")
+}

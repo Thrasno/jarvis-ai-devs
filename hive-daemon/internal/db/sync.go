@@ -162,12 +162,15 @@ WHERE synced_at IS NULL AND sync_id != ''`).Scan(&n)
 }
 
 // CountUnsyncedSessions returns the global count of sessions (across all
-// projects) that have not yet been pushed to the server.
+// projects) that have not yet been pushed to the server. The sync_id != ''
+// predicate matches the behavior of CountUnsyncedMemories and
+// CountUnsyncedPrompts: sessions without a sync_id were never queued for sync
+// and must not be counted as pending.
 func (d *DB) CountUnsyncedSessions() (int, error) {
 	var n int
 	err := d.sqlDB.QueryRow(`
 SELECT COUNT(*) FROM sessions
-WHERE synced_at IS NULL`).Scan(&n)
+WHERE synced_at IS NULL AND sync_id != ''`).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("count unsynced sessions: %w", err)
 	}
@@ -551,7 +554,7 @@ func (d *DB) GetLastSync(project string) (time.Time, error) {
 	err := d.sqlDB.QueryRow(
 		`SELECT last_sync_at FROM sync_state WHERE project = ?`, project,
 	).Scan(&ts)
-	if err == sql.ErrNoRows || !ts.Valid {
+	if errors.Is(err, sql.ErrNoRows) || !ts.Valid {
 		return time.Time{}, nil
 	}
 	if err != nil {
@@ -587,7 +590,7 @@ FROM sync_state WHERE project = ?`, project).Scan(
 		&backoffUntil,
 		&lastError,
 	)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return health, nil
 	}
 	if err != nil {

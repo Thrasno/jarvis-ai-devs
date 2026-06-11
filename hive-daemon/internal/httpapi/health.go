@@ -82,11 +82,9 @@ func healthSummaryToResponse(s hivesync.HealthSummary) HealthSummaryResponse {
 }
 
 // handleHealthSummary handles GET /governance/health/summary.
+// Method constraint enforced by mux pattern "GET /governance/health/summary".
 func (s *Server) handleHealthSummary(w http.ResponseWriter, r *http.Request) {
 	if !requireLoopback(w, r) {
-		return
-	}
-	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
 	summary, err := s.health.Summary(r.Context())

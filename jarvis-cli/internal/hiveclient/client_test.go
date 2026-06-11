@@ -831,3 +831,104 @@ func TestDeleteProject_BuildsCorrectRequest(t *testing.T) {
 		t.Fatalf("delete result = %+v, want mutated alpha with rows_deleted=5 and cloud handoff note", result)
 	}
 }
+
+// T2.1 — GetSyncSummary tests
+
+func TestGetSyncSummary_DecodesDTOFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/governance/health/summary" {
+			t.Fatalf("request = %s %s, want GET /governance/health/summary", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"reachable": true,
+			"auth_ok": true,
+			"auto_sync": true,
+			"last_success_at": "2026-06-11T10:00:00Z",
+			"last_failure_at": "2026-06-11T09:00:00Z",
+			"last_error": "",
+			"unsynced_memories": 3,
+			"unsynced_prompts": 1,
+			"unsynced_sessions": 2,
+			"backoff_until": "0001-01-01T00:00:00Z",
+			"consecutive_failures": 0
+		}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	summary, err := client.GetSyncSummary(context.Background())
+	if err != nil {
+		t.Fatalf("GetSyncSummary: %v", err)
+	}
+	if !summary.Reachable {
+		t.Fatalf("Reachable = false, want true")
+	}
+	if !summary.AuthOK {
+		t.Fatalf("AuthOK = false, want true")
+	}
+	if !summary.AutoSync {
+		t.Fatalf("AutoSync = false, want true")
+	}
+	if summary.UnsyncedMemories != 3 {
+		t.Fatalf("UnsyncedMemories = %d, want 3", summary.UnsyncedMemories)
+	}
+	if summary.UnsyncedPrompts != 1 {
+		t.Fatalf("UnsyncedPrompts = %d, want 1", summary.UnsyncedPrompts)
+	}
+	if summary.UnsyncedSessions != 2 {
+		t.Fatalf("UnsyncedSessions = %d, want 2", summary.UnsyncedSessions)
+	}
+	if summary.ConsecutiveFailures != 0 {
+		t.Fatalf("ConsecutiveFailures = %d, want 0", summary.ConsecutiveFailures)
+	}
+	if summary.LastError != "" {
+		t.Fatalf("LastError = %q, want empty", summary.LastError)
+	}
+	if summary.LastSuccessAt.IsZero() {
+		t.Fatal("LastSuccessAt is zero, want non-zero")
+	}
+}
+
+func TestGetSyncSummary_ReturnsAPIErrorOnNon2xx(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"internal error reading sync state"}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.GetSyncSummary(context.Background())
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("GetSyncSummary error = %#v, want APIError 500", err)
+	}
+}
+
+func TestGetSyncSummary_ReturnsErrNotAvailableOn404(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"not found"}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.GetSyncSummary(context.Background())
+	if !errors.Is(err, ErrNotAvailable) {
+		t.Fatalf("GetSyncSummary error = %#v, want ErrNotAvailable", err)
+	}
+}
