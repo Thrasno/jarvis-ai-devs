@@ -868,8 +868,8 @@ func TestGetSyncSummary_DecodesDTOFields(t *testing.T) {
 	if !summary.Reachable {
 		t.Fatalf("Reachable = false, want true")
 	}
-	if !summary.AuthOk {
-		t.Fatalf("AuthOk = false, want true")
+	if !summary.AuthOK {
+		t.Fatalf("AuthOK = false, want true")
 	}
 	if !summary.AutoSync {
 		t.Fatalf("AutoSync = false, want true")
@@ -914,3 +914,21 @@ func TestGetSyncSummary_ReturnsAPIErrorOnNon2xx(t *testing.T) {
 	}
 }
 
+func TestGetSyncSummary_ReturnsErrNotAvailableOn404(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"not found"}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.GetSyncSummary(context.Background())
+	if !errors.Is(err, ErrNotAvailable) {
+		t.Fatalf("GetSyncSummary error = %#v, want ErrNotAvailable", err)
+	}
+}

@@ -2,10 +2,12 @@ package sync
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 )
 
 // HealthSummary is the aggregated sync health across all projects.
@@ -91,7 +93,12 @@ func (h *HealthService) Summary(ctx context.Context) (HealthSummary, error) {
 	}
 
 	// Load config for auto_sync and reachability (configured = has APIURL).
-	cfg, status, _ := h.loader.Load()
+	var cfgErr error
+	cfg, status, cfgErr := h.loader.Load()
+	if cfgErr != nil {
+		logger.Log.Printf("warn: HealthService.Summary: config unavailable: %v", cfgErr)
+		summary.LastError = fmt.Sprintf("config unavailable: %v", cfgErr)
+	}
 	summary.AutoSync = status.Configured && cfg != nil && cfg.AutoSync
 
 	configured := cfg != nil && cfg.APIURL != ""
@@ -146,8 +153,8 @@ func authError(lastError string) bool {
 //	|------------|-------------|---------|-----------|
 //	| false      | any         | any     | false     |
 //	| true       | ""          | true    | true      |
-//	| true       | non-empty   | false   | true      |  (auth error — server reachable)
-//	| true       | non-empty   | true    | false     |  (network error)
+//	| true       | non-empty   | true    | true      |  (auth error — server reachable)
+//	| true       | non-empty   | false   | false     |  (network error)
 func deriveReachable(configured bool, lastError string, authErr bool) bool {
 	if !configured {
 		return false

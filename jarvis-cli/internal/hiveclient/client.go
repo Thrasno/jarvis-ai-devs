@@ -279,7 +279,7 @@ type ConfigTestResult struct {
 // All time fields use the zero value when the daemon returns null or a zero timestamp.
 type SyncSummary struct {
 	Reachable           bool      `json:"reachable"`
-	AuthOk              bool      `json:"auth_ok"`
+	AuthOK              bool      `json:"auth_ok"`
 	AutoSync            bool      `json:"auto_sync"`
 	LastSuccessAt       time.Time `json:"last_success_at"`
 	LastFailureAt       time.Time `json:"last_failure_at"`
@@ -500,12 +500,12 @@ func (c *Client) Timeline(ctx context.Context, project string) (TimelineResult, 
 
 // GetSyncSummary fetches the aggregate sync health summary from
 // GET /governance/health/summary. A Go error is returned on transport failures
-// and non-2xx daemon responses. On 404 (old daemon without T14), an *APIError
-// with StatusCode 404 is returned — callers should treat this as a nil-summary
-// situation rather than a fatal error.
+// and non-2xx daemon responses. On 404 (old daemon without T14), the error is
+// ErrNotAvailable — callers should treat this as a nil-summary situation rather
+// than a fatal error and use errors.Is(err, ErrNotAvailable) to detect it.
 func (c *Client) GetSyncSummary(ctx context.Context) (SyncSummary, error) {
 	var summary SyncSummary
-	if err := c.get(ctx, "/governance/health/summary", nil, &summary, false); err != nil {
+	if err := c.get(ctx, "/governance/health/summary", nil, &summary, true); err != nil {
 		return SyncSummary{}, err
 	}
 	return summary, nil

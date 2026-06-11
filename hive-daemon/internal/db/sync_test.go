@@ -1689,6 +1689,18 @@ func TestCountUnsyncedSessions(t *testing.T) {
 			wantCount: 0,
 		},
 		{
+			name: "does not count sessions with empty sync_id",
+			setupData: func(t *testing.T, d *DB) {
+				t.Helper()
+				// Insert a legacy row with empty sync_id directly (bypasses CreateSession
+				// which always generates a non-empty sync_id via randomblob).
+				_, err := d.sqlDB.Exec(
+					`INSERT INTO sessions (id, sync_id, project, dev_id, client) VALUES ('sess-no-syncid', '', 'legacy-proj', 'dev', 'claude')`)
+				require.NoError(t, err)
+			},
+			wantCount: 0,
+		},
+		{
 			name: "parity with ListUnsyncedSessions for a project",
 			setupData: func(t *testing.T, d *DB) {
 				t.Helper()

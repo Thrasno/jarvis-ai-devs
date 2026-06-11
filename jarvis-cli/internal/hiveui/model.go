@@ -2445,13 +2445,13 @@ func healthStateBadge(state string) lipgloss.Style {
 
 // summaryHealthState derives the aggregate TUI state from a SyncSummary.
 // Priority order (evaluated in sequence, first match wins):
-//  1. auth failed  — AuthOk is false
-//  2. unreachable  — not Reachable, but AuthOk is true
+//  1. auth failed  — AuthOK is false
+//  2. unreachable  — not Reachable, but AuthOK is true
 //  3. sync disabled — not AutoSync and not Reachable (never configured)
-//  4. degraded     — Reachable and AuthOk, but ConsecutiveFailures > 0 or LastError non-empty
+//  4. degraded     — Reachable and AuthOK, but ConsecutiveFailures > 0 or LastError non-empty
 //  5. healthy      — all clear
 func summaryHealthState(s hiveclient.SyncSummary) string {
-	if !s.AuthOk {
+	if !s.AuthOK {
 		return "auth failed"
 	}
 	if !s.Reachable {

@@ -3395,7 +3395,7 @@ func TestSummaryHealthState_AllFiveStates(t *testing.T) {
 		{
 			name: "healthy — reachable, auth ok, no failures",
 			summary: hiveclient.SyncSummary{
-				Reachable: true, AuthOk: true, AutoSync: true,
+				Reachable: true, AuthOK: true, AutoSync: true,
 				ConsecutiveFailures: 0, LastError: "",
 			},
 			want: "healthy",
@@ -3403,7 +3403,7 @@ func TestSummaryHealthState_AllFiveStates(t *testing.T) {
 		{
 			name: "degraded — reachable, auth ok, but has consecutive failures",
 			summary: hiveclient.SyncSummary{
-				Reachable: true, AuthOk: true, AutoSync: true,
+				Reachable: true, AuthOK: true, AutoSync: true,
 				ConsecutiveFailures: 2, LastError: "timeout",
 			},
 			want: "degraded",
@@ -3411,7 +3411,7 @@ func TestSummaryHealthState_AllFiveStates(t *testing.T) {
 		{
 			name: "degraded — reachable, auth ok, last error non-empty",
 			summary: hiveclient.SyncSummary{
-				Reachable: true, AuthOk: true, AutoSync: true,
+				Reachable: true, AuthOK: true, AutoSync: true,
 				ConsecutiveFailures: 0, LastError: "some transient error",
 			},
 			want: "degraded",
@@ -3419,7 +3419,7 @@ func TestSummaryHealthState_AllFiveStates(t *testing.T) {
 		{
 			name: "auth failed — auth_ok false",
 			summary: hiveclient.SyncSummary{
-				Reachable: true, AuthOk: false, AutoSync: true,
+				Reachable: true, AuthOK: false, AutoSync: true,
 				ConsecutiveFailures: 1, LastError: "401 unauthorized",
 			},
 			want: "auth failed",
@@ -3427,7 +3427,7 @@ func TestSummaryHealthState_AllFiveStates(t *testing.T) {
 		{
 			name: "unreachable — not reachable, auth ok",
 			summary: hiveclient.SyncSummary{
-				Reachable: false, AuthOk: true, AutoSync: true,
+				Reachable: false, AuthOK: true, AutoSync: true,
 				ConsecutiveFailures: 5, LastError: "connection refused",
 			},
 			want: "unreachable",
@@ -3435,7 +3435,7 @@ func TestSummaryHealthState_AllFiveStates(t *testing.T) {
 		{
 			name: "sync disabled — not reachable and not auto_sync",
 			summary: hiveclient.SyncSummary{
-				Reachable: false, AuthOk: true, AutoSync: false,
+				Reachable: false, AuthOK: true, AutoSync: false,
 				ConsecutiveFailures: 0, LastError: "",
 			},
 			want: "sync disabled",
@@ -3443,7 +3443,7 @@ func TestSummaryHealthState_AllFiveStates(t *testing.T) {
 		{
 			name: "auth failed takes priority over unreachable",
 			summary: hiveclient.SyncSummary{
-				Reachable: false, AuthOk: false, AutoSync: false,
+				Reachable: false, AuthOK: false, AutoSync: false,
 				ConsecutiveFailures: 1, LastError: "401 unauthorized",
 			},
 			want: "auth failed",
@@ -3451,7 +3451,7 @@ func TestSummaryHealthState_AllFiveStates(t *testing.T) {
 		{
 			name: "degraded — unsynced count non-zero triggers degraded",
 			summary: hiveclient.SyncSummary{
-				Reachable: true, AuthOk: true, AutoSync: true,
+				Reachable: true, AuthOK: true, AutoSync: true,
 				ConsecutiveFailures: 0, LastError: "",
 				UnsyncedMemories: 5, UnsyncedPrompts: 0, UnsyncedSessions: 0,
 			},
@@ -3479,7 +3479,7 @@ func apiHealthSnapshotWithSummary(s hiveclient.SyncSummary) Snapshot {
 
 func TestAPIHealthView_SummaryPanel_HealthyState(t *testing.T) {
 	snap := apiHealthSnapshotWithSummary(hiveclient.SyncSummary{
-		Reachable: true, AuthOk: true, AutoSync: true,
+		Reachable: true, AuthOK: true, AutoSync: true,
 		ConsecutiveFailures: 0, LastError: "",
 		UnsyncedMemories: 0, UnsyncedPrompts: 0, UnsyncedSessions: 0,
 	})
@@ -3492,7 +3492,7 @@ func TestAPIHealthView_SummaryPanel_HealthyState(t *testing.T) {
 
 func TestAPIHealthView_SummaryPanel_DegradedState(t *testing.T) {
 	snap := apiHealthSnapshotWithSummary(hiveclient.SyncSummary{
-		Reachable: true, AuthOk: true, AutoSync: true,
+		Reachable: true, AuthOK: true, AutoSync: true,
 		ConsecutiveFailures: 3, LastError: "connection timeout",
 		UnsyncedMemories: 2, UnsyncedPrompts: 0, UnsyncedSessions: 1,
 	})
@@ -3504,7 +3504,7 @@ func TestAPIHealthView_SummaryPanel_DegradedState(t *testing.T) {
 
 func TestAPIHealthView_SummaryPanel_AuthFailedState(t *testing.T) {
 	snap := apiHealthSnapshotWithSummary(hiveclient.SyncSummary{
-		Reachable: true, AuthOk: false, AutoSync: true,
+		Reachable: true, AuthOK: false, AutoSync: true,
 		ConsecutiveFailures: 1, LastError: "401 unauthorized",
 	})
 	m := Model{snapshot: snap, screen: ScreenAPIHealth, width: 120}
@@ -3515,7 +3515,7 @@ func TestAPIHealthView_SummaryPanel_AuthFailedState(t *testing.T) {
 
 func TestAPIHealthView_SummaryPanel_UnreachableState(t *testing.T) {
 	snap := apiHealthSnapshotWithSummary(hiveclient.SyncSummary{
-		Reachable: false, AuthOk: true, AutoSync: true,
+		Reachable: false, AuthOK: true, AutoSync: true,
 		ConsecutiveFailures: 2, LastError: "connection refused",
 	})
 	m := Model{snapshot: snap, screen: ScreenAPIHealth, width: 120}
@@ -3526,7 +3526,7 @@ func TestAPIHealthView_SummaryPanel_UnreachableState(t *testing.T) {
 
 func TestAPIHealthView_SummaryPanel_SyncDisabledState(t *testing.T) {
 	snap := apiHealthSnapshotWithSummary(hiveclient.SyncSummary{
-		Reachable: false, AuthOk: true, AutoSync: false,
+		Reachable: false, AuthOK: true, AutoSync: false,
 		ConsecutiveFailures: 0, LastError: "",
 	})
 	m := Model{snapshot: snap, screen: ScreenAPIHealth, width: 120}
