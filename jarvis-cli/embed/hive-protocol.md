@@ -27,6 +27,7 @@ Self-check after EVERY task: "Did I make a decision, fix a bug, learn something 
 - **type**: bugfix | decision | architecture | discovery | pattern | config | preference
 - **scope**: `project` (default) | `personal`
 - **topic_key** (recommended for evolving topics): grouping/context key like `architecture/auth-model`
+- **capture_prompt** (optional): defaults to `true` for human/proactive saves. Set `false` for automated artifacts such as SDD outputs, generated config, registry updates, and machine-produced reports.
 - **content**:
   - **What**: One sentence — what was done
   - **Why**: What motivated it (user request, bug, performance, etc.)
@@ -54,6 +55,7 @@ Also search PROACTIVELY when:
 ## SDD ARTIFACT BOUNDARY (MVP CONTRACT)
 
 - Reserved namespace: `sdd/{change}/{artifact}` is for automated SDD artifacts only.
+- Automated SDD/config artifact saves MUST pass `capture_prompt:false`; they are pipeline outputs, not human memories.
 - General/conversational memory MUST use non-`sdd/` topics.
 - General memory entries MUST NOT reuse or pollute reserved SDD artifact topic keys.
 - In `hybrid` mode, artifact payload semantics must remain equivalent across both destinations.

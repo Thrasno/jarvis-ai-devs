@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,6 +15,10 @@ import (
 )
 
 func (d *DB) SavePrompt(ctx context.Context, project, content string) (*models.Prompt, error) {
+	return d.SavePromptForSession(ctx, project, "", content)
+}
+
+func (d *DB) SavePromptForSession(ctx context.Context, project, sessionID, content string) (*models.Prompt, error) {
 	if strings.TrimSpace(content) == "" {
 		return nil, errors.New("content is required")
 	}
@@ -24,15 +29,15 @@ func (d *DB) SavePrompt(ctx context.Context, project, content string) (*models.P
 	syncID := uuid.NewString()
 
 	const q = `
-INSERT INTO user_prompts (sync_id, project, content)
-VALUES (?, ?, ?)
+INSERT INTO user_prompts (sync_id, project, session_id, content)
+VALUES (?, ?, ?, ?)
 RETURNING id, created_at`
 
 	var (
 		id           int64
 		createdAtStr string
 	)
-	err := d.sqlDB.QueryRowContext(ctx, q, syncID, project, content).Scan(&id, &createdAtStr)
+	err := d.sqlDB.QueryRowContext(ctx, q, syncID, project, sessionID, content).Scan(&id, &createdAtStr)
 	if err != nil {
 		return nil, fmt.Errorf("save prompt: %w", err)
 	}
@@ -46,10 +51,33 @@ RETURNING id, created_at`
 		ID:        id,
 		SyncID:    syncID,
 		Project:   project,
+		SessionID: sessionID,
 		Content:   content,
 		CreatedAt: createdAt,
 		SyncedAt:  nil,
 	}, nil
+}
+
+func (d *DB) LatestPromptForSession(ctx context.Context, project, sessionID string) (*models.Prompt, error) {
+	if strings.TrimSpace(project) == "" || strings.TrimSpace(sessionID) == "" {
+		return nil, nil
+	}
+
+	const q = `
+SELECT id, sync_id, project, session_id, content, created_at, synced_at
+FROM user_prompts
+WHERE project = ? AND session_id = ?
+ORDER BY created_at DESC, id DESC
+LIMIT 1`
+
+	prompt, err := scanPromptRow(d.sqlDB.QueryRowContext(ctx, q, project, sessionID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("latest prompt for session: %w", err)
+	}
+	return prompt, nil
 }
 
 // ListRecentPrompts returns the most recent prompts for a project, ordered by
@@ -63,7 +91,7 @@ func (d *DB) ListRecentPrompts(ctx context.Context, project string, limit int) (
 	}
 
 	const q = `
-SELECT id, sync_id, project, content, created_at, synced_at
+SELECT id, sync_id, project, session_id, content, created_at, synced_at
 FROM user_prompts
 WHERE project = ?
 ORDER BY created_at DESC
@@ -77,39 +105,11 @@ LIMIT ?`
 
 	prompts := make([]*models.Prompt, 0)
 	for rows.Next() {
-		var (
-			id           int64
-			syncID       string
-			proj         string
-			content      string
-			createdAtStr string
-			syncedAtStr  *string
-		)
-		if err := rows.Scan(&id, &syncID, &proj, &content, &createdAtStr, &syncedAtStr); err != nil {
+		prompt, err := scanPromptRow(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan prompt row: %w", err)
 		}
-
-		createdAt, ok := parseDBTimestamp("created_at", createdAtStr)
-		if !ok {
-			return nil, fmt.Errorf("scan prompt row: invalid created_at %q", createdAtStr)
-		}
-
-		var syncedAt *time.Time
-		if syncedAtStr != nil {
-			t, ok := parseDBTimestamp("synced_at", *syncedAtStr)
-			if ok {
-				syncedAt = &t
-			}
-		}
-
-		prompts = append(prompts, &models.Prompt{
-			ID:        id,
-			SyncID:    syncID,
-			Project:   proj,
-			Content:   content,
-			CreatedAt: createdAt,
-			SyncedAt:  syncedAt,
-		})
+		prompts = append(prompts, prompt)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate prompt rows: %w", err)
@@ -120,14 +120,14 @@ LIMIT ?`
 
 // GetUnsyncedPrompts returns prompts for the project where synced_at IS NULL,
 // ordered by created_at ASC (oldest first — sync in order of capture).
-// Rows with sync_id = '' are excluded — they predate UUID generation and would
+// Rows with sync_id = "" are excluded — they predate UUID generation and would
 // be rejected by the server with 400 (UUID validation failure).
 func (d *DB) GetUnsyncedPrompts(ctx context.Context, project string) ([]*models.Prompt, error) {
 	if project == "" {
 		return nil, nil
 	}
 	const q = `
-SELECT id, sync_id, project, content, created_at, synced_at
+SELECT id, sync_id, project, session_id, content, created_at, synced_at
 FROM user_prompts
 WHERE project = ? AND synced_at IS NULL AND sync_id != ''
 ORDER BY created_at ASC`
@@ -140,41 +140,11 @@ ORDER BY created_at ASC`
 
 	prompts := make([]*models.Prompt, 0)
 	for rows.Next() {
-		var (
-			id           int64
-			syncID       string
-			proj         string
-			content      string
-			createdAtStr string
-			syncedAtStr  *string
-		)
-		if err := rows.Scan(&id, &syncID, &proj, &content, &createdAtStr, &syncedAtStr); err != nil {
+		prompt, err := scanPromptRow(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan unsynced prompt row: %w", err)
 		}
-
-		createdAt, ok := parseDBTimestamp("created_at", createdAtStr)
-		if !ok {
-			return nil, fmt.Errorf("scan unsynced prompt row: invalid created_at %q", createdAtStr)
-		}
-
-		var syncedAt *time.Time
-		if syncedAtStr != nil {
-			t, ok := parseDBTimestamp("synced_at", *syncedAtStr)
-			if ok {
-				syncedAt = &t
-			} else {
-				logger.Log.Printf("warn: GetUnsyncedPrompts: cannot parse synced_at %q for sync_id %s — treating as unsynced", *syncedAtStr, syncID)
-			}
-		}
-
-		prompts = append(prompts, &models.Prompt{
-			ID:        id,
-			SyncID:    syncID,
-			Project:   proj,
-			Content:   content,
-			CreatedAt: createdAt,
-			SyncedAt:  syncedAt,
-		})
+		prompts = append(prompts, prompt)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate unsynced prompt rows: %w", err)
@@ -195,6 +165,46 @@ func (d *DB) MarkPromptSynced(ctx context.Context, syncID string, at time.Time) 
 		logger.Log.Printf("warn: MarkPromptSynced: no row found for sync_id %s", syncID)
 	}
 	return nil
+}
+
+func scanPromptRow(s scanner) (*models.Prompt, error) {
+	var (
+		id           int64
+		syncID       string
+		project      string
+		sessionID    string
+		content      string
+		createdAtStr string
+		syncedAtStr  *string
+	)
+	if err := s.Scan(&id, &syncID, &project, &sessionID, &content, &createdAtStr, &syncedAtStr); err != nil {
+		return nil, err
+	}
+
+	createdAt, ok := parseDBTimestamp("created_at", createdAtStr)
+	if !ok {
+		return nil, fmt.Errorf("invalid created_at %q", createdAtStr)
+	}
+
+	var syncedAt *time.Time
+	if syncedAtStr != nil {
+		t, ok := parseDBTimestamp("synced_at", *syncedAtStr)
+		if ok {
+			syncedAt = &t
+		} else {
+			logger.Log.Printf("warn: scan prompt row: cannot parse synced_at %q for sync_id %s — treating as unsynced", *syncedAtStr, syncID)
+		}
+	}
+
+	return &models.Prompt{
+		ID:        id,
+		SyncID:    syncID,
+		Project:   project,
+		SessionID: sessionID,
+		Content:   content,
+		CreatedAt: createdAt,
+		SyncedAt:  syncedAt,
+	}, nil
 }
 
 // parseDBTimestamp tries SQLite's default datetime format then RFC3339.

@@ -72,11 +72,12 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 				"tags":          {"type": "array", "items": {"type": "string"}},
 				"files_affected":{"type": "array", "items": {"type": "string"}},
 				"session_id":    {"type": "string", "description": "Optional session ID; absent triggers lazy manual-save fallback"},
+				"capture_prompt":{"type": "boolean", "description": "Whether to best-effort link this memory to the latest prompt for the same project/session. Defaults to true; automated artifacts should pass false."},
 				"recovery_token": {"type": "string", "description": "Recovery token returned by an ambiguous project response"},
 				"project_choice_reason": {"type": "string", "description": "Original ambiguous project/context used when retrying with recovery_token"}
 			}
 		}`),
-	}, memSaveHandler(store, syncRuntime, activity))
+	}, memSaveHandler(store, syncRuntime, activity, prompts))
 
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_suggest_topic_key",
@@ -251,8 +252,8 @@ func memSessionEndHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.T
 	}
 }
 
-func memSaveHandler(store MemoryStore, syncRuntime *syncRuntime, activity *ActivityTracker) sdkmcp.ToolHandler {
-	return func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+func memSaveHandler(store MemoryStore, syncRuntime *syncRuntime, activity *ActivityTracker, prompts PromptStore) sdkmcp.ToolHandler {
+	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 		var p struct {
 			Title               string   `json:"title"`
 			Content             string   `json:"content"`
@@ -262,6 +263,7 @@ func memSaveHandler(store MemoryStore, syncRuntime *syncRuntime, activity *Activ
 			Tags                []string `json:"tags"`
 			FilesAffected       []string `json:"files_affected"`
 			SessionID           string   `json:"session_id"`
+			CapturePrompt       *bool    `json:"capture_prompt"`
 			RecoveryToken       string   `json:"recovery_token"`
 			ProjectChoiceReason string   `json:"project_choice_reason"`
 		}
@@ -272,7 +274,7 @@ func memSaveHandler(store MemoryStore, syncRuntime *syncRuntime, activity *Activ
 			return toolError(fmt.Errorf("title, content, and project are required")), nil
 		}
 
-		resolved, err := project.ValidateWriteProject(context.Background(), store, project.WriteInput{Project: p.Project, SessionID: p.SessionID, RecoveryToken: p.RecoveryToken, ProjectChoiceReason: p.ProjectChoiceReason})
+		resolved, err := project.ValidateWriteProject(ctx, store, project.WriteInput{Project: p.Project, SessionID: p.SessionID, RecoveryToken: p.RecoveryToken, ProjectChoiceReason: p.ProjectChoiceReason})
 		if err != nil {
 			return toolValidationError(err), nil
 		}
@@ -298,6 +300,16 @@ func memSaveHandler(store MemoryStore, syncRuntime *syncRuntime, activity *Activ
 		contentRes := sanitize.Strip(p.Content)
 		strippedCount := titleRes.Count + contentRes.Count
 
+		var promptID int64
+		if shouldCapturePrompt(p.CapturePrompt) && prompts != nil {
+			prompt, err := prompts.LatestPromptForSession(ctx, p.Project, sessionID)
+			if err != nil {
+				logger.Log.Printf("warn: latest prompt lookup failed for project=%q session_id=%q: %v", p.Project, sessionID, err)
+			} else if prompt != nil {
+				promptID = prompt.ID
+			}
+		}
+
 		mem := &models.Memory{
 			Title:         titleRes.Clean,
 			Content:       contentRes.Clean,
@@ -307,6 +319,7 @@ func memSaveHandler(store MemoryStore, syncRuntime *syncRuntime, activity *Activ
 			Tags:          p.Tags,
 			FilesAffected: p.FilesAffected,
 			SessionID:     sessionID,
+			PromptID:      promptID,
 		}
 
 		id, err := store.SaveMemory(mem)
@@ -614,7 +627,7 @@ func memSavePromptHandler(store MemoryStore, prompts PromptStore, activity *Acti
 		// Strip private tags from content at the handler boundary.
 		contentRes := sanitize.Strip(p.Content)
 
-		prompt, err := prompts.SavePrompt(ctx, p.Project, contentRes.Clean)
+		prompt, err := prompts.SavePromptForSession(ctx, p.Project, sessionID, contentRes.Clean)
 		if err != nil {
 			return toolError(fmt.Errorf("save failed: %w", err)), nil
 		}
@@ -904,6 +917,10 @@ func resolveSessionID(explicit, project string, store MemoryStore) (string, erro
 		return explicit, nil
 	}
 	return store.EnsureManualSaveSession(project)
+}
+
+func shouldCapturePrompt(value *bool) bool {
+	return value == nil || *value
 }
 
 func isQuietSyncBlocker(err error) bool {

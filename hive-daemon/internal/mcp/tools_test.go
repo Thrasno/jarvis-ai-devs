@@ -607,6 +607,56 @@ func TestMemSave_WithExplicitSessionID_DoesNotCallEnsure(t *testing.T) {
 	}
 }
 
+func TestMemSave_CapturePromptSemantics(t *testing.T) {
+	falseValue := false
+	tests := []struct {
+		name       string
+		capture    *bool
+		prompt     *models.Prompt
+		wantLookup bool
+		wantPrompt int64
+	}{
+		{name: "default true links latest prompt", prompt: &models.Prompt{ID: 7}, wantLookup: true, wantPrompt: 7},
+		{name: "explicit false skips lookup", capture: &falseValue},
+		{name: "default true falls back when no prompt exists", wantLookup: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var saved *models.Memory
+			lookupCalled := false
+			store := &mockStore{saveMemoryFn: func(m *models.Memory) (int64, error) {
+				saved = m
+				return 1, nil
+			}}
+			prompts := &mockStore{latestPromptForSessionFn: func(_ context.Context, projectName, sessionID string) (*models.Prompt, error) {
+				lookupCalled = true
+				if projectName != "jarvis-dev" || sessionID != "sess-001" {
+					t.Fatalf("lookup scope = (%q, %q), want (jarvis-dev, sess-001)", projectName, sessionID)
+				}
+				return tt.prompt, nil
+			}}
+			session := connectTestServerFull(t, store, prompts)
+
+			args := map[string]any{"title": "Memory", "content": "content", "type": "decision", "project": "jarvis-dev", "session_id": "sess-001"}
+			if tt.capture != nil {
+				args["capture_prompt"] = *tt.capture
+			}
+			res := callTool(t, session, "mem_save", args)
+
+			if res.IsError {
+				t.Fatalf("expected success, got error: %s", textContent(t, res))
+			}
+			if lookupCalled != tt.wantLookup {
+				t.Fatalf("lookupCalled = %v, want %v", lookupCalled, tt.wantLookup)
+			}
+			if saved == nil || saved.PromptID != tt.wantPrompt {
+				t.Fatalf("saved.PromptID = %v, want %d", saved, tt.wantPrompt)
+			}
+		})
+	}
+}
+
 func TestMemSave_ValidParams_CallsSaveMemory(t *testing.T) {
 	var saved *models.Memory
 	store := &mockStore{
