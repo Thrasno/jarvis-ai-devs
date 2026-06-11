@@ -266,12 +266,13 @@ func NewModelWithSnapshotAndProjectMergeBatchExecutor(snapshot Snapshot, executo
 	return m
 }
 
-func NewModelWithAllExecutors(snapshot Snapshot, guard GuardExecutor, archive ProjectArchiveExecutor, merge ProjectMergeExecutor, memory MemoryLoader, batchMerge ProjectMergeBatchExecutor) Model {
+func NewModelWithAllExecutors(snapshot Snapshot, guard GuardExecutor, archive ProjectArchiveExecutor, merge ProjectMergeExecutor, memory MemoryLoader, batchMerge ProjectMergeBatchExecutor, deleteExecutor ProjectDeleteExecutor) Model {
 	m := NewModelWithSnapshotAndGuardExecutor(snapshot, guard)
 	m.projectArchiveExecutor = archive
 	m.projectMergeExecutor = merge
 	m.memoryLoader = memory
 	m.projectMergeBatchExecutor = batchMerge
+	m.projectDeleteExecutor = deleteExecutor
 	return m
 }
 
@@ -599,6 +600,10 @@ func (m Model) back() Model {
 		m.screen = ScreenProjects
 	case ScreenProjectPurge:
 		m.screen = ScreenProjects
+		m.projectDeleteStep = projectPurgeSelect
+		m.projectDeleteBackupID = ""
+		m.projectDeleteConfirmation = ""
+		m.projectDeleteSubmitting = false
 	case ScreenProjectMerge:
 		m.screen = ScreenProjects
 		m.mergeSelectedSources = nil
@@ -661,6 +666,9 @@ func (m Model) projectsView() string {
 	}
 	if (m.projectMergeExecutor != nil || m.projectMergeBatchExecutor != nil) && len(m.snapshot.Projects) > 0 {
 		sb.WriteString("m merge guarded by backup ID and exact confirmation\n")
+	}
+	if m.projectDeleteExecutor != nil && len(m.snapshot.Projects) > 0 {
+		sb.WriteString("p purge archived project guarded by backup ID and exact confirmation\n")
 	}
 	sb.WriteString("\n")
 	sb.WriteString(helpBar([]KeyHint{{"j/k", "move"}, {"⏎", "open"}, {"t", "timeline"}, {"esc", "back"}, {"q", "quit"}}, "normal", w))
@@ -1190,6 +1198,7 @@ func projectArchiveConfirmationPhrase(project string) string {
 
 func (m Model) startProjectPurge() Model {
 	if m.projectDeleteExecutor == nil {
+		m.message = "purge executor not available"
 		return m
 	}
 	m.screen = ScreenProjectPurge
@@ -1205,6 +1214,26 @@ func (m Model) startProjectPurge() Model {
 func (m Model) updateProjectPurge(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.projectDeleteSubmitting {
 		m.message = "Guarded project purge is already pending through hive-daemon. Wait for the result before leaving or submitting again."
+		return m, nil
+	}
+	// At the select step, j/k/Up/Down navigate the project list.
+	if m.projectDeleteStep == projectPurgeSelect {
+		switch {
+		case key.Type == tea.KeyEsc:
+			m = m.back()
+			m.message = ""
+		case key.Type == tea.KeyDown || runeKey(key, 'j'):
+			n := len(m.snapshot.Projects)
+			if n > 0 && m.projectIndex < n-1 {
+				m.projectIndex++
+			}
+		case key.Type == tea.KeyUp || runeKey(key, 'k'):
+			if m.projectIndex > 0 {
+				m.projectIndex--
+			}
+		case key.Type == tea.KeyEnter:
+			return m.submitProjectPurge()
+		}
 		return m, nil
 	}
 	switch {
@@ -1287,6 +1316,9 @@ func (m Model) applyProjectDeleteResult(msg projectDeleteResultMsg) Model {
 }
 
 func (m Model) appendProjectPurgeText(text string) Model {
+	if m.projectDeleteStep == projectPurgeSelect {
+		return m
+	}
 	if m.projectDeleteStep == projectPurgeBackupID {
 		m.projectDeleteBackupID += text
 		return m
@@ -1296,6 +1328,9 @@ func (m Model) appendProjectPurgeText(text string) Model {
 }
 
 func (m Model) removeProjectPurgeRune() Model {
+	if m.projectDeleteStep == projectPurgeSelect {
+		return m
+	}
 	if m.projectDeleteStep == projectPurgeBackupID {
 		m.projectDeleteBackupID = trimLastRune(m.projectDeleteBackupID)
 		return m
