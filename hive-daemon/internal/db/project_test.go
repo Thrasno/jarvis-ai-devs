@@ -1230,6 +1230,319 @@ func TestProjectMergeSyncEvidence(t *testing.T) {
 	}
 }
 
+// ─── Phase 1: DeleteGovernanceProject Tests ──────────────────────────────────
+
+// TestDeleteGovernanceProject_ArchivedGuard verifies that attempting to purge
+// a project that is not archived returns ErrGovernanceProjectNotArchived and
+// leaves all rows untouched.
+func TestDeleteGovernanceProject_ArchivedGuard(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	saveGovernanceTestMemory(t, d, "live-project", "live memory")
+
+	_, err := d.DeleteGovernanceProject(context.Background(), "live-project", "tester", "test purge")
+	if !errors.Is(err, hivedb.ErrGovernanceProjectNotArchived) {
+		t.Fatalf("DeleteGovernanceProject error = %v, want ErrGovernanceProjectNotArchived", err)
+	}
+
+	// All rows must be intact.
+	var count int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE project = 'live-project'`).Scan(&count); err != nil {
+		t.Fatalf("count memories: %v", err)
+	}
+	if count == 0 {
+		t.Fatal("memories must be intact after rejected purge")
+	}
+}
+
+// TestDeleteGovernanceProject_MergedProject verifies that attempting to purge
+// a merged project returns ErrGovernanceProjectMergeConflict (not
+// ErrGovernanceProjectNotArchived) and leaves all rows untouched.
+func TestDeleteGovernanceProject_MergedProject(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	seedGovernanceMergeProjects(t, d)
+	mergeGovernanceProjectForTest(t, d, "alpha", "beta")
+
+	_, err := d.DeleteGovernanceProject(context.Background(), "alpha", "tester", "purge merged")
+	if !errors.Is(err, hivedb.ErrGovernanceProjectMergeConflict) {
+		t.Fatalf("DeleteGovernanceProject on merged project error = %v, want ErrGovernanceProjectMergeConflict", err)
+	}
+}
+
+// TestDeleteGovernanceProject_DeletionOrder verifies the full deletion chain:
+// memory_mutations, project_aliases, memories, user_prompts, sessions,
+// sync_state (except __auth__), hive_warnings, hive_project_governance.
+// Also verifies FTS5 consistency and that other-project rows are unaffected.
+func TestDeleteGovernanceProject_DeletionOrder(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+
+	// Seed target project (to be purged).
+	memID := saveGovernanceTestMemory(t, d, "purge-me", "Memory to purge")
+	if err := d.CreateSession("sess-purge", "purge-me", "/repo/purge", "dev", "test"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if _, err := d.SavePrompt(context.Background(), "purge-me", "prompt to purge"); err != nil {
+		t.Fatalf("SavePrompt: %v", err)
+	}
+	// Insert a pending memory_mutation.
+	if _, err := d.RawDB().Exec(`
+INSERT INTO memory_mutations (event_id, entity_sync_id, project, op, occurred_at)
+VALUES ('evt-purge-1', 'sync-purge-1', 'purge-me', 'save', '2026-06-11 10:00:00')`); err != nil {
+		t.Fatalf("insert memory_mutation: %v", err)
+	}
+	// Insert a hive_warning.
+	if _, err := d.RawDB().Exec(`
+INSERT INTO hive_warnings (severity, source, message) VALUES ('warn', 'purge-me', 'test warning')`); err != nil {
+		t.Fatalf("insert hive_warning: %v", err)
+	}
+	// Insert sync_state.
+	if err := d.RecordSyncFailure("purge-me", time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC), 1, time.Date(2026, 6, 11, 10, 1, 0, 0, time.UTC), fmt.Errorf("test")); err != nil {
+		t.Fatalf("RecordSyncFailure: %v", err)
+	}
+	// Insert __auth__ sync_state (must survive).
+	if _, err := d.RawDB().Exec(`INSERT OR IGNORE INTO sync_state (project, last_error) VALUES ('__auth__', '')`); err != nil {
+		t.Fatalf("insert __auth__ sync_state: %v", err)
+	}
+
+	// Seed an unrelated project (rows must be unaffected).
+	saveGovernanceTestMemory(t, d, "keep-me", "Survivor memory")
+
+	// Archive the target project first.
+	archiveGovernanceProjectForTest(t, d, "purge-me")
+
+	// Act.
+	rowsDeleted, err := d.DeleteGovernanceProject(context.Background(), "purge-me", "tester", "test purge")
+	if err != nil {
+		t.Fatalf("DeleteGovernanceProject: %v", err)
+	}
+	if rowsDeleted == 0 {
+		t.Fatal("DeleteGovernanceProject returned 0 rows deleted, want > 0")
+	}
+
+	// Memories must be gone.
+	var memCount int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE project = 'purge-me'`).Scan(&memCount); err != nil {
+		t.Fatalf("count memories: %v", err)
+	}
+	if memCount != 0 {
+		t.Fatalf("memories remaining for purge-me: %d, want 0", memCount)
+	}
+	// Sessions must be gone.
+	var sessCount int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM sessions WHERE project = 'purge-me'`).Scan(&sessCount); err != nil {
+		t.Fatalf("count sessions: %v", err)
+	}
+	if sessCount != 0 {
+		t.Fatalf("sessions remaining for purge-me: %d, want 0", sessCount)
+	}
+	// user_prompts must be gone.
+	var promptCount int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM user_prompts WHERE project = 'purge-me'`).Scan(&promptCount); err != nil {
+		t.Fatalf("count user_prompts: %v", err)
+	}
+	if promptCount != 0 {
+		t.Fatalf("user_prompts remaining for purge-me: %d, want 0", promptCount)
+	}
+	// memory_mutations must be gone.
+	var mutCount int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM memory_mutations WHERE project = 'purge-me'`).Scan(&mutCount); err != nil {
+		t.Fatalf("count memory_mutations: %v", err)
+	}
+	if mutCount != 0 {
+		t.Fatalf("memory_mutations remaining for purge-me: %d, want 0", mutCount)
+	}
+	// hive_warnings must be gone.
+	var warnCount int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM hive_warnings WHERE source = 'purge-me'`).Scan(&warnCount); err != nil {
+		t.Fatalf("count hive_warnings: %v", err)
+	}
+	if warnCount != 0 {
+		t.Fatalf("hive_warnings remaining for purge-me: %d, want 0", warnCount)
+	}
+	// sync_state must be gone for purge-me but __auth__ must survive.
+	var syncCount int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM sync_state WHERE project = 'purge-me'`).Scan(&syncCount); err != nil {
+		t.Fatalf("count sync_state: %v", err)
+	}
+	if syncCount != 0 {
+		t.Fatalf("sync_state remaining for purge-me: %d, want 0", syncCount)
+	}
+	var authCount int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM sync_state WHERE project = '__auth__'`).Scan(&authCount); err != nil {
+		t.Fatalf("count __auth__ sync_state: %v", err)
+	}
+	if authCount != 1 {
+		t.Fatalf("__auth__ sync_state must survive purge: count=%d", authCount)
+	}
+	// governance row must be gone.
+	var govCount int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM hive_project_governance WHERE project = 'purge-me'`).Scan(&govCount); err != nil {
+		t.Fatalf("count governance: %v", err)
+	}
+	if govCount != 0 {
+		t.Fatalf("governance row remaining for purge-me: %d, want 0", govCount)
+	}
+	// FTS5: the deleted memory's rowid must not match in the FTS index.
+	// Since memories_fts is a content table (content='memories'), verify that
+	// the deleted memory's rowid is no longer in the FTS index via the content table.
+	var ftsCount int
+	if err := d.RawDB().QueryRow(
+		`SELECT COUNT(*) FROM memories_fts WHERE rowid = ?`, memID,
+	).Scan(&ftsCount); err != nil {
+		t.Fatalf("FTS5 count: %v", err)
+	}
+	if ftsCount != 0 {
+		t.Fatalf("FTS5 entries remaining for purge-me memory (rowid=%d): %d, want 0", memID, ftsCount)
+	}
+	// Unrelated project rows must be intact.
+	var keepCount int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE project = 'keep-me'`).Scan(&keepCount); err != nil {
+		t.Fatalf("count keep-me memories: %v", err)
+	}
+	if keepCount == 0 {
+		t.Fatal("keep-me memories must not be deleted by purge")
+	}
+	_ = memID
+}
+
+// TestDeleteGovernanceProject_AliasCascade verifies that alias rows where
+// source_project OR target_project matches are deleted, and unrelated aliases survive.
+func TestDeleteGovernanceProject_AliasCascade(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+
+	// Seed purge target.
+	saveGovernanceTestMemory(t, d, "purge-alias", "Memory to purge")
+	// Seed other projects.
+	saveGovernanceTestMemory(t, d, "other-a", "Other A memory")
+	saveGovernanceTestMemory(t, d, "other-b", "Other B memory")
+
+	// Seed aliases: purge-alias as source and as target.
+	// Use raw inserts to avoid alias chain guard (we want test flexibility).
+	if _, err := d.RawDB().Exec(`
+INSERT INTO project_aliases (source_project, target_project, scope, reason, created_at)
+VALUES ('purge-alias', 'other-a', 'local', 'test', '2026-06-11 10:00:00')`); err != nil {
+		t.Fatalf("insert alias purge-alias->other-a: %v", err)
+	}
+	if _, err := d.RawDB().Exec(`
+INSERT INTO project_aliases (source_project, target_project, scope, reason, created_at)
+VALUES ('other-b', 'purge-alias', 'local', 'test', '2026-06-11 10:00:00')`); err != nil {
+		t.Fatalf("insert alias other-b->purge-alias: %v", err)
+	}
+	// Seed an unrelated alias that must survive.
+	if _, err := d.RawDB().Exec(`
+INSERT INTO project_aliases (source_project, target_project, scope, reason, created_at)
+VALUES ('other-a', 'other-b', 'local', 'test', '2026-06-11 10:00:00')`); err != nil {
+		t.Fatalf("insert alias other-a->other-b: %v", err)
+	}
+
+	archiveGovernanceProjectForTest(t, d, "purge-alias")
+
+	_, err := d.DeleteGovernanceProject(context.Background(), "purge-alias", "tester", "cascade test")
+	if err != nil {
+		t.Fatalf("DeleteGovernanceProject: %v", err)
+	}
+
+	// Aliases involving purge-alias must be gone.
+	var purgeAliasCount int
+	if err := d.RawDB().QueryRow(`
+SELECT COUNT(*) FROM project_aliases
+WHERE source_project = 'purge-alias' OR target_project = 'purge-alias'`).Scan(&purgeAliasCount); err != nil {
+		t.Fatalf("count purge-alias aliases: %v", err)
+	}
+	if purgeAliasCount != 0 {
+		t.Fatalf("alias rows for purge-alias: %d, want 0", purgeAliasCount)
+	}
+	// Unrelated alias other-a->other-b must survive.
+	var unrelatedCount int
+	if err := d.RawDB().QueryRow(`
+SELECT COUNT(*) FROM project_aliases
+WHERE source_project = 'other-a' AND target_project = 'other-b'`).Scan(&unrelatedCount); err != nil {
+		t.Fatalf("count unrelated alias: %v", err)
+	}
+	if unrelatedCount != 1 {
+		t.Fatalf("unrelated alias count = %d, want 1", unrelatedCount)
+	}
+}
+
+// TestDeleteGovernanceProject_IdempotentRePurge verifies that calling
+// DeleteGovernanceProject on a project that was already purged returns (0, nil),
+// and that calling it on a project name that has never existed also returns (0, nil).
+func TestDeleteGovernanceProject_IdempotentRePurge(t *testing.T) {
+	t.Parallel()
+
+	t.Run("already purged project returns (0, nil)", func(t *testing.T) {
+		t.Parallel()
+
+		d := openGovernanceTestDB(t)
+		saveGovernanceTestMemory(t, d, "re-purge", "Memory to purge")
+		archiveGovernanceProjectForTest(t, d, "re-purge")
+
+		first, err := d.DeleteGovernanceProject(context.Background(), "re-purge", "tester", "first purge")
+		if err != nil {
+			t.Fatalf("first DeleteGovernanceProject: %v", err)
+		}
+		if first == 0 {
+			t.Fatal("first DeleteGovernanceProject returned 0, want > 0")
+		}
+
+		second, err := d.DeleteGovernanceProject(context.Background(), "re-purge", "tester", "second purge")
+		if err != nil {
+			t.Fatalf("second DeleteGovernanceProject: %v", err)
+		}
+		if second != 0 {
+			t.Fatalf("second DeleteGovernanceProject returned %d, want 0 (idempotent)", second)
+		}
+	})
+
+	t.Run("completely unknown project returns (0, nil)", func(t *testing.T) {
+		t.Parallel()
+
+		d := openGovernanceTestDB(t)
+
+		// "never-existed" has no rows in any table and no governance record.
+		rows, err := d.DeleteGovernanceProject(context.Background(), "never-existed", "tester", "ghost purge")
+		if err != nil {
+			t.Fatalf("DeleteGovernanceProject on unknown project: %v", err)
+		}
+		if rows != 0 {
+			t.Fatalf("DeleteGovernanceProject on unknown project returned %d, want 0", rows)
+		}
+	})
+}
+
+// TestKnownProjects_ExcludesArchived verifies that projects with archived_at
+// set in hive_project_governance are excluded from KnownProjects results.
+func TestKnownProjects_ExcludesArchived(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	saveGovernanceTestMemory(t, d, "active-proj", "Active memory")
+	saveGovernanceTestMemory(t, d, "archived-proj", "Archived memory")
+	archiveGovernanceProjectForTest(t, d, "archived-proj")
+
+	projects, err := d.KnownProjects(context.Background())
+	if err != nil {
+		t.Fatalf("KnownProjects: %v", err)
+	}
+	got := map[string]bool{}
+	for _, p := range projects {
+		got[p.Name] = true
+	}
+	if got["archived-proj"] {
+		t.Fatal("KnownProjects must not return archived project")
+	}
+	if !got["active-proj"] {
+		t.Fatal("KnownProjects must return active project")
+	}
+}
+
 // TestKnownProjects_ExcludesAliasedSources verifies that source_project values
 // that have an active alias are hidden from KnownProjects.
 func TestKnownProjects_ExcludesAliasedSources(t *testing.T) {

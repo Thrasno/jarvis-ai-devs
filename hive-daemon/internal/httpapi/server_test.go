@@ -1900,3 +1900,76 @@ func TestHandleGovernanceMemory_404Deleted(t *testing.T) {
 		t.Fatalf("error = %q, want memory not found", resp["error"])
 	}
 }
+
+// ─── Phase 3: POST /governance/projects/{name}/delete ────────────────────────
+
+// TestHandleGovernanceProjectDelete_HappyPath verifies that POST .../delete with
+// a valid body returns 200 and a DeleteProjectResult JSON.
+func TestHandleGovernanceProjectDelete_HappyPath(t *testing.T) {
+	store, backup, srv := newHTTPGuardTestServer(t)
+	saveHTTPGuardMemoryInProject(t, store, "purge-target", "session-purge-target")
+	// Archive the project first.
+	if _, err := store.ArchiveGovernanceProject(context.Background(), "purge-target", "actor", "test", time.Now().UTC().Add(-time.Hour)); err != nil {
+		t.Fatalf("ArchiveGovernanceProject: %v", err)
+	}
+	body := fmt.Sprintf(`{"backup_id":%q,"confirmation":%q,"actor_id":"tester","reason":"cleanup"}`,
+		backup.ID, governance.ProjectDeleteConfirmation("purge-target"))
+	req := httptest.NewRequest(http.MethodPost, "/governance/projects/purge-target/delete", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Result governance.DeleteProjectResult `json:"result"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if !resp.Result.Mutated || resp.Result.Project != "purge-target" {
+		t.Fatalf("delete result = %+v, want mutated purge-target", resp.Result)
+	}
+	if !strings.Contains(resp.Result.CloudHandoffNote, "Cloud data not removed") {
+		t.Fatalf("cloud handoff note = %q, want cloud-data-not-removed note", resp.Result.CloudHandoffNote)
+	}
+}
+
+// TestHandleGovernanceProjectDelete_NotArchived verifies that POST .../delete
+// on a non-archived project returns 409.
+func TestHandleGovernanceProjectDelete_NotArchived(t *testing.T) {
+	store, backup, srv := newHTTPGuardTestServer(t)
+	saveHTTPGuardMemoryInProject(t, store, "live-project", "session-live-project")
+	// Do NOT archive — project is active.
+	body := fmt.Sprintf(`{"backup_id":%q,"confirmation":%q,"actor_id":"tester","reason":"cleanup"}`,
+		backup.ID, governance.ProjectDeleteConfirmation("live-project"))
+	req := httptest.NewRequest(http.MethodPost, "/governance/projects/live-project/delete", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestHandleGovernanceProjectDelete_BadConfirmation verifies that POST .../delete
+// with a wrong phrase returns 400.
+func TestHandleGovernanceProjectDelete_BadConfirmation(t *testing.T) {
+	store, backup, srv := newHTTPGuardTestServer(t)
+	saveHTTPGuardMemoryInProject(t, store, "alpha-del", "session-alpha-del")
+	body := fmt.Sprintf(`{"backup_id":%q,"confirmation":"WRONG PHRASE","actor_id":"tester","reason":"cleanup"}`,
+		backup.ID)
+	req := httptest.NewRequest(http.MethodPost, "/governance/projects/alpha-del/delete", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "confirmation mismatch") {
+		t.Fatalf("body = %s, want confirmation mismatch", rr.Body.String())
+	}
+}

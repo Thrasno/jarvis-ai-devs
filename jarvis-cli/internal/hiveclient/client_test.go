@@ -396,3 +396,41 @@ func TestClient_ProjectList_UnsyncedCount(t *testing.T) {
 		t.Fatalf("projects[0].UnsyncedCount = %d, want 5; projects=%+v", projects[0].UnsyncedCount, projects)
 	}
 }
+
+// TestDeleteProject_BuildsCorrectRequest verifies that DeleteProject posts to
+// .../governance/projects/{name}/delete with the serialized ProjectDeleteRequest body.
+func TestDeleteProject_BuildsCorrectRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/governance/projects/alpha/delete" {
+			t.Fatalf("request = %s %s, want POST /governance/projects/alpha/delete", r.Method, r.URL.Path)
+		}
+		var req ProjectDeleteRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.Project != "alpha" || req.BackupID != "backup-1" || req.Confirmation != "PURGE project alpha" || req.ActorID != "tester" || req.Reason != "cleanup" {
+			t.Fatalf("delete request = %+v, want exact project delete payload", req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"operation":"purge","target_type":"project","project":"alpha","backup_id":"backup-1","rows_deleted":5,"mutated":true,"cloud_handoff_note":"Project purged locally. Cloud data not removed — no tombstone sync protocol exists yet."}}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := client.DeleteProject(context.Background(), ProjectDeleteRequest{
+		Project:      "alpha",
+		BackupID:     "backup-1",
+		Confirmation: "PURGE project alpha",
+		ActorID:      "tester",
+		Reason:       "cleanup",
+	})
+	if err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+	if !result.Mutated || result.Project != "alpha" || result.RowsDeleted != 5 || result.CloudHandoffNote == "" {
+		t.Fatalf("delete result = %+v, want mutated alpha with rows_deleted=5 and cloud handoff note", result)
+	}
+}

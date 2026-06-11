@@ -12,12 +12,13 @@ import (
 )
 
 var (
-	ErrGovernanceProjectRequired      = errors.New("project is required")
-	ErrGovernanceProjectNotFound      = errors.New("governance project not found")
-	ErrGovernanceProjectArchived      = errors.New("governance project is archived")
-	ErrGovernanceProjectMergeInvalid  = errors.New("governance project merge source and target must differ")
-	ErrGovernanceProjectMergeConflict = errors.New("governance project already merged into another target")
-	ErrGovernanceMemoryNotFound       = errors.New("governance memory not found")
+	ErrGovernanceProjectRequired        = errors.New("project is required")
+	ErrGovernanceProjectNotFound        = errors.New("governance project not found")
+	ErrGovernanceProjectArchived        = errors.New("governance project is archived")
+	ErrGovernanceProjectNotArchived     = errors.New("governance project is not archived")
+	ErrGovernanceProjectMergeInvalid    = errors.New("governance project merge source and target must differ")
+	ErrGovernanceProjectMergeConflict   = errors.New("governance project already merged into another target")
+	ErrGovernanceMemoryNotFound         = errors.New("governance memory not found")
 )
 
 type GovernanceProject struct {
@@ -76,6 +77,7 @@ func (d *DB) KnownProjects(ctx context.Context) ([]project.KnownProject, error) 
 		FROM known
 		WHERE project != ''
 		  AND project NOT IN (SELECT source_project FROM project_aliases)
+		  AND project NOT IN (SELECT project FROM hive_project_governance WHERE archived_at IS NOT NULL)
 		GROUP BY project
 		ORDER BY project`)
 	if err != nil {
@@ -406,6 +408,138 @@ WHERE hive_project_governance.archived_at IS NULL
 		return false, fmt.Errorf("commit merge governance project: %w", err)
 	}
 	return true, nil
+}
+
+// DeleteGovernanceProject irreversibly purges all local data for an archived project
+// in a single self-contained transaction. The project must already be archived
+// (archived_at IS NOT NULL in hive_project_governance); if not, ErrGovernanceProjectNotArchived
+// is returned. Deletion order: memory_mutations → project_aliases → memories
+// (FTS5 maintained by the memories_ad trigger) → user_prompts → sessions →
+// sync_state (excluding __auth__) → hive_warnings → hive_project_governance.
+// Returns the total count of rows deleted across memory_mutations, project_aliases,
+// memories, user_prompts, sessions, hive_warnings, and the governance row.
+// sync_state rows are deleted but not counted (the __auth__ row is intentionally
+// excluded from deletion and the per-project row count is not meaningful to callers).
+// If the project is not found at all (already purged), returns (0, nil) for idempotency.
+func (d *DB) DeleteGovernanceProject(ctx context.Context, name, actorID, reason string) (int, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return 0, ErrGovernanceProjectRequired
+	}
+
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin delete governance project: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Check governance record: project must be archived (not merged, not live).
+	var mergedAt, archivedAt sql.NullString
+	err = tx.QueryRowContext(ctx,
+		`SELECT COALESCE(merged_at, ''), COALESCE(archived_at, '') FROM hive_project_governance WHERE project = ?`, name,
+	).Scan(&mergedAt, &archivedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		// No governance row: check whether the project has any data rows at all.
+		// If it does, it exists but was never archived. If not, it was already purged.
+		var exists bool
+		existErr := tx.QueryRowContext(ctx, `
+SELECT EXISTS(
+    SELECT 1 FROM sessions WHERE project = ?
+    UNION ALL SELECT 1 FROM memories WHERE project = ?
+    UNION ALL SELECT 1 FROM user_prompts WHERE project = ?
+    LIMIT 1
+)`, name, name, name).Scan(&exists)
+		if existErr != nil {
+			return 0, fmt.Errorf("check project existence for delete: %w", existErr)
+		}
+		if exists {
+			// Project has rows but no governance row — it is not archived.
+			return 0, ErrGovernanceProjectNotArchived
+		}
+		// No rows and no governance row: already purged, idempotent.
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read governance for delete: %w", err)
+	}
+	if mergedAt.Valid && mergedAt.String != "" {
+		// Merged projects must return the merge-conflict sentinel, not not-archived.
+		// Mirrors the guard in ArchiveGovernanceProject.
+		return 0, ErrGovernanceProjectMergeConflict
+	}
+	if !archivedAt.Valid || archivedAt.String == "" {
+		return 0, ErrGovernanceProjectNotArchived
+	}
+
+	var total int
+
+	// Step 1: delete memory_mutations.
+	res, err := tx.ExecContext(ctx, `DELETE FROM memory_mutations WHERE project = ?`, name)
+	if err != nil {
+		return 0, fmt.Errorf("delete memory_mutations: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	total += int(n)
+
+	// Step 2: delete project_aliases (both directions).
+	res, err = tx.ExecContext(ctx,
+		`DELETE FROM project_aliases WHERE source_project = ? OR target_project = ?`, name, name)
+	if err != nil {
+		return 0, fmt.Errorf("delete project_aliases: %w", err)
+	}
+	n, _ = res.RowsAffected()
+	total += int(n)
+
+	// Step 3: delete memories (memories_ad AFTER DELETE trigger maintains FTS5).
+	res, err = tx.ExecContext(ctx, `DELETE FROM memories WHERE project = ?`, name)
+	if err != nil {
+		return 0, fmt.Errorf("delete memories: %w", err)
+	}
+	n, _ = res.RowsAffected()
+	total += int(n)
+
+	// Step 4: delete user_prompts.
+	res, err = tx.ExecContext(ctx, `DELETE FROM user_prompts WHERE project = ?`, name)
+	if err != nil {
+		return 0, fmt.Errorf("delete user_prompts: %w", err)
+	}
+	n, _ = res.RowsAffected()
+	total += int(n)
+
+	// Step 5: delete sessions.
+	res, err = tx.ExecContext(ctx, `DELETE FROM sessions WHERE project = ?`, name)
+	if err != nil {
+		return 0, fmt.Errorf("delete sessions: %w", err)
+	}
+	n, _ = res.RowsAffected()
+	total += int(n)
+
+	// Step 6: delete sync_state (never touch __auth__).
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM sync_state WHERE project = ? AND project != '__auth__'`, name); err != nil {
+		return 0, fmt.Errorf("delete sync_state: %w", err)
+	}
+
+	// Step 7: delete hive_warnings.
+	res, err = tx.ExecContext(ctx, `DELETE FROM hive_warnings WHERE source = ?`, name)
+	if err != nil {
+		return 0, fmt.Errorf("delete hive_warnings: %w", err)
+	}
+	n, _ = res.RowsAffected()
+	total += int(n)
+
+	// Step 8: delete governance row.
+	res, err = tx.ExecContext(ctx, `DELETE FROM hive_project_governance WHERE project = ?`, name)
+	if err != nil {
+		return 0, fmt.Errorf("delete hive_project_governance: %w", err)
+	}
+	n, _ = res.RowsAffected()
+	total += int(n)
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit delete governance project: %w", err)
+	}
+	return total, nil
 }
 
 // ProjectMergeSyncEvidence reports whether any memory in the given projects has

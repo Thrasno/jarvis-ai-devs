@@ -78,6 +78,10 @@ type projectMergeStore interface {
 	ProjectMergeSyncEvidence(ctx context.Context, projects []string) (bool, error)
 }
 
+type projectDeleteStore interface {
+	DeleteGovernanceProject(ctx context.Context, project, actorID, reason string) (int, error)
+}
+
 // MergeResult holds the outcome of a single source→target merge within a batch.
 type MergeResult struct {
 	Source        string `json:"source"`
@@ -157,6 +161,26 @@ type ProjectMergeResult struct {
 	SourceProject    string `json:"source_project"`
 	TargetProject    string `json:"target_project"`
 	BackupID         string `json:"backup_id"`
+	Mutated          bool   `json:"mutated"`
+	CloudHandoffNote string `json:"cloud_handoff_note"`
+}
+
+// ProjectDeleteRequest is the input for ExecuteProjectDelete.
+type ProjectDeleteRequest struct {
+	Project      string `json:"project"`
+	BackupID     string `json:"backup_id"`
+	Confirmation string `json:"confirmation"`
+	ActorID      string `json:"actor_id,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+}
+
+// DeleteProjectResult is the output of ExecuteProjectDelete.
+type DeleteProjectResult struct {
+	Operation        string `json:"operation"`
+	TargetType       string `json:"target_type"`
+	Project          string `json:"project"`
+	BackupID         string `json:"backup_id"`
+	RowsDeleted      int    `json:"rows_deleted"`
 	Mutated          bool   `json:"mutated"`
 	CloudHandoffNote string `json:"cloud_handoff_note"`
 }
@@ -319,6 +343,50 @@ func (s *Service) ExecuteProjectArchive(ctx context.Context, req ProjectArchiveR
 	}, nil
 }
 
+const projectDeleteCloudHandoffNote = "Project purged locally. Cloud data not removed — no tombstone sync protocol exists yet."
+
+// ExecuteProjectDelete irreversibly purges all local data for an archived project.
+// Guards: fresh backup, exact confirmation phrase ("PURGE project <name>").
+// Propagates db.ErrGovernanceProjectNotArchived as-is for HTTP 409 mapping.
+func (s *Service) ExecuteProjectDelete(ctx context.Context, req ProjectDeleteRequest) (DeleteProjectResult, error) {
+	project := strings.TrimSpace(req.Project)
+	if project == "" {
+		return DeleteProjectResult{}, ErrProjectRequired
+	}
+	backupID, err := s.requireFreshBackup(ctx, req.BackupID)
+	if err != nil {
+		return DeleteProjectResult{}, err
+	}
+	if strings.TrimSpace(req.Confirmation) == "" {
+		return DeleteProjectResult{}, ErrDestructiveConfirmationRequired
+	}
+	if req.Confirmation != ProjectDeleteConfirmation(project) {
+		return DeleteProjectResult{}, ErrDestructiveConfirmationMismatch
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		return DeleteProjectResult{}, ErrDestructiveReasonRequired
+	}
+	deleter, ok := s.store.(projectDeleteStore)
+	if !ok {
+		return DeleteProjectResult{}, ErrDestructiveMutationStoreRequired
+	}
+	rowsDeleted, err := deleter.DeleteGovernanceProject(ctx, project, req.ActorID, reason)
+	if err != nil {
+		// Propagate ErrGovernanceProjectNotArchived as-is (HTTP layer maps to 409).
+		return DeleteProjectResult{}, err
+	}
+	return DeleteProjectResult{
+		Operation:        "purge",
+		TargetType:       GuardTargetProject,
+		Project:          project,
+		BackupID:         backupID,
+		RowsDeleted:      rowsDeleted,
+		Mutated:          rowsDeleted > 0,
+		CloudHandoffNote: projectDeleteCloudHandoffNote,
+	}, nil
+}
+
 func (s *Service) ExecuteProjectMerge(ctx context.Context, req ProjectMergeRequest) (ProjectMergeResult, error) {
 	source := strings.TrimSpace(req.SourceProject)
 	target := strings.TrimSpace(req.TargetProject)
@@ -370,6 +438,12 @@ func ProjectArchiveConfirmation(project string) string {
 
 func ProjectMergeConfirmation(source, target string) string {
 	return fmt.Sprintf("%s %s %s INTO %s", strings.ToUpper(GuardOperationMerge), GuardTargetProject, strings.TrimSpace(source), strings.TrimSpace(target))
+}
+
+// ProjectDeleteConfirmation returns the exact phrase the caller must type to
+// confirm a project purge. Mirrors the ARCHIVE phrase style.
+func ProjectDeleteConfirmation(p string) string {
+	return "PURGE project " + strings.TrimSpace(p)
 }
 
 func (s *Service) requireFreshBackup(ctx context.Context, backupID string) (string, error) {

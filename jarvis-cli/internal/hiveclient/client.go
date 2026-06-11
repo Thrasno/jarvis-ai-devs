@@ -154,6 +154,26 @@ type ProjectMergeResult struct {
 	CloudHandoffNote string `json:"cloud_handoff_note"`
 }
 
+// ProjectDeleteRequest is the input for DeleteProject.
+type ProjectDeleteRequest struct {
+	Project      string `json:"project"`
+	BackupID     string `json:"backup_id"`
+	Confirmation string `json:"confirmation"`
+	ActorID      string `json:"actor_id,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+}
+
+// ProjectDeleteResult is the output of DeleteProject.
+type ProjectDeleteResult struct {
+	Operation        string `json:"operation"`
+	TargetType       string `json:"target_type"`
+	Project          string `json:"project"`
+	BackupID         string `json:"backup_id"`
+	RowsDeleted      int    `json:"rows_deleted"`
+	Mutated          bool   `json:"mutated"`
+	CloudHandoffNote string `json:"cloud_handoff_note"`
+}
+
 // ProjectMergeBatchRequest is the input for a multi-source batch merge.
 type ProjectMergeBatchRequest struct {
 	Sources      []string `json:"sources"`
@@ -288,6 +308,20 @@ func (c *Client) ArchiveProject(ctx context.Context, req ProjectArchiveRequest) 
 	}
 	if err := c.post(ctx, "/governance/projects/"+url.PathEscape(project)+"/archive", req, &body); err != nil {
 		return ProjectArchiveResult{}, err
+	}
+	return body.Result, nil
+}
+
+// DeleteProject sends a purge request for an archived project to
+// POST /governance/projects/{name}/delete.
+func (c *Client) DeleteProject(ctx context.Context, req ProjectDeleteRequest) (ProjectDeleteResult, error) {
+	project := strings.TrimSpace(req.Project)
+	req.Project = project
+	var body struct {
+		Result ProjectDeleteResult `json:"result"`
+	}
+	if err := c.post(ctx, "/governance/projects/"+url.PathEscape(project)+"/delete", req, &body); err != nil {
+		return ProjectDeleteResult{}, err
 	}
 	return body.Result, nil
 }
