@@ -2705,7 +2705,7 @@ func TestAPIConfig_Save_SentinelRoundTrip_NotDirty(t *testing.T) {
 	m.configLoading = false
 	m.configAPIURL = "https://api.example.com"
 	m.configEmail = "u@x.com"
-	m.configPassword = "********"
+	m.configPassword = hiveclient.MaskedSecret
 	m.configPasswordDirty = false
 	m.configCursor = configFieldSave
 
@@ -2848,7 +2848,8 @@ func TestAPIConfig_Back_ResetsState(t *testing.T) {
 		testResult: hiveclient.ConfigTestResult{OK: true, Message: "ok"},
 	}
 	m := newConfigModelWithService(svc)
-	m.configLoading = false
+	m.configLoading = true
+	m.configCursor = configFieldPassword
 	m.configTestResult = &hiveclient.ConfigTestResult{OK: true}
 	m.configSubmitting = true
 	m.configTesting = true
@@ -2856,6 +2857,9 @@ func TestAPIConfig_Back_ResetsState(t *testing.T) {
 	m.configRestartHint = "restart required"
 	m.configEnvActive = true
 	m.configLoadErr = assertErr("some error")
+	m.configAPIURL = "https://example.com"
+	m.configEmail = "x@y.com"
+	m.configPassword = "secret123"
 	m.screen = ScreenAPIConfig
 
 	m = sendKey(m, tea.KeyEsc)
@@ -2865,6 +2869,9 @@ func TestAPIConfig_Back_ResetsState(t *testing.T) {
 	}
 	if m.configTestResult != nil {
 		t.Fatal("configTestResult should be nil after back")
+	}
+	if m.configLoading {
+		t.Fatal("configLoading should be false after back")
 	}
 	if m.configSubmitting {
 		t.Fatal("configSubmitting should be false after back")
@@ -2884,6 +2891,18 @@ func TestAPIConfig_Back_ResetsState(t *testing.T) {
 	if m.configLoadErr != nil {
 		t.Fatal("configLoadErr should be nil after back")
 	}
+	if m.configAPIURL != "" {
+		t.Fatalf("configAPIURL should be empty after back, got %q", m.configAPIURL)
+	}
+	if m.configEmail != "" {
+		t.Fatalf("configEmail should be empty after back, got %q", m.configEmail)
+	}
+	if m.configPassword != "" {
+		t.Fatalf("configPassword should be empty after back, got %q", m.configPassword)
+	}
+	if m.configCursor != configFieldAPIURL {
+		t.Fatalf("configCursor should be configFieldAPIURL after back, got %v", m.configCursor)
+	}
 }
 
 // T2.3n — No raw secret in any rendered frame.
@@ -2902,14 +2921,28 @@ func TestAPIConfig_NoRawSecretInView(t *testing.T) {
 	updated, _ := m.Update(msg)
 	m = updated.(Model)
 
-	// Simulate typing a secret in the password field
+	// Direct-assign path: verify raw value does not appear in view.
 	m.configCursor = configFieldPassword
 	m.configPassword = "supersecret"
 	m.configPasswordDirty = true
 
 	view := m.View()
 	if strings.Contains(view, "supersecret") {
-		t.Fatalf("raw password 'supersecret' found in view — security invariant violated:\n%s", view)
+		t.Fatalf("raw password 'supersecret' found in view (direct-assign path) — security invariant violated:\n%s", view)
+	}
+
+	// Typing path: verify that characters typed via sendRune are also not exposed.
+	m2 := newConfigModelWithService(svc)
+	m2.configLoading = false
+	m2.configCursor = configFieldPassword
+	m2.configPassword = ""
+	m2.configPasswordDirty = false
+	for _, r := range "supersecret" {
+		m2 = sendRune(m2, r)
+	}
+	view2 := m2.View()
+	if strings.Contains(view2, "supersecret") {
+		t.Fatalf("raw password 'supersecret' found in view (typing path) — security invariant violated:\n%s", view2)
 	}
 }
 

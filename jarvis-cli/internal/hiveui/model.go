@@ -701,6 +701,10 @@ func (m Model) back() Model {
 		m.screen = ScreenBackups
 	case ScreenAPIConfig:
 		m.screen = ScreenDashboard
+		m.configAPIURL = ""
+		m.configEmail = ""
+		m.configPassword = ""
+		m.configCursor = configFieldAPIURL
 		m.configTestResult = nil
 		m.configSubmitting = false
 		m.configTesting = false
@@ -2509,9 +2513,7 @@ func (m Model) removeConfigFieldRune() Model {
 		m.configEmail = trimLastRune(m.configEmail)
 	case configFieldPassword:
 		m.configPassword = trimLastRune(m.configPassword)
-		if m.configPassword == "" {
-			m.configPasswordDirty = true
-		}
+		m.configPasswordDirty = true
 	}
 	return m
 }
