@@ -29,7 +29,7 @@ func TestNewModelWithAllExecutors_WiresAllThreeExecutors(t *testing.T) {
 	snapshot := projectMergeSnapshot() // has alpha+beta projects, backup-merge, memories with ID 7
 	snapshot.Memories[0].ID = 7
 
-	m := NewModelWithAllExecutors(snapshot, guard, archive, merge, nil, nil)
+	m := NewModelWithAllExecutors(snapshot, guard, archive, merge, nil, nil, nil)
 
 	// Assert guard executor is wired: guard hotkey appears in memory detail.
 	detail := openMemoryDetail(m)
@@ -45,7 +45,7 @@ func TestNewModelWithAllExecutors_WiresAllThreeExecutors(t *testing.T) {
 
 func TestNewModelWithAllExecutors_EmptyDaemonURLDefaults(t *testing.T) {
 	snapshot := Snapshot{DaemonURL: ""}
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, nil, nil)
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, nil, nil, nil)
 	if m.snapshot.DaemonURL != "http://127.0.0.1:7438" {
 		t.Fatalf("DaemonURL = %q, want %q", m.snapshot.DaemonURL, "http://127.0.0.1:7438")
 	}
@@ -332,7 +332,6 @@ func TestMemoryDetailAdvertisesCorrectGuardActionForMemoryStatus(t *testing.T) {
 func TestDestructiveEntriesAreDisabledAndDoNotMutate(t *testing.T) {
 	wantDisabled := map[string]bool{
 		"Merge projects":  true,
-		"Delete projects": true,
 		"Delete memories": true,
 	}
 
@@ -1309,7 +1308,7 @@ func TestNewModelWithAllExecutors_WiresMemoryLoader(t *testing.T) {
 	snapshot := projectMergeSnapshot()
 	snapshot.Memories[0].ID = 10
 
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, loader, nil)
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, loader, nil, nil)
 	if m.memoryLoader == nil {
 		t.Fatal("memoryLoader should be wired, got nil")
 	}
@@ -1326,7 +1325,7 @@ func TestStartMemoryLoad_EmitsCmd(t *testing.T) {
 			{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"},
 		},
 	}
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, loader, nil)
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, loader, nil, nil)
 	// Navigate: dashboard -> projects -> project memories -> memory detail
 	m = sendKey(m, tea.KeyEnter) // open projects
 	m = sendKey(m, tea.KeyEnter) // open project memories
@@ -1353,7 +1352,7 @@ func TestApplyMemoryLoadResult_SetsContent(t *testing.T) {
 			{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"},
 		},
 	}
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{}, nil)
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{}, nil, nil)
 	m.screen = ScreenMemoryDetail
 	m.memoryLoading = true
 
@@ -1379,7 +1378,7 @@ func TestApplyMemoryLoadResult_IgnoresStale(t *testing.T) {
 			{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"},
 		},
 	}
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{}, nil)
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{}, nil, nil)
 	m.screen = ScreenMemoryDetail
 	m.memoryLoading = true
 	m.memoryContent = ""
@@ -1402,7 +1401,7 @@ func TestApplyMemoryLoadResult_SetsError(t *testing.T) {
 			{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"},
 		},
 	}
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{}, nil)
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{}, nil, nil)
 	m.screen = ScreenMemoryDetail
 	m.memoryLoading = true
 
@@ -1427,7 +1426,7 @@ func TestMemoryDetailView_Loading(t *testing.T) {
 		Projects:       []hiveclient.Project{{Name: "alpha"}},
 		Memories:       []hiveclient.Memory{{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"}},
 	}
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{}, nil)
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{}, nil, nil)
 	m.screen = ScreenMemoryDetail
 	m.memoryLoading = true
 
@@ -1441,7 +1440,7 @@ func TestMemoryDetailView_Content(t *testing.T) {
 		Projects:       []hiveclient.Project{{Name: "alpha"}},
 		Memories:       []hiveclient.Memory{{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"}},
 	}
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{}, nil)
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{}, nil, nil)
 	m.screen = ScreenMemoryDetail
 	m.memoryLoading = false
 	m.memoryContent = "the full content"
@@ -1456,7 +1455,7 @@ func TestMemoryDetailView_Error(t *testing.T) {
 		Projects:       []hiveclient.Project{{Name: "alpha"}},
 		Memories:       []hiveclient.Memory{{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"}},
 	}
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{}, nil)
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, &fakeMemoryLoader{}, nil, nil)
 	m.screen = ScreenMemoryDetail
 	m.memoryLoading = false
 	m.memoryLoadErr = assertErr("connection refused")
@@ -1472,7 +1471,7 @@ func TestMemoryDetailView_NoLoader(t *testing.T) {
 		Projects:       []hiveclient.Project{{Name: "alpha"}},
 		Memories:       []hiveclient.Memory{{ID: 10, Project: "alpha", Title: "mem", SyncID: "s-1"}},
 	}
-	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, nil, nil) // no loader
+	m := NewModelWithAllExecutors(snapshot, nil, nil, nil, nil, nil, nil) // no loader
 	m.screen = ScreenMemoryDetail
 
 	view := m.memoryDetailView()
@@ -1831,4 +1830,455 @@ func (f *fakeProjectMergeBatchExecutor) MergeProjects(_ context.Context, req hiv
 		BackupID:  req.BackupID,
 		Results:   results,
 	}, nil
+}
+
+// Phase 5 — ScreenProjectPurge tests
+
+// 5.2 RED: empty archived list → "Purge archived" entry → empty-state message, no crash.
+func TestScreenProjectPurge_EmptyList(t *testing.T) {
+	executor := &fakeProjectDeleteExecutor{note: "manual cloud cleanup required"}
+	// No projects → purge screen should show empty-state message.
+	snapshot := Snapshot{DashboardState: DashboardHealthy}
+	m := NewModelWithSnapshotAndProjectDeleteExecutor(snapshot, executor)
+	m = activatePurgeFromDashboard(m)
+
+	if m.Screen() != ScreenProjectPurge {
+		t.Fatalf("screen = %v, want ScreenProjectPurge", m.Screen())
+	}
+	assertContains(t, m.View(), "No projects available to purge")
+}
+
+// 5.3 RED: project present → "Purge archived" → project in list → Enter advances to backupID step.
+func TestScreenProjectPurge_SelectStep(t *testing.T) {
+	executor := &fakeProjectDeleteExecutor{note: "manual cloud cleanup required"}
+	snapshot := projectPurgeSnapshot()
+	m := NewModelWithSnapshotAndProjectDeleteExecutor(snapshot, executor)
+	m = activatePurgeFromDashboard(m)
+
+	if m.Screen() != ScreenProjectPurge {
+		t.Fatalf("screen = %v, want ScreenProjectPurge", m.Screen())
+	}
+	// Project should appear in the purge view.
+	assertContains(t, m.View(), "alpha")
+
+	// Pressing Enter at the select step should advance to the backupID step.
+	m = sendKey(m, tea.KeyEnter)
+	assertContains(t, m.View(), "Backup ID is required")
+}
+
+// 5.4 RED: reach confirmation step → wrong phrase → error shown, executor not called.
+func TestScreenProjectPurge_ConfirmMismatch(t *testing.T) {
+	executor := &fakeProjectDeleteExecutor{note: "manual cloud cleanup required"}
+	snapshot := projectPurgeSnapshot()
+	m := NewModelWithSnapshotAndProjectDeleteExecutor(snapshot, executor)
+	m = activatePurgeFromDashboard(m)
+	m = sendKey(m, tea.KeyEnter)      // advance to backupID step
+	m = sendText(m, "backup-purge")
+	m = sendKey(m, tea.KeyEnter)      // advance to confirmation step
+	m = sendText(m, "WRONG phrase")
+	m = sendKey(m, tea.KeyEnter)      // attempt submit
+
+	if len(executor.requests) != 0 {
+		t.Fatalf("dispatch count = %d, want 0 on mismatch", len(executor.requests))
+	}
+	assertContains(t, m.View(), "Confirmation mismatch")
+}
+
+// 5.5 RED: correct phrase → executor called → CloudHandoffNote visible in result view.
+func TestScreenProjectPurge_Success(t *testing.T) {
+	executor := &fakeProjectDeleteExecutor{note: "manual cloud cleanup required"}
+	snapshot := projectPurgeSnapshot()
+	m := NewModelWithSnapshotAndProjectDeleteExecutor(snapshot, executor)
+	m = activatePurgeFromDashboard(m)
+	m = sendKey(m, tea.KeyEnter)       // select → backupID
+	m = sendText(m, "backup-purge")
+	m = sendKey(m, tea.KeyEnter)       // backupID → confirm
+	m = sendText(m, "PURGE project alpha")
+	m = submitProjectPurgeAndApplyResult(t, m)
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("dispatch count = %d, want 1", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Project != "alpha" || req.BackupID != "backup-purge" || req.Confirmation != "PURGE project alpha" {
+		t.Fatalf("request = %#v, want purge request for alpha", req)
+	}
+	assertContains(t, m.View(), "manual cloud cleanup required")
+}
+
+// 5.6 RED: activate "Delete projects" dashboard entry → screen == ScreenProjects.
+func TestDeleteProjectsDashboardEntryRoutesToScreenProjects(t *testing.T) {
+	m := NewModelWithSnapshot(Snapshot{DashboardState: DashboardHealthy})
+	// Find the "Delete projects" action index.
+	deleteIndex := -1
+	for i, a := range dashboardActions() {
+		if a.label == "Delete projects" {
+			deleteIndex = i
+			break
+		}
+	}
+	if deleteIndex < 0 {
+		t.Fatal("Delete projects action not found in dashboardActions")
+	}
+	m.cursor = deleteIndex
+	m = sendKey(m, tea.KeyEnter)
+
+	if m.Screen() != ScreenProjects {
+		t.Fatalf("screen = %v, want ScreenProjects after activating Delete projects", m.Screen())
+	}
+}
+
+// Phase 5 helpers
+
+type fakeProjectDeleteExecutor struct {
+	requests []hiveclient.ProjectDeleteRequest
+	note     string
+}
+
+func (f *fakeProjectDeleteExecutor) DeleteProject(_ context.Context, req hiveclient.ProjectDeleteRequest) (hiveclient.ProjectDeleteResult, error) {
+	f.requests = append(f.requests, req)
+	return hiveclient.ProjectDeleteResult{
+		Operation:        "delete",
+		TargetType:       "project",
+		Project:          req.Project,
+		BackupID:         req.BackupID,
+		RowsDeleted:      42,
+		Mutated:          true,
+		CloudHandoffNote: f.note,
+	}, nil
+}
+
+func NewModelWithSnapshotAndProjectDeleteExecutor(snapshot Snapshot, executor ProjectDeleteExecutor) Model {
+	m := NewModelWithSnapshot(snapshot)
+	m.projectDeleteExecutor = executor
+	return m
+}
+
+func projectPurgeSnapshot() Snapshot {
+	snap := projectArchiveSnapshot()
+	// alpha is the selected project; treat it as purgeable (archived-only guard is backend's job).
+	return snap
+}
+
+// activatePurgeFromDashboard navigates from the dashboard to ScreenProjectPurge
+// by finding and activating the "Purge archived" dashboard entry.
+func activatePurgeFromDashboard(m Model) Model {
+	purgeIndex := -1
+	for i, a := range dashboardActions() {
+		if a.label == "Purge archived" {
+			purgeIndex = i
+			break
+		}
+	}
+	if purgeIndex < 0 {
+		// Action not yet added; return model unchanged so test fails descriptively.
+		return m
+	}
+	m.cursor = purgeIndex
+	return sendKey(m, tea.KeyEnter)
+}
+
+func submitProjectPurgeAndApplyResult(t *testing.T, m Model) Model {
+	t.Helper()
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("cmd is nil, want project purge dispatch")
+	}
+	updated, _ = updated.Update(cmd())
+	return updated.(Model)
+}
+
+// C1 — typing at select step must not corrupt projectDeleteConfirmation.
+func TestScreenProjectPurge_TypingAtSelectStepDoesNotCorruptConfirmation(t *testing.T) {
+	executor := &fakeProjectDeleteExecutor{note: "test"}
+	m := NewModelWithSnapshotAndProjectDeleteExecutor(projectPurgeSnapshot(), executor)
+	m = activatePurgeFromDashboard(m)
+
+	if m.projectDeleteStep != projectPurgeSelect {
+		t.Fatalf("step = %v, want projectPurgeSelect", m.projectDeleteStep)
+	}
+
+	m = sendRune(m, 'X')
+	m = sendRune(m, 'Y')
+	m = sendKey(m, tea.KeySpace)
+
+	if m.projectDeleteConfirmation != "" {
+		t.Fatalf("projectDeleteConfirmation = %q, want empty — typing at select step must not corrupt confirmation", m.projectDeleteConfirmation)
+	}
+	if m.projectDeleteBackupID != "" {
+		t.Fatalf("projectDeleteBackupID = %q, want empty — typing at select step must not corrupt backupID", m.projectDeleteBackupID)
+	}
+}
+
+// C2 — j/k/Up/Down navigate the project list at the select step.
+func TestScreenProjectPurge_NavigationAtSelectStep(t *testing.T) {
+	executor := &fakeProjectDeleteExecutor{note: "test"}
+	snap := projectPurgeSnapshot()
+	// Ensure at least two projects for meaningful navigation.
+	if len(snap.Projects) < 2 {
+		snap.Projects = append(snap.Projects, hiveclient.Project{Name: "gamma"})
+	}
+	m := NewModelWithSnapshotAndProjectDeleteExecutor(snap, executor)
+	m = activatePurgeFromDashboard(m)
+
+	initial := m.projectIndex
+
+	// Down increments.
+	m = sendKey(m, tea.KeyDown)
+	if m.projectIndex != initial+1 {
+		t.Fatalf("after Down: projectIndex = %d, want %d", m.projectIndex, initial+1)
+	}
+
+	// Up decrements back.
+	m = sendKey(m, tea.KeyUp)
+	if m.projectIndex != initial {
+		t.Fatalf("after Up: projectIndex = %d, want %d", m.projectIndex, initial)
+	}
+
+	// 'j' increments.
+	m = sendRune(m, 'j')
+	if m.projectIndex != initial+1 {
+		t.Fatalf("after j: projectIndex = %d, want %d", m.projectIndex, initial+1)
+	}
+
+	// 'k' decrements.
+	m = sendRune(m, 'k')
+	if m.projectIndex != initial {
+		t.Fatalf("after k: projectIndex = %d, want %d", m.projectIndex, initial)
+	}
+
+	// Floor at 0.
+	m = sendKey(m, tea.KeyUp)
+	if m.projectIndex < 0 {
+		t.Fatalf("projectIndex = %d, must not go below 0", m.projectIndex)
+	}
+
+	// Cap at len-1.
+	for range snap.Projects {
+		m = sendKey(m, tea.KeyDown)
+	}
+	if m.projectIndex >= len(snap.Projects) {
+		t.Fatalf("projectIndex = %d, must not exceed len-1 (%d)", m.projectIndex, len(snap.Projects)-1)
+	}
+}
+
+// C3 — 'p' hint appears in projectsView when executor is set.
+func TestProjectsView_PurgeHintAppearsWhenExecutorSet(t *testing.T) {
+	executor := &fakeProjectDeleteExecutor{}
+	snap := projectPurgeSnapshot()
+	m := NewModelWithSnapshotAndProjectDeleteExecutor(snap, executor)
+	m = sendKey(m, tea.KeyEnter) // navigate to projects
+
+	assertContains(t, m.View(), "p purge archived project guarded by backup ID and exact confirmation")
+}
+
+// C3 inverse — 'p' hint absent when executor is nil.
+func TestProjectsView_PurgeHintAbsentWithoutExecutor(t *testing.T) {
+	m := sendKey(NewModelWithSnapshot(projectPurgeSnapshot()), tea.KeyEnter)
+	assertNotContains(t, m.View(), "p purge archived")
+}
+
+// C4 — startProjectPurge with nil executor sets message, does not change screen.
+func TestStartProjectPurge_NilExecutorSetsMessage(t *testing.T) {
+	m := NewModelWithSnapshot(projectPurgeSnapshot())
+	m.screen = ScreenProjects
+
+	before := m.Screen()
+	m = m.startProjectPurge()
+
+	if m.Screen() != before {
+		t.Fatalf("screen changed to %v, want no change when executor is nil", m.Screen())
+	}
+	if !strings.Contains(m.message, "purge executor not available") {
+		t.Fatalf("message = %q, want 'purge executor not available'", m.message)
+	}
+}
+
+// C5 — executor error path: error message shown, screen returns to ScreenProjects.
+func TestScreenProjectPurge_ExecutorError(t *testing.T) {
+	executor := &fakeProjectDeleteExecutorError{err: assertErr("daemon rejected purge")}
+	snap := projectPurgeSnapshot()
+	m := NewModelWithSnapshotAndProjectDeleteExecutor(snap, executor)
+	m = activatePurgeFromDashboard(m)
+	m = sendKey(m, tea.KeyEnter)      // select → backupID
+	m = sendText(m, "backup-purge")
+	m = sendKey(m, tea.KeyEnter)      // backupID → confirmation
+	m = sendText(m, "PURGE project alpha")
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("cmd is nil, want purge dispatch")
+	}
+	updated, _ = updated.Update(cmd())
+	m = updated.(Model)
+
+	if m.Screen() != ScreenProjects {
+		t.Fatalf("screen = %v, want ScreenProjects after executor error", m.Screen())
+	}
+	assertContains(t, m.View(), "purge failed")
+}
+
+type fakeProjectDeleteExecutorError struct {
+	err error
+}
+
+func (f *fakeProjectDeleteExecutorError) DeleteProject(_ context.Context, req hiveclient.ProjectDeleteRequest) (hiveclient.ProjectDeleteResult, error) {
+	return hiveclient.ProjectDeleteResult{}, f.err
+}
+
+// C6 — ESC at each purge step navigates back to ScreenProjects without calling executor.
+func TestScreenProjectPurge_EscAtEachStep(t *testing.T) {
+	tests := []struct {
+		name    string
+		advance func(m Model) Model
+	}{
+		{
+			name:    "esc at select step",
+			advance: func(m Model) Model { return m },
+		},
+		{
+			name: "esc at backupID step",
+			advance: func(m Model) Model {
+				return sendKey(m, tea.KeyEnter) // select → backupID
+			},
+		},
+		{
+			name: "esc at confirmation step",
+			advance: func(m Model) Model {
+				m = sendKey(m, tea.KeyEnter) // select → backupID
+				m = sendText(m, "backup-purge")
+				return sendKey(m, tea.KeyEnter) // backupID → confirmation
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			executor := &fakeProjectDeleteExecutor{note: "test"}
+			m := NewModelWithSnapshotAndProjectDeleteExecutor(projectPurgeSnapshot(), executor)
+			m = activatePurgeFromDashboard(m)
+			m = tt.advance(m)
+
+			m = sendKey(m, tea.KeyEsc)
+
+			if m.Screen() != ScreenProjects {
+				t.Fatalf("screen = %v, want ScreenProjects after ESC", m.Screen())
+			}
+			if len(executor.requests) != 0 {
+				t.Fatalf("executor called %d times, want 0 after ESC", len(executor.requests))
+			}
+		})
+	}
+}
+
+// C7 — pending blocks keys; stale result is ignored.
+func TestScreenProjectPurge_PendingBlocksKeysAndStaleResult(t *testing.T) {
+	executor := &fakeProjectDeleteExecutor{note: "test"}
+	snap := projectPurgeSnapshot()
+	m := NewModelWithSnapshotAndProjectDeleteExecutor(snap, executor)
+	m = activatePurgeFromDashboard(m)
+	m = sendKey(m, tea.KeyEnter) // select → backupID
+	m = sendText(m, "backup-purge")
+	m = sendKey(m, tea.KeyEnter) // backupID → confirmation
+	m = sendText(m, "PURGE project alpha")
+
+	updated, firstCmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if firstCmd == nil {
+		t.Fatal("cmd is nil, want purge dispatch")
+	}
+
+	// While submitting, these keys must be blocked (no screen change, still submitting).
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyEsc},
+		{Type: tea.KeyCtrlC},
+		{Type: tea.KeyRunes, Runes: []rune{'p'}},
+	} {
+		var cmd tea.Cmd
+		updated, cmd = updated.Update(key)
+		if cmd != nil {
+			t.Fatalf("pending key %v returned cmd, want blocked", key.Type)
+		}
+	}
+	m = updated.(Model)
+	if m.Screen() != ScreenProjectPurge {
+		t.Fatalf("screen = %v, want ScreenProjectPurge while pending", m.Screen())
+	}
+	assertContains(t, m.View(), "Wait for the result before leaving or submitting again")
+
+	// Stale result (different project name) must be ignored.
+	updated, _ = updated.Update(projectDeleteResultMsg{project: "other-project", backupID: "backup-purge"})
+	m = updated.(Model)
+	if !m.projectDeleteSubmitting {
+		t.Fatal("projectDeleteSubmitting = false after stale result, want still pending")
+	}
+
+	// Matching result clears pending state.
+	updated, _ = updated.Update(firstCmd())
+	m = updated.(Model)
+	if m.projectDeleteSubmitting {
+		t.Fatal("projectDeleteSubmitting = true after matching result, want cleared")
+	}
+	if m.Screen() != ScreenProjects {
+		t.Fatalf("screen = %v, want ScreenProjects after successful purge", m.Screen())
+	}
+}
+
+// C8 — back() resets purge state fields.
+func TestScreenProjectPurge_BackResetsState(t *testing.T) {
+	executor := &fakeProjectDeleteExecutor{note: "test"}
+	m := NewModelWithSnapshotAndProjectDeleteExecutor(projectPurgeSnapshot(), executor)
+	m = activatePurgeFromDashboard(m)
+	m = sendKey(m, tea.KeyEnter) // select → backupID
+	m = sendText(m, "backup-purge")
+	m = sendKey(m, tea.KeyEnter) // backupID → confirmation
+	m = sendText(m, "partial confirm")
+
+	m = sendKey(m, tea.KeyEsc) // back to projects
+
+	if m.Screen() != ScreenProjects {
+		t.Fatalf("screen = %v, want ScreenProjects", m.Screen())
+	}
+	if m.projectDeleteStep != projectPurgeSelect {
+		t.Fatalf("projectDeleteStep = %v, want projectPurgeSelect", m.projectDeleteStep)
+	}
+	if m.projectDeleteBackupID != "" {
+		t.Fatalf("projectDeleteBackupID = %q, want empty", m.projectDeleteBackupID)
+	}
+	if m.projectDeleteConfirmation != "" {
+		t.Fatalf("projectDeleteConfirmation = %q, want empty", m.projectDeleteConfirmation)
+	}
+	if m.projectDeleteSubmitting {
+		t.Fatalf("projectDeleteSubmitting = true, want false")
+	}
+	if m.projectDeleteProject != (hiveclient.Project{}) {
+		t.Fatalf("projectDeleteProject = %+v, want zero value", m.projectDeleteProject)
+	}
+}
+
+// C10 — ctrl-c returns tea.Quit when not submitting.
+func TestScreenProjectPurge_CtrlCReturnsTeaQuitBeforeSubmit(t *testing.T) {
+	executor := &fakeProjectDeleteExecutor{note: "test"}
+	m := NewModelWithSnapshotAndProjectDeleteExecutor(projectPurgeSnapshot(), executor)
+	m = activatePurgeFromDashboard(m)
+	m = sendKey(m, tea.KeyEnter) // select → backupID
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("cmd is nil, want tea.Quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("cmd() = %T, want tea.QuitMsg", cmd())
+	}
+}
+
+// C9 — NewModelWithAllExecutors wires deleteExecutor.
+func TestNewModelWithAllExecutors_WiresDeleteExecutor(t *testing.T) {
+	executor := &fakeProjectDeleteExecutor{note: "test"}
+	snap := projectPurgeSnapshot()
+	m := NewModelWithAllExecutors(snap, nil, nil, nil, nil, nil, executor)
+
+	if m.projectDeleteExecutor == nil {
+		t.Fatal("projectDeleteExecutor should be wired, got nil")
+	}
 }
