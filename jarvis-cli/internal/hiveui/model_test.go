@@ -332,7 +332,6 @@ func TestMemoryDetailAdvertisesCorrectGuardActionForMemoryStatus(t *testing.T) {
 func TestDestructiveEntriesAreDisabledAndDoNotMutate(t *testing.T) {
 	wantDisabled := map[string]bool{
 		"Merge projects":  true,
-		"Delete projects": true,
 		"Delete memories": true,
 	}
 
@@ -1831,4 +1830,160 @@ func (f *fakeProjectMergeBatchExecutor) MergeProjects(_ context.Context, req hiv
 		BackupID:  req.BackupID,
 		Results:   results,
 	}, nil
+}
+
+// Phase 5 — ScreenProjectPurge tests
+
+// 5.2 RED: empty archived list → "Purge archived" entry → empty-state message, no crash.
+func TestScreenProjectPurge_EmptyList(t *testing.T) {
+	executor := &fakeProjectDeleteExecutor{note: "manual cloud cleanup required"}
+	// No projects → purge screen should show empty-state message.
+	snapshot := Snapshot{DashboardState: DashboardHealthy}
+	m := NewModelWithSnapshotAndProjectDeleteExecutor(snapshot, executor)
+	m = activatePurgeFromDashboard(m)
+
+	if m.Screen() != ScreenProjectPurge {
+		t.Fatalf("screen = %v, want ScreenProjectPurge", m.Screen())
+	}
+	assertContains(t, m.View(), "No projects available to purge")
+}
+
+// 5.3 RED: project present → "Purge archived" → project in list → Enter advances to backupID step.
+func TestScreenProjectPurge_SelectStep(t *testing.T) {
+	executor := &fakeProjectDeleteExecutor{note: "manual cloud cleanup required"}
+	snapshot := projectPurgeSnapshot()
+	m := NewModelWithSnapshotAndProjectDeleteExecutor(snapshot, executor)
+	m = activatePurgeFromDashboard(m)
+
+	if m.Screen() != ScreenProjectPurge {
+		t.Fatalf("screen = %v, want ScreenProjectPurge", m.Screen())
+	}
+	// Project should appear in the purge view.
+	assertContains(t, m.View(), "alpha")
+
+	// Pressing Enter at the select step should advance to the backupID step.
+	m = sendKey(m, tea.KeyEnter)
+	assertContains(t, m.View(), "Backup ID is required")
+}
+
+// 5.4 RED: reach confirmation step → wrong phrase → error shown, executor not called.
+func TestScreenProjectPurge_ConfirmMismatch(t *testing.T) {
+	executor := &fakeProjectDeleteExecutor{note: "manual cloud cleanup required"}
+	snapshot := projectPurgeSnapshot()
+	m := NewModelWithSnapshotAndProjectDeleteExecutor(snapshot, executor)
+	m = activatePurgeFromDashboard(m)
+	m = sendKey(m, tea.KeyEnter)      // advance to backupID step
+	m = sendText(m, "backup-purge")
+	m = sendKey(m, tea.KeyEnter)      // advance to confirmation step
+	m = sendText(m, "WRONG phrase")
+	m = sendKey(m, tea.KeyEnter)      // attempt submit
+
+	if len(executor.requests) != 0 {
+		t.Fatalf("dispatch count = %d, want 0 on mismatch", len(executor.requests))
+	}
+	assertContains(t, m.View(), "Confirmation mismatch")
+}
+
+// 5.5 RED: correct phrase → executor called → CloudHandoffNote visible in result view.
+func TestScreenProjectPurge_Success(t *testing.T) {
+	executor := &fakeProjectDeleteExecutor{note: "manual cloud cleanup required"}
+	snapshot := projectPurgeSnapshot()
+	m := NewModelWithSnapshotAndProjectDeleteExecutor(snapshot, executor)
+	m = activatePurgeFromDashboard(m)
+	m = sendKey(m, tea.KeyEnter)       // select → backupID
+	m = sendText(m, "backup-purge")
+	m = sendKey(m, tea.KeyEnter)       // backupID → confirm
+	m = sendText(m, "PURGE project alpha")
+	m = submitProjectPurgeAndApplyResult(t, m)
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("dispatch count = %d, want 1", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Project != "alpha" || req.BackupID != "backup-purge" || req.Confirmation != "PURGE project alpha" {
+		t.Fatalf("request = %#v, want purge request for alpha", req)
+	}
+	assertContains(t, m.View(), "manual cloud cleanup required")
+}
+
+// 5.6 RED: activate "Delete projects" dashboard entry → screen == ScreenProjects.
+func TestDeleteProjectsDashboardEntryRoutesToScreenProjects(t *testing.T) {
+	m := NewModelWithSnapshot(Snapshot{DashboardState: DashboardHealthy})
+	// Find the "Delete projects" action index.
+	deleteIndex := -1
+	for i, a := range dashboardActions() {
+		if a.label == "Delete projects" {
+			deleteIndex = i
+			break
+		}
+	}
+	if deleteIndex < 0 {
+		t.Fatal("Delete projects action not found in dashboardActions")
+	}
+	m.cursor = deleteIndex
+	m = sendKey(m, tea.KeyEnter)
+
+	if m.Screen() != ScreenProjects {
+		t.Fatalf("screen = %v, want ScreenProjects after activating Delete projects", m.Screen())
+	}
+}
+
+// Phase 5 helpers
+
+type fakeProjectDeleteExecutor struct {
+	requests []hiveclient.ProjectDeleteRequest
+	note     string
+}
+
+func (f *fakeProjectDeleteExecutor) DeleteProject(_ context.Context, req hiveclient.ProjectDeleteRequest) (hiveclient.ProjectDeleteResult, error) {
+	f.requests = append(f.requests, req)
+	return hiveclient.ProjectDeleteResult{
+		Operation:        "delete",
+		TargetType:       "project",
+		Project:          req.Project,
+		BackupID:         req.BackupID,
+		RowsDeleted:      42,
+		Mutated:          true,
+		CloudHandoffNote: f.note,
+	}, nil
+}
+
+func NewModelWithSnapshotAndProjectDeleteExecutor(snapshot Snapshot, executor ProjectDeleteExecutor) Model {
+	m := NewModelWithSnapshot(snapshot)
+	m.projectDeleteExecutor = executor
+	return m
+}
+
+func projectPurgeSnapshot() Snapshot {
+	snap := projectArchiveSnapshot()
+	// alpha is the selected project; treat it as purgeable (archived-only guard is backend's job).
+	return snap
+}
+
+// activatePurgeFromDashboard navigates from the dashboard to ScreenProjectPurge
+// by finding and activating the "Purge archived" dashboard entry.
+func activatePurgeFromDashboard(m Model) Model {
+	purgeIndex := -1
+	for i, a := range dashboardActions() {
+		if a.label == "Purge archived" {
+			purgeIndex = i
+			break
+		}
+	}
+	if purgeIndex < 0 {
+		// Action not yet added; return model unchanged so test fails descriptively.
+		return m
+	}
+	m.cursor = purgeIndex
+	return sendKey(m, tea.KeyEnter)
+}
+
+func submitProjectPurgeAndApplyResult(t *testing.T, m Model) Model {
+	t.Helper()
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("cmd is nil, want project purge dispatch")
+	}
+	updated, _ = updated.Update(cmd())
+	return updated.(Model)
 }

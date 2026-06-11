@@ -37,6 +37,7 @@ const (
 	ScreenMemoryGuard
 	ScreenProjectArchive
 	ScreenProjectMerge
+	ScreenProjectPurge
 )
 
 type GuardExecutor interface {
@@ -54,6 +55,11 @@ type ProjectMergeExecutor interface {
 // ProjectMergeBatchExecutor executes a multi-source batch merge.
 type ProjectMergeBatchExecutor interface {
 	MergeProjects(context.Context, hiveclient.ProjectMergeBatchRequest) (hiveclient.ProjectMergeBatchResult, error)
+}
+
+// ProjectDeleteExecutor permanently deletes an archived project through hive-daemon.
+type ProjectDeleteExecutor interface {
+	DeleteProject(context.Context, hiveclient.ProjectDeleteRequest) (hiveclient.ProjectDeleteResult, error)
 }
 
 // ProjectMergeImpact holds the per-source impact summary computed client-side
@@ -133,6 +139,13 @@ type Model struct {
 	mergeBatchResult          *hiveclient.ProjectMergeBatchResult
 	mergeBatchSubmitting      bool
 
+	projectDeleteExecutor     ProjectDeleteExecutor
+	projectDeleteProject      hiveclient.Project
+	projectDeleteBackupID     string
+	projectDeleteConfirmation string
+	projectDeleteStep         projectPurgeStep
+	projectDeleteSubmitting   bool
+
 	memoryLoader  MemoryLoader
 	memoryContent string
 	memoryLoading bool
@@ -166,6 +179,15 @@ const (
 	mergeStepConfirm
 	mergeStepExecuting
 	mergeStepResult
+)
+
+// projectPurgeStep is the step enum for the project purge flow.
+type projectPurgeStep int
+
+const (
+	projectPurgeSelect  projectPurgeStep = iota
+	projectPurgeBackupID
+	projectPurgeConfirmation
 )
 
 type memoryGuardResultMsg struct {
@@ -204,6 +226,13 @@ type memoryLoadResultMsg struct {
 	id     int64
 	memory hiveclient.Memory
 	err    error
+}
+
+type projectDeleteResultMsg struct {
+	project  string
+	backupID string
+	result   hiveclient.ProjectDeleteResult
+	err      error
 }
 
 func NewModelWithSnapshot(snapshot Snapshot) Model {
@@ -264,6 +293,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if result, ok := msg.(memoryLoadResultMsg); ok {
 		return m.applyMemoryLoadResult(result), nil
 	}
+	if result, ok := msg.(projectDeleteResultMsg); ok {
+		return m.applyProjectDeleteResult(result), nil
+	}
 	if sz, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width = sz.Width
 		return m, nil
@@ -293,6 +325,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.updateProjectArchive(key)
 	}
+	if m.screen == ScreenProjectPurge && m.projectDeleteSubmitting {
+		return m.updateProjectPurge(key)
+	}
+	if m.screen == ScreenProjectPurge {
+		if key.Type == tea.KeyCtrlC {
+			return m, tea.Quit
+		}
+		return m.updateProjectPurge(key)
+	}
 	if m.screen == ScreenMemoryGuard {
 		if key.Type == tea.KeyCtrlC && !m.guardSubmitting {
 			return m, tea.Quit
@@ -316,6 +357,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.startBatchProjectMerge()
 	case m.screen == ScreenProjects && runeKey(key, 'm') && m.projectMergeExecutor != nil:
 		m = m.startProjectMerge()
+	case m.screen == ScreenProjects && runeKey(key, 'p') && m.projectDeleteExecutor != nil:
+		m = m.startProjectPurge()
 	case runeKey(key, 't'):
 		m.screen = ScreenTimeline
 	case runeKey(key, 'w'):
@@ -388,6 +431,8 @@ func (m Model) View() string {
 			return m.batchProjectMergeView()
 		}
 		return m.projectMergeView()
+	case ScreenProjectPurge:
+		return m.projectPurgeView()
 	}
 
 	w := max(m.width, 80)
@@ -517,6 +562,8 @@ func (m Model) open() Model {
 	switch action.label {
 	case "Project viewer":
 		m.screen = ScreenProjects
+	case "Delete projects":
+		m.screen = ScreenProjects
 	case "Project timeline":
 		m.screen = ScreenTimeline
 	case "Hive API config":
@@ -527,6 +574,8 @@ func (m Model) open() Model {
 		m.screen = ScreenWarnings
 	case "Backup snapshots":
 		m.screen = ScreenBackups
+	case "Purge archived":
+		m = m.startProjectPurge()
 	default:
 		m.message = action.label + " is not available in this navigation sub-slice. No local Hive state was changed."
 	}
@@ -547,6 +596,8 @@ func (m Model) back() Model {
 	case ScreenMemoryGuard:
 		m.screen = ScreenMemoryDetail
 	case ScreenProjectArchive:
+		m.screen = ScreenProjects
+	case ScreenProjectPurge:
 		m.screen = ScreenProjects
 	case ScreenProjectMerge:
 		m.screen = ScreenProjects
@@ -1135,6 +1186,187 @@ func (m Model) projectArchiveView() string {
 
 func projectArchiveConfirmationPhrase(project string) string {
 	return "ARCHIVE project " + project
+}
+
+func (m Model) startProjectPurge() Model {
+	if m.projectDeleteExecutor == nil {
+		return m
+	}
+	m.screen = ScreenProjectPurge
+	m.projectDeleteProject = m.selectedProject()
+	m.projectDeleteBackupID = ""
+	m.projectDeleteConfirmation = ""
+	m.projectDeleteStep = projectPurgeSelect
+	m.projectDeleteSubmitting = false
+	m.message = ""
+	return m
+}
+
+func (m Model) updateProjectPurge(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.projectDeleteSubmitting {
+		m.message = "Guarded project purge is already pending through hive-daemon. Wait for the result before leaving or submitting again."
+		return m, nil
+	}
+	switch {
+	case key.Type == tea.KeyEsc:
+		m = m.back()
+		m.message = ""
+		return m, nil
+	case key.Type == tea.KeyBackspace:
+		m = m.removeProjectPurgeRune()
+		return m, nil
+	case key.Type == tea.KeyEnter:
+		return m.submitProjectPurge()
+	case key.Type == tea.KeySpace:
+		m = m.appendProjectPurgeText(" ")
+		return m, nil
+	case key.Type == tea.KeyRunes:
+		m = m.appendProjectPurgeText(string(key.Runes))
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) submitProjectPurge() (tea.Model, tea.Cmd) {
+	if m.projectDeleteStep == projectPurgeSelect {
+		if len(m.snapshot.Projects) == 0 {
+			m.message = "No projects available to purge."
+			return m, nil
+		}
+		m.projectDeleteProject = m.selectedProject()
+		m.projectDeleteStep = projectPurgeBackupID
+		m.message = ""
+		return m, nil
+	}
+	if m.projectDeleteStep == projectPurgeBackupID {
+		if strings.TrimSpace(m.projectDeleteBackupID) == "" {
+			m.message = "Backup ID is required before guarded project purge."
+			return m, nil
+		}
+		m.projectDeleteStep = projectPurgeConfirmation
+		m.message = ""
+		return m, nil
+	}
+	expected := projectPurgeConfirmationPhrase(m.projectDeleteProject.Name)
+	if m.projectDeleteConfirmation != expected {
+		m.message = "Confirmation mismatch. Type the phrase exactly; input is not trimmed."
+		return m, nil
+	}
+	if m.projectDeleteExecutor == nil {
+		m.message = "Guarded project purge is unavailable without a daemon command boundary."
+		return m, nil
+	}
+	executor := m.projectDeleteExecutor
+	request := hiveclient.ProjectDeleteRequest{
+		Project:      m.projectDeleteProject.Name,
+		BackupID:     strings.TrimSpace(m.projectDeleteBackupID),
+		Confirmation: m.projectDeleteConfirmation,
+	}
+	m.projectDeleteSubmitting = true
+	return m, func() tea.Msg {
+		result, err := executor.DeleteProject(context.Background(), request)
+		return projectDeleteResultMsg{project: request.Project, backupID: request.BackupID, result: result, err: err}
+	}
+}
+
+func (m Model) applyProjectDeleteResult(msg projectDeleteResultMsg) Model {
+	if !m.projectDeleteSubmitting || msg.project != m.projectDeleteProject.Name || msg.backupID != strings.TrimSpace(m.projectDeleteBackupID) {
+		return m
+	}
+	m.screen = ScreenProjects
+	m.projectDeleteSubmitting = false
+	if msg.err != nil {
+		m.message = fmt.Sprintf("Project %s purge failed through hive-daemon: %v", msg.project, msg.err)
+		return m
+	}
+	m.message = fmt.Sprintf("Project %s purge completed with backup %s. Rows deleted: %d.", msg.project, msg.backupID, msg.result.RowsDeleted)
+	if strings.TrimSpace(msg.result.CloudHandoffNote) != "" {
+		m.message += " Cloud handoff: " + msg.result.CloudHandoffNote
+	}
+	return m
+}
+
+func (m Model) appendProjectPurgeText(text string) Model {
+	if m.projectDeleteStep == projectPurgeBackupID {
+		m.projectDeleteBackupID += text
+		return m
+	}
+	m.projectDeleteConfirmation += text
+	return m
+}
+
+func (m Model) removeProjectPurgeRune() Model {
+	if m.projectDeleteStep == projectPurgeBackupID {
+		m.projectDeleteBackupID = trimLastRune(m.projectDeleteBackupID)
+		return m
+	}
+	m.projectDeleteConfirmation = trimLastRune(m.projectDeleteConfirmation)
+	return m
+}
+
+func (m Model) projectPurgeView() string {
+	project := m.projectDeleteProject.Name
+	w := max(m.width, 80)
+	panelW := panelWidth(w)
+
+	crumb := breadcrumbCurrent.Render("guarded project purge")
+
+	var sb strings.Builder
+	sb.WriteString(headerRow(crumb, badgeDestructive.Render("destructive"), w))
+	sb.WriteString("\n")
+
+	// IMPACT panel — show project list at select step, target at later steps.
+	var impactContent string
+	if m.projectDeleteStep == projectPurgeSelect {
+		if len(m.snapshot.Projects) == 0 {
+			impactContent = dimTextStyle.Render("No projects available to purge")
+		} else {
+			var listContent strings.Builder
+			for i, p := range m.snapshot.Projects {
+				cursor := "  "
+				if i == m.projectIndex {
+					cursor = cursorStyle.Render("▌") + " "
+				}
+				row := p.Name
+				if i == m.projectIndex {
+					row = selectedRow(row, panelW-8)
+				}
+				listContent.WriteString(cursor + row + "\n")
+			}
+			impactContent = listContent.String()
+		}
+	} else {
+		impactContent = fmt.Sprintf("%s %s", dimTextStyle.Render("target"), project)
+	}
+	sb.WriteString(borderedPanel(sectionHeader("IMPACT", panelW)+impactContent, panelW))
+	sb.WriteString("\n")
+
+	// REASON panel — only shown after select step.
+	if m.projectDeleteStep != projectPurgeSelect {
+		reasonContent := fmt.Sprintf("Backup ID is required: %s\n", visibleInput(m.projectDeleteBackupID)) +
+			fmt.Sprintf("Confirmation must match exactly. Type exactly: %s\n", projectPurgeConfirmationPhrase(project))
+		if m.projectDeleteStep == projectPurgeConfirmation {
+			reasonContent += fmt.Sprintf("confirmation: %s\n", visibleInput(m.projectDeleteConfirmation))
+		}
+		reasonContent += "No purge will run until both fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation."
+		sb.WriteString(borderedPanel(sectionHeader("REASON — REQUIRED", panelW)+reasonContent, panelW))
+	}
+
+	if m.projectDeleteSubmitting {
+		fmt.Fprintf(&sb, "\n%s\n", guardPending.Render("Guarded project purge is pending through hive-daemon. Wait for the result before leaving or submitting again."))
+	}
+	if m.message != "" {
+		fmt.Fprintf(&sb, "\n%s\n", m.message)
+	}
+	sb.WriteString("\n")
+	if !m.projectDeleteSubmitting {
+		sb.WriteString(helpBar([]KeyHint{{"esc", "back"}, {"ctrl-c", "quit"}}, "destructive", w))
+	}
+	return sb.String()
+}
+
+func projectPurgeConfirmationPhrase(project string) string {
+	return "PURGE project " + project
 }
 
 func (m Model) startProjectMerge() Model {
@@ -2035,7 +2267,8 @@ func dashboardActions() []dashboardAction {
 		{"Project viewer", "browse projects and memories", false},
 		{"Project timeline", "chronological project memories", false},
 		{"Merge projects", "destructive operation deferred", true},
-		{"Delete projects", "destructive operation deferred", true},
+		{"Delete projects", "archive then delete project memories and sessions", false},
+		{"Purge archived", "permanently remove all data for an archived project", false},
 		{"Delete memories", "destructive operation deferred", true},
 		{"Hive API config", "read-only configuration state", false},
 		{"Hive API health", "connectivity and sync health", false},
