@@ -399,6 +399,223 @@ func TestClient_ProjectList_UnsyncedCount(t *testing.T) {
 
 // TestDeleteProject_BuildsCorrectRequest verifies that DeleteProject posts to
 // .../governance/projects/{name}/delete with the serialized ProjectDeleteRequest body.
+// T2.1 — GetConfigStatus tests
+
+func TestGetConfigStatus_DecodesDTOFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/governance/config/status" {
+			t.Fatalf("request = %s %s, want GET /governance/config/status", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"configured":true,"source":"file","api_url":"https://hive.example.com","email":"user@example.com","password_set":true,"password_masked":"********","auto_sync":true,"env_active":false,"restart_hint":"","warnings":null}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	status, err := client.GetConfigStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetConfigStatus: %v", err)
+	}
+	if !status.Configured {
+		t.Fatalf("Configured = false, want true")
+	}
+	if status.APIURL != "https://hive.example.com" {
+		t.Fatalf("APIURL = %q, want https://hive.example.com", status.APIURL)
+	}
+	if status.Email != "user@example.com" {
+		t.Fatalf("Email = %q, want user@example.com", status.Email)
+	}
+	if status.PasswordMasked != "********" {
+		t.Fatalf("PasswordMasked = %q, want ********", status.PasswordMasked)
+	}
+	if !status.AutoSync {
+		t.Fatalf("AutoSync = false, want true")
+	}
+	if status.EnvActive {
+		t.Fatalf("EnvActive = true, want false")
+	}
+}
+
+func TestGetConfigStatus_ReturnsAPIErrorOnNon2xx(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"daemon not ready"}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.GetConfigStatus(context.Background())
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusServiceUnavailable || apiErr.Message != "daemon not ready" {
+		t.Fatalf("GetConfigStatus error = %#v, want APIError 503 with daemon not ready", err)
+	}
+}
+
+// T2.1 — UpdateConfig tests
+
+func TestUpdateConfig_SendsRequestBodyAndDecodesResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/governance/config" {
+			t.Fatalf("request = %s %s, want POST /governance/config", r.Method, r.URL.Path)
+		}
+		var req ConfigUpdateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.APIURL != "https://hive.example.com" || req.Email != "user@example.com" || req.Password != "newpassword" || !req.AutoSync {
+			t.Fatalf("update request = %+v, want exact fields forwarded", req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"configured":true,"source":"file","api_url":"https://hive.example.com","email":"user@example.com","password_set":true,"password_masked":"********","auto_sync":true,"env_active":false,"restart_hint":"Saved. Restart hive-daemon for the new configuration to take effect.","warnings":null,"restart_required":true}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	resp, err := client.UpdateConfig(context.Background(), ConfigUpdateRequest{
+		APIURL:   "https://hive.example.com",
+		Email:    "user@example.com",
+		Password: "newpassword",
+		AutoSync: true,
+	})
+	if err != nil {
+		t.Fatalf("UpdateConfig: %v", err)
+	}
+	if !resp.RestartRequired {
+		t.Fatalf("RestartRequired = false, want true")
+	}
+	if resp.RestartHint == "" {
+		t.Fatalf("RestartHint is empty, want non-empty restart hint")
+	}
+	if resp.EnvActive {
+		t.Fatalf("EnvActive = true, want false")
+	}
+	if resp.Status.APIURL != "https://hive.example.com" {
+		t.Fatalf("Status.APIURL = %q, want https://hive.example.com", resp.Status.APIURL)
+	}
+}
+
+func TestUpdateConfig_ReturnsAPIErrorOnNon2xx(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"api_url is required and must include a scheme and host"}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.UpdateConfig(context.Background(), ConfigUpdateRequest{})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("UpdateConfig error = %#v, want APIError 400", err)
+	}
+}
+
+// T2.1 — TestConnection tests
+
+func TestTestConnection_OKTrueReturnsNilError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/governance/config/test" {
+			t.Fatalf("request = %s %s, want POST /governance/config/test", r.Method, r.URL.Path)
+		}
+		var req ConfigTestRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.APIURL != "https://hive.example.com" || req.Email != "user@example.com" || req.Password != "testpass" {
+			t.Fatalf("test request = %+v, want exact fields forwarded", req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"message":"Connection succeeded"}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := client.TestConnection(context.Background(), ConfigTestRequest{
+		APIURL:   "https://hive.example.com",
+		Email:    "user@example.com",
+		Password: "testpass",
+	})
+	if err != nil {
+		t.Fatalf("TestConnection: unexpected Go error %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("result.OK = false, want true")
+	}
+	if result.Message != "Connection succeeded" {
+		t.Fatalf("result.Message = %q, want Connection succeeded", result.Message)
+	}
+}
+
+func TestTestConnection_OKFalseReturnsNilErrorWithResult(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":false,"message":"Connection failed: 401 Unauthorized"}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := client.TestConnection(context.Background(), ConfigTestRequest{
+		APIURL:   "https://hive.example.com",
+		Email:    "user@example.com",
+		Password: "wrongpass",
+	})
+	if err != nil {
+		t.Fatalf("TestConnection: unexpected Go error for ok:false response — %v", err)
+	}
+	if result.OK {
+		t.Fatalf("result.OK = true, want false for connection failure")
+	}
+	if result.Message == "" {
+		t.Fatalf("result.Message is empty, want non-empty failure message")
+	}
+}
+
+func TestTestConnection_TransportErrorReturnsGoError(t *testing.T) {
+	// Use a server that's immediately closed — transport will fail.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	serverURL := server.URL
+	server.Close() // close immediately to force transport error
+
+	client, err := New(serverURL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.TestConnection(context.Background(), ConfigTestRequest{
+		APIURL:   "https://hive.example.com",
+		Email:    "user@example.com",
+		Password: "pass",
+	})
+	if err == nil {
+		t.Fatal("TestConnection: expected Go error for transport failure, got nil")
+	}
+}
+
 func TestDeleteProject_BuildsCorrectRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/governance/projects/alpha/delete" {

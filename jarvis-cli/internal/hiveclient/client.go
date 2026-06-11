@@ -203,6 +203,70 @@ type ProjectMergeBatchResult struct {
 	CloudHandoffNote string        `json:"cloud_handoff_note,omitempty"`
 }
 
+// ConfigStatus is the client-side view of the daemon sync config.
+// The raw password is never present; PasswordMasked is "********" when set.
+type ConfigStatus struct {
+	Configured     bool     `json:"configured"`
+	Source         string   `json:"source"`
+	APIURL         string   `json:"api_url"`
+	Email          string   `json:"email"`
+	PasswordSet    bool     `json:"password_set"`
+	PasswordMasked string   `json:"password_masked"`
+	AutoSync       bool     `json:"auto_sync"`
+	EnvActive      bool     `json:"env_active"`
+	RestartHint    string   `json:"restart_hint,omitempty"`
+	Warnings       []string `json:"warnings,omitempty"`
+}
+
+// ConfigUpdateRequest is the payload for POST /governance/config.
+// Password may be "********" (the masked sentinel) to preserve the stored secret.
+type ConfigUpdateRequest struct {
+	APIURL   string `json:"api_url"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	AutoSync bool   `json:"auto_sync"`
+}
+
+// configUpdateWire is the flat JSON shape returned by POST /governance/config.
+// The daemon embeds ConfigStatusResponse directly and adds restart_required.
+type configUpdateWire struct {
+	Configured     bool     `json:"configured"`
+	Source         string   `json:"source"`
+	APIURL         string   `json:"api_url"`
+	Email          string   `json:"email"`
+	PasswordSet    bool     `json:"password_set"`
+	PasswordMasked string   `json:"password_masked"`
+	AutoSync       bool     `json:"auto_sync"`
+	EnvActive      bool     `json:"env_active"`
+	RestartHint    string   `json:"restart_hint,omitempty"`
+	Warnings       []string `json:"warnings,omitempty"`
+	RestartRequired bool    `json:"restart_required"`
+}
+
+// ConfigUpdateResponse is the structured result of UpdateConfig.
+// RestartHint and EnvActive are promoted to the top level for convenient access.
+// Status holds the full refreshed config state.
+type ConfigUpdateResponse struct {
+	RestartRequired bool
+	RestartHint     string
+	EnvActive       bool
+	Status          ConfigStatus
+}
+
+// ConfigTestRequest is the payload for POST /governance/config/test.
+type ConfigTestRequest struct {
+	APIURL   string `json:"api_url"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// ConfigTestResult is the outcome of TestConnection.
+// OK is true when login succeeded. A Go error is only returned for transport failures.
+type ConfigTestResult struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
+}
+
 func NewFromEnv() (*Client, error) {
 	baseURL := strings.TrimSpace(os.Getenv("HIVE_DAEMON_URL"))
 	if baseURL == "" {
@@ -339,6 +403,52 @@ func (c *Client) MergeProject(ctx context.Context, req ProjectMergeRequest) (Pro
 		return ProjectMergeResult{}, err
 	}
 	return body.Result, nil
+}
+
+// GetConfigStatus fetches the current sync config state from GET /governance/config/status.
+func (c *Client) GetConfigStatus(ctx context.Context) (ConfigStatus, error) {
+	var status ConfigStatus
+	if err := c.get(ctx, "/governance/config/status", nil, &status, false); err != nil {
+		return ConfigStatus{}, err
+	}
+	return status, nil
+}
+
+// UpdateConfig saves new sync config via POST /governance/config and returns the
+// refreshed status together with restart metadata.
+func (c *Client) UpdateConfig(ctx context.Context, req ConfigUpdateRequest) (ConfigUpdateResponse, error) {
+	var wire configUpdateWire
+	if err := c.post(ctx, "/governance/config", req, &wire); err != nil {
+		return ConfigUpdateResponse{}, err
+	}
+	return ConfigUpdateResponse{
+		RestartRequired: wire.RestartRequired,
+		RestartHint:     wire.RestartHint,
+		EnvActive:       wire.EnvActive,
+		Status: ConfigStatus{
+			Configured:     wire.Configured,
+			Source:         wire.Source,
+			APIURL:         wire.APIURL,
+			Email:          wire.Email,
+			PasswordSet:    wire.PasswordSet,
+			PasswordMasked: wire.PasswordMasked,
+			AutoSync:       wire.AutoSync,
+			EnvActive:      wire.EnvActive,
+			RestartHint:    wire.RestartHint,
+			Warnings:       wire.Warnings,
+		},
+	}, nil
+}
+
+// TestConnection calls POST /governance/config/test. A Go error is returned only
+// for transport-level failures. Auth/connectivity failures are represented in the
+// result with OK=false so callers can render inline feedback.
+func (c *Client) TestConnection(ctx context.Context, req ConfigTestRequest) (ConfigTestResult, error) {
+	var result ConfigTestResult
+	if err := c.post(ctx, "/governance/config/test", req, &result); err != nil {
+		return ConfigTestResult{}, err
+	}
+	return result, nil
 }
 
 // MergeProjects sends a multi-source batch merge request to POST /governance/projects/merge.
