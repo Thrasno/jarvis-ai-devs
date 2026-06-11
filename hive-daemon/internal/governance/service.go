@@ -50,8 +50,8 @@ type MemoryFilter struct {
 	OrderAsc       bool     // false = DESC (default); true = ASC
 }
 
-// timelineCategories is the fixed set of memory types that represent
-// architectural, decision, or operational events in a project timeline.
+// timelineCategories defines the memory types surfaced on the project timeline.
+// This list MUST stay in sync with timelineCategories in jarvis-cli/internal/hiveui/model.go.
 var timelineCategories = []string{"decision", "architecture", "discovery", "bugfix", "config"}
 
 type readStore interface {

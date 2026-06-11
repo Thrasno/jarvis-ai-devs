@@ -2141,7 +2141,8 @@ func trimLastRune(value string) string {
 	return string(runes[:len(runes)-1])
 }
 
-// timelineCategories is the client-side guard set — mirrors daemon-side filtering.
+// timelineCategories mirrors the daemon-side list in hive-daemon/internal/governance/service.go.
+// Both lists MUST stay in sync. Update both when adding a new timeline category.
 var timelineCategories = map[string]bool{
 	"decision":     true,
 	"architecture": true,
