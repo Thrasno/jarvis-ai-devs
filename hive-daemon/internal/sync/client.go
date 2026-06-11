@@ -28,6 +28,14 @@ func newClient(cfg *Config) *client {
 	}
 }
 
+// Login is the exported thin wrapper over login that the ConfigService uses
+// for connection tests. It discards the token; callers care only about success
+// or failure (i.e. can the daemon reach the API with these credentials?).
+func (c *client) Login(ctx context.Context) error {
+	_, _, err := c.login(ctx)
+	return err
+}
+
 // login obtiene un JWT del servidor y devuelve el token + su expiración.
 func (c *client) login(ctx context.Context) (token string, expiresAt time.Time, err error) {
 	body, _ := json.Marshal(map[string]string{

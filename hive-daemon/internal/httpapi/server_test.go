@@ -1716,6 +1716,449 @@ type governanceCountersHTTP struct {
 	SyncRows      int
 }
 
+// ─── T13: Config endpoints ────────────────────────────────────────────────────
+
+// fakeConfigService is a test double for httpapi.ConfigService.
+type fakeConfigService struct {
+	statusFn func(ctx context.Context) (httpapi.ConfigServiceStatus, error)
+	updateFn func(ctx context.Context, req httpapi.ConfigServiceUpdate) (httpapi.ConfigServiceStatus, error)
+	testFn   func(ctx context.Context, req httpapi.ConfigServiceUpdate) (httpapi.ConfigServiceTestResult, error)
+}
+
+func (f *fakeConfigService) Status(ctx context.Context) (httpapi.ConfigServiceStatus, error) {
+	if f.statusFn != nil {
+		return f.statusFn(ctx)
+	}
+	return httpapi.ConfigServiceStatus{
+		Configured:     true,
+		Source:         "file",
+		APIURL:         "https://hive.example.com",
+		Email:          "user@example.com",
+		PasswordSet:    true,
+		PasswordMasked: "********",
+		AutoSync:       false,
+		EnvActive:      false,
+	}, nil
+}
+
+func (f *fakeConfigService) Update(ctx context.Context, req httpapi.ConfigServiceUpdate) (httpapi.ConfigServiceStatus, error) {
+	if f.updateFn != nil {
+		return f.updateFn(ctx, req)
+	}
+	return httpapi.ConfigServiceStatus{
+		Configured:     true,
+		Source:         "file",
+		APIURL:         req.APIURL,
+		Email:          req.Email,
+		PasswordSet:    req.Password != "",
+		PasswordMasked: "********",
+		AutoSync:       req.AutoSync,
+		RestartHint:    "Saved. Restart hive-daemon for the new configuration to take effect.",
+	}, nil
+}
+
+func (f *fakeConfigService) Test(ctx context.Context, req httpapi.ConfigServiceUpdate) (httpapi.ConfigServiceTestResult, error) {
+	if f.testFn != nil {
+		return f.testFn(ctx, req)
+	}
+	return httpapi.ConfigServiceTestResult{OK: true, Message: "Connection succeeded"}, nil
+}
+
+func newConfigTestServer(svc httpapi.ConfigService) *httpapi.Server {
+	return httpapi.NewServerWithConfig("127.0.0.1:0", &mockPromptStore{}, svc)
+}
+
+// TestConfigStatus_200_MaskedPassword verifies GET /governance/config/status
+// returns masked password and never the raw secret.
+func TestConfigStatus_200_MaskedPassword(t *testing.T) {
+	const rawSecret = "supersecret"
+
+	svc := &fakeConfigService{
+		statusFn: func(_ context.Context) (httpapi.ConfigServiceStatus, error) {
+			return httpapi.ConfigServiceStatus{
+				Configured:     true,
+				Source:         "file",
+				APIURL:         "https://hive.example.com",
+				Email:          "user@example.com",
+				PasswordSet:    true,
+				PasswordMasked: "********",
+				AutoSync:       false,
+				EnvActive:      false,
+			}, nil
+		},
+	}
+	srv := newConfigTestServer(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/governance/config/status", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+
+	body := rr.Body.Bytes()
+
+	// No-secret-leak scan.
+	if strings.Contains(string(body), rawSecret) {
+		t.Errorf("raw secret %q leaked into response body: %s", rawSecret, body)
+	}
+
+	var resp httpapi.ConfigStatusResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if resp.PasswordMasked != "********" {
+		t.Errorf("PasswordMasked = %q, want sentinel", resp.PasswordMasked)
+	}
+	if !resp.PasswordSet {
+		t.Error("PasswordSet = false, want true")
+	}
+	if resp.EnvActive {
+		t.Error("EnvActive = true, want false for file source")
+	}
+}
+
+// TestConfigStatus_200_Unconfigured verifies GET /governance/config/status
+// returns PasswordSet=false and PasswordMasked="" when not configured.
+func TestConfigStatus_200_Unconfigured(t *testing.T) {
+	svc := &fakeConfigService{
+		statusFn: func(_ context.Context) (httpapi.ConfigServiceStatus, error) {
+			return httpapi.ConfigServiceStatus{
+				Configured:     false,
+				Source:         "none",
+				PasswordSet:    false,
+				PasswordMasked: "",
+			}, nil
+		},
+	}
+	srv := newConfigTestServer(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/governance/config/status", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp httpapi.ConfigStatusResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if resp.PasswordSet {
+		t.Error("PasswordSet = true, want false")
+	}
+	if resp.PasswordMasked != "" {
+		t.Errorf("PasswordMasked = %q, want empty", resp.PasswordMasked)
+	}
+}
+
+// TestConfigUpdate_200_NewPassword verifies POST /governance/config with a new
+// password returns RestartRequired=true and the file is written correctly.
+func TestConfigUpdate_200_NewPassword(t *testing.T) {
+	const rawSecret = "supersecret"
+	var gotUpdate httpapi.ConfigServiceUpdate
+
+	svc := &fakeConfigService{
+		updateFn: func(_ context.Context, req httpapi.ConfigServiceUpdate) (httpapi.ConfigServiceStatus, error) {
+			gotUpdate = req
+			return httpapi.ConfigServiceStatus{
+				Configured:     true,
+				Source:         "file",
+				APIURL:         req.APIURL,
+				Email:          req.Email,
+				PasswordSet:    true,
+				PasswordMasked: "********",
+				RestartHint:    "Saved. Restart hive-daemon for the new configuration to take effect.",
+			}, nil
+		},
+	}
+	srv := newConfigTestServer(svc)
+
+	body := `{"api_url":"https://hive.example.com","email":"user@example.com","password":"newpass","auto_sync":true}`
+	req := httptest.NewRequest(http.MethodPost, "/governance/config", bytes.NewBufferString(body))
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+
+	responseBytes := rr.Body.Bytes()
+
+	// No-secret-leak scan.
+	if strings.Contains(string(responseBytes), rawSecret) {
+		t.Errorf("raw secret leaked into response: %s", responseBytes)
+	}
+
+	var resp httpapi.ConfigUpdateResponse
+	if err := json.Unmarshal(responseBytes, &resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if !resp.RestartRequired {
+		t.Error("RestartRequired = false, want true")
+	}
+	if gotUpdate.Password != "newpass" {
+		t.Errorf("password passed to service = %q, want newpass", gotUpdate.Password)
+	}
+}
+
+// TestConfigUpdate_200_Sentinel verifies that sending the masked sentinel
+// passes it through to the service unchanged.
+func TestConfigUpdate_200_Sentinel(t *testing.T) {
+	var gotUpdate httpapi.ConfigServiceUpdate
+
+	svc := &fakeConfigService{
+		updateFn: func(_ context.Context, req httpapi.ConfigServiceUpdate) (httpapi.ConfigServiceStatus, error) {
+			gotUpdate = req
+			return httpapi.ConfigServiceStatus{
+				Configured:     true,
+				PasswordSet:    true,
+				PasswordMasked: "********",
+				RestartHint:    "Saved. Restart hive-daemon for the new configuration to take effect.",
+			}, nil
+		},
+	}
+	srv := newConfigTestServer(svc)
+
+	body := `{"api_url":"https://hive.example.com","email":"user@example.com","password":"********","auto_sync":false}`
+	req := httptest.NewRequest(http.MethodPost, "/governance/config", bytes.NewBufferString(body))
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	if gotUpdate.Password != "********" {
+		t.Errorf("sentinel was modified before reaching service: got %q", gotUpdate.Password)
+	}
+}
+
+// TestConfigUpdate_200_EnvActive verifies that env-active path returns
+// RestartHint mentioning env and EnvActive=true.
+func TestConfigUpdate_200_EnvActive(t *testing.T) {
+	svc := &fakeConfigService{
+		updateFn: func(_ context.Context, req httpapi.ConfigServiceUpdate) (httpapi.ConfigServiceStatus, error) {
+			return httpapi.ConfigServiceStatus{
+				Configured:     true,
+				Source:         "env",
+				EnvActive:      true,
+				PasswordSet:    true,
+				PasswordMasked: "********",
+				RestartHint:    "env variable overrides are active; restart to use file values",
+			}, nil
+		},
+	}
+	srv := newConfigTestServer(svc)
+
+	body := `{"api_url":"https://hive.example.com","email":"user@example.com","password":"pass","auto_sync":false}`
+	req := httptest.NewRequest(http.MethodPost, "/governance/config", bytes.NewBufferString(body))
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp httpapi.ConfigUpdateResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if !resp.EnvActive {
+		t.Error("EnvActive = false, want true")
+	}
+	if !strings.Contains(resp.RestartHint, "env") {
+		t.Errorf("RestartHint = %q, want env mention", resp.RestartHint)
+	}
+}
+
+// TestConfigUpdate_400_InvalidURL verifies POST /governance/config returns 400
+// when the service returns ErrConfigInvalidURL.
+func TestConfigUpdate_400_InvalidURL(t *testing.T) {
+	svc := &fakeConfigService{
+		updateFn: func(_ context.Context, req httpapi.ConfigServiceUpdate) (httpapi.ConfigServiceStatus, error) {
+			return httpapi.ConfigServiceStatus{}, httpapi.ErrConfigInvalidURL
+		},
+	}
+	srv := newConfigTestServer(svc)
+
+	body := `{"api_url":"not-a-url","email":"user@example.com","password":"pass","auto_sync":false}`
+	req := httptest.NewRequest(http.MethodPost, "/governance/config", bytes.NewBufferString(body))
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestConfigUpdate_400_EmptyEmail verifies POST /governance/config returns 400
+// when the service returns ErrConfigEmailRequired.
+func TestConfigUpdate_400_EmptyEmail(t *testing.T) {
+	svc := &fakeConfigService{
+		updateFn: func(_ context.Context, req httpapi.ConfigServiceUpdate) (httpapi.ConfigServiceStatus, error) {
+			return httpapi.ConfigServiceStatus{}, httpapi.ErrConfigEmailRequired
+		},
+	}
+	srv := newConfigTestServer(svc)
+
+	body := `{"api_url":"https://hive.example.com","email":"","password":"pass","auto_sync":false}`
+	req := httptest.NewRequest(http.MethodPost, "/governance/config", bytes.NewBufferString(body))
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestConfigTest_200_Success verifies POST /governance/config/test returns
+// 200 with ok=true on success.
+func TestConfigTest_200_Success(t *testing.T) {
+	const rawSecret = "supersecret"
+
+	svc := &fakeConfigService{
+		testFn: func(_ context.Context, req httpapi.ConfigServiceUpdate) (httpapi.ConfigServiceTestResult, error) {
+			return httpapi.ConfigServiceTestResult{OK: true, Message: "Connection succeeded"}, nil
+		},
+	}
+	srv := newConfigTestServer(svc)
+
+	body := `{"api_url":"https://hive.example.com","email":"user@example.com","password":"realpass"}`
+	req := httptest.NewRequest(http.MethodPost, "/governance/config/test", bytes.NewBufferString(body))
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+
+	responseBytes := rr.Body.Bytes()
+	if strings.Contains(string(responseBytes), rawSecret) {
+		t.Errorf("raw secret leaked: %s", responseBytes)
+	}
+
+	var resp httpapi.ConfigTestResult
+	if err := json.Unmarshal(responseBytes, &resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if !resp.OK {
+		t.Errorf("OK = false, want true; message: %s", resp.Message)
+	}
+}
+
+// TestConfigTest_200_Failure verifies POST /governance/config/test returns
+// 200 with ok=false (NOT an HTTP error) on auth failure, without leaking raw password.
+func TestConfigTest_200_Failure(t *testing.T) {
+	const rawSecret = "supersecret"
+
+	svc := &fakeConfigService{
+		testFn: func(_ context.Context, req httpapi.ConfigServiceUpdate) (httpapi.ConfigServiceTestResult, error) {
+			return httpapi.ConfigServiceTestResult{OK: false, Message: "Connection failed: login failed (401)"}, nil
+		},
+	}
+	srv := newConfigTestServer(svc)
+
+	body := `{"api_url":"https://hive.example.com","email":"user@example.com","password":"wrongpass"}`
+	req := httptest.NewRequest(http.MethodPost, "/governance/config/test", bytes.NewBufferString(body))
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 (test failure is ok=false, not HTTP error), got %d — body: %s", rr.Code, rr.Body.String())
+	}
+
+	responseBytes := rr.Body.Bytes()
+	if strings.Contains(string(responseBytes), rawSecret) {
+		t.Errorf("raw secret leaked: %s", responseBytes)
+	}
+
+	var resp httpapi.ConfigTestResult
+	if err := json.Unmarshal(responseBytes, &resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if resp.OK {
+		t.Error("OK = true, want false for auth failure")
+	}
+}
+
+// TestConfigTest_200_Sentinel verifies POST /governance/config/test with
+// the masked sentinel passes it through to the service.
+func TestConfigTest_200_Sentinel(t *testing.T) {
+	var gotReq httpapi.ConfigServiceUpdate
+
+	svc := &fakeConfigService{
+		testFn: func(_ context.Context, req httpapi.ConfigServiceUpdate) (httpapi.ConfigServiceTestResult, error) {
+			gotReq = req
+			return httpapi.ConfigServiceTestResult{OK: true, Message: "Connection succeeded"}, nil
+		},
+	}
+	srv := newConfigTestServer(svc)
+
+	body := `{"api_url":"https://hive.example.com","email":"user@example.com","password":"********"}`
+	req := httptest.NewRequest(http.MethodPost, "/governance/config/test", bytes.NewBufferString(body))
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	if gotReq.Password != "********" {
+		t.Errorf("sentinel modified before reaching service: got %q", gotReq.Password)
+	}
+}
+
+// TestConfigEndpoints_RejectNonLoopback verifies all config endpoints return
+// 403 for non-loopback remote addresses.
+func TestConfigEndpoints_RejectNonLoopback(t *testing.T) {
+	svc := &fakeConfigService{}
+	srv := newConfigTestServer(svc)
+
+	for _, tt := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/governance/config/status"},
+		{http.MethodPost, "/governance/config"},
+		{http.MethodPost, "/governance/config/test"},
+	} {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			var body *bytes.Buffer
+			if tt.method == http.MethodPost {
+				body = bytes.NewBufferString(`{"api_url":"https://hive.example.com","email":"x@x.com","password":"p"}`)
+			} else {
+				body = &bytes.Buffer{}
+			}
+			req := httptest.NewRequest(tt.method, tt.path, body)
+			req.RemoteAddr = "192.168.1.100:1234" // non-loopback
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("expected 403 for non-loopback, got %d — body: %s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
 // Task 3.1 — GET /governance/memories/{id}
 
 func TestHandleGovernanceMemory_200(t *testing.T) {

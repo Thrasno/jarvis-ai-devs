@@ -55,6 +55,7 @@ type Server struct {
 	prompts    PromptStore
 	projects   project.Store
 	governance GovernanceService
+	config     ConfigService
 	mux        *http.ServeMux
 }
 
@@ -72,7 +73,19 @@ func NewServerWithGovernance(addr string, prompts PromptStore, governance Govern
 }
 
 func NewServerWithProjectStoreAndGovernance(addr string, prompts PromptStore, projects project.Store, governance GovernanceService) *Server {
-	s := &Server{addr: addr, prompts: prompts, projects: projects, governance: governance}
+	return NewServerWithAll(addr, prompts, projects, governance, nil)
+}
+
+// NewServerWithConfig constructs a Server with a ConfigService for the
+// three /governance/config* endpoints.
+func NewServerWithConfig(addr string, prompts PromptStore, config ConfigService) *Server {
+	return NewServerWithAll(addr, prompts, nil, nil, config)
+}
+
+// NewServerWithAll is the canonical constructor. All other constructors
+// delegate to this one.
+func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, governance GovernanceService, config ConfigService) *Server {
+	s := &Server{addr: addr, prompts: prompts, projects: projects, governance: governance, config: config}
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("/prompts", s.handlePrompts)
 	if governance != nil {
@@ -86,6 +99,11 @@ func NewServerWithProjectStoreAndGovernance(addr string, prompts PromptStore, pr
 		s.mux.HandleFunc("/governance/backups", s.handleGovernanceBackups)
 		s.mux.HandleFunc("/governance/restores", s.handleGovernanceRestores)
 		s.mux.HandleFunc("/governance/guards/execute", s.handleGovernanceGuardExecute)
+	}
+	if config != nil {
+		s.mux.HandleFunc("GET /governance/config/status", s.handleConfigStatus)
+		s.mux.HandleFunc("POST /governance/config", s.handleConfigUpdate)
+		s.mux.HandleFunc("POST /governance/config/test", s.handleConfigTest)
 	}
 	return s
 }
@@ -496,6 +514,104 @@ func (s *Server) handleGovernanceGuardExecute(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"result": result})
+}
+
+// requireLoopback returns true when the request comes from a loopback address.
+// On failure it writes 403 and returns false.
+func requireLoopback(w http.ResponseWriter, r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		// Fallback: try without port
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsLoopback() {
+		return true
+	}
+	// "localhost" without a numeric IP
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: config endpoints are loopback-only"})
+	return false
+}
+
+func (s *Server) handleConfigStatus(w http.ResponseWriter, r *http.Request) {
+	if !requireLoopback(w, r) {
+		return
+	}
+	status, err := s.config.Status(r.Context())
+	if err != nil {
+		writeConfigError(w, "config status", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, statusToResponse(status))
+}
+
+func (s *Server) handleConfigUpdate(w http.ResponseWriter, r *http.Request) {
+	if !requireLoopback(w, r) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body ConfigUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	req := ConfigServiceUpdate{
+		APIURL:   body.APIURL,
+		Email:    body.Email,
+		Password: body.Password,
+		AutoSync: body.AutoSync,
+	}
+	status, err := s.config.Update(r.Context(), req)
+	if err != nil {
+		writeConfigError(w, "config update", err)
+		return
+	}
+	resp := ConfigUpdateResponse{
+		ConfigStatusResponse: statusToResponse(status),
+		RestartRequired:      true,
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleConfigTest(w http.ResponseWriter, r *http.Request) {
+	if !requireLoopback(w, r) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body ConfigTestRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	req := ConfigServiceUpdate{
+		APIURL:   body.APIURL,
+		Email:    body.Email,
+		Password: body.Password,
+	}
+	result, err := s.config.Test(r.Context(), req)
+	if err != nil {
+		writeConfigError(w, "config test", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ConfigTestResult{OK: result.OK, Message: result.Message})
+}
+
+// writeConfigError maps config domain errors to HTTP status codes.
+func writeConfigError(w http.ResponseWriter, source string, err error) {
+	switch {
+	case errors.Is(err, ErrConfigInvalidURL):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrConfigEmailRequired):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrNoStoredSecret):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password required: no stored secret to reuse"})
+	default:
+		logger.Log.Printf("%s: %v", source, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+	}
 }
 
 func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
