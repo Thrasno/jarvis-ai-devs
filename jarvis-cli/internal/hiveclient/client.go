@@ -208,6 +208,74 @@ type ProjectMergeBatchResult struct {
 	CloudHandoffNote string        `json:"cloud_handoff_note,omitempty"`
 }
 
+type EngramImportJobKind string
+
+const (
+	EngramImportJobKindPreview EngramImportJobKind = "preview"
+	EngramImportJobKindExecute EngramImportJobKind = "execute"
+)
+
+type EngramImportPhase string
+
+const (
+	EngramImportPhaseQueued       EngramImportPhase = "queued"
+	EngramImportPhaseDiscovery    EngramImportPhase = "discovery"
+	EngramImportPhaseAnalysis     EngramImportPhase = "analysis"
+	EngramImportPhaseBackup       EngramImportPhase = "backup"
+	EngramImportPhaseImport       EngramImportPhase = "import"
+	EngramImportPhaseFinalization EngramImportPhase = "finalization"
+	EngramImportPhaseCompleted    EngramImportPhase = "completed"
+	EngramImportPhaseFailed       EngramImportPhase = "failed"
+)
+
+type EngramImportRequest struct {
+	Source    string `json:"source,omitempty"`
+	PreviewID string `json:"preview_id,omitempty"`
+}
+
+type EngramImportEntityCounts struct {
+	Sessions     int `json:"sessions"`
+	Prompts      int `json:"prompts"`
+	Observations int `json:"observations"`
+}
+
+type EngramImportCounts struct {
+	Imported int `json:"imported"`
+	Reused   int `json:"reused"`
+}
+
+type EngramImportInvalidRow struct {
+	Table    string `json:"table"`
+	SourceID string `json:"source_id"`
+	Reason   string `json:"reason"`
+}
+
+type EngramImportReport struct {
+	PreviewID         string                   `json:"preview_id,omitempty"`
+	SourcePath        string                   `json:"source_path"`
+	SourceFingerprint string                   `json:"source_fingerprint"`
+	Projects          []string                 `json:"projects,omitempty"`
+	Projected         EngramImportEntityCounts `json:"projected"`
+	Imported          EngramImportCounts       `json:"imported"`
+	SkippedRelations  int                      `json:"skipped_relations"`
+	InvalidRows       []EngramImportInvalidRow `json:"invalid_rows,omitempty"`
+	BackupID          string                   `json:"backup_id,omitempty"`
+}
+
+type EngramImportJob struct {
+	ID           string              `json:"id"`
+	Kind         EngramImportJobKind `json:"kind"`
+	Phase        EngramImportPhase   `json:"phase"`
+	Message      string              `json:"message"`
+	Processed    int                 `json:"processed"`
+	Total        int                 `json:"total"`
+	Percent      int                 `json:"percent"`
+	Done         bool                `json:"done"`
+	Error        string              `json:"error,omitempty"`
+	Report       *EngramImportReport `json:"report,omitempty"`
+	PhaseHistory []string            `json:"phase_history,omitempty"`
+}
+
 // ConfigStatus is the client-side view of the daemon sync config.
 // The raw password is never present; PasswordMasked is "********" when set.
 type ConfigStatus struct {
@@ -236,17 +304,17 @@ type ConfigUpdateRequest struct {
 // Keep in sync with hive-daemon/internal/httpapi/config.go ConfigStatusResponse.
 // The daemon embeds ConfigStatusResponse directly and adds restart_required.
 type configUpdateWire struct {
-	Configured     bool     `json:"configured"`
-	Source         string   `json:"source"`
-	APIURL         string   `json:"api_url"`
-	Email          string   `json:"email"`
-	PasswordSet    bool     `json:"password_set"`
-	PasswordMasked string   `json:"password_masked"`
-	AutoSync       bool     `json:"auto_sync"`
-	EnvActive      bool     `json:"env_active"`
-	RestartHint    string   `json:"restart_hint,omitempty"`
-	Warnings       []string `json:"warnings,omitempty"`
-	RestartRequired bool    `json:"restart_required"`
+	Configured      bool     `json:"configured"`
+	Source          string   `json:"source"`
+	APIURL          string   `json:"api_url"`
+	Email           string   `json:"email"`
+	PasswordSet     bool     `json:"password_set"`
+	PasswordMasked  string   `json:"password_masked"`
+	AutoSync        bool     `json:"auto_sync"`
+	EnvActive       bool     `json:"env_active"`
+	RestartHint     string   `json:"restart_hint,omitempty"`
+	Warnings        []string `json:"warnings,omitempty"`
+	RestartRequired bool     `json:"restart_required"`
 }
 
 // ConfigUpdateResponse is the structured result of UpdateConfig.
@@ -466,6 +534,37 @@ func (c *Client) MergeProjects(ctx context.Context, req ProjectMergeBatchRequest
 		return ProjectMergeBatchResult{}, err
 	}
 	return body.Result, nil
+}
+
+func (c *Client) StartEngramImportPreview(ctx context.Context, req EngramImportRequest) (EngramImportJob, error) {
+	var body struct {
+		Job EngramImportJob `json:"job"`
+	}
+	if err := c.post(ctx, "/governance/imports/engram/preview", req, &body); err != nil {
+		return EngramImportJob{}, err
+	}
+	return body.Job, nil
+}
+
+func (c *Client) StartEngramImportExecute(ctx context.Context, req EngramImportRequest) (EngramImportJob, error) {
+	var body struct {
+		Job EngramImportJob `json:"job"`
+	}
+	if err := c.post(ctx, "/governance/imports/engram/execute", req, &body); err != nil {
+		return EngramImportJob{}, err
+	}
+	return body.Job, nil
+}
+
+func (c *Client) GetEngramImportJob(ctx context.Context, id string) (EngramImportJob, error) {
+	var body struct {
+		Job EngramImportJob `json:"job"`
+	}
+	path := "/governance/imports/engram/jobs/" + url.PathEscape(strings.TrimSpace(id))
+	if err := c.get(ctx, path, nil, &body, false); err != nil {
+		return EngramImportJob{}, err
+	}
+	return body.Job, nil
 }
 
 func (c *Client) get(ctx context.Context, path string, query url.Values, out any, notAvailableOn404 bool) error {

@@ -40,9 +40,9 @@ type Counts struct {
 }
 
 type InvalidRow struct {
-	Table    string
-	SourceID string
-	Reason   string
+	Table    string `json:"table"`
+	SourceID string `json:"source_id"`
+	Reason   string `json:"reason"`
 }
 
 type Analysis struct {

@@ -2416,3 +2416,162 @@ func TestHandleGovernanceProjectDelete_BadConfirmation(t *testing.T) {
 		t.Fatalf("body = %s, want confirmation mismatch", rr.Body.String())
 	}
 }
+
+func TestGovernanceEngramImportPreviewHTTPStartsJobAndPollsReport(t *testing.T) {
+	store, _, srv := newHTTPGuardTestServer(t)
+	sourcePath := createHTTPEngramFixture(t)
+	body := fmt.Sprintf(`{"source":%q}`, sourcePath)
+	req := httptest.NewRequest(http.MethodPost, "/governance/imports/engram/preview", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var startResp struct {
+		Job governance.EngramImportJob `json:"job"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&startResp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	job := waitHTTPEngramImportJobDone(t, srv, startResp.Job.ID)
+	if job.Kind != governance.EngramImportJobKindPreview || job.Phase != governance.EngramImportPhaseCompleted || !job.Done {
+		t.Fatalf("job = %+v, want completed preview", job)
+	}
+	if job.Report == nil || job.Report.PreviewID != startResp.Job.ID || job.Report.Projected.Observations != 1 || job.Report.SkippedRelations != 1 {
+		t.Fatalf("report = %+v, want preview counts and token", job.Report)
+	}
+	if len(job.Report.InvalidRows) != 1 {
+		t.Fatalf("invalid rows = %+v, want one orphan observation", job.Report.InvalidRows)
+	}
+	pollReq := httptest.NewRequest(http.MethodGet, "/governance/imports/engram/jobs/"+startResp.Job.ID, nil)
+	pollRR := httptest.NewRecorder()
+	srv.ServeHTTP(pollRR, pollReq)
+	jobBody := pollRR.Body.String()
+	if !strings.Contains(jobBody, `"invalid_rows":[{"table":"observations","source_id":"22"`) {
+		t.Fatalf("job JSON = %s, want snake_case invalid_rows payload", jobBody)
+	}
+	if strings.Contains(jobBody, `"Table"`) || strings.Contains(jobBody, `"SourceID"`) {
+		t.Fatalf("job JSON = %s, must not expose Go field names for invalid rows", jobBody)
+	}
+	if count := httpImportRunCount(t, store); count != 0 {
+		t.Fatalf("preview wrote import runs = %d, want 0", count)
+	}
+}
+
+func TestGovernanceEngramImportExecuteHTTPRequiresPreview(t *testing.T) {
+	_, _, srv := newHTTPGuardTestServer(t)
+	sourcePath := createHTTPEngramFixture(t)
+	body := fmt.Sprintf(`{"source":%q,"preview_id":"missing-preview"}`, sourcePath)
+	req := httptest.NewRequest(http.MethodPost, "/governance/imports/engram/execute", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "fresh engram import preview is required") {
+		t.Fatalf("body = %s, want fresh preview error", rr.Body.String())
+	}
+}
+
+func TestGovernanceEngramImportExecuteHTTPBacksUpThenImports(t *testing.T) {
+	store, _, srv := newHTTPGuardTestServer(t)
+	sourcePath := createHTTPEngramFixture(t)
+	previewReq := httptest.NewRequest(http.MethodPost, "/governance/imports/engram/preview", bytes.NewBufferString(fmt.Sprintf(`{"source":%q}`, sourcePath)))
+	previewRR := httptest.NewRecorder()
+	srv.ServeHTTP(previewRR, previewReq)
+	if previewRR.Code != http.StatusAccepted {
+		t.Fatalf("preview expected 202, got %d — body: %s", previewRR.Code, previewRR.Body.String())
+	}
+	var previewStart struct {
+		Job governance.EngramImportJob `json:"job"`
+	}
+	if err := json.NewDecoder(previewRR.Body).Decode(&previewStart); err != nil {
+		t.Fatalf("preview response not valid JSON: %v", err)
+	}
+	previewJob := waitHTTPEngramImportJobDone(t, srv, previewStart.Job.ID)
+
+	executeBody := fmt.Sprintf(`{"source":%q,"preview_id":%q}`, sourcePath, previewJob.Report.PreviewID)
+	executeReq := httptest.NewRequest(http.MethodPost, "/governance/imports/engram/execute", bytes.NewBufferString(executeBody))
+	executeRR := httptest.NewRecorder()
+	srv.ServeHTTP(executeRR, executeReq)
+
+	if executeRR.Code != http.StatusAccepted {
+		t.Fatalf("execute expected 202, got %d — body: %s", executeRR.Code, executeRR.Body.String())
+	}
+	var executeStart struct {
+		Job governance.EngramImportJob `json:"job"`
+	}
+	if err := json.NewDecoder(executeRR.Body).Decode(&executeStart); err != nil {
+		t.Fatalf("execute response not valid JSON: %v", err)
+	}
+	job := waitHTTPEngramImportJobDone(t, srv, executeStart.Job.ID)
+	if job.Report == nil || job.Report.BackupID == "" || job.Report.Imported.Imported != 3 {
+		t.Fatalf("execute report = %+v, want backup id and 3 imported rows", job.Report)
+	}
+	if count := httpImportRunCount(t, store); count != 1 {
+		t.Fatalf("import runs = %d, want 1", count)
+	}
+}
+
+func waitHTTPEngramImportJobDone(t *testing.T, srv *httpapi.Server, id string) governance.EngramImportJob {
+	t.Helper()
+	path := "/governance/imports/engram/jobs/" + id
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("poll expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+		}
+		var resp struct {
+			Job governance.EngramImportJob `json:"job"`
+		}
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("poll response not valid JSON: %v", err)
+		}
+		if resp.Job.Done {
+			return resp.Job
+		}
+	}
+	t.Fatalf("job %s did not finish", id)
+	return governance.EngramImportJob{}
+}
+
+func createHTTPEngramFixture(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "engram.db")
+	sqlDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("Open source: %v", err)
+	}
+	_, err = sqlDB.Exec(`
+CREATE TABLE observations (id INTEGER PRIMARY KEY, project TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', type TEXT NOT NULL DEFAULT '', topic_key TEXT, session_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT);
+CREATE TABLE sessions (id TEXT PRIMARY KEY, project TEXT NOT NULL DEFAULT '', directory TEXT NOT NULL DEFAULT '', dev_id TEXT NOT NULL DEFAULT '', client TEXT NOT NULL DEFAULT '', started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, ended_at TEXT, summary TEXT);
+CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, project TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE memory_relations (id INTEGER PRIMARY KEY, source_id INTEGER, target_id INTEGER, relation TEXT);
+INSERT INTO sessions (id, project, directory, dev_id, client, started_at) VALUES ('ses-1', 'proj-a', 'C:/src/a', 'dev-a', 'opencode', '2026-06-11 10:00:00');
+INSERT INTO user_prompts (id, project, content, created_at) VALUES (11, 'proj-a', 'prompt content', '2026-06-11 10:01:00');
+INSERT INTO observations (id, project, title, content, type, topic_key, session_id, created_at, updated_at) VALUES (21, 'proj-a', 'Decision', 'Keep daemon-owned import', 'decision', 'topic-a', 'ses-1', '2026-06-11 10:02:00', '2026-06-11 10:03:00');
+INSERT INTO observations (id, project, title, content, type, topic_key, session_id, created_at, updated_at) VALUES (22, 'proj-a', 'Orphan', 'Missing session should be reported', 'discovery', 'topic-orphan', 'missing-session', '2026-06-11 10:04:00', '2026-06-11 10:05:00');
+INSERT INTO memory_relations (id, source_id, target_id, relation) VALUES (1, 21, 21, 'related');`)
+	if err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatalf("Close source: %v", err)
+	}
+	return path
+}
+
+func httpImportRunCount(t *testing.T, store *db.DB) int {
+	t.Helper()
+	var count int
+	if err := store.RawDB().QueryRow(`SELECT COUNT(*) FROM import_runs`).Scan(&count); err != nil {
+		t.Fatalf("count import runs: %v", err)
+	}
+	return count
+}

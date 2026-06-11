@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/stretchr/testify/require"
+	_ "modernc.org/sqlite"
 )
 
 func TestServiceReturnsReadOnlyGovernanceViews(t *testing.T) {
@@ -1211,4 +1213,203 @@ func TestExecuteProjectDelete_Success(t *testing.T) {
 	require.True(t, result.Mutated)
 	require.NotEmpty(t, result.CloudHandoffNote)
 	require.Equal(t, "alpha", result.Project)
+}
+
+func TestEngramImportPreviewCreatesFreshTokenAndDoesNotBackupOrWrite(t *testing.T) {
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	sourcePath := createGovernanceEngramFixture(t)
+	backup := &fakeEngramImportBackupStore{}
+	service := NewServiceWithBackup(store, backup)
+
+	job, err := service.StartEngramImportPreview(context.Background(), EngramImportRequest{Source: sourcePath})
+	require.NoError(t, err)
+	job = waitEngramImportJobDone(t, service, job.ID)
+
+	require.Equal(t, EngramImportJobKindPreview, job.Kind)
+	require.Equal(t, EngramImportPhaseCompleted, job.Phase)
+	require.True(t, job.Done)
+	require.Equal(t, 100, job.Percent)
+	require.NotNil(t, job.Report)
+	require.Equal(t, job.ID, job.Report.PreviewID)
+	require.Equal(t, EngramImportEntityCounts{Sessions: 1, Prompts: 1, Observations: 1}, job.Report.Projected)
+	require.Equal(t, 1, job.Report.SkippedRelations)
+	require.Equal(t, 0, backup.createCalls, "dry-run preview must not create a Hive backup")
+	require.Equal(t, 0, governanceImportRunCount(t, store), "dry-run preview must not write Hive import metadata")
+}
+
+func TestEngramImportExecuteRequiresFreshPreviewBeforeBackupOrImport(t *testing.T) {
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	sourcePath := createGovernanceEngramFixture(t)
+	backup := &fakeEngramImportBackupStore{}
+	service := NewServiceWithBackup(store, backup)
+
+	_, err = service.StartEngramImportExecute(context.Background(), EngramImportRequest{Source: sourcePath, PreviewID: "missing-preview"})
+
+	require.ErrorIs(t, err, ErrEngramImportPreviewRequired)
+	require.Equal(t, 0, backup.createCalls, "missing preview must be rejected before backup creation")
+	require.Equal(t, 0, governanceImportRunCount(t, store), "missing preview must be rejected before Hive writes")
+}
+
+func TestEngramImportExecuteCreatesBackupBeforeImportAndReportsProgress(t *testing.T) {
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	sourcePath := createGovernanceEngramFixture(t)
+	backup := &fakeEngramImportBackupStore{manifest: BackupManifest{ID: "backup-before-import", CreatedAt: time.Now().UTC()}}
+	service := NewServiceWithBackup(store, backup)
+
+	preview, err := service.StartEngramImportPreview(context.Background(), EngramImportRequest{Source: sourcePath})
+	require.NoError(t, err)
+	preview = waitEngramImportJobDone(t, service, preview.ID)
+
+	job, err := service.StartEngramImportExecute(context.Background(), EngramImportRequest{Source: sourcePath, PreviewID: preview.ID})
+	require.NoError(t, err)
+	job = waitEngramImportJobDone(t, service, job.ID)
+
+	require.Equal(t, EngramImportJobKindExecute, job.Kind)
+	require.True(t, job.Done)
+	require.Equal(t, EngramImportPhaseCompleted, job.Phase)
+	require.Equal(t, 100, job.Percent)
+	require.Contains(t, job.PhaseHistory, string(EngramImportPhaseAnalysis))
+	require.Contains(t, job.PhaseHistory, string(EngramImportPhaseBackup))
+	require.Contains(t, job.PhaseHistory, string(EngramImportPhaseImport))
+	require.Contains(t, job.PhaseHistory, string(EngramImportPhaseFinalization))
+	require.NotNil(t, job.Report)
+	require.Equal(t, "backup-before-import", job.Report.BackupID)
+	require.Equal(t, EngramImportMutationCounts{Imported: 3}, job.Report.Imported)
+	require.Equal(t, 1, backup.createCalls)
+	require.Equal(t, 1, governanceImportRunCount(t, store))
+}
+
+func TestEngramImportExecuteRejectsChangedSourceAfterPreviewBeforeBackupOrImport(t *testing.T) {
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	sourcePath := createGovernanceEngramFixture(t)
+	backup := &fakeEngramImportBackupStore{manifest: BackupManifest{ID: "backup-before-import", CreatedAt: time.Now().UTC()}}
+	service := NewServiceWithBackup(store, backup)
+
+	preview, err := service.StartEngramImportPreview(context.Background(), EngramImportRequest{Source: sourcePath})
+	require.NoError(t, err)
+	preview = waitEngramImportJobDone(t, service, preview.ID)
+	require.Equal(t, EngramImportPhaseCompleted, preview.Phase)
+
+	mutateGovernanceEngramFixture(t, sourcePath)
+
+	job, err := service.StartEngramImportExecute(context.Background(), EngramImportRequest{Source: sourcePath, PreviewID: preview.ID})
+	require.NoError(t, err)
+	job = waitEngramImportJobDone(t, service, job.ID)
+
+	require.True(t, job.Done)
+	require.Equal(t, EngramImportPhaseFailed, job.Phase)
+	require.Contains(t, job.Error, ErrEngramImportPreviewRequired.Error())
+	require.Equal(t, 0, backup.createCalls, "changed preview source must be rejected before backup creation")
+	require.Equal(t, 0, governanceImportRunCount(t, store), "changed preview source must be rejected before Hive writes")
+}
+
+func TestEngramImportExecuteAbortsWhenBackupFailsBeforeImport(t *testing.T) {
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	sourcePath := createGovernanceEngramFixture(t)
+	backupErr := errors.New("backup disk full")
+	backup := &fakeEngramImportBackupStore{createErr: backupErr}
+	service := NewServiceWithBackup(store, backup)
+
+	preview, err := service.StartEngramImportPreview(context.Background(), EngramImportRequest{Source: sourcePath})
+	require.NoError(t, err)
+	preview = waitEngramImportJobDone(t, service, preview.ID)
+
+	job, err := service.StartEngramImportExecute(context.Background(), EngramImportRequest{Source: sourcePath, PreviewID: preview.ID})
+	require.NoError(t, err)
+	job = waitEngramImportJobDone(t, service, job.ID)
+
+	require.True(t, job.Done)
+	require.Equal(t, EngramImportPhaseFailed, job.Phase)
+	require.Contains(t, job.Error, backupErr.Error())
+	require.Equal(t, 1, backup.createCalls)
+	require.Equal(t, 0, governanceImportRunCount(t, store), "backup failure must abort before import metadata writes")
+}
+
+type fakeEngramImportBackupStore struct {
+	manifest    BackupManifest
+	createErr   error
+	createCalls int
+}
+
+func (f *fakeEngramImportBackupStore) List(context.Context) ([]BackupManifest, error) {
+	return nil, nil
+}
+
+func (f *fakeEngramImportBackupStore) Create(context.Context) (BackupManifest, error) {
+	f.createCalls++
+	if f.createErr != nil {
+		return BackupManifest{}, f.createErr
+	}
+	if f.manifest.ID == "" {
+		f.manifest = BackupManifest{ID: "backup-1", CreatedAt: time.Now().UTC()}
+	}
+	return f.manifest, nil
+}
+
+func (f *fakeEngramImportBackupStore) PlanRestore(context.Context, RestoreRequest) (RestoreResult, error) {
+	return RestoreResult{}, errors.New("not implemented")
+}
+
+func (f *fakeEngramImportBackupStore) ValidateArchive(context.Context, string) (BackupManifest, error) {
+	return BackupManifest{}, errors.New("not implemented")
+}
+
+func waitEngramImportJobDone(t *testing.T, service *Service, id string) EngramImportJob {
+	t.Helper()
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		job, err := service.EngramImportJob(context.Background(), id)
+		require.NoError(t, err)
+		if job.Done {
+			return job
+		}
+	}
+	job, err := service.EngramImportJob(context.Background(), id)
+	require.NoError(t, err)
+	t.Fatalf("job %s did not finish; snapshot=%+v", id, job)
+	return EngramImportJob{}
+}
+
+func createGovernanceEngramFixture(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "engram.db")
+	sqlDB, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	_, err = sqlDB.Exec(`
+CREATE TABLE observations (id INTEGER PRIMARY KEY, project TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', type TEXT NOT NULL DEFAULT '', topic_key TEXT, session_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT);
+CREATE TABLE sessions (id TEXT PRIMARY KEY, project TEXT NOT NULL DEFAULT '', directory TEXT NOT NULL DEFAULT '', dev_id TEXT NOT NULL DEFAULT '', client TEXT NOT NULL DEFAULT '', started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, ended_at TEXT, summary TEXT);
+CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, project TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE memory_relations (id INTEGER PRIMARY KEY, source_id INTEGER, target_id INTEGER, relation TEXT);
+INSERT INTO sessions (id, project, directory, dev_id, client, started_at) VALUES ('ses-1', 'proj-a', 'C:/src/a', 'dev-a', 'opencode', '2026-06-11 10:00:00');
+INSERT INTO user_prompts (id, project, content, created_at) VALUES (11, 'proj-a', 'prompt content', '2026-06-11 10:01:00');
+INSERT INTO observations (id, project, title, content, type, topic_key, session_id, created_at, updated_at) VALUES (21, 'proj-a', 'Decision', 'Keep daemon-owned import', 'decision', 'topic-a', 'ses-1', '2026-06-11 10:02:00', '2026-06-11 10:03:00');
+INSERT INTO memory_relations (id, source_id, target_id, relation) VALUES (1, 21, 21, 'related');`)
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+	return path
+}
+
+func mutateGovernanceEngramFixture(t *testing.T, path string) {
+	t.Helper()
+	sqlDB, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	_, err = sqlDB.Exec(`INSERT INTO user_prompts (id, project, content, created_at) VALUES (12, 'proj-a', 'changed prompt content', '2026-06-11 10:04:00')`)
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+}
+
+func governanceImportRunCount(t *testing.T, store *db.DB) int {
+	t.Helper()
+	var count int
+	require.NoError(t, store.RawDB().QueryRow(`SELECT COUNT(*) FROM import_runs`).Scan(&count))
+	return count
 }
