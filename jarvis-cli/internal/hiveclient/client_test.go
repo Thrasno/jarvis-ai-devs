@@ -397,8 +397,6 @@ func TestClient_ProjectList_UnsyncedCount(t *testing.T) {
 	}
 }
 
-// TestDeleteProject_BuildsCorrectRequest verifies that DeleteProject posts to
-// .../governance/projects/{name}/delete with the serialized ProjectDeleteRequest body.
 // T2.1 — GetConfigStatus tests
 
 func TestGetConfigStatus_DecodesDTOFields(t *testing.T) {
@@ -437,6 +435,12 @@ func TestGetConfigStatus_DecodesDTOFields(t *testing.T) {
 	}
 	if status.EnvActive {
 		t.Fatalf("EnvActive = true, want false")
+	}
+	if !status.PasswordSet {
+		t.Fatalf("PasswordSet = false, want true")
+	}
+	if status.Source != "file" {
+		t.Fatalf("Source = %q, want file", status.Source)
 	}
 }
 
@@ -613,6 +617,58 @@ func TestTestConnection_TransportErrorReturnsGoError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("TestConnection: expected Go error for transport failure, got nil")
+	}
+}
+
+func TestTestConnection_ReturnsAPIErrorOnNon2xx(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"api_url is required and must include a scheme and host"}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.TestConnection(context.Background(), ConfigTestRequest{})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest || apiErr.Message != "api_url is required and must include a scheme and host" {
+		t.Fatalf("TestConnection error = %#v, want APIError 400 with api_url message", err)
+	}
+}
+
+func TestUpdateConfig_ForwardsMaskedSentinelVerbatim(t *testing.T) {
+	var receivedPassword string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req ConfigUpdateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		receivedPassword = req.Password
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"configured":true,"source":"file","api_url":"https://hive.example.com","email":"user@example.com","password_set":true,"password_masked":"********","auto_sync":true,"env_active":false}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.UpdateConfig(context.Background(), ConfigUpdateRequest{
+		APIURL:   "https://hive.example.com",
+		Email:    "user@example.com",
+		Password: "********",
+		AutoSync: true,
+	})
+	if err != nil {
+		t.Fatalf("UpdateConfig: %v", err)
+	}
+	if receivedPassword != "********" {
+		t.Fatalf("server received password = %q, want ********", receivedPassword)
 	}
 }
 

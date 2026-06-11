@@ -227,7 +227,8 @@ type ConfigUpdateRequest struct {
 	AutoSync bool   `json:"auto_sync"`
 }
 
-// configUpdateWire is the flat JSON shape returned by POST /governance/config.
+// configUpdateWire mirrors the flat JSON the daemon emits for POST /governance/config.
+// Keep in sync with hive-daemon/internal/httpapi/config.go ConfigStatusResponse.
 // The daemon embeds ConfigStatusResponse directly and adds restart_required.
 type configUpdateWire struct {
 	Configured     bool     `json:"configured"`
@@ -440,9 +441,9 @@ func (c *Client) UpdateConfig(ctx context.Context, req ConfigUpdateRequest) (Con
 	}, nil
 }
 
-// TestConnection calls POST /governance/config/test. A Go error is returned only
-// for transport-level failures. Auth/connectivity failures are represented in the
-// result with OK=false so callers can render inline feedback.
+// TestConnection calls POST /governance/config/test. A Go error is returned for
+// transport failures AND non-2xx daemon responses. When the daemon responds 200
+// with ok:false, the error is nil and the result carries the failure in OK and Message.
 func (c *Client) TestConnection(ctx context.Context, req ConfigTestRequest) (ConfigTestResult, error) {
 	var result ConfigTestResult
 	if err := c.post(ctx, "/governance/config/test", req, &result); err != nil {
