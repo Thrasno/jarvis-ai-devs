@@ -108,6 +108,12 @@ func LoadSnapshot(ctx context.Context, c *hiveclient.Client, baseURL string, sel
 		snap.Backups = backups
 	}
 
+	// SyncSummary — optional; nil on old daemon (404) or any error.
+	summary, err := c.GetSyncSummary(ctx)
+	if err == nil {
+		snap.SyncSummary = &summary
+	}
+
 	return snap
 }
 
