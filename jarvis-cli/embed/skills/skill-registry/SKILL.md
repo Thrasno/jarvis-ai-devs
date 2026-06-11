@@ -158,11 +158,13 @@ mem_save(
   topic_key: "skill-registry",
   type: "config",
   project: "{project}",
+  capture_prompt: false,
   content: "{registry markdown from Step 3}"
 )
 ```
 
 `topic_key` ensures upserts — running again updates the same observation.
+`capture_prompt:false` is required because the registry is an automated configuration artifact.
 
 ### Step 5: Return Summary
 
