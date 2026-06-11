@@ -1212,3 +1212,109 @@ func TestExecuteProjectDelete_Success(t *testing.T) {
 	require.NotEmpty(t, result.CloudHandoffNote)
 	require.Equal(t, "alpha", result.Project)
 }
+
+// ─── T16: MemoryFilter passthrough and Timeline method ───────────────────────
+
+// TestMemoriesPassesThroughCategoriesAndOrderAsc verifies that calling
+// Memories with Categories and OrderAsc correctly passes those values to the
+// db layer and returns only the matching memories in the right order.
+func TestMemoriesPassesThroughCategoriesAndOrderAsc(t *testing.T) {
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	require.NoError(t, store.CreateSession("sess-timeline", "proj-tm", "/", "dev", "test"))
+	insertServiceMemoryWithTimestampAndCategory(t, store, "proj-tm", "Oldest decision", "decision", "2026-01-01 10:00:00")
+	insertServiceMemoryWithTimestampAndCategory(t, store, "proj-tm", "Middle note", "note", "2026-01-02 10:00:00")
+	insertServiceMemoryWithTimestampAndCategory(t, store, "proj-tm", "Newest decision", "decision", "2026-01-03 10:00:00")
+
+	svc := NewService(store)
+
+	memories, err := svc.Memories(context.Background(), MemoryFilter{
+		Project:    "proj-tm",
+		Categories: []string{"decision"},
+		OrderAsc:   true,
+		Limit:      10,
+	})
+	require.NoError(t, err)
+	require.Len(t, memories, 2, "only decision memories should be returned")
+	require.Equal(t, "Oldest decision", memories[0].Title, "ASC order: oldest first")
+	require.Equal(t, "Newest decision", memories[1].Title)
+}
+
+// TestTimelineReturnsErrProjectNotFoundForUnknownProject verifies that
+// Timeline returns ErrProjectNotFound when the project doesn't exist.
+func TestTimelineReturnsErrProjectNotFoundForUnknownProject(t *testing.T) {
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	svc := NewService(store)
+
+	_, err = svc.Timeline(context.Background(), "ghost")
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrProjectNotFound)
+}
+
+// TestTimelinePassesCategoriesAndAscOrderToStorage verifies that Timeline
+// calls the storage with the 5 timeline categories and OrderAsc: true.
+func TestTimelinePassesCategoriesAndAscOrderToStorage(t *testing.T) {
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	require.NoError(t, store.CreateSession("sess-tl", "proj-tl", "/", "dev", "test"))
+	insertServiceMemoryWithTimestampAndCategory(t, store, "proj-tl", "Old arch", "architecture", "2026-01-01 10:00:00")
+	insertServiceMemoryWithTimestampAndCategory(t, store, "proj-tl", "Middle note", "note", "2026-01-02 10:00:00")
+	insertServiceMemoryWithTimestampAndCategory(t, store, "proj-tl", "New decision", "decision", "2026-01-03 10:00:00")
+
+	svc := NewService(store)
+
+	memories, err := svc.Timeline(context.Background(), "proj-tl")
+	require.NoError(t, err)
+
+	// note must not be in the result
+	for _, m := range memories {
+		require.NotEqual(t, "note", m.Category, "Timeline must not return notes")
+	}
+	// Oldest timeline memory must come first (ASC order).
+	require.GreaterOrEqual(t, len(memories), 2)
+	require.True(t, memories[0].CreatedAt.Before(memories[len(memories)-1].CreatedAt) ||
+		memories[0].CreatedAt.Equal(memories[len(memories)-1].CreatedAt),
+		"memories must be ASC ordered by created_at")
+}
+
+// TestTimelineEmptyResultForProjectWithNoTimelineCategories verifies that
+// Timeline returns an empty slice (not an error) when the project has no
+// memories in the 5 timeline categories.
+func TestTimelineEmptyResultForProjectWithNoTimelineCategories(t *testing.T) {
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	require.NoError(t, store.CreateSession("sess-empty-tl", "proj-empty-tl", "/", "dev", "test"))
+	insertServiceMemoryWithTimestampAndCategory(t, store, "proj-empty-tl", "A note", "note", "2026-01-01 10:00:00")
+
+	svc := NewService(store)
+
+	memories, err := svc.Timeline(context.Background(), "proj-empty-tl")
+	require.NoError(t, err)
+	require.Empty(t, memories)
+}
+
+// insertServiceMemoryWithTimestampAndCategory inserts a memory row directly
+// with a controlled created_at timestamp and category for service-level tests.
+func insertServiceMemoryWithTimestampAndCategory(t *testing.T, store *db.DB, projectName, title, category, createdAt string) {
+	t.Helper()
+	if _, err := store.EnsureManualSaveSession(projectName); err != nil {
+		t.Fatalf("EnsureManualSaveSession: %v", err)
+	}
+	_, err := store.RawDB().Exec(`
+INSERT INTO memories (sync_id, project, category, title, content, created_by, session_id, created_at, updated_at)
+VALUES (?, ?, ?, ?, 'content', 'tester', ?, ?, ?)`,
+		"sync-svc-"+title+"-"+projectName, projectName, category, title,
+		"manual-save-"+projectName, createdAt, createdAt)
+	if err != nil {
+		t.Fatalf("insertServiceMemoryWithTimestampAndCategory: %v", err)
+	}
+}
