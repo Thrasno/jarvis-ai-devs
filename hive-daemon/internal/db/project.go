@@ -12,13 +12,13 @@ import (
 )
 
 var (
-	ErrGovernanceProjectRequired        = errors.New("project is required")
-	ErrGovernanceProjectNotFound        = errors.New("governance project not found")
-	ErrGovernanceProjectArchived        = errors.New("governance project is archived")
-	ErrGovernanceProjectNotArchived     = errors.New("governance project is not archived")
-	ErrGovernanceProjectMergeInvalid    = errors.New("governance project merge source and target must differ")
-	ErrGovernanceProjectMergeConflict   = errors.New("governance project already merged into another target")
-	ErrGovernanceMemoryNotFound         = errors.New("governance memory not found")
+	ErrGovernanceProjectRequired      = errors.New("project is required")
+	ErrGovernanceProjectNotFound      = errors.New("governance project not found")
+	ErrGovernanceProjectArchived      = errors.New("governance project is archived")
+	ErrGovernanceProjectNotArchived   = errors.New("governance project is not archived")
+	ErrGovernanceProjectMergeInvalid  = errors.New("governance project merge source and target must differ")
+	ErrGovernanceProjectMergeConflict = errors.New("governance project already merged into another target")
+	ErrGovernanceMemoryNotFound       = errors.New("governance memory not found")
 )
 
 type GovernanceProject struct {

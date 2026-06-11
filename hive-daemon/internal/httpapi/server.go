@@ -37,6 +37,7 @@ type GovernanceService interface {
 	Project(context.Context, string) (governance.Project, error)
 	Memories(context.Context, governance.MemoryFilter) ([]governance.Memory, error)
 	MemoryByID(context.Context, int64) (governance.Memory, error)
+	Timeline(context.Context, string) ([]governance.Memory, error)
 	Health(context.Context) ([]governance.Health, error)
 	Warnings(context.Context, governance.WarningFilter) ([]governance.Warning, error)
 	Backups(context.Context) ([]governance.BackupManifest, error)
@@ -296,6 +297,15 @@ func (s *Server) handleGovernanceProject(w http.ResponseWriter, r *http.Request)
 		s.handleGovernanceProjectDelete(w, r, projectName)
 		return
 	}
+	if strings.HasSuffix(escapedName, "/timeline") {
+		projectName, err := url.PathUnescape(strings.TrimSuffix(escapedName, "/timeline"))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is invalid"})
+			return
+		}
+		s.handleGovernanceTimeline(w, r, projectName)
+		return
+	}
 	name, err := url.PathUnescape(escapedName)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is invalid"})
@@ -366,6 +376,21 @@ func (s *Server) handleGovernanceProjectDelete(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"result": result})
+}
+
+func (s *Server) handleGovernanceTimeline(w http.ResponseWriter, r *http.Request, projectName string) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	memories, err := s.governance.Timeline(r.Context(), projectName)
+	if err != nil {
+		writeGovernanceError(w, "governance timeline", err)
+		return
+	}
+	if memories == nil {
+		memories = []governance.Memory{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"memories": memories})
 }
 
 func (s *Server) handleGovernanceProjectMerge(w http.ResponseWriter, r *http.Request, sourceProject, targetProject string) {
