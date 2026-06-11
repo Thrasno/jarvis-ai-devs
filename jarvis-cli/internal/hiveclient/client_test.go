@@ -672,6 +672,82 @@ func TestUpdateConfig_ForwardsMaskedSentinelVerbatim(t *testing.T) {
 	}
 }
 
+// T16 — Phase 3 — hiveclient.Timeline
+
+func TestTimeline_SuccessfulFetch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/governance/projects/atlas/timeline" {
+			t.Fatalf("request = %s %s, want GET /governance/projects/atlas/timeline", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"memories":[{"id":1,"sync_id":"s-1","project":"atlas","category":"decision","title":"Use Go","created_by":"agent","created_at":"2026-06-01T10:00:00Z","deleted":false},{"id":2,"sync_id":"s-2","project":"atlas","category":"architecture","title":"Hexagonal layout","created_by":"agent","created_at":"2026-06-02T10:00:00Z","deleted":false}]}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	memories, err := client.Timeline(context.Background(), "atlas")
+	if err != nil {
+		t.Fatalf("Timeline: %v", err)
+	}
+	if len(memories) != 2 {
+		t.Fatalf("len(memories) = %d, want 2", len(memories))
+	}
+	if memories[0].Category != "decision" {
+		t.Fatalf("memories[0].Category = %q, want decision", memories[0].Category)
+	}
+	if memories[1].Category != "architecture" {
+		t.Fatalf("memories[1].Category = %q, want architecture", memories[1].Category)
+	}
+}
+
+func TestTimeline_ProjectNotFound_ReturnsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"project not found"}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	memories, err := client.Timeline(context.Background(), "ghost")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("Timeline error = %#v, want APIError 404", err)
+	}
+	if memories != nil {
+		t.Fatalf("memories = %v, want nil on error", memories)
+	}
+}
+
+func TestTimeline_EscapesProjectNameInPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.RequestURI != "/governance/projects/team%2Fatlas/timeline" {
+			t.Fatalf("RequestURI = %q, want /governance/projects/team%%2Fatlas/timeline", r.RequestURI)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"memories":[]}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.Timeline(context.Background(), "team/atlas")
+	if err != nil {
+		t.Fatalf("Timeline: %v", err)
+	}
+}
+
 func TestDeleteProject_BuildsCorrectRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/governance/projects/alpha/delete" {
