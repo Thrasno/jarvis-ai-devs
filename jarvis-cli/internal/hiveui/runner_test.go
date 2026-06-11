@@ -238,6 +238,136 @@ func TestLoadSnapshot_MemoriesEmptyFilterFallback(t *testing.T) {
 	}
 }
 
+// ─── LoadSnapshot: TimelineMemories ──────────────────────────────────────────
+
+func TestLoadSnapshot_PopulatesTimelineMemoriesForSelectedProject(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/governance/health":
+			writeJSON(w, map[string]any{"projects": []map[string]any{
+				{"project": "core-api", "consecutive_failures": 0, "last_error": ""},
+			}})
+		case r.URL.Path == "/governance/projects":
+			writeJSON(w, map[string]any{"projects": []map[string]any{
+				{"name": "core-api", "active_memory_count": 2},
+			}})
+		case r.URL.Path == "/governance/memories":
+			writeJSON(w, map[string]any{"memories": []map[string]any{
+				{"sync_id": "m1", "project": "core-api", "category": "note", "title": "A note"},
+			}})
+		case r.URL.Path == "/governance/projects/core-api/timeline":
+			writeJSON(w, map[string]any{"memories": []map[string]any{
+				{"sync_id": "t1", "project": "core-api", "category": "decision", "title": "Use Go"},
+				{"sync_id": "t2", "project": "core-api", "category": "architecture", "title": "Hexagonal"},
+			}})
+		case r.URL.Path == "/governance/warnings":
+			writeJSON(w, map[string]any{"warnings": []any{}})
+		case r.URL.Path == "/governance/backups":
+			writeJSON(w, map[string]any{"backups": []any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client, err := hiveclient.New(srv.URL)
+	if err != nil {
+		t.Fatalf("hiveclient.New: %v", err)
+	}
+
+	snap := LoadSnapshot(context.Background(), client, srv.URL, "core-api")
+
+	if snap.LoadError != nil {
+		t.Fatalf("LoadError = %v, want nil", snap.LoadError)
+	}
+	if len(snap.TimelineMemories) != 2 {
+		t.Fatalf("TimelineMemories len = %d, want 2", len(snap.TimelineMemories))
+	}
+	if snap.TimelineMemories[0].SyncID != "t1" {
+		t.Fatalf("TimelineMemories[0].SyncID = %q, want t1", snap.TimelineMemories[0].SyncID)
+	}
+}
+
+func TestLoadSnapshot_NoProject_LeavesTimelineMemoriesEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/governance/health":
+			writeJSON(w, map[string]any{"projects": []any{}})
+		case "/governance/projects":
+			writeJSON(w, map[string]any{"projects": []any{}})
+		case "/governance/memories":
+			writeJSON(w, map[string]any{"memories": []any{}})
+		case "/governance/warnings":
+			writeJSON(w, map[string]any{"warnings": []any{}})
+		case "/governance/backups":
+			writeJSON(w, map[string]any{"backups": []any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client, err := hiveclient.New(srv.URL)
+	if err != nil {
+		t.Fatalf("hiveclient.New: %v", err)
+	}
+
+	// No project selected (empty string).
+	snap := LoadSnapshot(context.Background(), client, srv.URL, "")
+
+	if snap.LoadError != nil {
+		t.Fatalf("LoadError = %v, want nil", snap.LoadError)
+	}
+	if snap.TimelineMemories != nil {
+		t.Fatalf("TimelineMemories = %v, want nil when no project selected", snap.TimelineMemories)
+	}
+}
+
+func TestLoadSnapshot_TimelineError_LeavesTimelineMemoriesEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/governance/health":
+			writeJSON(w, map[string]any{"projects": []map[string]any{
+				{"project": "core-api", "consecutive_failures": 0, "last_error": ""},
+			}})
+		case r.URL.Path == "/governance/projects":
+			writeJSON(w, map[string]any{"projects": []map[string]any{
+				{"name": "core-api", "active_memory_count": 1},
+			}})
+		case r.URL.Path == "/governance/memories":
+			writeJSON(w, map[string]any{"memories": []any{}})
+		case r.URL.Path == "/governance/projects/core-api/timeline":
+			// Simulate a 404 (project not found in timeline).
+			http.Error(w, `{"error":"project not found"}`, http.StatusNotFound)
+		case r.URL.Path == "/governance/warnings":
+			writeJSON(w, map[string]any{"warnings": []any{}})
+		case r.URL.Path == "/governance/backups":
+			writeJSON(w, map[string]any{"backups": []any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client, err := hiveclient.New(srv.URL)
+	if err != nil {
+		t.Fatalf("hiveclient.New: %v", err)
+	}
+
+	snap := LoadSnapshot(context.Background(), client, srv.URL, "core-api")
+
+	if snap.LoadError != nil {
+		t.Fatalf("LoadError = %v, want nil (timeline error must not fail snapshot load)", snap.LoadError)
+	}
+	// TimelineMemories must be empty slice (not nil) on error.
+	if snap.TimelineMemories == nil {
+		t.Fatal("TimelineMemories = nil, want empty slice when Timeline returns error")
+	}
+	if len(snap.TimelineMemories) != 0 {
+		t.Fatalf("TimelineMemories len = %d, want 0 on error", len(snap.TimelineMemories))
+	}
+}
+
 // ─── RunHiveTUI ──────────────────────────────────────────────────────────────
 
 func TestRunHiveTUI_StubsProgram_AndReturnsNil(t *testing.T) {
