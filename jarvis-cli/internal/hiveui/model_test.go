@@ -1345,6 +1345,80 @@ func TestRemoveMemoryFromNormalSnapshot_AlsoRemovesFromTimelineMemories(t *testi
 	}
 }
 
+// TestRemoveMemoryFromNormalSnapshot_ClampsMemoryIndexAgainstTimeline verifies
+// that when detailReturn == ScreenTimeline, memoryIndex is clamped against
+// len(TimelineMemories) after the delete, not len(projectMemories()).
+func TestRemoveMemoryFromNormalSnapshot_ClampsMemoryIndexAgainstTimeline(t *testing.T) {
+	const targetID = int64(10)
+	snap := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects: []hiveclient.Project{
+			{Name: "atlas", ActiveMemoryCount: 4, DeletedMemoryCount: 0},
+		},
+		// Four project memories — projectMemories() returns len 3 after delete.
+		Memories: []hiveclient.Memory{
+			{ID: targetID, SyncID: "m-del", Project: "atlas", Category: "decision", Title: "Delete"},
+			{ID: 11, SyncID: "m1", Project: "atlas", Category: "bugfix", Title: "B1"},
+			{ID: 12, SyncID: "m2", Project: "atlas", Category: "bugfix", Title: "B2"},
+			{ID: 13, SyncID: "m3", Project: "atlas", Category: "bugfix", Title: "B3"},
+		},
+		// Only two entries in timeline — a smaller slice.
+		TimelineMemories: []hiveclient.Memory{
+			{ID: targetID, SyncID: "m-del", Project: "atlas", Category: "decision", Title: "Delete"},
+			{ID: 11, SyncID: "m1", Project: "atlas", Category: "bugfix", Title: "B1"},
+		},
+	}
+	// memoryIndex 2 is valid for projectMemories (len 3 after delete) but
+	// out of bounds for TimelineMemories (len 1 after delete).
+	m := Model{
+		snapshot:     snap,
+		screen:       ScreenMemoryDetail,
+		detailReturn: ScreenTimeline,
+		memoryIndex:  2,
+	}
+
+	m = m.removeMemoryFromNormalSnapshot(targetID)
+
+	// After delete, TimelineMemories has 1 entry (index 0 only).
+	// memoryIndex must be clamped to 0, not left at 2.
+	if m.memoryIndex >= len(m.snapshot.TimelineMemories) {
+		t.Fatalf("memoryIndex = %d is out of bounds for TimelineMemories len %d",
+			m.memoryIndex, len(m.snapshot.TimelineMemories))
+	}
+}
+
+// TestRemoveMemoryFromNormalSnapshot_ClampsMemoryIndexAgainstTimeline_EmptyTimeline
+// verifies that memoryIndex is reset to 0 when TimelineMemories becomes empty.
+func TestRemoveMemoryFromNormalSnapshot_ClampsMemoryIndexAgainstTimeline_EmptyTimeline(t *testing.T) {
+	const targetID = int64(20)
+	snap := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects: []hiveclient.Project{
+			{Name: "atlas", ActiveMemoryCount: 2, DeletedMemoryCount: 0},
+		},
+		Memories: []hiveclient.Memory{
+			{ID: targetID, SyncID: "m-del", Project: "atlas", Category: "decision", Title: "Delete"},
+			{ID: 21, SyncID: "m1", Project: "atlas", Category: "bugfix", Title: "B1"},
+		},
+		// Only the target in timeline — will be empty after delete.
+		TimelineMemories: []hiveclient.Memory{
+			{ID: targetID, SyncID: "m-del", Project: "atlas", Category: "decision", Title: "Delete"},
+		},
+	}
+	m := Model{
+		snapshot:     snap,
+		screen:       ScreenMemoryDetail,
+		detailReturn: ScreenTimeline,
+		memoryIndex:  0,
+	}
+
+	m = m.removeMemoryFromNormalSnapshot(targetID)
+
+	if m.memoryIndex != 0 {
+		t.Fatalf("memoryIndex = %d, want 0 when TimelineMemories is empty", m.memoryIndex)
+	}
+}
+
 func sendKey(m Model, key tea.KeyType) Model {
 	updated, _ := m.Update(tea.KeyMsg{Type: key})
 	return updated.(Model)

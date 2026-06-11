@@ -1040,6 +1040,15 @@ func (m Model) removeMemoryFromNormalSnapshot(id int64) Model {
 			break
 		}
 	}
+	if m.detailReturn == ScreenTimeline {
+		tl := len(m.snapshot.TimelineMemories)
+		if tl == 0 {
+			m.memoryIndex = 0
+		} else {
+			m.memoryIndex = wrapIndex(m.memoryIndex, tl)
+		}
+		return m
+	}
 	if len(m.projectMemories()) == 0 {
 		m.memoryIndex = 0
 		return m
