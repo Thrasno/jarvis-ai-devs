@@ -17,6 +17,11 @@ import (
 const (
 	defaultBaseURL = "http://127.0.0.1:7438"
 	defaultTimeout = 10 * time.Second
+
+	// MaskedSecret is the sentinel value that clients send when they want to
+	// preserve the currently stored secret without transmitting or revealing it.
+	// The daemon detects this sentinel and reuses the stored credential.
+	MaskedSecret = "********"
 )
 
 var ErrNotAvailable = errors.New("governance endpoint is not available")
