@@ -2696,3 +2696,136 @@ func TestHandleGovernanceTimeline_Truncated(t *testing.T) {
 		t.Fatalf("truncated = false, want true when len(memories) == 500")
 	}
 }
+
+// ─── GET /governance/health/summary tests ─────────────────────────────────────
+
+// fakeHealthService is a test double for httpapi.HealthService.
+type fakeHealthService struct {
+	summaryFn func(ctx context.Context) (httpapi.HealthSummaryResponse, error)
+}
+
+func (f *fakeHealthService) Summary(ctx context.Context) (httpapi.HealthSummaryResponse, error) {
+	if f.summaryFn != nil {
+		return f.summaryFn(ctx)
+	}
+	return httpapi.HealthSummaryResponse{
+		Reachable:           true,
+		AuthOK:              true,
+		AutoSync:            true,
+		LastError:           "",
+		UnsyncedMemories:    0,
+		UnsyncedPrompts:     0,
+		UnsyncedSessions:    0,
+		ConsecutiveFailures: 0,
+	}, nil
+}
+
+func newHealthTestServer(svc httpapi.HealthService) *httpapi.Server {
+	return httpapi.NewServerWithHealth("127.0.0.1:0", &mockPromptStore{}, svc)
+}
+
+// TestGetHealthSummary_200Shape verifies the 200 response contains all required fields.
+func TestGetHealthSummary_200Shape(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &fakeHealthService{
+		summaryFn: func(ctx context.Context) (httpapi.HealthSummaryResponse, error) {
+			return httpapi.HealthSummaryResponse{
+				Reachable:           true,
+				AuthOK:              true,
+				AutoSync:            true,
+				LastSuccessAt:       &now,
+				LastFailureAt:       nil,
+				BackoffUntil:        nil,
+				LastError:           "",
+				UnsyncedMemories:    2,
+				UnsyncedPrompts:     1,
+				UnsyncedSessions:    0,
+				ConsecutiveFailures: 0,
+			}, nil
+		},
+	}
+	srv := newHealthTestServer(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/governance/health/summary", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	requiredFields := []string{
+		"reachable", "auth_ok", "auto_sync",
+		"last_success_at", "last_failure_at", "last_error",
+		"unsynced_memories", "unsynced_prompts", "unsynced_sessions",
+		"backoff_until", "consecutive_failures",
+	}
+	for _, f := range requiredFields {
+		if _, ok := resp[f]; !ok {
+			t.Errorf("missing required field %q in response", f)
+		}
+	}
+
+	// No secrets
+	for _, secretField := range []string{"api_url", "email", "password", "token"} {
+		if _, ok := resp[secretField]; ok {
+			t.Errorf("secret field %q must not appear in health summary response", secretField)
+		}
+	}
+}
+
+// TestGetHealthSummary_405MethodNotAllowed verifies that non-GET returns 405.
+func TestGetHealthSummary_405MethodNotAllowed(t *testing.T) {
+	srv := newHealthTestServer(&fakeHealthService{})
+
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/governance/health/summary", nil)
+			req.RemoteAddr = "127.0.0.1:12345"
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, req)
+			if rr.Code != http.StatusMethodNotAllowed {
+				t.Errorf("%s: expected 405, got %d", method, rr.Code)
+			}
+		})
+	}
+}
+
+// TestGetHealthSummary_403LoopbackGuard verifies that non-loopback requests are forbidden.
+func TestGetHealthSummary_403LoopbackGuard(t *testing.T) {
+	srv := newHealthTestServer(&fakeHealthService{})
+
+	req := httptest.NewRequest(http.MethodGet, "/governance/health/summary", nil)
+	req.RemoteAddr = "203.0.113.1:54321" // non-loopback
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rr.Code)
+	}
+}
+
+// TestGetHealthSummary_500WhenServiceErrors verifies 500 when Summary returns an error.
+func TestGetHealthSummary_500WhenServiceErrors(t *testing.T) {
+	svc := &fakeHealthService{
+		summaryFn: func(ctx context.Context) (httpapi.HealthSummaryResponse, error) {
+			return httpapi.HealthSummaryResponse{}, errors.New("db unavailable")
+		},
+	}
+	srv := newHealthTestServer(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/governance/health/summary", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rr.Code)
+	}
+}
