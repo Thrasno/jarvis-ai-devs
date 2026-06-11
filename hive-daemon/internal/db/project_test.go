@@ -1543,6 +1543,234 @@ func TestKnownProjects_ExcludesArchived(t *testing.T) {
 	}
 }
 
+// ─── T16: ListGovernanceMemories — Categories and OrderAsc filter tests ──────
+
+// TestListGovernanceMemories_CategoryFilter verifies that when Categories is
+// non-empty, only memories whose category matches are returned.
+func TestListGovernanceMemories_CategoryFilter(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name           string
+		categories     []string
+		wantCategories []string
+	}{
+		{
+			name:           "single category returns only matching",
+			categories:     []string{"decision"},
+			wantCategories: []string{"decision"},
+		},
+		{
+			name:           "multiple categories return all matching",
+			categories:     []string{"decision", "architecture", "bugfix"},
+			wantCategories: []string{"decision", "architecture"},
+		},
+		{
+			name:           "empty categories returns all types",
+			categories:     []string{},
+			wantCategories: []string{"decision", "architecture", "note"},
+		},
+		{
+			name:           "nil categories returns all types",
+			categories:     nil,
+			wantCategories: []string{"decision", "architecture", "note"},
+		},
+		{
+			name:           "category with no matches returns empty slice",
+			categories:     []string{"config"},
+			wantCategories: []string{},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			d := openGovernanceTestDB(t)
+			saveGovernanceTestMemoryWithCategory(t, d, "proj-filter", "Decision mem", "decision")
+			saveGovernanceTestMemoryWithCategory(t, d, "proj-filter", "Architecture mem", "architecture")
+			saveGovernanceTestMemoryWithCategory(t, d, "proj-filter", "Note mem", "note")
+
+			memories, err := d.ListGovernanceMemories(context.Background(), hivedb.GovernanceMemoryFilter{
+				Project:    "proj-filter",
+				Categories: tt.categories,
+				Limit:      10,
+			})
+			if err != nil {
+				t.Fatalf("ListGovernanceMemories: %v", err)
+			}
+
+			got := make(map[string]bool, len(memories))
+			for _, m := range memories {
+				got[m.Category] = true
+			}
+
+			if len(tt.wantCategories) == 0 {
+				if len(memories) != 0 {
+					t.Fatalf("expected 0 memories, got %d: %v", len(memories), memories)
+				}
+				return
+			}
+
+			for _, want := range tt.wantCategories {
+				if !got[want] {
+					t.Fatalf("expected category %q in results, got categories: %v", want, got)
+				}
+			}
+			// When categories filter is active, no other types should appear.
+			if len(tt.categories) > 0 {
+				wantSet := make(map[string]bool, len(tt.categories))
+				for _, c := range tt.categories {
+					wantSet[c] = true
+				}
+				for cat := range got {
+					if !wantSet[cat] {
+						t.Fatalf("unexpected category %q in filtered results", cat)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestListGovernanceMemories_OrderAsc verifies that OrderAsc controls the
+// sort direction, and that the zero value (false) preserves existing DESC behaviour.
+func TestListGovernanceMemories_OrderAsc(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name      string
+		orderAsc  bool
+		wantFirst string // title of the memory that should appear first
+	}{
+		{
+			name:      "OrderAsc false (zero value) returns newest first",
+			orderAsc:  false,
+			wantFirst: "Third mem",
+		},
+		{
+			name:      "OrderAsc true returns oldest first",
+			orderAsc:  true,
+			wantFirst: "First mem",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			d := openGovernanceTestDB(t)
+			insertMemoryWithTimestamp(t, d, "proj-order", "First mem", "decision", "2026-01-01 10:00:00")
+			insertMemoryWithTimestamp(t, d, "proj-order", "Second mem", "decision", "2026-01-02 10:00:00")
+			insertMemoryWithTimestamp(t, d, "proj-order", "Third mem", "decision", "2026-01-03 10:00:00")
+
+			memories, err := d.ListGovernanceMemories(context.Background(), hivedb.GovernanceMemoryFilter{
+				Project:  "proj-order",
+				OrderAsc: tt.orderAsc,
+				Limit:    10,
+			})
+			if err != nil {
+				t.Fatalf("ListGovernanceMemories: %v", err)
+			}
+			if len(memories) != 3 {
+				t.Fatalf("expected 3 memories, got %d", len(memories))
+			}
+			if memories[0].Title != tt.wantFirst {
+				t.Fatalf("first memory = %q, want %q", memories[0].Title, tt.wantFirst)
+			}
+		})
+	}
+}
+
+// TestListGovernanceMemories_CategoryAndOrderCombined verifies that combining
+// Categories and OrderAsc produces correctly filtered and sorted results.
+func TestListGovernanceMemories_CategoryAndOrderCombined(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	insertMemoryWithTimestamp(t, d, "proj-combo", "Old decision", "decision", "2026-01-01 10:00:00")
+	insertMemoryWithTimestamp(t, d, "proj-combo", "Old note", "note", "2026-01-02 10:00:00")
+	insertMemoryWithTimestamp(t, d, "proj-combo", "New decision", "decision", "2026-01-03 10:00:00")
+
+	memories, err := d.ListGovernanceMemories(context.Background(), hivedb.GovernanceMemoryFilter{
+		Project:    "proj-combo",
+		Categories: []string{"decision"},
+		OrderAsc:   true,
+		Limit:      10,
+	})
+	if err != nil {
+		t.Fatalf("ListGovernanceMemories: %v", err)
+	}
+	if len(memories) != 2 {
+		t.Fatalf("expected 2 decision memories, got %d", len(memories))
+	}
+	if memories[0].Title != "Old decision" {
+		t.Fatalf("first = %q, want Old decision (ASC order)", memories[0].Title)
+	}
+	if memories[1].Title != "New decision" {
+		t.Fatalf("second = %q, want New decision", memories[1].Title)
+	}
+}
+
+// TestListGovernanceMemories_ZeroValueFilterPreservesExistingBehaviour verifies
+// that a zero-value GovernanceMemoryFilter (aside from Project) behaves
+// identically to the previous default: all types, DESC, limit 100.
+func TestListGovernanceMemories_ZeroValueFilterPreservesExistingBehaviour(t *testing.T) {
+	t.Parallel()
+
+	d := openGovernanceTestDB(t)
+	insertMemoryWithTimestamp(t, d, "proj-regress", "Old mem", "decision", "2026-01-01 10:00:00")
+	insertMemoryWithTimestamp(t, d, "proj-regress", "Middle mem", "note", "2026-01-02 10:00:00")
+	insertMemoryWithTimestamp(t, d, "proj-regress", "New mem", "architecture", "2026-01-03 10:00:00")
+
+	memories, err := d.ListGovernanceMemories(context.Background(), hivedb.GovernanceMemoryFilter{
+		Project: "proj-regress",
+		Limit:   10,
+	})
+	if err != nil {
+		t.Fatalf("ListGovernanceMemories: %v", err)
+	}
+	if len(memories) != 3 {
+		t.Fatalf("expected 3 memories (all types), got %d", len(memories))
+	}
+	// First result must be newest (DESC is the default).
+	if memories[0].Title != "New mem" {
+		t.Fatalf("first = %q, want New mem (DESC default)", memories[0].Title)
+	}
+}
+
+// saveGovernanceTestMemoryWithCategory inserts a memory with a specific category.
+func saveGovernanceTestMemoryWithCategory(t *testing.T, d *hivedb.DB, projectName, title, category string) int64 {
+	t.Helper()
+	if _, err := d.EnsureManualSaveSession(projectName); err != nil {
+		t.Fatalf("EnsureManualSaveSession: %v", err)
+	}
+	id, err := d.SaveMemory(&models.Memory{
+		Project:   projectName,
+		Title:     title,
+		Content:   "content",
+		Category:  category,
+		SessionID: "manual-save-" + projectName,
+	})
+	if err != nil {
+		t.Fatalf("SaveMemory: %v", err)
+	}
+	return id
+}
+
+// insertMemoryWithTimestamp inserts a memory row directly with a controlled
+// created_at timestamp, bypassing SaveMemory's automatic timestamp.
+func insertMemoryWithTimestamp(t *testing.T, d *hivedb.DB, projectName, title, category, createdAt string) {
+	t.Helper()
+	if _, err := d.EnsureManualSaveSession(projectName); err != nil {
+		t.Fatalf("EnsureManualSaveSession: %v", err)
+	}
+	_, err := d.RawDB().Exec(`
+INSERT INTO memories (sync_id, project, category, title, content, created_by, session_id, created_at, updated_at)
+VALUES (?, ?, ?, ?, 'content', 'tester', ?, ?, ?)`,
+		"sync-"+title+"-"+projectName, projectName, category, title,
+		"manual-save-"+projectName, createdAt, createdAt)
+	if err != nil {
+		t.Fatalf("insertMemoryWithTimestamp: %v", err)
+	}
+}
+
 // TestKnownProjects_ExcludesAliasedSources verifies that source_project values
 // that have an active alias are hidden from KnownProjects.
 func TestKnownProjects_ExcludesAliasedSources(t *testing.T) {
