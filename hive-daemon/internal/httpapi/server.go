@@ -46,6 +46,7 @@ type GovernanceService interface {
 	ExecuteProjectArchive(context.Context, governance.ProjectArchiveRequest) (governance.ProjectArchiveResult, error)
 	ExecuteProjectMerge(context.Context, governance.ProjectMergeRequest) (governance.ProjectMergeResult, error)
 	ExecuteProjectMergeBatch(context.Context, governance.ProjectMergeBatchRequest) (governance.ProjectMergeBatchResult, error)
+	ExecuteProjectDelete(context.Context, governance.ProjectDeleteRequest) (governance.DeleteProjectResult, error)
 }
 
 // Server handles HTTP requests for the Hive prompt-capture endpoint.
@@ -268,6 +269,15 @@ func (s *Server) handleGovernanceProject(w http.ResponseWriter, r *http.Request)
 		s.handleGovernanceProjectArchive(w, r, projectName)
 		return
 	}
+	if strings.HasSuffix(escapedName, "/delete") {
+		projectName, err := url.PathUnescape(strings.TrimSuffix(escapedName, "/delete"))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is invalid"})
+			return
+		}
+		s.handleGovernanceProjectDelete(w, r, projectName)
+		return
+	}
 	name, err := url.PathUnescape(escapedName)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is invalid"})
@@ -316,6 +326,25 @@ func (s *Server) handleGovernanceProjectArchive(w http.ResponseWriter, r *http.R
 	result, err := s.governance.ExecuteProjectArchive(r.Context(), body)
 	if err != nil {
 		writeGuardError(w, "governance project archive", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"result": result})
+}
+
+func (s *Server) handleGovernanceProjectDelete(w http.ResponseWriter, r *http.Request, projectName string) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body governance.ProjectDeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	body.Project = projectName
+	result, err := s.governance.ExecuteProjectDelete(r.Context(), body)
+	if err != nil {
+		writeGuardError(w, "governance project delete", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"result": result})
@@ -610,6 +639,9 @@ func writeGuardError(w http.ResponseWriter, source string, err error) {
 	case errors.Is(err, db.ErrGovernanceProjectArchived):
 		status = http.StatusConflict
 		errorMessage = "project is archived"
+	case errors.Is(err, db.ErrGovernanceProjectNotArchived):
+		status = http.StatusConflict
+		errorMessage = "project is not archived"
 	case errors.Is(err, db.ErrGovernanceProjectMergeConflict):
 		status = http.StatusConflict
 		errorMessage = "project merge conflicts with existing local project governance metadata"
