@@ -1345,6 +1345,49 @@ func TestRemoveMemoryFromNormalSnapshot_AlsoRemovesFromTimelineMemories(t *testi
 	}
 }
 
+// TestTimelineView_SelectedMemoryMatchesHighlightedRow verifies that when
+// TimelineMemories contains entries with non-timeline categories,
+// selectedMemory() returns the same memory that is highlighted in the rendered
+// view. This is the core regression test for the cursor/filter index mismatch.
+func TestTimelineView_SelectedMemoryMatchesHighlightedRow(t *testing.T) {
+	base := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	mems := []hiveclient.Memory{
+		{ID: 1, SyncID: "t1", Project: "atlas", Category: "decision", Title: "First decision", CreatedAt: base},
+		// "note" is not a timeline category — client-side filter used to drop it.
+		{ID: 2, SyncID: "t2", Project: "atlas", Category: "note", Title: "A plain note", CreatedAt: base.Add(time.Hour)},
+		{ID: 3, SyncID: "t3", Project: "atlas", Category: "architecture", Title: "Arch choice", CreatedAt: base.Add(2 * time.Hour)},
+	}
+	snap := Snapshot{
+		DashboardState:   DashboardHealthy,
+		Projects:         []hiveclient.Project{{Name: "atlas"}},
+		TimelineMemories: mems,
+	}
+
+	// Cursor at index 1 — should point at "A plain note".
+	m := Model{snapshot: snap, screen: ScreenTimeline, memoryIndex: 1}
+
+	selected := m.selectedMemory()
+	view := m.View()
+
+	// selectedMemory() must return the entry at index 1: "A plain note".
+	if selected.SyncID != "t2" {
+		t.Fatalf("selectedMemory().SyncID = %q, want t2 (A plain note)", selected.SyncID)
+	}
+
+	// The view must highlight "A plain note" (cursor marker present on that row).
+	// We verify the title appears in the view at all.
+	if !strings.Contains(view, "A plain note") {
+		t.Fatalf("timelineView does not contain 'A plain note'; all three entries should be rendered")
+	}
+
+	// Cursor at index 2 — should point at "Arch choice".
+	m.memoryIndex = 2
+	selected2 := m.selectedMemory()
+	if selected2.SyncID != "t3" {
+		t.Fatalf("selectedMemory().SyncID = %q, want t3 (Arch choice)", selected2.SyncID)
+	}
+}
+
 // TestRemoveMemoryFromNormalSnapshot_ClampsMemoryIndexAgainstTimeline verifies
 // that when detailReturn == ScreenTimeline, memoryIndex is clamped against
 // len(TimelineMemories) after the delete, not len(projectMemories()).

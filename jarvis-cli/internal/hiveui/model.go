@@ -2151,25 +2151,12 @@ func trimLastRune(value string) string {
 	return string(runes[:len(runes)-1])
 }
 
-// timelineCategories mirrors the daemon-side list in hive-daemon/internal/governance/service.go.
-// Both lists MUST stay in sync. Update both when adding a new timeline category.
-var timelineCategories = map[string]bool{
-	"decision":     true,
-	"architecture": true,
-	"discovery":    true,
-	"bugfix":       true,
-	"config":       true,
-}
-
 func (m Model) timelineView() string {
-	raw := m.screenMemories()
-	// Client-side guard: filter to timeline categories (defence against stale data).
-	memories := make([]hiveclient.Memory, 0, len(raw))
-	for _, mem := range raw {
-		if timelineCategories[mem.Category] {
-			memories = append(memories, mem)
-		}
-	}
+	// Use screenMemories() directly so the cursor index (m.memoryIndex) and the
+	// rendered rows are always aligned. The daemon already filters to timeline
+	// categories before populating TimelineMemories; a client-side re-filter
+	// would create an index mismatch.
+	memories := m.screenMemories()
 
 	project := m.selectedProject().Name
 	w := max(m.width, 80)
