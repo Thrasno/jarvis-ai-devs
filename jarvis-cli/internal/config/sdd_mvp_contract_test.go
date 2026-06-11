@@ -44,6 +44,21 @@ func TestMVPContract_HiveProtocol_DocumentsSDDBoundary(t *testing.T) {
 	}
 }
 
+func TestMVPContract_HiveProtocol_UsesActivityBasedReminderNotAgentTimer(t *testing.T) {
+	protocol := strings.ToLower(readFileForMVP(t, "embed/hive-protocol.md"))
+
+	for _, required := range []string{
+		"automatic mcp nudge",
+		"5 tool calls",
+		"no agent-side 15-minute timer",
+		"noisy timers",
+	} {
+		if !strings.Contains(protocol, required) {
+			t.Fatalf("hive protocol reminder guidance must include %q", required)
+		}
+	}
+}
+
 func readFileForMVP(t *testing.T, rel string) string {
 	t.Helper()
 	return readConfigTestFile(t, rel)
