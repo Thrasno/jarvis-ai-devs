@@ -95,8 +95,9 @@ Do not skip step 1. Without it, everything done before compaction is lost from m
 
 ## AUTO-REMINDER SYSTEM
 
-Hive includes an automatic nudge system that reminds you to save when you've been reading without persisting:
+Hive uses an automatic MCP nudge system instead of an agent-side timer:
 - **Trigger**: Every 5 tool calls (`mem_search`, `mem_context`, `mem_get_observation`) without a `mem_save`
+- **No timer**: Do not create a separate 15-minute reminder loop. There is intentionally no agent-side 15-minute timer because noisy timers interrupt fast coding sessions and duplicate the MCP nudge.
 - **Message**: Appears inline in tool responses with semantic pattern hints (e.g., "look for: agreement patterns like 'let's do', 'yes, go ahead'")
 - **Reset**: Calling `mem_save` or `mem_session_summary` resets the counter
 

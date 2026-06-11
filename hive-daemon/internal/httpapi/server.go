@@ -30,6 +30,7 @@ const (
 // *db.DB satisfies this via structural typing.
 type PromptStore interface {
 	SavePrompt(ctx context.Context, project, content string) (*models.Prompt, error)
+	SavePromptForSession(ctx context.Context, project, sessionID, content string) (*models.Prompt, error)
 }
 
 type GovernanceService interface {
@@ -175,6 +176,8 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Content             string `json:"content"`
 		Project             string `json:"project"`
+		Directory           string `json:"directory"`
+		SessionID           string `json:"session_id"`
 		RecoveryToken       string `json:"recovery_token"`
 		ProjectChoiceReason string `json:"project_choice_reason"`
 	}
@@ -196,7 +199,7 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.TrimSpace(body.Project) == "" {
+	if strings.TrimSpace(body.Project) == "" && (s.projects == nil || strings.TrimSpace(body.Directory) == "") {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "project is required"})
 		return
@@ -210,7 +213,13 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.projects != nil {
-		resolved, err := project.ValidateWriteProject(r.Context(), s.projects, project.WriteInput{Project: body.Project, RecoveryToken: body.RecoveryToken, ProjectChoiceReason: body.ProjectChoiceReason})
+		resolved, err := project.ValidateWriteProject(r.Context(), s.projects, project.WriteInput{
+			Project:             body.Project,
+			Directory:           body.Directory,
+			SessionID:           body.SessionID,
+			RecoveryToken:       body.RecoveryToken,
+			ProjectChoiceReason: body.ProjectChoiceReason,
+		})
 		if err != nil {
 			writeProjectValidationError(w, err)
 			return
@@ -221,7 +230,7 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	// Strip private tags from content at the handler boundary.
 	contentRes := sanitize.Strip(body.Content)
 
-	prompt, err := s.prompts.SavePrompt(r.Context(), body.Project, contentRes.Clean)
+	prompt, err := s.prompts.SavePromptForSession(r.Context(), body.Project, body.SessionID, contentRes.Clean)
 	if err != nil {
 		logger.Log.Printf("save prompt: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -232,6 +241,8 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"id":             prompt.ID,
+		"project":        prompt.Project,
+		"session_id":     prompt.SessionID,
 		"created_at":     prompt.CreatedAt.Format(time.RFC3339),
 		"stripped":       contentRes.Count > 0,
 		"stripped_count": contentRes.Count,

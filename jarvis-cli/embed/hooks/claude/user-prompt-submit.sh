@@ -31,6 +31,43 @@ resolve_session_id() {
   printf 'ppid-%s' "${PPID:-$$}"
 }
 
+resolve_project() {
+  if [ -n "${HIVE_PROJECT:-}" ]; then
+    printf '%s' "$HIVE_PROJECT"
+    return
+  fi
+  if [ -n "${JARVIS_PROJECT:-}" ]; then
+    printf '%s' "$JARVIS_PROJECT"
+    return
+  fi
+  if command -v jq >/dev/null 2>&1; then
+    PROJECT_FROM_INPUT=$(printf '%s' "$INPUT" | jq -r '.project // .projectName // empty' 2>/dev/null)
+    if [ -n "$PROJECT_FROM_INPUT" ] && [ "$PROJECT_FROM_INPUT" != "null" ]; then
+      printf '%s' "$PROJECT_FROM_INPUT"
+      return
+    fi
+  fi
+}
+
+resolve_directory() {
+  if [ -n "${HIVE_PROJECT_DIRECTORY:-}" ]; then
+    printf '%s' "$HIVE_PROJECT_DIRECTORY"
+    return
+  fi
+  if [ -n "${JARVIS_WORKSPACE_DIRECTORY:-}" ]; then
+    printf '%s' "$JARVIS_WORKSPACE_DIRECTORY"
+    return
+  fi
+  if command -v jq >/dev/null 2>&1; then
+    DIRECTORY_FROM_INPUT=$(printf '%s' "$INPUT" | jq -r '.directory // .cwd // .workspace.directory // empty' 2>/dev/null)
+    if [ -n "$DIRECTORY_FROM_INPUT" ] && [ "$DIRECTORY_FROM_INPUT" != "null" ]; then
+      printf '%s' "$DIRECTORY_FROM_INPUT"
+      return
+    fi
+  fi
+  printf '%s' "${PWD:-}"
+}
+
 state_file_for_session() {
   SESSION_ID_VALUE=$(resolve_session_id)
   SAFE_SESSION_ID=$(printf '%s' "$SESSION_ID_VALUE" | tr -c 'A-Za-z0-9_.-' '_' | cut -c 1-160)
@@ -43,7 +80,10 @@ state_file_for_session() {
 }
 
 if [ -n "$PROMPT" ]; then
-  BODY=$(jq -n --arg c "$PROMPT" '{content: $c}' 2>/dev/null)
+  SESSION_ID_VALUE=$(resolve_session_id)
+  DIRECTORY_VALUE=$(resolve_directory)
+  PROJECT_VALUE=$(resolve_project)
+  BODY=$(jq -n --arg c "$PROMPT" --arg s "$SESSION_ID_VALUE" --arg d "$DIRECTORY_VALUE" --arg p "$PROJECT_VALUE" '{content: $c, session_id: $s, directory: $d} + (if $p != "" then {project: $p} else {} end)' 2>/dev/null)
   if [ -n "$BODY" ]; then
     curl -s --max-time 1 \
       -X POST "http://127.0.0.1:${HIVE_HTTP_PORT}/prompts" \
