@@ -79,15 +79,15 @@ type MemoryLoader interface {
 }
 
 type Snapshot struct {
-	DashboardState  DashboardState
-	DaemonURL       string
-	Projects        []hiveclient.Project
-	Memories        []hiveclient.Memory
+	DashboardState   DashboardState
+	DaemonURL        string
+	Projects         []hiveclient.Project
+	Memories         []hiveclient.Memory
 	TimelineMemories []hiveclient.Memory
-	Health          []hiveclient.Health
-	Warnings        []hiveclient.Warning
-	Backups         []hiveclient.Backup
-	LoadError       error
+	Health           []hiveclient.Health
+	Warnings         []hiveclient.Warning
+	Backups          []hiveclient.Backup
+	LoadError        error
 }
 
 type Model struct {

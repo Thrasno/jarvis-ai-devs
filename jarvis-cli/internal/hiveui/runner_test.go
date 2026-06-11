@@ -118,7 +118,7 @@ func TestLoadSnapshot_AllRouteSuccess(t *testing.T) {
 		t.Fatalf("hiveclient.New: %v", err)
 	}
 
-	snap := LoadSnapshot(context.Background(), client, srv.URL)
+	snap := LoadSnapshot(context.Background(), client, srv.URL, "")
 
 	if snap.LoadError != nil {
 		t.Fatalf("LoadError = %v, want nil", snap.LoadError)
@@ -157,7 +157,7 @@ func TestLoadSnapshot_StatusTransportError_YieldsDaemonUnavailable(t *testing.T)
 		t.Fatalf("hiveclient.New: %v", err)
 	}
 
-	snap := LoadSnapshot(context.Background(), client, url)
+	snap := LoadSnapshot(context.Background(), client, url, "")
 
 	if snap.DashboardState != DashboardDaemonUnavailable {
 		t.Fatalf("DashboardState = %v, want DashboardDaemonUnavailable", snap.DashboardState)
@@ -213,7 +213,7 @@ func TestLoadSnapshot_MemoriesEmptyFilterFallback(t *testing.T) {
 		t.Fatalf("hiveclient.New: %v", err)
 	}
 
-	snap := LoadSnapshot(context.Background(), client, srv.URL)
+	snap := LoadSnapshot(context.Background(), client, srv.URL, "")
 
 	if snap.LoadError != nil {
 		t.Fatalf("LoadError = %v, want nil", snap.LoadError)
