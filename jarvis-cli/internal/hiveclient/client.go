@@ -236,17 +236,17 @@ type ConfigUpdateRequest struct {
 // Keep in sync with hive-daemon/internal/httpapi/config.go ConfigStatusResponse.
 // The daemon embeds ConfigStatusResponse directly and adds restart_required.
 type configUpdateWire struct {
-	Configured     bool     `json:"configured"`
-	Source         string   `json:"source"`
-	APIURL         string   `json:"api_url"`
-	Email          string   `json:"email"`
-	PasswordSet    bool     `json:"password_set"`
-	PasswordMasked string   `json:"password_masked"`
-	AutoSync       bool     `json:"auto_sync"`
-	EnvActive      bool     `json:"env_active"`
-	RestartHint    string   `json:"restart_hint,omitempty"`
-	Warnings       []string `json:"warnings,omitempty"`
-	RestartRequired bool    `json:"restart_required"`
+	Configured      bool     `json:"configured"`
+	Source          string   `json:"source"`
+	APIURL          string   `json:"api_url"`
+	Email           string   `json:"email"`
+	PasswordSet     bool     `json:"password_set"`
+	PasswordMasked  string   `json:"password_masked"`
+	AutoSync        bool     `json:"auto_sync"`
+	EnvActive       bool     `json:"env_active"`
+	RestartHint     string   `json:"restart_hint,omitempty"`
+	Warnings        []string `json:"warnings,omitempty"`
+	RestartRequired bool     `json:"restart_required"`
 }
 
 // ConfigUpdateResponse is the structured result of UpdateConfig.
@@ -455,6 +455,20 @@ func (c *Client) TestConnection(ctx context.Context, req ConfigTestRequest) (Con
 		return ConfigTestResult{}, err
 	}
 	return result, nil
+}
+
+// Timeline fetches the category-filtered, ASC-ordered timeline for a project
+// via GET /governance/projects/{name}/timeline.
+// It returns an APIError (with StatusCode 404) when the project does not exist.
+func (c *Client) Timeline(ctx context.Context, project string) ([]Memory, error) {
+	var body struct {
+		Memories []Memory `json:"memories"`
+	}
+	path := "/governance/projects/" + url.PathEscape(project) + "/timeline"
+	if err := c.get(ctx, path, nil, &body, false); err != nil {
+		return nil, err
+	}
+	return body.Memories, nil
 }
 
 // MergeProjects sends a multi-source batch merge request to POST /governance/projects/merge.
