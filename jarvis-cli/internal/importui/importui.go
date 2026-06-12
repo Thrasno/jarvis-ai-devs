@@ -129,6 +129,13 @@ func renderReport(out io.Writer, job hiveclient.EngramImportJob) {
 		}
 		fmt.Fprintf(out, "Imported: %d\n", report.Imported.Imported)
 		fmt.Fprintf(out, "Reused: %d\n", report.Imported.Reused)
+		fmt.Fprintf(out, "Ambiguous: %d\n", report.Imported.Ambiguous)
+		if len(report.AmbiguousDuplicates) > 0 {
+			fmt.Fprintln(out, "Ambiguous duplicates:")
+			for _, duplicate := range report.AmbiguousDuplicates {
+				fmt.Fprintf(out, "- source_id=%s project=%s title=%s reason=%s\n", duplicate.SourceID, duplicate.Project, duplicate.Title, duplicate.Reason)
+			}
+		}
 	}
 	if report.SourcePath != "" {
 		fmt.Fprintf(out, "Source: %s\n", report.SourcePath)
@@ -139,6 +146,12 @@ func renderReport(out io.Writer, job hiveclient.EngramImportJob) {
 	fmt.Fprintf(out, "Sessions: %d\n", report.Projected.Sessions)
 	fmt.Fprintf(out, "Prompts: %d\n", report.Projected.Prompts)
 	fmt.Fprintf(out, "Observations: %d\n", report.Projected.Observations)
+	if len(report.ProjectedByProject) > 0 {
+		fmt.Fprintln(out, "Project impact:")
+		for _, impact := range report.ProjectedByProject {
+			fmt.Fprintf(out, "- %s: sessions=%d prompts=%d observations=%d\n", impact.Project, impact.Projected.Sessions, impact.Projected.Prompts, impact.Projected.Observations)
+		}
+	}
 	fmt.Fprintf(out, "Skipped relations: %d\n", report.SkippedRelations)
 	fmt.Fprintf(out, "Invalid rows: %d\n", len(report.InvalidRows))
 }

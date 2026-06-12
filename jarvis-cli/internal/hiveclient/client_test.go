@@ -745,7 +745,7 @@ func TestGetEngramImportJobDecodesProgressAndReport(t *testing.T) {
 			t.Fatalf("request = %s %s, want GET import job", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"job":{"id":"job-preview","kind":"preview","phase":"completed","message":"preview completed","processed":3,"total":3,"percent":100,"done":true,"report":{"preview_id":"job-preview","source_path":"C:/tmp/engram.db","source_fingerprint":"sha256:abc","projected":{"sessions":1,"prompts":1,"observations":1},"skipped_relations":2,"invalid_rows":[{"table":"observations","source_id":"22","reason":"session_id references missing or skipped session"}]}}}`))
+		_, _ = w.Write([]byte(`{"job":{"id":"job-preview","kind":"preview","phase":"completed","message":"preview completed","processed":3,"total":3,"percent":100,"done":true,"report":{"preview_id":"job-preview","source_path":"C:/tmp/engram.db","source_fingerprint":"sha256:abc","projected":{"sessions":1,"prompts":1,"observations":1},"projected_by_project":[{"project":"proj-a","projected":{"sessions":1,"prompts":1,"observations":1}}],"imported":{"imported":0,"reused":0,"ambiguous":2},"ambiguous_duplicates":[{"source_id":"21","project":"proj-a","title":"Existing duplicate","reason":"multiple active Hive memories match project and title"}],"skipped_relations":2,"invalid_rows":[{"table":"observations","source_id":"22","reason":"session_id references missing or skipped session"}]}}}`))
 	}))
 	defer server.Close()
 	client, err := New(server.URL)
@@ -762,6 +762,15 @@ func TestGetEngramImportJobDecodesProgressAndReport(t *testing.T) {
 	}
 	if len(job.Report.InvalidRows) != 1 || job.Report.InvalidRows[0].Table != "observations" || job.Report.InvalidRows[0].SourceID != "22" || job.Report.InvalidRows[0].Reason == "" {
 		t.Fatalf("invalid rows = %+v, want daemon report invalid_rows decoded", job.Report.InvalidRows)
+	}
+	if len(job.Report.ProjectedByProject) != 1 || job.Report.ProjectedByProject[0].Project != "proj-a" || job.Report.ProjectedByProject[0].Projected.Observations != 1 {
+		t.Fatalf("projected_by_project = %+v, want proj-a per-entity counts", job.Report.ProjectedByProject)
+	}
+	if job.Report.Imported.Ambiguous != 2 {
+		t.Fatalf("ambiguous count = %d, want 2", job.Report.Imported.Ambiguous)
+	}
+	if len(job.Report.AmbiguousDuplicates) != 1 || job.Report.AmbiguousDuplicates[0].SourceID != "21" || job.Report.AmbiguousDuplicates[0].Project != "proj-a" || job.Report.AmbiguousDuplicates[0].Title != "Existing duplicate" || job.Report.AmbiguousDuplicates[0].Reason == "" {
+		t.Fatalf("ambiguous duplicates = %+v, want actionable duplicate details", job.Report.AmbiguousDuplicates)
 	}
 }
 

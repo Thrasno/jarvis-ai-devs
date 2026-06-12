@@ -54,20 +54,35 @@ type EngramImportEntityCounts struct {
 }
 
 type EngramImportMutationCounts struct {
-	Imported int `json:"imported"`
-	Reused   int `json:"reused"`
+	Imported  int `json:"imported"`
+	Reused    int `json:"reused"`
+	Ambiguous int `json:"ambiguous"`
+}
+
+type EngramImportProjectImpact struct {
+	Project   string                   `json:"project"`
+	Projected EngramImportEntityCounts `json:"projected"`
+}
+
+type EngramImportAmbiguousDuplicate struct {
+	SourceID string `json:"source_id"`
+	Project  string `json:"project"`
+	Title    string `json:"title"`
+	Reason   string `json:"reason"`
 }
 
 type EngramImportReport struct {
-	PreviewID         string                    `json:"preview_id,omitempty"`
-	SourcePath        string                    `json:"source_path"`
-	SourceFingerprint string                    `json:"source_fingerprint"`
-	Projects          []string                  `json:"projects,omitempty"`
-	Projected         EngramImportEntityCounts  `json:"projected"`
-	Imported          EngramImportMutationCounts `json:"imported"`
-	SkippedRelations  int                       `json:"skipped_relations"`
-	InvalidRows       []engramimport.InvalidRow `json:"invalid_rows,omitempty"`
-	BackupID          string                    `json:"backup_id,omitempty"`
+	PreviewID           string                           `json:"preview_id,omitempty"`
+	SourcePath          string                           `json:"source_path"`
+	SourceFingerprint   string                           `json:"source_fingerprint"`
+	Projects            []string                         `json:"projects,omitempty"`
+	Projected           EngramImportEntityCounts         `json:"projected"`
+	ProjectedByProject  []EngramImportProjectImpact      `json:"projected_by_project,omitempty"`
+	Imported            EngramImportMutationCounts       `json:"imported"`
+	AmbiguousDuplicates []EngramImportAmbiguousDuplicate `json:"ambiguous_duplicates,omitempty"`
+	SkippedRelations    int                              `json:"skipped_relations"`
+	InvalidRows         []engramimport.InvalidRow        `json:"invalid_rows,omitempty"`
+	BackupID            string                           `json:"backup_id,omitempty"`
 }
 
 type EngramImportJob struct {
@@ -212,7 +227,8 @@ func (s *Service) runEngramImportExecute(ctx context.Context, jobID string, req 
 	s.updateEngramImportJob(jobID, EngramImportPhaseFinalization, "finalizing import report", analysisTotal(analysis), analysisTotal(analysis), 95, false, "", nil)
 	report := reportFromAnalysis(req.PreviewID, analysis)
 	report.BackupID = backup.ID
-	report.Imported = EngramImportMutationCounts{Imported: result.Counts.Imported, Reused: result.Counts.Reused}
+	report.Imported = EngramImportMutationCounts{Imported: result.Counts.Imported, Reused: result.Counts.Reused, Ambiguous: result.Counts.Ambiguous}
+	report.AmbiguousDuplicates = ambiguousDuplicatesReport(result.AmbiguousDuplicates)
 	s.updateEngramImportJob(jobID, EngramImportPhaseCompleted, "import completed", analysisTotal(analysis), analysisTotal(analysis), 100, true, "", &report)
 }
 
@@ -273,14 +289,34 @@ func resolveEngramImportSource(req EngramImportRequest) (engramimport.Source, er
 
 func reportFromAnalysis(previewID string, analysis engramimport.Analysis) EngramImportReport {
 	return EngramImportReport{
-		PreviewID:         previewID,
-		SourcePath:        analysis.SourcePath,
-		SourceFingerprint: analysis.SourceFingerprint,
-		Projects:          append([]string(nil), analysis.Projects...),
-		Projected:         EngramImportEntityCounts{Sessions: analysis.Counts.Sessions, Prompts: analysis.Counts.Prompts, Observations: analysis.Counts.Observations},
-		SkippedRelations:  analysis.SkippedRelations,
-		InvalidRows:       append([]engramimport.InvalidRow(nil), analysis.InvalidRows...),
+		PreviewID:          previewID,
+		SourcePath:         analysis.SourcePath,
+		SourceFingerprint:  analysis.SourceFingerprint,
+		Projects:           append([]string(nil), analysis.Projects...),
+		Projected:          EngramImportEntityCounts{Sessions: analysis.Counts.Sessions, Prompts: analysis.Counts.Prompts, Observations: analysis.Counts.Observations},
+		ProjectedByProject: projectedByProjectReport(analysis.ProjectedByProject),
+		SkippedRelations:   analysis.SkippedRelations,
+		InvalidRows:        append([]engramimport.InvalidRow(nil), analysis.InvalidRows...),
 	}
+}
+
+func projectedByProjectReport(impacts []engramimport.ProjectImpact) []EngramImportProjectImpact {
+	report := make([]EngramImportProjectImpact, 0, len(impacts))
+	for _, impact := range impacts {
+		report = append(report, EngramImportProjectImpact{
+			Project:   impact.Project,
+			Projected: EngramImportEntityCounts{Sessions: impact.Counts.Sessions, Prompts: impact.Counts.Prompts, Observations: impact.Counts.Observations},
+		})
+	}
+	return report
+}
+
+func ambiguousDuplicatesReport(duplicates []db.ImportAmbiguousDuplicate) []EngramImportAmbiguousDuplicate {
+	report := make([]EngramImportAmbiguousDuplicate, 0, len(duplicates))
+	for _, duplicate := range duplicates {
+		report = append(report, EngramImportAmbiguousDuplicate{SourceID: duplicate.SourceID, Project: duplicate.Project, Title: duplicate.Title, Reason: duplicate.Reason})
+	}
+	return report
 }
 
 func analysisTotal(analysis engramimport.Analysis) int {

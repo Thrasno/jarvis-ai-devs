@@ -16,6 +16,10 @@ func TestRunPreviewShowsProgressAndFinalReport(t *testing.T) {
 		jobs: []hiveclient.EngramImportJob{{ID: "preview-1", Kind: hiveclient.EngramImportJobKindPreview, Phase: hiveclient.EngramImportPhaseCompleted, Message: "preview complete", Processed: 4, Total: 4, Percent: 100, Done: true, Report: &hiveclient.EngramImportReport{
 			PreviewID: "preview-1", SourcePath: "C:/tmp/engram.db", Projects: []string{"alpha", "beta"},
 			Projected: hiveclient.EngramImportEntityCounts{Sessions: 2, Prompts: 3, Observations: 5}, SkippedRelations: 7,
+			ProjectedByProject: []hiveclient.EngramImportProjectImpact{
+				{Project: "alpha", Projected: hiveclient.EngramImportEntityCounts{Sessions: 1, Prompts: 1, Observations: 2}},
+				{Project: "beta", Projected: hiveclient.EngramImportEntityCounts{Sessions: 1, Prompts: 2, Observations: 3}},
+			},
 			InvalidRows: []hiveclient.EngramImportInvalidRow{{Table: "observations", SourceID: "22", Reason: "missing session"}},
 		}}},
 	}
@@ -28,7 +32,7 @@ func TestRunPreviewShowsProgressAndFinalReport(t *testing.T) {
 	if client.previewSource != "C:/tmp/engram.db" || !got.Done || got.Report == nil {
 		t.Fatalf("preview source=%q job=%+v, want completed preview", client.previewSource, got)
 	}
-	assertOutputContains(t, out.String(), "Engram import dry-run", "discovery", "1/4 (25%)", "Preview report", "Projects: alpha, beta", "Sessions: 2", "Prompts: 3", "Observations: 5", "Skipped relations: 7", "Invalid rows: 1")
+	assertOutputContains(t, out.String(), "Engram import dry-run", "discovery", "1/4 (25%)", "Preview report", "Projects: alpha, beta", "Sessions: 2", "Prompts: 3", "Observations: 5", "Project impact:", "alpha: sessions=1 prompts=1 observations=2", "beta: sessions=1 prompts=2 observations=3", "Skipped relations: 7", "Invalid rows: 1")
 
 	out.Reset()
 	renderProgress(&out, true, client.startPreview)
@@ -40,7 +44,7 @@ func TestRunExecuteShowsBackupProgressAndImportReport(t *testing.T) {
 		startExecute: job("execute-1", hiveclient.EngramImportJobKindExecute, hiveclient.EngramImportPhaseBackup, "creating Hive backup", 0, 1, 0, false),
 		jobs: []hiveclient.EngramImportJob{
 			job("execute-1", hiveclient.EngramImportJobKindExecute, hiveclient.EngramImportPhaseImport, "importing rows", 3, 6, 50, false),
-			{ID: "execute-1", Kind: hiveclient.EngramImportJobKindExecute, Phase: hiveclient.EngramImportPhaseCompleted, Message: "import complete", Processed: 6, Total: 6, Percent: 100, Done: true, Report: &hiveclient.EngramImportReport{BackupID: "backup-1", Imported: hiveclient.EngramImportCounts{Imported: 4, Reused: 2}}},
+			{ID: "execute-1", Kind: hiveclient.EngramImportJobKindExecute, Phase: hiveclient.EngramImportPhaseCompleted, Message: "import complete", Processed: 6, Total: 6, Percent: 100, Done: true, Report: &hiveclient.EngramImportReport{BackupID: "backup-1", Imported: hiveclient.EngramImportCounts{Imported: 4, Reused: 2, Ambiguous: 1}, AmbiguousDuplicates: []hiveclient.EngramImportAmbiguousDuplicate{{SourceID: "21", Project: "proj-a", Title: "Existing duplicate", Reason: "multiple active Hive memories match project and title"}}}},
 		},
 	}
 	var out bytes.Buffer
@@ -52,7 +56,7 @@ func TestRunExecuteShowsBackupProgressAndImportReport(t *testing.T) {
 	if client.executeSource != "C:/tmp/engram.db" || client.executePreviewID != "preview-1" {
 		t.Fatalf("execute source=%q preview=%q, want forwarded request", client.executeSource, client.executePreviewID)
 	}
-	assertOutputContains(t, out.String(), "Engram import execute", "backup", "creating Hive backup", "import", "3/6 (50%)", "Import report", "Backup: backup-1", "Imported: 4", "Reused: 2")
+	assertOutputContains(t, out.String(), "Engram import execute", "backup", "creating Hive backup", "import", "3/6 (50%)", "Import report", "Backup: backup-1", "Imported: 4", "Reused: 2", "Ambiguous: 1", "Ambiguous duplicates:", "source_id=21 project=proj-a title=Existing duplicate reason=multiple active Hive memories match project and title")
 }
 
 func TestRunExecuteReportsFailedJobReason(t *testing.T) {

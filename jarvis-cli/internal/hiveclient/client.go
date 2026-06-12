@@ -240,8 +240,14 @@ type EngramImportEntityCounts struct {
 }
 
 type EngramImportCounts struct {
-	Imported int `json:"imported"`
-	Reused   int `json:"reused"`
+	Imported  int `json:"imported"`
+	Reused    int `json:"reused"`
+	Ambiguous int `json:"ambiguous"`
+}
+
+type EngramImportProjectImpact struct {
+	Project   string                   `json:"project"`
+	Projected EngramImportEntityCounts `json:"projected"`
 }
 
 type EngramImportInvalidRow struct {
@@ -250,16 +256,25 @@ type EngramImportInvalidRow struct {
 	Reason   string `json:"reason"`
 }
 
+type EngramImportAmbiguousDuplicate struct {
+	SourceID string `json:"source_id"`
+	Project  string `json:"project"`
+	Title    string `json:"title"`
+	Reason   string `json:"reason"`
+}
+
 type EngramImportReport struct {
-	PreviewID         string                   `json:"preview_id,omitempty"`
-	SourcePath        string                   `json:"source_path"`
-	SourceFingerprint string                   `json:"source_fingerprint"`
-	Projects          []string                 `json:"projects,omitempty"`
-	Projected         EngramImportEntityCounts `json:"projected"`
-	Imported          EngramImportCounts       `json:"imported"`
-	SkippedRelations  int                      `json:"skipped_relations"`
-	InvalidRows       []EngramImportInvalidRow `json:"invalid_rows,omitempty"`
-	BackupID          string                   `json:"backup_id,omitempty"`
+	PreviewID           string                           `json:"preview_id,omitempty"`
+	SourcePath          string                           `json:"source_path"`
+	SourceFingerprint   string                           `json:"source_fingerprint"`
+	Projects            []string                         `json:"projects,omitempty"`
+	Projected           EngramImportEntityCounts         `json:"projected"`
+	ProjectedByProject  []EngramImportProjectImpact      `json:"projected_by_project,omitempty"`
+	Imported            EngramImportCounts               `json:"imported"`
+	AmbiguousDuplicates []EngramImportAmbiguousDuplicate `json:"ambiguous_duplicates,omitempty"`
+	SkippedRelations    int                              `json:"skipped_relations"`
+	InvalidRows         []EngramImportInvalidRow         `json:"invalid_rows,omitempty"`
+	BackupID            string                           `json:"backup_id,omitempty"`
 }
 
 type EngramImportJob struct {
