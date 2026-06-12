@@ -23,6 +23,9 @@ type Memory struct {
 	// SessionID links this memory to a lifecycle session. Set by the MCP handler
 	// (either explicit from the caller or resolved via EnsureManualSaveSession).
 	SessionID string `json:"session_id,omitempty"`
+	// PromptID optionally links this memory to a captured user prompt in local Hive.
+	// It is local-only in PR1 and is persisted through memory_prompt_links.
+	PromptID int64 `json:"prompt_id,omitempty"`
 }
 
 // Validate checks that all required fields are present.

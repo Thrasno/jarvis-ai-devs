@@ -6,6 +6,7 @@ $ErrorActionPreference = 'SilentlyContinue'
 
 $port = if ($env:HIVE_HTTP_PORT) { $env:HIVE_HTTP_PORT } else { '7438' }
 $inputJson = [Console]::In.ReadToEnd()
+$payload = $null
 $prompt = ''
 
 function Resolve-PowerShellExecutable {
@@ -46,8 +47,116 @@ try {
     $prompt = ''
 }
 
+function Resolve-HiveSessionId {
+    param([object]$Payload)
+
+    foreach ($name in @('HIVE_CLAUDE_SESSION_ID', 'CLAUDE_SESSION_ID', 'SESSION_ID')) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+    }
+
+    if ($null -ne $Payload) {
+        foreach ($name in @('session_id', 'sessionId', 'transcript_path', 'transcriptPath')) {
+            if ($Payload.PSObject.Properties.Name -contains $name) {
+                $value = [string]$Payload.$name
+                if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+            }
+        }
+        if ($Payload.PSObject.Properties.Name -contains 'session' -and $null -ne $Payload.session) {
+            if ($Payload.session.PSObject.Properties.Name -contains 'id') {
+                $value = [string]$Payload.session.id
+                if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+            }
+        }
+    }
+
+    return Resolve-HiveFallbackSessionId
+}
+
+function Resolve-HiveProject {
+    param([object]$Payload)
+
+    foreach ($name in @('HIVE_PROJECT', 'JARVIS_PROJECT')) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+    }
+
+    if ($null -ne $Payload) {
+        foreach ($name in @('project', 'projectName')) {
+            if ($Payload.PSObject.Properties.Name -contains $name) {
+                $value = [string]$Payload.$name
+                if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+            }
+        }
+    }
+
+    return ''
+}
+
+function Resolve-HiveDirectory {
+    param([object]$Payload)
+
+    foreach ($name in @('HIVE_PROJECT_DIRECTORY', 'JARVIS_WORKSPACE_DIRECTORY')) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+    }
+
+    if ($null -ne $Payload) {
+        foreach ($name in @('directory', 'cwd')) {
+            if ($Payload.PSObject.Properties.Name -contains $name) {
+                $value = [string]$Payload.$name
+                if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+            }
+        }
+        if ($Payload.PSObject.Properties.Name -contains 'workspace' -and $null -ne $Payload.workspace) {
+            if ($Payload.workspace.PSObject.Properties.Name -contains 'directory') {
+                $value = [string]$Payload.workspace.directory
+                if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+            }
+        }
+    }
+
+    try {
+        return [IO.Directory]::GetCurrentDirectory()
+    } catch {
+        return ''
+    }
+}
+
+function Resolve-HiveFallbackSessionId {
+    try {
+        $process = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $PID"
+        if ($null -ne $process -and $null -ne $process.ParentProcessId) {
+            return "ppid-$($process.ParentProcessId)"
+        }
+    } catch {}
+
+    return "ppid-$PID"
+}
+
+function Get-HiveSessionStateFile {
+    param([object]$Payload)
+
+    $sessionId = Resolve-HiveSessionId -Payload $Payload
+    $safeSessionId = [regex]::Replace($sessionId, '[^A-Za-z0-9_.-]', '_')
+    if ($safeSessionId.Length -gt 160) { $safeSessionId = $safeSessionId.Substring(0, 160) }
+    if ([string]::IsNullOrWhiteSpace($safeSessionId)) { $safeSessionId = 'unknown' }
+    $stateRoot = Join-Path ([IO.Path]::GetTempPath()) 'jarvis-hive/claude-hooks'
+    try { [IO.Directory]::CreateDirectory($stateRoot) | Out-Null } catch {}
+    return Join-Path $stateRoot "first-prompt-$safeSessionId.done"
+}
+
 if (-not [string]::IsNullOrWhiteSpace($prompt)) {
-    $body = @{ content = $prompt } | ConvertTo-Json -Compress
+    $sessionId = Resolve-HiveSessionId -Payload $payload
+    $directory = Resolve-HiveDirectory -Payload $payload
+    $project = Resolve-HiveProject -Payload $payload
+    $bodyMap = [ordered]@{ content = $prompt }
+    $bodyMap['session_id'] = $sessionId
+    $bodyMap['directory'] = $directory
+    if (-not [string]::IsNullOrWhiteSpace($project)) {
+        $bodyMap['project'] = $project
+    }
+    $body = $bodyMap | ConvertTo-Json -Compress
     $uri = "http://127.0.0.1:$port/prompts"
 
     try {
@@ -82,55 +191,6 @@ try {
         } catch {
         }
     }
-}
-
-function Resolve-HiveSessionId {
-    param([object]$Payload)
-
-    foreach ($name in @('HIVE_CLAUDE_SESSION_ID', 'CLAUDE_SESSION_ID', 'SESSION_ID')) {
-        $value = [Environment]::GetEnvironmentVariable($name)
-        if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
-    }
-
-    if ($null -ne $Payload) {
-        foreach ($name in @('session_id', 'sessionId', 'transcript_path', 'transcriptPath')) {
-            if ($Payload.PSObject.Properties.Name -contains $name) {
-                $value = [string]$Payload.$name
-                if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
-            }
-        }
-        if ($Payload.PSObject.Properties.Name -contains 'session' -and $null -ne $Payload.session) {
-            if ($Payload.session.PSObject.Properties.Name -contains 'id') {
-                $value = [string]$Payload.session.id
-                if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
-            }
-        }
-    }
-
-    return Resolve-HiveFallbackSessionId
-}
-
-function Resolve-HiveFallbackSessionId {
-    try {
-        $process = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $PID"
-        if ($null -ne $process -and $null -ne $process.ParentProcessId) {
-            return "ppid-$($process.ParentProcessId)"
-        }
-    } catch {}
-
-    return "ppid-$PID"
-}
-
-function Get-HiveSessionStateFile {
-    param([object]$Payload)
-
-    $sessionId = Resolve-HiveSessionId -Payload $Payload
-    $safeSessionId = [regex]::Replace($sessionId, '[^A-Za-z0-9_.-]', '_')
-    if ($safeSessionId.Length -gt 160) { $safeSessionId = $safeSessionId.Substring(0, 160) }
-    if ([string]::IsNullOrWhiteSpace($safeSessionId)) { $safeSessionId = 'unknown' }
-    $stateRoot = Join-Path ([IO.Path]::GetTempPath()) 'jarvis-hive/claude-hooks'
-    try { [IO.Directory]::CreateDirectory($stateRoot) | Out-Null } catch {}
-    return Join-Path $stateRoot "first-prompt-$safeSessionId.done"
 }
 
 # First-prompt injection design:

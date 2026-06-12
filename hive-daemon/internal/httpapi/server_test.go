@@ -24,8 +24,9 @@ import (
 )
 
 type mockPromptStore struct {
-	savePromptFn func(ctx context.Context, project, content string) (*models.Prompt, error)
-	called       bool
+	savePromptFn           func(ctx context.Context, project, content string) (*models.Prompt, error)
+	savePromptForSessionFn func(ctx context.Context, project, sessionID, content string) (*models.Prompt, error)
+	called                 bool
 }
 
 type mockProjectStore struct {
@@ -77,6 +78,17 @@ func (m *mockPromptStore) SavePrompt(ctx context.Context, project, content strin
 		return m.savePromptFn(ctx, project, content)
 	}
 	return &models.Prompt{ID: 42, Project: project, Content: content, CreatedAt: time.Now()}, nil
+}
+
+func (m *mockPromptStore) SavePromptForSession(ctx context.Context, project, sessionID, content string) (*models.Prompt, error) {
+	m.called = true
+	if m.savePromptForSessionFn != nil {
+		return m.savePromptForSessionFn(ctx, project, sessionID, content)
+	}
+	if m.savePromptFn != nil {
+		return m.savePromptFn(ctx, project, content)
+	}
+	return &models.Prompt{ID: 42, Project: project, SessionID: sessionID, Content: content, CreatedAt: time.Now()}, nil
 }
 
 func newTestServer(store *mockPromptStore) *httpapi.Server {
@@ -491,6 +503,81 @@ func TestPostPrompts_RecoveryTokenRetryConsumesTokenAndSavesChosenProject(t *tes
 	}
 	if savedProject != "jarvis-dev" {
 		t.Fatalf("saved project = %q, want jarvis-dev", savedProject)
+	}
+}
+
+func TestPostPrompts_WithProjectOrDirectoryAndSessionID_PersistsPromptForSession(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct{ name, body, session string }{
+		{"project", `{"content":"explain prompt capture","project":"jarvis-dev","session_id":"sess-123"}`, "sess-123"},
+		{"directory", `{"content":"explain prompt capture","directory":"/work/jarvis-dev","session_id":"sess-dir"}`, "sess-dir"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var gotProject, gotSessionID, gotContent string
+			store := &mockPromptStore{savePromptForSessionFn: func(_ context.Context, projectName, sessionID, content string) (*models.Prompt, error) {
+				gotProject, gotSessionID, gotContent = projectName, sessionID, content
+				return &models.Prompt{ID: 8, Project: projectName, SessionID: sessionID, Content: content, CreatedAt: time.Now()}, nil
+			}}
+			srv := httpapi.NewServerWithProjectStore("127.0.0.1:0", store, mockProjectStore{known: []project.KnownProject{{Name: "jarvis-dev", Directory: "/work/jarvis-dev"}}})
+			req := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewBufferString(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+
+			srv.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusCreated {
+				t.Fatalf("expected 201, got %d — body: %s", rr.Code, rr.Body.String())
+			}
+			if gotProject != "jarvis-dev" || gotSessionID != tt.session || gotContent != "explain prompt capture" {
+				t.Fatalf("saved prompt = project %q, session %q, content %q", gotProject, gotSessionID, gotContent)
+			}
+			if !strings.Contains(rr.Body.String(), `"session_id":"`+tt.session+`"`) {
+				t.Fatalf("response missing session_id %q: %s", tt.session, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestPostPrompts_AmbiguousDirectoryReturnsRecoveryTokenAndBlocksSave(t *testing.T) {
+	t.Parallel()
+
+	store := &mockPromptStore{}
+	srv := httpapi.NewServerWithProjectStore("127.0.0.1:0", store, mockProjectStore{
+		known: []project.KnownProject{
+			{Name: "jarvis-dev", Directory: "/work/jarvis-dev"},
+			{Name: "jarvis-copy", Directory: "/work/../work/jarvis-dev"},
+		},
+		createRecoveryTokenFn: func(_ context.Context, req project.TokenRequest) (string, error) {
+			if req.RequestedProject != "" {
+				t.Fatalf("requested project = %q, want empty when resolution used directory only", req.RequestedProject)
+			}
+			return "directory-retry-token", nil
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewBufferString(`{"content":"capture safely","directory":"/work/jarvis-dev","session_id":"sess-dir"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		ErrorCode     string `json:"error_code"`
+		RecoveryToken string `json:"recovery_token"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if resp.ErrorCode != string(project.CodeProjectAmbiguous) || resp.RecoveryToken != "directory-retry-token" {
+		t.Fatalf("response = %+v, want ambiguous with directory retry token", resp)
+	}
+	if store.called {
+		t.Fatal("SavePrompt must not be called after directory ambiguity")
 	}
 }
 

@@ -31,6 +31,7 @@ Carry this decision through all steps. Do not re-evaluate mid-skill.
 - Use `mcp__hive__mem_search` + `mcp__hive__mem_get_observation` for all reads
 - Do NOT create any `openspec/` directories or files
 - `project` field is ALWAYS required in every save call
+- SDD/config artifact saves MUST pass `capture_prompt:false` when supported because they are automated outputs, not human memories
 
 ### openspec mode
 - Write artifact files under `openspec/changes/{change-name}/`
@@ -39,6 +40,7 @@ Carry this decision through all steps. Do not re-evaluate mid-skill.
 
 ### hybrid mode
 - Perform both: save to Hive AND write to filesystem
+- Hive artifact saves MUST pass `capture_prompt:false` when supported
 - Retrieve dependencies from Hive (primary) with filesystem fallback
 - Both backends stay in sync
 

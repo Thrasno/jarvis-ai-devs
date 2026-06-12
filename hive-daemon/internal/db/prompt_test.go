@@ -132,6 +132,65 @@ func TestSavePrompt_HappyPath(t *testing.T) {
 	}
 }
 
+func TestPromptSessionSemantics(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+
+	ctx := context.Background()
+	p, err := d.SavePromptForSession(ctx, "jarvis-dev", "sess-001", "older same session")
+	if err != nil {
+		t.Fatalf("SavePromptForSession older: %v", err)
+	}
+	_, err = d.SavePromptForSession(ctx, "jarvis-dev", "sess-002", "other session")
+	if err != nil {
+		t.Fatalf("SavePromptForSession other session: %v", err)
+	}
+	_, err = d.SavePromptForSession(ctx, "other", "sess-001", "other project")
+	if err != nil {
+		t.Fatalf("SavePromptForSession other project: %v", err)
+	}
+	_, err = d.SavePromptForSession(ctx, "jarvis-dev", "sess-001", "latest same session")
+	if err != nil {
+		t.Fatalf("SavePromptForSession latest: %v", err)
+	}
+
+	if p.SessionID != "sess-001" {
+		t.Errorf("Prompt.SessionID = %q, want %q", p.SessionID, "sess-001")
+	}
+	var storedSessionID string
+	if err := d.RawDB().QueryRowContext(ctx, "SELECT session_id FROM user_prompts WHERE id = ?", p.ID).Scan(&storedSessionID); err != nil {
+		t.Fatalf("query session_id: %v", err)
+	}
+	if storedSessionID != "sess-001" {
+		t.Errorf("stored session_id = %q, want %q", storedSessionID, "sess-001")
+	}
+
+	prompt, err := d.LatestPromptForSession(ctx, "jarvis-dev", "sess-001")
+	if err != nil {
+		t.Fatalf("LatestPromptForSession() unexpected error: %v", err)
+	}
+	if prompt == nil {
+		t.Fatal("LatestPromptForSession() returned nil")
+	}
+	if prompt.Content != "latest same session" {
+		t.Errorf("Content = %q, want %q", prompt.Content, "latest same session")
+	}
+	if prompt.Project != "jarvis-dev" || prompt.SessionID != "sess-001" {
+		t.Errorf("prompt scope = (%q, %q), want (jarvis-dev, sess-001)", prompt.Project, prompt.SessionID)
+	}
+
+	prompt, err = d.LatestPromptForSession(ctx, "jarvis-dev", "missing-session")
+	if err != nil {
+		t.Fatalf("LatestPromptForSession() unexpected error: %v", err)
+	}
+	if prompt != nil {
+		t.Fatalf("LatestPromptForSession() = %+v, want nil", prompt)
+	}
+}
+
 func TestSavePrompt_EmptyContentReturnsError(t *testing.T) {
 	d, err := db.Open(":memory:")
 	if err != nil {
@@ -742,8 +801,8 @@ func TestMarkPromptSynced_RemovesFromUnsynced(t *testing.T) {
 	_ = ctx
 }
 
-// FIX-2: rows with sync_id='' must be excluded from GetUnsyncedPrompts.
-// Old rows created before UUID generation have sync_id=''. The server rejects
+// FIX-2: rows with sync_id="" must be excluded from GetUnsyncedPrompts.
+// Old rows created before UUID generation have sync_id="". The server rejects
 // them with 400 (UUID validation), so they must never reach the sync pipeline.
 func TestGetUnsyncedPrompts_ExcludesEmptySyncID(t *testing.T) {
 	d, err := db.Open(":memory:")

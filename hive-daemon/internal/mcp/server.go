@@ -14,6 +14,8 @@ import (
 // and by mem_context to list recent prompts for a project.
 type PromptStore interface {
 	SavePrompt(ctx context.Context, project, content string) (*models.Prompt, error)
+	SavePromptForSession(ctx context.Context, project, sessionID, content string) (*models.Prompt, error)
+	LatestPromptForSession(ctx context.Context, project, sessionID string) (*models.Prompt, error)
 	ListRecentPrompts(ctx context.Context, project string, limit int) ([]*models.Prompt, error)
 }
 

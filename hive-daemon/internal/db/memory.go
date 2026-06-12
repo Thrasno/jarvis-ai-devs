@@ -67,6 +67,14 @@ RETURNING id`
 	if err != nil {
 		return 0, fmt.Errorf("save memory: %w", err)
 	}
+	if mem.PromptID > 0 {
+		if _, err := tx.Exec(
+			`INSERT INTO memory_prompt_links (memory_id, prompt_id) VALUES (?, ?)`,
+			id, mem.PromptID,
+		); err != nil {
+			return 0, fmt.Errorf("link memory prompt: %w", err)
+		}
+	}
 	if err := insertMemoryMutation(tx, memoryMutationRecord{
 		EventID:      uuid.New().String(),
 		EntitySyncID: syncID,
