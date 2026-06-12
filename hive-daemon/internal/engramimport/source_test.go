@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	hivedb "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
@@ -75,6 +76,31 @@ INSERT INTO memory_relations (id, source_id, target_id, relation) VALUES
 	require.Equal(t, "ses-1", batch.Memories[0].SessionSourceID)
 }
 
+func TestAnalyzeSourceReportsProjectedCountsByProject(t *testing.T) {
+	path := createEngramFixture(t, func(sqlDB *sql.DB) {
+		_, err := sqlDB.Exec(`
+INSERT INTO sessions (id, project, directory, dev_id, client, started_at) VALUES
+  ('ses-a', 'proj-a', 'C:/src/a', 'dev-a', 'opencode', '2026-06-11 10:00:00'),
+  ('ses-b', 'proj-b', 'C:/src/b', 'dev-b', 'opencode', '2026-06-11 10:10:00');
+INSERT INTO user_prompts (id, project, content, created_at) VALUES
+  (11, 'proj-a', 'prompt alpha', '2026-06-11 10:01:00'),
+  (12, 'proj-b', 'prompt beta', '2026-06-11 10:11:00');
+INSERT INTO observations (id, project, title, content, type, topic_key, session_id, created_at, updated_at) VALUES
+  (21, 'proj-a', 'Decision A', 'Alpha import', 'decision', 'topic-a', 'ses-a', '2026-06-11 10:02:00', '2026-06-11 10:03:00'),
+  (22, 'proj-b', 'Decision B', 'Beta import', 'decision', 'topic-b', 'ses-b', '2026-06-11 10:12:00', '2026-06-11 10:13:00'),
+  (23, 'proj-b', 'Bugfix B', 'Beta import second memory', 'bugfix', 'topic-b2', 'ses-b', '2026-06-11 10:14:00', '2026-06-11 10:15:00');`)
+		require.NoError(t, err)
+	})
+
+	analysis, err := AnalyzeSource(context.Background(), Source{Path: path})
+	require.NoError(t, err)
+	require.Equal(t, []string{"proj-a", "proj-b"}, analysis.Projects)
+	require.Equal(t, []ProjectImpact{
+		{Project: "proj-a", Counts: Counts{Sessions: 1, Prompts: 1, Observations: 1}},
+		{Project: "proj-b", Counts: Counts{Sessions: 1, Prompts: 1, Observations: 2}},
+	}, analysis.ProjectedByProject)
+}
+
 func TestAnalyzeSourceRejectsMissingRequiredTables(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "engram.db")
 	sqlDB, err := sql.Open("sqlite", path)
@@ -87,6 +113,20 @@ func TestAnalyzeSourceRejectsMissingRequiredTables(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidSchema)
 	require.ErrorContains(t, err, "sessions")
 	require.ErrorContains(t, err, "user_prompts")
+}
+
+func TestOpenReadOnlyEscapesSQLiteFileURIPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "engram source #1.db")
+	createEngramFixtureAt(t, path, nil)
+
+	sqlDB, err := openReadOnly(path)
+	require.NoError(t, err)
+	defer sqlDB.Close()
+
+	var count int
+	require.NoError(t, sqlDB.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&count))
+	require.Equal(t, 0, count)
+	require.Contains(t, sqliteFileURI(`C:\tmp\engram source #1?.db`), `engram%20source%20%231%3F.db?mode=ro`)
 }
 
 func TestImportSourcePersistsMappedRowsWithHiveUUIDSyncIDs(t *testing.T) {
@@ -111,6 +151,33 @@ INSERT INTO observations (id, project, title, content, type, session_id, created
 	require.NoError(t, uuid.Validate(aliasSyncID(t, hive, "user_prompts", "11")))
 	require.NoError(t, uuid.Validate(aliasSyncID(t, hive, "observations", "21")))
 	require.NotEqual(t, "21", aliasSyncID(t, hive, "observations", "21"))
+}
+
+func TestImportSourcePersistsRowsForAllProjectsAndReportsPerProjectImpact(t *testing.T) {
+	path := createEngramFixture(t, func(sqlDB *sql.DB) {
+		_, err := sqlDB.Exec(`
+INSERT INTO sessions (id, project, directory, dev_id, client, started_at) VALUES
+  ('ses-a', 'proj-a', 'C:/src/a', 'dev-a', 'opencode', '2026-06-11 10:00:00'),
+  ('ses-b', 'proj-b', 'C:/src/b', 'dev-b', 'opencode', '2026-06-11 10:10:00');
+INSERT INTO user_prompts (id, project, content, created_at) VALUES
+  (11, 'proj-a', 'prompt alpha', '2026-06-11 10:01:00'),
+  (12, 'proj-b', 'prompt beta', '2026-06-11 10:11:00');
+INSERT INTO observations (id, project, title, content, type, session_id, created_at) VALUES
+  (21, 'proj-a', 'Decision A', 'Alpha import', 'decision', 'ses-a', '2026-06-11 10:02:00'),
+  (22, 'proj-b', 'Decision B', 'Beta import', 'decision', 'ses-b', '2026-06-11 10:12:00');`)
+		require.NoError(t, err)
+	})
+	hive := openHiveDBForImportTest(t)
+
+	report, err := ImportSource(context.Background(), hive, ImportRequest{Source: Source{Path: path}, RunID: "run-multi-project"})
+	require.NoError(t, err)
+	require.Equal(t, hivedb.ImportCounts{Imported: 6}, report.Counts)
+	require.Equal(t, []ProjectImpact{
+		{Project: "proj-a", Counts: Counts{Sessions: 1, Prompts: 1, Observations: 1}},
+		{Project: "proj-b", Counts: Counts{Sessions: 1, Prompts: 1, Observations: 1}},
+	}, report.ProjectedByProject)
+	require.Equal(t, 1, countHiveMemoriesByProject(t, hive, "proj-a"))
+	require.Equal(t, 1, countHiveMemoriesByProject(t, hive, "proj-b"))
 }
 
 func TestAnalyzeSourceSkipsObservationsWithMissingSessionAlias(t *testing.T) {
@@ -226,6 +293,69 @@ INSERT INTO observations (id, project, title, content, type, session_id, created
 	}
 }
 
+func TestImportSourceReportsAmbiguousMemoryDuplicatesWithoutOverwritingHiveRows(t *testing.T) {
+	path := createEngramFixture(t, func(sqlDB *sql.DB) {
+		_, err := sqlDB.Exec(`
+INSERT INTO sessions (id, project, directory, dev_id, client, started_at) VALUES
+  ('ses-1', 'proj-a', 'C:/src/a', 'dev-a', 'opencode', '2026-06-11 10:00:00');
+INSERT INTO observations (id, project, title, content, type, session_id, created_at) VALUES
+  (21, 'proj-a', 'Duplicated title', 'Imported body', 'decision', 'ses-1', '2026-06-11 10:02:00');`)
+		require.NoError(t, err)
+	})
+	hive := openHiveDBForImportTest(t)
+	require.NoError(t, hive.CreateSession("existing-session", "proj-a", "C:/src/a", "tester", "test"))
+	_, err := hive.SaveMemory(&models.Memory{Project: "proj-a", Title: "Duplicated title", Content: "existing body one", SessionID: "existing-session"})
+	require.NoError(t, err)
+	_, err = hive.SaveMemory(&models.Memory{Project: "proj-a", Title: "Duplicated title", Content: "existing body two", SessionID: "existing-session"})
+	require.NoError(t, err)
+
+	report, err := ImportSource(context.Background(), hive, ImportRequest{Source: Source{Path: path}, RunID: "run-ambiguous"})
+	require.NoError(t, err)
+	require.Equal(t, hivedb.ImportCounts{Imported: 1, Ambiguous: 1}, report.Counts)
+	require.Equal(t, 2, countHiveMemoriesWithTitle(t, hive, "Duplicated title"), "ambiguous memory must be reported but left unchanged")
+}
+
+func TestCreateSourceSnapshotCapturesStableRowsBeforeLaterSourceMutation(t *testing.T) {
+	path := createEngramFixture(t, func(sqlDB *sql.DB) {
+		_, err := sqlDB.Exec(`
+INSERT INTO sessions (id, project, directory, dev_id, client, started_at) VALUES
+  ('ses-1', 'proj-a', 'C:/src/a', 'dev-a', 'opencode', '2026-06-11 10:00:00');`)
+		require.NoError(t, err)
+	})
+
+	snapshot, err := createSourceSnapshot(context.Background(), path)
+	require.NoError(t, err)
+	defer snapshot.cleanup()
+
+	execEngramSQL(t, path, `INSERT INTO sessions (id, project, directory, dev_id, client, started_at) VALUES ('ses-2', 'proj-a', 'C:/src/a', 'dev-a', 'opencode', '2026-06-11 10:01:00')`)
+
+	snapshotDB, err := openReadOnly(snapshot.path)
+	require.NoError(t, err)
+	defer snapshotDB.Close()
+	var count int
+	require.NoError(t, snapshotDB.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&count))
+	require.Equal(t, 1, count)
+}
+
+func TestAnalyzeSourceFingerprintChangesWhenCapturedSourceRowsChange(t *testing.T) {
+	path := createEngramFixture(t, func(sqlDB *sql.DB) {
+		_, err := sqlDB.Exec(`
+INSERT INTO sessions (id, project, directory, dev_id, client, started_at) VALUES
+  ('ses-1', 'proj-a', 'C:/src/a', 'dev-a', 'opencode', '2026-06-11 10:00:00');`)
+		require.NoError(t, err)
+	})
+
+	before, err := AnalyzeSource(context.Background(), Source{Path: path})
+	require.NoError(t, err)
+	execEngramSQL(t, path, `INSERT INTO sessions (id, project, directory, dev_id, client, started_at) VALUES ('ses-2', 'proj-a', 'C:/src/a', 'dev-a', 'opencode', '2026-06-11 10:01:00')`)
+	after, err := AnalyzeSource(context.Background(), Source{Path: path})
+	require.NoError(t, err)
+
+	require.Equal(t, path, before.SourcePath)
+	require.Equal(t, path, after.SourcePath)
+	require.NotEqual(t, before.SourceFingerprint, after.SourceFingerprint)
+}
+
 func TestFingerprintIncludesSQLiteSidecarFiles(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "engram.db")
 	require.NoError(t, os.WriteFile(path, []byte("main"), 0o600))
@@ -327,4 +457,18 @@ SELECT hive_sync_id FROM import_source_aliases
 WHERE source_system = 'engram' AND source_table = ? AND source_id = ? AND source_project = 'proj-a'`, table, sourceID).Scan(&syncID)
 	require.NoError(t, err)
 	return syncID
+}
+
+func countHiveMemoriesWithTitle(t *testing.T, hive *hivedb.DB, title string) int {
+	t.Helper()
+	var count int
+	require.NoError(t, hive.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE title = ?`, title).Scan(&count))
+	return count
+}
+
+func countHiveMemoriesByProject(t *testing.T, hive *hivedb.DB, project string) int {
+	t.Helper()
+	var count int
+	require.NoError(t, hive.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE project = ?`, project).Scan(&count))
+	return count
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -156,6 +157,27 @@ func TestImportEngramBatchRejectsExistingAliasWithChangedContentHash(t *testing.
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrImportAliasContentChanged))
 	require.ErrorContains(t, err, "user_prompts/p1")
+}
+
+func TestImportEngramBatchReportsAmbiguousMemoryDuplicateWithoutAlias(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, d.CreateSession("existing-session", "proj", "/repo/proj", "tester", "test"))
+	_, err := d.SaveMemory(&models.Memory{Project: "proj", Title: "Existing duplicate", Content: "first existing", SessionID: "existing-session"})
+	require.NoError(t, err)
+	_, err = d.SaveMemory(&models.Memory{Project: "proj", Title: "Existing duplicate", Content: "second existing", SessionID: "existing-session"})
+	require.NoError(t, err)
+
+	result, err := d.ImportEngramBatch(ctx, ImportRun{ID: "run-ambiguous", SourceSystem: "engram", SourcePath: "one.db", Mode: "execute"}, ImportBatch{
+		Sessions: []ImportSession{{SourceID: "s1", Project: "proj", StartedAt: "2026-06-11 10:00:00"}},
+		Memories: []ImportMemory{{SourceID: "m1", Project: "proj", Title: "Existing duplicate", Content: "imported content", SessionSourceID: "s1", CreatedAt: "2026-06-11 10:02:00"}},
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, ImportCounts{Imported: 1, Ambiguous: 1}, result.Counts)
+	require.Equal(t, []ImportAmbiguousDuplicate{{SourceID: "m1", Project: "proj", Title: "Existing duplicate", Reason: "multiple active Hive memories match project and title"}}, result.AmbiguousDuplicates)
+	require.Equal(t, 2, queryInt(t, d.sqlDB, `SELECT COUNT(*) FROM memories WHERE project = 'proj' AND title = 'Existing duplicate'`))
+	require.Equal(t, 0, queryInt(t, d.sqlDB, `SELECT COUNT(*) FROM import_source_aliases WHERE source_table = 'observations' AND source_id = 'm1'`))
 }
 
 func requireAlias(t *testing.T, sqlDB *sql.DB, key SourceAliasKey) ImportSourceAlias {

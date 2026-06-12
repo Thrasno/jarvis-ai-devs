@@ -1234,6 +1234,7 @@ func TestEngramImportPreviewCreatesFreshTokenAndDoesNotBackupOrWrite(t *testing.
 	require.NotNil(t, job.Report)
 	require.Equal(t, job.ID, job.Report.PreviewID)
 	require.Equal(t, EngramImportEntityCounts{Sessions: 1, Prompts: 1, Observations: 1}, job.Report.Projected)
+	require.Equal(t, []EngramImportProjectImpact{{Project: "proj-a", Projected: EngramImportEntityCounts{Sessions: 1, Prompts: 1, Observations: 1}}}, job.Report.ProjectedByProject)
 	require.Equal(t, 1, job.Report.SkippedRelations)
 	require.Equal(t, 0, backup.createCalls, "dry-run preview must not create a Hive backup")
 	require.Equal(t, 0, governanceImportRunCount(t, store), "dry-run preview must not write Hive import metadata")
@@ -1283,6 +1284,33 @@ func TestEngramImportExecuteCreatesBackupBeforeImportAndReportsProgress(t *testi
 	require.Equal(t, EngramImportMutationCounts{Imported: 3}, job.Report.Imported)
 	require.Equal(t, 1, backup.createCalls)
 	require.Equal(t, 1, governanceImportRunCount(t, store))
+}
+
+func TestEngramImportExecuteReportsAmbiguousDuplicatesWithoutOverwritingHiveRows(t *testing.T) {
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	require.NoError(t, store.CreateSession("existing-session", "proj-a", "C:/src/a", "tester", "test"))
+	_, err = store.SaveMemory(&models.Memory{Project: "proj-a", Title: "Duplicated title", Content: "existing body one", SessionID: "existing-session"})
+	require.NoError(t, err)
+	_, err = store.SaveMemory(&models.Memory{Project: "proj-a", Title: "Duplicated title", Content: "existing body two", SessionID: "existing-session"})
+	require.NoError(t, err)
+	sourcePath := createGovernanceAmbiguousEngramFixture(t)
+	backup := &fakeEngramImportBackupStore{manifest: BackupManifest{ID: "backup-before-import", CreatedAt: time.Now().UTC()}}
+	service := NewServiceWithBackup(store, backup)
+
+	preview, err := service.StartEngramImportPreview(context.Background(), EngramImportRequest{Source: sourcePath})
+	require.NoError(t, err)
+	preview = waitEngramImportJobDone(t, service, preview.ID)
+	job, err := service.StartEngramImportExecute(context.Background(), EngramImportRequest{Source: sourcePath, PreviewID: preview.ID})
+	require.NoError(t, err)
+	job = waitEngramImportJobDone(t, service, job.ID)
+
+	require.Equal(t, EngramImportPhaseCompleted, job.Phase)
+	require.NotNil(t, job.Report)
+	require.Equal(t, EngramImportMutationCounts{Imported: 1, Ambiguous: 1}, job.Report.Imported)
+	require.Equal(t, []EngramImportAmbiguousDuplicate{{SourceID: "21", Project: "proj-a", Title: "Duplicated title", Reason: "multiple active Hive memories match project and title"}}, job.Report.AmbiguousDuplicates)
+	require.Equal(t, 2, governanceMemoryCountByTitle(t, store, "Duplicated title"))
 }
 
 func TestEngramImportExecuteRejectsChangedSourceAfterPreviewBeforeBackupOrImport(t *testing.T) {
@@ -1398,6 +1426,23 @@ INSERT INTO memory_relations (id, source_id, target_id, relation) VALUES (1, 21,
 	return path
 }
 
+func createGovernanceAmbiguousEngramFixture(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "engram.db")
+	sqlDB, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	_, err = sqlDB.Exec(`
+CREATE TABLE observations (id INTEGER PRIMARY KEY, project TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', type TEXT NOT NULL DEFAULT '', topic_key TEXT, session_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT);
+CREATE TABLE sessions (id TEXT PRIMARY KEY, project TEXT NOT NULL DEFAULT '', directory TEXT NOT NULL DEFAULT '', dev_id TEXT NOT NULL DEFAULT '', client TEXT NOT NULL DEFAULT '', started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, ended_at TEXT, summary TEXT);
+CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, project TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE memory_relations (id INTEGER PRIMARY KEY, source_id INTEGER, target_id INTEGER, relation TEXT);
+INSERT INTO sessions (id, project, directory, dev_id, client, started_at) VALUES ('ses-1', 'proj-a', 'C:/src/a', 'dev-a', 'opencode', '2026-06-11 10:00:00');
+INSERT INTO observations (id, project, title, content, type, session_id, created_at) VALUES (21, 'proj-a', 'Duplicated title', 'Imported body', 'decision', 'ses-1', '2026-06-11 10:02:00');`)
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+	return path
+}
+
 func mutateGovernanceEngramFixture(t *testing.T, path string) {
 	t.Helper()
 	sqlDB, err := sql.Open("sqlite", path)
@@ -1411,5 +1456,12 @@ func governanceImportRunCount(t *testing.T, store *db.DB) int {
 	t.Helper()
 	var count int
 	require.NoError(t, store.RawDB().QueryRow(`SELECT COUNT(*) FROM import_runs`).Scan(&count))
+	return count
+}
+
+func governanceMemoryCountByTitle(t *testing.T, store *db.DB, title string) int {
+	t.Helper()
+	var count int
+	require.NoError(t, store.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE title = ?`, title).Scan(&count))
 	return count
 }
