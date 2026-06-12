@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -63,7 +64,7 @@ func (d *DB) validateRecoveryToken(ctx context.Context, validation project.Token
 		WHERE token = ?
 	`, validation.Token).Scan(&candidatesJSON, &contextHash, &consumedAtRaw, &expiresAtRaw)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return project.ErrRecoveryTokenInvalid
 		}
 		return fmt.Errorf("select recovery token: %w", err)

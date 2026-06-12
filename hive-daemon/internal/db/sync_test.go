@@ -1524,6 +1524,205 @@ func TestSaveFromRemote_NonAliasedProjectStoredAsIs(t *testing.T) {
 	assert.Equal(t, "Qux", storedProject, "project must be unchanged when no alias exists")
 }
 
+// TestCountUnsyncedMemories tests the global count of unsynced memories.
+func TestCountUnsyncedMemories(t *testing.T) {
+	tests := []struct {
+		name      string
+		setupData func(t *testing.T, d *DB)
+		wantCount int
+	}{
+		{
+			name:      "empty database returns zero",
+			setupData: func(t *testing.T, d *DB) {},
+			wantCount: 0,
+		},
+		{
+			name: "counts only unsynced memories with sync_id",
+			setupData: func(t *testing.T, d *DB) {
+				t.Helper()
+				_, err := d.EnsureManualSaveSession("count-proj-a")
+				require.NoError(t, err)
+				_, err = d.EnsureManualSaveSession("count-proj-b")
+				require.NoError(t, err)
+				// Save 2 unsynced memories across 2 projects
+				_, err = d.SaveMemory(createTestMemory("count-proj-a"))
+				require.NoError(t, err)
+				_, err = d.SaveMemory(createTestMemory("count-proj-b"))
+				require.NoError(t, err)
+			},
+			wantCount: 2,
+		},
+		{
+			name: "already synced memory is not counted",
+			setupData: func(t *testing.T, d *DB) {
+				t.Helper()
+				_, err := d.EnsureManualSaveSession("count-proj-synced")
+				require.NoError(t, err)
+				id, err := d.SaveMemory(createTestMemory("count-proj-synced"))
+				require.NoError(t, err)
+				saved, err := d.GetMemory(id)
+				require.NoError(t, err)
+				require.NoError(t, d.MarkSynced(saved.SyncID, time.Now()))
+			},
+			wantCount: 0,
+		},
+		{
+			name: "parity with GetUnsynced empty project",
+			setupData: func(t *testing.T, d *DB) {
+				t.Helper()
+				_, err := d.EnsureManualSaveSession("parity-proj")
+				require.NoError(t, err)
+				_, err = d.SaveMemory(createTestMemory("parity-proj"))
+				require.NoError(t, err)
+				_, err = d.SaveMemory(createTestMemory("parity-proj"))
+				require.NoError(t, err)
+			},
+			wantCount: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := setupTestDB(t)
+			t.Cleanup(func() { require.NoError(t, d.Close()) })
+			tt.setupData(t, d)
+			count, err := d.CountUnsyncedMemories()
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantCount, count)
+
+			// Parity: count must match len(GetUnsynced(""))
+			unsynced, err := d.GetUnsynced("")
+			require.NoError(t, err)
+			assert.Equal(t, len(unsynced), count, "CountUnsyncedMemories must equal len(GetUnsynced(\"\"))")
+		})
+	}
+}
+
+// TestCountUnsyncedPrompts tests the global count of unsynced prompts across all projects.
+func TestCountUnsyncedPrompts(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name      string
+		setupData func(t *testing.T, d *DB)
+		wantCount int
+	}{
+		{
+			name:      "empty database returns zero",
+			setupData: func(t *testing.T, d *DB) {},
+			wantCount: 0,
+		},
+		{
+			name: "counts prompts across all projects",
+			setupData: func(t *testing.T, d *DB) {
+				t.Helper()
+				_, err := d.SavePrompt(ctx, "prompts-proj-a", "prompt 1")
+				require.NoError(t, err)
+				_, err = d.SavePrompt(ctx, "prompts-proj-b", "prompt 2")
+				require.NoError(t, err)
+			},
+			wantCount: 2,
+		},
+		{
+			name: "does not count prompts with empty sync_id",
+			setupData: func(t *testing.T, d *DB) {
+				t.Helper()
+				// Insert a row with empty sync_id directly (legacy row)
+				_, err := d.sqlDB.ExecContext(ctx,
+					`INSERT INTO user_prompts (sync_id, project, content) VALUES ('', 'legacy-proj', 'legacy prompt')`)
+				require.NoError(t, err)
+			},
+			wantCount: 0,
+		},
+		{
+			name: "parity with GetUnsyncedPrompts for a single project",
+			setupData: func(t *testing.T, d *DB) {
+				t.Helper()
+				_, err := d.SavePrompt(ctx, "parity-prompt-proj", "p1")
+				require.NoError(t, err)
+				_, err = d.SavePrompt(ctx, "parity-prompt-proj", "p2")
+				require.NoError(t, err)
+			},
+			wantCount: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := setupTestDB(t)
+			t.Cleanup(func() { require.NoError(t, d.Close()) })
+			tt.setupData(t, d)
+			count, err := d.CountUnsyncedPrompts(ctx)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantCount, count)
+		})
+	}
+}
+
+// TestCountUnsyncedSessions tests the global count of unsynced sessions.
+func TestCountUnsyncedSessions(t *testing.T) {
+	tests := []struct {
+		name      string
+		setupData func(t *testing.T, d *DB)
+		wantCount int
+	}{
+		{
+			name:      "empty database returns zero",
+			setupData: func(t *testing.T, d *DB) {},
+			wantCount: 0,
+		},
+		{
+			name: "counts unsynced sessions across all projects",
+			setupData: func(t *testing.T, d *DB) {
+				t.Helper()
+				require.NoError(t, d.CreateSession("sess-a-1", "session-proj-a", "", "dev", "claude"))
+				require.NoError(t, d.CreateSession("sess-b-1", "session-proj-b", "", "dev", "claude"))
+			},
+			wantCount: 2,
+		},
+		{
+			name: "does not count synced sessions",
+			setupData: func(t *testing.T, d *DB) {
+				t.Helper()
+				require.NoError(t, d.CreateSession("sess-synced-1", "session-proj-synced", "", "dev", "claude"))
+				require.NoError(t, d.MarkSessionSynced("sess-synced-1", time.Now()))
+			},
+			wantCount: 0,
+		},
+		{
+			name: "does not count sessions with empty sync_id",
+			setupData: func(t *testing.T, d *DB) {
+				t.Helper()
+				// Insert a legacy row with empty sync_id directly (bypasses CreateSession
+				// which always generates a non-empty sync_id via randomblob).
+				_, err := d.sqlDB.Exec(
+					`INSERT INTO sessions (id, sync_id, project, dev_id, client) VALUES ('sess-no-syncid', '', 'legacy-proj', 'dev', 'claude')`)
+				require.NoError(t, err)
+			},
+			wantCount: 0,
+		},
+		{
+			name: "parity with ListUnsyncedSessions for a project",
+			setupData: func(t *testing.T, d *DB) {
+				t.Helper()
+				require.NoError(t, d.CreateSession("sess-parity-1", "parity-sess-proj", "", "dev", "claude"))
+				require.NoError(t, d.CreateSession("sess-parity-2", "parity-sess-proj", "", "dev", "claude"))
+			},
+			wantCount: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := setupTestDB(t)
+			t.Cleanup(func() { require.NoError(t, d.Close()) })
+			tt.setupData(t, d)
+			count, err := d.CountUnsyncedSessions()
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantCount, count)
+		})
+	}
+}
+
 // TestApplyRemoteMutation_RemapsAliasedProject verifies that ApplyRemoteMutation
 // rewrites event.Project to the alias target before insert.
 func TestApplyRemoteMutation_RemapsAliasedProject(t *testing.T) {
