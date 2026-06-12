@@ -2331,6 +2331,37 @@ func TestWriteSyncJSON_ForceEnablesAutoSync(t *testing.T) {
 	}
 }
 
+func TestWriteSyncJSON_NilPreservesExistingAutoSync(t *testing.T) {
+	tmpHome := t.TempDir()
+	setTestHome(t, tmpHome)
+	jarvisDir := filepath.Join(tmpHome, ".jarvis")
+	if err := os.MkdirAll(jarvisDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed the file with auto_sync:true; passing nil must leave it unchanged.
+	seed := `{"api_url":"https://old.dev","email":"old@example.com","password":"old","auto_sync":true}`
+	if err := os.WriteFile(filepath.Join(jarvisDir, "sync.json"), []byte(seed), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeSyncJSON("https://hivemem.dev", "new@example.com", "newpass", nil); err != nil {
+		t.Fatalf("writeSyncJSON: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(jarvisDir, "sync.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	if !strings.Contains(body, `"auto_sync":true`) {
+		t.Fatalf("expected auto_sync preserved as true when nil passed, got: %s", body)
+	}
+	if !strings.Contains(body, "new@example.com") {
+		t.Fatalf("expected updated credentials in sync.json, got: %s", body)
+	}
+}
+
 func TestNewModel_EmptyStoredScopeFallsBackToLocalOnly(t *testing.T) {
 	tmpHome := t.TempDir()
 	setTestHome(t, tmpHome)

@@ -123,15 +123,14 @@ func TestWriteSyncCredentials_LeavesPreviousFileWhenUpdateFails(t *testing.T) {
 }
 
 func TestWriteSyncCredentials_ForceEnableWritesTrue(t *testing.T) {
-	isolateHome(t)
+	tmpHome := isolateHome(t)
 
 	enable := true
 	if err := WriteSyncCredentials("https://hivemem.dev", "user@example.com", "s3cr3t", &enable); err != nil {
 		t.Fatalf("WriteSyncCredentials: %v", err)
 	}
 
-	home, _ := os.UserHomeDir()
-	data, err := os.ReadFile(filepath.Join(home, ".jarvis", "sync.json"))
+	data, err := os.ReadFile(filepath.Join(tmpHome, ".jarvis", "sync.json"))
 	if err != nil {
 		t.Fatalf("read sync.json: %v", err)
 	}
@@ -175,15 +174,14 @@ func TestWriteSyncCredentials_ForceEnableOverridesExistingFalse(t *testing.T) {
 }
 
 func TestWriteSyncCredentials_ForceDisableWritesFalse(t *testing.T) {
-	isolateHome(t)
+	tmpHome := isolateHome(t)
 
 	disable := false
 	if err := WriteSyncCredentials("https://hivemem.dev", "user@example.com", "s3cr3t", &disable); err != nil {
 		t.Fatalf("WriteSyncCredentials: %v", err)
 	}
 
-	home, _ := os.UserHomeDir()
-	data, err := os.ReadFile(filepath.Join(home, ".jarvis", "sync.json"))
+	data, err := os.ReadFile(filepath.Join(tmpHome, ".jarvis", "sync.json"))
 	if err != nil {
 		t.Fatalf("read sync.json: %v", err)
 	}
@@ -194,14 +192,13 @@ func TestWriteSyncCredentials_ForceDisableWritesFalse(t *testing.T) {
 }
 
 func TestWriteSyncCredentials_PreserveNoFileOmitsField(t *testing.T) {
-	isolateHome(t)
+	tmpHome := isolateHome(t)
 
 	if err := WriteSyncCredentials("https://hivemem.dev", "user@example.com", "s3cr3t", nil); err != nil {
 		t.Fatalf("WriteSyncCredentials: %v", err)
 	}
 
-	home, _ := os.UserHomeDir()
-	data, err := os.ReadFile(filepath.Join(home, ".jarvis", "sync.json"))
+	data, err := os.ReadFile(filepath.Join(tmpHome, ".jarvis", "sync.json"))
 	if err != nil {
 		t.Fatalf("read sync.json: %v", err)
 	}
