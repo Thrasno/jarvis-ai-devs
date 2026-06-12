@@ -359,10 +359,14 @@ func verifyNonOwnedDrift(report *IntegrityReport, notes []string) {
 }
 
 func driftClassFromStatus(status IntegrityStatus) DriftClass {
-	if status == StatusFail {
+	switch status {
+	case StatusFail:
 		return DriftOwned
+	case StatusWarn:
+		return DriftUnknown
+	default:
+		return DriftNone
 	}
-	return DriftNone
 }
 
 func observedLabel(exists bool) string {

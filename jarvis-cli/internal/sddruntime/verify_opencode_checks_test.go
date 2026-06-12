@@ -477,6 +477,7 @@ func TestVerifyOpenCode_MCPHive_EmitsWarnWhenNotPresent(t *testing.T) {
 // mcp.hive entry (warn-only) does not push the report status to StatusFail, and
 // that the warn check is actually present in the report with StatusWarn.
 func TestVerifyOpenCode_MCPHive_WarnDoesNotCauseOverallFail(t *testing.T) {
+	const checkKey = "invariant.opencode.mcp_hive"
 	observed := compliantOpenCodeRuntime(t)
 	observed.OpenCode.MCPHivePresent = false
 
@@ -485,8 +486,11 @@ func TestVerifyOpenCode_MCPHive_WarnDoesNotCauseOverallFail(t *testing.T) {
 	if report.Status == StatusFail {
 		t.Fatalf("mcp_hive warning must not cause overall StatusFail, got %q", report.Status)
 	}
+	if report.Status != StatusWarn {
+		t.Fatalf("expected overall StatusWarn when only %s warns, got %q", checkKey, report.Status)
+	}
 
-	check := findCheckByKey(report.Checks, "invariant.opencode.mcp_hive")
+	check := findCheckByKey(report.Checks, checkKey)
 	if check == nil {
 		t.Fatal("expected invariant.opencode.mcp_hive check to be present in report")
 	}
@@ -527,6 +531,7 @@ func TestVerifyOpenCode_MCPContext7_EmitsWarnWhenNotPresent(t *testing.T) {
 }
 
 func TestVerifyOpenCode_MCPContext7_WarnDoesNotCauseOverallFail(t *testing.T) {
+	const checkKey = "invariant.opencode.mcp_context7"
 	observed := compliantOpenCodeRuntime(t)
 	observed.OpenCode.MCPContext7Present = false
 
@@ -535,8 +540,11 @@ func TestVerifyOpenCode_MCPContext7_WarnDoesNotCauseOverallFail(t *testing.T) {
 	if report.Status == StatusFail {
 		t.Fatalf("mcp_context7 warning must not cause overall StatusFail, got %q", report.Status)
 	}
+	if report.Status != StatusWarn {
+		t.Fatalf("expected overall StatusWarn when only %s warns, got %q", checkKey, report.Status)
+	}
 
-	check := findCheckByKey(report.Checks, "invariant.opencode.mcp_context7")
+	check := findCheckByKey(report.Checks, checkKey)
 	if check == nil {
 		t.Fatal("expected invariant.opencode.mcp_context7 check to be present in report")
 	}
