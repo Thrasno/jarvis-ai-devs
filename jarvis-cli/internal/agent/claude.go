@@ -666,6 +666,9 @@ func (a *ClaudeAgent) InstallStatusline(hooksFS fs.FS, confirm func() bool) erro
 	if err := writeFileAtomic(scriptPath, content, 0755); err != nil {
 		return fmt.Errorf("write statusline script: %w", err)
 	}
+	if err := os.Chmod(scriptPath, 0755); err != nil {
+		return fmt.Errorf("chmod statusline script: %w", err)
+	}
 
 	existing, err := readFileOrEmpty(a.settingsPath())
 	if err != nil {

@@ -1427,6 +1427,6 @@ func buildTUIStatuslineConfirm(home string, m Model) func() bool {
 		overwrite := m.statuslineOverwrite
 		return func() bool { return overwrite }
 	}
-	// Default: overwrite (safe for CI and non-interactive runs).
-	return func() bool { return true }
+	// Default: skip (do not silently overwrite without explicit user consent).
+	return func() bool { return false }
 }
