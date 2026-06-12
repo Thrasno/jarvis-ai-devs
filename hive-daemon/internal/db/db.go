@@ -223,6 +223,38 @@ CREATE TABLE IF NOT EXISTS hive_project_governance (
     merged_by      TEXT NOT NULL DEFAULT '',
     merge_reason   TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS import_runs (
+    id                 TEXT PRIMARY KEY,
+    source_system      TEXT NOT NULL,
+    source_path        TEXT NOT NULL DEFAULT '',
+    source_fingerprint TEXT NOT NULL DEFAULT '',
+    mode               TEXT NOT NULL DEFAULT '',
+    status             TEXT NOT NULL DEFAULT 'completed',
+    started_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at       DATETIME,
+    report_json        TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS import_source_aliases (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_system  TEXT NOT NULL,
+    source_table   TEXT NOT NULL,
+    source_id      TEXT NOT NULL,
+    source_project TEXT NOT NULL DEFAULT '',
+    hive_table     TEXT NOT NULL,
+    hive_pk        TEXT NOT NULL,
+    hive_sync_id   TEXT NOT NULL,
+    content_hash   TEXT NOT NULL DEFAULT '',
+    run_id         TEXT NOT NULL REFERENCES import_runs(id),
+    created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_import_source_aliases_source
+ON import_source_aliases(source_system, source_table, source_id, source_project);
+
+CREATE INDEX IF NOT EXISTS idx_import_source_aliases_hive
+ON import_source_aliases(hive_table, hive_pk);
 `
 
 // DB wraps an SQLite connection with schema validation.
@@ -319,6 +351,10 @@ func initSchema(sqlDB *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS memory_prompt_links (memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE, prompt_id INTEGER NOT NULL REFERENCES user_prompts(id) ON DELETE CASCADE, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (memory_id, prompt_id))`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_prompt_links_prompt_id ON memory_prompt_links(prompt_id)`,
 		`CREATE TABLE IF NOT EXISTS hive_project_governance (project TEXT PRIMARY KEY, archived_at DATETIME, archived_by TEXT NOT NULL DEFAULT '', archive_reason TEXT NOT NULL DEFAULT '', merge_target TEXT NOT NULL DEFAULT '', merged_at DATETIME, merged_by TEXT NOT NULL DEFAULT '', merge_reason TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE IF NOT EXISTS import_runs (id TEXT PRIMARY KEY, source_system TEXT NOT NULL, source_path TEXT NOT NULL DEFAULT '', source_fingerprint TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'completed', started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, completed_at DATETIME, report_json TEXT NOT NULL DEFAULT '{}')`,
+		`CREATE TABLE IF NOT EXISTS import_source_aliases (id INTEGER PRIMARY KEY AUTOINCREMENT, source_system TEXT NOT NULL, source_table TEXT NOT NULL, source_id TEXT NOT NULL, source_project TEXT NOT NULL DEFAULT '', hive_table TEXT NOT NULL, hive_pk TEXT NOT NULL, hive_sync_id TEXT NOT NULL, content_hash TEXT NOT NULL DEFAULT '', run_id TEXT NOT NULL REFERENCES import_runs(id), created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_import_source_aliases_source ON import_source_aliases(source_system, source_table, source_id, source_project)`,
+		`CREATE INDEX IF NOT EXISTS idx_import_source_aliases_hive ON import_source_aliases(hive_table, hive_pk)`,
 		`ALTER TABLE hive_project_governance ADD COLUMN merge_target TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE hive_project_governance ADD COLUMN merged_at DATETIME`,
 		`ALTER TABLE hive_project_governance ADD COLUMN merged_by TEXT NOT NULL DEFAULT ''`,

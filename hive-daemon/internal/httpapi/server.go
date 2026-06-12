@@ -49,6 +49,9 @@ type GovernanceService interface {
 	ExecuteProjectMerge(context.Context, governance.ProjectMergeRequest) (governance.ProjectMergeResult, error)
 	ExecuteProjectMergeBatch(context.Context, governance.ProjectMergeBatchRequest) (governance.ProjectMergeBatchResult, error)
 	ExecuteProjectDelete(context.Context, governance.ProjectDeleteRequest) (governance.DeleteProjectResult, error)
+	StartEngramImportPreview(context.Context, governance.EngramImportRequest) (governance.EngramImportJob, error)
+	StartEngramImportExecute(context.Context, governance.EngramImportRequest) (governance.EngramImportJob, error)
+	EngramImportJob(context.Context, string) (governance.EngramImportJob, error)
 }
 
 // Server handles HTTP requests for the Hive prompt-capture endpoint.
@@ -109,6 +112,9 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 		s.mux.HandleFunc("/governance/backups", s.handleGovernanceBackups)
 		s.mux.HandleFunc("/governance/restores", s.handleGovernanceRestores)
 		s.mux.HandleFunc("/governance/guards/execute", s.handleGovernanceGuardExecute)
+		s.mux.HandleFunc("POST /governance/imports/engram/preview", s.handleGovernanceEngramImportPreview)
+		s.mux.HandleFunc("POST /governance/imports/engram/execute", s.handleGovernanceEngramImportExecute)
+		s.mux.HandleFunc("GET /governance/imports/engram/jobs/{id}", s.handleGovernanceEngramImportJob)
 	}
 	if config != nil {
 		s.mux.HandleFunc("GET /governance/config/status", s.handleConfigStatus)
@@ -575,6 +581,51 @@ func (s *Server) handleGovernanceGuardExecute(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{"result": result})
 }
 
+func (s *Server) handleGovernanceEngramImportPreview(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body governance.EngramImportRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	job, err := s.governance.StartEngramImportPreview(r.Context(), body)
+	if err != nil {
+		writeEngramImportError(w, "governance engram import preview", err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
+}
+
+func (s *Server) handleGovernanceEngramImportExecute(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body governance.EngramImportRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	job, err := s.governance.StartEngramImportExecute(r.Context(), body)
+	if err != nil {
+		writeEngramImportError(w, "governance engram import execute", err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
+}
+
+func (s *Server) handleGovernanceEngramImportJob(w http.ResponseWriter, r *http.Request) {
+	job, err := s.governance.EngramImportJob(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeEngramImportError(w, "governance engram import job", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"job": job})
+}
+
 // requireLoopback returns true when the request comes from a loopback address.
 // On failure it writes 403 and returns false.
 func requireLoopback(w http.ResponseWriter, r *http.Request) bool {
@@ -845,6 +896,25 @@ func writeBatchMergeError(w http.ResponseWriter, source string, err error) {
 	case errors.Is(err, governance.ErrBackupStoreRequired), errors.Is(err, governance.ErrDestructiveMutationStoreRequired):
 		status = http.StatusServiceUnavailable
 		errorMessage = "destructive operation guard is not configured"
+	default:
+		logger.Log.Printf("%s: %v", source, err)
+	}
+	writeJSON(w, status, map[string]string{"error": errorMessage})
+}
+
+func writeEngramImportError(w http.ResponseWriter, source string, err error) {
+	status := http.StatusInternalServerError
+	errorMessage := "internal error"
+	switch {
+	case errors.Is(err, governance.ErrEngramImportPreviewRequired):
+		status = http.StatusBadRequest
+		errorMessage = "fresh engram import preview is required"
+	case errors.Is(err, governance.ErrEngramImportJobNotFound):
+		status = http.StatusNotFound
+		errorMessage = "engram import job not found"
+	case errors.Is(err, governance.ErrBackupStoreRequired), errors.Is(err, governance.ErrEngramImportStoreRequired):
+		status = http.StatusServiceUnavailable
+		errorMessage = err.Error()
 	default:
 		logger.Log.Printf("%s: %v", source, err)
 	}

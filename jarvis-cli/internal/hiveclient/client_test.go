@@ -832,6 +832,94 @@ func TestDeleteProject_BuildsCorrectRequest(t *testing.T) {
 	}
 }
 
+func TestStartEngramImportPreviewSendsSourceAndDecodesJob(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/governance/imports/engram/preview" {
+			t.Fatalf("request = %s %s, want POST /governance/imports/engram/preview", r.Method, r.URL.Path)
+		}
+		var req EngramImportRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.Source != "C:/tmp/engram.db" || req.PreviewID != "" {
+			t.Fatalf("request = %+v, want source-only preview", req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"job":{"id":"job-preview","kind":"preview","phase":"queued","message":"queued","percent":0,"done":false}}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	job, err := client.StartEngramImportPreview(context.Background(), EngramImportRequest{Source: "C:/tmp/engram.db"})
+	if err != nil {
+		t.Fatalf("StartEngramImportPreview: %v", err)
+	}
+	if job.ID != "job-preview" || job.Kind != EngramImportJobKindPreview || job.Phase != EngramImportPhaseQueued {
+		t.Fatalf("job = %+v, want queued preview job", job)
+	}
+}
+
+func TestGetEngramImportJobDecodesProgressAndReport(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/governance/imports/engram/jobs/job-preview" {
+			t.Fatalf("request = %s %s, want GET import job", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"job":{"id":"job-preview","kind":"preview","phase":"completed","message":"preview completed","processed":3,"total":3,"percent":100,"done":true,"report":{"preview_id":"job-preview","source_path":"C:/tmp/engram.db","source_fingerprint":"sha256:abc","projected":{"sessions":1,"prompts":1,"observations":1},"projected_by_project":[{"project":"proj-a","projected":{"sessions":1,"prompts":1,"observations":1}}],"imported":{"imported":0,"reused":0,"ambiguous":2},"ambiguous_duplicates":[{"source_id":"21","project":"proj-a","title":"Existing duplicate","reason":"multiple active Hive memories match project and title"}],"skipped_relations":2,"invalid_rows":[{"table":"observations","source_id":"22","reason":"session_id references missing or skipped session"}]}}}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	job, err := client.GetEngramImportJob(context.Background(), "job-preview")
+	if err != nil {
+		t.Fatalf("GetEngramImportJob: %v", err)
+	}
+	if !job.Done || job.Percent != 100 || job.Report == nil || job.Report.Projected.Observations != 1 || job.Report.SkippedRelations != 2 {
+		t.Fatalf("job = %+v, want completed preview report", job)
+	}
+	if len(job.Report.InvalidRows) != 1 || job.Report.InvalidRows[0].Table != "observations" || job.Report.InvalidRows[0].SourceID != "22" || job.Report.InvalidRows[0].Reason == "" {
+		t.Fatalf("invalid rows = %+v, want daemon report invalid_rows decoded", job.Report.InvalidRows)
+	}
+	if len(job.Report.ProjectedByProject) != 1 || job.Report.ProjectedByProject[0].Project != "proj-a" || job.Report.ProjectedByProject[0].Projected.Observations != 1 {
+		t.Fatalf("projected_by_project = %+v, want proj-a per-entity counts", job.Report.ProjectedByProject)
+	}
+	if job.Report.Imported.Ambiguous != 2 {
+		t.Fatalf("ambiguous count = %d, want 2", job.Report.Imported.Ambiguous)
+	}
+	if len(job.Report.AmbiguousDuplicates) != 1 || job.Report.AmbiguousDuplicates[0].SourceID != "21" || job.Report.AmbiguousDuplicates[0].Project != "proj-a" || job.Report.AmbiguousDuplicates[0].Title != "Existing duplicate" || job.Report.AmbiguousDuplicates[0].Reason == "" {
+		t.Fatalf("ambiguous duplicates = %+v, want actionable duplicate details", job.Report.AmbiguousDuplicates)
+	}
+}
+
+func TestStartEngramImportExecuteReturnsPreviewAPIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/governance/imports/engram/execute" {
+			t.Fatalf("request = %s %s, want POST /governance/imports/engram/execute", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"fresh engram import preview is required"}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.StartEngramImportExecute(context.Background(), EngramImportRequest{Source: "C:/tmp/engram.db", PreviewID: "missing"})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest || apiErr.Message != "fresh engram import preview is required" {
+		t.Fatalf("StartEngramImportExecute error = %#v, want APIError 400 fresh preview", err)
+	}
+}
+
 // T2.1 — GetSyncSummary tests
 
 func TestGetSyncSummary_DecodesDTOFields(t *testing.T) {

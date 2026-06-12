@@ -3,6 +3,7 @@ package sync
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -133,6 +134,9 @@ func TestLoad(t *testing.T) {
 		{
 			name: "file perms 0644",
 			setup: func(t *testing.T) {
+				if runtime.GOOS == "windows" {
+					t.Skip("file permission checks are not enforced on Windows")
+				}
 				clearEnv(t)
 				dir := t.TempDir()
 				path := writeFile(t, dir, validJSON, 0644)
