@@ -105,7 +105,8 @@ func (defaultCockpitRunner) LoginHiveCloud(_ context.Context, email, password st
 	if resolvedEmail == "" {
 		resolvedEmail = strings.TrimSpace(email)
 	}
-	if err := config.WriteSyncCredentials(apiURL, resolvedEmail, password); err != nil {
+	enable := true
+	if err := config.WriteSyncCredentials(apiURL, resolvedEmail, password, &enable); err != nil {
 		return "", fmt.Errorf("write sync credentials: %w", err)
 	}
 	if cfg.Cloud == nil {

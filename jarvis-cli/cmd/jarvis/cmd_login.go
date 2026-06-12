@@ -68,7 +68,7 @@ var loginCmd = &cobra.Command{
 
 		// Write sync.json with new credentials (preserving supported optional settings).
 		// token is intentionally excluded — hive-daemon uses DisallowUnknownFields().
-		if writeErr := config.WriteSyncCredentials(cfg.APIURL, email, password); writeErr != nil {
+		if writeErr := config.WriteSyncCredentials(cfg.APIURL, email, password, nil); writeErr != nil {
 			return writeErr
 		}
 

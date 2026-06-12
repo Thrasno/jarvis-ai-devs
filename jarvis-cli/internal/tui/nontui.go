@@ -354,7 +354,8 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		cfg.Cloud = nil
 		cfg.Email = ""
 	} else if strings.TrimSpace(cfg.Email) != "" && strings.TrimSpace(pendingPassword) != "" {
-		if err := writeSyncJSON(cfg.APIURL, cfg.Email, pendingPassword); err != nil {
+		enable := true
+		if err := writeSyncJSON(cfg.APIURL, cfg.Email, pendingPassword, &enable); err != nil {
 			return fmt.Errorf("write sync.json: %w. Ver docs/setup-recovery.md", err)
 		}
 	}

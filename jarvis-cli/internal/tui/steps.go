@@ -194,8 +194,10 @@ func (m Model) handleLoginResult(msg loginResultMsg) (tea.Model, tea.Cmd) {
 // Only api_url, email, and password are stored — token is intentionally
 // excluded because hive-daemon's syncFileConfig uses DisallowUnknownFields()
 // and manages the token internally after login.
-func writeSyncJSON(apiURL, email, password string) error {
-	return config.WriteSyncCredentials(apiURL, email, password)
+// autoSync follows the tri-state semantics of config.WriteSyncCredentials:
+// nil preserves any existing value, &true forces enable, &false forces disable.
+func writeSyncJSON(apiURL, email, password string, autoSync *bool) error {
+	return config.WriteSyncCredentials(apiURL, email, password, autoSync)
 }
 
 // Override Update to also handle loginResultMsg (needs to be wired in root Update).
@@ -1113,7 +1115,8 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			m.cfg.Cloud = nil
 			m.cfg.Email = ""
 		} else if strings.TrimSpace(m.Email) != "" && strings.TrimSpace(m.Password) != "" {
-			if err := writeSyncJSON(m.cfg.APIURL, m.Email, m.Password); err != nil {
+			enable := true
+			if err := writeSyncJSON(m.cfg.APIURL, m.Email, m.Password, &enable); err != nil {
 				return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: write sync.json: %v. Ver docs/setup-recovery.md", err), done: true, failed: true}
 			}
 			if m.cfg.Cloud == nil {
