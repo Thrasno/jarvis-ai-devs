@@ -3,11 +3,13 @@ package sddruntime
 // ObservedOpenCodeConfig holds parsed state from opencode.json.
 // It is nested on ObservedRuntime and populated only when the active agent is
 // "opencode". The Claude adapter leaves this at its zero value, which is safe:
-// StructureValid==false and all slices nil — no invariant checks will fire.
+// ParseSucceeded==false and all slices nil — no invariant checks will fire.
 type ObservedOpenCodeConfig struct {
-	// StructureValid is true only when opencode.json was present, non-empty,
-	// and successfully parsed. All other fields are meaningful only when this is true.
-	StructureValid bool
+	// ParseSucceeded is true only when opencode.json was found, non-empty,
+	// and unmarshalled without error. It does NOT mean the config is semantically
+	// valid — individual fields may still be zero. All other fields are meaningful
+	// only when this is true.
+	ParseSucceeded bool
 
 	// ShareMode is the value of the top-level "share" key. Expected: "disabled".
 	ShareMode string

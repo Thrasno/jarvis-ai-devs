@@ -33,7 +33,7 @@ type ObservedRuntime struct {
 	NonOwnedChanges          []string
 	UnknownChanges           []string
 	// OpenCode carries parsed opencode.json state for the opencode agent.
-	// The Claude adapter leaves this at its zero value (StructureValid==false),
+	// The Claude adapter leaves this at its zero value (ParseSucceeded==false),
 	// which is safe — all verifier checks on this field are agent-gated.
 	OpenCode ObservedOpenCodeConfig
 }

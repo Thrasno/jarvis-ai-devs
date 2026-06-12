@@ -44,7 +44,7 @@ type openCodeMCPEntry struct {
 
 // parseOpenCodeConfig reads and parses opencode.json at path, returning an
 // ObservedOpenCodeConfig. On any error (file not found, empty, malformed JSON),
-// it returns a zero-value struct with StructureValid==false. Errors are never
+// it returns a zero-value struct with ParseSucceeded==false. Errors are never
 // propagated — callers treat parse failure as incomplete observation only.
 func parseOpenCodeConfig(path string) sddruntime.ObservedOpenCodeConfig {
 	data, err := os.ReadFile(path)
@@ -61,7 +61,7 @@ func parseOpenCodeConfig(path string) sddruntime.ObservedOpenCodeConfig {
 	}
 
 	cfg := sddruntime.ObservedOpenCodeConfig{
-		StructureValid: true,
+		ParseSucceeded: true,
 		ShareMode:      doc.Share,
 		DefaultAgent:   doc.DefaultAgent,
 	}
@@ -139,19 +139,27 @@ func hasSecretDenyPatterns(read map[string]string) bool {
 }
 
 // isMCPCommandNonEmpty returns true when the raw JSON for the command field
-// decodes to a non-empty array of strings.
+// decodes to a non-empty array, non-empty/non-whitespace string, or non-empty
+// object. Returns false for null, empty array, empty/whitespace-only string,
+// empty object, or any other value.
 func isMCPCommandNonEmpty(raw json.RawMessage) bool {
 	if len(raw) == 0 {
 		return false
 	}
+	// Try array of strings first (most common format).
 	var arr []string
-	if err := json.Unmarshal(raw, &arr); err != nil {
-		// Could be a plain string command — treat as non-empty.
-		var s string
-		if err2 := json.Unmarshal(raw, &s); err2 == nil {
-			return strings.TrimSpace(s) != ""
-		}
-		return false
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		return len(arr) > 0
 	}
-	return len(arr) > 0
+	// Try plain string command.
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return strings.TrimSpace(s) != ""
+	}
+	// Try object format (e.g. {"bin": "hive-daemon", "args": []}).
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		return len(obj) > 0
+	}
+	return false
 }

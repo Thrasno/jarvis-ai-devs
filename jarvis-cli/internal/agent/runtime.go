@@ -114,7 +114,7 @@ func observeRuntimeWithConfig(configDir string, plan sddruntime.RuntimePlan, cfg
 	}
 
 	// Populate OpenCode-specific observed config for the opencode agent.
-	// Claude leaves this at zero value (StructureValid==false), which is safe.
+	// Claude leaves this at zero value (ParseSucceeded==false), which is safe.
 	var openCodeCfg sddruntime.ObservedOpenCodeConfig
 	if plan.Agent == "opencode" {
 		settingsPath := filepath.Join(configDir, filepath.Base(plan.Paths.Settings))

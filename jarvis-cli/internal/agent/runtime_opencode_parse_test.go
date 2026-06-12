@@ -39,8 +39,8 @@ func TestParseOpenCodeConfig_ValidFullJSON(t *testing.T) {
 
 	got := parseOpenCodeConfig(path)
 
-	if !got.StructureValid {
-		t.Fatal("StructureValid must be true for valid JSON")
+	if !got.ParseSucceeded {
+		t.Fatal("ParseSucceeded must be true for valid JSON")
 	}
 	if got.ShareMode != "disabled" {
 		t.Errorf("ShareMode = %q, want %q", got.ShareMode, "disabled")
@@ -86,8 +86,8 @@ func TestParseOpenCodeConfig_ValidFullJSON(t *testing.T) {
 func TestParseOpenCodeConfig_MissingFile(t *testing.T) {
 	got := parseOpenCodeConfig(filepath.Join(t.TempDir(), "nonexistent.json"))
 
-	if got.StructureValid {
-		t.Error("StructureValid must be false for missing file")
+	if got.ParseSucceeded {
+		t.Error("ParseSucceeded must be false for missing file")
 	}
 	// All other fields should be zero.
 	if got.ShareMode != "" {
@@ -103,8 +103,8 @@ func TestParseOpenCodeConfig_EmptyFile(t *testing.T) {
 
 	got := parseOpenCodeConfig(path)
 
-	if got.StructureValid {
-		t.Error("StructureValid must be false for empty file")
+	if got.ParseSucceeded {
+		t.Error("ParseSucceeded must be false for empty file")
 	}
 }
 
@@ -116,13 +116,13 @@ func TestParseOpenCodeConfig_MalformedJSON(t *testing.T) {
 
 	got := parseOpenCodeConfig(path)
 
-	if got.StructureValid {
-		t.Error("StructureValid must be false for malformed JSON")
+	if got.ParseSucceeded {
+		t.Error("ParseSucceeded must be false for malformed JSON")
 	}
 }
 
 func TestParseOpenCodeConfig_MissingOptionalFields(t *testing.T) {
-	// Valid JSON but missing optional fields — StructureValid must be true,
+	// Valid JSON but missing optional fields — ParseSucceeded must be true,
 	// missing fields at zero values.
 	content := `{"share": "disabled"}`
 	path := filepath.Join(t.TempDir(), "opencode.json")
@@ -132,8 +132,8 @@ func TestParseOpenCodeConfig_MissingOptionalFields(t *testing.T) {
 
 	got := parseOpenCodeConfig(path)
 
-	if !got.StructureValid {
-		t.Error("StructureValid must be true for valid JSON even with missing optional fields")
+	if !got.ParseSucceeded {
+		t.Error("ParseSucceeded must be true for valid JSON even with missing optional fields")
 	}
 	if got.ShareMode != "disabled" {
 		t.Errorf("ShareMode = %q, want %q", got.ShareMode, "disabled")
@@ -163,10 +163,70 @@ func TestParseOpenCodeConfig_HiveMCPWithEmptyCommand(t *testing.T) {
 
 	got := parseOpenCodeConfig(path)
 
-	if !got.StructureValid {
-		t.Error("StructureValid must be true for valid JSON")
+	if !got.ParseSucceeded {
+		t.Error("ParseSucceeded must be true for valid JSON")
 	}
 	if got.MCPHivePresent {
 		t.Error("MCPHivePresent must be false when command array is empty")
+	}
+}
+
+func TestIsMCPCommandNonEmpty(t *testing.T) {
+	tests := []struct {
+		name          string
+		commandJSON   string // value for "command" key inside the hive MCP entry
+		wantPresent   bool
+	}{
+		{
+			name:        "null command",
+			commandJSON: `null`,
+			wantPresent: false,
+		},
+		{
+			name:        "empty string command",
+			commandJSON: `""`,
+			wantPresent: false,
+		},
+		{
+			name:        "whitespace-only string command",
+			commandJSON: `"   "`,
+			wantPresent: false,
+		},
+		{
+			name:        "non-empty string command",
+			commandJSON: `"hive-daemon"`,
+			wantPresent: true,
+		},
+		{
+			name:        "empty array command",
+			commandJSON: `[]`,
+			wantPresent: false,
+		},
+		{
+			name:        "non-empty array command",
+			commandJSON: `["hive-daemon"]`,
+			wantPresent: true,
+		},
+		{
+			name:        "object format command",
+			commandJSON: `{"bin": "hive-daemon"}`,
+			wantPresent: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := `{"mcp": {"hive": {"type": "local", "command": ` + tt.commandJSON + `}}}`
+			path := filepath.Join(t.TempDir(), "opencode.json")
+			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+				t.Fatalf("write file: %v", err)
+			}
+
+			got := parseOpenCodeConfig(path)
+
+			if got.MCPHivePresent != tt.wantPresent {
+				t.Errorf("MCPHivePresent = %v, want %v (command: %s)", got.MCPHivePresent, tt.wantPresent, tt.commandJSON)
+			}
+		})
 	}
 }

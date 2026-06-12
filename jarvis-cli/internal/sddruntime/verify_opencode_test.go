@@ -3,14 +3,14 @@ package sddruntime
 import "testing"
 
 // TestObservedOpenCodeConfig_ZeroValueIsSafe asserts that the zero value of
-// ObservedOpenCodeConfig has StructureValid == false and all slice fields nil/empty.
+// ObservedOpenCodeConfig has ParseSucceeded == false and all slice fields nil/empty.
 // This guards the Claude adapter regression: when OpenCode field is not populated
 // (zero value), no false-positive checks fire.
 func TestObservedOpenCodeConfig_ZeroValueIsSafe(t *testing.T) {
 	var cfg ObservedOpenCodeConfig
 
-	if cfg.StructureValid {
-		t.Error("zero value StructureValid must be false")
+	if cfg.ParseSucceeded {
+		t.Error("zero value ParseSucceeded must be false")
 	}
 	if cfg.ShareMode != "" {
 		t.Errorf("zero value ShareMode must be empty, got %q", cfg.ShareMode)
@@ -63,17 +63,17 @@ func TestObservedRuntime_HasOpenCodeField(t *testing.T) {
 
 	// The field must exist and be addressable.
 	cfg := r.OpenCode
-	if cfg.StructureValid {
-		t.Error("ObservedRuntime.OpenCode zero value must have StructureValid == false")
+	if cfg.ParseSucceeded {
+		t.Error("ObservedRuntime.OpenCode zero value must have ParseSucceeded == false")
 	}
 
 	// Assigning a populated struct must work.
 	r.OpenCode = ObservedOpenCodeConfig{
-		StructureValid: true,
+		ParseSucceeded: true,
 		ShareMode:      "disabled",
 		DefaultAgent:   "sdd-orchestrator",
 	}
-	if !r.OpenCode.StructureValid {
+	if !r.OpenCode.ParseSucceeded {
 		t.Error("assigned ObservedOpenCodeConfig not reflected on ObservedRuntime")
 	}
 	if r.OpenCode.ShareMode != "disabled" {

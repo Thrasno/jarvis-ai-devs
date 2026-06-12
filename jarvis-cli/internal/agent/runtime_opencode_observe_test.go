@@ -55,7 +55,7 @@ func validOpenCodeJSON(t *testing.T) []byte {
 
 // TestObserveRuntimeWithConfig_OpenCode_PopulatesOpenCodeConfig asserts that
 // when an OpenCode agent observes a valid opencode.json, the resulting
-// ObservedRuntime.OpenCode has StructureValid==true and key fields set.
+// ObservedRuntime.OpenCode has ParseSucceeded==true and key fields set.
 func TestObserveRuntimeWithConfig_OpenCode_PopulatesOpenCodeConfig(t *testing.T) {
 	home := t.TempDir()
 	a := &OpenCodeAgent{home: home, templatesFS: testTemplatesFS}
@@ -84,8 +84,8 @@ func TestObserveRuntimeWithConfig_OpenCode_PopulatesOpenCodeConfig(t *testing.T)
 		t.Fatalf("ObserveRuntime: %v", err)
 	}
 
-	if !observed.OpenCode.StructureValid {
-		t.Fatal("OpenCode.StructureValid must be true for valid opencode.json")
+	if !observed.OpenCode.ParseSucceeded {
+		t.Fatal("OpenCode.ParseSucceeded must be true for valid opencode.json")
 	}
 	if observed.OpenCode.DefaultAgent != "sdd-orchestrator" {
 		t.Errorf("OpenCode.DefaultAgent = %q, want %q", observed.OpenCode.DefaultAgent, "sdd-orchestrator")
@@ -100,7 +100,7 @@ func TestObserveRuntimeWithConfig_OpenCode_PopulatesOpenCodeConfig(t *testing.T)
 
 // TestObserveRuntimeWithConfig_Claude_LeavesOpenCodeConfigAtZero asserts that
 // the Claude adapter never populates ObservedRuntime.OpenCode — it must remain
-// at its zero value (StructureValid==false).
+// at its zero value (ParseSucceeded==false).
 func TestObserveRuntimeWithConfig_Claude_LeavesOpenCodeConfigAtZero(t *testing.T) {
 	home := t.TempDir()
 	a := &ClaudeAgent{home: home, templatesFS: testTemplatesFS}
@@ -124,8 +124,8 @@ func TestObserveRuntimeWithConfig_Claude_LeavesOpenCodeConfigAtZero(t *testing.T
 		t.Fatalf("ObserveRuntime: %v", err)
 	}
 
-	if observed.OpenCode.StructureValid {
-		t.Error("Claude adapter must leave OpenCode.StructureValid == false")
+	if observed.OpenCode.ParseSucceeded {
+		t.Error("Claude adapter must leave OpenCode.ParseSucceeded == false")
 	}
 	if observed.OpenCode.ShareMode != "" {
 		t.Errorf("Claude adapter must leave OpenCode.ShareMode empty, got %q", observed.OpenCode.ShareMode)
@@ -133,7 +133,7 @@ func TestObserveRuntimeWithConfig_Claude_LeavesOpenCodeConfigAtZero(t *testing.T
 }
 
 // TestObserveRuntimeWithConfig_OpenCode_MissingSettingsFile_ZeroOpenCode asserts
-// that when opencode.json is absent, OpenCode.StructureValid remains false and
+// that when opencode.json is absent, OpenCode.ParseSucceeded remains false and
 // observation does not error.
 func TestObserveRuntimeWithConfig_OpenCode_MissingSettingsFile_ZeroOpenCode(t *testing.T) {
 	plan, err := sddruntime.Build("opencode")
@@ -158,7 +158,7 @@ func TestObserveRuntimeWithConfig_OpenCode_MissingSettingsFile_ZeroOpenCode(t *t
 		t.Fatalf("observeRuntime: %v", err)
 	}
 
-	if observed.OpenCode.StructureValid {
-		t.Error("OpenCode.StructureValid must be false when opencode.json is absent")
+	if observed.OpenCode.ParseSucceeded {
+		t.Error("OpenCode.ParseSucceeded must be false when opencode.json is absent")
 	}
 }
