@@ -186,17 +186,18 @@ type DeleteProjectResult struct {
 }
 
 type Service struct {
-	store  readStore
-	backup backupStore
-	now    func() time.Time
+	store   readStore
+	backup  backupStore
+	now     func() time.Time
+	imports *engramImportJobManager
 }
 
 func NewService(store readStore) *Service {
-	return &Service{store: store, now: time.Now}
+	return &Service{store: store, now: time.Now, imports: newEngramImportJobManager()}
 }
 
 func NewServiceWithBackup(store readStore, backup backupStore) *Service {
-	return &Service{store: store, backup: backup, now: time.Now}
+	return &Service{store: store, backup: backup, now: time.Now, imports: newEngramImportJobManager()}
 }
 
 func (s *Service) Projects(ctx context.Context) ([]Project, error) {

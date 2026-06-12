@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -39,22 +40,28 @@ type Counts struct {
 	Observations int
 }
 
+type ProjectImpact struct {
+	Project string
+	Counts  Counts
+}
+
 type InvalidRow struct {
-	Table    string
-	SourceID string
-	Reason   string
+	Table    string `json:"table"`
+	SourceID string `json:"source_id"`
+	Reason   string `json:"reason"`
 }
 
 type Analysis struct {
-	SourcePath        string
-	SourceFingerprint string
-	Projects          []string
-	Counts            Counts
-	SkippedRelations  int
-	InvalidRows       []InvalidRow
-	Sessions          []hivedb.ImportSession
-	Prompts           []hivedb.ImportPrompt
-	Memories          []hivedb.ImportMemory
+	SourcePath         string
+	SourceFingerprint  string
+	Projects           []string
+	ProjectedByProject []ProjectImpact
+	Counts             Counts
+	SkippedRelations   int
+	InvalidRows        []InvalidRow
+	Sessions           []hivedb.ImportSession
+	Prompts            []hivedb.ImportPrompt
+	Memories           []hivedb.ImportMemory
 }
 
 type ImportRequest struct {
@@ -63,11 +70,19 @@ type ImportRequest struct {
 }
 
 type ImportReport struct {
-	SourcePath        string
-	SourceFingerprint string
-	Counts            hivedb.ImportCounts
-	SkippedRelations  int
-	InvalidRows       []InvalidRow
+	SourcePath          string
+	SourceFingerprint   string
+	Counts              hivedb.ImportCounts
+	AmbiguousDuplicates []hivedb.ImportAmbiguousDuplicate
+	ProjectedByProject  []ProjectImpact
+	SkippedRelations    int
+	InvalidRows         []InvalidRow
+}
+
+type sourceSnapshot struct {
+	path        string
+	fingerprint string
+	cleanup     func()
 }
 
 func ResolveSource(options SourceOptions) (Source, error) {
@@ -101,7 +116,13 @@ func ResolveSource(options SourceOptions) (Source, error) {
 }
 
 func AnalyzeSource(ctx context.Context, source Source) (Analysis, error) {
-	sqlDB, err := openReadOnly(source.Path)
+	snapshot, err := createSourceSnapshot(ctx, source.Path)
+	if err != nil {
+		return Analysis{}, err
+	}
+	defer snapshot.cleanup()
+
+	sqlDB, err := openReadOnly(snapshot.path)
 	if err != nil {
 		return Analysis{}, err
 	}
@@ -110,7 +131,7 @@ func AnalyzeSource(ctx context.Context, source Source) (Analysis, error) {
 	if err := validateSchema(ctx, sqlDB); err != nil {
 		return Analysis{}, err
 	}
-	analysis := Analysis{SourcePath: source.Path, SourceFingerprint: fingerprint(source.Path)}
+	analysis := Analysis{SourcePath: source.Path, SourceFingerprint: snapshot.fingerprint}
 	projects := map[string]struct{}{}
 	validSessions := map[string]map[string]struct{}{}
 	if err := readSessions(ctx, sqlDB, &analysis, projects, validSessions); err != nil {
@@ -127,7 +148,37 @@ func AnalyzeSource(ctx context.Context, source Source) (Analysis, error) {
 		analysis.Projects = append(analysis.Projects, project)
 	}
 	sort.Strings(analysis.Projects)
+	analysis.ProjectedByProject = projectedByProject(analysis)
 	return analysis, nil
+}
+
+func projectedByProject(analysis Analysis) []ProjectImpact {
+	countsByProject := make(map[string]Counts)
+	for _, session := range analysis.Sessions {
+		counts := countsByProject[session.Project]
+		counts.Sessions++
+		countsByProject[session.Project] = counts
+	}
+	for _, prompt := range analysis.Prompts {
+		counts := countsByProject[prompt.Project]
+		counts.Prompts++
+		countsByProject[prompt.Project] = counts
+	}
+	for _, memory := range analysis.Memories {
+		counts := countsByProject[memory.Project]
+		counts.Observations++
+		countsByProject[memory.Project] = counts
+	}
+	projects := make([]string, 0, len(countsByProject))
+	for project := range countsByProject {
+		projects = append(projects, project)
+	}
+	sort.Strings(projects)
+	impacts := make([]ProjectImpact, 0, len(projects))
+	for _, project := range projects {
+		impacts = append(impacts, ProjectImpact{Project: project, Counts: countsByProject[project]})
+	}
+	return impacts
 }
 
 func BuildImportBatch(analysis Analysis) hivedb.ImportBatch {
@@ -143,11 +194,36 @@ func ImportSource(ctx context.Context, hive *hivedb.DB, request ImportRequest) (
 	if err != nil {
 		return ImportReport{}, err
 	}
-	return ImportReport{SourcePath: analysis.SourcePath, SourceFingerprint: analysis.SourceFingerprint, Counts: result.Counts, SkippedRelations: analysis.SkippedRelations, InvalidRows: analysis.InvalidRows}, nil
+	return ImportReport{SourcePath: analysis.SourcePath, SourceFingerprint: analysis.SourceFingerprint, Counts: result.Counts, AmbiguousDuplicates: result.AmbiguousDuplicates, ProjectedByProject: analysis.ProjectedByProject, SkippedRelations: analysis.SkippedRelations, InvalidRows: analysis.InvalidRows}, nil
+}
+
+func createSourceSnapshot(ctx context.Context, path string) (sourceSnapshot, error) {
+	tempDir, err := os.MkdirTemp("", "jarvis-engram-import-*")
+	if err != nil {
+		return sourceSnapshot{}, fmt.Errorf("prepare engram source snapshot: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(tempDir) }
+	snapshotPath := filepath.Join(tempDir, filepath.Base(path))
+
+	sqlDB, err := sql.Open("sqlite", sqliteFileURI(path))
+	if err != nil {
+		cleanup()
+		return sourceSnapshot{}, fmt.Errorf("open engram source for snapshot: %w", err)
+	}
+	defer sqlDB.Close()
+	if _, err := sqlDB.ExecContext(ctx, `PRAGMA busy_timeout=5000`); err != nil {
+		cleanup()
+		return sourceSnapshot{}, fmt.Errorf("configure engram source snapshot: %w", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `VACUUM main INTO ?`, snapshotPath); err != nil {
+		cleanup()
+		return sourceSnapshot{}, fmt.Errorf("snapshot engram source: %w", err)
+	}
+	return sourceSnapshot{path: snapshotPath, fingerprint: fingerprint(snapshotPath), cleanup: cleanup}, nil
 }
 
 func openReadOnly(path string) (*sql.DB, error) {
-	dsn := "file:" + filepath.ToSlash(path) + "?mode=ro"
+	dsn := sqliteFileURI(path)
 	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open engram source: %w", err)
@@ -157,6 +233,11 @@ func openReadOnly(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("configure engram read-only source: %w", err)
 	}
 	return sqlDB, nil
+}
+
+func sqliteFileURI(path string) string {
+	escapedPath := strings.ReplaceAll(url.PathEscape(filepath.ToSlash(path)), "%2F", "/")
+	return "file:" + escapedPath + "?mode=ro"
 }
 
 func validateSchema(ctx context.Context, sqlDB *sql.DB) error {

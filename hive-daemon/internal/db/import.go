@@ -87,13 +87,22 @@ type ImportBatch struct {
 }
 
 type ImportCounts struct {
-	Imported int
-	Reused   int
+	Imported  int
+	Reused    int
+	Ambiguous int
+}
+
+type ImportAmbiguousDuplicate struct {
+	SourceID string `json:"source_id"`
+	Project  string `json:"project"`
+	Title    string `json:"title"`
+	Reason   string `json:"reason"`
 }
 
 type ImportResult struct {
-	RunID  string
-	Counts ImportCounts
+	RunID               string
+	Counts              ImportCounts
+	AmbiguousDuplicates []ImportAmbiguousDuplicate
 }
 
 func (d *DB) ImportEngramBatch(ctx context.Context, run ImportRun, batch ImportBatch) (ImportResult, error) {
@@ -124,11 +133,16 @@ func (d *DB) ImportEngramBatch(ctx context.Context, run ImportRun, batch ImportB
 		addImportCount(&result.Counts, imported)
 	}
 	for _, memory := range batch.Memories {
-		imported, err := importMemory(ctx, tx, run, memory)
+		imported, ambiguous, err := importMemory(ctx, tx, run, memory)
 		if err != nil {
 			return ImportResult{}, err
 		}
-		addImportCount(&result.Counts, imported)
+		if ambiguous {
+			result.Counts.Ambiguous++
+			result.AmbiguousDuplicates = append(result.AmbiguousDuplicates, ImportAmbiguousDuplicate{SourceID: memory.SourceID, Project: memory.Project, Title: memory.Title, Reason: "multiple active Hive memories match project and title"})
+		} else {
+			addImportCount(&result.Counts, imported)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -215,18 +229,25 @@ VALUES (?, ?, ?, ?)`, syncID, prompt.Project, prompt.Content, defaultTime(prompt
 	return true, insertImportAlias(ctx, tx, run, key, "user_prompts", strconv.FormatInt(id, 10), syncID, prompt.ContentHash)
 }
 
-func importMemory(ctx context.Context, tx *sql.Tx, run ImportRun, memory ImportMemory) (bool, error) {
+func importMemory(ctx context.Context, tx *sql.Tx, run ImportRun, memory ImportMemory) (bool, bool, error) {
 	key := SourceAliasKey{SourceSystem: run.SourceSystem, SourceTable: "observations", SourceID: memory.SourceID, SourceProject: memory.Project}
 	if alias, found, err := findImportAlias(ctx, tx, key); err != nil || found {
-		return false, validateReusedImportAlias(alias, found, memory.ContentHash, err)
+		return false, false, validateReusedImportAlias(alias, found, memory.ContentHash, err)
+	}
+	ambiguous, err := ambiguousMemoryDuplicate(ctx, tx, memory)
+	if err != nil {
+		return false, false, err
+	}
+	if ambiguous {
+		return false, true, nil
 	}
 
 	sessionAlias, found, err := findImportAlias(ctx, tx, SourceAliasKey{SourceSystem: run.SourceSystem, SourceTable: "sessions", SourceID: memory.SessionSourceID, SourceProject: memory.Project})
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if !found {
-		return false, fmt.Errorf("%w: %s", ErrImportSessionAliasNotFound, memory.SessionSourceID)
+		return false, false, fmt.Errorf("%w: %s", ErrImportSessionAliasNotFound, memory.SessionSourceID)
 	}
 
 	syncID := uuid.NewString()
@@ -239,17 +260,29 @@ VALUES (?, ?, ?, ?, ?, ?, '[]', '[]', ?, ?, ?, ?)`,
 		syncID, memory.Project, memory.TopicKey, memory.Category, memory.Title, memory.Content, importActorID, createdAt, updatedAt, sessionAlias.HivePK,
 	)
 	if err != nil {
-		return false, fmt.Errorf("insert imported memory %s: %w", memory.SourceID, err)
+		return false, false, fmt.Errorf("insert imported memory %s: %w", memory.SourceID, err)
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
-		return false, fmt.Errorf("read imported memory id: %w", err)
+		return false, false, fmt.Errorf("read imported memory id: %w", err)
 	}
 	mem := &models.Memory{Project: memory.Project, TopicKey: memory.TopicKey, Category: memory.Category, Title: memory.Title, Content: memory.Content, CreatedBy: importActorID, CreatedAt: parseImportTime(createdAt), UpdatedAt: parseImportTime(updatedAt), SessionID: sessionAlias.HivePK}
 	if err := insertMemoryMutation(tx, memoryMutationRecord{EventID: uuid.NewString(), EntitySyncID: syncID, Project: memory.Project, Op: MutationOpCreate, OccurredAt: updatedAt, ActorID: importActorID, Payload: mutationPayload{Memory: memoryPayloadFromModel(mem, syncID, importActorID, parseImportTime(updatedAt))}}); err != nil {
-		return false, fmt.Errorf("journal imported memory mutation: %w", err)
+		return false, false, fmt.Errorf("journal imported memory mutation: %w", err)
 	}
-	return true, insertImportAlias(ctx, tx, run, key, "memories", strconv.FormatInt(id, 10), syncID, memory.ContentHash)
+	return true, false, insertImportAlias(ctx, tx, run, key, "memories", strconv.FormatInt(id, 10), syncID, memory.ContentHash)
+}
+
+func ambiguousMemoryDuplicate(ctx context.Context, tx *sql.Tx, memory ImportMemory) (bool, error) {
+	var count int
+	err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM memories
+WHERE project = ? AND title = ? AND deleted_at IS NULL`, memory.Project, memory.Title).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("detect ambiguous imported memory %s: %w", memory.SourceID, err)
+	}
+	return count > 1, nil
 }
 
 func validateReusedImportAlias(alias ImportSourceAlias, found bool, contentHash string, err error) error {
