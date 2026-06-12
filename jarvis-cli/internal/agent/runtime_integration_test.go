@@ -630,7 +630,15 @@ func installOptionalManagedArtifacts(configDir string) error {
 	if err := os.MkdirAll(configDir+"/output-styles", 0755); err != nil {
 		return err
 	}
+	// Claude prompt hook: hive-hooks/ directory.
 	if err := os.MkdirAll(configDir+"/hive-hooks", 0755); err != nil {
+		return err
+	}
+	// OpenCode prompt hook: plugins/hive.ts file.
+	if err := os.MkdirAll(configDir+"/plugins", 0755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(configDir+"/plugins/hive.ts", []byte("// hive plugin"), 0644); err != nil {
 		return err
 	}
 	return nil
