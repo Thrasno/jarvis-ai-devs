@@ -56,7 +56,19 @@ SDD is the structured planning layer for substantial changes.
 
 ### SDD Entry Routing
 
-Route SDD commands deterministically:
+Route SDD commands deterministically. When the `jarvis` CLI is available, use the native dispatcher before inferring routing from artifacts or prose:
+
+```
+jarvis sdd status <change> --json          # authoritative ChangeStatus (schema: jarvis.sdd-status)
+jarvis sdd continue <change> --json        # next recommended phase or blocked reasons
+```
+
+The JSON contract fields used for routing:
+- `nextRecommended`: stable phase token (`sdd-explore` … `sdd-archive`) or `none` / empty string when all done.
+- `blockedReasons`: non-empty array blocks apply, verify, and archive. Do NOT route to a blocked phase.
+- `dependencies[phase]`: `blocked | ready | all_done` per phase.
+
+When `jarvis sdd continue` is not available (no CLI), fall back to artifact inspection:
 - `/sdd-new <change>` starts proposal flow after init/preflight.
 - `/sdd-ff <change>` runs proposal, spec, design, and tasks in dependency order.
 - `/sdd-continue [change]` resumes from the next incomplete dependency-ready phase.
