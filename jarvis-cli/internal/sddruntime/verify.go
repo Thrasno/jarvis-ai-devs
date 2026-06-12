@@ -52,6 +52,12 @@ func Verify(agent string, observed ObservedRuntime) IntegrityReport {
 	verifyNonOwnedDrift(&report, observed.NonOwnedChanges)
 	verifyUnknownDrift(&report, observed.UnknownChanges)
 
+	if agent == "opencode" {
+		for _, check := range verifyOpenCodeConfigInvariants(observed.OpenCode) {
+			report.AddCheck(check)
+		}
+	}
+
 	return report
 }
 
@@ -353,10 +359,14 @@ func verifyNonOwnedDrift(report *IntegrityReport, notes []string) {
 }
 
 func driftClassFromStatus(status IntegrityStatus) DriftClass {
-	if status == StatusFail {
+	switch status {
+	case StatusFail:
 		return DriftOwned
+	case StatusWarn:
+		return DriftUnknown
+	default:
+		return DriftNone
 	}
-	return DriftNone
 }
 
 func observedLabel(exists bool) string {

@@ -85,6 +85,7 @@ func (e *Engine) verify(provider string, bootstrapLedger bool) (VerifyResult, er
 		Artifacts:           observed.Artifacts,
 		NonOwnedChanges:     observed.NonOwnedChanges,
 		UnknownChanges:      observed.UnknownChanges,
+		OpenCode:            observed.OpenCode,
 	})
 	return VerifyResult{Status: report.Status, Report: report}, nil
 }

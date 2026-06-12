@@ -219,6 +219,9 @@ func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
 			"orchestrator": {Exists: true},
 			"skills":       {Exists: true},
 		},
+		// OpenCode field must be populated for the opencode agent so that
+		// verifier checks do not fire spurious failures.
+		OpenCode: compliantOpenCodeObservedForTUI(),
 	}
 
 	tests := []struct {
@@ -358,7 +361,7 @@ func passingRuntimeObservation(t *testing.T, agentName string, modelAssignments,
 	}
 	contract := sddruntime.DefaultContract()
 
-	return sddruntime.ObservedRuntime{
+	r := sddruntime.ObservedRuntime{
 		Manifest: sddruntime.RuntimeManifestState{
 			Present:            true,
 			ContractVersion:    contract.Version,
@@ -378,5 +381,39 @@ func passingRuntimeObservation(t *testing.T, agentName string, modelAssignments,
 			"orchestrator": {Exists: true},
 			"skills":       {Exists: true},
 		},
+	}
+	if agentName == "opencode" {
+		r.OpenCode = compliantOpenCodeObservedForTUI()
+	}
+	return r
+}
+
+// compliantOpenCodeObservedForTUI returns an ObservedOpenCodeConfig with all
+// invariant fields set to their canonical passing values. Used by test helpers
+// in this package that build ObservedRuntime for the opencode agent without
+// going through the full wizard flow.
+func compliantOpenCodeObservedForTUI() sddruntime.ObservedOpenCodeConfig {
+	subagents := []string{
+		"sdd-explore", "sdd-propose", "sdd-spec", "sdd-design",
+		"sdd-tasks", "sdd-apply", "sdd-verify", "sdd-archive",
+		"sdd-init", "sdd-onboard",
+		"jd-judge-a", "jd-judge-b", "jd-fix-agent",
+	}
+	return sddruntime.ObservedOpenCodeConfig{
+		ParseSucceeded:     true,
+		ShareMode:          "disabled",
+		DefaultAgent:       "sdd-orchestrator",
+		OrchestratorMode:   "primary",
+		OrchestratorModel:  "legacy=opus",
+		OrchestratorPrompt: "{file:./sdd-orchestrator.md}",
+		AgentNames:         append([]string{"sdd-orchestrator"}, subagents...),
+		HiddenSubagents:    subagents,
+		TaskAllows:         subagents,
+		TaskWildcardDeny:   true,
+		BashWildcardAllow:  true,
+		ReadSecretDenies:   true,
+		MCPHivePresent:     true,
+		MCPContext7Present: true,
+		PluginHiveExists:   true,
 	}
 }
