@@ -2277,7 +2277,8 @@ func TestWriteSyncJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := writeSyncJSON("https://hivemem.dev", "user@example.com", "s3cr3t")
+	enable := true
+	err := writeSyncJSON("https://hivemem.dev", "user@example.com", "s3cr3t", &enable)
 	if err != nil {
 		t.Fatalf("writeSyncJSON: %v", err)
 	}
@@ -2293,9 +2294,12 @@ func TestWriteSyncJSON(t *testing.T) {
 	if !strings.Contains(string(data), "user@example.com") {
 		t.Errorf("expected email in sync.json, got: %s", data)
 	}
+	if !strings.Contains(string(data), `"auto_sync":true`) {
+		t.Errorf("expected auto_sync:true in sync.json, got: %s", data)
+	}
 }
 
-func TestWriteSyncJSON_PreservesAutoSync(t *testing.T) {
+func TestWriteSyncJSON_ForceEnablesAutoSync(t *testing.T) {
 	tmpHome := t.TempDir()
 	setTestHome(t, tmpHome)
 	jarvisDir := filepath.Join(tmpHome, ".jarvis")
@@ -2303,12 +2307,14 @@ func TestWriteSyncJSON_PreservesAutoSync(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	seed := `{"api_url":"https://old.dev","email":"old@example.com","password":"old","auto_sync":true}`
+	// Seed the file with auto_sync:false to confirm the helper forces it to true.
+	seed := `{"api_url":"https://old.dev","email":"old@example.com","password":"old","auto_sync":false}`
 	if err := os.WriteFile(filepath.Join(jarvisDir, "sync.json"), []byte(seed), 0600); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := writeSyncJSON("https://hivemem.dev", "user@example.com", "s3cr3t"); err != nil {
+	enable := true
+	if err := writeSyncJSON("https://hivemem.dev", "user@example.com", "s3cr3t", &enable); err != nil {
 		t.Fatalf("writeSyncJSON: %v", err)
 	}
 
@@ -2318,7 +2324,7 @@ func TestWriteSyncJSON_PreservesAutoSync(t *testing.T) {
 	}
 	body := string(data)
 	if !strings.Contains(body, `"auto_sync":true`) {
-		t.Fatalf("expected auto_sync to be preserved, got: %s", body)
+		t.Fatalf("expected auto_sync forced to true, got: %s", body)
 	}
 	if !strings.Contains(body, "user@example.com") {
 		t.Fatalf("expected updated credentials, got: %s", body)
