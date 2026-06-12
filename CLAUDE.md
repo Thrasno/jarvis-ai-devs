@@ -187,15 +187,19 @@ Do not skip planning for architectural, cross-component, or high-risk changes.
 
 The backlog is managed through Todoist.
 
+Use `docs/todoist-backlog-guide.md` for the operational workflow, API v1 endpoints, response parsing gotchas, and safe token handling.
+
+The repo backlog hierarchy is project `Jarvis-Dev` with parent task `JARVIS`.
+
 Todoist API token location:
 
 ```text
-~/.config/tokens
+~/.config/tokens/todoist.env
 ```
 
-Agents may use this token only when explicitly required for Todoist API operations.
+Agents may use this token only when explicitly required for Todoist API operations. Parse it safely into an `Authorization: Bearer ...` header; never print, commit, copy, or expose token contents.
 
-Never print, commit, copy, or expose token contents.
+Use `https://api.todoist.com/api/v1/...` for Todoist API calls.
 
 ## Secrets and Local Configuration
 
