@@ -1,11 +1,26 @@
 package tui
 
-import "fmt"
+import (
+	"context"
+	"os"
+	"strings"
 
-// RunTimeline prints the timeline placeholder for MVP 1.
-// Full TUI timeline is deferred to MVP 2.
-func RunTimeline() error {
-	fmt.Println("Timeline coming in MVP 2. Use mem_search for now.")
-	fmt.Println("To search memories: call mem_search from within Claude Code or OpenCode.")
-	return nil
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveui"
+)
+
+// RunTimeline starts the Hive TUI on ScreenTimeline for the given project.
+// baseURL is resolved from env vars (same as the hive command) when empty.
+func RunTimeline(project string) error {
+	baseURL := resolveTimelineDaemonURL()
+	return hiveui.RunTimelineTUI(context.Background(), baseURL, project)
+}
+
+func resolveTimelineDaemonURL() string {
+	if u := strings.TrimSpace(os.Getenv("HIVE_DAEMON_URL")); u != "" {
+		return u
+	}
+	if port := strings.TrimSpace(os.Getenv("HIVE_HTTP_PORT")); port != "" {
+		return "http://127.0.0.1:" + port
+	}
+	return "http://127.0.0.1:7438"
 }

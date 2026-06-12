@@ -79,14 +79,19 @@ type MemoryLoader interface {
 }
 
 type Snapshot struct {
-	DashboardState DashboardState
-	DaemonURL      string
-	Projects       []hiveclient.Project
-	Memories       []hiveclient.Memory
-	Health         []hiveclient.Health
-	Warnings       []hiveclient.Warning
-	Backups        []hiveclient.Backup
-	LoadError      error
+	DashboardState    DashboardState
+	DaemonURL         string
+	Projects          []hiveclient.Project
+	Memories          []hiveclient.Memory
+	TimelineMemories  []hiveclient.Memory
+	TimelineTruncated bool // true when the daemon hit the 500-entry timeline limit
+	Health            []hiveclient.Health
+	Warnings          []hiveclient.Warning
+	Backups           []hiveclient.Backup
+	LoadError         error
+	// SyncSummary holds the aggregate sync health from GET /governance/health/summary.
+	// Nil when the daemon predates T14 or the endpoint failed — degrade gracefully.
+	SyncSummary *hiveclient.SyncSummary
 }
 
 type Model struct {
@@ -597,7 +602,7 @@ func (m Model) move(delta int) Model {
 	case ScreenProjects:
 		m.projectIndex = wrapIndex(m.projectIndex+delta, len(m.snapshot.Projects))
 	case ScreenProjectMemories, ScreenTimeline:
-		m.memoryIndex = wrapIndex(m.memoryIndex+delta, len(m.projectMemories()))
+		m.memoryIndex = wrapIndex(m.memoryIndex+delta, len(m.screenMemories()))
 	case ScreenWarnings:
 		m.warningIndex = wrapIndex(m.warningIndex+delta, len(m.snapshot.Warnings))
 	case ScreenBackups:
@@ -619,7 +624,7 @@ func (m Model) open() Model {
 		return m
 	}
 	if m.screen == ScreenProjectMemories || m.screen == ScreenTimeline {
-		if len(m.projectMemories()) == 0 {
+		if len(m.screenMemories()) == 0 {
 			m.message = "No item is available to open."
 			return m
 		}
@@ -1015,6 +1020,17 @@ func (m Model) removeMemoryFromNormalSnapshot(id int64) Model {
 		memories = append(memories, memory)
 	}
 	m.snapshot.Memories = memories
+
+	// Also remove from TimelineMemories so ScreenTimeline does not show a stale entry.
+	timelineMemories := m.snapshot.TimelineMemories[:0]
+	for _, memory := range m.snapshot.TimelineMemories {
+		if memory.ID == id {
+			continue
+		}
+		timelineMemories = append(timelineMemories, memory)
+	}
+	m.snapshot.TimelineMemories = timelineMemories
+
 	if deletedProject != "" {
 		for i := range m.snapshot.Projects {
 			if m.snapshot.Projects[i].Name != deletedProject {
@@ -1026,6 +1042,15 @@ func (m Model) removeMemoryFromNormalSnapshot(id int64) Model {
 			m.snapshot.Projects[i].DeletedMemoryCount++
 			break
 		}
+	}
+	if m.detailReturn == ScreenTimeline {
+		tl := len(m.snapshot.TimelineMemories)
+		if tl == 0 {
+			m.memoryIndex = 0
+		} else {
+			m.memoryIndex = wrapIndex(m.memoryIndex, tl)
+		}
+		return m
 	}
 	if len(m.projectMemories()) == 0 {
 		m.memoryIndex = 0
@@ -2130,7 +2155,12 @@ func trimLastRune(value string) string {
 }
 
 func (m Model) timelineView() string {
-	memories := m.projectMemories()
+	// Use screenMemories() directly so the cursor index (m.memoryIndex) and the
+	// rendered rows are always aligned. The daemon already filters to timeline
+	// categories before populating TimelineMemories; a client-side re-filter
+	// would create an index mismatch.
+	memories := m.screenMemories()
+
 	project := m.selectedProject().Name
 	w := max(m.width, 80)
 	panelW := panelWidth(w)
@@ -2143,6 +2173,9 @@ func (m Model) timelineView() string {
 	sb.WriteString("\n")
 
 	var timelineContent strings.Builder
+	if len(memories) == 0 {
+		timelineContent.WriteString(dimTextStyle.Render("No timeline events for this project yet.") + "\n")
+	}
 	lastDay := ""
 	for i, memory := range memories {
 		day := timelineDateText(memory.CreatedAt)
@@ -2169,11 +2202,14 @@ func (m Model) timelineView() string {
 	}
 	sb.WriteString(borderedPanel(sectionHeader("TIMELINE", panelW)+timelineContent.String(), panelW))
 
+	if m.snapshot.TimelineTruncated {
+		sb.WriteString("\n" + dimTextStyle.Render("(showing first 500 events — use mem_search for older entries)") + "\n")
+	}
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}
 	sb.WriteString("\n")
-	sb.WriteString(helpBar([]KeyHint{{"j/k", "move"}, {"⏎", "open"}, {"esc", "back"}, {"q", "quit"}}, "normal", w))
+	sb.WriteString(helpBar([]KeyHint{{"j/k", "move"}, {"⏎", "open"}, {"esc", "back"}, {"q", "quit"}, {"--project", "jarvis timeline"}}, "normal", w))
 	return sb.String()
 }
 
@@ -2334,6 +2370,35 @@ func (m Model) apiHealthView() string {
 	sb.WriteString(headerRow(crumb, modeBadge("normal"), w))
 	sb.WriteString("\n")
 
+	// SUMMARY panel — prepended before per-project panels.
+	if m.snapshot.SyncSummary == nil {
+		emptyContent := dimTextStyle.Render("Sync summary is not available in the current snapshot.")
+		sb.WriteString(borderedPanel(sectionHeader("SUMMARY", panelW)+emptyContent, panelW))
+	} else {
+		s := m.snapshot.SyncSummary
+		state := summaryHealthState(*s)
+		badge := healthStateBadge(state)
+
+		unsyncedLine := fmt.Sprintf("%dm / %dp / %ds",
+			s.UnsyncedMemories,
+			s.UnsyncedPrompts,
+			s.UnsyncedSessions,
+		)
+		summaryContent := fmt.Sprintf("%s  %s\n%s  %s\n%s  %s\n%s  %s",
+			badge.Render(state), "",
+			dimTextStyle.Render("unsynced"), unsyncedLine,
+			dimTextStyle.Render("last sync"), relativeTime(s.LastSuccessAt),
+			dimTextStyle.Render("last error"), emptyDash(s.LastError),
+		)
+		action := summaryActionLine(state)
+		if action != "" {
+			summaryContent += "\n" + action
+		}
+		sb.WriteString(borderedPanel(sectionHeader("SUMMARY", panelW)+summaryContent, panelW))
+		sb.WriteString("\n")
+	}
+
+	// Per-project CONNECTIVITY and HISTORY panels.
 	if len(m.snapshot.Health) == 0 {
 		emptyContent := dimTextStyle.Render("Health details are not available in the current read-only snapshot.")
 		sb.WriteString(borderedPanel(sectionHeader("CONNECTIVITY", panelW)+emptyContent, panelW))
@@ -2373,7 +2438,48 @@ func healthStateBadge(state string) lipgloss.Style {
 	case "auth failed":
 		return badgeCritical
 	default:
+		// covers "unreachable", "sync disabled", and any unknown state
 		return badgeOffline
+	}
+}
+
+// summaryHealthState derives the aggregate TUI state from a SyncSummary.
+// Priority order (evaluated in sequence, first match wins):
+//  1. auth failed  — AuthOK is false
+//  2. unreachable  — not Reachable, but AuthOK is true
+//  3. sync disabled — not AutoSync and not Reachable (never configured)
+//  4. degraded     — Reachable and AuthOK, but ConsecutiveFailures > 0 or LastError non-empty
+//  5. healthy      — all clear
+func summaryHealthState(s hiveclient.SyncSummary) string {
+	if !s.AuthOK {
+		return "auth failed"
+	}
+	if !s.Reachable {
+		if !s.AutoSync {
+			return "sync disabled"
+		}
+		return "unreachable"
+	}
+	if s.ConsecutiveFailures > 0 || strings.TrimSpace(s.LastError) != "" {
+		return "degraded"
+	}
+	return "healthy"
+}
+
+// summaryActionLine returns the context-sensitive suggested action for a summary state.
+// Returns an empty string for "healthy" (no action shown).
+func summaryActionLine(state string) string {
+	switch state {
+	case "auth failed":
+		return dimTextStyle.Render("check credentials (press c)")
+	case "unreachable":
+		return dimTextStyle.Render("verify api_url and network (press c)")
+	case "sync disabled":
+		return dimTextStyle.Render("enable auto-sync (press c)")
+	case "degraded":
+		return dimTextStyle.Render("check error above (press c)")
+	default:
+		return ""
 	}
 }
 
@@ -2871,8 +2977,18 @@ func (m Model) projectMemories() []hiveclient.Memory {
 	return memories
 }
 
+// screenMemories returns the memory slice that the current screen navigates.
+// On ScreenTimeline it returns TimelineMemories (populated by LoadSnapshot);
+// on all other screens it delegates to projectMemories().
+func (m Model) screenMemories() []hiveclient.Memory {
+	if m.screen == ScreenTimeline {
+		return m.snapshot.TimelineMemories
+	}
+	return m.projectMemories()
+}
+
 func (m Model) selectedMemory() hiveclient.Memory {
-	memories := m.projectMemories()
+	memories := m.screenMemories()
 	if len(memories) == 0 {
 		return hiveclient.Memory{Project: m.selectedProject().Name, SyncID: "-"}
 	}

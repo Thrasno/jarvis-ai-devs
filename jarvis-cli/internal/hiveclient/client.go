@@ -356,6 +356,24 @@ type ConfigTestResult struct {
 	Message string `json:"message"`
 }
 
+// SyncSummary is the client-side view of the daemon's aggregate sync health.
+// It mirrors the HealthSummaryResponse DTO from the daemon's
+// GET /governance/health/summary endpoint.
+// All time fields use the zero value when the daemon returns null or a zero timestamp.
+type SyncSummary struct {
+	Reachable           bool      `json:"reachable"`
+	AuthOK              bool      `json:"auth_ok"`
+	AutoSync            bool      `json:"auto_sync"`
+	LastSuccessAt       time.Time `json:"last_success_at"`
+	LastFailureAt       time.Time `json:"last_failure_at"`
+	LastError           string    `json:"last_error"`
+	UnsyncedMemories    int       `json:"unsynced_memories"`
+	UnsyncedPrompts     int       `json:"unsynced_prompts"`
+	UnsyncedSessions    int       `json:"unsynced_sessions"`
+	BackoffUntil        time.Time `json:"backoff_until"`
+	ConsecutiveFailures int       `json:"consecutive_failures"`
+}
+
 func NewFromEnv() (*Client, error) {
 	baseURL := strings.TrimSpace(os.Getenv("HIVE_DAEMON_URL"))
 	if baseURL == "" {
@@ -538,6 +556,42 @@ func (c *Client) TestConnection(ctx context.Context, req ConfigTestRequest) (Con
 		return ConfigTestResult{}, err
 	}
 	return result, nil
+}
+
+// TimelineResult is the structured result of Timeline.
+// Truncated is true when the daemon hit the 500-entry hard limit.
+type TimelineResult struct {
+	Memories  []Memory
+	Truncated bool
+}
+
+// Timeline fetches the category-filtered, ASC-ordered timeline for a project
+// via GET /governance/projects/{name}/timeline.
+// It returns an APIError (with StatusCode 404) when the project does not exist.
+// TimelineResult.Truncated is true when the response signals the 500-entry limit was hit.
+func (c *Client) Timeline(ctx context.Context, project string) (TimelineResult, error) {
+	var body struct {
+		Memories  []Memory `json:"memories"`
+		Truncated bool     `json:"truncated"`
+	}
+	path := "/governance/projects/" + url.PathEscape(project) + "/timeline"
+	if err := c.get(ctx, path, nil, &body, false); err != nil {
+		return TimelineResult{}, err
+	}
+	return TimelineResult{Memories: body.Memories, Truncated: body.Truncated}, nil
+}
+
+// GetSyncSummary fetches the aggregate sync health summary from
+// GET /governance/health/summary. A Go error is returned on transport failures
+// and non-2xx daemon responses. On 404 (old daemon without T14), the error is
+// ErrNotAvailable — callers should treat this as a nil-summary situation rather
+// than a fatal error and use errors.Is(err, ErrNotAvailable) to detect it.
+func (c *Client) GetSyncSummary(ctx context.Context) (SyncSummary, error) {
+	var summary SyncSummary
+	if err := c.get(ctx, "/governance/health/summary", nil, &summary, true); err != nil {
+		return SyncSummary{}, err
+	}
+	return summary, nil
 }
 
 // MergeProjects sends a multi-source batch merge request to POST /governance/projects/merge.

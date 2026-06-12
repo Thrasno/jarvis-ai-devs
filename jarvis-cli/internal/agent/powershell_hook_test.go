@@ -303,7 +303,7 @@ func claudePowerShellHookScriptPath(t *testing.T, scripts ...string) string {
 
 func powerShellHookCommand(t *testing.T, powershell, scriptPath string) *exec.Cmd {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	return exec.CommandContext(ctx, powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
 }

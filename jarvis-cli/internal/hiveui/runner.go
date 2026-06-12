@@ -2,6 +2,7 @@ package hiveui
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -38,12 +39,15 @@ func deriveDashboardState(health []hiveclient.Health) DashboardState {
 	return DashboardHealthy
 }
 
-// LoadSnapshot loads all five Snapshot fields via c.
+// LoadSnapshot loads all Snapshot fields via c.
+// selectedProject, when non-empty, triggers a Timeline fetch that populates
+// snap.TimelineMemories. Timeline errors are silently swallowed (empty slice).
+//
 // If the Status probe fails with a transport error, it returns a Snapshot with
 // DashboardDaemonUnavailable and LoadError set — no other fields are populated.
 // Subsequent field errors after a successful Status call are silently omitted
 // (the model views handle empty slices gracefully).
-func LoadSnapshot(ctx context.Context, c *hiveclient.Client, baseURL string) Snapshot {
+func LoadSnapshot(ctx context.Context, c *hiveclient.Client, baseURL string, selectedProject string) Snapshot {
 	snap := Snapshot{DaemonURL: baseURL}
 	if snap.DaemonURL == "" {
 		snap.DaemonURL = "http://127.0.0.1:7438"
@@ -82,6 +86,17 @@ func LoadSnapshot(ctx context.Context, c *hiveclient.Client, baseURL string) Sna
 	}
 	snap.Memories = memories
 
+	// Timeline memories — only when a project is selected.
+	if selectedProject != "" {
+		tr, terr := c.Timeline(ctx, selectedProject)
+		if terr != nil {
+			snap.TimelineMemories = []hiveclient.Memory{}
+		} else {
+			snap.TimelineMemories = tr.Memories
+			snap.TimelineTruncated = tr.Truncated
+		}
+	}
+
 	// Warnings.
 	warnings, err := c.Warnings(ctx)
 	if err == nil {
@@ -94,19 +109,22 @@ func LoadSnapshot(ctx context.Context, c *hiveclient.Client, baseURL string) Sna
 		snap.Backups = backups
 	}
 
+	// SyncSummary — optional; nil on old daemon (404) or any error.
+	summary, err := c.GetSyncSummary(ctx)
+	if err == nil {
+		snap.SyncSummary = &summary
+	}
+
 	return snap
 }
 
-// isAPIError checks whether err is of type *hiveclient.APIError and sets target.
+// isAPIError checks whether err (or any error in its chain) is *hiveclient.APIError
+// and sets target. Uses errors.As so wrapped errors are handled correctly.
 func isAPIError(err error, target **hiveclient.APIError) bool {
 	if err == nil {
 		return false
 	}
-	apiErr, ok := err.(*hiveclient.APIError)
-	if ok {
-		*target = apiErr
-	}
-	return ok
+	return errors.As(err, target)
 }
 
 // RunHiveTUI creates a live hiveclient.Client, loads a Snapshot, wires all
@@ -123,8 +141,39 @@ func RunHiveTUI(ctx context.Context, baseURL string) error {
 		return err
 	}
 
-	snap := LoadSnapshot(ctx, client, baseURL)
+	snap := LoadSnapshot(ctx, client, baseURL, "")
 	m := NewModelWithConfig(snap, client, client, client, client, client, client, client)
+
+	return runProgram(m)
+}
+
+// RunTimelineTUI starts the Hive TUI with ScreenTimeline as the initial screen
+// for the given project. It loads TimelineMemories from the daemon before the
+// TUI renders. If the daemon is unreachable, the TUI shows the offline screen.
+func RunTimelineTUI(ctx context.Context, baseURL string, project string) error {
+	if baseURL == "" {
+		baseURL = "http://127.0.0.1:7438"
+	}
+
+	client, err := hiveclient.New(baseURL)
+	if err != nil {
+		return err
+	}
+
+	snap := LoadSnapshot(ctx, client, baseURL, project)
+
+	// Locate the project index so the selected project is pre-wired.
+	projectIndex := 0
+	for i, p := range snap.Projects {
+		if p.Name == project {
+			projectIndex = i
+			break
+		}
+	}
+
+	m := NewModelWithConfig(snap, client, client, client, client, client, client, client)
+	m.screen = ScreenTimeline
+	m.projectIndex = projectIndex
 
 	return runProgram(m)
 }

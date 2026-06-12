@@ -143,10 +143,20 @@ CREATE TABLE IF NOT EXISTS mutation_cursors (
     PRIMARY KEY (consumer, project)
 );
 
+CREATE TABLE IF NOT EXISTS memory_prompt_links (
+    memory_id  INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+    prompt_id  INTEGER NOT NULL REFERENCES user_prompts(id) ON DELETE CASCADE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (memory_id, prompt_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_prompt_links_prompt_id ON memory_prompt_links(prompt_id);
+
 CREATE TABLE IF NOT EXISTS user_prompts (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     sync_id    TEXT    NOT NULL DEFAULT '',
     project    TEXT    NOT NULL DEFAULT '',
+    session_id TEXT    NOT NULL DEFAULT '',
     content    TEXT    NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     synced_at  DATETIME
@@ -316,7 +326,9 @@ func initSchema(sqlDB *sql.DB) error {
 		// user_prompts: add project and sync_id columns for context filtering
 		`ALTER TABLE user_prompts ADD COLUMN project TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE user_prompts ADD COLUMN sync_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE user_prompts ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_user_prompts_project_created ON user_prompts(project, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_prompts_project_session_created ON user_prompts(project, session_id, created_at DESC, id DESC)`,
 		`ALTER TABLE sync_state ADD COLUMN last_attempt_at DATETIME`,
 		`ALTER TABLE sync_state ADD COLUMN last_success_at DATETIME`,
 		`ALTER TABLE sync_state ADD COLUMN last_failure_at DATETIME`,
@@ -336,6 +348,8 @@ func initSchema(sqlDB *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_memory_mutations_project_unsynced ON memory_mutations(project, sequence) WHERE synced_at IS NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_mutations_entity ON memory_mutations(entity_type, entity_sync_id, sequence)`,
 		`CREATE TABLE IF NOT EXISTS mutation_cursors (consumer TEXT NOT NULL, project TEXT NOT NULL, sequence INTEGER NOT NULL DEFAULT 0, event_id TEXT NOT NULL DEFAULT '', updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (consumer, project))`,
+		`CREATE TABLE IF NOT EXISTS memory_prompt_links (memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE, prompt_id INTEGER NOT NULL REFERENCES user_prompts(id) ON DELETE CASCADE, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (memory_id, prompt_id))`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_prompt_links_prompt_id ON memory_prompt_links(prompt_id)`,
 		`CREATE TABLE IF NOT EXISTS hive_project_governance (project TEXT PRIMARY KEY, archived_at DATETIME, archived_by TEXT NOT NULL DEFAULT '', archive_reason TEXT NOT NULL DEFAULT '', merge_target TEXT NOT NULL DEFAULT '', merged_at DATETIME, merged_by TEXT NOT NULL DEFAULT '', merge_reason TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE IF NOT EXISTS import_runs (id TEXT PRIMARY KEY, source_system TEXT NOT NULL, source_path TEXT NOT NULL DEFAULT '', source_fingerprint TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'completed', started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, completed_at DATETIME, report_json TEXT NOT NULL DEFAULT '{}')`,
 		`CREATE TABLE IF NOT EXISTS import_source_aliases (id INTEGER PRIMARY KEY AUTOINCREMENT, source_system TEXT NOT NULL, source_table TEXT NOT NULL, source_id TEXT NOT NULL, source_project TEXT NOT NULL DEFAULT '', hive_table TEXT NOT NULL, hive_pk TEXT NOT NULL, hive_sync_id TEXT NOT NULL, content_hash TEXT NOT NULL DEFAULT '', run_id TEXT NOT NULL REFERENCES import_runs(id), created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`,

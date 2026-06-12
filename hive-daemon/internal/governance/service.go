@@ -46,7 +46,13 @@ type MemoryFilter struct {
 	Project        string
 	IncludeDeleted bool
 	Limit          int
+	Categories     []string // empty = no category filter (all types returned)
+	OrderAsc       bool     // false = DESC (default); true = ASC
 }
+
+// timelineCategories defines the memory types surfaced on the project timeline.
+// This list MUST stay in sync with timelineCategories in jarvis-cli/internal/hiveui/model.go.
+var timelineCategories = []string{"decision", "architecture", "discovery", "bugfix", "config"}
 
 type readStore interface {
 	ListGovernanceProjects(context.Context) ([]db.GovernanceProject, error)
@@ -225,6 +231,27 @@ func (s *Service) Memories(ctx context.Context, filter MemoryFilter) ([]Memory, 
 		Project:        project,
 		IncludeDeleted: filter.IncludeDeleted,
 		Limit:          filter.Limit,
+		Categories:     filter.Categories,
+		OrderAsc:       filter.OrderAsc,
+	})
+}
+
+// Timeline returns memories for the given project filtered to the 5 timeline
+// categories, ordered oldest-first. Returns ErrProjectNotFound if the project
+// does not exist.
+func (s *Service) Timeline(ctx context.Context, name string) ([]Memory, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, ErrProjectRequired
+	}
+	if _, err := s.store.GetGovernanceProject(ctx, name); err != nil {
+		return nil, mapProjectError(err)
+	}
+	return s.store.ListGovernanceMemories(ctx, db.GovernanceMemoryFilter{
+		Project:    name,
+		Categories: timelineCategories,
+		OrderAsc:   true,
+		Limit:      500,
 	})
 }
 

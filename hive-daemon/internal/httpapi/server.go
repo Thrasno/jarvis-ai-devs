@@ -30,6 +30,7 @@ const (
 // *db.DB satisfies this via structural typing.
 type PromptStore interface {
 	SavePrompt(ctx context.Context, project, content string) (*models.Prompt, error)
+	SavePromptForSession(ctx context.Context, project, sessionID, content string) (*models.Prompt, error)
 }
 
 type GovernanceService interface {
@@ -37,6 +38,7 @@ type GovernanceService interface {
 	Project(context.Context, string) (governance.Project, error)
 	Memories(context.Context, governance.MemoryFilter) ([]governance.Memory, error)
 	MemoryByID(context.Context, int64) (governance.Memory, error)
+	Timeline(context.Context, string) ([]governance.Memory, error)
 	Health(context.Context) ([]governance.Health, error)
 	Warnings(context.Context, governance.WarningFilter) ([]governance.Warning, error)
 	Backups(context.Context) ([]governance.BackupManifest, error)
@@ -59,6 +61,7 @@ type Server struct {
 	projects   project.Store
 	governance GovernanceService
 	config     ConfigService
+	health     HealthService
 	mux        *http.ServeMux
 }
 
@@ -75,20 +78,27 @@ func NewServerWithGovernance(addr string, prompts PromptStore, governance Govern
 	return NewServerWithProjectStoreAndGovernance(addr, prompts, nil, governance)
 }
 
+// NewServerWithGovernanceAndHealth constructs a Server with governance and health endpoints.
+// Used when both GovernanceService and HealthService are available.
+func NewServerWithGovernanceAndHealth(addr string, prompts PromptStore, governance GovernanceService, health HealthService) *Server {
+	return NewServerWithAll(addr, prompts, nil, governance, nil, health)
+}
+
 func NewServerWithProjectStoreAndGovernance(addr string, prompts PromptStore, projects project.Store, governance GovernanceService) *Server {
-	return NewServerWithAll(addr, prompts, projects, governance, nil)
+	return NewServerWithAll(addr, prompts, projects, governance, nil, nil)
 }
 
 // NewServerWithConfig constructs a Server with a ConfigService for the
 // three /governance/config* endpoints.
 func NewServerWithConfig(addr string, prompts PromptStore, config ConfigService) *Server {
-	return NewServerWithAll(addr, prompts, nil, nil, config)
+	return NewServerWithAll(addr, prompts, nil, nil, config, nil)
 }
 
 // NewServerWithAll is the canonical constructor. All other constructors
-// delegate to this one.
-func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, governance GovernanceService, config ConfigService) *Server {
-	s := &Server{addr: addr, prompts: prompts, projects: projects, governance: governance, config: config}
+// delegate to this one. The health parameter is nil-safe: when nil, the
+// /governance/health/summary route is not registered.
+func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, governance GovernanceService, config ConfigService, health HealthService) *Server {
+	s := &Server{addr: addr, prompts: prompts, projects: projects, governance: governance, config: config, health: health}
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("/prompts", s.handlePrompts)
 	if governance != nil {
@@ -110,6 +120,9 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 		s.mux.HandleFunc("GET /governance/config/status", s.handleConfigStatus)
 		s.mux.HandleFunc("POST /governance/config", s.handleConfigUpdate)
 		s.mux.HandleFunc("POST /governance/config/test", s.handleConfigTest)
+	}
+	if health != nil {
+		s.mux.HandleFunc("GET /governance/health/summary", s.handleHealthSummary)
 	}
 	return s
 }
@@ -181,6 +194,8 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Content             string `json:"content"`
 		Project             string `json:"project"`
+		Directory           string `json:"directory"`
+		SessionID           string `json:"session_id"`
 		RecoveryToken       string `json:"recovery_token"`
 		ProjectChoiceReason string `json:"project_choice_reason"`
 	}
@@ -202,7 +217,7 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.TrimSpace(body.Project) == "" {
+	if strings.TrimSpace(body.Project) == "" && (s.projects == nil || strings.TrimSpace(body.Directory) == "") {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "project is required"})
 		return
@@ -216,7 +231,13 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.projects != nil {
-		resolved, err := project.ValidateWriteProject(r.Context(), s.projects, project.WriteInput{Project: body.Project, RecoveryToken: body.RecoveryToken, ProjectChoiceReason: body.ProjectChoiceReason})
+		resolved, err := project.ValidateWriteProject(r.Context(), s.projects, project.WriteInput{
+			Project:             body.Project,
+			Directory:           body.Directory,
+			SessionID:           body.SessionID,
+			RecoveryToken:       body.RecoveryToken,
+			ProjectChoiceReason: body.ProjectChoiceReason,
+		})
 		if err != nil {
 			writeProjectValidationError(w, err)
 			return
@@ -227,7 +248,7 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	// Strip private tags from content at the handler boundary.
 	contentRes := sanitize.Strip(body.Content)
 
-	prompt, err := s.prompts.SavePrompt(r.Context(), body.Project, contentRes.Clean)
+	prompt, err := s.prompts.SavePromptForSession(r.Context(), body.Project, body.SessionID, contentRes.Clean)
 	if err != nil {
 		logger.Log.Printf("save prompt: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -238,6 +259,8 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"id":             prompt.ID,
+		"project":        prompt.Project,
+		"session_id":     prompt.SessionID,
 		"created_at":     prompt.CreatedAt.Format(time.RFC3339),
 		"stripped":       contentRes.Count > 0,
 		"stripped_count": contentRes.Count,
@@ -300,6 +323,15 @@ func (s *Server) handleGovernanceProject(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		s.handleGovernanceProjectDelete(w, r, projectName)
+		return
+	}
+	if strings.HasSuffix(escapedName, "/timeline") {
+		projectName, err := url.PathUnescape(strings.TrimSuffix(escapedName, "/timeline"))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is invalid"})
+			return
+		}
+		s.handleGovernanceTimeline(w, r, projectName)
 		return
 	}
 	name, err := url.PathUnescape(escapedName)
@@ -372,6 +404,33 @@ func (s *Server) handleGovernanceProjectDelete(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"result": result})
+}
+
+// timelineResponse is the JSON envelope for the timeline endpoint.
+// Truncated is true when the service hit the 500-entry hard limit, meaning
+// older entries may have been cut off. Callers should surface this to the user.
+type timelineResponse struct {
+	Memories  []governance.Memory `json:"memories"`
+	Truncated bool                `json:"truncated,omitempty"`
+}
+
+func (s *Server) handleGovernanceTimeline(w http.ResponseWriter, r *http.Request, projectName string) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	memories, err := s.governance.Timeline(r.Context(), projectName)
+	if err != nil {
+		writeGovernanceError(w, "governance timeline", err)
+		return
+	}
+	if memories == nil {
+		memories = []governance.Memory{}
+	}
+	resp := timelineResponse{
+		Memories:  memories,
+		Truncated: len(memories) == 500,
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleGovernanceProjectMerge(w http.ResponseWriter, r *http.Request, sourceProject, targetProject string) {

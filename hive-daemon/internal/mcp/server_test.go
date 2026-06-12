@@ -31,6 +31,8 @@ type mockStore struct {
 	listMemoriesFn            func(string, int) ([]*models.Memory, error)
 	searchFn                  func(string, string, string, int) ([]*models.Memory, error)
 	savePromptFn              func(context.Context, string, string) (*models.Prompt, error)
+	savePromptForSessionFn    func(context.Context, string, string, string) (*models.Prompt, error)
+	latestPromptForSessionFn  func(context.Context, string, string) (*models.Prompt, error)
 	listRecentPromptsFn       func(context.Context, string, int) ([]*models.Prompt, error)
 	createSessionFn           func(id, project, directory, devID, client string) error
 	endSessionFn              func(id, summary string) error
@@ -77,6 +79,23 @@ func (m *mockStore) SavePrompt(ctx context.Context, project, content string) (*m
 		return m.savePromptFn(ctx, project, content)
 	}
 	return &models.Prompt{ID: 1, Project: project, CreatedAt: time.Now()}, nil
+}
+
+func (m *mockStore) SavePromptForSession(ctx context.Context, project, sessionID, content string) (*models.Prompt, error) {
+	if m.savePromptForSessionFn != nil {
+		return m.savePromptForSessionFn(ctx, project, sessionID, content)
+	}
+	if m.savePromptFn != nil {
+		return m.savePromptFn(ctx, project, content)
+	}
+	return &models.Prompt{ID: 1, Project: project, SessionID: sessionID, Content: content, CreatedAt: time.Now()}, nil
+}
+
+func (m *mockStore) LatestPromptForSession(ctx context.Context, project, sessionID string) (*models.Prompt, error) {
+	if m.latestPromptForSessionFn != nil {
+		return m.latestPromptForSessionFn(ctx, project, sessionID)
+	}
+	return nil, nil
 }
 
 func (m *mockStore) ListRecentPrompts(ctx context.Context, project string, limit int) ([]*models.Prompt, error) {

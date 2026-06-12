@@ -362,6 +362,51 @@ func TestSaveMemory_StoresTags(t *testing.T) {
 	}
 }
 
+func TestSchema_MemoryPromptLinksExists(t *testing.T) {
+	d := openTestDB(t)
+
+	var name string
+	err := d.sqlDB.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='memory_prompt_links'`).Scan(&name)
+	require.NoError(t, err)
+	assert.Equal(t, "memory_prompt_links", name)
+}
+
+func TestSaveMemory_WithPromptIDCreatesPromptLink(t *testing.T) {
+	d := openTestDB(t)
+	ensureManualSaveSessions(t, d, "proj")
+
+	prompt, err := d.SavePromptForSession(t.Context(), "proj", "manual-save-proj", "Please save this decision")
+	require.NoError(t, err)
+
+	mem := newMemory("proj", "Decision", "Captured from current prompt")
+	mem.PromptID = prompt.ID
+	id, err := d.SaveMemory(mem)
+	require.NoError(t, err)
+
+	var linkedPromptID int64
+	require.NoError(t, d.sqlDB.QueryRow(
+		`SELECT prompt_id FROM memory_prompt_links WHERE memory_id = ?`, id,
+	).Scan(&linkedPromptID))
+	assert.Equal(t, prompt.ID, linkedPromptID)
+}
+
+func TestSaveMemory_WithoutPromptIDCreatesNoPromptLink(t *testing.T) {
+	d := openTestDB(t)
+	ensureManualSaveSessions(t, d, "proj")
+
+	_, err := d.SavePromptForSession(t.Context(), "proj", "manual-save-proj", "Prompt exists but capture is disabled")
+	require.NoError(t, err)
+
+	id, err := d.SaveMemory(newMemory("proj", "Automated artifact", "capture_prompt:false behavior"))
+	require.NoError(t, err)
+
+	var links int
+	require.NoError(t, d.sqlDB.QueryRow(
+		`SELECT COUNT(*) FROM memory_prompt_links WHERE memory_id = ?`, id,
+	).Scan(&links))
+	assert.Equal(t, 0, links)
+}
+
 // ─── 3.2 GetMemory ─────────────────────────────────────────────────────────
 
 func TestGetMemory_ReturnsAllFields(t *testing.T) {

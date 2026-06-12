@@ -12,13 +12,13 @@ import (
 )
 
 var (
-	ErrGovernanceProjectRequired        = errors.New("project is required")
-	ErrGovernanceProjectNotFound        = errors.New("governance project not found")
-	ErrGovernanceProjectArchived        = errors.New("governance project is archived")
-	ErrGovernanceProjectNotArchived     = errors.New("governance project is not archived")
-	ErrGovernanceProjectMergeInvalid    = errors.New("governance project merge source and target must differ")
-	ErrGovernanceProjectMergeConflict   = errors.New("governance project already merged into another target")
-	ErrGovernanceMemoryNotFound         = errors.New("governance memory not found")
+	ErrGovernanceProjectRequired      = errors.New("project is required")
+	ErrGovernanceProjectNotFound      = errors.New("governance project not found")
+	ErrGovernanceProjectArchived      = errors.New("governance project is archived")
+	ErrGovernanceProjectNotArchived   = errors.New("governance project is not archived")
+	ErrGovernanceProjectMergeInvalid  = errors.New("governance project merge source and target must differ")
+	ErrGovernanceProjectMergeConflict = errors.New("governance project already merged into another target")
+	ErrGovernanceMemoryNotFound       = errors.New("governance memory not found")
 )
 
 type GovernanceProject struct {
@@ -62,6 +62,8 @@ type GovernanceMemoryFilter struct {
 	Project        string
 	IncludeDeleted bool
 	Limit          int
+	Categories     []string // empty = no category filter (all types returned)
+	OrderAsc       bool     // false = DESC (default); true = ASC
 }
 
 func (d *DB) KnownProjects(ctx context.Context) ([]project.KnownProject, error) {
@@ -166,7 +168,19 @@ WHERE project = ?`
 	if !filter.IncludeDeleted {
 		q += ` AND deleted_at IS NULL`
 	}
-	q += ` ORDER BY created_at DESC, id DESC LIMIT ?`
+	if len(filter.Categories) > 0 {
+		placeholders := make([]string, len(filter.Categories))
+		for i, c := range filter.Categories {
+			placeholders[i] = "?"
+			args = append(args, c)
+		}
+		q += ` AND category IN (` + strings.Join(placeholders, ",") + `)`
+	}
+	order := "DESC"
+	if filter.OrderAsc {
+		order = "ASC"
+	}
+	q += ` ORDER BY created_at ` + order + `, id ` + order + ` LIMIT ?`
 	args = append(args, limit)
 
 	rows, err := d.sqlDB.QueryContext(ctx, q, args...)

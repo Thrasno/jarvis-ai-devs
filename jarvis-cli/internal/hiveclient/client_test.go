@@ -672,6 +672,130 @@ func TestUpdateConfig_ForwardsMaskedSentinelVerbatim(t *testing.T) {
 	}
 }
 
+// T16 — Phase 3 — hiveclient.Timeline
+
+func TestTimeline_SuccessfulFetch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/governance/projects/atlas/timeline" {
+			t.Fatalf("request = %s %s, want GET /governance/projects/atlas/timeline", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"memories":[{"id":1,"sync_id":"s-1","project":"atlas","category":"decision","title":"Use Go","created_by":"agent","created_at":"2026-06-01T10:00:00Z","deleted":false},{"id":2,"sync_id":"s-2","project":"atlas","category":"architecture","title":"Hexagonal layout","created_by":"agent","created_at":"2026-06-02T10:00:00Z","deleted":false}]}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := client.Timeline(context.Background(), "atlas")
+	if err != nil {
+		t.Fatalf("Timeline: %v", err)
+	}
+	if len(result.Memories) != 2 {
+		t.Fatalf("len(result.Memories) = %d, want 2", len(result.Memories))
+	}
+	if result.Memories[0].Category != "decision" {
+		t.Fatalf("result.Memories[0].Category = %q, want decision", result.Memories[0].Category)
+	}
+	if result.Memories[1].Category != "architecture" {
+		t.Fatalf("result.Memories[1].Category = %q, want architecture", result.Memories[1].Category)
+	}
+	if result.Truncated {
+		t.Fatal("result.Truncated = true, want false for normal result")
+	}
+}
+
+func TestTimeline_ProjectNotFound_ReturnsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"project not found"}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := client.Timeline(context.Background(), "ghost")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("Timeline error = %#v, want APIError 404", err)
+	}
+	if result.Memories != nil {
+		t.Fatalf("result.Memories = %v, want nil on error", result.Memories)
+	}
+}
+
+func TestTimeline_EscapesProjectNameInPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.RequestURI != "/governance/projects/team%2Fatlas/timeline" {
+			t.Fatalf("RequestURI = %q, want /governance/projects/team%%2Fatlas/timeline", r.RequestURI)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"memories":[]}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.Timeline(context.Background(), "team/atlas")
+	if err != nil {
+		t.Fatalf("Timeline: %v", err)
+	}
+}
+
+func TestTimeline_TruncatedFlag_True(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"memories":[{"id":1,"sync_id":"s-1","project":"atlas","category":"decision","title":"A decision","created_by":"agent","created_at":"2026-06-01T10:00:00Z","deleted":false}],"truncated":true}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := client.Timeline(context.Background(), "atlas")
+	if err != nil {
+		t.Fatalf("Timeline: %v", err)
+	}
+	if len(result.Memories) != 1 {
+		t.Fatalf("len(result.Memories) = %d, want 1", len(result.Memories))
+	}
+	if !result.Truncated {
+		t.Fatal("result.Truncated = false, want true when server returns truncated:true")
+	}
+}
+
+func TestTimeline_TruncatedFlag_False(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"memories":[{"id":2,"sync_id":"s-2","project":"atlas","category":"architecture","title":"Layout","created_by":"agent","created_at":"2026-06-02T10:00:00Z","deleted":false}]}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := client.Timeline(context.Background(), "atlas")
+	if err != nil {
+		t.Fatalf("Timeline: %v", err)
+	}
+	if result.Truncated {
+		t.Fatal("result.Truncated = true, want false when server omits truncated field")
+	}
+}
+
 func TestDeleteProject_BuildsCorrectRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/governance/projects/alpha/delete" {
@@ -793,5 +917,106 @@ func TestStartEngramImportExecuteReturnsPreviewAPIError(t *testing.T) {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest || apiErr.Message != "fresh engram import preview is required" {
 		t.Fatalf("StartEngramImportExecute error = %#v, want APIError 400 fresh preview", err)
+	}
+}
+
+// T2.1 — GetSyncSummary tests
+
+func TestGetSyncSummary_DecodesDTOFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/governance/health/summary" {
+			t.Fatalf("request = %s %s, want GET /governance/health/summary", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"reachable": true,
+			"auth_ok": true,
+			"auto_sync": true,
+			"last_success_at": "2026-06-11T10:00:00Z",
+			"last_failure_at": "2026-06-11T09:00:00Z",
+			"last_error": "",
+			"unsynced_memories": 3,
+			"unsynced_prompts": 1,
+			"unsynced_sessions": 2,
+			"backoff_until": "0001-01-01T00:00:00Z",
+			"consecutive_failures": 0
+		}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	summary, err := client.GetSyncSummary(context.Background())
+	if err != nil {
+		t.Fatalf("GetSyncSummary: %v", err)
+	}
+	if !summary.Reachable {
+		t.Fatalf("Reachable = false, want true")
+	}
+	if !summary.AuthOK {
+		t.Fatalf("AuthOK = false, want true")
+	}
+	if !summary.AutoSync {
+		t.Fatalf("AutoSync = false, want true")
+	}
+	if summary.UnsyncedMemories != 3 {
+		t.Fatalf("UnsyncedMemories = %d, want 3", summary.UnsyncedMemories)
+	}
+	if summary.UnsyncedPrompts != 1 {
+		t.Fatalf("UnsyncedPrompts = %d, want 1", summary.UnsyncedPrompts)
+	}
+	if summary.UnsyncedSessions != 2 {
+		t.Fatalf("UnsyncedSessions = %d, want 2", summary.UnsyncedSessions)
+	}
+	if summary.ConsecutiveFailures != 0 {
+		t.Fatalf("ConsecutiveFailures = %d, want 0", summary.ConsecutiveFailures)
+	}
+	if summary.LastError != "" {
+		t.Fatalf("LastError = %q, want empty", summary.LastError)
+	}
+	if summary.LastSuccessAt.IsZero() {
+		t.Fatal("LastSuccessAt is zero, want non-zero")
+	}
+}
+
+func TestGetSyncSummary_ReturnsAPIErrorOnNon2xx(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"internal error reading sync state"}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.GetSyncSummary(context.Background())
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("GetSyncSummary error = %#v, want APIError 500", err)
+	}
+}
+
+func TestGetSyncSummary_ReturnsErrNotAvailableOn404(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"not found"}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.GetSyncSummary(context.Background())
+	if !errors.Is(err, ErrNotAvailable) {
+		t.Fatalf("GetSyncSummary error = %#v, want ErrNotAvailable", err)
 	}
 }

@@ -132,6 +132,51 @@ VALUES (?, 'memory', ?, ?, ?, ?, ?, ?)`,
 	return err
 }
 
+// CountUnsyncedMemories returns the global count of memories that have not yet
+// been pushed to the server. Predicate is identical to GetUnsynced("") so the
+// two are always consistent.
+func (d *DB) CountUnsyncedMemories() (int, error) {
+	var n int
+	err := d.sqlDB.QueryRow(`
+SELECT COUNT(*) FROM memories
+WHERE synced_at IS NULL AND sync_id != '' AND deleted_at IS NULL`).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count unsynced memories: %w", err)
+	}
+	return n, nil
+}
+
+// CountUnsyncedPrompts returns the global count of prompts (across all projects)
+// that have not yet been pushed to the server. Intentionally omits the project
+// clause so it counts globally — unlike GetUnsyncedPrompts which guards against
+// an empty project with an early nil return.
+func (d *DB) CountUnsyncedPrompts(ctx context.Context) (int, error) {
+	var n int
+	err := d.sqlDB.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM user_prompts
+WHERE synced_at IS NULL AND sync_id != ''`).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count unsynced prompts: %w", err)
+	}
+	return n, nil
+}
+
+// CountUnsyncedSessions returns the global count of sessions (across all
+// projects) that have not yet been pushed to the server. The sync_id != ''
+// predicate matches the behavior of CountUnsyncedMemories and
+// CountUnsyncedPrompts: sessions without a sync_id were never queued for sync
+// and must not be counted as pending.
+func (d *DB) CountUnsyncedSessions() (int, error) {
+	var n int
+	err := d.sqlDB.QueryRow(`
+SELECT COUNT(*) FROM sessions
+WHERE synced_at IS NULL AND sync_id != ''`).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count unsynced sessions: %w", err)
+	}
+	return n, nil
+}
+
 // GetUnsynced devuelve todas las memorias que aún no se han enviado al servidor
 // (synced_at IS NULL). Son las que hay que incluir en el próximo push.
 func (d *DB) GetUnsynced(project string) ([]*models.Memory, error) {
@@ -509,7 +554,7 @@ func (d *DB) GetLastSync(project string) (time.Time, error) {
 	err := d.sqlDB.QueryRow(
 		`SELECT last_sync_at FROM sync_state WHERE project = ?`, project,
 	).Scan(&ts)
-	if err == sql.ErrNoRows || !ts.Valid {
+	if errors.Is(err, sql.ErrNoRows) || !ts.Valid {
 		return time.Time{}, nil
 	}
 	if err != nil {
@@ -545,7 +590,7 @@ FROM sync_state WHERE project = ?`, project).Scan(
 		&backoffUntil,
 		&lastError,
 	)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return health, nil
 	}
 	if err != nil {
