@@ -283,6 +283,21 @@ func TestVerifyOpenCode_SubagentsPresent_PassesWhenExactly13(t *testing.T) {
 	}
 }
 
+func TestVerifyOpenCode_SubagentsPresent_FailsWhenCountAbove13(t *testing.T) {
+	observed := compliantOpenCodeRuntime(t)
+	observed.OpenCode.HiddenSubagents = append(observed.OpenCode.HiddenSubagents, "extra-agent")
+
+	report := Verify("opencode", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.opencode.subagents_present")
+	if check == nil {
+		t.Fatal("expected invariant.opencode.subagents_present check")
+	}
+	if check.Status != StatusFail {
+		t.Fatalf("expected StatusFail for 14 subagents, got %q", check.Status)
+	}
+}
+
 // --- invariant.opencode.task_allowlist ---
 
 func TestVerifyOpenCode_TaskAllowlist_FailsWhenWildcardDenyMissing(t *testing.T) {
@@ -326,6 +341,21 @@ func TestVerifyOpenCode_TaskAllowlist_PassesWhenDenyAndExactly13Allows(t *testin
 	}
 	if check.Status != StatusPass {
 		t.Fatalf("expected StatusPass, got %q", check.Status)
+	}
+}
+
+func TestVerifyOpenCode_TaskAllowlist_FailsWhenAllowsAbove13(t *testing.T) {
+	observed := compliantOpenCodeRuntime(t)
+	observed.OpenCode.TaskAllows = append(observed.OpenCode.TaskAllows, "extra-task")
+
+	report := Verify("opencode", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.opencode.task_allowlist")
+	if check == nil {
+		t.Fatal("expected invariant.opencode.task_allowlist check")
+	}
+	if check.Status != StatusFail {
+		t.Fatalf("expected StatusFail for 14 task allows, got %q", check.Status)
 	}
 }
 
@@ -444,7 +474,8 @@ func TestVerifyOpenCode_MCPHive_EmitsWarnWhenNotPresent(t *testing.T) {
 }
 
 // TestVerifyOpenCode_MCPHive_WarnDoesNotCauseOverallFail asserts that a missing
-// mcp.hive entry (warn-only) does not push the report status to StatusFail.
+// mcp.hive entry (warn-only) does not push the report status to StatusFail, and
+// that the warn check is actually present in the report with StatusWarn.
 func TestVerifyOpenCode_MCPHive_WarnDoesNotCauseOverallFail(t *testing.T) {
 	observed := compliantOpenCodeRuntime(t)
 	observed.OpenCode.MCPHivePresent = false
@@ -453,6 +484,14 @@ func TestVerifyOpenCode_MCPHive_WarnDoesNotCauseOverallFail(t *testing.T) {
 
 	if report.Status == StatusFail {
 		t.Fatalf("mcp_hive warning must not cause overall StatusFail, got %q", report.Status)
+	}
+
+	check := findCheckByKey(report.Checks, "invariant.opencode.mcp_hive")
+	if check == nil {
+		t.Fatal("expected invariant.opencode.mcp_hive check to be present in report")
+	}
+	if check.Status != StatusWarn {
+		t.Fatalf("expected invariant.opencode.mcp_hive StatusWarn, got %q", check.Status)
 	}
 }
 
@@ -495,6 +534,14 @@ func TestVerifyOpenCode_MCPContext7_WarnDoesNotCauseOverallFail(t *testing.T) {
 
 	if report.Status == StatusFail {
 		t.Fatalf("mcp_context7 warning must not cause overall StatusFail, got %q", report.Status)
+	}
+
+	check := findCheckByKey(report.Checks, "invariant.opencode.mcp_context7")
+	if check == nil {
+		t.Fatal("expected invariant.opencode.mcp_context7 check to be present in report")
+	}
+	if check.Status != StatusWarn {
+		t.Fatalf("expected invariant.opencode.mcp_context7 StatusWarn, got %q", check.Status)
 	}
 }
 

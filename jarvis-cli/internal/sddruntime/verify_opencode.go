@@ -172,14 +172,16 @@ func verifyOpenCodeConfigInvariants(oc ObservedOpenCodeConfig) []CheckResult {
 	mcpHiveStatus := StatusPass
 	mcpHiveMsg := "mcp.hive entry present (type=local, non-empty command)"
 	mcpHiveObserved := fmt.Sprintf("mcp_hive_present=%v", oc.MCPHivePresent)
+	mcpHiveDrift := DriftNone
 	if !oc.MCPHivePresent {
 		mcpHiveStatus = StatusWarn
 		mcpHiveMsg = "mcp.hive missing/not local/empty command (daemon may be absent on clean install)"
+		mcpHiveDrift = DriftUnknown
 	}
 	results = append(results, CheckResult{
 		Key:        "invariant.opencode.mcp_hive",
 		Status:     mcpHiveStatus,
-		DriftClass: driftClassFromStatus(mcpHiveStatus),
+		DriftClass: mcpHiveDrift,
 		Expected:   `mcp.hive with type="local" and non-empty command`,
 		Observed:   mcpHiveObserved,
 		Message:    mcpHiveMsg,
@@ -189,14 +191,16 @@ func verifyOpenCodeConfigInvariants(oc ObservedOpenCodeConfig) []CheckResult {
 	ctx7Status := StatusPass
 	ctx7Msg := "mcp.context7 entry present (type=remote)"
 	ctx7Observed := fmt.Sprintf("mcp_context7_present=%v", oc.MCPContext7Present)
+	ctx7Drift := DriftNone
 	if !oc.MCPContext7Present {
 		ctx7Status = StatusWarn
 		ctx7Msg = "mcp.context7 missing/not remote/non-canonical url"
+		ctx7Drift = DriftUnknown
 	}
 	results = append(results, CheckResult{
 		Key:        "invariant.opencode.mcp_context7",
 		Status:     ctx7Status,
-		DriftClass: driftClassFromStatus(ctx7Status),
+		DriftClass: ctx7Drift,
 		Expected:   `mcp.context7 with type="remote"`,
 		Observed:   ctx7Observed,
 		Message:    ctx7Msg,
