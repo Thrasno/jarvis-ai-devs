@@ -55,7 +55,7 @@ func observeRuntimeWithConfig(configDir string, plan sddruntime.RuntimePlan, cfg
 	presentIDs := make([]string, 0, len(plan.Contract.ManagedArtifacts))
 
 	for _, managed := range plan.Contract.ManagedArtifacts {
-		artifact, err := observeArtifact(configDir, plan.Paths, managed)
+		artifact, err := observeArtifactForAgent(configDir, plan.Paths, managed, plan.Agent)
 		if err != nil {
 			return sddruntime.ObservedRuntime{}, err
 		}
@@ -113,6 +113,16 @@ func observeRuntimeWithConfig(configDir string, plan sddruntime.RuntimePlan, cfg
 		return sddruntime.ObservedRuntime{}, err
 	}
 
+	// Populate OpenCode-specific observed config for the opencode agent.
+	// Claude leaves this at zero value (ParseSucceeded==false), which is safe.
+	var openCodeCfg sddruntime.ObservedOpenCodeConfig
+	if plan.Agent == "opencode" {
+		settingsPath := filepath.Join(configDir, filepath.Base(plan.Paths.Settings))
+		openCodeCfg = parseOpenCodeConfig(settingsPath)
+		// PluginHiveExists reflects whether plugins/hive.ts was observed present.
+		openCodeCfg.PluginHiveExists = artifacts["prompt_hook"].Exists
+	}
+
 	return sddruntime.ObservedRuntime{
 		Manifest: sddruntime.RuntimeManifestState{
 			Present:            manifestPresent,
@@ -130,6 +140,7 @@ func observeRuntimeWithConfig(configDir string, plan sddruntime.RuntimePlan, cfg
 		ModelAssignments:         modelAssignments,
 		ResolvedModelAssignments: resolvedAssignments,
 		Artifacts:                artifacts,
+		OpenCode:                 openCodeCfg,
 	}, nil
 }
 
@@ -199,6 +210,14 @@ func platformForAgent(agent string) (sddruntime.Platform, error) {
 }
 
 func observeArtifact(configDir string, paths sddruntime.RuntimePaths, artifact sddruntime.ManagedArtifact) (sddruntime.ObservedArtifact, error) {
+	return observeArtifactForAgent(configDir, paths, artifact, "")
+}
+
+// observeArtifactForAgent is the agent-aware variant of observeArtifact.
+// The agent parameter controls path resolution for artifacts whose filesystem
+// location differs per agent (e.g. prompt_hook: opencode uses plugins/hive.ts,
+// claude uses hive-hooks/).
+func observeArtifactForAgent(configDir string, paths sddruntime.RuntimePaths, artifact sddruntime.ManagedArtifact, agent string) (sddruntime.ObservedArtifact, error) {
 	switch artifact.ID {
 	case "instructions":
 		instructionsPath := filepath.Join(configDir, filepath.Base(paths.Instructions))
@@ -251,16 +270,38 @@ func observeArtifact(configDir string, paths sddruntime.RuntimePaths, artifact s
 		}
 		return sddruntime.ObservedArtifact{Exists: stat.IsDir()}, nil
 	case "prompt_hook":
-		hooksPath := filepath.Join(configDir, filepath.Base(filepath.Clean(artifact.RelativePath)))
-		stat, err := os.Stat(hooksPath)
+		return observePromptHookArtifact(configDir, artifact, agent)
+	default:
+		return sddruntime.ObservedArtifact{}, fmt.Errorf("unsupported managed artifact id %q", artifact.ID)
+	}
+}
+
+// observePromptHookArtifact resolves the prompt hook path agent-aware:
+//   - opencode: checks plugins/hive.ts as a regular non-empty file
+//   - claude (and default): checks hive-hooks/ as a directory
+func observePromptHookArtifact(configDir string, artifact sddruntime.ManagedArtifact, agent string) (sddruntime.ObservedArtifact, error) {
+	if agent == "opencode" {
+		// OpenCode installs the hook as plugins/hive.ts (a TypeScript file).
+		pluginPath := filepath.Join(configDir, "plugins", "hive.ts")
+		stat, err := os.Stat(pluginPath)
 		if os.IsNotExist(err) {
 			return sddruntime.ObservedArtifact{Exists: false}, nil
 		}
 		if err != nil {
 			return sddruntime.ObservedArtifact{}, fmt.Errorf("stat prompt_hook artifact: %w", err)
 		}
-		return sddruntime.ObservedArtifact{Exists: stat.IsDir()}, nil
-	default:
-		return sddruntime.ObservedArtifact{}, fmt.Errorf("unsupported managed artifact id %q", artifact.ID)
+		exists := !stat.IsDir() && stat.Size() > 0
+		return sddruntime.ObservedArtifact{Exists: exists}, nil
 	}
+
+	// Claude (and unknown agents): hive-hooks/ directory.
+	hooksPath := filepath.Join(configDir, filepath.Base(filepath.Clean(artifact.RelativePath)))
+	stat, err := os.Stat(hooksPath)
+	if os.IsNotExist(err) {
+		return sddruntime.ObservedArtifact{Exists: false}, nil
+	}
+	if err != nil {
+		return sddruntime.ObservedArtifact{}, fmt.Errorf("stat prompt_hook artifact: %w", err)
+	}
+	return sddruntime.ObservedArtifact{Exists: stat.IsDir()}, nil
 }
