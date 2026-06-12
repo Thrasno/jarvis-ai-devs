@@ -29,6 +29,7 @@ const (
 	StepSkills
 	StepPhaseModels
 	StepReview
+	StepStatuslineConfirm
 	StepApply
 	StepDone
 )
@@ -81,10 +82,12 @@ type Model struct {
 	SkillPrompts []skillPrompt
 	Selected     map[string]bool
 
-	Agents        []agent.Agent
-	agentProgress []string
-	agentDone     bool
-	reviewChoice  int
+	Agents                   []agent.Agent
+	agentProgress            []string
+	agentDone                bool
+	reviewChoice             int
+	statuslineOverwriteReady bool // true once the overwrite/skip decision has been captured
+	statuslineOverwrite      bool // the captured decision: true = overwrite, false = skip
 
 	phaseModelRows                []phaseModelRow
 	phaseModelActiveRow           int
@@ -307,6 +310,8 @@ func (m Model) updateStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return updatePhaseModels(m, msg)
 	case StepReview:
 		return updateReview(m, msg)
+	case StepStatuslineConfirm:
+		return updateStatuslineConfirm(m, msg)
 	case StepApply:
 		return updateApply(m, msg)
 	case StepDone:
@@ -333,6 +338,8 @@ func (m Model) View() string {
 		return viewPhaseModels(m)
 	case StepReview:
 		return viewReview(m)
+	case StepStatuslineConfirm:
+		return viewStatuslineConfirm(m)
 	case StepApply:
 		return viewApply(m)
 	case StepDone:

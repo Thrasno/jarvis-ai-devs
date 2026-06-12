@@ -331,12 +331,17 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	}
 	context7Entry := agent.MCPEntry{Name: "context7"}
 
+	// Determine statusline overwrite policy before the pipeline goroutine.
+	// If the script already exists, prompt the user once; otherwise use a no-op
+	// closure (confirm is never called on fresh install).
+	statuslineConfirm := buildNoTUIStatuslineConfirm(home, scanner)
+
 	results := configureWizardAgents(agents, cfg, entry, context7Entry, resolvedPreset, wizardPresetApplyContext{
 		Layer1:               config.Layer1Content(),
 		Skills:               skillInfos,
 		PreviousPresetSlug:   previousPresetSlug,
 		PreviousPresetSource: previousPresetSource,
-	}, skillsSubFS, selectedIDs)
+	}, skillsSubFS, selectedIDs, statuslineConfirm)
 	var configuredAgents []string
 	for _, res := range results {
 		fmt.Printf("Configuring %s ...\n", res.AgentName)
@@ -508,4 +513,21 @@ func normalizePlatformValueForPrompt(input, fallback string, catalog []string) s
 		}
 	}
 	return fallback
+}
+
+// buildNoTUIStatuslineConfirm checks whether ~/.claude/statusline-command.sh
+// already exists. If absent, it returns a closure that always returns true
+// (confirm is never called on a fresh install). If present, it prompts the user
+// once via the provided scanner and returns a constant-returning closure based
+// on their answer.
+func buildNoTUIStatuslineConfirm(home string, scanner *bufio.Scanner) func() bool {
+	scriptPath := filepath.Join(home, ".claude", "statusline-command.sh")
+	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+		// File absent — confirm will never be called; return true as a no-op.
+		return func() bool { return true }
+	}
+	fmt.Fprint(noTUIStdout, "~/.claude/statusline-command.sh already exists. Overwrite? [y/N]: ")
+	ans := strings.ToLower(strings.TrimSpace(readLine(scanner)))
+	overwrite := ans == "y" || ans == "yes"
+	return func() bool { return overwrite }
 }

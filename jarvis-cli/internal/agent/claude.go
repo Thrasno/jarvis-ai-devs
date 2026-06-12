@@ -630,6 +630,54 @@ func resolveClaudeSessionHook(goos, name, hookDir string) claudePromptHookSpec {
 	}
 }
 
+// statuslinePath returns the path to ~/.claude/statusline-command.sh.
+func (a *ClaudeAgent) statuslinePath() string {
+	return filepath.Join(a.ConfigDir(), "statusline-command.sh")
+}
+
+// statusLineSettingsPatch returns the JSON patch that registers the statusline command.
+func (a *ClaudeAgent) statusLineSettingsPatch() []byte {
+	return []byte(`{"statusLine":{"type":"command","command":"bash ~/.claude/statusline-command.sh"}}`)
+}
+
+// InstallStatusline writes the embedded statusline script to
+// ~/.claude/statusline-command.sh and merges the statusLine key into
+// settings.json. When the script already exists, confirm() decides:
+// true = overwrite + merge, false = atomic skip (write nothing).
+// confirm is never called when the file is absent.
+func (a *ClaudeAgent) InstallStatusline(hooksFS fs.FS, confirm func() bool) error {
+	scriptPath := a.statuslinePath()
+
+	_, statErr := os.Stat(scriptPath)
+	if statErr == nil {
+		// File exists — ask the caller.
+		if !confirm() {
+			return nil
+		}
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("stat statusline script: %w", statErr)
+	}
+
+	// Proceed: write script and merge settings.
+	content, err := fs.ReadFile(hooksFS, "embed/hooks/claude/statusline-command.sh")
+	if err != nil {
+		return fmt.Errorf("read embedded statusline script: %w", err)
+	}
+	if err := writeFileAtomic(scriptPath, content, 0755); err != nil {
+		return fmt.Errorf("write statusline script: %w", err)
+	}
+
+	existing, err := readFileOrEmpty(a.settingsPath())
+	if err != nil {
+		return fmt.Errorf("read settings.json: %w", err)
+	}
+	merged, err := MergeJSON(existing, a.statusLineSettingsPatch())
+	if err != nil {
+		return fmt.Errorf("merge statusLine into settings.json: %w", err)
+	}
+	return writeFileAtomic(a.settingsPath(), merged, 0644)
+}
+
 // readFileOrEmpty reads a file's contents or returns an empty byte slice if not found.
 func readFileOrEmpty(path string) ([]byte, error) {
 	data, err := os.ReadFile(path)

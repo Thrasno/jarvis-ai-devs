@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1034,4 +1035,215 @@ func assertClaudeCall(t *testing.T, call stubClaudeCall, wantName string, wantAr
 			t.Fatalf("arg[%d] = %q, want %q; full=%v", i, call.args[i], wantArgs[i], call.args)
 		}
 	}
+}
+
+// ── InstallStatusline tests (TDD: RED → GREEN → REFACTOR) ────────────────────
+
+// TestClaudeAgent_InstallStatusline_FreshInstall verifies that when the
+// statusline script does not exist, InstallStatusline writes the script at 0755,
+// merges the statusLine key into settings.json, and never calls confirm.
+func TestClaudeAgent_InstallStatusline_FreshInstall(t *testing.T) {
+	tmpHome := t.TempDir()
+	a := &ClaudeAgent{home: tmpHome}
+
+	claudeDir := filepath.Join(tmpHome, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatalf("create .claude dir: %v", err)
+	}
+
+	confirmCalled := false
+	confirm := func() bool {
+		confirmCalled = true
+		return true
+	}
+
+	if err := a.InstallStatusline(testHooksFS, confirm); err != nil {
+		t.Fatalf("InstallStatusline: %v", err)
+	}
+
+	if confirmCalled {
+		t.Error("confirm must not be called on fresh install (file absent)")
+	}
+
+	// Script must be written.
+	scriptPath := filepath.Join(claudeDir, "statusline-command.sh")
+	info, err := os.Stat(scriptPath)
+	if err != nil {
+		t.Fatalf("statusline script not written: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode()&0100 == 0 {
+		t.Errorf("statusline script must be executable, mode=%v", info.Mode())
+	}
+
+	// statusLine key must be present in settings.json.
+	settings := readStatuslineSettings(t, filepath.Join(claudeDir, "settings.json"))
+	sl, ok := settings["statusLine"].(map[string]any)
+	if !ok {
+		t.Fatalf("statusLine key missing or wrong type in settings.json: %#v", settings)
+	}
+	if sl["type"] != "command" {
+		t.Errorf("statusLine.type = %v, want command", sl["type"])
+	}
+	if sl["command"] != "bash ~/.claude/statusline-command.sh" {
+		t.Errorf("statusLine.command = %v, want bash ~/.claude/statusline-command.sh", sl["command"])
+	}
+}
+
+// TestClaudeAgent_InstallStatusline_Skip verifies that when the script already
+// exists and confirm returns false, nothing is written and settings.json is
+// left unchanged.
+func TestClaudeAgent_InstallStatusline_Skip(t *testing.T) {
+	tmpHome := t.TempDir()
+	a := &ClaudeAgent{home: tmpHome}
+
+	claudeDir := filepath.Join(tmpHome, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatalf("create .claude dir: %v", err)
+	}
+
+	// Pre-write an existing script with known content.
+	scriptPath := filepath.Join(claudeDir, "statusline-command.sh")
+	originalContent := []byte("#!/bin/bash\necho old-statusline\n")
+	if err := os.WriteFile(scriptPath, originalContent, 0755); err != nil {
+		t.Fatalf("write existing script: %v", err)
+	}
+
+	// Pre-write settings.json without statusLine.
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{"theme":"dark"}`), 0644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	confirm := func() bool { return false }
+
+	if err := a.InstallStatusline(testHooksFS, confirm); err != nil {
+		t.Fatalf("InstallStatusline: %v", err)
+	}
+
+	// Script must be unchanged.
+	content, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read script: %v", err)
+	}
+	if string(content) != string(originalContent) {
+		t.Errorf("script was modified on skip; got %q", string(content))
+	}
+
+	// settings.json must not have statusLine.
+	settings := readStatuslineSettings(t, settingsPath)
+	if _, ok := settings["statusLine"]; ok {
+		t.Errorf("statusLine key must not be present after skip, got %#v", settings)
+	}
+}
+
+// TestClaudeAgent_InstallStatusline_Overwrite verifies that when the script
+// already exists and confirm returns true, the script is overwritten at 0755
+// and the statusLine key is merged into settings.json.
+func TestClaudeAgent_InstallStatusline_Overwrite(t *testing.T) {
+	tmpHome := t.TempDir()
+	a := &ClaudeAgent{home: tmpHome}
+
+	claudeDir := filepath.Join(tmpHome, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatalf("create .claude dir: %v", err)
+	}
+
+	// Pre-write an old script.
+	scriptPath := filepath.Join(claudeDir, "statusline-command.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/bash\necho old\n"), 0755); err != nil {
+		t.Fatalf("write existing script: %v", err)
+	}
+
+	// Pre-write settings.json with a sibling key to verify preservation.
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{"theme":"dark"}`), 0644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	confirm := func() bool { return true }
+
+	if err := a.InstallStatusline(testHooksFS, confirm); err != nil {
+		t.Fatalf("InstallStatusline: %v", err)
+	}
+
+	// Script must be replaced with embedded content.
+	content, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read script after overwrite: %v", err)
+	}
+	expectedContent, err := fs.ReadFile(testHooksFS, "embed/hooks/claude/statusline-command.sh")
+	if err != nil {
+		t.Fatalf("read embedded script: %v", err)
+	}
+	if string(content) != string(expectedContent) {
+		t.Errorf("script content after overwrite = %q, want embedded content", string(content))
+	}
+
+	// statusLine key must be present; sibling key must be preserved.
+	settings := readStatuslineSettings(t, settingsPath)
+	if settings["theme"] != "dark" {
+		t.Errorf("sibling settings key lost after overwrite; theme = %v", settings["theme"])
+	}
+	sl, ok := settings["statusLine"].(map[string]any)
+	if !ok {
+		t.Fatalf("statusLine key missing after overwrite: %#v", settings)
+	}
+	if sl["command"] != "bash ~/.claude/statusline-command.sh" {
+		t.Errorf("statusLine.command = %v", sl["command"])
+	}
+}
+
+// TestClaudeAgent_InstallStatusline_SettingsIsolationOnSkip verifies that a
+// pre-existing unrelated settings key is not modified and statusLine is absent
+// after a skip.
+func TestClaudeAgent_InstallStatusline_SettingsIsolationOnSkip(t *testing.T) {
+	tmpHome := t.TempDir()
+	a := &ClaudeAgent{home: tmpHome}
+
+	claudeDir := filepath.Join(tmpHome, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatalf("create .claude dir: %v", err)
+	}
+
+	// Pre-write script so confirm will be called.
+	scriptPath := filepath.Join(claudeDir, "statusline-command.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/bash\necho existing\n"), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	// Pre-write settings.json with an unrelated key and statusLine present.
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	seed := `{"outputStyle":"Gentleman","permissions":{"allow":["Bash(go test:*)"]}}`
+	if err := os.WriteFile(settingsPath, []byte(seed), 0644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	confirm := func() bool { return false }
+
+	if err := a.InstallStatusline(testHooksFS, confirm); err != nil {
+		t.Fatalf("InstallStatusline: %v", err)
+	}
+
+	// settings.json must be byte-identical to seed (not modified at all).
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+	if string(raw) != seed {
+		t.Errorf("settings.json was modified on skip\ngot:  %q\nwant: %q", string(raw), seed)
+	}
+}
+
+// readStatuslineSettings reads and unmarshals settings.json from path.
+func readStatuslineSettings(t *testing.T, path string) map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal settings.json: %v", err)
+	}
+	return m
 }

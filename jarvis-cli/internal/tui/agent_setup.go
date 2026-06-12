@@ -30,6 +30,13 @@ type generatedConfigAgent interface {
 	MergeGeneratedConfig(*config.AppConfig) error
 }
 
+// statuslineInstaller is implemented by agents that support the Jarvis-managed
+// Claude Code statusline. The confirm callback decides overwrite vs. skip when
+// the script already exists; it is never called on a fresh install.
+type statuslineInstaller interface {
+	InstallStatusline(hooksFS fs.FS, confirm func() bool) error
+}
+
 // configureWizardAgent applies the same MCP + instruction + skills setup flow
 // for both TUI and no-TUI wizards.
 func configureWizardAgent(
@@ -39,6 +46,7 @@ func configureWizardAgent(
 	context7Entry agent.MCPEntry,
 	skillsSubFS fs.FS,
 	selectedIDs []string,
+	statuslineConfirm func() bool,
 ) error {
 	if err := a.MergeConfig(hiveEntry); err != nil {
 		return fmt.Errorf("hive MCP config: %w", err)
@@ -71,6 +79,11 @@ func configureWizardAgent(
 	if err := a.InstallSessionHooks(jarvis.HooksFS); err != nil {
 		return fmt.Errorf("install session hooks: %w", err)
 	}
+	if slAgent, ok := a.(statuslineInstaller); ok {
+		if err := slAgent.InstallStatusline(jarvis.HooksFS, statuslineConfirm); err != nil {
+			return fmt.Errorf("install statusline: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -86,6 +99,7 @@ func configureWizardAgents(
 	presetCtx wizardPresetApplyContext,
 	skillsSubFS fs.FS,
 	selectedIDs []string,
+	statuslineConfirm func() bool,
 ) []AgentApplyResult {
 	results := make([]AgentApplyResult, 0, len(agents))
 	for _, a := range agents {
@@ -96,7 +110,7 @@ func configureWizardAgents(
 				ConfigPath: a.ConfigDir(),
 			},
 		}
-		if err := configureWizardAgent(a, cfg, hiveEntry, context7Entry, skillsSubFS, selectedIDs); err != nil {
+		if err := configureWizardAgent(a, cfg, hiveEntry, context7Entry, skillsSubFS, selectedIDs, statuslineConfirm); err != nil {
 			res.Err = err
 			results = append(results, res)
 			return results
