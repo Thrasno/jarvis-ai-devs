@@ -18,9 +18,15 @@ type syncJSON struct {
 
 // WriteSyncCredentials writes ~/.jarvis/sync.json with cloud credentials.
 //
-// If the file already exists, optional supported settings (currently auto_sync)
-// are preserved while required auth fields are updated.
-func WriteSyncCredentials(apiURL, email, password string) error {
+// The autoSync parameter controls the auto_sync field using a tri-state:
+//   - nil: preserve the existing value from the current file (or omit if no file / field absent).
+//   - &true: force-enable auto_sync regardless of any existing value.
+//   - &false: force-disable auto_sync regardless of any existing value.
+//
+// Required auth fields (api_url, email, password) are always updated.
+// If the file already exists and cannot be parsed, the call returns an error
+// without writing a new file.
+func WriteSyncCredentials(apiURL, email, password string, autoSync *bool) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -31,7 +37,7 @@ func WriteSyncCredentials(apiURL, email, password string) error {
 		return fmt.Errorf("create ~/.jarvis: %w", err)
 	}
 
-	var autoSync *bool
+	var existingAutoSync *bool
 	if existingData, err := os.ReadFile(path); err == nil {
 		var existing syncJSON
 		dec := json.NewDecoder(bytes.NewReader(existingData))
@@ -39,16 +45,23 @@ func WriteSyncCredentials(apiURL, email, password string) error {
 		if decodeErr := dec.Decode(&existing); decodeErr != nil {
 			return fmt.Errorf("parse existing sync.json: %w", decodeErr)
 		}
-		autoSync = existing.AutoSync
+		existingAutoSync = existing.AutoSync
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("read existing sync.json: %w", err)
+	}
+
+	// Resolve final auto_sync value: explicit intent overrides the preserved value.
+	resolved := existingAutoSync
+	if autoSync != nil {
+		v := *autoSync // copy to a fresh addressable bool — avoid aliasing the caller's pointer
+		resolved = &v
 	}
 
 	payload := syncJSON{
 		APIURL:   strings.TrimSpace(apiURL),
 		Email:    strings.TrimSpace(email),
 		Password: strings.TrimSpace(password),
-		AutoSync: autoSync,
+		AutoSync: resolved,
 	}
 
 	data, err := json.Marshal(payload)
