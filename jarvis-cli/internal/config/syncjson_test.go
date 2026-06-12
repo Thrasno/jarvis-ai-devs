@@ -235,3 +235,32 @@ func TestDeleteSyncCredentials_IdempotentWhenMissing(t *testing.T) {
 		t.Fatalf("DeleteSyncCredentials missing file should not fail: %v", err)
 	}
 }
+
+func TestWriteSyncCredentials_NilPreservesExistingAutoSyncTrue(t *testing.T) {
+	tmpHome := isolateHome(t)
+	jarvisDir := filepath.Join(tmpHome, ".jarvis")
+	if err := os.MkdirAll(jarvisDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	existing := `{"api_url":"https://old.dev","email":"old@example.com","password":"old","auto_sync":true}`
+	if err := os.WriteFile(filepath.Join(jarvisDir, "sync.json"), []byte(existing), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteSyncCredentials("https://hivemem.dev", "new@example.com", "newpass", nil); err != nil {
+		t.Fatalf("WriteSyncCredentials: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(jarvisDir, "sync.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	if !strings.Contains(body, `"auto_sync":true`) {
+		t.Fatalf("expected auto_sync preserved as true when nil passed, got: %s", body)
+	}
+	if !strings.Contains(body, `"email":"new@example.com"`) {
+		t.Fatalf("expected updated credentials, got: %s", body)
+	}
+}
