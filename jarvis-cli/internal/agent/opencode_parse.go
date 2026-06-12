@@ -25,13 +25,17 @@ type openCodeGlobalPermission struct {
 }
 
 type openCodeAgentEntry struct {
-	Mode       string                    `json:"mode"`
-	Hidden     bool                      `json:"hidden"`
-	Model      string                    `json:"model"`
-	Prompt     string                    `json:"prompt"`
-	Permission *openCodeAgentPermission  `json:"permission,omitempty"`
+	Mode       string          `json:"mode"`
+	Hidden     bool            `json:"hidden"`
+	Model      string          `json:"model"`
+	Prompt     string          `json:"prompt"`
+	Permission json.RawMessage `json:"permission,omitempty"`
 }
 
+// openCodeAgentPermission is the orchestrator-specific permission shape where
+// "task" is a map (wildcard deny + named allows). Subagents use a different
+// shape ("task":"deny" as a string), so we unmarshal the orchestrator permission
+// separately rather than embedding this type in openCodeAgentEntry.
 type openCodeAgentPermission struct {
 	Task map[string]string `json:"task"`
 }
@@ -72,16 +76,22 @@ func parseOpenCodeConfig(path string) sddruntime.ObservedOpenCodeConfig {
 		cfg.OrchestratorModel  = orch.Model
 		cfg.OrchestratorPrompt = orch.Prompt
 
-		if orch.Permission != nil {
-			cfg.TaskWildcardDeny = orch.Permission.Task["*"] == "deny"
-			allows := make([]string, 0)
-			for k, v := range orch.Permission.Task {
-				if k != "*" && v == "allow" {
-					allows = append(allows, k)
+		// The orchestrator's permission.task is a map (wildcard deny + named allows).
+		// Subagents use task as a plain string — unmarshal the orchestrator permission
+		// separately to avoid type conflicts.
+		if len(orch.Permission) > 0 {
+			var orchPerm openCodeAgentPermission
+			if err := json.Unmarshal(orch.Permission, &orchPerm); err == nil && orchPerm.Task != nil {
+				cfg.TaskWildcardDeny = orchPerm.Task["*"] == "deny"
+				allows := make([]string, 0)
+				for k, v := range orchPerm.Task {
+					if k != "*" && v == "allow" {
+						allows = append(allows, k)
+					}
 				}
+				sort.Strings(allows)
+				cfg.TaskAllows = allows
 			}
-			sort.Strings(allows)
-			cfg.TaskAllows = allows
 		}
 	}
 

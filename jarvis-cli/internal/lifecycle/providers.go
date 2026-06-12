@@ -60,7 +60,41 @@ func (f *fakeProviderAdapter) Apply(steps []DoctorStep) error {
 	f.observed.Artifacts["skills"] = sddruntime.ObservedArtifact{Exists: true}
 	f.observed.NonOwnedChanges = nil
 	f.observed.UnknownChanges = nil
+	// For the opencode fake adapter, populate OpenCode so that opencode-specific
+	// verifier checks do not fire spurious failures in lifecycle engine tests.
+	if f.name == "opencode" && !f.observed.OpenCode.ParseSucceeded {
+		f.observed.OpenCode = fakeCompliantOpenCodeConfig()
+	}
 	return nil
+}
+
+// fakeCompliantOpenCodeConfig returns a fully passing ObservedOpenCodeConfig
+// for use in fake lifecycle adapter tests. It mirrors what a properly
+// installed opencode config would produce.
+func fakeCompliantOpenCodeConfig() sddruntime.ObservedOpenCodeConfig {
+	subagents := []string{
+		"sdd-explore", "sdd-propose", "sdd-spec", "sdd-design",
+		"sdd-tasks", "sdd-apply", "sdd-verify", "sdd-archive",
+		"sdd-init", "sdd-onboard",
+		"jd-judge-a", "jd-judge-b", "jd-fix-agent",
+	}
+	return sddruntime.ObservedOpenCodeConfig{
+		ParseSucceeded:     true,
+		ShareMode:          "disabled",
+		DefaultAgent:       "sdd-orchestrator",
+		OrchestratorMode:   "primary",
+		OrchestratorModel:  "legacy=opus",
+		OrchestratorPrompt: "{file:./sdd-orchestrator.md}",
+		AgentNames:         append([]string{"sdd-orchestrator"}, subagents...),
+		HiddenSubagents:    subagents,
+		TaskAllows:         subagents,
+		TaskWildcardDeny:   true,
+		BashWildcardAllow:  true,
+		ReadSecretDenies:   true,
+		MCPHivePresent:     true,
+		MCPContext7Present: true,
+		PluginHiveExists:   true,
+	}
 }
 
 func (f *fakeProviderAdapter) BackupTargets(steps []DoctorStep) ([]BackupTarget, error) {

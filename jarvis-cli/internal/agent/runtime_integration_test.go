@@ -173,6 +173,11 @@ func TestOpenCodeAgent_ObserveRuntimeWithConfigUsesPendingAssignments(t *testing
 	if err := os.MkdirAll(a.ConfigDir(), 0755); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}
+	// Install the compliant opencode.json and supporting artifacts so that
+	// opencode verifier checks do not obscure the model-assignment assertions.
+	if err := installOptionalManagedArtifacts(a.ConfigDir()); err != nil {
+		t.Fatalf("install optional managed artifacts: %v", err)
+	}
 	if err := a.WriteInstructions("# Layer1", "# Layer2", nil); err != nil {
 		t.Fatalf("WriteInstructions: %v", err)
 	}
@@ -225,6 +230,12 @@ func TestOpenCodeAgent_MergeGeneratedConfigKeepsRuntimeVerificationPassing(t *te
 	if err := os.MkdirAll(a.ConfigDir(), 0755); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}
+	// Install supporting artifacts (plugins/hive.ts etc.) BEFORE MergeGeneratedConfig
+	// so that MergeGeneratedConfig's opencode.json is not overwritten by the stub.
+	if err := installOptionalManagedArtifacts(a.ConfigDir()); err != nil {
+		t.Fatalf("install optional artifacts: %v", err)
+	}
+	// MergeGeneratedConfig writes the real opencode.json, overwriting the stub from above.
 	if err := a.MergeGeneratedConfig(cfg); err != nil {
 		t.Fatalf("MergeGeneratedConfig: %v", err)
 	}
@@ -233,9 +244,6 @@ func TestOpenCodeAgent_MergeGeneratedConfigKeepsRuntimeVerificationPassing(t *te
 	}
 	if err := a.InstallOrchestrator([]byte("# orchestrator")); err != nil {
 		t.Fatalf("InstallOrchestrator: %v", err)
-	}
-	if err := installOptionalManagedArtifacts(a.ConfigDir()); err != nil {
-		t.Fatalf("install optional artifacts: %v", err)
 	}
 	if err := a.InstallSkills(fstest.MapFS{"_shared/SKILL.md": {Data: []byte("# shared")}}, nil); err != nil {
 		t.Fatalf("InstallSkills: %v", err)
@@ -624,7 +632,9 @@ func installOptionalManagedArtifacts(configDir string) error {
 	if err := os.WriteFile(configDir+"/settings.json", []byte(`{"statusLine":{"type":"command","command":"echo ok"}}`), 0644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(configDir+"/opencode.json", []byte(`{"model":"sonnet"}`), 0644); err != nil {
+	// Write a fully compliant opencode.json so that opencode verifier checks pass.
+	// This includes all 13 required subagents, proper permissions, and orchestrator config.
+	if err := os.WriteFile(configDir+"/opencode.json", []byte(compliantOpenCodeJSON()), 0644); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(configDir+"/output-styles", 0755); err != nil {
@@ -642,4 +652,45 @@ func installOptionalManagedArtifacts(configDir string) error {
 		return err
 	}
 	return nil
+}
+
+// compliantOpenCodeJSON returns a JSON string that satisfies all opencode verifier
+// checks. It mirrors the structure that MergeGeneratedConfig produces so that test
+// fixtures not going through the full wizard flow still pass sddruntime.Verify.
+func compliantOpenCodeJSON() string {
+	subagents := append(openCodeSDDSubagents(), openCodeJudgmentDaySubagents()...)
+
+	taskAllows := ""
+	for _, name := range subagents {
+		taskAllows += `, "` + name + `": "allow"`
+	}
+
+	agentEntries := ""
+	for _, name := range subagents {
+		if agentEntries != "" {
+			agentEntries += ","
+		}
+		agentEntries += `"` + name + `": {"mode": "subagent", "hidden": true, "model": "legacy=sonnet", "prompt": "skill prompt"}`
+	}
+
+	return `{
+  "share": "disabled",
+  "default_agent": "sdd-orchestrator",
+  "permission": {
+    "bash": {"*": "allow"},
+    "read": {"*": "allow", ".env": "deny", "secrets": "deny", "tokens": "deny", "credentials": "deny", "*.key": "deny"}
+  },
+  "agent": {
+    "sdd-orchestrator": {
+      "mode": "primary",
+      "model": "legacy=opus",
+      "prompt": "{file:./sdd-orchestrator.md}",
+      "permission": {"task": {"*": "deny"` + taskAllows + `}}
+    },` + agentEntries + `
+  },
+  "mcp": {
+    "hive": {"type": "local", "command": ["hive-daemon", "mcp"]},
+    "context7": {"type": "remote", "url": "https://context7.ai"}
+  }
+}`
 }

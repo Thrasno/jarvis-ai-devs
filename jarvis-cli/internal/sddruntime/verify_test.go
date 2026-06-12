@@ -369,6 +369,39 @@ func compliantObservedRuntime(t *testing.T) ObservedRuntime {
 			"orchestrator": {Exists: true},
 			"skills":       {Exists: true},
 		},
+		// OpenCode is populated so that opencode-agent verifier checks do not
+		// fire spurious failures in tests that do not exercise those checks.
+		OpenCode: compliantOpenCodeObserved(),
+	}
+}
+
+// compliantOpenCodeObserved returns an ObservedOpenCodeConfig with all
+// invariant fields set to their canonical passing values. It is used by
+// test helpers that build a fully-compliant ObservedRuntime for the opencode
+// agent so that pre-existing tests remain unaffected by the new check layer.
+func compliantOpenCodeObserved() ObservedOpenCodeConfig {
+	subagents := []string{
+		"sdd-explore", "sdd-propose", "sdd-spec", "sdd-design",
+		"sdd-tasks", "sdd-apply", "sdd-verify", "sdd-archive",
+		"sdd-init", "sdd-onboard",
+		"jd-judge-a", "jd-judge-b", "jd-fix-agent",
+	}
+	return ObservedOpenCodeConfig{
+		ParseSucceeded:     true,
+		ShareMode:          "disabled",
+		DefaultAgent:       "sdd-orchestrator",
+		OrchestratorMode:   "primary",
+		OrchestratorModel:  "claude-opus-4-5",
+		OrchestratorPrompt: "{file:./sdd-orchestrator.md}",
+		AgentNames:         append([]string{"sdd-orchestrator"}, subagents...),
+		HiddenSubagents:    subagents,
+		TaskAllows:         subagents,
+		TaskWildcardDeny:   true,
+		BashWildcardAllow:  true,
+		ReadSecretDenies:   true,
+		MCPHivePresent:     true,
+		MCPContext7Present: true,
+		PluginHiveExists:   true,
 	}
 }
 
