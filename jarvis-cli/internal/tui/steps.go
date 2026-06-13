@@ -1174,7 +1174,7 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		// use it; otherwise default to skip (safe default without user consent).
 		statuslineConfirm, statuslineErr := buildTUIStatuslineConfirm(home, m)
 		if statuslineErr != nil {
-			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: check statusline script: %v", statuslineErr), done: true, failed: true}
+			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: check statusline script: %v. Ver docs/setup-recovery.md", statuslineErr), done: true, failed: true}
 		}
 
 		// Configure each detected agent and collect structured outcomes.
