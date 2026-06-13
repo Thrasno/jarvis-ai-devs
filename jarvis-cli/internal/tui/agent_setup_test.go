@@ -92,21 +92,40 @@ func (a *setupAgentStub) WriteOutputStyle(*persona.Preset) error {
 	return a.outputStyleErr
 }
 
+// setupStatuslineAgentStub wraps setupAgentStub and implements statuslineInstaller
+// so that the InstallStatusline error-propagation path can be exercised.
+type setupStatuslineAgentStub struct {
+	*setupAgentStub
+	installStatuslineErr error
+}
+
+func (a *setupStatuslineAgentStub) InstallStatusline(_ fs.FS, _ func() bool) error {
+	return a.installStatuslineErr
+}
+
 func TestConfigureWizardAgent_ErrorPropagation(t *testing.T) {
 	tests := []struct {
 		name    string
-		agent   *setupAgentStub
+		agent   agent.Agent
 		wantErr string
 	}{
 		{name: "hive merge fails", agent: &setupAgentStub{name: "claude", mergeErrAt: 1}, wantErr: "hive MCP config"},
 		{name: "context7 merge fails", agent: &setupAgentStub{name: "claude", mergeErrAt: 2}, wantErr: "context7 MCP config"},
 		{name: "install skills fails", agent: &setupAgentStub{name: "claude", installSkillsErr: errors.New("skills fail")}, wantErr: "install skills"},
 		{name: "install orchestrator fails", agent: &setupAgentStub{name: "claude", installOrchErr: errors.New("orchestrator fail")}, wantErr: "install orchestrator"},
+		{
+			name: "install statusline fails",
+			agent: &setupStatuslineAgentStub{
+				setupAgentStub:       &setupAgentStub{name: "claude"},
+				installStatuslineErr: errors.New("statusline fail"),
+			},
+			wantErr: "install statusline",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := configureWizardAgent(tt.agent, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil)
+			err := configureWizardAgent(tt.agent, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, func() bool { return true })
 			if err == nil {
 				t.Fatalf("configureWizardAgent expected error containing %q", tt.wantErr)
 			}
@@ -162,7 +181,7 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			results := configureWizardAgents(tt.agents, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, tt.resolved, wizardPresetApplyContext{}, testSkillsFS, nil)
+			results := configureWizardAgents(tt.agents, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, tt.resolved, wizardPresetApplyContext{}, testSkillsFS, nil, func() bool { return true })
 			if len(results) != tt.wantLen {
 				t.Fatalf("len(results) = %d, want %d", len(results), tt.wantLen)
 			}
@@ -253,7 +272,7 @@ func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			results := configureWizardAgents([]agent.Agent{tt.agent}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil)
+			results := configureWizardAgents([]agent.Agent{tt.agent}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, func() bool { return true })
 			if len(results) != 1 {
 				t.Fatalf("len(results) = %d, want 1", len(results))
 			}
@@ -331,7 +350,7 @@ func TestConfigureWizardAgents_RuntimeVerificationUsesPendingConfigForOpenCodeDe
 		return observed, nil
 	}
 
-	results := configureWizardAgents([]agent.Agent{a}, pendingCfg, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil)
+	results := configureWizardAgents([]agent.Agent{a}, pendingCfg, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, func() bool { return true })
 	if len(results) != 1 {
 		t.Fatalf("len(results) = %d, want 1", len(results))
 	}

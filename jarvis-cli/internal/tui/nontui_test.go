@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -857,6 +858,146 @@ func TestRunNoTUI_LocalCloudLoginWithoutResolvedEmailFallsBackToInput(t *testing
 	}
 	if loaded.Email != "input@example.com" {
 		t.Fatalf("expected fallback to entered email, got %q", loaded.Email)
+	}
+}
+
+func TestBuildNoTUIStatuslineConfirm(t *testing.T) {
+	tests := []struct {
+		name        string
+		setup       func(t *testing.T, dir string)
+		input       string
+		wantErr     bool
+		wantConfirm bool
+	}{
+		{
+			name: "file absent returns true without prompting",
+			setup: func(t *testing.T, dir string) {
+				// No .claude directory — script is absent.
+			},
+			input:       "y\n", // sentinel: scanner should NOT be consumed
+			wantErr:     false,
+			wantConfirm: true,
+		},
+		{
+			name: "file present and answer y returns true",
+			setup: func(t *testing.T, dir string) {
+				claudeDir := filepath.Join(dir, ".claude")
+				if err := os.MkdirAll(claudeDir, 0755); err != nil {
+					t.Fatalf("mkdir .claude: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(claudeDir, "statusline-command.sh"), []byte("#!/bin/bash\n"), 0644); err != nil {
+					t.Fatalf("write statusline script: %v", err)
+				}
+			},
+			input:       "y\n",
+			wantErr:     false,
+			wantConfirm: true,
+		},
+		{
+			name: "file present and answer yes returns true",
+			setup: func(t *testing.T, dir string) {
+				claudeDir := filepath.Join(dir, ".claude")
+				if err := os.MkdirAll(claudeDir, 0755); err != nil {
+					t.Fatalf("mkdir .claude: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(claudeDir, "statusline-command.sh"), []byte("#!/bin/bash\n"), 0644); err != nil {
+					t.Fatalf("write statusline script: %v", err)
+				}
+			},
+			input:       "yes\n",
+			wantErr:     false,
+			wantConfirm: true,
+		},
+		{
+			name: "file present and answer n returns false",
+			setup: func(t *testing.T, dir string) {
+				claudeDir := filepath.Join(dir, ".claude")
+				if err := os.MkdirAll(claudeDir, 0755); err != nil {
+					t.Fatalf("mkdir .claude: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(claudeDir, "statusline-command.sh"), []byte("#!/bin/bash\n"), 0644); err != nil {
+					t.Fatalf("write statusline script: %v", err)
+				}
+			},
+			input:       "n\n",
+			wantErr:     false,
+			wantConfirm: false,
+		},
+		{
+			name: "file present and empty input (Enter) returns false",
+			setup: func(t *testing.T, dir string) {
+				claudeDir := filepath.Join(dir, ".claude")
+				if err := os.MkdirAll(claudeDir, 0755); err != nil {
+					t.Fatalf("mkdir .claude: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(claudeDir, "statusline-command.sh"), []byte("#!/bin/bash\n"), 0644); err != nil {
+					t.Fatalf("write statusline script: %v", err)
+				}
+			},
+			input:       "\n",
+			wantErr:     false,
+			wantConfirm: false,
+		},
+		{
+			name: "stat returns non-ENOENT error",
+			setup: func(t *testing.T, dir string) {
+				// Create .claude as a regular file so stat on .claude/statusline-command.sh
+				// fails with a "not a directory" error (Linux/macOS only; skipped on Windows
+				// because Windows returns ENOENT in this situation).
+				if runtime.GOOS == "windows" {
+					t.Skip("Windows returns ENOENT when a path component is a file; non-ENOENT stat test not applicable")
+				}
+				claudePath := filepath.Join(dir, ".claude")
+				if err := os.WriteFile(claudePath, []byte("not a dir"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			input:       "",
+			wantErr:     true,
+			wantConfirm: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpHome := t.TempDir()
+			tt.setup(t, tmpHome)
+
+			scanner := bufio.NewScanner(strings.NewReader(tt.input))
+			confirm, err := buildNoTUIStatuslineConfirm(tmpHome, scanner)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if confirm != nil {
+					t.Fatal("expected nil confirm on error, got non-nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if confirm == nil {
+				t.Fatal("expected non-nil confirm closure")
+			}
+			if got := confirm(); got != tt.wantConfirm {
+				t.Fatalf("confirm() = %v, want %v", got, tt.wantConfirm)
+			}
+
+			// For the "file absent" case: verify the scanner was NOT consumed
+			// by buildNoTUIStatuslineConfirm. The input "y\n" should still be
+			// readable, proving no I/O happened in the absent-file path.
+			if tt.name == "file absent returns true without prompting" {
+				if !scanner.Scan() {
+					t.Fatal("expected scanner to still have 'y' token (scanner was incorrectly consumed by the absent-file path)")
+				}
+				if got := strings.TrimSpace(scanner.Text()); got != "y" {
+					t.Fatalf("expected scanner to still hold 'y', got %q", got)
+				}
+			}
+		})
 	}
 }
 

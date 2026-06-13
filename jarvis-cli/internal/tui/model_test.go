@@ -2104,11 +2104,17 @@ func TestUpdateReview_BackCancelApply(t *testing.T) {
 	}{
 		{name: "back", choice: 0, expectStep: StepSkills, expectDone: false, expectCmdNil: true},
 		{name: "cancel", choice: 1, expectStep: StepReview, expectDone: true, expectCmdNil: false},
+		// "apply" with no statusline file present must go directly to StepApply.
+		// Isolate HOME to guarantee the statusline script is absent.
 		{name: "apply", choice: 2, expectStep: StepApply, expectDone: false, expectCmdNil: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Isolate HOME for "apply" so the statusline-existence check is deterministic.
+			if tt.choice == 2 {
+				isolateTestHome(t)
+			}
 			m := Model{Step: StepReview, reviewChoice: tt.choice, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
 			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 			m2 := updated.(Model)
@@ -2667,5 +2673,151 @@ func TestUpdateDone_IgnoresNonQuitRune(t *testing.T) {
 	}
 	if cmd != nil {
 		t.Fatalf("expected nil command for non-quit rune, got %v", cmd)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// StepStatuslineConfirm tests
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestStepReview_Apply_SkipsStatuslineConfirmWhenFileAbsent verifies that when the
+// statusline script does NOT exist, the Review "Apply" choice goes directly to
+// StepApply without passing through StepStatuslineConfirm.
+func TestStepReview_Apply_SkipsStatuslineConfirmWhenFileAbsent(t *testing.T) {
+	home := isolateTestHome(t)
+	// Ensure the statusline script does NOT exist.
+	_ = home // ~/.claude/statusline-command.sh is absent in a fresh temp dir.
+
+	m := Model{
+		Step:         StepReview,
+		Selected:     make(map[string]bool),
+		cfg:          &config.AppConfig{},
+		reviewChoice: 2, // "Apply"
+	}
+
+	m = sendKey(m, tea.KeyEnter)
+
+	if m.Step != StepApply {
+		t.Fatalf("expected StepApply when statusline file absent, got %v", m.Step)
+	}
+}
+
+// TestStepReview_Apply_GoesToStatuslineConfirmWhenFileExists verifies that when
+// ~/.claude/statusline-command.sh already exists, the Review "Apply" choice
+// transitions to StepStatuslineConfirm first.
+func TestStepReview_Apply_GoesToStatuslineConfirmWhenFileExists(t *testing.T) {
+	home := isolateTestHome(t)
+
+	// Create the statusline script so it "exists".
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeDir, "statusline-command.sh"), []byte("#!/bin/bash\n"), 0755); err != nil {
+		t.Fatalf("write statusline: %v", err)
+	}
+
+	m := Model{
+		Step:         StepReview,
+		Selected:     make(map[string]bool),
+		cfg:          &config.AppConfig{},
+		reviewChoice: 2, // "Apply"
+	}
+
+	m = sendKey(m, tea.KeyEnter)
+
+	if m.Step != StepStatuslineConfirm {
+		t.Fatalf("expected StepStatuslineConfirm when statusline file exists, got %v", m.Step)
+	}
+}
+
+// TestStepStatuslineConfirm_YesOverwrite verifies that pressing 'y' in
+// StepStatuslineConfirm sets statuslineOverwrite=true, statuslineOverwriteReady=true,
+// and advances to StepApply.
+func TestStepStatuslineConfirm_YesOverwrite(t *testing.T) {
+	m := Model{
+		Step:     StepStatuslineConfirm,
+		Selected: make(map[string]bool),
+		cfg:      &config.AppConfig{},
+	}
+
+	m = sendRune(m, "y")
+
+	if m.Step != StepApply {
+		t.Fatalf("expected StepApply after 'y', got %v", m.Step)
+	}
+	if !m.statuslineOverwriteReady {
+		t.Fatal("expected statuslineOverwriteReady=true after 'y'")
+	}
+	if !m.statuslineOverwrite {
+		t.Fatal("expected statuslineOverwrite=true after 'y'")
+	}
+}
+
+// TestStepStatuslineConfirm_EnterDefaultSkip verifies that pressing Enter (default)
+// in StepStatuslineConfirm sets statuslineOverwrite=false, statuslineOverwriteReady=true,
+// and advances to StepApply.
+func TestStepStatuslineConfirm_EnterDefaultSkip(t *testing.T) {
+	m := Model{
+		Step:     StepStatuslineConfirm,
+		Selected: make(map[string]bool),
+		cfg:      &config.AppConfig{},
+	}
+
+	m = sendKey(m, tea.KeyEnter)
+
+	if m.Step != StepApply {
+		t.Fatalf("expected StepApply after Enter (default skip), got %v", m.Step)
+	}
+	if !m.statuslineOverwriteReady {
+		t.Fatal("expected statuslineOverwriteReady=true after Enter")
+	}
+	if m.statuslineOverwrite {
+		t.Fatal("expected statuslineOverwrite=false (skip) after Enter")
+	}
+}
+
+// TestStepStatuslineConfirm_NSkip verifies that pressing 'n' in
+// StepStatuslineConfirm sets statuslineOverwrite=false, statuslineOverwriteReady=true,
+// and advances to StepApply.
+func TestStepStatuslineConfirm_NSkip(t *testing.T) {
+	m := Model{
+		Step:     StepStatuslineConfirm,
+		Selected: make(map[string]bool),
+		cfg:      &config.AppConfig{},
+	}
+
+	m = sendRune(m, "n")
+
+	if m.Step != StepApply {
+		t.Fatalf("expected StepApply after 'n', got %v", m.Step)
+	}
+	if !m.statuslineOverwriteReady {
+		t.Fatal("expected statuslineOverwriteReady=true after 'n'")
+	}
+	if m.statuslineOverwrite {
+		t.Fatal("expected statuslineOverwrite=false (skip) after 'n'")
+	}
+}
+
+// TestViewStatuslineConfirm_ContainsPromptText verifies that viewStatuslineConfirm
+// renders the expected confirmation prompt.
+func TestViewStatuslineConfirm_ContainsPromptText(t *testing.T) {
+	m := Model{
+		Step:     StepStatuslineConfirm,
+		Selected: make(map[string]bool),
+		cfg:      &config.AppConfig{},
+	}
+
+	view := m.View()
+
+	if view == "" {
+		t.Fatal("expected non-empty view for StepStatuslineConfirm")
+	}
+	if !strings.Contains(view, "statusline") {
+		t.Fatalf("expected view to mention 'statusline', got:\n%s", view)
+	}
+	if !strings.Contains(view, "y") && !strings.Contains(view, "Y") {
+		t.Fatalf("expected view to include y/n prompt, got:\n%s", view)
 	}
 }
