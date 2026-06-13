@@ -334,7 +334,10 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	// Determine statusline overwrite policy before the pipeline goroutine.
 	// If the script already exists, prompt the user once; otherwise use a no-op
 	// closure (confirm is never called on fresh install).
-	statuslineConfirm := buildNoTUIStatuslineConfirm(home, scanner)
+	statuslineConfirm, err := buildNoTUIStatuslineConfirm(home, scanner)
+	if err != nil {
+		return fmt.Errorf("check statusline script: %w", err)
+	}
 
 	results := configureWizardAgents(agents, cfg, entry, context7Entry, resolvedPreset, wizardPresetApplyContext{
 		Layer1:               config.Layer1Content(),
@@ -519,15 +522,20 @@ func normalizePlatformValueForPrompt(input, fallback string, catalog []string) s
 // already exists. If absent, it returns a closure that always returns true
 // (confirm is never called on a fresh install). If present, it prompts the user
 // once via the provided scanner and returns a constant-returning closure based
-// on their answer.
-func buildNoTUIStatuslineConfirm(home string, scanner *bufio.Scanner) func() bool {
+// on their answer. A non-ENOENT stat error (e.g. permission denied) is returned
+// as an error so callers can handle it explicitly.
+func buildNoTUIStatuslineConfirm(home string, scanner *bufio.Scanner) (func() bool, error) {
 	scriptPath := filepath.Join(home, ".claude", "statusline-command.sh")
-	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		// File absent — confirm will never be called; return true as a no-op.
-		return func() bool { return true }
+	_, err := os.Stat(scriptPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// File absent — confirm will never be called; return true as a no-op.
+			return func() bool { return true }, nil
+		}
+		return nil, err
 	}
 	fmt.Fprint(noTUIStdout, "~/.claude/statusline-command.sh already exists. Overwrite? [y/N]: ")
 	ans := strings.ToLower(strings.TrimSpace(readLine(scanner)))
 	overwrite := ans == "y" || ans == "yes"
-	return func() bool { return overwrite }
+	return func() bool { return overwrite }, nil
 }

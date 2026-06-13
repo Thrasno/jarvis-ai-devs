@@ -1012,7 +1012,15 @@ func updateReview(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 2: // Apply
 			// Check if the statusline script already exists. If so, show the
 			// overwrite/skip confirmation step before launching the apply pipeline.
-			home, _ := os.UserHomeDir()
+			home, homeErr := os.UserHomeDir()
+			if homeErr != nil {
+				// Cannot determine home dir; skip the pre-flight and proceed directly to apply.
+				m.Step = StepApply
+				m.agentProgress = nil
+				m.agentDone = false
+				m.Err = nil
+				return m, runAgentConfigCmd(m)
+			}
 			scriptPath := filepath.Join(home, ".claude", "statusline-command.sh")
 			if _, err := os.Stat(scriptPath); err == nil {
 				// File exists: route through the pre-flight confirmation step.
@@ -1073,7 +1081,7 @@ func updateStatuslineConfirm(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func viewStatuslineConfirm(m Model) string {
 	var sb strings.Builder
-	sb.WriteString(stepHeader(6, 7, "Statusline Script"))
+	sb.WriteString(stepHeader(6, 8, "Statusline Script"))
 	sb.WriteString(warningStyle.Render("~/.claude/statusline-command.sh already exists.") + "\n\n")
 	sb.WriteString("Overwrite with the Jarvis-managed statusline? [y/N]: \n\n")
 	sb.WriteString(dimStyle.Render("y: overwrite  n/Enter: keep existing  Ctrl+C: exit"))
@@ -1157,8 +1165,11 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		// (before the goroutine enters the pipeline) so the Bubbletea
 		// single-thread contract is not violated. If the script is absent,
 		// confirm is never called. If the pre-flight step captured an answer,
-		// use it; otherwise default to overwrite (safe for fresh installs).
-		statuslineConfirm := buildTUIStatuslineConfirm(home, m)
+		// use it; otherwise default to skip (safe default without user consent).
+		statuslineConfirm, statuslineErr := buildTUIStatuslineConfirm(home, m)
+		if statuslineErr != nil {
+			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: check statusline script: %v", statuslineErr), done: true, failed: true}
+		}
 
 		// Configure each detected agent and collect structured outcomes.
 		results := configureWizardAgents(m.Agents, m.cfg, entry, context7Entry, resolved, wizardPresetApplyContext{
@@ -1417,16 +1428,22 @@ func skillsSelectedList(m Model) []string {
 // the TUI pipeline goroutine. If the script does not yet exist, confirm is never
 // called (fresh install always proceeds). If the script exists, the pre-flight
 // decision captured in Model.statuslineOverwrite is used; if no pre-flight step
-// ran (statuslineOverwriteReady is false), the safe default is to overwrite.
-func buildTUIStatuslineConfirm(home string, m Model) func() bool {
+// ran (statuslineOverwriteReady is false), the safe default is to skip.
+// A non-ENOENT stat error (e.g. permission denied) is returned as an error so
+// callers can handle it explicitly.
+func buildTUIStatuslineConfirm(home string, m Model) (func() bool, error) {
 	scriptPath := filepath.Join(home, ".claude", "statusline-command.sh")
-	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		return func() bool { return true }
+	_, err := os.Stat(scriptPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return func() bool { return true }, nil
+		}
+		return nil, err
 	}
 	if m.statuslineOverwriteReady {
 		overwrite := m.statuslineOverwrite
-		return func() bool { return overwrite }
+		return func() bool { return overwrite }, nil
 	}
 	// Default: skip (do not silently overwrite without explicit user consent).
-	return func() bool { return false }
+	return func() bool { return false }, nil
 }

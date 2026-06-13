@@ -860,6 +860,74 @@ func TestRunNoTUI_LocalCloudLoginWithoutResolvedEmailFallsBackToInput(t *testing
 	}
 }
 
+func TestBuildNoTUIStatuslineConfirm(t *testing.T) {
+	tests := []struct {
+		name       string
+		fileExists bool
+		input      string
+		wantResult bool
+	}{
+		{
+			name:       "file absent returns true without prompting",
+			fileExists: false,
+			input:      "",
+			wantResult: true,
+		},
+		{
+			name:       "file present and answer y returns true",
+			fileExists: true,
+			input:      "y\n",
+			wantResult: true,
+		},
+		{
+			name:       "file present and answer yes returns true",
+			fileExists: true,
+			input:      "yes\n",
+			wantResult: true,
+		},
+		{
+			name:       "file present and answer n returns false",
+			fileExists: true,
+			input:      "n\n",
+			wantResult: false,
+		},
+		{
+			name:       "file present and empty input (Enter) returns false",
+			fileExists: true,
+			input:      "\n",
+			wantResult: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpHome := t.TempDir()
+
+			if tt.fileExists {
+				claudeDir := filepath.Join(tmpHome, ".claude")
+				if err := os.MkdirAll(claudeDir, 0755); err != nil {
+					t.Fatalf("mkdir .claude: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(claudeDir, "statusline-command.sh"), []byte("#!/bin/bash\n"), 0644); err != nil {
+					t.Fatalf("write statusline script: %v", err)
+				}
+			}
+
+			scanner := bufio.NewScanner(strings.NewReader(tt.input))
+			confirm, err := buildNoTUIStatuslineConfirm(tmpHome, scanner)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if confirm == nil {
+				t.Fatal("expected non-nil confirm closure")
+			}
+			if got := confirm(); got != tt.wantResult {
+				t.Fatalf("confirm() = %v, want %v", got, tt.wantResult)
+			}
+		})
+	}
+}
+
 func TestRunNoTUI_LoadConfigError(t *testing.T) {
 	originalLoad := loadAppConfig
 	loadAppConfig = func() (*config.AppConfig, error) {

@@ -1,6 +1,5 @@
 #!/bin/bash
 
-PRIMARY='\033[38;5;110m'
 ACCENT='\033[38;5;179m'
 SECONDARY='\033[38;5;146m'
 MUTED='\033[38;5;242m'
@@ -9,6 +8,8 @@ ERROR='\033[38;5;174m'
 PURPLE='\033[38;5;183m'
 BOLD='\033[1m'
 NC='\033[0m'
+
+command -v jq >/dev/null 2>&1 || { echo "jarvis statusline: jq required"; exit 0; }
 
 input=$(cat)
 
@@ -35,6 +36,7 @@ DIR_NAME=$(basename "$DIR")
 
 BRANCH=""
 GIT_DIRTY=""
+cd "$DIR" 2>/dev/null || true
 if git rev-parse --git-dir > /dev/null 2>&1; then
   BRANCH=$(git branch --show-current 2>/dev/null)
   if [[ -n $(git status --porcelain 2>/dev/null) ]]; then

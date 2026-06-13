@@ -92,16 +92,35 @@ func (a *setupAgentStub) WriteOutputStyle(*persona.Preset) error {
 	return a.outputStyleErr
 }
 
+// setupStatuslineAgentStub wraps setupAgentStub and implements statuslineInstaller
+// so that the InstallStatusline error-propagation path can be exercised.
+type setupStatuslineAgentStub struct {
+	*setupAgentStub
+	installStatuslineErr error
+}
+
+func (a *setupStatuslineAgentStub) InstallStatusline(_ fs.FS, _ func() bool) error {
+	return a.installStatuslineErr
+}
+
 func TestConfigureWizardAgent_ErrorPropagation(t *testing.T) {
 	tests := []struct {
 		name    string
-		agent   *setupAgentStub
+		agent   agent.Agent
 		wantErr string
 	}{
 		{name: "hive merge fails", agent: &setupAgentStub{name: "claude", mergeErrAt: 1}, wantErr: "hive MCP config"},
 		{name: "context7 merge fails", agent: &setupAgentStub{name: "claude", mergeErrAt: 2}, wantErr: "context7 MCP config"},
 		{name: "install skills fails", agent: &setupAgentStub{name: "claude", installSkillsErr: errors.New("skills fail")}, wantErr: "install skills"},
 		{name: "install orchestrator fails", agent: &setupAgentStub{name: "claude", installOrchErr: errors.New("orchestrator fail")}, wantErr: "install orchestrator"},
+		{
+			name: "install statusline fails",
+			agent: &setupStatuslineAgentStub{
+				setupAgentStub:       &setupAgentStub{name: "claude"},
+				installStatuslineErr: errors.New("statusline fail"),
+			},
+			wantErr: "install statusline",
+		},
 	}
 
 	for _, tt := range tests {
