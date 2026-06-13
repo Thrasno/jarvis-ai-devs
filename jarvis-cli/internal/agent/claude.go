@@ -663,11 +663,13 @@ func (a *ClaudeAgent) InstallStatusline(hooksFS fs.FS, confirm func() bool) erro
 	if err != nil {
 		return fmt.Errorf("read embedded statusline script: %w", err)
 	}
+	// Remove any existing script so writeFileAtomic always creates fresh,
+	// guaranteeing the supplied 0755 permission is applied.
+	if err := os.Remove(scriptPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove existing statusline script: %w", err)
+	}
 	if err := writeFileAtomic(scriptPath, content, 0755); err != nil {
 		return fmt.Errorf("write statusline script: %w", err)
-	}
-	if err := os.Chmod(scriptPath, 0755); err != nil {
-		return fmt.Errorf("chmod statusline script: %w", err)
 	}
 
 	existing, err := readFileOrEmpty(a.settingsPath())

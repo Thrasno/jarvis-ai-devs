@@ -1026,8 +1026,11 @@ func updateReview(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// File exists: route through the pre-flight confirmation step.
 				m.Step = StepStatuslineConfirm
 				return m, nil
+			} else if !os.IsNotExist(err) {
+				m.Err = err
+				return m, nil
 			}
-			// File absent: proceed directly to apply (fresh install, no prompt needed).
+			// File absent (ENOENT): proceed directly to apply (fresh install, no prompt needed).
 			m.Step = StepApply
 			m.agentProgress = nil
 			m.agentDone = false
@@ -1081,7 +1084,7 @@ func updateStatuslineConfirm(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func viewStatuslineConfirm(m Model) string {
 	var sb strings.Builder
-	sb.WriteString(stepHeader(6, 8, "Statusline Script"))
+	sb.WriteString(titleStyle.Render("Jarvis-Dev Setup — Statusline Script") + "\n\n")
 	sb.WriteString(warningStyle.Render("~/.claude/statusline-command.sh already exists.") + "\n\n")
 	sb.WriteString("Overwrite with the Jarvis-managed statusline? [y/N]: \n\n")
 	sb.WriteString(dimStyle.Render("y: overwrite  n/Enter: keep existing  Ctrl+C: exit"))
@@ -1117,7 +1120,10 @@ func runAgentConfigCmd(m Model) tea.Cmd {
 // This is called from the view/update flow after the first agentProgressMsg arrives.
 func runAgentConfigSequence(m Model) tea.Cmd {
 	return func() tea.Msg {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return agentProgressMsg{line: fmt.Sprintf("resolve home dir: %v", err), failed: true, done: true}
+		}
 
 		// Build the sub-FS rooted at embed/skills for InstallSkills.
 		skillsSubFS, err := fs.Sub(jarvis.SkillsFS, "embed/skills")
