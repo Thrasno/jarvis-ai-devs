@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,7 +50,7 @@ func runInit(dir string) error {
 	fmt.Printf("✓ Stack:   %s\n", stack)
 	fmt.Println()
 	fmt.Println("Scaffolding .jarvis/...")
-	if err := installProjectSkillCopies(dir); err != nil {
+	if err := installProjectSkillCopies(dir, embeddedSkills); err != nil {
 		return fmt.Errorf("install project skill copies: %w", err)
 	}
 
@@ -66,40 +65,13 @@ func runInit(dir string) error {
 	return nil
 }
 
-func installProjectSkillCopies(dir string) error {
-	skillsFS, err := fs.Sub(jarvis.SkillsFS, "embed/skills")
-	if err != nil {
-		return fmt.Errorf("open embedded skills: %w", err)
+func installProjectSkillCopies(dir string, embeddedSkills []skills.Skill) error {
+	selected := make([]string, 0, len(embeddedSkills))
+	for _, skill := range embeddedSkills {
+		selected = append(selected, skill.ID)
 	}
-	destRoot := filepath.Join(dir, ".jarvis", "skills")
-
-	return fs.WalkDir(skillsFS, ".", func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return fmt.Errorf("read embedded skill %s: %w", path, walkErr)
-		}
-		if path == "." || d.IsDir() {
-			return nil
-		}
-
-		content, err := fs.ReadFile(skillsFS, path)
-		if err != nil {
-			return fmt.Errorf("read embedded skill %s: %w", path, err)
-		}
-
-		destPath := filepath.Join(destRoot, filepath.FromSlash(path))
-		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-			return fmt.Errorf("create skill dir for %s: %w", path, err)
-		}
-		tmp := destPath + ".tmp"
-		if err := os.WriteFile(tmp, content, 0644); err != nil {
-			return fmt.Errorf("write skill copy %s: %w", path, err)
-		}
-		if err := os.Rename(tmp, destPath); err != nil {
-			_ = os.Remove(tmp)
-			return fmt.Errorf("finalize skill copy %s: %w", path, err)
-		}
-		return nil
-	})
+	_, err := skills.InstallSelectedWithResult(jarvis.SkillsFS, filepath.Join(dir, ".jarvis", "skills"), selected)
+	return err
 }
 
 func toProjectRegistrySkills(rows []skills.RegistryRow) []project.RegistrySkill {
