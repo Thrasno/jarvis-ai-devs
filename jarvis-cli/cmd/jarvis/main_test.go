@@ -240,6 +240,47 @@ func TestRunWizard_NoTUIFlagPreservesFallback(t *testing.T) {
 	}
 }
 
+func TestRunWizard_NoTUIUsesCurrentDirectoryForProjectCWD(t *testing.T) {
+	originalTerminal := terminalIsTTY
+	originalRunTUI := runTUIProgram
+	originalRunNoTUI := runNoTUIWizard
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get current directory: %v", err)
+	}
+	t.Cleanup(func() {
+		terminalIsTTY = originalTerminal
+		runTUIProgram = originalRunTUI
+		runNoTUIWizard = originalRunNoTUI
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf("restore working directory: %v", err)
+		}
+	})
+
+	projectCWD := t.TempDir()
+	if err := os.Chdir(projectCWD); err != nil {
+		t.Fatalf("chdir project cwd: %v", err)
+	}
+
+	terminalIsTTY = func() bool { return true }
+	runTUIProgram = func(tea.Model) error {
+		t.Fatal("--no-tui setup/reconfigure path must not start cockpit TUI")
+		return nil
+	}
+	var got tui.WizardConfig
+	runNoTUIWizard = func(wcfg tui.WizardConfig) error {
+		got = wcfg
+		return nil
+	}
+
+	if err := runWizard(true); err != nil {
+		t.Fatalf("runWizard --no-tui route: %v", err)
+	}
+	if got.ProjectCWD != projectCWD {
+		t.Fatalf("runWizard ProjectCWD = %q, want current directory %q", got.ProjectCWD, projectCWD)
+	}
+}
+
 func TestRootCommand_WhenFullyConfiguredV2_StillEntersWizard(t *testing.T) {
 	if _, err := os.Stat(jarvisBin); os.IsNotExist(err) {
 		t.Skip("jarvis binary not available")

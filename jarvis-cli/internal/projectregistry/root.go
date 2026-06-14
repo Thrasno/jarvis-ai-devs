@@ -2,6 +2,7 @@ package projectregistry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,12 @@ import (
 )
 
 const rootResolutionTimeout = 2 * time.Second
+
+var ErrNotGitWorktree = errors.New("not a git worktree")
+
+func IsNonProjectError(err error) bool {
+	return errors.Is(err, ErrNotGitWorktree)
+}
 
 // ResolveRoot resolves cwd to the active git worktree root and rejects roots
 // that could target generated home/config agent state instead of a project.
@@ -42,7 +49,7 @@ func ResolveRoot(ctx context.Context, cwd string) (string, error) {
 		return "", fmt.Errorf("resolve git worktree root for %q: %w", abs, ctx.Err())
 	}
 	if err != nil {
-		return "", fmt.Errorf("%q is not inside a git worktree", abs)
+		return "", fmt.Errorf("%q is %w", abs, ErrNotGitWorktree)
 	}
 
 	root := strings.TrimSpace(string(output))
@@ -57,6 +64,27 @@ func ResolveRoot(ctx context.Context, cwd string) (string, error) {
 		return "", err
 	}
 	return root, nil
+}
+
+func resolveExplicitProjectRoot(cwd string) (string, error) {
+	if strings.TrimSpace(cwd) == "" {
+		return "", fmt.Errorf("project root cwd is required")
+	}
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", fmt.Errorf("resolve project root %q: %w", cwd, err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("project root %q is not accessible: %w", abs, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("project root %q is not a directory", abs)
+	}
+	if err := rejectUnsafeRoot(abs); err != nil {
+		return "", err
+	}
+	return abs, nil
 }
 
 func rejectUnsafeRoot(root string) error {

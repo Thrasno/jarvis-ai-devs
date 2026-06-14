@@ -32,7 +32,7 @@ mode, Jarvis falls back to the setup wizard prompts.`,
 func init() {
 	rootCmd.PersistentFlags().Bool("no-tui", false, "disable TUI, use readline prompts")
 	initLifecycleCommands()
-	rootCmd.AddCommand(personaCmd, syncCmd, loginCmd, timelineCmd, hiveCmd, configCmd, initCmd, verifyCmd, doctorCmd, reconcileCmd, backupCmd, restoreCmd, uninstallCmd, sddCmd)
+	rootCmd.AddCommand(personaCmd, syncCmd, loginCmd, timelineCmd, hiveCmd, configCmd, initCmd, skillRegistryCmd, verifyCmd, doctorCmd, reconcileCmd, backupCmd, restoreCmd, uninstallCmd, sddCmd)
 }
 
 func main() {
@@ -63,6 +63,9 @@ func runWizard(noTUI bool) error {
 		PersonaFS:  jarvis.PersonaFS,
 		SkillsFS:   jarvis.SkillsFS,
 		TemplateFS: jarvis.TemplatesFS,
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		wcfg.ProjectCWD = cwd
 	}
 
 	if noTUI || !terminalIsTTY() {

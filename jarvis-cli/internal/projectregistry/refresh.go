@@ -3,6 +3,7 @@ package projectregistry
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"path/filepath"
 
@@ -21,9 +22,10 @@ const (
 )
 
 type RefreshOptions struct {
-	CWD      string
-	Force    bool
-	SkillsFS embed.FS
+	CWD             string
+	Force           bool
+	AllowNonGitRoot bool
+	SkillsFS        embed.FS
 }
 
 type Warning struct {
@@ -47,7 +49,13 @@ type Result struct {
 func Refresh(ctx context.Context, opts RefreshOptions) (Result, error) {
 	root, err := ResolveRoot(ctx, opts.CWD)
 	if err != nil {
-		return Result{}, err
+		if !opts.AllowNonGitRoot || !errors.Is(err, ErrNotGitWorktree) {
+			return Result{}, err
+		}
+		root, err = resolveExplicitProjectRoot(opts.CWD)
+		if err != nil {
+			return Result{}, err
+		}
 	}
 
 	embeddedSkills, err := skills.ListSkills(opts.SkillsFS)

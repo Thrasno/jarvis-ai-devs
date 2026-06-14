@@ -308,8 +308,7 @@ func TestRunConfigSet_InvalidKey_InProcess(t *testing.T) {
 // TestRunInit_InProcess calls runInit() directly with a temp project dir.
 // Verifies .jarvis/skill-registry.md is created and the commit reminder is printed.
 func TestRunInit_InProcess(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("PATH", "") // prevent git from resolving a remote
+	dir := initCommandGitWorktree(t)
 
 	// Create a go.mod so the Go stack is detected.
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n"), 0644); err != nil {
@@ -392,8 +391,7 @@ func TestRunInit_InProcess(t *testing.T) {
 }
 
 func TestRunInitRejectsSymlinkedJarvisBeforeWritingSkillCopies(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("PATH", "") // prevent git from resolving a remote
+	dir := initCommandGitWorktree(t)
 
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/symlink\n"), 0644); err != nil {
 		t.Fatalf("write go.mod: %v", err)
@@ -422,8 +420,7 @@ func TestRunInitRejectsSymlinkedJarvisBeforeWritingSkillCopies(t *testing.T) {
 }
 
 func TestInitCmdRunEUsesCurrentWorkingDirectory(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("PATH", "") // prevent git from resolving a remote
+	dir := initCommandGitWorktree(t)
 
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/initcmd\n"), 0644); err != nil {
 		t.Fatalf("write go.mod: %v", err)
