@@ -1,6 +1,10 @@
 import { createApiClient, type ApiClient, type AuditLogList, type MemoryList, type MemorySearch, type User } from './api/client'
 import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
 import { control } from './components/dom'
+import { comingSoon } from './components/ComingSoon'
+import { renderSidebar, type UserLevel } from './components/Sidebar'
+import type { DashboardScreenKey } from './domain/dashboard'
+import { dashboardFixtures } from './fixtures/hive-dashboard/index'
 import { renderAuditSync } from './views/AuditSync'
 import { renderMemories } from './views/Memories'
 import { renderOverview, type OverviewData, type ViewState } from './views/Overview'
@@ -13,12 +17,12 @@ export type UsersData = { users: User[] }
 export type MemoriesData = { recent: MemoryList; search: MemorySearch }
 export type AuditSyncData = AuditLogList
 export type LoadedDashboardData = {
-  overview: ViewState<OverviewData>
-  users: ViewState<UsersData>
-  memories: ViewState<MemoriesData>
-  audit: ViewState<AuditSyncData>
+  overview?: ViewState<OverviewData>
+  users?: ViewState<UsersData>
+  memories?: ViewState<MemoriesData>
+  audit?: ViewState<AuditSyncData>
 }
-export type DashboardState = { status: 'loading' } | { status: 'ready'; data: LoadedDashboardData }
+export type DashboardState = { status: 'loading' } | { status: 'ready'; data: Partial<LoadedDashboardData> }
 
 type AppActions = {
   onLogin(email: string, password: string): Promise<void> | void
@@ -26,12 +30,121 @@ type AppActions = {
   onNavigate?(path: string): void
 }
 
-export function renderApp(container: HTMLElement, state: AuthState, actions: AppActions, dashboard: DashboardState = { status: 'loading' }, routePath = window.location.pathname): void {
-  container.replaceChildren()
-  state.status === 'anonymous' ? renderLogin(container, state, actions) : renderShell(container, state, actions, dashboard, routePath)
+type ScreenRoute = {
+  path: string
+  load?: keyof LoadedDashboardData
+  render: (vs: ViewState<unknown>) => HTMLElement
+  placeholderLabel?: string
 }
 
-function renderLogin(container: HTMLElement, state: Extract<AuthState, { status: 'anonymous' }>, actions: AppActions): void {
+export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
+  overview: {
+    path: '/dashboard',
+    load: 'overview',
+    render: (vs) => renderOverview(vs as ViewState<OverviewData>)
+  },
+  memories: {
+    path: '/dashboard/memories',
+    load: 'memories',
+    render: (vs) => renderMemories(vs as ViewState<MemoriesData>)
+  },
+  userManagement: {
+    path: '/dashboard/userManagement',
+    load: 'users',
+    render: (vs) => renderUsers(vs as ViewState<UsersData>)
+  },
+  auditLog: {
+    path: '/dashboard/auditLog',
+    load: 'audit',
+    render: (vs) => renderAuditSync(vs as ViewState<AuditSyncData>)
+  },
+  projects: {
+    path: '/dashboard/projects',
+    placeholderLabel: 'Projects',
+    render: () => comingSoon('Projects')
+  },
+  knowledgeBrowser: {
+    path: '/dashboard/knowledgeBrowser',
+    placeholderLabel: 'Knowledge Browser',
+    render: () => comingSoon('Knowledge Browser')
+  },
+  globalSearch: {
+    path: '/dashboard/globalSearch',
+    placeholderLabel: 'Global Search',
+    render: () => comingSoon('Global Search')
+  },
+  knowledgeGraph: {
+    path: '/dashboard/knowledgeGraph',
+    placeholderLabel: 'Knowledge Graph',
+    render: () => comingSoon('Knowledge Graph')
+  },
+  activityFeed: {
+    path: '/dashboard/activityFeed',
+    placeholderLabel: 'Activity Feed',
+    render: () => comingSoon('Activity Feed')
+  },
+  contributors: {
+    path: '/dashboard/contributors',
+    placeholderLabel: 'Contributors',
+    render: () => comingSoon('Contributors')
+  },
+  developerTimeline: {
+    path: '/dashboard/developerTimeline',
+    placeholderLabel: 'Developer Timeline',
+    render: () => comingSoon('Developer Timeline')
+  },
+  syncStatus: {
+    path: '/dashboard/syncStatus',
+    placeholderLabel: 'Sync Status',
+    render: () => comingSoon('Sync Status')
+  },
+  analytics: {
+    path: '/dashboard/analytics',
+    placeholderLabel: 'Analytics',
+    render: () => comingSoon('Analytics')
+  },
+  conflictViewer: {
+    path: '/dashboard/conflictViewer',
+    placeholderLabel: 'Conflict Viewer',
+    render: () => comingSoon('Conflict Viewer')
+  }
+}
+
+/**
+ * Resolve the active DashboardScreenKey from a URL path.
+ * Strips trailing slash, matches exact path against ROUTES table.
+ * Falls back to 'overview'.
+ */
+function screenFromPath(routePath: string): DashboardScreenKey {
+  const normalized = routePath.replace(/\/$/, '')
+  // Handle legacy /dashboard/audit-sync alias
+  if (normalized.endsWith('/audit-sync')) return 'auditLog'
+  // Handle legacy /dashboard/users alias
+  if (normalized.endsWith('/users')) return 'userManagement'
+  for (const [key, route] of Object.entries(ROUTES) as [DashboardScreenKey, ScreenRoute][]) {
+    if (route.path === normalized) return key
+  }
+  return 'overview'
+}
+
+export function renderApp(
+  container: HTMLElement,
+  state: AuthState,
+  actions: AppActions,
+  dashboard: DashboardState = { status: 'loading' },
+  routePath = window.location.pathname
+): void {
+  container.replaceChildren()
+  state.status === 'anonymous'
+    ? renderLogin(container, state, actions)
+    : renderShell(container, state, actions, dashboard, routePath)
+}
+
+function renderLogin(
+  container: HTMLElement,
+  state: Extract<AuthState, { status: 'anonymous' }>,
+  actions: AppActions
+): void {
   const form = document.createElement('form')
   form.className = 'dashboard-panel panel login-card'
   form.dataset.dashboardPrimitive = 'panel'
@@ -53,65 +166,99 @@ function renderLogin(container: HTMLElement, state: Extract<AuthState, { status:
   container.append(form)
 }
 
-function renderShell(container: HTMLElement, state: Extract<AuthState, { status: 'authenticated' }>, actions: AppActions, dashboard: DashboardState, routePath: string): void {
+function renderShell(
+  container: HTMLElement,
+  state: Extract<AuthState, { status: 'authenticated' }>,
+  actions: AppActions,
+  dashboard: DashboardState,
+  routePath: string
+): void {
+  const activeScreen = screenFromPath(routePath)
+  const userLevel = state.user.level as UserLevel
+
+  // Root layout
+  const layout = document.createElement('div')
+  layout.className = 'dashboard-app-layout'
+  layout.dataset.dashboardPrimitive = 'layout'
+
+  // Sidebar
+  const sidebarContainer = document.createElement('div')
+  renderSidebar(sidebarContainer, {
+    groups: dashboardFixtures.shared.navigationGroups,
+    currentPath: ROUTES[activeScreen].path,
+    userLevel,
+    onNavigate: (path) => actions.onNavigate?.(path),
+    onLogout: actions.onLogout
+  })
+  layout.append(sidebarContainer)
+
+  // Main area (header + content)
+  const mainArea = document.createElement('div')
+  mainArea.className = 'dashboard-main-area'
+
+  // Header band
   const header = document.createElement('header')
+  header.className = 'dashboard-header'
+  header.dataset.dashboardPrimitive = 'header'
   header.setAttribute('role', 'banner')
-  header.dataset.dashboardPrimitive = 'panel'
-  header.innerHTML = '<p class="eyebrow">Hive API</p><h1>Hive API Dashboard</h1>'
-  const identity = document.createElement('p')
-  identity.textContent = `Signed in as ${state.user.email}`
-  const logout = control('Sign out')
-  logout.addEventListener('click', actions.onLogout)
-  header.append(identity, logout)
+  header.innerHTML = `<p class="eyebrow">Hive API</p><h1 class="dashboard-header__title">Hive API Dashboard</h1>`
 
-  const panel = state.user.level === 'admin' ? renderAdminView(routePath, dashboard, actions) : document.createElement('article')
-  if (state.user.level !== 'admin') {
-    panel.className = 'dashboard-panel panel'
-    panel.dataset.dashboardPrimitive = 'panel'
-    panel.innerHTML = '<h2>Admin access required</h2><p>This dashboard requires an admin Hive API identity.</p>'
-  }
+  const searchSlot = document.createElement('input')
+  searchSlot.type = 'search'
+  searchSlot.className = 'dashboard-header__search'
+  searchSlot.placeholder = 'Search...'
+  searchSlot.setAttribute('aria-label', 'Search')
+  searchSlot.addEventListener('click', () => actions.onNavigate?.('/dashboard/globalSearch'))
+  searchSlot.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') actions.onNavigate?.('/dashboard/globalSearch')
+  })
 
+  const bellButton = control('Notifications')
+  bellButton.setAttribute('aria-label', 'Notifications')
+  bellButton.className = 'dashboard-header__bell dashboard-control control'
+  bellButton.dataset.dashboardPrimitive = 'control'
+
+  header.append(searchSlot, bellButton)
+  mainArea.append(header)
+
+  // Content area
+  const mainContent = document.createElement('main')
+  mainContent.className = 'dashboard-content'
+  mainContent.dataset.dashboardPrimitive = 'main'
+  mainContent.append(renderAuthenticatedView(activeScreen, dashboard))
+  mainArea.append(mainContent)
+
+  layout.append(mainArea)
+
+  // Shell wrapper
   const shell = document.createElement('section')
   shell.className = 'dashboard-page shell'
   shell.dataset.dashboardPrimitive = 'page'
-  shell.append(header, panel)
+  shell.append(layout)
   container.append(shell)
 }
 
-function renderAdminView(routePath: string, state: DashboardState, actions: AppActions): HTMLElement {
-  const wrapper = document.createElement('article')
-  wrapper.append(nav(actions))
-  const path = routePath.replace(/\/$/, '')
-  if (path.endsWith('/users')) wrapper.append(renderUsers(stateFor(state, 'users')))
-  else if (path.endsWith('/memories')) wrapper.append(renderMemories(stateFor(state, 'memories')))
-  else if (path.endsWith('/audit-sync')) wrapper.append(renderAuditSync(stateFor(state, 'audit')))
-  else wrapper.append(renderOverview(stateFor(state, 'overview')))
-  return wrapper
-}
-
-function stateFor<K extends keyof LoadedDashboardData>(state: DashboardState, key: K): LoadedDashboardData[K] | { status: 'loading' } {
-  return state.status === 'ready' ? state.data[key] : { status: 'loading' }
-}
-
-function nav(actions: AppActions): HTMLElement {
-  const node = document.createElement('nav')
-  node.setAttribute('aria-label', 'Dashboard sections')
-  const links = [['Overview', '/dashboard'], ['Users', '/dashboard/users'], ['Memories', '/dashboard/memories'], ['Audit & sync', '/dashboard/audit-sync']]
-  for (const [label, href] of links) {
-    const link = document.createElement('a')
-    link.href = href
-    link.textContent = label
-    link.addEventListener('click', (event) => {
-      if (!actions.onNavigate) return
-      event.preventDefault()
-      actions.onNavigate(href)
-    })
-    node.append(link)
+function renderAuthenticatedView(screen: DashboardScreenKey, state: DashboardState): HTMLElement {
+  const route = ROUTES[screen]
+  if (!route.load) {
+    // Fixture-only / ComingSoon route
+    return route.render({ status: 'loading' })
   }
-  return node
+  const viewState = stateFor(state, route.load)
+  return route.render(viewState as ViewState<unknown>)
 }
 
-export async function loadDashboard(api: ApiClient, token: string): Promise<DashboardState> {
+function stateFor<K extends keyof LoadedDashboardData>(
+  state: DashboardState,
+  key: K
+): ViewState<unknown> {
+  if (state.status !== 'ready') return { status: 'loading' }
+  const slice = state.data[key]
+  return slice ?? { status: 'loading' }
+}
+
+// Keep loadDashboard for backwards compat with the existing test that calls it directly
+export async function loadDashboard(api: ApiClient, token: string): Promise<{ status: 'ready'; data: LoadedDashboardData }> {
   const [health, stats, users, recent, search, audit] = await Promise.allSettled([
     api.health(), api.adminStats(token), api.adminUsers(token), api.memories(token, { limit: 5 }), api.searchMemories(token, { query: DEFAULT_MEMORY_SEARCH_QUERY, limit: 5 }), api.auditLogs(token, { limit: 10 })
   ])
@@ -122,6 +269,59 @@ export async function loadDashboard(api: ApiClient, token: string): Promise<Dash
       users: settledState(users),
       memories: combinedState(recent, search, (recent, search) => ({ recent, search })),
       audit: settledState(audit)
+    }
+  }
+}
+
+export async function loadForRoute(
+  screen: DashboardScreenKey,
+  api: ApiClient,
+  token: string,
+  cache: DashboardState
+): Promise<DashboardState> {
+  const route = ROUTES[screen]
+  // Fixture-only routes need no fetch
+  if (!route.load) return cache
+
+  const key = route.load
+  // Already cached
+  if (cache.status === 'ready' && cache.data[key] !== undefined) return cache
+
+  const existingData = cache.status === 'ready' ? cache.data : {}
+
+  let slice: ViewState<unknown>
+  try {
+    slice = await fetchSlice(key, api, token)
+  } catch (error) {
+    slice = { status: 'error', message: messageFor(error) }
+  }
+
+  return {
+    status: 'ready',
+    data: { ...existingData, [key]: slice }
+  }
+}
+
+async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token: string): Promise<ViewState<unknown>> {
+  switch (key) {
+    case 'overview': {
+      const [health, stats] = await Promise.allSettled([api.health(), api.adminStats(token)])
+      return combinedState(health, stats, (h, s) => ({ health: h, stats: s }))
+    }
+    case 'users': {
+      const result = await Promise.allSettled([api.adminUsers(token)])
+      return settledState(result[0])
+    }
+    case 'memories': {
+      const [recent, search] = await Promise.allSettled([
+        api.memories(token, { limit: 5 }),
+        api.searchMemories(token, { query: DEFAULT_MEMORY_SEARCH_QUERY, limit: 5 })
+      ])
+      return combinedState(recent, search, (r, s) => ({ recent: r, search: s }))
+    }
+    case 'audit': {
+      const result = await Promise.allSettled([api.auditLogs(token, { limit: 10 })])
+      return settledState(result[0])
     }
   }
 }
@@ -145,7 +345,7 @@ function loginErrorMessage(error: unknown): string {
 }
 
 function escapeHtml(value: string): string {
-  return value.replace(/[&<>\"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char] ?? char))
+  return value.replace(/[&<>"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char] ?? char))
 }
 
 type StartOptions = { api?: ApiClient; session?: SessionStore }
@@ -155,7 +355,10 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
   const session = options.session ?? createSessionStore({ api })
   let dashboard: DashboardState = { status: 'loading' }
   let loadVersion = 0
+  let activeScreen: DashboardScreenKey = 'overview'
+
   const rerender = (state: AuthState) => renderApp(root, state, actions, dashboard, window.location.pathname)
+
   const actions: AppActions = {
     async onLogin(email, password) {
       try {
@@ -169,18 +372,33 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
       dashboard = { status: 'loading' }
       rerender(session.logout())
     },
-    onNavigate(path) {
+    async onNavigate(path) {
       history.pushState(null, '', path)
-      rerender(session.getState())
+      activeScreen = screenFromPath(path)
+      const state = session.getState()
+      rerender(state)
+      if (state.status === 'authenticated') {
+        await loadAndRender(state, activeScreen)
+      }
     }
+  }
+
+  async function loadAndRender(state: Extract<AuthState, { status: 'authenticated' }>, screen: DashboardScreenKey): Promise<void> {
+    const version = loadVersion
+    const loaded = await loadForRoute(screen, api, state.token, dashboard)
+    const current = session.getState()
+    if (version !== loadVersion || current.status !== 'authenticated' || current.token !== state.token) return
+    dashboard = loaded
+    rerender(current)
   }
 
   async function setState(state: AuthState): Promise<void> {
     const version = loadVersion + 1
     loadVersion = version
+    activeScreen = screenFromPath(window.location.pathname)
     rerender(state)
-    if (state.status === 'authenticated' && state.user.level === 'admin') {
-      const loaded = await loadDashboard(api, state.token)
+    if (state.status === 'authenticated') {
+      const loaded = await loadForRoute(activeScreen, api, state.token, dashboard)
       const current = session.getState()
       if (version !== loadVersion || current.status !== 'authenticated' || current.token !== state.token) return
       dashboard = loaded
