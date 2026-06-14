@@ -188,6 +188,57 @@ describe('bell and search slot integration', () => {
     expect(drawer).not.toBeNull()
     expect(drawer?.hasAttribute('data-open')).toBe(true)
   })
+
+  it('W1 — bell click fires onToggleDrawer action', () => {
+    const container = document.createElement('main')
+    const onToggleDrawer = vi.fn()
+
+    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn(), onToggleDrawer })
+
+    const bell = container.querySelector<HTMLButtonElement>('[aria-label="Notifications"]')
+    expect(bell).not.toBeNull()
+    bell!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    expect(onToggleDrawer).toHaveBeenCalledTimes(1)
+  })
+
+  it('W2 — search slot click navigates to /dashboard/globalSearch', () => {
+    const container = document.createElement('main')
+    const onNavigate = vi.fn()
+
+    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn(), onNavigate })
+
+    const searchSlot = container.querySelector<HTMLElement>('.dashboard-header__search')
+    expect(searchSlot).not.toBeNull()
+    searchSlot!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    expect(onNavigate).toHaveBeenCalledWith('/dashboard/globalSearch')
+  })
+
+  it('W4 — mark all read closes drawer and removes unread badge', () => {
+    const container = document.createElement('main')
+    const onMarkAllRead = vi.fn()
+
+    // Render with drawer open and 3 unread notifications
+    renderApp(
+      container,
+      { status: 'authenticated', token: 'jwt-token', user: adminUser },
+      { onLogin: vi.fn(), onLogout: vi.fn(), onMarkAllRead },
+      { status: 'loading' },
+      '/dashboard',
+      { drawerOpen: true, readIds: new Set(), summaryUnread: 3 }
+    )
+
+    // Drawer must be open and badge visible before click
+    expect(container.querySelector('[data-dashboard-primitive="drawer"]')?.hasAttribute('data-open')).toBe(true)
+    expect(container.querySelector('[data-bell-badge]')).not.toBeNull()
+
+    const markAllReadBtn = container.querySelector<HTMLButtonElement>('[data-mark-all-read]')
+    expect(markAllReadBtn).not.toBeNull()
+    markAllReadBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    expect(onMarkAllRead).toHaveBeenCalledTimes(1)
+  })
 })
 
 function deferred<T>() {

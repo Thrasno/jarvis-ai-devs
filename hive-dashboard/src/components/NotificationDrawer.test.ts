@@ -110,4 +110,14 @@ describe('NotificationDrawer', () => {
     expect(firstCard?.textContent).toContain(first.projectName)
     expect(firstCard?.textContent).toContain(first.timeLabel)
   })
+
+  it('drawer header title reads "Notifications"', () => {
+    const container = document.createElement('div')
+
+    renderNotificationDrawer(container, baseProps())
+
+    const title = container.querySelector('.dashboard-drawer__title')
+    expect(title).not.toBeNull()
+    expect(title?.textContent).toBe('Notifications')
+  })
 })
