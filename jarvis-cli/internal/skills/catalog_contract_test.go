@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -19,6 +20,8 @@ import (
 )
 
 const sharedPhaseCommonPath = "embed/skills/_shared/sdd-phase-common.md"
+const sharedHiveConventionPath = "embed/skills/_shared/hive-convention.md"
+const sharedPersistenceContractPath = "embed/skills/_shared/persistence-contract.md"
 
 func TestCatalogContract_SharedSDDPhaseCommonMatchesJarvisAdaptedUpstreamShape(t *testing.T) {
 	content := readEmbeddedSkillAsset(t, sharedPhaseCommonPath)
@@ -65,6 +68,8 @@ func TestCatalogContract_SharedSDDPhaseCommonCarriesVerifiedSourceAndNoLegacyEng
 		"mcp__engram__",
 		"engram-convention.md",
 		"`engram | openspec | hybrid | none`",
+		"mem_search returns the most recent",
+		"authoritative version",
 	}
 
 	for _, snippet := range forbiddenSnippets {
@@ -75,6 +80,191 @@ func TestCatalogContract_SharedSDDPhaseCommonCarriesVerifiedSourceAndNoLegacyEng
 
 	if !strings.Contains(content, "`hive | openspec | hybrid | none`") {
 		t.Fatalf("expected %s to document Jarvis runtime store modes", sharedPhaseCommonPath)
+	}
+}
+
+func TestCatalogContract_SharedHiveRetrievalDocsAvoidUnsupportedLatestGuarantees(t *testing.T) {
+	t.Parallel()
+
+	for _, assetPath := range []string{sharedPhaseCommonPath, sharedHiveConventionPath} {
+		t.Run(assetPath, func(t *testing.T) {
+			content := readEmbeddedSkillAsset(t, assetPath)
+			for _, forbidden := range []string{
+				"mem_search returns the most recent",
+				"retrieval surfaces the most recent",
+				"most recent, which is the authoritative version",
+				"authoritative version",
+				"latest returned observation",
+				"latest-by-topic",
+			} {
+				if strings.Contains(content, forbidden) {
+					t.Fatalf("expected %s not to promise unsupported Hive latest/authoritative retrieval with %q", assetPath, forbidden)
+				}
+			}
+
+			for _, required := range []string{
+				"Search results are previews, not source material.",
+				"If Hive search returns multiple candidate artifacts for the same topic and no explicit artifact reference is available, treat the result as ambiguous.",
+			} {
+				if !strings.Contains(content, required) {
+					t.Fatalf("expected %s to contain ambiguity-safe Hive retrieval wording %q", assetPath, required)
+				}
+			}
+		})
+	}
+}
+
+func TestCatalogContract_SharedPersistenceContractUsesJarvisHiveModeContract(t *testing.T) {
+	content := readEmbeddedSkillAsset(t, sharedPersistenceContractPath)
+
+	requiredSnippets := []string{
+		"Gentleman-Programming/gentle-ai/v1.40.2/internal/assets/skills/_shared/persistence-contract.md",
+		"660917927b4821f5e540dc8fa501d6bee723222c",
+		"Artifact store mode (`hive | openspec | hybrid | none`)",
+		"## Mode Resolution",
+		"## Mode Roles",
+		"### Mode Comparison",
+		"## Behavior Per Mode",
+		"## State Persistence Across Phases",
+		"`sdd/{change-name}/state`",
+		"`sdd/{change-name}/{artifact-type}`",
+		"## Sub-Agent Response Ordering",
+		"the final output MUST be text, never only a tool result",
+		"## Skill Registry Handoff",
+		"## Detail Level",
+		"detail_level`: `concise | standard | deep`",
+		"Use topic keys in the format `{domain}/{identifier}` or `{domain}/{change}/{phase}`",
+		"Topic keys group related artifact saves; they are not artifact identity, recency, or version guarantees.",
+		"If Hive search returns multiple artifacts for the same topic and no explicit recency/version metadata, treat the result as ambiguous.",
+		"Ask the orchestrator/user or use a provided artifact reference before proceeding.",
+		"Phase agents persist their own phase artifact according to the resolved mode.",
+		"The orchestrator may pass state or artifact references to phase agents, but this contract does not require per-transition DAG-state persistence unless runtime status explicitly implements it.",
+		"- Explore: `sdd/{change-name}/explore` or `openspec/changes/{change-name}/explore.md`",
+		"Explore artifact uses `explore` for both the Hive topic key and the OpenSpec file path.",
+		"Do not treat Jarvis product Hive, Hive API, or Hive ↔ Hive API synchronization as SDD artifact persistence.",
+	}
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(content, snippet) {
+			t.Fatalf("expected %s to contain %q", sharedPersistenceContractPath, snippet)
+		}
+	}
+
+	forbiddenSnippets := []string{
+		"Engram",
+		"engram",
+		"mcp__engram__",
+		"`engram | openspec | hybrid | none`",
+		"upsert",
+		"upserts",
+		"overwrite",
+		"overwrites",
+		"no revision history is kept",
+		"latest returned observation",
+		"latest-by-topic",
+		"authoritative version",
+		"`sdd/{change-name}/exploration`",
+		"openspec/changes/{change-name}/exploration.md",
+		"The orchestrator persists DAG state after each phase transition",
+		"Both backends stay in sync",
+	}
+	for _, snippet := range forbiddenSnippets {
+		if strings.Contains(content, snippet) {
+			t.Fatalf("expected %s not to contain unsupported or legacy persistence wording %q", sharedPersistenceContractPath, snippet)
+		}
+	}
+}
+
+func TestCatalogContract_SDDExploreHiveTopicAgreesAcrossSharedContractAndPhaseSkills(t *testing.T) {
+	t.Parallel()
+
+	sharedContract := readEmbeddedSkillAsset(t, sharedPersistenceContractPath)
+	exploreSkill := readEmbeddedSkillAsset(t, "embed/skills/sdd-explore/SKILL.md")
+	proposeSkill := readEmbeddedSkillAsset(t, "embed/skills/sdd-propose/SKILL.md")
+
+	for assetPath, content := range map[string]string{
+		sharedPersistenceContractPath:       sharedContract,
+		"embed/skills/sdd-explore/SKILL.md": exploreSkill,
+		"embed/skills/sdd-propose/SKILL.md": proposeSkill,
+	} {
+		if !strings.Contains(content, "sdd/{change-name}/explore") {
+			t.Fatalf("expected %s to use stable Explore Hive topic key sdd/{change-name}/explore", assetPath)
+		}
+		if strings.Contains(content, "sdd/{change-name}/exploration") {
+			t.Fatalf("expected %s not to rename the Explore Hive topic key to sdd/{change-name}/exploration", assetPath)
+		}
+	}
+
+	if !strings.Contains(sharedContract, "openspec/changes/{change-name}/explore.md") {
+		t.Fatal("expected shared persistence contract to use OpenSpec explore.md file path convention")
+	}
+}
+
+func TestCatalogContract_SDDExploreOpenSpecPathAgreesWithRuntimeSourceConvention(t *testing.T) {
+	t.Parallel()
+
+	changeName := "my-change"
+	projectRoot := t.TempDir()
+	changeDir := filepath.Join(projectRoot, "openspec", "changes", changeName)
+	if err := os.MkdirAll(changeDir, 0o755); err != nil {
+		t.Fatalf("create change dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(changeDir, "explore.md"), []byte("# Exploration\n"), 0o644); err != nil {
+		t.Fatalf("write runtime explore artifact: %v", err)
+	}
+
+	artifacts, _, err := sddstatus.NewOpenSpecSource(projectRoot).FetchArtifacts(context.Background(), changeName)
+	if err != nil {
+		t.Fatalf("fetch OpenSpec artifacts: %v", err)
+	}
+	if got := artifacts[sddstatus.ArtifactExplore]; got != sddstatus.ArtifactDone {
+		t.Fatalf("runtime OpenSpec source explore artifact = %q, want %q", got, sddstatus.ArtifactDone)
+	}
+
+	sharedContract := readEmbeddedSkillAsset(t, sharedPersistenceContractPath)
+	if !strings.Contains(sharedContract, "openspec/changes/{change-name}/explore.md") {
+		t.Fatalf("expected %s to document runtime OpenSpec explore path explore.md", sharedPersistenceContractPath)
+	}
+	if strings.Contains(sharedContract, "openspec/changes/{change-name}/exploration.md") {
+		t.Fatalf("expected %s not to document stale OpenSpec exploration.md path", sharedPersistenceContractPath)
+	}
+}
+
+func TestCatalogContract_SDDExploreOpenSpecPathAgreesAcrossSharedDocsAndPhaseSkill(t *testing.T) {
+	t.Parallel()
+
+	assets := map[string]string{
+		sharedPersistenceContractPath:                 readEmbeddedSkillAsset(t, sharedPersistenceContractPath),
+		"embed/skills/_shared/openspec-convention.md": readEmbeddedSkillAsset(t, "embed/skills/_shared/openspec-convention.md"),
+		"embed/skills/sdd-explore/SKILL.md":           readEmbeddedSkillAsset(t, "embed/skills/sdd-explore/SKILL.md"),
+	}
+
+	for assetPath, content := range assets {
+		if !strings.Contains(content, "openspec/changes/{change-name}/explore.md") {
+			t.Fatalf("expected %s to document runtime OpenSpec Explore path openspec/changes/{change-name}/explore.md", assetPath)
+		}
+		if strings.Contains(content, "exploration.md") {
+			t.Fatalf("expected %s not to document stale OpenSpec Explore path exploration.md", assetPath)
+		}
+	}
+}
+
+func TestCatalogContract_EmbeddedSkillDocsDoNotKeepStaleExploreOpenSpecFilename(t *testing.T) {
+	t.Parallel()
+
+	err := fs.WalkDir(jarvis.SkillsFS, "embed/skills", func(filePath string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() || !strings.HasSuffix(filePath, ".md") {
+			return walkErr
+		}
+
+		content := readEmbeddedSkillAsset(t, filePath)
+		if strings.Contains(content, "exploration.md") {
+			t.Fatalf("%s keeps stale OpenSpec Explore filename exploration.md; use explore.md unless explicitly scoped to legacy migration", filePath)
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir(embed/skills): %v", err)
 	}
 }
 
@@ -1045,6 +1235,66 @@ func TestCatalogContract_SkillRegistryDocsAreIndexFirstAndPathFirst(t *testing.T
 	}
 }
 
+func TestCatalogContract_RootAgentInstructionsUseHiveForSDDArtifacts(t *testing.T) {
+	t.Parallel()
+
+	sections := make(map[string]string)
+	for _, filePath := range []string{"AGENTS.md", "CLAUDE.md"} {
+		content := readWorkspaceAsset(t, filePath)
+		section := markdownSection(t, content, "SDD Workflow")
+		sections[filePath] = section
+
+		for _, required := range []string{
+			"Use Hive as the default SDD artifact store unless the user explicitly requests OpenSpec/file-based artifacts.",
+			"Do not use Engram as Jarvis SDD artifact storage.",
+		} {
+			if !strings.Contains(section, required) {
+				t.Fatalf("expected %s SDD Workflow section to contain %q", filePath, required)
+			}
+		}
+
+		for _, forbidden := range []string{
+			"Use Engram as the default artifact store",
+			"Engram as the default",
+			"Artifact store mode (`engram | openspec | hybrid | none`)",
+		} {
+			if strings.Contains(section, forbidden) {
+				t.Fatalf("expected %s SDD Workflow section not to contain legacy Engram default wording %q", filePath, forbidden)
+			}
+		}
+	}
+
+	if sections["AGENTS.md"] != sections["CLAUDE.md"] {
+		t.Fatalf("root SDD Workflow guidance must stay equivalent between AGENTS.md and CLAUDE.md\nAGENTS.md:\n%s\nCLAUDE.md:\n%s", sections["AGENTS.md"], sections["CLAUDE.md"])
+	}
+}
+
+func TestCatalogContract_SkillRegistryHivePersistenceDoesNotPromiseTopicKeyUpserts(t *testing.T) {
+	t.Parallel()
+
+	content := readEmbeddedSkillAsset(t, "embed/skills/skill-registry/SKILL.md")
+
+	for _, required := range []string{
+		"If Hive is available, also save to Hive",
+		"`topic_key` groups registry saves for retrieval; it is not an identity, recency, or upsert guarantee.",
+	} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("expected skill-registry source to contain Hive-safe persistence wording %q", required)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"topic_key ensures upserts",
+		"ensures upserts",
+		"running again updates the same observation",
+		"updates the same observation",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("expected skill-registry source not to promise unsupported topic_key upsert semantics with %q", forbidden)
+		}
+	}
+}
+
 func TestCatalogContract_SkillRegistryDoesNotIgnoreJarvisDirectory(t *testing.T) {
 	t.Parallel()
 
@@ -1085,7 +1335,7 @@ func TestCatalogContract_EmbeddedSkillMarkdownReferencesResolve(t *testing.T) {
 		"SKILL.md":                         true,
 		".github/PULL_REQUEST_TEMPLATE.md": true,
 		"github/PULL_REQUEST_TEMPLATE.md":  true,
-		"exploration.md":                   true,
+		"explore.md":                       true,
 		"proposal.md":                      true,
 		"design.md":                        true,
 		"tasks.md":                         true,
@@ -1093,6 +1343,7 @@ func TestCatalogContract_EmbeddedSkillMarkdownReferencesResolve(t *testing.T) {
 		"spec.md":                          true,
 		"openspec/config.yaml":             true,
 		"openspec/config.md":               true,
+		"openspec/changes/{change-name}/explore.md":       true,
 		"openspec/changes/{change-name}/proposal.md":      true,
 		"openspec/changes/{change-name}/design.md":        true,
 		"openspec/changes/{change-name}/tasks.md":         true,
@@ -1431,6 +1682,26 @@ func TestCatalogContract_GentleAIParityRunReportTemplateCapturesRequiredDecision
 
 	if !strings.Contains(content, "## Inventory summary") {
 		t.Fatal("expected run report template to include inventory summary section")
+	}
+
+	for _, required := range []string{
+		"Hive/current Jarvis artifact store",
+		"maintenance PR",
+		"committed report",
+	} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("expected run report template persistence guidance to contain %q", required)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"Store completed reports in Engram",
+		"completed reports in Engram",
+		"reports are stored in Engram",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("run report template must not direct completed maintenance reports to legacy Engram storage with %q", forbidden)
+		}
 	}
 
 	for _, category := range []string{"apply", "adapt", "ignore", "investigate"} {

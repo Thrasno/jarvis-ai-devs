@@ -22,6 +22,8 @@ NOTE: the preferred path is (1) — exact skill paths selected by the orchestrat
 
 **CRITICAL**: `mcp__hive__mem_search` returns 300-char PREVIEWS, not full content. You MUST call `mcp__hive__mem_get_observation(id)` for EVERY artifact. **Skipping this produces wrong output.**
 
+Search results are previews, not source material. If Hive search returns multiple candidate artifacts for the same topic and no explicit artifact reference is available, treat the result as ambiguous. Ask the orchestrator/user for the intended observation ID or use a provided artifact reference before proceeding.
+
 **Run all searches in parallel** — do NOT search sequentially.
 
 ```
@@ -55,7 +57,7 @@ mcp__hive__mem_save(
 )
 ```
 
-`topic_key` groups versions of an artifact; saving again creates a new row; mem_search returns the most recent, which is the authoritative version.
+`topic_key` groups related artifact saves; saving again creates a distinct observation. Do not assume search ordering identifies the current artifact; use an explicit artifact reference when one is provided, and treat multiple candidates as ambiguous when no explicit reference is available.
 `capture_prompt: false` is mandatory for SDD artifacts because they are automated pipeline outputs, not human/proactive memory saves. Set it when the Hive tool schema supports it; if an older schema rejects or does not expose the field, omit it rather than failing.
 
 ### OpenSpec mode

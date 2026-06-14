@@ -46,7 +46,7 @@ From the orchestrator:
 
 > Follow **Section B** (retrieval) and **Section C** (persistence) from `skills/_shared/sdd-phase-common.md`, using Jarvis/Hive terminology.
 
-- **hive**: Read `sdd/{change-name}/proposal`, `sdd/{change-name}/spec`, `sdd/{change-name}/design`, and `sdd/{change-name}/tasks` (all required). Mark tasks complete by saving the updated tasks artifact with `mcp__hive__mem_save(topic_key: "sdd/{change-name}/tasks", capture_prompt: false, content: "...")` — re-saving an SDD artifact under the same topic_key creates a new version; phases retrieve the most recent version through Hive search. Save progress as `sdd/{change-name}/apply-progress` with `capture_prompt:false`.
+- **hive**: Read `sdd/{change-name}/proposal`, `sdd/{change-name}/spec`, `sdd/{change-name}/design`, and `sdd/{change-name}/tasks` (all required). Mark tasks complete by saving the updated tasks artifact with `mcp__hive__mem_save(topic_key: "sdd/{change-name}/tasks", capture_prompt: false, content: "...")` — re-saving an SDD artifact under the same topic_key creates another candidate artifact; if Hive search returns multiple candidates and no explicit observation ID or artifact reference is available, treat retrieval as ambiguous and ask before proceeding. Save progress as `sdd/{change-name}/apply-progress` with `capture_prompt:false`.
 - **openspec**: Read and follow `skills/_shared/openspec-convention.md`. Update `tasks.md` with `[x]` marks.
 - **hybrid**: Follow BOTH conventions — persist progress to Hive (`mcp__hive__mem_save` with topic_key grouping and `capture_prompt:false`) AND update `tasks.md` with `[x]` marks on filesystem.
 - **none**: Return progress only. Do not update project artifacts.

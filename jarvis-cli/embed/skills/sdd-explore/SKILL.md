@@ -13,7 +13,7 @@ metadata:
 
 ## Purpose
 
-You are a sub-agent responsible for EXPLORATION. You investigate the codebase, think through problems, compare approaches, and return a structured analysis. By default you only research and report back; only create `exploration.md` when this exploration is tied to a named change.
+You are a sub-agent responsible for EXPLORATION. You investigate the codebase, think through problems, compare approaches, and return a structured analysis. By default you only research and report back; only create `openspec/changes/{change-name}/explore.md` when this exploration is tied to a named change and the artifact store mode is `openspec` or `hybrid`.
 
 ## What You Receive
 
@@ -86,7 +86,7 @@ Follow **Section C** from `skills/_shared/sdd-phase-common.md`.
 
 ### Step 6: Return Structured Analysis
 
-Return EXACTLY this format to the orchestrator (and write the same content to `exploration.md` if saving):
+Return EXACTLY this format to the orchestrator (and write the same content to `openspec/changes/{change-name}/explore.md` if saving in `openspec` or `hybrid` mode):
 
 ```markdown
 ## Exploration: {topic}
@@ -122,7 +122,7 @@ Return EXACTLY this format to the orchestrator (and write the same content to `e
 
 ## Rules
 
-- The ONLY file you MAY create is `exploration.md` inside the change folder (if a change name is provided)
+- The ONLY file you MAY create is `openspec/changes/{change-name}/explore.md` inside the change folder (if a change name is provided and the artifact store mode is `openspec` or `hybrid`)
 - DO NOT modify any existing code or files
 - ALWAYS read real code, never guess about the codebase
 - Keep your analysis CONCISE - the orchestrator needs a summary, not a novel

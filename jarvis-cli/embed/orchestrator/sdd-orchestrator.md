@@ -257,7 +257,7 @@ For this agent (sub-agent delegation): **Automatic** means phases run back-to-ba
 
 When the user invokes `/sdd-new`, `/sdd-ff`, or `/sdd-continue` for the first time in a session, ALSO ASK which artifact store they want for this change:
 
-- **`hive`**: Fast, no files created. Artifacts live in hive memory only. Best for solo work and quick iteration. Note: re-running a phase overwrites the previous version (no history).
+- **`hive`**: Fast, no files created. Artifacts are saved to Hive under phase topic keys for cross-session retrieval. Best for solo work and quick iteration. Topic keys group related SDD artifact saves; they are not identity, recency, overwrite, or version guarantees. If Hive search returns multiple candidate artifacts for the same topic and no explicit artifact reference is available, treat the result as ambiguous.
 - **`openspec`**: File-based. Creates `openspec/` directory with full artifact trail. Committable, shareable with team, full git history.
 - **`hybrid`**: Both — files for team sharing + Hive for cross-session recovery. Higher token cost.
 
