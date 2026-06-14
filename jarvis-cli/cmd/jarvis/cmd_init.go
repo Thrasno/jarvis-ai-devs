@@ -1,16 +1,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/project"
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
 )
 
 var initCmd = &cobra.Command{
@@ -36,57 +36,31 @@ any custom skills you have added.`,
 // runInit is the testable core of the init command.
 // dir is the project root (working directory in normal use).
 func runInit(dir string) error {
-	projectName := project.DetectProject(dir)
-	stack := project.DetectStack(dir)
-	suggestedSkills := project.SkillsForStack(stack)
-	embeddedSkills, err := skills.ListSkills(jarvis.SkillsFS)
+	root, err := projectregistry.ResolveRoot(context.Background(), dir)
 	if err != nil {
-		return fmt.Errorf("list embedded skills: %w", err)
+		if !projectregistry.IsNonProjectError(err) {
+			return err
+		}
+		root = dir
 	}
-	registrySkills := toProjectRegistrySkills(skills.RegistryRows(embeddedSkills))
+	projectName := project.DetectProject(root)
+	stack := project.DetectStack(root)
+	suggestedSkills := project.SkillsForStack(stack)
 
 	fmt.Println("Detecting project...")
 	fmt.Printf("✓ Project: %s\n", projectName)
 	fmt.Printf("✓ Stack:   %s\n", stack)
 	fmt.Println()
 	fmt.Println("Scaffolding .jarvis/...")
-	if err := installProjectSkillCopies(dir, embeddedSkills); err != nil {
-		return fmt.Errorf("install project skill copies: %w", err)
+	result, err := projectregistry.Refresh(context.Background(), projectregistry.RefreshOptions{CWD: dir, AllowNonGitRoot: true, SkillsFS: jarvis.SkillsFS})
+	if err != nil {
+		return fmt.Errorf("refresh skill registry: %w", err)
 	}
-
-	if err := project.WriteRegistry(dir, projectName, stack, suggestedSkills, registrySkills); err != nil {
-		return fmt.Errorf("write skill registry: %w", err)
-	}
+	printSkillRegistryWarnings(os.Stderr, result.Warnings)
 
 	fmt.Println("✓ Skill registry created: .jarvis/skill-registry.md")
 	fmt.Printf("✓ Skills:  %s\n", strings.Join(suggestedSkills, ", "))
 	fmt.Println()
 	fmt.Println("commit .jarvis/ to share with your team")
 	return nil
-}
-
-func installProjectSkillCopies(dir string, embeddedSkills []skills.Skill) error {
-	selected := make([]string, 0, len(embeddedSkills))
-	for _, skill := range embeddedSkills {
-		selected = append(selected, skill.ID)
-	}
-	_, err := skills.InstallSelectedWithResult(jarvis.SkillsFS, filepath.Join(dir, ".jarvis", "skills"), selected)
-	return err
-}
-
-func toProjectRegistrySkills(rows []skills.RegistryRow) []project.RegistrySkill {
-	registrySkills := make([]project.RegistrySkill, 0, len(rows))
-	for _, row := range rows {
-		registrySkills = append(registrySkills, project.RegistrySkill{
-			ID:           row.ID,
-			Name:         row.Name,
-			Description:  row.Description,
-			Trigger:      row.Trigger,
-			Scope:        row.Scope,
-			Path:         row.Path,
-			CompactRules: row.CompactRules,
-			IsCore:       row.IsCore,
-		})
-	}
-	return registrySkills
 }

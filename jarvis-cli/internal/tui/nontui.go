@@ -2,6 +2,7 @@ package tui
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"io/fs"
@@ -418,6 +419,13 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	cfg.Version = "1.0.0"
 	if saveErr := config.Save(cfg); saveErr != nil {
 		return fmt.Errorf("save config: %w", saveErr)
+	}
+	registryWarnings, registryErr := refreshProjectRegistryForApply(context.Background(), wcfg.ProjectCWD, wcfg.SkillsFS)
+	if registryErr != nil {
+		return fmt.Errorf("project skill registry refresh failed: %w", registryErr)
+	}
+	for _, warning := range registryWarnings {
+		fmt.Fprintln(noTUIStdout, warning)
 	}
 
 	fmt.Println("\nConfiguration applied successfully!")

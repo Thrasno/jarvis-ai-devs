@@ -3,6 +3,7 @@ package tui
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
 )
@@ -37,6 +39,95 @@ func testWizardConfig() WizardConfig {
 	return WizardConfig{
 		PersonaFS: testPersonaFS,
 		SkillsFS:  testSkillsFS,
+	}
+}
+
+func TestRunNoTUI_RefreshesProjectRegistryAfterSuccessfulApplyAndPrintsWarnings(t *testing.T) {
+	tmpHome := isolateTestHome(t)
+	t.Setenv("PATH", "")
+	projectRoot := t.TempDir()
+
+	called := false
+	originalRefresh := refreshProjectSkillRegistry
+	refreshProjectSkillRegistry = func(ctx context.Context, opts projectregistry.RefreshOptions) (projectregistry.Result, error) {
+		called = true
+		if opts.CWD != projectRoot {
+			t.Fatalf("refresh cwd = %q, want %q", opts.CWD, projectRoot)
+		}
+		if _, err := os.Stat(filepath.Join(tmpHome, ".jarvis", "config.yaml")); err != nil {
+			t.Fatalf("project registry refresh should run after config save, got stat err=%v", err)
+		}
+		return projectregistry.Result{Warnings: []projectregistry.Warning{{Message: "legacy registry imported", Path: filepath.Join(projectRoot, ".atl", "skill-registry.md")}}}, nil
+	}
+	t.Cleanup(func() { refreshProjectSkillRegistry = originalRefresh })
+
+	var output bytes.Buffer
+	previousStdout := noTUIStdout
+	noTUIStdout = &output
+	t.Cleanup(func() { noTUIStdout = previousStdout })
+
+	wcfg := testWizardConfig()
+	wcfg.ProjectCWD = projectRoot
+	if err := runNoTUI(wcfg, strings.NewReader("\n\nyes\n")); err != nil {
+		t.Fatalf("runNoTUI: %v", err)
+	}
+
+	if !called {
+		t.Fatal("expected project registry refresh to run after no-TUI apply")
+	}
+	if !strings.Contains(output.String(), "Project skill registry warning: legacy registry imported") {
+		t.Fatalf("expected non-blocking project registry warning in output, got:\n%s", output.String())
+	}
+}
+
+func TestRunNoTUI_ProjectRegistryNonProjectFailureIsWarningOnly(t *testing.T) {
+	isolateTestHome(t)
+	t.Setenv("PATH", "")
+	projectRoot := t.TempDir()
+
+	originalRefresh := refreshProjectSkillRegistry
+	refreshProjectSkillRegistry = func(context.Context, projectregistry.RefreshOptions) (projectregistry.Result, error) {
+		return projectregistry.Result{}, projectregistry.ErrNotGitWorktree
+	}
+	t.Cleanup(func() { refreshProjectSkillRegistry = originalRefresh })
+
+	var output bytes.Buffer
+	previousStdout := noTUIStdout
+	noTUIStdout = &output
+	t.Cleanup(func() { noTUIStdout = previousStdout })
+
+	wcfg := testWizardConfig()
+	wcfg.ProjectCWD = projectRoot
+	err := runNoTUI(wcfg, strings.NewReader("\n\nyes\n"))
+
+	if err != nil {
+		t.Fatalf("runNoTUI returned error for non-project refresh failure: %v", err)
+	}
+	if !strings.Contains(output.String(), "Project skill registry warning: not a git worktree") {
+		t.Fatalf("expected non-project registry warning in output, got:\n%s", output.String())
+	}
+}
+
+func TestRunNoTUI_ProjectRegistryWriteFailureIsBlocking(t *testing.T) {
+	isolateTestHome(t)
+	t.Setenv("PATH", "")
+	projectRoot := t.TempDir()
+
+	originalRefresh := refreshProjectSkillRegistry
+	refreshProjectSkillRegistry = func(context.Context, projectregistry.RefreshOptions) (projectregistry.Result, error) {
+		return projectregistry.Result{}, errors.New("write skill registry: finalize registry: permission denied")
+	}
+	t.Cleanup(func() { refreshProjectSkillRegistry = originalRefresh })
+
+	wcfg := testWizardConfig()
+	wcfg.ProjectCWD = projectRoot
+	err := runNoTUI(wcfg, strings.NewReader("\n\nyes\n"))
+
+	if err == nil {
+		t.Fatal("expected blocking registry write failure from runNoTUI")
+	}
+	if !strings.Contains(err.Error(), "project skill registry refresh failed") || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("expected blocking registry failure error, got: %v", err)
 	}
 }
 

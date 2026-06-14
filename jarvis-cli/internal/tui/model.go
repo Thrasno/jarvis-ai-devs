@@ -61,6 +61,7 @@ type Model struct {
 	PersonaFS  embed.FS
 	SkillsFS   embed.FS
 	TemplateFS embed.FS
+	ProjectCWD string
 
 	Email       string
 	Password    string
@@ -166,6 +167,7 @@ type WizardConfig struct {
 	PersonaFS  embed.FS
 	SkillsFS   embed.FS
 	TemplateFS embed.FS
+	ProjectCWD string
 }
 
 // NewModel creates a fresh wizard model at StepScope.
@@ -178,6 +180,7 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 		PersonaFS:  wcfg.PersonaFS,
 		SkillsFS:   wcfg.SkillsFS,
 		TemplateFS: wcfg.TemplateFS,
+		ProjectCWD: wcfg.ProjectCWD,
 		Selected:   make(map[string]bool),
 		cfg:        &config.AppConfig{APIURL: config.DefaultAPIURL, Scope: config.ScopeLocalOnly},
 		noTUI:      noTUI,

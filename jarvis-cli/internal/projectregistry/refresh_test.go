@@ -212,6 +212,36 @@ func TestRefreshWritesCanonicalRegistryAndInstallsProjectSkillCopies(t *testing.
 	assertFileContains(t, filepath.Join(root, ".jarvis", "skills", "sdd-apply", "strict-tdd.md"), "Strict TDD")
 }
 
+func TestRefreshCanExplicitlyAllowNonGitRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.test/nongit\n"), 0644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	result, err := Refresh(context.Background(), RefreshOptions{CWD: root, AllowNonGitRoot: true, SkillsFS: jarvis.SkillsFS})
+
+	if err != nil {
+		t.Fatalf("Refresh returned error for explicitly allowed non-git root: %v", err)
+	}
+	assertSamePath(t, result.Root, root)
+	assertFileContains(t, filepath.Join(root, ".jarvis", "skill-registry.md"), "Canonical registry path: `.jarvis/skill-registry.md`")
+	assertFileContains(t, filepath.Join(root, ".jarvis", "skills", "sdd-apply", "SKILL.md"), "sdd-apply")
+}
+
+func TestFormatWarningLineIsSharedAndConcise(t *testing.T) {
+	warning := Warning{Code: "metadata-gap", Path: ".jarvis/skills/example/SKILL.md", Message: "missing trigger metadata"}
+
+	line := FormatWarningLine(warning)
+	lines := FormatWarningLines("Project skill registry warning: ", []Warning{warning})
+
+	if line != "Warning: missing trigger metadata (.jarvis/skills/example/SKILL.md)" {
+		t.Fatalf("FormatWarningLine = %q", line)
+	}
+	if len(lines) != 1 || lines[0] != "Project skill registry warning: missing trigger metadata (.jarvis/skills/example/SKILL.md)" {
+		t.Fatalf("FormatWarningLines = %#v", lines)
+	}
+}
+
 func TestRefreshReportsLegacyImportWarning(t *testing.T) {
 	root := initGitWorktree(t)
 	legacyPath := filepath.Join(root, ".atl", "skill-registry.md")

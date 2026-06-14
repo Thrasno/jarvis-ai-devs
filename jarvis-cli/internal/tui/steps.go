@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -1245,10 +1246,17 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		if err := config.Save(m.cfg); err != nil {
 			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: save config: %v. Ver docs/setup-recovery.md", err), done: true, failed: true}
 		}
+		registryWarnings, registryErr := refreshProjectRegistryForApply(context.Background(), m.ProjectCWD, m.SkillsFS)
+		if registryErr != nil {
+			return agentProgressMsg{line: fmt.Sprintf("Project skill registry refresh failed: %v", registryErr), done: true, failed: true}
+		}
 
 		summary := fmt.Sprintf("Configuration complete. Agents configured: %s", strings.Join(configuredAgents, ", "))
 		if len(configuredAgents) == 0 {
 			summary = "No agents detected. Install Claude Code or OpenCode and re-run jarvis."
+		}
+		if len(registryWarnings) > 0 {
+			summary += "\n" + strings.Join(registryWarnings, "\n")
 		}
 		return agentProgressMsg{line: summary, done: true}
 	}

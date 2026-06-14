@@ -1,14 +1,18 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 )
 
@@ -133,6 +137,107 @@ func TestConfigureWizardAgent_ErrorPropagation(t *testing.T) {
 				t.Fatalf("error = %q, want contains %q", got, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestRunAgentConfigSequence_RefreshesProjectRegistryAfterSuccessfulApplyAndReportsWarnings(t *testing.T) {
+	tmpHome := isolateTestHome(t)
+	projectRoot := t.TempDir()
+
+	called := false
+	originalRefresh := refreshProjectSkillRegistry
+	refreshProjectSkillRegistry = func(ctx context.Context, opts projectregistry.RefreshOptions) (projectregistry.Result, error) {
+		called = true
+		if opts.CWD != projectRoot {
+			t.Fatalf("refresh cwd = %q, want %q", opts.CWD, projectRoot)
+		}
+		if _, err := os.Stat(filepath.Join(tmpHome, ".jarvis", "config.yaml")); err != nil {
+			t.Fatalf("project registry refresh should run after config save, got stat err=%v", err)
+		}
+		return projectregistry.Result{Warnings: []projectregistry.Warning{{Message: "legacy registry imported"}}}, nil
+	}
+	t.Cleanup(func() { refreshProjectSkillRegistry = originalRefresh })
+
+	m := Model{
+		Step:       StepAgentConfig,
+		Selected:   make(map[string]bool),
+		cfg:        &config.AppConfig{APIURL: config.DefaultAPIURL, Scope: config.ScopeLocalOnly},
+		ProjectCWD: projectRoot,
+	}
+
+	msg := runAgentConfigSequence(m)()
+	progress, ok := msg.(agentProgressMsg)
+	if !ok {
+		t.Fatalf("expected agentProgressMsg, got %T", msg)
+	}
+	if !progress.done || progress.failed {
+		t.Fatalf("expected successful completion despite registry warning, got %+v", progress)
+	}
+	if !called {
+		t.Fatal("expected project registry refresh to run after TUI apply")
+	}
+	if !strings.Contains(progress.line, "Project skill registry warning: legacy registry imported") {
+		t.Fatalf("expected registry warning in progress line, got %q", progress.line)
+	}
+}
+
+func TestRunAgentConfigSequence_ProjectRegistryNonProjectFailureIsWarningOnly(t *testing.T) {
+	isolateTestHome(t)
+	projectRoot := t.TempDir()
+
+	originalRefresh := refreshProjectSkillRegistry
+	refreshProjectSkillRegistry = func(context.Context, projectregistry.RefreshOptions) (projectregistry.Result, error) {
+		return projectregistry.Result{}, projectregistry.ErrNotGitWorktree
+	}
+	t.Cleanup(func() { refreshProjectSkillRegistry = originalRefresh })
+
+	m := Model{
+		Step:       StepAgentConfig,
+		Selected:   make(map[string]bool),
+		cfg:        &config.AppConfig{APIURL: config.DefaultAPIURL, Scope: config.ScopeLocalOnly},
+		ProjectCWD: projectRoot,
+	}
+
+	msg := runAgentConfigSequence(m)()
+	progress, ok := msg.(agentProgressMsg)
+	if !ok {
+		t.Fatalf("expected agentProgressMsg, got %T", msg)
+	}
+	if !progress.done || progress.failed {
+		t.Fatalf("expected successful completion despite registry refresh failure, got %+v", progress)
+	}
+	if !strings.Contains(progress.line, "Project skill registry warning: not a git worktree") {
+		t.Fatalf("expected refresh failure warning in progress line, got %q", progress.line)
+	}
+}
+
+func TestRunAgentConfigSequence_ProjectRegistryWriteFailureIsBlocking(t *testing.T) {
+	isolateTestHome(t)
+	projectRoot := t.TempDir()
+
+	originalRefresh := refreshProjectSkillRegistry
+	refreshProjectSkillRegistry = func(context.Context, projectregistry.RefreshOptions) (projectregistry.Result, error) {
+		return projectregistry.Result{}, errors.New("write skill registry: finalize registry: permission denied")
+	}
+	t.Cleanup(func() { refreshProjectSkillRegistry = originalRefresh })
+
+	m := Model{
+		Step:       StepAgentConfig,
+		Selected:   make(map[string]bool),
+		cfg:        &config.AppConfig{APIURL: config.DefaultAPIURL, Scope: config.ScopeLocalOnly},
+		ProjectCWD: projectRoot,
+	}
+
+	msg := runAgentConfigSequence(m)()
+	progress, ok := msg.(agentProgressMsg)
+	if !ok {
+		t.Fatalf("expected agentProgressMsg, got %T", msg)
+	}
+	if !progress.done || !progress.failed {
+		t.Fatalf("expected registry write failure to block successful completion, got %+v", progress)
+	}
+	if !strings.Contains(progress.line, "Project skill registry refresh failed") || !strings.Contains(progress.line, "permission denied") {
+		t.Fatalf("expected blocking registry failure in progress line, got %q", progress.line)
 	}
 }
 
