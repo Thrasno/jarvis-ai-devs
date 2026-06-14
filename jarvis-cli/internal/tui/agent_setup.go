@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"context"
+	"embed"
 	"fmt"
 	"io/fs"
 	"strings"
@@ -9,6 +11,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 )
 
@@ -33,6 +36,8 @@ type generatedConfigAgent interface {
 type configAwareSkillInstaller interface {
 	InstallSkillsWithConfig(fs.FS, []string, *config.AppConfig) error
 }
+
+var refreshProjectSkillRegistry = projectregistry.Refresh
 
 // statuslineInstaller is implemented by agents that support the Jarvis-managed
 // Claude Code statusline. The confirm callback decides overwrite vs. skip when
@@ -177,4 +182,22 @@ func verifyConfiguredAgentRuntime(a agent.Agent, cfg *config.AppConfig) error {
 	}
 
 	return fmt.Errorf("runtime verification failed [%s] contract=%s checks=%s", report.Agent, report.ContractVersion, strings.Join(failures, "; "))
+}
+
+func refreshProjectRegistryForApply(ctx context.Context, cwd string, skillsFS embed.FS) ([]string, error) {
+	if strings.TrimSpace(cwd) == "" {
+		return nil, nil
+	}
+	result, err := refreshProjectSkillRegistry(ctx, projectregistry.RefreshOptions{CWD: cwd, SkillsFS: skillsFS})
+	if err != nil {
+		if projectregistry.IsNonProjectError(err) {
+			return []string{"Project skill registry warning: " + projectregistry.ErrNotGitWorktree.Error()}, nil
+		}
+		return nil, err
+	}
+	return projectRegistryWarningLines(result.Warnings), nil
+}
+
+func projectRegistryWarningLines(warnings []projectregistry.Warning) []string {
+	return projectregistry.FormatWarningLines("Project skill registry warning: ", warnings)
 }
