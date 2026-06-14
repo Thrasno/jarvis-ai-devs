@@ -66,23 +66,10 @@ func TestClaudeAgent_InstallRegistryAutomation_MergesUserPromptSubmitHookIdempot
 		}
 	}
 
-	scriptPath := filepath.Join(tmpHome, ".claude", "hive-hooks", "skill-registry-refresh.sh")
-	content, err := os.ReadFile(scriptPath)
-	if err != nil {
-		t.Fatalf("read installed registry hook: %v", err)
-	}
-	if !strings.Contains(string(content), "skill-registry refresh --quiet --cwd") {
-		t.Fatalf("installed hook does not run quiet cwd refresh: %s", content)
-	}
 	executable := currentJarvisExecutableForTest(t)
-	if !strings.Contains(string(content), executable) {
-		t.Fatalf("installed hook should pin the current jarvis executable %q, got: %s", executable, content)
-	}
-	if !strings.Contains(string(content), "timeout 3s") || strings.Contains(string(content), "{{JARVIS_") {
-		t.Fatalf("installed hook should render timeout and consume placeholders: %s", content)
-	}
-	if strings.Contains(string(content), "command -v jarvis") || strings.Contains(string(content), " jarvis skill-registry") {
-		t.Fatalf("installed hook must not resolve jarvis from PATH or execute bare jarvis: %s", content)
+	scriptPath := filepath.Join(tmpHome, ".claude", "hive-hooks", "skill-registry-refresh.sh")
+	if _, err := os.Stat(scriptPath); !os.IsNotExist(err) {
+		t.Fatalf("Claude registry automation should install a direct command without a shell wrapper, stat err=%v", err)
 	}
 
 	settings := readJSONFile(t, settingsPath)
@@ -102,9 +89,43 @@ func TestClaudeAgent_InstallRegistryAutomation_MergesUserPromptSubmitHookIdempot
 	if command["type"] != "command" || command["timeout"] != float64(registryAutomationTimeoutSeconds) {
 		t.Fatalf("unexpected registry hook command contract: %#v", command)
 	}
-	if !strings.Contains(command["command"].(string), scriptPath) {
-		t.Fatalf("registry hook command should point at installed script, got %#v", command)
+	wantCommand := shellSingleQuote(executable) + ` skill-registry refresh --quiet --cwd "${CLAUDE_PROJECT_DIR:-$PWD}" || true`
+	if command["command"] != wantCommand {
+		t.Fatalf("registry hook command = %#v, want %#v", command["command"], wantCommand)
 	}
+}
+
+func TestClaudeRegistryRefreshCommand_PinsExecutableAndUsesProjectDirFallback(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		executable string
+	}{
+		{name: "plain absolute path", executable: jarvisExecutablePathForRenderTest(t)},
+		{name: "single quote in path", executable: filepath.Join(t.TempDir(), "bin", "jarvis'canary")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			command, err := claudeRegistryRefreshCommand(tt.executable)
+			if err != nil {
+				t.Fatalf("claudeRegistryRefreshCommand: %v", err)
+			}
+			want := shellSingleQuote(tt.executable) + ` skill-registry refresh --quiet --cwd "${CLAUDE_PROJECT_DIR:-$PWD}" || true`
+			if command != want {
+				t.Fatalf("command = %q, want %q", command, want)
+			}
+			for _, forbidden := range []string{"--no-gitignore", "powershell.exe", "skill-registry-refresh.sh", "skill-registry-refresh.ps1", " jarvis skill-registry"} {
+				if strings.Contains(command, forbidden) {
+					t.Fatalf("direct Claude registry command must not contain %q: %s", forbidden, command)
+				}
+			}
+		})
+	}
+
+	t.Run("rejects non-absolute executable", func(t *testing.T) {
+		_, err := claudeRegistryRefreshCommand("jarvis")
+		if err == nil {
+			t.Fatal("expected non-absolute executable path to be rejected")
+		}
+	})
 }
 
 func TestOpenCodeAgent_InstallRegistryAutomation_WritesSeparatePluginWithoutClobberingHive(t *testing.T) {
@@ -156,8 +177,6 @@ func TestRenderRegistryAutomationEmbeddedAssetsConsumePlaceholders(t *testing.T)
 		path        string
 		wantTimeout string
 	}{
-		{name: "claude shell", path: "embed/hooks/claude/skill-registry-refresh.sh", wantTimeout: "timeout 3s"},
-		{name: "claude powershell", path: "embed/hooks/claude/skill-registry-refresh.ps1", wantTimeout: "WaitForExit(3000)"},
 		{name: "opencode plugin", path: "embed/hooks/opencode/skill-registry.ts", wantTimeout: "timeout: 3000"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -194,15 +213,9 @@ func TestRenderRegistryAutomationAssetRejectsMalformedPlaceholderContract(t *tes
 	}{
 		{
 			name:    "missing executable placeholder",
-			path:    "embed/hooks/claude/skill-registry-refresh.sh",
-			content: "timeout {{JARVIS_REFRESH_TIMEOUT_SECONDS}}s\n",
+			path:    "embed/hooks/opencode/skill-registry.ts",
+			content: "timeout: {{JARVIS_REFRESH_TIMEOUT_MILLIS}}\n",
 			wantErr: jarvisExecutablePlaceholder,
-		},
-		{
-			name:    "missing timeout seconds placeholder",
-			path:    "embed/hooks/claude/skill-registry-refresh.sh",
-			content: "{{JARVIS_EXECUTABLE}}\n",
-			wantErr: jarvisRefreshTimeoutSecondsPlaceholder,
 		},
 		{
 			name:    "missing timeout millis placeholder",
