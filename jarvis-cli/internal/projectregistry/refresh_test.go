@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -23,9 +24,7 @@ func TestResolveRootUsesGitTopLevelFromSubdir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveRoot returned error: %v", err)
 	}
-	if resolved != root {
-		t.Fatalf("ResolveRoot = %q, want %q", resolved, root)
-	}
+	assertSamePath(t, resolved, root)
 }
 
 func TestResolveRootRejectsUnsafeRoots(t *testing.T) {
@@ -79,6 +78,103 @@ func TestResolveRootRejectsUnsafeRoots(t *testing.T) {
 
 		assertErrorContains(t, err, "unsafe project root")
 	})
+
+	t.Run("home alias directory", func(t *testing.T) {
+		home := initGitWorktree(t)
+		alias := createDirectoryAlias(t, home)
+		t.Setenv("HOME", alias)
+
+		_, err := ResolveRoot(context.Background(), home)
+
+		assertErrorContains(t, err, "unsafe project root")
+	})
+
+	t.Run("home config alias directory", func(t *testing.T) {
+		home := t.TempDir()
+		alias := createDirectoryAlias(t, home)
+		t.Setenv("HOME", alias)
+		configRoot := filepath.Join(home, ".config", "opencode")
+		if err := os.MkdirAll(configRoot, 0755); err != nil {
+			t.Fatalf("create config dir: %v", err)
+		}
+		runGit(t, configRoot, "init")
+
+		_, err := ResolveRoot(context.Background(), configRoot)
+
+		assertErrorContains(t, err, "unsafe project root")
+	})
+
+	t.Run("home claude alias generated state directory", func(t *testing.T) {
+		home := t.TempDir()
+		alias := createDirectoryAlias(t, home)
+		t.Setenv("HOME", alias)
+		claudeRoot := filepath.Join(home, ".claude", "projects", "example")
+		if err := os.MkdirAll(claudeRoot, 0755); err != nil {
+			t.Fatalf("create claude dir: %v", err)
+		}
+		runGit(t, claudeRoot, "init")
+
+		_, err := ResolveRoot(context.Background(), claudeRoot)
+
+		assertErrorContains(t, err, "unsafe project root")
+	})
+}
+
+func TestRejectUnsafeRootUsesPathEquivalenceForHomeAliases(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "ActualHome")
+	alias := filepath.Join(base, "HOMEALIAS")
+	sameAliasPath := func(a, b string) bool {
+		return normalizeAliasPathForTest(a, alias, home) == normalizeAliasPathForTest(b, alias, home)
+	}
+
+	tests := []struct {
+		name string
+		root string
+		want string
+	}{
+		{
+			name: "home alias",
+			root: home,
+			want: "home directory",
+		},
+		{
+			name: "home config alias",
+			root: filepath.Join(home, ".config", "opencode"),
+			want: "home config directories",
+		},
+		{
+			name: "home Claude generated state alias",
+			root: filepath.Join(home, ".claude", "projects", "example"),
+			want: "home Claude generated state",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := rejectUnsafeRootForHomes(tt.root, []string{alias}, sameAliasPath)
+
+			assertErrorContains(t, err, tt.want)
+		})
+	}
+}
+
+func TestPathsReferToSameFileRespectsPlatformCaseSensitivity(t *testing.T) {
+	base := t.TempDir()
+	upper := filepath.Join(base, "CaseProbe")
+	lower := filepath.Join(base, "caseprobe")
+	if err := os.WriteFile(upper, []byte("probe"), 0644); err != nil {
+		t.Fatalf("write case probe: %v", err)
+	}
+	if !pathsReferToSameFile(upper, filepath.Join(base, ".", "CaseProbe")) {
+		t.Fatal("pathsReferToSameFile(same cleaned path) = false, want true")
+	}
+
+	got := pathsReferToSameFile(upper, lower)
+	want := runtime.GOOS == "windows"
+	if got != want {
+		t.Fatalf("pathsReferToSameFile(case-only mismatch) = %v, want %v on %s", got, want, runtime.GOOS)
+	}
 }
 
 func TestRefreshWritesCanonicalRegistryAndInstallsProjectSkillCopies(t *testing.T) {
@@ -97,12 +193,8 @@ func TestRefreshWritesCanonicalRegistryAndInstallsProjectSkillCopies(t *testing.
 	}
 
 	registryPath := filepath.Join(root, ".jarvis", "skill-registry.md")
-	if result.Root != root {
-		t.Fatalf("Root = %q, want %q", result.Root, root)
-	}
-	if result.Path != registryPath {
-		t.Fatalf("Path = %q, want %q", result.Path, registryPath)
-	}
+	assertSamePath(t, result.Root, root)
+	assertSamePath(t, result.Path, registryPath)
 	if !result.Changed {
 		t.Fatal("Changed = false, want true for first refresh")
 	}
@@ -328,6 +420,60 @@ func runGit(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(output))
 	}
+}
+
+func createDirectoryAlias(t *testing.T, target string) string {
+	t.Helper()
+	alias := filepath.Join(t.TempDir(), "home-alias")
+	if err := os.Symlink(target, alias); err != nil {
+		t.Skipf("directory symlink unavailable on this platform: %v", err)
+	}
+	return alias
+}
+
+func normalizeAliasPathForTest(path, alias, target string) string {
+	path = filepath.Clean(path)
+	alias = filepath.Clean(alias)
+	target = filepath.Clean(target)
+	if path == alias {
+		return target
+	}
+	if rel, err := filepath.Rel(alias, path); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+		return filepath.Join(target, rel)
+	}
+	return path
+}
+
+func assertSamePath(t *testing.T, got, want string) {
+	t.Helper()
+	if pathsReferToSameFile(got, want) {
+		return
+	}
+	t.Fatalf("path = %q, want same filesystem path as %q", got, want)
+}
+
+func pathsReferToSameFile(a, b string) bool {
+	aInfo, aErr := os.Stat(a)
+	bInfo, bErr := os.Stat(b)
+	if aErr == nil && bErr == nil && os.SameFile(aInfo, bInfo) {
+		return true
+	}
+	aClean := filepath.Clean(a)
+	bClean := filepath.Clean(b)
+	if runtime.GOOS == "windows" && strings.EqualFold(aClean, bClean) {
+		return true
+	}
+	aEval, aErr := filepath.EvalSymlinks(aClean)
+	bEval, bErr := filepath.EvalSymlinks(bClean)
+	if aErr != nil || bErr != nil {
+		return false
+	}
+	aEval = filepath.Clean(aEval)
+	bEval = filepath.Clean(bEval)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(aEval, bEval)
+	}
+	return aEval == bEval
 }
 
 func assertErrorContains(t *testing.T, err error, want string) {
