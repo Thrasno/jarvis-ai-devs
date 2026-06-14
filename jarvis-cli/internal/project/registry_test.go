@@ -11,11 +11,10 @@ import (
 // with both the Suggested Skills and Custom Skills sections on first run.
 func TestWriteRegistry_FirstRun(t *testing.T) {
 	dir := t.TempDir()
-	skills := []string{"sdd-workflow", "hive", "go-testing"}
+	skills := []string{"hive", "go-testing"}
 	richSkills := []RegistrySkill{
 		{ID: "go-testing", Name: "Go Testing", Description: "Go testing patterns", Trigger: "When writing Go tests", Path: "go-testing/SKILL.md", CompactRules: "Run gofmt and targeted go test", IsCore: false},
 		{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", CompactRules: "Search memory before recall", IsCore: true},
-		{ID: "sdd-workflow", Name: "SDD Workflow", Description: "Spec-Driven Development lifecycle", Trigger: "SDD workflow phase", Path: "sdd-workflow/SKILL.md", CompactRules: "Follow proposal/spec/design/tasks/apply/verify/archive", IsCore: true},
 	}
 
 	if err := WriteRegistry(dir, "my-project", StackGo, skills, richSkills); err != nil {
@@ -34,7 +33,6 @@ func TestWriteRegistry_FirstRun(t *testing.T) {
 		"Go",
 		"Canonical registry path: `.jarvis/skill-registry.md`",
 		"## Suggested Skills",
-		"- `sdd-workflow`",
 		"- `hive`",
 		"- `go-testing`",
 		"## Installed Skills",
@@ -78,9 +76,8 @@ func TestWriteRegistry_Idempotent(t *testing.T) {
 	initialRich := []RegistrySkill{
 		{ID: "go-testing", Name: "Go Testing", Description: "Go testing patterns", Trigger: "When writing Go tests", Path: "go-testing/SKILL.md", CompactRules: "Run gofmt and targeted go test"},
 		{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", CompactRules: "Search memory before recall", IsCore: true},
-		{ID: "sdd-workflow", Name: "SDD Workflow", Description: "Spec-Driven Development lifecycle", Trigger: "SDD workflow phase", Path: "sdd-workflow/SKILL.md", CompactRules: "Follow the SDD cycle", IsCore: true},
 	}
-	if err := WriteRegistry(dir, "my-project", StackGo, []string{"sdd-workflow", "hive", "go-testing"}, initialRich); err != nil {
+	if err := WriteRegistry(dir, "my-project", StackGo, []string{"hive", "go-testing"}, initialRich); err != nil {
 		t.Fatalf("first WriteRegistry: %v", err)
 	}
 
@@ -100,9 +97,8 @@ func TestWriteRegistry_Idempotent(t *testing.T) {
 		{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", CompactRules: "Search memory before recall", IsCore: true},
 		{ID: "laravel-architecture", Name: "Laravel Architecture", Description: "Laravel conventions", Trigger: "When writing Laravel code", Path: "laravel-architecture/SKILL.md", CompactRules: "Keep controllers thin"},
 		{ID: "phpunit-testing", Name: "PHPUnit Testing", Description: "PHPUnit patterns", Trigger: "When writing PHP tests", Path: "phpunit-testing/SKILL.md", CompactRules: "Use AAA structure"},
-		{ID: "sdd-workflow", Name: "SDD Workflow", Description: "Spec-Driven Development lifecycle", Trigger: "SDD workflow phase", Path: "sdd-workflow/SKILL.md", CompactRules: "Follow the SDD cycle", IsCore: true},
 	}
-	if err := WriteRegistry(dir, "my-project", StackLaravel, []string{"sdd-workflow", "hive", "laravel-architecture", "phpunit-testing"}, updatedRich); err != nil {
+	if err := WriteRegistry(dir, "my-project", StackLaravel, []string{"hive", "laravel-architecture", "phpunit-testing"}, updatedRich); err != nil {
 		t.Fatalf("second WriteRegistry: %v", err)
 	}
 
@@ -142,12 +138,12 @@ func TestWriteRegistry_CustomAbsent(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(registryPath), 0755); err != nil {
 		t.Fatal(err)
 	}
-	noCustom := "# Skill Registry — old-project\n\n## Suggested Skills\n\n- **sdd-workflow**\n"
+	noCustom := "# Skill Registry — old-project\n\n## Suggested Skills\n\n- **hive**\n"
 	if err := os.WriteFile(registryPath, []byte(noCustom), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := WriteRegistry(dir, "old-project", StackNode, []string{"sdd-workflow", "hive"}); err != nil {
+	if err := WriteRegistry(dir, "old-project", StackNode, []string{"hive"}); err != nil {
 		t.Fatalf("WriteRegistry: %v", err)
 	}
 
@@ -170,7 +166,7 @@ func TestWriteRegistry_ImportsLegacyCustomSectionWhenCanonicalAbsent(t *testing.
 		t.Fatal(err)
 	}
 
-	if err := WriteRegistry(dir, "legacy-project", StackGo, []string{"sdd-workflow", "hive", "go-testing"}); err != nil {
+	if err := WriteRegistry(dir, "legacy-project", StackGo, []string{"hive", "go-testing"}); err != nil {
 		t.Fatalf("WriteRegistry: %v", err)
 	}
 
@@ -203,7 +199,7 @@ func TestWriteRegistry_WritesCanonicalOnlyWhenLegacyExists(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := WriteRegistry(dir, "canonical-project", StackGo, []string{"sdd-workflow"}, []RegistrySkill{{ID: "sdd-workflow", Name: "SDD Workflow", Description: "Spec-Driven Development lifecycle", Trigger: "SDD workflow phase", Path: "sdd-workflow/SKILL.md", IsCore: true}}); err != nil {
+	if err := WriteRegistry(dir, "canonical-project", StackGo, []string{"hive"}, []RegistrySkill{{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", IsCore: true}}); err != nil {
 		t.Fatalf("WriteRegistry: %v", err)
 	}
 
@@ -239,7 +235,7 @@ func TestWriteRegistry_CanonicalCustomSectionWinsOverLegacy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := WriteRegistry(dir, "canonical-project", StackGo, []string{"sdd-workflow", "hive", "go-testing"}); err != nil {
+	if err := WriteRegistry(dir, "canonical-project", StackGo, []string{"hive", "go-testing"}); err != nil {
 		t.Fatalf("WriteRegistry: %v", err)
 	}
 

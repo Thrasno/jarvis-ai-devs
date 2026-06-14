@@ -236,11 +236,6 @@ func TestCatalogContract_SDDFilesDoNotReferenceRetiredQAGates(t *testing.T) {
 		forbidden []string
 	}{
 		{
-			path:      "embed/skills/sdd-workflow/SKILL.md",
-			required:  []string{"tasks → apply → verify → archive", "sdd/{change-name}/verify-report", "sdd/{change-name}/archive-report"},
-			forbidden: []string{"sdd-qa", "qa-signoff", "qa-checklist"},
-		},
-		{
 			path:      "embed/skills/hive/SKILL.md",
 			required:  []string{"`sdd/{change}/verify-report`", "`sdd/{change}/archive-report`"},
 			forbidden: []string{"qa-signoff", "qa-checklist", "sdd-qa"},
@@ -282,6 +277,9 @@ func TestCatalogContract_SDDFilesDoNotReferenceRetiredQAGates(t *testing.T) {
 
 	if _, err := fs.Stat(jarvis.SkillsFS, "embed/skills/sdd-qa/SKILL.md"); err == nil {
 		t.Fatal("expected embedded sdd-qa skill to be deleted")
+	}
+	if _, err := fs.Stat(jarvis.SkillsFS, "embed/skills/sdd-workflow/SKILL.md"); err == nil {
+		t.Fatal("expected embedded sdd-workflow skill to be deleted")
 	}
 }
 
@@ -503,7 +501,7 @@ func TestCatalogContract_RegistryPromptAndProtocolStayPathInjected(t *testing.T)
 	}
 
 	dir := t.TempDir()
-	if err := project.WriteRegistry(dir, "contract-project", project.StackGo, []string{"sdd-workflow", "hive", "go-testing"}, projectRows); err != nil {
+	if err := project.WriteRegistry(dir, "contract-project", project.StackGo, []string{"hive", "go-testing"}, projectRows); err != nil {
 		t.Fatalf("WriteRegistry(): %v", err)
 	}
 	content, err := os.ReadFile(filepath.Join(dir, registryPaths.WritePath))

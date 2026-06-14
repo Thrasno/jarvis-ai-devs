@@ -13,8 +13,8 @@ import (
 // fsys may be the root-package SkillsFS (with files under embed/skills) or a
 // sub-FS already rooted at the skills directory.
 // Install is idempotent: existing files are overwritten silently.
-// Core skills (sdd-workflow, hive, and the active SDD runtime helpers) are
-// always included regardless of selected.
+// Core skills (hive and the active SDD runtime helpers) are always included
+// regardless of selected.
 func InstallSelected(fsys fs.FS, agentSkillsDir string, selected []string) error {
 	skillsFS, err := skillsSubtree(fsys)
 	if err != nil {

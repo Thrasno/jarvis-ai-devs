@@ -93,9 +93,9 @@ func DetectProject(dir string) string {
 }
 
 // SkillsForStack returns the skill list for a given stack.
-// Core skills (sdd-workflow, hive) are always first.
+// Core skills are always first.
 func SkillsForStack(stack Stack) []string {
-	skills := []string{"sdd-workflow", "hive"}
+	skills := []string{"hive"}
 	switch stack {
 	case StackGo:
 		skills = append(skills, "go-testing")

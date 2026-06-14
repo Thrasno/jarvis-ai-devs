@@ -17,7 +17,6 @@ func TestInstallSelected_RecursivelyInstallsSkillTrees(t *testing.T) {
 
 	fsys := fstest.MapFS{
 		"embed/skills/hive/SKILL.md":                                  {Data: []byte("# Hive")},
-		"embed/skills/sdd-workflow/SKILL.md":                          {Data: []byte("# Workflow")},
 		"embed/skills/sdd-init/SKILL.md":                              {Data: []byte("# Init")},
 		"embed/skills/sdd-apply/SKILL.md":                             {Data: []byte("# Apply")},
 		"embed/skills/sdd-verify/SKILL.md":                            {Data: []byte("# Verify")},
@@ -54,13 +53,15 @@ func TestInstallSelected(t *testing.T) {
 			t.Fatalf("InstallSelected failed: %v", err)
 		}
 
-		// Core skills must always be installed
-		for _, coreID := range []string{"sdd-workflow", "hive"} {
+		// Core skills must always be installed.
+		for _, coreID := range []string{"hive", "sdd-init", "sdd-apply", "sdd-verify", "sdd-archive"} {
 			path := filepath.Join(dir, coreID, "SKILL.md")
 			if _, err := os.Stat(path); os.IsNotExist(err) {
 				t.Errorf("core skill %s was not installed at %s", coreID, path)
 			}
 		}
+
+		assertPathAbsent(t, filepath.Join(dir, "sdd-workflow"))
 
 		// Selected skill must be installed
 		gitPath := filepath.Join(dir, "git-workflow", "SKILL.md")
@@ -103,12 +104,13 @@ func TestInstallSelected(t *testing.T) {
 			t.Fatalf("InstallSelected failed: %v", err)
 		}
 
-		for _, id := range append(allIDs, "sdd-workflow", "hive") {
+		for _, id := range append(allIDs, "hive", "sdd-init", "sdd-apply", "sdd-verify", "sdd-archive") {
 			path := filepath.Join(dir, id, "SKILL.md")
 			if _, err := os.Stat(path); os.IsNotExist(err) {
 				t.Errorf("skill %s was not installed", id)
 			}
 		}
+		assertPathAbsent(t, filepath.Join(dir, "sdd-workflow"))
 	})
 
 	t.Run("skill files have non-empty content", func(t *testing.T) {
@@ -118,7 +120,7 @@ func TestInstallSelected(t *testing.T) {
 			t.Fatalf("InstallSelected failed: %v", err)
 		}
 
-		for _, coreID := range []string{"sdd-workflow", "hive"} {
+		for _, coreID := range []string{"hive", "sdd-init", "sdd-apply", "sdd-verify", "sdd-archive"} {
 			path := filepath.Join(dir, coreID, "SKILL.md")
 			data, err := os.ReadFile(path)
 			if err != nil {
