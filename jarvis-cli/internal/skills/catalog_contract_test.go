@@ -236,11 +236,6 @@ func TestCatalogContract_SDDFilesDoNotReferenceRetiredQAGates(t *testing.T) {
 		forbidden []string
 	}{
 		{
-			path:      "embed/skills/sdd-workflow/SKILL.md",
-			required:  []string{"tasks → apply → verify → archive", "sdd/{change-name}/verify-report", "sdd/{change-name}/archive-report"},
-			forbidden: []string{"sdd-qa", "qa-signoff", "qa-checklist"},
-		},
-		{
 			path:      "embed/skills/hive/SKILL.md",
 			required:  []string{"`sdd/{change}/verify-report`", "`sdd/{change}/archive-report`"},
 			forbidden: []string{"qa-signoff", "qa-checklist", "sdd-qa"},
@@ -282,6 +277,9 @@ func TestCatalogContract_SDDFilesDoNotReferenceRetiredQAGates(t *testing.T) {
 
 	if _, err := fs.Stat(jarvis.SkillsFS, "embed/skills/sdd-qa/SKILL.md"); err == nil {
 		t.Fatal("expected embedded sdd-qa skill to be deleted")
+	}
+	if _, err := fs.Stat(jarvis.SkillsFS, "embed/skills/sdd-workflow/SKILL.md"); err == nil {
+		t.Fatal("expected embedded sdd-workflow skill to be deleted")
 	}
 }
 
@@ -503,7 +501,7 @@ func TestCatalogContract_RegistryPromptAndProtocolStayPathInjected(t *testing.T)
 	}
 
 	dir := t.TempDir()
-	if err := project.WriteRegistry(dir, "contract-project", project.StackGo, []string{"sdd-workflow", "hive", "go-testing"}, projectRows); err != nil {
+	if err := project.WriteRegistry(dir, "contract-project", project.StackGo, []string{"hive", "go-testing"}, projectRows); err != nil {
 		t.Fatalf("WriteRegistry(): %v", err)
 	}
 	content, err := os.ReadFile(filepath.Join(dir, registryPaths.WritePath))
@@ -911,6 +909,303 @@ func TestCatalogContract_QAChecklistOutputContractAndSDDBoundaries(t *testing.T)
 	}
 }
 
+func TestCatalogContract_GentleAIParityRunbookProtectsSourceTemplates(t *testing.T) {
+	t.Parallel()
+
+	content := readWorkspaceAsset(t, "docs/maintenance/gentle-ai-skill-parity.md")
+	scopeRows := markdownTableRows(t, markdownSection(t, content, "Scope boundaries"))
+	checklist := markdownSection(t, content, "Verification checklist")
+
+	if !strings.Contains(strings.ToLower(content), "maintainer-only") {
+		t.Fatal("expected parity runbook to identify the workflow as maintainer-only")
+	}
+
+	requiredScopeRules := []struct {
+		area  string
+		terms []string
+	}{
+		{"Workflow audience", []string{"Maintainers only", "public CLI", "doctor", "install", "automatic sync"}},
+		{"Editable source", []string{"Jarvis source-of-truth files", "jarvis-cli/embed/**", "jarvis-cli/internal/agent/**", "jarvis-cli/internal/persona/**", "jarvis-cli/internal/sddruntime/**"}},
+		{"Forbidden edit targets", []string{"~/.claude/**", "~/.config/opencode/**", "generated registries", "installed `.jarvis/skills/**` copies", "team environments"}},
+		{"Upstream updates", []string{"No blind upstream sync", "recorded decision", "rationale"}},
+		{"Skill content updates", []string{"Out of scope", "chained PR slices"}},
+	}
+	for _, rule := range requiredScopeRules {
+		row := requireMarkdownTableRow(t, scopeRows, rule.area)
+		requireAllTerms(t, row, rule.terms...)
+	}
+
+	requireAllTerms(t, checklist,
+		"Accepted changes", "Jarvis source templates/assets only",
+		"Generated artifacts", "team environments", "untouched",
+	)
+}
+
+func TestCatalogContract_GentleAIParityRunReportTemplateCapturesRequiredDecisions(t *testing.T) {
+	t.Parallel()
+
+	content := readWorkspaceAsset(t, "docs/maintenance/skill-parity-run-report-template.md")
+	metadataRows := markdownTableRows(t, markdownSection(t, content, "Run metadata"))
+	guardrail := markdownSection(t, content, "Source-of-truth guardrail")
+	differenceRows := markdownTableRows(t, markdownSection(t, content, "Difference log"))
+	approvalPlan := markdownSection(t, content, "Approval and implementation plan")
+
+	for _, field := range []string{
+		"Run ID",
+		"Gentle AI selected reference",
+		"Gentle AI retrieval date",
+		"Jarvis commit or branch",
+		"Last adopted Gentle AI version",
+		"Maintainer",
+		"Report location",
+		"Reference availability",
+	} {
+		requireMarkdownTableRow(t, metadataRows, field)
+	}
+
+	requireAllTerms(t, guardrail,
+		"Jarvis source templates/assets", "not generated user-machine configs",
+		"~/.claude/**", "~/.config/opencode/**", "generated registries", "installed `.jarvis/skills/**` copies", "team environments",
+	)
+
+	differenceHeader := differenceRows[0]
+	requireAllTerms(t, differenceHeader, "Decision", "Rationale", "Owner", "Follow-up")
+	requireAllTerms(t, approvalPlan, "Maintainer approval", "before skill content or workflow semantics changed")
+
+	if !strings.Contains(content, "## Inventory summary") {
+		t.Fatal("expected run report template to include inventory summary section")
+	}
+
+	for _, category := range []string{"apply", "adapt", "ignore", "investigate"} {
+		if !strings.Contains(content, "`"+category+"`") {
+			t.Fatalf("expected run report template to document decision category %q", category)
+		}
+	}
+}
+
+func TestCatalogContract_GentleAIParityRunbookDocumentsInventoryDecisions(t *testing.T) {
+	t.Parallel()
+
+	content := readWorkspaceAsset(t, "docs/maintenance/gentle-ai-skill-parity.md")
+	inventoryRows := markdownTableRows(t, markdownSection(t, content, "Inventory rules"))
+	checklist := markdownSection(t, content, "Verification checklist")
+
+	for _, skillID := range []string{"go-testing", "skill-creator", "skill-improver", "skill-registry"} {
+		row := requireMarkdownTableRow(t, inventoryRows, "`"+skillID+"`")
+		requireAllTerms(t, row, "In scope", "Adopted Gentle AI skill", "stamp metadata is absent")
+	}
+
+	requireAllTerms(t, requireMarkdownTableRow(t, inventoryRows, "Stamped Gentle AI skill files"), "In scope", "selected upstream path", "reference")
+	requireAllTerms(t, requireMarkdownTableRow(t, inventoryRows, "Stamped `_shared` or reference files"), "In scope", "shared contracts")
+	requireAllTerms(t, requireMarkdownTableRow(t, inventoryRows, "Adopted unstamped skills"), "In scope", "intentionally adopted")
+	requireAllTerms(t, requireMarkdownTableRow(t, inventoryRows, "`hive`"), "Adapted equivalent", "Engram", "compare intent")
+	requireAllTerms(t, requireMarkdownTableRow(t, inventoryRows, "`qa-checklist`"), "Out of Gentle AI parity", "Jarvis-local")
+	requireAllTerms(t, requireMarkdownTableRow(t, inventoryRows, "`sdd-workflow`"), "Retired/removed", "orchestrator", "shared SDD contracts", "phase skills")
+	requireAllTerms(t, requireMarkdownTableRow(t, inventoryRows, "Ambiguous local files"), "Investigate", "Do not silently include", "exclude", "edit")
+	requireAllTerms(t, checklist,
+		"inventory includes all adopted Gentle AI skills", "adopted unstamped skills",
+		"`hive`, `qa-checklist`, and `sdd-workflow`", "scope table",
+	)
+}
+
+func TestCatalogContract_GentleAISourceStampsAreParseableAndNetworkFree(t *testing.T) {
+	t.Parallel()
+
+	checked := 0
+	err := fs.WalkDir(jarvis.SkillsFS, "embed/skills", func(filePath string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() || !strings.HasSuffix(filePath, ".md") {
+			return walkErr
+		}
+
+		content := readEmbeddedSkillAsset(t, filePath)
+		if !strings.Contains(content, "Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/") {
+			return nil
+		}
+
+		checked++
+		stamp, ok := parseGentleAISourceStamp(content)
+		if !ok {
+			t.Fatalf("expected %s to have a parseable Gentle AI source stamp", filePath)
+		}
+		if stamp.Repository != "Gentleman-Programming/gentle-ai" {
+			t.Fatalf("%s source stamp repository = %q, want Gentleman-Programming/gentle-ai", filePath, stamp.Repository)
+		}
+		if !strings.HasPrefix(stamp.UpstreamPath, "internal/assets/skills/") {
+			t.Fatalf("%s source stamp upstream path = %q, want internal/assets/skills/...", filePath, stamp.UpstreamPath)
+		}
+		if stamp.Reference == "" {
+			t.Fatalf("%s source stamp must include a tag, commit, or reference segment", filePath)
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir(embed/skills): %v", err)
+	}
+	if checked == 0 {
+		t.Fatal("expected at least one Gentle AI source stamp to be covered")
+	}
+}
+
+func TestCatalogContract_GentleAIParityInventoryClassifiesStampedAndAmbiguousSources(t *testing.T) {
+	t.Parallel()
+
+	runbook := readWorkspaceAsset(t, "docs/maintenance/gentle-ai-skill-parity.md")
+	stampedContent := readEmbeddedSkillAsset(t, "embed/skills/sdd-apply/SKILL.md")
+	unstampedContent := "# Unstamped local fixture\n\nThis fixture intentionally has no Gentle AI source stamp.\n"
+
+	if got := classifyGentleAIParityCandidate(runbook, "embed/skills/sdd-apply/SKILL.md", stampedContent); got != "in-scope" {
+		t.Fatalf("stamped adopted skill classified as %q, want in-scope", got)
+	}
+	if got := classifyGentleAIParityCandidate(runbook, "embed/skills/go-testing/SKILL.md", unstampedContent); got != "in-scope" {
+		t.Fatalf("documented adopted unstamped skill classified as %q, want in-scope", got)
+	}
+	if got := classifyGentleAIParityCandidate(runbook, "embed/skills/hive/SKILL.md", unstampedContent); got != "adapted-equivalent" {
+		t.Fatalf("hive classified as %q, want adapted-equivalent", got)
+	}
+	if got := classifyGentleAIParityCandidate(runbook, "embed/skills/qa-checklist/SKILL.md", unstampedContent); got != "out-of-parity" {
+		t.Fatalf("qa-checklist classified as %q, want out-of-parity", got)
+	}
+	if got := classifyGentleAIParityCandidate(runbook, "embed/skills/local-only/SKILL.md", unstampedContent); got != "investigate" {
+		t.Fatalf("ambiguous unstamped skill classified as %q, want investigate", got)
+	}
+}
+
+type gentleAISourceStamp struct {
+	Repository   string
+	Reference    string
+	UpstreamPath string
+}
+
+func parseGentleAISourceStamp(content string) (gentleAISourceStamp, bool) {
+	pattern := regexp.MustCompile(`Synced from https://raw\.githubusercontent\.com/(Gentleman-Programming/gentle-ai)/([^/\s)]+)/([^\s)]+\.md)`)
+	match := pattern.FindStringSubmatch(content)
+	if match == nil {
+		return gentleAISourceStamp{}, false
+	}
+
+	return gentleAISourceStamp{
+		Repository:   match[1],
+		Reference:    match[2],
+		UpstreamPath: match[3],
+	}, true
+}
+
+func classifyGentleAIParityCandidate(runbook, filePath, content string) string {
+	skillID := embeddedSkillID(filePath)
+
+	if _, ok := parseGentleAISourceStamp(content); ok && strings.Contains(runbook, "| Stamped Gentle AI skill files | In scope |") {
+		return "in-scope"
+	}
+	if strings.Contains(runbook, fmt.Sprintf("| `%s` | In scope |", skillID)) {
+		return "in-scope"
+	}
+	if strings.Contains(runbook, fmt.Sprintf("| `%s` | Adapted equivalent |", skillID)) {
+		return "adapted-equivalent"
+	}
+	if strings.Contains(runbook, fmt.Sprintf("| `%s` | Out of Gentle AI parity |", skillID)) {
+		return "out-of-parity"
+	}
+	if strings.Contains(runbook, fmt.Sprintf("| `%s` | Retired/removed |", skillID)) {
+		return "retired"
+	}
+	if strings.Contains(runbook, "| Ambiguous local files | Investigate |") {
+		return "investigate"
+	}
+	return "unknown"
+}
+
+func embeddedSkillID(filePath string) string {
+	relativePath := strings.TrimPrefix(filePath, "embed/skills/")
+	parts := strings.Split(relativePath, "/")
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[0]
+}
+
+func markdownSection(t *testing.T, content, heading string) string {
+	t.Helper()
+
+	sectionStart := strings.Index(content, "## "+heading)
+	if sectionStart == -1 {
+		t.Fatalf("expected markdown heading %q", heading)
+	}
+
+	section := content[sectionStart:]
+	nextHeading := strings.Index(section[len("## "+heading):], "\n## ")
+	if nextHeading == -1 {
+		return section
+	}
+	return section[:len("## "+heading)+nextHeading]
+}
+
+func markdownTableRows(t *testing.T, section string) []string {
+	t.Helper()
+
+	var rows []string
+	for _, line := range strings.Split(section, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "|") || !strings.HasSuffix(trimmed, "|") {
+			continue
+		}
+		if isMarkdownTableSeparator(trimmed) {
+			continue
+		}
+		rows = append(rows, trimmed)
+	}
+
+	if len(rows) == 0 {
+		t.Fatal("expected markdown section to contain a table")
+	}
+	return rows
+}
+
+func isMarkdownTableSeparator(row string) bool {
+	for _, cell := range markdownTableCells(row) {
+		if strings.Trim(cell, "-:") != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func requireMarkdownTableRow(t *testing.T, rows []string, firstCell string) string {
+	t.Helper()
+
+	for _, row := range rows {
+		cells := markdownTableCells(row)
+		if len(cells) == 0 {
+			continue
+		}
+		if cells[0] == firstCell {
+			return strings.Join(cells, " | ")
+		}
+	}
+
+	t.Fatalf("expected markdown table row with first cell %q", firstCell)
+	return ""
+}
+
+func markdownTableCells(row string) []string {
+	trimmed := strings.Trim(row, "|")
+	parts := strings.Split(trimmed, "|")
+	for i, part := range parts {
+		parts[i] = strings.TrimSpace(part)
+	}
+	return parts
+}
+
+func requireAllTerms(t *testing.T, content string, terms ...string) {
+	t.Helper()
+
+	for _, term := range terms {
+		if !strings.Contains(content, term) {
+			t.Fatalf("expected content to contain %q in %q", term, content)
+		}
+	}
+}
+
 func readEmbeddedSkillAsset(t *testing.T, path string) string {
 	t.Helper()
 
@@ -936,6 +1231,17 @@ func readLocalOrEmbeddedAsset(t *testing.T, path string) string {
 
 	repoRoot := repositoryRoot(t)
 	content, err := os.ReadFile(repoRoot + "/" + path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q): %v", path, err)
+	}
+
+	return string(content)
+}
+
+func readWorkspaceAsset(t *testing.T, path string) string {
+	t.Helper()
+
+	content, err := os.ReadFile(filepath.Join(repositoryRoot(t), "..", filepath.FromSlash(path)))
 	if err != nil {
 		t.Fatalf("ReadFile(%q): %v", path, err)
 	}

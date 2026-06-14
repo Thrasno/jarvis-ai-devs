@@ -20,8 +20,8 @@ type InstallResult struct {
 // sub-FS already rooted at the skills directory.
 // Install is idempotent: byte-equivalent files are left untouched, changed files
 // are atomically replaced without following destination symlinks.
-// Core skills (sdd-workflow, hive, and the active SDD runtime helpers) are
-// always included regardless of selected.
+// Core skills (hive and the active SDD runtime helpers) are always included
+// regardless of selected.
 func InstallSelected(fsys fs.FS, agentSkillsDir string, selected []string) error {
 	_, err := InstallSelectedWithResult(fsys, agentSkillsDir, selected)
 	return err

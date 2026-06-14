@@ -179,11 +179,11 @@ func TestSkillsForStack(t *testing.T) {
 		stack Stack
 		want  []string
 	}{
-		{StackGo, []string{"sdd-workflow", "hive", "go-testing"}},
-		{StackLaravel, []string{"sdd-workflow", "hive", "laravel-architecture", "phpunit-testing"}},
-		{StackZoho, []string{"sdd-workflow", "hive", "zoho-deluge"}},
-		{StackReact, []string{"sdd-workflow", "hive"}},
-		{StackUnknown, []string{"sdd-workflow", "hive"}},
+		{StackGo, []string{"hive", "go-testing"}},
+		{StackLaravel, []string{"hive", "laravel-architecture", "phpunit-testing"}},
+		{StackZoho, []string{"hive", "zoho-deluge"}},
+		{StackReact, []string{"hive"}},
+		{StackUnknown, []string{"hive"}},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.stack), func(t *testing.T) {

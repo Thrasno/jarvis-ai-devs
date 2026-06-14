@@ -66,6 +66,29 @@ func TestRegistry_ListSkillsOmitsRetiredSDDQA(t *testing.T) {
 	}
 }
 
+func TestRegistry_ListSkillsOmitsRetiredSDDWorkflow(t *testing.T) {
+	skills, err := ListSkills(jarvis.SkillsFS)
+	if err != nil {
+		t.Fatalf("ListSkills: %v", err)
+	}
+
+	for _, s := range skills {
+		if s.ID == "sdd-workflow" {
+			t.Fatal("expected retired sdd-workflow skill to be absent from embedded registry")
+		}
+	}
+
+	if _, exists := coreSkillIDs["sdd-workflow"]; exists {
+		t.Fatal("expected retired sdd-workflow skill to be removed from core skills")
+	}
+	if _, exists := skillMeta["sdd-workflow"]; exists {
+		t.Fatal("expected retired sdd-workflow skill to be removed from registry metadata")
+	}
+	if _, exists := compactRuleMeta["sdd-workflow"]; exists {
+		t.Fatal("expected retired sdd-workflow skill to be removed from compact rules")
+	}
+}
+
 // TestRegistry_SupportingFilesSkipped verifies that non-SKILL.md files (e.g.
 // strict-tdd.md) do not produce registry entries.
 func TestRegistry_SupportingFilesSkipped(t *testing.T) {
@@ -123,7 +146,7 @@ func TestRegistry_SharedNotRegistered(t *testing.T) {
 func TestRegistry_SkillMetaCount(t *testing.T) {
 	expectedSkills := []string{
 		// SDD/Hive
-		"sdd-workflow", "hive", "sdd-explore", "sdd-propose", "sdd-spec",
+		"hive", "sdd-explore", "sdd-propose", "sdd-spec",
 		"sdd-design", "sdd-tasks", "sdd-apply", "sdd-verify",
 		"sdd-archive", "sdd-init",
 		// Complementary upstream workflow helpers
@@ -281,7 +304,11 @@ func TestRegistryRows_WorkflowSkillsExposeRegistryMetadata(t *testing.T) {
 		}
 	}
 
-	for _, id := range []string{"sdd-workflow", "hive", "sdd-init", "sdd-apply", "sdd-verify", "sdd-archive"} {
+	if _, exists := byID["sdd-workflow"]; exists {
+		t.Fatal("expected retired sdd-workflow to be absent from registry rows")
+	}
+
+	for _, id := range []string{"hive", "sdd-init", "sdd-apply", "sdd-verify", "sdd-archive"} {
 		row, exists := byID[id]
 		if !exists {
 			t.Fatalf("expected core skill %q to be registry-ready", id)
