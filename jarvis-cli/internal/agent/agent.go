@@ -84,6 +84,23 @@ type Agent interface {
 	InstallSessionHooks(hooksFS fs.FS) error
 }
 
+// RegistryAutomationInstaller is implemented by agents with a supported hook or
+// plugin surface for non-fatal project skill registry refresh automation.
+type RegistryAutomationInstaller interface {
+	InstallRegistryAutomation(hooksFS fs.FS) error
+}
+
+// InstallRegistryAutomationIfSupported installs project skill registry refresh
+// automation only for agents with an explicitly supported hook/plugin surface.
+// Unsupported agents are left untouched.
+func InstallRegistryAutomationIfSupported(a Agent, hooksFS fs.FS) (bool, error) {
+	installer, ok := a.(RegistryAutomationInstaller)
+	if !ok {
+		return false, nil
+	}
+	return true, installer.InstallRegistryAutomation(hooksFS)
+}
+
 // Detect returns all agents detected as installed on the current system.
 // fsys must be an fs.FS containing the template files (e.g. root-package TemplatesFS).
 // It checks for ~/.claude (ClaudeAgent) and ~/.config/opencode or opencode binary

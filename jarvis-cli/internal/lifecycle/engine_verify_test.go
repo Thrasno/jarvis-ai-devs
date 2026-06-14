@@ -2,11 +2,14 @@ package lifecycle
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/project"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 )
 
@@ -317,6 +320,126 @@ func TestEngineVerify_NonCriticalDriftReturnsWarnWithActionableDiagnostics(t *te
 	}
 }
 
+func TestEngineDoctor_ReportsProjectRegistryQualityWarnings(t *testing.T) {
+	projectRoot := t.TempDir()
+	registryPath := filepath.Join(projectRoot, project.CanonicalRegistryPath)
+	skillPath := filepath.Join(projectRoot, project.ProjectSkillsDir, "go-testing", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatalf("create skill dir: %v", err)
+	}
+	if err := os.WriteFile(registryPath, []byte("# Skill Registry\n\n"+project.RegistryWarningsHeader+"\n- skipped invalid skill\n"), 0o644); err != nil {
+		t.Fatalf("write registry: %v", err)
+	}
+	if err := os.WriteFile(skillPath, []byte("# Go Testing\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(skillPath, future, future); err != nil {
+		t.Fatalf("touch skill: %v", err)
+	}
+
+	adapter := &fakeProviderAdapter{
+		name: "claude",
+		observed: ObservedProviderState{Artifacts: map[string]sddruntime.ObservedArtifact{
+			"instructions": {Exists: true, MarkersValid: true},
+			"orchestrator": {Exists: true},
+			"skills":       {Exists: true},
+		}},
+	}
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"claude": adapter}, HomeDir: t.TempDir(), ProjectRoot: projectRoot})
+
+	plan, err := engine.Doctor("claude")
+	if err != nil {
+		t.Fatalf("Doctor returned error: %v", err)
+	}
+	if plan.Status != sddruntime.StatusWarn {
+		t.Fatalf("doctor status = %q, want warn", plan.Status)
+	}
+	for _, key := range []string{"registry.quality.stale", "registry.quality.warnings"} {
+		step := findStep(plan.Steps, key)
+		if step == nil {
+			t.Fatalf("expected doctor step for %s in %#v", key, plan.Steps)
+		}
+		if step.SafeToAutoApply || step.ReasonCode != "registry_quality_warning" {
+			t.Fatalf("registry quality step should be manual warning, got %+v", *step)
+		}
+		if !strings.Contains(step.NextAction, "jarvis skill-registry refresh") {
+			t.Fatalf("registry quality step lacks refresh guidance: %+v", *step)
+		}
+	}
+}
+
+func TestEngineVerify_WarnsWhenCanonicalProjectRegistryMissing(t *testing.T) {
+	projectRoot := t.TempDir()
+	adapter := &fakeProviderAdapter{
+		name: "claude",
+		observed: ObservedProviderState{Artifacts: map[string]sddruntime.ObservedArtifact{
+			"instructions": {Exists: true, MarkersValid: true},
+			"orchestrator": {Exists: true},
+			"skills":       {Exists: true},
+		}},
+	}
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"claude": adapter}, HomeDir: t.TempDir(), ProjectRoot: projectRoot})
+
+	result, err := engine.Verify("claude")
+	if err != nil {
+		t.Fatalf("Verify returned error: %v", err)
+	}
+	if result.Status != sddruntime.StatusWarn {
+		t.Fatalf("verify status = %q, want warn", result.Status)
+	}
+	check := findCheck(result.Report.Checks, "registry.quality.missing")
+	if check == nil {
+		t.Fatal("expected registry.quality.missing check")
+	}
+	if check.Status != sddruntime.StatusWarn || !strings.Contains(check.Message, "jarvis skill-registry refresh") {
+		t.Fatalf("unexpected missing registry check: %+v", *check)
+	}
+}
+
+func TestEngineVerifyAndDoctor_UseGitWorktreeRootForRegistryQualityFromNestedCWD(t *testing.T) {
+	projectRoot := t.TempDir()
+	initGitWorktree(t, projectRoot)
+
+	nestedCWD := filepath.Join(projectRoot, "cmd", "jarvis")
+	if err := os.MkdirAll(nestedCWD, 0o755); err != nil {
+		t.Fatalf("create nested cwd: %v", err)
+	}
+	registryPath := filepath.Join(projectRoot, project.CanonicalRegistryPath)
+	if err := os.MkdirAll(filepath.Dir(registryPath), 0o755); err != nil {
+		t.Fatalf("create registry dir: %v", err)
+	}
+	if err := os.WriteFile(registryPath, []byte("# Skill Registry\n\n"), 0o644); err != nil {
+		t.Fatalf("write registry: %v", err)
+	}
+
+	adapter := &fakeProviderAdapter{
+		name: "claude",
+		observed: ObservedProviderState{Artifacts: map[string]sddruntime.ObservedArtifact{
+			"instructions": {Exists: true, MarkersValid: true},
+			"orchestrator": {Exists: true},
+			"skills":       {Exists: true},
+		}},
+	}
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"claude": adapter}, HomeDir: t.TempDir(), ProjectRoot: nestedCWD})
+
+	result, err := engine.Verify("claude")
+	if err != nil {
+		t.Fatalf("Verify returned error: %v", err)
+	}
+	if check := findCheck(result.Report.Checks, "registry.quality.missing"); check != nil {
+		t.Fatalf("verify reported false missing registry from nested cwd: %+v", *check)
+	}
+
+	plan, err := engine.Doctor("claude")
+	if err != nil {
+		t.Fatalf("Doctor returned error: %v", err)
+	}
+	if step := findStep(plan.Steps, "registry.quality.missing"); step != nil {
+		t.Fatalf("doctor reported false missing registry from nested cwd: %+v", *step)
+	}
+}
+
 func TestEngineVerify_InvalidRuntimeStoreModeEnvReturnsError(t *testing.T) {
 	t.Setenv("JARVIS_SDD_STORE_MODE", "memory")
 
@@ -364,4 +487,25 @@ func findCheck(checks []sddruntime.CheckResult, key string) *sddruntime.CheckRes
 		}
 	}
 	return nil
+}
+
+func findStep(steps []DoctorStep, key string) *DoctorStep {
+	for i := range steps {
+		if steps[i].CheckKey == key {
+			return &steps[i]
+		}
+	}
+	return nil
+}
+
+func initGitWorktree(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	cmd := exec.Command("git", "init")
+	cmd.Dir = dir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v\n%s", err, string(output))
+	}
 }

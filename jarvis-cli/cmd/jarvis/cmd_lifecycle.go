@@ -2,11 +2,13 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/lifecycle"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/spf13/cobra"
 )
 
@@ -48,7 +50,14 @@ func initLifecycleCommands() {
 
 func runVerify(cmd *cobra.Command, _ []string) error {
 	opts := mustLifecycleOpts(cmd)
-	return runPerProvider(cmd, opts.provider, func(engine *lifecycle.Engine, provider string) error { _, err := engine.Verify(provider); return err })
+	return runPerProvider(cmd, opts.provider, func(engine *lifecycle.Engine, provider string) error {
+		result, err := engine.Verify(provider)
+		if err != nil {
+			return err
+		}
+		printVerifyResult("verify: runtime integrity", result)
+		return nil
+	})
 }
 func runDoctor(cmd *cobra.Command, _ []string) error {
 	opts := mustLifecycleOpts(cmd)
@@ -117,6 +126,27 @@ func printDoctorPlan(header string, plan lifecycle.DoctorPlan) {
 			step.SafeToAutoApply,
 			step.BackupNeeded,
 			step.NextAction,
+		)
+	}
+}
+
+func printVerifyResult(header string, result lifecycle.VerifyResult) {
+	if header != "" {
+		fmt.Println(header)
+	}
+	fmt.Printf("provider=%s status=%s contract=%s checks=%d\n", result.Report.Agent, result.Status, result.Report.ContractVersion, len(result.Report.Checks))
+	for i, check := range result.Report.Checks {
+		if check.Status == sddruntime.StatusPass {
+			continue
+		}
+		fmt.Printf("check=%d check_key=%s status=%s class=%s expected=%s observed=%s message=%s\n",
+			i+1,
+			check.Key,
+			check.Status,
+			check.DriftClass,
+			check.Expected,
+			check.Observed,
+			check.Message,
 		)
 	}
 }
@@ -220,5 +250,6 @@ func newLifecycleEngine() *lifecycle.Engine {
 	for _, a := range agent.Detect(jarvis.TemplatesFS) {
 		adapters[a.Name()] = agent.NewLifecycleAdapter(a)
 	}
-	return lifecycle.NewEngine(lifecycle.EngineDeps{Adapters: adapters})
+	cwd, _ := os.Getwd()
+	return lifecycle.NewEngine(lifecycle.EngineDeps{Adapters: adapters, ProjectRoot: cwd})
 }

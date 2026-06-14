@@ -1186,11 +1186,13 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			PreviousPresetSource: previousSource,
 		}, skillsSubFS, selectedIDs, statuslineConfirm)
 		var configuredAgents []string
+		var automationWarnings []string
 		for _, res := range results {
 			if res.Err != nil {
 				return agentProgressMsg{line: fmt.Sprintf("[%s] Configuration FAILED: %v", res.AgentName, res.Err), done: true, failed: true}
 			}
 			configuredAgents = append(configuredAgents, res.AgentName)
+			automationWarnings = append(automationWarnings, res.Warnings...)
 		}
 
 		if m.Scope == config.ScopeLocalOnly {
@@ -1255,8 +1257,9 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		if len(configuredAgents) == 0 {
 			summary = "No agents detected. Install Claude Code or OpenCode and re-run jarvis."
 		}
-		if len(registryWarnings) > 0 {
-			summary += "\n" + strings.Join(registryWarnings, "\n")
+		allWarnings := append(automationWarnings, registryWarnings...)
+		if len(allWarnings) > 0 {
+			summary += "\n" + strings.Join(allWarnings, "\n")
 		}
 		return agentProgressMsg{line: summary, done: true}
 	}

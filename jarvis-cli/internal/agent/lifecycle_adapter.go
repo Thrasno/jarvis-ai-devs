@@ -33,6 +33,7 @@ func (a *lifecycleAgentAdapter) Observe() (lifecycle.ObservedProviderState, erro
 		Artifacts:       observed.Artifacts,
 		NonOwnedChanges: observed.NonOwnedChanges,
 		UnknownChanges:  observed.UnknownChanges,
+		RegistryQuality: observed.RegistryQuality,
 	}, nil
 }
 

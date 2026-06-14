@@ -19,6 +19,7 @@ import (
 type AgentApplyResult struct {
 	AgentName string
 	State     config.AgentState
+	Warnings  []string
 	Err       error
 }
 
@@ -56,48 +57,52 @@ func configureWizardAgent(
 	skillsSubFS fs.FS,
 	selectedIDs []string,
 	statuslineConfirm func() bool,
-) error {
+) ([]string, error) {
 	if err := a.MergeConfig(hiveEntry); err != nil {
-		return fmt.Errorf("hive MCP config: %w", err)
+		return nil, fmt.Errorf("hive MCP config: %w", err)
 	}
 	if err := a.MergeConfig(context7Entry); err != nil {
-		return fmt.Errorf("context7 MCP config: %w", err)
+		return nil, fmt.Errorf("context7 MCP config: %w", err)
 	}
 	if generatedAgent, ok := a.(generatedConfigAgent); ok {
 		if err := generatedAgent.MergeGeneratedConfig(cfg); err != nil {
-			return fmt.Errorf("generated config guardrails: %w", err)
+			return nil, fmt.Errorf("generated config guardrails: %w", err)
 		}
 	}
 	if skillInstaller, ok := a.(configAwareSkillInstaller); ok {
 		if err := skillInstaller.InstallSkillsWithConfig(skillsSubFS, selectedIDs, cfg); err != nil {
-			return fmt.Errorf("install skills: %w", err)
+			return nil, fmt.Errorf("install skills: %w", err)
 		}
 	} else if err := a.InstallSkills(skillsSubFS, selectedIDs); err != nil {
-		return fmt.Errorf("install skills: %w", err)
+		return nil, fmt.Errorf("install skills: %w", err)
 	}
 	orchestratorTemplate, err := fs.ReadFile(jarvis.OrchestratorFS, "embed/orchestrator/sdd-orchestrator.md")
 	if err != nil {
-		return fmt.Errorf("read orchestrator template: %w", err)
+		return nil, fmt.Errorf("read orchestrator template: %w", err)
 	}
 	renderedOrchestrator, err := sddruntime.RenderOrchestrator(a.Name(), cfg, string(orchestratorTemplate))
 	if err != nil {
-		return fmt.Errorf("render orchestrator: %w", err)
+		return nil, fmt.Errorf("render orchestrator: %w", err)
 	}
 	if err := a.InstallOrchestrator([]byte(renderedOrchestrator)); err != nil {
-		return fmt.Errorf("install orchestrator: %w", err)
+		return nil, fmt.Errorf("install orchestrator: %w", err)
 	}
 	if err := a.InstallPromptHook(jarvis.HooksFS); err != nil {
-		return fmt.Errorf("install prompt hook: %w", err)
+		return nil, fmt.Errorf("install prompt hook: %w", err)
 	}
 	if err := a.InstallSessionHooks(jarvis.HooksFS); err != nil {
-		return fmt.Errorf("install session hooks: %w", err)
+		return nil, fmt.Errorf("install session hooks: %w", err)
+	}
+	warnings := []string(nil)
+	if _, err := agent.InstallRegistryAutomationIfSupported(a, jarvis.HooksFS); err != nil {
+		warnings = append(warnings, fmt.Sprintf("Project skill registry warning: automation not installed for %s: %v", a.Name(), err))
 	}
 	if slAgent, ok := a.(statuslineInstaller); ok {
 		if err := slAgent.InstallStatusline(jarvis.HooksFS, statuslineConfirm); err != nil {
-			return fmt.Errorf("install statusline: %w", err)
+			return warnings, fmt.Errorf("install statusline: %w", err)
 		}
 	}
-	return nil
+	return warnings, nil
 }
 
 // configureWizardAgents applies setup to all detected agents and returns
@@ -123,7 +128,9 @@ func configureWizardAgents(
 				ConfigPath: a.ConfigDir(),
 			},
 		}
-		if err := configureWizardAgent(a, cfg, hiveEntry, context7Entry, skillsSubFS, selectedIDs, statuslineConfirm); err != nil {
+		warnings, err := configureWizardAgent(a, cfg, hiveEntry, context7Entry, skillsSubFS, selectedIDs, statuslineConfirm)
+		res.Warnings = append(res.Warnings, warnings...)
+		if err != nil {
 			res.Err = err
 			results = append(results, res)
 			return results

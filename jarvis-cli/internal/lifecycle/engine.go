@@ -10,14 +10,16 @@ import (
 )
 
 type EngineDeps struct {
-	Adapters map[string]ProviderAdapter
-	HomeDir  string
+	Adapters    map[string]ProviderAdapter
+	HomeDir     string
+	ProjectRoot string
 }
 
 type Engine struct {
-	adapters map[string]ProviderAdapter
-	ledger   LedgerStore
-	backups  BackupStore
+	adapters    map[string]ProviderAdapter
+	ledger      LedgerStore
+	backups     BackupStore
+	projectRoot string
 }
 
 func NewEngine(deps EngineDeps) *Engine {
@@ -26,7 +28,7 @@ func NewEngine(deps EngineDeps) *Engine {
 			deps.HomeDir = home
 		}
 	}
-	return &Engine{adapters: deps.Adapters, ledger: NewLedgerStore(deps.HomeDir), backups: NewBackupStore(deps.HomeDir)}
+	return &Engine{adapters: deps.Adapters, ledger: NewLedgerStore(deps.HomeDir), backups: NewBackupStore(deps.HomeDir), projectRoot: deps.ProjectRoot}
 }
 
 func (e *Engine) Verify(provider string) (VerifyResult, error) {
@@ -64,6 +66,10 @@ func (e *Engine) verify(provider string, bootstrapLedger bool) (VerifyResult, er
 	if err != nil {
 		return VerifyResult{}, err
 	}
+	registryQuality := observed.RegistryQuality
+	if e.projectRoot != "" {
+		registryQuality = ObserveProjectRegistryQuality(e.projectRoot)
+	}
 	storeContract, err := sddruntime.ResolveRuntimeStoreContract(sddruntime.StoreModeHive)
 	if err != nil {
 		return VerifyResult{}, err
@@ -85,6 +91,7 @@ func (e *Engine) verify(provider string, bootstrapLedger bool) (VerifyResult, er
 		Artifacts:           observed.Artifacts,
 		NonOwnedChanges:     observed.NonOwnedChanges,
 		UnknownChanges:      observed.UnknownChanges,
+		RegistryQuality:     registryQuality,
 		OpenCode:            observed.OpenCode,
 	})
 	return VerifyResult{Status: report.Status, Report: report}, nil
@@ -311,6 +318,11 @@ func doctorStepFromCheck(check sddruntime.CheckResult) DoctorStep {
 		Class:       "manual-required",
 		SafetyClass: "manual-required",
 		NextAction:  "review diagnosis and repair manually before rerunning doctor",
+	}
+	if strings.HasPrefix(check.Key, "registry.quality.") {
+		step.ReasonCode = "registry_quality_warning"
+		step.NextAction = "run jarvis skill-registry refresh from the project worktree and inspect any remaining registry warnings"
+		return step
 	}
 
 	switch check.DriftClass {
