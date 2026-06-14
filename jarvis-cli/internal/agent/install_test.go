@@ -347,6 +347,75 @@ func TestInstallSkillsFromEmbeddedSDDApply_PreservesJarvisStatusAndWorkspaceGuar
 	}
 }
 
+func TestInstallSkillsFromEmbeddedSDDArchive_PreservesJarvisArchiveSafetyGuards(t *testing.T) {
+	skillsFS, err := fs.Sub(jarvis.SkillsFS, "embed/skills")
+	if err != nil {
+		t.Fatalf("open embedded skills FS: %v", err)
+	}
+
+	dest := t.TempDir()
+	if err := installSkillsFromFS(dest, skillsFS, []string{"sdd-archive"}); err != nil {
+		t.Fatalf("installSkillsFromFS: %v", err)
+	}
+
+	installed, err := os.ReadFile(filepath.Join(dest, "sdd-archive", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read installed skill: %v", err)
+	}
+	content := string(installed)
+
+	requiredSnippets := []string{
+		"Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.40.2",
+		"jarvis sdd status <change> --json",
+		"schema: `jarvis.sdd-status`",
+		"blockedReasons",
+		"taskProgress",
+		"applyState",
+		"artifacts[\"verify-report\"]",
+		"artifactPaths[\"verify-report\"]",
+		"contextFiles[\"verify-report\"]",
+		"verify-report artifact content",
+		"actionContext",
+		"phaseInstructions",
+		"If verify-report evidence is missing, failing, stale, or does not cover the current artifacts, STOP",
+		"Unresolved CRITICAL verification findings always block archive",
+		"Any incomplete task checkbox or `taskProgress` entry blocks archive",
+		"Stale checkboxes are not archive-ready by themselves",
+		"When prior `apply-progress = partial` exists, STOP until current tasks, apply-progress, and verify-report have been reconciled and re-verified",
+		"Partial, missing, or stale artifacts block archive until they are reconciled and re-verified",
+		"For `none` mode, return a closure summary only; do not persist an archive report",
+		"Generated artifacts are output, never sources of truth",
+	}
+	for _, want := range requiredSnippets {
+		if !strings.Contains(content, want) {
+			t.Fatalf("installed sdd-archive missing %q:\n%s", want, content)
+		}
+	}
+
+	forbiddenSnippets := []string{
+		"mcp__engram__",
+		"Artifact store mode (`engram | openspec | hybrid | none`)",
+		"Engram archive report",
+		"verifyReport",
+		"intentional archive override",
+		"intentional-with-warnings",
+		"non-critical partial artifact archive",
+		"non-critical partial artifacts",
+		"explicit approves a non-critical partial",
+		"explicitly approves a non-critical partial",
+		"Exceptional stale-checkbox reconciliation is allowed",
+		"archive-time reconciliation",
+		"~/.claude/skills",
+		"~/.config/opencode/skills",
+		"section:model",
+	}
+	for _, unwanted := range forbiddenSnippets {
+		if strings.Contains(content, unwanted) {
+			t.Fatalf("installed sdd-archive must not contain %q:\n%s", unwanted, content)
+		}
+	}
+}
+
 type brokenReadFS struct{}
 
 func (brokenReadFS) Open(name string) (fs.File, error) {
