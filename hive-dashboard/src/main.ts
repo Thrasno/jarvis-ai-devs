@@ -142,12 +142,13 @@ export function renderApp(
   actions: AppActions,
   dashboard: DashboardState = { status: 'loading' },
   routePath = window.location.pathname,
-  drawerState: DrawerState = { drawerOpen: false, readIds: new Set() }
+  drawerState: DrawerState = { drawerOpen: false, readIds: new Set() },
+  drawerJustOpened = false
 ): void {
   container.replaceChildren()
   state.status === 'anonymous'
     ? renderLogin(container, state, actions)
-    : renderShell(container, state, actions, dashboard, routePath, drawerState)
+    : renderShell(container, state, actions, dashboard, routePath, drawerState, drawerJustOpened)
 }
 
 function renderLogin(
@@ -182,7 +183,8 @@ function renderShell(
   actions: AppActions,
   dashboard: DashboardState,
   routePath: string,
-  drawerState: DrawerState
+  drawerState: DrawerState,
+  drawerJustOpened = false
 ): void {
   const activeScreen = screenFromPath(routePath)
   const userLevel = state.user.level as UserLevel
@@ -265,7 +267,7 @@ function renderShell(
   const drawerContainer = document.createElement('div')
   renderNotificationDrawer(drawerContainer, {
     notifications: dashboardFixtures.shared.notifications,
-    summary: notificationSummary,
+    summary: { ...notificationSummary, unread: drawerState.summaryUnread ?? notificationSummary.unread },
     readIds: drawerState.readIds,
     onMarkAllRead: () => actions.onMarkAllRead?.(),
     onClose: () => actions.onToggleDrawer?.()
@@ -273,8 +275,6 @@ function renderShell(
   const drawerEl = drawerContainer.querySelector('[data-dashboard-primitive="drawer"]')
   if (drawerEl && drawerState.drawerOpen) {
     drawerEl.setAttribute('data-open', '')
-    const closeBtn = drawerEl.querySelector<HTMLElement>('[data-drawer-close]')
-    closeBtn?.focus()
   }
   layout.append(drawerContainer)
 
@@ -284,6 +284,12 @@ function renderShell(
   shell.dataset.dashboardPrimitive = 'page'
   shell.append(layout)
   container.append(shell)
+
+  // Focus the close button only when the drawer was just opened (not on data-load re-renders).
+  // Called after container.append(shell) so the element is attached to the document.
+  if (drawerJustOpened && drawerEl) {
+    drawerEl.querySelector<HTMLElement>('[data-drawer-close]')?.focus()
+  }
 }
 
 function renderAuthenticatedView(screen: DashboardScreenKey, state: DashboardState): HTMLElement {
@@ -408,8 +414,10 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
   let readIds: Set<string> = new Set()
   let summaryUnread: number = dashboardFixtures.shared.notificationSummary.unread
 
+  let drawerJustOpened = false
+
   const rerender = (state: AuthState) =>
-    renderApp(root, state, actions, dashboard, window.location.pathname, { drawerOpen, readIds, summaryUnread })
+    renderApp(root, state, actions, dashboard, window.location.pathname, { drawerOpen, readIds, summaryUnread }, drawerJustOpened)
 
   const actions: AppActions = {
     async onLogin(email, password) {
@@ -438,7 +446,9 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     onToggleDrawer() {
       const wasOpen = drawerOpen
       drawerOpen = !drawerOpen
+      drawerJustOpened = !wasOpen
       rerender(session.getState())
+      drawerJustOpened = false
       if (wasOpen) {
         root.querySelector<HTMLElement>('[data-bell]')?.focus()
       }
@@ -448,6 +458,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
       summaryUnread = 0
       drawerOpen = false
       rerender(session.getState())
+      root.querySelector<HTMLElement>('[data-bell]')?.focus()
     }
   }
 
