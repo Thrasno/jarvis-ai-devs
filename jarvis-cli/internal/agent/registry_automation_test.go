@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -134,8 +135,9 @@ func TestOpenCodeAgent_InstallRegistryAutomation_WritesSeparatePluginWithoutClob
 		t.Fatalf("read installed registry plugin: %v", err)
 	}
 	executable := currentJarvisExecutableForTest(t)
-	if !strings.Contains(string(pluginContent), executable) {
-		t.Fatalf("installed plugin should pin the current jarvis executable %q, got: %s", executable, pluginContent)
+	wantExecutable := executableReplacementForAsset("embed/hooks/opencode/skill-registry.ts", executable)
+	if !strings.Contains(string(pluginContent), wantExecutable) {
+		t.Fatalf("installed plugin should pin the JSON-quoted current jarvis executable %q, got: %s", wantExecutable, pluginContent)
 	}
 	if strings.Contains(string(pluginContent), `execFile("jarvis"`) || strings.Contains(string(pluginContent), "process.env[\"PATH\"]") {
 		t.Fatalf("installed plugin must not locate jarvis through PATH: %s", pluginContent)
@@ -159,11 +161,12 @@ func TestRenderRegistryAutomationEmbeddedAssetsConsumePlaceholders(t *testing.T)
 		{name: "opencode plugin", path: "embed/hooks/opencode/skill-registry.ts", wantTimeout: "timeout: 3000"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			executable := jarvisExecutablePathForRenderTest(t)
 			content, err := jarvis.HooksFS.ReadFile(tt.path)
 			if err != nil {
 				t.Fatalf("read embedded asset: %v", err)
 			}
-			rendered, err := renderRegistryAutomationAssetWithExecutable(tt.path, content, "/opt/jarvis/bin/jarvis")
+			rendered, err := renderRegistryAutomationAssetWithExecutable(tt.path, content, executable)
 			if err != nil {
 				t.Fatalf("render embedded asset: %v", err)
 			}
@@ -173,6 +176,10 @@ func TestRenderRegistryAutomationEmbeddedAssetsConsumePlaceholders(t *testing.T)
 			}
 			if !strings.Contains(text, tt.wantTimeout) {
 				t.Fatalf("rendered asset missing expected timeout %q: %s", tt.wantTimeout, text)
+			}
+			wantExecutable := executableReplacementForAsset(tt.path, executable)
+			if !strings.Contains(text, wantExecutable) {
+				t.Fatalf("rendered asset missing executable %q: %s", wantExecutable, text)
 			}
 		})
 	}
@@ -205,7 +212,7 @@ func TestRenderRegistryAutomationAssetRejectsMalformedPlaceholderContract(t *tes
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := renderRegistryAutomationAssetWithExecutable(tt.path, []byte(tt.content), "/usr/local/bin/jarvis")
+			_, err := renderRegistryAutomationAssetWithExecutable(tt.path, []byte(tt.content), jarvisExecutablePathForRenderTest(t))
 			if err == nil {
 				t.Fatal("expected malformed asset to return an error")
 			}
@@ -217,12 +224,13 @@ func TestRenderRegistryAutomationAssetRejectsMalformedPlaceholderContract(t *tes
 }
 
 func TestRenderRegistryAutomationAssetConsumesPlaceholdersAndUsesCentralTimeout(t *testing.T) {
+	executable := jarvisExecutablePathForRenderTest(t)
 	out, err := renderRegistryAutomationAssetWithExecutable(
 		"embed/hooks/opencode/skill-registry.ts",
 		[]byte(`const exe = {{JARVIS_EXECUTABLE}}
 const timeout = {{JARVIS_REFRESH_TIMEOUT_MILLIS}}
 `),
-		"/opt/jarvis/bin/jarvis",
+		executable,
 	)
 	if err != nil {
 		t.Fatalf("renderRegistryAutomationAssetWithExecutable: %v", err)
@@ -233,12 +241,22 @@ const timeout = {{JARVIS_REFRESH_TIMEOUT_MILLIS}}
 			t.Fatalf("rendered asset still contains placeholder %q: %s", forbidden, text)
 		}
 	}
-	if !strings.Contains(text, `"/opt/jarvis/bin/jarvis"`) {
+	wantExecutable := executableReplacementForAsset("embed/hooks/opencode/skill-registry.ts", executable)
+	if !strings.Contains(text, wantExecutable) {
 		t.Fatalf("rendered asset did not JSON-quote executable: %s", text)
 	}
 	if !strings.Contains(text, "3000") {
 		t.Fatalf("rendered asset did not use %dms timeout: %s", registryAutomationTimeoutMillis, text)
 	}
+}
+
+func jarvisExecutablePathForRenderTest(t *testing.T) string {
+	t.Helper()
+	name := "jarvis"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(t.TempDir(), "bin", name)
 }
 
 func currentJarvisExecutableForTest(t *testing.T) string {
