@@ -48,3 +48,171 @@ button, .dashboard-control { background: var(--dashboard-accent); border: 0; col
 button:disabled, .dashboard-control:disabled { cursor: not-allowed; opacity: .55; }
 header { margin-bottom: 1rem; }
 a { color: var(--dashboard-accent); }
+
+/* ─── Shell layout custom properties ─────────────────────────────────────── */
+:root {
+  --dashboard-sidebar-width: 210px;
+  --dashboard-drawer-width: 260px;
+}
+
+/* ─── Three-region app layout ─────────────────────────────────────────────── */
+.dashboard-app-layout {
+  display: grid;
+  grid-template-columns: var(--dashboard-sidebar-width) 1fr;
+  min-height: 100vh;
+  width: 100%;
+}
+
+/* ─── Sidebar ──────────────────────────────────────────────────────────────── */
+.dashboard-sidebar {
+  background: var(--dashboard-surface);
+  border-right: 1px solid var(--dashboard-border);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow-y: auto;
+  padding: calc(var(--dashboard-spacing) * 1.5) var(--dashboard-spacing);
+  position: sticky;
+  top: 0;
+  width: var(--dashboard-sidebar-width);
+}
+
+/* ─── Header band ──────────────────────────────────────────────────────────── */
+.dashboard-header {
+  align-items: center;
+  background: var(--dashboard-surface);
+  border-bottom: 1px solid var(--dashboard-border);
+  border-radius: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dashboard-spacing);
+  margin-bottom: 0;
+  padding: var(--dashboard-spacing) calc(var(--dashboard-spacing) * 1.5);
+}
+
+.dashboard-header .eyebrow { margin: 0; }
+.dashboard-header__title { font-size: 1rem; margin: 0; flex: 1; }
+.dashboard-header__search { flex: 0 1 14rem; }
+.dashboard-header__bell { flex-shrink: 0; }
+
+/* ─── Main area ────────────────────────────────────────────────────────────── */
+.dashboard-main-area {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.dashboard-content {
+  flex: 1;
+  padding: calc(var(--dashboard-spacing) * 2);
+}
+
+/* ─── Notification drawer (right overlay) ─────────────────────────────────── */
+.dashboard-drawer {
+  background: var(--dashboard-surface);
+  border-left: 1px solid var(--dashboard-border);
+  height: 100vh;
+  overflow-y: auto;
+  padding: calc(var(--dashboard-spacing) * 1.5);
+  position: fixed;
+  right: 0;
+  top: 0;
+  transform: translateX(100%);
+  transition: transform 0.22s ease;
+  width: var(--dashboard-drawer-width);
+  z-index: 200;
+}
+
+.dashboard-drawer[data-open] {
+  transform: translateX(0);
+}
+
+/* ─── Nav group and entry styles ──────────────────────────────────────────── */
+.dashboard-nav-group {
+  margin-bottom: calc(var(--dashboard-spacing) * 1.25);
+}
+
+.dashboard-nav-group__label {
+  margin: 0 0 .4rem;
+}
+
+.dashboard-nav-entry {
+  border-radius: calc(var(--dashboard-radius) - 10px);
+  color: var(--dashboard-text-muted);
+  display: block;
+  font-size: .88rem;
+  padding: .4rem .65rem;
+  text-decoration: none;
+  transition: background 0.12s, color 0.12s;
+}
+
+.dashboard-nav-entry:hover {
+  background: var(--dashboard-surface-raised);
+  color: var(--dashboard-text);
+}
+
+.dashboard-nav-entry--active {
+  background: var(--dashboard-surface-raised);
+  color: var(--dashboard-accent);
+  font-weight: 700;
+}
+
+.dashboard-sidebar__logout {
+  margin-top: auto;
+  width: 100%;
+}
+
+/* ─── ComingSoon component ────────────────────────────────────────────────── */
+.dashboard-coming-soon {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--dashboard-spacing) * 1.25);
+  justify-content: center;
+  min-height: 60vh;
+  text-align: center;
+}
+
+.dashboard-coming-soon__glyph {
+  animation: dashboard-float 3s ease-in-out infinite;
+  color: var(--dashboard-accent);
+  font-size: 3rem;
+  line-height: 1;
+}
+
+.dashboard-coming-soon__title {
+  color: var(--dashboard-text);
+  font-size: 1.5rem;
+  margin: 0;
+}
+
+.dashboard-coming-soon__message {
+  color: var(--dashboard-text-muted);
+  max-width: 32ch;
+  margin: 0;
+}
+
+@keyframes dashboard-float {
+  0%, 100% { transform: translateY(0) scale(1); opacity: 1; }
+  50%       { transform: translateY(-10px) scale(1.08); opacity: 0.8; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-coming-soon__glyph {
+    animation: none;
+  }
+}
+
+/* ─── Mobile breakpoint (≤768px): collapse to single-column ──────────────── */
+@media (max-width: 768px) {
+  .dashboard-app-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-sidebar {
+    height: auto;
+    overflow-y: visible;
+    position: static;
+    width: 100%;
+  }
+}
