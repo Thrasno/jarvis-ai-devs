@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { UserLevel } from '../components/Sidebar'
 import { renderSidebar } from '../components/Sidebar'
-import { dashboardNavigationGroups } from '../fixtures/hive-dashboard/shared'
+import { currentDashboardProfile, dashboardNavigationGroups } from '../fixtures/hive-dashboard/shared'
 
 const baseProps = {
   groups: dashboardNavigationGroups,
   currentPath: '/dashboard',
   userLevel: 'admin' as UserLevel,
+  profile: currentDashboardProfile,
   onNavigate: vi.fn(),
   onLogout: vi.fn()
 }
@@ -76,6 +77,55 @@ describe('Sidebar', () => {
     renderSidebar(container, { ...baseProps, onLogout })
 
     const logoutButton = container.querySelector('[data-sidebar-action="logout"]')
+    expect(logoutButton).not.toBeNull()
+    logoutButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(onLogout).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Sidebar profile block', () => {
+  it('shows initials avatar, email, and role badge for a member user', () => {
+    const container = document.createElement('div')
+    const profile = {
+      initials: 'A',
+      name: 'alice',
+      email: 'alice@example.com',
+      role: 'member' as const,
+      logoutLabel: 'Sign out'
+    }
+
+    renderSidebar(container, { ...baseProps, userLevel: 'member', profile, onLogout: vi.fn() })
+
+    const profileBlock = container.querySelector('[data-sidebar-profile]')
+    expect(profileBlock).not.toBeNull()
+    expect(profileBlock?.textContent).toContain('A')
+    expect(profileBlock?.textContent).toContain('alice@example.com')
+    expect(profileBlock?.textContent).toContain('member')
+  })
+
+  it('shows display name when provided instead of raw email prefix', () => {
+    const container = document.createElement('div')
+    const profile = {
+      initials: 'AS',
+      name: 'Alice Smith',
+      email: 'alice@example.com',
+      role: 'member' as const,
+      logoutLabel: 'Sign out'
+    }
+
+    renderSidebar(container, { ...baseProps, userLevel: 'member', profile, onLogout: vi.fn() })
+
+    const profileBlock = container.querySelector('[data-sidebar-profile]')
+    expect(profileBlock?.textContent).toContain('Alice Smith')
+  })
+
+  it('logout button in profile block triggers onLogout exactly once', () => {
+    const container = document.createElement('div')
+    const onLogout = vi.fn()
+
+    renderSidebar(container, { ...baseProps, profile: currentDashboardProfile, onLogout })
+
+    const logoutButton = container.querySelector('[data-sidebar-profile] button')
     expect(logoutButton).not.toBeNull()
     logoutButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(onLogout).toHaveBeenCalledTimes(1)

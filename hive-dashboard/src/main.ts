@@ -187,6 +187,7 @@ function renderShell(
     groups: dashboardFixtures.shared.navigationGroups,
     currentPath: ROUTES[activeScreen].path,
     userLevel,
+    profile: dashboardFixtures.shared.profile,
     onNavigate: (path) => actions.onNavigate?.(path),
     onLogout: actions.onLogout
   })
