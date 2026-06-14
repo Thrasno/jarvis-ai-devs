@@ -105,8 +105,8 @@ func TestCockpitInstallReconfigureEntersWizard(t *testing.T) {
 	if m2.Step != StepScope {
 		t.Fatalf("expected wizard to start at StepScope, got %v", m2.Step)
 	}
-	if !strings.Contains(m2.View(), "Jarvis-Dev Setup") {
-		t.Fatalf("expected wizard view after install action, got:\n%s", m2.View())
+	if !strings.Contains(m2.View(), "Scope") {
+		t.Fatalf("expected wizard scope view after install action, got:\n%s", m2.View())
 	}
 }
 
@@ -1961,8 +1961,11 @@ func TestViewReview_LocalOnlyShowsExactWarning(t *testing.T) {
 	}
 
 	view := viewReview(m)
-	if !strings.Contains(view, localOnlyReviewWarning) {
-		t.Fatalf("expected exact local-only warning in review, got:\n%s", view)
+	// The warning may be word-wrapped by the bordered panel renderer; check for a
+	// distinctive prefix that fits within a single panel line.
+	warningPrefix := "Se ha seleccionado modo local"
+	if !strings.Contains(view, warningPrefix) {
+		t.Fatalf("expected local-only warning (prefix %q) in review, got:\n%s", warningPrefix, view)
 	}
 }
 
@@ -2006,7 +2009,7 @@ func TestViewReview_BoundedPolishKeepsCheckpointLayout(t *testing.T) {
 			view := viewReview(m)
 
 			for _, mustContain := range []string{
-				"Jarvis-Dev Setup  [6/7]  Review & Apply",
+				"Setup › Review",
 				"Resumen de configuración",
 				"Scope:",
 				"Persona: fixture",
@@ -2014,17 +2017,23 @@ func TestViewReview_BoundedPolishKeepsCheckpointLayout(t *testing.T) {
 				"Back",
 				"Cancel",
 				"Apply",
-				"↑/↓ o j/k: navegar  Enter: confirmar",
+				"↑/↓",
+				"navegar",
+				"Enter",
+				"confirmar",
 			} {
 				if !strings.Contains(view, mustContain) {
 					t.Fatalf("expected review view to contain %q, got:\n%s", mustContain, view)
 				}
 			}
 
-			if tt.expectWarning && !strings.Contains(view, localOnlyReviewWarning) {
-				t.Fatalf("expected local-only warning in review view, got:\n%s", view)
+			// The warning may be word-wrapped by the bordered panel renderer; check for
+			// a distinctive prefix that fits within a single panel line.
+			warningPrefix := "Se ha seleccionado modo local"
+			if tt.expectWarning && !strings.Contains(view, warningPrefix) {
+				t.Fatalf("expected local-only warning prefix %q in review view, got:\n%s", warningPrefix, view)
 			}
-			if tt.unexpectedWarning && strings.Contains(view, localOnlyReviewWarning) {
+			if tt.unexpectedWarning && strings.Contains(view, warningPrefix) {
 				t.Fatalf("did not expect local-only warning for scope %q, got:\n%s", tt.scope, view)
 			}
 		})
