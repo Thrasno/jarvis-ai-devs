@@ -1,3 +1,4 @@
+// All tests in this package run under Ascii color profile; see testmain_test.go.
 package tui
 
 import (
@@ -105,8 +106,8 @@ func TestCockpitInstallReconfigureEntersWizard(t *testing.T) {
 	if m2.Step != StepScope {
 		t.Fatalf("expected wizard to start at StepScope, got %v", m2.Step)
 	}
-	if !strings.Contains(m2.View(), "Jarvis-Dev Setup") {
-		t.Fatalf("expected wizard view after install action, got:\n%s", m2.View())
+	if !strings.Contains(m2.View(), "Scope") {
+		t.Fatalf("expected wizard scope view after install action, got:\n%s", m2.View())
 	}
 }
 
@@ -161,7 +162,9 @@ func TestCockpitNavigationKeysMoveSelectionAndWrap(t *testing.T) {
 	if m.cockpitCursor != last {
 		t.Fatalf("expected up from first action to wrap to cursor %d, got %d", last, m.cockpitCursor)
 	}
-	if !strings.Contains(m.View(), "> Exit") {
+	// After Slice 3, selected item is highlighted via SelectedRow (no "> " prefix).
+	// Check the action label appears in the rendered view.
+	if !strings.Contains(m.View(), "Exit") {
 		t.Fatalf("expected wrapped selection to be visible on Exit, got:\n%s", m.View())
 	}
 
@@ -169,7 +172,7 @@ func TestCockpitNavigationKeysMoveSelectionAndWrap(t *testing.T) {
 	if m.cockpitCursor != 0 {
 		t.Fatalf("expected down from last action to wrap to cursor 0, got %d", m.cockpitCursor)
 	}
-	if !strings.Contains(m.View(), "> Install/Reconfigure") {
+	if !strings.Contains(m.View(), "Install/Reconfigure") {
 		t.Fatalf("expected wrapped selection to be visible on Install/Reconfigure, got:\n%s", m.View())
 	}
 
@@ -772,12 +775,13 @@ func TestViewPhaseModels_RendersPickerModes(t *testing.T) {
 		prepare func(*Model)
 		want    []string
 	}{
-		{name: "opencode provider", mode: phaseModelModeOpenCodeProvider, want: []string{"Select OpenCode provider", "OpenAI"}},
-		{name: "opencode model", mode: phaseModelModeOpenCodeModel, want: []string{"Select OpenCode model", "Search:", "plain", "reasoning"}},
+		// After Slice 3, picker headers are terminalui HeaderRow breadcrumbs (not "Select ...").
+		{name: "opencode provider", mode: phaseModelModeOpenCodeProvider, want: []string{"Phase Models", "Provider", "OpenAI"}},
+		{name: "opencode model", mode: phaseModelModeOpenCodeModel, want: []string{"Phase Models", "Model", "Search:", "plain", "reasoning"}},
 		{name: "opencode effort", mode: phaseModelModeOpenCodeEffort, prepare: func(m *Model) {
 			m.phaseModelPendingOpenCode = config.OpenCodeModelAssignment{ProviderID: "openai", ModelID: "reasoning"}
-		}, want: []string{"Select OpenCode effort", "minimal", "high"}},
-		{name: "claude model", mode: phaseModelModeClaudeModel, want: []string{"Select Claude model", "claude-haiku", "claude-sonnet"}},
+		}, want: []string{"Phase Models", "Effort", "minimal", "high"}},
+		{name: "claude model", mode: phaseModelModeClaudeModel, want: []string{"Phase Models", "Claude", "claude-haiku", "claude-sonnet"}},
 	}
 
 	for _, tt := range tests {
@@ -1961,8 +1965,11 @@ func TestViewReview_LocalOnlyShowsExactWarning(t *testing.T) {
 	}
 
 	view := viewReview(m)
-	if !strings.Contains(view, localOnlyReviewWarning) {
-		t.Fatalf("expected exact local-only warning in review, got:\n%s", view)
+	// The warning may be word-wrapped by the bordered panel renderer; check for a
+	// distinctive prefix that fits within a single panel line.
+	warningPrefix := "Se ha seleccionado modo local"
+	if !strings.Contains(view, warningPrefix) {
+		t.Fatalf("expected local-only warning (prefix %q) in review, got:\n%s", warningPrefix, view)
 	}
 }
 
@@ -2006,7 +2013,7 @@ func TestViewReview_BoundedPolishKeepsCheckpointLayout(t *testing.T) {
 			view := viewReview(m)
 
 			for _, mustContain := range []string{
-				"Jarvis-Dev Setup  [6/7]  Review & Apply",
+				"Setup › Review",
 				"Resumen de configuración",
 				"Scope:",
 				"Persona: fixture",
@@ -2014,17 +2021,23 @@ func TestViewReview_BoundedPolishKeepsCheckpointLayout(t *testing.T) {
 				"Back",
 				"Cancel",
 				"Apply",
-				"↑/↓ o j/k: navegar  Enter: confirmar",
+				"↑/↓",
+				"navegar",
+				"Enter",
+				"confirmar",
 			} {
 				if !strings.Contains(view, mustContain) {
 					t.Fatalf("expected review view to contain %q, got:\n%s", mustContain, view)
 				}
 			}
 
-			if tt.expectWarning && !strings.Contains(view, localOnlyReviewWarning) {
-				t.Fatalf("expected local-only warning in review view, got:\n%s", view)
+			// The warning may be word-wrapped by the bordered panel renderer; check for
+			// a distinctive prefix that fits within a single panel line.
+			warningPrefix := "Se ha seleccionado modo local"
+			if tt.expectWarning && !strings.Contains(view, warningPrefix) {
+				t.Fatalf("expected local-only warning prefix %q in review view, got:\n%s", warningPrefix, view)
 			}
-			if tt.unexpectedWarning && strings.Contains(view, localOnlyReviewWarning) {
+			if tt.unexpectedWarning && strings.Contains(view, warningPrefix) {
 				t.Fatalf("did not expect local-only warning for scope %q, got:\n%s", tt.scope, view)
 			}
 		})
@@ -2549,16 +2562,21 @@ func TestViewPersona_Branches(t *testing.T) {
 	t.Run("custom edit view shows form", func(t *testing.T) {
 		m := Model{Step: StepPersona, customEdit: true, customPresetName: "mi-persona", customDisplayName: "Mi Persona", CustomYAML: "name: mi-persona"}
 		v := viewPersona(m)
-		if !strings.Contains(v, "Custom Preset Creation") {
-			t.Fatalf("expected custom creation header, got:\n%s", v)
+		// After Slice 3, custom edit uses HeaderRow breadcrumb "Edit" and BorderedPanel.
+		if !strings.Contains(v, "Edit") {
+			t.Fatalf("expected custom edit HeaderRow breadcrumb containing 'Edit', got:\n%s", v)
+		}
+		if !strings.Contains(v, "mi-persona") {
+			t.Fatalf("expected custom edit view to show the preset name, got:\n%s", v)
 		}
 	})
 
 	t.Run("no presets branch shows fallback", func(t *testing.T) {
 		m := Model{Step: StepPersona, Presets: nil}
 		v := viewPersona(m)
-		if !strings.Contains(v, "No presets loaded") {
-			t.Fatalf("expected no presets warning, got:\n%s", v)
+		// After Slice 3, empty state is rendered as a BorderedPanel with "No personas" text.
+		if !strings.Contains(v, "No personas") && !strings.Contains(v, "No presets") {
+			t.Fatalf("expected no-presets fallback message, got:\n%s", v)
 		}
 	})
 }

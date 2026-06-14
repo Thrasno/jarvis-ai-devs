@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/terminalui"
 )
 
 type DashboardState int
@@ -476,18 +477,18 @@ func (m Model) Screen() Screen { return m.screen }
 func (m Model) View() string {
 	if m.snapshot.DashboardState == DashboardDaemonUnavailable || m.snapshot.LoadError != nil {
 		w := max(m.width, 80)
-		panelW := panelWidth(w)
+		panelW := terminalui.PanelWidth(w)
 		var sb strings.Builder
 		crumb := breadcrumbStyle.Render("~/.jarvis · hive tui — ") + breadcrumbCurrent.Render("dashboard · offline")
-		sb.WriteString(headerRow(crumb, modeBadge("offline"), w))
+		sb.WriteString(terminalui.HeaderRow(crumb, terminalui.ModeBadge("offline"), w))
 		sb.WriteString("\n")
-		errorContent := statusDot("failed") + " " + dimTextStyle.Render("Cannot reach hive-daemon") + "\n" +
+		errorContent := terminalui.StatusDot("failed") + " " + dimTextStyle.Render("Cannot reach hive-daemon") + "\n" +
 			dimTextStyle.Render(fmt.Sprintf("No response from %s", m.snapshot.DaemonURL)) + "\n" +
 			dimTextStyle.Render("The local Hive daemon is not running, so the TUI has nothing to read.")
-		sb.WriteString(borderedPanel(sectionHeader("CANNOT REACH HIVE-DAEMON", panelW)+errorContent, panelW))
+		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("CANNOT REACH HIVE-DAEMON", panelW)+errorContent, panelW))
 		sb.WriteString("\n")
 		glanceContent := dimTextStyle.Render("projects — memories — unsynced n/a warnings —")
-		sb.WriteString(borderedPanel(sectionHeader("AT A GLANCE", panelW)+glanceContent, panelW))
+		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("AT A GLANCE", panelW)+glanceContent, panelW))
 		sb.WriteString("\n")
 		sb.WriteString(helpBar([]KeyHint{{"q", "quit"}}, "offline", w))
 		return sb.String()
@@ -525,7 +526,7 @@ func (m Model) View() string {
 	}
 
 	w := max(m.width, 80)
-	panelW := panelWidth(w)
+	panelW := terminalui.PanelWidth(w)
 
 	// Determine mode for badge and breadcrumb suffix
 	mode := "normal"
@@ -538,7 +539,7 @@ func (m Model) View() string {
 
 	var sb strings.Builder
 	crumb := breadcrumbStyle.Render("~/.jarvis · hive tui — ") + breadcrumbCurrent.Render(dashboardTitle(m.snapshot.DashboardState))
-	sb.WriteString(headerRow(crumb, modeBadge(mode), w))
+	sb.WriteString(terminalui.HeaderRow(crumb, terminalui.ModeBadge(mode), w))
 	sb.WriteString("\n")
 
 	// Notice panel for degraded / local-only
@@ -547,13 +548,13 @@ func (m Model) View() string {
 		if m.snapshot.DashboardState == DashboardLocalOnly {
 			panelLabel = "NOTE"
 		}
-		sb.WriteString(borderedPanel(sectionHeader(panelLabel, panelW)+dimTextStyle.Render(notice), panelW))
+		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader(panelLabel, panelW)+dimTextStyle.Render(notice), panelW))
 		sb.WriteString("\n")
 	}
 
 	// STATUS panel
 	statusContent := fmt.Sprintf("daemon running · %s · %s", apiStatus(m.snapshot), syncStatus(m.snapshot))
-	sb.WriteString(borderedPanel(sectionHeader("STATUS", panelW)+statusContent, panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("STATUS", panelW)+statusContent, panelW))
 	sb.WriteString("\n")
 
 	// AT A GLANCE panel
@@ -565,7 +566,7 @@ func (m Model) View() string {
 		len(m.snapshot.Warnings),
 		lastSyncText(m.snapshot),
 	))
-	sb.WriteString(borderedPanel(sectionHeader("AT A GLANCE", panelW)+glanceLine, panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("AT A GLANCE", panelW)+glanceLine, panelW))
 	sb.WriteString("\n")
 
 	// ACTIONS panel
@@ -581,13 +582,13 @@ func (m Model) View() string {
 		}
 		var row string
 		if i == m.cursor {
-			row = selectedRow(action.label+state+" — "+dimTextStyle.Render(action.description), panelW-4)
+			row = terminalui.SelectedRow(action.label+state+" — "+dimTextStyle.Render(action.description), panelW-4)
 		} else {
 			row = titleStyle.Render(action.label) + state + " — " + dimTextStyle.Render(action.description)
 		}
 		actionsBlock.WriteString(cursor + row + "\n")
 	}
-	sb.WriteString(borderedPanel(sectionHeader("ACTIONS", panelW)+actionsBlock.String(), panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("ACTIONS", panelW)+actionsBlock.String(), panelW))
 
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
@@ -728,13 +729,13 @@ func (m Model) back() Model {
 
 func (m Model) projectsView() string {
 	w := max(m.width, 80)
-	panelW := panelWidth(w)
+	panelW := terminalui.PanelWidth(w)
 
 	crumb := breadcrumbStyle.Render("dashboard / ") + breadcrumbCurrent.Render("projects")
 	countBadge := dimTextStyle.Render(fmt.Sprintf("%d projects", len(m.snapshot.Projects)))
 
 	var sb strings.Builder
-	sb.WriteString(headerRow(crumb, countBadge, w))
+	sb.WriteString(terminalui.HeaderRow(crumb, countBadge, w))
 	sb.WriteString("\n")
 
 	var tableContent strings.Builder
@@ -753,13 +754,13 @@ func (m Model) projectsView() string {
 		)
 		var row string
 		if i == m.projectIndex {
-			row = selectedRow(rowText, panelW-4)
+			row = terminalui.SelectedRow(rowText, panelW-4)
 		} else {
 			row = rowText
 		}
 		tableContent.WriteString(cursor + row + "\n")
 	}
-	sb.WriteString(borderedPanel(sectionHeader("PROJECTS", panelW)+tableContent.String(), panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("PROJECTS", panelW)+tableContent.String(), panelW))
 
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
@@ -782,13 +783,13 @@ func (m Model) projectMemoriesView() string {
 	memories := m.projectMemories()
 	project := m.selectedProject().Name
 	w := max(m.width, 80)
-	panelW := panelWidth(w)
+	panelW := terminalui.PanelWidth(w)
 
 	crumb := breadcrumbStyle.Render("dashboard / projects / ") + breadcrumbCurrent.Render(project)
 	countBadge := dimTextStyle.Render(fmt.Sprintf("%d memories", len(memories)))
 
 	var sb strings.Builder
-	sb.WriteString(headerRow(crumb, countBadge, w))
+	sb.WriteString(terminalui.HeaderRow(crumb, countBadge, w))
 	sb.WriteString("\n")
 
 	var listContent strings.Builder
@@ -804,16 +805,16 @@ func (m Model) projectMemoriesView() string {
 		if memory.Deleted {
 			deleted = " [deleted]"
 		}
-		rowText := typeBadge(emptyDash(memory.Category)) + "  " + memory.Title + deleted + "  " + dimTextStyle.Render(relativeTime(memory.CreatedAt))
+		rowText := terminalui.TypeBadge(emptyDash(memory.Category)) + "  " + memory.Title + deleted + "  " + dimTextStyle.Render(relativeTime(memory.CreatedAt))
 		var row string
 		if i == m.memoryIndex {
-			row = selectedRow(rowText, panelW-4)
+			row = terminalui.SelectedRow(rowText, panelW-4)
 		} else {
 			row = rowText
 		}
 		listContent.WriteString(cursor + row + "\n")
 	}
-	sb.WriteString(borderedPanel(sectionHeader("MEMORIES", panelW)+listContent.String(), panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("MEMORIES", panelW)+listContent.String(), panelW))
 
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
@@ -826,12 +827,12 @@ func (m Model) projectMemoriesView() string {
 func (m Model) memoryDetailView() string {
 	memory := m.selectedMemory()
 	w := max(m.width, 80)
-	panelW := panelWidth(w)
+	panelW := terminalui.PanelWidth(w)
 
 	crumb := breadcrumbStyle.Render("… / "+memory.Project+" / ") + breadcrumbCurrent.Render(memoryKey(memory))
 
 	var sb strings.Builder
-	sb.WriteString(headerRow(crumb, typeBadge(emptyDash(memory.Category)), w))
+	sb.WriteString(terminalui.HeaderRow(crumb, terminalui.TypeBadge(emptyDash(memory.Category)), w))
 	sb.WriteString("\n")
 
 	// METADATA panel
@@ -846,7 +847,7 @@ func (m Model) memoryDetailView() string {
 	if memory.Deleted {
 		metaContent += "\n" + dimTextStyle.Render("status") + " deleted"
 	}
-	sb.WriteString(borderedPanel(sectionHeader("METADATA", panelW)+metaContent, panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("METADATA", panelW)+metaContent, panelW))
 	sb.WriteString("\n")
 
 	// CONTENT panel
@@ -863,7 +864,7 @@ func (m Model) memoryDetailView() string {
 	default:
 		contentBody = m.memoryContent
 	}
-	sb.WriteString(borderedPanel(sectionHeader("CONTENT", panelW)+contentBody, panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("CONTENT", panelW)+contentBody, panelW))
 
 	if m.guardExecutor != nil && memory.ID != 0 && memory.Deleted {
 		sb.WriteString("\nr restore guarded by backup ID and exact confirmation\n")
@@ -1121,17 +1122,17 @@ func (m Model) removeGuardRune() Model {
 func (m Model) memoryGuardView() string {
 	memory := m.guardMemory
 	w := max(m.width, 80)
-	panelW := panelWidth(w)
+	panelW := terminalui.PanelWidth(w)
 
 	crumb := breadcrumbCurrent.Render(fmt.Sprintf("guarded memory %s", m.guardOperation))
 
 	var sb strings.Builder
-	sb.WriteString(headerRow(crumb, modeBadge("destructive"), w))
+	sb.WriteString(terminalui.HeaderRow(crumb, terminalui.ModeBadge("destructive"), w))
 	sb.WriteString("\n")
 
 	// IMPACT panel
 	impactContent := fmt.Sprintf("%s %s", dimTextStyle.Render("target"), memoryKey(memory))
-	sb.WriteString(borderedPanel(sectionHeader("IMPACT", panelW)+impactContent, panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("IMPACT", panelW)+impactContent, panelW))
 	sb.WriteString("\n")
 
 	// SAFETY panel
@@ -1152,7 +1153,7 @@ func (m Model) memoryGuardView() string {
 		fieldScope = "all fields"
 	}
 	safetyContent += fmt.Sprintf("No %s will run until %s pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation.", m.guardOperation, fieldScope)
-	sb.WriteString(borderedPanel(sectionHeader("SAFETY", panelW)+safetyContent, panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("SAFETY", panelW)+safetyContent, panelW))
 
 	if m.guardSubmitting {
 		fmt.Fprintf(&sb, "\n%s\n", guardPending.Render(fmt.Sprintf("Guarded memory %s is pending through hive-daemon. Wait for the result before leaving or submitting again.", m.guardOperation)))
@@ -1280,17 +1281,17 @@ func (m Model) removeProjectArchiveRune() Model {
 func (m Model) projectArchiveView() string {
 	project := m.projectArchiveProject.Name
 	w := max(m.width, 80)
-	panelW := panelWidth(w)
+	panelW := terminalui.PanelWidth(w)
 
 	crumb := breadcrumbCurrent.Render("guarded project archive")
 
 	var sb strings.Builder
-	sb.WriteString(headerRow(crumb, badgeDestructive.Render("destructive"), w))
+	sb.WriteString(terminalui.HeaderRow(crumb, badgeDestructive.Render("destructive"), w))
 	sb.WriteString("\n")
 
 	// IMPACT panel
 	impactContent := fmt.Sprintf("%s %s", dimTextStyle.Render("target"), project)
-	sb.WriteString(borderedPanel(sectionHeader("IMPACT", panelW)+impactContent, panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("IMPACT", panelW)+impactContent, panelW))
 	sb.WriteString("\n")
 
 	// REASON panel
@@ -1300,7 +1301,7 @@ func (m Model) projectArchiveView() string {
 		reasonContent += fmt.Sprintf("confirmation: %s\n", visibleInput(m.projectArchiveConfirmation))
 	}
 	reasonContent += "No archive will run until both fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation."
-	sb.WriteString(borderedPanel(sectionHeader("REASON — REQUIRED", panelW)+reasonContent, panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("REASON — REQUIRED", panelW)+reasonContent, panelW))
 
 	if m.projectArchiveSubmitting {
 		fmt.Fprintf(&sb, "\n%s\n", guardPending.Render("Guarded project archive is pending through hive-daemon. Wait for the result before leaving or submitting again."))
@@ -1465,12 +1466,12 @@ func (m Model) removeProjectPurgeRune() Model {
 func (m Model) projectPurgeView() string {
 	project := m.projectDeleteProject.Name
 	w := max(m.width, 80)
-	panelW := panelWidth(w)
+	panelW := terminalui.PanelWidth(w)
 
 	crumb := breadcrumbCurrent.Render("guarded project purge")
 
 	var sb strings.Builder
-	sb.WriteString(headerRow(crumb, badgeDestructive.Render("destructive"), w))
+	sb.WriteString(terminalui.HeaderRow(crumb, badgeDestructive.Render("destructive"), w))
 	sb.WriteString("\n")
 
 	// IMPACT panel — show project list at select step, target at later steps.
@@ -1487,7 +1488,7 @@ func (m Model) projectPurgeView() string {
 				}
 				row := p.Name
 				if i == m.projectIndex {
-					row = selectedRow(row, panelW-8)
+					row = terminalui.SelectedRow(row, panelW-8)
 				}
 				listContent.WriteString(cursor + row + "\n")
 			}
@@ -1496,7 +1497,7 @@ func (m Model) projectPurgeView() string {
 	} else {
 		impactContent = fmt.Sprintf("%s %s", dimTextStyle.Render("target"), project)
 	}
-	sb.WriteString(borderedPanel(sectionHeader("IMPACT", panelW)+impactContent, panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("IMPACT", panelW)+impactContent, panelW))
 	sb.WriteString("\n")
 
 	// REASON panel — only shown after select step.
@@ -1507,7 +1508,7 @@ func (m Model) projectPurgeView() string {
 			reasonContent += fmt.Sprintf("confirmation: %s\n", visibleInput(m.projectDeleteConfirmation))
 		}
 		reasonContent += "No purge will run until both fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation."
-		sb.WriteString(borderedPanel(sectionHeader("REASON — REQUIRED", panelW)+reasonContent, panelW))
+		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("REASON — REQUIRED", panelW)+reasonContent, panelW))
 	}
 
 	if m.projectDeleteSubmitting {
@@ -1673,17 +1674,17 @@ func (m Model) projectMergeView() string {
 	source := strings.TrimSpace(m.projectMergeSource.Name)
 	target := strings.TrimSpace(m.projectMergeTarget)
 	w := max(m.width, 80)
-	panelW := panelWidth(w)
+	panelW := terminalui.PanelWidth(w)
 
 	crumb := breadcrumbCurrent.Render("guarded project merge")
 
 	var sb strings.Builder
-	sb.WriteString(headerRow(crumb, badgeDestructive.Render("destructive"), w))
+	sb.WriteString(terminalui.HeaderRow(crumb, badgeDestructive.Render("destructive"), w))
 	sb.WriteString("\n")
 
 	// IMPACT PREVIEW panel
 	impactContent := fmt.Sprintf("%s %s", dimTextStyle.Render("source"), source)
-	sb.WriteString(borderedPanel(sectionHeader("IMPACT PREVIEW", panelW)+impactContent, panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("IMPACT PREVIEW", panelW)+impactContent, panelW))
 	sb.WriteString("\n")
 
 	// SAFETY panel — multi-step inputs
@@ -1701,7 +1702,7 @@ func (m Model) projectMergeView() string {
 		safetyContent += fmt.Sprintf("confirmation: %s\n", visibleInput(m.projectMergeConfirmation))
 	}
 	safetyContent += "No merge will run until all fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation."
-	sb.WriteString(borderedPanel(sectionHeader("SAFETY", panelW)+safetyContent, panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("SAFETY", panelW)+safetyContent, panelW))
 
 	if m.projectMergeSubmitting {
 		fmt.Fprintf(&sb, "\n%s\n", guardPending.Render("Guarded project merge is pending through hive-daemon. Wait for the result before leaving or submitting again."))
@@ -1973,11 +1974,11 @@ func mergeBatchConfirmationPhrase(target string) string {
 // batchProjectMergeView renders the multi-source merge screen.
 func (m Model) batchProjectMergeView() string {
 	w := max(m.width, 80)
-	panelW := panelWidth(w)
+	panelW := terminalui.PanelWidth(w)
 
 	crumb := breadcrumbCurrent.Render("batch project merge")
 	var sb strings.Builder
-	sb.WriteString(headerRow(crumb, badgeDestructive.Render("destructive"), w))
+	sb.WriteString(terminalui.HeaderRow(crumb, badgeDestructive.Render("destructive"), w))
 	sb.WriteString("\n")
 
 	switch m.mergeStep {
@@ -1992,7 +1993,7 @@ func (m Model) batchProjectMergeView() string {
 	case mergeStepConfirm:
 		m.renderBatchConfirmPanel(&sb, panelW)
 	case mergeStepExecuting:
-		sb.WriteString(borderedPanel(sectionHeader("STATUS", panelW)+guardPending.Render("Batch merge is running through hive-daemon. Please wait."), panelW))
+		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("STATUS", panelW)+guardPending.Render("Batch merge is running through hive-daemon. Please wait."), panelW))
 	case mergeStepResult:
 		m.renderBatchResultPanel(&sb, panelW)
 	}
@@ -2024,13 +2025,13 @@ func (m Model) renderSelectSourcesPanel(sb *strings.Builder, panelW int) {
 		}
 		content.WriteString(cursor + selected + project.Name + "\n")
 	}
-	sb.WriteString(borderedPanel(sectionHeader("SELECT SOURCES", panelW)+content.String(), panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("SELECT SOURCES", panelW)+content.String(), panelW))
 }
 
 func (m Model) renderPickTargetPanel(sb *strings.Builder, panelW int) {
 	selected := strings.Join(m.mergeSelectedSources, ", ")
 	content := fmt.Sprintf("Sources selected: %s\n\nTarget project name: %s\n", selected, visibleInput(m.mergeTarget))
-	sb.WriteString(borderedPanel(sectionHeader("PICK TARGET", panelW)+content, panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("PICK TARGET", panelW)+content, panelW))
 }
 
 func (m Model) renderImpactPanel(sb *strings.Builder, panelW int) {
@@ -2045,7 +2046,7 @@ func (m Model) renderImpactPanel(sb *strings.Builder, panelW int) {
 		content.WriteString(fmt.Sprintf("%s  %d  %d  %d  %d\n",
 			imp.Source, imp.Memories, imp.Sessions, imp.Prompts, imp.Unsynced))
 	}
-	sb.WriteString(borderedPanel(sectionHeader("IMPACT", panelW)+content.String(), panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("IMPACT", panelW)+content.String(), panelW))
 
 	if m.mergeSyncEvidence {
 		sb.WriteString("\n")
@@ -2053,7 +2054,7 @@ func (m Model) renderImpactPanel(sb *strings.Builder, panelW int) {
 			"Before proceeding, notify your admin to handle cloud-side cleanup.\n\n" +
 			dimTextStyle.Render("admin note: The following projects were merged locally and their cloud entries must be reconciled: ") +
 			strings.Join(m.mergeSelectedSources, ", ") + " → " + m.mergeTarget
-		sb.WriteString(borderedPanel(sectionHeader("CLOUD SYNC NOTICE", panelW)+guardContent, panelW))
+		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("CLOUD SYNC NOTICE", panelW)+guardContent, panelW))
 	}
 }
 
@@ -2063,7 +2064,7 @@ func (m Model) renderBatchBackupIDPanel(sb *strings.Builder, panelW int) {
 		m.mergeTarget,
 		visibleInput(m.mergeBackupID),
 	)
-	sb.WriteString(borderedPanel(sectionHeader("BACKUP ID", panelW)+content, panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("BACKUP ID", panelW)+content, panelW))
 }
 
 func (m Model) renderBatchConfirmPanel(sb *strings.Builder, panelW int) {
@@ -2072,7 +2073,7 @@ func (m Model) renderBatchConfirmPanel(sb *strings.Builder, panelW int) {
 		phrase,
 		visibleInput(m.mergeConfirmText),
 	)
-	sb.WriteString(borderedPanel(sectionHeader("CONFIRM", panelW)+content, panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("CONFIRM", panelW)+content, panelW))
 }
 
 func (m Model) renderBatchResultPanel(sb *strings.Builder, panelW int) {
@@ -2095,7 +2096,7 @@ func (m Model) renderBatchResultPanel(sb *strings.Builder, panelW int) {
 			content.WriteString("\n" + dimTextStyle.Render("Cloud handoff: "+m.mergeBatchResult.CloudHandoffNote) + "\n")
 		}
 	}
-	sb.WriteString(borderedPanel(sectionHeader("RESULT", panelW)+content.String(), panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("RESULT", panelW)+content.String(), panelW))
 }
 
 // slicesEqual reports whether a and b contain the same strings in the same order.
@@ -2163,13 +2164,13 @@ func (m Model) timelineView() string {
 
 	project := m.selectedProject().Name
 	w := max(m.width, 80)
-	panelW := panelWidth(w)
+	panelW := terminalui.PanelWidth(w)
 
 	crumb := breadcrumbStyle.Render("timeline / ") + breadcrumbCurrent.Render(project)
 	countBadge := dimTextStyle.Render(fmt.Sprintf("%d entries", len(memories)))
 
 	var sb strings.Builder
-	sb.WriteString(headerRow(crumb, countBadge, w))
+	sb.WriteString(terminalui.HeaderRow(crumb, countBadge, w))
 	sb.WriteString("\n")
 
 	var timelineContent strings.Builder
@@ -2194,13 +2195,13 @@ func (m Model) timelineView() string {
 		rowText := dimTextStyle.Render(timelineTimeText(memory.CreatedAt)) + "  " + dimTextStyle.Render(emptyDash(memory.Category)) + "  " + memory.Title + deleted
 		var row string
 		if i == m.memoryIndex {
-			row = selectedRow(rowText, panelW-4)
+			row = terminalui.SelectedRow(rowText, panelW-4)
 		} else {
 			row = rowText
 		}
 		timelineContent.WriteString(cursor + row + "\n")
 	}
-	sb.WriteString(borderedPanel(sectionHeader("TIMELINE", panelW)+timelineContent.String(), panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("TIMELINE", panelW)+timelineContent.String(), panelW))
 
 	if m.snapshot.TimelineTruncated {
 		sb.WriteString("\n" + dimTextStyle.Render("(showing first 500 events — use mem_search for older entries)") + "\n")
@@ -2215,7 +2216,7 @@ func (m Model) timelineView() string {
 
 func (m Model) warningsView() string {
 	w := max(m.width, 80)
-	panelW := panelWidth(w)
+	panelW := terminalui.PanelWidth(w)
 
 	activeCount := activeWarnings(m.snapshot.Warnings)
 	crumb := breadcrumbCurrent.Render("memory warnings")
@@ -2227,7 +2228,7 @@ func (m Model) warningsView() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(headerRow(crumb, countBadge, w))
+	sb.WriteString(terminalui.HeaderRow(crumb, countBadge, w))
 	sb.WriteString("\n")
 
 	var listContent strings.Builder
@@ -2244,11 +2245,11 @@ func (m Model) warningsView() string {
 		}
 		rowText := warningRowText(warning)
 		if i == m.warningIndex {
-			rowText = selectedRow(rowText, panelW-4)
+			rowText = terminalui.SelectedRow(rowText, panelW-4)
 		}
 		listContent.WriteString(cursor + rowText + "\n")
 	}
-	sb.WriteString(borderedPanel(sectionHeader("WARNINGS", panelW)+listContent.String(), panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("WARNINGS", panelW)+listContent.String(), panelW))
 
 	sb.WriteString("\n")
 	sb.WriteString(helpBar([]KeyHint{{"j/k", "move"}, {"esc", "back"}, {"q", "quit"}}, "normal", w))
@@ -2288,13 +2289,13 @@ func warningStateBadge(state string) lipgloss.Style {
 
 func (m Model) backupsView() string {
 	w := max(m.width, 80)
-	panelW := panelWidth(w)
+	panelW := terminalui.PanelWidth(w)
 
 	crumb := breadcrumbCurrent.Render("backup snapshots")
 	pathBadge := dimTextStyle.Render("read-only")
 
 	var sb strings.Builder
-	sb.WriteString(headerRow(crumb, pathBadge, w))
+	sb.WriteString(terminalui.HeaderRow(crumb, pathBadge, w))
 	sb.WriteString("\n")
 
 	var tableContent strings.Builder
@@ -2316,14 +2317,14 @@ func (m Model) backupsView() string {
 		)
 		var row string
 		if i == m.backupIndex {
-			row = selectedRow(rowText, panelW-4)
+			row = terminalui.SelectedRow(rowText, panelW-4)
 		} else {
 			row = rowText
 		}
 		tableContent.WriteString(cursor + row + "\n")
 	}
 	tableContent.WriteString(readOnlyBanner.Render("No restore action is available in this read-only TUI slice."))
-	sb.WriteString(borderedPanel(sectionHeader("BACKUPS", panelW)+tableContent.String(), panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("BACKUPS", panelW)+tableContent.String(), panelW))
 
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
@@ -2336,12 +2337,12 @@ func (m Model) backupsView() string {
 func (m Model) backupDetailView() string {
 	backup := m.selectedBackup()
 	w := max(m.width, 80)
-	panelW := panelWidth(w)
+	panelW := terminalui.PanelWidth(w)
 
 	crumb := breadcrumbCurrent.Render("backup detail")
 
 	var sb strings.Builder
-	sb.WriteString(headerRow(crumb, modeBadge("normal"), w))
+	sb.WriteString(terminalui.HeaderRow(crumb, terminalui.ModeBadge("normal"), w))
 	sb.WriteString("\n")
 
 	detailContent := fmt.Sprintf("%s %s\n%s %s\n%s\n%s\n%s\nstatus validity unknown\n%s %s\n%s",
@@ -2353,7 +2354,7 @@ func (m Model) backupDetailView() string {
 		dimTextStyle.Render("size"), byteSize(backup.SizeBytes),
 		readOnlyBanner.Render("Read-only inspection only."),
 	)
-	sb.WriteString(borderedPanel(sectionHeader("BACKUP DETAIL", panelW)+detailContent, panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("BACKUP DETAIL", panelW)+detailContent, panelW))
 
 	sb.WriteString("\n")
 	sb.WriteString(helpBar([]KeyHint{{"esc", "back"}, {"q", "quit"}}, "normal", w))
@@ -2362,18 +2363,18 @@ func (m Model) backupDetailView() string {
 
 func (m Model) apiHealthView() string {
 	w := max(m.width, 80)
-	panelW := panelWidth(w)
+	panelW := terminalui.PanelWidth(w)
 
 	crumb := breadcrumbCurrent.Render("hive api health")
 
 	var sb strings.Builder
-	sb.WriteString(headerRow(crumb, modeBadge("normal"), w))
+	sb.WriteString(terminalui.HeaderRow(crumb, terminalui.ModeBadge("normal"), w))
 	sb.WriteString("\n")
 
 	// SUMMARY panel — prepended before per-project panels.
 	if m.snapshot.SyncSummary == nil {
 		emptyContent := dimTextStyle.Render("Sync summary is not available in the current snapshot.")
-		sb.WriteString(borderedPanel(sectionHeader("SUMMARY", panelW)+emptyContent, panelW))
+		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("SUMMARY", panelW)+emptyContent, panelW))
 	} else {
 		s := m.snapshot.SyncSummary
 		state := summaryHealthState(*s)
@@ -2394,14 +2395,14 @@ func (m Model) apiHealthView() string {
 		if action != "" {
 			summaryContent += "\n" + action
 		}
-		sb.WriteString(borderedPanel(sectionHeader("SUMMARY", panelW)+summaryContent, panelW))
+		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("SUMMARY", panelW)+summaryContent, panelW))
 		sb.WriteString("\n")
 	}
 
 	// Per-project CONNECTIVITY and HISTORY panels.
 	if len(m.snapshot.Health) == 0 {
 		emptyContent := dimTextStyle.Render("Health details are not available in the current read-only snapshot.")
-		sb.WriteString(borderedPanel(sectionHeader("CONNECTIVITY", panelW)+emptyContent, panelW))
+		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("CONNECTIVITY", panelW)+emptyContent, panelW))
 	} else {
 		for _, health := range m.snapshot.Health {
 			state := healthState(health)
@@ -2413,14 +2414,14 @@ func (m Model) apiHealthView() string {
 				dimTextStyle.Render("consecutive failures"), health.ConsecutiveFailures,
 				dimTextStyle.Render("backoff"), formatDateTime(health.BackoffUntil),
 			)
-			sb.WriteString(borderedPanel(sectionHeader("CONNECTIVITY", panelW)+connectContent, panelW))
+			sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("CONNECTIVITY", panelW)+connectContent, panelW))
 			sb.WriteString("\n")
 
 			historyContent := fmt.Sprintf("last success %s  last failure %s",
 				formatDateTime(health.LastSuccessAt),
 				formatDateTime(health.LastFailureAt),
 			)
-			sb.WriteString(borderedPanel(sectionHeader("HISTORY", panelW)+historyContent, panelW))
+			sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("HISTORY", panelW)+historyContent, panelW))
 		}
 	}
 
@@ -2731,22 +2732,22 @@ func (m Model) applyConfigTestResult(msg configTestResultMsg) Model {
 
 func (m Model) apiConfigView() string {
 	w := max(m.width, 80)
-	panelW := panelWidth(w)
+	panelW := terminalui.PanelWidth(w)
 
 	crumb := breadcrumbCurrent.Render("hive api config")
 
 	var sb strings.Builder
-	sb.WriteString(headerRow(crumb, modeBadge("secrets"), w))
+	sb.WriteString(terminalui.HeaderRow(crumb, terminalui.ModeBadge("secrets"), w))
 	sb.WriteString("\n")
 
 	// Graceful degradation: no ConfigService available.
 	if m.configService == nil {
 		endpointContent := "Read-only snapshot\n" +
 			dimTextStyle.Render("API configuration is not available from the current daemon client contract.")
-		sb.WriteString(borderedPanel(sectionHeader("ENDPOINT", panelW)+endpointContent, panelW))
+		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("ENDPOINT", panelW)+endpointContent, panelW))
 		sb.WriteString("\n")
 		credContent := readOnlyBanner.Render("Secrets are never displayed, echoed, or inferred by this TUI.")
-		sb.WriteString(borderedPanel(sectionHeader("CREDENTIALS — NEVER SHOWN OR LOGGED", panelW)+credContent, panelW))
+		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("CREDENTIALS — NEVER SHOWN OR LOGGED", panelW)+credContent, panelW))
 		sb.WriteString("\n")
 		sb.WriteString(helpBar([]KeyHint{{"esc", "back"}, {"q", "quit"}}, "secrets", w))
 		return sb.String()
@@ -2755,7 +2756,7 @@ func (m Model) apiConfigView() string {
 	// Loading state.
 	if m.configLoading {
 		loadContent := dimTextStyle.Render("Loading config from hive-daemon...")
-		sb.WriteString(borderedPanel(sectionHeader("CONFIG", panelW)+loadContent, panelW))
+		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("CONFIG", panelW)+loadContent, panelW))
 		sb.WriteString("\n")
 		sb.WriteString(helpBar([]KeyHint{{"esc", "back"}, {"q", "quit"}}, "secrets", w))
 		return sb.String()
@@ -2764,7 +2765,7 @@ func (m Model) apiConfigView() string {
 	// Error state (load failed).
 	if m.configLoadErr != nil {
 		errContent := fmt.Sprintf("Configuration error: %v", m.configLoadErr)
-		sb.WriteString(borderedPanel(sectionHeader("CONFIG ERROR", panelW)+errContent, panelW))
+		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("CONFIG ERROR", panelW)+errContent, panelW))
 		sb.WriteString("\n")
 		sb.WriteString(helpBar([]KeyHint{{"esc", "back"}, {"q", "quit"}}, "secrets", w))
 		return sb.String()
@@ -2773,7 +2774,7 @@ func (m Model) apiConfigView() string {
 	// Env-active NOTICE: shown when env vars are active (independent of save).
 	if m.configEnvActive {
 		noticeContent := dimTextStyle.Render("Environment variables (HIVE_API_*) are active and override the file config at runtime. Changes saved here will take effect only after restarting hive-daemon with those env vars unset.")
-		sb.WriteString(borderedPanel(sectionHeader("NOTICE — ENV VARS ACTIVE", panelW)+noticeContent, panelW))
+		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("NOTICE — ENV VARS ACTIVE", panelW)+noticeContent, panelW))
 		sb.WriteString("\n")
 	}
 
@@ -2788,7 +2789,7 @@ func (m Model) apiConfigView() string {
 		autoSyncVal = "[x] enabled"
 	}
 	fieldContent += m.renderConfigField(configFieldAutoSync, "Auto Sync", autoSyncVal, panelW)
-	sb.WriteString(borderedPanel(sectionHeader("CONFIGURATION", panelW)+fieldContent, panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("CONFIGURATION", panelW)+fieldContent, panelW))
 	sb.WriteString("\n")
 
 	// Actions.
@@ -2803,25 +2804,25 @@ func (m Model) apiConfigView() string {
 		saveLabel = "Saving..."
 	}
 	actionsContent += m.renderConfigField(configFieldSave, saveLabel, "", panelW)
-	sb.WriteString(borderedPanel(sectionHeader("ACTIONS", panelW)+actionsContent, panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("ACTIONS", panelW)+actionsContent, panelW))
 	sb.WriteString("\n")
 
 	// Test connection result panel.
 	if m.configTestResult != nil {
 		var resultContent string
 		if m.configTestResult.OK {
-			resultContent = lipgloss.NewStyle().Foreground(lipgloss.Color("#a6e3a1")).Render("Connection succeeded")
+			resultContent = lipgloss.NewStyle().Foreground(terminalui.ColorGreen).Render("Connection succeeded")
 		} else {
-			resultContent = lipgloss.NewStyle().Foreground(lipgloss.Color("#f38ba8")).Render("Connection failed: " + m.configTestResult.Message)
+			resultContent = lipgloss.NewStyle().Foreground(terminalui.ColorRed).Render("Connection failed: " + m.configTestResult.Message)
 		}
-		sb.WriteString(borderedPanel(sectionHeader("CONNECTION TEST", panelW)+resultContent, panelW))
+		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("CONNECTION TEST", panelW)+resultContent, panelW))
 		sb.WriteString("\n")
 	}
 
 	// Restart-required panel: shown after successful save.
 	if m.configRestartHint != "" {
 		restartContent := dimTextStyle.Render(m.configRestartHint)
-		sb.WriteString(borderedPanel(sectionHeader("RESTART REQUIRED", panelW)+restartContent, panelW))
+		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("RESTART REQUIRED", panelW)+restartContent, panelW))
 		sb.WriteString("\n")
 	}
 
@@ -2842,7 +2843,7 @@ func (m Model) renderConfigField(field configField, label, value string, panelW 
 		row = titleStyle.Render(label)
 	}
 	if m.configCursor == field {
-		row = selectedRow(row, panelW-4)
+		row = terminalui.SelectedRow(row, panelW-4)
 	}
 	return cursor + row + "\n"
 }

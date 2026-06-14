@@ -13,6 +13,7 @@ import (
 	"github.com/muesli/termenv"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/terminalui"
 )
 
 func TestMain(m *testing.M) {
@@ -212,8 +213,8 @@ func TestWarningsViewUsesHiveVisualSystemForSelectedRows(t *testing.T) {
 	m := Model{snapshot: Snapshot{DashboardState: DashboardHealthy, Warnings: warnings}, screen: ScreenWarnings, warningIndex: 1, width: 100}
 
 	view := m.View()
-	panelW := panelWidth(100)
-	expectedSelected := selectedRow(warningRowText(warnings[1]), panelW-4)
+	panelW := terminalui.PanelWidth(100)
+	expectedSelected := terminalui.SelectedRow(warningRowText(warnings[1]), panelW-4)
 	assertContains(t, view,
 		"memory warnings",
 		"1 active",
@@ -2035,9 +2036,9 @@ func TestWindowSizeMsgUpdatesWidth(t *testing.T) {
 func TestTypeBadgeAllCategories(t *testing.T) {
 	categories := []string{"decision", "bugfix", "pattern", "architecture", "config", "preference", "discovery"}
 	for _, cat := range categories {
-		got := typeBadge(cat)
+		got := terminalui.TypeBadge(cat)
 		if got == "" {
-			t.Errorf("typeBadge(%q) returned empty string", cat)
+			t.Errorf("terminalui.TypeBadge(%q) returned empty string", cat)
 		}
 	}
 }
@@ -2045,22 +2046,22 @@ func TestTypeBadgeAllCategories(t *testing.T) {
 // TestTypeBadgeCaseInsensitive verifies that typeBadge normalizes input to
 // lowercase before map lookup.
 func TestTypeBadgeCaseInsensitive(t *testing.T) {
-	lower := typeBadge("decision")
-	upper := typeBadge("Decision")
+	lower := terminalui.TypeBadge("decision")
+	upper := terminalui.TypeBadge("Decision")
 	if lower != upper {
-		t.Errorf("typeBadge case-sensitivity: typeBadge(\"decision\") = %q, typeBadge(\"Decision\") = %q", lower, upper)
+		t.Errorf("typeBadge case-sensitivity: terminalui.TypeBadge(\"decision\") = %q, terminalui.TypeBadge(\"Decision\") = %q", lower, upper)
 	}
 }
 
 // TestBorderedPanelMinWidth verifies that borderedPanel does not panic when
 // called with width=0 and returns a non-empty string containing the content.
 func TestBorderedPanelMinWidth(t *testing.T) {
-	result := borderedPanel("x", 0)
+	result := terminalui.BorderedPanel("x", 0)
 	if result == "" {
-		t.Error("borderedPanel(\"x\", 0) returned empty string")
+		t.Error("terminalui.BorderedPanel(\"x\", 0) returned empty string")
 	}
 	if !strings.Contains(result, "x") {
-		t.Errorf("borderedPanel(\"x\", 0) = %q, want string containing \"x\"", result)
+		t.Errorf("terminalui.BorderedPanel(\"x\", 0) = %q, want string containing \"x\"", result)
 	}
 }
 

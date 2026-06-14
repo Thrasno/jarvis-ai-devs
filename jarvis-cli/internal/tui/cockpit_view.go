@@ -3,6 +3,8 @@ package tui
 import (
 	"fmt"
 	"strings"
+
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/terminalui"
 )
 
 func viewCockpit(m Model) string {
@@ -10,23 +12,34 @@ func viewCockpit(m Model) string {
 		return viewCockpitPanel(m)
 	}
 
+	w := terminalui.PanelWidth(m.width)
 	var sb strings.Builder
 
-	sb.WriteString(strings.TrimRight(CockpitLogo(), "\n"))
+	// Gate full logo render on width >= 80 (or 0 = not yet measured → show full).
+	// Below 80, render a compact one-line title via TitleStyle instead.
+	if m.width == 0 || m.width >= 80 {
+		sb.WriteString(strings.TrimRight(CockpitLogo(), "\n"))
+		sb.WriteString("\n\n")
+		sb.WriteString(terminalui.TitleStyle.Render("Jarvis Cockpit"))
+	} else {
+		sb.WriteString(terminalui.TitleStyle.Render("Jarvis Cockpit"))
+	}
+	sb.WriteString("\n")
+	sb.WriteString(terminalui.DimTextStyle.Render("Choose what you want to do."))
 	sb.WriteString("\n\n")
-	sb.WriteString("Jarvis Cockpit\n")
-	sb.WriteString("Choose what you want to do.\n\n")
 
 	actions := CockpitActions()
+	var listSB strings.Builder
 	for i, action := range actions {
-		cursor := " "
-		if i == m.cockpitCursor {
-			cursor = ">"
-		}
-
 		status := cockpitActionStatus(action)
-		sb.WriteString(fmt.Sprintf("%s %s — %s%s\n", cursor, action.Label, action.Description, status))
+		line := fmt.Sprintf("%s — %s%s", action.Label, action.Description, status)
+		if i == m.cockpitCursor {
+			listSB.WriteString(terminalui.SelectedRow(line, w) + "\n")
+		} else {
+			listSB.WriteString("  " + line + "\n")
+		}
 	}
+	sb.WriteString(terminalui.BorderedPanel(listSB.String(), w) + "\n")
 
 	if m.cockpitMessage != "" {
 		sb.WriteString("\n")
@@ -34,7 +47,12 @@ func viewCockpit(m Model) string {
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString("\n↑/↓ or j/k: navigate  Enter: select  q: exit")
+	hints := []terminalui.KeyHint{
+		{Key: "↑/↓", Desc: "navigate"},
+		{Key: "Enter", Desc: "select"},
+		{Key: "q", Desc: "exit"},
+	}
+	sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
 	return sb.String()
 }
 

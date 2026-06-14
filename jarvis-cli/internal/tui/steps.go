@@ -18,28 +18,21 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/terminalui"
 )
 
 const localOnlyReviewWarning = "Se ha seleccionado modo local, se borrará cualquier credencial almacenada sobre hive-api"
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Style helpers
+// Style helpers — Catppuccin Mocha semantic styles derived from terminalui
 // ──────────────────────────────────────────────────────────────────────────────
 
 var (
-	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
-	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
-	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
-	warningStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-	successStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	headerStyle   = lipgloss.NewStyle().Bold(true).Underline(true)
+	// errorStyle renders error messages in Catppuccin Red.
+	errorStyle = lipgloss.NewStyle().Foreground(terminalui.ColorRed).Bold(true)
+	// warningStyle renders warning messages in Catppuccin Yellow.
+	warningStyle = lipgloss.NewStyle().Foreground(terminalui.ColorYellow)
 )
-
-// stepHeader returns a formatted wizard header for the given step number.
-func stepHeader(step, total int, title string) string {
-	return titleStyle.Render(fmt.Sprintf("Jarvis-Dev Setup  [%d/%d]  %s", step, total, title)) + "\n\n"
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Step 1: Scope
@@ -74,26 +67,35 @@ func updateScope(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func viewScope(m Model) string {
+	w := terminalui.PanelWidth(m.width)
 	var sb strings.Builder
-	sb.WriteString(stepHeader(1, 7, "Setup Scope"))
-	sb.WriteString("Elegí el alcance del setup (sin side effects hasta Apply).\n\n")
+
+	sb.WriteString(terminalui.HeaderRow("Setup › Scope", terminalui.ModeBadge("normal"), m.width) + "\n\n")
+
+	sb.WriteString(terminalui.SectionHeader("SCOPE", w))
 
 	var localLine string
 	var cloudLine string
 	if m.Scope == config.ScopeLocalOnly {
-		localLine = selectedStyle.Render("> local-only")
-		cloudLine = dimStyle.Render("  local+cloud")
+		localLine = terminalui.SelectedRow("local-only", w)
+		cloudLine = terminalui.DimTextStyle.Render("  local+cloud")
 	} else {
-		localLine = dimStyle.Render("  local-only")
-		cloudLine = selectedStyle.Render("> local+cloud")
+		localLine = terminalui.DimTextStyle.Render("  local-only")
+		cloudLine = terminalui.SelectedRow("local+cloud", w)
 	}
-	sb.WriteString(localLine + "\n")
-	sb.WriteString(cloudLine + "\n\n")
-	sb.WriteString(dimStyle.Render("local-only: setup local sin cloud. local+cloud: incluye auth/enlace cloud.") + "\n")
+	content := localLine + "\n" + cloudLine + "\n\n" +
+		terminalui.DimTextStyle.Render("local-only: setup local sin cloud. local+cloud: incluye auth/enlace cloud.")
 	if m.Err != nil {
-		sb.WriteString(errorStyle.Render("Error: "+m.Err.Error()) + "\n\n")
+		content += "\n\n" + errorStyle.Render("Error: "+m.Err.Error())
 	}
-	sb.WriteString(dimStyle.Render("↑/↓ o j/k: cambiar  Enter: continuar  Ctrl+C: salir"))
+	sb.WriteString(terminalui.BorderedPanel(content, w) + "\n")
+
+	hints := []terminalui.KeyHint{
+		{Key: "↑/↓", Desc: "cambiar"},
+		{Key: "Enter", Desc: "continuar"},
+		{Key: "Ctrl+C", Desc: "salir"},
+	}
+	sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
 	return sb.String()
 }
 
@@ -226,36 +228,46 @@ func handleStepMsg(m Model, msg tea.Msg) (Model, bool, tea.Cmd) {
 }
 
 func viewHiveCloud(m Model) string {
+	w := terminalui.PanelWidth(m.width)
 	var sb strings.Builder
-	title := "Hive Cloud Authentication"
+
+	breadcrumb := "Setup › Hive Cloud"
 	if m.Mode == string(config.ConfigStatusReconfigure) {
-		title = "Hive Cloud Authentication (Reconfigure)"
+		breadcrumb = "Setup › Hive Cloud (Reconfigure)"
 	}
-	sb.WriteString(stepHeader(2, 7, title))
-	sb.WriteString("Connect to Hive Cloud for team memory sync (press Esc to skip).\n\n")
+	sb.WriteString(terminalui.HeaderRow(breadcrumb, terminalui.ModeBadge("normal"), m.width) + "\n\n")
 
 	// Email field
-	var emailLabel string
+	var emailLine string
 	if m.activeField == 0 {
-		emailLabel = selectedStyle.Render("> Email:  ")
+		emailLine = terminalui.SelectedRow("Email:  "+m.Email, w)
 	} else {
-		emailLabel = dimStyle.Render("  Email:  ")
+		emailLine = terminalui.DimTextStyle.Render("  Email:  ") + m.Email
 	}
-	sb.WriteString(emailLabel + m.Email + "\n")
 
-	// Password field (masked)
-	passLabel := ""
+	// Password field — mask with bullet characters, never in clear text.
+	masked := strings.Repeat("•", len(m.Password))
+	var passLine string
 	if m.activeField == 1 {
-		passLabel = selectedStyle.Render("> Password:")
+		passLine = terminalui.SelectedRow("Password: "+masked, w)
 	} else {
-		passLabel = dimStyle.Render("  Password:")
+		passLine = terminalui.DimTextStyle.Render("  Password:") + " " + masked
 	}
-	sb.WriteString(passLabel + " " + strings.Repeat("*", len(m.Password)) + "\n\n")
 
+	content := terminalui.DimTextStyle.Render("Connect to Hive Cloud for team memory sync (press Esc to skip).") + "\n\n" +
+		emailLine + "\n" +
+		passLine
 	if m.Err != nil {
-		sb.WriteString(errorStyle.Render("Error: "+m.Err.Error()) + "\n\n")
+		content += "\n\n" + errorStyle.Render("Error: "+m.Err.Error())
 	}
-	sb.WriteString(dimStyle.Render("Tab: switch field  Enter: next/login  Esc: skip"))
+	sb.WriteString(terminalui.BorderedPanel(content, w) + "\n")
+
+	hints := []terminalui.KeyHint{
+		{Key: "Tab", Desc: "switch field"},
+		{Key: "Enter", Desc: "next/login"},
+		{Key: "Esc", Desc: "skip"},
+	}
+	sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
 	return sb.String()
 }
 
@@ -388,12 +400,12 @@ func updatePersonaCustomEdit(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func viewPersona(m Model) string {
-	var sb strings.Builder
-	sb.WriteString(stepHeader(3, 7, "Select Persona Preset"))
+	w := terminalui.PanelWidth(m.width)
 
 	if m.customEdit {
-		sb.WriteString(headerStyle.Render("Custom Preset Creation") + "\n")
-		sb.WriteString(dimStyle.Render("Tab: cambiar campo  Enter: siguiente/corte de línea  Ctrl+S: confirmar  Esc: cancelar") + "\n\n")
+		var sb strings.Builder
+		sb.WriteString(terminalui.HeaderRow("Setup › Persona › Edit", terminalui.ModeBadge("normal"), m.width) + "\n\n")
+
 		if m.Err != nil {
 			sb.WriteString(errorStyle.Render("Error: "+m.Err.Error()) + "\n\n")
 		}
@@ -403,41 +415,69 @@ func viewPersona(m Model) string {
 		yamlLabel := "  YAML draft:"
 		switch m.customField {
 		case 0:
-			nameLabel = selectedStyle.Render("> Name (slug base): " + m.customPresetName)
+			nameLabel = terminalui.SelectedRow("Name (slug base): "+m.customPresetName, w)
 		case 1:
-			displayLabel = selectedStyle.Render("> Display name: " + m.customDisplayName)
+			displayLabel = terminalui.SelectedRow("Display name: "+m.customDisplayName, w)
 		default:
-			yamlLabel = selectedStyle.Render("> YAML draft:")
+			yamlLabel = terminalui.SelectedRow("YAML draft:", w)
 		}
-		sb.WriteString(nameLabel + "\n")
-		sb.WriteString(displayLabel + "\n\n")
-		sb.WriteString(yamlLabel + "\n")
-		sb.WriteString(m.CustomYAML)
-		sb.WriteString("_")
+
+		var fieldsSB strings.Builder
+		fieldsSB.WriteString(nameLabel + "\n")
+		fieldsSB.WriteString(displayLabel + "\n\n")
+		fieldsSB.WriteString(yamlLabel + "\n")
+		fieldsSB.WriteString(m.CustomYAML + "_")
+		sb.WriteString(terminalui.BorderedPanel(fieldsSB.String(), w) + "\n")
+
+		hints := []terminalui.KeyHint{
+			{Key: "Tab", Desc: "switch field"},
+			{Key: "Enter", Desc: "next/newline"},
+			{Key: "Ctrl+S", Desc: "save"},
+			{Key: "Esc", Desc: "cancel"},
+		}
+		sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
 		return sb.String()
 	}
+
+	var sb strings.Builder
+	sb.WriteString(terminalui.HeaderRow("Setup › Persona", terminalui.ModeBadge("normal"), m.width) + "\n\n")
 
 	if len(m.Presets) == 0 {
-		sb.WriteString(errorStyle.Render("No presets loaded. Press Enter to continue.") + "\n")
+		sb.WriteString(terminalui.BorderedPanel("No personas configured. Press Enter to continue.", w) + "\n")
+		hints := []terminalui.KeyHint{
+			{Key: "Enter", Desc: "continue"},
+		}
+		sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
 		return sb.String()
 	}
 
+	sb.WriteString(terminalui.SectionHeader("PERSONAS", w))
+	var listSB strings.Builder
 	for i, p := range m.Presets {
-		cursor := "  "
 		name := p.DisplayName
 		if name == "" {
 			name = p.Name
 		}
-		desc := dimStyle.Render("  " + p.Description)
-		if i == m.presetCur {
-			cursor = selectedStyle.Render("> ")
-			name = selectedStyle.Render(name)
+		line := name
+		if p.Description != "" {
+			line += " — " + p.Description
 		}
-		sb.WriteString(cursor + name + "\n")
-		sb.WriteString(desc + "\n")
+		if i == m.presetCur {
+			listSB.WriteString(terminalui.SelectedRow(line, w) + "\n")
+		} else {
+			listSB.WriteString(terminalui.DimTextStyle.Render("  "+line) + "\n")
+		}
 	}
+	if m.Err != nil {
+		listSB.WriteString("\n" + errorStyle.Render("Error: "+m.Err.Error()))
+	}
+	sb.WriteString(terminalui.BorderedPanel(listSB.String(), w) + "\n")
 
-	sb.WriteString("\n" + dimStyle.Render("↑/↓ or j/k: navigate  Enter: select"))
+	hints := []terminalui.KeyHint{
+		{Key: "↑/↓", Desc: "navigate"},
+		{Key: "Enter", Desc: "select"},
+	}
+	sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
 	return sb.String()
 }
 
@@ -500,9 +540,14 @@ func updateSkills(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func viewSkills(m Model) string {
+	w := terminalui.PanelWidth(m.width)
 	var sb strings.Builder
-	sb.WriteString(stepHeader(4, 7, "Select Extra Skills"))
-	sb.WriteString(dimStyle.Render("Required/default skills are installed automatically. Select only stack-specific extras.") + "\n\n")
+
+	sb.WriteString(terminalui.HeaderRow("Setup › Skills", terminalui.ModeBadge("normal"), m.width) + "\n\n")
+
+	var listSB strings.Builder
+	listSB.WriteString(terminalui.SectionHeader("AVAILABLE", w))
+	listSB.WriteString(terminalui.DimTextStyle.Render("Required/default skills are installed automatically. Select only stack-specific extras.") + "\n\n")
 
 	cur := m.presetCur
 	for i, prompt := range m.SkillPrompts {
@@ -510,20 +555,24 @@ func viewSkills(m Model) string {
 		if len(prompt.SkillIDs) > 0 && m.Selected[prompt.SkillIDs[0]] {
 			check = "[x]"
 		}
-
 		line := fmt.Sprintf("%s %s — %s", check, prompt.Label, prompt.Description)
 		if i == cur {
-			line = selectedStyle.Render("> " + line)
+			listSB.WriteString(terminalui.SelectedRow(line, w) + "\n")
 		} else {
-			line = "  " + line
+			listSB.WriteString("  " + line + "\n")
 		}
-		sb.WriteString(line + "\n")
 	}
 	if len(m.SkillPrompts) == 0 {
-		sb.WriteString(dimStyle.Render("No stack-specific skill prompts available for this catalog.") + "\n")
+		listSB.WriteString(terminalui.DimTextStyle.Render("No stack-specific skill prompts available for this catalog.") + "\n")
 	}
+	sb.WriteString(terminalui.BorderedPanel(listSB.String(), w) + "\n")
 
-	sb.WriteString("\n" + dimStyle.Render("↑/↓ or j/k: navigate  Space: toggle  Enter: confirm"))
+	hints := []terminalui.KeyHint{
+		{Key: "↑/↓", Desc: "navigate"},
+		{Key: "Space", Desc: "toggle"},
+		{Key: "Enter", Desc: "confirm"},
+	}
+	sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
 	return sb.String()
 }
 
@@ -868,20 +917,29 @@ func viewPhaseModels(m Model) string {
 		return viewPhaseModelPicker(m)
 	}
 
+	w := terminalui.PanelWidth(m.width)
 	var sb strings.Builder
-	sb.WriteString(stepHeader(5, 7, "SDD Phase Models"))
+	sb.WriteString(terminalui.HeaderRow("Setup › Phase Models", terminalui.ModeBadge("normal"), m.width) + "\n\n")
+
 	if !m.phaseModelHasOpenCode && !m.phaseModelHasClaude {
-		sb.WriteString("No Claude Code or OpenCode runtime target detected. Phase model editing is unavailable.\n\n")
-		sb.WriteString(dimStyle.Render("Tab review  Esc back"))
+		sb.WriteString(terminalui.BorderedPanel("No Claude Code or OpenCode runtime target detected. Phase model editing is unavailable.", w) + "\n")
+		hints := []terminalui.KeyHint{
+			{Key: "Tab", Desc: "review"},
+			{Key: "Esc", Desc: "back"},
+		}
+		sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
 		return sb.String()
 	}
-	sb.WriteString("Editá los modelos por fase para los agentes runtime detectados.\n\n")
+
+	var listSB strings.Builder
+	listSB.WriteString(terminalui.DimTextStyle.Render("Edit models per phase for detected runtime targets.") + "\n\n")
 	for _, diagnostic := range m.phaseModelOpenCodeDiagnostics {
-		sb.WriteString(warningStyle.Render(diagnostic) + "\n")
+		listSB.WriteString(warningStyle.Render(diagnostic) + "\n")
 	}
 	if len(m.phaseModelOpenCodeDiagnostics) > 0 {
-		sb.WriteString("\n")
+		listSB.WriteString("\n")
 	}
+
 	header := "phase"
 	if m.phaseModelHasOpenCode {
 		header += "                 OpenCode"
@@ -889,7 +947,8 @@ func viewPhaseModels(m Model) string {
 	if m.phaseModelHasClaude {
 		header += "             Claude"
 	}
-	sb.WriteString(headerStyle.Render(header) + "\n")
+	listSB.WriteString(terminalui.ColumnHeaderStyle.Render(header) + "\n")
+
 	for i, row := range m.phaseModelRows {
 		parts := []string{fmt.Sprintf("%-20s", row.Phase)}
 		if m.phaseModelHasOpenCode {
@@ -900,70 +959,127 @@ func viewPhaseModels(m Model) string {
 		}
 		line := strings.Join(parts, " ")
 		if i == m.phaseModelActiveRow {
-			line = selectedStyle.Render("> " + line)
+			listSB.WriteString(terminalui.SelectedRow(line, w) + "\n")
 		} else {
-			line = "  " + line
+			listSB.WriteString("  " + line + "\n")
 		}
-		sb.WriteString(line + "\n")
 	}
-	sb.WriteString("\n" + dimStyle.Render("↑/↓ row  ←/→ column  Enter: edit picker  Space: cycle legacy option  a apply-all active column  Tab review  Esc back"))
+	sb.WriteString(terminalui.BorderedPanel(listSB.String(), w) + "\n")
+
+	hints := []terminalui.KeyHint{
+		{Key: "↑/↓", Desc: "row"},
+		{Key: "←/→", Desc: "column"},
+		{Key: "Enter", Desc: "picker"},
+		{Key: "Space", Desc: "cycle"},
+		{Key: "a", Desc: "apply-all"},
+		{Key: "Tab", Desc: "review"},
+		{Key: "Esc", Desc: "back"},
+	}
+	sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
 	return sb.String()
 }
 
 func viewPhaseModelPicker(m Model) string {
+	w := terminalui.PanelWidth(m.width)
 	var sb strings.Builder
-	sb.WriteString(stepHeader(5, 7, "SDD Phase Models"))
+
 	switch m.phaseModelMode {
 	case phaseModelModeOpenCodeProvider:
-		sb.WriteString(headerStyle.Render("Select OpenCode provider") + "\n\n")
+		sb.WriteString(terminalui.HeaderRow("Setup › Phase Models › Provider", terminalui.ModeBadge("normal"), m.width) + "\n\n")
+		var listSB strings.Builder
+		listSB.WriteString(terminalui.SectionHeader("PROVIDER", w))
 		for i, provider := range m.phaseModelOpenCodeProviders {
-			writePickerLine(&sb, i == m.phaseModelProviderCursor, provider.DisplayName())
+			if i == m.phaseModelProviderCursor {
+				listSB.WriteString(terminalui.SelectedRow(provider.DisplayName(), w) + "\n")
+			} else {
+				listSB.WriteString("  " + provider.DisplayName() + "\n")
+			}
 		}
-		sb.WriteString("\n" + dimStyle.Render("↑/↓: navigate  Enter: select provider  Esc: back"))
+		sb.WriteString(terminalui.BorderedPanel(listSB.String(), w) + "\n")
+		hints := []terminalui.KeyHint{
+			{Key: "↑/↓", Desc: "navigate"},
+			{Key: "Enter", Desc: "select provider"},
+			{Key: "Esc", Desc: "back"},
+		}
+		sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
+
 	case phaseModelModeOpenCodeModel:
-		sb.WriteString(headerStyle.Render("Select OpenCode model") + "\n")
-		sb.WriteString("Search: " + m.phaseModelModelSearch + "\n\n")
+		sb.WriteString(terminalui.HeaderRow("Setup › Phase Models › Model", terminalui.ModeBadge("normal"), m.width) + "\n\n")
+		var listSB strings.Builder
+		listSB.WriteString(terminalui.SectionHeader("MODEL", w))
+		listSB.WriteString("Search: " + m.phaseModelModelSearch + "\n\n")
 		models := currentOpenCodeModelOptions(m)
 		if len(models) == 0 {
-			sb.WriteString(dimStyle.Render("No models match the current search.") + "\n")
+			listSB.WriteString(terminalui.DimTextStyle.Render("No models match the current search.") + "\n")
 		}
 		for i, model := range models {
 			label := model.Model.ID
 			if strings.TrimSpace(model.Model.Name) != "" {
 				label += " — " + strings.TrimSpace(model.Model.Name)
 			}
-			writePickerLine(&sb, i == m.phaseModelModelCursor, label)
+			if i == m.phaseModelModelCursor {
+				listSB.WriteString(terminalui.SelectedRow(label, w) + "\n")
+			} else {
+				listSB.WriteString("  " + label + "\n")
+			}
 		}
-		sb.WriteString("\n" + dimStyle.Render("Type to search  Backspace: delete  Ctrl+U: clear  Enter: select model  Esc: providers"))
+		sb.WriteString(terminalui.BorderedPanel(listSB.String(), w) + "\n")
+		hints := []terminalui.KeyHint{
+			{Key: "type", Desc: "search"},
+			{Key: "Backspace", Desc: "delete"},
+			{Key: "Ctrl+U", Desc: "clear"},
+			{Key: "Enter", Desc: "select model"},
+			{Key: "Esc", Desc: "providers"},
+		}
+		sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
+
 	case phaseModelModeOpenCodeEffort:
-		sb.WriteString(headerStyle.Render("Select OpenCode effort") + "\n\n")
+		sb.WriteString(terminalui.HeaderRow("Setup › Phase Models › Effort", terminalui.ModeBadge("normal"), m.width) + "\n\n")
+		var listSB strings.Builder
+		listSB.WriteString(terminalui.SectionHeader("EFFORT", w))
 		efforts := currentOpenCodeEffortOptions(m)
 		for i, effort := range efforts {
 			label := effort
 			if label == "" {
 				label = "default"
 			}
-			writePickerLine(&sb, i == m.phaseModelEffortCursor, label)
+			if i == m.phaseModelEffortCursor {
+				listSB.WriteString(terminalui.SelectedRow(label, w) + "\n")
+			} else {
+				listSB.WriteString("  " + label + "\n")
+			}
 		}
-		sb.WriteString("\n" + dimStyle.Render("↑/↓: navigate  Enter: confirm effort  Esc: models"))
+		sb.WriteString(terminalui.BorderedPanel(listSB.String(), w) + "\n")
+		hints := []terminalui.KeyHint{
+			{Key: "↑/↓", Desc: "navigate"},
+			{Key: "Enter", Desc: "confirm effort"},
+			{Key: "Esc", Desc: "models"},
+		}
+		sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
+
 	case phaseModelModeClaudeModel:
-		sb.WriteString(headerStyle.Render("Select Claude model") + "\n\n")
+		sb.WriteString(terminalui.HeaderRow("Setup › Phase Models › Claude", terminalui.ModeBadge("normal"), m.width) + "\n\n")
+		var listSB strings.Builder
+		listSB.WriteString(terminalui.SectionHeader("CLAUDE MODEL", w))
 		for i, model := range m.phaseModelClaude {
-			writePickerLine(&sb, i == m.phaseModelModelCursor, model)
+			if i == m.phaseModelModelCursor {
+				listSB.WriteString(terminalui.SelectedRow(model, w) + "\n")
+			} else {
+				listSB.WriteString("  " + model + "\n")
+			}
 		}
-		sb.WriteString("\n" + dimStyle.Render("↑/↓: navigate  Enter: select model  Esc: back"))
+		sb.WriteString(terminalui.BorderedPanel(listSB.String(), w) + "\n")
+		hints := []terminalui.KeyHint{
+			{Key: "↑/↓", Desc: "navigate"},
+			{Key: "Enter", Desc: "select model"},
+			{Key: "Esc", Desc: "back"},
+		}
+		sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
+
 	default:
 		return viewPhaseModels(Model{Step: m.Step, cfg: m.cfg, phaseModelRows: m.phaseModelRows, phaseModelHasOpenCode: m.phaseModelHasOpenCode, phaseModelHasClaude: m.phaseModelHasClaude})
 	}
 	return sb.String()
-}
-
-func writePickerLine(sb *strings.Builder, selected bool, label string) {
-	if selected {
-		sb.WriteString(selectedStyle.Render("> "+label) + "\n")
-		return
-	}
-	sb.WriteString("  " + label + "\n")
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1084,11 +1200,18 @@ func updateStatuslineConfirm(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func viewStatuslineConfirm(m Model) string {
+	w := terminalui.PanelWidth(m.width)
 	var sb strings.Builder
-	sb.WriteString(titleStyle.Render("Jarvis-Dev Setup — Statusline Script") + "\n\n")
-	sb.WriteString(warningStyle.Render("~/.claude/statusline-command.sh already exists.") + "\n\n")
-	sb.WriteString("Overwrite with the Jarvis-managed statusline? [y/N]: \n\n")
-	sb.WriteString(dimStyle.Render("y: overwrite  n/Enter: keep existing  Ctrl+C: exit"))
+	sb.WriteString(terminalui.HeaderRow("Setup › Statusline Script", terminalui.ModeBadge("normal"), m.width) + "\n\n")
+	content := warningStyle.Render("~/.claude/statusline-command.sh already exists.") + "\n\n" +
+		"Overwrite with the Jarvis-managed statusline? [y/N]: "
+	sb.WriteString(terminalui.BorderedPanel(content, w) + "\n")
+	hints := []terminalui.KeyHint{
+		{Key: "y", Desc: "overwrite"},
+		{Key: "n/Enter", Desc: "keep existing"},
+		{Key: "Ctrl+C", Desc: "exit"},
+	}
+	sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
 	return sb.String()
 }
 
@@ -1321,24 +1444,29 @@ func buildSkillInfoList(m Model) []config.SkillInfo {
 }
 
 func viewReview(m Model) string {
+	w := terminalui.PanelWidth(m.width)
 	var sb strings.Builder
-	sb.WriteString(stepHeader(6, 7, "Review & Apply"))
-	sb.WriteString(headerStyle.Render("Resumen de configuración") + "\n")
 
-	fmt.Fprintf(&sb, "Scope: %s", m.Scope)
+	sb.WriteString(terminalui.HeaderRow("Setup › Review", terminalui.ModeBadge("normal"), m.width) + "\n\n")
+
+	// Build summary content for the bordered panel.
+	var summarySB strings.Builder
+	summarySB.WriteString(terminalui.TitleStyle.Render("Resumen de configuración") + "\n\n")
+
+	fmt.Fprintf(&summarySB, "Scope: %s", m.Scope)
 	if m.Scope == config.ScopeLocalOnly {
-		sb.WriteString("  " + errorStyle.Render(localOnlyReviewWarning))
+		summarySB.WriteString("  " + errorStyle.Render(localOnlyReviewWarning))
 	}
-	sb.WriteString("\n")
-	fmt.Fprintf(&sb, "Persona: %s\n", m.cfg.PersonaPreset)
+	summarySB.WriteString("\n")
+	fmt.Fprintf(&summarySB, "Persona: %s\n", m.cfg.PersonaPreset)
 	if m.Scope == config.ScopeLocalCloud {
-		fmt.Fprintf(&sb, "Cloud email: %s\n", strings.TrimSpace(m.Email))
+		fmt.Fprintf(&summarySB, "Cloud email: %s\n", strings.TrimSpace(m.Email))
 	} else {
-		sb.WriteString("Cloud email: (omitido por alcance local-only)\n")
+		summarySB.WriteString("Cloud email: (omitido por alcance local-only)\n")
 	}
 
 	resolved := sddruntime.ResolvePhaseModels(m.cfg)
-	sb.WriteString("SDD phase models:\n")
+	summarySB.WriteString("SDD phase models:\n")
 	for _, phase := range sddruntime.DefaultContract().Phases {
 		sel := resolved[phase]
 		opencodeDisplay := sel.OpenCode
@@ -1349,53 +1477,66 @@ func viewReview(m Model) string {
 				effortDisplay = ", effort=" + strings.TrimSpace(assignment.Effort)
 			}
 		}
-		fmt.Fprintf(&sb, "- %s: opencode=%s%s, claude=%s\n", phase, opencodeDisplay, effortDisplay, sel.Claude)
+		fmt.Fprintf(&summarySB, "- %s: opencode=%s%s, claude=%s\n", phase, opencodeDisplay, effortDisplay, sel.Claude)
 	}
+	sb.WriteString(terminalui.BorderedPanel(summarySB.String(), w) + "\n\n")
 
 	choices := []string{"Back", "Cancel", "Apply"}
 	for i, opt := range choices {
 		line := "  " + opt
 		if i == m.reviewChoice {
-			line = selectedStyle.Render("> " + opt)
+			line = terminalui.SelectedRow("> "+opt, w)
 		}
 		sb.WriteString(line + "\n")
 	}
 
-	sb.WriteString("\n" + dimStyle.Render("↑/↓ o j/k: navegar  Enter: confirmar"))
+	hints := []terminalui.KeyHint{
+		{Key: "↑/↓", Desc: "navegar"},
+		{Key: "Enter", Desc: "confirmar"},
+	}
+	sb.WriteString("\n" + terminalui.HelpBar(hints, "normal", m.width))
 	return sb.String()
 }
 
 func viewApply(m Model) string {
+	w := terminalui.PanelWidth(m.width)
 	var sb strings.Builder
-	sb.WriteString(stepHeader(7, 7, "Apply"))
 
+	sb.WriteString(terminalui.HeaderRow("Setup › Apply", terminalui.ModeBadge("normal"), m.width) + "\n\n")
+
+	var contentSB strings.Builder
 	if len(m.agentProgress) == 0 {
 		agentNames := make([]string, 0, len(m.Agents))
 		for _, a := range m.Agents {
 			agentNames = append(agentNames, a.Name())
 		}
 		if len(agentNames) == 0 {
-			sb.WriteString("No agents detected on this system.\n")
-			sb.WriteString(dimStyle.Render("Install Claude Code or OpenCode, then re-run jarvis.") + "\n\n")
+			contentSB.WriteString("No agents detected on this system.\n")
+			contentSB.WriteString(terminalui.DimTextStyle.Render("Install Claude Code or OpenCode, then re-run jarvis."))
 		} else {
-			sb.WriteString("Detected agents: " + strings.Join(agentNames, ", ") + "\n\n")
+			contentSB.WriteString("Detected agents: " + strings.Join(agentNames, ", ") + "\n\n")
+			contentSB.WriteString(terminalui.DimTextStyle.Render("Press Enter para ejecutar apply."))
 		}
-		sb.WriteString(dimStyle.Render("Press Enter para ejecutar apply."))
+		sb.WriteString(terminalui.BorderedPanel(contentSB.String(), w) + "\n")
+		hints := []terminalui.KeyHint{{Key: "Enter", Desc: "apply"}}
+		sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
 		return sb.String()
 	}
 
 	for _, line := range m.agentProgress {
-		sb.WriteString(line + "\n")
+		contentSB.WriteString(line + "\n")
 	}
-
 	if m.agentDone {
 		if m.Err != nil {
-			sb.WriteString("\n" + errorStyle.Render("Setup failed. Press Enter to retry."))
+			contentSB.WriteString("\n" + errorStyle.Render("Setup failed. Press Enter to retry."))
 		} else {
-			sb.WriteString("\n" + successStyle.Render("All done!") + "\n")
-			sb.WriteString(dimStyle.Render("Press Enter to see the summary."))
+			contentSB.WriteString("\n" + terminalui.TitleStyle.Render("All done!"))
+			contentSB.WriteString("\n" + terminalui.DimTextStyle.Render("Press Enter to see the summary."))
 		}
 	}
+	sb.WriteString(terminalui.BorderedPanel(contentSB.String(), w) + "\n")
+	hints := []terminalui.KeyHint{{Key: "Enter", Desc: "continue"}}
+	sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
 	return sb.String()
 }
 
@@ -1415,18 +1556,30 @@ func updateDone(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func viewDone(m Model) string {
+	w := terminalui.PanelWidth(m.width)
 	var sb strings.Builder
+
+	doneLabel := terminalui.StatusDot("healthy") + " Complete"
+	sb.WriteString(terminalui.HeaderRow("Setup › Done", doneLabel, m.width) + "\n\n")
+
+	var contentSB strings.Builder
 	if m.Mode == string(config.ConfigStatusReconfigure) {
-		sb.WriteString(titleStyle.Render("Jarvis-Dev Reconfiguration Complete!") + "\n\n")
+		contentSB.WriteString(terminalui.TitleStyle.Render("Jarvis-Dev Reconfiguration Complete!") + "\n\n")
 	} else {
-		sb.WriteString(titleStyle.Render("Jarvis-Dev Setup Complete!") + "\n\n")
+		contentSB.WriteString(terminalui.TitleStyle.Render("Jarvis-Dev Setup Complete!") + "\n\n")
 	}
-	sb.WriteString(successStyle.Render("Your AI coding environment is configured.") + "\n\n")
-	sb.WriteString(headerStyle.Render("Next Steps:") + "\n")
-	sb.WriteString("  1. Restart Claude Code or OpenCode to load the new MCP config.\n")
-	sb.WriteString("  2. Use " + headerStyle.Render("'jarvis persona set <preset>'") + " to change persona.\n")
-	sb.WriteString("  3. Use mem_sync in your agent only when you want a manual cloud sync.\n\n")
-	sb.WriteString(dimStyle.Render("Press Enter or q to exit."))
+	contentSB.WriteString(terminalui.TitleStyle.Render("Your AI coding environment is configured.") + "\n\n")
+	contentSB.WriteString(terminalui.ColumnHeaderStyle.Render("Next Steps:") + "\n")
+	contentSB.WriteString("  1. Restart Claude Code or OpenCode to load the new MCP config.\n")
+	contentSB.WriteString("  2. Use " + terminalui.HelpKeyStyle.Render("'jarvis persona set <preset>'") + " to change persona.\n")
+	contentSB.WriteString("  3. Use mem_sync in your agent only when you want a manual cloud sync.")
+	sb.WriteString(terminalui.BorderedPanel(contentSB.String(), w) + "\n")
+
+	hints := []terminalui.KeyHint{
+		{Key: "Enter", Desc: "exit"},
+		{Key: "q", Desc: "quit"},
+	}
+	sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
 	return sb.String()
 }
 
