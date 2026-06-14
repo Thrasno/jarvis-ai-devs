@@ -284,6 +284,138 @@ func TestCatalogContract_SDDVerifySourceUsesJarvisAdaptedModelSections(t *testin
 	}
 }
 
+func TestCatalogContract_SDDVerifyStrictTDDSourcePreservesQualityVerificationRules(t *testing.T) {
+	t.Parallel()
+
+	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-verify/strict-tdd-verify.md")
+
+	requiredSnippets := []string{
+		"Gentleman-Programming/gentle-ai/v1.40.2/internal/assets/skills/sdd-verify/strict-tdd-verify.md",
+		"660917927b4821f5e540dc8fa501d6bee723222c",
+		"## Step 5a: TDD Compliance Check",
+		"RED evidence must include an executed focused failing command",
+		"GREEN evidence must be re-run during verify",
+		"REFACTOR evidence must include a post-refactor passing command or an explicit no-refactor rationale",
+		"### Test Layer Distribution",
+		"For each spec scenario, note which test layer covers it",
+		"### Changed File Coverage",
+		"Go coverage example: `go test ./... -coverprofile=/tmp/opencode/jarvis-sdd-verify.coverprofile`",
+		"### Assertion Quality",
+		"| File | Line | Assertion | Issue | Severity |",
+		"Tautologies",
+		"Ghost loops",
+		"Smoke-test-only",
+		"Mock/assertion ratio",
+		"Behavior coverage vs implementation-only tests",
+		"Mock/Fake Hygiene",
+		"Skipped Dimensions and Uncertainty",
+		"Coverage analysis skipped — no coverage tool detected",
+		"Missing optional tooling is not a failure, but skipped TDD evidence is still a finding.",
+	}
+
+	for _, want := range requiredSnippets {
+		if !strings.Contains(content, want) {
+			t.Fatalf("expected sdd-verify strict-tdd source to contain quality rule %q", want)
+		}
+	}
+}
+
+func TestCatalogContract_SDDVerifyStrictTDDSourceDocumentsJarvisPolicyAdditions(t *testing.T) {
+	t.Parallel()
+
+	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-verify/strict-tdd-verify.md")
+
+	requiredSnippets := []string{
+		"Upstream-derived from Gentle AI v1.40.2",
+		"Jarvis-specific verification policy additions beyond runtime wording",
+		"Future parity runs MUST NOT overwrite Jarvis-specific verification policy without maintainer approval.",
+	}
+
+	for _, want := range requiredSnippets {
+		if !strings.Contains(content, want) {
+			t.Fatalf("expected sdd-verify strict-tdd source provenance to contain %q", want)
+		}
+	}
+}
+
+func TestCatalogContract_SDDVerifyStrictTDDSourceFlagsOverIntegratedCoverageGaps(t *testing.T) {
+	t.Parallel()
+
+	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-verify/strict-tdd-verify.md")
+
+	requiredSnippets := []string{
+		"### Coverage Allocation Audit",
+		"over-integrated",
+		"E2E-heavy",
+		"deterministic lower-layer tests",
+		"Flag WARNING when behavior is covered only by E2E or broad integration tests but deterministic unit or lower-layer integration tests should cover it",
+		"Do not accept expensive E2E coverage as a substitute for cheaper deterministic coverage of pure logic, parsing, mapping, validation, command construction, or artifact rendering.",
+	}
+
+	for _, want := range requiredSnippets {
+		if !strings.Contains(content, want) {
+			t.Fatalf("expected sdd-verify strict-tdd source to contain coverage allocation guard %q", want)
+		}
+	}
+}
+
+func TestCatalogContract_SDDVerifyStrictTDDSourceWritesCoverageProfilesOutsideRepo(t *testing.T) {
+	t.Parallel()
+
+	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-verify/strict-tdd-verify.md")
+
+	if !strings.Contains(content, "/tmp/opencode/") {
+		t.Fatal("expected coverage examples to write generated profiles outside the repository under /tmp/opencode")
+	}
+
+	for _, forbidden := range []string{
+		"-coverprofile=coverage.out",
+		"-coverprofile ./coverage.out",
+		"-coverprofile=./coverage.out",
+		"Go coverage example: `go test ./... -coverprofile=coverage.out`",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("expected sdd-verify strict-tdd source not to recommend repo-local coverage output %q", forbidden)
+		}
+	}
+
+	for _, line := range strings.Split(content, "\n") {
+		if !strings.Contains(line, "coverprofile") {
+			continue
+		}
+		if !regexp.MustCompile(`-coverprofile[= ]/tmp/opencode/[^\s` + "`" + `]+`).MatchString(line) {
+			t.Fatalf("expected coverprofile guidance to use /tmp/opencode, got line %q", line)
+		}
+	}
+}
+
+func TestCatalogContract_SDDVerifyStrictTDDSourceRejectsWeakTDDPassLoopholes(t *testing.T) {
+	t.Parallel()
+
+	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-verify/strict-tdd-verify.md")
+
+	forbiddenSnippets := []string{
+		"verify adequate cases or a valid single-scenario reason",
+		"If \"➖ Single\" → verify spec truly has only one scenario",
+		"Skip verification, trust the report",
+		"subjective quality; skip strict verification",
+		"Coverage and quality metrics are informational, not blocking.",
+		"Test layer distribution is informational — SUGGESTION level only",
+		"assertions that never call production code",
+		"type-only assertions without value assertions",
+		"empty collection assertions are enough",
+		"manual verification path is evidence by itself",
+		"RED would fail",
+		"would fail if run",
+	}
+
+	for _, unwanted := range forbiddenSnippets {
+		if strings.Contains(content, unwanted) {
+			t.Fatalf("expected sdd-verify strict-tdd source not to contain weak TDD loophole %q", unwanted)
+		}
+	}
+}
+
 func TestCatalogContract_SDDApplySourceUsesJarvisAdaptedStatusGuards(t *testing.T) {
 	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-apply/SKILL.md")
 
