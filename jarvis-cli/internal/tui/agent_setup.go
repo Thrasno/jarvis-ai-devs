@@ -34,6 +34,10 @@ type generatedConfigAgent interface {
 	MergeGeneratedConfig(*config.AppConfig) error
 }
 
+type configAwareSkillInstaller interface {
+	InstallSkillsWithConfig(fs.FS, []string, *config.AppConfig) error
+}
+
 var refreshProjectSkillRegistry = projectregistry.Refresh
 
 // statuslineInstaller is implemented by agents that support the Jarvis-managed
@@ -65,7 +69,11 @@ func configureWizardAgent(
 			return nil, fmt.Errorf("generated config guardrails: %w", err)
 		}
 	}
-	if err := a.InstallSkills(skillsSubFS, selectedIDs); err != nil {
+	if skillInstaller, ok := a.(configAwareSkillInstaller); ok {
+		if err := skillInstaller.InstallSkillsWithConfig(skillsSubFS, selectedIDs, cfg); err != nil {
+			return nil, fmt.Errorf("install skills: %w", err)
+		}
+	} else if err := a.InstallSkills(skillsSubFS, selectedIDs); err != nil {
 		return nil, fmt.Errorf("install skills: %w", err)
 	}
 	orchestratorTemplate, err := fs.ReadFile(jarvis.OrchestratorFS, "embed/orchestrator/sdd-orchestrator.md")

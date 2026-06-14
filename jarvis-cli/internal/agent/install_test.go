@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 )
 
 func TestInstallSkillsFromFS(t *testing.T) {
@@ -127,6 +129,48 @@ func TestInstallSkillsFromFS_Idempotent(t *testing.T) {
 
 	// Content must be exactly what was written, not appended.
 	assertFileContent(t, filepath.Join(dest, "my-skill", "SKILL.md"), "# My Skill")
+}
+
+func TestInstallSkillsFromFSWithModelSections_RemovesNonMatchingSections(t *testing.T) {
+	dest := t.TempDir()
+	skillsFS := fstest.MapFS{
+		"sdd-verify/SKILL.md": {Data: []byte(strings.Join([]string{
+			"Neutral intro",
+			"<!-- section:model-capable -->",
+			"Capable verification instructions",
+			"<!-- /section:model-capable -->",
+			"<!-- section:model-small -->",
+			"Small verification instructions",
+			"<!-- /section:model-small -->",
+			"Neutral outro",
+		}, "\n"))},
+	}
+
+	err := installSkillsFromFSWithModelSections(dest, skillsFS, []string{"sdd-verify"}, func(skillID string) sddruntime.ModelSectionClass {
+		if skillID != "sdd-verify" {
+			t.Fatalf("unexpected skillID %q", skillID)
+		}
+		return sddruntime.ModelSectionSmall
+	})
+	if err != nil {
+		t.Fatalf("installSkillsFromFSWithModelSections: %v", err)
+	}
+
+	installed, err := os.ReadFile(filepath.Join(dest, "sdd-verify", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read installed skill: %v", err)
+	}
+	content := string(installed)
+	for _, want := range []string{"Neutral intro", "Small verification instructions", "Neutral outro"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("installed skill missing %q:\n%s", want, content)
+		}
+	}
+	for _, unwanted := range []string{"Capable verification instructions", "section:model"} {
+		if strings.Contains(content, unwanted) {
+			t.Fatalf("installed skill must remove %q:\n%s", unwanted, content)
+		}
+	}
 }
 
 type brokenReadFS struct{}

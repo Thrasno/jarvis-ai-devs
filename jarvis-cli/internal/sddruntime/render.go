@@ -76,8 +76,12 @@ func RenderOrchestrator(agent string, cfg *config.AppConfig, templateContent str
 	for _, phase := range contract.Phases {
 		rows = append(rows, modelAssignmentRow{Phase: phase, Model: assignments[phase], Effort: assignmentEffort(platform, cfg, phase), Reason: phaseReason(phase)})
 	}
+	selectedTemplate, err := RenderModelSections(templateContent, ModelSectionClassForModel(assignments["orchestrator"]))
+	if err != nil {
+		return "", fmt.Errorf("render orchestrator model sections: %w", err)
+	}
 
-	tmpl, err := template.New("sdd-orchestrator").Parse(templateContent)
+	tmpl, err := template.New("sdd-orchestrator").Parse(selectedTemplate)
 	if err != nil {
 		return "", fmt.Errorf("parse orchestrator template: %w", err)
 	}

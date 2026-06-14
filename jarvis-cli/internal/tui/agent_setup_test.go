@@ -67,6 +67,21 @@ func (a *setupConfigAwareAgentStub) ObserveRuntimeWithConfig(cfg *config.AppConf
 	return a.ObserveRuntime()
 }
 
+type setupConfigAwareSkillInstallerStub struct {
+	*setupAgentStub
+	installSkillsWithConfigCalls    int
+	installSkillsWithConfigCfg      *config.AppConfig
+	installSkillsWithConfigSelected []string
+	installSkillsWithConfigErr      error
+}
+
+func (a *setupConfigAwareSkillInstallerStub) InstallSkillsWithConfig(_ fs.FS, selected []string, cfg *config.AppConfig) error {
+	a.installSkillsWithConfigCalls++
+	a.installSkillsWithConfigCfg = cfg
+	a.installSkillsWithConfigSelected = append([]string(nil), selected...)
+	return a.installSkillsWithConfigErr
+}
+
 func (a *setupAgentStub) MergeConfig(entry agent.MCPEntry) error {
 	a.mergeCalls++
 	if a.mergeErrAt > 0 && a.mergeCalls == a.mergeErrAt {
@@ -197,6 +212,56 @@ func TestConfigureWizardAgents_SurfacesRegistryAutomationWarningsWithoutFailing(
 	}
 	if len(results[0].Warnings) != 1 || !strings.Contains(results[0].Warnings[0], "readonly config") {
 		t.Fatalf("expected surfaced registry automation warning, got %+v", results[0])
+	}
+}
+
+func TestConfigureWizardAgent_PrefersConfigAwareSkillInstallation(t *testing.T) {
+	tests := []struct {
+		name                       string
+		installSkillsWithConfigErr error
+		wantErr                    string
+	}{
+		{name: "config-aware installer succeeds"},
+		{name: "config-aware installer error is returned", installSkillsWithConfigErr: errors.New("config-aware skills fail"), wantErr: "config-aware skills fail"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.AppConfig{}
+			selectedIDs := []string{"sdd-apply", "sdd-verify"}
+			a := &setupConfigAwareSkillInstallerStub{
+				setupAgentStub: &setupAgentStub{
+					name:             "opencode",
+					installSkillsErr: errors.New("legacy InstallSkills should not be called"),
+				},
+				installSkillsWithConfigErr: tt.installSkillsWithConfigErr,
+			}
+
+			warnings, err := configureWizardAgent(a, cfg, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, selectedIDs, func() bool { return true })
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("configureWizardAgent expected error containing %q", tt.wantErr)
+				}
+				if got := err.Error(); !strings.Contains(got, tt.wantErr) {
+					t.Fatalf("error = %q, want contains %q", got, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("configureWizardAgent returned error: %v", err)
+			}
+			if tt.wantErr == "" && len(warnings) != 0 {
+				t.Fatalf("unexpected registry automation warnings: %v", warnings)
+			}
+
+			if a.installSkillsWithConfigCalls != 1 {
+				t.Fatalf("InstallSkillsWithConfig calls = %d, want 1", a.installSkillsWithConfigCalls)
+			}
+			if a.installSkillsWithConfigCfg != cfg {
+				t.Fatalf("InstallSkillsWithConfig cfg = %p, want %p", a.installSkillsWithConfigCfg, cfg)
+			}
+			if got := strings.Join(a.installSkillsWithConfigSelected, ","); got != strings.Join(selectedIDs, ",") {
+				t.Fatalf("InstallSkillsWithConfig selected = %q, want %q", got, strings.Join(selectedIDs, ","))
+			}
+		})
 	}
 }
 
