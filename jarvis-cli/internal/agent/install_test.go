@@ -276,6 +276,77 @@ func TestInstallSkillsFromEmbeddedSDDVerify_RendersModelSpecificSections(t *test
 	}
 }
 
+func TestInstallSkillsFromEmbeddedSDDApply_PreservesJarvisStatusAndWorkspaceGuards(t *testing.T) {
+	skillsFS, err := fs.Sub(jarvis.SkillsFS, "embed/skills")
+	if err != nil {
+		t.Fatalf("open embedded skills FS: %v", err)
+	}
+
+	dest := t.TempDir()
+	cfg := &config.AppConfig{SDD: config.SDDConfig{PhaseModels: map[string]config.PhaseModelSelection{
+		"sdd-apply": {OpenCode: "sonnet"},
+	}}}
+	sectionClass, err := skillModelSectionClassForPlatform(sddruntime.PlatformOpenCode, cfg)
+	if err != nil {
+		t.Fatalf("resolve model section class: %v", err)
+	}
+
+	if err := installSkillsFromFSWithModelSections(dest, skillsFS, []string{"sdd-apply"}, sectionClass); err != nil {
+		t.Fatalf("installSkillsFromFSWithModelSections: %v", err)
+	}
+
+	installed, err := os.ReadFile(filepath.Join(dest, "sdd-apply", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read installed skill: %v", err)
+	}
+	content := string(installed)
+
+	requiredSnippets := []string{
+		"Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.40.2",
+		"jarvis sdd status <change> --json",
+		"schema: `jarvis.sdd-status`",
+		"actionContext",
+		"actionContext.allowedEditRoots",
+		"contextFiles",
+		"artifactPaths",
+		"allowedEditRoots",
+		"workspace-planning",
+		"blockedReasons",
+		"applyState",
+		"applyState.hasProgress",
+		"applyState.complete",
+		"phaseInstructions",
+		"If `jarvis sdd status <change> --json` is unavailable, STOP before editing unless the maintainer explicitly approves manual recovery mode in the current conversation.",
+		"Manual recovery mode does not make missing status safe by default; report missing status dimensions: blockers, dependencies, workspace-planning, artifact context, and allowed edit roots.",
+		"If `actionContext.allowedEditRoots` is missing or empty, STOP before editing.",
+		"If a needed edit is outside every `actionContext.allowedEditRoots` entry, STOP",
+		"Generated artifacts are output, never sources of truth",
+		"When prior `apply-progress = partial` exists, merge/reconcile it with current task state",
+		"do not jump to `sdd-verify` until apply progress and task checkboxes agree.",
+	}
+	for _, want := range requiredSnippets {
+		if !strings.Contains(content, want) {
+			t.Fatalf("installed sdd-apply missing %q:\n%s", want, content)
+		}
+	}
+
+	forbiddenSnippets := []string{
+		"mcp__engram__",
+		"Artifact store mode (`engram | openspec | hybrid | none`)",
+		"~/.claude/skills",
+		"~/.config/opencode/skills",
+		"If `applyState` says apply is blocked",
+		"If the command is unavailable, build the equivalent status from the artifacts before editing.",
+		"If status is unavailable and no explicit `actionContext.allowedEditRoots` is available, STOP before editing.",
+		"section:model",
+	}
+	for _, unwanted := range forbiddenSnippets {
+		if strings.Contains(content, unwanted) {
+			t.Fatalf("installed sdd-apply must not contain %q:\n%s", unwanted, content)
+		}
+	}
+}
+
 type brokenReadFS struct{}
 
 func (brokenReadFS) Open(name string) (fs.File, error) {

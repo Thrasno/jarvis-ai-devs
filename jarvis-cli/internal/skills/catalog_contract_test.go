@@ -153,7 +153,12 @@ func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *test
 			required: []string{
 				"disable-model-invocation: true",
 				"user-invocable: false",
+				"jarvis sdd status <change> --json",
+				"schema: `jarvis.sdd-status`",
+				"allowedEditRoots",
+				"workspace-planning",
 				"Read Previous Apply-Progress (if exists)",
+				"apply-progress = partial",
 				"There is no silent fallback.",
 				"Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.",
 			},
@@ -198,7 +203,7 @@ func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *test
 			content := readEmbeddedSkillAsset(t, tc.path)
 
 			upstreamVersion := "v1.26.5"
-			if tc.name == "sdd-verify" {
+			if tc.name == "sdd-verify" || tc.name == "sdd-apply" {
 				upstreamVersion = "v1.40.2"
 			}
 			sourceStamp := fmt.Sprintf("Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/%s/internal/assets/skills/%s/SKILL.md", upstreamVersion, tc.name)
@@ -275,6 +280,60 @@ func TestCatalogContract_SDDVerifySourceUsesJarvisAdaptedModelSections(t *testin
 	for _, snippet := range forbiddenSnippets {
 		if strings.Contains(content, snippet) {
 			t.Fatalf("expected sdd-verify source not to contain %q", snippet)
+		}
+	}
+}
+
+func TestCatalogContract_SDDApplySourceUsesJarvisAdaptedStatusGuards(t *testing.T) {
+	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-apply/SKILL.md")
+
+	requiredSnippets := []string{
+		"Gentleman-Programming/gentle-ai/v1.40.2/internal/assets/skills/sdd-apply/SKILL.md",
+		"660917927b4821f5e540dc8fa501d6bee723222c",
+		"delegate_only: true",
+		"jarvis sdd status <change> --json",
+		"schema: `jarvis.sdd-status`",
+		"actionContext",
+		"actionContext.allowedEditRoots",
+		"contextFiles",
+		"artifactPaths",
+		"allowedEditRoots",
+		"workspace-planning",
+		"blockedReasons",
+		"applyState",
+		"applyState.hasProgress",
+		"applyState.complete",
+		"phaseInstructions",
+		"If `jarvis sdd status <change> --json` is unavailable, STOP before editing unless the maintainer explicitly approves manual recovery mode in the current conversation.",
+		"Manual recovery mode does not make missing status safe by default; report missing status dimensions: blockers, dependencies, workspace-planning, artifact context, and allowed edit roots.",
+		"If `actionContext.allowedEditRoots` is missing or empty, STOP before editing.",
+		"If a needed edit is outside every `actionContext.allowedEditRoots` entry, STOP",
+		"Read context from `contextFiles` and `artifactPaths` before reading implementation files.",
+		"Generated artifacts are output, never sources of truth",
+		"mcp__hive__mem_save",
+		"Artifact store mode (`hive | openspec | hybrid | none`)",
+		"When prior `apply-progress = partial` exists, merge/reconcile it with current task state",
+		"do not jump to `sdd-verify` until apply progress and task checkboxes agree.",
+	}
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(content, snippet) {
+			t.Fatalf("expected sdd-apply source to contain %q", snippet)
+		}
+	}
+
+	forbiddenSnippets := []string{
+		"mcp__engram__",
+		"Artifact store mode (`engram | openspec | hybrid | none`)",
+		"mem_update(id: {tasks-observation-id}",
+		"~/.claude/skills",
+		"~/.config/opencode/skills",
+		"If `applyState` says apply is blocked",
+		"If the command is unavailable, build the equivalent status from the artifacts before editing.",
+		"If status is unavailable and no explicit `actionContext.allowedEditRoots` is available, STOP before editing.",
+	}
+	for _, snippet := range forbiddenSnippets {
+		if strings.Contains(content, snippet) {
+			t.Fatalf("expected sdd-apply source not to contain %q", snippet)
 		}
 	}
 }
