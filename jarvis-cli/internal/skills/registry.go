@@ -15,7 +15,7 @@ import (
 
 // Skill represents a single embedded skill file.
 type Skill struct {
-	// ID is the directory name for this skill (e.g. "sdd-workflow").
+	// ID is the directory name for this skill (e.g. "sdd-apply").
 	ID string
 
 	// Name is the human-readable display name.
@@ -51,17 +51,15 @@ type RegistryRow struct {
 
 // coreSkillIDs lists the skills that are always installed.
 var coreSkillIDs = map[string]bool{
-	"sdd-workflow": true,
-	"hive":         true,
-	"sdd-init":     true,
-	"sdd-apply":    true,
-	"sdd-verify":   true,
-	"sdd-archive":  true,
+	"hive":        true,
+	"sdd-init":    true,
+	"sdd-apply":   true,
+	"sdd-verify":  true,
+	"sdd-archive": true,
 }
 
 // skillMeta provides human-readable metadata for each skill ID.
 var skillMeta = map[string]struct{ name, description, trigger string }{
-	"sdd-workflow":         {name: "SDD Workflow", description: "Spec-Driven Development lifecycle: proposal → spec → design → tasks → apply → verify → archive", trigger: "SDD workflow phase"},
 	"hive":                 {name: "Hive Memory", description: "Persistent memory protocol: when to save, how to search, session summary triggers", trigger: "Using Hive memory"},
 	"sdd-explore":          {name: "SDD Explore", description: "Investigate ideas and compare approaches before committing to a change", trigger: "When exploring ideas"},
 	"sdd-propose":          {name: "SDD Propose", description: "Create a structured change proposal with intent, scope, and success criteria", trigger: "When creating proposals"},
@@ -92,7 +90,6 @@ var skillMeta = map[string]struct{ name, description, trigger string }{
 }
 
 var compactRuleMeta = map[string]string{
-	"sdd-workflow":         "Use the SDD phase order and persist phase artifacts.",
 	"hive":                 "Search memory for past context and save significant discoveries.",
 	"sdd-explore":          "Clarify goals and tradeoffs before committing to a change.",
 	"sdd-propose":          "Define intent, scope, risks, and success criteria before implementation.",
