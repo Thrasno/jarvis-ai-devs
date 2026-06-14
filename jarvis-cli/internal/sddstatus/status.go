@@ -9,11 +9,17 @@ const StatusSchema = "jarvis.sdd-status"
 // ArtifactState represents how complete an SDD artifact is.
 type ArtifactState string
 
-// ArtifactMissing and ArtifactDone are the only states produced by source adapters.
-// "partial" is not yet implemented; the schema uses missing or done only.
 const (
 	ArtifactMissing ArtifactState = "missing"
+	ArtifactPartial ArtifactState = "partial"
 	ArtifactDone    ArtifactState = "done"
+)
+
+type ActionMode string
+
+const (
+	ActionModeWorkspaceEdit     ActionMode = "workspace-edit"
+	ActionModeWorkspacePlanning ActionMode = "workspace-planning"
 )
 
 // DependencyState represents whether a phase's required inputs are satisfied.
@@ -128,19 +134,39 @@ type ApplyState struct {
 	Complete bool `json:"complete"`
 }
 
+// ActionContext describes how phase agents may use the current workspace.
+type ActionContext struct {
+	Mode             ActionMode `json:"mode"`
+	AllowedEditRoots []string   `json:"allowedEditRoots,omitempty"`
+}
+
+// PhaseRelationship describes the artifact dependency contract for a phase.
+type PhaseRelationship struct {
+	Phase          string   `json:"phase"`
+	OutputArtifact string   `json:"outputArtifact"`
+	Requires       []string `json:"requires,omitempty"`
+}
+
 // ChangeStatus is the stable JSON contract for SDD phase routing.
 // Schema: "jarvis.sdd-status".
 type ChangeStatus struct {
-	Schema          string                     `json:"schema"`
-	ChangeName      string                     `json:"changeName"`
-	ArtifactStore   string                     `json:"artifactStore"`
-	ArtifactPaths   map[string]string          `json:"artifactPaths"`
-	Artifacts       map[string]ArtifactState   `json:"artifacts"`
-	Dependencies    map[string]DependencyState `json:"dependencies"`
-	TaskProgress    *TaskProgress              `json:"taskProgress,omitempty"`
-	ApplyState      *ApplyState                `json:"applyState,omitempty"`
-	NextRecommended string                     `json:"nextRecommended"`
-	BlockedReasons  []string                   `json:"blockedReasons"`
+	Schema            string                     `json:"schema"`
+	ChangeName        string                     `json:"changeName"`
+	ArtifactStore     string                     `json:"artifactStore"`
+	PlanningHome      string                     `json:"planningHome"`
+	ChangeRoot        string                     `json:"changeRoot"`
+	ArtifactPaths     map[string]string          `json:"artifactPaths"`
+	ContextFiles      map[string]string          `json:"contextFiles"`
+	Artifacts         map[string]ArtifactState   `json:"artifacts"`
+	Dependencies      map[string]DependencyState `json:"dependencies"`
+	ActionContext     ActionContext              `json:"actionContext"`
+	AllowedEditRoots  []string                   `json:"allowedEditRoots,omitempty"`
+	Relationships     []PhaseRelationship        `json:"relationships"`
+	PhaseInstructions map[string]string          `json:"phaseInstructions"`
+	TaskProgress      *TaskProgress              `json:"taskProgress,omitempty"`
+	ApplyState        *ApplyState                `json:"applyState,omitempty"`
+	NextRecommended   string                     `json:"nextRecommended"`
+	BlockedReasons    []string                   `json:"blockedReasons"`
 }
 
 // Input is the observable artifact state for a change, used as input to ComputeStatus.
@@ -150,6 +176,21 @@ type Input struct {
 	// Contents maps artifact name to full text, used for content-based checks.
 	// Absent entries disable content-based checks for that artifact.
 	Contents map[string]string
+	// PlanningHome identifies the planning artifact home. Defaults to sdd/{changeName}.
+	PlanningHome string
+	// ChangeRoot identifies the root for this change's artifacts. Defaults to PlanningHome.
+	ChangeRoot string
+	// ContextFiles maps logical artifact names to paths/topics a phase should read.
+	// Defaults to ArtifactPaths.
+	ContextFiles map[string]string
+	// ActionMode describes whether agents may edit the workspace or should only plan.
+	// Defaults to workspace-planning unless allowed edit roots are provided.
+	ActionMode ActionMode
+	// AllowedEditRoots lists roots that phase agents may edit in workspace-edit mode.
+	AllowedEditRoots []string
+	// PhaseInstructions maps phases to the slash command used to invoke them.
+	// Defaults to /{phase} {changeName}.
+	PhaseInstructions map[string]string
 }
 
 // ComputeStatus derives a ChangeStatus from the observed artifact states and contents.
@@ -163,23 +204,56 @@ func ComputeStatus(changeName, artifactStore string, in Input) *ChangeStatus {
 	}
 
 	artifactPaths := buildArtifactPaths(changeName)
+	planningHome := defaultString(in.PlanningHome, buildPlanningHome(changeName))
+	changeRoot := defaultString(in.ChangeRoot, planningHome)
+	contextFiles := copyStringMap(in.ContextFiles)
+	if len(contextFiles) == 0 {
+		contextFiles = copyStringMap(artifactPaths)
+	}
+	allowedEditRoots := compactStringSlice(in.AllowedEditRoots)
+	actionMode := in.ActionMode
+	if len(allowedEditRoots) == 0 {
+		actionMode = ActionModeWorkspacePlanning
+	} else if actionMode == "" {
+		actionMode = ActionModeWorkspaceEdit
+	} else if actionMode != ActionModeWorkspaceEdit {
+		allowedEditRoots = nil
+	}
+	phaseInstructions := copyStringMap(in.PhaseInstructions)
+	if len(phaseInstructions) == 0 {
+		phaseInstructions = buildPhaseInstructions(changeName)
+	}
 	taskProgress := parseTaskProgress(in.Contents[ArtifactTasks])
 	applyState := buildApplyState(in.Artifacts)
 	dependencies := computeDependencies(in.Artifacts, taskProgress, in.Contents[ArtifactVerifyReport])
 	nextRecommended, blockedReasons := computeNextAndBlockers(in.Artifacts, dependencies, in.Contents[ArtifactVerifyReport])
 
 	return &ChangeStatus{
-		Schema:          StatusSchema,
-		ChangeName:      changeName,
-		ArtifactStore:   artifactStore,
-		ArtifactPaths:   artifactPaths,
-		Artifacts:       normalizeArtifacts(in.Artifacts),
-		Dependencies:    dependencies,
-		TaskProgress:    taskProgress,
-		ApplyState:      applyState,
-		NextRecommended: nextRecommended,
-		BlockedReasons:  blockedReasons,
+		Schema:        StatusSchema,
+		ChangeName:    changeName,
+		ArtifactStore: artifactStore,
+		PlanningHome:  planningHome,
+		ChangeRoot:    changeRoot,
+		ArtifactPaths: artifactPaths,
+		ContextFiles:  contextFiles,
+		Artifacts:     normalizeArtifacts(in.Artifacts),
+		Dependencies:  dependencies,
+		ActionContext: ActionContext{
+			Mode:             actionMode,
+			AllowedEditRoots: copyStringSlice(allowedEditRoots),
+		},
+		AllowedEditRoots:  allowedEditRoots,
+		Relationships:     buildPhaseRelationships(),
+		PhaseInstructions: phaseInstructions,
+		TaskProgress:      taskProgress,
+		ApplyState:        applyState,
+		NextRecommended:   nextRecommended,
+		BlockedReasons:    blockedReasons,
 	}
+}
+
+func buildPlanningHome(changeName string) string {
+	return "sdd/" + changeName
 }
 
 func buildArtifactPaths(changeName string) map[string]string {
@@ -188,6 +262,60 @@ func buildArtifactPaths(changeName string) map[string]string {
 		paths[artifact] = "sdd/" + changeName + "/" + artifact
 	}
 	return paths
+}
+
+func buildPhaseInstructions(changeName string) map[string]string {
+	instructions := make(map[string]string, len(PhaseOrder))
+	for _, phase := range PhaseOrder {
+		instructions[phase] = "/" + phase + " " + changeName
+	}
+	return instructions
+}
+
+func buildPhaseRelationships() []PhaseRelationship {
+	relationships := make([]PhaseRelationship, 0, len(PhaseOrder))
+	for _, phase := range PhaseOrder {
+		relationships = append(relationships, PhaseRelationship{
+			Phase:          phase,
+			OutputArtifact: PhaseOutput[phase],
+			Requires:       copyStringSlice(PhaseRequiredDeps[phase]),
+		})
+	}
+	return relationships
+}
+
+func defaultString(value, fallback string) string {
+	if value != "" {
+		return value
+	}
+	return fallback
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func copyStringSlice(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
+}
+
+func compactStringSlice(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, value := range in {
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return copyStringSlice(out)
 }
 
 // normalizeArtifacts ensures every known artifact has an explicit entry.
@@ -259,13 +387,20 @@ func computePhaseDep(phase string, artifacts map[string]ArtifactState, tp *TaskP
 
 	switch phase {
 	case PhaseApply:
+		if artifacts[ArtifactApplyProgress] == ArtifactPartial {
+			return DepReady
+		}
 		// Apply is complete (not just done artifact) when tasks are all checked off.
 		if tp != nil && tp.AllDone {
 			return DepAllDone
 		}
 	case PhaseVerify:
 		// Verify also requires apply-progress to exist (or tasks all done).
-		hasProgress := artifacts[ArtifactApplyProgress] != ArtifactMissing && artifacts[ArtifactApplyProgress] != ""
+		applyProgress := artifacts[ArtifactApplyProgress]
+		if applyProgress == ArtifactPartial {
+			return DepBlocked
+		}
+		hasProgress := applyProgress == ArtifactDone
 		tasksAllDone := tp != nil && tp.AllDone
 		if !hasProgress && !tasksAllDone {
 			return DepBlocked
@@ -318,7 +453,11 @@ func computeNextAndBlockers(artifacts map[string]ArtifactState, deps map[string]
 			if len(missingDeps) == 0 {
 				switch phase {
 				case PhaseVerify:
-					blocked = append(blocked, "phase sdd-verify blocked — apply-progress required or all tasks must be done")
+					if artifacts[ArtifactApplyProgress] == ArtifactPartial {
+						blocked = append(blocked, "phase sdd-verify blocked — apply-progress is partial; complete or reconcile sdd-apply before verification")
+					} else {
+						blocked = append(blocked, "phase sdd-verify blocked — apply-progress required or all tasks must be done")
+					}
 				case PhaseArchive:
 					// verifyContent is always "" here only when the verify-report artifact
 					// exists (it is a hard dep and passed the dep check above) but was stored
