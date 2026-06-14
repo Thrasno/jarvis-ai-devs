@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -27,11 +28,12 @@ func TestSkillRegistryRefreshCommand(t *testing.T) {
 		registryPath := filepath.Join(root, ".jarvis", "skill-registry.md")
 		assertCommandFileContains(t, registryPath, "Canonical registry path: `.jarvis/skill-registry.md`")
 		assertCommandFileContains(t, filepath.Join(root, ".jarvis", "skills", "sdd-apply", "SKILL.md"), "sdd-apply")
-		for _, want := range []string{"Skill registry refreshed", registryPath, "changed: true", "reason: created", "skills:"} {
+		for _, want := range []string{"Skill registry refreshed", "changed: true", "reason: created", "skills:"} {
 			if !strings.Contains(output, want) {
 				t.Fatalf("expected output to contain %q, got:\n%s", want, output)
 			}
 		}
+		assertCommandOutputPathSame(t, output, registryPath)
 	})
 
 	t.Run("defaults cwd to current working directory", func(t *testing.T) {
@@ -63,9 +65,7 @@ func TestSkillRegistryRefreshCommand(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(subdir, ".jarvis", "skill-registry.md")); !os.IsNotExist(err) {
 			t.Fatalf("expected default cwd from subdir to write at git root only, got stat err=%v", err)
 		}
-		if !strings.Contains(output, registryPath) {
-			t.Fatalf("expected output to include git-root registry path %q, got:\n%s", registryPath, output)
-		}
+		assertCommandOutputPathSame(t, output, registryPath)
 	})
 
 	t.Run("rejects invalid roots without writing registry files", func(t *testing.T) {
@@ -173,4 +173,52 @@ func assertCommandFileContains(t *testing.T, path, want string) {
 	if !strings.Contains(string(content), want) {
 		t.Fatalf("expected %s to contain %q, got:\n%s", path, want, string(content))
 	}
+}
+
+func assertCommandOutputPathSame(t *testing.T, output, wantPath string) {
+	t.Helper()
+
+	const prefix = "path: "
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		gotPath := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		if commandPathsReferToSameFile(gotPath, wantPath) {
+			return
+		}
+		t.Fatalf("expected output path %q to refer to same file as %q, got output:\n%s", gotPath, wantPath, output)
+	}
+
+	t.Fatalf("expected output to include %q line for %q, got:\n%s", prefix, wantPath, output)
+}
+
+func commandPathsReferToSameFile(a, b string) bool {
+	if a == b {
+		return true
+	}
+
+	aInfo, aErr := os.Stat(a)
+	bInfo, bErr := os.Stat(b)
+	if aErr == nil && bErr == nil && os.SameFile(aInfo, bInfo) {
+		return true
+	}
+
+	aClean := filepath.Clean(a)
+	bClean := filepath.Clean(b)
+	if runtime.GOOS == "windows" && strings.EqualFold(aClean, bClean) {
+		return true
+	}
+
+	aEval, aErr := filepath.EvalSymlinks(aClean)
+	bEval, bErr := filepath.EvalSymlinks(bClean)
+	if aErr != nil || bErr != nil {
+		return false
+	}
+	aEval = filepath.Clean(aEval)
+	bEval = filepath.Clean(bEval)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(aEval, bEval)
+	}
+	return aEval == bEval
 }

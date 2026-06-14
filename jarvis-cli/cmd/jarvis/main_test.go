@@ -252,15 +252,17 @@ func TestRunWizard_NoTUIUsesCurrentDirectoryForProjectCWD(t *testing.T) {
 		terminalIsTTY = originalTerminal
 		runTUIProgram = originalRunTUI
 		runNoTUIWizard = originalRunNoTUI
-		if err := os.Chdir(originalWD); err != nil {
-			t.Fatalf("restore working directory: %v", err)
-		}
 	})
 
 	projectCWD := t.TempDir()
 	if err := os.Chdir(projectCWD); err != nil {
 		t.Fatalf("chdir project cwd: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf("restore working directory: %v", err)
+		}
+	})
 
 	terminalIsTTY = func() bool { return true }
 	runTUIProgram = func(tea.Model) error {
