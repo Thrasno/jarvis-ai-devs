@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/project"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
 
 const sharedPhaseCommonPath = "embed/skills/_shared/sdd-phase-common.md"
@@ -203,7 +205,7 @@ func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *test
 			content := readEmbeddedSkillAsset(t, tc.path)
 
 			upstreamVersion := "v1.26.5"
-			if tc.name == "sdd-verify" || tc.name == "sdd-apply" {
+			if tc.name == "sdd-verify" || tc.name == "sdd-apply" || tc.name == "sdd-archive" {
 				upstreamVersion = "v1.40.2"
 			}
 			sourceStamp := fmt.Sprintf("Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/%s/internal/assets/skills/%s/SKILL.md", upstreamVersion, tc.name)
@@ -467,6 +469,100 @@ func TestCatalogContract_SDDApplySourceUsesJarvisAdaptedStatusGuards(t *testing.
 		if strings.Contains(content, snippet) {
 			t.Fatalf("expected sdd-apply source not to contain %q", snippet)
 		}
+	}
+}
+
+func TestCatalogContract_SDDArchiveSourceUsesJarvisAdaptedArchiveSafetyGuards(t *testing.T) {
+	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-archive/SKILL.md")
+
+	requiredSnippets := []string{
+		"Gentleman-Programming/gentle-ai/v1.40.2/internal/assets/skills/sdd-archive/SKILL.md",
+		"660917927b4821f5e540dc8fa501d6bee723222c",
+		"delegate_only: true",
+		"## Status and Archive Safety Gate",
+		"jarvis sdd status <change> --json",
+		"schema: `jarvis.sdd-status`",
+		"blockedReasons",
+		"taskProgress",
+		"applyState",
+		"artifacts[\"verify-report\"]",
+		"artifactPaths[\"verify-report\"]",
+		"contextFiles[\"verify-report\"]",
+		"verify-report artifact content",
+		"actionContext",
+		"phaseInstructions",
+		"If verify-report evidence is missing, failing, stale, or does not cover the current artifacts, STOP",
+		"Unresolved CRITICAL verification findings always block archive",
+		"Any incomplete task checkbox or `taskProgress` entry blocks archive",
+		"Stale checkboxes are not archive-ready by themselves",
+		"When prior `apply-progress = partial` exists, STOP until current tasks, apply-progress, and verify-report have been reconciled and re-verified",
+		"Generated artifacts are output, never sources of truth",
+		"Partial, missing, or stale artifacts block archive until they are reconciled and re-verified",
+		"For `none` mode, return a closure summary only; do not persist an archive report",
+		"mcp__hive__mem_save",
+		"Artifact store mode (`hive | openspec | hybrid | none`)",
+	}
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(content, snippet) {
+			t.Fatalf("expected sdd-archive source to contain %q", snippet)
+		}
+	}
+
+	forbiddenSnippets := []string{
+		"mcp__engram__",
+		"Artifact store mode (`engram | openspec | hybrid | none`)",
+		"Engram archive report",
+		"verifyReport",
+		"intentional archive override",
+		"intentional-with-warnings",
+		"non-critical partial artifact archive",
+		"non-critical partial artifacts",
+		"explicit approves a non-critical partial",
+		"explicitly approves a non-critical partial",
+		"Exceptional stale-checkbox reconciliation is allowed",
+		"archive-time reconciliation",
+		"~/.claude/skills",
+		"~/.config/opencode/skills",
+		"R1",
+		"R2",
+		"R3",
+		"R4",
+		"sdd-qa",
+	}
+	for _, snippet := range forbiddenSnippets {
+		if strings.Contains(content, snippet) {
+			t.Fatalf("expected sdd-archive source not to contain %q", snippet)
+		}
+	}
+}
+
+func TestCatalogContract_SDDArchiveStatusFieldsMatchChangeStatusJSONContract(t *testing.T) {
+	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-archive/SKILL.md")
+	statusJSONNames := jsonFieldNames(reflect.TypeOf(sddstatus.ChangeStatus{}))
+
+	for _, fieldName := range []string{
+		"artifacts",
+		"artifactPaths",
+		"contextFiles",
+		"blockedReasons",
+		"taskProgress",
+		"applyState",
+		"actionContext",
+		"phaseInstructions",
+	} {
+		if !statusJSONNames[fieldName] {
+			t.Fatalf("ChangeStatus JSON contract missing %q", fieldName)
+		}
+		if !strings.Contains(content, fieldName) {
+			t.Fatalf("expected sdd-archive to reference real status JSON field %q", fieldName)
+		}
+	}
+
+	if statusJSONNames["verifyReport"] {
+		t.Fatal("ChangeStatus JSON contract unexpectedly exposes top-level verifyReport")
+	}
+	if strings.Contains(content, "verifyReport") {
+		t.Fatal("sdd-archive must not reference nonexistent top-level verifyReport; use artifacts/artifactPaths/contextFiles verify-report evidence")
 	}
 }
 
@@ -1565,6 +1661,20 @@ func requireAllTerms(t *testing.T, content string, terms ...string) {
 			t.Fatalf("expected content to contain %q in %q", term, content)
 		}
 	}
+}
+
+func jsonFieldNames(structType reflect.Type) map[string]bool {
+	fields := make(map[string]bool, structType.NumField())
+	for i := 0; i < structType.NumField(); i++ {
+		field := structType.Field(i)
+		jsonTag := field.Tag.Get("json")
+		name, _, _ := strings.Cut(jsonTag, ",")
+		if name == "" || name == "-" {
+			continue
+		}
+		fields[name] = true
+	}
+	return fields
 }
 
 func readEmbeddedSkillAsset(t *testing.T, path string) string {
