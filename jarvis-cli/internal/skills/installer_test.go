@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 )
@@ -221,6 +222,108 @@ func TestInstallSelected_ErrorPaths(t *testing.T) {
 	}
 }
 
+func TestInstallSelectedDoesNotFollowDestinationSymlinks(t *testing.T) {
+	t.Run("replaces final file symlink without overwriting target", func(t *testing.T) {
+		dir := t.TempDir()
+		external := filepath.Join(t.TempDir(), "outside.md")
+		if err := os.WriteFile(external, []byte("do not overwrite"), 0644); err != nil {
+			t.Fatalf("seed external target: %v", err)
+		}
+		linkPath := filepath.Join(dir, "custom-skill", "SKILL.md")
+		if err := os.MkdirAll(filepath.Dir(linkPath), 0755); err != nil {
+			t.Fatalf("create skill dir: %v", err)
+		}
+		if err := os.Symlink(external, linkPath); err != nil {
+			t.Fatalf("create destination symlink: %v", err)
+		}
+
+		err := InstallSelected(fstest.MapFS{"custom-skill/SKILL.md": {Data: []byte("# Custom")}}, dir, []string{"custom-skill"})
+		if err != nil {
+			t.Fatalf("InstallSelected failed: %v", err)
+		}
+
+		if got := string(mustReadOSFile(t, external)); got != "do not overwrite" {
+			t.Fatalf("external symlink target was overwritten: got %q", got)
+		}
+		info, err := os.Lstat(linkPath)
+		if err != nil {
+			t.Fatalf("lstat installed path: %v", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("destination remained a symlink; want regular installed file")
+		}
+		assertInstalledSkillFile(t, dir, "custom-skill/SKILL.md", "# Custom")
+	})
+
+	t.Run("rejects symlink parent directory", func(t *testing.T) {
+		dir := t.TempDir()
+		externalDir := t.TempDir()
+		linkDir := filepath.Join(dir, "custom-skill")
+		if err := os.Symlink(externalDir, linkDir); err != nil {
+			t.Fatalf("create parent symlink: %v", err)
+		}
+
+		err := InstallSelected(fstest.MapFS{"custom-skill/SKILL.md": {Data: []byte("# Custom")}}, dir, []string{"custom-skill"})
+		if err == nil {
+			t.Fatal("expected InstallSelected to reject symlink parent directory")
+		}
+		if !strings.Contains(err.Error(), "symlink") {
+			t.Fatalf("expected symlink error, got %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(externalDir, "SKILL.md")); !os.IsNotExist(err) {
+			t.Fatalf("external symlink target directory was written through: err=%v", err)
+		}
+	})
+
+	t.Run("rejects symlink ancestor directory even when destination root exists", func(t *testing.T) {
+		projectRoot := t.TempDir()
+		externalDir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(externalDir, "skills"), 0755); err != nil {
+			t.Fatalf("seed external skills dir: %v", err)
+		}
+		if err := os.Symlink(externalDir, filepath.Join(projectRoot, ".jarvis")); err != nil {
+			t.Fatalf("create .jarvis symlink: %v", err)
+		}
+
+		err := InstallSelected(fstest.MapFS{"custom-skill/SKILL.md": {Data: []byte("# Custom")}}, filepath.Join(projectRoot, ".jarvis", "skills"), []string{"custom-skill"})
+		if err == nil {
+			t.Fatal("expected InstallSelected to reject symlink ancestor directory")
+		}
+		if !strings.Contains(err.Error(), "symlink") {
+			t.Fatalf("expected symlink error, got %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(externalDir, "skills", "custom-skill", "SKILL.md")); !os.IsNotExist(err) {
+			t.Fatalf("external symlink ancestor target was written through: err=%v", err)
+		}
+	})
+}
+
+func TestInstallSelectedSkipsByteEquivalentFiles(t *testing.T) {
+	dir := t.TempDir()
+	fixedTime := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	fsy := fstest.MapFS{"custom-skill/SKILL.md": {Data: []byte("# Custom")}}
+
+	if err := InstallSelected(fsy, dir, []string{"custom-skill"}); err != nil {
+		t.Fatalf("first InstallSelected failed: %v", err)
+	}
+	path := filepath.Join(dir, "custom-skill", "SKILL.md")
+	if err := os.Chtimes(path, fixedTime, fixedTime); err != nil {
+		t.Fatalf("set installed file time: %v", err)
+	}
+
+	if err := InstallSelected(fsy, dir, []string{"custom-skill"}); err != nil {
+		t.Fatalf("second InstallSelected failed: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat installed file: %v", err)
+	}
+	if !info.ModTime().Equal(fixedTime) {
+		t.Fatalf("byte-equivalent install rewrote file: got %s want %s", info.ModTime(), fixedTime)
+	}
+}
+
 func TestInstallSelected_InstallsQAChecklistAndSkillCreatorWhenConfigured(t *testing.T) {
 	dir := t.TempDir()
 
@@ -286,6 +389,15 @@ func assertPathAbsent(t *testing.T, path string) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("expected %s to be absent, got err=%v", path, err)
 	}
+}
+
+func mustReadOSFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return data
 }
 
 type errStatFS struct{}

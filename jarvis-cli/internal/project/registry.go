@@ -1,6 +1,7 @@
 package project
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,16 @@ const (
 	canonicalPath    = ".jarvis/skill-registry.md"
 	legacyPathATL    = ".atl/skill-registry.md"
 	projectSkillsDir = ".jarvis/skills"
+)
+
+const (
+	RegistryReasonCreated   = "created"
+	RegistryReasonUpdated   = "updated"
+	RegistryReasonUnchanged = "unchanged"
+	RegistryReasonForced    = "forced"
+
+	RegistryWarningLegacyImported = "legacy-registry-imported"
+	RegistrySeverityWarning       = "warning"
 )
 
 type RegistrySource string
@@ -39,6 +50,26 @@ type RegistrySkill struct {
 	Path         string
 	CompactRules string
 	IsCore       bool
+}
+
+type RegistryWarning struct {
+	Code     string
+	Severity string
+	Path     string
+	Message  string
+}
+
+type WriteRegistryOptions struct {
+	Force    bool
+	Warnings []RegistryWarning
+}
+
+type WriteRegistryResult struct {
+	Path       string
+	Changed    bool
+	SkillCount int
+	Reason     string
+	Warnings   []RegistryWarning
 }
 
 func CanonicalRegistryPaths() RegistryPaths {
@@ -68,55 +99,250 @@ func ResolveRegistryReadPath(dir string) (string, RegistrySource, error) {
 // The Custom Skills section is preserved as-is if it already exists.
 // The write is atomic: a .tmp file is written first, then renamed into place.
 func WriteRegistry(dir, projectName string, stack Stack, skills []string, richSkills ...[]RegistrySkill) error {
+	var registrySkills []RegistrySkill
+	if len(richSkills) > 0 {
+		registrySkills = richSkills[0]
+	}
+	_, err := WriteRegistryWithResult(dir, projectName, stack, skills, registrySkills, WriteRegistryOptions{})
+	return err
+}
+
+// WriteRegistryWithResult creates or updates .jarvis/skill-registry.md in dir.
+// The Suggested Skills section is always regenerated from the provided skills list.
+// The Custom Skills section is preserved as-is if it already exists.
+// Legacy .atl custom content is imported only when the canonical registry is absent.
+// Byte-equivalent content is not rewritten unless Force is set.
+func WriteRegistryWithResult(dir, projectName string, stack Stack, skills []string, registrySkills []RegistrySkill, opts WriteRegistryOptions) (WriteRegistryResult, error) {
 	paths := CanonicalRegistryPaths()
 	registryPath := filepath.Join(dir, paths.WritePath)
+	renderedWarnings := append([]RegistryWarning(nil), opts.Warnings...)
+	result := WriteRegistryResult{
+		Path:       registryPath,
+		SkillCount: len(registrySkills),
+		Warnings:   append([]RegistryWarning(nil), renderedWarnings...),
+	}
 
-	if err := os.MkdirAll(filepath.Dir(registryPath), 0755); err != nil {
-		return fmt.Errorf("create .jarvis dir: %w", err)
+	if err := safeMkdirAllWithinRoot(dir, filepath.Dir(registryPath)); err != nil {
+		return result, fmt.Errorf("create .jarvis dir: %w", err)
+	}
+	if err := validateRegistrySymlinkTarget(dir, registryPath); err != nil {
+		return result, fmt.Errorf("validate registry path: %w", err)
 	}
 
 	// Preserve custom skills from an existing canonical file, or import legacy
 	// custom skills only when the canonical registry does not exist yet.
 	customSection := defaultCustom
+	canonicalExists := false
 	if existing, err := os.ReadFile(registryPath); err == nil {
+		canonicalExists = true
 		customSection = extractCustomSection(string(existing))
 	} else if os.IsNotExist(err) {
 		legacyRegistryPath := filepath.Join(dir, legacyPathATL)
 		if existing, err := os.ReadFile(legacyRegistryPath); err == nil {
 			customSection = extractCustomSection(string(existing))
+			result.Warnings = append([]RegistryWarning{{
+				Code:     RegistryWarningLegacyImported,
+				Severity: RegistrySeverityWarning,
+				Path:     legacyPathATL,
+				Message:  "Imported legacy custom content into canonical registry.",
+			}}, result.Warnings...)
+		}
+	} else {
+		return result, fmt.Errorf("read existing registry: %w", err)
+	}
+
+	content := buildRegistryContent(projectName, stack, skills, registrySkills, customSection, renderedWarnings)
+
+	if existing, err := os.ReadFile(registryPath); err == nil && string(existing) == content && !opts.Force {
+		result.Changed = false
+		result.Reason = RegistryReasonUnchanged
+		return result, nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return result, fmt.Errorf("read existing registry for comparison: %w", err)
+	}
+
+	if err := writeRegistryFileAtomically(registryPath, []byte(content), 0644); err != nil {
+		return result, fmt.Errorf("finalize registry: %w", err)
+	}
+
+	result.Changed = true
+	switch {
+	case opts.Force:
+		result.Reason = RegistryReasonForced
+	case canonicalExists:
+		result.Reason = RegistryReasonUpdated
+	default:
+		result.Reason = RegistryReasonCreated
+	}
+	return result, nil
+}
+
+func safeMkdirAllWithinRoot(root, dir string) error {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	absRoot = filepath.Clean(absRoot)
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	absDir = filepath.Clean(absDir)
+	if !pathWithinRoot(absRoot, absDir) {
+		return fmt.Errorf("%s is outside project root %s", absDir, absRoot)
+	}
+
+	info, err := os.Lstat(absRoot)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to follow symlink directory %s", absRoot)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", absRoot)
+	}
+
+	rel, err := filepath.Rel(absRoot, absDir)
+	if err != nil {
+		return err
+	}
+	if rel == "." {
+		return nil
+	}
+
+	current := absRoot
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("refusing to follow symlink directory %s", current)
+			}
+			if !info.IsDir() {
+				return fmt.Errorf("%s is not a directory", current)
+			}
+			continue
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := os.Mkdir(current, 0755); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				continue
+			}
+			return err
 		}
 	}
+	return nil
+}
 
-	var registrySkills []RegistrySkill
-	if len(richSkills) > 0 {
-		registrySkills = richSkills[0]
+func validateRegistrySymlinkTarget(root, registryPath string) error {
+	info, err := os.Lstat(registryPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
-	content := buildRegistryContent(projectName, stack, skills, registrySkills, customSection)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return nil
+	}
 
-	// Atomic write: write to .tmp, then rename.
-	tmp := registryPath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
-		return fmt.Errorf("write temp registry: %w", err)
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return err
 	}
-	if err := os.Rename(tmp, registryPath); err != nil {
-		_ = os.Remove(tmp) // best-effort cleanup
-		return fmt.Errorf("finalize registry: %w", err)
+	absRoot = filepath.Clean(absRoot)
+	absRegistryPath, err := filepath.Abs(registryPath)
+	if err != nil {
+		return err
+	}
+	resolved, err := filepath.EvalSymlinks(absRegistryPath)
+	if err != nil {
+		return fmt.Errorf("resolve registry symlink %s: %w", registryPath, err)
+	}
+	if !pathWithinRoot(absRoot, filepath.Clean(resolved)) {
+		return fmt.Errorf("registry symlink target %s is outside project root %s", resolved, absRoot)
 	}
 	return nil
+}
+
+func writeRegistryFileAtomically(path string, content []byte, mode os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
+}
+
+func pathWithinRoot(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
 }
 
 // extractCustomSection returns the content from the ## Custom Skills header onwards.
 // If the header is absent, returns a default empty custom section.
 func extractCustomSection(content string) string {
-	idx := strings.Index(content, customHeader)
-	if idx == -1 {
+	idx := customSectionIndex(content)
+	if idx < 0 {
 		return defaultCustom
 	}
 	return strings.TrimRight(content[idx:], "\n") + "\n"
 }
 
+func customSectionIndex(content string) int {
+	lineStart := 0
+	for lineStart <= len(content) {
+		lineEnd := strings.IndexByte(content[lineStart:], '\n')
+		if lineEnd < 0 {
+			lineEnd = len(content)
+		} else {
+			lineEnd += lineStart
+		}
+		line := strings.TrimSpace(strings.TrimSuffix(content[lineStart:lineEnd], "\r"))
+		if line == customHeader {
+			return lineStart
+		}
+		if lineEnd == len(content) {
+			break
+		}
+		lineStart = lineEnd + 1
+	}
+	return -1
+}
+
 // buildRegistryContent generates the full skill-registry.md content.
-func buildRegistryContent(projectName string, stack Stack, skills []string, richSkills []RegistrySkill, customSection string) string {
+func buildRegistryContent(projectName string, stack Stack, skills []string, richSkills []RegistrySkill, customSection string, warnings []RegistryWarning) string {
 	var sb strings.Builder
 
 	sb.WriteString("# Skill Registry — ")
@@ -166,6 +392,24 @@ func buildRegistryContent(projectName string, stack Stack, skills []string, rich
 			sb.WriteString("**: ")
 			sb.WriteString(skill.CompactRules)
 			sb.WriteString("\n")
+		}
+	}
+
+	if len(warnings) > 0 {
+		sb.WriteString("\n---\n\n")
+		sb.WriteString("## Registry Warnings\n\n")
+		sb.WriteString("| Code | Severity | Path | Message |\n")
+		sb.WriteString("|------|----------|------|---------|\n")
+		for _, warning := range warnings {
+			sb.WriteString("| ")
+			sb.WriteString(escapeTableCell(warning.Code))
+			sb.WriteString(" | ")
+			sb.WriteString(escapeTableCell(warning.Severity))
+			sb.WriteString(" | `")
+			sb.WriteString(escapeTableCell(warning.Path))
+			sb.WriteString("` | ")
+			sb.WriteString(escapeTableCell(warning.Message))
+			sb.WriteString(" |\n")
 		}
 	}
 

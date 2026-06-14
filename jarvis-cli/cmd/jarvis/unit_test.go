@@ -391,6 +391,36 @@ func TestRunInit_InProcess(t *testing.T) {
 	}
 }
 
+func TestRunInitRejectsSymlinkedJarvisBeforeWritingSkillCopies(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", "") // prevent git from resolving a remote
+
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/symlink\n"), 0644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	externalJarvis := filepath.Join(t.TempDir(), "external-jarvis")
+	if err := os.Mkdir(externalJarvis, 0755); err != nil {
+		t.Fatalf("mkdir external jarvis: %v", err)
+	}
+	if err := os.Symlink(externalJarvis, filepath.Join(dir, ".jarvis")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	err := runInit(dir)
+	if err == nil {
+		t.Fatal("expected runInit to reject symlinked .jarvis")
+	}
+	if !strings.Contains(err.Error(), "install project skill copies") || !strings.Contains(err.Error(), "refusing to follow symlink") {
+		t.Fatalf("expected symlink rejection while installing skill copies, got: %v", err)
+	}
+
+	externalSkills := filepath.Join(externalJarvis, "skills")
+	if _, err := os.Stat(externalSkills); !os.IsNotExist(err) {
+		t.Fatalf("expected no skill copies written outside project through symlink, stat err: %v", err)
+	}
+}
+
 func TestInitCmdRunEUsesCurrentWorkingDirectory(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PATH", "") // prevent git from resolving a remote

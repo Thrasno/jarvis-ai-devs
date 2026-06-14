@@ -253,6 +253,154 @@ func TestWriteRegistry_CanonicalCustomSectionWinsOverLegacy(t *testing.T) {
 	}
 }
 
+func TestWriteRegistryWithResultReportsLegacyImportAndExplicitWarningSection(t *testing.T) {
+	dir := t.TempDir()
+	legacyPath := filepath.Join(dir, ".atl", "skill-registry.md")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := "# Legacy Registry\n\n## Custom Skills\n\n- **legacy-custom**\n"
+	if err := os.WriteFile(legacyPath, []byte(legacy), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := WriteRegistryWithResult(dir, "warning-project", StackGo, []string{"hive"}, []RegistrySkill{
+		{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", IsCore: true},
+	}, WriteRegistryOptions{
+		Warnings: []RegistryWarning{{Code: "metadata-gap", Severity: "warning", Path: ".jarvis/skills/example/SKILL.md", Message: "missing trigger metadata"}},
+	})
+	if err != nil {
+		t.Fatalf("WriteRegistryWithResult: %v", err)
+	}
+
+	canonicalPath := filepath.Join(dir, ".jarvis", "skill-registry.md")
+	if result.Path != canonicalPath {
+		t.Fatalf("Path = %q, want %q", result.Path, canonicalPath)
+	}
+	if !result.Changed {
+		t.Fatal("Changed = false, want true for first write")
+	}
+	if result.Reason != RegistryReasonCreated {
+		t.Fatalf("Reason = %q, want %q", result.Reason, RegistryReasonCreated)
+	}
+	if result.SkillCount != 1 {
+		t.Fatalf("SkillCount = %d, want 1", result.SkillCount)
+	}
+	if len(result.Warnings) != 2 {
+		t.Fatalf("Warnings = %+v, want explicit warning plus legacy import warning", result.Warnings)
+	}
+	if result.Warnings[0].Code != RegistryWarningLegacyImported {
+		t.Fatalf("first warning = %+v, want legacy import warning", result.Warnings[0])
+	}
+
+	content := string(mustReadRegistryFile(t, canonicalPath))
+	for _, want := range []string{
+		"- **legacy-custom**",
+		"## Registry Warnings",
+		"| metadata-gap | warning | `.jarvis/skills/example/SKILL.md` | missing trigger metadata |",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("expected registry to contain %q, got:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "legacy-registry-imported") {
+		t.Fatalf("legacy import warning should be result-only to keep post-migration refresh stable, got:\n%s", content)
+	}
+}
+
+func TestWriteRegistryWithResultUsesUnchangedFastPathUnlessForced(t *testing.T) {
+	dir := t.TempDir()
+	richSkills := []RegistrySkill{{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", IsCore: true}}
+
+	first, err := WriteRegistryWithResult(dir, "fast-path-project", StackGo, []string{"hive"}, richSkills, WriteRegistryOptions{})
+	if err != nil {
+		t.Fatalf("first WriteRegistryWithResult: %v", err)
+	}
+	if first.Reason != RegistryReasonCreated || !first.Changed {
+		t.Fatalf("first result = %+v, want created change", first)
+	}
+	infoBefore := mustStatRegistryFile(t, first.Path)
+
+	second, err := WriteRegistryWithResult(dir, "fast-path-project", StackGo, []string{"hive"}, richSkills, WriteRegistryOptions{})
+	if err != nil {
+		t.Fatalf("second WriteRegistryWithResult: %v", err)
+	}
+	if second.Changed {
+		t.Fatalf("second Changed = true, want unchanged fast path: %+v", second)
+	}
+	if second.Reason != RegistryReasonUnchanged {
+		t.Fatalf("second Reason = %q, want %q", second.Reason, RegistryReasonUnchanged)
+	}
+	infoAfter := mustStatRegistryFile(t, second.Path)
+	if !infoAfter.ModTime().Equal(infoBefore.ModTime()) {
+		t.Fatalf("unchanged fast path rewrote registry: before=%s after=%s", infoBefore.ModTime(), infoAfter.ModTime())
+	}
+
+	forced, err := WriteRegistryWithResult(dir, "fast-path-project", StackGo, []string{"hive"}, richSkills, WriteRegistryOptions{Force: true})
+	if err != nil {
+		t.Fatalf("forced WriteRegistryWithResult: %v", err)
+	}
+	if !forced.Changed {
+		t.Fatal("forced Changed = false, want true")
+	}
+	if forced.Reason != RegistryReasonForced {
+		t.Fatalf("forced Reason = %q, want %q", forced.Reason, RegistryReasonForced)
+	}
+}
+
+func TestWriteRegistryWithResultRejectsSymlinkedJarvisAncestor(t *testing.T) {
+	dir := t.TempDir()
+	externalDir := t.TempDir()
+	if err := os.Symlink(externalDir, filepath.Join(dir, ".jarvis")); err != nil {
+		t.Fatalf("create .jarvis symlink: %v", err)
+	}
+
+	_, err := WriteRegistryWithResult(dir, "symlink-project", StackGo, []string{"hive"}, []RegistrySkill{{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", IsCore: true}}, WriteRegistryOptions{})
+	if err == nil {
+		t.Fatal("expected WriteRegistryWithResult to reject symlinked .jarvis ancestor")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink error, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(externalDir, "skill-registry.md")); !os.IsNotExist(err) {
+		t.Fatalf("external .jarvis symlink target was written through: err=%v", err)
+	}
+}
+
+func TestWriteRegistryWithResultRejectsRegistrySymlinkOutsideProjectRoot(t *testing.T) {
+	dir := t.TempDir()
+	registryPath := filepath.Join(dir, ".jarvis", "skill-registry.md")
+	if err := os.MkdirAll(filepath.Dir(registryPath), 0755); err != nil {
+		t.Fatalf("create .jarvis dir: %v", err)
+	}
+	externalRegistry := filepath.Join(t.TempDir(), "skill-registry.md")
+	externalBefore := "# External Registry\n\n## Custom Skills\n\n- **external-custom**\n"
+	if err := os.WriteFile(externalRegistry, []byte(externalBefore), 0644); err != nil {
+		t.Fatalf("seed external registry target: %v", err)
+	}
+	if err := os.Symlink(externalRegistry, registryPath); err != nil {
+		t.Fatalf("create registry symlink: %v", err)
+	}
+
+	_, err := WriteRegistryWithResult(dir, "symlink-project", StackGo, []string{"hive"}, []RegistrySkill{{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", IsCore: true}}, WriteRegistryOptions{})
+	if err == nil {
+		t.Fatal("expected WriteRegistryWithResult to reject registry symlink outside project root")
+	}
+	if !strings.Contains(err.Error(), "outside project root") {
+		t.Fatalf("expected outside-project symlink error, got %v", err)
+	}
+	if got := string(mustReadRegistryFile(t, externalRegistry)); got != externalBefore {
+		t.Fatalf("external registry symlink target changed: got %q want %q", got, externalBefore)
+	}
+	info, err := os.Lstat(registryPath)
+	if err != nil {
+		t.Fatalf("lstat registry symlink: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("registry symlink was replaced; want rejected before mutation")
+	}
+}
+
 func TestCanonicalRegistryPaths_DualReadSingleWrite(t *testing.T) {
 	paths := CanonicalRegistryPaths()
 
@@ -315,4 +463,22 @@ func TestResolveRegistryReadPath_PrefersCanonicalFallsBackLegacy(t *testing.T) {
 			t.Fatalf("source mismatch: got %q want %q", source, RegistrySourceLegacy)
 		}
 	})
+}
+
+func mustReadRegistryFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return data
+}
+
+func mustStatRegistryFile(t *testing.T, path string) os.FileInfo {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return info
 }
