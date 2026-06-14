@@ -56,7 +56,7 @@ func TypeBadge(category string) string {
 	if key == "" || key == "-" {
 		return DimTextStyle.Render("-")
 	}
-	if style, ok := TypeBadgeMap[key]; ok {
+	if style, ok := typeBadgeMap[key]; ok {
 		return style.Render(key)
 	}
 	return DimTextStyle.Render(key)

@@ -25,8 +25,8 @@ var (
 	DotOffline  = lipgloss.NewStyle().Foreground(ColorOverlay2)
 	DotFailed   = lipgloss.NewStyle().Foreground(ColorRed)
 
-	// TypeBadgeMap maps observation type names to their badge styles.
-	TypeBadgeMap = map[string]lipgloss.Style{
+	// typeBadgeMap maps observation type names to their badge styles.
+	typeBadgeMap = map[string]lipgloss.Style{
 		"decision":     lipgloss.NewStyle().Background(ColorMauve).Foreground(ColorBase).Padding(0, 1),
 		"bugfix":       lipgloss.NewStyle().Background(ColorRed).Foreground(ColorBase).Padding(0, 1),
 		"pattern":      lipgloss.NewStyle().Background(ColorTeal).Foreground(ColorBase).Padding(0, 1),

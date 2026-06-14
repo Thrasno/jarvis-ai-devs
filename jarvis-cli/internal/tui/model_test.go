@@ -1,3 +1,4 @@
+// All tests in this package run under Ascii color profile; see testmain_test.go.
 package tui
 
 import (

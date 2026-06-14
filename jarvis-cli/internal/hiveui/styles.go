@@ -55,9 +55,6 @@ var (
 	dotOffline  = terminalui.DotOffline
 	dotFailed   = terminalui.DotFailed
 
-	// Type badge map — alias to terminalui
-	typeBadgeMap = terminalui.TypeBadgeMap
-
 	// Health badge aliases — aliases to terminalui
 	badgeHealthy  = terminalui.BadgeHealthy
 	badgeDegraded = terminalui.BadgeDegraded

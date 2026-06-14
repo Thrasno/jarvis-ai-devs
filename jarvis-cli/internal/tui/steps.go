@@ -1550,11 +1550,7 @@ func viewDone(m Model) string {
 	var sb strings.Builder
 
 	doneLabel := terminalui.StatusDot("healthy") + " Complete"
-	if m.Mode == string(config.ConfigStatusReconfigure) {
-		sb.WriteString(terminalui.HeaderRow("Setup › Done", doneLabel, m.width) + "\n\n")
-	} else {
-		sb.WriteString(terminalui.HeaderRow("Setup › Done", doneLabel, m.width) + "\n\n")
-	}
+	sb.WriteString(terminalui.HeaderRow("Setup › Done", doneLabel, m.width) + "\n\n")
 
 	var contentSB strings.Builder
 	if m.Mode == string(config.ConfigStatusReconfigure) {

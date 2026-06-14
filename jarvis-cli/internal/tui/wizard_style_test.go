@@ -1,22 +1,13 @@
 package tui
 
 import (
-	"os"
 	"strings"
 	"testing"
-
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
 )
-
-func TestMain(m *testing.M) {
-	lipgloss.SetColorProfile(termenv.Ascii)
-	os.Exit(m.Run())
-}
 
 // TestViewScope_HasHeaderAndHelpBar verifies that viewScope renders a breadcrumb
 // and a help hint key in the output.
