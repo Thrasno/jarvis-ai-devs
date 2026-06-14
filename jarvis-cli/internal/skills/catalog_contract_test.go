@@ -197,7 +197,11 @@ func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *test
 		t.Run(tc.name, func(t *testing.T) {
 			content := readEmbeddedSkillAsset(t, tc.path)
 
-			sourceStamp := fmt.Sprintf("Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/%s/SKILL.md", tc.name)
+			upstreamVersion := "v1.26.5"
+			if tc.name == "sdd-verify" {
+				upstreamVersion = "v1.40.2"
+			}
+			sourceStamp := fmt.Sprintf("Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/%s/internal/assets/skills/%s/SKILL.md", upstreamVersion, tc.name)
 			if !strings.Contains(content, sourceStamp) {
 				t.Fatalf("expected %s to contain source stamp %q", tc.path, sourceStamp)
 			}
@@ -224,6 +228,54 @@ func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *test
 				}
 			}
 		})
+	}
+}
+
+func TestCatalogContract_SDDVerifySourceUsesJarvisAdaptedModelSections(t *testing.T) {
+	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-verify/SKILL.md")
+
+	requiredSnippets := []string{
+		"Gentleman-Programming/gentle-ai/v1.40.2/internal/assets/skills/sdd-verify/SKILL.md",
+		"660917927b4821f5e540dc8fa501d6bee723222c",
+		"<!-- section:model-capable -->",
+		"<!-- /section:model-capable -->",
+		"<!-- section:model-small -->",
+		"<!-- /section:model-small -->",
+		"jarvis sdd status <change> --json",
+		"schema: `jarvis.sdd-status`",
+		"contextFiles",
+		"artifactPaths",
+		"allowedEditRoots",
+		"workspace-planning",
+		"apply-progress missing or partial",
+		"unchecked implementation task is CRITICAL",
+		"## Status Handling and Blockers",
+		"## Runtime Evidence Policy",
+		"If runtime tests cannot be run, report runtime evidence as skipped",
+		"A documented manual verification path is not evidence by itself.",
+		"Manual or runtime verification counts as `PASS` only when it was executed and the report records the command or manual action, result, timestamp or session, and operator/evidence source.",
+		"## Skipped Dimensions",
+		"## Final Verdict Constraints",
+		"Generated artifacts are output, never sources of truth",
+		"mcp__hive__mem_save",
+	}
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(content, snippet) {
+			t.Fatalf("expected sdd-verify source to contain %q", snippet)
+		}
+	}
+
+	forbiddenSnippets := []string{
+		"mcp__engram__",
+		"Artifact Retrieval (Engram Mode)",
+		"Persist `verify-report` according to mode: Engram",
+		"Do NOT run tests unless `strict_tdd` is active",
+		"project explicitly documents an accepted manual verification path",
+	}
+	for _, snippet := range forbiddenSnippets {
+		if strings.Contains(content, snippet) {
+			t.Fatalf("expected sdd-verify source not to contain %q", snippet)
+		}
 	}
 }
 
