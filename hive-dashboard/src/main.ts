@@ -432,6 +432,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
       dashboard = { status: 'loading' }
       drawerOpen = false
       readIds = new Set()
+      summaryUnread = dashboardFixtures.shared.notificationSummary.unread
       rerender(session.logout())
     },
     async onNavigate(path) {
