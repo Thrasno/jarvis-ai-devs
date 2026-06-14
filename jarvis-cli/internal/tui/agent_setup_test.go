@@ -17,18 +17,20 @@ import (
 )
 
 type setupAgentStub struct {
-	name                  string
-	mergeErrAt            int
-	installSkillsErr      error
-	installOrchErr        error
-	writeInstructionsErr  error
-	outputStyleErr        error
-	observeRuntime        sddruntime.ObservedRuntime
-	observeRuntimeErr     error
-	runtimePlan           sddruntime.RuntimePlan
-	runtimePlanErr        error
-	installedOrchestrator string
-	observeCalls          int
+	name                    string
+	mergeErrAt              int
+	installSkillsErr        error
+	installOrchErr          error
+	writeInstructionsErr    error
+	outputStyleErr          error
+	observeRuntime          sddruntime.ObservedRuntime
+	observeRuntimeErr       error
+	runtimePlan             sddruntime.RuntimePlan
+	runtimePlanErr          error
+	registryAutomationErr   error
+	installedOrchestrator   string
+	observeCalls            int
+	registryAutomationCalls int
 
 	mergeCalls int
 }
@@ -92,6 +94,11 @@ func (a *setupAgentStub) InstallPromptHook(fs.FS) error {
 
 func (a *setupAgentStub) InstallSessionHooks(fs.FS) error { return nil }
 
+func (a *setupAgentStub) InstallRegistryAutomation(fs.FS) error {
+	a.registryAutomationCalls++
+	return a.registryAutomationErr
+}
+
 func (a *setupAgentStub) WriteOutputStyle(*persona.Preset) error {
 	return a.outputStyleErr
 }
@@ -129,7 +136,7 @@ func TestConfigureWizardAgent_ErrorPropagation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := configureWizardAgent(tt.agent, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, func() bool { return true })
+			_, err := configureWizardAgent(tt.agent, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, func() bool { return true })
 			if err == nil {
 				t.Fatalf("configureWizardAgent expected error containing %q", tt.wantErr)
 			}
@@ -137,6 +144,59 @@ func TestConfigureWizardAgent_ErrorPropagation(t *testing.T) {
 				t.Fatalf("error = %q, want contains %q", got, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestConfigureWizardAgent_InstallsSupportedRegistryAutomation(t *testing.T) {
+	a := &setupAgentStub{name: "claude"}
+
+	warnings, err := configureWizardAgent(a, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, func() bool { return true })
+	if err != nil {
+		t.Fatalf("configureWizardAgent returned error: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected registry automation warnings: %v", warnings)
+	}
+	if a.registryAutomationCalls != 1 {
+		t.Fatalf("registry automation calls = %d, want 1", a.registryAutomationCalls)
+	}
+}
+
+func TestConfigureWizardAgent_RegistryAutomationFailureIsWarningOnly(t *testing.T) {
+	a := &setupAgentStub{name: "claude", registryAutomationErr: errors.New("disk full")}
+
+	warnings, err := configureWizardAgent(a, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, func() bool { return true })
+	if err != nil {
+		t.Fatalf("configureWizardAgent returned error for optional registry automation failure: %v", err)
+	}
+	if a.registryAutomationCalls != 1 {
+		t.Fatalf("registry automation calls = %d, want 1", a.registryAutomationCalls)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "Project skill registry warning: automation not installed for claude") || !strings.Contains(warnings[0], "disk full") {
+		t.Fatalf("expected visible registry automation warning, got %v", warnings)
+	}
+}
+
+func TestConfigureWizardAgents_SurfacesRegistryAutomationWarningsWithoutFailing(t *testing.T) {
+	assignments, err := sddruntime.DefaultAssignmentsForPlatform(sddruntime.PlatformClaude)
+	if err != nil {
+		t.Fatalf("resolve default assignments: %v", err)
+	}
+	a := &setupAgentStub{
+		name:                  "claude",
+		registryAutomationErr: errors.New("readonly config"),
+		observeRuntime:        passingRuntimeObservation(t, "claude", assignments, nil),
+	}
+
+	results := configureWizardAgents([]agent.Agent{a}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, func() bool { return true })
+	if len(results) != 1 {
+		t.Fatalf("len(results) = %d, want 1", len(results))
+	}
+	if results[0].Err != nil || !results[0].State.Configured {
+		t.Fatalf("registry automation failure should not fail agent setup, got %+v", results[0])
+	}
+	if len(results[0].Warnings) != 1 || !strings.Contains(results[0].Warnings[0], "readonly config") {
+		t.Fatalf("expected surfaced registry automation warning, got %+v", results[0])
 	}
 }
 

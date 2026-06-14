@@ -352,6 +352,9 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		if res.Err != nil {
 			return fmt.Errorf("configure %s: %w", res.AgentName, res.Err)
 		}
+		for _, warning := range res.Warnings {
+			fmt.Fprintln(noTUIStdout, warning)
+		}
 		fmt.Printf("  %s configured.\n", res.AgentName)
 		configuredAgents = append(configuredAgents, res.AgentName)
 	}

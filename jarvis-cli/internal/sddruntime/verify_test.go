@@ -306,6 +306,56 @@ func TestVerify_FailsForCorruptedManifestWithRemediation(t *testing.T) {
 	}
 }
 
+func TestVerify_RegistryQualityProblemsWarnWithoutFailingRuntime(t *testing.T) {
+	tests := []struct {
+		name    string
+		quality ObservedRegistryQuality
+		wantKey string
+		wantMsg string
+	}{
+		{
+			name:    "missing canonical registry",
+			quality: ObservedRegistryQuality{Checked: true, Path: ".jarvis/skill-registry.md", Exists: false},
+			wantKey: "registry.quality.missing",
+			wantMsg: "run jarvis skill-registry refresh",
+		},
+		{
+			name:    "stale canonical registry",
+			quality: ObservedRegistryQuality{Checked: true, Path: ".jarvis/skill-registry.md", Exists: true, Stale: true},
+			wantKey: "registry.quality.stale",
+			wantMsg: "refresh the project skill registry",
+		},
+		{
+			name:    "registry warning section",
+			quality: ObservedRegistryQuality{Checked: true, Path: ".jarvis/skill-registry.md", Exists: true, HasWarnings: true},
+			wantKey: "registry.quality.warnings",
+			wantMsg: "inspect registry warnings",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			observed := compliantObservedRuntime(t)
+			observed.RegistryQuality = tt.quality
+
+			report := Verify("claude", observed)
+			if report.Status != StatusWarn {
+				t.Fatalf("registry quality problem should warn, got status %q", report.Status)
+			}
+			check := findCheckByKey(report.Checks, tt.wantKey)
+			if check == nil {
+				t.Fatalf("expected %s check", tt.wantKey)
+			}
+			if check.Status != StatusWarn || check.DriftClass != DriftUnknown {
+				t.Fatalf("unexpected check severity/class: %+v", *check)
+			}
+			if !strings.Contains(check.Message, tt.wantMsg) {
+				t.Fatalf("message %q does not contain %q", check.Message, tt.wantMsg)
+			}
+		})
+	}
+}
+
 func TestVerify_LegacyLayoutOutsideOwnershipContractFailsFast(t *testing.T) {
 	tests := []struct {
 		name     string

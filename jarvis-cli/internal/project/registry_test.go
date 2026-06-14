@@ -31,7 +31,7 @@ func TestWriteRegistry_FirstRun(t *testing.T) {
 	for _, want := range []string{
 		"my-project",
 		"Go",
-		"Canonical registry path: `.jarvis/skill-registry.md`",
+		"Canonical registry path: `" + CanonicalRegistryPath + "`",
 		"## Suggested Skills",
 		"- `hive`",
 		"- `go-testing`",
@@ -404,11 +404,11 @@ func TestWriteRegistryWithResultRejectsRegistrySymlinkOutsideProjectRoot(t *test
 func TestCanonicalRegistryPaths_DualReadSingleWrite(t *testing.T) {
 	paths := CanonicalRegistryPaths()
 
-	if paths.WritePath != ".jarvis/skill-registry.md" {
+	if paths.WritePath != CanonicalRegistryPath {
 		t.Fatalf("write path mismatch: got %q", paths.WritePath)
 	}
 
-	wantRead := []string{".jarvis/skill-registry.md", ".atl/skill-registry.md"}
+	wantRead := []string{CanonicalRegistryPath, LegacyRegistryPathATL}
 	if len(paths.ReadPaths) != len(wantRead) {
 		t.Fatalf("read paths len mismatch: got %v want %v", paths.ReadPaths, wantRead)
 	}

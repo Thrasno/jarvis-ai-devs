@@ -541,6 +541,25 @@ func (a *OpenCodeAgent) InstallPromptHook(hooksFS fs.FS) error {
 	return writeFileAtomic(dest, content, 0644)
 }
 
+// InstallRegistryAutomation writes the separate Jarvis project skill registry
+// refresh plugin. It intentionally does not mutate opencode.json and does not
+// replace the Hive prompt-capture plugin.
+func (a *OpenCodeAgent) InstallRegistryAutomation(hooksFS fs.FS) error {
+	pluginDir := filepath.Join(a.ConfigDir(), "plugins")
+	if err := os.MkdirAll(pluginDir, 0755); err != nil {
+		return fmt.Errorf("create plugins dir: %w", err)
+	}
+	content, err := fs.ReadFile(hooksFS, "embed/hooks/opencode/skill-registry.ts")
+	if err != nil {
+		return fmt.Errorf("read opencode registry plugin: %w", err)
+	}
+	content, err = renderRegistryAutomationAsset("embed/hooks/opencode/skill-registry.ts", content)
+	if err != nil {
+		return fmt.Errorf("render opencode registry plugin: %w", err)
+	}
+	return writeFileAtomic(filepath.Join(pluginDir, "skill-registry.ts"), content, 0644)
+}
+
 // InstallSessionHooks is a no-op for OpenCode — session memory is handled by the Hive TypeScript plugin.
 func (a *OpenCodeAgent) InstallSessionHooks(_ fs.FS) error { return nil }
 

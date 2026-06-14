@@ -17,6 +17,7 @@ type ObservedProviderState struct {
 	Artifacts       map[string]sddruntime.ObservedArtifact
 	NonOwnedChanges []string
 	UnknownChanges  []string
+	RegistryQuality sddruntime.ObservedRegistryQuality
 	// OpenCode carries parsed opencode.json state for the opencode provider.
 	// Populated by the opencode lifecycle adapter; other adapters leave it at
 	// zero value (ParseSucceeded==false), which is safe — all opencode verifier

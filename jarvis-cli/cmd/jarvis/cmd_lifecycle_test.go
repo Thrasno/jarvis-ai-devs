@@ -97,6 +97,47 @@ func TestRunDoctor_RendersAdditiveStructuredDiagnosis(t *testing.T) {
 	}
 }
 
+func TestRunVerify_RendersRegistryWarningDiagnostics(t *testing.T) {
+	home := isolateTestHome(t)
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatalf("MkdirAll .claude: %v", err)
+	}
+	projectRoot := t.TempDir()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(projectRoot); err != nil {
+		t.Fatalf("Chdir project root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+
+	cmd := &cobra.Command{}
+	cmd.Flags().String("provider", "claude", "")
+	if err := cmd.Flags().Set("provider", "claude"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
+
+	var runErr error
+	out := captureStdout(t, func() {
+		runErr = runVerify(cmd, nil)
+	})
+	if runErr != nil {
+		t.Fatalf("runVerify returned error: %v", runErr)
+	}
+	for _, want := range []string{
+		"verify: runtime integrity",
+		"provider=claude",
+		"check_key=registry.quality.missing",
+		"status=warn",
+		"jarvis skill-registry refresh",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("verify output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestLifecycleCommandValidation(t *testing.T) {
 	if _, err := os.Stat(jarvisBin); os.IsNotExist(err) {
 		t.Skip("jarvis binary not available")

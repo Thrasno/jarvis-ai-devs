@@ -32,10 +32,19 @@ type ObservedRuntime struct {
 	Artifacts                map[string]ObservedArtifact
 	NonOwnedChanges          []string
 	UnknownChanges           []string
+	RegistryQuality          ObservedRegistryQuality
 	// OpenCode carries parsed opencode.json state for the opencode agent.
 	// The Claude adapter leaves this at its zero value (ParseSucceeded==false),
 	// which is safe — all verifier checks on this field are agent-gated.
 	OpenCode ObservedOpenCodeConfig
+}
+
+type ObservedRegistryQuality struct {
+	Checked     bool
+	Path        string
+	Exists      bool
+	Stale       bool
+	HasWarnings bool
 }
 
 func Verify(agent string, observed ObservedRuntime) IntegrityReport {
@@ -46,6 +55,7 @@ func Verify(agent string, observed ObservedRuntime) IntegrityReport {
 	verifyPromptInvariants(&report, observed)
 	verifyStoreInvariants(&report, observed)
 	verifyRegistryInvariant(&report, contract, observed.RegistryPath)
+	verifyRegistryQuality(&report, observed.RegistryQuality)
 	verifyMemoryTopicInvariants(&report, observed)
 	verifyModelInvariants(&report, contract, observed)
 	verifyManagedArtifacts(&report, contract, observed.Artifacts)
@@ -59,6 +69,47 @@ func Verify(agent string, observed ObservedRuntime) IntegrityReport {
 	}
 
 	return report
+}
+
+func verifyRegistryQuality(report *IntegrityReport, quality ObservedRegistryQuality) {
+	if !quality.Checked {
+		return
+	}
+	path := strings.TrimSpace(quality.Path)
+	if path == "" {
+		path = DefaultRegistryPath
+	}
+	if !quality.Exists {
+		report.AddCheck(CheckResult{
+			Key:        "registry.quality.missing",
+			Status:     StatusWarn,
+			DriftClass: DriftUnknown,
+			Expected:   "canonical project skill registry present",
+			Observed:   "missing: " + path,
+			Message:    "project skill registry is missing; run jarvis skill-registry refresh from the project worktree",
+		})
+		return
+	}
+	if quality.Stale {
+		report.AddCheck(CheckResult{
+			Key:        "registry.quality.stale",
+			Status:     StatusWarn,
+			DriftClass: DriftUnknown,
+			Expected:   "registry at least as fresh as installed project skills",
+			Observed:   "stale: " + path,
+			Message:    "project skill registry appears stale; refresh the project skill registry with jarvis skill-registry refresh",
+		})
+	}
+	if quality.HasWarnings {
+		report.AddCheck(CheckResult{
+			Key:        "registry.quality.warnings",
+			Status:     StatusWarn,
+			DriftClass: DriftUnknown,
+			Expected:   "registry generated without warning section",
+			Observed:   "warnings present: " + path,
+			Message:    "project skill registry contains a warning section; inspect registry warnings and rerun jarvis skill-registry refresh after fixing skill metadata",
+		})
+	}
 }
 
 func verifyPromptInvariants(report *IntegrityReport, observed ObservedRuntime) {
