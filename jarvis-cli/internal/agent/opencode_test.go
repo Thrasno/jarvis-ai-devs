@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
@@ -335,6 +336,38 @@ func TestOpenCodeAgent_InstallOrchestrator_WritesToConfigDir(t *testing.T) {
 	}
 	if string(content) == "" {
 		t.Fatal("expected orchestrator content to be written")
+	}
+}
+
+func TestOpenCodeAgent_InstallSkillsWithConfig_UsesResolvedPhaseModelSections(t *testing.T) {
+	tmpHome := t.TempDir()
+	a := &OpenCodeAgent{home: tmpHome}
+	cfg := &config.AppConfig{SDD: config.SDDConfig{PhaseModels: map[string]config.PhaseModelSelection{
+		"sdd-verify": {OpenCode: "haiku"},
+	}}}
+	skillsFS := fstest.MapFS{
+		"sdd-verify/SKILL.md": {Data: []byte(strings.Join([]string{
+			"Neutral verify intro",
+			"<!-- section:model-capable -->",
+			"Capable verify instructions",
+			"<!-- /section:model-capable -->",
+			"<!-- section:model-small -->",
+			"Small verify instructions",
+			"<!-- /section:model-small -->",
+		}, "\n"))},
+	}
+
+	if err := a.InstallSkillsWithConfig(skillsFS, []string{"sdd-verify"}, cfg); err != nil {
+		t.Fatalf("InstallSkillsWithConfig: %v", err)
+	}
+
+	installed, err := os.ReadFile(filepath.Join(a.ConfigDir(), "skills", "sdd-verify", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read installed skill: %v", err)
+	}
+	content := string(installed)
+	if !strings.Contains(content, "Small verify instructions") || strings.Contains(content, "Capable verify instructions") || strings.Contains(content, "section:model") {
+		t.Fatalf("installed skill did not select small model section cleanly:\n%s", content)
 	}
 }
 

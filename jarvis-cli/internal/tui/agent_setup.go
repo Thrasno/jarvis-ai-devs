@@ -30,6 +30,10 @@ type generatedConfigAgent interface {
 	MergeGeneratedConfig(*config.AppConfig) error
 }
 
+type configAwareSkillInstaller interface {
+	InstallSkillsWithConfig(fs.FS, []string, *config.AppConfig) error
+}
+
 // statuslineInstaller is implemented by agents that support the Jarvis-managed
 // Claude Code statusline. The confirm callback decides overwrite vs. skip when
 // the script already exists; it is never called on a fresh install.
@@ -59,7 +63,11 @@ func configureWizardAgent(
 			return fmt.Errorf("generated config guardrails: %w", err)
 		}
 	}
-	if err := a.InstallSkills(skillsSubFS, selectedIDs); err != nil {
+	if skillInstaller, ok := a.(configAwareSkillInstaller); ok {
+		if err := skillInstaller.InstallSkillsWithConfig(skillsSubFS, selectedIDs, cfg); err != nil {
+			return fmt.Errorf("install skills: %w", err)
+		}
+	} else if err := a.InstallSkills(skillsSubFS, selectedIDs); err != nil {
 		return fmt.Errorf("install skills: %w", err)
 	}
 	orchestratorTemplate, err := fs.ReadFile(jarvis.OrchestratorFS, "embed/orchestrator/sdd-orchestrator.md")
