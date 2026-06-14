@@ -220,15 +220,12 @@ function renderShell(
   header.innerHTML = `<p class="eyebrow">Hive API</p><h1 class="dashboard-header__title">Hive API Dashboard</h1>`
 
   // Search slot
-  const searchSlot = document.createElement('input')
-  searchSlot.type = 'search'
+  const searchSlot = document.createElement('button')
+  searchSlot.type = 'button'
   searchSlot.className = 'dashboard-header__search'
-  searchSlot.placeholder = 'Search memories…'
+  searchSlot.textContent = 'Search memories…'
   searchSlot.setAttribute('aria-label', 'Search memories')
   searchSlot.addEventListener('click', () => actions.onNavigate?.('/dashboard/globalSearch'))
-  searchSlot.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') actions.onNavigate?.('/dashboard/globalSearch')
-  })
 
   // Bell button with optional unread badge
   const bellWrapper = document.createElement('div')
@@ -238,6 +235,7 @@ function renderShell(
   bellButton.setAttribute('aria-label', 'Notifications')
   bellButton.className = 'dashboard-header__bell dashboard-control control'
   bellButton.dataset.dashboardPrimitive = 'control'
+  bellButton.dataset.bell = ''
   bellButton.addEventListener('click', () => actions.onToggleDrawer?.())
 
   bellWrapper.append(bellButton)
@@ -275,6 +273,8 @@ function renderShell(
   const drawerEl = drawerContainer.querySelector('[data-dashboard-primitive="drawer"]')
   if (drawerEl && drawerState.drawerOpen) {
     drawerEl.setAttribute('data-open', '')
+    const closeBtn = drawerEl.querySelector<HTMLElement>('[data-drawer-close]')
+    closeBtn?.focus()
   }
   layout.append(drawerContainer)
 
@@ -398,7 +398,7 @@ function escapeHtml(value: string): string {
 
 type StartOptions = { api?: ApiClient; session?: SessionStore }
 
-export function startDashboardApp(root: HTMLElement, options: StartOptions = {}): void {
+export function startDashboardApp(root: HTMLElement, options: StartOptions = {}): () => void {
   const api = options.api ?? createApiClient()
   const session = options.session ?? createSessionStore({ api })
   let dashboard: DashboardState = { status: 'loading' }
@@ -406,9 +406,10 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
   let activeScreen: DashboardScreenKey = 'overview'
   let drawerOpen = false
   let readIds: Set<string> = new Set()
+  let summaryUnread: number = dashboardFixtures.shared.notificationSummary.unread
 
   const rerender = (state: AuthState) =>
-    renderApp(root, state, actions, dashboard, window.location.pathname, { drawerOpen, readIds })
+    renderApp(root, state, actions, dashboard, window.location.pathname, { drawerOpen, readIds, summaryUnread })
 
   const actions: AppActions = {
     async onLogin(email, password) {
@@ -435,11 +436,16 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
       }
     },
     onToggleDrawer() {
+      const wasOpen = drawerOpen
       drawerOpen = !drawerOpen
       rerender(session.getState())
+      if (wasOpen) {
+        root.querySelector<HTMLElement>('[data-bell]')?.focus()
+      }
     },
     onMarkAllRead() {
       for (const n of dashboardFixtures.shared.notifications) readIds.add(n.id)
+      summaryUnread = 0
       drawerOpen = false
       rerender(session.getState())
     }
@@ -468,11 +474,13 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     }
   }
 
-  window.addEventListener('popstate', () => rerender(session.getState()))
+  const handler = () => rerender(session.getState())
+  window.addEventListener('popstate', handler)
   session
     .bootstrap()
     .then(setState)
     .catch(() => rerender({ status: 'anonymous', error: 'Unable to restore your session. Please sign in again.' }))
+  return () => window.removeEventListener('popstate', handler)
 }
 
 const root = document.getElementById('app')

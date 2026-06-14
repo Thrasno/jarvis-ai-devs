@@ -215,7 +215,7 @@ describe('bell and search slot integration', () => {
     expect(onNavigate).toHaveBeenCalledWith('/dashboard/globalSearch')
   })
 
-  it('W4 — mark all read closes drawer and removes unread badge', () => {
+  it('mark all read button fires onMarkAllRead callback', () => {
     const container = document.createElement('main')
     const onMarkAllRead = vi.fn()
 

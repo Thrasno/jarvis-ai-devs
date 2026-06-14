@@ -14,12 +14,16 @@ export function renderNotificationDrawer(container: HTMLElement, props: DrawerPr
   const drawer = document.createElement('div')
   drawer.className = 'dashboard-drawer'
   drawer.dataset.dashboardPrimitive = 'drawer'
+  drawer.setAttribute('role', 'dialog')
+  drawer.setAttribute('aria-modal', 'true')
+  drawer.setAttribute('aria-labelledby', 'notifications-title')
 
   // Header
   const header = document.createElement('div')
   header.className = 'dashboard-drawer__header'
 
   const title = document.createElement('h2')
+  title.id = 'notifications-title'
   title.className = 'dashboard-drawer__title'
   title.textContent = 'Notifications'
 
@@ -41,6 +45,7 @@ export function renderNotificationDrawer(container: HTMLElement, props: DrawerPr
   closeBtn.className = 'dashboard-control control dashboard-drawer__close'
   closeBtn.dataset.dashboardPrimitive = 'control'
   closeBtn.dataset.notificationClose = ''
+  closeBtn.dataset.drawerClose = ''
   closeBtn.setAttribute('aria-label', 'Close notifications')
   closeBtn.textContent = '×'
   closeBtn.addEventListener('click', () => props.onClose())

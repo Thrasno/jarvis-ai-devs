@@ -112,6 +112,7 @@ a { color: var(--dashboard-accent); }
   background: var(--dashboard-surface);
   border-left: 1px solid var(--dashboard-border);
   height: 100vh;
+  max-width: 100%;
   overflow-y: auto;
   padding: calc(var(--dashboard-spacing) * 1.5);
   position: fixed;
@@ -353,6 +354,10 @@ a { color: var(--dashboard-accent); }
     height: auto;
     overflow-y: visible;
     position: static;
+    width: 100%;
+  }
+
+  .dashboard-drawer {
     width: 100%;
   }
 }
