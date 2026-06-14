@@ -532,27 +532,17 @@ func claudePromptHookFilename(goos string) string {
 	return "user-prompt-submit.sh"
 }
 
-// InstallRegistryAutomation writes the Jarvis project skill registry refresh
-// hook for Claude Code and merges it into UserPromptSubmit without replacing
-// the Hive prompt-capture hook or user-owned hooks.
-func (a *ClaudeAgent) InstallRegistryAutomation(hooksFS fs.FS) error {
-	hookDir := filepath.Join(a.ConfigDir(), "hive-hooks")
-	if err := os.MkdirAll(hookDir, 0755); err != nil {
-		return fmt.Errorf("create hive-hooks dir: %w", err)
-	}
-
-	spec := resolveClaudeRegistryHook(claudeRuntimeGOOS, hookDir)
-	content, err := fs.ReadFile(hooksFS, spec.assetPath)
+// InstallRegistryAutomation merges the Jarvis project skill registry refresh
+// command into Claude Code UserPromptSubmit without replacing the Hive
+// prompt-capture hook or user-owned hooks.
+func (a *ClaudeAgent) InstallRegistryAutomation(_ fs.FS) error {
+	executable, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("read registry hook script: %w", err)
+		return fmt.Errorf("resolve jarvis executable: %w", err)
 	}
-	content, err = renderRegistryAutomationAsset(spec.assetPath, content)
+	command, err := claudeRegistryRefreshCommand(executable)
 	if err != nil {
-		return fmt.Errorf("render registry hook script: %w", err)
-	}
-	scriptPath := filepath.Join(hookDir, spec.filename)
-	if err := writeFileAtomic(scriptPath, content, spec.perm); err != nil {
-		return fmt.Errorf("write registry hook script: %w", err)
+		return err
 	}
 
 	patch := map[string]any{
@@ -563,7 +553,7 @@ func (a *ClaudeAgent) InstallRegistryAutomation(hooksFS fs.FS) error {
 					"hooks": []any{
 						map[string]any{
 							"type":    "command",
-							"command": spec.command,
+							"command": command,
 							"timeout": registryAutomationTimeoutSeconds,
 						},
 					},
@@ -586,25 +576,11 @@ func (a *ClaudeAgent) InstallRegistryAutomation(hooksFS fs.FS) error {
 	return writeFileAtomic(a.settingsPath(), merged, 0644)
 }
 
-func resolveClaudeRegistryHook(goos, hookDir string) claudePromptHookSpec {
-	if goos == "windows" {
-		filename := "skill-registry-refresh.ps1"
-		scriptPath := filepath.Join(hookDir, filename)
-		return claudePromptHookSpec{
-			assetPath: "embed/hooks/claude/" + filename,
-			filename:  filename,
-			command:   `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "` + escapePowerShellFilePath(scriptPath) + `"`,
-			perm:      0644,
-		}
+func claudeRegistryRefreshCommand(executable string) (string, error) {
+	if strings.TrimSpace(executable) == "" || !filepath.IsAbs(executable) {
+		return "", fmt.Errorf("resolve jarvis executable: expected absolute path, got %q", executable)
 	}
-	filename := "skill-registry-refresh.sh"
-	scriptPath := filepath.Join(hookDir, filename)
-	return claudePromptHookSpec{
-		assetPath: "embed/hooks/claude/" + filename,
-		filename:  filename,
-		command:   scriptPath,
-		perm:      0755,
-	}
+	return shellSingleQuote(executable) + ` skill-registry refresh --quiet --cwd "${CLAUDE_PROJECT_DIR:-$PWD}" || true`, nil
 }
 
 func resolveClaudePromptHook(goos, scriptPath string) claudePromptHookSpec {

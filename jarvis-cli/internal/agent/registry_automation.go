@@ -14,8 +14,7 @@ const (
 	registryAutomationTimeoutSeconds = 3
 	registryAutomationTimeoutMillis  = registryAutomationTimeoutSeconds * 1000
 
-	jarvisRefreshTimeoutSecondsPlaceholder = "{{JARVIS_REFRESH_TIMEOUT_SECONDS}}"
-	jarvisRefreshTimeoutMillisPlaceholder  = "{{JARVIS_REFRESH_TIMEOUT_MILLIS}}"
+	jarvisRefreshTimeoutMillisPlaceholder = "{{JARVIS_REFRESH_TIMEOUT_MILLIS}}"
 )
 
 func renderRegistryAutomationAsset(assetPath string, content []byte) ([]byte, error) {
@@ -40,11 +39,10 @@ func renderRegistryAutomationAssetWithExecutable(assetPath string, content []byt
 	replacement := executableReplacementForAsset(assetPath, executable)
 	replacer := strings.NewReplacer(
 		jarvisExecutablePlaceholder, replacement,
-		jarvisRefreshTimeoutSecondsPlaceholder, fmt.Sprintf("%d", registryAutomationTimeoutSeconds),
 		jarvisRefreshTimeoutMillisPlaceholder, fmt.Sprintf("%d", registryAutomationTimeoutMillis),
 	)
 	rendered := replacer.Replace(text)
-	for _, placeholder := range []string{jarvisExecutablePlaceholder, jarvisRefreshTimeoutSecondsPlaceholder, jarvisRefreshTimeoutMillisPlaceholder} {
+	for _, placeholder := range []string{jarvisExecutablePlaceholder, jarvisRefreshTimeoutMillisPlaceholder} {
 		if strings.Contains(rendered, placeholder) {
 			return nil, fmt.Errorf("render registry automation asset %s: unconsumed placeholder %s", assetPath, placeholder)
 		}
@@ -54,28 +52,22 @@ func renderRegistryAutomationAssetWithExecutable(assetPath string, content []byt
 
 func expectedRegistryAutomationPlaceholders(assetPath string) []string {
 	placeholders := []string{jarvisExecutablePlaceholder}
-	switch {
-	case strings.HasSuffix(assetPath, ".sh"):
-		placeholders = append(placeholders, jarvisRefreshTimeoutSecondsPlaceholder)
-	case strings.HasSuffix(assetPath, ".ps1"), strings.HasSuffix(assetPath, ".ts"):
+	if strings.HasSuffix(assetPath, ".ts") {
 		placeholders = append(placeholders, jarvisRefreshTimeoutMillisPlaceholder)
 	}
 	return placeholders
 }
 
 func executableReplacementForAsset(assetPath, executable string) string {
-	switch {
-	case strings.HasSuffix(assetPath, ".ps1"):
-		return "'" + strings.ReplaceAll(executable, "'", "''") + "'"
-	case strings.HasSuffix(assetPath, ".ts"):
+	if strings.HasSuffix(assetPath, ".ts") {
 		encoded, err := json.Marshal(executable)
 		if err != nil {
 			return `""`
 		}
 		return string(encoded)
-	default:
-		return shellSingleQuote(executable)
 	}
+
+	return shellSingleQuote(executable)
 }
 
 func shellSingleQuote(value string) string {

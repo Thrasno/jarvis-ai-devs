@@ -100,6 +100,22 @@ func TestSkillRegistryRefreshCommand(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects no-gitignore compatibility flag", func(t *testing.T) {
+		root := initCommandGitWorktree(t)
+
+		output, err := executeSkillRegistryCommand("refresh", "--cwd", root, "--quiet", "--no-gitignore")
+
+		if err == nil {
+			t.Fatalf("expected --no-gitignore to be rejected, got nil error and output:\n%s", output)
+		}
+		if !strings.Contains(output+err.Error(), "unknown flag: --no-gitignore") {
+			t.Fatalf("expected unknown flag error for --no-gitignore, got err=%v output:\n%s", err, output)
+		}
+		if _, statErr := os.Stat(filepath.Join(root, ".jarvis", "skill-registry.md")); !os.IsNotExist(statErr) {
+			t.Fatalf("expected rejected --no-gitignore refresh not to write registry, got stat err=%v", statErr)
+		}
+	})
+
 	t.Run("force reports forced rewrite reason", func(t *testing.T) {
 		root := initCommandGitWorktree(t)
 		if output, err := executeSkillRegistryCommand("refresh", "--cwd", root); err != nil {

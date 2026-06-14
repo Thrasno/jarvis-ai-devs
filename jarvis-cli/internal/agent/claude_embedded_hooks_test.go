@@ -23,9 +23,18 @@ func TestEmbeddedPromptCaptureHooks_PostProjectSessionMetadata(t *testing.T) {
 func TestEmbeddedSkillRegistryAutomationHooks_UseQuietActiveWorktreeRefresh(t *testing.T) {
 	t.Parallel()
 
-	assertHookContract(t, "claude registry shell hook", claudeEmbeddedHookPath(t, "skill-registry-refresh.sh"), "skill-registry refresh", "--quiet", "--cwd", "resolve_directory", "timeout {{JARVIS_REFRESH_TIMEOUT_SECONDS}}s", "{{JARVIS_EXECUTABLE}}", `PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"`)
-	assertHookContract(t, "claude registry powershell hook", claudeEmbeddedHookPath(t, "skill-registry-refresh.ps1"), "skill-registry refresh", "--quiet", "--cwd", "Resolve-Directory", "Start-Process", "WaitForExit({{JARVIS_REFRESH_TIMEOUT_MILLIS}})", "{{JARVIS_EXECUTABLE}}")
 	assertHookContract(t, "opencode registry plugin", opencodeEmbeddedHookPath(t, "skill-registry.ts"), "skill-registry", "--quiet", "--cwd", "context.directory", "context.worktree", "process.cwd()", "timeout: {{JARVIS_REFRESH_TIMEOUT_MILLIS}}", "{{JARVIS_EXECUTABLE}}")
+}
+
+func TestClaudeSkillRegistryAutomation_DoesNotShipWrapperScripts(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{"skill-registry-refresh.sh", "skill-registry-refresh.ps1"} {
+		path := claudeEmbeddedHookPath(t, name)
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("Claude registry automation should use a direct command and not ship %s, stat err=%v", path, err)
+		}
+	}
 }
 
 func TestEmbeddedSkillRegistryAutomationHooks_DoNotUseProjectLocalPathLookup(t *testing.T) {
@@ -36,22 +45,6 @@ func TestEmbeddedSkillRegistryAutomationHooks_DoNotUseProjectLocalPathLookup(t *
 		path      string
 		forbidden []string
 	}{
-		{
-			name: "claude registry shell hook",
-			path: claudeEmbeddedHookPath(t, "skill-registry-refresh.sh"),
-			forbidden: []string{
-				"command -v jarvis",
-				" jarvis skill-registry",
-			},
-		},
-		{
-			name: "claude registry powershell hook",
-			path: claudeEmbeddedHookPath(t, "skill-registry-refresh.ps1"),
-			forbidden: []string{
-				"Get-Command -Name 'jarvis'",
-				"Start-Process -FilePath 'jarvis'",
-			},
-		},
 		{
 			name: "opencode registry plugin",
 			path: opencodeEmbeddedHookPath(t, "skill-registry.ts"),
