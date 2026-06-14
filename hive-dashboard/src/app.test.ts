@@ -4,6 +4,7 @@ import type { SessionStore } from './auth/session'
 import { loadDashboard, renderApp, startDashboardApp } from './main'
 
 const adminUser = { id: 'admin-1', username: 'admin', email: 'admin@example.com', level: 'admin' as const, is_active: true, created_at: '2026-06-06T20:00:00Z' }
+const memberUser = { id: 'member-1', username: 'member', email: 'member@example.com', level: 'member' as const, is_active: true, created_at: '2026-06-06T20:00:00Z' }
 
 describe('dashboard shell', () => {
   it('shows the login form to unauthenticated users', () => {
@@ -37,14 +38,15 @@ describe('dashboard shell', () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('invalid credentials')
   })
 
-  it('denies admin shell content to a non-admin identity', () => {
+  it('renders the full shell (sidebar + header + main) for any authenticated user', () => {
     const container = document.createElement('main')
-    const memberUser = { ...adminUser, level: 'member' as const, username: 'member' }
 
     renderApp(container, { status: 'authenticated', token: 'jwt-token', user: memberUser }, { onLogin: vi.fn(), onLogout: vi.fn() })
 
-    expect(container.textContent).toContain('Admin access required')
-    expect(container.textContent).not.toContain('Admin dashboard')
+    expect(container.textContent).not.toContain('Admin access required')
+    expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).not.toBeNull()
+    expect(container.querySelector('[data-dashboard-primitive="header"]')).not.toBeNull()
+    expect(container.querySelector('[data-dashboard-primitive="main"]')).not.toBeNull()
   })
 
   it('renders the protected shell for an admin identity', () => {
@@ -52,13 +54,11 @@ describe('dashboard shell', () => {
 
     renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() })
 
-    expect(container.querySelector('h1')?.textContent).toBe('Hive API Dashboard')
-    expect(container.querySelector('[data-dashboard-primitive="page"]')?.textContent).toContain('Hive API Dashboard')
-    expect(container.querySelector('header')?.getAttribute('role')).toBe('banner')
-    expect(container.querySelector('button')?.getAttribute('data-dashboard-primitive')).toBe('control')
-    expect(container.querySelector('nav')?.getAttribute('aria-label')).toBe('Dashboard sections')
-    expect(container.querySelector('nav')?.textContent).toContain('Overview')
-    expect(container.textContent).toContain('Loading dashboard data')
+    expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).not.toBeNull()
+    expect(container.querySelector('[data-dashboard-primitive="header"]')).not.toBeNull()
+    expect(container.querySelector('[data-dashboard-primitive="main"]')).not.toBeNull()
+    expect(container.querySelector('[data-dashboard-primitive="sidebar"] nav')?.getAttribute('aria-label')).toBe('Dashboard sections')
+    expect(container.querySelector('[data-dashboard-primitive="sidebar"] nav')?.textContent).toContain('Dashboard')
     expect(container.textContent).not.toContain('daemon')
   })
 
@@ -67,12 +67,20 @@ describe('dashboard shell', () => {
 
     renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, dashboardState(), '/dashboard/users')
 
-    expect(container.querySelector('nav')?.textContent).toContain('Overview')
-    expect(container.querySelector('a[href="/dashboard/memories"]')?.textContent).toBe('Memories')
+    expect(container.querySelector('[data-dashboard-primitive="sidebar"] nav')?.textContent).toContain('Dashboard')
     expect(container.querySelector('section h2')?.textContent).toBe('Users')
     expect(container.textContent).toContain('admin · active')
     expect(container.textContent).toContain('admin@example.com')
     expect(container.textContent).not.toContain('Authentication is active')
+  })
+
+  it('renders ComingSoon for an unimplemented route', () => {
+    const container = document.createElement('main')
+
+    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, { status: 'loading' }, '/dashboard/activityFeed')
+
+    expect(container.querySelector('[data-coming-soon]')).not.toBeNull()
+    expect(container.textContent).toContain('Activity Feed')
   })
 
   it('shows the named default memory search in the memories view', () => {
@@ -80,7 +88,7 @@ describe('dashboard shell', () => {
 
     renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, dashboardState(), '/dashboard/memories')
 
-    expect(container.textContent).toContain('Default search: "dashboard"')
+    expect(container.querySelector('[data-dashboard-primitive="main"]')?.textContent).toContain('Default search: "dashboard"')
   })
 
   it('does not render stale dashboard data after logout while a dashboard load is pending', async () => {

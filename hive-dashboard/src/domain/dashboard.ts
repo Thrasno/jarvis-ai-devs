@@ -1,5 +1,6 @@
 export const dashboardScreenKeys = [
   'overview',
+  'memories',
   'projects',
   'knowledgeBrowser',
   'globalSearch',
