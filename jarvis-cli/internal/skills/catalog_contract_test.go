@@ -417,6 +417,124 @@ func TestCatalogContract_EmbeddedProductAssetsAvoidLocalRuntimeSkillPaths(t *tes
 	}
 }
 
+func TestCatalogContract_SDDApplyStrictTDDSourcePreservesQualityRules(t *testing.T) {
+	t.Parallel()
+
+	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-apply/strict-tdd.md")
+
+	requiredSnippets := []string{
+		"## Assertion Quality Rules (MANDATORY)",
+		"### Banned Assertion Patterns (NEVER write these)",
+		"NEVER write trivial assertions",
+		"# GHOST LOOP",
+		"loop iterates 0 times",
+		"assert the collection is non-empty FIRST",
+		"TRIANGULATE (MANDATORY for most tasks)",
+		"MINIMUM: at least 2 test cases per behavior",
+		"NON-EMPTY/NON-TRIVIAL",
+		"Failure Evidence Requirements",
+		"RED evidence must include one of these",
+		"executed focused failing test command",
+		"Go compile-time failure from a missing symbol",
+		"If infrastructure blocks the focused RED command, STOP",
+		"### Smoke Test Rule",
+		"Renders without crash",
+		"does NOT count toward TDD coverage",
+		"### Mock/Fake Hygiene Rules",
+		"If you need more mocks than assertions",
+		"Extract-Before-Mock Rule",
+		"### Behavior-First Test Rule",
+		"Tests must assert **behavior visible to the user or caller**",
+		"BEFORE touching production code",
+		"approval tests",
+		"if got != want",
+	}
+
+	for _, want := range requiredSnippets {
+		if !strings.Contains(content, want) {
+			t.Fatalf("expected sdd-apply strict-tdd source to contain %q", want)
+		}
+	}
+}
+
+func TestCatalogContract_SDDApplyStrictTDDSourceRejectsWeakTestLoopholes(t *testing.T) {
+	t.Parallel()
+
+	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-apply/strict-tdd.md")
+
+	forbiddenSnippets := []string{
+		"TRIANGULATE (when behavior has multiple cases)",
+		"If NO (single-case behavior, e.g., config setup, simple mapping):",
+		"Skip triangulation, proceed to REFACTOR",
+		"➖ Single if spec has only one scenario",
+		"\"➖ Single\" if spec has only one scenario",
+		"skip triangulation because the spec has only one scenario",
+		"skip triangulation when the spec has only one scenario",
+		"documented unimplemented-behavior failure when execution is not possible yet",
+		"RED would fail",
+		"would fail if run",
+		"would fail when run",
+		"would fail once executed",
+		"report as \"Blocked\" and continue to next task",
+		"expect(true).toBe(true)              # ✅",
+		"assert 1 == 1                        # ✅",
+		"Renders without crash\" is a unit test",
+		"type-only assertions are enough",
+		"empty collection assertions are enough",
+	}
+
+	for _, unwanted := range forbiddenSnippets {
+		if strings.Contains(content, unwanted) {
+			t.Fatalf("expected sdd-apply strict-tdd source not to contain weak-test loophole %q", unwanted)
+		}
+	}
+}
+
+func TestCatalogContract_SDDApplyStrictTDDSourceLimitsTriangulationSkipToStructuralOneOutputTasks(t *testing.T) {
+	t.Parallel()
+
+	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-apply/strict-tdd.md")
+
+	requiredSnippets := []string{
+		"Skip triangulation ONLY when ALL of these are true:",
+		"The task is purely structural",
+		"There is literally ONE possible output",
+		"no branching, no logic",
+		"A single spec scenario is NOT a triangulation skip reason",
+		"only structural one-output work may skip triangulation",
+		"Triangulation skipped: {reason}",
+	}
+
+	for _, want := range requiredSnippets {
+		if !strings.Contains(content, want) {
+			t.Fatalf("expected sdd-apply strict-tdd source to contain triangulation skip guard %q", want)
+		}
+	}
+}
+
+func TestCatalogContract_SDDApplyStrictTDDSourceRequiresExecutedREDEvidence(t *testing.T) {
+	t.Parallel()
+
+	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-apply/strict-tdd.md")
+
+	requiredSnippets := []string{
+		"Strict TDD requires proof that RED happened before GREEN.",
+		"RED evidence MUST include the executed focused failing test command",
+		"the failing assertion, compile error, or behavior mismatch output",
+		"Do not document RED as \"would fail\"",
+		"it is not RED until the focused command was executed and failed",
+		"If infrastructure blocks the focused RED command, STOP",
+		"do NOT implement or move to another task",
+		"Do not proceed to GREEN with hypothetical RED evidence.",
+	}
+
+	for _, want := range requiredSnippets {
+		if !strings.Contains(content, want) {
+			t.Fatalf("expected sdd-apply strict-tdd source to require executed RED evidence %q", want)
+		}
+	}
+}
+
 func TestCatalogContract_EmbeddedDocsUseJarvisRegistryAsCanonicalPath(t *testing.T) {
 	t.Parallel()
 
