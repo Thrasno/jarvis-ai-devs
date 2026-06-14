@@ -2,6 +2,7 @@ import { createApiClient, type ApiClient, type AuditLogList, type MemoryList, ty
 import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
 import { control } from './components/dom'
 import { comingSoon } from './components/ComingSoon'
+import { renderNotificationDrawer } from './components/NotificationDrawer'
 import { renderSidebar, type UserLevel } from './components/Sidebar'
 import type { DashboardScreenKey } from './domain/dashboard'
 import { dashboardFixtures } from './fixtures/hive-dashboard/index'
@@ -28,6 +29,14 @@ type AppActions = {
   onLogin(email: string, password: string): Promise<void> | void
   onLogout(): void
   onNavigate?(path: string): void
+  onToggleDrawer?(): void
+  onMarkAllRead?(): void
+}
+
+type DrawerState = {
+  drawerOpen: boolean
+  readIds: ReadonlySet<string>
+  summaryUnread?: number
 }
 
 type ScreenRoute = {
@@ -132,12 +141,13 @@ export function renderApp(
   state: AuthState,
   actions: AppActions,
   dashboard: DashboardState = { status: 'loading' },
-  routePath = window.location.pathname
+  routePath = window.location.pathname,
+  drawerState: DrawerState = { drawerOpen: false, readIds: new Set() }
 ): void {
   container.replaceChildren()
   state.status === 'anonymous'
     ? renderLogin(container, state, actions)
-    : renderShell(container, state, actions, dashboard, routePath)
+    : renderShell(container, state, actions, dashboard, routePath, drawerState)
 }
 
 function renderLogin(
@@ -171,10 +181,15 @@ function renderShell(
   state: Extract<AuthState, { status: 'authenticated' }>,
   actions: AppActions,
   dashboard: DashboardState,
-  routePath: string
+  routePath: string,
+  drawerState: DrawerState
 ): void {
   const activeScreen = screenFromPath(routePath)
   const userLevel = state.user.level as UserLevel
+  const notificationSummary = dashboardFixtures.shared.notificationSummary
+  const unreadCount = drawerState.summaryUnread !== undefined
+    ? drawerState.summaryUnread
+    : notificationSummary.unread
 
   // Root layout
   const layout = document.createElement('div')
@@ -204,22 +219,39 @@ function renderShell(
   header.setAttribute('role', 'banner')
   header.innerHTML = `<p class="eyebrow">Hive API</p><h1 class="dashboard-header__title">Hive API Dashboard</h1>`
 
+  // Search slot
   const searchSlot = document.createElement('input')
   searchSlot.type = 'search'
   searchSlot.className = 'dashboard-header__search'
-  searchSlot.placeholder = 'Search...'
-  searchSlot.setAttribute('aria-label', 'Search')
+  searchSlot.placeholder = 'Search memories…'
+  searchSlot.setAttribute('aria-label', 'Search memories')
   searchSlot.addEventListener('click', () => actions.onNavigate?.('/dashboard/globalSearch'))
   searchSlot.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') actions.onNavigate?.('/dashboard/globalSearch')
   })
 
+  // Bell button with optional unread badge
+  const bellWrapper = document.createElement('div')
+  bellWrapper.className = 'dashboard-header__bell-wrapper'
+
   const bellButton = control('Notifications')
   bellButton.setAttribute('aria-label', 'Notifications')
   bellButton.className = 'dashboard-header__bell dashboard-control control'
   bellButton.dataset.dashboardPrimitive = 'control'
+  bellButton.addEventListener('click', () => actions.onToggleDrawer?.())
 
-  header.append(searchSlot, bellButton)
+  bellWrapper.append(bellButton)
+
+  if (unreadCount > 0) {
+    const badge = document.createElement('span')
+    badge.className = 'dashboard-header__bell-badge'
+    badge.dataset.bellBadge = ''
+    badge.setAttribute('aria-label', `${unreadCount} unread notifications`)
+    badge.textContent = String(unreadCount)
+    bellWrapper.append(badge)
+  }
+
+  header.append(searchSlot, bellWrapper)
   mainArea.append(header)
 
   // Content area
@@ -230,6 +262,21 @@ function renderShell(
   mainArea.append(mainContent)
 
   layout.append(mainArea)
+
+  // Notification drawer (fixed overlay, always rendered, shown via data-open)
+  const drawerContainer = document.createElement('div')
+  renderNotificationDrawer(drawerContainer, {
+    notifications: dashboardFixtures.shared.notifications,
+    summary: notificationSummary,
+    readIds: drawerState.readIds,
+    onMarkAllRead: () => actions.onMarkAllRead?.(),
+    onClose: () => actions.onToggleDrawer?.()
+  })
+  const drawerEl = drawerContainer.querySelector('[data-dashboard-primitive="drawer"]')
+  if (drawerEl && drawerState.drawerOpen) {
+    drawerEl.setAttribute('data-open', '')
+  }
+  layout.append(drawerContainer)
 
   // Shell wrapper
   const shell = document.createElement('section')
@@ -357,8 +404,11 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
   let dashboard: DashboardState = { status: 'loading' }
   let loadVersion = 0
   let activeScreen: DashboardScreenKey = 'overview'
+  let drawerOpen = false
+  let readIds: Set<string> = new Set()
 
-  const rerender = (state: AuthState) => renderApp(root, state, actions, dashboard, window.location.pathname)
+  const rerender = (state: AuthState) =>
+    renderApp(root, state, actions, dashboard, window.location.pathname, { drawerOpen, readIds })
 
   const actions: AppActions = {
     async onLogin(email, password) {
@@ -371,6 +421,8 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     onLogout() {
       loadVersion += 1
       dashboard = { status: 'loading' }
+      drawerOpen = false
+      readIds = new Set()
       rerender(session.logout())
     },
     async onNavigate(path) {
@@ -381,6 +433,15 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
       if (state.status === 'authenticated') {
         await loadAndRender(state, activeScreen)
       }
+    },
+    onToggleDrawer() {
+      drawerOpen = !drawerOpen
+      rerender(session.getState())
+    },
+    onMarkAllRead() {
+      for (const n of dashboardFixtures.shared.notifications) readIds.add(n.id)
+      drawerOpen = false
+      rerender(session.getState())
     }
   }
 

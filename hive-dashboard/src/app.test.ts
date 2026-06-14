@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from './api/client'
 import type { SessionStore } from './auth/session'
 import { loadDashboard, renderApp, startDashboardApp } from './main'
+import { dashboardNotificationSummary } from './fixtures/hive-dashboard/shared'
 
 const adminUser = { id: 'admin-1', username: 'admin', email: 'admin@example.com', level: 'admin' as const, is_active: true, created_at: '2026-06-06T20:00:00Z' }
 const memberUser = { id: 'member-1', username: 'member', email: 'member@example.com', level: 'member' as const, is_active: true, created_at: '2026-06-06T20:00:00Z' }
@@ -135,6 +136,57 @@ describe('dashboard shell', () => {
     expect(dashboard.data.users.status).toBe('ready')
     expect(dashboard.data.memories.status).toBe('ready')
     expect(dashboard.data.audit.status).toBe('ready')
+  })
+})
+
+describe('bell and search slot integration', () => {
+  it('notification bell is visible in authenticated shell', () => {
+    const container = document.createElement('main')
+
+    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() })
+
+    const bell = container.querySelector('[aria-label="Notifications"]')
+    expect(bell).not.toBeNull()
+  })
+
+  it('bell shows unread badge when summary.unread > 0', () => {
+    const container = document.createElement('main')
+
+    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, { status: 'loading' }, '/dashboard', { drawerOpen: false, readIds: new Set() })
+
+    // dashboardNotificationSummary.unread is 3
+    const badge = container.querySelector('[data-bell-badge]')
+    expect(badge).not.toBeNull()
+    expect(badge?.textContent).toContain(String(dashboardNotificationSummary.unread))
+  })
+
+  it('bell badge is hidden when all notifications are read', () => {
+    const container = document.createElement('main')
+    const allReadIds = new Set(Array.from({ length: 7 }, (_, i) => `id-${i}`))
+
+    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, { status: 'loading' }, '/dashboard', { drawerOpen: false, readIds: allReadIds, summaryUnread: 0 })
+
+    const badge = container.querySelector('[data-bell-badge]')
+    expect(badge).toBeNull()
+  })
+
+  it('search slot is visible in authenticated shell', () => {
+    const container = document.createElement('main')
+
+    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() })
+
+    const searchSlot = container.querySelector('.dashboard-header__search')
+    expect(searchSlot).not.toBeNull()
+  })
+
+  it('drawer element has [data-open] attribute when drawerOpen is true', () => {
+    const container = document.createElement('main')
+
+    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, { status: 'loading' }, '/dashboard', { drawerOpen: true, readIds: new Set() })
+
+    const drawer = container.querySelector('[data-dashboard-primitive="drawer"]')
+    expect(drawer).not.toBeNull()
+    expect(drawer?.hasAttribute('data-open')).toBe(true)
   })
 })
 
