@@ -17,10 +17,10 @@ export type UsersData = { users: User[] }
 export type MemoriesData = { recent: MemoryList; search: MemorySearch }
 export type AuditSyncData = AuditLogList
 export type LoadedDashboardData = {
-  overview?: ViewState<OverviewData>
-  users?: ViewState<UsersData>
-  memories?: ViewState<MemoriesData>
-  audit?: ViewState<AuditSyncData>
+  overview: ViewState<OverviewData>
+  users: ViewState<UsersData>
+  memories: ViewState<MemoriesData>
+  audit: ViewState<AuditSyncData>
 }
 export type DashboardState = { status: 'loading' } | { status: 'ready'; data: Partial<LoadedDashboardData> }
 
