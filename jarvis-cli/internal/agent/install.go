@@ -6,7 +6,26 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 )
+
+type skillModelSectionClass func(skillID string) sddruntime.ModelSectionClass
+
+func skillModelSectionClassForPlatform(platform sddruntime.Platform, cfg *config.AppConfig) (skillModelSectionClass, error) {
+	assignments, err := sddruntime.ResolveAssignmentsForPlatform(platform, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return func(skillID string) sddruntime.ModelSectionClass {
+		model := strings.TrimSpace(assignments[skillID])
+		if model == "" {
+			model = assignments["default"]
+		}
+		return sddruntime.ModelSectionClassForModel(model)
+	}, nil
+}
 
 // installSkillsFromFS walks skillsFS and installs selected skill directories
 // (plus _shared/) to destDir. Files are written atomically.
@@ -14,6 +33,10 @@ import (
 // selected lists skill directory names (e.g. ["sdd-apply", "hive"]).
 // The _shared/ directory is ALWAYS installed regardless of the selected list.
 func installSkillsFromFS(destDir string, skillsFS fs.FS, selected []string) error {
+	return installSkillsFromFSWithModelSections(destDir, skillsFS, selected, nil)
+}
+
+func installSkillsFromFSWithModelSections(destDir string, skillsFS fs.FS, selected []string, sectionClass skillModelSectionClass) error {
 	selectedSet := make(map[string]bool, len(selected))
 	for _, id := range selected {
 		selectedSet[id] = true
@@ -49,6 +72,13 @@ func installSkillsFromFS(destDir string, skillsFS fs.FS, selected []string) erro
 		content, err := fs.ReadFile(skillsFS, path)
 		if err != nil {
 			return fmt.Errorf("read skill file %s: %w", path, err)
+		}
+		if sectionClass != nil {
+			rendered, err := sddruntime.RenderModelSections(string(content), sectionClass(topDir))
+			if err != nil {
+				return fmt.Errorf("render model sections for skill file %s: %w", path, err)
+			}
+			content = []byte(rendered)
 		}
 		return writeFileAtomic(destPath, content, 0644)
 	})

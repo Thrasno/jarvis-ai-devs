@@ -452,6 +452,18 @@ func (a *ClaudeAgent) InstallSkills(skillsFS fs.FS, selected []string) error {
 	return installSkillsFromFS(dir, skillsFS, selected)
 }
 
+func (a *ClaudeAgent) InstallSkillsWithConfig(skillsFS fs.FS, selected []string, cfg *config.AppConfig) error {
+	dir := a.skillsDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create skills dir: %w", err)
+	}
+	sectionClass, err := skillModelSectionClassForPlatform(sddruntime.PlatformClaude, cfg)
+	if err != nil {
+		return fmt.Errorf("resolve skill model sections: %w", err)
+	}
+	return installSkillsFromFSWithModelSections(dir, skillsFS, selected, sectionClass)
+}
+
 // InstallOrchestrator installs rendered sdd-orchestrator.md to ~/.claude/.
 // Idempotent: existing file is overwritten silently.
 func (a *ClaudeAgent) InstallOrchestrator(orchestratorContent []byte) error {
