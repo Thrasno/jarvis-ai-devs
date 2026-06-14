@@ -10,6 +10,8 @@ import (
 	"testing"
 	"testing/fstest"
 
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 )
 
@@ -170,6 +172,107 @@ func TestInstallSkillsFromFSWithModelSections_RemovesNonMatchingSections(t *test
 		if strings.Contains(content, unwanted) {
 			t.Fatalf("installed skill must remove %q:\n%s", unwanted, content)
 		}
+	}
+}
+
+func TestInstallSkillsFromEmbeddedSDDVerify_RendersModelSpecificSections(t *testing.T) {
+	skillsFS, err := fs.Sub(jarvis.SkillsFS, "embed/skills")
+	if err != nil {
+		t.Fatalf("open embedded skills FS: %v", err)
+	}
+
+	minimumVerifierContract := []string{
+		"## Activation Contract",
+		"## Hard Rules",
+		"## Status Handling and Blockers",
+		"## Runtime Evidence Policy",
+		"## Skipped Dimensions",
+		"## Final Verdict Constraints",
+		"## Output Contract",
+		"Execute relevant tests; static analysis alone is never verification.",
+		"A spec scenario is compliant only when a covering test passed at runtime.",
+		"If runtime tests cannot be run, report runtime evidence as skipped and do not claim full PASS for behavior that was not executed.",
+		"A documented manual verification path is not evidence by itself.",
+		"Manual or runtime verification counts as `PASS` only when it was executed and the report records the command or manual action, result, timestamp or session, and operator/evidence source.",
+		"Unresolved CRITICAL verification finding exists",
+	}
+	forbiddenVerifierDrift := []string{
+		"Do NOT run tests unless `strict_tdd` is active and the test runner is explicitly provided.",
+		"project explicitly documents an accepted manual verification path",
+	}
+
+	tests := []struct {
+		name     string
+		model    string
+		want     []string
+		unwanted []string
+	}{
+		{
+			name:  "capable model keeps full verifier guidance",
+			model: "sonnet",
+			want: []string{
+				"The orchestrator should provide structured status from `jarvis sdd status <change> --json`",
+				"Any unchecked implementation task is CRITICAL and blocks archive readiness.",
+				"Capable Model Execution Strategy",
+			},
+			unwanted: []string{"Return Minimal Report", "section:model"},
+		},
+		{
+			name:  "small model keeps minimal verifier guidance",
+			model: "haiku",
+			want: []string{
+				"You are a VERIFY sub-agent. Your job: check implemented changes match spec acceptance criteria.",
+				"Keep the report concise, but preserve the neutral contract above",
+				`"next": "ready-for-archive|sdd-apply|missing-evidence-required"`,
+			},
+			unwanted: []string{"Graceful Artifact Handling", "section:model"},
+		},
+		{
+			name:  "unknown model keeps neutral-only rendered skill",
+			model: "vendor/custom-model",
+			want: []string{
+				"Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.40.2",
+			},
+			unwanted: []string{"Graceful Artifact Handling", "Return Minimal Report", "section:model"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dest := t.TempDir()
+			cfg := &config.AppConfig{SDD: config.SDDConfig{PhaseModels: map[string]config.PhaseModelSelection{
+				"sdd-verify": {OpenCode: tt.model},
+			}}}
+			if providerID, modelID, ok := strings.Cut(tt.model, "/"); ok {
+				cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
+					"sdd-verify": {ProviderID: providerID, ModelID: modelID},
+				}
+			}
+			sectionClass, err := skillModelSectionClassForPlatform(sddruntime.PlatformOpenCode, cfg)
+			if err != nil {
+				t.Fatalf("resolve model section class: %v", err)
+			}
+
+			if err := installSkillsFromFSWithModelSections(dest, skillsFS, []string{"sdd-verify"}, sectionClass); err != nil {
+				t.Fatalf("installSkillsFromFSWithModelSections: %v", err)
+			}
+
+			installed, err := os.ReadFile(filepath.Join(dest, "sdd-verify", "SKILL.md"))
+			if err != nil {
+				t.Fatalf("read installed skill: %v", err)
+			}
+			content := string(installed)
+			for _, want := range append(minimumVerifierContract, tt.want...) {
+				if !strings.Contains(content, want) {
+					t.Fatalf("installed sdd-verify missing %q for model %q:\n%s", want, tt.model, content)
+				}
+			}
+			for _, unwanted := range append(forbiddenVerifierDrift, tt.unwanted...) {
+				if strings.Contains(content, unwanted) {
+					t.Fatalf("installed sdd-verify must not contain %q for model %q:\n%s", unwanted, tt.model, content)
+				}
+			}
+		})
 	}
 }
 
