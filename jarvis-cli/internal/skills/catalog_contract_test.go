@@ -22,6 +22,7 @@ import (
 const sharedPhaseCommonPath = "embed/skills/_shared/sdd-phase-common.md"
 const sharedHiveConventionPath = "embed/skills/_shared/hive-convention.md"
 const sharedPersistenceContractPath = "embed/skills/_shared/persistence-contract.md"
+const sharedOpenSpecConventionPath = "embed/skills/_shared/openspec-convention.md"
 
 func TestCatalogContract_SharedSDDPhaseCommonMatchesJarvisAdaptedUpstreamShape(t *testing.T) {
 	content := readEmbeddedSkillAsset(t, sharedPhaseCommonPath)
@@ -233,9 +234,9 @@ func TestCatalogContract_SDDExploreOpenSpecPathAgreesAcrossSharedDocsAndPhaseSki
 	t.Parallel()
 
 	assets := map[string]string{
-		sharedPersistenceContractPath:                 readEmbeddedSkillAsset(t, sharedPersistenceContractPath),
-		"embed/skills/_shared/openspec-convention.md": readEmbeddedSkillAsset(t, "embed/skills/_shared/openspec-convention.md"),
-		"embed/skills/sdd-explore/SKILL.md":           readEmbeddedSkillAsset(t, "embed/skills/sdd-explore/SKILL.md"),
+		sharedPersistenceContractPath:       readEmbeddedSkillAsset(t, sharedPersistenceContractPath),
+		sharedOpenSpecConventionPath:        readEmbeddedSkillAsset(t, sharedOpenSpecConventionPath),
+		"embed/skills/sdd-explore/SKILL.md": readEmbeddedSkillAsset(t, "embed/skills/sdd-explore/SKILL.md"),
 	}
 
 	for assetPath, content := range assets {
@@ -244,6 +245,81 @@ func TestCatalogContract_SDDExploreOpenSpecPathAgreesAcrossSharedDocsAndPhaseSki
 		}
 		if strings.Contains(content, "exploration.md") {
 			t.Fatalf("expected %s not to document stale OpenSpec Explore path exploration.md", assetPath)
+		}
+	}
+}
+
+func TestCatalogContract_OpenSpecConventionDocumentsRemovedAndRenamedDeltaSemantics(t *testing.T) {
+	t.Parallel()
+
+	content := readEmbeddedSkillAsset(t, sharedOpenSpecConventionPath)
+
+	requiredSnippets := []string{
+		"## Delta Spec Sections",
+		"## ADDED Requirements",
+		"## MODIFIED Requirements",
+		"## REMOVED Requirements",
+		"## RENAMED Requirements",
+		"REMOVED requirements MUST include non-empty, non-placeholder Reason and Migration evidence.",
+		"`Migration: None` is allowed only when the delta explicitly justifies why no replacement or user/operator migration is needed.",
+		"(Reason: {why this requirement is being removed})",
+		"(Migration: {what replaces this behavior, or `None` with justification})",
+		"(Old name: {Existing Requirement Name})",
+		"(New name: {New Requirement Name})",
+		"RENAMED requirements MUST include explicit old and new requirement names.",
+	}
+
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(content, snippet) {
+			t.Fatalf("expected %s to document OpenSpec delta semantic %q", sharedOpenSpecConventionPath, snippet)
+		}
+	}
+}
+
+func TestCatalogContract_SDDSpecDocumentsRemovedMigrationAndRenamedDeltas(t *testing.T) {
+	t.Parallel()
+
+	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-spec/SKILL.md")
+
+	requiredSnippets := []string{
+		"what's being ADDED, MODIFIED, REMOVED, or RENAMED from the system's behavior",
+		"## RENAMED Requirements",
+		"(Old name: {Existing Requirement Name})",
+		"(New name: {New Requirement Name})",
+		"(Migration: {what replaces this behavior, or `None` with justification})",
+		"| {domain} | Delta/New | {N added, M modified, K removed, R renamed} | {total scenarios} |",
+		"If existing specs exist, write DELTA specs (ADDED/MODIFIED/REMOVED/RENAMED sections)",
+		"Before writing a REMOVED requirement, verify Reason and Migration are both non-empty and not placeholder text.",
+		"Use `Migration: None` only with an explicit justification explaining why no replacement or migration is needed.",
+		"Do not write REMOVED requirements with empty Reason, empty Migration, placeholder evidence, or unjustified `Migration: None`.",
+		"RENAMED requirements MUST include explicit old and new requirement names",
+	}
+
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(content, snippet) {
+			t.Fatalf("expected sdd-spec source to document OpenSpec removed/renamed semantic %q", snippet)
+		}
+	}
+}
+
+func TestCatalogContract_SDDArchiveDocumentsRenamedMergeAndRemovedGuards(t *testing.T) {
+	t.Parallel()
+
+	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-archive/SKILL.md")
+
+	requiredSnippets := []string{
+		"RENAMED Requirements → Rename the matching requirement in main spec using the explicit old/new names",
+		"If a RENAMED requirement omits Old name or New name, STOP before renaming it",
+		"Before deleting any REMOVED requirement, confirm the delta includes both `Reason:` and `Migration:` with non-empty, non-placeholder evidence",
+		"`Migration: None` is valid only when it includes a justification",
+		"If Reason or Migration is empty, placeholder text, or unjustified `None`, STOP before deleting it",
+		"For RENAMED requirements, preserve the requirement body and scenarios unless the delta also modifies them",
+		"| {domain} | Created/Updated | {N added, M modified, K removed, R renamed requirements} |",
+	}
+
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(content, snippet) {
+			t.Fatalf("expected sdd-archive source to document OpenSpec archive semantic %q", snippet)
 		}
 	}
 }

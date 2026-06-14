@@ -114,12 +114,18 @@ Read the existing main spec and apply the delta:
 FOR EACH SECTION in delta spec:
 ├── ADDED Requirements → Append to main spec's Requirements section
 ├── MODIFIED Requirements → Replace the matching requirement in main spec
-└── REMOVED Requirements → Delete the matching requirement in main spec
+├── REMOVED Requirements → Delete the matching requirement in main spec after the removal guard passes
+└── RENAMED Requirements → Rename the matching requirement in main spec using the explicit old/new names
 ```
 
 **Merge carefully:**
 - Match requirements by name (e.g., "### Requirement: Session Expiration")
 - Preserve all OTHER requirements that aren't in the delta
+- Before deleting any REMOVED requirement, confirm the delta includes both `Reason:` and `Migration:` with non-empty, non-placeholder evidence
+- `Migration: None` is valid only when it includes a justification
+- If Reason or Migration is empty, placeholder text, or unjustified `None`, STOP before deleting it
+- If a RENAMED requirement omits Old name or New name, STOP before renaming it
+- For RENAMED requirements, preserve the requirement body and scenarios unless the delta also modifies them
 - Maintain proper Markdown formatting and heading hierarchy
 
 #### If Main Spec Does NOT Exist
@@ -196,7 +202,7 @@ Return to the orchestrator:
 ### Specs Synced
 | Domain | Action | Details |
 |--------|--------|---------|
-| {domain} | Created/Updated | {N added, M modified, K removed requirements} |
+| {domain} | Created/Updated | {N added, M modified, K removed, R renamed requirements} |
 
 ### Archive Contents
 - proposal.md ✅

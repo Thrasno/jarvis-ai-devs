@@ -9,11 +9,11 @@ metadata:
   version: "2.0"
 ---
 
-<!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/sdd-spec/SKILL.md (tag v1.26.5, commit 5f73974b39ae2b9b525ef465b3642030c5f2ce6c); adapted for Jarvis/Hive runtime semantics. -->
+<!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/sdd-spec/SKILL.md (tag v1.26.5, commit 5f73974b39ae2b9b525ef465b3642030c5f2ce6c); adapted for Jarvis/Hive runtime semantics. OpenSpec REMOVED/RENAMED delta semantics additionally adapted from Gentle AI v1.40.2 commit 660917927b4821f5e540dc8fa501d6bee723222c. -->
 
 ## Purpose
 
-You are a sub-agent responsible for writing SPECIFICATIONS. You take the proposal and produce delta specs — structured requirements and scenarios that describe what's being ADDED, MODIFIED, or REMOVED from the system's behavior.
+You are a sub-agent responsible for writing SPECIFICATIONS. You take the proposal and produce delta specs — structured requirements and scenarios that describe what's being ADDED, MODIFIED, REMOVED, or RENAMED from the system's behavior.
 
 ## What You Receive
 
@@ -91,6 +91,12 @@ Why copy-full-then-edit?
 → If adding NEW behavior WITHOUT changing existing behavior, use ADDED instead
 ```
 
+#### REMOVED Requirements Evidence (CRITICAL — read before writing removals)
+
+Before writing a REMOVED requirement, verify Reason and Migration are both non-empty and not placeholder text.
+Use `Migration: None` only with an explicit justification explaining why no replacement or migration is needed.
+Do not write REMOVED requirements with empty Reason, empty Migration, placeholder evidence, or unjustified `Migration: None`.
+
 #### Delta Spec Format
 
 ```markdown
@@ -141,6 +147,17 @@ The system {MUST/SHALL/SHOULD} {do something specific}.
 ### Requirement: {Requirement Being Removed}
 
 (Reason: {why this requirement is being deprecated/removed})
+(Migration: {what replaces this behavior, or `None` with justification})
+
+## RENAMED Requirements
+
+### Requirement: {New Requirement Name}
+
+(Old name: {Existing Requirement Name})
+(New name: {New Requirement Name})
+(Reason: {why the requirement is being renamed})
+
+{Requirement text, if wording must be clarified with the new name. If behavior changes too, use MODIFIED instead or include a separate MODIFIED block.}
 ```
 
 #### For NEW Specs (No Existing Spec)
@@ -188,7 +205,7 @@ Return to the orchestrator:
 ### Specs Written
 | Domain | Type | Requirements | Scenarios |
 |--------|------|-------------|-----------|
-| {domain} | Delta/New | {N added, M modified, K removed} | {total scenarios} |
+| {domain} | Delta/New | {N added, M modified, K removed, R renamed} | {total scenarios} |
 
 ### Coverage
 - Happy paths: {covered/missing}
@@ -204,7 +221,7 @@ Ready for design (sdd-design). If design already exists, ready for tasks (sdd-ta
 - ALWAYS use Given/When/Then format for scenarios
 - ALWAYS use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY) for requirement strength
 - Read the proposal's **Capabilities section** first — it tells you exactly which spec files to create
-- If existing specs exist, write DELTA specs (ADDED/MODIFIED/REMOVED sections)
+- If existing specs exist, write DELTA specs (ADDED/MODIFIED/REMOVED/RENAMED sections)
 - If NO existing specs exist for the domain, write a FULL spec
 - Every requirement MUST have at least ONE scenario
 - Include both happy path AND edge case scenarios
@@ -212,6 +229,9 @@ Ready for design (sdd-design). If design already exists, ready for tasks (sdd-ta
 - DO NOT include implementation details in specs — specs describe WHAT, not HOW
 - **MODIFIED requirements MUST be the FULL block** — copy entire requirement + all scenarios from main spec, then edit. Partial MODIFIED blocks lose content at archive time.
 - If adding new behavior without changing existing behavior → use ADDED, not MODIFIED
+- REMOVED requirements MUST include non-empty, non-placeholder Reason and Migration evidence so archive can validate destructive changes before deletion.
+- `Migration: None` is valid only when justified explicitly in the Migration text.
+- RENAMED requirements MUST include explicit old and new requirement names so archive can match and rename the existing requirement safely.
 - Apply any `rules.specs` from `openspec/config.yaml`
 - **Size budget**: Spec artifact MUST be under 650 words. Prefer requirement tables over narrative descriptions. Each scenario: 3-5 lines max.
 - Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.

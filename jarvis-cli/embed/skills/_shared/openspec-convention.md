@@ -1,5 +1,5 @@
 <!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/_shared/openspec-convention.md -->
-<!-- Upstream commit: 5f73974b39ae2b9b525ef465b3642030c5f2ce6c; adapted for Jarvis/Hive runtime wording. -->
+<!-- Upstream commit: 5f73974b39ae2b9b525ef465b3642030c5f2ce6c; adapted for Jarvis/Hive runtime wording and Jarvis OpenSpec delta-safety conventions. -->
 # OpenSpec File Convention (shared across all SDD skills)
 
 ## Directory Structure
@@ -59,6 +59,41 @@ Main specs: openspec/specs/{domain}/spec.md
 - If a file already exists, read it first and update it; do not overwrite blindly.
 - If the change directory already exists with artifacts, the change is being continued.
 - Use `openspec/config.yaml` `rules` section for project-specific constraints per phase.
+
+## Delta Spec Sections
+
+Delta specs describe requirement-level changes with one or more of these sections:
+
+## ADDED Requirements
+
+Use this section for new requirements that do not replace or rename existing behavior.
+
+## MODIFIED Requirements
+
+Use this section for requirements whose behavior changes. Include the full updated requirement block because archive replaces the existing requirement with the delta block.
+
+## REMOVED Requirements
+
+Use this section for requirements intentionally removed from the main spec. REMOVED requirements MUST include non-empty, non-placeholder Reason and Migration evidence. `Migration: None` is allowed only when the delta explicitly justifies why no replacement or user/operator migration is needed.
+
+```markdown
+### Requirement: {Requirement Being Removed}
+
+(Reason: {why this requirement is being removed})
+(Migration: {what replaces this behavior, or `None` with justification})
+```
+
+## RENAMED Requirements
+
+Use this section when the requirement identity/name changes but the behavior is otherwise preserved. RENAMED requirements MUST include explicit old and new requirement names.
+
+```markdown
+### Requirement: {New Requirement Name}
+
+(Old name: {Existing Requirement Name})
+(New name: {New Requirement Name})
+(Reason: {why the requirement is being renamed})
+```
 
 ## Config File Reference
 
