@@ -10,30 +10,7 @@ type KeyHint struct {
 	Desc string
 }
 
-// panelWidth delegates to terminalui.PanelWidth.
-func panelWidth(termWidth int) int { return terminalui.PanelWidth(termWidth) }
-
-// sectionHeader delegates to terminalui.SectionHeader.
-func sectionHeader(label string, width int) string { return terminalui.SectionHeader(label, width) }
-
-// borderedPanel delegates to terminalui.BorderedPanel.
-func borderedPanel(content string, width int) string { return terminalui.BorderedPanel(content, width) }
-
-// typeBadge delegates to terminalui.TypeBadge.
-func typeBadge(category string) string { return terminalui.TypeBadge(category) }
-
-// modeBadge delegates to terminalui.ModeBadge.
-func modeBadge(mode string) string { return terminalui.ModeBadge(mode) }
-
-// statusDot delegates to terminalui.StatusDot.
-func statusDot(state string) string { return terminalui.StatusDot(state) }
-
-// headerRow delegates to terminalui.HeaderRow.
-func headerRow(breadcrumb, badge string, termWidth int) string {
-	return terminalui.HeaderRow(breadcrumb, badge, termWidth)
-}
-
-// helpBar delegates to terminalui.HelpBar, converting the local KeyHint slice
+// helpBar renders a footer help bar, converting the local KeyHint slice
 // to terminalui.KeyHint so callers in model.go need no changes.
 func helpBar(hints []KeyHint, mode string, termWidth int) string {
 	th := make([]terminalui.KeyHint, len(hints))
@@ -42,6 +19,3 @@ func helpBar(hints []KeyHint, mode string, termWidth int) string {
 	}
 	return terminalui.HelpBar(th, mode, termWidth)
 }
-
-// selectedRow delegates to terminalui.SelectedRow.
-func selectedRow(content string, width int) string { return terminalui.SelectedRow(content, width) }
