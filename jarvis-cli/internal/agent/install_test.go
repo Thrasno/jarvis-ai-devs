@@ -416,6 +416,159 @@ func TestInstallSkillsFromEmbeddedSDDArchive_PreservesJarvisArchiveSafetyGuards(
 	}
 }
 
+func TestInstallSkillsFromEmbeddedSharedPersistenceContract_PreservesJarvisHiveModeContract(t *testing.T) {
+	skillsFS, err := fs.Sub(jarvis.SkillsFS, "embed/skills")
+	if err != nil {
+		t.Fatalf("open embedded skills FS: %v", err)
+	}
+
+	dest := t.TempDir()
+	if err := installSkillsFromFS(dest, skillsFS, []string{"sdd-apply"}); err != nil {
+		t.Fatalf("installSkillsFromFS: %v", err)
+	}
+
+	installed, err := os.ReadFile(filepath.Join(dest, "_shared", "persistence-contract.md"))
+	if err != nil {
+		t.Fatalf("read installed shared persistence contract: %v", err)
+	}
+	content := string(installed)
+
+	requiredSnippets := []string{
+		"Artifact store mode (`hive | openspec | hybrid | none`)",
+		"## Mode Resolution",
+		"## State Persistence Across Phases",
+		"## Sub-Agent Response Ordering",
+		"the final output MUST be text, never only a tool result",
+		"## Skill Registry Handoff",
+		"Use topic keys in the format `{domain}/{identifier}` or `{domain}/{change}/{phase}`",
+		"Topic keys group related artifact saves; they are not artifact identity, recency, or version guarantees.",
+		"If Hive search returns multiple artifacts for the same topic and no explicit recency/version metadata, treat the result as ambiguous.",
+		"Ask the orchestrator/user or use a provided artifact reference before proceeding.",
+		"Phase agents persist their own phase artifact according to the resolved mode.",
+		"The orchestrator may pass state or artifact references to phase agents, but this contract does not require per-transition DAG-state persistence unless runtime status explicitly implements it.",
+		"- Explore: `sdd/{change-name}/explore` or `openspec/changes/{change-name}/explore.md`",
+		"Explore artifact uses `explore` for both the Hive topic key and the OpenSpec file path.",
+		"Do not treat Jarvis product Hive, Hive API, or Hive ↔ Hive API synchronization as SDD artifact persistence.",
+	}
+	for _, want := range requiredSnippets {
+		if !strings.Contains(content, want) {
+			t.Fatalf("installed shared persistence contract missing %q:\n%s", want, content)
+		}
+	}
+
+	forbiddenSnippets := []string{
+		"Engram",
+		"engram",
+		"mcp__engram__",
+		"`engram | openspec | hybrid | none`",
+		"upsert",
+		"overwrite",
+		"latest returned observation",
+		"latest-by-topic",
+		"authoritative version",
+		"`sdd/{change-name}/exploration`",
+		"openspec/changes/{change-name}/exploration.md",
+		"The orchestrator persists DAG state after each phase transition",
+		"Both backends stay in sync",
+	}
+	for _, unwanted := range forbiddenSnippets {
+		if strings.Contains(content, unwanted) {
+			t.Fatalf("installed shared persistence contract must not contain %q:\n%s", unwanted, content)
+		}
+	}
+}
+
+func TestInstallSkillsFromEmbeddedSharedDocs_AvoidUnsupportedLatestGuarantees(t *testing.T) {
+	skillsFS, err := fs.Sub(jarvis.SkillsFS, "embed/skills")
+	if err != nil {
+		t.Fatalf("open embedded skills FS: %v", err)
+	}
+
+	dest := t.TempDir()
+	if err := installSkillsFromFS(dest, skillsFS, []string{"sdd-apply"}); err != nil {
+		t.Fatalf("installSkillsFromFS: %v", err)
+	}
+
+	for _, relPath := range []string{
+		filepath.Join("_shared", "sdd-phase-common.md"),
+		filepath.Join("_shared", "hive-convention.md"),
+	} {
+		installed, err := os.ReadFile(filepath.Join(dest, relPath))
+		if err != nil {
+			t.Fatalf("read installed shared doc %s: %v", relPath, err)
+		}
+		content := string(installed)
+
+		for _, forbidden := range []string{
+			"mem_search returns the most recent",
+			"retrieval surfaces the most recent",
+			"most recent, which is the authoritative version",
+			"authoritative version",
+			"latest returned observation",
+			"latest-by-topic",
+		} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("installed shared doc %s must not promise unsupported Hive latest/authoritative retrieval with %q:\n%s", relPath, forbidden, content)
+			}
+		}
+
+		for _, required := range []string{
+			"Search results are previews, not source material.",
+			"If Hive search returns multiple candidate artifacts for the same topic and no explicit artifact reference is available, treat the result as ambiguous.",
+		} {
+			if !strings.Contains(content, required) {
+				t.Fatalf("installed shared doc %s missing ambiguity-safe Hive retrieval wording %q:\n%s", relPath, required, content)
+			}
+		}
+	}
+}
+
+func TestInstallSkillsFromEmbeddedSkillDocs_AvoidUnsupportedMostRecentRetrievalClaims(t *testing.T) {
+	skillsFS, err := fs.Sub(jarvis.SkillsFS, "embed/skills")
+	if err != nil {
+		t.Fatalf("open embedded skills FS: %v", err)
+	}
+
+	dest := t.TempDir()
+	if err := installSkillsFromFS(dest, skillsFS, []string{"sdd-apply", "hive"}); err != nil {
+		t.Fatalf("installSkillsFromFS: %v", err)
+	}
+
+	for _, relPath := range []string{
+		filepath.Join("sdd-apply", "SKILL.md"),
+		filepath.Join("hive", "SKILL.md"),
+	} {
+		installed, err := os.ReadFile(filepath.Join(dest, relPath))
+		if err != nil {
+			t.Fatalf("read installed skill doc %s: %v", relPath, err)
+		}
+		content := string(installed)
+
+		for _, forbidden := range []string{
+			"use the most recent on retrieval",
+			"retrieval uses the most recent",
+			"retrieve the most recent version",
+			"phases retrieve the most recent version",
+			"most recent, which is the authoritative version",
+			"authoritative version",
+		} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("installed skill doc %s must not promise unsupported most-recent retrieval with %q:\n%s", relPath, forbidden, content)
+			}
+		}
+
+		for _, required := range []string{
+			"multiple candidates",
+			"explicit",
+			"ambiguous",
+		} {
+			if !strings.Contains(content, required) {
+				t.Fatalf("installed skill doc %s missing ambiguity-safe retrieval guidance %q:\n%s", relPath, required, content)
+			}
+		}
+	}
+}
+
 type brokenReadFS struct{}
 
 func (brokenReadFS) Open(name string) (fs.File, error) {

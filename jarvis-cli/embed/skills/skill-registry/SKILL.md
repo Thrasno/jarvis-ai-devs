@@ -163,7 +163,7 @@ mem_save(
 )
 ```
 
-`topic_key` ensures upserts — running again updates the same observation.
+`topic_key` groups registry saves for retrieval; it is not an identity, recency, or upsert guarantee.
 `capture_prompt:false` is required because the registry is an automated configuration artifact.
 
 ### Step 5: Return Summary

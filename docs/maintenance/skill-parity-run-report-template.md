@@ -1,6 +1,6 @@
 # Skill Parity Run Report Template
 
-Use this template for each Gentle AI skill parity maintenance run. Store completed reports in Engram or link them from the maintenance PR unless a maintainer explicitly chooses a committed report.
+Use this template for each Gentle AI skill parity maintenance run. Store completed reports in Hive/current Jarvis artifact store or link them from the maintenance PR unless a maintainer explicitly chooses a committed report.
 
 ## Run metadata
 

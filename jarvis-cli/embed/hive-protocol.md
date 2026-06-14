@@ -36,7 +36,8 @@ Self-check after EVERY task: "Did I make a decision, fix a bug, learn something 
 
 Topic update rules:
 - Different topics MUST NOT overwrite each other
-- Same topic evolving → reuse the same `topic_key` to group versions; retrieval returns the most recent row.
+- Same topic evolving → reuse the same `topic_key` to group related observations.
+- If search returns multiple candidates for the same `topic_key`, treat retrieval as ambiguous unless an explicit observation ID or artifact reference is available; do not infer latest or authoritative meaning from ordering.
 - Unsure about key → call `mem_suggest_topic_key` first
 - Observations saved WITHOUT a `topic_key` are append-only — never update them by ID; save a new observation instead
 

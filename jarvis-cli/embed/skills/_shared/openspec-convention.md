@@ -14,7 +14,7 @@ openspec/
     ├── archive/             <- Completed changes (YYYY-MM-DD-{change-name}/)
     └── {change-name}/       <- Active change folder
         ├── state.yaml       <- DAG state (survives compaction)
-        ├── exploration.md   <- (optional) from sdd-explore
+        ├── explore.md       <- (optional) from sdd-explore
         ├── proposal.md      <- from sdd-propose
         ├── specs/           <- from sdd-spec
         │   └── {domain}/
@@ -30,7 +30,7 @@ openspec/
 |-------|----------------|------|
 | orchestrator | Creates/Updates | `openspec/changes/{change-name}/state.yaml` |
 | sdd-init | Creates | `openspec/config.yaml`, `openspec/specs/`, `openspec/changes/`, `openspec/changes/archive/` |
-| sdd-explore | Creates (optional) | `openspec/changes/{change-name}/exploration.md` |
+| sdd-explore | Creates (optional) | `openspec/changes/{change-name}/explore.md` |
 | sdd-propose | Creates | `openspec/changes/{change-name}/proposal.md` |
 | sdd-spec | Creates | `openspec/changes/{change-name}/specs/{domain}/spec.md` |
 | sdd-design | Creates | `openspec/changes/{change-name}/design.md` |
@@ -44,6 +44,7 @@ openspec/
 
 ```
 Proposal:   openspec/changes/{change-name}/proposal.md
+Explore:    openspec/changes/{change-name}/explore.md
 Specs:      openspec/changes/{change-name}/specs/  (all domain subdirectories)
 Design:     openspec/changes/{change-name}/design.md
 Tasks:      openspec/changes/{change-name}/tasks.md

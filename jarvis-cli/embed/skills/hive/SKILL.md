@@ -11,7 +11,7 @@
 - `content` (required): Full memory content. Markdown OK.
 - `type` (required): `bugfix | decision | architecture | discovery | pattern | config | preference | session_summary`
 - `project` (required): Project identifier. NEVER omit. Example: `"jarvis-dev"`
-- `topic_key` (recommended): Grouping/context key for related memories. Same topic_key groups related observations; each save is a new row; use the most recent on retrieval. Example: `"sdd/my-change/spec"`
+- `topic_key` (recommended): Grouping/context key for related memories. Same topic_key groups related observations; each save is a new row, not a recency or identity guarantee. If multiple candidates are returned, use an explicit observation ID/reference or treat retrieval as ambiguous and ask for clarification. Example: `"sdd/my-change/spec"`
 - `files_affected` (optional): Array of file paths affected
 - `tags` (optional): Array of tags for categorization
 - `capture_prompt` (optional): Defaults to `true` and best-effort links the memory to the latest user prompt for the same project/session. Set `false` for automated artifacts and generated outputs.
@@ -159,7 +159,7 @@ Format: `{domain}/{identifier}` or `{domain}/{change}/{phase}`
 **Rules**:
 - `project` field is MANDATORY in every `mem_save` call — NEVER omit it
 - Automated artifact saves (`sdd/*`, generated config, registry output, machine reports) MUST include `capture_prompt:false`
-- Same `topic_key` groups related observations; each save is a new row; retrieval uses the most recent.
+- Same `topic_key` groups related observations; each save is a new row, not a recency or identity guarantee. If multiple candidates are returned, use an explicit observation ID/reference or treat retrieval as ambiguous and ask for clarification.
 - Different topics MUST use different topic keys — never use a topic_key that belongs to a different topic
 - When unsure about the right key: call `mcp__hive__mem_suggest_topic_key` first
 
