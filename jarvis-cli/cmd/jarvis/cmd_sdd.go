@@ -68,20 +68,27 @@ func init() {
 // It uses the git repository root's directory name, falling back to the
 // current working directory name when not inside a git repo.
 func detectProjectName() string {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel").Output()
-	if err == nil {
-		root := strings.TrimSpace(string(out))
-		if root != "" {
-			return filepath.Base(root)
-		}
+	if root, ok := detectGitRoot(); ok {
+		return filepath.Base(root)
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "unknown"
 	}
 	return filepath.Base(cwd)
+}
+
+func detectGitRoot() (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel").Output()
+	if err == nil {
+		root := strings.TrimSpace(string(out))
+		if root != "" {
+			return root, true
+		}
+	}
+	return "", false
 }
 
 // resolveSource returns an ArtifactSource and the active store mode label.
@@ -143,7 +150,7 @@ func resolveChangeName(ctx context.Context, src sddstatus.ArtifactSource, given 
 	}
 }
 
-func buildStatus(changeName string, src sddstatus.ArtifactSource, storeMode string) (*sddstatus.ChangeStatus, error) {
+func buildStatus(changeName string, src sddstatus.ArtifactSource, storeMode string, allowedEditRoots []string) (*sddstatus.ChangeStatus, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -152,10 +159,32 @@ func buildStatus(changeName string, src sddstatus.ArtifactSource, storeMode stri
 		return nil, fmt.Errorf("fetch artifacts: %w", err)
 	}
 
-	return sddstatus.ComputeStatus(changeName, storeMode, sddstatus.Input{
-		Artifacts: arts,
-		Contents:  contents,
-	}), nil
+	input := sddstatus.Input{
+		Artifacts:        arts,
+		Contents:         contents,
+		AllowedEditRoots: allowedEditRoots,
+	}
+
+	return sddstatus.ComputeStatus(changeName, storeMode, input), nil
+}
+
+func currentWorkspaceEditRoots(projectName string) []string {
+	root, ok := detectGitRoot()
+	if !ok {
+		return nil
+	}
+	return validatedEditRootsForProject(projectName, root)
+}
+
+func validatedEditRootsForProject(projectName, workspaceRoot string) []string {
+	if projectName == "" || workspaceRoot == "" {
+		return nil
+	}
+	root := filepath.Clean(workspaceRoot)
+	if filepath.Base(root) != projectName {
+		return nil
+	}
+	return []string{root}
 }
 
 func runSddStatus(given, projectFlag string, asJSON, withInstructions bool) error {
@@ -176,7 +205,7 @@ func runSddStatus(given, projectFlag string, asJSON, withInstructions bool) erro
 		return err
 	}
 
-	status, err := buildStatus(changeName, src, storeMode)
+	status, err := buildStatus(changeName, src, storeMode, currentWorkspaceEditRoots(project))
 	if err != nil {
 		return err
 	}
@@ -206,7 +235,7 @@ func runSddContinue(given, projectFlag string, asJSON bool) error {
 		return err
 	}
 
-	status, err := buildStatus(changeName, src, storeMode)
+	status, err := buildStatus(changeName, src, storeMode, currentWorkspaceEditRoots(project))
 	if err != nil {
 		return err
 	}
@@ -293,6 +322,8 @@ func artifactIcon(s sddstatus.ArtifactState) string {
 	switch s {
 	case sddstatus.ArtifactDone:
 		return "✓"
+	case sddstatus.ArtifactPartial:
+		return "…"
 	default:
 		return "✗"
 	}

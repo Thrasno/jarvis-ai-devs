@@ -1,6 +1,7 @@
 package sddstatus_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -13,6 +14,99 @@ func artifacts(pairs ...string) map[string]sddstatus.ArtifactState {
 		m[pairs[i]] = sddstatus.ArtifactState(pairs[i+1])
 	}
 	return m
+}
+
+func TestComputeStatus_JSONContractIncludesRuntimeContext(t *testing.T) {
+	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
+		Artifacts:        allPlanningDone(),
+		ActionMode:       sddstatus.ActionModeWorkspaceEdit,
+		AllowedEditRoots: []string{"/workspace/jarvis-dev"},
+	})
+
+	if s.Schema != "jarvis.sdd-status" {
+		t.Fatalf("schema = %q, want jarvis.sdd-status", s.Schema)
+	}
+	if s.PlanningHome != "sdd/my-feature" {
+		t.Fatalf("PlanningHome = %q, want sdd/my-feature", s.PlanningHome)
+	}
+	if s.ChangeRoot != "sdd/my-feature" {
+		t.Fatalf("ChangeRoot = %q, want sdd/my-feature", s.ChangeRoot)
+	}
+	if got := s.ContextFiles[sddstatus.ArtifactSpec]; got != "sdd/my-feature/spec" {
+		t.Fatalf("contextFiles[spec] = %q, want sdd/my-feature/spec", got)
+	}
+	if got := s.AllowedEditRoots; len(got) != 1 || got[0] != "/workspace/jarvis-dev" {
+		t.Fatalf("AllowedEditRoots = %#v, want current workspace root", got)
+	}
+	if s.ActionContext.Mode != sddstatus.ActionModeWorkspaceEdit {
+		t.Fatalf("ActionContext.Mode = %q, want %q", s.ActionContext.Mode, sddstatus.ActionModeWorkspaceEdit)
+	}
+	if got := s.ActionContext.AllowedEditRoots; len(got) != 1 || got[0] != "/workspace/jarvis-dev" {
+		t.Fatalf("ActionContext.AllowedEditRoots = %#v, want current workspace root", got)
+	}
+	if got := s.PhaseInstructions[sddstatus.PhaseApply]; got != "/sdd-apply my-feature" {
+		t.Fatalf("PhaseInstructions[apply] = %q, want /sdd-apply my-feature", got)
+	}
+
+	foundApplyRelationship := false
+	for _, rel := range s.Relationships {
+		if rel.Phase == sddstatus.PhaseApply && rel.OutputArtifact == sddstatus.ArtifactApplyProgress {
+			foundApplyRelationship = containsAll(rel.Requires, []string{sddstatus.ArtifactSpec, sddstatus.ArtifactDesign, sddstatus.ArtifactTasks})
+		}
+	}
+	if !foundApplyRelationship {
+		t.Fatalf("relationships must describe sdd-apply required artifacts; got %#v", s.Relationships)
+	}
+
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal status: %v", err)
+	}
+	jsonText := string(data)
+	for _, key := range []string{"contextFiles", "planningHome", "changeRoot", "actionContext", "allowedEditRoots", "relationships", "phaseInstructions"} {
+		if !strings.Contains(jsonText, `"`+key+`"`) {
+			t.Fatalf("status JSON missing key %q: %s", key, jsonText)
+		}
+	}
+}
+
+func TestComputeStatus_PartialArtifactStateIsPreservedButNotReady(t *testing.T) {
+	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
+		Artifacts: artifacts(
+			sddstatus.ArtifactProposal, string(sddstatus.ArtifactDone),
+			sddstatus.ArtifactSpec, string(sddstatus.ArtifactPartial),
+			sddstatus.ArtifactDesign, string(sddstatus.ArtifactDone),
+		),
+	})
+
+	if got := s.Artifacts[sddstatus.ArtifactSpec]; got != sddstatus.ArtifactPartial {
+		t.Fatalf("Artifacts[spec] = %q, want partial", got)
+	}
+	if got := s.Dependencies[sddstatus.PhaseTasks]; got != sddstatus.DepBlocked {
+		t.Fatalf("tasks dep = %q, want blocked while spec is partial", got)
+	}
+}
+
+func containsAll(got []string, want []string) bool {
+	seen := make(map[string]bool, len(got))
+	for _, item := range got {
+		seen[item] = true
+	}
+	for _, item := range want {
+		if !seen[item] {
+			return false
+		}
+	}
+	return true
+}
+
+func containsString(got []string, want string) bool {
+	for _, item := range got {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 func allPlanningDone() map[string]sddstatus.ArtifactState {
@@ -50,6 +144,34 @@ func TestComputeStatus_NilInput_AllMissing(t *testing.T) {
 		if got := s.Artifacts[artifact]; got != sddstatus.ArtifactMissing {
 			t.Errorf("artifact %q = %q, want missing", artifact, got)
 		}
+	}
+}
+
+func TestComputeStatus_DefaultsToPlanningWhenNoAllowedEditRoots(t *testing.T) {
+	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{})
+
+	if got := s.ActionContext.Mode; got != sddstatus.ActionModeWorkspacePlanning {
+		t.Fatalf("ActionContext.Mode = %q, want %q", got, sddstatus.ActionModeWorkspacePlanning)
+	}
+	if len(s.ActionContext.AllowedEditRoots) != 0 {
+		t.Fatalf("ActionContext.AllowedEditRoots = %#v, want empty", s.ActionContext.AllowedEditRoots)
+	}
+	if len(s.AllowedEditRoots) != 0 {
+		t.Fatalf("AllowedEditRoots = %#v, want empty", s.AllowedEditRoots)
+	}
+}
+
+func TestComputeStatus_ExplicitEditModeWithoutAllowedEditRootsStillPlans(t *testing.T) {
+	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
+		ActionMode:       sddstatus.ActionModeWorkspaceEdit,
+		AllowedEditRoots: []string{""},
+	})
+
+	if got := s.ActionContext.Mode; got != sddstatus.ActionModeWorkspacePlanning {
+		t.Fatalf("ActionContext.Mode = %q, want %q", got, sddstatus.ActionModeWorkspacePlanning)
+	}
+	if len(s.AllowedEditRoots) != 0 {
+		t.Fatalf("AllowedEditRoots = %#v, want empty", s.AllowedEditRoots)
 	}
 }
 
@@ -129,6 +251,46 @@ func TestComputeStatus_VerifyReadyWithApplyProgress(t *testing.T) {
 
 	if s.Dependencies[sddstatus.PhaseVerify] != sddstatus.DepReady {
 		t.Errorf("verify dep = %q, want ready", s.Dependencies[sddstatus.PhaseVerify])
+	}
+}
+
+func TestComputeStatus_VerifyBlockedWithPartialApplyProgress(t *testing.T) {
+	arts := allPlanningDone()
+	arts[sddstatus.ArtifactApplyProgress] = "partial"
+
+	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
+		Artifacts: arts,
+	})
+
+	if got := s.Artifacts[sddstatus.ArtifactApplyProgress]; got != sddstatus.ArtifactPartial {
+		t.Fatalf("Artifacts[apply-progress] = %q, want partial", got)
+	}
+	if got := s.Dependencies[sddstatus.PhaseVerify]; got != sddstatus.DepBlocked {
+		t.Errorf("verify dep = %q, want blocked while apply-progress is partial", got)
+	}
+}
+
+func TestComputeStatus_VerifyBlockedWithPartialApplyProgressEvenWhenAllTasksDone(t *testing.T) {
+	arts := allPlanningDone()
+	arts[sddstatus.ArtifactApplyProgress] = "partial"
+	const tasksContent = "- [x] T1\n- [x] T2\n"
+
+	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
+		Artifacts: arts,
+		Contents:  map[string]string{sddstatus.ArtifactTasks: tasksContent},
+	})
+
+	if got := s.Dependencies[sddstatus.PhaseVerify]; got != sddstatus.DepBlocked {
+		t.Errorf("verify dep = %q, want blocked while apply-progress is partial even when all tasks are done", got)
+	}
+	if got := s.Dependencies[sddstatus.PhaseApply]; got != sddstatus.DepReady {
+		t.Errorf("apply dep = %q, want ready while apply-progress is partial even when all tasks are done", got)
+	}
+	if got := s.NextRecommended; got != sddstatus.PhaseApply {
+		t.Errorf("nextRecommended = %q, want sdd-apply until partial apply-progress is complete", got)
+	}
+	if !containsString(s.BlockedReasons, "phase sdd-verify blocked — apply-progress is partial; complete or reconcile sdd-apply before verification") {
+		t.Fatalf("BlockedReasons = %#v, want clear partial apply-progress blocker", s.BlockedReasons)
 	}
 }
 
@@ -451,4 +613,3 @@ func TestVerifyBlockPatterns_NegatedNounFormsDoNotBlock(t *testing.T) {
 		}
 	}
 }
-
