@@ -176,18 +176,39 @@ func TestConfigureWizardAgent_InstallsAgents(t *testing.T) {
 		}
 	})
 
-	t.Run("returns error when InstallAgents fails", func(t *testing.T) {
+	t.Run("propagates InstallAgents error", func(t *testing.T) {
 		stub := &setupAgentInstallerStub{
 			setupAgentStub:   &setupAgentStub{name: "claude"},
 			installAgentsErr: errors.New("agents dir write failed"),
 		}
+		agentsSubFS := fstest.MapFS{"review-risk.md": {Data: []byte("# review-risk")}}
 
-		_, err := configureWizardAgent(stub, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
+		_, err := configureWizardAgent(stub, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, agentsSubFS, func() bool { return true })
 		if err == nil {
 			t.Fatal("expected error when InstallAgents fails")
 		}
 		if !strings.Contains(err.Error(), "install agents") {
 			t.Fatalf("error = %q, want contains 'install agents'", err.Error())
+		}
+	})
+
+	t.Run("calls InstallAgents with nil agentsSubFS when agent implements AgentInstaller", func(t *testing.T) {
+		// agentsSubFS is nil for platforms that use the JSON config builder path
+		// (e.g. OpenCodeAgent). The nil is passed through to InstallAgents; the
+		// implementation is responsible for handling it.
+		stub := &setupAgentInstallerStub{
+			setupAgentStub: &setupAgentStub{name: "claude"},
+		}
+
+		_, err := configureWizardAgent(stub, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
+		if err != nil {
+			t.Fatalf("configureWizardAgent returned error: %v", err)
+		}
+		if stub.installAgentsCalls != 1 {
+			t.Fatalf("InstallAgents calls = %d, want 1", stub.installAgentsCalls)
+		}
+		if stub.installAgentsFS != nil {
+			t.Fatal("InstallAgents was called with non-nil FS, want nil")
 		}
 	})
 }
