@@ -88,6 +88,9 @@ func installSkillsFromFSWithModelSections(destDir string, skillsFS fs.FS, select
 // destDir using the same filename. It is a flat walker: subdirectories are
 // skipped. Writes are atomic and idempotent (existing files are overwritten).
 func installAgentsFromFS(destDir string, agentsFS fs.FS) error {
+	if agentsFS == nil {
+		return fmt.Errorf("installAgentsFromFS: agentsFS is nil")
+	}
 	return fs.WalkDir(agentsFS, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if path != "." {
@@ -96,7 +99,10 @@ func installAgentsFromFS(destDir string, agentsFS fs.FS) error {
 			return err
 		}
 		if d.IsDir() {
-			return nil
+			if path == "." {
+				return nil
+			}
+			return fs.SkipDir
 		}
 
 		content, err := fs.ReadFile(agentsFS, path)

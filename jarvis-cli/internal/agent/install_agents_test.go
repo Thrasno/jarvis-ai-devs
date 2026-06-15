@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -37,6 +38,53 @@ func TestInstallAgentsFromFS_WritesAllFiles(t *testing.T) {
 		if string(got) != wantContent {
 			t.Errorf("file %s content = %q, want %q", relPath, got, wantContent)
 		}
+	}
+}
+
+// TestInstallAgentsFromFS_NilFS verifies that installAgentsFromFS returns an
+// error (not a panic) when agentsFS is nil.
+func TestInstallAgentsFromFS_NilFS(t *testing.T) {
+	dest := t.TempDir()
+
+	err := installAgentsFromFS(dest, nil)
+	if err == nil {
+		t.Fatal("expected error when agentsFS is nil, got nil")
+	}
+	if !strings.Contains(err.Error(), "agentsFS is nil") {
+		t.Fatalf("expected error to mention agentsFS is nil, got: %v", err)
+	}
+}
+
+// TestInstallAgentsFromFS_SkipsSubdirectories verifies that installAgentsFromFS
+// does not write files inside subdirectories to destDir (flat walker contract).
+func TestInstallAgentsFromFS_SkipsSubdirectories(t *testing.T) {
+	dest := t.TempDir()
+
+	testFS := fstest.MapFS{
+		"top-level.md":        {Data: []byte("# Top Level")},
+		"subdir/nested.md":    {Data: []byte("# Nested")},
+		"subdir/deep/more.md": {Data: []byte("# Deep")},
+	}
+
+	if err := installAgentsFromFS(dest, testFS); err != nil {
+		t.Fatalf("installAgentsFromFS: %v", err)
+	}
+
+	// Top-level file must be written.
+	got, err := os.ReadFile(filepath.Join(dest, "top-level.md"))
+	if err != nil {
+		t.Fatalf("top-level.md not written: %v", err)
+	}
+	if string(got) != "# Top Level" {
+		t.Errorf("top-level.md content = %q, want %q", got, "# Top Level")
+	}
+
+	// Files inside subdirectories must not be written.
+	if _, err := os.Stat(filepath.Join(dest, "subdir", "nested.md")); !os.IsNotExist(err) {
+		t.Errorf("expected subdir/nested.md to be absent, got err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "subdir", "deep", "more.md")); !os.IsNotExist(err) {
+		t.Errorf("expected subdir/deep/more.md to be absent, got err=%v", err)
 	}
 }
 
