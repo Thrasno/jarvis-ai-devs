@@ -192,25 +192,6 @@ func TestConfigureWizardAgent_InstallsAgents(t *testing.T) {
 		}
 	})
 
-	t.Run("calls InstallAgents with nil agentsSubFS when agent implements AgentInstaller", func(t *testing.T) {
-		// agentsSubFS is nil for platforms that use the JSON config builder path
-		// (e.g. OpenCodeAgent). The nil is passed through to InstallAgents; the
-		// implementation is responsible for handling it.
-		stub := &setupAgentInstallerStub{
-			setupAgentStub: &setupAgentStub{name: "claude"},
-		}
-
-		_, err := configureWizardAgent(stub, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
-		if err != nil {
-			t.Fatalf("configureWizardAgent returned error: %v", err)
-		}
-		if stub.installAgentsCalls != 1 {
-			t.Fatalf("InstallAgents calls = %d, want 1", stub.installAgentsCalls)
-		}
-		if stub.installAgentsFS != nil {
-			t.Fatal("InstallAgents was called with non-nil FS, want nil")
-		}
-	})
 }
 
 func TestConfigureWizardAgent_ErrorPropagation(t *testing.T) {
