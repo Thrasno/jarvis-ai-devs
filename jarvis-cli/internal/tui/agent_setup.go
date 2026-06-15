@@ -49,6 +49,9 @@ type statuslineInstaller interface {
 
 // configureWizardAgent applies the same MCP + instruction + skills setup flow
 // for both TUI and no-TUI wizards.
+// agentsSubFS is the sub-FS rooted at embed/agents/<platform> for file-based
+// agent install (ClaudeAgent). Pass nil for platforms that use the JSON config
+// builder path instead (OpenCodeAgent).
 func configureWizardAgent(
 	a agent.Agent,
 	cfg *config.AppConfig,
@@ -56,6 +59,7 @@ func configureWizardAgent(
 	context7Entry agent.MCPEntry,
 	skillsSubFS fs.FS,
 	selectedIDs []string,
+	agentsSubFS fs.FS,
 	statuslineConfirm func() bool,
 ) ([]string, error) {
 	if err := a.MergeConfig(hiveEntry); err != nil {
@@ -87,6 +91,11 @@ func configureWizardAgent(
 	if err := a.InstallOrchestrator([]byte(renderedOrchestrator)); err != nil {
 		return nil, fmt.Errorf("install orchestrator: %w", err)
 	}
+	if ai, ok := a.(agent.AgentInstaller); ok {
+		if err := ai.InstallAgents(agentsSubFS); err != nil {
+			return nil, fmt.Errorf("install agents: %w", err)
+		}
+	}
 	if err := a.InstallPromptHook(jarvis.HooksFS); err != nil {
 		return nil, fmt.Errorf("install prompt hook: %w", err)
 	}
@@ -108,6 +117,8 @@ func configureWizardAgent(
 // configureWizardAgents applies setup to all detected agents and returns
 // per-agent structured outcomes. If one agent fails, callers can abort before
 // committing canonical config and still report the failing agent explicitly.
+// agentsSubFS is the sub-FS rooted at embed/agents/<platform> passed through to
+// configureWizardAgent for file-based agent install (ClaudeAgent).
 func configureWizardAgents(
 	agents []agent.Agent,
 	cfg *config.AppConfig,
@@ -117,6 +128,7 @@ func configureWizardAgents(
 	presetCtx wizardPresetApplyContext,
 	skillsSubFS fs.FS,
 	selectedIDs []string,
+	agentsSubFS fs.FS,
 	statuslineConfirm func() bool,
 ) []AgentApplyResult {
 	results := make([]AgentApplyResult, 0, len(agents))
@@ -128,7 +140,7 @@ func configureWizardAgents(
 				ConfigPath: a.ConfigDir(),
 			},
 		}
-		warnings, err := configureWizardAgent(a, cfg, hiveEntry, context7Entry, skillsSubFS, selectedIDs, statuslineConfirm)
+		warnings, err := configureWizardAgent(a, cfg, hiveEntry, context7Entry, skillsSubFS, selectedIDs, agentsSubFS, statuslineConfirm)
 		res.Warnings = append(res.Warnings, warnings...)
 		if err != nil {
 			res.Err = err
