@@ -37,9 +37,9 @@ var loginCmd = &cobra.Command{
 		fmt.Print("Password: ")
 		password := ""
 		if scanner.Scan() {
-			password = strings.TrimSpace(scanner.Text())
+			password = scanner.Text()
 		}
-		if password == "" {
+		if strings.TrimSpace(password) == "" {
 			return fmt.Errorf("password cannot be empty")
 		}
 
