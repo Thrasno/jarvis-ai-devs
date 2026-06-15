@@ -852,7 +852,7 @@ func TestCatalogContract_SDDFilesDoNotReferenceRetiredQAGates(t *testing.T) {
 		},
 		{
 			path:      "embed/orchestrator/sdd-orchestrator.md",
-			required:  []string{"proposal -> specs --> tasks -> apply -> verify -> archive", "`hive` — default when available; persistent memory across sessions"},
+			required:  []string{"proposal -> specs --> tasks -> apply -> verify -> archive", "Artifact store is collected by `SDD Session Preflight`"},
 			forbidden: []string{"engram-convention.md", "sdd-qa", "qa-signoff", "~/.claude/skills", "~/.config/opencode/skills"},
 		},
 		{
