@@ -3,8 +3,7 @@ package hook
 // HiveProtocolText is the Hive Memory Protocol instruction block injected into
 // Claude Code at session start via additionalContext.
 //
-// This text is sourced from jarvis-cli/embed/hooks/claude/session-start.sh and
-// must be kept in sync when the protocol changes.
+// Update this constant directly when the protocol changes.
 const HiveProtocolText = `## Hive Memory Protocol — ACTIVE
 
 MANDATORY FIRST ACTION: call mem_context to recover memory from previous sessions before responding to the user.
