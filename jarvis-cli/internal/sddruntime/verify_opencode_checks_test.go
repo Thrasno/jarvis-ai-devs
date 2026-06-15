@@ -237,10 +237,10 @@ func TestVerifyOpenCode_OrchestratorPrimary_PassesWhenAllFieldsCorrect(t *testin
 
 // --- invariant.opencode.subagents_present ---
 
-func TestVerifyOpenCode_SubagentsPresent_FailsWhenCountBelow13(t *testing.T) {
+func TestVerifyOpenCode_SubagentsPresent_FailsWhenCountBelow17(t *testing.T) {
 	observed := compliantOpenCodeRuntime(t)
 	// Remove one hidden subagent.
-	observed.OpenCode.HiddenSubagents = observed.OpenCode.HiddenSubagents[:12]
+	observed.OpenCode.HiddenSubagents = observed.OpenCode.HiddenSubagents[:16]
 
 	report := Verify("opencode", observed)
 
@@ -268,9 +268,9 @@ func TestVerifyOpenCode_SubagentsPresent_FailsWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestVerifyOpenCode_SubagentsPresent_PassesWhenExactly13(t *testing.T) {
+func TestVerifyOpenCode_SubagentsPresent_PassesWhenExactly17(t *testing.T) {
 	observed := compliantOpenCodeRuntime(t)
-	// compliantOpenCodeConfig sets exactly 13.
+	// compliantOpenCodeObserved sets exactly 17.
 
 	report := Verify("opencode", observed)
 
@@ -283,7 +283,7 @@ func TestVerifyOpenCode_SubagentsPresent_PassesWhenExactly13(t *testing.T) {
 	}
 }
 
-func TestVerifyOpenCode_SubagentsPresent_FailsWhenCountAbove13(t *testing.T) {
+func TestVerifyOpenCode_SubagentsPresent_FailsWhenCountAbove17(t *testing.T) {
 	observed := compliantOpenCodeRuntime(t)
 	observed.OpenCode.HiddenSubagents = append(observed.OpenCode.HiddenSubagents, "extra-agent")
 
@@ -294,7 +294,7 @@ func TestVerifyOpenCode_SubagentsPresent_FailsWhenCountAbove13(t *testing.T) {
 		t.Fatal("expected invariant.opencode.subagents_present check")
 	}
 	if check.Status != StatusFail {
-		t.Fatalf("expected StatusFail for 14 subagents, got %q", check.Status)
+		t.Fatalf("expected StatusFail for 18 subagents, got %q", check.Status)
 	}
 }
 
@@ -315,9 +315,9 @@ func TestVerifyOpenCode_TaskAllowlist_FailsWhenWildcardDenyMissing(t *testing.T)
 	}
 }
 
-func TestVerifyOpenCode_TaskAllowlist_FailsWhenAllowsBelow13(t *testing.T) {
+func TestVerifyOpenCode_TaskAllowlist_FailsWhenAllowsBelow17(t *testing.T) {
 	observed := compliantOpenCodeRuntime(t)
-	observed.OpenCode.TaskAllows = observed.OpenCode.TaskAllows[:12]
+	observed.OpenCode.TaskAllows = observed.OpenCode.TaskAllows[:16]
 
 	report := Verify("opencode", observed)
 
@@ -330,7 +330,7 @@ func TestVerifyOpenCode_TaskAllowlist_FailsWhenAllowsBelow13(t *testing.T) {
 	}
 }
 
-func TestVerifyOpenCode_TaskAllowlist_PassesWhenDenyAndExactly13Allows(t *testing.T) {
+func TestVerifyOpenCode_TaskAllowlist_PassesWhenDenyAndExactly17Allows(t *testing.T) {
 	observed := compliantOpenCodeRuntime(t)
 
 	report := Verify("opencode", observed)
@@ -344,7 +344,7 @@ func TestVerifyOpenCode_TaskAllowlist_PassesWhenDenyAndExactly13Allows(t *testin
 	}
 }
 
-func TestVerifyOpenCode_TaskAllowlist_FailsWhenAllowsAbove13(t *testing.T) {
+func TestVerifyOpenCode_TaskAllowlist_FailsWhenAllowsAbove17(t *testing.T) {
 	observed := compliantOpenCodeRuntime(t)
 	observed.OpenCode.TaskAllows = append(observed.OpenCode.TaskAllows, "extra-task")
 
@@ -355,7 +355,7 @@ func TestVerifyOpenCode_TaskAllowlist_FailsWhenAllowsAbove13(t *testing.T) {
 		t.Fatal("expected invariant.opencode.task_allowlist check")
 	}
 	if check.Status != StatusFail {
-		t.Fatalf("expected StatusFail for 14 task allows, got %q", check.Status)
+		t.Fatalf("expected StatusFail for 18 task allows, got %q", check.Status)
 	}
 }
 

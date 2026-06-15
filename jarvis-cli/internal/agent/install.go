@@ -84,6 +84,37 @@ func installSkillsFromFSWithModelSections(destDir string, skillsFS fs.FS, select
 	})
 }
 
+// installAgentsFromFS walks agentsFS and writes every file it contains into
+// destDir using the same filename. It is a flat walker: subdirectories are
+// skipped. Writes are atomic and idempotent (existing files are overwritten).
+func installAgentsFromFS(destDir string, agentsFS fs.FS) error {
+	if agentsFS == nil {
+		return fmt.Errorf("installAgentsFromFS: agentsFS is nil")
+	}
+	return fs.WalkDir(agentsFS, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if path != "." {
+				return fmt.Errorf("read agent file %s: %w", path, err)
+			}
+			return err
+		}
+		if d.IsDir() {
+			if path == "." {
+				return nil
+			}
+			return fs.SkipDir
+		}
+
+		content, err := fs.ReadFile(agentsFS, path)
+		if err != nil {
+			return fmt.Errorf("read agent file %s: %w", path, err)
+		}
+
+		destPath := filepath.Join(destDir, filepath.FromSlash(path))
+		return writeFileAtomic(destPath, content, 0644)
+	})
+}
+
 // installOrchestrator writes rendered orchestrator markdown to destPath.
 // The file is written atomically.
 func installOrchestrator(destPath string, content []byte) error {

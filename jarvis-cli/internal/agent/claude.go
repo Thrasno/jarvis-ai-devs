@@ -20,6 +20,9 @@ import (
 // Ensure ClaudeAgent implements Agent at compile time.
 var _ Agent = (*ClaudeAgent)(nil)
 
+// Ensure ClaudeAgent implements the optional AgentInstaller capability.
+var _ AgentInstaller = (*ClaudeAgent)(nil)
+
 type claudeCommandRunner func(name string, args ...string) (string, error)
 
 var claudeRuntimeGOOS = runtime.GOOS
@@ -438,6 +441,26 @@ func toTitleCase(name string) string {
 		}
 	}
 	return strings.Join(parts, "")
+}
+
+// agentsDir returns the path to ~/.claude/agents/.
+func (a *ClaudeAgent) agentsDir() string {
+	return filepath.Join(a.ConfigDir(), "agents")
+}
+
+// InstallAgents installs named agent definition files from agentsFS to
+// ~/.claude/agents/. agentsFS must be a sub-FS rooted at the platform-specific
+// embed/agents/claude directory. Install is idempotent: existing files are
+// overwritten silently.
+func (a *ClaudeAgent) InstallAgents(agentsFS fs.FS) error {
+	if agentsFS == nil {
+		return fmt.Errorf("InstallAgents: agentsFS is nil")
+	}
+	dir := a.agentsDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create agents dir: %w", err)
+	}
+	return installAgentsFromFS(dir, agentsFS)
 }
 
 // InstallSkills installs selected skills from skillsFS to ~/.claude/skills/.
