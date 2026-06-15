@@ -453,6 +453,9 @@ func (a *ClaudeAgent) agentsDir() string {
 // embed/agents/claude directory. Install is idempotent: existing files are
 // overwritten silently.
 func (a *ClaudeAgent) InstallAgents(agentsFS fs.FS) error {
+	if agentsFS == nil {
+		return fmt.Errorf("InstallAgents: agentsFS is nil")
+	}
 	dir := a.agentsDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create agents dir: %w", err)
