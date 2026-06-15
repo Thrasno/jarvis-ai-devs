@@ -27,6 +27,10 @@ type claudeCommandRunner func(name string, args ...string) (string, error)
 
 var claudeRuntimeGOOS = runtime.GOOS
 
+// osExecutable is a package-level variable wrapping os.Executable so tests
+// can inject a fake path without spawning a real subprocess.
+var osExecutable = os.Executable
+
 type claudePromptHookSpec struct {
 	assetPath string
 	filename  string
@@ -495,24 +499,15 @@ func (a *ClaudeAgent) InstallOrchestrator(orchestratorContent []byte) error {
 }
 
 // InstallPromptHook writes the Hive UserPromptSubmit hook for Claude Code.
-// It copies the OS-specific script to ~/.claude/hive-hooks/
-// and patches ~/.claude/settings.json to register the hook.
-func (a *ClaudeAgent) InstallPromptHook(hooksFS fs.FS) error {
-	hookDir := filepath.Join(a.ConfigDir(), "hive-hooks")
-	if err := os.MkdirAll(hookDir, 0755); err != nil {
-		return fmt.Errorf("create hive-hooks dir: %w", err)
-	}
-
-	filename := claudePromptHookFilename(claudeRuntimeGOOS)
-	scriptPath := filepath.Join(hookDir, filename)
-	spec := resolveClaudePromptHook(claudeRuntimeGOOS, scriptPath)
-	content, err := fs.ReadFile(hooksFS, spec.assetPath)
+// After migration to native Go hooks, the Claude implementation emits an inline
+// command using the jarvis binary path from os.Executable(). The hooksFS
+// parameter is kept for interface compatibility but is ignored for Claude.
+func (a *ClaudeAgent) InstallPromptHook(_ fs.FS) error {
+	executable, err := osExecutable()
 	if err != nil {
-		return fmt.Errorf("read hook script: %w", err)
+		return fmt.Errorf("resolve jarvis executable: %w", err)
 	}
-	if err := writeFileAtomic(scriptPath, content, spec.perm); err != nil {
-		return fmt.Errorf("write hook script: %w", err)
-	}
+	command := shellSingleQuote(executable) + " hook prompt-submit"
 
 	patch := map[string]any{
 		"hooks": map[string]any{
@@ -522,7 +517,7 @@ func (a *ClaudeAgent) InstallPromptHook(hooksFS fs.FS) error {
 					"hooks": []any{
 						map[string]any{
 							"type":    "command",
-							"command": spec.command,
+							"command": command,
 							"timeout": 2,
 						},
 					},
@@ -629,25 +624,16 @@ func escapePowerShellFilePath(path string) string {
 }
 
 // InstallSessionHooks installs the Hive SessionStart and Stop hooks for Claude Code.
-// It copies OS-specific scripts to ~/.claude/hive-hooks/ and patches settings.json.
-func (a *ClaudeAgent) InstallSessionHooks(hooksFS fs.FS) error {
-	hookDir := filepath.Join(a.ConfigDir(), "hive-hooks")
-	if err := os.MkdirAll(hookDir, 0755); err != nil {
-		return fmt.Errorf("create hive-hooks dir: %w", err)
+// After migration to native Go hooks, this emits inline commands using the jarvis
+// binary path from os.Executable(). The hooksFS parameter is kept for interface
+// compatibility but is ignored for Claude.
+func (a *ClaudeAgent) InstallSessionHooks(_ fs.FS) error {
+	executable, err := osExecutable()
+	if err != nil {
+		return fmt.Errorf("resolve jarvis executable: %w", err)
 	}
-
-	startSpec := resolveClaudeSessionHook(claudeRuntimeGOOS, "session-start", hookDir)
-	stopSpec := resolveClaudeSessionHook(claudeRuntimeGOOS, "session-stop", hookDir)
-
-	for _, spec := range []claudePromptHookSpec{startSpec, stopSpec} {
-		content, err := fs.ReadFile(hooksFS, spec.assetPath)
-		if err != nil {
-			return fmt.Errorf("read hook script %s: %w", spec.assetPath, err)
-		}
-		if err := writeFileAtomic(filepath.Join(hookDir, spec.filename), content, spec.perm); err != nil {
-			return fmt.Errorf("write hook script %s: %w", spec.filename, err)
-		}
-	}
+	startCommand := shellSingleQuote(executable) + " hook session-start"
+	stopCommand := shellSingleQuote(executable) + " hook session-stop"
 
 	patch := map[string]any{
 		"hooks": map[string]any{
@@ -657,7 +643,7 @@ func (a *ClaudeAgent) InstallSessionHooks(hooksFS fs.FS) error {
 					"hooks": []any{
 						map[string]any{
 							"type":    "command",
-							"command": startSpec.command,
+							"command": startCommand,
 							"timeout": 5,
 						},
 					},
@@ -669,8 +655,9 @@ func (a *ClaudeAgent) InstallSessionHooks(hooksFS fs.FS) error {
 					"hooks": []any{
 						map[string]any{
 							"type":    "command",
-							"command": stopSpec.command,
-							"timeout": 2,
+							"command": stopCommand,
+							"timeout": 5,
+							"async":   true,
 						},
 					},
 				},
@@ -695,25 +682,126 @@ func (a *ClaudeAgent) InstallSessionHooks(hooksFS fs.FS) error {
 	return writeFileAtomic(a.settingsPath(), merged, 0644)
 }
 
-func resolveClaudeSessionHook(goos, name, hookDir string) claudePromptHookSpec {
-	if goos == "windows" {
-		filename := name + ".ps1"
-		scriptPath := filepath.Join(hookDir, filename)
-		return claudePromptHookSpec{
-			assetPath: "embed/hooks/claude/" + filename,
-			filename:  filename,
-			command:   `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "` + escapePowerShellFilePath(scriptPath) + `"`,
-			perm:      0644,
+// InstallCompactHook adds a second SessionStart entry with matcher "compact"
+// pointing to "jarvis hook session-compact". It is idempotent: if an entry
+// named "hive-session-compact" already exists it is not added again.
+// This method is on *ClaudeAgent only (not on the AgentInstaller interface)
+// because OpenCode has no equivalent matcher concept.
+func (a *ClaudeAgent) InstallCompactHook() error {
+	executable, err := osExecutable()
+	if err != nil {
+		return fmt.Errorf("resolve jarvis executable: %w", err)
+	}
+	command := shellSingleQuote(executable) + " hook session-compact"
+
+	// Check for existing entry before patching (idempotency).
+	existing, err := readFileOrEmpty(a.settingsPath())
+	if err != nil {
+		return fmt.Errorf("read settings.json: %w", err)
+	}
+	if len(strings.TrimSpace(string(existing))) > 0 {
+		var decoded map[string]any
+		if err := json.Unmarshal(existing, &decoded); err == nil {
+			if hooks, ok := decoded["hooks"].(map[string]any); ok {
+				if sessionStart, ok := hooks["SessionStart"].([]any); ok {
+					for _, entry := range sessionStart {
+						if em, ok := entry.(map[string]any); ok && em["name"] == "hive-session-compact" {
+							return nil // already installed
+						}
+					}
+				}
+			}
 		}
 	}
-	filename := name + ".sh"
-	scriptPath := filepath.Join(hookDir, filename)
-	return claudePromptHookSpec{
-		assetPath: "embed/hooks/claude/" + filename,
-		filename:  filename,
-		command:   scriptPath,
-		perm:      0755,
+
+	patch := map[string]any{
+		"hooks": map[string]any{
+			"SessionStart": []any{
+				map[string]any{
+					"name":    "hive-session-compact",
+					"matcher": "compact",
+					"hooks": []any{
+						map[string]any{
+							"type":    "command",
+							"command": command,
+							"timeout": 5,
+						},
+					},
+				},
+			},
+		},
 	}
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("marshal compact hook patch: %w", err)
+	}
+
+	merged, err := MergeJSON(existing, patchBytes)
+	if err != nil {
+		return fmt.Errorf("merge settings.json compact hook: %w", err)
+	}
+
+	return writeFileAtomic(a.settingsPath(), merged, 0644)
+}
+
+// InstallSubagentStopHook adds a SubagentStop entry pointing to
+// "jarvis hook subagent-stop". It is idempotent.
+// This method is on *ClaudeAgent only (not on the AgentInstaller interface).
+func (a *ClaudeAgent) InstallSubagentStopHook() error {
+	executable, err := osExecutable()
+	if err != nil {
+		return fmt.Errorf("resolve jarvis executable: %w", err)
+	}
+	command := shellSingleQuote(executable) + " hook subagent-stop"
+
+	// Check for existing entry before patching (idempotency).
+	existing, err := readFileOrEmpty(a.settingsPath())
+	if err != nil {
+		return fmt.Errorf("read settings.json: %w", err)
+	}
+	if len(strings.TrimSpace(string(existing))) > 0 {
+		var decoded map[string]any
+		if err := json.Unmarshal(existing, &decoded); err == nil {
+			if hooks, ok := decoded["hooks"].(map[string]any); ok {
+				if subagentStop, ok := hooks["SubagentStop"].([]any); ok {
+					for _, entry := range subagentStop {
+						if em, ok := entry.(map[string]any); ok && em["name"] == "hive-subagent-stop" {
+							return nil // already installed
+						}
+					}
+				}
+			}
+		}
+	}
+
+	patch := map[string]any{
+		"hooks": map[string]any{
+			"SubagentStop": []any{
+				map[string]any{
+					"name": "hive-subagent-stop",
+					"hooks": []any{
+						map[string]any{
+							"type":    "command",
+							"command": command,
+							"timeout": 10,
+							"async":   true,
+						},
+					},
+				},
+			},
+		},
+	}
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("marshal subagent stop hook patch: %w", err)
+	}
+
+	merged, err := MergeJSON(existing, patchBytes)
+	if err != nil {
+		return fmt.Errorf("merge settings.json subagent stop hook: %w", err)
+	}
+
+	return writeFileAtomic(a.settingsPath(), merged, 0644)
 }
 
 // statuslinePath returns the path to ~/.claude/statusline-command.sh.
