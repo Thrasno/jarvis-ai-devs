@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc --noEmit && vite build",
     "lint": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run --allowOnly=false"
   },
   "devDependencies": {
     "jsdom": "^24.1.3",
