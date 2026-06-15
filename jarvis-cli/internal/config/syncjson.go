@@ -1,7 +1,6 @@
 package config
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -24,7 +23,9 @@ type syncJSON struct {
 //   - &false: force-disable auto_sync regardless of any existing value.
 //
 // Required auth fields (api_url, email, password) are always updated.
-// If the file already exists and cannot be parsed, the call returns an error
+// Unknown fields in an existing file are ignored so that a newer-format sync.json
+// does not block credential updates.
+// If the file already exists and cannot be parsed as JSON, the call returns an error
 // without writing a new file.
 func WriteSyncCredentials(apiURL, email, password string, autoSync *bool) error {
 	home, err := os.UserHomeDir()
@@ -40,9 +41,7 @@ func WriteSyncCredentials(apiURL, email, password string, autoSync *bool) error 
 	var existingAutoSync *bool
 	if existingData, err := os.ReadFile(path); err == nil {
 		var existing syncJSON
-		dec := json.NewDecoder(bytes.NewReader(existingData))
-		dec.DisallowUnknownFields()
-		if decodeErr := dec.Decode(&existing); decodeErr != nil {
+		if decodeErr := json.Unmarshal(existingData, &existing); decodeErr != nil {
 			return fmt.Errorf("parse existing sync.json: %w", decodeErr)
 		}
 		existingAutoSync = existing.AutoSync
@@ -60,7 +59,7 @@ func WriteSyncCredentials(apiURL, email, password string, autoSync *bool) error 
 	payload := syncJSON{
 		APIURL:   strings.TrimSpace(apiURL),
 		Email:    strings.TrimSpace(email),
-		Password: strings.TrimSpace(password),
+		Password: password,
 		AutoSync: resolved,
 	}
 

@@ -28,6 +28,22 @@ func TestWriteSyncCredentials_CreatesFile(t *testing.T) {
 	}
 }
 
+func TestWriteSyncCredentials_PreservesPasswordWhitespace(t *testing.T) {
+	tmpHome := isolateHome(t)
+
+	if err := WriteSyncCredentials("https://hivemem.dev", "user@example.com", " s3cr3t ", nil); err != nil {
+		t.Fatalf("WriteSyncCredentials: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpHome, ".jarvis", "sync.json"))
+	if err != nil {
+		t.Fatalf("read sync.json: %v", err)
+	}
+	if !strings.Contains(string(data), `"password":" s3cr3t "`) {
+		t.Fatalf("expected password preserved with whitespace, got: %s", string(data))
+	}
+}
+
 func TestWriteSyncCredentials_PreservesAutoSync(t *testing.T) {
 	tmpHome := isolateHome(t)
 	jarvisDir := filepath.Join(tmpHome, ".jarvis")
@@ -225,6 +241,35 @@ func TestDeleteSyncCredentials_RemovesExistingFile(t *testing.T) {
 
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("expected sync.json deleted, stat err: %v", err)
+	}
+}
+
+func TestWriteSyncCredentials_ToleratesUnknownFieldsInExistingFile(t *testing.T) {
+	tmpHome := isolateHome(t)
+	jarvisDir := filepath.Join(tmpHome, ".jarvis")
+	if err := os.MkdirAll(jarvisDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	existing := `{"api_url":"https://old.dev","email":"old@example.com","password":"old","auto_sync":true,"refresh_token":"tok123","future_field":42}`
+	if err := os.WriteFile(filepath.Join(jarvisDir, "sync.json"), []byte(existing), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteSyncCredentials("https://hivemem.dev", "new@example.com", "newpass", nil); err != nil {
+		t.Fatalf("WriteSyncCredentials should tolerate unknown fields, got: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(jarvisDir, "sync.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	if !strings.Contains(body, `"email":"new@example.com"`) {
+		t.Fatalf("expected updated credentials, got: %s", body)
+	}
+	if !strings.Contains(body, `"auto_sync":true`) {
+		t.Fatalf("expected auto_sync preserved, got: %s", body)
 	}
 }
 
