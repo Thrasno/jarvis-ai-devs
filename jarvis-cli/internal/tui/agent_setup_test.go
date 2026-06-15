@@ -145,6 +145,26 @@ func (a *setupAgentInstallerStub) InstallAgents(agentsSubFS fs.FS) error {
 	return a.installAgentsErr
 }
 
+// setupClaudeHookStub wraps setupAgentStub and implements agent.CompactHookInstaller
+// and agent.SubagentStopHookInstaller so that the Claude-only hook wiring path can be tested.
+type setupClaudeHookStub struct {
+	*setupAgentStub
+	installCompactHookCalls      int
+	installCompactHookErr        error
+	installSubagentStopHookCalls int
+	installSubagentStopHookErr   error
+}
+
+func (a *setupClaudeHookStub) InstallCompactHook() error {
+	a.installCompactHookCalls++
+	return a.installCompactHookErr
+}
+
+func (a *setupClaudeHookStub) InstallSubagentStopHook() error {
+	a.installSubagentStopHookCalls++
+	return a.installSubagentStopHookErr
+}
+
 // TestConfigureWizardAgent_InstallsAgents asserts that when the agent implements
 // AgentInstaller, InstallAgents is called during configureWizardAgent, and that
 // when the agent does NOT implement AgentInstaller, no error occurs.
@@ -192,6 +212,38 @@ func TestConfigureWizardAgent_InstallsAgents(t *testing.T) {
 		}
 	})
 
+}
+
+// TestConfigureWizardAgent_InstallsClaudeOnlyHooks asserts that when the agent
+// implements CompactHookInstaller and SubagentStopHookInstaller (Claude-only
+// capabilities), configureWizardAgent calls both install methods, and that
+// non-Claude agents without those interfaces are unaffected.
+func TestConfigureWizardAgent_InstallsClaudeOnlyHooks(t *testing.T) {
+	t.Run("calls InstallCompactHook and InstallSubagentStopHook when agent implements them", func(t *testing.T) {
+		stub := &setupClaudeHookStub{
+			setupAgentStub: &setupAgentStub{name: "claude"},
+		}
+
+		_, err := configureWizardAgent(stub, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
+		if err != nil {
+			t.Fatalf("configureWizardAgent returned error: %v", err)
+		}
+		if stub.installCompactHookCalls != 1 {
+			t.Fatalf("InstallCompactHook calls = %d, want 1", stub.installCompactHookCalls)
+		}
+		if stub.installSubagentStopHookCalls != 1 {
+			t.Fatalf("InstallSubagentStopHook calls = %d, want 1", stub.installSubagentStopHookCalls)
+		}
+	})
+
+	t.Run("does not fail when agent does not implement Claude-only hook interfaces", func(t *testing.T) {
+		stub := &setupAgentStub{name: "opencode"}
+
+		_, err := configureWizardAgent(stub, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
+		if err != nil {
+			t.Fatalf("configureWizardAgent returned error for agent without Claude-only hooks: %v", err)
+		}
+	})
 }
 
 func TestConfigureWizardAgent_ErrorPropagation(t *testing.T) {

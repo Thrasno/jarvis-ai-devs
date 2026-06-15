@@ -120,6 +120,36 @@ func InstallRegistryAutomationIfSupported(a Agent, hooksFS fs.FS) (bool, error) 
 	return true, installer.InstallRegistryAutomation(hooksFS)
 }
 
+// CompactHookInstaller is implemented by agents that support a compact event hook.
+// This is a Claude-only capability; OpenCode has no equivalent matcher concept.
+type CompactHookInstaller interface {
+	InstallCompactHook() error
+}
+
+// SubagentStopHookInstaller is implemented by agents that support a subagent stop hook.
+// This is a Claude-only capability.
+type SubagentStopHookInstaller interface {
+	InstallSubagentStopHook() error
+}
+
+// InstallCompactHookIfSupported installs the compact event hook for agents that
+// explicitly implement CompactHookInstaller. Other agents are left untouched.
+func InstallCompactHookIfSupported(a Agent) error {
+	if installer, ok := a.(CompactHookInstaller); ok {
+		return installer.InstallCompactHook()
+	}
+	return nil
+}
+
+// InstallSubagentStopHookIfSupported installs the subagent stop hook for agents
+// that explicitly implement SubagentStopHookInstaller. Other agents are left untouched.
+func InstallSubagentStopHookIfSupported(a Agent) error {
+	if installer, ok := a.(SubagentStopHookInstaller); ok {
+		return installer.InstallSubagentStopHook()
+	}
+	return nil
+}
+
 // Detect returns all agents detected as installed on the current system.
 // fsys must be an fs.FS containing the template files (e.g. root-package TemplatesFS).
 // It checks for ~/.claude (ClaudeAgent) and ~/.config/opencode or opencode binary
