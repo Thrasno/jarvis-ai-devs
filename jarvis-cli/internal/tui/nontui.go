@@ -49,7 +49,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	mode := cfg.ConfigStatus()
 
 	// ── Step 1: Scope ─────────────────────────────────────────────────────────
-	fmt.Println("=== Jarvis-Dev Setup [1/6] Scope ===")
+	fmt.Println("=== Jarvis-Dev Setup [1/7] Scope ===")
 	fmt.Printf("Scope [local-only/local+cloud] (default: %s): ", cfg.Scope)
 	scopeInput := strings.TrimSpace(readLine(scanner))
 	scope := cfg.Scope
@@ -65,9 +65,9 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	cfg.Scope = scope
 
 	// ── Step 2: HiveCloud ─────────────────────────────────────────────────────
-	header := "\n=== Jarvis-Dev Setup [2/6] Hive Cloud Authentication ==="
+	header := "\n=== Jarvis-Dev Setup [2/7] Hive Cloud Authentication ==="
 	if mode == config.ConfigStatusReconfigure {
-		header = "\n=== Jarvis-Dev Reconfigure [2/6] Hive Cloud Authentication ==="
+		header = "\n=== Jarvis-Dev Reconfigure [2/7] Hive Cloud Authentication ==="
 	}
 	fmt.Println(header)
 	currentEmail := ""
@@ -119,7 +119,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	}
 
 	// ── Step 3: Persona ───────────────────────────────────────────────────────
-	fmt.Println("\n=== Jarvis-Dev Setup [3/6] Select Persona Preset ===")
+	fmt.Println("\n=== Jarvis-Dev Setup [3/7] Select Persona Preset ===")
 	presets, err := listPersonaPresets(wcfg.PersonaFS)
 	if err != nil {
 		return fmt.Errorf("list presets: %w", err)
@@ -179,7 +179,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	fmt.Printf("Selected: %s (%s)\n", resolvedPreset.Slug, resolvedPreset.Source)
 
 	// ── Step 4: Extra Skills ──────────────────────────────────────────────────
-	fmt.Println("\n=== Jarvis-Dev Setup [4/6] Select Extra Skills ===")
+	fmt.Println("\n=== Jarvis-Dev Setup [4/7] Select Extra Skills ===")
 	skillList, err := listAvailableSkills(wcfg.SkillsFS)
 	if err != nil {
 		return fmt.Errorf("list skills: %w", err)
