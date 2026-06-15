@@ -84,6 +84,25 @@ type Agent interface {
 	InstallSessionHooks(hooksFS fs.FS) error
 }
 
+// AgentInstaller is implemented by agents that support installing named agent
+// definition files to a platform-specific agents directory.
+// This is an optional capability checked via type assertion.
+// OpenCodeAgent does not implement this interface; its agent registration uses
+// the inline JSON config builder path instead.
+type AgentInstaller interface {
+	InstallAgents(agentsFS fs.FS) error
+}
+
+// InstallAgentsIfSupported installs named agent definition files for agents
+// that explicitly implement the AgentInstaller optional capability.
+// Agents that do not implement AgentInstaller are left untouched and nil is returned.
+func InstallAgentsIfSupported(a Agent, agentsFS fs.FS) error {
+	if ai, ok := a.(AgentInstaller); ok {
+		return ai.InstallAgents(agentsFS)
+	}
+	return nil
+}
+
 // RegistryAutomationInstaller is implemented by agents with a supported hook or
 // plugin surface for non-fatal project skill registry refresh automation.
 type RegistryAutomationInstaller interface {
