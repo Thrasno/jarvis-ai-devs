@@ -29,6 +29,11 @@ var OrchestratorFS embed.FS
 //go:embed all:embed/hooks
 var HooksFS embed.FS
 
+// AgentsFS contains the embedded named agent definition files.
+//
+//go:embed all:embed/agents
+var AgentsFS embed.FS
+
 // HiveProtocol contains the canonical Hive memory protocol injected into agent instructions.
 //
 //go:embed embed/hive-protocol.md
