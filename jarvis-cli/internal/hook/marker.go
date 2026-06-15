@@ -83,3 +83,28 @@ func MarkerExists(sessionID string) bool {
 	_, err := os.Stat(p)
 	return err == nil
 }
+
+// CreateMarkerExclusive atomically creates the marker file for the given
+// session ID using O_CREATE|O_EXCL. It returns created=true when the file did
+// not exist and was created by this call, and created=false when the file
+// already existed. Any other OS error is returned as err.
+//
+// Use this instead of the MarkerExists + CreateMarker two-step when only one
+// concurrent caller should act (e.g. first-prompt detection in RunPromptSubmit).
+func CreateMarkerExclusive(sessionID string) (created bool, err error) {
+	p := markerPath(sessionID)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return false, err
+	}
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		if os.IsExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer f.Close()
+	// Write a timestamp so the file is non-empty and human-readable.
+	_, _ = f.WriteString(time.Now().UTC().Format(time.RFC3339) + "\n")
+	return true, nil
+}

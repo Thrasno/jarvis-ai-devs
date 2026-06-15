@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
@@ -75,18 +76,13 @@ func TestPostSessions_ValidBody_Returns200(t *testing.T) {
 }
 
 func TestPostSessions_DuplicateID_Returns200_Idempotent(t *testing.T) {
-	calls := 0
-	store := &mockSessionStore{
-		createSessionFn: func(id, project, directory, devID, client string) error {
-			calls++
-			if calls > 1 {
-				// CreateSession returns an error on duplicate — handler must treat as 200.
-				return errors.New("UNIQUE constraint failed: sessions.id")
-			}
-			return nil
-		},
-	}
-	srv := newServerWithSessions(store)
+	// Use a real DB so CreateSession returns a genuine *sqlite.Error on duplicate.
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	realDB, err := db.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = realDB.Close() })
+
+	srv := httpapi.NewServerWithSessions("127.0.0.1:0", &mockPromptStore{}, realDB)
 
 	body := `{"id":"sess-dup","project":"jarvis-dev","directory":"/tmp","dev_id":"","client":""}`
 	rr1 := postJSON(srv, "/sessions", body)

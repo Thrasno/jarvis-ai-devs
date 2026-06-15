@@ -19,6 +19,8 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sanitize"
+	sqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const (
@@ -852,15 +854,28 @@ func (s *Server) handleObservationsPassive(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
 }
 
-// isDuplicateKeyError reports whether err is a SQLite UNIQUE constraint
-// violation on the sessions.id primary key. Hook-initiated session creates are
-// fire-and-forget; duplicates are treated as idempotent.
+// isDuplicateKeyError reports whether err is a SQLite constraint violation
+// caused by a duplicate key. Hook-initiated session creates are fire-and-forget;
+// duplicates are treated as idempotent.
+//
+// SQLite uses two distinct extended error codes depending on how the column is
+// declared:
+//   - SQLITE_CONSTRAINT_PRIMARYKEY (1555) — fired when the duplicate violates
+//     a PRIMARY KEY column (e.g. sessions.id TEXT PRIMARY KEY).
+//   - SQLITE_CONSTRAINT_UNIQUE (2067) — fired when the duplicate violates a
+//     UNIQUE constraint on a non-PK column (e.g. sessions.sync_id UNIQUE).
+//
+// Both codes indicate an idempotent duplicate; the function accepts either.
 func isDuplicateKeyError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "unique") || strings.Contains(msg, "duplicate")
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		code := sqliteErr.Code()
+		return code == sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY || code == sqlite3.SQLITE_CONSTRAINT_UNIQUE
+	}
+	return false
 }
 
 func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {

@@ -193,3 +193,67 @@ func TestMarkerExists_ReturnsFalseWhenAbsent(t *testing.T) {
 		t.Error("MarkerExists should return false for nonexistent marker")
 	}
 }
+
+func TestCreateMarkerExclusive_FirstCall_ReturnsCreatedTrue(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+
+	created, err := CreateMarkerExclusive("exclusive-session-1")
+	if err != nil {
+		t.Fatalf("CreateMarkerExclusive returned unexpected error: %v", err)
+	}
+	if !created {
+		t.Error("first call to CreateMarkerExclusive should return created=true")
+	}
+	// Marker file must exist after creation.
+	if !MarkerExists("exclusive-session-1") {
+		t.Error("marker file should exist after CreateMarkerExclusive created=true")
+	}
+}
+
+func TestCreateMarkerExclusive_SecondCall_ReturnsCreatedFalse(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+
+	// First call creates the marker.
+	created1, err := CreateMarkerExclusive("exclusive-session-2")
+	if err != nil {
+		t.Fatalf("first CreateMarkerExclusive: %v", err)
+	}
+	if !created1 {
+		t.Error("first call should return created=true")
+	}
+
+	// Second call on the same session must not create again.
+	created2, err := CreateMarkerExclusive("exclusive-session-2")
+	if err != nil {
+		t.Fatalf("second CreateMarkerExclusive returned unexpected error: %v", err)
+	}
+	if created2 {
+		t.Error("second call to CreateMarkerExclusive should return created=false")
+	}
+}
+
+func TestCreateMarkerExclusive_OnlyOneSystemMessage(t *testing.T) {
+	// Simulates two concurrent-style calls; only the winner gets created=true
+	// and should emit systemMessage.
+	dir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+
+	sessionID := "exclusive-race-session"
+
+	systemMessages := 0
+	for i := 0; i < 2; i++ {
+		created, err := CreateMarkerExclusive(sessionID)
+		if err != nil {
+			t.Fatalf("CreateMarkerExclusive call %d: %v", i, err)
+		}
+		if created {
+			systemMessages++
+		}
+	}
+
+	if systemMessages != 1 {
+		t.Errorf("expected exactly 1 systemMessage emission, got %d", systemMessages)
+	}
+}

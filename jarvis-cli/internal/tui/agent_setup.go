@@ -102,6 +102,12 @@ func configureWizardAgent(
 	if err := a.InstallSessionHooks(jarvis.HooksFS); err != nil {
 		return nil, fmt.Errorf("install session hooks: %w", err)
 	}
+	if err := agent.InstallCompactHookIfSupported(a); err != nil {
+		return nil, fmt.Errorf("install compact hook: %w", err)
+	}
+	if err := agent.InstallSubagentStopHookIfSupported(a); err != nil {
+		return nil, fmt.Errorf("install subagent stop hook: %w", err)
+	}
 	warnings := []string(nil)
 	if _, err := agent.InstallRegistryAutomationIfSupported(a, jarvis.HooksFS); err != nil {
 		warnings = append(warnings, fmt.Sprintf("Project skill registry warning: automation not installed for %s: %v", a.Name(), err))
