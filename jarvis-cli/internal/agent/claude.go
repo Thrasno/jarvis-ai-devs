@@ -31,13 +31,6 @@ var claudeRuntimeGOOS = runtime.GOOS
 // can inject a fake path without spawning a real subprocess.
 var osExecutable = os.Executable
 
-type claudePromptHookSpec struct {
-	assetPath string
-	filename  string
-	command   string
-	perm      os.FileMode
-}
-
 // ClaudeAgent implements Agent for Anthropic's Claude Code CLI.
 // Config dir: ~/.claude/
 // MCP registration contract (persists in ~/.claude.json):
@@ -543,13 +536,6 @@ func (a *ClaudeAgent) InstallPromptHook(_ fs.FS) error {
 	return writeFileAtomic(a.settingsPath(), merged, 0644)
 }
 
-func claudePromptHookFilename(goos string) string {
-	if goos == "windows" {
-		return "user-prompt-submit.ps1"
-	}
-	return "user-prompt-submit.sh"
-}
-
 // InstallRegistryAutomation merges the Jarvis project skill registry refresh
 // command into Claude Code UserPromptSubmit without replacing the Hive
 // prompt-capture hook or user-owned hooks.
@@ -599,28 +585,6 @@ func claudeRegistryRefreshCommand(executable string) (string, error) {
 		return "", fmt.Errorf("resolve jarvis executable: expected absolute path, got %q", executable)
 	}
 	return shellSingleQuote(executable) + ` skill-registry refresh --quiet --cwd "${CLAUDE_PROJECT_DIR:-$PWD}" || true`, nil
-}
-
-func resolveClaudePromptHook(goos, scriptPath string) claudePromptHookSpec {
-	if goos == "windows" {
-		return claudePromptHookSpec{
-			assetPath: "embed/hooks/claude/user-prompt-submit.ps1",
-			filename:  "user-prompt-submit.ps1",
-			command:   `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "` + escapePowerShellFilePath(scriptPath) + `"`,
-			perm:      0644,
-		}
-	}
-
-	return claudePromptHookSpec{
-		assetPath: "embed/hooks/claude/user-prompt-submit.sh",
-		filename:  "user-prompt-submit.sh",
-		command:   scriptPath,
-		perm:      0755,
-	}
-}
-
-func escapePowerShellFilePath(path string) string {
-	return strings.ReplaceAll(path, `"`, `\"`)
 }
 
 // InstallSessionHooks installs the Hive SessionStart and Stop hooks for Claude Code.

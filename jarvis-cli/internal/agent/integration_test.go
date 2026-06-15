@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -529,25 +528,17 @@ func TestProtocolInjection_ProtocolContentCorrect(t *testing.T) {
 // ── T-CLI-1: InstallPromptHook tests ─────────────────────────────────────────
 
 // testHooksFS is a minimal in-memory FS that mirrors embed/hooks/ for tests.
+// The 6 Claude session/prompt shell scripts were deleted in hooks-go-native migration;
+// only the statusline script and the OpenCode plugin remain.
 var testHooksFS = fstest.MapFS{
-	"embed/hooks/claude/user-prompt-submit.sh":   {Data: []byte("#!/bin/bash\nprintf '{}\n'")},
-	"embed/hooks/claude/user-prompt-submit.ps1":  {Data: []byte("Write-Output '{}'\n")},
-	"embed/hooks/claude/session-start.sh":        {Data: []byte("#!/bin/bash\nprintf '{\"additionalContext\":\"test\"}\n'")},
-	"embed/hooks/claude/session-start.ps1":       {Data: []byte("Write-Output '{\"additionalContext\":\"test\"}'\n")},
-	"embed/hooks/claude/session-stop.sh":         {Data: []byte("#!/bin/bash\nprintf '{}\n'")},
-	"embed/hooks/claude/session-stop.ps1":        {Data: []byte("Write-Output '{}'\n")},
-	"embed/hooks/claude/statusline-command.sh":   {Data: []byte("#!/bin/bash\necho statusline\n")},
-	"embed/hooks/opencode/hive.ts":               {Data: []byte("export const Hive = {}")},
+	"embed/hooks/claude/statusline-command.sh": {Data: []byte("#!/bin/bash\necho statusline\n")},
+	"embed/hooks/opencode/hive.ts":             {Data: []byte("export const Hive = {}")},
 }
 
 // TestClaudeAgent_InstallSessionHooks verifies that InstallSessionHooks:
-//   - writes session-start and session-stop script files to ~/.claude/hive-hooks/
-//   - patches settings.json with SessionStart and Stop hook entries
+//   - patches settings.json with SessionStart and Stop hook entries using inline commands
+//   - does NOT write any script files (hooks-go-native migration)
 func TestClaudeAgent_InstallSessionHooks(t *testing.T) {
-	previousGOOS := claudeRuntimeGOOS
-	claudeRuntimeGOOS = "linux"
-	t.Cleanup(func() { claudeRuntimeGOOS = previousGOOS })
-
 	home := t.TempDir()
 	setTestHome(t, home)
 
@@ -556,23 +547,21 @@ func TestClaudeAgent_InstallSessionHooks(t *testing.T) {
 		t.Fatalf("mkdir .claude: %v", err)
 	}
 
+	origExe := osExecutable
+	osExecutable = func() (string, error) { return "/usr/local/bin/jarvis", nil }
+	t.Cleanup(func() { osExecutable = origExe })
+
 	a := &ClaudeAgent{home: home, templatesFS: testTemplatesFS}
 	if err := a.InstallSessionHooks(testHooksFS); err != nil {
 		t.Fatalf("InstallSessionHooks: %v", err)
 	}
 
+	// No script files should be written.
 	hookDir := filepath.Join(claudeDir, "hive-hooks")
-
-	// session-start script must exist.
-	startScript := filepath.Join(hookDir, "session-start.sh")
-	if _, err := os.Stat(startScript); err != nil {
-		t.Fatalf("session-start script not found at %s: %v", startScript, err)
-	}
-
-	// session-stop script must exist.
-	stopScript := filepath.Join(hookDir, "session-stop.sh")
-	if _, err := os.Stat(stopScript); err != nil {
-		t.Fatalf("session-stop script not found at %s: %v", stopScript, err)
+	for _, script := range []string{"session-start.sh", "session-start.ps1", "session-stop.sh", "session-stop.ps1"} {
+		if _, err := os.Stat(filepath.Join(hookDir, script)); !os.IsNotExist(err) {
+			t.Errorf("script %q must not be written after hooks-go-native migration", script)
+		}
 	}
 
 	settingsPath := filepath.Join(claudeDir, "settings.json")
@@ -583,15 +572,30 @@ func TestClaudeAgent_InstallSessionHooks(t *testing.T) {
 		t.Fatal("settings.json missing 'hooks' object")
 	}
 
-	// SessionStart entry must be present.
+	// SessionStart entry must be present with inline command.
 	sessionStart, ok := hooks["SessionStart"].([]any)
 	if !ok || len(sessionStart) == 0 {
 		t.Fatal("settings.json missing hooks.SessionStart array")
 	}
 	foundStart := false
 	for _, entry := range sessionStart {
-		if entryMap, ok := entry.(map[string]any); ok && entryMap["name"] == "hive-session-start" {
-			foundStart = true
+		entryMap, ok := entry.(map[string]any)
+		if !ok || entryMap["name"] != "hive-session-start" {
+			continue
+		}
+		foundStart = true
+		// Verify inline command (not a script path)
+		innerHooks, _ := entryMap["hooks"].([]any)
+		if len(innerHooks) == 0 {
+			t.Fatal("hive-session-start missing inner hooks")
+		}
+		hm, _ := innerHooks[0].(map[string]any)
+		cmd, _ := hm["command"].(string)
+		if !strings.Contains(cmd, "hook") || !strings.Contains(cmd, "session-start") {
+			t.Errorf("hive-session-start command %q must reference 'hook session-start'", cmd)
+		}
+		if strings.HasSuffix(cmd, ".sh") || strings.HasSuffix(cmd, ".ps1") {
+			t.Errorf("hive-session-start command must not be a script path, got %q", cmd)
 		}
 	}
 	if !foundStart {
@@ -621,10 +625,6 @@ func TestClaudeAgent_InstallSessionHooks(t *testing.T) {
 // InstallSessionHooks twice leaves exactly one hive-session-start entry under
 // SessionStart and exactly one hive-session-stop entry under Stop.
 func TestClaudeAgent_InstallSessionHooks_Idempotent(t *testing.T) {
-	previousGOOS := claudeRuntimeGOOS
-	claudeRuntimeGOOS = "linux"
-	t.Cleanup(func() { claudeRuntimeGOOS = previousGOOS })
-
 	home := t.TempDir()
 	setTestHome(t, home)
 
@@ -632,6 +632,10 @@ func TestClaudeAgent_InstallSessionHooks_Idempotent(t *testing.T) {
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
 		t.Fatalf("mkdir .claude: %v", err)
 	}
+
+	origExe := osExecutable
+	osExecutable = func() (string, error) { return "/usr/local/bin/jarvis", nil }
+	t.Cleanup(func() { osExecutable = origExe })
 
 	a := &ClaudeAgent{home: home, templatesFS: testTemplatesFS}
 
@@ -685,15 +689,11 @@ func TestClaudeAgent_InstallSessionHooks_Idempotent(t *testing.T) {
 }
 
 // TestClaudeAgent_InstallPromptHook verifies that InstallPromptHook:
-//   - writes the shell script as executable
-//   - patches settings.json with a UserPromptSubmit hook entry
+//   - patches settings.json with a UserPromptSubmit hook entry using an inline command
+//   - does NOT write any script file (hooks-go-native migration)
 //   - is idempotent (hook appears exactly once after two calls)
 //   - preserves pre-existing UserPromptSubmit entries (R-9 mitigation)
 func TestClaudeAgent_InstallPromptHook(t *testing.T) {
-	previousGOOS := claudeRuntimeGOOS
-	claudeRuntimeGOOS = "linux"
-	t.Cleanup(func() { claudeRuntimeGOOS = previousGOOS })
-
 	home := t.TempDir()
 	setTestHome(t, home)
 
@@ -702,24 +702,23 @@ func TestClaudeAgent_InstallPromptHook(t *testing.T) {
 		t.Fatalf("mkdir .claude: %v", err)
 	}
 
+	origExe := osExecutable
+	osExecutable = func() (string, error) { return "/usr/local/bin/jarvis", nil }
+	t.Cleanup(func() { osExecutable = origExe })
+
 	a := &ClaudeAgent{home: home, templatesFS: testTemplatesFS}
 
-	// First call — must create everything from scratch.
+	// First call.
 	if err := a.InstallPromptHook(testHooksFS); err != nil {
 		t.Fatalf("first InstallPromptHook: %v", err)
 	}
 
-	scriptPath := filepath.Join(claudeDir, "hive-hooks", "user-prompt-submit.sh")
-
-	// Script must exist.
-	info, err := os.Stat(scriptPath)
-	if err != nil {
-		t.Fatalf("script not found at %s: %v", scriptPath, err)
-	}
-
-	// Script must be executable on Unix; Windows does not preserve POSIX execute bits.
-	if runtime.GOOS != "windows" && info.Mode()&0100 == 0 {
-		t.Errorf("script is not executable: mode=%v", info.Mode())
+	// No script files should be written.
+	for _, script := range []string{"user-prompt-submit.sh", "user-prompt-submit.ps1"} {
+		path := filepath.Join(claudeDir, "hive-hooks", script)
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("script %q must not be written after hooks-go-native migration", path)
+		}
 	}
 
 	// settings.json must exist and be valid JSON.
@@ -728,7 +727,6 @@ func TestClaudeAgent_InstallPromptHook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("settings.json not found: %v", err)
 	}
-
 	var settings map[string]any
 	if err := json.Unmarshal(raw, &settings); err != nil {
 		t.Fatalf("settings.json is invalid JSON: %v", err)
@@ -744,10 +742,10 @@ func TestClaudeAgent_InstallPromptHook(t *testing.T) {
 		t.Fatal("settings.json missing hooks.UserPromptSubmit array")
 	}
 
-	foundCommand := false
+	foundInlineCommand := false
 	for _, entry := range ups {
 		entryMap, ok := entry.(map[string]any)
-		if !ok {
+		if !ok || entryMap["name"] != "hive-prompt-capture" {
 			continue
 		}
 		innerHooks, ok := entryMap["hooks"].([]any)
@@ -760,14 +758,15 @@ func TestClaudeAgent_InstallPromptHook(t *testing.T) {
 				continue
 			}
 			if hMap["type"] == "command" {
-				if hMap["command"] == scriptPath {
-					foundCommand = true
+				cmd, _ := hMap["command"].(string)
+				if strings.Contains(cmd, "hook") && strings.Contains(cmd, "prompt-submit") {
+					foundInlineCommand = true
 				}
 			}
 		}
 	}
-	if !foundCommand {
-		t.Errorf("no UserPromptSubmit hook entry with type=command pointing to %s", scriptPath)
+	if !foundInlineCommand {
+		t.Errorf("no UserPromptSubmit hook with inline 'hook prompt-submit' command found")
 	}
 
 	// Second call — must be idempotent (hook appears exactly once).
@@ -801,51 +800,60 @@ func TestClaudeAgent_InstallPromptHook(t *testing.T) {
 	}
 }
 
-func TestClaudeAgent_InstallPromptHook_WindowsRegistersPowerShellHook(t *testing.T) {
-	home := t.TempDir()
-	setTestHome(t, home)
-	withClaudeGOOS(t, "windows")
+// TestClaudeAgent_InstallPromptHook_RegistersInlineCommandOnAllPlatforms verifies
+// that InstallPromptHook uses an inline jarvis command on all platforms after migration.
+func TestClaudeAgent_InstallPromptHook_RegistersInlineCommandOnAllPlatforms(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin", "windows"} {
+		t.Run(goos, func(t *testing.T) {
+			home := t.TempDir()
+			setTestHome(t, home)
 
-	claudeDir := filepath.Join(home, ".claude")
-	if err := os.MkdirAll(claudeDir, 0755); err != nil {
-		t.Fatalf("mkdir .claude: %v", err)
-	}
+			claudeDir := filepath.Join(home, ".claude")
+			if err := os.MkdirAll(claudeDir, 0755); err != nil {
+				t.Fatalf("mkdir .claude: %v", err)
+			}
 
-	a := &ClaudeAgent{home: home, templatesFS: testTemplatesFS}
-	if err := a.InstallPromptHook(testHooksFS); err != nil {
-		t.Fatalf("InstallPromptHook: %v", err)
-	}
+			origExe := osExecutable
+			osExecutable = func() (string, error) { return "/usr/local/bin/jarvis", nil }
+			t.Cleanup(func() { osExecutable = origExe })
 
-	scriptPath := filepath.Join(claudeDir, "hive-hooks", "user-prompt-submit.ps1")
-	if _, err := os.Stat(scriptPath); err != nil {
-		t.Fatalf("PowerShell hook not found at %s: %v", scriptPath, err)
-	}
+			a := &ClaudeAgent{home: home, templatesFS: testTemplatesFS}
+			if err := a.InstallPromptHook(testHooksFS); err != nil {
+				t.Fatalf("InstallPromptHook(%s): %v", goos, err)
+			}
 
-	command := claudeHookCommandFromSettings(t, filepath.Join(claudeDir, "settings.json"))
-	want := `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "` + scriptPath + `"`
-	if command != want {
-		t.Fatalf("hook command = %q, want %q", command, want)
+			command := claudeHookCommandFromSettings(t, filepath.Join(claudeDir, "settings.json"))
+			if !strings.Contains(command, "hook") || !strings.Contains(command, "prompt-submit") {
+				t.Errorf("(%s) hook command %q must reference 'hook prompt-submit'", goos, command)
+			}
+			if strings.HasSuffix(command, ".sh") || strings.HasSuffix(command, ".ps1") {
+				t.Errorf("(%s) hook command must not be a script path, got %q", goos, command)
+			}
+		})
 	}
 }
 
-func TestClaudeAgent_InstallPromptHook_WindowsPreservesExistingHooksAndIsIdempotent(t *testing.T) {
+func TestClaudeAgent_InstallPromptHook_PreservesExistingHooksAndIsIdempotent(t *testing.T) {
 	home := t.TempDir()
 	setTestHome(t, home)
-	withClaudeGOOS(t, "windows")
 
 	claudeDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
 		t.Fatalf("mkdir .claude: %v", err)
 	}
+
+	origExe := osExecutable
+	osExecutable = func() (string, error) { return "/usr/local/bin/jarvis", nil }
+	t.Cleanup(func() { osExecutable = origExe })
 
 	existing := map[string]any{
 		"env": map[string]any{"KEEP_ME": "yes"},
 		"hooks": map[string]any{
 			"UserPromptSubmit": []any{
 				map[string]any{
-					"name": "my-existing-windows-hook",
+					"name": "my-existing-hook",
 					"hooks": []any{
-						map[string]any{"type": "command", "command": `C:\\Tools\\existing.ps1`},
+						map[string]any{"type": "command", "command": `/usr/local/bin/existing-hook`},
 					},
 				},
 			},
@@ -880,14 +888,14 @@ func TestClaudeAgent_InstallPromptHook_WindowsPreservesExistingHooksAndIsIdempot
 			continue
 		}
 		switch entryMap["name"] {
-		case "my-existing-windows-hook":
+		case "my-existing-hook":
 			foundExisting = true
 		case "hive-prompt-capture":
 			hiveCount++
 		}
 	}
 	if !foundExisting {
-		t.Fatal("existing Windows hook was not preserved")
+		t.Fatal("existing hook was not preserved")
 	}
 	if hiveCount != 1 {
 		t.Fatalf("expected exactly one hive-prompt-capture hook after rerun, got %d", hiveCount)
@@ -960,6 +968,10 @@ func TestClaudeAgent_InstallPromptHook_PreservesExistingHooks(t *testing.T) {
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
 		t.Fatalf("mkdir .claude: %v", err)
 	}
+
+	origExe := osExecutable
+	osExecutable = func() (string, error) { return "/usr/local/bin/jarvis", nil }
+	t.Cleanup(func() { osExecutable = origExe })
 
 	// Pre-seed settings.json with an existing hook.
 	existing := map[string]any{
@@ -1396,6 +1408,9 @@ func TestGeneratedRuntimeAcceptance_ConfigArtifactsProveRolloutSafety(t *testing
 	if err := os.MkdirAll(claude.ConfigDir(), 0755); err != nil {
 		t.Fatalf("mkdir claude dir: %v", err)
 	}
+	origExe := osExecutable
+	osExecutable = func() (string, error) { return "/usr/local/bin/jarvis", nil }
+	t.Cleanup(func() { osExecutable = origExe })
 	if err := claude.InstallPromptHook(testHooksFS); err != nil {
 		t.Fatalf("InstallPromptHook: %v", err)
 	}
