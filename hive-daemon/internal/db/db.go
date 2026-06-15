@@ -255,6 +255,24 @@ ON import_source_aliases(source_system, source_table, source_id, source_project)
 
 CREATE INDEX IF NOT EXISTS idx_import_source_aliases_hive
 ON import_source_aliases(hive_table, hive_pk);
+
+-- passive_observations: stores raw stdout captured by the subagent-stop hook.
+-- sync_id is nullable and reserved for future Hive sync integration.
+CREATE TABLE IF NOT EXISTS passive_observations (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL DEFAULT '',
+    project    TEXT NOT NULL DEFAULT '',
+    source     TEXT NOT NULL DEFAULT '',
+    content    TEXT NOT NULL,
+    sync_id    TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_passive_observations_session
+ON passive_observations(session_id);
+
+CREATE INDEX IF NOT EXISTS idx_passive_observations_project
+ON passive_observations(project, created_at DESC);
 `
 
 // DB wraps an SQLite connection with schema validation.
@@ -372,6 +390,11 @@ func initSchema(sqlDB *sql.DB) error {
 			synced_at      DATETIME
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_project_aliases_target ON project_aliases(target_project)`,
+		// passive_observations: additive table for hook-captured subagent output.
+		// sync_id nullable for forward-compat with Hive sync (local-only for now).
+		`CREATE TABLE IF NOT EXISTS passive_observations (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL DEFAULT '', project TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, sync_id TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+		`CREATE INDEX IF NOT EXISTS idx_passive_observations_session ON passive_observations(session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_passive_observations_project ON passive_observations(project, created_at DESC)`,
 	}
 	for _, m := range migrations {
 		if _, err := sqlDB.Exec(m); err != nil {

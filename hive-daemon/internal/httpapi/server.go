@@ -33,6 +33,14 @@ type PromptStore interface {
 	SavePromptForSession(ctx context.Context, project, sessionID, content string) (*models.Prompt, error)
 }
 
+// SessionStore is the interface httpapi needs for session-lifecycle and
+// passive-observation endpoints. *db.DB satisfies this structurally.
+type SessionStore interface {
+	CreateSession(id, project, directory, devID, client string) error
+	EndSession(id, summary string) error
+	SavePassiveObservation(ctx context.Context, sessionID, project, source, content string) error
+}
+
 type GovernanceService interface {
 	Projects(context.Context) ([]governance.Project, error)
 	Project(context.Context, string) (governance.Project, error)
@@ -58,6 +66,7 @@ type GovernanceService interface {
 type Server struct {
 	addr       string
 	prompts    PromptStore
+	sessions   SessionStore
 	projects   project.Store
 	governance GovernanceService
 	config     ConfigService
@@ -94,13 +103,28 @@ func NewServerWithConfig(addr string, prompts PromptStore, config ConfigService)
 	return NewServerWithAll(addr, prompts, nil, nil, config, nil)
 }
 
+// NewServerWithSessions constructs a Server with session-lifecycle and
+// passive-observation endpoints wired alongside the prompt endpoint.
+func NewServerWithSessions(addr string, prompts PromptStore, sessions SessionStore) *Server {
+	return NewServerWithAll(addr, prompts, nil, nil, nil, nil, sessions)
+}
+
 // NewServerWithAll is the canonical constructor. All other constructors
 // delegate to this one. The health parameter is nil-safe: when nil, the
 // /governance/health/summary route is not registered.
-func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, governance GovernanceService, config ConfigService, health HealthService) *Server {
-	s := &Server{addr: addr, prompts: prompts, projects: projects, governance: governance, config: config, health: health}
+func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, governance GovernanceService, config ConfigService, health HealthService, sessions ...SessionStore) *Server {
+	var sess SessionStore
+	if len(sessions) > 0 {
+		sess = sessions[0]
+	}
+	s := &Server{addr: addr, prompts: prompts, sessions: sess, projects: projects, governance: governance, config: config, health: health}
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("/prompts", s.handlePrompts)
+	// Session-lifecycle and passive-observation routes (hook-initiated).
+	// Registered unconditionally — handlers are nil-safe on s.sessions.
+	s.mux.HandleFunc("POST /sessions", s.handleSessionsCreate)
+	s.mux.HandleFunc("POST /sessions/{id}/end", s.handleSessionsEnd)
+	s.mux.HandleFunc("POST /observations/passive", s.handleObservationsPassive)
 	if governance != nil {
 		s.mux.HandleFunc("/governance/projects", s.handleGovernanceProjects)
 		s.mux.HandleFunc("POST /governance/projects/merge", s.handleGovernanceProjectMergeBatch)
@@ -722,6 +746,121 @@ func writeConfigError(w http.ResponseWriter, source string, err error) {
 		logger.Log.Printf("%s: %v", source, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 	}
+}
+
+// ─── Session-lifecycle handlers ───────────────────────────────────────────────
+
+// handleSessionsCreate handles POST /sessions.
+// Accepts optional dev_id and client (hook context has no MCP values to provide).
+// Treats duplicate-id errors as idempotent — returns 200 on UNIQUE constraint failure.
+func (s *Server) handleSessionsCreate(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body struct {
+		ID        string `json:"id"`
+		Project   string `json:"project"`
+		Directory string `json:"directory"`
+		DevID     string `json:"dev_id"`
+		Client    string `json:"client"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	if strings.TrimSpace(body.ID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
+		return
+	}
+	if s.sessions == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session store not configured"})
+		return
+	}
+	err := s.sessions.CreateSession(body.ID, body.Project, body.Directory, body.DevID, body.Client)
+	if err != nil {
+		// Treat duplicate-key errors as idempotent (hook may fire more than once).
+		if isDuplicateKeyError(err) {
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+			return
+		}
+		logger.Log.Printf("create session %q: %v", body.ID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleSessionsEnd handles POST /sessions/{id}/end.
+// Passes an empty summary — the hook has no summary context to provide.
+func (s *Server) handleSessionsEnd(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	id := r.PathValue("id")
+	if strings.TrimSpace(id) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
+		return
+	}
+	if s.sessions == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session store not configured"})
+		return
+	}
+	err := s.sessions.EndSession(id, "")
+	if err != nil {
+		if errors.Is(err, db.ErrSessionNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+			return
+		}
+		logger.Log.Printf("end session %q: %v", id, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleObservationsPassive handles POST /observations/passive.
+// content is required; session_id, project, and source are optional.
+func (s *Server) handleObservationsPassive(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body struct {
+		Content   string `json:"content"`
+		SessionID string `json:"session_id"`
+		Project   string `json:"project"`
+		Source    string `json:"source"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	if strings.TrimSpace(body.Content) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "content is required"})
+		return
+	}
+	if s.sessions == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session store not configured"})
+		return
+	}
+	if err := s.sessions.SavePassiveObservation(r.Context(), body.SessionID, body.Project, body.Source, body.Content); err != nil {
+		logger.Log.Printf("save passive observation: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
+}
+
+// isDuplicateKeyError reports whether err is a SQLite UNIQUE constraint
+// violation on the sessions.id primary key. Hook-initiated session creates are
+// fire-and-forget; duplicates are treated as idempotent.
+func isDuplicateKeyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique") || strings.Contains(msg, "duplicate")
 }
 
 func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {

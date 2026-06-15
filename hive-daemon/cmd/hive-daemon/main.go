@@ -59,7 +59,7 @@ func main() {
 		govSvc := governance.NewServiceWithBackup(store, backupStore)
 		configSvc := httpapi.NewSyncServiceAdapter(hivesync.NewService())
 		healthSvc := httpapi.NewHealthServiceAdapter(hivesync.NewHealthService(store, nil))
-		srv := httpapi.NewServerWithAll(httpAddr(), store, store, govSvc, configSvc, healthSvc)
+		srv := httpapi.NewServerWithAll(httpAddr(), store, store, govSvc, configSvc, healthSvc, store)
 		if err := srv.Start(rootCtx); err != nil {
 			logger.Log.Printf("http server stopped: %v (mcp continues)", err)
 		}
