@@ -7,6 +7,17 @@ import (
 	"testing"
 )
 
+// requireSymlinkSupport skips the test if the OS does not allow symlink creation
+// without elevated privileges (e.g. Windows without Developer Mode).
+func requireSymlinkSupport(t *testing.T) {
+	t.Helper()
+	src := t.TempDir()
+	dst := filepath.Join(t.TempDir(), "probe-link")
+	if err := os.Symlink(src, dst); err != nil {
+		t.Skipf("symlink creation not available on this system: %v", err)
+	}
+}
+
 // TestWriteRegistry_FirstRun verifies that WriteRegistry creates .jarvis/skill-registry.md
 // with both the Suggested Skills and Custom Skills sections on first run.
 func TestWriteRegistry_FirstRun(t *testing.T) {
@@ -349,6 +360,7 @@ func TestWriteRegistryWithResultUsesUnchangedFastPathUnlessForced(t *testing.T) 
 }
 
 func TestWriteRegistryWithResultRejectsSymlinkedJarvisAncestor(t *testing.T) {
+	requireSymlinkSupport(t)
 	dir := t.TempDir()
 	externalDir := t.TempDir()
 	if err := os.Symlink(externalDir, filepath.Join(dir, ".jarvis")); err != nil {
@@ -368,6 +380,7 @@ func TestWriteRegistryWithResultRejectsSymlinkedJarvisAncestor(t *testing.T) {
 }
 
 func TestWriteRegistryWithResultRejectsRegistrySymlinkOutsideProjectRoot(t *testing.T) {
+	requireSymlinkSupport(t)
 	dir := t.TempDir()
 	registryPath := filepath.Join(dir, ".jarvis", "skill-registry.md")
 	if err := os.MkdirAll(filepath.Dir(registryPath), 0755); err != nil {

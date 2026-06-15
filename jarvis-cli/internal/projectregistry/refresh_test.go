@@ -398,7 +398,19 @@ func TestRefreshPostMigrationIsStable(t *testing.T) {
 	}
 }
 
+// requireSymlinkSupport skips the test if the OS does not allow symlink creation
+// without elevated privileges (e.g. Windows without Developer Mode).
+func requireSymlinkSupport(t *testing.T) {
+	t.Helper()
+	src := t.TempDir()
+	dst := filepath.Join(t.TempDir(), "probe-link")
+	if err := os.Symlink(src, dst); err != nil {
+		t.Skipf("symlink creation not available on this system: %v", err)
+	}
+}
+
 func TestRefreshRejectsCanonicalRegistrySymlinkOutsideWorktree(t *testing.T) {
+	requireSymlinkSupport(t)
 	root := initGitWorktree(t)
 	if _, err := Refresh(context.Background(), RefreshOptions{CWD: root, SkillsFS: jarvis.SkillsFS}); err != nil {
 		t.Fatalf("initial Refresh returned error: %v", err)

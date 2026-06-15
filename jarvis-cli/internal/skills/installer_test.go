@@ -222,7 +222,19 @@ func TestInstallSelected_ErrorPaths(t *testing.T) {
 	}
 }
 
+// requireSymlinkSupport skips the test if the OS does not allow symlink creation
+// without elevated privileges (e.g. Windows without Developer Mode).
+func requireSymlinkSupport(t *testing.T) {
+	t.Helper()
+	src := t.TempDir()
+	dst := filepath.Join(t.TempDir(), "probe-link")
+	if err := os.Symlink(src, dst); err != nil {
+		t.Skipf("symlink creation not available on this system: %v", err)
+	}
+}
+
 func TestInstallSelectedDoesNotFollowDestinationSymlinks(t *testing.T) {
+	requireSymlinkSupport(t)
 	t.Run("replaces final file symlink without overwriting target", func(t *testing.T) {
 		dir := t.TempDir()
 		external := filepath.Join(t.TempDir(), "outside.md")
