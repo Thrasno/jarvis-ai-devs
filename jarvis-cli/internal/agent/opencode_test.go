@@ -629,6 +629,89 @@ func TestOpenCodeAgent_MergeGeneratedConfig_IgnoresMalformedTaskPermissionValues
 	}
 }
 
+// TestBuildGeneratedAgents_ContainsAllReviewAgents asserts that
+// buildOpenCodeGeneratedAgents returns entries for all 4 R1-R4 review agents
+// with mode=subagent and hidden=true (spec: OpenCode Agent Registration).
+func TestBuildGeneratedAgents_ContainsAllReviewAgents(t *testing.T) {
+	agents := buildOpenCodeGeneratedAgents(nil, nil)
+
+	reviewNames := []string{"review-risk", "review-readability", "review-reliability", "review-resilience"}
+	byName := make(map[string]opencodeGeneratedAgent, len(agents))
+	for _, a := range agents {
+		byName[a.Name] = a
+	}
+
+	for _, name := range reviewNames {
+		got, ok := byName[name]
+		if !ok {
+			t.Errorf("buildOpenCodeGeneratedAgents: missing entry for %q", name)
+			continue
+		}
+		if got.Mode != "subagent" {
+			t.Errorf("%s: mode = %q, want subagent", name, got.Mode)
+		}
+		if !got.Hidden {
+			t.Errorf("%s: hidden = false, want true", name)
+		}
+	}
+}
+
+// TestCleanupAllowList_ContainsAllReviewAgents asserts that review agents are
+// included in the cleanup allow-list so they are not pruned during reinstall
+// (spec: OpenCode Agent Registration — Cleanup does not remove review agents).
+func TestCleanupAllowList_ContainsAllReviewAgents(t *testing.T) {
+	reviewNames := []string{"review-risk", "review-readability", "review-reliability", "review-resilience"}
+	allowed := openCodeReviewSubagents()
+
+	byName := make(map[string]bool, len(allowed))
+	for _, n := range allowed {
+		byName[n] = true
+	}
+
+	for _, name := range reviewNames {
+		if !byName[name] {
+			t.Errorf("openCodeReviewSubagents: missing %q", name)
+		}
+	}
+
+	// Also verify they survive a full cleanupOpenCodeGeneratedConfig pass.
+	// Build a JSON blob where all review agents already have task:allow entries.
+	taskMap := map[string]any{"*": "deny"}
+	for _, n := range reviewNames {
+		taskMap[n] = "allow"
+	}
+	cfg := map[string]any{
+		"agent": map[string]any{
+			"sdd-orchestrator": map[string]any{
+				"permission": map[string]any{
+					"task": taskMap,
+				},
+			},
+		},
+	}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal test config: %v", err)
+	}
+
+	cleaned, err := cleanupOpenCodeGeneratedConfig(raw)
+	if err != nil {
+		t.Fatalf("cleanupOpenCodeGeneratedConfig: %v", err)
+	}
+
+	var out map[string]any
+	if err := json.Unmarshal(cleaned, &out); err != nil {
+		t.Fatalf("unmarshal cleaned config: %v", err)
+	}
+
+	taskPerm := out["agent"].(map[string]any)["sdd-orchestrator"].(map[string]any)["permission"].(map[string]any)["task"].(map[string]any)
+	for _, name := range reviewNames {
+		if taskPerm[name] != "allow" {
+			t.Errorf("cleanupOpenCodeGeneratedConfig removed review agent %q from task allows: %#v", name, taskPerm)
+		}
+	}
+}
+
 func assertOpenCodeReadDenyCoverage(t *testing.T, read map[string]any) {
 	t.Helper()
 	for _, expected := range []string{
