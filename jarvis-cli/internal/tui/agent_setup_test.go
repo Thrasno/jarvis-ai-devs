@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
@@ -129,6 +130,70 @@ func (a *setupStatuslineAgentStub) InstallStatusline(_ fs.FS, _ func() bool) err
 	return a.installStatuslineErr
 }
 
+// setupAgentInstallerStub wraps setupAgentStub and also implements agent.AgentInstaller
+// so that the InstallAgents wiring path can be exercised.
+type setupAgentInstallerStub struct {
+	*setupAgentStub
+	installAgentsCalls int
+	installAgentsFS    fs.FS
+	installAgentsErr   error
+}
+
+func (a *setupAgentInstallerStub) InstallAgents(agentsSubFS fs.FS) error {
+	a.installAgentsCalls++
+	a.installAgentsFS = agentsSubFS
+	return a.installAgentsErr
+}
+
+// TestConfigureWizardAgent_InstallsAgents asserts that when the agent implements
+// AgentInstaller, InstallAgents is called during configureWizardAgent, and that
+// when the agent does NOT implement AgentInstaller, no error occurs.
+func TestConfigureWizardAgent_InstallsAgents(t *testing.T) {
+	t.Run("calls InstallAgents when agent implements AgentInstaller", func(t *testing.T) {
+		stub := &setupAgentInstallerStub{
+			setupAgentStub: &setupAgentStub{name: "claude"},
+		}
+		agentsSubFS := fstest.MapFS{"review-risk.md": {Data: []byte("# review-risk")}}
+
+		_, err := configureWizardAgent(stub, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, agentsSubFS, func() bool { return true })
+		if err != nil {
+			t.Fatalf("configureWizardAgent returned error: %v", err)
+		}
+		if stub.installAgentsCalls != 1 {
+			t.Fatalf("InstallAgents calls = %d, want 1", stub.installAgentsCalls)
+		}
+		if stub.installAgentsFS == nil {
+			t.Fatal("InstallAgents was not called with the provided agentsSubFS (got nil)")
+		}
+	})
+
+	t.Run("does not call InstallAgents when agent does not implement AgentInstaller", func(t *testing.T) {
+		stub := &setupAgentStub{name: "opencode"}
+
+		_, err := configureWizardAgent(stub, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
+		if err != nil {
+			t.Fatalf("configureWizardAgent returned error for non-AgentInstaller agent: %v", err)
+		}
+	})
+
+	t.Run("propagates InstallAgents error", func(t *testing.T) {
+		stub := &setupAgentInstallerStub{
+			setupAgentStub:   &setupAgentStub{name: "claude"},
+			installAgentsErr: errors.New("agents dir write failed"),
+		}
+		agentsSubFS := fstest.MapFS{"review-risk.md": {Data: []byte("# review-risk")}}
+
+		_, err := configureWizardAgent(stub, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, agentsSubFS, func() bool { return true })
+		if err == nil {
+			t.Fatal("expected error when InstallAgents fails")
+		}
+		if !strings.Contains(err.Error(), "install agents") {
+			t.Fatalf("error = %q, want contains 'install agents'", err.Error())
+		}
+	})
+
+}
+
 func TestConfigureWizardAgent_ErrorPropagation(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -151,7 +216,7 @@ func TestConfigureWizardAgent_ErrorPropagation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := configureWizardAgent(tt.agent, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, func() bool { return true })
+			_, err := configureWizardAgent(tt.agent, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
 			if err == nil {
 				t.Fatalf("configureWizardAgent expected error containing %q", tt.wantErr)
 			}
@@ -165,7 +230,7 @@ func TestConfigureWizardAgent_ErrorPropagation(t *testing.T) {
 func TestConfigureWizardAgent_InstallsSupportedRegistryAutomation(t *testing.T) {
 	a := &setupAgentStub{name: "claude"}
 
-	warnings, err := configureWizardAgent(a, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, func() bool { return true })
+	warnings, err := configureWizardAgent(a, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
 	if err != nil {
 		t.Fatalf("configureWizardAgent returned error: %v", err)
 	}
@@ -180,7 +245,7 @@ func TestConfigureWizardAgent_InstallsSupportedRegistryAutomation(t *testing.T) 
 func TestConfigureWizardAgent_RegistryAutomationFailureIsWarningOnly(t *testing.T) {
 	a := &setupAgentStub{name: "claude", registryAutomationErr: errors.New("disk full")}
 
-	warnings, err := configureWizardAgent(a, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, func() bool { return true })
+	warnings, err := configureWizardAgent(a, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
 	if err != nil {
 		t.Fatalf("configureWizardAgent returned error for optional registry automation failure: %v", err)
 	}
@@ -203,7 +268,7 @@ func TestConfigureWizardAgents_SurfacesRegistryAutomationWarningsWithoutFailing(
 		observeRuntime:        passingRuntimeObservation(t, "claude", assignments, nil),
 	}
 
-	results := configureWizardAgents([]agent.Agent{a}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, func() bool { return true })
+	results := configureWizardAgents([]agent.Agent{a}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
 	if len(results) != 1 {
 		t.Fatalf("len(results) = %d, want 1", len(results))
 	}
@@ -237,7 +302,7 @@ func TestConfigureWizardAgent_PrefersConfigAwareSkillInstallation(t *testing.T) 
 				installSkillsWithConfigErr: tt.installSkillsWithConfigErr,
 			}
 
-			warnings, err := configureWizardAgent(a, cfg, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, selectedIDs, func() bool { return true })
+			warnings, err := configureWizardAgent(a, cfg, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, selectedIDs, nil, func() bool { return true })
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("configureWizardAgent expected error containing %q", tt.wantErr)
@@ -411,7 +476,7 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			results := configureWizardAgents(tt.agents, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, tt.resolved, wizardPresetApplyContext{}, testSkillsFS, nil, func() bool { return true })
+			results := configureWizardAgents(tt.agents, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, tt.resolved, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
 			if len(results) != tt.wantLen {
 				t.Fatalf("len(results) = %d, want %d", len(results), tt.wantLen)
 			}
@@ -502,7 +567,7 @@ func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			results := configureWizardAgents([]agent.Agent{tt.agent}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, func() bool { return true })
+			results := configureWizardAgents([]agent.Agent{tt.agent}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
 			if len(results) != 1 {
 				t.Fatalf("len(results) = %d, want 1", len(results))
 			}
@@ -580,7 +645,7 @@ func TestConfigureWizardAgents_RuntimeVerificationUsesPendingConfigForOpenCodeDe
 		return observed, nil
 	}
 
-	results := configureWizardAgents([]agent.Agent{a}, pendingCfg, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, func() bool { return true })
+	results := configureWizardAgents([]agent.Agent{a}, pendingCfg, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
 	if len(results) != 1 {
 		t.Fatalf("len(results) = %d, want 1", len(results))
 	}
@@ -647,6 +712,7 @@ func compliantOpenCodeObservedForTUI() sddruntime.ObservedOpenCodeConfig {
 		"sdd-tasks", "sdd-apply", "sdd-verify", "sdd-archive",
 		"sdd-init", "sdd-onboard",
 		"jd-judge-a", "jd-judge-b", "jd-fix-agent",
+		"review-risk", "review-readability", "review-reliability", "review-resilience",
 	}
 	return sddruntime.ObservedOpenCodeConfig{
 		ParseSucceeded:     true,

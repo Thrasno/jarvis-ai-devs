@@ -305,6 +305,12 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		return fmt.Errorf("skills sub-FS: %w", err)
 	}
 
+	// Build the sub-FS rooted at embed/agents/claude for ClaudeAgent.InstallAgents.
+	agentsSubFS, err := fs.Sub(jarvis.AgentsFS, "embed/agents/claude")
+	if err != nil {
+		return fmt.Errorf("agents sub-FS: %w", err)
+	}
+
 	// Build the list of selected skill IDs.
 	var selectedIDs []string
 	for _, s := range skillList {
@@ -345,7 +351,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		Skills:               skillInfos,
 		PreviousPresetSlug:   previousPresetSlug,
 		PreviousPresetSource: previousPresetSource,
-	}, skillsSubFS, selectedIDs, statuslineConfirm)
+	}, skillsSubFS, selectedIDs, agentsSubFS, statuslineConfirm)
 	var configuredAgents []string
 	for _, res := range results {
 		fmt.Printf("Configuring %s ...\n", res.AgentName)
