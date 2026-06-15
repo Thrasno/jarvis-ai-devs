@@ -83,36 +83,38 @@ func verifyOpenCodeConfigInvariants(oc ObservedOpenCodeConfig) []CheckResult {
 		Message:    orchMsg,
 	})
 
-	// --- R5: All 13 Subagents Present ---
+	// --- R5: All 17 Subagents Present ---
+	// 10 SDD + 3 Judgment Day + 4 Review = 17 required hidden subagents.
 	subStatus := StatusPass
-	subMsg := fmt.Sprintf("all 13 required subagents present (hidden=true, mode=subagent): found %d", len(oc.HiddenSubagents))
+	subMsg := fmt.Sprintf("all 17 required subagents present (hidden=true, mode=subagent): found %d", len(oc.HiddenSubagents))
 	subObserved := fmt.Sprintf("%d hidden subagents", len(oc.HiddenSubagents))
-	if len(oc.HiddenSubagents) != 13 {
+	if len(oc.HiddenSubagents) != 17 {
 		subStatus = StatusFail
-		subMsg = fmt.Sprintf("required 13 subagents missing/not hidden/not mode=subagent; found %d", len(oc.HiddenSubagents))
+		subMsg = fmt.Sprintf("required 17 subagents missing/not hidden/not mode=subagent; found %d", len(oc.HiddenSubagents))
 	}
 	results = append(results, CheckResult{
 		Key:        "invariant.opencode.subagents_present",
 		Status:     subStatus,
 		DriftClass: driftClassFromStatus(subStatus),
-		Expected:   "13 hidden subagents with mode=subagent",
+		Expected:   "17 hidden subagents with mode=subagent",
 		Observed:   subObserved,
 		Message:    subMsg,
 	})
 
 	// --- R6: Task Allowlist ---
+	// 10 SDD + 3 Judgment Day + 4 Review = 17 named allows required.
 	taskStatus := StatusPass
 	taskMsg := fmt.Sprintf("orchestrator task allowlist complete: wildcard deny=true, %d named allows", len(oc.TaskAllows))
 	taskObserved := fmt.Sprintf("wildcard_deny=%v, allows=%d", oc.TaskWildcardDeny, len(oc.TaskAllows))
-	if !oc.TaskWildcardDeny || len(oc.TaskAllows) != 13 {
+	if !oc.TaskWildcardDeny || len(oc.TaskAllows) != 17 {
 		taskStatus = StatusFail
-		taskMsg = fmt.Sprintf(`orchestrator task allowlist drift: "*" deny=%v, named allows=%d (want 13)`, oc.TaskWildcardDeny, len(oc.TaskAllows))
+		taskMsg = fmt.Sprintf(`orchestrator task allowlist drift: "*" deny=%v, named allows=%d (want 17)`, oc.TaskWildcardDeny, len(oc.TaskAllows))
 	}
 	results = append(results, CheckResult{
 		Key:        "invariant.opencode.task_allowlist",
 		Status:     taskStatus,
 		DriftClass: driftClassFromStatus(taskStatus),
-		Expected:   `task["*"]="deny" and 13 named allows`,
+		Expected:   `task["*"]="deny" and 17 named allows`,
 		Observed:   taskObserved,
 		Message:    taskMsg,
 	})

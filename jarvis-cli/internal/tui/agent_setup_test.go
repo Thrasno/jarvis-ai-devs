@@ -647,6 +647,7 @@ func compliantOpenCodeObservedForTUI() sddruntime.ObservedOpenCodeConfig {
 		"sdd-tasks", "sdd-apply", "sdd-verify", "sdd-archive",
 		"sdd-init", "sdd-onboard",
 		"jd-judge-a", "jd-judge-b", "jd-fix-agent",
+		"review-risk", "review-readability", "review-reliability", "review-resilience",
 	}
 	return sddruntime.ObservedOpenCodeConfig{
 		ParseSucceeded:     true,
