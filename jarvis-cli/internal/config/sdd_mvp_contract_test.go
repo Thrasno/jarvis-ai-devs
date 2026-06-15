@@ -8,14 +8,65 @@ import (
 func TestMVPContract_Orchestrator_UsesSupportedArtifactStoreModesOnly(t *testing.T) {
 	orchestrator := strings.ToLower(readFileForMVP(t, "embed/orchestrator/sdd-orchestrator.md"))
 
-	for _, mode := range []string{"hive", "openspec", "hybrid"} {
+	for _, mode := range []string{"hive", "openspec", "hybrid", "none"} {
 		if !strings.Contains(orchestrator, mode) {
 			t.Fatalf("orchestrator must document %q artifact store mode", mode)
+		}
+	}
+	for _, unsupported := range []string{
+		"`engram`",
+		"b2 engram",
+		"b3 both",
+		"artifact store: openspec, engram, or both",
+	} {
+		if strings.Contains(orchestrator, unsupported) {
+			t.Fatalf("orchestrator artifact-store guidance must use Jarvis modes only; found unsupported %q", unsupported)
 		}
 	}
 
 	if strings.Contains(orchestrator, "artifact store") && !strings.Contains(orchestrator, "none") {
 		t.Fatalf("orchestrator artifact-store section must still document none fallback behavior")
+	}
+
+	for _, forbidden := range []string{
+		"if the user doesn't specify, detect",
+		"`hive` — default",
+		"`hive` - default",
+		"default to `hive`",
+		"otherwise → `none`",
+	} {
+		if strings.Contains(orchestrator, forbidden) {
+			t.Fatalf("orchestrator artifact-store guidance must not silently infer a store after the hard gate; found %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"artifact store is collected by `sdd session preflight`",
+		"do not silently infer or default artifact store mode after the hard gate",
+		"missing artifact-store choice means preflight is incomplete",
+	} {
+		if !strings.Contains(orchestrator, required) {
+			t.Fatalf("orchestrator artifact-store guidance must defer collection to session preflight with %q", required)
+		}
+	}
+}
+
+func TestMVPContract_OrchestratorOperationalGuidanceUsesJarvisTerminology(t *testing.T) {
+	orchestrator := strings.ToLower(readFileForMVP(t, "embed/orchestrator/sdd-orchestrator.md"))
+
+	for _, forbidden := range []string{"engram", "gentle ai"} {
+		if strings.Contains(orchestrator, forbidden) {
+			t.Fatalf("orchestrator operational guidance must not leak unsupported term %q", forbidden)
+		}
+	}
+
+	for _, line := range strings.Split(orchestrator, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "<!--") {
+			continue
+		}
+		if strings.Contains(line, "gentle-ai") {
+			t.Fatalf("orchestrator operational guidance must not leak gentle-ai outside source/provenance comments; line: %q", line)
+		}
 	}
 }
 

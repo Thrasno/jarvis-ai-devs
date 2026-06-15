@@ -54,31 +54,138 @@ Anti-patterns — these ALWAYS inflate context without need:
 
 SDD is the structured planning layer for substantial changes.
 
-### SDD Entry Routing
+### Native SDD Dispatcher Guard
 
-Route SDD commands deterministically. When the `jarvis` CLI is available, use the native dispatcher before inferring routing from artifacts or prose:
+Route SDD commands deterministically. Before routing, continuing, applying, verifying, archiving, or reporting status for an SDD change, use the native dispatcher when the `jarvis` CLI is available. Read-only status may run without session preflight so the user can recover state before choosing an SDD path:
 
 ```
 jarvis sdd status <change> --json          # authoritative ChangeStatus (schema: jarvis.sdd-status)
 jarvis sdd continue <change> --json        # next recommended phase or blocked reasons
 ```
 
+Native `jarvis.sdd-status` JSON is authoritative over prompt inference and human prose. Route only by `nextRecommended` and `dependencies`; never infer routing from prose, markdown summaries, or phase-result wording.
+
 The JSON contract fields used for routing:
 - `nextRecommended`: stable phase token (`sdd-explore` … `sdd-archive`) or `none` / empty string when all done.
-- `blockedReasons`: non-empty array blocks apply, verify, and archive. Do NOT route to a blocked phase.
+- `blockedReasons`: phase/action-specific blocker list. BlockedReasons stop only the blocked phase or action; they do not override a safe `nextRecommended` for a different ready phase.
 - `dependencies[phase]`: `blocked | ready | all_done` per phase.
 
+Routing rule: launch the `nextRecommended` phase only when that phase dependency is `ready`. If `blockedReasons` apply to the recommended phase or to terminal work (`verify`/`archive` completion), report the relevant `blockedReasons` and stop only for the blocked phase or terminal action. Do not infer that downstream verify/archive blockers prevent a safe upstream `sdd-apply` when native status recommends `sdd-apply` and the apply dependency is ready.
+
+### SDD Entry Routing (MANDATORY)
+
+For a new product/code change request that says to use SDD, start at preflight → init guard → explore/proposal (`/sdd-new` equivalent). Never launch `sdd-apply` just because the user asked to implement a feature.
+
+Only launch `sdd-apply` when all are true:
+1. Session preflight is complete.
+2. The active change has existing spec, design, and tasks artifacts.
+3. Native status reports the apply dependency as ready.
+4. The user explicitly asked to apply/continue implementation, or the prior SDD planning phase completed and the orchestrator has passed the review workload guard.
+
+If any dependency is missing, stop and propose `/sdd-new` or `/sdd-ff`; do not implement.
+
 When `jarvis sdd continue` is not available (no CLI), fall back to artifact inspection:
-- `/sdd-new <change>` starts proposal flow after init/preflight.
+- `/sdd-new <change>` starts proposal flow after preflight and the init guard.
 - `/sdd-ff <change>` runs proposal, spec, design, and tasks in dependency order.
 - `/sdd-continue [change]` resumes from the next incomplete dependency-ready phase.
+- `/sdd-status [change]` reports read-only status from available artifacts.
 - `/sdd-apply`, `/sdd-verify`, and `/sdd-archive` are delegated to their dedicated phase agents with the full phase launch envelope.
 
 Do not execute phase work inline. The orchestrator resolves state, launches the correct sub-agent, then summarizes the sub-agent result.
 
-### SDD Session Preflight
+### SDD Session Preflight (HARD GATE)
 
-Before the first SDD phase launch in a session, resolve and cache:
+Before executing any mutating, planning, init, apply, verify, or archive SDD command or natural-language SDD request, ensure this session has an explicit `SDD Session Preflight` decision block.
+
+This applies to `/sdd-init`, `/sdd-new`, `/sdd-ff`, `/sdd-continue`, `/sdd-explore`, `/sdd-apply`, `/sdd-verify`, `/sdd-archive`, and natural-language equivalents such as "use SDD to add dark mode" or "do it with SDD". `/sdd-status` is read-only recovery and must not be blocked by missing session preflight.
+
+Required preflight choices:
+1. **Execution mode**: `interactive` or `auto`.
+2. **Artifact store**: `hive`, `openspec`, `hybrid`, or `none`.
+3. **Chained PR strategy / delivery strategy**: `ask-on-risk`, `auto-chain`, `single-pr`, or `exception-ok`.
+4. **Review budget**: maximum changed lines before stopping for reviewer-burden approval.
+
+User-facing preflight question format:
+
+Ask the user directly with a compact, numbered preflight prompt. Match the user's current language for all user-facing prose. If the user writes Spanish, ask the preflight in Spanish. Keep option codes (`A1`, `B1`, `C1`, `D1`) and canonical values unchanged. Do NOT ask the user to type raw keys like `execution mode`, `artifact store`, `delivery strategy`, or `review budget`. Do NOT mention non-existent tools. Do NOT invent informal values; use only the canonical values after the user chooses.
+
+Do NOT mix languages inside one preflight prompt: headings, option titles, descriptions, and follow-up text must all be in the user's current language. If the current language is Spanish, use the Spanish localized shape below as the neutral fallback; if an active persona defines a direct-conversation Spanish style, adapt only user-facing prose to that persona while preserving option codes and canonical values. Do not translate only the intro while keeping English labels like `Pace`, `Artifacts`, `Review`, `recommended`, `forecast`, or `budget`.
+
+Use this shape for English users, or translate user-facing prose to the user's current language while preserving option codes. Translation means the whole shape: headings, option titles, and descriptions together.
+
+```text
+Before continuing with SDD, choose one option per group.
+Reply with "use recommended" or with codes like: A1, B1, C1, D1.
+
+A. Pace
+   A1 Interactive (recommended): show each phase and wait for confirmation before continuing.
+   A2 Automatic: run phases back-to-back and stop only on high risk.
+
+B. Artifacts
+   B1 Hive (recommended): fast, no spec files in the repo; use Hive artifact topics.
+   B2 OpenSpec: repo files, traceable in review.
+   B3 Hybrid: OpenSpec files plus Hive artifact saves.
+   B4 None: inline-only results; no persisted SDD artifacts.
+
+C. PRs
+   C1 Ask me (recommended): stop and ask if the forecast exceeds the budget.
+   C2 Auto-chain: split into chained PRs automatically when the forecast is high.
+   C3 Single PR: try to keep the change in one PR; require exception approval if over budget.
+   C4 Exception-OK: allow an oversized PR because the maintainer accepts the review cost.
+
+D. Review
+   D1 400 lines (recommended): stop if forecast exceeds 400 changed lines.
+   D2 800 lines: more permissive; useful for medium changes.
+   D3 Other: ask for the number afterwards.
+```
+
+After asking this, STOP and wait for the user's answer.
+
+If the user's current language is Spanish, use this localized shape:
+
+```text
+Antes de continuar con SDD, elija una opción por grupo.
+Responda con "usar recomendado" o con códigos como: A1, B1, C1, D1.
+
+A. Ritmo
+   A1 Interactivo (recomendado): mostrar cada fase y esperar confirmación antes de continuar.
+   A2 Automático: ejecutar las fases seguidas y frenar solo ante riesgo alto.
+
+B. Artefactos
+   B1 Hive (recomendado): rápido, sin archivos de especificación en el repo; usar temas de artefactos en Hive.
+   B2 OpenSpec: archivos en el repo, trazables en revisión.
+   B3 Híbrido: archivos OpenSpec más guardado de artefactos en Hive.
+   B4 Ninguno: resultados solo en línea; sin artefactos SDD persistidos.
+
+C. PRs
+   C1 Preguntarme (recomendado): frenar y preguntar si la estimación supera el presupuesto.
+   C2 Encadenar automáticamente: separar en PRs encadenados automáticamente si la estimación es alta.
+   C3 Un solo PR: intentar mantener el cambio en un PR; requerir aprobación de excepción si supera el presupuesto.
+   C4 Excepción aprobada: permitir un PR sobredimensionado porque el mantenedor acepta el coste de revisión.
+
+D. Revisión
+   D1 400 líneas (recomendado): frenar si la estimación supera 400 líneas cambiadas.
+   D2 800 líneas: más permisivo; útil para cambios medianos.
+   D3 Otro: preguntar el número después.
+```
+
+Map answers to canonical values:
+- Pace: A1/Interactive -> `interactive`; A2/Automatic -> `auto`.
+- Artifacts: B1/Hive -> `hive`; B2/OpenSpec -> `openspec`; B3/Hybrid -> `hybrid`; B4/None -> `none`.
+- PRs: C1/Ask me -> `ask-on-risk`; C2/Auto-chain -> `auto-chain`; C3/Single PR -> `single-pr`; C4/Exception-OK -> `exception-ok`.
+- Review: D1/400 lines -> `review_budget_lines: 400`; D2/800 lines -> `review_budget_lines: 800`; D3/Other -> ask one follow-up for the number.
+- Recommended shortcut: `use recommended` / `usar recomendado` -> A1, B1, C1, D1.
+
+Hard gate rules:
+- Read-only status may run without session preflight; `/sdd-status` reports available state and recovery hints without mutating artifacts, running init, delegating phases, or editing files.
+- Mutating, planning, apply, verify, and archive SDD commands require session preflight unless all four preflight choices were already provided in the current conversation.
+- The SDD Session Preflight hard gate takes precedence over direct-command bypass wording. Outside this SDD hard gate, direct command warnings remain advisory.
+- `openspec/config.yaml`, existing SDD artifacts, previous `sdd-init` results, installed SDD assets, or generated local skill copies do NOT satisfy session preflight.
+- If the session has no preflight block, ask the localized user-facing preflight prompt, then stop and wait. Do not run init, do not delegate phases, do not edit files, and do not apply tasks in the same turn.
+- Cache the choices for this session and include them in later phase prompts.
+- If the user explicitly provided all four choices in the current conversation, summarize them as the session preflight block and continue.
+
+After preflight is complete, resolve and cache:
 - project name and working directory;
 - execution mode (`interactive` or `auto`);
 - artifact store mode (`hive`, `openspec`, `hybrid`, or `none`);
@@ -98,7 +205,8 @@ Before `sdd-apply`, inspect the tasks artifact for review workload forecast, est
 
 Forward the resolved delivery strategy to apply and verify agents:
 - `single-pr` only when the work is within budget or the prompt explicitly records `size:exception`;
-- `force-chained` / `auto-chain` when the change is split into reviewable work units;
+- `auto-chain` when the change is split into reviewable work units automatically after the forecast;
+- `ask-on-risk` when the orchestrator must ask before exceeding the review budget;
 - `exception-ok` only when the maintainer explicitly accepts the oversized review.
 
 Each apply batch must state its PR boundary, rollback scope, verification plan, and estimated review budget impact.
@@ -120,7 +228,7 @@ Decision model contract:
 - `force_inline`
 - `recommendation_only`
 
-Never block direct user commands. Warnings are advisory only (`warning-only`) and do not prevent execution.
+Outside this SDD hard gate, direct user commands are not blocked by activation-policy warnings; warnings are advisory only (`warning-only`) and do not prevent execution. For SDD commands, read-only status may run without session preflight, while mutating, planning, apply, verify, and archive SDD commands require session preflight unless all four preflight choices were already provided.
 
 #### Explicit bilingual override vocabulary (v1)
 
@@ -167,7 +275,7 @@ When heuristics result in a SDD recommendation:
 1. Emit the recommendation in one sentence, naming the signals that fired. Example: "This request looks like a candidate for SDD (multiple deliverables, cross-file impact). Want to run the full SDD flow or go direct?"
 2. **STOP. Do not write any code, plan, or implementation until the user responds explicitly.**
 3. Accepted responses:
-   - Any SDD trigger phrase → start SDD flow (sdd-init check → sdd-new)
+   - Any SDD trigger phrase → enter the SDD path through `SDD Session Preflight` first when any of the four choices are missing; after preflight is complete, run the init guard and route to `/sdd-new`.
    - Any inline override phrase → proceed inline, no further mention of SDD
    - Ambiguous affirmative without clear direction → ask once: "SDD or direct?"
 4. This pause contract applies equally in Claude Code and OpenCode. `sdd-orchestrator.md` is the single source of truth for both runtimes — no runtime-specific divergence.
@@ -179,7 +287,7 @@ Scope guardrail: this policy is orchestration behavior specification ONLY. This 
 When a request is clearly trivial (single-file tweak, typo fix, copy-paste task) but the user explicitly asks for SDD:
 1. Offer inline/direct as lower-friction guidance in the FIRST response only
 2. Present as suggestion, NOT as blocker: "This looks simple — we could do it inline. Want to proceed with SDD anyway?"
-3. If user responds with ANY SDD-triggering phrase again (`use sdd`, `usa sdd`, `let's use sdd`, `quiero sdd`, `continue`, `yes`, `proceed`), immediately start SDD flow without further pushback
+3. If user responds with ANY SDD-triggering phrase again (`use sdd`, `usa sdd`, `let's use sdd`, `quiero sdd`, `continue`, `yes`, `proceed`), continue the SDD path without further inline pushback, subject to the SDD Session Preflight hard gate
 4. Do NOT repeat the inline suggestion in subsequent turns
 
 Reconfirmation detector (what counts as user confirming SDD):
@@ -193,12 +301,18 @@ Categories of reconfirmation phrases (all normalized before matching):
 
 After reconfirmation is detected, behavior transitions to full SDD mode:
 - Stop suggesting inline alternatives
-- Proceed with sdd-init check → sdd-new or requested phase
+- Continue the SDD path without further inline pushback
+- Reconfirmation does not satisfy session preflight
+- Before any init guard, planning phase, requested phase, or delegation, session preflight must already be complete
+- If session preflight is missing, ask the localized preflight prompt and stop
+- After session preflight is complete, run the init guard, then route to `/sdd-new` or the requested dependency-ready phase
 
 ### Artifact Store Policy
 
-- `hive` — default when available; persistent memory across sessions
-- `openspec` — file-based artifacts; use only when user explicitly requests
+Artifact store is collected by `SDD Session Preflight`. Missing artifact-store choice means preflight is incomplete; ask the localized preflight prompt and stop before init, planning, delegation, or file edits.
+
+- `hive` — recommended option when selected in preflight; persistent memory across sessions
+- `openspec` — file-based artifacts; use when selected in preflight
 - `hybrid` — both backends; cross-session recovery + local files; more tokens per op
 - `none` — return results inline only; recommend enabling hive or openspec
 
@@ -212,36 +326,40 @@ Skills (appear in autocomplete):
 - `/sdd-archive [change]` → close a change and persist final state in the active artifact store 
 - `/sdd-onboard` → guided end-to-end walkthrough of SDD using your real codebase
 
-Meta-commands (type directly — orchestrator handles them, won't appear in autocomplete):
+Meta-commands and direct orchestrator handling (type directly — orchestrator handles them, won't appear in autocomplete):
+- `/sdd-status [change]` → read-only status handled directly by the orchestrator; use native `jarvis sdd status` (`jarvis sdd status <change> --json`) when available, otherwise report status from available artifacts without preflight, init, delegation, or file edits
 - `/sdd-new <change>` → start a new change by delegating exploration + proposal to sub-agents
 - `/sdd-continue [change]` → run the next dependency-ready phase via sub-agent(s)
 - `/sdd-ff <name>` → fast-forward planning: proposal → specs → design → tasks
 
-`/sdd-new`, `/sdd-continue`, and `/sdd-ff` are meta-commands handled by YOU. Do NOT invoke them as skills.
+`/sdd-status`, `/sdd-new`, `/sdd-continue`, and `/sdd-ff` are meta/direct orchestrator-handled commands. Do NOT invoke them as skills.
 
 ### SDD Init Guard (MANDATORY)
 
-Before executing ANY SDD command (`/sdd-new`, `/sdd-ff`, `/sdd-continue`, `/sdd-explore`, `/sdd-apply`, `/sdd-verify`, `/sdd-archive`), check if `sdd-init` has been run for this project:
+After `SDD Session Preflight` is complete and before executing any mutating, planning, init, apply, verify, or archive SDD command (`/sdd-init`, `/sdd-new`, `/sdd-ff`, `/sdd-continue`, `/sdd-explore`, `/sdd-apply`, `/sdd-verify`, `/sdd-archive`), check if `sdd-init` has been run for this project. `/sdd-status` is read-only recovery: do not run init for status; report available state, missing init, and recovery hints.
 
 1. Search Hive: `mem_search(query: "sdd-init/{project}", project: "{project}")`
-2. If found → init was done, proceed normally
-3. If NOT found → run `sdd-init` FIRST (delegate to sdd-init sub-agent), THEN proceed with the requested command
+2. If found:
+   - If the requested command is `/sdd-init`, report the existing init status and stop; do not run init again.
+   - If the requested command is not `/sdd-init`, proceed normally.
+3. If NOT found:
+   - Run `sdd-init` FIRST (delegate to the sdd-init sub-agent) exactly once.
+   - If the requested command is `/sdd-init`, the init guard itself satisfies the request. After delegated init completes, stop and report the init result. Do not proceed to run `/sdd-init` again.
+   - If the requested command is not `/sdd-init`, THEN proceed with the requested command.
 
 This ensures:
 - Testing capabilities are always detected and cached
 - Strict TDD Mode is activated when the project supports it
 - The project context (stack, conventions) is available for all phases
 
-Do NOT skip this check. Do NOT ask the user — just run init silently if needed.
+Do NOT skip this check. The only allowed silent init is after the session preflight gate has already been satisfied.
 
 ### Execution Mode
 
-When the user invokes `/sdd-new`, `/sdd-ff`, or `/sdd-continue` for the first time in a session, ASK which execution mode they prefer:
+Execution mode is collected by `SDD Session Preflight`. Missing execution-mode choice means preflight is incomplete; ask the localized preflight prompt and stop before init, planning, delegation, or file edits.
 
 - **Automatic** (`auto`): Run all phases back-to-back without pausing. Show the final result only. Use this when the user wants speed and trusts the process.
 - **Interactive** (`interactive`): After each phase completes, show the result summary and ASK: "Want to adjust anything or continue?" before proceeding to the next phase. Use this when the user wants to review and steer each step.
-
-If the user doesn't specify, default to **Interactive** (safer, gives the user control).
 
 Cache the mode choice for the session — don't ask again unless the user explicitly requests a mode change.
 
@@ -255,13 +373,14 @@ For this agent (sub-agent delegation): **Automatic** means phases run back-to-ba
 
 ### Artifact Store Mode
 
-When the user invokes `/sdd-new`, `/sdd-ff`, or `/sdd-continue` for the first time in a session, ALSO ASK which artifact store they want for this change:
+This is collected by `SDD Session Preflight`. If missing, enforce the hard gate before any phase work. Ask which artifact store they want for this change:
 
 - **`hive`**: Fast, no files created. Artifacts are saved to Hive under phase topic keys for cross-session retrieval. Best for solo work and quick iteration. Topic keys group related SDD artifact saves; they are not identity, recency, overwrite, or version guarantees. If Hive search returns multiple candidate artifacts for the same topic and no explicit artifact reference is available, treat the result as ambiguous.
 - **`openspec`**: File-based. Creates `openspec/` directory with full artifact trail. Committable, shareable with team, full git history.
 - **`hybrid`**: Both — files for team sharing + Hive for cross-session recovery. Higher token cost.
+- **`none`**: Inline-only results; no persisted SDD artifacts. Use only when persistence is unavailable or explicitly rejected.
 
-If the user doesn't specify, detect: if hive memory is available → default to `hive`. Otherwise → `none`.
+Artifact store is collected by `SDD Session Preflight`. Do not silently infer or default artifact store mode after the hard gate. Missing artifact-store choice means preflight is incomplete; ask the localized preflight prompt and stop before init, planning, delegation, or file edits.
 
 Cache the artifact store choice for the session. Pass it as `artifact_store.mode` to every sub-agent launch.
 
