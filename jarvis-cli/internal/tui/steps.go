@@ -1255,6 +1255,12 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			return agentProgressMsg{line: fmt.Sprintf("Skills FS error: %v", err), done: true, failed: true}
 		}
 
+		// Build the sub-FS rooted at embed/agents/claude for ClaudeAgent.InstallAgents.
+		agentsSubFS, err := fs.Sub(jarvis.AgentsFS, "embed/agents/claude")
+		if err != nil {
+			return agentProgressMsg{line: fmt.Sprintf("Agents FS error: %v", err), done: true, failed: true}
+		}
+
 		// Build the list of selected skill IDs.
 		selectedIDs := buildSelectedIDs(m)
 
@@ -1307,7 +1313,7 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			Skills:               skillInfos,
 			PreviousPresetSlug:   previousSlug,
 			PreviousPresetSource: previousSource,
-		}, skillsSubFS, selectedIDs, statuslineConfirm)
+		}, skillsSubFS, selectedIDs, agentsSubFS, statuslineConfirm)
 		var configuredAgents []string
 		var automationWarnings []string
 		for _, res := range results {
