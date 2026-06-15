@@ -32,7 +32,7 @@ mode, Jarvis falls back to the setup wizard prompts.`,
 func init() {
 	rootCmd.PersistentFlags().Bool("no-tui", false, "disable TUI, use readline prompts")
 	initLifecycleCommands()
-	rootCmd.AddCommand(personaCmd, syncCmd, loginCmd, timelineCmd, hiveCmd, configCmd, initCmd, skillRegistryCmd, verifyCmd, doctorCmd, reconcileCmd, backupCmd, restoreCmd, uninstallCmd, sddCmd)
+	rootCmd.AddCommand(personaCmd, syncCmd, loginCmd, timelineCmd, hiveCmd, configCmd, initCmd, skillRegistryCmd, verifyCmd, doctorCmd, reconcileCmd, backupCmd, restoreCmd, uninstallCmd, sddCmd, hookCmd)
 }
 
 func main() {
