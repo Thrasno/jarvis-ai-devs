@@ -62,9 +62,11 @@ func RunPromptSubmit(ctx context.Context, r io.Reader, w io.Writer, baseURL stri
 	client := &DaemonClient{BaseURL: baseURL, Timeout: 1500 * time.Millisecond}
 	_ = client.PostPrompt(ctx, sessionID, directory, project, payload.Prompt)
 
-	// First-prompt logic: create marker atomically; if we created it → first prompt
-	if !MarkerExists(sessionID) {
-		_ = CreateMarker(sessionID)
+	// First-prompt logic: O_CREATE|O_EXCL makes the check-and-create atomic,
+	// preventing a TOCTOU race when concurrent hook invocations both observe the
+	// marker as absent and both inject systemMessage.
+	created, _ := CreateMarkerExclusive(sessionID)
+	if created {
 		WriteResponse(w, HookResponse{SystemMessage: FirstPromptSystemMessage})
 		return
 	}
