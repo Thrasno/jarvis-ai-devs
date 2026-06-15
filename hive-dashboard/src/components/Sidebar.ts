@@ -1,4 +1,4 @@
-import type { DashboardScreenKey, NavigationGroupViewModel } from '../domain/dashboard'
+import type { CurrentProfileViewModel, DashboardScreenKey, NavigationGroupViewModel } from '../domain/dashboard'
 
 export type UserLevel = 'viewer' | 'member' | 'admin'
 
@@ -6,6 +6,7 @@ export type SidebarProps = {
   readonly groups: readonly NavigationGroupViewModel[]
   readonly currentPath: string
   readonly userLevel: UserLevel
+  readonly profile: CurrentProfileViewModel
   readonly onNavigate: (path: string) => void
   readonly onLogout: () => void
 }
@@ -79,14 +80,52 @@ export function renderSidebar(container: HTMLElement, props: SidebarProps): void
 
   sidebar.append(nav)
 
+  renderProfileBlock(sidebar, { profile: props.profile, onLogout: props.onLogout })
+
+  container.append(sidebar)
+}
+
+type ProfileBlockProps = {
+  readonly profile: CurrentProfileViewModel
+  readonly onLogout: () => void
+}
+
+function renderProfileBlock(container: HTMLElement, props: ProfileBlockProps): void {
+  const block = document.createElement('div')
+  block.className = 'dashboard-sidebar__profile'
+  block.dataset.sidebarProfile = ''
+
+  // Initials avatar
+  const avatar = document.createElement('div')
+  avatar.className = 'dashboard-sidebar__profile-avatar'
+  avatar.setAttribute('aria-hidden', 'true')
+  avatar.textContent = props.profile.initials
+
+  // Name
+  const name = document.createElement('p')
+  name.className = 'dashboard-sidebar__profile-name'
+  name.textContent = props.profile.name
+
+  // Email
+  const email = document.createElement('p')
+  email.className = 'dashboard-sidebar__profile-email'
+  email.textContent = props.profile.email
+
+  // Role badge
+  const roleBadge = document.createElement('span')
+  roleBadge.className = 'dashboard-status status'
+  roleBadge.dataset.dashboardStatus = 'neutral'
+  roleBadge.textContent = props.profile.role
+
+  // Logout button
   const logoutButton = document.createElement('button')
   logoutButton.type = 'button'
   logoutButton.className = 'dashboard-control control dashboard-sidebar__logout'
   logoutButton.dataset.dashboardPrimitive = 'control'
   logoutButton.dataset.sidebarAction = 'logout'
-  logoutButton.textContent = 'Sign out'
+  logoutButton.textContent = props.profile.logoutLabel
   logoutButton.addEventListener('click', () => props.onLogout())
-  sidebar.append(logoutButton)
 
-  container.append(sidebar)
+  block.append(avatar, name, email, roleBadge, logoutButton)
+  container.append(block)
 }
