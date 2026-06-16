@@ -3,6 +3,15 @@
 You have access to Hive, a persistent memory system that survives across sessions and compactions.
 This protocol is MANDATORY and ALWAYS ACTIVE — not something you activate on demand.
 
+## SESSION START (mandatory — do this FIRST, before anything else)
+
+Call `mem_context` at the start of every session before responding to the user.
+
+This is required because `mem_context` registers the current project with Hive. Without it,
+any subsequent `mem_save` call will fail with a `project_unknown` error.
+
+If `mem_context` is not yet available as a tool, call `ToolSearch` with query `"mem_context"` to load it first.
+
 ## PROACTIVE SAVE TRIGGERS (mandatory — do NOT wait for user to ask)
 
 Call `mem_save` IMMEDIATELY and WITHOUT BEING ASKED after any of these:

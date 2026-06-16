@@ -527,6 +527,9 @@ func (a *ClaudeAgent) InstallPromptHook(_ fs.FS) error {
 	if err != nil {
 		return fmt.Errorf("read settings.json: %w", err)
 	}
+	// Strip legacy entries (no "name" field) that match the same command so that
+	// re-running jarvis init on an old install does not produce duplicate hooks.
+	existing = removeHookEntriesByCommand(existing, "UserPromptSubmit", command)
 
 	merged, err := MergeJSON(existing, patchBytes)
 	if err != nil {
@@ -637,6 +640,10 @@ func (a *ClaudeAgent) InstallSessionHooks(_ fs.FS) error {
 	if err != nil {
 		return fmt.Errorf("read settings.json: %w", err)
 	}
+	// Strip legacy entries (no "name" field) that match the same commands so that
+	// re-running jarvis init on an old install does not produce duplicate hooks.
+	existing = removeHookEntriesByCommand(existing, "SessionStart", startCommand)
+	existing = removeHookEntriesByCommand(existing, "Stop", stopCommand)
 
 	merged, err := MergeJSON(existing, patchBytes)
 	if err != nil {
