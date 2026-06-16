@@ -1,4 +1,8 @@
-# Jarvis Dev
+<p align="center">
+  <img src="docs/branding/design/nexusIco.png" alt="Jarvis Dev logo" width="160">
+</p>
+
+<h1 align="center">Jarvis Dev</h1>
 
 Jarvis Dev is an open development ecosystem for AI-assisted engineering workflows. It combines a CLI, a local memory daemon, and a central API to help teams keep context, structure execution, and reduce repeated decisions.
 
@@ -8,6 +12,19 @@ Jarvis Dev is an open development ecosystem for AI-assisted engineering workflow
 - **`hive-daemon/`**: local service for offline-first memory operations.
 - **`hive-api/`**: central API service for shared memory and sync.
 - **`hive-dashboard/`**: static admin dashboard source served by `hive-api` when enabled.
+
+## Documentation
+
+- Start here: [`docs/getting-started.md`](docs/getting-started.md)
+- CLI reference: [`docs/cli-reference.md`](docs/cli-reference.md)
+- Configuration and generated files: [`docs/configuration.md`](docs/configuration.md), [`docs/generated-artifacts.md`](docs/generated-artifacts.md)
+- Troubleshooting: [`docs/troubleshooting.md`](docs/troubleshooting.md)
+- Architecture reference: [`docs/reference/architecture.md`](docs/reference/architecture.md)
+- Security and privacy: [`docs/security-privacy.md`](docs/security-privacy.md)
+- SDD user guide: [`docs/sdd-user-guide.md`](docs/sdd-user-guide.md)
+- Hive guides: [`docs/hive/local-memory-guide.md`](docs/hive/local-memory-guide.md), [`docs/hive/sync-guide.md`](docs/hive/sync-guide.md), [`docs/hive/api-operator-guide.md`](docs/hive/api-operator-guide.md), [`docs/hive/dashboard-guide.md`](docs/hive/dashboard-guide.md)
+- Team adoption: [`docs/teams/adoption-guide.md`](docs/teams/adoption-guide.md), [`docs/teams/evaluator-guide.md`](docs/teams/evaluator-guide.md)
+- Public stakeholder docs: [`docs/public/`](docs/public/)
 
 ## Core capabilities
 
