@@ -259,7 +259,7 @@ func TestRunSubagentStop_DaemonDown_OutputsEmpty(t *testing.T) {
 
 // --- RunSessionStop ---
 
-func TestRunSessionStop_DeletesMarkerAndPostsEnd(t *testing.T) {
+func TestRunSessionStop_PreservesMarkerAndPostsEnd(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 	t.Setenv("HIVE_CLAUDE_SESSION_ID", "stop-session-1")
@@ -282,8 +282,10 @@ func TestRunSessionStop_DeletesMarkerAndPostsEnd(t *testing.T) {
 	if out.String() != "{}" {
 		t.Errorf("session-stop should output {}, got: %q", out.String())
 	}
-	if MarkerExists("stop-session-1") {
-		t.Error("marker should be deleted after session-stop")
+	// Marker must NOT be deleted — Stop fires after every agent turn in interactive
+	// mode, so deleting it would cause FirstPromptSystemMessage on every prompt.
+	if !MarkerExists("stop-session-1") {
+		t.Error("marker must be preserved after session-stop; Stop fires after every turn")
 	}
 	if receivedPath != "/sessions/stop-session-1/end" {
 		t.Errorf("should POST to /sessions/{id}/end, got: %q", receivedPath)

@@ -93,15 +93,18 @@ func RunSubagentStop(ctx context.Context, r io.Reader, w io.Writer, baseURL stri
 //
 // It:
 //  1. Resolves the session ID
-//  2. Deletes the marker file (non-fatal if absent)
-//  3. POSTs to /sessions/{id}/end (404 is non-fatal)
-//  4. Outputs {}
+//  2. POSTs to /sessions/{id}/end (404 is non-fatal)
+//  3. Outputs {}
+//
+// Note: the first-prompt marker is intentionally NOT deleted here.
+// Claude Code fires Stop after every agent turn in interactive mode, not only
+// when the session window closes. Deleting the marker on Stop would cause
+// FirstPromptSystemMessage to fire on every subsequent prompt in the session.
+// Markers use UUID-based names so old markers from finished sessions never
+// collide with new ones; the OS temp dir eventually reclaims them.
 func RunSessionStop(ctx context.Context, r io.Reader, w io.Writer, baseURL string) {
 	payload, _ := ParsePayload(r)
 	sessionID := ResolveSessionID(payload)
-
-	// Delete marker — non-fatal
-	_ = DeleteMarker(sessionID)
 
 	// Notify daemon — non-fatal
 	client := &DaemonClient{BaseURL: baseURL, Timeout: 2 * time.Second}
