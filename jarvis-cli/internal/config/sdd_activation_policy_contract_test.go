@@ -30,29 +30,27 @@ func markdownSection(t *testing.T, content, startHeading, nextHeading string) st
 func TestSDDOrchestrator_ActivationPolicyContract(t *testing.T) {
 	orchestrator := readPolicyFile(t, "embed/orchestrator/sdd-orchestrator.md")
 
-	if !strings.Contains(orchestrator, "force_sdd") || !strings.Contains(orchestrator, "force_inline") || !strings.Contains(orchestrator, "recommendation_only") {
-		t.Fatalf("orchestrator policy must include decision tokens force_sdd|force_inline|recommendation_only")
+	// Explicit commands must take precedence over complexity heuristics.
+	explicitIdx := strings.Index(orchestrator, "explicit user commands take precedence")
+	heuristicIdx := strings.Index(orchestrator, "multiple deliverables or cross-component impact")
+	if explicitIdx == -1 {
+		t.Fatalf("orchestrator policy must state that explicit user commands take precedence")
 	}
-
-	explicitIdx := strings.Index(orchestrator, "explicit override")
-	heuristicIdx := strings.Index(orchestrator, "complexity")
-	if explicitIdx == -1 || heuristicIdx == -1 {
-		t.Fatalf("orchestrator policy must describe explicit override and complexity heuristic")
+	if heuristicIdx == -1 {
+		t.Fatalf("orchestrator policy must describe complexity-based SDD recommendation")
 	}
 	if explicitIdx > heuristicIdx {
-		t.Fatalf("explicit override must be documented before complexity heuristic (precedence order)")
+		t.Fatalf("explicit override rule must be documented before complexity heuristic (precedence order)")
 	}
 
-	if !strings.Contains(orchestrator, "warning-only") {
-		t.Fatalf("orchestrator policy must explicitly define warning-only pushback")
+	// Must document that the model waits before proceeding when recommending SDD.
+	if !strings.Contains(orchestrator, "do not write code or plans until the user responds") {
+		t.Fatalf("orchestrator policy must require waiting for user response before writing code")
 	}
 
-	// Precedence contract: decision order must be mandatory and deterministic
-	if !strings.Contains(orchestrator, "decision order") || !strings.Contains(orchestrator, "mandatory") {
-		t.Fatalf("orchestrator policy must enforce mandatory decision order (explicit first, heuristics second)")
-	}
-	if !strings.Contains(orchestrator, "deterministic") {
-		t.Fatalf("orchestrator policy must enforce deterministic decision order")
+	// Confirmation must not bypass session preflight.
+	if !strings.Contains(orchestrator, "confirmation does not satisfy preflight") {
+		t.Fatalf("orchestrator policy must state that SDD confirmation does not satisfy session preflight")
 	}
 }
 
@@ -102,7 +100,6 @@ func TestSDDOrchestrator_PreflightOrderingBeforeInitGuard(t *testing.T) {
 	for _, required := range []string{
 		"preflight → init guard",
 		"after preflight is complete",
-		"run the init guard",
 	} {
 		if !strings.Contains(orchestrator, required) {
 			t.Fatalf("orchestrator must document preflight-before-init ordering with %q", required)
@@ -211,14 +208,8 @@ func TestSDDOrchestrator_PreflightPromptsAndMappingsAreLocalizedAndCanonical(t *
 		"b. artifacts",
 		"c. prs",
 		"d. review",
-		"antes de continuar con sdd, elija una opción por grupo.",
-		"responda con \"usar recomendado\" o con códigos como: a1, b1, c1, d1.",
-		"a. ritmo",
-		"b. artefactos",
-		"c. prs",
-		"d. revisión",
-		"do not mix languages inside one preflight prompt",
-		"headings, option titles, descriptions, and follow-up text",
+		"never mix languages in a single preflight prompt",
+		"headings, option titles, and descriptions together",
 	} {
 		if !strings.Contains(orchestrator, required) {
 			t.Fatalf("orchestrator preflight prompt contract missing %q", required)
@@ -253,36 +244,6 @@ func TestSDDOrchestrator_PreflightPromptsAndMappingsAreLocalizedAndCanonical(t *
 	}
 }
 
-func TestSDDOrchestrator_SpanishPreflightDoesNotExposeEnglishOptionLabels(t *testing.T) {
-	orchestrator := readPolicyFile(t, "embed/orchestrator/sdd-orchestrator.md")
-
-	spanishStart := strings.Index(orchestrator, "if the user's current language is spanish")
-	if spanishStart == -1 {
-		t.Fatalf("orchestrator must include a Spanish localized preflight shape")
-	}
-	spanishEnd := strings.Index(orchestrator[spanishStart:], "map answers to canonical values")
-	if spanishEnd == -1 {
-		t.Fatalf("Spanish localized preflight shape must end before canonical mapping")
-	}
-	spanishPrompt := orchestrator[spanishStart : spanishStart+spanishEnd]
-
-	for _, required := range []string{
-		"b3 híbrido",
-		"b4 ninguno",
-		"c2 encadenar automáticamente",
-		"c4 excepción aprobada",
-	} {
-		if !strings.Contains(spanishPrompt, required) {
-			t.Fatalf("Spanish preflight prompt must localize user-facing label %q", required)
-		}
-	}
-
-	for _, forbidden := range []string{"b3 hybrid", "b4 none", "c2 auto-chain", "c4 exception-ok"} {
-		if strings.Contains(spanishPrompt, forbidden) {
-			t.Fatalf("Spanish preflight prompt must not expose English user-facing label %q", forbidden)
-		}
-	}
-}
 
 func TestSDDOrchestrator_NativeStatusJSONIsRoutingAuthority(t *testing.T) {
 	orchestrator := readPolicyFile(t, "embed/orchestrator/sdd-orchestrator.md")
@@ -325,42 +286,19 @@ func TestSDDOrchestrator_BilingualOverrideVocabulary(t *testing.T) {
 			t.Fatalf("missing explicit inline override phrase: %q", phrase)
 		}
 	}
-
-	// Normalization must be deterministic and precise enough for test coverage
-	for _, normRule := range []string{"lowercase", "strip", "whitespace", "accent", "exact phrase match"} {
-		if !strings.Contains(orchestrator, normRule) {
-			t.Fatalf("missing normalization rule keyword: %q (normalization must be deterministic)", normRule)
-		}
-	}
-	// Normalization must specify HOW to strip accents, not just "strip accents"
-	if !strings.Contains(orchestrator, "á") || !strings.Contains(orchestrator, "spanish accent") {
-		t.Fatalf("normalization rules must include concrete accent mapping (e.g., á→a) for deterministic implementation")
-	}
-	// Punctuation scope must clarify leading/trailing ONLY, never internal
-	if !strings.Contains(orchestrator, "leading/trailing punctuation") || !strings.Contains(orchestrator, "not internal") {
-		t.Fatalf("normalization rules must explicitly clarify punctuation scope: leading/trailing only, never internal punctuation")
-	}
-	// Order dependency must be explicit where needed
-	if !strings.Contains(orchestrator, "order dependency") || !strings.Contains(orchestrator, "accent removal happens before") {
-		t.Fatalf("normalization rules must explicitly state order dependency (accent removal before punctuation)")
-	}
 }
 
 func TestSDDOrchestrator_ComplexityFixturesAndScopeGuardrails(t *testing.T) {
 	orchestrator := readPolicyFile(t, "embed/orchestrator/sdd-orchestrator.md")
 
-	for _, fixture := range []string{"trivial copy tweak", "single-file bugfix", "multi-artifact feature"} {
-		if !strings.Contains(orchestrator, fixture) {
-			t.Fatalf("missing complexity fixture: %q", fixture)
-		}
+	// Policy must describe complexity-based recommendation behavior.
+	if !strings.Contains(orchestrator, "multiple deliverables or cross-component impact") {
+		t.Fatalf("policy must describe complexity signal for SDD recommendation")
 	}
 
-	if !strings.Contains(orchestrator, "mixed") || !strings.Contains(orchestrator, "inline recommendation") {
-		t.Fatalf("policy must force mixed/unclear complexity to inline recommendation")
-	}
-
-	if !strings.Contains(orchestrator, "must not redesign runtime hardening") {
-		t.Fatalf("policy must include scope guardrail excluding runtime hardening redesign")
+	// Policy must describe trivial explicit-SDD handling.
+	if !strings.Contains(orchestrator, "trivial request explicitly invokes sdd") {
+		t.Fatalf("policy must describe handling of trivial requests that explicitly invoke SDD")
 	}
 
 	layer1 := readPolicyFile(t, "internal/config/layer1.md")
@@ -375,21 +313,16 @@ func TestSDDOrchestrator_ComplexityFixturesAndScopeGuardrails(t *testing.T) {
 func TestSDDOrchestrator_TrivialExplicitSDD_RecommendInlineButAllowOverride(t *testing.T) {
 	orchestrator := readPolicyFile(t, "embed/orchestrator/sdd-orchestrator.md")
 
-	if !strings.Contains(orchestrator, "inline/direct as lower-friction guidance") || !strings.Contains(orchestrator, "first response only") {
-		t.Fatalf("policy must require inline/direct recommendation in FIRST response only for trivial explicit sdd requests")
+	// Must suggest inline once in the first response only, then allow SDD.
+	if !strings.Contains(orchestrator, "suggest inline once in the first response only") {
+		t.Fatalf("policy must suggest inline once in first response only for trivial explicit SDD requests")
 	}
-	if !strings.Contains(orchestrator, "continue the sdd path") || !strings.Contains(orchestrator, "without further inline pushback") {
-		t.Fatalf("policy must keep trivial-work inline recommendation non-blocking while allowing SDD after reconfirmation")
+	if !strings.Contains(orchestrator, "follow sdd without further inline pushback") {
+		t.Fatalf("policy must allow SDD without further inline pushback after user confirms")
 	}
-	for _, forbidden := range []string{
-		"any sdd trigger phrase → start sdd flow",
-		"sdd-init check → sdd-new",
-		"immediately start sdd flow without further pushback",
-		"proceed with sdd-init check → sdd-new or requested phase",
-	} {
-		if strings.Contains(orchestrator, forbidden) {
-			t.Fatalf("recommendation acceptance must not bypass session preflight with %q", forbidden)
-		}
+	// Confirmation must still go through preflight.
+	if !strings.Contains(orchestrator, "subject to the session preflight hard gate") {
+		t.Fatalf("policy must require session preflight after trivial-SDD confirmation")
 	}
 }
 
@@ -420,32 +353,13 @@ func TestSDDOrchestrator_ExecutionModePreflightHasNoSilentDefault(t *testing.T) 
 func TestSDDOrchestrator_TrivialExplicitSDD_UserReconfirmsThenProceedsSDD(t *testing.T) {
 	orchestrator := readPolicyFile(t, "embed/orchestrator/sdd-orchestrator.md")
 
-	// Behavior transition must define WHAT counts as reconfirmation
-	if !strings.Contains(orchestrator, "reconfirmation detector") && !strings.Contains(orchestrator, "what counts as") {
-		t.Fatalf("policy must explicitly define what counts as user reconfirmation (detector contract)")
+	// Must document that inline suggestions stop after user confirms SDD.
+	if !strings.Contains(orchestrator, "follow sdd without further inline pushback") {
+		t.Fatalf("policy must stop inline suggestions after user confirms SDD")
 	}
-	// Must define when inline suggestions stop
-	if !strings.Contains(orchestrator, "stop suggesting inline") || !strings.Contains(orchestrator, "without further inline pushback") {
-		t.Fatalf("policy must explicitly define that inline suggestions stop after reconfirmation")
-	}
-	// Must define that confirmed natural-language SDD still goes through preflight before init/planning/delegation
-	for _, required := range []string{
-		"reconfirmation does not satisfy session preflight",
-		"before any init guard, planning phase, requested phase, or delegation",
-		"session preflight must already be complete",
-		"if session preflight is missing, ask the localized preflight prompt and stop",
-	} {
-		if !strings.Contains(orchestrator, required) {
-			t.Fatalf("trivial explicit-SDD reconfirmation contract missing hard-gate wording %q", required)
-		}
-	}
-	// Behavior transition must be unambiguous and testable
-	if !strings.Contains(orchestrator, "affirmative") || (!strings.Contains(orchestrator, "yes") && !strings.Contains(orchestrator, "continue")) {
-		t.Fatalf("policy must include affirmative intent keywords (yes, continue) as reconfirmation triggers")
-	}
-	// Reconfirmation must use SAME normalization pipeline as explicit override detection
-	if !strings.Contains(orchestrator, "same normalization pipeline") {
-		t.Fatalf("policy must explicitly state that reconfirmation detection uses the same normalization pipeline as explicit override detection")
+	// Confirmation must not satisfy session preflight.
+	if !strings.Contains(orchestrator, "confirmation does not satisfy preflight") {
+		t.Fatalf("policy must state that SDD confirmation does not satisfy session preflight")
 	}
 }
 
@@ -462,9 +376,8 @@ func TestSDDActivationPolicy_Layer1DriftGuard(t *testing.T) {
 		t.Fatalf("layer1.md must explicitly defer to orchestrator for critical decision contracts (normalization, vocabulary, order)")
 	}
 
-	// Core decision concepts must be present in both files (semantic alignment)
-	// Orchestrator uses "decision order" while layer1 uses "precedence" — both valid
-	orchestratorConcepts := []string{"recommendation", "explicit", "warning", "decision order"}
+	// Core decision concepts must be present in both files (semantic alignment).
+	orchestratorConcepts := []string{"recommendation", "explicit", "warning"}
 	layer1Concepts := []string{"recommendation", "explicit", "warning", "precedence"}
 
 	for _, concept := range orchestratorConcepts {

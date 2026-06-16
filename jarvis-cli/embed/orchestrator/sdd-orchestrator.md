@@ -85,26 +85,14 @@ The JSON contract fields used for routing:
 
 Routing rule: launch the `nextRecommended` phase only when that phase dependency is `ready`. If `blockedReasons` apply to the recommended phase or to terminal work (`verify`/`archive` completion), report the relevant `blockedReasons` and stop only for the blocked phase or terminal action. Do not infer that downstream verify/archive blockers prevent a safe upstream `sdd-apply` when native status recommends `sdd-apply` and the apply dependency is ready.
 
-### SDD Entry Routing (MANDATORY)
+### SDD Entry Routing
 
-For a new product/code change request that says to use SDD, start at preflight → init guard → explore/proposal (`/sdd-new` equivalent). Never launch `sdd-apply` just because the user asked to implement a feature.
-
-Only launch `sdd-apply` when all are true:
-1. Session preflight is complete.
-2. The active change has existing spec, design, and tasks artifacts.
-3. Native status reports the apply dependency as ready.
-4. The user explicitly asked to apply/continue implementation, or the prior SDD planning phase completed and the orchestrator has passed the review workload guard.
-
-If any dependency is missing, stop and propose `/sdd-new` or `/sdd-ff`; do not implement.
-
-When `jarvis sdd continue` is not available (no CLI), fall back to artifact inspection:
-- `/sdd-new <change>` starts proposal flow after preflight and the init guard.
-- `/sdd-ff <change>` runs proposal, spec, design, and tasks in dependency order.
-- `/sdd-continue [change]` resumes from the next incomplete dependency-ready phase.
-- `/sdd-status [change]` reports read-only status from available artifacts.
-- `/sdd-apply`, `/sdd-verify`, and `/sdd-archive` are delegated to their dedicated phase agents with the full phase launch envelope.
-
-Do not execute phase work inline. The orchestrator resolves state, launches the correct sub-agent, then summarizes the sub-agent result.
+- If the user explicitly says "use sdd" or equivalent: enter the SDD path via Session Preflight → init guard → `/sdd-new`.
+- If the user says "do it inline", "without sdd", or equivalent: proceed inline, no SDD.
+- If neither explicit signal: when the request touches 2+ concerns, files, or components, suggest SDD in one sentence and wait. Do not write code or plans until the user responds.
+- Never launch `sdd-apply` without spec, design, and tasks present and the native status reporting apply as ready. If any dependency is missing, stop and propose `/sdd-new` or `/sdd-ff`.
+- When `jarvis sdd continue` is unavailable, fall back to artifact inspection and the commands listed under Commands below.
+- Never execute phase work inline. Resolve state, launch the sub-agent, synthesize results.
 
 ### SDD Session Preflight (HARD GATE)
 
@@ -120,11 +108,11 @@ Required preflight choices:
 
 User-facing preflight question format:
 
-Ask the user directly with a compact, numbered preflight prompt. Match the user's current language for all user-facing prose. If the user writes Spanish, ask the preflight in Spanish. Keep option codes (`A1`, `B1`, `C1`, `D1`) and canonical values unchanged. Do NOT ask the user to type raw keys like `execution mode`, `artifact store`, `delivery strategy`, or `review budget`. Do NOT mention non-existent tools. Do NOT invent informal values; use only the canonical values after the user chooses.
+Ask the user directly with a compact, numbered preflight prompt. Match the user's current language. Keep option codes (`A1`, `B1`, `C1`, `D1`) and canonical values unchanged — translate only the user-facing labels and descriptions, not the codes. Do NOT ask the user to type raw keys like `execution mode`, `artifact store`, `delivery strategy`, or `review budget`. Do NOT mention non-existent tools. Do NOT invent informal values; use only the canonical values after the user chooses.
 
-Do NOT mix languages inside one preflight prompt: headings, option titles, descriptions, and follow-up text must all be in the user's current language. If the current language is Spanish, use the Spanish localized shape below as the neutral fallback; if an active persona defines a direct-conversation Spanish style, adapt only user-facing prose to that persona while preserving option codes and canonical values. Do not translate only the intro while keeping English labels like `Pace`, `Artifacts`, `Review`, `recommended`, `forecast`, or `budget`.
+Translate the entire preflight shape into the user's language: headings, option titles, and descriptions together. Never mix languages in a single preflight prompt.
 
-Use this shape for English users, or translate user-facing prose to the user's current language while preserving option codes. Translation means the whole shape: headings, option titles, and descriptions together.
+Use this shape, translated to the user's current language:
 
 ```text
 Before continuing with SDD, choose one option per group.
@@ -154,33 +142,6 @@ D. Review
 
 After asking this, STOP and wait for the user's answer.
 
-If the user's current language is Spanish, use this localized shape:
-
-```text
-Antes de continuar con SDD, elija una opción por grupo.
-Responda con "usar recomendado" o con códigos como: A1, B1, C1, D1.
-
-A. Ritmo
-   A1 Interactivo (recomendado): mostrar cada fase y esperar confirmación antes de continuar.
-   A2 Automático: ejecutar las fases seguidas y frenar solo ante riesgo alto.
-
-B. Artefactos
-   B1 Hive (recomendado): rápido, sin archivos de especificación en el repo; usar temas de artefactos en Hive.
-   B2 OpenSpec: archivos en el repo, trazables en revisión.
-   B3 Híbrido: archivos OpenSpec más guardado de artefactos en Hive.
-   B4 Ninguno: resultados solo en línea; sin artefactos SDD persistidos.
-
-C. PRs
-   C1 Preguntarme (recomendado): frenar y preguntar si la estimación supera el presupuesto.
-   C2 Encadenar automáticamente: separar en PRs encadenados automáticamente si la estimación es alta.
-   C3 Un solo PR: intentar mantener el cambio en un PR; requerir aprobación de excepción si supera el presupuesto.
-   C4 Excepción aprobada: permitir un PR sobredimensionado porque el mantenedor acepta el coste de revisión.
-
-D. Revisión
-   D1 400 líneas (recomendado): frenar si la estimación supera 400 líneas cambiadas.
-   D2 800 líneas: más permisivo; útil para cambios medianos.
-   D3 Otro: preguntar el número después.
-```
 
 Map answers to canonical values:
 - Pace: A1/Interactive -> `interactive`; A2/Automatic -> `auto`.
@@ -228,97 +189,15 @@ Each apply batch must state its PR boundary, rollback scope, verification plan, 
 
 When the strategy is `feature-branch-chain`, keep the tracker branch as the integration branch and keep it draft/no-merge until all child PRs are reviewed. Child PR #1 targets the tracker branch; later child PRs target the immediate previous child branch. When the strategy is `stacked-to-main`, each child targets the previous child branch or `main` after its predecessor merges. Do not mix chain strategies within one change.
 
-### Runtime Activation Policy (Explicit Override First)
+### Runtime Activation Policy
 
-Decision order for SDD activation is mandatory and deterministic:
+Explicit user commands take precedence over complexity heuristics:
 
-1. Detect explicit override commands first.
-2. Execute the explicit command with optional warning-only pushback.
-3. Run complexity heuristics only when there is no explicit command.
-
-Decision model contract:
-- `force_sdd`
-- `force_inline`
-- `recommendation_only`
-
-Outside this SDD hard gate, direct user commands are not blocked by activation-policy warnings; warnings are advisory only (`warning-only`) and do not prevent execution. For SDD commands, read-only status may run without session preflight, while mutating, planning, apply, verify, and archive SDD commands require session preflight unless all four preflight choices were already provided.
-
-#### Explicit bilingual override vocabulary (v1)
-
-- SDD overrides: `use sdd`, `usa sdd`, `let's use sdd`, `quiero sdd`
-- Inline overrides: `do it inline`, `do it directly`, `hacelo directo`, `sin sdd`
-
-Normalization before matching (deterministic):
-1. Convert to lowercase
-2. Strip leading/trailing whitespace
-3. Collapse internal whitespace runs (multiple spaces/tabs) to single space
-4. Remove accents: á→a, é→e, í→i, ó→o, ú→u, ñ→n (Spanish accent map)
-5. Remove leading/trailing punctuation ONLY from the ENTIRE normalized phrase (NOT internal punctuation):
-   - Strip punctuation characters (.,!?;:) ONLY when they are the very first or very last character of the fully normalized string
-   - NEVER strip punctuation between words, inside the phrase, or in the middle of the string
-   - Example: "use sdd!" → "use sdd" (trailing ! removed), but "let's use sdd" → "let's use sdd" (apostrophe inside phrase preserved)
-6. Perform exact phrase match against normalized vocabulary list
-
-Order dependency: accent removal happens BEFORE punctuation stripping. Normalization is applied left-to-right (steps 1→6) with no backtracking.
-
-#### Complexity heuristics (only for `recommendation_only`)
-
-Evaluate every development request against these three signals before responding:
-
-- **S1** multiple deliverables — more than one file, module, or output artifact
-- **S2** cross-file or cross-system impact — touches more than one concern, layer, or component
-- **S3** non-trivial coordination or regression risk — ordering constraints, shared state, or integration surface
-
-Decision rule (deterministic, no exceptions):
-- Count only signals that are clearly present; mixed or unclear complexity defaults to inline recommendation.
-- ≥2 signals present → **SDD recommendation required**
-- ≤1 signal present → proceed inline, no recommendation
-
-Canonical acceptance fixtures:
-- `trivial copy tweak` → 0 signals → inline, no SDD recommendation
-- `single-file bugfix` → ≤1 signal → inline, no SDD recommendation
-- `multi-artifact feature` → S1 + S2 + S3 → SDD recommendation required
-- `crear app de gestión de fichajes desde 0` → S1 + S2 + S3 → SDD recommendation required
-- `renombrá esta variable` → 0 signals → inline, no SDD recommendation
-
-#### `recommendation_only` pause contract
-
-When heuristics result in a SDD recommendation:
-
-1. Emit the recommendation in one sentence, naming the signals that fired. Example: "This request looks like a candidate for SDD (multiple deliverables, cross-file impact). Want to run the full SDD flow or go direct?"
-2. **STOP. Do not write any code, plan, or implementation until the user responds explicitly.**
-3. Accepted responses:
-   - Any SDD trigger phrase → enter the SDD path through `SDD Session Preflight` first when any of the four choices are missing; after preflight is complete, run the init guard and route to `/sdd-new`.
-   - Any inline override phrase → proceed inline, no further mention of SDD
-   - Ambiguous affirmative without clear direction → ask once: "SDD or direct?"
-4. This pause contract applies equally in Claude Code and OpenCode. `sdd-orchestrator.md` is the single source of truth for both runtimes — no runtime-specific divergence.
-
-Scope guardrail: this policy is orchestration behavior specification ONLY. This policy must not redesign runtime hardening, installer/runtime verification, or `internal/sddruntime` internals. No runtime activation engine code is written as part of this change. Runtime verification belongs to `internal/sddruntime` contract/verifier.
-
-#### Trivial explicit-SDD handling (non-blocking recommendation)
-
-When a request is clearly trivial (single-file tweak, typo fix, copy-paste task) but the user explicitly asks for SDD:
-1. Offer inline/direct as lower-friction guidance in the FIRST response only
-2. Present as suggestion, NOT as blocker: "This looks simple — we could do it inline. Want to proceed with SDD anyway?"
-3. If user responds with ANY SDD-triggering phrase again (`use sdd`, `usa sdd`, `let's use sdd`, `quiero sdd`, `continue`, `yes`, `proceed`), continue the SDD path without further inline pushback, subject to the SDD Session Preflight hard gate
-4. Do NOT repeat the inline suggestion in subsequent turns
-
-Reconfirmation detector (what counts as user confirming SDD):
-
-IMPORTANT: Reconfirmation detection uses the SAME normalization pipeline (steps 1-6 above) as explicit override detection.
-
-Categories of reconfirmation phrases (all normalized before matching):
-- Exact match: any normalized SDD override phrase from vocabulary (`use sdd`, `usa sdd`, etc.)
-- Affirmative intent: `yes`, `si`, `continue`, `continua`, `proceed`, `dale`, `ok`
-- Negation of inline: `no, use sdd`, `sin inline`, `not inline`
-
-After reconfirmation is detected, behavior transitions to full SDD mode:
-- Stop suggesting inline alternatives
-- Continue the SDD path without further inline pushback
-- Reconfirmation does not satisfy session preflight
-- Before any init guard, planning phase, requested phase, or delegation, session preflight must already be complete
-- If session preflight is missing, ask the localized preflight prompt and stop
-- After session preflight is complete, run the init guard, then route to `/sdd-new` or the requested dependency-ready phase
+- SDD override phrases (`use sdd`, `usa sdd`, `let's use sdd`, `quiero sdd`): enter the SDD path through Session Preflight.
+- Inline override phrases (`do it inline`, `do it directly`, `hacelo directo`, `sin sdd`): proceed inline, no SDD.
+- When neither explicit signal is present: if the request involves multiple deliverables or cross-component impact, recommend SDD in one sentence and wait. Do not write code or plans until the user responds.
+- When the user confirms SDD (any affirmative or SDD phrase): enter the SDD path through Session Preflight. Confirmation does not satisfy preflight.
+- When a trivial request explicitly invokes SDD: suggest inline once in the first response only. If the user confirms SDD again, follow SDD without further inline pushback, subject to the Session Preflight hard gate.
 
 ### Artifact Store Policy
 

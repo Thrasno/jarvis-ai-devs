@@ -2,6 +2,7 @@ package terminalui_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
@@ -42,7 +43,7 @@ func TestBorderedPanel_ContainsContent(t *testing.T) {
 	if len(result) == 0 {
 		t.Fatal("BorderedPanel returned empty string")
 	}
-	if !containsStr(result, content) {
+	if !strings.Contains(result, content) {
 		t.Errorf("BorderedPanel output does not contain %q\ngot: %q", content, result)
 	}
 }
@@ -56,12 +57,122 @@ func TestHelpBar_ContainsAllHints(t *testing.T) {
 	}
 	result := terminalui.HelpBar(hints, "normal", 100)
 	for _, h := range hints {
-		if !containsStr(result, h.Key) {
+		if !strings.Contains(result, h.Key) {
 			t.Errorf("HelpBar output missing key %q", h.Key)
 		}
-		if !containsStr(result, h.Desc) {
+		if !strings.Contains(result, h.Desc) {
 			t.Errorf("HelpBar output missing desc %q", h.Desc)
 		}
+	}
+}
+
+func TestSectionHeader_RendersSemanticContent(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		label string
+		width int
+		wants []string
+	}{
+		{name: "label with separator", label: "Memory", width: 32, wants: []string{"▸ Memory", "─"}},
+		{name: "empty label remains deterministic", label: "", width: 4, wants: []string{"▸ ", "─"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := terminalui.SectionHeader(tt.label, tt.width)
+			if result == "" {
+				t.Fatal("SectionHeader returned empty string")
+			}
+			if !strings.HasSuffix(result, "\n") {
+				t.Fatalf("SectionHeader should end with newline, got %q", result)
+			}
+			assertContainsAll(t, result, tt.wants...)
+		})
+	}
+}
+
+func TestTypeBadge_RendersNormalizedVisibleText(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "known type", input: "  BUGFIX  ", want: "bugfix"},
+		{name: "empty type uses dash", input: "", want: "-"},
+		{name: "unknown type is normalized", input: "Custom Type", want: "custom type"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := terminalui.TypeBadge(tt.input)
+			if result == "" {
+				t.Fatal("TypeBadge returned empty string")
+			}
+			if !strings.Contains(result, tt.want) {
+				t.Fatalf("TypeBadge(%q) missing %q in %q", tt.input, tt.want, result)
+			}
+		})
+	}
+}
+
+func TestModeBadge_RendersSemanticModeText(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "empty mode defaults to normal", input: "", want: "NORMAL"},
+		{name: "offline mode", input: "offline", want: "OFFLINE"},
+		{name: "unknown mode uppercases input", input: "review", want: "REVIEW"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := terminalui.ModeBadge(tt.input)
+			if result == "" {
+				t.Fatal("ModeBadge returned empty string")
+			}
+			if !strings.Contains(result, tt.want) {
+				t.Fatalf("ModeBadge(%q) missing %q in %q", tt.input, tt.want, result)
+			}
+		})
+	}
+}
+
+func TestHeaderRow_RendersBreadcrumbAndBadge(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		breadcrumb string
+		badge      string
+		width      int
+		wants      []string
+	}{
+		{name: "normal row", breadcrumb: "Jarvis / Hive", badge: terminalui.ModeBadge("offline"), width: 40, wants: []string{"Jarvis / Hive", "OFFLINE"}},
+		{name: "minimal row", breadcrumb: "", badge: terminalui.ModeBadge(""), width: 1, wants: []string{"NORMAL"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := terminalui.HeaderRow(tt.breadcrumb, tt.badge, tt.width)
+			if result == "" {
+				t.Fatal("HeaderRow returned empty string")
+			}
+			assertContainsAll(t, result, tt.wants...)
+		})
+	}
+}
+
+func TestSelectedRow_RendersContentAndMinimalWidth(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		content string
+		width   int
+		want    string
+	}{
+		{name: "selected content", content: "Sync memory", width: 24, want: "Sync memory"},
+		{name: "empty content still renders padded row", content: "", width: 0, want: " "},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := terminalui.SelectedRow(tt.content, tt.width)
+			if result == "" {
+				t.Fatal("SelectedRow returned empty string")
+			}
+			if !strings.Contains(result, tt.want) {
+				t.Fatalf("SelectedRow(%q, %d) missing %q in %q", tt.content, tt.width, tt.want, result)
+			}
+		})
 	}
 }
 
@@ -88,15 +199,11 @@ func TestStatusDot_DistinctPerState(t *testing.T) {
 	}
 }
 
-// containsStr reports whether s contains substr.
-func containsStr(s, substr string) bool {
-	if len(substr) == 0 {
-		return true
-	}
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
+func assertContainsAll(t *testing.T, result string, wants ...string) {
+	t.Helper()
+	for _, want := range wants {
+		if !strings.Contains(result, want) {
+			t.Fatalf("output missing %q in %q", want, result)
 		}
 	}
-	return false
 }

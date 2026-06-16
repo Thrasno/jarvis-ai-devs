@@ -164,6 +164,25 @@ func TestCockpitHandlers_HiveCloudLoginPromptsCredentialsAndReturnsToMenu(t *tes
 	}
 }
 
+func TestCockpitHandlers_HiveCloudLoginMasksPasswordWithBullets(t *testing.T) {
+	m := newCockpitHandlerTestModel(&fakeCockpitRunner{})
+	m = selectCockpitAction(t, m, CockpitActionHiveCloudLogin)
+	m.Email = "input@example.com"
+	m.Password = "secret"
+	m.activeField = 1
+
+	view := m.View()
+	if strings.Contains(view, "secret") {
+		t.Fatalf("login view must not render raw password:\n%s", view)
+	}
+	if !strings.Contains(view, "••••••") {
+		t.Fatalf("login view must render bullet password mask:\n%s", view)
+	}
+	if strings.Contains(view, "*") {
+		t.Fatalf("login view must not use star password mask:\n%s", view)
+	}
+}
+
 func TestCockpitHandlers_HiveCloudLoginRequiresCredentialsAllowsBackspaceAndSurfacesErrors(t *testing.T) {
 	runner := &fakeCockpitRunner{loginErr: errors.New("cloud unavailable")}
 	m := newCockpitHandlerTestModel(runner)
@@ -887,5 +906,5 @@ func (f *fakePersonaAgent) RuntimePlan() (sddruntime.RuntimePlan, error) {
 func (f *fakePersonaAgent) ObserveRuntime() (sddruntime.ObservedRuntime, error) {
 	return sddruntime.ObservedRuntime{}, nil
 }
-func (f *fakePersonaAgent) InstallPromptHook(fs.FS) error    { return nil }
+func (f *fakePersonaAgent) InstallPromptHook(fs.FS) error   { return nil }
 func (f *fakePersonaAgent) InstallSessionHooks(fs.FS) error { return nil }

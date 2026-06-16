@@ -117,7 +117,7 @@ func viewCockpitPanel(m Model) string {
 			passwordCursor = ">"
 		}
 		sb.WriteString(fmt.Sprintf("%s Email: %s\n", emailCursor, m.Email))
-		sb.WriteString(fmt.Sprintf("%s Password: %s\n", passwordCursor, strings.Repeat("*", len(m.Password))))
+		sb.WriteString(fmt.Sprintf("%s Password: %s\n", passwordCursor, strings.Repeat("•", len(m.Password))))
 		if m.cockpitMessage != "" && m.cockpitMessage != "Hive Cloud Login" {
 			sb.WriteString("\n")
 			sb.WriteString(m.cockpitMessage)
