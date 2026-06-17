@@ -3,6 +3,7 @@ import type { ApiClient } from './api/client'
 import type { SessionStore } from './auth/session'
 import { loadDashboard, renderApp, startDashboardApp } from './main'
 import { dashboardNotificationSummary } from './fixtures/hive-dashboard/shared'
+import { hiveOverviewFixture } from './fixtures/hive-dashboard/overview'
 
 const adminUser = { id: 'admin-1', username: 'admin', email: 'admin@example.com', level: 'admin' as const, is_active: true, created_at: '2026-06-06T20:00:00Z' }
 const memberUser = { id: 'member-1', username: 'member', email: 'member@example.com', level: 'member' as const, is_active: true, created_at: '2026-06-06T20:00:00Z' }
@@ -508,7 +509,7 @@ function dashboardState() {
   return {
     status: 'ready' as const,
     data: {
-      overview: { status: 'ready' as const, data: { health: { status: 'ok', db: 'connected', version: '1.0.0' }, stats: { users: { total: 1, active: 1, by_level: { admin: 1 } }, memories: { total: 1, by_project: [], by_category: [], last_synced_at: null } } } },
+      overview: { status: 'ready' as const, data: hiveOverviewFixture },
       users: { status: 'ready' as const, data: { users: [adminUser] } },
       memories: { status: 'ready' as const, data: { recent: { memories: [], total: 0, limit: 5, offset: 0 }, search: { memories: [], total: 0, query: 'dashboard', limit: 5 } } },
       audit: { status: 'ready' as const, data: { audit_logs: [], total: 0, limit: 10, offset: 0 } }

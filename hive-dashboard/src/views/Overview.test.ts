@@ -102,4 +102,28 @@ describe('overview view', () => {
     expect(stack).toBeDefined()
     expect(stack?.children.length).toBe(0)
   })
+
+  it('renders chart marks even when all growth values are zero', () => {
+    const fixture: OverviewFixtureViewModel = {
+      ...hiveOverviewFixture,
+      knowledgeGrowth: {
+        ...hiveOverviewFixture.knowledgeGrowth,
+        points: hiveOverviewFixture.knowledgeGrowth.points.map((p) => ({ label: p.label, value: 0 }))
+      }
+    }
+    const view = renderOverview({ status: 'ready', data: fixture })
+    const marks = view.querySelectorAll('[data-chart-point]')
+    expect(marks.length).toBe(hiveOverviewFixture.knowledgeGrowth.points.length)
+  })
+
+  it('renders degraded project badge distinct from healthy', () => {
+    // dashboardProjects[0] = core-api (healthy), [2] = billing-worker (degraded)
+    const view = renderOverview({ status: 'ready', data: hiveOverviewFixture })
+    const stackEl = view.querySelector('[data-dashboard-primitive="stack"]')
+    const rows = Array.from(stackEl?.children ?? [])
+    const healthyBadge = rows[0]?.querySelector('[data-dashboard-status]')
+    const degradedBadge = rows[2]?.querySelector('[data-dashboard-status]')
+    expect(healthyBadge?.getAttribute('aria-label')).toContain('healthy')
+    expect(degradedBadge?.getAttribute('aria-label')).toContain('degraded')
+  })
 })
