@@ -135,9 +135,9 @@ VALUES (?, 'memory', ?, ?, ?, ?, ?, ?)`,
 // CountUnsyncedMemories returns the global count of memories that have not yet
 // been pushed to the server. Predicate is identical to GetUnsynced("") so the
 // two are always consistent.
-func (d *DB) CountUnsyncedMemories() (int, error) {
+func (d *DB) CountUnsyncedMemories(ctx context.Context) (int, error) {
 	var n int
-	err := d.sqlDB.QueryRow(`
+	err := d.sqlDB.QueryRowContext(ctx, `
 SELECT COUNT(*) FROM memories
 WHERE synced_at IS NULL AND sync_id != '' AND deleted_at IS NULL`).Scan(&n)
 	if err != nil {
@@ -166,9 +166,9 @@ WHERE synced_at IS NULL AND sync_id != ''`).Scan(&n)
 // predicate matches the behavior of CountUnsyncedMemories and
 // CountUnsyncedPrompts: sessions without a sync_id were never queued for sync
 // and must not be counted as pending.
-func (d *DB) CountUnsyncedSessions() (int, error) {
+func (d *DB) CountUnsyncedSessions(ctx context.Context) (int, error) {
 	var n int
-	err := d.sqlDB.QueryRow(`
+	err := d.sqlDB.QueryRowContext(ctx, `
 SELECT COUNT(*) FROM sessions
 WHERE synced_at IS NULL AND sync_id != ''`).Scan(&n)
 	if err != nil {
@@ -956,14 +956,23 @@ func sanitizeSyncLastError(err error) string {
 
 func stripHTTPErrorBody(message string) string {
 	trimmed := strings.TrimSpace(message)
-	for _, prefix := range []string{"login failed (", "sync failed ("} {
-		if strings.HasPrefix(trimmed, prefix) {
-			head, _, found := strings.Cut(trimmed, ":")
-			if found {
-				return strings.TrimSpace(head)
-			}
+
+	// Primary rule: cut at "): " — this separator appears after the status code
+	// or parenthesised context and avoids false cuts on HTTPS URLs (which contain
+	// "://" but not "): ").
+	if head, _, found := strings.Cut(trimmed, "): "); found {
+		return strings.TrimSpace(head) + ")"
+	}
+
+	// Fallback: if the message contains a newline and the content after the first
+	// newline starts with an HTML/JSON body indicator, truncate at the newline.
+	if idx := strings.IndexByte(trimmed, '\n'); idx >= 0 {
+		remainder := trimmed[idx+1:]
+		if len(remainder) > 0 && (remainder[0] == '<' || remainder[0] == '{' || remainder[0] == '[') {
+			return strings.TrimSpace(trimmed[:idx])
 		}
 	}
+
 	return trimmed
 }
 

@@ -34,9 +34,9 @@ type HealthServicer interface {
 // HealthStore is the minimal DB interface required by HealthService.
 type HealthStore interface {
 	ListGovernanceSyncHealth(ctx context.Context) ([]db.SyncHealth, error)
-	CountUnsyncedMemories() (int, error)
+	CountUnsyncedMemories(ctx context.Context) (int, error)
 	CountUnsyncedPrompts(ctx context.Context) (int, error)
-	CountUnsyncedSessions() (int, error)
+	CountUnsyncedSessions(ctx context.Context) (int, error)
 }
 
 // ConfigLoader abstracts config loading so HealthService is testable without
@@ -79,7 +79,7 @@ func (h *HealthService) Summary(ctx context.Context) (HealthSummary, error) {
 	summary := aggregate(rows, time.Now().UTC())
 
 	// Load unsynced counts.
-	summary.UnsyncedMemories, err = h.store.CountUnsyncedMemories()
+	summary.UnsyncedMemories, err = h.store.CountUnsyncedMemories(ctx)
 	if err != nil {
 		return HealthSummary{}, err
 	}
@@ -87,7 +87,7 @@ func (h *HealthService) Summary(ctx context.Context) (HealthSummary, error) {
 	if err != nil {
 		return HealthSummary{}, err
 	}
-	summary.UnsyncedSessions, err = h.store.CountUnsyncedSessions()
+	summary.UnsyncedSessions, err = h.store.CountUnsyncedSessions(ctx)
 	if err != nil {
 		return HealthSummary{}, err
 	}

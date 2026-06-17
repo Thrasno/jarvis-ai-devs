@@ -28,7 +28,7 @@ func (s *stubHealthStore) ListGovernanceSyncHealth(_ context.Context) ([]db.Sync
 	return s.rows, s.listErr
 }
 
-func (s *stubHealthStore) CountUnsyncedMemories() (int, error) {
+func (s *stubHealthStore) CountUnsyncedMemories(_ context.Context) (int, error) {
 	return s.unsyncedMemories, s.countMemoriesErr
 }
 
@@ -36,7 +36,7 @@ func (s *stubHealthStore) CountUnsyncedPrompts(_ context.Context) (int, error) {
 	return s.unsyncedPrompts, s.countPromptsErr
 }
 
-func (s *stubHealthStore) CountUnsyncedSessions() (int, error) {
+func (s *stubHealthStore) CountUnsyncedSessions(_ context.Context) (int, error) {
 	return s.unsyncedSessions, s.countSessionsErr
 }
 
@@ -289,4 +289,55 @@ func TestHealthService_Summary_UnsyncedCounts(t *testing.T) {
 	assert.Equal(t, 5, summary.UnsyncedMemories)
 	assert.Equal(t, 3, summary.UnsyncedPrompts)
 	assert.Equal(t, 1, summary.UnsyncedSessions)
+}
+
+// TestHealthService_Summary_StoreErrors verifies that Summary propagates errors
+// returned by each HealthStore method without masking or swallowing them.
+func TestHealthService_Summary_StoreErrors(t *testing.T) {
+	storeErr := errors.New("store failure")
+
+	tests := []struct {
+		name        string
+		store       *stubHealthStore
+		wantErrText string
+	}{
+		{
+			name: "ListGovernanceSyncHealth error is returned",
+			store: &stubHealthStore{
+				listErr: storeErr,
+			},
+			wantErrText: storeErr.Error(),
+		},
+		{
+			name: "CountUnsyncedMemories error is returned",
+			store: &stubHealthStore{
+				countMemoriesErr: storeErr,
+			},
+			wantErrText: storeErr.Error(),
+		},
+		{
+			name: "CountUnsyncedPrompts error is returned",
+			store: &stubHealthStore{
+				countPromptsErr: storeErr,
+			},
+			wantErrText: storeErr.Error(),
+		},
+		{
+			name: "CountUnsyncedSessions error is returned",
+			store: &stubHealthStore{
+				countSessionsErr: storeErr,
+			},
+			wantErrText: storeErr.Error(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			loader := &stubConfigLoader{}
+			svc := hivesync.NewHealthService(tt.store, loader)
+			_, err := svc.Summary(context.Background())
+			require.Error(t, err)
+			assert.ErrorContains(t, err, tt.wantErrText)
+		})
+	}
 }

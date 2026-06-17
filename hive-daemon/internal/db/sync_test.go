@@ -1526,6 +1526,7 @@ func TestSaveFromRemote_NonAliasedProjectStoredAsIs(t *testing.T) {
 
 // TestCountUnsyncedMemories tests the global count of unsynced memories.
 func TestCountUnsyncedMemories(t *testing.T) {
+	ctx := context.Background()
 	tests := []struct {
 		name      string
 		setupData func(t *testing.T, d *DB)
@@ -1586,7 +1587,7 @@ func TestCountUnsyncedMemories(t *testing.T) {
 			d := setupTestDB(t)
 			t.Cleanup(func() { require.NoError(t, d.Close()) })
 			tt.setupData(t, d)
-			count, err := d.CountUnsyncedMemories()
+			count, err := d.CountUnsyncedMemories(ctx)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantCount, count)
 
@@ -1660,6 +1661,7 @@ func TestCountUnsyncedPrompts(t *testing.T) {
 
 // TestCountUnsyncedSessions tests the global count of unsynced sessions.
 func TestCountUnsyncedSessions(t *testing.T) {
+	ctx := context.Background()
 	tests := []struct {
 		name      string
 		setupData func(t *testing.T, d *DB)
@@ -1716,11 +1718,77 @@ func TestCountUnsyncedSessions(t *testing.T) {
 			d := setupTestDB(t)
 			t.Cleanup(func() { require.NoError(t, d.Close()) })
 			tt.setupData(t, d)
-			count, err := d.CountUnsyncedSessions()
+			count, err := d.CountUnsyncedSessions(ctx)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantCount, count)
 		})
 	}
+}
+
+// TestCountUnsyncedMemories_Context verifies that CountUnsyncedMemories accepts a
+// context.Context and respects cancellation.
+func TestCountUnsyncedMemories_Context(t *testing.T) {
+	t.Run("accepts background context", func(t *testing.T) {
+		d := setupTestDB(t)
+		t.Cleanup(func() { require.NoError(t, d.Close()) })
+		ctx := context.Background()
+		count, err := d.CountUnsyncedMemories(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, 0, count)
+	})
+
+	t.Run("respects cancelled context", func(t *testing.T) {
+		d := setupTestDB(t)
+		t.Cleanup(func() { require.NoError(t, d.Close()) })
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // cancel immediately
+		_, err := d.CountUnsyncedMemories(ctx)
+		require.ErrorIs(t, err, context.Canceled)
+	})
+}
+
+// TestCountUnsyncedSessions_Context verifies that CountUnsyncedSessions accepts a
+// context.Context and respects cancellation.
+func TestCountUnsyncedSessions_Context(t *testing.T) {
+	t.Run("accepts background context", func(t *testing.T) {
+		d := setupTestDB(t)
+		t.Cleanup(func() { require.NoError(t, d.Close()) })
+		ctx := context.Background()
+		count, err := d.CountUnsyncedSessions(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, 0, count)
+	})
+
+	t.Run("respects cancelled context", func(t *testing.T) {
+		d := setupTestDB(t)
+		t.Cleanup(func() { require.NoError(t, d.Close()) })
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // cancel immediately
+		_, err := d.CountUnsyncedSessions(ctx)
+		require.ErrorIs(t, err, context.Canceled)
+	})
+}
+
+// TestCountUnsyncedPrompts_Context verifies that CountUnsyncedPrompts accepts a
+// context.Context and respects cancellation.
+func TestCountUnsyncedPrompts_Context(t *testing.T) {
+	t.Run("accepts background context", func(t *testing.T) {
+		d := setupTestDB(t)
+		t.Cleanup(func() { require.NoError(t, d.Close()) })
+		ctx := context.Background()
+		count, err := d.CountUnsyncedPrompts(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, 0, count)
+	})
+
+	t.Run("respects cancelled context", func(t *testing.T) {
+		d := setupTestDB(t)
+		t.Cleanup(func() { require.NoError(t, d.Close()) })
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // cancel immediately
+		_, err := d.CountUnsyncedPrompts(ctx)
+		require.ErrorIs(t, err, context.Canceled)
+	})
 }
 
 // TestApplyRemoteMutation_RemapsAliasedProject verifies that ApplyRemoteMutation
@@ -1782,4 +1850,63 @@ VALUES (?, ?, ?, ?, ?, ?, ?, '2026-01-01 00:00:00', '2026-01-01 00:00:00')`,
 	err = db.sqlDB.QueryRow(`SELECT project FROM memory_mutations WHERE event_id = ?`, "evt-remap-001").Scan(&mutProject)
 	require.NoError(t, err, "mutation record must exist")
 	assert.Equal(t, "Bar", mutProject, "mutation project must be rewritten to alias target")
+}
+
+// TestStripHTTPErrorBody verifies the stripHTTPErrorBody function correctly
+// removes HTML/JSON response bodies from error messages without cutting
+// at HTTPS URL colons or other colon-containing prefixes.
+func TestStripHTTPErrorBody(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "HTTPS URL must not be cut at scheme colon",
+			input: "login failed (https://host:8443 is down): <html><body>error</body></html>",
+			want:  "login failed (https://host:8443 is down)",
+		},
+		{
+			name:  "401 response with JSON body",
+			input: "sync failed (401): {\"error\":\"unauthorized\"}",
+			want:  "sync failed (401)",
+		},
+		{
+			name:  "generic error prefix with body content",
+			input: "some other error (500): body content",
+			want:  "some other error (500)",
+		},
+		{
+			name:  "plain error message is returned unchanged",
+			input: "plain error message",
+			want:  "plain error message",
+		},
+		{
+			name:  "newline followed by HTML body is truncated",
+			input: "error\n<html>body</html>",
+			want:  "error",
+		},
+		{
+			name:  "newline followed by JSON body is truncated",
+			input: "connection error\n{\"detail\":\"not found\"}",
+			want:  "connection error",
+		},
+		{
+			name:  "newline followed by non-body text is kept",
+			input: "multi-line error\nsecond line info",
+			want:  "multi-line error\nsecond line info",
+		},
+		{
+			name:  "whitespace only message returns empty",
+			input: "   ",
+			want:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripHTTPErrorBody(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
