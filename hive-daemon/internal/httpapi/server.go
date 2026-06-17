@@ -129,7 +129,7 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 	s.mux.HandleFunc("POST /observations/passive", s.handleObservationsPassive)
 	if governance != nil {
 		s.mux.HandleFunc("/governance/projects", s.handleGovernanceProjects)
-		s.mux.HandleFunc("POST /governance/projects/merge", s.handleGovernanceProjectMergeBatch)
+		s.mux.HandleFunc("/governance/projects/merge", s.handleGovernanceProjectMergeBatch)
 		s.mux.HandleFunc("/governance/projects/", s.handleGovernanceProject)
 		s.mux.HandleFunc("/governance/memories", s.handleGovernanceMemories)
 		s.mux.HandleFunc("GET /governance/memories/{id}", s.handleGovernanceMemory)
@@ -1047,6 +1047,9 @@ func writeBatchMergeError(w http.ResponseWriter, source string, err error) {
 	case errors.Is(err, governance.ErrDestructiveBackupRequired):
 		status = http.StatusBadRequest
 		errorMessage = "fresh backup is required before destructive operation"
+	case errors.Is(err, governance.ErrBackupArchiveInvalid):
+		status = http.StatusConflict
+		errorMessage = "backup archive integrity check failed"
 	case errors.Is(err, governance.ErrBackupStoreRequired), errors.Is(err, governance.ErrDestructiveMutationStoreRequired):
 		status = http.StatusServiceUnavailable
 		errorMessage = "destructive operation guard is not configured"

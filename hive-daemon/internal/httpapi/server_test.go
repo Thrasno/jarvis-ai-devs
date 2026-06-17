@@ -2380,6 +2380,41 @@ func TestGovernanceProjectMergeBatchHTTPReturnsPerSourceResults(t *testing.T) {
 	}
 }
 
+func TestGovernanceProjectMergeBatchHTTPRejectsNonPOST(t *testing.T) {
+	_, _, srv := newHTTPGuardTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/governance/projects/merge", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestGovernanceProjectMergeBatchHTTPInvalidBackupArchiveReturns409(t *testing.T) {
+	_, backup, srv := newHTTPGuardTestServer(t)
+	if err := os.Remove(backup.ArchivePath); err != nil {
+		t.Fatalf("Remove backup archive: %v", err)
+	}
+	body := fmt.Sprintf(`{"sources":["alpha"],"target":"beta","backup_id":%q,"confirmation":%q}`, backup.ID, governance.ProjectMergeBatchConfirmation("beta"))
+	req := httptest.NewRequest(http.MethodPost, "/governance/projects/merge", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if resp["error"] != "backup archive integrity check failed" {
+		t.Fatalf("error = %q, want backup archive integrity check failed", resp["error"])
+	}
+}
+
 // Task 3.2 — POST /governance/projects/merge with empty sources returns 400
 
 func TestGovernanceProjectMergeBatchHTTPEmptySourcesReturns400(t *testing.T) {
