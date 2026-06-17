@@ -220,6 +220,61 @@ func TestRunPromptSubmit_DaemonDown_StillHandlesMarker(t *testing.T) {
 	}
 }
 
+func TestRunPromptSubmit_PostsPromptWithExactContent(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+	t.Setenv("HIVE_CLAUDE_SESSION_ID", "prompt-fidelity-session")
+
+	_ = DeleteMarker("prompt-fidelity-session")
+
+	wantContent := "quoted \"value\" with backslash \\ and literal \\n plus real\nnewline"
+	requestPayload, err := json.Marshal(map[string]string{
+		"prompt":     wantContent,
+		"session_id": "prompt-fidelity-session",
+		"directory":  "/workspace/project",
+		"project":    "jarvis-ai-devs",
+	})
+	if err != nil {
+		t.Fatalf("marshal hook payload: %v", err)
+	}
+
+	calls := 0
+	var got map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/prompts" {
+			t.Errorf("path = %q, want /prompts", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	var out bytes.Buffer
+	RunPromptSubmit(context.Background(), bytes.NewReader(requestPayload), &out, srv.URL)
+
+	if calls != 1 {
+		t.Fatalf("POST calls = %d, want 1", calls)
+	}
+	if got["content"] != wantContent {
+		t.Fatalf("content mismatch\ngot:  %q\nwant: %q", got["content"], wantContent)
+	}
+	if got["session_id"] != "prompt-fidelity-session" {
+		t.Errorf("session_id = %q, want prompt-fidelity-session", got["session_id"])
+	}
+	if got["directory"] != "/workspace/project" {
+		t.Errorf("directory = %q, want /workspace/project", got["directory"])
+	}
+	if got["project"] != "jarvis-ai-devs" {
+		t.Errorf("project = %q, want jarvis-ai-devs", got["project"])
+	}
+}
+
 // --- RunSubagentStop ---
 
 func TestRunSubagentStop_PostsObservation(t *testing.T) {
