@@ -28,7 +28,7 @@ func (s *stubHealthStore) ListGovernanceSyncHealth(_ context.Context) ([]db.Sync
 	return s.rows, s.listErr
 }
 
-func (s *stubHealthStore) CountUnsyncedMemories() (int, error) {
+func (s *stubHealthStore) CountUnsyncedMemories(_ context.Context) (int, error) {
 	return s.unsyncedMemories, s.countMemoriesErr
 }
 
@@ -36,7 +36,7 @@ func (s *stubHealthStore) CountUnsyncedPrompts(_ context.Context) (int, error) {
 	return s.unsyncedPrompts, s.countPromptsErr
 }
 
-func (s *stubHealthStore) CountUnsyncedSessions() (int, error) {
+func (s *stubHealthStore) CountUnsyncedSessions(_ context.Context) (int, error) {
 	return s.unsyncedSessions, s.countSessionsErr
 }
 

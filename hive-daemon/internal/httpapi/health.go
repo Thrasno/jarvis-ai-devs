@@ -73,8 +73,10 @@ func healthSummaryToResponse(s hivesync.HealthSummary) HealthSummaryResponse {
 		t := s.LastFailureAt.UTC()
 		resp.LastFailureAt = &t
 	}
-	// BackoffUntil is null when zero OR when already in the past.
-	if !s.BackoffUntil.IsZero() && s.BackoffUntil.After(time.Now().UTC()) {
+	// BackoffUntil is null only when zero. The domain (aggregate) already
+	// guarantees that only future values reach HealthSummary.BackoffUntil,
+	// so the DTO trusts the domain and forwards any non-zero value directly.
+	if !s.BackoffUntil.IsZero() {
 		t := s.BackoffUntil.UTC()
 		resp.BackoffUntil = &t
 	}
