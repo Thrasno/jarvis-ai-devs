@@ -195,19 +195,48 @@ describe('dashboard shell', () => {
   })
 
   it('keeps successful dashboard panels visible when one endpoint fails', async () => {
-    // stats rejection is consumed here to avoid an unhandled rejection;
-    // overview now returns the fixture unconditionally so the rejected promise is never awaited by loadDashboard
     const rejectedStats = Promise.reject(new Error('stats unavailable'))
-    rejectedStats.catch(() => undefined)
     const dashboard = await loadDashboard(fakeApi({ stats: rejectedStats }), 'jwt-token')
 
     expect(dashboard.status).toBe('ready')
     if (dashboard.status !== 'ready') throw new Error('expected ready dashboard')
-    // Overview now returns the fixture unconditionally — API errors do not affect it
-    expect(dashboard.data.overview.status).toBe('ready')
+    expect(dashboard.data.overview).toEqual({ status: 'error', message: 'stats unavailable' })
     expect(dashboard.data.users.status).toBe('ready')
     expect(dashboard.data.memories.status).toBe('ready')
     expect(dashboard.data.audit.status).toBe('ready')
+  })
+
+  it('surfaces unhealthy live health as an overview error instead of fixture-complemented daemon counts', async () => {
+    for (const [health, message] of [
+      [{ status: 'degraded', db: 'connected', version: '1.0.0' }, 'Hive API health is degraded: status degraded'],
+      [{ status: 'ok', db: 'disconnected', version: '1.0.0' }, 'Hive API health is degraded: database disconnected']
+    ] as const) {
+      const dashboard = await loadDashboard(fakeApi({ health: Promise.resolve(health) }), 'jwt-token')
+
+      expect(dashboard.status).toBe('ready')
+      expect(dashboard.data.overview).toMatchObject({ status: 'error', message })
+      expect(dashboard.data.users.status).toBe('ready')
+      expect(dashboard.data.memories.status).toBe('ready')
+      expect(dashboard.data.audit.status).toBe('ready')
+    }
+  })
+
+  it('maps overview KPI metrics from live admin stats', async () => {
+    const dashboard = await loadDashboard(fakeApi({ stats: Promise.resolve(adminStats({ totalMemories: 1234, activeProjectCounts: [10, 0, 5] })) }), 'jwt-token')
+
+    expect(dashboard.status).toBe('ready')
+    if (dashboard.status !== 'ready' || dashboard.data.overview.status !== 'ready') throw new Error('expected ready overview')
+    expect(dashboard.data.overview.data.totalMemories).toMatchObject({ value: 1234, displayValue: '1.2k' })
+    expect(dashboard.data.overview.data.activeProjects).toMatchObject({ value: 2, displayValue: '2' })
+    expect(dashboard.data.overview.data.totalMemories.sourceLabel).toBeUndefined()
+    expect(dashboard.data.overview.data.activeProjects.sourceLabel).toBeUndefined()
+    expect(dashboard.data.overview.data.openConflicts.sourceLabel).toBe('Demo fixture data — live conflict counts are unavailable.')
+    expect(dashboard.data.overview.data.knowledgeGrowth.sourceLabel).toBe(
+      'Demo fixture data — live historical knowledge growth is unavailable.'
+    )
+    expect(dashboard.data.overview.data.syncHealthByProjectSourceLabel).toBe(
+      'Demo fixture data — live per-project sync health is unavailable.'
+    )
   })
 })
 
@@ -502,6 +531,18 @@ function fakeApi(overrides: { health?: Promise<Awaited<ReturnType<ApiClient['hea
     searchMemories: vi.fn(async () => ({ memories: [], total: 0, query: 'dashboard', limit: 5 })),
     memory: vi.fn(async () => ({ id: 'mem-1', sync_id: 'sync-1', project: 'jarvis-dev', category: 'decision', title: 'Dashboard scope', content: 'No daemon controls', tags: [], files_affected: [], created_by: 'admin-1', created_at: '2026-06-06T20:00:00Z', updated_at: '2026-06-06T20:01:00Z', synced_at: '2026-06-06T20:02:00Z' })),
     auditLogs: vi.fn(async () => ({ audit_logs: [], total: 0, limit: 10, offset: 0 }))
+  }
+}
+
+function adminStats(input: { totalMemories: number; activeProjectCounts: readonly number[] }): Awaited<ReturnType<ApiClient['adminStats']>> {
+  return {
+    users: { total: 1, active: 1, by_level: { admin: 1 } },
+    memories: {
+      total: input.totalMemories,
+      by_project: input.activeProjectCounts.map((count, index) => ({ project: `project-${index + 1}`, count })),
+      by_category: [],
+      last_synced_at: null
+    }
   }
 }
 

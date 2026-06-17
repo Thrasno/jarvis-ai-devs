@@ -1,4 +1,4 @@
-import { createApiClient, type ApiClient, type AuditLogList, type MemoryList, type MemorySearch, type User } from './api/client'
+import { createApiClient, type AdminStats, type ApiClient, type AuditLogList, type Health, type MemoryList, type MemorySearch, type User } from './api/client'
 import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
 import { control } from './components/dom'
 import { comingSoon } from './components/ComingSoon'
@@ -353,13 +353,13 @@ function stateFor<K extends keyof LoadedDashboardData>(
 
 // Keep loadDashboard for backwards compat with the existing test that calls it directly
 export async function loadDashboard(api: ApiClient, token: string): Promise<{ status: 'ready'; data: LoadedDashboardData }> {
-  const [users, recent, search, audit] = await Promise.allSettled([
-    api.adminUsers(token), api.memories(token, { limit: 5 }), api.searchMemories(token, { query: DEFAULT_MEMORY_SEARCH_QUERY, limit: 5 }), api.auditLogs(token, { limit: 10 })
+  const [health, stats, users, recent, search, audit] = await Promise.allSettled([
+    api.health(), api.adminStats(token), api.adminUsers(token), api.memories(token, { limit: 5 }), api.searchMemories(token, { query: DEFAULT_MEMORY_SEARCH_QUERY, limit: 5 }), api.auditLogs(token, { limit: 10 })
   ])
   return {
     status: 'ready',
     data: {
-      overview: { status: 'ready' as const, data: hiveOverviewFixture },
+      overview: overviewState(health, stats),
       users: settledState(users),
       memories: combinedState(recent, search, (recent, search) => ({ recent, search })),
       audit: settledState(audit)
@@ -399,9 +399,8 @@ export async function loadForRoute(
 async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token: string): Promise<ViewState<unknown>> {
   switch (key) {
     case 'overview': {
-      void api
-      void token
-      return { status: 'ready' as const, data: hiveOverviewFixture }
+      const [health, stats] = await Promise.allSettled([api.health(), api.adminStats(token)])
+      return overviewState(health, stats)
     }
     case 'users': {
       const result = await Promise.allSettled([api.adminUsers(token)])
@@ -419,6 +418,54 @@ async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token:
       return settledState(result[0])
     }
   }
+}
+
+function overviewState(
+  health: PromiseSettledResult<Health>,
+  stats: PromiseSettledResult<AdminStats>
+): ViewState<OverviewFixtureViewModel> {
+  if (health.status === 'rejected') return { status: 'error', message: messageFor(health.reason) }
+  if (stats.status === 'rejected') return { status: 'error', message: messageFor(stats.reason) }
+
+  const healthMessage = degradedHealthMessage(health.value)
+  if (healthMessage) return { status: 'error', message: healthMessage }
+
+  return { status: 'ready', data: overviewFromLiveApiWithFixtureComplements(stats.value) }
+}
+
+function degradedHealthMessage(health: Health): string | null {
+  const status = health.status.trim() || 'unknown'
+  const db = health.db.trim() || 'unknown'
+  const apiReady = status.toLowerCase() === 'ok'
+  const dbReady = db.toLowerCase() === 'connected'
+
+  if (apiReady && dbReady) return null
+
+  const issues = [
+    ...(apiReady ? [] : [`status ${status}`]),
+    ...(dbReady ? [] : [`database ${db}`])
+  ]
+  return `Hive API health is degraded: ${issues.join(', ')}`
+}
+
+function overviewFromLiveApiWithFixtureComplements(stats: AdminStats): OverviewFixtureViewModel {
+  const healthyTotal = hiveOverviewFixture.healthyDaemons.totalValue ?? hiveOverviewFixture.healthyDaemons.value
+  const healthyValue = hiveOverviewFixture.healthyDaemons.value
+  const activeProjects = activeProjectCount(stats)
+  return {
+    ...hiveOverviewFixture,
+    totalMemories: { label: hiveOverviewFixture.totalMemories.label, value: stats.memories.total, displayValue: compactNumber(stats.memories.total) },
+    activeProjects: { label: hiveOverviewFixture.activeProjects.label, value: activeProjects, displayValue: String(activeProjects) },
+    healthyDaemons: { ...hiveOverviewFixture.healthyDaemons, value: healthyValue, totalValue: healthyTotal, displayValue: `${healthyValue}/${healthyTotal}` }
+  }
+}
+
+function activeProjectCount(stats: AdminStats): number {
+  return stats.memories.by_project.filter((project) => project.count > 0).length
+}
+
+function compactNumber(value: number): string {
+  return value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value)
 }
 
 function settledState<T>(result: PromiseSettledResult<T>): ViewState<T> {

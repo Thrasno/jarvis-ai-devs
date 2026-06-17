@@ -122,13 +122,16 @@ export type ChartPointViewModel = {
 export type ChartSeriesViewModel = {
   readonly label: string
   readonly points: readonly ChartPointViewModel[]
+  readonly sourceLabel?: string
 }
 
 export type MetricCardViewModel = {
   readonly label: string
   readonly value: number
+  readonly totalValue?: number
   readonly displayValue?: string
   readonly trendLabel?: string
+  readonly sourceLabel?: string
 }
 
 export type OverviewFixtureViewModel = {
@@ -136,8 +139,10 @@ export type OverviewFixtureViewModel = {
   readonly totalMemories: MetricCardViewModel
   readonly activeProjects: MetricCardViewModel
   readonly healthyDaemons: MetricCardViewModel
+  readonly openConflicts: MetricCardViewModel
   readonly knowledgeGrowth: ChartSeriesViewModel
   readonly syncHealthByProject: readonly ProjectPrimitiveViewModel[]
+  readonly syncHealthByProjectSourceLabel?: string
   readonly liveActivity: {
     readonly summary: string
     readonly newestMemoryId: string

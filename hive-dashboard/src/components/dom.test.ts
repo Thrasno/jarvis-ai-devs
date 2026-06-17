@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { control, emptyState, grid, metricCard, panel, stack, statusBadge, text } from './dom'
+import { control, emptyState, grid, metricCard, panel, stack, statusBadge, statusLabel, text } from './dom'
 
 describe('dashboard DOM primitives', () => {
   it('renders base layout primitives with accessible structure', () => {
@@ -33,11 +33,15 @@ describe('dashboard DOM primitives', () => {
 
   it('maps known statuses to stable accessible meanings', () => {
     const healthy = statusBadge('healthy')
+    const degraded = statusBadge('degraded')
     const inactive = statusBadge('inactive')
 
     expect(healthy.textContent).toBe('Healthy')
     expect(healthy.getAttribute('data-dashboard-status')).toBe('healthy')
     expect(healthy.getAttribute('aria-label')).toBe('Healthy status: healthy')
+    expect(degraded.textContent).toBe('Degraded')
+    expect(degraded.getAttribute('data-dashboard-status')).toBe('warning')
+    expect(degraded.getAttribute('aria-label')).toBe('Degraded status: degraded')
     expect(inactive.textContent).toBe('Inactive')
     expect(inactive.getAttribute('data-dashboard-status')).toBe('inactive')
     expect(inactive.getAttribute('aria-label')).toBe('Inactive status: inactive')
@@ -49,5 +53,11 @@ describe('dashboard DOM primitives', () => {
     expect(badge.textContent).toBe('Unknown')
     expect(badge.getAttribute('data-dashboard-status')).toBe('neutral')
     expect(badge.getAttribute('aria-label')).toBe('Neutral status: paused')
+  })
+
+  it('centralizes status labels for view semantics', () => {
+    expect(statusLabel('healthy')).toBe('Healthy')
+    expect(statusLabel('degraded')).toBe('Degraded')
+    expect(statusLabel('paused')).toBe('Unknown')
   })
 })
