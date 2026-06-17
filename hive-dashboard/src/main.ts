@@ -4,11 +4,12 @@ import { control } from './components/dom'
 import { comingSoon } from './components/ComingSoon'
 import { renderNotificationDrawer } from './components/NotificationDrawer'
 import { renderSidebar, type UserLevel } from './components/Sidebar'
-import type { CurrentProfileViewModel, DashboardScreenKey } from './domain/dashboard'
+import type { CurrentProfileViewModel, DashboardScreenKey, OverviewFixtureViewModel } from './domain/dashboard'
 import { dashboardFixtures } from './fixtures/hive-dashboard/index'
+import { hiveOverviewFixture } from './fixtures/hive-dashboard/overview'
 import { renderAuditSync } from './views/AuditSync'
 import { renderMemories } from './views/Memories'
-import { renderOverview, type OverviewData, type ViewState } from './views/Overview'
+import { renderOverview, type ViewState } from './views/Overview'
 import { renderUsers } from './views/Users'
 import './styles.css'
 
@@ -18,7 +19,7 @@ export type UsersData = { users: User[] }
 export type MemoriesData = { recent: MemoryList; search: MemorySearch }
 export type AuditSyncData = AuditLogList
 export type LoadedDashboardData = {
-  overview: ViewState<OverviewData>
+  overview: ViewState<OverviewFixtureViewModel>
   users: ViewState<UsersData>
   memories: ViewState<MemoriesData>
   audit: ViewState<AuditSyncData>
@@ -50,7 +51,7 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
   overview: {
     path: '/dashboard',
     load: 'overview',
-    render: (vs) => renderOverview(vs as ViewState<OverviewData>)
+    render: (vs) => renderOverview(vs as ViewState<OverviewFixtureViewModel>)
   },
   memories: {
     path: '/dashboard/memories',
@@ -352,13 +353,13 @@ function stateFor<K extends keyof LoadedDashboardData>(
 
 // Keep loadDashboard for backwards compat with the existing test that calls it directly
 export async function loadDashboard(api: ApiClient, token: string): Promise<{ status: 'ready'; data: LoadedDashboardData }> {
-  const [health, stats, users, recent, search, audit] = await Promise.allSettled([
-    api.health(), api.adminStats(token), api.adminUsers(token), api.memories(token, { limit: 5 }), api.searchMemories(token, { query: DEFAULT_MEMORY_SEARCH_QUERY, limit: 5 }), api.auditLogs(token, { limit: 10 })
+  const [users, recent, search, audit] = await Promise.allSettled([
+    api.adminUsers(token), api.memories(token, { limit: 5 }), api.searchMemories(token, { query: DEFAULT_MEMORY_SEARCH_QUERY, limit: 5 }), api.auditLogs(token, { limit: 10 })
   ])
   return {
     status: 'ready',
     data: {
-      overview: combinedState(health, stats, (health, stats) => ({ health, stats })),
+      overview: { status: 'ready' as const, data: hiveOverviewFixture },
       users: settledState(users),
       memories: combinedState(recent, search, (recent, search) => ({ recent, search })),
       audit: settledState(audit)
@@ -398,8 +399,9 @@ export async function loadForRoute(
 async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token: string): Promise<ViewState<unknown>> {
   switch (key) {
     case 'overview': {
-      const [health, stats] = await Promise.allSettled([api.health(), api.adminStats(token)])
-      return combinedState(health, stats, (h, s) => ({ health: h, stats: s }))
+      void api
+      void token
+      return { status: 'ready' as const, data: hiveOverviewFixture }
     }
     case 'users': {
       const result = await Promise.allSettled([api.adminUsers(token)])
