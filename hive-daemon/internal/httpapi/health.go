@@ -22,7 +22,7 @@ type HealthSummaryResponse struct {
 	AutoSync            bool       `json:"auto_sync"`
 	LastSuccessAt       *time.Time `json:"last_success_at"`       // null when zero
 	LastFailureAt       *time.Time `json:"last_failure_at"`       // null when zero
-	BackoffUntil        *time.Time `json:"backoff_until"`         // null when zero or past
+	BackoffUntil        *time.Time `json:"backoff_until"`         // null when zero
 	LastError           string     `json:"last_error"`
 	ConsecutiveFailures int        `json:"consecutive_failures"`
 	UnsyncedMemories    int        `json:"unsynced_memories"`
@@ -52,8 +52,7 @@ func (a *HealthServiceAdapter) Summary(ctx context.Context) (HealthSummaryRespon
 }
 
 // healthSummaryToResponse converts a sync.HealthSummary to HealthSummaryResponse.
-// Zero time.Time values become nil pointers (JSON null). BackoffUntil is also
-// nil when it is in the past.
+// Zero time.Time values become nil pointers (JSON null).
 func healthSummaryToResponse(s hivesync.HealthSummary) HealthSummaryResponse {
 	resp := HealthSummaryResponse{
 		Reachable:           s.Reachable,

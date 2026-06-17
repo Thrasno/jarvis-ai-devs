@@ -1743,7 +1743,7 @@ func TestCountUnsyncedMemories_Context(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // cancel immediately
 		_, err := d.CountUnsyncedMemories(ctx)
-		require.Error(t, err, "cancelled context must propagate an error")
+		require.ErrorIs(t, err, context.Canceled)
 	})
 }
 
@@ -1765,7 +1765,29 @@ func TestCountUnsyncedSessions_Context(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // cancel immediately
 		_, err := d.CountUnsyncedSessions(ctx)
-		require.Error(t, err, "cancelled context must propagate an error")
+		require.ErrorIs(t, err, context.Canceled)
+	})
+}
+
+// TestCountUnsyncedPrompts_Context verifies that CountUnsyncedPrompts accepts a
+// context.Context and respects cancellation.
+func TestCountUnsyncedPrompts_Context(t *testing.T) {
+	t.Run("accepts background context", func(t *testing.T) {
+		d := setupTestDB(t)
+		t.Cleanup(func() { require.NoError(t, d.Close()) })
+		ctx := context.Background()
+		count, err := d.CountUnsyncedPrompts(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, 0, count)
+	})
+
+	t.Run("respects cancelled context", func(t *testing.T) {
+		d := setupTestDB(t)
+		t.Cleanup(func() { require.NoError(t, d.Close()) })
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // cancel immediately
+		_, err := d.CountUnsyncedPrompts(ctx)
+		require.ErrorIs(t, err, context.Canceled)
 	})
 }
 
