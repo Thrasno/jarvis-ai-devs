@@ -120,7 +120,12 @@ describe('Hive dashboard Explore fixtures', () => {
       'activityFeed'
     ])
 
-    expect(hiveOverviewFixture.totalMemories).toEqual({ label: 'Total Memories', value: 22375, displayValue: '22.4k' })
+    expect(hiveOverviewFixture.totalMemories).toEqual({
+      label: 'Total Memories',
+      value: 22375,
+      displayValue: '22.4k',
+      sourceLabel: 'Demo fixture data — live data is unavailable.'
+    })
     expect(exploreScreenFixtures.projects.projects).toHaveLength(8)
     expect(exploreScreenFixtures.knowledgeBrowser.memories).toHaveLength(41)
     expect(exploreScreenFixtures.knowledgeBrowser.metadata.exportCount).toBe(41)

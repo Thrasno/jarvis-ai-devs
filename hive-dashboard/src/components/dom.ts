@@ -1,5 +1,6 @@
 const STATUS_CONTRACTS: Record<string, { token: string; label: string }> = {
   active: { token: 'active', label: 'Active' },
+  degraded: { token: 'warning', label: 'Degraded' },
   error: { token: 'error', label: 'Error' },
   healthy: { token: 'healthy', label: 'Healthy' },
   inactive: { token: 'inactive', label: 'Inactive' },
@@ -86,6 +87,10 @@ export function statusBadge(status: string): HTMLElement {
   badge.setAttribute('aria-label', `${contract.label === 'Unknown' ? 'Neutral' : contract.label} status: ${status}`)
   badge.textContent = contract.label
   return badge
+}
+
+export function statusLabel(status: string): string {
+  return STATUS_CONTRACTS[status.toLowerCase()]?.label ?? 'Unknown'
 }
 
 export function text(value: string, className?: string): HTMLParagraphElement {

@@ -1,14 +1,15 @@
-import { createApiClient, type ApiClient, type AuditLogList, type MemoryList, type MemorySearch, type User } from './api/client'
+import { createApiClient, type AdminStats, type ApiClient, type AuditLogList, type Health, type MemoryList, type MemorySearch, type User } from './api/client'
 import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
 import { control } from './components/dom'
 import { comingSoon } from './components/ComingSoon'
 import { renderNotificationDrawer } from './components/NotificationDrawer'
 import { renderSidebar, type UserLevel } from './components/Sidebar'
-import type { CurrentProfileViewModel, DashboardScreenKey } from './domain/dashboard'
+import type { CurrentProfileViewModel, DashboardScreenKey, OverviewFixtureViewModel } from './domain/dashboard'
 import { dashboardFixtures } from './fixtures/hive-dashboard/index'
+import { hiveOverviewFixture } from './fixtures/hive-dashboard/overview'
 import { renderAuditSync } from './views/AuditSync'
 import { renderMemories } from './views/Memories'
-import { renderOverview, type OverviewData, type ViewState } from './views/Overview'
+import { renderOverview, type ViewState } from './views/Overview'
 import { renderUsers } from './views/Users'
 import './styles.css'
 
@@ -18,7 +19,7 @@ export type UsersData = { users: User[] }
 export type MemoriesData = { recent: MemoryList; search: MemorySearch }
 export type AuditSyncData = AuditLogList
 export type LoadedDashboardData = {
-  overview: ViewState<OverviewData>
+  overview: ViewState<OverviewFixtureViewModel>
   users: ViewState<UsersData>
   memories: ViewState<MemoriesData>
   audit: ViewState<AuditSyncData>
@@ -50,7 +51,7 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
   overview: {
     path: '/dashboard',
     load: 'overview',
-    render: (vs) => renderOverview(vs as ViewState<OverviewData>)
+    render: (vs) => renderOverview(vs as ViewState<OverviewFixtureViewModel>)
   },
   memories: {
     path: '/dashboard/memories',
@@ -358,7 +359,7 @@ export async function loadDashboard(api: ApiClient, token: string): Promise<{ st
   return {
     status: 'ready',
     data: {
-      overview: combinedState(health, stats, (health, stats) => ({ health, stats })),
+      overview: overviewState(health, stats),
       users: settledState(users),
       memories: combinedState(recent, search, (recent, search) => ({ recent, search })),
       audit: settledState(audit)
@@ -399,7 +400,7 @@ async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token:
   switch (key) {
     case 'overview': {
       const [health, stats] = await Promise.allSettled([api.health(), api.adminStats(token)])
-      return combinedState(health, stats, (h, s) => ({ health: h, stats: s }))
+      return overviewState(health, stats)
     }
     case 'users': {
       const result = await Promise.allSettled([api.adminUsers(token)])
@@ -417,6 +418,54 @@ async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token:
       return settledState(result[0])
     }
   }
+}
+
+function overviewState(
+  health: PromiseSettledResult<Health>,
+  stats: PromiseSettledResult<AdminStats>
+): ViewState<OverviewFixtureViewModel> {
+  if (health.status === 'rejected') return { status: 'error', message: messageFor(health.reason) }
+  if (stats.status === 'rejected') return { status: 'error', message: messageFor(stats.reason) }
+
+  const healthMessage = degradedHealthMessage(health.value)
+  if (healthMessage) return { status: 'error', message: healthMessage }
+
+  return { status: 'ready', data: overviewFromLiveApiWithFixtureComplements(stats.value) }
+}
+
+function degradedHealthMessage(health: Health): string | null {
+  const status = health.status.trim() || 'unknown'
+  const db = health.db.trim() || 'unknown'
+  const apiReady = status.toLowerCase() === 'ok'
+  const dbReady = db.toLowerCase() === 'connected'
+
+  if (apiReady && dbReady) return null
+
+  const issues = [
+    ...(apiReady ? [] : [`status ${status}`]),
+    ...(dbReady ? [] : [`database ${db}`])
+  ]
+  return `Hive API health is degraded: ${issues.join(', ')}`
+}
+
+function overviewFromLiveApiWithFixtureComplements(stats: AdminStats): OverviewFixtureViewModel {
+  const healthyTotal = hiveOverviewFixture.healthyDaemons.totalValue ?? hiveOverviewFixture.healthyDaemons.value
+  const healthyValue = hiveOverviewFixture.healthyDaemons.value
+  const activeProjects = activeProjectCount(stats)
+  return {
+    ...hiveOverviewFixture,
+    totalMemories: { label: hiveOverviewFixture.totalMemories.label, value: stats.memories.total, displayValue: compactNumber(stats.memories.total) },
+    activeProjects: { label: hiveOverviewFixture.activeProjects.label, value: activeProjects, displayValue: String(activeProjects) },
+    healthyDaemons: { ...hiveOverviewFixture.healthyDaemons, value: healthyValue, totalValue: healthyTotal, displayValue: `${healthyValue}/${healthyTotal}` }
+  }
+}
+
+function activeProjectCount(stats: AdminStats): number {
+  return stats.memories.by_project.filter((project) => project.count > 0).length
+}
+
+function compactNumber(value: number): string {
+  return value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value)
 }
 
 function settledState<T>(result: PromiseSettledResult<T>): ViewState<T> {

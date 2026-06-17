@@ -3,6 +3,7 @@ import type { ApiClient } from './api/client'
 import type { SessionStore } from './auth/session'
 import { loadDashboard, renderApp, startDashboardApp } from './main'
 import { dashboardNotificationSummary } from './fixtures/hive-dashboard/shared'
+import { hiveOverviewFixture } from './fixtures/hive-dashboard/overview'
 
 const adminUser = { id: 'admin-1', username: 'admin', email: 'admin@example.com', level: 'admin' as const, is_active: true, created_at: '2026-06-06T20:00:00Z' }
 const memberUser = { id: 'member-1', username: 'member', email: 'member@example.com', level: 'member' as const, is_active: true, created_at: '2026-06-06T20:00:00Z' }
@@ -194,7 +195,8 @@ describe('dashboard shell', () => {
   })
 
   it('keeps successful dashboard panels visible when one endpoint fails', async () => {
-    const dashboard = await loadDashboard(fakeApi({ stats: Promise.reject(new Error('stats unavailable')) }), 'jwt-token')
+    const rejectedStats = Promise.reject(new Error('stats unavailable'))
+    const dashboard = await loadDashboard(fakeApi({ stats: rejectedStats }), 'jwt-token')
 
     expect(dashboard.status).toBe('ready')
     if (dashboard.status !== 'ready') throw new Error('expected ready dashboard')
@@ -202,6 +204,39 @@ describe('dashboard shell', () => {
     expect(dashboard.data.users.status).toBe('ready')
     expect(dashboard.data.memories.status).toBe('ready')
     expect(dashboard.data.audit.status).toBe('ready')
+  })
+
+  it('surfaces unhealthy live health as an overview error instead of fixture-complemented daemon counts', async () => {
+    for (const [health, message] of [
+      [{ status: 'degraded', db: 'connected', version: '1.0.0' }, 'Hive API health is degraded: status degraded'],
+      [{ status: 'ok', db: 'disconnected', version: '1.0.0' }, 'Hive API health is degraded: database disconnected']
+    ] as const) {
+      const dashboard = await loadDashboard(fakeApi({ health: Promise.resolve(health) }), 'jwt-token')
+
+      expect(dashboard.status).toBe('ready')
+      expect(dashboard.data.overview).toMatchObject({ status: 'error', message })
+      expect(dashboard.data.users.status).toBe('ready')
+      expect(dashboard.data.memories.status).toBe('ready')
+      expect(dashboard.data.audit.status).toBe('ready')
+    }
+  })
+
+  it('maps overview KPI metrics from live admin stats', async () => {
+    const dashboard = await loadDashboard(fakeApi({ stats: Promise.resolve(adminStats({ totalMemories: 1234, activeProjectCounts: [10, 0, 5] })) }), 'jwt-token')
+
+    expect(dashboard.status).toBe('ready')
+    if (dashboard.status !== 'ready' || dashboard.data.overview.status !== 'ready') throw new Error('expected ready overview')
+    expect(dashboard.data.overview.data.totalMemories).toMatchObject({ value: 1234, displayValue: '1.2k' })
+    expect(dashboard.data.overview.data.activeProjects).toMatchObject({ value: 2, displayValue: '2' })
+    expect(dashboard.data.overview.data.totalMemories.sourceLabel).toBeUndefined()
+    expect(dashboard.data.overview.data.activeProjects.sourceLabel).toBeUndefined()
+    expect(dashboard.data.overview.data.openConflicts.sourceLabel).toBe('Demo fixture data — live conflict counts are unavailable.')
+    expect(dashboard.data.overview.data.knowledgeGrowth.sourceLabel).toBe(
+      'Demo fixture data — live historical knowledge growth is unavailable.'
+    )
+    expect(dashboard.data.overview.data.syncHealthByProjectSourceLabel).toBe(
+      'Demo fixture data — live per-project sync health is unavailable.'
+    )
   })
 })
 
@@ -499,11 +534,23 @@ function fakeApi(overrides: { health?: Promise<Awaited<ReturnType<ApiClient['hea
   }
 }
 
+function adminStats(input: { totalMemories: number; activeProjectCounts: readonly number[] }): Awaited<ReturnType<ApiClient['adminStats']>> {
+  return {
+    users: { total: 1, active: 1, by_level: { admin: 1 } },
+    memories: {
+      total: input.totalMemories,
+      by_project: input.activeProjectCounts.map((count, index) => ({ project: `project-${index + 1}`, count })),
+      by_category: [],
+      last_synced_at: null
+    }
+  }
+}
+
 function dashboardState() {
   return {
     status: 'ready' as const,
     data: {
-      overview: { status: 'ready' as const, data: { health: { status: 'ok', db: 'connected', version: '1.0.0' }, stats: { users: { total: 1, active: 1, by_level: { admin: 1 } }, memories: { total: 1, by_project: [], by_category: [], last_synced_at: null } } } },
+      overview: { status: 'ready' as const, data: hiveOverviewFixture },
       users: { status: 'ready' as const, data: { users: [adminUser] } },
       memories: { status: 'ready' as const, data: { recent: { memories: [], total: 0, limit: 5, offset: 0 }, search: { memories: [], total: 0, query: 'dashboard', limit: 5 } } },
       audit: { status: 'ready' as const, data: { audit_logs: [], total: 0, limit: 10, offset: 0 } }
