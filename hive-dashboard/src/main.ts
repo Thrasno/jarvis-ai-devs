@@ -4,18 +4,20 @@ import { control } from './components/dom'
 import { comingSoon } from './components/ComingSoon'
 import { renderNotificationDrawer } from './components/NotificationDrawer'
 import { renderSidebar, type UserLevel } from './components/Sidebar'
-import type { CurrentProfileViewModel, DashboardScreenKey, OverviewFixtureViewModel, ProjectListFixtureViewModel } from './domain/dashboard'
+import type { ActivityFeedFixtureViewModel, CurrentProfileViewModel, DashboardScreenKey, OverviewFixtureViewModel, ProjectListFixtureViewModel } from './domain/dashboard'
 import { dashboardFixtures } from './fixtures/hive-dashboard/index'
-import { projectsFixture } from './fixtures/hive-dashboard/explore'
+import { activityFeedFixture, projectsFixture } from './fixtures/hive-dashboard/explore'
 import { hiveOverviewFixture } from './fixtures/hive-dashboard/overview'
 import { renderAuditSync } from './views/AuditSync'
 import { renderMemories } from './views/Memories'
 import { renderOverview, type ViewState } from './views/Overview'
 import { renderProjects } from './views/Projects'
 import { renderUsers } from './views/Users'
+import { renderActivityFeed } from './views/ActivityFeed'
 import './styles.css'
 
 export const DEFAULT_MEMORY_SEARCH_QUERY = 'dashboard'
+
 
 export type UsersData = { users: User[] }
 export type MemoriesData = { recent: MemoryList; search: MemorySearch }
@@ -94,7 +96,8 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
   activityFeed: {
     path: '/dashboard/activityFeed',
     placeholderLabel: 'Activity Feed',
-    render: () => comingSoon('Activity Feed')
+    // Handled by the activityFeed special-case in renderAuthenticatedView; this render is never called.
+    render: () => comingSoon('Activity Feed'),
   },
   contributors: {
     path: '/dashboard/contributors',
@@ -147,12 +150,14 @@ export function renderApp(
   dashboard: DashboardState = { status: 'loading' },
   routePath = window.location.pathname,
   drawerState: DrawerState = { drawerOpen: false, readIds: new Set() },
-  drawerJustOpened = false
+  drawerJustOpened = false,
+  disposeActivityFeed: () => void = () => {},
+  setActivityFeedDispose: (fn: () => void) => void = () => {}
 ): void {
   container.replaceChildren()
   state.status === 'anonymous'
     ? renderLogin(container, state, actions)
-    : renderShell(container, state, actions, dashboard, routePath, drawerState, drawerJustOpened)
+    : renderShell(container, state, actions, dashboard, routePath, drawerState, drawerJustOpened, disposeActivityFeed, setActivityFeedDispose)
 }
 
 function renderLogin(
@@ -188,7 +193,9 @@ function renderShell(
   dashboard: DashboardState,
   routePath: string,
   drawerState: DrawerState,
-  drawerJustOpened = false
+  drawerJustOpened = false,
+  disposeActivityFeed: () => void = () => {},
+  setActivityFeedDispose: (fn: () => void) => void = () => {}
 ): void {
   const activeScreen = screenFromPath(routePath)
   const userLevel = state.user.level as UserLevel
@@ -263,7 +270,7 @@ function renderShell(
   const mainContent = document.createElement('main')
   mainContent.className = 'dashboard-content'
   mainContent.dataset.dashboardPrimitive = 'main'
-  mainContent.append(renderAuthenticatedView(activeScreen, dashboard))
+  mainContent.append(renderAuthenticatedView(activeScreen, dashboard, actions, disposeActivityFeed, setActivityFeedDispose))
   mainArea.append(mainContent)
 
   setModalBackgroundState([sidebar, header, mainContent], drawerState.drawerOpen)
@@ -335,7 +342,21 @@ function initialsFor(name: string): string {
   return initials.toUpperCase()
 }
 
-function renderAuthenticatedView(screen: DashboardScreenKey, state: DashboardState): HTMLElement {
+function renderAuthenticatedView(screen: DashboardScreenKey, state: DashboardState, actions: AppActions, disposeActivityFeed: () => void, setActivityFeedDispose: (fn: () => void) => void): HTMLElement {
+  disposeActivityFeed()
+
+  if (screen === 'activityFeed') {
+    const handle = renderActivityFeed(
+      { status: 'ready', data: activityFeedFixture } as ViewState<ActivityFeedFixtureViewModel>,
+      {
+        onNavigate: (p) => actions.onNavigate?.(p),
+        scheduler: { setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window) }
+      }
+    )
+    setActivityFeedDispose(handle.dispose)
+    return handle.element
+  }
+
   const route = ROUTES[screen]
   if (!route.load) {
     // Fixture-only / ComingSoon route
@@ -502,6 +523,14 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
   const api = options.api ?? createApiClient()
   const session = options.session ?? createSessionStore({ api })
   let dashboard: DashboardState = { status: 'loading' }
+  let activeActivityFeedDispose: (() => void) | undefined
+  function disposeActivityFeed(): void {
+    activeActivityFeedDispose?.()
+    activeActivityFeedDispose = undefined
+  }
+  function setActivityFeedDispose(fn: () => void): void {
+    activeActivityFeedDispose = fn
+  }
   let loadVersion = 0
   let activeScreen: DashboardScreenKey = 'overview'
   let drawerOpen = false
@@ -513,7 +542,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
 
   const rerender = (state: AuthState) => {
     if (disposed) return
-    renderApp(root, state, actions, dashboard, window.location.pathname, { drawerOpen, readIds, summaryUnread }, drawerJustOpened)
+    renderApp(root, state, actions, dashboard, window.location.pathname, { drawerOpen, readIds, summaryUnread }, drawerJustOpened, disposeActivityFeed, setActivityFeedDispose)
   }
 
   const actions: AppActions = {
@@ -610,6 +639,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     disposed = true
     loadVersion += 1
     window.removeEventListener('popstate', handler)
+    disposeActivityFeed()
   }
 }
 
