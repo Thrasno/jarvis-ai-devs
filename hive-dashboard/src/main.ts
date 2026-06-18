@@ -9,6 +9,8 @@ import { dashboardFixtures } from './fixtures/hive-dashboard/index'
 import { activityFeedFixture, projectsFixture } from './fixtures/hive-dashboard/explore'
 import { hiveOverviewFixture } from './fixtures/hive-dashboard/overview'
 import { renderAuditSync } from './views/AuditSync'
+import { renderGlobalSearch } from './views/GlobalSearch'
+import { renderKnowledgeBrowser } from './views/KnowledgeBrowser'
 import { renderMemories } from './views/Memories'
 import { renderOverview, type ViewState } from './views/Overview'
 import { renderProjects } from './views/Projects'
@@ -31,7 +33,7 @@ export type LoadedDashboardData = {
 }
 export type DashboardState = { status: 'loading' } | { status: 'ready'; data: Partial<LoadedDashboardData> }
 
-type AppActions = {
+export type AppActions = {
   onLogin(email: string, password: string): Promise<void> | void
   onLogout(): void
   onNavigate?(path: string): void
@@ -39,16 +41,28 @@ type AppActions = {
   onMarkAllRead?(): void
 }
 
-type DrawerState = {
+export type DrawerState = {
   drawerOpen: boolean
   readIds: ReadonlySet<string>
   summaryUnread?: number
 }
 
+export type RenderAppOptions = {
+  container: HTMLElement
+  state: AuthState
+  actions: AppActions
+  dashboard?: DashboardState
+  routePath?: string
+  drawerState?: DrawerState
+  drawerJustOpened?: boolean
+  disposeActivityFeed?: () => void
+  setActivityFeedDispose?: (fn: () => void) => void
+}
+
 type ScreenRoute = {
   path: string
   load?: keyof LoadedDashboardData
-  render: (vs: ViewState<unknown>) => HTMLElement
+  render: (vs: ViewState<unknown>, routePath: string) => HTMLElement
   placeholderLabel?: string
 }
 
@@ -61,7 +75,7 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
   memories: {
     path: '/dashboard/memories',
     load: 'memories',
-    render: (vs) => renderMemories(vs as ViewState<MemoriesData>)
+    render: (vs, routePath) => renderMemories(vs as ViewState<MemoriesData>, { detailId: memoryDetailIdFromPath(routePath) })
   },
   userManagement: {
     path: '/dashboard/userManagement',
@@ -80,13 +94,11 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
   },
   knowledgeBrowser: {
     path: '/dashboard/knowledgeBrowser',
-    placeholderLabel: 'Knowledge Browser',
-    render: () => comingSoon('Knowledge Browser')
+    render: (_vs, routePath) => renderKnowledgeBrowser(queryFromRoutePath(routePath))
   },
   globalSearch: {
     path: '/dashboard/globalSearch',
-    placeholderLabel: 'Global Search',
-    render: () => comingSoon('Global Search')
+    render: (_vs, routePath) => renderGlobalSearch(queryFromRoutePath(routePath))
   },
   knowledgeGraph: {
     path: '/dashboard/knowledgeGraph',
@@ -133,6 +145,7 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
  */
 function screenFromPath(routePath: string): DashboardScreenKey {
   const normalized = routePath.split(/[?#]/, 1)[0].replace(/\/$/, '')
+  if (memoryDetailIdFromPath(routePath)) return 'memories'
   // Handle legacy /dashboard/audit-sync alias
   if (normalized.endsWith('/audit-sync')) return 'auditLog'
   // Handle legacy /dashboard/users alias
@@ -143,17 +156,20 @@ function screenFromPath(routePath: string): DashboardScreenKey {
   return 'overview'
 }
 
-export function renderApp(
-  container: HTMLElement,
-  state: AuthState,
-  actions: AppActions,
-  dashboard: DashboardState = { status: 'loading' },
+export function renderApp({
+  container,
+  state,
+  actions,
+  dashboard = { status: 'loading' },
   routePath = window.location.pathname,
-  drawerState: DrawerState = { drawerOpen: false, readIds: new Set() },
+  drawerState = { drawerOpen: false, readIds: new Set() },
   drawerJustOpened = false,
-  disposeActivityFeed: () => void = () => {},
-  setActivityFeedDispose: (fn: () => void) => void = () => {}
-): void {
+  disposeActivityFeed = () => {},
+  setActivityFeedDispose = () => {}
+}: RenderAppOptions): void {
+  if (state.status === 'anonymous') {
+    disposeActivityFeed()
+  }
   container.replaceChildren()
   state.status === 'anonymous'
     ? renderLogin(container, state, actions)
@@ -239,7 +255,7 @@ function renderShell(
   searchSlot.className = 'dashboard-header__search'
   searchSlot.textContent = 'Search memories…'
   searchSlot.setAttribute('aria-label', 'Search memories')
-  searchSlot.addEventListener('click', () => actions.onNavigate?.('/dashboard/globalSearch'))
+  searchSlot.addEventListener('click', () => actions.onNavigate?.(globalSearchPathFromRoutePath(routePath)))
 
   // Bell button with optional unread badge
   const bellWrapper = document.createElement('div')
@@ -270,7 +286,7 @@ function renderShell(
   const mainContent = document.createElement('main')
   mainContent.className = 'dashboard-content'
   mainContent.dataset.dashboardPrimitive = 'main'
-  mainContent.append(renderAuthenticatedView(activeScreen, dashboard, actions, disposeActivityFeed, setActivityFeedDispose))
+  mainContent.append(renderAuthenticatedView(activeScreen, dashboard, routePath, actions, disposeActivityFeed, setActivityFeedDispose))
   mainArea.append(mainContent)
 
   setModalBackgroundState([sidebar, header, mainContent], drawerState.drawerOpen)
@@ -342,7 +358,14 @@ function initialsFor(name: string): string {
   return initials.toUpperCase()
 }
 
-function renderAuthenticatedView(screen: DashboardScreenKey, state: DashboardState, actions: AppActions, disposeActivityFeed: () => void, setActivityFeedDispose: (fn: () => void) => void): HTMLElement {
+function renderAuthenticatedView(
+  screen: DashboardScreenKey,
+  state: DashboardState,
+  routePath: string,
+  actions: AppActions,
+  disposeActivityFeed: () => void,
+  setActivityFeedDispose: (fn: () => void) => void
+): HTMLElement {
   disposeActivityFeed()
 
   if (screen === 'activityFeed') {
@@ -360,10 +383,39 @@ function renderAuthenticatedView(screen: DashboardScreenKey, state: DashboardSta
   const route = ROUTES[screen]
   if (!route.load) {
     // Fixture-only / ComingSoon route
-    return route.render({ status: 'loading' })
+    return route.render({ status: 'loading' }, routePath)
   }
   const viewState = stateFor(state, route.load)
-  return route.render(viewState as ViewState<unknown>)
+  return route.render(viewState as ViewState<unknown>, routePath)
+}
+
+function queryFromRoutePath(routePath: string): string {
+  const queryStart = routePath.indexOf('?')
+  if (queryStart === -1) return ''
+  const hashStart = routePath.indexOf('#', queryStart)
+  return hashStart === -1 ? routePath.slice(queryStart) : routePath.slice(queryStart, hashStart)
+}
+
+function globalSearchPathFromRoutePath(routePath: string): string {
+  const normalized = routePath.split(/[?#]/, 1)[0].replace(/\/$/, '')
+  const query = queryFromRoutePath(routePath)
+  if (query && (normalized === ROUTES.knowledgeBrowser.path || normalized === ROUTES.globalSearch.path)) {
+    return `${ROUTES.globalSearch.path}${query}`
+  }
+  return ROUTES.globalSearch.path
+}
+
+function memoryDetailIdFromPath(routePath: string): string | null {
+  const normalized = routePath.split(/[?#]/, 1)[0].replace(/\/$/, '')
+  const prefix = '/dashboard/memories/'
+  if (!normalized.startsWith(prefix)) return null
+  const id = normalized.slice(prefix.length).trim()
+  if (!id) return null
+  try {
+    return decodeURIComponent(id)
+  } catch {
+    return id
+  }
 }
 
 function stateFor<K extends keyof LoadedDashboardData>(
@@ -542,7 +594,17 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
 
   const rerender = (state: AuthState) => {
     if (disposed) return
-    renderApp(root, state, actions, dashboard, window.location.pathname, { drawerOpen, readIds, summaryUnread }, drawerJustOpened, disposeActivityFeed, setActivityFeedDispose)
+    renderApp({
+      container: root,
+      state,
+      actions,
+      dashboard,
+      routePath: currentRoutePath(),
+      drawerState: { drawerOpen, readIds, summaryUnread },
+      drawerJustOpened,
+      disposeActivityFeed,
+      setActivityFeedDispose
+    })
   }
 
   const actions: AppActions = {
@@ -610,7 +672,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     if (disposed) return
     const version = loadVersion + 1
     loadVersion = version
-    activeScreen = screenFromPath(window.location.pathname)
+    activeScreen = screenFromPath(currentRoutePath())
     rerender(state)
     if (state.status === 'authenticated') {
       const loaded = await loadForRoute(activeScreen, api, state.token, dashboard)
@@ -641,6 +703,10 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     window.removeEventListener('popstate', handler)
     disposeActivityFeed()
   }
+}
+
+function currentRoutePath(): string {
+  return `${window.location.pathname}${window.location.search}${window.location.hash}`
 }
 
 const root = document.getElementById('app')

@@ -86,7 +86,9 @@ export type MemoryViewModel = {
   readonly category: MemoryCategory
   readonly projectId: string
   readonly authorId: string
+  readonly authorLabel: string
   readonly tags: readonly string[]
+  readonly savedAt: string
   readonly savedAtLabel: string
   readonly versionCount?: number
 }
@@ -176,6 +178,7 @@ export type BrowserPageMetadataViewModel = {
 
 export type KnowledgeBrowserFixtureViewModel = {
   readonly screen: 'knowledgeBrowser'
+  readonly sourceLabel: string
   readonly categoryFilters: readonly CategoryFilterViewModel[]
   readonly memories: readonly MemoryViewModel[]
   readonly metadata: BrowserPageMetadataViewModel
@@ -185,13 +188,20 @@ export type SearchResultViewModel = {
   readonly memoryId: string
   readonly title: string
   readonly excerpt: string
+  readonly category: MemoryCategory
   readonly projectId: string
+  readonly authorId: string
+  readonly authorLabel: string
+  readonly tags: readonly string[]
+  readonly savedAt: string
+  readonly savedAtLabel: string
   readonly highlights: readonly string[]
   readonly score: number
 }
 
 export type GlobalSearchFixtureViewModel = {
   readonly screen: 'globalSearch'
+  readonly sourceLabel: string
   readonly query: string
   readonly highlights: readonly string[]
   readonly results: readonly SearchResultViewModel[]

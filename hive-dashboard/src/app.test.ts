@@ -13,7 +13,7 @@ describe('dashboard shell', () => {
   it('shows the login form to unauthenticated users', () => {
     const container = document.createElement('main')
 
-    renderApp(container, { status: 'anonymous' }, { onLogin: vi.fn(), onLogout: vi.fn() })
+    renderApp({ container, state: { status: 'anonymous' }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
 
     expect(container.querySelector('h1')?.textContent).toBe('Sign in to Hive API')
     expect(container.querySelector('form')?.getAttribute('data-dashboard-primitive')).toBe('panel')
@@ -48,7 +48,7 @@ describe('dashboard shell', () => {
   it('renders the full shell (sidebar + header + main) for any authenticated user', () => {
     const container = document.createElement('main')
 
-    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: memberUser }, { onLogin: vi.fn(), onLogout: vi.fn() })
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: memberUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
 
     expect(container.textContent).not.toContain('Admin access required')
     expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).not.toBeNull()
@@ -59,7 +59,7 @@ describe('dashboard shell', () => {
   it('derives the sidebar profile from the authenticated user', () => {
     const container = document.createElement('main')
 
-    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: memberUser }, { onLogin: vi.fn(), onLogout: vi.fn() })
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: memberUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
 
     const profile = container.querySelector('[data-sidebar-profile]')
     expect(profile).not.toBeNull()
@@ -73,7 +73,7 @@ describe('dashboard shell', () => {
   it('renders the protected shell for an admin identity', () => {
     const container = document.createElement('main')
 
-    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() })
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
 
     expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).not.toBeNull()
     expect(container.querySelector('[data-dashboard-primitive="header"]')).not.toBeNull()
@@ -86,7 +86,7 @@ describe('dashboard shell', () => {
   it('renders route navigation and the selected API-backed view for admin deep links', () => {
     const container = document.createElement('main')
 
-    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, dashboardState(), '/dashboard/users')
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath: '/dashboard/users' })
 
     expect(container.querySelector('[data-dashboard-primitive="sidebar"] nav')?.textContent).toContain('Dashboard')
     expect(container.querySelector('section h2')?.textContent).toBe('Users')
@@ -95,29 +95,89 @@ describe('dashboard shell', () => {
     expect(container.textContent).not.toContain('Authentication is active')
   })
 
+  it('keeps the plain audit sync legacy alias available', () => {
+    const container = document.createElement('main')
+
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath: '/dashboard/audit-sync' })
+
+    expect(container.querySelector('section h2')?.textContent).toBe('Audit and sync')
+    expect(container.textContent).not.toContain('Memory detail is unavailable')
+  })
+
   it('renders ComingSoon for an unimplemented route', () => {
     const container = document.createElement('main')
 
-    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, { status: 'loading' }, '/dashboard/knowledgeBrowser')
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: { status: 'loading' }, routePath: '/dashboard/knowledgeGraph' })
 
     expect(container.querySelector('[data-coming-soon]')).not.toBeNull()
-    expect(container.textContent).toContain('Knowledge Browser')
+    expect(container.textContent).toContain('Knowledge Graph')
   })
 
   it('T12 — renders activityFeed view instead of ComingSoon', () => {
     const container = document.createElement('main')
+    let activeActivityFeedDispose: (() => void) | undefined
 
-    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, { status: 'loading' }, '/dashboard/activityFeed')
+    try {
+      renderApp({
+        container,
+        state: { status: 'authenticated', token: 'jwt-token', user: adminUser },
+        actions: { onLogin: vi.fn(), onLogout: vi.fn() },
+        dashboard: { status: 'loading' },
+        routePath: '/dashboard/activityFeed',
+        setActivityFeedDispose: (fn) => { activeActivityFeedDispose = fn }
+      })
 
-    expect(container.querySelector('[data-coming-soon]')).toBeNull()
-    expect(container.querySelector('[role="note"]')?.textContent).toBe('Demo fixture data — live activity feed is unavailable.')
-    expect(container.querySelector('section h2')?.textContent).toBe('Activity Feed')
+      expect(container.querySelector('[data-coming-soon]')).toBeNull()
+      expect(container.querySelector('[role="note"]')?.textContent).toBe('Demo fixture data — live activity feed is unavailable.')
+      expect(container.querySelector('section h2')?.textContent).toBe('Activity Feed')
+    } finally {
+      activeActivityFeedDispose?.()
+    }
+  })
+
+  it('disposes the active Activity Feed handle before rendering anonymous login', () => {
+    const container = document.createElement('main')
+    const setIntervalSpy = vi.spyOn(window, 'setInterval').mockReturnValue(123 as ReturnType<typeof window.setInterval>)
+    const clearIntervalSpy = vi.spyOn(window, 'clearInterval').mockImplementation(() => {})
+    let activeActivityFeedDispose: (() => void) | undefined
+    const disposeActivityFeed = () => {
+      activeActivityFeedDispose?.()
+      activeActivityFeedDispose = undefined
+    }
+
+    try {
+      renderApp({
+        container,
+        state: { status: 'authenticated', token: 'jwt-token', user: adminUser },
+        actions: { onLogin: vi.fn(), onLogout: vi.fn() },
+        routePath: '/dashboard/activityFeed',
+        disposeActivityFeed,
+        setActivityFeedDispose: (fn) => { activeActivityFeedDispose = fn }
+      })
+
+      expect(setIntervalSpy).toHaveBeenCalledTimes(1)
+      expect(container.querySelector('section h2')?.textContent).toBe('Activity Feed')
+
+      renderApp({
+        container,
+        state: { status: 'anonymous' },
+        actions: { onLogin: vi.fn(), onLogout: vi.fn() },
+        disposeActivityFeed,
+        setActivityFeedDispose: (fn) => { activeActivityFeedDispose = fn }
+      })
+
+      expect(clearIntervalSpy).toHaveBeenCalledTimes(1)
+      expect(container.querySelector('h1')?.textContent).toBe('Sign in to Hive API')
+    } finally {
+      setIntervalSpy.mockRestore()
+      clearIntervalSpy.mockRestore()
+    }
   })
 
   it('shows the named default memory search in the memories view', () => {
     const container = document.createElement('main')
 
-    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, dashboardState(), '/dashboard/memories')
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath: '/dashboard/memories' })
 
     expect(container.querySelector('[data-dashboard-primitive="main"]')?.textContent).toContain('Default search: "dashboard"')
   })
@@ -125,7 +185,7 @@ describe('dashboard shell', () => {
   it('renders the Projects view instead of ComingSoon for an authenticated member', () => {
     const container = document.createElement('main')
 
-    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: memberUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, dashboardState(), '/dashboard/projects')
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: memberUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath: '/dashboard/projects' })
 
     expect(container.querySelector('[data-coming-soon]')).toBeNull()
     expect(container.querySelector('[role="note"]')?.textContent).toBe('Demo fixture data — live project summaries are unavailable.')
@@ -136,11 +196,82 @@ describe('dashboard shell', () => {
   it('matches the memories route when project-scoped browse navigation includes query and hash', () => {
     const container = document.createElement('main')
 
-    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, dashboardState(), '/dashboard/memories?project=core-api#results')
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath: '/dashboard/memories?project=core-api#results' })
 
     expect(container.querySelector('section h2')?.textContent).toBe('Memories')
     expect(container.querySelector('[data-coming-soon]')).toBeNull()
     expect(container.querySelector('[data-dashboard-primitive="main"]')?.textContent).toContain('Default search: "dashboard"')
+  })
+
+  it('renders the Knowledge Browser discovery route instead of ComingSoon', () => {
+    const container = document.createElement('main')
+
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath: '/dashboard/knowledgeBrowser?query=auth&limit=1' })
+
+    expect(container.querySelector('[data-coming-soon]')).toBeNull()
+    expect(container.querySelector('section h2')?.textContent).toBe('Knowledge Browser')
+    expect(container.querySelector('[role="note"]')?.textContent).toContain('Fixture-backed discovery data')
+    expect(container.querySelector('article[role="listitem"]')?.textContent).toContain('Gateway owns the auth boundary')
+  })
+
+  it('renders the Global Search discovery route with fixture highlights instead of ComingSoon', () => {
+    const container = document.createElement('main')
+
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath: '/dashboard/globalSearch?query=auth&limit=1' })
+
+    expect(container.querySelector('[data-coming-soon]')).toBeNull()
+    expect(container.querySelector('section h2')?.textContent).toBe('Global Search')
+    expect(container.querySelector('[role="note"]')?.textContent).toContain('Fixture-backed search data')
+    expect(Array.from(container.querySelectorAll('mark')).map((mark) => mark.textContent)).toContain('auth')
+  })
+
+  it('shows a controlled unavailable state for memory detail deep links', () => {
+    const container = document.createElement('main')
+
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath: '/dashboard/memories/gateway-auth-boundary' })
+
+    expect(container.querySelector('section h2')?.textContent).toBe('Memories')
+    expect(container.querySelector('[data-coming-soon]')).toBeNull()
+    expect(container.querySelector('[role="status"]')?.textContent).toBe('Memory detail is unavailable in this fixture-backed dashboard slice.')
+  })
+
+  it('shows memory detail unavailable state before API-backed memories data is ready', () => {
+    for (const dashboard of [
+      { status: 'loading' as const },
+      { status: 'ready' as const, data: { memories: { status: 'error' as const, message: 'memories unavailable' } } }
+    ]) {
+      const container = document.createElement('main')
+
+      renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard, routePath: '/dashboard/memories/gateway-auth-boundary' })
+
+      expect(container.querySelector('section h2')?.textContent).toBe('Memories')
+      expect(container.querySelector('[role="status"]')?.textContent).toBe('Memory detail is unavailable in this fixture-backed dashboard slice.')
+      expect(container.textContent).not.toContain('Loading memories…')
+      expect(container.textContent).not.toContain('memories unavailable')
+    }
+  })
+
+  it('shows the controlled unavailable state for malformed memory detail URLs', () => {
+    const container = document.createElement('main')
+
+    expect(() => renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath: '/dashboard/memories/%E0%A4%A' })).not.toThrow()
+
+    expect(container.querySelector('section h2')?.textContent).toBe('Memories')
+    expect(container.querySelector('[data-coming-soon]')).toBeNull()
+    expect(container.querySelector('[role="status"]')?.textContent).toBe('Memory detail is unavailable in this fixture-backed dashboard slice.')
+  })
+
+  it('keeps memory detail IDs from colliding with legacy route aliases', () => {
+    for (const routePath of ['/dashboard/memories/users', '/dashboard/memories/audit-sync']) {
+      const container = document.createElement('main')
+
+      renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath })
+
+      expect(container.querySelector('section h2')?.textContent).toBe('Memories')
+      expect(container.querySelector('[role="status"]')?.textContent).toBe('Memory detail is unavailable in this fixture-backed dashboard slice.')
+      expect(container.textContent).not.toContain('Users')
+      expect(container.textContent).not.toContain('Audit Sync')
+    }
   })
 
   it('does not render stale dashboard data after logout while a dashboard load is pending', async () => {
@@ -278,7 +409,7 @@ describe('bell and search slot integration', () => {
   it('notification bell is visible in authenticated shell', () => {
     const container = document.createElement('main')
 
-    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() })
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
 
     const bell = container.querySelector('[aria-label="Notifications"]')
     expect(bell).not.toBeNull()
@@ -287,7 +418,7 @@ describe('bell and search slot integration', () => {
   it('bell shows unread badge when summary.unread > 0', () => {
     const container = document.createElement('main')
 
-    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, { status: 'loading' }, '/dashboard', { drawerOpen: false, readIds: new Set() })
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: { status: 'loading' }, routePath: '/dashboard', drawerState: { drawerOpen: false, readIds: new Set() } })
 
     // dashboardNotificationSummary.unread is 3
     const badge = container.querySelector('[data-bell-badge]')
@@ -299,7 +430,7 @@ describe('bell and search slot integration', () => {
     const container = document.createElement('main')
     const allReadIds = new Set(Array.from({ length: 7 }, (_, i) => `id-${i}`))
 
-    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, { status: 'loading' }, '/dashboard', { drawerOpen: false, readIds: allReadIds, summaryUnread: 0 })
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: { status: 'loading' }, routePath: '/dashboard', drawerState: { drawerOpen: false, readIds: allReadIds, summaryUnread: 0 } })
 
     const badge = container.querySelector('[data-bell-badge]')
     expect(badge).toBeNull()
@@ -308,7 +439,7 @@ describe('bell and search slot integration', () => {
   it('search slot is visible in authenticated shell', () => {
     const container = document.createElement('main')
 
-    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() })
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
 
     const searchSlot = container.querySelector('.dashboard-header__search')
     expect(searchSlot).not.toBeNull()
@@ -317,7 +448,7 @@ describe('bell and search slot integration', () => {
   it('drawer element has [data-open] attribute when drawerOpen is true', () => {
     const container = document.createElement('main')
 
-    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, { status: 'loading' }, '/dashboard', { drawerOpen: true, readIds: new Set() })
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: { status: 'loading' }, routePath: '/dashboard', drawerState: { drawerOpen: true, readIds: new Set() } })
 
     const drawer = container.querySelector('[data-dashboard-primitive="drawer"]')
     expect(drawer).not.toBeNull()
@@ -327,7 +458,7 @@ describe('bell and search slot integration', () => {
   it('makes the app background inert while the modal notification drawer is open', () => {
     const container = document.createElement('main')
 
-    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, { status: 'loading' }, '/dashboard', { drawerOpen: true, readIds: new Set() })
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: { status: 'loading' }, routePath: '/dashboard', drawerState: { drawerOpen: true, readIds: new Set() } })
 
     expect(container.querySelector('[data-dashboard-primitive="drawer"]')?.getAttribute('aria-modal')).toBe('true')
     expect(container.querySelector('[data-dashboard-primitive="sidebar"]')?.hasAttribute('inert')).toBe(true)
@@ -338,7 +469,7 @@ describe('bell and search slot integration', () => {
   it('keeps the app background interactive when the notification drawer is closed', () => {
     const container = document.createElement('main')
 
-    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, { status: 'loading' }, '/dashboard', { drawerOpen: false, readIds: new Set() })
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: { status: 'loading' }, routePath: '/dashboard', drawerState: { drawerOpen: false, readIds: new Set() } })
 
     expect(container.querySelector('[data-dashboard-primitive="drawer"]')?.getAttribute('aria-modal')).toBeNull()
     expect(container.querySelector('[data-dashboard-primitive="sidebar"]')?.hasAttribute('inert')).toBe(false)
@@ -350,7 +481,7 @@ describe('bell and search slot integration', () => {
     const container = document.createElement('main')
     const onToggleDrawer = vi.fn()
 
-    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn(), onToggleDrawer })
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn(), onToggleDrawer } })
 
     const bell = container.querySelector<HTMLButtonElement>('[aria-label="Notifications"]')
     expect(bell).not.toBeNull()
@@ -363,7 +494,7 @@ describe('bell and search slot integration', () => {
     const container = document.createElement('main')
     const onNavigate = vi.fn()
 
-    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn(), onNavigate })
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn(), onNavigate } })
 
     const searchSlot = container.querySelector<HTMLElement>('.dashboard-header__search')
     expect(searchSlot).not.toBeNull()
@@ -372,19 +503,81 @@ describe('bell and search slot integration', () => {
     expect(onNavigate).toHaveBeenCalledWith('/dashboard/globalSearch')
   })
 
+  it('header search preserves discovery query filters when navigating to Global Search', () => {
+    const container = document.createElement('main')
+    const onNavigate = vi.fn()
+
+    renderApp({
+      container,
+      state: { status: 'authenticated', token: 'jwt-token', user: adminUser },
+      actions: { onLogin: vi.fn(), onLogout: vi.fn(), onNavigate },
+      routePath: '/dashboard/knowledgeBrowser?query=auth&category=architecture#results'
+    })
+
+    const searchSlot = container.querySelector<HTMLElement>('.dashboard-header__search')
+    expect(searchSlot).not.toBeNull()
+    searchSlot!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    expect(onNavigate).toHaveBeenCalledWith('/dashboard/globalSearch?query=auth&category=architecture')
+  })
+
+  it('header search opens the Global Search route in the running app', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard')
+
+    const cleanup = startDashboardApp(container, { api: fakeApi(), session })
+    try {
+      await flushDashboard()
+      container.querySelector<HTMLButtonElement>('.dashboard-header__search')!.click()
+      await flushDashboard()
+
+      expect(window.location.pathname).toBe('/dashboard/globalSearch')
+      expect(container.querySelector('section h2')?.textContent).toBe('Global Search')
+      expect(container.querySelector('[data-coming-soon]')).toBeNull()
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('initializes discovery filters from the current URL in the running app', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/knowledgeBrowser?query=auth&limit=1')
+
+    const cleanup = startDashboardApp(container, { api: fakeApi(), session })
+    try {
+      await flushDashboard()
+
+      expect(container.querySelector('section h2')?.textContent).toBe('Knowledge Browser')
+      expect(container.querySelector('input[name="query"]')?.getAttribute('value')).toBe('auth')
+      expect(container.querySelectorAll('article[role="listitem"]')).toHaveLength(1)
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
   it('mark all read button fires onMarkAllRead callback', () => {
     const container = document.createElement('main')
     const onMarkAllRead = vi.fn()
 
     // Render with drawer open and 3 unread notifications
-    renderApp(
+    renderApp({
       container,
-      { status: 'authenticated', token: 'jwt-token', user: adminUser },
-      { onLogin: vi.fn(), onLogout: vi.fn(), onMarkAllRead },
-      { status: 'loading' },
-      '/dashboard',
-      { drawerOpen: true, readIds: new Set(), summaryUnread: 3 }
-    )
+      state: { status: 'authenticated', token: 'jwt-token', user: adminUser },
+      actions: { onLogin: vi.fn(), onLogout: vi.fn(), onMarkAllRead },
+      dashboard: { status: 'loading' },
+      routePath: '/dashboard',
+      drawerState: { drawerOpen: true, readIds: new Set(), summaryUnread: 3 }
+    })
 
     // Drawer must be open and badge visible before click
     expect(container.querySelector('[data-dashboard-primitive="drawer"]')?.hasAttribute('data-open')).toBe(true)

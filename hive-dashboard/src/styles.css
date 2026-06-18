@@ -237,6 +237,101 @@ a { color: var(--dashboard-accent); }
   text-decoration: none;
 }
 
+/* ─── Knowledge discovery views ───────────────────────────────────────────── */
+.dashboard-discovery-filters {
+  align-items: end;
+  display: grid;
+  gap: .75rem;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  margin-bottom: var(--dashboard-spacing);
+}
+
+.dashboard-discovery-filters label {
+  color: var(--dashboard-text-muted);
+  font-size: .84rem;
+  font-weight: 700;
+  margin: 0;
+}
+
+.dashboard-discovery-filters input,
+.dashboard-discovery-filters select {
+  background: var(--dashboard-surface-raised);
+  border: 1px solid var(--dashboard-border);
+  border-radius: 10px;
+  color: var(--dashboard-text);
+  font: inherit;
+  padding: .75rem .85rem;
+}
+
+.dashboard-discovery-filters button {
+  align-self: end;
+}
+
+.dashboard-discovery-results {
+  display: grid;
+  gap: var(--dashboard-spacing);
+}
+
+.dashboard-discovery-card {
+  background: var(--dashboard-surface-raised);
+  border: 1px solid var(--dashboard-border);
+  border-radius: calc(var(--dashboard-radius) - 6px);
+  display: grid;
+  gap: .7rem;
+  padding: var(--dashboard-spacing);
+}
+
+.dashboard-discovery-card h3,
+.dashboard-discovery-card p,
+.dashboard-discovery-tags {
+  margin: 0;
+}
+
+.dashboard-discovery-card__metadata,
+.dashboard-discovery-card__summary,
+.dashboard-discovery-pagination {
+  color: var(--dashboard-text-muted);
+}
+
+.dashboard-discovery-card__summary mark {
+  background: color-mix(in srgb, var(--dashboard-warning) 32%, transparent);
+  border-radius: 5px;
+  color: var(--dashboard-text);
+  padding: .05rem .2rem;
+}
+
+.dashboard-discovery-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  list-style: none;
+  padding: 0;
+}
+
+.dashboard-discovery-tags li {
+  border: 1px solid var(--dashboard-border);
+  border-radius: 999px;
+  color: var(--dashboard-text-muted);
+  font-size: .78rem;
+  font-weight: 700;
+  padding: .22rem .55rem;
+}
+
+.dashboard-discovery-card__action {
+  justify-self: start;
+  margin-top: .1rem;
+  text-decoration: none;
+}
+
+.dashboard-discovery-pagination {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .75rem;
+  justify-content: space-between;
+  margin-top: var(--dashboard-spacing);
+}
+
 @keyframes dashboard-float {
   0%, 100% { transform: translateY(0) scale(1); opacity: 1; }
   50%       { transform: translateY(-10px) scale(1.08); opacity: 0.8; }

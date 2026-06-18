@@ -151,6 +151,86 @@ describe('Hive dashboard Explore fixtures', () => {
     ])
   })
 
+  it('labels discovery fixtures as source-limited instead of live API-backed', () => {
+    expect(exploreScreenFixtures.knowledgeBrowser.sourceLabel).toBe('Fixture-backed discovery data — live facets and filters are unavailable.')
+    expect(exploreScreenFixtures.globalSearch.sourceLabel).toBe('Fixture-backed search data — live highlights are unavailable.')
+    expect(exploreScreenFixtures.knowledgeBrowser.sourceLabel.toLowerCase()).not.toContain('live production')
+    expect(exploreScreenFixtures.globalSearch.sourceLabel.toLowerCase()).not.toContain('live production')
+  })
+
+  it('exposes filterable discovery authors, dates, tags, and projects on browser memories', () => {
+    expect(exploreScreenFixtures.knowledgeBrowser.memories.slice(0, 3).map((memory) => ({
+      authorId: memory.authorId,
+      authorLabel: memory.authorLabel,
+      projectId: memory.projectId,
+      savedAt: memory.savedAt,
+      tags: memory.tags
+    }))).toEqual([
+      {
+        authorId: 'sergei-abramov',
+        authorLabel: 'Sergei Abramov',
+        projectId: 'auth-service',
+        savedAt: '2026-06-06T10:33:00.000Z',
+        tags: ['security', 'tokens']
+      },
+      {
+        authorId: 'agent-07',
+        authorLabel: 'agent-07',
+        projectId: 'core-api',
+        savedAt: '2026-06-06T01:37:00.000Z',
+        tags: ['hnsw', 'replication', 'postgres']
+      },
+      {
+        authorId: 'sergei-abramov',
+        authorLabel: 'Sergei Abramov',
+        projectId: 'core-api',
+        savedAt: '2026-06-05T21:57:00.000Z',
+        tags: ['redis', 'perf']
+      }
+    ])
+  })
+
+  it('keeps Knowledge Browser category facet counts aligned with filterable memories', () => {
+    const { categoryFilters, memories } = exploreScreenFixtures.knowledgeBrowser
+
+    for (const filter of categoryFilters) {
+      const matchingMemories = filter.category === 'all'
+        ? memories
+        : memories.filter((memory) => memory.category === filter.category)
+
+      expect(filter.count).toBe(matchingMemories.length)
+      if (filter.count > 0) expect(matchingMemories.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('carries search result metadata and highlight snippets for shared discovery cards', () => {
+    expect(exploreScreenFixtures.globalSearch.results.slice(0, 2).map((result) => ({
+      memoryId: result.memoryId,
+      category: result.category,
+      authorLabel: result.authorLabel,
+      savedAt: result.savedAt,
+      tags: result.tags,
+      highlights: result.highlights
+    }))).toEqual([
+      {
+        memoryId: 'gateway-auth-boundary',
+        category: 'architecture',
+        authorLabel: 'Sergei Abramov',
+        savedAt: '2026-06-06T10:33:00.000Z',
+        tags: ['security', 'tokens'],
+        highlights: ['auth', 'boundary']
+      },
+      {
+        memoryId: 'vector-store-single-writer',
+        category: 'architecture',
+        authorLabel: 'agent-07',
+        savedAt: '2026-06-06T01:37:00.000Z',
+        tags: ['hnsw', 'replication', 'postgres'],
+        highlights: ['replicas', 'read-only']
+      }
+    ])
+  })
+
   it('keeps Explore datasets and graph data as plain render-agnostic arrays', () => {
     expect(Array.isArray(hiveOverviewFixture.knowledgeGrowth.points)).toBe(true)
     expect(hiveOverviewFixture.knowledgeGrowth.points.map((point) => point.value)).toEqual([16720, 18140, 19680, 21110, 22375])

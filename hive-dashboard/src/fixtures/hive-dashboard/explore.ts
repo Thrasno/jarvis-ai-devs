@@ -12,8 +12,8 @@ import {
 import { dashboardContributors, dashboardMemories, dashboardProjects } from './shared'
 import { hiveOverviewFixture } from './overview'
 
-const categoryCounts = [9, 6, 5, 5, 4, 4, 3, 5] as const
 const browserMemories = buildMemories(41)
+const categoryCounts = countMemoriesByCategory(browserMemories)
 
 export const projectsFixture = {
   screen: 'projects',
@@ -25,12 +25,13 @@ export const projectsFixture = {
 
 export const knowledgeBrowserFixture = {
   screen: 'knowledgeBrowser',
+  sourceLabel: 'Fixture-backed discovery data — live facets and filters are unavailable.',
   categoryFilters: [
     { category: 'all', label: 'All', count: 41, selected: true },
     ...memoryCategories.map((category, index) => ({
       category,
       label: category.replace('_', ' '),
-      count: categoryCounts[index],
+      count: categoryCounts[category],
       selected: false
     }))
   ],
@@ -40,6 +41,7 @@ export const knowledgeBrowserFixture = {
 
 export const globalSearchFixture = {
   screen: 'globalSearch',
+  sourceLabel: 'Fixture-backed search data — live highlights are unavailable.',
   query: 'auth boundary',
   highlights: ['auth', 'boundary'],
   results: dashboardMemories.slice(0, 6).map(toSearchResult),
@@ -88,13 +90,28 @@ function buildMemories(count: number): MemoryViewModel[] {
   })
 }
 
+function countMemoriesByCategory(memories: readonly MemoryViewModel[]): Record<MemoryViewModel['category'], number> {
+  return Object.fromEntries(
+    memoryCategories.map((category) => [
+      category,
+      memories.filter((memory) => memory.category === category).length
+    ])
+  ) as Record<MemoryViewModel['category'], number>
+}
+
 function toSearchResult(memory: MemoryViewModel, index: number): SearchResultViewModel {
   return {
     memoryId: memory.id,
     title: memory.title,
     excerpt: memory.content,
+    category: memory.category,
     projectId: memory.projectId,
-    highlights: index % 2 === 0 ? ['auth'] : ['boundary'],
+    authorId: memory.authorId,
+    authorLabel: memory.authorLabel,
+    tags: memory.tags,
+    savedAt: memory.savedAt,
+    savedAtLabel: memory.savedAtLabel,
+    highlights: index % 2 === 0 ? ['auth', 'boundary'] : ['replicas', 'read-only'],
     score: 0.98 - index * 0.04
   }
 }

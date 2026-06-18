@@ -85,14 +85,14 @@ export const dashboardContributors = [
 ] as const satisfies readonly ContributorPrimitiveViewModel[]
 
 export const dashboardMemories = [
-  memory('gateway-auth-boundary', 'Gateway owns the auth boundary, not services', 'architecture', 'auth-service', 'sergei-abramov', ['security', 'tokens'], '06 Jun 2026 · 10:33'),
-  memory('vector-store-single-writer', 'Vector store is single-writer, replicas read-only', 'architecture', 'core-api', 'agent-07', ['hnsw', 'replication', 'postgres'], '06 Jun 2026 · 01:37'),
-  memory('redis-maxmemory-policy', 'Redis evicts under 2GB — bumped maxmemory policy', 'bugfix', 'core-api', 'sergei-abramov', ['redis', 'perf'], '05 Jun 2026 · 21:57'),
-  memory('split-ingest-worker-gateway', 'Split monolith ingest into worker + gateway', 'architecture', 'mobile-sdk', 'jun-tanaka', ['perf', 'observability'], '05 Jun 2026 · 20:44'),
-  memory('token-refresh-cold-start', 'Race condition in token refresh on cold start', 'bugfix', 'auth-service', 'remy-delacroix', ['tokens', 'security'], '05 Jun 2026 · 17:48', 3),
-  memory('local-first-crdt-reconnect', 'Local-first: CRDT merge on reconnect', 'architecture', 'data-pipeline', 'ada-okafor', ['crdt', 'offline-first', 'replication'], '05 Jun 2026 · 16:39', 3),
-  memory('vector-dimension-pinned', 'Vector dim is 1536 — do not change', 'config', 'core-api', 'kwame-mensah', ['hnsw'], '05 Jun 2026 · 16:13'),
-  memory('conflict-lww-preserve-loser', 'Conflicts resolve last-writer-wins, never silent drop', 'decision', 'data-pipeline', 'ada-okafor', ['crdt', 'replication'], '05 Jun 2026 · 12:24', 3)
+  memory('gateway-auth-boundary', 'Gateway owns the auth boundary, not services', 'architecture', 'auth-service', 'sergei-abramov', ['security', 'tokens'], '2026-06-06T10:33:00.000Z', '06 Jun 2026 · 10:33'),
+  memory('vector-store-single-writer', 'Vector store is single-writer, replicas read-only', 'architecture', 'core-api', 'agent-07', ['hnsw', 'replication', 'postgres'], '2026-06-06T01:37:00.000Z', '06 Jun 2026 · 01:37'),
+  memory('redis-maxmemory-policy', 'Redis evicts under 2GB — bumped maxmemory policy', 'bugfix', 'core-api', 'sergei-abramov', ['redis', 'perf'], '2026-06-05T21:57:00.000Z', '05 Jun 2026 · 21:57'),
+  memory('split-ingest-worker-gateway', 'Split monolith ingest into worker + gateway', 'architecture', 'mobile-sdk', 'jun-tanaka', ['perf', 'observability'], '2026-06-05T20:44:00.000Z', '05 Jun 2026 · 20:44'),
+  memory('token-refresh-cold-start', 'Race condition in token refresh on cold start', 'bugfix', 'auth-service', 'remy-delacroix', ['tokens', 'security'], '2026-06-05T17:48:00.000Z', '05 Jun 2026 · 17:48', 3),
+  memory('local-first-crdt-reconnect', 'Local-first: CRDT merge on reconnect', 'architecture', 'data-pipeline', 'ada-okafor', ['crdt', 'offline-first', 'replication'], '2026-06-05T16:39:00.000Z', '05 Jun 2026 · 16:39', 3),
+  memory('vector-dimension-pinned', 'Vector dim is 1536 — do not change', 'config', 'core-api', 'kwame-mensah', ['hnsw'], '2026-06-05T16:13:00.000Z', '05 Jun 2026 · 16:13'),
+  memory('conflict-lww-preserve-loser', 'Conflicts resolve last-writer-wins, never silent drop', 'decision', 'data-pipeline', 'ada-okafor', ['crdt', 'replication'], '2026-06-05T12:24:00.000Z', '05 Jun 2026 · 12:24', 3)
 ] as const satisfies readonly MemoryViewModel[]
 
 export const dashboardNotificationSummary = { unread: 3, total: 7 } as const satisfies NotificationSummaryViewModel
@@ -153,16 +153,20 @@ function memory(
   projectId: string,
   authorId: string,
   tags: readonly string[],
+  savedAt: string,
   savedAtLabel: string,
   versionCount?: number
 ): MemoryViewModel {
+  const author = dashboardContributors.find((contributor) => contributor.id === authorId)
   return {
     id,
     title,
     category,
     projectId,
     authorId,
+    authorLabel: author?.displayName ?? authorId,
     tags,
+    savedAt,
     savedAtLabel,
     content: title,
     ...(versionCount === undefined ? {} : { versionCount })

@@ -2,8 +2,13 @@ import type { Memory, MemoryList, MemorySearch } from '../api/client'
 import { append, error, list, panel, text } from '../components/dom'
 import type { ViewState } from './Overview'
 
-export function renderMemories(state: ViewState<{ recent: MemoryList; search: MemorySearch }>): HTMLElement {
+export function renderMemories(state: ViewState<{ recent: MemoryList; search: MemorySearch }>, options: { detailId?: string | null } = {}): HTMLElement {
   const card = panel('Memories')
+  if (options.detailId) {
+    const unavailable = text('Memory detail is unavailable in this fixture-backed dashboard slice.', 'dashboard-state state')
+    unavailable.setAttribute('role', 'status')
+    return append(card, unavailable)
+  }
   if (state.status === 'loading') return append(card, text('Loading memories…'))
   if (state.status === 'error') return error(card, state.message)
   return append(card,
