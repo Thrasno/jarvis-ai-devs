@@ -62,14 +62,14 @@ export const dashboardNavigationGroups = [
 ] as const satisfies readonly NavigationGroupViewModel[]
 
 export const dashboardProjects = [
-  project('core-api', 'eu-west-1', 'healthy', 4821, 6, '2m ago'),
-  project('auth-service', 'eu-west-1', 'healthy', 2940, 4, '6m ago'),
-  project('billing-worker', 'us-east-1', 'degraded', 1633, 3, '38m ago'),
-  project('web-client', 'eu-west-1', 'healthy', 3577, 5, '14m ago'),
-  project('data-pipeline', 'us-east-1', 'healthy', 5210, 7, '1m ago'),
-  project('mobile-sdk', 'ap-south-1', 'degraded', 1188, 2, '3h ago'),
-  project('infra-terraform', 'eu-west-1', 'healthy', 902, 3, '51m ago'),
-  project('search-index', 'us-east-1', 'unknown', 2104, 4, '1d ago')
+  project('core-api', 'eu-west-1', 'healthy', 4821, 6, '2m ago', '2026-06-06T01:37:00.000Z'),
+  project('auth-service', 'eu-west-1', 'healthy', 2940, 4, '6m ago', '2026-06-06T10:33:00.000Z'),
+  project('billing-worker', 'us-east-1', 'degraded', 1633, 3, '38m ago', '2026-06-04T09:10:00.000Z'),
+  project('web-client', 'eu-west-1', 'healthy', 3577, 5, '14m ago', '2026-06-05T11:20:00.000Z'),
+  project('data-pipeline', 'us-east-1', 'healthy', 5210, 7, '1m ago', '2026-06-05T16:39:00.000Z'),
+  project('mobile-sdk', 'ap-south-1', 'degraded', 1188, 2, '3h ago', '2024-06-05T20:44:00.000Z'),
+  project('infra-terraform', 'eu-west-1', 'healthy', 902, 3, '51m ago', '2026-06-05T16:13:00.000Z'),
+  project('search-index', 'us-east-1', 'unknown', 2104, 4, '1d ago', null)
 ] as const satisfies readonly ProjectPrimitiveViewModel[]
 
 export const dashboardContributors = [
@@ -113,9 +113,10 @@ function project(
   status: ProjectSyncStatus,
   memoryCount: number,
   contributorCount: number,
-  lastSyncLabel: string
+  lastSyncLabel: string,
+  lastMemoryAt: string | null
 ): ProjectPrimitiveViewModel {
-  return { id: name, name, region, status, memoryCount, contributorCount, lastSyncLabel }
+  return { id: name, name, region, status, memoryCount, contributorCount, lastSyncLabel, lastMemoryAt }
 }
 
 function contributor(

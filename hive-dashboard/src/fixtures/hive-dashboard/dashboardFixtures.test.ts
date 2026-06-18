@@ -127,12 +127,28 @@ describe('Hive dashboard Explore fixtures', () => {
       sourceLabel: 'Demo fixture data — live data is unavailable.'
     })
     expect(exploreScreenFixtures.projects.projects).toHaveLength(8)
+    expect(exploreScreenFixtures.projects.healthEvaluationDate).toBe('2026-06-18T00:00:00.000Z')
     expect(exploreScreenFixtures.knowledgeBrowser.memories).toHaveLength(41)
     expect(exploreScreenFixtures.knowledgeBrowser.metadata.exportCount).toBe(41)
     expect(exploreScreenFixtures.globalSearch.results).toHaveLength(6)
     expect(exploreScreenFixtures.knowledgeGraph.nodes).toHaveLength(41)
     expect(exploreScreenFixtures.knowledgeGraph.links).toHaveLength(33)
     expect(exploreScreenFixtures.activityFeed.livePolling).toEqual({ enabled: true, intervalSeconds: 5 })
+  })
+
+  it('labels Projects as non-live fixture data and exposes health derivation inputs', () => {
+    expect(exploreScreenFixtures.projects.sourceLabel).toBe('Demo fixture data — live project summaries are unavailable.')
+    expect(exploreScreenFixtures.projects.sourceLabel.toLowerCase()).not.toContain('live production')
+    expect(exploreScreenFixtures.projects.projects.map((project) => [project.name, project.lastMemoryAt])).toEqual([
+      ['core-api', '2026-06-06T01:37:00.000Z'],
+      ['auth-service', '2026-06-06T10:33:00.000Z'],
+      ['billing-worker', '2026-06-04T09:10:00.000Z'],
+      ['web-client', '2026-06-05T11:20:00.000Z'],
+      ['data-pipeline', '2026-06-05T16:39:00.000Z'],
+      ['mobile-sdk', '2024-06-05T20:44:00.000Z'],
+      ['infra-terraform', '2026-06-05T16:13:00.000Z'],
+      ['search-index', null]
+    ])
   })
 
   it('keeps Explore datasets and graph data as plain render-agnostic arrays', () => {
