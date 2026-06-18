@@ -98,10 +98,20 @@ describe('dashboard shell', () => {
   it('renders ComingSoon for an unimplemented route', () => {
     const container = document.createElement('main')
 
-    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, { status: 'loading' }, '/dashboard/activityFeed')
+    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, { status: 'loading' }, '/dashboard/knowledgeBrowser')
 
     expect(container.querySelector('[data-coming-soon]')).not.toBeNull()
-    expect(container.textContent).toContain('Activity Feed')
+    expect(container.textContent).toContain('Knowledge Browser')
+  })
+
+  it('T12 — renders activityFeed view instead of ComingSoon', () => {
+    const container = document.createElement('main')
+
+    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, { status: 'loading' }, '/dashboard/activityFeed')
+
+    expect(container.querySelector('[data-coming-soon]')).toBeNull()
+    expect(container.querySelector('[role="note"]')?.textContent).toBe('Demo fixture data — live activity feed is unavailable.')
+    expect(container.querySelector('section h2')?.textContent).toBe('Activity Feed')
   })
 
   it('shows the named default memory search in the memories view', () => {
