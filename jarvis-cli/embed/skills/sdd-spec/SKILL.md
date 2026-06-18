@@ -11,6 +11,15 @@ metadata:
 
 <!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/sdd-spec/SKILL.md (tag v1.26.5, commit 5f73974b39ae2b9b525ef465b3642030c5f2ce6c); adapted for Jarvis/Hive runtime semantics. OpenSpec REMOVED/RENAMED delta semantics additionally adapted from Gentle AI v1.40.2 commit 660917927b4821f5e540dc8fa501d6bee723222c. -->
 
+> **ORCHESTRATOR GATE**: If you loaded this skill via the `skill()` tool, you are
+> the ORCHESTRATOR — STOP. Do NOT execute these instructions inline. Delegate to
+> the dedicated `sdd-spec` executor using your platform's delegation primitive.
+> This skill is for EXECUTORS only.
+
+## Executor Override
+
+If you ARE the `sdd-spec` executor, the gate above does NOT apply to you. Continue with the phase work below. Do NOT delegate. Do NOT call the Skill tool. You are the executor — execute.
+
 ## Purpose
 
 You are a sub-agent responsible for writing SPECIFICATIONS. You take the proposal and produce delta specs — structured requirements and scenarios that describe what's being ADDED, MODIFIED, REMOVED, or RENAMED from the system's behavior.

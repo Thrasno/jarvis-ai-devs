@@ -583,6 +583,205 @@ func TestVerifyBlockPatterns_PluralForms(t *testing.T) {
 	}
 }
 
+// --- Slice B: Apply Delivery Decision Gate tests (B1–B7) ---
+
+// applyDecisionBlockedContent is the minimum tasks content that triggers the apply-decision gate.
+const applyDecisionBlockedContent = "Decision needed before apply: Yes\n"
+
+// allPlanningDoneWithTasksContent returns allPlanningDone() artifacts plus tasks content in Contents.
+func allPlanningDoneWithTasksContent(content string) sddstatus.Input {
+	return sddstatus.Input{
+		Artifacts: allPlanningDone(),
+		Contents:  map[string]string{sddstatus.ArtifactTasks: content},
+	}
+}
+
+// TestApplyDecisionGate_BlockedWhenDecisionRequired covers spec scenario
+// "apply blocked when tasks declare unresolved decision".
+func TestApplyDecisionGate_BlockedWhenDecisionRequired(t *testing.T) {
+	s := sddstatus.ComputeStatus("my-feature", "hive",
+		allPlanningDoneWithTasksContent(applyDecisionBlockedContent))
+
+	if s.Dependencies[sddstatus.PhaseApply] != sddstatus.DepBlocked {
+		t.Errorf("apply dep = %q, want blocked when decision required and unresolved", s.Dependencies[sddstatus.PhaseApply])
+	}
+
+	hasReason := false
+	for _, r := range s.BlockedReasons {
+		if strings.Contains(r, "Decision needed before apply") {
+			hasReason = true
+		}
+	}
+	if !hasReason {
+		t.Errorf("BlockedReasons must mention 'Decision needed before apply'; got: %v", s.BlockedReasons)
+	}
+}
+
+// TestApplyDecisionGate_ReadyWhenDecisionNo covers spec scenario
+// "apply ready when tasks carry only the No resolution token" (gate inactive: required=false).
+// A tasks artifact with only "No" means the author explicitly flagged this as not needing
+// a decision — the gate does not trigger.
+func TestApplyDecisionGate_ReadyWhenDecisionNo(t *testing.T) {
+	content := "Decision needed before apply: No\n"
+	s := sddstatus.ComputeStatus("my-feature", "hive",
+		allPlanningDoneWithTasksContent(content))
+
+	if s.Dependencies[sddstatus.PhaseApply] != sddstatus.DepReady {
+		t.Errorf("apply dep = %q, want ready when only 'Decision needed before apply: No' present (gate inactive)", s.Dependencies[sddstatus.PhaseApply])
+	}
+}
+
+// TestApplyDecisionGate_ReadyWhenDecisionYesAndNoPresent tests the conflict-resolution
+// behavior: when both Yes and No are present (e.g., a tasks artifact that evolved),
+// the No resolution token wins and apply is unblocked. Required=true, Resolved=true.
+func TestApplyDecisionGate_ReadyWhenDecisionYesAndNoPresent(t *testing.T) {
+	// Contradictory content: Yes triggers the gate, No resolves it.
+	content := "Decision needed before apply: Yes\nDecision needed before apply: No\n"
+	s := sddstatus.ComputeStatus("my-feature", "hive",
+		allPlanningDoneWithTasksContent(content))
+
+	if s.Dependencies[sddstatus.PhaseApply] != sddstatus.DepReady {
+		t.Errorf("apply dep = %q, want ready when both Yes and No are present (No wins)", s.Dependencies[sddstatus.PhaseApply])
+	}
+	if s.ApplyDecision == nil {
+		t.Fatal("ApplyDecision must not be nil when tasks content has decision flags")
+	}
+	if !s.ApplyDecision.Required {
+		t.Errorf("ApplyDecision.Required = false, want true (Yes was present)")
+	}
+	if !s.ApplyDecision.Resolved {
+		t.Errorf("ApplyDecision.Resolved = false, want true (No resolves Yes)")
+	}
+}
+
+// TestApplyDecisionGate_ReadyWhenChainStrategyStackedToMain covers B3.
+func TestApplyDecisionGate_ReadyWhenChainStrategyStackedToMain(t *testing.T) {
+	content := "Decision needed before apply: Yes\nChain strategy: stacked-to-main\n"
+	s := sddstatus.ComputeStatus("my-feature", "hive",
+		allPlanningDoneWithTasksContent(content))
+
+	if s.Dependencies[sddstatus.PhaseApply] != sddstatus.DepReady {
+		t.Errorf("apply dep = %q, want ready when 'Chain strategy: stacked-to-main' present", s.Dependencies[sddstatus.PhaseApply])
+	}
+}
+
+// TestApplyDecisionGate_ReadyWhenChainStrategyFeatureBranchChain covers B4.
+func TestApplyDecisionGate_ReadyWhenChainStrategyFeatureBranchChain(t *testing.T) {
+	content := "Decision needed before apply: Yes\nChain strategy: feature-branch-chain\n"
+	s := sddstatus.ComputeStatus("my-feature", "hive",
+		allPlanningDoneWithTasksContent(content))
+
+	if s.Dependencies[sddstatus.PhaseApply] != sddstatus.DepReady {
+		t.Errorf("apply dep = %q, want ready when 'Chain strategy: feature-branch-chain' present", s.Dependencies[sddstatus.PhaseApply])
+	}
+}
+
+// TestApplyDecisionGate_ReadyWhenSizeException covers B5.
+func TestApplyDecisionGate_ReadyWhenSizeException(t *testing.T) {
+	content := "Decision needed before apply: Yes\nsize:exception\n"
+	s := sddstatus.ComputeStatus("my-feature", "hive",
+		allPlanningDoneWithTasksContent(content))
+
+	if s.Dependencies[sddstatus.PhaseApply] != sddstatus.DepReady {
+		t.Errorf("apply dep = %q, want ready when 'size:exception' present", s.Dependencies[sddstatus.PhaseApply])
+	}
+}
+
+// TestApplyDecisionGate_ReadyWhenNoDecisionFlag covers spec scenario
+// "apply ready when tasks have no decision flag" (B6).
+func TestApplyDecisionGate_ReadyWhenNoDecisionFlag(t *testing.T) {
+	content := "## Tasks\n\n- [ ] T1\n- [ ] T2\n"
+	s := sddstatus.ComputeStatus("my-feature", "hive",
+		allPlanningDoneWithTasksContent(content))
+
+	if s.Dependencies[sddstatus.PhaseApply] != sddstatus.DepReady {
+		t.Errorf("apply dep = %q, want ready when no 'Decision needed before apply' flag", s.Dependencies[sddstatus.PhaseApply])
+	}
+}
+
+// TestApplyDecisionGate_ApplyDecisionFieldPopulated covers B7.
+func TestApplyDecisionGate_ApplyDecisionFieldPopulated(t *testing.T) {
+	// Case 1: Required=true, Resolved=false.
+	s := sddstatus.ComputeStatus("my-feature", "hive",
+		allPlanningDoneWithTasksContent(applyDecisionBlockedContent))
+	if s.ApplyDecision == nil {
+		t.Fatal("ApplyDecision must not be nil when tasks content is non-empty and has decision flag")
+	}
+	if !s.ApplyDecision.Required {
+		t.Errorf("ApplyDecision.Required = false, want true")
+	}
+	if s.ApplyDecision.Resolved {
+		t.Errorf("ApplyDecision.Resolved = true, want false")
+	}
+
+	// Case 2: Required=true, Resolved=true (Decision needed before apply: No).
+	content2 := "Decision needed before apply: Yes\nDecision needed before apply: No\n"
+	s2 := sddstatus.ComputeStatus("my-feature", "hive",
+		allPlanningDoneWithTasksContent(content2))
+	if s2.ApplyDecision == nil {
+		t.Fatal("ApplyDecision must not be nil for case 2")
+	}
+	if !s2.ApplyDecision.Required {
+		t.Errorf("ApplyDecision.Required = false, want true (case 2)")
+	}
+	if !s2.ApplyDecision.Resolved {
+		t.Errorf("ApplyDecision.Resolved = false, want true (case 2)")
+	}
+
+	// Case 3: nil when tasks content is empty.
+	s3 := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
+		Artifacts: allPlanningDone(),
+	})
+	if s3.ApplyDecision != nil {
+		t.Errorf("ApplyDecision = %+v, want nil when tasks content is empty", s3.ApplyDecision)
+	}
+}
+
+// TestApplyDecisionGate_ApplyProgressDoneBypassesGate pins the behavior that
+// when apply-progress is already done, the delivery-decision gate is not evaluated.
+// This is intentional: if apply completed in a prior session, the gate was resolved then.
+func TestApplyDecisionGate_ApplyProgressDoneBypassesGate(t *testing.T) {
+	arts := allPlanningDone()
+	arts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactDone
+	content := "Decision needed before apply: Yes\n" // gate would block if evaluated
+
+	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
+		Artifacts: arts,
+		Contents:  map[string]string{sddstatus.ArtifactTasks: content},
+	})
+
+	if s.Dependencies[sddstatus.PhaseApply] != sddstatus.DepAllDone {
+		t.Errorf("apply dep = %q, want all_done when apply-progress is done (gate bypassed intentionally)", s.Dependencies[sddstatus.PhaseApply])
+	}
+}
+
+// TestApplyDecisionGate_BlockedWhenPartialProgressAndDecisionUnresolved pins the
+// ordering invariant: the delivery-decision gate fires before the apply-progress=partial
+// check, so an in-progress apply batch remains blocked when the gate is unresolved.
+func TestApplyDecisionGate_BlockedWhenPartialProgressAndDecisionUnresolved(t *testing.T) {
+	arts := allPlanningDone()
+	arts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactPartial
+
+	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
+		Artifacts: arts,
+		Contents:  map[string]string{sddstatus.ArtifactTasks: applyDecisionBlockedContent},
+	})
+
+	if s.Dependencies[sddstatus.PhaseApply] != sddstatus.DepBlocked {
+		t.Errorf("apply dep = %q, want blocked: delivery-decision gate must fire before apply-progress=partial check", s.Dependencies[sddstatus.PhaseApply])
+	}
+
+	hasReason := false
+	for _, r := range s.BlockedReasons {
+		if strings.Contains(r, "Decision needed before apply") {
+			hasReason = true
+		}
+	}
+	if !hasReason {
+		t.Errorf("BlockedReasons must mention 'Decision needed before apply'; got: %v", s.BlockedReasons)
+	}
+}
+
 func TestVerifyBlockPatterns_NegatedNounFormsDoNotBlock(t *testing.T) {
 	// Common CI summary phrases that contain failure/blocker words in a zero/negated context
 	// must NOT block archive. These were false-positives before the verifyNegatedForms strip.

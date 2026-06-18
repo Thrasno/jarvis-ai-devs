@@ -175,6 +175,10 @@ Forward these values to every SDD sub-agent prompt. If a value is unknown and ch
 
 Before `sdd-apply`, inspect the tasks artifact for review workload forecast, estimated changed lines, chained PR recommendation, and any `Decision needed before apply` flag. If the work may exceed the configured review budget and no delivery path is resolved, stop and ask for a chain strategy or explicit size exception before launching apply. Do not let child PRs target `main` directly when a feature-branch chain is active.
 
+If `jarvis sdd status <change> --json` is available and reports `dependencies["sdd-apply"]` as `"blocked"`, the orchestrator MUST NOT launch apply and MUST surface the `blockedReasons` to the user. This native gate enforces the `Decision needed before apply` contract at runtime — the orchestrator does not need to reparse the tasks artifact when native status is available.
+
+When the native CLI is unavailable, fall back to reading the tasks artifact directly: if it contains `Decision needed before apply: Yes` and no resolved delivery decision is recorded in the session (no `Chain strategy: stacked-to-main`, `Chain strategy: feature-branch-chain`, or `size:exception`), stop and ask the user for a delivery decision before delegating apply.
+
 ### Delivery Strategy
 
 Forward the resolved delivery strategy to apply and verify agents:

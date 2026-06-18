@@ -90,6 +90,69 @@ func TestValidatedEditRootsForProjectRequiresMatchingWorkspaceRoot(t *testing.T)
 	}
 }
 
+// TestRunSddContinue_BlockedWhenProposalMissing proves that when no planning artifacts
+// exist, the spec phase is blocked (proposal missing) and the continue routing reflects
+// this by surfacing a blocked reason referencing both sdd-spec and proposal.
+// This tests the CLI-level enforcement of spec scenario "sdd-spec blocked without proposal".
+func TestRunSddContinue_BlockedWhenProposalMissing(t *testing.T) {
+	status, err := buildStatus("my-feature", fakeSddArtifactSource{
+		artifacts: map[string]sddstatus.ArtifactState{},
+	}, "hive", nil)
+	if err != nil {
+		t.Fatalf("buildStatus: %v", err)
+	}
+
+	if status.Dependencies[sddstatus.PhaseSpec] != sddstatus.DepBlocked {
+		t.Errorf("sdd-spec dep = %q, want blocked when proposal is missing", status.Dependencies[sddstatus.PhaseSpec])
+	}
+
+	hasReason := false
+	for _, r := range status.BlockedReasons {
+		if strings.Contains(r, sddstatus.PhaseSpec) && strings.Contains(r, sddstatus.ArtifactProposal) {
+			hasReason = true
+		}
+	}
+	if !hasReason {
+		t.Errorf("BlockedReasons must reference both sdd-spec and proposal; got: %v", status.BlockedReasons)
+	}
+}
+
+// TestRunSddContinue_BlockedWhenApplyDecisionUnresolved proves that when all planning
+// artifacts are done but the tasks artifact declares an unresolved delivery decision,
+// sdd-apply is blocked and the continue routing surfaces a descriptive reason.
+// This tests the CLI-level enforcement of spec scenario "apply blocked when tasks declare
+// unresolved decision".
+func TestRunSddContinue_BlockedWhenApplyDecisionUnresolved(t *testing.T) {
+	status, err := buildStatus("my-feature", fakeSddArtifactSource{
+		artifacts: map[string]sddstatus.ArtifactState{
+			sddstatus.ArtifactProposal: sddstatus.ArtifactDone,
+			sddstatus.ArtifactSpec:     sddstatus.ArtifactDone,
+			sddstatus.ArtifactDesign:   sddstatus.ArtifactDone,
+			sddstatus.ArtifactTasks:    sddstatus.ArtifactDone,
+		},
+		contents: map[string]string{
+			sddstatus.ArtifactTasks: "Decision needed before apply: Yes\n",
+		},
+	}, "hive", nil)
+	if err != nil {
+		t.Fatalf("buildStatus: %v", err)
+	}
+
+	if status.Dependencies[sddstatus.PhaseApply] != sddstatus.DepBlocked {
+		t.Errorf("sdd-apply dep = %q, want blocked when apply-decision is unresolved", status.Dependencies[sddstatus.PhaseApply])
+	}
+
+	hasReason := false
+	for _, r := range status.BlockedReasons {
+		if strings.Contains(r, "Decision needed before apply") {
+			hasReason = true
+		}
+	}
+	if !hasReason {
+		t.Errorf("BlockedReasons must mention 'Decision needed before apply'; got: %v", status.BlockedReasons)
+	}
+}
+
 // TestPrintStatusHuman_BlockedWithNoNextRecommended guards against the regression
 // where printStatusHuman showed "all phases complete ✓" while also showing blocked
 // reasons — contradictory output that occurred when NextRecommended was "" and
