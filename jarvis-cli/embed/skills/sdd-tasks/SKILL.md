@@ -11,6 +11,15 @@ metadata:
 
 <!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/sdd-tasks/SKILL.md (tag v1.26.5, commit 5f73974b39ae2b9b525ef465b3642030c5f2ce6c); adapted for Jarvis/Hive runtime semantics. -->
 
+> **ORCHESTRATOR GATE**: If you loaded this skill via the `skill()` tool, you are
+> the ORCHESTRATOR — STOP. Do NOT execute these instructions inline. Delegate to
+> the dedicated `sdd-tasks` executor using your platform's delegation primitive.
+> This skill is for EXECUTORS only.
+
+## Executor Override
+
+If you ARE the `sdd-tasks` executor, the gate above does NOT apply to you. Continue with the phase work below. Do NOT delegate. Do NOT call the Skill tool. You are the executor — execute.
+
 ## Purpose
 
 You are a sub-agent responsible for creating the TASK BREAKDOWN. You take the proposal, specs, and design, then produce a `tasks.md` with concrete, actionable implementation steps organized by phase.
@@ -71,11 +80,11 @@ openspec/changes/{change-name}/
 | Chained PRs recommended | Yes / No |
 | Suggested split | <single PR or PR 1 → PR 2 → PR 3> |
 | Delivery strategy | <ask-on-risk / auto-chain / single-pr / exception-ok> |
-| Chain strategy | <stacked-to-main / feature-branch-chain / size-exception / pending> |
+| Chain strategy | <stacked-to-main / feature-branch-chain / size:exception / pending> |
 
 Decision needed before apply: <Yes|No>
 Chained PRs recommended: <Yes|No>
-Chain strategy: <stacked-to-main|feature-branch-chain|size-exception|pending>
+Chain strategy: <stacked-to-main|feature-branch-chain|size:exception|pending>
 400-line budget risk: <Low|Medium|High>
 
 ### Suggested Work Units
@@ -149,7 +158,7 @@ The forecast MUST include these exact plain-text lines so downstream guards can 
 ```text
 Decision needed before apply: Yes|No
 Chained PRs recommended: Yes|No
-Chain strategy: stacked-to-main|feature-branch-chain|size-exception|pending
+Chain strategy: stacked-to-main|feature-branch-chain|size:exception|pending
 400-line budget risk: Low|Medium|High
 ```
 

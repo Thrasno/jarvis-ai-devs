@@ -411,7 +411,7 @@ func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *test
 				"disable-model-invocation: true",
 				"user-invocable: false",
 				"## Review Workload Forecast",
-				"Chain strategy: <stacked-to-main|feature-branch-chain|size-exception|pending>",
+				"Chain strategy: <stacked-to-main|feature-branch-chain|size:exception|pending>",
 				"Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.",
 			},
 		},

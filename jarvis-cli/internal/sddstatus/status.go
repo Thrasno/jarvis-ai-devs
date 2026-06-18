@@ -2,6 +2,7 @@ package sddstatus
 
 import (
 	"regexp"
+	"strings"
 )
 
 const StatusSchema = "jarvis.sdd-status"
@@ -118,7 +119,23 @@ var verifyNegatedForms = regexp.MustCompile(`(?i)(?:\b(?:0|no|zero)\s+(?:failure
 var (
 	rxCheckedBox   = regexp.MustCompile(`(?i)\[x\]`)
 	rxUncheckedBox = regexp.MustCompile(`\[ \]`)
+
+	// rxApplyDecisionRequired matches "Decision needed before apply: Yes" with word boundary
+	// to avoid prefix collisions like "Yesterday". Case-insensitive for robustness.
+	rxApplyDecisionRequired = regexp.MustCompile(`(?i)Decision needed before apply:\s*Yes\b`)
+	// rxApplyDecisionNo matches the explicit "No" resolution token. Word boundary prevents
+	// matching "None" or other words that start with "No".
+	rxApplyDecisionNo = regexp.MustCompile(`(?i)Decision needed before apply:\s*No\b`)
 )
+
+// ApplyDecision reports whether an unresolved delivery decision blocks apply.
+// Required is true when the tasks artifact declares "Decision needed before apply: Yes".
+// Resolved is true when a resolution token is present (explicit No, a non-pending chain
+// strategy, or an accepted size exception). Apply is blocked only when Required && !Resolved.
+type ApplyDecision struct {
+	Required bool `json:"required"`
+	Resolved bool `json:"resolved"`
+}
 
 // TaskProgress holds parsed task completion counts from a tasks artifact.
 type TaskProgress struct {
@@ -165,6 +182,7 @@ type ChangeStatus struct {
 	PhaseInstructions map[string]string          `json:"phaseInstructions"`
 	TaskProgress      *TaskProgress              `json:"taskProgress,omitempty"`
 	ApplyState        *ApplyState                `json:"applyState,omitempty"`
+	ApplyDecision     *ApplyDecision             `json:"applyDecision,omitempty"`
 	NextRecommended   string                     `json:"nextRecommended"`
 	BlockedReasons    []string                   `json:"blockedReasons"`
 }
@@ -224,9 +242,10 @@ func ComputeStatus(changeName, artifactStore string, in Input) *ChangeStatus {
 		phaseInstructions = buildPhaseInstructions(changeName)
 	}
 	taskProgress := parseTaskProgress(in.Contents[ArtifactTasks])
+	applyDecision := parseApplyDecision(in.Contents[ArtifactTasks])
 	applyState := buildApplyState(in.Artifacts)
-	dependencies := computeDependencies(in.Artifacts, taskProgress, in.Contents[ArtifactVerifyReport])
-	nextRecommended, blockedReasons := computeNextAndBlockers(in.Artifacts, dependencies, in.Contents[ArtifactVerifyReport])
+	dependencies := computeDependencies(in.Artifacts, taskProgress, applyDecision, in.Contents[ArtifactVerifyReport])
+	nextRecommended, blockedReasons := computeNextAndBlockers(in.Artifacts, dependencies, applyDecision, in.Contents[ArtifactVerifyReport])
 
 	return &ChangeStatus{
 		Schema:        StatusSchema,
@@ -247,6 +266,7 @@ func ComputeStatus(changeName, artifactStore string, in Input) *ChangeStatus {
 		PhaseInstructions: phaseInstructions,
 		TaskProgress:      taskProgress,
 		ApplyState:        applyState,
+		ApplyDecision:     applyDecision,
 		NextRecommended:   nextRecommended,
 		BlockedReasons:    blockedReasons,
 	}
@@ -348,6 +368,36 @@ func parseTaskProgress(content string) *TaskProgress {
 	}
 }
 
+// parseApplyDecision inspects the tasks artifact content to determine whether an
+// unresolved delivery decision is blocking apply. It mirrors the parseTaskProgress
+// pattern: pure content inspection, no I/O.
+//
+// Required is set when the content contains the literal phrase
+// "Decision needed before apply: Yes".
+//
+// Resolved is set when any of the following resolution tokens are present:
+//   - "Decision needed before apply: No"
+//   - "Chain strategy: stacked-to-main"
+//   - "Chain strategy: feature-branch-chain"
+//   - "size:exception"
+//
+// Returns nil when tasksContent is empty (gate inactive).
+func parseApplyDecision(tasksContent string) *ApplyDecision {
+	if tasksContent == "" {
+		return nil
+	}
+	required := rxApplyDecisionRequired.MatchString(tasksContent)
+	if !required {
+		// Gate inactive — not required, therefore not blocking.
+		return &ApplyDecision{Required: false, Resolved: true}
+	}
+	resolved := rxApplyDecisionNo.MatchString(tasksContent) ||
+		strings.Contains(tasksContent, "Chain strategy: stacked-to-main") ||
+		strings.Contains(tasksContent, "Chain strategy: feature-branch-chain") ||
+		strings.Contains(tasksContent, "size:exception")
+	return &ApplyDecision{Required: true, Resolved: resolved}
+}
+
 func buildApplyState(artifacts map[string]ArtifactState) *ApplyState {
 	state := artifacts[ArtifactApplyProgress]
 	if state == ArtifactMissing || state == "" {
@@ -359,16 +409,18 @@ func buildApplyState(artifacts map[string]ArtifactState) *ApplyState {
 	}
 }
 
-func computeDependencies(artifacts map[string]ArtifactState, tp *TaskProgress, verifyContent string) map[string]DependencyState {
+func computeDependencies(artifacts map[string]ArtifactState, tp *TaskProgress, ad *ApplyDecision, verifyContent string) map[string]DependencyState {
 	deps := make(map[string]DependencyState, len(PhaseOrder))
 	for _, phase := range PhaseOrder {
-		deps[phase] = computePhaseDep(phase, artifacts, tp, verifyContent)
+		deps[phase] = computePhaseDep(phase, artifacts, tp, ad, verifyContent)
 	}
 	return deps
 }
 
-func computePhaseDep(phase string, artifacts map[string]ArtifactState, tp *TaskProgress, verifyContent string) DependencyState {
+func computePhaseDep(phase string, artifacts map[string]ArtifactState, tp *TaskProgress, ad *ApplyDecision, verifyContent string) DependencyState {
 	output := PhaseOutput[phase]
+	// When apply-progress is already done the delivery-decision gate is moot —
+	// the phase completed in a prior session and the gate was resolved then.
 	if artifacts[output] == ArtifactDone {
 		return DepAllDone
 	}
@@ -387,6 +439,10 @@ func computePhaseDep(phase string, artifacts map[string]ArtifactState, tp *TaskP
 
 	switch phase {
 	case PhaseApply:
+		// Apply is blocked when a delivery decision is required but unresolved.
+		if ad != nil && ad.Required && !ad.Resolved {
+			return DepBlocked
+		}
 		if artifacts[ArtifactApplyProgress] == ArtifactPartial {
 			return DepReady
 		}
@@ -432,7 +488,7 @@ func isVerifyPassing(content string) bool {
 	return true
 }
 
-func computeNextAndBlockers(artifacts map[string]ArtifactState, deps map[string]DependencyState, verifyContent string) (next string, reasons []string) {
+func computeNextAndBlockers(artifacts map[string]ArtifactState, deps map[string]DependencyState, ad *ApplyDecision, verifyContent string) (next string, reasons []string) {
 	var blocked []string
 	for _, phase := range PhaseOrder {
 		state := deps[phase]
@@ -452,6 +508,8 @@ func computeNextAndBlockers(artifacts map[string]ArtifactState, deps map[string]
 			// The block comes from a secondary condition in computePhaseDep's switch block.
 			if len(missingDeps) == 0 {
 				switch phase {
+				case PhaseApply:
+					blocked = append(blocked, "phase sdd-apply blocked — delivery decision required (tasks declare 'Decision needed before apply: Yes' and no resolved chain strategy/size:exception)")
 				case PhaseVerify:
 					if artifacts[ArtifactApplyProgress] == ArtifactPartial {
 						blocked = append(blocked, "phase sdd-verify blocked — apply-progress is partial; complete or reconcile sdd-apply before verification")
