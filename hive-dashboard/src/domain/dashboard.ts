@@ -63,6 +63,7 @@ export type ProjectPrimitiveViewModel = {
   readonly memoryCount: number
   readonly contributorCount: number
   readonly lastSyncLabel: string
+  readonly lastMemoryAt?: string | null
 }
 
 export type ContributorPrimitiveViewModel = {
@@ -154,6 +155,8 @@ export type OverviewFixtureViewModel = {
 export type ProjectListFixtureViewModel = {
   readonly screen: 'projects'
   readonly totalProjects: number
+  readonly sourceLabel?: string
+  readonly healthEvaluationDate: string
   readonly projects: readonly ProjectPrimitiveViewModel[]
 }
 
