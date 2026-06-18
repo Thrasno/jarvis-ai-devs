@@ -179,10 +179,6 @@ Typical phases:
 - verify,
 - archive.
 
-Use Hive as the default SDD artifact store unless the user explicitly requests OpenSpec/file-based artifacts.
-
-Do not use Engram as Jarvis SDD artifact storage.
-
 Do not skip planning for architectural, cross-component, or high-risk changes.
 
 ## Backlog Management
