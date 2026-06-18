@@ -4,6 +4,7 @@ import type { SessionStore } from './auth/session'
 import { loadDashboard, renderApp, startDashboardApp } from './main'
 import { dashboardNotificationSummary } from './fixtures/hive-dashboard/shared'
 import { hiveOverviewFixture } from './fixtures/hive-dashboard/overview'
+import { projectsFixture } from './fixtures/hive-dashboard/explore'
 
 const adminUser = { id: 'admin-1', username: 'admin', email: 'admin@example.com', level: 'admin' as const, is_active: true, created_at: '2026-06-06T20:00:00Z' }
 const memberUser = { id: 'member-1', username: 'member', email: 'member@example.com', level: 'member' as const, is_active: true, created_at: '2026-06-06T20:00:00Z' }
@@ -111,6 +112,27 @@ describe('dashboard shell', () => {
     expect(container.querySelector('[data-dashboard-primitive="main"]')?.textContent).toContain('Default search: "dashboard"')
   })
 
+  it('renders the Projects view instead of ComingSoon for an authenticated member', () => {
+    const container = document.createElement('main')
+
+    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: memberUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, dashboardState(), '/dashboard/projects')
+
+    expect(container.querySelector('[data-coming-soon]')).toBeNull()
+    expect(container.querySelector('[role="note"]')?.textContent).toBe('Demo fixture data — live project summaries are unavailable.')
+    expect(container.querySelector('[aria-label="Project summaries"]')).not.toBeNull()
+    expect(container.querySelector<HTMLAnchorElement>('a[href="/dashboard/memories?project=core-api"]')?.textContent).toBe('Browse memories')
+  })
+
+  it('matches the memories route when project-scoped browse navigation includes query and hash', () => {
+    const container = document.createElement('main')
+
+    renderApp(container, { status: 'authenticated', token: 'jwt-token', user: adminUser }, { onLogin: vi.fn(), onLogout: vi.fn() }, dashboardState(), '/dashboard/memories?project=core-api#results')
+
+    expect(container.querySelector('section h2')?.textContent).toBe('Memories')
+    expect(container.querySelector('[data-coming-soon]')).toBeNull()
+    expect(container.querySelector('[data-dashboard-primitive="main"]')?.textContent).toContain('Default search: "dashboard"')
+  })
+
   it('does not render stale dashboard data after logout while a dashboard load is pending', async () => {
     const container = document.createElement('main')
     document.body.append(container)
@@ -204,6 +226,7 @@ describe('dashboard shell', () => {
     expect(dashboard.data.users.status).toBe('ready')
     expect(dashboard.data.memories.status).toBe('ready')
     expect(dashboard.data.audit.status).toBe('ready')
+    expect(dashboard.data.projects).toEqual({ status: 'ready', data: projectsFixture })
   })
 
   it('surfaces unhealthy live health as an overview error instead of fixture-complemented daemon counts', async () => {
@@ -218,6 +241,7 @@ describe('dashboard shell', () => {
       expect(dashboard.data.users.status).toBe('ready')
       expect(dashboard.data.memories.status).toBe('ready')
       expect(dashboard.data.audit.status).toBe('ready')
+      expect(dashboard.data.projects).toEqual({ status: 'ready', data: projectsFixture })
     }
   })
 
@@ -553,7 +577,8 @@ function dashboardState() {
       overview: { status: 'ready' as const, data: hiveOverviewFixture },
       users: { status: 'ready' as const, data: { users: [adminUser] } },
       memories: { status: 'ready' as const, data: { recent: { memories: [], total: 0, limit: 5, offset: 0 }, search: { memories: [], total: 0, query: 'dashboard', limit: 5 } } },
-      audit: { status: 'ready' as const, data: { audit_logs: [], total: 0, limit: 10, offset: 0 } }
+      audit: { status: 'ready' as const, data: { audit_logs: [], total: 0, limit: 10, offset: 0 } },
+      projects: { status: 'ready' as const, data: projectsFixture }
     }
   }
 }

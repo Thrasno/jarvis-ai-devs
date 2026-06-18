@@ -18,6 +18,8 @@ const browserMemories = buildMemories(41)
 export const projectsFixture = {
   screen: 'projects',
   totalProjects: dashboardProjects.length,
+  sourceLabel: 'Demo fixture data — live project summaries are unavailable.',
+  healthEvaluationDate: '2026-06-18T00:00:00.000Z',
   projects: dashboardProjects
 } as const satisfies ProjectListFixtureViewModel
 

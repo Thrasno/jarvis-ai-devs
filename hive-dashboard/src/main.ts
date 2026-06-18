@@ -4,12 +4,14 @@ import { control } from './components/dom'
 import { comingSoon } from './components/ComingSoon'
 import { renderNotificationDrawer } from './components/NotificationDrawer'
 import { renderSidebar, type UserLevel } from './components/Sidebar'
-import type { CurrentProfileViewModel, DashboardScreenKey, OverviewFixtureViewModel } from './domain/dashboard'
+import type { CurrentProfileViewModel, DashboardScreenKey, OverviewFixtureViewModel, ProjectListFixtureViewModel } from './domain/dashboard'
 import { dashboardFixtures } from './fixtures/hive-dashboard/index'
+import { projectsFixture } from './fixtures/hive-dashboard/explore'
 import { hiveOverviewFixture } from './fixtures/hive-dashboard/overview'
 import { renderAuditSync } from './views/AuditSync'
 import { renderMemories } from './views/Memories'
 import { renderOverview, type ViewState } from './views/Overview'
+import { renderProjects } from './views/Projects'
 import { renderUsers } from './views/Users'
 import './styles.css'
 
@@ -23,6 +25,7 @@ export type LoadedDashboardData = {
   users: ViewState<UsersData>
   memories: ViewState<MemoriesData>
   audit: ViewState<AuditSyncData>
+  projects: ViewState<ProjectListFixtureViewModel>
 }
 export type DashboardState = { status: 'loading' } | { status: 'ready'; data: Partial<LoadedDashboardData> }
 
@@ -70,8 +73,8 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
   },
   projects: {
     path: '/dashboard/projects',
-    placeholderLabel: 'Projects',
-    render: () => comingSoon('Projects')
+    load: 'projects',
+    render: (vs) => renderProjects(vs as ViewState<ProjectListFixtureViewModel>)
   },
   knowledgeBrowser: {
     path: '/dashboard/knowledgeBrowser',
@@ -126,7 +129,7 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
  * Falls back to 'overview'.
  */
 function screenFromPath(routePath: string): DashboardScreenKey {
-  const normalized = routePath.replace(/\/$/, '')
+  const normalized = routePath.split(/[?#]/, 1)[0].replace(/\/$/, '')
   // Handle legacy /dashboard/audit-sync alias
   if (normalized.endsWith('/audit-sync')) return 'auditLog'
   // Handle legacy /dashboard/users alias
@@ -362,7 +365,8 @@ export async function loadDashboard(api: ApiClient, token: string): Promise<{ st
       overview: overviewState(health, stats),
       users: settledState(users),
       memories: combinedState(recent, search, (recent, search) => ({ recent, search })),
-      audit: settledState(audit)
+      audit: settledState(audit),
+      projects: { status: 'ready', data: projectsFixture }
     }
   }
 }
@@ -417,6 +421,8 @@ async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token:
       const result = await Promise.allSettled([api.auditLogs(token, { limit: 10 })])
       return settledState(result[0])
     }
+    case 'projects':
+      return { status: 'ready', data: projectsFixture }
   }
 }
 
