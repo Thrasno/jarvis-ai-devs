@@ -193,6 +193,50 @@ a { color: var(--dashboard-accent); }
   margin: 0;
 }
 
+/* ─── Projects repository view ────────────────────────────────────────────── */
+.dashboard-source-note {
+  background: color-mix(in srgb, var(--dashboard-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--dashboard-accent) 35%, var(--dashboard-border));
+  border-radius: calc(var(--dashboard-radius) - 8px);
+  color: var(--dashboard-text-muted);
+  margin: 0 0 var(--dashboard-spacing);
+  padding: .75rem .9rem;
+}
+
+.dashboard-project-grid {
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+}
+
+.dashboard-project-card {
+  background: var(--dashboard-surface-raised);
+  border: 1px solid var(--dashboard-border);
+  border-radius: calc(var(--dashboard-radius) - 6px);
+  display: grid;
+  gap: .65rem;
+  padding: var(--dashboard-spacing);
+}
+
+.dashboard-project-card h3,
+.dashboard-project-card p {
+  margin: 0;
+}
+
+.dashboard-project-card h3 {
+  color: var(--dashboard-text);
+  font-size: 1.05rem;
+}
+
+.dashboard-project-card__metric,
+.dashboard-project-card__health {
+  color: var(--dashboard-text-muted);
+}
+
+.dashboard-project-card__action {
+  justify-self: start;
+  margin-top: .25rem;
+  text-decoration: none;
+}
+
 @keyframes dashboard-float {
   0%, 100% { transform: translateY(0) scale(1); opacity: 1; }
   50%       { transform: translateY(-10px) scale(1.08); opacity: 0.8; }
