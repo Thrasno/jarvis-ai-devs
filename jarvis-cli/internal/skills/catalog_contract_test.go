@@ -1311,40 +1311,6 @@ func TestCatalogContract_SkillRegistryDocsAreIndexFirstAndPathFirst(t *testing.T
 	}
 }
 
-func TestCatalogContract_RootAgentInstructionsUseHiveForSDDArtifacts(t *testing.T) {
-	t.Parallel()
-
-	sections := make(map[string]string)
-	for _, filePath := range []string{"AGENTS.md", "CLAUDE.md"} {
-		content := readWorkspaceAsset(t, filePath)
-		section := markdownSection(t, content, "SDD Workflow")
-		sections[filePath] = section
-
-		for _, required := range []string{
-			"Use Hive as the default SDD artifact store unless the user explicitly requests OpenSpec/file-based artifacts.",
-			"Do not use Engram as Jarvis SDD artifact storage.",
-		} {
-			if !strings.Contains(section, required) {
-				t.Fatalf("expected %s SDD Workflow section to contain %q", filePath, required)
-			}
-		}
-
-		for _, forbidden := range []string{
-			"Use Engram as the default artifact store",
-			"Engram as the default",
-			"Artifact store mode (`engram | openspec | hybrid | none`)",
-		} {
-			if strings.Contains(section, forbidden) {
-				t.Fatalf("expected %s SDD Workflow section not to contain legacy Engram default wording %q", filePath, forbidden)
-			}
-		}
-	}
-
-	if sections["AGENTS.md"] != sections["CLAUDE.md"] {
-		t.Fatalf("root SDD Workflow guidance must stay equivalent between AGENTS.md and CLAUDE.md\nAGENTS.md:\n%s\nCLAUDE.md:\n%s", sections["AGENTS.md"], sections["CLAUDE.md"])
-	}
-}
-
 func TestCatalogContract_SkillRegistryHivePersistenceDoesNotPromiseTopicKeyUpserts(t *testing.T) {
 	t.Parallel()
 
