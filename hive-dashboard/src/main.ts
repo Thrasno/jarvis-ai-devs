@@ -14,7 +14,7 @@ import { renderKnowledgeBrowser } from './views/KnowledgeBrowser'
 import { renderMemories } from './views/Memories'
 import { renderOverview, type ViewState } from './views/Overview'
 import { renderProjects } from './views/Projects'
-import { renderUsers } from './views/Users'
+import { renderUsers, type UserManagementActionType } from './views/Users'
 import { renderActivityFeed } from './views/ActivityFeed'
 import './styles.css'
 
@@ -39,12 +39,20 @@ export type AppActions = {
   onNavigate?(path: string): void
   onToggleDrawer?(): void
   onMarkAllRead?(): void
+  onSetUserLevel?(username: string, level: UserLevel): Promise<void>
+  onGrantAdmin?(username: string): Promise<void>
+  onDeactivateUser?(username: string): Promise<void>
 }
 
 export type DrawerState = {
   drawerOpen: boolean
   readIds: ReadonlySet<string>
   summaryUnread?: number
+}
+
+export type UserManagementState = {
+  pendingAction?: { username: string; type: UserManagementActionType }
+  mutationError?: string
 }
 
 export type RenderAppOptions = {
@@ -54,6 +62,7 @@ export type RenderAppOptions = {
   dashboard?: DashboardState
   routePath?: string
   drawerState?: DrawerState
+  userManagementState?: UserManagementState
   drawerJustOpened?: boolean
   disposeActivityFeed?: () => void
   setActivityFeedDispose?: (fn: () => void) => void
@@ -163,6 +172,7 @@ export function renderApp({
   dashboard = { status: 'loading' },
   routePath = window.location.pathname,
   drawerState = { drawerOpen: false, readIds: new Set() },
+  userManagementState = {},
   drawerJustOpened = false,
   disposeActivityFeed = () => {},
   setActivityFeedDispose = () => {}
@@ -173,7 +183,7 @@ export function renderApp({
   container.replaceChildren()
   state.status === 'anonymous'
     ? renderLogin(container, state, actions)
-    : renderShell(container, state, actions, dashboard, routePath, drawerState, drawerJustOpened, disposeActivityFeed, setActivityFeedDispose)
+    : renderShell(container, state, actions, dashboard, routePath, drawerState, userManagementState, drawerJustOpened, disposeActivityFeed, setActivityFeedDispose)
 }
 
 function renderLogin(
@@ -209,6 +219,7 @@ function renderShell(
   dashboard: DashboardState,
   routePath: string,
   drawerState: DrawerState,
+  userManagementState: UserManagementState,
   drawerJustOpened = false,
   disposeActivityFeed: () => void = () => {},
   setActivityFeedDispose: (fn: () => void) => void = () => {}
@@ -286,7 +297,7 @@ function renderShell(
   const mainContent = document.createElement('main')
   mainContent.className = 'dashboard-content'
   mainContent.dataset.dashboardPrimitive = 'main'
-  mainContent.append(renderAuthenticatedView(activeScreen, dashboard, routePath, actions, disposeActivityFeed, setActivityFeedDispose))
+  mainContent.append(renderAuthenticatedView(activeScreen, dashboard, routePath, state, actions, userManagementState, disposeActivityFeed, setActivityFeedDispose))
   mainArea.append(mainContent)
 
   setModalBackgroundState([sidebar, header, mainContent], drawerState.drawerOpen)
@@ -362,7 +373,9 @@ function renderAuthenticatedView(
   screen: DashboardScreenKey,
   state: DashboardState,
   routePath: string,
+  auth: Extract<AuthState, { status: 'authenticated' }>,
   actions: AppActions,
+  userManagementState: UserManagementState,
   disposeActivityFeed: () => void,
   setActivityFeedDispose: (fn: () => void) => void
 ): HTMLElement {
@@ -381,6 +394,19 @@ function renderAuthenticatedView(
   }
 
   const route = ROUTES[screen]
+  if (screen === 'userManagement') {
+    return renderUsers(stateFor(state, 'users') as ViewState<UsersData>, {
+      currentUsername: auth.user.username,
+      currentLevel: auth.user.level,
+      pendingAction: userManagementState.pendingAction,
+      mutationError: userManagementState.mutationError,
+      actions: {
+        onSetUserLevel: (username, level) => actions.onSetUserLevel?.(username, level) ?? Promise.resolve(),
+        onGrantAdmin: (username) => actions.onGrantAdmin?.(username) ?? Promise.resolve(),
+        onDeactivateUser: (username) => actions.onDeactivateUser?.(username) ?? Promise.resolve()
+      }
+    })
+  }
   if (!route.load) {
     // Fixture-only / ComingSoon route
     return route.render({ status: 'loading' }, routePath)
@@ -588,6 +614,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
   let drawerOpen = false
   let readIds: Set<string> = new Set()
   let summaryUnread: number = dashboardFixtures.shared.notificationSummary.unread
+  let userManagementState: UserManagementState = {}
   let disposed = false
 
   let drawerJustOpened = false
@@ -601,6 +628,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
       dashboard,
       routePath: currentRoutePath(),
       drawerState: { drawerOpen, readIds, summaryUnread },
+      userManagementState,
       drawerJustOpened,
       disposeActivityFeed,
       setActivityFeedDispose
@@ -624,6 +652,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
       drawerOpen = false
       readIds = new Set()
       summaryUnread = dashboardFixtures.shared.notificationSummary.unread
+      userManagementState = {}
       rerender(session.logout())
     },
     async onNavigate(path) {
@@ -654,6 +683,43 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
       drawerOpen = false
       rerender(session.getState())
       root.querySelector<HTMLElement>('[data-bell]')?.focus()
+    },
+    onSetUserLevel(username, level) {
+      return runUserMutation(username, 'level', (token) => api.setUserLevel(token, username, level))
+    },
+    onGrantAdmin(username) {
+      return runUserMutation(username, 'grant-admin', (token) => api.grantAdmin(token, username))
+    },
+    onDeactivateUser(username) {
+      return runUserMutation(username, 'deactivate', (token) => api.deactivateUser(token, username))
+    }
+  }
+
+  async function runUserMutation(
+    username: string,
+    type: UserManagementActionType,
+    mutate: (token: string) => Promise<unknown>
+  ): Promise<void> {
+    if (disposed || userManagementState.pendingAction) return
+    const state = session.getState()
+    if (state.status !== 'authenticated') return
+    const version = loadVersion
+    userManagementState = { pendingAction: { username, type } }
+    rerender(state)
+    try {
+      await mutate(state.token)
+      const slice = await fetchSlice('users', api, state.token)
+      if (disposed) return
+      const current = session.getState()
+      if (version !== loadVersion || current.status !== 'authenticated' || current.token !== state.token) return
+      const existingData = dashboard.status === 'ready' ? dashboard.data : {}
+      dashboard = { status: 'ready', data: { ...existingData, users: slice as ViewState<UsersData> } }
+      userManagementState = {}
+      rerender(current)
+    } catch (error) {
+      if (disposed) return
+      userManagementState = { mutationError: messageFor(error) }
+      rerender(session.getState())
     }
   }
 
