@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 This file is the operational contract for AI agents working in this repository.
 
@@ -125,7 +125,7 @@ Sources of truth are:
 
 Rules:
 
-- Never fix behavior by editing generated files directly.
+- Never fix behavior by editing generated files directly. ALLWAYS CHANGE ASSETS, TEMPLATES AND SOURCE OF TRUTH. NEVER CHANGE LOCAL DEVELOPER FILES.
 - Change the source of truth, then regenerate and verify the rendered output.
 - Config emitters must deep-merge; never clobber user-owned keys.
 - New content must land in the correct layer and pass the layer/role validator.
@@ -163,23 +163,6 @@ Use coverage when the task requires confidence around behavior:
 ```bash
 go test -cover ./...
 ```
-
-## SDD Workflow
-
-Use Spec-Driven Development for substantial changes.
-
-Typical phases:
-
-- explore,
-- proposal,
-- spec,
-- design,
-- tasks,
-- apply,
-- verify,
-- archive.
-
-Do not skip planning for architectural, cross-component, or high-risk changes.
 
 ## Backlog Management
 
@@ -222,7 +205,6 @@ Never commit:
 - Use conventional commits.
 - Never add AI attribution or `Co-Authored-By` lines.
 - Keep changes reviewable.
-- If a change is likely to exceed roughly 400 changed lines, split it into reviewable work units or ask for an explicit size exception.
 - Keep tests and implementation changes together when they belong to the same behavior.
 - GitHub comments, including issue comments, PR comments, and review comments, must be bilingual: English first, followed by normative Spanish from Spain.
 
@@ -261,6 +243,7 @@ Agents must not:
 - confuse Hive sync with assistant memory or SDD artifact storage,
 - skip tests after behavior changes,
 - add AI attribution to commits.
+- change agent local configuration files. ALLWAYS CHANGE SOURCE OF TRUTH
 
 ## Product Direction
 
