@@ -91,6 +91,8 @@ func (h *AdminHandler) SetLevel(c *gin.Context) {
 			c.JSON(http.StatusNotFound, model.ErrorResponse{Error: "usuario no encontrado"})
 		case errors.Is(err, service.ErrMaxAdminsReached):
 			c.JSON(http.StatusConflict, model.ErrorResponse{Error: err.Error()})
+		case errors.Is(err, service.ErrInsufficientAdmins):
+			c.JSON(http.StatusConflict, model.ErrorResponse{Error: err.Error()})
 		default:
 			c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "error al cambiar nivel"})
 		}
@@ -137,12 +139,20 @@ func (h *AdminHandler) GrantAdmin(c *gin.Context) {
 func (h *AdminHandler) Deactivate(c *gin.Context) {
 	username := c.Param("username")
 
+	if claims := claimsFromCtx(c); claims != nil && claims.Username == username {
+		c.JSON(http.StatusForbidden, model.ErrorResponse{Error: "cannot deactivate your own account"})
+		return
+	}
+
 	if err := h.svc.Deactivate(c.Request.Context(), adminActorFromCtx(c), username); err != nil {
-		if errors.Is(err, repository.ErrNotFound) {
+		switch {
+		case errors.Is(err, repository.ErrNotFound):
 			c.JSON(http.StatusNotFound, model.ErrorResponse{Error: "usuario no encontrado"})
-			return
+		case errors.Is(err, service.ErrInsufficientAdmins):
+			c.JSON(http.StatusConflict, model.ErrorResponse{Error: err.Error()})
+		default:
+			c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "error al desactivar usuario"})
 		}
-		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "error al desactivar usuario"})
 		return
 	}
 

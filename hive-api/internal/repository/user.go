@@ -1,8 +1,8 @@
 // Package repository define los contratos de acceso a datos y sus implementaciones.
 //
 // Cada repositorio tiene dos partes:
-//   1. Una interfaz (el contrato) — qué operaciones están disponibles
-//   2. Una implementación concreta (postgres*) — cómo se hacen esas operaciones
+//  1. Una interfaz (el contrato) — qué operaciones están disponibles
+//  2. Una implementación concreta (postgres*) — cómo se hacen esas operaciones
 //
 // El resto del sistema (services) solo conoce la interfaz, nunca la implementación.
 // Esto permite testear los services con mocks sin necesitar una base de datos real.
@@ -48,6 +48,10 @@ type UserRepository interface {
 	// CountAdmins devuelve cuántos usuarios tienen nivel admin.
 	// Se usa para enforcement del límite de 3 admins máximo.
 	CountAdmins(ctx context.Context) (int, error)
+
+	// LockActiveAdminInvariant serializes mutations that can reduce the active
+	// admin count so the last-admin invariant is enforced atomically.
+	LockActiveAdminInvariant(ctx context.Context) error
 
 	// Deactivate deshabilita un usuario (is_active = false).
 	// No borra el registro — preservamos el historial.

@@ -81,6 +81,11 @@ func (m *MockUserRepository) CountAdmins(ctx context.Context) (int, error) {
 	return args.Int(0), args.Error(1)
 }
 
+func (m *MockUserRepository) LockActiveAdminInvariant(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
+}
+
 func (m *MockUserRepository) Deactivate(ctx context.Context, id string) error {
 	args := m.Called(ctx, id)
 	return args.Error(0)
