@@ -2,9 +2,14 @@ package sync
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
+	mathrand "math/rand"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -54,6 +59,10 @@ type SyncStore interface {
 	ApplyRemoteMutation(event db.MutationEnvelope) (bool, error)
 	GetMutationCursor(consumer, project string) (db.MutationCursor, error)
 	SetMutationCursor(consumer, project string, cursor db.MutationCursor, at time.Time) error
+	RecordSyncAttemptLog(ctx context.Context, log db.SyncAttemptLog) error
+	ListPendingSyncAttemptLogs(ctx context.Context, limit int) ([]db.SyncAttemptLog, error)
+	MarkSyncAttemptLogsDelivered(ctx context.Context, ids []string, at time.Time) error
+	DeleteSyncAttemptLogsOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 type BackoffError struct {
@@ -92,8 +101,9 @@ type Syncer struct {
 }
 
 type syncDeps struct {
-	now    func() time.Time
-	jitter func(max time.Duration) time.Duration
+	now          func() time.Time
+	jitter       func(max time.Duration) time.Duration
+	newAttemptID func() string
 }
 
 // New crea un Syncer con las dependencias inyectadas.
@@ -112,6 +122,9 @@ func newSyncer(cfg *Config, store SyncStore, deps syncDeps) *Syncer {
 	if deps.jitter == nil {
 		deps.jitter = defaultSyncDeps().jitter
 	}
+	if deps.newAttemptID == nil {
+		deps.newAttemptID = defaultSyncDeps().newAttemptID
+	}
 	return &Syncer{
 		store:    store,
 		client:   newClient(cfg),
@@ -127,8 +140,9 @@ func defaultSyncDeps() syncDeps {
 			if max <= 0 {
 				return 0
 			}
-			return time.Duration(rand.Int63n(int64(max) + 1))
+			return time.Duration(mathrand.Int63n(int64(max) + 1))
 		},
+		newAttemptID: newSyncAttemptID,
 	}
 }
 
@@ -338,6 +352,25 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 		return nil, fmt.Errorf("registrar éxito de sync: %w", err)
 	}
 
+	attemptLog := db.SyncAttemptLog{
+		AttemptID:      s.deps.newAttemptID(),
+		DevID:          s.client.cfg.Email,
+		Project:        project,
+		Client:         "hive-daemon",
+		StartedAt:      now,
+		EndedAt:        s.deps.now().UTC(),
+		Outcome:        db.SyncAttemptOutcomeSuccess,
+		HTTPStatus:     httpStatusOK,
+		SyncCountsJSON: syncCountsJSON(resp, mutationsPushed, mutationsPulled),
+		MetadataJSON:   "{}",
+	}
+	if err := s.store.RecordSyncAttemptLog(ctx, attemptLog); err != nil {
+		logger.Log.Printf("warn: record sync attempt log %s: %v", attemptLog.AttemptID, err)
+	} else {
+		s.deleteExpiredSyncAttemptLogs(ctx)
+		s.flushSyncAttemptLogs(ctx, token)
+	}
+
 	return &Result{
 		Pushed:            resp.Pushed,
 		Pulled:            len(resp.Pulled),
@@ -349,6 +382,67 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 		CompatibilityMode: compatibilityMode,
 		MutationCursor:    mutationCursor,
 	}, nil
+}
+
+const syncAttemptFlushLimit = 100
+const syncAttemptRetentionDays = 90
+const httpStatusOK = 200
+
+func (s *Syncer) flushSyncAttemptLogs(ctx context.Context, token string) {
+	pending, err := s.store.ListPendingSyncAttemptLogs(ctx, syncAttemptFlushLimit)
+	if err != nil {
+		logger.Log.Printf("warn: list pending sync attempt logs: %v", err)
+		return
+	}
+	if len(pending) == 0 {
+		return
+	}
+
+	response, err := s.client.syncAttempts(ctx, token, pending)
+	if err != nil {
+		logger.Log.Printf("warn: flush sync attempt logs: %v", err)
+		return
+	}
+
+	deliveredIDs := append([]string{}, response.AcceptedIDs...)
+	deliveredIDs = append(deliveredIDs, response.DuplicateIDs...)
+	if len(deliveredIDs) == 0 {
+		return
+	}
+	if err := s.store.MarkSyncAttemptLogsDelivered(ctx, deliveredIDs, s.deps.now().UTC()); err != nil {
+		logger.Log.Printf("warn: mark sync attempt logs delivered: %v", err)
+	}
+}
+
+func (s *Syncer) deleteExpiredSyncAttemptLogs(ctx context.Context) {
+	cutoff := s.deps.now().UTC().AddDate(0, 0, -syncAttemptRetentionDays)
+	if _, err := s.store.DeleteSyncAttemptLogsOlderThan(ctx, cutoff); err != nil {
+		logger.Log.Printf("warn: delete expired sync attempt logs: %v", err)
+	}
+}
+
+func syncCountsJSON(resp *syncResponse, mutationsPushed, mutationsPulled int) string {
+	counts := map[string]int{
+		"pushed":           resp.Pushed,
+		"pulled":           len(resp.Pulled),
+		"conflicts":        resp.Conflicts,
+		"prompts_pushed":   resp.PromptsPushed,
+		"mutations_pushed": mutationsPushed,
+		"mutations_pulled": mutationsPulled,
+	}
+	encoded, err := json.Marshal(counts)
+	if err != nil {
+		return "{}"
+	}
+	return string(encoded)
+}
+
+func newSyncAttemptID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("attempt-%d", time.Now().UTC().UnixNano())
+	}
+	return hex.EncodeToString(buf)
 }
 
 func mutationEventIDs(mutations []db.MutationEnvelope) []string {
@@ -384,7 +478,47 @@ func (s *Syncer) recordFailure(project string, health db.SyncHealth, at time.Tim
 	if err := s.store.RecordSyncFailure(project, at, consecutiveFailures, backoffUntil, syncErr); err != nil {
 		return fmt.Errorf("registrar fallo de sync: %w", err)
 	}
+	s.recordFailureAttemptLog(context.Background(), project, at, syncErr)
 	return nil
+}
+
+func (s *Syncer) recordFailureAttemptLog(ctx context.Context, project string, startedAt time.Time, syncErr error) {
+	message := ""
+	if syncErr != nil {
+		message = syncErr.Error()
+	}
+	attemptLog := db.SyncAttemptLog{
+		AttemptID:      s.deps.newAttemptID(),
+		DevID:          s.client.cfg.Email,
+		Project:        project,
+		Client:         "hive-daemon",
+		StartedAt:      startedAt,
+		EndedAt:        s.deps.now().UTC(),
+		Outcome:        db.SyncAttemptOutcomeFailure,
+		HTTPStatus:     syncAttemptHTTPStatus(message),
+		ErrorCode:      "sync_failed",
+		ErrorMessage:   message,
+		SyncCountsJSON: "{}",
+		MetadataJSON:   "{}",
+	}
+	if err := s.store.RecordSyncAttemptLog(ctx, attemptLog); err != nil {
+		logger.Log.Printf("warn: record failed sync attempt log %s: %v", attemptLog.AttemptID, err)
+		return
+	}
+	s.deleteExpiredSyncAttemptLogs(ctx)
+}
+
+func syncAttemptHTTPStatus(message string) int {
+	start := strings.Index(message, "(")
+	end := strings.Index(message, ")")
+	if start == -1 || end <= start+1 {
+		return 0
+	}
+	status, err := strconv.Atoi(message[start+1 : end])
+	if err != nil {
+		return 0
+	}
+	return status
 }
 
 func computeBackoffDelay(consecutiveFailures int, jitter func(max time.Duration) time.Duration) time.Duration {

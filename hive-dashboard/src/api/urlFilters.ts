@@ -9,6 +9,8 @@ export type DashboardUrlFilters = {
   author?: OptionalString
   actorUserId?: OptionalString
   actor_user_id?: OptionalString
+  window?: OptionalString
+  dev_id?: OptionalString
   from?: OptionalString
   since?: OptionalString
   until?: OptionalString
@@ -17,6 +19,9 @@ export type DashboardUrlFilters = {
   status?: OptionalString
   action?: OptionalString
   outcome?: OptionalString
+  client?: OptionalString
+  daemon_id?: OptionalString
+  error_code?: OptionalString
   limit?: OptionalNumber
   offset?: OptionalNumber
 }
@@ -24,8 +29,10 @@ export type DashboardUrlFilters = {
 type ScalarFilterKey = Exclude<keyof DashboardUrlFilters, 'tags' | 'tag' | 'actorUserId'>
 
 const scalarFilters: readonly { key: ScalarFilterKey; param: string }[] = [
+  { key: 'window', param: 'window' },
   { key: 'query', param: 'query' },
   { key: 'project', param: 'project' },
+  { key: 'dev_id', param: 'dev_id' },
   { key: 'category', param: 'category' },
   { key: 'developer', param: 'developer' },
   { key: 'author', param: 'author' },
@@ -36,6 +43,9 @@ const scalarFilters: readonly { key: ScalarFilterKey; param: string }[] = [
   { key: 'status', param: 'status' },
   { key: 'action', param: 'action' },
   { key: 'outcome', param: 'outcome' },
+  { key: 'client', param: 'client' },
+  { key: 'daemon_id', param: 'daemon_id' },
+  { key: 'error_code', param: 'error_code' },
   { key: 'limit', param: 'limit' },
   { key: 'offset', param: 'offset' }
 ]
@@ -58,6 +68,8 @@ export function parseDashboardFilters(input: string | URLSearchParams): Dashboar
   const filters: DashboardUrlFilters = {}
   setString(filters, 'query', first(params, 'query'))
   setString(filters, 'project', first(params, 'project'))
+  setString(filters, 'window', first(params, 'window'))
+  setString(filters, 'dev_id', first(params, 'dev_id'))
   setString(filters, 'category', first(params, 'category'))
   setString(filters, 'developer', first(params, 'developer'))
   setString(filters, 'author', first(params, 'author'))
@@ -68,6 +80,9 @@ export function parseDashboardFilters(input: string | URLSearchParams): Dashboar
   setString(filters, 'status', first(params, 'status'))
   setString(filters, 'action', first(params, 'action'))
   setString(filters, 'outcome', first(params, 'outcome'))
+  setString(filters, 'client', first(params, 'client'))
+  setString(filters, 'daemon_id', first(params, 'daemon_id'))
+  setString(filters, 'error_code', first(params, 'error_code'))
   setNumber(filters, 'limit', first(params, 'limit'))
   setNumber(filters, 'offset', first(params, 'offset'))
 

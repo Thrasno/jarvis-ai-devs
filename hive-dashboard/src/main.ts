@@ -1,4 +1,4 @@
-import { createApiClient, type AdminStats, type ApiClient, type AuditLogList, type Health, type MemoryList, type MemorySearch, type User } from './api/client'
+import { createApiClient, type AdminStats, type ApiClient, type Health, type MemoryList, type MemorySearch, type SyncAttemptSummary, type User } from './api/client'
 import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
 import { control } from './components/dom'
 import { comingSoon } from './components/ComingSoon'
@@ -23,7 +23,7 @@ export const DEFAULT_MEMORY_SEARCH_QUERY = 'dashboard'
 
 export type UsersData = { users: User[] }
 export type MemoriesData = { recent: MemoryList; search: MemorySearch }
-export type AuditSyncData = AuditLogList
+export type AuditSyncData = SyncAttemptSummary
 export type LoadedDashboardData = {
   overview: ViewState<OverviewFixtureViewModel>
   users: ViewState<UsersData>
@@ -430,7 +430,7 @@ function stateFor<K extends keyof LoadedDashboardData>(
 // Keep loadDashboard for backwards compat with the existing test that calls it directly
 export async function loadDashboard(api: ApiClient, token: string): Promise<{ status: 'ready'; data: LoadedDashboardData }> {
   const [health, stats, users, recent, search, audit] = await Promise.allSettled([
-    api.health(), api.adminStats(token), api.adminUsers(token), api.memories(token, { limit: 5 }), api.searchMemories(token, { query: DEFAULT_MEMORY_SEARCH_QUERY, limit: 5 }), api.auditLogs(token, { limit: 10 })
+    api.health(), api.adminStats(token), api.adminUsers(token), api.memories(token, { limit: 5 }), api.searchMemories(token, { query: DEFAULT_MEMORY_SEARCH_QUERY, limit: 5 }), api.syncAttemptSummary(token)
   ])
   return {
     status: 'ready',
@@ -491,7 +491,7 @@ async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token:
       return combinedState(recent, search, (r, s) => ({ recent: r, search: s }))
     }
     case 'audit': {
-      const result = await Promise.allSettled([api.auditLogs(token, { limit: 10 })])
+      const result = await Promise.allSettled([api.syncAttemptSummary(token)])
       return settledState(result[0])
     }
     case 'projects':

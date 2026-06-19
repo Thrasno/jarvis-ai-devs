@@ -137,6 +137,38 @@ type syncResponse struct {
 	CompatibilityMode  string                `json:"compatibility_mode,omitempty"`
 }
 
+type syncAttemptIngestRequest struct {
+	Attempts []syncAttemptPayload `json:"attempts"`
+}
+
+type syncAttemptPayload struct {
+	AttemptID    string            `json:"attempt_id"`
+	DevID        string            `json:"dev_id"`
+	Project      string            `json:"project"`
+	Client       string            `json:"client"`
+	DaemonID     string            `json:"daemon_id"`
+	StartedAt    time.Time         `json:"started_at"`
+	EndedAt      *time.Time        `json:"ended_at,omitempty"`
+	Outcome      string            `json:"outcome"`
+	HTTPStatus   *int              `json:"http_status,omitempty"`
+	ErrorCode    *string           `json:"error_code,omitempty"`
+	ErrorMessage *string           `json:"error_message,omitempty"`
+	RequestID    string            `json:"request_id"`
+	SyncCounts   map[string]int    `json:"sync_counts"`
+	Metadata     map[string]string `json:"metadata"`
+}
+
+type syncAttemptRejected struct {
+	AttemptID string `json:"attempt_id"`
+	Error     string `json:"error"`
+}
+
+type syncAttemptIngestResponse struct {
+	AcceptedIDs  []string              `json:"accepted_ids"`
+	DuplicateIDs []string              `json:"duplicate_ids"`
+	Rejected     []syncAttemptRejected `json:"rejected"`
+}
+
 // apiMemory es la forma que usa hive-api para devolver memorias.
 type apiMemory struct {
 	ID            string    `json:"id"`
@@ -244,6 +276,57 @@ func (c *client) sync(ctx context.Context, token, project string,
 	return &result, nil
 }
 
+func (c *client) syncAttempts(ctx context.Context, token string, attempts []db.SyncAttemptLog) (*syncAttemptIngestResponse, error) {
+	payloads := make([]syncAttemptPayload, 0, len(attempts))
+	for _, attempt := range attempts {
+		payloads = append(payloads, syncAttemptPayload{
+			AttemptID:    attempt.AttemptID,
+			DevID:        attempt.DevID,
+			Project:      attempt.Project,
+			Client:       attempt.Client,
+			DaemonID:     attempt.DaemonID,
+			StartedAt:    attempt.StartedAt,
+			EndedAt:      timePtr(attempt.EndedAt),
+			Outcome:      string(attempt.Outcome),
+			HTTPStatus:   intPtrIfNonZero(attempt.HTTPStatus),
+			ErrorCode:    stringPtrIfNotEmpty(attempt.ErrorCode),
+			ErrorMessage: stringPtrIfNotEmpty(attempt.ErrorMessage),
+			RequestID:    attempt.RequestID,
+			SyncCounts:   intMapFromJSON(attempt.SyncCountsJSON),
+			Metadata:     stringMapFromJSON(attempt.MetadataJSON),
+		})
+	}
+
+	reqBody, err := json.Marshal(syncAttemptIngestRequest{Attempts: payloads})
+	if err != nil {
+		return nil, fmt.Errorf("marshal sync attempts request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.APIURL+"/sync-attempts", bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("build sync attempts request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sync attempts request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("sync attempts failed (%d): %s", resp.StatusCode, string(body))
+	}
+
+	var result syncAttemptIngestResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode sync attempts response: %w", err)
+	}
+	return &result, nil
+}
+
 func orEmpty(s []string) []string {
 	if s == nil {
 		return []string{}
@@ -256,4 +339,47 @@ func nilStringPtr(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+func timePtr(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	return &value
+}
+
+func intPtrIfNonZero(value int) *int {
+	if value == 0 {
+		return nil
+	}
+	return &value
+}
+
+func stringPtrIfNotEmpty(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func intMapFromJSON(raw string) map[string]int {
+	if raw == "" {
+		return map[string]int{}
+	}
+	var result map[string]int
+	if err := json.Unmarshal([]byte(raw), &result); err != nil || result == nil {
+		return map[string]int{}
+	}
+	return result
+}
+
+func stringMapFromJSON(raw string) map[string]string {
+	if raw == "" {
+		return map[string]string{}
+	}
+	var result map[string]string
+	if err := json.Unmarshal([]byte(raw), &result); err != nil || result == nil {
+		return map[string]string{}
+	}
+	return result
 }

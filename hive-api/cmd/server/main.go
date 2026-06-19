@@ -34,6 +34,7 @@ type buildAppDeps struct {
 	authSvc            handler.AuthService
 	memorySvc          handler.MemoryService
 	syncSvc            handler.SyncService
+	syncAttemptSvc     handler.SyncAttemptService
 	adminSvc           handler.AdminService
 	db                 handler.DBPinger // nil en tests unitarios → health skip DB check
 	allowedOrigins     []string
@@ -41,26 +42,29 @@ type buildAppDeps struct {
 }
 
 type serviceFactories struct {
-	newUserRepo      func(*pgxpool.Pool) repository.UserRepository
-	newMemoryRepo    func(*pgxpool.Pool) repository.MemoryRepository
-	newPromptRepo    func(*pgxpool.Pool) repository.PromptRepository
-	newSessionRepo   func(*pgxpool.Pool) repository.SessionRepository
-	newAuditRepo     func(*pgxpool.Pool) repository.AuditRepository
-	newTxManager     func(*pgxpool.Pool) repository.TxManager
-	newAuthService   func(repository.UserRepository, string) handler.AuthService
-	newMemoryService func(repository.MemoryRepository, repository.SessionRepository) handler.MemoryService
-	newSyncService   func(repository.MemoryRepository, repository.PromptRepository, repository.SessionRepository, repository.AuditRepository) handler.SyncService
-	newAdminService  func(repository.UserRepository, repository.MemoryRepository, repository.AuditRepository, repository.TxManager) handler.AdminService
+	newUserRepo           func(*pgxpool.Pool) repository.UserRepository
+	newMemoryRepo         func(*pgxpool.Pool) repository.MemoryRepository
+	newPromptRepo         func(*pgxpool.Pool) repository.PromptRepository
+	newSessionRepo        func(*pgxpool.Pool) repository.SessionRepository
+	newAuditRepo          func(*pgxpool.Pool) repository.AuditRepository
+	newSyncAttemptRepo    func(*pgxpool.Pool) repository.SyncAttemptRepository
+	newTxManager          func(*pgxpool.Pool) repository.TxManager
+	newAuthService        func(repository.UserRepository, string) handler.AuthService
+	newMemoryService      func(repository.MemoryRepository, repository.SessionRepository) handler.MemoryService
+	newSyncService        func(repository.MemoryRepository, repository.PromptRepository, repository.SessionRepository, repository.AuditRepository) handler.SyncService
+	newSyncAttemptService func(repository.SyncAttemptRepository) handler.SyncAttemptService
+	newAdminService       func(repository.UserRepository, repository.MemoryRepository, repository.AuditRepository, repository.TxManager) handler.AdminService
 }
 
 func defaultServiceFactories() serviceFactories {
 	return serviceFactories{
-		newUserRepo:    repository.NewPostgresUserRepository,
-		newMemoryRepo:  repository.NewPostgresMemoryRepository,
-		newPromptRepo:  repository.NewPostgresPromptRepository,
-		newSessionRepo: repository.NewPostgresSessionRepository,
-		newAuditRepo:   repository.NewPostgresAuditRepository,
-		newTxManager:   repository.NewPostgresTxManager,
+		newUserRepo:        repository.NewPostgresUserRepository,
+		newMemoryRepo:      repository.NewPostgresMemoryRepository,
+		newPromptRepo:      repository.NewPostgresPromptRepository,
+		newSessionRepo:     repository.NewPostgresSessionRepository,
+		newAuditRepo:       repository.NewPostgresAuditRepository,
+		newSyncAttemptRepo: repository.NewPostgresSyncAttemptRepository,
+		newTxManager:       repository.NewPostgresTxManager,
 		newAuthService: func(userRepo repository.UserRepository, jwtSecret string) handler.AuthService {
 			return service.NewAuthService(userRepo, jwtSecret)
 		},
@@ -69,6 +73,9 @@ func defaultServiceFactories() serviceFactories {
 		},
 		newSyncService: func(memRepo repository.MemoryRepository, promptRepo repository.PromptRepository, sessionRepo repository.SessionRepository, auditRepo repository.AuditRepository) handler.SyncService {
 			return service.NewSyncService(memRepo, promptRepo, sessionRepo, auditRepo)
+		},
+		newSyncAttemptService: func(syncAttemptRepo repository.SyncAttemptRepository) handler.SyncAttemptService {
+			return service.NewSyncAttemptService(syncAttemptRepo)
 		},
 		newAdminService: func(userRepo repository.UserRepository, memRepo repository.MemoryRepository, auditRepo repository.AuditRepository, tx repository.TxManager) handler.AdminService {
 			return service.NewAdminService(userRepo, memRepo, auditRepo, tx)
@@ -83,6 +90,7 @@ func buildApp(deps buildAppDeps) *gin.Engine {
 		AuthSvc:            deps.authSvc,
 		MemorySvc:          deps.memorySvc,
 		SyncSvc:            deps.syncSvc,
+		SyncAttemptSvc:     deps.syncAttemptSvc,
 		AdminSvc:           deps.adminSvc,
 		DB:                 deps.db,
 		AllowedOrigins:     deps.allowedOrigins,
@@ -105,18 +113,21 @@ func wireServicesWithFactories(pool *pgxpool.Pool, cfg *config.Config, factories
 	promptRepo := factories.newPromptRepo(pool)
 	sessionRepo := factories.newSessionRepo(pool)
 	auditRepo := factories.newAuditRepo(pool)
+	syncAttemptRepo := factories.newSyncAttemptRepo(pool)
 	txManager := factories.newTxManager(pool)
 
 	// Servicios — lógica de negocio, inyectamos los repositorios
 	authSvc := factories.newAuthService(userRepo, cfg.JWTSecret)
 	memorySvc := factories.newMemoryService(memRepo, sessionRepo)
 	syncSvc := factories.newSyncService(memRepo, promptRepo, sessionRepo, auditRepo)
+	syncAttemptSvc := factories.newSyncAttemptService(syncAttemptRepo)
 	adminSvc := factories.newAdminService(userRepo, memRepo, auditRepo, txManager)
 
 	return buildAppDeps{
 		authSvc:            authSvc,
 		memorySvc:          memorySvc,
 		syncSvc:            syncSvc,
+		syncAttemptSvc:     syncAttemptSvc,
 		adminSvc:           adminSvc,
 		db:                 pool, // pgxpool.Pool implementa DBPinger (tiene Ping(ctx) error)
 		allowedOrigins:     cfg.AllowedOrigins,
@@ -165,6 +176,10 @@ func main() {
 
 	if err := repository.RunMigrations(pool, migrations.DropTopicKeyUniqueConstraintSQL); err != nil {
 		log.Fatalf("migración 006 falló: %v", err)
+	}
+
+	if err := repository.RunMigrations(pool, migrations.SyncAttemptLogsSQL); err != nil {
+		log.Fatalf("migración 007 falló: %v", err)
 	}
 
 	log.Println("✓ PostgreSQL conectado y migraciones ejecutadas")

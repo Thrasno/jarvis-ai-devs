@@ -100,7 +100,7 @@ describe('dashboard shell', () => {
 
     renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath: '/dashboard/audit-sync' })
 
-    expect(container.querySelector('section h2')?.textContent).toBe('Audit and sync')
+    expect(container.querySelector('section h2')?.textContent).toBe('Sync attempt audit reliability')
     expect(container.textContent).not.toContain('Memory detail is unavailable')
   })
 
@@ -368,6 +368,19 @@ describe('dashboard shell', () => {
     expect(dashboard.data.memories.status).toBe('ready')
     expect(dashboard.data.audit.status).toBe('ready')
     expect(dashboard.data.projects).toEqual({ status: 'ready', data: projectsFixture })
+  })
+
+  it('loads the audit route from production sync attempt summaries instead of fixture or audit-log data', async () => {
+    const api = fakeApi()
+
+    const dashboard = await loadDashboard(api, 'jwt-token')
+
+    expect(dashboard.status).toBe('ready')
+    expect(api.syncAttemptSummary).toHaveBeenCalledWith('jwt-token')
+    expect(api.auditLogs).not.toHaveBeenCalled()
+    expect(dashboard.data.audit.status).toBe('ready')
+    if (dashboard.data.audit.status !== 'ready') throw new Error('expected ready audit data')
+    expect(dashboard.data.audit.data.windows.map((window) => window.window)).toEqual(['24h', '7d', '30d'])
   })
 
   it('surfaces unhealthy live health as an overview error instead of fixture-complemented daemon counts', async () => {
@@ -757,7 +770,37 @@ function fakeApi(overrides: { health?: Promise<Awaited<ReturnType<ApiClient['hea
     memories: vi.fn(async () => ({ memories: [], total: 0, limit: 5, offset: 0 })),
     searchMemories: vi.fn(async () => ({ memories: [], total: 0, query: 'dashboard', limit: 5 })),
     memory: vi.fn(async () => ({ id: 'mem-1', sync_id: 'sync-1', project: 'jarvis-dev', category: 'decision', title: 'Dashboard scope', content: 'No daemon controls', tags: [], files_affected: [], created_by: 'admin-1', created_at: '2026-06-06T20:00:00Z', updated_at: '2026-06-06T20:01:00Z', synced_at: '2026-06-06T20:02:00Z' })),
-    auditLogs: vi.fn(async () => ({ audit_logs: [], total: 0, limit: 10, offset: 0 }))
+    auditLogs: vi.fn(async () => ({ audit_logs: [], total: 0, limit: 10, offset: 0 })),
+    syncAttemptSummary: vi.fn(async () => syncAttemptSummaryFixture())
+  }
+}
+
+function syncAttemptSummaryFixture() {
+  return {
+    windows: [
+      syncAttemptWindow('24h', 3, 2, 1, 0.3333),
+      syncAttemptWindow('7d', 5, 4, 1, 0.2),
+      syncAttemptWindow('30d', 8, 7, 1, 0.125)
+    ]
+  }
+}
+
+function syncAttemptWindow(window: '24h' | '7d' | '30d', total: number, successes: number, failures: number, failure_rate: number) {
+  return {
+    window,
+    total,
+    successes,
+    failures,
+    failure_rate,
+    last_success_at: '2026-06-19T09:00:00Z',
+    last_failure_at: '2026-06-19T08:00:00Z',
+    by_developer: [{ key: 'ada@example.com', count: total }],
+    by_project: [{ key: 'jarvis-dev', count: total }],
+    by_client: [{ key: 'hive-daemon', count: total }],
+    by_daemon: [{ key: 'daemon-1', count: total }],
+    by_outcome: [{ key: 'success', count: successes }, { key: 'failure', count: failures }],
+    by_error_code: [{ key: 'NETWORK_ERROR', count: failures }],
+    top_errors: [{ key: 'NETWORK_ERROR', count: failures }]
   }
 }
 
@@ -780,7 +823,7 @@ function dashboardState() {
       overview: { status: 'ready' as const, data: hiveOverviewFixture },
       users: { status: 'ready' as const, data: { users: [adminUser] } },
       memories: { status: 'ready' as const, data: { recent: { memories: [], total: 0, limit: 5, offset: 0 }, search: { memories: [], total: 0, query: 'dashboard', limit: 5 } } },
-      audit: { status: 'ready' as const, data: { audit_logs: [], total: 0, limit: 10, offset: 0 } },
+      audit: { status: 'ready' as const, data: syncAttemptSummaryFixture() },
       projects: { status: 'ready' as const, data: projectsFixture }
     }
   }
