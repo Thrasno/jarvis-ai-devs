@@ -117,22 +117,80 @@ func TestSetLevel_AlreadyAdmin_SkipsCheck(t *testing.T) {
 	mockUserRepo.AssertExpectations(t)
 }
 
-// TestSetLevel_Downgrade verifica que degradar admin→member no verifica el límite.
-func TestSetLevel_Downgrade_SkipsCheck(t *testing.T) {
-	svc, mockUserRepo, _, mockAuditRepo, _ := newTestAdminService(t)
+func TestSetLevel_ActiveAdminDowngradeAllowedWhenAnotherAdminRemains(t *testing.T) {
+	svc, mockUserRepo, _, mockAuditRepo, mockTx := newTestAdminService(t)
 	ctx := context.Background()
 
-	adminUser := &model.User{ID: "user-1", Username: "andres", Level: model.LevelAdmin}
+	adminUser := &model.User{ID: "user-1", Username: "andres", Level: model.LevelAdmin, IsActive: true}
 
 	mockUserRepo.On("GetByUsername", ctx, "andres").Return(adminUser, nil)
+	mockUserRepo.On("LockActiveAdminInvariant", ctx).Return(nil)
+	mockUserRepo.On("CountAdmins", ctx).Return(2, nil)
 	mockUserRepo.On("UpdateLevel", ctx, "user-1", model.LevelMember).Return(nil)
 	mockAuditRepo.On("Insert", ctx, mock.Anything).Return(nil)
 
 	err := svc.SetLevel(ctx, testAdminActor, "andres", model.LevelMember)
 
 	require.NoError(t, err)
-	mockUserRepo.AssertNotCalled(t, "CountAdmins")
+	assert.True(t, mockTx.Committed)
 	mockUserRepo.AssertExpectations(t)
+	mockAuditRepo.AssertExpectations(t)
+}
+
+func TestSetLevel_ActiveAdminDowngradeRejectedWhenNoOtherAdminRemains(t *testing.T) {
+	svc, mockUserRepo, _, mockAuditRepo, _ := newTestAdminService(t)
+	ctx := context.Background()
+
+	adminUser := &model.User{ID: "user-1", Username: "lastadmin", Level: model.LevelAdmin, IsActive: true}
+
+	mockUserRepo.On("GetByUsername", ctx, "lastadmin").Return(adminUser, nil)
+	mockUserRepo.On("LockActiveAdminInvariant", ctx).Return(nil)
+	mockUserRepo.On("CountAdmins", ctx).Return(1, nil)
+
+	err := svc.SetLevel(ctx, testAdminActor, "lastadmin", model.LevelViewer)
+
+	assert.ErrorIs(t, err, service.ErrInsufficientAdmins)
+	mockUserRepo.AssertNotCalled(t, "UpdateLevel", ctx, "user-1", model.LevelViewer)
+	mockAuditRepo.AssertNotCalled(t, "Insert", mock.Anything, mock.Anything)
+	mockUserRepo.AssertExpectations(t)
+}
+
+func TestSetLevel_ActiveAdminDowngradeLockFailureSkipsCountAndMutation(t *testing.T) {
+	svc, mockUserRepo, _, mockAuditRepo, _ := newTestAdminService(t)
+	ctx := context.Background()
+	lockErr := errors.New("lock failed")
+
+	adminUser := &model.User{ID: "user-1", Username: "otheradmin", Level: model.LevelAdmin, IsActive: true}
+
+	mockUserRepo.On("GetByUsername", ctx, "otheradmin").Return(adminUser, nil)
+	mockUserRepo.On("LockActiveAdminInvariant", ctx).Return(lockErr)
+
+	err := svc.SetLevel(ctx, testAdminActor, "otheradmin", model.LevelMember)
+
+	assert.ErrorIs(t, err, lockErr)
+	mockUserRepo.AssertNotCalled(t, "CountAdmins", ctx)
+	mockUserRepo.AssertNotCalled(t, "UpdateLevel", ctx, "user-1", model.LevelMember)
+	mockAuditRepo.AssertNotCalled(t, "Insert", mock.Anything, mock.Anything)
+	mockUserRepo.AssertExpectations(t)
+}
+
+func TestSetLevel_InactiveAdminDowngradeSkipsActiveAdminInvariant(t *testing.T) {
+	svc, mockUserRepo, _, mockAuditRepo, _ := newTestAdminService(t)
+	ctx := context.Background()
+
+	adminUser := &model.User{ID: "user-1", Username: "inactiveadmin", Level: model.LevelAdmin, IsActive: false}
+
+	mockUserRepo.On("GetByUsername", ctx, "inactiveadmin").Return(adminUser, nil)
+	mockUserRepo.On("UpdateLevel", ctx, "user-1", model.LevelMember).Return(nil)
+	mockAuditRepo.On("Insert", ctx, mock.Anything).Return(nil)
+
+	err := svc.SetLevel(ctx, testAdminActor, "inactiveadmin", model.LevelMember)
+
+	require.NoError(t, err)
+	mockUserRepo.AssertNotCalled(t, "LockActiveAdminInvariant", ctx)
+	mockUserRepo.AssertNotCalled(t, "CountAdmins", ctx)
+	mockUserRepo.AssertExpectations(t)
+	mockAuditRepo.AssertExpectations(t)
 }
 
 // TestSetLevel_UserNotFound verifica que intentar cambiar el nivel de un usuario inexistente falla.
@@ -190,6 +248,83 @@ func TestDeactivate_AuditFailureRollsBackMutation(t *testing.T) {
 	assert.ErrorIs(t, err, auditErr)
 	assert.True(t, mockTx.RolledBack)
 	assert.False(t, mockTx.Committed)
+	mockUserRepo.AssertExpectations(t)
+	mockAuditRepo.AssertExpectations(t)
+}
+
+func TestDeactivate_ActiveAdminAllowedWhenAnotherAdminRemains(t *testing.T) {
+	svc, mockUserRepo, _, mockAuditRepo, mockTx := newTestAdminService(t)
+	ctx := context.Background()
+	targetUser := &model.User{ID: "admin-2", Username: "otheradmin", Level: model.LevelAdmin, IsActive: true}
+
+	mockUserRepo.On("GetByUsername", ctx, "otheradmin").Return(targetUser, nil)
+	mockUserRepo.On("LockActiveAdminInvariant", ctx).Return(nil)
+	mockUserRepo.On("CountAdmins", ctx).Return(2, nil)
+	mockUserRepo.On("Deactivate", ctx, "admin-2").Return(nil)
+	mockAuditRepo.On("Insert", ctx, mock.MatchedBy(func(entry *model.AuditEntry) bool {
+		return entry.Action == model.AuditActionUserDeactivate &&
+			entry.Metadata["target_username"] == "otheradmin" &&
+			entry.Metadata["target_user_id"] == "admin-2"
+	})).Return(nil)
+
+	err := svc.Deactivate(ctx, testAdminActor, "otheradmin")
+
+	require.NoError(t, err)
+	assert.True(t, mockTx.Committed)
+	mockUserRepo.AssertExpectations(t)
+	mockAuditRepo.AssertExpectations(t)
+}
+
+func TestDeactivate_ActiveAdminRejectedWhenNoOtherAdminRemains(t *testing.T) {
+	svc, mockUserRepo, _, mockAuditRepo, _ := newTestAdminService(t)
+	ctx := context.Background()
+	targetUser := &model.User{ID: "admin-2", Username: "lastadmin", Level: model.LevelAdmin, IsActive: true}
+
+	mockUserRepo.On("GetByUsername", ctx, "lastadmin").Return(targetUser, nil)
+	mockUserRepo.On("LockActiveAdminInvariant", ctx).Return(nil)
+	mockUserRepo.On("CountAdmins", ctx).Return(1, nil)
+
+	err := svc.Deactivate(ctx, testAdminActor, "lastadmin")
+
+	assert.ErrorIs(t, err, service.ErrInsufficientAdmins)
+	mockUserRepo.AssertNotCalled(t, "Deactivate", ctx, "admin-2")
+	mockAuditRepo.AssertNotCalled(t, "Insert", mock.Anything, mock.Anything)
+	mockUserRepo.AssertExpectations(t)
+}
+
+func TestDeactivate_ActiveAdminLockFailureSkipsCountAndMutation(t *testing.T) {
+	svc, mockUserRepo, _, mockAuditRepo, _ := newTestAdminService(t)
+	ctx := context.Background()
+	targetUser := &model.User{ID: "admin-2", Username: "otheradmin", Level: model.LevelAdmin, IsActive: true}
+	lockErr := errors.New("lock failed")
+
+	mockUserRepo.On("GetByUsername", ctx, "otheradmin").Return(targetUser, nil)
+	mockUserRepo.On("LockActiveAdminInvariant", ctx).Return(lockErr)
+
+	err := svc.Deactivate(ctx, testAdminActor, "otheradmin")
+
+	assert.ErrorIs(t, err, lockErr)
+	mockUserRepo.AssertNotCalled(t, "CountAdmins", ctx)
+	mockUserRepo.AssertNotCalled(t, "Deactivate", ctx, "admin-2")
+	mockAuditRepo.AssertNotCalled(t, "Insert", mock.Anything, mock.Anything)
+	mockUserRepo.AssertExpectations(t)
+}
+
+func TestDeactivate_ActiveNonAdminAllowedWithoutAdminCount(t *testing.T) {
+	svc, mockUserRepo, _, mockAuditRepo, mockTx := newTestAdminService(t)
+	ctx := context.Background()
+	targetUser := &model.User{ID: "user-2", Username: "memberuser", Level: model.LevelMember, IsActive: true}
+
+	mockUserRepo.On("GetByUsername", ctx, "memberuser").Return(targetUser, nil)
+	mockUserRepo.On("Deactivate", ctx, "user-2").Return(nil)
+	mockAuditRepo.On("Insert", ctx, mock.AnythingOfType("*model.AuditEntry")).Return(nil)
+
+	err := svc.Deactivate(ctx, testAdminActor, "memberuser")
+
+	require.NoError(t, err)
+	assert.True(t, mockTx.Committed)
+	mockUserRepo.AssertNotCalled(t, "LockActiveAdminInvariant", ctx)
+	mockUserRepo.AssertNotCalled(t, "CountAdmins", ctx)
 	mockUserRepo.AssertExpectations(t)
 	mockAuditRepo.AssertExpectations(t)
 }

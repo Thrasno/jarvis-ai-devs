@@ -98,6 +98,13 @@ func (r *postgresUserRepository) CountAdmins(ctx context.Context) (int, error) {
 	return count, wrapPgError(err, "CountAdmins")
 }
 
+func (r *postgresUserRepository) LockActiveAdminInvariant(ctx context.Context) error {
+	const q = `SELECT pg_advisory_xact_lock(4815162342)`
+	var ignored any
+	err := r.db.QueryRow(ctx, q).Scan(&ignored)
+	return wrapPgError(err, "LockActiveAdminInvariant")
+}
+
 func (r *postgresUserRepository) Deactivate(ctx context.Context, id string) error {
 	const q = `UPDATE users SET is_active = false, updated_at = $1 WHERE id = $2`
 	_, err := r.db.Exec(ctx, q, time.Now(), id)

@@ -520,3 +520,15 @@ func TestPostgresUserRepository_CountAdmins(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, count, "should only count active admins")
 }
+
+func TestPostgresUserRepository_LockActiveAdminInvariant(t *testing.T) {
+	pool, cleanup := startPostgres(t)
+	defer cleanup()
+
+	txManager := NewPostgresTxManager(pool)
+	err := txManager.WithinTx(context.Background(), func(ctx context.Context, repos TxRepositories) error {
+		return repos.Users.LockActiveAdminInvariant(ctx)
+	})
+
+	require.NoError(t, err)
+}

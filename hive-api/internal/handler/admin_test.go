@@ -107,6 +107,21 @@ func TestSetLevel_MaxAdmins(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, w.Code)
 }
 
+func TestSetLevel_InsufficientAdminsReturnsConflict(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+
+	adminSvc := &mockAdminSvc{}
+	adminSvc.On("SetLevel", context.Background(), model.AdminActor{UserID: "admin-uuid-123", Username: "adminuser"}, "lastadmin", model.LevelMember).
+		Return(service.ErrInsufficientAdmins)
+
+	w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodPost, "/admin/users/lastadmin/level",
+		map[string]string{"level": "member"}, "admin-token")
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	adminSvc.AssertExpectations(t)
+}
+
 // TestDeactivate_Success verifica que un admin pueda desactivar a un usuario
 func TestDeactivate_Success(t *testing.T) {
 	authSvc := &mockAuthSvc{}
@@ -134,6 +149,33 @@ func TestDeactivate_NotFound(t *testing.T) {
 		nil, "admin-token")
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestDeactivate_SelfDeactivationForbidden(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+
+	adminSvc := &mockAdminSvc{}
+	w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodPost, "/admin/users/adminuser/deactivate",
+		nil, "admin-token")
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	adminSvc.AssertNotCalled(t, "Deactivate", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestDeactivate_InsufficientAdminsReturnsConflict(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+
+	adminSvc := &mockAdminSvc{}
+	adminSvc.On("Deactivate", context.Background(), model.AdminActor{UserID: "admin-uuid-123", Username: "adminuser"}, "lastadmin").
+		Return(service.ErrInsufficientAdmins)
+
+	w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodPost, "/admin/users/lastadmin/deactivate",
+		nil, "admin-token")
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	adminSvc.AssertExpectations(t)
 }
 
 // TestSetLevel_InvalidBody verifica que 400 cuando el body es inválido

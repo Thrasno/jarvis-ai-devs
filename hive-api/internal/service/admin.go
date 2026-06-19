@@ -13,6 +13,10 @@ import (
 // El handler lo mapea a HTTP 409 Conflict con mensaje explicativo.
 var ErrMaxAdminsReached = errors.New("máximo de admins alcanzado (límite: 3)")
 
+// ErrInsufficientAdmins is returned when deactivating an admin would leave no
+// active admin account available to manage the system.
+var ErrInsufficientAdmins = errors.New("insufficient active admins remaining")
+
 // maxAdmins es el número máximo de administradores permitidos en el sistema.
 // Es una constante de negocio — si el equipo crece, se puede cambiar aquí.
 const maxAdmins = 3
@@ -81,11 +85,6 @@ func (s *adminService) ListAuditLogs(ctx context.Context, filter model.AuditFilt
 }
 
 // SetLevel implementa la lógica de cambio de nivel con la regla de 3 admins.
-//
-// La lógica de verificación del límite es:
-//   - Si el nuevo nivel NO es admin → no necesitamos contar (podemos proceder)
-//   - Si el usuario YA es admin y le asignamos admin → no incrementamos el conteo (podemos proceder)
-//   - Si el nuevo nivel ES admin y el usuario NO era admin → verificar que haya cupo
 func (s *adminService) SetLevel(ctx context.Context, actor model.AdminActor, username string, newLevel model.UserLevel) error {
 	return s.tx.WithinTx(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
 		user, err := repos.Users.GetByUsername(ctx, username)
@@ -93,8 +92,6 @@ func (s *adminService) SetLevel(ctx context.Context, actor model.AdminActor, use
 			return err
 		}
 
-		// Solo necesitamos verificar el límite si estamos SUBIENDO a admin
-		// (cuando newLevel es admin Y el usuario actualmente no es admin).
 		if newLevel == model.LevelAdmin && user.Level != model.LevelAdmin {
 			count, err := repos.Users.CountAdmins(ctx)
 			if err != nil {
@@ -102,6 +99,18 @@ func (s *adminService) SetLevel(ctx context.Context, actor model.AdminActor, use
 			}
 			if count >= maxAdmins {
 				return ErrMaxAdminsReached
+			}
+		}
+		if user.IsActive && user.Level == model.LevelAdmin && newLevel != model.LevelAdmin {
+			if err := repos.Users.LockActiveAdminInvariant(ctx); err != nil {
+				return err
+			}
+			count, err := repos.Users.CountAdmins(ctx)
+			if err != nil {
+				return err
+			}
+			if count <= 1 {
+				return ErrInsufficientAdmins
 			}
 		}
 
@@ -117,6 +126,18 @@ func (s *adminService) Deactivate(ctx context.Context, actor model.AdminActor, u
 		user, err := repos.Users.GetByUsername(ctx, username)
 		if err != nil {
 			return err
+		}
+		if user.IsActive && user.Level == model.LevelAdmin {
+			if err := repos.Users.LockActiveAdminInvariant(ctx); err != nil {
+				return err
+			}
+			count, err := repos.Users.CountAdmins(ctx)
+			if err != nil {
+				return err
+			}
+			if count <= 1 {
+				return ErrInsufficientAdmins
+			}
 		}
 		if err := repos.Users.Deactivate(ctx, user.ID); err != nil {
 			return err
