@@ -95,6 +95,127 @@ describe('dashboard shell', () => {
     expect(container.textContent).not.toContain('Authentication is active')
   })
 
+  it('wires user management actions to the API and refreshes users after success', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const usersBefore = { users: [adminUser, memberUser] }
+    const promotedMember = { ...memberUser, level: 'viewer' as const }
+    const usersAfter = { users: [adminUser, promotedMember] }
+    const api = fakeApi({ users: [Promise.resolve(usersBefore), Promise.resolve(usersAfter)] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/users')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      container.querySelector<HTMLButtonElement>('[aria-label="member management actions"] button')!.click()
+      expect(container.querySelector('[role="dialog"]')?.textContent).toContain('Change member level to viewer?')
+      container.querySelector<HTMLButtonElement>('[role="dialog"] button')!.click()
+      await flushDashboard()
+
+      expect(api.setUserLevel).toHaveBeenCalledWith('jwt-token', 'member', 'viewer')
+      expect(api.adminUsers).toHaveBeenCalledTimes(2)
+      expect(container.textContent).toContain('Level: viewer')
+      expect(container.textContent).not.toContain('Level: member')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('wires admin-seat grants to the API and refreshes users after success', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const adminMember = { ...memberUser, level: 'admin' as const }
+    const api = fakeApi({
+      users: [
+        Promise.resolve({ users: [adminUser, memberUser] }),
+        Promise.resolve({ users: [adminUser, adminMember] })
+      ]
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/users')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      container.querySelector<HTMLButtonElement>('button[aria-label="Grant admin to member"]')!.click()
+      container.querySelector<HTMLButtonElement>('[role="dialog"] button')!.click()
+      await flushDashboard()
+
+      expect(api.grantAdmin).toHaveBeenCalledWith('jwt-token', 'member')
+      expect(api.adminUsers).toHaveBeenCalledTimes(2)
+      expect(container.textContent).toContain('Admin seat: yes')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('shows pending and API error state for user management mutations without refreshing on failure', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const mutation = deferred<Awaited<ReturnType<ApiClient['deactivateUser']>>>()
+    const api = fakeApi({
+      users: [Promise.resolve({ users: [adminUser, memberUser] })],
+      deactivateUser: mutation.promise
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/users')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      container.querySelector<HTMLButtonElement>('button[aria-label="Deactivate member"]')!.click()
+      container.querySelector<HTMLButtonElement>('[role="dialog"] button')!.click()
+      await flushDashboard()
+
+      expect(container.querySelector<HTMLButtonElement>('button[aria-label="Deactivating member"]')?.disabled).toBe(true)
+      mutation.reject(new Error('insufficient active admins'))
+      await flushDashboard()
+
+      expect(api.deactivateUser).toHaveBeenCalledWith('jwt-token', 'member')
+      expect(api.adminUsers).toHaveBeenCalledTimes(1)
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('insufficient active admins')
+      expect(container.textContent).toContain('member@example.com')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('does not expose user management controls to non-admin sessions', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: memberUser })
+    const api = fakeApi({ users: [Promise.resolve({ users: [adminUser, memberUser] })] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/users')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      expect(container.querySelector('section h2')?.textContent).toBe('Users')
+      expect(container.textContent).toContain('member@example.com')
+      expect(container.querySelector('[aria-label="member management actions"]')).toBeNull()
+      expect(container.querySelector('button[aria-label="Grant admin to member"]')).toBeNull()
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
   it('keeps the plain audit sync legacy alias available', () => {
     const container = document.createElement('main')
 
@@ -740,8 +861,12 @@ async function flushDashboard(): Promise<void> {
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((done) => { resolve = done })
-  return { promise, resolve }
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done
+    reject = fail
+  })
+  return { promise, resolve, reject }
 }
 
 function fakeSessionStore(initial: ReturnType<SessionStore['getState']>): SessionStore {
@@ -757,16 +882,24 @@ function fakeSessionStore(initial: ReturnType<SessionStore['getState']>): Sessio
   }
 }
 
-function fakeApi(overrides: { health?: Promise<Awaited<ReturnType<ApiClient['health']>>>; stats?: Promise<Awaited<ReturnType<ApiClient['adminStats']>>> } = {}): ApiClient {
+function fakeApi(overrides: {
+  health?: Promise<Awaited<ReturnType<ApiClient['health']>>>
+  stats?: Promise<Awaited<ReturnType<ApiClient['adminStats']>>>
+  users?: Promise<Awaited<ReturnType<ApiClient['adminUsers']>>>[]
+  setUserLevel?: Promise<Awaited<ReturnType<ApiClient['setUserLevel']>>>
+  grantAdmin?: Promise<Awaited<ReturnType<ApiClient['grantAdmin']>>>
+  deactivateUser?: Promise<Awaited<ReturnType<ApiClient['deactivateUser']>>>
+} = {}): ApiClient {
+  const userResponses = [...(overrides.users ?? [])]
   return {
     login: vi.fn(),
     currentUser: vi.fn(),
     health: vi.fn(() => overrides.health ?? Promise.resolve({ status: 'ok', db: 'connected', version: '1.0.0' })),
     adminStats: vi.fn(() => overrides.stats ?? Promise.resolve({ users: { total: 1, active: 1, by_level: { admin: 1 } }, memories: { total: 1, by_project: [], by_category: [], last_synced_at: null } })),
-    adminUsers: vi.fn(async () => ({ users: [adminUser] })),
-    setUserLevel: vi.fn(async () => ({ message: 'nivel actualizado' })),
-    grantAdmin: vi.fn(async () => ({ message: 'usuario ascendido a admin' })),
-    deactivateUser: vi.fn(async () => ({ message: 'usuario desactivado' })),
+    adminUsers: vi.fn(() => userResponses.shift() ?? Promise.resolve({ users: [adminUser] })),
+    setUserLevel: vi.fn(() => overrides.setUserLevel ?? Promise.resolve({ message: 'level updated' })),
+    grantAdmin: vi.fn(() => overrides.grantAdmin ?? Promise.resolve({ message: 'admin granted' })),
+    deactivateUser: vi.fn(() => overrides.deactivateUser ?? Promise.resolve({ message: 'user deactivated' })),
     memories: vi.fn(async () => ({ memories: [], total: 0, limit: 5, offset: 0 })),
     searchMemories: vi.fn(async () => ({ memories: [], total: 0, query: 'dashboard', limit: 5 })),
     memory: vi.fn(async () => ({ id: 'mem-1', sync_id: 'sync-1', project: 'jarvis-dev', category: 'decision', title: 'Dashboard scope', content: 'No daemon controls', tags: [], files_affected: [], created_by: 'admin-1', created_at: '2026-06-06T20:00:00Z', updated_at: '2026-06-06T20:01:00Z', synced_at: '2026-06-06T20:02:00Z' })),
