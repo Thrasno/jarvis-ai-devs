@@ -102,6 +102,20 @@ func (m *mockSyncSvc) PullAll(ctx context.Context, project string, since time.Ti
 	return args.Get(0).(*model.PullResult), args.Error(1)
 }
 
+type mockSyncAttemptSvc struct {
+	mock.Mock
+}
+
+func (m *mockSyncAttemptSvc) Ingest(ctx context.Context, req model.SyncAttemptIngestRequest) (model.SyncAttemptIngestResponse, error) {
+	args := m.Called(ctx, req)
+	return args.Get(0).(model.SyncAttemptIngestResponse), args.Error(1)
+}
+
+func (m *mockSyncAttemptSvc) Summary(ctx context.Context, query model.SyncAttemptSummaryQuery) (model.SyncAttemptSummaryResponse, error) {
+	args := m.Called(ctx, query)
+	return args.Get(0).(model.SyncAttemptSummaryResponse), args.Error(1)
+}
+
 // --- AdminService mock ---
 
 type mockAdminSvc struct {

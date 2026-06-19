@@ -56,3 +56,8 @@ var MemoryMutationsSQL string
 //
 //go:embed 006_drop_topic_key_unique_constraint.sql
 var DropTopicKeyUniqueConstraintSQL string
+
+// SyncAttemptLogsSQL is migration 007: dedicated production storage for daemon sync attempt audit logs.
+//
+//go:embed 007_sync_attempt_logs.sql
+var SyncAttemptLogsSQL string

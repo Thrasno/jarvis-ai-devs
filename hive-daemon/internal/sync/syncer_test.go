@@ -21,31 +21,39 @@ import (
 
 // mockSyncStore implements the SyncStore interface for testing.
 type mockSyncStore struct {
-	mu                      sync.Mutex
-	unsynced                []*models.Memory
-	lastSync                time.Time
-	jwt                     string
-	markedSynced            []string
-	savedFromRemote         []*models.Memory
-	unsyncedPrompts         []*models.Prompt
-	unsyncedPromptsErr      error
-	markedPromptSynced      []string
-	markPromptSyncedErr     error
-	healthByProject         map[string]db.SyncHealth
-	recordAttemptCalls      []string
-	recordSuccessCalls      []string
-	recordFailureCalls      []string
-	unsyncedSessions        []*models.Session
-	unsyncedSessionsErr     error
-	markedSessionSynced     []string
-	savedSessionsFromRemote []*models.Session
-	pendingMutations        []db.MutationEnvelope
-	markedMutationsSynced   []string
-	markMutationsSyncedErr  error
-	appliedRemoteMutations  []db.MutationEnvelope
-	applyRemoteMutationErr  error
-	mutationCursor          db.MutationCursor
-	setMutationCursors      []db.MutationCursor
+	mu                       sync.Mutex
+	unsynced                 []*models.Memory
+	lastSync                 time.Time
+	jwt                      string
+	markedSynced             []string
+	savedFromRemote          []*models.Memory
+	unsyncedPrompts          []*models.Prompt
+	unsyncedPromptsErr       error
+	markedPromptSynced       []string
+	markPromptSyncedErr      error
+	healthByProject          map[string]db.SyncHealth
+	recordAttemptCalls       []string
+	recordSuccessCalls       []string
+	recordFailureCalls       []string
+	unsyncedSessions         []*models.Session
+	unsyncedSessionsErr      error
+	markedSessionSynced      []string
+	savedSessionsFromRemote  []*models.Session
+	pendingMutations         []db.MutationEnvelope
+	markedMutationsSynced    []string
+	markMutationsSyncedErr   error
+	appliedRemoteMutations   []db.MutationEnvelope
+	applyRemoteMutationErr   error
+	mutationCursor           db.MutationCursor
+	setMutationCursors       []db.MutationCursor
+	pendingSyncAttempts      []db.SyncAttemptLog
+	recordedSyncAttempts     []db.SyncAttemptLog
+	queueRecordedAttempts    bool
+	listSyncAttemptLimit     int
+	markedSyncAttempts       []string
+	markSyncAttemptsErr      error
+	deleteSyncAttemptCutoffs []time.Time
+	deleteSyncAttemptErr     error
 }
 
 func (m *mockSyncStore) GetUnsynced(project string) ([]*models.Memory, error) {
@@ -212,6 +220,43 @@ func (m *mockSyncStore) SetMutationCursor(consumer, project string, cursor db.Mu
 	m.mutationCursor = cursor
 	m.setMutationCursors = append(m.setMutationCursors, cursor)
 	return nil
+}
+
+func (m *mockSyncStore) RecordSyncAttemptLog(ctx context.Context, log db.SyncAttemptLog) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recordedSyncAttempts = append(m.recordedSyncAttempts, log)
+	if m.queueRecordedAttempts {
+		m.pendingSyncAttempts = append(m.pendingSyncAttempts, log)
+	}
+	return nil
+}
+
+func (m *mockSyncStore) ListPendingSyncAttemptLogs(ctx context.Context, limit int) ([]db.SyncAttemptLog, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.listSyncAttemptLimit = limit
+	if limit <= 0 || limit > len(m.pendingSyncAttempts) {
+		limit = len(m.pendingSyncAttempts)
+	}
+	return append([]db.SyncAttemptLog(nil), m.pendingSyncAttempts[:limit]...), nil
+}
+
+func (m *mockSyncStore) MarkSyncAttemptLogsDelivered(ctx context.Context, ids []string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.markSyncAttemptsErr != nil {
+		return m.markSyncAttemptsErr
+	}
+	m.markedSyncAttempts = append(m.markedSyncAttempts, ids...)
+	return nil
+}
+
+func (m *mockSyncStore) DeleteSyncAttemptLogsOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deleteSyncAttemptCutoffs = append(m.deleteSyncAttemptCutoffs, cutoff)
+	return 0, m.deleteSyncAttemptErr
 }
 
 func (m *mockSyncStore) getHealthLocked(project string) db.SyncHealth {
@@ -1490,4 +1535,166 @@ func TestSyncer_Sync_LegacyFallbackDoesNotAckMutationJournal(t *testing.T) {
 	assert.Empty(t, store.markedMutationsSynced)
 	assert.Empty(t, store.appliedRemoteMutations)
 	assert.Empty(t, store.setMutationCursors)
+}
+
+func TestSyncer_Sync_FlushesAttemptLogsBestEffortAfterRecordingCurrentResult(t *testing.T) {
+	now := time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{
+		jwt:                   "valid-token",
+		queueRecordedAttempts: true,
+		pendingSyncAttempts: []db.SyncAttemptLog{
+			{AttemptID: "previous-attempt", DevID: "dev@example.com", Project: "test-project", Client: "hive-daemon", StartedAt: now.Add(-time.Minute), EndedAt: now.Add(-time.Minute), Outcome: db.SyncAttemptOutcomeFailure, ErrorCode: "server_error"},
+		},
+	}
+
+	var postedAttemptIDs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sync":
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+		case "/sync-attempts":
+			assert.Equal(t, "Bearer valid-token", r.Header.Get("Authorization"))
+			var req syncAttemptIngestRequest
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+			for _, attempt := range req.Attempts {
+				postedAttemptIDs = append(postedAttemptIDs, attempt.AttemptID)
+			}
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncAttemptIngestResponse{
+				AcceptedIDs:  []string{"current-attempt"},
+				DuplicateIDs: []string{"previous-attempt"},
+				Rejected:     []syncAttemptRejected{{AttemptID: "rejected-attempt", Error: "invalid"}},
+			}))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "dev@example.com", Password: "password123"}, store, syncDeps{
+		now:          func() time.Time { return now },
+		jitter:       func(max time.Duration) time.Duration { return 0 },
+		newAttemptID: func() string { return "current-attempt" },
+	})
+
+	result, err := syncer.Sync(context.Background(), "test-project")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, []string{"previous-attempt", "current-attempt"}, postedAttemptIDs, "current result must be recorded before pending attempts are listed for flush")
+	assert.Equal(t, []time.Time{now.AddDate(0, 0, -90)}, store.deleteSyncAttemptCutoffs, "successful sync path must run 90-day retention before upload")
+	assert.Equal(t, 100, store.listSyncAttemptLimit)
+	assert.Equal(t, []string{"current-attempt", "previous-attempt"}, store.markedSyncAttempts, "only accepted and duplicate IDs are marked delivered")
+}
+
+func TestSyncer_Sync_AttemptFlushFailureIsNonFatalAndLeavesAttemptsPending(t *testing.T) {
+	now := time.Date(2026, 6, 19, 12, 30, 0, 0, time.UTC)
+	store := &mockSyncStore{jwt: "valid-token", queueRecordedAttempts: true, deleteSyncAttemptErr: fmt.Errorf("retention cleanup unavailable")}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sync":
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+		case "/sync-attempts":
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "dev@example.com", Password: "password123"}, store, syncDeps{
+		now:          func() time.Time { return now },
+		jitter:       func(max time.Duration) time.Duration { return 0 },
+		newAttemptID: func() string { return "current-attempt" },
+	})
+
+	result, err := syncer.Sync(context.Background(), "test-project")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Empty(t, store.markedSyncAttempts, "failed attempt uploads must leave local attempts pending")
+	assert.Equal(t, []time.Time{now.AddDate(0, 0, -90)}, store.deleteSyncAttemptCutoffs, "retention cleanup errors must not fail memory sync")
+	require.Len(t, store.recordedSyncAttempts, 1)
+	assert.Equal(t, db.SyncAttemptOutcomeSuccess, store.recordedSyncAttempts[0].Outcome)
+}
+
+func TestSyncer_Sync_FailedMemorySyncRecordsPendingFailureAttempt(t *testing.T) {
+	now := time.Date(2026, 6, 19, 12, 45, 0, 0, time.UTC)
+	store := &mockSyncStore{jwt: "valid-token", queueRecordedAttempts: true}
+
+	var attemptUploadCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sync":
+			http.Error(w, "upstream temporarily unavailable", http.StatusBadGateway)
+		case "/sync-attempts":
+			attemptUploadCalls++
+			http.Error(w, "audit endpoint unavailable", http.StatusServiceUnavailable)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "dev@example.com", Password: "password123"}, store, syncDeps{
+		now:          func() time.Time { return now },
+		jitter:       func(max time.Duration) time.Duration { return 0 },
+		newAttemptID: func() string { return "failed-current-attempt" },
+	})
+
+	result, err := syncer.Sync(context.Background(), "test-project")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sync con servidor")
+	assert.Nil(t, result)
+	assert.Zero(t, attemptUploadCalls, "failed memory sync must not require immediate audit upload when the API path is unavailable")
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	require.Len(t, store.recordedSyncAttempts, 1)
+	recorded := store.recordedSyncAttempts[0]
+	assert.Equal(t, "failed-current-attempt", recorded.AttemptID)
+	assert.Equal(t, "dev@example.com", recorded.DevID)
+	assert.Equal(t, "test-project", recorded.Project)
+	assert.Equal(t, db.SyncAttemptOutcomeFailure, recorded.Outcome)
+	assert.Equal(t, "sync_failed", recorded.ErrorCode)
+	assert.Contains(t, recorded.ErrorMessage, "sync failed (502)")
+	assert.Equal(t, []db.SyncAttemptLog{recorded}, store.pendingSyncAttempts, "failed attempt logs must remain pending for later delivery")
+	assert.Equal(t, []time.Time{now.AddDate(0, 0, -90)}, store.deleteSyncAttemptCutoffs, "failed sync path must run 90-day retention after recording the audit attempt")
+	assert.Empty(t, store.markedSyncAttempts)
+}
+
+func TestSyncer_Sync_AttemptFlushBatchNeverExceedsOneHundred(t *testing.T) {
+	now := time.Date(2026, 6, 19, 13, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{jwt: "valid-token", queueRecordedAttempts: true}
+	for i := 0; i < 150; i++ {
+		store.pendingSyncAttempts = append(store.pendingSyncAttempts, db.SyncAttemptLog{AttemptID: fmt.Sprintf("attempt-%03d", i), DevID: "dev@example.com", Project: "test-project", StartedAt: now.Add(time.Duration(i) * time.Second), EndedAt: now.Add(time.Duration(i) * time.Second), Outcome: db.SyncAttemptOutcomeSuccess})
+	}
+
+	var postedCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sync":
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+		case "/sync-attempts":
+			var req syncAttemptIngestRequest
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+			postedCount = len(req.Attempts)
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncAttemptIngestResponse{}))
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "dev@example.com", Password: "password123"}, store, syncDeps{
+		now:          func() time.Time { return now },
+		jitter:       func(max time.Duration) time.Duration { return 0 },
+		newAttemptID: func() string { return "current-attempt" },
+	})
+
+	_, err := syncer.Sync(context.Background(), "test-project")
+	require.NoError(t, err)
+	assert.Equal(t, 100, store.listSyncAttemptLimit)
+	assert.Equal(t, 100, postedCount)
 }

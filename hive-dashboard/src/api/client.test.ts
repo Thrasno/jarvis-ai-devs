@@ -92,6 +92,38 @@ describe('Hive API client', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(4, '/admin/audit-logs?since=2026-06-05T00%3A00%3A00Z&action=sync_push&outcome=success&limit=10&offset=20', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
   })
 
+  it('loads admin sync attempt summaries from the production audit endpoint', async () => {
+    const summary = {
+      windows: [
+        {
+          window: '24h',
+          total: 3,
+          successes: 2,
+          failures: 1,
+          failure_rate: 0.3333,
+          last_success_at: '2026-06-19T09:00:00Z',
+          last_failure_at: '2026-06-19T08:00:00Z',
+          by_developer: [{ key: 'ada@example.com', count: 3 }],
+          by_project: [{ key: 'jarvis-dev', count: 3 }],
+          by_client: [{ key: 'hive-daemon', count: 3 }],
+          by_daemon: [{ key: 'daemon-1', count: 3 }],
+          by_outcome: [{ key: 'success', count: 2 }, { key: 'failure', count: 1 }],
+          by_error_code: [{ key: 'NETWORK_ERROR', count: 1 }],
+          top_errors: [{ key: 'NETWORK_ERROR', count: 1 }]
+        }
+      ]
+    }
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(summary))
+    const client = createApiClient({ fetch: fetchMock })
+
+    await expect(client.syncAttemptSummary('jwt-token', { window: '7d', project: 'jarvis-dev', dev_id: 'ada@example.com' })).resolves.toEqual(summary)
+
+    expect(fetchMock).toHaveBeenCalledWith('/admin/sync-attempts/summary?window=7d&project=jarvis-dev&dev_id=ada%40example.com', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer jwt-token' }
+    })
+  })
+
   it('calls existing admin user mutation endpoints with typed bodies', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ message: 'nivel actualizado' }))

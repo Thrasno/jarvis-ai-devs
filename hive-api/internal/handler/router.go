@@ -44,6 +44,11 @@ type SyncService interface {
 	PullAll(ctx context.Context, project string, since time.Time, excludeSyncIDs []string) (*model.PullResult, error)
 }
 
+type SyncAttemptService interface {
+	Ingest(ctx context.Context, req model.SyncAttemptIngestRequest) (model.SyncAttemptIngestResponse, error)
+	Summary(ctx context.Context, query model.SyncAttemptSummaryQuery) (model.SyncAttemptSummaryResponse, error)
+}
+
 // AdminService define las operaciones de administración.
 type AdminService interface {
 	ListUsers(ctx context.Context) ([]*model.User, error)
@@ -61,6 +66,7 @@ type RouterDeps struct {
 	AuthSvc            AuthService
 	MemorySvc          MemoryService
 	SyncSvc            SyncService
+	SyncAttemptSvc     SyncAttemptService
 	AdminSvc           AdminService
 	DB                 DBPinger // puede ser nil en tests unitarios
 	AllowedOrigins     []string // orígenes permitidos para CORS (e.g. ["https://hive.hivemem.dev"])
@@ -79,12 +85,14 @@ type RouterDeps struct {
 //	GET  /memories/search                             — RequireAuth (ANTES de /:id)
 //	GET  /memories/:id                                — RequireAuth
 //	POST /sync                                        — RequireAuth
+//	POST /sync-attempts                               — RequireAuth
 //	GET  /admin/users                                 — RequireAuth + RequireAdmin
 //	POST /admin/users/:username/level                 — RequireAuth + RequireAdmin
 //	POST /admin/users/:username/grant-admin           — RequireAuth + RequireAdmin
 //	POST /admin/users/:username/deactivate            — RequireAuth + RequireAdmin
 //	GET  /admin/stats                                 — RequireAuth + RequireAdmin
 //	GET  /admin/audit-logs                            — RequireAuth + RequireAdmin
+//	GET  /admin/sync-attempts/summary                 — RequireAuth + RequireAdmin
 func NewRouter(deps RouterDeps) *gin.Engine {
 	r := gin.New()
 
@@ -96,6 +104,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 	authH := NewAuthHandler(deps.AuthSvc)
 	memH := NewMemoryHandler(deps.MemorySvc)
 	syncH := NewSyncHandler(deps.SyncSvc)
+	syncAttemptH := NewSyncAttemptHandler(deps.SyncAttemptSvc, deps.AuthSvc)
 	adminH := NewAdminHandler(deps.AdminSvc)
 	healthH := NewHealthHandler(deps.DB)
 
@@ -117,12 +126,14 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		auth.GET("/memories/:id", memH.GetByID)
 
 		auth.POST("/sync", syncH.Sync)
+		auth.POST("/sync-attempts", syncAttemptH.Ingest)
 	}
 
 	// Rutas de admin — RequireAuth + RequireAdmin
 	admin := r.Group("/admin", middleware.RequireAuth(deps.AuthSvc), middleware.RequireAdmin())
 	{
 		admin.GET("/audit-logs", adminH.ListAuditLogs)
+		admin.GET("/sync-attempts/summary", syncAttemptH.Summary)
 		admin.GET("/users", adminH.ListUsers)
 		admin.GET("/stats", adminH.GetStats)
 		admin.POST("/users/:username/level", adminH.SetLevel)
