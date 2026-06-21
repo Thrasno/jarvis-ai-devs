@@ -73,10 +73,17 @@ type OpenCodeModelAssignment struct {
 	Effort     string `mapstructure:"effort" yaml:"effort,omitempty"`
 }
 
+// ClaudeModelAssignment stores Claude-specific model routing details for a single SDD phase.
+type ClaudeModelAssignment struct {
+	Model  string `mapstructure:"model" yaml:"model,omitempty"`
+	Effort string `mapstructure:"effort" yaml:"effort,omitempty"`
+}
+
 // SDDConfig stores persisted SDD runtime preferences.
 type SDDConfig struct {
 	PhaseModels         map[string]PhaseModelSelection     `mapstructure:"phase_models" yaml:"phase_models,omitempty"`
 	OpenCodePhaseModels map[string]OpenCodeModelAssignment `mapstructure:"opencode_phase_models" yaml:"opencode_phase_models,omitempty"`
+	ClaudePhaseModels   map[string]ClaudeModelAssignment   `mapstructure:"claude_phase_models" yaml:"claude_phase_models,omitempty"`
 }
 
 // AppConfig holds all Jarvis-CLI configuration.
@@ -266,6 +273,11 @@ func normalizeAndMigrate(cfg *AppConfig) {
 	} else {
 		cfg.SDD.OpenCodePhaseModels = normalizeOpenCodePhaseModelsMap(cfg.SDD.OpenCodePhaseModels)
 	}
+	if cfg.SDD.ClaudePhaseModels == nil {
+		cfg.SDD.ClaudePhaseModels = map[string]ClaudeModelAssignment{}
+	} else {
+		cfg.SDD.ClaudePhaseModels = normalizeClaudePhaseModelsMap(cfg.SDD.ClaudePhaseModels)
+	}
 
 	if strings.TrimSpace(cfg.PersonaPreset) == "" {
 		cfg.PersonaPreset = strings.TrimSpace(cfg.Preset)
@@ -333,6 +345,20 @@ func normalizeOpenCodePhaseModelsMap(in map[string]OpenCodeModelAssignment) map[
 		}
 		assignment.ProviderID = strings.TrimSpace(assignment.ProviderID)
 		assignment.ModelID = strings.TrimSpace(assignment.ModelID)
+		assignment.Effort = strings.TrimSpace(assignment.Effort)
+		out[phase] = assignment
+	}
+	return out
+}
+
+func normalizeClaudePhaseModelsMap(in map[string]ClaudeModelAssignment) map[string]ClaudeModelAssignment {
+	out := make(map[string]ClaudeModelAssignment, len(in))
+	for rawPhase, assignment := range in {
+		phase := strings.ToLower(strings.TrimSpace(rawPhase))
+		if phase == "" {
+			continue
+		}
+		assignment.Model = strings.TrimSpace(assignment.Model)
 		assignment.Effort = strings.TrimSpace(assignment.Effort)
 		out[phase] = assignment
 	}

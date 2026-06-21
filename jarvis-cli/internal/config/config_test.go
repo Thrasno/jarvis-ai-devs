@@ -416,6 +416,39 @@ func TestSaveLoad_PersistsOpenCodePhaseModelAssignments(t *testing.T) {
 	}
 }
 
+func TestLoad_LegacyPhaseModelsClaudeLoadsWithEmptyClaudeEffort(t *testing.T) {
+	home := isolateHome(t)
+	raw := strings.Join([]string{
+		"api_url: https://hivemem.dev",
+		"persona_preset: argentino",
+		"sdd:",
+		"  phase_models:",
+		"    sdd-design:",
+		"      claude: opus",
+	}, "\n")
+	if err := os.MkdirAll(filepath.Join(home, ".jarvis"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".jarvis", "config.yaml"), []byte(raw), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.SDD.PhaseModels["sdd-design"].Claude != "opus" {
+		t.Fatalf("legacy PhaseModels Claude = %q, want opus", cfg.SDD.PhaseModels["sdd-design"].Claude)
+	}
+	if cfg.SDD.ClaudePhaseModels == nil {
+		t.Fatal("expected SDD.ClaudePhaseModels to be initialized")
+	}
+	if got := cfg.SDD.ClaudePhaseModels["sdd-design"].Effort; got != "" {
+		t.Fatalf("Claude effort = %q, want empty inherited/default effort", got)
+	}
+}
+
 func TestLoad_ReturnsErrorWhenFileCorrupt(t *testing.T) {
 	home := isolateHome(t)
 
