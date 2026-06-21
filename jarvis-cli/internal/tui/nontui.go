@@ -223,9 +223,17 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		if cfg.SDD.OpenCodePhaseModels == nil {
 			cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{}
 		}
+		if cfg.SDD.ClaudePhaseModels == nil {
+			cfg.SDD.ClaudePhaseModels = map[string]config.ClaudeModelAssignment{}
+		}
 		for _, phase := range contract.Phases {
 			current := resolvedPhaseModels[phase]
-			fmt.Printf("%s [opencode=%s claude=%s]\n", phase, current.OpenCode, current.Claude)
+			claudeAssignment := cfg.SDD.ClaudePhaseModels[phase]
+			currentClaude := current.Claude
+			if strings.TrimSpace(claudeAssignment.Model) != "" {
+				currentClaude = strings.TrimSpace(claudeAssignment.Model)
+			}
+			fmt.Printf("%s [opencode=%s claude=%s]\n", phase, current.OpenCode, currentClaude)
 			if len(opencodeAssignments) > 0 {
 				currentAssignment := cfg.SDD.OpenCodePhaseModels[phase]
 				fmt.Printf("  OpenCode provider/model [%s] (Enter keeps, number selects): ", openCodeAssignmentPromptValue(currentAssignment, current.OpenCode))
@@ -245,11 +253,16 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 					delete(cfg.SDD.OpenCodePhaseModels, phase)
 				}
 			}
-			fmt.Printf("  Claude model [%s] (Enter keeps): ", current.Claude)
+			fmt.Printf("  Claude model [%s] (Enter keeps): ", currentClaude)
 			claudeInput := strings.ToLower(strings.TrimSpace(readLine(scanner)))
 			row := current
-			row.Claude = normalizePlatformValueForPrompt(claudeInput, current.Claude, contract.PlatformCatalogs[sddruntime.PlatformClaude])
+			row.Claude = normalizePlatformValueForPrompt(claudeInput, currentClaude, contract.PlatformCatalogs[sddruntime.PlatformClaude])
 			resolvedPhaseModels[phase] = row
+			fmt.Printf("  Claude effort [%s] (Enter keeps): ", displayPromptDefault(claudeAssignment.Effort))
+			effortInput := strings.ToLower(strings.TrimSpace(readLine(scanner)))
+			claudeAssignment.Model = row.Claude
+			claudeAssignment.Effort = normalizeClaudeEffortForPrompt(effortInput, claudeAssignment.Effort)
+			cfg.SDD.ClaudePhaseModels[phase] = claudeAssignment
 		}
 	}
 	if cfg.SDD.PhaseModels == nil {
@@ -258,8 +271,17 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	if cfg.SDD.OpenCodePhaseModels == nil {
 		cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{}
 	}
+	if cfg.SDD.ClaudePhaseModels == nil {
+		cfg.SDD.ClaudePhaseModels = map[string]config.ClaudeModelAssignment{}
+	}
 	for phase, row := range resolvedPhaseModels {
 		cfg.SDD.PhaseModels[phase] = row
+		if assignment, ok := cfg.SDD.ClaudePhaseModels[phase]; ok && (strings.TrimSpace(assignment.Model) != "" || strings.TrimSpace(assignment.Effort) != "") {
+			if strings.TrimSpace(assignment.Model) == "" {
+				assignment.Model = row.Claude
+			}
+			cfg.SDD.ClaudePhaseModels[phase] = assignment
+		}
 	}
 
 	// ── Step 6: Review/Apply ──────────────────────────────────────────────────
@@ -271,7 +293,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	fmt.Printf("Mode: %s\n", mode)
 	fmt.Printf("Persona: %s\n", cfg.PersonaPreset)
 	fmt.Printf("Cloud: %s\n", strings.TrimSpace(cfg.Email))
-	printNoTUIPhaseModelReview(resolvedPhaseModels, cfg.SDD.OpenCodePhaseModels)
+	printNoTUIPhaseModelReview(resolvedPhaseModels, cfg.SDD.OpenCodePhaseModels, cfg.SDD.ClaudePhaseModels)
 	fmt.Print("Apply these changes now? [type 'yes' to continue, 'edit' to edit phase models]: ")
 	applyAnswer := strings.ToLower(strings.TrimSpace(readLine(scanner)))
 	if applyAnswer == "edit" {
@@ -279,7 +301,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		for phase, row := range resolvedPhaseModels {
 			cfg.SDD.PhaseModels[phase] = row
 		}
-		printNoTUIPhaseModelReview(resolvedPhaseModels, cfg.SDD.OpenCodePhaseModels)
+		printNoTUIPhaseModelReview(resolvedPhaseModels, cfg.SDD.OpenCodePhaseModels, cfg.SDD.ClaudePhaseModels)
 		fmt.Print("Apply these changes now? [type 'yes' to continue]: ")
 		applyAnswer = strings.ToLower(strings.TrimSpace(readLine(scanner)))
 	}
@@ -452,7 +474,7 @@ func readLine(scanner *bufio.Scanner) string {
 	return ""
 }
 
-func printNoTUIPhaseModelReview(resolved map[string]config.PhaseModelSelection, assignments map[string]config.OpenCodeModelAssignment) {
+func printNoTUIPhaseModelReview(resolved map[string]config.PhaseModelSelection, assignments map[string]config.OpenCodeModelAssignment, claudeAssignments map[string]config.ClaudeModelAssignment) {
 	fmt.Fprintln(noTUIStdout, "SDD phase models:")
 	for _, phase := range sddruntime.DefaultContract().Phases {
 		sel := resolved[phase]
@@ -464,8 +486,37 @@ func printNoTUIPhaseModelReview(resolved map[string]config.PhaseModelSelection, 
 				effortDisplay = ", effort=" + strings.TrimSpace(assignment.Effort)
 			}
 		}
-		fmt.Fprintf(noTUIStdout, "- %s: opencode=%s%s, claude=%s\n", phase, opencodeDisplay, effortDisplay, sel.Claude)
+		claudeDisplay := sel.Claude
+		claudeEffortDisplay := ""
+		if assignment, ok := claudeAssignments[phase]; ok {
+			if model := strings.TrimSpace(assignment.Model); model != "" {
+				claudeDisplay = model
+			}
+			if effort := strings.TrimSpace(assignment.Effort); effort != "" {
+				claudeEffortDisplay = ", effort=" + effort
+			}
+		}
+		fmt.Fprintf(noTUIStdout, "- %s: opencode=%s%s, claude=%s%s\n", phase, opencodeDisplay, effortDisplay, claudeDisplay, claudeEffortDisplay)
 	}
+}
+
+func displayPromptDefault(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "default"
+	}
+	return strings.TrimSpace(value)
+}
+
+func normalizeClaudeEffortForPrompt(input, fallback string) string {
+	if input == "" {
+		return strings.TrimSpace(fallback)
+	}
+	for _, allowed := range claudeEffortOptions() {
+		if input == allowed {
+			return input
+		}
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func printOpenCodeAssignmentOptions(options []config.OpenCodeModelAssignment) {

@@ -106,6 +106,7 @@ type Model struct {
 	phaseModelModelSearch         string
 	phaseModelOpenCodeProviders   []openCodeProviderOption
 	phaseModelPendingOpenCode     config.OpenCodeModelAssignment
+	phaseModelPendingClaude       config.ClaudeModelAssignment
 
 	cfg *config.AppConfig
 
@@ -137,6 +138,7 @@ const (
 	phaseModelModeOpenCodeModel
 	phaseModelModeOpenCodeEffort
 	phaseModelModeClaudeModel
+	phaseModelModeClaudeEffort
 )
 
 const (
@@ -372,6 +374,13 @@ func initializePhaseModelEditor(m Model) Model {
 		row := phaseModelRow{Phase: phase, OpenCode: sel.OpenCode, Claude: sel.Claude}
 		if m.cfg != nil && m.cfg.SDD.OpenCodePhaseModels != nil {
 			row.OpenCodeAssignment = m.cfg.SDD.OpenCodePhaseModels[phase]
+		}
+		if m.cfg != nil && m.cfg.SDD.ClaudePhaseModels != nil {
+			assignment := m.cfg.SDD.ClaudePhaseModels[phase]
+			if strings.TrimSpace(assignment.Model) != "" {
+				row.Claude = strings.TrimSpace(assignment.Model)
+			}
+			row.ClaudeEffort = strings.TrimSpace(assignment.Effort)
 		}
 		m.phaseModelRows = append(m.phaseModelRows, row)
 	}
