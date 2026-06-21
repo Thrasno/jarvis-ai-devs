@@ -460,6 +460,25 @@ func (a *ClaudeAgent) InstallAgents(agentsFS fs.FS) error {
 	return installAgentsFromFS(dir, agentsFS)
 }
 
+func (a *ClaudeAgent) InstallSDDPhaseAgents(cfg *config.AppConfig) error {
+	files, err := RenderClaudeSDDPhaseAgents(a.templatesFS, cfg)
+	if err != nil {
+		return err
+	}
+	dir := a.agentsDir()
+	for _, def := range SDDPhaseAgentDefinitions() {
+		name := def.Name + ".md"
+		content, ok := files[name]
+		if !ok {
+			return fmt.Errorf("rendered Claude SDD agent %s missing", name)
+		}
+		if err := writeFileAtomic(filepath.Join(dir, name), content, 0644); err != nil {
+			return fmt.Errorf("write Claude SDD agent %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 // InstallSkills installs selected skills from skillsFS to ~/.claude/skills/.
 // skillsFS must be a sub-FS rooted at the embed/skills directory.
 // The _shared/ directory is always installed regardless of the selected list.
