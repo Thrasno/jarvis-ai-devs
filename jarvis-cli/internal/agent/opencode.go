@@ -228,108 +228,9 @@ func shouldIncludeJSONSchema(existing []byte) (bool, error) {
 }
 
 func buildOpenCodeGeneratedAgents(assignments, variants map[string]string) []opencodeGeneratedAgent {
-	agents := []opencodeGeneratedAgent{
-		{
-			Name:        "sdd-explore",
-			Description: "Explore SDD ideas and codebase context before committing to a change.",
-			Mode:        "subagent",
-			Hidden:      true,
-			Model:       modelForGeneratedAgent(assignments, "sdd-explore"),
-			Variant:     variants["sdd-explore"],
-			Prompt:      jarvisSkillPrompt("sdd-explore"),
-			Permission:  `{"task":"deny","edit":"deny","bash":"ask"}`,
-		},
-		{
-			Name:        "sdd-propose",
-			Description: "Create SDD change proposals with intent, scope, and approach.",
-			Mode:        "subagent",
-			Hidden:      true,
-			Model:       modelForGeneratedAgent(assignments, "sdd-propose"),
-			Variant:     variants["sdd-propose"],
-			Prompt:      jarvisSkillPrompt("sdd-propose"),
-			Permission:  `{"task":"deny","edit":"allow","bash":"ask"}`,
-		},
-		{
-			Name:        "sdd-spec",
-			Description: "Write SDD delta specifications with requirements and scenarios.",
-			Mode:        "subagent",
-			Hidden:      true,
-			Model:       modelForGeneratedAgent(assignments, "sdd-spec"),
-			Variant:     variants["sdd-spec"],
-			Prompt:      jarvisSkillPrompt("sdd-spec"),
-			Permission:  `{"task":"deny","edit":"allow","bash":"ask"}`,
-		},
-		{
-			Name:        "sdd-design",
-			Description: "Create technical designs and architecture approaches for SDD changes.",
-			Mode:        "subagent",
-			Hidden:      true,
-			Model:       modelForGeneratedAgent(assignments, "sdd-design"),
-			Variant:     variants["sdd-design"],
-			Prompt:      jarvisSkillPrompt("sdd-design"),
-			Permission:  `{"task":"deny","edit":"allow","bash":"ask"}`,
-		},
-		{
-			Name:        "sdd-tasks",
-			Description: "Break SDD changes into implementation tasks and reviewable PR slices.",
-			Mode:        "subagent",
-			Hidden:      true,
-			Model:       modelForGeneratedAgent(assignments, "sdd-tasks"),
-			Variant:     variants["sdd-tasks"],
-			Prompt:      jarvisSkillPrompt("sdd-tasks"),
-			Permission:  `{"task":"deny","edit":"allow","bash":"ask"}`,
-		},
-		{
-			Name:        "sdd-apply",
-			Description: "Implement assigned SDD tasks using the active testing contract.",
-			Mode:        "subagent",
-			Hidden:      true,
-			Model:       modelForGeneratedAgent(assignments, "sdd-apply"),
-			Variant:     variants["sdd-apply"],
-			Prompt:      jarvisSkillPrompt("sdd-apply"),
-			Permission:  `{"task":"deny","edit":"allow","bash":{"*":"ask","go test *":"allow"}}`,
-		},
-		{
-			Name:        "sdd-verify",
-			Description: "Verify implementation against SDD specs, design, tasks, and tests.",
-			Mode:        "subagent",
-			Hidden:      true,
-			Model:       modelForGeneratedAgent(assignments, "sdd-verify"),
-			Variant:     variants["sdd-verify"],
-			Prompt:      jarvisSkillPrompt("sdd-verify"),
-			Permission:  `{"task":"deny","edit":"deny","bash":{"*":"ask","go test *":"allow","go vet *":"allow"}}`,
-		},
-		{
-			Name:        "sdd-archive",
-			Description: "Archive completed SDD changes by syncing delta specs and closing artifacts.",
-			Mode:        "subagent",
-			Hidden:      true,
-			Model:       modelForGeneratedAgent(assignments, "sdd-archive"),
-			Variant:     variants["sdd-archive"],
-			Prompt:      jarvisSkillPrompt("sdd-archive"),
-			Permission:  `{"task":"deny","edit":"allow","bash":"ask"}`,
-		},
-		{
-			Name:        "sdd-init",
-			Description: "Initialize SDD context, testing capabilities, registry, and persistence.",
-			Mode:        "subagent",
-			Hidden:      true,
-			Model:       modelForGeneratedAgent(assignments, "default"),
-			Variant:     variants["default"],
-			Prompt:      jarvisSkillPrompt("sdd-init"),
-			Permission:  `{"task":"deny","edit":"allow","bash":{"*":"ask","go test *":"allow"}}`,
-		},
-		{
-			Name:        "sdd-onboard",
-			Description: "Walk users through the SDD workflow on the real codebase.",
-			Mode:        "subagent",
-			Hidden:      true,
-			Model:       modelForGeneratedAgent(assignments, "default"),
-			Variant:     variants["default"],
-			Prompt:      jarvisSkillPrompt("sdd-onboard"),
-			Permission:  `{"task":"deny","edit":"deny","bash":"ask"}`,
-		},
-		{
+	agents := buildOpenCodeSDDGeneratedAgents(assignments, variants)
+	agents = append(agents,
+		opencodeGeneratedAgent{
 			Name:        "jd-judge-a",
 			Description: "Run the first blind Judgment Day review pass.",
 			Mode:        "subagent",
@@ -339,7 +240,7 @@ func buildOpenCodeGeneratedAgents(assignments, variants map[string]string) []ope
 			Prompt:      judgmentDayPrompt("jd-judge-a"),
 			Permission:  `{"task":"deny","edit":"deny","bash":"ask"}`,
 		},
-		{
+		opencodeGeneratedAgent{
 			Name:        "jd-judge-b",
 			Description: "Run the second blind Judgment Day review pass.",
 			Mode:        "subagent",
@@ -349,7 +250,7 @@ func buildOpenCodeGeneratedAgents(assignments, variants map[string]string) []ope
 			Prompt:      judgmentDayPrompt("jd-judge-b"),
 			Permission:  `{"task":"deny","edit":"deny","bash":"ask"}`,
 		},
-		{
+		opencodeGeneratedAgent{
 			Name:        "jd-fix-agent",
 			Description: "Fix confirmed Judgment Day issues without expanding scope.",
 			Mode:        "subagent",
@@ -359,7 +260,7 @@ func buildOpenCodeGeneratedAgents(assignments, variants map[string]string) []ope
 			Prompt:      judgmentDayPrompt("jd-fix-agent"),
 			Permission:  `{"task":"deny","edit":"allow","bash":{"*":"ask","go test *":"allow"}}`,
 		},
-		{
+		opencodeGeneratedAgent{
 			Name:        "review-risk",
 			Description: "R1 — security, secrets, injection, privilege boundaries, dependency risk",
 			Mode:        "subagent",
@@ -369,7 +270,7 @@ func buildOpenCodeGeneratedAgents(assignments, variants map[string]string) []ope
 			Prompt:      reviewAgentPrompt("review-risk"),
 			Permission:  `{"task":"deny","edit":"deny","bash":"ask"}`,
 		},
-		{
+		opencodeGeneratedAgent{
 			Name:        "review-readability",
 			Description: "R2 — naming clarity, dead code, duplication, complexity, intention",
 			Mode:        "subagent",
@@ -379,7 +280,7 @@ func buildOpenCodeGeneratedAgents(assignments, variants map[string]string) []ope
 			Prompt:      reviewAgentPrompt("review-readability"),
 			Permission:  `{"task":"deny","edit":"deny","bash":"ask"}`,
 		},
-		{
+		opencodeGeneratedAgent{
 			Name:        "review-reliability",
 			Description: "R3 — test contract coverage, edge cases, determinism, regressions",
 			Mode:        "subagent",
@@ -389,7 +290,7 @@ func buildOpenCodeGeneratedAgents(assignments, variants map[string]string) []ope
 			Prompt:      reviewAgentPrompt("review-reliability"),
 			Permission:  `{"task":"deny","edit":"deny","bash":"ask"}`,
 		},
-		{
+		opencodeGeneratedAgent{
 			Name:        "review-resilience",
 			Description: "R4 — fallbacks, timeouts, observability, rollback readiness, SLO",
 			Mode:        "subagent",
@@ -399,12 +300,35 @@ func buildOpenCodeGeneratedAgents(assignments, variants map[string]string) []ope
 			Prompt:      reviewAgentPrompt("review-resilience"),
 			Permission:  `{"task":"deny","edit":"deny","bash":"ask"}`,
 		},
+	)
+	return agents
+}
+
+func buildOpenCodeSDDGeneratedAgents(assignments, variants map[string]string) []opencodeGeneratedAgent {
+	defs := SDDPhaseAgentDefinitions()
+	agents := make([]opencodeGeneratedAgent, 0, len(defs))
+	for _, def := range defs {
+		agents = append(agents, opencodeGeneratedAgent{
+			Name:        def.Name,
+			Description: def.Description,
+			Mode:        "subagent",
+			Hidden:      true,
+			Model:       modelForGeneratedAgent(assignments, def.ModelKey),
+			Variant:     variants[def.ModelKey],
+			Prompt:      jarvisSkillPrompt(def.SkillID),
+			Permission:  def.OpenCodePermission,
+		})
 	}
 	return agents
 }
 
 func openCodeSDDSubagents() []string {
-	return []string{"sdd-explore", "sdd-propose", "sdd-spec", "sdd-design", "sdd-tasks", "sdd-apply", "sdd-verify", "sdd-archive", "sdd-init", "sdd-onboard"}
+	defs := SDDPhaseAgentDefinitions()
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		names = append(names, def.Name)
+	}
+	return names
 }
 
 func openCodeJudgmentDaySubagents() []string {

@@ -62,6 +62,22 @@ var testTemplatesFS fs.FS = fstest.MapFS{
   }
 }`),
 	},
+	"embed/templates/claude-sdd-agent.md.tmpl": {
+		Data: []byte("---\n" +
+			"name: {{.Name}}\n" +
+			"description: {{.Description}}\n" +
+			"tools: {{.Tools}}\n" +
+			"model: {{.Model}}\n" +
+			"{{- if .Effort}}\n" +
+			"effort: {{.Effort}}\n" +
+			"{{- end}}\n" +
+			"permissionMode: default\n" +
+			"---\n\n" +
+			"# {{.Name}}\n\n" +
+			"Read and follow the Jarvis skill at `{{.SkillPath}}`.\n" +
+			"Generated technical artifacts default to English.\n" +
+			"Return the phase Result Contract.\n"),
+	},
 }
 
 func TestTestTemplatesFS_CoversGeneratedConfigTemplate(t *testing.T) {
