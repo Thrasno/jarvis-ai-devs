@@ -7,11 +7,30 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 )
 
+type PhaseRoute struct {
+	Model  string
+	Effort string
+}
+
 // DefaultAssignmentsForPlatform returns the contract default phase->model assignments for a platform.
 // It only derives from DefaultPhaseModels and returns a deterministic error for unsupported platforms.
 func DefaultAssignmentsForPlatform(platform Platform) (map[string]string, error) {
+	routes, err := DefaultPhaseRoutesForPlatform(platform)
+	if err != nil {
+		return nil, err
+	}
+	assignments := make(map[string]string, len(routes))
+	for phase, route := range routes {
+		assignments[phase] = route.Model
+	}
+
+	return assignments, nil
+}
+
+// DefaultPhaseRoutesForPlatform returns the contract default phase routes for a platform.
+func DefaultPhaseRoutesForPlatform(platform Platform) (map[string]PhaseRoute, error) {
 	contract := DefaultContract()
-	assignments := make(map[string]string, len(contract.Phases))
+	routes := make(map[string]PhaseRoute, len(contract.Phases))
 
 	for _, phase := range contract.Phases {
 		selection, ok := contract.DefaultPhaseModels[phase]
@@ -21,37 +40,60 @@ func DefaultAssignmentsForPlatform(platform Platform) (map[string]string, error)
 
 		switch platform {
 		case PlatformOpenCode:
-			assignments[phase] = selection.OpenCode
+			routes[phase] = PhaseRoute{Model: selection.OpenCode}
 		case PlatformClaude:
-			assignments[phase] = selection.Claude
+			routes[phase] = PhaseRoute{Model: selection.Claude}
 		default:
 			return nil, fmt.Errorf("unsupported platform %q", platform)
 		}
 	}
 
-	return assignments, nil
+	return routes, nil
 }
 
 // ResolveAssignmentsForPlatform returns phase->model assignments for a platform.
 // OpenCode provider-qualified assignments override legacy aliases when complete.
 func ResolveAssignmentsForPlatform(platform Platform, cfg *config.AppConfig) (map[string]string, error) {
+	routes, err := ResolvePhaseRoutesForPlatform(platform, cfg)
+	if err != nil {
+		return nil, err
+	}
+	assignments := make(map[string]string, len(routes))
+	for phase, route := range routes {
+		assignments[phase] = route.Model
+	}
+	return assignments, nil
+}
+
+// ResolvePhaseRoutesForPlatform returns phase->model/effort routes for a platform.
+func ResolvePhaseRoutesForPlatform(platform Platform, cfg *config.AppConfig) (map[string]PhaseRoute, error) {
 	resolved := ResolvePhaseModels(cfg)
 	contract := DefaultContract()
-	assignments := make(map[string]string, len(contract.Phases))
+	routes := make(map[string]PhaseRoute, len(contract.Phases))
 	for _, phase := range contract.Phases {
 		selection := resolved[phase]
 		switch platform {
 		case PlatformOpenCode:
-			assignments[phase] = selection.OpenCode
+			routes[phase] = PhaseRoute{Model: selection.OpenCode}
 		case PlatformClaude:
-			assignments[phase] = selection.Claude
+			routes[phase] = PhaseRoute{Model: selection.Claude}
 		default:
 			return nil, fmt.Errorf("unsupported platform %q", platform)
 		}
 	}
 
-	if platform != PlatformOpenCode || cfg == nil || cfg.SDD.OpenCodePhaseModels == nil {
-		return assignments, nil
+	switch platform {
+	case PlatformOpenCode:
+		applyOpenCodePhaseRoutes(routes, cfg, contract)
+	case PlatformClaude:
+		applyClaudePhaseRoutes(routes, cfg, contract)
+	}
+	return routes, nil
+}
+
+func applyOpenCodePhaseRoutes(routes map[string]PhaseRoute, cfg *config.AppConfig, contract Contract) {
+	if cfg == nil || cfg.SDD.OpenCodePhaseModels == nil {
+		return
 	}
 	for rawPhase, assignment := range cfg.SDD.OpenCodePhaseModels {
 		phase := strings.ToLower(strings.TrimSpace(rawPhase))
@@ -63,9 +105,26 @@ func ResolveAssignmentsForPlatform(platform Platform, cfg *config.AppConfig) (ma
 		if providerID == "" || modelID == "" {
 			continue
 		}
-		assignments[phase] = providerID + "/" + modelID
+		routes[phase] = PhaseRoute{Model: providerID + "/" + modelID, Effort: strings.TrimSpace(assignment.Effort)}
 	}
-	return assignments, nil
+}
+
+func applyClaudePhaseRoutes(routes map[string]PhaseRoute, cfg *config.AppConfig, contract Contract) {
+	if cfg == nil || cfg.SDD.ClaudePhaseModels == nil {
+		return
+	}
+	for rawPhase, assignment := range cfg.SDD.ClaudePhaseModels {
+		phase := strings.ToLower(strings.TrimSpace(rawPhase))
+		if _, ok := contract.DefaultPhaseModels[phase]; !ok {
+			continue
+		}
+		route := routes[phase]
+		if model := strings.TrimSpace(assignment.Model); model != "" {
+			route.Model = model
+		}
+		route.Effort = strings.TrimSpace(assignment.Effort)
+		routes[phase] = route
+	}
 }
 
 // ResolveOpenCodeProviderQualifiedAssignments returns OpenCode phase assignments

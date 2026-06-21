@@ -85,6 +85,54 @@ func TestResolveOpenCodeProviderQualifiedAssignments_DefaultsAreProviderQualifie
 	}
 }
 
+func TestDefaultPhaseRoutesForPlatform_IncludesInitAndOnboard(t *testing.T) {
+	routes, err := DefaultPhaseRoutesForPlatform(PlatformClaude)
+	if err != nil {
+		t.Fatalf("DefaultPhaseRoutesForPlatform: %v", err)
+	}
+
+	tests := []struct {
+		phase     string
+		wantModel string
+	}{
+		{phase: "sdd-init", wantModel: "sonnet"},
+		{phase: "sdd-onboard", wantModel: "sonnet"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.phase, func(t *testing.T) {
+			got, ok := routes[tt.phase]
+			if !ok {
+				t.Fatalf("expected route for %q", tt.phase)
+			}
+			if got.Model != tt.wantModel || got.Effort != "" {
+				t.Fatalf("route for %q = %+v, want model %q and empty effort", tt.phase, got, tt.wantModel)
+			}
+		})
+	}
+}
+
+func TestResolvePhaseRoutesForPlatform_ClaudeReturnsModelAndEffort(t *testing.T) {
+	cfg := &config.AppConfig{SDD: config.SDDConfig{
+		PhaseModels: map[string]config.PhaseModelSelection{
+			"sdd-design": {Claude: "haiku"},
+		},
+		ClaudePhaseModels: map[string]config.ClaudeModelAssignment{
+			"sdd-design": {Effort: "max"},
+		},
+	}}
+
+	routes, err := ResolvePhaseRoutesForPlatform(PlatformClaude, cfg)
+	if err != nil {
+		t.Fatalf("ResolvePhaseRoutesForPlatform: %v", err)
+	}
+
+	got := routes["sdd-design"]
+	if got.Model != "haiku" || got.Effort != "max" {
+		t.Fatalf("sdd-design Claude route = %+v, want model haiku and effort max", got)
+	}
+}
+
 func TestDefaultAssignmentsForPlatform(t *testing.T) {
 	tests := []struct {
 		name      string

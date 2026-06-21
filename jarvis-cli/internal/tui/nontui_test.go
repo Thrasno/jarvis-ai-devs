@@ -42,6 +42,10 @@ func testWizardConfig() WizardConfig {
 	}
 }
 
+func remainingPhaseModelPromptNewlines() string {
+	return strings.Repeat("\n", 2*(len(sddruntime.DefaultContract().Phases)-1))
+}
+
 func TestRunNoTUI_RefreshesProjectRegistryAfterSuccessfulApplyAndPrintsWarnings(t *testing.T) {
 	tmpHome := isolateTestHome(t)
 	t.Setenv("PATH", "")
@@ -307,7 +311,7 @@ func TestRunNoTUI_PrintsOpenCodeProviderModelOptionsBeforeNumericSelection(t *te
 	isolateTestHome(t)
 	t.Setenv("PATH", "")
 
-	input := strings.NewReader("\n\n" + "edit\n" + "1\n\n" + strings.Repeat("\n", 18) + "yes\n")
+	input := strings.NewReader("\n\n" + "edit\n" + "1\n\n" + remainingPhaseModelPromptNewlines() + "yes\n")
 	var output bytes.Buffer
 	previousStdout := noTUIStdout
 	noTUIStdout = &output
@@ -430,7 +434,7 @@ func TestRunNoTUI_KeepsExistingOpenCodeProviderAssignmentWhenDiscoveryUnavailabl
 		t.Fatalf("save seed config: %v", err)
 	}
 
-	input := strings.NewReader("\n\n" + "edit\n" + "\n\n" + strings.Repeat("\n", 18) + "yes\n")
+	input := strings.NewReader("\n\n" + "edit\n" + "\n\n" + remainingPhaseModelPromptNewlines() + "yes\n")
 	if err := runNoTUI(testWizardConfig(), input); err != nil {
 		t.Fatalf("runNoTUI keep provider assignment: %v", err)
 	}
@@ -462,7 +466,7 @@ func TestRunNoTUI_LegacySelectionDeletesExistingOpenCodeProviderAssignment(t *te
 		t.Fatalf("save seed config: %v", err)
 	}
 
-	input := strings.NewReader("\n\n" + "edit\n" + "0\n\n" + strings.Repeat("\n", 18) + "yes\n")
+	input := strings.NewReader("\n\n" + "edit\n" + "0\n\n" + remainingPhaseModelPromptNewlines() + "yes\n")
 	if err := runNoTUI(testWizardConfig(), input); err != nil {
 		t.Fatalf("runNoTUI legacy clear: %v", err)
 	}
@@ -488,7 +492,7 @@ func TestRunNoTUI_PersistsEditedOpenCodeProviderModelAssignment(t *testing.T) {
 
 	// scope default, persona default, skills default,
 	// request phase editor, select OpenCode provider/model option 1 for default, keep the rest, then apply yes.
-	input := strings.NewReader("\n\n" + "edit\n" + "1\n\n" + strings.Repeat("\n", 18) + "yes\n")
+	input := strings.NewReader("\n\n" + "edit\n" + "1\n\n" + remainingPhaseModelPromptNewlines() + "yes\n")
 
 	if err := runNoTUI(testWizardConfig(), input); err != nil {
 		t.Fatalf("runNoTUI provider model assignment: %v", err)
@@ -513,7 +517,7 @@ func TestRunNoTUI_PersistsEditedPhaseModels(t *testing.T) {
 
 	// scope default, persona default, skills default,
 	// request phase editor from review using 'edit', set default.claude=haiku, keep rest, then apply yes.
-	input := strings.NewReader("\n\n" + "edit\n" + "\nhaiku\n" + strings.Repeat("\n", 18) + "yes\nyes\n")
+	input := strings.NewReader("\n\n" + "edit\n" + "\nhaiku\n" + remainingPhaseModelPromptNewlines() + "yes\nyes\n")
 
 	if err := runNoTUI(testWizardConfig(), input); err != nil {
 		t.Fatalf("runNoTUI phase models: %v", err)

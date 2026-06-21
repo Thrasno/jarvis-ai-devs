@@ -57,6 +57,7 @@ func DefaultContract() Contract {
 		Phases: []string{
 			"default",
 			"orchestrator",
+			"sdd-init",
 			"sdd-explore",
 			"sdd-propose",
 			"sdd-spec",
@@ -65,6 +66,7 @@ func DefaultContract() Contract {
 			"sdd-apply",
 			"sdd-verify",
 			"sdd-archive",
+			"sdd-onboard",
 		},
 		PlatformCatalogs: map[Platform][]string{
 			PlatformOpenCode: []string{"opus", "sonnet", "haiku"},
@@ -72,6 +74,7 @@ func DefaultContract() Contract {
 		},
 		DefaultPhaseModels: map[string]config.PhaseModelSelection{
 			"orchestrator": {OpenCode: "opus", Claude: "opus"},
+			"sdd-init":     {OpenCode: "sonnet", Claude: "sonnet"},
 			"sdd-explore":  {OpenCode: "sonnet", Claude: "sonnet"},
 			"sdd-propose":  {OpenCode: "opus", Claude: "opus"},
 			"sdd-spec":     {OpenCode: "sonnet", Claude: "sonnet"},
@@ -80,10 +83,12 @@ func DefaultContract() Contract {
 			"sdd-apply":    {OpenCode: "sonnet", Claude: "sonnet"},
 			"sdd-verify":   {OpenCode: "sonnet", Claude: "sonnet"},
 			"sdd-archive":  {OpenCode: "haiku", Claude: "haiku"},
+			"sdd-onboard":  {OpenCode: "sonnet", Claude: "sonnet"},
 			"default":      {OpenCode: "sonnet", Claude: "sonnet"},
 		},
 		ModelAssignments: map[string]string{
 			"orchestrator": "opus",
+			"sdd-init":     "sonnet",
 			"sdd-explore":  "sonnet",
 			"sdd-propose":  "opus",
 			"sdd-spec":     "sonnet",
@@ -92,6 +97,7 @@ func DefaultContract() Contract {
 			"sdd-apply":    "sonnet",
 			"sdd-verify":   "sonnet",
 			"sdd-archive":  "haiku",
+			"sdd-onboard":  "sonnet",
 			"default":      "sonnet",
 		},
 		ManagedArtifacts: []ManagedArtifact{
