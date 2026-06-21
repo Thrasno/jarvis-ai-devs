@@ -38,6 +38,12 @@ type configAwareSkillInstaller interface {
 	InstallSkillsWithConfig(fs.FS, []string, *config.AppConfig) error
 }
 
+type sddPhaseAgentInstaller interface {
+	InstallSDDPhaseAgents(*config.AppConfig) error
+}
+
+const claudeRestartGuidance = "Restart Claude Code to discover refreshed Jarvis-managed SDD agents."
+
 var refreshProjectSkillRegistry = projectregistry.Refresh
 
 // statuslineInstaller is implemented by agents that support the Jarvis-managed
@@ -96,6 +102,11 @@ func configureWizardAgent(
 			return nil, fmt.Errorf("install agents: %w", err)
 		}
 	}
+	if sddInstaller, ok := a.(sddPhaseAgentInstaller); ok {
+		if err := sddInstaller.InstallSDDPhaseAgents(cfg); err != nil {
+			return nil, fmt.Errorf("install Claude SDD agents: %w", err)
+		}
+	}
 	if err := a.InstallPromptHook(jarvis.HooksFS); err != nil {
 		return nil, fmt.Errorf("install prompt hook: %w", err)
 	}
@@ -109,6 +120,9 @@ func configureWizardAgent(
 		return nil, fmt.Errorf("install subagent stop hook: %w", err)
 	}
 	warnings := []string(nil)
+	if _, ok := a.(sddPhaseAgentInstaller); ok && strings.EqualFold(strings.TrimSpace(a.Name()), "claude") {
+		warnings = append(warnings, claudeRestartGuidance)
+	}
 	if _, err := agent.InstallRegistryAutomationIfSupported(a, jarvis.HooksFS); err != nil {
 		warnings = append(warnings, fmt.Sprintf("Project skill registry warning: automation not installed for %s: %v", a.Name(), err))
 	}

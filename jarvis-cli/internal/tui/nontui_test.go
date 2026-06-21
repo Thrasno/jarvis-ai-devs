@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
@@ -40,6 +41,29 @@ func testWizardConfig() WizardConfig {
 		PersonaFS: testPersonaFS,
 		SkillsFS:  testSkillsFS,
 	}
+}
+
+func remainingPhasePromptNewlines() string {
+	return strings.Repeat("\n", 3*(len(sddruntime.DefaultContract().Phases)-1))
+}
+
+func phaseEditorPromptNewlinesBefore(target string) string {
+	for i, phase := range sddruntime.DefaultContract().Phases {
+		if phase == target {
+			return strings.Repeat("\n", 3*i)
+		}
+	}
+	return ""
+}
+
+func phaseEditorPromptNewlinesAfter(target string) string {
+	phases := sddruntime.DefaultContract().Phases
+	for i, phase := range phases {
+		if phase == target {
+			return strings.Repeat("\n", 3*(len(phases)-i-1))
+		}
+	}
+	return ""
 }
 
 func TestRunNoTUI_RefreshesProjectRegistryAfterSuccessfulApplyAndPrintsWarnings(t *testing.T) {
@@ -287,13 +311,33 @@ func TestPrintNoTUIPhaseModelReview_IncludesOpenCodeProviderModelAssignments(t *
 	noTUIStdout = &output
 	t.Cleanup(func() { noTUIStdout = previousStdout })
 
-	printNoTUIPhaseModelReview(resolved, assignments)
+	printNoTUIPhaseModelReview(resolved, assignments, nil)
 
 	if !strings.Contains(output.String(), "- default: opencode=openai/gpt-5.1-codex-max") {
 		t.Fatalf("expected provider-qualified OpenCode assignment in no-TUI review, got:\n%s", output.String())
 	}
 	if !strings.Contains(output.String(), "effort=high") {
 		t.Fatalf("expected OpenCode effort in no-TUI review, got:\n%s", output.String())
+	}
+}
+
+func TestPrintNoTUIPhaseModelReview_IncludesClaudeSpecificModelAndEffort(t *testing.T) {
+	resolved := sddruntime.ResolvePhaseModels(&config.AppConfig{})
+	claudeAssignments := map[string]config.ClaudeModelAssignment{
+		"default": {Model: "haiku", Effort: "max"},
+	}
+	var output bytes.Buffer
+	previousStdout := noTUIStdout
+	noTUIStdout = &output
+	t.Cleanup(func() { noTUIStdout = previousStdout })
+
+	printNoTUIPhaseModelReview(resolved, nil, claudeAssignments)
+
+	if !strings.Contains(output.String(), "- default: opencode=") || !strings.Contains(output.String(), "claude=haiku") {
+		t.Fatalf("expected Claude-specific model in no-TUI review, got:\n%s", output.String())
+	}
+	if !strings.Contains(output.String(), "claude=haiku, effort=max") {
+		t.Fatalf("expected Claude effort in no-TUI review, got:\n%s", output.String())
 	}
 }
 
@@ -307,7 +351,7 @@ func TestRunNoTUI_PrintsOpenCodeProviderModelOptionsBeforeNumericSelection(t *te
 	isolateTestHome(t)
 	t.Setenv("PATH", "")
 
-	input := strings.NewReader("\n\n" + "edit\n" + "1\n\n" + strings.Repeat("\n", 18) + "yes\n")
+	input := strings.NewReader("\n\n" + "edit\n" + "1\n\n\n" + remainingPhasePromptNewlines() + "yes\nyes\n")
 	var output bytes.Buffer
 	previousStdout := noTUIStdout
 	noTUIStdout = &output
@@ -430,7 +474,7 @@ func TestRunNoTUI_KeepsExistingOpenCodeProviderAssignmentWhenDiscoveryUnavailabl
 		t.Fatalf("save seed config: %v", err)
 	}
 
-	input := strings.NewReader("\n\n" + "edit\n" + "\n\n" + strings.Repeat("\n", 18) + "yes\n")
+	input := strings.NewReader("\n\n" + "edit\n" + "\n\n\n" + remainingPhasePromptNewlines() + "yes\nyes\n")
 	if err := runNoTUI(testWizardConfig(), input); err != nil {
 		t.Fatalf("runNoTUI keep provider assignment: %v", err)
 	}
@@ -462,7 +506,7 @@ func TestRunNoTUI_LegacySelectionDeletesExistingOpenCodeProviderAssignment(t *te
 		t.Fatalf("save seed config: %v", err)
 	}
 
-	input := strings.NewReader("\n\n" + "edit\n" + "0\n\n" + strings.Repeat("\n", 18) + "yes\n")
+	input := strings.NewReader("\n\n" + "edit\n" + "0\n\n\n" + remainingPhasePromptNewlines() + "yes\nyes\n")
 	if err := runNoTUI(testWizardConfig(), input); err != nil {
 		t.Fatalf("runNoTUI legacy clear: %v", err)
 	}
@@ -488,7 +532,7 @@ func TestRunNoTUI_PersistsEditedOpenCodeProviderModelAssignment(t *testing.T) {
 
 	// scope default, persona default, skills default,
 	// request phase editor, select OpenCode provider/model option 1 for default, keep the rest, then apply yes.
-	input := strings.NewReader("\n\n" + "edit\n" + "1\n\n" + strings.Repeat("\n", 18) + "yes\n")
+	input := strings.NewReader("\n\n" + "edit\n" + "1\n\n\n" + remainingPhasePromptNewlines() + "yes\nyes\n")
 
 	if err := runNoTUI(testWizardConfig(), input); err != nil {
 		t.Fatalf("runNoTUI provider model assignment: %v", err)
@@ -510,10 +554,14 @@ func TestRunNoTUI_PersistsEditedOpenCodeProviderModelAssignment(t *testing.T) {
 func TestRunNoTUI_PersistsEditedPhaseModels(t *testing.T) {
 	isolateTestHome(t)
 	t.Setenv("PATH", "")
+	var output bytes.Buffer
+	previousStdout := noTUIStdout
+	noTUIStdout = &output
+	t.Cleanup(func() { noTUIStdout = previousStdout })
 
 	// scope default, persona default, skills default,
-	// request phase editor from review using 'edit', set default.claude=haiku, keep rest, then apply yes.
-	input := strings.NewReader("\n\n" + "edit\n" + "\nhaiku\n" + strings.Repeat("\n", 18) + "yes\nyes\n")
+	// request phase editor from review using 'edit', set default.claude=haiku with effort=high, keep rest, then apply yes.
+	input := strings.NewReader("\n\n" + "edit\n" + "\nhaiku\nhigh\n" + remainingPhasePromptNewlines() + "yes\nyes\n")
 
 	if err := runNoTUI(testWizardConfig(), input); err != nil {
 		t.Fatalf("runNoTUI phase models: %v", err)
@@ -527,6 +575,42 @@ func TestRunNoTUI_PersistsEditedPhaseModels(t *testing.T) {
 	resolved := sddruntime.ResolvePhaseModels(loaded)
 	if resolved["default"].Claude != "haiku" {
 		t.Fatalf("expected default.claude=haiku after no-tui edit, got %q", resolved["default"].Claude)
+	}
+	if got := loaded.SDD.ClaudePhaseModels["default"].Effort; got != "high" {
+		t.Fatalf("expected default Claude effort=high after no-tui edit, got %q", got)
+	}
+	if !strings.Contains(output.String(), "- default: opencode=") || !strings.Contains(output.String(), "claude=haiku, effort=high") {
+		t.Fatalf("expected Review & Apply output to include edited Claude model and effort, got:\n%s", output.String())
+	}
+}
+
+func TestRunNoTUI_InstallsClaudeSDDAgentsWithSelectedModelAndEffort(t *testing.T) {
+	tmpHome := isolateTestHome(t)
+	t.Setenv("PATH", "")
+
+	originalDetect := detectInstalledAgents
+	detectInstalledAgents = func(fsys fs.FS) []agent.Agent {
+		return []agent.Agent{&sddInstallingMockAgent{mockAgent: mockAgent{name: "claude", configDir: filepath.Join(tmpHome, ".claude")}, home: tmpHome}}
+	}
+	t.Cleanup(func() { detectInstalledAgents = originalDetect })
+
+	input := strings.NewReader("\n\n" + "edit\n" +
+		phaseEditorPromptNewlinesBefore("sdd-design") +
+		"\nhaiku\nmax\n" +
+		phaseEditorPromptNewlinesAfter("sdd-design") +
+		"yes\n")
+
+	if err := runNoTUI(testWizardConfig(), input); err != nil {
+		t.Fatalf("runNoTUI Claude SDD install: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tmpHome, ".claude", "agents", "sdd-design.md"))
+	if err != nil {
+		t.Fatalf("expected generated sdd-design.md to be installed: %v", err)
+	}
+	text := string(content)
+	if !strings.Contains(text, "model: haiku") || !strings.Contains(text, "effort: max") {
+		t.Fatalf("generated sdd-design.md did not use selected Claude route:\n%s", text)
 	}
 }
 
@@ -692,6 +776,53 @@ type failingMockAgent struct{ mockAgent }
 
 func (m *failingMockAgent) MergeConfig(entry agent.MCPEntry) error {
 	return errors.New("boom merge")
+}
+
+type sddInstallingMockAgent struct {
+	mockAgent
+	home string
+}
+
+func (m *sddInstallingMockAgent) InstallSDDPhaseAgents(cfg *config.AppConfig) error {
+	files, err := agent.RenderClaudeSDDPhaseAgents(jarvis.TemplatesFS, cfg)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(m.home, ".claude", "agents")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "sdd-design.md"), files["sdd-design.md"], 0644)
+}
+
+func (m *sddInstallingMockAgent) ObserveRuntimeWithConfig(cfg *config.AppConfig) (sddruntime.ObservedRuntime, error) {
+	plan, err := sddruntime.Build("claude")
+	if err != nil {
+		return sddruntime.ObservedRuntime{}, err
+	}
+	assignments, err := sddruntime.ResolveAssignmentsForPlatform(sddruntime.PlatformClaude, cfg)
+	if err != nil {
+		return sddruntime.ObservedRuntime{}, err
+	}
+	return sddruntime.ObservedRuntime{
+		Manifest: sddruntime.RuntimeManifestState{
+			Present:            true,
+			ContractVersion:    plan.Contract.Version,
+			ManagedArtifactIDs: []string{"instructions", "orchestrator", "skills"},
+		},
+		RegistryPath:             plan.Contract.RegistryPath,
+		PromptSourceIDs:          []string{"layer1.behavior", "layer2.persona", "skill.sdd-orchestrator", "registry.skill-index", "protocol.hive"},
+		StoreMode:                "hybrid",
+		StoreReadFrom:            []string{"hive", "openspec"},
+		StoreWriteTo:             []string{"hive", "openspec"},
+		ModelAssignments:         assignments,
+		ResolvedModelAssignments: assignments,
+		Artifacts: map[string]sddruntime.ObservedArtifact{
+			"instructions": {Exists: true, MarkersValid: true},
+			"orchestrator": {Exists: true},
+			"skills":       {Exists: true},
+		},
+	}, nil
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

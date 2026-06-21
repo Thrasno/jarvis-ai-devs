@@ -967,12 +967,63 @@ func TestStepPhaseModels_ClaudePickerUsesClaudeCatalogOnly(t *testing.T) {
 	}
 	m.phaseModelModelCursor = 1
 	m = sendKey(m, tea.KeyEnter)
+	m = sendKey(m, tea.KeyEnter)
 
 	if got := m.cfg.SDD.PhaseModels[phase].Claude; got != "claude-sonnet" {
 		t.Fatalf("expected Claude assignment from Claude catalog, got %q", got)
 	}
 	if got := m.cfg.SDD.PhaseModels[phase].OpenCode; got == "opencode-only" {
 		t.Fatalf("Claude selection must not use or rewrite OpenCode catalog, got OpenCode %q", got)
+	}
+}
+
+func TestStepPhaseModels_ClaudeModelAndEffortPersistAfterEffortConfirm(t *testing.T) {
+	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
+		&mockAgent{name: "claude", configDir: t.TempDir()},
+	}}
+	m = initializePhaseModelEditor(m)
+	m.phaseModelClaude = []string{"claude-haiku", "claude-sonnet"}
+	m.phaseModelActiveCol = phaseModelClaudeColumn
+	phase := m.phaseModelRows[0].Phase
+
+	m = sendKey(m, tea.KeyEnter)
+	m.phaseModelModelCursor = 1
+	m = sendKey(m, tea.KeyEnter)
+	if m.phaseModelMode != phaseModelModeClaudeEffort {
+		t.Fatalf("expected Claude effort picker after model confirmation, got %v", m.phaseModelMode)
+	}
+	if got := m.cfg.SDD.ClaudePhaseModels[phase]; got.Model != "" || got.Effort != "" {
+		t.Fatalf("expected Claude route to wait for effort confirmation, got %+v", got)
+	}
+
+	m.phaseModelEffortCursor = 5
+	m = sendKey(m, tea.KeyEnter)
+
+	route := m.cfg.SDD.ClaudePhaseModels[phase]
+	if route.Model != "claude-sonnet" || route.Effort != "max" {
+		t.Fatalf("expected selected Claude model+effort persisted, got %+v", route)
+	}
+	if m.phaseModelMode != phaseModelModeList {
+		t.Fatalf("expected return to list mode after Claude effort commit, got %v", m.phaseModelMode)
+	}
+}
+
+func TestConfigureWizardAgents_AddsClaudeRestartGuidanceOnlyForClaude(t *testing.T) {
+	claudeHome := t.TempDir()
+	claude := &sddInstallingMockAgent{mockAgent: mockAgent{name: "claude", configDir: filepath.Join(claudeHome, ".claude")}, home: claudeHome}
+	opencode := &mockAgent{name: "opencode", configDir: t.TempDir()}
+	cfg := &config.AppConfig{APIURL: config.DefaultAPIURL}
+
+	results := configureWizardAgents([]agent.Agent{claude, opencode}, cfg, agent.MCPEntry{Name: "hive", DaemonPath: "/tmp/hive-daemon"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, nil, nil, nil, func() bool { return true })
+
+	if len(results) != 2 {
+		t.Fatalf("expected two results, got %#v", results)
+	}
+	if !slices.Contains(results[0].Warnings, claudeRestartGuidance) {
+		t.Fatalf("expected Claude restart guidance in Claude warnings, got %#v", results[0].Warnings)
+	}
+	if slices.Contains(results[1].Warnings, claudeRestartGuidance) {
+		t.Fatalf("OpenCode result must not receive Claude restart guidance, got %#v", results[1].Warnings)
 	}
 }
 

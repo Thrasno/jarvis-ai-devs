@@ -581,6 +581,7 @@ type phaseModelRow struct {
 	OpenCode           string
 	OpenCodeAssignment config.OpenCodeModelAssignment
 	Claude             string
+	ClaudeEffort       string
 }
 
 func updatePhaseModels(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -643,6 +644,8 @@ func updatePhaseModelPicker(m Model, msg tea.KeyMsg) Model {
 		return updateOpenCodeEffortPicker(m, msg)
 	case phaseModelModeClaudeModel:
 		return updateClaudeModelPicker(m, msg)
+	case phaseModelModeClaudeEffort:
+		return updateClaudeEffortPicker(m, msg)
 	default:
 		m.phaseModelMode = phaseModelModeList
 		return m
@@ -662,6 +665,8 @@ func openOrCycleActivePhaseModel(m Model) (Model, bool) {
 	if m.phaseModelColumnEnabled(m.phaseModelActiveCol) && m.phaseModelActiveCol == phaseModelClaudeColumn && len(m.phaseModelClaude) > 0 {
 		m.phaseModelMode = phaseModelModeClaudeModel
 		m.phaseModelModelCursor = catalogIndex(m.phaseModelRows[m.phaseModelActiveRow].Claude, m.phaseModelClaude)
+		m.phaseModelEffortCursor = catalogIndex(m.phaseModelRows[m.phaseModelActiveRow].ClaudeEffort, claudeEffortOptions())
+		m.phaseModelPendingClaude = config.ClaudeModelAssignment{}
 		return m, false
 	}
 	m = cycleActivePhaseModel(m)
@@ -764,14 +769,57 @@ func updateClaudeModelPicker(m Model, msg tea.KeyMsg) Model {
 		}
 	case tea.KeyEnter:
 		if len(m.phaseModelClaude) > 0 {
-			m.phaseModelRows[m.phaseModelActiveRow].Claude = m.phaseModelClaude[clampIndex(m.phaseModelModelCursor, len(m.phaseModelClaude))]
-			persistPhaseModelRows(&m)
+			m.phaseModelPendingClaude = config.ClaudeModelAssignment{
+				Model:  m.phaseModelClaude[clampIndex(m.phaseModelModelCursor, len(m.phaseModelClaude))],
+				Effort: m.phaseModelRows[m.phaseModelActiveRow].ClaudeEffort,
+			}
+			m.phaseModelEffortCursor = catalogIndex(m.phaseModelPendingClaude.Effort, claudeEffortOptions())
+			m.phaseModelMode = phaseModelModeClaudeEffort
+			return m
 		}
 		m.phaseModelMode = phaseModelModeList
 	case tea.KeyEsc:
 		m.phaseModelMode = phaseModelModeList
 	}
 	return m
+}
+
+func updateClaudeEffortPicker(m Model, msg tea.KeyMsg) Model {
+	efforts := claudeEffortOptions()
+	switch msg.Type {
+	case tea.KeyUp:
+		if m.phaseModelEffortCursor > 0 {
+			m.phaseModelEffortCursor--
+		}
+	case tea.KeyDown:
+		if m.phaseModelEffortCursor < len(efforts)-1 {
+			m.phaseModelEffortCursor++
+		}
+	case tea.KeyEnter:
+		if len(efforts) > 0 {
+			m.phaseModelPendingClaude.Effort = efforts[clampIndex(m.phaseModelEffortCursor, len(efforts))]
+		}
+		m = commitPendingClaudePhaseModel(m)
+	case tea.KeyEsc:
+		m.phaseModelMode = phaseModelModeClaudeModel
+	}
+	return m
+}
+
+func commitPendingClaudePhaseModel(m Model) Model {
+	if strings.TrimSpace(m.phaseModelPendingClaude.Model) != "" {
+		row := &m.phaseModelRows[m.phaseModelActiveRow]
+		row.Claude = strings.TrimSpace(m.phaseModelPendingClaude.Model)
+		row.ClaudeEffort = strings.TrimSpace(m.phaseModelPendingClaude.Effort)
+		persistPhaseModelRows(&m)
+	}
+	m.phaseModelPendingClaude = config.ClaudeModelAssignment{}
+	m.phaseModelMode = phaseModelModeList
+	return m
+}
+
+func claudeEffortOptions() []string {
+	return []string{"", "low", "medium", "high", "xhigh", "max"}
 }
 
 func currentOpenCodeModelOptions(m Model) []openCodeModelOption {
@@ -837,6 +885,7 @@ func cycleActivePhaseModel(m Model) Model {
 		}
 	} else {
 		row.Claude = nextCatalogValue(row.Claude, m.phaseModelClaude)
+		row.ClaudeEffort = strings.TrimSpace(row.ClaudeEffort)
 	}
 	return m
 }
@@ -852,6 +901,7 @@ func applyAllForActiveColumn(m Model) Model {
 			m.phaseModelRows[i].OpenCodeAssignment = active.OpenCodeAssignment
 		} else {
 			m.phaseModelRows[i].Claude = active.Claude
+			m.phaseModelRows[i].ClaudeEffort = active.ClaudeEffort
 		}
 	}
 	return m
@@ -891,8 +941,12 @@ func persistPhaseModelRows(m *Model) {
 	if m.cfg.SDD.OpenCodePhaseModels == nil {
 		m.cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{}
 	}
+	if m.cfg.SDD.ClaudePhaseModels == nil {
+		m.cfg.SDD.ClaudePhaseModels = map[string]config.ClaudeModelAssignment{}
+	}
 	for _, row := range m.phaseModelRows {
 		m.cfg.SDD.PhaseModels[row.Phase] = config.PhaseModelSelection{OpenCode: row.OpenCode, Claude: row.Claude}
+		m.cfg.SDD.ClaudePhaseModels[row.Phase] = config.ClaudeModelAssignment{Model: row.Claude, Effort: row.ClaudeEffort}
 		if row.OpenCodeAssignment.ProviderID != "" && row.OpenCodeAssignment.ModelID != "" {
 			m.cfg.SDD.OpenCodePhaseModels[row.Phase] = row.OpenCodeAssignment
 		} else {
@@ -910,6 +964,14 @@ func phaseModelOpenCodeDisplay(row phaseModelRow) string {
 		return display
 	}
 	return row.OpenCode
+}
+
+func phaseModelClaudeDisplay(row phaseModelRow) string {
+	display := strings.TrimSpace(row.Claude)
+	if strings.TrimSpace(row.ClaudeEffort) != "" {
+		display += " (effort=" + strings.TrimSpace(row.ClaudeEffort) + ")"
+	}
+	return display
 }
 
 func viewPhaseModels(m Model) string {
@@ -955,7 +1017,7 @@ func viewPhaseModels(m Model) string {
 			parts = append(parts, fmt.Sprintf("%-20s", phaseModelOpenCodeDisplay(row)))
 		}
 		if m.phaseModelHasClaude {
-			parts = append(parts, fmt.Sprintf("%-10s", row.Claude))
+			parts = append(parts, fmt.Sprintf("%-10s", phaseModelClaudeDisplay(row)))
 		}
 		line := strings.Join(parts, " ")
 		if i == m.phaseModelActiveRow {
@@ -1073,6 +1135,30 @@ func viewPhaseModelPicker(m Model) string {
 			{Key: "↑/↓", Desc: "navigate"},
 			{Key: "Enter", Desc: "select model"},
 			{Key: "Esc", Desc: "back"},
+		}
+		sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
+
+	case phaseModelModeClaudeEffort:
+		sb.WriteString(terminalui.HeaderRow("Setup › Phase Models › Claude Effort", terminalui.ModeBadge("normal"), m.width) + "\n\n")
+		var listSB strings.Builder
+		listSB.WriteString(terminalui.SectionHeader("EFFORT", w))
+		efforts := claudeEffortOptions()
+		for i, effort := range efforts {
+			label := effort
+			if label == "" {
+				label = "default"
+			}
+			if i == m.phaseModelEffortCursor {
+				listSB.WriteString(terminalui.SelectedRow(label, w) + "\n")
+			} else {
+				listSB.WriteString("  " + label + "\n")
+			}
+		}
+		sb.WriteString(terminalui.BorderedPanel(listSB.String(), w) + "\n")
+		hints := []terminalui.KeyHint{
+			{Key: "↑/↓", Desc: "navigate"},
+			{Key: "Enter", Desc: "confirm effort"},
+			{Key: "Esc", Desc: "models"},
 		}
 		sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
 
@@ -1483,7 +1569,17 @@ func viewReview(m Model) string {
 				effortDisplay = ", effort=" + strings.TrimSpace(assignment.Effort)
 			}
 		}
-		fmt.Fprintf(&summarySB, "- %s: opencode=%s%s, claude=%s\n", phase, opencodeDisplay, effortDisplay, sel.Claude)
+		claudeDisplay := sel.Claude
+		claudeEffortDisplay := ""
+		if assignment := m.cfg.SDD.ClaudePhaseModels[phase]; strings.TrimSpace(assignment.Model) != "" || strings.TrimSpace(assignment.Effort) != "" {
+			if strings.TrimSpace(assignment.Model) != "" {
+				claudeDisplay = strings.TrimSpace(assignment.Model)
+			}
+			if strings.TrimSpace(assignment.Effort) != "" {
+				claudeEffortDisplay = ", effort=" + strings.TrimSpace(assignment.Effort)
+			}
+		}
+		fmt.Fprintf(&summarySB, "- %s: opencode=%s%s, claude=%s%s\n", phase, opencodeDisplay, effortDisplay, claudeDisplay, claudeEffortDisplay)
 	}
 	sb.WriteString(terminalui.BorderedPanel(summarySB.String(), w) + "\n\n")
 
