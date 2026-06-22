@@ -43,6 +43,19 @@ From the orchestrator:
 
 ## What to Do
 
+### Step 0: Proposal Question Round (Interactive Mode — Safety Net)
+
+**Check first**: if the orchestrator's delegation message already includes a question round summary (answered product questions, confirmed assumptions), skip this step — the round was completed upstream.
+
+If you are in **interactive mode** and the delegation message has no evidence of a completed question round, run it now before drafting the proposal:
+
+1. Tell the user the questions are meant to sharpen the proposal by uncovering business rules, scope, and product tradeoffs.
+2. Ask 3–5 concrete questions covering: business problem and motivation, target users and their situations, key business rules or constraints, product outcome and success definition, explicit out-of-scope boundaries, and critical edge cases.
+3. Summarize the answers and ask the user to confirm or correct before continuing.
+4. Only after confirmation, proceed to Step 1.
+
+If mode is **automatic**, skip this step entirely.
+
 ### Step 1: Load Skills
 Follow **Section A** from `skills/_shared/sdd-phase-common.md`.
 
