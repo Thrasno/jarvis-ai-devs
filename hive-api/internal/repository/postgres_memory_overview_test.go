@@ -72,7 +72,7 @@ func TestPostgresMemoryRepository_CountByProject_ExcludesSoftDeleted(t *testing.
 	// Soft-delete via memory_mutations tombstone
 	deletedAt := now.Add(time.Second)
 	_, err = repo.ApplyMemoryMutation(ctx, model.MutationEnvelope{
-		EventID:      "del-event-1",
+		EventID:      fmt.Sprintf("550e8400-e29b-41d4-a716-%012x", atomic.AddInt64(&testMemCounter, 1)),
 		EntityType:   model.MutationEntityMemory,
 		EntitySyncID: deleted.SyncID,
 		Project:      "proj-del",
