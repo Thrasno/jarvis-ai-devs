@@ -167,7 +167,7 @@ func TestPostgresMemoryRepository_CountGrowthByMonth_ReturnsAscendingPoints(t *t
 
 	result, err := repo.CountGrowthByMonth(ctx, 5)
 	require.NoError(t, err)
-	assert.Len(t, result, 5, "must return exactly 5 points")
+	require.Len(t, result, 5, "must return exactly 5 points")
 
 	// Points must be in ascending order (oldest first)
 	for i := 1; i < len(result); i++ {
