@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -9,6 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+var testMemCounter int64
 
 // --- CountByProject tests ---
 
@@ -192,22 +196,19 @@ func TestPostgresMemoryRepository_CountGrowthByMonth_EmptyTable(t *testing.T) {
 }
 
 // newTestMemory creates a minimal valid memory for testing.
-func newTestMemory(syncID, project string, sessionID *string, now time.Time) *model.Memory {
+// label is used only for human-readable Title/Content; the SyncID is a valid UUID generated from a counter.
+func newTestMemory(label, project string, sessionID *string, now time.Time) *model.Memory {
+	n := atomic.AddInt64(&testMemCounter, 1)
+	syncID := fmt.Sprintf("550e8400-e29b-41d4-a716-%012x", n)
 	return &model.Memory{
-		SyncID:    "550e8400-e29b-41d4-a716-" + padSyncSuffix(syncID),
+		SyncID:    syncID,
 		Project:   project,
 		Category:  model.CatDecision,
-		Title:     "test " + syncID,
-		Content:   "content for " + syncID,
+		Title:     "test " + label,
+		Content:   "content for " + label,
 		CreatedBy: "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		SessionID: sessionID,
 	}
-}
-
-func padSyncSuffix(s string) string {
-	b := []byte("000000000000")
-	copy(b[len(b)-len(s):], s)
-	return string(b)
 }

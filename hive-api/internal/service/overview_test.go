@@ -250,7 +250,7 @@ func TestOverviewService_GetGrowth_EmptyReturnsEmptySlice(t *testing.T) {
 	assert.Empty(t, resp.KnowledgeGrowth)
 }
 
-func TestOverviewService_GetGrowth_SyncHealthSuccessMapToHealthy(t *testing.T) {
+func TestOverviewService_GetStats_SyncHealthStatusMapping(t *testing.T) {
 	svc, memRepo, syncRepo, auditRepo := newTestOverviewService(t)
 	ctx := context.Background()
 
