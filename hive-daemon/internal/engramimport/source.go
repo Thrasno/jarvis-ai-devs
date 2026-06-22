@@ -254,15 +254,15 @@ func validateSchema(ctx context.Context, sqlDB *sql.DB) error {
 }
 
 func readSessions(ctx context.Context, sqlDB *sql.DB, analysis *Analysis, projects map[string]struct{}, validSessions map[string]map[string]struct{}) error {
-	rows, err := sqlDB.QueryContext(ctx, `SELECT id, project, directory, dev_id, client, started_at, ended_at, summary FROM sessions ORDER BY id`)
+	rows, err := sqlDB.QueryContext(ctx, `SELECT id, project, directory, client, started_at, ended_at, summary FROM sessions ORDER BY id`)
 	if err != nil {
 		return fmt.Errorf("read engram sessions: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id, project, directory, devID, client, startedAt string
+		var id, project, directory, client, startedAt string
 		var endedAt, summary sql.NullString
-		if err := rows.Scan(&id, &project, &directory, &devID, &client, &startedAt, &endedAt, &summary); err != nil {
+		if err := rows.Scan(&id, &project, &directory, &client, &startedAt, &endedAt, &summary); err != nil {
 			return fmt.Errorf("scan engram session: %w", err)
 		}
 		if strings.TrimSpace(id) == "" || strings.TrimSpace(project) == "" {
@@ -275,7 +275,7 @@ func readSessions(ctx context.Context, sqlDB *sql.DB, analysis *Analysis, projec
 		}
 		validSessions[project][id] = struct{}{}
 		analysis.Counts.Sessions++
-		analysis.Sessions = append(analysis.Sessions, hivedb.ImportSession{SourceID: id, Project: project, Directory: directory, DevID: devID, Client: client, StartedAt: startedAt, EndedAt: nullableString(endedAt), Summary: nullableString(summary), ContentHash: hashStrings(id, project, directory, devID, client, startedAt, nullableString(endedAt), nullableString(summary))})
+		analysis.Sessions = append(analysis.Sessions, hivedb.ImportSession{SourceID: id, Project: project, Directory: directory, Client: client, StartedAt: startedAt, EndedAt: nullableString(endedAt), Summary: nullableString(summary), ContentHash: hashStrings(id, project, directory, client, startedAt, nullableString(endedAt), nullableString(summary))})
 	}
 	return rows.Err()
 }

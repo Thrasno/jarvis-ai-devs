@@ -221,7 +221,6 @@ INSERT INTO observations (id, project, title, content, type, topic_key, session_
 		{name: "session source id", mutate: `UPDATE sessions SET id = 'ses-2' WHERE id = 'ses-1'; UPDATE observations SET session_id = 'ses-2' WHERE session_id = 'ses-1'`, wantChange: "session"},
 		{name: "session project", mutate: `UPDATE sessions SET project = 'proj-b' WHERE id = 'ses-1'; UPDATE observations SET project = 'proj-b' WHERE session_id = 'ses-1'`, wantChange: "session"},
 		{name: "session directory", mutate: `UPDATE sessions SET directory = 'C:/src/b' WHERE id = 'ses-1'`, wantChange: "session"},
-		{name: "session dev id", mutate: `UPDATE sessions SET dev_id = 'dev-b' WHERE id = 'ses-1'`, wantChange: "session"},
 		{name: "session client", mutate: `UPDATE sessions SET client = 'claude' WHERE id = 'ses-1'`, wantChange: "session"},
 		{name: "session started at", mutate: `UPDATE sessions SET started_at = '2026-06-11 10:15:00' WHERE id = 'ses-1'`, wantChange: "session"},
 		{name: "session ended at", mutate: `UPDATE sessions SET ended_at = '2026-06-11 10:45:00' WHERE id = 'ses-1'`, wantChange: "session"},

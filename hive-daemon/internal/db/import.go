@@ -201,7 +201,7 @@ func importSession(ctx context.Context, tx *sql.Tx, run ImportRun, session Impor
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at, ended_at, summary)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		hiveID, syncID, session.Project, session.Directory, defaultString(session.DevID, importActorID), defaultString(session.Client, "engram"), defaultTime(session.StartedAt), nullEmpty(session.EndedAt), nullEmpty(session.Summary),
+		hiveID, syncID, session.Project, session.Directory, resolveDevID(), defaultString(session.Client, "engram"), defaultTime(session.StartedAt), nullEmpty(session.EndedAt), nullEmpty(session.Summary),
 	)
 	if err != nil {
 		return false, fmt.Errorf("insert imported session %s: %w", session.SourceID, err)
