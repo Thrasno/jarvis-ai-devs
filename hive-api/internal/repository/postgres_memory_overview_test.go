@@ -104,6 +104,93 @@ func TestPostgresMemoryRepository_CountByProject_EmptyTable(t *testing.T) {
 	assert.Empty(t, result)
 }
 
+// --- CountLiveActivity tests ---
+
+func TestPostgresMemoryRepository_CountLiveActivity_ReturnsCountAndNewest(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+	now := time.Now().UTC()
+	sess := ensureManualSavePtr(t, pool, "live-proj")
+
+	// Insert 3 memories to be in the activity window
+	for i := 0; i < 3; i++ {
+		_, err := repo.Create(ctx, newTestMemory("live-"+string(rune('a'+i)), "live-proj", sess, now))
+		require.NoError(t, err)
+	}
+
+	since := now.Add(-2 * time.Hour)
+	count, newestSyncID, err := repo.CountLiveActivity(ctx, since)
+	require.NoError(t, err)
+	assert.Equal(t, 3, count)
+	assert.NotEmpty(t, newestSyncID, "newestSyncID must be a non-empty UUID string")
+}
+
+func TestPostgresMemoryRepository_CountLiveActivity_EmptyWindow(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+
+	// Use a future since time so no memories fall in the window
+	since := time.Now().UTC().Add(time.Hour)
+	count, newestSyncID, err := repo.CountLiveActivity(ctx, since)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count)
+	assert.Equal(t, "", newestSyncID)
+}
+
+// --- CountGrowthByMonth tests ---
+
+func TestPostgresMemoryRepository_CountGrowthByMonth_ReturnsAscendingPoints(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+	now := time.Now().UTC()
+	sess := ensureManualSavePtr(t, pool, "growth-proj")
+
+	// Insert 2 memories with created_at in the current month
+	for i := 0; i < 2; i++ {
+		mem := newTestMemory("growth-"+string(rune('a'+i)), "growth-proj", sess, now)
+		_, err := repo.Create(ctx, mem)
+		require.NoError(t, err)
+	}
+
+	result, err := repo.CountGrowthByMonth(ctx, 5)
+	require.NoError(t, err)
+	assert.Len(t, result, 5, "must return exactly 5 points")
+
+	// Points must be in ascending order (oldest first)
+	for i := 1; i < len(result); i++ {
+		assert.GreaterOrEqual(t, result[i].Value, result[i-1].Value,
+			"cumulative values must be non-decreasing (ascending)")
+	}
+
+	// The last point (most recent month) must reflect the 2 memories we added
+	last := result[len(result)-1]
+	assert.GreaterOrEqual(t, last.Value, 2, "last point must include at least the 2 seeded memories")
+}
+
+func TestPostgresMemoryRepository_CountGrowthByMonth_EmptyTable(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+
+	result, err := repo.CountGrowthByMonth(ctx, 5)
+	require.NoError(t, err)
+	assert.Len(t, result, 5, "must return exactly 5 points even when table is empty")
+	for _, pt := range result {
+		assert.Equal(t, 0, pt.Value, "all cumulative values must be 0 for empty table")
+	}
+}
+
 // newTestMemory creates a minimal valid memory for testing.
 func newTestMemory(syncID, project string, sessionID *string, now time.Time) *model.Memory {
 	return &model.Memory{
