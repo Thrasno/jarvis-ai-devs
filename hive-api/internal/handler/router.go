@@ -49,6 +49,10 @@ type SyncAttemptService interface {
 	Summary(ctx context.Context, query model.SyncAttemptSummaryQuery) (model.SyncAttemptSummaryResponse, error)
 }
 
+type ProjectService interface {
+	List(ctx context.Context) (model.ProjectListResponse, error)
+}
+
 // AdminService define las operaciones de administración.
 type AdminService interface {
 	ListUsers(ctx context.Context) ([]*model.User, error)
@@ -73,6 +77,7 @@ type RouterDeps struct {
 	MemorySvc          MemoryService
 	SyncSvc            SyncService
 	SyncAttemptSvc     SyncAttemptService
+	ProjectSvc         ProjectService
 	AdminSvc           AdminService
 	OverviewSvc        OverviewService
 	DB                 DBPinger // puede ser nil en tests unitarios
@@ -112,6 +117,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 	memH := NewMemoryHandler(deps.MemorySvc)
 	syncH := NewSyncHandler(deps.SyncSvc)
 	syncAttemptH := NewSyncAttemptHandler(deps.SyncAttemptSvc, deps.AuthSvc)
+	projectH := NewProjectHandler(deps.ProjectSvc)
 	adminH := NewAdminHandler(deps.AdminSvc)
 	overviewH := NewOverviewHandler(deps.OverviewSvc)
 	healthH := NewHealthHandler(deps.DB)
@@ -125,6 +131,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 	auth := r.Group("/", middleware.RequireAuth(deps.AuthSvc))
 	{
 		auth.GET("/auth/me", authH.Me)
+		auth.GET("/projects", projectH.List)
 
 		// CRÍTICO: /memories/search DEBE registrarse ANTES de /memories/:id
 		// Si /:id se registra primero, "search" matchea como id="search"

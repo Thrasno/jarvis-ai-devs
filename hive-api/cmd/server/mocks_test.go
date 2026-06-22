@@ -80,6 +80,13 @@ func (m *mockSync) PullAll(ctx context.Context, project string, since time.Time,
 	return args.Get(0).(*model.PullResult), args.Error(1)
 }
 
+type mockProject struct{ mock.Mock }
+
+func (m *mockProject) List(ctx context.Context) (model.ProjectListResponse, error) {
+	args := m.Called(ctx)
+	return args.Get(0).(model.ProjectListResponse), args.Error(1)
+}
+
 type mockAdmin struct{ mock.Mock }
 
 func (m *mockAdmin) ListUsers(ctx context.Context) ([]*model.User, error) {

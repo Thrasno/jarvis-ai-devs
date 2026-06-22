@@ -116,6 +116,15 @@ func (m *mockSyncAttemptSvc) Summary(ctx context.Context, query model.SyncAttemp
 	return args.Get(0).(model.SyncAttemptSummaryResponse), args.Error(1)
 }
 
+type mockProjectSvc struct {
+	mock.Mock
+}
+
+func (m *mockProjectSvc) List(ctx context.Context) (model.ProjectListResponse, error) {
+	args := m.Called(ctx)
+	return args.Get(0).(model.ProjectListResponse), args.Error(1)
+}
+
 // --- AdminService mock ---
 
 type mockAdminSvc struct {

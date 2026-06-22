@@ -27,6 +27,7 @@ func TestBuildApp_NonNil(t *testing.T) {
 		authSvc:     &mockAuth{},
 		memorySvc:   &mockMemory{},
 		syncSvc:     &mockSync{},
+		projectSvc:  &mockProject{},
 		adminSvc:    &mockAdmin{},
 		overviewSvc: &mockOverview{},
 	})
@@ -40,6 +41,7 @@ func TestBuildApp_HealthEndpoint(t *testing.T) {
 		authSvc:     &mockAuth{},
 		memorySvc:   &mockMemory{},
 		syncSvc:     &mockSync{},
+		projectSvc:  &mockProject{},
 		adminSvc:    &mockAdmin{},
 		overviewSvc: &mockOverview{},
 	})
@@ -83,4 +85,37 @@ func TestWireServices_InjectsAuditRepositoryIntoAdminAndSyncServices(t *testing.
 	require.NotNil(t, deps.adminSvc)
 	assert.Equal(t, []string{"https://app.example"}, deps.allowedOrigins)
 	assert.Equal(t, "/app/dashboard", deps.dashboardAssetsDir)
+}
+
+func TestWireServices_WiresProjectRepositoryIntoRouterDeps(t *testing.T) {
+	projectRepo := &repository.MockProjectRepository{}
+	projectSvc := &mockProject{}
+	factories := defaultServiceFactories()
+	factories.newUserRepo = func(*pgxpool.Pool) repository.UserRepository { return nil }
+	factories.newMemoryRepo = func(*pgxpool.Pool) repository.MemoryRepository { return nil }
+	factories.newPromptRepo = func(*pgxpool.Pool) repository.PromptRepository { return nil }
+	factories.newSessionRepo = func(*pgxpool.Pool) repository.SessionRepository { return nil }
+	factories.newAuditRepo = func(*pgxpool.Pool) repository.AuditRepository { return nil }
+	factories.newSyncAttemptRepo = func(*pgxpool.Pool) repository.SyncAttemptRepository { return nil }
+	factories.newProjectRepo = func(*pgxpool.Pool) repository.ProjectRepository { return projectRepo }
+	factories.newTxManager = func(*pgxpool.Pool) repository.TxManager { return nil }
+	factories.newAuthService = func(repository.UserRepository, string) handler.AuthService { return &mockAuth{} }
+	factories.newMemoryService = func(repository.MemoryRepository, repository.SessionRepository) handler.MemoryService {
+		return &mockMemory{}
+	}
+	factories.newSyncService = func(repository.MemoryRepository, repository.PromptRepository, repository.SessionRepository, repository.AuditRepository) handler.SyncService {
+		return &mockSync{}
+	}
+	factories.newSyncAttemptService = func(repository.SyncAttemptRepository) handler.SyncAttemptService { return nil }
+	factories.newProjectService = func(got repository.ProjectRepository) handler.ProjectService {
+		require.Same(t, projectRepo, got)
+		return projectSvc
+	}
+	factories.newAdminService = func(repository.UserRepository, repository.MemoryRepository, repository.AuditRepository, repository.TxManager) handler.AdminService {
+		return &mockAdmin{}
+	}
+
+	deps := wireServicesWithFactories(nil, &config.Config{}, factories)
+
+	require.Same(t, projectSvc, deps.projectSvc)
 }
