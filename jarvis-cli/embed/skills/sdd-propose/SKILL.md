@@ -30,6 +30,7 @@ From the orchestrator:
 - Change name (e.g., "add-dark-mode")
 - Exploration analysis (from sdd-explore) OR direct user description
 - Artifact store mode (`hive | openspec | hybrid | none`)
+- `execution_mode` (`interactive | auto`): controls whether the Pre-Phase question round runs. If absent, default to `interactive`.
 
 ## Execution and Persistence Contract
 
@@ -45,6 +46,21 @@ From the orchestrator:
 
 ### Step 1: Load Skills
 Follow **Section A** from `skills/_shared/sdd-phase-common.md`.
+
+### Pre-Phase: Proposal Question Round (Interactive Mode — Safety Net)
+
+**Check first**: if the orchestrator's delegation message contains the structured field `QUESTION_ROUND: completed`, skip this step — the round was completed upstream.
+
+If `execution_mode` is **auto**, skip this step entirely.
+
+If `execution_mode` is **interactive** (or absent/unset):
+
+1. Tell the user the questions are meant to improve the PRD/proposal by uncovering business understanding, business rules, implications, impact, edge cases, and product tradeoffs.
+2. Ask 3–5 concrete product questions covering: business problem and motivation, target users and their situations, business rules and constraints, product outcome and success definition, current-state gap (what is broken or missing today), implications and impact, explicit out-of-scope boundaries (non-goals), product constraints, business tradeoffs, decision gaps, first-slice scope boundaries, and critical edge cases.
+3. Summarize the answers as assumptions and ask the user to confirm or correct before continuing. If the user wants to correct or expand, offer to run a second question round before proceeding.
+4. Only after confirmation, proceed to Step 2.
+
+**Headless / CI fallback**: if no user response is received within this step (non-interactive or headless context detected), proceed with a best-effort proposal based on the available input and log a warning in the Return Summary: `QUESTION_ROUND: skipped (headless or non-interactive context)`.
 
 ### Step 2: Create Change Directory
 
@@ -159,6 +175,7 @@ Return to the orchestrator:
 - **Scope**: {N deliverables in, M items deferred}
 - **Approach**: {one-line approach}
 - **Risk Level**: {Low/Medium/High}
+- **Question Round**: {completed (orchestrator) | completed (executor) | skipped (auto) | skipped (headless)}
 
 ### Next Step
 Ready for specs (sdd-spec) or design (sdd-design).
