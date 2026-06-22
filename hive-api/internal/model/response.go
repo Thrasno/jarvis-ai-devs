@@ -134,3 +134,32 @@ type CategoryCount struct {
 	Category string `json:"category"`
 	Count    int64  `json:"count"`
 }
+
+const (
+	ProjectSyncHealthHealthy  = "healthy"
+	ProjectSyncHealthDegraded = "degraded"
+	ProjectSyncHealthUnknown  = "unknown"
+)
+
+type ProjectListResponse struct {
+	Projects []ProjectSummary `json:"projects"`
+	Total    int              `json:"total"`
+}
+
+type ProjectSummary struct {
+	Name           string     `json:"name"`
+	MemoryCount    int64      `json:"memoryCount"`
+	SessionCount   int64      `json:"sessionCount"`
+	LastActivityAt *time.Time `json:"lastActivityAt"`
+	SyncHealth     string     `json:"syncHealth"`
+}
+
+type ProjectAggregate struct {
+	Name              string
+	MemoryCount       int64
+	SessionCount      int64
+	LastMemoryAt      *time.Time
+	LastSessionAt     *time.Time
+	LastSyncAt        *time.Time
+	LatestSyncOutcome *SyncAttemptOutcome
+}

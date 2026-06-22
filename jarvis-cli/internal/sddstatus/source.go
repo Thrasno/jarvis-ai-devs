@@ -39,7 +39,7 @@ func (h *HiveSource) FetchArtifacts(ctx context.Context, changeName string) (map
 	}
 
 	prefix := "sdd/" + changeName + "/"
-	// Collect the most recent memory for each artifact title.
+	// Collect the most recent memory for each artifact topic.
 	type entry struct {
 		content   string
 		createdAt time.Time
@@ -49,10 +49,11 @@ func (h *HiveSource) FetchArtifacts(ctx context.Context, changeName string) (map
 		if m.Deleted {
 			continue
 		}
-		if !strings.HasPrefix(m.Title, prefix) {
+		path := memoryArtifactPath(m)
+		if !strings.HasPrefix(path, prefix) {
 			continue
 		}
-		artifact := strings.TrimPrefix(m.Title, prefix)
+		artifact := strings.TrimPrefix(path, prefix)
 		if e, ok := latest[artifact]; !ok || m.CreatedAt.After(e.createdAt) {
 			latest[artifact] = entry{content: m.Content, createdAt: m.CreatedAt}
 		}
@@ -80,10 +81,11 @@ func (h *HiveSource) ListChanges(ctx context.Context) ([]string, error) {
 		if m.Deleted {
 			continue
 		}
-		if !strings.HasPrefix(m.Title, "sdd/") {
+		path := memoryArtifactPath(m)
+		if !strings.HasPrefix(path, "sdd/") {
 			continue
 		}
-		parts := strings.SplitN(strings.TrimPrefix(m.Title, "sdd/"), "/", 2)
+		parts := strings.SplitN(strings.TrimPrefix(path, "sdd/"), "/", 2)
 		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
 			seen[parts[0]] = struct{}{}
 		}
@@ -95,6 +97,13 @@ func (h *HiveSource) ListChanges(ctx context.Context) ([]string, error) {
 	}
 	sort.Strings(changes)
 	return changes, nil
+}
+
+func memoryArtifactPath(m hiveclient.Memory) string {
+	if m.TopicKey != nil && strings.TrimSpace(*m.TopicKey) != "" {
+		return strings.TrimSpace(*m.TopicKey)
+	}
+	return m.Title
 }
 
 // OpenSpecSource reads SDD artifacts from an openspec directory layout:

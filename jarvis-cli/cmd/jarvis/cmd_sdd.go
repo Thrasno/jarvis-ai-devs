@@ -181,9 +181,6 @@ func validatedEditRootsForProject(projectName, workspaceRoot string) []string {
 		return nil
 	}
 	root := filepath.Clean(workspaceRoot)
-	if filepath.Base(root) != projectName {
-		return nil
-	}
 	return []string{root}
 }
 

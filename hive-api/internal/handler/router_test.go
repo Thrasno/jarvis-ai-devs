@@ -195,6 +195,7 @@ func newTestRouterWithDashboard(dashboardAssetsDir string) *gin.Engine {
 		AuthSvc:            &mockAuthSvc{},
 		MemorySvc:          &mockMemorySvc{},
 		SyncSvc:            &mockSyncSvc{},
+		ProjectSvc:         &mockProjectSvc{},
 		AdminSvc:           &mockAdminSvc{},
 		DashboardAssetsDir: dashboardAssetsDir,
 	})
@@ -229,6 +230,7 @@ func TestRouter_RoutesRegistered(t *testing.T) {
 		"GET:/health",
 		"POST:/auth/login",
 		"GET:/auth/me",
+		"GET:/projects",
 		"GET:/memories",
 		"POST:/memories",
 		"GET:/memories/search",
@@ -243,6 +245,7 @@ func TestRouter_RoutesRegistered(t *testing.T) {
 	for _, route := range expectedRoutes {
 		assert.True(t, routeMap[route], "ruta no registrada: %s", route)
 	}
+	assert.False(t, routeMap["GET:/dashboard/projects"], "projects API must not use /dashboard/*")
 }
 
 func TestRouter_AdminAuditLogsRequiresAuth(t *testing.T) {

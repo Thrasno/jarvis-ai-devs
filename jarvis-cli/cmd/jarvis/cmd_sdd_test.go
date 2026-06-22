@@ -65,7 +65,7 @@ func TestBuildStatus_IncludesValidatedAllowedEditRoot(t *testing.T) {
 	}
 }
 
-func TestValidatedEditRootsForProjectRequiresMatchingWorkspaceRoot(t *testing.T) {
+func TestValidatedEditRootsForProjectRequiresKnownProjectAndWorkspaceRoot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "jarvis-dev")
 
 	got := validatedEditRootsForProject("jarvis-dev", root)
@@ -73,12 +73,17 @@ func TestValidatedEditRootsForProjectRequiresMatchingWorkspaceRoot(t *testing.T)
 		t.Fatalf("validatedEditRootsForProject matching root = %#v, want %q", got, root)
 	}
 
+	mismatchedWorktreeRoot := filepath.Join(t.TempDir(), "epic-06-projects-repository-api")
+	got = validatedEditRootsForProject("jarvis-dev", mismatchedWorktreeRoot)
+	if len(got) != 1 || got[0] != mismatchedWorktreeRoot {
+		t.Fatalf("validatedEditRootsForProject worktree root = %#v, want %q", got, mismatchedWorktreeRoot)
+	}
+
 	for _, tt := range []struct {
 		name        string
 		projectName string
 		root        string
 	}{
-		{name: "project mismatch", projectName: "other-project", root: root},
 		{name: "missing project", projectName: "", root: root},
 		{name: "missing root", projectName: "jarvis-dev", root: ""},
 	} {
@@ -87,6 +92,36 @@ func TestValidatedEditRootsForProjectRequiresMatchingWorkspaceRoot(t *testing.T)
 				t.Fatalf("validatedEditRootsForProject(%q, %q) = %#v, want empty", tt.projectName, tt.root, got)
 			}
 		})
+	}
+}
+
+func TestBuildStatus_ApplyReadyUsesWorktreeRootAsAllowedEditRoot(t *testing.T) {
+	worktreeRoot := filepath.Join(t.TempDir(), "epic-06-projects-repository-api")
+	editRoots := validatedEditRootsForProject("jarvis-dev", worktreeRoot)
+
+	status, err := buildStatus("my-feature", fakeSddArtifactSource{
+		artifacts: map[string]sddstatus.ArtifactState{
+			sddstatus.ArtifactProposal: sddstatus.ArtifactDone,
+			sddstatus.ArtifactSpec:     sddstatus.ArtifactDone,
+			sddstatus.ArtifactDesign:   sddstatus.ArtifactDone,
+			sddstatus.ArtifactTasks:    sddstatus.ArtifactDone,
+		},
+	}, "hive", editRoots)
+	if err != nil {
+		t.Fatalf("buildStatus: %v", err)
+	}
+
+	if got := status.Dependencies[sddstatus.PhaseApply]; got != sddstatus.DepReady {
+		t.Fatalf("sdd-apply dependency = %q, want %q", got, sddstatus.DepReady)
+	}
+	if got := status.ActionContext.Mode; got != sddstatus.ActionModeWorkspaceEdit {
+		t.Fatalf("ActionContext.Mode = %q, want %q", got, sddstatus.ActionModeWorkspaceEdit)
+	}
+	if got := status.ActionContext.AllowedEditRoots; len(got) != 1 || got[0] != worktreeRoot {
+		t.Fatalf("ActionContext.AllowedEditRoots = %#v, want [%q]", got, worktreeRoot)
+	}
+	if got := status.AllowedEditRoots; len(got) != 1 || got[0] != worktreeRoot {
+		t.Fatalf("AllowedEditRoots = %#v, want [%q]", got, worktreeRoot)
 	}
 }
 

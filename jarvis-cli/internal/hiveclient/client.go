@@ -58,6 +58,7 @@ type Memory struct {
 	ID           int64      `json:"id"`
 	SyncID       string     `json:"sync_id"`
 	Project      string     `json:"project"`
+	TopicKey     *string    `json:"topic_key"`
 	Category     string     `json:"category"`
 	Title        string     `json:"title"`
 	Content      string     `json:"content"`
