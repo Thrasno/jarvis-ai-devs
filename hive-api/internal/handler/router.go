@@ -63,6 +63,12 @@ type AdminService interface {
 	ListAuditLogs(ctx context.Context, filter model.AuditFilter) (model.AuditListResponse, error)
 }
 
+// OverviewService provides aggregated dashboard overview metrics.
+type OverviewService interface {
+	GetStats(ctx context.Context) (*model.OverviewStatsResponse, error)
+	GetGrowth(ctx context.Context) (*model.OverviewGrowthResponse, error)
+}
+
 // RouterDeps agrupa las dependencias del router.
 // Pasar un struct en lugar de N parámetros hace que el constructor sea legible
 // y fácil de extender sin romper código existente.
@@ -73,6 +79,7 @@ type RouterDeps struct {
 	SyncAttemptSvc     SyncAttemptService
 	ProjectSvc         ProjectService
 	AdminSvc           AdminService
+	OverviewSvc        OverviewService
 	DB                 DBPinger // puede ser nil en tests unitarios
 	AllowedOrigins     []string // orígenes permitidos para CORS (e.g. ["https://hive.hivemem.dev"])
 	DashboardAssetsDir string   // directorio con assets compilados para servir /dashboard
@@ -112,6 +119,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 	syncAttemptH := NewSyncAttemptHandler(deps.SyncAttemptSvc, deps.AuthSvc)
 	projectH := NewProjectHandler(deps.ProjectSvc)
 	adminH := NewAdminHandler(deps.AdminSvc)
+	overviewH := NewOverviewHandler(deps.OverviewSvc)
 	healthH := NewHealthHandler(deps.DB)
 
 	// Rutas públicas (sin autenticación)
@@ -146,6 +154,8 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		admin.POST("/users/:username/level", adminH.SetLevel)
 		admin.POST("/users/:username/grant-admin", adminH.GrantAdmin)
 		admin.POST("/users/:username/deactivate", adminH.Deactivate)
+		admin.GET("/overview/stats", overviewH.GetStats)
+		admin.GET("/overview/growth", overviewH.GetGrowth)
 	}
 
 	registerDashboardRoutes(r, deps.DashboardAssetsDir)

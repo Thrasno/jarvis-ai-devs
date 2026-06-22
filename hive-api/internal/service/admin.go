@@ -206,8 +206,16 @@ func (s *adminService) GetStats(ctx context.Context) (*model.AdminStatsResponse,
 	}
 	stats.Memories.Total = total
 
-	// Arrays vacíos explícitos — nunca null en JSON (spec: zeros as 0 not null)
-	stats.Memories.ByProject = []model.ProjectCount{}
+	byProject, err := s.memRepo.CountByProject(ctx, model.MemoryFilter{})
+	if err != nil {
+		return nil, err
+	}
+	if byProject == nil {
+		byProject = []model.ProjectCount{}
+	}
+	stats.Memories.ByProject = byProject
+
+	// ByCategory: explicit empty — no query yet
 	stats.Memories.ByCategory = []model.CategoryCount{}
 
 	return stats, nil

@@ -613,6 +613,94 @@ func memoryFromPayload(payload *model.MemoryPayload) *model.Memory {
 	}
 }
 
+// CountByProject returns memory counts grouped by project, DESC by count.
+// Soft-deleted memories are excluded. Returns []ProjectCount{} (not nil) when empty.
+func (r *postgresMemoryRepository) CountByProject(ctx context.Context, filter model.MemoryFilter) ([]model.ProjectCount, error) {
+	const q = `
+		SELECT project, COUNT(*) AS cnt
+		FROM memories
+		WHERE deleted_at IS NULL
+		GROUP BY project
+		ORDER BY COUNT(*) DESC`
+
+	rows, err := r.pool.Query(ctx, q)
+	if err != nil {
+		return nil, wrapPgError(err, "CountByProject")
+	}
+	defer rows.Close()
+
+	result := []model.ProjectCount{}
+	for rows.Next() {
+		var pc model.ProjectCount
+		if err := rows.Scan(&pc.Project, &pc.Count); err != nil {
+			return nil, wrapPgError(err, "scan CountByProject row")
+		}
+		result = append(result, pc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrapPgError(err, "iterate CountByProject rows")
+	}
+	return result, nil
+}
+
+// CountLiveActivity counts memories synced within the given window and returns the newest sync_id.
+func (r *postgresMemoryRepository) CountLiveActivity(ctx context.Context, since time.Time) (int, string, error) {
+	const q = `
+		SELECT COUNT(*) AS c,
+		       COALESCE(
+		         (SELECT sync_id::text FROM memories
+		          WHERE synced_at >= $1 AND deleted_at IS NULL
+		          ORDER BY synced_at DESC, id DESC LIMIT 1),
+		         '') AS newest
+		FROM memories WHERE synced_at >= $1 AND deleted_at IS NULL`
+
+	var count int
+	var newest string
+	err := r.pool.QueryRow(ctx, q, since).Scan(&count, &newest)
+	if err != nil {
+		return 0, "", wrapPgError(err, "CountLiveActivity")
+	}
+	return count, newest, nil
+}
+
+// CountGrowthByMonth returns cumulative memory counts by month (ascending) over the last N months.
+// Uses created_at (not synced_at) to reflect knowledge accumulation.
+func (r *postgresMemoryRepository) CountGrowthByMonth(ctx context.Context, months int) ([]model.MonthCount, error) {
+	const q = `
+		WITH months AS (
+		  SELECT date_trunc('month', now()) - (n || ' months')::interval AS m
+		  FROM generate_series($1 - 1, 0, -1) AS n
+		)
+		SELECT months.m,
+		       (SELECT COUNT(*) FROM memories
+		        WHERE deleted_at IS NULL
+		          AND created_at < months.m + interval '1 month') AS cumulative
+		FROM months ORDER BY months.m ASC`
+
+	rows, err := r.pool.Query(ctx, q, months)
+	if err != nil {
+		return nil, wrapPgError(err, "CountGrowthByMonth")
+	}
+	defer rows.Close()
+
+	result := []model.MonthCount{}
+	for rows.Next() {
+		var m time.Time
+		var cumulative int64
+		if err := rows.Scan(&m, &cumulative); err != nil {
+			return nil, wrapPgError(err, "scan CountGrowthByMonth row")
+		}
+		result = append(result, model.MonthCount{
+			Label: m.Format("Jan 2006"),
+			Value: int(cumulative),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrapPgError(err, "iterate CountGrowthByMonth rows")
+	}
+	return result, nil
+}
+
 // --- helpers privados ---
 
 // scanMemory ejecuta una query de fila única y escanea el resultado.

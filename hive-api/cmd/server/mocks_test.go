@@ -116,3 +116,21 @@ func (m *mockAdmin) ListAuditLogs(ctx context.Context, filter model.AuditFilter)
 	args := m.Called(ctx, filter)
 	return args.Get(0).(model.AuditListResponse), args.Error(1)
 }
+
+type mockOverview struct{ mock.Mock }
+
+func (m *mockOverview) GetStats(ctx context.Context) (*model.OverviewStatsResponse, error) {
+	args := m.Called(ctx)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.OverviewStatsResponse), args.Error(1)
+}
+
+func (m *mockOverview) GetGrowth(ctx context.Context) (*model.OverviewGrowthResponse, error) {
+	args := m.Called(ctx)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.OverviewGrowthResponse), args.Error(1)
+}

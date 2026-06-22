@@ -116,3 +116,24 @@ func (m *MockMemoryRepository) ListMemoryMutations(ctx context.Context, project 
 	}
 	return args.Get(0).(*model.MutationBatch), args.Error(1)
 }
+
+func (m *MockMemoryRepository) CountByProject(ctx context.Context, filter model.MemoryFilter) ([]model.ProjectCount, error) {
+	args := m.Called(ctx, filter)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]model.ProjectCount), args.Error(1)
+}
+
+func (m *MockMemoryRepository) CountLiveActivity(ctx context.Context, since time.Time) (int, string, error) {
+	args := m.Called(ctx, since)
+	return args.Int(0), args.String(1), args.Error(2)
+}
+
+func (m *MockMemoryRepository) CountGrowthByMonth(ctx context.Context, months int) ([]model.MonthCount, error) {
+	args := m.Called(ctx, months)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]model.MonthCount), args.Error(1)
+}

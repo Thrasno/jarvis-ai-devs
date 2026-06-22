@@ -120,3 +120,10 @@ type SyncAttemptDimensionCount struct {
 	Key   string `json:"key"`
 	Count int    `json:"count"`
 }
+
+// ProjectSyncHealthRow is a raw DB row returned by SyncHealthByProject.
+type ProjectSyncHealthRow struct {
+	Project          string
+	LastOutcome      SyncAttemptOutcome
+	ContributorCount int
+}

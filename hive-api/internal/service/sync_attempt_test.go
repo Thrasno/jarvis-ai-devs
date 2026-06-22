@@ -54,6 +54,14 @@ func (r *fakeSyncAttemptRepo) ListForSummary(ctx context.Context, filter model.S
 	return r.summary, nil
 }
 
+func (r *fakeSyncAttemptRepo) DaemonHealth(_ context.Context, _, _ time.Duration) (int, int, error) {
+	return 0, 0, nil
+}
+
+func (r *fakeSyncAttemptRepo) SyncHealthByProject(_ context.Context, _ time.Duration) ([]model.ProjectSyncHealthRow, error) {
+	return nil, nil
+}
+
 func TestSyncAttemptService_IngestValidationAndIdempotency(t *testing.T) {
 	svc := NewSyncAttemptService(&fakeSyncAttemptRepo{})
 	now := time.Now().UTC()

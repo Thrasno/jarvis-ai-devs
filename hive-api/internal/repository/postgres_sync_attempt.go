@@ -99,6 +99,79 @@ ORDER BY started_at DESC`
 	return records, nil
 }
 
+// DaemonHealth returns healthy and total daemon counts.
+// total = distinct daemons with any attempt in totalWindow (30d).
+// healthy = daemons whose last attempt in healthyWindow (24h) was a success.
+func (r *postgresSyncAttemptRepository) DaemonHealth(ctx context.Context, healthyWindow, totalWindow time.Duration) (int, int, error) {
+	now := time.Now().UTC()
+	totalSince := now.Add(-totalWindow)
+	healthySince := now.Add(-healthyWindow)
+
+	const qTotal = `
+		SELECT COUNT(DISTINCT daemon_id)
+		FROM sync_attempt_logs
+		WHERE daemon_id <> '' AND started_at >= $1`
+
+	var total int
+	if err := r.db.QueryRow(ctx, qTotal, totalSince).Scan(&total); err != nil {
+		return 0, 0, wrapPgError(err, "DaemonHealth total")
+	}
+
+	const qHealthy = `
+		SELECT COUNT(*) FROM (
+		  SELECT DISTINCT ON (daemon_id) daemon_id, outcome
+		  FROM sync_attempt_logs
+		  WHERE daemon_id <> '' AND started_at >= $1
+		  ORDER BY daemon_id, started_at DESC
+		) t WHERE t.outcome = 'success'`
+
+	var healthy int
+	if err := r.db.QueryRow(ctx, qHealthy, healthySince).Scan(&healthy); err != nil {
+		return 0, 0, wrapPgError(err, "DaemonHealth healthy")
+	}
+
+	return healthy, total, nil
+}
+
+// SyncHealthByProject returns per-project sync health for the given window.
+func (r *postgresSyncAttemptRepository) SyncHealthByProject(ctx context.Context, window time.Duration) ([]model.ProjectSyncHealthRow, error) {
+	since := time.Now().UTC().Add(-window)
+
+	const q = `
+		SELECT p.project, last.outcome, p.contributors FROM (
+		  SELECT project, COUNT(DISTINCT source_dev_id) AS contributors
+		  FROM sync_attempt_logs
+		  WHERE project <> '' AND started_at >= $1
+		  GROUP BY project
+		) p
+		JOIN LATERAL (
+		  SELECT outcome FROM sync_attempt_logs s
+		  WHERE s.project = p.project AND s.started_at >= $1
+		  ORDER BY started_at DESC LIMIT 1
+		) last ON true`
+
+	rows, err := r.db.Query(ctx, q, since)
+	if err != nil {
+		return nil, wrapPgError(err, "SyncHealthByProject")
+	}
+	defer rows.Close()
+
+	result := []model.ProjectSyncHealthRow{}
+	for rows.Next() {
+		var row model.ProjectSyncHealthRow
+		var outcome string
+		if err := rows.Scan(&row.Project, &outcome, &row.ContributorCount); err != nil {
+			return nil, wrapPgError(err, "scan SyncHealthByProject row")
+		}
+		row.LastOutcome = model.SyncAttemptOutcome(outcome)
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrapPgError(err, "iterate SyncHealthByProject rows")
+	}
+	return result, nil
+}
+
 func nonNilIntMap(values map[string]int) map[string]int {
 	if values == nil {
 		return map[string]int{}
