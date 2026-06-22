@@ -24,10 +24,11 @@ import (
 // cuando se le pasan mocks de dependencias.
 func TestBuildApp_NonNil(t *testing.T) {
 	app := buildApp(buildAppDeps{
-		authSvc:   &mockAuth{},
-		memorySvc: &mockMemory{},
-		syncSvc:   &mockSync{},
-		adminSvc:  &mockAdmin{},
+		authSvc:     &mockAuth{},
+		memorySvc:   &mockMemory{},
+		syncSvc:     &mockSync{},
+		adminSvc:    &mockAdmin{},
+		overviewSvc: &mockOverview{},
 	})
 	require.NotNil(t, app)
 }
@@ -36,10 +37,11 @@ func TestBuildApp_NonNil(t *testing.T) {
 // responda 200 en GET /health sin necesitar base de datos.
 func TestBuildApp_HealthEndpoint(t *testing.T) {
 	app := buildApp(buildAppDeps{
-		authSvc:   &mockAuth{},
-		memorySvc: &mockMemory{},
-		syncSvc:   &mockSync{},
-		adminSvc:  &mockAdmin{},
+		authSvc:     &mockAuth{},
+		memorySvc:   &mockMemory{},
+		syncSvc:     &mockSync{},
+		adminSvc:    &mockAdmin{},
+		overviewSvc: &mockOverview{},
 	})
 
 	w := httptest.NewRecorder()

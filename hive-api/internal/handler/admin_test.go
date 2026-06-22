@@ -30,10 +30,11 @@ func adminClaims() *model.Claims {
 
 func adminDeps(authSvc *mockAuthSvc, adminSvc *mockAdminSvc) RouterDeps {
 	return RouterDeps{
-		AuthSvc:   authSvc,
-		MemorySvc: &mockMemorySvc{},
-		SyncSvc:   &mockSyncSvc{},
-		AdminSvc:  adminSvc,
+		AuthSvc:     authSvc,
+		MemorySvc:   &mockMemorySvc{},
+		SyncSvc:     &mockSyncSvc{},
+		AdminSvc:    adminSvc,
+		OverviewSvc: &mockOverviewSvc{},
 	}
 }
 

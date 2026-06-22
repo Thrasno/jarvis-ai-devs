@@ -491,8 +491,12 @@ func TestGetStats_Success(t *testing.T) {
 		{ID: "2", Level: model.LevelMember, IsActive: true},
 		{ID: "3", Level: model.LevelMember, IsActive: false},
 	}
+	byProject := []model.ProjectCount{
+		{Project: "jarvis-dev", Count: 42},
+	}
 	mockUserRepo.On("List", ctx).Return(users, nil)
 	mockMemRepo.On("Count", ctx, model.MemoryFilter{}).Return(int64(42), nil)
+	mockMemRepo.On("CountByProject", ctx, model.MemoryFilter{}).Return(byProject, nil)
 
 	stats, err := svc.GetStats(ctx)
 	require.NoError(t, err)
@@ -502,5 +506,21 @@ func TestGetStats_Success(t *testing.T) {
 	assert.Equal(t, 2, stats.Users.ByLevel["member"])
 	assert.Equal(t, int64(42), stats.Memories.Total)
 	assert.NotNil(t, stats.Memories.ByProject)
+	assert.Len(t, stats.Memories.ByProject, 1)
+	assert.Equal(t, "jarvis-dev", stats.Memories.ByProject[0].Project)
 	assert.NotNil(t, stats.Memories.ByCategory)
+}
+
+func TestGetStats_ByProjectError(t *testing.T) {
+	svc, mockUserRepo, mockMemRepo, _, _ := newTestAdminService(t)
+	ctx := context.Background()
+
+	users := []*model.User{{ID: "1", Level: model.LevelAdmin, IsActive: true}}
+	repoErr := errors.New("db error")
+	mockUserRepo.On("List", ctx).Return(users, nil)
+	mockMemRepo.On("Count", ctx, model.MemoryFilter{}).Return(int64(0), nil)
+	mockMemRepo.On("CountByProject", ctx, model.MemoryFilter{}).Return(nil, repoErr)
+
+	_, err := svc.GetStats(ctx)
+	assert.ErrorIs(t, err, repoErr)
 }

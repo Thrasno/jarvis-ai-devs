@@ -65,4 +65,17 @@ type MemoryRepository interface {
 
 	ApplyMemoryMutation(ctx context.Context, mutation model.MutationEnvelope) (*model.MutationApplyResult, error)
 	ListMemoryMutations(ctx context.Context, project string, cursor model.MutationCursor, limit int) (*model.MutationBatch, error)
+
+	// CountByProject returns memory counts grouped by project, ordered by count DESC.
+	// Soft-deleted memories (deleted_at IS NOT NULL) are excluded.
+	// Returns []ProjectCount{} (not nil) when empty.
+	CountByProject(ctx context.Context, filter model.MemoryFilter) ([]model.ProjectCount, error)
+
+	// CountLiveActivity counts memories synced in the given window and returns the newest sync_id.
+	// Returns count=0, newestSyncID="" when the window is empty.
+	CountLiveActivity(ctx context.Context, since time.Time) (count int, newestSyncID string, err error)
+
+	// CountGrowthByMonth returns cumulative memory counts by month (ascending) over the last N months.
+	// Uses created_at (not synced_at). Returns []MonthCount{} when empty.
+	CountGrowthByMonth(ctx context.Context, months int) ([]model.MonthCount, error)
 }

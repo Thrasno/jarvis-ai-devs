@@ -196,6 +196,7 @@ func newTestRouterWithDashboard(dashboardAssetsDir string) *gin.Engine {
 		MemorySvc:          &mockMemorySvc{},
 		SyncSvc:            &mockSyncSvc{},
 		AdminSvc:           &mockAdminSvc{},
+		OverviewSvc:        &mockOverviewSvc{},
 		DashboardAssetsDir: dashboardAssetsDir,
 	})
 }
@@ -210,10 +211,11 @@ func newTestRouterWithDashboard(dashboardAssetsDir string) *gin.Engine {
 // que las paramétrizadas cuando comparten prefijo.
 func TestRouter_RoutesRegistered(t *testing.T) {
 	r := NewRouter(RouterDeps{
-		AuthSvc:   &mockAuthSvc{},
-		MemorySvc: &mockMemorySvc{},
-		SyncSvc:   &mockSyncSvc{},
-		AdminSvc:  &mockAdminSvc{},
+		AuthSvc:     &mockAuthSvc{},
+		MemorySvc:   &mockMemorySvc{},
+		SyncSvc:     &mockSyncSvc{},
+		AdminSvc:    &mockAdminSvc{},
+		OverviewSvc: &mockOverviewSvc{},
 	})
 
 	// Verificamos que cada ruta esperada exista probando que no devuelve 404
@@ -247,10 +249,11 @@ func TestRouter_RoutesRegistered(t *testing.T) {
 
 func TestRouter_AdminAuditLogsRequiresAuth(t *testing.T) {
 	r := NewRouter(RouterDeps{
-		AuthSvc:   &mockAuthSvc{},
-		MemorySvc: &mockMemorySvc{},
-		SyncSvc:   &mockSyncSvc{},
-		AdminSvc:  &mockAdminSvc{},
+		AuthSvc:     &mockAuthSvc{},
+		MemorySvc:   &mockMemorySvc{},
+		SyncSvc:     &mockSyncSvc{},
+		AdminSvc:    &mockAdminSvc{},
+		OverviewSvc: &mockOverviewSvc{},
 	})
 
 	w := httptest.NewRecorder()
@@ -266,10 +269,11 @@ func TestRouter_AdminAuditLogsRequiresAuth(t *testing.T) {
 // antes de /memories/:id en la lista de rutas.
 func TestRouter_SearchBeforeByID(t *testing.T) {
 	r := NewRouter(RouterDeps{
-		AuthSvc:   &mockAuthSvc{},
-		MemorySvc: &mockMemorySvc{},
-		SyncSvc:   &mockSyncSvc{},
-		AdminSvc:  &mockAdminSvc{},
+		AuthSvc:     &mockAuthSvc{},
+		MemorySvc:   &mockMemorySvc{},
+		SyncSvc:     &mockSyncSvc{},
+		AdminSvc:    &mockAdminSvc{},
+		OverviewSvc: &mockOverviewSvc{},
 	})
 
 	// Hacemos una request real a /memories/search
