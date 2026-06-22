@@ -87,6 +87,14 @@ func (r *postgresAuditRepository) Count(ctx context.Context, filter model.AuditF
 	return count, wrapPgError(err, "Count audit logs")
 }
 
+// CountSyncConflicts counts audit entries with action=sync_conflict on or after since.
+func (r *postgresAuditRepository) CountSyncConflicts(ctx context.Context, since time.Time) (int, error) {
+	const q = `SELECT COUNT(*) FROM audit_logs WHERE action = $1 AND occurred_at >= $2`
+	var count int
+	err := r.db.QueryRow(ctx, q, string(model.AuditActionSyncConflict), since).Scan(&count)
+	return count, wrapPgError(err, "CountSyncConflicts")
+}
+
 func buildAuditFilterWhere(filter model.AuditFilter, startIdx int) (string, []interface{}) {
 	clauses := []string{}
 	args := []interface{}{}

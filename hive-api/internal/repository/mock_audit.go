@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
 	"github.com/stretchr/testify/mock"
@@ -28,4 +29,9 @@ func (m *MockAuditRepository) List(ctx context.Context, filter model.AuditFilter
 func (m *MockAuditRepository) Count(ctx context.Context, filter model.AuditFilter) (int64, error) {
 	args := m.Called(ctx, filter)
 	return args.Get(0).(int64), args.Error(1)
+}
+
+func (m *MockAuditRepository) CountSyncConflicts(ctx context.Context, since time.Time) (int, error) {
+	args := m.Called(ctx, since)
+	return args.Int(0), args.Error(1)
 }
