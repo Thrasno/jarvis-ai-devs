@@ -167,3 +167,25 @@ type mockDBPinger struct {
 func (m *mockDBPinger) Ping(ctx context.Context) error {
 	return m.Called(ctx).Error(0)
 }
+
+// --- OverviewService mock ---
+
+type mockOverviewSvc struct {
+	mock.Mock
+}
+
+func (m *mockOverviewSvc) GetStats(ctx context.Context) (*model.OverviewStatsResponse, error) {
+	args := m.Called(ctx)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.OverviewStatsResponse), args.Error(1)
+}
+
+func (m *mockOverviewSvc) GetGrowth(ctx context.Context) (*model.OverviewGrowthResponse, error) {
+	args := m.Called(ctx)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.OverviewGrowthResponse), args.Error(1)
+}

@@ -36,6 +36,7 @@ type buildAppDeps struct {
 	syncSvc            handler.SyncService
 	syncAttemptSvc     handler.SyncAttemptService
 	adminSvc           handler.AdminService
+	overviewSvc        handler.OverviewService
 	db                 handler.DBPinger // nil en tests unitarios → health skip DB check
 	allowedOrigins     []string
 	dashboardAssetsDir string
@@ -54,6 +55,7 @@ type serviceFactories struct {
 	newSyncService        func(repository.MemoryRepository, repository.PromptRepository, repository.SessionRepository, repository.AuditRepository) handler.SyncService
 	newSyncAttemptService func(repository.SyncAttemptRepository) handler.SyncAttemptService
 	newAdminService       func(repository.UserRepository, repository.MemoryRepository, repository.AuditRepository, repository.TxManager) handler.AdminService
+	newOverviewService    func(repository.MemoryRepository, repository.SyncAttemptRepository, repository.AuditRepository) handler.OverviewService
 }
 
 func defaultServiceFactories() serviceFactories {
@@ -80,6 +82,9 @@ func defaultServiceFactories() serviceFactories {
 		newAdminService: func(userRepo repository.UserRepository, memRepo repository.MemoryRepository, auditRepo repository.AuditRepository, tx repository.TxManager) handler.AdminService {
 			return service.NewAdminService(userRepo, memRepo, auditRepo, tx)
 		},
+		newOverviewService: func(memRepo repository.MemoryRepository, syncRepo repository.SyncAttemptRepository, auditRepo repository.AuditRepository) handler.OverviewService {
+			return service.NewOverviewService(memRepo, syncRepo, auditRepo)
+		},
 	}
 }
 
@@ -92,6 +97,7 @@ func buildApp(deps buildAppDeps) *gin.Engine {
 		SyncSvc:            deps.syncSvc,
 		SyncAttemptSvc:     deps.syncAttemptSvc,
 		AdminSvc:           deps.adminSvc,
+		OverviewSvc:        deps.overviewSvc,
 		DB:                 deps.db,
 		AllowedOrigins:     deps.allowedOrigins,
 		DashboardAssetsDir: deps.dashboardAssetsDir,
@@ -122,6 +128,7 @@ func wireServicesWithFactories(pool *pgxpool.Pool, cfg *config.Config, factories
 	syncSvc := factories.newSyncService(memRepo, promptRepo, sessionRepo, auditRepo)
 	syncAttemptSvc := factories.newSyncAttemptService(syncAttemptRepo)
 	adminSvc := factories.newAdminService(userRepo, memRepo, auditRepo, txManager)
+	overviewSvc := factories.newOverviewService(memRepo, syncAttemptRepo, auditRepo)
 
 	return buildAppDeps{
 		authSvc:            authSvc,
@@ -129,6 +136,7 @@ func wireServicesWithFactories(pool *pgxpool.Pool, cfg *config.Config, factories
 		syncSvc:            syncSvc,
 		syncAttemptSvc:     syncAttemptSvc,
 		adminSvc:           adminSvc,
+		overviewSvc:        overviewSvc,
 		db:                 pool, // pgxpool.Pool implementa DBPinger (tiene Ping(ctx) error)
 		allowedOrigins:     cfg.AllowedOrigins,
 		dashboardAssetsDir: cfg.DashboardAssetsDir,
