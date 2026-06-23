@@ -22,13 +22,12 @@ func requireSymlinkSupport(t *testing.T) {
 // with both the Suggested Skills and Custom Skills sections on first run.
 func TestWriteRegistry_FirstRun(t *testing.T) {
 	dir := t.TempDir()
-	skills := []string{"hive", "go-testing"}
 	richSkills := []RegistrySkill{
 		{ID: "go-testing", Name: "Go Testing", Description: "Go testing patterns", Trigger: "When writing Go tests", Path: "go-testing/SKILL.md", CompactRules: "Run gofmt and targeted go test", IsCore: false},
 		{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", CompactRules: "Search memory before recall", IsCore: true},
 	}
 
-	if err := WriteRegistry(dir, "my-project", StackGo, skills, richSkills); err != nil {
+	if err := WriteRegistry(dir, "my-project", richSkills, WriteRegistryOptions{}); err != nil {
 		t.Fatalf("WriteRegistry: %v", err)
 	}
 
@@ -41,18 +40,11 @@ func TestWriteRegistry_FirstRun(t *testing.T) {
 
 	for _, want := range []string{
 		"my-project",
-		"Go",
 		"Canonical registry path: `" + CanonicalRegistryPath + "`",
-		"## Suggested Skills",
-		"- `hive`",
-		"- `go-testing`",
 		"## Installed Skills",
-		"| Skill | Trigger / Description | Scope | Path |",
-		"| Go Testing | When writing Go tests — Go testing patterns | optional | `.jarvis/skills/go-testing/SKILL.md` |",
-		"| Hive Memory | Using Hive memory — Persistent memory protocol | core | `.jarvis/skills/hive/SKILL.md` |",
-		"## Compact Rules (Transitional Metadata)",
-		"Compact rules are compatibility metadata; the skill index path rows above are the primary instruction contract.",
-		"- **hive**: Search memory before recall",
+		"| Trigger | Skill | Scope | Path |",
+		"| When writing Go tests | Go Testing | optional | `.jarvis/skills/go-testing/SKILL.md` |",
+		"| Using Hive memory | Hive Memory | core | `.jarvis/skills/hive/SKILL.md` |",
 		"## Project Conventions",
 		"- Generated sections are deterministic; customize only from `## Custom Skills` onward.",
 		"## Custom Skills",
@@ -62,18 +54,19 @@ func TestWriteRegistry_FirstRun(t *testing.T) {
 		}
 	}
 
-	if strings.Index(content, "| Go Testing |") > strings.Index(content, "| Hive Memory |") {
+	if strings.Index(content, "| When writing Go tests |") > strings.Index(content, "| Using Hive memory |") {
 		t.Fatalf("expected installed skills to be sorted deterministically by skill ID, got:\n%s", content)
 	}
 
 	for _, forbidden := range []string{
-		"| Skill | Trigger | Path | Type |",
+		"**Stack**",
+		"## Suggested Skills",
+		"## Compact Rules",
+		"| Skill | Trigger / Description | Scope | Path |",
 		"| Go Testing | When writing Go tests — Go testing patterns | optional | `go-testing/SKILL.md` |",
-		"| Go Testing | When writing Go tests | `go-testing/SKILL.md` | optional |",
-		"## Compact Rules\n",
 	} {
 		if strings.Contains(content, forbidden) {
-			t.Fatalf("registry must use index-first/path-first schema, but found legacy content %q in:\n%s", forbidden, content)
+			t.Fatalf("registry must use new header format, but found legacy content %q in:\n%s", forbidden, content)
 		}
 	}
 }
@@ -88,7 +81,7 @@ func TestWriteRegistry_Idempotent(t *testing.T) {
 		{ID: "go-testing", Name: "Go Testing", Description: "Go testing patterns", Trigger: "When writing Go tests", Path: "go-testing/SKILL.md", CompactRules: "Run gofmt and targeted go test"},
 		{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", CompactRules: "Search memory before recall", IsCore: true},
 	}
-	if err := WriteRegistry(dir, "my-project", StackGo, []string{"hive", "go-testing"}, initialRich); err != nil {
+	if err := WriteRegistry(dir, "my-project", initialRich, WriteRegistryOptions{}); err != nil {
 		t.Fatalf("first WriteRegistry: %v", err)
 	}
 
@@ -103,32 +96,31 @@ func TestWriteRegistry_Idempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Second run: different stack (Laravel), should update Suggested but keep custom.
+	// Second run: different set of skills (simulating Laravel stack), should update
+	// installed skills but keep custom.
 	updatedRich := []RegistrySkill{
 		{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", CompactRules: "Search memory before recall", IsCore: true},
 		{ID: "laravel-architecture", Name: "Laravel Architecture", Description: "Laravel conventions", Trigger: "When writing Laravel code", Path: "laravel-architecture/SKILL.md", CompactRules: "Keep controllers thin"},
 		{ID: "phpunit-testing", Name: "PHPUnit Testing", Description: "PHPUnit patterns", Trigger: "When writing PHP tests", Path: "phpunit-testing/SKILL.md", CompactRules: "Use AAA structure"},
 	}
-	if err := WriteRegistry(dir, "my-project", StackLaravel, []string{"hive", "laravel-architecture", "phpunit-testing"}, updatedRich); err != nil {
+	if err := WriteRegistry(dir, "my-project", updatedRich, WriteRegistryOptions{}); err != nil {
 		t.Fatalf("second WriteRegistry: %v", err)
 	}
 
 	data, _ := os.ReadFile(registryPath)
 	content := string(data)
 
-	// Updated suggested skills present.
+	// Updated skills present.
 	if !strings.Contains(content, "laravel-architecture") {
-		t.Error("expected updated 'laravel-architecture' in Suggested Skills")
+		t.Error("expected updated 'laravel-architecture' in installed skills")
 	}
-	// Old stack-specific skill removed from suggestions.
-	suggestedIdx := strings.Index(content, "## Suggested Skills")
 	customIdx := strings.Index(content, "## Custom Skills")
-	if suggestedIdx < 0 || customIdx < 0 {
-		t.Fatal("missing expected sections")
+	if customIdx < 0 {
+		t.Fatal("missing ## Custom Skills section")
 	}
-	suggestedSection := content[suggestedIdx:customIdx]
-	if strings.Contains(suggestedSection, "go-testing") {
-		t.Error("go-testing should not appear in Suggested Skills after stack change to Laravel")
+	installedSection := content[:customIdx]
+	if strings.Contains(installedSection, "go-testing") {
+		t.Error("go-testing should not appear after skill set change")
 	}
 	// Custom skill preserved.
 	if !strings.Contains(content, "my-custom-skill") {
@@ -154,7 +146,7 @@ func TestWriteRegistry_CustomAbsent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := WriteRegistry(dir, "old-project", StackNode, []string{"hive"}); err != nil {
+	if err := WriteRegistry(dir, "old-project", nil, WriteRegistryOptions{}); err != nil {
 		t.Fatalf("WriteRegistry: %v", err)
 	}
 
@@ -177,7 +169,7 @@ func TestWriteRegistry_ImportsLegacyCustomSectionWhenCanonicalAbsent(t *testing.
 		t.Fatal(err)
 	}
 
-	if err := WriteRegistry(dir, "legacy-project", StackGo, []string{"hive", "go-testing"}); err != nil {
+	if err := WriteRegistry(dir, "legacy-project", nil, WriteRegistryOptions{}); err != nil {
 		t.Fatalf("WriteRegistry: %v", err)
 	}
 
@@ -210,7 +202,7 @@ func TestWriteRegistry_WritesCanonicalOnlyWhenLegacyExists(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := WriteRegistry(dir, "canonical-project", StackGo, []string{"hive"}, []RegistrySkill{{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", IsCore: true}}); err != nil {
+	if err := WriteRegistry(dir, "canonical-project", []RegistrySkill{{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", IsCore: true}}, WriteRegistryOptions{}); err != nil {
 		t.Fatalf("WriteRegistry: %v", err)
 	}
 
@@ -246,7 +238,7 @@ func TestWriteRegistry_CanonicalCustomSectionWinsOverLegacy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := WriteRegistry(dir, "canonical-project", StackGo, []string{"hive", "go-testing"}); err != nil {
+	if err := WriteRegistry(dir, "canonical-project", nil, WriteRegistryOptions{}); err != nil {
 		t.Fatalf("WriteRegistry: %v", err)
 	}
 
@@ -275,7 +267,7 @@ func TestWriteRegistryWithResultReportsLegacyImportAndExplicitWarningSection(t *
 		t.Fatal(err)
 	}
 
-	result, err := WriteRegistryWithResult(dir, "warning-project", StackGo, []string{"hive"}, []RegistrySkill{
+	result, err := WriteRegistryWithResult(dir, "warning-project", []RegistrySkill{
 		{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", IsCore: true},
 	}, WriteRegistryOptions{
 		Warnings: []RegistryWarning{{Code: "metadata-gap", Severity: "warning", Path: ".jarvis/skills/example/SKILL.md", Message: "missing trigger metadata"}},
@@ -323,7 +315,7 @@ func TestWriteRegistryWithResultUsesUnchangedFastPathUnlessForced(t *testing.T) 
 	dir := t.TempDir()
 	richSkills := []RegistrySkill{{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", IsCore: true}}
 
-	first, err := WriteRegistryWithResult(dir, "fast-path-project", StackGo, []string{"hive"}, richSkills, WriteRegistryOptions{})
+	first, err := WriteRegistryWithResult(dir, "fast-path-project", richSkills, WriteRegistryOptions{})
 	if err != nil {
 		t.Fatalf("first WriteRegistryWithResult: %v", err)
 	}
@@ -332,7 +324,7 @@ func TestWriteRegistryWithResultUsesUnchangedFastPathUnlessForced(t *testing.T) 
 	}
 	infoBefore := mustStatRegistryFile(t, first.Path)
 
-	second, err := WriteRegistryWithResult(dir, "fast-path-project", StackGo, []string{"hive"}, richSkills, WriteRegistryOptions{})
+	second, err := WriteRegistryWithResult(dir, "fast-path-project", richSkills, WriteRegistryOptions{})
 	if err != nil {
 		t.Fatalf("second WriteRegistryWithResult: %v", err)
 	}
@@ -347,7 +339,7 @@ func TestWriteRegistryWithResultUsesUnchangedFastPathUnlessForced(t *testing.T) 
 		t.Fatalf("unchanged fast path rewrote registry: before=%s after=%s", infoBefore.ModTime(), infoAfter.ModTime())
 	}
 
-	forced, err := WriteRegistryWithResult(dir, "fast-path-project", StackGo, []string{"hive"}, richSkills, WriteRegistryOptions{Force: true})
+	forced, err := WriteRegistryWithResult(dir, "fast-path-project", richSkills, WriteRegistryOptions{Force: true})
 	if err != nil {
 		t.Fatalf("forced WriteRegistryWithResult: %v", err)
 	}
@@ -367,7 +359,7 @@ func TestWriteRegistryWithResultRejectsSymlinkedJarvisAncestor(t *testing.T) {
 		t.Fatalf("create .jarvis symlink: %v", err)
 	}
 
-	_, err := WriteRegistryWithResult(dir, "symlink-project", StackGo, []string{"hive"}, []RegistrySkill{{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", IsCore: true}}, WriteRegistryOptions{})
+	_, err := WriteRegistryWithResult(dir, "symlink-project", []RegistrySkill{{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", IsCore: true}}, WriteRegistryOptions{})
 	if err == nil {
 		t.Fatal("expected WriteRegistryWithResult to reject symlinked .jarvis ancestor")
 	}
@@ -395,7 +387,7 @@ func TestWriteRegistryWithResultRejectsRegistrySymlinkOutsideProjectRoot(t *test
 		t.Fatalf("create registry symlink: %v", err)
 	}
 
-	_, err := WriteRegistryWithResult(dir, "symlink-project", StackGo, []string{"hive"}, []RegistrySkill{{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", IsCore: true}}, WriteRegistryOptions{})
+	_, err := WriteRegistryWithResult(dir, "symlink-project", []RegistrySkill{{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", IsCore: true}}, WriteRegistryOptions{})
 	if err == nil {
 		t.Fatal("expected WriteRegistryWithResult to reject registry symlink outside project root")
 	}
@@ -476,6 +468,48 @@ func TestResolveRegistryReadPath_PrefersCanonicalFallsBackLegacy(t *testing.T) {
 			t.Fatalf("source mismatch: got %q want %q", source, RegistrySourceLegacy)
 		}
 	})
+}
+
+// TestWriteRegistry_NewHeaderFormat verifies that WriteRegistry emits the new
+// table header | Trigger | Skill | Scope | Path | and does not emit the old
+// Stack block, Suggested Skills section, or Compact Rules section.
+func TestWriteRegistry_NewHeaderFormat(t *testing.T) {
+	dir := t.TempDir()
+	richSkills := []RegistrySkill{
+		{ID: "go-testing", Name: "Go Testing", Description: "Go testing patterns", Trigger: "When writing Go tests", Scope: "optional", Path: "go-testing/SKILL.md"},
+		{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Scope: "core", Path: "hive/SKILL.md"},
+	}
+
+	if err := WriteRegistry(dir, "new-format-project", richSkills, WriteRegistryOptions{}); err != nil {
+		t.Fatalf("WriteRegistry: %v", err)
+	}
+
+	registryPath := filepath.Join(dir, ".jarvis", "skill-registry.md")
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatalf("file not created: %v", err)
+	}
+	content := string(data)
+
+	// New header must be present
+	if !strings.Contains(content, "| Trigger | Skill | Scope | Path |") {
+		t.Errorf("expected new table header '| Trigger | Skill | Scope | Path |' in registry, got:\n%s", content)
+	}
+
+	// Old Stack block must be absent
+	if strings.Contains(content, "**Stack**") {
+		t.Errorf("expected no '**Stack**' in registry, got:\n%s", content)
+	}
+
+	// Suggested Skills section must be absent
+	if strings.Contains(content, "## Suggested Skills") {
+		t.Errorf("expected no '## Suggested Skills' in registry, got:\n%s", content)
+	}
+
+	// Compact Rules section must be absent
+	if strings.Contains(content, "## Compact Rules") {
+		t.Errorf("expected no '## Compact Rules' in registry, got:\n%s", content)
+	}
 }
 
 func mustReadRegistryFile(t *testing.T, path string) []byte {

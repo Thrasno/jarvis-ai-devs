@@ -78,8 +78,6 @@ func Refresh(ctx context.Context, opts RefreshOptions) (Result, error) {
 	registryResult, err := project.WriteRegistryWithResult(
 		root,
 		project.DetectProject(root),
-		project.DetectStack(root),
-		project.SkillsForStack(project.DetectStack(root)),
 		toProjectRegistrySkills(skills.RegistryRows(embeddedSkills)),
 		project.WriteRegistryOptions{Force: opts.Force},
 	)

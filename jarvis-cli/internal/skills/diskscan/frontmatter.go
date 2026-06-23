@@ -1,0 +1,132 @@
+// Package diskscan provides on-disk skill discovery by walking skill directories
+// and parsing SKILL.md frontmatter.
+package diskscan
+
+import (
+	"strings"
+)
+
+// FrontmatterResult holds the parsed frontmatter fields from a SKILL.md file.
+type FrontmatterResult struct {
+	Name    string
+	Trigger string
+	Scope   string
+}
+
+// FrontmatterWarning describes a problem found while parsing frontmatter.
+type FrontmatterWarning struct {
+	Code string
+	Path string
+}
+
+// ParseFrontmatter parses the YAML frontmatter block from content and returns
+// the extracted fields. If name is missing, a missing-name warning is returned.
+// If trigger is missing (but name is present), a missing-trigger warning is returned.
+// Missing scope is allowed and returns no warning.
+func ParseFrontmatter(content []byte, path string) (FrontmatterResult, *FrontmatterWarning) {
+	block, _ := extractFrontmatterBlock(content)
+
+	result := parseFrontmatterFields(block)
+
+	if result.Name == "" {
+		return result, &FrontmatterWarning{Code: "missing-name", Path: path}
+	}
+	if result.Trigger == "" {
+		return result, &FrontmatterWarning{Code: "missing-trigger", Path: path}
+	}
+	return result, nil
+}
+
+// extractFrontmatterBlock extracts the raw YAML content between the opening and
+// closing --- delimiters. Returns (content, true) when a valid block is found,
+// or (nil, false) when absent.
+func extractFrontmatterBlock(content []byte) ([]byte, bool) {
+	s := string(content)
+
+	// Strip a leading UTF-8 BOM if present.
+	s = strings.TrimPrefix(s, "\xEF\xBB\xBF")
+
+	// Must start with ---
+	if !strings.HasPrefix(s, "---") {
+		return nil, false
+	}
+	// Find the newline after the opening ---
+	firstNewline := strings.IndexByte(s, '\n')
+	if firstNewline < 0 {
+		return nil, false
+	}
+	rest := s[firstNewline+1:]
+
+	// Find the closing ---
+	closingIdx := -1
+	for {
+		idx := strings.Index(rest, "---")
+		if idx < 0 {
+			break
+		}
+		// The --- must be at the beginning of a line
+		if idx == 0 || rest[idx-1] == '\n' {
+			// Ensure the rest of the line after --- is empty or whitespace
+			afterDelim := rest[idx+3:]
+			lineEnd := strings.IndexByte(afterDelim, '\n')
+			var lineRemainder string
+			if lineEnd < 0 {
+				lineRemainder = afterDelim
+			} else {
+				lineRemainder = afterDelim[:lineEnd]
+			}
+			if strings.TrimSpace(lineRemainder) == "" {
+				closingIdx = idx
+				break
+			}
+		}
+		rest = rest[idx+3:]
+	}
+
+	if closingIdx < 0 {
+		return nil, false
+	}
+
+	block := rest[:closingIdx]
+	return []byte(block), true
+}
+
+// parseFrontmatterFields does a minimal line-by-line parse of YAML frontmatter.
+// Only top-level scalar keys are extracted; nested structures are ignored.
+func parseFrontmatterFields(block []byte) FrontmatterResult {
+	var result FrontmatterResult
+	lines := strings.Split(string(block), "\n")
+	for _, line := range lines {
+		key, value, ok := parseFrontmatterLine(line)
+		if !ok {
+			continue
+		}
+		switch key {
+		case "name":
+			result.Name = value
+		case "trigger":
+			result.Trigger = value
+		case "scope":
+			result.Scope = value
+		}
+	}
+	return result
+}
+
+// parseFrontmatterLine parses a single "key: value" YAML line.
+// Returns (key, value, true) on success; ("", "", false) otherwise.
+// Keys are normalized to lowercase.
+func parseFrontmatterLine(line string) (string, string, bool) {
+	colonIdx := strings.IndexByte(line, ':')
+	if colonIdx < 0 {
+		return "", "", false
+	}
+	key := strings.ToLower(strings.TrimSpace(line[:colonIdx]))
+	value := strings.TrimSpace(line[colonIdx+1:])
+	// Strip optional inline YAML quotes
+	value = strings.Trim(value, `"'`)
+	if key == "" {
+		return "", "", false
+	}
+	return key, value, true
+}

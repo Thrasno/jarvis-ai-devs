@@ -10,7 +10,6 @@ import (
 )
 
 const (
-	SuggestedSkillsHeader  = "## Suggested Skills"
 	CustomSkillsHeader     = "## Custom Skills"
 	RegistryWarningsHeader = "## Registry Warnings"
 	CanonicalRegistryPath  = ".jarvis/skill-registry.md"
@@ -97,24 +96,20 @@ func ResolveRegistryReadPath(dir string) (string, RegistrySource, error) {
 }
 
 // WriteRegistry creates or updates .jarvis/skill-registry.md in dir.
-// The Suggested Skills section is always regenerated from the provided skills list.
+// The installed skills table is regenerated from registrySkills.
 // The Custom Skills section is preserved as-is if it already exists.
 // The write is atomic: a .tmp file is written first, then renamed into place.
-func WriteRegistry(dir, projectName string, stack Stack, skills []string, richSkills ...[]RegistrySkill) error {
-	var registrySkills []RegistrySkill
-	if len(richSkills) > 0 {
-		registrySkills = richSkills[0]
-	}
-	_, err := WriteRegistryWithResult(dir, projectName, stack, skills, registrySkills, WriteRegistryOptions{})
+func WriteRegistry(dir, projectName string, registrySkills []RegistrySkill, opts WriteRegistryOptions) error {
+	_, err := WriteRegistryWithResult(dir, projectName, registrySkills, opts)
 	return err
 }
 
 // WriteRegistryWithResult creates or updates .jarvis/skill-registry.md in dir.
-// The Suggested Skills section is always regenerated from the provided skills list.
+// The installed skills table is regenerated from registrySkills.
 // The Custom Skills section is preserved as-is if it already exists.
 // Legacy .atl custom content is imported only when the canonical registry is absent.
 // Byte-equivalent content is not rewritten unless Force is set.
-func WriteRegistryWithResult(dir, projectName string, stack Stack, skills []string, registrySkills []RegistrySkill, opts WriteRegistryOptions) (WriteRegistryResult, error) {
+func WriteRegistryWithResult(dir, projectName string, registrySkills []RegistrySkill, opts WriteRegistryOptions) (WriteRegistryResult, error) {
 	paths := CanonicalRegistryPaths()
 	registryPath := filepath.Join(dir, paths.WritePath)
 	renderedWarnings := append([]RegistryWarning(nil), opts.Warnings...)
@@ -153,7 +148,7 @@ func WriteRegistryWithResult(dir, projectName string, stack Stack, skills []stri
 		return result, fmt.Errorf("read existing registry: %w", err)
 	}
 
-	content := buildRegistryContent(projectName, stack, skills, registrySkills, customSection, renderedWarnings)
+	content := buildRegistryContent(projectName, registrySkills, customSection, renderedWarnings)
 
 	if existing, err := os.ReadFile(registryPath); err == nil && string(existing) == content && !opts.Force {
 		result.Changed = false
@@ -344,38 +339,29 @@ func customSectionIndex(content string) int {
 }
 
 // buildRegistryContent generates the full skill-registry.md content.
-func buildRegistryContent(projectName string, stack Stack, skills []string, richSkills []RegistrySkill, customSection string, warnings []RegistryWarning) string {
+// The table uses the index-first, path-first schema:
+// | Trigger | Skill | Scope | Path |
+func buildRegistryContent(projectName string, richSkills []RegistrySkill, customSection string, warnings []RegistryWarning) string {
 	var sb strings.Builder
 
 	sb.WriteString("# Skill Registry — ")
 	sb.WriteString(projectName)
 	sb.WriteString("\n\n")
-	sb.WriteString("**Stack**: ")
-	sb.WriteString(string(stack))
-	sb.WriteString("\n")
 	sb.WriteString("Canonical registry path: `")
 	sb.WriteString(CanonicalRegistryPath)
 	sb.WriteString("`")
 	sb.WriteString("\n\n---\n\n")
-	sb.WriteString(SuggestedSkillsHeader)
-	sb.WriteString("\n\n")
-	for _, skill := range skills {
-		sb.WriteString("- `")
-		sb.WriteString(skill)
-		sb.WriteString("`\n")
-	}
 
 	rows := sortedRegistrySkills(richSkills)
 	if len(rows) > 0 {
-		sb.WriteString("\n---\n\n")
 		sb.WriteString("## Installed Skills\n\n")
-		sb.WriteString("| Skill | Trigger / Description | Scope | Path |\n")
-		sb.WriteString("|-------|-----------------------|-------|------|\n")
+		sb.WriteString("| Trigger | Skill | Scope | Path |\n")
+		sb.WriteString("|---------|-------|-------|------|\n")
 		for _, skill := range rows {
 			sb.WriteString("| ")
-			sb.WriteString(registryDisplayName(skill))
+			sb.WriteString(registryTrigger(skill))
 			sb.WriteString(" | ")
-			sb.WriteString(registryTriggerDescription(skill))
+			sb.WriteString(registryDisplayName(skill))
 			sb.WriteString(" | ")
 			sb.WriteString(registryScope(skill))
 			sb.WriteString(" | `")
@@ -383,24 +369,10 @@ func buildRegistryContent(projectName string, stack Stack, skills []string, rich
 			sb.WriteString("`")
 			sb.WriteString(" |\n")
 		}
-
 		sb.WriteString("\n---\n\n")
-		sb.WriteString("## Compact Rules (Transitional Metadata)\n\n")
-		sb.WriteString("Compact rules are compatibility metadata; the skill index path rows above are the primary instruction contract.\n\n")
-		for _, skill := range rows {
-			if skill.CompactRules == "" {
-				continue
-			}
-			sb.WriteString("- **")
-			sb.WriteString(skill.ID)
-			sb.WriteString("**: ")
-			sb.WriteString(skill.CompactRules)
-			sb.WriteString("\n")
-		}
 	}
 
 	if len(warnings) > 0 {
-		sb.WriteString("\n---\n\n")
 		sb.WriteString(RegistryWarningsHeader)
 		sb.WriteString("\n\n")
 		sb.WriteString("| Code | Severity | Path | Message |\n")
@@ -416,9 +388,9 @@ func buildRegistryContent(projectName string, stack Stack, skills []string, rich
 			sb.WriteString(escapeTableCell(warning.Message))
 			sb.WriteString(" |\n")
 		}
+		sb.WriteString("\n---\n\n")
 	}
 
-	sb.WriteString("\n---\n\n")
 	sb.WriteString("## Project Conventions\n\n")
 	sb.WriteString("- Generated sections are deterministic; customize only from `## Custom Skills` onward.\n")
 	sb.WriteString("- Keep `")
@@ -433,19 +405,9 @@ func buildRegistryContent(projectName string, stack Stack, skills []string, rich
 	return sb.String()
 }
 
-func registryTriggerDescription(skill RegistrySkill) string {
-	trigger := strings.TrimSpace(skill.Trigger)
-	description := strings.TrimSpace(skill.Description)
-	switch {
-	case trigger != "" && description != "":
-		return escapeTableCell(trigger + " — " + description)
-	case trigger != "":
-		return escapeTableCell(trigger)
-	case description != "":
-		return escapeTableCell(description)
-	default:
-		return ""
-	}
+// registryTrigger returns the trigger string for the Trigger column.
+func registryTrigger(skill RegistrySkill) string {
+	return escapeTableCell(strings.TrimSpace(skill.Trigger))
 }
 
 func registryScope(skill RegistrySkill) string {
