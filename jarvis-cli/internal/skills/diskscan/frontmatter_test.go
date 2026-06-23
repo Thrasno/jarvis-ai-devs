@@ -168,3 +168,208 @@ func TestParseFrontmatter_CRLFLineEndings(t *testing.T) {
 		t.Errorf("Scope = %q, want %q", result.Scope, "core")
 	}
 }
+
+// TestParseFrontmatter_FoldedDescriptionWithTrigger validates that a folded
+// YAML scalar (description: >) with the trigger on a continuation line is
+// correctly extracted. This matches the real go-testing / branch-pr skill format.
+func TestParseFrontmatter_FoldedDescriptionWithTrigger(t *testing.T) {
+	content := []byte(`---
+name: go-testing
+description: >
+  Go testing patterns for Gentleman.Dots, including Bubbletea TUI testing.
+  Trigger: When writing Go tests, using teatest, or adding test coverage.
+license: Apache-2.0
+---
+
+# Go Testing
+`)
+	result, warn := ParseFrontmatter(content, "go-testing/SKILL.md")
+	if warn != nil {
+		t.Fatalf("unexpected warning for folded description with trigger: %+v", warn)
+	}
+	if result.Name != "go-testing" {
+		t.Errorf("Name = %q, want %q", result.Name, "go-testing")
+	}
+	want := "When writing Go tests, using teatest, or adding test coverage."
+	if result.Trigger != want {
+		t.Errorf("Trigger = %q, want %q", result.Trigger, want)
+	}
+}
+
+// TestParseFrontmatter_SingleLineDescriptionWithTrigger validates that a
+// single-line quoted description containing "Trigger: ..." extracts the
+// trigger text correctly. This is the case that fails with the current parser.
+func TestParseFrontmatter_SingleLineDescriptionWithTrigger(t *testing.T) {
+	content := []byte(`---
+name: sdd-apply
+description: "Implement SDD tasks from specs and design. Trigger: orchestrator launches apply for one or more change tasks."
+---
+
+# SDD Apply
+`)
+	result, warn := ParseFrontmatter(content, "sdd-apply/SKILL.md")
+	if warn != nil {
+		t.Fatalf("unexpected warning for single-line description with trigger: %+v", warn)
+	}
+	if result.Name != "sdd-apply" {
+		t.Errorf("Name = %q, want %q", result.Name, "sdd-apply")
+	}
+	want := "orchestrator launches apply for one or more change tasks."
+	if result.Trigger != want {
+		t.Errorf("Trigger = %q, want %q", result.Trigger, want)
+	}
+}
+
+// TestParseFrontmatter_FoldedDescriptionSummaryThenTrigger validates that when
+// the description has a summary sentence before the Trigger: line, only the
+// trigger portion is extracted, not the whole description.
+func TestParseFrontmatter_FoldedDescriptionSummaryThenTrigger(t *testing.T) {
+	content := []byte(`---
+name: branch-pr
+description: >
+  Create Gentle AI pull requests with issue-first checks for Jarvis-packaged workflows.
+  Trigger: When creating a pull request, opening a PR, or preparing changes for review.
+license: Apache-2.0
+---
+
+# Branch PR
+`)
+	result, warn := ParseFrontmatter(content, "branch-pr/SKILL.md")
+	if warn != nil {
+		t.Fatalf("unexpected warning for description with summary + trigger: %+v", warn)
+	}
+	if result.Name != "branch-pr" {
+		t.Errorf("Name = %q, want %q", result.Name, "branch-pr")
+	}
+	want := "When creating a pull request, opening a PR, or preparing changes for review."
+	if result.Trigger != want {
+		t.Errorf("Trigger = %q, want %q", result.Trigger, want)
+	}
+}
+
+// TestParseFrontmatter_StandaloneKeyTakesPrecedenceOverDescription verifies
+// back-compat: when both a standalone Trigger: key and description-embedded
+// trigger exist, the standalone key wins.
+func TestParseFrontmatter_StandaloneKeyTakesPrecedenceOverDescription(t *testing.T) {
+	content := []byte(`---
+name: explicit-trigger
+description: "Some description. Trigger: trigger from description."
+Trigger: explicit standalone trigger
+---
+`)
+	result, warn := ParseFrontmatter(content, "explicit-trigger/SKILL.md")
+	if warn != nil {
+		t.Fatalf("unexpected warning: %+v", warn)
+	}
+	want := "explicit standalone trigger"
+	if result.Trigger != want {
+		t.Errorf("Trigger = %q, want %q (standalone key should win)", result.Trigger, want)
+	}
+}
+
+// TestParseFrontmatter_DescriptionWithNoTrigger validates that a description
+// field without any "Trigger:" text still produces a missing-trigger warning.
+func TestParseFrontmatter_DescriptionWithNoTrigger(t *testing.T) {
+	content := []byte(`---
+name: no-trigger-in-desc
+description: "Just a summary with no trigger text here."
+---
+`)
+	_, warn := ParseFrontmatter(content, "no-trigger-in-desc/SKILL.md")
+	if warn == nil {
+		t.Fatal("expected missing-trigger warning when description has no Trigger: text")
+	}
+	if warn.Code != "missing-trigger" {
+		t.Errorf("warning Code = %q, want %q", warn.Code, "missing-trigger")
+	}
+}
+
+// TestParseFrontmatter_FoldedDescriptionCRLFBlankLine validates that a folded
+// YAML scalar with a CRLF blank line (\r\n\r\n) between the summary sentence
+// and the "Trigger:" text does NOT prematurely end the folded scalar. The blank
+// CRLF line ("\r" after split-by-\n) must be treated as empty/blank, not as a
+// non-indented line that terminates the description block.
+//
+// The exact failure scenario: the Trigger text is embedded INLINE in the
+// description folded scalar on a single continuation line that starts with
+// "Summary sentence. Trigger: value". There is no standalone top-level
+// Trigger: key. When the CRLF blank line ("\r") prematurely sets inDesc=false,
+// the continuation line "  Summary. Trigger: value\r" is never accumulated into
+// descLines, so extractTriggerFromDescription is never called with that text,
+// producing a missing-trigger warning.
+func TestParseFrontmatter_FoldedDescriptionCRLFBlankLine(t *testing.T) {
+	// Build with explicit CRLF line endings. The blank line between the two
+	// description paragraphs becomes "\r" after split-by-\n. The trigger is
+	// embedded inline on the second continuation line — no standalone top-level
+	// Trigger: key exists. If inDesc is terminated by the \r blank line, the
+	// second paragraph never reaches descLines and the trigger is lost.
+	content := "---\r\nname: crlf-blank-skill\r\ndescription: >\r\n  Go testing patterns for the project.\r\n\r\n  Summary before trigger. Trigger: When writing Go tests or adding test coverage.\r\n---\r\n"
+
+	result, warn := ParseFrontmatter([]byte(content), "crlf-blank-skill/SKILL.md")
+	if warn != nil {
+		t.Fatalf("unexpected warning: %+v (CRLF blank line must not drop embedded trigger)", warn)
+	}
+	if result.Name != "crlf-blank-skill" {
+		t.Errorf("Name = %q, want %q", result.Name, "crlf-blank-skill")
+	}
+	want := "When writing Go tests or adding test coverage."
+	if result.Trigger != want {
+		t.Errorf("Trigger = %q, want %q (CRLF blank line terminated folded scalar prematurely)", result.Trigger, want)
+	}
+}
+
+// TestExtractTriggerFromDescription_FirstWins verifies that when the description
+// text contains two "Trigger:" occurrences, the FIRST one wins and only its
+// value (up to but not including the second occurrence) is returned.
+func TestExtractTriggerFromDescription_FirstWins(t *testing.T) {
+	text := "Some summary. Trigger: first trigger value. Extra text. Trigger: second trigger value."
+	got := extractTriggerFromDescription(text)
+	want := "first trigger value. Extra text. Trigger: second trigger value."
+	if got != want {
+		t.Errorf("extractTriggerFromDescription = %q, want %q", got, want)
+	}
+}
+
+// TestParseFrontmatter_RealSkillFrontmatters validates that the two real-world
+// skill formats (go-testing folded, sdd-apply single-line) both yield
+// non-empty triggers with no warnings.
+func TestParseFrontmatter_RealSkillFrontmatters(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name: "go-testing (folded)",
+			content: "---\nname: go-testing\ndescription: >\n  Go testing patterns for Gentleman.Dots, including Bubbletea TUI testing.\n  Trigger: When writing Go tests, using teatest, or adding test coverage.\nlicense: Apache-2.0\n---\n",
+			want: "When writing Go tests, using teatest, or adding test coverage.",
+		},
+		{
+			name:    "branch-pr (folded)",
+			content: "---\nname: branch-pr\ndescription: >\n  Create Gentle AI pull requests with issue-first checks for Jarvis-packaged workflows.\n  Trigger: When creating a pull request, opening a PR, or preparing changes for review.\nlicense: Apache-2.0\n---\n",
+			want:    "When creating a pull request, opening a PR, or preparing changes for review.",
+		},
+		{
+			name:    "sdd-apply (single-line quoted)",
+			content: "---\nname: sdd-apply\ndescription: \"Implement SDD tasks from specs and design. Trigger: orchestrator launches apply for one or more change tasks.\"\n---\n",
+			want:    "orchestrator launches apply for one or more change tasks.",
+		},
+		{
+			name:    "skill-registry (folded with long summary)",
+			content: "---\nname: skill-registry\ndescription: >\n  Create or update the skill registry for the current project. Scans user skills and project conventions, writes .jarvis/skill-registry.md, and saves to Hive if available.\n  Trigger: When user says \"update skills\", \"skill registry\", \"actualizar skills\", \"update registry\", or after installing/removing skills.\n---\n",
+			want:    "When user says \"update skills\", \"skill registry\", \"actualizar skills\", \"update registry\", or after installing/removing skills.",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, warn := ParseFrontmatter([]byte(tc.content), tc.name+"/SKILL.md")
+			if warn != nil {
+				t.Errorf("unexpected warning %+v for skill %q", warn, tc.name)
+			}
+			if result.Trigger != tc.want {
+				t.Errorf("Trigger = %q, want %q", result.Trigger, tc.want)
+			}
+		})
+	}
+}

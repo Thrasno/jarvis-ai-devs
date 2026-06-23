@@ -7,7 +7,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
 )
 
@@ -41,9 +40,8 @@ func newSkillRegistryRefreshCmd() *cobra.Command {
 			}
 
 			result, err := projectregistry.Refresh(cmd.Context(), projectregistry.RefreshOptions{
-				CWD:      refreshCWD,
-				Force:    force,
-				SkillsFS: jarvis.SkillsFS,
+				CWD:   refreshCWD,
+				Force: force,
 			})
 			if err != nil {
 				return err

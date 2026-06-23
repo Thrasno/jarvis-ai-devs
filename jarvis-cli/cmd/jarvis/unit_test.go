@@ -328,13 +328,14 @@ func TestRunInit_InProcess(t *testing.T) {
 		t.Errorf("expected .jarvis/skill-registry.md to exist: %v", err)
 	}
 	registry := string(registryData)
+	// Verify structural elements of the registry file format.
 	for _, want := range []string{
 		"## Installed Skills",
 		"| Trigger | Skill | Scope | Path |",
-		"| When writing Go tests, using teatest, or adding test coverage | Go Testing | optional | `.jarvis/skills/go-testing/SKILL.md` |",
-		"| When improving skills, auditing skills, refactoring skills, or checking skill quality | Skill Improver | optional | `.jarvis/skills/skill-improver/SKILL.md` |",
 		"## Project Conventions",
 		"Canonical registry path: `.jarvis/skill-registry.md`",
+		// go-testing SKILL.md is scanned from disk; verify its row appears.
+		"go-testing",
 	} {
 		if !strings.Contains(registry, want) {
 			t.Fatalf("expected rich registry content %q, got:\n%s", want, registry)
@@ -383,12 +384,11 @@ func TestRunInit_InProcess(t *testing.T) {
 		t.Errorf("expected commit reminder in output:\n%s", out)
 	}
 
-	// Verify stack and skills appear in output.
-	if !strings.Contains(out, "Go") {
-		t.Errorf("expected 'Go' stack in output:\n%s", out)
-	}
-	if !strings.Contains(out, "go-testing") {
-		t.Errorf("expected 'go-testing' skill in output:\n%s", out)
+	// Verify init success messages appear in output.
+	for _, want := range []string{"Skill registry created", "Skills:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in init output:\n%s", want, out)
+		}
 	}
 }
 

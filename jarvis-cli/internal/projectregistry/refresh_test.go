@@ -8,10 +8,142 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
-
-	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 )
+
+// isolateHome points HOME to a temp dir so diskscan's global skill dirs do not
+// resolve to real developer machine paths. Call this in any test that calls
+// Refresh without an explicit ScanDirs override and cares about warning counts.
+func isolateHome(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
+
+// seedSkillFile writes a SKILL.md with valid frontmatter into root/.jarvis/skills/<id>/SKILL.md.
+// scope may be empty to test the default scope path.
+func seedSkillFile(t *testing.T, root, id, scope string) string {
+	t.Helper()
+	dir := filepath.Join(root, ".jarvis", "skills", id)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("create skill dir: %v", err)
+	}
+	var fm string
+	if scope != "" {
+		fm = "---\nname: " + id + "\ntrigger: When using " + id + "\nscope: " + scope + "\n---\n\n# " + id + "\n"
+	} else {
+		fm = "---\nname: " + id + "\ntrigger: When using " + id + "\n---\n\n# " + id + "\n"
+	}
+	skillPath := filepath.Join(dir, "SKILL.md")
+	if err := os.WriteFile(skillPath, []byte(fm), 0644); err != nil {
+		t.Fatalf("write skill file: %v", err)
+	}
+	return skillPath
+}
+
+// TestRefreshIndexesScannedSkills verifies that Refresh picks up a skill placed at
+// root/.jarvis/skills/<id>/SKILL.md and writes a matching row in the registry table.
+// It also asserts that SkillCount reflects exactly the number of indexed skills.
+func TestRefreshIndexesScannedSkills(t *testing.T) {
+	root := initGitWorktree(t)
+	seedSkillFile(t, root, "go-testing", "optional")
+
+	result, err := Refresh(context.Background(), RefreshOptions{CWD: root, ScanDirs: []string{filepath.Join(root, ".jarvis", "skills")}})
+	if err != nil {
+		t.Fatalf("Refresh returned error: %v", err)
+	}
+
+	registryPath := filepath.Join(root, ".jarvis", "skill-registry.md")
+	assertSamePath(t, result.Path, registryPath)
+	assertFileContains(t, registryPath, "go-testing")
+	assertFileContains(t, registryPath, "| Trigger |")
+	if result.SkillCount != 1 {
+		t.Fatalf("SkillCount = %d, want 1 (exactly the one seeded skill)", result.SkillCount)
+	}
+}
+
+// TestRefreshOptions_ScanDirsOverridesDefault verifies that when ScanDirs is set,
+// only those directories are scanned (the default dirs are ignored).
+func TestRefreshOptions_ScanDirsOverridesDefault(t *testing.T) {
+	root := initGitWorktree(t)
+	// Seed a skill in the explicit dir (should be found).
+	customDir := filepath.Join(root, "custom-skills")
+	if err := os.MkdirAll(filepath.Join(customDir, "my-skill"), 0755); err != nil {
+		t.Fatalf("create custom skill dir: %v", err)
+	}
+	skillContent := "---\nname: my-skill\ntrigger: When testing custom scan dirs\n---\n\n# my-skill\n"
+	if err := os.WriteFile(filepath.Join(customDir, "my-skill", "SKILL.md"), []byte(skillContent), 0644); err != nil {
+		t.Fatalf("write custom skill: %v", err)
+	}
+	// Seed a skill in the default project dir (should NOT be found because ScanDirs overrides).
+	seedSkillFile(t, root, "default-only-skill", "optional")
+
+	result, err := Refresh(context.Background(), RefreshOptions{CWD: root, ScanDirs: []string{customDir}})
+	if err != nil {
+		t.Fatalf("Refresh returned error: %v", err)
+	}
+
+	registryPath := filepath.Join(root, ".jarvis", "skill-registry.md")
+	assertSamePath(t, result.Path, registryPath)
+	assertFileContains(t, registryPath, "my-skill")
+	// The default-only-skill must NOT appear because ScanDirs overrides default resolution.
+	assertFileNotContains(t, registryPath, "default-only-skill")
+}
+
+// TestScanRowAdapterNormalizesPath verifies that the adapter converts an
+// absolute OS-native path into a project-relative, forward-slash path.
+func TestScanRowAdapterNormalizesPath(t *testing.T) {
+	root := t.TempDir()
+	// Simulate a ScanRow with an absolute OS-native path.
+	absPath := filepath.Join(root, ".jarvis", "skills", "go-testing", "SKILL.md")
+	relFwd := scanRowRelPath(root, absPath)
+
+	want := ".jarvis/skills/go-testing/SKILL.md"
+	if relFwd != want {
+		t.Fatalf("scanRowRelPath = %q, want %q", relFwd, want)
+	}
+}
+
+// TestScanRowRelPath_OutsideRootFallsBackToAbsolute verifies that when the skill
+// absolute path is NOT under the project root (e.g. a user-global skill under
+// ~/.claude/skills/...), scanRowRelPath returns a forward-slash absolute path
+// rather than a ".." -prefixed relative path. A ".." path written into the
+// registry would be broken on any machine where the directory layout differs.
+func TestScanRowRelPath_OutsideRootFallsBackToAbsolute(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), ".claude", "skills", "hive", "SKILL.md")
+
+	got := scanRowRelPath(root, outside)
+
+	if strings.HasPrefix(got, "..") {
+		t.Fatalf("scanRowRelPath returned %q; must not start with '..' for paths outside root", got)
+	}
+	// The result must use forward slashes (cross-platform registry format).
+	if strings.Contains(got, "\\") {
+		t.Fatalf("scanRowRelPath returned %q; must use forward slashes", got)
+	}
+	// The result must be an absolute path pointing to the original file.
+	wantAbs := filepath.ToSlash(outside)
+	if got != wantAbs {
+		t.Fatalf("scanRowRelPath = %q, want absolute forward-slash path %q", got, wantAbs)
+	}
+}
+
+// TestRefreshScopeDefaultIsOptional verifies that a SKILL.md with no scope:
+// frontmatter key results in an "optional" cell in the registry table.
+func TestRefreshScopeDefaultIsOptional(t *testing.T) {
+	root := initGitWorktree(t)
+	// Seed without scope field.
+	seedSkillFile(t, root, "no-scope-skill", "")
+
+	_, err := Refresh(context.Background(), RefreshOptions{CWD: root, ScanDirs: []string{filepath.Join(root, ".jarvis", "skills")}})
+	if err != nil {
+		t.Fatalf("Refresh returned error: %v", err)
+	}
+
+	registryPath := filepath.Join(root, ".jarvis", "skill-registry.md")
+	assertFileContains(t, registryPath, "optional")
+}
 
 func TestResolveRootUsesGitTopLevelFromSubdir(t *testing.T) {
 	root := initGitWorktree(t)
@@ -177,7 +309,8 @@ func TestPathsReferToSameFileRespectsPlatformCaseSensitivity(t *testing.T) {
 	}
 }
 
-func TestRefreshWritesCanonicalRegistryAndInstallsProjectSkillCopies(t *testing.T) {
+func TestRefreshWritesCanonicalRegistry(t *testing.T) {
+	isolateHome(t)
 	root := initGitWorktree(t)
 	subdir := filepath.Join(root, "cmd", "app")
 	if err := os.MkdirAll(subdir, 0755); err != nil {
@@ -186,8 +319,10 @@ func TestRefreshWritesCanonicalRegistryAndInstallsProjectSkillCopies(t *testing.
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.test/app\n"), 0644); err != nil {
 		t.Fatalf("write go.mod: %v", err)
 	}
+	// Seed a skill so Refresh has something to index.
+	seedSkillFile(t, root, "go-testing", "optional")
 
-	result, err := Refresh(context.Background(), RefreshOptions{CWD: subdir, SkillsFS: jarvis.SkillsFS})
+	result, err := Refresh(context.Background(), RefreshOptions{CWD: subdir})
 	if err != nil {
 		t.Fatalf("Refresh returned error: %v", err)
 	}
@@ -201,31 +336,30 @@ func TestRefreshWritesCanonicalRegistryAndInstallsProjectSkillCopies(t *testing.
 	if result.Reason != ReasonCreated {
 		t.Fatalf("Reason = %q, want %q", result.Reason, ReasonCreated)
 	}
-	if result.SkillCount < 20 {
-		t.Fatalf("SkillCount = %d, want registry rows for embedded skills", result.SkillCount)
-	}
 	if len(result.Warnings) != 0 {
 		t.Fatalf("Warnings = %+v, want none for clean refresh", result.Warnings)
 	}
 	assertFileContains(t, registryPath, "Canonical registry path: `.jarvis/skill-registry.md`")
-	assertFileContains(t, filepath.Join(root, ".jarvis", "skills", "go-testing", "SKILL.md"), "Go")
-	assertFileContains(t, filepath.Join(root, ".jarvis", "skills", "sdd-apply", "strict-tdd.md"), "Strict TDD")
+	// Refresh does NOT install skill copies; that is cmd_init's responsibility.
+	if _, err := os.Stat(filepath.Join(root, ".jarvis", "skills", "sdd-apply", "strict-tdd.md")); !os.IsNotExist(err) {
+		t.Fatal("Refresh must not install skill copies under .jarvis/skills")
+	}
 }
 
 func TestRefreshCanExplicitlyAllowNonGitRoot(t *testing.T) {
+	isolateHome(t)
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.test/nongit\n"), 0644); err != nil {
 		t.Fatalf("write go.mod: %v", err)
 	}
 
-	result, err := Refresh(context.Background(), RefreshOptions{CWD: root, AllowNonGitRoot: true, SkillsFS: jarvis.SkillsFS})
+	result, err := Refresh(context.Background(), RefreshOptions{CWD: root, AllowNonGitRoot: true})
 
 	if err != nil {
 		t.Fatalf("Refresh returned error for explicitly allowed non-git root: %v", err)
 	}
 	assertSamePath(t, result.Root, root)
 	assertFileContains(t, filepath.Join(root, ".jarvis", "skill-registry.md"), "Canonical registry path: `.jarvis/skill-registry.md`")
-	assertFileContains(t, filepath.Join(root, ".jarvis", "skills", "sdd-apply", "SKILL.md"), "sdd-apply")
 }
 
 func TestFormatWarningLineIsSharedAndConcise(t *testing.T) {
@@ -243,6 +377,7 @@ func TestFormatWarningLineIsSharedAndConcise(t *testing.T) {
 }
 
 func TestRefreshReportsLegacyImportWarning(t *testing.T) {
+	isolateHome(t)
 	root := initGitWorktree(t)
 	legacyPath := filepath.Join(root, ".atl", "skill-registry.md")
 	if err := os.MkdirAll(filepath.Dir(legacyPath), 0755); err != nil {
@@ -253,7 +388,7 @@ func TestRefreshReportsLegacyImportWarning(t *testing.T) {
 		t.Fatalf("write legacy registry: %v", err)
 	}
 
-	first, err := Refresh(context.Background(), RefreshOptions{CWD: root, SkillsFS: jarvis.SkillsFS})
+	first, err := Refresh(context.Background(), RefreshOptions{CWD: root})
 	if err != nil {
 		t.Fatalf("first Refresh returned error: %v", err)
 	}
@@ -270,9 +405,10 @@ func TestRefreshReportsLegacyImportWarning(t *testing.T) {
 }
 
 func TestRefreshUsesUnchangedFastPath(t *testing.T) {
+	isolateHome(t)
 	root := initGitWorktree(t)
 
-	first, err := Refresh(context.Background(), RefreshOptions{CWD: root, SkillsFS: jarvis.SkillsFS})
+	first, err := Refresh(context.Background(), RefreshOptions{CWD: root})
 	if err != nil {
 		t.Fatalf("first Refresh returned error: %v", err)
 	}
@@ -281,7 +417,7 @@ func TestRefreshUsesUnchangedFastPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat canonical registry: %v", err)
 	}
-	second, err := Refresh(context.Background(), RefreshOptions{CWD: root, SkillsFS: jarvis.SkillsFS})
+	second, err := Refresh(context.Background(), RefreshOptions{CWD: root})
 	if err != nil {
 		t.Fatalf("second Refresh returned error: %v", err)
 	}
@@ -300,62 +436,70 @@ func TestRefreshUsesUnchangedFastPath(t *testing.T) {
 	}
 }
 
-func TestRefreshDoesNotRewriteUnchangedInstalledSkillFiles(t *testing.T) {
+func TestRefreshDoesNotRewriteUnchangedRegistry(t *testing.T) {
+	isolateHome(t)
 	root := initGitWorktree(t)
+	seedSkillFile(t, root, "go-testing", "optional")
 
-	first, err := Refresh(context.Background(), RefreshOptions{CWD: root, SkillsFS: jarvis.SkillsFS})
+	first, err := Refresh(context.Background(), RefreshOptions{CWD: root})
 	if err != nil {
 		t.Fatalf("first Refresh returned error: %v", err)
 	}
-	skillPath := filepath.Join(root, ".jarvis", "skills", "go-testing", "SKILL.md")
-	fixedTime := firstSkillModTime(t, first.Path)
-	if err := os.Chtimes(skillPath, fixedTime, fixedTime); err != nil {
-		t.Fatalf("set skill mod time: %v", err)
+	infoBefore, err := os.Stat(first.Path)
+	if err != nil {
+		t.Fatalf("stat registry: %v", err)
 	}
 
-	second, err := Refresh(context.Background(), RefreshOptions{CWD: root, SkillsFS: jarvis.SkillsFS})
+	second, err := Refresh(context.Background(), RefreshOptions{CWD: root})
 	if err != nil {
 		t.Fatalf("second Refresh returned error: %v", err)
 	}
 
 	if second.Changed {
-		t.Fatalf("Changed = true, want false when registry and installed skills are unchanged: %+v", second)
+		t.Fatalf("Changed = true, want false when registry content is unchanged: %+v", second)
 	}
-	info, err := os.Stat(skillPath)
+	infoAfter, err := os.Stat(second.Path)
 	if err != nil {
-		t.Fatalf("stat skill file after refresh: %v", err)
+		t.Fatalf("stat registry after second refresh: %v", err)
 	}
-	if !info.ModTime().Equal(fixedTime) {
-		t.Fatalf("skill file was rewritten on unchanged refresh: got %s want %s", info.ModTime(), fixedTime)
+	if !infoAfter.ModTime().Equal(infoBefore.ModTime()) {
+		t.Fatalf("registry was rewritten on unchanged refresh: before=%s after=%s", infoBefore.ModTime(), infoAfter.ModTime())
 	}
 }
 
-func TestRefreshReportsChangedWhenOnlyInstalledSkillFilesChange(t *testing.T) {
+func TestRefreshDoesNotInstallSkillCopies(t *testing.T) {
+	isolateHome(t)
 	root := initGitWorktree(t)
+	seedSkillFile(t, root, "go-testing", "optional")
 
-	if _, err := Refresh(context.Background(), RefreshOptions{CWD: root, SkillsFS: jarvis.SkillsFS}); err != nil {
-		t.Fatalf("first Refresh returned error: %v", err)
-	}
-	skillPath := filepath.Join(root, ".jarvis", "skills", "go-testing", "SKILL.md")
-	if err := os.Remove(skillPath); err != nil {
-		t.Fatalf("remove installed skill file: %v", err)
-	}
-
-	second, err := Refresh(context.Background(), RefreshOptions{CWD: root, SkillsFS: jarvis.SkillsFS})
+	_, err := Refresh(context.Background(), RefreshOptions{CWD: root})
 	if err != nil {
-		t.Fatalf("second Refresh returned error: %v", err)
+		t.Fatalf("Refresh returned error: %v", err)
 	}
 
-	if !second.Changed {
-		t.Fatalf("Changed = false, want true when refresh reinstalls missing skill files: %+v", second)
+	// Refresh must NOT install or modify skill copies; that is cmd_init's job.
+	skillCopyPath := filepath.Join(root, ".jarvis", "skills", "go-testing", "SKILL.md")
+	// The only SKILL.md under .jarvis/skills is the seed we wrote — not a copy installed by Refresh.
+	// Seeded file is the source; no additional copy should appear elsewhere.
+	// We just verify Refresh doesn't write outside the seeded path.
+	entries, err := os.ReadDir(filepath.Join(root, ".jarvis", "skills"))
+	if err != nil {
+		t.Fatalf("read skills dir: %v", err)
 	}
-	if second.Reason != ReasonUpdated {
-		t.Fatalf("Reason = %q, want %q for skill-copy write with unchanged registry", second.Reason, ReasonUpdated)
+	for _, e := range entries {
+		p := filepath.Join(root, ".jarvis", "skills", e.Name(), "SKILL.md")
+		if p == skillCopyPath {
+			// The seeded file — OK.
+			continue
+		}
+		if _, statErr := os.Stat(p); statErr == nil {
+			t.Fatalf("Refresh must not install additional skill files; found unexpected: %s", p)
+		}
 	}
-	assertFileContains(t, skillPath, "Go")
 }
 
 func TestRefreshPostMigrationIsStable(t *testing.T) {
+	isolateHome(t)
 	root := initGitWorktree(t)
 	legacyPath := filepath.Join(root, ".atl", "skill-registry.md")
 	if err := os.MkdirAll(filepath.Dir(legacyPath), 0755); err != nil {
@@ -366,7 +510,7 @@ func TestRefreshPostMigrationIsStable(t *testing.T) {
 		t.Fatalf("write legacy registry: %v", err)
 	}
 
-	first, err := Refresh(context.Background(), RefreshOptions{CWD: root, SkillsFS: jarvis.SkillsFS})
+	first, err := Refresh(context.Background(), RefreshOptions{CWD: root})
 	if err != nil {
 		t.Fatalf("first Refresh returned error: %v", err)
 	}
@@ -379,7 +523,7 @@ func TestRefreshPostMigrationIsStable(t *testing.T) {
 		t.Fatalf("stat canonical registry: %v", err)
 	}
 
-	second, err := Refresh(context.Background(), RefreshOptions{CWD: root, SkillsFS: jarvis.SkillsFS})
+	second, err := Refresh(context.Background(), RefreshOptions{CWD: root})
 	if err != nil {
 		t.Fatalf("second Refresh returned error: %v", err)
 	}
@@ -411,8 +555,9 @@ func requireSymlinkSupport(t *testing.T) {
 
 func TestRefreshRejectsCanonicalRegistrySymlinkOutsideWorktree(t *testing.T) {
 	requireSymlinkSupport(t)
+	isolateHome(t)
 	root := initGitWorktree(t)
-	if _, err := Refresh(context.Background(), RefreshOptions{CWD: root, SkillsFS: jarvis.SkillsFS}); err != nil {
+	if _, err := Refresh(context.Background(), RefreshOptions{CWD: root}); err != nil {
 		t.Fatalf("initial Refresh returned error: %v", err)
 	}
 	registryPath := filepath.Join(root, ".jarvis", "skill-registry.md")
@@ -428,7 +573,7 @@ func TestRefreshRejectsCanonicalRegistrySymlinkOutsideWorktree(t *testing.T) {
 		t.Fatalf("create canonical registry symlink: %v", err)
 	}
 
-	_, err := Refresh(context.Background(), RefreshOptions{CWD: root, SkillsFS: jarvis.SkillsFS})
+	_, err := Refresh(context.Background(), RefreshOptions{CWD: root})
 	if err == nil {
 		t.Fatal("expected Refresh to reject canonical registry symlink outside worktree")
 	}
@@ -542,15 +687,6 @@ func assertFileNotContains(t *testing.T, path, forbidden string) {
 	if strings.Contains(content, forbidden) {
 		t.Fatalf("expected %s not to contain %q, got:\n%s", path, forbidden, content)
 	}
-}
-
-func firstSkillModTime(t *testing.T, registryPath string) time.Time {
-	t.Helper()
-	info, err := os.Stat(registryPath)
-	if err != nil {
-		t.Fatalf("stat registry for baseline time: %v", err)
-	}
-	return info.ModTime().Add(-1 * time.Hour).Truncate(time.Second)
 }
 
 func mustReadFile(t *testing.T, path string) []byte {

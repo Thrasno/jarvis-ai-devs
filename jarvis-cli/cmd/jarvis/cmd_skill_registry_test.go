@@ -14,6 +14,7 @@ import (
 
 func TestSkillRegistryRefreshCommand(t *testing.T) {
 	t.Run("refreshes canonical registry from explicit subdirectory cwd", func(t *testing.T) {
+		isolateTestHome(t)
 		root := initCommandGitWorktree(t)
 		subdir := filepath.Join(root, "cmd", "app")
 		if err := os.MkdirAll(subdir, 0755); err != nil {
@@ -27,7 +28,8 @@ func TestSkillRegistryRefreshCommand(t *testing.T) {
 		}
 		registryPath := filepath.Join(root, ".jarvis", "skill-registry.md")
 		assertCommandFileContains(t, registryPath, "Canonical registry path: `.jarvis/skill-registry.md`")
-		assertCommandFileContains(t, filepath.Join(root, ".jarvis", "skills", "sdd-apply", "SKILL.md"), "sdd-apply")
+		// skill-registry refresh indexes disk skills; it does NOT install skill copies.
+		// Skill copies are installed by jarvis init, not by this command.
 		for _, want := range []string{"Skill registry refreshed", "changed: true", "reason: created", "skills:"} {
 			if !strings.Contains(output, want) {
 				t.Fatalf("expected output to contain %q, got:\n%s", want, output)
@@ -37,6 +39,7 @@ func TestSkillRegistryRefreshCommand(t *testing.T) {
 	})
 
 	t.Run("defaults cwd to current working directory", func(t *testing.T) {
+		isolateTestHome(t)
 		root := initCommandGitWorktree(t)
 		subdir := filepath.Join(root, "packages", "api")
 		if err := os.MkdirAll(subdir, 0755); err != nil {
@@ -85,6 +88,7 @@ func TestSkillRegistryRefreshCommand(t *testing.T) {
 	})
 
 	t.Run("quiet suppresses unchanged success output", func(t *testing.T) {
+		isolateTestHome(t)
 		root := initCommandGitWorktree(t)
 		if output, err := executeSkillRegistryCommand("refresh", "--cwd", root); err != nil {
 			t.Fatalf("seed refresh returned error: %v\noutput:\n%s", err, output)
@@ -117,6 +121,7 @@ func TestSkillRegistryRefreshCommand(t *testing.T) {
 	})
 
 	t.Run("force reports forced rewrite reason", func(t *testing.T) {
+		isolateTestHome(t)
 		root := initCommandGitWorktree(t)
 		if output, err := executeSkillRegistryCommand("refresh", "--cwd", root); err != nil {
 			t.Fatalf("seed refresh returned error: %v\noutput:\n%s", err, output)
@@ -135,6 +140,7 @@ func TestSkillRegistryRefreshCommand(t *testing.T) {
 	})
 
 	t.Run("prints concise non-fatal warnings", func(t *testing.T) {
+		isolateTestHome(t)
 		root := initCommandGitWorktree(t)
 		legacyPath := filepath.Join(root, ".atl", "skill-registry.md")
 		if err := os.MkdirAll(filepath.Dir(legacyPath), 0755); err != nil {

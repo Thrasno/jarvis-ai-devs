@@ -1463,7 +1463,7 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		if err := config.Save(m.cfg); err != nil {
 			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: save config: %v. Ver docs/setup-recovery.md", err), done: true, failed: true}
 		}
-		registryWarnings, registryErr := refreshProjectRegistryForApply(context.Background(), m.ProjectCWD, m.SkillsFS)
+		registryWarnings, registryErr := refreshProjectRegistryForApply(context.Background(), m.ProjectCWD)
 		if registryErr != nil {
 			return agentProgressMsg{line: fmt.Sprintf("Project skill registry refresh failed: %v", registryErr), done: true, failed: true}
 		}
