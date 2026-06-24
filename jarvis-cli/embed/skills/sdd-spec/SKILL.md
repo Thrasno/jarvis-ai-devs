@@ -1,9 +1,11 @@
 ---
 name: sdd-spec
-description: "Write SDD delta specs with requirements and scenarios. Trigger: orchestrator launches spec work for a change."
+display_name: "SDD Spec"
+description: "Write delta requirements and Given/When/Then scenarios for a change. Trigger: When writing specs"
 disable-model-invocation: true
 user-invocable: false
 license: MIT
+scope: optional
 metadata:
   author: gentleman-programming
   version: "2.0"

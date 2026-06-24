@@ -1,7 +1,9 @@
 ---
 name: qa-checklist
+display_name: "QA Checklist"
 description: "Trigger: batería de pruebas, checklist de pruebas, qué pruebas debería hacer, QA checklist, test checklist. Plan on-demand QA."
 license: Apache-2.0
+scope: optional
 metadata:
   author: gentleman-programming
   version: "1.0"

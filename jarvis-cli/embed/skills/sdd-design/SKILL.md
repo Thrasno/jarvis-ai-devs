@@ -1,9 +1,11 @@
 ---
 name: sdd-design
-description: "Create the SDD technical design and architecture approach. Trigger: orchestrator launches design for a change."
+display_name: "SDD Design"
+description: "Document architecture decisions and technical approach with rationale. Trigger: When designing architecture"
 disable-model-invocation: true
 user-invocable: false
 license: MIT
+scope: optional
 metadata:
   author: gentleman-programming
   version: "2.0"

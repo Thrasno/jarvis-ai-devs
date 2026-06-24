@@ -4,13 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/project"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
 )
 
 var initCmd = &cobra.Command{
@@ -19,8 +20,8 @@ var initCmd = &cobra.Command{
 	Long: `Scaffold the .jarvis/ directory for the current project.
 
 Creates .jarvis/skill-registry.md with suggested skills based on the detected
-technology stack. The file is safe to commit — share it with your team so
-everyone gets the same skill suggestions.
+technology stack. The generated .jarvis cache is gitignored by default and can
+be regenerated with jarvis init or jarvis skill-registry refresh.
 
 Re-running jarvis init updates the Suggested Skills section while preserving
 any custom skills you have added.`,
@@ -44,23 +45,39 @@ func runInit(dir string) error {
 		root = dir
 	}
 	projectName := project.DetectProject(root)
-	stack := project.DetectStack(root)
-	suggestedSkills := project.SkillsForStack(stack)
 
 	fmt.Println("Detecting project...")
 	fmt.Printf("✓ Project: %s\n", projectName)
-	fmt.Printf("✓ Stack:   %s\n", stack)
 	fmt.Println()
 	fmt.Println("Scaffolding .jarvis/...")
-	result, err := projectregistry.Refresh(context.Background(), projectregistry.RefreshOptions{CWD: dir, AllowNonGitRoot: true, SkillsFS: jarvis.SkillsFS})
+
+	// Install embedded skill copies into <root>/.jarvis/skills.
+	// This is init's responsibility; Refresh only indexes disk skills.
+	agentSkillsDir := filepath.Join(root, ".jarvis", "skills")
+	embeddedSkills, err := skills.ListSkills(jarvis.SkillsFS)
+	if err != nil {
+		return fmt.Errorf("list embedded skills: %w", err)
+	}
+	selected := make([]string, 0, len(embeddedSkills))
+	for _, s := range embeddedSkills {
+		selected = append(selected, s.ID)
+	}
+	installResult, err := skills.InstallSelectedWithResult(jarvis.SkillsFS, agentSkillsDir, selected)
+	if err != nil {
+		return fmt.Errorf("install project skill copies: %w", err)
+	}
+
+	// Refresh indexes the now-installed skill copies to produce the registry.
+	result, err := projectregistry.Refresh(context.Background(), projectregistry.RefreshOptions{CWD: dir, AllowNonGitRoot: true})
 	if err != nil {
 		return fmt.Errorf("refresh skill registry: %w", err)
 	}
 	printSkillRegistryWarnings(os.Stderr, result.Warnings)
 
+	installedCount := installResult.FilesWritten
 	fmt.Println("✓ Skill registry created: .jarvis/skill-registry.md")
-	fmt.Printf("✓ Skills:  %s\n", strings.Join(suggestedSkills, ", "))
+	fmt.Printf("✓ Skills: %d skill copies installed under .jarvis/skills\n", installedCount)
 	fmt.Println()
-	fmt.Println("commit .jarvis/ to share with your team")
+	fmt.Println(".jarvis/ generated cache is gitignored by default; regenerate it with jarvis init or jarvis skill-registry refresh")
 	return nil
 }

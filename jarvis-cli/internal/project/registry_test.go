@@ -23,8 +23,8 @@ func requireSymlinkSupport(t *testing.T) {
 func TestWriteRegistry_FirstRun(t *testing.T) {
 	dir := t.TempDir()
 	richSkills := []RegistrySkill{
-		{ID: "go-testing", Name: "Go Testing", Description: "Go testing patterns", Trigger: "When writing Go tests", Path: "go-testing/SKILL.md", CompactRules: "Run gofmt and targeted go test", IsCore: false},
-		{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", CompactRules: "Search memory before recall", IsCore: true},
+		{ID: "go-testing", Name: "Go Testing", Description: "Go testing patterns", Trigger: "When writing Go tests", Path: "go-testing/SKILL.md", IsCore: false},
+		{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", IsCore: true},
 	}
 
 	if err := WriteRegistry(dir, "my-project", richSkills, WriteRegistryOptions{}); err != nil {
@@ -78,8 +78,8 @@ func TestWriteRegistry_Idempotent(t *testing.T) {
 
 	// First run: write initial registry.
 	initialRich := []RegistrySkill{
-		{ID: "go-testing", Name: "Go Testing", Description: "Go testing patterns", Trigger: "When writing Go tests", Path: "go-testing/SKILL.md", CompactRules: "Run gofmt and targeted go test"},
-		{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", CompactRules: "Search memory before recall", IsCore: true},
+		{ID: "go-testing", Name: "Go Testing", Description: "Go testing patterns", Trigger: "When writing Go tests", Path: "go-testing/SKILL.md"},
+		{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", IsCore: true},
 	}
 	if err := WriteRegistry(dir, "my-project", initialRich, WriteRegistryOptions{}); err != nil {
 		t.Fatalf("first WriteRegistry: %v", err)
@@ -99,9 +99,9 @@ func TestWriteRegistry_Idempotent(t *testing.T) {
 	// Second run: different set of skills (simulating Laravel stack), should update
 	// installed skills but keep custom.
 	updatedRich := []RegistrySkill{
-		{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", CompactRules: "Search memory before recall", IsCore: true},
-		{ID: "laravel-architecture", Name: "Laravel Architecture", Description: "Laravel conventions", Trigger: "When writing Laravel code", Path: "laravel-architecture/SKILL.md", CompactRules: "Keep controllers thin"},
-		{ID: "phpunit-testing", Name: "PHPUnit Testing", Description: "PHPUnit patterns", Trigger: "When writing PHP tests", Path: "phpunit-testing/SKILL.md", CompactRules: "Use AAA structure"},
+		{ID: "hive", Name: "Hive Memory", Description: "Persistent memory protocol", Trigger: "Using Hive memory", Path: "hive/SKILL.md", IsCore: true},
+		{ID: "laravel-architecture", Name: "Laravel Architecture", Description: "Laravel conventions", Trigger: "When writing Laravel code", Path: "laravel-architecture/SKILL.md"},
+		{ID: "phpunit-testing", Name: "PHPUnit Testing", Description: "PHPUnit patterns", Trigger: "When writing PHP tests", Path: "phpunit-testing/SKILL.md"},
 	}
 	if err := WriteRegistry(dir, "my-project", updatedRich, WriteRegistryOptions{}); err != nil {
 		t.Fatalf("second WriteRegistry: %v", err)
@@ -509,6 +509,43 @@ func TestWriteRegistry_NewHeaderFormat(t *testing.T) {
 	// Compact Rules section must be absent
 	if strings.Contains(content, "## Compact Rules") {
 		t.Errorf("expected no '## Compact Rules' in registry, got:\n%s", content)
+	}
+}
+
+// TestWriteRegistry_EmptyButValid verifies that WriteRegistry with a nil/empty
+// skill slice produces a valid markdown file that contains the "## Installed Skills"
+// header and the table header row, but no data rows — and does not panic.
+func TestWriteRegistry_EmptyButValid(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		skills []RegistrySkill
+	}{
+		{"nil skills", nil},
+		{"empty skills", []RegistrySkill{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+
+			if err := WriteRegistry(dir, "empty-project", tc.skills, WriteRegistryOptions{}); err != nil {
+				t.Fatalf("WriteRegistry: %v", err)
+			}
+
+			registryPath := filepath.Join(dir, ".jarvis", "skill-registry.md")
+			data, err := os.ReadFile(registryPath)
+			if err != nil {
+				t.Fatalf("file not created: %v", err)
+			}
+			content := string(data)
+
+			for _, want := range []string{
+				"## Installed Skills",
+				"| Trigger | Skill | Scope | Path |",
+			} {
+				if !strings.Contains(content, want) {
+					t.Fatalf("expected empty registry to contain %q, got:\n%s", want, content)
+				}
+			}
+		})
 	}
 }
 

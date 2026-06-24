@@ -451,7 +451,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	if saveErr := config.Save(cfg); saveErr != nil {
 		return fmt.Errorf("save config: %w", saveErr)
 	}
-	registryWarnings, registryErr := refreshProjectRegistryForApply(context.Background(), wcfg.ProjectCWD, wcfg.SkillsFS)
+	registryWarnings, registryErr := refreshProjectRegistryForApply(context.Background(), wcfg.ProjectCWD)
 	if registryErr != nil {
 		return fmt.Errorf("project skill registry refresh failed: %w", registryErr)
 	}

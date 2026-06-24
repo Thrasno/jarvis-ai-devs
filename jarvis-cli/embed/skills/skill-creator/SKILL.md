@@ -1,7 +1,9 @@
 ---
 name: skill-creator
+display_name: "Skill Creator"
 description: "Trigger: new skills, agent instructions, documenting AI usage patterns. Create LLM-first skills with valid frontmatter."
 license: Apache-2.0
+scope: optional
 metadata:
   author: gentleman-programming
   version: "1.0"

@@ -57,13 +57,6 @@ func TestRegistry_ListSkillsOmitsRetiredSDDQA(t *testing.T) {
 			t.Fatal("expected retired sdd-qa skill to be absent from embedded registry")
 		}
 	}
-
-	if _, exists := coreSkillIDs["sdd-qa"]; exists {
-		t.Fatal("expected retired sdd-qa skill to be removed from core skills")
-	}
-	if _, exists := skillMeta["sdd-qa"]; exists {
-		t.Fatal("expected retired sdd-qa skill to be removed from registry metadata")
-	}
 }
 
 func TestRegistry_ListSkillsOmitsRetiredSDDWorkflow(t *testing.T) {
@@ -76,16 +69,6 @@ func TestRegistry_ListSkillsOmitsRetiredSDDWorkflow(t *testing.T) {
 		if s.ID == "sdd-workflow" {
 			t.Fatal("expected retired sdd-workflow skill to be absent from embedded registry")
 		}
-	}
-
-	if _, exists := coreSkillIDs["sdd-workflow"]; exists {
-		t.Fatal("expected retired sdd-workflow skill to be removed from core skills")
-	}
-	if _, exists := skillMeta["sdd-workflow"]; exists {
-		t.Fatal("expected retired sdd-workflow skill to be removed from registry metadata")
-	}
-	if _, exists := compactRuleMeta["sdd-workflow"]; exists {
-		t.Fatal("expected retired sdd-workflow skill to be removed from compact rules")
 	}
 }
 
@@ -141,44 +124,6 @@ func TestRegistry_SharedNotRegistered(t *testing.T) {
 	}
 }
 
-// TestRegistry_SkillMetaCount verifies that skillMeta contains entries for all
-// expected shipped skills after the retired sdd-qa removal.
-func TestRegistry_SkillMetaCount(t *testing.T) {
-	expectedSkills := []string{
-		// SDD/Hive
-		"hive", "sdd-explore", "sdd-propose", "sdd-spec",
-		"sdd-design", "sdd-tasks", "sdd-apply", "sdd-verify",
-		"sdd-archive", "sdd-init",
-		// Complementary upstream workflow helpers
-		"chained-pr", "work-unit-commits", "comment-writer", "cognitive-doc-design",
-		// Domain-specific
-		"zoho-deluge", "laravel-architecture", "phpunit-testing", "git-workflow",
-		// Workflow + product helpers already shipped
-		"branch-pr", "issue-creation", "go-testing", "judgment-day",
-		"sdd-onboard", "skill-creator", "skill-improver", "skill-registry", "qa-checklist",
-	}
-
-	if len(skillMeta) != len(expectedSkills) {
-		t.Errorf("expected %d skills in skillMeta, got %d", len(expectedSkills), len(skillMeta))
-	}
-
-	for _, id := range expectedSkills {
-		meta, exists := skillMeta[id]
-		if !exists {
-			t.Errorf("expected skill %q in skillMeta, not found", id)
-			continue
-		}
-		if meta.name == "" {
-			t.Errorf("skill %q has empty name", id)
-		}
-		if meta.description == "" {
-			t.Errorf("skill %q has empty description", id)
-		}
-		if meta.trigger == "" {
-			t.Errorf("skill %q has empty trigger", id)
-		}
-	}
-}
 
 func TestRegistry_QAChecklistIsDiscoverableButNotCore(t *testing.T) {
 	skills, err := ListSkills(jarvis.SkillsFS)
@@ -265,138 +210,82 @@ func TestRegistry_SkillImproverIsShippedDiscoverableAndOptional(t *testing.T) {
 		t.Fatalf("skill-improver path = %q, want skill-improver/SKILL.md", skill.Path)
 	}
 
-	metadata := strings.ToLower(skill.Name + " " + skill.Description + " " + skill.Trigger)
-	for _, phrase := range []string{"skill improver", "audit", "improving skills", "skill quality"} {
+	// Include skill.ID in metadata so ID-based phrases (e.g. "skill-improver") are discoverable
+	// even after Name was updated to the display_name ("Skill Improver").
+	metadata := strings.ToLower(skill.ID + " " + skill.Name + " " + skill.Description + " " + skill.Trigger)
+	for _, phrase := range []string{"skill-improver", "audit", "refactor skills", "skill quality"} {
 		if !strings.Contains(metadata, phrase) {
-			t.Fatalf("expected skill-improver metadata to include %q; got name=%q description=%q trigger=%q", phrase, skill.Name, skill.Description, skill.Trigger)
+			t.Fatalf("expected skill-improver metadata to include %q; got id=%q name=%q description=%q trigger=%q", phrase, skill.ID, skill.Name, skill.Description, skill.Trigger)
 		}
 	}
 }
 
-func TestRegistryRows_WorkflowSkillsExposeRegistryMetadata(t *testing.T) {
+// TestListSkills_WorkflowSkillsExposeRegistryMetadata verifies that workflow
+// skills returned by ListSkills have the required metadata fields populated.
+func TestListSkills_WorkflowSkillsExposeRegistryMetadata(t *testing.T) {
 	skills, err := ListSkills(jarvis.SkillsFS)
 	if err != nil {
 		t.Fatalf("ListSkills: %v", err)
 	}
 
-	rows := RegistryRows(skills)
-	byID := make(map[string]RegistryRow, len(rows))
-	for _, row := range rows {
-		if _, exists := byID[row.ID]; exists {
-			t.Fatalf("duplicate registry row for skill %q", row.ID)
+	byID := make(map[string]Skill, len(skills))
+	for _, s := range skills {
+		if _, exists := byID[s.ID]; exists {
+			t.Fatalf("duplicate skill for ID %q", s.ID)
 		}
-		byID[row.ID] = row
+		byID[s.ID] = s
 	}
 
 	for _, id := range []string{"work-unit-commits", "chained-pr", "cognitive-doc-design", "branch-pr", "issue-creation", "comment-writer", "skill-improver"} {
-		row, exists := byID[id]
+		s, exists := byID[id]
 		if !exists {
 			t.Fatalf("expected workflow skill %q to be registry-ready", id)
 		}
-		if row.Name == "" || row.Trigger == "" || row.Description == "" || row.Path == "" || row.Scope == "" || row.CompactRules == "" {
-			t.Fatalf("workflow skill %q missing registry metadata: %+v", id, row)
+		if s.Name == "" || s.Trigger == "" || s.Description == "" || s.Path == "" || s.Scope == "" {
+			t.Fatalf("workflow skill %q missing registry metadata: %+v", id, s)
 		}
-		if !strings.HasSuffix(row.Path, "/SKILL.md") {
-			t.Fatalf("workflow skill %q path must point at packaged SKILL.md, got %q", id, row.Path)
+		if !strings.HasSuffix(s.Path, "/SKILL.md") {
+			t.Fatalf("workflow skill %q path must point at packaged SKILL.md, got %q", id, s.Path)
 		}
-		if row.Scope != "optional" {
-			t.Fatalf("workflow skill %q scope = %q, want optional", id, row.Scope)
+		if s.Scope != "optional" {
+			t.Fatalf("workflow skill %q scope = %q, want optional", id, s.Scope)
 		}
 	}
 
 	if _, exists := byID["sdd-workflow"]; exists {
-		t.Fatal("expected retired sdd-workflow to be absent from registry rows")
+		t.Fatal("expected retired sdd-workflow to be absent from skill list")
 	}
 
 	for _, id := range []string{"hive", "sdd-init", "sdd-apply", "sdd-verify", "sdd-archive"} {
-		row, exists := byID[id]
+		s, exists := byID[id]
 		if !exists {
-			t.Fatalf("expected core skill %q to be registry-ready", id)
+			t.Fatalf("expected core skill %q to be in skill list", id)
 		}
-		if row.Scope != "core" {
-			t.Fatalf("core skill %q scope = %q, want core", id, row.Scope)
+		if s.Scope != "core" {
+			t.Fatalf("core skill %q scope = %q, want core", id, s.Scope)
 		}
 	}
 }
 
-func TestRegistryRows_WorkflowSkillsExposeActionableCompactRules(t *testing.T) {
+// TestListSkills_DoesNotDuplicateSkillCreator verifies that ListSkills returns
+// exactly one entry for skill-creator.
+func TestListSkills_DoesNotDuplicateSkillCreator(t *testing.T) {
 	skills, err := ListSkills(jarvis.SkillsFS)
 	if err != nil {
 		t.Fatalf("ListSkills: %v", err)
 	}
 
-	rows := RegistryRows(skills)
-	byID := make(map[string]RegistryRow, len(rows))
-	for _, row := range rows {
-		byID[row.ID] = row
-	}
-
-	wantPhrases := map[string][]string{
-		"work-unit-commits":    {"Plan commits", "reviewable work units", "keep tests and docs with code"},
-		"chained-pr":           {"Split work over 400 lines", "stacked PRs", "review slices"},
-		"cognitive-doc-design": {"Structure docs", "reader cognitive load", "audience"},
-		"branch-pr":            {"Check for an issue first", "review-focused PR", "clean diff"},
-		"issue-creation":       {"Search existing issues first", "acceptance criteria", "clear scope"},
-		"comment-writer":       {"warm and direct", "state the decision", "actionable next step"},
-		"skill-improver":       {"Audit existing skills", "style guide", "explicit user approval"},
-	}
-
-	for id, phrases := range wantPhrases {
-		row, exists := byID[id]
-		if !exists {
-			t.Fatalf("expected workflow skill %q to be registry-ready", id)
-		}
-		if len(row.CompactRules) < 90 {
-			t.Fatalf("compact rules for %q are too thin: %q", id, row.CompactRules)
-		}
-		for _, phrase := range phrases {
-			if !strings.Contains(row.CompactRules, phrase) {
-				t.Fatalf("compact rules for %q must contain actionable phrase %q, got %q", id, phrase, row.CompactRules)
-			}
-		}
-	}
-}
-
-func TestRegistryRows_DoesNotDuplicateSkillCreator(t *testing.T) {
-	skills, err := ListSkills(jarvis.SkillsFS)
-	if err != nil {
-		t.Fatalf("ListSkills: %v", err)
-	}
-
-	rows := RegistryRows(skills)
 	count := 0
-	for _, row := range rows {
-		if row.ID == "skill-creator" {
+	for _, s := range skills {
+		if s.ID == "skill-creator" {
 			count++
 		}
 	}
 	if count != 1 {
-		t.Fatalf("expected exactly one skill-creator registry row, got %d", count)
+		t.Fatalf("expected exactly one skill-creator entry, got %d", count)
 	}
 }
 
-func TestRegistryRows_UsesDeterministicFallbackCompactRules(t *testing.T) {
-	rows := RegistryRows([]Skill{
-		{ID: "unknown-with-trigger", Name: "Unknown With Trigger", Trigger: "When a custom topic appears", Path: "unknown-with-trigger/SKILL.md"},
-		{ID: "unknown-without-trigger", Name: "Unknown Without Trigger", Path: "unknown-without-trigger/SKILL.md"},
-	})
-
-	if len(rows) != 2 {
-		t.Fatalf("expected two registry rows, got %d", len(rows))
-	}
-
-	byID := make(map[string]RegistryRow, len(rows))
-	for _, row := range rows {
-		byID[row.ID] = row
-	}
-
-	if got, want := byID["unknown-with-trigger"].CompactRules, "Load when: When a custom topic appears."; got != want {
-		t.Fatalf("trigger fallback compact rule = %q, want %q", got, want)
-	}
-	if got, want := byID["unknown-without-trigger"].CompactRules, "Read this skill when its topic matches the current task."; got != want {
-		t.Fatalf("default fallback compact rule = %q, want %q", got, want)
-	}
-}
 
 func TestGetSkillReturnsEmbeddedSkillByID(t *testing.T) {
 	skill, err := GetSkill(jarvis.SkillsFS, "go-testing")
@@ -407,11 +296,49 @@ func TestGetSkillReturnsEmbeddedSkillByID(t *testing.T) {
 	if skill.ID != "go-testing" {
 		t.Fatalf("skill ID = %q, want %q", skill.ID, "go-testing")
 	}
+	// Name must be the canonical display name from display_name: frontmatter.
 	if skill.Name != "Go Testing" {
-		t.Fatalf("skill name = %q, want %q", skill.Name, "Go Testing")
+		t.Fatalf("skill name = %q, want %q (display_name frontmatter)", skill.Name, "Go Testing")
 	}
 	if skill.Path != "go-testing/SKILL.md" {
 		t.Fatalf("skill path = %q, want %q", skill.Path, "go-testing/SKILL.md")
+	}
+}
+
+// TestGetSkill_DisplayNameOverridesName asserts that when a skill has a
+// display_name: frontmatter key, Skill.Name uses the display name, not the
+// kebab id from name:.
+func TestGetSkill_DisplayNameOverridesName(t *testing.T) {
+	skill, err := GetSkill(jarvis.SkillsFS, "sdd-apply")
+	if err != nil {
+		t.Fatalf("GetSkill sdd-apply: %v", err)
+	}
+	if skill.ID != "sdd-apply" {
+		t.Fatalf("skill ID = %q, want sdd-apply", skill.ID)
+	}
+	if skill.Name != "SDD Apply" {
+		t.Fatalf("skill Name = %q, want %q", skill.Name, "SDD Apply")
+	}
+}
+
+// TestAllEmbedSkillsHaveDisplayName asserts every embed/skills/*/SKILL.md
+// (excluding _shared) has a display_name: frontmatter key.
+func TestAllEmbedSkillsHaveDisplayName(t *testing.T) {
+	skills, err := ListSkills(jarvis.SkillsFS)
+	if err != nil {
+		t.Fatalf("ListSkills: %v", err)
+	}
+	if len(skills) == 0 {
+		t.Fatal("expected at least one embedded skill")
+	}
+	for _, s := range skills {
+		// Name must NOT equal the kebab ID — it must be the display name.
+		if s.Name == s.ID {
+			t.Errorf("skill %q has Name == ID (%q); display_name: frontmatter is missing or not being used", s.ID, s.Name)
+		}
+		if s.Name == "" {
+			t.Errorf("skill %q has empty Name", s.ID)
+		}
 	}
 }
 
@@ -425,23 +352,6 @@ func TestGetSkillReturnsNotFoundError(t *testing.T) {
 	}
 }
 
-// TestRegistry_TriggerFieldPopulated verifies that Trigger field is populated
-// for skills with metadata.
-func TestRegistry_TriggerFieldPopulated(t *testing.T) {
-	skills, err := listSkillsFromFS(testEmbedFS, "testdata")
-	if err != nil {
-		t.Fatalf("listSkillsFromFS: %v", err)
-	}
-
-	for _, s := range skills {
-		// If skill has metadata, Trigger must be populated.
-		if _, hasMeta := skillMeta[s.ID]; hasMeta {
-			if s.Trigger == "" {
-				t.Errorf("skill %q has metadata but empty Trigger field", s.ID)
-			}
-		}
-	}
-}
 
 // listSkillsFromFS is a testable variant of ListSkills that accepts a root prefix.
 // This allows tests to use testdata/ instead of embed/skills/ as the root.
@@ -474,24 +384,10 @@ func listSkillsFromFS(fsys embed.FS, root string) ([]Skill, error) {
 			return readErr
 		}
 
-		meta, hasMeta := skillMeta[dirName]
-		name := dirName
-		description := ""
-		trigger := ""
-		if hasMeta {
-			name = meta.name
-			description = meta.description
-			trigger = meta.trigger
-		}
-
 		result = append(result, Skill{
-			ID:          dirName,
-			Name:        name,
-			Description: description,
-			Trigger:     trigger,
-			IsCore:      coreSkillIDs[dirName],
-			Content:     content,
-			Path:        relPath,
+			ID:      dirName,
+			Content: content,
+			Path:    relPath,
 		})
 		return nil
 	})

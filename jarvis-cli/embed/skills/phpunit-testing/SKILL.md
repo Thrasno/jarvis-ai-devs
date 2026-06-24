@@ -1,3 +1,10 @@
+---
+name: phpunit-testing
+display_name: "PHPUnit Testing"
+description: "PHPUnit patterns: AAA structure, factories, one concept per test. Trigger: When writing PHP tests"
+scope: optional
+---
+
 # PHPUnit Testing — Patterns and Standards
 
 ## Arrange-Act-Assert (AAA) Structure

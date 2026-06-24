@@ -1,7 +1,9 @@
 ---
 name: cognitive-doc-design
+display_name: "Cognitive Doc Design"
 description: "Design docs that reduce cognitive load. Trigger: writing guides, READMEs, RFCs, onboarding, architecture, or review-facing docs."
 license: Apache-2.0
+scope: optional
 metadata:
   author: gentleman-programming
   version: "1.0"

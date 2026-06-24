@@ -1,3 +1,10 @@
+---
+name: git-workflow
+display_name: "Git Workflow"
+description: "Conventional commits, branch naming, no force push to main. Trigger: When using git"
+scope: optional
+---
+
 # Git Workflow — Conventions and Standards
 
 ## Conventional Commits (MANDATORY)

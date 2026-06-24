@@ -8,9 +8,11 @@ import (
 
 // FrontmatterResult holds the parsed frontmatter fields from a SKILL.md file.
 type FrontmatterResult struct {
-	Name    string
-	Trigger string
-	Scope   string
+	Name        string
+	DisplayName string
+	Description string
+	Trigger     string
+	Scope       string
 }
 
 // FrontmatterWarning describes a problem found while parsing frontmatter.
@@ -93,24 +95,114 @@ func extractFrontmatterBlock(content []byte) ([]byte, bool) {
 
 // parseFrontmatterFields does a minimal line-by-line parse of YAML frontmatter.
 // Only top-level scalar keys are extracted; nested structures are ignored.
+//
+// Trigger resolution order (gentle v1.42.0 spec):
+//  1. Standalone "Trigger:" (or "trigger:") key — explicit override, highest priority.
+//  2. "Trigger:" text embedded inside the description field value — handles both
+//     single-line quoted values and YAML folded/block scalars (description: > or |).
+//  3. Neither present → trigger remains empty (caller emits missing-trigger warning).
 func parseFrontmatterFields(block []byte) FrontmatterResult {
 	var result FrontmatterResult
 	lines := strings.Split(string(block), "\n")
+
+	// descLines accumulates the description scalar value across folded/block lines.
+	var descLines []string
+	inDesc := false // true while inside a folded/block description scalar
+
 	for _, line := range lines {
-		key, value, ok := parseFrontmatterLine(line)
+		// Normalize away a trailing \r so that CRLF files (\r\n split by \n
+		// leaves a trailing \r) are treated identically to LF files. A blank
+		// CRLF line becomes "\r" after the split; without stripping it has
+		// len=1 and line[0]=='\r', which would wrongly terminate the folded
+		// scalar. After stripping it becomes "" (empty), which is the correct
+		// blank-line representation that continuation parsing expects.
+		trimmedLine := strings.TrimRight(line, "\r")
+
+		// A top-level key (no leading whitespace) ends any ongoing folded scalar.
+		// An empty (blank) line does NOT end the scalar — it is a paragraph
+		// separator within the folded value.
+		if inDesc && len(trimmedLine) > 0 && trimmedLine[0] != ' ' && trimmedLine[0] != '\t' {
+			inDesc = false
+		}
+
+		if inDesc {
+			// Continuation line of a folded/block description scalar.
+			descLines = append(descLines, strings.TrimSpace(trimmedLine))
+			continue
+		}
+
+		key, value, ok := parseFrontmatterLine(trimmedLine)
 		if !ok {
 			continue
 		}
 		switch key {
 		case "name":
 			result.Name = value
+		case "display_name":
+			result.DisplayName = value
 		case "trigger":
 			result.Trigger = value
 		case "scope":
 			result.Scope = value
+		case "description":
+			if value == ">" || value == "|" {
+				// Folded or literal block scalar — value follows on indented lines.
+				inDesc = true
+			} else {
+				// Single-line (plain or quoted) description value.
+				descLines = append(descLines, value)
+			}
 		}
 	}
+
+	// Capture the full description value (raw, before trigger extraction).
+	if len(descLines) > 0 {
+		result.Description = strings.Join(descLines, " ")
+	}
+
+	// Step 2: if no standalone trigger was found, extract from description.
+	if result.Trigger == "" && len(descLines) > 0 {
+		result.Trigger = extractTriggerFromDescription(result.Description)
+	}
+
 	return result
+}
+
+// extractTriggerFromDescription scans text for the first occurrence of
+// "Trigger:" (case-insensitive) and returns the text that follows it,
+// trimmed of surrounding whitespace and trailing YAML block-scalar artifacts.
+// The FIRST "Trigger:" occurrence wins. The extracted value is terminated at
+// the first sentence boundary after "Trigger:" — i.e. the first period that is
+// immediately followed by a space or is at the end of the string. This prevents
+// trailing summary prose (e.g. "Trigger: improve skills. Audit and upgrade...")
+// from leaking into the trigger value.
+// Returns an empty string when the marker is not found.
+func extractTriggerFromDescription(text string) string {
+	lower := strings.ToLower(text)
+	idx := strings.Index(lower, "trigger:")
+	if idx < 0 {
+		return ""
+	}
+	after := strings.TrimSpace(text[idx+len("trigger:"):])
+	// Strip stray surrounding quotes that survive quote-stripping on single-line values.
+	after = strings.Trim(after, `"'`)
+	after = strings.TrimSpace(after)
+	// Truncate at the first sentence boundary: a period followed by a space or
+	// at the very end of the string. This drops trailing summary prose that
+	// sometimes follows the trigger sentence in folded/inline descriptions.
+	for i := 0; i < len(after); i++ {
+		if after[i] == '.' {
+			// Period at end of string: include it and stop.
+			if i == len(after)-1 {
+				return after[:i+1]
+			}
+			// Period followed by whitespace: include the period and stop.
+			if after[i+1] == ' ' || after[i+1] == '\t' || after[i+1] == '\n' {
+				return after[:i+1]
+			}
+		}
+	}
+	return after
 }
 
 // parseFrontmatterLine parses a single "key: value" YAML line.

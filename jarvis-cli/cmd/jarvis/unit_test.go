@@ -306,7 +306,7 @@ func TestRunConfigSet_InvalidKey_InProcess(t *testing.T) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 // TestRunInit_InProcess calls runInit() directly with a temp project dir.
-// Verifies .jarvis/skill-registry.md is created and the commit reminder is printed.
+// Verifies .jarvis/skill-registry.md is created and local cache guidance is printed.
 func TestRunInit_InProcess(t *testing.T) {
 	dir := initCommandGitWorktree(t)
 
@@ -328,13 +328,14 @@ func TestRunInit_InProcess(t *testing.T) {
 		t.Errorf("expected .jarvis/skill-registry.md to exist: %v", err)
 	}
 	registry := string(registryData)
+	// Verify structural elements of the registry file format.
 	for _, want := range []string{
 		"## Installed Skills",
 		"| Trigger | Skill | Scope | Path |",
-		"| When writing Go tests, using teatest, or adding test coverage | Go Testing | optional | `.jarvis/skills/go-testing/SKILL.md` |",
-		"| When improving skills, auditing skills, refactoring skills, or checking skill quality | Skill Improver | optional | `.jarvis/skills/skill-improver/SKILL.md` |",
 		"## Project Conventions",
 		"Canonical registry path: `.jarvis/skill-registry.md`",
+		// go-testing SKILL.md is scanned from disk; verify its row appears.
+		"go-testing",
 	} {
 		if !strings.Contains(registry, want) {
 			t.Fatalf("expected rich registry content %q, got:\n%s", want, registry)
@@ -378,17 +379,19 @@ func TestRunInit_InProcess(t *testing.T) {
 		t.Fatalf("expected copied skill-improver skill to match embedded content")
 	}
 
-	// Verify CLI output contains the commit reminder.
-	if !strings.Contains(out, "commit .jarvis/") {
-		t.Errorf("expected commit reminder in output:\n%s", out)
+	// Verify CLI output describes the generated local cache behavior.
+	if !strings.Contains(out, ".jarvis/ generated cache is gitignored by default") {
+		t.Errorf("expected generated cache guidance in output:\n%s", out)
+	}
+	if strings.Contains(out, "commit .jarvis/") {
+		t.Errorf("init output must not tell users to commit generated .jarvis cache:\n%s", out)
 	}
 
-	// Verify stack and skills appear in output.
-	if !strings.Contains(out, "Go") {
-		t.Errorf("expected 'Go' stack in output:\n%s", out)
-	}
-	if !strings.Contains(out, "go-testing") {
-		t.Errorf("expected 'go-testing' skill in output:\n%s", out)
+	// Verify init success messages appear in output.
+	for _, want := range []string{"Skill registry created", "Skills:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in init output:\n%s", want, out)
+		}
 	}
 }
 
