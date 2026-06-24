@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
@@ -78,6 +79,50 @@ func TestImportEngramBatchInsertsRowsAliasesAndMemoryMutation(t *testing.T) {
 	require.Equal(t, memoryAlias.HiveSyncID, payload.Memory.SyncID)
 	require.Equal(t, "proj", payload.Memory.Project)
 	require.Equal(t, sessionAlias.HivePK, payload.Memory.SessionID)
+}
+
+func TestImportEngramBatchAssignsImportedSessionDevIDFromLocalEnvironment(t *testing.T) {
+	tests := []struct {
+		name      string
+		envDevID  string
+		wantDevID string
+	}{
+		{name: "HIVE_DEV_ID is set", envDevID: "local-dev", wantDevID: "local-dev"},
+		{name: "HIVE_DEV_ID is unset", wantDevID: "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.envDevID != "" {
+				t.Setenv("HIVE_DEV_ID", tt.envDevID)
+			} else {
+				unsetEnv(t, "HIVE_DEV_ID")
+			}
+			d := openTestDB(t)
+
+			_, err := d.ImportEngramBatch(context.Background(), ImportRun{ID: "run-1", SourceSystem: "engram", SourcePath: "one.db", Mode: "execute"}, ImportBatch{
+				Sessions: []ImportSession{{SourceID: "source-session", Project: "proj", Directory: "/repo/proj", DevID: "source-dev", Client: "opencode", StartedAt: "2026-06-11 10:00:00"}},
+			})
+			require.NoError(t, err)
+
+			sessionAlias := requireAlias(t, d.sqlDB, SourceAliasKey{SourceSystem: "engram", SourceTable: "sessions", SourceID: "source-session", SourceProject: "proj"})
+			require.Equal(t, tt.wantDevID, queryString(t, d.sqlDB, `SELECT dev_id FROM sessions WHERE id = ?`, sessionAlias.HivePK))
+			require.NotEqual(t, "source-dev", queryString(t, d.sqlDB, `SELECT dev_id FROM sessions WHERE id = ?`, sessionAlias.HivePK))
+		})
+	}
+}
+
+func unsetEnv(t *testing.T, key string) {
+	t.Helper()
+	value, existed := os.LookupEnv(key)
+	require.NoError(t, os.Unsetenv(key))
+	t.Cleanup(func() {
+		if existed {
+			require.NoError(t, os.Setenv(key, value))
+			return
+		}
+		require.NoError(t, os.Unsetenv(key))
+	})
 }
 
 func TestImportEngramBatchReusesExistingAliasesWithoutDuplicatingRows(t *testing.T) {
