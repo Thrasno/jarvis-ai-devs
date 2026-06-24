@@ -68,3 +68,7 @@ docs/memories/
 docs/EXECUTIVE_PROPOSAL.md
 docs/INFRASTRUCTURE.md
 docs/ANALYSIS.md
+
+# Skill registry per-machine scan cache (gitignored by default; use --no-gitignore to opt out)
+.jarvis/skill-registry.md
+.jarvis/skills/

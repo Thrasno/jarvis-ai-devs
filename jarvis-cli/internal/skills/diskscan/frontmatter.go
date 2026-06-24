@@ -8,9 +8,11 @@ import (
 
 // FrontmatterResult holds the parsed frontmatter fields from a SKILL.md file.
 type FrontmatterResult struct {
-	Name    string
-	Trigger string
-	Scope   string
+	Name        string
+	DisplayName string
+	Description string
+	Trigger     string
+	Scope       string
 }
 
 // FrontmatterWarning describes a problem found while parsing frontmatter.
@@ -136,6 +138,8 @@ func parseFrontmatterFields(block []byte) FrontmatterResult {
 		switch key {
 		case "name":
 			result.Name = value
+		case "display_name":
+			result.DisplayName = value
 		case "trigger":
 			result.Trigger = value
 		case "scope":
@@ -151,9 +155,14 @@ func parseFrontmatterFields(block []byte) FrontmatterResult {
 		}
 	}
 
+	// Capture the full description value (raw, before trigger extraction).
+	if len(descLines) > 0 {
+		result.Description = strings.Join(descLines, " ")
+	}
+
 	// Step 2: if no standalone trigger was found, extract from description.
 	if result.Trigger == "" && len(descLines) > 0 {
-		result.Trigger = extractTriggerFromDescription(strings.Join(descLines, " "))
+		result.Trigger = extractTriggerFromDescription(result.Description)
 	}
 
 	return result
@@ -162,8 +171,11 @@ func parseFrontmatterFields(block []byte) FrontmatterResult {
 // extractTriggerFromDescription scans text for the first occurrence of
 // "Trigger:" (case-insensitive) and returns the text that follows it,
 // trimmed of surrounding whitespace and trailing YAML block-scalar artifacts.
-// The FIRST "Trigger:" occurrence wins; everything after it (including any
-// subsequent "Trigger:" occurrences) is returned as part of the value.
+// The FIRST "Trigger:" occurrence wins. The extracted value is terminated at
+// the first sentence boundary after "Trigger:" — i.e. the first period that is
+// immediately followed by a space or is at the end of the string. This prevents
+// trailing summary prose (e.g. "Trigger: improve skills. Audit and upgrade...")
+// from leaking into the trigger value.
 // Returns an empty string when the marker is not found.
 func extractTriggerFromDescription(text string) string {
 	lower := strings.ToLower(text)
@@ -174,7 +186,23 @@ func extractTriggerFromDescription(text string) string {
 	after := strings.TrimSpace(text[idx+len("trigger:"):])
 	// Strip stray surrounding quotes that survive quote-stripping on single-line values.
 	after = strings.Trim(after, `"'`)
-	return strings.TrimSpace(after)
+	after = strings.TrimSpace(after)
+	// Truncate at the first sentence boundary: a period followed by a space or
+	// at the very end of the string. This drops trailing summary prose that
+	// sometimes follows the trigger sentence in folded/inline descriptions.
+	for i := 0; i < len(after); i++ {
+		if after[i] == '.' {
+			// Period at end of string: include it and stop.
+			if i == len(after)-1 {
+				return after[:i+1]
+			}
+			// Period followed by whitespace: include the period and stop.
+			if after[i+1] == ' ' || after[i+1] == '\t' || after[i+1] == '\n' {
+				return after[:i+1]
+			}
+		}
+	}
+	return after
 }
 
 // parseFrontmatterLine parses a single "key: value" YAML line.

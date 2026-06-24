@@ -1,3 +1,10 @@
+---
+name: hive
+display_name: "Hive Memory"
+description: "Persistent memory protocol: when to save, how to search, session summary triggers. Trigger: Using Hive memory"
+scope: core
+---
+
 # Hive Memory — Complete Usage Protocol
 
 ## Section 1 — MCP Tool Reference

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills/diskscan"
 )
 
 type InstallResult struct {
@@ -34,11 +36,17 @@ func InstallSelectedWithResult(fsys fs.FS, agentSkillsDir string, selected []str
 	}
 	result := InstallResult{}
 
-	selectedSet := make(map[string]bool, len(selected)+len(coreSkillIDs))
+	// Core skills are derived at install time by scanning the embedded skill
+	// frontmatter for scope: core. This makes the frontmatter the single source
+	// of truth: adding scope: core to a skill's frontmatter is sufficient to
+	// include it in every install, with no changes to installer.go required.
+	coreIDs := coreIDsFromFS(skillsFS)
+
+	selectedSet := make(map[string]bool, len(selected)+len(coreIDs))
 	for _, id := range selected {
 		selectedSet[id] = true
 	}
-	for id := range coreSkillIDs {
+	for _, id := range coreIDs {
 		selectedSet[id] = true
 	}
 
@@ -186,6 +194,35 @@ func safeMkdirAll(dir string) error {
 		}
 	}
 	return nil
+}
+
+// coreIDsFromFS returns the IDs of all skills that carry scope: core in their
+// SKILL.md frontmatter. skillsFS must already be the skills-subtree FS (not the
+// root-package FS). Errors reading individual skill files are silently skipped;
+// the only consequence is that the skill is not auto-included as core (it can
+// still be installed when explicitly selected).
+func coreIDsFromFS(skillsFS fs.FS) []string {
+	var ids []string
+	entries, err := fs.ReadDir(skillsFS, ".")
+	if err != nil {
+		return ids
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		skillID := entry.Name()
+		skillMD := skillID + "/SKILL.md"
+		content, err := fs.ReadFile(skillsFS, skillMD)
+		if err != nil {
+			continue
+		}
+		fm, _ := diskscan.ParseFrontmatter(content, skillMD)
+		if fm.Scope == "core" {
+			ids = append(ids, skillID)
+		}
+	}
+	return ids
 }
 
 func skillsSubtree(fsys fs.FS) (fs.FS, error) {

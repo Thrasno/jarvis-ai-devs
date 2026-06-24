@@ -1,9 +1,11 @@
 ---
 name: branch-pr
+display_name: "Branch & PR"
 description: >
   Create Gentle AI pull requests with issue-first checks for Jarvis-packaged workflows.
   Trigger: When creating a pull request, opening a PR, or preparing changes for review.
 license: Apache-2.0
+scope: optional
 metadata:
   author: gentleman-programming
   version: "2.0"

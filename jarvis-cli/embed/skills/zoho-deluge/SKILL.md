@@ -1,3 +1,10 @@
+---
+name: zoho-deluge
+display_name: "Zoho Deluge"
+description: "Zoho Deluge scripting conventions: no nested loops, bulk operations, null safety. Trigger: When writing Zoho Deluge scripts"
+scope: optional
+---
+
 # Zoho Deluge — Scripting Standards
 
 ## Critical Rules
