@@ -20,8 +20,8 @@ var initCmd = &cobra.Command{
 	Long: `Scaffold the .jarvis/ directory for the current project.
 
 Creates .jarvis/skill-registry.md with suggested skills based on the detected
-technology stack. The file is safe to commit — share it with your team so
-everyone gets the same skill suggestions.
+technology stack. The generated .jarvis cache is gitignored by default and can
+be regenerated with jarvis init or jarvis skill-registry refresh.
 
 Re-running jarvis init updates the Suggested Skills section while preserving
 any custom skills you have added.`,
@@ -78,6 +78,6 @@ func runInit(dir string) error {
 	fmt.Println("✓ Skill registry created: .jarvis/skill-registry.md")
 	fmt.Printf("✓ Skills: %d skill copies installed under .jarvis/skills\n", installedCount)
 	fmt.Println()
-	fmt.Println("commit .jarvis/ to share with your team")
+	fmt.Println(".jarvis/ generated cache is gitignored by default; regenerate it with jarvis init or jarvis skill-registry refresh")
 	return nil
 }

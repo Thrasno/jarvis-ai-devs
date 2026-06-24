@@ -1343,26 +1343,29 @@ func TestCatalogContract_SkillRegistryHivePersistenceDoesNotPromiseTopicKeyUpser
 	}
 }
 
-func TestCatalogContract_SkillRegistryDoesNotIgnoreJarvisDirectory(t *testing.T) {
+func TestCatalogContract_SkillRegistryDescribesGitignoreByDefaultWithOptOut(t *testing.T) {
 	t.Parallel()
 
 	content := readLocalOrEmbeddedAsset(t, "embed/skills/skill-registry/SKILL.md")
-	lowerContent := strings.ToLower(content)
 
-	for _, forbidden := range []string{
-		"add `.jarvis/` to the project's `.gitignore`",
-		"add .jarvis/ to the project's .gitignore",
-		"ignore `.jarvis/`",
-		"ignore .jarvis/",
+	// The registry is a per-machine scan cache — it is gitignored by default.
+	for _, required := range []string{
+		"per-machine scan cache",
+		"gitignored by default",
+		"--no-gitignore",
 	} {
-		if strings.Contains(lowerContent, forbidden) {
-			t.Fatalf("skill-registry must not tell agents to ignore .jarvis/: found %q", forbidden)
+		if !strings.Contains(content, required) {
+			t.Fatalf("expected skill-registry to describe gitignore-by-default semantics with %q", required)
 		}
 	}
 
-	if !strings.Contains(content, ".jarvis/skill-registry.md`) is intended to be committed/shared") &&
-		!strings.Contains(content, ".jarvis/skill-registry.md` is intended to be committed/shared") {
-		t.Fatal("expected skill-registry to state .jarvis/skill-registry.md is committed/shared")
+	// The old "committed/shared" wording must be absent — it contradicts the new default.
+	for _, forbidden := range []string{
+		"intended to be committed/shared as the project-local team registry",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("skill-registry must not claim the registry is committed/shared by default: found %q", forbidden)
+		}
 	}
 }
 

@@ -31,9 +31,18 @@ func makeSkillMD(t *testing.T, dir, skillID, name, trigger, scope string) {
 	}
 }
 
+func setUserHomeDir(t *testing.T, home string) {
+	t.Helper()
+	orig := userHomeDir
+	userHomeDir = func() (string, error) {
+		return home, nil
+	}
+	t.Cleanup(func() { userHomeDir = orig })
+}
+
 func TestResolveScanDirs_Order(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setUserHomeDir(t, home)
 	root := t.TempDir()
 
 	dirs := ResolveScanDirs(root)
@@ -59,7 +68,7 @@ func TestResolveScanDirs_Order(t *testing.T) {
 
 func TestResolveScanDirs_Absolute(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setUserHomeDir(t, home)
 	root := t.TempDir()
 
 	dirs := ResolveScanDirs(root)
@@ -68,6 +77,60 @@ func TestResolveScanDirs_Absolute(t *testing.T) {
 			t.Errorf("expected absolute path, got %q", d)
 		}
 	}
+}
+
+func TestScan_SkipsInvalidSkillMetadataWithWarnings(t *testing.T) {
+	projectSkills := t.TempDir()
+	globalSkills := t.TempDir()
+
+	makeSkillMD(t, projectSkills, "missing-name", "", "When missing a name", "optional")
+	makeSkillMD(t, globalSkills, "missing-trigger", "Missing Trigger", "", "optional")
+	makeSkillMD(t, projectSkills, "valid-skill", "Valid Skill", "When valid", "optional")
+
+	rows, warns, err := Scan([]string{projectSkills, globalSkills})
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Fatalf("expected only valid skill row, got %d: %+v", len(rows), rows)
+	}
+	if rows[0].ID != "valid-skill" {
+		t.Fatalf("expected valid-skill to be the only row, got %+v", rows[0])
+	}
+	assertScanWarning(t, warns, "missing-name", filepath.Join(projectSkills, "missing-name", "SKILL.md"))
+	assertScanWarning(t, warns, "missing-trigger", filepath.Join(globalSkills, "missing-trigger", "SKILL.md"))
+}
+
+func TestScan_InvalidProjectSkillDoesNotShadowValidGlobalSkill(t *testing.T) {
+	projectSkills := t.TempDir()
+	globalSkills := t.TempDir()
+
+	makeSkillMD(t, projectSkills, "shared-skill", "", "When project metadata is invalid", "optional")
+	makeSkillMD(t, globalSkills, "shared-skill", "Global Shared Skill", "When global metadata is valid", "optional")
+
+	rows, warns, err := Scan([]string{projectSkills, globalSkills})
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Fatalf("expected valid global skill to be indexed after invalid project skill, got %d: %+v", len(rows), rows)
+	}
+	if rows[0].ID != "shared-skill" || rows[0].Name != "Global Shared Skill" {
+		t.Fatalf("expected valid global shared-skill row, got %+v", rows[0])
+	}
+	assertScanWarning(t, warns, "missing-name", filepath.Join(projectSkills, "shared-skill", "SKILL.md"))
+}
+
+func assertScanWarning(t *testing.T, warns []ScanWarning, code, path string) {
+	t.Helper()
+	for _, warn := range warns {
+		if warn.Code == code && warn.Path == path {
+			return
+		}
+	}
+	t.Fatalf("expected warning code=%q path=%q, got %+v", code, path, warns)
 }
 
 func TestScan_BasicSkill(t *testing.T) {

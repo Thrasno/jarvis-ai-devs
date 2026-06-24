@@ -30,6 +30,8 @@ type RefreshOptions struct {
 	Force           bool
 	AllowNonGitRoot bool
 	ScanDirs        []string
+	// NoGitignore skips .gitignore mutation when true.
+	NoGitignore bool
 }
 
 type Warning struct {
@@ -85,13 +87,29 @@ func Refresh(ctx context.Context, opts RefreshOptions) (Result, error) {
 		return Result{Root: root, Path: registryResult.Path}, fmt.Errorf("write skill registry: %w", err)
 	}
 
+	refreshWarnings := toRefreshWarnings(registryResult.Warnings)
+
+	// After writing the registry, ensure .gitignore contains the per-machine cache entries.
+	// Filesystem errors (read/write .gitignore) are hard errors that abort Refresh.
+	// Only git rm failures are demoted to non-fatal warnings surfaced in Result.Warnings.
+	if gitWarn, gitErr := EnsureGitignore(ctx, root, EnsureGitignoreOptions{NoGitignore: opts.NoGitignore}); gitErr != nil {
+		return Result{Root: root, Path: registryResult.Path}, fmt.Errorf("ensure gitignore: %w", gitErr)
+	} else if gitWarn != "" {
+		refreshWarnings = append(refreshWarnings, Warning{
+			Code:     "gitignore-untrack",
+			Severity: SeverityWarning,
+			Path:     ".gitignore",
+			Message:  gitWarn,
+		})
+	}
+
 	return Result{
 		Root:       root,
 		Path:       registryResult.Path,
 		Reason:     registryResult.Reason,
 		Changed:    registryResult.Changed,
 		SkillCount: registryResult.SkillCount,
-		Warnings:   toRefreshWarnings(registryResult.Warnings),
+		Warnings:   refreshWarnings,
 	}, nil
 }
 
