@@ -113,12 +113,15 @@ func scanDir(dir string, seen map[string]bool) ([]ScanRow, []ScanWarning, error)
 		if seen[skillID] {
 			continue
 		}
-		seen[skillID] = true
 
 		result, warn := ParseFrontmatter(content, skillMDPath)
 		if warn != nil {
 			warns = append(warns, ScanWarning{Code: warn.Code, Path: warn.Path})
+			if isInvalidSkillMetadata(warn.Code) {
+				continue
+			}
 		}
+		seen[skillID] = true
 
 		rows = append(rows, ScanRow{
 			ID:      skillID,
@@ -130,6 +133,10 @@ func scanDir(dir string, seen map[string]bool) ([]ScanRow, []ScanWarning, error)
 	}
 
 	return rows, warns, nil
+}
+
+func isInvalidSkillMetadata(code string) bool {
+	return code == "missing-name" || code == "missing-trigger"
 }
 
 // shouldSkipSkill returns true when the skill directory name matches the skip list.

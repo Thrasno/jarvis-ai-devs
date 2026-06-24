@@ -306,7 +306,7 @@ func TestRunConfigSet_InvalidKey_InProcess(t *testing.T) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 // TestRunInit_InProcess calls runInit() directly with a temp project dir.
-// Verifies .jarvis/skill-registry.md is created and the commit reminder is printed.
+// Verifies .jarvis/skill-registry.md is created and local cache guidance is printed.
 func TestRunInit_InProcess(t *testing.T) {
 	dir := initCommandGitWorktree(t)
 
@@ -379,9 +379,12 @@ func TestRunInit_InProcess(t *testing.T) {
 		t.Fatalf("expected copied skill-improver skill to match embedded content")
 	}
 
-	// Verify CLI output contains the commit reminder.
-	if !strings.Contains(out, "commit .jarvis/") {
-		t.Errorf("expected commit reminder in output:\n%s", out)
+	// Verify CLI output describes the generated local cache behavior.
+	if !strings.Contains(out, ".jarvis/ generated cache is gitignored by default") {
+		t.Errorf("expected generated cache guidance in output:\n%s", out)
+	}
+	if strings.Contains(out, "commit .jarvis/") {
+		t.Errorf("init output must not tell users to commit generated .jarvis cache:\n%s", out)
 	}
 
 	// Verify init success messages appear in output.
