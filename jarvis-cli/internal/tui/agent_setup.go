@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"embed"
 	"fmt"
 	"io/fs"
 	"strings"
@@ -223,11 +222,11 @@ func verifyConfiguredAgentRuntime(a agent.Agent, cfg *config.AppConfig) error {
 	return fmt.Errorf("runtime verification failed [%s] contract=%s checks=%s", report.Agent, report.ContractVersion, strings.Join(failures, "; "))
 }
 
-func refreshProjectRegistryForApply(ctx context.Context, cwd string, skillsFS embed.FS) ([]string, error) {
+func refreshProjectRegistryForApply(ctx context.Context, cwd string) ([]string, error) {
 	if strings.TrimSpace(cwd) == "" {
 		return nil, nil
 	}
-	result, err := refreshProjectSkillRegistry(ctx, projectregistry.RefreshOptions{CWD: cwd, SkillsFS: skillsFS})
+	result, err := refreshProjectSkillRegistry(ctx, projectregistry.RefreshOptions{CWD: cwd})
 	if err != nil {
 		if projectregistry.IsNonProjectError(err) {
 			return []string{"Project skill registry warning: " + projectregistry.ErrNotGitWorktree.Error()}, nil

@@ -1,9 +1,11 @@
 ---
 name: sdd-apply
-description: "Implement SDD tasks from specs and design. Trigger: orchestrator launches apply for one or more change tasks."
+display_name: "SDD Apply"
+description: "Implement tasks following specs and design; supports Strict TDD mode. Trigger: When implementing tasks"
 disable-model-invocation: true
 user-invocable: false
 license: MIT
+scope: core
 metadata:
   author: gentleman-programming
   version: "3.0"

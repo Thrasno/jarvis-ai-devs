@@ -1,3 +1,10 @@
+---
+name: laravel-architecture
+display_name: "Laravel Architecture"
+description: "Laravel conventions: thin controllers, services, repositories, FormRequest validation. Trigger: When writing Laravel code"
+scope: optional
+---
+
 # Laravel Architecture — Conventions
 
 ## Core Principle: Thin Controllers

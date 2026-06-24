@@ -2,13 +2,13 @@ package projectregistry
 
 import (
 	"context"
-	"embed"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/project"
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills/diskscan"
 )
 
 const (
@@ -21,11 +21,17 @@ const (
 	SeverityWarning               = project.RegistrySeverityWarning
 )
 
+// RefreshOptions configures a Refresh run.
+// ScanDirs overrides the default directory list produced by diskscan.ResolveScanDirs.
+// When ScanDirs is nil or empty, ResolveScanDirs(root) is used.
+// Refresh never installs skill copies — that is cmd_init's responsibility.
 type RefreshOptions struct {
 	CWD             string
 	Force           bool
 	AllowNonGitRoot bool
-	SkillsFS        embed.FS
+	ScanDirs        []string
+	// NoGitignore skips .gitignore mutation when true.
+	NoGitignore bool
 }
 
 type Warning struct {
@@ -44,8 +50,8 @@ type Result struct {
 	Warnings   []Warning
 }
 
-// Refresh updates the project-local skill registry and skill copies for the
-// explicit cwd's active git worktree.
+// Refresh updates the project-local skill registry by scanning disk skill directories.
+// It does NOT install skill copies — that is the responsibility of cmd_init.
 func Refresh(ctx context.Context, opts RefreshOptions) (Result, error) {
 	root, err := ResolveRoot(ctx, opts.CWD)
 	if err != nil {
@@ -58,66 +64,101 @@ func Refresh(ctx context.Context, opts RefreshOptions) (Result, error) {
 		}
 	}
 
-	embeddedSkills, err := skills.ListSkills(opts.SkillsFS)
-	if err != nil {
-		return Result{Root: root}, fmt.Errorf("list embedded skills: %w", err)
-	}
-	if len(embeddedSkills) == 0 {
-		return Result{Root: root}, fmt.Errorf("list embedded skills: no skills found")
+	dirs := opts.ScanDirs
+	if len(dirs) == 0 {
+		dirs = diskscan.ResolveScanDirs(root)
 	}
 
-	selected := make([]string, 0, len(embeddedSkills))
-	for _, skill := range embeddedSkills {
-		selected = append(selected, skill.ID)
-	}
-	installResult, err := skills.InstallSelectedWithResult(opts.SkillsFS, filepath.Join(root, ".jarvis", "skills"), selected)
+	rows, scanWarns, err := diskscan.Scan(dirs)
 	if err != nil {
-		return Result{Root: root}, fmt.Errorf("install project skill copies: %w", err)
+		return Result{Root: root}, fmt.Errorf("scan skills: %w", err)
 	}
+
+	registrySkills := scanRowsToRegistrySkills(root, rows)
+	registryWarnings := toRegistryWarnings(scanWarns)
 
 	registryResult, err := project.WriteRegistryWithResult(
 		root,
 		project.DetectProject(root),
-		project.DetectStack(root),
-		project.SkillsForStack(project.DetectStack(root)),
-		toProjectRegistrySkills(skills.RegistryRows(embeddedSkills)),
-		project.WriteRegistryOptions{Force: opts.Force},
+		registrySkills,
+		project.WriteRegistryOptions{Force: opts.Force, Warnings: registryWarnings},
 	)
 	if err != nil {
 		return Result{Root: root, Path: registryResult.Path}, fmt.Errorf("write skill registry: %w", err)
 	}
 
-	changed := registryResult.Changed || installResult.Changed
-	reason := registryResult.Reason
-	if !registryResult.Changed && installResult.Changed {
-		reason = ReasonUpdated
+	refreshWarnings := toRefreshWarnings(registryResult.Warnings)
+
+	// After writing the registry, ensure .gitignore contains the per-machine cache entries.
+	// Filesystem errors (read/write .gitignore) are hard errors that abort Refresh.
+	// Only git rm failures are demoted to non-fatal warnings surfaced in Result.Warnings.
+	if gitWarn, gitErr := EnsureGitignore(ctx, root, EnsureGitignoreOptions{NoGitignore: opts.NoGitignore}); gitErr != nil {
+		return Result{Root: root, Path: registryResult.Path}, fmt.Errorf("ensure gitignore: %w", gitErr)
+	} else if gitWarn != "" {
+		refreshWarnings = append(refreshWarnings, Warning{
+			Code:     "gitignore-untrack",
+			Severity: SeverityWarning,
+			Path:     ".gitignore",
+			Message:  gitWarn,
+		})
 	}
 
 	return Result{
 		Root:       root,
 		Path:       registryResult.Path,
-		Reason:     reason,
-		Changed:    changed,
+		Reason:     registryResult.Reason,
+		Changed:    registryResult.Changed,
 		SkillCount: registryResult.SkillCount,
-		Warnings:   toRefreshWarnings(registryResult.Warnings),
+		Warnings:   refreshWarnings,
 	}, nil
 }
 
-func toProjectRegistrySkills(rows []skills.RegistryRow) []project.RegistrySkill {
-	registrySkills := make([]project.RegistrySkill, 0, len(rows))
+// scanRowRelPath converts an absolute OS-native path to a project-relative,
+// forward-slash path. This is the cross-platform path normalization gate required
+// for portable registry markdown on all operating systems (including Windows).
+//
+// When the path is outside the project root (e.g. a user-global skill under
+// ~/.claude/skills/...), filepath.Rel returns a ".." -prefixed relative path
+// that is meaningless outside the original machine layout. In that case the
+// function falls back to the absolute path with forward slashes so the registry
+// entry remains well-defined regardless of the caller's directory.
+func scanRowRelPath(root, absPath string) string {
+	rel, err := filepath.Rel(root, absPath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		// Path is outside the project root — use the absolute path with
+		// forward slashes so the registry entry is always a valid, portable path.
+		return filepath.ToSlash(absPath)
+	}
+	return filepath.ToSlash(rel)
+}
+
+// scanRowsToRegistrySkills maps diskscan.ScanRow values to project.RegistrySkill
+// values, normalizing the absolute OS-native path to a project-relative,
+// forward-slash path suitable for the registry markdown.
+func scanRowsToRegistrySkills(root string, rows []diskscan.ScanRow) []project.RegistrySkill {
+	skills := make([]project.RegistrySkill, 0, len(rows))
 	for _, row := range rows {
-		registrySkills = append(registrySkills, project.RegistrySkill{
-			ID:           row.ID,
-			Name:         row.Name,
-			Description:  row.Description,
-			Trigger:      row.Trigger,
-			Scope:        row.Scope,
-			Path:         row.Path,
-			CompactRules: row.CompactRules,
-			IsCore:       row.IsCore,
+		skills = append(skills, project.RegistrySkill{
+			ID:      row.ID,
+			Name:    row.Name,
+			Trigger: row.Trigger,
+			Scope:   row.Scope,
+			Path:    scanRowRelPath(root, row.Path),
 		})
 	}
-	return registrySkills
+	return skills
+}
+
+func toRegistryWarnings(warns []diskscan.ScanWarning) []project.RegistryWarning {
+	result := make([]project.RegistryWarning, 0, len(warns))
+	for _, w := range warns {
+		result = append(result, project.RegistryWarning{
+			Code:     w.Code,
+			Severity: SeverityWarning,
+			Path:     w.Path,
+		})
+	}
+	return result
 }
 
 func toRefreshWarnings(warnings []project.RegistryWarning) []Warning {

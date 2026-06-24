@@ -1,7 +1,9 @@
 ---
 name: work-unit-commits
+display_name: "Work Unit Commits"
 description: "Plan commits as reviewable work units. Trigger: implementation, commit splitting, chained PRs, or keeping tests and docs with code."
 license: Apache-2.0
+scope: optional
 metadata:
   author: gentleman-programming
   version: "1.0"

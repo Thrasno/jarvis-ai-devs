@@ -1,7 +1,9 @@
 ---
 name: skill-improver
+display_name: "Skill Improver"
 description: "Trigger: improve skills, audit skills, refactor skills, skill quality. Audit and upgrade existing LLM-first skills safely."
 license: Apache-2.0
+scope: optional
 metadata:
   author: gentleman-programming
   version: "1.0"

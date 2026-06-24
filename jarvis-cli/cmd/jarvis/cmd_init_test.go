@@ -8,6 +8,7 @@ import (
 )
 
 func TestRunInitPreservesFirstRunNonGitDirectory(t *testing.T) {
+	isolateTestHome(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/nongit\n"), 0644); err != nil {
 		t.Fatalf("write go.mod: %v", err)
@@ -29,6 +30,7 @@ func TestRunInitPreservesFirstRunNonGitDirectory(t *testing.T) {
 }
 
 func TestRunInitNonGitRejectsSymlinkedJarvisBeforeWritingSkillCopies(t *testing.T) {
+	isolateTestHome(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/nongit-symlink\n"), 0644); err != nil {
 		t.Fatalf("write go.mod: %v", err)
@@ -55,6 +57,7 @@ func TestRunInitNonGitRejectsSymlinkedJarvisBeforeWritingSkillCopies(t *testing.
 }
 
 func TestInitCmdRunEAllowsNonGitCurrentWorkingDirectory(t *testing.T) {
+	isolateTestHome(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/initcmd-nongit\n"), 0644); err != nil {
 		t.Fatalf("write go.mod: %v", err)
@@ -84,7 +87,34 @@ func TestInitCmdRunEAllowsNonGitCurrentWorkingDirectory(t *testing.T) {
 	}
 }
 
+// TestRunInit_InstallsProjectSkillCopies verifies that runInit explicitly installs
+// embedded skill copies under .jarvis/skills, confirming that install is init's
+// responsibility (not Refresh's).
+func TestRunInit_InstallsProjectSkillCopies(t *testing.T) {
+	isolateTestHome(t)
+	root := initCommandGitWorktree(t)
+
+	captureStdout(t, func() {
+		if err := runInit(root); err != nil {
+			t.Fatalf("runInit returned error: %v", err)
+		}
+	})
+
+	// Core skill copies must exist on disk after init.
+	for _, id := range []string{"sdd-apply", "go-testing", "hive"} {
+		skillPath := filepath.Join(root, ".jarvis", "skills", id, "SKILL.md")
+		if _, err := os.Stat(skillPath); os.IsNotExist(err) {
+			t.Fatalf("expected skill copy at %s after runInit", skillPath)
+		}
+	}
+	// Auxiliary skill file (strict-tdd.md) must also be installed.
+	assertCommandFileContains(t, filepath.Join(root, ".jarvis", "skills", "sdd-apply", "strict-tdd.md"), "Strict TDD")
+	// The registry must be written and reference the project path.
+	assertCommandFileContains(t, filepath.Join(root, ".jarvis", "skill-registry.md"), "Canonical registry path:")
+}
+
 func TestRunInitUsesProjectRegistryRefreshFromGitSubdirectory(t *testing.T) {
+	isolateTestHome(t)
 	root := initCommandGitWorktree(t)
 	subdir := filepath.Join(root, "nested", "module")
 	if err := os.MkdirAll(subdir, 0755); err != nil {

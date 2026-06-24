@@ -1,7 +1,9 @@
 ---
 name: chained-pr
+display_name: "Chained PR"
 description: "Trigger: PRs over 400 lines, stacked PRs, review slices. Split oversized changes into chained PRs that protect review focus."
 license: Apache-2.0
+scope: optional
 metadata:
   author: gentleman-programming
   version: "1.0"
