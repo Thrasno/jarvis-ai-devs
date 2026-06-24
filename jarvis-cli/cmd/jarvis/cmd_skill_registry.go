@@ -7,7 +7,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
 )
 
@@ -26,6 +25,7 @@ func newSkillRegistryRefreshCmd() *cobra.Command {
 	var cwd string
 	var force bool
 	var quiet bool
+	var noGitignore bool
 
 	cmd := &cobra.Command{
 		Use:   "refresh",
@@ -41,9 +41,9 @@ func newSkillRegistryRefreshCmd() *cobra.Command {
 			}
 
 			result, err := projectregistry.Refresh(cmd.Context(), projectregistry.RefreshOptions{
-				CWD:      refreshCWD,
-				Force:    force,
-				SkillsFS: jarvis.SkillsFS,
+				CWD:         refreshCWD,
+				Force:       force,
+				NoGitignore: noGitignore,
 			})
 			if err != nil {
 				return err
@@ -64,6 +64,7 @@ func newSkillRegistryRefreshCmd() *cobra.Command {
 	cmd.Flags().StringVar(&cwd, "cwd", "", "project directory to refresh; subdirectories resolve to the active git worktree root")
 	cmd.Flags().BoolVar(&force, "force", false, "rewrite the registry even when generated content is unchanged")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress success output; warnings remain visible")
+	cmd.Flags().BoolVar(&noGitignore, "no-gitignore", false, "skip adding skill registry paths to .gitignore")
 	return cmd
 }
 

@@ -348,6 +348,58 @@ func TestInstallSelected_InstallsQAChecklistAndSkillCreatorWhenConfigured(t *tes
 	assertInstalledSkillFileContains(t, dir, "skill-creator/references/quality-loop.md", "# Skill Quality Loop")
 }
 
+// TestInstallSelected_CoreDerivedFromFrontmatter verifies that skills with
+// scope: core in their frontmatter are always installed (regardless of the
+// selected list), and skills with scope: optional are only installed when
+// explicitly selected.
+func TestInstallSelected_CoreDerivedFromFrontmatter(t *testing.T) {
+	dir := t.TempDir()
+
+	// Provide a minimal FS with one core skill and one optional skill.
+	// The core skill must be installed even though it is NOT in the selected list.
+	fsys := fstest.MapFS{
+		"embed/skills/my-core/SKILL.md":     {Data: []byte("---\nname: my-core\ndisplay_name: My Core\ndescription: \"Core skill. Trigger: always.\"\nscope: core\n---\n# Core\n")},
+		"embed/skills/my-optional/SKILL.md": {Data: []byte("---\nname: my-optional\ndisplay_name: My Optional\ndescription: \"Optional skill. Trigger: when selected.\"\nscope: optional\n---\n# Optional\n")},
+		"embed/skills/_shared/hive-convention.md": {Data: []byte("# shared")},
+	}
+
+	// Install nothing explicitly.
+	if err := InstallSelected(fsys, dir, []string{}); err != nil {
+		t.Fatalf("InstallSelected failed: %v", err)
+	}
+
+	// Core skill must be present.
+	corePath := filepath.Join(dir, "my-core", "SKILL.md")
+	if _, err := os.Stat(corePath); os.IsNotExist(err) {
+		t.Error("expected core skill (scope: core) to be installed even when not selected")
+	}
+
+	// Optional skill must NOT be installed.
+	optPath := filepath.Join(dir, "my-optional", "SKILL.md")
+	if _, err := os.Stat(optPath); err == nil {
+		t.Error("expected optional skill (scope: optional) to NOT be installed when not selected")
+	}
+}
+
+// TestInstallSelected_OptionalCoreWhenSelected verifies that an optional skill IS
+// installed when explicitly passed in the selected list.
+func TestInstallSelected_OptionalCoreWhenSelected(t *testing.T) {
+	dir := t.TempDir()
+
+	fsys := fstest.MapFS{
+		"embed/skills/my-optional/SKILL.md": {Data: []byte("---\nname: my-optional\ndisplay_name: My Optional\ndescription: \"Optional. Trigger: when selected.\"\nscope: optional\n---\n# Optional\n")},
+	}
+
+	if err := InstallSelected(fsys, dir, []string{"my-optional"}); err != nil {
+		t.Fatalf("InstallSelected failed: %v", err)
+	}
+
+	optPath := filepath.Join(dir, "my-optional", "SKILL.md")
+	if _, err := os.Stat(optPath); os.IsNotExist(err) {
+		t.Error("expected optional skill to be installed when explicitly selected")
+	}
+}
+
 func TestListSkills(t *testing.T) {
 	skills, err := ListSkills(jarvis.SkillsFS)
 	if err != nil {
