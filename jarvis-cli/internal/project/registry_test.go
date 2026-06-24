@@ -512,6 +512,43 @@ func TestWriteRegistry_NewHeaderFormat(t *testing.T) {
 	}
 }
 
+// TestWriteRegistry_EmptyButValid verifies that WriteRegistry with a nil/empty
+// skill slice produces a valid markdown file that contains the "## Installed Skills"
+// header and the table header row, but no data rows — and does not panic.
+func TestWriteRegistry_EmptyButValid(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		skills []RegistrySkill
+	}{
+		{"nil skills", nil},
+		{"empty skills", []RegistrySkill{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+
+			if err := WriteRegistry(dir, "empty-project", tc.skills, WriteRegistryOptions{}); err != nil {
+				t.Fatalf("WriteRegistry: %v", err)
+			}
+
+			registryPath := filepath.Join(dir, ".jarvis", "skill-registry.md")
+			data, err := os.ReadFile(registryPath)
+			if err != nil {
+				t.Fatalf("file not created: %v", err)
+			}
+			content := string(data)
+
+			for _, want := range []string{
+				"## Installed Skills",
+				"| Trigger | Skill | Scope | Path |",
+			} {
+				if !strings.Contains(content, want) {
+					t.Fatalf("expected empty registry to contain %q, got:\n%s", want, content)
+				}
+			}
+		})
+	}
+}
+
 func mustReadRegistryFile(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)

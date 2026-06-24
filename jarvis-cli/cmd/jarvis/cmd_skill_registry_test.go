@@ -104,19 +104,46 @@ func TestSkillRegistryRefreshCommand(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects no-gitignore compatibility flag", func(t *testing.T) {
+	t.Run("accepts no-gitignore flag and skips gitignore mutation", func(t *testing.T) {
+		isolateTestHome(t)
 		root := initCommandGitWorktree(t)
 
 		output, err := executeSkillRegistryCommand("refresh", "--cwd", root, "--quiet", "--no-gitignore")
 
-		if err == nil {
-			t.Fatalf("expected --no-gitignore to be rejected, got nil error and output:\n%s", output)
+		if err != nil {
+			t.Fatalf("--no-gitignore should be accepted, got error: %v\noutput:\n%s", err, output)
 		}
-		if !strings.Contains(output+err.Error(), "unknown flag: --no-gitignore") {
-			t.Fatalf("expected unknown flag error for --no-gitignore, got err=%v output:\n%s", err, output)
+		// Registry must still be written.
+		if _, statErr := os.Stat(filepath.Join(root, ".jarvis", "skill-registry.md")); statErr != nil {
+			t.Fatalf("expected registry to be written even with --no-gitignore, stat err=%v", statErr)
 		}
-		if _, statErr := os.Stat(filepath.Join(root, ".jarvis", "skill-registry.md")); !os.IsNotExist(statErr) {
-			t.Fatalf("expected rejected --no-gitignore refresh not to write registry, got stat err=%v", statErr)
+		// .gitignore must NOT be created when --no-gitignore is set.
+		if _, statErr := os.Stat(filepath.Join(root, ".gitignore")); !os.IsNotExist(statErr) {
+			t.Fatalf("expected no .gitignore to be written when --no-gitignore is set, stat err=%v", statErr)
+		}
+	})
+
+	t.Run("writes gitignore entries by default", func(t *testing.T) {
+		isolateTestHome(t)
+		root := initCommandGitWorktree(t)
+
+		output, err := executeSkillRegistryCommand("refresh", "--cwd", root)
+
+		if err != nil {
+			t.Fatalf("default refresh returned error: %v\noutput:\n%s", err, output)
+		}
+		gitignorePath := filepath.Join(root, ".gitignore")
+		if _, statErr := os.Stat(gitignorePath); os.IsNotExist(statErr) {
+			t.Fatal("expected .gitignore to be created by default refresh")
+		}
+		content, readErr := os.ReadFile(gitignorePath)
+		if readErr != nil {
+			t.Fatalf("read .gitignore: %v", readErr)
+		}
+		for _, entry := range []string{".jarvis/skill-registry.md", ".jarvis/skills/"} {
+			if !strings.Contains(string(content), entry) {
+				t.Fatalf("expected .gitignore to contain %q after default refresh, got:\n%s", entry, string(content))
+			}
 		}
 	})
 

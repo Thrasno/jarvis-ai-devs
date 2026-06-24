@@ -202,4 +202,4 @@ To update after installing/removing skills, run this again.
 - Compact rules MUST be 5-15 lines per skill — concise, actionable, no fluff
 - Include ALL convention index files found (not just the first)
 - If no skills or conventions are found, write an empty registry (so sub-agents don't waste time searching)
-- `.jarvis/skill-registry.md` is intended to be committed/shared as the project-local team registry; legacy or local-only artifacts must not be treated as canonical
+- `.jarvis/skill-registry.md` is a per-machine scan cache and is gitignored by default; use `--no-gitignore` to opt out of automatic .gitignore mutation when you want to commit it to the repository instead
