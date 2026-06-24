@@ -43,14 +43,13 @@ type RegistryPaths struct {
 }
 
 type RegistrySkill struct {
-	ID           string
-	Name         string
-	Description  string
-	Trigger      string
-	Scope        string
-	Path         string
-	CompactRules string
-	IsCore       bool
+	ID          string
+	Name        string
+	Description string
+	Trigger     string
+	Scope       string
+	Path        string
+	IsCore      bool
 }
 
 type RegistryWarning struct {

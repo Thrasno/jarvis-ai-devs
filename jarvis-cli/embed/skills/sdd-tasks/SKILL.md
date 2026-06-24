@@ -1,9 +1,11 @@
 ---
 name: sdd-tasks
-description: "Break an SDD change into implementation tasks. Trigger: orchestrator launches task planning for a change."
+display_name: "SDD Tasks"
+description: "Break down a change into a concrete, ordered implementation checklist. Trigger: When creating task lists"
 disable-model-invocation: true
 user-invocable: false
 license: MIT
+scope: optional
 metadata:
   author: gentleman-programming
   version: "2.0"

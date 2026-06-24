@@ -1,13 +1,16 @@
-<!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/judgment-day/SKILL.md -->
-<!-- Upstream commit: 5f73974b39ae2b9b525ef465b3642030c5f2ce6c; adapted for Jarvis/Hive runtime wording. -->
 ---
 name: judgment-day
+display_name: "Judgment Day"
 description: "Trigger: judgment day, dual review, adversarial review, juzgar. Run blind dual review, fix confirmed issues, then re-judge."
 license: Apache-2.0
+scope: optional
 metadata:
   author: gentleman-programming
   version: "1.4"
 ---
+
+<!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/judgment-day/SKILL.md -->
+<!-- Upstream commit: 5f73974b39ae2b9b525ef465b3642030c5f2ce6c; adapted for Jarvis/Hive runtime wording. -->
 
 ## Activation Contract
 

@@ -1,7 +1,9 @@
 ---
 name: comment-writer
+display_name: "Comment Writer"
 description: "Write warm, direct collaboration comments. Trigger: PR feedback, issue replies, reviews, Slack messages, or GitHub comments."
 license: Apache-2.0
+scope: optional
 metadata:
   author: gentleman-programming
   version: "1.0"

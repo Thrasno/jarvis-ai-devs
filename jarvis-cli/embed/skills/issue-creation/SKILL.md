@@ -1,9 +1,11 @@
 ---
 name: issue-creation
+display_name: "Issue Creation"
 description: >
   Create Gentle AI issues with issue-first checks for Jarvis-packaged workflows.
   Trigger: When creating a GitHub issue, reporting a bug, or requesting a feature.
 license: Apache-2.0
+scope: optional
 metadata:
   author: gentleman-programming
   version: "1.0"

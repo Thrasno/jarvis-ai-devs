@@ -1,9 +1,11 @@
 ---
 name: skill-registry
+display_name: "Skill Registry"
 description: >
   Create or update the skill registry for the current project. Scans user skills and project conventions, writes .jarvis/skill-registry.md, and saves to Hive if available.
   Trigger: When user says "update skills", "skill registry", "actualizar skills", "update registry", or after installing/removing skills.
 license: MIT
+scope: optional
 metadata:
   author: gentleman-programming
   version: "1.0"

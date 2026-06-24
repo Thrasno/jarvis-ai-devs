@@ -1,9 +1,11 @@
 ---
 name: sdd-init
-description: "Trigger: sdd init, iniciar sdd, openspec init. Initialize SDD context, testing capabilities, registry, and persistence."
+display_name: "SDD Init"
+description: "Detect project stack, testing capabilities, and initialize SDD context. Trigger: When initializing SDD, iniciar sdd, openspec init, /sdd-init"
 disable-model-invocation: true
 user-invocable: false
 license: MIT
+scope: core
 metadata:
   author: gentleman-programming
   version: "3.0"

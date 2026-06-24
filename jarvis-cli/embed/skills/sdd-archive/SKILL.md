@@ -1,9 +1,11 @@
 ---
 name: sdd-archive
-description: "Archive a completed SDD change by syncing delta specs. Trigger: orchestrator launches archive after implementation and verification."
+display_name: "SDD Archive"
+description: "Merge delta specs to main specs and close the SDD change cycle. Trigger: When archiving changes"
 disable-model-invocation: true
 user-invocable: false
 license: MIT
+scope: core
 metadata:
   author: gentleman-programming
   version: "2.0"

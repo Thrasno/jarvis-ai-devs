@@ -1,9 +1,11 @@
 ---
 name: go-testing
+display_name: "Go Testing"
 description: >
   Go testing patterns for Gentleman.Dots, including Bubbletea TUI testing.
   Trigger: When writing Go tests, using teatest, or adding test coverage.
 license: Apache-2.0
+scope: optional
 metadata:
   author: gentleman-programming
   version: "1.0"

@@ -1205,21 +1205,28 @@ func TestCatalogContract_RegistryPromptAndProtocolStayPathInjected(t *testing.T)
 	if err != nil {
 		t.Fatalf("ListSkills(): %v", err)
 	}
-	rows := RegistryRows(skills)
-	if len(rows) == 0 {
+	if len(skills) == 0 {
 		t.Fatal("expected embedded skills to produce registry rows")
 	}
 
-	projectRows := make([]project.RegistrySkill, 0, len(rows))
-	for _, row := range rows {
+	projectRows := make([]project.RegistrySkill, 0, len(skills))
+	for _, s := range skills {
+		scope := s.Scope
+		if scope == "" {
+			if s.IsCore {
+				scope = "core"
+			} else {
+				scope = "optional"
+			}
+		}
 		projectRows = append(projectRows, project.RegistrySkill{
-			ID:           row.ID,
-			Name:         row.Name,
-			Description:  row.Description,
-			Trigger:      row.Trigger,
-			Scope:        row.Scope,
-			Path:         row.Path,
-			CompactRules: row.CompactRules,
+			ID:          s.ID,
+			Name:        s.Name,
+			Description: s.Description,
+			Trigger:     s.Trigger,
+			Scope:       scope,
+			Path:        s.Path,
+			IsCore:      s.IsCore,
 		})
 	}
 
@@ -1237,7 +1244,7 @@ func TestCatalogContract_RegistryPromptAndProtocolStayPathInjected(t *testing.T)
 		"Canonical registry path: `.jarvis/skill-registry.md`",
 		"| Trigger | Skill | Scope | Path |",
 		"| When implementing tasks | SDD Apply | core | `.jarvis/skills/sdd-apply/SKILL.md` |",
-		"| When writing Go tests, using teatest, or adding test coverage | Go Testing | optional | `.jarvis/skills/go-testing/SKILL.md` |",
+		"| When writing Go tests, using teatest, or adding test coverage. | Go Testing | optional | `.jarvis/skills/go-testing/SKILL.md` |",
 	}
 	for _, snippet := range required {
 		if !strings.Contains(registry, snippet) {
@@ -2065,6 +2072,78 @@ func shouldAllowGeneratedMarkdownReference(reference string, allowlist map[strin
 		}
 	}
 	return strings.Contains(reference, "{") || strings.Contains(reference, "...")
+}
+
+// TestCatalogContract_AllEmbeddedSkillsHaveScopeFrontmatter asserts that every
+// embed/skills/*/SKILL.md (excluding _shared) has a YAML frontmatter block with a
+// "scope:" key valued either "core" or "optional". This enforces SF-3.
+func TestCatalogContract_AllEmbeddedSkillsHaveScopeFrontmatter(t *testing.T) {
+	t.Parallel()
+
+	validScopes := map[string]bool{"core": true, "optional": true}
+
+	err := fs.WalkDir(jarvis.SkillsFS, "embed/skills", func(filePath string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() || d.Name() != "SKILL.md" {
+			return nil
+		}
+		// Derive skill directory name.
+		dirName := path.Base(path.Dir(filePath))
+		if dirName == "_shared" {
+			return nil
+		}
+
+		content := readEmbeddedSkillAsset(t, filePath)
+
+		if !hasYAMLFrontmatter(content) {
+			t.Errorf("%s: missing YAML frontmatter block (no --- fences)", filePath)
+			return nil
+		}
+
+		// Extract the scope: value from frontmatter.
+		scope := extractFrontmatterKey(content, "scope")
+		if scope == "" {
+			t.Errorf("%s: frontmatter is missing required 'scope:' key", filePath)
+			return nil
+		}
+		if !validScopes[scope] {
+			t.Errorf("%s: frontmatter 'scope:' = %q, want 'core' or 'optional'", filePath, scope)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir(embed/skills): %v", err)
+	}
+}
+
+// extractFrontmatterKey extracts a top-level scalar YAML key from a markdown
+// frontmatter block (between --- fences). Returns the empty string if absent.
+func extractFrontmatterKey(content, key string) string {
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	// Find opening ---
+	if !strings.HasPrefix(normalized, "---\n") {
+		return ""
+	}
+	rest := normalized[4:]
+	// Find closing ---
+	endIdx := strings.Index(rest, "\n---")
+	if endIdx < 0 {
+		return ""
+	}
+	block := rest[:endIdx]
+	needle := key + ":"
+	for _, line := range strings.Split(block, "\n") {
+		trimmed := strings.TrimRight(line, "\r")
+		if !strings.HasPrefix(strings.ToLower(trimmed), needle) {
+			continue
+		}
+		value := strings.TrimSpace(trimmed[len(needle):])
+		value = strings.Trim(value, `"'`)
+		return value
+	}
+	return ""
 }
 
 func resolveEmbeddedMarkdownReference(sourcePath, reference string) (string, bool) {

@@ -319,14 +319,102 @@ func TestParseFrontmatter_FoldedDescriptionCRLFBlankLine(t *testing.T) {
 }
 
 // TestExtractTriggerFromDescription_FirstWins verifies that when the description
-// text contains two "Trigger:" occurrences, the FIRST one wins and only its
-// value (up to but not including the second occurrence) is returned.
+// text contains two "Trigger:" occurrences, the FIRST one wins and its value is
+// terminated at the first sentence boundary (period-space or period-end).
 func TestExtractTriggerFromDescription_FirstWins(t *testing.T) {
 	text := "Some summary. Trigger: first trigger value. Extra text. Trigger: second trigger value."
 	got := extractTriggerFromDescription(text)
-	want := "first trigger value. Extra text. Trigger: second trigger value."
+	// After FIX 3: trigger must stop at the first sentence boundary.
+	want := "first trigger value."
 	if got != want {
 		t.Errorf("extractTriggerFromDescription = %q, want %q", got, want)
+	}
+}
+
+// TestExtractTriggerFromDescription_SentenceBoundary verifies that
+// extractTriggerFromDescription stops at the first sentence boundary (period
+// followed by space or end-of-string) after "Trigger:".
+func TestExtractTriggerFromDescription_SentenceBoundary(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{
+			name: "clean sentence",
+			text: "Skill summary. Trigger: When X, Y, or Z.",
+			want: "When X, Y, or Z.",
+		},
+		{
+			name: "trailing summary after period-space",
+			text: "Trigger: improve skills. Audit and upgrade...",
+			want: "improve skills.",
+		},
+		{
+			name: "no trailing text",
+			text: "Trigger: When doing something",
+			want: "When doing something",
+		},
+		{
+			name: "period at end of string",
+			text: "Trigger: When doing something.",
+			want: "When doing something.",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractTriggerFromDescription(tc.text)
+			if got != tc.want {
+				t.Errorf("extractTriggerFromDescription(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseFrontmatter_DisplayName verifies that a display_name: frontmatter key
+// is parsed correctly and returned in FrontmatterResult.DisplayName.
+func TestParseFrontmatter_DisplayName(t *testing.T) {
+	content := []byte(`---
+name: go-testing
+display_name: Go Testing
+description: >
+  Go testing patterns.
+  Trigger: When writing Go tests.
+scope: optional
+---
+
+# Go Testing
+`)
+	result, warn := ParseFrontmatter(content, "go-testing/SKILL.md")
+	if warn != nil {
+		t.Fatalf("unexpected warning: %+v", warn)
+	}
+	if result.DisplayName != "Go Testing" {
+		t.Errorf("DisplayName = %q, want %q", result.DisplayName, "Go Testing")
+	}
+	if result.Name != "go-testing" {
+		t.Errorf("Name = %q, want %q (name: key unchanged)", result.Name, "go-testing")
+	}
+}
+
+// TestParseFrontmatter_DisplayNameAbsent verifies that when display_name: is absent,
+// DisplayName is empty (caller uses Name as fallback).
+func TestParseFrontmatter_DisplayNameAbsent(t *testing.T) {
+	content := []byte(`---
+name: my-skill
+Trigger: When doing something
+scope: optional
+---
+
+# My Skill
+`)
+	result, warn := ParseFrontmatter(content, "my-skill/SKILL.md")
+	if warn != nil {
+		t.Fatalf("unexpected warning: %+v", warn)
+	}
+	if result.DisplayName != "" {
+		t.Errorf("DisplayName = %q, want empty string when absent", result.DisplayName)
 	}
 }
 

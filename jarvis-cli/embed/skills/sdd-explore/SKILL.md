@@ -1,9 +1,11 @@
 ---
 name: sdd-explore
-description: "Explore SDD ideas before committing to a change. Trigger: orchestrator launches exploration or requirement clarification."
+display_name: "SDD Explore"
+description: "Investigate ideas and compare approaches before committing to a change. Trigger: When exploring ideas"
 disable-model-invocation: true
 user-invocable: false
 license: MIT
+scope: optional
 metadata:
   author: gentleman-programming
   version: "2.0"

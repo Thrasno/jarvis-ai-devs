@@ -1,9 +1,11 @@
 ---
 name: sdd-verify
-description: "Trigger: SDD verification phase, verify change. Execute tests and prove implementation matches specs, design, and tasks."
+display_name: "SDD Verify"
+description: "Verify implementation against specs with structural and behavioral checks. Trigger: When verifying implementation"
 disable-model-invocation: true
 user-invocable: false
 license: MIT
+scope: core
 metadata:
   author: gentleman-programming
   version: "3.0"
