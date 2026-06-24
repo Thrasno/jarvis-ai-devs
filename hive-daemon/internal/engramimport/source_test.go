@@ -101,6 +101,39 @@ INSERT INTO observations (id, project, title, content, type, topic_key, session_
 	}, analysis.ProjectedByProject)
 }
 
+func TestAnalyzeSourceReadsLegacySessionsWithoutDevID(t *testing.T) {
+	t.Setenv("HIVE_DEV_ID", "legacy-import-dev")
+	path := createLegacyEngramFixtureWithoutSessionDevID(t, func(sqlDB *sql.DB) {
+		_, err := sqlDB.Exec(`
+INSERT INTO sessions (id, project, directory, client, started_at, ended_at, summary) VALUES
+  ('ses-legacy', 'proj-legacy', '/src/legacy', 'opencode', '2026-06-11 10:00:00', NULL, 'legacy summary');
+INSERT INTO user_prompts (id, project, content, created_at) VALUES
+  (11, 'proj-legacy', 'legacy prompt', '2026-06-11 10:01:00');
+INSERT INTO observations (id, project, title, content, type, topic_key, session_id, created_at, updated_at) VALUES
+  (21, 'proj-legacy', 'Legacy decision', 'Imported from old schema', 'decision', 'legacy-topic', 'ses-legacy', '2026-06-11 10:02:00', '2026-06-11 10:03:00');`)
+		require.NoError(t, err)
+	})
+
+	analysis, err := AnalyzeSource(context.Background(), Source{Path: path})
+	require.NoError(t, err)
+	require.Equal(t, Counts{Sessions: 1, Prompts: 1, Observations: 1}, analysis.Counts)
+	require.Empty(t, analysis.InvalidRows)
+	require.Equal(t, []string{"proj-legacy"}, analysis.Projects)
+
+	batch := BuildImportBatch(analysis)
+	require.Len(t, batch.Sessions, 1)
+	require.Equal(t, "ses-legacy", batch.Sessions[0].SourceID)
+	require.Equal(t, "proj-legacy", batch.Sessions[0].Project)
+	require.Empty(t, batch.Sessions[0].DevID)
+	require.Len(t, batch.Memories, 1)
+	require.Equal(t, "ses-legacy", batch.Memories[0].SessionSourceID)
+
+	hive := openHiveDBForImportTest(t)
+	report, err := ImportSource(context.Background(), hive, ImportRequest{Source: Source{Path: path}, RunID: "run-legacy"})
+	require.NoError(t, err)
+	require.Equal(t, hivedb.ImportCounts{Imported: 3}, report.Counts)
+}
+
 func TestAnalyzeSourceRejectsMissingRequiredTables(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "engram.db")
 	sqlDB, err := sql.Open("sqlite", path)
@@ -438,6 +471,46 @@ CREATE TABLE memory_relations (
 		seed(sqlDB)
 	}
 	require.NoError(t, sqlDB.Close())
+}
+
+func createLegacyEngramFixtureWithoutSessionDevID(t *testing.T, seed func(*sql.DB)) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "engram.db")
+	sqlDB, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	_, err = sqlDB.Exec(`
+CREATE TABLE observations (
+  id INTEGER PRIMARY KEY,
+  project TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  type TEXT NOT NULL DEFAULT '',
+  topic_key TEXT,
+  session_id TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT
+);
+CREATE TABLE sessions (
+  id TEXT PRIMARY KEY,
+  project TEXT NOT NULL DEFAULT '',
+  directory TEXT NOT NULL DEFAULT '',
+  client TEXT NOT NULL DEFAULT '',
+  started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  ended_at TEXT,
+  summary TEXT
+);
+CREATE TABLE user_prompts (
+  id INTEGER PRIMARY KEY,
+  project TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`)
+	require.NoError(t, err)
+	if seed != nil {
+		seed(sqlDB)
+	}
+	require.NoError(t, sqlDB.Close())
+	return path
 }
 
 func openHiveDBForImportTest(t *testing.T) *hivedb.DB {
