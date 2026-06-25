@@ -7,6 +7,7 @@ export function activityFeedFromApi(response: ActivityFeedResponse, now = new Da
   return {
     screen: 'activityFeed',
     groups: groupEntries(response.entries, now),
+    livePolling: disabledLivePolling(),
     nextCursor: response.next_cursor || undefined,
     loadingMore: false
   }
@@ -30,6 +31,10 @@ export function appendActivityPage(current: ActivityFeedViewModel, response: Act
     loadingMore: false,
     paginationError: undefined
   }
+}
+
+function disabledLivePolling(): ActivityFeedViewModel['livePolling'] {
+  return { enabled: false, intervalSeconds: 0 }
 }
 
 function groupEntries(entries: readonly ActivityFeedEntry[], now: Date): readonly ActivityGroupViewModel[] {

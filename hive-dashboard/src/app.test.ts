@@ -904,7 +904,8 @@ function fakeApi(overrides: {
     searchMemories: vi.fn(async () => ({ memories: [], total: 0, query: 'dashboard', limit: 5 })),
     memory: vi.fn(async () => ({ id: 'mem-1', sync_id: 'sync-1', project: 'jarvis-dev', category: 'decision', title: 'Dashboard scope', content: 'No daemon controls', tags: [], files_affected: [], created_by: 'admin-1', created_at: '2026-06-06T20:00:00Z', updated_at: '2026-06-06T20:01:00Z', synced_at: '2026-06-06T20:02:00Z' })),
     auditLogs: vi.fn(async () => ({ audit_logs: [], total: 0, limit: 10, offset: 0 })),
-    syncAttemptSummary: vi.fn(async () => syncAttemptSummaryFixture())
+    syncAttemptSummary: vi.fn(async () => syncAttemptSummaryFixture()),
+    activity: vi.fn(async () => ({ entries: [] }))
   }
 }
 
