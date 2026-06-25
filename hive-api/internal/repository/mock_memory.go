@@ -117,6 +117,14 @@ func (m *MockMemoryRepository) ListMemoryMutations(ctx context.Context, project 
 	return args.Get(0).(*model.MutationBatch), args.Error(1)
 }
 
+func (m *MockMemoryRepository) ListActivityFeed(ctx context.Context, query model.ActivityFeedRepositoryQuery) ([]model.ActivityJournalRow, error) {
+	args := m.Called(ctx, query)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]model.ActivityJournalRow), args.Error(1)
+}
+
 func (m *MockMemoryRepository) CountByProject(ctx context.Context, filter model.MemoryFilter) ([]model.ProjectCount, error) {
 	args := m.Called(ctx, filter)
 	if args.Get(0) == nil {

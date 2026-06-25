@@ -61,3 +61,8 @@ var DropTopicKeyUniqueConstraintSQL string
 //
 //go:embed 007_sync_attempt_logs.sql
 var SyncAttemptLogsSQL string
+
+// ActivityFeedIndexSQL is migration 008: recency index for the global activity feed query.
+//
+//go:embed 008_activity_feed_index.sql
+var ActivityFeedIndexSQL string
