@@ -250,6 +250,10 @@ export type ActivityGroupViewModel = {
 export type ActivityFeedViewModel = {
   readonly screen: 'activityFeed'
   readonly groups: readonly ActivityGroupViewModel[]
+  readonly livePolling?: {
+    readonly enabled: boolean
+    readonly intervalSeconds: number
+  }
   readonly nextCursor?: string
   readonly loadingMore?: boolean
   readonly paginationError?: string
