@@ -134,3 +134,13 @@ func (m *mockOverview) GetGrowth(ctx context.Context) (*model.OverviewGrowthResp
 	}
 	return args.Get(0).(*model.OverviewGrowthResponse), args.Error(1)
 }
+
+type mockActivity struct{ mock.Mock }
+
+func (m *mockActivity) List(ctx context.Context, query model.ActivityFeedQuery) (*model.ActivityFeedResponse, error) {
+	args := m.Called(ctx, query)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.ActivityFeedResponse), args.Error(1)
+}

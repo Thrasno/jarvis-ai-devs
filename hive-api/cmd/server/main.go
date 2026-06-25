@@ -38,6 +38,7 @@ type buildAppDeps struct {
 	projectSvc         handler.ProjectService
 	adminSvc           handler.AdminService
 	overviewSvc        handler.OverviewService
+	activitySvc        handler.ActivityService
 	db                 handler.DBPinger // nil en tests unitarios → health skip DB check
 	allowedOrigins     []string
 	dashboardAssetsDir string
@@ -59,6 +60,7 @@ type serviceFactories struct {
 	newProjectService     func(repository.ProjectRepository) handler.ProjectService
 	newAdminService       func(repository.UserRepository, repository.MemoryRepository, repository.AuditRepository, repository.TxManager) handler.AdminService
 	newOverviewService    func(repository.MemoryRepository, repository.SyncAttemptRepository, repository.AuditRepository) handler.OverviewService
+	newActivityService    func(repository.MemoryRepository) handler.ActivityService
 }
 
 func defaultServiceFactories() serviceFactories {
@@ -92,6 +94,9 @@ func defaultServiceFactories() serviceFactories {
 		newOverviewService: func(memRepo repository.MemoryRepository, syncRepo repository.SyncAttemptRepository, auditRepo repository.AuditRepository) handler.OverviewService {
 			return service.NewOverviewService(memRepo, syncRepo, auditRepo)
 		},
+		newActivityService: func(memRepo repository.MemoryRepository) handler.ActivityService {
+			return service.NewActivityService(memRepo)
+		},
 	}
 }
 
@@ -106,6 +111,7 @@ func buildApp(deps buildAppDeps) *gin.Engine {
 		ProjectSvc:         deps.projectSvc,
 		AdminSvc:           deps.adminSvc,
 		OverviewSvc:        deps.overviewSvc,
+		ActivitySvc:        deps.activitySvc,
 		DB:                 deps.db,
 		AllowedOrigins:     deps.allowedOrigins,
 		DashboardAssetsDir: deps.dashboardAssetsDir,
@@ -139,6 +145,7 @@ func wireServicesWithFactories(pool *pgxpool.Pool, cfg *config.Config, factories
 	projectSvc := factories.newProjectService(projectRepo)
 	adminSvc := factories.newAdminService(userRepo, memRepo, auditRepo, txManager)
 	overviewSvc := factories.newOverviewService(memRepo, syncAttemptRepo, auditRepo)
+	activitySvc := factories.newActivityService(memRepo)
 
 	return buildAppDeps{
 		authSvc:            authSvc,
@@ -148,10 +155,33 @@ func wireServicesWithFactories(pool *pgxpool.Pool, cfg *config.Config, factories
 		projectSvc:         projectSvc,
 		adminSvc:           adminSvc,
 		overviewSvc:        overviewSvc,
+		activitySvc:        activitySvc,
 		db:                 pool, // pgxpool.Pool implementa DBPinger (tiene Ping(ctx) error)
 		allowedOrigins:     cfg.AllowedOrigins,
 		dashboardAssetsDir: cfg.DashboardAssetsDir,
 	}
+}
+
+func startupMigrationSQL() []string {
+	return []string{
+		migrations.InitialSQL,
+		migrations.UserPromptsSQL,
+		migrations.SessionsSQL,
+		migrations.AuditLogsSQL,
+		migrations.MemoryMutationsSQL,
+		migrations.DropTopicKeyUniqueConstraintSQL,
+		migrations.SyncAttemptLogsSQL,
+		migrations.ActivityFeedIndexSQL,
+	}
+}
+
+func runStartupMigrations(pool *pgxpool.Pool) error {
+	for _, sql := range startupMigrationSQL() {
+		if err := repository.RunMigrations(pool, sql); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func main() {
@@ -173,32 +203,8 @@ func main() {
 	}
 	defer pool.Close()
 
-	if err := repository.RunMigrations(pool, migrations.InitialSQL); err != nil {
-		log.Fatalf("migración 001 falló: %v", err)
-	}
-
-	if err := repository.RunMigrations(pool, migrations.UserPromptsSQL); err != nil {
-		log.Fatalf("migración 002 falló: %v", err)
-	}
-
-	if err := repository.RunMigrations(pool, migrations.SessionsSQL); err != nil {
-		log.Fatalf("migración 003 falló: %v", err)
-	}
-
-	if err := repository.RunMigrations(pool, migrations.AuditLogsSQL); err != nil {
-		log.Fatalf("migración 004 falló: %v", err)
-	}
-
-	if err := repository.RunMigrations(pool, migrations.MemoryMutationsSQL); err != nil {
-		log.Fatalf("migración 005 falló: %v", err)
-	}
-
-	if err := repository.RunMigrations(pool, migrations.DropTopicKeyUniqueConstraintSQL); err != nil {
-		log.Fatalf("migración 006 falló: %v", err)
-	}
-
-	if err := repository.RunMigrations(pool, migrations.SyncAttemptLogsSQL); err != nil {
-		log.Fatalf("migración 007 falló: %v", err)
+	if err := runStartupMigrations(pool); err != nil {
+		log.Fatalf("migraciones fallaron: %v", err)
 	}
 
 	log.Println("✓ PostgreSQL conectado y migraciones ejecutadas")

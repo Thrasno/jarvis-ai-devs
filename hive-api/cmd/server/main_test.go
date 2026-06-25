@@ -15,6 +15,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/handler"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -118,4 +119,50 @@ func TestWireServices_WiresProjectRepositoryIntoRouterDeps(t *testing.T) {
 	deps := wireServicesWithFactories(nil, &config.Config{}, factories)
 
 	require.Same(t, projectSvc, deps.projectSvc)
+}
+
+func TestWireServices_WiresActivityServiceFromMemoryRepository(t *testing.T) {
+	memRepo := &repository.MockMemoryRepository{}
+	activitySvc := &mockActivity{}
+	factories := defaultServiceFactories()
+	factories.newUserRepo = func(*pgxpool.Pool) repository.UserRepository { return nil }
+	factories.newMemoryRepo = func(*pgxpool.Pool) repository.MemoryRepository { return memRepo }
+	factories.newPromptRepo = func(*pgxpool.Pool) repository.PromptRepository { return nil }
+	factories.newSessionRepo = func(*pgxpool.Pool) repository.SessionRepository { return nil }
+	factories.newAuditRepo = func(*pgxpool.Pool) repository.AuditRepository { return nil }
+	factories.newSyncAttemptRepo = func(*pgxpool.Pool) repository.SyncAttemptRepository { return nil }
+	factories.newProjectRepo = func(*pgxpool.Pool) repository.ProjectRepository { return nil }
+	factories.newTxManager = func(*pgxpool.Pool) repository.TxManager { return nil }
+	factories.newAuthService = func(repository.UserRepository, string) handler.AuthService { return &mockAuth{} }
+	factories.newMemoryService = func(got repository.MemoryRepository, _ repository.SessionRepository) handler.MemoryService {
+		require.Same(t, memRepo, got)
+		return &mockMemory{}
+	}
+	factories.newSyncService = func(repository.MemoryRepository, repository.PromptRepository, repository.SessionRepository, repository.AuditRepository) handler.SyncService {
+		return &mockSync{}
+	}
+	factories.newSyncAttemptService = func(repository.SyncAttemptRepository) handler.SyncAttemptService { return nil }
+	factories.newProjectService = func(repository.ProjectRepository) handler.ProjectService { return &mockProject{} }
+	factories.newAdminService = func(repository.UserRepository, repository.MemoryRepository, repository.AuditRepository, repository.TxManager) handler.AdminService {
+		return &mockAdmin{}
+	}
+	factories.newOverviewService = func(repository.MemoryRepository, repository.SyncAttemptRepository, repository.AuditRepository) handler.OverviewService {
+		return &mockOverview{}
+	}
+	factories.newActivityService = func(got repository.MemoryRepository) handler.ActivityService {
+		require.Same(t, memRepo, got)
+		return activitySvc
+	}
+
+	deps := wireServicesWithFactories(nil, &config.Config{}, factories)
+
+	require.Same(t, activitySvc, deps.activitySvc)
+}
+
+func TestStartupMigrationSQLIncludesActivityFeedIndex(t *testing.T) {
+	startupMigrations := startupMigrationSQL()
+
+	require.Len(t, startupMigrations, 8)
+	assert.Equal(t, migrations.InitialSQL, startupMigrations[0])
+	assert.Equal(t, migrations.ActivityFeedIndexSQL, startupMigrations[7])
 }

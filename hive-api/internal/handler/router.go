@@ -69,6 +69,11 @@ type OverviewService interface {
 	GetGrowth(ctx context.Context) (*model.OverviewGrowthResponse, error)
 }
 
+// ActivityService provides the authenticated global activity feed.
+type ActivityService interface {
+	List(ctx context.Context, query model.ActivityFeedQuery) (*model.ActivityFeedResponse, error)
+}
+
 // RouterDeps agrupa las dependencias del router.
 // Pasar un struct en lugar de N parámetros hace que el constructor sea legible
 // y fácil de extender sin romper código existente.
@@ -80,6 +85,7 @@ type RouterDeps struct {
 	ProjectSvc         ProjectService
 	AdminSvc           AdminService
 	OverviewSvc        OverviewService
+	ActivitySvc        ActivityService
 	DB                 DBPinger // puede ser nil en tests unitarios
 	AllowedOrigins     []string // orígenes permitidos para CORS (e.g. ["https://hive.hivemem.dev"])
 	DashboardAssetsDir string   // directorio con assets compilados para servir /dashboard
@@ -96,6 +102,7 @@ type RouterDeps struct {
 //	POST /memories                                    — RequireAuth
 //	GET  /memories/search                             — RequireAuth (ANTES de /:id)
 //	GET  /memories/:id                                — RequireAuth
+//	GET  /activity                                    — RequireAuth
 //	POST /sync                                        — RequireAuth
 //	POST /sync-attempts                               — RequireAuth
 //	GET  /admin/users                                 — RequireAuth + RequireAdmin
@@ -120,6 +127,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 	projectH := NewProjectHandler(deps.ProjectSvc)
 	adminH := NewAdminHandler(deps.AdminSvc)
 	overviewH := NewOverviewHandler(deps.OverviewSvc)
+	activityH := NewActivityHandler(deps.ActivitySvc)
 	healthH := NewHealthHandler(deps.DB)
 
 	// Rutas públicas (sin autenticación)
@@ -139,6 +147,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		auth.GET("/memories", memH.List)
 		auth.POST("/memories", memH.Create)
 		auth.GET("/memories/:id", memH.GetByID)
+		auth.GET("/activity", activityH.List)
 
 		auth.POST("/sync", syncH.Sync)
 		auth.POST("/sync-attempts", syncAttemptH.Ingest)
