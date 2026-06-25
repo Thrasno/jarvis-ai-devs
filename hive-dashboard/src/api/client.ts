@@ -38,6 +38,19 @@ export type SyncAttemptSummaryWindow = {
 }
 export type SyncAttemptSummary = { windows: SyncAttemptSummaryWindow[] }
 export type MutationMessage = { message: string }
+export type ActivityFeedParams = { limit?: number; cursor?: string }
+export type ActivityFeedEntry = {
+  id: string
+  event_type: 'create' | 'update' | 'delete' | string
+  occurred_at: string
+  actor: string
+  project: string
+  category: string
+  title: string
+  summary: string
+  memory_sync_id?: string | null
+}
+export type ActivityFeedResponse = { entries: ActivityFeedEntry[]; next_cursor?: string | null }
 export type MemoryListParams = { project?: string; category?: string; limit?: number; offset?: number }
 export type MemorySearchParams = { query: string; project?: string; limit?: number; offset?: number }
 export type AuditLogParams = { project?: string; actor_user_id?: string; action?: string; outcome?: string; since?: string; until?: string; limit?: number; offset?: number }
@@ -58,6 +71,7 @@ export type ApiClient = {
   memory(token: string, id: string): Promise<Memory>
   auditLogs(token: string, params?: AuditLogParams): Promise<AuditLogList>
   syncAttemptSummary(token: string, params?: SyncAttemptSummaryParams): Promise<SyncAttemptSummary>
+  activity(token: string, params?: ActivityFeedParams): Promise<ActivityFeedResponse>
 }
 
 export class ApiError extends Error {
@@ -133,6 +147,9 @@ export function createApiClient(options: { baseUrl?: string; fetch?: Fetcher } =
     },
     syncAttemptSummary(token, params = {}) {
       return request<SyncAttemptSummary>(withQuery('/admin/sync-attempts/summary', params), authGet(token))
+    },
+    activity(token, params = {}) {
+      return request<ActivityFeedResponse>(activityPath(params), authGet(token))
     }
   }
 }
@@ -152,6 +169,13 @@ function authPost(token: string, body?: unknown): RequestInit {
 
 function withQuery(path: string, params: DashboardUrlFilters): string {
   return appendDashboardFilters(path, params)
+}
+
+function activityPath(params: ActivityFeedParams): string {
+  const query = new URLSearchParams()
+  query.set('limit', String(params.limit ?? 20))
+  if (params.cursor) query.set('cursor', params.cursor)
+  return `/activity?${query.toString()}`
 }
 
 async function readPayload(response: Response): Promise<unknown> {
