@@ -198,3 +198,15 @@ func (m *mockOverviewSvc) GetGrowth(ctx context.Context) (*model.OverviewGrowthR
 	}
 	return args.Get(0).(*model.OverviewGrowthResponse), args.Error(1)
 }
+
+type mockActivitySvc struct {
+	mock.Mock
+}
+
+func (m *mockActivitySvc) List(ctx context.Context, query model.ActivityFeedQuery) (*model.ActivityFeedResponse, error) {
+	args := m.Called(ctx, query)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.ActivityFeedResponse), args.Error(1)
+}

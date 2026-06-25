@@ -18,8 +18,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -172,6 +174,7 @@ func TestRouter_ReservedAPIPrefixesReturnJSONNotDashboardHTML(t *testing.T) {
 		"/memories/unknown/path",
 		"/sync/unknown",
 		"/health/unknown",
+		"/activity/unknown",
 	}
 
 	for _, path := range paths {
@@ -190,6 +193,48 @@ func TestRouter_ReservedAPIPrefixesReturnJSONNotDashboardHTML(t *testing.T) {
 	}
 }
 
+func TestRouter_ActivityRouteDoesNotConflictWithDashboardCatchAll(t *testing.T) {
+	dashboardDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dashboardDir, "index.html"), []byte("<html>Hive Dashboard</html>"), 0o644))
+
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+	activitySvc := &mockActivitySvc{}
+	activitySvc.On("List", mock.Anything, model.ActivityFeedQuery{}).Return(&model.ActivityFeedResponse{Entries: []model.ActivityFeedEntry{}}, nil)
+
+	r := NewRouter(RouterDeps{
+		AuthSvc:            authSvc,
+		MemorySvc:          &mockMemorySvc{},
+		SyncSvc:            &mockSyncSvc{},
+		ProjectSvc:         &mockProjectSvc{},
+		AdminSvc:           &mockAdminSvc{},
+		OverviewSvc:        &mockOverviewSvc{},
+		ActivitySvc:        activitySvc,
+		DashboardAssetsDir: dashboardDir,
+	})
+
+	activityResponse := httptest.NewRecorder()
+	activityReq, err := http.NewRequest(http.MethodGet, "/activity", nil)
+	require.NoError(t, err)
+	activityReq.Header.Set("Authorization", "Bearer valid-token")
+	r.ServeHTTP(activityResponse, activityReq)
+
+	assert.Equal(t, http.StatusOK, activityResponse.Code)
+	assert.Equal(t, "application/json; charset=utf-8", activityResponse.Header().Get("Content-Type"))
+	assert.JSONEq(t, `{"entries":[]}`, activityResponse.Body.String())
+	assert.NotContains(t, activityResponse.Body.String(), "Hive Dashboard")
+
+	dashboardResponse := httptest.NewRecorder()
+	dashboardReq, err := http.NewRequest(http.MethodGet, "/dashboard", nil)
+	require.NoError(t, err)
+	r.ServeHTTP(dashboardResponse, dashboardReq)
+
+	assert.Equal(t, http.StatusOK, dashboardResponse.Code)
+	assert.Contains(t, dashboardResponse.Body.String(), "Hive Dashboard")
+	authSvc.AssertExpectations(t)
+	activitySvc.AssertExpectations(t)
+}
+
 func newTestRouterWithDashboard(dashboardAssetsDir string) *gin.Engine {
 	return NewRouter(RouterDeps{
 		AuthSvc:            &mockAuthSvc{},
@@ -198,6 +243,7 @@ func newTestRouterWithDashboard(dashboardAssetsDir string) *gin.Engine {
 		ProjectSvc:         &mockProjectSvc{},
 		AdminSvc:           &mockAdminSvc{},
 		OverviewSvc:        &mockOverviewSvc{},
+		ActivitySvc:        &mockActivitySvc{},
 		DashboardAssetsDir: dashboardAssetsDir,
 	})
 }
@@ -237,6 +283,7 @@ func TestRouter_RoutesRegistered(t *testing.T) {
 		"POST:/memories",
 		"GET:/memories/search",
 		"GET:/memories/:id",
+		"GET:/activity",
 		"POST:/sync",
 		"GET:/admin/audit-logs",
 		"GET:/admin/users",
