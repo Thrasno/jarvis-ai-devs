@@ -133,7 +133,8 @@ describe('Hive dashboard Explore fixtures', () => {
     expect(exploreScreenFixtures.globalSearch.results).toHaveLength(6)
     expect(exploreScreenFixtures.knowledgeGraph.nodes).toHaveLength(41)
     expect(exploreScreenFixtures.knowledgeGraph.links).toHaveLength(33)
-    expect(exploreScreenFixtures.activityFeed.livePolling).toEqual({ enabled: true, intervalSeconds: 5 })
+    expect(exploreScreenFixtures.activityFeed.groups).toHaveLength(3)
+    expect('livePolling' in exploreScreenFixtures.activityFeed).toBe(false)
   })
 
   it('labels Projects as non-live fixture data and exposes health derivation inputs', () => {
