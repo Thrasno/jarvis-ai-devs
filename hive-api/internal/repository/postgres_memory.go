@@ -382,6 +382,96 @@ func (r *postgresMemoryRepository) ListMemoryMutations(ctx context.Context, proj
 	return batch, nil
 }
 
+func (r *postgresMemoryRepository) ListActivityFeed(ctx context.Context, query model.ActivityFeedRepositoryQuery) ([]model.ActivityJournalRow, error) {
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+
+	args := []interface{}{}
+	cursorClause := ""
+	if query.Cursor != nil {
+		args = append(args, query.Cursor.OccurredAt, query.Cursor.Sequence, query.Cursor.EventID)
+		cursorClause = `AND (mm.occurred_at, mm.sequence, mm.event_id) < ($1, $2, $3::uuid)`
+	}
+	args = append(args, limit)
+	limitPlaceholder := len(args)
+
+	q := fmt.Sprintf(`
+		SELECT mm.event_id::text, mm.entity_type, mm.entity_sync_id::text, mm.project, mm.op,
+		       mm.sequence, mm.occurred_at, COALESCE(mm.actor_id, ''), mm.memory, mm.tombstone,
+		       COALESCE(mem.project, ''), COALESCE(mem.category::text, ''), COALESCE(mem.title, ''),
+		       COALESCE(mem.content, ''), COALESCE(mem.created_by, '')
+		FROM memory_mutations mm
+		LEFT JOIN memories mem ON mem.sync_id = mm.entity_sync_id AND mem.project = mm.project
+		WHERE mm.entity_type = 'memory'
+		  AND mm.op IN ('create', 'update', 'delete')
+		  %s
+		ORDER BY mm.occurred_at DESC, mm.sequence DESC, mm.event_id DESC
+		LIMIT $%d`, cursorClause, limitPlaceholder)
+
+	rows, err := r.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, wrapPgError(err, "list activity feed")
+	}
+	defer rows.Close()
+
+	feed := []model.ActivityJournalRow{}
+	for rows.Next() {
+		row, err := scanActivityJournalRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		feed = append(feed, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrapPgError(err, "iterate activity feed")
+	}
+	return feed, nil
+}
+
+func scanActivityJournalRow(rows pgx.Rows) (model.ActivityJournalRow, error) {
+	var row model.ActivityJournalRow
+	var op string
+	var memoryRaw, tombstoneRaw []byte
+	var memoryProject, memoryCategory, memoryTitle, memoryContent, memoryCreatedBy string
+
+	err := rows.Scan(&row.EventID, &row.EntityType, &row.EntitySyncID, &row.Project, &op,
+		&row.Sequence, &row.OccurredAt, &row.ActorID, &memoryRaw, &tombstoneRaw,
+		&memoryProject, &memoryCategory, &memoryTitle, &memoryContent, &memoryCreatedBy)
+	if err != nil {
+		return model.ActivityJournalRow{}, wrapPgError(err, "scan activity feed row")
+	}
+	row.Op = model.MutationOp(op)
+
+	if len(memoryRaw) > 0 && string(memoryRaw) != "null" {
+		var payload model.MemoryPayload
+		if err := json.Unmarshal(memoryRaw, &payload); err != nil {
+			return model.ActivityJournalRow{}, fmt.Errorf("unmarshal activity memory payload: %w", err)
+		}
+		row.Memory = &payload
+	}
+	if row.Memory == nil && (memoryProject != "" || memoryCategory != "" || memoryTitle != "") {
+		row.Memory = &model.MemoryPayload{
+			SyncID:    row.EntitySyncID,
+			Project:   memoryProject,
+			Category:  model.MemoryCategory(memoryCategory),
+			Title:     memoryTitle,
+			Content:   memoryContent,
+			CreatedBy: memoryCreatedBy,
+		}
+	}
+	if len(tombstoneRaw) > 0 && string(tombstoneRaw) != "null" {
+		var payload model.TombstonePayload
+		if err := json.Unmarshal(tombstoneRaw, &payload); err != nil {
+			return model.ActivityJournalRow{}, fmt.Errorf("unmarshal activity tombstone payload: %w", err)
+		}
+		row.Tombstone = &payload
+	}
+
+	return row, nil
+}
+
 type mutationTx interface {
 	QueryRow(context.Context, string, ...interface{}) pgx.Row
 	Exec(context.Context, string, ...interface{}) (pgconn.CommandTag, error)

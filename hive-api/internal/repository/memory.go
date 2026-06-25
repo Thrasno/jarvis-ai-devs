@@ -65,6 +65,7 @@ type MemoryRepository interface {
 
 	ApplyMemoryMutation(ctx context.Context, mutation model.MutationEnvelope) (*model.MutationApplyResult, error)
 	ListMemoryMutations(ctx context.Context, project string, cursor model.MutationCursor, limit int) (*model.MutationBatch, error)
+	ListActivityFeed(ctx context.Context, query model.ActivityFeedRepositoryQuery) ([]model.ActivityJournalRow, error)
 
 	// CountByProject returns memory counts grouped by project, ordered by count DESC.
 	// Soft-deleted memories (deleted_at IS NOT NULL) are excluded.
