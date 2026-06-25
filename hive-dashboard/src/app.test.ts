@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ApiClient } from './api/client'
+import type { ActivityFeedResponse, ApiClient } from './api/client'
 import type { SessionStore } from './auth/session'
 import { loadDashboard, renderApp, startDashboardApp } from './main'
 import { dashboardNotificationSummary } from './fixtures/hive-dashboard/shared'
@@ -234,64 +234,172 @@ describe('dashboard shell', () => {
     expect(container.textContent).toContain('Knowledge Graph')
   })
 
-  it('T12 — renders activityFeed view instead of ComingSoon', () => {
+  it('renders Activity Feed from route-loaded API data instead of fixture data', () => {
     const container = document.createElement('main')
-    let activeActivityFeedDispose: (() => void) | undefined
+
+    renderApp({
+      container,
+      state: { status: 'authenticated', token: 'jwt-token', user: adminUser },
+      actions: { onLogin: vi.fn(), onLogout: vi.fn() },
+      dashboard: { status: 'ready', data: { activity: { status: 'ready', data: activityViewState() } } },
+      routePath: '/dashboard/activityFeed'
+    })
+
+    expect(container.querySelector('[data-coming-soon]')).toBeNull()
+    expect(container.querySelector('section h2')?.textContent).toBe('Activity Feed')
+    expect(container.textContent).toContain('Real backend activity')
+    expect(container.textContent).not.toContain('Demo fixture data')
+  })
+
+  it('does not start Activity Feed polling timers when rendering the real route', () => {
+    const container = document.createElement('main')
+    const setIntervalSpy = vi.spyOn(window, 'setInterval')
 
     try {
       renderApp({
         container,
         state: { status: 'authenticated', token: 'jwt-token', user: adminUser },
         actions: { onLogin: vi.fn(), onLogout: vi.fn() },
-        dashboard: { status: 'loading' },
+        dashboard: { status: 'ready', data: { activity: { status: 'ready', data: activityViewState() } } },
         routePath: '/dashboard/activityFeed',
-        setActivityFeedDispose: (fn) => { activeActivityFeedDispose = fn }
       })
 
-      expect(container.querySelector('[data-coming-soon]')).toBeNull()
-      expect(container.querySelector('[role="note"]')?.textContent).toBe('Demo fixture data — live activity feed is unavailable.')
       expect(container.querySelector('section h2')?.textContent).toBe('Activity Feed')
+      expect(setIntervalSpy).not.toHaveBeenCalled()
     } finally {
-      activeActivityFeedDispose?.()
+      setIntervalSpy.mockRestore()
     }
   })
 
-  it('disposes the active Activity Feed handle before rendering anonymous login', () => {
+  it('loads Activity Feed through /activity?limit=20 when the route opens', async () => {
     const container = document.createElement('main')
-    const setIntervalSpy = vi.spyOn(window, 'setInterval').mockReturnValue(123 as ReturnType<typeof window.setInterval>)
-    const clearIntervalSpy = vi.spyOn(window, 'clearInterval').mockImplementation(() => {})
-    let activeActivityFeedDispose: (() => void) | undefined
-    const disposeActivityFeed = () => {
-      activeActivityFeedDispose?.()
-      activeActivityFeedDispose = undefined
-    }
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({ activity: [Promise.resolve(activityResponse('event-1', 'Real backend activity', 'cursor-2'))] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/activityFeed')
 
+    const cleanup = startDashboardApp(container, { api, session })
     try {
-      renderApp({
-        container,
-        state: { status: 'authenticated', token: 'jwt-token', user: adminUser },
-        actions: { onLogin: vi.fn(), onLogout: vi.fn() },
-        routePath: '/dashboard/activityFeed',
-        disposeActivityFeed,
-        setActivityFeedDispose: (fn) => { activeActivityFeedDispose = fn }
-      })
+      await flushDashboard()
 
-      expect(setIntervalSpy).toHaveBeenCalledTimes(1)
-      expect(container.querySelector('section h2')?.textContent).toBe('Activity Feed')
-
-      renderApp({
-        container,
-        state: { status: 'anonymous' },
-        actions: { onLogin: vi.fn(), onLogout: vi.fn() },
-        disposeActivityFeed,
-        setActivityFeedDispose: (fn) => { activeActivityFeedDispose = fn }
-      })
-
-      expect(clearIntervalSpy).toHaveBeenCalledTimes(1)
-      expect(container.querySelector('h1')?.textContent).toBe('Sign in to Hive API')
+      expect(api.activity).toHaveBeenCalledWith('jwt-token', { limit: 20 })
+      expect(container.textContent).toContain('Real backend activity')
+      expect(container.textContent).not.toContain('Demo fixture data')
     } finally {
-      setIntervalSpy.mockRestore()
-      clearIntervalSpy.mockRestore()
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('renders route-loaded empty Activity Feed responses without fixture fallback or Load More', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({ activity: [Promise.resolve({ entries: [] })] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/activityFeed')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      expect(api.activity).toHaveBeenCalledWith('jwt-token', { limit: 20 })
+      expect(container.querySelector('[role="status"]')?.textContent).toContain('No activity entries found')
+      expect(container.querySelector('button[data-load-more-activity]')).toBeNull()
+      expect(container.textContent).not.toContain('Demo fixture data')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('renders route-loaded Activity Feed failures without fixture fallback', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({ activity: [() => Promise.reject(new Error('activity API unavailable'))] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/activityFeed')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      expect(api.activity).toHaveBeenCalledWith('jwt-token', { limit: 20 })
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('activity API unavailable')
+      expect(container.querySelector('button[data-load-more-activity]')).toBeNull()
+      expect(container.textContent).not.toContain('Demo fixture data')
+      expect(container.textContent).not.toContain('Real backend activity')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('does not offer Activity Feed Load More when route-loaded next_cursor is null or undefined', async () => {
+    for (const response of [
+      { ...activityResponse('event-null-cursor', 'Null cursor activity'), next_cursor: null },
+      { entries: activityResponse('event-undefined-cursor', 'Undefined cursor activity').entries }
+    ]) {
+      const container = document.createElement('main')
+      document.body.append(container)
+      const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+      const api = fakeApi({ activity: [Promise.resolve(response)] })
+      const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+      history.pushState(null, '', '/dashboard/activityFeed')
+
+      const cleanup = startDashboardApp(container, { api, session })
+      try {
+        await flushDashboard()
+
+        expect(container.textContent).toContain(response.entries[0].title)
+        expect(container.querySelector('button[data-load-more-activity]')).toBeNull()
+      } finally {
+        cleanup()
+        history.pushState(null, '', originalPath)
+        container.remove()
+      }
+    }
+  })
+
+  it('appends Activity Feed Load More pages and keeps existing entries visible on pagination failure', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({
+      activity: [
+        Promise.resolve(activityResponse('event-1', 'First page activity', 'cursor-2')),
+        Promise.resolve(activityResponse('event-2', 'Second page activity', 'cursor-3')),
+        () => Promise.reject(new Error('next page failed'))
+      ]
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/activityFeed')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+      container.querySelector<HTMLButtonElement>('button[data-load-more-activity]')!.click()
+      await flushDashboard()
+
+      expect(api.activity).toHaveBeenNthCalledWith(2, 'jwt-token', { limit: 20, cursor: 'cursor-2' })
+      expect(container.textContent).toContain('First page activity')
+      expect(container.textContent).toContain('Second page activity')
+
+      container.querySelector<HTMLButtonElement>('button[data-load-more-activity]')!.click()
+      await flushDashboard()
+
+      expect(container.textContent).toContain('First page activity')
+      expect(container.textContent).toContain('Second page activity')
+      expect(container.textContent).toContain('next page failed')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
     }
   })
 
@@ -889,8 +997,10 @@ function fakeApi(overrides: {
   setUserLevel?: Promise<Awaited<ReturnType<ApiClient['setUserLevel']>>>
   grantAdmin?: Promise<Awaited<ReturnType<ApiClient['grantAdmin']>>>
   deactivateUser?: Promise<Awaited<ReturnType<ApiClient['deactivateUser']>>>
+  activity?: Array<Promise<ActivityFeedResponse> | (() => Promise<ActivityFeedResponse>)>
 } = {}): ApiClient {
   const userResponses = [...(overrides.users ?? [])]
+  const activityResponses = [...(overrides.activity ?? [])]
   return {
     login: vi.fn(),
     currentUser: vi.fn(),
@@ -904,7 +1014,12 @@ function fakeApi(overrides: {
     searchMemories: vi.fn(async () => ({ memories: [], total: 0, query: 'dashboard', limit: 5 })),
     memory: vi.fn(async () => ({ id: 'mem-1', sync_id: 'sync-1', project: 'jarvis-dev', category: 'decision', title: 'Dashboard scope', content: 'No daemon controls', tags: [], files_affected: [], created_by: 'admin-1', created_at: '2026-06-06T20:00:00Z', updated_at: '2026-06-06T20:01:00Z', synced_at: '2026-06-06T20:02:00Z' })),
     auditLogs: vi.fn(async () => ({ audit_logs: [], total: 0, limit: 10, offset: 0 })),
-    syncAttemptSummary: vi.fn(async () => syncAttemptSummaryFixture())
+    syncAttemptSummary: vi.fn(async () => syncAttemptSummaryFixture()),
+    activity: vi.fn(() => {
+      const next = activityResponses.shift()
+      if (typeof next === 'function') return next()
+      return next ?? Promise.resolve(activityResponse('event-1', 'Real backend activity'))
+    })
   }
 }
 
@@ -957,7 +1072,36 @@ function dashboardState() {
       users: { status: 'ready' as const, data: { users: [adminUser] } },
       memories: { status: 'ready' as const, data: { recent: { memories: [], total: 0, limit: 5, offset: 0 }, search: { memories: [], total: 0, query: 'dashboard', limit: 5 } } },
       audit: { status: 'ready' as const, data: syncAttemptSummaryFixture() },
+      activity: { status: 'ready' as const, data: activityViewState() },
       projects: { status: 'ready' as const, data: projectsFixture }
     }
+  }
+}
+
+function activityViewState() {
+  return {
+    screen: 'activityFeed' as const,
+    groups: [{
+      dateLabel: 'Today',
+      entries: [{ id: 'event-1', title: 'Real backend activity', actorHandle: 'ada@example.com', projectId: 'jarvis-dev', category: 'decision' as const, timeLabel: '09:00', memorySyncId: 'sync-1' }]
+    }],
+    nextCursor: 'cursor-2'
+  }
+}
+
+function activityResponse(id: string, title: string, nextCursor?: string): ActivityFeedResponse {
+  return {
+    entries: [{
+      id,
+      event_type: 'create',
+      occurred_at: '2026-06-25T09:00:00Z',
+      actor: 'ada@example.com',
+      project: 'jarvis-dev',
+      category: 'decision',
+      title,
+      summary: title,
+      memory_sync_id: `sync-${id}`
+    }],
+    next_cursor: nextCursor ?? null
   }
 }

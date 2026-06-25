@@ -69,8 +69,7 @@ export const activityFeedFixture = {
     { dateLabel: 'Today', entries: browserMemories.slice(0, 3).map((memory, index) => toActivity(memory, index)) },
     { dateLabel: 'Yesterday', entries: browserMemories.slice(3, 6).map((memory, index) => toActivity(memory, index + 3)) },
     { dateLabel: '05 Jun 2026', entries: browserMemories.slice(6, 9).map((memory, index) => toActivity(memory, index + 6)) }
-  ],
-  livePolling: { enabled: true, intervalSeconds: 5 }
+  ]
 } as const satisfies ActivityFeedFixtureViewModel
 
 export const exploreScreenFixtures = {
@@ -124,6 +123,7 @@ function toActivity(memory: MemoryViewModel, index: number) {
     actorHandle: contributor.handle,
     projectId: memory.projectId,
     category: memory.category,
-    timeLabel: index < 3 ? `${index + 1}m ago` : `${index + 1}h ago`
+    timeLabel: index < 3 ? `${index + 1}m ago` : `${index + 1}h ago`,
+    memorySyncId: memory.id
   }
 }

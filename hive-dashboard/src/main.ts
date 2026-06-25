@@ -4,9 +4,10 @@ import { control } from './components/dom'
 import { comingSoon } from './components/ComingSoon'
 import { renderNotificationDrawer } from './components/NotificationDrawer'
 import { renderSidebar, type UserLevel } from './components/Sidebar'
-import type { ActivityFeedFixtureViewModel, CurrentProfileViewModel, DashboardScreenKey, OverviewFixtureViewModel, ProjectListFixtureViewModel } from './domain/dashboard'
+import { activityFeedFromApi, appendActivityPage } from './domain/activityFeed'
+import type { ActivityFeedViewModel, CurrentProfileViewModel, DashboardScreenKey, OverviewFixtureViewModel, ProjectListFixtureViewModel } from './domain/dashboard'
 import { dashboardFixtures } from './fixtures/hive-dashboard/index'
-import { activityFeedFixture, projectsFixture } from './fixtures/hive-dashboard/explore'
+import { projectsFixture } from './fixtures/hive-dashboard/explore'
 import { hiveOverviewFixture } from './fixtures/hive-dashboard/overview'
 import { renderAuditSync } from './views/AuditSync'
 import { renderGlobalSearch } from './views/GlobalSearch'
@@ -19,6 +20,7 @@ import { renderActivityFeed } from './views/ActivityFeed'
 import './styles.css'
 
 export const DEFAULT_MEMORY_SEARCH_QUERY = 'dashboard'
+export const DEFAULT_ACTIVITY_LIMIT = 20
 
 
 export type UsersData = { users: User[] }
@@ -30,6 +32,7 @@ export type LoadedDashboardData = {
   memories: ViewState<MemoriesData>
   audit: ViewState<AuditSyncData>
   projects: ViewState<ProjectListFixtureViewModel>
+  activity: ViewState<ActivityFeedViewModel>
 }
 export type DashboardState = { status: 'loading' } | { status: 'ready'; data: Partial<LoadedDashboardData> }
 
@@ -42,6 +45,7 @@ export type AppActions = {
   onSetUserLevel?(username: string, level: UserLevel): Promise<void>
   onGrantAdmin?(username: string): Promise<void>
   onDeactivateUser?(username: string): Promise<void>
+  onLoadMoreActivity?(): Promise<void>
 }
 
 export type DrawerState = {
@@ -116,9 +120,8 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
   },
   activityFeed: {
     path: '/dashboard/activityFeed',
-    placeholderLabel: 'Activity Feed',
-    // Handled by the activityFeed special-case in renderAuthenticatedView; this render is never called.
-    render: () => comingSoon('Activity Feed'),
+    load: 'activity',
+    render: (vs) => renderActivityFeed(vs as ViewState<ActivityFeedViewModel>, { onNavigate: () => {} }).element,
   },
   contributors: {
     path: '/dashboard/contributors',
@@ -383,10 +386,10 @@ function renderAuthenticatedView(
 
   if (screen === 'activityFeed') {
     const handle = renderActivityFeed(
-      { status: 'ready', data: activityFeedFixture } as ViewState<ActivityFeedFixtureViewModel>,
+      stateFor(state, 'activity') as ViewState<ActivityFeedViewModel>,
       {
         onNavigate: (p) => actions.onNavigate?.(p),
-        scheduler: { setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window) }
+        onLoadMore: () => { void actions.onLoadMoreActivity?.() }
       }
     )
     setActivityFeedDispose(handle.dispose)
@@ -455,8 +458,8 @@ function stateFor<K extends keyof LoadedDashboardData>(
 
 // Keep loadDashboard for backwards compat with the existing test that calls it directly
 export async function loadDashboard(api: ApiClient, token: string): Promise<{ status: 'ready'; data: LoadedDashboardData }> {
-  const [health, stats, users, recent, search, audit] = await Promise.allSettled([
-    api.health(), api.adminStats(token), api.adminUsers(token), api.memories(token, { limit: 5 }), api.searchMemories(token, { query: DEFAULT_MEMORY_SEARCH_QUERY, limit: 5 }), api.syncAttemptSummary(token)
+  const [health, stats, users, recent, search, audit, activity] = await Promise.allSettled([
+    api.health(), api.adminStats(token), api.adminUsers(token), api.memories(token, { limit: 5 }), api.searchMemories(token, { query: DEFAULT_MEMORY_SEARCH_QUERY, limit: 5 }), api.syncAttemptSummary(token), api.activity(token, { limit: DEFAULT_ACTIVITY_LIMIT })
   ])
   return {
     status: 'ready',
@@ -465,6 +468,7 @@ export async function loadDashboard(api: ApiClient, token: string): Promise<{ st
       users: settledState(users),
       memories: combinedState(recent, search, (recent, search) => ({ recent, search })),
       audit: settledState(audit),
+      activity: activityState(activity),
       projects: { status: 'ready', data: projectsFixture }
     }
   }
@@ -522,7 +526,17 @@ async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token:
     }
     case 'projects':
       return { status: 'ready', data: projectsFixture }
+    case 'activity': {
+      const result = await Promise.allSettled([api.activity(token, { limit: DEFAULT_ACTIVITY_LIMIT })])
+      return activityState(result[0])
+    }
   }
+}
+
+function activityState(result: PromiseSettledResult<Awaited<ReturnType<ApiClient['activity']>>>): ViewState<ActivityFeedViewModel> {
+  return result.status === 'fulfilled'
+    ? { status: 'ready', data: activityFeedFromApi(result.value) }
+    : { status: 'error', message: messageFor(result.reason) }
 }
 
 function overviewState(
@@ -692,6 +706,41 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     },
     onDeactivateUser(username) {
       return runUserMutation(username, 'deactivate', (token) => api.deactivateUser(token, username))
+    },
+    async onLoadMoreActivity() {
+      await loadMoreActivity()
+    }
+  }
+
+  async function loadMoreActivity(): Promise<void> {
+    if (disposed) return
+    const state = session.getState()
+    if (state.status !== 'authenticated' || dashboard.status !== 'ready') return
+    const currentSlice = dashboard.data.activity
+    if (!currentSlice || currentSlice.status !== 'ready' || !currentSlice.data.nextCursor || currentSlice.data.loadingMore) return
+
+    const version = loadVersion
+    const loadingData = { ...currentSlice.data, loadingMore: true, paginationError: undefined }
+    dashboard = { status: 'ready', data: { ...dashboard.data, activity: { status: 'ready', data: loadingData } } }
+    rerender(state)
+
+    try {
+      const page = await api.activity(state.token, { limit: DEFAULT_ACTIVITY_LIMIT, cursor: currentSlice.data.nextCursor })
+      if (disposed) return
+      const current = session.getState()
+      if (version !== loadVersion || current.status !== 'authenticated' || current.token !== state.token || dashboard.status !== 'ready') return
+      const latest = dashboard.data.activity
+      const base = latest?.status === 'ready' ? latest.data : currentSlice.data
+      dashboard = { status: 'ready', data: { ...dashboard.data, activity: { status: 'ready', data: appendActivityPage(base, page) } } }
+      rerender(current)
+    } catch (error) {
+      if (disposed) return
+      const current = session.getState()
+      if (version !== loadVersion || current.status !== 'authenticated' || current.token !== state.token || dashboard.status !== 'ready') return
+      const latest = dashboard.data.activity
+      const base = latest?.status === 'ready' ? latest.data : currentSlice.data
+      dashboard = { status: 'ready', data: { ...dashboard.data, activity: { status: 'ready', data: { ...base, loadingMore: false, paginationError: messageFor(error) } } } }
+      rerender(current)
     }
   }
 
