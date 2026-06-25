@@ -124,6 +124,45 @@ describe('Hive API client', () => {
     })
   })
 
+  it('loads the activity feed with bearer auth, default limit, and encoded cursor', async () => {
+    const firstPage = {
+      entries: [activityEntry('event-1', 'sync-1')],
+      next_cursor: '2026-06-25T09:00:00Z/event-1'
+    }
+    const secondPage = { entries: [activityEntry('event-2', null)], next_cursor: null }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(firstPage))
+      .mockResolvedValueOnce(jsonResponse(secondPage))
+    const client = createApiClient({ fetch: fetchMock })
+
+    await expect(client.activity('jwt-token')).resolves.toEqual(firstPage)
+    await expect(client.activity('jwt-token', { limit: 20, cursor: '2026-06-25T09:00:00Z/event-1' })).resolves.toEqual(secondPage)
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/activity?limit=20', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer jwt-token' }
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/activity?limit=20&cursor=2026-06-25T09%3A00%3A00Z%2Fevent-1', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer jwt-token' }
+    })
+  })
+
+  it('normalizes activity feed request failures without fixture fallback data', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ message: 'activity unavailable', code: 'SERVER_ERROR' }, 503))
+    const client = createApiClient({ fetch: fetchMock })
+
+    await expect(client.activity('jwt-token', { limit: 10 })).rejects.toMatchObject({
+      status: 503,
+      code: 'SERVER_ERROR',
+      message: 'activity unavailable'
+    })
+    expect(fetchMock).toHaveBeenCalledWith('/activity?limit=10', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer jwt-token' }
+    })
+  })
+
   it('calls existing admin user mutation endpoints with typed bodies', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ message: 'nivel actualizado' }))
@@ -147,4 +186,18 @@ describe('Hive API client', () => {
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+}
+
+function activityEntry(id: string, memorySyncId: string | null) {
+  return {
+    id,
+    event_type: 'create',
+    occurred_at: '2026-06-25T09:00:00Z',
+    actor: 'ada@example.com',
+    project: 'jarvis-dev',
+    category: 'decision',
+    title: 'Captured decision',
+    summary: 'Saved a memory',
+    memory_sync_id: memorySyncId
+  }
 }

@@ -239,6 +239,7 @@ export type ActivityEntryViewModel = {
   readonly projectId: string
   readonly category: MemoryCategory
   readonly timeLabel: string
+  readonly memorySyncId?: string
 }
 
 export type ActivityGroupViewModel = {
@@ -246,14 +247,15 @@ export type ActivityGroupViewModel = {
   readonly entries: readonly ActivityEntryViewModel[]
 }
 
-export type ActivityFeedFixtureViewModel = {
+export type ActivityFeedViewModel = {
   readonly screen: 'activityFeed'
   readonly groups: readonly ActivityGroupViewModel[]
-  readonly livePolling: {
-    readonly enabled: boolean
-    readonly intervalSeconds: number
-  }
+  readonly nextCursor?: string
+  readonly loadingMore?: boolean
+  readonly paginationError?: string
 }
+
+export type ActivityFeedFixtureViewModel = ActivityFeedViewModel
 
 export type ExploreScreenFixturesViewModel = {
   readonly overview: OverviewFixtureViewModel
