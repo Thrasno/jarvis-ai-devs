@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
@@ -358,8 +359,11 @@ func TestList_AppliesDefaultLimit(t *testing.T) {
 func TestList_RespectsExplicitLimit(t *testing.T) {
 	svc, mockRepo := newTestMemoryService(t)
 	ctx := context.Background()
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	until := time.Date(2026, 1, 31, 23, 59, 59, int(time.Second-time.Nanosecond), time.UTC)
+	category := model.CatDecision
 
-	filter := model.MemoryFilter{Project: "jarvis-dev", Limit: 5}
+	filter := model.MemoryFilter{Project: "jarvis-dev", Category: &category, CreatedFrom: &from, CreatedUntil: &until, Limit: 5, Offset: 1}
 	mems := []*model.Memory{{ID: "1"}, {ID: "2"}}
 
 	mockRepo.On("List", ctx, filter).Return(mems, nil)
@@ -379,13 +383,16 @@ func TestSearch_DelegatesToRepo(t *testing.T) {
 	ctx := context.Background()
 
 	filter := model.MemoryFilter{Project: "jarvis-dev"}
+	expectedFilter := model.MemoryFilter{Project: "jarvis-dev", Limit: 20}
 	mems := []*model.Memory{{ID: "1", Title: "Auth bug fix"}}
 
-	mockRepo.On("Search", ctx, "auth", filter).Return(mems, nil)
+	mockRepo.On("Search", ctx, "auth", expectedFilter).Return(mems, nil)
+	mockRepo.On("CountSearch", ctx, "auth", expectedFilter).Return(int64(7), nil)
 
-	result, err := svc.Search(ctx, "auth", filter)
+	result, total, err := svc.Search(ctx, "auth", filter)
 
 	require.NoError(t, err)
 	assert.Len(t, result, 1)
+	assert.Equal(t, int64(7), total)
 	mockRepo.AssertExpectations(t)
 }

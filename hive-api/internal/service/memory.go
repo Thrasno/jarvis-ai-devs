@@ -33,7 +33,7 @@ type MemoryService interface {
 	List(ctx context.Context, filter model.MemoryFilter) ([]*model.Memory, int64, error)
 
 	// Search realiza búsqueda de texto completo en memorias.
-	Search(ctx context.Context, query string, filter model.MemoryFilter) ([]*model.Memory, error)
+	Search(ctx context.Context, query string, filter model.MemoryFilter) ([]*model.Memory, int64, error)
 }
 
 type memoryService struct {
@@ -121,6 +121,31 @@ func (s *memoryService) List(ctx context.Context, filter model.MemoryFilter) ([]
 	return mems, cr.count, nil
 }
 
-func (s *memoryService) Search(ctx context.Context, query string, filter model.MemoryFilter) ([]*model.Memory, error) {
-	return s.repo.Search(ctx, query, filter)
+func (s *memoryService) Search(ctx context.Context, query string, filter model.MemoryFilter) ([]*model.Memory, int64, error) {
+	if filter.Limit == 0 {
+		filter.Limit = defaultMemoryLimit
+	}
+
+	type countResult struct {
+		count int64
+		err   error
+	}
+	countCh := make(chan countResult, 1)
+
+	go func() {
+		count, err := s.repo.CountSearch(ctx, query, filter)
+		countCh <- countResult{count: count, err: err}
+	}()
+
+	mems, err := s.repo.Search(ctx, query, filter)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	cr := <-countCh
+	if cr.err != nil {
+		return nil, 0, cr.err
+	}
+
+	return mems, cr.count, nil
 }

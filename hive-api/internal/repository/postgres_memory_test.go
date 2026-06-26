@@ -979,6 +979,60 @@ func TestPostgresMemoryRepository_Count(t *testing.T) {
 	}
 }
 
+func TestPostgresMemoryRepository_ListAndCount_FilterByCreatedAtAndExcludeTombstones(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+	sessionID := ensureManualSavePtr(t, pool, "discovery-list")
+	base := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+
+	fixtures := []struct {
+		syncID, title string
+		createdAt     time.Time
+	}{
+		{"880e8400-e29b-41d4-a716-446655440001", "in range newest", base.Add(24 * time.Hour)},
+		{"880e8400-e29b-41d4-a716-446655440002", "in range older", base},
+		{"880e8400-e29b-41d4-a716-446655440003", "outside range", base.Add(-48 * time.Hour)},
+		{"880e8400-e29b-41d4-a716-446655440004", "tombstoned in range", base.Add(time.Hour)},
+	}
+	for _, fixture := range fixtures {
+		createDiscoveryMemory(t, repo, ctx, fixture.syncID, "discovery-list", fixture.title, "zaffre discovery content", fixture.createdAt, sessionID)
+	}
+	_, err := pool.Exec(ctx, `UPDATE memories SET deleted_at = $1 WHERE sync_id = $2`, base.Add(2*time.Hour), fixtures[3].syncID)
+	require.NoError(t, err)
+
+	from := base.Add(-time.Hour)
+	until := base.Add(25 * time.Hour)
+	filter := model.MemoryFilter{Project: "discovery-list", CreatedFrom: &from, CreatedUntil: &until, Limit: 1, Offset: 1}
+
+	page, err := repo.List(ctx, filter)
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+	assert.Equal(t, "in range older", page[0].Title)
+
+	total, err := repo.Count(ctx, filter)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), total, "Count must count all active matches before pagination")
+
+	page, err = repo.Search(ctx, "zaffre", filter)
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+
+	total, err = repo.CountSearch(ctx, "zaffre", filter)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), total, "Search total must count active matches before pagination")
+
+	noMatch, err := repo.Search(ctx, "nomatchzaffre", model.MemoryFilter{Project: "discovery-list", Limit: 10})
+	require.NoError(t, err)
+	assert.Empty(t, noMatch)
+
+	noMatchTotal, err := repo.CountSearch(ctx, "nomatchzaffre", model.MemoryFilter{Project: "discovery-list", Limit: 10})
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), noMatchTotal)
+}
+
 // Helper function to create string pointers
 func stringPtr(s string) *string {
 	return &s
@@ -987,6 +1041,22 @@ func stringPtr(s string) *string {
 // Helper function to create MemoryCategory pointers
 func ptr(c model.MemoryCategory) *model.MemoryCategory {
 	return &c
+}
+
+func createDiscoveryMemory(t *testing.T, repo MemoryRepository, ctx context.Context, syncID, project, title, content string, createdAt time.Time, sessionID *string) {
+	t.Helper()
+	_, err := repo.Create(ctx, &model.Memory{
+		SyncID:    syncID,
+		Project:   project,
+		Category:  model.CatDecision,
+		Title:     title,
+		Content:   content,
+		CreatedBy: "tester",
+		CreatedAt: createdAt,
+		UpdatedAt: createdAt,
+		SessionID: sessionID,
+	})
+	require.NoError(t, err)
 }
 
 func assertNoMemoryMutationRow(t *testing.T, pool *pgxpool.Pool, eventID string) {

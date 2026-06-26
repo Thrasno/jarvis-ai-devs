@@ -93,6 +93,7 @@ type SearchResponse struct {
 	Total    int64     `json:"total"`
 	Query    string    `json:"query"`
 	Limit    int       `json:"limit"`
+	Offset   int       `json:"offset"`
 }
 
 // HealthResponse es la respuesta del GET /health.
