@@ -68,31 +68,37 @@ describe('Knowledge discovery pure helpers', () => {
     ])
   })
 
-  it('builds page links with existing discovery filters and the requested offset', () => {
-    expect(buildDiscoveryPageLink('/dashboard/knowledgeBrowser', '?query=auth&tag=security&limit=3&offset=0', 3)).toBe(
-      '/dashboard/knowledgeBrowser?query=auth&tag=security&limit=3&offset=3'
+  it('builds search page links with only supported live discovery filters', () => {
+    expect(buildDiscoveryPageLink('/dashboard/globalSearch', '?query=auth&author=ada&developer=agent-07&tag=security&limit=3&offset=0', 3)).toBe(
+      '/dashboard/globalSearch?query=auth&limit=3&offset=3'
+    )
+  })
+
+  it('builds browse page links without search-only or unsupported live discovery filters', () => {
+    expect(buildDiscoveryPageLink('/dashboard/knowledgeBrowser', { query: 'auth', tags: ['security'], project: 'jarvis-dev', limit: 3, offset: 0 }, 3)).toBe(
+      '/dashboard/knowledgeBrowser?project=jarvis-dev&limit=3&offset=3'
     )
   })
 })
 
 describe('Knowledge discovery shared DOM', () => {
-  it('renders Browse mode with shared filters, source note, cards, metadata, tags, pagination, and detail actions', () => {
+  it('renders Browse mode with supported live filters, source note, cards, metadata, tags, pagination, and detail actions', () => {
     const view = renderKnowledgeDiscovery({
       mode: 'browse',
       title: 'Knowledge Browser',
       path: '/dashboard/knowledgeBrowser',
-      filters: '?query=auth&limit=2&offset=0',
+      filters: '?query=unsupported&project=auth-service&author=ada&developer=agent-07&tag=security&limit=2&offset=0',
       state: ready(discoveryData(knowledgeBrowserFixture.memories.slice(0, 2), { total: 4, limit: 2, nextOffset: 2 }))
     })
 
-    expect(view.querySelector('form[role="search"]')?.textContent).toContain('Search memories')
-    expect(view.querySelector('input[name="query"]')?.getAttribute('value')).toBe('auth')
+    expect(view.querySelector('form[role="search"]')?.textContent).not.toContain('Search memories')
+    expect(view.querySelector('input[name="query"]')).toBeNull()
     expect(view.querySelector('select[name="category"]')).not.toBeNull()
     expect(view.querySelector('input[name="project"]')).not.toBeNull()
-    expect(view.querySelector('input[name="author"]')).not.toBeNull()
     expect(view.querySelector('input[name="from"]')).not.toBeNull()
     expect(view.querySelector('input[name="until"]')).not.toBeNull()
-    expect(view.querySelector('input[name="tag"]')).not.toBeNull()
+    expect(view.querySelector('input[name="author"]')).toBeNull()
+    expect(view.querySelector('input[name="tag"]')).toBeNull()
     expect(view.querySelector('[role="note"]')?.textContent).toBe('Live Hive API data')
 
     const cards = Array.from(view.querySelectorAll('article[role="listitem"]'))
@@ -105,6 +111,26 @@ describe('Knowledge discovery shared DOM', () => {
     expect(cards[0]?.textContent).toContain('security')
     expect(cards[0]?.querySelector('a')?.getAttribute('href')).toBe('/dashboard/memories/gateway-auth-boundary')
     expect(view.querySelector('nav[aria-label="Discovery pages"]')?.textContent).toContain('Next page')
+    expect(view.querySelector('a[href="/dashboard/knowledgeBrowser?project=auth-service&limit=2&offset=2"]')?.textContent).toBe('Next page')
+  })
+
+  it('submits Browse mode filters without a search-only query parameter', () => {
+    let submittedPath = ''
+    const view = renderKnowledgeDiscovery({
+      mode: 'browse',
+      title: 'Knowledge Browser',
+      path: '/dashboard/knowledgeBrowser',
+      filters: '?query=ignored&project=jarvis-dev&limit=5',
+      state: ready(discoveryData(knowledgeBrowserFixture.memories.slice(0, 1), { total: 1, limit: 5 })),
+      onFilterSubmit: (path) => {
+        submittedPath = path
+      }
+    })
+
+    expect(view.querySelector('input[name="query"]')).toBeNull()
+    view.querySelector('form')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+
+    expect(submittedPath).toBe('/dashboard/knowledgeBrowser?project=jarvis-dev&limit=5')
   })
 
   it('renders Search mode without highlight markup or deferred affordances', () => {
@@ -121,6 +147,22 @@ describe('Knowledge discovery shared DOM', () => {
     expect(view.querySelector('mark')).toBeNull()
     expect(view.querySelector('a[href="/dashboard/memories/gateway-auth-boundary"]')?.textContent).toContain('Open memory')
     expect(view.textContent).not.toMatch(/export|edit|sync|permission/i)
+  })
+
+  it('renders Search mode pagination with the query and without unsupported live filters', () => {
+    const view = renderKnowledgeDiscovery({
+      mode: 'search',
+      title: 'Global Search',
+      path: '/dashboard/globalSearch',
+      filters: '?query=auth&project=auth-service&author=ada&developer=agent-07&tag=security&limit=1&offset=0',
+      state: ready(discoveryData(knowledgeBrowserFixture.memories.slice(0, 1), { total: 2, limit: 1, nextOffset: 1 }))
+    })
+
+    expect(view.querySelector('input[name="query"]')?.getAttribute('value')).toBe('auth')
+    expect(view.querySelector('a[href="/dashboard/globalSearch?query=auth&project=auth-service&limit=1&offset=1"]')?.textContent).toBe('Next page')
+    expect(view.querySelector('a[href*="author="]')).toBeNull()
+    expect(view.querySelector('a[href*="developer="]')).toBeNull()
+    expect(view.querySelector('a[href*="tag="]')).toBeNull()
   })
 
   it('renders live loading, explicit error, and empty states without fixture fallback', () => {

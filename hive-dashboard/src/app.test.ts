@@ -441,6 +441,7 @@ describe('dashboard shell', () => {
     expect(container.querySelector('[data-coming-soon]')).toBeNull()
     expect(container.querySelector('section h2')?.textContent).toBe('Knowledge Browser')
     expect(container.querySelector('[role="note"]')?.textContent).toContain('Live Hive API data')
+    expect(container.querySelector('input[name="query"]')).toBeNull()
     expect(container.querySelector('article[role="listitem"]')?.textContent).toContain('Gateway owns the auth boundary')
   })
 
@@ -532,6 +533,125 @@ describe('dashboard shell', () => {
       expect(api.searchMemories).toHaveBeenNthCalledWith(2, 'jwt-token', { query: 'second', project: 'jarvis-dev', limit: 5 })
       expect(container.textContent).toContain('Second query memory')
       expect(container.querySelector('mark')).toBeNull()
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('shows a prompt and does not call Global Search when no query exists', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi()
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/globalSearch?limit=5')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      expect(api.searchMemories).not.toHaveBeenCalled()
+      expect(container.querySelector<HTMLInputElement>('input[name="query"]')?.value).toBe('')
+      expect(container.querySelector('[role="status"]')?.textContent).toBe('Enter a search query to find live memories.')
+      expect(container.querySelector('[data-dashboard-primitive="main"]')?.textContent).not.toContain('Gateway owns the auth boundary')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('omits unsupported author and tag filters from live Global Search API params', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({ search: [Promise.resolve(memorySearchResponse([memory({ title: 'Live search memory' })], { query: 'auth' }))] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/globalSearch?query=auth&project=jarvis-dev&author=admin-1&tag=security&limit=5')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      expect(api.searchMemories).toHaveBeenCalledWith('jwt-token', { query: 'auth', project: 'jarvis-dev', limit: 5 })
+      expect(container.querySelector('input[name="author"]')).toBeNull()
+      expect(container.querySelector('input[name="tag"]')).toBeNull()
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('keeps stale Global Search responses from overwriting the current query results', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const firstSearch = deferred<MemorySearch>()
+    const api = fakeApi({ search: [
+      firstSearch.promise,
+      Promise.resolve(memorySearchResponse([memory({ id: 'mem-2', title: 'Second query memory' })], { query: 'second' }))
+    ] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/globalSearch?query=first&project=jarvis-dev&limit=5')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+      expect(api.searchMemories).toHaveBeenNthCalledWith(1, 'jwt-token', { query: 'first', project: 'jarvis-dev', limit: 5 })
+
+      history.pushState(null, '', '/dashboard/globalSearch?query=second&project=jarvis-dev&limit=5')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await flushDashboard()
+
+      expect(api.searchMemories).toHaveBeenNthCalledWith(2, 'jwt-token', { query: 'second', project: 'jarvis-dev', limit: 5 })
+      expect(container.textContent).toContain('Second query memory')
+
+      firstSearch.resolve(memorySearchResponse([memory({ id: 'mem-1', title: 'First query memory' })], { query: 'first' }))
+      await flushDashboard()
+
+      expect(window.location.pathname + window.location.search).toBe('/dashboard/globalSearch?query=second&project=jarvis-dev&limit=5')
+      expect(container.textContent).toContain('Second query memory')
+      expect(container.textContent).not.toContain('First query memory')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('keeps stale Knowledge Browser responses from overwriting the current filters', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const firstBrowse = deferred<MemoryList>()
+    const api = fakeApi({ memories: [
+      firstBrowse.promise,
+      Promise.resolve(memoryListResponse([memory({ id: 'mem-2', title: 'Second filter memory' })], { total: 1, limit: 5 }))
+    ] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/knowledgeBrowser?project=jarvis-dev&category=decision&limit=5')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+      expect(api.memories).toHaveBeenNthCalledWith(1, 'jwt-token', { project: 'jarvis-dev', category: 'decision', limit: 5 })
+
+      history.pushState(null, '', '/dashboard/knowledgeBrowser?project=jarvis-dev&category=architecture&limit=5')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await flushDashboard()
+
+      expect(api.memories).toHaveBeenNthCalledWith(2, 'jwt-token', { project: 'jarvis-dev', category: 'architecture', limit: 5 })
+      expect(container.textContent).toContain('Second filter memory')
+
+      firstBrowse.resolve(memoryListResponse([memory({ id: 'mem-1', title: 'First filter memory' })], { total: 1, limit: 5 }))
+      await flushDashboard()
+
+      expect(window.location.pathname + window.location.search).toBe('/dashboard/knowledgeBrowser?project=jarvis-dev&category=architecture&limit=5')
+      expect(container.textContent).toContain('Second filter memory')
+      expect(container.textContent).not.toContain('First filter memory')
     } finally {
       cleanup()
       history.pushState(null, '', originalPath)
@@ -883,7 +1003,7 @@ describe('bell and search slot integration', () => {
       await flushDashboard()
 
       expect(container.querySelector('section h2')?.textContent).toBe('Knowledge Browser')
-      expect(container.querySelector('input[name="query"]')?.getAttribute('value')).toBe('auth')
+      expect(container.querySelector('input[name="query"]')).toBeNull()
       expect(container.querySelectorAll('article[role="listitem"]')).toHaveLength(1)
     } finally {
       cleanup()

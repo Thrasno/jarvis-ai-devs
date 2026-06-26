@@ -422,6 +422,55 @@ func TestPostgresMemoryRepository_Search(t *testing.T) {
 	}
 }
 
+func TestPostgresMemoryRepository_Search_OrdersEqualRankResultsDeterministically(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+	sessionID := ensureManualSavePtr(t, pool, "search-stable-pages")
+	baseTime := time.Date(2026, 6, 26, 9, 0, 0, 0, time.UTC)
+
+	memories := []*model.Memory{
+		{
+			SyncID:    "550e8400-e29b-41d4-a716-446655440033",
+			Project:   "search-stable-pages",
+			Category:  model.CatDecision,
+			Title:     "Zaffre deterministic search",
+			Content:   "zaffre stable pagination",
+			CreatedBy: "test-user",
+			CreatedAt: baseTime,
+			UpdatedAt: baseTime,
+			SessionID: sessionID,
+		},
+		{
+			SyncID:    "550e8400-e29b-41d4-a716-446655440034",
+			Project:   "search-stable-pages",
+			Category:  model.CatDecision,
+			Title:     "Zaffre deterministic search",
+			Content:   "zaffre stable pagination",
+			CreatedBy: "test-user",
+			CreatedAt: baseTime.Add(time.Hour),
+			UpdatedAt: baseTime.Add(time.Hour),
+			SessionID: sessionID,
+		},
+	}
+	for _, mem := range memories {
+		_, err := repo.Create(ctx, mem)
+		require.NoError(t, err)
+	}
+
+	firstPage, err := repo.Search(ctx, "zaffre", model.MemoryFilter{Project: "search-stable-pages", Limit: 1, Offset: 0})
+	require.NoError(t, err)
+	secondPage, err := repo.Search(ctx, "zaffre", model.MemoryFilter{Project: "search-stable-pages", Limit: 1, Offset: 1})
+	require.NoError(t, err)
+
+	require.Len(t, firstPage, 1)
+	require.Len(t, secondPage, 1)
+	assert.Equal(t, memories[1].SyncID, firstPage[0].SyncID)
+	assert.Equal(t, memories[0].SyncID, secondPage[0].SyncID)
+}
+
 // TestPostgresMemoryRepository_Upsert verifica las 4 ramas del algoritmo de upsert.
 // Casos a probar:
 // 1. No existe sync_id → INSERT
@@ -877,6 +926,42 @@ func TestPostgresMemoryRepository_List(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPostgresMemoryRepository_ListOrdersTimestampTiesByIDDesc(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+	sessionID := ensureManualSavePtr(t, pool, "list-tie-test")
+	sameTime := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+
+	rows := []struct {
+		id     string
+		syncID string
+		title  string
+	}{
+		{id: "00000000-0000-0000-0000-000000000001", syncID: "550e8400-e29b-41d4-a716-446655441101", title: "lowest id"},
+		{id: "00000000-0000-0000-0000-000000000003", syncID: "550e8400-e29b-41d4-a716-446655441103", title: "highest id"},
+		{id: "00000000-0000-0000-0000-000000000002", syncID: "550e8400-e29b-41d4-a716-446655441102", title: "middle id"},
+	}
+
+	for _, row := range rows {
+		_, err := pool.Exec(ctx, `
+			INSERT INTO memories
+				(id, sync_id, project, category, title, content, tags, files_affected,
+				 created_by, created_at, updated_at, synced_at, session_id)
+			VALUES ($1, $2, 'list-tie-test', $3, $4, 'content', '[]'::jsonb, '[]'::jsonb,
+				'tester', $5, $5, $5, $6)`, row.id, row.syncID, model.CatDecision, row.title, sameTime, sessionID)
+		require.NoError(t, err)
+	}
+
+	page, err := repo.List(ctx, model.MemoryFilter{Project: "list-tie-test", Limit: 3})
+
+	require.NoError(t, err)
+	require.Len(t, page, 3)
+	assert.Equal(t, []string{"highest id", "middle id", "lowest id"}, []string{page[0].Title, page[1].Title, page[2].Title})
 }
 
 // TestPostgresMemoryRepository_Count verifies Count with filters.

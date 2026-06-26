@@ -8,7 +8,7 @@ describe('Knowledge Browser view', () => {
 
     expect(view.querySelector('h2')?.textContent).toBe('Knowledge Browser')
     expect(view.querySelector('[role="note"]')?.textContent).toBe('Live Hive API data')
-    expect(view.querySelector('input[name="query"]')?.getAttribute('value')).toBe('auth')
+    expect(view.querySelector('input[name="query"]')).toBeNull()
     expect(Array.from(view.querySelectorAll('article[role="listitem"]')).map((card) => card.textContent)).toEqual([
       expect.stringContaining('Gateway owns the auth boundary, not services'),
       expect.stringContaining('Vector store is single-writer, replicas read-only')

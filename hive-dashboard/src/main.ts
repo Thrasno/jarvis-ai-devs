@@ -544,7 +544,9 @@ async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token:
       return { status: 'ready', data: memoryListToDiscoveryData(response) }
     }
     case 'globalSearch': {
-      const response = await api.searchMemories(token, memorySearchParamsFromRoute(routePath))
+      const params = memorySearchParamsFromRoute(routePath)
+      if (!params) return { status: 'ready', data: emptyDiscoveryData(routePath) }
+      const response = await api.searchMemories(token, params)
       return { status: 'ready', data: memorySearchToDiscoveryData(response) }
     }
   }
@@ -566,6 +568,15 @@ function isQuerySensitiveDiscoveryKey(key: keyof LoadedDashboardData): boolean {
   return key === 'knowledgeBrowser' || key === 'globalSearch'
 }
 
+function isQuerySensitiveDiscoveryScreen(screen: DashboardScreenKey): boolean {
+  const key = ROUTES[screen].load
+  return key !== undefined && isQuerySensitiveDiscoveryKey(key)
+}
+
+function routeAndQueryFromRoutePath(routePath: string): string {
+  return routePath.split('#', 1)[0]
+}
+
 function memoryListParamsFromRoute(routePath: string): MemoryListParams {
   const filters = parseDashboardFilters(queryFromRoutePath(routePath))
   return {
@@ -578,16 +589,30 @@ function memoryListParamsFromRoute(routePath: string): MemoryListParams {
   }
 }
 
-function memorySearchParamsFromRoute(routePath: string): MemorySearchParams {
+function memorySearchParamsFromRoute(routePath: string): MemorySearchParams | null {
   const filters = parseDashboardFilters(queryFromRoutePath(routePath))
+  const query = filters.query?.trim()
+  if (!query) return null
   return {
-    query: filters.query || DEFAULT_MEMORY_SEARCH_QUERY,
+    query,
     project: filters.project,
     category: filters.category && filters.category !== 'all' ? filters.category : undefined,
     from: filters.from,
     until: filters.until,
     limit: filters.limit,
     offset: filters.offset
+  }
+}
+
+function emptyDiscoveryData(routePath: string): KnowledgeDiscoveryData {
+  const filters = parseDashboardFilters(queryFromRoutePath(routePath))
+  return {
+    items: [],
+    total: 0,
+    limit: filters.limit ?? 10,
+    offset: filters.offset ?? 0,
+    previousOffset: null,
+    nextOffset: null
   }
 }
 
@@ -730,6 +755,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     async onNavigate(path) {
       if (disposed) return
       history.pushState(null, '', path)
+      loadVersion += 1
       activeScreen = screenFromPath(path)
       const state = session.getState()
       rerender(state)
@@ -833,10 +859,13 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
   async function loadAndRender(state: Extract<AuthState, { status: 'authenticated' }>, screen: DashboardScreenKey): Promise<void> {
     if (disposed) return
     const version = loadVersion
-      const loaded = await loadForRoute(screen, api, state.token, dashboard, currentRoutePath())
+    const routePath = currentRoutePath()
+    const discoveryRouteKey = isQuerySensitiveDiscoveryScreen(screen) ? routeAndQueryFromRoutePath(routePath) : undefined
+    const loaded = await loadForRoute(screen, api, state.token, dashboard, routePath)
     if (disposed) return
     const current = session.getState()
     if (version !== loadVersion || current.status !== 'authenticated' || current.token !== state.token) return
+    if (discoveryRouteKey !== undefined && (screenFromPath(currentRoutePath()) !== screen || routeAndQueryFromRoutePath(currentRoutePath()) !== discoveryRouteKey)) return
     dashboard = loaded
     rerender(current)
   }
@@ -845,13 +874,17 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     if (disposed) return
     const version = loadVersion + 1
     loadVersion = version
-    activeScreen = screenFromPath(currentRoutePath())
+    const routePath = currentRoutePath()
+    const screen = screenFromPath(routePath)
+    const discoveryRouteKey = isQuerySensitiveDiscoveryScreen(screen) ? routeAndQueryFromRoutePath(routePath) : undefined
+    activeScreen = screen
     rerender(state)
     if (state.status === 'authenticated') {
-        const loaded = await loadForRoute(activeScreen, api, state.token, dashboard, currentRoutePath())
+      const loaded = await loadForRoute(screen, api, state.token, dashboard, routePath)
       if (disposed) return
       const current = session.getState()
       if (version !== loadVersion || current.status !== 'authenticated' || current.token !== state.token) return
+      if (discoveryRouteKey !== undefined && (screenFromPath(currentRoutePath()) !== screen || routeAndQueryFromRoutePath(currentRoutePath()) !== discoveryRouteKey)) return
       dashboard = loaded
       rerender(current)
     }
@@ -859,6 +892,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
 
   const handler = () => {
     if (disposed) return
+    loadVersion += 1
     const state = session.getState()
     activeScreen = screenFromPath(currentRoutePath())
     rerender(state)
