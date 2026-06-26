@@ -1,6 +1,8 @@
 import { appendDashboardFilters, parseDashboardFilters, type DashboardUrlFilters } from '../api/urlFilters'
 import { emptyState, panel, text } from '../components/dom'
+import type { KnowledgeDiscoveryCard, KnowledgeDiscoveryData } from '../domain/knowledgeDiscovery'
 import { memoryCategories, type MemoryViewModel, type SearchResultViewModel } from '../domain/dashboard'
+import type { ViewState } from './Overview'
 
 export type DiscoveryHighlightSegment = {
   readonly text: string
@@ -21,10 +23,10 @@ export type DiscoveryMode = 'browse' | 'search'
 export type DiscoveryRenderInput = {
   readonly mode: DiscoveryMode
   readonly title: string
-  readonly sourceLabel: string
   readonly path: string
   readonly filters: string | URLSearchParams | DashboardUrlFilters
-  readonly memories: readonly DiscoveryRenderableMemory[]
+  readonly state: ViewState<KnowledgeDiscoveryData>
+  readonly onFilterSubmit?: (path: string) => void
 }
 
 type DiscoveryRenderableMemory = MemoryViewModel | SearchResultViewModel
@@ -34,15 +36,26 @@ type DiscoveryMemory = MemoryViewModel & {
 }
 
 export function renderKnowledgeDiscovery(input: DiscoveryRenderInput): HTMLElement {
-  const filters = normalizeFilters(input.filters)
-  const memories = input.memories.map(toDiscoveryMemory)
-  const filtered = filterDiscoveryMemories(memories, filters)
-  const page = paginateDiscoveryMemories(filtered, filters)
+  const filters = filtersForMode(input.mode, normalizeFilters(input.filters))
   const root = panel(input.title)
 
-  root.append(renderFilterForm(input, filters), sourceNotice(input.sourceLabel))
+  root.append(renderFilterForm(input, filters), sourceNotice('Live Hive API data'))
+
+  if (input.state.status === 'loading') {
+    root.append(text('Loading live memories…'))
+    return root
+  }
+
+  if (input.state.status === 'error') {
+    const message = text(input.state.message, 'dashboard-state state')
+    message.setAttribute('role', 'alert')
+    root.append(message)
+    return root
+  }
+
+  const page = input.state.data
   if (page.total === 0) {
-    root.append(emptyState('No fixture-backed memories match the current filters.'))
+    root.append(emptyState(input.mode === 'search' && !normalize(filters.query) ? 'Enter a search query to find live memories.' : 'No live memories match the current filters.'))
     return root
   }
 
@@ -51,7 +64,7 @@ export function renderKnowledgeDiscovery(input: DiscoveryRenderInput): HTMLEleme
   list.setAttribute('role', 'list')
   list.setAttribute('aria-label', `${input.title} results`)
   list.append(...page.items.map((memory) => renderResultCard(memory, input.mode)))
-  root.append(list, renderPagination(input.path, filters, page))
+  root.append(list, renderPagination(input.path, input.mode, filters, page))
   return root
 }
 
@@ -123,8 +136,8 @@ export function segmentDiscoveryHighlight(text: string, highlights: readonly str
   return segments
 }
 
-export function buildDiscoveryPageLink(path: string, input: string | URLSearchParams | DashboardUrlFilters, offset: number): string {
-  const filters = normalizeFilters(input)
+export function buildDiscoveryPageLink(path: string, input: string | URLSearchParams | DashboardUrlFilters, offset: number, mode: DiscoveryMode = discoveryModeFromPath(path)): string {
+  const filters = filtersForMode(mode, normalizeFilters(input))
   return appendDashboardFilters(path, { ...filters, offset })
 }
 
@@ -134,17 +147,19 @@ function renderFilterForm(input: DiscoveryRenderInput, filters: DashboardUrlFilt
   form.method = 'get'
   form.action = input.path
   form.setAttribute('role', 'search')
-  form.append(
-    labelledInput('Search memories', 'query', filters.query),
+  form.addEventListener('submit', (event) => {
+    if (!input.onFilterSubmit) return
+    event.preventDefault()
+    input.onFilterSubmit(discoveryPathFromForm(input.path, form))
+  })
+  const controls: HTMLElement[] = [
     labelledSelect('Category', 'category', filters.category),
     labelledInput('Project', 'project', filters.project),
-    labelledInput('Author', 'author', filters.author ?? filters.developer),
     labelledInput('From', 'from', filters.from ?? filters.since, 'date'),
-    labelledInput('Until', 'until', filters.until, 'date'),
-    labelledInput('Tag', 'tag', firstTag(filters)),
-    hiddenLimit(filters.limit),
-    submitButton(input.mode === 'search' ? 'Search' : 'Apply filters')
-  )
+    labelledInput('Until', 'until', filters.until, 'date')
+  ]
+  if (input.mode === 'search') controls.unshift(labelledInput('Search memories', 'query', filters.query))
+  form.append(...controls, hiddenLimit(filters.limit), submitButton(input.mode === 'search' ? 'Search' : 'Apply filters'))
   return form
 }
 
@@ -175,8 +190,7 @@ function metadataLine(memory: DiscoveryMemory): HTMLElement {
 
 function summary(memory: DiscoveryMemory, mode: DiscoveryMode): HTMLElement {
   const paragraph = text('', 'dashboard-discovery-card__summary')
-  const terms = mode === 'search' ? memory.highlights : []
-  paragraph.append(...segmentDiscoveryHighlight(memory.content, terms).map(renderHighlightSegment))
+  paragraph.append(document.createTextNode(memory.content))
   return paragraph
 }
 
@@ -207,19 +221,19 @@ function detailLink(memoryId: string): HTMLAnchorElement {
   return link
 }
 
-function renderPagination(path: string, filters: DashboardUrlFilters, page: DiscoveryPage<DiscoveryMemory>): HTMLElement {
+function renderPagination(path: string, mode: DiscoveryMode, filters: DashboardUrlFilters, page: Pick<KnowledgeDiscoveryData, 'items' | 'total' | 'previousOffset' | 'nextOffset'>): HTMLElement {
   const nav = document.createElement('nav')
   nav.className = 'dashboard-discovery-pagination'
   nav.setAttribute('aria-label', 'Discovery pages')
-  nav.append(text(`Showing ${page.items.length} of ${page.total} fixture-backed memories.`))
-  if (page.previousOffset !== null) nav.append(pageLink('Previous page', path, filters, page.previousOffset))
-  if (page.nextOffset !== null) nav.append(pageLink('Next page', path, filters, page.nextOffset))
+  nav.append(text(`Showing ${page.items.length} of ${page.total} live memories.`))
+  if (page.previousOffset !== null) nav.append(pageLink('Previous page', path, mode, filters, page.previousOffset))
+  if (page.nextOffset !== null) nav.append(pageLink('Next page', path, mode, filters, page.nextOffset))
   return nav
 }
 
-function pageLink(label: string, path: string, filters: DashboardUrlFilters, offset: number): HTMLAnchorElement {
+function pageLink(label: string, path: string, mode: DiscoveryMode, filters: DashboardUrlFilters, offset: number): HTMLAnchorElement {
   const link = document.createElement('a')
-  link.href = buildDiscoveryPageLink(path, filters, offset)
+  link.href = buildDiscoveryPageLink(path, filters, offset, mode)
   link.textContent = label
   return link
 }
@@ -299,6 +313,22 @@ function normalizeFilters(input: string | URLSearchParams | DashboardUrlFilters)
   return input
 }
 
+function filtersForMode(mode: DiscoveryMode, filters: DashboardUrlFilters): DashboardUrlFilters {
+  const liveFilters: DashboardUrlFilters = {
+    project: filters.project,
+    category: filters.category,
+    from: filters.from,
+    until: filters.until,
+    limit: filters.limit,
+    offset: filters.offset
+  }
+  return mode === 'search' ? { query: filters.query, ...liveFilters } : liveFilters
+}
+
+function discoveryModeFromPath(path: string): DiscoveryMode {
+  return path.includes('globalSearch') ? 'search' : 'browse'
+}
+
 function matchesQuery(memory: MemoryViewModel, query: string): boolean {
   return [memory.title, memory.content, memory.category, memory.projectId, memory.authorId, memory.authorLabel, ...memory.tags]
     .map(normalize)
@@ -311,9 +341,34 @@ function tagsFor(filters: DashboardUrlFilters): readonly string[] {
   return typeof filters.tag === 'string' ? [filters.tag] : []
 }
 
-function firstTag(filters: DashboardUrlFilters): string | null {
-  const [tag] = tagsFor(filters)
-  return tag ?? null
+function discoveryPathFromForm(path: string, form: HTMLFormElement): string {
+  const data = new FormData(form)
+  const filters: DashboardUrlFilters = {
+    query: stringFormValue(data, 'query'),
+    category: categoryFormValue(data),
+    project: stringFormValue(data, 'project'),
+    from: stringFormValue(data, 'from'),
+    until: stringFormValue(data, 'until'),
+    limit: numberFormValue(data, 'limit')
+  }
+  return appendDashboardFilters(path, filters)
+}
+
+function stringFormValue(data: FormData, key: string): string | undefined {
+  const value = String(data.get(key) ?? '').trim()
+  return value === '' ? undefined : value
+}
+
+function categoryFormValue(data: FormData): string | undefined {
+  const value = stringFormValue(data, 'category')
+  return !value || value === 'all' ? undefined : value
+}
+
+function numberFormValue(data: FormData, key: string): number | undefined {
+  const value = stringFormValue(data, key)
+  if (!value) return undefined
+  const parsed = Number(value)
+  return Number.isInteger(parsed) ? parsed : undefined
 }
 
 function memoryDay(memory: MemoryViewModel): string {

@@ -99,7 +99,7 @@ func (r *postgresMemoryRepository) List(ctx context.Context, filter model.Memory
 	                         origin, synced_at, session_id,
 	                         deleted_at, deleted_by, delete_reason, restored_at
 	                  FROM memories WHERE 1=1 %s
-	                  ORDER BY created_at DESC, synced_at DESC LIMIT $1 OFFSET $2`, where)
+	                  ORDER BY created_at DESC, synced_at DESC, id DESC LIMIT $1 OFFSET $2`, where)
 
 	rows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {
@@ -143,7 +143,8 @@ func (r *postgresMemoryRepository) Search(ctx context.Context, query string, fil
 	                         deleted_at, deleted_by, delete_reason, restored_at
 	                  FROM memories
 	                  WHERE search_vector @@ plainto_tsquery('simple', $1) %s
-	                  ORDER BY ts_rank(search_vector, plainto_tsquery('simple', $1)) DESC
+	                  ORDER BY ts_rank(search_vector, plainto_tsquery('simple', $1)) DESC,
+	                           created_at DESC, synced_at DESC, id DESC
 	                  LIMIT $2 OFFSET $3`, where)
 
 	rows, err := r.pool.Query(ctx, q, args...)

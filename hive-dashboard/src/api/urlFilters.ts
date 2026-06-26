@@ -26,6 +26,8 @@ export type DashboardUrlFilters = {
   offset?: OptionalNumber
 }
 
+export type MemoryDiscoveryUrlFilters = Pick<DashboardUrlFilters, 'query' | 'project' | 'category' | 'from' | 'until' | 'limit' | 'offset'>
+
 type ScalarFilterKey = Exclude<keyof DashboardUrlFilters, 'tags' | 'tag' | 'actorUserId'>
 
 const scalarFilters: readonly { key: ScalarFilterKey; param: string }[] = [

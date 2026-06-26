@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ActivityFeedResponse, ApiClient } from './api/client'
+import type { ActivityFeedResponse, ApiClient, MemoryList, MemorySearch } from './api/client'
 import type { SessionStore } from './auth/session'
 import { loadDashboard, renderApp, startDashboardApp } from './main'
 import { dashboardNotificationSummary } from './fixtures/hive-dashboard/shared'
 import { hiveOverviewFixture } from './fixtures/hive-dashboard/overview'
 import { projectsFixture } from './fixtures/hive-dashboard/explore'
+import { memoryListToDiscoveryData, memorySearchToDiscoveryData } from './domain/knowledgeDiscovery'
 
 const adminUser = { id: 'admin-1', username: 'admin', email: 'admin@example.com', level: 'admin' as const, is_active: true, created_at: '2026-06-06T20:00:00Z' }
 const memberUser = { id: 'member-1', username: 'member', email: 'member@example.com', level: 'member' as const, is_active: true, created_at: '2026-06-06T20:00:00Z' }
@@ -439,19 +440,223 @@ describe('dashboard shell', () => {
 
     expect(container.querySelector('[data-coming-soon]')).toBeNull()
     expect(container.querySelector('section h2')?.textContent).toBe('Knowledge Browser')
-    expect(container.querySelector('[role="note"]')?.textContent).toContain('Fixture-backed discovery data')
+    expect(container.querySelector('[role="note"]')?.textContent).toContain('Live Hive API data')
+    expect(container.querySelector('input[name="query"]')).toBeNull()
     expect(container.querySelector('article[role="listitem"]')?.textContent).toContain('Gateway owns the auth boundary')
   })
 
-  it('renders the Global Search discovery route with fixture highlights instead of ComingSoon', () => {
+  it('renders the Global Search discovery route with live memory data instead of fixture highlights', () => {
     const container = document.createElement('main')
 
     renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath: '/dashboard/globalSearch?query=auth&limit=1' })
 
     expect(container.querySelector('[data-coming-soon]')).toBeNull()
     expect(container.querySelector('section h2')?.textContent).toBe('Global Search')
-    expect(container.querySelector('[role="note"]')?.textContent).toContain('Fixture-backed search data')
-    expect(Array.from(container.querySelectorAll('mark')).map((mark) => mark.textContent)).toContain('auth')
+    expect(container.querySelector('[role="note"]')?.textContent).toContain('Live Hive API data')
+    expect(container.querySelector('mark')).toBeNull()
+  })
+
+  it('loads Knowledge Browser from the live memories API using URL filters', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({ memories: [Promise.resolve(memoryListResponse([memory({ title: 'Live browse memory' })], { total: 1, limit: 5, offset: 10 }))] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/knowledgeBrowser?project=jarvis-dev&category=decision&from=2026-06-01&until=2026-06-30&limit=5&offset=10')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await Promise.resolve()
+      expect(container.textContent).toContain('Loading live memories')
+      await flushDashboard()
+
+      expect(api.memories).toHaveBeenCalledWith('jwt-token', { project: 'jarvis-dev', category: 'decision', from: '2026-06-01', until: '2026-06-30', limit: 5, offset: 10 })
+      expect(container.textContent).toContain('Live browse memory')
+      expect(container.textContent).not.toContain('Fixture-backed discovery data')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('renders explicit Knowledge Browser API failures and empty responses without fixture fallback', async () => {
+    for (const [response, assertion] of [
+      [() => Promise.reject(new Error('browse API unavailable')), (container: HTMLElement) => expect(container.querySelector('[role="alert"]')?.textContent).toContain('browse API unavailable')],
+      [Promise.resolve(memoryListResponse([], { total: 0 })), (container: HTMLElement) => expect(container.querySelector('[role="status"]')?.textContent).toBe('No live memories match the current filters.')]
+    ] as const) {
+      const container = document.createElement('main')
+      document.body.append(container)
+      const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+      const api = fakeApi({ memories: [response] })
+      const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+      history.pushState(null, '', '/dashboard/knowledgeBrowser?limit=5')
+
+      const cleanup = startDashboardApp(container, { api, session })
+      try {
+        await flushDashboard()
+
+        assertion(container)
+        const mainText = container.querySelector('[data-dashboard-primitive="main"]')?.textContent ?? ''
+        expect(mainText).not.toContain('Fixture-backed discovery data')
+        expect(mainText).not.toContain('Gateway owns the auth boundary')
+      } finally {
+        cleanup()
+        history.pushState(null, '', originalPath)
+        container.remove()
+      }
+    }
+  })
+
+  it('reloads Global Search when URL filters change and links results to memory detail routes', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({ search: [
+      Promise.resolve(memorySearchResponse([memory({ id: 'mem-1', title: 'First query memory' })], { query: 'first' })),
+      Promise.resolve(memorySearchResponse([memory({ id: 'mem-2', title: 'Second query memory' })], { query: 'second' }))
+    ] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/globalSearch?query=first&project=jarvis-dev&limit=5&offset=0')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+      expect(api.searchMemories).toHaveBeenNthCalledWith(1, 'jwt-token', { query: 'first', project: 'jarvis-dev', limit: 5, offset: 0 })
+      expect(container.querySelector('a[href="/dashboard/memories/mem-1"]')?.textContent).toBe('Open memory')
+
+      container.querySelector<HTMLInputElement>('input[name="query"]')!.value = 'second'
+      container.querySelector('form')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+      await flushDashboard()
+
+      expect(window.location.pathname + window.location.search).toBe('/dashboard/globalSearch?query=second&project=jarvis-dev&limit=5')
+      expect(api.searchMemories).toHaveBeenNthCalledWith(2, 'jwt-token', { query: 'second', project: 'jarvis-dev', limit: 5 })
+      expect(container.textContent).toContain('Second query memory')
+      expect(container.querySelector('mark')).toBeNull()
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('shows a prompt and does not call Global Search when no query exists', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi()
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/globalSearch?limit=5')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      expect(api.searchMemories).not.toHaveBeenCalled()
+      expect(container.querySelector<HTMLInputElement>('input[name="query"]')?.value).toBe('')
+      expect(container.querySelector('[role="status"]')?.textContent).toBe('Enter a search query to find live memories.')
+      expect(container.querySelector('[data-dashboard-primitive="main"]')?.textContent).not.toContain('Gateway owns the auth boundary')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('omits unsupported author and tag filters from live Global Search API params', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({ search: [Promise.resolve(memorySearchResponse([memory({ title: 'Live search memory' })], { query: 'auth' }))] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/globalSearch?query=auth&project=jarvis-dev&author=admin-1&tag=security&limit=5')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      expect(api.searchMemories).toHaveBeenCalledWith('jwt-token', { query: 'auth', project: 'jarvis-dev', limit: 5 })
+      expect(container.querySelector('input[name="author"]')).toBeNull()
+      expect(container.querySelector('input[name="tag"]')).toBeNull()
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('keeps stale Global Search responses from overwriting the current query results', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const firstSearch = deferred<MemorySearch>()
+    const api = fakeApi({ search: [
+      firstSearch.promise,
+      Promise.resolve(memorySearchResponse([memory({ id: 'mem-2', title: 'Second query memory' })], { query: 'second' }))
+    ] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/globalSearch?query=first&project=jarvis-dev&limit=5')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+      expect(api.searchMemories).toHaveBeenNthCalledWith(1, 'jwt-token', { query: 'first', project: 'jarvis-dev', limit: 5 })
+
+      history.pushState(null, '', '/dashboard/globalSearch?query=second&project=jarvis-dev&limit=5')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await flushDashboard()
+
+      expect(api.searchMemories).toHaveBeenNthCalledWith(2, 'jwt-token', { query: 'second', project: 'jarvis-dev', limit: 5 })
+      expect(container.textContent).toContain('Second query memory')
+
+      firstSearch.resolve(memorySearchResponse([memory({ id: 'mem-1', title: 'First query memory' })], { query: 'first' }))
+      await flushDashboard()
+
+      expect(window.location.pathname + window.location.search).toBe('/dashboard/globalSearch?query=second&project=jarvis-dev&limit=5')
+      expect(container.textContent).toContain('Second query memory')
+      expect(container.textContent).not.toContain('First query memory')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('keeps stale Knowledge Browser responses from overwriting the current filters', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const firstBrowse = deferred<MemoryList>()
+    const api = fakeApi({ memories: [
+      firstBrowse.promise,
+      Promise.resolve(memoryListResponse([memory({ id: 'mem-2', title: 'Second filter memory' })], { total: 1, limit: 5 }))
+    ] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/knowledgeBrowser?project=jarvis-dev&category=decision&limit=5')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+      expect(api.memories).toHaveBeenNthCalledWith(1, 'jwt-token', { project: 'jarvis-dev', category: 'decision', limit: 5 })
+
+      history.pushState(null, '', '/dashboard/knowledgeBrowser?project=jarvis-dev&category=architecture&limit=5')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await flushDashboard()
+
+      expect(api.memories).toHaveBeenNthCalledWith(2, 'jwt-token', { project: 'jarvis-dev', category: 'architecture', limit: 5 })
+      expect(container.textContent).toContain('Second filter memory')
+
+      firstBrowse.resolve(memoryListResponse([memory({ id: 'mem-1', title: 'First filter memory' })], { total: 1, limit: 5 }))
+      await flushDashboard()
+
+      expect(window.location.pathname + window.location.search).toBe('/dashboard/knowledgeBrowser?project=jarvis-dev&category=architecture&limit=5')
+      expect(container.textContent).toContain('Second filter memory')
+      expect(container.textContent).not.toContain('First filter memory')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
   })
 
   it('shows a controlled unavailable state for memory detail deep links', () => {
@@ -798,7 +1003,7 @@ describe('bell and search slot integration', () => {
       await flushDashboard()
 
       expect(container.querySelector('section h2')?.textContent).toBe('Knowledge Browser')
-      expect(container.querySelector('input[name="query"]')?.getAttribute('value')).toBe('auth')
+      expect(container.querySelector('input[name="query"]')).toBeNull()
       expect(container.querySelectorAll('article[role="listitem"]')).toHaveLength(1)
     } finally {
       cleanup()
@@ -998,9 +1203,13 @@ function fakeApi(overrides: {
   grantAdmin?: Promise<Awaited<ReturnType<ApiClient['grantAdmin']>>>
   deactivateUser?: Promise<Awaited<ReturnType<ApiClient['deactivateUser']>>>
   activity?: Array<Promise<ActivityFeedResponse> | (() => Promise<ActivityFeedResponse>)>
+  memories?: Array<Promise<MemoryList> | (() => Promise<MemoryList>)>
+  search?: Array<Promise<MemorySearch> | (() => Promise<MemorySearch>)>
 } = {}): ApiClient {
   const userResponses = [...(overrides.users ?? [])]
   const activityResponses = [...(overrides.activity ?? [])]
+  const memoryResponses = [...(overrides.memories ?? [])]
+  const searchResponses = [...(overrides.search ?? [])]
   return {
     login: vi.fn(),
     currentUser: vi.fn(),
@@ -1010,8 +1219,16 @@ function fakeApi(overrides: {
     setUserLevel: vi.fn(() => overrides.setUserLevel ?? Promise.resolve({ message: 'level updated' })),
     grantAdmin: vi.fn(() => overrides.grantAdmin ?? Promise.resolve({ message: 'admin granted' })),
     deactivateUser: vi.fn(() => overrides.deactivateUser ?? Promise.resolve({ message: 'user deactivated' })),
-    memories: vi.fn(async () => ({ memories: [], total: 0, limit: 5, offset: 0 })),
-    searchMemories: vi.fn(async () => ({ memories: [], total: 0, query: 'dashboard', limit: 5 })),
+    memories: vi.fn(() => {
+      const next = memoryResponses.shift()
+      if (typeof next === 'function') return next()
+      return next ?? Promise.resolve(memoryListResponse([memory({ title: 'Gateway owns the auth boundary, not services' })]))
+    }),
+    searchMemories: vi.fn(() => {
+      const next = searchResponses.shift()
+      if (typeof next === 'function') return next()
+      return next ?? Promise.resolve(memorySearchResponse([memory({ title: 'Gateway owns the auth boundary, not services' })]))
+    }),
     memory: vi.fn(async () => ({ id: 'mem-1', sync_id: 'sync-1', project: 'jarvis-dev', category: 'decision', title: 'Dashboard scope', content: 'No daemon controls', tags: [], files_affected: [], created_by: 'admin-1', created_at: '2026-06-06T20:00:00Z', updated_at: '2026-06-06T20:01:00Z', synced_at: '2026-06-06T20:02:00Z' })),
     auditLogs: vi.fn(async () => ({ audit_logs: [], total: 0, limit: 10, offset: 0 })),
     syncAttemptSummary: vi.fn(async () => syncAttemptSummaryFixture()),
@@ -1020,6 +1237,32 @@ function fakeApi(overrides: {
       if (typeof next === 'function') return next()
       return next ?? Promise.resolve(activityResponse('event-1', 'Real backend activity'))
     })
+  }
+}
+
+function memoryListResponse(memories: MemoryList['memories'], overrides: Partial<Omit<MemoryList, 'memories'>> = {}): MemoryList {
+  return { memories, total: memories.length, limit: 10, offset: 0, ...overrides }
+}
+
+function memorySearchResponse(memories: MemorySearch['memories'], overrides: Partial<Omit<MemorySearch, 'memories'>> = {}): MemorySearch {
+  return { memories, total: memories.length, query: 'dashboard', limit: 10, offset: 0, ...overrides }
+}
+
+function memory(overrides: Partial<MemoryList['memories'][number]> = {}): MemoryList['memories'][number] {
+  return {
+    id: 'mem-1',
+    sync_id: 'sync-1',
+    project: 'jarvis-dev',
+    category: 'decision',
+    title: 'Dashboard scope',
+    content: 'No daemon controls',
+    tags: [],
+    files_affected: [],
+    created_by: 'admin-1',
+    created_at: '2026-06-06T20:00:00Z',
+    updated_at: '2026-06-06T20:01:00Z',
+    synced_at: '2026-06-06T20:02:00Z',
+    ...overrides
   }
 }
 
@@ -1070,10 +1313,12 @@ function dashboardState() {
     data: {
       overview: { status: 'ready' as const, data: hiveOverviewFixture },
       users: { status: 'ready' as const, data: { users: [adminUser] } },
-      memories: { status: 'ready' as const, data: { recent: { memories: [], total: 0, limit: 5, offset: 0 }, search: { memories: [], total: 0, query: 'dashboard', limit: 5 } } },
+      memories: { status: 'ready' as const, data: { recent: { memories: [], total: 0, limit: 5, offset: 0 }, search: { memories: [], total: 0, query: 'dashboard', limit: 5, offset: 0 } } },
       audit: { status: 'ready' as const, data: syncAttemptSummaryFixture() },
       activity: { status: 'ready' as const, data: activityViewState() },
-      projects: { status: 'ready' as const, data: projectsFixture }
+      projects: { status: 'ready' as const, data: projectsFixture },
+      knowledgeBrowser: { status: 'ready' as const, data: memoryListToDiscoveryData(memoryListResponse([memory({ title: 'Gateway owns the auth boundary, not services' })], { limit: 1 })) },
+      globalSearch: { status: 'ready' as const, data: memorySearchToDiscoveryData(memorySearchResponse([memory({ title: 'Gateway owns the auth boundary, not services' })], { limit: 1 })) }
     }
   }
 }

@@ -1,4 +1,4 @@
-import { appendDashboardFilters, type DashboardUrlFilters } from './urlFilters'
+import { appendDashboardFilters, type DashboardUrlFilters, type MemoryDiscoveryUrlFilters } from './urlFilters'
 
 export type UserLevel = 'viewer' | 'member' | 'admin'
 export type User = {
@@ -15,7 +15,7 @@ export type AdminStats = { users: { total: number; active: number; by_level: Rec
 export type Count = { project?: string; category?: string; count: number }
 export type Memory = { id: string; sync_id: string; project: string; category: string; title: string; content: string; tags: string[]; files_affected: string[]; created_by: string; created_at: string; updated_at: string; synced_at: string }
 export type MemoryList = { memories: Memory[]; total: number; limit: number; offset: number }
-export type MemorySearch = { memories: Memory[]; total: number; query: string; limit: number }
+export type MemorySearch = { memories: Memory[]; total: number; query: string; limit: number; offset: number }
 export type AuditLog = { id: string; occurred_at: string; action: string; outcome: string; entry_count: number; metadata: Record<string, unknown> }
 export type AuditLogList = { audit_logs: AuditLog[]; total: number; limit: number; offset: number }
 export type SyncAttemptSummaryWindowKey = '24h' | '7d' | '30d'
@@ -51,8 +51,8 @@ export type ActivityFeedEntry = {
   memory_sync_id?: string | null
 }
 export type ActivityFeedResponse = { entries: ActivityFeedEntry[]; next_cursor?: string | null }
-export type MemoryListParams = { project?: string; category?: string; limit?: number; offset?: number }
-export type MemorySearchParams = { query: string; project?: string; limit?: number; offset?: number }
+export type MemoryListParams = Omit<MemoryDiscoveryUrlFilters, 'query'>
+export type MemorySearchParams = Required<Pick<MemoryDiscoveryUrlFilters, 'query'>> & Omit<MemoryDiscoveryUrlFilters, 'query'>
 export type AuditLogParams = { project?: string; actor_user_id?: string; action?: string; outcome?: string; since?: string; until?: string; limit?: number; offset?: number }
 export type SyncAttemptSummaryParams = { window?: SyncAttemptSummaryWindowKey; project?: string; dev_id?: string; client?: string; daemon_id?: string; outcome?: 'success' | 'failure'; error_code?: string }
 export type ApiErrorCode = 'NETWORK_ERROR' | 'NON_JSON_RESPONSE' | 'UNAUTHORIZED' | 'FORBIDDEN' | 'VALIDATION_ERROR' | 'NOT_FOUND' | 'CONFLICT' | 'SERVER_ERROR' | 'REQUEST_FAILED' | string
@@ -134,10 +134,10 @@ export function createApiClient(options: { baseUrl?: string; fetch?: Fetcher } =
       return request<MutationMessage>(`/admin/users/${encodeURIComponent(username)}/deactivate`, authPost(token))
     },
     memories(token, params = {}) {
-      return request<MemoryList>(withQuery('/memories', params), authGet(token))
+      return request<MemoryList>(withMemoryListQuery('/memories', params), authGet(token))
     },
     searchMemories(token, params) {
-      return request<MemorySearch>(withQuery('/memories/search', params), authGet(token))
+      return request<MemorySearch>(withMemoryDiscoveryQuery('/memories/search', params), authGet(token))
     },
     memory(token, id) {
       return request<Memory>(`/memories/${encodeURIComponent(id)}`, authGet(token))
@@ -169,6 +169,29 @@ function authPost(token: string, body?: unknown): RequestInit {
 
 function withQuery(path: string, params: DashboardUrlFilters): string {
   return appendDashboardFilters(path, params)
+}
+
+function withMemoryListQuery(path: string, params: MemoryListParams): string {
+  return appendDashboardFilters(path, {
+    project: params.project,
+    category: params.category,
+    from: params.from,
+    until: params.until,
+    limit: params.limit,
+    offset: params.offset
+  })
+}
+
+function withMemoryDiscoveryQuery(path: string, params: MemoryDiscoveryUrlFilters): string {
+  return appendDashboardFilters(path, {
+    query: params.query,
+    project: params.project,
+    category: params.category,
+    from: params.from,
+    until: params.until,
+    limit: params.limit,
+    offset: params.offset
+  })
 }
 
 function activityPath(params: ActivityFeedParams): string {

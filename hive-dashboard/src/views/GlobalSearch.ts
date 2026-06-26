@@ -1,13 +1,14 @@
-import { globalSearchFixture } from '../fixtures/hive-dashboard'
+import type { KnowledgeDiscoveryData } from '../domain/knowledgeDiscovery'
+import type { ViewState } from './Overview'
 import { renderKnowledgeDiscovery } from './KnowledgeDiscovery'
 
-export function renderGlobalSearch(filters: string | URLSearchParams = window.location.search): HTMLElement {
+export function renderGlobalSearch(state: ViewState<KnowledgeDiscoveryData>, filters: string | URLSearchParams = window.location.search, options: { onNavigate?: (path: string) => void } = {}): HTMLElement {
   return renderKnowledgeDiscovery({
     mode: 'search',
     title: 'Global Search',
-    sourceLabel: globalSearchFixture.sourceLabel,
     path: '/dashboard/globalSearch',
     filters,
-    memories: globalSearchFixture.results
+    state,
+    onFilterSubmit: options.onNavigate
   })
 }

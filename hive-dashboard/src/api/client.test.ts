@@ -77,7 +77,7 @@ describe('Hive API client', () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ memories: [memory], total: 1, limit: 5, offset: 0 }))
       .mockResolvedValueOnce(jsonResponse(memory))
-      .mockResolvedValueOnce(jsonResponse({ memories: [memory], total: 1, query: 'dashboard scope', limit: 5 }))
+      .mockResolvedValueOnce(jsonResponse({ memories: [memory], total: 1, query: 'dashboard scope', limit: 5, offset: 0 }))
       .mockResolvedValueOnce(jsonResponse({ audit_logs: [audit], total: 1, limit: 10, offset: 20 }))
     const client = createApiClient({ fetch: fetchMock })
 
@@ -90,6 +90,31 @@ describe('Hive API client', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/memories/mem-1', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
     expect(fetchMock).toHaveBeenNthCalledWith(3, '/memories/search?query=dashboard+scope&project=jarvis-dev&limit=5', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
     expect(fetchMock).toHaveBeenNthCalledWith(4, '/admin/audit-logs?since=2026-06-05T00%3A00%3A00Z&action=sync_push&outcome=success&limit=10&offset=20', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
+  })
+
+  it('serializes live discovery browse and search filters with pagination offsets', async () => {
+    const memory = { id: 'mem-1', sync_id: 'sync-1', project: 'jarvis-dev', category: 'decision', title: 'Dashboard scope', content: 'No daemon controls', tags: [], files_affected: [], created_by: 'admin-1', created_at: '2026-06-06T20:00:00Z', updated_at: '2026-06-06T20:01:00Z', synced_at: '2026-06-06T20:02:00Z' }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ memories: [memory], total: 1, limit: 25, offset: 50 }))
+      .mockResolvedValueOnce(jsonResponse({ memories: [memory], total: 11, query: 'dashboard scope', limit: 10, offset: 20 }))
+    const client = createApiClient({ fetch: fetchMock })
+
+    await client.memories('jwt-token', { project: 'jarvis-dev', category: 'decision', from: '2026-06-01', until: '2026-06-30', limit: 25, offset: 50 })
+    await expect(client.searchMemories('jwt-token', { query: 'dashboard scope', project: 'jarvis-dev', category: 'decision', from: '2026-06-01', until: '2026-06-30', limit: 10, offset: 20 })).resolves.toMatchObject({ offset: 20 })
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/memories?project=jarvis-dev&category=decision&from=2026-06-01&until=2026-06-30&limit=25&offset=50', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/memories/search?query=dashboard+scope&project=jarvis-dev&category=decision&from=2026-06-01&until=2026-06-30&limit=10&offset=20', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
+  })
+
+  it('omits unsupported or empty discovery filters instead of sending fixture-era params', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ memories: [], total: 0, limit: 10, offset: 0 }))
+    const client = createApiClient({ fetch: fetchMock })
+
+    const unsupportedFilters = { project: '', category: ' ', from: null, until: undefined, limit: 0, offset: -1, query: 'ignored', author: 'ada', tag: ['security'] } as unknown as Parameters<typeof client.memories>[1]
+
+    await client.memories('jwt-token', unsupportedFilters)
+
+    expect(fetchMock).toHaveBeenCalledWith('/memories', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
   })
 
   it('loads admin sync attempt summaries from the production audit endpoint', async () => {

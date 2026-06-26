@@ -166,4 +166,5 @@ func TestStartupMigrationSQLIncludesDiscoveryIndexesAfterActivityFeedIndex(t *te
 	assert.Equal(t, migrations.InitialSQL, startupMigrations[0])
 	assert.Equal(t, migrations.ActivityFeedIndexSQL, startupMigrations[7])
 	assert.Equal(t, migrations.MemoryDiscoveryIndexesSQL, startupMigrations[8])
+	assert.Contains(t, migrations.MemoryDiscoveryIndexesSQL, "created_at DESC, synced_at DESC, id DESC")
 }
