@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/middleware"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
@@ -10,6 +11,8 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/service"
 	"github.com/gin-gonic/gin"
 )
+
+const defaultMemoryQueryLimit = 20
 
 // MemoryHandler maneja los endpoints CRUD de memorias.
 type MemoryHandler struct {
@@ -78,15 +81,10 @@ func (h *MemoryHandler) List(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: err.Error()})
 		return
 	}
-
-	filter := model.MemoryFilter{
-		Project: q.Project,
-		Limit:   q.Limit,
-		Offset:  q.Offset,
-	}
-	if q.Category != "" {
-		cat := model.MemoryCategory(q.Category)
-		filter.Category = &cat
+	filter, limit, err := buildMemoryDiscoveryFilter(q.Project, q.Category, q.From, q.Until, q.Limit, q.Offset)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: err.Error()})
+		return
 	}
 
 	mems, total, err := h.svc.List(c.Request.Context(), filter)
@@ -103,7 +101,7 @@ func (h *MemoryHandler) List(c *gin.Context) {
 	c.JSON(http.StatusOK, model.ListMemoriesResponse{
 		Memories: mems,
 		Total:    total,
-		Limit:    q.Limit,
+		Limit:    limit,
 		Offset:   q.Offset,
 	})
 }
@@ -136,14 +134,13 @@ func (h *MemoryHandler) Search(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: err.Error()})
 		return
 	}
-
-	filter := model.MemoryFilter{
-		Project: q.Project,
-		Limit:   q.Limit,
-		Offset:  q.Offset,
+	filter, limit, err := buildMemoryDiscoveryFilter(q.Project, q.Category, q.From, q.Until, q.Limit, q.Offset)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: err.Error()})
+		return
 	}
 
-	mems, err := h.svc.Search(c.Request.Context(), q.Query, filter)
+	mems, total, err := h.svc.Search(c.Request.Context(), q.Query, filter)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "error en la búsqueda"})
 		return
@@ -155,10 +152,65 @@ func (h *MemoryHandler) Search(c *gin.Context) {
 
 	c.JSON(http.StatusOK, model.SearchResponse{
 		Memories: mems,
-		Total:    int64(len(mems)),
+		Total:    total,
 		Query:    q.Query,
-		Limit:    q.Limit,
+		Limit:    limit,
+		Offset:   q.Offset,
 	})
+}
+
+func buildMemoryDiscoveryFilter(project, category, fromRaw, untilRaw string, limit, offset int) (model.MemoryFilter, int, error) {
+	createdFrom, createdUntil, err := parseMemoryDateRange(fromRaw, untilRaw)
+	if err != nil {
+		return model.MemoryFilter{}, 0, err
+	}
+	if limit == 0 {
+		limit = defaultMemoryQueryLimit
+	}
+	filter := model.MemoryFilter{Project: project, CreatedFrom: createdFrom, CreatedUntil: createdUntil, Limit: limit, Offset: offset}
+	if category != "" {
+		cat := model.MemoryCategory(category)
+		if !cat.IsValid() {
+			return model.MemoryFilter{}, 0, errors.New("invalid category")
+		}
+		filter.Category = &cat
+	}
+	return filter, limit, nil
+}
+
+func parseMemoryDateRange(fromRaw, untilRaw string) (*time.Time, *time.Time, error) {
+	from, err := parseMemoryDateBoundary(fromRaw, false)
+	if err != nil {
+		return nil, nil, errors.New("invalid from date")
+	}
+	until, err := parseMemoryDateBoundary(untilRaw, true)
+	if err != nil {
+		return nil, nil, errors.New("invalid until date")
+	}
+	if from != nil && until != nil && from.After(*until) {
+		return nil, nil, errors.New("from must be before until")
+	}
+	return from, until, nil
+}
+
+func parseMemoryDateBoundary(raw string, endOfDay bool) (*time.Time, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse("2006-01-02", raw)
+	if err != nil {
+		parsed, err = time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return nil, err
+		}
+	}
+	parsed = parsed.UTC()
+	hour, minute, second, nsec := 0, 0, 0, 0
+	if endOfDay {
+		hour, minute, second, nsec = 23, 59, 59, int(time.Second-time.Nanosecond)
+	}
+	boundary := time.Date(parsed.Year(), parsed.Month(), parsed.Day(), hour, minute, second, nsec, time.UTC)
+	return &boundary, nil
 }
 
 // --- helpers privados ---

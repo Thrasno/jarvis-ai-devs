@@ -159,10 +159,11 @@ func TestWireServices_WiresActivityServiceFromMemoryRepository(t *testing.T) {
 	require.Same(t, activitySvc, deps.activitySvc)
 }
 
-func TestStartupMigrationSQLIncludesActivityFeedIndex(t *testing.T) {
+func TestStartupMigrationSQLIncludesDiscoveryIndexesAfterActivityFeedIndex(t *testing.T) {
 	startupMigrations := startupMigrationSQL()
 
-	require.Len(t, startupMigrations, 8)
+	require.Len(t, startupMigrations, 9)
 	assert.Equal(t, migrations.InitialSQL, startupMigrations[0])
 	assert.Equal(t, migrations.ActivityFeedIndexSQL, startupMigrations[7])
+	assert.Equal(t, migrations.MemoryDiscoveryIndexesSQL, startupMigrations[8])
 }

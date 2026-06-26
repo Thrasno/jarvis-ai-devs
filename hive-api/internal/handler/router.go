@@ -35,7 +35,7 @@ type MemoryService interface {
 	Create(ctx context.Context, mem *model.Memory) (*model.Memory, error)
 	GetByID(ctx context.Context, id string) (*model.Memory, error)
 	List(ctx context.Context, filter model.MemoryFilter) ([]*model.Memory, int64, error)
-	Search(ctx context.Context, query string, filter model.MemoryFilter) ([]*model.Memory, error)
+	Search(ctx context.Context, query string, filter model.MemoryFilter) ([]*model.Memory, int64, error)
 }
 
 // SyncService define las operaciones de sincronización.

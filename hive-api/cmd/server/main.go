@@ -172,6 +172,7 @@ func startupMigrationSQL() []string {
 		migrations.DropTopicKeyUniqueConstraintSQL,
 		migrations.SyncAttemptLogsSQL,
 		migrations.ActivityFeedIndexSQL,
+		migrations.MemoryDiscoveryIndexesSQL,
 	}
 }
 

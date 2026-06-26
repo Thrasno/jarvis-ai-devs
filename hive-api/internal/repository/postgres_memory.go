@@ -92,24 +92,14 @@ func (r *postgresMemoryRepository) List(ctx context.Context, filter model.Memory
 	where := ""
 	argIdx := 3
 
-	if filter.Project != "" {
-		where += fmt.Sprintf(" AND project = $%d", argIdx)
-		args = append(args, filter.Project)
-		argIdx++
-	}
-	if filter.Category != nil {
-		where += fmt.Sprintf(" AND category = $%d", argIdx)
-		args = append(args, *filter.Category)
-	}
-
-	where += " AND deleted_at IS NULL"
+	where, args, _ = appendMemoryFilterPredicates(where, args, argIdx, filter)
 
 	q := fmt.Sprintf(`SELECT id, sync_id, project, topic_key, category, title, content,
 	                         tags, files_affected, created_by, created_at, updated_at,
 	                         origin, synced_at, session_id,
 	                         deleted_at, deleted_by, delete_reason, restored_at
 	                  FROM memories WHERE 1=1 %s
-	                  ORDER BY synced_at DESC LIMIT $1 OFFSET $2`, where)
+	                  ORDER BY created_at DESC, synced_at DESC LIMIT $1 OFFSET $2`, where)
 
 	rows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {
@@ -126,17 +116,7 @@ func (r *postgresMemoryRepository) Count(ctx context.Context, filter model.Memor
 	where := ""
 	argIdx := 1
 
-	if filter.Project != "" {
-		where += fmt.Sprintf(" AND project = $%d", argIdx)
-		args = append(args, filter.Project)
-		argIdx++
-	}
-	if filter.Category != nil {
-		where += fmt.Sprintf(" AND category = $%d", argIdx)
-		args = append(args, *filter.Category)
-	}
-
-	where += " AND deleted_at IS NULL"
+	where, args, _ = appendMemoryFilterPredicates(where, args, argIdx, filter)
 
 	q := fmt.Sprintf(`SELECT COUNT(*) FROM memories WHERE 1=1 %s`, where)
 	var count int64
@@ -155,17 +135,14 @@ func (r *postgresMemoryRepository) Search(ctx context.Context, query string, fil
 	where := ""
 	argIdx := 4
 
-	if filter.Project != "" {
-		where += fmt.Sprintf(" AND project = $%d", argIdx)
-		args = append(args, filter.Project)
-	}
+	where, args, _ = appendMemoryFilterPredicates(where, args, argIdx, filter)
 
 	q := fmt.Sprintf(`SELECT id, sync_id, project, topic_key, category, title, content,
 	                         tags, files_affected, created_by, created_at, updated_at,
 	                         origin, synced_at, session_id,
 	                         deleted_at, deleted_by, delete_reason, restored_at
 	                  FROM memories
-	                  WHERE search_vector @@ plainto_tsquery('simple', $1) AND deleted_at IS NULL %s
+	                  WHERE search_vector @@ plainto_tsquery('simple', $1) %s
 	                  ORDER BY ts_rank(search_vector, plainto_tsquery('simple', $1)) DESC
 	                  LIMIT $2 OFFSET $3`, where)
 
@@ -176,6 +153,19 @@ func (r *postgresMemoryRepository) Search(ctx context.Context, query string, fil
 	defer rows.Close()
 
 	return r.scanMemoryRows(rows)
+}
+
+func (r *postgresMemoryRepository) CountSearch(ctx context.Context, query string, filter model.MemoryFilter) (int64, error) {
+	args := []interface{}{query}
+	where := ""
+	argIdx := 2
+
+	where, args, _ = appendMemoryFilterPredicates(where, args, argIdx, filter)
+
+	q := fmt.Sprintf(`SELECT COUNT(*) FROM memories WHERE search_vector @@ plainto_tsquery('simple', $1) %s`, where)
+	var count int64
+	err := r.pool.QueryRow(ctx, q, args...).Scan(&count)
+	return count, wrapPgError(err, "CountSearch memories")
 }
 
 // Upsert implementa el algoritmo de 4 ramas del protocolo de sync.
@@ -792,6 +782,32 @@ func (r *postgresMemoryRepository) CountGrowthByMonth(ctx context.Context, month
 }
 
 // --- helpers privados ---
+
+func appendMemoryFilterPredicates(where string, args []interface{}, argIdx int, filter model.MemoryFilter) (string, []interface{}, int) {
+	if filter.Project != "" {
+		where += fmt.Sprintf(" AND project = $%d", argIdx)
+		args = append(args, filter.Project)
+		argIdx++
+	}
+	if filter.Category != nil {
+		where += fmt.Sprintf(" AND category = $%d", argIdx)
+		args = append(args, *filter.Category)
+		argIdx++
+	}
+	if filter.CreatedFrom != nil {
+		where += fmt.Sprintf(" AND created_at >= $%d", argIdx)
+		args = append(args, *filter.CreatedFrom)
+		argIdx++
+	}
+	if filter.CreatedUntil != nil {
+		where += fmt.Sprintf(" AND created_at <= $%d", argIdx)
+		args = append(args, *filter.CreatedUntil)
+		argIdx++
+	}
+
+	where += " AND deleted_at IS NULL"
+	return where, args, argIdx
+}
 
 // scanMemory ejecuta una query de fila única y escanea el resultado.
 func (r *postgresMemoryRepository) scanMemory(ctx context.Context, query string, arg interface{}) (*model.Memory, error) {

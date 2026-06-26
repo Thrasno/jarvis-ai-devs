@@ -66,3 +66,6 @@ var SyncAttemptLogsSQL string
 //
 //go:embed 008_activity_feed_index.sql
 var ActivityFeedIndexSQL string
+
+//go:embed 009_memory_discovery_indexes.sql
+var MemoryDiscoveryIndexesSQL string

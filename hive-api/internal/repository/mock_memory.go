@@ -75,6 +75,11 @@ func (m *MockMemoryRepository) Search(ctx context.Context, query string, filter 
 	return args.Get(0).([]*model.Memory), args.Error(1)
 }
 
+func (m *MockMemoryRepository) CountSearch(ctx context.Context, query string, filter model.MemoryFilter) (int64, error) {
+	args := m.Called(ctx, query, filter)
+	return args.Get(0).(int64), args.Error(1)
+}
+
 // Upsert es el más complejo porque devuelve 3 valores.
 // En el test configuramos con:
 //

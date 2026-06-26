@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 // claims válidos para tests autenticados
@@ -232,15 +234,52 @@ func TestListMemories_Success(t *testing.T) {
 	authSvc := &mockAuthSvc{}
 	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
 
-	mems := []*model.Memory{{ID: "1", Title: "mem1"}}
 	memSvc := &mockMemorySvc{}
 	memSvc.On("List", context.Background(), mock.AnythingOfType("model.MemoryFilter")).
-		Return(mems, int64(1), nil)
+		Return([]*model.Memory{}, int64(0), nil)
 
-	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodGet, "/memories", nil, "valid-token")
+	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodGet, "/memories?project=no-match", nil, "valid-token")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var body model.ListMemoriesResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Empty(t, body.Memories)
+	assert.Equal(t, int64(0), body.Total)
+	memSvc.AssertExpectations(t)
+}
+
+func TestListMemories_PassesStructuredDiscoveryFilters(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	memSvc := &mockMemorySvc{}
+	wantFrom := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	wantUntil := time.Date(2026, 1, 31, 23, 59, 59, int(time.Second-time.Nanosecond), time.UTC)
+	memSvc.On("List", context.Background(), mock.MatchedBy(func(filter model.MemoryFilter) bool {
+		return filter.Project == "jarvis-dev" && filter.Category != nil && *filter.Category == model.CatDecision &&
+			filter.Limit == 10 && filter.Offset == 5 && filter.CreatedFrom.Equal(wantFrom) && filter.CreatedUntil.Equal(wantUntil)
+	})).Return([]*model.Memory{{ID: "mem-filtered", Title: "filtered"}}, int64(3), nil)
+
+	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodGet,
+		"/memories?project=jarvis-dev&category=decision&from=2026-01-01&until=2026-01-31&limit=10&offset=5", nil, "valid-token")
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	memSvc.AssertExpectations(t)
+}
+
+func TestListMemories_InvalidDateRangeReturnsErrorResponse(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+	memSvc := &mockMemorySvc{}
+
+	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodGet,
+		"/memories?from=2026-02-01&until=2026-01-01", nil, "valid-token")
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	var body model.ErrorResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Contains(t, body.Error, "from must be before until")
+	memSvc.AssertNotCalled(t, "List", mock.Anything, mock.Anything)
 }
 
 // --- GetByID tests ---
@@ -281,11 +320,34 @@ func TestSearchMemories_Success(t *testing.T) {
 	mems := []*model.Memory{{ID: "1", Title: "found"}}
 	memSvc := &mockMemorySvc{}
 	memSvc.On("Search", context.Background(), "test query", mock.AnythingOfType("model.MemoryFilter")).
-		Return(mems, nil)
+		Return(mems, int64(1), nil)
 
 	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodGet, "/memories/search?query=test+query", nil, "valid-token")
 
 	assert.Equal(t, http.StatusOK, w.Code)
+	memSvc.AssertExpectations(t)
+}
+
+func TestSearchMemories_ReturnsPaginationOffsetAndTotal(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	mems := []*model.Memory{{ID: "search-2", Title: "second result"}}
+	memSvc := &mockMemorySvc{}
+	memSvc.On("Search", context.Background(), "postgres", mock.MatchedBy(func(filter model.MemoryFilter) bool {
+		return filter.Project == "jarvis-dev" && filter.Limit == 1 && filter.Offset == 1
+	})).Return(mems, int64(2), nil)
+
+	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodGet,
+		"/memories/search?query=postgres&project=jarvis-dev&limit=1&offset=1", nil, "valid-token")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var body model.SearchResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Len(t, body.Memories, 1)
+	assert.Equal(t, int64(2), body.Total)
+	assert.Equal(t, 1, body.Limit)
+	assert.Equal(t, 1, body.Offset)
 	memSvc.AssertExpectations(t)
 }
 

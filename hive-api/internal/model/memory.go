@@ -174,6 +174,11 @@ type MemoryFilter struct {
 	Project  string
 	Category *MemoryCategory // puntero: nil = sin filtro de categoría
 
+	// CreatedFrom and CreatedUntil filter by the canonical memory creation time.
+	// Nil means the corresponding range bound is not applied.
+	CreatedFrom  *time.Time
+	CreatedUntil *time.Time
+
 	// Paginación. Si Limit es 0, la capa de repositorio usará un default (20).
 	Limit  int
 	Offset int

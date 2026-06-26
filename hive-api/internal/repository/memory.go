@@ -39,6 +39,8 @@ type MemoryRepository interface {
 	// que un LIKE '%query%' y soporta relevancia.
 	Search(ctx context.Context, query string, filter model.MemoryFilter) ([]*model.Memory, error)
 
+	CountSearch(ctx context.Context, query string, filter model.MemoryFilter) (int64, error)
+
 	// Upsert es el corazón del protocolo de sincronización.
 	// Implementa estas 4 reglas en orden:
 	//

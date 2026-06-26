@@ -130,14 +130,19 @@ type SetLevelRequest struct {
 type ListMemoriesQuery struct {
 	Project  string `form:"project"`
 	Category string `form:"category"`
+	From     string `form:"from"`
+	Until    string `form:"until"`
 	Limit    int    `form:"limit"  binding:"omitempty,min=1,max=100"`
 	Offset   int    `form:"offset" binding:"omitempty,min=0"`
 }
 
 // SearchQuery son los query params del GET /memories/search.
 type SearchQuery struct {
-	Query   string `form:"query"   binding:"required"`
-	Project string `form:"project"`
-	Limit   int    `form:"limit"   binding:"omitempty,min=1,max=100"`
-	Offset  int    `form:"offset"  binding:"omitempty,min=0"`
+	Query    string `form:"query"   binding:"required"`
+	Project  string `form:"project"`
+	Category string `form:"category"`
+	From     string `form:"from"`
+	Until    string `form:"until"`
+	Limit    int    `form:"limit"   binding:"omitempty,min=1,max=100"`
+	Offset   int    `form:"offset"  binding:"omitempty,min=0"`
 }

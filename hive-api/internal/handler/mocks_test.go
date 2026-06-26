@@ -72,12 +72,12 @@ func (m *mockMemorySvc) List(ctx context.Context, filter model.MemoryFilter) ([]
 	return args.Get(0).([]*model.Memory), args.Get(1).(int64), args.Error(2)
 }
 
-func (m *mockMemorySvc) Search(ctx context.Context, query string, filter model.MemoryFilter) ([]*model.Memory, error) {
+func (m *mockMemorySvc) Search(ctx context.Context, query string, filter model.MemoryFilter) ([]*model.Memory, int64, error) {
 	args := m.Called(ctx, query, filter)
 	if args.Get(0) == nil {
-		return nil, args.Error(1)
+		return nil, args.Get(1).(int64), args.Error(2)
 	}
-	return args.Get(0).([]*model.Memory), args.Error(1)
+	return args.Get(0).([]*model.Memory), args.Get(1).(int64), args.Error(2)
 }
 
 // --- SyncService mock ---
