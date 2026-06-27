@@ -7,13 +7,11 @@ export type ChartInput =
   | {
       readonly kind: 'time-series'
       readonly title: string
-      readonly summary: string
       readonly series: ChartSeriesViewModel
     }
   | {
       readonly kind: 'categorical'
       readonly title: string
-      readonly summary: string
       readonly points: readonly ChartPointViewModel[]
     }
 
@@ -31,7 +29,6 @@ export function renderChart(input: ChartInput): HTMLElement {
   if (!isSupportedChartInput(input)) return fallbackChart()
 
   const chart = chartRoot(input.title, input.kind)
-  chart.append(chartTitle(input.title), chartSummary(input.summary))
 
   if (input.kind === 'time-series') {
     const points = input.series.points
@@ -57,7 +54,7 @@ function isSupportedChartInput(input: unknown): input is ChartInput {
   const candidate = input as Record<string, unknown>
 
   if (candidate.kind !== 'time-series' && candidate.kind !== 'categorical') return false
-  if (typeof candidate.title !== 'string' || typeof candidate.summary !== 'string') return false
+  if (typeof candidate.title !== 'string') return false
 
   if (candidate.kind === 'time-series') {
     const series = candidate.series as Partial<ChartSeriesViewModel> | undefined
@@ -74,19 +71,6 @@ function chartRoot(label: string, kind: ChartKind | 'unsupported'): HTMLElement 
   chart.setAttribute('role', 'figure')
   chart.setAttribute('aria-label', label)
   return chart
-}
-
-function chartTitle(title: string): HTMLHeadingElement {
-  const heading = document.createElement('h2')
-  heading.textContent = title
-  return heading
-}
-
-function chartSummary(summary: string): HTMLParagraphElement {
-  const p = document.createElement('p')
-  p.className = 'chart-summary'
-  p.textContent = summary
-  return p
 }
 
 function renderLineChart(points: readonly ChartPointViewModel[]): SVGSVGElement {
