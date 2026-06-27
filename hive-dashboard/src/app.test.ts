@@ -64,12 +64,18 @@ describe('dashboard shell', () => {
     expect(container.querySelector('[data-testid="nexus-emblem"]')).not.toBeNull()
   })
 
-  it('renders the NEXUS emblem (data-testid="nexus-emblem") in the authenticated shell header', () => {
+  it('renders the NEXUS emblem (data-testid="nexus-emblem") in the authenticated shell — inside the sidebar, NOT the topbar', () => {
     const container = document.createElement('main')
 
     renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: memberUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
 
+    const sidebar = container.querySelector('[data-dashboard-primitive="sidebar"]')
+    const header = container.querySelector('[role="banner"]')
+    // Emblem must exist somewhere in the shell
     expect(container.querySelector('[data-testid="nexus-emblem"]')).not.toBeNull()
+    // Emblem must be inside the sidebar, not the topbar
+    expect(sidebar?.querySelector('[data-testid="nexus-emblem"]')).not.toBeNull()
+    expect(header?.querySelector('[data-testid="nexus-emblem"]')).toBeNull()
   })
 
   it('renders the login tagline "Team memory, governed." on the login screen', () => {
@@ -1126,7 +1132,8 @@ describe('dashboard shell', () => {
     const cleanup = startDashboardApp(container, { api: fakeApi({ health: health.promise }), session })
     try {
       await Promise.resolve()
-      expect(container.querySelector('h1')?.textContent).toBe('NEXUS HIVE')
+      // The shell header h1 now shows the per-route page title, not the brand wordmark
+      expect(container.querySelector('.dashboard-header__title')?.textContent).toBe('Hive Overview')
       expect(container.textContent).not.toContain('API status ok')
 
       const renderedBeforeCleanup = container.innerHTML
@@ -1428,6 +1435,76 @@ describe('shell search slot integration', () => {
     }
   })
 
+})
+
+describe('shell header fidelity — NEXUS re-skin', () => {
+  it('header (role=banner) does NOT contain the brand wordmark (.dashboard-brand__wordmark)', () => {
+    const container = document.createElement('main')
+
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: memberUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
+
+    const header = container.querySelector('[role="banner"]')
+    expect(header).not.toBeNull()
+    expect(header?.querySelector('.dashboard-brand__wordmark')).toBeNull()
+  })
+
+  it('header (role=banner) does NOT contain "NEXUS HIVE" text', () => {
+    const container = document.createElement('main')
+
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: memberUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
+
+    const header = container.querySelector('[role="banner"]')
+    expect(header?.textContent).not.toContain('NEXUS HIVE')
+  })
+
+  it('brand wordmark "NEXUS HIVE" appears exactly once in the shell, inside the sidebar', () => {
+    const container = document.createElement('main')
+
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: memberUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
+
+    const sidebar = container.querySelector('[data-dashboard-primitive="sidebar"]')
+    const wordmarks = container.querySelectorAll('.dashboard-brand__wordmark')
+    expect(wordmarks).toHaveLength(1)
+    expect(sidebar?.querySelector('.dashboard-brand__wordmark')).not.toBeNull()
+  })
+
+  it('header contains a page-title h1 matching the active route (default /dashboard → "Hive Overview")', () => {
+    const container = document.createElement('main')
+
+    renderApp({
+      container,
+      state: { status: 'authenticated', token: 'jwt-token', user: memberUser },
+      actions: { onLogin: vi.fn(), onLogout: vi.fn() },
+      routePath: '/dashboard'
+    })
+
+    const header = container.querySelector('[role="banner"]')
+    expect(header?.querySelector('.dashboard-header__title')?.textContent).toBe('Hive Overview')
+  })
+
+  it('header contains a page-title h1 matching the active route (/dashboard/projects → "Projects")', () => {
+    const container = document.createElement('main')
+
+    renderApp({
+      container,
+      state: { status: 'authenticated', token: 'jwt-token', user: memberUser },
+      actions: { onLogin: vi.fn(), onLogout: vi.fn() },
+      routePath: '/dashboard/projects'
+    })
+
+    const header = container.querySelector('[role="banner"]')
+    expect(header?.querySelector('.dashboard-header__title')?.textContent).toBe('Projects')
+  })
+
+  it('header contains a search input (not a button) for memory search', () => {
+    const container = document.createElement('main')
+
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: memberUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
+
+    const header = container.querySelector('[role="banner"]')
+    const searchInput = header?.querySelector('input[type="search"]') ?? header?.querySelector('input')
+    expect(searchInput).not.toBeNull()
+  })
 })
 
 async function flushDashboard(): Promise<void> {
