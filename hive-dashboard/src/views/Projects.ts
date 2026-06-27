@@ -57,7 +57,6 @@ function renderProjectCard(project: ProjectLiveSummaryViewModel): HTMLElement {
   item.setAttribute('aria-label', projectAriaLabel(project))
   item.append(
     identitySection(project, titleId),
-    healthSection(project),
     metricsSection(project, metricsId),
     decorativeRail(),
     browseLink(project)
@@ -71,7 +70,7 @@ function identitySection(project: ProjectLiveSummaryViewModel, titleId: string):
   const title = document.createElement('h3')
   title.id = titleId
   title.textContent = project.name
-  section.append(title)
+  section.append(title, healthSection(project))
   return section
 }
 
@@ -110,7 +109,6 @@ function decorativeRail(): HTMLElement {
   const rail = document.createElement('div')
   rail.className = 'dashboard-project-card__rail'
   rail.setAttribute('aria-hidden', 'true')
-  rail.append(document.createElement('span'))
   return rail
 }
 
