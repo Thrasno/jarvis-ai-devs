@@ -229,7 +229,7 @@ function renderLogin(
   form.className = 'dashboard-panel panel login-card'
   form.dataset.dashboardPrimitive = 'panel'
   form.innerHTML = `
-    ${renderBrand({ withTagline: true })}
+    ${renderBrand({ withTagline: true, size: 64 })}
     <h1>Sign in to NEXUS HIVE</h1>
     ${state.error ? `<p class="error" role="alert">${escapeHtml(state.error)}</p>` : ''}
     <label>Email<input name="email" type="email" autocomplete="email" required /></label>
