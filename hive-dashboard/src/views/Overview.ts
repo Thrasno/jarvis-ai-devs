@@ -1,4 +1,4 @@
-import type { MetricCardViewModel, OverviewFixtureViewModel, ProjectPrimitiveViewModel } from '../domain/dashboard'
+import type { MetricCardViewModel, OverviewFixtureViewModel, OverviewLiveActivityViewModel, OverviewSyncHealthProjectViewModel } from '../domain/dashboard'
 import { renderChart } from '../components/Chart'
 import { append, emptyState, error, grid, metricCard, panel, stack, statusBadge, statusLabel, text } from '../components/dom'
 
@@ -22,24 +22,27 @@ function metricCardFromViewModel(vm: MetricCardViewModel): HTMLElement {
   return metricCard({ label: vm.label, value: vm.displayValue ?? String(vm.value), detail: vm.sourceLabel })
 }
 
-function renderSyncHealthRow(project: ProjectPrimitiveViewModel): HTMLElement {
+function renderSyncHealthRow(project: OverviewSyncHealthProjectViewModel): HTMLElement {
   const row = document.createElement('div')
+  const region = project.region.trim()
+  const ariaParts = [
+    `${project.name}: ${statusLabel(project.status)}`,
+    `${project.contributorCount} contributors`,
+    ...(region ? [`region ${region}`] : [])
+  ]
   row.setAttribute('role', 'listitem')
-  row.setAttribute(
-    'aria-label',
-    `${project.name}: ${statusLabel(project.status)}, ${project.memoryCount} memories, last synced ${project.lastSyncLabel}`
-  )
+  row.setAttribute('aria-label', ariaParts.join(', '))
   return append(
     row,
     text(''),
     statusBadge(project.status),
     text(project.name),
-    text(String(project.memoryCount)),
-    text(project.lastSyncLabel)
+    text(`${project.contributorCount} contributors`),
+    ...(region ? [text(region)] : [])
   )
 }
 
-function renderSyncHealthSection(projects: readonly ProjectPrimitiveViewModel[], sourceLabel?: string): HTMLElement {
+function renderSyncHealthSection(projects: readonly OverviewSyncHealthProjectViewModel[], sourceLabel?: string): HTMLElement {
   const section = document.createElement('section')
   section.setAttribute('role', 'region')
   section.setAttribute('aria-label', 'Sync health by project')
@@ -47,7 +50,7 @@ function renderSyncHealthSection(projects: readonly ProjectPrimitiveViewModel[],
   if (sourceLabel) section.append(sourceNotice(sourceLabel))
 
   if (projects.length === 0) {
-    section.append(emptyState(`No project sync health data is available. ${sourceLabel ?? 'Live per-project sync health is unavailable.'}`))
+    section.append(emptyState('No project sync health data is available.'))
     return section
   }
 
@@ -68,11 +71,37 @@ function sourceAwareSummary(summary: string, sourceLabel?: string): string {
   return sourceLabel ? `${summary} ${sourceLabel}` : summary
 }
 
+function renderLiveActivity(activity: OverviewLiveActivityViewModel): HTMLElement {
+  const section = document.createElement('section')
+  section.setAttribute('role', 'region')
+  section.setAttribute('aria-label', 'Live activity')
+
+  if (activity.count <= 0 || activity.newestSyncId.trim() === '') {
+    section.append(emptyState('No recent activity is available.'))
+    return section
+  }
+
+  section.append(
+    text(`${activity.count} recent sync ${activity.count === 1 ? 'event' : 'events'}`),
+    text(`Newest sync: ${activity.newestSyncId}`)
+  )
+  return section
+}
+
+function renderMostActiveProjects(points: OverviewFixtureViewModel['mostActiveProjects']): HTMLElement {
+  return renderChart({
+    kind: 'categorical',
+    title: 'Most active projects',
+    summary: 'Most active projects by live memory count.',
+    points
+  })
+}
+
 export function renderOverview(state: ViewState<OverviewFixtureViewModel>): HTMLElement {
   const card = panel('Hive Overview')
   if (state.status === 'loading') return append(card, text('Loading overview…'))
   if (state.status === 'error') return error(card, state.message)
-  const { totalMemories, activeProjects, healthyDaemons, openConflicts, knowledgeGrowth, syncHealthByProject, syncHealthByProjectSourceLabel } = state.data
+  const { totalMemories, activeProjects, healthyDaemons, openConflicts, knowledgeGrowth, syncHealthByProject, syncHealthByProjectSourceLabel, liveActivity, mostActiveProjects } = state.data
   return append(
     card,
     grid([
@@ -87,6 +116,8 @@ export function renderOverview(state: ViewState<OverviewFixtureViewModel>): HTML
       summary: sourceAwareSummary('Knowledge growth over time.', knowledgeGrowth.sourceLabel),
       series: knowledgeGrowth
     }),
-    renderSyncHealthSection(syncHealthByProject, syncHealthByProjectSourceLabel)
+    renderSyncHealthSection(syncHealthByProject, syncHealthByProjectSourceLabel),
+    renderLiveActivity(liveActivity),
+    renderMostActiveProjects(mostActiveProjects)
   )
 }

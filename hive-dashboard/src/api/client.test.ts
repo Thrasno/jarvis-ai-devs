@@ -71,6 +71,33 @@ describe('Hive API client', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(3, '/admin/users', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
   })
 
+  it('loads live overview stats and growth endpoints with a bearer token', async () => {
+    const overviewStats = {
+      daemon_health: { healthy: 2, total: 3 },
+      conflicts: { open: 4 },
+      sync_health_by_project: [{ project: 'jarvis-dev', status: 'healthy', region: 'local', contributor_count: 2 }],
+      live_activity: { count: 5, newest_sync_id: 'sync-newest' },
+      most_active_projects: [{ project: 'jarvis-dev', count: 9 }]
+    }
+    const overviewGrowth = { knowledge_growth: [{ label: 'Jun', value: 42 }] }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(overviewStats))
+      .mockResolvedValueOnce(jsonResponse(overviewGrowth))
+    const client = createApiClient({ fetch: fetchMock })
+
+    await expect(client.overviewStats('jwt-token')).resolves.toEqual(overviewStats)
+    await expect(client.overviewGrowth('jwt-token')).resolves.toEqual(overviewGrowth)
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/admin/overview/stats', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer jwt-token' }
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/admin/overview/growth', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer jwt-token' }
+    })
+  })
+
   it('loads memories, memory detail, search, and audit logs through existing read-only endpoints', async () => {
     const memory = { id: 'mem-1', sync_id: 'sync-1', project: 'jarvis-dev', category: 'decision', title: 'Dashboard scope', content: 'No daemon controls', tags: [], files_affected: [], created_by: 'admin-1', created_at: '2026-06-06T20:00:00Z', updated_at: '2026-06-06T20:01:00Z', synced_at: '2026-06-06T20:02:00Z' }
     const audit = { id: 'audit-1', occurred_at: '2026-06-06T20:03:00Z', action: 'sync_push', outcome: 'success', entry_count: 2, metadata: { pushed_count: 2 } }

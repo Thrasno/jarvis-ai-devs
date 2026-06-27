@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ActivityFeedResponse, ApiClient, MemoryList, MemorySearch } from './api/client'
+import type { ActivityFeedResponse, ApiClient, MemoryList, MemorySearch, OverviewGrowth, OverviewStats } from './api/client'
 import type { SessionStore } from './auth/session'
 import { loadDashboard, renderApp, startDashboardApp } from './main'
 import { dashboardNotificationSummary } from './fixtures/hive-dashboard/shared'
@@ -842,13 +842,63 @@ describe('dashboard shell', () => {
     expect(dashboard.data.overview.data.activeProjects).toMatchObject({ value: 2, displayValue: '2' })
     expect(dashboard.data.overview.data.totalMemories.sourceLabel).toBeUndefined()
     expect(dashboard.data.overview.data.activeProjects.sourceLabel).toBeUndefined()
-    expect(dashboard.data.overview.data.openConflicts.sourceLabel).toBe('Demo fixture data — live conflict counts are unavailable.')
-    expect(dashboard.data.overview.data.knowledgeGrowth.sourceLabel).toBe(
-      'Demo fixture data — live historical knowledge growth is unavailable.'
-    )
-    expect(dashboard.data.overview.data.syncHealthByProjectSourceLabel).toBe(
-      'Demo fixture data — live per-project sync health is unavailable.'
-    )
+    expect(dashboard.data.overview.data.openConflicts).toMatchObject({ value: 3 })
+    expect(dashboard.data.overview.data.openConflicts.sourceLabel).toBeUndefined()
+    expect(dashboard.data.overview.data.knowledgeGrowth.points).toEqual([{ label: 'Jun', value: 44 }])
+    expect(dashboard.data.overview.data.syncHealthByProjectSourceLabel).toBeUndefined()
+  })
+
+  it('loads overview health, admin totals, overview stats, and overview growth together', async () => {
+    const api = fakeApi({
+      stats: Promise.resolve(adminStats({ totalMemories: 4321, activeProjectCounts: [7, 0, 2] })),
+      overviewStats: Promise.resolve(overviewStats({ openConflicts: 6, liveActivityCount: 8, newestSyncId: 'sync-live' })),
+      overviewGrowth: Promise.resolve({ knowledge_growth: [{ label: 'Jun', value: 99 }] })
+    })
+
+    const dashboard = await loadDashboard(api, 'jwt-token')
+
+    expect(api.health).toHaveBeenCalledTimes(1)
+    expect(api.adminStats).toHaveBeenCalledWith('jwt-token')
+    expect(api.overviewStats).toHaveBeenCalledWith('jwt-token')
+    expect(api.overviewGrowth).toHaveBeenCalledWith('jwt-token')
+    expect(dashboard.status).toBe('ready')
+    if (dashboard.data.overview.status !== 'ready') throw new Error('expected ready overview')
+    expect(dashboard.data.overview.data.totalMemories).toMatchObject({ value: 4321, displayValue: '4.3k' })
+    expect(dashboard.data.overview.data.activeProjects).toMatchObject({ value: 2, displayValue: '2' })
+    expect(dashboard.data.overview.data.healthyDaemons).toMatchObject({ value: 1, totalValue: 2, displayValue: '1/2' })
+    expect(dashboard.data.overview.data.openConflicts).toMatchObject({ value: 6 })
+    expect(dashboard.data.overview.data.openConflicts.sourceLabel).toBeUndefined()
+    expect(dashboard.data.overview.data.liveActivity).toEqual({ count: 8, newestSyncId: 'sync-live' })
+    expect(dashboard.data.overview.data.mostActiveProjects).toEqual([{ label: 'jarvis-dev', value: 11 }])
+    expect(dashboard.data.overview.data.knowledgeGrowth.points).toEqual([{ label: 'Jun', value: 99 }])
+  })
+
+  it('renders route-loaded overview data without visible fixture complements', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({ overviewStats: Promise.resolve(overviewStats({ liveActivityCount: 2, newestSyncId: 'sync-live' })) })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      expect(api.health).toHaveBeenCalledTimes(1)
+      expect(api.adminStats).toHaveBeenCalledWith('jwt-token')
+      expect(api.overviewStats).toHaveBeenCalledWith('jwt-token')
+      expect(api.overviewGrowth).toHaveBeenCalledWith('jwt-token')
+      const overview = container.querySelector<HTMLElement>('[data-dashboard-primitive="main"] section[role="region"]')
+      expect(overview?.textContent).toContain('Newest sync: sync-live')
+      expect(overview?.textContent).toContain('jarvis-dev')
+      expect(overview?.textContent).not.toContain('Demo fixture data')
+      expect(overview?.textContent).not.toContain('Gateway owns the auth boundary')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
   })
 })
 
@@ -1198,6 +1248,8 @@ function fakeSessionStore(initial: ReturnType<SessionStore['getState']>): Sessio
 function fakeApi(overrides: {
   health?: Promise<Awaited<ReturnType<ApiClient['health']>>>
   stats?: Promise<Awaited<ReturnType<ApiClient['adminStats']>>>
+  overviewStats?: Promise<OverviewStats>
+  overviewGrowth?: Promise<OverviewGrowth>
   users?: Promise<Awaited<ReturnType<ApiClient['adminUsers']>>>[]
   setUserLevel?: Promise<Awaited<ReturnType<ApiClient['setUserLevel']>>>
   grantAdmin?: Promise<Awaited<ReturnType<ApiClient['grantAdmin']>>>
@@ -1215,6 +1267,8 @@ function fakeApi(overrides: {
     currentUser: vi.fn(),
     health: vi.fn(() => overrides.health ?? Promise.resolve({ status: 'ok', db: 'connected', version: '1.0.0' })),
     adminStats: vi.fn(() => overrides.stats ?? Promise.resolve({ users: { total: 1, active: 1, by_level: { admin: 1 } }, memories: { total: 1, by_project: [], by_category: [], last_synced_at: null } })),
+    overviewStats: vi.fn(() => overrides.overviewStats ?? Promise.resolve(overviewStats())),
+    overviewGrowth: vi.fn(() => overrides.overviewGrowth ?? Promise.resolve({ knowledge_growth: [{ label: 'Jun', value: 44 }] })),
     adminUsers: vi.fn(() => userResponses.shift() ?? Promise.resolve({ users: [adminUser] })),
     setUserLevel: vi.fn(() => overrides.setUserLevel ?? Promise.resolve({ message: 'level updated' })),
     grantAdmin: vi.fn(() => overrides.grantAdmin ?? Promise.resolve({ message: 'admin granted' })),
@@ -1304,6 +1358,16 @@ function adminStats(input: { totalMemories: number; activeProjectCounts: readonl
       by_category: [],
       last_synced_at: null
     }
+  }
+}
+
+function overviewStats(input: { openConflicts?: number; liveActivityCount?: number; newestSyncId?: string } = {}): OverviewStats {
+  return {
+    daemon_health: { healthy: 1, total: 2 },
+    conflicts: { open: input.openConflicts ?? 3 },
+    sync_health_by_project: [{ project: 'jarvis-dev', status: 'healthy', region: 'local', contributor_count: 2 }],
+    live_activity: { count: input.liveActivityCount ?? 4, newest_sync_id: input.newestSyncId ?? 'sync-newest' },
+    most_active_projects: [{ project: 'jarvis-dev', count: 11 }]
   }
 }
 

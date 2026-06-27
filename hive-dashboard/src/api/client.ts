@@ -13,6 +13,15 @@ export type LoginResponse = { token: string; expires_at?: string; user: User }
 export type Health = { status: string; db: string; version: string }
 export type AdminStats = { users: { total: number; active: number; by_level: Record<string, number> }; memories: { total: number; by_project: Count[]; by_category: Count[]; last_synced_at: string | null } }
 export type Count = { project?: string; category?: string; count: number }
+export type OverviewProjectSyncHealth = { project: string; status: 'healthy' | 'degraded' | 'unknown' | string; region: string; contributor_count: number }
+export type OverviewStats = {
+  daemon_health: { healthy: number; total: number }
+  conflicts: { open: number }
+  sync_health_by_project: OverviewProjectSyncHealth[]
+  live_activity: { count: number; newest_sync_id: string }
+  most_active_projects: Count[]
+}
+export type OverviewGrowth = { knowledge_growth: { label: string; value: number }[] }
 export type Memory = { id: string; sync_id: string; project: string; category: string; title: string; content: string; tags: string[]; files_affected: string[]; created_by: string; created_at: string; updated_at: string; synced_at: string }
 export type MemoryList = { memories: Memory[]; total: number; limit: number; offset: number }
 export type MemorySearch = { memories: Memory[]; total: number; query: string; limit: number; offset: number }
@@ -62,6 +71,8 @@ export type ApiClient = {
   currentUser(token: string): Promise<User>
   health(): Promise<Health>
   adminStats(token: string): Promise<AdminStats>
+  overviewStats(token: string): Promise<OverviewStats>
+  overviewGrowth(token: string): Promise<OverviewGrowth>
   adminUsers(token: string): Promise<{ users: User[] }>
   setUserLevel(token: string, username: string, level: UserLevel): Promise<MutationMessage>
   grantAdmin(token: string, username: string): Promise<MutationMessage>
@@ -120,6 +131,12 @@ export function createApiClient(options: { baseUrl?: string; fetch?: Fetcher } =
     },
     adminStats(token) {
       return request<AdminStats>('/admin/stats', authGet(token))
+    },
+    overviewStats(token) {
+      return request<OverviewStats>('/admin/overview/stats', authGet(token))
+    },
+    overviewGrowth(token) {
+      return request<OverviewGrowth>('/admin/overview/growth', authGet(token))
     },
     adminUsers(token) {
       return request<{ users: User[] }>('/admin/users', authGet(token))
