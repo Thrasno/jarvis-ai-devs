@@ -183,10 +183,20 @@ function flushPanel(title: string, content: HTMLElement): HTMLElement {
   section.className = 'dashboard-panel panel dashboard-panel--flush'
   section.dataset.dashboardPrimitive = 'panel'
 
+  // Header bar — 44px height, mono uppercase title
+  const header = document.createElement('div')
+  header.className = 'dashboard-panel__header'
+
   const titleEl = document.createElement('h2')
   titleEl.className = 'dashboard-panel__title'
   titleEl.textContent = title
+  header.append(titleEl)
 
-  section.append(titleEl, content)
+  // Body — flush variant: no padding (content manages its own spacing)
+  const body = document.createElement('div')
+  body.className = 'dashboard-panel__body'
+  body.append(content)
+
+  section.append(header, body)
   return section
 }
