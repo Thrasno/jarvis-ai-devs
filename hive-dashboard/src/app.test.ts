@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ActivityFeedResponse, ApiClient, MemoryList, MemorySearch, OverviewGrowth, OverviewStats } from './api/client'
+import type { ActivityFeedResponse, ApiClient, Memory, MemoryList, MemorySearch, OverviewGrowth, OverviewStats } from './api/client'
 import type { SessionStore } from './auth/session'
-import { loadDashboard, renderApp, startDashboardApp } from './main'
-import { dashboardNotificationSummary } from './fixtures/hive-dashboard/shared'
+import { loadDashboard, loadForRoute, renderApp, startDashboardApp } from './main'
 import { hiveOverviewFixture } from './fixtures/hive-dashboard/overview'
 import { projectsFixture } from './fixtures/hive-dashboard/explore'
 import { memoryListToDiscoveryData, memorySearchToDiscoveryData } from './domain/knowledgeDiscovery'
@@ -659,17 +658,184 @@ describe('dashboard shell', () => {
     }
   })
 
-  it('shows a controlled unavailable state for memory detail deep links', () => {
+  it('loads memory detail deep links through the existing memory API and shows loading while pending', async () => {
     const container = document.createElement('main')
+    document.body.append(container)
+    const requestedMemory = deferred<Memory>()
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({ memory: [requestedMemory.promise] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/memories/mem-detail-1')
 
-    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath: '/dashboard/memories/gateway-auth-boundary' })
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await Promise.resolve()
+      await Promise.resolve()
 
-    expect(container.querySelector('section h2')?.textContent).toBe('Memories')
-    expect(container.querySelector('[data-coming-soon]')).toBeNull()
-    expect(container.querySelector('[role="status"]')?.textContent).toBe('Memory detail is unavailable in this fixture-backed dashboard slice.')
+      expect(api.memory).toHaveBeenCalledWith('jwt-token', 'mem-detail-1')
+      expect(container.querySelector('[role="status"]')?.textContent).toBe('Loading memory mem-detail-1…')
+
+      requestedMemory.resolve(memory({ id: 'mem-detail-1', title: 'Loaded detail memory', content: 'Full detail content' }))
+      await flushDashboard()
+
+      expect(container.querySelector('section h2')?.textContent).toBe('Loaded detail memory')
+      expect(container.textContent).toContain('Full detail content')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
   })
 
-  it('shows memory detail unavailable state before API-backed memories data is ready', () => {
+  it('shows controlled malformed memory detail routes without calling the memory API', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi()
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/memories/%E0%A4%A')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      expect(api.memory).not.toHaveBeenCalled()
+      expect(container.querySelector('section h2')?.textContent).toBe('Memories')
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('Malformed memory ID')
+      expect(container.textContent).not.toContain('Memory detail is unavailable')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('shows memory detail API errors without sync-id fallback claims', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({ memory: [() => Promise.reject(new Error('memory missing'))] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/memories/sync-id-like-value')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      expect(api.memory).toHaveBeenCalledWith('jwt-token', 'sync-id-like-value')
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('memory missing')
+      expect(container.textContent).not.toContain('sync-ID lookup')
+      expect(container.textContent).not.toContain('Memory detail is unavailable')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('keeps stale memory detail responses from overwriting the current route', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const firstDetail = deferred<Memory>()
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({ memory: [
+      firstDetail.promise,
+      Promise.resolve(memory({ id: 'mem-b', title: 'Second detail memory', content: 'Current route content' }))
+    ] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/memories/mem-a')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+      expect(api.memory).toHaveBeenNthCalledWith(1, 'jwt-token', 'mem-a')
+
+      history.pushState(null, '', '/dashboard/memories/mem-b')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await flushDashboard()
+
+      expect(api.memory).toHaveBeenNthCalledWith(2, 'jwt-token', 'mem-b')
+      expect(container.textContent).toContain('Second detail memory')
+
+      firstDetail.resolve(memory({ id: 'mem-a', title: 'First stale memory', content: 'Stale route content' }))
+      await flushDashboard()
+
+      expect(window.location.pathname).toBe('/dashboard/memories/mem-b')
+      expect(container.textContent).toContain('Second detail memory')
+      expect(container.textContent).not.toContain('First stale memory')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('revalidates an already cached memory detail when the same detail route loads again', async () => {
+    const api = fakeApi({ memory: [Promise.resolve(memory({ id: 'mem-detail-1', title: 'Fresh detail memory', content: 'Fresh detail content' }))] })
+    const cached = {
+      status: 'ready' as const,
+      data: {
+        memoryDetail: { status: 'ready' as const, data: { routeId: 'mem-detail-1', memory: memory({ id: 'mem-detail-1', title: 'Stale detail memory', content: 'Stale detail content' }) } }
+      }
+    }
+
+    const loaded = await loadForRoute('memories', api, 'jwt-token', cached, '/dashboard/memories/mem-detail-1')
+
+    expect(api.memory).toHaveBeenCalledWith('jwt-token', 'mem-detail-1')
+    expect(loaded.status).toBe('ready')
+    if (loaded.status !== 'ready') throw new Error('expected ready dashboard')
+    expect(loaded.data.memoryDetail).toEqual({
+      status: 'ready',
+      data: {
+        routeId: 'mem-detail-1',
+        memory: memory({ id: 'mem-detail-1', title: 'Fresh detail memory', content: 'Fresh detail content' })
+      }
+    })
+  })
+
+  it('navigates back to the memories list from memory detail', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({ memory: [Promise.resolve(memory({ id: 'mem-detail-1', title: 'Loaded detail memory' }))] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/memories/mem-detail-1')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+      expect(container.querySelector('section h2')?.textContent).toBe('Loaded detail memory')
+
+      container.querySelector<HTMLButtonElement>('button[aria-label="Back to memories"]')?.click()
+      await flushDashboard()
+
+      expect(window.location.pathname).toBe('/dashboard/memories')
+      expect(container.querySelector('section h2')?.textContent).toBe('Memories')
+      expect(container.textContent).toContain('Recent memories')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('renders API-ready memory detail data when supplied by renderApp', () => {
+    const container = document.createElement('main')
+
+    renderApp({
+      container,
+      state: { status: 'authenticated', token: 'jwt-token', user: adminUser },
+      actions: { onLogin: vi.fn(), onLogout: vi.fn() },
+      dashboard: { status: 'ready', data: { memoryDetail: { status: 'ready', data: { routeId: 'gateway-auth-boundary', memory: memory({ id: 'gateway-auth-boundary', title: 'Gateway memory detail' }) } } } },
+      routePath: '/dashboard/memories/gateway-auth-boundary'
+    })
+
+    expect(container.querySelector('section h2')?.textContent).toBe('Gateway memory detail')
+    expect(container.querySelector('[data-coming-soon]')).toBeNull()
+    expect(container.textContent).toContain('Memory ID: gateway-auth-boundary')
+  })
+
+  it('shows memory detail loading independently from the memories list state', () => {
     for (const dashboard of [
       { status: 'loading' as const },
       { status: 'ready' as const, data: { memories: { status: 'error' as const, message: 'memories unavailable' } } }
@@ -679,20 +845,20 @@ describe('dashboard shell', () => {
       renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard, routePath: '/dashboard/memories/gateway-auth-boundary' })
 
       expect(container.querySelector('section h2')?.textContent).toBe('Memories')
-      expect(container.querySelector('[role="status"]')?.textContent).toBe('Memory detail is unavailable in this fixture-backed dashboard slice.')
+      expect(container.querySelector('[role="status"]')?.textContent).toBe('Loading memory gateway-auth-boundary…')
       expect(container.textContent).not.toContain('Loading memories…')
       expect(container.textContent).not.toContain('memories unavailable')
     }
   })
 
-  it('shows the controlled unavailable state for malformed memory detail URLs', () => {
+  it('shows the controlled malformed state when renderApp receives a malformed memory detail URL', () => {
     const container = document.createElement('main')
 
     expect(() => renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath: '/dashboard/memories/%E0%A4%A' })).not.toThrow()
 
     expect(container.querySelector('section h2')?.textContent).toBe('Memories')
     expect(container.querySelector('[data-coming-soon]')).toBeNull()
-    expect(container.querySelector('[role="status"]')?.textContent).toBe('Memory detail is unavailable in this fixture-backed dashboard slice.')
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Malformed memory ID')
   })
 
   it('keeps memory detail IDs from colliding with legacy route aliases', () => {
@@ -702,7 +868,7 @@ describe('dashboard shell', () => {
       renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath })
 
       expect(container.querySelector('section h2')?.textContent).toBe('Memories')
-      expect(container.querySelector('[role="status"]')?.textContent).toBe('Memory detail is unavailable in this fixture-backed dashboard slice.')
+      expect(container.querySelector('[role="status"]')?.textContent).toContain('Loading memory')
       expect(container.textContent).not.toContain('Users')
       expect(container.textContent).not.toContain('Audit Sync')
     }
@@ -902,35 +1068,27 @@ describe('dashboard shell', () => {
   })
 })
 
-describe('bell and search slot integration', () => {
-  it('notification bell is visible in authenticated shell', () => {
+describe('shell search slot integration', () => {
+  it('hides fixture-backed notification shell affordances in the authenticated shell', () => {
     const container = document.createElement('main')
 
-    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
+    renderApp({
+      container,
+      state: { status: 'authenticated', token: 'jwt-token', user: adminUser },
+      actions: { onLogin: vi.fn(), onLogout: vi.fn() },
+      dashboard: { status: 'loading' },
+      routePath: '/dashboard'
+    })
 
-    const bell = container.querySelector('[aria-label="Notifications"]')
-    expect(bell).not.toBeNull()
-  })
-
-  it('bell shows unread badge when summary.unread > 0', () => {
-    const container = document.createElement('main')
-
-    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: { status: 'loading' }, routePath: '/dashboard', drawerState: { drawerOpen: false, readIds: new Set() } })
-
-    // dashboardNotificationSummary.unread is 3
-    const badge = container.querySelector('[data-bell-badge]')
-    expect(badge).not.toBeNull()
-    expect(badge?.textContent).toContain(String(dashboardNotificationSummary.unread))
-  })
-
-  it('bell badge is hidden when all notifications are read', () => {
-    const container = document.createElement('main')
-    const allReadIds = new Set(Array.from({ length: 7 }, (_, i) => `id-${i}`))
-
-    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: { status: 'loading' }, routePath: '/dashboard', drawerState: { drawerOpen: false, readIds: allReadIds, summaryUnread: 0 } })
-
-    const badge = container.querySelector('[data-bell-badge]')
-    expect(badge).toBeNull()
+    expect(container.querySelector('[aria-label="Notifications"]')).toBeNull()
+    expect(container.querySelector('[data-bell]')).toBeNull()
+    expect(container.querySelector('[data-bell-badge]')).toBeNull()
+    expect(container.querySelector('[data-dashboard-primitive="drawer"]')).toBeNull()
+    expect(container.querySelector('[data-notification-card]')).toBeNull()
+    expect(container.querySelector('[data-mark-all-read]')).toBeNull()
+    expect(container.querySelector('[data-dashboard-primitive="sidebar"]')?.hasAttribute('inert')).toBe(false)
+    expect(container.querySelector('[role="banner"]')?.hasAttribute('inert')).toBe(false)
+    expect(container.querySelector('[data-dashboard-primitive="main"]')?.hasAttribute('inert')).toBe(false)
   })
 
   it('search slot is visible in authenticated shell', () => {
@@ -940,51 +1098,6 @@ describe('bell and search slot integration', () => {
 
     const searchSlot = container.querySelector('.dashboard-header__search')
     expect(searchSlot).not.toBeNull()
-  })
-
-  it('drawer element has [data-open] attribute when drawerOpen is true', () => {
-    const container = document.createElement('main')
-
-    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: { status: 'loading' }, routePath: '/dashboard', drawerState: { drawerOpen: true, readIds: new Set() } })
-
-    const drawer = container.querySelector('[data-dashboard-primitive="drawer"]')
-    expect(drawer).not.toBeNull()
-    expect(drawer?.hasAttribute('data-open')).toBe(true)
-  })
-
-  it('makes the app background inert while the modal notification drawer is open', () => {
-    const container = document.createElement('main')
-
-    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: { status: 'loading' }, routePath: '/dashboard', drawerState: { drawerOpen: true, readIds: new Set() } })
-
-    expect(container.querySelector('[data-dashboard-primitive="drawer"]')?.getAttribute('aria-modal')).toBe('true')
-    expect(container.querySelector('[data-dashboard-primitive="sidebar"]')?.hasAttribute('inert')).toBe(true)
-    expect(container.querySelector('[role="banner"]')?.hasAttribute('inert')).toBe(true)
-    expect(container.querySelector('[data-dashboard-primitive="main"]')?.hasAttribute('inert')).toBe(true)
-  })
-
-  it('keeps the app background interactive when the notification drawer is closed', () => {
-    const container = document.createElement('main')
-
-    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: { status: 'loading' }, routePath: '/dashboard', drawerState: { drawerOpen: false, readIds: new Set() } })
-
-    expect(container.querySelector('[data-dashboard-primitive="drawer"]')?.getAttribute('aria-modal')).toBeNull()
-    expect(container.querySelector('[data-dashboard-primitive="sidebar"]')?.hasAttribute('inert')).toBe(false)
-    expect(container.querySelector('[role="banner"]')?.hasAttribute('inert')).toBe(false)
-    expect(container.querySelector('[data-dashboard-primitive="main"]')?.hasAttribute('inert')).toBe(false)
-  })
-
-  it('W1 — bell click fires onToggleDrawer action', () => {
-    const container = document.createElement('main')
-    const onToggleDrawer = vi.fn()
-
-    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn(), onToggleDrawer } })
-
-    const bell = container.querySelector<HTMLButtonElement>('[aria-label="Notifications"]')
-    expect(bell).not.toBeNull()
-    bell!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-
-    expect(onToggleDrawer).toHaveBeenCalledTimes(1)
   })
 
   it('W2 — search slot click navigates to /dashboard/globalSearch', () => {
@@ -1062,32 +1175,7 @@ describe('bell and search slot integration', () => {
     }
   })
 
-  it('mark all read button fires onMarkAllRead callback', () => {
-    const container = document.createElement('main')
-    const onMarkAllRead = vi.fn()
-
-    // Render with drawer open and 3 unread notifications
-    renderApp({
-      container,
-      state: { status: 'authenticated', token: 'jwt-token', user: adminUser },
-      actions: { onLogin: vi.fn(), onLogout: vi.fn(), onMarkAllRead },
-      dashboard: { status: 'loading' },
-      routePath: '/dashboard',
-      drawerState: { drawerOpen: true, readIds: new Set(), summaryUnread: 3 }
-    })
-
-    // Drawer must be open and badge visible before click
-    expect(container.querySelector('[data-dashboard-primitive="drawer"]')?.hasAttribute('data-open')).toBe(true)
-    expect(container.querySelector('[data-bell-badge]')).not.toBeNull()
-
-    const markAllReadBtn = container.querySelector<HTMLButtonElement>('[data-mark-all-read]')
-    expect(markAllReadBtn).not.toBeNull()
-    markAllReadBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-
-    expect(onMarkAllRead).toHaveBeenCalledTimes(1)
-  })
-
-  it('opens and closes the notification drawer through startDashboardApp state', async () => {
+  it('does not expose notification drawer controls in the running app shell', async () => {
     const container = document.createElement('main')
     document.body.append(container)
     const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
@@ -1096,62 +1184,14 @@ describe('bell and search slot integration', () => {
     try {
       await flushDashboard()
 
-      const bell = container.querySelector<HTMLButtonElement>('[data-bell]')
-      expect(bell).not.toBeNull()
-      expect(drawer(container)?.hasAttribute('hidden')).toBe(true)
-      expect(drawer(container)?.getAttribute('role')).toBeNull()
-
-      bell!.click()
-
-      expect(drawer(container)?.hasAttribute('data-open')).toBe(true)
-      expect(drawer(container)?.hasAttribute('hidden')).toBe(false)
-      expect(drawer(container)?.getAttribute('role')).toBe('dialog')
-      expect(drawer(container)?.getAttribute('aria-modal')).toBe('true')
-      expect(container.querySelector('[data-dashboard-primitive="sidebar"]')?.hasAttribute('inert')).toBe(true)
-      expect(container.querySelector('[role="banner"]')?.hasAttribute('inert')).toBe(true)
-      expect(container.querySelector('[data-dashboard-primitive="main"]')?.hasAttribute('inert')).toBe(true)
-      expect(document.activeElement).toBe(container.querySelector('[data-drawer-close]'))
-
-      container.querySelector<HTMLButtonElement>('[data-drawer-close]')!.click()
-
-      expect(drawer(container)?.hasAttribute('data-open')).toBe(false)
-      expect(drawer(container)?.hasAttribute('hidden')).toBe(true)
-      expect(drawer(container)?.hasAttribute('inert')).toBe(true)
-      expect(drawer(container)?.getAttribute('aria-hidden')).toBe('true')
-      expect(drawer(container)?.getAttribute('role')).toBeNull()
-      expect(drawer(container)?.getAttribute('aria-modal')).toBeNull()
+      expect(container.querySelector('[data-bell]')).toBeNull()
+      expect(container.querySelector('[aria-label="Notifications"]')).toBeNull()
+      expect(container.querySelector('[data-dashboard-primitive="drawer"]')).toBeNull()
+      expect(container.querySelector('[data-notification-card]')).toBeNull()
+      expect(container.querySelector('[data-mark-all-read]')).toBeNull()
       expect(container.querySelector('[data-dashboard-primitive="sidebar"]')?.hasAttribute('inert')).toBe(false)
       expect(container.querySelector('[role="banner"]')?.hasAttribute('inert')).toBe(false)
       expect(container.querySelector('[data-dashboard-primitive="main"]')?.hasAttribute('inert')).toBe(false)
-      expect(document.activeElement).toBe(container.querySelector('[data-bell]'))
-    } finally {
-      cleanup()
-      container.remove()
-    }
-  })
-
-  it('closes the open notification drawer with Escape and restores bell focus', async () => {
-    const container = document.createElement('main')
-    document.body.append(container)
-    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
-
-    const cleanup = startDashboardApp(container, { api: fakeApi(), session })
-    try {
-      await flushDashboard()
-
-      const bell = container.querySelector<HTMLButtonElement>('[data-bell]')
-      expect(bell).not.toBeNull()
-      bell!.click()
-      expect(drawer(container)?.hasAttribute('data-open')).toBe(true)
-      expect(document.activeElement).toBe(container.querySelector('[data-drawer-close]'))
-
-      const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
-      container.querySelector<HTMLButtonElement>('[data-drawer-close]')!.dispatchEvent(event)
-
-      expect(event.defaultPrevented).toBe(true)
-      expect(drawer(container)?.hasAttribute('data-open')).toBe(false)
-      expect(drawer(container)?.hasAttribute('hidden')).toBe(true)
-      expect(document.activeElement).toBe(container.querySelector('[data-bell]'))
     } finally {
       cleanup()
       container.remove()
@@ -1184,36 +1224,7 @@ describe('bell and search slot integration', () => {
     }
   })
 
-  it('marks all notifications read through startDashboardApp and restores bell focus', async () => {
-    const container = document.createElement('main')
-    document.body.append(container)
-    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
-
-    const cleanup = startDashboardApp(container, { api: fakeApi(), session })
-    try {
-      await flushDashboard()
-
-      expect(container.querySelector('[data-bell-badge]')?.textContent).toBe(String(dashboardNotificationSummary.unread))
-      container.querySelector<HTMLButtonElement>('[data-bell]')!.click()
-      expect(drawer(container)?.hasAttribute('data-open')).toBe(true)
-
-      container.querySelector<HTMLButtonElement>('[data-mark-all-read]')!.click()
-
-      expect(container.querySelector('[data-bell-badge]')).toBeNull()
-      expect(drawer(container)?.hasAttribute('data-open')).toBe(false)
-      expect(drawer(container)?.hasAttribute('hidden')).toBe(true)
-      expect(container.querySelectorAll('[data-unread-indicator]').length).toBe(0)
-      expect(document.activeElement).toBe(container.querySelector('[data-bell]'))
-    } finally {
-      cleanup()
-      container.remove()
-    }
-  })
 })
-
-function drawer(container: HTMLElement): HTMLElement | null {
-  return container.querySelector('[data-dashboard-primitive="drawer"]')
-}
 
 async function flushDashboard(): Promise<void> {
   await Promise.resolve()
@@ -1257,11 +1268,13 @@ function fakeApi(overrides: {
   activity?: Array<Promise<ActivityFeedResponse> | (() => Promise<ActivityFeedResponse>)>
   memories?: Array<Promise<MemoryList> | (() => Promise<MemoryList>)>
   search?: Array<Promise<MemorySearch> | (() => Promise<MemorySearch>)>
+  memory?: Array<Promise<Memory> | (() => Promise<Memory>)>
 } = {}): ApiClient {
   const userResponses = [...(overrides.users ?? [])]
   const activityResponses = [...(overrides.activity ?? [])]
   const memoryResponses = [...(overrides.memories ?? [])]
   const searchResponses = [...(overrides.search ?? [])]
+  const detailResponses = [...(overrides.memory ?? [])]
   return {
     login: vi.fn(),
     currentUser: vi.fn(),
@@ -1283,7 +1296,11 @@ function fakeApi(overrides: {
       if (typeof next === 'function') return next()
       return next ?? Promise.resolve(memorySearchResponse([memory({ title: 'Gateway owns the auth boundary, not services' })]))
     }),
-    memory: vi.fn(async () => ({ id: 'mem-1', sync_id: 'sync-1', project: 'jarvis-dev', category: 'decision', title: 'Dashboard scope', content: 'No daemon controls', tags: [], files_affected: [], created_by: 'admin-1', created_at: '2026-06-06T20:00:00Z', updated_at: '2026-06-06T20:01:00Z', synced_at: '2026-06-06T20:02:00Z' })),
+    memory: vi.fn((_token: string, id: string) => {
+      const next = detailResponses.shift()
+      if (typeof next === 'function') return next()
+      return next ?? Promise.resolve(memory({ id }))
+    }),
     auditLogs: vi.fn(async () => ({ audit_logs: [], total: 0, limit: 10, offset: 0 })),
     syncAttemptSummary: vi.fn(async () => syncAttemptSummaryFixture()),
     activity: vi.fn(() => {

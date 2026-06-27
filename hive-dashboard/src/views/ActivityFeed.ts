@@ -31,23 +31,13 @@ function entryLabel(entry: ActivityEntryViewModel): string {
   return `${entry.title} — ${entry.category} — ${entry.actorHandle} — ${entry.projectId} — ${entry.timeLabel}`
 }
 
-function renderEntry(entry: ActivityEntryViewModel, onNavigate: (path: string) => void): HTMLElement {
-  if (!entry.memorySyncId) {
-    const row = document.createElement('article')
-    row.className = 'dashboard-notification-card'
-    row.setAttribute('data-activity-entry-static', '')
-    row.setAttribute('aria-label', entryLabel(entry))
-    renderEntryContent(row, entry)
-    return row
-  }
-
-  const btn = document.createElement('button')
-  btn.type = 'button'
-  btn.className = 'dashboard-notification-card'
-  btn.setAttribute('aria-label', entryLabel(entry))
-  renderEntryContent(btn, entry)
-  btn.addEventListener('click', () => onNavigate(`/dashboard/memories/${encodeURIComponent(entry.memorySyncId ?? '')}`))
-  return btn
+function renderEntry(entry: ActivityEntryViewModel): HTMLElement {
+  const row = document.createElement('article')
+  row.className = 'dashboard-notification-card'
+  row.setAttribute('data-activity-entry-static', '')
+  row.setAttribute('aria-label', entryLabel(entry))
+  renderEntryContent(row, entry)
+  return row
 }
 
 export function renderActivityFeed(
@@ -85,7 +75,7 @@ export function renderActivityFeed(
     const entryList = document.createElement('div')
     entryList.setAttribute('data-activity-group-entries', '')
     for (const entry of group.entries) {
-      entryList.append(renderEntry(entry, deps.onNavigate))
+      entryList.append(renderEntry(entry))
     }
     section.append(entryList)
     card.append(section)
