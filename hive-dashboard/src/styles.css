@@ -468,17 +468,8 @@ body::before {
 
 /* ─── Projects repository view ────────────────────────────────────────────── */
 .dashboard-projects {
-  background:
-    radial-gradient(circle at 16% 0%, rgba(224, 36, 111, 0.16), transparent 32%),
-    radial-gradient(circle at 100% 8%, rgba(59, 130, 232, 0.14), transparent 36%),
-    linear-gradient(180deg, rgba(18, 26, 43, 0.92) 0%, rgba(9, 14, 24, 0.96) 100%);
-  border: 1px solid var(--dashboard-border);
-  border-radius: var(--dashboard-radius);
-  box-shadow: 0 20px 60px rgb(0 0 0 / 24%);
   display: grid;
   gap: calc(var(--dashboard-spacing) * 1.5);
-  overflow: hidden;
-  padding: calc(var(--dashboard-spacing) * 1.5);
 }
 
 .dashboard-projects__header {
@@ -531,14 +522,17 @@ body::before {
 }
 
 .dashboard-project-card__identity,
-.dashboard-project-card__health,
 .dashboard-project-card__metrics,
 .dashboard-project-card__actions {
   padding: var(--dashboard-spacing);
 }
 
 .dashboard-project-card__identity {
-  min-height: 5rem;
+  align-items: start;
+  display: flex;
+  gap: .75rem;
+  justify-content: space-between;
+  min-height: 0;
 }
 
 .dashboard-project-card__identity h3 {
@@ -549,14 +543,14 @@ body::before {
 }
 
 .dashboard-project-card__health {
-  align-self: start;
+  align-self: center;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 999px;
+  flex: 0 0 auto;
   font-family: var(--dashboard-font-mono);
   font-size: .7rem;
   font-weight: 800;
   letter-spacing: .12em;
-  margin: 0 var(--dashboard-spacing) var(--dashboard-spacing);
   padding: .35rem .65rem;
 }
 
@@ -604,16 +598,8 @@ body::before {
 }
 
 .dashboard-project-card__rail {
-  background: rgba(255, 255, 255, 0.04);
-  height: 3px;
-  overflow: hidden;
-}
-
-.dashboard-project-card__rail span {
-  background: var(--dashboard-brand-gradient);
-  display: block;
-  height: 100%;
-  width: 100%;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  height: 0;
 }
 
 .dashboard-project-card__actions {
@@ -621,7 +607,7 @@ body::before {
 }
 
 .dashboard-project-card__browse {
-  color: var(--dashboard-accent);
+  color: var(--dashboard-text-muted);
   font-family: var(--dashboard-font-mono);
   font-size: .78rem;
   font-weight: 800;
@@ -630,7 +616,7 @@ body::before {
 }
 
 .dashboard-project-card__browse:hover {
-  color: var(--dashboard-text);
+  color: var(--dashboard-data-blue);
 }
 
 @media (max-width: 768px) {

@@ -23,18 +23,18 @@ describe('projects view', () => {
 
     expect(cards).toHaveLength(3)
     expect(cards.map((card) => card.getAttribute('aria-label'))).toEqual([
-      'Core API project: HEALTHY health, 4,821 memories, 17 sessions, last activity Jun 27, 2026, 09:30',
+      'Core API project: HEALTHY health, 4,821 memories, 17 sessions, last activity 27/06/26',
       'Search Index project: UNKNOWN health, 2,104 memories, 4 sessions, last activity unavailable',
-      'Billing Worker project: DEGRADED health, 1,633 memories, 3 sessions, last activity Jun 26, 2026, 08:15'
+      'Billing Worker project: DEGRADED health, 1,633 memories, 3 sessions, last activity 26/06/26'
     ])
     expect(cards[0].querySelector('.dashboard-project-card__identity h3')?.textContent).toBe('Core API')
-    expect(cards[0].querySelector('.dashboard-project-card__health')?.textContent).toContain('HEALTHY')
+    expect(cards[0].querySelector('.dashboard-project-card__identity .dashboard-project-card__health')?.textContent).toContain('HEALTHY')
     expect(cards[0].querySelector('.dashboard-project-card__metrics')).not.toBeNull()
     expect(cards[0].querySelector('.dashboard-project-card__actions')).not.toBeNull()
     expect(cards[0].textContent).toContain('Core API')
     expect(metricValue(cards[0], 'MEMORIES')).toBe('4,821')
     expect(metricValue(cards[0], 'SESSIONS')).toBe('17')
-    expect(metricValue(cards[0], 'LAST ACTIVITY')).toBe('Jun 27, 2026, 09:30')
+    expect(metricValue(cards[0], 'LAST ACTIVITY')).toBe('27/06/26')
     expect(cards[0].querySelector<HTMLAnchorElement>('a')?.textContent).toBe('browse memories →')
     expect(browseLinks.map((link) => link.getAttribute('aria-label'))).toEqual([
       'Browse memories for Core API',
@@ -58,6 +58,7 @@ describe('projects view', () => {
       expect(rail.getAttribute('aria-hidden')).toBe('true')
       expect(rail.getAttribute('role')).not.toBe('progressbar')
       expect(rail.hasAttribute('aria-valuenow')).toBe(false)
+      expect(rail.childElementCount).toBe(0)
     }
   })
 

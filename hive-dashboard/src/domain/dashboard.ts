@@ -500,13 +500,10 @@ function lastActivityLabel(value: string | null | undefined): string {
   if (!value) return 'Last activity unavailable'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return 'Last activity unavailable'
-  const formatted = new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
+  const formatted = new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit',
+    month: '2-digit',
+    year: '2-digit',
     timeZone: 'UTC'
   }).format(date)
   return `Last activity: ${formatted}`
