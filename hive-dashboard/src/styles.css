@@ -18,6 +18,7 @@
   --dashboard-data-blue: #3B82E8;
   --dashboard-violet: #8b5cf0;
   --dashboard-brand-gradient: linear-gradient(90deg, #E0246F 0%, #8b5cf0 50%, #3B82E8 100%);
+  --dashboard-sidebar-bg: #0a0e16;
   --dashboard-font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace;
   color: var(--dashboard-text);
   background: var(--dashboard-background);
@@ -176,8 +177,8 @@ body::before {
 
 /* ─── Sidebar ──────────────────────────────────────────────────────────────── */
 .dashboard-sidebar {
-  background: var(--dashboard-surface);
-  border-right: 1px solid var(--dashboard-border);
+  background: var(--dashboard-sidebar-bg);
+  border-right: 1px solid #161d2a;
   display: flex;
   flex-direction: column;
   height: 100vh;
