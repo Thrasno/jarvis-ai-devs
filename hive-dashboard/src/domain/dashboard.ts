@@ -137,6 +137,19 @@ export type MetricCardViewModel = {
   readonly sourceLabel?: string
 }
 
+export type OverviewSyncHealthProjectViewModel = {
+  readonly id: string
+  readonly name: string
+  readonly region: string
+  readonly status: ProjectSyncStatus
+  readonly contributorCount: number
+}
+
+export type OverviewLiveActivityViewModel = {
+  readonly count: number
+  readonly newestSyncId: string
+}
+
 export type OverviewFixtureViewModel = {
   readonly screen: 'overview'
   readonly totalMemories: MetricCardViewModel
@@ -144,13 +157,9 @@ export type OverviewFixtureViewModel = {
   readonly healthyDaemons: MetricCardViewModel
   readonly openConflicts: MetricCardViewModel
   readonly knowledgeGrowth: ChartSeriesViewModel
-  readonly syncHealthByProject: readonly ProjectPrimitiveViewModel[]
+  readonly syncHealthByProject: readonly OverviewSyncHealthProjectViewModel[]
   readonly syncHealthByProjectSourceLabel?: string
-  readonly liveActivity: {
-    readonly summary: string
-    readonly newestMemoryId: string
-    readonly updatedAtLabel: string
-  }
+  readonly liveActivity: OverviewLiveActivityViewModel
   readonly mostActiveProjects: readonly ChartPointViewModel[]
 }
 

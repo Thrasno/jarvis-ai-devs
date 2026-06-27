@@ -3,17 +3,15 @@ import { conflictViewerFixture } from './governance'
 import { dashboardContributors, dashboardProjects } from './shared'
 
 const healthyContributors = dashboardContributors.filter((contributor) => contributor.status === 'healthy').length
-const demoFixtureSource = 'Demo fixture data — live data is unavailable.'
 
 export const hiveOverviewFixture = {
   screen: 'overview',
-  totalMemories: { label: 'Total Memories', value: 22375, displayValue: '22.4k', sourceLabel: demoFixtureSource },
-  activeProjects: { label: 'Active Projects', value: dashboardProjects.length, displayValue: '8', sourceLabel: demoFixtureSource },
-  healthyDaemons: { label: 'Healthy Daemons', value: healthyContributors, totalValue: dashboardContributors.length, displayValue: `${healthyContributors}/${dashboardContributors.length}`, sourceLabel: 'Demo fixture data — live daemon counts are unavailable.' },
-  openConflicts: { label: 'Open Conflicts', value: conflictViewerFixture.summary.open, sourceLabel: 'Demo fixture data — live conflict counts are unavailable.' },
+  totalMemories: { label: 'Total Memories', value: 22375, displayValue: '22.4k' },
+  activeProjects: { label: 'Active Projects', value: dashboardProjects.length, displayValue: '8' },
+  healthyDaemons: { label: 'Healthy Daemons', value: healthyContributors, totalValue: dashboardContributors.length, displayValue: `${healthyContributors}/${dashboardContributors.length}` },
+  openConflicts: { label: 'Open Conflicts', value: conflictViewerFixture.summary.open },
   knowledgeGrowth: {
     label: 'Knowledge Growth',
-    sourceLabel: 'Demo fixture data — live historical knowledge growth is unavailable.',
     points: [
       { label: 'Feb', value: 16720 },
       { label: 'Mar', value: 18140 },
@@ -22,12 +20,16 @@ export const hiveOverviewFixture = {
       { label: 'Jun', value: 22375 }
     ]
   },
-  syncHealthByProject: dashboardProjects,
-  syncHealthByProjectSourceLabel: 'Demo fixture data — live per-project sync health is unavailable.',
+  syncHealthByProject: dashboardProjects.map((project) => ({
+    id: project.id,
+    name: project.name,
+    region: project.region,
+    status: project.status,
+    contributorCount: project.contributorCount
+  })),
   liveActivity: {
-    summary: '3 memories saved in the last hour',
-    newestMemoryId: 'gateway-auth-boundary',
-    updatedAtLabel: 'Demo fixture data — live activity freshness is unavailable.'
+    count: 3,
+    newestSyncId: 'sync-gateway-auth-boundary'
   },
   mostActiveProjects: [
     { label: 'data-pipeline', value: 5210 },

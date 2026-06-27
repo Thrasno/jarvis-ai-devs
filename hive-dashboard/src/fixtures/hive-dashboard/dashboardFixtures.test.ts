@@ -123,9 +123,9 @@ describe('Hive dashboard Explore fixtures', () => {
     expect(hiveOverviewFixture.totalMemories).toEqual({
       label: 'Total Memories',
       value: 22375,
-      displayValue: '22.4k',
-      sourceLabel: 'Demo fixture data — live data is unavailable.'
+      displayValue: '22.4k'
     })
+    expect(hiveOverviewFixture.liveActivity).toEqual({ count: 3, newestSyncId: 'sync-gateway-auth-boundary' })
     expect(exploreScreenFixtures.projects.projects).toHaveLength(8)
     expect(exploreScreenFixtures.projects.healthEvaluationDate).toBe('2026-06-18T00:00:00.000Z')
     expect(exploreScreenFixtures.knowledgeBrowser.memories).toHaveLength(41)

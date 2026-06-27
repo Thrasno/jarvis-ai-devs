@@ -1,4 +1,4 @@
-import { createApiClient, type AdminStats, type ApiClient, type Health, type MemoryList, type MemoryListParams, type MemorySearch, type MemorySearchParams, type SyncAttemptSummary, type User } from './api/client'
+import { createApiClient, type AdminStats, type ApiClient, type Count, type Health, type MemoryList, type MemoryListParams, type MemorySearch, type MemorySearchParams, type OverviewGrowth, type OverviewProjectSyncHealth, type OverviewStats, type SyncAttemptSummary, type User } from './api/client'
 import { parseDashboardFilters } from './api/urlFilters'
 import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
 import { control } from './components/dom'
@@ -6,11 +6,10 @@ import { comingSoon } from './components/ComingSoon'
 import { renderNotificationDrawer } from './components/NotificationDrawer'
 import { renderSidebar, type UserLevel } from './components/Sidebar'
 import { activityFeedFromApi, appendActivityPage } from './domain/activityFeed'
-import type { ActivityFeedViewModel, CurrentProfileViewModel, DashboardScreenKey, OverviewFixtureViewModel, ProjectListFixtureViewModel } from './domain/dashboard'
+import type { ActivityFeedViewModel, CurrentProfileViewModel, DashboardScreenKey, OverviewFixtureViewModel, ProjectListFixtureViewModel, ProjectSyncStatus } from './domain/dashboard'
 import { memoryListToDiscoveryData, memorySearchToDiscoveryData, type KnowledgeDiscoveryData } from './domain/knowledgeDiscovery'
 import { dashboardFixtures } from './fixtures/hive-dashboard/index'
 import { projectsFixture } from './fixtures/hive-dashboard/explore'
-import { hiveOverviewFixture } from './fixtures/hive-dashboard/overview'
 import { renderAuditSync } from './views/AuditSync'
 import { renderGlobalSearch } from './views/GlobalSearch'
 import { renderKnowledgeBrowser } from './views/KnowledgeBrowser'
@@ -23,6 +22,14 @@ import './styles.css'
 
 export const DEFAULT_MEMORY_SEARCH_QUERY = 'dashboard'
 export const DEFAULT_ACTIVITY_LIMIT = 20
+
+const OVERVIEW_LABELS = {
+  totalMemories: 'Total Memories',
+  activeProjects: 'Active Projects',
+  healthyDaemons: 'Healthy Daemons',
+  openConflicts: 'Open Conflicts',
+  knowledgeGrowth: 'Knowledge Growth'
+} as const
 
 
 export type UsersData = { users: User[] }
@@ -464,13 +471,13 @@ function stateFor<K extends keyof LoadedDashboardData>(
 
 // Keep loadDashboard for backwards compat with the existing test that calls it directly
 export async function loadDashboard(api: ApiClient, token: string): Promise<{ status: 'ready'; data: LoadedDashboardData }> {
-  const [health, stats, users, recent, search, audit, activity] = await Promise.allSettled([
-    api.health(), api.adminStats(token), api.adminUsers(token), api.memories(token, { limit: 5 }), api.searchMemories(token, { query: DEFAULT_MEMORY_SEARCH_QUERY, limit: 5 }), api.syncAttemptSummary(token), api.activity(token, { limit: DEFAULT_ACTIVITY_LIMIT })
+  const [health, stats, overviewStatsResult, overviewGrowthResult, users, recent, search, audit, activity] = await Promise.allSettled([
+    api.health(), api.adminStats(token), api.overviewStats(token), api.overviewGrowth(token), api.adminUsers(token), api.memories(token, { limit: 5 }), api.searchMemories(token, { query: DEFAULT_MEMORY_SEARCH_QUERY, limit: 5 }), api.syncAttemptSummary(token), api.activity(token, { limit: DEFAULT_ACTIVITY_LIMIT })
   ])
   return {
     status: 'ready',
     data: {
-      overview: overviewState(health, stats),
+      overview: overviewState(health, stats, overviewStatsResult, overviewGrowthResult),
       users: settledState(users),
       memories: combinedState(recent, search, (recent, search) => ({ recent, search })),
       audit: settledState(audit),
@@ -515,8 +522,8 @@ export async function loadForRoute(
 async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token: string, routePath = ''): Promise<ViewState<unknown>> {
   switch (key) {
     case 'overview': {
-      const [health, stats] = await Promise.allSettled([api.health(), api.adminStats(token)])
-      return overviewState(health, stats)
+      const [health, stats, overviewStatsResult, overviewGrowthResult] = await Promise.allSettled([api.health(), api.adminStats(token), api.overviewStats(token), api.overviewGrowth(token)])
+      return overviewState(health, stats, overviewStatsResult, overviewGrowthResult)
     }
     case 'users': {
       const result = await Promise.allSettled([api.adminUsers(token)])
@@ -624,15 +631,19 @@ function activityState(result: PromiseSettledResult<Awaited<ReturnType<ApiClient
 
 function overviewState(
   health: PromiseSettledResult<Health>,
-  stats: PromiseSettledResult<AdminStats>
+  stats: PromiseSettledResult<AdminStats>,
+  overviewStatsResult: PromiseSettledResult<OverviewStats>,
+  overviewGrowthResult: PromiseSettledResult<OverviewGrowth>
 ): ViewState<OverviewFixtureViewModel> {
   if (health.status === 'rejected') return { status: 'error', message: messageFor(health.reason) }
   if (stats.status === 'rejected') return { status: 'error', message: messageFor(stats.reason) }
+  if (overviewStatsResult.status === 'rejected') return { status: 'error', message: messageFor(overviewStatsResult.reason) }
+  if (overviewGrowthResult.status === 'rejected') return { status: 'error', message: messageFor(overviewGrowthResult.reason) }
 
   const healthMessage = degradedHealthMessage(health.value)
   if (healthMessage) return { status: 'error', message: healthMessage }
 
-  return { status: 'ready', data: overviewFromLiveApiWithFixtureComplements(stats.value) }
+  return { status: 'ready', data: overviewFromLiveApi(stats.value, overviewStatsResult.value, overviewGrowthResult.value) }
 }
 
 function degradedHealthMessage(health: Health): string | null {
@@ -650,16 +661,45 @@ function degradedHealthMessage(health: Health): string | null {
   return `Hive API health is degraded: ${issues.join(', ')}`
 }
 
-function overviewFromLiveApiWithFixtureComplements(stats: AdminStats): OverviewFixtureViewModel {
-  const healthyTotal = hiveOverviewFixture.healthyDaemons.totalValue ?? hiveOverviewFixture.healthyDaemons.value
-  const healthyValue = hiveOverviewFixture.healthyDaemons.value
+function overviewFromLiveApi(stats: AdminStats, overviewStats: OverviewStats, overviewGrowth: OverviewGrowth): OverviewFixtureViewModel {
   const activeProjects = activeProjectCount(stats)
   return {
-    ...hiveOverviewFixture,
-    totalMemories: { label: hiveOverviewFixture.totalMemories.label, value: stats.memories.total, displayValue: compactNumber(stats.memories.total) },
-    activeProjects: { label: hiveOverviewFixture.activeProjects.label, value: activeProjects, displayValue: String(activeProjects) },
-    healthyDaemons: { ...hiveOverviewFixture.healthyDaemons, value: healthyValue, totalValue: healthyTotal, displayValue: `${healthyValue}/${healthyTotal}` }
+    screen: 'overview',
+    totalMemories: { label: OVERVIEW_LABELS.totalMemories, value: stats.memories.total, displayValue: compactNumber(stats.memories.total) },
+    activeProjects: { label: OVERVIEW_LABELS.activeProjects, value: activeProjects, displayValue: String(activeProjects) },
+    healthyDaemons: {
+      label: OVERVIEW_LABELS.healthyDaemons,
+      value: overviewStats.daemon_health.healthy,
+      totalValue: overviewStats.daemon_health.total,
+      displayValue: `${overviewStats.daemon_health.healthy}/${overviewStats.daemon_health.total}`
+    },
+    openConflicts: { label: OVERVIEW_LABELS.openConflicts, value: overviewStats.conflicts.open },
+    knowledgeGrowth: { label: OVERVIEW_LABELS.knowledgeGrowth, points: overviewGrowth.knowledge_growth },
+    syncHealthByProject: overviewStats.sync_health_by_project.map(syncHealthProjectFromApi),
+    liveActivity: {
+      count: overviewStats.live_activity.count,
+      newestSyncId: overviewStats.live_activity.newest_sync_id
+    },
+    mostActiveProjects: overviewStats.most_active_projects.map(projectCountPoint)
   }
+}
+
+function syncHealthProjectFromApi(project: OverviewProjectSyncHealth): OverviewFixtureViewModel['syncHealthByProject'][number] {
+  return {
+    id: project.project,
+    name: project.project,
+    region: project.region,
+    status: projectSyncStatus(project.status),
+    contributorCount: project.contributor_count
+  }
+}
+
+function projectSyncStatus(status: string): ProjectSyncStatus {
+  return status === 'healthy' || status === 'degraded' || status === 'unknown' ? status : 'unknown'
+}
+
+function projectCountPoint(count: Count): OverviewFixtureViewModel['mostActiveProjects'][number] {
+  return { label: count.project ?? count.category ?? 'unknown', value: count.count }
 }
 
 function activeProjectCount(stats: AdminStats): number {
