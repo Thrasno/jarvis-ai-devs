@@ -47,6 +47,14 @@ export type SyncAttemptSummaryWindow = {
 }
 export type SyncAttemptSummary = { windows: SyncAttemptSummaryWindow[] }
 export type MutationMessage = { message: string }
+export type ProjectSummary = {
+  name: string
+  memoryCount: number
+  sessionCount: number
+  lastActivityAt?: string | null
+  syncHealth?: 'healthy' | 'degraded' | 'unknown' | string | null
+}
+export type ProjectListResponse = { projects: ProjectSummary[]; total: number }
 export type ActivityFeedParams = { limit?: number; cursor?: string }
 export type ActivityFeedEntry = {
   id: string
@@ -83,6 +91,7 @@ export type ApiClient = {
   auditLogs(token: string, params?: AuditLogParams): Promise<AuditLogList>
   syncAttemptSummary(token: string, params?: SyncAttemptSummaryParams): Promise<SyncAttemptSummary>
   activity(token: string, params?: ActivityFeedParams): Promise<ActivityFeedResponse>
+  projects(token: string): Promise<ProjectListResponse>
 }
 
 export class ApiError extends Error {
@@ -167,6 +176,9 @@ export function createApiClient(options: { baseUrl?: string; fetch?: Fetcher } =
     },
     activity(token, params = {}) {
       return request<ActivityFeedResponse>(activityPath(params), authGet(token))
+    },
+    projects(token) {
+      return request<ProjectListResponse>('/projects', authGet(token))
     }
   }
 }

@@ -1,114 +1,104 @@
 import { describe, expect, it } from 'vitest'
-import type { ProjectListFixtureViewModel, ProjectPrimitiveViewModel } from '../domain/dashboard'
+import { projectsFromApi } from '../domain/dashboard'
+import type { ProjectListResponse } from '../api/client'
 import { renderProjects } from './Projects'
 
 describe('projects view', () => {
-  it('renders sorted project cards with required fields and project-scoped browse links', () => {
-    const view = renderProjects({ status: 'ready', data: projectList([healthyProject(), unknownProject(), degradedProject()]) })
+  it('renders live project cards with backend fields and project-name Knowledge Browser links', () => {
+    const view = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([healthyProject(), unknownProject(), degradedProject()])) })
     const cards = Array.from(view.querySelectorAll<HTMLElement>('[role="listitem"]'))
     const browseLinks = Array.from(view.querySelectorAll<HTMLAnchorElement>('a'))
 
     expect(cards).toHaveLength(3)
     expect(cards.map((card) => card.getAttribute('aria-label'))).toEqual([
-      'Billing Worker project: Degraded health, 1,633 memories, 3 contributors, last synced 38m ago',
-      'Search Index project: Unknown health, 2,104 memories, 4 contributors, last synced 1d ago',
-      'Core API project: Healthy health, 4,821 memories, 6 contributors, last synced 2m ago'
+      'Core API project: Healthy health, 4,821 memories, 17 sessions, last activity Jun 27, 2026, 09:30',
+      'Search Index project: Unknown health, 2,104 memories, 4 sessions, last activity unavailable',
+      'Billing Worker project: Degraded health, 1,633 memories, 3 sessions, last activity Jun 26, 2026, 08:15'
     ])
-    expect(cards[0].textContent).toContain('Billing Worker')
-    expect(cards[0].textContent).toContain('us-east-1')
-    expect(cards[0].textContent).toContain('1,633 memories')
-    expect(cards[0].textContent).toContain('3 contributors')
-    expect(cards[0].textContent).toContain('Last sync: 38m ago')
-    expect(cards[0].textContent).toContain('Health: Degraded')
-    expect(cards[0].querySelector<HTMLAnchorElement>('a')?.textContent).toBe('Browse memories')
+    expect(cards[0].textContent).toContain('Core API')
+    expect(cards[0].textContent).toContain('4,821 memories')
+    expect(cards[0].textContent).toContain('17 sessions')
+    expect(cards[0].textContent).toContain('Last activity: Jun 27, 2026, 09:30')
+    expect(cards[0].textContent).toContain('Health: Healthy')
+    expect(cards[0].querySelector<HTMLAnchorElement>('a')?.textContent).toBe('Open in Knowledge Browser')
     expect(browseLinks.map((link) => link.getAttribute('aria-label'))).toEqual([
-      'Browse memories for Billing Worker',
-      'Browse memories for Search Index',
-      'Browse memories for Core API'
+      'Open Core API in Knowledge Browser',
+      'Open Search Index in Knowledge Browser',
+      'Open Billing Worker in Knowledge Browser'
     ])
-    expect(cards[0].querySelector<HTMLAnchorElement>('a')?.getAttribute('href')).toBe('/dashboard/memories?project=billing-worker')
+    expect(cards[0].querySelector<HTMLAnchorElement>('a')?.getAttribute('href')).toBe('/dashboard/knowledgeBrowser?project=Core+API')
   })
 
-  it('uses the project list reference date for health derivation and ordering', () => {
-    const view = renderProjects({
-      status: 'ready',
-      data: projectList(
-        [
-          project('almost-stale', 'Almost Stale', 'eu-west-1', 'healthy', 12, 2, '1d ago', '2024-06-10T00:00:00.000Z'),
-          project('older-stale', 'Older Stale', 'eu-west-1', 'healthy', 8, 1, '2d ago', '2024-06-09T00:00:00.000Z')
-        ],
-        '2026-06-09T00:00:00.000Z'
-      )
-    })
+  it('normalizes missing and unsupported sync health without stale-date inference', () => {
+    const view = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([
+      { name: 'Missing Health', memoryCount: 8, sessionCount: 1, lastActivityAt: '2020-01-01T00:00:00Z', syncHealth: null },
+      { name: 'Unsupported Health', memoryCount: 12, sessionCount: 2, lastActivityAt: '2026-06-25T00:00:00Z', syncHealth: 'paused' }
+    ])) })
     const cards = Array.from(view.querySelectorAll<HTMLElement>('[role="listitem"]'))
 
-    expect(cards.map((card) => card.querySelector('h3')?.textContent)).toEqual(['Older Stale', 'Almost Stale'])
-    expect(cards[0].textContent).toContain('Health: Degraded')
-    expect(cards[1].textContent).toContain('Health: Healthy')
+    expect(cards).toHaveLength(2)
+    expect(cards[0].textContent).toContain('Health: Unknown')
+    expect(cards[1].textContent).toContain('Health: Unknown')
+    expect(cards[0].textContent).not.toContain('Health: Degraded')
   })
 
-  it('renders a non-live source note without claiming fixture cards are production data', () => {
-    const view = renderProjects({ status: 'ready', data: projectList([healthyProject()]) })
-    const note = view.querySelector('[role="note"]')
+  it('renders loading, error, and empty states without fixture fallback cards', () => {
+    const loading = renderProjects({ status: 'loading' })
+    expect(loading.querySelector('[role="status"]')?.textContent).toBe('Loading live project summaries…')
+    expect(loading.querySelectorAll('[role="listitem"]')).toHaveLength(0)
 
-    expect(note?.textContent).toBe('Demo fixture data — live project summaries are unavailable.')
-    expect(note?.textContent).toMatch(/fixture data/i)
-    expect(note?.textContent).toMatch(/live project summaries are unavailable/i)
-    expect(view.textContent).not.toMatch(/live production|production data/i)
+    const failed = renderProjects({ status: 'error', message: 'projects API unavailable' })
+    expect(failed.querySelector('[role="alert"]')?.textContent).toContain('projects API unavailable')
+    expect(failed.querySelectorAll('[role="listitem"]')).toHaveLength(0)
+
+    const empty = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([])) })
+    expect(empty.querySelector('[role="status"]')?.textContent).toBe('No live project summaries found.')
+    expect(empty.querySelector('[role="alert"]')).toBeNull()
+    expect(empty.querySelectorAll('[role="listitem"]')).toHaveLength(0)
   })
 
-  it('renders unknown health distinctly from degraded health', () => {
-    const view = renderProjects({ status: 'ready', data: projectList([unknownProject(), degradedProject()]) })
-    const [degraded, unknown] = Array.from(view.querySelectorAll<HTMLElement>('[role="listitem"]'))
+  it('does not render fixture-only region, contributor, developer, card, or last-sync claims', () => {
+    const view = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([healthyProject()])) })
+    const text = view.textContent ?? ''
 
-    expect(degraded.textContent).toContain('Health: Degraded')
-    expect(degraded.textContent).not.toContain('Health: Unknown')
-    expect(unknown.textContent).toContain('Health: Unknown')
-    expect(unknown.textContent).not.toContain('Health: Degraded')
+    expect(text).not.toContain('eu-west-1')
+    expect(text).not.toContain('contributors')
+    expect(text).not.toContain('developers')
+    expect(text).not.toContain('Last sync')
+    expect(text).not.toContain('Demo fixture data')
   })
 
-  it('renders a non-error empty state when no project summaries are available', () => {
-    const view = renderProjects({ status: 'ready', data: projectList([]) })
+  it('encodes special project names in Knowledge Browser browse links', () => {
+    const view = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([
+      { name: 'team/alpha project', memoryCount: 1, sessionCount: 1, lastActivityAt: null, syncHealth: 'healthy' }
+    ])) })
 
-    expect(view.getAttribute('role')).toBe('region')
-    expect(view.querySelector('[role="alert"]')).toBeNull()
-    expect(view.querySelector('[role="status"]')?.textContent).toBe('No project summaries are available. Demo fixture data — live project summaries are unavailable.')
-    expect(view.querySelectorAll('[role="listitem"]')).toHaveLength(0)
-    expect(view.textContent).not.toContain('0 projects')
+    expect(view.querySelector<HTMLAnchorElement>('a')?.getAttribute('href')).toBe('/dashboard/knowledgeBrowser?project=team%2Falpha+project')
   })
 })
 
-function projectList(projects: readonly ProjectPrimitiveViewModel[], healthEvaluationDate = '2026-06-18T00:00:00.000Z'): ProjectListFixtureViewModel {
-  return {
-    screen: 'projects',
-    totalProjects: projects.length,
-    sourceLabel: 'Demo fixture data — live project summaries are unavailable.',
-    healthEvaluationDate,
-    projects
-  }
+function projectResponse(projects: ProjectListResponse['projects']): ProjectListResponse {
+  return { projects, total: projects.length }
 }
 
-function healthyProject(): ProjectPrimitiveViewModel {
-  return project('core-api', 'Core API', 'eu-west-1', 'healthy', 4821, 6, '2m ago', '2026-06-06T01:37:00.000Z')
+function healthyProject(): ProjectListResponse['projects'][number] {
+  return project('Core API', 'healthy', 4821, 17, '2026-06-27T09:30:00Z')
 }
 
-function degradedProject(): ProjectPrimitiveViewModel {
-  return project('billing-worker', 'Billing Worker', 'us-east-1', 'degraded', 1633, 3, '38m ago', '2026-06-04T09:10:00.000Z')
+function degradedProject(): ProjectListResponse['projects'][number] {
+  return project('Billing Worker', 'degraded', 1633, 3, '2026-06-26T08:15:00Z')
 }
 
-function unknownProject(): ProjectPrimitiveViewModel {
-  return project('search-index', 'Search Index', 'us-east-1', 'unknown', 2104, 4, '1d ago', null)
+function unknownProject(): ProjectListResponse['projects'][number] {
+  return project('Search Index', 'unknown', 2104, 4, null)
 }
 
 function project(
-  id: string,
   name: string,
-  region: string,
-  status: ProjectPrimitiveViewModel['status'],
+  syncHealth: ProjectListResponse['projects'][number]['syncHealth'],
   memoryCount: number,
-  contributorCount: number,
-  lastSyncLabel: string,
-  lastMemoryAt: string | null
-): ProjectPrimitiveViewModel {
-  return { id, name, region, status, memoryCount, contributorCount, lastSyncLabel, lastMemoryAt }
+  sessionCount: number,
+  lastActivityAt: string | null
+): ProjectListResponse['projects'][number] {
+  return { name, memoryCount, sessionCount, lastActivityAt, syncHealth }
 }

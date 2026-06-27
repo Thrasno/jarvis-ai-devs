@@ -1,3 +1,5 @@
+import type { ProjectListResponse, ProjectSummary } from '../api/client'
+
 export const dashboardScreenKeys = [
   'overview',
   'memories',
@@ -169,6 +171,21 @@ export type ProjectListFixtureViewModel = {
   readonly sourceLabel?: string
   readonly healthEvaluationDate: string
   readonly projects: readonly ProjectPrimitiveViewModel[]
+}
+
+export type ProjectLiveSummaryViewModel = {
+  readonly name: string
+  readonly memoryCount: number
+  readonly sessionCount: number
+  readonly lastActivityLabel: string
+  readonly syncHealth: ProjectSyncStatus
+  readonly browsePath: string
+}
+
+export type ProjectListViewModel = {
+  readonly screen: 'projects'
+  readonly totalProjects: number
+  readonly projects: readonly ProjectLiveSummaryViewModel[]
 }
 
 export type CategoryFilterViewModel = {
@@ -454,4 +471,43 @@ export type DashboardFixturesViewModel = {
     readonly memories: readonly MemoryViewModel[]
   }
   readonly screens: DashboardScreenFixturesViewModel
+}
+
+export function projectsFromApi(response: ProjectListResponse): ProjectListViewModel {
+  return {
+    screen: 'projects',
+    totalProjects: response.total,
+    projects: response.projects.map(projectFromApi)
+  }
+}
+
+function projectFromApi(project: ProjectSummary): ProjectLiveSummaryViewModel {
+  return {
+    name: project.name,
+    memoryCount: project.memoryCount,
+    sessionCount: project.sessionCount,
+    lastActivityLabel: lastActivityLabel(project.lastActivityAt),
+    syncHealth: normalizedProjectSyncHealth(project.syncHealth),
+    browsePath: `/dashboard/knowledgeBrowser?${new URLSearchParams({ project: project.name }).toString()}`
+  }
+}
+
+function normalizedProjectSyncHealth(status: ProjectSummary['syncHealth']): ProjectSyncStatus {
+  return status === 'healthy' || status === 'degraded' || status === 'unknown' ? status : 'unknown'
+}
+
+function lastActivityLabel(value: string | null | undefined): string {
+  if (!value) return 'Last activity unavailable'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'Last activity unavailable'
+  const formatted = new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'UTC'
+  }).format(date)
+  return `Last activity: ${formatted}`
 }

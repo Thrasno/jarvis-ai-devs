@@ -1,23 +1,18 @@
-import { appendDashboardFilters } from '../api/urlFilters'
-import { append, emptyState, error, grid, panel, statusBadge, statusLabel, text } from '../components/dom'
-import type { ProjectListFixtureViewModel, ProjectPrimitiveViewModel, ProjectSyncStatus } from '../domain/dashboard'
-import { deriveProjectHealth, sortProjectSummaries } from '../domain/projectHealth'
+import { append, emptyState, grid, panel, statusBadge, statusLabel, text } from '../components/dom'
+import type { ProjectListViewModel, ProjectLiveSummaryViewModel } from '../domain/dashboard'
 import type { ViewState } from './Overview'
 
-export function renderProjects(state: ViewState<ProjectListFixtureViewModel>): HTMLElement {
+export function renderProjects(state: ViewState<ProjectListViewModel>): HTMLElement {
   const card = panel('Projects')
-  if (state.status === 'loading') return append(card, text('Loading projects…'))
-  if (state.status === 'error') return error(card, state.message)
-  const healthEvaluationDate = new Date(state.data.healthEvaluationDate)
-
-  if (state.data.sourceLabel) card.append(sourceNotice(state.data.sourceLabel))
+  if (state.status === 'loading') return append(card, statusText('Loading live project summaries…'))
+  if (state.status === 'error') return append(card, alertText(state.message))
 
   if (state.data.projects.length === 0) {
-    card.append(emptyState(`No project summaries are available. ${state.data.sourceLabel ?? 'Live project summaries are unavailable.'}`))
+    card.append(emptyState('No live project summaries found.'))
     return card
   }
 
-  const list = grid(sortProjectSummaries(state.data.projects, healthEvaluationDate).map((project) => renderProjectCard(project, healthEvaluationDate)))
+  const list = grid(state.data.projects.map(renderProjectCard))
   list.classList.add('dashboard-project-grid')
   list.setAttribute('role', 'list')
   list.setAttribute('aria-label', 'Project summaries')
@@ -25,19 +20,17 @@ export function renderProjects(state: ViewState<ProjectListFixtureViewModel>): H
   return card
 }
 
-function renderProjectCard(project: ProjectPrimitiveViewModel, healthEvaluationDate: Date): HTMLElement {
-  const health = deriveProjectHealth(project, healthEvaluationDate)
+function renderProjectCard(project: ProjectLiveSummaryViewModel): HTMLElement {
   const item = document.createElement('article')
   item.className = 'dashboard-project-card'
   item.setAttribute('role', 'listitem')
-  item.setAttribute('aria-label', projectAriaLabel(project, health))
+  item.setAttribute('aria-label', projectAriaLabel(project))
   item.append(
     heading(project.name),
-    text(project.region),
     metric(`${formatCount(project.memoryCount)} memories`),
-    metric(`${formatCount(project.contributorCount)} contributors`),
-    metric(`Last sync: ${project.lastSyncLabel}`),
-    healthRow(health),
+    metric(`${formatCount(project.sessionCount)} sessions`),
+    metric(project.lastActivityLabel),
+    healthRow(project),
     browseLink(project)
   )
   return item
@@ -53,30 +46,41 @@ function metric(value: string): HTMLElement {
   return text(value, 'dashboard-project-card__metric')
 }
 
-function healthRow(health: ProjectSyncStatus): HTMLElement {
+function statusText(value: string): HTMLElement {
+  const node = text(value)
+  node.setAttribute('role', 'status')
+  return node
+}
+
+function alertText(value: string): HTMLElement {
+  const node = text(value, 'dashboard-state state')
+  node.setAttribute('role', 'alert')
+  return node
+}
+
+function healthRow(project: ProjectLiveSummaryViewModel): HTMLElement {
   const row = document.createElement('p')
   row.className = 'dashboard-project-card__health'
-  row.append('Health: ', statusBadge(health))
+  row.append('Health: ', statusBadge(project.syncHealth))
   return row
 }
 
-function browseLink(project: ProjectPrimitiveViewModel): HTMLAnchorElement {
+function browseLink(project: ProjectLiveSummaryViewModel): HTMLAnchorElement {
   const link = document.createElement('a')
   link.className = 'dashboard-control control dashboard-project-card__action'
-  link.href = appendDashboardFilters('/dashboard/memories', { project: project.id })
-  link.setAttribute('aria-label', `Browse memories for ${project.name}`)
-  link.textContent = 'Browse memories'
+  link.href = project.browsePath
+  link.setAttribute('aria-label', `Open ${project.name} in Knowledge Browser`)
+  link.textContent = 'Open in Knowledge Browser'
   return link
 }
 
-function sourceNotice(message: string): HTMLElement {
-  const notice = text(message, 'dashboard-source-note')
-  notice.setAttribute('role', 'note')
-  return notice
+function projectAriaLabel(project: ProjectLiveSummaryViewModel): string {
+  return `${project.name} project: ${statusLabel(project.syncHealth)} health, ${formatCount(project.memoryCount)} memories, ${formatCount(project.sessionCount)} sessions, ${ariaLastActivityLabel(project.lastActivityLabel)}`
 }
 
-function projectAriaLabel(project: ProjectPrimitiveViewModel, health: ProjectSyncStatus): string {
-  return `${project.name} project: ${statusLabel(health)} health, ${formatCount(project.memoryCount)} memories, ${formatCount(project.contributorCount)} contributors, last synced ${project.lastSyncLabel}`
+function ariaLastActivityLabel(value: string): string {
+  if (value === 'Last activity unavailable') return 'last activity unavailable'
+  return value.replace('Last activity:', 'last activity')
 }
 
 function formatCount(value: number): string {

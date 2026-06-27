@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ActivityFeedResponse, ApiClient, Memory, MemoryList, MemorySearch, OverviewGrowth, OverviewStats } from './api/client'
+import type { ActivityFeedResponse, ApiClient, Memory, MemoryList, MemorySearch, OverviewGrowth, OverviewStats, ProjectListResponse } from './api/client'
 import type { SessionStore } from './auth/session'
 import { loadDashboard, loadForRoute, renderApp, startDashboardApp } from './main'
 import { hiveOverviewFixture } from './fixtures/hive-dashboard/overview'
-import { projectsFixture } from './fixtures/hive-dashboard/explore'
 import { memoryListToDiscoveryData, memorySearchToDiscoveryData } from './domain/knowledgeDiscovery'
+import { projectsFromApi } from './domain/dashboard'
 
 const adminUser = { id: 'admin-1', username: 'admin', email: 'admin@example.com', level: 'admin' as const, is_active: true, created_at: '2026-06-06T20:00:00Z' }
 const memberUser = { id: 'member-1', username: 'member', email: 'member@example.com', level: 'member' as const, is_active: true, created_at: '2026-06-06T20:00:00Z' }
@@ -448,9 +448,137 @@ describe('dashboard shell', () => {
     renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: memberUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath: '/dashboard/projects' })
 
     expect(container.querySelector('[data-coming-soon]')).toBeNull()
-    expect(container.querySelector('[role="note"]')?.textContent).toBe('Demo fixture data — live project summaries are unavailable.')
+    expect(container.querySelector('[role="note"]')).toBeNull()
     expect(container.querySelector('[aria-label="Project summaries"]')).not.toBeNull()
-    expect(container.querySelector<HTMLAnchorElement>('a[href="/dashboard/memories?project=core-api"]')?.textContent).toBe('Browse memories')
+    expect(container.textContent).toContain('Core API')
+    expect(container.textContent).toContain('17 sessions')
+    expect(container.textContent).not.toContain('Demo fixture data')
+    expect(container.textContent).not.toContain('Last sync')
+    expect(container.textContent).not.toContain('contributors')
+    expect(container.querySelector<HTMLAnchorElement>('a[href="/dashboard/knowledgeBrowser?project=Core+API"]')?.textContent).toBe('Open in Knowledge Browser')
+  })
+
+  it('does not call the Projects API during non-project dashboard bootstrap', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi()
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      expect(api.projects).not.toHaveBeenCalled()
+      expect(container.querySelector('section h2')?.textContent).toBe('Hive Overview')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('loads live Projects summaries only when the Projects route opens', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({ projects: [Promise.resolve(projectListResponse([projectSummary({ name: 'Live Project' })]))] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/projects')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await Promise.resolve()
+      expect(container.querySelector('[role="status"]')?.textContent).toBe('Loading live project summaries…')
+      await flushDashboard()
+
+      expect(api.projects).toHaveBeenCalledWith('jwt-token')
+      expect(container.textContent).toContain('Live Project')
+      expect(container.textContent).not.toContain('Demo fixture data')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('re-fetches live Projects summaries when re-entering the Projects route', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({
+      projects: [
+        Promise.resolve(projectListResponse([projectSummary({ name: 'First Project' })])),
+        Promise.resolve(projectListResponse([projectSummary({ name: 'Second Project' })]))
+      ]
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/projects')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+      expect(api.projects).toHaveBeenCalledTimes(1)
+      expect(container.textContent).toContain('First Project')
+
+      container.querySelector<HTMLAnchorElement>('a[data-nav-entry="overview"]')!.click()
+      await flushDashboard()
+      expect(container.querySelector('section h2')?.textContent).toBe('Hive Overview')
+
+      container.querySelector<HTMLAnchorElement>('a[data-nav-entry="projects"]')!.click()
+      await flushDashboard()
+
+      expect(api.projects).toHaveBeenCalledTimes(2)
+      expect(container.textContent).toContain('Second Project')
+      expect(container.textContent).not.toContain('First Project')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('shows loading instead of stale Projects data while re-entry refresh is pending', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const secondProjects = deferred<ProjectListResponse>()
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({
+      projects: [
+        Promise.resolve(projectListResponse([projectSummary({ name: 'First Project' })])),
+        secondProjects.promise
+      ]
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/projects')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+      expect(container.textContent).toContain('First Project')
+
+      container.querySelector<HTMLAnchorElement>('a[data-nav-entry="overview"]')!.click()
+      await flushDashboard()
+      expect(container.querySelector('section h2')?.textContent).toBe('Hive Overview')
+
+      container.querySelector<HTMLAnchorElement>('a[data-nav-entry="projects"]')!.click()
+      await Promise.resolve()
+
+      expect(api.projects).toHaveBeenCalledTimes(2)
+      expect(container.querySelector('[role="status"]')?.textContent).toBe('Loading live project summaries…')
+      expect(container.textContent).not.toContain('First Project')
+
+      secondProjects.resolve(projectListResponse([projectSummary({ name: 'Second Project' })]))
+      await flushDashboard()
+
+      expect(container.textContent).toContain('Second Project')
+      expect(container.textContent).not.toContain('First Project')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
   })
 
   it('matches the memories route when project-scoped browse navigation includes query and hash', () => {
@@ -990,7 +1118,8 @@ describe('dashboard shell', () => {
 
   it('keeps successful dashboard panels visible when one endpoint fails', async () => {
     const rejectedStats = Promise.reject(new Error('stats unavailable'))
-    const dashboard = await loadDashboard(fakeApi({ stats: rejectedStats }), 'jwt-token')
+    const api = fakeApi({ stats: rejectedStats })
+    const dashboard = await loadDashboard(api, 'jwt-token')
 
     expect(dashboard.status).toBe('ready')
     if (dashboard.status !== 'ready') throw new Error('expected ready dashboard')
@@ -998,7 +1127,8 @@ describe('dashboard shell', () => {
     expect(dashboard.data.users.status).toBe('ready')
     expect(dashboard.data.memories.status).toBe('ready')
     expect(dashboard.data.audit.status).toBe('ready')
-    expect(dashboard.data.projects).toEqual({ status: 'ready', data: projectsFixture })
+    expect(api.projects).not.toHaveBeenCalled()
+    expect(dashboard.data.projects).toBeUndefined()
   })
 
   it('loads the audit route from production sync attempt summaries instead of fixture or audit-log data', async () => {
@@ -1026,7 +1156,7 @@ describe('dashboard shell', () => {
       expect(dashboard.data.users.status).toBe('ready')
       expect(dashboard.data.memories.status).toBe('ready')
       expect(dashboard.data.audit.status).toBe('ready')
-      expect(dashboard.data.projects).toEqual({ status: 'ready', data: projectsFixture })
+      expect(dashboard.data.projects).toBeUndefined()
     }
   })
 
@@ -1300,12 +1430,14 @@ function fakeApi(overrides: {
   memories?: Array<Promise<MemoryList> | (() => Promise<MemoryList>)>
   search?: Array<Promise<MemorySearch> | (() => Promise<MemorySearch>)>
   memory?: Array<Promise<Memory> | (() => Promise<Memory>)>
+  projects?: Array<Promise<ProjectListResponse> | (() => Promise<ProjectListResponse>)>
 } = {}): ApiClient {
   const userResponses = [...(overrides.users ?? [])]
   const activityResponses = [...(overrides.activity ?? [])]
   const memoryResponses = [...(overrides.memories ?? [])]
   const searchResponses = [...(overrides.search ?? [])]
   const detailResponses = [...(overrides.memory ?? [])]
+  const projectResponses = [...(overrides.projects ?? [])]
   return {
     login: vi.fn(),
     currentUser: vi.fn(),
@@ -1338,7 +1470,27 @@ function fakeApi(overrides: {
       const next = activityResponses.shift()
       if (typeof next === 'function') return next()
       return next ?? Promise.resolve(activityResponse('event-1', 'Real backend activity'))
+    }),
+    projects: vi.fn(() => {
+      const next = projectResponses.shift()
+      if (typeof next === 'function') return next()
+      return next ?? Promise.resolve(projectListResponse([projectSummary()]))
     })
+  }
+}
+
+function projectListResponse(projects: ProjectListResponse['projects']): ProjectListResponse {
+  return { projects, total: projects.length }
+}
+
+function projectSummary(overrides: Partial<ProjectListResponse['projects'][number]> = {}): ProjectListResponse['projects'][number] {
+  return {
+    name: 'Core API',
+    memoryCount: 4821,
+    sessionCount: 17,
+    lastActivityAt: '2026-06-27T09:30:00Z',
+    syncHealth: 'healthy',
+    ...overrides
   }
 }
 
@@ -1428,7 +1580,7 @@ function dashboardState() {
       memories: { status: 'ready' as const, data: { recent: { memories: [], total: 0, limit: 5, offset: 0 }, search: { memories: [], total: 0, query: 'dashboard', limit: 5, offset: 0 } } },
       audit: { status: 'ready' as const, data: syncAttemptSummaryFixture() },
       activity: { status: 'ready' as const, data: activityViewState() },
-      projects: { status: 'ready' as const, data: projectsFixture },
+      projects: { status: 'ready' as const, data: projectsFromApi(projectListResponse([projectSummary()])) },
       knowledgeBrowser: { status: 'ready' as const, data: memoryListToDiscoveryData(memoryListResponse([memory({ title: 'Gateway owns the auth boundary, not services' })], { limit: 1 })) },
       globalSearch: { status: 'ready' as const, data: memorySearchToDiscoveryData(memorySearchResponse([memory({ title: 'Gateway owns the auth boundary, not services' })], { limit: 1 })) }
     }
