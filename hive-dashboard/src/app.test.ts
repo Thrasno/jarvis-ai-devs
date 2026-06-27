@@ -15,7 +15,7 @@ describe('dashboard shell', () => {
 
     renderApp({ container, state: { status: 'anonymous' }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
 
-    expect(container.querySelector('h1')?.textContent).toBe('Sign in to Hive API')
+    expect(container.querySelector('h1')?.textContent).toBe('Sign in to NEXUS HIVE')
     expect(container.querySelector('form')?.getAttribute('data-dashboard-primitive')).toBe('panel')
     expect(container.querySelector('input[name="email"]')?.getAttribute('type')).toBe('email')
     expect(container.querySelector('button[type="submit"]')?.getAttribute('data-dashboard-primitive')).toBe('control')
@@ -38,7 +38,7 @@ describe('dashboard shell', () => {
       await Promise.resolve()
 
       expect(session.login).toHaveBeenCalledWith('admin@example.com', 'wrong')
-      expect(container.querySelector('h1')?.textContent).toBe('Sign in to Hive API')
+      expect(container.querySelector('h1')?.textContent).toBe('Sign in to NEXUS HIVE')
       expect(container.querySelector('[role="alert"]')?.textContent).toContain('invalid credentials')
     } finally {
       cleanup()
@@ -54,6 +54,17 @@ describe('dashboard shell', () => {
     expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).not.toBeNull()
     expect(container.querySelector('[data-dashboard-primitive="header"]')).not.toBeNull()
     expect(container.querySelector('[data-dashboard-primitive="main"]')).not.toBeNull()
+  })
+
+  it('does not mount a notification bell or notification drawer in the topbar (hard boundary)', () => {
+    const container = document.createElement('main')
+
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: memberUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
+
+    expect(container.querySelector('[data-testid="notification-bell"]')).toBeNull()
+    expect(container.querySelector('[aria-label*="notification"]')).toBeNull()
+    expect(container.querySelector('.dashboard-header__bell')).toBeNull()
+    expect(container.querySelector('[data-testid="notification-drawer"]')).toBeNull()
   })
 
   it('derives the sidebar profile from the authenticated user', () => {
@@ -1044,14 +1055,14 @@ describe('dashboard shell', () => {
       await Promise.resolve()
 
       container.querySelector<HTMLButtonElement>('button')?.click()
-      expect(container.querySelector('h1')?.textContent).toBe('Sign in to Hive API')
+      expect(container.querySelector('h1')?.textContent).toBe('Sign in to NEXUS HIVE')
 
       health.resolve({ status: 'ok', db: 'connected', version: '1.0.0' })
       await Promise.resolve()
       await Promise.resolve()
       await Promise.resolve()
 
-      expect(container.querySelector('h1')?.textContent).toBe('Sign in to Hive API')
+      expect(container.querySelector('h1')?.textContent).toBe('Sign in to NEXUS HIVE')
       expect(container.textContent).not.toContain('API status ok')
     } finally {
       cleanup()
@@ -1072,7 +1083,7 @@ describe('dashboard shell', () => {
     await flushDashboard()
 
     expect(container.innerHTML).toBe('<p>preserved after cleanup</p>')
-    expect(container.textContent).not.toContain('Hive API Dashboard')
+    expect(container.textContent).not.toContain('NEXUS HIVE')
   })
 
   it('does not mutate the DOM when dashboard loading resolves after cleanup', async () => {
@@ -1083,7 +1094,7 @@ describe('dashboard shell', () => {
     const cleanup = startDashboardApp(container, { api: fakeApi({ health: health.promise }), session })
     try {
       await Promise.resolve()
-      expect(container.querySelector('h1')?.textContent).toBe('Hive API Dashboard')
+      expect(container.querySelector('h1')?.textContent).toBe('NEXUS HIVE')
       expect(container.textContent).not.toContain('API status ok')
 
       const renderedBeforeCleanup = container.innerHTML
@@ -1108,7 +1119,7 @@ describe('dashboard shell', () => {
       await Promise.resolve()
       await Promise.resolve()
 
-      expect(container.querySelector('h1')?.textContent).toBe('Sign in to Hive API')
+      expect(container.querySelector('h1')?.textContent).toBe('Sign in to NEXUS HIVE')
       expect(container.querySelector('input[name="email"]')).not.toBeNull()
       expect(container.querySelector('[role="alert"]')?.textContent).toContain('Unable to restore your session')
     } finally {
@@ -1146,8 +1157,8 @@ describe('dashboard shell', () => {
 
   it('surfaces unhealthy live health as an overview error instead of fixture-complemented daemon counts', async () => {
     for (const [health, message] of [
-      [{ status: 'degraded', db: 'connected', version: '1.0.0' }, 'Hive API health is degraded: status degraded'],
-      [{ status: 'ok', db: 'disconnected', version: '1.0.0' }, 'Hive API health is degraded: database disconnected']
+      [{ status: 'degraded', db: 'connected', version: '1.0.0' }, 'NEXUS HIVE health is degraded: status degraded'],
+      [{ status: 'ok', db: 'disconnected', version: '1.0.0' }, 'NEXUS HIVE health is degraded: database disconnected']
     ] as const) {
       const dashboard = await loadDashboard(fakeApi({ health: Promise.resolve(health) }), 'jwt-token')
 
