@@ -206,8 +206,8 @@ function renderLogin(
   form.className = 'dashboard-panel panel login-card'
   form.dataset.dashboardPrimitive = 'panel'
   form.innerHTML = `
-    <p class="eyebrow">Hive API</p>
-    <h1>Sign in to Hive API</h1>
+    <p class="eyebrow">NEXUS HIVE</p>
+    <h1>Sign in to NEXUS HIVE</h1>
     ${state.error ? `<p class="error" role="alert">${escapeHtml(state.error)}</p>` : ''}
     <label>Email<input name="email" type="email" autocomplete="email" required /></label>
     <label>Password<input name="password" type="password" autocomplete="current-password" required /></label>
@@ -263,7 +263,7 @@ function renderShell(
   header.className = 'dashboard-header'
   header.dataset.dashboardPrimitive = 'header'
   header.setAttribute('role', 'banner')
-  header.innerHTML = `<p class="eyebrow">Hive API</p><h1 class="dashboard-header__title">Hive API Dashboard</h1>`
+  header.innerHTML = `<p class="eyebrow">NEXUS HIVE</p><h1 class="dashboard-header__title">NEXUS HIVE</h1>`
 
   // Search slot
   const searchSlot = document.createElement('button')
@@ -658,7 +658,7 @@ function degradedHealthMessage(health: Health): string | null {
     ...(apiReady ? [] : [`status ${status}`]),
     ...(dbReady ? [] : [`database ${db}`])
   ]
-  return `Hive API health is degraded: ${issues.join(', ')}`
+  return `NEXUS HIVE health is degraded: ${issues.join(', ')}`
 }
 
 function overviewFromLiveApi(stats: AdminStats, overviewStats: OverviewStats, overviewGrowth: OverviewGrowth): OverviewFixtureViewModel {
