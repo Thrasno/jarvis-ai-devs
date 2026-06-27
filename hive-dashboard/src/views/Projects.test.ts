@@ -4,32 +4,47 @@ import type { ProjectListResponse } from '../api/client'
 import { renderProjects } from './Projects'
 
 describe('projects view', () => {
-  it('renders live project cards with backend fields and project-name Knowledge Browser links', () => {
+  it('renders a bespoke Projects root with heading, repository count, and no generic panel chrome', () => {
+    const view = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([healthyProject(), unknownProject(), degradedProject()])) })
+
+    expect(view.matches('section[data-dashboard-view="projects"]')).toBe(true)
+    expect(view.getAttribute('aria-labelledby')).toBe('dashboard-projects-title')
+    expect(view.querySelector('#dashboard-projects-title')?.textContent).toBe('Projects')
+    expect(view.querySelector('.dashboard-projects__eyebrow')?.textContent).toBe('ACCESSIBLE REPOSITORIES · 3')
+    expect(view.getAttribute('data-dashboard-primitive')).toBeNull()
+    expect(view.classList.contains('dashboard-panel')).toBe(false)
+    expect(view.classList.contains('panel')).toBe(false)
+  })
+
+  it('renders segmented project cards with honest live labels and project-name Knowledge Browser links', () => {
     const view = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([healthyProject(), unknownProject(), degradedProject()])) })
     const cards = Array.from(view.querySelectorAll<HTMLElement>('[role="listitem"]'))
     const browseLinks = Array.from(view.querySelectorAll<HTMLAnchorElement>('a'))
 
     expect(cards).toHaveLength(3)
     expect(cards.map((card) => card.getAttribute('aria-label'))).toEqual([
-      'Core API project: Healthy health, 4,821 memories, 17 sessions, last activity Jun 27, 2026, 09:30',
-      'Search Index project: Unknown health, 2,104 memories, 4 sessions, last activity unavailable',
-      'Billing Worker project: Degraded health, 1,633 memories, 3 sessions, last activity Jun 26, 2026, 08:15'
+      'Core API project: HEALTHY health, 4,821 memories, 17 sessions, last activity Jun 27, 2026, 09:30',
+      'Search Index project: UNKNOWN health, 2,104 memories, 4 sessions, last activity unavailable',
+      'Billing Worker project: DEGRADED health, 1,633 memories, 3 sessions, last activity Jun 26, 2026, 08:15'
     ])
+    expect(cards[0].querySelector('.dashboard-project-card__identity h3')?.textContent).toBe('Core API')
+    expect(cards[0].querySelector('.dashboard-project-card__health')?.textContent).toContain('HEALTHY')
+    expect(cards[0].querySelector('.dashboard-project-card__metrics')).not.toBeNull()
+    expect(cards[0].querySelector('.dashboard-project-card__actions')).not.toBeNull()
     expect(cards[0].textContent).toContain('Core API')
-    expect(cards[0].textContent).toContain('4,821 memories')
-    expect(cards[0].textContent).toContain('17 sessions')
-    expect(cards[0].textContent).toContain('Last activity: Jun 27, 2026, 09:30')
-    expect(cards[0].textContent).toContain('Health: Healthy')
-    expect(cards[0].querySelector<HTMLAnchorElement>('a')?.textContent).toBe('Open in Knowledge Browser')
+    expect(metricValue(cards[0], 'MEMORIES')).toBe('4,821')
+    expect(metricValue(cards[0], 'SESSIONS')).toBe('17')
+    expect(metricValue(cards[0], 'LAST ACTIVITY')).toBe('Jun 27, 2026, 09:30')
+    expect(cards[0].querySelector<HTMLAnchorElement>('a')?.textContent).toBe('browse memories →')
     expect(browseLinks.map((link) => link.getAttribute('aria-label'))).toEqual([
-      'Open Core API in Knowledge Browser',
-      'Open Search Index in Knowledge Browser',
-      'Open Billing Worker in Knowledge Browser'
+      'Browse memories for Core API',
+      'Browse memories for Search Index',
+      'Browse memories for Billing Worker'
     ])
     expect(cards[0].querySelector<HTMLAnchorElement>('a')?.getAttribute('href')).toBe('/dashboard/knowledgeBrowser?project=Core+API')
   })
 
-  it('normalizes missing and unsupported sync health without stale-date inference', () => {
+  it('renders sync health uppercase and keeps decorative rails non-semantic', () => {
     const view = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([
       { name: 'Missing Health', memoryCount: 8, sessionCount: 1, lastActivityAt: '2020-01-01T00:00:00Z', syncHealth: null },
       { name: 'Unsupported Health', memoryCount: 12, sessionCount: 2, lastActivityAt: '2026-06-25T00:00:00Z', syncHealth: 'paused' }
@@ -37,21 +52,29 @@ describe('projects view', () => {
     const cards = Array.from(view.querySelectorAll<HTMLElement>('[role="listitem"]'))
 
     expect(cards).toHaveLength(2)
-    expect(cards[0].textContent).toContain('Health: Unknown')
-    expect(cards[1].textContent).toContain('Health: Unknown')
-    expect(cards[0].textContent).not.toContain('Health: Degraded')
+    expect(cards.map((card) => card.querySelector('.dashboard-project-card__health')?.textContent)).toEqual(['UNKNOWN', 'UNKNOWN'])
+    expect(cards[0].textContent).not.toContain('DEGRADED')
+    for (const rail of view.querySelectorAll<HTMLElement>('.dashboard-project-card__rail')) {
+      expect(rail.getAttribute('aria-hidden')).toBe('true')
+      expect(rail.getAttribute('role')).not.toBe('progressbar')
+      expect(rail.hasAttribute('aria-valuenow')).toBe(false)
+    }
   })
 
   it('renders loading, error, and empty states without fixture fallback cards', () => {
     const loading = renderProjects({ status: 'loading' })
+    expect(loading.matches('section[data-dashboard-view="projects"]')).toBe(true)
     expect(loading.querySelector('[role="status"]')?.textContent).toBe('Loading live project summaries…')
     expect(loading.querySelectorAll('[role="listitem"]')).toHaveLength(0)
 
     const failed = renderProjects({ status: 'error', message: 'projects API unavailable' })
+    expect(failed.matches('section[data-dashboard-view="projects"]')).toBe(true)
     expect(failed.querySelector('[role="alert"]')?.textContent).toContain('projects API unavailable')
     expect(failed.querySelectorAll('[role="listitem"]')).toHaveLength(0)
 
     const empty = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([])) })
+    expect(empty.matches('section[data-dashboard-view="projects"]')).toBe(true)
+    expect(empty.querySelector('.dashboard-projects__eyebrow')?.textContent).toBe('ACCESSIBLE REPOSITORIES · 0')
     expect(empty.querySelector('[role="status"]')?.textContent).toBe('No live project summaries found.')
     expect(empty.querySelector('[role="alert"]')).toBeNull()
     expect(empty.querySelectorAll('[role="listitem"]')).toHaveLength(0)
@@ -63,8 +86,13 @@ describe('projects view', () => {
 
     expect(text).not.toContain('eu-west-1')
     expect(text).not.toContain('contributors')
+    expect(text).not.toContain('Contributors')
     expect(text).not.toContain('developers')
+    expect(text).not.toContain('DEVS')
+    expect(text).not.toContain('LAST SYNC')
     expect(text).not.toContain('Last sync')
+    expect(text).not.toContain('developer count')
+    expect(text).not.toContain('contributor count')
     expect(text).not.toContain('Demo fixture data')
   })
 
@@ -76,6 +104,12 @@ describe('projects view', () => {
     expect(view.querySelector<HTMLAnchorElement>('a')?.getAttribute('href')).toBe('/dashboard/knowledgeBrowser?project=team%2Falpha+project')
   })
 })
+
+function metricValue(card: HTMLElement, label: string): string | undefined {
+  const terms = Array.from(card.querySelectorAll('dt'))
+  const term = terms.find((node) => node.textContent === label)
+  return term?.nextElementSibling?.textContent ?? undefined
+}
 
 function projectResponse(projects: ProjectListResponse['projects']): ProjectListResponse {
   return { projects, total: projects.length }

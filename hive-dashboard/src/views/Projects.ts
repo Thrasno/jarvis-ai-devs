@@ -1,49 +1,117 @@
-import { append, emptyState, grid, panel, statusBadge, statusLabel, text } from '../components/dom'
+import { append, emptyState, text } from '../components/dom'
 import type { ProjectListViewModel, ProjectLiveSummaryViewModel } from '../domain/dashboard'
 import type { ViewState } from './Overview'
 
+let projectCardId = 0
+
 export function renderProjects(state: ViewState<ProjectListViewModel>): HTMLElement {
-  const card = panel('Projects')
-  if (state.status === 'loading') return append(card, statusText('Loading live project summaries…'))
-  if (state.status === 'error') return append(card, alertText(state.message))
+  const root = projectsRoot(state.status === 'ready' ? state.data.totalProjects : 0)
+  if (state.status === 'loading') return append(root, statusText('Loading live project summaries…'))
+  if (state.status === 'error') return append(root, alertText(state.message))
 
   if (state.data.projects.length === 0) {
-    card.append(emptyState('No live project summaries found.'))
-    return card
+    root.append(emptyState('No live project summaries found.'))
+    return root
   }
 
-  const list = grid(state.data.projects.map(renderProjectCard))
-  list.classList.add('dashboard-project-grid')
+  const list = document.createElement('div')
+  list.className = 'dashboard-projects__grid'
   list.setAttribute('role', 'list')
-  list.setAttribute('aria-label', 'Project summaries')
-  card.append(list)
-  return card
+  list.setAttribute('aria-label', 'Accessible repositories')
+  list.append(...state.data.projects.map(renderProjectCard))
+  root.append(list)
+  return root
+}
+
+function projectsRoot(totalProjects: number): HTMLElement {
+  const root = document.createElement('section')
+  root.className = 'dashboard-projects'
+  root.dataset.dashboardView = 'projects'
+  root.setAttribute('aria-labelledby', 'dashboard-projects-title')
+
+  const header = document.createElement('div')
+  header.className = 'dashboard-projects__header'
+
+  const eyebrow = document.createElement('p')
+  eyebrow.className = 'dashboard-projects__eyebrow'
+  eyebrow.textContent = `ACCESSIBLE REPOSITORIES · ${formatCount(totalProjects)}`
+
+  const title = document.createElement('h2')
+  title.id = 'dashboard-projects-title'
+  title.className = 'dashboard-projects__title'
+  title.textContent = 'Projects'
+
+  header.append(eyebrow, title)
+  root.append(header)
+  return root
 }
 
 function renderProjectCard(project: ProjectLiveSummaryViewModel): HTMLElement {
   const item = document.createElement('article')
+  const titleId = `dashboard-project-card-${++projectCardId}`
+  const metricsId = `${titleId}-metrics`
   item.className = 'dashboard-project-card'
   item.setAttribute('role', 'listitem')
+  item.setAttribute('aria-labelledby', titleId)
+  item.setAttribute('aria-describedby', metricsId)
   item.setAttribute('aria-label', projectAriaLabel(project))
   item.append(
-    heading(project.name),
-    metric(`${formatCount(project.memoryCount)} memories`),
-    metric(`${formatCount(project.sessionCount)} sessions`),
-    metric(project.lastActivityLabel),
-    healthRow(project),
+    identitySection(project, titleId),
+    healthSection(project),
+    metricsSection(project, metricsId),
+    decorativeRail(),
     browseLink(project)
   )
   return item
 }
 
-function heading(value: string): HTMLHeadingElement {
-  const node = document.createElement('h3')
-  node.textContent = value
-  return node
+function identitySection(project: ProjectLiveSummaryViewModel, titleId: string): HTMLElement {
+  const section = document.createElement('div')
+  section.className = 'dashboard-project-card__identity'
+  const title = document.createElement('h3')
+  title.id = titleId
+  title.textContent = project.name
+  section.append(title)
+  return section
 }
 
-function metric(value: string): HTMLElement {
-  return text(value, 'dashboard-project-card__metric')
+function healthSection(project: ProjectLiveSummaryViewModel): HTMLElement {
+  const health = document.createElement('div')
+  health.className = 'dashboard-project-card__health'
+  health.dataset.projectHealth = project.syncHealth
+  health.textContent = healthLabel(project.syncHealth)
+  return health
+}
+
+function metricsSection(project: ProjectLiveSummaryViewModel, metricsId: string): HTMLElement {
+  const metrics = document.createElement('dl')
+  metrics.id = metricsId
+  metrics.className = 'dashboard-project-card__metrics'
+  metrics.append(
+    metric('MEMORIES', formatCount(project.memoryCount)),
+    metric('SESSIONS', formatCount(project.sessionCount)),
+    metric('LAST ACTIVITY', lastActivityValue(project.lastActivityLabel))
+  )
+  return metrics
+}
+
+function metric(label: string, value: string): HTMLElement {
+  const group = document.createElement('div')
+  group.className = 'dashboard-project-card__metric'
+  const term = document.createElement('dt')
+  term.textContent = label
+  const description = document.createElement('dd')
+  description.textContent = value
+  group.append(term, description)
+  return group
+}
+
+function decorativeRail(): HTMLElement {
+  const rail = document.createElement('div')
+  rail.className = 'dashboard-project-card__rail'
+  rail.setAttribute('aria-hidden', 'true')
+  rail.append(document.createElement('span'))
+  return rail
 }
 
 function statusText(value: string): HTMLElement {
@@ -58,29 +126,34 @@ function alertText(value: string): HTMLElement {
   return node
 }
 
-function healthRow(project: ProjectLiveSummaryViewModel): HTMLElement {
-  const row = document.createElement('p')
-  row.className = 'dashboard-project-card__health'
-  row.append('Health: ', statusBadge(project.syncHealth))
-  return row
-}
-
-function browseLink(project: ProjectLiveSummaryViewModel): HTMLAnchorElement {
+function browseLink(project: ProjectLiveSummaryViewModel): HTMLElement {
+  const footer = document.createElement('div')
+  footer.className = 'dashboard-project-card__actions'
   const link = document.createElement('a')
-  link.className = 'dashboard-control control dashboard-project-card__action'
+  link.className = 'dashboard-project-card__browse'
   link.href = project.browsePath
-  link.setAttribute('aria-label', `Open ${project.name} in Knowledge Browser`)
-  link.textContent = 'Open in Knowledge Browser'
-  return link
+  link.setAttribute('aria-label', `Browse memories for ${project.name}`)
+  link.textContent = 'browse memories →'
+  footer.append(link)
+  return footer
 }
 
 function projectAriaLabel(project: ProjectLiveSummaryViewModel): string {
-  return `${project.name} project: ${statusLabel(project.syncHealth)} health, ${formatCount(project.memoryCount)} memories, ${formatCount(project.sessionCount)} sessions, ${ariaLastActivityLabel(project.lastActivityLabel)}`
+  return `${project.name} project: ${healthLabel(project.syncHealth)} health, ${formatCount(project.memoryCount)} memories, ${formatCount(project.sessionCount)} sessions, ${ariaLastActivityLabel(project.lastActivityLabel)}`
 }
 
 function ariaLastActivityLabel(value: string): string {
   if (value === 'Last activity unavailable') return 'last activity unavailable'
   return value.replace('Last activity:', 'last activity')
+}
+
+function lastActivityValue(value: string): string {
+  if (value === 'Last activity unavailable') return 'Unavailable'
+  return value.replace('Last activity:', '').trim()
+}
+
+function healthLabel(value: ProjectLiveSummaryViewModel['syncHealth']): string {
+  return value.toUpperCase()
 }
 
 function formatCount(value: number): string {
