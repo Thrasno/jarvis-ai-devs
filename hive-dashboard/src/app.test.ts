@@ -287,7 +287,7 @@ describe('dashboard shell', () => {
     renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath })
 
     expect(container.querySelector('[data-coming-soon]')).toBeNull()
-    expect(container.querySelector('section h2')?.textContent).toBe('Hive Overview')
+    expect(container.querySelector('[data-dashboard-view="overview"]')).not.toBeNull()
     expect(container.textContent).not.toContain(label)
   })
 
@@ -520,7 +520,7 @@ describe('dashboard shell', () => {
       await flushDashboard()
 
       expect(api.projects).not.toHaveBeenCalled()
-      expect(container.querySelector('section h2')?.textContent).toBe('Hive Overview')
+      expect(container.querySelector('[data-dashboard-view="overview"]')).not.toBeNull()
     } finally {
       cleanup()
       history.pushState(null, '', originalPath)
@@ -573,7 +573,7 @@ describe('dashboard shell', () => {
 
       container.querySelector<HTMLAnchorElement>('a[data-nav-entry="overview"]')!.click()
       await flushDashboard()
-      expect(container.querySelector('section h2')?.textContent).toBe('Hive Overview')
+      expect(container.querySelector('[data-dashboard-view="overview"]')).not.toBeNull()
 
       container.querySelector<HTMLAnchorElement>('a[data-nav-entry="projects"]')!.click()
       await flushDashboard()
@@ -609,7 +609,7 @@ describe('dashboard shell', () => {
 
       container.querySelector<HTMLAnchorElement>('a[data-nav-entry="overview"]')!.click()
       await flushDashboard()
-      expect(container.querySelector('section h2')?.textContent).toBe('Hive Overview')
+      expect(container.querySelector('[data-dashboard-view="overview"]')).not.toBeNull()
 
       container.querySelector<HTMLAnchorElement>('a[data-nav-entry="projects"]')!.click()
       await Promise.resolve()
@@ -1504,6 +1504,152 @@ describe('shell header fidelity — NEXUS re-skin', () => {
     const header = container.querySelector('[role="banner"]')
     const searchInput = header?.querySelector('input[type="search"]') ?? header?.querySelector('input')
     expect(searchInput).not.toBeNull()
+  })
+
+  // Phase 1.2 — exactly ONE "Hive Overview" title in the shell (in header, NOT inside overview view)
+  it('renders "Hive Overview" exactly once in the authenticated shell — in the header, not inside the overview view', () => {
+    const container = document.createElement('main')
+
+    renderApp({
+      container,
+      state: { status: 'authenticated', token: 'jwt-token', user: memberUser },
+      actions: { onLogin: vi.fn(), onLogout: vi.fn() },
+      dashboard: dashboardState(),
+      routePath: '/dashboard'
+    })
+
+    const headerTitle = container.querySelector('.dashboard-header__title')
+    expect(headerTitle?.textContent).toBe('Hive Overview')
+
+    // The overview view root must NOT contain any element with text "Hive Overview"
+    const overviewRoot = container.querySelector('[data-dashboard-view="overview"]')
+    expect(overviewRoot).not.toBeNull()
+    const overviewHeadings = Array.from(overviewRoot?.querySelectorAll('h1, h2, h3') ?? [])
+    const overviewTitleEl = overviewHeadings.find((el) => el.textContent?.trim() === 'Hive Overview')
+    expect(overviewTitleEl).toBeUndefined()
+  })
+
+  // Phase 1.3a — 4 stat tiles present in overview
+  it('renders exactly 4 stat tiles inside the overview stats row', () => {
+    const container = document.createElement('main')
+
+    renderApp({
+      container,
+      state: { status: 'authenticated', token: 'jwt-token', user: memberUser },
+      actions: { onLogin: vi.fn(), onLogout: vi.fn() },
+      dashboard: dashboardState(),
+      routePath: '/dashboard'
+    })
+
+    const overviewRoot = container.querySelector('[data-dashboard-view="overview"]')
+    expect(overviewRoot).not.toBeNull()
+    const statsRow = overviewRoot?.querySelector('.dashboard-overview__stats')
+    expect(statsRow).not.toBeNull()
+    const tiles = statsRow?.querySelectorAll('[data-dashboard-primitive="metric"]')
+    expect(tiles?.length).toBe(4)
+  })
+
+  // Phase 1.3b — accent chip present in each stat tile
+  it('renders a hex accent chip span inside each stat tile in the overview stats row', () => {
+    const container = document.createElement('main')
+
+    renderApp({
+      container,
+      state: { status: 'authenticated', token: 'jwt-token', user: memberUser },
+      actions: { onLogin: vi.fn(), onLogout: vi.fn() },
+      dashboard: dashboardState(),
+      routePath: '/dashboard'
+    })
+
+    const statsRow = container.querySelector('[data-dashboard-view="overview"] .dashboard-overview__stats')
+    expect(statsRow).not.toBeNull()
+    const tiles = Array.from(statsRow?.querySelectorAll('[data-dashboard-primitive="metric"]') ?? [])
+    expect(tiles.length).toBe(4)
+    for (const tile of tiles) {
+      expect(tile.querySelector('.dashboard-tile__accent')).not.toBeNull()
+    }
+  })
+
+  // Phase 1.3c — nexus-emblem img in sidebar and login, absent in header
+  it('renders nexus-emblem as an <img> element (not SVG polygon) in the sidebar and login', () => {
+    const container = document.createElement('main')
+
+    // Login screen: emblem must be an <img>
+    renderApp({ container, state: { status: 'anonymous' }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
+    const loginEmblem = container.querySelector('[data-testid="nexus-emblem"]')
+    expect(loginEmblem).not.toBeNull()
+    expect(loginEmblem?.tagName.toLowerCase()).toBe('img')
+
+    // Authenticated shell: emblem <img> in sidebar, not in header
+    const container2 = document.createElement('main')
+    renderApp({ container: container2, state: { status: 'authenticated', token: 'jwt-token', user: memberUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
+    const sidebar = container2.querySelector('[data-dashboard-primitive="sidebar"]')
+    const headerEl = container2.querySelector('[role="banner"]')
+    const sidebarEmblem = sidebar?.querySelector('[data-testid="nexus-emblem"]')
+    expect(sidebarEmblem).not.toBeNull()
+    expect(sidebarEmblem?.tagName.toLowerCase()).toBe('img')
+    expect(headerEl?.querySelector('[data-testid="nexus-emblem"]')).toBeNull()
+  })
+
+  // Phase 1.3d — header eyebrow element present with non-empty text
+  it('renders a non-empty eyebrow element in the authenticated shell header', () => {
+    const container = document.createElement('main')
+
+    renderApp({
+      container,
+      state: { status: 'authenticated', token: 'jwt-token', user: memberUser },
+      actions: { onLogin: vi.fn(), onLogout: vi.fn() }
+    })
+
+    const header = container.querySelector('[role="banner"]')
+    const eyebrow = header?.querySelector('.dashboard-header__eyebrow')
+    expect(eyebrow).not.toBeNull()
+    expect(eyebrow?.textContent?.trim().length).toBeGreaterThan(0)
+  })
+
+  // Phase 1.4a — line chart emits SVG with polyline + polygon + line elements
+  it('renders the line chart as SVG containing polyline, polygon, and gridline line elements', () => {
+    const container = document.createElement('main')
+
+    renderApp({
+      container,
+      state: { status: 'authenticated', token: 'jwt-token', user: memberUser },
+      actions: { onLogin: vi.fn(), onLogout: vi.fn() },
+      dashboard: dashboardState(),
+      routePath: '/dashboard'
+    })
+
+    const overviewRoot = container.querySelector('[data-dashboard-view="overview"]')
+    expect(overviewRoot).not.toBeNull()
+    // Find the time-series chart section
+    const lineChartSection = overviewRoot?.querySelector('[data-chart-kind="time-series"]')
+    expect(lineChartSection).not.toBeNull()
+    const svg = lineChartSection?.querySelector('svg')
+    expect(svg).not.toBeNull()
+    expect(svg?.querySelector('polyline')).not.toBeNull()
+    expect(svg?.querySelector('polygon')).not.toBeNull()
+    expect(svg?.querySelector('line')).not.toBeNull()
+  })
+
+  // Phase 1.4b — bar chart emits SVG with rect elements
+  it('renders the bar chart as SVG containing rect elements for bars', () => {
+    const container = document.createElement('main')
+
+    renderApp({
+      container,
+      state: { status: 'authenticated', token: 'jwt-token', user: memberUser },
+      actions: { onLogin: vi.fn(), onLogout: vi.fn() },
+      dashboard: dashboardState(),
+      routePath: '/dashboard'
+    })
+
+    const overviewRoot = container.querySelector('[data-dashboard-view="overview"]')
+    expect(overviewRoot).not.toBeNull()
+    const barChartSection = overviewRoot?.querySelector('[data-chart-kind="categorical"]')
+    expect(barChartSection).not.toBeNull()
+    const svg = barChartSection?.querySelector('svg')
+    expect(svg).not.toBeNull()
+    expect(svg?.querySelector('rect')).not.toBeNull()
   })
 })
 
