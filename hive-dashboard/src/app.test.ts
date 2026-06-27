@@ -1651,6 +1651,70 @@ describe('shell header fidelity — NEXUS re-skin', () => {
     expect(svg).not.toBeNull()
     expect(svg?.querySelector('rect')).not.toBeNull()
   })
+
+  // Fix 1 — tri-color Conpas "N" in the nexus-emblem SVG
+  it('nexus-emblem SVG contains exactly 3 polygons (tri-color N glyph) in sidebar', () => {
+    const container = document.createElement('main')
+
+    renderApp({
+      container,
+      state: { status: 'authenticated', token: 'jwt-token', user: memberUser },
+      actions: { onLogin: vi.fn(), onLogout: vi.fn() }
+    })
+
+    const sidebar = container.querySelector('[data-dashboard-primitive="sidebar"]')
+    const emblem = sidebar?.querySelector('[data-testid="nexus-emblem"]')
+    expect(emblem).not.toBeNull()
+    expect(emblem?.tagName.toLowerCase()).toBe('svg')
+    const polygons = emblem?.querySelectorAll('polygon')
+    expect(polygons?.length).toBe(3)
+  })
+
+  it('nexus-emblem SVG contains exactly 3 polygons (tri-color N glyph) in login screen', () => {
+    const container = document.createElement('main')
+
+    renderApp({ container, state: { status: 'anonymous' }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
+
+    const emblem = container.querySelector('[data-testid="nexus-emblem"]')
+    expect(emblem).not.toBeNull()
+    const polygons = emblem?.querySelectorAll('polygon')
+    expect(polygons?.length).toBe(3)
+  })
+
+  it('brand wordmark span contains "EXUS HIVE" (N is rendered as SVG emblem)', () => {
+    const container = document.createElement('main')
+
+    renderApp({
+      container,
+      state: { status: 'authenticated', token: 'jwt-token', user: memberUser },
+      actions: { onLogin: vi.fn(), onLogout: vi.fn() }
+    })
+
+    const wordmark = container.querySelector('[data-dashboard-primitive="sidebar"] .dashboard-brand__wordmark')
+    expect(wordmark).not.toBeNull()
+    expect(wordmark?.textContent).toBe('EXUS HIVE')
+  })
+
+  // Fix 2 — panel chrome: header bar + body structure
+  it('overview flush panels have a .dashboard-panel__header bar and a .dashboard-panel__body', () => {
+    const container = document.createElement('main')
+
+    renderApp({
+      container,
+      state: { status: 'authenticated', token: 'jwt-token', user: memberUser },
+      actions: { onLogin: vi.fn(), onLogout: vi.fn() },
+      dashboard: dashboardState(),
+      routePath: '/dashboard'
+    })
+
+    const overviewRoot = container.querySelector('[data-dashboard-view="overview"]')
+    const panels = overviewRoot?.querySelectorAll('[data-dashboard-primitive="panel"]')
+    expect(panels?.length).toBeGreaterThanOrEqual(4)
+    panels?.forEach((panel) => {
+      expect(panel.querySelector('.dashboard-panel__header')).not.toBeNull()
+      expect(panel.querySelector('.dashboard-panel__body')).not.toBeNull()
+    })
+  })
 })
 
 async function flushDashboard(): Promise<void> {
