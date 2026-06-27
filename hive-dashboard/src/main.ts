@@ -162,6 +162,28 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
 }
 
 /**
+ * Per-route titles for the shell topbar.
+ * Each entry: [pageTitle, eyebrow subtitle].
+ */
+const SCREEN_TITLES: Record<DashboardScreenKey, [string, string]> = {
+  overview:         ['Hive Overview',       'central memory · live sync · governance'],
+  projects:         ['Projects',            'knowledge by repository'],
+  memories:         ['Knowledge Browser',   'explore, filter & export team memory'],
+  knowledgeBrowser: ['Knowledge Browser',   'explore, filter & export team memory'],
+  globalSearch:     ['Global Search',       'search every memory across the hive'],
+  activityFeed:     ['Activity Feed',       'recently saved memory across the team'],
+  userManagement:   ['User Management',     'roles, access & governance'],
+  auditLog:         ['Audit Log',           'system operations & governance events'],
+  // Hidden/deferred screens fall back to their nearest visible equivalents
+  knowledgeGraph:   ['Hive Overview',       'central memory · live sync · governance'],
+  contributors:     ['Hive Overview',       'central memory · live sync · governance'],
+  developerTimeline:['Hive Overview',       'central memory · live sync · governance'],
+  syncStatus:       ['Hive Overview',       'central memory · live sync · governance'],
+  analytics:        ['Hive Overview',       'central memory · live sync · governance'],
+  conflictViewer:   ['Hive Overview',       'central memory · live sync · governance'],
+}
+
+/**
  * Resolve the active DashboardScreenKey from a URL path.
  * Strips trailing slash, matches exact path against ROUTES table.
  * Falls back to 'overview'.
@@ -264,17 +286,36 @@ function renderShell(
   header.className = 'dashboard-header'
   header.dataset.dashboardPrimitive = 'header'
   header.setAttribute('role', 'banner')
-  header.innerHTML = `${renderBrand()}<h1 class="dashboard-header__title">NEXUS HIVE</h1>`
 
-  // Search slot
-  const searchSlot = document.createElement('button')
-  searchSlot.type = 'button'
+  // Per-route title + eyebrow (no brand in the topbar — brand lives only in sidebar)
+  const [pageTitle, eyebrow] = SCREEN_TITLES[activeScreen]
+  const titleGroup = document.createElement('div')
+  titleGroup.className = 'dashboard-header__title-group'
+  titleGroup.innerHTML = `
+    <p class="dashboard-header__eyebrow">${escapeHtml(eyebrow)}</p>
+    <h1 class="dashboard-header__title">${escapeHtml(pageTitle)}</h1>
+  `
+  header.append(titleGroup)
+
+  // Search slot — real input field (replaces bare button), navigates to Global Search on Enter/click.
+  // Deliberately NOT a <form> to avoid interfering with in-view forms (e.g. GlobalSearch filter form).
+  const searchWrapper = document.createElement('div')
+  searchWrapper.className = 'dashboard-header__search-wrapper'
+  searchWrapper.setAttribute('role', 'search')
+  const searchSlot = document.createElement('input')
+  searchSlot.type = 'search'
   searchSlot.className = 'dashboard-header__search'
-  searchSlot.textContent = 'Search memories…'
+  searchSlot.placeholder = 'Search all memories…'
   searchSlot.setAttribute('aria-label', 'Search memories')
+  searchSlot.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      actions.onNavigate?.(globalSearchPathFromRoutePath(routePath))
+    }
+  })
   searchSlot.addEventListener('click', () => actions.onNavigate?.(globalSearchPathFromRoutePath(routePath)))
-
-  header.append(searchSlot)
+  searchWrapper.append(searchSlot)
+  header.append(searchWrapper)
   mainArea.append(header)
 
   // Content area

@@ -1,4 +1,5 @@
 import type { CurrentProfileViewModel, DashboardScreenKey, NavigationGroupViewModel } from '../domain/dashboard'
+import { renderBrand } from './Brand'
 
 export type UserLevel = 'viewer' | 'member' | 'admin'
 
@@ -42,6 +43,12 @@ export function renderSidebar(container: HTMLElement, props: SidebarProps): void
   const sidebar = document.createElement('aside')
   sidebar.className = 'dashboard-sidebar'
   sidebar.dataset.dashboardPrimitive = 'sidebar'
+
+  // Brand block — emblem + wordmark lives exclusively in the sidebar
+  const brandEl = document.createElement('div')
+  brandEl.className = 'dashboard-sidebar__brand'
+  brandEl.innerHTML = renderBrand()
+  sidebar.append(brandEl)
 
   const nav = document.createElement('nav')
   nav.setAttribute('aria-label', 'Dashboard sections')
