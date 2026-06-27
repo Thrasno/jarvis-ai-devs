@@ -1570,24 +1570,24 @@ describe('shell header fidelity — NEXUS re-skin', () => {
     }
   })
 
-  // Phase 1.3c — nexus-emblem img in sidebar and login, absent in header
-  it('renders nexus-emblem as an <img> element (not SVG polygon) in the sidebar and login', () => {
+  // Phase 1.3c — nexus-emblem inline SVG in sidebar and login, absent in header
+  it('renders nexus-emblem as an inline <svg> element in the sidebar and login', () => {
     const container = document.createElement('main')
 
-    // Login screen: emblem must be an <img>
+    // Login screen: emblem must be an inline <svg>
     renderApp({ container, state: { status: 'anonymous' }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
     const loginEmblem = container.querySelector('[data-testid="nexus-emblem"]')
     expect(loginEmblem).not.toBeNull()
-    expect(loginEmblem?.tagName.toLowerCase()).toBe('img')
+    expect(loginEmblem?.tagName.toLowerCase()).toBe('svg')
 
-    // Authenticated shell: emblem <img> in sidebar, not in header
+    // Authenticated shell: emblem <svg> in sidebar, not in header
     const container2 = document.createElement('main')
     renderApp({ container: container2, state: { status: 'authenticated', token: 'jwt-token', user: memberUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
     const sidebar = container2.querySelector('[data-dashboard-primitive="sidebar"]')
     const headerEl = container2.querySelector('[role="banner"]')
     const sidebarEmblem = sidebar?.querySelector('[data-testid="nexus-emblem"]')
     expect(sidebarEmblem).not.toBeNull()
-    expect(sidebarEmblem?.tagName.toLowerCase()).toBe('img')
+    expect(sidebarEmblem?.tagName.toLowerCase()).toBe('svg')
     expect(headerEl?.querySelector('[data-testid="nexus-emblem"]')).toBeNull()
   })
 
