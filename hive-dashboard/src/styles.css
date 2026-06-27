@@ -1,3 +1,5 @@
+*, *::before, *::after { box-sizing: border-box; }
+
 :root {
   /* ── NEXUS palette ── */
   --dashboard-background: #080a10;
@@ -67,7 +69,17 @@ body { margin: 0; background: var(--dashboard-background); }
 [data-dashboard-status="error"] { color: var(--dashboard-danger); }
 [data-dashboard-status="inactive"], [data-dashboard-status="neutral"] { color: var(--dashboard-text-muted); }
 .chart { background: var(--dashboard-surface); border: 1px solid var(--dashboard-border); border-radius: var(--dashboard-radius); padding: calc(var(--dashboard-spacing) * 1.5); }
-.chart-summary { color: var(--dashboard-text-muted); }
+/* ─── Panel section title (flush panels) ─────────────────────────────────── */
+.dashboard-panel__title {
+  color: var(--dashboard-text-muted);
+  font-family: var(--dashboard-font-mono);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  margin: 0 0 12px;
+  text-transform: uppercase;
+}
+
 /* ─── Overview stat tiles row ─────────────────────────────────────────────── */
 .dashboard-overview__stats {
   display: grid;
@@ -101,6 +113,15 @@ body { margin: 0; background: var(--dashboard-background); }
   align-items: center;
   display: flex;
   gap: 5px;
+}
+
+/* ─── Empty state compact centering (panels with no data) ────────────────── */
+.dashboard-panel--flush .state[data-state="empty"] {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 80px;
+  padding: 16px;
 }
 
 /* ─── Chart SVG baseline ──────────────────────────────────────────────────── */

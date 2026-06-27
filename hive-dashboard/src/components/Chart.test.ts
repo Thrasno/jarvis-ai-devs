@@ -8,15 +8,17 @@ describe('dashboard chart foundation', () => {
     const chart = renderChart({
       kind: 'time-series',
       title: 'Knowledge Growth',
-      summary: 'Total memories grew from February through June.',
       series: hiveOverviewFixture.knowledgeGrowth
     })
 
     expect(chart.getAttribute('role')).toBe('figure')
     expect(chart.getAttribute('data-chart-kind')).toBe('time-series')
     expect(chart.getAttribute('aria-label')).toBe('Knowledge Growth')
-    expect(chart.querySelector('h2')?.textContent).toBe('Knowledge Growth')
-    expect(chart.querySelector('.chart-summary')?.textContent).toBe('Total memories grew from February through June.')
+
+    // Chart content must NOT render an inner heading — the panel owns the title
+    expect(chart.querySelector('h2')).toBeNull()
+    // Chart content must NOT render a summary paragraph — removed per polish spec
+    expect(chart.querySelector('.chart-summary')).toBeNull()
 
     // SVG must be present with structural elements
     const svg = chart.querySelector('svg')
@@ -30,12 +32,12 @@ describe('dashboard chart foundation', () => {
     const chart = renderChart({
       kind: 'categorical',
       title: 'Memories by category',
-      summary: 'Memory totals grouped by category.',
       points: insightsScreenFixtures.analytics.memoriesByCategory
     })
 
     expect(chart.getAttribute('data-chart-kind')).toBe('categorical')
-    expect(chart.querySelector('.chart-summary')?.textContent).toBe('Memory totals grouped by category.')
+    // No summary paragraph — removed per polish spec
+    expect(chart.querySelector('.chart-summary')).toBeNull()
 
     // SVG must be present with rect bar elements
     const svg = chart.querySelector('svg')
@@ -52,7 +54,6 @@ describe('dashboard chart foundation', () => {
     const chart = renderChart({
       kind: 'time-series',
       title: 'Knowledge Growth',
-      summary: 'Growth over time.',
       series: hiveOverviewFixture.knowledgeGrowth
     })
 
@@ -70,7 +71,6 @@ describe('dashboard chart foundation', () => {
     const chart = renderChart({
       kind: 'categorical',
       title: 'Projects',
-      summary: 'Most active.',
       points
     })
 
@@ -84,7 +84,6 @@ describe('dashboard chart foundation', () => {
     const chart = renderChart({
       kind: 'categorical',
       title: 'Empty categories',
-      summary: 'No category values are available.',
       points: []
     })
 
@@ -114,7 +113,6 @@ describe('dashboard chart foundation', () => {
     const chart = renderChart({
       kind: 'categorical',
       title: 'Active projects',
-      summary: 'Project rankings.',
       points
     })
 

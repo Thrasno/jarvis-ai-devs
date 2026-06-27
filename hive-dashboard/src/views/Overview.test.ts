@@ -72,7 +72,8 @@ describe('overview view', () => {
 
     expect(view.textContent).not.toContain('Demo fixture data')
     expect(getByRole(view, 'group', { name: `Open Conflicts: ${conflictViewerFixture.summary.open}` })).toBeDefined()
-    expect(getByRole(view, 'figure', { name: 'Knowledge Growth' }).textContent).toContain('Knowledge growth over time.')
+    // No descriptive summary text — polish spec removes these sentences
+    expect(getByRole(view, 'figure', { name: 'Knowledge Growth' }).textContent).not.toContain('Knowledge growth over time.')
     expect(syncHealth.textContent).not.toContain('unavailable')
   })
 
@@ -199,6 +200,50 @@ describe('overview view', () => {
 
     expect(getByRole(activity, 'status').textContent).toBe('No recent activity is available.')
     expect(activity.textContent).not.toContain('Demo fixture data')
+  })
+
+  it('Knowledge Growth panel has exactly one title element — no nested heading duplication', () => {
+    const view = renderOverview({ status: 'ready', data: hiveOverviewFixture })
+    const knowledgePanel = view.querySelector('[data-dashboard-primitive="panel"]')
+    if (!knowledgePanel) throw new Error('Expected at least one panel')
+    // flushPanel renders one <h2 class="dashboard-panel__title">; chart must not add a second
+    const headings = Array.from(view.querySelectorAll('.dashboard-panel__title'))
+    // Each panel section has exactly one .dashboard-panel__title; none inside the chart figure
+    for (const panel of view.querySelectorAll('[data-dashboard-primitive="panel"]')) {
+      const titlesInPanel = panel.querySelectorAll('.dashboard-panel__title')
+      expect(titlesInPanel).toHaveLength(1)
+      // No duplicate headings inside the chart figure nested within the panel
+      const figure = panel.querySelector('[role="figure"]')
+      if (figure) {
+        expect(figure.querySelector('h2')).toBeNull()
+      }
+    }
+    expect(headings.length).toBeGreaterThanOrEqual(4) // 4 panels minimum
+  })
+
+  it('Knowledge Growth chart content does not contain descriptive summary text', () => {
+    const view = renderOverview({ status: 'ready', data: hiveOverviewFixture })
+    const knowledgeChart = getByRole(view, 'figure', { name: 'Knowledge Growth' })
+    expect(knowledgeChart.querySelector('.chart-summary')).toBeNull()
+    expect(knowledgeChart.querySelector('p')).toBeNull()
+    expect(knowledgeChart.textContent).not.toContain('over time')
+  })
+
+  it('Most active projects chart content does not contain descriptive summary text', () => {
+    const view = renderOverview({ status: 'ready', data: hiveOverviewFixture })
+    const chart = getByRole(view, 'figure', { name: 'Most active projects' })
+    expect(chart.querySelector('.chart-summary')).toBeNull()
+    expect(chart.querySelector('h2')).toBeNull()
+    expect(chart.textContent).not.toContain('Most active projects by live memory count')
+  })
+
+  it('panel titles use dashboard-panel__title class and small mono styling hook', () => {
+    const view = renderOverview({ status: 'ready', data: hiveOverviewFixture })
+    const panelTitles = view.querySelectorAll('.dashboard-panel__title')
+    expect(panelTitles.length).toBeGreaterThanOrEqual(4)
+    panelTitles.forEach((title) => {
+      expect(title.tagName).toBe('H2')
+    })
   })
 
   it('renders most-active projects as SVG bar chart from live project counts', () => {

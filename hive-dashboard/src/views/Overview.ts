@@ -63,10 +63,6 @@ function sourceNotice(message: string): HTMLElement {
   return notice
 }
 
-function sourceAwareSummary(summary: string, sourceLabel?: string): string {
-  return sourceLabel ? `${summary} ${sourceLabel}` : summary
-}
-
 function renderLiveActivity(activity: OverviewLiveActivityViewModel): HTMLElement {
   const section = document.createElement('section')
   section.setAttribute('role', 'region')
@@ -88,7 +84,6 @@ function renderMostActiveProjects(points: OverviewFixtureViewModel['mostActivePr
   return renderChart({
     kind: 'categorical',
     title: 'Most active projects',
-    summary: 'Most active projects by live memory count.',
     points
   })
 }
@@ -128,7 +123,6 @@ export function renderOverview(state: ViewState<OverviewFixtureViewModel>): HTML
     flushPanel('Knowledge growth', renderChart({
       kind: 'time-series',
       title: knowledgeGrowth.label,
-      summary: sourceAwareSummary('Knowledge growth over time.', knowledgeGrowth.sourceLabel),
       series: knowledgeGrowth
     })),
     flushPanel('Sync health by project', renderSyncHealthSection(syncHealthByProject, syncHealthByProjectSourceLabel))
