@@ -78,6 +78,31 @@ describe('dashboard shell', () => {
     expect(header?.querySelector('[data-testid="nexus-emblem"]')).toBeNull()
   })
 
+  it('renders the NEXUS emblem image (data-testid="nexus-emblem-img") in the login screen', () => {
+    const container = document.createElement('main')
+
+    renderApp({ container, state: { status: 'anonymous' }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
+
+    const img = container.querySelector<HTMLImageElement>('[data-testid="nexus-emblem-img"]')
+    expect(img).not.toBeNull()
+    expect(img?.tagName.toLowerCase()).toBe('img')
+    expect(img?.getAttribute('aria-hidden')).toBe('true')
+    expect(img?.getAttribute('alt')).toBe('')
+  })
+
+  it('renders the NEXUS emblem image (data-testid="nexus-emblem-img") in the sidebar of the authenticated shell', () => {
+    const container = document.createElement('main')
+
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: memberUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
+
+    const sidebar = container.querySelector('[data-dashboard-primitive="sidebar"]')
+    const img = sidebar?.querySelector<HTMLImageElement>('[data-testid="nexus-emblem-img"]')
+    expect(img).not.toBeNull()
+    expect(img?.tagName.toLowerCase()).toBe('img')
+    expect(img?.getAttribute('aria-hidden')).toBe('true')
+    expect(img?.getAttribute('alt')).toBe('')
+  })
+
   it('renders the login tagline "Team memory, governed." on the login screen', () => {
     const container = document.createElement('main')
 

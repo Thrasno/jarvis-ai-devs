@@ -189,16 +189,22 @@ body::before {
 
 /* ─── NEXUS brand container ───────────────────────────────────────────────── */
 .dashboard-brand {
-  align-items: baseline;
+  align-items: center;
   display: inline-flex;
-  gap: 3px;
+  gap: 6px;
+}
+
+/* ─── NEXUS emblem image (hexagonal node ring PNG) ────────────────────────── */
+.dashboard-brand__emblem-img {
+  display: block;
+  flex-shrink: 0;
+  object-fit: contain;
 }
 
 /* ─── Conpas NLogo glyph (tri-color N SVG) ────────────────────────────────── */
 .nexus-n {
   display: inline-block;
   flex-shrink: 0;
-  vertical-align: baseline;
 }
 
 /* ─── NEXUS brand wordmark (gradient text) ────────────────────────────────── */
