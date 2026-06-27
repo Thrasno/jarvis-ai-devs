@@ -523,13 +523,18 @@ describe('dashboard shell', () => {
 
     expect(container.querySelector('[data-coming-soon]')).toBeNull()
     expect(container.querySelector('[role="note"]')).toBeNull()
-    expect(container.querySelector('[aria-label="Project summaries"]')).not.toBeNull()
+    expect(container.querySelector('[data-dashboard-view="projects"]')).not.toBeNull()
+    expect(container.querySelector('.dashboard-projects__eyebrow')?.textContent).toBe('ACCESSIBLE REPOSITORIES · 1')
+    expect(container.querySelector('[aria-label="Accessible repositories"]')).not.toBeNull()
     expect(container.textContent).toContain('Core API')
-    expect(container.textContent).toContain('17 sessions')
+    expect(container.textContent).toContain('MEMORIES')
+    expect(container.textContent).toContain('SESSIONS')
+    expect(container.textContent).toContain('LAST ACTIVITY')
     expect(container.textContent).not.toContain('Demo fixture data')
-    expect(container.textContent).not.toContain('Last sync')
+    expect(container.textContent).not.toContain('DEVS')
+    expect(container.textContent).not.toContain('LAST SYNC')
     expect(container.textContent).not.toContain('contributors')
-    expect(container.querySelector<HTMLAnchorElement>('a[href="/dashboard/knowledgeBrowser?project=Core+API"]')?.textContent).toBe('Open in Knowledge Browser')
+    expect(container.querySelector<HTMLAnchorElement>('a[href="/dashboard/knowledgeBrowser?project=Core+API"]')?.textContent).toBe('browse memories →')
   })
 
   it('does not call the Projects API during non-project dashboard bootstrap', async () => {
