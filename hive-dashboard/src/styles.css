@@ -1,19 +1,25 @@
 :root {
-  --dashboard-background: #08111f;
-  --dashboard-surface: #101b2d;
-  --dashboard-surface-raised: #15233a;
-  --dashboard-border: #263854;
-  --dashboard-text: #edf4ff;
-  --dashboard-text-muted: #a6b6cc;
-  --dashboard-accent: #7aa2ff;
-  --dashboard-warning: #f7c948;
-  --dashboard-success: #44d07b;
-  --dashboard-danger: #ff6b7a;
+  /* ── NEXUS palette ── */
+  --dashboard-background: #080a10;
+  --dashboard-surface: #0E1320;
+  --dashboard-surface-raised: #121a2b;
+  --dashboard-border: #1b2333;
+  --dashboard-text: #E6EDF3;
+  --dashboard-text-muted: #8B97A8;
+  --dashboard-accent: #E0246F;
+  --dashboard-warning: #E0A22E;
+  --dashboard-success: #22B85C;
+  --dashboard-danger: #EF4444;
   --dashboard-spacing: 1rem;
   --dashboard-radius: 18px;
+  /* ── New NEXUS-specific tokens ── */
+  --dashboard-data-blue: #3B82E8;
+  --dashboard-violet: #8b5cf0;
+  --dashboard-brand-gradient: linear-gradient(90deg, #E0246F 0%, #8b5cf0 50%, #3B82E8 100%);
+  --dashboard-font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace;
   color: var(--dashboard-text);
   background: var(--dashboard-background);
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-family: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
 }
 
 body { margin: 0; background: var(--dashboard-background); }
@@ -21,12 +27,12 @@ body { margin: 0; background: var(--dashboard-background); }
 .dashboard-page, .shell { width: min(920px, 100%); }
 .login-card { width: min(420px, 100%); }
 .dashboard-panel, .panel, header { background: var(--dashboard-surface); border: 1px solid var(--dashboard-border); border-radius: var(--dashboard-radius); box-shadow: 0 20px 60px rgb(0 0 0 / 24%); padding: calc(var(--dashboard-spacing) * 2); }
-.eyebrow { color: var(--dashboard-text-muted); font-size: .78rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.eyebrow { color: var(--dashboard-text-muted); font-family: var(--dashboard-font-mono); font-size: .78rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 .dashboard-stack, .stack { display: grid; gap: var(--dashboard-spacing); }
 .dashboard-grid, .grid { display: grid; gap: var(--dashboard-spacing); grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); }
 .dashboard-metric, .metric { background: var(--dashboard-surface-raised); border: 1px solid var(--dashboard-border); border-radius: calc(var(--dashboard-radius) - 6px); padding: var(--dashboard-spacing); }
 .dashboard-metric-label, .dashboard-metric-detail { color: var(--dashboard-text-muted); }
-.dashboard-metric-value { color: var(--dashboard-text); font-size: 1.5rem; font-weight: 800; margin-block: .25rem; }
+.dashboard-metric-value { color: var(--dashboard-text); font-family: var(--dashboard-font-mono); font-size: 1.5rem; font-weight: 800; margin-block: .25rem; }
 .dashboard-state, .state { color: var(--dashboard-text-muted); }
 .dashboard-status, .status { border: 1px solid var(--dashboard-border); border-radius: 999px; display: inline-flex; font-size: .78rem; font-weight: 800; margin-inline-start: .5rem; padding: .2rem .55rem; }
 [data-dashboard-status="healthy"], [data-dashboard-status="active"] { color: var(--dashboard-success); }
@@ -38,20 +44,44 @@ body { margin: 0; background: var(--dashboard-background); }
 .chart-points { display: grid; gap: .65rem; list-style: none; margin: 0; padding: 0; }
 .chart-point { align-items: center; background: var(--dashboard-surface-raised); border: 1px solid var(--dashboard-border); border-radius: calc(var(--dashboard-radius) - 8px); display: flex; justify-content: space-between; padding: .7rem .85rem; }
 .chart-point-label { color: var(--dashboard-text-muted); }
-.chart-point-value { color: var(--dashboard-accent); font-weight: 800; }
+.chart-point-value { color: var(--dashboard-accent); font-family: var(--dashboard-font-mono); font-weight: 800; }
 .chart-category .chart-point-value { color: var(--dashboard-success); }
 label { display: grid; gap: .4rem; margin-block: 1rem; }
 input, button { border-radius: 10px; font: inherit; padding: .8rem 1rem; }
 input { background: var(--dashboard-surface-raised); border: 1px solid var(--dashboard-border); color: var(--dashboard-text); }
 input:focus-visible, button:focus-visible, a:focus-visible { outline: 3px solid var(--dashboard-accent); outline-offset: 2px; }
-button, .dashboard-control { background: var(--dashboard-accent); border: 0; color: #061020; cursor: pointer; font-weight: 700; }
+button, .dashboard-control { background: var(--dashboard-accent); border: 0; color: #FFFFFF; cursor: pointer; font-weight: 700; }
 button:disabled, .dashboard-control:disabled { cursor: not-allowed; opacity: .55; }
 header { margin-bottom: 1rem; }
 a { color: var(--dashboard-accent); }
 
+h1, h2, .dashboard-header__title, .dashboard-coming-soon__title { font-family: var(--dashboard-font-mono); }
+
+/* ─── NEXUS radial backdrop ────────────────────────────────────────────────── */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(900px circle at 12% -10%, rgba(224,36,111,.10), transparent 60%),
+    radial-gradient(800px circle at 100% 0%, rgba(59,130,232,.08), transparent 55%);
+}
+
+/* ─── NEXUS brand wordmark (gradient text) ────────────────────────────────── */
+.dashboard-brand__wordmark {
+  background: var(--dashboard-brand-gradient);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  font-family: var(--dashboard-font-mono);
+  font-weight: 700;
+}
+
 /* ─── Shell layout custom properties ─────────────────────────────────────── */
 :root {
-  --dashboard-sidebar-width: 210px;
+  --dashboard-sidebar-width: 248px;
   --dashboard-drawer-width: 260px;
 }
 
@@ -87,6 +117,7 @@ a { color: var(--dashboard-accent); }
   flex-wrap: wrap;
   gap: var(--dashboard-spacing);
   margin-bottom: 0;
+  min-height: 64px;
   padding: var(--dashboard-spacing) calc(var(--dashboard-spacing) * 1.5);
 }
 
@@ -380,8 +411,8 @@ a { color: var(--dashboard-accent); }
 .dashboard-sidebar__profile-avatar {
   align-items: center;
   background: var(--dashboard-accent);
-  border-radius: 50%;
-  color: #061020;
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  color: #FFFFFF;
   display: inline-flex;
   font-size: .85rem;
   font-weight: 800;
