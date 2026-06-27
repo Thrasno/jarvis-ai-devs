@@ -98,6 +98,30 @@ describe('Hive API client', () => {
     })
   })
 
+  it('loads live project summaries from the authenticated projects endpoint', async () => {
+    const projects = {
+      projects: [
+        {
+          name: 'jarvis-dev',
+          memoryCount: 42,
+          sessionCount: 7,
+          lastActivityAt: '2026-06-27T09:30:00Z',
+          syncHealth: 'healthy'
+        }
+      ],
+      total: 1
+    }
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(projects))
+    const client = createApiClient({ fetch: fetchMock })
+
+    await expect(client.projects('jwt-token')).resolves.toEqual(projects)
+
+    expect(fetchMock).toHaveBeenCalledWith('/projects', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer jwt-token' }
+    })
+  })
+
   it('loads memories, memory detail, search, and audit logs through existing read-only endpoints', async () => {
     const memory = { id: 'mem-1', sync_id: 'sync-1', project: 'jarvis-dev', category: 'decision', title: 'Dashboard scope', content: 'No daemon controls', tags: [], files_affected: [], created_by: 'admin-1', created_at: '2026-06-06T20:00:00Z', updated_at: '2026-06-06T20:01:00Z', synced_at: '2026-06-06T20:02:00Z' }
     const audit = { id: 'audit-1', occurred_at: '2026-06-06T20:03:00Z', action: 'sync_push', outcome: 'success', entry_count: 2, metadata: { pushed_count: 2 } }

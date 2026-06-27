@@ -4,10 +4,9 @@ import { createSessionStore, type AuthState, type SessionStore } from './auth/se
 import { control } from './components/dom'
 import { renderSidebar, type UserLevel } from './components/Sidebar'
 import { activityFeedFromApi, appendActivityPage } from './domain/activityFeed'
-import type { ActivityFeedViewModel, CurrentProfileViewModel, DashboardScreenKey, OverviewFixtureViewModel, ProjectListFixtureViewModel, ProjectSyncStatus } from './domain/dashboard'
+import { projectsFromApi, type ActivityFeedViewModel, type CurrentProfileViewModel, type DashboardScreenKey, type OverviewFixtureViewModel, type ProjectListViewModel, type ProjectSyncStatus } from './domain/dashboard'
 import { memoryListToDiscoveryData, memorySearchToDiscoveryData, type KnowledgeDiscoveryData } from './domain/knowledgeDiscovery'
 import { dashboardFixtures } from './fixtures/hive-dashboard/index'
-import { projectsFixture } from './fixtures/hive-dashboard/explore'
 import { renderAuditSync } from './views/AuditSync'
 import { renderGlobalSearch } from './views/GlobalSearch'
 import { renderKnowledgeBrowser } from './views/KnowledgeBrowser'
@@ -40,7 +39,7 @@ export type LoadedDashboardData = {
   memories: ViewState<MemoriesData>
   memoryDetail?: MemoryDetailViewState
   audit: ViewState<AuditSyncData>
-  projects: ViewState<ProjectListFixtureViewModel>
+  projects?: ViewState<ProjectListViewModel>
   activity: ViewState<ActivityFeedViewModel>
   knowledgeBrowser: ViewState<KnowledgeDiscoveryData>
   globalSearch: ViewState<KnowledgeDiscoveryData>
@@ -112,7 +111,7 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
   projects: {
     path: '/dashboard/projects',
     load: 'projects',
-    render: (vs) => renderProjects(vs as ViewState<ProjectListFixtureViewModel>)
+    render: (vs) => renderProjects(vs as ViewState<ProjectListViewModel>)
   },
   knowledgeBrowser: {
     path: '/dashboard/knowledgeBrowser',
@@ -415,6 +414,11 @@ function stateFor<K extends keyof LoadedDashboardData>(
   return slice ?? { status: 'loading' }
 }
 
+function projectsLoadingState(state: DashboardState): DashboardState {
+  if (state.status !== 'ready') return state
+  return { status: 'ready', data: { ...state.data, projects: { status: 'loading' } } }
+}
+
 function memoryDetailForRoute(state: DashboardState, routeId: string): MemoryDetailViewState {
   if (state.status !== 'ready') return { status: 'loading' }
   const detail = state.data.memoryDetail
@@ -438,7 +442,6 @@ export async function loadDashboard(api: ApiClient, token: string): Promise<{ st
       memories: combinedState(recent, search, (recent, search) => ({ recent, search })),
       audit: settledState(audit),
       activity: activityState(activity),
-      projects: { status: 'ready', data: projectsFixture },
       knowledgeBrowser: discoveryListState(recent),
       globalSearch: discoverySearchState(search)
     }
@@ -463,7 +466,7 @@ export async function loadForRoute(
 
   const key = route.load
   // Already cached
-  if (!isQuerySensitiveDiscoveryKey(key) && cache.status === 'ready' && cache.data[key] !== undefined) return cache
+  if (key !== 'projects' && !isQuerySensitiveDiscoveryKey(key) && cache.status === 'ready' && cache.data[key] !== undefined) return cache
 
   const existingData = cache.status === 'ready' ? cache.data : {}
 
@@ -529,8 +532,10 @@ async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token:
       const result = await Promise.allSettled([api.syncAttemptSummary(token)])
       return settledState(result[0])
     }
-    case 'projects':
-      return { status: 'ready', data: projectsFixture }
+    case 'projects': {
+      const response = await api.projects(token)
+      return { status: 'ready', data: projectsFromApi(response) }
+    }
     case 'activity': {
       const result = await Promise.allSettled([api.activity(token, { limit: DEFAULT_ACTIVITY_LIMIT })])
       return activityState(result[0])
@@ -782,6 +787,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
       history.pushState(null, '', path)
       loadVersion += 1
       activeScreen = screenFromPath(path)
+      if (activeScreen === 'projects') dashboard = projectsLoadingState(dashboard)
       const state = session.getState()
       rerender(state)
       if (state.status === 'authenticated') {
@@ -887,6 +893,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     const discoveryRouteKey = isQuerySensitiveDiscoveryScreen(screen) ? routeAndQueryFromRoutePath(routePath) : undefined
     const memoryDetailRouteKey = memoryDetailRouteKeyForScreen(screen, routePath)
     activeScreen = screen
+    if (activeScreen === 'projects') dashboard = projectsLoadingState(dashboard)
     rerender(state)
     if (state.status === 'authenticated') {
       const loaded = await loadForRoute(screen, api, state.token, dashboard, routePath)
@@ -905,6 +912,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     loadVersion += 1
     const state = session.getState()
     activeScreen = screenFromPath(currentRoutePath())
+    if (activeScreen === 'projects') dashboard = projectsLoadingState(dashboard)
     rerender(state)
     if (state.status === 'authenticated') {
       void loadAndRender(state, activeScreen)
