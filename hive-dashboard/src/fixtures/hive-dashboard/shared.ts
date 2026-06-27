@@ -34,29 +34,18 @@ export const dashboardNavigationGroups = [
     entries: [
       { screen: 'overview', label: 'Dashboard' },
       { screen: 'projects', label: 'Projects' },
+      { screen: 'memories', label: 'Memories' },
       { screen: 'knowledgeBrowser', label: 'Knowledge Browser' },
       { screen: 'globalSearch', label: 'Global Search' },
-      { screen: 'knowledgeGraph', label: 'Knowledge Graph' },
       { screen: 'activityFeed', label: 'Activity Feed' }
     ]
   },
-  {
-    key: 'team',
-    label: 'Team',
-    entries: [
-      { screen: 'contributors', label: 'Contributors' },
-      { screen: 'developerTimeline', label: 'Developer Timeline' },
-      { screen: 'syncStatus', label: 'Sync Status' }
-    ]
-  },
-  { key: 'insights', label: 'Insights', entries: [{ screen: 'analytics', label: 'Analytics' }] },
   {
     key: 'governance',
     label: 'Governance',
     entries: [
       { screen: 'userManagement', label: 'User Management' },
-      { screen: 'auditLog', label: 'Audit Log' },
-      { screen: 'conflictViewer', label: 'Conflict Viewer' }
+      { screen: 'auditLog', label: 'Audit Log' }
     ]
   }
 ] as const satisfies readonly NavigationGroupViewModel[]

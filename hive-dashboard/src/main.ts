@@ -2,7 +2,6 @@ import { createApiClient, type AdminStats, type ApiClient, type Count, type Heal
 import { parseDashboardFilters } from './api/urlFilters'
 import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
 import { control } from './components/dom'
-import { comingSoon } from './components/ComingSoon'
 import { renderSidebar, type UserLevel } from './components/Sidebar'
 import { activityFeedFromApi, appendActivityPage } from './domain/activityFeed'
 import type { ActivityFeedViewModel, CurrentProfileViewModel, DashboardScreenKey, OverviewFixtureViewModel, ProjectListFixtureViewModel, ProjectSyncStatus } from './domain/dashboard'
@@ -78,8 +77,16 @@ type ScreenRoute = {
   path: string
   load?: keyof LoadedDashboardData
   render: (vs: ViewState<unknown>, routePath: string, actions: AppActions) => HTMLElement
-  placeholderLabel?: string
 }
+
+const HIDDEN_DASHBOARD_SCREENS = new Set<DashboardScreenKey>([
+  'knowledgeGraph',
+  'contributors',
+  'developerTimeline',
+  'syncStatus',
+  'analytics',
+  'conflictViewer'
+])
 
 export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
   overview: {
@@ -119,8 +126,8 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
   },
   knowledgeGraph: {
     path: '/dashboard/knowledgeGraph',
-    placeholderLabel: 'Knowledge Graph',
-    render: () => comingSoon('Knowledge Graph')
+    load: 'overview',
+    render: (vs) => renderOverview(vs as ViewState<OverviewFixtureViewModel>)
   },
   activityFeed: {
     path: '/dashboard/activityFeed',
@@ -129,28 +136,28 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
   },
   contributors: {
     path: '/dashboard/contributors',
-    placeholderLabel: 'Contributors',
-    render: () => comingSoon('Contributors')
+    load: 'overview',
+    render: (vs) => renderOverview(vs as ViewState<OverviewFixtureViewModel>)
   },
   developerTimeline: {
     path: '/dashboard/developerTimeline',
-    placeholderLabel: 'Developer Timeline',
-    render: () => comingSoon('Developer Timeline')
+    load: 'overview',
+    render: (vs) => renderOverview(vs as ViewState<OverviewFixtureViewModel>)
   },
   syncStatus: {
     path: '/dashboard/syncStatus',
-    placeholderLabel: 'Sync Status',
-    render: () => comingSoon('Sync Status')
+    load: 'overview',
+    render: (vs) => renderOverview(vs as ViewState<OverviewFixtureViewModel>)
   },
   analytics: {
     path: '/dashboard/analytics',
-    placeholderLabel: 'Analytics',
-    render: () => comingSoon('Analytics')
+    load: 'overview',
+    render: (vs) => renderOverview(vs as ViewState<OverviewFixtureViewModel>)
   },
   conflictViewer: {
     path: '/dashboard/conflictViewer',
-    placeholderLabel: 'Conflict Viewer',
-    render: () => comingSoon('Conflict Viewer')
+    load: 'overview',
+    render: (vs) => renderOverview(vs as ViewState<OverviewFixtureViewModel>)
   }
 }
 
@@ -167,7 +174,7 @@ function screenFromPath(routePath: string): DashboardScreenKey {
   // Handle legacy /dashboard/users alias
   if (normalized.endsWith('/users')) return 'userManagement'
   for (const [key, route] of Object.entries(ROUTES) as [DashboardScreenKey, ScreenRoute][]) {
-    if (route.path === normalized) return key
+    if (route.path === normalized) return HIDDEN_DASHBOARD_SCREENS.has(key) ? 'overview' : key
   }
   return 'overview'
 }
@@ -337,6 +344,9 @@ function renderAuthenticatedView(
   }
 
   const route = ROUTES[screen]
+  if (HIDDEN_DASHBOARD_SCREENS.has(screen)) {
+    return renderOverview(stateFor(state, 'overview') as ViewState<OverviewFixtureViewModel>)
+  }
   if (screen === 'userManagement') {
     return renderUsers(stateFor(state, 'users') as ViewState<UsersData>, {
       currentUsername: auth.user.username,
@@ -448,7 +458,7 @@ export async function loadForRoute(
     if (detailRoute.kind === 'malformed') return cache
     if (detailRoute.kind === 'valid') return loadMemoryDetail(detailRoute, api, token, cache)
   }
-  // Fixture-only routes need no fetch
+  if (HIDDEN_DASHBOARD_SCREENS.has(screen)) return loadForRoute('overview', api, token, cache, ROUTES.overview.path)
   if (!route.load) return cache
 
   const key = route.load
