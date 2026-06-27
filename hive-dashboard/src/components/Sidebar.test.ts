@@ -133,15 +133,119 @@ describe('Sidebar profile block', () => {
     expect(profileBlock?.textContent).toContain('Alice Smith')
   })
 
-  it('logout button in profile block triggers onLogout exactly once', () => {
+  it('logout control in profile block triggers onLogout exactly once', () => {
     const container = document.createElement('div')
     const onLogout = vi.fn()
 
     renderSidebar(container, { ...baseProps, profile: currentDashboardProfile, onLogout })
 
-    const logoutButton = container.querySelector('[data-sidebar-profile] button')
-    expect(logoutButton).not.toBeNull()
-    logoutButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const logoutControl = container.querySelector('[data-sidebar-action="logout"]')
+    expect(logoutControl).not.toBeNull()
+    logoutControl!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(onLogout).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Sidebar nav icons', () => {
+  it('each visible nav entry renders an svg icon', () => {
+    const container = document.createElement('div')
+    renderSidebar(container, { ...baseProps, userLevel: 'admin' })
+
+    const navEntries = container.querySelectorAll('.dashboard-nav-entry')
+    expect(navEntries.length).toBeGreaterThan(0)
+
+    for (const entry of navEntries) {
+      const icon = entry.querySelector('svg')
+      expect(icon).not.toBeNull()
+    }
+  })
+
+  it('overview nav entry renders a grid icon (4 rects)', () => {
+    const container = document.createElement('div')
+    renderSidebar(container, { ...baseProps })
+
+    const overviewEntry = container.querySelector('[data-nav-entry="overview"]')
+    expect(overviewEntry).not.toBeNull()
+    const rects = overviewEntry?.querySelectorAll('svg rect')
+    expect(rects?.length).toBe(4)
+  })
+
+  it('projects nav entry renders a db icon (ellipse + paths)', () => {
+    const container = document.createElement('div')
+    renderSidebar(container, { ...baseProps })
+
+    const projectsEntry = container.querySelector('[data-nav-entry="projects"]')
+    expect(projectsEntry).not.toBeNull()
+    const ellipse = projectsEntry?.querySelector('svg ellipse')
+    expect(ellipse).not.toBeNull()
+  })
+
+  it('activityFeed nav entry renders an activity icon (path)', () => {
+    const container = document.createElement('div')
+    renderSidebar(container, { ...baseProps })
+
+    const activityEntry = container.querySelector('[data-nav-entry="activityFeed"]')
+    expect(activityEntry).not.toBeNull()
+    const path = activityEntry?.querySelector('svg path')
+    expect(path).not.toBeNull()
+  })
+
+  it('userManagement nav entry renders a shield icon (admin only)', () => {
+    const container = document.createElement('div')
+    renderSidebar(container, { ...baseProps, userLevel: 'admin' })
+
+    const userMgmtEntry = container.querySelector('[data-nav-entry="userManagement"]')
+    expect(userMgmtEntry).not.toBeNull()
+    const svg = userMgmtEntry?.querySelector('svg')
+    expect(svg).not.toBeNull()
+  })
+})
+
+describe('Sidebar profile footer', () => {
+  it('renders a role pill with the user role text', () => {
+    const container = document.createElement('div')
+    renderSidebar(container, { ...baseProps, userLevel: 'admin' })
+
+    const rolePill = container.querySelector('[data-sidebar-role-pill]')
+    expect(rolePill).not.toBeNull()
+    expect(rolePill?.textContent).toContain('admin')
+  })
+
+  it('renders logout as a link element (not a button)', () => {
+    const container = document.createElement('div')
+    renderSidebar(container, { ...baseProps })
+
+    const logoutControl = container.querySelector('[data-sidebar-action="logout"]')
+    expect(logoutControl).not.toBeNull()
+    expect(logoutControl?.tagName.toLowerCase()).toBe('a')
+  })
+
+  it('does not render a large filled logout button', () => {
+    const container = document.createElement('div')
+    renderSidebar(container, { ...baseProps })
+
+    // The old button.dashboard-control.dashboard-sidebar__logout should no longer exist
+    const oldButton = container.querySelector('button.dashboard-sidebar__logout')
+    expect(oldButton).toBeNull()
+  })
+
+  it('profile row contains hex avatar, name, and email', () => {
+    const container = document.createElement('div')
+    renderSidebar(container, {
+      ...baseProps,
+      profile: {
+        initials: 'AO',
+        name: 'Ada Okafor',
+        email: 'ada.okafor@nexus.dev',
+        role: 'admin',
+        logoutLabel: 'Logout'
+      }
+    })
+
+    const profileRow = container.querySelector('[data-sidebar-profile-row]')
+    expect(profileRow).not.toBeNull()
+    expect(profileRow?.textContent).toContain('AO')
+    expect(profileRow?.textContent).toContain('Ada Okafor')
+    expect(profileRow?.textContent).toContain('ada.okafor@nexus.dev')
   })
 })

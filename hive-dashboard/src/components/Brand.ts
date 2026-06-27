@@ -30,11 +30,11 @@ export function renderBrand(options: { withTagline?: boolean; size?: number } = 
 
   return `<span class="dashboard-brand">
   <img src="${emblemUrl}" width="${emblemSize}" height="${emblemSize}" alt="" aria-hidden="true" data-testid="nexus-emblem-img" class="dashboard-brand__emblem-img" style="object-fit:contain;flex-shrink:0">
-  <svg class="nexus-n" data-testid="nexus-emblem" width="${nWidth}" height="${nHeight}" viewBox="0 0 100 100" fill="none" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+  <span class="dashboard-brand__lockup"><svg class="nexus-n" data-testid="nexus-emblem" width="${nWidth}" height="${nHeight}" viewBox="0 0 100 100" fill="none" preserveAspectRatio="none" aria-hidden="true" focusable="false">
     <polygon points="9,11 30,11 30,89 9,89" fill="#22B85C"/>
     <polygon points="70,11 91,11 91,89 70,89" fill="#E0246F"/>
     <polygon points="30,11 49,11 70,89 51,89" fill="#3B82E8"/>
-  </svg><span class="dashboard-brand__wordmark">EXUS HIVE</span>
+  </svg><span class="dashboard-brand__wordmark">EXUS HIVE</span></span>
   ${tagline}
 </span>`
 }

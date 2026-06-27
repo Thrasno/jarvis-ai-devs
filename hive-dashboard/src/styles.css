@@ -37,7 +37,8 @@ body { margin: 0; background: var(--dashboard-background); }
 .dashboard-metric, .metric {
   background: rgba(11, 15, 24, 0.55);
   border: 1px solid #1e2735;
-  border-radius: 0.75rem;
+  border-radius: 14px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
   padding: var(--dashboard-spacing);
 }
 .dashboard-metric-label {
@@ -191,7 +192,14 @@ body::before {
 .dashboard-brand {
   align-items: center;
   display: inline-flex;
-  gap: 6px;
+  gap: 8px;
+}
+
+/* ─── N + wordmark lockup (tight inline group) ────────────────────────────── */
+.dashboard-brand__lockup {
+  align-items: center;
+  display: inline-flex;
+  gap: 1px;
 }
 
 /* ─── NEXUS emblem image (hexagonal node ring PNG) ────────────────────────── */
@@ -249,12 +257,11 @@ body::before {
 .dashboard-sidebar__brand {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
   padding-bottom: calc(var(--dashboard-spacing) * 1.25);
   margin-bottom: var(--dashboard-spacing);
   border-bottom: 1px solid var(--dashboard-border);
 }
-.dashboard-sidebar__brand .dashboard-brand { gap: 0.6rem; }
+.dashboard-sidebar__brand .dashboard-brand { gap: 8px; }
 
 /* ─── Header band ──────────────────────────────────────────────────────────── */
 .dashboard-header {
@@ -368,33 +375,65 @@ body::before {
 }
 
 .dashboard-nav-group__label {
-  margin: 0 0 .4rem;
+  color: var(--dashboard-text-muted);
+  font-family: var(--dashboard-font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  margin: 0 0 6px;
+  padding-left: 10px;
+  text-transform: uppercase;
 }
 
 .dashboard-nav-entry {
-  border-radius: calc(var(--dashboard-radius) - 10px);
-  color: var(--dashboard-text-muted);
-  display: block;
-  font-size: .88rem;
-  padding: .4rem .65rem;
+  align-items: center;
+  border-radius: 8px;
+  color: #8B97A8;
+  display: flex;
+  font-size: 13px;
+  gap: 10px;
+  height: 36px;
+  padding: 0 10px;
+  position: relative;
   text-decoration: none;
   transition: background 0.12s, color 0.12s;
 }
 
 .dashboard-nav-entry:hover {
-  background: var(--dashboard-surface-raised);
+  background: rgba(255, 255, 255, 0.03);
   color: var(--dashboard-text);
 }
 
 .dashboard-nav-entry--active {
-  background: var(--dashboard-surface-raised);
-  color: var(--dashboard-accent);
-  font-weight: 700;
+  background: rgba(59, 130, 232, 0.10);
+  color: #E6EDF3;
 }
 
-.dashboard-sidebar__logout {
-  margin-top: auto;
-  width: 100%;
+/* Left accent bar for active nav entries */
+.dashboard-nav-entry--active::before {
+  background: #3B82E8;
+  border-radius: 0 2px 2px 0;
+  bottom: 6px;
+  content: '';
+  left: 0;
+  position: absolute;
+  top: 6px;
+  width: 2px;
+}
+
+/* ─── Nav entry icon ──────────────────────────────────────────────────────── */
+.dashboard-nav-entry__icon {
+  align-items: center;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+/* ─── Nav entry label ─────────────────────────────────────────────────────── */
+.dashboard-nav-entry__label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ─── ComingSoon component ────────────────────────────────────────────────── */
@@ -605,10 +644,27 @@ body::before {
 /* ─── Sidebar profile block ───────────────────────────────────────────────── */
 .dashboard-sidebar__profile {
   border-top: 1px solid var(--dashboard-border);
-  display: grid;
-  gap: .3rem;
+  display: flex;
+  flex-direction: column;
   margin-top: auto;
   padding-top: var(--dashboard-spacing);
+}
+
+/* Profile row: avatar + name/email */
+.dashboard-sidebar__profile-row {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 8px;
+  display: flex;
+  gap: 10px;
+  padding: 8px;
+}
+
+/* Text column inside profile row */
+.dashboard-sidebar__profile-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .dashboard-sidebar__profile-avatar {
@@ -617,27 +673,57 @@ body::before {
   clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
   color: #FFFFFF;
   display: inline-flex;
-  font-size: .85rem;
+  flex-shrink: 0;
+  font-size: .75rem;
   font-weight: 800;
-  height: 2rem;
+  height: 30px;
   justify-content: center;
-  width: 2rem;
+  width: 30px;
 }
 
 .dashboard-sidebar__profile-name {
-  color: var(--dashboard-text);
-  font-size: .88rem;
-  font-weight: 700;
-  margin: 0;
-}
-
-.dashboard-sidebar__profile-email {
-  color: var(--dashboard-text-muted);
-  font-size: .78rem;
+  color: #E6EDF3;
+  font-size: 13px;
+  font-weight: 600;
   margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.dashboard-sidebar__profile-email {
+  color: var(--dashboard-text-muted);
+  font-family: var(--dashboard-font-mono);
+  font-size: 10px;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Footer row: role pill + logout link */
+.dashboard-sidebar__profile-footer {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding: 0 4px;
+}
+
+/* Logout link */
+.dashboard-sidebar__logout {
+  color: var(--dashboard-text-muted);
+  font-family: var(--dashboard-font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-decoration: none;
+  text-transform: uppercase;
+  transition: color 0.12s;
+}
+
+.dashboard-sidebar__logout:hover {
+  color: #E6EDF3;
 }
 
 /* ─── Notification drawer cards ──────────────────────────────────────────── */

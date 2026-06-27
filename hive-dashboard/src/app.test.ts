@@ -139,7 +139,7 @@ describe('dashboard shell', () => {
     expect(profile).not.toBeNull()
     expect(profile?.textContent).toContain('member')
     expect(profile?.textContent).toContain('member@example.com')
-    expect(profile?.querySelector('[data-dashboard-status]')?.textContent).toBe('member')
+    expect(profile?.querySelector('[data-sidebar-role-pill]')?.textContent).toBe('member')
     expect(profile?.textContent).not.toContain('Ada Okafor')
     expect(profile?.textContent).not.toContain('ada.okafor@nexus.dev')
   })
@@ -1117,7 +1117,7 @@ describe('dashboard shell', () => {
     try {
       await Promise.resolve()
 
-      container.querySelector<HTMLButtonElement>('button')?.click()
+      container.querySelector<HTMLAnchorElement>('[data-sidebar-action="logout"]')?.click()
       expect(container.querySelector('h1')?.textContent).toBe('Sign in to NEXUS HIVE')
 
       health.resolve({ status: 'ok', db: 'connected', version: '1.0.0' })
