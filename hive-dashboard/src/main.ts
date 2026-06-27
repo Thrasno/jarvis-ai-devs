@@ -2,6 +2,7 @@ import { createApiClient, type AdminStats, type ApiClient, type Count, type Heal
 import { parseDashboardFilters } from './api/urlFilters'
 import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
 import { control } from './components/dom'
+import { renderBrand } from './components/Brand'
 import { renderSidebar, type UserLevel } from './components/Sidebar'
 import { activityFeedFromApi, appendActivityPage } from './domain/activityFeed'
 import { projectsFromApi, type ActivityFeedViewModel, type CurrentProfileViewModel, type DashboardScreenKey, type OverviewFixtureViewModel, type ProjectListViewModel, type ProjectSyncStatus } from './domain/dashboard'
@@ -206,7 +207,7 @@ function renderLogin(
   form.className = 'dashboard-panel panel login-card'
   form.dataset.dashboardPrimitive = 'panel'
   form.innerHTML = `
-    <p class="eyebrow">NEXUS HIVE</p>
+    ${renderBrand({ withTagline: true })}
     <h1>Sign in to NEXUS HIVE</h1>
     ${state.error ? `<p class="error" role="alert">${escapeHtml(state.error)}</p>` : ''}
     <label>Email<input name="email" type="email" autocomplete="email" required /></label>
@@ -263,7 +264,7 @@ function renderShell(
   header.className = 'dashboard-header'
   header.dataset.dashboardPrimitive = 'header'
   header.setAttribute('role', 'banner')
-  header.innerHTML = `<p class="eyebrow">NEXUS HIVE</p><h1 class="dashboard-header__title">NEXUS HIVE</h1>`
+  header.innerHTML = `${renderBrand()}<h1 class="dashboard-header__title">NEXUS HIVE</h1>`
 
   // Search slot
   const searchSlot = document.createElement('button')

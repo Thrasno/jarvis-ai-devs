@@ -56,6 +56,38 @@ describe('dashboard shell', () => {
     expect(container.querySelector('[data-dashboard-primitive="main"]')).not.toBeNull()
   })
 
+  it('renders the NEXUS emblem (data-testid="nexus-emblem") in the login screen', () => {
+    const container = document.createElement('main')
+
+    renderApp({ container, state: { status: 'anonymous' }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
+
+    expect(container.querySelector('[data-testid="nexus-emblem"]')).not.toBeNull()
+  })
+
+  it('renders the NEXUS emblem (data-testid="nexus-emblem") in the authenticated shell header', () => {
+    const container = document.createElement('main')
+
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: memberUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
+
+    expect(container.querySelector('[data-testid="nexus-emblem"]')).not.toBeNull()
+  })
+
+  it('renders the login tagline "Team memory, governed." on the login screen', () => {
+    const container = document.createElement('main')
+
+    renderApp({ container, state: { status: 'anonymous' }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
+
+    expect(container.textContent).toContain('Team memory, governed.')
+  })
+
+  it('does not render the tagline "Team memory, governed." in the authenticated shell (login-only)', () => {
+    const container = document.createElement('main')
+
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: memberUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
+
+    expect(container.textContent).not.toContain('Team memory, governed.')
+  })
+
   it('does not mount a notification bell or notification drawer in the topbar (hard boundary)', () => {
     const container = document.createElement('main')
 
