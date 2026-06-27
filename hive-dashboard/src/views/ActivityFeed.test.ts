@@ -28,14 +28,14 @@ describe('ActivityFeed', () => {
     })), { onNavigate: vi.fn() })
 
     expect(Array.from(element.querySelectorAll('[data-activity-group-header]')).map((header) => header.textContent)).toEqual(['Today', 'Yesterday'])
-    expect(element.querySelectorAll('button.dashboard-notification-card')).toHaveLength(1)
-    expect(element.querySelectorAll('[data-activity-entry-static]')).toHaveLength(1)
+    expect(element.querySelectorAll('button.dashboard-notification-card')).toHaveLength(0)
+    expect(element.querySelectorAll('[data-activity-entry-static]')).toHaveLength(2)
     expect(element.querySelector('[data-activity-category="decision"]')?.textContent).toBe('decision')
     expect(element.textContent).not.toContain('Live')
     expect(element.querySelector('[data-live-indicator]')).toBeNull()
   })
 
-  it('navigates only entries with memorySyncId and leaves delete-only rows static', () => {
+  it('keeps memory sync ID entries visible but non-navigable until activity exposes server memory IDs', () => {
     const onNavigate = vi.fn()
     const { element } = renderActivityFeed(ready(feed({
       groups: [{
@@ -44,9 +44,13 @@ describe('ActivityFeed', () => {
       }]
     })), { onNavigate })
 
-    element.querySelector<HTMLButtonElement>('button.dashboard-notification-card')!.click()
-    expect(onNavigate).toHaveBeenCalledWith('/dashboard/memories/sync-1')
-    expect(element.querySelector('[data-activity-entry-static]')?.textContent).toContain('Deleted memory')
+    expect(element.querySelector('button.dashboard-notification-card')).toBeNull()
+    expect(element.textContent).toContain('Activity event-1')
+    expect(onNavigate).not.toHaveBeenCalled()
+    expect(Array.from(element.querySelectorAll('[data-activity-entry-static]')).map((row) => row.textContent)).toEqual([
+      expect.stringContaining('Activity event-1'),
+      expect.stringContaining('Deleted memory')
+    ])
   })
 
   it('renders Load More from nextCursor and exposes loading and pagination error states', () => {

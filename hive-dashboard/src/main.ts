@@ -1,9 +1,8 @@
-import { createApiClient, type AdminStats, type ApiClient, type Count, type Health, type MemoryList, type MemoryListParams, type MemorySearch, type MemorySearchParams, type OverviewGrowth, type OverviewProjectSyncHealth, type OverviewStats, type SyncAttemptSummary, type User } from './api/client'
+import { createApiClient, type AdminStats, type ApiClient, type Count, type Health, type Memory, type MemoryList, type MemoryListParams, type MemorySearch, type MemorySearchParams, type OverviewGrowth, type OverviewProjectSyncHealth, type OverviewStats, type SyncAttemptSummary, type User } from './api/client'
 import { parseDashboardFilters } from './api/urlFilters'
 import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
 import { control } from './components/dom'
 import { comingSoon } from './components/ComingSoon'
-import { renderNotificationDrawer } from './components/NotificationDrawer'
 import { renderSidebar, type UserLevel } from './components/Sidebar'
 import { activityFeedFromApi, appendActivityPage } from './domain/activityFeed'
 import type { ActivityFeedViewModel, CurrentProfileViewModel, DashboardScreenKey, OverviewFixtureViewModel, ProjectListFixtureViewModel, ProjectSyncStatus } from './domain/dashboard'
@@ -13,7 +12,7 @@ import { projectsFixture } from './fixtures/hive-dashboard/explore'
 import { renderAuditSync } from './views/AuditSync'
 import { renderGlobalSearch } from './views/GlobalSearch'
 import { renderKnowledgeBrowser } from './views/KnowledgeBrowser'
-import { renderMemories } from './views/Memories'
+import { renderMemories, type MemoryDetailData, type MemoryDetailRoute, type MemoryDetailViewState } from './views/Memories'
 import { renderOverview, type ViewState } from './views/Overview'
 import { renderProjects } from './views/Projects'
 import { renderUsers, type UserManagementActionType } from './views/Users'
@@ -34,11 +33,13 @@ const OVERVIEW_LABELS = {
 
 export type UsersData = { users: User[] }
 export type MemoriesData = { recent: MemoryList; search: MemorySearch }
+export type MemoryDetailStateData = MemoryDetailData
 export type AuditSyncData = SyncAttemptSummary
 export type LoadedDashboardData = {
   overview: ViewState<OverviewFixtureViewModel>
   users: ViewState<UsersData>
   memories: ViewState<MemoriesData>
+  memoryDetail?: MemoryDetailViewState
   audit: ViewState<AuditSyncData>
   projects: ViewState<ProjectListFixtureViewModel>
   activity: ViewState<ActivityFeedViewModel>
@@ -51,18 +52,10 @@ export type AppActions = {
   onLogin(email: string, password: string): Promise<void> | void
   onLogout(): void
   onNavigate?(path: string): void
-  onToggleDrawer?(): void
-  onMarkAllRead?(): void
   onSetUserLevel?(username: string, level: UserLevel): Promise<void>
   onGrantAdmin?(username: string): Promise<void>
   onDeactivateUser?(username: string): Promise<void>
   onLoadMoreActivity?(): Promise<void>
-}
-
-export type DrawerState = {
-  drawerOpen: boolean
-  readIds: ReadonlySet<string>
-  summaryUnread?: number
 }
 
 export type UserManagementState = {
@@ -76,9 +69,7 @@ export type RenderAppOptions = {
   actions: AppActions
   dashboard?: DashboardState
   routePath?: string
-  drawerState?: DrawerState
   userManagementState?: UserManagementState
-  drawerJustOpened?: boolean
   disposeActivityFeed?: () => void
   setActivityFeedDispose?: (fn: () => void) => void
 }
@@ -99,7 +90,7 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
   memories: {
     path: '/dashboard/memories',
     load: 'memories',
-    render: (vs, routePath) => renderMemories(vs as ViewState<MemoriesData>, { detailId: memoryDetailIdFromPath(routePath) })
+    render: (vs) => renderMemories(vs as ViewState<MemoriesData>)
   },
   userManagement: {
     path: '/dashboard/userManagement',
@@ -170,7 +161,7 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
  */
 function screenFromPath(routePath: string): DashboardScreenKey {
   const normalized = routePath.split(/[?#]/, 1)[0].replace(/\/$/, '')
-  if (memoryDetailIdFromPath(routePath)) return 'memories'
+  if (memoryDetailRouteFromPath(routePath).kind !== 'none') return 'memories'
   // Handle legacy /dashboard/audit-sync alias
   if (normalized.endsWith('/audit-sync')) return 'auditLog'
   // Handle legacy /dashboard/users alias
@@ -187,9 +178,7 @@ export function renderApp({
   actions,
   dashboard = { status: 'loading' },
   routePath = window.location.pathname,
-  drawerState = { drawerOpen: false, readIds: new Set() },
   userManagementState = {},
-  drawerJustOpened = false,
   disposeActivityFeed = () => {},
   setActivityFeedDispose = () => {}
 }: RenderAppOptions): void {
@@ -199,7 +188,7 @@ export function renderApp({
   container.replaceChildren()
   state.status === 'anonymous'
     ? renderLogin(container, state, actions)
-    : renderShell(container, state, actions, dashboard, routePath, drawerState, userManagementState, drawerJustOpened, disposeActivityFeed, setActivityFeedDispose)
+    : renderShell(container, state, actions, dashboard, routePath, userManagementState, disposeActivityFeed, setActivityFeedDispose)
 }
 
 function renderLogin(
@@ -234,18 +223,12 @@ function renderShell(
   actions: AppActions,
   dashboard: DashboardState,
   routePath: string,
-  drawerState: DrawerState,
   userManagementState: UserManagementState,
-  drawerJustOpened = false,
   disposeActivityFeed: () => void = () => {},
   setActivityFeedDispose: (fn: () => void) => void = () => {}
 ): void {
   const activeScreen = screenFromPath(routePath)
   const userLevel = state.user.level as UserLevel
-  const notificationSummary = dashboardFixtures.shared.notificationSummary
-  const unreadCount = drawerState.summaryUnread !== undefined
-    ? drawerState.summaryUnread
-    : notificationSummary.unread
 
   // Root layout
   const layout = document.createElement('div')
@@ -284,29 +267,7 @@ function renderShell(
   searchSlot.setAttribute('aria-label', 'Search memories')
   searchSlot.addEventListener('click', () => actions.onNavigate?.(globalSearchPathFromRoutePath(routePath)))
 
-  // Bell button with optional unread badge
-  const bellWrapper = document.createElement('div')
-  bellWrapper.className = 'dashboard-header__bell-wrapper'
-
-  const bellButton = control('Notifications')
-  bellButton.setAttribute('aria-label', 'Notifications')
-  bellButton.className = 'dashboard-header__bell dashboard-control control'
-  bellButton.dataset.dashboardPrimitive = 'control'
-  bellButton.dataset.bell = ''
-  bellButton.addEventListener('click', () => actions.onToggleDrawer?.())
-
-  bellWrapper.append(bellButton)
-
-  if (unreadCount > 0) {
-    const badge = document.createElement('span')
-    badge.className = 'dashboard-header__bell-badge'
-    badge.dataset.bellBadge = ''
-    badge.setAttribute('aria-label', `${unreadCount} unread notifications`)
-    badge.textContent = String(unreadCount)
-    bellWrapper.append(badge)
-  }
-
-  header.append(searchSlot, bellWrapper)
+  header.append(searchSlot)
   mainArea.append(header)
 
   // Content area
@@ -316,22 +277,7 @@ function renderShell(
   mainContent.append(renderAuthenticatedView(activeScreen, dashboard, routePath, state, actions, userManagementState, disposeActivityFeed, setActivityFeedDispose))
   mainArea.append(mainContent)
 
-  setModalBackgroundState([sidebar, header, mainContent], drawerState.drawerOpen)
-
   layout.append(mainArea)
-
-  // Notification drawer (fixed overlay, always rendered, shown via data-open)
-  const drawerContainer = document.createElement('div')
-  renderNotificationDrawer(drawerContainer, {
-    notifications: dashboardFixtures.shared.notifications,
-    summary: { ...notificationSummary, unread: drawerState.summaryUnread ?? notificationSummary.unread },
-    readIds: drawerState.readIds,
-    open: drawerState.drawerOpen,
-    onMarkAllRead: () => actions.onMarkAllRead?.(),
-    onClose: () => actions.onToggleDrawer?.()
-  })
-  const drawerEl = drawerContainer.querySelector('[data-dashboard-primitive="drawer"]')
-  layout.append(drawerContainer)
 
   // Shell wrapper
   const shell = document.createElement('section')
@@ -339,25 +285,6 @@ function renderShell(
   shell.dataset.dashboardPrimitive = 'page'
   shell.append(layout)
   container.append(shell)
-
-  // Focus the close button only when the drawer was just opened (not on data-load re-renders).
-  // Called after container.append(shell) so the element is attached to the document.
-  if (drawerJustOpened && drawerEl) {
-    drawerEl.querySelector<HTMLElement>('[data-drawer-close]')?.focus()
-  }
-}
-
-function setModalBackgroundState(elements: readonly (HTMLElement | null)[], modalOpen: boolean): void {
-  for (const element of elements) {
-    if (!element) continue
-    if (modalOpen) {
-      element.setAttribute('inert', '')
-      element.setAttribute('aria-hidden', 'true')
-    } else {
-      element.removeAttribute('inert')
-      element.removeAttribute('aria-hidden')
-    }
-  }
 }
 
 function profileFromUser(user: User): CurrentProfileViewModel {
@@ -423,6 +350,14 @@ function renderAuthenticatedView(
       }
     })
   }
+  if (screen === 'memories') {
+    const detailRoute = memoryDetailRouteFromPath(routePath)
+    return renderMemories(stateFor(state, 'memories') as ViewState<MemoriesData>, {
+      detailRoute,
+      detail: detailRoute.kind === 'valid' ? memoryDetailForRoute(state, detailRoute.id) : undefined,
+      onBackToMemories: () => actions.onNavigate?.('/dashboard/memories')
+    })
+  }
   if (!route.load) {
     // Fixture-only / ComingSoon route
     return route.render({ status: 'loading' }, routePath, actions)
@@ -447,16 +382,17 @@ function globalSearchPathFromRoutePath(routePath: string): string {
   return ROUTES.globalSearch.path
 }
 
-function memoryDetailIdFromPath(routePath: string): string | null {
+function memoryDetailRouteFromPath(routePath: string): MemoryDetailRoute {
   const normalized = routePath.split(/[?#]/, 1)[0].replace(/\/$/, '')
   const prefix = '/dashboard/memories/'
-  if (!normalized.startsWith(prefix)) return null
+  if (!normalized.startsWith(prefix)) return { kind: 'none' }
   const id = normalized.slice(prefix.length).trim()
-  if (!id) return null
+  if (!id) return { kind: 'none' }
   try {
-    return decodeURIComponent(id)
+    const decoded = decodeURIComponent(id).trim()
+    return decoded ? { kind: 'valid', id: decoded, routeKey: decoded } : { kind: 'malformed', raw: id }
   } catch {
-    return id
+    return { kind: 'malformed', raw: id }
   }
 }
 
@@ -467,6 +403,16 @@ function stateFor<K extends keyof LoadedDashboardData>(
   if (state.status !== 'ready') return { status: 'loading' }
   const slice = state.data[key]
   return slice ?? { status: 'loading' }
+}
+
+function memoryDetailForRoute(state: DashboardState, routeId: string): MemoryDetailViewState {
+  if (state.status !== 'ready') return { status: 'loading' }
+  const detail = state.data.memoryDetail
+  if (!detail) return { status: 'loading' }
+  if (detail.status === 'ready') return detail.data.routeId === routeId ? detail : { status: 'loading' }
+  const detailRouteId = 'routeId' in detail ? detail.routeId : undefined
+  if (detail.status === 'error' && detailRouteId && detailRouteId !== routeId) return { status: 'loading' }
+  return detail
 }
 
 // Keep loadDashboard for backwards compat with the existing test that calls it directly
@@ -497,6 +443,11 @@ export async function loadForRoute(
   routePath = ROUTES[screen].path
 ): Promise<DashboardState> {
   const route = ROUTES[screen]
+  if (screen === 'memories') {
+    const detailRoute = memoryDetailRouteFromPath(routePath)
+    if (detailRoute.kind === 'malformed') return cache
+    if (detailRoute.kind === 'valid') return loadMemoryDetail(detailRoute, api, token, cache)
+  }
   // Fixture-only routes need no fetch
   if (!route.load) return cache
 
@@ -519,8 +470,36 @@ export async function loadForRoute(
   }
 }
 
+async function loadMemoryDetail(
+  route: Extract<MemoryDetailRoute, { kind: 'valid' }>,
+  api: ApiClient,
+  token: string,
+  cache: DashboardState
+): Promise<DashboardState> {
+  const existingData = cache.status === 'ready' ? cache.data : {}
+
+  let slice: MemoryDetailViewState
+  try {
+    const memory = await api.memory(token, route.id)
+    slice = memoryDetailState(route.id, memory)
+  } catch (error) {
+    slice = { status: 'error', message: messageFor(error), routeId: route.id }
+  }
+
+  return {
+    status: 'ready',
+    data: { ...existingData, memoryDetail: slice }
+  }
+}
+
+function memoryDetailState(routeId: string, memory: Memory): MemoryDetailViewState {
+  return { status: 'ready', data: { routeId, memory } }
+}
+
 async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token: string, routePath = ''): Promise<ViewState<unknown>> {
   switch (key) {
+    case 'memoryDetail':
+      return { status: 'loading' }
     case 'overview': {
       const [health, stats, overviewStatsResult, overviewGrowthResult] = await Promise.allSettled([api.health(), api.adminStats(token), api.overviewStats(token), api.overviewGrowth(token)])
       return overviewState(health, stats, overviewStatsResult, overviewGrowthResult)
@@ -582,6 +561,12 @@ function isQuerySensitiveDiscoveryScreen(screen: DashboardScreenKey): boolean {
 
 function routeAndQueryFromRoutePath(routePath: string): string {
   return routePath.split('#', 1)[0]
+}
+
+function memoryDetailRouteKeyForScreen(screen: DashboardScreenKey, routePath: string): string | undefined {
+  if (screen !== 'memories') return undefined
+  const route = memoryDetailRouteFromPath(routePath)
+  return route.kind === 'valid' ? route.routeKey : undefined
 }
 
 function memoryListParamsFromRoute(routePath: string): MemoryListParams {
@@ -748,13 +733,8 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
   }
   let loadVersion = 0
   let activeScreen: DashboardScreenKey = 'overview'
-  let drawerOpen = false
-  let readIds: Set<string> = new Set()
-  let summaryUnread: number = dashboardFixtures.shared.notificationSummary.unread
   let userManagementState: UserManagementState = {}
   let disposed = false
-
-  let drawerJustOpened = false
 
   const rerender = (state: AuthState) => {
     if (disposed) return
@@ -764,9 +744,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
       actions,
       dashboard,
       routePath: currentRoutePath(),
-      drawerState: { drawerOpen, readIds, summaryUnread },
       userManagementState,
-      drawerJustOpened,
       disposeActivityFeed,
       setActivityFeedDispose
     })
@@ -786,9 +764,6 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
       if (disposed) return
       loadVersion += 1
       dashboard = { status: 'loading' }
-      drawerOpen = false
-      readIds = new Set()
-      summaryUnread = dashboardFixtures.shared.notificationSummary.unread
       userManagementState = {}
       rerender(session.logout())
     },
@@ -802,25 +777,6 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
       if (state.status === 'authenticated') {
         await loadAndRender(state, activeScreen)
       }
-    },
-    onToggleDrawer() {
-      if (disposed) return
-      const wasOpen = drawerOpen
-      drawerOpen = !drawerOpen
-      drawerJustOpened = !wasOpen
-      rerender(session.getState())
-      drawerJustOpened = false
-      if (wasOpen) {
-        root.querySelector<HTMLElement>('[data-bell]')?.focus()
-      }
-    },
-    onMarkAllRead() {
-      if (disposed) return
-      for (const n of dashboardFixtures.shared.notifications) readIds.add(n.id)
-      summaryUnread = 0
-      drawerOpen = false
-      rerender(session.getState())
-      root.querySelector<HTMLElement>('[data-bell]')?.focus()
     },
     onSetUserLevel(username, level) {
       return runUserMutation(username, 'level', (token) => api.setUserLevel(token, username, level))
@@ -901,11 +857,13 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     const version = loadVersion
     const routePath = currentRoutePath()
     const discoveryRouteKey = isQuerySensitiveDiscoveryScreen(screen) ? routeAndQueryFromRoutePath(routePath) : undefined
+    const memoryDetailRouteKey = memoryDetailRouteKeyForScreen(screen, routePath)
     const loaded = await loadForRoute(screen, api, state.token, dashboard, routePath)
     if (disposed) return
     const current = session.getState()
     if (version !== loadVersion || current.status !== 'authenticated' || current.token !== state.token) return
     if (discoveryRouteKey !== undefined && (screenFromPath(currentRoutePath()) !== screen || routeAndQueryFromRoutePath(currentRoutePath()) !== discoveryRouteKey)) return
+    if (memoryDetailRouteKey !== undefined && memoryDetailRouteKeyForScreen(screen, currentRoutePath()) !== memoryDetailRouteKey) return
     dashboard = loaded
     rerender(current)
   }
@@ -917,6 +875,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     const routePath = currentRoutePath()
     const screen = screenFromPath(routePath)
     const discoveryRouteKey = isQuerySensitiveDiscoveryScreen(screen) ? routeAndQueryFromRoutePath(routePath) : undefined
+    const memoryDetailRouteKey = memoryDetailRouteKeyForScreen(screen, routePath)
     activeScreen = screen
     rerender(state)
     if (state.status === 'authenticated') {
@@ -925,6 +884,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
       const current = session.getState()
       if (version !== loadVersion || current.status !== 'authenticated' || current.token !== state.token) return
       if (discoveryRouteKey !== undefined && (screenFromPath(currentRoutePath()) !== screen || routeAndQueryFromRoutePath(currentRoutePath()) !== discoveryRouteKey)) return
+      if (memoryDetailRouteKey !== undefined && memoryDetailRouteKeyForScreen(screen, currentRoutePath()) !== memoryDetailRouteKey) return
       dashboard = loaded
       rerender(current)
     }
