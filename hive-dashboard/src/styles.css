@@ -70,15 +70,51 @@ body { margin: 0; background: var(--dashboard-background); }
 [data-dashboard-status="error"] { color: var(--dashboard-danger); }
 [data-dashboard-status="inactive"], [data-dashboard-status="neutral"] { color: var(--dashboard-text-muted); }
 .chart { background: var(--dashboard-surface); border: 1px solid var(--dashboard-border); border-radius: var(--dashboard-radius); padding: calc(var(--dashboard-spacing) * 1.5); }
-/* ─── Panel section title (flush panels) ─────────────────────────────────── */
+/* ─── Panel chrome: design-spec container ─────────────────────────────────── */
+.dashboard-panel--flush {
+  background: linear-gradient(180deg, #131c2e 0%, #0d1320 64%, #0c111c 100%);
+  border: 1px solid var(--dashboard-border);
+  border-radius: 14px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 14px 34px -20px rgba(0, 0, 0, 0.95);
+  overflow: hidden;
+  padding: 0;
+}
+
+/* ─── Panel header bar (44px) ─────────────────────────────────────────────── */
+.dashboard-panel__header {
+  align-items: center;
+  border-bottom: 1px solid var(--dashboard-border);
+  display: flex;
+  height: 44px;
+  justify-content: space-between;
+  padding: 0 16px;
+}
+
+/* ─── Panel section title ─────────────────────────────────────────────────── */
 .dashboard-panel__title {
   color: var(--dashboard-text-muted);
   font-family: var(--dashboard-font-mono);
-  font-size: 0.75rem;
-  font-weight: 700;
+  font-size: 0.6875rem;
+  font-weight: 600;
   letter-spacing: 0.14em;
-  margin: 0 0 12px;
+  margin: 0;
   text-transform: uppercase;
+}
+
+/* ─── Panel body ──────────────────────────────────────────────────────────── */
+.dashboard-panel__body {
+  padding: 16px;
+}
+
+.dashboard-panel--flush .dashboard-panel__body {
+  padding: 0;
+}
+
+/* ─── Overview root container (20px vertical rhythm) ─────────────────────── */
+.dashboard-overview {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
 }
 
 /* ─── Overview stat tiles row ─────────────────────────────────────────────── */
@@ -149,6 +185,26 @@ body::before {
   background:
     radial-gradient(900px circle at 12% -10%, rgba(224,36,111,.04), transparent 60%),
     radial-gradient(800px circle at 100% 0%, rgba(59,130,232,.03), transparent 55%);
+}
+
+/* ─── NEXUS brand container ───────────────────────────────────────────────── */
+.dashboard-brand {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+/* ─── NEXUS emblem image (hexagonal node ring PNG) ────────────────────────── */
+.dashboard-brand__emblem-img {
+  display: block;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
+/* ─── Conpas NLogo glyph (tri-color N SVG) ────────────────────────────────── */
+.nexus-n {
+  display: inline-block;
+  flex-shrink: 0;
 }
 
 /* ─── NEXUS brand wordmark (gradient text) ────────────────────────────────── */
