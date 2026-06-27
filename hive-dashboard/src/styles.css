@@ -147,8 +147,8 @@ body::before {
   z-index: -1;
   pointer-events: none;
   background:
-    radial-gradient(900px circle at 12% -10%, rgba(224,36,111,.10), transparent 60%),
-    radial-gradient(800px circle at 100% 0%, rgba(59,130,232,.08), transparent 55%);
+    radial-gradient(900px circle at 12% -10%, rgba(224,36,111,.04), transparent 60%),
+    radial-gradient(800px circle at 100% 0%, rgba(59,130,232,.03), transparent 55%);
 }
 
 /* ─── NEXUS brand wordmark (gradient text) ────────────────────────────────── */
