@@ -28,11 +28,9 @@ describe('Hive dashboard shared fixtures', () => {
     expect(dashboardContributors.map((contributor) => contributor.handle)).toContain('agent-07')
   })
 
-  it('models the PDF sidebar information architecture with four groups and thirteen screens', () => {
+  it('models only visible real-route sidebar navigation', () => {
     expect(dashboardNavigationGroups.map((group) => group.label)).toEqual([
       'Explore',
-      'Team',
-      'Insights',
       'Governance'
     ])
 
@@ -41,19 +39,14 @@ describe('Hive dashboard shared fixtures', () => {
     expect(screenLabels).toEqual([
       'Dashboard',
       'Projects',
+      'Memories',
       'Knowledge Browser',
       'Global Search',
-      'Knowledge Graph',
       'Activity Feed',
-      'Contributors',
-      'Developer Timeline',
-      'Sync Status',
-      'Analytics',
       'User Management',
-      'Audit Log',
-      'Conflict Viewer'
+      'Audit Log'
     ])
-    expect(screenLabels).toHaveLength(13)
+    expect(screenLabels).toHaveLength(8)
   })
 
   it('preserves the PDF profile and notification summary counts', () => {
@@ -387,11 +380,23 @@ describe('Hive dashboard Governance fixtures', () => {
 })
 
 describe('Hive dashboard final screen fixture registry', () => {
-  it('exports all thirteen PDF screen fixtures keyed by every navigation screen id', () => {
+  it('keeps hidden placeholder fixture screens out of visible navigation', () => {
     const navScreenIds = dashboardNavigationGroups.flatMap((group) => group.entries.map((entry) => entry.screen))
 
-    expect(Object.keys(dashboardScreenFixtures)).toEqual(navScreenIds)
-    expect(Object.keys(dashboardScreenFixtures)).toHaveLength(13)
+    expect(navScreenIds).toEqual([
+      'overview',
+      'projects',
+      'memories',
+      'knowledgeBrowser',
+      'globalSearch',
+      'activityFeed',
+      'userManagement',
+      'auditLog'
+    ])
+    expect(Object.keys(dashboardScreenFixtures)).toContain('analytics')
+    expect(Object.keys(dashboardScreenFixtures)).toContain('conflictViewer')
+    expect(navScreenIds).not.toContain('analytics')
+    expect(navScreenIds).not.toContain('conflictViewer')
     expect(dashboardScreenFixtures.analytics).toBe(insightsScreenFixtures.analytics)
     expect(dashboardScreenFixtures.conflictViewer).toBe(governanceScreenFixtures.conflictViewer)
   })

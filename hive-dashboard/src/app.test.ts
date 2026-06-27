@@ -225,13 +225,44 @@ describe('dashboard shell', () => {
     expect(container.textContent).not.toContain('Memory detail is unavailable')
   })
 
-  it('renders ComingSoon for an unimplemented route', () => {
+  it.each([
+    ['/dashboard/knowledgeGraph', 'Knowledge Graph'],
+    ['/dashboard/contributors', 'Contributors'],
+    ['/dashboard/developerTimeline', 'Developer Timeline'],
+    ['/dashboard/syncStatus', 'Sync Status'],
+    ['/dashboard/analytics', 'Analytics'],
+    ['/dashboard/conflictViewer', 'Conflict Viewer']
+  ])('falls back to Overview for hidden Coming Soon route deep link %s', (routePath, label) => {
     const container = document.createElement('main')
 
-    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: { status: 'loading' }, routePath: '/dashboard/knowledgeGraph' })
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath })
 
-    expect(container.querySelector('[data-coming-soon]')).not.toBeNull()
-    expect(container.textContent).toContain('Knowledge Graph')
+    expect(container.querySelector('[data-coming-soon]')).toBeNull()
+    expect(container.querySelector('section h2')?.textContent).toBe('Hive Overview')
+    expect(container.textContent).not.toContain(label)
+  })
+
+  it('keeps Coming Soon routes out of the visible sidebar navigation', () => {
+    const container = document.createElement('main')
+
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath: '/dashboard' })
+
+    const navText = container.querySelector('[data-dashboard-primitive="sidebar"] nav')?.textContent ?? ''
+
+    expect(navText).toContain('Dashboard')
+    expect(navText).toContain('Projects')
+    expect(navText).toContain('Memories')
+    expect(navText).toContain('Knowledge Browser')
+    expect(navText).toContain('Global Search')
+    expect(navText).toContain('Activity Feed')
+    expect(navText).toContain('User Management')
+    expect(navText).toContain('Audit Log')
+    expect(navText).not.toContain('Knowledge Graph')
+    expect(navText).not.toContain('Contributors')
+    expect(navText).not.toContain('Developer Timeline')
+    expect(navText).not.toContain('Sync Status')
+    expect(navText).not.toContain('Analytics')
+    expect(navText).not.toContain('Conflict Viewer')
   })
 
   it('renders Activity Feed from route-loaded API data instead of fixture data', () => {

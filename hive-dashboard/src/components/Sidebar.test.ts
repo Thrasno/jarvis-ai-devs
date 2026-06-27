@@ -13,7 +13,7 @@ const baseProps = {
 }
 
 describe('Sidebar', () => {
-  it('renders Explore, Team, and Insights nav groups for a member user', () => {
+  it('renders only visible real-route nav groups for a member user', () => {
     const container = document.createElement('div')
 
     renderSidebar(container, { ...baseProps, userLevel: 'member' })
@@ -21,8 +21,14 @@ describe('Sidebar', () => {
     const nav = container.querySelector('nav[aria-label="Dashboard sections"]')
     expect(nav).not.toBeNull()
     expect(nav?.textContent).toContain('Explore')
-    expect(nav?.textContent).toContain('Team')
-    expect(nav?.textContent).toContain('Insights')
+    expect(nav?.textContent).not.toContain('Team')
+    expect(nav?.textContent).not.toContain('Insights')
+    expect(nav?.textContent).not.toContain('Knowledge Graph')
+    expect(nav?.textContent).not.toContain('Contributors')
+    expect(nav?.textContent).not.toContain('Developer Timeline')
+    expect(nav?.textContent).not.toContain('Sync Status')
+    expect(nav?.textContent).not.toContain('Analytics')
+    expect(nav?.textContent).not.toContain('Conflict Viewer')
   })
 
   it('hides the Governance group for member users', () => {
@@ -68,6 +74,14 @@ describe('Sidebar', () => {
 
     const allActive = container.querySelectorAll('.dashboard-nav-entry--active')
     expect(allActive.length).toBe(1)
+  })
+
+  it('does not render groups that only contain hidden Coming Soon entries', () => {
+    const container = document.createElement('div')
+
+    renderSidebar(container, { ...baseProps, userLevel: 'admin' })
+
+    expect([...container.querySelectorAll('[data-nav-group]')].map((group) => group.getAttribute('data-nav-group'))).toEqual(['explore', 'governance'])
   })
 
   it('calls onLogout exactly once when the logout button is clicked', () => {

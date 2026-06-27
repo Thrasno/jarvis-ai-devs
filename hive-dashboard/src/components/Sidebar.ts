@@ -22,16 +22,19 @@ const SCREEN_PATHS: Partial<Record<DashboardScreenKey, string>> = {
   projects: '/dashboard/projects',
   knowledgeBrowser: '/dashboard/knowledgeBrowser',
   globalSearch: '/dashboard/globalSearch',
-  knowledgeGraph: '/dashboard/knowledgeGraph',
   activityFeed: '/dashboard/activityFeed',
-  contributors: '/dashboard/contributors',
-  developerTimeline: '/dashboard/developerTimeline',
-  syncStatus: '/dashboard/syncStatus',
-  analytics: '/dashboard/analytics',
   userManagement: '/dashboard/userManagement',
-  auditLog: '/dashboard/auditLog',
-  conflictViewer: '/dashboard/conflictViewer'
+  auditLog: '/dashboard/auditLog'
 }
+
+const HIDDEN_NAV_SCREENS = new Set<DashboardScreenKey>([
+  'knowledgeGraph',
+  'contributors',
+  'developerTimeline',
+  'syncStatus',
+  'analytics',
+  'conflictViewer'
+])
 
 export function renderSidebar(container: HTMLElement, props: SidebarProps): void {
   container.replaceChildren()
@@ -43,9 +46,13 @@ export function renderSidebar(container: HTMLElement, props: SidebarProps): void
   const nav = document.createElement('nav')
   nav.setAttribute('aria-label', 'Dashboard sections')
 
-  const visibleGroups = props.groups.filter(
-    (group) => group.key !== 'governance' || props.userLevel === 'admin'
-  )
+  const visibleGroups = props.groups
+    .filter((group) => group.key !== 'governance' || props.userLevel === 'admin')
+    .map((group) => ({
+      ...group,
+      entries: group.entries.filter((entry) => !HIDDEN_NAV_SCREENS.has(entry.screen))
+    }))
+    .filter((group) => group.entries.length > 0)
 
   for (const group of visibleGroups) {
     const groupEl = document.createElement('div')
