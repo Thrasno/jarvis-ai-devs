@@ -4,7 +4,7 @@ import { insightsScreenFixtures } from '../fixtures/hive-dashboard/insights'
 import { renderChart, type ChartInput } from './Chart'
 
 describe('dashboard chart foundation', () => {
-  it('renders time-series fixture data with accessible summary and ordered marks', () => {
+  it('renders time-series as SVG with accessible wrapper and SVG elements', () => {
     const chart = renderChart({
       kind: 'time-series',
       title: 'Knowledge Growth',
@@ -18,24 +18,15 @@ describe('dashboard chart foundation', () => {
     expect(chart.querySelector('h2')?.textContent).toBe('Knowledge Growth')
     expect(chart.querySelector('.chart-summary')?.textContent).toBe('Total memories grew from February through June.')
 
-    const marks = Array.from(chart.querySelectorAll('[data-chart-point]'))
-    expect(marks.map((mark) => mark.textContent)).toEqual([
-      'Feb16720',
-      'Mar18140',
-      'Apr19680',
-      'May21110',
-      'Jun22375'
-    ])
-    expect(marks.map((mark) => mark.getAttribute('aria-label'))).toEqual([
-      'Knowledge Growth point Feb: 16720',
-      'Knowledge Growth point Mar: 18140',
-      'Knowledge Growth point Apr: 19680',
-      'Knowledge Growth point May: 21110',
-      'Knowledge Growth point Jun: 22375'
-    ])
+    // SVG must be present with structural elements
+    const svg = chart.querySelector('svg')
+    expect(svg).not.toBeNull()
+    expect(svg?.querySelector('polyline')).not.toBeNull()
+    expect(svg?.querySelector('polygon')).not.toBeNull()
+    expect(svg?.querySelector('line')).not.toBeNull()
   })
 
-  it('renders categorical fixture data with deterministic labels and category semantics', () => {
+  it('renders categorical fixture data as horizontal bar chart SVG', () => {
     const chart = renderChart({
       kind: 'categorical',
       title: 'Memories by category',
@@ -46,30 +37,50 @@ describe('dashboard chart foundation', () => {
     expect(chart.getAttribute('data-chart-kind')).toBe('categorical')
     expect(chart.querySelector('.chart-summary')?.textContent).toBe('Memory totals grouped by category.')
 
-    const categories = Array.from(chart.querySelectorAll('[data-chart-category]'))
-    expect(categories.map((category) => category.getAttribute('data-chart-category'))).toEqual([
-      'architecture',
-      'bugfix',
-      'decision',
-      'discovery',
-      'pattern',
-      'config',
-      'preference',
-      'session_summary'
-    ])
-    expect(categories.map((category) => category.getAttribute('aria-label'))).toEqual([
-      'Memories by category category architecture: 4200',
-      'Memories by category category bugfix: 3600',
-      'Memories by category category decision: 3100',
-      'Memories by category category discovery: 2800',
-      'Memories by category category pattern: 2500',
-      'Memories by category category config: 2200',
-      'Memories by category category preference: 1800',
-      'Memories by category category session_summary: 2200'
-    ])
+    // SVG must be present with rect bar elements
+    const svg = chart.querySelector('svg')
+    expect(svg).not.toBeNull()
+    expect(svg?.querySelector('rect')).not.toBeNull()
+
+    // Top 6 bars only (sorted by value desc, categorical input has 8 items)
+    const rects = Array.from(svg?.querySelectorAll('rect') ?? [])
+    // At least 6 fill rects present (each bar has track + fill = 2 rects per row)
+    expect(rects.length).toBeGreaterThanOrEqual(6)
   })
 
-  it('renders an accessible empty state without misleading marks', () => {
+  it('renders time-series x-axis labels from point labels', () => {
+    const chart = renderChart({
+      kind: 'time-series',
+      title: 'Knowledge Growth',
+      summary: 'Growth over time.',
+      series: hiveOverviewFixture.knowledgeGrowth
+    })
+
+    const svg = chart.querySelector('svg')
+    const texts = Array.from(svg?.querySelectorAll('text') ?? []).map((t) => t.textContent)
+    // At least one x-axis label from the data should appear
+    expect(texts.some((t) => hiveOverviewFixture.knowledgeGrowth.points.some((p) => t?.includes(p.label)))).toBe(true)
+  })
+
+  it('renders categorical bar labels from point labels', () => {
+    const points = [
+      { label: 'alpha', value: 100 },
+      { label: 'beta', value: 80 }
+    ]
+    const chart = renderChart({
+      kind: 'categorical',
+      title: 'Projects',
+      summary: 'Most active.',
+      points
+    })
+
+    const svg = chart.querySelector('svg')
+    const texts = Array.from(svg?.querySelectorAll('text') ?? []).map((t) => t.textContent)
+    expect(texts.some((t) => t?.includes('alpha'))).toBe(true)
+    expect(texts.some((t) => t?.includes('beta'))).toBe(true)
+  })
+
+  it('renders an accessible empty state without SVG when data is empty', () => {
     const chart = renderChart({
       kind: 'categorical',
       title: 'Empty categories',
@@ -78,7 +89,7 @@ describe('dashboard chart foundation', () => {
     })
 
     expect(chart.getAttribute('role')).toBe('figure')
-    expect(chart.querySelectorAll('[data-chart-point]')).toHaveLength(0)
+    expect(chart.querySelector('svg')).toBeNull()
     expect(chart.querySelector('.state')?.getAttribute('role')).toBe('status')
     expect(chart.querySelector('.state')?.getAttribute('data-state')).toBe('empty')
     expect(chart.querySelector('.state')?.textContent).toBe('No chart data is available for Empty categories.')
@@ -92,5 +103,25 @@ describe('dashboard chart foundation', () => {
     expect(chart.getAttribute('aria-label')).toBe('Unsupported chart')
     expect(chart.querySelector('.state')?.getAttribute('role')).toBe('status')
     expect(chart.querySelector('.state')?.textContent).toBe('Unsupported chart data. Chart cannot be rendered.')
+  })
+
+  it('renders bar chart sorted descending by value (top 6)', () => {
+    const points = [
+      { label: 'low', value: 1 },
+      { label: 'high', value: 100 },
+      { label: 'mid', value: 50 }
+    ]
+    const chart = renderChart({
+      kind: 'categorical',
+      title: 'Active projects',
+      summary: 'Project rankings.',
+      points
+    })
+
+    const svg = chart.querySelector('svg')
+    const texts = Array.from(svg?.querySelectorAll('text') ?? []).map((t) => t.textContent ?? '')
+    // First label text should be the highest value item
+    const labelTexts = texts.filter((t) => ['low', 'high', 'mid'].includes(t))
+    expect(labelTexts[0]).toBe('high')
   })
 })

@@ -23,8 +23,9 @@
 }
 
 body { margin: 0; background: var(--dashboard-background); }
-#app { min-height: 100vh; display: grid; place-items: center; padding: calc(var(--dashboard-spacing) * 2); }
-.dashboard-page, .shell { width: min(920px, 100%); }
+#app { min-height: 100vh; }
+#app:has(.login-card) { display: grid; place-items: center; padding: calc(var(--dashboard-spacing) * 2); }
+.dashboard-page, .shell { width: 100%; }
 .login-card { width: min(420px, 100%); }
 .dashboard-panel, .panel, header { background: var(--dashboard-surface); border: 1px solid var(--dashboard-border); border-radius: var(--dashboard-radius); box-shadow: 0 20px 60px rgb(0 0 0 / 24%); padding: calc(var(--dashboard-spacing) * 2); }
 .eyebrow { color: var(--dashboard-text-muted); font-family: var(--dashboard-font-mono); font-size: .78rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
@@ -67,11 +68,44 @@ body { margin: 0; background: var(--dashboard-background); }
 [data-dashboard-status="inactive"], [data-dashboard-status="neutral"] { color: var(--dashboard-text-muted); }
 .chart { background: var(--dashboard-surface); border: 1px solid var(--dashboard-border); border-radius: var(--dashboard-radius); padding: calc(var(--dashboard-spacing) * 1.5); }
 .chart-summary { color: var(--dashboard-text-muted); }
-.chart-points { display: grid; gap: .65rem; list-style: none; margin: 0; padding: 0; }
-.chart-point { align-items: center; background: var(--dashboard-surface-raised); border: 1px solid var(--dashboard-border); border-radius: calc(var(--dashboard-radius) - 8px); display: flex; justify-content: space-between; padding: .7rem .85rem; }
-.chart-point-label { color: var(--dashboard-text-muted); }
-.chart-point-value { color: var(--dashboard-accent); font-family: var(--dashboard-font-mono); font-weight: 800; }
-.chart-category .chart-point-value { color: var(--dashboard-success); }
+/* ─── Overview stat tiles row ─────────────────────────────────────────────── */
+.dashboard-overview__stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 16px;
+}
+
+/* ─── Overview two-column panel rows ─────────────────────────────────────── */
+.dashboard-overview__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(300px, 1fr);
+  gap: 20px;
+}
+
+@media (max-width: 768px) {
+  .dashboard-overview__row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ─── Tile hex accent chip ────────────────────────────────────────────────── */
+.dashboard-tile__accent {
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  display: inline-block;
+  height: 9px;
+  width: 8px;
+  flex-shrink: 0;
+}
+
+.dashboard-metric-label-row {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+}
+
+/* ─── Chart SVG baseline ──────────────────────────────────────────────────── */
+.chart svg { overflow: visible; }
+
 label { display: grid; gap: .4rem; margin-block: 1rem; }
 input, button { border-radius: 10px; font: inherit; padding: .8rem 1rem; }
 input { background: var(--dashboard-surface-raised); border: 1px solid var(--dashboard-border); color: var(--dashboard-text); }
@@ -155,7 +189,7 @@ body::before {
   gap: var(--dashboard-spacing);
   margin-bottom: 0;
   min-height: 64px;
-  padding: var(--dashboard-spacing) calc(var(--dashboard-spacing) * 1.5);
+  padding: 0 28px;
 }
 
 .dashboard-header .eyebrow { margin: 0; }
@@ -221,11 +255,12 @@ body::before {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  min-width: 0;
 }
 
 .dashboard-content {
   flex: 1;
-  padding: calc(var(--dashboard-spacing) * 2);
+  padding: 24px 28px;
 }
 
 /* ─── Notification drawer (right overlay) ─────────────────────────────────── */

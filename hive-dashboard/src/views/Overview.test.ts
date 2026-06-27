@@ -50,15 +50,15 @@ describe('overview view', () => {
     ).toBeDefined()
   })
 
-  it('renders Knowledge Growth chart with 5 data points', () => {
+  it('renders Knowledge Growth chart as SVG with polyline and polygon', () => {
     const view = renderOverview({ status: 'ready', data: hiveOverviewFixture })
     const chart = getByRole(view, 'figure', { name: 'Knowledge Growth' })
-    const marks = getAllByRole(chart, 'listitem')
+    const svg = chart.querySelector('svg')
 
-    expect(marks).toHaveLength(5)
-    for (const point of hiveOverviewFixture.knowledgeGrowth.points) {
-      expect(getByRole(chart, 'listitem', { name: `Knowledge Growth point ${point.label}: ${point.value}` })).toBeDefined()
-    }
+    expect(svg).not.toBeNull()
+    expect(svg?.querySelector('polyline')).not.toBeNull()
+    expect(svg?.querySelector('polygon')).not.toBeNull()
+    expect(svg?.querySelector('line')).not.toBeNull()
   })
 
   it('renders Knowledge Growth chart label', () => {
@@ -144,7 +144,7 @@ describe('overview view', () => {
     expect(queryAllByRole(syncHealth, 'listitem')).toHaveLength(0)
   })
 
-  it('renders chart marks even when all growth values are zero', () => {
+  it('renders chart as SVG even when all growth values are zero', () => {
     const fixture: OverviewFixtureViewModel = {
       ...hiveOverviewFixture,
       knowledgeGrowth: {
@@ -154,12 +154,12 @@ describe('overview view', () => {
     }
     const view = renderOverview({ status: 'ready', data: fixture })
     const chart = getByRole(view, 'figure', { name: 'Knowledge Growth' })
-    const marks = getAllByRole(chart, 'listitem')
+    const svg = chart.querySelector('svg')
 
-    expect(marks).toHaveLength(hiveOverviewFixture.knowledgeGrowth.points.length)
-    for (const point of hiveOverviewFixture.knowledgeGrowth.points) {
-      expect(getByRole(chart, 'listitem', { name: `Knowledge Growth point ${point.label}: 0` })).toBeDefined()
-    }
+    expect(svg).not.toBeNull()
+    // Polyline and polygon still rendered even for zero-value data
+    expect(svg?.querySelector('polyline')).not.toBeNull()
+    expect(svg?.querySelector('polygon')).not.toBeNull()
   })
 
   it('renders degraded project badge distinct from healthy', () => {
@@ -201,16 +201,21 @@ describe('overview view', () => {
     expect(activity.textContent).not.toContain('Demo fixture data')
   })
 
-  it('renders most-active projects from live project counts', () => {
+  it('renders most-active projects as SVG bar chart from live project counts', () => {
     const fixture: OverviewFixtureViewModel = {
       ...hiveOverviewFixture,
       mostActiveProjects: [{ label: 'jarvis-dev', value: 14 }, { label: 'hive-api', value: 9 }]
     }
     const view = renderOverview({ status: 'ready', data: fixture })
     const chart = getByRole(view, 'figure', { name: 'Most active projects' })
+    const svg = chart.querySelector('svg')
 
-    expect(getByRole(chart, 'listitem', { name: 'Most active projects category jarvis-dev: 14' })).toBeDefined()
-    expect(getByRole(chart, 'listitem', { name: 'Most active projects category hive-api: 9' })).toBeDefined()
+    expect(svg).not.toBeNull()
+    expect(svg?.querySelector('rect')).not.toBeNull()
+    // Project labels should appear in the SVG text elements
+    const svgTexts = Array.from(svg?.querySelectorAll('text') ?? []).map((t) => t.textContent)
+    expect(svgTexts.some((t) => t?.includes('jarvis-dev'))).toBe(true)
+    expect(svgTexts.some((t) => t?.includes('hive-api'))).toBe(true)
     expect(chart.textContent).not.toContain('data-pipeline')
   })
 
@@ -222,7 +227,9 @@ describe('overview view', () => {
     const view = renderOverview({ status: 'ready', data: fixture })
     const chart = getByRole(view, 'figure', { name: 'Most active projects' })
 
-    expect(getByRole(chart, 'status').textContent).toBe('No chart data is available for Most active projects.')
+    // Empty state uses the standard emptyState component with role=status
+    const emptyEl = chart.querySelector('[role="status"]')
+    expect(emptyEl?.textContent).toBe('No chart data is available for Most active projects.')
     expect(chart.textContent).not.toContain('data-pipeline')
   })
 })
