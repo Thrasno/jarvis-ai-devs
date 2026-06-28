@@ -22,7 +22,6 @@ const SCREEN_PATHS: Partial<Record<DashboardScreenKey, string>> = {
   memories: '/dashboard/memories',
   projects: '/dashboard/projects',
   knowledgeBrowser: '/dashboard/knowledgeBrowser',
-  globalSearch: '/dashboard/globalSearch',
   activityFeed: '/dashboard/activityFeed',
   userManagement: '/dashboard/userManagement',
   auditLog: '/dashboard/auditLog'
@@ -51,7 +50,6 @@ export function navIconForScreen(screenId: DashboardScreenKey, active: boolean):
     projects: `<ellipse cx="10" cy="4.5" rx="6.5" ry="2.4"/><path d="M3.5 4.5v11c0 1.3 2.9 2.4 6.5 2.4s6.5-1.1 6.5-2.4v-11"/><path d="M3.5 10c0 1.3 2.9 2.4 6.5 2.4s6.5-1.1 6.5-2.4"/>`,
     memories: `<rect x="3" y="2.5" width="14" height="15" rx="1"/><line x1="6" y1="6.5" x2="14" y2="6.5"/><line x1="6" y1="10" x2="14" y2="10"/><line x1="6" y1="13.5" x2="11" y2="13.5"/>`,
     knowledgeBrowser: `<rect x="3" y="2.5" width="14" height="15" rx="1"/><line x1="6" y1="6.5" x2="14" y2="6.5"/><line x1="6" y1="10" x2="14" y2="10"/><line x1="6" y1="13.5" x2="11" y2="13.5"/>`,
-    globalSearch: `<circle cx="9" cy="9" r="5.5"/><line x1="13.2" y1="13.2" x2="17" y2="17"/>`,
     activityFeed: `<path d="M2.5 10h3l2.5-6 3.5 12 2.5-6h3.5"/>`,
     userManagement: `<path d="M10 2.5l6 2.2v4.6c0 4-2.6 6.6-6 7.7-3.4-1.1-6-3.7-6-7.7V4.7z"/><path d="M7.5 10l1.8 1.8L13 8"/>`,
     auditLog: `<rect x="4" y="3" width="12" height="14" rx="1"/><line x1="7" y1="7" x2="13" y2="7"/><line x1="7" y1="10" x2="13" y2="10"/><line x1="7" y1="13" x2="11" y2="13"/>`

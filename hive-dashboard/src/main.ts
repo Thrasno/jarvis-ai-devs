@@ -1,4 +1,4 @@
-import { createApiClient, type AdminStats, type ApiClient, type Count, type Health, type Memory, type MemoryList, type MemoryListParams, type MemorySearch, type MemorySearchParams, type OverviewGrowth, type OverviewProjectSyncHealth, type OverviewStats, type SyncAttemptSummary, type User } from './api/client'
+import { createApiClient, type AdminStats, type ApiClient, type Count, type Health, type Memory, type MemoryList, type MemoryListParams, type MemorySearch, type OverviewGrowth, type OverviewProjectSyncHealth, type OverviewStats, type SyncAttemptSummary, type User } from './api/client'
 import { parseDashboardFilters } from './api/urlFilters'
 import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
 import { control } from './components/dom'
@@ -6,10 +6,9 @@ import { renderBrand } from './components/Brand'
 import { renderSidebar, type UserLevel } from './components/Sidebar'
 import { activityFeedFromApi, appendActivityPage } from './domain/activityFeed'
 import { projectsFromApi, type ActivityFeedViewModel, type CurrentProfileViewModel, type DashboardScreenKey, type OverviewFixtureViewModel, type ProjectListViewModel, type ProjectSyncStatus } from './domain/dashboard'
-import { memoryListToDiscoveryData, memorySearchToDiscoveryData, type KnowledgeDiscoveryData } from './domain/knowledgeDiscovery'
+import { memoryListToDiscoveryData, type KnowledgeDiscoveryData } from './domain/knowledgeDiscovery'
 import { dashboardFixtures } from './fixtures/hive-dashboard/index'
 import { renderAuditSync } from './views/AuditSync'
-import { renderGlobalSearch } from './views/GlobalSearch'
 import { renderKnowledgeBrowser } from './views/KnowledgeBrowser'
 import { renderMemories, type MemoryDetailData, type MemoryDetailRoute, type MemoryDetailViewState } from './views/Memories'
 import { renderOverview, type ViewState } from './views/Overview'
@@ -20,6 +19,7 @@ import './styles.css'
 
 export const DEFAULT_MEMORY_SEARCH_QUERY = 'dashboard'
 export const DEFAULT_ACTIVITY_LIMIT = 20
+const LEGACY_GLOBAL_SEARCH_PATH = '/dashboard/globalSearch'
 
 const OVERVIEW_LABELS = {
   totalMemories: 'Total Memories',
@@ -43,7 +43,6 @@ export type LoadedDashboardData = {
   projects?: ViewState<ProjectListViewModel>
   activity: ViewState<ActivityFeedViewModel>
   knowledgeBrowser: ViewState<KnowledgeDiscoveryData>
-  globalSearch: ViewState<KnowledgeDiscoveryData>
 }
 export type DashboardState = { status: 'loading' } | { status: 'ready'; data: Partial<LoadedDashboardData> }
 
@@ -119,11 +118,6 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
     load: 'knowledgeBrowser',
     render: (vs, routePath, actions) => renderKnowledgeBrowser(vs as ViewState<KnowledgeDiscoveryData>, queryFromRoutePath(routePath), { onNavigate: actions.onNavigate, detailOriginPath: routeAndQueryFromRoutePath(routePath) })
   },
-  globalSearch: {
-    path: '/dashboard/globalSearch',
-    load: 'globalSearch',
-    render: (vs, routePath, actions) => renderGlobalSearch(vs as ViewState<KnowledgeDiscoveryData>, queryFromRoutePath(routePath), { onNavigate: actions.onNavigate, detailOriginPath: routeAndQueryFromRoutePath(routePath) })
-  },
   knowledgeGraph: {
     path: '/dashboard/knowledgeGraph',
     load: 'overview',
@@ -170,7 +164,6 @@ const SCREEN_TITLES: Record<DashboardScreenKey, [string, string]> = {
   projects:         ['Projects',            'knowledge by repository'],
   memories:         ['Knowledge Browser',   'explore, filter & export team memory'],
   knowledgeBrowser: ['Knowledge Browser',   'explore, filter & export team memory'],
-  globalSearch:     ['Global Search',       'search every memory across the hive'],
   activityFeed:     ['Activity Feed',       'recently saved memory across the team'],
   userManagement:   ['User Management',     'roles, access & governance'],
   auditLog:         ['Audit Log',           'system operations & governance events'],
@@ -189,7 +182,8 @@ const SCREEN_TITLES: Record<DashboardScreenKey, [string, string]> = {
  * Falls back to 'overview'.
  */
 function screenFromPath(routePath: string): DashboardScreenKey {
-  const normalized = routePath.split(/[?#]/, 1)[0].replace(/\/$/, '')
+  const canonical = canonicalDashboardRoutePath(routePath)
+  const normalized = canonical.split(/[?#]/, 1)[0].replace(/\/$/, '')
   if (memoryDetailRouteFromPath(routePath).kind !== 'none') return 'memories'
   // Handle legacy /dashboard/audit-sync alias
   if (normalized.endsWith('/audit-sync')) return 'auditLog'
@@ -297,8 +291,8 @@ function renderShell(
   `
   header.append(titleGroup)
 
-  // Search slot — real input field (replaces bare button), navigates to Global Search on Enter/click.
-  // Deliberately NOT a <form> to avoid interfering with in-view forms (e.g. GlobalSearch filter form).
+  // Search slot — real input field that navigates to the canonical Knowledge Browser search surface.
+  // Deliberately NOT a <form> to avoid interfering with in-view forms.
   const searchWrapper = document.createElement('div')
   searchWrapper.className = 'dashboard-header__search-wrapper'
   searchWrapper.setAttribute('role', 'search')
@@ -310,10 +304,10 @@ function renderShell(
   searchSlot.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault()
-      actions.onNavigate?.(globalSearchPathFromRoutePath(routePath))
+      actions.onNavigate?.(knowledgeBrowserPathFromRoutePath(routePath, searchSlot.value))
     }
   })
-  searchSlot.addEventListener('click', () => actions.onNavigate?.(globalSearchPathFromRoutePath(routePath)))
+  searchSlot.addEventListener('click', () => actions.onNavigate?.(knowledgeBrowserPathFromRoutePath(routePath)))
   searchWrapper.append(searchSlot)
   header.append(searchWrapper)
   mainArea.append(header)
@@ -424,13 +418,15 @@ function queryFromRoutePath(routePath: string): string {
   return hashStart === -1 ? routePath.slice(queryStart) : routePath.slice(queryStart, hashStart)
 }
 
-function globalSearchPathFromRoutePath(routePath: string): string {
+function knowledgeBrowserPathFromRoutePath(routePath: string, submittedQuery = ''): string {
+  const queryOverride = submittedQuery.trim()
+  if (queryOverride) return `${ROUTES.knowledgeBrowser.path}?${new URLSearchParams({ query: queryOverride }).toString()}`
   const normalized = routePath.split(/[?#]/, 1)[0].replace(/\/$/, '')
   const query = queryFromRoutePath(routePath)
-  if (query && (normalized === ROUTES.knowledgeBrowser.path || normalized === ROUTES.globalSearch.path)) {
-    return `${ROUTES.globalSearch.path}${query}`
+  if (query && (normalized === ROUTES.knowledgeBrowser.path || normalized === LEGACY_GLOBAL_SEARCH_PATH)) {
+    return `${ROUTES.knowledgeBrowser.path}${query}`
   }
-  return ROUTES.globalSearch.path
+  return ROUTES.knowledgeBrowser.path
 }
 
 function memoryDetailBackPathFromRoute(routePath: string): string {
@@ -443,8 +439,10 @@ function safeDashboardReturnPath(value: string | null): string | undefined {
   try {
     const route = new URL(candidate, window.location.origin)
     if (route.origin !== window.location.origin) return undefined
-    if (!isDiscoveryReturnPath(route.pathname)) return undefined
-    const path = `${route.pathname}${route.search}${route.hash}`
+    const normalized = canonicalDashboardRoutePath(`${route.pathname}${route.search}${route.hash}`)
+    const normalizedPath = normalized.split(/[?#]/, 1)[0]
+    if (!isDiscoveryReturnPath(normalizedPath)) return undefined
+    const path = normalized
     return path
   } catch {
     return undefined
@@ -452,7 +450,18 @@ function safeDashboardReturnPath(value: string | null): string | undefined {
 }
 
 function isDiscoveryReturnPath(pathname: string): boolean {
-  return [ROUTES.knowledgeBrowser.path, ROUTES.globalSearch.path].includes(pathname)
+  return pathname === ROUTES.knowledgeBrowser.path
+}
+
+function canonicalDashboardRoutePath(routePath: string): string {
+  try {
+    const route = new URL(routePath, window.location.origin)
+    if (route.origin !== window.location.origin) return routePath
+    if (route.pathname.replace(/\/$/, '') !== LEGACY_GLOBAL_SEARCH_PATH) return routePath
+    return `${ROUTES.knowledgeBrowser.path}${route.search}${route.hash}`
+  } catch {
+    return routePath
+  }
 }
 
 function memoryDetailRouteFromPath(routePath: string): MemoryDetailRoute {
@@ -506,8 +515,7 @@ export async function loadDashboard(api: ApiClient, token: string): Promise<{ st
       memories: combinedState(recent, search, (recent, search) => ({ recent, search })),
       audit: settledState(audit),
       activity: activityState(activity),
-      knowledgeBrowser: discoveryListState(recent),
-      globalSearch: discoverySearchState(search)
+      knowledgeBrowser: discoveryListState(recent)
     }
   }
 }
@@ -608,12 +616,6 @@ async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token:
       const response = await api.memories(token, memoryListParamsFromRoute(routePath))
       return { status: 'ready', data: memoryListToDiscoveryData(response) }
     }
-    case 'globalSearch': {
-      const params = memorySearchParamsFromRoute(routePath)
-      if (!params) return { status: 'ready', data: emptyDiscoveryData(routePath) }
-      const response = await api.searchMemories(token, params)
-      return { status: 'ready', data: memorySearchToDiscoveryData(response) }
-    }
   }
 }
 
@@ -623,14 +625,8 @@ function discoveryListState(result: PromiseSettledResult<MemoryList>): ViewState
     : { status: 'error', message: messageFor(result.reason) }
 }
 
-function discoverySearchState(result: PromiseSettledResult<MemorySearch>): ViewState<KnowledgeDiscoveryData> {
-  return result.status === 'fulfilled'
-    ? { status: 'ready', data: memorySearchToDiscoveryData(result.value) }
-    : { status: 'error', message: messageFor(result.reason) }
-}
-
 function isQuerySensitiveDiscoveryKey(key: keyof LoadedDashboardData): boolean {
-  return key === 'knowledgeBrowser' || key === 'globalSearch'
+  return key === 'knowledgeBrowser'
 }
 
 function isQuerySensitiveDiscoveryScreen(screen: DashboardScreenKey): boolean {
@@ -639,7 +635,7 @@ function isQuerySensitiveDiscoveryScreen(screen: DashboardScreenKey): boolean {
 }
 
 function routeAndQueryFromRoutePath(routePath: string): string {
-  return routePath
+  return canonicalDashboardRoutePath(routePath)
 }
 
 function memoryDetailRouteKeyForScreen(screen: DashboardScreenKey, routePath: string): string | undefined {
@@ -659,33 +655,6 @@ function memoryListParamsFromRoute(routePath: string): MemoryListParams {
     until: filters.until,
     limit: filters.limit,
     offset: filters.offset
-  }
-}
-
-function memorySearchParamsFromRoute(routePath: string): MemorySearchParams | null {
-  const filters = parseDashboardFilters(queryFromRoutePath(routePath))
-  const query = filters.query?.trim()
-  if (!query) return null
-  return {
-    query,
-    project: filters.project,
-    category: filters.category && filters.category !== 'all' ? filters.category : undefined,
-    from: filters.from,
-    until: filters.until,
-    limit: filters.limit,
-    offset: filters.offset
-  }
-}
-
-function emptyDiscoveryData(routePath: string): KnowledgeDiscoveryData {
-  const filters = parseDashboardFilters(queryFromRoutePath(routePath))
-  return {
-    items: [],
-    total: 0,
-    limit: filters.limit ?? 10,
-    offset: filters.offset ?? 0,
-    previousOffset: null,
-    nextOffset: null
   }
 }
 
@@ -850,9 +819,9 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     },
     async onNavigate(path) {
       if (disposed) return
-      history.pushState(null, '', path)
+      history.pushState(null, '', canonicalDashboardRoutePath(path))
       loadVersion += 1
-      activeScreen = screenFromPath(path)
+      activeScreen = screenFromPath(currentRoutePath())
       if (activeScreen === 'projects') dashboard = projectsLoadingState(dashboard)
       const state = session.getState()
       rerender(state)
@@ -937,7 +906,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
   async function loadAndRender(state: Extract<AuthState, { status: 'authenticated' }>, screen: DashboardScreenKey): Promise<void> {
     if (disposed) return
     const version = loadVersion
-    const routePath = currentRoutePath()
+    const routePath = canonicalizeCurrentRoutePath()
     const discoveryRouteKey = isQuerySensitiveDiscoveryScreen(screen) ? routeAndQueryFromRoutePath(routePath) : undefined
     const memoryDetailRouteKey = memoryDetailRouteKeyForScreen(screen, routePath)
     const loaded = await loadForRoute(screen, api, state.token, dashboard, routePath)
@@ -954,7 +923,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     if (disposed) return
     const version = loadVersion + 1
     loadVersion = version
-    const routePath = currentRoutePath()
+    const routePath = canonicalizeCurrentRoutePath()
     const screen = screenFromPath(routePath)
     const discoveryRouteKey = isQuerySensitiveDiscoveryScreen(screen) ? routeAndQueryFromRoutePath(routePath) : undefined
     const memoryDetailRouteKey = memoryDetailRouteKeyForScreen(screen, routePath)
@@ -977,6 +946,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     if (disposed) return
     loadVersion += 1
     const state = session.getState()
+    canonicalizeCurrentRoutePath()
     activeScreen = screenFromPath(currentRoutePath())
     if (activeScreen === 'projects') dashboard = projectsLoadingState(dashboard)
     rerender(state)
@@ -1003,6 +973,13 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
 
 function currentRoutePath(): string {
   return `${window.location.pathname}${window.location.search}${window.location.hash}`
+}
+
+function canonicalizeCurrentRoutePath(): string {
+  const current = currentRoutePath()
+  const canonical = canonicalDashboardRoutePath(current)
+  if (canonical !== current) history.replaceState(null, '', canonical)
+  return canonical
 }
 
 const root = document.getElementById('app')

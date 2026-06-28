@@ -5,7 +5,6 @@ export const dashboardScreenKeys = [
   'memories',
   'projects',
   'knowledgeBrowser',
-  'globalSearch',
   'knowledgeGraph',
   'activityFeed',
   'contributors',
@@ -210,34 +209,6 @@ export type KnowledgeBrowserFixtureViewModel = {
   readonly metadata: BrowserPageMetadataViewModel
 }
 
-export type SearchResultViewModel = {
-  readonly memoryId: string
-  readonly title: string
-  readonly excerpt: string
-  readonly category: MemoryCategory
-  readonly projectId: string
-  readonly authorId: string
-  readonly authorLabel: string
-  readonly tags: readonly string[]
-  readonly savedAt: string
-  readonly savedAtLabel: string
-  readonly highlights: readonly string[]
-  readonly score: number
-}
-
-export type GlobalSearchFixtureViewModel = {
-  readonly screen: 'globalSearch'
-  readonly sourceLabel: string
-  readonly query: string
-  readonly highlights: readonly string[]
-  readonly results: readonly SearchResultViewModel[]
-  readonly metadata: {
-    readonly shareLabel: string
-    readonly clearLabel: string
-    readonly exportCount: number
-  }
-}
-
 export type KnowledgeGraphNodeKind = 'project' | 'contributor' | 'memory' | 'category'
 
 export type KnowledgeGraphNodeViewModel = {
@@ -260,11 +231,17 @@ export type KnowledgeGraphFixtureViewModel = {
 
 export type ActivityEntryViewModel = {
   readonly id: string
+  readonly eventType: string
+  readonly eventLabel: string
   readonly title: string
+  readonly summary: string
   readonly actorHandle: string
   readonly projectId: string
   readonly category: MemoryCategory
+  readonly sourceLabel: string
   readonly timeLabel: string
+  readonly absoluteTimeLabel: string
+  readonly relativeTimeLabel: string
   readonly memorySyncId?: string
 }
 
@@ -276,10 +253,6 @@ export type ActivityGroupViewModel = {
 export type ActivityFeedViewModel = {
   readonly screen: 'activityFeed'
   readonly groups: readonly ActivityGroupViewModel[]
-  readonly livePolling?: {
-    readonly enabled: boolean
-    readonly intervalSeconds: number
-  }
   readonly nextCursor?: string
   readonly loadingMore?: boolean
   readonly paginationError?: string
@@ -291,7 +264,6 @@ export type ExploreScreenFixturesViewModel = {
   readonly overview: OverviewFixtureViewModel
   readonly projects: ProjectListFixtureViewModel
   readonly knowledgeBrowser: KnowledgeBrowserFixtureViewModel
-  readonly globalSearch: GlobalSearchFixtureViewModel
   readonly knowledgeGraph: KnowledgeGraphFixtureViewModel
   readonly activityFeed: ActivityFeedFixtureViewModel
 }

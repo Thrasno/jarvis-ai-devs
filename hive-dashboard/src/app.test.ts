@@ -3,7 +3,7 @@ import type { ActivityFeedResponse, ApiClient, Memory, MemoryList, MemorySearch,
 import type { SessionStore } from './auth/session'
 import { loadDashboard, loadForRoute, renderApp, startDashboardApp } from './main'
 import { hiveOverviewFixture } from './fixtures/hive-dashboard/overview'
-import { memoryListToDiscoveryData, memorySearchToDiscoveryData } from './domain/knowledgeDiscovery'
+import { memoryListToDiscoveryData } from './domain/knowledgeDiscovery'
 import { projectsFromApi } from './domain/dashboard'
 
 const adminUser = { id: 'admin-1', username: 'admin', email: 'admin@example.com', level: 'admin' as const, is_active: true, created_at: '2026-06-06T20:00:00Z' }
@@ -327,7 +327,7 @@ describe('dashboard shell', () => {
     expect(navText).toContain('Projects')
     expect(navText).not.toContain('Memories')
     expect(navText).toContain('Knowledge Browser')
-    expect(navText).toContain('Global Search')
+    expect(navText).not.toContain('Global Search')
     expect(navText).toContain('Activity Feed')
     expect(navText).toContain('User Management')
     expect(navText).toContain('Audit Log')
@@ -411,7 +411,7 @@ describe('dashboard shell', () => {
       await flushDashboard()
 
       expect(api.activity).toHaveBeenCalledWith('jwt-token', { limit: 20 })
-      expect(container.querySelector('[role="status"]')?.textContent).toContain('No activity entries found')
+      expect(container.querySelector('[role="status"]')?.textContent).toContain('No recent memory lifecycle activity is available')
       expect(container.querySelector('button[data-load-more-activity]')).toBeNull()
       expect(container.textContent).not.toContain('Demo fixture data')
     } finally {
@@ -682,14 +682,15 @@ describe('dashboard shell', () => {
     expect(container.querySelector('article[role="listitem"]')?.textContent).toContain('Gateway owns the auth boundary')
   })
 
-  it('renders the Global Search discovery route with live memory data instead of fixture highlights', () => {
+  it('falls back legacy Global Search routes to Knowledge Browser while preserving query filters', () => {
     const container = document.createElement('main')
 
     renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath: '/dashboard/globalSearch?query=auth&limit=1' })
 
     expect(container.querySelector('[data-coming-soon]')).toBeNull()
-    expect(container.querySelector('section h2')?.textContent).toBe('Global Search')
-    expect(container.querySelector('[role="note"]')?.textContent).toContain('Live Hive API data')
+    expect(container.querySelector('.dashboard-knowledge-browser__filters-shell')).not.toBeNull()
+    expect(container.querySelector<HTMLInputElement>('input[name="query"]')?.value).toBe('auth')
+    expect(container.querySelector('[role="note"]')?.textContent).toContain('Live Hive API browse data')
     expect(container.querySelector('mark')).toBeNull()
   })
 
@@ -780,44 +781,34 @@ describe('dashboard shell', () => {
     }
   })
 
-  it('returns from a Global Search memory detail to the originating filtered route and reloads search state', async () => {
+  it('normalizes Global Search memory detail return targets to Knowledge Browser and reloads browse state', async () => {
     const container = document.createElement('main')
     document.body.append(container)
     const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
     const api = fakeApi({
-      search: [
-        Promise.resolve(memorySearchResponse([memory({ id: 'search-memory-1', title: 'Global Search memory' })], { query: 'auth', total: 1 })),
-        Promise.resolve(memorySearchResponse([memory({ id: 'search-memory-1', title: 'Restored Global Search memory' })], { query: 'auth', total: 1 }))
-      ],
-      memory: [Promise.resolve(memory({ id: 'search-memory-1', title: 'Opened search memory detail', content: 'Detail content from Global Search' }))]
+      memories: [Promise.resolve(memoryListResponse([memory({ id: 'search-memory-1', title: 'Restored Knowledge Browser memory' })], { total: 1 }))],
+      memory: [Promise.resolve(memory({ id: 'search-memory-1', title: 'Opened search memory detail', content: 'Detail content from Knowledge Browser' }))]
     })
     const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
     const originPath = '/dashboard/globalSearch?query=auth&project=jarvis-dev&category=decision&from=2026-06-01&until=2026-06-30&limit=5&offset=10#memory-results'
-    history.pushState(null, '', originPath)
+    history.pushState(null, '', memoryDetailHref('search-memory-1', originPath))
 
     const cleanup = startDashboardApp(container, { api, session })
     try {
       await flushDashboard()
 
-      expect(api.searchMemories).toHaveBeenNthCalledWith(1, 'jwt-token', { query: 'auth', project: 'jarvis-dev', category: 'decision', from: '2026-06-01', until: '2026-06-30', limit: 5, offset: 10 })
-      const openMemoryLink = linkByText(container, 'Open memory')
-      expect(openMemoryLink?.getAttribute('href')).toBe(memoryDetailHref('search-memory-1', originPath))
-
-      history.pushState(null, '', openMemoryLink!.getAttribute('href')!)
-      window.dispatchEvent(new PopStateEvent('popstate'))
-      await flushDashboard()
-
       expect(api.memory).toHaveBeenCalledWith('jwt-token', 'search-memory-1')
       expect(container.querySelector('section h2')?.textContent).toBe('Opened search memory detail')
-      expect(container.textContent).toContain('Detail content from Global Search')
+      expect(container.textContent).toContain('Detail content from Knowledge Browser')
 
       container.querySelector<HTMLButtonElement>('button[aria-label="Back to memories"]')?.click()
       await flushDashboard()
 
-      expect(window.location.pathname + window.location.search + window.location.hash).toBe(originPath)
-      expect(container.querySelector('section h2')?.textContent).toBe('Global Search')
-      expect(api.searchMemories).toHaveBeenNthCalledWith(2, 'jwt-token', { query: 'auth', project: 'jarvis-dev', category: 'decision', from: '2026-06-01', until: '2026-06-30', limit: 5, offset: 10 })
-      expect(container.textContent).toContain('Restored Global Search memory')
+      expect(window.location.pathname + window.location.search + window.location.hash).toBe('/dashboard/knowledgeBrowser?query=auth&project=jarvis-dev&category=decision&from=2026-06-01&until=2026-06-30&limit=5&offset=10#memory-results')
+      expect(container.querySelector('.dashboard-knowledge-browser__filters-shell')).not.toBeNull()
+      expect(api.memories).toHaveBeenCalledWith('jwt-token', { query: 'auth', project: 'jarvis-dev', category: 'decision', from: '2026-06-01', until: '2026-06-30', limit: 5, offset: 10 })
+      expect(api.searchMemories).not.toHaveBeenCalled()
+      expect(container.textContent).toContain('Restored Knowledge Browser memory')
     } finally {
       cleanup()
       history.pushState(null, '', originalPath)
@@ -853,13 +844,13 @@ describe('dashboard shell', () => {
     }
   })
 
-  it('reloads Global Search when URL filters change and links results to memory detail routes', async () => {
+  it('canonicalizes legacy Global Search URL filter changes through Knowledge Browser browse results', async () => {
     const container = document.createElement('main')
     document.body.append(container)
     const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
-    const api = fakeApi({ search: [
-      Promise.resolve(memorySearchResponse([memory({ id: 'mem-1', title: 'First query memory' })], { query: 'first' })),
-      Promise.resolve(memorySearchResponse([memory({ id: 'mem-2', title: 'Second query memory' })], { query: 'second' }))
+    const api = fakeApi({ memories: [
+      Promise.resolve(memoryListResponse([memory({ id: 'mem-1', title: 'First query memory' })])),
+      Promise.resolve(memoryListResponse([memory({ id: 'mem-2', title: 'Second query memory' })]))
     ] })
     const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
     history.pushState(null, '', '/dashboard/globalSearch?query=first&project=jarvis-dev&limit=5&offset=0')
@@ -867,16 +858,17 @@ describe('dashboard shell', () => {
     const cleanup = startDashboardApp(container, { api, session })
     try {
       await flushDashboard()
-      expect(api.searchMemories).toHaveBeenNthCalledWith(1, 'jwt-token', { query: 'first', project: 'jarvis-dev', limit: 5, offset: 0 })
+      expect(api.memories).toHaveBeenNthCalledWith(1, 'jwt-token', { query: 'first', project: 'jarvis-dev', limit: 5, offset: 0 })
       const openMemoryLink = linkByText(container, 'Open memory')
-      expect(openMemoryLink?.getAttribute('href')).toBe(memoryDetailHref('mem-1', '/dashboard/globalSearch?query=first&project=jarvis-dev&limit=5&offset=0'))
+      expect(openMemoryLink?.getAttribute('href')).toBe(memoryDetailHref('mem-1', '/dashboard/knowledgeBrowser?query=first&project=jarvis-dev&limit=5&offset=0'))
 
       container.querySelector<HTMLInputElement>('input[name="query"]')!.value = 'second'
       container.querySelector('form')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
       await flushDashboard()
 
-      expect(window.location.pathname + window.location.search).toBe('/dashboard/globalSearch?query=second&project=jarvis-dev&limit=5')
-      expect(api.searchMemories).toHaveBeenNthCalledWith(2, 'jwt-token', { query: 'second', project: 'jarvis-dev', limit: 5 })
+      expect(window.location.pathname + window.location.search).toBe('/dashboard/knowledgeBrowser?query=second&project=jarvis-dev&limit=5')
+      expect(api.memories).toHaveBeenNthCalledWith(2, 'jwt-token', { query: 'second', project: 'jarvis-dev', limit: 5 })
+      expect(api.searchMemories).not.toHaveBeenCalled()
       expect(container.textContent).toContain('Second query memory')
       expect(container.querySelector('mark')).toBeNull()
     } finally {
@@ -886,7 +878,7 @@ describe('dashboard shell', () => {
     }
   })
 
-  it('shows a prompt and does not call Global Search when no query exists', async () => {
+  it('loads legacy Global Search without a query through Knowledge Browser browse data', async () => {
     const container = document.createElement('main')
     document.body.append(container)
     const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
@@ -898,10 +890,11 @@ describe('dashboard shell', () => {
     try {
       await flushDashboard()
 
+      expect(api.memories).toHaveBeenCalledWith('jwt-token', { limit: 5 })
       expect(api.searchMemories).not.toHaveBeenCalled()
       expect(container.querySelector<HTMLInputElement>('input[name="query"]')?.value).toBe('')
-      expect(container.querySelector('[role="status"]')?.textContent).toBe('Enter a search query to find live memories.')
-      expect(container.querySelector('[data-dashboard-primitive="main"]')?.textContent).not.toContain('Gateway owns the auth boundary')
+      expect(container.querySelector('.dashboard-knowledge-browser__filters-shell')).not.toBeNull()
+      expect(container.querySelector('[data-dashboard-primitive="main"]')?.textContent).toContain('Gateway owns the auth boundary')
     } finally {
       cleanup()
       history.pushState(null, '', originalPath)
@@ -909,7 +902,7 @@ describe('dashboard shell', () => {
     }
   })
 
-  it('omits unsupported author and tag filters from live Global Search API params', async () => {
+  it('omits unsupported author and tag filters from legacy Global Search fallback browse params', async () => {
     const container = document.createElement('main')
     document.body.append(container)
     const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
@@ -921,7 +914,8 @@ describe('dashboard shell', () => {
     try {
       await flushDashboard()
 
-      expect(api.searchMemories).toHaveBeenCalledWith('jwt-token', { query: 'auth', project: 'jarvis-dev', limit: 5 })
+      expect(api.memories).toHaveBeenCalledWith('jwt-token', { query: 'auth', project: 'jarvis-dev', limit: 5 })
+      expect(api.searchMemories).not.toHaveBeenCalled()
       expect(container.querySelector('input[name="author"]')).toBeNull()
       expect(container.querySelector('input[name="tag"]')).toBeNull()
     } finally {
@@ -931,14 +925,14 @@ describe('dashboard shell', () => {
     }
   })
 
-  it('keeps stale Global Search responses from overwriting the current query results', async () => {
+  it('keeps stale legacy Global Search fallback responses from overwriting current Knowledge Browser results', async () => {
     const container = document.createElement('main')
     document.body.append(container)
     const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
-    const firstSearch = deferred<MemorySearch>()
-    const api = fakeApi({ search: [
-      firstSearch.promise,
-      Promise.resolve(memorySearchResponse([memory({ id: 'mem-2', title: 'Second query memory' })], { query: 'second' }))
+    const firstBrowse = deferred<MemoryList>()
+    const api = fakeApi({ memories: [
+      firstBrowse.promise,
+      Promise.resolve(memoryListResponse([memory({ id: 'mem-2', title: 'Second query memory' })]))
     ] })
     const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
     history.pushState(null, '', '/dashboard/globalSearch?query=first&project=jarvis-dev&limit=5')
@@ -946,19 +940,19 @@ describe('dashboard shell', () => {
     const cleanup = startDashboardApp(container, { api, session })
     try {
       await flushDashboard()
-      expect(api.searchMemories).toHaveBeenNthCalledWith(1, 'jwt-token', { query: 'first', project: 'jarvis-dev', limit: 5 })
+      expect(api.memories).toHaveBeenNthCalledWith(1, 'jwt-token', { query: 'first', project: 'jarvis-dev', limit: 5 })
 
       history.pushState(null, '', '/dashboard/globalSearch?query=second&project=jarvis-dev&limit=5')
       window.dispatchEvent(new PopStateEvent('popstate'))
       await flushDashboard()
 
-      expect(api.searchMemories).toHaveBeenNthCalledWith(2, 'jwt-token', { query: 'second', project: 'jarvis-dev', limit: 5 })
+      expect(api.memories).toHaveBeenNthCalledWith(2, 'jwt-token', { query: 'second', project: 'jarvis-dev', limit: 5 })
       expect(container.textContent).toContain('Second query memory')
 
-      firstSearch.resolve(memorySearchResponse([memory({ id: 'mem-1', title: 'First query memory' })], { query: 'first' }))
+      firstBrowse.resolve(memoryListResponse([memory({ id: 'mem-1', title: 'First query memory' })]))
       await flushDashboard()
 
-      expect(window.location.pathname + window.location.search).toBe('/dashboard/globalSearch?query=second&project=jarvis-dev&limit=5')
+      expect(window.location.pathname + window.location.search).toBe('/dashboard/knowledgeBrowser?query=second&project=jarvis-dev&limit=5')
       expect(container.textContent).toContain('Second query memory')
       expect(container.textContent).not.toContain('First query memory')
     } finally {
@@ -1223,8 +1217,8 @@ describe('dashboard shell', () => {
       container.querySelector<HTMLButtonElement>('button[aria-label="Back to memories"]')?.click()
       await flushDashboard()
 
-      expect(window.location.pathname + window.location.search + window.location.hash).toBe(returnTo)
-      expect(container.querySelector('section h2')?.textContent).toBe('Global Search')
+      expect(window.location.pathname + window.location.search + window.location.hash).toBe('/dashboard/knowledgeBrowser?query=auth&project=jarvis-dev#memory-results')
+      expect(container.querySelector('.dashboard-knowledge-browser__filters-shell')).not.toBeNull()
     } finally {
       cleanup()
       history.pushState(null, '', originalPath)
@@ -1516,7 +1510,7 @@ describe('shell search slot integration', () => {
     expect(searchSlot).not.toBeNull()
   })
 
-  it('W2 — search slot click navigates to /dashboard/globalSearch', () => {
+  it('search slot click navigates to Knowledge Browser', () => {
     const container = document.createElement('main')
     const onNavigate = vi.fn()
 
@@ -1526,10 +1520,24 @@ describe('shell search slot integration', () => {
     expect(searchSlot).not.toBeNull()
     searchSlot!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
 
-    expect(onNavigate).toHaveBeenCalledWith('/dashboard/globalSearch')
+    expect(onNavigate).toHaveBeenCalledWith('/dashboard/knowledgeBrowser')
   })
 
-  it('header search preserves discovery query filters when navigating to Global Search', () => {
+  it('header search submit sends the entered query to Knowledge Browser', () => {
+    const container = document.createElement('main')
+    const onNavigate = vi.fn()
+
+    renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn(), onNavigate } })
+
+    const searchSlot = container.querySelector<HTMLInputElement>('.dashboard-header__search')
+    expect(searchSlot).not.toBeNull()
+    searchSlot!.value = 'sync bug'
+    searchSlot!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+
+    expect(onNavigate).toHaveBeenCalledWith('/dashboard/knowledgeBrowser?query=sync+bug')
+  })
+
+  it('header search preserves discovery query filters when navigating to Knowledge Browser', () => {
     const container = document.createElement('main')
     const onNavigate = vi.fn()
 
@@ -1544,10 +1552,10 @@ describe('shell search slot integration', () => {
     expect(searchSlot).not.toBeNull()
     searchSlot!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
 
-    expect(onNavigate).toHaveBeenCalledWith('/dashboard/globalSearch?query=auth&category=architecture')
+    expect(onNavigate).toHaveBeenCalledWith('/dashboard/knowledgeBrowser?query=auth&category=architecture')
   })
 
-  it('header search opens the Global Search route in the running app', async () => {
+  it('header search opens the Knowledge Browser route in the running app', async () => {
     const container = document.createElement('main')
     document.body.append(container)
     const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
@@ -1560,8 +1568,8 @@ describe('shell search slot integration', () => {
       container.querySelector<HTMLButtonElement>('.dashboard-header__search')!.click()
       await flushDashboard()
 
-      expect(window.location.pathname).toBe('/dashboard/globalSearch')
-      expect(container.querySelector('section h2')?.textContent).toBe('Global Search')
+      expect(window.location.pathname).toBe('/dashboard/knowledgeBrowser')
+      expect(container.querySelector('.dashboard-knowledge-browser__filters-shell')).not.toBeNull()
       expect(container.querySelector('[data-coming-soon]')).toBeNull()
     } finally {
       cleanup()
@@ -2124,8 +2132,7 @@ function dashboardState() {
       audit: { status: 'ready' as const, data: syncAttemptSummaryFixture() },
       activity: { status: 'ready' as const, data: activityViewState() },
       projects: { status: 'ready' as const, data: projectsFromApi(projectListResponse([projectSummary()])) },
-      knowledgeBrowser: { status: 'ready' as const, data: memoryListToDiscoveryData(memoryListResponse([memory({ title: 'Gateway owns the auth boundary, not services' })], { limit: 1 })) },
-      globalSearch: { status: 'ready' as const, data: memorySearchToDiscoveryData(memorySearchResponse([memory({ title: 'Gateway owns the auth boundary, not services' })], { limit: 1 })) }
+      knowledgeBrowser: { status: 'ready' as const, data: memoryListToDiscoveryData(memoryListResponse([memory({ title: 'Gateway owns the auth boundary, not services' })], { limit: 1 })) }
     }
   }
 }
@@ -2135,7 +2142,7 @@ function activityViewState() {
     screen: 'activityFeed' as const,
     groups: [{
       dateLabel: 'Today',
-      entries: [{ id: 'event-1', title: 'Real backend activity', actorHandle: 'ada@example.com', projectId: 'jarvis-dev', category: 'decision' as const, timeLabel: '09:00', memorySyncId: 'sync-1' }]
+      entries: [{ id: 'event-1', eventType: 'create', eventLabel: 'Created', title: 'Real backend activity', summary: 'Real backend activity', actorHandle: 'ada@example.com', projectId: 'jarvis-dev', category: 'decision' as const, sourceLabel: 'decision', timeLabel: '09:00', absoluteTimeLabel: '25 Jun 2026 · 09:00', relativeTimeLabel: '3h ago', memorySyncId: 'sync-1' }]
     }],
     nextCursor: 'cursor-2'
   }

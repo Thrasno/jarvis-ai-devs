@@ -22,6 +22,7 @@ describe('Sidebar', () => {
     expect(nav).not.toBeNull()
     expect(nav?.textContent).toContain('Explore')
     expect(nav?.textContent).not.toContain('Memories')
+    expect(nav?.textContent).not.toContain('Global Search')
     expect(nav?.textContent).not.toContain('Team')
     expect(nav?.textContent).not.toContain('Insights')
     expect(nav?.textContent).not.toContain('Knowledge Graph')
@@ -84,6 +85,7 @@ describe('Sidebar', () => {
 
     expect([...container.querySelectorAll('[data-nav-group]')].map((group) => group.getAttribute('data-nav-group'))).toEqual(['explore', 'governance'])
     expect(container.querySelector('[data-nav-entry="memories"]')).toBeNull()
+    expect(container.querySelector('[data-nav-entry="globalSearch"]')).toBeNull()
   })
 
   it('calls onLogout exactly once when the logout button is clicked', () => {

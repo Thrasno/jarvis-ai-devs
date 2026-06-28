@@ -1,4 +1,4 @@
-import type { Memory, MemoryList, MemorySearch } from '../api/client'
+import type { Memory, MemoryList } from '../api/client'
 import { memoryCategories, type MemoryCategory, type MemoryViewModel } from './dashboard'
 
 export type KnowledgeDiscoveryCard = MemoryViewModel & {
@@ -15,10 +15,6 @@ export type KnowledgeDiscoveryData = {
 }
 
 export function memoryListToDiscoveryData(page: MemoryList): KnowledgeDiscoveryData {
-  return memoryPageToDiscoveryData(page.memories, page)
-}
-
-export function memorySearchToDiscoveryData(page: MemorySearch): KnowledgeDiscoveryData {
   return memoryPageToDiscoveryData(page.memories, page)
 }
 

@@ -8,30 +8,42 @@ function ready(data: ActivityFeedViewModel = feed()): ViewState<ActivityFeedView
 }
 
 describe('ActivityFeed', () => {
-  it('renders loading, initial error, and empty states without fixture source notes', () => {
-    expect(renderActivityFeed({ status: 'loading' }, { onNavigate: vi.fn() }).element.textContent).toContain('Loading activity feed')
+  it('renders accessible loading, initial error, and empty states without fixture source notes', () => {
+    const loading = renderActivityFeed({ status: 'loading' }, { onNavigate: vi.fn() }).element
+    expect(loading.querySelector('[role="status"]')?.textContent).toContain('Loading recent memory lifecycle activity')
 
     const error = renderActivityFeed({ status: 'error', message: 'activity unavailable' }, { onNavigate: vi.fn() }).element
     expect(error.querySelector('[role="alert"]')?.textContent).toContain('activity unavailable')
 
     const empty = renderActivityFeed(ready(feed({ groups: [] })), { onNavigate: vi.fn() }).element
-    expect(empty.querySelector('[role="status"]')?.textContent).toContain('No activity entries found')
+    expect(empty.querySelector('[role="status"]')?.textContent).toContain('No recent memory lifecycle activity is available.')
+    expect(empty.textContent).toContain('Recent memory lifecycle activity from the live Activity API.')
     expect(empty.textContent).not.toContain('Demo fixture data')
   })
 
-  it('renders grouped backend entries with category badges and no live polling indicator', () => {
+  it('renders grouped backend entries as timeline cards with honest metadata and no unsupported controls', () => {
     const { element } = renderActivityFeed(ready(feed({
       groups: [
-        { dateLabel: 'Today', entries: [entry('event-1', { title: 'Captured decision', category: 'decision', memorySyncId: 'sync-1' })] },
-        { dateLabel: 'Yesterday', entries: [entry('event-2', { title: 'Deleted stale memory', category: 'bugfix' })] }
+        { dateLabel: 'Today', entries: [entry('event-1', { title: 'Captured decision', eventLabel: 'Created', summary: 'Decision summary', category: 'decision', memorySyncId: 'sync-1' })] },
+        { dateLabel: 'Yesterday', entries: [entry('event-2', { title: 'Deleted stale memory', eventLabel: 'Deleted', summary: 'Delete summary', category: 'bugfix' })] }
       ]
     })), { onNavigate: vi.fn() })
 
     expect(Array.from(element.querySelectorAll('[data-activity-group-header]')).map((header) => header.textContent)).toEqual(['Today', 'Yesterday'])
     expect(element.querySelectorAll('button.dashboard-notification-card')).toHaveLength(0)
     expect(element.querySelectorAll('[data-activity-entry-static]')).toHaveLength(2)
+    expect(element.querySelectorAll('article[role="listitem"]')).toHaveLength(2)
     expect(element.querySelector('[data-activity-category="decision"]')?.textContent).toBe('decision')
-    expect(element.textContent).not.toContain('Live')
+    expect(element.textContent).toContain('Created')
+    expect(element.textContent).toContain('Decision summary')
+    expect(element.textContent).toContain('@ada')
+    expect(element.textContent).toContain('jarvis-dev')
+    expect(element.textContent).toContain('09:00')
+    expect(element.querySelector('[role="note"]')?.textContent).toContain('Recent memory lifecycle activity')
+    expect(element.querySelector('form')).toBeNull()
+    expect(element.querySelector('a[href^="/dashboard/memories/"]')).toBeNull()
+    expect(element.textContent).not.toContain('Audit log')
+    expect(element.textContent).not.toContain('Unread')
     expect(element.querySelector('[data-live-indicator]')).toBeNull()
   })
 
@@ -79,14 +91,20 @@ function feed(overrides: Partial<ActivityFeedViewModel> = {}): ActivityFeedViewM
   }
 }
 
-function entry(id: string, overrides: Partial<{ title: string; category: MemoryCategory; memorySyncId: string; timeLabel: string }> = {}) {
+function entry(id: string, overrides: Partial<{ title: string; eventLabel: string; summary: string; category: MemoryCategory; memorySyncId: string; timeLabel: string }> = {}) {
   return {
     id,
     title: overrides.title ?? `Activity ${id}`,
+    eventType: 'create',
+    eventLabel: overrides.eventLabel ?? 'Created',
+    summary: overrides.summary ?? `Summary for ${id}`,
     actorHandle: '@ada',
     projectId: 'jarvis-dev',
     category: overrides.category ?? 'discovery',
+    sourceLabel: overrides.category ?? 'discovery',
     timeLabel: overrides.timeLabel ?? '09:00',
+    absoluteTimeLabel: '25 Jun 2026 · 09:00',
+    relativeTimeLabel: '3h ago',
     memorySyncId: overrides.memorySyncId
   }
 }

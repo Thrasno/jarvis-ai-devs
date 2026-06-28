@@ -19,9 +19,15 @@ describe('activity feed mapper', () => {
     expect(viewModel.groups[0].entries[0]).toMatchObject({
       id: 'event-today',
       title: 'Today memory',
+      eventType: 'create',
+      eventLabel: 'Created',
+      summary: 'Summary for event-today',
       actorHandle: 'ada@example.com',
       projectId: 'jarvis-dev',
       category: 'decision',
+      sourceLabel: 'decision',
+      absoluteTimeLabel: '25 Jun 2026 · 08:30',
+      relativeTimeLabel: '4h ago',
       memorySyncId: 'sync-event-today'
     })
     expect(viewModel.nextCursor).toBe('next-page')
@@ -36,6 +42,31 @@ describe('activity feed mapper', () => {
       title: 'Captured activity delete-event',
       memorySyncId: undefined
     })
+  })
+
+  it('normalizes event labels, summaries, sources, and relative time from current activity fields only', () => {
+    const viewModel = activityFeedFromApi({
+      entries: [
+        entry('update-event', '2026-06-25T11:45:00Z', { event_type: 'update', category: 'pattern', summary: 'Pattern memory changed' }),
+        entry('delete-event', '2026-06-24T12:00:00Z', { event_type: 'delete', category: '', summary: '' }),
+        entry('custom-event', '2026-06-21T08:00:00Z', { event_type: 'bulk_import', category: 'unknown-category' })
+      ]
+    }, now)
+
+    const entries = viewModel.groups.flatMap((group) => group.entries)
+
+    expect(entries.map((item) => ({
+      id: item.id,
+      eventLabel: item.eventLabel,
+      category: item.category,
+      sourceLabel: item.sourceLabel,
+      summary: item.summary,
+      relativeTimeLabel: item.relativeTimeLabel
+    }))).toEqual([
+      { id: 'update-event', eventLabel: 'Updated', category: 'pattern', sourceLabel: 'pattern', summary: 'Pattern memory changed', relativeTimeLabel: '15m ago' },
+      { id: 'delete-event', eventLabel: 'Deleted', category: 'discovery', sourceLabel: 'source unavailable', summary: 'No summary provided by activity source.', relativeTimeLabel: '24h ago' },
+      { id: 'custom-event', eventLabel: 'Bulk import', category: 'discovery', sourceLabel: 'unknown-category', summary: 'Summary for custom-event', relativeTimeLabel: '4d ago' }
+    ])
   })
 
   it('appends a cursor page without duplicating existing event ids', () => {

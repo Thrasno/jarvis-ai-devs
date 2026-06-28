@@ -11,20 +11,37 @@ export type ActivityFeedHandle = { element: HTMLElement; dispose: () => void }
 
 function categoryBadge(category: MemoryCategory): HTMLElement {
   const badge = document.createElement('span')
-  badge.className = 'dashboard-status'
+  badge.className = 'dashboard-activity-feed__source-badge dashboard-status'
   badge.setAttribute('data-activity-category', category)
   badge.textContent = category.replaceAll('_', ' ')
   return badge
 }
 
 function renderEntryContent(root: HTMLElement, entry: ActivityEntryViewModel): void {
-  root.append(
-    text(entry.title),
-    categoryBadge(entry.category),
-    text(entry.actorHandle),
-    text(entry.projectId),
-    text(entry.timeLabel)
+  const header = document.createElement('div')
+  header.className = 'dashboard-activity-feed__entry-header'
+  const eventBadge = document.createElement('span')
+  eventBadge.className = 'dashboard-activity-feed__event-badge'
+  eventBadge.textContent = entry.eventLabel
+  header.append(eventBadge, categoryBadge(entry.category))
+
+  const title = document.createElement('h3')
+  title.className = 'dashboard-activity-feed__entry-title'
+  title.textContent = entry.title
+
+  const summary = text(entry.summary, 'dashboard-activity-feed__entry-summary')
+
+  const metadata = document.createElement('dl')
+  metadata.className = 'dashboard-activity-feed__metadata'
+  metadata.setAttribute('aria-label', `Activity metadata for ${entry.title}`)
+  metadata.append(
+    metadataItem('Actor', entry.actorHandle),
+    metadataItem('Project', entry.projectId),
+    metadataItem('Time', `${entry.relativeTimeLabel} · ${entry.absoluteTimeLabel}`),
+    metadataItem('Source', entry.sourceLabel)
   )
+
+  root.append(header, title, summary, metadata)
 }
 
 function entryLabel(entry: ActivityEntryViewModel): string {
@@ -33,11 +50,23 @@ function entryLabel(entry: ActivityEntryViewModel): string {
 
 function renderEntry(entry: ActivityEntryViewModel): HTMLElement {
   const row = document.createElement('article')
-  row.className = 'dashboard-notification-card'
+  row.className = 'dashboard-activity-feed__entry-card'
   row.setAttribute('data-activity-entry-static', '')
+  row.setAttribute('role', 'listitem')
   row.setAttribute('aria-label', entryLabel(entry))
   renderEntryContent(row, entry)
   return row
+}
+
+function metadataItem(label: string, value: string): HTMLElement {
+  const wrapper = document.createElement('div')
+  wrapper.className = 'dashboard-activity-feed__metadata-item'
+  const term = document.createElement('dt')
+  term.textContent = label
+  const description = document.createElement('dd')
+  description.textContent = value
+  wrapper.append(term, description)
+  return wrapper
 }
 
 export function renderActivityFeed(
@@ -45,9 +74,14 @@ export function renderActivityFeed(
   deps: ActivityFeedDeps
 ): ActivityFeedHandle {
   const card = panel('Activity Feed')
+  card.classList.add('dashboard-activity-feed')
+  card.dataset.dashboardPrimitive = 'activity-feed'
+  card.append(sourceNote())
 
   if (state.status === 'loading') {
-    append(card, text('Loading activity feed…'))
+    const loading = text('Loading recent memory lifecycle activity…')
+    loading.setAttribute('role', 'status')
+    append(card, loading)
     return { element: card, dispose: () => {} }
   }
 
@@ -59,13 +93,18 @@ export function renderActivityFeed(
 
   const { groups } = state.data
   if (groups.length === 0) {
-    append(card, emptyState('No activity entries found.'))
+    append(card, emptyState('No recent memory lifecycle activity is available.'))
     return { element: card, dispose: () => {} }
   }
 
+  const timeline = document.createElement('div')
+  timeline.className = 'dashboard-activity-feed__timeline'
+  timeline.setAttribute('role', 'list')
+  timeline.setAttribute('aria-label', 'Recent memory lifecycle activity')
+
   for (const group of groups) {
     const section = document.createElement('section')
-    section.className = 'dashboard-activity-group'
+    section.className = 'dashboard-activity-feed__group'
 
     const header = document.createElement('h3')
     header.setAttribute('data-activity-group-header', '')
@@ -73,13 +112,15 @@ export function renderActivityFeed(
     section.append(header)
 
     const entryList = document.createElement('div')
+    entryList.className = 'dashboard-activity-feed__entries'
     entryList.setAttribute('data-activity-group-entries', '')
     for (const entry of group.entries) {
       entryList.append(renderEntry(entry))
     }
     section.append(entryList)
-    card.append(section)
+    timeline.append(section)
   }
+  card.append(timeline)
 
   if (state.data.paginationError) {
     const paginationError = text(state.data.paginationError, 'dashboard-state state')
@@ -95,4 +136,10 @@ export function renderActivityFeed(
   }
 
   return { element: card, dispose: () => {} }
+}
+
+function sourceNote(): HTMLElement {
+  const note = text('Recent memory lifecycle activity from the live Activity API. This is not an audit log or notification inbox.', 'dashboard-activity-feed__source-note')
+  note.setAttribute('role', 'note')
+  return note
 }

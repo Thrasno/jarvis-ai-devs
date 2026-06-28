@@ -35,7 +35,6 @@ export const dashboardNavigationGroups = [
       { screen: 'overview', label: 'Dashboard' },
       { screen: 'projects', label: 'Projects' },
       { screen: 'knowledgeBrowser', label: 'Knowledge Browser' },
-      { screen: 'globalSearch', label: 'Global Search' },
       { screen: 'activityFeed', label: 'Activity Feed' }
     ]
   },

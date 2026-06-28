@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { MemoryList, MemorySearch } from '../api/client'
-import { memoryListToDiscoveryData, memorySearchToDiscoveryData } from './knowledgeDiscovery'
+import type { MemoryList } from '../api/client'
+import { memoryListToDiscoveryData } from './knowledgeDiscovery'
 
 describe('knowledge discovery API mapping', () => {
   it('maps browse memory rows to discovery cards using created_at as savedAt with no highlights', () => {
@@ -32,16 +32,15 @@ describe('knowledge discovery API mapping', () => {
     })
   })
 
-  it('maps search responses as memory-only cards without search highlights', () => {
-    const page: MemorySearch = {
+  it('paginates browse API memory rows without search-specific highlights', () => {
+    const page: MemoryList = {
       memories: [memory({ id: 'mem-2', title: 'Auth boundary', content: 'Gateway owns auth', tags: ['security'] })],
       total: 20,
-      query: 'auth',
       limit: 5,
       offset: 10
     }
 
-    const data = memorySearchToDiscoveryData(page)
+    const data = memoryListToDiscoveryData(page)
 
     expect(data.items.map((item) => ({ id: item.id, title: item.title, highlights: item.highlights }))).toEqual([
       { id: 'mem-2', title: 'Auth boundary', highlights: [] }

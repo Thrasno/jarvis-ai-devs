@@ -2,12 +2,10 @@ import {
   memoryCategories,
   type ActivityFeedFixtureViewModel,
   type ExploreScreenFixturesViewModel,
-  type GlobalSearchFixtureViewModel,
   type KnowledgeBrowserFixtureViewModel,
   type KnowledgeGraphFixtureViewModel,
   type MemoryViewModel,
-  type ProjectListFixtureViewModel,
-  type SearchResultViewModel
+  type ProjectListFixtureViewModel
 } from '../../domain/dashboard'
 import { dashboardContributors, dashboardMemories, dashboardProjects } from './shared'
 import { hiveOverviewFixture } from './overview'
@@ -39,15 +37,6 @@ export const knowledgeBrowserFixture = {
   metadata: { page: 1, pageSize: 10, totalMemories: 41, exportCount: 41 }
 } as const satisfies KnowledgeBrowserFixtureViewModel
 
-export const globalSearchFixture = {
-  screen: 'globalSearch',
-  sourceLabel: 'Fixture-backed search data — live highlights are unavailable.',
-  query: 'auth boundary',
-  highlights: ['auth', 'boundary'],
-  results: dashboardMemories.slice(0, 6).map(toSearchResult),
-  metadata: { shareLabel: 'Share results', clearLabel: 'Clear search', exportCount: 6 }
-} as const satisfies GlobalSearchFixtureViewModel
-
 export const knowledgeGraphFixture = {
   screen: 'knowledgeGraph',
   nodes: [
@@ -76,7 +65,6 @@ export const exploreScreenFixtures = {
   overview: hiveOverviewFixture,
   projects: projectsFixture,
   knowledgeBrowser: knowledgeBrowserFixture,
-  globalSearch: globalSearchFixture,
   knowledgeGraph: knowledgeGraphFixture,
   activityFeed: activityFeedFixture
 } as const satisfies ExploreScreenFixturesViewModel
@@ -98,32 +86,21 @@ function countMemoriesByCategory(memories: readonly MemoryViewModel[]): Record<M
   ) as Record<MemoryViewModel['category'], number>
 }
 
-function toSearchResult(memory: MemoryViewModel, index: number): SearchResultViewModel {
-  return {
-    memoryId: memory.id,
-    title: memory.title,
-    excerpt: memory.content,
-    category: memory.category,
-    projectId: memory.projectId,
-    authorId: memory.authorId,
-    authorLabel: memory.authorLabel,
-    tags: memory.tags,
-    savedAt: memory.savedAt,
-    savedAtLabel: memory.savedAtLabel,
-    highlights: index % 2 === 0 ? ['auth', 'boundary'] : ['replicas', 'read-only'],
-    score: 0.98 - index * 0.04
-  }
-}
-
 function toActivity(memory: MemoryViewModel, index: number) {
   const contributor = dashboardContributors[index % dashboardContributors.length]
   return {
     id: `activity-${memory.id}`,
+    eventType: 'create',
+    eventLabel: 'Created',
     title: memory.title,
+    summary: memory.content,
     actorHandle: contributor.handle,
     projectId: memory.projectId,
     category: memory.category,
+    sourceLabel: memory.category,
     timeLabel: index < 3 ? `${index + 1}m ago` : `${index + 1}h ago`,
+    absoluteTimeLabel: memory.savedAtLabel,
+    relativeTimeLabel: index < 3 ? `${index + 1}m ago` : `${index + 1}h ago`,
     memorySyncId: memory.id
   }
 }
