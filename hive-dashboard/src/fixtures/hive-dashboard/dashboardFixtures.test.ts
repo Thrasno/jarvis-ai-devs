@@ -39,14 +39,13 @@ describe('Hive dashboard shared fixtures', () => {
     expect(screenLabels).toEqual([
       'Dashboard',
       'Projects',
-      'Memories',
       'Knowledge Browser',
       'Global Search',
       'Activity Feed',
       'User Management',
       'Audit Log'
     ])
-    expect(screenLabels).toHaveLength(8)
+    expect(screenLabels).toHaveLength(7)
   })
 
   it('preserves the PDF profile and notification summary counts', () => {
@@ -386,7 +385,6 @@ describe('Hive dashboard final screen fixture registry', () => {
     expect(navScreenIds).toEqual([
       'overview',
       'projects',
-      'memories',
       'knowledgeBrowser',
       'globalSearch',
       'activityFeed',

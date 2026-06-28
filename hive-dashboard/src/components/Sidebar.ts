@@ -29,6 +29,7 @@ const SCREEN_PATHS: Partial<Record<DashboardScreenKey, string>> = {
 }
 
 const HIDDEN_NAV_SCREENS = new Set<DashboardScreenKey>([
+  'memories',
   'knowledgeGraph',
   'contributors',
   'developerTimeline',

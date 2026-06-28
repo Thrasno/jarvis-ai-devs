@@ -34,7 +34,6 @@ export const dashboardNavigationGroups = [
     entries: [
       { screen: 'overview', label: 'Dashboard' },
       { screen: 'projects', label: 'Projects' },
-      { screen: 'memories', label: 'Memories' },
       { screen: 'knowledgeBrowser', label: 'Knowledge Browser' },
       { screen: 'globalSearch', label: 'Global Search' },
       { screen: 'activityFeed', label: 'Activity Feed' }

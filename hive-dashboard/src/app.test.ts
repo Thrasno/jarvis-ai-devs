@@ -325,7 +325,7 @@ describe('dashboard shell', () => {
 
     expect(navText).toContain('Dashboard')
     expect(navText).toContain('Projects')
-    expect(navText).toContain('Memories')
+    expect(navText).not.toContain('Memories')
     expect(navText).toContain('Knowledge Browser')
     expect(navText).toContain('Global Search')
     expect(navText).toContain('Activity Feed')
@@ -710,6 +710,38 @@ describe('dashboard shell', () => {
       expect(api.memories).toHaveBeenCalledWith('jwt-token', { project: 'jarvis-dev', category: 'decision', from: '2026-06-01', until: '2026-06-30', limit: 5, offset: 10 })
       expect(container.textContent).toContain('Live browse memory')
       expect(container.textContent).not.toContain('Fixture-backed discovery data')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('keeps Knowledge Browser Open memory links routed to the technical memory detail page', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({
+      memories: [Promise.resolve(memoryListResponse([memory({ id: 'kb-memory-1', title: 'Knowledge Browser memory' })], { total: 1 }))],
+      memory: [Promise.resolve(memory({ id: 'kb-memory-1', title: 'Opened memory detail', content: 'Detail content from Knowledge Browser' }))]
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/knowledgeBrowser?limit=5')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      const openMemoryLink = container.querySelector<HTMLAnchorElement>('a[href="/dashboard/memories/kb-memory-1"]')
+      expect(openMemoryLink?.textContent).toBe('Open memory')
+
+      history.pushState(null, '', openMemoryLink!.href)
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await flushDashboard()
+
+      expect(api.memory).toHaveBeenCalledWith('jwt-token', 'kb-memory-1')
+      expect(container.querySelector('section h2')?.textContent).toBe('Opened memory detail')
+      expect(container.textContent).toContain('Detail content from Knowledge Browser')
     } finally {
       cleanup()
       history.pushState(null, '', originalPath)
