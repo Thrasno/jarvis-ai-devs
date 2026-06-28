@@ -157,11 +157,21 @@ describe('Hive API client', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/memories/search?query=dashboard+scope&project=jarvis-dev&category=decision&from=2026-06-01&until=2026-06-30&limit=10&offset=20', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
   })
 
+  it('serializes Knowledge Browser query filters to the browse endpoint without search response semantics', async () => {
+    const memory = { id: 'mem-1', sync_id: 'sync-1', project: 'jarvis-dev', category: 'bugfix', title: 'Auth fix', content: 'Fixed auth browse search', tags: [], files_affected: [], created_by: 'admin-1', created_at: '2026-06-06T20:00:00Z', updated_at: '2026-06-06T20:01:00Z', synced_at: '2026-06-06T20:02:00Z' }
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ memories: [memory], total: 1, limit: 10, offset: 0 }))
+    const client = createApiClient({ fetch: fetchMock })
+
+    await expect(client.memories('jwt-token', { query: 'auth browse', project: 'jarvis-dev', category: 'bugfix', limit: 10 })).resolves.toEqual({ memories: [memory], total: 1, limit: 10, offset: 0 })
+
+    expect(fetchMock).toHaveBeenCalledWith('/memories?query=auth+browse&project=jarvis-dev&category=bugfix&limit=10', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
+  })
+
   it('omits unsupported or empty discovery filters instead of sending fixture-era params', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ memories: [], total: 0, limit: 10, offset: 0 }))
     const client = createApiClient({ fetch: fetchMock })
 
-    const unsupportedFilters = { project: '', category: ' ', from: null, until: undefined, limit: 0, offset: -1, query: 'ignored', author: 'ada', tag: ['security'] } as unknown as Parameters<typeof client.memories>[1]
+    const unsupportedFilters = { project: '', category: ' ', from: null, until: undefined, limit: 0, offset: -1, query: ' ', author: 'ada', tag: ['security'] } as unknown as Parameters<typeof client.memories>[1]
 
     await client.memories('jwt-token', unsupportedFilters)
 

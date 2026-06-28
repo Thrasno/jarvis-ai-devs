@@ -68,7 +68,7 @@ export type ActivityFeedEntry = {
   memory_sync_id?: string | null
 }
 export type ActivityFeedResponse = { entries: ActivityFeedEntry[]; next_cursor?: string | null }
-export type MemoryListParams = Omit<MemoryDiscoveryUrlFilters, 'query'>
+export type MemoryListParams = MemoryDiscoveryUrlFilters
 export type MemorySearchParams = Required<Pick<MemoryDiscoveryUrlFilters, 'query'>> & Omit<MemoryDiscoveryUrlFilters, 'query'>
 export type AuditLogParams = { project?: string; actor_user_id?: string; action?: string; outcome?: string; since?: string; until?: string; limit?: number; offset?: number }
 export type SyncAttemptSummaryParams = { window?: SyncAttemptSummaryWindowKey; project?: string; dev_id?: string; client?: string; daemon_id?: string; outcome?: 'success' | 'failure'; error_code?: string }
@@ -202,6 +202,7 @@ function withQuery(path: string, params: DashboardUrlFilters): string {
 
 function withMemoryListQuery(path: string, params: MemoryListParams): string {
   return appendDashboardFilters(path, {
+    query: params.query,
     project: params.project,
     category: params.category,
     from: params.from,

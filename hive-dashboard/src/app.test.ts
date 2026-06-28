@@ -676,9 +676,9 @@ describe('dashboard shell', () => {
     renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath: '/dashboard/knowledgeBrowser?query=auth&limit=1' })
 
     expect(container.querySelector('[data-coming-soon]')).toBeNull()
-    expect(container.querySelector('section h2')?.textContent).toBe('Knowledge Browser')
-    expect(container.querySelector('[role="note"]')?.textContent).toContain('Live Hive API data')
-    expect(container.querySelector('input[name="query"]')).toBeNull()
+    expect(container.querySelector('section h2')?.textContent).toBe('Explore team memory')
+    expect(container.querySelector('[role="note"]')?.textContent).toContain('Live Hive API browse data')
+    expect(container.querySelector<HTMLInputElement>('input[name="query"]')?.value).toBe('auth')
     expect(container.querySelector('article[role="listitem"]')?.textContent).toContain('Gateway owns the auth boundary')
   })
 
@@ -717,6 +717,29 @@ describe('dashboard shell', () => {
     }
   })
 
+  it('loads Knowledge Browser search queries through the browse API instead of Global Search', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({ memories: [Promise.resolve(memoryListResponse([memory({ title: 'Browse search memory' })], { total: 1, limit: 5 }))] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/knowledgeBrowser?query=auth&project=jarvis-dev&category=bugfix&limit=5')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      expect(api.memories).toHaveBeenCalledWith('jwt-token', { query: 'auth', project: 'jarvis-dev', category: 'bugfix', limit: 5 })
+      expect(api.searchMemories).not.toHaveBeenCalled()
+      expect(window.location.pathname).toBe('/dashboard/knowledgeBrowser')
+      expect(container.textContent).toContain('Browse search memory')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
   it('returns from a Knowledge Browser memory detail to the originating filtered route', async () => {
     const container = document.createElement('main')
     document.body.append(container)
@@ -748,7 +771,7 @@ describe('dashboard shell', () => {
       await flushDashboard()
 
       expect(window.location.pathname + window.location.search + window.location.hash).toBe(originPath)
-      expect(container.querySelector('section h2')?.textContent).toBe('Knowledge Browser')
+      expect(container.querySelector('section h2')?.textContent).toBe('Explore team memory')
       expect(api.memories).toHaveBeenLastCalledWith('jwt-token', { project: 'jarvis-dev', category: 'decision', limit: 5 })
     } finally {
       cleanup()
@@ -805,7 +828,7 @@ describe('dashboard shell', () => {
   it('renders explicit Knowledge Browser API failures and empty responses without fixture fallback', async () => {
     for (const [response, assertion] of [
       [() => Promise.reject(new Error('browse API unavailable')), (container: HTMLElement) => expect(container.querySelector('[role="alert"]')?.textContent).toContain('browse API unavailable')],
-      [Promise.resolve(memoryListResponse([], { total: 0 })), (container: HTMLElement) => expect(container.querySelector('[role="status"]')?.textContent).toBe('No live memories match the current filters.')]
+      [Promise.resolve(memoryListResponse([], { total: 0 })), (container: HTMLElement) => expect(container.querySelector('[role="status"]')?.textContent).toBe('No live memories match this browse query.')]
     ] as const) {
       const container = document.createElement('main')
       document.body.append(container)
@@ -1134,8 +1157,8 @@ describe('dashboard shell', () => {
       await flushDashboard()
 
       expect(window.location.pathname).toBe('/dashboard/knowledgeBrowser')
-      expect(container.querySelector('section h2')?.textContent).toBe('Knowledge Browser')
-      expect(container.textContent).toContain('Live Hive API data')
+      expect(container.querySelector('section h2')?.textContent).toBe('Explore team memory')
+      expect(container.textContent).toContain('Live Hive API browse data')
     } finally {
       cleanup()
       history.pushState(null, '', originalPath)
@@ -1174,7 +1197,7 @@ describe('dashboard shell', () => {
       await flushDashboard()
 
       expect(window.location.pathname + window.location.search).toBe('/dashboard/knowledgeBrowser')
-      expect(container.querySelector('section h2')?.textContent).toBe('Knowledge Browser')
+      expect(container.querySelector('section h2')?.textContent).toBe('Explore team memory')
       expect(api.memories).toHaveBeenCalledWith('jwt-token', {})
     } finally {
       cleanup()
@@ -1558,8 +1581,8 @@ describe('shell search slot integration', () => {
     try {
       await flushDashboard()
 
-      expect(container.querySelector('section h2')?.textContent).toBe('Knowledge Browser')
-      expect(container.querySelector('input[name="query"]')).toBeNull()
+      expect(container.querySelector('section h2')?.textContent).toBe('Explore team memory')
+      expect(container.querySelector<HTMLInputElement>('input[name="query"]')?.value).toBe('auth')
       expect(container.querySelectorAll('article[role="listitem"]')).toHaveLength(1)
     } finally {
       cleanup()

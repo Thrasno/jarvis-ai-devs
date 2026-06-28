@@ -650,7 +650,9 @@ function memoryDetailRouteKeyForScreen(screen: DashboardScreenKey, routePath: st
 
 function memoryListParamsFromRoute(routePath: string): MemoryListParams {
   const filters = parseDashboardFilters(queryFromRoutePath(routePath))
+  const query = filters.query?.trim()
   return {
+    query: query || undefined,
     project: filters.project,
     category: filters.category && filters.category !== 'all' ? filters.category : undefined,
     from: filters.from,

@@ -267,6 +267,96 @@ func TestListMemories_PassesStructuredDiscoveryFilters(t *testing.T) {
 	memSvc.AssertExpectations(t)
 }
 
+func TestListMemories_WithQueryReturnsListResponseFromSearch(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	mems := []*model.Memory{{ID: "mem-auth", Title: "Auth boundary", Content: "Gateway owns auth"}}
+	memSvc := &mockMemorySvc{}
+	memSvc.On("Search", context.Background(), "auth", mock.MatchedBy(func(filter model.MemoryFilter) bool {
+		return filter.Category != nil && *filter.Category == model.CatBugfix && filter.Limit == 10 && filter.Offset == 0
+	})).Return(mems, int64(3), nil)
+
+	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodGet,
+		"/memories?query=auth&category=bugfix&limit=10&offset=0", nil, "valid-token")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var body map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Contains(t, body, "memories")
+	assert.Contains(t, body, "total")
+	assert.Contains(t, body, "limit")
+	assert.Contains(t, body, "offset")
+	assert.NotContains(t, body, "query")
+
+	var list model.ListMemoriesResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &list))
+	require.Len(t, list.Memories, 1)
+	assert.Equal(t, "Auth boundary", list.Memories[0].Title)
+	assert.Equal(t, int64(3), list.Total)
+	assert.Equal(t, 10, list.Limit)
+	assert.Equal(t, 0, list.Offset)
+	memSvc.AssertExpectations(t)
+	memSvc.AssertNotCalled(t, "List", mock.Anything, mock.Anything)
+}
+
+func TestListMemories_TrimsQueryAndFallsBackToListWhenEmpty(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	memSvc := &mockMemorySvc{}
+	memSvc.On("List", context.Background(), mock.MatchedBy(func(filter model.MemoryFilter) bool {
+		return filter.Project == "jarvis-dev" && filter.Limit == defaultMemoryQueryLimit
+	})).Return([]*model.Memory{{ID: "mem-recent", Title: "Recent memory"}}, int64(1), nil)
+
+	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodGet,
+		"/memories?query=+++&project=jarvis-dev", nil, "valid-token")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var list model.ListMemoriesResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &list))
+	require.Len(t, list.Memories, 1)
+	assert.Equal(t, "Recent memory", list.Memories[0].Title)
+	assert.Equal(t, defaultMemoryQueryLimit, list.Limit)
+	memSvc.AssertExpectations(t)
+	memSvc.AssertNotCalled(t, "Search", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestListMemories_WithQueryNoMatchesReturnsEmptyListAndZeroTotal(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	memSvc := &mockMemorySvc{}
+	memSvc.On("Search", context.Background(), "no-match", mock.MatchedBy(func(filter model.MemoryFilter) bool {
+		return filter.Project == "jarvis-dev" && filter.Limit == 5
+	})).Return([]*model.Memory(nil), int64(0), nil)
+
+	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodGet,
+		"/memories?query=no-match&project=jarvis-dev&limit=5", nil, "valid-token")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var list model.ListMemoriesResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &list))
+	assert.Empty(t, list.Memories)
+	assert.NotNil(t, list.Memories)
+	assert.Equal(t, int64(0), list.Total)
+	assert.Equal(t, 5, list.Limit)
+	memSvc.AssertExpectations(t)
+}
+
+func TestListMemories_WithQueryRejectsInvalidFiltersBeforeSearch(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+	memSvc := &mockMemorySvc{}
+
+	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodGet,
+		"/memories?query=auth&category=not-a-category", nil, "valid-token")
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	memSvc.AssertNotCalled(t, "Search", mock.Anything, mock.Anything, mock.Anything)
+	memSvc.AssertNotCalled(t, "List", mock.Anything, mock.Anything)
+}
+
 func TestListMemories_InvalidDateRangeReturnsErrorResponse(t *testing.T) {
 	authSvc := &mockAuthSvc{}
 	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)

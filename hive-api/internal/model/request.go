@@ -128,6 +128,7 @@ type SetLevelRequest struct {
 // Usamos form:"..." en lugar de json:"..." porque vienen en la URL, no en el body.
 // Ejemplo: GET /memories?project=jarvis-dev&limit=10&offset=0
 type ListMemoriesQuery struct {
+	Query    string `form:"query"`
 	Project  string `form:"project"`
 	Category string `form:"category"`
 	From     string `form:"from"`

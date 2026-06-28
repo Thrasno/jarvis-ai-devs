@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/middleware"
@@ -87,7 +88,14 @@ func (h *MemoryHandler) List(c *gin.Context) {
 		return
 	}
 
-	mems, total, err := h.svc.List(c.Request.Context(), filter)
+	query := strings.TrimSpace(q.Query)
+	var mems []*model.Memory
+	var total int64
+	if query != "" {
+		mems, total, err = h.svc.Search(c.Request.Context(), query, filter)
+	} else {
+		mems, total, err = h.svc.List(c.Request.Context(), filter)
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "error al listar memorias"})
 		return
