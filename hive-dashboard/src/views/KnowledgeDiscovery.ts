@@ -25,6 +25,7 @@ export type DiscoveryRenderInput = {
   readonly title: string
   readonly path: string
   readonly filters: string | URLSearchParams | DashboardUrlFilters
+  readonly detailOriginPath?: string
   readonly state: ViewState<KnowledgeDiscoveryData>
   readonly onFilterSubmit?: (path: string) => void
 }
@@ -63,7 +64,8 @@ export function renderKnowledgeDiscovery(input: DiscoveryRenderInput): HTMLEleme
   list.className = 'dashboard-discovery-results'
   list.setAttribute('role', 'list')
   list.setAttribute('aria-label', `${input.title} results`)
-  list.append(...page.items.map((memory) => renderResultCard(memory, input.mode)))
+  const detailOriginPath = input.detailOriginPath ?? appendDashboardFilters(input.path, filters)
+  list.append(...page.items.map((memory) => renderResultCard(memory, input.mode, detailOriginPath)))
   root.append(list, renderPagination(input.path, input.mode, filters, page))
   return root
 }
@@ -163,7 +165,7 @@ function renderFilterForm(input: DiscoveryRenderInput, filters: DashboardUrlFilt
   return form
 }
 
-function renderResultCard(memory: DiscoveryMemory, mode: DiscoveryMode): HTMLElement {
+function renderResultCard(memory: DiscoveryMemory, mode: DiscoveryMode, detailOriginPath: string): HTMLElement {
   const card = document.createElement('article')
   card.className = 'dashboard-discovery-card'
   card.setAttribute('role', 'listitem')
@@ -176,7 +178,7 @@ function renderResultCard(memory: DiscoveryMemory, mode: DiscoveryMode): HTMLEle
     metadataLine(memory),
     summary(memory, mode),
     tagList(memory.tags),
-    detailLink(memory.id)
+    detailLink(memory.id, detailOriginPath)
   )
   return card
 }
@@ -213,10 +215,10 @@ function tagList(tags: readonly string[]): HTMLElement {
   return list
 }
 
-function detailLink(memoryId: string): HTMLAnchorElement {
+function detailLink(memoryId: string, originPath: string): HTMLAnchorElement {
   const link = document.createElement('a')
   link.className = 'dashboard-control control dashboard-discovery-card__action'
-  link.href = `/dashboard/memories/${encodeURIComponent(memoryId)}`
+  link.href = `/dashboard/memories/${encodeURIComponent(memoryId)}?${new URLSearchParams({ returnTo: originPath }).toString()}`
   link.textContent = 'Open memory'
   return link
 }

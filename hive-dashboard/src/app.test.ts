@@ -717,7 +717,7 @@ describe('dashboard shell', () => {
     }
   })
 
-  it('keeps Knowledge Browser Open memory links routed to the technical memory detail page', async () => {
+  it('returns from a Knowledge Browser memory detail to the originating filtered route', async () => {
     const container = document.createElement('main')
     document.body.append(container)
     const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
@@ -726,22 +726,75 @@ describe('dashboard shell', () => {
       memory: [Promise.resolve(memory({ id: 'kb-memory-1', title: 'Opened memory detail', content: 'Detail content from Knowledge Browser' }))]
     })
     const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
-    history.pushState(null, '', '/dashboard/knowledgeBrowser?limit=5')
+    const originPath = '/dashboard/knowledgeBrowser?project=jarvis-dev&category=decision&limit=5#browser-results'
+    history.pushState(null, '', originPath)
 
     const cleanup = startDashboardApp(container, { api, session })
     try {
       await flushDashboard()
 
-      const openMemoryLink = container.querySelector<HTMLAnchorElement>('a[href="/dashboard/memories/kb-memory-1"]')
-      expect(openMemoryLink?.textContent).toBe('Open memory')
+      const openMemoryLink = linkByText(container, 'Open memory')
+      expect(openMemoryLink?.getAttribute('href')).toBe(memoryDetailHref('kb-memory-1', originPath))
 
-      history.pushState(null, '', openMemoryLink!.href)
+      history.pushState(null, '', openMemoryLink!.getAttribute('href')!)
       window.dispatchEvent(new PopStateEvent('popstate'))
       await flushDashboard()
 
       expect(api.memory).toHaveBeenCalledWith('jwt-token', 'kb-memory-1')
       expect(container.querySelector('section h2')?.textContent).toBe('Opened memory detail')
       expect(container.textContent).toContain('Detail content from Knowledge Browser')
+
+      container.querySelector<HTMLButtonElement>('button[aria-label="Back to memories"]')?.click()
+      await flushDashboard()
+
+      expect(window.location.pathname + window.location.search + window.location.hash).toBe(originPath)
+      expect(container.querySelector('section h2')?.textContent).toBe('Knowledge Browser')
+      expect(api.memories).toHaveBeenLastCalledWith('jwt-token', { project: 'jarvis-dev', category: 'decision', limit: 5 })
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('returns from a Global Search memory detail to the originating filtered route and reloads search state', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({
+      search: [
+        Promise.resolve(memorySearchResponse([memory({ id: 'search-memory-1', title: 'Global Search memory' })], { query: 'auth', total: 1 })),
+        Promise.resolve(memorySearchResponse([memory({ id: 'search-memory-1', title: 'Restored Global Search memory' })], { query: 'auth', total: 1 }))
+      ],
+      memory: [Promise.resolve(memory({ id: 'search-memory-1', title: 'Opened search memory detail', content: 'Detail content from Global Search' }))]
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    const originPath = '/dashboard/globalSearch?query=auth&project=jarvis-dev&category=decision&from=2026-06-01&until=2026-06-30&limit=5&offset=10#memory-results'
+    history.pushState(null, '', originPath)
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      expect(api.searchMemories).toHaveBeenNthCalledWith(1, 'jwt-token', { query: 'auth', project: 'jarvis-dev', category: 'decision', from: '2026-06-01', until: '2026-06-30', limit: 5, offset: 10 })
+      const openMemoryLink = linkByText(container, 'Open memory')
+      expect(openMemoryLink?.getAttribute('href')).toBe(memoryDetailHref('search-memory-1', originPath))
+
+      history.pushState(null, '', openMemoryLink!.getAttribute('href')!)
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await flushDashboard()
+
+      expect(api.memory).toHaveBeenCalledWith('jwt-token', 'search-memory-1')
+      expect(container.querySelector('section h2')?.textContent).toBe('Opened search memory detail')
+      expect(container.textContent).toContain('Detail content from Global Search')
+
+      container.querySelector<HTMLButtonElement>('button[aria-label="Back to memories"]')?.click()
+      await flushDashboard()
+
+      expect(window.location.pathname + window.location.search + window.location.hash).toBe(originPath)
+      expect(container.querySelector('section h2')?.textContent).toBe('Global Search')
+      expect(api.searchMemories).toHaveBeenNthCalledWith(2, 'jwt-token', { query: 'auth', project: 'jarvis-dev', category: 'decision', from: '2026-06-01', until: '2026-06-30', limit: 5, offset: 10 })
+      expect(container.textContent).toContain('Restored Global Search memory')
     } finally {
       cleanup()
       history.pushState(null, '', originalPath)
@@ -792,7 +845,8 @@ describe('dashboard shell', () => {
     try {
       await flushDashboard()
       expect(api.searchMemories).toHaveBeenNthCalledWith(1, 'jwt-token', { query: 'first', project: 'jarvis-dev', limit: 5, offset: 0 })
-      expect(container.querySelector('a[href="/dashboard/memories/mem-1"]')?.textContent).toBe('Open memory')
+      const openMemoryLink = linkByText(container, 'Open memory')
+      expect(openMemoryLink?.getAttribute('href')).toBe(memoryDetailHref('mem-1', '/dashboard/globalSearch?query=first&project=jarvis-dev&limit=5&offset=0'))
 
       container.querySelector<HTMLInputElement>('input[name="query"]')!.value = 'second'
       container.querySelector('form')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
@@ -1063,7 +1117,7 @@ describe('dashboard shell', () => {
     })
   })
 
-  it('navigates back to the memories list from memory detail', async () => {
+  it('falls back to Knowledge Browser from direct memory detail access', async () => {
     const container = document.createElement('main')
     document.body.append(container)
     const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
@@ -1079,9 +1133,75 @@ describe('dashboard shell', () => {
       container.querySelector<HTMLButtonElement>('button[aria-label="Back to memories"]')?.click()
       await flushDashboard()
 
-      expect(window.location.pathname).toBe('/dashboard/memories')
-      expect(container.querySelector('section h2')?.textContent).toBe('Memories')
-      expect(container.textContent).toContain('Recent memories')
+      expect(window.location.pathname).toBe('/dashboard/knowledgeBrowser')
+      expect(container.querySelector('section h2')?.textContent).toBe('Knowledge Browser')
+      expect(container.textContent).toContain('Live Hive API data')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it.each([
+    ['external absolute URL', 'https://evil.example/dashboard/globalSearch?query=auth'],
+    ['protocol-relative URL', '//evil.example/dashboard/globalSearch?query=auth'],
+    ['non-dashboard path', '/settings?tab=dashboard'],
+    ['dashboard overview route', '/dashboard'],
+    ['hidden memories route', '/dashboard/memories'],
+    ['hidden memory detail route', '/dashboard/memories/mem-detail-2'],
+    ['user management route', '/dashboard/userManagement?tab=roles#admins'],
+    ['other dashboard route', '/dashboard/projects?project=jarvis-dev'],
+    ['discovery-looking sibling route', '/dashboard/knowledgeBrowserExtra?project=jarvis-dev'],
+    ['Global Search subpath', '/dashboard/globalSearch/foo?query=auth'],
+    ['Knowledge Browser subpath', '/dashboard/knowledgeBrowser/foo?project=jarvis-dev'],
+    ['empty value', ''],
+    ['malformed-ish value', 'http://[::1']
+  ])('falls back to Knowledge Browser for unsafe memory detail returnTo values: %s', async (_name, returnTo) => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({ memory: [Promise.resolve(memory({ id: 'mem-detail-1', title: 'Loaded detail memory' }))] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', memoryDetailHref('mem-detail-1', returnTo))
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+      expect(container.querySelector('section h2')?.textContent).toBe('Loaded detail memory')
+
+      container.querySelector<HTMLButtonElement>('button[aria-label="Back to memories"]')?.click()
+      await flushDashboard()
+
+      expect(window.location.pathname + window.location.search).toBe('/dashboard/knowledgeBrowser')
+      expect(container.querySelector('section h2')?.textContent).toBe('Knowledge Browser')
+      expect(api.memories).toHaveBeenCalledWith('jwt-token', {})
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('preserves query and hash for allowed memory detail returnTo discovery origins', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({ memory: [Promise.resolve(memory({ id: 'mem-detail-1', title: 'Loaded detail memory' }))] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    const returnTo = '/dashboard/globalSearch?query=auth&project=jarvis-dev#memory-results'
+    history.pushState(null, '', memoryDetailHref('mem-detail-1', returnTo))
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+      expect(container.querySelector('section h2')?.textContent).toBe('Loaded detail memory')
+
+      container.querySelector<HTMLButtonElement>('button[aria-label="Back to memories"]')?.click()
+      await flushDashboard()
+
+      expect(window.location.pathname + window.location.search + window.location.hash).toBe(returnTo)
+      expect(container.querySelector('section h2')?.textContent).toBe('Global Search')
     } finally {
       cleanup()
       history.pushState(null, '', originalPath)
@@ -1892,6 +2012,14 @@ function memoryListResponse(memories: MemoryList['memories'], overrides: Partial
 
 function memorySearchResponse(memories: MemorySearch['memories'], overrides: Partial<Omit<MemorySearch, 'memories'>> = {}): MemorySearch {
   return { memories, total: memories.length, query: 'dashboard', limit: 10, offset: 0, ...overrides }
+}
+
+function memoryDetailHref(memoryId: string, returnTo: string): string {
+  return `/dashboard/memories/${encodeURIComponent(memoryId)}?${new URLSearchParams({ returnTo }).toString()}`
+}
+
+function linkByText(container: HTMLElement, label: string): HTMLAnchorElement | undefined {
+  return Array.from(container.querySelectorAll<HTMLAnchorElement>('a')).find((link) => link.textContent?.trim() === label)
 }
 
 function memory(overrides: Partial<MemoryList['memories'][number]> = {}): MemoryList['memories'][number] {

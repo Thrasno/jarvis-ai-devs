@@ -109,7 +109,7 @@ describe('Knowledge discovery shared DOM', () => {
     expect(cards[0]?.textContent).toContain('Sergei Abramov')
     expect(cards[0]?.textContent).toContain('Saved 06 Jun 2026')
     expect(cards[0]?.textContent).toContain('security')
-    expect(cards[0]?.querySelector('a')?.getAttribute('href')).toBe('/dashboard/memories/gateway-auth-boundary')
+    expect(cards[0]?.querySelector('a')?.getAttribute('href')).toBe(detailHref('gateway-auth-boundary', '/dashboard/knowledgeBrowser?project=auth-service&limit=2&offset=0'))
     expect(view.querySelector('nav[aria-label="Discovery pages"]')?.textContent).toContain('Next page')
     expect(view.querySelector('a[href="/dashboard/knowledgeBrowser?project=auth-service&limit=2&offset=2"]')?.textContent).toBe('Next page')
   })
@@ -145,7 +145,9 @@ describe('Knowledge discovery shared DOM', () => {
     expect(view.textContent).toContain('Global Search')
     expect(view.textContent).toContain('Live Hive API data')
     expect(view.querySelector('mark')).toBeNull()
-    expect(view.querySelector('a[href="/dashboard/memories/gateway-auth-boundary"]')?.textContent).toContain('Open memory')
+    const openMemoryLink = view.querySelector<HTMLAnchorElement>('.dashboard-discovery-card__action')
+    expect(openMemoryLink?.textContent).toContain('Open memory')
+    expect(openMemoryLink?.getAttribute('href')).toBe(detailHref('gateway-auth-boundary', '/dashboard/globalSearch?query=auth&limit=3'))
     expect(view.textContent).not.toMatch(/export|edit|sync|permission/i)
   })
 
@@ -218,4 +220,8 @@ function discoveryData(memories: readonly MemoryViewModel[], overrides: Partial<
     nextOffset: null,
     ...overrides
   }
+}
+
+function detailHref(memoryId: string, returnTo: string): string {
+  return `/dashboard/memories/${encodeURIComponent(memoryId)}?${new URLSearchParams({ returnTo }).toString()}`
 }

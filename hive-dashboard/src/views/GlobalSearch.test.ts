@@ -19,7 +19,12 @@ describe('Global Search view', () => {
     const view = renderGlobalSearch({ status: 'ready', data: { items: knowledgeBrowserFixture.memories.slice(0, 1).map((memory) => ({ ...memory, highlights: [] })), total: 1, limit: 1, offset: 0, previousOffset: null, nextOffset: null } }, '?query=auth&limit=1')
 
     expect(view.querySelector('article[role="listitem"]')?.textContent).toContain('Gateway owns the auth boundary')
-    expect(view.querySelector('a[href="/dashboard/memories/gateway-auth-boundary"]')?.textContent).toBe('Open memory')
+    expect(view.querySelector('a')?.getAttribute('href')).toBe(detailHref('gateway-auth-boundary', '/dashboard/globalSearch?query=auth&limit=1'))
+    expect(view.querySelector('a')?.textContent).toBe('Open memory')
     expect(view.textContent).not.toMatch(/export|edit|sync diagnostics|permission/i)
   })
 })
+
+function detailHref(memoryId: string, returnTo: string): string {
+  return `/dashboard/memories/${encodeURIComponent(memoryId)}?${new URLSearchParams({ returnTo }).toString()}`
+}

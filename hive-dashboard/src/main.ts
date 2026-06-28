@@ -117,12 +117,12 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
   knowledgeBrowser: {
     path: '/dashboard/knowledgeBrowser',
     load: 'knowledgeBrowser',
-    render: (vs, routePath, actions) => renderKnowledgeBrowser(vs as ViewState<KnowledgeDiscoveryData>, queryFromRoutePath(routePath), { onNavigate: actions.onNavigate })
+    render: (vs, routePath, actions) => renderKnowledgeBrowser(vs as ViewState<KnowledgeDiscoveryData>, queryFromRoutePath(routePath), { onNavigate: actions.onNavigate, detailOriginPath: routeAndQueryFromRoutePath(routePath) })
   },
   globalSearch: {
     path: '/dashboard/globalSearch',
     load: 'globalSearch',
-    render: (vs, routePath, actions) => renderGlobalSearch(vs as ViewState<KnowledgeDiscoveryData>, queryFromRoutePath(routePath), { onNavigate: actions.onNavigate })
+    render: (vs, routePath, actions) => renderGlobalSearch(vs as ViewState<KnowledgeDiscoveryData>, queryFromRoutePath(routePath), { onNavigate: actions.onNavigate, detailOriginPath: routeAndQueryFromRoutePath(routePath) })
   },
   knowledgeGraph: {
     path: '/dashboard/knowledgeGraph',
@@ -406,7 +406,7 @@ function renderAuthenticatedView(
     return renderMemories(stateFor(state, 'memories') as ViewState<MemoriesData>, {
       detailRoute,
       detail: detailRoute.kind === 'valid' ? memoryDetailForRoute(state, detailRoute.id) : undefined,
-      onBackToMemories: () => actions.onNavigate?.('/dashboard/memories')
+      onBackToMemories: () => actions.onNavigate?.(memoryDetailBackPathFromRoute(routePath))
     })
   }
   if (!route.load) {
@@ -431,6 +431,28 @@ function globalSearchPathFromRoutePath(routePath: string): string {
     return `${ROUTES.globalSearch.path}${query}`
   }
   return ROUTES.globalSearch.path
+}
+
+function memoryDetailBackPathFromRoute(routePath: string): string {
+  return safeDashboardReturnPath(new URLSearchParams(queryFromRoutePath(routePath)).get('returnTo')) ?? ROUTES.knowledgeBrowser.path
+}
+
+function safeDashboardReturnPath(value: string | null): string | undefined {
+  const candidate = value?.trim()
+  if (!candidate || candidate.startsWith('//')) return undefined
+  try {
+    const route = new URL(candidate, window.location.origin)
+    if (route.origin !== window.location.origin) return undefined
+    if (!isDiscoveryReturnPath(route.pathname)) return undefined
+    const path = `${route.pathname}${route.search}${route.hash}`
+    return path
+  } catch {
+    return undefined
+  }
+}
+
+function isDiscoveryReturnPath(pathname: string): boolean {
+  return [ROUTES.knowledgeBrowser.path, ROUTES.globalSearch.path].includes(pathname)
 }
 
 function memoryDetailRouteFromPath(routePath: string): MemoryDetailRoute {
@@ -617,7 +639,7 @@ function isQuerySensitiveDiscoveryScreen(screen: DashboardScreenKey): boolean {
 }
 
 function routeAndQueryFromRoutePath(routePath: string): string {
-  return routePath.split('#', 1)[0]
+  return routePath
 }
 
 function memoryDetailRouteKeyForScreen(screen: DashboardScreenKey, routePath: string): string | undefined {
