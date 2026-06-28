@@ -722,39 +722,44 @@ body::before {
 /* ─── Knowledge Browser premium browse surface ───────────────────────────── */
 .dashboard-knowledge-browser {
   display: grid;
-  gap: 18px;
+  gap: 16px;
 }
 
-.dashboard-knowledge-browser__hero {
-  align-items: stretch;
-  background:
-    radial-gradient(600px circle at 8% 0%, rgba(224, 36, 111, 0.14), transparent 56%),
-    linear-gradient(135deg, rgba(18, 26, 43, 0.88), rgba(8, 10, 16, 0.72));
-  border: 1px solid rgba(139, 151, 168, 0.16);
-  border-radius: 20px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 24px 60px rgb(0 0 0 / 22%);
-  display: grid;
-  gap: 18px;
-  grid-template-columns: minmax(0, 1fr) minmax(18rem, 0.52fr);
-  overflow: hidden;
-  padding: 22px;
-}
-
-.dashboard-knowledge-browser__hero-copy,
-.dashboard-knowledge-browser__hero-controls,
+.dashboard-knowledge-browser__filters-shell,
+.dashboard-knowledge-browser__search-group,
 .dashboard-knowledge-browser__search,
 .dashboard-knowledge-browser__export,
 .dashboard-knowledge-browser-card {
   display: grid;
 }
 
-.dashboard-knowledge-browser__hero-copy { gap: 8px; }
-.dashboard-knowledge-browser__hero-controls { gap: 12px; }
+.dashboard-knowledge-browser__filters-shell {
+  gap: 12px;
+}
 
-.dashboard-knowledge-browser__eyebrow,
+.dashboard-knowledge-browser__filters-top {
+  align-items: end;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+}
+
+.dashboard-knowledge-browser__search-group {
+  flex: 1 1 28rem;
+  gap: 7px;
+  min-width: 16rem;
+}
+
+.dashboard-knowledge-browser__filter-actions {
+  align-items: end;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
 .dashboard-knowledge-browser__source,
-.dashboard-knowledge-browser__hero-copy h2,
-.dashboard-knowledge-browser__hero-copy p,
+.dashboard-knowledge-browser__count,
 .dashboard-knowledge-browser__export p,
 .dashboard-knowledge-browser-card h3,
 .dashboard-knowledge-browser-card p,
@@ -763,23 +768,6 @@ body::before {
   margin: 0;
 }
 
-.dashboard-knowledge-browser__eyebrow {
-  color: var(--dashboard-data-blue);
-  font-family: var(--dashboard-font-mono);
-  font-size: 0.66rem;
-  font-weight: 800;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.dashboard-knowledge-browser__hero-copy h2 {
-  color: var(--dashboard-text);
-  font-family: var(--dashboard-font-mono);
-  font-size: clamp(1.55rem, 3vw, 2.55rem);
-  letter-spacing: -0.045em;
-}
-
-.dashboard-knowledge-browser__hero-copy p,
 .dashboard-knowledge-browser__source,
 .dashboard-knowledge-browser__export p,
 .dashboard-knowledge-browser-card__metadata,
@@ -788,9 +776,22 @@ body::before {
   color: var(--dashboard-text-muted);
 }
 
+.dashboard-knowledge-browser__source {
+  font-size: 0.76rem;
+}
+
+.dashboard-knowledge-browser__count {
+  color: var(--dashboard-text);
+  font-family: var(--dashboard-font-mono);
+  font-size: 0.78rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .dashboard-knowledge-browser__search {
-  align-content: end;
-  gap: 10px;
+  align-items: end;
+  gap: 9px;
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .dashboard-knowledge-browser__search label {
@@ -806,46 +807,52 @@ body::before {
   background: rgba(8, 10, 16, 0.72);
   border-color: rgba(139, 151, 168, 0.32);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  min-height: 46px;
+  min-height: 48px;
 }
 
 .dashboard-knowledge-browser__search button,
 .dashboard-knowledge-browser__export button {
-  border: 1px solid rgba(224, 36, 111, 0.52);
-  box-shadow: 0 12px 30px rgba(224, 36, 111, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.14);
-  min-height: 42px;
+  border: 1px solid rgba(224, 36, 111, 0.34);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  min-height: 36px;
 }
 
 .dashboard-knowledge-browser__search button {
-  background: linear-gradient(135deg, #e0246f, #8b5cf0);
+  background: linear-gradient(135deg, rgba(224, 36, 111, 0.12), rgba(59, 130, 232, 0.10));
+  color: rgba(230, 237, 243, 0.9);
+  padding: 0.54rem 0.82rem;
 }
 
 .dashboard-knowledge-browser__export {
-  background: rgba(8, 10, 16, 0.42);
-  border: 1px solid rgba(139, 151, 168, 0.24);
-  border-radius: 14px;
-  gap: 8px;
-  padding: 12px;
+  gap: 5px;
+  justify-items: end;
 }
 
 .dashboard-knowledge-browser__export button:disabled {
-  background: rgba(18, 26, 43, 0.68);
-  border: 1px solid rgba(139, 151, 168, 0.34);
+  background: linear-gradient(135deg, rgba(59, 130, 232, 0.10), rgba(34, 184, 92, 0.08));
+  border: 1px solid rgba(139, 151, 168, 0.30);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  color: rgba(230, 237, 243, 0.58);
+  color: rgba(230, 237, 243, 0.66);
   opacity: 1;
+  padding: 0.5rem 0.78rem;
+}
+
+.dashboard-knowledge-browser__export p {
+  font-size: 0.7rem;
+  max-width: 18rem;
+  text-align: right;
 }
 
 .dashboard-knowledge-browser__filters {
   align-items: end;
-  background: linear-gradient(180deg, rgba(18, 26, 43, 0.64), rgba(10, 14, 22, 0.72));
-  border: 1px solid rgba(139, 151, 168, 0.18);
-  border-radius: 18px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
   display: grid;
   gap: 12px;
   grid-template-columns: minmax(12rem, 1.3fr) minmax(10rem, 1fr) minmax(9rem, 0.8fr) minmax(9rem, 0.8fr) auto;
-  padding: 14px;
+  padding: 0;
 }
 
 .dashboard-knowledge-browser__filters input[type="hidden"] {
@@ -928,7 +935,15 @@ body::before {
 }
 
 .dashboard-knowledge-browser-card__badge,
-.dashboard-knowledge-browser-card__project,
+.dashboard-knowledge-browser-card__project {
+  border: 1px solid rgba(139, 151, 168, 0.2);
+  border-radius: 6px;
+  font-family: var(--dashboard-font-mono);
+  font-size: 0.68rem;
+  font-weight: 800;
+  padding: 0.24rem 0.52rem;
+}
+
 .dashboard-knowledge-browser-card__tags li {
   border: 1px solid rgba(139, 151, 168, 0.2);
   border-radius: 999px;
@@ -993,8 +1008,10 @@ body::before {
 }
 
 @media (max-width: 900px) {
-  .dashboard-knowledge-browser__hero {
-    grid-template-columns: 1fr;
+  .dashboard-knowledge-browser__filters-top,
+  .dashboard-knowledge-browser__filter-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .dashboard-knowledge-browser__filters {

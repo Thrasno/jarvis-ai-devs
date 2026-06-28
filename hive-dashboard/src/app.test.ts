@@ -676,7 +676,7 @@ describe('dashboard shell', () => {
     renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath: '/dashboard/knowledgeBrowser?query=auth&limit=1' })
 
     expect(container.querySelector('[data-coming-soon]')).toBeNull()
-    expect(container.querySelector('section h2')?.textContent).toBe('Explore team memory')
+    expect(container.querySelector('.dashboard-knowledge-browser__filters-shell')).not.toBeNull()
     expect(container.querySelector('[role="note"]')?.textContent).toContain('Live Hive API browse data')
     expect(container.querySelector<HTMLInputElement>('input[name="query"]')?.value).toBe('auth')
     expect(container.querySelector('article[role="listitem"]')?.textContent).toContain('Gateway owns the auth boundary')
@@ -771,7 +771,7 @@ describe('dashboard shell', () => {
       await flushDashboard()
 
       expect(window.location.pathname + window.location.search + window.location.hash).toBe(originPath)
-      expect(container.querySelector('section h2')?.textContent).toBe('Explore team memory')
+      expect(container.querySelector('.dashboard-knowledge-browser__filters-shell')).not.toBeNull()
       expect(api.memories).toHaveBeenLastCalledWith('jwt-token', { project: 'jarvis-dev', category: 'decision', limit: 5 })
     } finally {
       cleanup()
@@ -1157,7 +1157,7 @@ describe('dashboard shell', () => {
       await flushDashboard()
 
       expect(window.location.pathname).toBe('/dashboard/knowledgeBrowser')
-      expect(container.querySelector('section h2')?.textContent).toBe('Explore team memory')
+      expect(container.querySelector('.dashboard-knowledge-browser__filters-shell')).not.toBeNull()
       expect(container.textContent).toContain('Live Hive API browse data')
     } finally {
       cleanup()
@@ -1197,7 +1197,7 @@ describe('dashboard shell', () => {
       await flushDashboard()
 
       expect(window.location.pathname + window.location.search).toBe('/dashboard/knowledgeBrowser')
-      expect(container.querySelector('section h2')?.textContent).toBe('Explore team memory')
+      expect(container.querySelector('.dashboard-knowledge-browser__filters-shell')).not.toBeNull()
       expect(api.memories).toHaveBeenCalledWith('jwt-token', {})
     } finally {
       cleanup()
@@ -1581,7 +1581,7 @@ describe('shell search slot integration', () => {
     try {
       await flushDashboard()
 
-      expect(container.querySelector('section h2')?.textContent).toBe('Explore team memory')
+      expect(container.querySelector('.dashboard-knowledge-browser__filters-shell')).not.toBeNull()
       expect(container.querySelector<HTMLInputElement>('input[name="query"]')?.value).toBe('auth')
       expect(container.querySelectorAll('article[role="listitem"]')).toHaveLength(1)
     } finally {

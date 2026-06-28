@@ -10,7 +10,10 @@ describe('Knowledge Browser view', () => {
     expect(view.classList.contains('dashboard-panel')).toBe(false)
     expect(view.classList.contains('panel')).toBe(false)
     expect(view.classList.contains('dashboard-knowledge-browser')).toBe(true)
-    expect(view.querySelector('h2')?.textContent).toBe('Explore team memory')
+    expect(view.querySelector('.dashboard-knowledge-browser__hero')).toBeNull()
+    expect(view.querySelector('h2')).toBeNull()
+    expect(view.querySelector<HTMLElement>('.dashboard-knowledge-browser__filters-shell')?.getAttribute('aria-label')).toBe('Knowledge Browser filters')
+    expect(view.querySelector<HTMLElement>('.dashboard-knowledge-browser__count')?.textContent).toBe('4 live memories')
     expect(view.querySelector<HTMLInputElement>('input[name="query"]')?.value).toBe('auth')
     expect(view.querySelector('[role="note"]')?.textContent).toContain('Live Hive API browse data')
     expect(view.querySelector('[data-knowledge-browser-export]')?.textContent).toContain('Export')
@@ -25,6 +28,18 @@ describe('Knowledge Browser view', () => {
     expect(cards[0]?.textContent).toContain('security')
     expect(cards[0]?.querySelector('a')?.getAttribute('href')).toBe(detailHref('gateway-auth-boundary', '/dashboard/knowledgeBrowser?query=auth&limit=2'))
     expect(view.querySelector('mark')).toBeNull()
+  })
+
+  it('keeps search, category chips, advanced filters, count, and export in one flat filter area', () => {
+    const view = renderKnowledgeBrowser(ready(knowledgeBrowserFixture.memories.slice(0, 3), { total: 3, limit: 10 }), '?query=auth&project=auth-service&category=bugfix&from=2026-06-01&until=2026-06-30&limit=10')
+    const filtersShell = view.querySelector<HTMLElement>('.dashboard-knowledge-browser__filters-shell')
+
+    expect(filtersShell).not.toBeNull()
+    expect(filtersShell?.querySelector('form[role="search"] input[name="query"]')).not.toBeNull()
+    expect(filtersShell?.querySelector('nav[aria-label="Memory categories"]')).not.toBeNull()
+    expect(filtersShell?.querySelector('form[aria-label="Knowledge Browser live filters"]')).not.toBeNull()
+    expect(filtersShell?.querySelector('[data-knowledge-browser-export]')).not.toBeNull()
+    expect(view.querySelector('.dashboard-knowledge-browser__hero')).toBeNull()
   })
 
   it('submits in-page search and category chips on the Knowledge Browser route', () => {

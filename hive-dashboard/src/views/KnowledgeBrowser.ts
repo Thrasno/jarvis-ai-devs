@@ -9,9 +9,9 @@ export function renderKnowledgeBrowser(state: ViewState<KnowledgeDiscoveryData>,
   root.className = 'dashboard-knowledge-browser'
   root.dataset.dashboardView = 'knowledge-browser'
 
-  root.append(renderHero(parsedFilters, options.onNavigate))
   const readyItems = state.status === 'ready' ? state.data.items : []
-  root.append(renderAdvancedFilters(readyItems, parsedFilters, options.onNavigate), renderCategoryChips(readyItems, parsedFilters, options.onNavigate))
+  const readyPage = state.status === 'ready' ? state.data : undefined
+  root.append(renderFiltersShell(readyItems, parsedFilters, readyPage?.total, options.onNavigate))
 
   if (state.status === 'loading') {
     root.append(statusMessage('Loading live memories…'))
@@ -39,30 +39,36 @@ export function renderKnowledgeBrowser(state: ViewState<KnowledgeDiscoveryData>,
   return root
 }
 
-function renderHero(filters: DashboardUrlFilters, onNavigate?: (path: string) => void): HTMLElement {
-  const hero = document.createElement('div')
-  hero.className = 'dashboard-knowledge-browser__hero'
+function renderFiltersShell(items: readonly KnowledgeDiscoveryCard[], filters: DashboardUrlFilters, total: number | undefined, onNavigate?: (path: string) => void): HTMLElement {
+  const shell = document.createElement('section')
+  shell.className = 'dashboard-knowledge-browser__filters-shell'
+  shell.setAttribute('aria-label', 'Knowledge Browser filters')
 
-  const copy = document.createElement('div')
-  copy.className = 'dashboard-knowledge-browser__hero-copy'
-  const eyebrow = document.createElement('p')
-  eyebrow.className = 'dashboard-knowledge-browser__eyebrow'
-  eyebrow.textContent = 'Live knowledge discovery'
-  const title = document.createElement('h2')
-  title.textContent = 'Explore team memory'
-  const description = document.createElement('p')
-  description.textContent = 'Search, filter, and open production Hive memories without leaving the browser route.'
+  const top = document.createElement('div')
+  top.className = 'dashboard-knowledge-browser__filters-top'
+
+  const searchGroup = document.createElement('div')
+  searchGroup.className = 'dashboard-knowledge-browser__search-group'
   const source = document.createElement('p')
   source.className = 'dashboard-knowledge-browser__source'
   source.setAttribute('role', 'note')
   source.textContent = 'Live Hive API browse data · unsupported tag and developer filters are not active in this MVP.'
-  copy.append(eyebrow, title, description, source)
+  searchGroup.append(renderSearchForm(filters, onNavigate), source)
 
-  const controls = document.createElement('div')
-  controls.className = 'dashboard-knowledge-browser__hero-controls'
-  controls.append(renderSearchForm(filters, onNavigate), renderExportAffordance())
-  hero.append(copy, controls)
-  return hero
+  const actions = document.createElement('div')
+  actions.className = 'dashboard-knowledge-browser__filter-actions'
+  actions.append(renderMemoryCount(total), renderExportAffordance())
+
+  top.append(searchGroup, actions)
+  shell.append(top, renderCategoryChips(items, filters, onNavigate), renderAdvancedFilters(items, filters, onNavigate))
+  return shell
+}
+
+function renderMemoryCount(total: number | undefined): HTMLElement {
+  const count = document.createElement('p')
+  count.className = 'dashboard-knowledge-browser__count'
+  count.textContent = typeof total === 'number' ? `${total} live ${total === 1 ? 'memory' : 'memories'}` : 'Live memories'
+  return count
 }
 
 function renderSearchForm(filters: DashboardUrlFilters, onNavigate?: (path: string) => void): HTMLFormElement {
