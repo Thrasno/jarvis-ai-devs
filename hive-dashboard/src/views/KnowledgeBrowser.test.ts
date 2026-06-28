@@ -41,6 +41,36 @@ describe('Knowledge Browser view', () => {
     expect(view.querySelector<HTMLAnchorElement>('[data-knowledge-category-chip="bugfix"]')?.getAttribute('href')).toBe('/dashboard/knowledgeBrowser?query=auth&project=auth-service&category=bugfix&limit=10')
   })
 
+  it('restores advanced live filters for project, category, and date range without unsupported controls', () => {
+    const view = renderKnowledgeBrowser(ready(knowledgeBrowserFixture.memories.slice(0, 3), { total: 3, limit: 10 }), '?query=auth&project=auth-service&category=bugfix&from=2026-06-01&until=2026-06-30&limit=10')
+    const advancedFilters = view.querySelector<HTMLFormElement>('form[aria-label="Knowledge Browser live filters"]')
+
+    expect(advancedFilters).not.toBeNull()
+    expect(advancedFilters?.querySelector<HTMLInputElement>('input[name="project"]')?.value).toBe('auth-service')
+    expect(advancedFilters?.querySelector<HTMLInputElement>('input[name="from"]')?.value).toBe('2026-06-01')
+    expect(advancedFilters?.querySelector<HTMLInputElement>('input[name="until"]')?.value).toBe('2026-06-30')
+    expect(advancedFilters?.querySelector<HTMLSelectElement>('select[name="category"]')?.value).toBe('bugfix')
+    expect(advancedFilters?.querySelector('input[name="developer"]')).toBeNull()
+    expect(advancedFilters?.querySelector('input[name="tag"]')).toBeNull()
+    expect(view.querySelector<HTMLAnchorElement>('[data-knowledge-category-chip="bugfix"]')?.getAttribute('aria-current')).toBe('true')
+  })
+
+  it('submits advanced filters to supported browse params and keeps category chips in sync', () => {
+    const onNavigate = vi.fn()
+    const view = renderKnowledgeBrowser(ready(knowledgeBrowserFixture.memories.slice(0, 3), { total: 3, limit: 10 }), '?query=auth&category=architecture&limit=10&offset=20', { onNavigate })
+    const advancedFilters = view.querySelector<HTMLFormElement>('form[aria-label="Knowledge Browser live filters"]')!
+
+    advancedFilters.querySelector<HTMLInputElement>('input[name="project"]')!.value = 'platform-api'
+    advancedFilters.querySelector<HTMLInputElement>('input[name="from"]')!.value = '2026-05-01'
+    advancedFilters.querySelector<HTMLInputElement>('input[name="until"]')!.value = '2026-05-31'
+    advancedFilters.querySelector<HTMLSelectElement>('select[name="category"]')!.value = 'bugfix'
+    advancedFilters.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+
+    expect(onNavigate).toHaveBeenCalledWith('/dashboard/knowledgeBrowser?query=auth&project=platform-api&category=bugfix&from=2026-05-01&until=2026-05-31&limit=10')
+    expect(view.querySelector<HTMLAnchorElement>('[data-knowledge-category-chip="architecture"]')?.getAttribute('aria-current')).toBe('true')
+    expect(view.querySelector<HTMLAnchorElement>('[data-knowledge-category-chip="all"]')?.getAttribute('href')).toBe('/dashboard/knowledgeBrowser?query=auth&limit=10')
+  })
+
   it('renders loading, error, empty, and pagination states with accessible semantics', () => {
     const loading = renderKnowledgeBrowser({ status: 'loading' }, '?query=auth')
     const failed = renderKnowledgeBrowser({ status: 'error', message: 'browse API unavailable' }, '?query=auth')

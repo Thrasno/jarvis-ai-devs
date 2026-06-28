@@ -10,6 +10,8 @@ export function renderKnowledgeBrowser(state: ViewState<KnowledgeDiscoveryData>,
   root.dataset.dashboardView = 'knowledge-browser'
 
   root.append(renderHero(parsedFilters, options.onNavigate))
+  const readyItems = state.status === 'ready' ? state.data.items : []
+  root.append(renderAdvancedFilters(readyItems, parsedFilters, options.onNavigate), renderCategoryChips(readyItems, parsedFilters, options.onNavigate))
 
   if (state.status === 'loading') {
     root.append(statusMessage('Loading live memories…'))
@@ -22,8 +24,6 @@ export function renderKnowledgeBrowser(state: ViewState<KnowledgeDiscoveryData>,
   }
 
   const page = state.data
-  root.append(renderCategoryChips(page.items, parsedFilters, options.onNavigate))
-
   if (page.total === 0) {
     root.append(emptyMessage('No live memories match this browse query.'))
     return root
@@ -116,6 +116,75 @@ function renderExportAffordance(): HTMLElement {
   copy.textContent = 'Export is deferred for the MVP. No download or export API is available yet.'
   wrapper.append(button, copy)
   return wrapper
+}
+
+function renderAdvancedFilters(items: readonly KnowledgeDiscoveryCard[], filters: DashboardUrlFilters, onNavigate?: (path: string) => void): HTMLFormElement {
+  const form = document.createElement('form')
+  form.className = 'dashboard-knowledge-browser__filters'
+  form.method = 'get'
+  form.action = '/dashboard/knowledgeBrowser'
+  form.setAttribute('aria-label', 'Knowledge Browser live filters')
+  form.append(
+    hiddenInput('query', filters.query),
+    filterInput('Project', 'project', filters.project),
+    filterSelect('Category', 'category', filters.category, categoryChipValues(items, filters)),
+    filterInput('From', 'from', filters.from, 'date'),
+    filterInput('Until', 'until', filters.until, 'date'),
+    hiddenInput('limit', filters.limit),
+    filterButton('Apply filters')
+  )
+  form.addEventListener('submit', (event) => {
+    if (!onNavigate) return
+    event.preventDefault()
+    const data = new FormData(form)
+    onNavigate(appendDashboardFilters('/dashboard/knowledgeBrowser', {
+      query: stringFormValue(data, 'query'),
+      project: stringFormValue(data, 'project'),
+      category: categoryParam(stringFormValue(data, 'category')),
+      from: stringFormValue(data, 'from'),
+      until: stringFormValue(data, 'until'),
+      limit: numberFormValue(data, 'limit')
+    }))
+  })
+  return form
+}
+
+function filterInput(label: string, name: string, value: DashboardUrlFilters[keyof DashboardUrlFilters], type = 'text'): HTMLElement {
+  const wrapper = document.createElement('label')
+  wrapper.textContent = label
+  const input = document.createElement('input')
+  input.name = name
+  input.type = type
+  if (typeof value === 'string') input.value = value
+  wrapper.append(input)
+  return wrapper
+}
+
+function filterSelect(label: string, name: string, value: DashboardUrlFilters[keyof DashboardUrlFilters], categories: readonly string[]): HTMLElement {
+  const wrapper = document.createElement('label')
+  wrapper.textContent = label
+  const select = document.createElement('select')
+  select.name = name
+  const activeCategory = categoryParam(typeof value === 'string' ? value : undefined)
+  select.append(selectOption('All categories', 'all', !activeCategory))
+  for (const category of categories) select.append(selectOption(category, category, category === activeCategory))
+  wrapper.append(select)
+  return wrapper
+}
+
+function selectOption(label: string, value: string, selected: boolean): HTMLOptionElement {
+  const option = document.createElement('option')
+  option.value = value
+  option.textContent = label
+  option.selected = selected
+  return option
+}
+
+function filterButton(label: string): HTMLButtonElement {
+  const button = document.createElement('button')
+  button.type = 'submit'
+  button.textContent = label
+  return button
 }
 
 function renderCategoryChips(items: readonly KnowledgeDiscoveryCard[], filters: DashboardUrlFilters, onNavigate?: (path: string) => void): HTMLElement {
