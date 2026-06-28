@@ -8,6 +8,17 @@ function ready(data: ActivityFeedViewModel = feed()): ViewState<ActivityFeedView
 }
 
 describe('ActivityFeed', () => {
+  it('renders a bespoke Activity Feed root with heading and no generic panel chrome', () => {
+    const view = renderActivityFeed(ready(), { onNavigate: vi.fn() }).element
+
+    expect(view.matches('section[data-dashboard-view="activity-feed"]')).toBe(true)
+    expect(view.getAttribute('aria-labelledby')).toBe('dashboard-activity-feed-title')
+    expect(view.querySelector('#dashboard-activity-feed-title')?.textContent).toBe('Activity Feed')
+    expect(view.getAttribute('data-dashboard-primitive')).toBeNull()
+    expect(view.classList.contains('dashboard-panel')).toBe(false)
+    expect(view.classList.contains('panel')).toBe(false)
+  })
+
   it('renders accessible loading, initial error, and empty states without fixture source notes', () => {
     const loading = renderActivityFeed({ status: 'loading' }, { onNavigate: vi.fn() }).element
     expect(loading.querySelector('[role="status"]')?.textContent).toContain('Loading recent memory lifecycle activity')

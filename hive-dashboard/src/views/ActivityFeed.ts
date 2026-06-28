@@ -1,4 +1,4 @@
-import { append, control, emptyState, error, panel, text } from '../components/dom'
+import { append, control, emptyState, error, text } from '../components/dom'
 import type { ActivityEntryViewModel, ActivityFeedViewModel, MemoryCategory } from '../domain/dashboard'
 import type { ViewState } from './Overview'
 
@@ -73,10 +73,7 @@ export function renderActivityFeed(
   state: ViewState<ActivityFeedViewModel>,
   deps: ActivityFeedDeps
 ): ActivityFeedHandle {
-  const card = panel('Activity Feed')
-  card.classList.add('dashboard-activity-feed')
-  card.dataset.dashboardPrimitive = 'activity-feed'
-  card.append(sourceNote())
+  const card = activityFeedRoot()
 
   if (state.status === 'loading') {
     const loading = text('Loading recent memory lifecycle activity…')
@@ -136,6 +133,25 @@ export function renderActivityFeed(
   }
 
   return { element: card, dispose: () => {} }
+}
+
+function activityFeedRoot(): HTMLElement {
+  const root = document.createElement('section')
+  root.className = 'dashboard-activity-feed'
+  root.dataset.dashboardView = 'activity-feed'
+  root.setAttribute('aria-labelledby', 'dashboard-activity-feed-title')
+
+  const header = document.createElement('div')
+  header.className = 'dashboard-activity-feed__header'
+
+  const title = document.createElement('h2')
+  title.id = 'dashboard-activity-feed-title'
+  title.className = 'dashboard-activity-feed__title'
+  title.textContent = 'Activity Feed'
+
+  header.append(title)
+  root.append(header, sourceNote())
+  return root
 }
 
 function sourceNote(): HTMLElement {
