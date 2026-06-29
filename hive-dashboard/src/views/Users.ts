@@ -33,6 +33,8 @@ export function renderUsers(state: ViewState<{ users: User[] }>, options: UserMa
   if (state.status === 'error') return error(root, state.message)
 
   root.append(adminSeatBanner(state.data.users))
+  const selfManagementCopy = selfManagementNotice(state.data.users, options)
+  if (selfManagementCopy) root.append(selfManagementCopy)
   if (options.currentLevel !== 'admin') root.append(permissionNotice())
   if (options.mutationError) root.append(inlineAlert(options.mutationError))
   if (options.refreshError) root.append(inlineAlert(options.refreshError))
@@ -75,6 +77,15 @@ function permissionNotice(): HTMLElement {
   const notice = document.createElement('p')
   notice.className = 'dashboard-users__permission-note'
   notice.textContent = 'Admin access is required to change users.'
+  return notice
+}
+
+function selfManagementNotice(users: User[], options: UserManagementOptions): HTMLElement | null {
+  if (options.currentLevel !== 'admin' || !options.currentUsername) return null
+  if (!users.some((user) => user.username === options.currentUsername)) return null
+  const notice = document.createElement('p')
+  notice.className = 'dashboard-users__self-note'
+  notice.textContent = 'You cannot manage your own account.'
   return notice
 }
 
@@ -212,7 +223,7 @@ function roleSwitcher(user: User, options: UserManagementOptions): HTMLElement {
 
   for (const level of ROLE_OPTIONS) {
     const pressed = user.level === level
-    const roleButton = button(level, {
+    const roleButton = button(roleLabel(level), {
       className: 'dashboard-users__role-segment',
       disabled: !canMutate(user, options) || pressed,
       pressed
@@ -232,6 +243,10 @@ function roleMutation(username: string, level: UserLevel, options: UserManagemen
   return options.actions?.onSetUserLevel?.(username, level) ?? Promise.resolve()
 }
 
+function roleLabel(level: UserLevel): string {
+  return level.toUpperCase()
+}
+
 function managementControls(user: User, options: UserManagementOptions): HTMLElement {
   const group = document.createElement('div')
   group.className = 'dashboard-users__actions'
@@ -244,10 +259,6 @@ function managementControls(user: User, options: UserManagementOptions): HTMLEle
     group.append(actionButton(`${resetPending ? 'Resetting password for' : 'Reset password for'} ${user.username}`, disabled, () => {
       showPasswordResetConfirmation(group, user.username, (temporaryPassword) => options.actions!.onResetTemporaryPassword!(user.username, temporaryPassword))
     }))
-  }
-
-  if (options.currentUsername === user.username && options.currentLevel === 'admin') {
-    group.append(text('You cannot manage your own account.', 'dashboard-users__permission-note'))
   }
 
   return group
@@ -268,7 +279,7 @@ function userLevelFromForm(value: FormDataEntryValue | null): UserLevel {
 }
 
 function actionButton(label: string, disabled: boolean, onClick: () => void): HTMLButtonElement {
-  const action = button(label, { className: 'dashboard-users__button', disabled })
+  const action = button(label, { className: 'dashboard-users__button dashboard-users__button--secondary', disabled })
   action.setAttribute('aria-label', label)
   if (!disabled) action.addEventListener('click', onClick)
   return action

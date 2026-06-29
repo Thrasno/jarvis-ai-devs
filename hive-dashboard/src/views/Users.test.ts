@@ -47,24 +47,24 @@ describe('users view', () => {
     const view = renderUsers({ status: 'ready', data: { users: [memberUser] } }, { currentUsername: 'viewer', currentLevel: 'viewer', actions: userActions() })
 
     expect(view.textContent).toContain('Admin access is required to change users.')
-    expect(buttonByText(roleSwitcher(view, 'member'), 'viewer')?.disabled).toBe(true)
-    expect(buttonByText(roleSwitcher(view, 'member'), 'admin')?.disabled).toBe(true)
+    expect(buttonByText(roleSwitcher(view, 'member'), 'VIEWER')?.disabled).toBe(true)
+    expect(buttonByText(roleSwitcher(view, 'member'), 'ADMIN')?.disabled).toBe(true)
     expect(statusButton(view, 'Mark member inactive')?.disabled).toBe(true)
   })
 
   it('renders role-level controls for supported non-admin level changes', () => {
     const view = renderUsers({ status: 'ready', data: { users: [adminUser, viewerUser] } }, { currentUsername: 'owner', currentLevel: 'admin', actions: userActions() })
 
-    expect(buttonByText(roleSwitcher(view, 'admin'), 'member')).not.toBeNull()
-    expect(buttonByText(roleSwitcher(view, 'admin'), 'viewer')).not.toBeNull()
-    expect(buttonByText(roleSwitcher(view, 'viewer'), 'member')).not.toBeNull()
+    expect(buttonByText(roleSwitcher(view, 'admin'), 'MEMBER')).not.toBeNull()
+    expect(buttonByText(roleSwitcher(view, 'admin'), 'VIEWER')).not.toBeNull()
+    expect(buttonByText(roleSwitcher(view, 'viewer'), 'MEMBER')).not.toBeNull()
   })
 
   it('requires confirmation before changing a user level and skips the mutation when cancelled', async () => {
     const actions = userActions()
     const view = renderUsers({ status: 'ready', data: { users: [memberUser] } }, { currentUsername: 'admin', currentLevel: 'admin', actions })
 
-    buttonByText(roleSwitcher(view, 'member'), 'viewer')!.click()
+    buttonByText(roleSwitcher(view, 'member'), 'VIEWER')!.click()
 
     expect(view.querySelector('[role="dialog"]')?.textContent).toContain('Change member level to viewer?')
     actionButton(view, 'Cancel')!.click()
@@ -78,7 +78,7 @@ describe('users view', () => {
     const actions = userActions()
     const view = renderUsers({ status: 'ready', data: { users: [viewerUser] } }, { currentUsername: 'admin', currentLevel: 'admin', actions })
 
-    buttonByText(roleSwitcher(view, 'viewer'), 'member')!.click()
+    buttonByText(roleSwitcher(view, 'viewer'), 'MEMBER')!.click()
     actionButton(view, 'Confirm')!.click()
     await Promise.resolve()
 
@@ -89,7 +89,7 @@ describe('users view', () => {
     const actions = userActions()
     const view = renderUsers({ status: 'ready', data: { users: [adminUser] } }, { currentUsername: 'owner', currentLevel: 'admin', actions })
 
-    buttonByText(roleSwitcher(view, 'admin'), 'member')!.click()
+    buttonByText(roleSwitcher(view, 'admin'), 'MEMBER')!.click()
     actionButton(view, 'Confirm')!.click()
     await Promise.resolve()
 
@@ -100,7 +100,7 @@ describe('users view', () => {
     const actions = userActions()
     const view = renderUsers({ status: 'ready', data: { users: [memberUser] } }, { currentUsername: 'admin', currentLevel: 'admin', actions })
 
-    buttonByText(roleSwitcher(view, 'member'), 'admin')!.click()
+    buttonByText(roleSwitcher(view, 'member'), 'ADMIN')!.click()
     expect(view.querySelector('[role="dialog"]')?.textContent).toContain('Change member level to admin?')
     actionButton(view, 'Confirm')!.click()
     await Promise.resolve()
@@ -123,17 +123,18 @@ describe('users view', () => {
   it('disables self management controls', () => {
     const view = renderUsers({ status: 'ready', data: { users: [adminUser] } }, { currentUsername: 'admin', currentLevel: 'admin', actions: userActions() })
 
-    expect(buttonByText(roleSwitcher(view, 'admin'), 'member')?.disabled).toBe(true)
-    expect(buttonByText(roleSwitcher(view, 'admin'), 'viewer')?.disabled).toBe(true)
+    expect(buttonByText(roleSwitcher(view, 'admin'), 'MEMBER')?.disabled).toBe(true)
+    expect(buttonByText(roleSwitcher(view, 'admin'), 'VIEWER')?.disabled).toBe(true)
     expect(statusButton(view, 'Mark admin inactive')?.disabled).toBe(true)
     expect(view.textContent).toContain('You cannot manage your own account.')
+    expect(rowByName(view, 'admin')?.textContent).not.toContain('You cannot manage your own account.')
   })
 
   it('disables self admin-seat controls for non-admin accounts', () => {
     const view = renderUsers({ status: 'ready', data: { users: [memberUser] } }, { currentUsername: 'member', currentLevel: 'admin', actions: userActions() })
 
-    expect(buttonByText(roleSwitcher(view, 'member'), 'viewer')?.disabled).toBe(true)
-    expect(buttonByText(roleSwitcher(view, 'member'), 'admin')?.disabled).toBe(true)
+    expect(buttonByText(roleSwitcher(view, 'member'), 'VIEWER')?.disabled).toBe(true)
+    expect(buttonByText(roleSwitcher(view, 'member'), 'ADMIN')?.disabled).toBe(true)
     expect(statusButton(view, 'Mark member inactive')?.disabled).toBe(true)
   })
 
@@ -141,8 +142,8 @@ describe('users view', () => {
     const view = renderUsers({ status: 'ready', data: { users: [memberUser] } }, { currentUsername: 'admin', currentLevel: 'admin', actions: userActions(), pendingAction: { username: 'member', type: 'deactivate' } })
 
     expect(statusButton(view, 'Marking member inactive…')?.disabled).toBe(true)
-    expect(buttonByText(roleSwitcher(view, 'member'), 'viewer')?.disabled).toBe(true)
-    expect(buttonByText(roleSwitcher(view, 'member'), 'admin')?.disabled).toBe(true)
+    expect(buttonByText(roleSwitcher(view, 'member'), 'VIEWER')?.disabled).toBe(true)
+    expect(buttonByText(roleSwitcher(view, 'member'), 'ADMIN')?.disabled).toBe(true)
   })
 
   it('shows mutation errors while keeping the user visible', () => {
@@ -180,10 +181,10 @@ describe('users view', () => {
     const view = renderUsers({ status: 'ready', data: { users: [memberUser] } }, { currentUsername: 'admin', currentLevel: 'admin', actions: userActions() })
     const switcher = view.querySelector('[role="group"][aria-label="member role"]')
 
-    expect(buttonTexts(switcher)).toEqual(['viewer', 'member', 'admin'])
-    expect(buttonByText(switcher, 'member')?.getAttribute('aria-pressed')).toBe('true')
-    expect(buttonByText(switcher, 'viewer')?.disabled).toBe(false)
-    expect(buttonByText(switcher, 'admin')?.disabled).toBe(false)
+    expect(buttonTexts(switcher)).toEqual(['VIEWER', 'MEMBER', 'ADMIN'])
+    expect(buttonByText(switcher, 'MEMBER')?.getAttribute('aria-pressed')).toBe('true')
+    expect(buttonByText(switcher, 'VIEWER')?.disabled).toBe(false)
+    expect(buttonByText(switcher, 'ADMIN')?.disabled).toBe(false)
     expect(actionButton(view, 'Grant admin to member')).toBeNull()
   })
 
@@ -191,9 +192,9 @@ describe('users view', () => {
     const view = renderUsers({ status: 'ready', data: { users: [memberUser] } }, { currentUsername: 'viewer', currentLevel: 'viewer', actions: userActions() })
 
     expect(view.textContent).toContain('Admin access is required to change users.')
-    expect(buttonByText(view, 'viewer')?.disabled).toBe(true)
-    expect(buttonByText(view, 'member')?.disabled).toBe(true)
-    expect(buttonByText(view, 'admin')?.disabled).toBe(true)
+    expect(buttonByText(view, 'VIEWER')?.disabled).toBe(true)
+    expect(buttonByText(view, 'MEMBER')?.disabled).toBe(true)
+    expect(buttonByText(view, 'ADMIN')?.disabled).toBe(true)
     expect(actionButton(view, 'Reset password for member')?.disabled).toBe(true)
     expect(statusButton(view, 'Mark member inactive')?.disabled).toBe(true)
   })

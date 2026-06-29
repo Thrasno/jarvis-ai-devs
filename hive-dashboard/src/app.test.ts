@@ -207,7 +207,7 @@ describe('dashboard shell', () => {
     try {
       await flushDashboard()
 
-      buttonInGroup(container, 'member role', 'viewer')!.click()
+      buttonInGroup(container, 'member role', 'VIEWER')!.click()
       expect(container.querySelector('[role="dialog"]')?.textContent).toContain('Change member level to viewer?')
       container.querySelector<HTMLButtonElement>('[role="dialog"] button')!.click()
       await flushDashboard()
@@ -241,7 +241,7 @@ describe('dashboard shell', () => {
     try {
       await flushDashboard()
 
-      buttonInGroup(container, 'member role', 'admin')!.click()
+      buttonInGroup(container, 'member role', 'ADMIN')!.click()
       container.querySelector<HTMLButtonElement>('[role="dialog"] button')!.click()
       await flushDashboard()
 
@@ -270,7 +270,7 @@ describe('dashboard shell', () => {
     try {
       await flushDashboard()
 
-      buttonInGroup(container, 'member role', 'viewer')!.click()
+      buttonInGroup(container, 'member role', 'VIEWER')!.click()
       container.querySelector<HTMLButtonElement>('[role="dialog"] button')!.click()
       await flushDashboard()
 
@@ -337,7 +337,7 @@ describe('dashboard shell', () => {
     try {
       await flushDashboard()
 
-      buttonInGroup(container, 'member role', 'admin')!.click()
+      buttonInGroup(container, 'member role', 'ADMIN')!.click()
       container.querySelector<HTMLButtonElement>('[role="dialog"] button')!.click()
       await flushDashboard()
 
@@ -739,8 +739,8 @@ describe('dashboard shell', () => {
       expect(container.querySelector('section h2')?.textContent).toBe('Users')
       expect(container.textContent).toContain('member@example.com')
       expect(container.textContent).toContain('Admin access is required to change users.')
-      expect(buttonInGroup(container, 'member role', 'viewer')?.disabled).toBe(true)
-      expect(buttonInGroup(container, 'member role', 'admin')?.disabled).toBe(true)
+      expect(buttonInGroup(container, 'member role', 'VIEWER')?.disabled).toBe(true)
+      expect(buttonInGroup(container, 'member role', 'ADMIN')?.disabled).toBe(true)
       expect(container.querySelector<HTMLButtonElement>('button[aria-label="Mark member inactive"]')?.disabled).toBe(true)
       expect(container.querySelector('button[aria-label="Grant admin to member"]')).toBeNull()
     } finally {

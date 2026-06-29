@@ -1297,6 +1297,7 @@ body::before {
 .dashboard-users__email,
 .dashboard-users__seat-state,
 .dashboard-users__permission-note,
+.dashboard-users__self-note,
 .dashboard-users__dialog-title,
 .dashboard-users__alert {
   margin: 0;
@@ -1319,6 +1320,7 @@ body::before {
 
 .dashboard-users__seat-banner,
 .dashboard-users__permission-note,
+.dashboard-users__self-note,
 .dashboard-users__alert {
   background: rgba(8, 10, 16, 0.52);
   border: 1px solid rgba(139, 151, 168, 0.18);
@@ -1338,6 +1340,11 @@ body::before {
 
 .dashboard-users__permission-note {
   color: var(--dashboard-text-muted);
+}
+
+.dashboard-users__self-note {
+  border-color: rgba(59, 130, 232, 0.22);
+  color: rgba(230, 237, 243, 0.72);
 }
 
 .dashboard-users__alert {
@@ -1373,7 +1380,7 @@ body::before {
 
 .dashboard-users__table {
   background: transparent;
-  border: 1px solid rgba(139, 151, 168, 0.12);
+  border: 1px solid rgba(139, 151, 168, 0.09);
   border-radius: 10px;
   box-shadow: none;
   overflow: hidden;
@@ -1382,25 +1389,25 @@ body::before {
 .dashboard-users__row {
   align-items: center;
   display: grid;
-  gap: 12px;
+  gap: 10px;
   grid-template-columns: minmax(9rem, 1.1fr) minmax(13rem, 1.4fr) minmax(12rem, 1.1fr) minmax(7rem, .8fr) minmax(7rem, .7fr) minmax(11rem, 1fr);
-  padding: 13px 14px;
+  padding: 10px 12px;
 }
 
 .dashboard-users__row + .dashboard-users__row {
-  border-top: 1px solid rgba(139, 151, 168, 0.10);
+  border-top: 1px solid rgba(139, 151, 168, 0.075);
 }
 
 .dashboard-users__body .dashboard-users__row:nth-child(even) {
-  background: rgba(255, 255, 255, 0.014);
+  background: rgba(255, 255, 255, 0.01);
 }
 
 .dashboard-users__body .dashboard-users__row:hover {
-  background: rgba(59, 130, 232, 0.035);
+  background: rgba(59, 130, 232, 0.024);
 }
 
 .dashboard-users__row--header {
-  background: rgba(8, 10, 16, 0.22);
+  background: rgba(8, 10, 16, 0.16);
   color: var(--dashboard-text-muted);
   font-family: var(--dashboard-font-mono);
   font-size: .64rem;
@@ -1414,16 +1421,17 @@ body::before {
 }
 
 .dashboard-users__username {
-  color: var(--dashboard-text);
+  color: rgba(230, 237, 243, 0.9);
   font-family: var(--dashboard-font-mono);
-  font-weight: 800;
+  font-size: .88rem;
+  font-weight: 500;
   overflow-wrap: anywhere;
 }
 
 .dashboard-users__email,
 .dashboard-users__seat-state {
   color: var(--dashboard-text-muted);
-  font-size: .82rem;
+  font-size: .78rem;
   overflow-wrap: anywhere;
 }
 
@@ -1468,8 +1476,8 @@ body::before {
 }
 
 .dashboard-users__role-switcher {
-  background: rgba(8, 10, 16, 0.46);
-  border: 1px solid rgba(139, 151, 168, 0.26);
+  background: rgba(8, 10, 16, 0.36);
+  border: 1px solid rgba(139, 151, 168, 0.18);
   border-radius: 9px;
   flex-wrap: nowrap;
   gap: 0;
@@ -1494,7 +1502,7 @@ body::before {
   border-radius: 8px;
   color: rgba(230, 237, 243, 0.82);
   font-size: .74rem;
-  font-weight: 800;
+  font-weight: 700;
   min-height: 32px;
   padding: .4rem .64rem;
 }
@@ -1504,7 +1512,13 @@ body::before {
   border: 0;
   border-left: 1px solid rgba(139, 151, 168, 0.20);
   border-radius: 0;
+  color: rgba(230, 237, 243, 0.68);
+  font-family: var(--dashboard-font-mono);
+  font-size: .68rem;
+  font-weight: 500;
+  letter-spacing: .08em;
   min-width: 4.2rem;
+  position: relative;
 }
 
 .dashboard-users__role-segment:first-of-type {
@@ -1512,9 +1526,20 @@ body::before {
 }
 
 .dashboard-users__role-segment[aria-pressed="true"] {
-  background: rgba(59, 130, 232, 0.22);
-  box-shadow: inset 0 0 0 1px rgba(59, 130, 232, 0.40);
+  background: rgba(59, 130, 232, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 232, 0.24);
   color: #BFDBFE;
+}
+
+.dashboard-users__role-segment[aria-pressed="true"]::after {
+  background: #60A5FA;
+  border-radius: 999px;
+  bottom: 4px;
+  content: '';
+  height: 2px;
+  left: 14px;
+  position: absolute;
+  right: 14px;
 }
 
 .dashboard-users__role-segment[aria-pressed="true"]:disabled,
@@ -1527,6 +1552,22 @@ body::before {
   border-color: rgba(224, 36, 111, 0.36);
   color: var(--dashboard-text);
   white-space: nowrap;
+}
+
+.dashboard-users__button--secondary {
+  background: rgba(8, 10, 16, 0.28);
+  border-color: rgba(139, 151, 168, 0.20);
+  color: rgba(230, 237, 243, 0.66);
+  font-size: .7rem;
+  font-weight: 500;
+  min-height: 30px;
+  padding: .34rem .58rem;
+}
+
+.dashboard-users__button--secondary:hover:not(:disabled) {
+  background: rgba(59, 130, 232, 0.08);
+  border-color: rgba(59, 130, 232, 0.28);
+  color: rgba(230, 237, 243, 0.86);
 }
 
 .dashboard-users__button--danger {
