@@ -164,9 +164,31 @@ describe('dashboard shell', () => {
 
     expect(container.querySelector('[data-dashboard-primitive="sidebar"] nav')?.textContent).toContain('Dashboard')
     expect(container.querySelector('section h2')?.textContent).toBe('Users')
-    expect(container.textContent).toContain('admin · active')
+    expect(container.textContent).toContain('State: active')
     expect(container.textContent).toContain('admin@example.com')
     expect(container.textContent).not.toContain('Authentication is active')
+  })
+
+  it('keeps inactive activation disabled when the app render contract omits the activate action', () => {
+    const container = document.createElement('main')
+    const inactiveMember = { ...memberUser, is_active: false }
+
+    renderApp({
+      container,
+      state: { status: 'authenticated', token: 'jwt-token', user: adminUser },
+      actions: {
+        onLogin: vi.fn(),
+        onLogout: vi.fn(),
+        onSetUserLevel: vi.fn(),
+        onDeactivateUser: vi.fn()
+      },
+      dashboard: { status: 'ready', data: { users: { status: 'ready', data: { users: [adminUser, inactiveMember] } } } },
+      routePath: '/dashboard/users'
+    })
+
+    const activate = container.querySelector<HTMLButtonElement>('button[aria-label="Mark member active"]')
+    expect(activate).not.toBeNull()
+    expect(activate?.disabled).toBe(true)
   })
 
   it('wires user management actions to the API and refreshes users after success', async () => {
@@ -184,7 +206,7 @@ describe('dashboard shell', () => {
     try {
       await flushDashboard()
 
-      container.querySelector<HTMLButtonElement>('[aria-label="member management actions"] button')!.click()
+      buttonInGroup(container, 'member role', 'viewer')!.click()
       expect(container.querySelector('[role="dialog"]')?.textContent).toContain('Change member level to viewer?')
       container.querySelector<HTMLButtonElement>('[role="dialog"] button')!.click()
       await flushDashboard()
@@ -200,7 +222,7 @@ describe('dashboard shell', () => {
     }
   })
 
-  it('wires admin-seat grants to the API and refreshes users after success', async () => {
+  it('wires admin role changes to the API and refreshes users after success', async () => {
     const container = document.createElement('main')
     document.body.append(container)
     const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
@@ -218,13 +240,44 @@ describe('dashboard shell', () => {
     try {
       await flushDashboard()
 
-      container.querySelector<HTMLButtonElement>('button[aria-label="Grant admin to member"]')!.click()
+      buttonInGroup(container, 'member role', 'admin')!.click()
       container.querySelector<HTMLButtonElement>('[role="dialog"] button')!.click()
       await flushDashboard()
 
-      expect(api.grantAdmin).toHaveBeenCalledWith('jwt-token', 'member')
+      expect(api.setUserLevel).toHaveBeenCalledWith('jwt-token', 'member', 'admin')
+      expect(api.grantAdmin).not.toHaveBeenCalled()
       expect(api.adminUsers).toHaveBeenCalledTimes(2)
       expect(container.textContent).toContain('Admin seat: yes')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('reports a post-mutation users refresh failure without presenting the mutation as failed', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({
+      users: [Promise.resolve({ users: [adminUser, memberUser] }), Promise.reject(new Error('users refresh unavailable'))]
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/users')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      buttonInGroup(container, 'member role', 'viewer')!.click()
+      container.querySelector<HTMLButtonElement>('[role="dialog"] button')!.click()
+      await flushDashboard()
+
+      expect(api.setUserLevel).toHaveBeenCalledWith('jwt-token', 'member', 'viewer')
+      expect(api.adminUsers).toHaveBeenCalledTimes(2)
+      expect(container.textContent).toContain('Mutation succeeded, but users could not be refreshed: users refresh unavailable')
+      expect(container.textContent).toContain('Level: member')
+      expect(container.textContent).not.toContain('User management action failed')
     } finally {
       cleanup()
       history.pushState(null, '', originalPath)
@@ -248,11 +301,11 @@ describe('dashboard shell', () => {
     try {
       await flushDashboard()
 
-      container.querySelector<HTMLButtonElement>('button[aria-label="Deactivate member"]')!.click()
+      container.querySelector<HTMLButtonElement>('button[aria-label="Mark member inactive"]')!.click()
       container.querySelector<HTMLButtonElement>('[role="dialog"] button')!.click()
       await flushDashboard()
 
-      expect(container.querySelector<HTMLButtonElement>('button[aria-label="Deactivating member"]')?.disabled).toBe(true)
+      expect(container.querySelector<HTMLButtonElement>('button[aria-label="Marking member inactive…"]')?.disabled).toBe(true)
       mutation.reject(new Error('insufficient active admins'))
       await flushDashboard()
 
@@ -267,7 +320,406 @@ describe('dashboard shell', () => {
     }
   })
 
-  it('does not expose user management controls to non-admin sessions', async () => {
+  it('keeps the prior user role visible when an admin-seat conflict rejects a role change', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const setUserLevel = deferred<Awaited<ReturnType<ApiClient['setUserLevel']>>>()
+    const api = fakeApi({
+      users: [Promise.resolve({ users: [adminUser, memberUser] })],
+      setUserLevel: setUserLevel.promise
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/users')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      buttonInGroup(container, 'member role', 'admin')!.click()
+      container.querySelector<HTMLButtonElement>('[role="dialog"] button')!.click()
+      await flushDashboard()
+
+      setUserLevel.reject(new Error('máximo de admins alcanzado'))
+      await flushDashboard()
+
+      expect(api.setUserLevel).toHaveBeenCalledWith('jwt-token', 'member', 'admin')
+      expect(api.adminUsers).toHaveBeenCalledTimes(1)
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('máximo de admins alcanzado')
+      const memberRow = container.querySelector('[role="row"][aria-label="member user account"]')
+      expect(memberRow?.textContent).toContain('Level: member')
+      expect(memberRow?.textContent).toContain('Admin seat: no')
+      expect(memberRow?.textContent).not.toContain('Level: admin')
+      expect(memberRow?.textContent).not.toContain('Admin seat: yes')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('creates a user through the dashboard API, blocks duplicate submits while pending, and refreshes after success', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const createdUser = { id: 'created-1', username: 'created', email: 'created@example.com', level: 'viewer' as const, is_active: true, created_at: '2026-06-06T20:00:00Z' }
+    const createUser = deferred<Awaited<ReturnType<ApiClient['createUser']>>>()
+    const api = fakeApi({
+      users: [Promise.resolve({ users: [adminUser, memberUser] }), Promise.resolve({ users: [adminUser, memberUser, createdUser] })],
+      createUser: createUser.promise
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/users')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      container.querySelector<HTMLInputElement>('form[aria-label="Create user"] input[name="username"]')!.value = 'created'
+      container.querySelector<HTMLInputElement>('form[aria-label="Create user"] input[name="email"]')!.value = 'created@example.com'
+      container.querySelector<HTMLSelectElement>('form[aria-label="Create user"] select[name="level"]')!.value = 'viewer'
+      container.querySelector<HTMLInputElement>('form[aria-label="Create user"] input[name="temporary_password"]')!.value = 'temporary-secret'
+      const submit = container.querySelector<HTMLButtonElement>('form[aria-label="Create user"] button[type="submit"]')!
+      submit.click()
+      await flushDashboard()
+
+      expect(api.createUser).toHaveBeenCalledTimes(1)
+      expect(api.createUser).toHaveBeenCalledWith('jwt-token', { username: 'created', email: 'created@example.com', level: 'viewer', temporary_password: 'temporary-secret' })
+      expect(container.querySelector<HTMLButtonElement>('form[aria-label="Create user"] button[type="submit"]')?.disabled).toBe(true)
+      expect(container.querySelector<HTMLButtonElement>('form[aria-label="Create user"] button[type="submit"]')?.textContent).toContain('Creating user')
+
+      container.querySelector<HTMLButtonElement>('form[aria-label="Create user"] button[type="submit"]')!.click()
+      await flushDashboard()
+      expect(api.createUser).toHaveBeenCalledTimes(1)
+
+      createUser.resolve({ message: 'user created' })
+      await flushDashboard()
+
+      expect(api.adminUsers).toHaveBeenCalledTimes(2)
+      expect(container.textContent).toContain('created@example.com')
+      expect(container.textContent).not.toContain('temporary-secret')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('clears pending user mutation state when navigation changes after mutation success before cleanup', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const deactivateUser = deferred<Awaited<ReturnType<ApiClient['deactivateUser']>>>()
+    const api = fakeApi({
+      users: [Promise.resolve({ users: [adminUser, memberUser] })],
+      deactivateUser: deactivateUser.promise
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/users')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      container.querySelector<HTMLButtonElement>('button[aria-label="Mark member inactive"]')!.click()
+      container.querySelector<HTMLButtonElement>('[role="dialog"] button')!.click()
+      await flushDashboard()
+      expect(container.querySelector<HTMLButtonElement>('button[aria-label="Marking member inactive…"]')?.disabled).toBe(true)
+
+      deactivateUser.resolve({ message: 'user deactivated' })
+      container.querySelector<HTMLAnchorElement>('a[data-nav-entry="overview"]')!.click()
+      await flushDashboard()
+      expect(container.querySelector('[data-dashboard-view="overview"]')).not.toBeNull()
+
+      container.querySelector<HTMLAnchorElement>('a[data-nav-entry="userManagement"]')!.click()
+      await flushDashboard()
+
+      const statusButton = container.querySelector<HTMLButtonElement>('button[aria-label="Mark member inactive"]')
+      expect(statusButton).not.toBeNull()
+      expect(statusButton?.disabled).toBe(false)
+      expect(container.querySelector('button[aria-label="Marking member inactive…"]')).toBeNull()
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('re-fetches users after returning from navigation that raced a successful mutation', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const inactiveMember = { ...memberUser, is_active: false }
+    const deactivateUser = deferred<Awaited<ReturnType<ApiClient['deactivateUser']>>>()
+    const api = fakeApi({
+      users: [
+        Promise.resolve({ users: [adminUser, memberUser] }),
+        Promise.resolve({ users: [adminUser, inactiveMember] })
+      ],
+      deactivateUser: deactivateUser.promise
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/users')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      container.querySelector<HTMLButtonElement>('button[aria-label="Mark member inactive"]')!.click()
+      container.querySelector<HTMLButtonElement>('[role="dialog"] button')!.click()
+      await flushDashboard()
+      expect(container.querySelector<HTMLButtonElement>('button[aria-label="Marking member inactive…"]')?.disabled).toBe(true)
+
+      container.querySelector<HTMLAnchorElement>('a[data-nav-entry="overview"]')!.click()
+      await flushDashboard()
+      deactivateUser.resolve({ message: 'user deactivated' })
+      await flushDashboard()
+
+      container.querySelector<HTMLAnchorElement>('a[data-nav-entry="userManagement"]')!.click()
+      await flushDashboard()
+
+      expect(api.adminUsers).toHaveBeenCalledTimes(2)
+      const memberRow = container.querySelector('[role="row"][aria-label="member user account"]')
+      expect(memberRow?.textContent).toContain('State: inactive')
+      expect(memberRow?.textContent).not.toContain('State: active')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('re-fetches users when a navigation-raced mutation resolves after returning to user management', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const inactiveMember = { ...memberUser, is_active: false }
+    const deactivateUser = deferred<Awaited<ReturnType<ApiClient['deactivateUser']>>>()
+    const api = fakeApi({
+      users: [
+        Promise.resolve({ users: [adminUser, memberUser] }),
+        Promise.resolve({ users: [adminUser, inactiveMember] })
+      ],
+      deactivateUser: deactivateUser.promise
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/users')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      container.querySelector<HTMLButtonElement>('button[aria-label="Mark member inactive"]')!.click()
+      container.querySelector<HTMLButtonElement>('[role="dialog"] button')!.click()
+      await flushDashboard()
+      expect(container.querySelector<HTMLButtonElement>('button[aria-label="Marking member inactive…"]')?.disabled).toBe(true)
+
+      container.querySelector<HTMLAnchorElement>('a[data-nav-entry="overview"]')!.click()
+      await flushDashboard()
+      expect(container.querySelector('[data-dashboard-view="overview"]')).not.toBeNull()
+
+      container.querySelector<HTMLAnchorElement>('a[data-nav-entry="userManagement"]')!.click()
+      await flushDashboard()
+      expect(api.adminUsers).toHaveBeenCalledTimes(1)
+      expect(container.querySelector<HTMLButtonElement>('button[aria-label="Marking member inactive…"]')?.disabled).toBe(true)
+
+      deactivateUser.resolve({ message: 'user deactivated' })
+      await flushDashboard()
+
+      expect(api.adminUsers).toHaveBeenCalledTimes(2)
+      const memberRow = container.querySelector('[role="row"][aria-label="member user account"]')
+      expect(memberRow?.textContent).toContain('State: inactive')
+      expect(memberRow?.textContent).not.toContain('State: active')
+      expect(container.querySelector('button[aria-label="Marking member inactive…"]')).toBeNull()
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('rejects short create-user temporary passwords before calling the dashboard API', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({ users: [Promise.resolve({ users: [adminUser, memberUser] })] })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/users')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      container.querySelector<HTMLInputElement>('form[aria-label="Create user"] input[name="username"]')!.value = 'created'
+      container.querySelector<HTMLInputElement>('form[aria-label="Create user"] input[name="email"]')!.value = 'created@example.com'
+      container.querySelector<HTMLInputElement>('form[aria-label="Create user"] input[name="temporary_password"]')!.value = 'short'
+      container.querySelector<HTMLButtonElement>('form[aria-label="Create user"] button[type="submit"]')!.click()
+      await flushDashboard()
+
+      expect(api.createUser).not.toHaveBeenCalled()
+      expect(api.adminUsers).toHaveBeenCalledTimes(1)
+      expect(container.querySelector('form[aria-label="Create user"] [role="alert"]')?.textContent).toContain('Temporary password must be at least 8 characters.')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('surfaces create-user API errors without refreshing the list', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const createUser = deferred<Awaited<ReturnType<ApiClient['createUser']>>>()
+    const api = fakeApi({
+      users: [Promise.resolve({ users: [adminUser, memberUser] })],
+      createUser: createUser.promise
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/users')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      container.querySelector<HTMLInputElement>('form[aria-label="Create user"] input[name="username"]')!.value = 'member'
+      container.querySelector<HTMLInputElement>('form[aria-label="Create user"] input[name="email"]')!.value = 'member@example.com'
+      container.querySelector<HTMLInputElement>('form[aria-label="Create user"] input[name="temporary_password"]')!.value = 'temporary-secret'
+      container.querySelector<HTMLButtonElement>('form[aria-label="Create user"] button[type="submit"]')!.click()
+      await flushDashboard()
+
+      createUser.reject(new Error('username already exists'))
+      await flushDashboard()
+
+      expect(api.createUser).toHaveBeenCalledWith('jwt-token', { username: 'member', email: 'member@example.com', level: 'member', temporary_password: 'temporary-secret' })
+      expect(api.adminUsers).toHaveBeenCalledTimes(1)
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('username already exists')
+      expect(container.textContent).not.toContain('temporary-secret')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('blocks duplicate password reset submits and removes the temporary password after an API error', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const resetPassword = deferred<Awaited<ReturnType<ApiClient['resetTemporaryPassword']>>>()
+    const api = fakeApi({
+      users: [Promise.resolve({ users: [adminUser, memberUser] })],
+      resetTemporaryPassword: resetPassword.promise
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/users')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      container.querySelector<HTMLButtonElement>('button[aria-label="Reset password for member"]')!.click()
+      container.querySelector<HTMLInputElement>('[role="dialog"] input[name="temporary_password"]')!.value = 'rotated-secret'
+      container.querySelector<HTMLButtonElement>('[role="dialog"] button')!.click()
+      await flushDashboard()
+
+      expect(api.resetTemporaryPassword).toHaveBeenCalledTimes(1)
+      expect(container.querySelector<HTMLButtonElement>('button[aria-label="Resetting password for member"]')?.disabled).toBe(true)
+      container.querySelector<HTMLButtonElement>('button[aria-label="Resetting password for member"]')!.click()
+      await flushDashboard()
+      expect(api.resetTemporaryPassword).toHaveBeenCalledTimes(1)
+
+      resetPassword.reject(new Error('password reset rejected'))
+      await flushDashboard()
+
+      expect(api.adminUsers).toHaveBeenCalledTimes(1)
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('password reset rejected')
+      expect(container.textContent).not.toContain('rotated-secret')
+      const passwordInputs = Array.from(container.querySelectorAll<HTMLInputElement>('input[name="temporary_password"]'))
+      expect(passwordInputs.every((input) => input.value === '')).toBe(true)
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('resets a temporary password through the dashboard API and refreshes users after success', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const resetPassword = deferred<Awaited<ReturnType<ApiClient['resetTemporaryPassword']>>>()
+    const api = fakeApi({
+      users: [Promise.resolve({ users: [adminUser, memberUser] }), Promise.resolve({ users: [adminUser, memberUser] })],
+      resetTemporaryPassword: resetPassword.promise
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/users')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      container.querySelector<HTMLButtonElement>('button[aria-label="Reset password for member"]')!.click()
+      container.querySelector<HTMLInputElement>('[role="dialog"] input[name="temporary_password"]')!.value = 'rotated-secret'
+      container.querySelector<HTMLButtonElement>('[role="dialog"] button')!.click()
+      await flushDashboard()
+
+      expect(api.resetTemporaryPassword).toHaveBeenCalledWith('jwt-token', 'member', 'rotated-secret')
+      expect(container.querySelector<HTMLButtonElement>('button[aria-label="Resetting password for member"]')?.disabled).toBe(true)
+
+      resetPassword.resolve({ message: 'password reset' })
+      await flushDashboard()
+
+      expect(api.adminUsers).toHaveBeenCalledTimes(2)
+      expect(container.textContent).toContain('member@example.com')
+      expect(container.textContent).not.toContain('rotated-secret')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('activates an inactive user through the dashboard API and refreshes users after success', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const inactiveMember = { ...memberUser, username: 'inactive-member', email: 'inactive@example.com', is_active: false }
+    const activatedMember = { ...inactiveMember, is_active: true }
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const activateUser = deferred<Awaited<ReturnType<ApiClient['activateUser']>>>()
+    const api = fakeApi({
+      users: [Promise.resolve({ users: [adminUser, inactiveMember] }), Promise.resolve({ users: [adminUser, activatedMember] })],
+      activateUser: activateUser.promise
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/users')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      container.querySelector<HTMLButtonElement>('button[aria-label="Mark inactive-member active"]')!.click()
+      container.querySelector<HTMLButtonElement>('[role="dialog"] button')!.click()
+      await flushDashboard()
+
+      expect(api.activateUser).toHaveBeenCalledWith('jwt-token', 'inactive-member')
+      expect(container.querySelector<HTMLButtonElement>('button[aria-label="Marking inactive-member active…"]')?.disabled).toBe(true)
+
+      activateUser.resolve({ message: 'user activated' })
+      await flushDashboard()
+
+      expect(api.adminUsers).toHaveBeenCalledTimes(2)
+      expect(container.textContent).toContain('State: active')
+      expect(container.textContent).not.toContain('State: inactive')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('renders disabled user management controls to non-admin sessions', async () => {
     const container = document.createElement('main')
     document.body.append(container)
     const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: memberUser })
@@ -281,7 +733,10 @@ describe('dashboard shell', () => {
 
       expect(container.querySelector('section h2')?.textContent).toBe('Users')
       expect(container.textContent).toContain('member@example.com')
-      expect(container.querySelector('[aria-label="member management actions"]')).toBeNull()
+      expect(container.textContent).toContain('Admin access is required to change users.')
+      expect(buttonInGroup(container, 'member role', 'viewer')?.disabled).toBe(true)
+      expect(buttonInGroup(container, 'member role', 'admin')?.disabled).toBe(true)
+      expect(container.querySelector<HTMLButtonElement>('button[aria-label="Mark member inactive"]')?.disabled).toBe(true)
       expect(container.querySelector('button[aria-label="Grant admin to member"]')).toBeNull()
     } finally {
       cleanup()
@@ -1966,9 +2421,12 @@ function fakeApi(overrides: {
   overviewStats?: Promise<OverviewStats>
   overviewGrowth?: Promise<OverviewGrowth>
   users?: Promise<Awaited<ReturnType<ApiClient['adminUsers']>>>[]
+  createUser?: Promise<Awaited<ReturnType<ApiClient['createUser']>>>
   setUserLevel?: Promise<Awaited<ReturnType<ApiClient['setUserLevel']>>>
   grantAdmin?: Promise<Awaited<ReturnType<ApiClient['grantAdmin']>>>
   deactivateUser?: Promise<Awaited<ReturnType<ApiClient['deactivateUser']>>>
+  resetTemporaryPassword?: Promise<Awaited<ReturnType<ApiClient['resetTemporaryPassword']>>>
+  activateUser?: Promise<Awaited<ReturnType<ApiClient['activateUser']>>>
   activity?: Array<Promise<ActivityFeedResponse> | (() => Promise<ActivityFeedResponse>)>
   memories?: Array<Promise<MemoryList> | (() => Promise<MemoryList>)>
   search?: Array<Promise<MemorySearch> | (() => Promise<MemorySearch>)>
@@ -1989,9 +2447,12 @@ function fakeApi(overrides: {
     overviewStats: vi.fn(() => overrides.overviewStats ?? Promise.resolve(overviewStats())),
     overviewGrowth: vi.fn(() => overrides.overviewGrowth ?? Promise.resolve({ knowledge_growth: [{ label: 'Jun', value: 44 }] })),
     adminUsers: vi.fn(() => userResponses.shift() ?? Promise.resolve({ users: [adminUser] })),
+    createUser: vi.fn(() => overrides.createUser ?? Promise.resolve({ message: 'user created' })),
     setUserLevel: vi.fn(() => overrides.setUserLevel ?? Promise.resolve({ message: 'level updated' })),
     grantAdmin: vi.fn(() => overrides.grantAdmin ?? Promise.resolve({ message: 'admin granted' })),
     deactivateUser: vi.fn(() => overrides.deactivateUser ?? Promise.resolve({ message: 'user deactivated' })),
+    resetTemporaryPassword: vi.fn(() => overrides.resetTemporaryPassword ?? Promise.resolve({ message: 'password reset' })),
+    activateUser: vi.fn(() => overrides.activateUser ?? Promise.resolve({ message: 'user activated' })),
     memories: vi.fn(() => {
       const next = memoryResponses.shift()
       if (typeof next === 'function') return next()
@@ -2051,6 +2512,10 @@ function memoryDetailHref(memoryId: string, returnTo: string): string {
 
 function linkByText(container: HTMLElement, label: string): HTMLAnchorElement | undefined {
   return Array.from(container.querySelectorAll<HTMLAnchorElement>('a')).find((link) => link.textContent?.trim() === label)
+}
+
+function buttonInGroup(container: HTMLElement, groupLabel: string, buttonText: string): HTMLButtonElement | undefined {
+  return Array.from(container.querySelectorAll<HTMLButtonElement>(`[role="group"][aria-label="${groupLabel}"] button`)).find((button) => button.textContent === buttonText)
 }
 
 function memory(overrides: Partial<MemoryList['memories'][number]> = {}): MemoryList['memories'][number] {
