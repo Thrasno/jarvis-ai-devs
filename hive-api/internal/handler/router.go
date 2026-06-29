@@ -56,6 +56,9 @@ type ProjectService interface {
 // AdminService define las operaciones de administración.
 type AdminService interface {
 	ListUsers(ctx context.Context) ([]*model.User, error)
+	CreateUser(ctx context.Context, actor model.AdminActor, req model.CreateUserRequest) error
+	ResetTemporaryPassword(ctx context.Context, actor model.AdminActor, username string, req model.ResetTemporaryPasswordRequest) error
+	Activate(ctx context.Context, actor model.AdminActor, username string) error
 	SetLevel(ctx context.Context, actor model.AdminActor, username string, newLevel model.UserLevel) error
 	GrantAdmin(ctx context.Context, actor model.AdminActor, username string) error
 	Deactivate(ctx context.Context, actor model.AdminActor, username string) error
@@ -106,9 +109,12 @@ type RouterDeps struct {
 //	POST /sync                                        — RequireAuth
 //	POST /sync-attempts                               — RequireAuth
 //	GET  /admin/users                                 — RequireAuth + RequireAdmin
+//	POST /admin/users                                 — RequireAuth + RequireAdmin
 //	POST /admin/users/:username/level                 — RequireAuth + RequireAdmin
 //	POST /admin/users/:username/grant-admin           — RequireAuth + RequireAdmin
 //	POST /admin/users/:username/deactivate            — RequireAuth + RequireAdmin
+//	POST /admin/users/:username/reset-password        — RequireAuth + RequireAdmin
+//	POST /admin/users/:username/activate              — RequireAuth + RequireAdmin
 //	GET  /admin/stats                                 — RequireAuth + RequireAdmin
 //	GET  /admin/audit-logs                            — RequireAuth + RequireAdmin
 //	GET  /admin/sync-attempts/summary                 — RequireAuth + RequireAdmin
@@ -154,15 +160,18 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 	}
 
 	// Rutas de admin — RequireAuth + RequireAdmin
-	admin := r.Group("/admin", middleware.RequireAuth(deps.AuthSvc), middleware.RequireAdmin())
+	admin := r.Group("/admin", middleware.RequireAuth(deps.AuthSvc), middleware.RequireAdmin(deps.AuthSvc))
 	{
 		admin.GET("/audit-logs", adminH.ListAuditLogs)
 		admin.GET("/sync-attempts/summary", syncAttemptH.Summary)
 		admin.GET("/users", adminH.ListUsers)
+		admin.POST("/users", adminH.CreateUser)
 		admin.GET("/stats", adminH.GetStats)
 		admin.POST("/users/:username/level", adminH.SetLevel)
 		admin.POST("/users/:username/grant-admin", adminH.GrantAdmin)
 		admin.POST("/users/:username/deactivate", adminH.Deactivate)
+		admin.POST("/users/:username/reset-password", adminH.ResetTemporaryPassword)
+		admin.POST("/users/:username/activate", adminH.Activate)
 		admin.GET("/overview/stats", overviewH.GetStats)
 		admin.GET("/overview/growth", overviewH.GetGrowth)
 	}

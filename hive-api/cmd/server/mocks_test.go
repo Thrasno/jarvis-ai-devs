@@ -96,6 +96,15 @@ func (m *mockAdmin) ListUsers(ctx context.Context) ([]*model.User, error) {
 	}
 	return args.Get(0).([]*model.User), args.Error(1)
 }
+func (m *mockAdmin) CreateUser(ctx context.Context, actor model.AdminActor, req model.CreateUserRequest) error {
+	return m.Called(ctx, actor, req).Error(0)
+}
+func (m *mockAdmin) ResetTemporaryPassword(ctx context.Context, actor model.AdminActor, username string, req model.ResetTemporaryPasswordRequest) error {
+	return m.Called(ctx, actor, username, req).Error(0)
+}
+func (m *mockAdmin) Activate(ctx context.Context, actor model.AdminActor, username string) error {
+	return m.Called(ctx, actor, username).Error(0)
+}
 func (m *mockAdmin) SetLevel(ctx context.Context, actor model.AdminActor, username string, newLevel model.UserLevel) error {
 	return m.Called(ctx, actor, username, newLevel).Error(0)
 }

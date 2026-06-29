@@ -3,9 +3,12 @@ package service
 import (
 	"context"
 	"errors"
+	"log"
+	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // ErrMaxAdminsReached se devuelve cuando intentamos ascender a admin
@@ -17,9 +20,13 @@ var ErrMaxAdminsReached = errors.New("máximo de admins alcanzado (límite: 3)")
 // active admin account available to manage the system.
 var ErrInsufficientAdmins = errors.New("insufficient active admins remaining")
 
+var ErrSelfAdminMutation = errors.New("cannot mutate your own admin account")
+
 // maxAdmins es el número máximo de administradores permitidos en el sistema.
 // Es una constante de negocio — si el equipo crece, se puede cambiar aquí.
 const maxAdmins = 3
+
+const auditBestEffortTimeout = 2 * time.Second
 
 // AdminService gestiona las operaciones de administración del sistema.
 type AdminService interface {
@@ -31,6 +38,10 @@ type AdminService interface {
 	// Devuelve ErrMaxAdminsReached si el límite está alcanzado.
 	// Devuelve repository.ErrNotFound si el usuario no existe.
 	SetLevel(ctx context.Context, actor model.AdminActor, username string, newLevel model.UserLevel) error
+
+	CreateUser(ctx context.Context, actor model.AdminActor, req model.CreateUserRequest) error
+	ResetTemporaryPassword(ctx context.Context, actor model.AdminActor, username string, req model.ResetTemporaryPasswordRequest) error
+	Activate(ctx context.Context, actor model.AdminActor, username string) error
 
 	// GrantAdmin asciende a un usuario a nivel admin.
 	// Idempotente: si ya es admin, devuelve nil sin error.
@@ -84,21 +95,145 @@ func (s *adminService) ListAuditLogs(ctx context.Context, filter model.AuditFilt
 	return model.NewAuditListResponse(entries, total, filter), nil
 }
 
-// SetLevel implementa la lógica de cambio de nivel con la regla de 3 admins.
-func (s *adminService) SetLevel(ctx context.Context, actor model.AdminActor, username string, newLevel model.UserLevel) error {
-	return s.tx.WithinTx(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
-		user, err := repos.Users.GetByUsername(ctx, username)
-		if err != nil {
-			return err
-		}
-
-		if newLevel == model.LevelAdmin && user.Level != model.LevelAdmin {
+func (s *adminService) CreateUser(ctx context.Context, actor model.AdminActor, req model.CreateUserRequest) error {
+	passwordHash, err := hashPassword(req.TemporaryPassword)
+	if err != nil {
+		return err
+	}
+	err = s.tx.WithinTx(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
+		if req.Level == model.LevelAdmin {
+			if err := repos.Users.LockActiveAdminInvariant(ctx); err != nil {
+				return err
+			}
 			count, err := repos.Users.CountAdmins(ctx)
 			if err != nil {
 				return err
 			}
 			if count >= maxAdmins {
 				return ErrMaxAdminsReached
+			}
+		}
+		created, err := repos.Users.Create(ctx, &model.User{
+			Username: req.Username,
+			Email:    req.Email,
+			Password: passwordHash,
+			Level:    req.Level,
+			IsActive: true,
+		})
+		if err != nil {
+			return err
+		}
+		return repos.Audit.Insert(ctx, buildUserCreateAudit(actor, created))
+	})
+	if err != nil {
+		s.insertAuditBestEffort(ctx, buildUserCreateFailureAudit(actor, req, err))
+	}
+	return err
+}
+
+func (s *adminService) ResetTemporaryPassword(ctx context.Context, actor model.AdminActor, username string, req model.ResetTemporaryPasswordRequest) error {
+	if actor.Username == username {
+		err := ErrSelfAdminMutation
+		s.insertAuditBestEffort(ctx, buildUserPasswordResetFailureAudit(actor, username, nil, err))
+		return err
+	}
+	passwordHash, err := hashPassword(req.TemporaryPassword)
+	if err != nil {
+		return err
+	}
+	var target *model.User
+	err = s.tx.WithinTx(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
+		user, err := repos.Users.GetByUsername(ctx, username)
+		if err != nil {
+			return err
+		}
+		target = user
+		if err := repos.Users.UpdatePassword(ctx, user.ID, passwordHash); err != nil {
+			return err
+		}
+		return repos.Audit.Insert(ctx, buildUserPasswordResetAudit(actor, user))
+	})
+	if err != nil {
+		s.insertAuditBestEffort(ctx, buildUserPasswordResetFailureAudit(actor, username, target, err))
+	}
+	return err
+}
+
+func (s *adminService) Activate(ctx context.Context, actor model.AdminActor, username string) error {
+	if actor.Username == username {
+		err := ErrSelfAdminMutation
+		s.insertAuditBestEffort(ctx, buildUserActivateFailureAudit(actor, username, nil, err))
+		return err
+	}
+	var target *model.User
+	err := s.tx.WithinTx(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
+		user, err := repos.Users.GetByUsername(ctx, username)
+		if err != nil {
+			return err
+		}
+		target = user
+		if !user.IsActive {
+			if err := repos.Users.LockActiveAdminInvariant(ctx); err != nil {
+				return err
+			}
+			user, err = repos.Users.GetByUsername(ctx, username)
+			if err != nil {
+				return err
+			}
+			target = user
+		}
+		if !user.IsActive && user.Level == model.LevelAdmin {
+			count, err := repos.Users.CountAdmins(ctx)
+			if err != nil {
+				return err
+			}
+			if count >= maxAdmins {
+				return ErrMaxAdminsReached
+			}
+		}
+		if err := repos.Users.Activate(ctx, user.ID); err != nil {
+			return err
+		}
+		return repos.Audit.Insert(ctx, buildUserActivateAudit(actor, user))
+	})
+	if err != nil {
+		s.insertAuditBestEffort(ctx, buildUserActivateFailureAudit(actor, username, target, err))
+	}
+	return err
+}
+
+// SetLevel implementa la lógica de cambio de nivel con la regla de 3 admins.
+func (s *adminService) SetLevel(ctx context.Context, actor model.AdminActor, username string, newLevel model.UserLevel) error {
+	if actor.Username == username {
+		err := ErrSelfAdminMutation
+		s.insertAuditBestEffort(ctx, buildUserLevelChangeFailureAudit(actor, username, nil, newLevel, err))
+		return err
+	}
+	var target *model.User
+	err := s.tx.WithinTx(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
+		user, err := repos.Users.GetByUsername(ctx, username)
+		if err != nil {
+			return err
+		}
+		target = user
+
+		if newLevel == model.LevelAdmin && user.Level != model.LevelAdmin {
+			if err := repos.Users.LockActiveAdminInvariant(ctx); err != nil {
+				return err
+			}
+			user, err = repos.Users.GetByUsername(ctx, username)
+			if err != nil {
+				return err
+			}
+			target = user
+			if user.IsActive && user.Level != model.LevelAdmin {
+				count, err := repos.Users.CountAdmins(ctx)
+				if err != nil {
+					return err
+				}
+				if count >= maxAdmins {
+					return ErrMaxAdminsReached
+				}
 			}
 		}
 		if user.IsActive && user.Level == model.LevelAdmin && newLevel != model.LevelAdmin {
@@ -119,14 +254,25 @@ func (s *adminService) SetLevel(ctx context.Context, actor model.AdminActor, use
 		}
 		return repos.Audit.Insert(ctx, buildUserLevelChangeAudit(actor, user, newLevel))
 	})
+	if err != nil {
+		s.insertAuditBestEffort(ctx, buildUserLevelChangeFailureAudit(actor, username, target, newLevel, err))
+	}
+	return err
 }
 
 func (s *adminService) Deactivate(ctx context.Context, actor model.AdminActor, username string) error {
-	return s.tx.WithinTx(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
+	if actor.Username == username {
+		err := ErrSelfAdminMutation
+		s.insertAuditBestEffort(ctx, buildUserDeactivateFailureAudit(actor, username, nil, err))
+		return err
+	}
+	var target *model.User
+	err := s.tx.WithinTx(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
 		user, err := repos.Users.GetByUsername(ctx, username)
 		if err != nil {
 			return err
 		}
+		target = user
 		if user.IsActive && user.Level == model.LevelAdmin {
 			if err := repos.Users.LockActiveAdminInvariant(ctx); err != nil {
 				return err
@@ -144,6 +290,36 @@ func (s *adminService) Deactivate(ctx context.Context, actor model.AdminActor, u
 		}
 		return repos.Audit.Insert(ctx, buildUserDeactivateAudit(actor, user))
 	})
+	if err != nil {
+		s.insertAuditBestEffort(ctx, buildUserDeactivateFailureAudit(actor, username, target, err))
+	}
+	return err
+}
+
+func hashPassword(password string) (string, error) {
+	if err := model.ValidateTemporaryPasswordBytes(password); err != nil {
+		return "", err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
+func (s *adminService) insertAuditBestEffort(_ context.Context, entry *model.AuditEntry) {
+	if entry == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), auditBestEffortTimeout)
+	defer cancel()
+	if err := s.auditRepo.Insert(ctx, entry); err != nil {
+		reasonCode := ""
+		if entry.ReasonCode != nil {
+			reasonCode = *entry.ReasonCode
+		}
+		log.Printf("warn: failed to insert admin audit entry action=%q outcome=%q reason_code=%q: %v", entry.Action, entry.Outcome, reasonCode, err)
+	}
 }
 
 // GrantAdmin asciende a admin con idempotencia y verificación del límite.
@@ -153,27 +329,46 @@ func (s *adminService) Deactivate(ctx context.Context, actor model.AdminActor, u
 func (s *adminService) GrantAdmin(ctx context.Context, actor model.AdminActor, username string) error {
 	user, err := s.userRepo.GetByUsername(ctx, username)
 	if err != nil {
+		s.insertAuditBestEffort(ctx, buildUserLevelChangeFailureAudit(actor, username, nil, model.LevelAdmin, err))
 		return err
 	}
+	target := user
 
 	// Idempotente: ya es admin → retornamos sin error y sin tocar la BD.
 	if user.Level == model.LevelAdmin {
 		return nil
 	}
 
-	return s.tx.WithinTx(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
-		count, err := repos.Users.CountAdmins(ctx)
+	err = s.tx.WithinTx(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
+		if err := repos.Users.LockActiveAdminInvariant(ctx); err != nil {
+			return err
+		}
+		user, err = repos.Users.GetByUsername(ctx, username)
 		if err != nil {
 			return err
 		}
-		if count >= maxAdmins {
-			return ErrMaxAdminsReached
+		target = user
+		if user.Level == model.LevelAdmin {
+			return nil
+		}
+		if user.IsActive {
+			count, err := repos.Users.CountAdmins(ctx)
+			if err != nil {
+				return err
+			}
+			if count >= maxAdmins {
+				return ErrMaxAdminsReached
+			}
 		}
 		if err := repos.Users.UpdateLevel(ctx, user.ID, model.LevelAdmin); err != nil {
 			return err
 		}
 		return repos.Audit.Insert(ctx, buildUserLevelChangeAudit(actor, user, model.LevelAdmin))
 	})
+	if err != nil {
+		s.insertAuditBestEffort(ctx, buildUserLevelChangeFailureAudit(actor, username, target, model.LevelAdmin, err))
+	}
+	return err
 }
 
 // GetStats recopila estadísticas agregadas de usuarios y memorias.

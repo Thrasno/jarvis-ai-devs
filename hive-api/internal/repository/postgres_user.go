@@ -10,6 +10,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const activeAdminInvariantAdvisoryLockKey int64 = 4815162342
+
 // postgresUserRepository es la implementación de UserRepository sobre PostgreSQL.
 //
 // Usamos pgxpool.Pool para todas las queries — el pool gestiona automáticamente
@@ -91,6 +93,12 @@ func (r *postgresUserRepository) UpdateLevel(ctx context.Context, id string, lev
 	return wrapPgError(err, "UpdateLevel")
 }
 
+func (r *postgresUserRepository) UpdatePassword(ctx context.Context, id string, passwordHash string) error {
+	const q = `UPDATE users SET password = $1, updated_at = $2 WHERE id = $3`
+	_, err := r.db.Exec(ctx, q, passwordHash, time.Now(), id)
+	return wrapPgError(err, "UpdatePassword")
+}
+
 func (r *postgresUserRepository) CountAdmins(ctx context.Context) (int, error) {
 	const q = `SELECT COUNT(*) FROM users WHERE level = 'admin' AND is_active = true`
 	var count int
@@ -99,9 +107,9 @@ func (r *postgresUserRepository) CountAdmins(ctx context.Context) (int, error) {
 }
 
 func (r *postgresUserRepository) LockActiveAdminInvariant(ctx context.Context) error {
-	const q = `SELECT pg_advisory_xact_lock(4815162342)`
+	const q = `SELECT pg_advisory_xact_lock($1)`
 	var ignored any
-	err := r.db.QueryRow(ctx, q).Scan(&ignored)
+	err := r.db.QueryRow(ctx, q, activeAdminInvariantAdvisoryLockKey).Scan(&ignored)
 	return wrapPgError(err, "LockActiveAdminInvariant")
 }
 
@@ -109,6 +117,12 @@ func (r *postgresUserRepository) Deactivate(ctx context.Context, id string) erro
 	const q = `UPDATE users SET is_active = false, updated_at = $1 WHERE id = $2`
 	_, err := r.db.Exec(ctx, q, time.Now(), id)
 	return wrapPgError(err, "Deactivate")
+}
+
+func (r *postgresUserRepository) Activate(ctx context.Context, id string) error {
+	const q = `UPDATE users SET is_active = true, updated_at = $1 WHERE id = $2`
+	_, err := r.db.Exec(ctx, q, time.Now(), id)
+	return wrapPgError(err, "Activate")
 }
 
 // scanUser ejecuta una query que devuelve un único usuario y escanea el resultado.

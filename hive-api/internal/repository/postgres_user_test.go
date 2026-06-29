@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
@@ -70,6 +71,69 @@ func TestPostgresUserRepository_Create(t *testing.T) {
 			assert.Equal(t, tt.user.Email, created.Email)
 			assert.Equal(t, tt.user.Level, created.Level)
 			assert.Equal(t, tt.user.IsActive, created.IsActive)
+		})
+	}
+}
+
+func TestPostgresUserRepository_Create_DuplicateMapsToErrConflict(t *testing.T) {
+	pool, cleanup := startPostgres(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresUserRepository(pool)
+
+	tests := []struct {
+		name      string
+		firstUser *model.User
+		duplicate *model.User
+	}{
+		{
+			name: "duplicate username maps to conflict",
+			firstUser: &model.User{
+				Username: "duplicate-username",
+				Email:    "duplicate-username@example.com",
+				Password: "hash-one",
+				Level:    model.LevelMember,
+				IsActive: true,
+			},
+			duplicate: &model.User{
+				Username: "duplicate-username",
+				Email:    "other-username@example.com",
+				Password: "hash-two",
+				Level:    model.LevelViewer,
+				IsActive: true,
+			},
+		},
+		{
+			name: "duplicate email maps to conflict",
+			firstUser: &model.User{
+				Username: "duplicate-email-owner",
+				Email:    "duplicate-email@example.com",
+				Password: "hash-one",
+				Level:    model.LevelMember,
+				IsActive: true,
+			},
+			duplicate: &model.User{
+				Username: "duplicate-email-other",
+				Email:    "duplicate-email@example.com",
+				Password: "hash-two",
+				Level:    model.LevelViewer,
+				IsActive: true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.NoError(t, truncateTables(ctx, pool))
+
+			_, err := repo.Create(ctx, tt.firstUser)
+			require.NoError(t, err)
+
+			_, err = repo.Create(ctx, tt.duplicate)
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, ErrConflict), "expected duplicate create error to wrap ErrConflict, got %v", err)
+			assert.Contains(t, err.Error(), "unique constraint")
 		})
 	}
 }
@@ -274,6 +338,34 @@ func TestPostgresUserRepository_UpdateLevel(t *testing.T) {
 	}
 }
 
+func TestPostgresUserRepository_UpdatePassword_UpdatesOnlyStoredHash(t *testing.T) {
+	pool, cleanup := startPostgres(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresUserRepository(pool)
+
+	created, err := repo.Create(ctx, &model.User{
+		Username: "passwordtest",
+		Email:    "passwordtest@example.com",
+		Password: "old-hash",
+		Level:    model.LevelAdmin,
+		IsActive: false,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, repo.UpdatePassword(ctx, created.ID, "new-hash"))
+
+	user, err := repo.GetByID(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "new-hash", user.Password)
+	assert.Equal(t, created.ID, user.ID)
+	assert.Equal(t, created.Username, user.Username)
+	assert.Equal(t, created.Email, user.Email)
+	assert.Equal(t, created.Level, user.Level)
+	assert.Equal(t, created.IsActive, user.IsActive)
+}
+
 // TestPostgresUserRepository_Deactivate verifica que podemos desactivar usuarios.
 // Casos a probar:
 // - Usuario activo → is_active = false
@@ -330,6 +422,34 @@ func TestPostgresUserRepository_Deactivate(t *testing.T) {
 			assert.False(t, user.IsActive, "user should be inactive")
 		})
 	}
+}
+
+func TestPostgresUserRepository_Activate_SetsUserActive(t *testing.T) {
+	pool, cleanup := startPostgres(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresUserRepository(pool)
+
+	created, err := repo.Create(ctx, &model.User{
+		Username: "activatetest",
+		Email:    "activate@example.com",
+		Password: "hashedpass",
+		Level:    model.LevelMember,
+		IsActive: false,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, repo.Activate(ctx, created.ID))
+
+	user, err := repo.GetByID(ctx, created.ID)
+	require.NoError(t, err)
+	assert.True(t, user.IsActive)
+	assert.Equal(t, created.ID, user.ID)
+	assert.Equal(t, created.Username, user.Username)
+	assert.Equal(t, created.Email, user.Email)
+	assert.Equal(t, created.Password, user.Password)
+	assert.Equal(t, created.Level, user.Level)
 }
 
 // TestPostgresUserRepository_GetByEmail verifica que podemos recuperar usuarios por email.

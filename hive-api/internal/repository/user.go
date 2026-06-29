@@ -45,6 +45,8 @@ type UserRepository interface {
 	// UpdateLevel cambia el nivel de acceso de un usuario.
 	UpdateLevel(ctx context.Context, id string, level model.UserLevel) error
 
+	UpdatePassword(ctx context.Context, id string, passwordHash string) error
+
 	// CountAdmins devuelve cuántos usuarios tienen nivel admin.
 	// Se usa para enforcement del límite de 3 admins máximo.
 	CountAdmins(ctx context.Context) (int, error)
@@ -56,4 +58,6 @@ type UserRepository interface {
 	// Deactivate deshabilita un usuario (is_active = false).
 	// No borra el registro — preservamos el historial.
 	Deactivate(ctx context.Context, id string) error
+
+	Activate(ctx context.Context, id string) error
 }

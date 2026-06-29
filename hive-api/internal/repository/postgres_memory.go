@@ -890,6 +890,10 @@ func wrapPgError(err error, op string) error {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return fmt.Errorf("%s: unique constraint: %w", op, ErrConflict)
+	}
 	return fmt.Errorf("%s: %w", op, err)
 }
 

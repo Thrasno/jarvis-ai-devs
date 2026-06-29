@@ -76,6 +76,11 @@ func (m *MockUserRepository) UpdateLevel(ctx context.Context, id string, level m
 	return args.Error(0)
 }
 
+func (m *MockUserRepository) UpdatePassword(ctx context.Context, id string, passwordHash string) error {
+	args := m.Called(ctx, id, passwordHash)
+	return args.Error(0)
+}
+
 func (m *MockUserRepository) CountAdmins(ctx context.Context) (int, error) {
 	args := m.Called(ctx)
 	return args.Int(0), args.Error(1)
@@ -87,6 +92,11 @@ func (m *MockUserRepository) LockActiveAdminInvariant(ctx context.Context) error
 }
 
 func (m *MockUserRepository) Deactivate(ctx context.Context, id string) error {
+	args := m.Called(ctx, id)
+	return args.Error(0)
+}
+
+func (m *MockUserRepository) Activate(ctx context.Context, id string) error {
 	args := m.Called(ctx, id)
 	return args.Error(0)
 }

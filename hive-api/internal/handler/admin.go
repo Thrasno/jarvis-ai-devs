@@ -58,6 +58,55 @@ func (h *AdminHandler) ListAuditLogs(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+func (h *AdminHandler) CreateUser(c *gin.Context) {
+	var req model.CreateUserRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: err.Error()})
+		return
+	}
+	if err := model.ValidateTemporaryPasswordBytes(req.TemporaryPassword); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	if err := h.svc.CreateUser(c.Request.Context(), adminActorFromCtx(c), req); err != nil {
+		h.writeAdminMutationError(c, err, "error al crear usuario")
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"message": "usuario creado"})
+}
+
+func (h *AdminHandler) ResetTemporaryPassword(c *gin.Context) {
+	username := c.Param("username")
+	var req model.ResetTemporaryPasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: err.Error()})
+		return
+	}
+	if err := model.ValidateTemporaryPasswordBytes(req.TemporaryPassword); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	if err := h.svc.ResetTemporaryPassword(c.Request.Context(), adminActorFromCtx(c), username, req); err != nil {
+		h.writeAdminMutationError(c, err, "error al resetear contraseña")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "contraseña temporal actualizada"})
+}
+
+func (h *AdminHandler) Activate(c *gin.Context) {
+	username := c.Param("username")
+	if err := h.svc.Activate(c.Request.Context(), adminActorFromCtx(c), username); err != nil {
+		h.writeAdminMutationError(c, err, "error al activar usuario")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "usuario activado"})
+}
+
 // SetLevel maneja POST /admin/users/:username/level.
 // Cambia el nivel de acceso de un usuario.
 //
@@ -87,6 +136,8 @@ func (h *AdminHandler) SetLevel(c *gin.Context) {
 
 	if err := h.svc.SetLevel(c.Request.Context(), adminActorFromCtx(c), username, req.Level); err != nil {
 		switch {
+		case errors.Is(err, service.ErrSelfAdminMutation):
+			c.JSON(http.StatusForbidden, model.ErrorResponse{Error: err.Error()})
 		case errors.Is(err, repository.ErrNotFound):
 			c.JSON(http.StatusNotFound, model.ErrorResponse{Error: "usuario no encontrado"})
 		case errors.Is(err, service.ErrMaxAdminsReached):
@@ -146,6 +197,8 @@ func (h *AdminHandler) Deactivate(c *gin.Context) {
 
 	if err := h.svc.Deactivate(c.Request.Context(), adminActorFromCtx(c), username); err != nil {
 		switch {
+		case errors.Is(err, service.ErrSelfAdminMutation):
+			c.JSON(http.StatusForbidden, model.ErrorResponse{Error: err.Error()})
 		case errors.Is(err, repository.ErrNotFound):
 			c.JSON(http.StatusNotFound, model.ErrorResponse{Error: "usuario no encontrado"})
 		case errors.Is(err, service.ErrInsufficientAdmins):
@@ -157,6 +210,21 @@ func (h *AdminHandler) Deactivate(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "usuario desactivado"})
+}
+
+func (h *AdminHandler) writeAdminMutationError(c *gin.Context, err error, fallback string) {
+	switch {
+	case errors.Is(err, model.ErrTemporaryPasswordTooLong):
+		c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: err.Error()})
+	case errors.Is(err, service.ErrSelfAdminMutation):
+		c.JSON(http.StatusForbidden, model.ErrorResponse{Error: err.Error()})
+	case errors.Is(err, repository.ErrNotFound):
+		c.JSON(http.StatusNotFound, model.ErrorResponse{Error: "usuario no encontrado"})
+	case errors.Is(err, repository.ErrConflict), errors.Is(err, service.ErrMaxAdminsReached), errors.Is(err, service.ErrInsufficientAdmins):
+		c.JSON(http.StatusConflict, model.ErrorResponse{Error: err.Error()})
+	default:
+		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: fallback})
+	}
 }
 
 // GetStats maneja GET /admin/stats.
