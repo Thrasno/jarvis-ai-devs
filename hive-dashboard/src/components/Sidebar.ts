@@ -165,6 +165,7 @@ function renderProfileBlock(container: HTMLElement, props: ProfileBlockProps): v
   // Initials avatar
   const avatar = document.createElement('div')
   avatar.className = 'dashboard-sidebar__profile-avatar'
+  avatar.dataset.userRole = props.profile.role
   avatar.setAttribute('aria-hidden', 'true')
   avatar.textContent = props.profile.initials
 

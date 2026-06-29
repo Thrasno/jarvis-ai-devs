@@ -115,7 +115,9 @@ describe('Sidebar profile block', () => {
     renderSidebar(container, { ...baseProps, userLevel: 'member', profile, onLogout: vi.fn() })
 
     const profileBlock = container.querySelector('[data-sidebar-profile]')
+    const avatar = container.querySelector('.dashboard-sidebar__profile-avatar')
     expect(profileBlock).not.toBeNull()
+    expect(avatar?.getAttribute('data-user-role')).toBe('member')
     expect(profileBlock?.textContent).toContain('A')
     expect(profileBlock?.textContent).toContain('alice@example.com')
     expect(profileBlock?.textContent).toContain('member')
