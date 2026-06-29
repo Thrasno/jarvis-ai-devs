@@ -1,5 +1,5 @@
 import type { CreateUserRequest, User, UserLevel } from '../api/client'
-import { append, emptyState, error, statusBadge, text } from '../components/dom'
+import { append, emptyState, error, text } from '../components/dom'
 import type { ViewState } from './Overview'
 
 const ROLE_OPTIONS: UserLevel[] = ['viewer', 'member', 'admin']
@@ -156,7 +156,7 @@ function userRow(user: User, options: UserManagementOptions): HTMLElement {
     cell(text(user.email || 'Unavailable', 'dashboard-users__email')),
     cell(roleSwitcher(user, options)),
     cell(text(`Admin seat: ${isAdminSeat(user) ? 'yes' : 'no'}`, 'dashboard-users__seat-state')),
-    cell(statusCell(user)),
+    cell(statusCell(user, options)),
     cell(managementControls(user, options))
   )
   return row
@@ -169,10 +169,29 @@ function identityCell(user: User): HTMLElement {
   return identity
 }
 
-function statusCell(user: User): HTMLElement {
+function statusCell(user: User, options: UserManagementOptions): HTMLElement {
   const state = document.createElement('div')
   state.className = 'dashboard-users__status-cell'
-  state.append(text(`State: ${user.is_active ? 'active' : 'inactive'}`, 'dashboard-users__state-text'), statusBadge(user.is_active ? 'active' : 'inactive'))
+  const statusPending = options.pendingAction?.username === user.username && (options.pendingAction.type === 'deactivate' || options.pendingAction.type === 'activate')
+  const activateUnavailable = !user.is_active && !options.actions?.onActivateUser
+  const status = user.is_active ? 'active' : 'inactive'
+  const control = button(statusTagLabel(user, statusPending), {
+    className: 'dashboard-users__status-toggle dashboard-status status',
+    disabled: !canMutate(user, options) || activateUnavailable
+  })
+  control.dataset.dashboardPrimitive = 'status'
+  control.dataset.dashboardStatus = status
+  control.dataset.userStatusAction = status
+  control.setAttribute('aria-label', statusButtonLabel(user, statusPending))
+  if (!control.disabled) {
+    control.addEventListener('click', () => {
+      const nextState = user.is_active ? 'inactive' : 'active'
+      showConfirmation(state, `Mark ${user.username} ${nextState}?`, () => user.is_active
+        ? options.actions!.onDeactivateUser(user.username)
+        : options.actions!.onActivateUser!(user.username))
+    })
+  }
+  state.append(control)
   return state
 }
 
@@ -220,22 +239,12 @@ function managementControls(user: User, options: UserManagementOptions): HTMLEle
 
   const disabled = !canMutate(user, options)
   const resetPending = options.pendingAction?.username === user.username && options.pendingAction.type === 'reset-password'
-  const statusPending = options.pendingAction?.username === user.username && (options.pendingAction.type === 'deactivate' || options.pendingAction.type === 'activate')
-  const activateUnavailable = !user.is_active && !options.actions?.onActivateUser
-  const statusLabel = statusButtonLabel(user, statusPending)
 
   if (options.actions?.onResetTemporaryPassword || options.currentLevel !== 'admin') {
     group.append(actionButton(`${resetPending ? 'Resetting password for' : 'Reset password for'} ${user.username}`, disabled, () => {
       showPasswordResetConfirmation(group, user.username, (temporaryPassword) => options.actions!.onResetTemporaryPassword!(user.username, temporaryPassword))
     }))
   }
-
-  group.append(actionButton(statusLabel, disabled || activateUnavailable, () => {
-    const nextState = user.is_active ? 'inactive' : 'active'
-    showConfirmation(group, `Mark ${user.username} ${nextState}?`, () => user.is_active
-      ? options.actions!.onDeactivateUser(user.username)
-      : options.actions!.onActivateUser!(user.username))
-  }, user.is_active ? 'active' : 'inactive'))
 
   if (options.currentUsername === user.username && options.currentLevel === 'admin') {
     group.append(text('You cannot manage your own account.', 'dashboard-users__permission-note'))
@@ -249,13 +258,17 @@ function statusButtonLabel(user: User, pending: boolean): string {
   return user.is_active ? `Mark ${user.username} inactive` : `Mark ${user.username} active`
 }
 
+function statusTagLabel(user: User, pending: boolean): string {
+  const label = user.is_active ? 'Active' : 'Inactive'
+  return pending ? `${label}…` : label
+}
+
 function userLevelFromForm(value: FormDataEntryValue | null): UserLevel {
   return value === 'viewer' || value === 'admin' ? value : 'member'
 }
 
-function actionButton(label: string, disabled: boolean, onClick: () => void, state?: 'active' | 'inactive'): HTMLButtonElement {
+function actionButton(label: string, disabled: boolean, onClick: () => void): HTMLButtonElement {
   const action = button(label, { className: 'dashboard-users__button', disabled })
-  if (state) action.dataset.userStatusAction = state
   action.setAttribute('aria-label', label)
   if (!disabled) action.addEventListener('click', onClick)
   return action

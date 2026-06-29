@@ -164,8 +164,9 @@ describe('dashboard shell', () => {
 
     expect(container.querySelector('[data-dashboard-primitive="sidebar"] nav')?.textContent).toContain('Dashboard')
     expect(container.querySelector('section h2')?.textContent).toBe('Users')
-    expect(container.textContent).toContain('State: active')
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Mark admin inactive"]')?.textContent).toBe('Active')
     expect(container.textContent).toContain('admin@example.com')
+    expect(container.textContent).not.toContain('State: active')
     expect(container.textContent).not.toContain('Authentication is active')
   })
 
@@ -480,7 +481,8 @@ describe('dashboard shell', () => {
 
       expect(api.adminUsers).toHaveBeenCalledTimes(2)
       const memberRow = container.querySelector('[role="row"][aria-label="member user account"]')
-      expect(memberRow?.textContent).toContain('State: inactive')
+      expect(memberRow?.textContent).toContain('Inactive')
+      expect(memberRow?.textContent).not.toContain('State: inactive')
       expect(memberRow?.textContent).not.toContain('State: active')
     } finally {
       cleanup()
@@ -528,7 +530,8 @@ describe('dashboard shell', () => {
 
       expect(api.adminUsers).toHaveBeenCalledTimes(2)
       const memberRow = container.querySelector('[role="row"][aria-label="member user account"]')
-      expect(memberRow?.textContent).toContain('State: inactive')
+      expect(memberRow?.textContent).toContain('Inactive')
+      expect(memberRow?.textContent).not.toContain('State: inactive')
       expect(memberRow?.textContent).not.toContain('State: active')
       expect(container.querySelector('button[aria-label="Marking member inactive…"]')).toBeNull()
     } finally {
@@ -710,8 +713,10 @@ describe('dashboard shell', () => {
       await flushDashboard()
 
       expect(api.adminUsers).toHaveBeenCalledTimes(2)
-      expect(container.textContent).toContain('State: active')
-      expect(container.textContent).not.toContain('State: inactive')
+      const memberRow = container.querySelector('[role="row"][aria-label="inactive-member user account"]')
+      expect(memberRow?.textContent).toContain('Active')
+      expect(memberRow?.textContent).not.toContain('State: active')
+      expect(memberRow?.textContent).not.toContain('State: inactive')
     } finally {
       cleanup()
       history.pushState(null, '', originalPath)

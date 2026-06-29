@@ -14,11 +14,13 @@ describe('users view', () => {
     expect(view.textContent).toContain('admin@example.com')
     expect(view.textContent).toContain('Level: admin')
     expect(view.textContent).toContain('Admin seat: yes')
-    expect(view.textContent).toContain('State: active')
+    expect(rowByName(view, 'admin')?.textContent).toContain('Active')
+    expect(rowByName(view, 'admin')?.textContent).not.toContain('State: active')
     expect(view.textContent).toContain('viewer')
     expect(view.textContent).toContain('Level: viewer')
     expect(view.textContent).toContain('Admin seat: no')
-    expect(view.textContent).toContain('State: inactive')
+    expect(rowByName(view, 'viewer')?.textContent).toContain('Inactive')
+    expect(rowByName(view, 'viewer')?.textContent).not.toContain('State: inactive')
   })
 
   it('renders an empty state', () => {
@@ -47,7 +49,7 @@ describe('users view', () => {
     expect(view.textContent).toContain('Admin access is required to change users.')
     expect(buttonByText(roleSwitcher(view, 'member'), 'viewer')?.disabled).toBe(true)
     expect(buttonByText(roleSwitcher(view, 'member'), 'admin')?.disabled).toBe(true)
-    expect(actionButton(view, 'Mark member inactive')?.disabled).toBe(true)
+    expect(statusButton(view, 'Mark member inactive')?.disabled).toBe(true)
   })
 
   it('renders role-level controls for supported non-admin level changes', () => {
@@ -110,7 +112,7 @@ describe('users view', () => {
     const actions = userActions()
     const view = renderUsers({ status: 'ready', data: { users: [memberUser] } }, { currentUsername: 'admin', currentLevel: 'admin', actions })
 
-    actionButton(view, 'Mark member inactive')!.click()
+    statusButton(view, 'Mark member inactive')!.click()
     expect(view.querySelector('[role="dialog"]')?.textContent).toContain('Mark member inactive?')
     actionButton(view, 'Confirm')!.click()
     await Promise.resolve()
@@ -123,7 +125,7 @@ describe('users view', () => {
 
     expect(buttonByText(roleSwitcher(view, 'admin'), 'member')?.disabled).toBe(true)
     expect(buttonByText(roleSwitcher(view, 'admin'), 'viewer')?.disabled).toBe(true)
-    expect(actionButton(view, 'Mark admin inactive')?.disabled).toBe(true)
+    expect(statusButton(view, 'Mark admin inactive')?.disabled).toBe(true)
     expect(view.textContent).toContain('You cannot manage your own account.')
   })
 
@@ -132,13 +134,13 @@ describe('users view', () => {
 
     expect(buttonByText(roleSwitcher(view, 'member'), 'viewer')?.disabled).toBe(true)
     expect(buttonByText(roleSwitcher(view, 'member'), 'admin')?.disabled).toBe(true)
-    expect(actionButton(view, 'Mark member inactive')?.disabled).toBe(true)
+    expect(statusButton(view, 'Mark member inactive')?.disabled).toBe(true)
   })
 
   it('disables duplicate submissions while the same action is pending', () => {
     const view = renderUsers({ status: 'ready', data: { users: [memberUser] } }, { currentUsername: 'admin', currentLevel: 'admin', actions: userActions(), pendingAction: { username: 'member', type: 'deactivate' } })
 
-    expect(actionButton(view, 'Marking member inactive…')?.disabled).toBe(true)
+    expect(statusButton(view, 'Marking member inactive…')?.disabled).toBe(true)
     expect(buttonByText(roleSwitcher(view, 'member'), 'viewer')?.disabled).toBe(true)
     expect(buttonByText(roleSwitcher(view, 'member'), 'admin')?.disabled).toBe(true)
   })
@@ -193,7 +195,7 @@ describe('users view', () => {
     expect(buttonByText(view, 'member')?.disabled).toBe(true)
     expect(buttonByText(view, 'admin')?.disabled).toBe(true)
     expect(actionButton(view, 'Reset password for member')?.disabled).toBe(true)
-    expect(actionButton(view, 'Mark member inactive')?.disabled).toBe(true)
+    expect(statusButton(view, 'Mark member inactive')?.disabled).toBe(true)
   })
 
   it('uses one status toggle button and does not call the mutation when confirmation is cancelled', async () => {
@@ -202,7 +204,9 @@ describe('users view', () => {
 
     expect(actionButton(view, 'Deactivate member')).toBeNull()
     expect(actionButton(view, 'Activate viewer')).toBeNull()
-    actionButton(view, 'Mark member inactive')!.click()
+    expect(actionButton(view, 'Mark member inactive')).toBeNull()
+    expect(statusButton(view, 'Mark member inactive')?.textContent).toBe('Active')
+    statusButton(view, 'Mark member inactive')!.click()
     expect(view.querySelector('[role="dialog"]')?.textContent).toContain('Mark member inactive?')
     actionButton(view, 'Cancel')!.click()
     await Promise.resolve()
@@ -210,7 +214,7 @@ describe('users view', () => {
     expect(actions.onDeactivateUser).not.toHaveBeenCalled()
     expect(actions.onActivateUser).not.toHaveBeenCalled()
     expect(view.querySelector('[role="dialog"]')).toBeNull()
-    expect(actionButton(view, 'Mark viewer active')).not.toBeNull()
+    expect(statusButton(view, 'Mark viewer active')?.textContent).toBe('Inactive')
   })
 
   it('blocks empty and short temporary password resets before calling the action', async () => {
@@ -241,7 +245,7 @@ describe('users view', () => {
     }
     const view = renderUsers({ status: 'ready', data: { users: [viewerUser] } }, { currentUsername: 'admin', currentLevel: 'admin', actions })
 
-    const activate = actionButton(view, 'Mark viewer active')
+    const activate = statusButton(view, 'Mark viewer active')
     expect(activate).not.toBeNull()
     expect(activate?.disabled).toBe(true)
 
@@ -275,6 +279,10 @@ describe('users view', () => {
 
 function actionButton(root: HTMLElement, label: string): HTMLButtonElement | null {
   return Array.from(root.querySelectorAll('button')).find((button) => button.textContent === label) ?? null
+}
+
+function statusButton(root: HTMLElement, label: string): HTMLButtonElement | null {
+  return root.querySelector<HTMLButtonElement>(`button[data-user-status-action][aria-label="${label}"]`)
 }
 
 function columnHeaders(root: HTMLElement): string[] {
