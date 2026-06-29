@@ -10,10 +10,13 @@ const (
 type AuditAction string
 
 const (
-	AuditActionSyncPush        AuditAction = "sync_push"
-	AuditActionSyncConflict    AuditAction = "sync_conflict"
-	AuditActionUserLevelChange AuditAction = "user_level_change"
-	AuditActionUserDeactivate  AuditAction = "user_deactivate"
+	AuditActionSyncPush          AuditAction = "sync_push"
+	AuditActionSyncConflict      AuditAction = "sync_conflict"
+	AuditActionUserCreate        AuditAction = "user_create"
+	AuditActionUserPasswordReset AuditAction = "user_password_reset"
+	AuditActionUserActivate      AuditAction = "user_activate"
+	AuditActionUserLevelChange   AuditAction = "user_level_change"
+	AuditActionUserDeactivate    AuditAction = "user_deactivate"
 )
 
 type AuditOutcome string
@@ -95,6 +98,25 @@ func SanitizeAuditMetadata(action AuditAction, metadata map[string]any) AuditMet
 
 func auditMetadataAllowlist(action AuditAction) map[string]bool {
 	switch action {
+	case AuditActionUserCreate:
+		return map[string]bool{
+			"target_username": true,
+			"target_user_id":  true,
+			"target_level":    true,
+			"actor_username":  true,
+		}
+	case AuditActionUserPasswordReset:
+		return map[string]bool{
+			"target_username": true,
+			"target_user_id":  true,
+			"actor_username":  true,
+		}
+	case AuditActionUserActivate:
+		return map[string]bool{
+			"target_username": true,
+			"target_user_id":  true,
+			"actor_username":  true,
+		}
 	case AuditActionUserLevelChange:
 		return map[string]bool{
 			"target_username": true,

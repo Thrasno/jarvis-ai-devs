@@ -35,6 +35,20 @@ func (m *mockAuthSvc) ValidateToken(tokenString string) (*model.Claims, error) {
 }
 
 func (m *mockAuthSvc) GetCurrentUser(ctx context.Context, userID string) (*model.User, error) {
+	for _, call := range m.ExpectedCalls {
+		if call.Method == "GetCurrentUser" {
+			args := m.Called(ctx, userID)
+			if args.Get(0) == nil {
+				return nil, args.Error(1)
+			}
+			return args.Get(0).(*model.User), args.Error(1)
+		}
+	}
+
+	if userID != "" {
+		return &model.User{ID: userID, Username: "adminuser", Level: model.LevelAdmin, IsActive: true}, nil
+	}
+
 	args := m.Called(ctx, userID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
@@ -137,6 +151,21 @@ func (m *mockAdminSvc) ListUsers(ctx context.Context) ([]*model.User, error) {
 		return nil, args.Error(1)
 	}
 	return args.Get(0).([]*model.User), args.Error(1)
+}
+
+func (m *mockAdminSvc) CreateUser(ctx context.Context, actor model.AdminActor, req model.CreateUserRequest) error {
+	args := m.Called(ctx, actor, req)
+	return args.Error(0)
+}
+
+func (m *mockAdminSvc) ResetTemporaryPassword(ctx context.Context, actor model.AdminActor, username string, req model.ResetTemporaryPasswordRequest) error {
+	args := m.Called(ctx, actor, username, req)
+	return args.Error(0)
+}
+
+func (m *mockAdminSvc) Activate(ctx context.Context, actor model.AdminActor, username string) error {
+	args := m.Called(ctx, actor, username)
+	return args.Error(0)
 }
 
 func (m *mockAdminSvc) SetLevel(ctx context.Context, actor model.AdminActor, username string, newLevel model.UserLevel) error {

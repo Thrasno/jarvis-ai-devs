@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,6 +62,350 @@ func TestListUsers_Forbidden(t *testing.T) {
 	w := doAuthRequest(t, adminDeps(authSvc, &mockAdminSvc{}), http.MethodGet, "/admin/users", nil, "member-token")
 
 	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+func TestCreateUser_Success(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+
+	req := model.CreateUserRequest{
+		Username:          "newuser",
+		Email:             "newuser@example.com",
+		Level:             model.LevelMember,
+		TemporaryPassword: "temporary-secret",
+	}
+	adminSvc := &mockAdminSvc{}
+	adminSvc.On("CreateUser", context.Background(), model.AdminActor{UserID: "admin-uuid-123", Username: "adminuser"}, req).Return(nil)
+
+	w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodPost, "/admin/users", req, "admin-token")
+
+	assert.Equal(t, http.StatusCreated, w.Code)
+	assert.NotContains(t, w.Body.String(), req.TemporaryPassword)
+	adminSvc.AssertExpectations(t)
+}
+
+func TestCreateUser_ForbiddenForNonAdmin(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "member-token").Return(testClaims(), nil)
+
+	w := doAuthRequest(t, adminDeps(authSvc, &mockAdminSvc{}), http.MethodPost, "/admin/users", map[string]string{
+		"username":           "newuser",
+		"email":              "newuser@example.com",
+		"level":              "member",
+		"temporary_password": "temporary-secret",
+	}, "member-token")
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+func TestAdminMutationRoutes_ForbiddenForNonAdminDoesNotCallService(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   any
+	}{
+		{
+			name:   "create user",
+			method: http.MethodPost,
+			path:   "/admin/users",
+			body: map[string]string{
+				"username":           "newuser",
+				"email":              "newuser@example.com",
+				"level":              "member",
+				"temporary_password": "temporary-secret",
+			},
+		},
+		{name: "reset temporary password", method: http.MethodPost, path: "/admin/users/member/reset-password", body: map[string]string{"temporary_password": "temporary-secret"}},
+		{name: "activate user", method: http.MethodPost, path: "/admin/users/member/activate"},
+		{name: "set level", method: http.MethodPost, path: "/admin/users/member/level", body: map[string]string{"level": "viewer"}},
+		{name: "grant admin compatibility endpoint", method: http.MethodPost, path: "/admin/users/member/grant-admin"},
+		{name: "deactivate user", method: http.MethodPost, path: "/admin/users/member/deactivate"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authSvc := &mockAuthSvc{}
+			authSvc.On("ValidateToken", "member-token").Return(testClaims(), nil)
+			adminSvc := &mockAdminSvc{}
+
+			w := doAuthRequest(t, adminDeps(authSvc, adminSvc), tt.method, tt.path, tt.body, "member-token")
+
+			assert.Equal(t, http.StatusForbidden, w.Code)
+			adminSvc.AssertNotCalled(t, "CreateUser", mock.Anything, mock.Anything, mock.Anything)
+			adminSvc.AssertNotCalled(t, "ResetTemporaryPassword", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+			adminSvc.AssertNotCalled(t, "Activate", mock.Anything, mock.Anything, mock.Anything)
+			adminSvc.AssertNotCalled(t, "SetLevel", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+			adminSvc.AssertNotCalled(t, "GrantAdmin", mock.Anything, mock.Anything, mock.Anything)
+			adminSvc.AssertNotCalled(t, "Deactivate", mock.Anything, mock.Anything, mock.Anything)
+		})
+	}
+}
+
+func TestAdminMutationRoutes_ForbiddenWhenCurrentUserNoLongerAdmin(t *testing.T) {
+	tests := []struct {
+		name        string
+		currentUser *model.User
+		currentErr  error
+	}{
+		{
+			name:        "demoted after token issued",
+			currentUser: &model.User{ID: "admin-uuid-123", Username: "adminuser", Level: model.LevelMember, IsActive: true},
+		},
+		{
+			name:       "deactivated after token issued",
+			currentErr: service.ErrUserInactive,
+		},
+	}
+
+	routes := []struct {
+		name   string
+		method string
+		path   string
+		body   any
+	}{
+		{
+			name:   "create user",
+			method: http.MethodPost,
+			path:   "/admin/users",
+			body: map[string]string{
+				"username":           "newuser",
+				"email":              "newuser@example.com",
+				"level":              "member",
+				"temporary_password": "temporary-secret",
+			},
+		},
+		{name: "reset temporary password", method: http.MethodPost, path: "/admin/users/member/reset-password", body: map[string]string{"temporary_password": "temporary-secret"}},
+		{name: "activate user", method: http.MethodPost, path: "/admin/users/member/activate"},
+	}
+
+	for _, tt := range tests {
+		for _, route := range routes {
+			t.Run(tt.name+"/"+route.name, func(t *testing.T) {
+				authSvc := &mockAuthSvc{}
+				authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+				authSvc.On("GetCurrentUser", context.Background(), "admin-uuid-123").Return(tt.currentUser, tt.currentErr)
+				adminSvc := &mockAdminSvc{}
+
+				w := doAuthRequest(t, adminDeps(authSvc, adminSvc), route.method, route.path, route.body, "admin-token")
+
+				assert.Equal(t, http.StatusForbidden, w.Code)
+				adminSvc.AssertNotCalled(t, "CreateUser", mock.Anything, mock.Anything, mock.Anything)
+				adminSvc.AssertNotCalled(t, "ResetTemporaryPassword", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+				adminSvc.AssertNotCalled(t, "Activate", mock.Anything, mock.Anything, mock.Anything)
+				authSvc.AssertExpectations(t)
+			})
+		}
+	}
+}
+
+func TestCreateUser_InvalidRequestReturnsBadRequest(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+
+	adminSvc := &mockAdminSvc{}
+	w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodPost, "/admin/users", map[string]string{
+		"username": "newuser",
+		"level":    "owner",
+	}, "admin-token")
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	adminSvc.AssertNotCalled(t, "CreateUser", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestCreateUser_TemporaryPasswordBoundaryValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		password    string
+		wantStatus  int
+		wantService bool
+	}{
+		{name: "bcrypt maximum accepted", password: strings.Repeat("a", 72), wantStatus: http.StatusCreated, wantService: true},
+		{name: "bcrypt maximum accepted with multibyte input", password: strings.Repeat("ñ", 36), wantStatus: http.StatusCreated, wantService: true},
+		{name: "bcrypt byte maximum exceeded with multibyte input", password: strings.Repeat("ñ", 37), wantStatus: http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authSvc := &mockAuthSvc{}
+			authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+			req := model.CreateUserRequest{Username: "boundary", Email: "boundary@example.com", Level: model.LevelMember, TemporaryPassword: tt.password}
+			adminSvc := &mockAdminSvc{}
+			if tt.wantService {
+				adminSvc.On("CreateUser", context.Background(), model.AdminActor{UserID: "admin-uuid-123", Username: "adminuser"}, req).Return(nil)
+			}
+
+			w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodPost, "/admin/users", req, "admin-token")
+
+			assert.Equal(t, tt.wantStatus, w.Code)
+			if tt.wantService {
+				adminSvc.AssertExpectations(t)
+			} else {
+				adminSvc.AssertNotCalled(t, "CreateUser", mock.Anything, mock.Anything, mock.Anything)
+			}
+		})
+	}
+}
+
+func TestCreateUser_Conflict(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+
+	req := model.CreateUserRequest{
+		Username:          "existing",
+		Email:             "existing@example.com",
+		Level:             model.LevelAdmin,
+		TemporaryPassword: "temporary-secret",
+	}
+	adminSvc := &mockAdminSvc{}
+	adminSvc.On("CreateUser", context.Background(), model.AdminActor{UserID: "admin-uuid-123", Username: "adminuser"}, req).Return(repository.ErrConflict)
+
+	w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodPost, "/admin/users", req, "admin-token")
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	adminSvc.AssertExpectations(t)
+}
+
+func TestResetTemporaryPassword_Success(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+
+	req := model.ResetTemporaryPasswordRequest{TemporaryPassword: "temporary-secret"}
+	adminSvc := &mockAdminSvc{}
+	adminSvc.On("ResetTemporaryPassword", context.Background(), model.AdminActor{UserID: "admin-uuid-123", Username: "adminuser"}, "targetuser", req).Return(nil)
+
+	w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodPost, "/admin/users/targetuser/reset-password", req, "admin-token")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NotContains(t, w.Body.String(), req.TemporaryPassword)
+	adminSvc.AssertExpectations(t)
+}
+
+func TestResetTemporaryPassword_NotFound(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+
+	req := model.ResetTemporaryPasswordRequest{TemporaryPassword: "temporary-secret"}
+	adminSvc := &mockAdminSvc{}
+	adminSvc.On("ResetTemporaryPassword", context.Background(), model.AdminActor{UserID: "admin-uuid-123", Username: "adminuser"}, "nobody", req).Return(repository.ErrNotFound)
+
+	w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodPost, "/admin/users/nobody/reset-password", req, "admin-token")
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	adminSvc.AssertExpectations(t)
+}
+
+func TestResetTemporaryPassword_SelfResetForbidden(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+
+	req := model.ResetTemporaryPasswordRequest{TemporaryPassword: "temporary-secret"}
+	adminSvc := &mockAdminSvc{}
+	adminSvc.On("ResetTemporaryPassword", context.Background(), model.AdminActor{UserID: "admin-uuid-123", Username: "adminuser"}, "adminuser", req).
+		Return(service.ErrSelfAdminMutation)
+
+	w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodPost, "/admin/users/adminuser/reset-password", req, "admin-token")
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	adminSvc.AssertExpectations(t)
+}
+
+func TestResetTemporaryPassword_InvalidRequestReturnsBadRequest(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+
+	adminSvc := &mockAdminSvc{}
+	w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodPost, "/admin/users/targetuser/reset-password", map[string]string{}, "admin-token")
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	adminSvc.AssertNotCalled(t, "ResetTemporaryPassword", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestResetTemporaryPassword_TemporaryPasswordBoundaryValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		password    string
+		wantStatus  int
+		wantService bool
+	}{
+		{name: "bcrypt maximum accepted", password: strings.Repeat("a", 72), wantStatus: http.StatusOK, wantService: true},
+		{name: "bcrypt maximum accepted with multibyte input", password: strings.Repeat("ñ", 36), wantStatus: http.StatusOK, wantService: true},
+		{name: "bcrypt byte maximum exceeded with multibyte input", password: strings.Repeat("ñ", 37), wantStatus: http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authSvc := &mockAuthSvc{}
+			authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+			req := model.ResetTemporaryPasswordRequest{TemporaryPassword: tt.password}
+			adminSvc := &mockAdminSvc{}
+			if tt.wantService {
+				adminSvc.On("ResetTemporaryPassword", context.Background(), model.AdminActor{UserID: "admin-uuid-123", Username: "adminuser"}, "targetuser", req).Return(nil)
+			}
+
+			w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodPost, "/admin/users/targetuser/reset-password", req, "admin-token")
+
+			assert.Equal(t, tt.wantStatus, w.Code)
+			if tt.wantService {
+				adminSvc.AssertExpectations(t)
+			} else {
+				adminSvc.AssertNotCalled(t, "ResetTemporaryPassword", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+			}
+		})
+	}
+}
+
+func TestActivateUser_Success(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+
+	adminSvc := &mockAdminSvc{}
+	adminSvc.On("Activate", context.Background(), model.AdminActor{UserID: "admin-uuid-123", Username: "adminuser"}, "targetuser").Return(nil)
+
+	w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodPost, "/admin/users/targetuser/activate", nil, "admin-token")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	adminSvc.AssertExpectations(t)
+}
+
+func TestActivateUser_NotFound(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+
+	adminSvc := &mockAdminSvc{}
+	adminSvc.On("Activate", context.Background(), model.AdminActor{UserID: "admin-uuid-123", Username: "adminuser"}, "nobody").Return(repository.ErrNotFound)
+
+	w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodPost, "/admin/users/nobody/activate", nil, "admin-token")
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	adminSvc.AssertExpectations(t)
+}
+
+func TestActivateUser_MaxAdminsConflict(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+
+	adminSvc := &mockAdminSvc{}
+	adminSvc.On("Activate", context.Background(), model.AdminActor{UserID: "admin-uuid-123", Username: "adminuser"}, "inactiveadmin").Return(service.ErrMaxAdminsReached)
+
+	w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodPost, "/admin/users/inactiveadmin/activate", nil, "admin-token")
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	adminSvc.AssertExpectations(t)
+}
+
+func TestActivateUser_SelfActivateForbidden(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+
+	adminSvc := &mockAdminSvc{}
+	adminSvc.On("Activate", context.Background(), model.AdminActor{UserID: "admin-uuid-123", Username: "adminuser"}, "adminuser").
+		Return(service.ErrSelfAdminMutation)
+
+	w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodPost, "/admin/users/adminuser/activate", nil, "admin-token")
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	adminSvc.AssertExpectations(t)
 }
 
 // TestSetLevel_Success verifica que un admin pueda cambiar el nivel de un usuario
@@ -121,6 +466,18 @@ func TestSetLevel_InsufficientAdminsReturnsConflict(t *testing.T) {
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 	adminSvc.AssertExpectations(t)
+}
+
+func TestSetLevel_InvalidLevelReturnsBadRequestWithoutServiceCall(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
+	adminSvc := &mockAdminSvc{}
+
+	w := doAuthRequest(t, adminDeps(authSvc, adminSvc), http.MethodPost, "/admin/users/targetuser/level",
+		map[string]string{"level": "owner"}, "admin-token")
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	adminSvc.AssertNotCalled(t, "SetLevel", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
 // TestDeactivate_Success verifica que un admin pueda desactivar a un usuario

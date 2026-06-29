@@ -51,6 +51,42 @@ func TestAuditMetadata_AllowlistByAction(t *testing.T) {
 				"prompt_count":   2,
 			},
 		},
+		{
+			name:   "user create excludes temporary password fields",
+			action: AuditActionUserCreate,
+			input: map[string]any{
+				"target_username":    "ada",
+				"target_user_id":     "11111111-1111-1111-1111-111111111111",
+				"target_level":       "member",
+				"actor_username":     "root",
+				"temporary_password": "temporary-secret",
+				"password":           "temporary-secret",
+				"password_hash":      "$2a$10$secret",
+			},
+			want: AuditMetadata{
+				"target_username": "ada",
+				"target_user_id":  "11111111-1111-1111-1111-111111111111",
+				"target_level":    "member",
+				"actor_username":  "root",
+			},
+		},
+		{
+			name:   "password reset excludes temporary password fields",
+			action: AuditActionUserPasswordReset,
+			input: map[string]any{
+				"target_username":    "ada",
+				"target_user_id":     "11111111-1111-1111-1111-111111111111",
+				"actor_username":     "root",
+				"temporary_password": "temporary-secret",
+				"raw_password":       "temporary-secret",
+				"password_hash":      "$2a$10$secret",
+			},
+			want: AuditMetadata{
+				"target_username": "ada",
+				"target_user_id":  "11111111-1111-1111-1111-111111111111",
+				"actor_username":  "root",
+			},
+		},
 	}
 
 	for _, tt := range tests {

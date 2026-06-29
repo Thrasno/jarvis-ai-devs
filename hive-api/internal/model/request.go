@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // LoginRequest es el body del POST /auth/login.
 // binding:"required" indica a Gin que el campo es obligatorio.
@@ -121,7 +124,29 @@ type SyncMemoryPayload struct {
 
 // SetLevelRequest es el body del POST /admin/users/:username/level.
 type SetLevelRequest struct {
-	Level UserLevel `json:"level" binding:"required"`
+	Level UserLevel `json:"level" binding:"required,oneof=viewer member admin"`
+}
+
+type CreateUserRequest struct {
+	Username          string    `json:"username" binding:"required,max=100"`
+	Email             string    `json:"email" binding:"required,email,max=255"`
+	Level             UserLevel `json:"level" binding:"required,oneof=viewer member admin"`
+	TemporaryPassword string    `json:"temporary_password" binding:"required,min=8,max=72"`
+}
+
+type ResetTemporaryPasswordRequest struct {
+	TemporaryPassword string `json:"temporary_password" binding:"required,min=8,max=72"`
+}
+
+const MaxTemporaryPasswordBytes = 72
+
+var ErrTemporaryPasswordTooLong = errors.New("temporary password exceeds 72 bytes")
+
+func ValidateTemporaryPasswordBytes(password string) error {
+	if len([]byte(password)) > MaxTemporaryPasswordBytes {
+		return ErrTemporaryPasswordTooLong
+	}
+	return nil
 }
 
 // ListMemoriesQuery son los query params del GET /memories.
