@@ -268,6 +268,30 @@ describe('Hive API client', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/admin/users/new-admin/grant-admin', { method: 'POST', headers: { Authorization: 'Bearer jwt-token' } })
     expect(fetchMock).toHaveBeenNthCalledWith(3, '/admin/users/old%20user/deactivate', { method: 'POST', headers: { Authorization: 'Bearer jwt-token' } })
   })
+
+  it('calls create, temporary password reset, and activate admin user endpoints with secret request bodies only', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ message: 'user created' }, 201))
+      .mockResolvedValueOnce(jsonResponse({ message: 'temporary password reset' }))
+      .mockResolvedValueOnce(jsonResponse({ message: 'user activated' }))
+    const client = createApiClient({ fetch: fetchMock })
+
+    await expect(client.createUser('jwt-token', { username: 'new user', email: 'new@example.com', level: 'viewer', temporary_password: 'temporary-secret' })).resolves.toEqual({ message: 'user created' })
+    await expect(client.resetTemporaryPassword('jwt-token', 'new user', 'rotated-secret')).resolves.toEqual({ message: 'temporary password reset' })
+    await expect(client.activateUser('jwt-token', 'new user')).resolves.toEqual({ message: 'user activated' })
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/admin/users', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer jwt-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'new user', email: 'new@example.com', level: 'viewer', temporary_password: 'temporary-secret' })
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/admin/users/new%20user/reset-password', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer jwt-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ temporary_password: 'rotated-secret' })
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/admin/users/new%20user/activate', { method: 'POST', headers: { Authorization: 'Bearer jwt-token' } })
+  })
 })
 
 function jsonResponse(body: unknown, status = 200): Response {

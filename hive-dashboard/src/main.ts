@@ -1,4 +1,4 @@
-import { createApiClient, type AdminStats, type ApiClient, type Count, type Health, type Memory, type MemoryList, type MemoryListParams, type MemorySearch, type OverviewGrowth, type OverviewProjectSyncHealth, type OverviewStats, type SyncAttemptSummary, type User } from './api/client'
+import { createApiClient, type AdminStats, type ApiClient, type Count, type CreateUserRequest, type Health, type Memory, type MemoryList, type MemoryListParams, type MemorySearch, type OverviewGrowth, type OverviewProjectSyncHealth, type OverviewStats, type SyncAttemptSummary, type User } from './api/client'
 import { parseDashboardFilters } from './api/urlFilters'
 import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
 import { control } from './components/dom'
@@ -13,7 +13,7 @@ import { renderKnowledgeBrowser } from './views/KnowledgeBrowser'
 import { renderMemories, type MemoryDetailData, type MemoryDetailRoute, type MemoryDetailViewState } from './views/Memories'
 import { renderOverview, type ViewState } from './views/Overview'
 import { renderProjects } from './views/Projects'
-import { renderUsers, type UserManagementActionType } from './views/Users'
+import { renderUsers, type UserManagementActions, type UserManagementActionType } from './views/Users'
 import { renderActivityFeed } from './views/ActivityFeed'
 import './styles.css'
 
@@ -50,15 +50,19 @@ export type AppActions = {
   onLogin(email: string, password: string): Promise<void> | void
   onLogout(): void
   onNavigate?(path: string): void
+  onCreateUser?(request: CreateUserRequest): Promise<void>
   onSetUserLevel?(username: string, level: UserLevel): Promise<void>
   onGrantAdmin?(username: string): Promise<void>
   onDeactivateUser?(username: string): Promise<void>
+  onResetTemporaryPassword?(username: string, temporaryPassword: string): Promise<void>
+  onActivateUser?(username: string): Promise<void>
   onLoadMoreActivity?(): Promise<void>
 }
 
 export type UserManagementState = {
   pendingAction?: { username: string; type: UserManagementActionType }
   mutationError?: string
+  refreshError?: string
 }
 
 export type RenderAppOptions = {
@@ -388,11 +392,8 @@ function renderAuthenticatedView(
       currentLevel: auth.user.level,
       pendingAction: userManagementState.pendingAction,
       mutationError: userManagementState.mutationError,
-      actions: {
-        onSetUserLevel: (username, level) => actions.onSetUserLevel?.(username, level) ?? Promise.resolve(),
-        onGrantAdmin: (username) => actions.onGrantAdmin?.(username) ?? Promise.resolve(),
-        onDeactivateUser: (username) => actions.onDeactivateUser?.(username) ?? Promise.resolve()
-      }
+      refreshError: userManagementState.refreshError,
+      actions: userManagementActionsFromAppActions(actions)
     })
   }
   if (screen === 'memories') {
@@ -409,6 +410,23 @@ function renderAuthenticatedView(
   }
   const viewState = stateFor(state, route.load)
   return route.render(viewState as ViewState<unknown>, routePath, actions)
+}
+
+function userManagementActionsFromAppActions(actions: AppActions): UserManagementActions {
+  const onCreateUser = actions.onCreateUser
+  const onSetUserLevel = actions.onSetUserLevel
+  const onDeactivateUser = actions.onDeactivateUser
+  const onResetTemporaryPassword = actions.onResetTemporaryPassword
+  const onActivateUser = actions.onActivateUser
+
+  const userActions: UserManagementActions = {
+    onSetUserLevel: (username, level) => onSetUserLevel?.(username, level) ?? Promise.resolve(),
+    onDeactivateUser: (username) => onDeactivateUser?.(username) ?? Promise.resolve()
+  }
+  if (onCreateUser) userActions.onCreateUser = (request) => onCreateUser(request)
+  if (onResetTemporaryPassword) userActions.onResetTemporaryPassword = (username, temporaryPassword) => onResetTemporaryPassword(username, temporaryPassword)
+  if (onActivateUser) userActions.onActivateUser = (username) => onActivateUser(username)
+  return userActions
 }
 
 function queryFromRoutePath(routePath: string): string {
@@ -829,6 +847,9 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
         await loadAndRender(state, activeScreen)
       }
     },
+    onCreateUser(request) {
+      return runUserMutation(request.username, 'create', (token) => api.createUser(token, request))
+    },
     onSetUserLevel(username, level) {
       return runUserMutation(username, 'level', (token) => api.setUserLevel(token, username, level))
     },
@@ -837,6 +858,12 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     },
     onDeactivateUser(username) {
       return runUserMutation(username, 'deactivate', (token) => api.deactivateUser(token, username))
+    },
+    onResetTemporaryPassword(username, temporaryPassword) {
+      return runUserMutation(username, 'reset-password', (token) => api.resetTemporaryPassword(token, username, temporaryPassword))
+    },
+    onActivateUser(username) {
+      return runUserMutation(username, 'activate', (token) => api.activateUser(token, username))
     },
     async onLoadMoreActivity() {
       await loadMoreActivity()
@@ -884,23 +911,89 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     const state = session.getState()
     if (state.status !== 'authenticated') return
     const version = loadVersion
-    userManagementState = { pendingAction: { username, type } }
+    const pendingAction = { username, type }
+    userManagementState = { pendingAction }
     rerender(state)
     try {
       await mutate(state.token)
-      const slice = await fetchSlice('users', api, state.token)
       if (disposed) return
       const current = session.getState()
-      if (version !== loadVersion || current.status !== 'authenticated' || current.token !== state.token) return
+      if (version !== loadVersion || current.status !== 'authenticated' || current.token !== state.token) {
+        await recoverUsersAfterStaleSuccessfulMutation(pendingAction, current, state.token)
+        return
+      }
       const existingData = dashboard.status === 'ready' ? dashboard.data : {}
+      let slice: ViewState<UsersData>
+      try {
+        slice = await fetchSlice('users', api, state.token) as ViewState<UsersData>
+      } catch (refreshError) {
+        userManagementState = { refreshError: usersRefreshFailureMessage(refreshError) }
+        dashboard = { status: 'ready', data: existingData }
+        rerender(current)
+        return
+      }
+      if (disposed) return
+      const refreshedCurrent = session.getState()
+      if (version !== loadVersion || refreshedCurrent.status !== 'authenticated' || refreshedCurrent.token !== state.token) {
+        await recoverUsersAfterStaleSuccessfulMutation(pendingAction, refreshedCurrent, state.token)
+        return
+      }
+      if (slice.status === 'error') {
+        userManagementState = { refreshError: usersRefreshFailureMessage(slice.message) }
+        dashboard = { status: 'ready', data: existingData }
+        rerender(refreshedCurrent)
+        return
+      }
       dashboard = { status: 'ready', data: { ...existingData, users: slice as ViewState<UsersData> } }
       userManagementState = {}
-      rerender(current)
+      rerender(refreshedCurrent)
     } catch (error) {
       if (disposed) return
+      const current = session.getState()
+      if (version !== loadVersion || current.status !== 'authenticated' || current.token !== state.token) {
+        clearUserPendingAction(pendingAction, current)
+        return
+      }
       userManagementState = { mutationError: messageFor(error) }
-      rerender(session.getState())
+      rerender(current)
     }
+  }
+
+  async function recoverUsersAfterStaleSuccessfulMutation(
+    pendingAction: { username: string; type: UserManagementActionType },
+    state: AuthState,
+    mutationToken: string
+  ): Promise<void> {
+    invalidateUsersCache()
+    clearUserPendingAction(pendingAction, state)
+    if (state.status !== 'authenticated' || state.token !== mutationToken) return
+    if (screenFromPath(currentRoutePath()) !== 'userManagement') return
+    await loadAndRender(state, 'userManagement')
+  }
+
+  function invalidateUsersCache(): void {
+    if (dashboard.status !== 'ready' || dashboard.data.users === undefined) return
+    const data = { ...dashboard.data }
+    delete data.users
+    dashboard = { status: 'ready', data }
+  }
+
+  function clearUserPendingAction(
+    pendingAction: { username: string; type: UserManagementActionType },
+    state: AuthState
+  ): void {
+    const currentPending = userManagementState.pendingAction
+    if (!currentPending || currentPending.username !== pendingAction.username || currentPending.type !== pendingAction.type) return
+    const nextState: UserManagementState = {}
+    if (userManagementState.mutationError) nextState.mutationError = userManagementState.mutationError
+    if (userManagementState.refreshError) nextState.refreshError = userManagementState.refreshError
+    userManagementState = nextState
+    if (!disposed) rerender(state)
+  }
+
+  function usersRefreshFailureMessage(error: unknown): string {
+    const detail = typeof error === 'string' ? error : messageFor(error)
+    return `Mutation succeeded, but users could not be refreshed: ${detail}. Refresh the page to confirm the latest state.`
   }
 
   async function loadAndRender(state: Extract<AuthState, { status: 'authenticated' }>, screen: DashboardScreenKey): Promise<void> {

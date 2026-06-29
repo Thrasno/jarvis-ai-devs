@@ -47,6 +47,7 @@ export type SyncAttemptSummaryWindow = {
 }
 export type SyncAttemptSummary = { windows: SyncAttemptSummaryWindow[] }
 export type MutationMessage = { message: string }
+export type CreateUserRequest = { username: string; email: string; level: UserLevel; temporary_password: string }
 export type ProjectSummary = {
   name: string
   memoryCount: number
@@ -82,9 +83,12 @@ export type ApiClient = {
   overviewStats(token: string): Promise<OverviewStats>
   overviewGrowth(token: string): Promise<OverviewGrowth>
   adminUsers(token: string): Promise<{ users: User[] }>
+  createUser(token: string, request: CreateUserRequest): Promise<MutationMessage>
   setUserLevel(token: string, username: string, level: UserLevel): Promise<MutationMessage>
   grantAdmin(token: string, username: string): Promise<MutationMessage>
   deactivateUser(token: string, username: string): Promise<MutationMessage>
+  resetTemporaryPassword(token: string, username: string, temporaryPassword: string): Promise<MutationMessage>
+  activateUser(token: string, username: string): Promise<MutationMessage>
   memories(token: string, params?: MemoryListParams): Promise<MemoryList>
   searchMemories(token: string, params: MemorySearchParams): Promise<MemorySearch>
   memory(token: string, id: string): Promise<Memory>
@@ -150,6 +154,9 @@ export function createApiClient(options: { baseUrl?: string; fetch?: Fetcher } =
     adminUsers(token) {
       return request<{ users: User[] }>('/admin/users', authGet(token))
     },
+    createUser(token, createRequest) {
+      return request<MutationMessage>('/admin/users', authPost(token, createRequest))
+    },
     setUserLevel(token, username, level) {
       return request<MutationMessage>(`/admin/users/${encodeURIComponent(username)}/level`, authPost(token, { level }))
     },
@@ -158,6 +165,12 @@ export function createApiClient(options: { baseUrl?: string; fetch?: Fetcher } =
     },
     deactivateUser(token, username) {
       return request<MutationMessage>(`/admin/users/${encodeURIComponent(username)}/deactivate`, authPost(token))
+    },
+    resetTemporaryPassword(token, username, temporaryPassword) {
+      return request<MutationMessage>(`/admin/users/${encodeURIComponent(username)}/reset-password`, authPost(token, { temporary_password: temporaryPassword }))
+    },
+    activateUser(token, username) {
+      return request<MutationMessage>(`/admin/users/${encodeURIComponent(username)}/activate`, authPost(token))
     },
     memories(token, params = {}) {
       return request<MemoryList>(withMemoryListQuery('/memories', params), authGet(token))
