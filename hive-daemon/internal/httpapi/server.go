@@ -243,6 +243,16 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Derive the effective project from directory when project is empty.
+	// Only pre-populate when derivation yields a concrete name (not the
+	// "default" fallback); otherwise leave project empty so the validator's
+	// own directory-based resolution can still match existing registered dirs.
+	if strings.TrimSpace(body.Project) == "" && strings.TrimSpace(body.Directory) != "" {
+		if derived := project.DeriveFromDirectory(body.Directory); derived != "default" && derived != "" {
+			body.Project = derived
+		}
+	}
+
 	if strings.TrimSpace(body.Project) == "" && (s.projects == nil || strings.TrimSpace(body.Directory) == "") {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "project is required"})
@@ -282,6 +292,8 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// opencode: canonical project is returned here; exact-name pinning into the
+	// model is a documented limitation — use HIVE_PROJECT env as workaround.
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"id":             prompt.ID,
@@ -779,6 +791,14 @@ func (s *Server) handleSessionsCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session store not configured"})
 		return
 	}
+	// Derive the effective project from directory when project is empty.
+	// Sessions create has no validator gate; only apply when derivation yields
+	// a concrete name (not "default") so non-existent dirs don't pollute sessions.
+	if strings.TrimSpace(body.Project) == "" && strings.TrimSpace(body.Directory) != "" {
+		if derived := project.DeriveFromDirectory(body.Directory); derived != "default" && derived != "" {
+			body.Project = derived
+		}
+	}
 	err := s.sessions.CreateSession(body.ID, body.Project, body.Directory, body.DevID, body.Client)
 	if err != nil {
 		// Treat duplicate-key errors as idempotent (hook may fire more than once).
@@ -833,6 +853,7 @@ func (s *Server) handleObservationsPassive(w http.ResponseWriter, r *http.Reques
 		SessionID string `json:"session_id"`
 		Project   string `json:"project"`
 		Source    string `json:"source"`
+		Directory string `json:"directory"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
@@ -845,6 +866,12 @@ func (s *Server) handleObservationsPassive(w http.ResponseWriter, r *http.Reques
 	if s.sessions == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session store not configured"})
 		return
+	}
+	// Derive the effective project from directory when project is empty.
+	if strings.TrimSpace(body.Project) == "" && strings.TrimSpace(body.Directory) != "" {
+		if derived := project.DeriveFromDirectory(body.Directory); derived != "default" && derived != "" {
+			body.Project = derived
+		}
 	}
 	if err := s.sessions.SavePassiveObservation(r.Context(), body.SessionID, body.Project, body.Source, body.Content); err != nil {
 		logger.Log.Printf("save passive observation: %v", err)
