@@ -158,7 +158,7 @@ func TestDaemonClient_PostPassiveObservation_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := &DaemonClient{BaseURL: srv.URL, Timeout: 5 * time.Second}
-	err := c.PostPassiveObservation(context.Background(), "sid3", "proj", "subagent", "some output")
+	err := c.PostPassiveObservation(context.Background(), "sid3", "proj", "subagent", "some output", "/work/dir")
 	if err != nil {
 		t.Errorf("expected nil error, got: %v", err)
 	}
@@ -174,11 +174,14 @@ func TestDaemonClient_PostPassiveObservation_HappyPath(t *testing.T) {
 	if received["content"] != "some output" {
 		t.Errorf("content: got %q", received["content"])
 	}
+	if received["directory"] != "/work/dir" {
+		t.Errorf("directory: got %q", received["directory"])
+	}
 }
 
 func TestDaemonClient_PostPassiveObservation_ServerDown_ReturnsNil(t *testing.T) {
 	c := &DaemonClient{BaseURL: "http://127.0.0.1:19999", Timeout: 200 * time.Millisecond}
-	err := c.PostPassiveObservation(context.Background(), "sid", "proj", "subagent", "output")
+	err := c.PostPassiveObservation(context.Background(), "sid", "proj", "subagent", "output", "")
 	if err != nil {
 		t.Errorf("expected nil (non-fatal), got: %v", err)
 	}

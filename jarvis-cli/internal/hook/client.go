@@ -96,11 +96,14 @@ func (c *DaemonClient) PostSessionEnd(ctx context.Context, sessionID string) err
 }
 
 // PostPassiveObservation records a passive observation (e.g. subagent stdout).
-func (c *DaemonClient) PostPassiveObservation(ctx context.Context, sessionID, project, source, content string) error {
+// The directory parameter is included so the daemon can derive the canonical
+// project name when project is empty.
+func (c *DaemonClient) PostPassiveObservation(ctx context.Context, sessionID, project, source, content, directory string) error {
 	return c.post(ctx, "/observations/passive", map[string]string{
 		"session_id": sessionID,
 		"project":    project,
 		"source":     source,
 		"content":    content,
+		"directory":  directory,
 	})
 }

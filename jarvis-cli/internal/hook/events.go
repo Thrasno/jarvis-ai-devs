@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"time"
+
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/project"
 )
 
 // RunSessionStart handles the Claude Code SessionStart hook event.
@@ -19,15 +21,21 @@ import (
 func RunSessionStart(ctx context.Context, r io.Reader, w io.Writer, baseURL string) {
 	payload, _ := ParsePayload(r)
 	sessionID := ResolveSessionID(payload)
+	directory := coalesce(payload.Directory, payload.CWD)
+
+	// Derive the canonical project name locally using the original DetectProject
+	// so the pinned name equals the registered name (same function, same input).
+	canonical := project.DetectProject(directory)
 
 	// Create marker — idempotent; ignore error (non-fatal)
 	_ = CreateMarker(sessionID)
 
-	// Notify daemon — non-fatal
+	// Notify daemon with the derived canonical name — non-fatal.
+	// This registers the canonical project before any mem_save call.
 	client := &DaemonClient{BaseURL: baseURL, Timeout: 4 * time.Second}
-	_ = client.PostSessionStart(ctx, sessionID, payload.Project, coalesce(payload.Directory, payload.CWD))
+	_ = client.PostSessionStart(ctx, sessionID, canonical, directory)
 
-	WriteResponse(w, HookResponse{AdditionalContext: HiveProtocolText})
+	WriteResponse(w, HookResponse{AdditionalContext: BuildHiveProtocolText(canonical)})
 }
 
 // RunSessionCompact handles the Claude Code SessionStart hook event when the
@@ -56,11 +64,13 @@ func RunPromptSubmit(ctx context.Context, r io.Reader, w io.Writer, baseURL stri
 	payload, _ := ParsePayload(r)
 	sessionID := ResolveSessionID(payload)
 	directory := coalesce(payload.Directory, payload.CWD)
-	project := payload.Project
+
+	// Derive canonical project locally so prompts attach to the canonical project.
+	canonical := project.DetectProject(directory)
 
 	// POST to daemon — fire-and-forget, short timeout
 	client := &DaemonClient{BaseURL: baseURL, Timeout: 1500 * time.Millisecond}
-	_ = client.PostPrompt(ctx, sessionID, directory, project, payload.Prompt)
+	_ = client.PostPrompt(ctx, sessionID, directory, canonical, payload.Prompt)
 
 	// First-prompt logic: O_CREATE|O_EXCL makes the check-and-create atomic,
 	// preventing a TOCTOU race when concurrent hook invocations both observe the
@@ -83,9 +93,8 @@ func RunSubagentStop(ctx context.Context, r io.Reader, w io.Writer, baseURL stri
 	directory := coalesce(payload.Directory, payload.CWD)
 
 	client := &DaemonClient{BaseURL: baseURL, Timeout: 8 * time.Second}
-	_ = client.PostPassiveObservation(ctx, sessionID, payload.Project, "subagent", coalesce(payload.Stdout, ""))
+	_ = client.PostPassiveObservation(ctx, sessionID, payload.Project, "subagent", coalesce(payload.Stdout, ""), directory)
 
-	_ = directory // captured for future use in observation context
 	WriteEmpty(w)
 }
 

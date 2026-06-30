@@ -35,3 +35,23 @@ A context compaction just occurred. Follow these steps before resuming work:
 // FirstPromptSystemMessage is the systemMessage returned by the prompt-submit hook
 // on the first prompt of a session (when the marker file does not yet exist).
 const FirstPromptSystemMessage = `Memory protocol is active. FIRST ACTION: call mem_context to load session memory before responding to the user.`
+
+// BuildHiveProtocolText returns the Hive Memory Protocol text to inject into
+// Claude Code's additionalContext at session start.
+//
+// When canonicalProject is non-empty, a canonical name pin line is appended so
+// the assistant uses the exact derived project name in all subsequent mem_* calls:
+//
+//	Active project: <canonicalProject> — use this exact name as the project argument in all mem_* calls.
+//
+// When canonicalProject is empty, HiveProtocolText is returned unchanged
+// (back-compat: no pin line injected).
+//
+// The canonical name is inserted verbatim — no normalization, no lowercasing —
+// so the assistant reproduces the exact string the daemon registered.
+func BuildHiveProtocolText(canonicalProject string) string {
+	if canonicalProject == "" {
+		return HiveProtocolText
+	}
+	return HiveProtocolText + "\n\nActive project: " + canonicalProject + " — use this exact name as the project argument in all mem_* calls."
+}
