@@ -281,6 +281,93 @@ func TestMemSave_FirstWrite_DerivedName_RegistrationRoundtrip(t *testing.T) {
 	}
 }
 
+// ─── FIX 3: No provenance bypass for the "default" sentinel ─────────────────
+
+// TestMemSave_EmptyProject_NonExistentDirectory_DefaultSentinel_StillRejectsProjectUnknown_Second
+// verifies that when project="" and directory is a non-existent path (DeriveFromDirectory
+// returns "default" with derived=true), mem_save returns project_unknown —
+// the provenance bypass must NOT fire for the "default" sentinel (FIX 3).
+func TestMemSave_EmptyProject_DefaultSentinel_FromNonExistentDir_StillRejectsProjectUnknown(t *testing.T) {
+	t.Parallel()
+
+	var saveCalled bool
+	store := &mockStore{
+		// KnownProjects returns non-empty but does not include "default".
+		knownProjectsFn: func(context.Context) ([]project.KnownProject, error) {
+			return []project.KnownProject{{Name: "some-project"}}, nil
+		},
+		saveMemoryFn: func(*models.Memory) (int64, error) {
+			saveCalled = true
+			return 1, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	// project="" + directory="/nonexistent/path" → DeriveFromDirectory → "default"
+	// The bypass MUST NOT fire for "default".
+	res := callTool(t, session, "mem_save", map[string]any{
+		"title":     "Default sentinel test",
+		"content":   "should not persist",
+		"type":      "architecture",
+		"project":   "",
+		"directory": "/totally/nonexistent/path/that/does/not/exist/abc123",
+	})
+
+	if !res.IsError {
+		t.Fatal("expected IsError=true: 'default' derived name must not bypass project_unknown gate")
+	}
+	body := decodeJSONResponse(t, res)
+	if got := body["error_code"]; got != string(project.CodeProjectUnknown) {
+		t.Fatalf("error_code = %v, want %q; body=%v", got, project.CodeProjectUnknown, body)
+	}
+	if saveCalled {
+		t.Fatal("SaveMemory must not be called when derived name is 'default'")
+	}
+}
+
+// TestMemSave_EmptyProject_WithGitDirectory_BypassStillWorksForRealName verifies
+// that the provenance bypass STILL fires correctly when the derived name is a real
+// project name (not "default") — regression guard for FIX 3.
+// This mirrors TestMemSave_EmptyProject_WithGitDirectory_DerivesAndSucceeds.
+func TestMemSave_EmptyProject_WithGitDirectory_BypassStillWorksForRealName(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	dir := t.TempDir()
+	initGitRepoMCP(t, dir, "https://github.com/org/fix3-bypass-repo.git")
+
+	var savedProject string
+	store := &mockStore{
+		// KnownProjects returns empty — new repo never registered.
+		knownProjectsFn: func(context.Context) ([]project.KnownProject, error) {
+			return []project.KnownProject{}, nil
+		},
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			savedProject = m.Project
+			return 1, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_save", map[string]any{
+		"title":     "FIX 3 bypass regression",
+		"content":   "content for real repo",
+		"type":      "architecture",
+		"project":   "",
+		"directory": dir,
+	})
+
+	if res.IsError {
+		t.Fatalf("bypass for non-default derived name should succeed, got error: %s", textContent(t, res))
+	}
+	if savedProject != "fix3-bypass-repo" {
+		t.Errorf("saved project = %q, want %q", savedProject, "fix3-bypass-repo")
+	}
+}
+
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 // initGitRepoMCP initialises a git repo in dir with the given remote URL.

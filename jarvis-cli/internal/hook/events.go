@@ -87,13 +87,21 @@ func RunPromptSubmit(ctx context.Context, r io.Reader, w io.Writer, baseURL stri
 //
 // It extracts session_id, cwd, and stdout from the payload and POSTs a passive
 // observation to the daemon. Always outputs {} and never errors.
+//
+// The canonical project name is derived locally via DetectProject (same as
+// RunSessionStart/RunPromptSubmit) so the observation is attributed to the
+// canonical project, not the raw payload.Project value.
 func RunSubagentStop(ctx context.Context, r io.Reader, w io.Writer, baseURL string) {
 	payload, _ := ParsePayload(r)
 	sessionID := ResolveSessionID(payload)
 	directory := coalesce(payload.Directory, payload.CWD)
 
+	// Derive canonical project from the filesystem — consistent with RunSessionStart
+	// and RunPromptSubmit so all events use the same canonical name.
+	canonical := project.DetectProject(directory)
+
 	client := &DaemonClient{BaseURL: baseURL, Timeout: 8 * time.Second}
-	_ = client.PostPassiveObservation(ctx, sessionID, payload.Project, "subagent", coalesce(payload.Stdout, ""), directory)
+	_ = client.PostPassiveObservation(ctx, sessionID, canonical, "subagent", coalesce(payload.Stdout, ""), directory)
 
 	WriteEmpty(w)
 }

@@ -157,6 +157,40 @@ func TestRunPromptSubmit_NonGitDirectory_UsesBasename(t *testing.T) {
 	}
 }
 
+// ─── FIX 2: RunSubagentStop derives canonical project name ───────────────────
+
+// TestRunSubagentStop_DerivesCanonicalProject verifies that RunSubagentStop
+// computes canonical := project.DetectProject(directory) and POSTs the derived
+// canonical name — NOT payload.Project — to /observations/passive (FIX 2).
+func TestRunSubagentStop_DerivesCanonicalProject(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	dir := t.TempDir()
+	t.Setenv("HIVE_CLAUDE_SESSION_ID", "subagent-canonical-session")
+	initHookGitRepo(t, dir, "https://github.com/org/derived-subagent-repo.git")
+
+	var capturedBody map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/observations/passive" {
+			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	// payload.Project is set to a raw/wrong value; directory points to git repo.
+	// After the fix, capturedBody["project"] must equal the derived canonical.
+	payload := `{"session_id":"subagent-canonical-session","project":"raw-payload-project","directory":"` + jsonEscape(dir) + `","stdout":"output"}`
+	var out bytes.Buffer
+	RunSubagentStop(context.Background(), strings.NewReader(payload), &out, srv.URL)
+
+	if capturedBody["project"] != "derived-subagent-repo" {
+		t.Errorf("POST /observations/passive project = %q, want derived canonical %q", capturedBody["project"], "derived-subagent-repo")
+	}
+}
+
 // ─── T-15: RunSubagentStop POSTs cwd as directory field ──────────────────────
 
 // TestRunSubagentStop_PostsDirectoryField verifies that RunSubagentStop includes

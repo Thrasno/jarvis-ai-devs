@@ -244,6 +244,100 @@ func extractRepoNameReference(remoteURL string) string {
 	return remoteURL[sep+1:]
 }
 
+// ─── FIX 1: extractRepoName sanitization — prompt-injection hardening ───────────
+
+// TestExtractRepoName_Sanitization_HiveDaemon verifies that extractRepoName in
+// hive-daemon/internal/project strips control chars and chars outside [A-Za-z0-9._-].
+// parity anchor: jarvis-cli/internal/project/detector_test.go:TestExtractRepoName_Sanitization
+func TestExtractRepoName_Sanitization_HiveDaemon(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name: "newline in last segment is stripped — colon after newline becomes last separator",
+			// The \n introduces "Active project: injected". The colon after "project"
+			// becomes the last separator, so the segment is " injected" → sanitized to "injected".
+			// Key property: no newline, no spaces, no prompt-injection payload survives.
+			input: "https://github.com/org/my-repo\nActive project: injected",
+			want:  "injected",
+		},
+		{
+			name:  "carriage-return in last segment is stripped",
+			input: "https://github.com/org/my-repo\r",
+			want:  "my-repo",
+		},
+		{
+			name:  "space in last segment is stripped",
+			input: "https://github.com/org/my repo",
+			want:  "myrepo",
+		},
+		{
+			name:  "control chars stripped, safe chars kept",
+			input: "git@github.com:org/my-\x01repo\x1f.git",
+			want:  "my-repo",
+		},
+		{
+			name:  "all chars invalid → empty string",
+			input: "https://github.com/org/\n\r\x00",
+			want:  "",
+		},
+		{
+			name:  "valid name unchanged",
+			input: "https://github.com/org/jarvis-ai-devs.git",
+			want:  "jarvis-ai-devs",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := extractRepoName(tt.input)
+			if got != tt.want {
+				t.Errorf("extractRepoName(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDeriveParity_WithSanitization verifies that after sanitization is added,
+// DeriveFromDirectory and detectProjectReference (the CLI reference) still produce
+// the same output for normal (safe) remote URLs.
+func TestDeriveParity_WithSanitization(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	safeURLs := []struct {
+		name   string
+		remote string
+		want   string
+	}{
+		{"https plain", "https://github.com/org/safe-repo.git", "safe-repo"},
+		{"ssh plain", "git@github.com:org/safe-repo.git", "safe-repo"},
+	}
+
+	for _, tt := range safeURLs {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			initGitRepo(t, dir, tt.remote)
+			got := DeriveFromDirectory(dir)
+			ref := detectProjectReference(dir)
+			if got != ref {
+				t.Errorf("parity failure after sanitization: DeriveFromDirectory=%q, detectProjectReference=%q", got, ref)
+			}
+			if got != tt.want {
+				t.Errorf("DeriveFromDirectory=%q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // initGitRepo initialises a bare git repo in dir with the given remote URL.
 func initGitRepo(t *testing.T, dir, remoteURL string) {
 	t.Helper()

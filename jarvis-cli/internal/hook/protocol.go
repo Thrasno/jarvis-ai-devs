@@ -1,5 +1,7 @@
 package hook
 
+import "strings"
+
 // HiveProtocolText is the Hive Memory Protocol instruction block injected into
 // Claude Code at session start via additionalContext.
 //
@@ -47,11 +49,14 @@ const FirstPromptSystemMessage = `Memory protocol is active. FIRST ACTION: call 
 // When canonicalProject is empty, HiveProtocolText is returned unchanged
 // (back-compat: no pin line injected).
 //
-// The canonical name is inserted verbatim — no normalization, no lowercasing —
-// so the assistant reproduces the exact string the daemon registered.
+// Defensive sanitization: \r and \n are stripped from canonicalProject before
+// interpolation to prevent prompt-injection via crafted git remote URLs.
 func BuildHiveProtocolText(canonicalProject string) string {
 	if canonicalProject == "" {
 		return HiveProtocolText
 	}
-	return HiveProtocolText + "\n\nActive project: " + canonicalProject + " — use this exact name as the project argument in all mem_* calls."
+	// Strip \r and \n defensively — the derivation source already sanitizes via
+	// extractRepoName, but we guard at the injection point as well.
+	safe := strings.NewReplacer("\r", "", "\n", "").Replace(canonicalProject)
+	return HiveProtocolText + "\n\nActive project: " + safe + " — use this exact name as the project argument in all mem_* calls."
 }

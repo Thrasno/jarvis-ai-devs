@@ -296,10 +296,13 @@ func memSaveHandler(store MemoryStore, syncRuntime *syncRuntime, activity *Activ
 			var validationErr *project.ValidationError
 			if errors.As(err, &validationErr) &&
 				validationErr.Code == project.CodeProjectUnknown &&
-				derived {
+				derived &&
+				p.Project != "default" {
 				// Provenance-gated escape: the name came from real git/filesystem
 				// derivation, not from the assistant. Allow the write — the memory
 				// row itself registers the derived project in KnownProjects.
+				// "default" is explicitly excluded: it is a sentinel for "could not
+				// derive a real name" and must never auto-register as a pooling target.
 				resolved = project.Result{Project: p.Project}
 			} else {
 				return toolValidationError(err), nil

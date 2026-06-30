@@ -4,8 +4,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
+
+// safeNamePattern matches characters allowed in a canonical project name.
+// Allowed: ASCII letters, digits, dot, underscore, hyphen.
+// parity anchor: jarvis-cli/internal/project/detector.go:safeNamePattern
+var safeNamePattern = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 
 // DeriveFromDirectory returns the canonical project name for dir using the
 // SAME resolution order as jarvis-cli DetectProject:
@@ -41,7 +47,8 @@ func DeriveFromDirectory(dir string) string {
 
 // extractRepoName parses a git remote URL and returns the repository name.
 // Handles both HTTPS (https://github.com/org/repo.git) and SSH (git@github.com:org/repo.git).
-// Copied verbatim from jarvis-cli/internal/project/detector.go:112-129.
+// The returned name is sanitized: only [A-Za-z0-9._-] characters are kept.
+// This prevents prompt-injection via crafted remote URLs.
 // parity anchor: jarvis-cli/internal/project/detector.go:extractRepoName
 func extractRepoName(remoteURL string) string {
 	remoteURL = strings.TrimSuffix(remoteURL, ".git")
@@ -56,10 +63,14 @@ func extractRepoName(remoteURL string) string {
 	if lastColon > sep {
 		sep = lastColon
 	}
+	var name string
 	if sep < 0 || sep == len(remoteURL)-1 {
-		return remoteURL
+		name = remoteURL
+	} else {
+		name = remoteURL[sep+1:]
 	}
-	return remoteURL[sep+1:]
+	// Sanitize: strip any character outside [A-Za-z0-9._-].
+	return safeNamePattern.ReplaceAllString(name, "")
 }
 
 // ResolveEffectiveProject returns the project name to use for persistence and
