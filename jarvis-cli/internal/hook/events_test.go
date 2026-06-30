@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -221,18 +222,20 @@ func TestRunPromptSubmit_DaemonDown_StillHandlesMarker(t *testing.T) {
 }
 
 func TestRunPromptSubmit_PostsPromptWithExactContent(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_RUNTIME_DIR", dir)
+	markerDir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", markerDir)
 	t.Setenv("HIVE_CLAUDE_SESSION_ID", "prompt-fidelity-session")
 
 	_ = DeleteMarker("prompt-fidelity-session")
 
+	// Use a real temp directory (not a git repo) so DetectProject returns the basename.
+	projectDir := t.TempDir()
 	wantContent := "quoted \"value\" with backslash \\ and literal \\n plus real\nnewline"
 	requestPayload, err := json.Marshal(map[string]string{
 		"prompt":     wantContent,
 		"session_id": "prompt-fidelity-session",
-		"directory":  "/workspace/project",
-		"project":    "jarvis-ai-devs",
+		"directory":  projectDir,
+		"project":    "should-be-overridden-by-derivation",
 	})
 	if err != nil {
 		t.Fatalf("marshal hook payload: %v", err)
@@ -267,11 +270,13 @@ func TestRunPromptSubmit_PostsPromptWithExactContent(t *testing.T) {
 	if got["session_id"] != "prompt-fidelity-session" {
 		t.Errorf("session_id = %q, want prompt-fidelity-session", got["session_id"])
 	}
-	if got["directory"] != "/workspace/project" {
-		t.Errorf("directory = %q, want /workspace/project", got["directory"])
+	if got["directory"] != projectDir {
+		t.Errorf("directory = %q, want %q", got["directory"], projectDir)
 	}
-	if got["project"] != "jarvis-ai-devs" {
-		t.Errorf("project = %q, want jarvis-ai-devs", got["project"])
+	// Project is now derived from the directory (T-14) — basename of temp dir.
+	wantProject := filepath.Base(projectDir)
+	if got["project"] != wantProject {
+		t.Errorf("project = %q, want %q (derived basename)", got["project"], wantProject)
 	}
 }
 

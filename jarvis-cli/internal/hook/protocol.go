@@ -1,5 +1,7 @@
 package hook
 
+import "strings"
+
 // HiveProtocolText is the Hive Memory Protocol instruction block injected into
 // Claude Code at session start via additionalContext.
 //
@@ -35,3 +37,26 @@ A context compaction just occurred. Follow these steps before resuming work:
 // FirstPromptSystemMessage is the systemMessage returned by the prompt-submit hook
 // on the first prompt of a session (when the marker file does not yet exist).
 const FirstPromptSystemMessage = `Memory protocol is active. FIRST ACTION: call mem_context to load session memory before responding to the user.`
+
+// BuildHiveProtocolText returns the Hive Memory Protocol text to inject into
+// Claude Code's additionalContext at session start.
+//
+// When canonicalProject is non-empty, a canonical name pin line is appended so
+// the assistant uses the exact derived project name in all subsequent mem_* calls:
+//
+//	Active project: <canonicalProject> — use this exact name as the project argument in all mem_* calls.
+//
+// When canonicalProject is empty, HiveProtocolText is returned unchanged
+// (back-compat: no pin line injected).
+//
+// Defensive sanitization: \r and \n are stripped from canonicalProject before
+// interpolation to prevent prompt-injection via crafted git remote URLs.
+func BuildHiveProtocolText(canonicalProject string) string {
+	if canonicalProject == "" {
+		return HiveProtocolText
+	}
+	// Strip \r and \n defensively — the derivation source already sanitizes via
+	// extractRepoName, but we guard at the injection point as well.
+	safe := strings.NewReplacer("\r", "", "\n", "").Replace(canonicalProject)
+	return HiveProtocolText + "\n\nActive project: " + safe + " — use this exact name as the project argument in all mem_* calls."
+}

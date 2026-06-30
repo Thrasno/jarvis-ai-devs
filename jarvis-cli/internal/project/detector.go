@@ -5,8 +5,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
+
+// safeNamePattern matches characters allowed in a canonical project name.
+// Allowed: ASCII letters, digits, dot, underscore, hyphen.
+var safeNamePattern = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 
 // Stack represents the detected technology stack of a project.
 type Stack string
@@ -109,6 +114,9 @@ func SkillsForStack(stack Stack) []string {
 
 // extractRepoName parses a git remote URL and returns the repository name.
 // Handles both HTTPS (https://github.com/org/repo.git) and SSH (git@github.com:org/repo.git).
+// The returned name is sanitized: only [A-Za-z0-9._-] characters are kept.
+// This prevents prompt-injection via crafted remote URLs.
+// parity anchor: hive-daemon/internal/project/derive.go:extractRepoName
 func extractRepoName(remoteURL string) string {
 	remoteURL = strings.TrimSuffix(remoteURL, ".git")
 	remoteURL = strings.TrimSpace(remoteURL)
@@ -122,8 +130,12 @@ func extractRepoName(remoteURL string) string {
 	if lastColon > sep {
 		sep = lastColon
 	}
+	var name string
 	if sep < 0 || sep == len(remoteURL)-1 {
-		return remoteURL
+		name = remoteURL
+	} else {
+		name = remoteURL[sep+1:]
 	}
-	return remoteURL[sep+1:]
+	// Sanitize: strip any character outside [A-Za-z0-9._-].
+	return safeNamePattern.ReplaceAllString(name, "")
 }

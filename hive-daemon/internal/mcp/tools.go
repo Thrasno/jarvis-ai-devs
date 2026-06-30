@@ -68,6 +68,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 				"content":       {"type": "string", "description": "Full memory content (markdown OK)"},
 				"type":          {"type": "string", "description": "Category: architecture, decision, bugfix, pattern, discovery, config, preference, session_summary"},
 				"project":       {"type": "string", "description": "Project identifier"},
+				"directory":     {"type": "string", "description": "Working directory; when project is empty, the daemon derives the canonical project name from this path"},
 				"topic_key":     {"type": "string", "description": "Grouping/context key for related memories (e.g. 'arch/auth-model'). Every save creates a new row; topic_key groups and aids retrieval — saving twice with the same key creates two distinct rows."},
 				"tags":          {"type": "array", "items": {"type": "string"}},
 				"files_affected":{"type": "array", "items": {"type": "string"}},
@@ -200,6 +201,9 @@ func memSessionStartHandler(store MemoryStore, activity *ActivityTracker) sdkmcp
 			return toolError(fmt.Errorf("client is required")), nil
 		}
 
+		// Derive the effective project from directory when project is empty.
+		p.Project, _ = project.ResolveEffectiveProject(p.Project, p.Directory)
+
 		if err := store.CreateSession(p.ID, p.Project, p.Directory, p.DevID, p.Client); err != nil {
 			return toolError(fmt.Errorf("create session failed: %w", err)), nil
 		}
@@ -259,6 +263,7 @@ func memSaveHandler(store MemoryStore, syncRuntime *syncRuntime, activity *Activ
 			Content             string   `json:"content"`
 			Type                string   `json:"type"`
 			Project             string   `json:"project"`
+			Directory           string   `json:"directory"`
 			TopicKey            *string  `json:"topic_key"`
 			Tags                []string `json:"tags"`
 			FilesAffected       []string `json:"files_affected"`
@@ -270,13 +275,38 @@ func memSaveHandler(store MemoryStore, syncRuntime *syncRuntime, activity *Activ
 		if err := json.Unmarshal(req.Params.Arguments, &p); err != nil {
 			return toolError(fmt.Errorf("invalid params: %w", err)), nil
 		}
+
+		// T-05: derive-then-validate with provenance-gated project_unknown escape.
+		// When project is empty and directory is provided, derive the canonical
+		// name from the real filesystem (git remote → basename → "default").
+		// The provenance bool tracks whether the name came from derivation (true)
+		// or was supplied by the caller (false). Only a derived name may bypass
+		// the project_unknown gate; an assistant-supplied name never does.
+		effective, derived := project.ResolveEffectiveProject(p.Project, p.Directory)
+		if effective != "" {
+			p.Project = effective
+		}
+
 		if p.Title == "" || p.Content == "" || p.Project == "" {
 			return toolError(fmt.Errorf("title, content, and project are required")), nil
 		}
 
 		resolved, err := project.ValidateWriteProject(ctx, store, project.WriteInput{Project: p.Project, SessionID: p.SessionID, RecoveryToken: p.RecoveryToken, ProjectChoiceReason: p.ProjectChoiceReason})
 		if err != nil {
-			return toolValidationError(err), nil
+			var validationErr *project.ValidationError
+			if errors.As(err, &validationErr) &&
+				validationErr.Code == project.CodeProjectUnknown &&
+				derived &&
+				p.Project != "default" {
+				// Provenance-gated escape: the name came from real git/filesystem
+				// derivation, not from the assistant. Allow the write — the memory
+				// row itself registers the derived project in KnownProjects.
+				// "default" is explicitly excluded: it is a sentinel for "could not
+				// derive a real name" and must never auto-register as a pooling target.
+				resolved = project.Result{Project: p.Project}
+			} else {
+				return toolValidationError(err), nil
+			}
 		}
 		p.Project = resolved.Project
 
