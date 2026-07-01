@@ -3223,6 +3223,87 @@ func TestDrain_TriggerManual_DrainsMultiPagePullAndAdvancesCursorsPerChannel(t *
 	assert.Equal(t, "sess-page-3", finalSess.SyncID)
 }
 
+// TestDrain_TriggerManual_RecordsAccumulatedSyncCountsAcrossBatches pins the
+// Judgment Day A1 fix: the success SyncAttemptLog persisted after a
+// multi-batch TriggerManual Drain must report pushed/pulled/conflicts/
+// prompts_pushed summed across ALL batches, not just the FINAL batch's raw
+// syncResponse. Before the fix, syncCountsJSON read those four fields
+// straight from the last batch's response while mutations_pushed/
+// mutations_pulled were already accumulated — an internally inconsistent
+// audit record. Two batches with distinct nonzero counts each make a
+// last-batch-only bug and a summed-total fix produce different, easily
+// distinguishable JSON.
+func TestDrain_TriggerManual_RecordsAccumulatedSyncCountsAcrossBatches(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{
+		jwt: "valid-token",
+		unsyncedSequence: [][]*models.Memory{
+			{createTestSyncMemory("local-1")},
+			{createTestSyncMemory("local-2")},
+			{},
+		},
+	}
+
+	var callCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync" {
+			return
+		}
+		idx := callCount
+		callCount++
+
+		w.WriteHeader(http.StatusOK)
+		switch idx {
+		case 0:
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{
+				Pushed:        1,
+				Pulled:        []apiMemory{{ID: "remote-1"}, {ID: "remote-2"}},
+				Conflicts:     1,
+				PromptsPushed: 2,
+			}))
+		case 1:
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{
+				Pushed:        1,
+				Pulled:        []apiMemory{{ID: "remote-3"}},
+				Conflicts:     2,
+				PromptsPushed: 3,
+			}))
+		default:
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 3, outcome.BatchesDone, "loop must run 3 batches: 2 with work, 1 final empty backlog")
+
+	// Sanity: the aggregated Result already sums correctly across batches —
+	// this bug is specifically about the persisted audit log diverging from
+	// this same aggregate.
+	assert.Equal(t, 2, result.Pushed, "aggregated Pushed must sum every batch")
+	assert.Equal(t, 3, result.Pulled, "aggregated Pulled must sum every batch")
+	assert.Equal(t, 3, result.Conflicts, "aggregated Conflicts must sum every batch")
+	assert.Equal(t, 5, result.PromptsPushed, "aggregated PromptsPushed must sum every batch")
+
+	require.Len(t, store.recordedSyncAttempts, 1)
+	recorded := store.recordedSyncAttempts[0]
+	assert.Equal(t, db.SyncAttemptOutcomeSuccess, recorded.Outcome)
+
+	var counts map[string]int
+	require.NoError(t, json.Unmarshal([]byte(recorded.SyncCountsJSON), &counts))
+	assert.Equal(t, 2, counts["pushed"], "persisted audit log must report the SUMMED pushed count across all batches, not just the last batch")
+	assert.Equal(t, 3, counts["pulled"], "persisted audit log must report the SUMMED pulled count across all batches, not just the last batch")
+	assert.Equal(t, 3, counts["conflicts"], "persisted audit log must report the SUMMED conflicts count across all batches, not just the last batch")
+	assert.Equal(t, 5, counts["prompts_pushed"], "persisted audit log must report the SUMMED prompts_pushed count across all batches, not just the last batch")
+}
+
 // TestDrain_TriggerManual_PullHasMoreButCursorStuck_Terminates is the
 // fresh-review CRITICAL regression test (PR 2b infinite-loop fix): a
 // misbehaving/legacy server keeps reporting pulled_has_more=true (and

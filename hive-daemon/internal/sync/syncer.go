@@ -447,7 +447,6 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 
 	result := &Result{Project: project}
 	outcome := DrainOutcome{}
-	var lastResp *syncResponse
 	prevMutationCursor := db.MutationCursor{}
 	// prevPullMemoriesCursor/prevPullSessionsCursor (PR 2b infinite-loop fix)
 	// track each pull channel's cursor as of the END of the previous
@@ -519,7 +518,6 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 
 		outcome.BatchesDone++
 		lastBatchBacklogSize = batch.BacklogSize
-		lastResp = resp
 		result.Pushed += batch.Pushed
 		result.Pulled += batch.Pulled
 		result.Conflicts += resp.Conflicts
@@ -618,7 +616,7 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 		EndedAt:        s.deps.now().UTC(),
 		Outcome:        db.SyncAttemptOutcomeSuccess,
 		HTTPStatus:     httpStatusOK,
-		SyncCountsJSON: syncCountsJSON(lastResp, result.MutationsPushed, result.MutationsPulled),
+		SyncCountsJSON: syncCountsJSON(result.Pushed, result.Pulled, result.Conflicts, result.PromptsPushed, result.MutationsPushed, result.MutationsPulled),
 		MetadataJSON:   "{}",
 	}
 	if err := s.store.RecordSyncAttemptLog(ctx, attemptLog); err != nil {
@@ -1000,12 +998,23 @@ func (s *Syncer) deleteExpiredSyncAttemptLogs(ctx context.Context) {
 	}
 }
 
-func syncCountsJSON(resp *syncResponse, mutationsPushed, mutationsPulled int) string {
+// syncCountsJSON builds the audit payload persisted on SyncAttemptLog. All
+// six counts MUST come from the same accumulation scope (see
+// hive-sync-batched-drain Judgment Day A1): for a Drain(TriggerManual) run
+// that loops over several batches, that means the totals accumulated across
+// every batch, not a single batch's raw syncResponse. Taking pushed/pulled/
+// conflicts/prompts_pushed from only the last batch while mutations_pushed/
+// mutations_pulled were already accumulated produced an internally
+// inconsistent audit record for multi-batch drains. Passing explicit ints
+// (rather than a *syncResponse) makes that invariant obvious at every call
+// site and keeps the single-batch case correct for free: with exactly one
+// batch, the accumulated totals equal that batch's own counts.
+func syncCountsJSON(pushed, pulled, conflicts, promptsPushed, mutationsPushed, mutationsPulled int) string {
 	counts := map[string]int{
-		"pushed":           resp.Pushed,
-		"pulled":           len(resp.Pulled),
-		"conflicts":        resp.Conflicts,
-		"prompts_pushed":   resp.PromptsPushed,
+		"pushed":           pushed,
+		"pulled":           pulled,
+		"conflicts":        conflicts,
+		"prompts_pushed":   promptsPushed,
 		"mutations_pushed": mutationsPushed,
 		"mutations_pulled": mutationsPulled,
 	}
