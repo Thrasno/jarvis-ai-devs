@@ -210,6 +210,55 @@ WHERE synced_at IS NULL AND sync_id != '' AND deleted_at IS NULL`
 	return results, rows.Err()
 }
 
+// GetUnsyncedPage returns at most `limit` memories that have not yet been
+// pushed to the server (synced_at IS NULL), ordered by created_at ASC with
+// id ASC as a secondary tiebreaker. This is the paged counterpart to
+// GetUnsynced (PR 1b-iii, hive-sync-batched-drain): syncBatchStep uses this
+// instead of the unpaged getter so a single push batch never exceeds
+// syncPageSize, while the ORDER BY keeps paging stable across repeated calls
+// as earlier rows get marked synced. created_at has only second-level
+// granularity, and this table is also served by
+// idx_memories_project_active (project, created_at DESC), so without the
+// secondary id ASC key a created_at tie can be returned in descending id
+// order instead of oldest-first, letting rows straddling a page boundary be
+// skipped or duplicated as the synced_at IS NULL filter shifts between
+// fetches. GetUnsynced itself is left untouched for any other existing
+// callers.
+func (d *DB) GetUnsyncedPage(project string, limit int) ([]*models.Memory, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	q := `
+SELECT id, sync_id, project, topic_key, category, title, content, tags, files_affected,
+	   created_by, created_at, updated_at, synced_at, session_id
+FROM memories
+WHERE synced_at IS NULL AND sync_id != '' AND deleted_at IS NULL`
+
+	args := []any{}
+	if project != "" {
+		q += " AND project = ?"
+		args = append(args, project)
+	}
+	q += " ORDER BY created_at ASC, id ASC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := d.sqlDB.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("get unsynced page: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []*models.Memory
+	for rows.Next() {
+		mem, err := scanSyncRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan unsynced page row: %w", err)
+		}
+		results = append(results, mem)
+	}
+	return results, rows.Err()
+}
+
 // MarkSynced marca una memoria como sincronizada con el servidor.
 func (d *DB) MarkSynced(syncID string, at time.Time) error {
 	result, err := d.sqlDB.Exec(
