@@ -716,6 +716,80 @@ func TestSyncDB_MarkMemoriesSyncedBySyncID(t *testing.T) {
 	})
 }
 
+// TestSyncDB_MarkMutationsAndMemoriesSynced covers the atomic combined ack
+// used by the mutation-sync-v2 path (design §3, Hive obs #1692 follow-up):
+// marking the mutation journal rows and the correlated legacy memories rows
+// synced in the SAME transaction. This closes the partial-failure gap where
+// MarkMutationsSynced could succeed while MarkMemoriesSyncedBySyncID failed,
+// leaving a legacy memories row permanently unsynced because
+// GetPendingMutations would never re-emit the already-acked mutation again.
+func TestSyncDB_MarkMutationsAndMemoriesSynced(t *testing.T) {
+	t.Run("marks both mutation and memory rows synced together", func(t *testing.T) {
+		db := setupTestDB(t)
+		t.Cleanup(func() { require.NoError(t, db.Close()) })
+		_, err := db.EnsureManualSaveSession("test-project")
+		require.NoError(t, err)
+
+		id, err := db.SaveMemory(createTestMemory("test-project"))
+		require.NoError(t, err)
+		mem, err := db.GetMemory(id)
+		require.NoError(t, err)
+
+		pending, err := db.GetPendingMutations("test-project", 10)
+		require.NoError(t, err)
+		require.Len(t, pending, 1)
+		eventID := pending[0].EventID
+
+		syncTime := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+		require.NoError(t, db.MarkMutationsAndMemoriesSynced([]string{eventID}, []string{mem.SyncID}, syncTime))
+
+		remaining, err := db.GetPendingMutations("test-project", 10)
+		require.NoError(t, err)
+		assert.Empty(t, remaining, "mutation must be acked")
+
+		unsynced, err := db.GetUnsynced("test-project")
+		require.NoError(t, err)
+		assert.Empty(t, unsynced, "correlated legacy memory row must be acked")
+	})
+
+	t.Run("both slices can be empty independently", func(t *testing.T) {
+		db := setupTestDB(t)
+		t.Cleanup(func() { require.NoError(t, db.Close()) })
+		_, err := db.EnsureManualSaveSession("test-project")
+		require.NoError(t, err)
+
+		id, err := db.SaveMemory(createTestMemory("test-project"))
+		require.NoError(t, err)
+		mem, err := db.GetMemory(id)
+		require.NoError(t, err)
+
+		pending, err := db.GetPendingMutations("test-project", 10)
+		require.NoError(t, err)
+		require.Len(t, pending, 1)
+		eventID := pending[0].EventID
+
+		syncTime := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+		// Only ack the mutation half; the memory correlation slice is empty
+		// (e.g. a delete mutation with no legacy-row correlation).
+		require.NoError(t, db.MarkMutationsAndMemoriesSynced([]string{eventID}, nil, syncTime))
+
+		remaining, err := db.GetPendingMutations("test-project", 10)
+		require.NoError(t, err)
+		assert.Empty(t, remaining)
+
+		unsynced, err := db.GetUnsynced("test-project")
+		require.NoError(t, err)
+		require.Len(t, unsynced, 1, "memory row is untouched when its sync_id is not in the correlation slice")
+		assert.Equal(t, mem.SyncID, unsynced[0].SyncID)
+	})
+
+	t.Run("no-op when both slices are empty", func(t *testing.T) {
+		db := setupTestDB(t)
+		t.Cleanup(func() { require.NoError(t, db.Close()) })
+		require.NoError(t, db.MarkMutationsAndMemoriesSynced(nil, nil, time.Now().UTC()))
+	})
+}
+
 // TestSyncDB_SaveFromRemote tests saving a memory received from the server.
 func TestSyncDB_SaveFromRemote(t *testing.T) {
 	tests := []struct {

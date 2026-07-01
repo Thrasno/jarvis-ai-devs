@@ -305,6 +305,47 @@ func (d *DB) MarkMutationsSynced(eventIDs []string, at time.Time) error {
 	return tx.Commit()
 }
 
+// MarkMutationsAndMemoriesSynced acks the given mutation journal event_ids
+// AND the correlated legacy memories.sync_id rows in a single transaction.
+// This is the atomic counterpart to calling MarkMutationsSynced followed by
+// MarkMemoriesSyncedBySyncID separately: if either half fails, the whole
+// transaction rolls back, so a pending mutation is never left "confirmed"
+// while its correlated legacy row stays unsynced forever. On the next Sync
+// call, GetPendingMutations will re-derive and retry both halves together.
+func (d *DB) MarkMutationsAndMemoriesSynced(eventIDs []string, syncIDs []string, at time.Time) error {
+	if len(eventIDs) == 0 && len(syncIDs) == 0 {
+		return nil
+	}
+	tx, err := d.sqlDB.Begin()
+	if err != nil {
+		return fmt.Errorf("begin mark mutations and memories synced: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	formatted := at.UTC().Format("2006-01-02 15:04:05")
+
+	for _, eventID := range eventIDs {
+		if _, err := tx.Exec(`UPDATE memory_mutations SET synced_at = ? WHERE event_id = ?`, formatted, eventID); err != nil {
+			return fmt.Errorf("mark mutation synced %s: %w", eventID, err)
+		}
+	}
+
+	for _, syncID := range syncIDs {
+		result, err := tx.Exec(`UPDATE memories SET synced_at = ? WHERE sync_id = ?`, formatted, syncID)
+		if err != nil {
+			return fmt.Errorf("mark memory synced %s: %w", syncID, err)
+		}
+		if n, _ := result.RowsAffected(); n == 0 {
+			logger.Log.Printf("warn: MarkMutationsAndMemoriesSynced: no memory row found for sync_id %s", syncID)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit mark mutations and memories synced: %w", err)
+	}
+	return nil
+}
+
 func (d *DB) GetMutationCursor(consumer, project string) (MutationCursor, error) {
 	var cursor MutationCursor
 	err := d.sqlDB.QueryRow(`
@@ -340,6 +381,12 @@ func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
 	if event.EventID == "" {
 		return false, fmt.Errorf("event_id is required")
 	}
+	// EntityType == "" defaults to "memory" here. This convention is mirrored
+	// by confirmedMemorySyncIDs in internal/sync/syncer.go, which treats an
+	// empty EntityType the same way when correlating confirmed mutations
+	// back to legacy memories.sync_id rows. Today EntityType is only ever ""
+	// or "memory", so both sites agree — if a second entity type is ever
+	// introduced, update both call sites together.
 	if event.EntityType == "" {
 		event.EntityType = "memory"
 	}
