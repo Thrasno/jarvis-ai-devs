@@ -77,6 +77,12 @@ type SyncStore interface {
 	RecordSyncAttempt(project string, at time.Time) error
 	RecordSyncSuccess(project string, at time.Time) error
 	RecordSyncFailure(project string, at time.Time, consecutiveFailures int, backoffUntil time.Time, syncErr error) error
+	// RecordDrainOutcome persists the most recently recorded Drain outcome
+	// (PR 3, task 3.4, hive-sync-batched-drain) — see db.(*DB).RecordDrainOutcome
+	// doc. Drain calls this at the end of every run (success and degraded
+	// paths) so the sync health surfaces (mem_sync, health DTO) can report the
+	// last drain state without re-deriving it.
+	RecordDrainOutcome(project, state, reason string, remaining int) error
 	GetJWT() string
 	SetJWT(token string, expiresAt time.Time) error
 	GetUnsyncedPrompts(ctx context.Context, project string) ([]*models.Prompt, error)
@@ -372,6 +378,25 @@ type DrainOutcome struct {
 	Err error
 }
 
+// drainStateString maps a DrainState to the same wire vocabulary the
+// mem_sync/health JSON surfaces use (mcp.drainStateJSON mirrors this — kept
+// as two small unexported functions rather than a shared exported one to
+// avoid adding a cross-package API surface just for a 3-way string switch).
+// Used by RecordDrainOutcome persistence so the DB stores the same strings
+// callers see over JSON.
+func drainStateString(state DrainState) string {
+	switch state {
+	case DrainFullySynced:
+		return "fully_synced"
+	case DrainExpectedPending:
+		return "expected_pending"
+	case DrainDegradedFailure:
+		return "degraded_failure"
+	default:
+		return "unknown"
+	}
+}
+
 // Sync ejecuta un único ciclo de sync (push+pull) para un proyecto. Es un
 // atajo sobre Drain con TriggerAuto — preserva la firma pública histórica
 // (*Result, error) para no romper a mem_save autoSync ni a los callers
@@ -476,6 +501,14 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 			outcome.BatchesRemaining = -1
 			outcome.RemainingPush = lastBatchBacklogSize
 			outcome.Err = stepErr
+			// Persist the degraded outcome (PR 3, task 3.4) before returning —
+			// both the nil-result and partial-result branches below are
+			// terminal for this Drain call, so this is the last chance to
+			// record it. Best-effort: a persistence failure here must not mask
+			// the original stepErr the caller is already about to see.
+			if persistErr := s.store.RecordDrainOutcome(project, drainStateString(outcome.State), string(outcome.Reason), outcome.RemainingPush); persistErr != nil {
+				logger.Log.Printf("warn: RecordDrainOutcome(project=%s): %v", project, persistErr)
+			}
 			if outcome.BatchesDone == 1 {
 				// Preserve the historical single-batch Sync contract: a
 				// first-and-only-batch failure returns a nil result.
@@ -561,6 +594,14 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 		prevMutationCursor = batch.MutationCursor
 		prevPullMemoriesCursor = batch.PullMemoriesCursor
 		prevPullSessionsCursor = batch.PullSessionsCursor
+	}
+
+	// Persist the drain outcome (PR 3, task 3.4) for the success path
+	// (DrainFullySynced or DrainExpectedPending) — best-effort, mirroring the
+	// degraded-failure path above: a persistence failure here must not fail
+	// an otherwise-successful Drain call.
+	if persistErr := s.store.RecordDrainOutcome(project, drainStateString(outcome.State), string(outcome.Reason), outcome.RemainingPush); persistErr != nil {
+		logger.Log.Printf("warn: RecordDrainOutcome(project=%s): %v", project, persistErr)
 	}
 
 	// Paso 6: actualizamos el timestamp del último sync exitoso

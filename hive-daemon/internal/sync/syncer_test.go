@@ -85,6 +85,12 @@ type mockSyncStore struct {
 	setPullCursorCalls []pullCursorSetCall
 	getPullCursorErr   error
 	setPullCursorErr   error
+
+	// recordDrainOutcomeCalls/recordDrainOutcomeErr (PR 3, task 3.4) record
+	// every RecordDrainOutcome invocation, or force it to fail, for tests
+	// asserting Drain persists its outcome at the end of a run.
+	recordDrainOutcomeCalls []recordDrainOutcomeCall
+	recordDrainOutcomeErr   error
 }
 
 type pullCursorCall struct {
@@ -207,6 +213,32 @@ func (m *mockSyncStore) RecordSyncSuccess(project string, at time.Time) error {
 	health.LastError = ""
 	m.healthByProject[project] = health
 	m.lastSync = at
+	return nil
+}
+
+// recordDrainOutcomeCall captures a single RecordDrainOutcome invocation for
+// assertions (PR 3, task 3.4).
+type recordDrainOutcomeCall struct {
+	project   string
+	state     string
+	reason    string
+	remaining int
+}
+
+func (m *mockSyncStore) RecordDrainOutcome(project, state, reason string, remaining int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.recordDrainOutcomeErr != nil {
+		return m.recordDrainOutcomeErr
+	}
+	m.recordDrainOutcomeCalls = append(m.recordDrainOutcomeCalls, recordDrainOutcomeCall{
+		project: project, state: state, reason: reason, remaining: remaining,
+	})
+	health := m.getHealthLocked(project)
+	health.LastDrainState = state
+	health.LastDrainReason = reason
+	health.LastDrainRemaining = remaining
+	m.healthByProject[project] = health
 	return nil
 }
 
@@ -3485,4 +3517,146 @@ func TestDrainOutcome_ClassifiesStateAndReason(t *testing.T) {
 		require.Error(t, outcome.Err)
 		assert.ErrorIs(t, outcome.Err, err)
 	})
+}
+
+// TestDrain_PersistsDrainOutcomeAtEndOfRun pins PR 3 task 3.4: Drain must
+// call store.RecordDrainOutcome exactly once at the end of every run — both
+// the success path (DrainFullySynced/DrainExpectedPending) and the degraded
+// path (DrainDegradedFailure) — with the same State/Reason/RemainingPush the
+// caller receives in DrainOutcome.
+func TestDrain_PersistsDrainOutcomeAtEndOfRun(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+
+	t.Run("success path persists fully-synced", func(t *testing.T) {
+		store := &mockSyncStore{jwt: "valid-token"}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/sync" {
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+		}))
+		defer server.Close()
+
+		syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+			now:    func() time.Time { return baseNow },
+			jitter: func(max time.Duration) time.Duration { return 0 },
+		})
+
+		_, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+		require.NoError(t, err)
+
+		require.Len(t, store.recordDrainOutcomeCalls, 1)
+		call := store.recordDrainOutcomeCalls[0]
+		assert.Equal(t, "test-project", call.project)
+		assert.Equal(t, "fully_synced", call.state)
+		assert.Equal(t, "", call.reason)
+		assert.Equal(t, outcome.RemainingPush, call.remaining)
+	})
+
+	t.Run("degraded path persists degraded-failure", func(t *testing.T) {
+		store := &mockSyncStore{
+			jwt: "valid-token",
+			unsyncedSequence: [][]*models.Memory{
+				{createTestSyncMemory("local-1")},
+				{createTestSyncMemory("local-2")},
+			},
+		}
+		var syncCalls atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/sync" {
+				return
+			}
+			n := syncCalls.Add(1)
+			if n == 2 {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, writeErr := w.Write([]byte("boom"))
+				require.NoError(t, writeErr)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 1, Pulled: []apiMemory{}, Conflicts: 0}))
+		}))
+		defer server.Close()
+
+		syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+			now:    func() time.Time { return baseNow },
+			jitter: func(max time.Duration) time.Duration { return 0 },
+		})
+
+		_, _, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+		require.Error(t, err)
+
+		require.Len(t, store.recordDrainOutcomeCalls, 1)
+		call := store.recordDrainOutcomeCalls[0]
+		assert.Equal(t, "test-project", call.project)
+		assert.Equal(t, "degraded_failure", call.state)
+	})
+
+	t.Run("RecordDrainOutcome failure does not mask the original result", func(t *testing.T) {
+		store := &mockSyncStore{
+			jwt:                   "valid-token",
+			recordDrainOutcomeErr: errors.New("db write failed"),
+		}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/sync" {
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+		}))
+		defer server.Close()
+
+		syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+			now:    func() time.Time { return baseNow },
+			jitter: func(max time.Duration) time.Duration { return 0 },
+		})
+
+		result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+		require.NoError(t, err, "a best-effort RecordDrainOutcome failure must not fail an otherwise-successful Drain call")
+		require.NotNil(t, result)
+		assert.Equal(t, DrainFullySynced, outcome.State)
+	})
+}
+
+// TestDrain_EndToEnd_PersistedOutcomeVisibleViaHealth pins PR 3 task 3.4's
+// end-to-end contract using the real *db.DB (not the mock): after a Drain
+// run, the persisted drain outcome must be visible through GetSyncHealth,
+// exactly like health.go's Summary() would read it for the health DTO.
+func TestDrain_EndToEnd_PersistedOutcomeVisibleViaHealth(t *testing.T) {
+	tmpDir := t.TempDir()
+	realDB, err := db.Open(tmpDir + "/test.db")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, realDB.Close()) })
+
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/login":
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+				"token":      "test-token",
+				"expires_at": baseNow.Add(24 * time.Hour).Format(time.RFC3339),
+			}))
+		case "/sync":
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, realDB, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	_, outcome, err := syncer.Drain(context.Background(), "e2e-project", TriggerManual)
+	require.NoError(t, err)
+	assert.Equal(t, DrainFullySynced, outcome.State)
+
+	health, err := realDB.GetSyncHealth("e2e-project")
+	require.NoError(t, err)
+	assert.Equal(t, "fully_synced", health.LastDrainState)
+	assert.Equal(t, "", health.LastDrainReason)
+	assert.Equal(t, 0, health.LastDrainRemaining)
 }

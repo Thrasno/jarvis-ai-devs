@@ -24,6 +24,15 @@ type SyncHealth struct {
 	BackoffUntil        time.Time `json:"backoff_until"`
 	ConsecutiveFailures int       `json:"consecutive_failures"`
 	LastError           string    `json:"last_error"`
+
+	// LastDrainState/LastDrainReason/LastDrainRemaining (PR 3, task 3.4,
+	// hive-sync-batched-drain) persist the most recent Drain outcome for this
+	// project — see RecordDrainOutcome. Empty/zero when no Drain call has
+	// ever recorded an outcome for this project (fresh sync_state row, or a
+	// DB created before this migration).
+	LastDrainState     string `json:"last_drain_state"`
+	LastDrainReason    string `json:"last_drain_reason"`
+	LastDrainRemaining int    `json:"last_drain_remaining"`
 }
 
 type MutationOp string
@@ -775,11 +784,14 @@ func (d *DB) GetSyncHealth(project string) (SyncHealth, error) {
 		backoffUntil                          sql.NullString
 		lastError                             sql.NullString
 		consecutiveFailures                   sql.NullInt64
+		lastDrainState, lastDrainReason       sql.NullString
+		lastDrainRemaining                    sql.NullInt64
 	)
 
 	health.Project = project
 	err := d.sqlDB.QueryRow(`
-SELECT last_attempt_at, last_success_at, last_failure_at, consecutive_failures, backoff_until, last_error
+SELECT last_attempt_at, last_success_at, last_failure_at, consecutive_failures, backoff_until, last_error,
+       last_drain_state, last_drain_reason, last_drain_remaining
 FROM sync_state WHERE project = ?`, project).Scan(
 		&lastAttempt,
 		&lastSuccess,
@@ -787,6 +799,9 @@ FROM sync_state WHERE project = ?`, project).Scan(
 		&consecutiveFailures,
 		&backoffUntil,
 		&lastError,
+		&lastDrainState,
+		&lastDrainReason,
+		&lastDrainRemaining,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return health, nil
@@ -805,13 +820,23 @@ FROM sync_state WHERE project = ?`, project).Scan(
 	if lastError.Valid {
 		health.LastError = lastError.String
 	}
+	if lastDrainState.Valid {
+		health.LastDrainState = lastDrainState.String
+	}
+	if lastDrainReason.Valid {
+		health.LastDrainReason = lastDrainReason.String
+	}
+	if lastDrainRemaining.Valid {
+		health.LastDrainRemaining = int(lastDrainRemaining.Int64)
+	}
 
 	return health, nil
 }
 
 func (d *DB) ListGovernanceSyncHealth(ctx context.Context) ([]SyncHealth, error) {
 	rows, err := d.sqlDB.QueryContext(ctx, `
-SELECT project, last_attempt_at, last_success_at, last_failure_at, consecutive_failures, backoff_until, last_error
+SELECT project, last_attempt_at, last_success_at, last_failure_at, consecutive_failures, backoff_until, last_error,
+       last_drain_state, last_drain_reason, last_drain_remaining
 FROM sync_state
 WHERE project != '__auth__'
 ORDER BY project`)
@@ -829,6 +854,33 @@ ORDER BY project`)
 		health = append(health, item)
 	}
 	return health, rows.Err()
+}
+
+// RecordDrainOutcome persists the most recently recorded Drain outcome for
+// project (PR 3, task 3.4, hive-sync-batched-drain). Unlike RecordSyncSuccess/
+// RecordSyncFailure this always OVERWRITES the previous drain fields — a
+// drain outcome is a point-in-time snapshot ("what happened on the last
+// Drain call"), not an accumulating counter, so the newest call always wins.
+// reason is passed through as-is (empty string for DrainReasonNone) and
+// stored as NULL only when the row does not exist yet — an explicit empty
+// string is stored as empty string, not NULL, so GetSyncHealth's Valid check
+// still reports the row as present.
+func (d *DB) RecordDrainOutcome(project, state, reason string, remaining int) error {
+	if _, err := d.sqlDB.Exec(`
+INSERT OR IGNORE INTO sync_state (project, consecutive_failures, last_error)
+VALUES (?, 0, '')`, project); err != nil {
+		return err
+	}
+
+	_, err := d.sqlDB.Exec(`
+UPDATE sync_state SET
+	last_drain_state = ?,
+	last_drain_reason = ?,
+	last_drain_remaining = ?
+WHERE project = ?`,
+		state, reason, remaining, project,
+	)
+	return err
 }
 
 func (d *DB) RecordSyncAttempt(project string, at time.Time) error {
@@ -901,8 +953,13 @@ func scanSyncHealth(s syncScanner) (SyncHealth, error) {
 		backoffUntil                          sql.NullString
 		lastError                             sql.NullString
 		consecutiveFailures                   sql.NullInt64
+		lastDrainState, lastDrainReason       sql.NullString
+		lastDrainRemaining                    sql.NullInt64
 	)
-	if err := s.Scan(&health.Project, &lastAttempt, &lastSuccess, &lastFailure, &consecutiveFailures, &backoffUntil, &lastError); err != nil {
+	if err := s.Scan(
+		&health.Project, &lastAttempt, &lastSuccess, &lastFailure, &consecutiveFailures, &backoffUntil, &lastError,
+		&lastDrainState, &lastDrainReason, &lastDrainRemaining,
+	); err != nil {
 		return SyncHealth{}, fmt.Errorf("scan sync health: %w", err)
 	}
 	health.LastAttemptAt = parseNullTime(lastAttempt)
@@ -914,6 +971,15 @@ func scanSyncHealth(s syncScanner) (SyncHealth, error) {
 	}
 	if lastError.Valid {
 		health.LastError = lastError.String
+	}
+	if lastDrainState.Valid {
+		health.LastDrainState = lastDrainState.String
+	}
+	if lastDrainReason.Valid {
+		health.LastDrainReason = lastDrainReason.String
+	}
+	if lastDrainRemaining.Valid {
+		health.LastDrainRemaining = int(lastDrainRemaining.Int64)
 	}
 	return health, nil
 }

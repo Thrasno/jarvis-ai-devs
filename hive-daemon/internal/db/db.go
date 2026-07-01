@@ -444,6 +444,14 @@ func initSchema(sqlDB *sql.DB) error {
 		// positions (PR 2a/2b, hive-sync-batched-drain). See the base schema
 		// declaration above for field semantics.
 		`CREATE TABLE IF NOT EXISTS pull_cursors (consumer TEXT NOT NULL, project TEXT NOT NULL, channel TEXT NOT NULL, synced_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, sync_id TEXT NOT NULL DEFAULT '', updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (consumer, project, channel))`,
+		// sync_state: nullable columns persisting the most recently recorded
+		// Drain outcome per project (PR 3, task 3.4, hive-sync-batched-drain).
+		// Nullable/no default beyond '' for the reason column — a project that
+		// never called RecordDrainOutcome (only RecordSyncSuccess/Failure) must
+		// read back empty/zero, not fail.
+		`ALTER TABLE sync_state ADD COLUMN last_drain_state TEXT`,
+		`ALTER TABLE sync_state ADD COLUMN last_drain_reason TEXT`,
+		`ALTER TABLE sync_state ADD COLUMN last_drain_remaining INTEGER`,
 	}
 	for _, m := range migrations {
 		if _, err := sqlDB.Exec(m); err != nil {
