@@ -2362,13 +2362,20 @@ func withSyncPageSize(t *testing.T, size int) {
 // contract: syncBatchStep must call the paged getters (GetUnsyncedPage,
 // ListUnsyncedSessionsPage, GetUnsyncedPromptsPage) with the current
 // syncPageSize as the limit, not the unbounded unpaged variants.
+//
+// No sessions are pending in this scenario on purpose: PR 2b's
+// session-priority gate (see TestSyncBatchStep_SessionPriorityGate_...
+// below) skips the GetUnsyncedPage fetch entirely while any session remains
+// unsynced, which would make store.getUnsyncedPageLimits empty and defeat
+// this test's own assertion. Session+prompt paging is still covered here;
+// the interaction between session backlog and memory paging is covered by
+// the dedicated session-priority-gate tests.
 func TestSyncBatchStep_PagesFetchesAtSyncPageSize(t *testing.T) {
 	withSyncPageSize(t, 2)
 
 	store := &mockSyncStore{
-		jwt:              "valid-token",
-		unsynced:         []*models.Memory{createTestSyncMemory("m-1"), createTestSyncMemory("m-2"), createTestSyncMemory("m-3")},
-		unsyncedSessions: []*models.Session{{ID: "s-1"}, {ID: "s-2"}, {ID: "s-3"}},
+		jwt:      "valid-token",
+		unsynced: []*models.Memory{createTestSyncMemory("m-1"), createTestSyncMemory("m-2"), createTestSyncMemory("m-3")},
 		unsyncedPrompts: []*models.Prompt{
 			createTestPrompt("p-1", "test-project", "one"),
 			createTestPrompt("p-2", "test-project", "two"),
@@ -2393,6 +2400,36 @@ func TestSyncBatchStep_PagesFetchesAtSyncPageSize(t *testing.T) {
 	assert.Equal(t, []int{2}, store.listUnsyncedSessionsPageLimits, "ListUnsyncedSessionsPage must be called with syncPageSize")
 	assert.Equal(t, []int{2}, store.getUnsyncedPromptsPageLimits, "GetUnsyncedPromptsPage must be called with syncPageSize")
 	assert.False(t, result.PushBacklogEmpty, "backlog still has more than one page pending")
+}
+
+// TestSyncBatchStep_SessionPriorityGate_SkipsMemoryFetchWhileSessionsPending
+// pins the PR 2b session-priority gate directly at the syncBatchStep level
+// (a narrower unit than the Drain-level FK regression test): while any
+// session remains unsynced, syncBatchStep must not even call GetUnsyncedPage
+// — the memories fetch is skipped entirely, not just filtered after the
+// fact — so store.getUnsyncedPageLimits stays empty for that step.
+func TestSyncBatchStep_SessionPriorityGate_SkipsMemoryFetchWhileSessionsPending(t *testing.T) {
+	store := &mockSyncStore{
+		jwt:              "valid-token",
+		unsynced:         []*models.Memory{createTestSyncMemory("m-1")},
+		unsyncedSessions: []*models.Session{{ID: "s-1"}},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sync" {
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{})
+
+	result, err := syncer.syncBatchStep(context.Background(), "test-project", "valid-token")
+	require.NoError(t, err)
+
+	assert.Empty(t, store.getUnsyncedPageLimits, "GetUnsyncedPage must not be called while sessions are pending")
+	assert.False(t, result.PushBacklogEmpty, "pending session keeps the backlog non-empty")
 }
 
 // TestDrain_TriggerManual_PagesThroughLargeBacklogWithoutFalsePositiveGuard
@@ -2622,4 +2659,232 @@ func (s *idempotentPagingStore) MarkSynced(syncID string, at time.Time) error {
 		}
 	}
 	return nil
+}
+
+// fkOrderingStore is a minimal SyncStore fake that models BOTH an unsynced
+// session backlog and an unsynced memory backlog paging INDEPENDENTLY (PR
+// 1b-iii regression, hive-sync-batched-drain PR 2b): sessions and memories
+// are each served from their own paged, "synced_at IS NULL"-like pending
+// set, mirroring ListUnsyncedSessionsPage/GetUnsyncedPage against real
+// tables. The embedded httptest server plays the part of hive-api's
+// per-request FK validator: a memory naming a session_id that is neither
+// already confirmed server-side (confirmedSessions) nor present in the SAME
+// request's sessions[] is rejected with a 400, exactly like
+// ErrSessionNotFound in hive-api.
+type fkOrderingStore struct {
+	mockSyncStore
+	mu                  sync.Mutex
+	pendingSessions     []*models.Session
+	pendingMemories     []*models.Memory
+	confirmedSessions   map[string]bool
+	pushedMemoryBatches [][]string // sync_ids per push, in order — for assertions
+}
+
+func newFKOrderingStore(sessions []*models.Session, memories []*models.Memory) *fkOrderingStore {
+	return &fkOrderingStore{
+		mockSyncStore:     mockSyncStore{jwt: "valid-token"},
+		pendingSessions:   sessions,
+		pendingMemories:   memories,
+		confirmedSessions: make(map[string]bool),
+	}
+}
+
+func (s *fkOrderingStore) ListUnsyncedSessionsPage(project string, limit int) ([]*models.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 || limit > len(s.pendingSessions) {
+		limit = len(s.pendingSessions)
+	}
+	page := make([]*models.Session, limit)
+	copy(page, s.pendingSessions[:limit])
+	return page, nil
+}
+
+func (s *fkOrderingStore) GetUnsyncedPage(project string, limit int) ([]*models.Memory, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 || limit > len(s.pendingMemories) {
+		limit = len(s.pendingMemories)
+	}
+	page := make([]*models.Memory, limit)
+	copy(page, s.pendingMemories[:limit])
+	return page, nil
+}
+
+func (s *fkOrderingStore) MarkSessionSynced(id string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.markedSessionSynced = append(s.markedSessionSynced, id)
+	s.confirmedSessions[id] = true
+	for i, sess := range s.pendingSessions {
+		if sess.ID == id {
+			s.pendingSessions = append(s.pendingSessions[:i], s.pendingSessions[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
+func (s *fkOrderingStore) MarkSynced(syncID string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.markedSynced = append(s.markedSynced, syncID)
+	for i, m := range s.pendingMemories {
+		if m.SyncID == syncID {
+			s.pendingMemories = append(s.pendingMemories[:i], s.pendingMemories[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
+// fkValidatingHandler returns an http.HandlerFunc that models hive-api's
+// per-request FK validator: any pushed memory whose session_id is non-empty
+// must be satisfied either by a session in the SAME request's sessions[] or
+// by a session already recorded as confirmed. Violations respond 400,
+// exactly like ErrSessionNotFound would in hive-api.
+func fkValidatingHandler(t *testing.T, confirmed map[string]bool, onRequest func(req syncRequest)) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync" {
+			return
+		}
+		var req syncRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+
+		inRequest := make(map[string]bool, len(req.Sessions))
+		for _, s := range req.Sessions {
+			inRequest[s.ID] = true
+		}
+
+		for _, m := range req.Memories {
+			if m.SessionID == "" {
+				continue // lazy-created / manual-save sessions are the server's concern, not FK-blocked here
+			}
+			if !inRequest[m.SessionID] && !confirmed[m.SessionID] {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(fmt.Sprintf("session not found: %s", m.SessionID)))
+				return
+			}
+		}
+
+		if onRequest != nil {
+			onRequest(req)
+		}
+
+		// Confirm sessions from this request AFTER validation, modeling the
+		// server durably persisting them as part of this same push.
+		for _, s := range req.Sessions {
+			confirmed[s.ID] = true
+		}
+
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{
+			Pushed: len(req.Memories),
+			Pulled: []apiMemory{},
+		}))
+	}
+}
+
+// TestDrain_SessionPriorityPreventsFKViolationOnLaterSessionPage is the
+// PR 2b regression test for the FK-ordering push bug introduced by PR
+// 1b-iii's independent session/memory paging: with a session backlog LARGER
+// than syncPageSize, a memory referencing a session that lands in a LATER
+// session page must never be pushed before its own session has been pushed
+// and confirmed. Before the PR 2b fix, syncBatchStep pushed a page of
+// sessions AND a page of memories in the SAME request/batch regardless of
+// whether the memory's named session had been drained yet — with 5 sessions
+// at page size 2, a memory naming the 5th session (page 3) would be pushed
+// in batch 1 alongside only the first 2 sessions, and hive-api would 400
+// with ErrSessionNotFound. This test proves the fix: drain the session
+// channel to empty BEFORE pushing any memories.
+func TestDrain_SessionPriorityPreventsFKViolationOnLaterSessionPage(t *testing.T) {
+	withSyncPageSize(t, 2)
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+
+	sessions := make([]*models.Session, 0, 5)
+	for i := 1; i <= 5; i++ {
+		sessions = append(sessions, &models.Session{ID: fmt.Sprintf("sess-%d", i)})
+	}
+	// This memory names the LAST session (sess-5), which lands in the third
+	// (final) session page at page size 2 — the exact regression scenario.
+	memNamingLateSession := createTestSyncMemory("mem-late-session")
+	memNamingLateSession.SessionID = "sess-5"
+
+	store := newFKOrderingStore(sessions, []*models.Memory{memNamingLateSession})
+
+	server := httptest.NewServer(fkValidatingHandler(t, store.confirmedSessions, nil))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+	require.NoError(t, err, "drain must not surface a 400 FK violation")
+	require.NotNil(t, result)
+	assert.Equal(t, DrainFullySynced, outcome.State)
+
+	// Everything must eventually drain: all 5 sessions and the 1 memory.
+	assert.Len(t, store.markedSessionSynced, 5, "all sessions must be confirmed")
+	assert.Len(t, store.markedSynced, 1, "the memory must be pushed exactly once, after its session")
+	assert.True(t, store.confirmedSessions["sess-5"], "sess-5 must be confirmed before the memory push succeeds")
+}
+
+// TestDrain_TriggerAuto_DefersMemoriesWhileSessionsPending pins the
+// single-step TriggerAuto contract for the same fix: if sessions are still
+// pending when a single auto-sync tick runs, that tick must push sessions
+// only — memories wait for a later tick, once the session backlog is fully
+// drained. This documents the (expected, temporary) memory-push delay under
+// TriggerAuto when a large session backlog is still draining.
+func TestDrain_TriggerAuto_DefersMemoriesWhileSessionsPending(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+
+	sess := &models.Session{ID: "sess-pending"}
+	mem := createTestSyncMemory("mem-with-pending-session")
+	mem.SessionID = sess.ID
+
+	store := newFKOrderingStore([]*models.Session{sess}, []*models.Memory{mem})
+
+	var sawMemoriesInRequest bool
+	server := httptest.NewServer(fkValidatingHandler(t, store.confirmedSessions, func(req syncRequest) {
+		if len(req.Memories) > 0 {
+			sawMemoriesInRequest = true
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerAuto)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, DrainExpectedPending, outcome.State, "memory still pending after the single allowed batch")
+	assert.False(t, sawMemoriesInRequest, "a single auto tick must not push memories while sessions are still pending")
+	assert.Len(t, store.markedSessionSynced, 1, "the single auto tick must still push the pending session")
+	assert.Empty(t, store.markedSynced, "the memory must wait for a later tick")
+
+	// A second auto tick, now that sessions are drained, must push the
+	// memory. TriggerAuto's PushBacklogEmpty reflects the backlog observed
+	// GOING INTO the step (before this step's own push), matching
+	// TestDrain_TriggerAuto_RunsExactlyOneStep — so this tick still reports
+	// DrainExpectedPending even though it pushes (and fully drains) the last
+	// pending memory; a follow-up tick with nothing left would report
+	// DrainFullySynced instead.
+	result2, outcome2, err := syncer.Drain(context.Background(), "test-project", TriggerAuto)
+	require.NoError(t, err)
+	require.NotNil(t, result2)
+	assert.Equal(t, DrainExpectedPending, outcome2.State)
+	assert.True(t, sawMemoriesInRequest, "the follow-up tick must push the now-unblocked memory")
+	assert.Len(t, store.markedSynced, 1)
+
+	// A third tick, with nothing left pending, confirms the fully-synced state.
+	result3, outcome3, err := syncer.Drain(context.Background(), "test-project", TriggerAuto)
+	require.NoError(t, err)
+	require.NotNil(t, result3)
+	assert.Equal(t, DrainFullySynced, outcome3.State)
 }

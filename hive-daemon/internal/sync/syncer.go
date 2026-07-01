@@ -438,21 +438,52 @@ func (s *Syncer) syncBatchStep(ctx context.Context, project, token string) (batc
 // syncBatchStep so the public batch-step signature required by design §4.2
 // stays exactly `(batchResult, error)`.
 func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token string) (batchResult, *syncResponse, error) {
+	// Paso 2b: sesiones locales pendientes de sync, paged (non-fatal si falla).
+	// Fetched BEFORE memories so the session-priority gate below (PR 2b,
+	// hive-sync-batched-drain) can decide whether this batch is allowed to
+	// push memories at all.
+	unsyncedSessions, err := s.store.ListUnsyncedSessionsPage(project, syncPageSize)
+	if err != nil {
+		logger.Log.Printf("warn: obtener sesiones no sincronizadas: %v", err)
+		unsyncedSessions = nil
+	}
+
 	// Paso 2: memorias locales pendientes de sync. Paged at syncPageSize (PR
 	// 1b-iii, hive-sync-batched-drain) so a single push batch never exceeds
 	// the page cap — a Drain(TriggerManual) run pages through the rest via
 	// repeated syncBatchStep calls instead of pushing the whole backlog at
 	// once.
-	unsynced, err := s.store.GetUnsyncedPage(project, syncPageSize)
-	if err != nil {
-		return batchResult{}, nil, fmt.Errorf("obtener memorias no sincronizadas: %w", err)
-	}
-
-	// Paso 2b: sesiones locales pendientes de sync, paged (non-fatal si falla).
-	unsyncedSessions, err := s.store.ListUnsyncedSessionsPage(project, syncPageSize)
-	if err != nil {
-		logger.Log.Printf("warn: obtener sesiones no sincronizadas: %v", err)
-		unsyncedSessions = nil
+	//
+	// Session-priority gate (PR 2b, hive-sync-batched-drain — fixes an
+	// FK-ordering regression from PR 1b-iii): PR 1b-iii paged the sessions
+	// and memories channels INDEPENDENTLY. hive-api validates the
+	// memories[].session_id FK per-request against that SAME request's
+	// sessions[] plus whatever sessions the server already has confirmed. If
+	// the session backlog spans more than one page, a memory in an early
+	// memories page can name a session sitting in a LATER, not-yet-pushed
+	// session page — the server would then 400 with ErrSessionNotFound.
+	//
+	// The fix: while any unsynced session remains for this project, this
+	// batch pushes sessions (+prompts+mutations) only, and defers ALL
+	// memories to a later batch/tick — it does not even fetch a memories
+	// page. Once ListUnsyncedSessionsPage reports the session channel empty,
+	// memories resume flowing normally. This composes with the no-progress
+	// guard because draining sessions IS progress (RecordsMarkedSynced
+	// increments), and it holds for both TriggerManual (the loop keeps
+	// calling syncBatchStep) and TriggerAuto (that single tick simply pushes
+	// sessions only; memories wait for the next auto tick once sessions are
+	// fully drained).
+	//
+	// Deferring the fetch itself (rather than fetching and holding back) also
+	// keeps len(unsyncedSessions) > 0 driving PushBacklogEmpty below to
+	// false, so Drain(TriggerManual) correctly keeps looping instead of
+	// mistaking a memories-deferred batch for a fully-drained one.
+	var unsynced []*models.Memory
+	if len(unsyncedSessions) == 0 {
+		unsynced, err = s.store.GetUnsyncedPage(project, syncPageSize)
+		if err != nil {
+			return batchResult{}, nil, fmt.Errorf("obtener memorias no sincronizadas: %w", err)
+		}
 	}
 
 	// Paso 2c: prompts locales pendientes de sync, paged (non-fatal si falla).
