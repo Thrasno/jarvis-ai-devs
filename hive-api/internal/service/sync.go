@@ -45,7 +45,19 @@ type SyncService interface {
 
 	// PullAll devuelve sesiones Y memorias actualizadas después de 'since'.
 	// Sessions se devuelven PRIMERO para que el daemon receptor satisfaga la FK.
-	PullAll(ctx context.Context, project string, since time.Time, excludeSyncIDs []string) (*model.PullResult, error)
+	//
+	// limit acota cuántas filas se devuelven POR CANAL (memorias y sesiones se
+	// paginan independientemente, cada una con su propio cursor) — ya debe venir
+	// clampeado por el caller (el handler aplica model.ClampPullLimit antes de
+	// llegar aquí). memoriesCursor/sessionsCursor reanudan cada canal desde una
+	// página anterior; su valor cero (model.PullCursor{}) significa "desde el
+	// principio del barrido since".
+	//
+	// PullAll NO compone un drain completo — devuelve exactamente una página por
+	// canal y dice si hay más (PullResult.MemoriesHasMore / SessionsHasMore). La
+	// composición de múltiples páginas hasta agotar el backlog es responsabilidad
+	// del daemon consumidor (PR 2b), no de este servicio.
+	PullAll(ctx context.Context, project string, since time.Time, excludeSyncIDs []string, limit int, memoriesCursor, sessionsCursor model.PullCursor) (*model.PullResult, error)
 }
 
 type syncService struct {
@@ -264,13 +276,16 @@ func (s *syncService) emitSyncAudit(ctx context.Context, project, userID string,
 
 // PullAll devuelve sesiones y memorias actualizadas después de 'since'.
 // Sessions se resuelven PRIMERO — el daemon receptor debe insertarlas antes que las memorias.
-func (s *syncService) PullAll(ctx context.Context, project string, since time.Time, excludeSyncIDs []string) (*model.PullResult, error) {
-	sessions, err := s.sessionRepo.ListSessionsSince(ctx, project, since)
+//
+// limit y los cursores se forwardean tal cual a los repositorios — ver el
+// contrato completo en la doc del método de la interfaz SyncService.PullAll.
+func (s *syncService) PullAll(ctx context.Context, project string, since time.Time, excludeSyncIDs []string, limit int, memoriesCursor, sessionsCursor model.PullCursor) (*model.PullResult, error) {
+	sessions, sessionsHasMore, err := s.sessionRepo.ListSessionsSince(ctx, project, since, sessionsCursor, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions since: %w", err)
 	}
 
-	memories, err := s.repo.PullSince(ctx, project, since, excludeSyncIDs)
+	memories, memoriesHasMore, err := s.repo.PullSince(ctx, project, since, excludeSyncIDs, memoriesCursor, limit)
 	if err != nil {
 		return nil, fmt.Errorf("pull memories since: %w", err)
 	}
@@ -282,7 +297,24 @@ func (s *syncService) PullAll(ctx context.Context, project string, since time.Ti
 		memories = []*model.Memory{}
 	}
 
-	return &model.PullResult{Sessions: sessions, Memories: memories}, nil
+	result := &model.PullResult{
+		Sessions:        sessions,
+		Memories:        memories,
+		MemoriesHasMore: memoriesHasMore,
+		SessionsHasMore: sessionsHasMore,
+	}
+
+	if memoriesHasMore && len(memories) > 0 {
+		last := memories[len(memories)-1]
+		result.NextPullCursor = &model.PullCursor{SyncedAt: last.SyncedAt, SyncID: last.SyncID}
+	}
+
+	if sessionsHasMore && len(sessions) > 0 {
+		last := sessions[len(sessions)-1]
+		result.NextSessionCursor = &model.PullCursor{SyncedAt: last.SyncedAt, SyncID: last.SyncID}
+	}
+
+	return result, nil
 }
 
 // resolveSessionID resolves the effective session_id for a memory being pushed.
