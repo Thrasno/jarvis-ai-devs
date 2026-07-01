@@ -154,6 +154,35 @@ INSERT INTO observations (id, project, title, content, type, topic_key, session_
 	require.Empty(t, analysis.Sessions[0].Client, "missing optional client column must default to empty")
 }
 
+func TestAnalyzeSourceSkipsRowsWithNullRequiredFieldsInsteadOfFailing(t *testing.T) {
+	path := createRealisticEngramFixtureWithoutSessionClient(t, func(sqlDB *sql.DB) {
+		_, err := sqlDB.Exec(`
+INSERT INTO sessions (id, project, directory, started_at, ended_at, summary) VALUES
+  ('ses-1', 'proj-a', '/src/a', '2026-06-11 10:00:00', NULL, NULL),
+  ('ses-null', NULL, NULL, NULL, NULL, NULL);
+INSERT INTO user_prompts (id, project, content, created_at) VALUES
+  (11, 'proj-a', 'ok prompt', '2026-06-11 10:01:00'),
+  (12, NULL, NULL, NULL);
+INSERT INTO observations (id, project, title, content, type, topic_key, session_id, created_at, updated_at) VALUES
+  (21, 'proj-a', 'Decision', 'Keep daemon-owned import', 'decision', 'topic-a', 'ses-1', '2026-06-11 10:02:00', NULL),
+  (22, NULL, NULL, NULL, NULL, NULL, 'ses-1', NULL, NULL);`)
+		require.NoError(t, err)
+	})
+
+	analysis, err := AnalyzeSource(context.Background(), Source{Path: path})
+	require.NoError(t, err)
+	require.Equal(t, Counts{Sessions: 1, Prompts: 1, Observations: 1}, analysis.Counts)
+	require.Len(t, analysis.InvalidRows, 3, "NULL required fields must be skipped as invalid rows, not crash the scan")
+	require.Equal(t, []string{"proj-a"}, analysis.Projects)
+
+	batch := BuildImportBatch(analysis)
+	require.Len(t, batch.Sessions, 1)
+	require.Equal(t, "ses-1", batch.Sessions[0].SourceID)
+	require.Len(t, batch.Prompts, 1)
+	require.Len(t, batch.Memories, 1)
+	require.Equal(t, "21", batch.Memories[0].SourceID)
+}
+
 func TestAnalyzeSourceRejectsSessionsMissingRequiredColumn(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "engram.db")
 	sqlDB, err := sql.Open("sqlite", path)
@@ -514,32 +543,34 @@ func createRealisticEngramFixtureWithoutSessionClient(t *testing.T, seed func(*s
 	path := filepath.Join(t.TempDir(), "engram.db")
 	sqlDB, err := sql.Open("sqlite", path)
 	require.NoError(t, err)
-	// Mirrors the installed Engram schema: sessions has neither dev_id nor client.
+	// Mirrors the installed Engram schema faithfully: sessions has neither
+	// dev_id nor client, and text columns are nullable (no NOT NULL / DEFAULT),
+	// so real NULL values can be exercised the way production data allows them.
 	_, err = sqlDB.Exec(`
 CREATE TABLE observations (
   id INTEGER PRIMARY KEY,
-  project TEXT NOT NULL DEFAULT '',
-  title TEXT NOT NULL DEFAULT '',
-  content TEXT NOT NULL DEFAULT '',
-  type TEXT NOT NULL DEFAULT '',
+  project TEXT,
+  title TEXT,
+  content TEXT,
+  type TEXT,
   topic_key TEXT,
   session_id TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_at TEXT,
   updated_at TEXT
 );
 CREATE TABLE sessions (
   id TEXT PRIMARY KEY,
-  project TEXT NOT NULL DEFAULT '',
-  directory TEXT NOT NULL DEFAULT '',
-  started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  project TEXT,
+  directory TEXT,
+  started_at TEXT,
   ended_at TEXT,
   summary TEXT
 );
 CREATE TABLE user_prompts (
   id INTEGER PRIMARY KEY,
-  project TEXT NOT NULL DEFAULT '',
-  content TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  project TEXT,
+  content TEXT,
+  created_at TEXT
 );`)
 	require.NoError(t, err)
 	if seed != nil {

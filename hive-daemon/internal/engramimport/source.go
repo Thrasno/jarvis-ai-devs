@@ -280,11 +280,18 @@ func readSessions(ctx context.Context, sqlDB *sql.DB, analysis *Analysis, projec
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id, project, directory, client, startedAt string
-		var endedAt, summary sql.NullString
-		if err := rows.Scan(&id, &project, &directory, &client, &startedAt, &endedAt, &summary); err != nil {
+		// Engram allows NULL in these text columns, so scan through NullString
+		// and normalize; scanning directly into string would fail on NULL before
+		// the required-field validation below can skip the row.
+		var idVal, projectVal, directoryVal, clientVal, startedAtVal, endedAt, summary sql.NullString
+		if err := rows.Scan(&idVal, &projectVal, &directoryVal, &clientVal, &startedAtVal, &endedAt, &summary); err != nil {
 			return fmt.Errorf("scan engram session: %w", err)
 		}
+		id := nullableString(idVal)
+		project := nullableString(projectVal)
+		directory := nullableString(directoryVal)
+		client := nullableString(clientVal)
+		startedAt := nullableString(startedAtVal)
 		if strings.TrimSpace(id) == "" || strings.TrimSpace(project) == "" {
 			analysis.InvalidRows = append(analysis.InvalidRows, InvalidRow{Table: "sessions", SourceID: id, Reason: "id and project are required"})
 			continue
@@ -308,10 +315,13 @@ func readPrompts(ctx context.Context, sqlDB *sql.DB, analysis *Analysis, project
 	defer rows.Close()
 	for rows.Next() {
 		var id int64
-		var project, content, createdAt string
-		if err := rows.Scan(&id, &project, &content, &createdAt); err != nil {
+		var projectVal, contentVal, createdAtVal sql.NullString
+		if err := rows.Scan(&id, &projectVal, &contentVal, &createdAtVal); err != nil {
 			return fmt.Errorf("scan engram prompt: %w", err)
 		}
+		project := nullableString(projectVal)
+		content := nullableString(contentVal)
+		createdAt := nullableString(createdAtVal)
 		sourceID := strconv.FormatInt(id, 10)
 		if strings.TrimSpace(project) == "" || strings.TrimSpace(content) == "" {
 			analysis.InvalidRows = append(analysis.InvalidRows, InvalidRow{Table: "user_prompts", SourceID: sourceID, Reason: "project and content are required"})
@@ -332,11 +342,16 @@ func readObservations(ctx context.Context, sqlDB *sql.DB, analysis *Analysis, pr
 	defer rows.Close()
 	for rows.Next() {
 		var id int64
-		var project, title, content, category, createdAt string
+		var projectVal, titleVal, contentVal, categoryVal, createdAtVal sql.NullString
 		var topicKey, sessionID, updatedAt sql.NullString
-		if err := rows.Scan(&id, &project, &title, &content, &category, &topicKey, &sessionID, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&id, &projectVal, &titleVal, &contentVal, &categoryVal, &topicKey, &sessionID, &createdAtVal, &updatedAt); err != nil {
 			return fmt.Errorf("scan engram observation: %w", err)
 		}
+		project := nullableString(projectVal)
+		title := nullableString(titleVal)
+		content := nullableString(contentVal)
+		category := nullableString(categoryVal)
+		createdAt := nullableString(createdAtVal)
 		sourceID := strconv.FormatInt(id, 10)
 		if strings.TrimSpace(project) == "" || strings.TrimSpace(title) == "" || strings.TrimSpace(content) == "" || !sessionID.Valid || strings.TrimSpace(sessionID.String) == "" {
 			analysis.InvalidRows = append(analysis.InvalidRows, InvalidRow{Table: "observations", SourceID: sourceID, Reason: "project, title, content, and session_id are required"})
