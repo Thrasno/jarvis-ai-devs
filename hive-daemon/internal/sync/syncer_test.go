@@ -58,9 +58,27 @@ type mockSyncStore struct {
 	markSyncAttemptsErr           error
 	deleteSyncAttemptCutoffs      []time.Time
 	deleteSyncAttemptErr          error
+
+	// unsyncedSequence, when non-nil, scripts a different GetUnsynced result
+	// per call — used by Drain tests (PR 1b-ii) to simulate a shrinking
+	// backlog across multiple batch steps. The last entry repeats once the
+	// sequence is exhausted. getUnsyncedCalls counts invocations.
+	unsyncedSequence [][]*models.Memory
+	getUnsyncedCalls int
 }
 
 func (m *mockSyncStore) GetUnsynced(project string) ([]*models.Memory, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.unsyncedSequence != nil {
+		idx := m.getUnsyncedCalls
+		if idx >= len(m.unsyncedSequence) {
+			idx = len(m.unsyncedSequence) - 1
+		}
+		m.getUnsyncedCalls++
+		return m.unsyncedSequence[idx], nil
+	}
+	m.getUnsyncedCalls++
 	return m.unsynced, nil
 }
 
@@ -1909,10 +1927,10 @@ func TestSyncer_Sync_AttemptFlushBatchNeverExceedsOneHundred(t *testing.T) {
 
 // TestSyncer_SyncBatchStep_DoesNotTouchInFlight pins the PR 1b-i extraction
 // contract (design §4.2): syncBatchStep is a pure push+pull exchange and the
-// reservation bookkeeping (s.inFlight) is exclusively the caller's (Sync's)
-// concern. If syncBatchStep ever reserved or released s.inFlight itself,
-// calling it directly here — bypassing Sync's tryStart/finish — would leave
-// s.inFlight mutated as a side effect, which this test would catch.
+// reservation bookkeeping (s.inFlight) is exclusively the caller's (Drain's,
+// via Sync) concern. If syncBatchStep ever reserved or released s.inFlight
+// itself, calling it directly here — bypassing Drain's tryReserve/release —
+// would leave s.inFlight mutated as a side effect, which this test would catch.
 func TestSyncer_SyncBatchStep_DoesNotTouchInFlight(t *testing.T) {
 	store := &mockSyncStore{jwt: "valid-token", unsynced: []*models.Memory{}}
 
@@ -2002,4 +2020,254 @@ func TestSyncer_SyncBatchStep_PushBacklogEmptyReflectsPendingWork(t *testing.T) 
 			assert.Equal(t, tt.wantIsEmpty, result.PushBacklogEmpty)
 		})
 	}
+}
+
+// TestDrain_TriggerAuto_RunsExactlyOneStep pins the Drain controller contract
+// for TriggerAuto (design §2.1, §4.3, PR 1b-ii): even when the backlog would
+// still have work remaining after one batch, TriggerAuto must stop after
+// exactly one syncBatchStep call — matching the historical Sync behavior.
+func TestDrain_TriggerAuto_RunsExactlyOneStep(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{
+		jwt: "valid-token",
+		unsyncedSequence: [][]*models.Memory{
+			{createTestSyncMemory("local-1")},
+			{createTestSyncMemory("local-2")},
+			{createTestSyncMemory("local-3")},
+		},
+	}
+
+	var syncCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sync" {
+			syncCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 1, Pulled: []apiMemory{}, Conflicts: 0}))
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerAuto)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, int32(1), syncCalls.Load(), "TriggerAuto must run exactly one batch step")
+	assert.Equal(t, 1, outcome.Batches)
+	assert.Equal(t, DrainExpectedPending, outcome.State, "backlog still has pending work after the single allowed batch")
+}
+
+// TestDrain_TriggerManual_LoopsUntilBacklogEmpty pins the Drain controller
+// contract for TriggerManual (design §2.1, §4.3, PR 1b-ii): it must keep
+// calling syncBatchStep until the push backlog is empty and the pull side
+// reports no more pages, aggregating counts into a single Result.
+func TestDrain_TriggerManual_LoopsUntilBacklogEmpty(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{
+		jwt: "valid-token",
+		unsyncedSequence: [][]*models.Memory{
+			{createTestSyncMemory("local-1"), createTestSyncMemory("local-2")},
+			{createTestSyncMemory("local-3")},
+			{},
+		},
+	}
+
+	var syncCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sync" {
+			syncCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 1, Pulled: []apiMemory{}, Conflicts: 0}))
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, int32(3), syncCalls.Load(), "TriggerManual must loop until the backlog is empty")
+	assert.Equal(t, 3, outcome.Batches)
+	assert.Equal(t, DrainFullySynced, outcome.State)
+	assert.Equal(t, 3, result.Pushed, "aggregated Pushed must sum every batch")
+}
+
+// TestDrain_TriggerManual_HoldsReservationForEntireRun pins the design §4.3
+// requirement that tryReserve/release wrap the WHOLE Drain run, not each
+// individual batch: while a manual multi-batch Drain is in flight, a second
+// Drain/Sync call for the same project must be rejected with
+// ErrSyncInFlight, not just between/after individual batches.
+func TestDrain_TriggerManual_HoldsReservationForEntireRun(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{
+		jwt: "valid-token",
+		unsyncedSequence: [][]*models.Memory{
+			{createTestSyncMemory("local-1")},
+			{},
+		},
+	}
+
+	batchStarted := make(chan struct{}, 4)
+	release := make(chan struct{})
+	var batchCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync" {
+			return
+		}
+		n := batchCount.Add(1)
+		batchStarted <- struct{}{}
+		if n == 1 {
+			// Block the first batch so we can assert inFlight state and a
+			// concurrent Sync() call mid-Drain, before the loop proceeds to
+			// its second (final, empty-backlog) batch.
+			<-release
+		}
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 1, Pulled: []apiMemory{}, Conflicts: 0}))
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	drainDone := make(chan error, 1)
+	go func() {
+		_, _, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+		drainDone <- err
+	}()
+
+	<-batchStarted // first batch is in flight, reservation held
+
+	_, midRunErr := syncer.Sync(context.Background(), "test-project")
+	require.ErrorIs(t, midRunErr, ErrSyncInFlight, "reservation must stay held across the whole Drain run, not just per-batch")
+
+	close(release)
+	require.NoError(t, <-drainDone)
+
+	assert.Empty(t, syncer.inFlight, "release must run after Drain finishes")
+}
+
+// TestDrain_TerminatesOnNoProgress pins the T1b-ii.5 termination guard: if an
+// iteration does not shrink the backlog AND the mutation cursor does not
+// advance, Drain must stop within bounded iterations instead of spinning
+// forever, and classify the result as expected-pending.
+func TestDrain_TerminatesOnNoProgress(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	// The backlog never shrinks (same single unsynced memory forever) and the
+	// server never advances the mutation cursor — this models a permanent
+	// server-side conflict that keeps re-queuing the same item.
+	store := &mockSyncStore{
+		jwt:      "valid-token",
+		unsynced: []*models.Memory{createTestSyncMemory("stuck-memory")},
+	}
+
+	var syncCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sync" {
+			syncCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+			// Pushed:0 models the server rejecting/ignoring the item every time.
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.LessOrEqual(t, syncCalls.Load(), int32(3), "the no-progress guard must break the loop within a small bounded number of iterations")
+	assert.Equal(t, DrainExpectedPending, outcome.State)
+}
+
+// TestDrain_TerminatesOnStepError pins the T1b-ii.5 requirement that a
+// mid-loop batch step error immediately breaks the Drain loop and classifies
+// the outcome as degraded-failure, surfacing the error to the caller.
+func TestDrain_TerminatesOnStepError(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{
+		jwt: "valid-token",
+		unsyncedSequence: [][]*models.Memory{
+			{createTestSyncMemory("local-1")},
+			{createTestSyncMemory("local-2")},
+		},
+	}
+
+	var syncCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync" {
+			return
+		}
+		n := syncCalls.Add(1)
+		if n == 2 {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, writeErr := w.Write([]byte("boom"))
+			require.NoError(t, writeErr)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 1, Pulled: []apiMemory{}, Conflicts: 0}))
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+	require.Error(t, err)
+	require.NotNil(t, result, "partial progress from the first successful batch must still be surfaced")
+	assert.Equal(t, 1, result.Pushed, "only the first batch's progress is aggregated before the failing second batch")
+	assert.Equal(t, 2, outcome.Batches)
+	assert.Equal(t, DrainDegradedFailure, outcome.State)
+	assert.Equal(t, int32(2), syncCalls.Load(), "loop must stop immediately after the failing batch, not retry indefinitely")
+}
+
+// TestDrain_TriggerManual_BackoffAndAttemptRecordedOnceAtTop pins the design
+// §4.3 requirement that the backoff gate and RecordSyncAttempt run ONCE at
+// the top of a Drain run, not once per batch iteration.
+func TestDrain_TriggerManual_BackoffAndAttemptRecordedOnceAtTop(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{
+		jwt: "valid-token",
+		unsyncedSequence: [][]*models.Memory{
+			{createTestSyncMemory("local-1"), createTestSyncMemory("local-2")},
+			{createTestSyncMemory("local-3")},
+			{},
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sync" {
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 1, Pulled: []apiMemory{}, Conflicts: 0}))
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	_, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+	require.NoError(t, err)
+	assert.Equal(t, 3, outcome.Batches, "sanity check: the loop actually ran multiple batches")
+	assert.Len(t, store.recordAttemptCalls, 1, "RecordSyncAttempt must run once per Drain call, not once per batch")
+	assert.Len(t, store.recordSuccessCalls, 1, "RecordSyncSuccess must run once at the end of a successful Drain")
 }

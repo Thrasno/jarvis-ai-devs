@@ -22,11 +22,13 @@ import (
 )
 
 type scriptedSyncer struct {
-	mu      sync.Mutex
-	result  *hivesync.Result
-	err     error
-	project string
-	calls   int
+	mu         sync.Mutex
+	result     *hivesync.Result
+	err        error
+	project    string
+	calls      int
+	drainCalls int
+	lastPolicy hivesync.TriggerPolicy
 }
 
 func (s *scriptedSyncer) Sync(context.Context, string) (*hivesync.Result, error) {
@@ -39,10 +41,33 @@ func (s *scriptedSyncer) Sync(context.Context, string) (*hivesync.Result, error)
 	return &hivesync.Result{Project: s.project}, s.err
 }
 
+func (s *scriptedSyncer) Drain(_ context.Context, _ string, policy hivesync.TriggerPolicy) (*hivesync.Result, hivesync.DrainOutcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.drainCalls++
+	s.lastPolicy = policy
+	if s.result != nil {
+		return s.result, hivesync.DrainOutcome{Batches: 1, State: hivesync.DrainFullySynced}, s.err
+	}
+	return &hivesync.Result{Project: s.project}, hivesync.DrainOutcome{Batches: 1, State: hivesync.DrainFullySynced}, s.err
+}
+
 func (s *scriptedSyncer) callCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.calls
+}
+
+func (s *scriptedSyncer) drainCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.drainCalls
+}
+
+func (s *scriptedSyncer) lastDrainPolicy() hivesync.TriggerPolicy {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastPolicy
 }
 
 func callTool(t *testing.T, session *sdkmcp.ClientSession, name string, args map[string]any) *sdkmcp.CallToolResult {
@@ -1275,6 +1300,102 @@ func TestMemSync_ReturnsStructuredStatuses(t *testing.T) {
 				}
 			} else if _, ok := body["retry_at"]; ok {
 				t.Fatalf("retry_at should be omitted, got %v", body["retry_at"])
+			}
+		})
+	}
+}
+
+// TestMemSyncHandler_UsesDrainManual pins PR 1b-ii Task 1b-ii.8: the mem_sync
+// MCP handler must drive a manual, user-triggered drain via
+// Drain(ctx, project, TriggerManual) instead of calling Sync (TriggerAuto).
+func TestMemSyncHandler_UsesDrainManual(t *testing.T) {
+	t.Parallel()
+
+	syncer := &scriptedSyncer{result: &hivesync.Result{
+		Pushed:    2,
+		Pulled:    1,
+		Conflicts: 0,
+		Project:   "test-proj",
+	}}
+	session := connectTestServerWithSync(t, &mockStore{}, nil, syncer)
+
+	res := callTool(t, session, "mem_sync", map[string]any{"project": "test-proj"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+
+	if got := syncer.drainCallCount(); got != 1 {
+		t.Fatalf("Drain call count = %d, want 1", got)
+	}
+	if got := syncer.callCount(); got != 0 {
+		t.Fatalf("Sync call count = %d, want 0 — mem_sync must use Drain, not Sync", got)
+	}
+	if got := syncer.lastDrainPolicy(); got != hivesync.TriggerManual {
+		t.Fatalf("Drain policy = %v, want TriggerManual", got)
+	}
+
+	body := decodeJSONResponse(t, res)
+	if got := body["pushed"]; got != float64(2) {
+		t.Fatalf("pushed = %v, want 2", got)
+	}
+	if got := body["pulled"]; got != float64(1) {
+		t.Fatalf("pulled = %v, want 1", got)
+	}
+	if got := body["status"]; got != "ok" {
+		t.Fatalf("status = %v, want ok", got)
+	}
+}
+
+// TestMemSyncHandler_StillHandlesInFlightAndBackoff pins that switching
+// mem_sync to Drain does not change the ErrSyncInFlight/BackoffError response
+// branches — they must behave identically whether raised from Sync or Drain.
+func TestMemSyncHandler_StillHandlesInFlightAndBackoff(t *testing.T) {
+	t.Parallel()
+
+	retryAt := time.Date(2026, time.May, 8, 12, 30, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		syncer     *scriptedSyncer
+		wantStatus string
+		wantRetry  string
+	}{
+		{
+			name:       "in flight",
+			syncer:     &scriptedSyncer{err: fmt.Errorf("blocked: %w", hivesync.ErrSyncInFlight)},
+			wantStatus: "in_flight",
+		},
+		{
+			name: "backoff",
+			syncer: &scriptedSyncer{err: &hivesync.BackoffError{
+				Project: "test-proj",
+				RetryAt: retryAt,
+			}},
+			wantStatus: "backoff",
+			wantRetry:  retryAt.Format(time.RFC3339),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session := connectTestServerWithSync(t, &mockStore{}, nil, tt.syncer)
+
+			res := callTool(t, session, "mem_sync", map[string]any{"project": "test-proj"})
+			if res.IsError {
+				t.Fatalf("unexpected error: %s", textContent(t, res))
+			}
+
+			if got := tt.syncer.drainCallCount(); got != 1 {
+				t.Fatalf("Drain call count = %d, want 1", got)
+			}
+
+			body := decodeJSONResponse(t, res)
+			if got := body["status"]; got != tt.wantStatus {
+				t.Fatalf("status = %v, want %q", got, tt.wantStatus)
+			}
+			if tt.wantRetry != "" {
+				if got := body["retry_at"]; got != tt.wantRetry {
+					t.Fatalf("retry_at = %v, want %q", got, tt.wantRetry)
+				}
 			}
 		})
 	}

@@ -892,7 +892,13 @@ func memSyncHandler(syncRuntime *syncRuntime) sdkmcp.ToolHandler {
 			return toolError(fmt.Errorf("project es requerido")), nil
 		}
 
-		result, err := syncer.Sync(ctx, p.Project)
+		// mem_sync drives a manual, user-triggered sync: drain the backlog
+		// across as many batches as needed instead of the single-step
+		// TriggerAuto policy used by the background/auto-sync path (design
+		// §2.1, §4.3, PR 1b-ii). Full DrainOutcome surfacing in the JSON
+		// response (drain_state) is deferred to PR 3 — for now the response
+		// shape stays exactly what it was for Sync.
+		result, _, err := syncer.Drain(ctx, p.Project, hivesync.TriggerManual)
 		if err != nil {
 			if errors.Is(err, hivesync.ErrSyncInFlight) {
 				return toolJSON(map[string]any{
