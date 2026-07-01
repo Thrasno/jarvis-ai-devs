@@ -37,6 +37,7 @@ var (
 type SyncStore interface {
 	GetUnsynced(project string) ([]*models.Memory, error)
 	MarkSynced(syncID string, at time.Time) error
+	MarkMemoriesSyncedBySyncID(syncIDs []string, at time.Time) error
 	SaveFromRemote(mem *models.Memory) error
 	GetLastSync(project string) (time.Time, error)
 	SetLastSync(project string, at time.Time) error

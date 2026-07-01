@@ -21,39 +21,41 @@ import (
 
 // mockSyncStore implements the SyncStore interface for testing.
 type mockSyncStore struct {
-	mu                       sync.Mutex
-	unsynced                 []*models.Memory
-	lastSync                 time.Time
-	jwt                      string
-	markedSynced             []string
-	savedFromRemote          []*models.Memory
-	unsyncedPrompts          []*models.Prompt
-	unsyncedPromptsErr       error
-	markedPromptSynced       []string
-	markPromptSyncedErr      error
-	healthByProject          map[string]db.SyncHealth
-	recordAttemptCalls       []string
-	recordSuccessCalls       []string
-	recordFailureCalls       []string
-	unsyncedSessions         []*models.Session
-	unsyncedSessionsErr      error
-	markedSessionSynced      []string
-	savedSessionsFromRemote  []*models.Session
-	pendingMutations         []db.MutationEnvelope
-	markedMutationsSynced    []string
-	markMutationsSyncedErr   error
-	appliedRemoteMutations   []db.MutationEnvelope
-	applyRemoteMutationErr   error
-	mutationCursor           db.MutationCursor
-	setMutationCursors       []db.MutationCursor
-	pendingSyncAttempts      []db.SyncAttemptLog
-	recordedSyncAttempts     []db.SyncAttemptLog
-	queueRecordedAttempts    bool
-	listSyncAttemptLimit     int
-	markedSyncAttempts       []string
-	markSyncAttemptsErr      error
-	deleteSyncAttemptCutoffs []time.Time
-	deleteSyncAttemptErr     error
+	mu                            sync.Mutex
+	unsynced                      []*models.Memory
+	lastSync                      time.Time
+	jwt                           string
+	markedSynced                  []string
+	markedMemoriesSyncedBySyncID  []string
+	markMemoriesSyncedBySyncIDErr error
+	savedFromRemote               []*models.Memory
+	unsyncedPrompts               []*models.Prompt
+	unsyncedPromptsErr            error
+	markedPromptSynced            []string
+	markPromptSyncedErr           error
+	healthByProject               map[string]db.SyncHealth
+	recordAttemptCalls            []string
+	recordSuccessCalls            []string
+	recordFailureCalls            []string
+	unsyncedSessions              []*models.Session
+	unsyncedSessionsErr           error
+	markedSessionSynced           []string
+	savedSessionsFromRemote       []*models.Session
+	pendingMutations              []db.MutationEnvelope
+	markedMutationsSynced         []string
+	markMutationsSyncedErr        error
+	appliedRemoteMutations        []db.MutationEnvelope
+	applyRemoteMutationErr        error
+	mutationCursor                db.MutationCursor
+	setMutationCursors            []db.MutationCursor
+	pendingSyncAttempts           []db.SyncAttemptLog
+	recordedSyncAttempts          []db.SyncAttemptLog
+	queueRecordedAttempts         bool
+	listSyncAttemptLimit          int
+	markedSyncAttempts            []string
+	markSyncAttemptsErr           error
+	deleteSyncAttemptCutoffs      []time.Time
+	deleteSyncAttemptErr          error
 }
 
 func (m *mockSyncStore) GetUnsynced(project string) ([]*models.Memory, error) {
@@ -64,6 +66,16 @@ func (m *mockSyncStore) MarkSynced(syncID string, at time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.markedSynced = append(m.markedSynced, syncID)
+	return nil
+}
+
+func (m *mockSyncStore) MarkMemoriesSyncedBySyncID(syncIDs []string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.markMemoriesSyncedBySyncIDErr != nil {
+		return m.markMemoriesSyncedBySyncIDErr
+	}
+	m.markedMemoriesSyncedBySyncID = append(m.markedMemoriesSyncedBySyncID, syncIDs...)
 	return nil
 }
 
