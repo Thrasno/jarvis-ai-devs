@@ -346,6 +346,18 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 			return nil, fmt.Errorf("marcar mutaciones sincronizadas: %w", err)
 		}
 		mutationsPushed = len(pendingMutations)
+
+		// R1a.3 fix (design §3, Hive obs #1692): hive-api ignores memories[]
+		// in mutation-sync-v2 mode, so legacy memory rows are never acked by
+		// the Paso 5b branch below. Once MarkMutationsSynced durably confirms
+		// the pending mutations, correlate their EntitySyncID back to the
+		// legacy memories.sync_id and ack those rows too — otherwise
+		// GetUnsynced would keep re-emitting them on every cycle forever.
+		if confirmedSyncIDs := confirmedMemorySyncIDs(pendingMutations); len(confirmedSyncIDs) > 0 {
+			if err := s.store.MarkMemoriesSyncedBySyncID(confirmedSyncIDs, now); err != nil {
+				logger.Log.Printf("warn: MarkMemoriesSyncedBySyncID: %v", err)
+			}
+		}
 	}
 
 	// Paso 6: actualizamos el timestamp del último sync exitoso
@@ -451,6 +463,30 @@ func mutationEventIDs(mutations []db.MutationEnvelope) []string {
 	for _, mutation := range mutations {
 		if mutation.EventID != "" {
 			ids = append(ids, mutation.EventID)
+		}
+	}
+	return ids
+}
+
+// confirmedMemorySyncIDs returns the legacy memories.sync_id values that can
+// be acked once the given mutations are durably confirmed by
+// MarkMutationsSynced. Only create/update mutations carry the memory content
+// sync_id that the legacy row shares; delete/restore mutations use tombstone
+// semantics and are already acked as part of ApplyRemoteMutation/legacy
+// tombstone handling, not via this correlation path.
+func confirmedMemorySyncIDs(mutations []db.MutationEnvelope) []string {
+	ids := make([]string, 0, len(mutations))
+	for _, mutation := range mutations {
+		if mutation.EntityType != "" && mutation.EntityType != "memory" {
+			continue
+		}
+		switch mutation.Op {
+		case db.MutationOpCreate, db.MutationOpUpdate:
+		default:
+			continue
+		}
+		if mutation.EntitySyncID != "" {
+			ids = append(ids, mutation.EntitySyncID)
 		}
 	}
 	return ids
