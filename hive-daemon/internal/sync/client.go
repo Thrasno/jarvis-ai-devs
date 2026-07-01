@@ -15,6 +15,28 @@ import (
 
 const mutationProtocolVersion = 2
 
+// PullCursor is a sync-package alias for db.PullCursor (defined in
+// internal/db alongside db.MutationCursor, PR 2b hive-sync-batched-drain).
+// It cannot be declared here instead: internal/db needs the same type for
+// GetPullCursor/SetPullCursor persistence, and internal/sync already
+// imports internal/db, so internal/db cannot import back from
+// internal/sync. Aliasing keeps call sites in this package (client.go,
+// syncer.go, tests) short while there is exactly one underlying type.
+type PullCursor = db.PullCursor
+
+// pullOptions carries the daemon's opt-in bounded-pull request (PR 2b): a
+// zero-value pullOptions{} sends no pull_limit/cursor fields at all
+// (omitempty), which matches hive-api's own opt-in contract — an absent
+// pull_limit means an unbounded legacy pull, exactly like pre-PR-2a
+// behavior. Callers that want bounded, resumable pagination set Limit and
+// forward the cursors persisted from the previous response's
+// NextPullCursor/NextSessionCursor.
+type pullOptions struct {
+	Limit          int
+	MemoriesCursor *PullCursor
+	SessionsCursor *PullCursor
+}
+
 // client es el HTTP client que habla con hive-api.
 type client struct {
 	cfg        *Config
@@ -104,6 +126,15 @@ type syncRequest struct {
 	ProtocolVersion int                   `json:"protocol_version,omitempty"`
 	MutationCursor  *db.MutationCursor    `json:"mutation_cursor,omitempty"`
 	Mutations       []db.MutationEnvelope `json:"mutations,omitempty"`
+
+	// Bounded legacy pull pagination (PR 2a/2b, hive-sync-batched-drain).
+	// PullLimit is an explicit opt-in: omitted/0 means an unbounded legacy
+	// pull, matching pre-PR-2a behavior exactly (see pullOptions doc).
+	// PullCursor resumes the memories pull channel; PullSessionCursor
+	// resumes the sessions pull channel — the two paginate independently.
+	PullLimit         int         `json:"pull_limit,omitempty"`
+	PullCursor        *PullCursor `json:"pull_cursor,omitempty"`
+	PullSessionCursor *PullCursor `json:"pull_session_cursor,omitempty"`
 }
 
 // memoryPayload es el formato que espera hive-api para cada memoria.
@@ -135,6 +166,17 @@ type syncResponse struct {
 	NextMutationCursor *db.MutationCursor    `json:"next_mutation_cursor,omitempty"`
 	PulledMutations    []db.MutationEnvelope `json:"pulled_mutations,omitempty"`
 	CompatibilityMode  string                `json:"compatibility_mode,omitempty"`
+
+	// Bounded legacy pull pagination (PR 2a/2b, hive-sync-batched-drain).
+	// omitempty on all four fields preserves backward compat both ways: an
+	// OLD hive-api server never sends them, so they decode to their zero
+	// values (false / nil) — PulledHasMore=false and
+	// PulledSessionsHasMore=false correctly signal "no more pages" for a
+	// server that predates pagination entirely.
+	PulledHasMore         bool        `json:"pulled_has_more,omitempty"`
+	NextPullCursor        *PullCursor `json:"next_pull_cursor,omitempty"`
+	PulledSessionsHasMore bool        `json:"pulled_sessions_has_more,omitempty"`
+	NextSessionCursor     *PullCursor `json:"next_session_cursor,omitempty"`
 }
 
 type syncAttemptIngestRequest struct {
@@ -188,9 +230,12 @@ type apiMemory struct {
 
 // sync envía sesiones, memorias y prompts locales, y recibe del servidor para un proyecto.
 // sessions se serializa ANTES de memories (Decision 11: FK ordering).
+// pullOpts opts into bounded legacy pull pagination (PR 2a/2b) — its zero
+// value sends no pull_limit/cursor fields, preserving the pre-PR-2a
+// unbounded-pull request shape exactly.
 func (c *client) sync(ctx context.Context, token, project string,
 	sessions []*models.Session, toSend []*models.Memory, prompts []*models.Prompt, lastSync *time.Time,
-	mutations []db.MutationEnvelope, mutationCursor *db.MutationCursor) (*syncResponse, error) {
+	mutations []db.MutationEnvelope, mutationCursor *db.MutationCursor, pullOpts pullOptions) (*syncResponse, error) {
 
 	sessionPayloads := make([]sessionPayload, 0, len(sessions))
 	for _, s := range sessions {
@@ -236,14 +281,17 @@ func (c *client) sync(ctx context.Context, token, project string,
 	}
 
 	reqBody, err := json.Marshal(syncRequest{
-		Project:         project,
-		Sessions:        sessionPayloads,
-		Memories:        payloads,
-		Prompts:         promptPayloads,
-		LastSync:        lastSync,
-		ProtocolVersion: mutationProtocolVersion,
-		MutationCursor:  mutationCursor,
-		Mutations:       mutations,
+		Project:           project,
+		Sessions:          sessionPayloads,
+		Memories:          payloads,
+		Prompts:           promptPayloads,
+		LastSync:          lastSync,
+		ProtocolVersion:   mutationProtocolVersion,
+		MutationCursor:    mutationCursor,
+		Mutations:         mutations,
+		PullLimit:         pullOpts.Limit,
+		PullCursor:        pullOpts.MemoriesCursor,
+		PullSessionCursor: pullOpts.SessionsCursor,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal sync request: %w", err)

@@ -521,7 +521,7 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 		lastSyncPtr = &lastSync
 	}
 
-	resp, err := s.client.sync(ctx, token, project, unsyncedSessions, unsynced, unsyncedPrompts, lastSyncPtr, pendingMutations, &mutationCursor)
+	resp, err := s.client.sync(ctx, token, project, unsyncedSessions, unsynced, unsyncedPrompts, lastSyncPtr, pendingMutations, &mutationCursor, pullOptions{})
 	if err != nil {
 		return batchResult{}, nil, fmt.Errorf("sync con servidor: %w", err)
 	}
