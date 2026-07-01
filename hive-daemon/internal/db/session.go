@@ -174,6 +174,40 @@ func (d *DB) ListUnsyncedSessions(project string) ([]*models.Session, error) {
 	return results, rows.Err()
 }
 
+// ListUnsyncedSessionsPage returns at most `limit` unsynced sessions for the
+// project (synced_at IS NULL), ordered by created_at ASC. This is the paged
+// counterpart to ListUnsyncedSessions (PR 1b-iii, hive-sync-batched-drain):
+// syncBatchStep uses this instead of the unpaged getter so a single push
+// batch never exceeds syncPageSize, while ORDER BY created_at ASC keeps
+// paging stable across repeated calls as earlier rows get marked synced.
+// ListUnsyncedSessions itself is left untouched for any other existing
+// callers.
+func (d *DB) ListUnsyncedSessionsPage(project string, limit int) ([]*models.Session, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := d.sqlDB.Query(`
+		SELECT id, sync_id, project, directory, dev_id, client,
+		       started_at, ended_at, summary, synced_at
+		FROM sessions WHERE project = ? AND synced_at IS NULL
+		ORDER BY created_at ASC LIMIT ?`, project, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list unsynced sessions page: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []*models.Session
+	for rows.Next() {
+		s, err := scanSession(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan unsynced session page: %w", err)
+		}
+		results = append(results, s)
+	}
+	return results, rows.Err()
+}
+
 // MarkSessionSynced sets synced_at for a session identified by id.
 func (d *DB) MarkSessionSynced(id string, at time.Time) error {
 	_, err := d.sqlDB.Exec(

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -2060,4 +2061,109 @@ func TestStripHTTPErrorBody(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+// TestGetUnsyncedPage_RespectsLimitAndOrder pins the PR 1b-iii paging
+// contract: GetUnsyncedPage must return at most `limit` rows, ordered by
+// created_at ASC, so a Drain loop can page through a backlog larger than the
+// push page size without skipping or reordering rows.
+func TestGetUnsyncedPage_RespectsLimitAndOrder(t *testing.T) {
+	d := setupTestDB(t)
+	t.Cleanup(func() { require.NoError(t, d.Close()) })
+
+	_, err := d.EnsureManualSaveSession("page-project")
+	require.NoError(t, err)
+
+	const total = 5
+	const limit = 3
+	wantSyncIDs := make([]string, 0, total)
+	base := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < total; i++ {
+		syncID := fmt.Sprintf("page-sync-%d", i)
+		createdAt := base.Add(time.Duration(i) * time.Minute).Format("2006-01-02 15:04:05")
+		_, err := d.sqlDB.Exec(`
+INSERT INTO memories (sync_id, project, category, title, content, created_by, session_id, created_at, updated_at)
+VALUES (?, 'page-project', 'test', 'Test Memory', 'content', 'test-user', 'manual-save-page-project', ?, ?)`,
+			syncID, createdAt, createdAt,
+		)
+		require.NoError(t, err)
+		wantSyncIDs = append(wantSyncIDs, syncID)
+	}
+
+	got, err := d.GetUnsyncedPage("page-project", limit)
+	require.NoError(t, err)
+	require.Len(t, got, limit, "page must be capped at limit even though more rows are pending")
+
+	gotSyncIDs := make([]string, 0, len(got))
+	for _, mem := range got {
+		gotSyncIDs = append(gotSyncIDs, mem.SyncID)
+	}
+	assert.Equal(t, wantSyncIDs[:limit], gotSyncIDs, "page must return the oldest rows first (created_at ASC)")
+}
+
+// TestListUnsyncedSessionsPage_RespectsLimitAndOrder mirrors
+// TestGetUnsyncedPage_RespectsLimitAndOrder for sessions.
+func TestListUnsyncedSessionsPage_RespectsLimitAndOrder(t *testing.T) {
+	d := setupTestDB(t)
+	t.Cleanup(func() { require.NoError(t, d.Close()) })
+
+	const total = 5
+	const limit = 2
+	wantIDs := make([]string, 0, total)
+	base := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < total; i++ {
+		id := fmt.Sprintf("page-sess-%d", i)
+		syncID := fmt.Sprintf("page-sess-sync-%d", i)
+		createdAt := base.Add(time.Duration(i) * time.Minute).Format("2006-01-02 15:04:05")
+		_, err := d.sqlDB.Exec(`
+INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at, created_at, updated_at)
+VALUES (?, ?, 'page-sess-project', '', 'test', 'test', ?, ?, ?)`,
+			id, syncID, createdAt, createdAt, createdAt,
+		)
+		require.NoError(t, err)
+		wantIDs = append(wantIDs, id)
+	}
+
+	got, err := d.ListUnsyncedSessionsPage("page-sess-project", limit)
+	require.NoError(t, err)
+	require.Len(t, got, limit, "page must be capped at limit even though more rows are pending")
+
+	gotIDs := make([]string, 0, len(got))
+	for _, sess := range got {
+		gotIDs = append(gotIDs, sess.ID)
+	}
+	assert.Equal(t, wantIDs[:limit], gotIDs, "page must return the oldest rows first (created_at ASC)")
+}
+
+// TestGetUnsyncedPromptsPage_RespectsLimitAndOrder mirrors
+// TestGetUnsyncedPage_RespectsLimitAndOrder for prompts.
+func TestGetUnsyncedPromptsPage_RespectsLimitAndOrder(t *testing.T) {
+	d := setupTestDB(t)
+	t.Cleanup(func() { require.NoError(t, d.Close()) })
+	ctx := context.Background()
+
+	const total = 5
+	const limit = 4
+	wantSyncIDs := make([]string, 0, total)
+	base := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < total; i++ {
+		syncID := fmt.Sprintf("page-prompt-%d", i)
+		createdAt := base.Add(time.Duration(i) * time.Minute).Format("2006-01-02 15:04:05")
+		_, err := d.sqlDB.ExecContext(ctx, `
+INSERT INTO user_prompts (sync_id, project, content, created_at) VALUES (?, 'page-prompt-project', 'hi', ?)`,
+			syncID, createdAt,
+		)
+		require.NoError(t, err)
+		wantSyncIDs = append(wantSyncIDs, syncID)
+	}
+
+	got, err := d.GetUnsyncedPromptsPage(ctx, "page-prompt-project", limit)
+	require.NoError(t, err)
+	require.Len(t, got, limit, "page must be capped at limit even though more rows are pending")
+
+	gotSyncIDs := make([]string, 0, len(got))
+	for _, p := range got {
+		gotSyncIDs = append(gotSyncIDs, p.SyncID)
+	}
+	assert.Equal(t, wantSyncIDs[:limit], gotSyncIDs, "page must return the oldest rows first (created_at ASC)")
 }
