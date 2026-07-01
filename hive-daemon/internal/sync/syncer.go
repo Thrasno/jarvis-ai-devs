@@ -86,6 +86,32 @@ func (e *BackoffError) Unwrap() error {
 	return ErrSyncBackoff
 }
 
+// batchResult carries the outcome of a single syncBatchStep push+pull
+// exchange (design §4.2, PR 1b-i). It intentionally mirrors the fields Sync
+// needs to assemble its final Result and to eventually decide whether the
+// Drain controller (PR 1b-ii) should run another batch.
+type batchResult struct {
+	Pushed            int
+	Pulled            int
+	MutationsPushed   int
+	MutationsPulled   int
+	CompatibilityMode string
+	MutationCursor    db.MutationCursor
+
+	// PushBacklogEmpty is true when, going into this step, there was no
+	// unsynced work of any kind (memories, sessions, prompts, or pending
+	// mutations) to send. PR 1b-i only ever runs a single batch step, so the
+	// cheapest accurate check is the size of the backlog fetched for this
+	// step: if nothing was fetched, nothing remained to send once the step
+	// completes. A paged/looping caller (PR 1b-ii Drain controller) can use
+	// this to decide whether another push is worth attempting.
+	PushBacklogEmpty bool
+
+	// PullHasMore is hardcoded false in PR 1b-i.
+	// TODO(PR2): wire from server has_more once hive-api paginates pulls.
+	PullHasMore bool
+}
+
 // Result resume los resultados de un sync.
 type Result struct {
 	Pushed            int
@@ -190,13 +216,87 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 		return nil, fmt.Errorf("autenticación: %w", err)
 	}
 
+	batch, resp, err := s.syncBatchStepWithResponse(ctx, project, token)
+	if err != nil {
+		// recordFailure must see the raw underlying error (unwrapped), not the
+		// "<step label>: %w" wrapper syncBatchStepWithResponse adds — that
+		// matches Sync's pre-extraction behavior, where each inline step
+		// passed its own raw err to recordFailure and only wrapped the error
+		// it returned to its own caller. sanitizeRecordedSyncError (health
+		// error text) depends on seeing the raw "sync failed (...)" /
+		// "login failed (...)" prefix, so double-wrapping here would corrupt
+		// the recorded health.LastError text.
+		if recordErr := s.recordFailure(project, health, now, errors.Unwrap(err)); recordErr != nil {
+			return nil, recordErr
+		}
+		return nil, err
+	}
+
+	// Paso 6: actualizamos el timestamp del último sync exitoso
+	if err := s.store.RecordSyncSuccess(project, now); err != nil {
+		return nil, fmt.Errorf("registrar éxito de sync: %w", err)
+	}
+
+	attemptLog := db.SyncAttemptLog{
+		AttemptID:      s.deps.newAttemptID(),
+		DevID:          s.client.cfg.Email,
+		Project:        project,
+		Client:         "hive-daemon",
+		StartedAt:      now,
+		EndedAt:        s.deps.now().UTC(),
+		Outcome:        db.SyncAttemptOutcomeSuccess,
+		HTTPStatus:     httpStatusOK,
+		SyncCountsJSON: syncCountsJSON(resp, batch.MutationsPushed, batch.MutationsPulled),
+		MetadataJSON:   "{}",
+	}
+	if err := s.store.RecordSyncAttemptLog(ctx, attemptLog); err != nil {
+		logger.Log.Printf("warn: record sync attempt log %s: %v", attemptLog.AttemptID, err)
+	} else {
+		s.deleteExpiredSyncAttemptLogs(ctx)
+		s.flushSyncAttemptLogs(ctx, token)
+	}
+
+	return &Result{
+		Pushed:            batch.Pushed,
+		Pulled:            batch.Pulled,
+		Conflicts:         resp.Conflicts,
+		PromptsPushed:     resp.PromptsPushed,
+		Project:           project,
+		MutationsPushed:   batch.MutationsPushed,
+		MutationsPulled:   batch.MutationsPulled,
+		CompatibilityMode: batch.CompatibilityMode,
+		MutationCursor:    batch.MutationCursor,
+	}, nil
+}
+
+// syncBatchStep runs a single push+pull exchange with the server for
+// project: it gathers the locally pending backlog, sends it, applies
+// whatever the server pulled back, and acks the backlog it just sent. It
+// does NOT touch s.inFlight, the backoff gate, RecordSyncAttempt, or
+// RecordSyncSuccess — those remain the caller's responsibility (Sync, for
+// now; the Drain controller in PR 1b-ii will call this in a loop instead).
+//
+// This is a pure extraction of Sync's former push+pull body (design §4.2,
+// Hive obs #1692, PR 1b-i) — it must not change observable behavior. See
+// TestSyncer_Run and the mutation-protocol-v2 / legacy-fallback tests in
+// syncer_test.go for the characterization coverage that pins this contract
+// both before and after the extraction.
+func (s *Syncer) syncBatchStep(ctx context.Context, project, token string) (batchResult, error) {
+	batch, _, err := s.syncBatchStepWithResponse(ctx, project, token)
+	return batch, err
+}
+
+// syncBatchStepWithResponse is the extraction workhorse: it returns both the
+// batchResult (for the Drain controller and for building Result) and the raw
+// syncResponse (which Sync still needs for Conflicts/PromptsPushed and to
+// build the sync-attempt-log counts JSON). Kept unexported and separate from
+// syncBatchStep so the public batch-step signature required by design §4.2
+// stays exactly `(batchResult, error)`.
+func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token string) (batchResult, *syncResponse, error) {
 	// Paso 2: memorias locales pendientes de sync
 	unsynced, err := s.store.GetUnsynced(project)
 	if err != nil {
-		if recordErr := s.recordFailure(project, health, now, err); recordErr != nil {
-			return nil, recordErr
-		}
-		return nil, fmt.Errorf("obtener memorias no sincronizadas: %w", err)
+		return batchResult{}, nil, fmt.Errorf("obtener memorias no sincronizadas: %w", err)
 	}
 
 	// Paso 2b: sesiones locales pendientes de sync (non-fatal si falla)
@@ -216,19 +316,21 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 	// Paso 2d: mutaciones locales pendientes para protocolo v2.
 	pendingMutations, err := s.store.GetPendingMutations(project, 100)
 	if err != nil {
-		if recordErr := s.recordFailure(project, health, now, err); recordErr != nil {
-			return nil, recordErr
-		}
-		return nil, fmt.Errorf("obtener mutaciones pendientes: %w", err)
+		return batchResult{}, nil, fmt.Errorf("obtener mutaciones pendientes: %w", err)
 	}
 
 	mutationCursor, err := s.store.GetMutationCursor(mutationCursorConsumerAPI, project)
 	if err != nil {
-		if recordErr := s.recordFailure(project, health, now, err); recordErr != nil {
-			return nil, recordErr
-		}
-		return nil, fmt.Errorf("obtener cursor de mutaciones: %w", err)
+		return batchResult{}, nil, fmt.Errorf("obtener cursor de mutaciones: %w", err)
 	}
+
+	// PushBacklogEmpty: nothing fetched above means nothing remained to send
+	// for this step. See the batchResult field doc for why this is the
+	// cheapest accurate check for a single, non-paged batch step.
+	pushBacklogEmpty := len(unsynced) == 0 && len(unsyncedSessions) == 0 &&
+		len(unsyncedPrompts) == 0 && len(pendingMutations) == 0
+
+	now := s.deps.now().UTC()
 
 	// Paso 3 + 4: sync bidireccional con el servidor
 	lastSync, _ := s.store.GetLastSync(project)
@@ -239,10 +341,7 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 
 	resp, err := s.client.sync(ctx, token, project, unsyncedSessions, unsynced, unsyncedPrompts, lastSyncPtr, pendingMutations, &mutationCursor)
 	if err != nil {
-		if recordErr := s.recordFailure(project, health, now, err); recordErr != nil {
-			return nil, recordErr
-		}
-		return nil, fmt.Errorf("sync con servidor: %w", err)
+		return batchResult{}, nil, fmt.Errorf("sync con servidor: %w", err)
 	}
 
 	compatibilityMode := compatibilityModeLegacy
@@ -326,10 +425,7 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 		for _, remoteMutation := range resp.PulledMutations {
 			applied, err := s.store.ApplyRemoteMutation(remoteMutation)
 			if err != nil {
-				if recordErr := s.recordFailure(project, health, now, err); recordErr != nil {
-					return nil, recordErr
-				}
-				return nil, fmt.Errorf("aplicar mutación remota %s: %w", remoteMutation.EventID, err)
+				return batchResult{}, nil, fmt.Errorf("aplicar mutación remota %s: %w", remoteMutation.EventID, err)
 			}
 			if applied {
 				mutationsPulled++
@@ -338,10 +434,7 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 
 		if resp.NextMutationCursor != nil {
 			if err := s.store.SetMutationCursor(mutationCursorConsumerAPI, project, *resp.NextMutationCursor, now); err != nil {
-				if recordErr := s.recordFailure(project, health, now, err); recordErr != nil {
-					return nil, recordErr
-				}
-				return nil, fmt.Errorf("guardar cursor de mutaciones: %w", err)
+				return batchResult{}, nil, fmt.Errorf("guardar cursor de mutaciones: %w", err)
 			}
 			mutationCursor = *resp.NextMutationCursor
 		}
@@ -369,49 +462,22 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 			confirmedMemorySyncIDs(pendingMutations),
 			now,
 		); err != nil {
-			if recordErr := s.recordFailure(project, health, now, err); recordErr != nil {
-				return nil, recordErr
-			}
-			return nil, fmt.Errorf("marcar mutaciones sincronizadas: %w", err)
+			return batchResult{}, nil, fmt.Errorf("marcar mutaciones sincronizadas: %w", err)
 		}
 		mutationsPushed = len(pendingMutations)
 	}
 
-	// Paso 6: actualizamos el timestamp del último sync exitoso
-	if err := s.store.RecordSyncSuccess(project, now); err != nil {
-		return nil, fmt.Errorf("registrar éxito de sync: %w", err)
-	}
-
-	attemptLog := db.SyncAttemptLog{
-		AttemptID:      s.deps.newAttemptID(),
-		DevID:          s.client.cfg.Email,
-		Project:        project,
-		Client:         "hive-daemon",
-		StartedAt:      now,
-		EndedAt:        s.deps.now().UTC(),
-		Outcome:        db.SyncAttemptOutcomeSuccess,
-		HTTPStatus:     httpStatusOK,
-		SyncCountsJSON: syncCountsJSON(resp, mutationsPushed, mutationsPulled),
-		MetadataJSON:   "{}",
-	}
-	if err := s.store.RecordSyncAttemptLog(ctx, attemptLog); err != nil {
-		logger.Log.Printf("warn: record sync attempt log %s: %v", attemptLog.AttemptID, err)
-	} else {
-		s.deleteExpiredSyncAttemptLogs(ctx)
-		s.flushSyncAttemptLogs(ctx, token)
-	}
-
-	return &Result{
+	return batchResult{
 		Pushed:            resp.Pushed,
 		Pulled:            len(resp.Pulled),
-		Conflicts:         resp.Conflicts,
-		PromptsPushed:     resp.PromptsPushed,
-		Project:           project,
 		MutationsPushed:   mutationsPushed,
 		MutationsPulled:   mutationsPulled,
 		CompatibilityMode: compatibilityMode,
 		MutationCursor:    mutationCursor,
-	}, nil
+		PushBacklogEmpty:  pushBacklogEmpty,
+		// TODO(PR2): wire from server has_more once hive-api paginates pulls.
+		PullHasMore: false,
+	}, resp, nil
 }
 
 const syncAttemptFlushLimit = 100

@@ -1906,3 +1906,100 @@ func TestSyncer_Sync_AttemptFlushBatchNeverExceedsOneHundred(t *testing.T) {
 	assert.Equal(t, 100, store.listSyncAttemptLimit)
 	assert.Equal(t, 100, postedCount)
 }
+
+// TestSyncer_SyncBatchStep_DoesNotTouchInFlight pins the PR 1b-i extraction
+// contract (design §4.2): syncBatchStep is a pure push+pull exchange and the
+// reservation bookkeeping (s.inFlight) is exclusively the caller's (Sync's)
+// concern. If syncBatchStep ever reserved or released s.inFlight itself,
+// calling it directly here — bypassing Sync's tryStart/finish — would leave
+// s.inFlight mutated as a side effect, which this test would catch.
+func TestSyncer_SyncBatchStep_DoesNotTouchInFlight(t *testing.T) {
+	store := &mockSyncStore{jwt: "valid-token", unsynced: []*models.Memory{}}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sync" {
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{})
+
+	require.Empty(t, syncer.inFlight, "precondition: inFlight must start empty")
+
+	result, err := syncer.syncBatchStep(context.Background(), "test-project", "valid-token")
+	require.NoError(t, err)
+	assert.Equal(t, 0, result.Pushed)
+	assert.True(t, result.PushBacklogEmpty, "empty backlog before the step means nothing remained to send")
+	assert.False(t, result.PullHasMore, "PR 1b-i hardcodes PullHasMore=false pending server pagination in PR 2")
+
+	assert.Empty(t, syncer.inFlight, "syncBatchStep must never reserve or release s.inFlight — that is Sync's concern")
+}
+
+// TestSyncer_SyncBatchStep_PushBacklogEmptyReflectsPendingWork verifies the
+// PushBacklogEmpty flag distinguishes an empty backlog from one that still
+// has unsynced work of any kind (memories, sessions, prompts, or mutations).
+func TestSyncer_SyncBatchStep_PushBacklogEmptyReflectsPendingWork(t *testing.T) {
+	tests := []struct {
+		name        string
+		setupStore  func() *mockSyncStore
+		wantIsEmpty bool
+	}{
+		{
+			name: "no pending work of any kind",
+			setupStore: func() *mockSyncStore {
+				return &mockSyncStore{jwt: "valid-token"}
+			},
+			wantIsEmpty: true,
+		},
+		{
+			name: "pending unsynced memories",
+			setupStore: func() *mockSyncStore {
+				return &mockSyncStore{jwt: "valid-token", unsynced: []*models.Memory{createTestSyncMemory("local-1")}}
+			},
+			wantIsEmpty: false,
+		},
+		{
+			name: "pending unsynced sessions",
+			setupStore: func() *mockSyncStore {
+				return &mockSyncStore{jwt: "valid-token", unsyncedSessions: []*models.Session{{ID: "sess-1"}}}
+			},
+			wantIsEmpty: false,
+		},
+		{
+			name: "pending unsynced prompts",
+			setupStore: func() *mockSyncStore {
+				return &mockSyncStore{jwt: "valid-token", unsyncedPrompts: []*models.Prompt{createTestPrompt("p-1", "test-project", "hi")}}
+			},
+			wantIsEmpty: false,
+		},
+		{
+			name: "pending mutations",
+			setupStore: func() *mockSyncStore {
+				return &mockSyncStore{jwt: "valid-token", pendingMutations: []db.MutationEnvelope{{EventID: "evt-1", EntityType: "memory", Op: db.MutationOpUpdate}}}
+			},
+			wantIsEmpty: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := tt.setupStore()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/sync" {
+					w.WriteHeader(http.StatusOK)
+					require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+				}
+			}))
+			defer server.Close()
+
+			syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{})
+
+			result, err := syncer.syncBatchStep(context.Background(), "test-project", "valid-token")
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantIsEmpty, result.PushBacklogEmpty)
+		})
+	}
+}
