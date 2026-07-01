@@ -75,6 +75,25 @@ type mockSyncStore struct {
 	getUnsyncedPageLimits          []int
 	listUnsyncedSessionsPageLimits []int
 	getUnsyncedPromptsPageLimits   []int
+
+	// pullCursors models the pull_cursors table (PR 2a/2b,
+	// hive-sync-batched-drain task 2.8): keyed by "<consumer>/<project>/<channel>".
+	// getPullCursorCalls/setPullCursorCalls record every Get/Set call for
+	// assertions on which channel was read/written and with what value.
+	pullCursors        map[string]db.PullCursor
+	getPullCursorCalls []pullCursorCall
+	setPullCursorCalls []pullCursorSetCall
+	getPullCursorErr   error
+	setPullCursorErr   error
+}
+
+type pullCursorCall struct {
+	consumer, project, channel string
+}
+
+type pullCursorSetCall struct {
+	consumer, project, channel string
+	cursor                     db.PullCursor
 }
 
 func (m *mockSyncStore) GetUnsynced(project string) ([]*models.Memory, error) {
@@ -335,6 +354,39 @@ func (m *mockSyncStore) SetMutationCursor(consumer, project string, cursor db.Mu
 	defer m.mu.Unlock()
 	m.mutationCursor = cursor
 	m.setMutationCursors = append(m.setMutationCursors, cursor)
+	return nil
+}
+
+// pullCursorKey builds the mock's internal lookup key for pullCursors — not
+// a wire format, just a test-fake indexing convenience.
+func pullCursorKey(consumer, project, channel string) string {
+	return consumer + "/" + project + "/" + channel
+}
+
+func (m *mockSyncStore) GetPullCursor(consumer, project, channel string) (db.PullCursor, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.getPullCursorCalls = append(m.getPullCursorCalls, pullCursorCall{consumer, project, channel})
+	if m.getPullCursorErr != nil {
+		return db.PullCursor{}, m.getPullCursorErr
+	}
+	if m.pullCursors == nil {
+		return db.PullCursor{}, nil
+	}
+	return m.pullCursors[pullCursorKey(consumer, project, channel)], nil
+}
+
+func (m *mockSyncStore) SetPullCursor(consumer, project, channel string, cursor db.PullCursor, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.setPullCursorCalls = append(m.setPullCursorCalls, pullCursorSetCall{consumer, project, channel, cursor})
+	if m.setPullCursorErr != nil {
+		return m.setPullCursorErr
+	}
+	if m.pullCursors == nil {
+		m.pullCursors = make(map[string]db.PullCursor)
+	}
+	m.pullCursors[pullCursorKey(consumer, project, channel)] = cursor
 	return nil
 }
 
@@ -2887,4 +2939,254 @@ func TestDrain_TriggerAuto_DefersMemoriesWhileSessionsPending(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result3)
 	assert.Equal(t, DrainFullySynced, outcome3.State)
+}
+
+// TestSyncBatchStep_SendsPullLimitAndPersistedCursors pins task 2.8
+// (hive-sync-batched-drain PR 2b): syncBatchStep must send PullLimit =
+// syncPageSize plus the persisted memories/sessions pull cursors from
+// GetPullCursor as an explicit opt-in into hive-api's bounded pull
+// pagination (PR 2a).
+func TestSyncBatchStep_SendsPullLimitAndPersistedCursors(t *testing.T) {
+	withSyncPageSize(t, 50)
+
+	memCursor := db.PullCursor{SyncedAt: time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC), SyncID: "mem-resume"}
+	sessCursor := db.PullCursor{SyncedAt: time.Date(2026, 6, 1, 9, 30, 0, 0, time.UTC), SyncID: "sess-resume"}
+
+	store := &mockSyncStore{
+		jwt: "valid-token",
+		pullCursors: map[string]db.PullCursor{
+			pullCursorKey(mutationCursorConsumerAPI, "test-project", pullCursorChannelMemories): memCursor,
+			pullCursorKey(mutationCursorConsumerAPI, "test-project", pullCursorChannelSessions): sessCursor,
+		},
+	}
+
+	var captured syncRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync" {
+			return
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{})
+
+	_, err := syncer.syncBatchStep(context.Background(), "test-project", "valid-token")
+	require.NoError(t, err)
+
+	assert.Equal(t, 50, captured.PullLimit, "PullLimit must be sent as syncPageSize (explicit opt-in)")
+	require.NotNil(t, captured.PullCursor)
+	assert.Equal(t, "mem-resume", captured.PullCursor.SyncID)
+	require.NotNil(t, captured.PullSessionCursor)
+	assert.Equal(t, "sess-resume", captured.PullSessionCursor.SyncID)
+
+	assert.Contains(t, store.getPullCursorCalls, pullCursorCall{mutationCursorConsumerAPI, "test-project", pullCursorChannelMemories})
+	assert.Contains(t, store.getPullCursorCalls, pullCursorCall{mutationCursorConsumerAPI, "test-project", pullCursorChannelSessions})
+}
+
+// TestSyncBatchStep_PersistsNextPullCursorsOnlyWhenPresent pins task 2.8:
+// syncBatchStep must persist resp.NextPullCursor/NextSessionCursor via
+// SetPullCursor, but ONLY when the server actually returned them — a nil
+// cursor in the response must not overwrite whatever was previously
+// persisted with a zero value.
+func TestSyncBatchStep_PersistsNextPullCursorsOnlyWhenPresent(t *testing.T) {
+	tests := []struct {
+		name               string
+		resp               syncResponse
+		wantSetCalls       []pullCursorSetCall
+		wantPullHasMore    bool
+		wantSetCallsLength int
+	}{
+		{
+			name: "both next cursors present are both persisted",
+			resp: syncResponse{
+				Pushed: 0, Pulled: []apiMemory{},
+				PulledHasMore:         true,
+				NextPullCursor:        &PullCursor{SyncID: "mem-next"},
+				PulledSessionsHasMore: false,
+				NextSessionCursor:     &PullCursor{SyncID: "sess-next"},
+			},
+			wantSetCalls: []pullCursorSetCall{
+				{mutationCursorConsumerAPI, "test-project", pullCursorChannelMemories, db.PullCursor{SyncID: "mem-next"}},
+				{mutationCursorConsumerAPI, "test-project", pullCursorChannelSessions, db.PullCursor{SyncID: "sess-next"}},
+			},
+			wantPullHasMore:    true,
+			wantSetCallsLength: 2,
+		},
+		{
+			name: "absent next cursors are not persisted",
+			resp: syncResponse{
+				Pushed: 0, Pulled: []apiMemory{},
+			},
+			wantSetCalls:       nil,
+			wantPullHasMore:    false,
+			wantSetCallsLength: 0,
+		},
+		{
+			name: "only memories cursor present persists only that channel",
+			resp: syncResponse{
+				Pushed: 0, Pulled: []apiMemory{},
+				PulledHasMore:  true,
+				NextPullCursor: &PullCursor{SyncID: "mem-only"},
+			},
+			wantSetCalls: []pullCursorSetCall{
+				{mutationCursorConsumerAPI, "test-project", pullCursorChannelMemories, db.PullCursor{SyncID: "mem-only"}},
+			},
+			wantPullHasMore:    true,
+			wantSetCallsLength: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &mockSyncStore{jwt: "valid-token"}
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/sync" {
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+				require.NoError(t, json.NewEncoder(w).Encode(tt.resp))
+			}))
+			defer server.Close()
+
+			syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{})
+
+			result, err := syncer.syncBatchStep(context.Background(), "test-project", "valid-token")
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.wantPullHasMore, result.PullHasMore)
+			assert.Len(t, store.setPullCursorCalls, tt.wantSetCallsLength)
+			assert.Equal(t, tt.wantSetCalls, store.setPullCursorCalls)
+		})
+	}
+}
+
+// TestSyncBatchStep_OldServerResponseWithoutPullFieldsReportsNoMore pins the
+// backward-compat requirement: an OLD hive-api response with no
+// pulled_has_more/pulled_sessions_has_more fields decodes those to false, so
+// PullHasMore must be false and Drain(TriggerAuto/TriggerManual) terminates
+// on push-empty exactly like before PR 2b — no new hang, no forced extra
+// batch.
+func TestSyncBatchStep_OldServerResponseWithoutPullFieldsReportsNoMore(t *testing.T) {
+	store := &mockSyncStore{jwt: "valid-token"}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync" {
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		// Old, pre-PR-2a response shape.
+		_, err := w.Write([]byte(`{"pushed":0,"pulled":[],"conflicts":0}`))
+		require.NoError(t, err)
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{})
+
+	result, err := syncer.syncBatchStep(context.Background(), "test-project", "valid-token")
+	require.NoError(t, err)
+	assert.False(t, result.PullHasMore, "old server response without has_more fields must decode to PullHasMore=false")
+	assert.Empty(t, store.setPullCursorCalls, "no next cursor was returned, nothing should be persisted")
+}
+
+// TestDrain_TriggerManual_DrainsMultiPagePullAndAdvancesCursorsPerChannel is
+// the fresh-review-required regression test for task 2.8: a scripted
+// httptest server returns pulled_has_more/pulled_sessions_has_more=true for
+// N pages then false, each time advancing the next cursor. Drain
+// (TriggerManual) must keep looping until BOTH pull channels report
+// has_more=false (push backlog is already empty throughout — this test
+// isolates the pull side), and must persist the per-channel cursor
+// advancing on every page.
+func TestDrain_TriggerManual_DrainsMultiPagePullAndAdvancesCursorsPerChannel(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{jwt: "valid-token"}
+
+	// 3 pull pages: memories drains after page 2, sessions drains after page 3.
+	memCursors := []*PullCursor{
+		{SyncID: "mem-page-1"},
+		{SyncID: "mem-page-2"},
+		nil, // memories fully drained by page 3
+	}
+	sessCursors := []*PullCursor{
+		{SyncID: "sess-page-1"},
+		{SyncID: "sess-page-2"},
+		{SyncID: "sess-page-3"},
+	}
+	memHasMore := []bool{true, true, false}
+	sessHasMore := []bool{true, true, false}
+
+	var callCount int
+	var pullLimitsSeen []int
+	var memCursorsSeen []*PullCursor
+	var sessCursorsSeen []*PullCursor
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync" {
+			return
+		}
+		var req syncRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		pullLimitsSeen = append(pullLimitsSeen, req.PullLimit)
+		memCursorsSeen = append(memCursorsSeen, req.PullCursor)
+		sessCursorsSeen = append(sessCursorsSeen, req.PullSessionCursor)
+
+		idx := callCount
+		if idx >= len(memHasMore) {
+			idx = len(memHasMore) - 1
+		}
+		callCount++
+
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{
+			Pushed: 0, Pulled: []apiMemory{},
+			PulledHasMore:         memHasMore[idx],
+			NextPullCursor:        memCursors[idx],
+			PulledSessionsHasMore: sessHasMore[idx],
+			NextSessionCursor:     sessCursors[idx],
+		}))
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Equal(t, 3, outcome.Batches, "loop must run exactly 3 batches: 2 with has_more, 1 final false")
+	assert.Equal(t, DrainFullySynced, outcome.State)
+	assert.Equal(t, []int{100, 100, 100}, pullLimitsSeen, "every batch sends the same PullLimit = syncPageSize")
+
+	// First batch sends no cursor (nothing persisted yet); subsequent batches
+	// resume from what the PREVIOUS response returned.
+	require.Len(t, memCursorsSeen, 3)
+	assert.Nil(t, memCursorsSeen[0], "first batch has no persisted memories cursor yet")
+	require.NotNil(t, memCursorsSeen[1])
+	assert.Equal(t, "mem-page-1", memCursorsSeen[1].SyncID)
+	require.NotNil(t, memCursorsSeen[2])
+	assert.Equal(t, "mem-page-2", memCursorsSeen[2].SyncID)
+
+	require.Len(t, sessCursorsSeen, 3)
+	assert.Nil(t, sessCursorsSeen[0], "first batch has no persisted sessions cursor yet")
+	require.NotNil(t, sessCursorsSeen[1])
+	assert.Equal(t, "sess-page-1", sessCursorsSeen[1].SyncID)
+	require.NotNil(t, sessCursorsSeen[2])
+	assert.Equal(t, "sess-page-2", sessCursorsSeen[2].SyncID)
+
+	// Final persisted state: memories cursor stopped advancing after page 2
+	// (page 3 returned nil next cursor alongside has_more=false); sessions
+	// cursor advanced through page 3.
+	finalMem, err := store.GetPullCursor(mutationCursorConsumerAPI, "test-project", pullCursorChannelMemories)
+	require.NoError(t, err)
+	assert.Equal(t, "mem-page-2", finalMem.SyncID)
+
+	finalSess, err := store.GetPullCursor(mutationCursorConsumerAPI, "test-project", pullCursorChannelSessions)
+	require.NoError(t, err)
+	assert.Equal(t, "sess-page-3", finalSess.SyncID)
 }
