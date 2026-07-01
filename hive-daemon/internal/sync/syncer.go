@@ -564,6 +564,17 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 		if err != nil {
 			return batchResult{}, nil, fmt.Errorf("obtener memorias no sincronizadas: %w", err)
 		}
+	} else {
+		// Visibility improvement (PR 2b fresh-review WARNING #2): log once per
+		// gated batch so a session that never drains (and therefore keeps
+		// deferring this project's memories indefinitely) is diagnosable from
+		// the daemon log instead of silently starving memories forever. Low
+		// noise by design: one informative line per gated step, not per
+		// session. The infinite-loop risk this used to carry (a permanently
+		// stuck session with pull pages still pending) is now bounded by the
+		// Drain no-progress guard's pull-cursor-advance corroboration and the
+		// maxDrainBatches cap above, not by this log line.
+		logger.Log.Printf("info: sync project=%s deferring memories this batch — %d unsynced session(s) still pending", project, len(unsyncedSessions))
 	}
 
 	// Paso 2c: prompts locales pendientes de sync, paged (non-fatal si falla).
