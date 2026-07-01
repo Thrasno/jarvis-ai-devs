@@ -71,10 +71,17 @@ type SyncRequest struct {
 	Mutations       []MutationEnvelope `json:"mutations,omitempty" binding:"max=100,dive"`
 
 	// PullLimit bounds how many rows the legacy pull channels (pulled memories,
-	// pulled sessions) return per request (PR 2a, design §2.2). Omitted or 0 means
-	// "use the server default" — clamped server-side via model.ClampPullLimit to
-	// [1, MaxPullLimit]. Old daemons that don't send this field get the same
-	// default-100 bounded page; they never relied on an unbounded pull.
+	// pulled sessions) return per request (PR 2a, design §2.2). This field is an
+	// EXPLICIT opt-in into bounded pagination:
+	//   - Omitted, 0, or negative → the server performs an UNBOUNDED legacy pull
+	//     (no LIMIT clause, has_more=false, no cursor) — EXACTLY today's
+	//     pre-pagination behavior. The current hive-daemon DOES rely on this: it
+	//     has no pulled_has_more/next_pull_cursor handling and hardcodes
+	//     PullHasMore=false, so capping the page here without the daemon knowing
+	//     how to resume would silently strand rows past page 1 until the daemon
+	//     is updated (PR 2b) to consume pagination.
+	//   - Explicit positive value → clamped server-side via model.ClampPullLimit
+	//     to [1, MaxPullLimit] and paginated with keyset cursors.
 	PullLimit int `json:"pull_limit,omitempty"`
 
 	// PullCursor resumes legacy memory pull pagination after a previous bounded

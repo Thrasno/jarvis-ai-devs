@@ -237,8 +237,14 @@ func (r *postgresMemoryRepository) update(ctx context.Context, id string, mem *m
 // `(synced_at, sync_id) > ($ts, $id)`, que respeta el orden compuesto sin el
 // problema de "empates en synced_at" que tendría comparar solo por timestamp.
 //
-// hasMore se calcula pidiendo limit+1 filas: si vuelven limit+1, hay más
-// páginas — se recorta a limit antes de devolver.
+// limit <= 0 (model.UnboundedPullLimit) significa "sin LIMIT" — barrido legado
+// completo en una sola página, hasMore siempre false. Este es el contrato de
+// backward-compat de PR 2a: un cliente que nunca optó a paginación (pull_limit
+// ausente/0) debe obtener EXACTAMENTE el comportamiento pre-2a — nunca le
+// recortamos filas que no sabe cómo reanudar.
+//
+// limit > 0 pide limit+1 filas: si vuelven limit+1, hay más páginas — se
+// recorta a limit antes de devolver.
 func (r *postgresMemoryRepository) PullSince(ctx context.Context, project string, since time.Time, excludeSyncIDs []string, cursor model.PullCursor, limit int) ([]*model.Memory, bool, error) {
 	args := []interface{}{project}
 	where := "project = $1 AND deleted_at IS NULL"
@@ -263,13 +269,18 @@ func (r *postgresMemoryRepository) PullSince(ctx context.Context, project string
 		argIdx++
 	}
 
-	fetchLimit := limit + 1
+	unbounded := limit <= 0
+
 	q := fmt.Sprintf(`SELECT id, sync_id, project, topic_key, category, title, content,
 	                         tags, files_affected, created_by, created_at, updated_at,
 	                         origin, synced_at, session_id,
 	                         deleted_at, deleted_by, delete_reason, restored_at
-	                  FROM memories WHERE %s ORDER BY synced_at ASC, sync_id ASC LIMIT $%d`, where, argIdx)
-	args = append(args, fetchLimit)
+	                  FROM memories WHERE %s ORDER BY synced_at ASC, sync_id ASC`, where)
+	if !unbounded {
+		fetchLimit := limit + 1
+		q += fmt.Sprintf(" LIMIT $%d", argIdx)
+		args = append(args, fetchLimit)
+	}
 
 	rows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {
@@ -280,6 +291,10 @@ func (r *postgresMemoryRepository) PullSince(ctx context.Context, project string
 	memories, err := r.scanMemoryRows(rows)
 	if err != nil {
 		return nil, false, err
+	}
+
+	if unbounded {
+		return memories, false, nil
 	}
 
 	hasMore := len(memories) > limit

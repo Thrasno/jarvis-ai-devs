@@ -73,9 +73,11 @@ func (h *SyncHandler) Sync(c *gin.Context) {
 		excludeIDs = append(excludeIDs, m.SyncID)
 	}
 
-	// pull_limit acota el tamaño de página de los canales de pull legado (PR 2a).
-	// Ausente/0 → default 100; se clampea a [1, MaxPullLimit] server-side —
-	// nunca confiamos en el valor crudo del cliente.
+	// pull_limit es un opt-in explícito a paginación acotada de los canales de
+	// pull legado (PR 2a). Ausente/0/negativo → pull sin límite (comportamiento
+	// pre-2a preservado tal cual — ver model.ClampPullLimit y
+	// model.UnboundedPullLimit); positivo explícito → se clampea a
+	// [1, MaxPullLimit] server-side, nunca confiamos en el valor crudo del cliente.
 	pullLimit := model.ClampPullLimit(req.PullLimit)
 
 	var memoriesCursor, sessionsCursor model.PullCursor

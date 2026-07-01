@@ -48,9 +48,12 @@ type SyncService interface {
 	//
 	// limit acota cuántas filas se devuelven POR CANAL (memorias y sesiones se
 	// paginan independientemente, cada una con su propio cursor) — ya debe venir
-	// clampeado por el caller (el handler aplica model.ClampPullLimit antes de
-	// llegar aquí). memoriesCursor/sessionsCursor reanudan cada canal desde una
-	// página anterior; su valor cero (model.PullCursor{}) significa "desde el
+	// normalizado por el caller (el handler aplica model.ClampPullLimit antes de
+	// llegar aquí). limit <= 0 (model.UnboundedPullLimit) significa "sin límite" —
+	// el repositorio hace un barrido completo sin LIMIT y siempre reporta
+	// hasMore=false; esto preserva el comportamiento pre-2a para clientes que no
+	// enviaron pull_limit. memoriesCursor/sessionsCursor reanudan cada canal desde
+	// una página anterior; su valor cero (model.PullCursor{}) significa "desde el
 	// principio del barrido since".
 	//
 	// PullAll NO compone un drain completo — devuelve exactamente una página por

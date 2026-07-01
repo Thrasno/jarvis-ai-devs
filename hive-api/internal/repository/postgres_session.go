@@ -192,12 +192,23 @@ func (r *postgresSessionRepository) ListSessionsByProject(ctx context.Context, p
 //
 // cursor y limit siguen la misma semántica que postgresMemoryRepository.PullSince:
 // cursor (si no es cursor.IsZero()) reanuda estrictamente después de
-// (cursor.SyncedAt, cursor.SyncID); hasMore se calcula pidiendo limit+1 y
-// recortando a limit.
+// (cursor.SyncedAt, cursor.SyncID); limit <= 0 (model.UnboundedPullLimit)
+// significa "sin LIMIT" — barrido completo en una sola página, hasMore=false
+// (backward-compat PR 2a, ver postgresMemoryRepository.PullSince); limit > 0
+// pide limit+1 y recorta a limit.
 //
-// NOTA: el orden de salida cambia de started_at ASC a (synced_at, sync_id) ASC
-// respecto a la versión anterior — necesario para que el cursor componga con el
-// índice compuesto idx_sessions_synced_at_sync_id (migración 010).
+// NOTA (ordering-semantics change): el ORDER BY de esta consulta cambió de
+// started_at ASC a (synced_at ASC, sync_id ASC) respecto a la versión anterior
+// a la paginación por keyset — necesario para que el cursor componga con el
+// índice compuesto idx_sessions_synced_at_sync_id (migración 010). Cualquier
+// consumidor que asumiera orden por started_at debe revisar esa suposición;
+// el pull ahora ordena por momento de sincronización, no por inicio de sesión.
+//
+// NOTA (pre-existing watermark inconsistency, out of scope for PR 2a): esta
+// consulta usa `synced_at > since` (estricto) mientras que
+// postgresMemoryRepository.PullSince usa `synced_at >= since` (inclusive) para
+// memorias. Esta discrepancia de semántica entre canales ya existía antes de
+// esta PR y no se modifica aquí — queda documentada para visibilidad.
 func (r *postgresSessionRepository) ListSessionsSince(ctx context.Context, project string, since time.Time, cursor model.PullCursor, limit int) ([]*model.Session, bool, error) {
 	args := []interface{}{project}
 	where := "project = $1"
@@ -215,14 +226,19 @@ func (r *postgresSessionRepository) ListSessionsSince(ctx context.Context, proje
 		argIdx += 2
 	}
 
-	fetchLimit := limit + 1
+	unbounded := limit <= 0
+
 	q := fmt.Sprintf(`
 		SELECT id, sync_id, project, directory, dev_id, client,
 		       started_at, ended_at, summary, synced_at, created_at, updated_at
 		FROM sessions
 		WHERE %s
-		ORDER BY synced_at ASC, sync_id ASC LIMIT $%d`, where, argIdx)
-	args = append(args, fetchLimit)
+		ORDER BY synced_at ASC, sync_id ASC`, where)
+	if !unbounded {
+		fetchLimit := limit + 1
+		q += fmt.Sprintf(" LIMIT $%d", argIdx)
+		args = append(args, fetchLimit)
+	}
 
 	rows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {
@@ -240,6 +256,10 @@ func (r *postgresSessionRepository) ListSessionsSince(ctx context.Context, proje
 	}
 	if err := rows.Err(); err != nil {
 		return nil, false, wrapPgError(err, "ListSessionsSince rows")
+	}
+
+	if unbounded {
+		return sessions, false, nil
 	}
 
 	hasMore := len(sessions) > limit
