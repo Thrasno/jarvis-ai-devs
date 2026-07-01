@@ -41,7 +41,7 @@ type MemoryService interface {
 // SyncService define las operaciones de sincronización.
 type SyncService interface {
 	Push(ctx context.Context, req model.SyncRequest, userID string) (*model.SyncResponse, error)
-	PullAll(ctx context.Context, project string, since time.Time, excludeSyncIDs []string) (*model.PullResult, error)
+	PullAll(ctx context.Context, project string, since time.Time, excludeSyncIDs []string, limit int, memoriesCursor, sessionsCursor model.PullCursor) (*model.PullResult, error)
 }
 
 type SyncAttemptService interface {

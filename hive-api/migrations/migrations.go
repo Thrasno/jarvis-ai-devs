@@ -69,3 +69,9 @@ var ActivityFeedIndexSQL string
 
 //go:embed 009_memory_discovery_indexes.sql
 var MemoryDiscoveryIndexesSQL string
+
+// PullCursorIndexesSQL is migration 010: composite (synced_at, sync_id) indexes on
+// memories and sessions supporting keyset pagination for bounded legacy pull (PR 2a).
+//
+//go:embed 010_pull_cursor_indexes.sql
+var PullCursorIndexesSQL string

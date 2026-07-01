@@ -162,9 +162,18 @@ func TestWireServices_WiresActivityServiceFromMemoryRepository(t *testing.T) {
 func TestStartupMigrationSQLIncludesDiscoveryIndexesAfterActivityFeedIndex(t *testing.T) {
 	startupMigrations := startupMigrationSQL()
 
-	require.Len(t, startupMigrations, 9)
+	require.Len(t, startupMigrations, 10)
 	assert.Equal(t, migrations.InitialSQL, startupMigrations[0])
 	assert.Equal(t, migrations.ActivityFeedIndexSQL, startupMigrations[7])
 	assert.Equal(t, migrations.MemoryDiscoveryIndexesSQL, startupMigrations[8])
 	assert.Contains(t, migrations.MemoryDiscoveryIndexesSQL, "created_at DESC, synced_at DESC, id DESC")
+}
+
+func TestStartupMigrationSQLIncludesPullCursorIndexesAfterDiscoveryIndexes(t *testing.T) {
+	startupMigrations := startupMigrationSQL()
+
+	require.Len(t, startupMigrations, 10)
+	assert.Equal(t, migrations.PullCursorIndexesSQL, startupMigrations[9])
+	assert.Contains(t, migrations.PullCursorIndexesSQL, "idx_memories_synced_at_sync_id")
+	assert.Contains(t, migrations.PullCursorIndexesSQL, "idx_sessions_synced_at_sync_id")
 }

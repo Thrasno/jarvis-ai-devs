@@ -229,8 +229,23 @@ func (r *postgresMemoryRepository) update(ctx context.Context, id string, mem *m
 	return scanMemoryRow(row)
 }
 
-// PullSince devuelve las memorias del proyecto actualizadas después de 'since'.
-func (r *postgresMemoryRepository) PullSince(ctx context.Context, project string, since time.Time, excludeSyncIDs []string) ([]*model.Memory, error) {
+// PullSince devuelve una página de memorias del proyecto actualizadas después de
+// 'since', ordenadas por (synced_at ASC, sync_id ASC) para paginación por keyset.
+//
+// cursor (si no es cursor.IsZero()) reanuda estrictamente después de
+// (cursor.SyncedAt, cursor.SyncID) usando la comparación de tupla de Postgres
+// `(synced_at, sync_id) > ($ts, $id)`, que respeta el orden compuesto sin el
+// problema de "empates en synced_at" que tendría comparar solo por timestamp.
+//
+// limit <= 0 (model.UnboundedPullLimit) significa "sin LIMIT" — barrido legado
+// completo en una sola página, hasMore siempre false. Este es el contrato de
+// backward-compat de PR 2a: un cliente que nunca optó a paginación (pull_limit
+// ausente/0) debe obtener EXACTAMENTE el comportamiento pre-2a — nunca le
+// recortamos filas que no sabe cómo reanudar.
+//
+// limit > 0 pide limit+1 filas: si vuelven limit+1, hay más páginas — se
+// recorta a limit antes de devolver.
+func (r *postgresMemoryRepository) PullSince(ctx context.Context, project string, since time.Time, excludeSyncIDs []string, cursor model.PullCursor, limit int) ([]*model.Memory, bool, error) {
 	args := []interface{}{project}
 	where := "project = $1 AND deleted_at IS NULL"
 	argIdx := 2
@@ -242,24 +257,52 @@ func (r *postgresMemoryRepository) PullSince(ctx context.Context, project string
 		argIdx++
 	}
 
+	if !cursor.IsZero() {
+		where += fmt.Sprintf(" AND (synced_at, sync_id) > ($%d, $%d)", argIdx, argIdx+1)
+		args = append(args, cursor.SyncedAt, cursor.SyncID)
+		argIdx += 2
+	}
+
 	if len(excludeSyncIDs) > 0 {
 		where += fmt.Sprintf(" AND sync_id != ALL($%d)", argIdx)
 		args = append(args, excludeSyncIDs)
+		argIdx++
 	}
+
+	unbounded := limit <= 0
 
 	q := fmt.Sprintf(`SELECT id, sync_id, project, topic_key, category, title, content,
 	                         tags, files_affected, created_by, created_at, updated_at,
 	                         origin, synced_at, session_id,
 	                         deleted_at, deleted_by, delete_reason, restored_at
-	                  FROM memories WHERE %s ORDER BY synced_at ASC`, where)
+	                  FROM memories WHERE %s ORDER BY synced_at ASC, sync_id ASC`, where)
+	if !unbounded {
+		fetchLimit := limit + 1
+		q += fmt.Sprintf(" LIMIT $%d", argIdx)
+		args = append(args, fetchLimit)
+	}
 
 	rows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {
-		return nil, wrapPgError(err, "PullSince")
+		return nil, false, wrapPgError(err, "PullSince")
 	}
 	defer rows.Close()
 
-	return r.scanMemoryRows(rows)
+	memories, err := r.scanMemoryRows(rows)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if unbounded {
+		return memories, false, nil
+	}
+
+	hasMore := len(memories) > limit
+	if hasMore {
+		memories = memories[:limit]
+	}
+
+	return memories, hasMore, nil
 }
 
 func (r *postgresMemoryRepository) ApplyMemoryMutation(ctx context.Context, mutation model.MutationEnvelope) (*model.MutationApplyResult, error) {

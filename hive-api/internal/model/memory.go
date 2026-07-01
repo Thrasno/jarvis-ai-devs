@@ -115,6 +115,53 @@ type MutationCursor struct {
 	EventID  string `json:"event_id"`
 }
 
+// PullCursor is the keyset pagination cursor for the legacy (row-state) pull
+// channels — pulled memories and pulled sessions. It mirrors the shape of
+// MutationCursor but keys off (synced_at, sync_id), which is the ordering
+// column pair used by PullSince and ListSessionsSince.
+//
+// SyncedAt + SyncID together form a strictly increasing, gap-free key when
+// combined with `ORDER BY synced_at ASC, sync_id ASC` — synced_at alone is not
+// unique enough to resume a page boundary when multiple rows share a timestamp.
+type PullCursor struct {
+	SyncedAt time.Time `json:"synced_at"`
+	SyncID   string    `json:"sync_id"`
+}
+
+// IsZero reports whether the cursor has no position yet (start of the pull).
+func (c PullCursor) IsZero() bool {
+	return c.SyncedAt.IsZero() && c.SyncID == ""
+}
+
+// MaxPullLimit is the upper bound an explicit client pull_limit is clamped to.
+const MaxPullLimit = 100
+
+// UnboundedPullLimit is the sentinel value repositories interpret as "no LIMIT
+// clause" — a single unbounded page, matching legacy pre-pagination behavior.
+// It is returned by ClampPullLimit when the client did not explicitly opt into
+// pagination (pull_limit absent, 0, or negative).
+const UnboundedPullLimit = 0
+
+// ClampPullLimit normalizes a client-supplied pull_limit.
+//
+// Backward-compat contract (PR 2a): pull_limit is an explicit opt-in into
+// bounded pagination. A client that does not send it (or sends 0/negative)
+// gets EXACTLY today's behavior — an unbounded pull with no LIMIT clause and
+// has_more=false — because the current hive-daemon has no pulled_has_more /
+// next_pull_cursor handling and would silently strand rows past page 1 if the
+// server capped the page without the daemon knowing how to resume. Only when
+// the client explicitly sends a positive pull_limit do we clamp it into
+// [1, MaxPullLimit] and paginate with keyset cursors.
+func ClampPullLimit(limit int) int {
+	if limit <= 0 {
+		return UnboundedPullLimit
+	}
+	if limit > MaxPullLimit {
+		return MaxPullLimit
+	}
+	return limit
+}
+
 type TombstonePayload struct {
 	DeletedAt time.Time `json:"deleted_at"`
 	DeletedBy string    `json:"deleted_by,omitempty"`

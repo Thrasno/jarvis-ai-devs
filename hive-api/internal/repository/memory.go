@@ -59,11 +59,24 @@ type MemoryRepository interface {
 	// El SyncService interpreta el resultado para contar pushed y conflicts.
 	Upsert(ctx context.Context, mem *model.Memory) (*model.Memory, bool, error)
 
-	// PullSince devuelve las memorias del proyecto actualizadas después de 'since'.
+	// PullSince devuelve una página de memorias del proyecto actualizadas después de
+	// 'since', ordenadas por (synced_at ASC, sync_id ASC) para paginación por keyset.
 	// excludeSyncIDs filtra las memorias que acaban de ser enviadas por el cliente
 	// (para no devolverlas de vuelta en el mismo sync).
-	// Si since es el tiempo cero (time.Time{}), devuelve todas las memorias del proyecto.
-	PullSince(ctx context.Context, project string, since time.Time, excludeSyncIDs []string) ([]*model.Memory, error)
+	// Si since es el tiempo cero (time.Time{}), el barrido arranca desde el principio.
+	//
+	// cursor, si no es su valor cero (cursor.IsZero()), reanuda la paginación DESPUÉS
+	// de la posición (cursor.SyncedAt, cursor.SyncID) — estrictamente mayor, en el
+	// orden (synced_at, sync_id). since y cursor se combinan: since fija el punto de
+	// arranque del primer sync incremental, cursor avanza páginas subsiguientes dentro
+	// de ese barrido. limit acota cuántas filas se devuelven (ya clampeado por el
+	// caller vía model.ClampPullLimit — este método no vuelve a clampear).
+	//
+	// Devuelve hasMore=true cuando existen más filas después de la última devuelta
+	// (implementado internamente con un fetch de limit+1 y trim a limit). Cuando
+	// hasMore es true, el caller debe construir el próximo cursor a partir del último
+	// elemento devuelto (SyncedAt, SyncID) para pedir la siguiente página.
+	PullSince(ctx context.Context, project string, since time.Time, excludeSyncIDs []string, cursor model.PullCursor, limit int) (memories []*model.Memory, hasMore bool, err error)
 
 	ApplyMemoryMutation(ctx context.Context, mutation model.MutationEnvelope) (*model.MutationApplyResult, error)
 	ListMemoryMutations(ctx context.Context, project string, cursor model.MutationCursor, limit int) (*model.MutationBatch, error)

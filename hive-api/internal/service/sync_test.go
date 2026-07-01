@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -328,12 +329,12 @@ func TestSync_PullAll_FirstSync(t *testing.T) {
 		{ID: "srv-2", SyncID: "sync-b"},
 	}
 
-	mockSessionRepo.On("ListSessionsSince", ctx, "jarvis-dev", time.Time{}).Return([]*model.Session{}, nil)
+	mockSessionRepo.On("ListSessionsSince", ctx, "jarvis-dev", time.Time{}, model.PullCursor{}, 100).Return([]*model.Session{}, false, nil)
 	mockRepo.On("PullSince", ctx, "jarvis-dev", time.Time{}, mock.MatchedBy(func(ids []string) bool {
 		return ids == nil || len(ids) == 0
-	})).Return(serverMems, nil)
+	}), model.PullCursor{}, 100).Return(serverMems, false, nil)
 
-	res, err := svc.PullAll(ctx, "jarvis-dev", time.Time{}, nil)
+	res, err := svc.PullAll(ctx, "jarvis-dev", time.Time{}, nil, 100, model.PullCursor{}, model.PullCursor{})
 
 	require.NoError(t, err)
 	assert.Len(t, res.Memories, 2)
@@ -352,10 +353,10 @@ func TestSync_PullAll_WithExclusions(t *testing.T) {
 		{ID: "srv-3", SyncID: "sync-c"},
 	}
 
-	mockSessionRepo.On("ListSessionsSince", ctx, "jarvis-dev", since).Return([]*model.Session{}, nil)
-	mockRepo.On("PullSince", ctx, "jarvis-dev", since, exclude).Return(serverMems, nil)
+	mockSessionRepo.On("ListSessionsSince", ctx, "jarvis-dev", since, model.PullCursor{}, 100).Return([]*model.Session{}, false, nil)
+	mockRepo.On("PullSince", ctx, "jarvis-dev", since, exclude, model.PullCursor{}, 100).Return(serverMems, false, nil)
 
-	res, err := svc.PullAll(ctx, "jarvis-dev", since, exclude)
+	res, err := svc.PullAll(ctx, "jarvis-dev", since, exclude, 100, model.PullCursor{}, model.PullCursor{})
 
 	require.NoError(t, err)
 	assert.Len(t, res.Memories, 1)
@@ -374,16 +375,153 @@ func TestPullAll_FiltersSessionsByProject(t *testing.T) {
 	// Service must invoke ListSessionsSince(ctx, "alpha", since). The mock will
 	// fail (unexpected call) if the project arg is missing or wrong.
 	alphaSessions := []*model.Session{{ID: "alpha-sess-1", Project: "alpha"}}
-	mockSessionRepo.On("ListSessionsSince", ctx, "alpha", time.Time{}).Return(alphaSessions, nil)
-	mockRepo.On("PullSince", ctx, "alpha", time.Time{}, mock.Anything).Return([]*model.Memory{}, nil)
+	mockSessionRepo.On("ListSessionsSince", ctx, "alpha", time.Time{}, model.PullCursor{}, 100).Return(alphaSessions, false, nil)
+	mockRepo.On("PullSince", ctx, "alpha", time.Time{}, mock.Anything, model.PullCursor{}, 100).Return([]*model.Memory{}, false, nil)
 
-	res, err := svc.PullAll(ctx, "alpha", time.Time{}, nil)
+	res, err := svc.PullAll(ctx, "alpha", time.Time{}, nil, 100, model.PullCursor{}, model.PullCursor{})
 
 	require.NoError(t, err)
 	require.Len(t, res.Sessions, 1)
 	assert.Equal(t, "alpha", res.Sessions[0].Project, "only alpha sessions must be returned")
 	mockSessionRepo.AssertExpectations(t)
 	mockRepo.AssertExpectations(t)
+}
+
+// ─── PR 2a: bounded legacy pull pagination ────────────────────────────────────
+
+// TestSync_PullAll_ForwardsLimitAndCursorsToRepositories verifies that PullAll
+// threads the caller-supplied limit and per-channel cursors straight through to
+// PullSince/ListSessionsSince without modification (the handler is responsible
+// for clamping — PullAll must not re-clamp).
+func TestSync_PullAll_ForwardsLimitAndCursorsToRepositories(t *testing.T) {
+	svc, mockRepo, _, mockSessionRepo := newTestSyncServiceWithSession(t)
+	ctx := context.Background()
+
+	since := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	memCursor := model.PullCursor{SyncedAt: since.Add(time.Minute), SyncID: "mem-cursor-1"}
+	sessCursor := model.PullCursor{SyncedAt: since.Add(2 * time.Minute), SyncID: "sess-cursor-1"}
+
+	mockSessionRepo.On("ListSessionsSince", ctx, "jarvis-dev", since, sessCursor, 7).
+		Return([]*model.Session{}, false, nil)
+	mockRepo.On("PullSince", ctx, "jarvis-dev", since, mock.Anything, memCursor, 7).
+		Return([]*model.Memory{}, false, nil)
+
+	_, err := svc.PullAll(ctx, "jarvis-dev", since, nil, 7, memCursor, sessCursor)
+
+	require.NoError(t, err)
+	mockRepo.AssertExpectations(t)
+	mockSessionRepo.AssertExpectations(t)
+}
+
+// CRITICAL FIX #1 — TestSync_PullAll_UnboundedLimitForwardedAsIsToRepositories
+// verifies that PullAll forwards model.UnboundedPullLimit (0) straight through
+// to PullSince/ListSessionsSince without substituting the old 100 default. This
+// is the service-layer half of the backward-compat contract: when the handler
+// resolves "client did not opt into pull_limit" to UnboundedPullLimit, PullAll
+// must not re-introduce a bounded page — the repositories are responsible for
+// interpreting limit<=0 as "no LIMIT clause".
+func TestSync_PullAll_UnboundedLimitForwardedAsIsToRepositories(t *testing.T) {
+	svc, mockRepo, _, mockSessionRepo := newTestSyncServiceWithSession(t)
+	ctx := context.Background()
+
+	serverMems := make([]*model.Memory, 0, 150)
+	for i := 0; i < 150; i++ {
+		serverMems = append(serverMems, &model.Memory{ID: fmt.Sprintf("srv-%d", i), SyncID: fmt.Sprintf("sync-%d", i)})
+	}
+
+	mockSessionRepo.On("ListSessionsSince", ctx, "jarvis-dev", time.Time{}, model.PullCursor{}, model.UnboundedPullLimit).
+		Return([]*model.Session{}, false, nil)
+	mockRepo.On("PullSince", ctx, "jarvis-dev", time.Time{}, mock.Anything, model.PullCursor{}, model.UnboundedPullLimit).
+		Return(serverMems, false, nil)
+
+	res, err := svc.PullAll(ctx, "jarvis-dev", time.Time{}, nil, model.UnboundedPullLimit, model.PullCursor{}, model.PullCursor{})
+
+	require.NoError(t, err)
+	assert.Len(t, res.Memories, 150, "unbounded pull must not be capped at the old 100-row default")
+	assert.False(t, res.MemoriesHasMore, "unbounded pull always reports hasMore=false")
+	assert.Nil(t, res.NextPullCursor)
+	mockRepo.AssertExpectations(t)
+	mockSessionRepo.AssertExpectations(t)
+}
+
+// TestSync_PullAll_MemoriesHasMoreSetsNextCursorFromLastRow verifies that when
+// the memory repository reports hasMore=true, PullAll surfaces
+// MemoriesHasMore=true and builds NextPullCursor from the last returned memory's
+// (SyncedAt, SyncID) — this is exactly what the daemon needs to request the
+// next page.
+func TestSync_PullAll_MemoriesHasMoreSetsNextCursorFromLastRow(t *testing.T) {
+	svc, mockRepo, _, mockSessionRepo := newTestSyncServiceWithSession(t)
+	ctx := context.Background()
+
+	lastSyncedAt := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	serverMems := []*model.Memory{
+		{ID: "srv-1", SyncID: "sync-a", SyncedAt: lastSyncedAt.Add(-time.Minute)},
+		{ID: "srv-2", SyncID: "sync-b", SyncedAt: lastSyncedAt},
+	}
+
+	mockSessionRepo.On("ListSessionsSince", ctx, "jarvis-dev", time.Time{}, model.PullCursor{}, 2).
+		Return([]*model.Session{}, false, nil)
+	mockRepo.On("PullSince", ctx, "jarvis-dev", time.Time{}, mock.Anything, model.PullCursor{}, 2).
+		Return(serverMems, true, nil)
+
+	res, err := svc.PullAll(ctx, "jarvis-dev", time.Time{}, nil, 2, model.PullCursor{}, model.PullCursor{})
+
+	require.NoError(t, err)
+	assert.True(t, res.MemoriesHasMore)
+	require.NotNil(t, res.NextPullCursor)
+	assert.Equal(t, "sync-b", res.NextPullCursor.SyncID)
+	assert.Equal(t, lastSyncedAt, res.NextPullCursor.SyncedAt)
+}
+
+// TestSync_PullAll_SessionsHasMoreSetsNextSessionCursorFromLastRow mirrors the
+// memories case for the sessions channel — independent cursor, independent
+// has-more flag.
+func TestSync_PullAll_SessionsHasMoreSetsNextSessionCursorFromLastRow(t *testing.T) {
+	svc, mockRepo, _, mockSessionRepo := newTestSyncServiceWithSession(t)
+	ctx := context.Background()
+
+	lastSyncedAt := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	serverSessions := []*model.Session{
+		{ID: "sess-1", SyncID: "sess-sync-a", SyncedAt: lastSyncedAt.Add(-time.Minute)},
+		{ID: "sess-2", SyncID: "sess-sync-b", SyncedAt: lastSyncedAt},
+	}
+
+	mockSessionRepo.On("ListSessionsSince", ctx, "jarvis-dev", time.Time{}, model.PullCursor{}, 2).
+		Return(serverSessions, true, nil)
+	mockRepo.On("PullSince", ctx, "jarvis-dev", time.Time{}, mock.Anything, model.PullCursor{}, 2).
+		Return([]*model.Memory{}, false, nil)
+
+	res, err := svc.PullAll(ctx, "jarvis-dev", time.Time{}, nil, 2, model.PullCursor{}, model.PullCursor{})
+
+	require.NoError(t, err)
+	assert.True(t, res.SessionsHasMore)
+	require.NotNil(t, res.NextSessionCursor)
+	assert.Equal(t, "sess-sync-b", res.NextSessionCursor.SyncID)
+	assert.Equal(t, lastSyncedAt, res.NextSessionCursor.SyncedAt)
+	assert.False(t, res.MemoriesHasMore)
+	assert.Nil(t, res.NextPullCursor)
+}
+
+// TestSync_PullAll_NoMoreRowsOmitsNextCursors verifies the common case (backlog
+// fits in one page): hasMore is false and no next cursor is built for either
+// channel — this is what makes the response's omitempty JSON fields disappear
+// for old and new daemons alike when there's nothing left to page through.
+func TestSync_PullAll_NoMoreRowsOmitsNextCursors(t *testing.T) {
+	svc, mockRepo, _, mockSessionRepo := newTestSyncServiceWithSession(t)
+	ctx := context.Background()
+
+	mockSessionRepo.On("ListSessionsSince", ctx, "jarvis-dev", time.Time{}, model.PullCursor{}, 100).
+		Return([]*model.Session{{ID: "sess-1", SyncID: "s1"}}, false, nil)
+	mockRepo.On("PullSince", ctx, "jarvis-dev", time.Time{}, mock.Anything, model.PullCursor{}, 100).
+		Return([]*model.Memory{{ID: "m1", SyncID: "sync-m1"}}, false, nil)
+
+	res, err := svc.PullAll(ctx, "jarvis-dev", time.Time{}, nil, 100, model.PullCursor{}, model.PullCursor{})
+
+	require.NoError(t, err)
+	assert.False(t, res.MemoriesHasMore)
+	assert.False(t, res.SessionsHasMore)
+	assert.Nil(t, res.NextPullCursor)
+	assert.Nil(t, res.NextSessionCursor)
 }
 
 // --- Tests de prompts en Push ---
@@ -704,10 +842,10 @@ func TestSyncService_Pull_CallsListSessionsSince(t *testing.T) {
 	sess1 := &model.Session{ID: "sess-from-server", Project: "jarvis-dev", DevID: "dev", Client: "claude-code"}
 	mem1 := &model.Memory{ID: "srv-mem-1", SyncID: "sync-m1"}
 
-	mockSessionRepo.On("ListSessionsSince", ctx, "jarvis-dev", since).Return([]*model.Session{sess1}, nil)
-	mockMemRepo.On("PullSince", ctx, "jarvis-dev", since, []string(nil)).Return([]*model.Memory{mem1}, nil)
+	mockSessionRepo.On("ListSessionsSince", ctx, "jarvis-dev", since, model.PullCursor{}, 100).Return([]*model.Session{sess1}, false, nil)
+	mockMemRepo.On("PullSince", ctx, "jarvis-dev", since, []string(nil), model.PullCursor{}, 100).Return([]*model.Memory{mem1}, false, nil)
 
-	result, err := svc.PullAll(ctx, "jarvis-dev", since, nil)
+	result, err := svc.PullAll(ctx, "jarvis-dev", since, nil, 100, model.PullCursor{}, model.PullCursor{})
 	require.NoError(t, err)
 	require.Len(t, result.Sessions, 1)
 	require.Len(t, result.Memories, 1)
@@ -725,10 +863,10 @@ func TestSyncService_Pull_EmptySessions(t *testing.T) {
 
 	since := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 
-	mockSessionRepo.On("ListSessionsSince", ctx, "jarvis-dev", since).Return([]*model.Session{}, nil)
-	mockMemRepo.On("PullSince", ctx, "jarvis-dev", since, []string(nil)).Return([]*model.Memory{}, nil)
+	mockSessionRepo.On("ListSessionsSince", ctx, "jarvis-dev", since, model.PullCursor{}, 100).Return([]*model.Session{}, false, nil)
+	mockMemRepo.On("PullSince", ctx, "jarvis-dev", since, []string(nil), model.PullCursor{}, 100).Return([]*model.Memory{}, false, nil)
 
-	result, err := svc.PullAll(ctx, "jarvis-dev", since, nil)
+	result, err := svc.PullAll(ctx, "jarvis-dev", since, nil, 100, model.PullCursor{}, model.PullCursor{})
 	require.NoError(t, err)
 	assert.Empty(t, result.Sessions)
 	assert.Empty(t, result.Memories)
