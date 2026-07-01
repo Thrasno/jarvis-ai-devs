@@ -107,6 +107,14 @@ type batchResult struct {
 	// this to decide whether another push is worth attempting.
 	PushBacklogEmpty bool
 
+	// BacklogSize is the total count of pending items fetched at the start of
+	// this step (memories + sessions + prompts + pending mutations). The
+	// Drain controller (PR 1b-ii) uses it as a progress proxy across
+	// iterations: if a full loop iteration does not shrink this count AND the
+	// mutation cursor does not advance, the loop is not making progress and
+	// must stop instead of spinning (design §4.3).
+	BacklogSize int
+
 	// PullHasMore is hardcoded false in PR 1b-i.
 	// TODO(PR2): wire from server has_more once hive-api paginates pulls.
 	PullHasMore bool
@@ -180,61 +188,166 @@ func defaultSyncDeps() syncDeps {
 	}
 }
 
-// Sync ejecuta el ciclo completo para un proyecto:
-//  1. Obtiene un JWT válido (del caché o haciendo login)
-//  2. Obtiene las memorias locales no sincronizadas
-//  3. Las envía al servidor (push)
-//  4. Recibe las memorias nuevas del servidor (pull)
-//  5. Guarda las memorias recibidas localmente
-//  6. Actualiza el timestamp de último sync
+// TriggerPolicy selects how many batch steps a Drain call runs before
+// returning (design §2.1, §4.3, PR 1b-ii).
+type TriggerPolicy int
+
+const (
+	// TriggerAuto runs exactly one syncBatchStep, matching the historical
+	// Sync behavior. Used by the background/auto-sync path.
+	TriggerAuto TriggerPolicy = iota
+	// TriggerManual loops syncBatchStep until the backlog is drained (or the
+	// termination guard trips). Used by the mem_sync MCP tool.
+	TriggerManual
+)
+
+// DrainState classifies how a Drain call ended. This is intentionally a
+// minimal internal classification for PR 1b-ii — full DrainOutcome surfacing
+// (mem_sync JSON field, health DTO wiring) is deferred to PR 3.
+type DrainState int
+
+const (
+	// DrainFullySynced means the loop drained the backlog cleanly: the push
+	// backlog was empty and the pull side reported no more pages.
+	DrainFullySynced DrainState = iota
+	// DrainExpectedPending means the loop stopped with backlog remaining
+	// (TriggerAuto's single-step contract, or the no-progress guard tripping
+	// without an error) — retrying later is expected to make progress.
+	DrainExpectedPending
+	// DrainDegradedFailure means a batch step returned an error and the loop
+	// stopped because of it.
+	DrainDegradedFailure
+)
+
+// DrainOutcome is a minimal internal classification of a Drain run. PR 3
+// extends this type and wires it into the mem_sync response and the sync
+// health DTO; for PR 1b-ii it exists only so the controller itself can
+// classify its own termination condition.
+type DrainOutcome struct {
+	State   DrainState
+	Batches int
+}
+
+// Sync ejecuta un único ciclo de sync (push+pull) para un proyecto. Es un
+// atajo sobre Drain con TriggerAuto — preserva la firma pública histórica
+// (*Result, error) para no romper a mem_save autoSync ni a los callers
+// existentes (design §4.3, PR 1b-ii).
 func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
-	if !s.tryStart(project) {
-		return nil, fmt.Errorf("%w: project %s", ErrSyncInFlight, project)
+	result, _, err := s.Drain(ctx, project, TriggerAuto)
+	return result, err
+}
+
+// Drain ejecuta uno o más ciclos de sync (push+pull) para un proyecto,
+// según la TriggerPolicy (design §2.1, §4.3, PR 1b-ii):
+//   - TriggerAuto corre exactamente un syncBatchStep (comportamiento
+//     histórico de Sync).
+//   - TriggerManual repite syncBatchStep hasta que el backlog de push esté
+//     vacío y el pull no reporte más páginas, o hasta que el guard de
+//     progreso (T1b-ii.5) detecte que una iteración no avanzó nada.
+//
+// La reserva de inFlight se toma UNA vez al principio y se mantiene durante
+// todo el Drain — no se libera/reserva entre batches.
+func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy) (*Result, DrainOutcome, error) {
+	if !s.tryReserve(project) {
+		return nil, DrainOutcome{}, fmt.Errorf("%w: project %s", ErrSyncInFlight, project)
 	}
-	defer s.finish(project)
+	defer s.release(project)
 
 	health, err := s.store.GetSyncHealth(project)
 	if err != nil {
-		return nil, fmt.Errorf("obtener estado de sync: %w", err)
+		return nil, DrainOutcome{}, fmt.Errorf("obtener estado de sync: %w", err)
 	}
 
 	now := s.deps.now().UTC()
 	if !health.BackoffUntil.IsZero() && now.Before(health.BackoffUntil) {
-		return nil, &BackoffError{Project: project, RetryAt: health.BackoffUntil}
+		return nil, DrainOutcome{}, &BackoffError{Project: project, RetryAt: health.BackoffUntil}
 	}
 
 	if err := s.store.RecordSyncAttempt(project, now); err != nil {
-		return nil, fmt.Errorf("registrar intento de sync: %w", err)
+		return nil, DrainOutcome{}, fmt.Errorf("registrar intento de sync: %w", err)
 	}
 
 	// Paso 1: JWT
 	token, err := s.getOrRefreshToken(ctx)
 	if err != nil {
 		if recordErr := s.recordFailure(project, health, now, err); recordErr != nil {
-			return nil, recordErr
+			return nil, DrainOutcome{}, recordErr
 		}
-		return nil, fmt.Errorf("autenticación: %w", err)
+		return nil, DrainOutcome{}, fmt.Errorf("autenticación: %w", err)
 	}
 
-	batch, resp, err := s.syncBatchStepWithResponse(ctx, project, token)
-	if err != nil {
-		// recordFailure must see the raw underlying error (unwrapped), not the
-		// "<step label>: %w" wrapper syncBatchStepWithResponse adds — that
-		// matches Sync's pre-extraction behavior, where each inline step
-		// passed its own raw err to recordFailure and only wrapped the error
-		// it returned to its own caller. sanitizeRecordedSyncError (health
-		// error text) depends on seeing the raw "sync failed (...)" /
-		// "login failed (...)" prefix, so double-wrapping here would corrupt
-		// the recorded health.LastError text.
-		if recordErr := s.recordFailure(project, health, now, errors.Unwrap(err)); recordErr != nil {
-			return nil, recordErr
+	result := &Result{Project: project}
+	outcome := DrainOutcome{}
+	var lastResp *syncResponse
+	prevBacklogSize := -1
+	prevMutationCursor := db.MutationCursor{}
+
+	for {
+		batch, resp, stepErr := s.syncBatchStepWithResponse(ctx, project, token)
+		if stepErr != nil {
+			// recordFailure must see the raw underlying error (unwrapped), not
+			// the "<step label>: %w" wrapper syncBatchStepWithResponse adds —
+			// that matches the pre-extraction behavior, where each inline step
+			// passed its own raw err to recordFailure and only wrapped the
+			// error it returned to its own caller. sanitizeRecordedSyncError
+			// (health error text) depends on seeing the raw "sync failed (...)"
+			// / "login failed (...)" prefix, so double-wrapping here would
+			// corrupt the recorded health.LastError text.
+			if recordErr := s.recordFailure(project, health, now, errors.Unwrap(stepErr)); recordErr != nil {
+				return nil, DrainOutcome{}, recordErr
+			}
+			outcome.State = DrainDegradedFailure
+			outcome.Batches++
+			if outcome.Batches == 1 {
+				// Preserve the historical single-batch Sync contract: a
+				// first-and-only-batch failure returns a nil result.
+				return nil, outcome, stepErr
+			}
+			return result, outcome, stepErr
 		}
-		return nil, err
+
+		outcome.Batches++
+		lastResp = resp
+		result.Pushed += batch.Pushed
+		result.Pulled += batch.Pulled
+		result.Conflicts += resp.Conflicts
+		result.PromptsPushed += resp.PromptsPushed
+		result.MutationsPushed += batch.MutationsPushed
+		result.MutationsPulled += batch.MutationsPulled
+		result.CompatibilityMode = batch.CompatibilityMode
+		result.MutationCursor = batch.MutationCursor
+
+		if policy == TriggerAuto {
+			if batch.PushBacklogEmpty && !batch.PullHasMore {
+				outcome.State = DrainFullySynced
+			} else {
+				outcome.State = DrainExpectedPending
+			}
+			break
+		}
+
+		// TriggerManual: keep looping until there is nothing left to push and
+		// the server reports no more pull pages.
+		if batch.PushBacklogEmpty && !batch.PullHasMore {
+			outcome.State = DrainFullySynced
+			break
+		}
+
+		// Termination guard (T1b-ii.5, design §4.3): if this iteration did not
+		// shrink the backlog AND the mutation cursor did not advance, the loop
+		// is not making progress (e.g. a permanent server-side conflict) — stop
+		// instead of spinning forever.
+		if prevBacklogSize != -1 && batch.BacklogSize >= prevBacklogSize && batch.MutationCursor == prevMutationCursor {
+			outcome.State = DrainExpectedPending
+			break
+		}
+		prevBacklogSize = batch.BacklogSize
+		prevMutationCursor = batch.MutationCursor
 	}
 
 	// Paso 6: actualizamos el timestamp del último sync exitoso
 	if err := s.store.RecordSyncSuccess(project, now); err != nil {
-		return nil, fmt.Errorf("registrar éxito de sync: %w", err)
+		return nil, DrainOutcome{}, fmt.Errorf("registrar éxito de sync: %w", err)
 	}
 
 	attemptLog := db.SyncAttemptLog{
@@ -246,7 +359,7 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 		EndedAt:        s.deps.now().UTC(),
 		Outcome:        db.SyncAttemptOutcomeSuccess,
 		HTTPStatus:     httpStatusOK,
-		SyncCountsJSON: syncCountsJSON(resp, batch.MutationsPushed, batch.MutationsPulled),
+		SyncCountsJSON: syncCountsJSON(lastResp, result.MutationsPushed, result.MutationsPulled),
 		MetadataJSON:   "{}",
 	}
 	if err := s.store.RecordSyncAttemptLog(ctx, attemptLog); err != nil {
@@ -256,17 +369,7 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 		s.flushSyncAttemptLogs(ctx, token)
 	}
 
-	return &Result{
-		Pushed:            batch.Pushed,
-		Pulled:            batch.Pulled,
-		Conflicts:         resp.Conflicts,
-		PromptsPushed:     resp.PromptsPushed,
-		Project:           project,
-		MutationsPushed:   batch.MutationsPushed,
-		MutationsPulled:   batch.MutationsPulled,
-		CompatibilityMode: batch.CompatibilityMode,
-		MutationCursor:    batch.MutationCursor,
-	}, nil
+	return result, outcome, nil
 }
 
 // syncBatchStep runs a single push+pull exchange with the server for
@@ -327,8 +430,8 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 	// PushBacklogEmpty: nothing fetched above means nothing remained to send
 	// for this step. See the batchResult field doc for why this is the
 	// cheapest accurate check for a single, non-paged batch step.
-	pushBacklogEmpty := len(unsynced) == 0 && len(unsyncedSessions) == 0 &&
-		len(unsyncedPrompts) == 0 && len(pendingMutations) == 0
+	backlogSize := len(unsynced) + len(unsyncedSessions) + len(unsyncedPrompts) + len(pendingMutations)
+	pushBacklogEmpty := backlogSize == 0
 
 	now := s.deps.now().UTC()
 
@@ -475,6 +578,7 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 		CompatibilityMode: compatibilityMode,
 		MutationCursor:    mutationCursor,
 		PushBacklogEmpty:  pushBacklogEmpty,
+		BacklogSize:       backlogSize,
 		// TODO(PR2): wire from server has_more once hive-api paginates pulls.
 		PullHasMore: false,
 	}, resp, nil
@@ -584,7 +688,7 @@ func confirmedMemorySyncIDs(mutations []db.MutationEnvelope) []string {
 	return ids
 }
 
-func (s *Syncer) tryStart(project string) bool {
+func (s *Syncer) tryReserve(project string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.inFlight[project] {
@@ -594,7 +698,7 @@ func (s *Syncer) tryStart(project string) bool {
 	return true
 }
 
-func (s *Syncer) finish(project string) {
+func (s *Syncer) release(project string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.inFlight, project)
