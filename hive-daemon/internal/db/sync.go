@@ -162,8 +162,8 @@ WHERE synced_at IS NULL AND sync_id != ''`).Scan(&n)
 }
 
 // CountUnsyncedSessions returns the global count of sessions (across all
-// projects) that have not yet been pushed to the server. The sync_id != ''
-// predicate matches the behavior of CountUnsyncedMemories and
+// projects) that have not yet been pushed to the server. The non-empty
+// sync_id predicate matches the behavior of CountUnsyncedMemories and
 // CountUnsyncedPrompts: sessions without a sync_id were never queued for sync
 // and must not be counted as pending.
 func (d *DB) CountUnsyncedSessions(ctx context.Context) (int, error) {
