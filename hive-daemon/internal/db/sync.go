@@ -54,6 +54,21 @@ type MutationCursor struct {
 	EventID  string `json:"event_id"`
 }
 
+// PullCursor is the keyset pagination cursor for the legacy (row-state) pull
+// channels — pulled memories and pulled sessions (PR 2a/2b,
+// hive-sync-batched-drain). It mirrors hive-api's model.PullCursor exactly
+// (same field names/types/JSON tags) so the wire payload round-trips without
+// translation: (synced_at, sync_id) forms a strictly increasing, gap-free
+// key when combined with `ORDER BY synced_at ASC, sync_id ASC` on the
+// server side. Declared here (not in internal/sync) so GetPullCursor/
+// SetPullCursor can persist it directly — internal/sync imports internal/db,
+// so the type must live on this side of that dependency edge; internal/sync
+// re-exports it as a type alias for callers in that package.
+type PullCursor struct {
+	SyncedAt time.Time `json:"synced_at"`
+	SyncID   string    `json:"sync_id"`
+}
+
 type MutationMemoryPayload struct {
 	SyncID        string    `json:"sync_id"`
 	Project       string    `json:"project"`
@@ -422,6 +437,65 @@ ON CONFLICT(consumer, project) DO UPDATE SET
 	)
 	if err != nil {
 		return fmt.Errorf("set mutation cursor: %w", err)
+	}
+	return nil
+}
+
+// pullCursorTimeLayout stores PullCursor.SyncedAt with full (nanosecond)
+// precision, unlike formatSQLiteTime's second-level truncation used
+// elsewhere in this file. PullCursor.SyncedAt is an opaque resume token
+// echoed back to hive-api's keyset pagination verbatim (see PullCursor's
+// doc) — it is never queried or ordered by SQLite itself, only stored and
+// round-tripped, so truncating it to seconds would risk resuming a page one
+// second early/late and re-fetching or skipping rows that share that second.
+const pullCursorTimeLayout = time.RFC3339Nano
+
+// GetPullCursor returns the persisted bounded-pull resume position for
+// (consumer, project, channel) — PR 2a/2b, hive-sync-batched-drain task 2.7.
+// channel is "memories" or "sessions": the two legacy pull channels
+// paginate independently, so each gets its own row. A missing cursor
+// (never synced, or first bounded pull for this project) returns the zero
+// value, matching GetMutationCursor's contract.
+func (d *DB) GetPullCursor(consumer, project, channel string) (PullCursor, error) {
+	var cursor PullCursor
+	var syncedAt string
+	err := d.sqlDB.QueryRow(`
+SELECT synced_at, sync_id
+FROM pull_cursors
+WHERE consumer = ? AND project = ? AND channel = ?`, consumer, project, channel).Scan(&syncedAt, &cursor.SyncID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PullCursor{}, nil
+	}
+	if err != nil {
+		return PullCursor{}, fmt.Errorf("get pull cursor: %w", err)
+	}
+	if syncedAt != "" {
+		parsed, parseErr := time.Parse(pullCursorTimeLayout, syncedAt)
+		if parseErr != nil {
+			return PullCursor{}, fmt.Errorf("get pull cursor: parse synced_at: %w", parseErr)
+		}
+		cursor.SyncedAt = parsed
+	}
+	return cursor, nil
+}
+
+// SetPullCursor persists the bounded-pull resume position for (consumer,
+// project, channel), upserting on repeated calls for the same key — PR
+// 2a/2b, hive-sync-batched-drain task 2.7. Mirrors SetMutationCursor's
+// ON CONFLICT DO UPDATE shape, keyed one level deeper to keep the memories
+// and sessions pull channels independent for the same project.
+func (d *DB) SetPullCursor(consumer, project, channel string, cursor PullCursor, at time.Time) error {
+	_, err := d.sqlDB.Exec(`
+INSERT INTO pull_cursors (consumer, project, channel, synced_at, sync_id, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(consumer, project, channel) DO UPDATE SET
+    synced_at = excluded.synced_at,
+    sync_id = excluded.sync_id,
+    updated_at = excluded.updated_at`,
+		consumer, project, channel, cursor.SyncedAt.UTC().Format(pullCursorTimeLayout), cursor.SyncID, formatSQLiteTime(at),
+	)
+	if err != nil {
+		return fmt.Errorf("set pull cursor: %w", err)
 	}
 	return nil
 }
