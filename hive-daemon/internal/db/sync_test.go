@@ -473,6 +473,60 @@ func TestSyncDB_ListGovernanceSyncHealth(t *testing.T) {
 	assert.Equal(t, "sync failed (503)", got[1].LastError)
 }
 
+// TestSyncDB_RecordDrainOutcome pins PR 3 task 3.4: RecordDrainOutcome
+// persists the last drain state/reason/remaining count onto the project's
+// sync_state row, and GetSyncHealth/ListGovernanceSyncHealth read it back.
+func TestSyncDB_RecordDrainOutcome(t *testing.T) {
+	db := setupTestDB(t)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+
+	require.NoError(t, db.RecordDrainOutcome("project-a", "expected_pending", "no-progress", 7))
+
+	got, err := db.GetSyncHealth("project-a")
+	require.NoError(t, err)
+	assert.Equal(t, "expected_pending", got.LastDrainState)
+	assert.Equal(t, "no-progress", got.LastDrainReason)
+	assert.Equal(t, 7, got.LastDrainRemaining)
+
+	// A later call overwrites the previous outcome rather than accumulating.
+	require.NoError(t, db.RecordDrainOutcome("project-a", "fully_synced", "", 0))
+
+	got, err = db.GetSyncHealth("project-a")
+	require.NoError(t, err)
+	assert.Equal(t, "fully_synced", got.LastDrainState)
+	assert.Equal(t, "", got.LastDrainReason)
+	assert.Equal(t, 0, got.LastDrainRemaining)
+
+	list, err := db.ListGovernanceSyncHealth(context.Background())
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, "fully_synced", list[0].LastDrainState)
+	assert.Equal(t, "", list[0].LastDrainReason)
+	assert.Equal(t, 0, list[0].LastDrainRemaining)
+}
+
+// TestSyncDB_GetSyncHealth_MissingDrainColumnsDefaultEmpty pins that a
+// project with no recorded drain outcome yet (e.g. only RecordSyncSuccess/
+// RecordSyncFailure have run, never RecordDrainOutcome) reads back empty/zero
+// drain fields instead of erroring — the columns are nullable additive
+// columns (PR 3 task 3.4 migration).
+func TestSyncDB_GetSyncHealth_MissingDrainColumnsDefaultEmpty(t *testing.T) {
+	db := setupTestDB(t)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+
+	require.NoError(t, db.RecordSyncSuccess("project-a", time.Date(2026, 5, 8, 11, 0, 0, 0, time.UTC)))
+
+	got, err := db.GetSyncHealth("project-a")
+	require.NoError(t, err)
+	assert.Empty(t, got.LastDrainState)
+	assert.Empty(t, got.LastDrainReason)
+	assert.Zero(t, got.LastDrainRemaining)
+}
+
 // setupTestDB creates a temporary SQLite database for testing.
 func setupTestDB(t *testing.T) *DB {
 	tmpDir := t.TempDir()

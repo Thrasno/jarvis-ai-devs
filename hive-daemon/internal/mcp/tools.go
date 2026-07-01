@@ -895,10 +895,9 @@ func memSyncHandler(syncRuntime *syncRuntime) sdkmcp.ToolHandler {
 		// mem_sync drives a manual, user-triggered sync: drain the backlog
 		// across as many batches as needed instead of the single-step
 		// TriggerAuto policy used by the background/auto-sync path (design
-		// §2.1, §4.3, PR 1b-ii). Full DrainOutcome surfacing in the JSON
-		// response (drain_state) is deferred to PR 3 — for now the response
-		// shape stays exactly what it was for Sync.
-		result, _, err := syncer.Drain(ctx, p.Project, hivesync.TriggerManual)
+		// §2.1, §4.3, PR 1b-ii). PR 3 (task 3.2) surfaces the full
+		// DrainOutcome in the JSON response instead of discarding it.
+		result, outcome, err := syncer.Drain(ctx, p.Project, hivesync.TriggerManual)
 		if err != nil {
 			if errors.Is(err, hivesync.ErrSyncInFlight) {
 				return toolJSON(map[string]any{
@@ -923,16 +922,55 @@ func memSyncHandler(syncRuntime *syncRuntime) sdkmcp.ToolHandler {
 			return toolError(fmt.Errorf("sync failed: %w", err)), nil
 		}
 
+		// DrainExpectedPending (either reason: auto-single-step, no-progress,
+		// or iteration-cap) is a SUCCESS response — backlog remaining after a
+		// manual drain is not, by itself, a tool-level error. A caller that
+		// wants to distinguish "normal bounded remainder" from "stuck" reads
+		// drain_reason (task 3.1/3.3).
+		//
+		// DrainDegradedFailure surfaces here (drain_state + error populated)
+		// ONLY when Drain returned it WITHOUT a top-level err — the common
+		// case (a mid-loop batch step failing) already returns a non-nil err
+		// above and takes the toolError branch instead, exactly as before
+		// this PR. This success-path branch exists so a caller never has to
+		// poll separately to learn about a failure that Drain chose to report
+		// alongside a nil error.
+		errText := ""
+		if outcome.Err != nil {
+			errText = outcome.Err.Error()
+		}
 		return toolJSON(map[string]any{
-			"pushed":          result.Pushed,
-			"pulled":          result.Pulled,
-			"conflicts":       result.Conflicts,
-			"project":         result.Project,
-			"status":          "ok",
-			"config_source":   syncStatus.Source,
-			"auto_sync":       syncStatus.AutoSync,
-			"config_warnings": syncStatus.Warnings,
+			"pushed":            result.Pushed,
+			"pulled":            result.Pulled,
+			"conflicts":         result.Conflicts,
+			"project":           result.Project,
+			"status":            "ok",
+			"config_source":     syncStatus.Source,
+			"auto_sync":         syncStatus.AutoSync,
+			"config_warnings":   syncStatus.Warnings,
+			"drain_state":       drainStateJSON(outcome.State),
+			"drain_reason":      string(outcome.Reason),
+			"batches_done":      outcome.BatchesDone,
+			"batches_remaining": outcome.BatchesRemaining,
+			"remaining_push":    outcome.RemainingPush,
+			"error":             errText,
 		})
+	}
+}
+
+// drainStateJSON maps a hivesync.DrainState to the mem_sync/health wire
+// vocabulary (PR 3, tasks 3.2/3.3). Kept as a single source of truth so both
+// surfaces stay in sync.
+func drainStateJSON(state hivesync.DrainState) string {
+	switch state {
+	case hivesync.DrainFullySynced:
+		return "fully_synced"
+	case hivesync.DrainExpectedPending:
+		return "expected_pending"
+	case hivesync.DrainDegradedFailure:
+		return "degraded_failure"
+	default:
+		return "unknown"
 	}
 }
 

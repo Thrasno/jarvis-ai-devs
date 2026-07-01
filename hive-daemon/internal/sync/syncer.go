@@ -77,6 +77,12 @@ type SyncStore interface {
 	RecordSyncAttempt(project string, at time.Time) error
 	RecordSyncSuccess(project string, at time.Time) error
 	RecordSyncFailure(project string, at time.Time, consecutiveFailures int, backoffUntil time.Time, syncErr error) error
+	// RecordDrainOutcome persists the most recently recorded Drain outcome
+	// (PR 3, task 3.4, hive-sync-batched-drain) — see db.(*DB).RecordDrainOutcome
+	// doc. Drain calls this at the end of every run (success and degraded
+	// paths) so the sync health surfaces (mem_sync, health DTO) can report the
+	// last drain state without re-deriving it.
+	RecordDrainOutcome(project, state, reason string, remaining int) error
 	GetJWT() string
 	SetJWT(token string, expiresAt time.Time) error
 	GetUnsyncedPrompts(ctx context.Context, project string) ([]*models.Prompt, error)
@@ -290,13 +296,105 @@ const (
 	DrainDegradedFailure
 )
 
-// DrainOutcome is a minimal internal classification of a Drain run. PR 3
-// extends this type and wires it into the mem_sync response and the sync
-// health DTO; for PR 1b-ii it exists only so the controller itself can
-// classify its own termination condition.
+// DrainReason distinguishes WHY a Drain call ended in DrainExpectedPending —
+// there are three different termination paths that all leave backlog
+// remaining, and only some of them indicate something is actually stuck
+// (PR 3, hive-sync-batched-drain, task 3.1):
+//
+//   - DrainReasonAutoSingleStep: TriggerAuto always stops after exactly one
+//     batch by design (see the TriggerAuto branch in Drain). Backlog
+//     remaining here is completely expected — the auto-sync tick will pick
+//     up more on its next run. Not a signal of trouble.
+//   - DrainReasonNoProgress: TriggerManual's no-progress guard tripped —
+//     RecordsMarkedSynced was 0, the mutation cursor did not advance, AND
+//     neither pull channel's cursor advanced for a full iteration. This means
+//     a manual, "drain everything now" request could not make headway, which
+//     usually means something IS stuck (permanent server-side rejection,
+//     misbehaving server, or a persistent local write failure).
+//   - DrainReasonIterationCap: TriggerManual hit maxDrainBatches — the loop
+//     was still making progress on every iteration but ran out of allowed
+//     batches. This is defense-in-depth against a pathologically large
+//     backlog or an unanticipated gap in the no-progress guard; on a healthy
+//     system it means "come back and drain again", not "stuck".
+//
+// DrainReason is empty ("") for DrainFullySynced and DrainDegradedFailure,
+// where the distinction does not apply.
+type DrainReason string
+
+const (
+	// DrainReasonNone is the zero value: no reason applies (DrainFullySynced,
+	// DrainDegradedFailure, or TriggerAuto's DrainFullySynced-after-one-batch
+	// case).
+	DrainReasonNone DrainReason = ""
+	// DrainReasonAutoSingleStep marks a TriggerAuto run that stopped after its
+	// single allowed batch with backlog still remaining — expected by design.
+	DrainReasonAutoSingleStep DrainReason = "auto-single-step"
+	// DrainReasonNoProgress marks a TriggerManual run stopped by the
+	// no-progress guard — nothing durably advanced for a full iteration.
+	DrainReasonNoProgress DrainReason = "no-progress"
+	// DrainReasonIterationCap marks a TriggerManual run stopped by the
+	// maxDrainBatches defense-in-depth cap while still (apparently) making
+	// progress.
+	DrainReasonIterationCap DrainReason = "iteration-cap"
+)
+
+// DrainOutcome classifies how a Drain call ended (PR 3, hive-sync-batched-drain,
+// task 3.1 — extends the PR 1b-ii minimal {State, Batches} shape with the full
+// detail needed to surface drain health through mem_sync and the health DTO).
 type DrainOutcome struct {
-	State   DrainState
-	Batches int
+	// State is the coarse classification of the run (fully synced, expected
+	// pending, or degraded failure).
+	State DrainState
+	// Reason distinguishes WHY State is DrainExpectedPending (see DrainReason
+	// doc). Empty for DrainFullySynced and DrainDegradedFailure.
+	Reason DrainReason
+	// BatchesDone is the number of syncBatchStep iterations that actually ran
+	// during this Drain call. Renamed from the PR 1b-ii `Batches` field name —
+	// PR 3 adds BatchesRemaining alongside it, and the "Done" suffix makes the
+	// pairing unambiguous at call sites and in the mem_sync/health JSON.
+	BatchesDone int
+	// BatchesRemaining is a best-effort estimate of how many more batches are
+	// likely needed to fully drain the backlog. It is NOT precisely knowable
+	// without another server round trip (the local backlog size does not
+	// account for what the pull side still has queued), so this is left at
+	// -1 ("unknown") whenever Drain cannot cheaply derive it. Today Drain does
+	// not compute this value — it is populated only when a future caller can
+	// supply it cheaply (e.g. from BacklogSize / syncPageSize on the final
+	// batch). Documented rather than silently omitted so it always means the
+	// same thing across the mem_sync and health surfaces.
+	BatchesRemaining int
+	// RemainingPush is a best-effort count of unsynced push work left after
+	// this Drain run ended. It is populated from the LAST batch's
+	// batchResult.BacklogSize (memories + sessions + prompts + pending
+	// mutations fetched for that batch) — see the batchResult.BacklogSize doc
+	// for why that number saturates at syncPageSize during a healthy
+	// multi-page drain and is therefore only a floor, not an exact count, once
+	// paging is involved. It is 0 when the run ended DrainFullySynced (the
+	// push backlog was confirmed empty), and -1 when Drain could not run any
+	// batch at all (e.g. this field is left unset before the loop runs).
+	RemainingPush int
+	// Err is set only when State is DrainDegradedFailure — the error the
+	// failing batch returned. nil in every other case.
+	Err error
+}
+
+// drainStateString maps a DrainState to the same wire vocabulary the
+// mem_sync/health JSON surfaces use (mcp.drainStateJSON mirrors this — kept
+// as two small unexported functions rather than a shared exported one to
+// avoid adding a cross-package API surface just for a 3-way string switch).
+// Used by RecordDrainOutcome persistence so the DB stores the same strings
+// callers see over JSON.
+func drainStateString(state DrainState) string {
+	switch state {
+	case DrainFullySynced:
+		return "fully_synced"
+	case DrainExpectedPending:
+		return "expected_pending"
+	case DrainDegradedFailure:
+		return "degraded_failure"
+	default:
+		return "unknown"
+	}
 }
 
 // Sync ejecuta un único ciclo de sync (push+pull) para un proyecto. Es un
@@ -349,7 +447,6 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 
 	result := &Result{Project: project}
 	outcome := DrainOutcome{}
-	var lastResp *syncResponse
 	prevMutationCursor := db.MutationCursor{}
 	// prevPullMemoriesCursor/prevPullSessionsCursor (PR 2b infinite-loop fix)
 	// track each pull channel's cursor as of the END of the previous
@@ -360,8 +457,15 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 	prevPullMemoriesCursor := db.PullCursor{}
 	prevPullSessionsCursor := db.PullCursor{}
 
+	// lastBatchBacklogSize tracks the most recent batch's batchResult.BacklogSize
+	// so DrainOutcome.RemainingPush (PR 3, task 3.1) can report a best-effort
+	// "work left" number without a second server round trip. See the
+	// DrainOutcome.RemainingPush doc for why this is a floor, not an exact
+	// count, once paging is involved.
+	lastBatchBacklogSize := -1
+
 	for {
-		if outcome.Batches >= maxDrainBatches {
+		if outcome.BatchesDone >= maxDrainBatches {
 			// Defense-in-depth (PR 2b infinite-loop fix): even if the
 			// cursor-advance corroboration below has a gap we haven't
 			// anticipated, this hard cap guarantees Drain(TriggerManual)
@@ -372,6 +476,9 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 			// diagnosable.
 			logger.Log.Printf("warn: Drain(project=%s) hit maxDrainBatches=%d without draining the backlog — stopping", project, maxDrainBatches)
 			outcome.State = DrainExpectedPending
+			outcome.Reason = DrainReasonIterationCap
+			outcome.BatchesRemaining = -1
+			outcome.RemainingPush = lastBatchBacklogSize
 			break
 		}
 		batch, resp, stepErr := s.syncBatchStepWithResponse(ctx, project, token)
@@ -388,8 +495,20 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 				return nil, DrainOutcome{}, recordErr
 			}
 			outcome.State = DrainDegradedFailure
-			outcome.Batches++
-			if outcome.Batches == 1 {
+			outcome.Reason = DrainReasonNone
+			outcome.BatchesDone++
+			outcome.BatchesRemaining = -1
+			outcome.RemainingPush = lastBatchBacklogSize
+			outcome.Err = stepErr
+			// Persist the degraded outcome (PR 3, task 3.4) before returning —
+			// both the nil-result and partial-result branches below are
+			// terminal for this Drain call, so this is the last chance to
+			// record it. Best-effort: a persistence failure here must not mask
+			// the original stepErr the caller is already about to see.
+			if persistErr := s.store.RecordDrainOutcome(project, drainStateString(outcome.State), string(outcome.Reason), outcome.RemainingPush); persistErr != nil {
+				logger.Log.Printf("warn: RecordDrainOutcome(project=%s): %v", project, persistErr)
+			}
+			if outcome.BatchesDone == 1 {
 				// Preserve the historical single-batch Sync contract: a
 				// first-and-only-batch failure returns a nil result.
 				return nil, outcome, stepErr
@@ -397,8 +516,8 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 			return result, outcome, stepErr
 		}
 
-		outcome.Batches++
-		lastResp = resp
+		outcome.BatchesDone++
+		lastBatchBacklogSize = batch.BacklogSize
 		result.Pushed += batch.Pushed
 		result.Pulled += batch.Pulled
 		result.Conflicts += resp.Conflicts
@@ -411,8 +530,12 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 		if policy == TriggerAuto {
 			if batch.PushBacklogEmpty && !batch.PullHasMore {
 				outcome.State = DrainFullySynced
+				outcome.RemainingPush = 0
 			} else {
 				outcome.State = DrainExpectedPending
+				outcome.Reason = DrainReasonAutoSingleStep
+				outcome.BatchesRemaining = -1
+				outcome.RemainingPush = lastBatchBacklogSize
 			}
 			break
 		}
@@ -421,6 +544,7 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 		// the server reports no more pull pages.
 		if batch.PushBacklogEmpty && !batch.PullHasMore {
 			outcome.State = DrainFullySynced
+			outcome.RemainingPush = 0
 			break
 		}
 
@@ -460,11 +584,22 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 		// which stays a true progress signal regardless of page size.
 		if batch.RecordsMarkedSynced == 0 && batch.MutationCursor == prevMutationCursor && !pullAdvanced {
 			outcome.State = DrainExpectedPending
+			outcome.Reason = DrainReasonNoProgress
+			outcome.BatchesRemaining = -1
+			outcome.RemainingPush = lastBatchBacklogSize
 			break
 		}
 		prevMutationCursor = batch.MutationCursor
 		prevPullMemoriesCursor = batch.PullMemoriesCursor
 		prevPullSessionsCursor = batch.PullSessionsCursor
+	}
+
+	// Persist the drain outcome (PR 3, task 3.4) for the success path
+	// (DrainFullySynced or DrainExpectedPending) — best-effort, mirroring the
+	// degraded-failure path above: a persistence failure here must not fail
+	// an otherwise-successful Drain call.
+	if persistErr := s.store.RecordDrainOutcome(project, drainStateString(outcome.State), string(outcome.Reason), outcome.RemainingPush); persistErr != nil {
+		logger.Log.Printf("warn: RecordDrainOutcome(project=%s): %v", project, persistErr)
 	}
 
 	// Paso 6: actualizamos el timestamp del último sync exitoso
@@ -481,7 +616,7 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 		EndedAt:        s.deps.now().UTC(),
 		Outcome:        db.SyncAttemptOutcomeSuccess,
 		HTTPStatus:     httpStatusOK,
-		SyncCountsJSON: syncCountsJSON(lastResp, result.MutationsPushed, result.MutationsPulled),
+		SyncCountsJSON: syncCountsJSON(result.Pushed, result.Pulled, result.Conflicts, result.PromptsPushed, result.MutationsPushed, result.MutationsPulled),
 		MetadataJSON:   "{}",
 	}
 	if err := s.store.RecordSyncAttemptLog(ctx, attemptLog); err != nil {
@@ -863,12 +998,23 @@ func (s *Syncer) deleteExpiredSyncAttemptLogs(ctx context.Context) {
 	}
 }
 
-func syncCountsJSON(resp *syncResponse, mutationsPushed, mutationsPulled int) string {
+// syncCountsJSON builds the audit payload persisted on SyncAttemptLog. All
+// six counts MUST come from the same accumulation scope (see
+// hive-sync-batched-drain Judgment Day A1): for a Drain(TriggerManual) run
+// that loops over several batches, that means the totals accumulated across
+// every batch, not a single batch's raw syncResponse. Taking pushed/pulled/
+// conflicts/prompts_pushed from only the last batch while mutations_pushed/
+// mutations_pulled were already accumulated produced an internally
+// inconsistent audit record for multi-batch drains. Passing explicit ints
+// (rather than a *syncResponse) makes that invariant obvious at every call
+// site and keeps the single-batch case correct for free: with exactly one
+// batch, the accumulated totals equal that batch's own counts.
+func syncCountsJSON(pushed, pulled, conflicts, promptsPushed, mutationsPushed, mutationsPulled int) string {
 	counts := map[string]int{
-		"pushed":           resp.Pushed,
-		"pulled":           len(resp.Pulled),
-		"conflicts":        resp.Conflicts,
-		"prompts_pushed":   resp.PromptsPushed,
+		"pushed":           pushed,
+		"pulled":           pulled,
+		"conflicts":        conflicts,
+		"prompts_pushed":   promptsPushed,
 		"mutations_pushed": mutationsPushed,
 		"mutations_pulled": mutationsPulled,
 	}

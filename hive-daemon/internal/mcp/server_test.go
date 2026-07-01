@@ -252,7 +252,7 @@ func (m *mockSyncer) Sync(ctx context.Context, project string) (*hivesync.Result
 
 func (m *mockSyncer) Drain(ctx context.Context, project string, policy hivesync.TriggerPolicy) (*hivesync.Result, hivesync.DrainOutcome, error) {
 	result, err := m.Sync(ctx, project)
-	return result, hivesync.DrainOutcome{Batches: 1, State: hivesync.DrainFullySynced}, err
+	return result, hivesync.DrainOutcome{BatchesDone: 1, State: hivesync.DrainFullySynced}, err
 }
 
 func (m *mockSyncer) callCount() int {

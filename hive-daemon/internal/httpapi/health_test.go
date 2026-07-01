@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,4 +61,73 @@ func TestHealthSummaryToResponse_BackoffUntilFutureIsSet(t *testing.T) {
 
 	require.NotNil(t, resp.BackoffUntil, "future BackoffUntil must be non-nil")
 	assert.Equal(t, futureTime.UTC(), *resp.BackoffUntil)
+}
+
+// TestHealthSummaryToResponse_LastDrainFieldsMapThrough pins PR 3 task 3.3:
+// LastDrainState/LastDrainRemaining/LastDrainReason are ADDITIVE fields on
+// both the domain HealthSummary and the wire DTO — mapping them through must
+// not disturb any existing field.
+func TestHealthSummaryToResponse_LastDrainFieldsMapThrough(t *testing.T) {
+	summary := hivesync.HealthSummary{
+		Reachable:           true,
+		AuthOK:              true,
+		AutoSync:            true,
+		LastError:           "",
+		ConsecutiveFailures: 0,
+		UnsyncedMemories:    4,
+		UnsyncedPrompts:     2,
+		UnsyncedSessions:    1,
+		LastDrainState:      "expected_pending",
+		LastDrainReason:     "no-progress",
+		LastDrainRemaining:  7,
+	}
+
+	resp := healthSummaryToResponse(summary)
+
+	assert.Equal(t, "expected_pending", resp.LastDrainState)
+	assert.Equal(t, "no-progress", resp.LastDrainReason)
+	assert.Equal(t, 7, resp.LastDrainRemaining)
+
+	// Existing fields must remain unaffected by the new mapping.
+	assert.True(t, resp.Reachable)
+	assert.True(t, resp.AuthOK)
+	assert.True(t, resp.AutoSync)
+	assert.Equal(t, "", resp.LastError)
+	assert.Equal(t, 0, resp.ConsecutiveFailures)
+	assert.Equal(t, 4, resp.UnsyncedMemories)
+	assert.Equal(t, 2, resp.UnsyncedPrompts)
+	assert.Equal(t, 1, resp.UnsyncedSessions)
+}
+
+// TestHealthSummaryResponse_ExistingFieldsUnchanged locks the frozen DTO
+// field set (name + json tag) so a future change cannot silently rename,
+// remove, or reorder an existing HealthSummaryResponse field — only additive
+// new fields are allowed (PR 3 task 3.3 contract).
+func TestHealthSummaryResponse_ExistingFieldsUnchanged(t *testing.T) {
+	typ := reflect.TypeOf(HealthSummaryResponse{})
+
+	wantJSONTags := map[string]string{
+		"Reachable":           "reachable",
+		"AuthOK":              "auth_ok",
+		"AutoSync":            "auto_sync",
+		"LastSuccessAt":       "last_success_at",
+		"LastFailureAt":       "last_failure_at",
+		"BackoffUntil":        "backoff_until",
+		"LastError":           "last_error",
+		"ConsecutiveFailures": "consecutive_failures",
+		"UnsyncedMemories":    "unsynced_memories",
+		"UnsyncedPrompts":     "unsynced_prompts",
+		"UnsyncedSessions":    "unsynced_sessions",
+	}
+
+	for name, wantTag := range wantJSONTags {
+		field, ok := typ.FieldByName(name)
+		if !ok {
+			t.Fatalf("HealthSummaryResponse must still declare field %q", name)
+		}
+		gotTag := strings.Split(field.Tag.Get("json"), ",")[0]
+		if gotTag != wantTag {
+			t.Fatalf("field %q json tag = %q, want %q", name, gotTag, wantTag)
+		}
+	}
 }

@@ -85,6 +85,12 @@ type mockSyncStore struct {
 	setPullCursorCalls []pullCursorSetCall
 	getPullCursorErr   error
 	setPullCursorErr   error
+
+	// recordDrainOutcomeCalls/recordDrainOutcomeErr (PR 3, task 3.4) record
+	// every RecordDrainOutcome invocation, or force it to fail, for tests
+	// asserting Drain persists its outcome at the end of a run.
+	recordDrainOutcomeCalls []recordDrainOutcomeCall
+	recordDrainOutcomeErr   error
 }
 
 type pullCursorCall struct {
@@ -207,6 +213,32 @@ func (m *mockSyncStore) RecordSyncSuccess(project string, at time.Time) error {
 	health.LastError = ""
 	m.healthByProject[project] = health
 	m.lastSync = at
+	return nil
+}
+
+// recordDrainOutcomeCall captures a single RecordDrainOutcome invocation for
+// assertions (PR 3, task 3.4).
+type recordDrainOutcomeCall struct {
+	project   string
+	state     string
+	reason    string
+	remaining int
+}
+
+func (m *mockSyncStore) RecordDrainOutcome(project, state, reason string, remaining int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.recordDrainOutcomeErr != nil {
+		return m.recordDrainOutcomeErr
+	}
+	m.recordDrainOutcomeCalls = append(m.recordDrainOutcomeCalls, recordDrainOutcomeCall{
+		project: project, state: state, reason: reason, remaining: remaining,
+	})
+	health := m.getHealthLocked(project)
+	health.LastDrainState = state
+	health.LastDrainReason = reason
+	health.LastDrainRemaining = remaining
+	m.healthByProject[project] = health
 	return nil
 }
 
@@ -2177,7 +2209,7 @@ func TestDrain_TriggerAuto_RunsExactlyOneStep(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Equal(t, int32(1), syncCalls.Load(), "TriggerAuto must run exactly one batch step")
-	assert.Equal(t, 1, outcome.Batches)
+	assert.Equal(t, 1, outcome.BatchesDone)
 	assert.Equal(t, DrainExpectedPending, outcome.State, "backlog still has pending work after the single allowed batch")
 }
 
@@ -2215,7 +2247,7 @@ func TestDrain_TriggerManual_LoopsUntilBacklogEmpty(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Equal(t, int32(3), syncCalls.Load(), "TriggerManual must loop until the backlog is empty")
-	assert.Equal(t, 3, outcome.Batches)
+	assert.Equal(t, 3, outcome.BatchesDone)
 	assert.Equal(t, DrainFullySynced, outcome.State)
 	assert.Equal(t, 3, result.Pushed, "aggregated Pushed must sum every batch")
 }
@@ -2360,7 +2392,7 @@ func TestDrain_TerminatesOnStepError(t *testing.T) {
 	require.Error(t, err)
 	require.NotNil(t, result, "partial progress from the first successful batch must still be surfaced")
 	assert.Equal(t, 1, result.Pushed, "only the first batch's progress is aggregated before the failing second batch")
-	assert.Equal(t, 2, outcome.Batches)
+	assert.Equal(t, 2, outcome.BatchesDone)
 	assert.Equal(t, DrainDegradedFailure, outcome.State)
 	assert.Equal(t, int32(2), syncCalls.Load(), "loop must stop immediately after the failing batch, not retry indefinitely")
 }
@@ -2394,7 +2426,7 @@ func TestDrain_TriggerManual_BackoffAndAttemptRecordedOnceAtTop(t *testing.T) {
 
 	_, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
 	require.NoError(t, err)
-	assert.Equal(t, 3, outcome.Batches, "sanity check: the loop actually ran multiple batches")
+	assert.Equal(t, 3, outcome.BatchesDone, "sanity check: the loop actually ran multiple batches")
 	assert.Len(t, store.recordAttemptCalls, 1, "RecordSyncAttempt must run once per Drain call, not once per batch")
 	assert.Len(t, store.recordSuccessCalls, 1, "RecordSyncSuccess must run once at the end of a successful Drain")
 }
@@ -2525,7 +2557,7 @@ func TestDrain_TriggerManual_PagesThroughLargeBacklogWithoutFalsePositiveGuard(t
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Equal(t, int32(4), syncCalls.Load(), "loop must page through all 4 scripted batches")
-	assert.Equal(t, 4, outcome.Batches)
+	assert.Equal(t, 4, outcome.BatchesDone)
 	assert.Equal(t, DrainFullySynced, outcome.State, "the loop must terminate by backlog-empty, not by the no-progress guard")
 	// Page size 2 caps each scripted entry ([5, 3, 1] items) at 2: batches mark
 	// 2 + 2 + 1 = 5 records, then a final empty batch confirms backlog-empty.
@@ -2651,7 +2683,7 @@ func TestDrain_NeverResendsAlreadySyncedAcrossBatches(t *testing.T) {
 	// empty-fetch batch confirms PushBacklogEmpty and ends the loop — the
 	// same shape as TestDrain_TriggerManual_LoopsUntilBacklogEmpty.
 	assert.Equal(t, []int{100, 100, 50, 0}, pushCounts, "250 items at a 100-item page cap must page as 100/100/50/0")
-	assert.Equal(t, 4, outcome.Batches)
+	assert.Equal(t, 4, outcome.BatchesDone)
 	assert.Equal(t, total, result.Pushed, "every one of the 250 rows must be pushed exactly once, summed across batches")
 
 	pushedOnce := make(map[string]int)
@@ -3159,7 +3191,7 @@ func TestDrain_TriggerManual_DrainsMultiPagePullAndAdvancesCursorsPerChannel(t *
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	assert.Equal(t, 3, outcome.Batches, "loop must run exactly 3 batches: 2 with has_more, 1 final false")
+	assert.Equal(t, 3, outcome.BatchesDone, "loop must run exactly 3 batches: 2 with has_more, 1 final false")
 	assert.Equal(t, DrainFullySynced, outcome.State)
 	assert.Equal(t, []int{100, 100, 100}, pullLimitsSeen, "every batch sends the same PullLimit = syncPageSize")
 
@@ -3189,6 +3221,87 @@ func TestDrain_TriggerManual_DrainsMultiPagePullAndAdvancesCursorsPerChannel(t *
 	finalSess, err := store.GetPullCursor(mutationCursorConsumerAPI, "test-project", pullCursorChannelSessions)
 	require.NoError(t, err)
 	assert.Equal(t, "sess-page-3", finalSess.SyncID)
+}
+
+// TestDrain_TriggerManual_RecordsAccumulatedSyncCountsAcrossBatches pins the
+// Judgment Day A1 fix: the success SyncAttemptLog persisted after a
+// multi-batch TriggerManual Drain must report pushed/pulled/conflicts/
+// prompts_pushed summed across ALL batches, not just the FINAL batch's raw
+// syncResponse. Before the fix, syncCountsJSON read those four fields
+// straight from the last batch's response while mutations_pushed/
+// mutations_pulled were already accumulated — an internally inconsistent
+// audit record. Two batches with distinct nonzero counts each make a
+// last-batch-only bug and a summed-total fix produce different, easily
+// distinguishable JSON.
+func TestDrain_TriggerManual_RecordsAccumulatedSyncCountsAcrossBatches(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{
+		jwt: "valid-token",
+		unsyncedSequence: [][]*models.Memory{
+			{createTestSyncMemory("local-1")},
+			{createTestSyncMemory("local-2")},
+			{},
+		},
+	}
+
+	var callCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync" {
+			return
+		}
+		idx := callCount
+		callCount++
+
+		w.WriteHeader(http.StatusOK)
+		switch idx {
+		case 0:
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{
+				Pushed:        1,
+				Pulled:        []apiMemory{{ID: "remote-1"}, {ID: "remote-2"}},
+				Conflicts:     1,
+				PromptsPushed: 2,
+			}))
+		case 1:
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{
+				Pushed:        1,
+				Pulled:        []apiMemory{{ID: "remote-3"}},
+				Conflicts:     2,
+				PromptsPushed: 3,
+			}))
+		default:
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 3, outcome.BatchesDone, "loop must run 3 batches: 2 with work, 1 final empty backlog")
+
+	// Sanity: the aggregated Result already sums correctly across batches —
+	// this bug is specifically about the persisted audit log diverging from
+	// this same aggregate.
+	assert.Equal(t, 2, result.Pushed, "aggregated Pushed must sum every batch")
+	assert.Equal(t, 3, result.Pulled, "aggregated Pulled must sum every batch")
+	assert.Equal(t, 3, result.Conflicts, "aggregated Conflicts must sum every batch")
+	assert.Equal(t, 5, result.PromptsPushed, "aggregated PromptsPushed must sum every batch")
+
+	require.Len(t, store.recordedSyncAttempts, 1)
+	recorded := store.recordedSyncAttempts[0]
+	assert.Equal(t, db.SyncAttemptOutcomeSuccess, recorded.Outcome)
+
+	var counts map[string]int
+	require.NoError(t, json.Unmarshal([]byte(recorded.SyncCountsJSON), &counts))
+	assert.Equal(t, 2, counts["pushed"], "persisted audit log must report the SUMMED pushed count across all batches, not just the last batch")
+	assert.Equal(t, 3, counts["pulled"], "persisted audit log must report the SUMMED pulled count across all batches, not just the last batch")
+	assert.Equal(t, 3, counts["conflicts"], "persisted audit log must report the SUMMED conflicts count across all batches, not just the last batch")
+	assert.Equal(t, 5, counts["prompts_pushed"], "persisted audit log must report the SUMMED prompts_pushed count across all batches, not just the last batch")
 }
 
 // TestDrain_TriggerManual_PullHasMoreButCursorStuck_Terminates is the
@@ -3312,6 +3425,319 @@ func TestDrain_TriggerManual_IterationCapEnforced(t *testing.T) {
 
 	require.NoError(t, drainErr)
 	require.NotNil(t, result)
-	assert.Equal(t, maxDrainBatches, outcome.Batches, "loop must stop exactly at the overridden cap")
+	assert.Equal(t, maxDrainBatches, outcome.BatchesDone, "loop must stop exactly at the overridden cap")
 	assert.Equal(t, DrainExpectedPending, outcome.State)
+}
+
+// TestDrainOutcome_ClassifiesStateAndReason pins the PR 3 (task 3.1) full
+// DrainOutcome classification contract: every termination path must produce
+// the right State, and DrainExpectedPending must additionally carry the
+// right Reason so a caller can distinguish an expected, bounded remainder
+// (auto-single-step) from something that is actually stuck (no-progress,
+// iteration-cap).
+func TestDrainOutcome_ClassifiesStateAndReason(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+
+	t.Run("fully-synced", func(t *testing.T) {
+		store := &mockSyncStore{
+			jwt:      "valid-token",
+			unsynced: nil,
+		}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/sync" {
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+		}))
+		defer server.Close()
+
+		syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+			now:    func() time.Time { return baseNow },
+			jitter: func(max time.Duration) time.Duration { return 0 },
+		})
+
+		result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, DrainFullySynced, outcome.State)
+		assert.Equal(t, DrainReasonNone, outcome.Reason)
+		assert.Equal(t, 0, outcome.RemainingPush)
+		assert.Nil(t, outcome.Err)
+	})
+
+	t.Run("expected-pending-auto-single-step", func(t *testing.T) {
+		store := &mockSyncStore{
+			jwt: "valid-token",
+			unsyncedSequence: [][]*models.Memory{
+				{createTestSyncMemory("local-1")},
+				{createTestSyncMemory("local-2")},
+			},
+		}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/sync" {
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 1, Pulled: []apiMemory{}, Conflicts: 0}))
+		}))
+		defer server.Close()
+
+		syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+			now:    func() time.Time { return baseNow },
+			jitter: func(max time.Duration) time.Duration { return 0 },
+		})
+
+		result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerAuto)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, DrainExpectedPending, outcome.State)
+		assert.Equal(t, DrainReasonAutoSingleStep, outcome.Reason, "TriggerAuto stopping after its single allowed batch is expected-by-design, not stuck")
+		assert.Nil(t, outcome.Err)
+	})
+
+	t.Run("expected-pending-no-progress", func(t *testing.T) {
+		store := &mockSyncStore{
+			jwt:           "valid-token",
+			unsynced:      []*models.Memory{createTestSyncMemory("stuck-memory")},
+			markSyncedErr: errors.New("persistent mark-synced failure"),
+		}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/sync" {
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+		}))
+		defer server.Close()
+
+		syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+			now:    func() time.Time { return baseNow },
+			jitter: func(max time.Duration) time.Duration { return 0 },
+		})
+
+		result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, DrainExpectedPending, outcome.State)
+		assert.Equal(t, DrainReasonNoProgress, outcome.Reason, "a stuck no-progress guard trip must be distinguishable from an expected auto-single-step remainder")
+		assert.Nil(t, outcome.Err)
+	})
+
+	t.Run("expected-pending-iteration-cap", func(t *testing.T) {
+		store := &mockSyncStore{jwt: "valid-token"}
+
+		origCap := maxDrainBatches
+		maxDrainBatches = 3
+		defer func() { maxDrainBatches = origCap }()
+
+		var seq int64
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/sync" {
+				return
+			}
+			n := atomic.AddInt64(&seq, 1)
+			cursor := &PullCursor{SyncID: fmt.Sprintf("mem-page-%d", n)}
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{
+				Pushed: 0, Pulled: []apiMemory{},
+				PulledHasMore:  true,
+				NextPullCursor: cursor,
+			}))
+		}))
+		defer server.Close()
+
+		syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+			now:    func() time.Time { return baseNow },
+			jitter: func(max time.Duration) time.Duration { return 0 },
+		})
+
+		result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, DrainExpectedPending, outcome.State)
+		assert.Equal(t, DrainReasonIterationCap, outcome.Reason, "hitting the iteration cap while still progressing must be distinguishable from a genuinely stuck no-progress trip")
+		assert.Nil(t, outcome.Err)
+	})
+
+	t.Run("degraded-failure", func(t *testing.T) {
+		store := &mockSyncStore{
+			jwt: "valid-token",
+			unsyncedSequence: [][]*models.Memory{
+				{createTestSyncMemory("local-1")},
+				{createTestSyncMemory("local-2")},
+			},
+		}
+		var syncCalls atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/sync" {
+				return
+			}
+			n := syncCalls.Add(1)
+			if n == 2 {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, writeErr := w.Write([]byte("boom"))
+				require.NoError(t, writeErr)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 1, Pulled: []apiMemory{}, Conflicts: 0}))
+		}))
+		defer server.Close()
+
+		syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+			now:    func() time.Time { return baseNow },
+			jitter: func(max time.Duration) time.Duration { return 0 },
+		})
+
+		result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+		require.Error(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, DrainDegradedFailure, outcome.State)
+		assert.Equal(t, DrainReasonNone, outcome.Reason)
+		require.Error(t, outcome.Err)
+		assert.ErrorIs(t, outcome.Err, err)
+	})
+}
+
+// TestDrain_PersistsDrainOutcomeAtEndOfRun pins PR 3 task 3.4: Drain must
+// call store.RecordDrainOutcome exactly once at the end of every run — both
+// the success path (DrainFullySynced/DrainExpectedPending) and the degraded
+// path (DrainDegradedFailure) — with the same State/Reason/RemainingPush the
+// caller receives in DrainOutcome.
+func TestDrain_PersistsDrainOutcomeAtEndOfRun(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+
+	t.Run("success path persists fully-synced", func(t *testing.T) {
+		store := &mockSyncStore{jwt: "valid-token"}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/sync" {
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+		}))
+		defer server.Close()
+
+		syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+			now:    func() time.Time { return baseNow },
+			jitter: func(max time.Duration) time.Duration { return 0 },
+		})
+
+		_, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+		require.NoError(t, err)
+
+		require.Len(t, store.recordDrainOutcomeCalls, 1)
+		call := store.recordDrainOutcomeCalls[0]
+		assert.Equal(t, "test-project", call.project)
+		assert.Equal(t, "fully_synced", call.state)
+		assert.Equal(t, "", call.reason)
+		assert.Equal(t, outcome.RemainingPush, call.remaining)
+	})
+
+	t.Run("degraded path persists degraded-failure", func(t *testing.T) {
+		store := &mockSyncStore{
+			jwt: "valid-token",
+			unsyncedSequence: [][]*models.Memory{
+				{createTestSyncMemory("local-1")},
+				{createTestSyncMemory("local-2")},
+			},
+		}
+		var syncCalls atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/sync" {
+				return
+			}
+			n := syncCalls.Add(1)
+			if n == 2 {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, writeErr := w.Write([]byte("boom"))
+				require.NoError(t, writeErr)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 1, Pulled: []apiMemory{}, Conflicts: 0}))
+		}))
+		defer server.Close()
+
+		syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+			now:    func() time.Time { return baseNow },
+			jitter: func(max time.Duration) time.Duration { return 0 },
+		})
+
+		_, _, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+		require.Error(t, err)
+
+		require.Len(t, store.recordDrainOutcomeCalls, 1)
+		call := store.recordDrainOutcomeCalls[0]
+		assert.Equal(t, "test-project", call.project)
+		assert.Equal(t, "degraded_failure", call.state)
+	})
+
+	t.Run("RecordDrainOutcome failure does not mask the original result", func(t *testing.T) {
+		store := &mockSyncStore{
+			jwt:                   "valid-token",
+			recordDrainOutcomeErr: errors.New("db write failed"),
+		}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/sync" {
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+		}))
+		defer server.Close()
+
+		syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+			now:    func() time.Time { return baseNow },
+			jitter: func(max time.Duration) time.Duration { return 0 },
+		})
+
+		result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+		require.NoError(t, err, "a best-effort RecordDrainOutcome failure must not fail an otherwise-successful Drain call")
+		require.NotNil(t, result)
+		assert.Equal(t, DrainFullySynced, outcome.State)
+	})
+}
+
+// TestDrain_EndToEnd_PersistedOutcomeVisibleViaHealth pins PR 3 task 3.4's
+// end-to-end contract using the real *db.DB (not the mock): after a Drain
+// run, the persisted drain outcome must be visible through GetSyncHealth,
+// exactly like health.go's Summary() would read it for the health DTO.
+func TestDrain_EndToEnd_PersistedOutcomeVisibleViaHealth(t *testing.T) {
+	tmpDir := t.TempDir()
+	realDB, err := db.Open(tmpDir + "/test.db")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, realDB.Close()) })
+
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/login":
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+				"token":      "test-token",
+				"expires_at": baseNow.Add(24 * time.Hour).Format(time.RFC3339),
+			}))
+		case "/sync":
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, realDB, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	_, outcome, err := syncer.Drain(context.Background(), "e2e-project", TriggerManual)
+	require.NoError(t, err)
+	assert.Equal(t, DrainFullySynced, outcome.State)
+
+	health, err := realDB.GetSyncHealth("e2e-project")
+	require.NoError(t, err)
+	assert.Equal(t, "fully_synced", health.LastDrainState)
+	assert.Equal(t, "", health.LastDrainReason)
+	assert.Equal(t, 0, health.LastDrainRemaining)
 }

@@ -23,6 +23,18 @@ type HealthSummary struct {
 	UnsyncedMemories    int
 	UnsyncedPrompts     int
 	UnsyncedSessions    int
+
+	// LastDrainState/LastDrainReason/LastDrainRemaining (PR 3, task 3.3/3.4,
+	// hive-sync-batched-drain) surface the most recently persisted Drain
+	// outcome across the aggregated projects — see db.SyncHealth's
+	// LastDrainState/LastDrainReason/LastDrainRemaining doc for the exact
+	// per-project persistence and the aggregate() doc for which row's value
+	// wins when multiple projects have drained. Empty/zero when no Drain run
+	// has persisted an outcome yet (e.g. a fresh install, or a DB predating
+	// this migration).
+	LastDrainState     string
+	LastDrainReason    string
+	LastDrainRemaining int
 }
 
 // HealthServicer is the interface callers use to retrieve the aggregate sync
