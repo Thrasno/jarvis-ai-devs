@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -408,6 +409,37 @@ func TestSync_PullAll_ForwardsLimitAndCursorsToRepositories(t *testing.T) {
 	_, err := svc.PullAll(ctx, "jarvis-dev", since, nil, 7, memCursor, sessCursor)
 
 	require.NoError(t, err)
+	mockRepo.AssertExpectations(t)
+	mockSessionRepo.AssertExpectations(t)
+}
+
+// CRITICAL FIX #1 — TestSync_PullAll_UnboundedLimitForwardedAsIsToRepositories
+// verifies that PullAll forwards model.UnboundedPullLimit (0) straight through
+// to PullSince/ListSessionsSince without substituting the old 100 default. This
+// is the service-layer half of the backward-compat contract: when the handler
+// resolves "client did not opt into pull_limit" to UnboundedPullLimit, PullAll
+// must not re-introduce a bounded page — the repositories are responsible for
+// interpreting limit<=0 as "no LIMIT clause".
+func TestSync_PullAll_UnboundedLimitForwardedAsIsToRepositories(t *testing.T) {
+	svc, mockRepo, _, mockSessionRepo := newTestSyncServiceWithSession(t)
+	ctx := context.Background()
+
+	serverMems := make([]*model.Memory, 0, 150)
+	for i := 0; i < 150; i++ {
+		serverMems = append(serverMems, &model.Memory{ID: fmt.Sprintf("srv-%d", i), SyncID: fmt.Sprintf("sync-%d", i)})
+	}
+
+	mockSessionRepo.On("ListSessionsSince", ctx, "jarvis-dev", time.Time{}, model.PullCursor{}, model.UnboundedPullLimit).
+		Return([]*model.Session{}, false, nil)
+	mockRepo.On("PullSince", ctx, "jarvis-dev", time.Time{}, mock.Anything, model.PullCursor{}, model.UnboundedPullLimit).
+		Return(serverMems, false, nil)
+
+	res, err := svc.PullAll(ctx, "jarvis-dev", time.Time{}, nil, model.UnboundedPullLimit, model.PullCursor{}, model.PullCursor{})
+
+	require.NoError(t, err)
+	assert.Len(t, res.Memories, 150, "unbounded pull must not be capped at the old 100-row default")
+	assert.False(t, res.MemoriesHasMore, "unbounded pull always reports hasMore=false")
+	assert.Nil(t, res.NextPullCursor)
 	mockRepo.AssertExpectations(t)
 	mockSessionRepo.AssertExpectations(t)
 }

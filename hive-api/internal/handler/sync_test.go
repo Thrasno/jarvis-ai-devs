@@ -399,11 +399,16 @@ func TestHandlerSync_Push_UnknownSession_Returns400(t *testing.T) {
 
 // ─── PR 2a: bounded legacy pull pagination — handler-level pull_limit clamp ──
 
-// TestSync_PullLimitOmittedDefaultsTo100 verifies that when pull_limit is absent
-// from the request, the handler forwards limit=100 (model.DefaultPullLimit) to
-// SyncService.PullAll — old daemons that never heard of pull_limit still get a
-// bounded page, not an unbounded pull.
-func TestSync_PullLimitOmittedDefaultsTo100(t *testing.T) {
+// TestSync_PullLimitAbsentMeansUnboundedPull verifies that when pull_limit is
+// absent from the request, the handler forwards limit=model.UnboundedPullLimit
+// (0) to SyncService.PullAll — meaning "no LIMIT clause, single unbounded
+// page". This is the CRITICAL backward-compat contract for PR 2a: the current
+// hive-daemon has no pulled_has_more/next_pull_cursor handling and hardcodes
+// PullHasMore=false, so if the server silently capped the page at 100 for
+// clients that never opted in, any channel with >100 pending rows would strand
+// the remainder until PR 2b ships. Old daemons that never send pull_limit MUST
+// keep getting exactly today's behavior: unbounded pull, has_more=false.
+func TestSync_PullLimitAbsentMeansUnboundedPull(t *testing.T) {
 	authSvc := &mockAuthSvc{}
 	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
 
@@ -411,13 +416,39 @@ func TestSync_PullLimitOmittedDefaultsTo100(t *testing.T) {
 	syncSvc := &mockSyncSvc{}
 	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
 		Return(syncResp, nil)
-	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), 100, model.PullCursor{}, model.PullCursor{}).
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), model.UnboundedPullLimit, model.PullCursor{}, model.PullCursor{}).
 		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
 
 	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
 		map[string]interface{}{
 			"project":  "jarvis-dev",
 			"memories": []interface{}{},
+		}, "valid-token")
+
+	require.Equal(t, http.StatusOK, w.Code)
+	syncSvc.AssertExpectations(t)
+}
+
+// TestSync_PullLimitZeroMeansUnboundedPull verifies an explicit pull_limit: 0
+// is treated the same as absent — unbounded pull, not a bounded page of 0 or
+// the old 100 default. Zero is indistinguishable from "omitted" on the wire
+// (Go zero value for int), so both must mean "did not opt in".
+func TestSync_PullLimitZeroMeansUnboundedPull(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	syncResp := &model.SyncResponse{Pushed: 0, Pulled: []*model.Memory{}}
+	syncSvc := &mockSyncSvc{}
+	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
+		Return(syncResp, nil)
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), model.UnboundedPullLimit, model.PullCursor{}, model.PullCursor{}).
+		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
+
+	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
+		map[string]interface{}{
+			"project":    "jarvis-dev",
+			"memories":   []interface{}{},
+			"pull_limit": 0,
 		}, "valid-token")
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -487,7 +518,7 @@ func TestSync_PullCursorsForwardedToPullAll(t *testing.T) {
 	expectedMemCursor := model.PullCursor{SyncedAt: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC), SyncID: "mem-cursor-x"}
 	expectedSessCursor := model.PullCursor{SyncedAt: time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC), SyncID: "sess-cursor-x"}
 
-	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), 100, expectedMemCursor, expectedSessCursor).
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), model.UnboundedPullLimit, expectedMemCursor, expectedSessCursor).
 		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
 
 	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
@@ -522,7 +553,7 @@ func TestSync_ResponseIncludesPullPaginationFields(t *testing.T) {
 	syncSvc := &mockSyncSvc{}
 	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
 		Return(syncResp, nil)
-	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), 100, model.PullCursor{}, model.PullCursor{}).
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), model.UnboundedPullLimit, model.PullCursor{}, model.PullCursor{}).
 		Return(&model.PullResult{
 			Sessions:          []*model.Session{},
 			Memories:          []*model.Memory{},
@@ -566,7 +597,7 @@ func TestSync_ResponseOmitsPullPaginationFieldsWhenFullyDrained(t *testing.T) {
 	syncSvc := &mockSyncSvc{}
 	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
 		Return(syncResp, nil)
-	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), 100, model.PullCursor{}, model.PullCursor{}).
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), model.UnboundedPullLimit, model.PullCursor{}, model.PullCursor{}).
 		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
 
 	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",

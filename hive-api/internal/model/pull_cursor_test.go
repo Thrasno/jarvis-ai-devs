@@ -28,13 +28,18 @@ func TestPullCursor_IsZero(t *testing.T) {
 }
 
 func TestClampPullLimit(t *testing.T) {
+	// ClampPullLimit only normalizes an EXPLICIT opt-in (limit > 0). Absent/0/negative
+	// means "client did not opt into pagination" and must stay unbounded (see
+	// model.UnboundedPullLimit) — true backward compat with pre-2a daemons that
+	// always did a single unbounded pull. This is NOT a regression: unbounded pull
+	// is the current status quo for clients that never send pull_limit.
 	tests := []struct {
 		name  string
 		input int
 		want  int
 	}{
-		{name: "zero defaults to 100", input: 0, want: 100},
-		{name: "negative defaults to 100", input: -5, want: 100},
+		{name: "zero means unbounded (client did not opt in)", input: 0, want: model.UnboundedPullLimit},
+		{name: "negative means unbounded (client did not opt in)", input: -5, want: model.UnboundedPullLimit},
 		{name: "within range preserved", input: 42, want: 42},
 		{name: "one is preserved (lower bound)", input: 1, want: 1},
 		{name: "exactly max preserved", input: 100, want: 100},

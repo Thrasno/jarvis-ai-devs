@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -785,7 +786,7 @@ func TestPostgresMemoryRepository_PullSince(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			results, hasMore, err := repo.PullSince(ctx, "pullsince-test", tt.since, tt.exclude, model.PullCursor{}, model.DefaultPullLimit)
+			results, hasMore, err := repo.PullSince(ctx, "pullsince-test", tt.since, tt.exclude, model.PullCursor{}, model.MaxPullLimit)
 
 			require.NoError(t, err)
 			assert.False(t, hasMore, "backlog is well under the default limit — hasMore must be false")
@@ -810,6 +811,213 @@ func TestPostgresMemoryRepository_PullSince(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ─── PR 2a fresh-review WARNING #2 — missing keyset pagination repository tests ──
+//
+// These tests were flagged as a gap by fresh-context review: PullSince's keyset
+// pagination (limit+1 trim, cursor walk, synced_at tiebreak) had no direct
+// repository-level coverage. Docker-gated (see startPostgresWithSessions);
+// CI-deferred in environments without a Docker daemon.
+
+// ─── CRITICAL FIX #1 — unbounded pull when the client does not opt in ────────
+//
+// TestPostgresMemoryRepository_PullSince_UnboundedLimitReturnsAllRows verifies
+// that limit<=0 (model.UnboundedPullLimit) performs a single unbounded pull —
+// no LIMIT clause, all matching rows returned, hasMore always false. This is
+// the repository-level half of the backward-compat contract: a pre-2a daemon
+// that never sends pull_limit must get every pending row in one page, exactly
+// like before PR 2a, even when the backlog exceeds the bounded page size.
+func TestPostgresMemoryRepository_PullSince_UnboundedLimitReturnsAllRows(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+	sess := ensureManualSavePtr(t, pool, "unbounded-test")
+
+	const totalRows = 150 // deliberately > model.MaxPullLimit (100)
+	baseTime := time.Now().Add(-3 * time.Hour)
+	for i := 0; i < totalRows; i++ {
+		mem := &model.Memory{
+			SyncID:    fmt.Sprintf("950e8400-0000-0000-0000-%012d", i),
+			Project:   "unbounded-test",
+			Category:  model.CatDecision,
+			Title:     "Unbounded test row",
+			Content:   fmt.Sprintf("row-%d", i),
+			CreatedBy: "tester",
+			CreatedAt: baseTime.Add(time.Duration(i) * time.Second),
+			UpdatedAt: baseTime.Add(time.Duration(i) * time.Second),
+			SessionID: sess,
+		}
+		_, err := repo.Create(ctx, mem)
+		require.NoError(t, err)
+	}
+
+	results, hasMore, err := repo.PullSince(ctx, "unbounded-test", time.Time{}, nil, model.PullCursor{}, model.UnboundedPullLimit)
+	require.NoError(t, err)
+	assert.False(t, hasMore, "unbounded pull must always report hasMore=false")
+	assert.Len(t, results, totalRows, "unbounded pull must return every matching row in a single page, uncapped by MaxPullLimit")
+}
+
+// TestPostgresMemoryRepository_PullSince_HasMoreTrimsToLimit verifies that when
+// more rows exist than the requested page size, PullSince reports hasMore=true
+// and trims the result to exactly `limit` rows (not limit+1).
+func TestPostgresMemoryRepository_PullSince_HasMoreTrimsToLimit(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+	sess := ensureManualSavePtr(t, pool, "trim-test")
+
+	const totalRows = 5
+	const pageLimit = 3
+
+	baseTime := time.Now().Add(-1 * time.Hour)
+	for i := 0; i < totalRows; i++ {
+		mem := &model.Memory{
+			SyncID:    fmt.Sprintf("650e8400-0000-0000-0000-%012d", i),
+			Project:   "trim-test",
+			Category:  model.CatDecision,
+			Title:     "Trim test row",
+			Content:   fmt.Sprintf("row-%d", i),
+			CreatedBy: "tester",
+			CreatedAt: baseTime.Add(time.Duration(i) * time.Minute),
+			UpdatedAt: baseTime.Add(time.Duration(i) * time.Minute),
+			SessionID: sess,
+		}
+		_, err := repo.Create(ctx, mem)
+		require.NoError(t, err)
+		time.Sleep(20 * time.Millisecond) // ensure distinct synced_at ordering
+	}
+
+	results, hasMore, err := repo.PullSince(ctx, "trim-test", time.Time{}, nil, model.PullCursor{}, pageLimit)
+	require.NoError(t, err)
+	assert.True(t, hasMore, "5 rows with a page limit of 3 must report hasMore=true")
+	assert.Len(t, results, pageLimit, "result must be trimmed to exactly the requested limit, not limit+1")
+}
+
+// TestPostgresMemoryRepository_PullSince_FullCursorWalkVisitsEveryRowOnce walks
+// the full backlog page by page using the returned cursor, and asserts no row
+// is skipped or duplicated across the walk, and the walk terminates.
+func TestPostgresMemoryRepository_PullSince_FullCursorWalkVisitsEveryRowOnce(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+	sess := ensureManualSavePtr(t, pool, "walk-test")
+
+	const totalRows = 11
+	const pageLimit = 4
+
+	baseTime := time.Now().Add(-2 * time.Hour)
+	wantSyncIDs := make(map[string]bool, totalRows)
+	for i := 0; i < totalRows; i++ {
+		syncID := fmt.Sprintf("750e8400-0000-0000-0000-%012d", i)
+		wantSyncIDs[syncID] = true
+		mem := &model.Memory{
+			SyncID:    syncID,
+			Project:   "walk-test",
+			Category:  model.CatDecision,
+			Title:     "Walk test row",
+			Content:   fmt.Sprintf("row-%d", i),
+			CreatedBy: "tester",
+			CreatedAt: baseTime.Add(time.Duration(i) * time.Minute),
+			UpdatedAt: baseTime.Add(time.Duration(i) * time.Minute),
+			SessionID: sess,
+		}
+		_, err := repo.Create(ctx, mem)
+		require.NoError(t, err)
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	seen := make(map[string]int, totalRows)
+	cursor := model.PullCursor{}
+	pages := 0
+	const maxPages = totalRows + 2 // safety bound so a broken cursor can't loop forever
+
+	for {
+		pages++
+		require.LessOrEqual(t, pages, maxPages, "cursor walk did not terminate — possible infinite loop")
+
+		page, hasMore, err := repo.PullSince(ctx, "walk-test", time.Time{}, nil, cursor, pageLimit)
+		require.NoError(t, err)
+
+		for _, mem := range page {
+			seen[mem.SyncID]++
+		}
+
+		if !hasMore || len(page) == 0 {
+			break
+		}
+
+		last := page[len(page)-1]
+		cursor = model.PullCursor{SyncedAt: last.SyncedAt, SyncID: last.SyncID}
+	}
+
+	assert.Len(t, seen, totalRows, "every row must be visited exactly once across the full walk")
+	for syncID := range wantSyncIDs {
+		assert.Equal(t, 1, seen[syncID], "sync_id %s must appear exactly once (no skip, no duplicate)", syncID)
+	}
+}
+
+// TestPostgresMemoryRepository_PullSince_TiebreakOnIdenticalSyncedAt verifies
+// that two rows sharing the exact same synced_at are ordered deterministically
+// by sync_id and that neither is skipped nor duplicated across a page boundary
+// (the scenario the (synced_at, sync_id) tuple comparison exists to solve).
+func TestPostgresMemoryRepository_PullSince_TiebreakOnIdenticalSyncedAt(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+	sess := ensureManualSavePtr(t, pool, "tiebreak-test")
+
+	now := time.Now()
+	syncIDLow := "850e8400-0000-0000-0000-000000000001"
+	syncIDHigh := "850e8400-0000-0000-0000-000000000002"
+
+	for _, syncID := range []string{syncIDHigh, syncIDLow} { // insert out of sync_id order on purpose
+		mem := &model.Memory{
+			SyncID:    syncID,
+			Project:   "tiebreak-test",
+			Category:  model.CatDecision,
+			Title:     "Tiebreak row",
+			Content:   "content-" + syncID,
+			CreatedBy: "tester",
+			CreatedAt: now,
+			UpdatedAt: now,
+			SessionID: sess,
+		}
+		_, err := repo.Create(ctx, mem)
+		require.NoError(t, err)
+	}
+
+	// Force both rows to share the exact same synced_at — synced_at is normally
+	// server-assigned via DEFAULT now() at INSERT time, so we override it after
+	// the fact to simulate two rows synced in the same instant.
+	tie := time.Now().Add(-5 * time.Minute).Truncate(time.Microsecond)
+	_, err := pool.Exec(ctx, `UPDATE memories SET synced_at = $1 WHERE project = 'tiebreak-test'`, tie)
+	require.NoError(t, err)
+
+	// Page 1: limit=1 must return exactly the lower sync_id (tiebreak order) and
+	// report hasMore=true because a second row with the same synced_at remains.
+	page1, hasMore1, err := repo.PullSince(ctx, "tiebreak-test", time.Time{}, nil, model.PullCursor{}, 1)
+	require.NoError(t, err)
+	require.True(t, hasMore1, "second row with identical synced_at must not be silently dropped")
+	require.Len(t, page1, 1)
+	assert.Equal(t, syncIDLow, page1[0].SyncID, "tiebreak must order the lower sync_id first")
+
+	// Page 2: resume from page 1's cursor — must return exactly the remaining row,
+	// not skip it and not repeat page 1's row.
+	cursor := model.PullCursor{SyncedAt: page1[0].SyncedAt, SyncID: page1[0].SyncID}
+	page2, hasMore2, err := repo.PullSince(ctx, "tiebreak-test", time.Time{}, nil, cursor, 1)
+	require.NoError(t, err)
+	assert.False(t, hasMore2, "backlog is fully drained after the second row")
+	require.Len(t, page2, 1)
+	assert.Equal(t, syncIDHigh, page2[0].SyncID, "second page must return the remaining tied row, not repeat or skip it")
 }
 
 // TestPostgresMemoryRepository_List verifies List with filters and pagination.
@@ -1236,7 +1444,7 @@ func TestPostgresMemoryRepository_PullSince_ReturnsSessionID(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	pulled, _, err := memRepo.PullSince(ctx, "crit7-pull", time.Time{}, nil, model.PullCursor{}, model.DefaultPullLimit)
+	pulled, _, err := memRepo.PullSince(ctx, "crit7-pull", time.Time{}, nil, model.PullCursor{}, model.MaxPullLimit)
 	require.NoError(t, err)
 	require.Len(t, pulled, 1)
 	require.NotNil(t, pulled[0].SessionID, "PullSince must return session_id")

@@ -608,7 +608,7 @@ func TestPostgresSessionRepository_ListSessionsSince(t *testing.T) {
 	// Cutoff is base+30s — sessions 2 and 3 have synced_at after the cutoff.
 	cutoff := base.Add(30 * time.Second)
 
-	got, hasMore, err := repo.ListSessionsSince(ctx, "test-proj", cutoff, model.PullCursor{}, model.DefaultPullLimit)
+	got, hasMore, err := repo.ListSessionsSince(ctx, "test-proj", cutoff, model.PullCursor{}, model.MaxPullLimit)
 	require.NoError(t, err)
 	require.Len(t, got, 2, "should return exactly 2 sessions after cutoff")
 	assert.False(t, hasMore)
@@ -636,7 +636,7 @@ func TestPostgresSessionRepository_ListSessionsSince_ZeroCutoff(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	got, _, err := repo.ListSessionsSince(ctx, "zero-proj", time.Time{}, model.PullCursor{}, model.DefaultPullLimit)
+	got, _, err := repo.ListSessionsSince(ctx, "zero-proj", time.Time{}, model.PullCursor{}, model.MaxPullLimit)
 	require.NoError(t, err)
 	// At minimum the 2 inserted rows are returned (other tests also insert to same DB
 	// but each test uses a fresh container so isolation is guaranteed)
@@ -667,17 +667,185 @@ func TestPostgresSessionRepository_ListSessionsSince_FiltersByProject(t *testing
 	insert("sess-A-2", "c1000000-0000-0000-0000-000000000002", "alpha", base.Add(time.Minute))
 	insert("sess-B-1", "c1000000-0000-0000-0000-000000000003", "beta", base.Add(2*time.Minute))
 
-	gotAlpha, _, err := repo.ListSessionsSince(ctx, "alpha", time.Time{}, model.PullCursor{}, model.DefaultPullLimit)
+	gotAlpha, _, err := repo.ListSessionsSince(ctx, "alpha", time.Time{}, model.PullCursor{}, model.MaxPullLimit)
 	require.NoError(t, err)
 	require.Len(t, gotAlpha, 2, "alpha must return only its own sessions")
 	for _, s := range gotAlpha {
 		assert.Equal(t, "alpha", s.Project)
 	}
 
-	gotBeta, _, err := repo.ListSessionsSince(ctx, "beta", time.Time{}, model.PullCursor{}, model.DefaultPullLimit)
+	gotBeta, _, err := repo.ListSessionsSince(ctx, "beta", time.Time{}, model.PullCursor{}, model.MaxPullLimit)
 	require.NoError(t, err)
 	require.Len(t, gotBeta, 1)
 	assert.Equal(t, "beta", gotBeta[0].Project)
+}
+
+// ─── CRITICAL FIX #1 — unbounded pull when the client does not opt in ────────
+//
+// TestPostgresSessionRepository_ListSessionsSince_UnboundedLimitReturnsAllRows
+// verifies that limit<=0 (model.UnboundedPullLimit) performs a single unbounded
+// pull — no LIMIT clause, all matching rows returned, hasMore always false.
+// Mirrors the memory-channel contract in postgres_memory_test.go.
+func TestPostgresSessionRepository_ListSessionsSince_UnboundedLimitReturnsAllRows(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresSessionRepository(pool)
+
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	const totalRows = 150 // deliberately > model.MaxPullLimit (100)
+
+	for i := 0; i < totalRows; i++ {
+		_, err := pool.Exec(ctx, `
+			INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at, synced_at)
+			VALUES ($1, $2, 'unbounded-sess-test', '', 'dev', 'claude-code', $3, $3)`,
+			fmt.Sprintf("sess-unbounded-%d", i),
+			fmt.Sprintf("a9000000-0000-0000-0000-%012d", i),
+			base.Add(time.Duration(i)*time.Second))
+		require.NoError(t, err)
+	}
+
+	results, hasMore, err := repo.ListSessionsSince(ctx, "unbounded-sess-test", time.Time{}, model.PullCursor{}, model.UnboundedPullLimit)
+	require.NoError(t, err)
+	assert.False(t, hasMore, "unbounded pull must always report hasMore=false")
+	assert.Len(t, results, totalRows, "unbounded pull must return every matching row in a single page, uncapped by MaxPullLimit")
+}
+
+// ─── PR 2a fresh-review WARNING #2 — missing keyset pagination repository tests ──
+//
+// These tests were flagged as a gap by fresh-context review: ListSessionsSince's
+// keyset pagination (limit+1 trim, cursor walk, synced_at tiebreak) had no
+// direct repository-level coverage. Docker-gated; CI-deferred in environments
+// without a Docker daemon.
+
+// TestPostgresSessionRepository_ListSessionsSince_HasMoreTrimsToLimit verifies
+// that when more rows exist than the requested page size, ListSessionsSince
+// reports hasMore=true and trims the result to exactly `limit` rows.
+func TestPostgresSessionRepository_ListSessionsSince_HasMoreTrimsToLimit(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresSessionRepository(pool)
+
+	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	const totalRows = 5
+	const pageLimit = 3
+
+	for i := 0; i < totalRows; i++ {
+		_, err := pool.Exec(ctx, `
+			INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at, synced_at)
+			VALUES ($1, $2, 'trim-sess-test', '', 'dev', 'claude-code', $3, $3)`,
+			fmt.Sprintf("sess-trim-%d", i),
+			fmt.Sprintf("d1000000-0000-0000-0000-%012d", i),
+			base.Add(time.Duration(i)*time.Minute))
+		require.NoError(t, err)
+	}
+
+	results, hasMore, err := repo.ListSessionsSince(ctx, "trim-sess-test", time.Time{}, model.PullCursor{}, pageLimit)
+	require.NoError(t, err)
+	assert.True(t, hasMore, "5 rows with a page limit of 3 must report hasMore=true")
+	assert.Len(t, results, pageLimit, "result must be trimmed to exactly the requested limit, not limit+1")
+}
+
+// TestPostgresSessionRepository_ListSessionsSince_FullCursorWalkVisitsEveryRowOnce
+// walks the full backlog page by page using the returned cursor, and asserts no
+// row is skipped or duplicated across the walk, and the walk terminates.
+func TestPostgresSessionRepository_ListSessionsSince_FullCursorWalkVisitsEveryRowOnce(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresSessionRepository(pool)
+
+	base := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	const totalRows = 11
+	const pageLimit = 4
+
+	wantIDs := make(map[string]bool, totalRows)
+	for i := 0; i < totalRows; i++ {
+		id := fmt.Sprintf("sess-walk-%d", i)
+		wantIDs[id] = true
+		_, err := pool.Exec(ctx, `
+			INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at, synced_at)
+			VALUES ($1, $2, 'walk-sess-test', '', 'dev', 'claude-code', $3, $3)`,
+			id,
+			fmt.Sprintf("e1000000-0000-0000-0000-%012d", i),
+			base.Add(time.Duration(i)*time.Minute))
+		require.NoError(t, err)
+	}
+
+	seen := make(map[string]int, totalRows)
+	cursor := model.PullCursor{}
+	pages := 0
+	const maxPages = totalRows + 2 // safety bound so a broken cursor can't loop forever
+
+	for {
+		pages++
+		require.LessOrEqual(t, pages, maxPages, "cursor walk did not terminate — possible infinite loop")
+
+		page, hasMore, err := repo.ListSessionsSince(ctx, "walk-sess-test", time.Time{}, cursor, pageLimit)
+		require.NoError(t, err)
+
+		for _, s := range page {
+			seen[s.ID]++
+		}
+
+		if !hasMore || len(page) == 0 {
+			break
+		}
+
+		last := page[len(page)-1]
+		cursor = model.PullCursor{SyncedAt: last.SyncedAt, SyncID: last.SyncID}
+	}
+
+	assert.Len(t, seen, totalRows, "every row must be visited exactly once across the full walk")
+	for id := range wantIDs {
+		assert.Equal(t, 1, seen[id], "session id %s must appear exactly once (no skip, no duplicate)", id)
+	}
+}
+
+// TestPostgresSessionRepository_ListSessionsSince_TiebreakOnIdenticalSyncedAt
+// verifies that two rows sharing the exact same synced_at are ordered
+// deterministically by sync_id and that neither is skipped nor duplicated
+// across a page boundary.
+func TestPostgresSessionRepository_ListSessionsSince_TiebreakOnIdenticalSyncedAt(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresSessionRepository(pool)
+
+	tie := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	syncIDLow := "f1000000-0000-0000-0000-000000000001"
+	syncIDHigh := "f1000000-0000-0000-0000-000000000002"
+
+	// Insert out of sync_id order on purpose, both sharing the exact same synced_at.
+	for _, syncID := range []string{syncIDHigh, syncIDLow} {
+		_, err := pool.Exec(ctx, `
+			INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at, synced_at)
+			VALUES ($1, $2, 'tiebreak-sess-test', '', 'dev', 'claude-code', $3, $3)`,
+			"sess-tie-"+syncID, syncID, tie)
+		require.NoError(t, err)
+	}
+
+	// Page 1: limit=1 must return exactly the lower sync_id (tiebreak order) and
+	// report hasMore=true because a second row with the same synced_at remains.
+	page1, hasMore1, err := repo.ListSessionsSince(ctx, "tiebreak-sess-test", time.Time{}, model.PullCursor{}, 1)
+	require.NoError(t, err)
+	require.True(t, hasMore1, "second row with identical synced_at must not be silently dropped")
+	require.Len(t, page1, 1)
+	assert.Equal(t, syncIDLow, page1[0].SyncID, "tiebreak must order the lower sync_id first")
+
+	// Page 2: resume from page 1's cursor — must return exactly the remaining row,
+	// not skip it and not repeat page 1's row.
+	cursor := model.PullCursor{SyncedAt: page1[0].SyncedAt, SyncID: page1[0].SyncID}
+	page2, hasMore2, err := repo.ListSessionsSince(ctx, "tiebreak-sess-test", time.Time{}, cursor, 1)
+	require.NoError(t, err)
+	assert.False(t, hasMore2, "backlog is fully drained after the second row")
+	require.Len(t, page2, 1)
+	assert.Equal(t, syncIDHigh, page2[0].SyncID, "second page must return the remaining tied row, not repeat or skip it")
 }
 
 // R3-FIX-1 — UpsertSession on a manual-save-* row created lazily with dev_id='unknown'
