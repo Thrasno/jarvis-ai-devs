@@ -22,8 +22,15 @@ import (
 )
 
 type scriptedSyncer struct {
-	mu         sync.Mutex
-	result     *hivesync.Result
+	mu     sync.Mutex
+	result *hivesync.Result
+	// outcome, when its State is non-zero-value-populated by the test (i.e.
+	// the test explicitly sets a field), is returned as-is instead of the
+	// {BatchesDone: 1, State: DrainFullySynced} default. Tests exercising the
+	// drain_state/drain_reason/error mem_sync JSON fields (PR 3, task 3.2) set
+	// this directly via outcomeSet.
+	outcome    hivesync.DrainOutcome
+	outcomeSet bool
 	err        error
 	project    string
 	calls      int
@@ -46,10 +53,14 @@ func (s *scriptedSyncer) Drain(_ context.Context, _ string, policy hivesync.Trig
 	defer s.mu.Unlock()
 	s.drainCalls++
 	s.lastPolicy = policy
-	if s.result != nil {
-		return s.result, hivesync.DrainOutcome{BatchesDone: 1, State: hivesync.DrainFullySynced}, s.err
+	outcome := hivesync.DrainOutcome{BatchesDone: 1, State: hivesync.DrainFullySynced}
+	if s.outcomeSet {
+		outcome = s.outcome
 	}
-	return &hivesync.Result{Project: s.project}, hivesync.DrainOutcome{BatchesDone: 1, State: hivesync.DrainFullySynced}, s.err
+	if s.result != nil {
+		return s.result, outcome, s.err
+	}
+	return &hivesync.Result{Project: s.project}, outcome, s.err
 }
 
 func (s *scriptedSyncer) callCount() int {
@@ -1343,6 +1354,182 @@ func TestMemSyncHandler_UsesDrainManual(t *testing.T) {
 	}
 	if got := body["status"]; got != "ok" {
 		t.Fatalf("status = %v, want ok", got)
+	}
+}
+
+// TestMemSyncHandler_JSONIncludesDrainState pins PR 3 task 3.2: the mem_sync
+// success response must stop discarding the DrainOutcome and surface
+// drain_state/drain_reason/batches_done/batches_remaining/remaining_push/error
+// alongside every existing field, unchanged.
+func TestMemSyncHandler_JSONIncludesDrainState(t *testing.T) {
+	t.Parallel()
+
+	syncer := &scriptedSyncer{
+		result: &hivesync.Result{
+			Pushed:    2,
+			Pulled:    1,
+			Conflicts: 0,
+			Project:   "test-proj",
+		},
+		outcomeSet: true,
+		outcome: hivesync.DrainOutcome{
+			State:            hivesync.DrainFullySynced,
+			Reason:           hivesync.DrainReasonNone,
+			BatchesDone:      3,
+			BatchesRemaining: -1,
+			RemainingPush:    0,
+		},
+	}
+	session := connectTestServerWithSync(t, &mockStore{}, nil, syncer)
+
+	res := callTool(t, session, "mem_sync", map[string]any{"project": "test-proj"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+
+	body := decodeJSONResponse(t, res)
+
+	// Existing fields must remain intact.
+	if got := body["pushed"]; got != float64(2) {
+		t.Fatalf("pushed = %v, want 2", got)
+	}
+	if got := body["pulled"]; got != float64(1) {
+		t.Fatalf("pulled = %v, want 1", got)
+	}
+	if got := body["conflicts"]; got != float64(0) {
+		t.Fatalf("conflicts = %v, want 0", got)
+	}
+	if got := body["project"]; got != "test-proj" {
+		t.Fatalf("project = %v, want test-proj", got)
+	}
+	if got := body["status"]; got != "ok" {
+		t.Fatalf("status = %v, want ok", got)
+	}
+
+	// New drain fields.
+	if got := body["drain_state"]; got != "fully_synced" {
+		t.Fatalf("drain_state = %v, want fully_synced", got)
+	}
+	if got := body["drain_reason"]; got != "" {
+		t.Fatalf("drain_reason = %v, want empty string", got)
+	}
+	if got := body["batches_done"]; got != float64(3) {
+		t.Fatalf("batches_done = %v, want 3", got)
+	}
+	if got := body["batches_remaining"]; got != float64(-1) {
+		t.Fatalf("batches_remaining = %v, want -1", got)
+	}
+	if got := body["remaining_push"]; got != float64(0) {
+		t.Fatalf("remaining_push = %v, want 0", got)
+	}
+	if got := body["error"]; got != "" {
+		t.Fatalf("error = %v, want empty string", got)
+	}
+}
+
+// TestMemSyncHandler_ExpectedPendingIsNotAToolError pins PR 3 task 3.2: an
+// ExpectedPending drain outcome (either reason) must still be a SUCCESS tool
+// response — mem_sync must not turn a normal bounded remainder into a
+// top-level tool error.
+func TestMemSyncHandler_ExpectedPendingIsNotAToolError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		reason     hivesync.DrainReason
+		wantReason string
+	}{
+		{name: "auto-single-step", reason: hivesync.DrainReasonAutoSingleStep, wantReason: "auto-single-step"},
+		{name: "no-progress", reason: hivesync.DrainReasonNoProgress, wantReason: "no-progress"},
+		{name: "iteration-cap", reason: hivesync.DrainReasonIterationCap, wantReason: "iteration-cap"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			syncer := &scriptedSyncer{
+				result:     &hivesync.Result{Pushed: 1, Pulled: 0, Project: "test-proj"},
+				outcomeSet: true,
+				outcome: hivesync.DrainOutcome{
+					State:            hivesync.DrainExpectedPending,
+					Reason:           tt.reason,
+					BatchesDone:      1,
+					BatchesRemaining: -1,
+					RemainingPush:    5,
+				},
+			}
+			session := connectTestServerWithSync(t, &mockStore{}, nil, syncer)
+
+			res := callTool(t, session, "mem_sync", map[string]any{"project": "test-proj"})
+			if res.IsError {
+				t.Fatalf("ExpectedPending must not be a tool-level error: %s", textContent(t, res))
+			}
+
+			body := decodeJSONResponse(t, res)
+			if got := body["status"]; got != "ok" {
+				t.Fatalf("status = %v, want ok", got)
+			}
+			if got := body["drain_state"]; got != "expected_pending" {
+				t.Fatalf("drain_state = %v, want expected_pending", got)
+			}
+			if got := body["drain_reason"]; got != tt.wantReason {
+				t.Fatalf("drain_reason = %v, want %q", got, tt.wantReason)
+			}
+			if got := body["remaining_push"]; got != float64(5) {
+				t.Fatalf("remaining_push = %v, want 5", got)
+			}
+			if got := body["error"]; got != "" {
+				t.Fatalf("error = %v, want empty string for ExpectedPending", got)
+			}
+		})
+	}
+}
+
+// TestMemSyncHandler_DegradedFailureSurfacesViaSuccessPath pins PR 3 task 3.2:
+// a DrainDegradedFailure outcome that Drain returns WITHOUT a top-level error
+// (partial progress case) must surface drain_state=degraded_failure and a
+// populated error field via the success JSON path, so the caller sees it
+// without polling.
+func TestMemSyncHandler_DegradedFailureSurfacesViaSuccessPath(t *testing.T) {
+	t.Parallel()
+
+	syncer := &scriptedSyncer{
+		result:     &hivesync.Result{Pushed: 1, Pulled: 0, Project: "test-proj"},
+		outcomeSet: true,
+		outcome: hivesync.DrainOutcome{
+			State:            hivesync.DrainDegradedFailure,
+			Reason:           hivesync.DrainReasonNone,
+			BatchesDone:      2,
+			BatchesRemaining: -1,
+			RemainingPush:    3,
+			Err:              errors.New("sync con servidor: boom"),
+		},
+		// err is intentionally nil: this models Drain's "result != nil AND err
+		// != nil" degraded-but-partial-progress branch where syncer.Drain still
+		// returns a non-nil top-level error. mem_sync's existing error branches
+		// (ErrSyncInFlight/BackoffError/generic) take priority when err is
+		// non-nil — see TestMemSyncHandler_StillHandlesInFlightAndBackoff — so
+		// this test exercises the success-path surfacing when the tool receives
+		// a nil top-level err alongside a DrainDegradedFailure outcome, which
+		// happens for e.g. a caller that treats a stale/last-known outcome as
+		// non-fatal for the immediate response. See handler doc for the exact
+		// contract.
+	}
+	session := connectTestServerWithSync(t, &mockStore{}, nil, syncer)
+
+	res := callTool(t, session, "mem_sync", map[string]any{"project": "test-proj"})
+	if res.IsError {
+		t.Fatalf("DegradedFailure without a top-level err must surface via the success JSON path, not a tool error: %s", textContent(t, res))
+	}
+
+	body := decodeJSONResponse(t, res)
+	if got := body["status"]; got != "ok" {
+		t.Fatalf("status = %v, want ok", got)
+	}
+	if got := body["drain_state"]; got != "degraded_failure" {
+		t.Fatalf("drain_state = %v, want degraded_failure", got)
+	}
+	if got := body["error"]; got != "sync con servidor: boom" {
+		t.Fatalf("error = %v, want the outcome.Err text", got)
 	}
 }
 
