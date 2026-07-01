@@ -225,6 +225,34 @@ func (d *DB) MarkSynced(syncID string, at time.Time) error {
 	return nil
 }
 
+// MarkMemoriesSyncedBySyncID marks legacy memory rows as synced by
+// correlating their sync_id, mirroring MarkMutationsSynced. This is used to
+// ack legacy memories once the server has durably confirmed the
+// corresponding mutation in mutation-sync-v2 mode, so GetUnsynced stops
+// re-emitting them.
+func (d *DB) MarkMemoriesSyncedBySyncID(syncIDs []string, at time.Time) error {
+	if len(syncIDs) == 0 {
+		return nil
+	}
+	tx, err := d.sqlDB.Begin()
+	if err != nil {
+		return fmt.Errorf("begin mark memories synced: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	formatted := at.UTC().Format("2006-01-02 15:04:05")
+	for _, syncID := range syncIDs {
+		result, err := tx.Exec(`UPDATE memories SET synced_at = ? WHERE sync_id = ?`, formatted, syncID)
+		if err != nil {
+			return fmt.Errorf("mark memory synced %s: %w", syncID, err)
+		}
+		if n, _ := result.RowsAffected(); n == 0 {
+			logger.Log.Printf("warn: MarkMemoriesSyncedBySyncID: no row found for sync_id %s", syncID)
+		}
+	}
+	return tx.Commit()
+}
+
 func (d *DB) GetPendingMutations(project string, limit int) ([]MutationEnvelope, error) {
 	if limit <= 0 {
 		limit = 100
