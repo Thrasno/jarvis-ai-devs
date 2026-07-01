@@ -20,14 +20,24 @@ type HealthSummaryResponse struct {
 	Reachable           bool       `json:"reachable"`
 	AuthOK              bool       `json:"auth_ok"`
 	AutoSync            bool       `json:"auto_sync"`
-	LastSuccessAt       *time.Time `json:"last_success_at"`       // null when zero
-	LastFailureAt       *time.Time `json:"last_failure_at"`       // null when zero
-	BackoffUntil        *time.Time `json:"backoff_until"`         // null when zero
+	LastSuccessAt       *time.Time `json:"last_success_at"` // null when zero
+	LastFailureAt       *time.Time `json:"last_failure_at"` // null when zero
+	BackoffUntil        *time.Time `json:"backoff_until"`   // null when zero
 	LastError           string     `json:"last_error"`
 	ConsecutiveFailures int        `json:"consecutive_failures"`
 	UnsyncedMemories    int        `json:"unsynced_memories"`
 	UnsyncedPrompts     int        `json:"unsynced_prompts"`
 	UnsyncedSessions    int        `json:"unsynced_sessions"`
+
+	// LastDrainState/LastDrainReason/LastDrainRemaining are ADDITIVE fields
+	// (PR 3, task 3.3, hive-sync-batched-drain) surfacing the most recently
+	// persisted Drain outcome. omitempty so an older daemon DB / a project
+	// that never ran Drain does not add noise to the response. Do NOT
+	// rename/remove/reorder the existing fields above — this DTO is frozen
+	// for the TUI (PR 1 note).
+	LastDrainState     string `json:"last_drain_state,omitempty"`
+	LastDrainReason    string `json:"last_drain_reason,omitempty"`
+	LastDrainRemaining int    `json:"last_drain_remaining,omitempty"`
 }
 
 // HealthServiceAdapter adapts a sync.HealthServicer to the httpapi.HealthService
@@ -63,6 +73,9 @@ func healthSummaryToResponse(s hivesync.HealthSummary) HealthSummaryResponse {
 		UnsyncedMemories:    s.UnsyncedMemories,
 		UnsyncedPrompts:     s.UnsyncedPrompts,
 		UnsyncedSessions:    s.UnsyncedSessions,
+		LastDrainState:      s.LastDrainState,
+		LastDrainReason:     s.LastDrainReason,
+		LastDrainRemaining:  s.LastDrainRemaining,
 	}
 	if !s.LastSuccessAt.IsZero() {
 		t := s.LastSuccessAt.UTC()
