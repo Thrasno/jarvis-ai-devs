@@ -13,6 +13,10 @@ func (runtimeTestSyncer) Sync(context.Context, string) (*hivesync.Result, error)
 	return &hivesync.Result{}, nil
 }
 
+func (runtimeTestSyncer) Drain(context.Context, string, hivesync.TriggerPolicy) (*hivesync.Result, hivesync.DrainOutcome, error) {
+	return &hivesync.Result{}, hivesync.DrainOutcome{Batches: 1, State: hivesync.DrainFullySynced}, nil
+}
+
 func TestSyncRuntimeReloadsWhenConfigFingerprintChanges(t *testing.T) {
 	configs := []*hivesync.Config{
 		{APIURL: "https://one.example.com", Email: "one@example.com", Password: "one", AutoSync: true},

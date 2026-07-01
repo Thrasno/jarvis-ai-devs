@@ -44,6 +44,7 @@ type MemoryStore interface {
 // *hivesync.Syncer la implementa; nil = sync no configurado.
 type SyncRunner interface {
 	Sync(ctx context.Context, project string) (*hivesync.Result, error)
+	Drain(ctx context.Context, project string, policy hivesync.TriggerPolicy) (*hivesync.Result, hivesync.DrainOutcome, error)
 }
 
 // NewServer crea y configura el servidor MCP con todas las herramientas Hive.
