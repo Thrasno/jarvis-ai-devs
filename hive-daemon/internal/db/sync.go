@@ -211,12 +211,19 @@ WHERE synced_at IS NULL AND sync_id != '' AND deleted_at IS NULL`
 }
 
 // GetUnsyncedPage returns at most `limit` memories that have not yet been
-// pushed to the server (synced_at IS NULL), ordered by created_at ASC. This
-// is the paged counterpart to GetUnsynced (PR 1b-iii, hive-sync-batched-drain):
-// syncBatchStep uses this instead of the unpaged getter so a single push
-// batch never exceeds syncPageSize, while ORDER BY created_at ASC keeps
-// paging stable across repeated calls as earlier rows get marked synced.
-// GetUnsynced itself is left untouched for any other existing callers.
+// pushed to the server (synced_at IS NULL), ordered by created_at ASC with
+// id ASC as a secondary tiebreaker. This is the paged counterpart to
+// GetUnsynced (PR 1b-iii, hive-sync-batched-drain): syncBatchStep uses this
+// instead of the unpaged getter so a single push batch never exceeds
+// syncPageSize, while the ORDER BY keeps paging stable across repeated calls
+// as earlier rows get marked synced. created_at has only second-level
+// granularity, and this table is also served by
+// idx_memories_project_active (project, created_at DESC), so without the
+// secondary id ASC key a created_at tie can be returned in descending id
+// order instead of oldest-first, letting rows straddling a page boundary be
+// skipped or duplicated as the synced_at IS NULL filter shifts between
+// fetches. GetUnsynced itself is left untouched for any other existing
+// callers.
 func (d *DB) GetUnsyncedPage(project string, limit int) ([]*models.Memory, error) {
 	if limit <= 0 {
 		limit = 100
@@ -232,7 +239,7 @@ WHERE synced_at IS NULL AND sync_id != '' AND deleted_at IS NULL`
 		q += " AND project = ?"
 		args = append(args, project)
 	}
-	q += " ORDER BY created_at ASC LIMIT ?"
+	q += " ORDER BY created_at ASC, id ASC LIMIT ?"
 	args = append(args, limit)
 
 	rows, err := d.sqlDB.Query(q, args...)

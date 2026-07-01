@@ -154,14 +154,20 @@ ORDER BY created_at ASC`
 }
 
 // GetUnsyncedPromptsPage returns at most `limit` unsynced prompts for the
-// project, ordered by created_at ASC (oldest first). This is the paged
-// counterpart to GetUnsyncedPrompts (PR 1b-iii, hive-sync-batched-drain):
-// syncBatchStep uses this instead of the unpaged getter so a single push
-// batch never exceeds syncPageSize, while ORDER BY created_at ASC keeps
-// paging stable across repeated calls as earlier rows get marked synced.
-// GetUnsyncedPrompts itself is left untouched for any other existing
-// callers. Same sync_id = "" exclusion as GetUnsyncedPrompts (rows that
-// predate UUID generation are never queued for sync).
+// project, ordered by created_at ASC (oldest first) with id ASC as a
+// secondary tiebreaker. This is the paged counterpart to GetUnsyncedPrompts
+// (PR 1b-iii, hive-sync-batched-drain): syncBatchStep uses this instead of
+// the unpaged getter so a single push batch never exceeds syncPageSize,
+// while the ORDER BY keeps paging stable across repeated calls as earlier
+// rows get marked synced. created_at has only second-level granularity, and
+// this table is also served by idx_user_prompts_project_created (project,
+// created_at DESC), so without the secondary id ASC key a created_at tie
+// can be returned in descending id order instead of oldest-first, letting
+// rows straddling a page boundary be skipped or duplicated as the
+// synced_at IS NULL filter shifts between fetches. GetUnsyncedPrompts
+// itself is left untouched for any other existing callers. Same
+// sync_id = "" exclusion as GetUnsyncedPrompts (rows that predate UUID
+// generation are never queued for sync).
 func (d *DB) GetUnsyncedPromptsPage(ctx context.Context, project string, limit int) ([]*models.Prompt, error) {
 	if project == "" {
 		return nil, nil
@@ -173,7 +179,7 @@ func (d *DB) GetUnsyncedPromptsPage(ctx context.Context, project string, limit i
 SELECT id, sync_id, project, session_id, content, created_at, synced_at
 FROM user_prompts
 WHERE project = ? AND synced_at IS NULL AND sync_id != ''
-ORDER BY created_at ASC LIMIT ?`
+ORDER BY created_at ASC, id ASC LIMIT ?`
 
 	rows, err := d.sqlDB.QueryContext(ctx, q, project, limit)
 	if err != nil {

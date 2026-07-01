@@ -2167,3 +2167,166 @@ INSERT INTO user_prompts (sync_id, project, content, created_at) VALUES (?, 'pag
 	}
 	assert.Equal(t, wantSyncIDs[:limit], gotSyncIDs, "page must return the oldest rows first (created_at ASC)")
 }
+
+// TestGetUnsyncedPage_SameSecondCreatedAt_NoSkipOrDuplicateAcrossPages pins
+// the fix for the fresh-review WARNING on PR 1b-iii: ORDER BY created_at ASC
+// alone has no deterministic order for rows created within the same second
+// (created_at has second-level granularity). Worse, `memories` carries
+// `idx_memories_project_active ON memories(project, created_at DESC) WHERE
+// deleted_at IS NULL`, so SQLite's query planner serves this exact WHERE
+// clause via that DESC index and, on a created_at tie, returns rows in
+// descending id order — the opposite of oldest-first. A drain loop that
+// pages + marks-synced between fetches then risks skipping or duplicating
+// rows that straddle a page boundary. GetUnsyncedPage must add a stable
+// secondary sort key (id ASC) so paging is deterministic (oldest id first)
+// even when created_at ties.
+func TestGetUnsyncedPage_SameSecondCreatedAt_NoSkipOrDuplicateAcrossPages(t *testing.T) {
+	d := setupTestDB(t)
+	t.Cleanup(func() { require.NoError(t, d.Close()) })
+
+	_, err := d.EnsureManualSaveSession("tie-project")
+	require.NoError(t, err)
+
+	const total = 5
+	const pageSize = 2
+	sameCreatedAt := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02 15:04:05")
+	wantSyncIDs := make([]string, 0, total)
+	for i := 0; i < total; i++ {
+		syncID := fmt.Sprintf("tie-sync-%d", i)
+		_, err := d.sqlDB.Exec(`
+INSERT INTO memories (sync_id, project, category, title, content, created_by, session_id, created_at, updated_at)
+VALUES (?, 'tie-project', 'test', 'Test Memory', 'content', 'test-user', 'manual-save-tie-project', ?, ?)`,
+			syncID, sameCreatedAt, sameCreatedAt,
+		)
+		require.NoError(t, err)
+		wantSyncIDs = append(wantSyncIDs, syncID)
+	}
+
+	seen := make(map[string]int)
+	var seenOrder []string
+	for iterations := 0; iterations < total+1; iterations++ {
+		page, err := d.GetUnsyncedPage("tie-project", pageSize)
+		require.NoError(t, err)
+		if len(page) == 0 {
+			break
+		}
+		for _, mem := range page {
+			seen[mem.SyncID]++
+			seenOrder = append(seenOrder, mem.SyncID)
+			require.NoError(t, d.MarkSynced(mem.SyncID, time.Now()))
+		}
+	}
+
+	assert.Len(t, seen, total, "every distinct row must be seen at least once across pages; got sequence %v", seenOrder)
+	for _, syncID := range wantSyncIDs {
+		assert.Equal(t, 1, seen[syncID], "sync_id %s must be returned exactly once across pages, got %d times (sequence %v)", syncID, seen[syncID], seenOrder)
+	}
+	assert.Equal(t, wantSyncIDs, seenOrder, "with a created_at tie, GetUnsyncedPage must still page oldest-id-first deterministically; got %v", seenOrder)
+}
+
+// TestGetUnsyncedPage_SameSecondCreatedAt_TieBreaksByIDAscending isolates the
+// planner-driven reversal directly: memories.idx_memories_project_active
+// forces ORDER BY created_at ASC to be served via a `created_at DESC` index,
+// so a created_at tie alone (without a secondary id ASC key) surfaces rows
+// in descending id order rather than insertion order. This documents why a
+// secondary sort key is required, independent of the paging/marking loop
+// above.
+func TestGetUnsyncedPage_SameSecondCreatedAt_TieBreaksByIDAscending(t *testing.T) {
+	d := setupTestDB(t)
+	t.Cleanup(func() { require.NoError(t, d.Close()) })
+
+	_, err := d.EnsureManualSaveSession("tie-order-project")
+	require.NoError(t, err)
+
+	const total = 4
+	sameCreatedAt := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02 15:04:05")
+	wantSyncIDs := make([]string, 0, total)
+	for i := 0; i < total; i++ {
+		syncID := fmt.Sprintf("tie-order-sync-%d", i)
+		_, err := d.sqlDB.Exec(`
+INSERT INTO memories (sync_id, project, category, title, content, created_by, session_id, created_at, updated_at)
+VALUES (?, 'tie-order-project', 'test', 'Test Memory', 'content', 'test-user', 'manual-save-tie-order-project', ?, ?)`,
+			syncID, sameCreatedAt, sameCreatedAt,
+		)
+		require.NoError(t, err)
+		wantSyncIDs = append(wantSyncIDs, syncID)
+	}
+
+	got, err := d.GetUnsyncedPage("tie-order-project", total)
+	require.NoError(t, err)
+	require.Len(t, got, total)
+
+	gotSyncIDs := make([]string, 0, total)
+	for _, mem := range got {
+		gotSyncIDs = append(gotSyncIDs, mem.SyncID)
+	}
+	assert.Equal(t, wantSyncIDs, gotSyncIDs, "rows with a created_at tie must still come back oldest-id-first (id ASC secondary key)")
+}
+
+// TestGetUnsyncedPromptsPage_SameSecondCreatedAt_TieBreaksByIDAscending
+// mirrors TestGetUnsyncedPage_SameSecondCreatedAt_TieBreaksByIDAscending for
+// prompts: user_prompts carries idx_user_prompts_project_created (project,
+// created_at DESC), so a created_at tie without a secondary id ASC key can
+// be served in descending id order by that index.
+func TestGetUnsyncedPromptsPage_SameSecondCreatedAt_TieBreaksByIDAscending(t *testing.T) {
+	d := setupTestDB(t)
+	t.Cleanup(func() { require.NoError(t, d.Close()) })
+	ctx := context.Background()
+
+	const total = 4
+	sameCreatedAt := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02 15:04:05")
+	wantSyncIDs := make([]string, 0, total)
+	for i := 0; i < total; i++ {
+		syncID := fmt.Sprintf("tie-prompt-sync-%d", i)
+		_, err := d.sqlDB.ExecContext(ctx, `
+INSERT INTO user_prompts (sync_id, project, content, created_at) VALUES (?, 'tie-prompt-project', 'hi', ?)`,
+			syncID, sameCreatedAt,
+		)
+		require.NoError(t, err)
+		wantSyncIDs = append(wantSyncIDs, syncID)
+	}
+
+	got, err := d.GetUnsyncedPromptsPage(ctx, "tie-prompt-project", total)
+	require.NoError(t, err)
+	require.Len(t, got, total)
+
+	gotSyncIDs := make([]string, 0, total)
+	for _, p := range got {
+		gotSyncIDs = append(gotSyncIDs, p.SyncID)
+	}
+	assert.Equal(t, wantSyncIDs, gotSyncIDs, "prompts with a created_at tie must still come back oldest-id-first (id ASC secondary key)")
+}
+
+// TestListUnsyncedSessionsPage_SameSecondCreatedAt_TieBreaksByIDAscending
+// mirrors TestGetUnsyncedPage_SameSecondCreatedAt_TieBreaksByIDAscending for
+// sessions, pinning that a created_at tie is still resolved oldest-id-first
+// via the id ASC secondary key.
+func TestListUnsyncedSessionsPage_SameSecondCreatedAt_TieBreaksByIDAscending(t *testing.T) {
+	d := setupTestDB(t)
+	t.Cleanup(func() { require.NoError(t, d.Close()) })
+
+	const total = 4
+	sameCreatedAt := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02 15:04:05")
+	wantIDs := make([]string, 0, total)
+	for i := 0; i < total; i++ {
+		id := fmt.Sprintf("tie-sess-%d", i)
+		syncID := fmt.Sprintf("tie-sess-sync-%d", i)
+		_, err := d.sqlDB.Exec(`
+INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at, created_at, updated_at)
+VALUES (?, ?, 'tie-sess-project', '', 'test', 'test', ?, ?, ?)`,
+			id, syncID, sameCreatedAt, sameCreatedAt, sameCreatedAt,
+		)
+		require.NoError(t, err)
+		wantIDs = append(wantIDs, id)
+	}
+
+	got, err := d.ListUnsyncedSessionsPage("tie-sess-project", total)
+	require.NoError(t, err)
+	require.Len(t, got, total)
+
+	gotIDs := make([]string, 0, total)
+	for _, sess := range got {
+		gotIDs = append(gotIDs, sess.ID)
+	}
+	assert.Equal(t, wantIDs, gotIDs, "sessions with a created_at tie must still come back oldest-id-first (id ASC secondary key)")
+}
