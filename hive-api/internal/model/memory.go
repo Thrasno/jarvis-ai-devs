@@ -115,6 +115,42 @@ type MutationCursor struct {
 	EventID  string `json:"event_id"`
 }
 
+// PullCursor is the keyset pagination cursor for the legacy (row-state) pull
+// channels — pulled memories and pulled sessions. It mirrors the shape of
+// MutationCursor but keys off (synced_at, sync_id), which is the ordering
+// column pair used by PullSince and ListSessionsSince.
+//
+// SyncedAt + SyncID together form a strictly increasing, gap-free key when
+// combined with `ORDER BY synced_at ASC, sync_id ASC` — synced_at alone is not
+// unique enough to resume a page boundary when multiple rows share a timestamp.
+type PullCursor struct {
+	SyncedAt time.Time `json:"synced_at"`
+	SyncID   string    `json:"sync_id"`
+}
+
+// IsZero reports whether the cursor has no position yet (start of the pull).
+func (c PullCursor) IsZero() bool {
+	return c.SyncedAt.IsZero() && c.SyncID == ""
+}
+
+// DefaultPullLimit is used when the client omits pull_limit or sends 0.
+const DefaultPullLimit = 100
+
+// MaxPullLimit is the upper bound a client's pull_limit is clamped to.
+const MaxPullLimit = 100
+
+// ClampPullLimit normalizes a client-supplied pull_limit to [1, MaxPullLimit],
+// defaulting to DefaultPullLimit when limit is 0 (absent/omitted) or negative.
+func ClampPullLimit(limit int) int {
+	if limit <= 0 {
+		return DefaultPullLimit
+	}
+	if limit > MaxPullLimit {
+		return MaxPullLimit
+	}
+	return limit
+}
+
 type TombstonePayload struct {
 	DeletedAt time.Time `json:"deleted_at"`
 	DeletedBy string    `json:"deleted_by,omitempty"`
