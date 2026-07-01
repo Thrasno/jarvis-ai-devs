@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,6 +27,7 @@ type mockSyncStore struct {
 	lastSync                      time.Time
 	jwt                           string
 	markedSynced                  []string
+	markSyncedErr                 error
 	markedMemoriesSyncedBySyncID  []string
 	markMemoriesSyncedBySyncIDErr error
 	savedFromRemote               []*models.Memory
@@ -65,6 +67,14 @@ type mockSyncStore struct {
 	// sequence is exhausted. getUnsyncedCalls counts invocations.
 	unsyncedSequence [][]*models.Memory
 	getUnsyncedCalls int
+
+	// getUnsyncedPageLimits/listUnsyncedSessionsPageLimits/
+	// getUnsyncedPromptsPageLimits record the `limit` argument passed on every
+	// GetUnsyncedPage/ListUnsyncedSessionsPage/GetUnsyncedPromptsPage call —
+	// used by PR 1b-iii tests to assert syncBatchStep pages at syncPageSize.
+	getUnsyncedPageLimits          []int
+	listUnsyncedSessionsPageLimits []int
+	getUnsyncedPromptsPageLimits   []int
 }
 
 func (m *mockSyncStore) GetUnsynced(project string) ([]*models.Memory, error) {
@@ -82,9 +92,34 @@ func (m *mockSyncStore) GetUnsynced(project string) ([]*models.Memory, error) {
 	return m.unsynced, nil
 }
 
+// GetUnsyncedPage reuses the same scripting fields as GetUnsynced
+// (unsynced/unsyncedSequence) — the mock does not model real pagination
+// semantics (that is covered by the real *db.DB paging tests in
+// internal/db/sync_test.go); it only needs to hand the Drain loop whatever
+// backlog a test script says is left. It additionally truncates the
+// returned slice to `limit` when the stored/scripted slice is longer, so
+// tests can assert that syncBatchStep never asks the store to violate the
+// page cap.
+func (m *mockSyncStore) GetUnsyncedPage(project string, limit int) ([]*models.Memory, error) {
+	m.mu.Lock()
+	m.getUnsyncedPageLimits = append(m.getUnsyncedPageLimits, limit)
+	m.mu.Unlock()
+	items, err := m.GetUnsynced(project)
+	if err != nil {
+		return nil, err
+	}
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
+}
+
 func (m *mockSyncStore) MarkSynced(syncID string, at time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.markSyncedErr != nil {
+		return m.markSyncedErr
+	}
 	m.markedSynced = append(m.markedSynced, syncID)
 	return nil
 }
@@ -187,6 +222,23 @@ func (m *mockSyncStore) GetUnsyncedPrompts(ctx context.Context, project string) 
 	return m.unsyncedPrompts, m.unsyncedPromptsErr
 }
 
+// GetUnsyncedPromptsPage mirrors GetUnsyncedPage's approach: reuse the
+// existing unsyncedPrompts/unsyncedPromptsErr scripting fields, truncated to
+// limit.
+func (m *mockSyncStore) GetUnsyncedPromptsPage(ctx context.Context, project string, limit int) ([]*models.Prompt, error) {
+	m.mu.Lock()
+	m.getUnsyncedPromptsPageLimits = append(m.getUnsyncedPromptsPageLimits, limit)
+	m.mu.Unlock()
+	items, err := m.GetUnsyncedPrompts(ctx, project)
+	if err != nil {
+		return nil, err
+	}
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
+}
+
 func (m *mockSyncStore) MarkPromptSynced(ctx context.Context, syncID string, at time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -198,6 +250,23 @@ func (m *mockSyncStore) ListUnsyncedSessions(project string) ([]*models.Session,
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.unsyncedSessions, m.unsyncedSessionsErr
+}
+
+// ListUnsyncedSessionsPage mirrors GetUnsyncedPage's approach: reuse the
+// existing unsyncedSessions/unsyncedSessionsErr scripting fields, truncated
+// to limit.
+func (m *mockSyncStore) ListUnsyncedSessionsPage(project string, limit int) ([]*models.Session, error) {
+	m.mu.Lock()
+	m.listUnsyncedSessionsPageLimits = append(m.listUnsyncedSessionsPageLimits, limit)
+	m.mu.Unlock()
+	items, err := m.ListUnsyncedSessions(project)
+	if err != nil {
+		return nil, err
+	}
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
 }
 
 func (m *mockSyncStore) MarkSessionSynced(id string, at time.Time) error {
@@ -2157,18 +2226,24 @@ func TestDrain_TriggerManual_HoldsReservationForEntireRun(t *testing.T) {
 	assert.Empty(t, syncer.inFlight, "release must run after Drain finishes")
 }
 
-// TestDrain_TerminatesOnNoProgress pins the T1b-ii.5 termination guard: if an
-// iteration does not shrink the backlog AND the mutation cursor does not
-// advance, Drain must stop within bounded iterations instead of spinning
-// forever, and classify the result as expected-pending.
+// TestDrain_TerminatesOnNoProgress pins the T1b-ii.5 termination guard
+// (revised for PR 1b-iii, see batchResult.RecordsMarkedSynced): if a batch
+// fetches pending work but durably marks NOTHING synced AND the mutation
+// cursor does not advance, Drain must stop within bounded iterations instead
+// of spinning forever, and classify the result as expected-pending.
+//
+// This models a permanent MarkSynced failure (e.g. a DB constraint issue or
+// a persistent server-side rejection that never lets the store durably
+// confirm the row) — NOT a step error, since a step error takes the
+// DrainDegradedFailure path instead. The backlog is scripted as a fixed,
+// never-shrinking single unsynced memory: with markSyncedErr always set,
+// RecordsMarkedSynced is 0 on every batch, so the guard must trip.
 func TestDrain_TerminatesOnNoProgress(t *testing.T) {
 	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
-	// The backlog never shrinks (same single unsynced memory forever) and the
-	// server never advances the mutation cursor — this models a permanent
-	// server-side conflict that keeps re-queuing the same item.
 	store := &mockSyncStore{
-		jwt:      "valid-token",
-		unsynced: []*models.Memory{createTestSyncMemory("stuck-memory")},
+		jwt:           "valid-token",
+		unsynced:      []*models.Memory{createTestSyncMemory("stuck-memory")},
+		markSyncedErr: errors.New("persistent mark-synced failure"),
 	}
 
 	var syncCalls atomic.Int32
@@ -2270,4 +2345,281 @@ func TestDrain_TriggerManual_BackoffAndAttemptRecordedOnceAtTop(t *testing.T) {
 	assert.Equal(t, 3, outcome.Batches, "sanity check: the loop actually ran multiple batches")
 	assert.Len(t, store.recordAttemptCalls, 1, "RecordSyncAttempt must run once per Drain call, not once per batch")
 	assert.Len(t, store.recordSuccessCalls, 1, "RecordSyncSuccess must run once at the end of a successful Drain")
+}
+
+// withSyncPageSize temporarily overrides the package-level syncPageSize var
+// for the duration of a test and restores it on cleanup — PR 1b-iii tests use
+// a small page size so a handful of scripted rows is enough to exercise
+// multi-batch paging without needing hundreds of fixtures.
+func withSyncPageSize(t *testing.T, size int) {
+	t.Helper()
+	original := syncPageSize
+	syncPageSize = size
+	t.Cleanup(func() { syncPageSize = original })
+}
+
+// TestSyncBatchStep_PagesFetchesAtSyncPageSize pins the PR 1b-iii page-cap
+// contract: syncBatchStep must call the paged getters (GetUnsyncedPage,
+// ListUnsyncedSessionsPage, GetUnsyncedPromptsPage) with the current
+// syncPageSize as the limit, not the unbounded unpaged variants.
+func TestSyncBatchStep_PagesFetchesAtSyncPageSize(t *testing.T) {
+	withSyncPageSize(t, 2)
+
+	store := &mockSyncStore{
+		jwt:              "valid-token",
+		unsynced:         []*models.Memory{createTestSyncMemory("m-1"), createTestSyncMemory("m-2"), createTestSyncMemory("m-3")},
+		unsyncedSessions: []*models.Session{{ID: "s-1"}, {ID: "s-2"}, {ID: "s-3"}},
+		unsyncedPrompts: []*models.Prompt{
+			createTestPrompt("p-1", "test-project", "one"),
+			createTestPrompt("p-2", "test-project", "two"),
+			createTestPrompt("p-3", "test-project", "three"),
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sync" {
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 2, Pulled: []apiMemory{}, Conflicts: 0}))
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{})
+
+	result, err := syncer.syncBatchStep(context.Background(), "test-project", "valid-token")
+	require.NoError(t, err)
+
+	assert.Equal(t, []int{2}, store.getUnsyncedPageLimits, "GetUnsyncedPage must be called with syncPageSize")
+	assert.Equal(t, []int{2}, store.listUnsyncedSessionsPageLimits, "ListUnsyncedSessionsPage must be called with syncPageSize")
+	assert.Equal(t, []int{2}, store.getUnsyncedPromptsPageLimits, "GetUnsyncedPromptsPage must be called with syncPageSize")
+	assert.False(t, result.PushBacklogEmpty, "backlog still has more than one page pending")
+}
+
+// TestDrain_TriggerManual_PagesThroughLargeBacklogWithoutFalsePositiveGuard
+// is the fresh-review-required regression test: with a backlog larger than
+// one page, the Drain(TriggerManual) loop must page through every batch and
+// terminate by backlog-empty, NOT by the no-progress guard tripping
+// prematurely. This is the scenario the OLD BacklogSize-based guard would
+// have misclassified: BacklogSize saturates at the (small, scripted) page
+// size on every iteration even though the backlog is genuinely shrinking.
+func TestDrain_TriggerManual_PagesThroughLargeBacklogWithoutFalsePositiveGuard(t *testing.T) {
+	withSyncPageSize(t, 2)
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+
+	// 5 unsynced memories, page size 2: batches of 2, 2, 1, then empty.
+	store := &mockSyncStore{
+		jwt: "valid-token",
+		unsyncedSequence: [][]*models.Memory{
+			{createTestSyncMemory("m-1"), createTestSyncMemory("m-2"), createTestSyncMemory("m-3"), createTestSyncMemory("m-4"), createTestSyncMemory("m-5")},
+			{createTestSyncMemory("m-3"), createTestSyncMemory("m-4"), createTestSyncMemory("m-5")},
+			{createTestSyncMemory("m-5")},
+			{},
+		},
+	}
+
+	var syncCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sync" {
+			syncCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 1, Pulled: []apiMemory{}, Conflicts: 0}))
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, int32(4), syncCalls.Load(), "loop must page through all 4 scripted batches")
+	assert.Equal(t, 4, outcome.Batches)
+	assert.Equal(t, DrainFullySynced, outcome.State, "the loop must terminate by backlog-empty, not by the no-progress guard")
+	// Page size 2 caps each scripted entry ([5, 3, 1] items) at 2: batches mark
+	// 2 + 2 + 1 = 5 records, then a final empty batch confirms backlog-empty.
+	assert.Len(t, store.markedSynced, 5, "every record marked synced across all batches must sum to the pushed total")
+}
+
+// TestDrain_SessionsBeforeMemoriesAcrossPagedBatches pins the FK-ordering
+// invariant across a multi-page manual Drain (PR 1b-iii task 1b-iii.2): a
+// memory whose session lands in an EARLIER batch than the memory itself must
+// still push successfully, because the earlier batch pushes and marks its
+// session before the loop advances. Within a single batch, sessions are
+// already serialized before memories (client.sync's fixed field order) —
+// this test additionally pins the cross-batch case.
+func TestDrain_SessionsBeforeMemoriesAcrossPagedBatches(t *testing.T) {
+	withSyncPageSize(t, 1)
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+
+	sess := &models.Session{ID: "sess-early-batch"}
+	mem := createTestSyncMemory("mem-later-batch")
+	mem.SessionID = sess.ID
+
+	store := &mockSyncStore{
+		jwt: "valid-token",
+		// Batch 1: only the session is pending — the memory is added to the
+		// store only after batch 1 completes, modeling a memory that gets
+		// queued in a LATER batch than the session it references (task
+		// 1b-iii.2's "session in an earlier batch" scenario).
+		unsyncedSessions: []*models.Session{sess},
+	}
+
+	var sawSessionBeforeMemory bool
+	var sessionPushed, memoryPushed bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync" {
+			return
+		}
+		var req syncRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		if len(req.Sessions) > 0 {
+			sessionPushed = true
+		}
+		if len(req.Memories) > 0 {
+			// The memory batch must only ever be sent once its session has
+			// already been pushed (and, by construction of this test, acked).
+			if !sessionPushed {
+				t.Errorf("memory batch sent before its session was pushed")
+			} else {
+				sawSessionBeforeMemory = true
+			}
+			memoryPushed = true
+		}
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: len(req.Memories), Pulled: []apiMemory{}, Conflicts: 0}))
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	// Drive two syncBatchStep calls directly (the same call the Drain loop
+	// makes each iteration): batch 1 only sees the session; only after it
+	// completes does the memory referencing that session become pending,
+	// modeling "the memory's session was pushed/confirmed in an earlier
+	// batch" — matching how a real DB-backed ListUnsyncedSessionsPage would
+	// stop returning an already-synced_at row.
+	token := "valid-token"
+	batch1, err := syncer.syncBatchStep(context.Background(), "test-project", token)
+	require.NoError(t, err)
+	require.True(t, sessionPushed, "first batch must push the session")
+	require.Len(t, store.markedSessionSynced, 1)
+	store.unsyncedSessions = nil           // simulate the session no longer being unsynced (already marked)
+	store.unsynced = []*models.Memory{mem} // now the memory becomes pending, referencing the already-pushed session
+
+	batch2, err := syncer.syncBatchStep(context.Background(), "test-project", token)
+	require.NoError(t, err)
+	require.True(t, memoryPushed, "second batch must push the memory")
+	assert.True(t, sawSessionBeforeMemory, "memory push must be observed only after the session push")
+	assert.Equal(t, 1, batch1.RecordsMarkedSynced)
+	assert.Equal(t, 1, batch2.RecordsMarkedSynced)
+}
+
+// TestDrain_NeverResendsAlreadySyncedAcrossBatches pins the PR 1b-iii
+// idempotent-paging contract (task 1b-iii.3): across a manual Drain that
+// pages through a 250-item backlog with a 100-item page cap (3 batches), each
+// row must be pushed exactly once, and the loop must terminate by
+// backlog-empty. The fake store below models a paged, filtered fetch backed
+// by a real "unsynced" set: GetUnsyncedPage never returns a row once
+// MarkSynced has removed it, mirroring the `synced_at IS NULL` predicate a
+// real DB paged query enforces.
+func TestDrain_NeverResendsAlreadySyncedAcrossBatches(t *testing.T) {
+	withSyncPageSize(t, 100)
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+
+	const total = 250
+	store := newIdempotentPagingStore(total)
+
+	var pushCounts []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync" {
+			return
+		}
+		var req syncRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		pushCounts = append(pushCounts, len(req.Memories))
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: len(req.Memories), Pulled: []apiMemory{}, Conflicts: 0}))
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Equal(t, DrainFullySynced, outcome.State, "the loop must terminate by backlog-empty")
+	// 250 items at a 100-item page cap page as 100/100/50, then one final
+	// empty-fetch batch confirms PushBacklogEmpty and ends the loop — the
+	// same shape as TestDrain_TriggerManual_LoopsUntilBacklogEmpty.
+	assert.Equal(t, []int{100, 100, 50, 0}, pushCounts, "250 items at a 100-item page cap must page as 100/100/50/0")
+	assert.Equal(t, 4, outcome.Batches)
+	assert.Equal(t, total, result.Pushed, "every one of the 250 rows must be pushed exactly once, summed across batches")
+
+	pushedOnce := make(map[string]int)
+	for _, syncID := range store.pushedSyncIDs {
+		pushedOnce[syncID]++
+	}
+	for syncID, count := range pushedOnce {
+		assert.Equal(t, 1, count, "sync_id %s must be pushed exactly once across the whole drain", syncID)
+	}
+	assert.Len(t, pushedOnce, total, "every seeded row must have been pushed")
+}
+
+// idempotentPagingStore is a minimal SyncStore fake, layered on mockSyncStore,
+// that models a real DB's `synced_at IS NULL ORDER BY created_at ASC LIMIT ?`
+// paging semantics for memories: GetUnsyncedPage only ever returns rows that
+// have not yet been marked synced, and MarkSynced durably removes a row from
+// the pending set so it can never be re-fetched or re-pushed. This is what
+// TestDrain_NeverResendsAlreadySyncedAcrossBatches needs that mockSyncStore's
+// static-slice GetUnsyncedPage cannot provide.
+type idempotentPagingStore struct {
+	mockSyncStore
+	mu            sync.Mutex
+	pending       []*models.Memory // ordered, oldest first — mirrors created_at ASC
+	pushedSyncIDs []string
+}
+
+func newIdempotentPagingStore(total int) *idempotentPagingStore {
+	pending := make([]*models.Memory, 0, total)
+	for i := 0; i < total; i++ {
+		pending = append(pending, createTestSyncMemory(fmt.Sprintf("idem-%03d", i)))
+	}
+	return &idempotentPagingStore{
+		mockSyncStore: mockSyncStore{jwt: "valid-token"},
+		pending:       pending,
+	}
+}
+
+func (s *idempotentPagingStore) GetUnsyncedPage(project string, limit int) ([]*models.Memory, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 || limit > len(s.pending) {
+		limit = len(s.pending)
+	}
+	page := make([]*models.Memory, limit)
+	copy(page, s.pending[:limit])
+	return page, nil
+}
+
+func (s *idempotentPagingStore) MarkSynced(syncID string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pushedSyncIDs = append(s.pushedSyncIDs, syncID)
+	for i, m := range s.pending {
+		if m.SyncID == syncID {
+			s.pending = append(s.pending[:i], s.pending[i+1:]...)
+			break
+		}
+	}
+	return nil
 }

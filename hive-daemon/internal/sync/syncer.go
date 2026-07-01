@@ -27,6 +27,14 @@ const (
 	compatibilityModeMutationV2 = "mutation-sync-v2"
 )
 
+// syncPageSize caps how many unsynced memories, sessions, and prompts a
+// single syncBatchStep fetches and pushes (PR 1b-iii, hive-sync-batched-drain
+// design §4.4). It is a package-level var (not a const) so tests can shrink
+// it to exercise multi-batch paging without needing hundreds of rows.
+// GetPendingMutations already took an explicit limit before this PR; it now
+// shares the same page size.
+var syncPageSize = 100
+
 var (
 	ErrSyncInFlight = errors.New("sync already in progress")
 	ErrSyncBackoff  = errors.New("sync blocked by backoff")
@@ -36,6 +44,12 @@ var (
 // *db.DB los implementa todos.
 type SyncStore interface {
 	GetUnsynced(project string) ([]*models.Memory, error)
+	// GetUnsyncedPage is the paged counterpart to GetUnsynced (PR 1b-iii,
+	// hive-sync-batched-drain): syncBatchStep uses it to cap a single push
+	// batch at syncPageSize instead of always fetching the full backlog.
+	// GetUnsynced is kept in the interface for any other existing/future
+	// caller that needs the unbounded list.
+	GetUnsyncedPage(project string, limit int) ([]*models.Memory, error)
 	MarkSynced(syncID string, at time.Time) error
 	MarkMemoriesSyncedBySyncID(syncIDs []string, at time.Time) error
 	SaveFromRemote(mem *models.Memory) error
@@ -48,10 +62,16 @@ type SyncStore interface {
 	GetJWT() string
 	SetJWT(token string, expiresAt time.Time) error
 	GetUnsyncedPrompts(ctx context.Context, project string) ([]*models.Prompt, error)
+	// GetUnsyncedPromptsPage is the paged counterpart to GetUnsyncedPrompts
+	// (PR 1b-iii, hive-sync-batched-drain) — see GetUnsyncedPage doc.
+	GetUnsyncedPromptsPage(ctx context.Context, project string, limit int) ([]*models.Prompt, error)
 	MarkPromptSynced(ctx context.Context, syncID string, at time.Time) error
 
 	// Session sync methods — added in Slice 4 (T4.1 + T4.2).
 	ListUnsyncedSessions(project string) ([]*models.Session, error)
+	// ListUnsyncedSessionsPage is the paged counterpart to ListUnsyncedSessions
+	// (PR 1b-iii, hive-sync-batched-drain) — see GetUnsyncedPage doc.
+	ListUnsyncedSessionsPage(project string, limit int) ([]*models.Session, error)
 	MarkSessionSynced(id string, at time.Time) error
 	SaveSessionFromRemote(s *models.Session) error
 
@@ -108,12 +128,27 @@ type batchResult struct {
 	PushBacklogEmpty bool
 
 	// BacklogSize is the total count of pending items fetched at the start of
-	// this step (memories + sessions + prompts + pending mutations). The
-	// Drain controller (PR 1b-ii) uses it as a progress proxy across
-	// iterations: if a full loop iteration does not shrink this count AND the
-	// mutation cursor does not advance, the loop is not making progress and
-	// must stop instead of spinning (design §4.3).
+	// this step (memories + sessions + prompts + pending mutations). PR 1b-i
+	// used it as the Drain progress proxy, but PR 1b-iii caps each fetch at
+	// syncPageSize: once the push is paged, BacklogSize saturates at the page
+	// size (e.g. always ~100 while draining a 250-item backlog) and stops
+	// reflecting whether the batch actually accomplished anything. It is kept
+	// here for diagnostics/PushBacklogEmpty only — the Drain no-progress guard
+	// must use RecordsMarkedSynced instead (see below).
 	BacklogSize int
+
+	// RecordsMarkedSynced is the count of records durably marked synced_at
+	// during THIS batch: memories (legacy-mode MarkSynced or v2
+	// MarkMutationsAndMemoriesSynced), sessions (MarkSessionSynced), prompts
+	// (MarkPromptSynced), and pending mutations (mutationsPushed) that the
+	// server actually acknowledged. This is the PR 1b-iii progress signal for
+	// the Drain no-progress guard (see Drain): a paged fetch can legitimately
+	// return the same page size on every call while the backlog shrinks
+	// underneath it, so page size alone can no longer prove progress.
+	// RecordsMarkedSynced > 0 means real work was durably confirmed and
+	// removed from the backlog this batch, which is a page-size-independent
+	// progress signal.
+	RecordsMarkedSynced int
 
 	// PullHasMore is hardcoded false in PR 1b-i.
 	// TODO(PR2): wire from server has_more once hive-api paginates pulls.
@@ -279,7 +314,6 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 	result := &Result{Project: project}
 	outcome := DrainOutcome{}
 	var lastResp *syncResponse
-	prevBacklogSize := -1
 	prevMutationCursor := db.MutationCursor{}
 
 	for {
@@ -333,15 +367,23 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 			break
 		}
 
-		// Termination guard (T1b-ii.5, design §4.3): if this iteration did not
-		// shrink the backlog AND the mutation cursor did not advance, the loop
-		// is not making progress (e.g. a permanent server-side conflict) — stop
-		// instead of spinning forever.
-		if prevBacklogSize != -1 && batch.BacklogSize >= prevBacklogSize && batch.MutationCursor == prevMutationCursor {
+		// Termination guard (T1b-ii.5, revised design §4.3 for PR 1b-iii): if
+		// this iteration durably marked NOTHING synced AND the mutation cursor
+		// did not advance, the loop is not making progress (e.g. a permanent
+		// server-side conflict) — stop instead of spinning forever.
+		//
+		// This intentionally no longer looks at BacklogSize. Once syncBatchStep
+		// pages its push fetch at syncPageSize (PR 1b-iii), a healthy multi-page
+		// drain can report the same (page-sized) BacklogSize on every iteration
+		// even though the underlying backlog is shrinking — that would make the
+		// old "BacklogSize >= prevBacklogSize" check false-positive and cut a
+		// still-productive drain short. RecordsMarkedSynced reflects records the
+		// server actually confirmed and the store durably marked this batch,
+		// which stays a true progress signal regardless of page size.
+		if batch.RecordsMarkedSynced == 0 && batch.MutationCursor == prevMutationCursor {
 			outcome.State = DrainExpectedPending
 			break
 		}
-		prevBacklogSize = batch.BacklogSize
 		prevMutationCursor = batch.MutationCursor
 	}
 
@@ -396,28 +438,34 @@ func (s *Syncer) syncBatchStep(ctx context.Context, project, token string) (batc
 // syncBatchStep so the public batch-step signature required by design §4.2
 // stays exactly `(batchResult, error)`.
 func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token string) (batchResult, *syncResponse, error) {
-	// Paso 2: memorias locales pendientes de sync
-	unsynced, err := s.store.GetUnsynced(project)
+	// Paso 2: memorias locales pendientes de sync. Paged at syncPageSize (PR
+	// 1b-iii, hive-sync-batched-drain) so a single push batch never exceeds
+	// the page cap — a Drain(TriggerManual) run pages through the rest via
+	// repeated syncBatchStep calls instead of pushing the whole backlog at
+	// once.
+	unsynced, err := s.store.GetUnsyncedPage(project, syncPageSize)
 	if err != nil {
 		return batchResult{}, nil, fmt.Errorf("obtener memorias no sincronizadas: %w", err)
 	}
 
-	// Paso 2b: sesiones locales pendientes de sync (non-fatal si falla)
-	unsyncedSessions, err := s.store.ListUnsyncedSessions(project)
+	// Paso 2b: sesiones locales pendientes de sync, paged (non-fatal si falla).
+	unsyncedSessions, err := s.store.ListUnsyncedSessionsPage(project, syncPageSize)
 	if err != nil {
 		logger.Log.Printf("warn: obtener sesiones no sincronizadas: %v", err)
 		unsyncedSessions = nil
 	}
 
-	// Paso 2c: prompts locales pendientes de sync (non-fatal si falla)
-	unsyncedPrompts, err := s.store.GetUnsyncedPrompts(ctx, project)
+	// Paso 2c: prompts locales pendientes de sync, paged (non-fatal si falla).
+	unsyncedPrompts, err := s.store.GetUnsyncedPromptsPage(ctx, project, syncPageSize)
 	if err != nil {
 		logger.Log.Printf("warn: obtener prompts no sincronizados: %v", err)
 		unsyncedPrompts = nil
 	}
 
-	// Paso 2d: mutaciones locales pendientes para protocolo v2.
-	pendingMutations, err := s.store.GetPendingMutations(project, 100)
+	// Paso 2d: mutaciones locales pendientes para protocolo v2. Already capped
+	// at syncPageSize — GetPendingMutations has taken an explicit limit since
+	// PR 1a.
+	pendingMutations, err := s.store.GetPendingMutations(project, syncPageSize)
 	if err != nil {
 		return batchResult{}, nil, fmt.Errorf("obtener mutaciones pendientes: %w", err)
 	}
@@ -452,11 +500,20 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 		compatibilityMode = resp.CompatibilityMode
 	}
 
+	// recordsMarkedSynced counts records durably marked synced_at THIS batch —
+	// the PR 1b-iii progress signal for the Drain no-progress guard (see the
+	// batchResult.RecordsMarkedSynced doc). Only successful marks count: a
+	// MarkXSynced error means the store did not durably confirm that row, so
+	// it must not be treated as progress.
+	recordsMarkedSynced := 0
+
 	// Paso 5a: marcamos como sincronizadas las sesiones que enviamos
 	for _, sess := range unsyncedSessions {
 		if err := s.store.MarkSessionSynced(sess.ID, now); err != nil {
 			logger.Log.Printf("warn: MarkSessionSynced %s: %v", sess.ID, err)
+			continue
 		}
+		recordsMarkedSynced++
 	}
 
 	// Paso 5b: marcamos como sincronizadas las memorias legacy solo cuando
@@ -468,7 +525,9 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 				// No abortamos — mejor tener datos duplicados que perder el sync
 				// En el próximo sync, el servidor los rechazará por sync_id duplicado
 				logger.Log.Printf("warn: MarkSynced %s: %v", m.SyncID, err)
+				continue
 			}
+			recordsMarkedSynced++
 		}
 	}
 
@@ -476,7 +535,9 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 	for _, p := range unsyncedPrompts {
 		if err := s.store.MarkPromptSynced(ctx, p.SyncID, now); err != nil {
 			logger.Log.Printf("warn: MarkPromptSynced %s: %v", p.SyncID, err)
+			continue
 		}
+		recordsMarkedSynced++
 	}
 
 	// Paso 5d: guardamos las sesiones que nos mandó el servidor (BEFORE memories — FK ordering)
@@ -568,17 +629,19 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 			return batchResult{}, nil, fmt.Errorf("marcar mutaciones sincronizadas: %w", err)
 		}
 		mutationsPushed = len(pendingMutations)
+		recordsMarkedSynced += mutationsPushed
 	}
 
 	return batchResult{
-		Pushed:            resp.Pushed,
-		Pulled:            len(resp.Pulled),
-		MutationsPushed:   mutationsPushed,
-		MutationsPulled:   mutationsPulled,
-		CompatibilityMode: compatibilityMode,
-		MutationCursor:    mutationCursor,
-		PushBacklogEmpty:  pushBacklogEmpty,
-		BacklogSize:       backlogSize,
+		Pushed:              resp.Pushed,
+		Pulled:              len(resp.Pulled),
+		MutationsPushed:     mutationsPushed,
+		MutationsPulled:     mutationsPulled,
+		CompatibilityMode:   compatibilityMode,
+		MutationCursor:      mutationCursor,
+		PushBacklogEmpty:    pushBacklogEmpty,
+		RecordsMarkedSynced: recordsMarkedSynced,
+		BacklogSize:         backlogSize,
 		// TODO(PR2): wire from server has_more once hive-api paginates pulls.
 		PullHasMore: false,
 	}, resp, nil
