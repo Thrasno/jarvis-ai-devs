@@ -134,6 +134,42 @@ INSERT INTO observations (id, project, title, content, type, topic_key, session_
 	require.Equal(t, hivedb.ImportCounts{Imported: 3}, report.Counts)
 }
 
+func TestAnalyzeSourceReadsSessionsMissingOptionalClientColumn(t *testing.T) {
+	path := createRealisticEngramFixtureWithoutSessionClient(t, func(sqlDB *sql.DB) {
+		_, err := sqlDB.Exec(`
+INSERT INTO sessions (id, project, directory, started_at, ended_at, summary) VALUES
+  ('ses-1', 'proj-a', '/src/a', '2026-06-11 10:00:00', NULL, 'summary');
+INSERT INTO user_prompts (id, project, content, created_at) VALUES
+  (11, 'proj-a', 'prompt content', '2026-06-11 10:01:00');
+INSERT INTO observations (id, project, title, content, type, topic_key, session_id, created_at, updated_at) VALUES
+  (21, 'proj-a', 'Decision', 'Keep daemon-owned import', 'decision', 'topic-a', 'ses-1', '2026-06-11 10:02:00', '2026-06-11 10:03:00');`)
+		require.NoError(t, err)
+	})
+
+	analysis, err := AnalyzeSource(context.Background(), Source{Path: path})
+	require.NoError(t, err)
+	require.Equal(t, Counts{Sessions: 1, Prompts: 1, Observations: 1}, analysis.Counts)
+	require.Empty(t, analysis.InvalidRows)
+	require.Len(t, analysis.Sessions, 1)
+	require.Empty(t, analysis.Sessions[0].Client, "missing optional client column must default to empty")
+}
+
+func TestAnalyzeSourceRejectsSessionsMissingRequiredColumn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "engram.db")
+	sqlDB, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	_, err = sqlDB.Exec(`
+CREATE TABLE observations (id INTEGER PRIMARY KEY, project TEXT, title TEXT, content TEXT, type TEXT, topic_key TEXT, session_id TEXT, created_at TEXT, updated_at TEXT);
+CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, project TEXT, content TEXT, created_at TEXT);
+CREATE TABLE sessions (id TEXT PRIMARY KEY, directory TEXT, started_at TEXT);`)
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+
+	_, err = AnalyzeSource(context.Background(), Source{Path: path})
+	require.ErrorIs(t, err, ErrInvalidSchema)
+	require.ErrorContains(t, err, "project")
+}
+
 func TestAnalyzeSourceRejectsMissingRequiredTables(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "engram.db")
 	sqlDB, err := sql.Open("sqlite", path)
@@ -471,6 +507,46 @@ CREATE TABLE memory_relations (
 		seed(sqlDB)
 	}
 	require.NoError(t, sqlDB.Close())
+}
+
+func createRealisticEngramFixtureWithoutSessionClient(t *testing.T, seed func(*sql.DB)) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "engram.db")
+	sqlDB, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	// Mirrors the installed Engram schema: sessions has neither dev_id nor client.
+	_, err = sqlDB.Exec(`
+CREATE TABLE observations (
+  id INTEGER PRIMARY KEY,
+  project TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  type TEXT NOT NULL DEFAULT '',
+  topic_key TEXT,
+  session_id TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT
+);
+CREATE TABLE sessions (
+  id TEXT PRIMARY KEY,
+  project TEXT NOT NULL DEFAULT '',
+  directory TEXT NOT NULL DEFAULT '',
+  started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  ended_at TEXT,
+  summary TEXT
+);
+CREATE TABLE user_prompts (
+  id INTEGER PRIMARY KEY,
+  project TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`)
+	require.NoError(t, err)
+	if seed != nil {
+		seed(sqlDB)
+	}
+	require.NoError(t, sqlDB.Close())
+	return path
 }
 
 func createLegacyEngramFixtureWithoutSessionDevID(t *testing.T, seed func(*sql.DB)) string {

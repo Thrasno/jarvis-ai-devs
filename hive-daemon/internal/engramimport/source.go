@@ -254,7 +254,27 @@ func validateSchema(ctx context.Context, sqlDB *sql.DB) error {
 }
 
 func readSessions(ctx context.Context, sqlDB *sql.DB, analysis *Analysis, projects map[string]struct{}, validSessions map[string]map[string]struct{}) error {
-	rows, err := sqlDB.QueryContext(ctx, `SELECT id, project, directory, client, started_at, ended_at, summary FROM sessions ORDER BY id`)
+	columns, err := existingColumns(ctx, sqlDB, "sessions")
+	if err != nil {
+		return err
+	}
+	// id and project carry session identity; without them a row is meaningless.
+	for _, required := range []string{"id", "project"} {
+		if _, ok := columns[required]; !ok {
+			return fmt.Errorf("%w: sessions missing required column %s", ErrInvalidSchema, required)
+		}
+	}
+	// Optional metadata columns vary across Engram versions; default when absent
+	// so schema drift does not break the import.
+	query := fmt.Sprintf(
+		`SELECT id, project, %s, %s, %s, %s, %s FROM sessions ORDER BY id`,
+		optionalColumn(columns, "directory", "''"),
+		optionalColumn(columns, "client", "''"),
+		optionalColumn(columns, "started_at", "''"),
+		optionalColumn(columns, "ended_at", "NULL"),
+		optionalColumn(columns, "summary", "NULL"),
+	)
+	rows, err := sqlDB.QueryContext(ctx, query)
 	if err != nil {
 		return fmt.Errorf("read engram sessions: %w", err)
 	}
@@ -340,6 +360,39 @@ func relationCount(ctx context.Context, sqlDB *sql.DB) int {
 	var count int
 	_ = sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_relations`).Scan(&count)
 	return count
+}
+
+// existingColumns returns the set of column names for table. The table name is
+// always a hardcoded constant, so interpolating it into the PRAGMA is safe.
+func existingColumns(ctx context.Context, sqlDB *sql.DB, table string) (map[string]struct{}, error) {
+	rows, err := sqlDB.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return nil, fmt.Errorf("inspect %s columns: %w", table, err)
+	}
+	defer rows.Close()
+	columns := make(map[string]struct{})
+	for rows.Next() {
+		var (
+			cid          int
+			name, ctype  string
+			notNull, pk  int
+			defaultValue sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &defaultValue, &pk); err != nil {
+			return nil, fmt.Errorf("scan %s column info: %w", table, err)
+		}
+		columns[name] = struct{}{}
+	}
+	return columns, rows.Err()
+}
+
+// optionalColumn returns the column name when present, otherwise a defaulted
+// SQL literal aliased to the column name so the scan layout stays stable.
+func optionalColumn(columns map[string]struct{}, name, fallback string) string {
+	if _, ok := columns[name]; ok {
+		return name
+	}
+	return fallback + " AS " + name
 }
 
 func tableExists(ctx context.Context, sqlDB *sql.DB, table string) bool {
