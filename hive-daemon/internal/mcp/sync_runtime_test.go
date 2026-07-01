@@ -14,7 +14,7 @@ func (runtimeTestSyncer) Sync(context.Context, string) (*hivesync.Result, error)
 }
 
 func (runtimeTestSyncer) Drain(context.Context, string, hivesync.TriggerPolicy) (*hivesync.Result, hivesync.DrainOutcome, error) {
-	return &hivesync.Result{}, hivesync.DrainOutcome{Batches: 1, State: hivesync.DrainFullySynced}, nil
+	return &hivesync.Result{}, hivesync.DrainOutcome{BatchesDone: 1, State: hivesync.DrainFullySynced}, nil
 }
 
 func TestSyncRuntimeReloadsWhenConfigFingerprintChanges(t *testing.T) {

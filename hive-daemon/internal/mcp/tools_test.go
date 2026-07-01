@@ -47,9 +47,9 @@ func (s *scriptedSyncer) Drain(_ context.Context, _ string, policy hivesync.Trig
 	s.drainCalls++
 	s.lastPolicy = policy
 	if s.result != nil {
-		return s.result, hivesync.DrainOutcome{Batches: 1, State: hivesync.DrainFullySynced}, s.err
+		return s.result, hivesync.DrainOutcome{BatchesDone: 1, State: hivesync.DrainFullySynced}, s.err
 	}
-	return &hivesync.Result{Project: s.project}, hivesync.DrainOutcome{Batches: 1, State: hivesync.DrainFullySynced}, s.err
+	return &hivesync.Result{Project: s.project}, hivesync.DrainOutcome{BatchesDone: 1, State: hivesync.DrainFullySynced}, s.err
 }
 
 func (s *scriptedSyncer) callCount() int {
