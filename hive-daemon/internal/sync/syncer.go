@@ -57,6 +57,13 @@ type SyncStore interface {
 
 	GetPendingMutations(project string, limit int) ([]db.MutationEnvelope, error)
 	MarkMutationsSynced(eventIDs []string, at time.Time) error
+	// MarkMutationsAndMemoriesSynced acks the mutation journal event_ids and
+	// the correlated legacy memories.sync_id rows atomically, in a single
+	// transaction. The mutation-sync-v2 path in Sync uses this instead of
+	// calling MarkMutationsSynced and MarkMemoriesSyncedBySyncID separately,
+	// so a partial DB failure rolls back both halves together and the next
+	// Sync retries them from a consistent pending state.
+	MarkMutationsAndMemoriesSynced(eventIDs []string, syncIDs []string, at time.Time) error
 	ApplyRemoteMutation(event db.MutationEnvelope) (bool, error)
 	GetMutationCursor(consumer, project string) (db.MutationCursor, error)
 	SetMutationCursor(consumer, project string, cursor db.MutationCursor, at time.Time) error
@@ -339,25 +346,35 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 			mutationCursor = *resp.NextMutationCursor
 		}
 
-		if err := s.store.MarkMutationsSynced(mutationEventIDs(pendingMutations), now); err != nil {
+		// R1a.3 fix (design §3, Hive obs #1692): hive-api ignores memories[]
+		// in mutation-sync-v2 mode, so legacy memory rows are never acked by
+		// the Paso 5b branch below. Once the pending mutations are durably
+		// confirmed, correlate their EntitySyncID back to the legacy
+		// memories.sync_id and ack those rows too — otherwise GetUnsynced
+		// would keep re-emitting them on every cycle forever.
+		//
+		// R1a.5 fix (fresh-context review follow-up): the mutation ack and
+		// the legacy memory ack MUST happen in the same transaction via
+		// MarkMutationsAndMemoriesSynced. Previously these were two separate
+		// calls — MarkMutationsSynced then MarkMemoriesSyncedBySyncID — and if
+		// the first succeeded but the second failed, the mutation rows were
+		// already marked synced_at, so GetPendingMutations would never
+		// re-derive confirmedMemorySyncIDs for them again on retry. That left
+		// the correlated legacy memories row permanently unsynced. Marking
+		// both halves atomically means a partial failure rolls the mutation
+		// ack back too, so the next Sync() call re-derives and retries both
+		// together from a consistent pending state.
+		if err := s.store.MarkMutationsAndMemoriesSynced(
+			mutationEventIDs(pendingMutations),
+			confirmedMemorySyncIDs(pendingMutations),
+			now,
+		); err != nil {
 			if recordErr := s.recordFailure(project, health, now, err); recordErr != nil {
 				return nil, recordErr
 			}
 			return nil, fmt.Errorf("marcar mutaciones sincronizadas: %w", err)
 		}
 		mutationsPushed = len(pendingMutations)
-
-		// R1a.3 fix (design §3, Hive obs #1692): hive-api ignores memories[]
-		// in mutation-sync-v2 mode, so legacy memory rows are never acked by
-		// the Paso 5b branch below. Once MarkMutationsSynced durably confirms
-		// the pending mutations, correlate their EntitySyncID back to the
-		// legacy memories.sync_id and ack those rows too — otherwise
-		// GetUnsynced would keep re-emitting them on every cycle forever.
-		if confirmedSyncIDs := confirmedMemorySyncIDs(pendingMutations); len(confirmedSyncIDs) > 0 {
-			if err := s.store.MarkMemoriesSyncedBySyncID(confirmedSyncIDs, now); err != nil {
-				logger.Log.Printf("warn: MarkMemoriesSyncedBySyncID: %v", err)
-			}
-		}
 	}
 
 	// Paso 6: actualizamos el timestamp del último sync exitoso
@@ -469,14 +486,23 @@ func mutationEventIDs(mutations []db.MutationEnvelope) []string {
 }
 
 // confirmedMemorySyncIDs returns the legacy memories.sync_id values that can
-// be acked once the given mutations are durably confirmed by
-// MarkMutationsSynced. Only create/update mutations carry the memory content
-// sync_id that the legacy row shares; delete/restore mutations use tombstone
-// semantics and are already acked as part of ApplyRemoteMutation/legacy
-// tombstone handling, not via this correlation path.
+// be acked once the given mutations are durably confirmed via
+// MarkMutationsAndMemoriesSynced. Only create/update mutations carry the
+// memory content sync_id that the legacy row shares; delete/restore
+// mutations use tombstone semantics and are already acked as part of
+// ApplyRemoteMutation/legacy tombstone handling, not via this correlation
+// path.
 func confirmedMemorySyncIDs(mutations []db.MutationEnvelope) []string {
 	ids := make([]string, 0, len(mutations))
 	for _, mutation := range mutations {
+		// EntityType == "" is treated as "memory" here to mirror the same
+		// default applied by db.(*DB).ApplyRemoteMutation (internal/db/sync.go),
+		// which normalizes an empty EntityType to "memory" before validating
+		// it. Today EntityType is only ever "" or "memory", so both sites
+		// agree. If a second entity type is ever introduced, update both
+		// call sites together — otherwise "" mutations could silently
+		// misclassify as memory mutations here while being rejected or
+		// handled differently there.
 		if mutation.EntityType != "" && mutation.EntityType != "memory" {
 			continue
 		}

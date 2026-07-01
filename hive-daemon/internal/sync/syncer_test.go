@@ -44,6 +44,8 @@ type mockSyncStore struct {
 	pendingMutations              []db.MutationEnvelope
 	markedMutationsSynced         []string
 	markMutationsSyncedErr        error
+	markMutationsAndMemoriesCalls int
+	markMutationsAndMemoriesErr   error
 	appliedRemoteMutations        []db.MutationEnvelope
 	applyRemoteMutationErr        error
 	mutationCursor                db.MutationCursor
@@ -207,6 +209,21 @@ func (m *mockSyncStore) MarkMutationsSynced(eventIDs []string, at time.Time) err
 		return m.markMutationsSyncedErr
 	}
 	m.markedMutationsSynced = append(m.markedMutationsSynced, eventIDs...)
+	return nil
+}
+
+// MarkMutationsAndMemoriesSynced mimics the atomic DB transaction: if
+// markMutationsAndMemoriesErr is set, NEITHER slice is recorded, modeling a
+// rollback where the mutation ack and the memory ack rise and fall together.
+func (m *mockSyncStore) MarkMutationsAndMemoriesSynced(eventIDs []string, syncIDs []string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.markMutationsAndMemoriesCalls++
+	if m.markMutationsAndMemoriesErr != nil {
+		return m.markMutationsAndMemoriesErr
+	}
+	m.markedMutationsSynced = append(m.markedMutationsSynced, eventIDs...)
+	m.markedMemoriesSyncedBySyncID = append(m.markedMemoriesSyncedBySyncID, syncIDs...)
 	return nil
 }
 
@@ -1510,9 +1527,9 @@ func TestSyncer_Sync_MutationProtocolErrorPathsDoNotAckPendingMutations(t *testi
 		{
 			name: "mark synced failure leaves pending journal unacked and records failure status",
 			store: &mockSyncStore{
-				jwt:                    "valid-token",
-				pendingMutations:       []db.MutationEnvelope{pendingMutation},
-				markMutationsSyncedErr: assert.AnError,
+				jwt:                         "valid-token",
+				pendingMutations:            []db.MutationEnvelope{pendingMutation},
+				markMutationsAndMemoriesErr: assert.AnError,
 			},
 			server: func(t *testing.T) *httptest.Server {
 				t.Helper()
@@ -1565,6 +1582,96 @@ func TestSyncer_Sync_MutationProtocolErrorPathsDoNotAckPendingMutations(t *testi
 			assert.Equal(t, tt.wantRecordedLastErr, health.LastError)
 		})
 	}
+}
+
+// TestSyncer_Sync_PartialDBFailureDuringCombinedAckRetriesBothHalvesTogether
+// is the regression test for the fresh-context review finding: previously,
+// MarkMutationsSynced and MarkMemoriesSyncedBySyncID were two separate calls.
+// If the mutation ack succeeded but the memory ack failed, the mutation row
+// was already synced_at, so GetPendingMutations would never re-derive
+// confirmedMemorySyncIDs for it again — permanently stranding the legacy
+// memories row. With the atomic MarkMutationsAndMemoriesSynced, a failure
+// rolls back BOTH halves, so the mutation stays pending and the very next
+// Sync() call re-derives and successfully acks both together.
+func TestSyncer_Sync_PartialDBFailureDuringCombinedAckRetriesBothHalvesTogether(t *testing.T) {
+	now := time.Date(2026, 5, 11, 20, 0, 0, 0, time.UTC)
+	pendingMutation := db.MutationEnvelope{
+		EventID:      "evt-partial-fail",
+		EntityType:   "memory",
+		EntitySyncID: "mem-partial-fail",
+		Project:      "test-project",
+		Op:           db.MutationOpUpdate,
+		Sequence:     20,
+		OccurredAt:   now,
+	}
+	store := &mockSyncStore{
+		jwt:              "valid-token",
+		pendingMutations: []db.MutationEnvelope{pendingMutation},
+		unsynced: []*models.Memory{
+			createTestSyncMemory("mem-partial-fail"),
+		},
+		markMutationsAndMemoriesErr: assert.AnError,
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{
+			Pushed:            0,
+			Pulled:            []apiMemory{},
+			Conflicts:         0,
+			CompatibilityMode: compatibilityModeMutationV2,
+			NextMutationCursor: &db.MutationCursor{
+				Sequence: 20,
+				EventID:  "evt-partial-fail",
+			},
+		}))
+	}))
+	defer server.Close()
+
+	currentTime := now
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return currentTime },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	// First Sync(): the combined DB ack fails. Both halves must roll back —
+	// no mutation acked, no memory acked. This is the "partial DB failure"
+	// scenario from the review: without atomicity, the mutation half would
+	// have already been recorded here, permanently stranding the memory.
+	result, err := syncer.Sync(context.Background(), "test-project")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "marcar mutaciones sincronizadas")
+	assert.Nil(t, result)
+
+	store.mu.Lock()
+	assert.Equal(t, 1, store.markMutationsAndMemoriesCalls)
+	assert.Empty(t, store.markedMutationsSynced, "mutation ack must roll back together with the failed memory ack")
+	assert.Empty(t, store.markedMemoriesSyncedBySyncID, "memory ack must not be recorded when the combined transaction fails")
+	// Simulate the failure being resolved (e.g. transient DB contention) and
+	// clear the injected error before retrying, exactly like a real retry
+	// after a transient error is no longer occurring.
+	store.markMutationsAndMemoriesErr = nil
+	store.mu.Unlock()
+
+	// Advance past the recorded failure backoff window so the retry Sync()
+	// call is not blocked by ErrSyncBackoff.
+	currentTime = currentTime.Add(backoffMaxDelay)
+
+	// Second Sync(): GetPendingMutations still returns the same pending
+	// mutation (since nothing was acked), so confirmedMemorySyncIDs
+	// re-derives the same correlation and both halves ack successfully this
+	// time. This proves there is no permanent stuck row.
+	result, err = syncer.Sync(context.Background(), "test-project")
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.MutationsPushed)
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	assert.Equal(t, 2, store.markMutationsAndMemoriesCalls)
+	assert.Equal(t, []string{"evt-partial-fail"}, store.markedMutationsSynced,
+		"retry must successfully ack the mutation once the transient failure clears")
+	assert.Equal(t, []string{"mem-partial-fail"}, store.markedMemoriesSyncedBySyncID,
+		"retry must successfully ack the correlated legacy memory row — no permanent stuck row")
 }
 
 func TestSyncer_Sync_DoesNotAdvanceMutationCursorWhenPulledApplyFails(t *testing.T) {
