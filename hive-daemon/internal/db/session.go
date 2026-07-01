@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
@@ -16,7 +17,14 @@ var ErrSessionNotFound = errors.New("session not found")
 
 // CreateSession inserts a new session row.
 // Returns an error if the id already exists (use EnsureManualSaveSession for idempotent inserts).
+// BUG-DEVID-EMPTY: an empty devID (after trimming) falls back to resolveDevID()
+// here so that NO insert caller — MCP or hook path — can ever persist a session
+// with an empty dev_id. hive-api rejects empty dev_id via binding:"required", and a
+// single poisoned row blocks the whole batched sync push.
 func (d *DB) CreateSession(id, project, directory, devID, client string) error {
+	if strings.TrimSpace(devID) == "" {
+		devID = resolveDevID()
+	}
 	_, err := d.sqlDB.Exec(`
 		INSERT INTO sessions (id, sync_id, project, directory, dev_id, client)
 		VALUES (?, lower(hex(randomblob(16))), ?, ?, ?, ?)`,

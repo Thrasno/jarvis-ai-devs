@@ -452,6 +452,14 @@ func initSchema(sqlDB *sql.DB) error {
 		`ALTER TABLE sync_state ADD COLUMN last_drain_state TEXT`,
 		`ALTER TABLE sync_state ADD COLUMN last_drain_reason TEXT`,
 		`ALTER TABLE sync_state ADD COLUMN last_drain_remaining INTEGER`,
+		// BUG-DEVID-EMPTY — heal sessions poisoned with dev_id='' by the hook
+		// path (handleSessionsCreate forwarded body.DevID with no fallback).
+		// hive-api rejects dev_id='' via binding:"required", and one poisoned
+		// Sessions[0] blocks the whole batched sync push. CreateSession now
+		// guards new inserts; this migration fixes existing rows. TRIM matches
+		// CreateSession's TrimSpace guard so whitespace-only values heal too.
+		// Idempotent — safe to run on every daemon start.
+		`UPDATE sessions SET dev_id = 'unknown' WHERE TRIM(dev_id) = ''`,
 	}
 	for _, m := range migrations {
 		if _, err := sqlDB.Exec(m); err != nil {

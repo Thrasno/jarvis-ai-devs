@@ -611,6 +611,74 @@ func TestEnsureManualSaveSession_ConcurrentCreate_ExactlyOneRow(t *testing.T) {
 	assert.Equal(t, 1, count, "concurrent calls must produce exactly one session row")
 }
 
+// BUG-DEVID-EMPTY — CreateSession must never persist an empty dev_id. The
+// hive-api server rejects sessions with an empty dev_id via `binding:"required"`,
+// and because sync pushes are batched, one poisoned row blocks the whole batch.
+// The hook path (handleSessionsCreate) passes body.DevID straight through with
+// no fallback, so CreateSession itself must guard against empty devID.
+func TestCreateSession_EmptyDevID_FallsBackToResolveDevID(t *testing.T) {
+	d := openTestDB(t)
+	directory := t.TempDir()
+
+	err := d.CreateSession("sess-empty-devid", "jarvis-dev", directory, "", "hook")
+	require.NoError(t, err)
+
+	sess, err := d.GetSession("sess-empty-devid")
+	require.NoError(t, err)
+	assert.Equal(t, resolveDevID(), sess.DevID,
+		"empty devID must fall back to resolveDevID(), never be stored empty")
+	assert.NotEmpty(t, sess.DevID, "dev_id must never be empty — hive-api rejects it")
+}
+
+// BUG-DEVID-EMPTY — migration must heal pre-existing rows that were poisoned
+// with an empty dev_id before the CreateSession fix landed. Follows the file-based
+// v1-DB migration pattern used by TestMigration_DevIDIndex_PresentAfterMigration.
+func TestMigration_HealsEmptyDevIDRows(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "heal_empty_devid.db")
+
+	seedV1DB(t, dbPath, []map[string]string{
+		{"sync_id": "s1", "project": "alpha", "title": "t1", "content": "c1", "created_at": "2026-01-01 10:00:00"},
+	})
+
+	// seedV1DB creates the sessions table for us only via the migration path
+	// (v1 schema has no sessions table); open once to get past table creation,
+	// then poison a row with dev_id='' directly, then re-open to trigger the
+	// healing migration under test.
+	d1, err := Open(dbPath)
+	require.NoError(t, err)
+	_, err = d1.sqlDB.Exec(`
+		INSERT INTO sessions (id, sync_id, project, directory, dev_id, client)
+		VALUES ('poisoned-sess', 'poisoned-sync', 'alpha', '', '', 'hook')`)
+	require.NoError(t, err)
+	// Whitespace-only dev_id must heal too — the migration uses TRIM to match
+	// CreateSession's TrimSpace guard.
+	_, err = d1.sqlDB.Exec(`
+		INSERT INTO sessions (id, sync_id, project, directory, dev_id, client)
+		VALUES ('ws-sess', 'ws-sync', 'alpha', '', '   ', 'hook')`)
+	require.NoError(t, err)
+	require.NoError(t, d1.Close())
+
+	// Re-open triggers migrations — this is the system under test.
+	d2, err := Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d2.Close() })
+
+	var devID string
+	err = d2.sqlDB.QueryRow(
+		`SELECT dev_id FROM sessions WHERE id = 'poisoned-sess'`,
+	).Scan(&devID)
+	require.NoError(t, err)
+	assert.Equal(t, "unknown", devID, "migration must heal empty dev_id rows to 'unknown'")
+
+	var wsDevID string
+	err = d2.sqlDB.QueryRow(
+		`SELECT dev_id FROM sessions WHERE id = 'ws-sess'`,
+	).Scan(&wsDevID)
+	require.NoError(t, err)
+	assert.Equal(t, "unknown", wsDevID, "migration must heal whitespace-only dev_id rows to 'unknown'")
+}
+
 // CRIT-5 — fresh-install schema must enforce NOT NULL on memories.session_id.
 // The migration short-circuits when pragma_table_info shows the column already
 // exists; that path bumps user_version=2 without touching the column. So the
