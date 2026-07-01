@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,7 +40,7 @@ func TestSync_Success(t *testing.T) {
 	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
 		Return(syncResp, nil)
 	// PullAll es llamado para obtener sesiones + memorias del servidor
-	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), mock.AnythingOfType("int"), mock.AnythingOfType("model.PullCursor"), mock.AnythingOfType("model.PullCursor")).
 		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
 
 	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
@@ -71,7 +73,7 @@ func TestSync_LegacyMemoryMetadataFieldsDoNotBreakBinding(t *testing.T) {
 	syncSvc.On("Push", context.Background(), mock.MatchedBy(func(req model.SyncRequest) bool {
 		return len(req.Memories) == 1 && req.Memories[0].SyncID == "11111111-1111-1111-1111-111111111111"
 	}), "user-uuid-123").Return(syncResp, nil)
-	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), mock.AnythingOfType("int"), mock.AnythingOfType("model.PullCursor"), mock.AnythingOfType("model.PullCursor")).
 		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
 
 	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
@@ -108,7 +110,7 @@ func TestSync_LegacyMutationMetadataFieldsDoNotBreakBinding(t *testing.T) {
 	syncSvc.On("Push", context.Background(), mock.MatchedBy(func(req model.SyncRequest) bool {
 		return len(req.Mutations) == 1 && req.Mutations[0].EntitySyncID == "22222222-2222-2222-2222-222222222222"
 	}), "user-uuid-123").Return(syncResp, nil)
-	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), mock.AnythingOfType("int"), mock.AnythingOfType("model.PullCursor"), mock.AnythingOfType("model.PullCursor")).
 		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
 
 	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
@@ -179,7 +181,7 @@ func TestSync_WithPrompts(t *testing.T) {
 	syncSvc := &mockSyncSvc{}
 	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
 		Return(syncResp, nil)
-	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), mock.AnythingOfType("int"), mock.AnythingOfType("model.PullCursor"), mock.AnythingOfType("model.PullCursor")).
 		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
 
 	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
@@ -243,7 +245,7 @@ func TestSync_MutationProtocolV2ResponseIncludesCursorAndMutationFields(t *testi
 			req.MutationCursor.Sequence == 40 &&
 			req.MutationCursor.EventID == "evt-40"
 	}), "user-uuid-123").Return(syncResp, nil)
-	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), mock.AnythingOfType("int"), mock.AnythingOfType("model.PullCursor"), mock.AnythingOfType("model.PullCursor")).
 		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
 
 	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
@@ -295,7 +297,7 @@ func TestSync_LegacyResponseOmitsAbsentMutationProtocolV2Fields(t *testing.T) {
 	syncSvc.On("Push", context.Background(), mock.MatchedBy(func(req model.SyncRequest) bool {
 		return req.ProtocolVersion == 0 && req.MutationCursor == nil && len(req.Mutations) == 0
 	}), "user-uuid-123").Return(syncResp, nil)
-	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), mock.AnythingOfType("int"), mock.AnythingOfType("model.PullCursor"), mock.AnythingOfType("model.PullCursor")).
 		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
 
 	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
@@ -336,7 +338,7 @@ func TestSyncHandler_Pull_IncludesSessions(t *testing.T) {
 	syncSvc := &mockSyncSvc{}
 	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
 		Return(syncResp, nil)
-	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), mock.AnythingOfType("int"), mock.AnythingOfType("model.PullCursor"), mock.AnythingOfType("model.PullCursor")).
 		Return(pullResult, nil)
 
 	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
@@ -395,6 +397,260 @@ func TestHandlerSync_Push_UnknownSession_Returns400(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code, "unknown session_id must be 400, not 500")
 }
 
+// ─── PR 2a: bounded legacy pull pagination — handler-level pull_limit clamp ──
+
+// TestSync_PullLimitOmittedDefaultsTo100 verifies that when pull_limit is absent
+// from the request, the handler forwards limit=100 (model.DefaultPullLimit) to
+// SyncService.PullAll — old daemons that never heard of pull_limit still get a
+// bounded page, not an unbounded pull.
+func TestSync_PullLimitOmittedDefaultsTo100(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	syncResp := &model.SyncResponse{Pushed: 0, Pulled: []*model.Memory{}}
+	syncSvc := &mockSyncSvc{}
+	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
+		Return(syncResp, nil)
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), 100, model.PullCursor{}, model.PullCursor{}).
+		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
+
+	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
+		map[string]interface{}{
+			"project":  "jarvis-dev",
+			"memories": []interface{}{},
+		}, "valid-token")
+
+	require.Equal(t, http.StatusOK, w.Code)
+	syncSvc.AssertExpectations(t)
+}
+
+// TestSync_PullLimitClampedToMax verifies a pull_limit above MaxPullLimit is
+// clamped server-side, never trusted raw from the client.
+func TestSync_PullLimitClampedToMax(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	syncResp := &model.SyncResponse{Pushed: 0, Pulled: []*model.Memory{}}
+	syncSvc := &mockSyncSvc{}
+	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
+		Return(syncResp, nil)
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), 100, model.PullCursor{}, model.PullCursor{}).
+		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
+
+	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
+		map[string]interface{}{
+			"project":    "jarvis-dev",
+			"memories":   []interface{}{},
+			"pull_limit": 5000,
+		}, "valid-token")
+
+	require.Equal(t, http.StatusOK, w.Code)
+	syncSvc.AssertExpectations(t)
+}
+
+// TestSync_PullLimitWithinRangeForwardedAsIs verifies a valid pull_limit passes
+// through unchanged.
+func TestSync_PullLimitWithinRangeForwardedAsIs(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	syncResp := &model.SyncResponse{Pushed: 0, Pulled: []*model.Memory{}}
+	syncSvc := &mockSyncSvc{}
+	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
+		Return(syncResp, nil)
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), 17, model.PullCursor{}, model.PullCursor{}).
+		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
+
+	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
+		map[string]interface{}{
+			"project":    "jarvis-dev",
+			"memories":   []interface{}{},
+			"pull_limit": 17,
+		}, "valid-token")
+
+	require.Equal(t, http.StatusOK, w.Code)
+	syncSvc.AssertExpectations(t)
+}
+
+// TestSync_PullCursorsForwardedToPullAll verifies pull_cursor and
+// pull_session_cursor from the request body are forwarded as the
+// memories/sessions cursor arguments respectively (independent channels).
+func TestSync_PullCursorsForwardedToPullAll(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	syncResp := &model.SyncResponse{Pushed: 0, Pulled: []*model.Memory{}}
+	syncSvc := &mockSyncSvc{}
+	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
+		Return(syncResp, nil)
+
+	expectedMemCursor := model.PullCursor{SyncedAt: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC), SyncID: "mem-cursor-x"}
+	expectedSessCursor := model.PullCursor{SyncedAt: time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC), SyncID: "sess-cursor-x"}
+
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), 100, expectedMemCursor, expectedSessCursor).
+		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
+
+	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
+		map[string]interface{}{
+			"project":  "jarvis-dev",
+			"memories": []interface{}{},
+			"pull_cursor": map[string]interface{}{
+				"synced_at": expectedMemCursor.SyncedAt.Format(time.RFC3339),
+				"sync_id":   expectedMemCursor.SyncID,
+			},
+			"pull_session_cursor": map[string]interface{}{
+				"synced_at": expectedSessCursor.SyncedAt.Format(time.RFC3339),
+				"sync_id":   expectedSessCursor.SyncID,
+			},
+		}, "valid-token")
+
+	require.Equal(t, http.StatusOK, w.Code)
+	syncSvc.AssertExpectations(t)
+}
+
+// TestSync_ResponseIncludesPullPaginationFields verifies the response wire
+// fields (pulled_has_more, next_pull_cursor, pulled_sessions_has_more,
+// next_session_cursor) round-trip from PullResult into the JSON body.
+func TestSync_ResponseIncludesPullPaginationFields(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	nextMemCursor := &model.PullCursor{SyncedAt: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC), SyncID: "next-mem"}
+	nextSessCursor := &model.PullCursor{SyncedAt: time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC), SyncID: "next-sess"}
+
+	syncResp := &model.SyncResponse{Pushed: 0, Pulled: []*model.Memory{}}
+	syncSvc := &mockSyncSvc{}
+	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
+		Return(syncResp, nil)
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), 100, model.PullCursor{}, model.PullCursor{}).
+		Return(&model.PullResult{
+			Sessions:          []*model.Session{},
+			Memories:          []*model.Memory{},
+			MemoriesHasMore:   true,
+			NextPullCursor:    nextMemCursor,
+			SessionsHasMore:   true,
+			NextSessionCursor: nextSessCursor,
+		}, nil)
+
+	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
+		map[string]interface{}{
+			"project":  "jarvis-dev",
+			"memories": []interface{}{},
+		}, "valid-token")
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, true, body["pulled_has_more"])
+	assert.Equal(t, true, body["pulled_sessions_has_more"])
+
+	nextPull, ok := body["next_pull_cursor"].(map[string]interface{})
+	require.True(t, ok, "next_pull_cursor must be a JSON object")
+	assert.Equal(t, "next-mem", nextPull["sync_id"])
+
+	nextSess, ok := body["next_session_cursor"].(map[string]interface{})
+	require.True(t, ok, "next_session_cursor must be a JSON object")
+	assert.Equal(t, "next-sess", nextSess["sync_id"])
+}
+
+// TestSync_ResponseOmitsPullPaginationFieldsWhenFullyDrained verifies backward
+// compat: when the pull fits in one page (the common/legacy case), the new
+// fields are entirely absent from the JSON body — an old daemon parsing this
+// response sees exactly the same shape as before PR 2a.
+func TestSync_ResponseOmitsPullPaginationFieldsWhenFullyDrained(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	syncResp := &model.SyncResponse{Pushed: 0, Pulled: []*model.Memory{}}
+	syncSvc := &mockSyncSvc{}
+	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
+		Return(syncResp, nil)
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), 100, model.PullCursor{}, model.PullCursor{}).
+		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
+
+	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
+		map[string]interface{}{
+			"project":  "jarvis-dev",
+			"memories": []interface{}{},
+		}, "valid-token")
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.NotContains(t, body, "pulled_has_more")
+	assert.NotContains(t, body, "next_pull_cursor")
+	assert.NotContains(t, body, "pulled_sessions_has_more")
+	assert.NotContains(t, body, "next_session_cursor")
+}
+
+// ─── PR 2a: field-identifying 400 for oversized arrays ───────────────────────
+
+// TestSync_OversizedMemoriesArray_Returns400WithFieldName verifies that when
+// memories[] exceeds binding:"max=100", the 400 error body names the offending
+// field ("Memories" / "memories") instead of a generic validator message —
+// gin's validator.FieldError carries this, we just need to surface it.
+func TestSync_OversizedMemoriesArray_Returns400WithFieldName(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	oversizedMemories := make([]interface{}, 101)
+	for i := range oversizedMemories {
+		oversizedMemories[i] = map[string]interface{}{
+			"sync_id":    "11111111-1111-1111-1111-111111111111",
+			"project":    "jarvis-dev",
+			"category":   "decision",
+			"title":      "t",
+			"content":    "c",
+			"created_by": "daemon-user",
+		}
+	}
+
+	w := doAuthRequest(t, syncDeps(authSvc, &mockSyncSvc{}), http.MethodPost, "/sync",
+		map[string]interface{}{
+			"project":  "jarvis-dev",
+			"memories": oversizedMemories,
+		}, "valid-token")
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+
+	var body model.ErrorResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Contains(t, strings.ToLower(body.Error), "memories", "400 body must identify the offending field")
+}
+
+// TestSync_OversizedSessionsArray_Returns400WithFieldName mirrors the memories
+// case for the sessions[] field.
+func TestSync_OversizedSessionsArray_Returns400WithFieldName(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	oversizedSessions := make([]interface{}, 101)
+	for i := range oversizedSessions {
+		oversizedSessions[i] = map[string]interface{}{
+			"id":      fmt.Sprintf("sess-%d", i),
+			"sync_id": fmt.Sprintf("22222222-2222-2222-2222-%012d", i),
+			"project": "jarvis-dev",
+			"dev_id":  "dev",
+			"client":  "claude-code",
+		}
+	}
+
+	w := doAuthRequest(t, syncDeps(authSvc, &mockSyncSvc{}), http.MethodPost, "/sync",
+		map[string]interface{}{
+			"project":  "jarvis-dev",
+			"memories": []interface{}{},
+			"sessions": oversizedSessions,
+		}, "valid-token")
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+
+	var body model.ErrorResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Contains(t, strings.ToLower(body.Error), "sessions", "400 body must identify the offending field")
+}
+
 // TestSync_NoPrompts verifica S9 (backward-compat): un cliente antiguo que no envía
 // el campo prompts recibe prompts_pushed=0 en la respuesta.
 func TestSync_NoPrompts(t *testing.T) {
@@ -411,7 +667,7 @@ func TestSync_NoPrompts(t *testing.T) {
 	syncSvc := &mockSyncSvc{}
 	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").
 		Return(syncResp, nil)
-	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), mock.AnythingOfType("int"), mock.AnythingOfType("model.PullCursor"), mock.AnythingOfType("model.PullCursor")).
 		Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
 
 	// Daemon antiguo: no incluye el campo "prompts" en el body

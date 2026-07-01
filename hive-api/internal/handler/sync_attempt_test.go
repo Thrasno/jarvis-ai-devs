@@ -122,7 +122,7 @@ func TestSyncAttempts_DoesNotChangePostSyncRoute(t *testing.T) {
 	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
 	syncSvc := &mockSyncSvc{}
 	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").Return(&model.SyncResponse{Pushed: 0, Pulled: []*model.Memory{}}, nil)
-	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string")).Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
+	syncSvc.On("PullAll", context.Background(), "jarvis-dev", mock.AnythingOfType("time.Time"), mock.AnythingOfType("[]string"), mock.AnythingOfType("int"), mock.AnythingOfType("model.PullCursor"), mock.AnythingOfType("model.PullCursor")).Return(&model.PullResult{Sessions: []*model.Session{}, Memories: []*model.Memory{}}, nil)
 
 	w := doAuthRequest(t, RouterDeps{AuthSvc: authSvc, MemorySvc: &mockMemorySvc{}, SyncSvc: syncSvc, SyncAttemptSvc: &mockSyncAttemptSvc{}, AdminSvc: &mockAdminSvc{}}, http.MethodPost, "/sync", map[string]interface{}{"project": "jarvis-dev", "memories": []interface{}{}}, "valid-token")
 

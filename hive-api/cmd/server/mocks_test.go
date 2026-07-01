@@ -72,8 +72,8 @@ func (m *mockSync) Push(ctx context.Context, req model.SyncRequest, userID strin
 	}
 	return args.Get(0).(*model.SyncResponse), args.Error(1)
 }
-func (m *mockSync) PullAll(ctx context.Context, project string, since time.Time, excludeSyncIDs []string) (*model.PullResult, error) {
-	args := m.Called(ctx, project, since, excludeSyncIDs)
+func (m *mockSync) PullAll(ctx context.Context, project string, since time.Time, excludeSyncIDs []string, limit int, memoriesCursor, sessionsCursor model.PullCursor) (*model.PullResult, error) {
+	args := m.Called(ctx, project, since, excludeSyncIDs, limit, memoriesCursor, sessionsCursor)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}

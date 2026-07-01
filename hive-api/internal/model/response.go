@@ -39,9 +39,20 @@ type SyncSessionResponse = SyncSessionPayload
 // PullResult agrupa sesiones y memorias devueltas por un pull incremental.
 // Las sesiones van ANTES que las memorias — el daemon receptor las inserta primero
 // para satisfacer la FK memories.session_id → sessions(id).
+//
+// MemoriesHasMore/SessionsHasMore + los next cursors implementan la paginación
+// acotada del pull legado (PR 2a, design §2.2). El servidor SOLO expone la página
+// actual + el indicador de continuación — la composición del drain completo
+// (llamar repetidamente hasta hasMore=false) es responsabilidad exclusiva del
+// daemon consumidor (PR 2b), no de este paquete.
 type PullResult struct {
 	Sessions []*Session
 	Memories []*Memory
+
+	MemoriesHasMore   bool
+	NextPullCursor    *PullCursor
+	SessionsHasMore   bool
+	NextSessionCursor *PullCursor
 }
 
 // SyncResponse es la respuesta del POST /sync.
@@ -70,6 +81,17 @@ type SyncResponse struct {
 	NextMutationCursor *MutationCursor    `json:"next_mutation_cursor,omitempty"`
 	PulledMutations    []MutationEnvelope `json:"pulled_mutations,omitempty"`
 	CompatibilityMode  string             `json:"compatibility_mode,omitempty"`
+
+	// Bounded legacy pull pagination (PR 2a, design §2.2). These fields cover the
+	// two previously-unbounded legacy pull channels: Pulled (memories) and
+	// PulledSessions. omitempty preserves backward compat — an old daemon that
+	// doesn't understand these fields simply ignores them, and when the pull is
+	// fully drained in one page (the common case) has_more is false/omitted so
+	// old and new daemons see the same shape.
+	PulledHasMore         bool        `json:"pulled_has_more,omitempty"`
+	NextPullCursor        *PullCursor `json:"next_pull_cursor,omitempty"`
+	PulledSessionsHasMore bool        `json:"pulled_sessions_has_more,omitempty"`
+	NextSessionCursor     *PullCursor `json:"next_session_cursor,omitempty"`
 }
 
 const MutationProtocolVersion = 2

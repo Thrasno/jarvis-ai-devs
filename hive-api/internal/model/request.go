@@ -69,6 +69,23 @@ type SyncRequest struct {
 	ProtocolVersion int                `json:"protocol_version,omitempty"`
 	MutationCursor  *MutationCursor    `json:"mutation_cursor,omitempty"`
 	Mutations       []MutationEnvelope `json:"mutations,omitempty" binding:"max=100,dive"`
+
+	// PullLimit bounds how many rows the legacy pull channels (pulled memories,
+	// pulled sessions) return per request (PR 2a, design §2.2). Omitted or 0 means
+	// "use the server default" — clamped server-side via model.ClampPullLimit to
+	// [1, MaxPullLimit]. Old daemons that don't send this field get the same
+	// default-100 bounded page; they never relied on an unbounded pull.
+	PullLimit int `json:"pull_limit,omitempty"`
+
+	// PullCursor resumes legacy memory pull pagination after a previous bounded
+	// page (see SyncResponse.NextPullCursor). Nil means start from the beginning
+	// of the current since-based window.
+	PullCursor *PullCursor `json:"pull_cursor,omitempty"`
+
+	// PullSessionCursor resumes legacy session pull pagination after a previous
+	// bounded page (see SyncResponse.NextSessionCursor). Independent from
+	// PullCursor — sessions and memories paginate separately.
+	PullSessionCursor *PullCursor `json:"pull_session_cursor,omitempty"`
 }
 
 // SyncSessionPayload es el formato de sesión en el wire protocol de sync.

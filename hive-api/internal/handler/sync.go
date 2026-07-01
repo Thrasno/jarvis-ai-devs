@@ -73,7 +73,20 @@ func (h *SyncHandler) Sync(c *gin.Context) {
 		excludeIDs = append(excludeIDs, m.SyncID)
 	}
 
-	pullResult, err := h.svc.PullAll(c.Request.Context(), req.Project, since, excludeIDs)
+	// pull_limit acota el tamaño de página de los canales de pull legado (PR 2a).
+	// Ausente/0 → default 100; se clampea a [1, MaxPullLimit] server-side —
+	// nunca confiamos en el valor crudo del cliente.
+	pullLimit := model.ClampPullLimit(req.PullLimit)
+
+	var memoriesCursor, sessionsCursor model.PullCursor
+	if req.PullCursor != nil {
+		memoriesCursor = *req.PullCursor
+	}
+	if req.PullSessionCursor != nil {
+		sessionsCursor = *req.PullSessionCursor
+	}
+
+	pullResult, err := h.svc.PullAll(c.Request.Context(), req.Project, since, excludeIDs, pullLimit, memoriesCursor, sessionsCursor)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "error en pull de memorias"})
 		return
@@ -101,13 +114,17 @@ func (h *SyncHandler) Sync(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, model.SyncResponse{
-		Pushed:             pushResp.Pushed,
-		Pulled:             pulled,
-		Conflicts:          pushResp.Conflicts,
-		PromptsPushed:      pushResp.PromptsPushed,
-		PulledSessions:     pulledSessions,
-		NextMutationCursor: pushResp.NextMutationCursor,
-		PulledMutations:    pushResp.PulledMutations,
-		CompatibilityMode:  pushResp.CompatibilityMode,
+		Pushed:                pushResp.Pushed,
+		Pulled:                pulled,
+		Conflicts:             pushResp.Conflicts,
+		PromptsPushed:         pushResp.PromptsPushed,
+		PulledSessions:        pulledSessions,
+		NextMutationCursor:    pushResp.NextMutationCursor,
+		PulledMutations:       pushResp.PulledMutations,
+		CompatibilityMode:     pushResp.CompatibilityMode,
+		PulledHasMore:         pullResult.MemoriesHasMore,
+		NextPullCursor:        pullResult.NextPullCursor,
+		PulledSessionsHasMore: pullResult.SessionsHasMore,
+		NextSessionCursor:     pullResult.NextSessionCursor,
 	})
 }
