@@ -173,6 +173,7 @@ func startupMigrationSQL() []string {
 		migrations.SyncAttemptLogsSQL,
 		migrations.ActivityFeedIndexSQL,
 		migrations.MemoryDiscoveryIndexesSQL,
+		migrations.PullCursorIndexesSQL,
 	}
 }
 
