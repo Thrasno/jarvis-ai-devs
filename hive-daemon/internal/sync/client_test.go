@@ -188,7 +188,7 @@ func TestClient_Sync(t *testing.T) {
 			}
 			client := newClient(cfg)
 
-			resp, err := client.sync(context.Background(), "test-token", "test-project", []*models.Session{}, tt.toSend, []*models.Prompt{}, tt.lastSync, nil, nil)
+			resp, err := client.sync(context.Background(), "test-token", "test-project", []*models.Session{}, tt.toSend, []*models.Prompt{}, tt.lastSync, nil, nil, pullOptions{})
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -231,7 +231,7 @@ func TestClient_SyncRequest_OmitsLegacyMetadataFields(t *testing.T) {
 	defer server.Close()
 
 	c := newClient(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"})
-	_, err := c.sync(context.Background(), "test-token", "test-project", []*models.Session{}, []*models.Memory{createTestSyncMemory("local-sync-metadata")}, []*models.Prompt{}, nil, nil, nil)
+	_, err := c.sync(context.Background(), "test-token", "test-project", []*models.Session{}, []*models.Memory{createTestSyncMemory("local-sync-metadata")}, []*models.Prompt{}, nil, nil, nil, pullOptions{})
 	require.NoError(t, err)
 }
 
@@ -287,7 +287,7 @@ func TestClient_Sync_AuthFailure(t *testing.T) {
 			}
 			client := newClient(cfg)
 
-			_, err := client.sync(context.Background(), "invalid-token", "test-project", []*models.Session{}, []*models.Memory{}, []*models.Prompt{}, nil, nil, nil)
+			_, err := client.sync(context.Background(), "invalid-token", "test-project", []*models.Session{}, []*models.Memory{}, []*models.Prompt{}, nil, nil, nil, pullOptions{})
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -372,7 +372,7 @@ func TestClient_Sync_WithPrompts(t *testing.T) {
 			}
 			c := newClient(cfg)
 
-			resp, err := c.sync(context.Background(), "test-token", "test-project", []*models.Session{}, []*models.Memory{}, tt.prompts, nil, nil, nil)
+			resp, err := c.sync(context.Background(), "test-token", "test-project", []*models.Session{}, []*models.Memory{}, tt.prompts, nil, nil, nil, pullOptions{})
 			require.NoError(t, err)
 			if resp.PromptsPushed != tt.wantPromptsPushed {
 				t.Errorf("expected PromptsPushed=%d, got %d", tt.wantPromptsPushed, resp.PromptsPushed)
@@ -437,7 +437,7 @@ func TestClient_Sync_MutationProtocolV2PayloadAndResponse(t *testing.T) {
 	defer server.Close()
 
 	c := newClient(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"})
-	resp, err := c.sync(context.Background(), "test-token", "test-project", []*models.Session{}, nil, nil, nil, pending, cursor)
+	resp, err := c.sync(context.Background(), "test-token", "test-project", []*models.Session{}, nil, nil, nil, pending, cursor, pullOptions{})
 	require.NoError(t, err)
 	assert.Equal(t, "mutation-sync-v2", resp.CompatibilityMode)
 	require.NotNil(t, resp.NextMutationCursor)
@@ -454,11 +454,118 @@ func TestClient_Sync_LegacyResponseLeavesMutationProtocolFieldsEmpty(t *testing.
 	defer server.Close()
 
 	c := newClient(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"})
-	resp, err := c.sync(context.Background(), "test-token", "test-project", []*models.Session{}, nil, nil, nil, nil, nil)
+	resp, err := c.sync(context.Background(), "test-token", "test-project", []*models.Session{}, nil, nil, nil, nil, nil, pullOptions{})
 	require.NoError(t, err)
 	assert.Empty(t, resp.CompatibilityMode)
 	assert.Nil(t, resp.NextMutationCursor)
 	assert.Empty(t, resp.PulledMutations)
+}
+
+// TestClient_Sync_SendsPullLimitAndCursors pins the PR 2a wire contract
+// (hive-sync-batched-drain task 2.6): the daemon must send pull_limit,
+// pull_cursor (memories channel), and pull_session_cursor (sessions
+// channel) on the request when the caller opts in via pullOptions.
+func TestClient_Sync_SendsPullLimitAndCursors(t *testing.T) {
+	memCursor := &PullCursor{SyncedAt: time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC), SyncID: "mem-cursor-sync-id"}
+	sessCursor := &PullCursor{SyncedAt: time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC), SyncID: "sess-cursor-sync-id"}
+
+	var captured syncRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+	}))
+	defer server.Close()
+
+	c := newClient(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"})
+	_, err := c.sync(context.Background(), "test-token", "test-project", []*models.Session{}, nil, nil, nil, nil, nil, pullOptions{
+		Limit:          100,
+		MemoriesCursor: memCursor,
+		SessionsCursor: sessCursor,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 100, captured.PullLimit)
+	require.NotNil(t, captured.PullCursor)
+	assert.Equal(t, "mem-cursor-sync-id", captured.PullCursor.SyncID)
+	require.NotNil(t, captured.PullSessionCursor)
+	assert.Equal(t, "sess-cursor-sync-id", captured.PullSessionCursor.SyncID)
+}
+
+// TestClient_Sync_ZeroPullOptionsOmitsPaginationFields pins the opt-in
+// contract: an empty pullOptions{} (the zero value) must not send pull_limit
+// or the cursor fields at all — omitempty keeps old-daemon-shaped requests
+// unchanged when a caller does not opt into bounded pagination.
+func TestClient_Sync_ZeroPullOptionsOmitsPaginationFields(t *testing.T) {
+	var rawBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&rawBody))
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+	}))
+	defer server.Close()
+
+	c := newClient(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"})
+	_, err := c.sync(context.Background(), "test-token", "test-project", []*models.Session{}, nil, nil, nil, nil, nil, pullOptions{})
+	require.NoError(t, err)
+
+	assert.NotContains(t, rawBody, "pull_limit")
+	assert.NotContains(t, rawBody, "pull_cursor")
+	assert.NotContains(t, rawBody, "pull_session_cursor")
+}
+
+// TestClient_Sync_DecodesPullPaginationResponseFields pins the response side
+// of the PR 2a wire contract: pulled_has_more, next_pull_cursor,
+// pulled_sessions_has_more, and next_session_cursor must decode onto
+// syncResponse.
+func TestClient_Sync_DecodesPullPaginationResponseFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+			"pushed":                   0,
+			"pulled":                   []any{},
+			"conflicts":                0,
+			"pulled_has_more":          true,
+			"next_pull_cursor":         map[string]any{"synced_at": "2026-06-01T10:00:00Z", "sync_id": "mem-next"},
+			"pulled_sessions_has_more": true,
+			"next_session_cursor":      map[string]any{"synced_at": "2026-06-01T11:00:00Z", "sync_id": "sess-next"},
+		}))
+	}))
+	defer server.Close()
+
+	c := newClient(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"})
+	resp, err := c.sync(context.Background(), "test-token", "test-project", []*models.Session{}, nil, nil, nil, nil, nil, pullOptions{Limit: 100})
+	require.NoError(t, err)
+
+	assert.True(t, resp.PulledHasMore)
+	require.NotNil(t, resp.NextPullCursor)
+	assert.Equal(t, "mem-next", resp.NextPullCursor.SyncID)
+	assert.True(t, resp.PulledSessionsHasMore)
+	require.NotNil(t, resp.NextSessionCursor)
+	assert.Equal(t, "sess-next", resp.NextSessionCursor.SyncID)
+}
+
+// TestClient_Sync_OldServerResponseWithoutPullFieldsDecodesFalse pins
+// backward-compat: an old hive-api response with no has_more/cursor fields
+// at all must decode to PulledHasMore=false, PulledSessionsHasMore=false,
+// and nil cursors — never an error and never a false "more pages" signal.
+func TestClient_Sync_OldServerResponseWithoutPullFieldsDecodesFalse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		// Deliberately the old, pre-PR-2a response shape — no pull pagination fields.
+		_, err := w.Write([]byte(`{"pushed":0,"pulled":[],"conflicts":0}`))
+		require.NoError(t, err)
+	}))
+	defer server.Close()
+
+	c := newClient(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"})
+	resp, err := c.sync(context.Background(), "test-token", "test-project", []*models.Session{}, nil, nil, nil, nil, nil, pullOptions{Limit: 100})
+	require.NoError(t, err)
+
+	assert.False(t, resp.PulledHasMore)
+	assert.Nil(t, resp.NextPullCursor)
+	assert.False(t, resp.PulledSessionsHasMore)
+	assert.Nil(t, resp.NextSessionCursor)
 }
 
 // TestClient_Login_ExportedWrapper tests the exported Login method which

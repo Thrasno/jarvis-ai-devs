@@ -25,6 +25,12 @@ const (
 	mutationCursorConsumerAPI   = "hive-api"
 	compatibilityModeLegacy     = "legacy-row-state"
 	compatibilityModeMutationV2 = "mutation-sync-v2"
+
+	// pullCursorChannelMemories/pullCursorChannelSessions identify the two
+	// independently-paginated legacy pull channels for GetPullCursor/
+	// SetPullCursor (PR 2a/2b, hive-sync-batched-drain).
+	pullCursorChannelMemories = "memories"
+	pullCursorChannelSessions = "sessions"
 )
 
 // syncPageSize caps how many unsynced memories, sessions, and prompts a
@@ -34,6 +40,18 @@ const (
 // GetPendingMutations already took an explicit limit before this PR; it now
 // shares the same page size.
 var syncPageSize = 100
+
+// maxDrainBatches bounds the total number of syncBatchStep iterations a
+// single Drain(TriggerManual) run may execute (PR 2b infinite-loop fix,
+// hive-sync-batched-drain). It is defense-in-depth on top of the pull-cursor
+// no-progress guard below: even if that guard's logic somehow has a gap, the
+// loop still cannot spin forever. At syncPageSize=100 per channel, a backlog
+// at the ~1.5k-5k target scale drains in well under 100 batches per channel,
+// so this cap is generous for any legitimate drain while still being a
+// small, finite number. It is a package-level var (not a const) so tests can
+// shrink it to hit the cap deterministically without looping thousands of
+// times.
+var maxDrainBatches = 5000
 
 var (
 	ErrSyncInFlight = errors.New("sync already in progress")
@@ -87,6 +105,13 @@ type SyncStore interface {
 	ApplyRemoteMutation(event db.MutationEnvelope) (bool, error)
 	GetMutationCursor(consumer, project string) (db.MutationCursor, error)
 	SetMutationCursor(consumer, project string, cursor db.MutationCursor, at time.Time) error
+	// GetPullCursor/SetPullCursor persist the bounded legacy-pull resume
+	// position (PR 2a/2b, hive-sync-batched-drain) per (consumer, project,
+	// channel). channel is pullCursorChannelMemories or
+	// pullCursorChannelSessions — the two legacy pull channels paginate
+	// independently.
+	GetPullCursor(consumer, project, channel string) (db.PullCursor, error)
+	SetPullCursor(consumer, project, channel string, cursor db.PullCursor, at time.Time) error
 	RecordSyncAttemptLog(ctx context.Context, log db.SyncAttemptLog) error
 	ListPendingSyncAttemptLogs(ctx context.Context, limit int) ([]db.SyncAttemptLog, error)
 	MarkSyncAttemptLogsDelivered(ctx context.Context, ids []string, at time.Time) error
@@ -153,6 +178,17 @@ type batchResult struct {
 	// PullHasMore is hardcoded false in PR 1b-i.
 	// TODO(PR2): wire from server has_more once hive-api paginates pulls.
 	PullHasMore bool
+
+	// PullMemoriesCursor/PullSessionsCursor (PR 2b infinite-loop fix) are the
+	// per-channel pull cursors AFTER this batch: the value the server
+	// returned via NextPullCursor/NextSessionCursor, or — when the server
+	// did not return one (already-drained channel, or a server that predates
+	// pagination) — the cursor that was already persisted before this batch
+	// ran. Drain compares these against the previous iteration's values to
+	// decide whether the pull side actually advanced, instead of trusting
+	// PullHasMore alone (see the Drain no-progress guard doc).
+	PullMemoriesCursor db.PullCursor
+	PullSessionsCursor db.PullCursor
 }
 
 // Result resume los resultados de un sync.
@@ -315,8 +351,29 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 	outcome := DrainOutcome{}
 	var lastResp *syncResponse
 	prevMutationCursor := db.MutationCursor{}
+	// prevPullMemoriesCursor/prevPullSessionsCursor (PR 2b infinite-loop fix)
+	// track each pull channel's cursor as of the END of the previous
+	// iteration, so the no-progress guard below can require an actual
+	// cursor advance instead of trusting the server's PullHasMore flag
+	// unconditionally. Zero value matches "nothing persisted yet", exactly
+	// like prevMutationCursor above.
+	prevPullMemoriesCursor := db.PullCursor{}
+	prevPullSessionsCursor := db.PullCursor{}
 
 	for {
+		if outcome.Batches >= maxDrainBatches {
+			// Defense-in-depth (PR 2b infinite-loop fix): even if the
+			// cursor-advance corroboration below has a gap we haven't
+			// anticipated, this hard cap guarantees Drain(TriggerManual)
+			// cannot spin forever. Hitting this in practice means either a
+			// pathological backlog far beyond the ~1.5k-5k target scale or a
+			// genuine bug — surface it as pending (not a hard failure) so
+			// the caller can retry, but make it loud in the log so it is
+			// diagnosable.
+			logger.Log.Printf("warn: Drain(project=%s) hit maxDrainBatches=%d without draining the backlog — stopping", project, maxDrainBatches)
+			outcome.State = DrainExpectedPending
+			break
+		}
 		batch, resp, stepErr := s.syncBatchStepWithResponse(ctx, project, token)
 		if stepErr != nil {
 			// recordFailure must see the raw underlying error (unwrapped), not
@@ -367,10 +424,31 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 			break
 		}
 
-		// Termination guard (T1b-ii.5, revised design §4.3 for PR 1b-iii): if
-		// this iteration durably marked NOTHING synced AND the mutation cursor
-		// did not advance, the loop is not making progress (e.g. a permanent
-		// server-side conflict) — stop instead of spinning forever.
+		// Termination guard (T1b-ii.5, revised design §4.3 for PR 1b-iii, and
+		// again for PR 2b task 2.8's pull pagination, and again for the PR 2b
+		// fresh-review infinite-loop fix): if this iteration durably marked
+		// NOTHING synced, the mutation cursor did not advance, AND the pull
+		// side did not actually advance either cursor, the loop is not
+		// making progress (e.g. a permanent server-side conflict, or a
+		// misbehaving server) — stop instead of spinning forever.
+		//
+		// pullAdvanced corroborates batch.PullHasMore with an actual cursor
+		// move (PR 2b infinite-loop fix, fresh-context review CRITICAL #1):
+		// PullHasMore alone is NOT trustworthy as a progress signal — hive-api
+		// could report has_more=true while returning the same/nil next
+		// cursor (server bug, replayed page, or a page whose rows are all
+		// already local so nothing gets pulled/marked). Trusting PullHasMore
+		// unconditionally in that case spins Drain(TriggerManual) forever,
+		// since pull-apply does not increment RecordsMarkedSynced and the
+		// mutation cursor is unrelated to the pull channels. Requiring an
+		// actual per-channel cursor advance closes that hole while still
+		// preserving the original intent: a HEALTHY multi-page pull-only
+		// drain (cursor genuinely advances every page) must keep looping
+		// until has_more=false — see
+		// TestDrain_TriggerManual_DrainsMultiPagePullAndAdvancesCursorsPerChannel,
+		// which stays green because postBatchPullMemoriesCursor/
+		// postBatchPullSessionsCursor advance on every one of its 3 batches.
+		pullAdvanced := batch.PullMemoriesCursor != prevPullMemoriesCursor || batch.PullSessionsCursor != prevPullSessionsCursor
 		//
 		// This intentionally no longer looks at BacklogSize. Once syncBatchStep
 		// pages its push fetch at syncPageSize (PR 1b-iii), a healthy multi-page
@@ -380,11 +458,13 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 		// still-productive drain short. RecordsMarkedSynced reflects records the
 		// server actually confirmed and the store durably marked this batch,
 		// which stays a true progress signal regardless of page size.
-		if batch.RecordsMarkedSynced == 0 && batch.MutationCursor == prevMutationCursor {
+		if batch.RecordsMarkedSynced == 0 && batch.MutationCursor == prevMutationCursor && !pullAdvanced {
 			outcome.State = DrainExpectedPending
 			break
 		}
 		prevMutationCursor = batch.MutationCursor
+		prevPullMemoriesCursor = batch.PullMemoriesCursor
+		prevPullSessionsCursor = batch.PullSessionsCursor
 	}
 
 	// Paso 6: actualizamos el timestamp del último sync exitoso
@@ -438,21 +518,63 @@ func (s *Syncer) syncBatchStep(ctx context.Context, project, token string) (batc
 // syncBatchStep so the public batch-step signature required by design §4.2
 // stays exactly `(batchResult, error)`.
 func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token string) (batchResult, *syncResponse, error) {
+	// Paso 2b: sesiones locales pendientes de sync, paged (non-fatal si falla).
+	// Fetched BEFORE memories so the session-priority gate below (PR 2b,
+	// hive-sync-batched-drain) can decide whether this batch is allowed to
+	// push memories at all.
+	unsyncedSessions, err := s.store.ListUnsyncedSessionsPage(project, syncPageSize)
+	if err != nil {
+		logger.Log.Printf("warn: obtener sesiones no sincronizadas: %v", err)
+		unsyncedSessions = nil
+	}
+
 	// Paso 2: memorias locales pendientes de sync. Paged at syncPageSize (PR
 	// 1b-iii, hive-sync-batched-drain) so a single push batch never exceeds
 	// the page cap — a Drain(TriggerManual) run pages through the rest via
 	// repeated syncBatchStep calls instead of pushing the whole backlog at
 	// once.
-	unsynced, err := s.store.GetUnsyncedPage(project, syncPageSize)
-	if err != nil {
-		return batchResult{}, nil, fmt.Errorf("obtener memorias no sincronizadas: %w", err)
-	}
-
-	// Paso 2b: sesiones locales pendientes de sync, paged (non-fatal si falla).
-	unsyncedSessions, err := s.store.ListUnsyncedSessionsPage(project, syncPageSize)
-	if err != nil {
-		logger.Log.Printf("warn: obtener sesiones no sincronizadas: %v", err)
-		unsyncedSessions = nil
+	//
+	// Session-priority gate (PR 2b, hive-sync-batched-drain — fixes an
+	// FK-ordering regression from PR 1b-iii): PR 1b-iii paged the sessions
+	// and memories channels INDEPENDENTLY. hive-api validates the
+	// memories[].session_id FK per-request against that SAME request's
+	// sessions[] plus whatever sessions the server already has confirmed. If
+	// the session backlog spans more than one page, a memory in an early
+	// memories page can name a session sitting in a LATER, not-yet-pushed
+	// session page — the server would then 400 with ErrSessionNotFound.
+	//
+	// The fix: while any unsynced session remains for this project, this
+	// batch pushes sessions (+prompts+mutations) only, and defers ALL
+	// memories to a later batch/tick — it does not even fetch a memories
+	// page. Once ListUnsyncedSessionsPage reports the session channel empty,
+	// memories resume flowing normally. This composes with the no-progress
+	// guard because draining sessions IS progress (RecordsMarkedSynced
+	// increments), and it holds for both TriggerManual (the loop keeps
+	// calling syncBatchStep) and TriggerAuto (that single tick simply pushes
+	// sessions only; memories wait for the next auto tick once sessions are
+	// fully drained).
+	//
+	// Deferring the fetch itself (rather than fetching and holding back) also
+	// keeps len(unsyncedSessions) > 0 driving PushBacklogEmpty below to
+	// false, so Drain(TriggerManual) correctly keeps looping instead of
+	// mistaking a memories-deferred batch for a fully-drained one.
+	var unsynced []*models.Memory
+	if len(unsyncedSessions) == 0 {
+		unsynced, err = s.store.GetUnsyncedPage(project, syncPageSize)
+		if err != nil {
+			return batchResult{}, nil, fmt.Errorf("obtener memorias no sincronizadas: %w", err)
+		}
+	} else {
+		// Visibility improvement (PR 2b fresh-review WARNING #2): log once per
+		// gated batch so a session that never drains (and therefore keeps
+		// deferring this project's memories indefinitely) is diagnosable from
+		// the daemon log instead of silently starving memories forever. Low
+		// noise by design: one informative line per gated step, not per
+		// session. The infinite-loop risk this used to carry (a permanently
+		// stuck session with pull pages still pending) is now bounded by the
+		// Drain no-progress guard's pull-cursor-advance corroboration and the
+		// maxDrainBatches cap above, not by this log line.
+		logger.Log.Printf("info: sync project=%s deferring memories this batch — %d unsynced session(s) still pending", project, len(unsyncedSessions))
 	}
 
 	// Paso 2c: prompts locales pendientes de sync, paged (non-fatal si falla).
@@ -475,6 +597,21 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 		return batchResult{}, nil, fmt.Errorf("obtener cursor de mutaciones: %w", err)
 	}
 
+	// Paso 2e: cursores de pull acotado persistidos (PR 2a/2b,
+	// hive-sync-batched-drain task 2.8). Cada canal pagina de forma
+	// independiente — ver GetPullCursor/SetPullCursor doc. Un cursor ausente
+	// (primera vez, o canal ya completamente drenado) es su valor cero, que
+	// pullOptions envía como nil (omitempty), exactamente como "empezar desde
+	// el principio de la ventana since-based actual".
+	pullMemoriesCursor, err := s.store.GetPullCursor(mutationCursorConsumerAPI, project, pullCursorChannelMemories)
+	if err != nil {
+		return batchResult{}, nil, fmt.Errorf("obtener cursor de pull de memorias: %w", err)
+	}
+	pullSessionsCursor, err := s.store.GetPullCursor(mutationCursorConsumerAPI, project, pullCursorChannelSessions)
+	if err != nil {
+		return batchResult{}, nil, fmt.Errorf("obtener cursor de pull de sesiones: %w", err)
+	}
+
 	// PushBacklogEmpty: nothing fetched above means nothing remained to send
 	// for this step. See the batchResult field doc for why this is the
 	// cheapest accurate check for a single, non-paged batch step.
@@ -483,14 +620,20 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 
 	now := s.deps.now().UTC()
 
-	// Paso 3 + 4: sync bidireccional con el servidor
+	// Paso 3 + 4: sync bidireccional con el servidor. PullLimit=syncPageSize
+	// is the explicit opt-in into hive-api's bounded pull pagination (PR 2a)
+	// — omitting it would fall back to an unbounded legacy pull.
 	lastSync, _ := s.store.GetLastSync(project)
 	var lastSyncPtr *time.Time
 	if !lastSync.IsZero() {
 		lastSyncPtr = &lastSync
 	}
 
-	resp, err := s.client.sync(ctx, token, project, unsyncedSessions, unsynced, unsyncedPrompts, lastSyncPtr, pendingMutations, &mutationCursor)
+	resp, err := s.client.sync(ctx, token, project, unsyncedSessions, unsynced, unsyncedPrompts, lastSyncPtr, pendingMutations, &mutationCursor, pullOptions{
+		Limit:          syncPageSize,
+		MemoriesCursor: pullCursorOrNil(pullMemoriesCursor),
+		SessionsCursor: pullCursorOrNil(pullSessionsCursor),
+	})
 	if err != nil {
 		return batchResult{}, nil, fmt.Errorf("sync con servidor: %w", err)
 	}
@@ -632,6 +775,36 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 		recordsMarkedSynced += mutationsPushed
 	}
 
+	// Paso 5f: persistimos los cursores de pull acotado para el próximo batch
+	// (PR 2a/2b, hive-sync-batched-drain task 2.8). Cada campo se persiste
+	// SOLO cuando el servidor efectivamente lo devolvió — un
+	// NextPullCursor/NextSessionCursor nil (respuesta de un servidor viejo
+	// sin paginación, o un canal ya totalmente drenado) no debe pisar el
+	// cursor persistido con un valor cero.
+	// postBatchPullMemoriesCursor/postBatchPullSessionsCursor (PR 2b
+	// infinite-loop fix) start from the cursors read at the top of this batch
+	// (pullMemoriesCursor/pullSessionsCursor) and are updated only when the
+	// server actually returned a next cursor for that channel — mirroring
+	// exactly the same "persist only when non-nil" condition as the
+	// SetPullCursor calls above, so these values always match what is now
+	// durably persisted for the channel. Drain uses them (not PullHasMore
+	// alone) to decide whether the pull side made real progress this
+	// iteration.
+	postBatchPullMemoriesCursor := pullMemoriesCursor
+	postBatchPullSessionsCursor := pullSessionsCursor
+	if resp.NextPullCursor != nil {
+		if err := s.store.SetPullCursor(mutationCursorConsumerAPI, project, pullCursorChannelMemories, *resp.NextPullCursor, now); err != nil {
+			return batchResult{}, nil, fmt.Errorf("guardar cursor de pull de memorias: %w", err)
+		}
+		postBatchPullMemoriesCursor = *resp.NextPullCursor
+	}
+	if resp.NextSessionCursor != nil {
+		if err := s.store.SetPullCursor(mutationCursorConsumerAPI, project, pullCursorChannelSessions, *resp.NextSessionCursor, now); err != nil {
+			return batchResult{}, nil, fmt.Errorf("guardar cursor de pull de sesiones: %w", err)
+		}
+		postBatchPullSessionsCursor = *resp.NextSessionCursor
+	}
+
 	return batchResult{
 		Pushed:              resp.Pushed,
 		Pulled:              len(resp.Pulled),
@@ -642,8 +815,14 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 		PushBacklogEmpty:    pushBacklogEmpty,
 		RecordsMarkedSynced: recordsMarkedSynced,
 		BacklogSize:         backlogSize,
-		// TODO(PR2): wire from server has_more once hive-api paginates pulls.
-		PullHasMore: false,
+		// PullHasMore (PR 2a/2b): true when EITHER pull channel reports more
+		// pages pending. An old hive-api response with no has_more fields at
+		// all decodes both to false (see syncResponse doc), so Drain
+		// terminates on push-empty exactly like before PR 2b — no behavior
+		// change against a server that predates pagination.
+		PullHasMore:        resp.PulledHasMore || resp.PulledSessionsHasMore,
+		PullMemoriesCursor: postBatchPullMemoriesCursor,
+		PullSessionsCursor: postBatchPullSessionsCursor,
 	}, resp, nil
 }
 
@@ -706,6 +885,20 @@ func newSyncAttemptID() string {
 		return fmt.Sprintf("attempt-%d", time.Now().UTC().UnixNano())
 	}
 	return hex.EncodeToString(buf)
+}
+
+// pullCursorOrNil converts a persisted db.PullCursor into the pointer shape
+// pullOptions expects: a zero-value cursor (never persisted, or the channel
+// has no resume position yet) sends nil so the request's pull_cursor/
+// pull_session_cursor field is omitted entirely (omitempty) — "start from
+// the beginning of the current window" — rather than an explicit zero
+// timestamp, which hive-api would otherwise have to special-case.
+func pullCursorOrNil(cursor db.PullCursor) *PullCursor {
+	if cursor == (db.PullCursor{}) {
+		return nil
+	}
+	result := cursor
+	return &result
 }
 
 func mutationEventIDs(mutations []db.MutationEnvelope) []string {

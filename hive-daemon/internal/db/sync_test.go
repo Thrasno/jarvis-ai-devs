@@ -1027,6 +1027,155 @@ func TestSyncDB_MutationCursorHelpersReturnDBErrors(t *testing.T) {
 	}
 }
 
+// TestSyncDB_PullCursorHelpers pins task 2.7 (hive-sync-batched-drain PR
+// 2b): GetPullCursor/SetPullCursor persist the bounded-pull resume position
+// per (consumer, project, channel), mirroring GetMutationCursor/
+// SetMutationCursor's shape — zero-value when absent, round-trips a set
+// value, and upserts (replaces) on repeated sets for the same key.
+func TestSyncDB_PullCursorHelpers(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     func(t *testing.T, db *DB)
+		consumer  string
+		project   string
+		channel   string
+		want      PullCursor
+		assertion func(t *testing.T, db *DB)
+	}{
+		{
+			name:     "missing cursor returns zero value",
+			setup:    func(t *testing.T, db *DB) {},
+			consumer: "hive-api",
+			project:  "pull-cursor-project-a",
+			channel:  "memories",
+			want:     PullCursor{},
+		},
+		{
+			name: "insert cursor persists synced_at and sync_id",
+			setup: func(t *testing.T, db *DB) {
+				require.NoError(t, db.SetPullCursor("hive-api", "pull-cursor-project-a", "memories",
+					PullCursor{SyncedAt: time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC), SyncID: "mem-1"},
+					time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)))
+			},
+			consumer: "hive-api",
+			project:  "pull-cursor-project-a",
+			channel:  "memories",
+			want:     PullCursor{SyncedAt: time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC), SyncID: "mem-1"},
+		},
+		{
+			name: "update cursor replaces synced_at and sync_id",
+			setup: func(t *testing.T, db *DB) {
+				require.NoError(t, db.SetPullCursor("hive-api", "pull-cursor-project-a", "memories",
+					PullCursor{SyncedAt: time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC), SyncID: "mem-1"},
+					time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)))
+				require.NoError(t, db.SetPullCursor("hive-api", "pull-cursor-project-a", "memories",
+					PullCursor{SyncedAt: time.Date(2026, 6, 1, 10, 5, 0, 0, time.UTC), SyncID: "mem-2"},
+					time.Date(2026, 6, 1, 10, 5, 0, 0, time.UTC)))
+			},
+			consumer: "hive-api",
+			project:  "pull-cursor-project-a",
+			channel:  "memories",
+			want:     PullCursor{SyncedAt: time.Date(2026, 6, 1, 10, 5, 0, 0, time.UTC), SyncID: "mem-2"},
+		},
+		{
+			name: "memories and sessions cursors are independent for the same project",
+			setup: func(t *testing.T, db *DB) {
+				require.NoError(t, db.SetPullCursor("hive-api", "pull-cursor-project-b", "memories",
+					PullCursor{SyncedAt: time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC), SyncID: "mem-b"},
+					time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC)))
+				require.NoError(t, db.SetPullCursor("hive-api", "pull-cursor-project-b", "sessions",
+					PullCursor{SyncedAt: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC), SyncID: "sess-b"},
+					time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)))
+			},
+			consumer: "hive-api",
+			project:  "pull-cursor-project-b",
+			channel:  "memories",
+			want:     PullCursor{SyncedAt: time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC), SyncID: "mem-b"},
+			assertion: func(t *testing.T, db *DB) {
+				got, err := db.GetPullCursor("hive-api", "pull-cursor-project-b", "sessions")
+				require.NoError(t, err)
+				assert.Equal(t, PullCursor{SyncedAt: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC), SyncID: "sess-b"}, got)
+			},
+		},
+		{
+			name: "cursor is isolated by project",
+			setup: func(t *testing.T, db *DB) {
+				require.NoError(t, db.SetPullCursor("hive-api", "pull-cursor-project-c", "memories",
+					PullCursor{SyncedAt: time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC), SyncID: "mem-c"},
+					time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)))
+				require.NoError(t, db.SetPullCursor("hive-api", "pull-cursor-project-d", "memories",
+					PullCursor{SyncedAt: time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC), SyncID: "mem-d"},
+					time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)))
+			},
+			consumer: "hive-api",
+			project:  "pull-cursor-project-d",
+			channel:  "memories",
+			want:     PullCursor{SyncedAt: time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC), SyncID: "mem-d"},
+			assertion: func(t *testing.T, db *DB) {
+				got, err := db.GetPullCursor("hive-api", "pull-cursor-project-c", "memories")
+				require.NoError(t, err)
+				assert.Equal(t, PullCursor{SyncedAt: time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC), SyncID: "mem-c"}, got)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+			tt.setup(t, db)
+
+			got, err := db.GetPullCursor(tt.consumer, tt.project, tt.channel)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+
+			if tt.assertion != nil {
+				tt.assertion(t, db)
+			}
+		})
+	}
+}
+
+func TestSyncDB_PullCursorHelpersReturnDBErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		call    func(*DB) error
+		wantErr string
+	}{
+		{
+			name: "get cursor on closed database returns wrapped db error",
+			call: func(db *DB) error {
+				_, err := db.GetPullCursor("hive-api", "pull-cursor-project", "memories")
+				return err
+			},
+			wantErr: "get pull cursor",
+		},
+		{
+			name: "set cursor on closed database returns wrapped db error",
+			call: func(db *DB) error {
+				return db.SetPullCursor("hive-api", "pull-cursor-project", "memories",
+					PullCursor{SyncedAt: time.Date(2026, 6, 1, 15, 0, 0, 0, time.UTC), SyncID: "mem-err"},
+					time.Date(2026, 6, 1, 15, 0, 0, 0, time.UTC))
+			},
+			wantErr: "set pull cursor",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			require.NoError(t, db.Close())
+
+			err := tt.call(db)
+
+			require.Error(t, err)
+			assert.ErrorContains(t, err, tt.wantErr)
+			assert.ErrorContains(t, err, "database is closed")
+		})
+	}
+}
+
 func TestSyncDB_ApplyRemoteMutationIdempotent(t *testing.T) {
 	db := setupTestDB(t)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })

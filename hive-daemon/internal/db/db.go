@@ -143,6 +143,22 @@ CREATE TABLE IF NOT EXISTS mutation_cursors (
     PRIMARY KEY (consumer, project)
 );
 
+-- pull_cursors persists the bounded legacy-pull resume position (PR 2a/2b,
+-- hive-sync-batched-drain) per (consumer, project, channel). "channel"
+-- distinguishes the two independently-paginated legacy pull channels —
+-- "memories" and "sessions" — mirroring mutation_cursors' shape one level
+-- deeper, since pull pagination needs one cursor per channel per project
+-- rather than a single cursor per project.
+CREATE TABLE IF NOT EXISTS pull_cursors (
+    consumer       TEXT NOT NULL,
+    project        TEXT NOT NULL,
+    channel        TEXT NOT NULL,
+    synced_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    sync_id        TEXT NOT NULL DEFAULT '',
+    updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (consumer, project, channel)
+);
+
 CREATE TABLE IF NOT EXISTS memory_prompt_links (
     memory_id  INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
     prompt_id  INTEGER NOT NULL REFERENCES user_prompts(id) ON DELETE CASCADE,
@@ -424,6 +440,10 @@ func initSchema(sqlDB *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS passive_observations (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL DEFAULT '', project TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, sync_id TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
 		`CREATE INDEX IF NOT EXISTS idx_passive_observations_session ON passive_observations(session_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_passive_observations_project ON passive_observations(project, created_at DESC)`,
+		// pull_cursors: additive table for bounded legacy-pull pagination resume
+		// positions (PR 2a/2b, hive-sync-batched-drain). See the base schema
+		// declaration above for field semantics.
+		`CREATE TABLE IF NOT EXISTS pull_cursors (consumer TEXT NOT NULL, project TEXT NOT NULL, channel TEXT NOT NULL, synced_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, sync_id TEXT NOT NULL DEFAULT '', updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (consumer, project, channel))`,
 	}
 	for _, m := range migrations {
 		if _, err := sqlDB.Exec(m); err != nil {
