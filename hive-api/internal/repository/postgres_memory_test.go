@@ -785,9 +785,10 @@ func TestPostgresMemoryRepository_PullSince(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			results, err := repo.PullSince(ctx, "pullsince-test", tt.since, tt.exclude)
+			results, hasMore, err := repo.PullSince(ctx, "pullsince-test", tt.since, tt.exclude, model.PullCursor{}, model.DefaultPullLimit)
 
 			require.NoError(t, err)
+			assert.False(t, hasMore, "backlog is well under the default limit — hasMore must be false")
 			assert.Len(t, results, tt.wantCount)
 
 			if tt.wantCount > 0 && tt.wantFirst != "" {
@@ -1235,7 +1236,7 @@ func TestPostgresMemoryRepository_PullSince_ReturnsSessionID(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	pulled, err := memRepo.PullSince(ctx, "crit7-pull", time.Time{}, nil)
+	pulled, _, err := memRepo.PullSince(ctx, "crit7-pull", time.Time{}, nil, model.PullCursor{}, model.DefaultPullLimit)
 	require.NoError(t, err)
 	require.Len(t, pulled, 1)
 	require.NotNil(t, pulled[0].SessionID, "PullSince must return session_id")
@@ -2082,6 +2083,41 @@ func TestPostgresMemoryRepository_ApplyMemoryMutation_DoesNotWriteAuditLogs(t *t
 	var auditAfter int
 	require.NoError(t, pool.QueryRow(ctx, `SELECT COUNT(*) FROM audit_logs`).Scan(&auditAfter))
 	assert.Equal(t, auditBefore, auditAfter, "domain mutation journaling must not use operational audit_logs")
+}
+
+// TestMigration010_PullCursorIndexesExist verifies that migration 010 creates the
+// composite (synced_at, sync_id) indexes on memories and sessions that keyset
+// pagination for bounded legacy pull relies on (PR 2a).
+func TestMigration010_PullCursorIndexesExist(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, RunMigrations(pool, migrations.PullCursorIndexesSQL))
+
+	tests := []struct {
+		table     string
+		indexName string
+	}{
+		{table: "memories", indexName: "idx_memories_synced_at_sync_id"},
+		{table: "sessions", indexName: "idx_sessions_synced_at_sync_id"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.indexName, func(t *testing.T) {
+			var exists bool
+			err := pool.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM pg_indexes
+					WHERE tablename = $1 AND indexname = $2
+				)`, tt.table, tt.indexName).Scan(&exists)
+			require.NoError(t, err)
+			assert.True(t, exists, "expected index %s on table %s to exist", tt.indexName, tt.table)
+		})
+	}
+
+	// Migration must be idempotent (IF NOT EXISTS) — applying it twice must not error.
+	require.NoError(t, RunMigrations(pool, migrations.PullCursorIndexesSQL))
 }
 
 func stringValue(s *string) string {

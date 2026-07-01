@@ -35,9 +35,21 @@ type SessionRepository interface {
 	// ListSessionsByProject devuelve todas las sesiones de un proyecto, ordenadas por started_at DESC.
 	ListSessionsByProject(ctx context.Context, project string) ([]model.Session, error)
 
-	// ListSessionsSince devuelve las sesiones del proyecto cuyo synced_at > since,
-	// ordenadas por started_at ASC. Cuando since es zero, devuelve todas las sesiones
-	// del proyecto (primer sync incremental). El filtro por project es obligatorio:
-	// sin él, un daemon recibiría sesiones de otros proyectos (R2-CRIT-4 — tenant leak).
-	ListSessionsSince(ctx context.Context, project string, since time.Time) ([]*model.Session, error)
+	// ListSessionsSince devuelve una página de sesiones del proyecto cuyo synced_at
+	// > since, ordenadas por (synced_at ASC, sync_id ASC) para paginación por keyset.
+	// Cuando since es zero, el barrido arranca desde el principio (primer sync
+	// incremental). El filtro por project es obligatorio: sin él, un daemon recibiría
+	// sesiones de otros proyectos (R2-CRIT-4 — tenant leak).
+	//
+	// cursor y limit siguen exactamente la misma semántica que
+	// MemoryRepository.PullSince: cursor (si no es cursor.IsZero()) reanuda
+	// estrictamente después de (cursor.SyncedAt, cursor.SyncID); limit acota el
+	// tamaño de página (ya clampeado por el caller); hasMore indica si quedan más
+	// filas después de la última devuelta.
+	//
+	// NOTA: el ordenamiento de salida cambia de started_at ASC a (synced_at, sync_id)
+	// ASC respecto a la firma anterior — necesario para que el cursor componga con el
+	// índice compuesto (synced_at, sync_id). El daemon consume sesiones por lote, no
+	// depende de un orden de started_at estable entre páginas.
+	ListSessionsSince(ctx context.Context, project string, since time.Time, cursor model.PullCursor, limit int) (sessions []*model.Session, hasMore bool, err error)
 }

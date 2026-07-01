@@ -608,11 +608,12 @@ func TestPostgresSessionRepository_ListSessionsSince(t *testing.T) {
 	// Cutoff is base+30s — sessions 2 and 3 have synced_at after the cutoff.
 	cutoff := base.Add(30 * time.Second)
 
-	got, err := repo.ListSessionsSince(ctx, "test-proj", cutoff)
+	got, hasMore, err := repo.ListSessionsSince(ctx, "test-proj", cutoff, model.PullCursor{}, model.DefaultPullLimit)
 	require.NoError(t, err)
 	require.Len(t, got, 2, "should return exactly 2 sessions after cutoff")
+	assert.False(t, hasMore)
 
-	// Chronological order by started_at ASC
+	// Ordered by (synced_at, sync_id) ASC, which matches started_at order here.
 	assert.Equal(t, "sess-list-2", got[0].ID)
 	assert.Equal(t, "sess-list-3", got[1].ID)
 }
@@ -635,7 +636,7 @@ func TestPostgresSessionRepository_ListSessionsSince_ZeroCutoff(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	got, err := repo.ListSessionsSince(ctx, "zero-proj", time.Time{})
+	got, _, err := repo.ListSessionsSince(ctx, "zero-proj", time.Time{}, model.PullCursor{}, model.DefaultPullLimit)
 	require.NoError(t, err)
 	// At minimum the 2 inserted rows are returned (other tests also insert to same DB
 	// but each test uses a fresh container so isolation is guaranteed)
@@ -666,14 +667,14 @@ func TestPostgresSessionRepository_ListSessionsSince_FiltersByProject(t *testing
 	insert("sess-A-2", "c1000000-0000-0000-0000-000000000002", "alpha", base.Add(time.Minute))
 	insert("sess-B-1", "c1000000-0000-0000-0000-000000000003", "beta", base.Add(2*time.Minute))
 
-	gotAlpha, err := repo.ListSessionsSince(ctx, "alpha", time.Time{})
+	gotAlpha, _, err := repo.ListSessionsSince(ctx, "alpha", time.Time{}, model.PullCursor{}, model.DefaultPullLimit)
 	require.NoError(t, err)
 	require.Len(t, gotAlpha, 2, "alpha must return only its own sessions")
 	for _, s := range gotAlpha {
 		assert.Equal(t, "alpha", s.Project)
 	}
 
-	gotBeta, err := repo.ListSessionsSince(ctx, "beta", time.Time{})
+	gotBeta, _, err := repo.ListSessionsSince(ctx, "beta", time.Time{}, model.PullCursor{}, model.DefaultPullLimit)
 	require.NoError(t, err)
 	require.Len(t, gotBeta, 1)
 	assert.Equal(t, "beta", gotBeta[0].Project)

@@ -98,12 +98,12 @@ func (m *MockMemoryRepository) Upsert(ctx context.Context, mem *model.Memory) (*
 	return args.Get(0).(*model.Memory), args.Bool(1), args.Error(2)
 }
 
-func (m *MockMemoryRepository) PullSince(ctx context.Context, project string, since time.Time, excludeSyncIDs []string) ([]*model.Memory, error) {
-	args := m.Called(ctx, project, since, excludeSyncIDs)
+func (m *MockMemoryRepository) PullSince(ctx context.Context, project string, since time.Time, excludeSyncIDs []string, cursor model.PullCursor, limit int) ([]*model.Memory, bool, error) {
+	args := m.Called(ctx, project, since, excludeSyncIDs, cursor, limit)
 	if args.Get(0) == nil {
-		return nil, args.Error(1)
+		return nil, args.Bool(1), args.Error(2)
 	}
-	return args.Get(0).([]*model.Memory), args.Error(1)
+	return args.Get(0).([]*model.Memory), args.Bool(1), args.Error(2)
 }
 
 func (m *MockMemoryRepository) ApplyMemoryMutation(ctx context.Context, mutation model.MutationEnvelope) (*model.MutationApplyResult, error) {
