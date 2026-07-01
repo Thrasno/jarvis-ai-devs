@@ -3190,3 +3190,128 @@ func TestDrain_TriggerManual_DrainsMultiPagePullAndAdvancesCursorsPerChannel(t *
 	require.NoError(t, err)
 	assert.Equal(t, "sess-page-3", finalSess.SyncID)
 }
+
+// TestDrain_TriggerManual_PullHasMoreButCursorStuck_Terminates is the
+// fresh-review CRITICAL regression test (PR 2b infinite-loop fix): a
+// misbehaving/legacy server keeps reporting pulled_has_more=true (and
+// pulled_sessions_has_more=true) on every batch but NEVER advances either
+// pull cursor (next_pull_cursor/next_session_cursor come back nil every
+// time, and nothing is ever pulled/pushed). Before the fix, the no-progress
+// guard trusted batch.PullHasMore unconditionally and looped forever. After
+// the fix, the guard must also require an actual pull-cursor advance before
+// treating PullHasMore as a progress signal, so this must terminate within a
+// small, bounded number of batches and classify as DrainExpectedPending (the
+// batch step never errors, so this is not a DrainDegradedFailure).
+func TestDrain_TriggerManual_PullHasMoreButCursorStuck_Terminates(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{jwt: "valid-token"}
+
+	var callCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync" {
+			return
+		}
+		atomic.AddInt32(&callCount, 1)
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{
+			Pushed: 0, Pulled: []apiMemory{},
+			// Server bug / malformed response: keeps claiming more pages are
+			// pending but never returns an advancing cursor for either
+			// channel, and nothing is actually pulled or marked synced.
+			PulledHasMore:         true,
+			NextPullCursor:        nil,
+			PulledSessionsHasMore: true,
+			NextSessionCursor:     nil,
+		}))
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	done := make(chan struct{})
+	var result *Result
+	var outcome DrainOutcome
+	var drainErr error
+	go func() {
+		result, outcome, drainErr = syncer.Drain(context.Background(), "test-project", TriggerManual)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Drain(TriggerManual) did not terminate — infinite loop on stuck pull cursor")
+	}
+
+	require.NoError(t, drainErr)
+	require.NotNil(t, result)
+
+	// Must stop well short of any "generous" iteration cap — the cursor
+	// no-progress guard, not the cap, is what terminates this case.
+	assert.Less(t, int(atomic.LoadInt32(&callCount)), 10,
+		"stuck-cursor drain must terminate almost immediately via the cursor no-progress guard, not the iteration cap")
+	assert.Equal(t, DrainExpectedPending, outcome.State)
+}
+
+// TestDrain_TriggerManual_IterationCapEnforced is the defense-in-depth
+// regression test for the bounded iteration cap: even if a server always
+// legitimately advances the pull cursor (so the cursor no-progress guard
+// alone would keep looping forever), Drain(TriggerManual) must still stop
+// once it hits maxDrainBatches. The test overrides maxDrainBatches to a
+// small value so it can hit the cap deterministically without looping
+// thousands of times.
+func TestDrain_TriggerManual_IterationCapEnforced(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{jwt: "valid-token"}
+
+	origCap := maxDrainBatches
+	maxDrainBatches = 5
+	defer func() { maxDrainBatches = origCap }()
+
+	var seq int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync" {
+			return
+		}
+		n := atomic.AddInt64(&seq, 1)
+		cursor := &PullCursor{SyncID: fmt.Sprintf("mem-page-%d", n)}
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{
+			Pushed: 0, Pulled: []apiMemory{},
+			// Always advances — a healthy-looking pull that never ends,
+			// simulating an endlessly-paginating backlog. Only the cap
+			// should stop this, not the cursor no-progress guard.
+			PulledHasMore:  true,
+			NextPullCursor: cursor,
+		}))
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	done := make(chan struct{})
+	var result *Result
+	var outcome DrainOutcome
+	var drainErr error
+	go func() {
+		result, outcome, drainErr = syncer.Drain(context.Background(), "test-project", TriggerManual)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Drain(TriggerManual) did not terminate — iteration cap not enforced")
+	}
+
+	require.NoError(t, drainErr)
+	require.NotNil(t, result)
+	assert.Equal(t, maxDrainBatches, outcome.Batches, "loop must stop exactly at the overridden cap")
+	assert.Equal(t, DrainExpectedPending, outcome.State)
+}
