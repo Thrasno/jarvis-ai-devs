@@ -91,6 +91,13 @@ type mockSyncStore struct {
 	// asserting Drain persists its outcome at the end of a run.
 	recordDrainOutcomeCalls []recordDrainOutcomeCall
 	recordDrainOutcomeErr   error
+
+	// getPendingMutationsCalls (fix-mutation-sync-session-gate) counts every
+	// GetPendingMutations invocation — used by the session-priority gate
+	// tests to assert the mutations fetch is skipped entirely (not merely
+	// filtered after the fact) while sessions are still pending, mirroring
+	// getUnsyncedPageLimits for memories.
+	getPendingMutationsCalls int
 }
 
 type pullCursorCall struct {
@@ -337,6 +344,7 @@ func (m *mockSyncStore) SaveSessionFromRemote(s *models.Session) error {
 func (m *mockSyncStore) GetPendingMutations(project string, limit int) ([]db.MutationEnvelope, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.getPendingMutationsCalls++
 	return append([]db.MutationEnvelope(nil), m.pendingMutations...), nil
 }
 
@@ -2762,6 +2770,17 @@ type fkOrderingStore struct {
 	pendingMemories     []*models.Memory
 	confirmedSessions   map[string]bool
 	pushedMemoryBatches [][]string // sync_ids per push, in order — for assertions
+
+	// pendingMutations/ackedMutationEventIDs (fix-mutation-sync-session-gate)
+	// extend this fixture to cover mutation-protocol-v2 pushes under the same
+	// FK-ordering hazard as memories: a mutation's Memory payload can carry a
+	// session_id that names a session sitting in a LATER, not-yet-pushed
+	// session page. ackedMutationEventIDs records every EventID acked via
+	// MarkMutationsAndMemoriesSynced, in order, so a test can assert a
+	// mutation was acked exactly once — and only once its named session was
+	// already confirmed.
+	pendingMutations      []db.MutationEnvelope
+	ackedMutationEventIDs []string
 }
 
 func newFKOrderingStore(sessions []*models.Session, memories []*models.Memory) *fkOrderingStore {
@@ -2822,6 +2841,38 @@ func (s *fkOrderingStore) MarkSynced(syncID string, at time.Time) error {
 	return nil
 }
 
+// GetPendingMutations mirrors ListUnsyncedSessionsPage/GetUnsyncedPage above:
+// it pages the scripted pendingMutations slice like the real paged store
+// methods this fixture models.
+func (s *fkOrderingStore) GetPendingMutations(project string, limit int) ([]db.MutationEnvelope, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 || limit > len(s.pendingMutations) {
+		limit = len(s.pendingMutations)
+	}
+	page := make([]db.MutationEnvelope, limit)
+	copy(page, s.pendingMutations[:limit])
+	return page, nil
+}
+
+// MarkMutationsAndMemoriesSynced mirrors MarkSynced above: it removes the
+// acked entries from pendingMutations by EventID and records every acked
+// EventID (in order) so a test can assert a mutation was acked exactly once.
+func (s *fkOrderingStore) MarkMutationsAndMemoriesSynced(eventIDs []string, syncIDs []string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ackedMutationEventIDs = append(s.ackedMutationEventIDs, eventIDs...)
+	for _, id := range eventIDs {
+		for i, mut := range s.pendingMutations {
+			if mut.EventID == id {
+				s.pendingMutations = append(s.pendingMutations[:i], s.pendingMutations[i+1:]...)
+				break
+			}
+		}
+	}
+	return nil
+}
+
 // fkValidatingHandler returns an http.HandlerFunc that models hive-api's
 // per-request FK validator: any pushed memory whose session_id is non-empty
 // must be satisfied either by a session in the SAME request's sessions[] or
@@ -2852,6 +2903,26 @@ func fkValidatingHandler(t *testing.T, confirmed map[string]bool, onRequest func
 			}
 		}
 
+		// Mutation-protocol-v2 pushes carry the same memories.session_id FK
+		// hazard via mutation.Memory.SessionID (fix-mutation-sync-session-gate):
+		// a mutation naming a session that is neither in this SAME request's
+		// sessions[] nor already confirmed server-side must be rejected exactly
+		// like a memory would be above.
+		for _, mut := range req.Mutations {
+			if mut.Memory == nil {
+				continue // tombstone/delete mutations carry no session_id FK
+			}
+			sessionID := mut.Memory.SessionID
+			if sessionID == "" {
+				continue
+			}
+			if !inRequest[sessionID] && !confirmed[sessionID] {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(fmt.Sprintf("session not found: %s", sessionID)))
+				return
+			}
+		}
+
 		if onRequest != nil {
 			onRequest(req)
 		}
@@ -2862,11 +2933,20 @@ func fkValidatingHandler(t *testing.T, confirmed map[string]bool, onRequest func
 			confirmed[s.ID] = true
 		}
 
-		w.WriteHeader(http.StatusOK)
-		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{
+		resp := syncResponse{
 			Pushed: len(req.Memories),
 			Pulled: []apiMemory{},
-		}))
+		}
+		// Only report mutation-protocol-v2 mode when the request actually
+		// carries mutations — this keeps every pre-existing memories-only
+		// fkValidatingHandler test on legacy-row-state mode exactly as before,
+		// while letting mutation-carrying requests exercise the
+		// MarkMutationsAndMemoriesSynced ack path in syncer.go.
+		if len(req.Mutations) > 0 {
+			resp.CompatibilityMode = compatibilityModeMutationV2
+		}
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(resp))
 	}
 }
 
@@ -2971,6 +3051,148 @@ func TestDrain_TriggerAuto_DefersMemoriesWhileSessionsPending(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result3)
 	assert.Equal(t, DrainFullySynced, outcome3.State)
+}
+
+// TestDrain_SessionPriorityPreventsFKViolationForMutationOnLaterSessionPage
+// is the mutation-protocol-v2 sibling of
+// TestDrain_SessionPriorityPreventsFKViolationOnLaterSessionPage
+// (fix-mutation-sync-session-gate): the session-priority gate that defers
+// memories while any session is unsynced must ALSO defer pending mutations
+// — a mutation's Memory.SessionID payload carries the exact same
+// memories.session_id FK hazard as a legacy memory. With a session backlog
+// LARGER than syncPageSize, a mutation naming a session that lands in a
+// LATER session page must never be pushed before its own session has been
+// pushed and confirmed.
+func TestDrain_SessionPriorityPreventsFKViolationForMutationOnLaterSessionPage(t *testing.T) {
+	withSyncPageSize(t, 2)
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+
+	sessions := make([]*models.Session, 0, 5)
+	for i := 1; i <= 5; i++ {
+		sessions = append(sessions, &models.Session{ID: fmt.Sprintf("sess-%d", i)})
+	}
+
+	// This mutation names the LAST session (sess-5), which lands in the third
+	// (final) session page at page size 2 — the exact regression scenario,
+	// this time for a mutation-protocol-v2 push instead of a legacy memory.
+	mutationNamingLateSession := db.MutationEnvelope{
+		EventID:      "evt-mutation-late-session",
+		EntityType:   "memory",
+		EntitySyncID: "mem-mutation-late-session",
+		Op:           db.MutationOpCreate,
+		Memory: &db.MutationMemoryPayload{
+			SessionID: "sess-5",
+			Category:  "architecture",
+			Title:     "Late session mutation",
+			Content:   "content",
+			CreatedBy: "tester",
+		},
+	}
+
+	store := newFKOrderingStore(sessions, nil)
+	store.pendingMutations = []db.MutationEnvelope{mutationNamingLateSession}
+
+	server := httptest.NewServer(fkValidatingHandler(t, store.confirmedSessions, nil))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+	require.NoError(t, err, "drain must not surface a 400 FK violation")
+	require.NotNil(t, result)
+	assert.Equal(t, DrainFullySynced, outcome.State)
+
+	// Everything must eventually drain: all 5 sessions and the 1 mutation.
+	assert.Len(t, store.markedSessionSynced, 5, "all sessions must be confirmed")
+	assert.Len(t, store.ackedMutationEventIDs, 1, "the mutation must be acked exactly once, after its session")
+	assert.True(t, store.confirmedSessions["sess-5"], "sess-5 must be confirmed before the mutation push succeeds")
+}
+
+// TestSyncBatchStep_SessionPriorityGate_SkipsMutationFetchWhileSessionsPending
+// is the mutation-protocol-v2 sibling of
+// TestSyncBatchStep_SessionPriorityGate_SkipsMemoryFetchWhileSessionsPending
+// (fix-mutation-sync-session-gate): while any session remains unsynced,
+// syncBatchStep must not even call GetPendingMutations — the mutations fetch
+// is skipped entirely, not just filtered after the fact.
+func TestSyncBatchStep_SessionPriorityGate_SkipsMutationFetchWhileSessionsPending(t *testing.T) {
+	store := &mockSyncStore{
+		jwt:              "valid-token",
+		unsyncedSessions: []*models.Session{{ID: "s-1"}},
+		pendingMutations: []db.MutationEnvelope{{
+			EventID:      "evt-1",
+			EntityType:   "memory",
+			EntitySyncID: "mem-1",
+			Op:           db.MutationOpCreate,
+		}},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sync" {
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{})
+
+	result, err := syncer.syncBatchStep(context.Background(), "test-project", "valid-token")
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, store.getPendingMutationsCalls, "GetPendingMutations must not be called while sessions are pending")
+	assert.False(t, result.PushBacklogEmpty, "pending session keeps the backlog non-empty")
+}
+
+// TestDrain_TriggerAuto_DefersMutationsWhileSessionsPending is the
+// mutation-protocol-v2 sibling of
+// TestDrain_TriggerAuto_DefersMemoriesWhileSessionsPending
+// (fix-mutation-sync-session-gate): if sessions are still pending when a
+// single auto-sync tick runs, that tick must push sessions only — the
+// pending mutation must never be sent in that same tick.
+func TestDrain_TriggerAuto_DefersMutationsWhileSessionsPending(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+
+	sess := &models.Session{ID: "sess-pending"}
+	mutation := db.MutationEnvelope{
+		EventID:      "evt-mutation-pending",
+		EntityType:   "memory",
+		EntitySyncID: "mem-mutation-pending",
+		Op:           db.MutationOpCreate,
+		Memory: &db.MutationMemoryPayload{
+			SessionID: sess.ID,
+			Category:  "architecture",
+			Title:     "pending",
+			Content:   "content",
+			CreatedBy: "tester",
+		},
+	}
+
+	store := newFKOrderingStore([]*models.Session{sess}, nil)
+	store.pendingMutations = []db.MutationEnvelope{mutation}
+
+	var sawMutationsInRequest bool
+	server := httptest.NewServer(fkValidatingHandler(t, store.confirmedSessions, func(req syncRequest) {
+		if len(req.Mutations) > 0 {
+			sawMutationsInRequest = true
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	result, outcome, err := syncer.Drain(context.Background(), "test-project", TriggerAuto)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, DrainExpectedPending, outcome.State, "mutation still pending after the single allowed batch")
+	assert.False(t, sawMutationsInRequest, "a single auto tick must not push mutations while sessions are still pending")
+	assert.Len(t, store.markedSessionSynced, 1, "the single auto tick must still push the pending session")
+	assert.Empty(t, store.ackedMutationEventIDs, "the mutation must wait for a later tick")
 }
 
 // TestSyncBatchStep_SendsPullLimitAndPersistedCursors pins task 2.8

@@ -694,22 +694,41 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 	// false, so Drain(TriggerManual) correctly keeps looping instead of
 	// mistaking a memories-deferred batch for a fully-drained one.
 	var unsynced []*models.Memory
+	var pendingMutations []db.MutationEnvelope
 	if len(unsyncedSessions) == 0 {
 		unsynced, err = s.store.GetUnsyncedPage(project, syncPageSize)
 		if err != nil {
 			return batchResult{}, nil, fmt.Errorf("obtener memorias no sincronizadas: %w", err)
 		}
+
+		// Paso 2d: mutaciones locales pendientes para protocolo v2. Already
+		// capped at syncPageSize — GetPendingMutations has taken an explicit
+		// limit since PR 1a. Gated by the SAME session-priority check as
+		// memories above (fix-mutation-sync-session-gate): a mutation's
+		// Memory payload can carry a memories.session_id FK
+		// (mutation.Memory.SessionID) exactly like a legacy memory row, so it
+		// is exposed to the identical FK-ordering hazard the memories gate
+		// above was built to fix — a mutation naming a session sitting in a
+		// LATER, not-yet-pushed session page must not be pushed before that
+		// session is confirmed. Fetching this only once the session channel
+		// is empty (rather than fetching and holding back) mirrors the
+		// memories gate exactly.
+		pendingMutations, err = s.store.GetPendingMutations(project, syncPageSize)
+		if err != nil {
+			return batchResult{}, nil, fmt.Errorf("obtener mutaciones pendientes: %w", err)
+		}
 	} else {
 		// Visibility improvement (PR 2b fresh-review WARNING #2): log once per
 		// gated batch so a session that never drains (and therefore keeps
-		// deferring this project's memories indefinitely) is diagnosable from
-		// the daemon log instead of silently starving memories forever. Low
-		// noise by design: one informative line per gated step, not per
-		// session. The infinite-loop risk this used to carry (a permanently
-		// stuck session with pull pages still pending) is now bounded by the
-		// Drain no-progress guard's pull-cursor-advance corroboration and the
-		// maxDrainBatches cap above, not by this log line.
-		logger.Log.Printf("info: sync project=%s deferring memories this batch — %d unsynced session(s) still pending", project, len(unsyncedSessions))
+		// deferring this project's memories and mutations indefinitely) is
+		// diagnosable from the daemon log instead of silently starving them
+		// forever. Low noise by design: one informative line per gated step,
+		// not per session. The infinite-loop risk this used to carry (a
+		// permanently stuck session with pull pages still pending) is now
+		// bounded by the Drain no-progress guard's pull-cursor-advance
+		// corroboration and the maxDrainBatches cap above, not by this log
+		// line.
+		logger.Log.Printf("info: sync project=%s deferring memories and mutations this batch — %d unsynced session(s) still pending", project, len(unsyncedSessions))
 	}
 
 	// Paso 2c: prompts locales pendientes de sync, paged (non-fatal si falla).
@@ -717,14 +736,6 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 	if err != nil {
 		logger.Log.Printf("warn: obtener prompts no sincronizados: %v", err)
 		unsyncedPrompts = nil
-	}
-
-	// Paso 2d: mutaciones locales pendientes para protocolo v2. Already capped
-	// at syncPageSize — GetPendingMutations has taken an explicit limit since
-	// PR 1a.
-	pendingMutations, err := s.store.GetPendingMutations(project, syncPageSize)
-	if err != nil {
-		return batchResult{}, nil, fmt.Errorf("obtener mutaciones pendientes: %w", err)
 	}
 
 	mutationCursor, err := s.store.GetMutationCursor(mutationCursorConsumerAPI, project)
