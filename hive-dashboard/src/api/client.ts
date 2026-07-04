@@ -13,7 +13,7 @@ export type LoginResponse = { token: string; expires_at?: string; user: User }
 export type Health = { status: string; db: string; version: string }
 export type AdminStats = { users: { total: number; active: number; by_level: Record<string, number> }; memories: { total: number; by_project: Count[]; by_category: Count[]; last_synced_at: string | null } }
 export type Count = { project?: string; category?: string; count: number }
-export type OverviewProjectSyncHealth = { project: string; status: 'healthy' | 'degraded' | 'unknown' | string; region: string; contributor_count: number }
+export type OverviewProjectSyncHealth = { project: string; status: 'healthy' | 'degraded' | 'unknown' | string; region: string; contributor_count: number; last_activity_at?: string | null }
 export type OverviewStats = {
   daemon_health: { healthy: number; total: number }
   conflicts: { open: number }

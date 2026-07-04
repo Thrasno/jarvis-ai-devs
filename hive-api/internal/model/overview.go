@@ -1,5 +1,7 @@
 package model
 
+import "time"
+
 // OverviewStatsResponse is the response for GET /admin/overview/stats.
 type OverviewStatsResponse struct {
 	DaemonHealth        OverviewDaemonHealth `json:"daemon_health"`
@@ -22,10 +24,11 @@ type OverviewConflicts struct {
 
 // ProjectSyncHealth holds per-project sync health status.
 type ProjectSyncHealth struct {
-	Project          string `json:"project"`
-	Status           string `json:"status"` // healthy | degraded | unknown
-	Region           string `json:"region"`
-	ContributorCount int    `json:"contributor_count"`
+	Project          string     `json:"project"`
+	Status           string     `json:"status"` // healthy | degraded | unknown
+	Region           string     `json:"region"`
+	ContributorCount int        `json:"contributor_count"`
+	LastActivityAt   *time.Time `json:"last_activity_at,omitempty"`
 }
 
 // OverviewLiveActivity holds recent sync activity metrics.

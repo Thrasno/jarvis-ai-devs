@@ -25,7 +25,8 @@ export const hiveOverviewFixture = {
     name: project.name,
     region: project.region,
     status: project.status,
-    contributorCount: project.contributorCount
+    contributorCount: project.contributorCount,
+    lastActivityLabel: project.lastSyncLabel
   })),
   liveActivity: {
     count: 3,

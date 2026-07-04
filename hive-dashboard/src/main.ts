@@ -1,11 +1,10 @@
 import { createApiClient, type AdminStats, type ApiClient, type Count, type CreateUserRequest, type Health, type Memory, type MemoryList, type MemoryListParams, type MemorySearch, type OverviewGrowth, type OverviewProjectSyncHealth, type OverviewStats, type SyncAttemptSummary, type User } from './api/client'
 import { parseDashboardFilters } from './api/urlFilters'
 import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
-import { control } from './components/dom'
 import { renderBrand } from './components/Brand'
 import { renderSidebar, type UserLevel } from './components/Sidebar'
 import { activityFeedFromApi, appendActivityPage } from './domain/activityFeed'
-import { projectsFromApi, type ActivityFeedViewModel, type CurrentProfileViewModel, type DashboardScreenKey, type OverviewFixtureViewModel, type ProjectListViewModel, type ProjectSyncStatus } from './domain/dashboard'
+import { projectsFromApi, relativeActivityAgeLabel, type ActivityFeedViewModel, type CurrentProfileViewModel, type DashboardScreenKey, type OverviewFixtureViewModel, type ProjectListViewModel, type ProjectSyncStatus } from './domain/dashboard'
 import { memoryListToDiscoveryData, type KnowledgeDiscoveryData } from './domain/knowledgeDiscovery'
 import { dashboardFixtures } from './fixtures/hive-dashboard/index'
 import { renderAuditSync } from './views/AuditSync'
@@ -272,7 +271,6 @@ function renderShell(
     onNavigate: (path) => actions.onNavigate?.(path),
     onLogout: actions.onLogout
   })
-  const sidebar = sidebarContainer.querySelector<HTMLElement>('[data-dashboard-primitive="sidebar"]')
   layout.append(sidebarContainer)
 
   // Main area (header + content)
@@ -743,7 +741,8 @@ function syncHealthProjectFromApi(project: OverviewProjectSyncHealth): OverviewF
     name: project.project,
     region: project.region,
     status: projectSyncStatus(project.status),
-    contributorCount: project.contributor_count
+    contributorCount: project.contributor_count,
+    lastActivityLabel: relativeActivityAgeLabel(project.last_activity_at)
   }
 }
 

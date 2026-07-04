@@ -167,6 +167,40 @@ body { margin: 0; background: var(--dashboard-background); }
   overscroll-behavior: contain;
 }
 
+.dashboard-sync-health__row {
+  align-items: center;
+  border-bottom: 1px solid rgba(37, 48, 67, 0.55);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  min-block-size: 34px;
+  padding: 6px 16px;
+}
+
+.dashboard-status-dot {
+  background: currentColor;
+  border-radius: 999px;
+  display: inline-block;
+  height: 8px;
+  width: 8px;
+}
+
+.dashboard-sync-health__project,
+.dashboard-sync-health__metric,
+.dashboard-sync-health__activity {
+  font-family: var(--dashboard-font-mono);
+  font-size: 0.6875rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-sync-health__metric,
+.dashboard-sync-health__activity {
+  color: var(--dashboard-text-muted);
+}
+
 .dashboard-sync-health__overflow-note {
   border-top: 1px solid var(--dashboard-border);
   color: var(--dashboard-text-muted);
