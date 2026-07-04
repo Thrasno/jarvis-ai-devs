@@ -577,7 +577,7 @@ func TestPostgresSessionRepository_ListSessionsByProject(t *testing.T) {
 // ─── T4.8: ListSessionsSince ─────────────────────────────────────────────────
 
 // TestPostgresSessionRepository_ListSessionsSince verifica que ListSessionsSince devuelve
-// solo las sesiones con synced_at > since, en orden cronológico por started_at ASC.
+// las sesiones con synced_at >= since, ordenadas por (synced_at, sync_id) ASC.
 func TestPostgresSessionRepository_ListSessionsSince(t *testing.T) {
 	pool, cleanup := startPostgresWithSessions(t)
 	defer cleanup()
@@ -616,6 +616,45 @@ func TestPostgresSessionRepository_ListSessionsSince(t *testing.T) {
 	// Ordered by (synced_at, sync_id) ASC, which matches started_at order here.
 	assert.Equal(t, "sess-list-2", got[0].ID)
 	assert.Equal(t, "sess-list-3", got[1].ID)
+}
+
+// TestPostgresSessionRepository_ListSessionsSince_IncludesExactWatermark verifica
+// que el pull bounded no pierde sesiones cuyo synced_at es exactamente igual al
+// watermark `since`; el cursor compuesto debe evitar duplicados al reanudar.
+func TestPostgresSessionRepository_ListSessionsSince_IncludesExactWatermark(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresSessionRepository(pool)
+
+	watermark := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+
+	insertSess := func(id, syncID string, syncedAt time.Time) {
+		t.Helper()
+		_, err := pool.Exec(ctx, `
+			INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at, synced_at)
+			VALUES ($1, $2, 'watermark-boundary-proj', '', 'dev', 'claude-code', $3, $3)`,
+			id, syncID, syncedAt)
+		require.NoError(t, err)
+	}
+
+	insertSess("sess-before-watermark", "a1100000-0000-0000-0000-000000000001", watermark.Add(-time.Second))
+	insertSess("sess-at-watermark", "a1100000-0000-0000-0000-000000000002", watermark)
+	insertSess("sess-after-watermark", "a1100000-0000-0000-0000-000000000003", watermark.Add(time.Second))
+
+	page1, hasMore1, err := repo.ListSessionsSince(ctx, "watermark-boundary-proj", watermark, model.PullCursor{}, 1)
+	require.NoError(t, err)
+	require.True(t, hasMore1, "row after the exact-watermark session should require another page")
+	require.Len(t, page1, 1)
+	assert.Equal(t, "sess-at-watermark", page1[0].ID, "exact-watermark session must be included")
+
+	cursor := model.PullCursor{SyncedAt: page1[0].SyncedAt, SyncID: page1[0].SyncID}
+	page2, hasMore2, err := repo.ListSessionsSince(ctx, "watermark-boundary-proj", watermark, cursor, 1)
+	require.NoError(t, err)
+	assert.False(t, hasMore2)
+	require.Len(t, page2, 1)
+	assert.Equal(t, "sess-after-watermark", page2[0].ID, "cursor must resume after the exact-watermark session without duplicating it")
 }
 
 // TestPostgresSessionRepository_ListSessionsSince_ZeroCutoff verifica que una cutoff
