@@ -185,7 +185,7 @@ func (r *postgresSessionRepository) ListSessionsByProject(ctx context.Context, p
 	return sessions, rows.Err()
 }
 
-// ListSessionsSince devuelve una página de sesiones del proyecto cuyo synced_at >
+// ListSessionsSince devuelve una página de sesiones del proyecto cuyo synced_at >=
 // since, ordenadas por (synced_at ASC, sync_id ASC) para paginación por keyset.
 // Cuando since es zero, el barrido arranca desde el principio. El filtro por
 // project previene leak de tenants (R2-CRIT-4).
@@ -204,18 +204,17 @@ func (r *postgresSessionRepository) ListSessionsByProject(ctx context.Context, p
 // consumidor que asumiera orden por started_at debe revisar esa suposición;
 // el pull ahora ordena por momento de sincronización, no por inicio de sesión.
 //
-// NOTA (pre-existing watermark inconsistency, out of scope for PR 2a): esta
-// consulta usa `synced_at > since` (estricto) mientras que
-// postgresMemoryRepository.PullSince usa `synced_at >= since` (inclusive) para
-// memorias. Esta discrepancia de semántica entre canales ya existía antes de
-// esta PR y no se modifica aquí — queda documentada para visibilidad.
+// El filtro de watermark usa `synced_at >= since`, igual que
+// postgresMemoryRepository.PullSince, para no perder sesiones con synced_at
+// exactamente igual a `since`; el cursor compuesto (synced_at, sync_id) reanuda
+// estrictamente después de la última fila vista y evita duplicados.
 func (r *postgresSessionRepository) ListSessionsSince(ctx context.Context, project string, since time.Time, cursor model.PullCursor, limit int) ([]*model.Session, bool, error) {
 	args := []interface{}{project}
 	where := "project = $1"
 	argIdx := 2
 
 	if !since.IsZero() {
-		where += fmt.Sprintf(" AND synced_at > $%d", argIdx)
+		where += fmt.Sprintf(" AND synced_at >= $%d", argIdx)
 		args = append(args, since)
 		argIdx++
 	}
