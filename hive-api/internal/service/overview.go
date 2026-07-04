@@ -72,11 +72,17 @@ func (s *overviewService) GetStats(ctx context.Context) (*model.OverviewStatsRes
 		if row.LastOutcome == model.SyncAttemptOutcomeSuccess {
 			status = "healthy"
 		}
+		var lastActivityAt *time.Time
+		if !row.LastActivityAt.IsZero() {
+			value := row.LastActivityAt
+			lastActivityAt = &value
+		}
 		resp.SyncHealthByProject = append(resp.SyncHealthByProject, model.ProjectSyncHealth{
 			Project:          row.Project,
 			Status:           status,
 			Region:           "",
 			ContributorCount: row.ContributorCount,
+			LastActivityAt:   lastActivityAt,
 		})
 	}
 

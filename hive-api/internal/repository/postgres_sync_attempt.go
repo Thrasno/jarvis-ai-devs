@@ -138,17 +138,25 @@ func (r *postgresSyncAttemptRepository) SyncHealthByProject(ctx context.Context,
 	since := time.Now().UTC().Add(-window)
 
 	const q = `
-		SELECT p.project, last.outcome, p.contributors FROM (
+		SELECT p.project, last.outcome, p.contributors, last.started_at FROM (
 		  SELECT project, COUNT(DISTINCT source_dev_id) AS contributors
 		  FROM sync_attempt_logs
 		  WHERE project <> '' AND started_at >= $1
 		  GROUP BY project
 		) p
 		JOIN LATERAL (
-		  SELECT outcome FROM sync_attempt_logs s
+		  SELECT outcome, started_at FROM sync_attempt_logs s
 		  WHERE s.project = p.project AND s.started_at >= $1
 		  ORDER BY started_at DESC LIMIT 1
-		) last ON true`
+		) last ON true
+		ORDER BY
+		  CASE
+		    WHEN last.outcome = 'failure' THEN 0
+		    WHEN last.outcome = 'success' THEN 2
+		    ELSE 1
+		  END,
+		  last.started_at DESC,
+		  p.project ASC`
 
 	rows, err := r.db.Query(ctx, q, since)
 	if err != nil {
@@ -160,7 +168,7 @@ func (r *postgresSyncAttemptRepository) SyncHealthByProject(ctx context.Context,
 	for rows.Next() {
 		var row model.ProjectSyncHealthRow
 		var outcome string
-		if err := rows.Scan(&row.Project, &outcome, &row.ContributorCount); err != nil {
+		if err := rows.Scan(&row.Project, &outcome, &row.ContributorCount, &row.LastActivityAt); err != nil {
 			return nil, wrapPgError(err, "scan SyncHealthByProject row")
 		}
 		row.LastOutcome = model.SyncAttemptOutcome(outcome)

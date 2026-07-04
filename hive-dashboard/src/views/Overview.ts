@@ -1,6 +1,6 @@
 import type { MetricCardViewModel, OverviewFixtureViewModel, OverviewLiveActivityViewModel, OverviewSyncHealthProjectViewModel } from '../domain/dashboard'
 import { renderChart } from '../components/Chart'
-import { append, emptyState, error, stack, statusBadge, statusLabel, text } from '../components/dom'
+import { append, emptyState, error, stack, statusDot, statusLabel, text } from '../components/dom'
 
 export type ViewState<T> = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; data: T }
 
@@ -23,21 +23,35 @@ function syncHealthDisplay(vm: MetricCardViewModel): string {
 function renderSyncHealthRow(project: OverviewSyncHealthProjectViewModel): HTMLElement {
   const row = document.createElement('div')
   const region = project.region.trim()
+  const contributors = contributorLabel(project.contributorCount)
   const ariaParts = [
     `${project.name}: ${statusLabel(project.status)}`,
-    `${project.contributorCount} contributors`,
+    contributors,
+    project.lastActivityLabel,
     ...(region ? [`region ${region}`] : [])
   ]
+  row.className = 'dashboard-sync-health__row'
   row.setAttribute('role', 'listitem')
   row.setAttribute('aria-label', ariaParts.join(', '))
+  row.title = ariaParts.join(' · ')
   return append(
     row,
-    text(''),
-    statusBadge(project.status),
-    text(project.name),
-    text(`${project.contributorCount} contributors`),
-    ...(region ? [text(region)] : [])
+    statusDot(project.status, { decorative: true }),
+    inlineText(project.name, 'dashboard-sync-health__project'),
+    inlineText(contributors, 'dashboard-sync-health__metric'),
+    inlineText(project.lastActivityLabel, 'dashboard-sync-health__activity')
   )
+}
+
+function contributorLabel(count: number): string {
+  return `${count} ${count === 1 ? 'contributor' : 'contributors'}`
+}
+
+function inlineText(value: string, className: string): HTMLSpanElement {
+  const span = document.createElement('span')
+  span.className = className
+  span.textContent = value
+  return span
 }
 
 function renderSyncHealthSection(projects: readonly OverviewSyncHealthProjectViewModel[], sourceLabel?: string): HTMLElement {

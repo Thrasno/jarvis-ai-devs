@@ -144,6 +144,7 @@ export type OverviewSyncHealthProjectViewModel = {
   readonly region: string
   readonly status: ProjectSyncStatus
   readonly contributorCount: number
+  readonly lastActivityLabel: string
 }
 
 export type OverviewLiveActivityViewModel = {
@@ -479,4 +480,21 @@ function lastActivityLabel(value: string | null | undefined): string {
     timeZone: 'UTC'
   }).format(date)
   return `Last activity: ${formatted}`
+}
+
+export function relativeActivityAgeLabel(value: string | null | undefined, now = new Date()): string {
+  if (!value) return 'activity unavailable'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'activity unavailable'
+
+  const elapsedMs = Math.max(0, now.getTime() - date.getTime())
+  const elapsedMinutes = Math.floor(elapsedMs / 60000)
+  if (elapsedMinutes < 1) return 'just now'
+  if (elapsedMinutes < 60) return `${elapsedMinutes}m ago`
+
+  const elapsedHours = Math.floor(elapsedMinutes / 60)
+  if (elapsedHours < 24) return `${elapsedHours}h ago`
+
+  const elapsedDays = Math.floor(elapsedHours / 24)
+  return `${elapsedDays}d ago`
 }

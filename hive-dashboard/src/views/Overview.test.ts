@@ -110,24 +110,31 @@ describe('overview view', () => {
     expect(rows).toHaveLength(8)
     expect(rows.map(accessibleName)).toEqual(
       expect.arrayContaining([
-        'project-1: Healthy, 6 contributors, region eu-west-1',
-        'project-8: Unknown, 4 contributors, region us-east-1'
+        'project-1: Healthy, 6 contributors, 2m ago, region eu-west-1',
+        'project-8: Unknown, 4 contributors, 1d ago, region us-east-1'
       ])
     )
     expect(syncHealthRegion.textContent).not.toContain('project-9')
     expect(overflowNote).toBeDefined()
   })
 
-  it('renders sync health rows with status badge and project name', () => {
+  it('renders compact sync health rows with status dot, project, metric, and activity age', () => {
     const view = renderOverview({ status: 'ready', data: hiveOverviewFixture })
     const project = hiveOverviewFixture.syncHealthByProject[0]
     const syncHealth = getByRole(view, 'list', { name: 'Sync health by project rows' })
 
     const row = getByRole(syncHealth, 'listitem', {
-      name: `${project.name}: Healthy, ${project.contributorCount} contributors, region ${project.region}`
+      name: `${project.name}: Healthy, ${project.contributorCount} contributors, ${project.lastActivityLabel}, region ${project.region}`
     })
+    const statusDot = row.querySelector('[data-dashboard-primitive="status-dot"]')
+
     expect(row).toBeDefined()
-    expect(getByLabelText(row, 'Healthy status: healthy')).toBeDefined()
+    expect(row.classList.contains('dashboard-sync-health__row')).toBe(true)
+    expect(statusDot?.getAttribute('data-dashboard-status')).toBe('healthy')
+    expect(statusDot?.getAttribute('aria-hidden')).toBe('true')
+    expect(row.textContent).toBe(`${project.name}${project.contributorCount} contributors${project.lastActivityLabel}`)
+    expect(row.title).toContain(`region ${project.region}`)
+    expect(row.textContent).not.toContain(project.region)
     expect(row.textContent).not.toContain('memories')
     expect(row.textContent).not.toContain('last synced')
   })
@@ -145,8 +152,8 @@ describe('overview view', () => {
     const view = renderOverview({ status: 'ready', data: fixture })
     const syncHealth = getByRole(view, 'list', { name: 'Sync health by project rows' })
 
-    const emptyRegionRow = getByRole(syncHealth, 'listitem', { name: 'core-api: Healthy, 6 contributors' })
-    const whitespaceRegionRow = getByRole(syncHealth, 'listitem', { name: 'billing-worker: Degraded, 3 contributors' })
+    const emptyRegionRow = getByRole(syncHealth, 'listitem', { name: 'core-api: Healthy, 6 contributors, 2m ago' })
+    const whitespaceRegionRow = getByRole(syncHealth, 'listitem', { name: 'billing-worker: Degraded, 3 contributors, 38m ago' })
 
     expect(accessibleName(emptyRegionRow)).not.toContain('region')
     expect(accessibleName(whitespaceRegionRow)).not.toContain('region')
@@ -200,13 +207,13 @@ describe('overview view', () => {
     const view = renderOverview({ status: 'ready', data: hiveOverviewFixture })
     const syncHealth = getByRole(view, 'list', { name: 'Sync health by project rows' })
 
-    const healthyRow = getByRole(syncHealth, 'listitem', { name: 'core-api: Healthy, 6 contributors, region eu-west-1' })
+    const healthyRow = getByRole(syncHealth, 'listitem', { name: 'core-api: Healthy, 6 contributors, 2m ago, region eu-west-1' })
     const degradedRow = getByRole(syncHealth, 'listitem', {
-      name: 'billing-worker: Degraded, 3 contributors, region us-east-1'
+      name: 'billing-worker: Degraded, 3 contributors, 38m ago, region us-east-1'
     })
 
-    expect(getByLabelText(healthyRow, 'Healthy status: healthy').textContent).toBe('Healthy')
-    expect(getByLabelText(degradedRow, 'Degraded status: degraded').textContent).toBe('Degraded')
+    expect(healthyRow.querySelector('[data-dashboard-primitive="status-dot"]')?.getAttribute('data-dashboard-status')).toBe('healthy')
+    expect(degradedRow.querySelector('[data-dashboard-primitive="status-dot"]')?.getAttribute('data-dashboard-status')).toBe('warning')
   })
 
   it('renders live activity using only count and newest sync id from the backend', () => {
@@ -331,14 +338,6 @@ function queryAllByRole(root: HTMLElement, role: string, options: QueryOptions =
     if (elementRole(element) !== role) return false
     return options.name === undefined || matchesName(accessibleName(element), options.name)
   })
-}
-
-function getByLabelText(root: HTMLElement, label: string | RegExp): HTMLElement {
-  const matches = [root, ...Array.from(root.querySelectorAll<HTMLElement>('[aria-label]'))].filter((element) =>
-    matchesName(accessibleName(element), label)
-  )
-  if (matches.length !== 1) throw new Error(`Expected exactly one labelled element, found ${matches.length}`)
-  return matches[0]
 }
 
 function elementRole(element: HTMLElement): string | undefined {

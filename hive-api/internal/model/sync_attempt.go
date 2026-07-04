@@ -126,4 +126,5 @@ type ProjectSyncHealthRow struct {
 	Project          string
 	LastOutcome      SyncAttemptOutcome
 	ContributorCount int
+	LastActivityAt   time.Time
 }

@@ -33,9 +33,10 @@ func TestOverviewService_GetStats_FullyPopulated(t *testing.T) {
 		Return(2, 5, nil)
 	auditRepo.On("CountSyncConflicts", ctx, mock.AnythingOfType("time.Time")).
 		Return(3, nil)
+	lastActivityAt := time.Date(2026, 7, 4, 12, 30, 0, 0, time.UTC)
 	syncRepo.On("SyncHealthByProject", ctx, mock.AnythingOfType("time.Duration")).
 		Return([]model.ProjectSyncHealthRow{
-			{Project: "proj-a", LastOutcome: model.SyncAttemptOutcomeSuccess, ContributorCount: 2},
+			{Project: "proj-a", LastOutcome: model.SyncAttemptOutcomeSuccess, ContributorCount: 2, LastActivityAt: lastActivityAt},
 		}, nil)
 	memRepo.On("CountLiveActivity", ctx, mock.AnythingOfType("time.Time")).
 		Return(10, "sync-id-abc", nil)
@@ -55,6 +56,8 @@ func TestOverviewService_GetStats_FullyPopulated(t *testing.T) {
 	assert.Len(t, stats.SyncHealthByProject, 1)
 	assert.Equal(t, "proj-a", stats.SyncHealthByProject[0].Project)
 	assert.Equal(t, "healthy", stats.SyncHealthByProject[0].Status)
+	require.NotNil(t, stats.SyncHealthByProject[0].LastActivityAt)
+	assert.Equal(t, lastActivityAt, *stats.SyncHealthByProject[0].LastActivityAt)
 	assert.Equal(t, 10, stats.LiveActivity.Count)
 	assert.Equal(t, "sync-id-abc", stats.LiveActivity.NewestSyncID)
 	assert.Len(t, stats.MostActiveProjects, 3)

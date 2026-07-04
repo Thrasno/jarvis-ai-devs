@@ -81,6 +81,7 @@ func TestPostgresSyncAttemptRepository_SyncHealthByProject_SuccessStatus(t *test
 	require.Len(t, rows, 1)
 	assert.Equal(t, "proj-X", rows[0].Project)
 	assert.Equal(t, model.SyncAttemptOutcomeSuccess, rows[0].LastOutcome)
+	assert.WithinDuration(t, now.Add(-1*time.Hour), rows[0].LastActivityAt, time.Second)
 }
 
 func TestPostgresSyncAttemptRepository_SyncHealthByProject_FailureStatus(t *testing.T) {
@@ -114,6 +115,56 @@ func TestPostgresSyncAttemptRepository_SyncHealthByProject_Empty(t *testing.T) {
 	assert.Empty(t, rows, "empty table must return empty slice")
 }
 
+func TestPostgresSyncAttemptRepository_SyncHealthByProject_LastActivityUsesLatestAttempt(t *testing.T) {
+	pool, cleanup := startPostgresWithSyncAttemptsAndSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresSyncAttemptRepository(pool)
+	now := time.Now().UTC()
+
+	_, err := repo.UpsertBatch(ctx, []model.SyncAttemptLog{
+		{AttemptID: "latest-1", DevID: "dev-alice", Project: "proj-latest", DaemonID: "d1", StartedAt: now.Add(-4 * time.Hour), Outcome: model.SyncAttemptOutcomeFailure},
+		{AttemptID: "latest-2", DevID: "dev-alice", Project: "proj-latest", DaemonID: "d1", StartedAt: now.Add(-15 * time.Minute), Outcome: model.SyncAttemptOutcomeSuccess},
+	})
+	require.NoError(t, err)
+
+	rows, err := repo.SyncHealthByProject(ctx, 30*24*time.Hour)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, model.SyncAttemptOutcomeSuccess, rows[0].LastOutcome)
+	assert.WithinDuration(t, now.Add(-15*time.Minute), rows[0].LastActivityAt, time.Second)
+}
+
+func TestPostgresSyncAttemptRepository_SyncHealthByProject_OrdersProblemProjectsFirst(t *testing.T) {
+	pool, cleanup := startPostgresWithSyncAttemptsAndSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresSyncAttemptRepository(pool)
+	now := time.Now().UTC()
+
+	_, err := repo.UpsertBatch(ctx, []model.SyncAttemptLog{
+		{AttemptID: "healthy-newer", DevID: "dev-1", Project: "proj-healthy-newer", DaemonID: "d1", StartedAt: now.Add(-5 * time.Minute), Outcome: model.SyncAttemptOutcomeSuccess},
+		{AttemptID: "failure-older-a", DevID: "dev-1", Project: "proj-failure-a", DaemonID: "d1", StartedAt: now.Add(-2 * time.Hour), Outcome: model.SyncAttemptOutcomeFailure},
+		{AttemptID: "failure-older-b", DevID: "dev-1", Project: "proj-failure-b", DaemonID: "d1", StartedAt: now.Add(-2 * time.Hour), Outcome: model.SyncAttemptOutcomeFailure},
+		{AttemptID: "failure-newer", DevID: "dev-1", Project: "proj-failure-newer", DaemonID: "d1", StartedAt: now.Add(-10 * time.Minute), Outcome: model.SyncAttemptOutcomeFailure},
+		{AttemptID: "healthy-older", DevID: "dev-1", Project: "proj-healthy-older", DaemonID: "d1", StartedAt: now.Add(-30 * time.Minute), Outcome: model.SyncAttemptOutcomeSuccess},
+	})
+	require.NoError(t, err)
+
+	rows, err := repo.SyncHealthByProject(ctx, 30*24*time.Hour)
+	require.NoError(t, err)
+	require.Len(t, rows, 5)
+	assert.Equal(t, []string{
+		"proj-failure-newer",
+		"proj-failure-a",
+		"proj-failure-b",
+		"proj-healthy-newer",
+		"proj-healthy-older",
+	}, projectNames(rows))
+}
+
 func TestPostgresSyncAttemptRepository_SyncHealthByProject_ContributorCount(t *testing.T) {
 	pool, cleanup := startPostgresWithSyncAttemptsAndSessions(t)
 	defer cleanup()
@@ -136,3 +187,10 @@ func TestPostgresSyncAttemptRepository_SyncHealthByProject_ContributorCount(t *t
 	assert.Equal(t, 2, rows[0].ContributorCount, "must count distinct source_dev_id per project")
 }
 
+func projectNames(rows []model.ProjectSyncHealthRow) []string {
+	names := make([]string, 0, len(rows))
+	for _, row := range rows {
+		names = append(names, row.Project)
+	}
+	return names
+}

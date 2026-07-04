@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { control, emptyState, grid, metricCard, panel, stack, statusBadge, statusLabel, text } from './dom'
+import { control, emptyState, grid, metricCard, panel, stack, statusBadge, statusDot, statusLabel, text } from './dom'
 
 describe('dashboard DOM primitives', () => {
   it('renders base layout primitives with accessible structure', () => {
@@ -53,6 +53,19 @@ describe('dashboard DOM primitives', () => {
     expect(badge.textContent).toBe('Unknown')
     expect(badge.getAttribute('data-dashboard-status')).toBe('neutral')
     expect(badge.getAttribute('aria-label')).toBe('Neutral status: paused')
+  })
+
+  it('renders compact status dots with optional row-owned semantics', () => {
+    const semantic = statusDot('healthy')
+    const decorative = statusDot('degraded', { decorative: true })
+
+    expect(semantic.getAttribute('data-dashboard-primitive')).toBe('status-dot')
+    expect(semantic.getAttribute('data-dashboard-status')).toBe('healthy')
+    expect(semantic.getAttribute('role')).toBe('img')
+    expect(semantic.getAttribute('aria-label')).toBe('Healthy status: healthy')
+    expect(decorative.getAttribute('data-dashboard-status')).toBe('warning')
+    expect(decorative.getAttribute('aria-hidden')).toBe('true')
+    expect(decorative.getAttribute('aria-label')).toBeNull()
   })
 
   it('centralizes status labels for view semantics', () => {

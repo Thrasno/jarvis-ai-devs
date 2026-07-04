@@ -77,20 +77,44 @@ export function emptyState(message: string): HTMLElement {
   return state
 }
 
+function statusContract(status: string): { token: string; label: string } {
+  return STATUS_CONTRACTS[status.toLowerCase()] ?? { token: 'neutral', label: 'Unknown' }
+}
+
+function statusAriaLabel(status: string): string {
+  const contract = statusContract(status)
+  return `${contract.label === 'Unknown' ? 'Neutral' : contract.label} status: ${status}`
+}
+
 export function statusBadge(status: string): HTMLElement {
-  const normalized = status.toLowerCase()
-  const contract = STATUS_CONTRACTS[normalized] ?? { token: 'neutral', label: 'Unknown' }
+  const contract = statusContract(status)
   const badge = document.createElement('span')
   badge.className = 'dashboard-status status'
   badge.dataset.dashboardPrimitive = 'status'
   badge.dataset.dashboardStatus = contract.token
-  badge.setAttribute('aria-label', `${contract.label === 'Unknown' ? 'Neutral' : contract.label} status: ${status}`)
+  badge.setAttribute('aria-label', statusAriaLabel(status))
   badge.textContent = contract.label
   return badge
 }
 
+export function statusDot(status: string, options: { decorative?: boolean } = {}): HTMLElement {
+  const contract = statusContract(status)
+  const dot = document.createElement('span')
+  dot.className = 'dashboard-status-dot'
+  dot.dataset.dashboardPrimitive = 'status-dot'
+  dot.dataset.dashboardStatus = contract.token
+  dot.title = statusAriaLabel(status)
+  if (options.decorative) {
+    dot.setAttribute('aria-hidden', 'true')
+  } else {
+    dot.setAttribute('role', 'img')
+    dot.setAttribute('aria-label', statusAriaLabel(status))
+  }
+  return dot
+}
+
 export function statusLabel(status: string): string {
-  return STATUS_CONTRACTS[status.toLowerCase()]?.label ?? 'Unknown'
+  return statusContract(status).label
 }
 
 export function text(value: string, className?: string): HTMLParagraphElement {
