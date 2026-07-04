@@ -174,6 +174,7 @@ func startupMigrationSQL() []string {
 		migrations.ActivityFeedIndexSQL,
 		migrations.MemoryDiscoveryIndexesSQL,
 		migrations.PullCursorIndexesSQL,
+		migrations.ProjectScopedPullCursorIndexesSQL,
 	}
 }
 

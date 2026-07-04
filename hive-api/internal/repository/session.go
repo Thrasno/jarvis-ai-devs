@@ -49,7 +49,7 @@ type SessionRepository interface {
 	//
 	// NOTA: el ordenamiento de salida cambia de started_at ASC a (synced_at, sync_id)
 	// ASC respecto a la firma anterior — necesario para que el cursor componga con el
-	// índice compuesto (synced_at, sync_id). El daemon consume sesiones por lote, no
+	// índice compuesto (project, synced_at, sync_id). El daemon consume sesiones por lote, no
 	// depende de un orden de started_at estable entre páginas.
 	ListSessionsSince(ctx context.Context, project string, since time.Time, cursor model.PullCursor, limit int) (sessions []*model.Session, hasMore bool, err error)
 }

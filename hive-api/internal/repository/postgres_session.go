@@ -200,7 +200,7 @@ func (r *postgresSessionRepository) ListSessionsByProject(ctx context.Context, p
 // NOTA (ordering-semantics change): el ORDER BY de esta consulta cambió de
 // started_at ASC a (synced_at ASC, sync_id ASC) respecto a la versión anterior
 // a la paginación por keyset — necesario para que el cursor componga con el
-// índice compuesto idx_sessions_synced_at_sync_id (migración 010). Cualquier
+// índice compuesto idx_sessions_project_synced_at_sync_id (migración 011). Cualquier
 // consumidor que asumiera orden por started_at debe revisar esa suposición;
 // el pull ahora ordena por momento de sincronización, no por inicio de sesión.
 //
