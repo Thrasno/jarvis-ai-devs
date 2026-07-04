@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { conflictViewerFixture } from '../fixtures/hive-dashboard/governance'
 import { hiveOverviewFixture } from '../fixtures/hive-dashboard/overview'
 import type { OverviewFixtureViewModel } from '../domain/dashboard'
-import { renderOverview, type ViewState } from './Overview'
+import { renderOverview } from './Overview'
 
 describe('overview view', () => {
   it('renders loading state', () => {
@@ -83,6 +83,39 @@ describe('overview view', () => {
     const rows = getAllByRole(syncHealth, 'listitem')
 
     expect(rows).toHaveLength(hiveOverviewFixture.syncHealthByProject.length)
+  })
+
+  it('caps sync health rows in the overview and announces additional projects', () => {
+    const highProjectCountFixture: OverviewFixtureViewModel = {
+      ...hiveOverviewFixture,
+      syncHealthByProject: Array.from({ length: 12 }, (_, index) => {
+        const project = hiveOverviewFixture.syncHealthByProject[index % hiveOverviewFixture.syncHealthByProject.length]
+        return {
+          ...project,
+          name: `project-${index + 1}`
+        }
+      })
+    }
+    const view = renderOverview({ status: 'ready', data: highProjectCountFixture })
+    const syncHealthRegion = getByRole(view, 'region', { name: 'Sync health by project' })
+    const syncHealth = getByRole(syncHealthRegion, 'list', { name: 'Sync health by project rows' })
+    const rows = getAllByRole(syncHealth, 'listitem')
+    const overflowNote = getByRole(syncHealthRegion, 'note', {
+      name: 'Showing 8 of 12 projects. 4 more projects are not shown in Overview.'
+    })
+
+    expect(syncHealthRegion.classList.contains('dashboard-sync-health')).toBe(true)
+    expect(syncHealth.classList.contains('dashboard-sync-health__list')).toBe(true)
+    expect(syncHealth.tabIndex).toBe(0)
+    expect(rows).toHaveLength(8)
+    expect(rows.map(accessibleName)).toEqual(
+      expect.arrayContaining([
+        'project-1: Healthy, 6 contributors, region eu-west-1',
+        'project-8: Unknown, 4 contributors, region us-east-1'
+      ])
+    )
+    expect(syncHealthRegion.textContent).not.toContain('project-9')
+    expect(overflowNote).toBeDefined()
   })
 
   it('renders sync health rows with status badge and project name', () => {

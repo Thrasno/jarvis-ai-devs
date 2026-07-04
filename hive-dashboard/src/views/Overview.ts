@@ -4,6 +4,8 @@ import { append, emptyState, error, stack, statusBadge, statusLabel, text } from
 
 export type ViewState<T> = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; data: T }
 
+const SYNC_HEALTH_OVERVIEW_PROJECT_LIMIT = 8
+
 function syncHealthDisplay(vm: MetricCardViewModel): string {
   if (vm.totalValue !== undefined && vm.totalValue > 0) {
     const pct = Math.round((vm.value / vm.totalValue) * 100)
@@ -40,6 +42,7 @@ function renderSyncHealthRow(project: OverviewSyncHealthProjectViewModel): HTMLE
 
 function renderSyncHealthSection(projects: readonly OverviewSyncHealthProjectViewModel[], sourceLabel?: string): HTMLElement {
   const section = document.createElement('section')
+  section.className = 'dashboard-sync-health'
   section.setAttribute('role', 'region')
   section.setAttribute('aria-label', 'Sync health by project')
 
@@ -50,11 +53,29 @@ function renderSyncHealthSection(projects: readonly OverviewSyncHealthProjectVie
     return section
   }
 
-  const list = stack(projects.map(renderSyncHealthRow))
+  const visibleProjects = projects.slice(0, SYNC_HEALTH_OVERVIEW_PROJECT_LIMIT)
+  const hiddenProjectCount = projects.length - visibleProjects.length
+  const list = stack(visibleProjects.map(renderSyncHealthRow))
+  list.classList.add('dashboard-sync-health__list')
   list.setAttribute('role', 'list')
   list.setAttribute('aria-label', 'Sync health by project rows')
+  list.tabIndex = 0
   section.append(list)
+
+  if (hiddenProjectCount > 0) {
+    section.append(syncHealthOverflowNote(visibleProjects.length, projects.length, hiddenProjectCount))
+  }
+
   return section
+}
+
+function syncHealthOverflowNote(visibleProjectCount: number, totalProjectCount: number, hiddenProjectCount: number): HTMLElement {
+  const note = text(
+    `Showing ${visibleProjectCount} of ${totalProjectCount} projects. ${hiddenProjectCount} more ${hiddenProjectCount === 1 ? 'project is' : 'projects are'} not shown in Overview.`,
+    'dashboard-sync-health__overflow-note'
+  )
+  note.setAttribute('role', 'note')
+  return note
 }
 
 function sourceNotice(message: string): HTMLElement {
