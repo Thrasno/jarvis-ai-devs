@@ -149,9 +149,31 @@ body { margin: 0; background: var(--dashboard-background); }
 
 /* ─── Overview two-column panel rows ─────────────────────────────────────── */
 .dashboard-overview__row {
+  align-items: start;
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(300px, 1fr);
   gap: 20px;
+}
+
+.dashboard-sync-health {
+  display: grid;
+  max-block-size: min(360px, 52vh);
+  overflow: hidden;
+}
+
+.dashboard-sync-health__list {
+  max-block-size: min(320px, 44vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.dashboard-sync-health__overflow-note {
+  border-top: 1px solid var(--dashboard-border);
+  color: var(--dashboard-text-muted);
+  font-family: var(--dashboard-font-mono);
+  font-size: 0.6875rem;
+  margin: 0;
+  padding: 10px 16px 12px;
 }
 
 @media (max-width: 768px) {
