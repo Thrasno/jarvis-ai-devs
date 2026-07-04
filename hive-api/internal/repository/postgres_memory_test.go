@@ -2328,6 +2328,81 @@ func TestMigration010_PullCursorIndexesExist(t *testing.T) {
 	require.NoError(t, RunMigrations(pool, migrations.PullCursorIndexesSQL))
 }
 
+// TestMigration011_ProjectScopedPullCursorIndexesReplaceObsoleteIndexes verifies
+// that migration 011 adds project-leading pull-cursor indexes and removes only
+// the indexes made obsolete by the actual query shapes.
+func TestMigration011_ProjectScopedPullCursorIndexesReplaceObsoleteIndexes(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, RunMigrations(pool, migrations.PullCursorIndexesSQL))
+	require.NoError(t, RunMigrations(pool, migrations.ProjectScopedPullCursorIndexesSQL))
+
+	tests := []struct {
+		table           string
+		indexName       string
+		wantDefinitions []string
+	}{
+		{
+			table:           "memories",
+			indexName:       "idx_memories_project_synced_at_sync_id",
+			wantDefinitions: []string{"(project, synced_at, sync_id)", "WHERE (deleted_at IS NULL)"},
+		},
+		{
+			table:           "sessions",
+			indexName:       "idx_sessions_project_synced_at_sync_id",
+			wantDefinitions: []string{"(project, synced_at, sync_id)"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.indexName, func(t *testing.T) {
+			var indexDef string
+			err := pool.QueryRow(ctx, `
+				SELECT indexdef FROM pg_indexes
+				WHERE tablename = $1 AND indexname = $2`, tt.table, tt.indexName).Scan(&indexDef)
+			require.NoError(t, err)
+			for _, want := range tt.wantDefinitions {
+				assert.Contains(t, indexDef, want)
+			}
+		})
+	}
+
+	obsoleteIndexes := []struct {
+		table     string
+		indexName string
+	}{
+		{table: "memories", indexName: "idx_memories_synced_at"},
+		{table: "sessions", indexName: "idx_sessions_synced_at_sync_id"},
+	}
+
+	for _, tt := range obsoleteIndexes {
+		t.Run("drops_"+tt.indexName, func(t *testing.T) {
+			assert.False(t, postgresIndexExists(t, pool, tt.table, tt.indexName), "expected obsolete index %s to be dropped", tt.indexName)
+		})
+	}
+
+	assert.True(t, postgresIndexExists(t, pool, "memories", "idx_memories_synced_at_sync_id"),
+		"memory global synced_at index remains to support global live-activity reads after dropping idx_memories_synced_at")
+
+	// Migration must be idempotent — applying it twice must not error.
+	require.NoError(t, RunMigrations(pool, migrations.ProjectScopedPullCursorIndexesSQL))
+}
+
+func postgresIndexExists(t *testing.T, pool *pgxpool.Pool, table, indexName string) bool {
+	t.Helper()
+
+	var exists bool
+	err := pool.QueryRow(context.Background(), `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE tablename = $1 AND indexname = $2
+		)`, table, indexName).Scan(&exists)
+	require.NoError(t, err)
+	return exists
+}
+
 func stringValue(s *string) string {
 	if s == nil {
 		return ""

@@ -75,3 +75,9 @@ var MemoryDiscoveryIndexesSQL string
 //
 //go:embed 010_pull_cursor_indexes.sql
 var PullCursorIndexesSQL string
+
+// ProjectScopedPullCursorIndexesSQL is migration 011: project-leading composite
+// indexes for the actual pull-cursor query shape, plus safe obsolete index cleanup.
+//
+//go:embed 011_project_scoped_pull_cursor_indexes.sql
+var ProjectScopedPullCursorIndexesSQL string
