@@ -471,6 +471,13 @@ func TestGetSession_NotFound_ReturnsErrSessionNotFound(t *testing.T) {
 	require.ErrorIs(t, err, ErrSessionNotFound)
 }
 
+func TestMarkSessionSynced_MissingSessionReturnsErrSessionNotFound(t *testing.T) {
+	d := openTestDB(t)
+
+	err := d.MarkSessionSynced("does-not-exist", time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC))
+	require.ErrorIs(t, err, ErrSessionNotFound)
+}
+
 func TestEndSession_HappyPath(t *testing.T) {
 	d := openTestDB(t)
 
