@@ -509,6 +509,18 @@ ON CONFLICT(consumer, project, channel) DO UPDATE SET
 	return nil
 }
 
+// ClearPullCursor deletes the bounded-pull resume position for one channel.
+// Deleting a missing row is a successful no-op.
+func (d *DB) ClearPullCursor(consumer, project, channel string) error {
+	_, err := d.sqlDB.Exec(`
+DELETE FROM pull_cursors
+WHERE consumer = ? AND project = ? AND channel = ?`, consumer, project, channel)
+	if err != nil {
+		return fmt.Errorf("clear pull cursor: %w", err)
+	}
+	return nil
+}
+
 func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
 	if event.EventID == "" {
 		return false, fmt.Errorf("event_id is required")

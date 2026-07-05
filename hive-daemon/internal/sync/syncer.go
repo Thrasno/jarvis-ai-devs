@@ -118,6 +118,7 @@ type SyncStore interface {
 	// independently.
 	GetPullCursor(consumer, project, channel string) (db.PullCursor, error)
 	SetPullCursor(consumer, project, channel string, cursor db.PullCursor, at time.Time) error
+	ClearPullCursor(consumer, project, channel string) error
 	RecordSyncAttemptLog(ctx context.Context, log db.SyncAttemptLog) error
 	ListPendingSyncAttemptLogs(ctx context.Context, limit int) ([]db.SyncAttemptLog, error)
 	MarkSyncAttemptLogsDelivered(ctx context.Context, ids []string, at time.Time) error
@@ -921,30 +922,31 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 		recordsMarkedSynced += mutationsPushed
 	}
 
-	// Paso 5f: persistimos los cursores de pull acotado para el próximo batch
-	// (PR 2a/2b, hive-sync-batched-drain task 2.8). Cada campo se persiste
-	// SOLO cuando el servidor efectivamente lo devolvió — un
-	// NextPullCursor/NextSessionCursor nil (respuesta de un servidor viejo
-	// sin paginación, o un canal ya totalmente drenado) no debe pisar el
-	// cursor persistido con un valor cero.
-	// postBatchPullMemoriesCursor/postBatchPullSessionsCursor (PR 2b
-	// infinite-loop fix) start from the cursors read at the top of this batch
-	// (pullMemoriesCursor/pullSessionsCursor) and are updated only when the
-	// server actually returned a next cursor for that channel — mirroring
-	// exactly the same "persist only when non-nil" condition as the
-	// SetPullCursor calls above, so these values always match what is now
-	// durably persisted for the channel. Drain uses them (not PullHasMore
-	// alone) to decide whether the pull side made real progress this
-	// iteration.
+	// Paso 5f: persistimos o limpiamos los cursores de pull acotado para el
+	// próximo batch. A channel reporting has_more=false is fully drained, so its
+	// durable cursor is cleared and the post-batch cursor becomes zero. A channel
+	// reporting has_more=true only advances when the server sends a next cursor;
+	// has_more=true with a nil next cursor leaves the previous cursor intact and
+	// lets Drain's no-progress guard handle the stalled pagination state.
 	postBatchPullMemoriesCursor := pullMemoriesCursor
 	postBatchPullSessionsCursor := pullSessionsCursor
-	if resp.NextPullCursor != nil {
+	if !resp.PulledHasMore {
+		if err := s.store.ClearPullCursor(mutationCursorConsumerAPI, project, pullCursorChannelMemories); err != nil {
+			return batchResult{}, nil, fmt.Errorf("clear pull cursor de memorias: %w", err)
+		}
+		postBatchPullMemoriesCursor = db.PullCursor{}
+	} else if resp.NextPullCursor != nil {
 		if err := s.store.SetPullCursor(mutationCursorConsumerAPI, project, pullCursorChannelMemories, *resp.NextPullCursor, now); err != nil {
 			return batchResult{}, nil, fmt.Errorf("guardar cursor de pull de memorias: %w", err)
 		}
 		postBatchPullMemoriesCursor = *resp.NextPullCursor
 	}
-	if resp.NextSessionCursor != nil {
+	if !resp.PulledSessionsHasMore {
+		if err := s.store.ClearPullCursor(mutationCursorConsumerAPI, project, pullCursorChannelSessions); err != nil {
+			return batchResult{}, nil, fmt.Errorf("clear pull cursor de sesiones: %w", err)
+		}
+		postBatchPullSessionsCursor = db.PullCursor{}
+	} else if resp.NextSessionCursor != nil {
 		if err := s.store.SetPullCursor(mutationCursorConsumerAPI, project, pullCursorChannelSessions, *resp.NextSessionCursor, now); err != nil {
 			return batchResult{}, nil, fmt.Errorf("guardar cursor de pull de sesiones: %w", err)
 		}
