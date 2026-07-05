@@ -919,7 +919,32 @@ func memSyncHandler(syncRuntime *syncRuntime) sdkmcp.ToolHandler {
 				})
 			}
 
-			return toolError(fmt.Errorf("sync failed: %w", err)), nil
+			wrapped := fmt.Errorf("sync failed: %w", err)
+			if result != nil {
+				response, marshalErr := toolJSON(map[string]any{
+					"status": "error",
+					"error":  wrapped.Error(),
+					"partial_result": map[string]any{
+						"batches_done":      outcome.BatchesDone,
+						"pushed":            result.Pushed,
+						"pulled":            result.Pulled,
+						"marked":            0,
+						"conflicts":         result.Conflicts,
+						"drain_state":       drainStateJSON(outcome.State),
+						"drain_reason":      string(outcome.Reason),
+						"remaining_push":    outcome.RemainingPush,
+						"remaining_pull":    0,
+						"remaining_mark":    0,
+						"batches_remaining": outcome.BatchesRemaining,
+					},
+				})
+				if marshalErr != nil {
+					return toolError(marshalErr), nil
+				}
+				response.IsError = true
+				return response, nil
+			}
+			return toolError(wrapped), nil
 		}
 
 		// DrainExpectedPending (either reason: auto-single-step, no-progress,

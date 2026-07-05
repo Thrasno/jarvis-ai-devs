@@ -1533,6 +1533,72 @@ func TestMemSyncHandler_DegradedFailureSurfacesViaSuccessPath(t *testing.T) {
 	}
 }
 
+func TestMemSyncHandler_PartialResultErrorIncludesStructuredPartialResult(t *testing.T) {
+	t.Parallel()
+
+	syncer := &scriptedSyncer{
+		result:     &hivesync.Result{Pushed: 2, Pulled: 1, Conflicts: 1, Project: "test-proj"},
+		outcomeSet: true,
+		outcome: hivesync.DrainOutcome{
+			State:            hivesync.DrainDegradedFailure,
+			Reason:           hivesync.DrainReasonNone,
+			BatchesDone:      2,
+			BatchesRemaining: -1,
+			RemainingPush:    3,
+		},
+		err: errors.New("boom"),
+	}
+	session := connectTestServerWithSync(t, &mockStore{}, nil, syncer)
+
+	res := callTool(t, session, "mem_sync", map[string]any{"project": "test-proj"})
+	if !res.IsError {
+		t.Fatalf("partial result with generic error must remain an MCP error")
+	}
+
+	body := decodeJSONResponse(t, res)
+	if got := body["status"]; got != "error" {
+		t.Fatalf("status = %v, want error", got)
+	}
+	errText, ok := body["error"].(string)
+	if !ok || !strings.Contains(errText, "sync failed:") || !strings.Contains(errText, "boom") {
+		t.Fatalf("error = %v, want wrapped sync failure containing boom", body["error"])
+	}
+	if _, ok := body["pushed"]; ok {
+		t.Fatalf("top-level pushed should be absent from partial error payload")
+	}
+
+	partial, ok := body["partial_result"].(map[string]any)
+	if !ok {
+		t.Fatalf("partial_result missing or wrong type: %T", body["partial_result"])
+	}
+	for _, field := range []string{"batches_done", "pushed", "pulled", "marked", "conflicts", "drain_state", "drain_reason", "remaining_push", "remaining_pull", "remaining_mark", "batches_remaining"} {
+		if _, ok := partial[field]; !ok {
+			t.Fatalf("partial_result.%s missing", field)
+		}
+	}
+	if got := partial["pushed"]; got != float64(2) {
+		t.Fatalf("partial_result.pushed = %v, want 2", got)
+	}
+	if got := partial["pulled"]; got != float64(1) {
+		t.Fatalf("partial_result.pulled = %v, want 1", got)
+	}
+	if got := partial["conflicts"]; got != float64(1) {
+		t.Fatalf("partial_result.conflicts = %v, want 1", got)
+	}
+	if got := partial["batches_done"]; got != float64(2) {
+		t.Fatalf("partial_result.batches_done = %v, want 2", got)
+	}
+	if got := partial["remaining_push"]; got != float64(3) {
+		t.Fatalf("partial_result.remaining_push = %v, want 3", got)
+	}
+	if got := partial["batches_remaining"]; got != float64(-1) {
+		t.Fatalf("partial_result.batches_remaining = %v, want -1", got)
+	}
+	if got := partial["drain_state"]; got != "degraded_failure" {
+		t.Fatalf("partial_result.drain_state = %v, want degraded_failure", got)
+	}
+}
+
 // TestMemSyncHandler_StillHandlesInFlightAndBackoff pins that switching
 // mem_sync to Drain does not change the ErrSyncInFlight/BackoffError response
 // branches — they must behave identically whether raised from Sync or Drain.
