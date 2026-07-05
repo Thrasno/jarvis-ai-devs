@@ -80,11 +80,13 @@ type mockSyncStore struct {
 	// hive-sync-batched-drain task 2.8): keyed by "<consumer>/<project>/<channel>".
 	// getPullCursorCalls/setPullCursorCalls record every Get/Set call for
 	// assertions on which channel was read/written and with what value.
-	pullCursors        map[string]db.PullCursor
-	getPullCursorCalls []pullCursorCall
-	setPullCursorCalls []pullCursorSetCall
-	getPullCursorErr   error
-	setPullCursorErr   error
+	pullCursors          map[string]db.PullCursor
+	getPullCursorCalls   []pullCursorCall
+	setPullCursorCalls   []pullCursorSetCall
+	clearPullCursorCalls []pullCursorCall
+	getPullCursorErr     error
+	setPullCursorErr     error
+	clearPullCursorErr   error
 
 	// recordDrainOutcomeCalls/recordDrainOutcomeErr (PR 3, task 3.4) record
 	// every RecordDrainOutcome invocation, or force it to fail, for tests
@@ -427,6 +429,17 @@ func (m *mockSyncStore) SetPullCursor(consumer, project, channel string, cursor 
 		m.pullCursors = make(map[string]db.PullCursor)
 	}
 	m.pullCursors[pullCursorKey(consumer, project, channel)] = cursor
+	return nil
+}
+
+func (m *mockSyncStore) ClearPullCursor(consumer, project, channel string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clearPullCursorCalls = append(m.clearPullCursorCalls, pullCursorCall{consumer, project, channel})
+	if m.clearPullCursorErr != nil {
+		return m.clearPullCursorErr
+	}
+	delete(m.pullCursors, pullCursorKey(consumer, project, channel))
 	return nil
 }
 
@@ -3254,12 +3267,12 @@ func TestSyncBatchStep_PersistsNextPullCursorsOnlyWhenPresent(t *testing.T) {
 		wantSetCallsLength int
 	}{
 		{
-			name: "both next cursors present are both persisted",
+			name: "both next cursors present with has more are both persisted",
 			resp: syncResponse{
 				Pushed: 0, Pulled: []apiMemory{},
 				PulledHasMore:         true,
 				NextPullCursor:        &PullCursor{SyncID: "mem-next"},
-				PulledSessionsHasMore: false,
+				PulledSessionsHasMore: true,
 				NextSessionCursor:     &PullCursor{SyncID: "sess-next"},
 			},
 			wantSetCalls: []pullCursorSetCall{
@@ -3344,6 +3357,66 @@ func TestSyncBatchStep_OldServerResponseWithoutPullFieldsReportsNoMore(t *testin
 	require.NoError(t, err)
 	assert.False(t, result.PullHasMore, "old server response without has_more fields must decode to PullHasMore=false")
 	assert.Empty(t, store.setPullCursorCalls, "no next cursor was returned, nothing should be persisted")
+}
+
+func TestDrain_TriggerManual_ClearsFullyDrainedPullCursorBeforeNextDrain(t *testing.T) {
+	baseNow := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	memCursor := db.PullCursor{SyncedAt: time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC), SyncID: "mem-stale"}
+	sessCursor := db.PullCursor{SyncedAt: time.Date(2026, 6, 1, 9, 30, 0, 0, time.UTC), SyncID: "sess-keep"}
+	store := &mockSyncStore{
+		jwt: "valid-token",
+		pullCursors: map[string]db.PullCursor{
+			pullCursorKey(mutationCursorConsumerAPI, "test-project", pullCursorChannelMemories): memCursor,
+			pullCursorKey(mutationCursorConsumerAPI, "test-project", pullCursorChannelSessions): sessCursor,
+		},
+	}
+
+	var requests []syncRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync" {
+			return
+		}
+		var req syncRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		requests = append(requests, req)
+
+		w.WriteHeader(http.StatusOK)
+		idx := len(requests)
+		resp := syncResponse{Pushed: 0, Pulled: []apiMemory{}}
+		if idx == 1 {
+			resp.PulledHasMore = false
+			resp.PulledSessionsHasMore = true
+			resp.NextSessionCursor = &PullCursor{SyncID: "sess-next"}
+		} else {
+			resp.PulledHasMore = true
+			resp.NextPullCursor = &PullCursor{SyncID: "mem-next"}
+			resp.PulledSessionsHasMore = false
+		}
+		require.NoError(t, json.NewEncoder(w).Encode(resp))
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	first, firstOutcome, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	assert.Equal(t, DrainExpectedPending, firstOutcome.State, "sessions still report another page")
+
+	second, _, err := syncer.Drain(context.Background(), "test-project", TriggerManual)
+	require.NoError(t, err)
+	require.NotNil(t, second)
+
+	require.GreaterOrEqual(t, len(requests), 2)
+	require.NotNil(t, requests[0].PullCursor)
+	assert.Equal(t, "mem-stale", requests[0].PullCursor.SyncID)
+	assert.Nil(t, requests[1].PullCursor, "second drain must omit the cleared memories cursor")
+
+	assert.Contains(t, store.clearPullCursorCalls, pullCursorCall{mutationCursorConsumerAPI, "test-project", pullCursorChannelMemories})
+	assert.NotContains(t, store.clearPullCursorCalls[:1], pullCursorCall{mutationCursorConsumerAPI, "test-project", pullCursorChannelSessions})
 }
 
 // TestDrain_TriggerManual_DrainsMultiPagePullAndAdvancesCursorsPerChannel is
@@ -3433,16 +3506,14 @@ func TestDrain_TriggerManual_DrainsMultiPagePullAndAdvancesCursorsPerChannel(t *
 	require.NotNil(t, sessCursorsSeen[2])
 	assert.Equal(t, "sess-page-2", sessCursorsSeen[2].SyncID)
 
-	// Final persisted state: memories cursor stopped advancing after page 2
-	// (page 3 returned nil next cursor alongside has_more=false); sessions
-	// cursor advanced through page 3.
+	// Final persisted state: both channels were fully drained and cleared.
 	finalMem, err := store.GetPullCursor(mutationCursorConsumerAPI, "test-project", pullCursorChannelMemories)
 	require.NoError(t, err)
-	assert.Equal(t, "mem-page-2", finalMem.SyncID)
+	assert.Equal(t, db.PullCursor{}, finalMem)
 
 	finalSess, err := store.GetPullCursor(mutationCursorConsumerAPI, "test-project", pullCursorChannelSessions)
 	require.NoError(t, err)
-	assert.Equal(t, "sess-page-3", finalSess.SyncID)
+	assert.Equal(t, db.PullCursor{}, finalSess)
 }
 
 // TestDrain_TriggerManual_RecordsAccumulatedSyncCountsAcrossBatches pins the
