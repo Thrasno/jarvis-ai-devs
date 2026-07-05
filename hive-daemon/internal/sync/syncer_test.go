@@ -42,6 +42,7 @@ type mockSyncStore struct {
 	unsyncedSessions              []*models.Session
 	unsyncedSessionsErr           error
 	markedSessionSynced           []string
+	markSessionSyncedErr          error
 	savedSessionsFromRemote       []*models.Session
 	pendingMutations              []db.MutationEnvelope
 	markedMutationsSynced         []string
@@ -330,6 +331,9 @@ func (m *mockSyncStore) ListUnsyncedSessionsPage(project string, limit int) ([]*
 func (m *mockSyncStore) MarkSessionSynced(id string, at time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.markSessionSyncedErr != nil {
+		return m.markSessionSyncedErr
+	}
 	m.markedSessionSynced = append(m.markedSessionSynced, id)
 	return nil
 }
@@ -2570,6 +2574,33 @@ func TestDrain_TriggerManual_PagesThroughLargeBacklogWithoutFalsePositiveGuard(t
 	// Page size 2 caps each scripted entry ([5, 3, 1] items) at 2: batches mark
 	// 2 + 2 + 1 = 5 records, then a final empty batch confirms backlog-empty.
 	assert.Len(t, store.markedSynced, 5, "every record marked synced across all batches must sum to the pushed total")
+}
+
+func TestSyncer_SyncBatchStep_DoesNotCountFailedSessionMarkAsProgress(t *testing.T) {
+	baseNow := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	sess := &models.Session{ID: "missing-session", Project: "test-project"}
+	store := &mockSyncStore{
+		jwt:                  "valid-token",
+		unsyncedSessions:     []*models.Session{sess},
+		markSessionSyncedErr: db.ErrSessionNotFound,
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/sync", r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	batch, err := syncer.syncBatchStep(context.Background(), "test-project", "valid-token")
+	require.NoError(t, err)
+	assert.Equal(t, 0, batch.RecordsMarkedSynced)
+	assert.Empty(t, store.markedSessionSynced)
 }
 
 // TestDrain_SessionsBeforeMemoriesAcrossPagedBatches pins the FK-ordering

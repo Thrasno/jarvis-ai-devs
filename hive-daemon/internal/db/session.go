@@ -222,12 +222,19 @@ func (d *DB) ListUnsyncedSessionsPage(project string, limit int) ([]*models.Sess
 
 // MarkSessionSynced sets synced_at for a session identified by id.
 func (d *DB) MarkSessionSynced(id string, at time.Time) error {
-	_, err := d.sqlDB.Exec(
+	result, err := d.sqlDB.Exec(
 		`UPDATE sessions SET synced_at = ? WHERE id = ?`,
 		at.UTC().Format("2006-01-02 15:04:05"), id,
 	)
 	if err != nil {
 		return fmt.Errorf("mark session synced: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mark session synced rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return ErrSessionNotFound
 	}
 	return nil
 }
