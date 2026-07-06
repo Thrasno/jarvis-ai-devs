@@ -122,6 +122,30 @@ func TestPostPrompts_ValidContent_Returns201(t *testing.T) {
 	}
 }
 
+func TestPostPrompts_ProjectBlockedReturns423(t *testing.T) {
+	store := &mockPromptStore{savePromptForSessionFn: func(ctx context.Context, project, sessionID, content string) (*models.Prompt, error) {
+		return nil, db.ErrProjectBlocked
+	}}
+	srv := httpapi.NewServer("127.0.0.1:0", store)
+
+	req := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewBufferString(`{"content":"blocked","project":"garbage-project"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusLocked {
+		t.Fatalf("expected 423, got %d", rr.Code)
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if resp["error"] != "project is blocked" {
+		t.Fatalf("expected project blocked error, got %q", resp["error"])
+	}
+}
+
 // TS-HTTP-2: Empty content returns 400, SavePrompt NOT called
 func TestPostPrompts_EmptyContent_Returns400(t *testing.T) {
 	store := &mockPromptStore{}

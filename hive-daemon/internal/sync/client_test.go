@@ -29,6 +29,10 @@ func TestClient_Login(t *testing.T) {
 				assert.Equal(t, http.MethodPost, r.Method)
 				assert.Equal(t, "/auth/login", r.URL.Path)
 				assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+				var got map[string]string
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+				assert.Equal(t, "daemon-test-1", got["daemon_id"])
+				assert.Equal(t, "hive-daemon", got["client"])
 
 				// Return success response
 				w.WriteHeader(http.StatusOK)
@@ -70,6 +74,7 @@ func TestClient_Login(t *testing.T) {
 				APIURL:   server.URL,
 				Email:    "test@example.com",
 				Password: "password123",
+				DaemonID: "daemon-test-1",
 			}
 			client := newClient(cfg)
 
@@ -233,6 +238,33 @@ func TestClient_SyncRequest_OmitsLegacyMetadataFields(t *testing.T) {
 	c := newClient(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"})
 	_, err := c.sync(context.Background(), "test-token", "test-project", []*models.Session{}, []*models.Memory{createTestSyncMemory("local-sync-metadata")}, []*models.Prompt{}, nil, nil, nil, pullOptions{})
 	require.NoError(t, err)
+}
+
+func TestClient_Sync_HTTP423ReturnsProjectBlockedError(t *testing.T) {
+	blockedAt := time.Date(2026, 7, 6, 10, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusLocked)
+		require.NoError(t, json.NewEncoder(w).Encode(projectBlockedErrorResponse{
+			Error: "project is blocked",
+			Command: projectBlockCommand{
+				CommandID:           "cmd-123",
+				Project:             "Garbage Project",
+				CanonicalProjectKey: "garbage-project",
+				BlockedAt:           blockedAt,
+			},
+		}))
+	}))
+	defer server.Close()
+
+	c := newClient(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"})
+	_, err := c.sync(context.Background(), "test-token", "garbage-project", nil, nil, nil, nil, nil, nil, pullOptions{})
+	require.Error(t, err)
+
+	var blocked *ProjectBlockedError
+	require.ErrorAs(t, err, &blocked)
+	require.Equal(t, "cmd-123", blocked.Command.CommandID)
+	require.Equal(t, "garbage-project", blocked.Command.CanonicalProjectKey)
+	require.Equal(t, blockedAt, blocked.Command.BlockedAt)
 }
 
 // TestClient_Sync_AuthFailure tests that 401 errors are properly propagated.

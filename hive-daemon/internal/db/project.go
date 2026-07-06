@@ -154,6 +154,13 @@ func (d *DB) ListGovernanceMemories(ctx context.Context, filter GovernanceMemory
 	if project == "" {
 		return nil, ErrGovernanceProjectRequired
 	}
+	blocked, err := d.IsProjectBlocked(ctx, project)
+	if err != nil {
+		return nil, err
+	}
+	if blocked {
+		return []GovernanceMemory{}, nil
+	}
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = 100
@@ -211,6 +218,13 @@ FROM memories WHERE id = ? AND deleted_at IS NULL`
 	}
 	if err != nil {
 		return GovernanceMemory{}, fmt.Errorf("get governance memory: %w", err)
+	}
+	blocked, err := d.IsProjectBlocked(ctx, memory.Project)
+	if err != nil {
+		return GovernanceMemory{}, err
+	}
+	if blocked {
+		return GovernanceMemory{}, fmt.Errorf("%w: id=%d", ErrGovernanceMemoryNotFound, id)
 	}
 	return memory, nil
 }

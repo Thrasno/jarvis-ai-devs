@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 )
 
 const mutationProtocolVersion = 2
+
+var ErrProjectBlocked = errors.New("project is blocked")
 
 // PullCursor is a sync-package alias for db.PullCursor (defined in
 // internal/db alongside db.MutationCursor, PR 2b hive-sync-batched-drain).
@@ -61,8 +64,10 @@ func (c *client) Login(ctx context.Context) error {
 // login obtiene un JWT del servidor y devuelve el token + su expiración.
 func (c *client) login(ctx context.Context) (token string, expiresAt time.Time, err error) {
 	body, _ := json.Marshal(map[string]string{
-		"email":    c.cfg.Email,
-		"password": c.cfg.Password,
+		"email":     c.cfg.Email,
+		"password":  c.cfg.Password,
+		"daemon_id": c.cfg.DaemonID,
+		"client":    "hive-daemon",
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -177,6 +182,32 @@ type syncResponse struct {
 	NextPullCursor        *PullCursor `json:"next_pull_cursor,omitempty"`
 	PulledSessionsHasMore bool        `json:"pulled_sessions_has_more,omitempty"`
 	NextSessionCursor     *PullCursor `json:"next_session_cursor,omitempty"`
+}
+
+type projectBlockCommand struct {
+	CommandID           string    `json:"command_id"`
+	AckToken            string    `json:"ack_token"`
+	Project             string    `json:"project"`
+	CanonicalProjectKey string    `json:"canonical_project_key"`
+	Reason              string    `json:"reason"`
+	BlockedAt           time.Time `json:"blocked_at"`
+}
+
+type projectBlockedErrorResponse struct {
+	Error   string              `json:"error"`
+	Command projectBlockCommand `json:"command"`
+}
+
+type ProjectBlockedError struct {
+	Command projectBlockCommand
+}
+
+func (e *ProjectBlockedError) Error() string {
+	return ErrProjectBlocked.Error()
+}
+
+func (e *ProjectBlockedError) Unwrap() error {
+	return ErrProjectBlocked
 }
 
 type syncAttemptIngestRequest struct {
@@ -311,6 +342,14 @@ func (c *client) sync(ctx context.Context, token, project string,
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode == http.StatusLocked {
+		var blocked projectBlockedErrorResponse
+		if err := json.NewDecoder(resp.Body).Decode(&blocked); err != nil {
+			return nil, fmt.Errorf("decode blocked project response: %w", err)
+		}
+		return nil, &ProjectBlockedError{Command: blocked.Command}
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("sync failed (%d): %s", resp.StatusCode, string(body))
@@ -322,6 +361,29 @@ func (c *client) sync(ctx context.Context, token, project string,
 	}
 
 	return &result, nil
+}
+
+func (c *client) ackProjectBlock(ctx context.Context, token string, ack db.ProjectBlockAck) error {
+	reqBody, err := json.Marshal(ack)
+	if err != nil {
+		return fmt.Errorf("marshal project block ack: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.APIURL+"/admin/project-blocks/ack", bytes.NewReader(reqBody))
+	if err != nil {
+		return fmt.Errorf("build project block ack request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("project block ack request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("project block ack failed (%d): %s", resp.StatusCode, string(body))
+	}
+	return nil
 }
 
 func (c *client) syncAttempts(ctx context.Context, token string, attempts []db.SyncAttemptLog) (*syncAttemptIngestResponse, error) {

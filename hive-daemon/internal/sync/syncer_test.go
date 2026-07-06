@@ -101,6 +101,10 @@ type mockSyncStore struct {
 	// filtered after the fact) while sessions are still pending, mirroring
 	// getUnsyncedPageLimits for memories.
 	getPendingMutationsCalls int
+	recordedProjectBlocks    []db.ProjectBlockCommand
+	quarantinedProjects      []string
+	recordedBlockAcks        []db.ProjectBlockAck
+	pendingBlockAcks         []db.ProjectBlockAck
 }
 
 type pullCursorCall struct {
@@ -167,6 +171,43 @@ func (m *mockSyncStore) MarkMemoriesSyncedBySyncID(syncIDs []string, at time.Tim
 	}
 	m.markedMemoriesSyncedBySyncID = append(m.markedMemoriesSyncedBySyncID, syncIDs...)
 	return nil
+}
+
+func (m *mockSyncStore) RecordProjectBlock(ctx context.Context, cmd db.ProjectBlockCommand) (db.ProjectBlock, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recordedProjectBlocks = append(m.recordedProjectBlocks, cmd)
+	return db.ProjectBlock{CommandID: cmd.CommandID, AckToken: cmd.AckToken, Project: cmd.Project, CanonicalProjectKey: cmd.CanonicalProjectKey, AckPending: true}, nil
+}
+
+func (m *mockSyncStore) QuarantineBlockedProject(ctx context.Context, projectName, actorID, reason string, at time.Time) (db.ProjectQuarantineResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.quarantinedProjects = append(m.quarantinedProjects, projectName)
+	return db.ProjectQuarantineResult{Project: projectName, Mutated: true}, nil
+}
+
+func (m *mockSyncStore) RecordProjectBlockAck(ctx context.Context, ack db.ProjectBlockAck) (db.ProjectBlockAck, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recordedBlockAcks = append(m.recordedBlockAcks, ack)
+	return ack, nil
+}
+
+func (m *mockSyncStore) RecordPendingProjectBlockAck(ctx context.Context, ack db.ProjectBlockAck) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pendingBlockAcks = append(m.pendingBlockAcks, ack)
+	return nil
+}
+
+func (m *mockSyncStore) ListPendingProjectBlockAcks(ctx context.Context, limit int) ([]db.ProjectBlockAck, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if limit > 0 && len(m.pendingBlockAcks) > limit {
+		return append([]db.ProjectBlockAck(nil), m.pendingBlockAcks[:limit]...), nil
+	}
+	return append([]db.ProjectBlockAck(nil), m.pendingBlockAcks...), nil
 }
 
 func (m *mockSyncStore) SaveFromRemote(mem *models.Memory) error {
@@ -1123,6 +1164,161 @@ func TestSyncer_Sync_HealthLifecycle(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSyncer_Sync_ProjectBlockCommandQuarantinesAndDoesNotMarkRowsSynced(t *testing.T) {
+	baseNow := time.Date(2026, 7, 6, 10, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{
+		jwt: "valid-token",
+		unsynced: []*models.Memory{
+			{SyncID: "mem-sync-1", Project: "garbage-project", Title: "local", Content: "pending"},
+		},
+		unsyncedPrompts: []*models.Prompt{
+			{SyncID: "prompt-sync-1", Project: "garbage-project", Content: "pending", CreatedAt: baseNow},
+		},
+		unsyncedSessions: []*models.Session{
+			{ID: "session-1", SyncID: "session-sync-1", Project: "garbage-project", DevID: "dev", Client: "test", StartedAt: baseNow},
+		},
+	}
+	ackRequests := make(chan db.ProjectBlockAck, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sync":
+			w.WriteHeader(http.StatusLocked)
+			require.NoError(t, json.NewEncoder(w).Encode(projectBlockedErrorResponse{
+				Error: "project is blocked",
+				Command: projectBlockCommand{
+					CommandID:           "cmd-423",
+					AckToken:            "ack-token-423",
+					Project:             "Garbage Project",
+					CanonicalProjectKey: "garbage-project",
+					BlockedAt:           baseNow.Add(-time.Minute),
+				},
+			}))
+		case "/admin/project-blocks/ack":
+			var ack db.ProjectBlockAck
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&ack))
+			ackRequests <- ack
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(ack))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{now: func() time.Time { return baseNow }})
+	result, err := syncer.Sync(context.Background(), "garbage-project")
+	require.Error(t, err)
+	require.Nil(t, result)
+
+	require.Len(t, store.recordedProjectBlocks, 1)
+	require.Equal(t, "cmd-423", store.recordedProjectBlocks[0].CommandID)
+	require.Equal(t, "ack-token-423", store.recordedProjectBlocks[0].AckToken)
+	require.Equal(t, []string{"garbage-project"}, store.quarantinedProjects)
+	require.Empty(t, store.markedSynced, "blocked rows must remain unsynced for local-first retry visibility")
+	require.Empty(t, store.markedPromptSynced)
+	require.Empty(t, store.markedSessionSynced)
+
+	select {
+	case ack := <-ackRequests:
+		require.Equal(t, "cmd-423", ack.CommandID)
+		require.Equal(t, "ack-token-423", ack.AckToken)
+		require.Equal(t, "garbage-project", ack.CanonicalProjectKey)
+		require.Equal(t, db.ProjectBlockAckApplied, ack.Status)
+	case <-time.After(time.Second):
+		t.Fatal("expected project block ACK request")
+	}
+	require.Len(t, store.recordedBlockAcks, 1)
+	require.Equal(t, db.ProjectBlockAckApplied, store.recordedBlockAcks[0].Status)
+}
+
+func TestSyncer_Sync_ProjectBlockAckFailureRecordedInAttemptLog(t *testing.T) {
+	baseNow := time.Date(2026, 7, 6, 10, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{
+		jwt: "valid-token",
+		unsynced: []*models.Memory{{
+			SyncID: "mem-sync-1", Project: "garbage-project", Title: "local", Content: "pending",
+		}},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sync":
+			w.WriteHeader(http.StatusLocked)
+			require.NoError(t, json.NewEncoder(w).Encode(projectBlockedErrorResponse{
+				Error: "project is blocked",
+				Command: projectBlockCommand{
+					CommandID:           "cmd-423",
+					AckToken:            "ack-token-423",
+					Project:             "Garbage Project",
+					CanonicalProjectKey: "garbage-project",
+					BlockedAt:           baseNow.Add(-time.Minute),
+				},
+			}))
+		case "/admin/project-blocks/ack":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, err := w.Write([]byte(`{"error":"ack unavailable"}`))
+			require.NoError(t, err)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{now: func() time.Time { return baseNow }})
+	result, err := syncer.Sync(context.Background(), "garbage-project")
+	require.Error(t, err)
+	require.Nil(t, result)
+
+	require.NotEmpty(t, store.recordedSyncAttempts)
+	lastAttempt := store.recordedSyncAttempts[len(store.recordedSyncAttempts)-1]
+	require.Contains(t, lastAttempt.ErrorMessage, "project block ack failed (500)")
+	require.Contains(t, lastAttempt.ErrorMessage, "ack unavailable")
+}
+
+func TestSyncer_Sync_RetriesPendingProjectBlockAcksBeforeNormalSync(t *testing.T) {
+	baseNow := time.Date(2026, 7, 6, 10, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{
+		jwt: "valid-token",
+		pendingBlockAcks: []db.ProjectBlockAck{{
+			CommandID:           "cmd-pending",
+			CanonicalProjectKey: "garbage-project",
+			AckToken:            "ack-token-pending",
+			Status:              db.ProjectBlockAckApplied,
+			AppliedAt:           baseNow.Add(-time.Minute),
+		}},
+	}
+	ackRequests := make(chan db.ProjectBlockAck, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/admin/project-blocks/ack":
+			var ack db.ProjectBlockAck
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&ack))
+			ackRequests <- ack
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(ack))
+		case "/sync":
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{}))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{now: func() time.Time { return baseNow }})
+	result, err := syncer.Sync(context.Background(), "garbage-project")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	select {
+	case ack := <-ackRequests:
+		require.Equal(t, "cmd-pending", ack.CommandID)
+		require.Equal(t, "garbage-project", ack.CanonicalProjectKey)
+	case <-time.After(time.Second):
+		t.Fatal("expected pending project block ACK retry")
+	}
+	require.Len(t, store.recordedBlockAcks, 1)
+	require.Equal(t, "cmd-pending", store.recordedBlockAcks[0].CommandID)
 }
 
 func TestSyncer_Sync_RespectsPersistedBackoffAfterRestart(t *testing.T) {

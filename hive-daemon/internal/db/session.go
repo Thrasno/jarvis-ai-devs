@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -22,6 +23,9 @@ var ErrSessionNotFound = errors.New("session not found")
 // with an empty dev_id. hive-api rejects empty dev_id via binding:"required", and a
 // single poisoned row blocks the whole batched sync push.
 func (d *DB) CreateSession(id, project, directory, devID, client string) error {
+	if err := d.ensureProjectWritable(context.Background(), project); err != nil {
+		return err
+	}
 	if strings.TrimSpace(devID) == "" {
 		devID = resolveDevID()
 	}
@@ -57,6 +61,13 @@ func (d *DB) GetSession(id string) (*models.Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get session: %w", err)
 	}
+	blocked, err := d.IsProjectBlocked(context.Background(), s.Project)
+	if err != nil {
+		return nil, fmt.Errorf("get session block check: %w", err)
+	}
+	if blocked {
+		return nil, ErrSessionNotFound
+	}
 
 	s.StartedAt, _ = parseTimeStr(startedAtStr)
 	if summary.Valid {
@@ -76,6 +87,17 @@ func (d *DB) GetSession(id string) (*models.Session, error) {
 
 // EndSession marks a session as ended with the provided summary.
 func (d *DB) EndSession(id, summary string) error {
+	var project string
+	err := d.sqlDB.QueryRow(`SELECT project FROM sessions WHERE id = ?`, id).Scan(&project)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrSessionNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("load session for end: %w", err)
+	}
+	if err := d.ensureProjectWritable(context.Background(), project); err != nil {
+		return err
+	}
 	result, err := d.sqlDB.Exec(`
 		UPDATE sessions SET ended_at = CURRENT_TIMESTAMP, summary = ?
 		WHERE id = ?`, summary, id,
@@ -91,6 +113,13 @@ func (d *DB) EndSession(id, summary string) error {
 
 // ListSessions returns sessions for a project ordered by started_at DESC, capped at limit.
 func (d *DB) ListSessions(project string, limit int) ([]*models.Session, error) {
+	blocked, err := d.IsProjectBlocked(context.Background(), project)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions block check: %w", err)
+	}
+	if blocked {
+		return []*models.Session{}, nil
+	}
 	rows, err := d.sqlDB.Query(`
 		SELECT id, sync_id, project, directory, dev_id, client,
 		       started_at, ended_at, summary, synced_at
@@ -121,6 +150,9 @@ func (d *DB) ListSessions(project string, limit int) ([]*models.Session, error) 
 // returns its id. Uses INSERT OR IGNORE so concurrent calls are safe.
 // This session is never auto-closed by AutoCloseStale (exempt by id prefix).
 func (d *DB) EnsureManualSaveSession(project string) (string, error) {
+	if err := d.ensureProjectWritable(context.Background(), project); err != nil {
+		return "", err
+	}
 	id := "manual-save-" + project
 	devID := resolveDevID()
 
@@ -161,6 +193,13 @@ func (d *DB) AutoCloseStale(threshold time.Duration, nowFn func() time.Time) (in
 // ListUnsyncedSessions returns all sessions for the project that haven't been synced yet
 // (synced_at IS NULL). Used by the Syncer to build the sessions[] push payload.
 func (d *DB) ListUnsyncedSessions(project string) ([]*models.Session, error) {
+	blocked, err := d.IsProjectBlocked(context.Background(), project)
+	if err != nil {
+		return nil, fmt.Errorf("list unsynced sessions block check: %w", err)
+	}
+	if blocked {
+		return []*models.Session{}, nil
+	}
 	rows, err := d.sqlDB.Query(`
 		SELECT id, sync_id, project, directory, dev_id, client,
 		       started_at, ended_at, summary, synced_at
@@ -195,6 +234,13 @@ func (d *DB) ListUnsyncedSessions(project string) ([]*models.Session, error) {
 // filter shifts between fetches. ListUnsyncedSessions itself is left
 // untouched for any other existing callers.
 func (d *DB) ListUnsyncedSessionsPage(project string, limit int) ([]*models.Session, error) {
+	blocked, err := d.IsProjectBlocked(context.Background(), project)
+	if err != nil {
+		return nil, fmt.Errorf("list unsynced sessions page block check: %w", err)
+	}
+	if blocked {
+		return []*models.Session{}, nil
+	}
 	if limit <= 0 {
 		limit = 100
 	}
@@ -243,6 +289,9 @@ func (d *DB) MarkSessionSynced(id string, at time.Time) error {
 // Uses the sync_id for conflict detection — ON CONFLICT(id) keeps first-arriving
 // sentinel rows intact for legacy-pre-lifecycle-* IDs.
 func (d *DB) SaveSessionFromRemote(s *models.Session) error {
+	if err := d.ensureProjectWritable(context.Background(), s.Project); err != nil {
+		return err
+	}
 	_, err := d.sqlDB.Exec(`
 		INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at, ended_at, summary, synced_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)

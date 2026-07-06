@@ -204,6 +204,15 @@ WHERE synced_at IS NULL AND sync_id != ''`).Scan(&n)
 // GetUnsynced devuelve todas las memorias que aún no se han enviado al servidor
 // (synced_at IS NULL). Son las que hay que incluir en el próximo push.
 func (d *DB) GetUnsynced(project string) ([]*models.Memory, error) {
+	if project != "" {
+		blocked, err := d.IsProjectBlocked(context.Background(), project)
+		if err != nil {
+			return nil, fmt.Errorf("get unsynced block check: %w", err)
+		}
+		if blocked {
+			return []*models.Memory{}, nil
+		}
+	}
 	q := `
 SELECT id, sync_id, project, topic_key, category, title, content, tags, files_affected,
 	   created_by, created_at, updated_at, synced_at, session_id
@@ -249,6 +258,15 @@ WHERE synced_at IS NULL AND sync_id != '' AND deleted_at IS NULL`
 // fetches. GetUnsynced itself is left untouched for any other existing
 // callers.
 func (d *DB) GetUnsyncedPage(project string, limit int) ([]*models.Memory, error) {
+	if project != "" {
+		blocked, err := d.IsProjectBlocked(context.Background(), project)
+		if err != nil {
+			return nil, fmt.Errorf("get unsynced page block check: %w", err)
+		}
+		if blocked {
+			return []*models.Memory{}, nil
+		}
+	}
 	if limit <= 0 {
 		limit = 100
 	}
@@ -327,6 +345,15 @@ func (d *DB) MarkMemoriesSyncedBySyncID(syncIDs []string, at time.Time) error {
 }
 
 func (d *DB) GetPendingMutations(project string, limit int) ([]MutationEnvelope, error) {
+	if project != "" {
+		blocked, err := d.IsProjectBlocked(context.Background(), project)
+		if err != nil {
+			return nil, fmt.Errorf("get pending mutations block check: %w", err)
+		}
+		if blocked {
+			return []MutationEnvelope{}, nil
+		}
+	}
 	if limit <= 0 {
 		limit = 100
 	}
@@ -566,6 +593,9 @@ func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
 	if aliasErr == nil {
 		event.Project = aliasTarget
 	}
+	if err := ensureProjectWritableInTx(tx, event.Project); err != nil {
+		return false, err
+	}
 
 	var existing string
 	err = tx.QueryRow(`SELECT event_id FROM memory_mutations WHERE event_id = ?`, event.EventID).Scan(&existing)
@@ -741,6 +771,9 @@ func (d *DB) SaveFromRemote(mem *models.Memory) error {
 		// All memory reads filter by memories.project directly, so the mismatch is harmless.
 		// Remapping sessions on sync receive would require creating artificial sessions
 		// under the target project, which adds noise to KnownProjects and session history.
+	}
+	if err := d.ensureProjectWritable(context.Background(), project); err != nil {
+		return err
 	}
 
 	// R2-CRIT-3: resolve session_id BEFORE the INSERT. memories.session_id is NOT NULL,
