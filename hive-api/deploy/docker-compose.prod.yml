@@ -41,6 +41,7 @@ services:
       PORT: "8080"
       GIN_MODE: ${GIN_MODE:-release}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      JARVIS_ENABLE_PROJECT_BLOCK_ADMIN: ${JARVIS_ENABLE_PROJECT_BLOCK_ADMIN:-true}
     depends_on:
       postgres:
         condition: service_healthy
