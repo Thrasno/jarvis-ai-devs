@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -33,6 +34,15 @@ func buildFTS5Query(query string) string {
 // When project is empty, searches across all projects.
 // When category is non-empty, only observations with that category are returned.
 func (d *DB) Search(query, project, category string, limit int) ([]*models.Memory, error) {
+	blockedKeys, err := d.blockedProjectKeys(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	if project != "" {
+		if _, blocked := blockedKeys[canonicalProjectKey(project)]; blocked {
+			return []*models.Memory{}, nil
+		}
+	}
 	ftsQuery := buildFTS5Query(query)
 
 	if ftsQuery == "" {
@@ -63,6 +73,9 @@ LIMIT ?`
 		if err != nil {
 			return nil, fmt.Errorf("scan search result: %w", err)
 		}
+		if _, blocked := blockedKeys[canonicalProjectKey(mem.Project)]; blocked {
+			continue
+		}
 		results = append(results, mem)
 	}
 	if err := rows.Err(); err != nil {
@@ -75,6 +88,10 @@ LIMIT ?`
 // filtered by category when non-empty, ordered by created_at DESC.
 // Used when the search query is empty.
 func (d *DB) searchAllForProject(project, category string, limit int) ([]*models.Memory, error) {
+	blockedKeys, err := d.blockedProjectKeys(context.Background())
+	if err != nil {
+		return nil, err
+	}
 	const q = `
 SELECT id, sync_id, project, topic_key, category, title, content,
 	   tags, files_affected, created_by, created_at, session_id
@@ -96,6 +113,9 @@ LIMIT ?`
 		mem, err := scanMemory(rows)
 		if err != nil {
 			return nil, fmt.Errorf("scan row: %w", err)
+		}
+		if _, blocked := blockedKeys[canonicalProjectKey(mem.Project)]; blocked {
+			continue
 		}
 		results = append(results, mem)
 	}

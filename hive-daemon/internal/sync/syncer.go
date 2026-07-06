@@ -123,6 +123,11 @@ type SyncStore interface {
 	ListPendingSyncAttemptLogs(ctx context.Context, limit int) ([]db.SyncAttemptLog, error)
 	MarkSyncAttemptLogsDelivered(ctx context.Context, ids []string, at time.Time) error
 	DeleteSyncAttemptLogsOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+	RecordProjectBlock(ctx context.Context, cmd db.ProjectBlockCommand) (db.ProjectBlock, error)
+	QuarantineBlockedProject(ctx context.Context, projectName, actorID, reason string, at time.Time) (db.ProjectQuarantineResult, error)
+	RecordPendingProjectBlockAck(ctx context.Context, ack db.ProjectBlockAck) error
+	RecordProjectBlockAck(ctx context.Context, ack db.ProjectBlockAck) (db.ProjectBlockAck, error)
+	ListPendingProjectBlockAcks(ctx context.Context, limit int) ([]db.ProjectBlockAck, error)
 }
 
 type BackoffError struct {
@@ -445,6 +450,7 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 		}
 		return nil, DrainOutcome{}, fmt.Errorf("autenticación: %w", err)
 	}
+	s.retryPendingProjectBlockAcks(ctx, token)
 
 	result := &Result{Project: project}
 	outcome := DrainOutcome{}
@@ -484,6 +490,14 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 		}
 		batch, resp, stepErr := s.syncBatchStepWithResponse(ctx, project, token)
 		if stepErr != nil {
+			recordSyncErr := errors.Unwrap(stepErr)
+			var blockedErr *ProjectBlockedError
+			if errors.As(stepErr, &blockedErr) {
+				if handleErr := s.handleProjectBlocked(ctx, token, project, blockedErr); handleErr != nil {
+					stepErr = fmt.Errorf("%w: %v", stepErr, handleErr)
+					recordSyncErr = stepErr
+				}
+			}
 			// recordFailure must see the raw underlying error (unwrapped), not
 			// the "<step label>: %w" wrapper syncBatchStepWithResponse adds —
 			// that matches the pre-extraction behavior, where each inline step
@@ -492,7 +506,7 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 			// (health error text) depends on seeing the raw "sync failed (...)"
 			// / "login failed (...)" prefix, so double-wrapping here would
 			// corrupt the recorded health.LastError text.
-			if recordErr := s.recordFailure(project, health, now, errors.Unwrap(stepErr)); recordErr != nil {
+			if recordErr := s.recordFailure(project, health, now, recordSyncErr); recordErr != nil {
 				return nil, DrainOutcome{}, recordErr
 			}
 			outcome.State = DrainDegradedFailure
@@ -628,6 +642,70 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 	}
 
 	return result, outcome, nil
+}
+
+func (s *Syncer) handleProjectBlocked(ctx context.Context, token, localProject string, blockedErr *ProjectBlockedError) error {
+	if blockedErr == nil {
+		return nil
+	}
+	cmd := db.ProjectBlockCommand{
+		CommandID:           blockedErr.Command.CommandID,
+		AckToken:            blockedErr.Command.AckToken,
+		Project:             blockedErr.Command.Project,
+		CanonicalProjectKey: blockedErr.Command.CanonicalProjectKey,
+		Reason:              blockedErr.Command.Reason,
+		BlockedAt:           blockedErr.Command.BlockedAt,
+	}
+	block, err := s.store.RecordProjectBlock(ctx, cmd)
+	if err != nil {
+		return fmt.Errorf("record local project block: %w", err)
+	}
+	ack := db.ProjectBlockAck{
+		CommandID:           block.CommandID,
+		AckToken:            block.AckToken,
+		CanonicalProjectKey: block.CanonicalProjectKey,
+		Status:              db.ProjectBlockAckApplied,
+		AppliedAt:           s.deps.now().UTC(),
+	}
+	quarantine, err := s.store.QuarantineBlockedProject(ctx, localProject, "hive-daemon", "project blocked by Hive API", ack.AppliedAt)
+	if err != nil {
+		ack.Status = db.ProjectBlockAckFailed
+		ack.Warning = err.Error()
+	} else if quarantine.Warning != "" {
+		ack.Warning = quarantine.Warning
+	}
+	if err := s.store.RecordPendingProjectBlockAck(ctx, ack); err != nil {
+		return fmt.Errorf("record pending project block ack: %w", err)
+	}
+	if err := s.client.ackProjectBlock(ctx, token, ack); err != nil {
+		return fmt.Errorf("report project block ack: %w", err)
+	}
+	if _, err := s.store.RecordProjectBlockAck(ctx, ack); err != nil {
+		return fmt.Errorf("record local project block ack: %w", err)
+	}
+	return nil
+}
+
+const pendingProjectBlockAckRetryLimit = 25
+
+func (s *Syncer) retryPendingProjectBlockAcks(ctx context.Context, token string) {
+	pending, err := s.store.ListPendingProjectBlockAcks(ctx, pendingProjectBlockAckRetryLimit)
+	if err != nil {
+		logger.Log.Printf("warn: list pending project block ACKs: %v", err)
+		return
+	}
+	for _, ack := range pending {
+		if ack.AppliedAt.IsZero() {
+			ack.AppliedAt = s.deps.now().UTC()
+		}
+		if err := s.client.ackProjectBlock(ctx, token, ack); err != nil {
+			logger.Log.Printf("warn: retry project block ACK command_id=%s canonical_project_key=%s: %v", ack.CommandID, ack.CanonicalProjectKey, err)
+			continue
+		}
+		if _, err := s.store.RecordProjectBlockAck(ctx, ack); err != nil {
+			logger.Log.Printf("warn: record retried project block ACK command_id=%s canonical_project_key=%s: %v", ack.CommandID, ack.CanonicalProjectKey, err)
+		}
+	}
 }
 
 // syncBatchStep runs a single push+pull exchange with the server for

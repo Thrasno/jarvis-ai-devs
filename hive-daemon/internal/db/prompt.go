@@ -25,6 +25,9 @@ func (d *DB) SavePromptForSession(ctx context.Context, project, sessionID, conte
 	if strings.TrimSpace(project) == "" {
 		return nil, errors.New("project is required")
 	}
+	if err := d.ensureProjectWritable(ctx, project); err != nil {
+		return nil, err
+	}
 
 	syncID := uuid.NewString()
 
@@ -62,6 +65,13 @@ func (d *DB) LatestPromptForSession(ctx context.Context, project, sessionID stri
 	if strings.TrimSpace(project) == "" || strings.TrimSpace(sessionID) == "" {
 		return nil, nil
 	}
+	blocked, err := d.IsProjectBlocked(ctx, project)
+	if err != nil {
+		return nil, fmt.Errorf("latest prompt block check: %w", err)
+	}
+	if blocked {
+		return nil, nil
+	}
 
 	const q = `
 SELECT id, sync_id, project, session_id, content, created_at, synced_at
@@ -85,6 +95,13 @@ LIMIT 1`
 func (d *DB) ListRecentPrompts(ctx context.Context, project string, limit int) ([]*models.Prompt, error) {
 	if project == "" || limit <= 0 {
 		return nil, nil
+	}
+	blocked, err := d.IsProjectBlocked(ctx, project)
+	if err != nil {
+		return nil, fmt.Errorf("list recent prompts block check: %w", err)
+	}
+	if blocked {
+		return []*models.Prompt{}, nil
 	}
 	if limit > 100 {
 		limit = 100
@@ -125,6 +142,13 @@ LIMIT ?`
 func (d *DB) GetUnsyncedPrompts(ctx context.Context, project string) ([]*models.Prompt, error) {
 	if project == "" {
 		return nil, nil
+	}
+	blocked, err := d.IsProjectBlocked(ctx, project)
+	if err != nil {
+		return nil, fmt.Errorf("get unsynced prompts block check: %w", err)
+	}
+	if blocked {
+		return []*models.Prompt{}, nil
 	}
 	const q = `
 SELECT id, sync_id, project, session_id, content, created_at, synced_at
@@ -171,6 +195,13 @@ ORDER BY created_at ASC`
 func (d *DB) GetUnsyncedPromptsPage(ctx context.Context, project string, limit int) ([]*models.Prompt, error) {
 	if project == "" {
 		return nil, nil
+	}
+	blocked, err := d.IsProjectBlocked(ctx, project)
+	if err != nil {
+		return nil, fmt.Errorf("get unsynced prompts page block check: %w", err)
+	}
+	if blocked {
+		return []*models.Prompt{}, nil
 	}
 	if limit <= 0 {
 		limit = 100

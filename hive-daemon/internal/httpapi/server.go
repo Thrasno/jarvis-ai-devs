@@ -286,6 +286,11 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 
 	prompt, err := s.prompts.SavePromptForSession(r.Context(), body.Project, body.SessionID, contentRes.Clean)
 	if err != nil {
+		if errors.Is(err, db.ErrProjectBlocked) {
+			w.WriteHeader(http.StatusLocked)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": db.ErrProjectBlocked.Error()})
+			return
+		}
 		logger.Log.Printf("save prompt: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal error"})

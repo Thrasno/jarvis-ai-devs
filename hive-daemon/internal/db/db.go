@@ -255,6 +255,24 @@ WHERE delivered_at IS NULL AND dev_id != '';
 CREATE INDEX IF NOT EXISTS idx_sync_attempt_logs_retention
 ON sync_attempt_logs(ended_at);
 
+CREATE TABLE IF NOT EXISTS project_blocks (
+    canonical_project_key TEXT PRIMARY KEY,
+    project               TEXT NOT NULL,
+    command_id            TEXT NOT NULL,
+    ack_token             TEXT NOT NULL DEFAULT '',
+    reason                TEXT NOT NULL DEFAULT '',
+    blocked_at            DATETIME NOT NULL,
+    ack_pending           INTEGER NOT NULL DEFAULT 1,
+    ack_status            TEXT NOT NULL DEFAULT '',
+    ack_warning           TEXT NOT NULL DEFAULT '',
+    ack_applied_at        DATETIME,
+    created_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_blocks_canonical ON project_blocks(canonical_project_key);
+CREATE INDEX IF NOT EXISTS idx_project_blocks_pending_ack ON project_blocks(ack_pending, blocked_at);
+
 CREATE TABLE IF NOT EXISTS hive_project_governance (
     project        TEXT PRIMARY KEY,
     archived_at    DATETIME,
@@ -413,6 +431,10 @@ func initSchema(sqlDB *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS sync_attempt_logs (attempt_id TEXT PRIMARY KEY, dev_id TEXT NOT NULL DEFAULT '', project TEXT NOT NULL, client TEXT NOT NULL DEFAULT '', daemon_id TEXT NOT NULL DEFAULT '', started_at DATETIME NOT NULL, ended_at DATETIME NOT NULL, outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure')), http_status INTEGER NOT NULL DEFAULT 0, error_code TEXT NOT NULL DEFAULT '', error_message TEXT NOT NULL DEFAULT '', request_id TEXT NOT NULL DEFAULT '', sync_counts_json TEXT NOT NULL DEFAULT '{}', metadata_json TEXT NOT NULL DEFAULT '{}', delivered_at DATETIME, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
 		`CREATE INDEX IF NOT EXISTS idx_sync_attempt_logs_pending ON sync_attempt_logs(delivered_at, started_at) WHERE delivered_at IS NULL AND dev_id != ''`,
 		`CREATE INDEX IF NOT EXISTS idx_sync_attempt_logs_retention ON sync_attempt_logs(ended_at)`,
+		`CREATE TABLE IF NOT EXISTS project_blocks (canonical_project_key TEXT PRIMARY KEY, project TEXT NOT NULL, command_id TEXT NOT NULL, ack_token TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '', blocked_at DATETIME NOT NULL, ack_pending INTEGER NOT NULL DEFAULT 1, ack_status TEXT NOT NULL DEFAULT '', ack_warning TEXT NOT NULL DEFAULT '', ack_applied_at DATETIME, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+		`ALTER TABLE project_blocks ADD COLUMN ack_token TEXT NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_project_blocks_canonical ON project_blocks(canonical_project_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_project_blocks_pending_ack ON project_blocks(ack_pending, blocked_at)`,
 		`CREATE TABLE IF NOT EXISTS hive_project_governance (project TEXT PRIMARY KEY, archived_at DATETIME, archived_by TEXT NOT NULL DEFAULT '', archive_reason TEXT NOT NULL DEFAULT '', merge_target TEXT NOT NULL DEFAULT '', merged_at DATETIME, merged_by TEXT NOT NULL DEFAULT '', merge_reason TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE IF NOT EXISTS import_runs (id TEXT PRIMARY KEY, source_system TEXT NOT NULL, source_path TEXT NOT NULL DEFAULT '', source_fingerprint TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'completed', started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, completed_at DATETIME, report_json TEXT NOT NULL DEFAULT '{}')`,
 		`CREATE TABLE IF NOT EXISTS import_source_aliases (id INTEGER PRIMARY KEY AUTOINCREMENT, source_system TEXT NOT NULL, source_table TEXT NOT NULL, source_id TEXT NOT NULL, source_project TEXT NOT NULL DEFAULT '', hive_table TEXT NOT NULL, hive_pk TEXT NOT NULL, hive_sync_id TEXT NOT NULL, content_hash TEXT NOT NULL DEFAULT '', run_id TEXT NOT NULL REFERENCES import_runs(id), created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`,

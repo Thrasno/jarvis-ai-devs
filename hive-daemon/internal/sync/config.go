@@ -19,6 +19,7 @@ type Config struct {
 	Email    string // HIVE_API_EMAIL
 	Password string // HIVE_API_PASSWORD
 	AutoSync bool   // Enable automatic background sync after each mem_save (default: false)
+	DaemonID string // Optional signed daemon identity for Hive API ACK authorization
 }
 
 type SyncConfigStatus struct {
@@ -58,6 +59,7 @@ type syncFileConfig struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 	AutoSync bool   `json:"auto_sync"` // Optional: enable automatic background sync after each mem_save (default: false)
+	DaemonID string `json:"daemon_id,omitempty"`
 }
 
 // loadFromEnv intenta cargar la configuración desde variables de entorno.
@@ -99,7 +101,7 @@ func loadFromEnv() (*Config, bool, error) {
 	// Parse HIVE_AUTO_SYNC: "true" or "1" enables auto-sync
 	autoSync := autoSyncStr == "true" || autoSyncStr == "1"
 
-	return &Config{APIURL: url, Email: email, Password: password, AutoSync: autoSync}, true, nil
+	return &Config{APIURL: url, Email: email, Password: password, AutoSync: autoSync, DaemonID: os.Getenv("HIVE_DAEMON_ID")}, true, nil
 }
 
 // loadFromFile intenta cargar la configuración desde ~/.jarvis/sync.json.
@@ -172,6 +174,7 @@ func loadFromFile() (*Config, bool, error) {
 		Email:    fc.Email,
 		Password: fc.Password,
 		AutoSync: fc.AutoSync, // Defaults to false if not present in JSON
+		DaemonID: fc.DaemonID,
 	}, true, nil
 }
 

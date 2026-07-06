@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,9 @@ var (
 func (d *DB) SaveMemory(mem *models.Memory) (int64, error) {
 	if err := mem.Validate(); err != nil {
 		return 0, fmt.Errorf("invalid memory: %w", err)
+	}
+	if err := d.ensureProjectWritable(context.Background(), mem.Project); err != nil {
+		return 0, err
 	}
 
 	tagsJSON, err := marshalStringSlice(mem.Tags)
@@ -110,11 +114,25 @@ FROM memories WHERE id = ? AND deleted_at IS NULL`
 	if err != nil {
 		return nil, fmt.Errorf("get memory: %w", err)
 	}
+	blocked, err := d.IsProjectBlocked(context.Background(), mem.Project)
+	if err != nil {
+		return nil, fmt.Errorf("get memory block check: %w", err)
+	}
+	if blocked {
+		return nil, fmt.Errorf("memory not found: id=%d", id)
+	}
 	return mem, nil
 }
 
 // ListMemories returns active memories for a project, ordered by created_at DESC.
 func (d *DB) ListMemories(project string, limit int) ([]*models.Memory, error) {
+	blocked, err := d.IsProjectBlocked(context.Background(), project)
+	if err != nil {
+		return nil, fmt.Errorf("list memories block check: %w", err)
+	}
+	if blocked {
+		return []*models.Memory{}, nil
+	}
 	const q = `
 SELECT id, sync_id, project, topic_key, category, title, content, tags, files_affected,
 	   created_by, created_at, session_id
@@ -203,6 +221,9 @@ func (d *DB) DeleteMemory(id int64, actorID, reason string) error {
 	if err != nil {
 		return fmt.Errorf("load memory for delete: %w", err)
 	}
+	if err := ensureProjectWritableInTx(tx, project); err != nil {
+		return err
+	}
 	if deletedAt.Valid {
 		return fmt.Errorf("%w: id=%d", ErrMemoryAlreadyDeleted, id)
 	}
@@ -253,6 +274,9 @@ func (d *DB) RestoreMemory(id int64, actorID string) error {
 	}
 	if err != nil {
 		return fmt.Errorf("load memory for restore: %w", err)
+	}
+	if err := ensureProjectWritableInTx(tx, project); err != nil {
+		return err
 	}
 	if !deletedAt.Valid {
 		return fmt.Errorf("%w: id=%d", ErrMemoryNotDeleted, id)
