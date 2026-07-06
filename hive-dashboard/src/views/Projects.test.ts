@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { projectsFromApi } from '../domain/dashboard'
 import type { ProjectListResponse } from '../api/client'
 import { renderProjects } from './Projects'
@@ -103,6 +103,80 @@ describe('projects view', () => {
     ])) })
 
     expect(view.querySelector<HTMLAnchorElement>('a')?.getAttribute('href')).toBe('/dashboard/knowledgeBrowser?project=team%2Falpha+project')
+  })
+
+  it('renders blocked badges, status, reason, export marker, and admin quarantine form guard copy', () => {
+    const view = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([
+      { name: 'Blocked Project', memoryCount: 0, sessionCount: 0, lastActivityAt: null, syncHealth: 'degraded', blocked: true, canonicalProjectKey: 'blocked-project', blockReason: 'duplicate import', exportMarker: 'export-123', blockAckStatus: 'applied' }
+    ])) }, { currentUserLevel: 'admin' })
+
+    expect(view.textContent).toContain('BLOCKED')
+    expect(view.textContent).toContain('Status: ACK applied')
+    expect(view.textContent).toContain('Reason: duplicate import')
+    expect(view.textContent).toContain('Export marker: export-123')
+    expect(view.querySelector('form[aria-label="Block Blocked Project"]')).not.toBeNull()
+    expect(view.querySelector('input[name="confirmation"]')?.getAttribute('placeholder')).toBe('blocked-project')
+    expect(view.textContent).toContain('Type blocked-project exactly')
+  })
+
+  it('shows non-admin rejection guidance instead of block controls', () => {
+    const view = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([healthyProject()])) }, { currentUserLevel: 'member' })
+
+    expect(view.textContent).toContain('Admin access required to block or quarantine projects.')
+    expect(view.querySelector('form[aria-label^="Block "]')).toBeNull()
+  })
+
+  it('rejects admin block submission until reason, export marker, and exact canonical confirmation are present', () => {
+    const onBlockProject = vi.fn()
+    const view = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([
+      { name: 'Blocked Project', memoryCount: 0, sessionCount: 0, lastActivityAt: null, syncHealth: 'degraded', canonicalProjectKey: 'blocked-project' }
+    ])) }, { currentUserLevel: 'admin', onBlockProject })
+    const form = view.querySelector<HTMLFormElement>('form[aria-label="Block Blocked Project"]')!
+
+    form.querySelector<HTMLInputElement>('input[name="reason"]')!.value = 'duplicate import'
+    form.querySelector<HTMLInputElement>('input[name="export_marker"]')!.value = 'export-123'
+    form.querySelector<HTMLInputElement>('input[name="confirmation"]')!.value = 'wrong-project'
+    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+
+    expect(onBlockProject).not.toHaveBeenCalled()
+    expect(form.querySelector('[role="alert"]')?.textContent).toBe('Reason, export marker, and exact canonical confirmation are required.')
+  })
+
+  it('rejects padded canonical confirmation instead of trimming it before validation', () => {
+    const onBlockProject = vi.fn()
+    const view = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([
+      { name: 'Blocked Project', memoryCount: 0, sessionCount: 0, lastActivityAt: null, syncHealth: 'degraded', canonicalProjectKey: 'blocked-project' }
+    ])) }, { currentUserLevel: 'admin', onBlockProject })
+    const form = view.querySelector<HTMLFormElement>('form[aria-label="Block Blocked Project"]')!
+
+    form.querySelector<HTMLInputElement>('input[name="reason"]')!.value = 'duplicate import'
+    form.querySelector<HTMLInputElement>('input[name="export_marker"]')!.value = 'export-123'
+    form.querySelector<HTMLInputElement>('input[name="confirmation"]')!.value = ' blocked-project '
+    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+
+    expect(onBlockProject).not.toHaveBeenCalled()
+    expect(form.querySelector('[role="alert"]')?.textContent).toBe('Reason, export marker, and exact canonical confirmation are required.')
+  })
+
+  it('preserves exact confirmation input in the admin block request and disables duplicate submits while pending', async () => {
+    const onBlockProject = vi.fn(() => Promise.resolve())
+    const view = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([
+      { name: 'Blocked Project', memoryCount: 0, sessionCount: 0, lastActivityAt: null, syncHealth: 'degraded', canonicalProjectKey: 'blocked-project' }
+    ])) }, { currentUserLevel: 'admin', onBlockProject, pendingBlockProject: 'Blocked Project' })
+    const form = view.querySelector<HTMLFormElement>('form[aria-label="Block Blocked Project"]')!
+
+    expect(form.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true)
+    expect(form.querySelector('[role="status"]')?.textContent).toBe('Quarantine request in progress…')
+  })
+
+  it('shows project block mutation and refresh errors in the governance form', () => {
+    const view = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([
+      { name: 'Blocked Project', memoryCount: 0, sessionCount: 0, lastActivityAt: null, syncHealth: 'degraded', canonicalProjectKey: 'blocked-project' }
+    ])) }, { currentUserLevel: 'admin', mutationError: 'Project block failed: forbidden.', refreshError: 'Block succeeded, but Projects could not be refreshed: timeout.' })
+
+    const alerts = Array.from(view.querySelectorAll('[role="alert"]')).map((node) => node.textContent)
+    expect(alerts).toContain('Project block failed: forbidden.')
+    expect(alerts).toContain('Block succeeded, but Projects could not be refreshed: timeout.')
   })
 })
 

@@ -600,6 +600,7 @@ body::before {
 
 .dashboard-project-card__identity,
 .dashboard-project-card__metrics,
+.dashboard-project-card__governance,
 .dashboard-project-card__actions {
   padding: var(--dashboard-spacing);
 }
@@ -643,6 +644,19 @@ body::before {
   color: var(--dashboard-text-muted);
 }
 
+.dashboard-project-card__blocked-badge {
+  align-self: center;
+  border: 1px solid rgba(239, 68, 68, 0.36);
+  border-radius: 999px;
+  color: var(--dashboard-danger);
+  flex: 0 0 auto;
+  font-family: var(--dashboard-font-mono);
+  font-size: .68rem;
+  font-weight: 900;
+  letter-spacing: .14em;
+  padding: .35rem .65rem;
+}
+
 .dashboard-project-card__metrics {
   border-block: 1px solid rgba(255, 255, 255, 0.06);
   display: grid;
@@ -672,6 +686,47 @@ body::before {
   font-weight: 700;
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.dashboard-project-card__governance {
+  display: grid;
+  gap: .75rem;
+}
+
+.dashboard-project-card__governance-line,
+.dashboard-project-card__block-help {
+  color: var(--dashboard-text-muted);
+  font-family: var(--dashboard-font-mono);
+  font-size: .72rem;
+  margin: 0;
+}
+
+.dashboard-project-card__block-error {
+  color: var(--dashboard-danger);
+  font-family: var(--dashboard-font-mono);
+  font-size: .72rem;
+  font-weight: 700;
+  margin: 0;
+}
+
+.dashboard-project-card__block-form {
+  border: 1px solid rgba(139, 151, 168, 0.16);
+  border-radius: 14px;
+  display: grid;
+  gap: .75rem;
+  padding: .85rem;
+}
+
+.dashboard-project-card__block-form label {
+  color: var(--dashboard-text-muted);
+  font-family: var(--dashboard-font-mono);
+  font-size: .68rem;
+  margin: 0;
+}
+
+.dashboard-project-card__block-form input,
+.dashboard-project-card__block-form button {
+  padding: .65rem .75rem;
 }
 
 .dashboard-project-card__rail {

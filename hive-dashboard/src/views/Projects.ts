@@ -3,8 +3,15 @@ import type { ProjectListViewModel, ProjectLiveSummaryViewModel } from '../domai
 import type { ViewState } from './Overview'
 
 let projectCardId = 0
+type ProjectViewOptions = {
+  currentUserLevel?: 'admin' | 'member' | 'viewer' | string
+  onBlockProject?: (request: { project: string; action: 'quarantine'; reason: string; confirmation: string; export_marker: string }) => Promise<void> | void
+  pendingBlockProject?: string
+  mutationError?: string
+  refreshError?: string
+}
 
-export function renderProjects(state: ViewState<ProjectListViewModel>): HTMLElement {
+export function renderProjects(state: ViewState<ProjectListViewModel>, options: ProjectViewOptions = {}): HTMLElement {
   const root = projectsRoot(state.status === 'ready' ? state.data.totalProjects : 0)
   if (state.status === 'loading') return append(root, statusText('Loading live project summaries…'))
   if (state.status === 'error') return append(root, alertText(state.message))
@@ -18,7 +25,7 @@ export function renderProjects(state: ViewState<ProjectListViewModel>): HTMLElem
   list.className = 'dashboard-projects__grid'
   list.setAttribute('role', 'list')
   list.setAttribute('aria-label', 'Accessible repositories')
-  list.append(...state.data.projects.map(renderProjectCard))
+  list.append(...state.data.projects.map((project) => renderProjectCard(project, options)))
   root.append(list)
   return root
 }
@@ -46,7 +53,7 @@ function projectsRoot(totalProjects: number): HTMLElement {
   return root
 }
 
-function renderProjectCard(project: ProjectLiveSummaryViewModel): HTMLElement {
+function renderProjectCard(project: ProjectLiveSummaryViewModel, options: ProjectViewOptions): HTMLElement {
   const item = document.createElement('article')
   const titleId = `dashboard-project-card-${++projectCardId}`
   const metricsId = `${titleId}-metrics`
@@ -58,6 +65,7 @@ function renderProjectCard(project: ProjectLiveSummaryViewModel): HTMLElement {
   item.append(
     identitySection(project, titleId),
     metricsSection(project, metricsId),
+    governanceSection(project, options),
     decorativeRail(),
     browseLink(project)
   )
@@ -71,7 +79,113 @@ function identitySection(project: ProjectLiveSummaryViewModel, titleId: string):
   title.id = titleId
   title.textContent = project.name
   section.append(title, healthSection(project))
+  if (project.blocked) section.append(blockedBadge())
   return section
+}
+
+function blockedBadge(): HTMLElement {
+  const badge = document.createElement('span')
+  badge.className = 'dashboard-project-card__blocked-badge'
+  badge.textContent = 'BLOCKED'
+  return badge
+}
+
+function governanceSection(project: ProjectLiveSummaryViewModel, options: ProjectViewOptions): HTMLElement {
+  const section = document.createElement('section')
+  section.className = 'dashboard-project-card__governance'
+  section.setAttribute('aria-label', `${project.name} governance`)
+  if (project.blocked) {
+    section.append(governanceLine(`Status: ACK ${project.blockAckStatus ?? 'pending'}`))
+    if (project.blockReason) section.append(governanceLine(`Reason: ${project.blockReason}`))
+    if (project.exportMarker) section.append(governanceLine(`Export marker: ${project.exportMarker}`))
+  }
+  if (options.currentUserLevel === 'admin') {
+    section.append(blockForm(project, options.onBlockProject, options.pendingBlockProject === project.name))
+    if (options.mutationError) section.append(formError(options.mutationError))
+    if (options.refreshError) section.append(formError(options.refreshError))
+  } else {
+    section.append(governanceLine('Admin access required to block or quarantine projects.'))
+  }
+  return section
+}
+
+function governanceLine(value: string): HTMLElement {
+  const line = document.createElement('p')
+  line.className = 'dashboard-project-card__governance-line'
+  line.textContent = value
+  return line
+}
+
+function blockForm(project: ProjectLiveSummaryViewModel, onBlockProject?: ProjectViewOptions['onBlockProject'], pending = false): HTMLFormElement {
+  const form = document.createElement('form')
+  form.className = 'dashboard-project-card__block-form'
+  form.setAttribute('aria-label', `Block ${project.name}`)
+  form.append(
+    formHelp(`Type ${project.canonicalProjectKey} exactly`),
+    input('reason', 'Reason', 'Duplicate or garbage project'),
+    input('export_marker', 'Export marker', 'backup/export id'),
+    input('confirmation', 'Exact confirmation', project.canonicalProjectKey),
+    ...(pending ? [statusText('Quarantine request in progress…')] : []),
+    quarantineButton(pending)
+  )
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    const data = new FormData(form)
+    const reason = String(data.get('reason') ?? '').trim()
+    const exportMarker = String(data.get('export_marker') ?? '').trim()
+    const confirmation = String(data.get('confirmation') ?? '')
+    clearFormError(form)
+    if (reason === '' || exportMarker === '' || confirmation !== project.canonicalProjectKey) {
+      form.insertBefore(formError('Reason, export marker, and exact canonical confirmation are required.'), form.firstChild)
+      return
+    }
+    await onBlockProject?.({
+      project: project.name,
+      action: 'quarantine',
+      reason,
+      confirmation,
+      export_marker: exportMarker
+    })
+  })
+  return form
+}
+
+function formError(value: string): HTMLElement {
+  const error = document.createElement('p')
+  error.className = 'dashboard-project-card__block-error'
+  error.setAttribute('role', 'alert')
+  error.textContent = value
+  return error
+}
+
+function clearFormError(form: HTMLFormElement): void {
+  form.querySelector('.dashboard-project-card__block-error')?.remove()
+}
+
+function formHelp(value: string): HTMLElement {
+  const help = document.createElement('p')
+  help.className = 'dashboard-project-card__block-help'
+  help.textContent = value
+  return help
+}
+
+function input(name: string, labelText: string, placeholder: string): HTMLElement {
+  const label = document.createElement('label')
+  label.textContent = labelText
+  const field = document.createElement('input')
+  field.name = name
+  field.placeholder = placeholder
+  field.required = true
+  label.append(field)
+  return label
+}
+
+function quarantineButton(disabled = false): HTMLButtonElement {
+  const button = document.createElement('button')
+  button.type = 'submit'
+  button.textContent = 'Quarantine project'
+  button.disabled = disabled
+  return button
 }
 
 function healthSection(project: ProjectLiveSummaryViewModel): HTMLElement {

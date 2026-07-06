@@ -122,6 +122,34 @@ describe('Hive API client', () => {
     })
   })
 
+  it('calls admin project block status and quarantine endpoints with guard fields', async () => {
+    const status = { project: 'Jarvis Dev', canonical_project_key: 'jarvis-dev', blocked: true, reason: 'duplicate', ack: { status: 'applied' } }
+    const block = { command_id: 'cmd-1', project: 'Jarvis Dev', canonical_project_key: 'jarvis-dev', reason: 'duplicate', blocked_at: '2026-07-06T10:00:00Z' }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(status))
+      .mockResolvedValueOnce(jsonResponse(block, 201))
+    const client = createApiClient({ fetch: fetchMock })
+
+    await expect(client.projectBlockStatus('jwt-token', 'Jarvis Dev')).resolves.toEqual(status)
+    await expect(client.blockProject('jwt-token', {
+      project: 'Jarvis Dev',
+      action: 'quarantine',
+      reason: 'duplicate project',
+      confirmation: 'jarvis-dev',
+      export_marker: 'export-2026-07-06'
+    })).resolves.toEqual(block)
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/admin/project-blocks/status?project=Jarvis+Dev', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer jwt-token' }
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/admin/project-blocks/block', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer jwt-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: 'Jarvis Dev', action: 'quarantine', reason: 'duplicate project', confirmation: 'jarvis-dev', export_marker: 'export-2026-07-06' })
+    })
+  })
+
   it('loads memories, memory detail, search, and audit logs through existing read-only endpoints', async () => {
     const memory = { id: 'mem-1', sync_id: 'sync-1', project: 'jarvis-dev', category: 'decision', title: 'Dashboard scope', content: 'No daemon controls', tags: [], files_affected: [], created_by: 'admin-1', created_at: '2026-06-06T20:00:00Z', updated_at: '2026-06-06T20:01:00Z', synced_at: '2026-06-06T20:02:00Z' }
     const audit = { id: 'audit-1', occurred_at: '2026-06-06T20:03:00Z', action: 'sync_push', outcome: 'success', entry_count: 2, metadata: { pushed_count: 2 } }

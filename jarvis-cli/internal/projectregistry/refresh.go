@@ -88,6 +88,7 @@ func Refresh(ctx context.Context, opts RefreshOptions) (Result, error) {
 	}
 
 	refreshWarnings := toRefreshWarnings(registryResult.Warnings)
+	refreshWarnings = append(refreshWarnings, unsafeRootWarnings(root)...)
 
 	// After writing the registry, ensure .gitignore contains the per-machine cache entries.
 	// Filesystem errors (read/write .gitignore) are hard errors that abort Refresh.
