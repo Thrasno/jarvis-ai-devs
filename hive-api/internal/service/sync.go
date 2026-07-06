@@ -23,6 +23,8 @@ var (
 	ErrSessionNotFound = errors.New("session not found on server and not in push payload")
 )
 
+const syncMutationPullBatchSize = 100
+
 // SyncService gestiona la sincronización bidireccional entre el daemon local
 // y el servidor central.
 //
@@ -42,6 +44,7 @@ type SyncService interface {
 	// La lógica de resolución de conflictos está en MemoryRepository.Upsert.
 	// SyncService interpreta el resultado para contar pushed vs conflicts.
 	Push(ctx context.Context, req model.SyncRequest, userID string) (*model.SyncResponse, error)
+	Sync(ctx context.Context, req model.SyncRequest, userID string) (*model.SyncResponse, error)
 
 	// PullAll devuelve sesiones Y memorias actualizadas después de 'since'.
 	// Sessions se devuelven PRIMERO para que el daemon receptor satisfaga la FK.
@@ -68,13 +71,19 @@ type syncService struct {
 	promptRepo  repository.PromptRepository
 	sessionRepo repository.SessionRepository
 	auditRepo   repository.AuditRepository
+	blockRepo   repository.ProjectBlockRepository
+	tx          repository.TxManager
 }
 
 // NewSyncService crea el SyncService con los repositorios inyectados.
 // memRepo gestiona memorias; promptRepo gestiona user-prompts;
 // sessionRepo gestiona sesiones (requerido para ordering FK en push).
-func NewSyncService(memRepo repository.MemoryRepository, promptRepo repository.PromptRepository, sessionRepo repository.SessionRepository, auditRepo repository.AuditRepository) SyncService {
-	return &syncService{repo: memRepo, promptRepo: promptRepo, sessionRepo: sessionRepo, auditRepo: auditRepo}
+func NewSyncService(memRepo repository.MemoryRepository, promptRepo repository.PromptRepository, sessionRepo repository.SessionRepository, auditRepo repository.AuditRepository, blockRepo repository.ProjectBlockRepository, tx ...repository.TxManager) SyncService {
+	var txManager repository.TxManager
+	if len(tx) > 0 {
+		txManager = tx[0]
+	}
+	return &syncService{repo: memRepo, promptRepo: promptRepo, sessionRepo: sessionRepo, auditRepo: auditRepo, blockRepo: blockRepo, tx: txManager}
 }
 
 // Push procesa el batch de memorias del cliente.
@@ -92,6 +101,84 @@ func NewSyncService(memRepo repository.MemoryRepository, promptRepo repository.P
 // El campo CreatedBy se asigna aquí, en el service — el repositorio no sabe
 // quién está haciendo el sync. Ese dato viene del JWT (validado por el middleware).
 func (s *syncService) Push(ctx context.Context, req model.SyncRequest, userID string) (*model.SyncResponse, error) {
+	return s.pushWithRepos(ctx, req, userID, syncPushRepos{Memory: s.repo, Prompt: s.promptRepo, Session: s.sessionRepo, Audit: s.auditRepo, ProjectBlocks: s.blockRepo})
+}
+
+func (s *syncService) Sync(ctx context.Context, req model.SyncRequest, userID string) (*model.SyncResponse, error) {
+	if s.tx == nil {
+		return nil, ErrProjectBlockUnavailable
+	}
+
+	var resp *model.SyncResponse
+	err := s.tx.WithinTx(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
+		txRepos := syncTransactionReposFrom(repos)
+		if !txRepos.Valid() {
+			return ErrProjectBlockUnavailable
+		}
+		keys := repository.CanonicalProjectKeys(syncRequestProjects(req))
+		if err := txRepos.ProjectKeyLocks.LockCanonicalProjectKeys(ctx, keys); err != nil {
+			if errors.Is(err, repository.ErrProjectKeyLockBusy) {
+				log.Printf("warn: project-key lock contention during sync projects=%v", keys)
+			}
+			return err
+		}
+		pushResp, err := s.pushWithRepos(ctx, req, userID, txRepos.Push)
+		if err != nil {
+			return err
+		}
+		resp, err = s.syncResponseWithPull(ctx, req, pushResp, txRepos.Pull)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+type syncPushRepos struct {
+	Memory        repository.MemoryRepository
+	Prompt        repository.PromptRepository
+	Session       repository.SessionRepository
+	Audit         repository.AuditRepository
+	ProjectBlocks repository.ProjectBlockRepository
+}
+
+type syncPullRepos struct {
+	Memory  repository.MemoryRepository
+	Session repository.SessionRepository
+}
+
+type syncTransactionRepos struct {
+	Push            syncPushRepos
+	Pull            syncPullRepos
+	ProjectKeyLocks repository.ProjectKeyLockRepository
+}
+
+func syncTransactionReposFrom(repos repository.TxRepositories) syncTransactionRepos {
+	return syncTransactionRepos{
+		Push: syncPushRepos{
+			Memory:        repos.Memory,
+			Prompt:        repos.Prompt,
+			Session:       repos.Session,
+			Audit:         repos.Audit,
+			ProjectBlocks: repos.ProjectBlocks,
+		},
+		Pull: syncPullRepos{
+			Memory:  repos.Memory,
+			Session: repos.Session,
+		},
+		ProjectKeyLocks: repos.ProjectKeyLocks,
+	}
+}
+
+func (r syncTransactionRepos) Valid() bool {
+	return r.Push.Memory != nil && r.Push.Prompt != nil && r.Push.Session != nil && r.Push.Audit != nil && r.Push.ProjectBlocks != nil && r.Pull.Memory != nil && r.Pull.Session != nil && r.ProjectKeyLocks != nil
+}
+
+func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, userID string, repos syncPushRepos) (*model.SyncResponse, error) {
+	if err := s.precheckBlockedProjects(ctx, req, repos.ProjectBlocks); err != nil {
+		return nil, err
+	}
 	// ─── Fase 1: sessions (MUST run before memories) ─────────────────────────
 	// Build a set of session IDs arriving in this payload so we can detect
 	// non-sentinel unknown IDs in the memory loop below (T4.5).
@@ -116,7 +203,7 @@ func (s *syncService) Push(ctx context.Context, req model.SyncRequest, userID st
 			EndedAt:   sp.EndedAt,
 			Summary:   sp.Summary,
 		}
-		if err := s.sessionRepo.UpsertSession(ctx, sess); err != nil {
+		if err := repos.Session.UpsertSession(ctx, sess); err != nil {
 			return nil, fmt.Errorf("upsert session %s: %w", sp.ID, err)
 		}
 		inPayloadSessions[sp.ID] = true
@@ -133,7 +220,7 @@ func (s *syncService) Push(ctx context.Context, req model.SyncRequest, userID st
 		}
 
 		// Resolve session_id for this memory (T4.4 + T4.5).
-		sessionID, err := s.resolveSessionID(ctx, payload.SessionID, req.Project, inPayloadSessions)
+		sessionID, err := s.resolveSessionID(ctx, repos.Session, payload.SessionID, req.Project, inPayloadSessions)
 		if err != nil {
 			return nil, err
 		}
@@ -156,8 +243,11 @@ func (s *syncService) Push(ctx context.Context, req model.SyncRequest, userID st
 			SessionID:     sessionID,
 		}
 
-		saved, wasInsert, err := s.repo.Upsert(ctx, mem)
+		saved, wasInsert, err := repos.Memory.Upsert(ctx, mem)
 		if err != nil {
+			if errors.Is(err, repository.ErrProjectBlocked) {
+				return nil, projectBlockedErrorForProjectDelivery(ctx, repos.ProjectBlocks, mem.Project, req.AckSubject)
+			}
 			return nil, err
 		}
 
@@ -187,8 +277,11 @@ func (s *syncService) Push(ctx context.Context, req model.SyncRequest, userID st
 			CreatedBy: userID,
 			CreatedAt: payload.CreatedAt,
 		}
-		saved, err := s.promptRepo.Upsert(ctx, p)
+		saved, err := repos.Prompt.Upsert(ctx, p)
 		if err != nil {
+			if errors.Is(err, repository.ErrProjectBlocked) {
+				return nil, projectBlockedErrorForProjectDelivery(ctx, repos.ProjectBlocks, p.Project, req.AckSubject)
+			}
 			return nil, err
 		}
 		if saved {
@@ -207,8 +300,11 @@ func (s *syncService) Push(ctx context.Context, req model.SyncRequest, userID st
 				continue
 			}
 
-			result, err := s.repo.ApplyMemoryMutation(ctx, mutation)
+			result, err := repos.Memory.ApplyMemoryMutation(ctx, mutation)
 			if err != nil {
+				if errors.Is(err, repository.ErrProjectBlocked) {
+					return nil, projectBlockedErrorForProjectDelivery(ctx, repos.ProjectBlocks, mutation.Project, req.AckSubject)
+				}
 				if errors.Is(err, repository.ErrMemoryTombstoned) || errors.Is(err, repository.ErrNotFound) {
 					conflicts++
 					continue
@@ -230,7 +326,7 @@ func (s *syncService) Push(ctx context.Context, req model.SyncRequest, userID st
 		if req.MutationCursor != nil {
 			cursor = *req.MutationCursor
 		}
-		batch, err := s.repo.ListMemoryMutations(ctx, req.Project, cursor, 100)
+		batch, err := repos.Memory.ListMemoryMutations(ctx, req.Project, cursor, syncMutationPullBatchSize)
 		if err != nil {
 			return nil, err
 		}
@@ -251,8 +347,46 @@ func (s *syncService) Push(ctx context.Context, req model.SyncRequest, userID st
 		NextMutationCursor: nextMutationCursor,
 		CompatibilityMode:  compatibilityMode,
 	}
-	s.emitSyncAudit(ctx, req.Project, userID, pushed, conflicts, promptsPushed)
+	if err := s.emitSyncAudit(ctx, repos.Audit, req.Project, userID, pushed, conflicts, promptsPushed); err != nil {
+		return nil, err
+	}
 	return resp, nil
+}
+
+func syncRequestProjects(req model.SyncRequest) []string {
+	projects := []string{req.Project}
+	for _, payload := range req.Sessions {
+		projects = append(projects, payload.Project)
+	}
+	for _, payload := range req.Memories {
+		projects = append(projects, payload.Project)
+	}
+	for _, payload := range req.Prompts {
+		projects = append(projects, payload.Project)
+	}
+	for _, mutation := range req.Mutations {
+		projects = append(projects, mutation.Project)
+		if mutation.Memory != nil {
+			projects = append(projects, mutation.Memory.Project)
+		}
+	}
+	return projects
+}
+
+func (s *syncService) precheckBlockedProjects(ctx context.Context, req model.SyncRequest, blockRepo repository.ProjectBlockRepository) error {
+	if blockRepo == nil {
+		return nil
+	}
+	for _, canonical := range repository.CanonicalProjectKeys(syncRequestProjects(req)) {
+		block, err := blockRepo.GetByCanonicalKey(ctx, canonical)
+		if err != nil && !errors.Is(err, repository.ErrNotFound) {
+			return err
+		}
+		if block != nil {
+			return projectBlockedErrorDelivery(ctx, blockRepo, block, req.AckSubject)
+		}
+	}
+	return nil
 }
 
 func mutationProjectMismatch(mutation model.MutationEnvelope, requestProject string) bool {
@@ -265,16 +399,17 @@ func mutationProjectMismatch(mutation model.MutationEnvelope, requestProject str
 	return false
 }
 
-func (s *syncService) emitSyncAudit(ctx context.Context, project, userID string, pushed, conflicts, promptsPushed int) {
-	if s.auditRepo == nil {
-		return
+func (s *syncService) emitSyncAudit(ctx context.Context, auditRepo repository.AuditRepository, project, userID string, pushed, conflicts, promptsPushed int) error {
+	if auditRepo == nil {
+		return nil
 	}
 
 	for _, entry := range buildSyncAuditEntries(project, userID, pushed, conflicts, promptsPushed) {
-		if err := s.auditRepo.Insert(ctx, entry); err != nil {
-			log.Printf("warn: failed to insert sync audit event action=%q project=%q: %v", entry.Action, project, err)
+		if err := auditRepo.Insert(ctx, entry); err != nil {
+			return fmt.Errorf("record sync audit event action=%q project=%q: %w", entry.Action, project, err)
 		}
 	}
+	return nil
 }
 
 // PullAll devuelve sesiones y memorias actualizadas después de 'since'.
@@ -283,12 +418,16 @@ func (s *syncService) emitSyncAudit(ctx context.Context, project, userID string,
 // limit y los cursores se forwardean tal cual a los repositorios — ver el
 // contrato completo en la doc del método de la interfaz SyncService.PullAll.
 func (s *syncService) PullAll(ctx context.Context, project string, since time.Time, excludeSyncIDs []string, limit int, memoriesCursor, sessionsCursor model.PullCursor) (*model.PullResult, error) {
-	sessions, sessionsHasMore, err := s.sessionRepo.ListSessionsSince(ctx, project, since, sessionsCursor, limit)
+	return s.pullAllWithRepos(ctx, syncPullRepos{Memory: s.repo, Session: s.sessionRepo}, project, since, excludeSyncIDs, limit, memoriesCursor, sessionsCursor)
+}
+
+func (s *syncService) pullAllWithRepos(ctx context.Context, repos syncPullRepos, project string, since time.Time, excludeSyncIDs []string, limit int, memoriesCursor, sessionsCursor model.PullCursor) (*model.PullResult, error) {
+	sessions, sessionsHasMore, err := repos.Session.ListSessionsSince(ctx, project, since, sessionsCursor, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions since: %w", err)
 	}
 
-	memories, memoriesHasMore, err := s.repo.PullSince(ctx, project, since, excludeSyncIDs, memoriesCursor, limit)
+	memories, memoriesHasMore, err := repos.Memory.PullSince(ctx, project, since, excludeSyncIDs, memoriesCursor, limit)
 	if err != nil {
 		return nil, fmt.Errorf("pull memories since: %w", err)
 	}
@@ -320,6 +459,50 @@ func (s *syncService) PullAll(ctx context.Context, project string, since time.Ti
 	return result, nil
 }
 
+func (s *syncService) syncResponseWithPull(ctx context.Context, req model.SyncRequest, pushResp *model.SyncResponse, repos syncPullRepos) (*model.SyncResponse, error) {
+	var since time.Time
+	if req.LastSync != nil {
+		since = *req.LastSync
+	}
+	excludeIDs := make([]string, 0, len(req.Memories))
+	for _, m := range req.Memories {
+		excludeIDs = append(excludeIDs, m.SyncID)
+	}
+	var memoriesCursor, sessionsCursor model.PullCursor
+	if req.PullCursor != nil {
+		memoriesCursor = *req.PullCursor
+	}
+	if req.PullSessionCursor != nil {
+		sessionsCursor = *req.PullSessionCursor
+	}
+	pullResult, err := s.pullAllWithRepos(ctx, repos, req.Project, since, excludeIDs, model.ClampPullLimit(req.PullLimit), memoriesCursor, sessionsCursor)
+	if err != nil {
+		return nil, err
+	}
+	pulledSessions := make([]model.SyncSessionResponse, 0, len(pullResult.Sessions))
+	for _, sess := range pullResult.Sessions {
+		pulledSessions = append(pulledSessions, model.SyncSessionResponse{ID: sess.ID, SyncID: sess.SyncID, Project: sess.Project, Directory: sess.Directory, DevID: sess.DevID, Client: sess.Client, StartedAt: sess.StartedAt, EndedAt: sess.EndedAt, Summary: sess.Summary})
+	}
+	pulled := pullResult.Memories
+	if pulled == nil {
+		pulled = []*model.Memory{}
+	}
+	return &model.SyncResponse{
+		Pushed:                pushResp.Pushed,
+		Pulled:                pulled,
+		Conflicts:             pushResp.Conflicts,
+		PromptsPushed:         pushResp.PromptsPushed,
+		PulledSessions:        pulledSessions,
+		NextMutationCursor:    pushResp.NextMutationCursor,
+		PulledMutations:       pushResp.PulledMutations,
+		CompatibilityMode:     pushResp.CompatibilityMode,
+		PulledHasMore:         pullResult.MemoriesHasMore,
+		NextPullCursor:        pullResult.NextPullCursor,
+		PulledSessionsHasMore: pullResult.SessionsHasMore,
+		NextSessionCursor:     pullResult.NextSessionCursor,
+	}, nil
+}
+
 // resolveSessionID resolves the effective session_id for a memory being pushed.
 //
 // Rules (T4.4 + T4.5 + T4.11):
@@ -332,7 +515,7 @@ func (s *syncService) PullAll(ctx context.Context, project string, since time.Ti
 // They are real session ids that should exist (migration creates them).
 // If present in the payload (branch 3), they are used directly.
 // If not in the payload, they fall through to the DB check (branch 4).
-func (s *syncService) resolveSessionID(ctx context.Context, sessionID, project string, inPayload map[string]bool) (*string, error) {
+func (s *syncService) resolveSessionID(ctx context.Context, sessionRepo repository.SessionRepository, sessionID, project string, inPayload map[string]bool) (*string, error) {
 	if sessionID == "" {
 		// T4.4: no session_id — old daemon or missing field; lazy-create manual-save-*
 		log.Printf("warn: memory pushed without session_id for project %q — creating manual-save session", project)
@@ -349,7 +532,7 @@ func (s *syncService) resolveSessionID(ctx context.Context, sessionID, project s
 	}
 
 	// R3-FIX-2 — delegate to shared validator (used also by memoryService.Create).
-	resolved, err := validateSessionAttribution(ctx, s.sessionRepo, sessionID, project)
+	resolved, err := validateSessionAttribution(ctx, sessionRepo, sessionID, project)
 	if err != nil {
 		return nil, err
 	}

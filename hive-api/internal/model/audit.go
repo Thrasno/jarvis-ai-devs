@@ -17,6 +17,7 @@ const (
 	AuditActionUserActivate      AuditAction = "user_activate"
 	AuditActionUserLevelChange   AuditAction = "user_level_change"
 	AuditActionUserDeactivate    AuditAction = "user_deactivate"
+	AuditActionProjectBlock      AuditAction = "project_block"
 )
 
 type AuditOutcome string
@@ -144,6 +145,14 @@ func auditMetadataAllowlist(action AuditAction) map[string]bool {
 			"conflict_count": true,
 			"prompt_count":   true,
 			"reason_code":    true,
+		}
+	case AuditActionProjectBlock:
+		return map[string]bool{
+			"project":       true,
+			"reason":        true,
+			"confirmation":  true,
+			"export_marker": true,
+			"action":        true,
 		}
 	default:
 		return map[string]bool{}

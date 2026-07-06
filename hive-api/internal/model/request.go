@@ -11,6 +11,8 @@ import (
 type LoginRequest struct {
 	Email    string `json:"email"    binding:"required,email"`
 	Password string `json:"password" binding:"required"`
+	DaemonID string `json:"daemon_id,omitempty"`
+	Client   string `json:"client,omitempty"`
 }
 
 // CreateMemoryRequest es el body del POST /memories.
@@ -93,6 +95,8 @@ type SyncRequest struct {
 	// bounded page (see SyncResponse.NextSessionCursor). Independent from
 	// PullCursor — sessions and memories paginate separately.
 	PullSessionCursor *PullCursor `json:"pull_session_cursor,omitempty"`
+
+	AckSubject ProjectBlockAckSubject `json:"-"`
 }
 
 // SyncSessionPayload es el formato de sesión en el wire protocol de sync.

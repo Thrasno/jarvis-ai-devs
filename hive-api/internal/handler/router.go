@@ -23,6 +23,10 @@ type AuthService interface {
 	GetCurrentUser(ctx context.Context, userID string) (*model.User, error)
 }
 
+type DeviceAuthService interface {
+	LoginWithDevice(ctx context.Context, email, password string, device model.ProjectBlockAckSubject) (string, error)
+}
+
 // DBPinger permite verificar la conectividad con la base de datos.
 // Lo usamos en GET /health para detectar si PostgreSQL está caído.
 // pgxpool.Pool implementa esta interfaz implícitamente (tiene Ping).
@@ -41,7 +45,14 @@ type MemoryService interface {
 // SyncService define las operaciones de sincronización.
 type SyncService interface {
 	Push(ctx context.Context, req model.SyncRequest, userID string) (*model.SyncResponse, error)
+	Sync(ctx context.Context, req model.SyncRequest, userID string) (*model.SyncResponse, error)
 	PullAll(ctx context.Context, project string, since time.Time, excludeSyncIDs []string, limit int, memoriesCursor, sessionsCursor model.PullCursor) (*model.PullResult, error)
+}
+
+type ProjectGovernanceService interface {
+	BlockProject(ctx context.Context, actor model.AdminActor, project string, req model.ProjectBlockRequest) (model.ProjectBlockResponse, error)
+	Status(ctx context.Context, project string) (model.ProjectBlockStatusResponse, error)
+	Acknowledge(ctx context.Context, ack model.ProjectBlockAck) (model.ProjectBlockAck, error)
 }
 
 type SyncAttemptService interface {
@@ -81,17 +92,19 @@ type ActivityService interface {
 // Pasar un struct en lugar de N parámetros hace que el constructor sea legible
 // y fácil de extender sin romper código existente.
 type RouterDeps struct {
-	AuthSvc            AuthService
-	MemorySvc          MemoryService
-	SyncSvc            SyncService
-	SyncAttemptSvc     SyncAttemptService
-	ProjectSvc         ProjectService
-	AdminSvc           AdminService
-	OverviewSvc        OverviewService
-	ActivitySvc        ActivityService
-	DB                 DBPinger // puede ser nil en tests unitarios
-	AllowedOrigins     []string // orígenes permitidos para CORS (e.g. ["https://hive.hivemem.dev"])
-	DashboardAssetsDir string   // directorio con assets compilados para servir /dashboard
+	AuthSvc                  AuthService
+	MemorySvc                MemoryService
+	SyncSvc                  SyncService
+	SyncAttemptSvc           SyncAttemptService
+	ProjectSvc               ProjectService
+	ProjectGovernanceSvc     ProjectGovernanceService
+	AdminSvc                 AdminService
+	OverviewSvc              OverviewService
+	ActivitySvc              ActivityService
+	DB                       DBPinger // puede ser nil en tests unitarios
+	AllowedOrigins           []string // orígenes permitidos para CORS (e.g. ["https://hive.hivemem.dev"])
+	DashboardAssetsDir       string   // directorio con assets compilados para servir /dashboard
+	ProjectBlockAdminEnabled bool
 }
 
 // NewRouter construye y configura el router Gin con todas las rutas y middlewares.
@@ -131,6 +144,10 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 	syncH := NewSyncHandler(deps.SyncSvc)
 	syncAttemptH := NewSyncAttemptHandler(deps.SyncAttemptSvc, deps.AuthSvc)
 	projectH := NewProjectHandler(deps.ProjectSvc)
+	var projectGovernanceH *ProjectGovernanceHandler
+	if deps.ProjectGovernanceSvc != nil {
+		projectGovernanceH = NewProjectGovernanceHandler(deps.ProjectGovernanceSvc)
+	}
 	adminH := NewAdminHandler(deps.AdminSvc)
 	overviewH := NewOverviewHandler(deps.OverviewSvc)
 	activityH := NewActivityHandler(deps.ActivitySvc)
@@ -157,6 +174,9 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 
 		auth.POST("/sync", syncH.Sync)
 		auth.POST("/sync-attempts", syncAttemptH.Ingest)
+		if projectGovernanceH != nil {
+			auth.POST("/admin/project-blocks/ack", projectGovernanceH.Acknowledge)
+		}
 	}
 
 	// Rutas de admin — RequireAuth + RequireAdmin
@@ -174,6 +194,10 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		admin.POST("/users/:username/activate", adminH.Activate)
 		admin.GET("/overview/stats", overviewH.GetStats)
 		admin.GET("/overview/growth", overviewH.GetGrowth)
+		if projectGovernanceH != nil && deps.ProjectBlockAdminEnabled {
+			admin.GET("/project-blocks/status", projectGovernanceH.Status)
+			admin.POST("/project-blocks/block", projectGovernanceH.BlockProject)
+		}
 	}
 
 	registerDashboardRoutes(r, deps.DashboardAssetsDir)

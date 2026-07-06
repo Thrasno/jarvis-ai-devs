@@ -39,6 +39,9 @@ func startPostgresWithSessions(t *testing.T) (*pgxpool.Pool, func()) {
 	err = RunMigrations(pool, migrations.DropTopicKeyUniqueConstraintSQL)
 	require.NoError(t, err, "failed to run migration 006")
 
+	err = RunMigrations(pool, migrations.ProjectBlocksSQL)
+	require.NoError(t, err, "failed to run migration 012")
+
 	return pool, cleanup
 }
 
@@ -616,6 +619,49 @@ func TestPostgresSessionRepository_ListSessionsSince(t *testing.T) {
 	// Ordered by (synced_at, sync_id) ASC, which matches started_at order here.
 	assert.Equal(t, "sess-list-2", got[0].ID)
 	assert.Equal(t, "sess-list-3", got[1].ID)
+}
+
+func TestPostgresSessionRepository_ListSessionsSince_FiltersBlockedProject(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	sessionRepo := NewPostgresSessionRepository(pool)
+	blockRepo := NewPostgresProjectBlockRepository(pool)
+	syncedAt := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+
+	insertSess := func(id, syncID, project string) {
+		t.Helper()
+		_, err := pool.Exec(ctx, `
+			INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at, synced_at)
+			VALUES ($1, $2, $3, '', 'dev', 'hive-daemon', $4, $4)`,
+			id, syncID, project, syncedAt)
+		require.NoError(t, err)
+	}
+
+	insertSess("sess-blocked", "ab100000-0000-0000-0000-000000000001", "Blocked Project")
+	insertSess("sess-open", "ab100000-0000-0000-0000-000000000002", "open-project")
+	_, err := blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
+		Project:             "Blocked Project",
+		CanonicalProjectKey: "blocked-project",
+		Action:              model.ProjectBlockActionQuarantine,
+		Reason:              "duplicate",
+		Confirmation:        "blocked-project",
+		ExportMarker:        "export-1",
+		ActorUserID:         "admin-1",
+	})
+	require.NoError(t, err)
+
+	blocked, blockedHasMore, err := sessionRepo.ListSessionsSince(ctx, "Blocked Project", time.Time{}, model.PullCursor{}, model.UnboundedPullLimit)
+	require.NoError(t, err)
+	require.Empty(t, blocked)
+	assert.False(t, blockedHasMore)
+
+	open, openHasMore, err := sessionRepo.ListSessionsSince(ctx, "open-project", time.Time{}, model.PullCursor{}, model.UnboundedPullLimit)
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	assert.False(t, openHasMore)
+	assert.Equal(t, "sess-open", open[0].ID)
 }
 
 // TestPostgresSessionRepository_ListSessionsSince_IncludesExactWatermark verifica

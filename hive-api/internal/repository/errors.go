@@ -27,3 +27,7 @@ var ErrConflict = errors.New("conflict")
 // ErrMemoryTombstoned se devuelve cuando una mutación normal intenta actualizar
 // una memoria borrada lógicamente sin una mutación restore explícita.
 var ErrMemoryTombstoned = errors.New("memory tombstoned")
+
+var ErrProjectBlocked = errors.New("project blocked")
+
+var ErrProjectKeyLockBusy = errors.New("project key lock busy")

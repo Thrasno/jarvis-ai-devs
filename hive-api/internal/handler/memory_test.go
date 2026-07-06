@@ -208,6 +208,57 @@ func TestHandlerMemory_Create_SessionNotFound_Returns400(t *testing.T) {
 	memSvc.AssertExpectations(t)
 }
 
+func TestHandlerMemory_Create_ProjectBlockedReturns423(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+	cmd := model.ProjectBlockCommand{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "jarvis-dev", CanonicalProjectKey: "jarvis-dev", Reason: "duplicate", BlockedAt: time.Now().UTC()}
+
+	memSvc := &mockMemorySvc{}
+	memSvc.On("Create", context.Background(), mock.AnythingOfType("*model.Memory")).
+		Return(nil, &service.ProjectBlockedError{Command: cmd})
+
+	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodPost, "/memories",
+		map[string]interface{}{
+			"sync_id":  "a1b2c3d4-e5f6-7890-abcd-ef1234567892",
+			"project":  "jarvis-dev",
+			"category": "decision",
+			"title":    "blocked",
+			"content":  "Some content",
+		}, "valid-token")
+
+	assert.Equal(t, http.StatusLocked, w.Code)
+	var body model.ProjectBlockedErrorResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, "cmd-1", body.Command.CommandID)
+	assert.Empty(t, body.Command.AckToken)
+	assert.Empty(t, body.Command.Reason)
+	memSvc.AssertExpectations(t)
+}
+
+func TestHandlerMemory_Create_ProjectKeyLockBusyReturns503(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	memSvc := &mockMemorySvc{}
+	memSvc.On("Create", context.Background(), mock.AnythingOfType("*model.Memory")).
+		Return(nil, service.ErrProjectKeyLockBusy)
+
+	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodPost, "/memories",
+		map[string]interface{}{
+			"sync_id":  "c1b2c3d4-e5f6-7890-abcd-ef1234567893",
+			"project":  "jarvis-dev",
+			"category": "decision",
+			"title":    "busy lock",
+			"content":  "Some content",
+		}, "valid-token")
+
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	var body model.ErrorResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, "project is busy; retry memory create", body.Error)
+	memSvc.AssertExpectations(t)
+}
+
 func TestCreateMemory_ServiceError(t *testing.T) {
 	authSvc := &mockAuthSvc{}
 	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)

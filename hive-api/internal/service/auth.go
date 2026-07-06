@@ -3,9 +3,9 @@
 // La separación handler → service → repository es el patrón más importante
 // de esta arquitectura. Cada capa tiene UNA responsabilidad:
 //
-//   Handler:     hablar HTTP (leer request, escribir response)
-//   Service:     ejecutar la lógica de negocio
-//   Repository:  hablar con la base de datos
+//	Handler:     hablar HTTP (leer request, escribir response)
+//	Service:     ejecutar la lógica de negocio
+//	Repository:  hablar con la base de datos
 //
 // Esta separación permite testear la lógica sin HTTP ni base de datos real.
 package service
@@ -47,6 +47,7 @@ type AuthService interface {
 	// Devuelve ErrInvalidCredentials si email/password no coinciden.
 	// Devuelve ErrUserInactive si el usuario está desactivado.
 	Login(ctx context.Context, email, password string) (string, error)
+	LoginWithDevice(ctx context.Context, email, password string, device model.ProjectBlockAckSubject) (string, error)
 
 	// ValidateToken verifica la firma y expiración del JWT.
 	// Devuelve los Claims (payload del token) si es válido.
@@ -74,7 +75,8 @@ type authService struct {
 //
 // Este patrón se llama "Constructor function" en Go.
 // Es equivalente a un constructor PHP:
-//   public function __construct(UserRepository $repo, string $jwtSecret) {}
+//
+//	public function __construct(UserRepository $repo, string $jwtSecret) {}
 //
 // Devuelve la interfaz, no el struct concreto — los consumidores no saben
 // qué implementación están usando.
@@ -87,11 +89,15 @@ func NewAuthService(userRepo repository.UserRepository, jwtSecret string) AuthSe
 }
 
 // Login implementa la autenticación completa:
-//   1. Buscar usuario por email
-//   2. Verificar que el password coincide con el hash bcrypt
-//   3. Verificar que el usuario está activo
-//   4. Generar y firmar un JWT con los datos del usuario
+//  1. Buscar usuario por email
+//  2. Verificar que el password coincide con el hash bcrypt
+//  3. Verificar que el usuario está activo
+//  4. Generar y firmar un JWT con los datos del usuario
 func (s *authService) Login(ctx context.Context, email, password string) (string, error) {
+	return s.LoginWithDevice(ctx, email, password, model.ProjectBlockAckSubject{})
+}
+
+func (s *authService) LoginWithDevice(ctx context.Context, email, password string, device model.ProjectBlockAckSubject) (string, error) {
 	// Paso 1: buscar el usuario.
 	// Si no existe, el repo devuelve ErrNotFound.
 	user, err := s.userRepo.GetByEmail(ctx, email)
@@ -125,13 +131,14 @@ func (s *authService) Login(ctx context.Context, email, password string) (string
 	}
 
 	// Paso 4: generar el JWT.
-	return s.generateToken(user)
+	return s.generateToken(user, device)
 }
 
 // generateToken crea y firma un JWT para el usuario dado.
 //
 // Un JWT tiene 3 partes separadas por puntos:
-//   header.payload.signature
+//
+//	header.payload.signature
 //
 // - header: algoritmo usado (HS256)
 // - payload: Claims — los datos que guardamos (ID, username, level, expiración)
@@ -139,7 +146,7 @@ func (s *authService) Login(ctx context.Context, email, password string) (string
 //
 // Solo quien tiene jwtSecret puede crear tokens válidos.
 // Cualquiera puede LEER el payload (base64, no cifrado) pero no puede FALSIFICARLO.
-func (s *authService) generateToken(user *model.User) (string, error) {
+func (s *authService) generateToken(user *model.User, device model.ProjectBlockAckSubject) (string, error) {
 	now := time.Now()
 
 	claims := &model.Claims{
@@ -153,6 +160,8 @@ func (s *authService) generateToken(user *model.User) (string, error) {
 		// para no ir a la BD a buscar el usuario en cada llamada:
 		Username: user.Username,
 		Level:    user.Level,
+		DaemonID: device.DaemonID,
+		Client:   device.Client,
 	}
 
 	// Creamos el token con el algoritmo HS256 (HMAC + SHA-256).

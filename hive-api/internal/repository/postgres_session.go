@@ -16,12 +16,16 @@ import (
 var _ SessionRepository = (*postgresSessionRepository)(nil)
 
 type postgresSessionRepository struct {
-	pool *pgxpool.Pool
+	db pgxQuerier
 }
 
 // NewPostgresSessionRepository crea la implementación real de SessionRepository.
 func NewPostgresSessionRepository(pool *pgxpool.Pool) SessionRepository {
-	return &postgresSessionRepository{pool: pool}
+	return newPostgresSessionRepositoryWithQuerier(pool)
+}
+
+func newPostgresSessionRepositoryWithQuerier(db pgxQuerier) SessionRepository {
+	return &postgresSessionRepository{db: db}
 }
 
 // CreateSession inserta una nueva sesión usando ON CONFLICT (sync_id) DO NOTHING
@@ -32,7 +36,7 @@ func (r *postgresSessionRepository) CreateSession(ctx context.Context, s *model.
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (sync_id) DO NOTHING`
 
-	_, err := r.pool.Exec(ctx, q,
+	_, err := r.db.Exec(ctx, q,
 		s.ID, s.SyncID, s.Project, s.Directory, s.DevID, s.Client,
 		s.StartedAt, s.EndedAt, s.Summary,
 	)
@@ -67,7 +71,7 @@ func (r *postgresSessionRepository) UpsertSession(ctx context.Context, s *model.
 			      client     = CASE WHEN EXCLUDED.client <> 'manual'  AND EXCLUDED.client <> '' THEN EXCLUDED.client ELSE sessions.client END,
 			      updated_at = now()`
 
-		_, err := r.pool.Exec(ctx, q,
+		_, err := r.db.Exec(ctx, q,
 			s.ID, s.SyncID, s.Project, s.Directory, s.DevID, s.Client,
 			s.StartedAt, s.EndedAt, s.Summary,
 		)
@@ -80,7 +84,7 @@ func (r *postgresSessionRepository) UpsertSession(ctx context.Context, s *model.
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 			ON CONFLICT (id) DO NOTHING`
 
-		_, err := r.pool.Exec(ctx, q,
+		_, err := r.db.Exec(ctx, q,
 			s.ID, s.SyncID, s.Project, s.Directory, s.DevID, s.Client,
 			s.StartedAt, s.EndedAt, s.Summary,
 		)
@@ -92,7 +96,7 @@ func (r *postgresSessionRepository) UpsertSession(ctx context.Context, s *model.
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (sync_id) DO NOTHING`
 
-	_, err := r.pool.Exec(ctx, q,
+	_, err := r.db.Exec(ctx, q,
 		s.ID, s.SyncID, s.Project, s.Directory, s.DevID, s.Client,
 		s.StartedAt, s.EndedAt, s.Summary,
 	)
@@ -112,7 +116,7 @@ func (r *postgresSessionRepository) EndSession(ctx context.Context, sessionID, s
 		SET ended_at = now(), summary = $2
 		WHERE id = $1`
 
-	tag, err := r.pool.Exec(ctx, q, sessionID, summary)
+	tag, err := r.db.Exec(ctx, q, sessionID, summary)
 	if err != nil {
 		return wrapPgError(err, "EndSession")
 	}
@@ -130,7 +134,7 @@ func (r *postgresSessionRepository) GetSession(ctx context.Context, sessionID st
 		FROM sessions
 		WHERE id = $1`
 
-	row := r.pool.QueryRow(ctx, q, sessionID)
+	row := r.db.QueryRow(ctx, q, sessionID)
 	s, err := scanSession(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -152,7 +156,7 @@ func (r *postgresSessionRepository) EnsureManualSaveSession(ctx context.Context,
 		VALUES ($1, $2, 'unknown', 'manual', now())
 		ON CONFLICT (id) DO NOTHING`
 
-	_, err := r.pool.Exec(ctx, q, id, project)
+	_, err := r.db.Exec(ctx, q, id, project)
 	if err != nil {
 		return "", wrapPgError(err, "EnsureManualSaveSession")
 	}
@@ -168,7 +172,7 @@ func (r *postgresSessionRepository) ListSessionsByProject(ctx context.Context, p
 		WHERE project = $1
 		ORDER BY started_at DESC`
 
-	rows, err := r.pool.Query(ctx, q, project)
+	rows, err := r.db.Query(ctx, q, project)
 	if err != nil {
 		return nil, wrapPgError(err, "ListSessionsByProject")
 	}
@@ -210,7 +214,7 @@ func (r *postgresSessionRepository) ListSessionsByProject(ctx context.Context, p
 // estrictamente después de la última fila vista y evita duplicados.
 func (r *postgresSessionRepository) ListSessionsSince(ctx context.Context, project string, since time.Time, cursor model.PullCursor, limit int) ([]*model.Session, bool, error) {
 	args := []interface{}{project}
-	where := "project = $1"
+	where := "project = $1 AND " + unblockedProjectPredicate("sessions.project")
 	argIdx := 2
 
 	if !since.IsZero() {
@@ -239,7 +243,7 @@ func (r *postgresSessionRepository) ListSessionsSince(ctx context.Context, proje
 		args = append(args, fetchLimit)
 	}
 
-	rows, err := r.pool.Query(ctx, q, args...)
+	rows, err := r.db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, false, wrapPgError(err, "ListSessionsSince")
 	}
