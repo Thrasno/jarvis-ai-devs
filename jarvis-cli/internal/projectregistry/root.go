@@ -20,8 +20,7 @@ func IsNonProjectError(err error) bool {
 	return errors.Is(err, ErrNotGitWorktree)
 }
 
-// ResolveRoot resolves cwd to the active git worktree root and rejects roots
-// that could target generated home/config agent state instead of a project.
+// ResolveRoot resolves cwd to the active git worktree root.
 func ResolveRoot(ctx context.Context, cwd string) (string, error) {
 	if strings.TrimSpace(cwd) == "" {
 		return "", fmt.Errorf("project root cwd is required")
@@ -60,9 +59,6 @@ func ResolveRoot(ctx context.Context, cwd string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve git worktree root %q: %w", root, err)
 	}
-	if err := rejectUnsafeRoot(root); err != nil {
-		return "", err
-	}
 	return root, nil
 }
 
@@ -81,33 +77,49 @@ func resolveExplicitProjectRoot(cwd string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("project root %q is not a directory", abs)
 	}
-	if err := rejectUnsafeRoot(abs); err != nil {
-		return "", err
-	}
 	return abs, nil
-}
-
-func rejectUnsafeRoot(root string) error {
-	return rejectUnsafeRootForHomes(root, homePathCandidates(), samePath)
 }
 
 type pathEquivalenceFunc func(a, b string) bool
 
-func rejectUnsafeRootForHomes(root string, homes []string, same pathEquivalenceFunc) error {
-	for _, home := range homes {
-		if same(root, home) {
-			return fmt.Errorf("unsafe project root %q: refusing to write to the home directory", root)
-		}
-		configRoot := filepath.Join(home, ".config")
-		if same(root, configRoot) || isWithinWithSame(root, configRoot, same) {
-			return fmt.Errorf("unsafe project root %q: refusing to write to home config directories", root)
-		}
-		claudeRoot := filepath.Join(home, ".claude")
-		if same(root, claudeRoot) || isWithinWithSame(root, claudeRoot, same) {
-			return fmt.Errorf("unsafe project root %q: refusing to write to home Claude generated state", root)
+type unsafeRootWarningLocation struct {
+	path  string
+	label string
+}
+
+func unsafeRootWarnings(root string) []Warning {
+	return unsafeRootWarningsForHomes(root, homePathCandidates(), samePath)
+}
+
+func unsafeRootWarningsForHomes(root string, homes []string, same pathEquivalenceFunc) []Warning {
+	var warnings []Warning
+	add := func(location unsafeRootWarningLocation) {
+		path := location.path
+		if same(root, path) {
+			warnings = append(warnings, Warning{
+				Code:     "unsafe-project-root",
+				Severity: SeverityWarning,
+				Path:     root,
+				Message:  fmt.Sprintf("unsafe project root %q points at %s; continuing with warning only", root, location.label),
+			})
 		}
 	}
-	return nil
+	for _, home := range homes {
+		for _, location := range unsafeRootWarningPolicy(home) {
+			add(location)
+		}
+	}
+	add(unsafeRootWarningLocation{path: os.TempDir(), label: os.TempDir()})
+	return warnings
+}
+
+func unsafeRootWarningPolicy(home string) []unsafeRootWarningLocation {
+	return []unsafeRootWarningLocation{
+		{path: home, label: "home directory"},
+		{path: filepath.Join(home, "Documents"), label: "Documents"},
+		{path: filepath.Join(home, "Downloads"), label: "Downloads"},
+		{path: filepath.Join(home, "Desktop"), label: "Desktop"},
+	}
 }
 
 func homePathCandidates() []string {
@@ -163,35 +175,6 @@ func samePath(a, b string) bool {
 		return strings.EqualFold(aClean, bClean)
 	}
 	return aClean == bClean
-}
-
-func isWithin(path, parent string) bool {
-	return isWithinWithSame(path, parent, samePath)
-}
-
-func isWithinWithSame(path, parent string, same pathEquivalenceFunc) bool {
-	path, err := cleanAbs(path)
-	if err != nil {
-		return false
-	}
-	parent, err = cleanAbs(parent)
-	if err != nil {
-		return false
-	}
-	if same(path, parent) {
-		return false
-	}
-
-	for current := path; ; current = filepath.Dir(current) {
-		if same(current, parent) {
-			return true
-		}
-		next := filepath.Dir(current)
-		if next == current {
-			break
-		}
-	}
-	return false
 }
 
 func cleanAbs(path string) (string, error) {

@@ -1042,6 +1042,188 @@ describe('dashboard shell', () => {
     }
   })
 
+  it('submits admin project quarantine guards and refreshes Projects after success', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({
+      projects: [
+        Promise.resolve(projectListResponse([projectSummary({ name: 'Garbage Project', canonicalProjectKey: 'garbage-project' })])),
+        Promise.resolve(projectListResponse([projectSummary({ name: 'Garbage Project', blocked: true, canonicalProjectKey: 'garbage-project', blockReason: 'duplicate import', exportMarker: 'export-123', blockAckStatus: 'applied' })]))
+      ],
+      projectBlockStatus: [
+        Promise.resolve({ project: 'Garbage Project', canonical_project_key: 'garbage-project', blocked: false }),
+        Promise.resolve({ project: 'Garbage Project', canonical_project_key: 'garbage-project', blocked: true, reason: 'duplicate import', ack: { status: 'applied' } })
+      ]
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/projects')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+      container.querySelector<HTMLInputElement>('input[name="reason"]')!.value = 'duplicate import'
+      container.querySelector<HTMLInputElement>('input[name="export_marker"]')!.value = 'export-123'
+      container.querySelector<HTMLInputElement>('input[name="confirmation"]')!.value = 'garbage-project'
+
+      container.querySelector('form[aria-label="Block Garbage Project"]')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+      await flushDashboard()
+
+      expect(api.blockProject).toHaveBeenCalledWith('jwt-token', { project: 'Garbage Project', action: 'quarantine', reason: 'duplicate import', confirmation: 'garbage-project', export_marker: 'export-123' })
+      expect(api.projects).toHaveBeenCalledTimes(2)
+      expect(container.textContent).toContain('BLOCKED')
+      expect(container.textContent).toContain('Status: ACK applied')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('loads admin project block status from the status endpoint instead of trusting /projects block fields', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({
+      projects: [Promise.resolve(projectListResponse([projectSummary({ name: 'Garbage Project' })]))],
+      projectBlockStatus: [Promise.resolve({ project: 'Garbage Project', canonical_project_key: 'garbage-project', blocked: true, reason: 'duplicate import', ack: { status: 'applied' } })]
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/projects')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+
+      expect(api.projects).toHaveBeenCalledWith('jwt-token')
+      expect(api.projectBlockStatus).toHaveBeenCalledWith('jwt-token', 'Garbage Project')
+      expect(container.textContent).toContain('BLOCKED')
+      expect(container.textContent).toContain('Status: ACK applied')
+      expect(container.textContent).toContain('Type garbage-project exactly')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('shows project block mutation errors and prevents duplicate in-flight submits', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const pendingBlock = deferred<Awaited<ReturnType<ApiClient['blockProject']>>>()
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({
+      projects: [Promise.resolve(projectListResponse([projectSummary({ name: 'Garbage Project', canonicalProjectKey: 'garbage-project' })]))],
+      blockProject: pendingBlock.promise
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/projects')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+      container.querySelector<HTMLInputElement>('input[name="reason"]')!.value = 'duplicate import'
+      container.querySelector<HTMLInputElement>('input[name="export_marker"]')!.value = 'export-123'
+      container.querySelector<HTMLInputElement>('input[name="confirmation"]')!.value = 'garbage-project'
+
+      const form = container.querySelector('form[aria-label="Block Garbage Project"]')!
+      form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+      form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+      await Promise.resolve()
+
+      expect(api.blockProject).toHaveBeenCalledTimes(1)
+      expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true)
+      pendingBlock.reject(new Error('forbidden'))
+      await flushDashboard()
+
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('Project block failed: forbidden')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('clears stale project block pending state when navigation races block completion', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const pendingBlock = deferred<Awaited<ReturnType<ApiClient['blockProject']>>>()
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({
+      projects: [
+        Promise.resolve(projectListResponse([projectSummary({ name: 'Garbage Project', canonicalProjectKey: 'garbage-project' })])),
+        Promise.resolve(projectListResponse([projectSummary({ name: 'Garbage Project', canonicalProjectKey: 'garbage-project' })]))
+      ],
+      blockProject: pendingBlock.promise
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/projects')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+      container.querySelector<HTMLInputElement>('input[name="reason"]')!.value = 'duplicate import'
+      container.querySelector<HTMLInputElement>('input[name="export_marker"]')!.value = 'export-123'
+      container.querySelector<HTMLInputElement>('input[name="confirmation"]')!.value = 'garbage-project'
+
+      container.querySelector('form[aria-label="Block Garbage Project"]')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+      await Promise.resolve()
+      expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true)
+
+      container.querySelector<HTMLAnchorElement>('a[data-nav-entry="overview"]')!.click()
+      await flushDashboard()
+      container.querySelector<HTMLAnchorElement>('a[data-nav-entry="projects"]')!.click()
+      await flushDashboard()
+
+      expect(api.projects).toHaveBeenCalledTimes(2)
+      expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false)
+      expect(container.textContent).not.toContain('Quarantine request in progress')
+
+      pendingBlock.resolve({ command_id: 'cmd-1', project: 'Garbage Project', canonical_project_key: 'garbage-project', reason: 'duplicate import', blocked_at: '2026-07-06T10:00:00Z' })
+      await flushDashboard()
+
+      expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false)
+      expect(container.textContent).not.toContain('Quarantine request in progress')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
+  it('shows a Projects refresh failure after project block success', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
+    const api = fakeApi({
+      projects: [
+        Promise.resolve(projectListResponse([projectSummary({ name: 'Garbage Project', canonicalProjectKey: 'garbage-project' })])),
+        () => Promise.reject(new Error('timeout'))
+      ]
+    })
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    history.pushState(null, '', '/dashboard/projects')
+
+    const cleanup = startDashboardApp(container, { api, session })
+    try {
+      await flushDashboard()
+      container.querySelector<HTMLInputElement>('input[name="reason"]')!.value = 'duplicate import'
+      container.querySelector<HTMLInputElement>('input[name="export_marker"]')!.value = 'export-123'
+      container.querySelector<HTMLInputElement>('input[name="confirmation"]')!.value = 'garbage-project'
+
+      container.querySelector('form[aria-label="Block Garbage Project"]')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+      await flushDashboard()
+
+      expect(api.blockProject).toHaveBeenCalledTimes(1)
+      expect(api.projects).toHaveBeenCalledTimes(2)
+      expect(container.textContent).toContain('Block succeeded, but Projects could not be refreshed: timeout. Refresh the page to confirm the latest state.')
+    } finally {
+      cleanup()
+      history.pushState(null, '', originalPath)
+      container.remove()
+    }
+  })
+
   it('re-fetches live Projects summaries when re-entering the Projects route', async () => {
     const container = document.createElement('main')
     document.body.append(container)
@@ -2395,6 +2577,10 @@ async function flushDashboard(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
   await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
 }
 
 function deferred<T>() {
@@ -2437,6 +2623,8 @@ function fakeApi(overrides: {
   search?: Array<Promise<MemorySearch> | (() => Promise<MemorySearch>)>
   memory?: Array<Promise<Memory> | (() => Promise<Memory>)>
   projects?: Array<Promise<ProjectListResponse> | (() => Promise<ProjectListResponse>)>
+  projectBlockStatus?: Array<Promise<Awaited<ReturnType<ApiClient['projectBlockStatus']>>> | (() => Promise<Awaited<ReturnType<ApiClient['projectBlockStatus']>>>)>
+  blockProject?: Promise<Awaited<ReturnType<ApiClient['blockProject']>>>
 } = {}): ApiClient {
   const userResponses = [...(overrides.users ?? [])]
   const activityResponses = [...(overrides.activity ?? [])]
@@ -2444,6 +2632,7 @@ function fakeApi(overrides: {
   const searchResponses = [...(overrides.search ?? [])]
   const detailResponses = [...(overrides.memory ?? [])]
   const projectResponses = [...(overrides.projects ?? [])]
+  const projectBlockStatusResponses = [...(overrides.projectBlockStatus ?? [])]
   return {
     login: vi.fn(),
     currentUser: vi.fn(),
@@ -2484,7 +2673,13 @@ function fakeApi(overrides: {
       const next = projectResponses.shift()
       if (typeof next === 'function') return next()
       return next ?? Promise.resolve(projectListResponse([projectSummary()]))
-    })
+    }),
+    projectBlockStatus: vi.fn((_token: string, project: string) => {
+      const next = projectBlockStatusResponses.shift()
+      if (typeof next === 'function') return next()
+      return next ?? Promise.resolve({ project, canonical_project_key: projectSummary({ name: project }).canonicalProjectKey ?? project, blocked: false })
+    }),
+    blockProject: vi.fn(() => overrides.blockProject ?? Promise.resolve({ command_id: 'cmd-1', project: 'Core API', canonical_project_key: 'core-api', reason: 'duplicate', blocked_at: '2026-07-06T10:00:00Z' }))
   }
 }
 

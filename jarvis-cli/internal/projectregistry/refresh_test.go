@@ -159,7 +159,7 @@ func TestResolveRootUsesGitTopLevelFromSubdir(t *testing.T) {
 	assertSamePath(t, resolved, root)
 }
 
-func TestResolveRootRejectsUnsafeRoots(t *testing.T) {
+func TestResolveRootDoesNotHardRejectUnsafeRoots(t *testing.T) {
 	t.Run("missing directory", func(t *testing.T) {
 		missing := filepath.Join(t.TempDir(), "missing")
 
@@ -178,9 +178,12 @@ func TestResolveRootRejectsUnsafeRoots(t *testing.T) {
 		home := initGitWorktree(t)
 		t.Setenv("HOME", home)
 
-		_, err := ResolveRoot(context.Background(), home)
+		root, err := ResolveRoot(context.Background(), home)
 
-		assertErrorContains(t, err, "unsafe project root")
+		if err != nil {
+			t.Fatalf("ResolveRoot returned error: %v", err)
+		}
+		assertSamePath(t, root, home)
 	})
 
 	t.Run("home config directory", func(t *testing.T) {
@@ -192,9 +195,12 @@ func TestResolveRootRejectsUnsafeRoots(t *testing.T) {
 		}
 		runGit(t, configRoot, "init")
 
-		_, err := ResolveRoot(context.Background(), configRoot)
+		root, err := ResolveRoot(context.Background(), configRoot)
 
-		assertErrorContains(t, err, "unsafe project root")
+		if err != nil {
+			t.Fatalf("ResolveRoot returned error: %v", err)
+		}
+		assertSamePath(t, root, configRoot)
 	})
 
 	t.Run("home claude generated state directory", func(t *testing.T) {
@@ -206,9 +212,12 @@ func TestResolveRootRejectsUnsafeRoots(t *testing.T) {
 		}
 		runGit(t, claudeRoot, "init")
 
-		_, err := ResolveRoot(context.Background(), claudeRoot)
+		root, err := ResolveRoot(context.Background(), claudeRoot)
 
-		assertErrorContains(t, err, "unsafe project root")
+		if err != nil {
+			t.Fatalf("ResolveRoot returned error: %v", err)
+		}
+		assertSamePath(t, root, claudeRoot)
 	})
 
 	t.Run("home alias directory", func(t *testing.T) {
@@ -216,9 +225,12 @@ func TestResolveRootRejectsUnsafeRoots(t *testing.T) {
 		alias := createDirectoryAlias(t, home)
 		t.Setenv("HOME", alias)
 
-		_, err := ResolveRoot(context.Background(), home)
+		root, err := ResolveRoot(context.Background(), home)
 
-		assertErrorContains(t, err, "unsafe project root")
+		if err != nil {
+			t.Fatalf("ResolveRoot returned error: %v", err)
+		}
+		assertSamePath(t, root, home)
 	})
 
 	t.Run("home config alias directory", func(t *testing.T) {
@@ -231,9 +243,12 @@ func TestResolveRootRejectsUnsafeRoots(t *testing.T) {
 		}
 		runGit(t, configRoot, "init")
 
-		_, err := ResolveRoot(context.Background(), configRoot)
+		root, err := ResolveRoot(context.Background(), configRoot)
 
-		assertErrorContains(t, err, "unsafe project root")
+		if err != nil {
+			t.Fatalf("ResolveRoot returned error: %v", err)
+		}
+		assertSamePath(t, root, configRoot)
 	})
 
 	t.Run("home claude alias generated state directory", func(t *testing.T) {
@@ -246,13 +261,16 @@ func TestResolveRootRejectsUnsafeRoots(t *testing.T) {
 		}
 		runGit(t, claudeRoot, "init")
 
-		_, err := ResolveRoot(context.Background(), claudeRoot)
+		root, err := ResolveRoot(context.Background(), claudeRoot)
 
-		assertErrorContains(t, err, "unsafe project root")
+		if err != nil {
+			t.Fatalf("ResolveRoot returned error: %v", err)
+		}
+		assertSamePath(t, root, claudeRoot)
 	})
 }
 
-func TestRejectUnsafeRootUsesPathEquivalenceForHomeAliases(t *testing.T) {
+func TestUnsafeRootWarningsUsePathEquivalenceForHomeAliases(t *testing.T) {
 	base := t.TempDir()
 	home := filepath.Join(base, "ActualHome")
 	alias := filepath.Join(base, "HOMEALIAS")
@@ -271,23 +289,73 @@ func TestRejectUnsafeRootUsesPathEquivalenceForHomeAliases(t *testing.T) {
 			want: "home directory",
 		},
 		{
-			name: "home config alias",
-			root: filepath.Join(home, ".config", "opencode"),
-			want: "home config directories",
-		},
-		{
-			name: "home Claude generated state alias",
-			root: filepath.Join(home, ".claude", "projects", "example"),
-			want: "home Claude generated state",
+			name: "documents alias",
+			root: filepath.Join(home, "Documents"),
+			want: "Documents",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := rejectUnsafeRootForHomes(tt.root, []string{alias}, sameAliasPath)
+			warnings := unsafeRootWarningsForHomes(tt.root, []string{alias}, sameAliasPath)
 
-			assertErrorContains(t, err, tt.want)
+			if len(warnings) != 1 || !strings.Contains(warnings[0].Message, tt.want) {
+				t.Fatalf("warnings = %+v, want one containing %q", warnings, tt.want)
+			}
 		})
+	}
+}
+
+func TestRefreshReportsUnsafeRootWarningWithoutHardReject(t *testing.T) {
+	home := initGitWorktree(t)
+	t.Setenv("HOME", home)
+
+	result, err := Refresh(context.Background(), RefreshOptions{CWD: home, ScanDirs: []string{filepath.Join(home, ".jarvis", "skills")}})
+
+	if err != nil {
+		t.Fatalf("Refresh returned error: %v", err)
+	}
+	if len(result.Warnings) != 1 {
+		t.Fatalf("Warnings len = %d, want 1: %+v", len(result.Warnings), result.Warnings)
+	}
+	if result.Warnings[0].Code != "unsafe-project-root" || !strings.Contains(result.Warnings[0].Message, "home directory") {
+		t.Fatalf("unsafe root warning = %+v", result.Warnings[0])
+	}
+}
+
+func TestUnsafeRootWarningsCoverApprovedWarnOnlyLocations(t *testing.T) {
+	home := t.TempDir()
+	same := func(a, b string) bool { return filepath.Clean(a) == filepath.Clean(b) }
+	tests := []struct {
+		name string
+		root string
+		want string
+	}{
+		{name: "home", root: home, want: "home directory"},
+		{name: "documents", root: filepath.Join(home, "Documents"), want: "Documents"},
+		{name: "downloads", root: filepath.Join(home, "Downloads"), want: "Downloads"},
+		{name: "desktop", root: filepath.Join(home, "Desktop"), want: "Desktop"},
+		{name: "tmp", root: os.TempDir(), want: os.TempDir()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			warnings := unsafeRootWarningsForHomes(tt.root, []string{home}, same)
+			if len(warnings) != 1 || !strings.Contains(warnings[0].Message, tt.want) {
+				t.Fatalf("warnings = %+v, want message containing %q", warnings, tt.want)
+			}
+		})
+	}
+}
+
+func TestUnsafeRootWarningsDoNotWarnForUnapprovedHomeChildren(t *testing.T) {
+	home := t.TempDir()
+	same := func(a, b string) bool { return filepath.Clean(a) == filepath.Clean(b) }
+
+	warnings := unsafeRootWarningsForHomes(filepath.Join(home, ".config", "opencode"), []string{home}, same)
+
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %+v, want none for unapproved home child", warnings)
 	}
 }
 

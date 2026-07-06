@@ -180,6 +180,11 @@ export type ProjectLiveSummaryViewModel = {
   readonly lastActivityLabel: string
   readonly syncHealth: ProjectSyncStatus
   readonly browsePath: string
+  readonly blocked: boolean
+  readonly canonicalProjectKey: string
+  readonly blockReason?: string
+  readonly exportMarker?: string
+  readonly blockAckStatus?: string
 }
 
 export type ProjectListViewModel = {
@@ -461,7 +466,12 @@ function projectFromApi(project: ProjectSummary): ProjectLiveSummaryViewModel {
     sessionCount: project.sessionCount,
     lastActivityLabel: lastActivityLabel(project.lastActivityAt),
     syncHealth: normalizedProjectSyncHealth(project.syncHealth),
-    browsePath: `/dashboard/knowledgeBrowser?${new URLSearchParams({ project: project.name }).toString()}`
+    browsePath: `/dashboard/knowledgeBrowser?${new URLSearchParams({ project: project.name }).toString()}`,
+    blocked: project.blocked === true,
+    canonicalProjectKey: project.canonicalProjectKey?.trim() || project.name,
+    blockReason: project.blockReason?.trim() || undefined,
+    exportMarker: project.exportMarker?.trim() || undefined,
+    blockAckStatus: project.blockAckStatus?.trim() || undefined
   }
 }
 

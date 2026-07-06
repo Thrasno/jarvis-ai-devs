@@ -48,12 +48,22 @@ export type SyncAttemptSummaryWindow = {
 export type SyncAttemptSummary = { windows: SyncAttemptSummaryWindow[] }
 export type MutationMessage = { message: string }
 export type CreateUserRequest = { username: string; email: string; level: UserLevel; temporary_password: string }
+export type ProjectBlockAction = 'quarantine' | 'purge_intent'
+export type ProjectBlockRequest = { project: string; action: ProjectBlockAction; reason: string; confirmation: string; export_marker: string }
+export type ProjectBlockResponse = { command_id: string; project: string; canonical_project_key: string; reason: string; blocked_at: string }
+export type ProjectBlockAckStatus = 'applied' | 'failed' | 'skipped' | string
+export type ProjectBlockStatusResponse = { project: string; canonical_project_key: string; blocked: boolean; reason?: string; ack?: { status?: ProjectBlockAckStatus; warning?: string } | null }
 export type ProjectSummary = {
   name: string
   memoryCount: number
   sessionCount: number
   lastActivityAt?: string | null
   syncHealth?: 'healthy' | 'degraded' | 'unknown' | string | null
+  blocked?: boolean
+  canonicalProjectKey?: string | null
+  blockReason?: string | null
+  exportMarker?: string | null
+  blockAckStatus?: ProjectBlockAckStatus | null
 }
 export type ProjectListResponse = { projects: ProjectSummary[]; total: number }
 export type ActivityFeedParams = { limit?: number; cursor?: string }
@@ -96,6 +106,8 @@ export type ApiClient = {
   syncAttemptSummary(token: string, params?: SyncAttemptSummaryParams): Promise<SyncAttemptSummary>
   activity(token: string, params?: ActivityFeedParams): Promise<ActivityFeedResponse>
   projects(token: string): Promise<ProjectListResponse>
+  projectBlockStatus(token: string, project: string): Promise<ProjectBlockStatusResponse>
+  blockProject(token: string, request: ProjectBlockRequest): Promise<ProjectBlockResponse>
 }
 
 export class ApiError extends Error {
@@ -192,6 +204,12 @@ export function createApiClient(options: { baseUrl?: string; fetch?: Fetcher } =
     },
     projects(token) {
       return request<ProjectListResponse>('/projects', authGet(token))
+    },
+    projectBlockStatus(token, project) {
+      return request<ProjectBlockStatusResponse>(withQuery('/admin/project-blocks/status', { project }), authGet(token))
+    },
+    blockProject(token, blockRequest) {
+      return request<ProjectBlockResponse>('/admin/project-blocks/block', authPost(token, blockRequest))
     }
   }
 }

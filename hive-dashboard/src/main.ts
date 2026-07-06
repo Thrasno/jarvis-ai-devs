@@ -1,4 +1,4 @@
-import { createApiClient, type AdminStats, type ApiClient, type Count, type CreateUserRequest, type Health, type Memory, type MemoryList, type MemoryListParams, type MemorySearch, type OverviewGrowth, type OverviewProjectSyncHealth, type OverviewStats, type SyncAttemptSummary, type User } from './api/client'
+import { createApiClient, type AdminStats, type ApiClient, type Count, type CreateUserRequest, type Health, type Memory, type MemoryList, type MemoryListParams, type MemorySearch, type OverviewGrowth, type OverviewProjectSyncHealth, type OverviewStats, type ProjectBlockRequest, type ProjectListResponse, type ProjectSummary, type SyncAttemptSummary, type User } from './api/client'
 import { parseDashboardFilters } from './api/urlFilters'
 import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
 import { renderBrand } from './components/Brand'
@@ -56,10 +56,18 @@ export type AppActions = {
   onResetTemporaryPassword?(username: string, temporaryPassword: string): Promise<void>
   onActivateUser?(username: string): Promise<void>
   onLoadMoreActivity?(): Promise<void>
+  onBlockProject?(request: ProjectBlockRequest): Promise<void>
 }
 
 export type UserManagementState = {
   pendingAction?: { username: string; type: UserManagementActionType }
+  mutationError?: string
+  refreshError?: string
+}
+
+export type ProjectBlockState = {
+  pendingProject?: string
+  pendingOperationId?: number
   mutationError?: string
   refreshError?: string
 }
@@ -71,6 +79,7 @@ export type RenderAppOptions = {
   dashboard?: DashboardState
   routePath?: string
   userManagementState?: UserManagementState
+  projectBlockState?: ProjectBlockState
   disposeActivityFeed?: () => void
   setActivityFeedDispose?: (fn: () => void) => void
 }
@@ -78,7 +87,12 @@ export type RenderAppOptions = {
 type ScreenRoute = {
   path: string
   load?: keyof LoadedDashboardData
-  render: (vs: ViewState<unknown>, routePath: string, actions: AppActions) => HTMLElement
+  render: (vs: ViewState<unknown>, routePath: string, actions: AppActions, context: RouteRenderContext) => HTMLElement
+}
+
+type RouteRenderContext = {
+  auth: Extract<AuthState, { status: 'authenticated' }>
+  projectBlockState: ProjectBlockState
 }
 
 const HIDDEN_DASHBOARD_SCREENS = new Set<DashboardScreenKey>([
@@ -114,7 +128,13 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
   projects: {
     path: '/dashboard/projects',
     load: 'projects',
-    render: (vs) => renderProjects(vs as ViewState<ProjectListViewModel>)
+    render: (vs, _routePath, actions, context) => renderProjects(vs as ViewState<ProjectListViewModel>, {
+      currentUserLevel: context.auth.user.level,
+      onBlockProject: actions.onBlockProject,
+      pendingBlockProject: context.projectBlockState.pendingProject,
+      mutationError: context.projectBlockState.mutationError,
+      refreshError: context.projectBlockState.refreshError
+    })
   },
   knowledgeBrowser: {
     path: '/dashboard/knowledgeBrowser',
@@ -205,6 +225,7 @@ export function renderApp({
   dashboard = { status: 'loading' },
   routePath = window.location.pathname,
   userManagementState = {},
+  projectBlockState = {},
   disposeActivityFeed = () => {},
   setActivityFeedDispose = () => {}
 }: RenderAppOptions): void {
@@ -214,7 +235,7 @@ export function renderApp({
   container.replaceChildren()
   state.status === 'anonymous'
     ? renderLogin(container, state, actions)
-    : renderShell(container, state, actions, dashboard, routePath, userManagementState, disposeActivityFeed, setActivityFeedDispose)
+    : renderShell(container, state, actions, dashboard, routePath, userManagementState, projectBlockState, disposeActivityFeed, setActivityFeedDispose)
 }
 
 function renderLogin(
@@ -250,6 +271,7 @@ function renderShell(
   dashboard: DashboardState,
   routePath: string,
   userManagementState: UserManagementState,
+  projectBlockState: ProjectBlockState,
   disposeActivityFeed: () => void = () => {},
   setActivityFeedDispose: (fn: () => void) => void = () => {}
 ): void {
@@ -318,7 +340,7 @@ function renderShell(
   const mainContent = document.createElement('main')
   mainContent.className = 'dashboard-content'
   mainContent.dataset.dashboardPrimitive = 'main'
-  mainContent.append(renderAuthenticatedView(activeScreen, dashboard, routePath, state, actions, userManagementState, disposeActivityFeed, setActivityFeedDispose))
+  mainContent.append(renderAuthenticatedView(activeScreen, dashboard, routePath, state, actions, userManagementState, projectBlockState, disposeActivityFeed, setActivityFeedDispose))
   mainArea.append(mainContent)
 
   layout.append(mainArea)
@@ -363,6 +385,7 @@ function renderAuthenticatedView(
   auth: Extract<AuthState, { status: 'authenticated' }>,
   actions: AppActions,
   userManagementState: UserManagementState,
+  projectBlockState: ProjectBlockState,
   disposeActivityFeed: () => void,
   setActivityFeedDispose: (fn: () => void) => void
 ): HTMLElement {
@@ -404,10 +427,10 @@ function renderAuthenticatedView(
   }
   if (!route.load) {
     // Fixture-only / ComingSoon route
-    return route.render({ status: 'loading' }, routePath, actions)
+    return route.render({ status: 'loading' }, routePath, actions, { auth, projectBlockState })
   }
   const viewState = stateFor(state, route.load)
-  return route.render(viewState as ViewState<unknown>, routePath, actions)
+  return route.render(viewState as ViewState<unknown>, routePath, actions, { auth, projectBlockState })
 }
 
 function userManagementActionsFromAppActions(actions: AppActions): UserManagementActions {
@@ -541,7 +564,8 @@ export async function loadForRoute(
   api: ApiClient,
   token: string,
   cache: DashboardState,
-  routePath = ROUTES[screen].path
+  routePath = ROUTES[screen].path,
+  userLevel?: UserLevel | string
 ): Promise<DashboardState> {
   const route = ROUTES[screen]
   if (screen === 'memories') {
@@ -549,7 +573,7 @@ export async function loadForRoute(
     if (detailRoute.kind === 'malformed') return cache
     if (detailRoute.kind === 'valid') return loadMemoryDetail(detailRoute, api, token, cache)
   }
-  if (HIDDEN_DASHBOARD_SCREENS.has(screen)) return loadForRoute('overview', api, token, cache, ROUTES.overview.path)
+  if (HIDDEN_DASHBOARD_SCREENS.has(screen)) return loadForRoute('overview', api, token, cache, ROUTES.overview.path, userLevel)
   if (!route.load) return cache
 
   const key = route.load
@@ -560,7 +584,7 @@ export async function loadForRoute(
 
   let slice: ViewState<unknown>
   try {
-    slice = await fetchSlice(key, api, token, routePath)
+    slice = await fetchSlice(key, api, token, routePath, userLevel)
   } catch (error) {
     slice = { status: 'error', message: messageFor(error) }
   }
@@ -597,7 +621,7 @@ function memoryDetailState(routeId: string, memory: Memory): MemoryDetailViewSta
   return { status: 'ready', data: { routeId, memory } }
 }
 
-async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token: string, routePath = ''): Promise<ViewState<unknown>> {
+async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token: string, routePath = '', userLevel?: UserLevel | string): Promise<ViewState<unknown>> {
   switch (key) {
     case 'memoryDetail':
       return { status: 'loading' }
@@ -621,7 +645,7 @@ async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token:
       return settledState(result[0])
     }
     case 'projects': {
-      const response = await api.projects(token)
+      const response = await loadProjects(api, token, userLevel)
       return { status: 'ready', data: projectsFromApi(response) }
     }
     case 'activity': {
@@ -632,6 +656,24 @@ async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token:
       const response = await api.memories(token, memoryListParamsFromRoute(routePath))
       return { status: 'ready', data: memoryListToDiscoveryData(response) }
     }
+  }
+}
+
+async function loadProjects(api: ApiClient, token: string, userLevel?: UserLevel | string): Promise<ProjectListResponse> {
+  const response = await api.projects(token)
+  if (userLevel !== 'admin' || response.projects.length === 0) return response
+  const statuses = await Promise.all(response.projects.map((project) => api.projectBlockStatus(token, project.name)))
+  const projects = response.projects.map((project, index) => projectWithBlockStatus(project, statuses[index]))
+  return { ...response, projects }
+}
+
+function projectWithBlockStatus(project: ProjectSummary, status: Awaited<ReturnType<ApiClient['projectBlockStatus']>>): ProjectSummary {
+  return {
+    ...project,
+    blocked: status.blocked,
+    canonicalProjectKey: status.blocked || !project.canonicalProjectKey ? status.canonical_project_key : project.canonicalProjectKey,
+    blockReason: status.reason ?? null,
+    blockAckStatus: status.ack?.status ?? null
   }
 }
 
@@ -801,6 +843,8 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
   let loadVersion = 0
   let activeScreen: DashboardScreenKey = 'overview'
   let userManagementState: UserManagementState = {}
+  let projectBlockState: ProjectBlockState = {}
+  let projectBlockOperationId = 0
   let disposed = false
 
   const rerender = (state: AuthState) => {
@@ -812,6 +856,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
       dashboard,
       routePath: currentRoutePath(),
       userManagementState,
+      projectBlockState,
       disposeActivityFeed,
       setActivityFeedDispose
     })
@@ -832,12 +877,14 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
       loadVersion += 1
       dashboard = { status: 'loading' }
       userManagementState = {}
+      projectBlockState = {}
       rerender(session.logout())
     },
     async onNavigate(path) {
       if (disposed) return
       history.pushState(null, '', canonicalDashboardRoutePath(path))
       loadVersion += 1
+      projectBlockState = {}
       activeScreen = screenFromPath(currentRoutePath())
       if (activeScreen === 'projects') dashboard = projectsLoadingState(dashboard)
       const state = session.getState()
@@ -866,7 +913,65 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     },
     async onLoadMoreActivity() {
       await loadMoreActivity()
+    },
+    async onBlockProject(request) {
+      await runProjectBlock(request)
     }
+  }
+
+  async function runProjectBlock(request: ProjectBlockRequest): Promise<void> {
+    if (disposed) return
+    const state = session.getState()
+    if (state.status !== 'authenticated') return
+    if (projectBlockState.pendingProject) return
+    const version = loadVersion
+    const operationId = projectBlockOperationId + 1
+    projectBlockOperationId = operationId
+    projectBlockState = { pendingProject: request.project, pendingOperationId: operationId }
+    rerender(state)
+    try {
+      await api.blockProject(state.token, request)
+    } catch (error) {
+      if (disposed) return
+      const current = session.getState()
+      if (version !== loadVersion || current.status !== 'authenticated' || current.token !== state.token) {
+        clearProjectBlockPendingAction(request.project, operationId, current)
+        return
+      }
+      projectBlockState = { mutationError: `Project block failed: ${messageFor(error)}.` }
+      rerender(current)
+      return
+    }
+    if (disposed) return
+    const current = session.getState()
+    if (version !== loadVersion || current.status !== 'authenticated' || current.token !== state.token || screenFromPath(currentRoutePath()) !== 'projects') {
+      clearProjectBlockPendingAction(request.project, operationId, current)
+      return
+    }
+    const existingData = dashboard.status === 'ready' ? dashboard.data : {}
+    let slice: ViewState<ProjectListViewModel>
+    try {
+      slice = await fetchSlice('projects', api, state.token, currentRoutePath(), state.user.level) as ViewState<ProjectListViewModel>
+    } catch (error) {
+      projectBlockState = { refreshError: `Block succeeded, but Projects could not be refreshed: ${messageFor(error)}. Refresh the page to confirm the latest state.` }
+      rerender(current)
+      return
+    }
+    if (disposed) return
+    const refreshedCurrent = session.getState()
+    if (version !== loadVersion || refreshedCurrent.status !== 'authenticated' || refreshedCurrent.token !== state.token || screenFromPath(currentRoutePath()) !== 'projects') {
+      clearProjectBlockPendingAction(request.project, operationId, refreshedCurrent)
+      return
+    }
+    projectBlockState = {}
+    dashboard = { status: 'ready', data: { ...existingData, projects: slice } }
+    rerender(refreshedCurrent)
+  }
+
+  function clearProjectBlockPendingAction(pendingProject: string, pendingOperationId: number, state: AuthState): void {
+    if (projectBlockState.pendingProject !== pendingProject || projectBlockState.pendingOperationId !== pendingOperationId) return
+    projectBlockState = {}
+    if (!disposed) rerender(state)
   }
 
   async function loadMoreActivity(): Promise<void> {
@@ -1001,7 +1106,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     const routePath = canonicalizeCurrentRoutePath()
     const discoveryRouteKey = isQuerySensitiveDiscoveryScreen(screen) ? routeAndQueryFromRoutePath(routePath) : undefined
     const memoryDetailRouteKey = memoryDetailRouteKeyForScreen(screen, routePath)
-    const loaded = await loadForRoute(screen, api, state.token, dashboard, routePath)
+    const loaded = await loadForRoute(screen, api, state.token, dashboard, routePath, state.user.level)
     if (disposed) return
     const current = session.getState()
     if (version !== loadVersion || current.status !== 'authenticated' || current.token !== state.token) return
@@ -1023,7 +1128,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     if (activeScreen === 'projects') dashboard = projectsLoadingState(dashboard)
     rerender(state)
     if (state.status === 'authenticated') {
-      const loaded = await loadForRoute(screen, api, state.token, dashboard, routePath)
+      const loaded = await loadForRoute(screen, api, state.token, dashboard, routePath, state.user.level)
       if (disposed) return
       const current = session.getState()
       if (version !== loadVersion || current.status !== 'authenticated' || current.token !== state.token) return
@@ -1037,6 +1142,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
   const handler = () => {
     if (disposed) return
     loadVersion += 1
+    projectBlockState = {}
     const state = session.getState()
     canonicalizeCurrentRoutePath()
     activeScreen = screenFromPath(currentRoutePath())

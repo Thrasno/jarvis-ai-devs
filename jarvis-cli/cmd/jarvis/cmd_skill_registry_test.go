@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
 	"github.com/spf13/cobra"
 )
 
@@ -187,6 +188,22 @@ func TestSkillRegistryRefreshCommand(t *testing.T) {
 		}
 		assertCommandFileContains(t, filepath.Join(root, ".jarvis", "skill-registry.md"), "- **legacy-custom**")
 	})
+}
+
+func TestPrintSkillRegistryWarningsWritesUnsafeRootWarningToStderrWriter(t *testing.T) {
+	var stderr bytes.Buffer
+
+	printSkillRegistryWarnings(&stderr, []projectregistry.Warning{{
+		Code:     "unsafe-project-root",
+		Severity: projectregistry.SeverityWarning,
+		Path:     "/home/dev",
+		Message:  "unsafe project root points at home directory; continuing with warning only",
+	}})
+
+	got := stderr.String()
+	if !strings.Contains(got, "Warning: unsafe project root") || !strings.Contains(got, "continuing with warning only") || !strings.Contains(got, "/home/dev") {
+		t.Fatalf("stderr warning output = %q, want unsafe-root warning", got)
+	}
 }
 
 func executeSkillRegistryCommand(args ...string) (string, error) {
