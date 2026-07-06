@@ -23,6 +23,9 @@ func startPostgresWithPrompts(t *testing.T) (*pgxpool.Pool, func()) {
 	err := RunMigrations(pool, migrations.UserPromptsSQL)
 	require.NoError(t, err, "Failed to run user_prompts migration")
 
+	err = RunMigrations(pool, migrations.ProjectBlocksSQL)
+	require.NoError(t, err, "Failed to run project_blocks migration")
+
 	return pool, cleanup
 }
 
@@ -131,4 +134,40 @@ func TestPostgresPromptRepository_ProjectIsolation(t *testing.T) {
 		require.NoError(t, errAAgain, "Re-upsert of project A prompt should not error")
 		assert.False(t, savedAAgain, "Re-upsert of project A prompt should return saved=false")
 	})
+}
+
+func TestPostgresPromptRepository_UpsertRejectsBlockedProject(t *testing.T) {
+	pool, cleanup := startPostgresWithPrompts(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	promptRepo := NewPostgresPromptRepository(pool)
+	blockRepo := NewPostgresProjectBlockRepository(pool)
+
+	_, err := blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
+		Project:             "Blocked Prompt Project",
+		CanonicalProjectKey: "blocked-prompt-project",
+		Action:              model.ProjectBlockActionQuarantine,
+		Reason:              "duplicate garbage project",
+		Confirmation:        "blocked-prompt-project",
+		ExportMarker:        "export-2026-07-06",
+		ActorUserID:         "admin-1",
+	})
+	require.NoError(t, err)
+
+	saved, err := promptRepo.Upsert(ctx, &model.Prompt{
+		SyncID:    "550e8400-e29b-41d4-a716-446655440073",
+		Project:   "Blocked Prompt Project",
+		Content:   "This prompt must not re-enter after block",
+		CreatedBy: "user@example.com",
+		CreatedAt: time.Now(),
+	})
+
+	require.ErrorIs(t, err, ErrProjectBlocked)
+	assert.False(t, saved, "blocked prompt upsert should not report a saved row")
+
+	var count int
+	err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM user_prompts WHERE project = $1`, "Blocked Prompt Project").Scan(&count)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "blocked prompt upsert must not create active prompt data")
 }

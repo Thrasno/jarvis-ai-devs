@@ -3,7 +3,6 @@ package handler
 import (
 	"errors"
 	"net/http"
-	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/service"
@@ -41,13 +40,22 @@ func (h *SyncHandler) Sync(c *gin.Context) {
 	userID := ""
 	if claims != nil {
 		userID = claims.Subject
+		req.AckSubject = projectBlockAckSubjectFromClaims(claims)
 	}
 
-	// --- Push phase ---
-	// Enviamos las memorias del cliente al servidor.
-	// pushResp contiene estadísticas (pushed, conflicts).
-	pushResp, err := h.svc.Push(c.Request.Context(), req, userID)
+	resp, err := h.svc.Sync(c.Request.Context(), req, userID)
 	if err != nil {
+		var blockedErr *service.ProjectBlockedError
+		if errors.As(err, &blockedErr) {
+			cmd := blockedErr.Command.Redacted()
+			cmd.AckToken = blockedErr.Command.AckToken
+			c.JSON(http.StatusLocked, model.ProjectBlockedErrorResponse{Error: blockedErr.Error(), Command: cmd})
+			return
+		}
+		if errors.Is(err, service.ErrProjectKeyLockBusy) {
+			c.JSON(http.StatusServiceUnavailable, model.ErrorResponse{Error: "project is busy; retry sync"})
+			return
+		}
 		// R2-CRIT-6 — clasificar errores de validación del push como 4xx (no 500).
 		// El daemon necesita ajustar su payload, no es una falla del servidor.
 		if errors.Is(err, service.ErrSessionProjectMismatch) || errors.Is(err, service.ErrSessionNotFound) {
@@ -58,75 +66,5 @@ func (h *SyncHandler) Sync(c *gin.Context) {
 		return
 	}
 
-	// --- Pull phase ---
-	// Obtenemos sesiones Y memorias del servidor que el cliente no tiene.
-	// Usamos last_sync como punto de corte temporal.
-	// Si no viene last_sync, usamos el tiempo cero → el servidor devuelve todo.
-	var since time.Time
-	if req.LastSync != nil {
-		since = *req.LastSync
-	}
-
-	// Excluimos los sync_ids que acabamos de enviar — no tiene sentido devolverlos.
-	excludeIDs := make([]string, 0, len(req.Memories))
-	for _, m := range req.Memories {
-		excludeIDs = append(excludeIDs, m.SyncID)
-	}
-
-	// pull_limit es un opt-in explícito a paginación acotada de los canales de
-	// pull legado (PR 2a). Ausente/0/negativo → pull sin límite (comportamiento
-	// pre-2a preservado tal cual — ver model.ClampPullLimit y
-	// model.UnboundedPullLimit); positivo explícito → se clampea a
-	// [1, MaxPullLimit] server-side, nunca confiamos en el valor crudo del cliente.
-	pullLimit := model.ClampPullLimit(req.PullLimit)
-
-	var memoriesCursor, sessionsCursor model.PullCursor
-	if req.PullCursor != nil {
-		memoriesCursor = *req.PullCursor
-	}
-	if req.PullSessionCursor != nil {
-		sessionsCursor = *req.PullSessionCursor
-	}
-
-	pullResult, err := h.svc.PullAll(c.Request.Context(), req.Project, since, excludeIDs, pullLimit, memoriesCursor, sessionsCursor)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "error en pull de memorias"})
-		return
-	}
-
-	// Map []*model.Session → []model.SyncSessionResponse (wire format for the daemon).
-	pulledSessions := make([]model.SyncSessionResponse, 0, len(pullResult.Sessions))
-	for _, s := range pullResult.Sessions {
-		pulledSessions = append(pulledSessions, model.SyncSessionResponse{
-			ID:        s.ID,
-			SyncID:    s.SyncID,
-			Project:   s.Project,
-			Directory: s.Directory,
-			DevID:     s.DevID,
-			Client:    s.Client,
-			StartedAt: s.StartedAt,
-			EndedAt:   s.EndedAt,
-			Summary:   s.Summary,
-		})
-	}
-
-	pulled := pullResult.Memories
-	if pulled == nil {
-		pulled = []*model.Memory{}
-	}
-
-	c.JSON(http.StatusOK, model.SyncResponse{
-		Pushed:                pushResp.Pushed,
-		Pulled:                pulled,
-		Conflicts:             pushResp.Conflicts,
-		PromptsPushed:         pushResp.PromptsPushed,
-		PulledSessions:        pulledSessions,
-		NextMutationCursor:    pushResp.NextMutationCursor,
-		PulledMutations:       pushResp.PulledMutations,
-		CompatibilityMode:     pushResp.CompatibilityMode,
-		PulledHasMore:         pullResult.MemoriesHasMore,
-		NextPullCursor:        pullResult.NextPullCursor,
-		PulledSessionsHasMore: pullResult.SessionsHasMore,
-		NextSessionCursor:     pullResult.NextSessionCursor,
-	})
+	c.JSON(http.StatusOK, resp)
 }

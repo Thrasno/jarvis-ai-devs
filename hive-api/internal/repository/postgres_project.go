@@ -21,13 +21,13 @@ func newPostgresProjectRepositoryWithQuerier(db pgxQuerier) ProjectRepository {
 }
 
 func (r *postgresProjectRepository) ListAggregates(ctx context.Context) ([]model.ProjectAggregate, error) {
-	const q = `
+	q := fmt.Sprintf(`
 WITH projects AS (
-    SELECT project FROM memories
+    SELECT project FROM memories WHERE %s
     UNION
-    SELECT project FROM sessions
+    SELECT project FROM sessions WHERE %s
     UNION
-    SELECT project FROM sync_attempt_logs
+    SELECT project FROM sync_attempt_logs WHERE %s
 ),
 memory_agg AS (
     SELECT
@@ -65,7 +65,7 @@ FROM projects p
 LEFT JOIN memory_agg m ON m.project = p.project
 LEFT JOIN session_agg s ON s.project = p.project
 LEFT JOIN latest_sync ls ON ls.project = p.project
-ORDER BY p.project`
+ORDER BY p.project`, unblockedProjectPredicate("memories.project"), unblockedProjectPredicate("sessions.project"), unblockedProjectPredicate("sync_attempt_logs.project"))
 
 	rows, err := r.db.Query(ctx, q)
 	if err != nil {

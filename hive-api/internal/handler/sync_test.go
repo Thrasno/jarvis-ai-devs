@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -164,6 +165,85 @@ func TestSync_ServiceError(t *testing.T) {
 		}, "valid-token")
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestSync_ProjectBlockedResponseRedactsReason(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	syncSvc := &mockSyncSvc{}
+	syncSvc.On("Sync", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").Return(nil, &service.ProjectBlockedError{Command: model.ProjectBlockCommand{
+		CommandID: "cmd-1", AckToken: "ack-token-1", Project: "Jarvis Dev", CanonicalProjectKey: "jarvis-dev", Reason: "sensitive admin reason", BlockedAt: time.Now().UTC(),
+	}})
+
+	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
+		map[string]interface{}{"project": "jarvis-dev", "memories": []interface{}{}}, "valid-token")
+
+	require.Equal(t, http.StatusLocked, w.Code)
+	var body model.ProjectBlockedErrorResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Equal(t, "cmd-1", body.Command.CommandID)
+	require.Equal(t, "ack-token-1", body.Command.AckToken)
+	require.Equal(t, "jarvis-dev", body.Command.CanonicalProjectKey)
+	require.Empty(t, body.Command.Reason)
+}
+
+func TestSync_ProjectBlockedResponseFromServicePrecheckPreservesAckToken(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	claims := testClaims()
+	claims.DaemonID = "daemon-1"
+	claims.Client = "hive-daemon"
+	authSvc.On("ValidateToken", "valid-token").Return(claims, nil)
+
+	ctx := context.Background()
+	txMemRepo := &repository.MockMemoryRepository{}
+	txPromptRepo := &repository.MockPromptRepository{}
+	txSessionRepo := &repository.MockSessionRepository{}
+	txBlockRepo := &repository.MockProjectBlockRepository{}
+	txAuditRepo := &repository.MockAuditRepository{}
+	txLocks := &repository.MockProjectKeyLockRepository{}
+	tx := repository.NewMockTxManager(nil, txAuditRepo)
+	tx.Memory = txMemRepo
+	tx.Prompt = txPromptRepo
+	tx.Session = txSessionRepo
+	tx.ProjectBlocks = txBlockRepo
+	tx.ProjectKeyLocks = txLocks
+	syncSvc := service.NewSyncService(&repository.MockMemoryRepository{}, &repository.MockPromptRepository{}, &repository.MockSessionRepository{}, nil, &repository.MockProjectBlockRepository{}, tx)
+	blockedAt := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	subject := model.ProjectBlockAckSubject{AuthSubject: "user-uuid-123", DaemonID: "daemon-1", Client: "hive-daemon"}
+	block := &model.ProjectBlock{CommandID: "cmd-real-precheck", AckToken: "legacy-global-token", Project: "Jarvis Dev", CanonicalProjectKey: "jarvis-dev", Reason: "sensitive admin reason", BlockedAt: blockedAt}
+
+	txLocks.On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
+	txBlockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(block, nil).Once()
+	txBlockRepo.On("EnsureAckDelivery", ctx, block, subject).Return(model.ProjectBlockCommand{CommandID: "cmd-real-precheck", AckToken: "ack-delivery-subject", Project: "Jarvis Dev", CanonicalProjectKey: "jarvis-dev", Reason: "sensitive admin reason", BlockedAt: blockedAt}, nil).Once()
+
+	w := doAuthRequest(t, RouterDeps{AuthSvc: authSvc, MemorySvc: &mockMemorySvc{}, SyncSvc: syncSvc, AdminSvc: &mockAdminSvc{}}, http.MethodPost, "/sync",
+		map[string]interface{}{"project": "Jarvis Dev", "memories": []interface{}{}}, "valid-token")
+
+	require.Equal(t, http.StatusLocked, w.Code)
+	var body model.ProjectBlockedErrorResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Equal(t, "cmd-real-precheck", body.Command.CommandID)
+	require.Equal(t, "ack-delivery-subject", body.Command.AckToken)
+	require.Equal(t, "jarvis-dev", body.Command.CanonicalProjectKey)
+	require.Empty(t, body.Command.Reason)
+	require.True(t, tx.RolledBack)
+	txMemRepo.AssertNotCalled(t, "Upsert", mock.Anything, mock.Anything)
+	txSessionRepo.AssertNotCalled(t, "UpsertSession", mock.Anything, mock.Anything)
+	txPromptRepo.AssertNotCalled(t, "Upsert", mock.Anything, mock.Anything)
+}
+
+func TestSync_ProjectKeyLockContentionReturns503(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+
+	syncSvc := &mockSyncSvc{}
+	syncSvc.On("Sync", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").Return(nil, service.ErrProjectKeyLockBusy)
+
+	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
+		map[string]interface{}{"project": "jarvis-dev", "memories": []interface{}{}}, "valid-token")
+
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
 }
 
 // TestSync_WithPrompts verifica que prompts_pushed aparece en la respuesta

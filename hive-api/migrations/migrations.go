@@ -81,3 +81,13 @@ var PullCursorIndexesSQL string
 //
 //go:embed 011_project_scoped_pull_cursor_indexes.sql
 var ProjectScopedPullCursorIndexesSQL string
+
+// ProjectBlocksSQL is migration 012: durable project block tombstones and account-bound acknowledgements.
+//
+//go:embed 012_project_blocks.sql
+var ProjectBlocksSQL string
+
+// ProjectBlockAckSubjectsSQL is migration 013: account-bound ACK deliveries and ACK records.
+//
+//go:embed 013_project_block_ack_subjects.sql
+var ProjectBlockAckSubjectsSQL string

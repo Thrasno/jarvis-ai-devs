@@ -27,6 +27,11 @@ type Claims struct {
 	// Level es el nivel de acceso. Lo incluimos en el token para que
 	// el middleware admin pueda verificarlo sin tocar la DB en cada request.
 	Level UserLevel `json:"level"`
+
+	// DaemonID and Client are optional signed device metadata. Project-block ACK
+	// authorization is bound to the signed account subject, not daemon metadata.
+	DaemonID string `json:"daemon_id,omitempty"`
+	Client   string `json:"client,omitempty"`
 }
 
 type AdminActor struct {

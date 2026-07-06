@@ -21,6 +21,13 @@ func startPostgresWithSyncAttemptsAndSessions(t *testing.T) (*pgxpool.Pool, func
 	return pool, cleanup
 }
 
+func startPostgresWithSyncAttemptsAndProjectBlocks(t *testing.T) (*pgxpool.Pool, func()) {
+	t.Helper()
+	pool, cleanup := startPostgresWithSyncAttemptsAndSessions(t)
+	require.NoError(t, RunMigrations(pool, migrations.ProjectBlocksSQL))
+	return pool, cleanup
+}
+
 // --- DaemonHealth tests ---
 
 func TestPostgresSyncAttemptRepository_DaemonHealth_CorrectCounts(t *testing.T) {
@@ -185,6 +192,35 @@ func TestPostgresSyncAttemptRepository_SyncHealthByProject_ContributorCount(t *t
 	require.Len(t, rows, 1)
 	assert.Equal(t, "proj-Z", rows[0].Project)
 	assert.Equal(t, 2, rows[0].ContributorCount, "must count distinct source_dev_id per project")
+}
+
+func TestPostgresSyncAttemptRepository_SyncHealthByProjectExcludesBlockedProjects(t *testing.T) {
+	pool, cleanup := startPostgresWithSyncAttemptsAndProjectBlocks(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresSyncAttemptRepository(pool)
+	blockRepo := NewPostgresProjectBlockRepository(pool)
+	now := time.Now().UTC()
+	_, err := repo.UpsertBatch(ctx, []model.SyncAttemptLog{
+		{AttemptID: "visible-sync-health", DevID: "dev-1", Project: "visible-sync", DaemonID: "d1", StartedAt: now.Add(-1 * time.Hour), Outcome: model.SyncAttemptOutcomeSuccess},
+		{AttemptID: "blocked-sync-health", DevID: "dev-2", Project: "Blocked Sync", DaemonID: "d2", StartedAt: now.Add(-30 * time.Minute), Outcome: model.SyncAttemptOutcomeFailure},
+	})
+	require.NoError(t, err)
+	_, err = blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
+		Project:             "Blocked Sync",
+		CanonicalProjectKey: "blocked-sync",
+		Action:              model.ProjectBlockActionQuarantine,
+		Reason:              "garbage",
+		Confirmation:        "blocked-sync",
+		ExportMarker:        "export-1",
+		ActorUserID:         "admin-1",
+	})
+	require.NoError(t, err)
+
+	rows, err := repo.SyncHealthByProject(ctx, 30*24*time.Hour)
+	require.NoError(t, err)
+	require.Equal(t, []string{"visible-sync"}, projectNames(rows))
 }
 
 func projectNames(rows []model.ProjectSyncHealthRow) []string {

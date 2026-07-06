@@ -31,62 +31,70 @@ import (
 // Separamos la construcción del router de la conexión a BD para poder
 // testear el router sin necesitar PostgreSQL real (db puede ser nil en tests).
 type buildAppDeps struct {
-	authSvc            handler.AuthService
-	memorySvc          handler.MemoryService
-	syncSvc            handler.SyncService
-	syncAttemptSvc     handler.SyncAttemptService
-	projectSvc         handler.ProjectService
-	adminSvc           handler.AdminService
-	overviewSvc        handler.OverviewService
-	activitySvc        handler.ActivityService
-	db                 handler.DBPinger // nil en tests unitarios → health skip DB check
-	allowedOrigins     []string
-	dashboardAssetsDir string
+	authSvc                  handler.AuthService
+	memorySvc                handler.MemoryService
+	syncSvc                  handler.SyncService
+	syncAttemptSvc           handler.SyncAttemptService
+	projectSvc               handler.ProjectService
+	projectGovernanceSvc     handler.ProjectGovernanceService
+	adminSvc                 handler.AdminService
+	overviewSvc              handler.OverviewService
+	activitySvc              handler.ActivityService
+	db                       handler.DBPinger // nil en tests unitarios → health skip DB check
+	allowedOrigins           []string
+	dashboardAssetsDir       string
+	projectBlockAdminEnabled bool
 }
 
 type serviceFactories struct {
-	newUserRepo           func(*pgxpool.Pool) repository.UserRepository
-	newMemoryRepo         func(*pgxpool.Pool) repository.MemoryRepository
-	newPromptRepo         func(*pgxpool.Pool) repository.PromptRepository
-	newSessionRepo        func(*pgxpool.Pool) repository.SessionRepository
-	newAuditRepo          func(*pgxpool.Pool) repository.AuditRepository
-	newSyncAttemptRepo    func(*pgxpool.Pool) repository.SyncAttemptRepository
-	newProjectRepo        func(*pgxpool.Pool) repository.ProjectRepository
-	newTxManager          func(*pgxpool.Pool) repository.TxManager
-	newAuthService        func(repository.UserRepository, string) handler.AuthService
-	newMemoryService      func(repository.MemoryRepository, repository.SessionRepository) handler.MemoryService
-	newSyncService        func(repository.MemoryRepository, repository.PromptRepository, repository.SessionRepository, repository.AuditRepository) handler.SyncService
-	newSyncAttemptService func(repository.SyncAttemptRepository) handler.SyncAttemptService
-	newProjectService     func(repository.ProjectRepository) handler.ProjectService
-	newAdminService       func(repository.UserRepository, repository.MemoryRepository, repository.AuditRepository, repository.TxManager) handler.AdminService
-	newOverviewService    func(repository.MemoryRepository, repository.SyncAttemptRepository, repository.AuditRepository) handler.OverviewService
-	newActivityService    func(repository.MemoryRepository) handler.ActivityService
+	newUserRepo                 func(*pgxpool.Pool) repository.UserRepository
+	newMemoryRepo               func(*pgxpool.Pool) repository.MemoryRepository
+	newPromptRepo               func(*pgxpool.Pool) repository.PromptRepository
+	newSessionRepo              func(*pgxpool.Pool) repository.SessionRepository
+	newAuditRepo                func(*pgxpool.Pool) repository.AuditRepository
+	newSyncAttemptRepo          func(*pgxpool.Pool) repository.SyncAttemptRepository
+	newProjectRepo              func(*pgxpool.Pool) repository.ProjectRepository
+	newProjectBlockRepo         func(*pgxpool.Pool) repository.ProjectBlockRepository
+	newTxManager                func(*pgxpool.Pool) repository.TxManager
+	newAuthService              func(repository.UserRepository, string) handler.AuthService
+	newMemoryService            func(repository.MemoryRepository, repository.SessionRepository, repository.ProjectBlockRepository, repository.TxManager) handler.MemoryService
+	newSyncService              func(repository.MemoryRepository, repository.PromptRepository, repository.SessionRepository, repository.AuditRepository, repository.ProjectBlockRepository, repository.TxManager) handler.SyncService
+	newSyncAttemptService       func(repository.SyncAttemptRepository) handler.SyncAttemptService
+	newProjectService           func(repository.ProjectRepository) handler.ProjectService
+	newProjectGovernanceService func(repository.ProjectBlockRepository, repository.AuditRepository, repository.TxManager) handler.ProjectGovernanceService
+	newAdminService             func(repository.UserRepository, repository.MemoryRepository, repository.AuditRepository, repository.TxManager) handler.AdminService
+	newOverviewService          func(repository.MemoryRepository, repository.SyncAttemptRepository, repository.AuditRepository) handler.OverviewService
+	newActivityService          func(repository.MemoryRepository) handler.ActivityService
 }
 
 func defaultServiceFactories() serviceFactories {
 	return serviceFactories{
-		newUserRepo:        repository.NewPostgresUserRepository,
-		newMemoryRepo:      repository.NewPostgresMemoryRepository,
-		newPromptRepo:      repository.NewPostgresPromptRepository,
-		newSessionRepo:     repository.NewPostgresSessionRepository,
-		newAuditRepo:       repository.NewPostgresAuditRepository,
-		newSyncAttemptRepo: repository.NewPostgresSyncAttemptRepository,
-		newProjectRepo:     repository.NewPostgresProjectRepository,
-		newTxManager:       repository.NewPostgresTxManager,
+		newUserRepo:         repository.NewPostgresUserRepository,
+		newMemoryRepo:       repository.NewPostgresMemoryRepository,
+		newPromptRepo:       repository.NewPostgresPromptRepository,
+		newSessionRepo:      repository.NewPostgresSessionRepository,
+		newAuditRepo:        repository.NewPostgresAuditRepository,
+		newSyncAttemptRepo:  repository.NewPostgresSyncAttemptRepository,
+		newProjectRepo:      repository.NewPostgresProjectRepository,
+		newProjectBlockRepo: repository.NewPostgresProjectBlockRepository,
+		newTxManager:        repository.NewPostgresTxManager,
 		newAuthService: func(userRepo repository.UserRepository, jwtSecret string) handler.AuthService {
 			return service.NewAuthService(userRepo, jwtSecret)
 		},
-		newMemoryService: func(memRepo repository.MemoryRepository, sessionRepo repository.SessionRepository) handler.MemoryService {
-			return service.NewMemoryService(memRepo, sessionRepo)
+		newMemoryService: func(memRepo repository.MemoryRepository, sessionRepo repository.SessionRepository, blockRepo repository.ProjectBlockRepository, tx repository.TxManager) handler.MemoryService {
+			return service.NewMemoryService(memRepo, sessionRepo, blockRepo, tx)
 		},
-		newSyncService: func(memRepo repository.MemoryRepository, promptRepo repository.PromptRepository, sessionRepo repository.SessionRepository, auditRepo repository.AuditRepository) handler.SyncService {
-			return service.NewSyncService(memRepo, promptRepo, sessionRepo, auditRepo)
+		newSyncService: func(memRepo repository.MemoryRepository, promptRepo repository.PromptRepository, sessionRepo repository.SessionRepository, auditRepo repository.AuditRepository, blockRepo repository.ProjectBlockRepository, tx repository.TxManager) handler.SyncService {
+			return service.NewSyncService(memRepo, promptRepo, sessionRepo, auditRepo, blockRepo, tx)
 		},
 		newSyncAttemptService: func(syncAttemptRepo repository.SyncAttemptRepository) handler.SyncAttemptService {
 			return service.NewSyncAttemptService(syncAttemptRepo)
 		},
 		newProjectService: func(projectRepo repository.ProjectRepository) handler.ProjectService {
 			return service.NewProjectService(projectRepo)
+		},
+		newProjectGovernanceService: func(blockRepo repository.ProjectBlockRepository, auditRepo repository.AuditRepository, tx repository.TxManager) handler.ProjectGovernanceService {
+			return service.NewProjectGovernanceService(blockRepo, auditRepo, tx)
 		},
 		newAdminService: func(userRepo repository.UserRepository, memRepo repository.MemoryRepository, auditRepo repository.AuditRepository, tx repository.TxManager) handler.AdminService {
 			return service.NewAdminService(userRepo, memRepo, auditRepo, tx)
@@ -104,17 +112,19 @@ func defaultServiceFactories() serviceFactories {
 // Es la función que los tests usan directamente — no necesita BD real.
 func buildApp(deps buildAppDeps) *gin.Engine {
 	return handler.NewRouter(handler.RouterDeps{
-		AuthSvc:            deps.authSvc,
-		MemorySvc:          deps.memorySvc,
-		SyncSvc:            deps.syncSvc,
-		SyncAttemptSvc:     deps.syncAttemptSvc,
-		ProjectSvc:         deps.projectSvc,
-		AdminSvc:           deps.adminSvc,
-		OverviewSvc:        deps.overviewSvc,
-		ActivitySvc:        deps.activitySvc,
-		DB:                 deps.db,
-		AllowedOrigins:     deps.allowedOrigins,
-		DashboardAssetsDir: deps.dashboardAssetsDir,
+		AuthSvc:                  deps.authSvc,
+		MemorySvc:                deps.memorySvc,
+		SyncSvc:                  deps.syncSvc,
+		SyncAttemptSvc:           deps.syncAttemptSvc,
+		ProjectSvc:               deps.projectSvc,
+		ProjectGovernanceSvc:     deps.projectGovernanceSvc,
+		AdminSvc:                 deps.adminSvc,
+		OverviewSvc:              deps.overviewSvc,
+		ActivitySvc:              deps.activitySvc,
+		DB:                       deps.db,
+		AllowedOrigins:           deps.allowedOrigins,
+		DashboardAssetsDir:       deps.dashboardAssetsDir,
+		ProjectBlockAdminEnabled: deps.projectBlockAdminEnabled,
 	})
 }
 
@@ -135,30 +145,34 @@ func wireServicesWithFactories(pool *pgxpool.Pool, cfg *config.Config, factories
 	auditRepo := factories.newAuditRepo(pool)
 	syncAttemptRepo := factories.newSyncAttemptRepo(pool)
 	projectRepo := factories.newProjectRepo(pool)
+	projectBlockRepo := factories.newProjectBlockRepo(pool)
 	txManager := factories.newTxManager(pool)
 
 	// Servicios — lógica de negocio, inyectamos los repositorios
 	authSvc := factories.newAuthService(userRepo, cfg.JWTSecret)
-	memorySvc := factories.newMemoryService(memRepo, sessionRepo)
-	syncSvc := factories.newSyncService(memRepo, promptRepo, sessionRepo, auditRepo)
+	memorySvc := factories.newMemoryService(memRepo, sessionRepo, projectBlockRepo, txManager)
+	syncSvc := factories.newSyncService(memRepo, promptRepo, sessionRepo, auditRepo, projectBlockRepo, txManager)
 	syncAttemptSvc := factories.newSyncAttemptService(syncAttemptRepo)
 	projectSvc := factories.newProjectService(projectRepo)
+	projectGovernanceSvc := factories.newProjectGovernanceService(projectBlockRepo, auditRepo, txManager)
 	adminSvc := factories.newAdminService(userRepo, memRepo, auditRepo, txManager)
 	overviewSvc := factories.newOverviewService(memRepo, syncAttemptRepo, auditRepo)
 	activitySvc := factories.newActivityService(memRepo)
 
 	return buildAppDeps{
-		authSvc:            authSvc,
-		memorySvc:          memorySvc,
-		syncSvc:            syncSvc,
-		syncAttemptSvc:     syncAttemptSvc,
-		projectSvc:         projectSvc,
-		adminSvc:           adminSvc,
-		overviewSvc:        overviewSvc,
-		activitySvc:        activitySvc,
-		db:                 pool, // pgxpool.Pool implementa DBPinger (tiene Ping(ctx) error)
-		allowedOrigins:     cfg.AllowedOrigins,
-		dashboardAssetsDir: cfg.DashboardAssetsDir,
+		authSvc:                  authSvc,
+		memorySvc:                memorySvc,
+		syncSvc:                  syncSvc,
+		syncAttemptSvc:           syncAttemptSvc,
+		projectSvc:               projectSvc,
+		projectGovernanceSvc:     projectGovernanceSvc,
+		adminSvc:                 adminSvc,
+		overviewSvc:              overviewSvc,
+		activitySvc:              activitySvc,
+		db:                       pool, // pgxpool.Pool implementa DBPinger (tiene Ping(ctx) error)
+		allowedOrigins:           cfg.AllowedOrigins,
+		dashboardAssetsDir:       cfg.DashboardAssetsDir,
+		projectBlockAdminEnabled: cfg != nil && cfg.ProjectBlockAdminEnabled,
 	}
 }
 
@@ -175,6 +189,8 @@ func startupMigrationSQL() []string {
 		migrations.MemoryDiscoveryIndexesSQL,
 		migrations.PullCursorIndexesSQL,
 		migrations.ProjectScopedPullCursorIndexesSQL,
+		migrations.ProjectBlocksSQL,
+		migrations.ProjectBlockAckSubjectsSQL,
 	}
 }
 

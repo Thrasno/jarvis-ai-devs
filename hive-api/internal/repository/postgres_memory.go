@@ -15,16 +15,24 @@ import (
 
 // postgresMemoryRepository es la implementación de MemoryRepository sobre PostgreSQL.
 type postgresMemoryRepository struct {
+	db   pgxQuerier
 	pool *pgxpool.Pool
 }
 
 // NewPostgresMemoryRepository crea la implementación real de MemoryRepository.
 func NewPostgresMemoryRepository(pool *pgxpool.Pool) MemoryRepository {
-	return &postgresMemoryRepository{pool: pool}
+	return &postgresMemoryRepository{db: pool, pool: pool}
+}
+
+func newPostgresMemoryRepositoryWithQuerier(db pgxQuerier) MemoryRepository {
+	return &postgresMemoryRepository{db: db}
 }
 
 // Create inserta una nueva memoria y devuelve el registro completo (con ID del servidor).
 func (r *postgresMemoryRepository) Create(ctx context.Context, mem *model.Memory) (*model.Memory, error) {
+	if err := r.rejectBlockedProject(ctx, mem.Project); err != nil {
+		return nil, err
+	}
 	const q = `
 		INSERT INTO memories
 			(sync_id, project, topic_key, category, title, content,
@@ -42,7 +50,7 @@ func (r *postgresMemoryRepository) Create(ctx context.Context, mem *model.Memory
 		return nil, fmt.Errorf("marshal files_affected: %w", err)
 	}
 
-	row := r.pool.QueryRow(ctx, q,
+	row := r.db.QueryRow(ctx, q,
 		mem.SyncID, mem.Project, mem.TopicKey, mem.Category,
 		mem.Title, mem.Content, tagsJSON, filesJSON,
 		mem.CreatedBy, mem.CreatedAt, mem.UpdatedAt,
@@ -58,11 +66,13 @@ func (r *postgresMemoryRepository) Create(ctx context.Context, mem *model.Memory
 
 // GetByID devuelve una memoria por su UUID de servidor.
 func (r *postgresMemoryRepository) GetByID(ctx context.Context, id string) (*model.Memory, error) {
-	const q = `SELECT id, sync_id, project, topic_key, category, title, content,
+	q := fmt.Sprintf(`SELECT id, sync_id, project, topic_key, category, title, content,
 	                  tags, files_affected, created_by, created_at, updated_at,
 	                  origin, synced_at, session_id,
 	                  deleted_at, deleted_by, delete_reason, restored_at
-	           FROM memories WHERE id = $1 AND deleted_at IS NULL`
+		           FROM memories
+		           WHERE id = $1 AND deleted_at IS NULL
+		             AND %s`, unblockedProjectPredicate("memories.project"))
 	return r.scanMemory(ctx, q, id)
 }
 
@@ -101,7 +111,7 @@ func (r *postgresMemoryRepository) List(ctx context.Context, filter model.Memory
 	                  FROM memories WHERE 1=1 %s
 	                  ORDER BY created_at DESC, synced_at DESC, id DESC LIMIT $1 OFFSET $2`, where)
 
-	rows, err := r.pool.Query(ctx, q, args...)
+	rows, err := r.db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, wrapPgError(err, "List memories")
 	}
@@ -120,7 +130,7 @@ func (r *postgresMemoryRepository) Count(ctx context.Context, filter model.Memor
 
 	q := fmt.Sprintf(`SELECT COUNT(*) FROM memories WHERE 1=1 %s`, where)
 	var count int64
-	err := r.pool.QueryRow(ctx, q, args...).Scan(&count)
+	err := r.db.QueryRow(ctx, q, args...).Scan(&count)
 	return count, wrapPgError(err, "Count memories")
 }
 
@@ -147,7 +157,7 @@ func (r *postgresMemoryRepository) Search(ctx context.Context, query string, fil
 	                           created_at DESC, synced_at DESC, id DESC
 	                  LIMIT $2 OFFSET $3`, where)
 
-	rows, err := r.pool.Query(ctx, q, args...)
+	rows, err := r.db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, wrapPgError(err, "Search memories")
 	}
@@ -165,13 +175,16 @@ func (r *postgresMemoryRepository) CountSearch(ctx context.Context, query string
 
 	q := fmt.Sprintf(`SELECT COUNT(*) FROM memories WHERE search_vector @@ plainto_tsquery('simple', $1) %s`, where)
 	var count int64
-	err := r.pool.QueryRow(ctx, q, args...).Scan(&count)
+	err := r.db.QueryRow(ctx, q, args...).Scan(&count)
 	return count, wrapPgError(err, "CountSearch memories")
 }
 
 // Upsert implementa el algoritmo de 4 ramas del protocolo de sync.
 // Ver la documentación en la interfaz MemoryRepository para los detalles de cada rama.
 func (r *postgresMemoryRepository) Upsert(ctx context.Context, mem *model.Memory) (*model.Memory, bool, error) {
+	if err := r.rejectBlockedProject(ctx, mem.Project); err != nil {
+		return nil, false, err
+	}
 	// Buscamos si ya existe una memoria con este sync_id
 	existing, err := r.GetBySyncID(ctx, mem.SyncID)
 	if err != nil {
@@ -220,7 +233,7 @@ func (r *postgresMemoryRepository) update(ctx context.Context, id string, mem *m
 	tagsJSON, _ := json.Marshal(orEmptySlice(mem.Tags))
 	filesJSON, _ := json.Marshal(orEmptySlice(mem.FilesAffected))
 
-	row := r.pool.QueryRow(ctx, q,
+	row := r.db.QueryRow(ctx, q,
 		mem.TopicKey, mem.Category, mem.Title, mem.Content,
 		tagsJSON, filesJSON, mem.UpdatedAt,
 		mem.SessionID, id,
@@ -247,7 +260,7 @@ func (r *postgresMemoryRepository) update(ctx context.Context, id string, mem *m
 // recorta a limit antes de devolver.
 func (r *postgresMemoryRepository) PullSince(ctx context.Context, project string, since time.Time, excludeSyncIDs []string, cursor model.PullCursor, limit int) ([]*model.Memory, bool, error) {
 	args := []interface{}{project}
-	where := "project = $1 AND deleted_at IS NULL"
+	where := `project = $1 AND deleted_at IS NULL AND ` + unblockedProjectPredicate("memories.project")
 	argIdx := 2
 
 	if !since.IsZero() {
@@ -282,7 +295,7 @@ func (r *postgresMemoryRepository) PullSince(ctx context.Context, project string
 		args = append(args, fetchLimit)
 	}
 
-	rows, err := r.pool.Query(ctx, q, args...)
+	rows, err := r.db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, false, wrapPgError(err, "PullSince")
 	}
@@ -309,6 +322,9 @@ func (r *postgresMemoryRepository) ApplyMemoryMutation(ctx context.Context, muta
 	if mutation.EventID == "" || mutation.EntityType != model.MutationEntityMemory || mutation.EntitySyncID == "" || mutation.Project == "" {
 		return nil, fmt.Errorf("invalid memory mutation envelope")
 	}
+	if r.pool == nil {
+		return r.applyMemoryMutationInTx(ctx, r.db, mutation)
+	}
 
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -316,8 +332,12 @@ func (r *postgresMemoryRepository) ApplyMemoryMutation(ctx context.Context, muta
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
+	return r.applyMemoryMutationInTx(ctx, tx, mutation)
+}
+
+func (r *postgresMemoryRepository) applyMemoryMutationInTx(ctx context.Context, tx mutationTx, mutation model.MutationEnvelope) (*model.MutationApplyResult, error) {
 	var existingSequence int64
-	err = tx.QueryRow(ctx, `SELECT sequence FROM memory_mutations WHERE event_id = $1`, mutation.EventID).Scan(&existingSequence)
+	err := tx.QueryRow(ctx, `SELECT sequence FROM memory_mutations WHERE event_id = $1`, mutation.EventID).Scan(&existingSequence)
 	if err == nil {
 		return &model.MutationApplyResult{EventID: mutation.EventID, Op: mutation.Op, Duplicate: true, Applied: false, Sequence: existingSequence}, nil
 	}
@@ -360,8 +380,12 @@ func (r *postgresMemoryRepository) ApplyMemoryMutation(ctx context.Context, muta
 	if err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, wrapPgError(err, "commit memory mutation")
+	if r.pool != nil {
+		if committer, ok := tx.(interface{ Commit(context.Context) error }); ok {
+			if err := committer.Commit(ctx); err != nil {
+				return nil, wrapPgError(err, "commit memory mutation")
+			}
+		}
 	}
 
 	return &model.MutationApplyResult{EventID: mutation.EventID, Op: mutation.Op, Applied: true, Sequence: sequence}, nil
@@ -376,7 +400,7 @@ func (r *postgresMemoryRepository) ListMemoryMutations(ctx context.Context, proj
 		limit = 100
 	}
 
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db.Query(ctx, `
 		SELECT sequence, event_id::text, entity_type, entity_sync_id::text, project, op,
 		       occurred_at, COALESCE(actor_id, ''), base_updated_at, memory, tombstone
 		FROM memory_mutations
@@ -436,15 +460,16 @@ func (r *postgresMemoryRepository) ListActivityFeed(ctx context.Context, query m
 		       mm.sequence, mm.occurred_at, COALESCE(mm.actor_id, ''), mm.memory, mm.tombstone,
 		       COALESCE(mem.project, ''), COALESCE(mem.category::text, ''), COALESCE(mem.title, ''),
 		       COALESCE(mem.content, ''), COALESCE(mem.created_by, '')
-		FROM memory_mutations mm
-		LEFT JOIN memories mem ON mem.sync_id = mm.entity_sync_id AND mem.project = mm.project
-		WHERE mm.entity_type = 'memory'
-		  AND mm.op IN ('create', 'update', 'delete')
-		  %s
+			FROM memory_mutations mm
+			LEFT JOIN memories mem ON mem.sync_id = mm.entity_sync_id AND mem.project = mm.project
+			WHERE mm.entity_type = 'memory'
+			  AND mm.op IN ('create', 'update', 'delete')
+			  AND %s
+			  %s
 		ORDER BY mm.occurred_at DESC, mm.sequence DESC, mm.event_id DESC
-		LIMIT $%d`, cursorClause, limitPlaceholder)
+		LIMIT $%d`, unblockedProjectPredicate("mm.project"), cursorClause, limitPlaceholder)
 
-	rows, err := r.pool.Query(ctx, q, args...)
+	rows, err := r.db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, wrapPgError(err, "list activity feed")
 	}
@@ -740,14 +765,15 @@ func memoryFromPayload(payload *model.MemoryPayload) *model.Memory {
 // CountByProject returns memory counts grouped by project, DESC by count.
 // Soft-deleted memories are excluded. Returns []ProjectCount{} (not nil) when empty.
 func (r *postgresMemoryRepository) CountByProject(ctx context.Context, filter model.MemoryFilter) ([]model.ProjectCount, error) {
-	const q = `
+	q := fmt.Sprintf(`
 		SELECT project, COUNT(*) AS cnt
 		FROM memories
 		WHERE deleted_at IS NULL
+		  AND %s
 		GROUP BY project
-		ORDER BY COUNT(*) DESC`
+		ORDER BY COUNT(*) DESC`, unblockedProjectPredicate("memories.project"))
 
-	rows, err := r.pool.Query(ctx, q)
+	rows, err := r.db.Query(ctx, q)
 	if err != nil {
 		return nil, wrapPgError(err, "CountByProject")
 	}
@@ -769,18 +795,21 @@ func (r *postgresMemoryRepository) CountByProject(ctx context.Context, filter mo
 
 // CountLiveActivity counts memories synced within the given window and returns the newest sync_id.
 func (r *postgresMemoryRepository) CountLiveActivity(ctx context.Context, since time.Time) (int, string, error) {
-	const q = `
-		SELECT COUNT(*) AS c,
-		       COALESCE(
-		         (SELECT sync_id::text FROM memories
-		          WHERE synced_at >= $1 AND deleted_at IS NULL
-		          ORDER BY synced_at DESC, id DESC LIMIT 1),
-		         '') AS newest
-		FROM memories WHERE synced_at >= $1 AND deleted_at IS NULL`
+	q := fmt.Sprintf(`
+			SELECT COUNT(*) AS c,
+			       COALESCE(
+			         (SELECT sync_id::text FROM memories
+			          WHERE synced_at >= $1 AND deleted_at IS NULL
+			            AND %s
+			          ORDER BY synced_at DESC, id DESC LIMIT 1),
+			         '') AS newest
+			FROM memories
+			WHERE synced_at >= $1 AND deleted_at IS NULL
+			  AND %s`, unblockedProjectPredicate("memories.project"), unblockedProjectPredicate("memories.project"))
 
 	var count int
 	var newest string
-	err := r.pool.QueryRow(ctx, q, since).Scan(&count, &newest)
+	err := r.db.QueryRow(ctx, q, since).Scan(&count, &newest)
 	if err != nil {
 		return 0, "", wrapPgError(err, "CountLiveActivity")
 	}
@@ -790,18 +819,19 @@ func (r *postgresMemoryRepository) CountLiveActivity(ctx context.Context, since 
 // CountGrowthByMonth returns cumulative memory counts by month (ascending) over the last N months.
 // Uses created_at (not synced_at) to reflect knowledge accumulation.
 func (r *postgresMemoryRepository) CountGrowthByMonth(ctx context.Context, months int) ([]model.MonthCount, error) {
-	const q = `
+	q := fmt.Sprintf(`
 		WITH months AS (
 		  SELECT date_trunc('month', now()) - (n || ' months')::interval AS m
 		  FROM generate_series($1 - 1, 0, -1) AS n
 		)
-		SELECT months.m,
-		       (SELECT COUNT(*) FROM memories
-		        WHERE deleted_at IS NULL
-		          AND created_at < months.m + interval '1 month') AS cumulative
-		FROM months ORDER BY months.m ASC`
+			SELECT months.m,
+			       (SELECT COUNT(*) FROM memories
+			        WHERE deleted_at IS NULL
+			          AND created_at < months.m + interval '1 month'
+			          AND %s) AS cumulative
+			FROM months ORDER BY months.m ASC`, unblockedProjectPredicate("memories.project"))
 
-	rows, err := r.pool.Query(ctx, q, months)
+	rows, err := r.db.Query(ctx, q, months)
 	if err != nil {
 		return nil, wrapPgError(err, "CountGrowthByMonth")
 	}
@@ -849,13 +879,17 @@ func appendMemoryFilterPredicates(where string, args []interface{}, argIdx int, 
 		argIdx++
 	}
 
-	where += " AND deleted_at IS NULL"
+	where += " AND deleted_at IS NULL AND " + unblockedProjectPredicate("memories.project")
 	return where, args, argIdx
+}
+
+func (r *postgresMemoryRepository) rejectBlockedProject(ctx context.Context, project string) error {
+	return checkProjectBlocked(ctx, r.db, project)
 }
 
 // scanMemory ejecuta una query de fila única y escanea el resultado.
 func (r *postgresMemoryRepository) scanMemory(ctx context.Context, query string, arg interface{}) (*model.Memory, error) {
-	row := r.pool.QueryRow(ctx, query, arg)
+	row := r.db.QueryRow(ctx, query, arg)
 	mem, err := scanMemoryRow(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

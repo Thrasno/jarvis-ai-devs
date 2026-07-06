@@ -68,6 +68,15 @@ func (h *MemoryHandler) Create(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: err.Error()})
 			return
 		}
+		var blockedErr *service.ProjectBlockedError
+		if errors.As(err, &blockedErr) {
+			c.JSON(http.StatusLocked, model.ProjectBlockedErrorResponse{Error: blockedErr.Error(), Command: blockedErr.Command.Redacted()})
+			return
+		}
+		if errors.Is(err, service.ErrProjectKeyLockBusy) {
+			c.JSON(http.StatusServiceUnavailable, model.ErrorResponse{Error: "project is busy; retry memory create"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "error al crear memoria"})
 		return
 	}

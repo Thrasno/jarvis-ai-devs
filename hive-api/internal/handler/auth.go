@@ -37,7 +37,18 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	token, err := h.svc.Login(c.Request.Context(), req.Email, req.Password)
+	device := model.ProjectBlockAckSubject{DaemonID: req.DaemonID, Client: req.Client}
+	var token string
+	var err error
+	if device.DaemonID != "" || device.Client != "" {
+		if deviceSvc, ok := h.svc.(DeviceAuthService); ok {
+			token, err = deviceSvc.LoginWithDevice(c.Request.Context(), req.Email, req.Password, device)
+		} else {
+			token, err = h.svc.Login(c.Request.Context(), req.Email, req.Password)
+		}
+	} else {
+		token, err = h.svc.Login(c.Request.Context(), req.Email, req.Password)
+	}
 	if err != nil {
 		// Distinguimos los errores de dominio para mapear al código HTTP correcto.
 		// ErrUserInactive → 403: el usuario existe pero está desactivado (no es un problema de credenciales).

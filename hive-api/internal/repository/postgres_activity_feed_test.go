@@ -137,6 +137,53 @@ func TestPostgresMemoryRepository_ListActivityFeed_ReturnsEmptyFeed(t *testing.T
 	assert.Empty(t, rows)
 }
 
+func TestPostgresMemoryRepository_ListActivityFeedExcludesBlockedProjects(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, RunMigrations(pool, migrations.MemoryMutationsSQL))
+	require.NoError(t, RunMigrations(pool, migrations.ProjectBlocksSQL))
+	repo := NewPostgresMemoryRepository(pool)
+	blockRepo := NewPostgresProjectBlockRepository(pool)
+	visibleSessionID := ensureManualSavePtr(t, pool, "visible-activity")
+	blockedSessionID := ensureManualSavePtr(t, pool, "Blocked Activity")
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+
+	seedActivityMutation(t, ctx, repo, activityMutationSeed{
+		EventID:      "870e8400-e29b-41d4-a716-446655440001",
+		EntitySyncID: "870e8400-e29b-41d4-a716-446655440101",
+		Project:      "visible-activity",
+		Op:           model.MutationOpCreate,
+		OccurredAt:   base,
+		Title:        "visible event",
+		SessionID:    *visibleSessionID,
+	})
+	seedActivityMutation(t, ctx, repo, activityMutationSeed{
+		EventID:      "870e8400-e29b-41d4-a716-446655440002",
+		EntitySyncID: "870e8400-e29b-41d4-a716-446655440102",
+		Project:      "Blocked Activity",
+		Op:           model.MutationOpCreate,
+		OccurredAt:   base.Add(time.Minute),
+		Title:        "blocked event",
+		SessionID:    *blockedSessionID,
+	})
+	_, err := blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
+		Project:             "Blocked Activity",
+		CanonicalProjectKey: "blocked-activity",
+		Action:              model.ProjectBlockActionQuarantine,
+		Reason:              "garbage",
+		Confirmation:        "blocked-activity",
+		ExportMarker:        "export-1",
+		ActorUserID:         "admin-1",
+	})
+	require.NoError(t, err)
+
+	rows, err := repo.ListActivityFeed(ctx, model.ActivityFeedRepositoryQuery{Limit: 10})
+	require.NoError(t, err)
+	require.Equal(t, []string{"870e8400-e29b-41d4-a716-446655440001"}, activityEventIDs(rows))
+}
+
 func TestMigration008_ActivityFeedIndexIsIdempotent(t *testing.T) {
 	pool, cleanup := startPostgresWithSessions(t)
 	defer cleanup()

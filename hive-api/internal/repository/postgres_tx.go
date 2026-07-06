@@ -21,8 +21,13 @@ func (m *postgresTxManager) WithinTx(ctx context.Context, fn func(context.Contex
 	}
 
 	repos := TxRepositories{
-		Users: newPostgresUserRepositoryWithQuerier(tx),
-		Audit: newPostgresAuditRepositoryWithQuerier(tx),
+		Users:           newPostgresUserRepositoryWithQuerier(tx),
+		Audit:           newPostgresAuditRepositoryWithQuerier(tx),
+		ProjectBlocks:   newPostgresProjectBlockRepositoryWithQuerier(tx),
+		Memory:          newPostgresMemoryRepositoryWithQuerier(tx),
+		Prompt:          newPostgresPromptRepositoryWithQuerier(tx),
+		Session:         newPostgresSessionRepositoryWithQuerier(tx),
+		ProjectKeyLocks: newPostgresProjectKeyLockRepositoryWithQuerier(tx),
 	}
 	if err := fn(ctx, repos); err != nil {
 		_ = tx.Rollback(ctx)

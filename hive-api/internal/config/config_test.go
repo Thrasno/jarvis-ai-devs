@@ -35,6 +35,18 @@ func TestLoad_ValidConfig(t *testing.T) {
 	assert.Equal(t, "esta-clave-tiene-mas-de-treinta-y-dos-caracteres", cfg.JWTSecret)
 	assert.Equal(t, "9090", cfg.Port)
 	assert.Equal(t, "release", cfg.GinMode)
+	assert.False(t, cfg.ProjectBlockAdminEnabled)
+}
+
+func TestLoad_ProjectBlockAdminFeatureFlag(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/hive")
+	t.Setenv("JWT_SECRET", "esta-clave-tiene-mas-de-treinta-y-dos-caracteres")
+	t.Setenv("JARVIS_ENABLE_PROJECT_BLOCK_ADMIN", "true")
+
+	cfg, err := config.Load()
+
+	require.NoError(t, err)
+	assert.True(t, cfg.ProjectBlockAdminEnabled)
 }
 
 // TestLoad_DefaultValues verifica que PORT y GIN_MODE tienen valores por defecto

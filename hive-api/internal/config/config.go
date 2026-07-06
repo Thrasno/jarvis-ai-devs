@@ -48,6 +48,10 @@ type Config struct {
 	// DashboardAssetsDir es el directorio opcional con los assets compilados del dashboard.
 	// Si está vacío, hive-api no registra rutas estáticas para /dashboard.
 	DashboardAssetsDir string
+
+	// ProjectBlockAdminEnabled gates temporary WU1 admin project-governance routes
+	// until daemon 423 enforcement lands. Read/status/sync safeguards can exist before this flag.
+	ProjectBlockAdminEnabled bool
 }
 
 // Load lee las variables de entorno y devuelve una Config válida.
@@ -66,12 +70,13 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		DatabaseURL:        os.Getenv("DATABASE_URL"),
-		JWTSecret:          os.Getenv("JWT_SECRET"),
-		Port:               getEnvWithDefault("PORT", "8080"),
-		GinMode:            getEnvWithDefault("GIN_MODE", "release"),
-		AllowedOrigins:     origins,
-		DashboardAssetsDir: strings.TrimSpace(os.Getenv("DASHBOARD_ASSETS_DIR")),
+		DatabaseURL:              os.Getenv("DATABASE_URL"),
+		JWTSecret:                os.Getenv("JWT_SECRET"),
+		Port:                     getEnvWithDefault("PORT", "8080"),
+		GinMode:                  getEnvWithDefault("GIN_MODE", "release"),
+		AllowedOrigins:           origins,
+		DashboardAssetsDir:       strings.TrimSpace(os.Getenv("DASHBOARD_ASSETS_DIR")),
+		ProjectBlockAdminEnabled: strings.EqualFold(strings.TrimSpace(os.Getenv("JARVIS_ENABLE_PROJECT_BLOCK_ADMIN")), "true"),
 	}
 
 	// Validamos cada campo requerido.

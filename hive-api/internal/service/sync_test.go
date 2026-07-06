@@ -24,7 +24,7 @@ func newTestSyncService(t *testing.T) (service.SyncService, *repository.MockMemo
 	// Maybe() allows the call to happen 0 or more times without failing expectations.
 	mockSessionRepo.On("EnsureManualSaveSession", mock.Anything, mock.Anything).
 		Return("manual-save-jarvis-dev", nil).Maybe()
-	svc := service.NewSyncService(mockMemRepo, mockPromptRepo, mockSessionRepo, nil)
+	svc := service.NewSyncService(mockMemRepo, mockPromptRepo, mockSessionRepo, nil, nil)
 	return svc, mockMemRepo, mockPromptRepo
 }
 
@@ -33,7 +33,7 @@ func newTestSyncServiceWithSession(t *testing.T) (service.SyncService, *reposito
 	mockMemRepo := &repository.MockMemoryRepository{}
 	mockPromptRepo := &repository.MockPromptRepository{}
 	mockSessionRepo := &repository.MockSessionRepository{}
-	svc := service.NewSyncService(mockMemRepo, mockPromptRepo, mockSessionRepo, nil)
+	svc := service.NewSyncService(mockMemRepo, mockPromptRepo, mockSessionRepo, nil, nil)
 	return svc, mockMemRepo, mockPromptRepo, mockSessionRepo
 }
 
@@ -45,7 +45,7 @@ func newTestSyncServiceWithAudit(t *testing.T) (service.SyncService, *repository
 	mockAuditRepo := &repository.MockAuditRepository{}
 	mockSessionRepo.On("EnsureManualSaveSession", mock.Anything, mock.Anything).
 		Return("manual-save-jarvis-dev", nil).Maybe()
-	svc := service.NewSyncService(mockMemRepo, mockPromptRepo, mockSessionRepo, mockAuditRepo)
+	svc := service.NewSyncService(mockMemRepo, mockPromptRepo, mockSessionRepo, mockAuditRepo, nil)
 	return svc, mockMemRepo, mockPromptRepo, mockAuditRepo
 }
 
@@ -202,7 +202,7 @@ func TestSync_Push_Mixed(t *testing.T) {
 	mockRepo.AssertExpectations(t)
 }
 
-func TestSync_Push_AuditFailureDoesNotFailSync(t *testing.T) {
+func TestSync_Push_AuditFailureFailsSync(t *testing.T) {
 	svc, mockRepo, mockPromptRepo, mockAuditRepo := newTestSyncServiceWithAudit(t)
 	ctx := context.Background()
 
@@ -239,10 +239,9 @@ func TestSync_Push_AuditFailureDoesNotFailSync(t *testing.T) {
 
 	resp, err := svc.Push(ctx, req, "user-1")
 
-	require.NoError(t, err)
-	assert.Equal(t, 1, resp.Pushed)
-	assert.Equal(t, 0, resp.Conflicts)
-	assert.Equal(t, 1, resp.PromptsPushed)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "sync audit")
+	require.Nil(t, resp)
 	mockRepo.AssertExpectations(t)
 	mockPromptRepo.AssertExpectations(t)
 	mockAuditRepo.AssertExpectations(t)

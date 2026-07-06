@@ -72,6 +72,14 @@ func (m *mockSync) Push(ctx context.Context, req model.SyncRequest, userID strin
 	}
 	return args.Get(0).(*model.SyncResponse), args.Error(1)
 }
+
+func (m *mockSync) Sync(ctx context.Context, req model.SyncRequest, userID string) (*model.SyncResponse, error) {
+	args := m.Called(ctx, req, userID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.SyncResponse), args.Error(1)
+}
 func (m *mockSync) PullAll(ctx context.Context, project string, since time.Time, excludeSyncIDs []string, limit int, memoriesCursor, sessionsCursor model.PullCursor) (*model.PullResult, error) {
 	args := m.Called(ctx, project, since, excludeSyncIDs, limit, memoriesCursor, sessionsCursor)
 	if args.Get(0) == nil {
@@ -85,6 +93,21 @@ type mockProject struct{ mock.Mock }
 func (m *mockProject) List(ctx context.Context) (model.ProjectListResponse, error) {
 	args := m.Called(ctx)
 	return args.Get(0).(model.ProjectListResponse), args.Error(1)
+}
+
+type mockProjectGovernance struct{ mock.Mock }
+
+func (m *mockProjectGovernance) BlockProject(ctx context.Context, actor model.AdminActor, project string, req model.ProjectBlockRequest) (model.ProjectBlockResponse, error) {
+	args := m.Called(ctx, actor, project, req)
+	return args.Get(0).(model.ProjectBlockResponse), args.Error(1)
+}
+func (m *mockProjectGovernance) Status(ctx context.Context, project string) (model.ProjectBlockStatusResponse, error) {
+	args := m.Called(ctx, project)
+	return args.Get(0).(model.ProjectBlockStatusResponse), args.Error(1)
+}
+func (m *mockProjectGovernance) Acknowledge(ctx context.Context, ack model.ProjectBlockAck) (model.ProjectBlockAck, error) {
+	args := m.Called(ctx, ack)
+	return args.Get(0).(model.ProjectBlockAck), args.Error(1)
 }
 
 type mockAdmin struct{ mock.Mock }

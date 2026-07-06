@@ -137,11 +137,12 @@ func (r *postgresSyncAttemptRepository) DaemonHealth(ctx context.Context, health
 func (r *postgresSyncAttemptRepository) SyncHealthByProject(ctx context.Context, window time.Duration) ([]model.ProjectSyncHealthRow, error) {
 	since := time.Now().UTC().Add(-window)
 
-	const q = `
+	q := fmt.Sprintf(`
 		SELECT p.project, last.outcome, p.contributors, last.started_at FROM (
 		  SELECT project, COUNT(DISTINCT source_dev_id) AS contributors
 		  FROM sync_attempt_logs
 		  WHERE project <> '' AND started_at >= $1
+		    AND %s
 		  GROUP BY project
 		) p
 		JOIN LATERAL (
@@ -156,7 +157,7 @@ func (r *postgresSyncAttemptRepository) SyncHealthByProject(ctx context.Context,
 		    ELSE 1
 		  END,
 		  last.started_at DESC,
-		  p.project ASC`
+		  p.project ASC`, unblockedProjectPredicate("sync_attempt_logs.project"))
 
 	rows, err := r.db.Query(ctx, q, since)
 	if err != nil {

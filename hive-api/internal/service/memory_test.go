@@ -21,7 +21,7 @@ func newTestMemoryService(t *testing.T) (service.MemoryService, *repository.Mock
 	// Existing tests don't trigger the lazy-fallback path; allow it to be called 0+ times.
 	mockSessionRepo.On("EnsureManualSaveSession", mock.Anything, mock.Anything).
 		Return("manual-save-jarvis-dev", nil).Maybe()
-	svc := service.NewMemoryService(mockRepo, mockSessionRepo)
+	svc := service.NewMemoryService(mockRepo, mockSessionRepo, nil)
 	return svc, mockRepo
 }
 
@@ -30,7 +30,7 @@ func newTestMemoryServiceWithSession(t *testing.T) (service.MemoryService, *repo
 	t.Helper()
 	mockRepo := &repository.MockMemoryRepository{}
 	mockSessionRepo := &repository.MockSessionRepository{}
-	svc := service.NewMemoryService(mockRepo, mockSessionRepo)
+	svc := service.NewMemoryService(mockRepo, mockSessionRepo, nil)
 	return svc, mockRepo, mockSessionRepo
 }
 
@@ -301,6 +301,83 @@ func TestCreateMemory_RegularSessionUnknownReturnsErrSessionNotFound(t *testing.
 	require.Error(t, err)
 	assert.ErrorIs(t, err, service.ErrSessionNotFound)
 	mockRepo.AssertNotCalled(t, "Create")
+}
+
+func TestCreateMemory_UsesProjectKeyTransactionLock(t *testing.T) {
+	ctx := context.Background()
+	outerRepo := &repository.MockMemoryRepository{}
+	txRepo := &repository.MockMemoryRepository{}
+	sessionRepo := &repository.MockSessionRepository{}
+	blockRepo := &repository.MockProjectBlockRepository{}
+	lockRepo := &repository.MockProjectKeyLockRepository{}
+	tx := &repository.MockTxManager{
+		Memory:          txRepo,
+		Session:         sessionRepo,
+		ProjectBlocks:   blockRepo,
+		ProjectKeyLocks: lockRepo,
+	}
+	svc := service.NewMemoryService(outerRepo, sessionRepo, blockRepo, tx)
+
+	input := &model.Memory{
+		SyncID:   "direct-create-lock-1",
+		Project:  "Jarvis Dev",
+		Title:    "Locked direct create",
+		Content:  "content",
+		Category: model.CatDecision,
+	}
+
+	lockRepo.On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
+	blockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(nil, repository.ErrNotFound).Once()
+	txRepo.On("GetBySyncID", ctx, "direct-create-lock-1").Return(nil, nil).Once()
+	sessionRepo.On("EnsureManualSaveSession", ctx, "Jarvis Dev").Return("manual-save-jarvis-dev", nil).Once()
+	txRepo.On("Create", ctx, mock.MatchedBy(func(m *model.Memory) bool {
+		return m.SyncID == "direct-create-lock-1" && m.SessionID != nil && *m.SessionID == "manual-save-jarvis-dev"
+	})).Return(&model.Memory{ID: "created-direct-lock"}, nil).Once()
+
+	created, err := svc.Create(ctx, input)
+	require.NoError(t, err)
+	require.Equal(t, "created-direct-lock", created.ID)
+	require.True(t, tx.Committed)
+	outerRepo.AssertNotCalled(t, "GetBySyncID", mock.Anything, mock.Anything)
+	outerRepo.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
+	lockRepo.AssertExpectations(t)
+	blockRepo.AssertExpectations(t)
+	txRepo.AssertExpectations(t)
+	sessionRepo.AssertExpectations(t)
+}
+
+func TestCreateMemory_RejectsBlockedProjectInsideProjectKeyLock(t *testing.T) {
+	ctx := context.Background()
+	outerRepo := &repository.MockMemoryRepository{}
+	txRepo := &repository.MockMemoryRepository{}
+	sessionRepo := &repository.MockSessionRepository{}
+	blockRepo := &repository.MockProjectBlockRepository{}
+	lockRepo := &repository.MockProjectKeyLockRepository{}
+	tx := &repository.MockTxManager{
+		Memory:          txRepo,
+		Session:         sessionRepo,
+		ProjectBlocks:   blockRepo,
+		ProjectKeyLocks: lockRepo,
+	}
+	svc := service.NewMemoryService(outerRepo, sessionRepo, blockRepo, tx)
+
+	block := &model.ProjectBlock{
+		Project:             "Jarvis Dev",
+		CanonicalProjectKey: "jarvis-dev",
+		CommandID:           "command-1",
+		Blocked:             true,
+		BlockedAt:           time.Now().UTC(),
+	}
+	lockRepo.On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
+	blockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(block, nil).Once()
+
+	_, err := svc.Create(ctx, &model.Memory{SyncID: "blocked-direct", Project: "Jarvis Dev", Category: model.CatDecision})
+	require.Error(t, err)
+	require.True(t, tx.RolledBack)
+	txRepo.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
+	outerRepo.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
+	lockRepo.AssertExpectations(t)
+	blockRepo.AssertExpectations(t)
 }
 
 // TestGetByID_Success verifica recuperación por ID.

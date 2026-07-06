@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/projectkey"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
 )
 
@@ -39,17 +40,58 @@ type MemoryService interface {
 type memoryService struct {
 	repo        repository.MemoryRepository
 	sessionRepo repository.SessionRepository
+	blockRepo   repository.ProjectBlockRepository
+	tx          repository.TxManager
 }
 
 // NewMemoryService crea un MemoryService con los repositorios inyectados.
 // sessionRepo se requiere para resolver el lazy-fallback `manual-save-{project}`
 // cuando el caller no envía session_id (R2-CRIT-2).
-func NewMemoryService(repo repository.MemoryRepository, sessionRepo repository.SessionRepository) MemoryService {
-	return &memoryService{repo: repo, sessionRepo: sessionRepo}
+func NewMemoryService(repo repository.MemoryRepository, sessionRepo repository.SessionRepository, blockRepo repository.ProjectBlockRepository, tx ...repository.TxManager) MemoryService {
+	var txManager repository.TxManager
+	if len(tx) > 0 {
+		txManager = tx[0]
+	}
+	return &memoryService{repo: repo, sessionRepo: sessionRepo, blockRepo: blockRepo, tx: txManager}
 }
 
 func (s *memoryService) Create(ctx context.Context, mem *model.Memory) (*model.Memory, error) {
-	existing, err := s.repo.GetBySyncID(ctx, mem.SyncID)
+	if s.tx != nil {
+		var created *model.Memory
+		err := s.tx.WithinTx(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
+			if repos.Memory == nil || repos.Session == nil || repos.ProjectBlocks == nil || repos.ProjectKeyLocks == nil {
+				return ErrProjectBlockUnavailable
+			}
+			canonical := projectkey.Canonicalize(mem.Project)
+			if err := repos.ProjectKeyLocks.LockCanonicalProjectKeys(ctx, []string{canonical}); err != nil {
+				return err
+			}
+			result, err := s.createWithRepos(ctx, mem, repos.Memory, repos.Session, repos.ProjectBlocks)
+			if err != nil {
+				return err
+			}
+			created = result
+			return nil
+		})
+		return created, err
+	}
+	if s.blockRepo != nil {
+		return nil, ErrProjectBlockUnavailable
+	}
+	return s.createWithRepos(ctx, mem, s.repo, s.sessionRepo, nil)
+}
+
+func (s *memoryService) createWithRepos(ctx context.Context, mem *model.Memory, memRepo repository.MemoryRepository, sessionRepo repository.SessionRepository, blockRepo repository.ProjectBlockRepository) (*model.Memory, error) {
+	if blockRepo != nil {
+		block, err := blockRepo.GetByCanonicalKey(ctx, projectkey.Canonicalize(mem.Project))
+		if err != nil && !errors.Is(err, repository.ErrNotFound) {
+			return nil, err
+		}
+		if block != nil {
+			return nil, projectBlockedError(block)
+		}
+	}
+	existing, err := memRepo.GetBySyncID(ctx, mem.SyncID)
 	if err != nil {
 		return nil, err
 	}
@@ -64,13 +106,17 @@ func (s *memoryService) Create(ctx context.Context, mem *model.Memory) (*model.M
 	if mem.SessionID != nil {
 		incoming = *mem.SessionID
 	}
-	resolved, err := validateSessionAttribution(ctx, s.sessionRepo, incoming, mem.Project)
+	resolved, err := validateSessionAttribution(ctx, sessionRepo, incoming, mem.Project)
 	if err != nil {
 		return nil, err
 	}
 	mem.SessionID = &resolved
 
-	return s.repo.Create(ctx, mem)
+	created, err := memRepo.Create(ctx, mem)
+	if errors.Is(err, repository.ErrProjectBlocked) {
+		return nil, projectBlockedErrorForProject(ctx, blockRepo, mem.Project)
+	}
+	return created, err
 }
 
 func (s *memoryService) GetByID(ctx context.Context, id string) (*model.Memory, error) {

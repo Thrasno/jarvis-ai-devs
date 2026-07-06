@@ -26,6 +26,11 @@ func (m *mockAuthSvc) Login(ctx context.Context, email, password string) (string
 	return args.String(0), args.Error(1)
 }
 
+func (m *mockAuthSvc) LoginWithDevice(ctx context.Context, email, password string, device model.ProjectBlockAckSubject) (string, error) {
+	args := m.Called(ctx, email, password, device)
+	return args.String(0), args.Error(1)
+}
+
 func (m *mockAuthSvc) ValidateToken(tokenString string) (*model.Claims, error) {
 	args := m.Called(tokenString)
 	if args.Get(0) == nil {
@@ -108,6 +113,51 @@ func (m *mockSyncSvc) Push(ctx context.Context, req model.SyncRequest, userID st
 	return args.Get(0).(*model.SyncResponse), args.Error(1)
 }
 
+func (m *mockSyncSvc) Sync(ctx context.Context, req model.SyncRequest, userID string) (*model.SyncResponse, error) {
+	for _, call := range m.ExpectedCalls {
+		if call.Method == "Sync" {
+			args := m.Called(ctx, req, userID)
+			if args.Get(0) == nil {
+				return nil, args.Error(1)
+			}
+			return args.Get(0).(*model.SyncResponse), args.Error(1)
+		}
+	}
+
+	pushResp, err := m.Push(ctx, req, userID)
+	if err != nil {
+		return nil, err
+	}
+	var since time.Time
+	if req.LastSync != nil {
+		since = *req.LastSync
+	}
+	excludeIDs := make([]string, 0, len(req.Memories))
+	for _, memory := range req.Memories {
+		excludeIDs = append(excludeIDs, memory.SyncID)
+	}
+	var memoriesCursor, sessionsCursor model.PullCursor
+	if req.PullCursor != nil {
+		memoriesCursor = *req.PullCursor
+	}
+	if req.PullSessionCursor != nil {
+		sessionsCursor = *req.PullSessionCursor
+	}
+	pullResult, err := m.PullAll(ctx, req.Project, since, excludeIDs, model.ClampPullLimit(req.PullLimit), memoriesCursor, sessionsCursor)
+	if err != nil {
+		return nil, err
+	}
+	pulledSessions := make([]model.SyncSessionResponse, 0, len(pullResult.Sessions))
+	for _, session := range pullResult.Sessions {
+		pulledSessions = append(pulledSessions, model.SyncSessionResponse{ID: session.ID, SyncID: session.SyncID, Project: session.Project, Directory: session.Directory, DevID: session.DevID, Client: session.Client, StartedAt: session.StartedAt, EndedAt: session.EndedAt, Summary: session.Summary})
+	}
+	pulled := pullResult.Memories
+	if pulled == nil {
+		pulled = []*model.Memory{}
+	}
+	return &model.SyncResponse{Pushed: pushResp.Pushed, Pulled: pulled, Conflicts: pushResp.Conflicts, PromptsPushed: pushResp.PromptsPushed, PulledSessions: pulledSessions, NextMutationCursor: pushResp.NextMutationCursor, PulledMutations: pushResp.PulledMutations, CompatibilityMode: pushResp.CompatibilityMode, PulledHasMore: pullResult.MemoriesHasMore, NextPullCursor: pullResult.NextPullCursor, PulledSessionsHasMore: pullResult.SessionsHasMore, NextSessionCursor: pullResult.NextSessionCursor}, nil
+}
+
 func (m *mockSyncSvc) PullAll(ctx context.Context, project string, since time.Time, excludeSyncIDs []string, limit int, memoriesCursor, sessionsCursor model.PullCursor) (*model.PullResult, error) {
 	args := m.Called(ctx, project, since, excludeSyncIDs, limit, memoriesCursor, sessionsCursor)
 	if args.Get(0) == nil {
@@ -118,6 +168,25 @@ func (m *mockSyncSvc) PullAll(ctx context.Context, project string, since time.Ti
 
 type mockSyncAttemptSvc struct {
 	mock.Mock
+}
+
+type mockProjectGovernanceSvc struct {
+	mock.Mock
+}
+
+func (m *mockProjectGovernanceSvc) BlockProject(ctx context.Context, actor model.AdminActor, project string, req model.ProjectBlockRequest) (model.ProjectBlockResponse, error) {
+	args := m.Called(ctx, actor, project, req)
+	return args.Get(0).(model.ProjectBlockResponse), args.Error(1)
+}
+
+func (m *mockProjectGovernanceSvc) Status(ctx context.Context, project string) (model.ProjectBlockStatusResponse, error) {
+	args := m.Called(ctx, project)
+	return args.Get(0).(model.ProjectBlockStatusResponse), args.Error(1)
+}
+
+func (m *mockProjectGovernanceSvc) Acknowledge(ctx context.Context, ack model.ProjectBlockAck) (model.ProjectBlockAck, error) {
+	args := m.Called(ctx, ack)
+	return args.Get(0).(model.ProjectBlockAck), args.Error(1)
 }
 
 func (m *mockSyncAttemptSvc) Ingest(ctx context.Context, req model.SyncAttemptIngestRequest) (model.SyncAttemptIngestResponse, error) {
