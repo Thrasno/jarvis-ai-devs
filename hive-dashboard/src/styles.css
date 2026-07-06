@@ -729,6 +729,18 @@ body::before {
   padding: .65rem .75rem;
 }
 
+.dashboard-project-card__block-form button {
+  background: linear-gradient(180deg, #7f1d1d 0%, #5f1717 100%);
+  border: 1px solid rgba(248, 113, 113, 0.48);
+  box-shadow: none;
+  color: #fee2e2;
+}
+
+.dashboard-project-card__block-form button:hover:not(:disabled) {
+  background: linear-gradient(180deg, #991b1b 0%, #7f1d1d 100%);
+  border-color: rgba(252, 165, 165, 0.72);
+}
+
 .dashboard-project-card__rail {
   border-top: 1px solid rgba(255, 255, 255, 0.06);
   height: 0;
