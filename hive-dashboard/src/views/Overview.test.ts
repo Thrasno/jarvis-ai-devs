@@ -319,6 +319,27 @@ describe('overview view', () => {
   })
 })
 
+
+  it('renders only the safe Member concepts and excludes hostile Admin payload fields', () => {
+    const member = {
+      screen: 'overview' as const,
+      capability: 'member' as const,
+      totalMemories: { label: 'Total Memories', value: 4 },
+      activeProjects: { label: 'Active Projects', value: 1 },
+      liveActivity: { count: 2 },
+      mostActiveProjects: [{ label: 'jarvis-dev', value: 4 }]
+    }
+    const view = renderOverview({ status: 'ready', data: member })
+
+    expect(view.textContent).toContain('Total Memories')
+    expect(view.textContent).toContain('Active Projects')
+    expect(view.textContent).toContain('Live activity')
+    expect(view.textContent).toContain('Most active projects')
+    for (const forbidden of ['Healthy Daemons', 'Open Conflicts', 'Knowledge Growth', 'Sync health', 'Newest sync', 'newest_sync_id', 'daemon_health', 'operations', 'contributor', 'actor', 'timestamp']) {
+      expect(view.textContent?.toLowerCase()).not.toContain(forbidden.toLowerCase())
+    }
+  })
+
 type QueryOptions = { name?: string | RegExp }
 
 function getByRole(root: HTMLElement, role: string, options: QueryOptions = {}): HTMLElement {

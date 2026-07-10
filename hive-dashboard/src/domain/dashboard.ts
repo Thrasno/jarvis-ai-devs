@@ -149,21 +149,33 @@ export type OverviewSyncHealthProjectViewModel = {
 
 export type OverviewLiveActivityViewModel = {
   readonly count: number
-  readonly newestSyncId: string
+  readonly newestSyncId?: string
 }
 
-export type OverviewFixtureViewModel = {
+export type OverviewCommonViewModel = {
   readonly screen: 'overview'
   readonly totalMemories: MetricCardViewModel
   readonly activeProjects: MetricCardViewModel
+  readonly liveActivity: OverviewLiveActivityViewModel
+  readonly mostActiveProjects: readonly ChartPointViewModel[]
+}
+
+export type MemberOverviewViewModel = OverviewCommonViewModel & {
+  readonly capability: 'member'
+}
+
+export type AdminOverviewViewModel = OverviewCommonViewModel & {
+  readonly capability: 'admin'
   readonly healthyDaemons: MetricCardViewModel
   readonly openConflicts: MetricCardViewModel
   readonly knowledgeGrowth: ChartSeriesViewModel
   readonly syncHealthByProject: readonly OverviewSyncHealthProjectViewModel[]
   readonly syncHealthByProjectSourceLabel?: string
-  readonly liveActivity: OverviewLiveActivityViewModel
-  readonly mostActiveProjects: readonly ChartPointViewModel[]
+  readonly liveActivity: OverviewLiveActivityViewModel & { readonly newestSyncId: string }
 }
+
+export type OverviewViewModel = MemberOverviewViewModel | AdminOverviewViewModel
+export type OverviewFixtureViewModel = AdminOverviewViewModel
 
 export type ProjectListFixtureViewModel = {
   readonly screen: 'projects'
