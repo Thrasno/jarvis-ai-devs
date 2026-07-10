@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
@@ -242,6 +243,131 @@ func TestParseOpenCodeConfig_RetainsSDDSubagentHiveGrantEvidence(t *testing.T) {
 	assertHivePermissionEvidence(t, got.SDDSubagentHiveGrantEvidence["sdd-design"], "hive_mem_*", "allow")
 	assertHivePermissionEvidence(t, got.SDDSubagentHiveGrantEvidence["sdd-design"], "hive_mem_save", "deny")
 	assertHivePermissionEvidence(t, got.SDDSubagentHiveGrantEvidence["sdd-design"], "hive_mem_context", "ask")
+}
+
+func TestParseOpenCodeConfig_PreservesHiveGrantOrderForLastMatchingVerification(t *testing.T) {
+	tests := []struct {
+		name        string
+		permission  string
+		wantStatus  sddruntime.IntegrityStatus
+		wantMessage string
+	}{
+		{
+			name: "wildcard deny before exact Hive allows passes",
+			permission: `
+        "hive_mem_*": "deny",
+        "hive_mem_search": "allow",
+        "hive_mem_get_observation": "allow",
+        "hive_mem_save": "allow",
+        "hive_mem_context": "allow",
+        "hive_mem_session_summary": "allow"`,
+			wantStatus: sddruntime.StatusPass,
+		},
+		{
+			name: "exact Hive allows before wildcard ask fails",
+			permission: `
+        "hive_mem_search": "allow",
+        "hive_mem_get_observation": "allow",
+        "hive_mem_save": "allow",
+        "hive_mem_context": "allow",
+        "hive_mem_session_summary": "allow",
+        "hive_mem_*": "ask"`,
+			wantStatus:  sddruntime.StatusFail,
+			wantMessage: "manually adjust",
+		},
+		{
+			name: "exact Hive allows before wildcard deny fails",
+			permission: `
+        "hive_mem_search": "allow",
+        "hive_mem_get_observation": "allow",
+        "hive_mem_save": "allow",
+        "hive_mem_context": "allow",
+        "hive_mem_session_summary": "allow",
+        "hive_mem_*": "deny"`,
+			wantStatus:  sddruntime.StatusFail,
+			wantMessage: "manually adjust",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeOpenCodeConfigWithApplyPermission(t, tt.permission)
+			parsed := parseOpenCodeConfig(path)
+			if !parsed.ParseSucceeded {
+				t.Fatal("ParseSucceeded must be true for valid JSON")
+			}
+
+			report := sddruntime.Verify("opencode", sddruntime.ObservedRuntime{
+				StoreMode:     "hive",
+				StoreReadFrom: []string{"hive"},
+				StoreWriteTo:  []string{"hive"},
+				OpenCode:      parsed,
+			})
+			check := findOpenCodeCheck(report.Checks, "invariant.opencode.sdd_hive_grants")
+			if check == nil {
+				t.Fatal("expected invariant.opencode.sdd_hive_grants check")
+			}
+			if check.Status != tt.wantStatus {
+				t.Fatalf("expected %q, got %q (observed=%q message=%q)", tt.wantStatus, check.Status, check.Observed, check.Message)
+			}
+			if tt.wantMessage != "" && !strings.Contains(check.Message, tt.wantMessage) {
+				t.Fatalf("expected message to contain %q, got %q", tt.wantMessage, check.Message)
+			}
+		})
+	}
+}
+
+func writeOpenCodeConfigWithApplyPermission(t *testing.T, applyPermission string) string {
+	t.Helper()
+
+	var agents strings.Builder
+	agents.WriteString(`
+    "sdd-orchestrator": {
+      "mode": "primary",
+      "model": "opus",
+      "prompt": "{file:./sdd-orchestrator.md}",
+      "permission": {"task": {"*": "deny", "sdd-init": "allow", "sdd-explore": "allow", "sdd-propose": "allow", "sdd-spec": "allow", "sdd-design": "allow", "sdd-tasks": "allow", "sdd-apply": "allow", "sdd-verify": "allow", "sdd-archive": "allow", "sdd-onboard": "allow"}}
+    }`)
+	for _, name := range openCodeSDDSubagents() {
+		agents.WriteString(",\n")
+		agents.WriteString(`    "` + name + `": {"mode": "subagent", "hidden": true, "permission": {"task": "deny", `)
+		if name == "sdd-apply" {
+			agents.WriteString(applyPermission)
+		} else {
+			agents.WriteString(`"hive_mem_*": "allow"`)
+		}
+		agents.WriteString(`}}`)
+	}
+
+	content := `{
+  "share": "disabled",
+  "default_agent": "sdd-orchestrator",
+  "permission": {
+    "bash": {"*": "allow"},
+    "read": {".env": "deny"}
+  },
+  "agent": {` + agents.String() + `
+  },
+  "mcp": {
+    "hive": {"type": "local", "command": ["hive-daemon"]},
+    "context7": {"type": "remote", "url": "https://mcp.context7.com/mcp"}
+  }
+}`
+
+	path := filepath.Join(t.TempDir(), "opencode.json")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write opencode.json: %v", err)
+	}
+	return path
+}
+
+func findOpenCodeCheck(checks []sddruntime.CheckResult, key string) *sddruntime.CheckResult {
+	for i := range checks {
+		if checks[i].Key == key {
+			return &checks[i]
+		}
+	}
+	return nil
 }
 
 func assertHiveGrantEvidence(t *testing.T, got []sddruntime.OpenCodePermissionEvidence, want ...string) {

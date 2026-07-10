@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"sort"
@@ -151,26 +152,39 @@ func parseOpenCodeHiveGrantEvidence(raw json.RawMessage) []sddruntime.OpenCodePe
 	if len(raw) == 0 {
 		return nil
 	}
-	var permission map[string]any
-	if err := json.Unmarshal(raw, &permission); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	tok, err := dec.Token()
+	if err != nil {
 		return nil
 	}
+	delim, ok := tok.(json.Delim)
+	if !ok || delim != '{' {
+		return nil
+	}
+
 	evidence := make([]sddruntime.OpenCodePermissionEvidence, 0)
-	for key, value := range permission {
-		action, ok := value.(string)
-		if !ok || !isOpenCodePermissionActionEvidence(action) {
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return nil
+		}
+
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return nil
+		}
+		var action string
+		if err := json.Unmarshal(value, &action); err != nil || !isOpenCodePermissionActionEvidence(action) {
 			continue
 		}
 		if isOpenCodeHiveGrantEvidence(key) {
 			evidence = append(evidence, sddruntime.OpenCodePermissionEvidence{Key: key, Action: action})
 		}
 	}
-	sort.Slice(evidence, func(i, j int) bool {
-		if evidence[i].Key == evidence[j].Key {
-			return evidence[i].Action < evidence[j].Action
-		}
-		return evidence[i].Key < evidence[j].Key
-	})
 	return evidence
 }
 
