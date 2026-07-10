@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
@@ -18,6 +19,7 @@ const (
 
 // OverviewService provides aggregated dashboard metrics.
 type OverviewService interface {
+	GetForLevel(ctx context.Context, level model.UserLevel) (*model.CapabilityOverviewResponse, error)
 	GetStats(ctx context.Context) (*model.OverviewStatsResponse, error)
 	GetGrowth(ctx context.Context) (*model.OverviewGrowthResponse, error)
 }
@@ -39,6 +41,78 @@ func NewOverviewService(
 		syncRepo:  sync,
 		auditRepo: audit,
 	}
+}
+
+// GetForLevel constructs an allowlisted overview projection for the given level.
+func (s *overviewService) GetForLevel(ctx context.Context, level model.UserLevel) (*model.CapabilityOverviewResponse, error) {
+	summary, err := s.getCommonSummary(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if level == model.LevelMember {
+		return &model.CapabilityOverviewResponse{
+			Capability: model.OverviewCapabilityMember,
+			Summary:    summary,
+		}, nil
+	}
+	if level != model.LevelAdmin {
+		return nil, fmt.Errorf("unsupported overview level: %s", level)
+	}
+
+	stats, err := s.GetStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	growth, err := s.GetGrowth(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return &model.CapabilityOverviewResponse{
+		Capability: model.OverviewCapabilityAdmin,
+		Summary:    summary,
+		Operations: &model.AdminOverviewOperations{
+			DaemonHealth:        stats.DaemonHealth,
+			Conflicts:           stats.Conflicts,
+			KnowledgeGrowth:     growth.KnowledgeGrowth,
+			SyncHealthByProject: stats.SyncHealthByProject,
+			NewestSyncID:        stats.LiveActivity.NewestSyncID,
+		},
+	}, nil
+}
+
+func (s *overviewService) getCommonSummary(ctx context.Context) (model.OverviewSummary, error) {
+	totalMemories, err := s.memRepo.Count(ctx, model.MemoryFilter{})
+	if err != nil {
+		return model.OverviewSummary{}, err
+	}
+	byProject, err := s.memRepo.CountByProject(ctx, model.MemoryFilter{})
+	if err != nil {
+		return model.OverviewSummary{}, err
+	}
+	liveCount, _, err := s.memRepo.CountLiveActivity(ctx, time.Now().UTC().Add(-overviewLiveWindow))
+	if err != nil {
+		return model.OverviewSummary{}, err
+	}
+
+	activeProjects := 0
+	for _, project := range byProject {
+		if project.Count > 0 {
+			activeProjects++
+		}
+	}
+	topProjects := append([]model.ProjectCount{}, byProject...)
+	if len(topProjects) > overviewTopProjects {
+		topProjects = topProjects[:overviewTopProjects]
+	}
+
+	return model.OverviewSummary{
+		TotalMemories:      totalMemories,
+		ActiveProjects:     activeProjects,
+		LiveActivity:       model.MemberOverviewLiveActivity{Count: liveCount},
+		MostActiveProjects: topProjects,
+	}, nil
 }
 
 // GetStats aggregates all overview stats in a single response.
