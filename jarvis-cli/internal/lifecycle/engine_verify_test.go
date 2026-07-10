@@ -157,12 +157,12 @@ func TestEngineDoctor_RecommendsRegenerationForMissingSDDSubagentHiveGrants(t *t
 func TestEngineDoctor_RecommendsManualGuardrailChangeForStrictOpenCodeHiveGuardrail(t *testing.T) {
 	config := fakeCompliantOpenCodeConfig()
 	config.SDDSubagentHiveGrantEvidence["sdd-apply"] = []sddruntime.OpenCodePermissionEvidence{
-		{Key: "hive_mem_*", Action: "deny"},
 		{Key: "hive_mem_search", Action: "allow"},
 		{Key: "hive_mem_get_observation", Action: "allow"},
 		{Key: "hive_mem_save", Action: "allow"},
 		{Key: "hive_mem_context", Action: "allow"},
 		{Key: "hive_mem_session_summary", Action: "allow"},
+		{Key: "hive_mem_*", Action: "deny"},
 	}
 	adapter := &fakeProviderAdapter{
 		name: "opencode",

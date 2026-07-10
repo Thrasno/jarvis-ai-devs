@@ -657,7 +657,7 @@ func TestVerifyOpenCode_SDDSubagentHiveGrants_FailsWhenExactAskOverridesWildcard
 	}
 }
 
-func TestVerifyOpenCode_SDDSubagentHiveGrants_FailsWhenStrictWildcardOverridesGeneratedExactAllow(t *testing.T) {
+func TestVerifyOpenCode_SDDSubagentHiveGrants_PassesWhenExactAllowsFollowStrictWildcard(t *testing.T) {
 	observed := compliantOpenCodeRuntime(t)
 	observed.OpenCode.SDDSubagentHiveGrantEvidence["sdd-apply"] = []OpenCodePermissionEvidence{
 		{Key: "hive_mem_*", Action: "deny"},
@@ -674,17 +674,51 @@ func TestVerifyOpenCode_SDDSubagentHiveGrants_FailsWhenStrictWildcardOverridesGe
 	if check == nil {
 		t.Fatal("expected invariant.opencode.sdd_hive_grants check")
 	}
-	if check.Status != StatusFail {
-		t.Fatalf("expected StatusFail when strict wildcard deny is present with generated exact allows, got %q", check.Status)
+	if check.Status != StatusPass {
+		t.Fatalf("expected StatusPass when exact allows follow strict wildcard, got %q (message: %s)", check.Status, check.Message)
 	}
-	if check.DriftClass != DriftNonOwned {
-		t.Fatalf("expected strict wildcard guardrail to be classified as non-owned drift, got %q", check.DriftClass)
+}
+
+func TestVerifyOpenCode_SDDSubagentHiveGrants_FailsWhenStrictWildcardFollowsGeneratedExactAllows(t *testing.T) {
+	tests := []struct {
+		name   string
+		action string
+	}{
+		{name: "deny", action: "deny"},
+		{name: "ask", action: "ask"},
 	}
-	if strings.Contains(check.Message, "jarvis init") || !strings.Contains(check.Message, "manually adjust") {
-		t.Fatalf("expected manual guardrail remediation, got %q", check.Message)
-	}
-	if !strings.Contains(check.Observed, "sdd-apply:hive_mem_search") {
-		t.Fatalf("expected observed drift for wildcard-denied tool, got %q", check.Observed)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			observed := compliantOpenCodeRuntime(t)
+			observed.OpenCode.SDDSubagentHiveGrantEvidence["sdd-apply"] = []OpenCodePermissionEvidence{
+				{Key: "hive_mem_search", Action: "allow"},
+				{Key: "hive_mem_get_observation", Action: "allow"},
+				{Key: "hive_mem_save", Action: "allow"},
+				{Key: "hive_mem_context", Action: "allow"},
+				{Key: "hive_mem_session_summary", Action: "allow"},
+				{Key: "hive_mem_*", Action: tt.action},
+			}
+
+			report := Verify("opencode", observed)
+
+			check := findCheckByKey(report.Checks, "invariant.opencode.sdd_hive_grants")
+			if check == nil {
+				t.Fatal("expected invariant.opencode.sdd_hive_grants check")
+			}
+			if check.Status != StatusFail {
+				t.Fatalf("expected StatusFail when strict wildcard %s follows generated exact allows, got %q", tt.action, check.Status)
+			}
+			if check.DriftClass != DriftNonOwned {
+				t.Fatalf("expected strict wildcard guardrail to be classified as non-owned drift, got %q", check.DriftClass)
+			}
+			if strings.Contains(check.Message, "jarvis init") || !strings.Contains(check.Message, "manually adjust") {
+				t.Fatalf("expected manual guardrail remediation, got %q", check.Message)
+			}
+			if !strings.Contains(check.Observed, "sdd-apply:hive_mem_search") {
+				t.Fatalf("expected observed drift for wildcard-%s tool, got %q", tt.action, check.Observed)
+			}
+		})
 	}
 }
 

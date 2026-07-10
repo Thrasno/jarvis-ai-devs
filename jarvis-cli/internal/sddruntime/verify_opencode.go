@@ -303,28 +303,14 @@ func missingOpenCodeSDDSubagentHiveGrants(evidence map[string][]OpenCodePermissi
 }
 
 func openCodeHiveGrantEvidenceAllows(evidence []OpenCodePermissionEvidence, tool string) bool {
+	lastAction := ""
 	for _, entry := range evidence {
-		if openCodeHivePermissionSpecificity(entry.Key, tool) >= 0 && isOpenCodeStricterPermissionAction(entry.Action) {
-			return false
-		}
-	}
-	bestSpecificity := -1
-	bestAction := ""
-	for _, entry := range evidence {
-		specificity := openCodeHivePermissionSpecificity(entry.Key, tool)
-		if specificity < 0 || specificity < bestSpecificity {
+		if openCodeHivePermissionSpecificity(entry.Key, tool) < 0 {
 			continue
 		}
-		if specificity > bestSpecificity {
-			bestSpecificity = specificity
-			bestAction = entry.Action
-			continue
-		}
-		if isOpenCodeStricterPermissionAction(entry.Action) {
-			bestAction = entry.Action
-		}
+		lastAction = entry.Action
 	}
-	return bestAction == "allow"
+	return lastAction == "allow"
 }
 
 func openCodeHivePermissionSpecificity(pattern, tool string) int {
