@@ -74,7 +74,7 @@ notes: |
 		}
 	})
 
-	t.Run("validation enforces structural and editorial contract", func(t *testing.T) {
+	t.Run("validation enforces structural contract", func(t *testing.T) {
 		tests := []struct {
 			name    string
 			yaml    string
@@ -127,33 +127,6 @@ characteristic_phrases:
 `,
 				wantErr: "missing required field: tone",
 			},
-			{
-				name: "reject malformed editorial notes",
-				yaml: `name: broken-notes
-display_name: Broken Notes
-description: invalid notes
-tone:
-  formality: balanced
-  directness: high
-  humor: warm
-  language: en-us
-communication_style:
-  verbosity: high
-  show_alternatives: true
-  challenge_assumptions: true
-characteristic_phrases:
-  greetings: ["hey"]
-  confirmations: ["done"]
-  transitions: ["now"]
-  sign_offs: ["bye"]
-notes: |
-  # Broken Notes
-
-  ## Missing Required Sections
-  This should fail.
-`,
-				wantErr: "invalid notes template",
-			},
 		}
 
 		for _, tt := range tests {
@@ -170,6 +143,42 @@ notes: |
 				}
 				if !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("ValidatePreset() error = %q, want contains %q", err.Error(), tt.wantErr)
+				}
+			})
+		}
+	})
+
+	t.Run("V1 validators accept noncanonical Notes during compatibility window", func(t *testing.T) {
+		content := []byte(`name: compatibility-notes
+display_name: Compatibility Notes
+description: Preset with freeform legacy notes
+tone:
+  formality: balanced
+  directness: high
+  humor: warm
+  language: en-us
+communication_style:
+  verbosity: concise
+characteristic_phrases:
+  greetings: ["hey"]
+  confirmations: ["done"]
+notes: |
+  This is deliberately freeform legacy content.
+  It has no canonical editorial headings or section template.
+`)
+
+		validators := []struct {
+			name     string
+			validate func([]byte) error
+		}{
+			{name: "ValidatePreset", validate: ValidatePreset},
+			{name: "ValidateCustom", validate: ValidateCustom},
+		}
+
+		for _, tt := range validators {
+			t.Run(tt.name, func(t *testing.T) {
+				if err := tt.validate(content); err != nil {
+					t.Fatalf("%s() rejected structurally valid noncanonical Notes: %v", tt.name, err)
 				}
 			})
 		}

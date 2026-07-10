@@ -304,6 +304,47 @@ func TestCustomTemplateV2ValidatesAsPresentationOnly(t *testing.T) {
 	}
 }
 
+func TestDormantV2RenderersExcludeRetiredV1NotesAndScopeContracts(t *testing.T) {
+	profiles := []string{
+		"argentino",
+		"neutra",
+		"yoda",
+		"sargento",
+		"tony-stark",
+		"asturiano",
+		"galleguinho",
+	}
+
+	for _, name := range profiles {
+		t.Run(name, func(t *testing.T) {
+			content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas-v2/"+name+".yaml")
+			if err != nil {
+				t.Fatalf("read dormant V2 profile: %v", err)
+			}
+			preset, err := ValidateAndDecode(content)
+			if err != nil {
+				t.Fatalf("ValidateAndDecode() error = %v", err)
+			}
+
+			for surface, rendered := range map[string]string{
+				"Layer2":              RenderLayer2V2(preset),
+				"Claude output style": RenderOutputStyleV2(preset),
+			} {
+				for _, obsolete := range []string{
+					"Persona Scope (CRITICAL)",
+					"Response Length Contract",
+					"## Notes",
+					"Technical Behavior",
+				} {
+					if strings.Contains(rendered, obsolete) {
+						t.Fatalf("%s contains retired V1 contract %q:\n%s", surface, obsolete, rendered)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestDormantV2ProfileDocsDoNotAdvertiseUnsupportedActivation(t *testing.T) {
 	template, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas-v2/custom.yaml.tmpl")
 	if err != nil {

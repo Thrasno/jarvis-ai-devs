@@ -106,9 +106,7 @@ func isAllowedLanguage(lang string) bool {
 	return false
 }
 
-// ValidatePreset enforces preset double normalization:
-// 1) structural YAML schema
-// 2) editorial notes template
+// ValidatePreset enforces the structural YAML schema for active V1 presets.
 func ValidatePreset(content []byte) error {
 	var raw map[string]any
 	if err := yaml.Unmarshal(content, &raw); err != nil {
@@ -120,13 +118,9 @@ func ValidatePreset(content []byte) error {
 	}
 
 	if notesValue, exists := raw["notes"]; exists {
-		notes, ok := notesValue.(string)
+		_, ok := notesValue.(string)
 		if !ok {
 			return fmt.Errorf("field 'notes' must be a string")
-		}
-
-		if err := ValidateNotesTemplate(notes); err != nil {
-			return fmt.Errorf("invalid notes template: %w", err)
 		}
 	}
 

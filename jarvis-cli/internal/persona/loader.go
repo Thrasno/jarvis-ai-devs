@@ -51,6 +51,34 @@ type Preset struct {
 	Notes string `yaml:"notes"`
 }
 
+// v1PersonaScopeGuardrail is retained only while the active V1 renderer still
+// consumes legacy Notes content. Schema V2 renderers never use it.
+const v1PersonaScopeGuardrail = `<!-- gentle-ai:persona-scope -->
+## Persona Scope (CRITICAL)
+
+The active persona controls ONLY direct replies to the user.
+
+It MUST NOT control generated artifacts:
+- code, identifiers, variable names, function names, comments
+- UI labels, UI copy, error messages, accessibility strings
+- documentation, README files, commit messages, PR descriptions
+- configuration, prompts, SDD artifacts, or string literals
+
+Generated technical artifacts default to English unless the user explicitly requests another artifact language or the existing project convention requires one. Preserve Jarvis naming: Hive, jarvis CLI, .jarvis/skill-registry.md, and .jarvis/skills/<skill>/SKILL.md. Do not introduce external assistant-memory backend wording into product/generated Jarvis artifacts.
+
+## Response Length Contract
+
+Default to short answers. Start with the minimum useful response, then expand only when the user asks or the task genuinely requires it.
+
+## Language Rules
+
+Match the user's current language in direct replies only. Do not let persona language, slang, tone, or regional voice leak into code, docs, configs, prompts, UI text, comments, identifiers, or other generated artifacts.
+
+## When Asking Questions
+
+Ask at most one question at a time. After asking it, STOP and wait for the user's response.
+<!-- /gentle-ai:persona-scope -->`
+
 // LoadPreset loads a named preset from the provided embed.FS.
 // fs must be the root-package PersonaFS (embed/personas directory embedded at root).
 // name must be one of the 7 built-in preset names (e.g. "argentino", "tony-stark").
@@ -167,7 +195,7 @@ func RenderLayer2(preset *Preset) string {
 	}
 
 	sb.WriteString("\n\n")
-	sb.WriteString(personaScopeGuardrail)
+	sb.WriteString(v1PersonaScopeGuardrail)
 
 	return sb.String()
 }
@@ -196,7 +224,7 @@ func RenderOutputStyle(preset *Preset) string {
 		sb.WriteString(notes)
 		sb.WriteString("\n\n")
 	}
-	sb.WriteString(personaScopeGuardrail)
+	sb.WriteString(v1PersonaScopeGuardrail)
 
 	return sb.String()
 }
@@ -278,7 +306,7 @@ func notesHasStructuredSection(notes, section string) bool {
 
 func withoutPersonaScopeGuardrail(notes string) string {
 	notes = stripMarkedPersonaScopeBlocks(notes)
-	notes = strings.ReplaceAll(notes, personaScopeGuardrail, "")
+	notes = strings.ReplaceAll(notes, v1PersonaScopeGuardrail, "")
 	for strings.Contains(notes, "## Persona Scope (CRITICAL)") {
 		notes = stripMarkdownSection(notes, "## Persona Scope (CRITICAL)")
 	}
