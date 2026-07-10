@@ -37,6 +37,10 @@ type ObservedRuntime struct {
 	// The Claude adapter leaves this at its zero value (ParseSucceeded==false),
 	// which is safe — all verifier checks on this field are agent-gated.
 	OpenCode ObservedOpenCodeConfig
+	// ClaudeSDDSubagentHiveTools maps generated Claude SDD agent names to their
+	// parsed frontmatter tool allowlist. Nil means the observer did not inspect
+	// Claude SDD agent files; non-nil maps are verified for generated-artifact drift.
+	ClaudeSDDSubagentHiveTools map[string][]string
 }
 
 type ObservedRegistryQuality struct {
@@ -63,12 +67,62 @@ func Verify(agent string, observed ObservedRuntime) IntegrityReport {
 	verifyUnknownDrift(&report, observed.UnknownChanges)
 
 	if agent == "opencode" {
-		for _, check := range verifyOpenCodeConfigInvariants(observed.OpenCode) {
+		for _, check := range verifyOpenCodeConfigInvariants(observed.OpenCode, observed.StoreMode) {
 			report.AddCheck(check)
 		}
 	}
+	if agent == "claude" {
+		verifyClaudeSDDSubagentHiveTools(&report, observed.ClaudeSDDSubagentHiveTools, observed.StoreMode)
+	}
 
 	return report
+}
+
+func verifyClaudeSDDSubagentHiveTools(report *IntegrityReport, evidence map[string][]string, storeMode string) {
+	if evidence == nil {
+		return
+	}
+	missing := missingClaudeSDDSubagentHiveTools(evidence)
+	status := StatusPass
+	drift := DriftNone
+	message := "all generated Claude SDD agents include Hive MCP tools"
+	if len(missing) > 0 {
+		status = hiveToolDriftStatus(storeMode)
+		drift = DriftOwned
+		if status == StatusFail {
+			message = "generated Claude SDD agent Hive MCP tools are missing for Hive/hybrid mode; re-run jarvis init or supported reconfiguration to regenerate Claude agents"
+		} else {
+			message = "generated Claude SDD agent Hive MCP tools are missing; advisory generated-artifact drift only because openspec and none modes do not require Hive artifact persistence"
+		}
+	}
+	report.AddCheck(CheckResult{
+		Key:        "invariant.claude.sdd_hive_tools",
+		Status:     status,
+		DriftClass: drift,
+		Expected:   strings.Join(requiredClaudeHiveMCPTools(), ","),
+		Observed:   strings.Join(missing, ","),
+		Message:    message,
+	})
+}
+
+func missingClaudeSDDSubagentHiveTools(evidence map[string][]string) []string {
+	missing := make([]string, 0)
+	for _, agentName := range requiredOpenCodeSDDSubagents() {
+		tools := make(map[string]struct{})
+		for _, tool := range evidence[agentName] {
+			tools[tool] = struct{}{}
+		}
+		for _, required := range requiredClaudeHiveMCPTools() {
+			if _, ok := tools[required]; !ok {
+				missing = append(missing, agentName+":"+required)
+			}
+		}
+	}
+	return missing
+}
+
+func requiredClaudeHiveMCPTools() []string {
+	return []string{"mcp__hive__mem_search", "mcp__hive__mem_get_observation", "mcp__hive__mem_save", "mcp__hive__mem_context", "mcp__hive__mem_session_summary"}
 }
 
 func verifyRegistryQuality(report *IntegrityReport, quality ObservedRegistryQuality) {
@@ -132,7 +186,7 @@ func verifyPromptInvariants(report *IntegrityReport, observed ObservedRuntime) {
 func verifyStoreInvariants(report *IntegrityReport, observed ObservedRuntime) {
 	resolved, err := ResolveStoreContract(observed.StoreMode)
 	if err != nil {
-		report.AddCheck(CheckResult{Key: "invariant.store.mode", Status: StatusFail, DriftClass: DriftOwned, Expected: "hive|openspec|hybrid", Observed: observed.StoreMode, Message: "store mode drift: unsupported mode"})
+		report.AddCheck(CheckResult{Key: "invariant.store.mode", Status: StatusFail, DriftClass: DriftOwned, Expected: "hive|openspec|hybrid|none", Observed: observed.StoreMode, Message: "store mode drift: unsupported mode"})
 		return
 	}
 
@@ -152,7 +206,7 @@ func verifyStoreInvariants(report *IntegrityReport, observed ObservedRuntime) {
 	}
 	report.AddCheck(CheckResult{Key: "invariant.store.write_targets", Status: writeStatus, DriftClass: driftClassFromStatus(writeStatus), Expected: strings.Join(resolved.WriteTo, ","), Observed: strings.Join(observed.StoreWriteTo, ","), Message: writeMsg})
 
-	report.AddCheck(CheckResult{Key: "invariant.store.mode", Status: StatusPass, DriftClass: DriftNone, Expected: "hive|openspec|hybrid", Observed: string(resolved.Mode), Message: "store mode invariant accepted"})
+	report.AddCheck(CheckResult{Key: "invariant.store.mode", Status: StatusPass, DriftClass: DriftNone, Expected: "hive|openspec|hybrid|none", Observed: string(resolved.Mode), Message: "store mode invariant accepted"})
 }
 
 func verifyMemoryTopicInvariants(report *IntegrityReport, observed ObservedRuntime) {

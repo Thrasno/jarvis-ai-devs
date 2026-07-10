@@ -30,10 +30,12 @@ func (a *lifecycleAgentAdapter) Observe() (lifecycle.ObservedProviderState, erro
 		return lifecycle.ObservedProviderState{}, err
 	}
 	return lifecycle.ObservedProviderState{
-		Artifacts:       observed.Artifacts,
-		NonOwnedChanges: observed.NonOwnedChanges,
-		UnknownChanges:  observed.UnknownChanges,
-		RegistryQuality: observed.RegistryQuality,
+		Artifacts:                  observed.Artifacts,
+		NonOwnedChanges:            observed.NonOwnedChanges,
+		UnknownChanges:             observed.UnknownChanges,
+		RegistryQuality:            observed.RegistryQuality,
+		OpenCode:                   observed.OpenCode,
+		ClaudeSDDSubagentHiveTools: observed.ClaudeSDDSubagentHiveTools,
 	}, nil
 }
 

@@ -37,7 +37,8 @@ type ObservedOpenCodeConfig struct {
 	HiddenSubagents []string
 
 	// TaskAllows contains the keys in orchestrator.permission.task whose value
-	// is "allow". Expected to have 13 entries (one per named subagent).
+	// is "allow". Expected to include every generated subagent that the
+	// orchestrator may delegate to.
 	TaskAllows []string
 
 	// TaskWildcardDeny is true when orchestrator.permission.task["*"] == "deny".
@@ -59,4 +60,18 @@ type ObservedOpenCodeConfig struct {
 	// PluginHiveExists is true when plugins/hive.ts exists and is non-empty.
 	// This field is populated from the prompt_hook artifact observation, not from JSON.
 	PluginHiveExists bool
+
+	// SDDSubagentHiveGrantEvidence maps each generated SDD subagent name to the
+	// exact permission entries or wildcard permission patterns that affect Hive
+	// MCP tool access, for example hive_mem_search, hive_mem_*, or hive_*.
+	// Both allow and stricter ask/deny entries are retained so verification can
+	// conservatively evaluate effective access after user-owned merge overrides.
+	SDDSubagentHiveGrantEvidence map[string][]OpenCodePermissionEvidence
+}
+
+// OpenCodePermissionEvidence records one permission entry that can affect Hive
+// MCP access for a generated OpenCode SDD subagent.
+type OpenCodePermissionEvidence struct {
+	Key    string
+	Action string
 }

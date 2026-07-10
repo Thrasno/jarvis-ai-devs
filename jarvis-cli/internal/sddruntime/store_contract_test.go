@@ -15,6 +15,7 @@ func TestResolveStoreMode_AllowsSupportedModes(t *testing.T) {
 		{name: "hive", input: "hive", want: StoreModeHive},
 		{name: "openspec", input: "openspec", want: StoreModeOpenSpec},
 		{name: "hybrid", input: "hybrid", want: StoreModeHybrid},
+		{name: "none", input: "none", want: StoreModeNone},
 		{name: "trim and normalize", input: "  HyBrId  ", want: StoreModeHybrid},
 	}
 
@@ -58,6 +59,7 @@ func TestResolveStoreContract_UsesDeterministicReadWriteMatrix(t *testing.T) {
 		{name: "hive", mode: "hive", wantMode: StoreModeHive, wantRead: []string{"hive"}, wantWrite: []string{"hive"}},
 		{name: "openspec", mode: "openspec", wantMode: StoreModeOpenSpec, wantRead: []string{"openspec"}, wantWrite: []string{"openspec"}},
 		{name: "hybrid", mode: "hybrid", wantMode: StoreModeHybrid, wantRead: []string{"hive", "openspec"}, wantWrite: []string{"hive", "openspec"}},
+		{name: "none", mode: "none", wantMode: StoreModeNone, wantRead: nil, wantWrite: nil},
 	}
 
 	for _, tt := range tests {

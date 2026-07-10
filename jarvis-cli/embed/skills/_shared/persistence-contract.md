@@ -72,6 +72,18 @@ Topic keys group related artifact saves; they are not artifact identity, recency
 - Write behavior: the phase artifact is complete only after the Hive save and filesystem write both succeed.
 - State clearly in the return envelope if either store failed.
 
+## Hive/Hybrid Degraded Mode
+
+If Hive MCP tools cannot be exposed to SDD phase sub-agents, `hive` and `hybrid` modes are degraded and MUST fail clearly. Do not silently downgrade `hive` or `hybrid` to inline-only context.
+
+Required Hive MCP tools: `mcp__hive__mem_search`, `mcp__hive__mem_get_observation`, `mcp__hive__mem_save`, `mcp__hive__mem_context`, and `mcp__hive__mem_session_summary`.
+
+OpenCode permission entries use the corresponding `hive_mem_search`, `hive_mem_get_observation`, `hive_mem_save`, `hive_mem_context`, and `hive_mem_session_summary` tool names.
+
+The blocked response MUST name the missing Hive MCP capability and recommend `jarvis init` or supported reconfiguration. Regeneration must preserve user-owned configuration through merge/no-clobber behavior.
+
+This generated-artifact drift check is independent from the selected SDD artifact store mode; non-Hive modes do not require Hive persistence, but generated stale agents may still be reported as advisory drift when present.
+
 ### None Mode
 
 - Call no persistence tools for SDD artifacts.

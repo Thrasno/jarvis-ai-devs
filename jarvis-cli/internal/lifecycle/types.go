@@ -22,7 +22,8 @@ type ObservedProviderState struct {
 	// Populated by the opencode lifecycle adapter; other adapters leave it at
 	// zero value (ParseSucceeded==false), which is safe — all opencode verifier
 	// checks are gated on ParseSucceeded.
-	OpenCode sddruntime.ObservedOpenCodeConfig
+	OpenCode                   sddruntime.ObservedOpenCodeConfig
+	ClaudeSDDSubagentHiveTools map[string][]string
 }
 
 type VerifyResult struct {

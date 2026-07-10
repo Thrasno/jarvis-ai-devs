@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 )
 
 func TestEngineUninstall_RejectsUnsupportedModes(t *testing.T) {
@@ -121,4 +123,45 @@ func TestEngineUninstall_UsesOwnedBoundariesOnly(t *testing.T) {
 			t.Fatalf("backup targets must be managed-only, got %q", target)
 		}
 	}
+}
+
+func TestFakeCompliantOpenCodeConfig_IncludesSDDHiveGrantEvidence(t *testing.T) {
+	config := fakeCompliantOpenCodeConfig()
+	requiredSubagents := []string{
+		"sdd-init",
+		"sdd-explore",
+		"sdd-propose",
+		"sdd-spec",
+		"sdd-design",
+		"sdd-tasks",
+		"sdd-apply",
+		"sdd-verify",
+		"sdd-archive",
+		"sdd-onboard",
+	}
+	requiredTools := []string{
+		"hive_mem_search",
+		"hive_mem_get_observation",
+		"hive_mem_save",
+		"hive_mem_context",
+		"hive_mem_session_summary",
+	}
+
+	for _, subagent := range requiredSubagents {
+		evidence := config.SDDSubagentHiveGrantEvidence[subagent]
+		for _, tool := range requiredTools {
+			if !hasAllowEvidence(evidence, tool) {
+				t.Fatalf("fake compliant OpenCode config missing allow evidence for %s:%s", subagent, tool)
+			}
+		}
+	}
+}
+
+func hasAllowEvidence(evidence []sddruntime.OpenCodePermissionEvidence, tool string) bool {
+	for _, entry := range evidence {
+		if entry.Key == tool && entry.Action == "allow" {
+			return true
+		}
+	}
+	return false
 }

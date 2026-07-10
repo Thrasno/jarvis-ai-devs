@@ -70,6 +70,9 @@ func deepMergeWithContext(dst, src map[string]any, inPermission bool) map[string
 
 		dstVal, exists := result[k]
 		if !exists {
+			if mergePermission && isGeneratedHiveAllow(srcVal) && hasStrictHiveWildcardGuardrail(result, k) {
+				continue
+			}
 			// New key from patch — add it
 			result[k] = srcVal
 			continue
@@ -103,7 +106,55 @@ func deepMergeWithContext(dst, src map[string]any, inPermission bool) map[string
 		result[k] = srcVal
 	}
 
+	if inPermission {
+		removeGeneratedHiveAllowsWeakenedByStrictWildcard(result)
+	}
+
 	return result
+}
+
+func isGeneratedHiveAllow(value any) bool {
+	permission, ok := value.(string)
+	return ok && permission == "allow"
+}
+
+func hasStrictHiveWildcardGuardrail(permission map[string]any, key string) bool {
+	if !isExactHiveMemPermissionKey(key) {
+		return false
+	}
+	for _, wildcard := range []string{"hive_mem_*", "hive_*"} {
+		if isStrictPermissionValue(permission[wildcard]) {
+			return true
+		}
+	}
+	return false
+}
+
+func removeGeneratedHiveAllowsWeakenedByStrictWildcard(permission map[string]any) {
+	for _, wildcard := range []string{"hive_mem_*", "hive_*"} {
+		if !isStrictPermissionValue(permission[wildcard]) {
+			continue
+		}
+		for _, key := range exactHiveMemPermissionKeys() {
+			if isGeneratedHiveAllow(permission[key]) {
+				delete(permission, key)
+			}
+		}
+		return
+	}
+}
+
+func exactHiveMemPermissionKeys() []string {
+	return []string{"hive_mem_search", "hive_mem_get_observation", "hive_mem_save", "hive_mem_context", "hive_mem_session_summary"}
+}
+
+func isExactHiveMemPermissionKey(key string) bool {
+	for _, exactKey := range exactHiveMemPermissionKeys() {
+		if key == exactKey {
+			return true
+		}
+	}
+	return false
 }
 
 func isStrictPermissionValue(value any) bool {

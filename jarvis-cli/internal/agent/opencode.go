@@ -308,6 +308,10 @@ func buildOpenCodeSDDGeneratedAgents(assignments, variants map[string]string) []
 	defs := SDDPhaseAgentDefinitions()
 	agents := make([]opencodeGeneratedAgent, 0, len(defs))
 	for _, def := range defs {
+		permission, err := withOpenCodeHiveMCPPermissions(def.OpenCodePermission)
+		if err != nil {
+			permission = def.OpenCodePermission
+		}
 		agents = append(agents, opencodeGeneratedAgent{
 			Name:        def.Name,
 			Description: def.Description,
@@ -316,10 +320,25 @@ func buildOpenCodeSDDGeneratedAgents(assignments, variants map[string]string) []
 			Model:       modelForGeneratedAgent(assignments, def.ModelKey),
 			Variant:     variants[def.ModelKey],
 			Prompt:      jarvisSkillPrompt(def.SkillID),
-			Permission:  def.OpenCodePermission,
+			Permission:  permission,
 		})
 	}
 	return agents
+}
+
+func withOpenCodeHiveMCPPermissions(raw string) (string, error) {
+	var permission map[string]any
+	if err := json.Unmarshal([]byte(raw), &permission); err != nil {
+		return "", err
+	}
+	for _, tool := range RequiredOpenCodeHiveMCPTools() {
+		permission[tool] = "allow"
+	}
+	out, err := json.Marshal(permission)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 func openCodeSDDSubagents() []string {

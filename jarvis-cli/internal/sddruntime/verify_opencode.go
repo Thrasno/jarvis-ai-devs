@@ -12,7 +12,7 @@ import (
 // If oc.ParseSucceeded is false, only the structure-valid guard check is
 // emitted and the function returns immediately, preventing nil/zero-value
 // noise from invalid state.
-func verifyOpenCodeConfigInvariants(oc ObservedOpenCodeConfig) []CheckResult {
+func verifyOpenCodeConfigInvariants(oc ObservedOpenCodeConfig, storeMode string) []CheckResult {
 	var results []CheckResult
 
 	// Guard: if JSON parsing failed, emit one error and short-circuit.
@@ -170,15 +170,43 @@ func verifyOpenCodeConfigInvariants(oc ObservedOpenCodeConfig) []CheckResult {
 		Message:    pluginMsg,
 	})
 
-	// --- R9: MCP Hive (warning only) ---
+	// --- R12: SDD subagent Hive MCP grants ---
+	hiveGrantStatus := StatusPass
+	hiveGrantMsg := "all generated SDD subagents include Hive MCP tool grants"
+	hiveGrantDrift := DriftNone
+	missingHiveGrants := missingOpenCodeSDDSubagentHiveGrants(oc.SDDSubagentHiveGrantEvidence)
+	if len(missingHiveGrants) > 0 {
+		hiveGrantStatus = hiveToolDriftStatus(storeMode)
+		hiveGrantDrift = DriftOwned
+		if hiveGrantStatus == StatusFail {
+			hiveGrantMsg = "generated OpenCode SDD subagent Hive MCP grants are missing for Hive/hybrid mode; re-run jarvis init or supported reconfiguration to regenerate opencode.json"
+		} else {
+			hiveGrantMsg = "generated OpenCode SDD subagent Hive MCP grants are missing; advisory generated-artifact drift only because this SDD store mode does not require Hive persistence"
+		}
+	}
+	results = append(results, CheckResult{
+		Key:        "invariant.opencode.sdd_hive_grants",
+		Status:     hiveGrantStatus,
+		DriftClass: hiveGrantDrift,
+		Expected:   strings.Join(requiredOpenCodeHiveMCPTools(), ","),
+		Observed:   strings.Join(missingHiveGrants, ","),
+		Message:    hiveGrantMsg,
+	})
+
+	// --- R9: MCP Hive ---
 	mcpHiveStatus := StatusPass
 	mcpHiveMsg := "mcp.hive entry present (type=local, non-empty command)"
 	mcpHiveObserved := fmt.Sprintf("mcp_hive_present=%v", oc.MCPHivePresent)
 	mcpHiveDrift := DriftNone
 	if !oc.MCPHivePresent {
-		mcpHiveStatus = StatusWarn
-		mcpHiveMsg = "mcp.hive missing/not local/empty command (daemon may be absent on clean install)"
-		mcpHiveDrift = DriftUnknown
+		mcpHiveStatus = openCodeMCPHiveDriftStatus(storeMode)
+		mcpHiveDrift = DriftOwned
+		if mcpHiveStatus == StatusFail {
+			mcpHiveMsg = "Hive/hybrid mode requires top-level mcp.hive because SDD subagents cannot reach Hive tools without the MCP server; re-run jarvis init or supported reconfiguration"
+		} else {
+			mcpHiveMsg = "mcp.hive missing/not local/empty command (daemon may be absent on clean install); Hive artifact persistence is not required for openspec or none modes"
+			mcpHiveDrift = DriftUnknown
+		}
 	}
 	results = append(results, CheckResult{
 		Key:        "invariant.opencode.mcp_hive",
@@ -209,4 +237,103 @@ func verifyOpenCodeConfigInvariants(oc ObservedOpenCodeConfig) []CheckResult {
 	})
 
 	return results
+}
+
+func hiveToolDriftStatus(storeMode string) IntegrityStatus {
+	mode, err := ResolveStoreMode(storeMode)
+	if err != nil {
+		return StatusFail
+	}
+	if mode == StoreModeOpenSpec || mode == StoreModeNone {
+		return StatusWarn
+	}
+	return StatusFail
+}
+
+func openCodeMCPHiveDriftStatus(storeMode string) IntegrityStatus {
+	mode, err := ResolveStoreMode(storeMode)
+	if err != nil {
+		return StatusFail
+	}
+	if mode == StoreModeOpenSpec || mode == StoreModeNone {
+		return StatusWarn
+	}
+	return StatusFail
+}
+
+func missingOpenCodeSDDSubagentHiveGrants(evidence map[string][]OpenCodePermissionEvidence) []string {
+	missing := make([]string, 0)
+	for _, agentName := range requiredOpenCodeSDDSubagents() {
+		agentEvidence := evidence[agentName]
+		for _, tool := range requiredOpenCodeHiveMCPTools() {
+			if !openCodeHiveGrantEvidenceAllows(agentEvidence, tool) {
+				missing = append(missing, agentName+":"+tool)
+			}
+		}
+	}
+	return missing
+}
+
+func openCodeHiveGrantEvidenceAllows(evidence []OpenCodePermissionEvidence, tool string) bool {
+	for _, entry := range evidence {
+		if openCodeHivePermissionSpecificity(entry.Key, tool) >= 0 && isOpenCodeStricterPermissionAction(entry.Action) {
+			return false
+		}
+	}
+	bestSpecificity := -1
+	bestAction := ""
+	for _, entry := range evidence {
+		specificity := openCodeHivePermissionSpecificity(entry.Key, tool)
+		if specificity < 0 || specificity < bestSpecificity {
+			continue
+		}
+		if specificity > bestSpecificity {
+			bestSpecificity = specificity
+			bestAction = entry.Action
+			continue
+		}
+		if isOpenCodeStricterPermissionAction(entry.Action) {
+			bestAction = entry.Action
+		}
+	}
+	return bestAction == "allow"
+}
+
+func openCodeHivePermissionSpecificity(pattern, tool string) int {
+	switch pattern {
+	case tool:
+		return 3
+	case "hive_mem_*":
+		if strings.HasPrefix(tool, "hive_mem_") {
+			return 2
+		}
+	case "hive_*":
+		if strings.HasPrefix(tool, "hive_") {
+			return 1
+		}
+	}
+	return -1
+}
+
+func isOpenCodeStricterPermissionAction(action string) bool {
+	return action == "ask" || action == "deny"
+}
+
+func requiredOpenCodeHiveMCPTools() []string {
+	return []string{"hive_mem_search", "hive_mem_get_observation", "hive_mem_save", "hive_mem_context", "hive_mem_session_summary"}
+}
+
+func requiredOpenCodeSDDSubagents() []string {
+	return []string{
+		"sdd-init",
+		"sdd-explore",
+		"sdd-propose",
+		"sdd-spec",
+		"sdd-design",
+		"sdd-tasks",
+		"sdd-apply",
+		"sdd-verify",
+		"sdd-archive",
+		"sdd-onboard",
+	}
 }

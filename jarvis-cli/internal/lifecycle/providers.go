@@ -72,6 +72,11 @@ func (f *fakeProviderAdapter) Apply(steps []DoctorStep) error {
 // for use in fake lifecycle adapter tests. It mirrors what a properly
 // installed opencode config would produce.
 func fakeCompliantOpenCodeConfig() sddruntime.ObservedOpenCodeConfig {
+	sddSubagents := []string{
+		"sdd-explore", "sdd-propose", "sdd-spec", "sdd-design",
+		"sdd-tasks", "sdd-apply", "sdd-verify", "sdd-archive",
+		"sdd-init", "sdd-onboard",
+	}
 	subagents := []string{
 		"sdd-explore", "sdd-propose", "sdd-spec", "sdd-design",
 		"sdd-tasks", "sdd-apply", "sdd-verify", "sdd-archive",
@@ -79,22 +84,37 @@ func fakeCompliantOpenCodeConfig() sddruntime.ObservedOpenCodeConfig {
 		"jd-judge-a", "jd-judge-b", "jd-fix-agent",
 		"review-risk", "review-readability", "review-reliability", "review-resilience",
 	}
+	hiveGrantEvidence := make(map[string][]sddruntime.OpenCodePermissionEvidence, len(sddSubagents))
+	for _, subagent := range sddSubagents {
+		hiveGrantEvidence[subagent] = fakeCompliantOpenCodeHiveGrantEvidence()
+	}
 	return sddruntime.ObservedOpenCodeConfig{
-		ParseSucceeded:     true,
-		ShareMode:          "disabled",
-		DefaultAgent:       "sdd-orchestrator",
-		OrchestratorMode:   "primary",
-		OrchestratorModel:  "legacy=opus",
-		OrchestratorPrompt: "{file:./sdd-orchestrator.md}",
-		AgentNames:         append([]string{"sdd-orchestrator"}, subagents...),
-		HiddenSubagents:    subagents,
-		TaskAllows:         subagents,
-		TaskWildcardDeny:   true,
-		BashWildcardAllow:  true,
-		ReadSecretDenies:   true,
-		MCPHivePresent:     true,
-		MCPContext7Present: true,
-		PluginHiveExists:   true,
+		ParseSucceeded:               true,
+		ShareMode:                    "disabled",
+		DefaultAgent:                 "sdd-orchestrator",
+		OrchestratorMode:             "primary",
+		OrchestratorModel:            "legacy=opus",
+		OrchestratorPrompt:           "{file:./sdd-orchestrator.md}",
+		AgentNames:                   append([]string{"sdd-orchestrator"}, subagents...),
+		HiddenSubagents:              subagents,
+		TaskAllows:                   subagents,
+		TaskWildcardDeny:             true,
+		BashWildcardAllow:            true,
+		ReadSecretDenies:             true,
+		MCPHivePresent:               true,
+		MCPContext7Present:           true,
+		PluginHiveExists:             true,
+		SDDSubagentHiveGrantEvidence: hiveGrantEvidence,
+	}
+}
+
+func fakeCompliantOpenCodeHiveGrantEvidence() []sddruntime.OpenCodePermissionEvidence {
+	return []sddruntime.OpenCodePermissionEvidence{
+		{Key: "hive_mem_search", Action: "allow"},
+		{Key: "hive_mem_get_observation", Action: "allow"},
+		{Key: "hive_mem_save", Action: "allow"},
+		{Key: "hive_mem_context", Action: "allow"},
+		{Key: "hive_mem_session_summary", Action: "allow"},
 	}
 }
 
