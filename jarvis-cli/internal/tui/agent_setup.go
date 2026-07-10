@@ -143,7 +143,7 @@ func configureWizardAgents(
 	cfg *config.AppConfig,
 	hiveEntry agent.MCPEntry,
 	context7Entry agent.MCPEntry,
-	resolvedPreset *persona.ResolvedPreset,
+	selection persona.PresetSelection,
 	presetCtx wizardPresetApplyContext,
 	skillsSubFS fs.FS,
 	selectedIDs []string,
@@ -170,8 +170,8 @@ func configureWizardAgents(
 		results = append(results, res)
 	}
 
-	if resolvedPreset != nil {
-		if err := applyWizardPresetSelection(agents, persona.PresetSelection{V1: resolvedPreset}, wizardPresetApplyContext{
+	if selection.V1 != nil || selection.V2 != nil {
+		if err := applyWizardPresetSelection(agents, selection, wizardPresetApplyContext{
 			Layer1:               presetCtx.Layer1,
 			Skills:               presetCtx.Skills,
 			PreviousPresetSlug:   presetCtx.PreviousPresetSlug,

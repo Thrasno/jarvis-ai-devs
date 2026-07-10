@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -25,7 +26,7 @@ var personaSetCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		presetName := args[0]
 
-		resolved, err := persona.ResolvePreset(jarvis.PersonaFS, presetName)
+		selection, resolved, err := resolvePersonaSetSelection(jarvis.PersonaFS, presetName)
 		if err != nil {
 			return fmt.Errorf("resolve preset %q: %w", presetName, err)
 		}
@@ -56,7 +57,7 @@ var personaSetCmd = &cobra.Command{
 		}
 
 		agents := agent.Detect(jarvis.TemplatesFS)
-		if err := applyPersonaPresetSelection(agents, persona.PresetSelection{V1: resolved}, persona.ApplyOptions{
+		if err := applyPersonaPresetSelection(agents, selection, persona.ApplyOptions{
 			Layer1:               config.Layer1Content(),
 			Skills:               skillInfos,
 			PreviousPresetSlug:   cfg.PersonaPreset,
@@ -73,6 +74,16 @@ var personaSetCmd = &cobra.Command{
 		fmt.Printf("Persona set to %q (%s).\n", resolved.Slug, displayName)
 		return nil
 	},
+}
+
+// resolvePersonaSetSelection keeps the normal CLI route explicitly on V1 while
+// passing the versioned selection shape used by the later V2 activation slice.
+func resolvePersonaSetSelection(personaFS fs.FS, presetName string) (persona.PresetSelection, *persona.ResolvedPreset, error) {
+	resolved, err := persona.ResolvePreset(personaFS, presetName)
+	if err != nil {
+		return persona.PresetSelection{}, nil, err
+	}
+	return persona.PresetSelection{V1: resolved}, resolved, nil
 }
 
 // applyPersonaPresetSelection adapts resolved persona versions to installed

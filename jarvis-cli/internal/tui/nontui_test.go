@@ -301,6 +301,19 @@ func TestRunNoTUI_CustomPresetInvalidYAMLBlocksContinuation(t *testing.T) {
 	}
 }
 
+func TestResolveNoTUIPresetSelectionKeepsNormalRouteOnV1(t *testing.T) {
+	selection, resolved, err := resolveNoTUIPresetSelection(testPersonaFS, "fixture", nil)
+	if err != nil {
+		t.Fatalf("resolveNoTUIPresetSelection: %v", err)
+	}
+	if selection.V1 == nil || selection.V2 != nil {
+		t.Fatalf("selection = %+v, want V1 only", selection)
+	}
+	if resolved == nil || resolved.Slug != "fixture" {
+		t.Fatalf("resolved = %+v, want V1 fixture", resolved)
+	}
+}
+
 func TestPrintNoTUIPhaseModelReview_IncludesOpenCodeProviderModelAssignments(t *testing.T) {
 	resolved := sddruntime.ResolvePhaseModels(&config.AppConfig{})
 	assignments := map[string]config.OpenCodeModelAssignment{

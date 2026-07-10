@@ -168,7 +168,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		customDraft = &customPresetDraft{Name: name, DisplayName: displayName, YAML: yamlOverride}
 	}
 
-	resolvedPreset, err := resolveWizardPresetSelection(wcfg.PersonaFS, selectedPersona.Name, customDraft)
+	selection, resolvedPreset, err := resolveNoTUIPresetSelection(wcfg.PersonaFS, selectedPersona.Name, customDraft)
 	if err != nil {
 		return fmt.Errorf("resolve selected preset: %w", err)
 	}
@@ -368,7 +368,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		return fmt.Errorf("check statusline script: %w", err)
 	}
 
-	results := configureWizardAgents(agents, cfg, entry, context7Entry, resolvedPreset, wizardPresetApplyContext{
+	results := configureWizardAgents(agents, cfg, entry, context7Entry, selection, wizardPresetApplyContext{
 		Layer1:               config.Layer1Content(),
 		Skills:               skillInfos,
 		PreviousPresetSlug:   previousPresetSlug,
@@ -464,6 +464,16 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	fmt.Println("Next: restart Claude Code or OpenCode.")
 	fmt.Println("Use mem_sync in your agent only when you want a manual cloud sync.")
 	return nil
+}
+
+// resolveNoTUIPresetSelection keeps the non-interactive wizard on V1 while
+// forwarding its choice through the versioned apply seam.
+func resolveNoTUIPresetSelection(personaFS fs.FS, requestedSlug string, custom *customPresetDraft) (persona.PresetSelection, *persona.ResolvedPreset, error) {
+	resolved, err := resolveWizardPresetSelection(personaFS, requestedSlug, custom)
+	if err != nil {
+		return persona.PresetSelection{}, nil, err
+	}
+	return persona.PresetSelection{V1: resolved}, resolved, nil
 }
 
 // readLine reads a single line from the scanner, trimming whitespace.

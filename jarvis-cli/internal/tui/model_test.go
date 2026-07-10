@@ -1014,7 +1014,7 @@ func TestConfigureWizardAgents_AddsClaudeRestartGuidanceOnlyForClaude(t *testing
 	opencode := &mockAgent{name: "opencode", configDir: t.TempDir()}
 	cfg := &config.AppConfig{APIURL: config.DefaultAPIURL}
 
-	results := configureWizardAgents([]agent.Agent{claude, opencode}, cfg, agent.MCPEntry{Name: "hive", DaemonPath: "/tmp/hive-daemon"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, nil, nil, nil, func() bool { return true })
+	results := configureWizardAgents([]agent.Agent{claude, opencode}, cfg, agent.MCPEntry{Name: "hive", DaemonPath: "/tmp/hive-daemon"}, agent.MCPEntry{Name: "context7"}, persona.PresetSelection{}, wizardPresetApplyContext{}, nil, nil, nil, func() bool { return true })
 
 	if len(results) != 2 {
 		t.Fatalf("expected two results, got %#v", results)
@@ -1107,6 +1107,35 @@ func TestStep_Persona_SelectAndAdvance(t *testing.T) {
 	}
 	if m.cfg.PersonaPreset != "preset-0" {
 		t.Errorf("expected cfg.PersonaPreset=preset-0, got %q", m.cfg.PersonaPreset)
+	}
+}
+
+func TestWizardPresetSelectionKeepsV1ActiveUntilExplicitV2Selection(t *testing.T) {
+	v1 := &persona.ResolvedPreset{Slug: "fixture", Preset: &persona.Preset{Name: "fixture"}}
+	v2 := &persona.ResolvedPresetV2{Slug: "future", Preset: &persona.PresetV2{Name: "future"}}
+
+	tests := []struct {
+		name string
+		m    Model
+		want string
+	}{
+		{name: "normal V1 selection wins", m: Model{selectedPreset: v1, selectedPresetV2: v2}, want: "v1"},
+		{name: "explicit V2 seam is available", m: Model{selectedPresetV2: v2}, want: "v2"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			selection, ok := tt.m.wizardPresetSelection()
+			if !ok {
+				t.Fatal("expected a selected preset")
+			}
+			if tt.want == "v1" && (selection.V1 != v1 || selection.V2 != nil) {
+				t.Fatalf("selection = %+v, want V1 only", selection)
+			}
+			if tt.want == "v2" && (selection.V1 != nil || selection.V2 != v2) {
+				t.Fatalf("selection = %+v, want V2 only", selection)
+			}
+		})
 	}
 }
 

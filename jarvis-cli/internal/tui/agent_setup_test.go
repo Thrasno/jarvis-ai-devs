@@ -328,7 +328,7 @@ func TestConfigureWizardAgents_SurfacesRegistryAutomationWarningsWithoutFailing(
 		observeRuntime:        passingRuntimeObservation(t, "claude", assignments, nil),
 	}
 
-	results := configureWizardAgents([]agent.Agent{a}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
+	results := configureWizardAgents([]agent.Agent{a}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, persona.PresetSelection{}, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
 	if len(results) != 1 {
 		t.Fatalf("len(results) = %d, want 1", len(results))
 	}
@@ -536,7 +536,7 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			results := configureWizardAgents(tt.agents, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, tt.resolved, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
+			results := configureWizardAgents(tt.agents, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, persona.PresetSelection{V1: tt.resolved}, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
 			if len(results) != tt.wantLen {
 				t.Fatalf("len(results) = %d, want %d", len(results), tt.wantLen)
 			}
@@ -583,6 +583,26 @@ func TestApplyWizardPresetSelectionAcceptsDormantV2(t *testing.T) {
 	}
 	if stub.v2OutputStyle == nil || stub.v2OutputStyle.Name != "custom-mentor" {
 		t.Fatalf("V2 output style preset = %+v, want custom-mentor", stub.v2OutputStyle)
+	}
+}
+
+func TestConfigureWizardAgentsAcceptsDormantV2Selection(t *testing.T) {
+	stub := &setupAgentStub{name: "claude", writeInstructionsErr: errors.New("instruction fail")}
+	selection := persona.PresetSelection{V2: &persona.ResolvedPresetV2{
+		Slug: "custom-mentor",
+		Preset: &persona.PresetV2{
+			Name: "custom-mentor",
+			Presentation: persona.PresentationV2{
+				Language: "en-us", Register: "friendly-professional", Vocabulary: "plain-technical", Cadence: "measured",
+				Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured",
+				TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded",
+			},
+		},
+	}}
+
+	results := configureWizardAgents([]agent.Agent{stub}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, selection, wizardPresetApplyContext{Layer1: "layer1"}, testSkillsFS, nil, nil, func() bool { return true })
+	if len(results) != 1 || results[0].Err == nil || !strings.Contains(results[0].Err.Error(), "apply preset pipeline") {
+		t.Fatalf("V2 selection was not forwarded through the agent setup seam: %+v", results)
 	}
 }
 
@@ -652,7 +672,7 @@ func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			results := configureWizardAgents([]agent.Agent{tt.agent}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
+			results := configureWizardAgents([]agent.Agent{tt.agent}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, persona.PresetSelection{}, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
 			if len(results) != 1 {
 				t.Fatalf("len(results) = %d, want 1", len(results))
 			}
@@ -730,7 +750,7 @@ func TestConfigureWizardAgents_RuntimeVerificationUsesPendingConfigForOpenCodeDe
 		return observed, nil
 	}
 
-	results := configureWizardAgents([]agent.Agent{a}, pendingCfg, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
+	results := configureWizardAgents([]agent.Agent{a}, pendingCfg, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, persona.PresetSelection{}, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
 	if len(results) != 1 {
 		t.Fatalf("len(results) = %d, want 1", len(results))
 	}

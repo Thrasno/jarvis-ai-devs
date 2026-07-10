@@ -76,6 +76,7 @@ type Model struct {
 	customPresetName     string
 	customDisplayName    string
 	selectedPreset       *persona.ResolvedPreset
+	selectedPresetV2     *persona.ResolvedPresetV2
 	previousPresetSlug   string
 	previousPresetSource persona.PresetSource
 
@@ -128,6 +129,18 @@ type Model struct {
 	cockpitInput          string
 	cockpitSnapshot       string
 	cockpitPlan           string
+}
+
+// wizardPresetSelection carries an explicitly selected version to the apply
+// seam. Interactive selection continues to populate V1 until activation.
+func (m Model) wizardPresetSelection() (persona.PresetSelection, bool) {
+	if m.selectedPreset != nil {
+		return persona.PresetSelection{V1: m.selectedPreset}, true
+	}
+	if m.selectedPresetV2 != nil {
+		return persona.PresetSelection{V2: m.selectedPresetV2}, true
+	}
+	return persona.PresetSelection{}, false
 }
 
 type phaseModelMode int

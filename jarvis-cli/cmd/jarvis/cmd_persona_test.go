@@ -298,6 +298,19 @@ func TestApplyPersonaPresetSelectionAcceptsDormantV2WhilePersonaSetRemainsV1(t *
 	}
 }
 
+func TestResolvePersonaSetSelectionKeepsNormalRouteOnV1(t *testing.T) {
+	selection, resolved, err := resolvePersonaSetSelection(jarvis.PersonaFS, "Neutra")
+	if err != nil {
+		t.Fatalf("resolvePersonaSetSelection: %v", err)
+	}
+	if selection.V1 == nil || selection.V2 != nil {
+		t.Fatalf("selection = %+v, want V1 only", selection)
+	}
+	if resolved == nil || resolved.Slug != "neutra" {
+		t.Fatalf("resolved = %+v, want V1 neutra", resolved)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) > 0 && len(substr) > 0 && (s == substr || len(s) >= len(substr) && findSubstring(s, substr))
 }

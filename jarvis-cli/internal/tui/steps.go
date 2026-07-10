@@ -316,6 +316,7 @@ func updatePersona(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		resolved, err := resolveWizardPresetSelection(m.PersonaFS, selected.Name, nil)
 		if err == nil {
 			m.selectedPreset = resolved
+			m.selectedPresetV2 = nil
 			m.cfg.PersonaPreset = resolved.Slug
 			m.cfg.Preset = resolved.Slug
 			m.cfg.PersonaPresetSource = string(resolved.Source)
@@ -346,6 +347,7 @@ func updatePersonaCustomEdit(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.selectedPreset = resolved
+		m.selectedPresetV2 = nil
 		m.cfg.PersonaPreset = resolved.Slug
 		m.cfg.Preset = resolved.Slug
 		m.cfg.PersonaPresetSource = string(resolved.Source)
@@ -1353,10 +1355,10 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		// Build SkillInfo list from registry for template rendering.
 		skillInfos := buildSkillInfoList(m)
 
-		var resolved *persona.ResolvedPreset
+		selection := persona.PresetSelection{}
 		if len(m.Agents) > 0 {
 			var err error
-			resolved, err = ensureResolvedPresetForApply(m)
+			selection, err = ensurePresetSelectionForApply(m)
 			if err != nil {
 				return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: resolve preset %q: %v", m.cfg.PersonaPreset, err), done: true, failed: true}
 			}
@@ -1394,7 +1396,7 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		}
 
 		// Configure each detected agent and collect structured outcomes.
-		results := configureWizardAgents(m.Agents, m.cfg, entry, context7Entry, resolved, wizardPresetApplyContext{
+		results := configureWizardAgents(m.Agents, m.cfg, entry, context7Entry, selection, wizardPresetApplyContext{
 			Layer1:               config.Layer1Content(),
 			Skills:               skillInfos,
 			PreviousPresetSlug:   previousSlug,
@@ -1480,9 +1482,9 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 	}
 }
 
-func ensureResolvedPresetForApply(m Model) (*persona.ResolvedPreset, error) {
-	if m.selectedPreset != nil {
-		return m.selectedPreset, nil
+func ensurePresetSelectionForApply(m Model) (persona.PresetSelection, error) {
+	if selection, ok := m.wizardPresetSelection(); ok {
+		return selection, nil
 	}
 
 	requested := ""
@@ -1496,15 +1498,15 @@ func ensureResolvedPresetForApply(m Model) (*persona.ResolvedPreset, error) {
 		}
 	}
 	if requested == "" {
-		return nil, fmt.Errorf("no preset selected")
+		return persona.PresetSelection{}, fmt.Errorf("no preset selected")
 	}
 
 	resolved, err := resolveWizardPresetSelection(m.PersonaFS, requested, nil)
 	if err != nil {
-		return nil, err
+		return persona.PresetSelection{}, err
 	}
 
-	return resolved, nil
+	return persona.PresetSelection{V1: resolved}, nil
 }
 
 // buildSelectedIDs returns a slice of skill IDs for all selected and core skills.
