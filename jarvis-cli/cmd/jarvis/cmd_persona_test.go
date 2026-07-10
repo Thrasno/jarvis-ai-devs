@@ -267,6 +267,37 @@ func TestPersonaSetCmd_OpenCodeAgent_NoOutputStyle(t *testing.T) {
 	}
 }
 
+func TestApplyPersonaPresetSelectionAcceptsDormantV2WhilePersonaSetRemainsV1(t *testing.T) {
+	tempHome := isolateTestHome(t)
+	if err := os.MkdirAll(filepath.Join(tempHome, ".claude"), 0o755); err != nil {
+		t.Fatalf("create .claude dir: %v", err)
+	}
+	agents := agent.Detect(jarvis.TemplatesFS)
+	selection := persona.PresetSelection{V2: &persona.ResolvedPresetV2{
+		Slug:   "custom-mentor",
+		Source: persona.PresetSourceUser,
+		Preset: &persona.PresetV2{
+			Name: "custom-mentor",
+			Presentation: persona.PresentationV2{
+				Language: "en-us", Register: "friendly-professional", Vocabulary: "plain-technical", Cadence: "measured",
+				Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured",
+				TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded",
+			},
+		},
+	}}
+
+	if err := applyPersonaPresetSelection(agents, selection, persona.ApplyOptions{Layer1: config.Layer1Content()}); err != nil {
+		t.Fatalf("applyPersonaPresetSelection(V2) error = %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(tempHome, ".claude", "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	if !contains(string(content), "### Presentation") || contains(string(content), "### Behavioral Rules") {
+		t.Fatalf("V2 CLI adapter rendered unexpected Layer2:\n%s", content)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) > 0 && len(substr) > 0 && (s == substr || len(s) >= len(substr) && findSubstring(s, substr))
 }

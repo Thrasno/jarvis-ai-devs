@@ -56,12 +56,7 @@ var personaSetCmd = &cobra.Command{
 		}
 
 		agents := agent.Detect(jarvis.TemplatesFS)
-		pipelineAgents := make([]persona.PresetAgent, 0, len(agents))
-		for _, a := range agents {
-			pipelineAgents = append(pipelineAgents, a)
-		}
-
-		if err := persona.ApplyPresetPipeline(pipelineAgents, resolved, persona.ApplyOptions{
+		if err := applyPersonaPresetSelection(agents, persona.PresetSelection{V1: resolved}, persona.ApplyOptions{
 			Layer1:               config.Layer1Content(),
 			Skills:               skillInfos,
 			PreviousPresetSlug:   cfg.PersonaPreset,
@@ -78,6 +73,16 @@ var personaSetCmd = &cobra.Command{
 		fmt.Printf("Persona set to %q (%s).\n", resolved.Slug, displayName)
 		return nil
 	},
+}
+
+// applyPersonaPresetSelection adapts resolved persona versions to installed
+// agents. persona set passes V1 explicitly until the V2 activation slice.
+func applyPersonaPresetSelection(agents []agent.Agent, selection persona.PresetSelection, opts persona.ApplyOptions) error {
+	pipelineAgents := make([]persona.PresetAgent, 0, len(agents))
+	for _, a := range agents {
+		pipelineAgents = append(pipelineAgents, a)
+	}
+	return persona.ApplyPresetSelectionPipeline(pipelineAgents, selection, opts)
 }
 
 func normalizePersonaPresetSource(value string) persona.PresetSource {

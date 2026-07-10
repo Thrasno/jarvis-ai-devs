@@ -543,6 +543,12 @@ func (a *OpenCodeAgent) WriteOutputStyle(preset *persona.Preset) error {
 	return nil
 }
 
+// WriteOutputStyleV2 is a no-op for OpenCodeAgent because OpenCode has no
+// native output-style support. It allows dormant V2 adapters to remain uniform.
+func (a *OpenCodeAgent) WriteOutputStyleV2(preset *persona.PresetV2) error {
+	return nil
+}
+
 // ClearOutputStyle is a no-op for OpenCodeAgent since OpenCode has no
 // output-style artifact contract to clean.
 func (a *OpenCodeAgent) ClearOutputStyle(name string) error {

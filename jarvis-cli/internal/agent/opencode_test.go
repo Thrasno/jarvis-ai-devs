@@ -57,6 +57,19 @@ func TestOpenCodeAgent_WriteOutputStyle_NoOp(t *testing.T) {
 	}
 }
 
+func TestOpenCodeAgent_WriteOutputStyleV2_NoOp(t *testing.T) {
+	tmpHome := t.TempDir()
+	agent := &OpenCodeAgent{home: tmpHome}
+	preset := &persona.PresetV2{Name: "custom-mentor"}
+
+	if err := agent.WriteOutputStyleV2(preset); err != nil {
+		t.Fatalf("WriteOutputStyleV2() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmpHome, ".config", "opencode", "output-styles")); !os.IsNotExist(err) {
+		t.Fatalf("V2 output-style directory should not exist, stat error = %v", err)
+	}
+}
+
 func TestOpenCodeAgent_WriteInstructions_ProjectsCanonicalLayer1(t *testing.T) {
 	tmpHome := t.TempDir()
 	agent := &OpenCodeAgent{home: tmpHome, templatesFS: testTemplatesFS}

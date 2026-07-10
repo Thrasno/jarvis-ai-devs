@@ -30,6 +30,8 @@ type setupAgentStub struct {
 	runtimePlanErr          error
 	registryAutomationErr   error
 	installedOrchestrator   string
+	layer2                  string
+	v2OutputStyle           *persona.PresetV2
 	observeCalls            int
 	registryAutomationCalls int
 
@@ -91,7 +93,8 @@ func (a *setupAgentStub) MergeConfig(entry agent.MCPEntry) error {
 	return nil
 }
 
-func (a *setupAgentStub) WriteInstructions(string, string, []config.SkillInfo) error {
+func (a *setupAgentStub) WriteInstructions(_ string, layer2 string, _ []config.SkillInfo) error {
+	a.layer2 = layer2
 	return a.writeInstructionsErr
 }
 
@@ -116,6 +119,11 @@ func (a *setupAgentStub) InstallRegistryAutomation(fs.FS) error {
 }
 
 func (a *setupAgentStub) WriteOutputStyle(*persona.Preset) error {
+	return a.outputStyleErr
+}
+
+func (a *setupAgentStub) WriteOutputStyleV2(preset *persona.PresetV2) error {
+	a.v2OutputStyle = preset
 	return a.outputStyleErr
 }
 
@@ -550,6 +558,31 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 				t.Fatalf("last error = %q, want contains %q", got, tt.wantErrSubstr)
 			}
 		})
+	}
+}
+
+func TestApplyWizardPresetSelectionAcceptsDormantV2(t *testing.T) {
+	stub := &setupAgentStub{name: "claude"}
+	selection := persona.PresetSelection{V2: &persona.ResolvedPresetV2{
+		Slug: "custom-mentor",
+		Preset: &persona.PresetV2{
+			Name: "custom-mentor",
+			Presentation: persona.PresentationV2{
+				Language: "en-us", Register: "friendly-professional", Vocabulary: "plain-technical", Cadence: "measured",
+				Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured",
+				TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded",
+			},
+		},
+	}}
+
+	if err := applyWizardPresetSelection([]agent.Agent{stub}, selection, wizardPresetApplyContext{Layer1: "layer1"}); err != nil {
+		t.Fatalf("applyWizardPresetSelection() error = %v", err)
+	}
+	if !strings.Contains(stub.layer2, "### Presentation") || strings.Contains(stub.layer2, "Behavioral Rules") {
+		t.Fatalf("V2 wizard layer2 = %q, want presentation-only content", stub.layer2)
+	}
+	if stub.v2OutputStyle == nil || stub.v2OutputStyle.Name != "custom-mentor" {
+		t.Fatalf("V2 output style preset = %+v, want custom-mentor", stub.v2OutputStyle)
 	}
 }
 

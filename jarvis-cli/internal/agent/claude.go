@@ -343,23 +343,30 @@ func (a *ClaudeAgent) SupportsOutputStyles() bool {
 // and patches settings.json with {"outputStyle": "{Name}"}.
 // Implements SPEC-002, SPEC-003, SPEC-004.
 func (a *ClaudeAgent) WriteOutputStyle(preset *persona.Preset) error {
+	return a.writeOutputStyle(preset.Name, persona.RenderOutputStyle(preset))
+}
+
+// WriteOutputStyleV2 writes a dormant schema-v2 presentation output style.
+// Normal CLI and TUI flows remain on WriteOutputStyle until V2 activation.
+func (a *ClaudeAgent) WriteOutputStyleV2(preset *persona.PresetV2) error {
+	return a.writeOutputStyle(preset.Name, persona.RenderOutputStyleV2(preset))
+}
+
+func (a *ClaudeAgent) writeOutputStyle(presetName, content string) error {
 	// 1. Create output-styles directory
 	outputStylesDir := filepath.Join(a.ConfigDir(), "output-styles")
 	if err := os.MkdirAll(outputStylesDir, 0755); err != nil {
 		return fmt.Errorf("create output-styles dir: %w", err)
 	}
 
-	// 2. Render output-style content
-	content := persona.RenderOutputStyle(preset)
-
-	// 3. Write output-style file atomically
-	titleCaseName := toTitleCase(preset.Name)
+	// 2. Write output-style file atomically
+	titleCaseName := toTitleCase(presetName)
 	outputStylePath := filepath.Join(outputStylesDir, titleCaseName+".md")
 	if err := writeFileAtomic(outputStylePath, []byte(content), 0644); err != nil {
 		return fmt.Errorf("write output-style file: %w", err)
 	}
 
-	// 4. Patch settings.json with outputStyle key
+	// 3. Patch settings.json with outputStyle key
 	patch := map[string]any{
 		"outputStyle": titleCaseName,
 	}

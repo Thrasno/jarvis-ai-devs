@@ -136,6 +136,35 @@ func TestClaudeAgent_WriteOutputStyle(t *testing.T) {
 	}
 }
 
+func TestClaudeAgent_WriteOutputStyleV2(t *testing.T) {
+	tmpHome := t.TempDir()
+	agent := &ClaudeAgent{home: tmpHome}
+	preset := &persona.PresetV2{
+		SchemaVersion: 2,
+		Name:          "custom-mentor",
+		DisplayName:   "Custom Mentor",
+		Presentation: persona.PresentationV2{
+			Language: "en-us", Register: "friendly-professional", Vocabulary: "plain-technical", Cadence: "measured",
+			Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured",
+			TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded",
+		},
+	}
+
+	if err := agent.WriteOutputStyleV2(preset); err != nil {
+		t.Fatalf("WriteOutputStyleV2() error = %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tmpHome, ".claude", "output-styles", "CustomMentor.md"))
+	if err != nil {
+		t.Fatalf("read V2 output-style: %v", err)
+	}
+	for _, want := range []string{"name: CustomMentor", "keep-coding-instructions: true", "### Presentation", "- Address pack: peer"} {
+		if !strings.Contains(string(content), want) {
+			t.Fatalf("V2 output-style missing %q:\n%s", want, content)
+		}
+	}
+}
+
 // TestClaudeAgent_WriteOutputStyle_HyphenatedName verifies TitleCase conversion
 // for hyphenated names (SPEC-006).
 func TestClaudeAgent_WriteOutputStyle_HyphenatedName(t *testing.T) {

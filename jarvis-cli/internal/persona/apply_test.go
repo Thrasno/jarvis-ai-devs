@@ -54,6 +54,19 @@ func (a *pipelineAgentStub) WriteOutputStyle(preset *Preset) error {
 	return nil
 }
 
+func (a *pipelineAgentStub) WriteOutputStyleV2(preset *PresetV2) error {
+	if !a.outputSupported {
+		return nil
+	}
+	if a.outputErr != nil {
+		return a.outputErr
+	}
+	styleName := testTitleCase(preset.Name)
+	a.settings["outputStyle"] = styleName
+	a.outputFiles[styleName+".md"] = RenderOutputStyleV2(preset)
+	return nil
+}
+
 func (a *pipelineAgentStub) ClearOutputStyle(name string) error {
 	if !a.outputSupported {
 		return nil
@@ -254,6 +267,53 @@ func TestApplyPresetPipeline_DoesNotClearWhenPreviousEqualsResolved(t *testing.T
 	}
 	if len(agent.clearCalls) != 0 {
 		t.Fatalf("expected no cleanup call when previous equals resolved, got %v", agent.clearCalls)
+	}
+}
+
+func TestApplyPresetSelectionPipelineSupportsDormantV2WithoutChangingV1(t *testing.T) {
+	agent := newPipelineAgentStub("claude", true)
+	v1 := newResolvedPreset("neutra")
+	v1.Preset.Notes = "# Legacy Notes\n\nKeep V1 active."
+	v2 := &ResolvedPresetV2{
+		Slug:   "custom-mentor",
+		Source: PresetSourceUser,
+		Preset: &PresetV2{
+			SchemaVersion: 2,
+			Name:          "custom-mentor",
+			DisplayName:   "Custom Mentor",
+			Presentation: PresentationV2{
+				Language: "en-us", Register: "friendly-professional", Vocabulary: "plain-technical", Cadence: "measured",
+				Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured",
+				TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded",
+			},
+		},
+	}
+
+	if err := ApplyPresetSelectionPipeline([]PresetAgent{agent}, PresetSelection{V1: v1}, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyPresetSelectionPipeline(V1) error = %v", err)
+	}
+	if !strings.Contains(agent.layer2, "Legacy Notes") {
+		t.Fatalf("V1 selection did not retain legacy rendering: %q", agent.layer2)
+	}
+
+	if err := ApplyPresetSelectionPipeline([]PresetAgent{agent}, PresetSelection{V2: v2}, ApplyOptions{PreviousPresetSlug: "neutra"}); err != nil {
+		t.Fatalf("ApplyPresetSelectionPipeline(V2) error = %v", err)
+	}
+	if !strings.Contains(agent.layer2, "### Presentation") || strings.Contains(agent.layer2, "Legacy Notes") {
+		t.Fatalf("V2 selection did not render only presentation data: %q", agent.layer2)
+	}
+	if _, ok := agent.outputFiles["CustomMentor.md"]; !ok {
+		t.Fatalf("V2 output style was not written: %v", keys(agent.outputFiles))
+	}
+}
+
+func TestApplyPresetSelectionPipelineRejectsAmbiguousSelections(t *testing.T) {
+	err := ApplyPresetSelectionPipeline(nil, PresetSelection{
+		V1: newResolvedPreset("neutra"),
+		V2: &ResolvedPresetV2{Slug: "custom-mentor", Preset: &PresetV2{Name: "custom-mentor"}},
+	}, ApplyOptions{})
+	if err == nil || !strings.Contains(err.Error(), "exactly one preset version") {
+		t.Fatalf("ApplyPresetSelectionPipeline() error = %v, want version-selection guidance", err)
 	}
 }
 

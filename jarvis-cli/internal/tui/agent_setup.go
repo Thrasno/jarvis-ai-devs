@@ -170,17 +170,12 @@ func configureWizardAgents(
 		results = append(results, res)
 	}
 
-	pipelineAgents := make([]persona.PresetAgent, 0, len(agents))
-	for _, a := range agents {
-		pipelineAgents = append(pipelineAgents, a)
-	}
 	if resolvedPreset != nil {
-		if err := persona.ApplyPresetPipeline(pipelineAgents, resolvedPreset, persona.ApplyOptions{
+		if err := applyWizardPresetSelection(agents, persona.PresetSelection{V1: resolvedPreset}, wizardPresetApplyContext{
 			Layer1:               presetCtx.Layer1,
 			Skills:               presetCtx.Skills,
 			PreviousPresetSlug:   presetCtx.PreviousPresetSlug,
 			PreviousPresetSource: presetCtx.PreviousPresetSource,
-			PersistConfig:        false,
 		}); err != nil {
 			if len(results) == 0 {
 				return []AgentApplyResult{{AgentName: "persona-apply", Err: fmt.Errorf("apply preset pipeline: %w", err)}}
@@ -199,6 +194,24 @@ func configureWizardAgents(
 	}
 
 	return results
+}
+
+// applyWizardPresetSelection is the TUI adapter seam for an already resolved
+// persona version. The normal wizard passes V1 explicitly; V2 remains dormant
+// until a later activation path opts in.
+func applyWizardPresetSelection(agents []agent.Agent, selection persona.PresetSelection, presetCtx wizardPresetApplyContext) error {
+	pipelineAgents := make([]persona.PresetAgent, 0, len(agents))
+	for _, a := range agents {
+		pipelineAgents = append(pipelineAgents, a)
+	}
+
+	return persona.ApplyPresetSelectionPipeline(pipelineAgents, selection, persona.ApplyOptions{
+		Layer1:               presetCtx.Layer1,
+		Skills:               presetCtx.Skills,
+		PreviousPresetSlug:   presetCtx.PreviousPresetSlug,
+		PreviousPresetSource: presetCtx.PreviousPresetSource,
+		PersistConfig:        false,
+	})
 }
 
 func verifyConfiguredAgentRuntime(a agent.Agent, cfg *config.AppConfig) error {
