@@ -281,6 +281,14 @@ type mockOverviewSvc struct {
 	mock.Mock
 }
 
+func (m *mockOverviewSvc) GetForLevel(ctx context.Context, level model.UserLevel) (*model.CapabilityOverviewResponse, error) {
+	args := m.Called(ctx, level)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.CapabilityOverviewResponse), args.Error(1)
+}
+
 func (m *mockOverviewSvc) GetStats(ctx context.Context) (*model.OverviewStatsResponse, error) {
 	args := m.Called(ctx)
 	if args.Get(0) == nil {

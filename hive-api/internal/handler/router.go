@@ -79,6 +79,7 @@ type AdminService interface {
 
 // OverviewService provides aggregated dashboard overview metrics.
 type OverviewService interface {
+	GetForLevel(ctx context.Context, level model.UserLevel) (*model.CapabilityOverviewResponse, error)
 	GetStats(ctx context.Context) (*model.OverviewStatsResponse, error)
 	GetGrowth(ctx context.Context) (*model.OverviewGrowthResponse, error)
 }
@@ -149,7 +150,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		projectGovernanceH = NewProjectGovernanceHandler(deps.ProjectGovernanceSvc)
 	}
 	adminH := NewAdminHandler(deps.AdminSvc)
-	overviewH := NewOverviewHandler(deps.OverviewSvc)
+	overviewH := NewOverviewHandler(deps.AuthSvc, deps.OverviewSvc)
 	activityH := NewActivityHandler(deps.ActivitySvc)
 	healthH := NewHealthHandler(deps.DB)
 
@@ -171,6 +172,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		auth.POST("/memories", memH.Create)
 		auth.GET("/memories/:id", memH.GetByID)
 		auth.GET("/activity", activityH.List)
+		auth.GET("/overview", overviewH.Get)
 
 		auth.POST("/sync", syncH.Sync)
 		auth.POST("/sync-attempts", syncAttemptH.Ingest)

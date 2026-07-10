@@ -284,6 +284,7 @@ func TestRouter_RoutesRegistered(t *testing.T) {
 		"GET:/memories/search",
 		"GET:/memories/:id",
 		"GET:/activity",
+		"GET:/overview",
 		"POST:/sync",
 		"GET:/admin/audit-logs",
 		"GET:/admin/users",
