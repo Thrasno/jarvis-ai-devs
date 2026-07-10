@@ -21,6 +21,12 @@ type SDDPhaseAgentDefinition struct {
 	ClaudeTools        []string
 }
 
+type HiveMCPToolRequirement struct {
+	LogicalName  string
+	ClaudeTool   string
+	OpenCodeTool string
+}
+
 type claudeSDDAgentTemplateData struct {
 	Name        string
 	Description string
@@ -31,9 +37,37 @@ type claudeSDDAgentTemplateData struct {
 	SkillPath   string
 }
 
+func RequiredHiveMCPToolRequirements() []HiveMCPToolRequirement {
+	return []HiveMCPToolRequirement{
+		{LogicalName: "mem_search", ClaudeTool: "mcp__hive__mem_search", OpenCodeTool: "hive_mem_search"},
+		{LogicalName: "mem_get_observation", ClaudeTool: "mcp__hive__mem_get_observation", OpenCodeTool: "hive_mem_get_observation"},
+		{LogicalName: "mem_save", ClaudeTool: "mcp__hive__mem_save", OpenCodeTool: "hive_mem_save"},
+		{LogicalName: "mem_context", ClaudeTool: "mcp__hive__mem_context", OpenCodeTool: "hive_mem_context"},
+		{LogicalName: "mem_session_summary", ClaudeTool: "mcp__hive__mem_session_summary", OpenCodeTool: "hive_mem_session_summary"},
+	}
+}
+
+func RequiredClaudeHiveMCPTools() []string {
+	requirements := RequiredHiveMCPToolRequirements()
+	tools := make([]string, 0, len(requirements))
+	for _, requirement := range requirements {
+		tools = append(tools, requirement.ClaudeTool)
+	}
+	return tools
+}
+
+func RequiredOpenCodeHiveMCPTools() []string {
+	requirements := RequiredHiveMCPToolRequirements()
+	tools := make([]string, 0, len(requirements))
+	for _, requirement := range requirements {
+		tools = append(tools, requirement.OpenCodeTool)
+	}
+	return tools
+}
+
 func SDDPhaseAgentDefinitions() []SDDPhaseAgentDefinition {
-	readTools := []string{"Read", "Grep", "Glob", "Bash"}
-	writeTools := []string{"Read", "Grep", "Glob", "Bash", "Edit", "MultiEdit", "Write"}
+	readTools := withClaudeHiveMCPTools("Read", "Grep", "Glob", "Bash")
+	writeTools := withClaudeHiveMCPTools("Read", "Grep", "Glob", "Bash", "Edit", "MultiEdit", "Write")
 
 	return []SDDPhaseAgentDefinition{
 		{
@@ -117,6 +151,10 @@ func SDDPhaseAgentDefinitions() []SDDPhaseAgentDefinition {
 			ClaudeTools:        readTools,
 		},
 	}
+}
+
+func withClaudeHiveMCPTools(tools ...string) []string {
+	return append(append([]string{}, tools...), RequiredClaudeHiveMCPTools()...)
 }
 
 func RenderClaudeSDDPhaseAgents(templatesFS fs.FS, cfg *config.AppConfig) (map[string][]byte, error) {

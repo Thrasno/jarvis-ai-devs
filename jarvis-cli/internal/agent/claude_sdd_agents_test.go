@@ -74,6 +74,7 @@ func TestRenderClaudeSDDPhaseAgents_UsesPhaseSpecificToolBoundaries(t *testing.T
 	for _, name := range []string{"sdd-explore", "sdd-verify", "sdd-onboard"} {
 		content := string(files[name+".md"])
 		tools := frontmatterValue(content, "tools")
+		assertClaudeSDDAgentHasHiveTools(t, name, tools)
 		if strings.Contains(tools, "Edit") || strings.Contains(tools, "MultiEdit") || strings.Contains(tools, "Write") {
 			t.Fatalf("%s tools include write capability, want read-only boundary: %q", name, tools)
 		}
@@ -82,10 +83,46 @@ func TestRenderClaudeSDDPhaseAgents_UsesPhaseSpecificToolBoundaries(t *testing.T
 	for _, name := range []string{"sdd-init", "sdd-propose", "sdd-spec", "sdd-design", "sdd-tasks", "sdd-apply", "sdd-archive"} {
 		content := string(files[name+".md"])
 		tools := frontmatterValue(content, "tools")
+		assertClaudeSDDAgentHasHiveTools(t, name, tools)
 		for _, tool := range []string{"Edit", "MultiEdit", "Write"} {
 			if !strings.Contains(tools, tool) {
 				t.Fatalf("%s tools = %q, want %s capability", name, tools, tool)
 			}
+		}
+	}
+}
+
+func TestRequiredHiveMCPToolRequirements_ExposePlatformSpecificNames(t *testing.T) {
+	want := []HiveMCPToolRequirement{
+		{LogicalName: "mem_search", ClaudeTool: "mcp__hive__mem_search", OpenCodeTool: "hive_mem_search"},
+		{LogicalName: "mem_get_observation", ClaudeTool: "mcp__hive__mem_get_observation", OpenCodeTool: "hive_mem_get_observation"},
+		{LogicalName: "mem_save", ClaudeTool: "mcp__hive__mem_save", OpenCodeTool: "hive_mem_save"},
+		{LogicalName: "mem_context", ClaudeTool: "mcp__hive__mem_context", OpenCodeTool: "hive_mem_context"},
+		{LogicalName: "mem_session_summary", ClaudeTool: "mcp__hive__mem_session_summary", OpenCodeTool: "hive_mem_session_summary"},
+	}
+
+	got := RequiredHiveMCPToolRequirements()
+	if len(got) != len(want) {
+		t.Fatalf("RequiredHiveMCPToolRequirements() returned %d tools, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("RequiredHiveMCPToolRequirements()[%d] = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+}
+
+func assertClaudeSDDAgentHasHiveTools(t *testing.T, name, tools string) {
+	t.Helper()
+	for _, tool := range []string{
+		"mcp__hive__mem_search",
+		"mcp__hive__mem_get_observation",
+		"mcp__hive__mem_save",
+		"mcp__hive__mem_context",
+		"mcp__hive__mem_session_summary",
+	} {
+		if !strings.Contains(tools, tool) {
+			t.Fatalf("%s tools = %q, want Hive MCP tool %s", name, tools, tool)
 		}
 	}
 }
