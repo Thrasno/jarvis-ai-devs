@@ -72,6 +72,49 @@ func TestClaudeAgent_ObserveRuntime_ProducesVerifierInput(t *testing.T) {
 	}
 }
 
+func TestClaudeAgent_ObserveRuntime_ReportsStaleSDDPhaseAgentMissingHiveTools(t *testing.T) {
+	home := t.TempDir()
+	a := &ClaudeAgent{home: home, templatesFS: testTemplatesFS}
+	if err := os.MkdirAll(filepath.Join(a.ConfigDir(), "agents"), 0755); err != nil {
+		t.Fatalf("mkdir agents dir: %v", err)
+	}
+	for _, def := range SDDPhaseAgentDefinitions() {
+		tools := "Read, Grep"
+		if def.Name != "sdd-apply" {
+			tools = strings.Join(def.ClaudeTools, ", ")
+		}
+		content := "---\nname: " + def.Name + "\ntools: " + tools + "\n---\n# " + def.Name + "\n"
+		if err := os.WriteFile(filepath.Join(a.ConfigDir(), "agents", def.Name+".md"), []byte(content), 0644); err != nil {
+			t.Fatalf("write %s agent: %v", def.Name, err)
+		}
+	}
+	if err := os.MkdirAll(a.ConfigDir(), 0755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := a.WriteInstructions("# Layer1", "# Layer2", nil); err != nil {
+		t.Fatalf("WriteInstructions: %v", err)
+	}
+	if err := a.InstallOrchestrator([]byte("# orchestrator")); err != nil {
+		t.Fatalf("InstallOrchestrator: %v", err)
+	}
+	if err := installOptionalManagedArtifacts(a.ConfigDir()); err != nil {
+		t.Fatalf("install optional managed artifacts: %v", err)
+	}
+	if err := a.InstallSkills(fstest.MapFS{"_shared/SKILL.md": {Data: []byte("# shared")}}, nil); err != nil {
+		t.Fatalf("InstallSkills: %v", err)
+	}
+
+	observed, err := a.ObserveRuntime()
+	if err != nil {
+		t.Fatalf("ObserveRuntime: %v", err)
+	}
+	report := sddruntime.Verify(a.Name(), observed)
+
+	if got := checkStatusByKey(report.Checks, "invariant.claude.sdd_hive_tools"); got != sddruntime.StatusFail {
+		t.Fatalf("stale Claude SDD Hive tools check = %q, want fail", got)
+	}
+}
+
 func TestOpenCodeAgent_ObserveRuntime_ProducesVerifierInput(t *testing.T) {
 	home := t.TempDir()
 	a := &OpenCodeAgent{home: home, templatesFS: testTemplatesFS}
@@ -670,7 +713,11 @@ func compliantOpenCodeJSON() string {
 		if agentEntries != "" {
 			agentEntries += ","
 		}
-		agentEntries += `"` + name + `": {"mode": "subagent", "hidden": true, "model": "legacy=sonnet", "prompt": "skill prompt"}`
+		permission := `{"task":"deny"}`
+		if isOpenCodeSDDSubagent(name) {
+			permission, _ = withOpenCodeHiveMCPPermissions(permission)
+		}
+		agentEntries += `"` + name + `": {"mode": "subagent", "hidden": true, "model": "legacy=sonnet", "prompt": "skill prompt", "permission": ` + permission + `}`
 	}
 
 	return `{
@@ -693,4 +740,13 @@ func compliantOpenCodeJSON() string {
     "context7": {"type": "remote", "url": "https://context7.ai"}
   }
 }`
+}
+
+func isOpenCodeSDDSubagent(name string) bool {
+	for _, sddName := range openCodeSDDSubagents() {
+		if name == sddName {
+			return true
+		}
+	}
+	return false
 }

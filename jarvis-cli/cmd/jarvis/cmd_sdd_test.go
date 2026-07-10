@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -41,6 +42,32 @@ func TestBuildStatus_DoesNotUseCurrentDirectoryAsAllowedEditRoot(t *testing.T) {
 	}
 	if got := status.ActionContext.Mode; got != sddstatus.ActionModeWorkspacePlanning {
 		t.Fatalf("ActionContext.Mode = %q, want %q", got, sddstatus.ActionModeWorkspacePlanning)
+	}
+}
+
+func TestResolveSource_NoneModeDoesNotConnectToHive(t *testing.T) {
+	t.Setenv("JARVIS_SDD_STORE_MODE", "none")
+
+	src, storeMode, err := resolveSource("jarvis-dev")
+	if err != nil {
+		t.Fatalf("resolveSource none mode: %v", err)
+	}
+	if storeMode != "none" {
+		t.Fatalf("storeMode = %q, want none", storeMode)
+	}
+	changes, err := src.ListChanges(context.Background())
+	if err != nil {
+		t.Fatalf("none source ListChanges: %v", err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("none source changes = %v, want empty", changes)
+	}
+	artifacts, contents, err := src.FetchArtifacts(context.Background(), "any-change")
+	if err != nil {
+		t.Fatalf("none source FetchArtifacts: %v", err)
+	}
+	if !reflect.DeepEqual(artifacts, map[string]sddstatus.ArtifactState{}) || len(contents) != 0 {
+		t.Fatalf("none source artifacts=%v contents=%v, want empty inline-only source", artifacts, contents)
 	}
 }
 

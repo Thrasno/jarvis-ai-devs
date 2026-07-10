@@ -450,6 +450,15 @@ func TestOpenCodeAgent_MergeGeneratedConfig_RendersTopologyPermissionsAndPreserv
 	if !strings.Contains(applyAgent["prompt"].(string), ".jarvis/skills/sdd-apply/SKILL.md") {
 		t.Fatalf("sdd-apply prompt should point at Jarvis skill path, got %q", applyAgent["prompt"])
 	}
+	for _, name := range openCodeSDDSubagents() {
+		sddAgent := agents[name].(map[string]any)
+		permission := sddAgent["permission"].(map[string]any)
+		for _, tool := range RequiredOpenCodeHiveMCPTools() {
+			if permission[tool] != "allow" {
+				t.Fatalf("agent.%s.permission[%q] = %v, want allow; permission=%#v", name, tool, permission[tool], permission)
+			}
+		}
+	}
 	permission := settings["permission"].(map[string]any)
 	bash := permission["bash"].(map[string]any)
 	if bash["*"] != "allow" || bash["git push --force*"] != "ask" || bash["git push * --force*"] != "ask" || bash["git push * --force-with-lease*"] != "ask" || bash["git reset --hard*"] != "ask" {
@@ -549,6 +558,55 @@ func TestOpenCodeAgent_MergeGeneratedConfig_PreservesExistingPermissionGuardrail
 		t.Fatalf("existing read guardrails were not preserved: %#v", read)
 	}
 	assertOpenCodeReadDenyCoverage(t, read)
+}
+
+func TestOpenCodeAgent_MergeGeneratedConfig_PreservesStrictHiveWildcardGuardrails(t *testing.T) {
+	tmpHome := t.TempDir()
+	a := &OpenCodeAgent{home: tmpHome, templatesFS: testTemplatesFS}
+	settingsPath := filepath.Join(tmpHome, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatalf("create opencode dir: %v", err)
+	}
+	existing := `{
+		"agent": {
+			"sdd-apply": {"permission": {"task": "deny", "edit": "allow", "hive_mem_*": "deny", "hive_mem_search": "allow", "hive_mem_save": "allow", "hive_mem_context": "ask"}},
+			"sdd-verify": {"permission": {"task": "deny", "edit": "deny", "hive_*": "ask", "hive_mem_get_observation": "allow", "hive_mem_context": "allow", "hive_mem_session_summary": "deny"}}
+		}
+	}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0644); err != nil {
+		t.Fatalf("write opencode.json: %v", err)
+	}
+
+	if err := a.MergeGeneratedConfig(defaultRuntimeConfig()); err != nil {
+		t.Fatalf("MergeGeneratedConfig: %v", err)
+	}
+
+	settings := readJSONFile(t, settingsPath)
+	agents := settings["agent"].(map[string]any)
+	applyPermission := agents["sdd-apply"].(map[string]any)["permission"].(map[string]any)
+	if applyPermission["hive_mem_*"] != "deny" {
+		t.Fatalf("sdd-apply hive_mem_* guardrail = %v, want deny", applyPermission["hive_mem_*"])
+	}
+	for _, tool := range RequiredOpenCodeHiveMCPTools() {
+		if applyPermission[tool] == "allow" {
+			t.Fatalf("generated exact allow %q must not be added over strict hive_mem_* deny: %#v", tool, applyPermission)
+		}
+	}
+	if applyPermission["hive_mem_context"] != "ask" {
+		t.Fatalf("user-owned exact hive_mem_context ask must be preserved: %#v", applyPermission)
+	}
+	verifyPermission := agents["sdd-verify"].(map[string]any)["permission"].(map[string]any)
+	if verifyPermission["hive_*"] != "ask" {
+		t.Fatalf("sdd-verify hive_* guardrail = %v, want ask", verifyPermission["hive_*"])
+	}
+	for _, tool := range RequiredOpenCodeHiveMCPTools() {
+		if verifyPermission[tool] == "allow" {
+			t.Fatalf("generated exact allow %q must not be added over strict hive_* ask: %#v", tool, verifyPermission)
+		}
+	}
+	if verifyPermission["hive_mem_session_summary"] != "deny" {
+		t.Fatalf("user-owned exact hive_mem_session_summary deny must be preserved: %#v", verifyPermission)
+	}
 }
 
 func TestOpenCodeAgent_MergeGeneratedConfig_RemovesUnknownOrchestratorTaskAllows(t *testing.T) {

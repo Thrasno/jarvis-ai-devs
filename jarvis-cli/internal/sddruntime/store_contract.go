@@ -12,6 +12,7 @@ const (
 	StoreModeHive     StoreMode = "hive"
 	StoreModeOpenSpec StoreMode = "openspec"
 	StoreModeHybrid   StoreMode = "hybrid"
+	StoreModeNone     StoreMode = "none"
 )
 
 var ErrInvalidStoreMode = fmt.Errorf("invalid store mode")
@@ -27,7 +28,7 @@ type StoreContract struct {
 func ResolveStoreMode(input string) (StoreMode, error) {
 	mode := StoreMode(strings.ToLower(strings.TrimSpace(input)))
 	switch mode {
-	case StoreModeHive, StoreModeOpenSpec, StoreModeHybrid:
+	case StoreModeHive, StoreModeOpenSpec, StoreModeHybrid, StoreModeNone:
 		return mode, nil
 	default:
 		return "", fmt.Errorf("%w: %q", ErrInvalidStoreMode, input)
@@ -47,6 +48,8 @@ func ResolveStoreContract(input string) (StoreContract, error) {
 		return StoreContract{Mode: mode, ReadFrom: []string{"openspec"}, WriteTo: []string{"openspec"}}, nil
 	case StoreModeHybrid:
 		return StoreContract{Mode: mode, ReadFrom: []string{"hive", "openspec"}, WriteTo: []string{"hive", "openspec"}}, nil
+	case StoreModeNone:
+		return StoreContract{Mode: mode, ReadFrom: nil, WriteTo: nil}, nil
 	default:
 		return StoreContract{}, fmt.Errorf("%w: %q", ErrInvalidStoreMode, input)
 	}

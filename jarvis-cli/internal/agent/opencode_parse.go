@@ -12,11 +12,11 @@ import (
 // openCodeConfigDoc mirrors only the fields from opencode.json that the
 // verifier cares about. Unknown keys are silently ignored.
 type openCodeConfigDoc struct {
-	Share        string                          `json:"share"`
-	DefaultAgent string                          `json:"default_agent"`
-	Permission   openCodeGlobalPermission        `json:"permission"`
-	Agent        map[string]openCodeAgentEntry   `json:"agent"`
-	MCP          map[string]openCodeMCPEntry     `json:"mcp"`
+	Share        string                        `json:"share"`
+	DefaultAgent string                        `json:"default_agent"`
+	Permission   openCodeGlobalPermission      `json:"permission"`
+	Agent        map[string]openCodeAgentEntry `json:"agent"`
+	MCP          map[string]openCodeMCPEntry   `json:"mcp"`
 }
 
 type openCodeGlobalPermission struct {
@@ -44,6 +44,7 @@ type openCodeMCPEntry struct {
 	Type    string          `json:"type"`
 	URL     string          `json:"url"`
 	Command json.RawMessage `json:"command"`
+	Enabled *bool           `json:"enabled"`
 }
 
 // parseOpenCodeConfig reads and parses opencode.json at path, returning an
@@ -72,8 +73,8 @@ func parseOpenCodeConfig(path string) sddruntime.ObservedOpenCodeConfig {
 
 	// Parse orchestrator entry.
 	if orch, ok := doc.Agent["sdd-orchestrator"]; ok {
-		cfg.OrchestratorMode   = orch.Mode
-		cfg.OrchestratorModel  = orch.Model
+		cfg.OrchestratorMode = orch.Mode
+		cfg.OrchestratorModel = orch.Model
 		cfg.OrchestratorPrompt = orch.Prompt
 
 		// The orchestrator's permission.task is a map (wildcard deny + named allows).
@@ -98,16 +99,28 @@ func parseOpenCodeConfig(path string) sddruntime.ObservedOpenCodeConfig {
 	// Collect all agent names and hidden subagents.
 	agentNames := make([]string, 0, len(doc.Agent))
 	hiddenSubagents := make([]string, 0)
+	hiveGrantEvidence := make(map[string][]sddruntime.OpenCodePermissionEvidence)
+	sddSubagents := make(map[string]struct{})
+	for _, name := range openCodeSDDSubagents() {
+		sddSubagents[name] = struct{}{}
+	}
 	for name, entry := range doc.Agent {
 		agentNames = append(agentNames, name)
 		if entry.Hidden && entry.Mode == "subagent" {
 			hiddenSubagents = append(hiddenSubagents, name)
 		}
+		if _, ok := sddSubagents[name]; ok {
+			evidence := parseOpenCodeHiveGrantEvidence(entry.Permission)
+			if len(evidence) > 0 {
+				hiveGrantEvidence[name] = evidence
+			}
+		}
 	}
 	sort.Strings(agentNames)
 	sort.Strings(hiddenSubagents)
-	cfg.AgentNames      = agentNames
+	cfg.AgentNames = agentNames
 	cfg.HiddenSubagents = hiddenSubagents
+	cfg.SDDSubagentHiveGrantEvidence = hiveGrantEvidence
 
 	// Parse top-level bash permission.
 	if doc.Permission.Bash != nil {
@@ -120,14 +133,61 @@ func parseOpenCodeConfig(path string) sddruntime.ObservedOpenCodeConfig {
 	}
 
 	// Parse MCP entries.
-	if hive, ok := doc.MCP["hive"]; ok && hive.Type == "local" {
+	if hive, ok := doc.MCP["hive"]; ok && hive.Type == "local" && isOpenCodeMCPEnabled(hive.Enabled) {
 		cfg.MCPHivePresent = isMCPCommandNonEmpty(hive.Command)
 	}
-	if ctx7, ok := doc.MCP["context7"]; ok && ctx7.Type == "remote" {
+	if ctx7, ok := doc.MCP["context7"]; ok && ctx7.Type == "remote" && isOpenCodeMCPEnabled(ctx7.Enabled) {
 		cfg.MCPContext7Present = true
 	}
 
 	return cfg
+}
+
+func isOpenCodeMCPEnabled(enabled *bool) bool {
+	return enabled == nil || *enabled
+}
+
+func parseOpenCodeHiveGrantEvidence(raw json.RawMessage) []sddruntime.OpenCodePermissionEvidence {
+	if len(raw) == 0 {
+		return nil
+	}
+	var permission map[string]any
+	if err := json.Unmarshal(raw, &permission); err != nil {
+		return nil
+	}
+	evidence := make([]sddruntime.OpenCodePermissionEvidence, 0)
+	for key, value := range permission {
+		action, ok := value.(string)
+		if !ok || !isOpenCodePermissionActionEvidence(action) {
+			continue
+		}
+		if isOpenCodeHiveGrantEvidence(key) {
+			evidence = append(evidence, sddruntime.OpenCodePermissionEvidence{Key: key, Action: action})
+		}
+	}
+	sort.Slice(evidence, func(i, j int) bool {
+		if evidence[i].Key == evidence[j].Key {
+			return evidence[i].Action < evidence[j].Action
+		}
+		return evidence[i].Key < evidence[j].Key
+	})
+	return evidence
+}
+
+func isOpenCodePermissionActionEvidence(action string) bool {
+	return action == "allow" || action == "ask" || action == "deny"
+}
+
+func isOpenCodeHiveGrantEvidence(key string) bool {
+	if key == "hive_*" || key == "hive_mem_*" {
+		return true
+	}
+	for _, tool := range RequiredOpenCodeHiveMCPTools() {
+		if key == tool {
+			return true
+		}
+	}
+	return false
 }
 
 // hasSecretDenyPatterns returns true when the read permission map contains at
@@ -149,9 +209,9 @@ func hasSecretDenyPatterns(read map[string]string) bool {
 }
 
 // isMCPCommandNonEmpty returns true when the raw JSON for the command field
-// decodes to a non-empty array, non-empty/non-whitespace string, or non-empty
-// object. Returns false for null, empty array, empty/whitespace-only string,
-// empty object, or any other value.
+// decodes to an array whose first command entry is non-empty/non-whitespace or a
+// non-empty/non-whitespace string. Object command values are unusable for the
+// local MCP command semantics Jarvis verifies.
 func isMCPCommandNonEmpty(raw json.RawMessage) bool {
 	if len(raw) == 0 {
 		return false
@@ -159,17 +219,12 @@ func isMCPCommandNonEmpty(raw json.RawMessage) bool {
 	// Try array of strings first (most common format).
 	var arr []string
 	if err := json.Unmarshal(raw, &arr); err == nil {
-		return len(arr) > 0
+		return len(arr) > 0 && strings.TrimSpace(arr[0]) != ""
 	}
 	// Try plain string command.
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
 		return strings.TrimSpace(s) != ""
-	}
-	// Try object format (e.g. {"bin": "hive-daemon", "args": []}).
-	var obj map[string]any
-	if err := json.Unmarshal(raw, &obj); err == nil {
-		return len(obj) > 0
 	}
 	return false
 }
