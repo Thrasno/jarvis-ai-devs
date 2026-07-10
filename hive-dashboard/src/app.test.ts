@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ActivityFeedResponse, ApiClient, Memory, MemoryList, MemorySearch, OverviewGrowth, OverviewStats, ProjectListResponse } from './api/client'
 import { createSessionStore, sessionTokenKey, type SessionStore } from './auth/session'
-import { loadDashboard, loadForRoute, renderApp, startDashboardApp } from './main'
+import { LOGIN_TIMEOUT_MS, loadDashboard, loadForRoute, renderApp, startDashboardApp } from './main'
 import { hiveOverviewFixture } from './fixtures/hive-dashboard/overview'
 import { memoryListToDiscoveryData } from './domain/knowledgeDiscovery'
 import { projectsFromApi } from './domain/dashboard'
@@ -85,6 +85,76 @@ describe('dashboard shell', () => {
     expect(replacement.disabled).toBe(false)
     expect(replacement.textContent).toBe('Sign in')
     expect(container.querySelector('[role="alert"]')?.textContent).toBe('Try again')
+  })
+
+  it('recovers from a timed-out login and suppresses a late successful response', async () => {
+    vi.useFakeTimers()
+    const container = document.createElement('main')
+    document.body.append(container)
+    sessionStorage.clear()
+    const pendingLogin = deferred<Awaited<ReturnType<ApiClient['login']>>>()
+    const api = fakeApi()
+    vi.mocked(api.login).mockImplementation((_email, _password, signal) => pendingLogin.promise)
+    const session = createSessionStore({ api })
+    const cleanup = startDashboardApp(container, { api, session })
+
+    try {
+      await flushDashboard()
+      container.querySelector('form.login-card')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+      expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true)
+
+      await vi.advanceTimersByTimeAsync(LOGIN_TIMEOUT_MS)
+
+      expect(container.querySelector('h1')?.textContent).toBe('Sign in to NEXUS HIVE')
+      expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false)
+      expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.textContent).toBe('Sign in')
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe('Sign in timed out. Please try again.')
+      expect(vi.mocked(api.login).mock.calls[0]?.[2]?.aborted).toBe(true)
+
+      pendingLogin.resolve({ token: 'late-token', user: memberUser })
+      await flushDashboard()
+
+      expect(session.getState()).toEqual({ status: 'anonymous' })
+      expect(sessionStorage.getItem(sessionTokenKey)).toBeNull()
+      expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).toBeNull()
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe('Sign in timed out. Please try again.')
+    } finally {
+      cleanup()
+      container.remove()
+      sessionStorage.clear()
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not time out a successful login while the authenticated dashboard is loading', async () => {
+    vi.useFakeTimers()
+    const container = document.createElement('main')
+    document.body.append(container)
+    sessionStorage.clear()
+    const dashboardLoad = deferred<Awaited<ReturnType<ApiClient['health']>>>()
+    const api = fakeApi({ health: dashboardLoad.promise })
+    vi.mocked(api.login).mockResolvedValue({ token: 'jwt-token', user: adminUser })
+    const session = createSessionStore({ api })
+    const cleanup = startDashboardApp(container, { api, session })
+
+    try {
+      await flushDashboard()
+      container.querySelector('form.login-card')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+      await flushDashboard()
+      expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).not.toBeNull()
+
+      await vi.advanceTimersByTimeAsync(LOGIN_TIMEOUT_MS)
+
+      expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).not.toBeNull()
+      expect(container.querySelector('[role="alert"]')).toBeNull()
+    } finally {
+      dashboardLoad.resolve({ status: 'ok', db: 'connected', version: '1.0.0' })
+      await flushDashboard()
+      cleanup()
+      container.remove()
+      sessionStorage.clear()
+      vi.useRealTimers()
+    }
   })
 
   it('keeps the newer authenticated session when rerendered login attempts settle in reverse order', async () => {
