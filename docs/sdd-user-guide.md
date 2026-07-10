@@ -35,6 +35,14 @@ This policy exists to prevent accidental implementation, unclear artifact storag
 
 Jarvis SDD artifacts belong to the Jarvis product workflow. Do not confuse them with assistant memory systems used by an external agent during development. In this repository, Hive is the default SDD artifact store unless a workflow explicitly chooses an OpenSpec/file-based mode.
 
+## Existing install regeneration
+
+Existing installations created by older Jarvis versions must regenerate generated agent artifacts before Hive or hybrid SDD subagents can rely on Hive MCP tools. Run `jarvis init` or the supported reconfiguration flow for your installed provider.
+
+Doctor is read-only: it reports outdated generated artifacts and does not silently mutate configuration. Regeneration preserves user-owned configuration through merge/no-clobber behavior.
+
+Hive/hybrid SDD phases fail clearly instead of silently falling back to inline artifact context when required Hive MCP tools are unavailable.
+
 ## Review workload rule
 
 When a change is likely to exceed roughly 400 changed lines or touches multiple critical areas, split it into reviewable work units or record an explicit size exception. The goal is to keep human review effective, not to maximize one-shot output.

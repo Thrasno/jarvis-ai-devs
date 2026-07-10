@@ -113,3 +113,13 @@ SDD must protect reviewer cognitive load, not only generate tasks.
 - In a Feature Branch Chain, PR #1 targets the feature/tracker branch and later child PRs target the immediate previous PR branch; if GitHub shows previous slices in a child diff, retarget/rebase until the diff is clean.
 
 This guard exists to reduce reviewer burnout and keep implementation delivery safe. Do not treat it as optional process noise.
+
+## F. Hive/Hybrid Degraded Mode
+
+If artifact store mode is `hive` or `hybrid` and required Hive MCP tools are unavailable to the phase sub-agent, STOP and return `blocked`. Do not silently fall back to inline artifact context as the happy path.
+
+Required Hive MCP tools: `mcp__hive__mem_search`, `mcp__hive__mem_get_observation`, `mcp__hive__mem_save`, `mcp__hive__mem_context`, and `mcp__hive__mem_session_summary`.
+
+OpenCode permission entries use the corresponding `hive_mem_search`, `hive_mem_get_observation`, `hive_mem_save`, `hive_mem_context`, and `hive_mem_session_summary` tool names.
+
+The blocked response MUST name the missing Hive MCP capability and include remediation guidance. Remediation: run `jarvis init` or the supported reconfiguration flow to regenerate agent artifacts without clobbering user-owned configuration.
