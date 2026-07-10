@@ -619,7 +619,7 @@ func TestOpenCodeAgent_MergeGeneratedConfig_PreservesStrictHiveWildcardGuardrail
 	}
 }
 
-func TestOpenCodeAgent_MergeGeneratedConfig_RemovesUnknownOrchestratorTaskAllows(t *testing.T) {
+func TestOpenCodeAgent_MergeGeneratedConfig_PreservesUserOwnedOrchestratorTaskAllows(t *testing.T) {
 	tmpHome := t.TempDir()
 	a := &OpenCodeAgent{home: tmpHome, templatesFS: testTemplatesFS}
 	settingsPath := filepath.Join(tmpHome, ".config", "opencode", "opencode.json")
@@ -651,8 +651,8 @@ func TestOpenCodeAgent_MergeGeneratedConfig_RemovesUnknownOrchestratorTaskAllows
 
 	settings := readJSONFile(t, settingsPath)
 	taskPerm := settings["agent"].(map[string]any)["sdd-orchestrator"].(map[string]any)["permission"].(map[string]any)["task"].(map[string]any)
-	if _, ok := taskPerm["some-random-agent"]; ok {
-		t.Fatalf("unknown orchestrator task allow was preserved: %#v", taskPerm)
+	if taskPerm["some-random-agent"] != "allow" {
+		t.Fatalf("user-owned orchestrator task allow was not preserved: %#v", taskPerm)
 	}
 	if taskPerm["*"] != "deny" || taskPerm["sdd-apply"] != "allow" || taskPerm["jd-judge-a"] != "allow" {
 		t.Fatalf("expected generated orchestrator task allows to remain: %#v", taskPerm)
@@ -689,8 +689,8 @@ func TestOpenCodeAgent_MergeGeneratedConfig_IgnoresMalformedTaskPermissionValues
 
 	settings := readJSONFile(t, settingsPath)
 	taskPerm := settings["agent"].(map[string]any)["sdd-orchestrator"].(map[string]any)["permission"].(map[string]any)["task"].(map[string]any)
-	if _, ok := taskPerm["some-random-agent"]; ok {
-		t.Fatalf("unknown string allow was preserved: %#v", taskPerm)
+	if taskPerm["some-random-agent"] != "allow" {
+		t.Fatalf("user-owned string allow was not preserved: %#v", taskPerm)
 	}
 	if _, ok := taskPerm["malformed-array"]; !ok {
 		t.Fatalf("malformed non-string value should be ignored by cleanup, got: %#v", taskPerm)

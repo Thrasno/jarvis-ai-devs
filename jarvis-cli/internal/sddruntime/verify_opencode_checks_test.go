@@ -283,7 +283,7 @@ func TestVerifyOpenCode_SubagentsPresent_PassesWhenExactly17(t *testing.T) {
 	}
 }
 
-func TestVerifyOpenCode_SubagentsPresent_FailsWhenCountAbove17(t *testing.T) {
+func TestVerifyOpenCode_SubagentsPresent_AllowsExtraUserOwnedSubagents(t *testing.T) {
 	observed := compliantOpenCodeRuntime(t)
 	observed.OpenCode.HiddenSubagents = append(observed.OpenCode.HiddenSubagents, "extra-agent")
 
@@ -293,8 +293,8 @@ func TestVerifyOpenCode_SubagentsPresent_FailsWhenCountAbove17(t *testing.T) {
 	if check == nil {
 		t.Fatal("expected invariant.opencode.subagents_present check")
 	}
-	if check.Status != StatusFail {
-		t.Fatalf("expected StatusFail for 18 subagents, got %q", check.Status)
+	if check.Status != StatusPass {
+		t.Fatalf("expected StatusPass with extra user-owned subagent, got %q", check.Status)
 	}
 }
 
@@ -366,7 +366,7 @@ func TestVerifyOpenCode_TaskAllowlist_PassesWhenDenyAndExactly17Allows(t *testin
 	}
 }
 
-func TestVerifyOpenCode_TaskAllowlist_FailsWhenAllowsAbove17(t *testing.T) {
+func TestVerifyOpenCode_TaskAllowlist_AllowsExtraUserOwnedTaskAllows(t *testing.T) {
 	observed := compliantOpenCodeRuntime(t)
 	observed.OpenCode.TaskAllows = append(observed.OpenCode.TaskAllows, "extra-task")
 
@@ -376,8 +376,8 @@ func TestVerifyOpenCode_TaskAllowlist_FailsWhenAllowsAbove17(t *testing.T) {
 	if check == nil {
 		t.Fatal("expected invariant.opencode.task_allowlist check")
 	}
-	if check.Status != StatusFail {
-		t.Fatalf("expected StatusFail for 18 task allows, got %q", check.Status)
+	if check.Status != StatusPass {
+		t.Fatalf("expected StatusPass with extra user-owned task allow, got %q", check.Status)
 	}
 }
 
@@ -676,6 +676,12 @@ func TestVerifyOpenCode_SDDSubagentHiveGrants_FailsWhenStrictWildcardOverridesGe
 	}
 	if check.Status != StatusFail {
 		t.Fatalf("expected StatusFail when strict wildcard deny is present with generated exact allows, got %q", check.Status)
+	}
+	if check.DriftClass != DriftNonOwned {
+		t.Fatalf("expected strict wildcard guardrail to be classified as non-owned drift, got %q", check.DriftClass)
+	}
+	if strings.Contains(check.Message, "jarvis init") || !strings.Contains(check.Message, "manually adjust") {
+		t.Fatalf("expected manual guardrail remediation, got %q", check.Message)
 	}
 	if !strings.Contains(check.Observed, "sdd-apply:hive_mem_search") {
 		t.Fatalf("expected observed drift for wildcard-denied tool, got %q", check.Observed)

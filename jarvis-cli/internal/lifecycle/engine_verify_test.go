@@ -154,6 +154,46 @@ func TestEngineDoctor_RecommendsRegenerationForMissingSDDSubagentHiveGrants(t *t
 	}
 }
 
+func TestEngineDoctor_RecommendsManualGuardrailChangeForStrictOpenCodeHiveGuardrail(t *testing.T) {
+	config := fakeCompliantOpenCodeConfig()
+	config.SDDSubagentHiveGrantEvidence["sdd-apply"] = []sddruntime.OpenCodePermissionEvidence{
+		{Key: "hive_mem_*", Action: "deny"},
+		{Key: "hive_mem_search", Action: "allow"},
+		{Key: "hive_mem_get_observation", Action: "allow"},
+		{Key: "hive_mem_save", Action: "allow"},
+		{Key: "hive_mem_context", Action: "allow"},
+		{Key: "hive_mem_session_summary", Action: "allow"},
+	}
+	adapter := &fakeProviderAdapter{
+		name: "opencode",
+		observed: ObservedProviderState{
+			Artifacts: map[string]sddruntime.ObservedArtifact{
+				"instructions": {Exists: true, MarkersValid: true},
+				"orchestrator": {Exists: true},
+				"skills":       {Exists: true},
+			},
+			OpenCode: config,
+		},
+	}
+
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"opencode": adapter}, HomeDir: t.TempDir()})
+	plan, err := engine.Doctor("opencode")
+	if err != nil {
+		t.Fatalf("Doctor returned error: %v", err)
+	}
+
+	step := findStep(plan.Steps, "invariant.opencode.sdd_hive_grants")
+	if step == nil {
+		t.Fatalf("expected doctor step for strict Hive guardrail in %#v", plan.Steps)
+	}
+	if step.SafeToAutoApply || step.SafetyClass != "non-owned" || step.ReasonCode != "opencode_hive_guardrail_blocks_access" {
+		t.Fatalf("strict Hive guardrail must require manual user-owned repair, got %+v", *step)
+	}
+	if strings.Contains(step.NextAction, "regenerate") || !strings.Contains(step.NextAction, "rerunning init will preserve the guardrail") {
+		t.Fatalf("doctor step must not claim regeneration will fix preserved guardrail: %+v", *step)
+	}
+}
+
 func TestEngineDoctor_RecommendsRegenerationForStaleClaudeSDDSubagentHiveTools(t *testing.T) {
 	adapter := &fakeProviderAdapter{
 		name: "claude",

@@ -89,10 +89,10 @@ func verifyOpenCodeConfigInvariants(oc ObservedOpenCodeConfig, storeMode string)
 	subStatus := StatusPass
 	subMsg := fmt.Sprintf("all required subagents present (hidden=true, mode=subagent): found %d", len(oc.HiddenSubagents))
 	subObserved := fmt.Sprintf("%d hidden subagents", len(oc.HiddenSubagents))
-	if len(missingSubagents) > 0 || len(unexpectedSubagents) > 0 {
+	if len(missingSubagents) > 0 {
 		subStatus = StatusFail
 		subObserved = formatOpenCodeSubagentDiff(missingSubagents, unexpectedSubagents)
-		subMsg = "required subagents missing/not hidden/not mode=subagent or unexpected generated subagents found: " + subObserved
+		subMsg = "required subagents missing/not hidden/not mode=subagent: " + subObserved
 	}
 	results = append(results, CheckResult{
 		Key:        "invariant.opencode.subagents_present",
@@ -109,7 +109,7 @@ func verifyOpenCodeConfigInvariants(oc ObservedOpenCodeConfig, storeMode string)
 	taskStatus := StatusPass
 	taskMsg := fmt.Sprintf("orchestrator task allowlist complete: wildcard deny=true, %d named allows", len(oc.TaskAllows))
 	taskObserved := fmt.Sprintf("wildcard_deny=%v, allows=%d", oc.TaskWildcardDeny, len(oc.TaskAllows))
-	if !oc.TaskWildcardDeny || len(missingTaskAllows) > 0 || len(unexpectedTaskAllows) > 0 {
+	if !oc.TaskWildcardDeny || len(missingTaskAllows) > 0 {
 		taskStatus = StatusFail
 		taskObserved = fmt.Sprintf("wildcard_deny=%v, %s", oc.TaskWildcardDeny, formatOpenCodeSubagentDiff(missingTaskAllows, unexpectedTaskAllows))
 		taskMsg = fmt.Sprintf(`orchestrator task allowlist drift: "*" deny=%v, %s`, oc.TaskWildcardDeny, formatOpenCodeSubagentDiff(missingTaskAllows, unexpectedTaskAllows))
@@ -182,7 +182,14 @@ func verifyOpenCodeConfigInvariants(oc ObservedOpenCodeConfig, storeMode string)
 	if len(missingHiveGrants) > 0 {
 		hiveGrantStatus = hiveToolDriftStatus(storeMode)
 		hiveGrantDrift = DriftOwned
-		if hiveGrantStatus == StatusFail {
+		if openCodeHiveGrantsBlockedByStrictWildcard(oc.SDDSubagentHiveGrantEvidence) {
+			hiveGrantDrift = DriftNonOwned
+			if hiveGrantStatus == StatusFail {
+				hiveGrantMsg = "strict user-owned OpenCode Hive wildcard guardrail blocks generated Hive MCP access for Hive/hybrid mode; manually adjust or remove the hive_mem_* / hive_* guardrail, or add exact tool allows where appropriate"
+			} else {
+				hiveGrantMsg = "strict user-owned OpenCode Hive wildcard guardrail blocks generated Hive MCP access; advisory only because this SDD store mode does not require Hive persistence"
+			}
+		} else if hiveGrantStatus == StatusFail {
 			hiveGrantMsg = "generated OpenCode SDD subagent Hive MCP grants are missing for Hive/hybrid mode; re-run jarvis init or supported reconfiguration to regenerate opencode.json"
 		} else {
 			hiveGrantMsg = "generated OpenCode SDD subagent Hive MCP grants are missing; advisory generated-artifact drift only because this SDD store mode does not require Hive persistence"
@@ -263,6 +270,23 @@ func openCodeMCPHiveDriftStatus(storeMode string) IntegrityStatus {
 		return StatusWarn
 	}
 	return StatusFail
+}
+
+func openCodeHiveGrantsBlockedByStrictWildcard(evidence map[string][]OpenCodePermissionEvidence) bool {
+	for _, agentName := range requiredOpenCodeSDDSubagents() {
+		agentEvidence := evidence[agentName]
+		for _, tool := range requiredOpenCodeHiveMCPTools() {
+			if openCodeHiveGrantEvidenceAllows(agentEvidence, tool) {
+				continue
+			}
+			for _, entry := range agentEvidence {
+				if (entry.Key == "hive_mem_*" || entry.Key == "hive_*") && openCodeHivePermissionSpecificity(entry.Key, tool) >= 0 && isOpenCodeStricterPermissionAction(entry.Action) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func missingOpenCodeSDDSubagentHiveGrants(evidence map[string][]OpenCodePermissionEvidence) []string {

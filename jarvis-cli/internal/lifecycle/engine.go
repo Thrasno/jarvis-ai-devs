@@ -356,6 +356,10 @@ func doctorStepFromCheck(check sddruntime.CheckResult) DoctorStep {
 		step.ReasonCode = "non_owned_drift"
 		step.SafetyClass = "non-owned"
 		step.NextAction = "preserve user-owned changes and repair manually if needed"
+		if check.Key == "invariant.opencode.sdd_hive_grants" {
+			step.ReasonCode = "opencode_hive_guardrail_blocks_access"
+			step.NextAction = "manually adjust or remove the user-owned OpenCode hive_mem_* / hive_* guardrail, or add exact Hive tool allows where appropriate; rerunning init will preserve the guardrail and will not repair this"
+		}
 		return step
 	case sddruntime.DriftUnknown:
 		step.ReasonCode = "unknown_drift"
