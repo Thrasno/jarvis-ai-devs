@@ -845,6 +845,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
   let userManagementState: UserManagementState = {}
   let projectBlockState: ProjectBlockState = {}
   let projectBlockOperationId = 0
+  let loginAttemptVersion = 0
   let disposed = false
 
   const rerender = (state: AuthState) => {
@@ -865,15 +866,20 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
   const actions: AppActions = {
     async onLogin(email, password) {
       if (disposed) return
+      const attemptVersion = ++loginAttemptVersion
+      const ownsLoginAttempt = () => !disposed && attemptVersion === loginAttemptVersion
       try {
-        await setState(await session.login(email, password))
+        const state = await session.loginWithOwnership(email, password, ownsLoginAttempt)
+        if (disposed || attemptVersion !== loginAttemptVersion) return
+        await setState(state)
       } catch (error) {
-        if (disposed) return
+        if (disposed || attemptVersion !== loginAttemptVersion) return
         rerender({ status: 'anonymous', error: loginErrorMessage(error) })
       }
     },
     onLogout() {
       if (disposed) return
+      loginAttemptVersion += 1
       loadVersion += 1
       dashboard = { status: 'loading' }
       userManagementState = {}

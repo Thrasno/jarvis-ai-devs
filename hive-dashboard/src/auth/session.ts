@@ -10,6 +10,7 @@ export type AuthState =
 export type SessionStore = {
   getState(): AuthState
   login(email: string, password: string): Promise<AuthState>
+  loginWithOwnership(email: string, password: string, shouldCommit: () => boolean): Promise<AuthState>
   bootstrap(): Promise<AuthState>
   logout(): AuthState
 }
@@ -31,13 +32,21 @@ export function createSessionStore(options: { api?: AuthApi; storage?: Storage }
     return state
   }
 
+  const login = async (email: string, password: string, shouldCommit = () => true): Promise<AuthState> => {
+    const response = await api.login(email, password)
+    if (!shouldCommit()) return state
+    return setAuthenticated(response.token, response.user)
+  }
+
   return {
     getState() {
       return state
     },
-    async login(email, password) {
-      const response = await api.login(email, password)
-      return setAuthenticated(response.token, response.user)
+    login(email, password) {
+      return login(email, password)
+    },
+    loginWithOwnership(email, password, shouldCommit) {
+      return login(email, password, shouldCommit)
     },
     async bootstrap() {
       const token = storage.getItem(sessionTokenKey)
