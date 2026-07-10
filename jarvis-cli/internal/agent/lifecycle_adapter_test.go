@@ -199,7 +199,7 @@ func TestLifecycleAdapter_DoctorDiagnosesMalformedOpenCodeConfig(t *testing.T) {
 	if step == nil {
 		t.Fatalf("expected real adapter doctor path to diagnose malformed OpenCode config, steps=%+v", plan.Steps)
 	}
-	if step.SafeToAutoApply || step.ReasonCode != "generated_opencode_artifact_outdated" {
+	if step.SafeToAutoApply || step.ReasonCode != "manual_invariant_drift" {
 		t.Fatalf("unexpected malformed OpenCode diagnosis: %+v", *step)
 	}
 }

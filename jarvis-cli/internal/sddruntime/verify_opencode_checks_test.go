@@ -298,6 +298,28 @@ func TestVerifyOpenCode_SubagentsPresent_FailsWhenCountAbove17(t *testing.T) {
 	}
 }
 
+func TestVerifyOpenCode_SubagentsPresent_FailsWhen17WrongNames(t *testing.T) {
+	observed := compliantOpenCodeRuntime(t)
+	observed.OpenCode.HiddenSubagents = []string{
+		"wrong-01", "wrong-02", "wrong-03", "wrong-04", "wrong-05", "wrong-06",
+		"wrong-07", "wrong-08", "wrong-09", "wrong-10", "wrong-11", "wrong-12",
+		"wrong-13", "wrong-14", "wrong-15", "wrong-16", "wrong-17",
+	}
+
+	report := Verify("opencode", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.opencode.subagents_present")
+	if check == nil {
+		t.Fatal("expected invariant.opencode.subagents_present check")
+	}
+	if check.Status != StatusFail {
+		t.Fatalf("expected StatusFail for wrong subagent names, got %q", check.Status)
+	}
+	if !strings.Contains(check.Observed, "missing=sdd-init") || !strings.Contains(check.Observed, "unexpected=wrong-01") {
+		t.Fatalf("expected useful missing/unexpected diagnostic, got observed=%q message=%q", check.Observed, check.Message)
+	}
+}
+
 // --- invariant.opencode.task_allowlist ---
 
 func TestVerifyOpenCode_TaskAllowlist_FailsWhenWildcardDenyMissing(t *testing.T) {
@@ -356,6 +378,28 @@ func TestVerifyOpenCode_TaskAllowlist_FailsWhenAllowsAbove17(t *testing.T) {
 	}
 	if check.Status != StatusFail {
 		t.Fatalf("expected StatusFail for 18 task allows, got %q", check.Status)
+	}
+}
+
+func TestVerifyOpenCode_TaskAllowlist_FailsWhen17WrongNames(t *testing.T) {
+	observed := compliantOpenCodeRuntime(t)
+	observed.OpenCode.TaskAllows = []string{
+		"wrong-01", "wrong-02", "wrong-03", "wrong-04", "wrong-05", "wrong-06",
+		"wrong-07", "wrong-08", "wrong-09", "wrong-10", "wrong-11", "wrong-12",
+		"wrong-13", "wrong-14", "wrong-15", "wrong-16", "wrong-17",
+	}
+
+	report := Verify("opencode", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.opencode.task_allowlist")
+	if check == nil {
+		t.Fatal("expected invariant.opencode.task_allowlist check")
+	}
+	if check.Status != StatusFail {
+		t.Fatalf("expected StatusFail for wrong task allow names, got %q", check.Status)
+	}
+	if !strings.Contains(check.Observed, "missing=sdd-init") || !strings.Contains(check.Observed, "unexpected=wrong-01") {
+		t.Fatalf("expected useful missing/unexpected diagnostic, got observed=%q message=%q", check.Observed, check.Message)
 	}
 }
 

@@ -229,6 +229,39 @@ func TestEngineDoctor_RecommendsRegenerationForMissingOpenCodeGeneratedPlugin(t 
 	}
 }
 
+func TestEngineDoctor_KeepsOpenCodeSecurityInvariantAsManualDrift(t *testing.T) {
+	config := fakeCompliantOpenCodeConfig()
+	config.BashWildcardAllow = false
+	adapter := &fakeProviderAdapter{
+		name: "opencode",
+		observed: ObservedProviderState{
+			Artifacts: map[string]sddruntime.ObservedArtifact{
+				"instructions": {Exists: true, MarkersValid: true},
+				"orchestrator": {Exists: true},
+				"skills":       {Exists: true},
+			},
+			OpenCode: config,
+		},
+	}
+
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"opencode": adapter}, HomeDir: t.TempDir()})
+	plan, err := engine.Doctor("opencode")
+	if err != nil {
+		t.Fatalf("Doctor returned error: %v", err)
+	}
+
+	step := findStep(plan.Steps, "invariant.opencode.permission_bash")
+	if step == nil {
+		t.Fatalf("expected doctor step for OpenCode bash permission drift in %#v", plan.Steps)
+	}
+	if step.ReasonCode != "manual_invariant_drift" {
+		t.Fatalf("security invariant must not be classified as generated artifact drift, got %+v", *step)
+	}
+	if strings.Contains(step.NextAction, "jarvis init") || strings.Contains(step.NextAction, "regenerate managed agent artifacts") {
+		t.Fatalf("security invariant should keep manual recovery guidance, got %+v", *step)
+	}
+}
+
 func TestEngineDoctor_DoesNotBootstrapMissingLedger(t *testing.T) {
 	home := t.TempDir()
 	ledgerPath := filepath.Join(home, ".jarvis", "managed-state.json")

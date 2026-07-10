@@ -150,17 +150,12 @@ func observeRuntimeWithConfig(configDir string, plan sddruntime.RuntimePlan, cfg
 
 func observeClaudeSDDSubagentHiveTools(agentsDir string) map[string][]string {
 	observed := make(map[string][]string)
-	found := false
 	for _, def := range SDDPhaseAgentDefinitions() {
 		content, err := os.ReadFile(filepath.Join(agentsDir, def.Name+".md"))
 		if err != nil {
 			continue
 		}
-		found = true
 		observed[def.Name] = parseClaudeAgentToolsFrontmatter(string(content))
-	}
-	if !found {
-		return nil
 	}
 	return observed
 }

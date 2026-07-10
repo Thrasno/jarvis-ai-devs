@@ -388,7 +388,14 @@ func managedArtifactReasonCode(check sddruntime.CheckResult) string {
 }
 
 func isGeneratedAgentArtifactDrift(checkKey string) bool {
-	return strings.HasPrefix(checkKey, "invariant.opencode.") || strings.HasPrefix(checkKey, "invariant.claude.")
+	switch checkKey {
+	case "invariant.opencode.sdd_hive_grants",
+		"invariant.opencode.plugin_hive",
+		"invariant.claude.sdd_hive_tools":
+		return true
+	default:
+		return false
+	}
 }
 
 func generatedAgentArtifactReasonCode(checkKey string) string {

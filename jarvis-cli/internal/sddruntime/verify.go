@@ -39,7 +39,8 @@ type ObservedRuntime struct {
 	OpenCode ObservedOpenCodeConfig
 	// ClaudeSDDSubagentHiveTools maps generated Claude SDD agent names to their
 	// parsed frontmatter tool allowlist. Nil means the observer did not inspect
-	// Claude SDD agent files; non-nil maps are verified for generated-artifact drift.
+	// Claude SDD agent files; non-nil maps are verified for generated-artifact
+	// drift, including missing or unreadable generated agent files.
 	ClaudeSDDSubagentHiveTools map[string][]string
 }
 
@@ -90,9 +91,9 @@ func verifyClaudeSDDSubagentHiveTools(report *IntegrityReport, evidence map[stri
 		status = hiveToolDriftStatus(storeMode)
 		drift = DriftOwned
 		if status == StatusFail {
-			message = "generated Claude SDD agent Hive MCP tools are missing for Hive/hybrid mode; re-run jarvis init or supported reconfiguration to regenerate Claude agents"
+			message = "generated Claude SDD agents are missing, unreadable, or lack Hive MCP tools for Hive/hybrid mode; re-run jarvis init or supported reconfiguration to regenerate Claude agents"
 		} else {
-			message = "generated Claude SDD agent Hive MCP tools are missing; advisory generated-artifact drift only because openspec and none modes do not require Hive artifact persistence"
+			message = "generated Claude SDD agents are missing, unreadable, or lack Hive MCP tools; advisory generated-artifact drift only because openspec and none modes do not require Hive artifact persistence"
 		}
 	}
 	report.AddCheck(CheckResult{

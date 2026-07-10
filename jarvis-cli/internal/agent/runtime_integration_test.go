@@ -52,6 +52,7 @@ func TestClaudeAgent_ObserveRuntime_ProducesVerifierInput(t *testing.T) {
 	if err := a.InstallOrchestrator([]byte("# orchestrator")); err != nil {
 		t.Fatalf("InstallOrchestrator: %v", err)
 	}
+	installCompliantClaudeSDDPhaseAgents(t, a)
 	if err := installOptionalManagedArtifacts(a.ConfigDir()); err != nil {
 		t.Fatalf("install optional managed artifacts: %v", err)
 	}
@@ -112,6 +113,45 @@ func TestClaudeAgent_ObserveRuntime_ReportsStaleSDDPhaseAgentMissingHiveTools(t 
 
 	if got := checkStatusByKey(report.Checks, "invariant.claude.sdd_hive_tools"); got != sddruntime.StatusFail {
 		t.Fatalf("stale Claude SDD Hive tools check = %q, want fail", got)
+	}
+}
+
+func TestClaudeAgent_ObserveRuntime_ReportsMissingSDDPhaseAgents(t *testing.T) {
+	home := t.TempDir()
+	a := &ClaudeAgent{home: home, templatesFS: testTemplatesFS}
+	if err := os.MkdirAll(a.ConfigDir(), 0755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := a.WriteInstructions("# Layer1", "# Layer2", nil); err != nil {
+		t.Fatalf("WriteInstructions: %v", err)
+	}
+	if err := a.InstallOrchestrator([]byte("# orchestrator")); err != nil {
+		t.Fatalf("InstallOrchestrator: %v", err)
+	}
+	if err := installOptionalManagedArtifacts(a.ConfigDir()); err != nil {
+		t.Fatalf("install optional managed artifacts: %v", err)
+	}
+	if err := a.InstallSkills(fstest.MapFS{"_shared/SKILL.md": {Data: []byte("# shared")}}, nil); err != nil {
+		t.Fatalf("InstallSkills: %v", err)
+	}
+
+	observed, err := a.ObserveRuntime()
+	if err != nil {
+		t.Fatalf("ObserveRuntime: %v", err)
+	}
+	if observed.ClaudeSDDSubagentHiveTools == nil {
+		t.Fatal("expected missing Claude SDD agents to be reported as inspected evidence")
+	}
+	report := sddruntime.Verify(a.Name(), observed)
+	check := findRuntimeCheckByKey(report.Checks, "invariant.claude.sdd_hive_tools")
+	if check == nil {
+		t.Fatal("expected invariant.claude.sdd_hive_tools check")
+	}
+	if check.Status != sddruntime.StatusFail {
+		t.Fatalf("missing Claude SDD agents check = %q, want fail", check.Status)
+	}
+	if !strings.Contains(check.Message, "missing") || !strings.Contains(check.Message, "regenerate") {
+		t.Fatalf("expected actionable missing-agent guidance, got %q", check.Message)
 	}
 }
 
@@ -328,6 +368,7 @@ func TestClaudeAgent_ObserveRuntimeWithConfigUsesPendingAssignments(t *testing.T
 	if err := a.InstallOrchestrator([]byte(rendered)); err != nil {
 		t.Fatalf("InstallOrchestrator: %v", err)
 	}
+	installCompliantClaudeSDDPhaseAgents(t, a)
 	skillsFS := fstest.MapFS{"_shared/SKILL.md": {Data: []byte("# shared")}}
 	if err := a.InstallSkills(skillsFS, nil); err != nil {
 		t.Fatalf("InstallSkills: %v", err)
@@ -398,6 +439,9 @@ func TestAdapters_RuntimeObservation_EquivalentContractSemantics(t *testing.T) {
 		}
 		if err := a.InstallOrchestrator([]byte("# orchestrator")); err != nil {
 			t.Fatalf("InstallOrchestrator for %s: %v", a.Name(), err)
+		}
+		if claudeAgent, ok := a.(*ClaudeAgent); ok {
+			installCompliantClaudeSDDPhaseAgents(t, claudeAgent)
 		}
 		if err := installOptionalManagedArtifacts(a.ConfigDir()); err != nil {
 			t.Fatalf("install optional managed artifacts for %s: %v", a.Name(), err)
@@ -669,6 +713,28 @@ func checkStatusByKey(checks []sddruntime.CheckResult, key string) sddruntime.In
 		}
 	}
 	return ""
+}
+
+func installCompliantClaudeSDDPhaseAgents(t *testing.T, a *ClaudeAgent) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(a.ConfigDir(), "agents"), 0o755); err != nil {
+		t.Fatalf("mkdir Claude agents dir: %v", err)
+	}
+	for _, def := range SDDPhaseAgentDefinitions() {
+		content := "---\nname: " + def.Name + "\ntools: " + strings.Join(def.ClaudeTools, ", ") + "\n---\n# " + def.Name + "\n"
+		if err := os.WriteFile(filepath.Join(a.ConfigDir(), "agents", def.Name+".md"), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s agent: %v", def.Name, err)
+		}
+	}
+}
+
+func findRuntimeCheckByKey(checks []sddruntime.CheckResult, key string) *sddruntime.CheckResult {
+	for i := range checks {
+		if checks[i].Key == key {
+			return &checks[i]
+		}
+	}
+	return nil
 }
 
 func installOptionalManagedArtifacts(configDir string) error {

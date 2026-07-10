@@ -415,6 +415,40 @@ func TestVerifyClaude_FailsWhenSDDSubagentHiveToolsAreMissing(t *testing.T) {
 	}
 }
 
+func TestVerifyClaude_FailsWhenSDDSubagentHiveToolEvidenceIsEmpty(t *testing.T) {
+	observed := compliantObservedRuntime(t)
+	observed.ClaudeSDDSubagentHiveTools = map[string][]string{}
+
+	report := Verify("claude", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.claude.sdd_hive_tools")
+	if check == nil {
+		t.Fatal("expected invariant.claude.sdd_hive_tools check")
+	}
+	if check.Status != StatusFail {
+		t.Fatalf("expected StatusFail for missing Claude SDD agents, got %q", check.Status)
+	}
+	if !strings.Contains(check.Message, "missing") || !strings.Contains(check.Message, "regenerate") {
+		t.Fatalf("expected actionable missing-agent guidance, got %q", check.Message)
+	}
+}
+
+func TestVerifyClaude_WarnsWhenSDDSubagentHiveToolEvidenceIsEmptyInNonHiveModes(t *testing.T) {
+	observed := compliantObservedRuntime(t)
+	setObservedStoreMode(t, &observed, "openspec")
+	observed.ClaudeSDDSubagentHiveTools = map[string][]string{}
+
+	report := Verify("claude", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.claude.sdd_hive_tools")
+	if check == nil {
+		t.Fatal("expected invariant.claude.sdd_hive_tools check")
+	}
+	if check.Status != StatusWarn {
+		t.Fatalf("expected StatusWarn for missing Claude SDD agents in openspec mode, got %q", check.Status)
+	}
+}
+
 func TestVerifyClaude_WarnsWhenSDDSubagentHiveToolsAreMissingInNonHiveModes(t *testing.T) {
 	tests := []struct {
 		name      string

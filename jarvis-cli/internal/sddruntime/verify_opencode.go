@@ -83,38 +83,42 @@ func verifyOpenCodeConfigInvariants(oc ObservedOpenCodeConfig, storeMode string)
 		Message:    orchMsg,
 	})
 
-	// --- R5: All 17 Subagents Present ---
-	// 10 SDD + 3 Judgment Day + 4 Review = 17 required hidden subagents.
+	// --- R5: Required Subagents Present ---
+	// 10 SDD + 3 Judgment Day + 4 Review required hidden subagents.
+	missingSubagents, unexpectedSubagents := diffRequiredOpenCodeSubagents(oc.HiddenSubagents)
 	subStatus := StatusPass
-	subMsg := fmt.Sprintf("all 17 required subagents present (hidden=true, mode=subagent): found %d", len(oc.HiddenSubagents))
+	subMsg := fmt.Sprintf("all required subagents present (hidden=true, mode=subagent): found %d", len(oc.HiddenSubagents))
 	subObserved := fmt.Sprintf("%d hidden subagents", len(oc.HiddenSubagents))
-	if len(oc.HiddenSubagents) != 17 {
+	if len(missingSubagents) > 0 || len(unexpectedSubagents) > 0 {
 		subStatus = StatusFail
-		subMsg = fmt.Sprintf("required 17 subagents missing/not hidden/not mode=subagent; found %d", len(oc.HiddenSubagents))
+		subObserved = formatOpenCodeSubagentDiff(missingSubagents, unexpectedSubagents)
+		subMsg = "required subagents missing/not hidden/not mode=subagent or unexpected generated subagents found: " + subObserved
 	}
 	results = append(results, CheckResult{
 		Key:        "invariant.opencode.subagents_present",
 		Status:     subStatus,
 		DriftClass: driftClassFromStatus(subStatus),
-		Expected:   "17 hidden subagents with mode=subagent",
+		Expected:   strings.Join(requiredOpenCodeSubagents(), ","),
 		Observed:   subObserved,
 		Message:    subMsg,
 	})
 
 	// --- R6: Task Allowlist ---
-	// 10 SDD + 3 Judgment Day + 4 Review = 17 named allows required.
+	// 10 SDD + 3 Judgment Day + 4 Review named allows required.
+	missingTaskAllows, unexpectedTaskAllows := diffRequiredOpenCodeSubagents(oc.TaskAllows)
 	taskStatus := StatusPass
 	taskMsg := fmt.Sprintf("orchestrator task allowlist complete: wildcard deny=true, %d named allows", len(oc.TaskAllows))
 	taskObserved := fmt.Sprintf("wildcard_deny=%v, allows=%d", oc.TaskWildcardDeny, len(oc.TaskAllows))
-	if !oc.TaskWildcardDeny || len(oc.TaskAllows) != 17 {
+	if !oc.TaskWildcardDeny || len(missingTaskAllows) > 0 || len(unexpectedTaskAllows) > 0 {
 		taskStatus = StatusFail
-		taskMsg = fmt.Sprintf(`orchestrator task allowlist drift: "*" deny=%v, named allows=%d (want 17)`, oc.TaskWildcardDeny, len(oc.TaskAllows))
+		taskObserved = fmt.Sprintf("wildcard_deny=%v, %s", oc.TaskWildcardDeny, formatOpenCodeSubagentDiff(missingTaskAllows, unexpectedTaskAllows))
+		taskMsg = fmt.Sprintf(`orchestrator task allowlist drift: "*" deny=%v, %s`, oc.TaskWildcardDeny, formatOpenCodeSubagentDiff(missingTaskAllows, unexpectedTaskAllows))
 	}
 	results = append(results, CheckResult{
 		Key:        "invariant.opencode.task_allowlist",
 		Status:     taskStatus,
 		DriftClass: driftClassFromStatus(taskStatus),
-		Expected:   `task["*"]="deny" and 17 named allows`,
+		Expected:   `task["*"]="deny" and named allows: ` + strings.Join(requiredOpenCodeSubagents(), ","),
 		Observed:   taskObserved,
 		Message:    taskMsg,
 	})
@@ -336,4 +340,64 @@ func requiredOpenCodeSDDSubagents() []string {
 		"sdd-archive",
 		"sdd-onboard",
 	}
+}
+
+func requiredOpenCodeSubagents() []string {
+	return []string{
+		"sdd-init",
+		"sdd-explore",
+		"sdd-propose",
+		"sdd-spec",
+		"sdd-design",
+		"sdd-tasks",
+		"sdd-apply",
+		"sdd-verify",
+		"sdd-archive",
+		"sdd-onboard",
+		"jd-judge-a",
+		"jd-judge-b",
+		"jd-fix-agent",
+		"review-risk",
+		"review-readability",
+		"review-reliability",
+		"review-resilience",
+	}
+}
+
+func diffRequiredOpenCodeSubagents(observed []string) ([]string, []string) {
+	requiredSet := make(map[string]struct{})
+	for _, required := range requiredOpenCodeSubagents() {
+		requiredSet[required] = struct{}{}
+	}
+	present := make(map[string]struct{}, len(observed))
+	for _, name := range observed {
+		present[name] = struct{}{}
+	}
+	missing := make([]string, 0)
+	for _, required := range requiredOpenCodeSubagents() {
+		if _, ok := present[required]; !ok {
+			missing = append(missing, required)
+		}
+	}
+	unexpected := make([]string, 0)
+	for _, name := range observed {
+		if _, ok := requiredSet[name]; !ok {
+			unexpected = append(unexpected, name)
+		}
+	}
+	return missing, unexpected
+}
+
+func formatOpenCodeSubagentDiff(missing, unexpected []string) string {
+	parts := make([]string, 0, 2)
+	if len(missing) > 0 {
+		parts = append(parts, "missing="+strings.Join(missing, ","))
+	}
+	if len(unexpected) > 0 {
+		parts = append(parts, "unexpected="+strings.Join(unexpected, ","))
+	}
+	if len(parts) == 0 {
+		return "missing= unexpected="
+	}
+	return strings.Join(parts, " ")
 }
