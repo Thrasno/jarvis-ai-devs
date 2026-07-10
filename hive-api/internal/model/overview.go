@@ -2,6 +2,43 @@ package model
 
 import "time"
 
+// OverviewCapability identifies the data projection authorized for an overview.
+type OverviewCapability string
+
+const (
+	OverviewCapabilityMember OverviewCapability = "member"
+	OverviewCapabilityAdmin  OverviewCapability = "admin"
+)
+
+// OverviewSummary contains the aggregates available to every overview capability.
+type OverviewSummary struct {
+	TotalMemories      int64                      `json:"total_memories"`
+	ActiveProjects     int                        `json:"active_projects"`
+	LiveActivity       MemberOverviewLiveActivity `json:"live_activity"`
+	MostActiveProjects []ProjectCount             `json:"most_active_projects"`
+}
+
+// MemberOverviewLiveActivity intentionally exposes only an aggregate count.
+type MemberOverviewLiveActivity struct {
+	Count int `json:"count"`
+}
+
+// CapabilityOverviewResponse is the capability-aware overview projection.
+type CapabilityOverviewResponse struct {
+	Capability OverviewCapability       `json:"capability"`
+	Summary    OverviewSummary          `json:"summary"`
+	Operations *AdminOverviewOperations `json:"operations,omitempty"`
+}
+
+// AdminOverviewOperations contains fields intentionally excluded from Member projections.
+type AdminOverviewOperations struct {
+	DaemonHealth        OverviewDaemonHealth `json:"daemon_health"`
+	Conflicts           OverviewConflicts    `json:"conflicts"`
+	KnowledgeGrowth     []OverviewChartPoint `json:"knowledge_growth"`
+	SyncHealthByProject []ProjectSyncHealth  `json:"sync_health_by_project"`
+	NewestSyncID        string               `json:"newest_sync_id"`
+}
+
 // OverviewStatsResponse is the response for GET /admin/overview/stats.
 type OverviewStatsResponse struct {
 	DaemonHealth        OverviewDaemonHealth `json:"daemon_health"`
