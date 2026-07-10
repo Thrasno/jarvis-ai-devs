@@ -201,6 +201,59 @@ func RenderOutputStyle(preset *Preset) string {
 	return sb.String()
 }
 
+// RenderLayer2V2 renders a schema-v2 profile as presentation only. It is
+// intentionally separate from RenderLayer2 until V2 activation.
+func RenderLayer2V2(preset *PresetV2) string {
+	return renderPresentationV2(preset, false)
+}
+
+// RenderOutputStyleV2 renders schema-v2 presentation for Claude Code while
+// retaining Claude's Layer1 coding instructions.
+func RenderOutputStyleV2(preset *PresetV2) string {
+	return renderPresentationV2(preset, true)
+}
+
+func renderPresentationV2(preset *PresetV2, outputStyle bool) string {
+	var sb strings.Builder
+	if outputStyle {
+		sb.WriteString("---\n")
+		fmt.Fprintf(&sb, "name: %s\n", toTitleCase(preset.Name))
+		sb.WriteString("description: Jarvis presentation profile\n")
+		sb.WriteString("keep-coding-instructions: true\n---\n\n")
+	}
+
+	fmt.Fprintf(&sb, "## Persona: %s\n\n", toTitleCase(preset.Name))
+	sb.WriteString("### Presentation\n")
+	fmt.Fprintf(&sb, "- Language: %s\n", presentationLanguageV2(preset.Presentation.Language))
+	fmt.Fprintf(&sb, "- Register: %s\n", presentationRegisterV2(preset.Presentation.Register))
+	fmt.Fprintf(&sb, "- Vocabulary: %s\n", preset.Presentation.Vocabulary)
+	fmt.Fprintf(&sb, "- Cadence: %s\n", preset.Presentation.Cadence)
+	fmt.Fprintf(&sb, "- Humor: %s\n", preset.Presentation.Humor)
+	fmt.Fprintf(&sb, "- Emotional range: %s\n", preset.Presentation.EmotionalRange)
+	fmt.Fprintf(&sb, "- Verbosity: %s\n", preset.Presentation.Verbosity)
+	fmt.Fprintf(&sb, "- Formatting: %s\n", preset.Presentation.Formatting)
+	fmt.Fprintf(&sb, "- Teaching metaphors: %s\n", preset.Presentation.TeachingMetaphors)
+	fmt.Fprintf(&sb, "- Examples: %s\n", preset.Presentation.Examples)
+	fmt.Fprintf(&sb, "- Address pack: %s\n", preset.Presentation.AddressPack)
+	fmt.Fprintf(&sb, "- Phrase pack: %s\n", preset.Presentation.PhrasePack)
+	fmt.Fprintf(&sb, "- Anti-caricature: %s\n", preset.Presentation.AntiCaricature)
+	return sb.String()
+}
+
+func presentationLanguageV2(language string) string {
+	if language == "es-rioplatense" {
+		return "Rioplatense Spanish (voseo)"
+	}
+	return language
+}
+
+func presentationRegisterV2(register string) string {
+	if register == "warm-direct" {
+		return "warm, energetic, and direct"
+	}
+	return register
+}
+
 func hasStructuredCommunicationBehavior(preset *Preset) bool {
 	return preset.CommunicationStyle.ShowAlternatives ||
 		preset.CommunicationStyle.ChallengeAssumptions ||

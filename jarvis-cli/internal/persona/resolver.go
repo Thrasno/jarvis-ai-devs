@@ -27,6 +27,15 @@ type ResolvedPreset struct {
 	Preset   *Preset
 }
 
+// ResolvedPresetV2 is the dormant schema-v2 result of preset resolution.
+// It intentionally does not replace ResolvedPreset while callers remain on V1.
+type ResolvedPresetV2 struct {
+	Slug     string
+	Source   PresetSource
+	FilePath string
+	Preset   *PresetV2
+}
+
 // NormalizeSlug canonicalizes a preset slug.
 // Rules: trim outer spaces, lowercase, and replace spaces with hyphens.
 func NormalizeSlug(slug string) string {
@@ -77,6 +86,47 @@ func ResolvePreset(fsys fs.FS, slug string) (*ResolvedPreset, error) {
 	return nil, fmt.Errorf("preset %q not found (available built-ins: %s)", normalized, strings.Join(available, ", "))
 }
 
+// ResolvePresetV2 resolves and validates a schema-v2 presentation profile.
+// It is an explicit dormant bridge; V1 callers continue to use ResolvePreset.
+func ResolvePresetV2(fsys fs.FS, slug string) (*ResolvedPresetV2, error) {
+	normalized := NormalizeSlug(slug)
+	if err := validatePresetSlug(normalized); err != nil {
+		return nil, err
+	}
+
+	builtinPath := filepath.ToSlash(filepath.Join("embed", "personas", normalized+".yaml"))
+	if p, err := readPresetV2FromFS(fsys, builtinPath); err == nil {
+		return &ResolvedPresetV2{
+			Slug:     normalized,
+			Source:   PresetSourceBuiltin,
+			FilePath: builtinPath,
+			Preset:   p,
+		}, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("load builtin schema v2 preset %q: %w", normalized, err)
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve user home dir: %w", err)
+	}
+
+	userPath := filepath.Join(homeDir, ".jarvis", "personas", normalized+".yaml")
+	if p, err := readPresetV2FromOS(userPath); err == nil {
+		return &ResolvedPresetV2{
+			Slug:     normalized,
+			Source:   PresetSourceUser,
+			FilePath: userPath,
+			Preset:   p,
+		}, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("load user schema v2 preset %q: %w", normalized, err)
+	}
+
+	available := listPresetNames(fsys)
+	return nil, fmt.Errorf("schema v2 preset %q not found (available built-ins: %s)", normalized, strings.Join(available, ", "))
+}
+
 func readPresetFromFS(fsys fs.FS, path string) (*Preset, error) {
 	data, err := fs.ReadFile(fsys, path)
 	if err != nil {
@@ -93,10 +143,34 @@ func readPresetFromOS(path string) (*Preset, error) {
 	return parsePreset(path, data)
 }
 
+func readPresetV2FromFS(fsys fs.FS, path string) (*PresetV2, error) {
+	data, err := fs.ReadFile(fsys, path)
+	if err != nil {
+		return nil, err
+	}
+	return parsePresetV2(path, data)
+}
+
+func readPresetV2FromOS(path string) (*PresetV2, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return parsePresetV2(path, data)
+}
+
 func parsePreset(path string, data []byte) (*Preset, error) {
 	var preset Preset
 	if err := yaml.Unmarshal(data, &preset); err != nil {
 		return nil, fmt.Errorf("parse preset at %q: %w", path, err)
 	}
 	return &preset, nil
+}
+
+func parsePresetV2(path string, data []byte) (*PresetV2, error) {
+	preset, err := ValidateAndDecode(data)
+	if err != nil {
+		return nil, fmt.Errorf("validate schema v2 preset at %q: %w", path, err)
+	}
+	return preset, nil
 }

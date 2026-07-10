@@ -5,11 +5,16 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
 
-const schemaVersionV2 = 2
+const (
+	schemaVersionV2       = 2
+	maxDisplayNameRunesV2 = 80
+)
 
 // PresetV2 is a dormant, presentation-only persona profile.
 type PresetV2 struct {
@@ -154,8 +159,8 @@ func validatePresetV2(preset *PresetV2) error {
 	if err := validatePresetSlug(preset.Name); err != nil {
 		return fmt.Errorf("invalid name: %w", err)
 	}
-	if strings.TrimSpace(preset.DisplayName) == "" {
-		return fmt.Errorf("missing required field: display_name")
+	if err := validateDisplayNameV2(preset.DisplayName); err != nil {
+		return err
 	}
 	for _, field := range []struct {
 		name  string
@@ -174,4 +179,34 @@ func validatePresetV2(preset *PresetV2) error {
 		}
 	}
 	return nil
+}
+
+// validateDisplayNameV2 keeps display_name as UI-only metadata. It intentionally
+// applies structural validation only because prompt renderers derive headings
+// from the validated slug instead of rendering this user-controlled field.
+func validateDisplayNameV2(displayName string) error {
+	if strings.TrimSpace(displayName) == "" {
+		return fmt.Errorf("missing required field: display_name")
+	}
+	if hasDisplayNameLineBreak(displayName) {
+		return fmt.Errorf("display_name must be exactly one line; use a single human-readable name")
+	}
+	if utf8.RuneCountInString(displayName) > maxDisplayNameRunesV2 {
+		return fmt.Errorf("display_name must be at most %d characters; use a shorter human-readable name", maxDisplayNameRunesV2)
+	}
+	for _, r := range displayName {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("display_name contains control character %q; use a one-line UI label", r)
+		}
+	}
+	return nil
+}
+
+func hasDisplayNameLineBreak(displayName string) bool {
+	for _, r := range displayName {
+		if r == '\n' || r == '\r' || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
+			return true
+		}
+	}
+	return false
 }
