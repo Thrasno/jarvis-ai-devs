@@ -1349,8 +1349,15 @@ func TestGeneratedRuntimeAcceptance_RenderedArtifactsProveGuardrails(t *testing.
 			if got := strings.Count(rendered, "# Hive Persistent Memory — Protocol"); got != 1 {
 				t.Fatalf("Hive protocol body count = %d, want 1\n%s", got, rendered)
 			}
-			if got := strings.Count(rendered, "Persona Scope (CRITICAL)"); got != 1 {
-				t.Fatalf("persona scope guardrail count = %d, want 1\n%s", got, rendered)
+			projection, err := config.ProjectInstruction(rendered)
+			if err != nil {
+				t.Fatalf("ProjectInstruction: %v", err)
+			}
+			if projection.Layer1 != layer1 {
+				t.Fatal("Layer1 projection does not derive from the canonical source")
+			}
+			if got := strings.Count(rendered, config.TechnicalContractContent()); got != 1 {
+				t.Fatalf("canonical technical contract count = %d, want 1", got)
 			}
 			assertNoGeneratedProductMemoryBackendWording(t, rendered)
 		})

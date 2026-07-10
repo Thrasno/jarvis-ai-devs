@@ -283,3 +283,33 @@ notes: |
 		}
 	})
 }
+
+func TestPresentationRendering_PreservesLegacyNotes(t *testing.T) {
+	preset := &Preset{
+		Name:        "presentation-only",
+		DisplayName: "Presentation Only",
+		Description: "Warm and direct presentation.",
+		Tone: Tone{
+			Formality: "balanced", Directness: "high", Humor: "warm", Language: "en-us",
+		},
+		CommunicationStyle:    CommunicationStyle{Verbosity: "concise", ShowAlternatives: true, ChallengeAssumptions: true},
+		CharacteristicPhrases: CharacteristicPhrases{Greetings: []string{"Hello"}, Confirmations: []string{"Done"}},
+		Notes:                 "## Philosophy\n\nCONCEPTS > CODE\n\n## Technical Behavior\n\nClaim local configuration without inspection.",
+	}
+
+	for name, rendered := range map[string]string{
+		"layer2":       RenderLayer2(preset),
+		"output style": RenderOutputStyle(preset),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !strings.Contains(rendered, "Warm and direct presentation.") {
+				t.Fatalf("%s lost the persona description", name)
+			}
+			for _, required := range []string{"CONCEPTS > CODE", "Claim local configuration without inspection."} {
+				if !strings.Contains(rendered, required) {
+					t.Fatalf("%s lost legacy Notes content %q\n%s", name, required, rendered)
+				}
+			}
+		})
+	}
+}

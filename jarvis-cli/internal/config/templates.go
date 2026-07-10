@@ -8,7 +8,10 @@ import (
 	_ "embed"
 	"fmt"
 	"io/fs"
+	"strings"
 	"text/template"
+
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 )
 
 // SkillInfo represents skill metadata for template rendering.
@@ -77,5 +80,44 @@ var layer1Content string
 // The content is embedded at compile time from internal/config/layer1.md.
 // This is the immutable content written between the LAYER1 sentinel markers.
 func Layer1Content() string {
-	return layer1Content
+	return strings.TrimSpace(TechnicalContractContent() + "\n\n" + layer1Content)
+}
+
+// TechnicalContractContent returns the sole renderer-owned technical and
+// educational policy source for generated instructions.
+func TechnicalContractContent() string {
+	return strings.TrimSpace(jarvis.TechnicalContract)
+}
+
+// InstructionProjection exposes the two renderer-owned instruction layers for
+// effective-policy checks without comparing presentation bytes across surfaces.
+type InstructionProjection struct {
+	Layer1 string
+	Layer2 string
+}
+
+// ProjectInstruction extracts Layer1 and Layer2 from a rendered instruction.
+func ProjectInstruction(content string) (InstructionProjection, error) {
+	layer1, err := projectMarkedContent(content, "<!-- JARVIS:LAYER1:START -->", "<!-- JARVIS:LAYER1:END -->")
+	if err != nil {
+		return InstructionProjection{}, fmt.Errorf("project Layer1: %w", err)
+	}
+	layer2, err := projectMarkedContent(content, "<!-- JARVIS:LAYER2:START -->", "<!-- JARVIS:LAYER2:END -->")
+	if err != nil {
+		return InstructionProjection{}, fmt.Errorf("project Layer2: %w", err)
+	}
+	return InstructionProjection{Layer1: layer1, Layer2: layer2}, nil
+}
+
+func projectMarkedContent(content, start, end string) (string, error) {
+	startIndex := strings.Index(content, start)
+	if startIndex == -1 {
+		return "", fmt.Errorf("missing start marker %q", start)
+	}
+	bodyStart := startIndex + len(start)
+	endIndex := strings.Index(content[bodyStart:], end)
+	if endIndex == -1 {
+		return "", fmt.Errorf("missing end marker %q", end)
+	}
+	return strings.TrimSpace(content[bodyStart : bodyStart+endIndex]), nil
 }

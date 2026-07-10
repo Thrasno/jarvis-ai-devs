@@ -68,10 +68,7 @@ func TestRenderOutputStyle_IncludesFixedStructuralGuardrails(t *testing.T) {
 
 	notesIndex := strings.Index(output, "Use persona voice everywhere")
 	guardrailIndex := strings.LastIndex(output, "Persona Scope (CRITICAL)")
-	if notesIndex == -1 || guardrailIndex == -1 {
-		t.Fatalf("RenderOutputStyle missing notes or guardrail\n%s", output)
-	}
-	if guardrailIndex < notesIndex {
-		t.Fatalf("RenderOutputStyle guardrail must follow preset notes so fixed scope rules have precedence\n%s", output)
+	if notesIndex == -1 || guardrailIndex == -1 || guardrailIndex < notesIndex {
+		t.Fatalf("RenderOutputStyle must preserve notes before fixed scope guardrails\n%s", output)
 	}
 }

@@ -57,6 +57,40 @@ func TestOpenCodeAgent_WriteOutputStyle_NoOp(t *testing.T) {
 	}
 }
 
+func TestOpenCodeAgent_WriteInstructions_ProjectsCanonicalLayer1(t *testing.T) {
+	tmpHome := t.TempDir()
+	agent := &OpenCodeAgent{home: tmpHome, templatesFS: testTemplatesFS}
+	preset := &persona.Preset{
+		Name:        "presentation-only",
+		DisplayName: "Presentation Only",
+		Description: "Warm and direct presentation.",
+		Tone:        persona.Tone{Formality: "balanced", Directness: "high", Humor: "warm", Language: "en-us"},
+		Notes:       "CONCEPTS > CODE\n\nClaim local configuration without inspection.",
+	}
+
+	if err := agent.WriteInstructions(config.Layer1Content(), persona.RenderLayer2(preset), nil); err != nil {
+		t.Fatalf("WriteInstructions: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(agent.ConfigDir(), "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	projection, err := config.ProjectInstruction(string(content))
+	if err != nil {
+		t.Fatalf("ProjectInstruction: %v", err)
+	}
+	if projection.Layer1 != config.Layer1Content() {
+		t.Fatal("Layer1 projection does not derive from the canonical Layer1 source")
+	}
+	if got := strings.Count(string(content), config.TechnicalContractContent()); got != 1 {
+		t.Fatalf("canonical technical contract count = %d, want 1", got)
+	}
+	if !strings.Contains(projection.Layer2, "Claim local configuration without inspection.") {
+		t.Fatalf("PR1 must preserve legacy Layer2 Notes until PR2\n%s", projection.Layer2)
+	}
+}
+
 // TestOpenCodeAgent_MergeConfig_Context7 verifies Context7 MCP is added with correct remote format.
 // Spec R3: OpenCode uses remote mode with specific URL.
 func TestOpenCodeAgent_MergeConfig_Context7(t *testing.T) {
