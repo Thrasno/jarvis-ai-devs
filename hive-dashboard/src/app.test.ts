@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ActivityFeedResponse, ApiClient, Memory, MemoryList, MemorySearch, OverviewGrowth, OverviewStats, ProjectListResponse } from './api/client'
-import type { SessionStore } from './auth/session'
+import { createSessionStore, sessionTokenKey, type SessionStore } from './auth/session'
 import { loadDashboard, loadForRoute, renderApp, startDashboardApp } from './main'
 import { hiveOverviewFixture } from './fixtures/hive-dashboard/overview'
 import { memoryListToDiscoveryData } from './domain/knowledgeDiscovery'
@@ -20,6 +20,152 @@ describe('dashboard shell', () => {
     expect(container.querySelector('input[name="email"]')?.getAttribute('type')).toBe('email')
     expect(container.querySelector('button[type="submit"]')?.getAttribute('data-dashboard-primitive')).toBe('control')
     expect(container.textContent).not.toContain('daemon')
+  })
+
+  it('does not persist an older real session when a newer rerendered login fails', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    sessionStorage.clear()
+    const firstLogin = deferred<Awaited<ReturnType<ApiClient['login']>>>()
+    const secondLogin = deferred<Awaited<ReturnType<ApiClient['login']>>>()
+    const api = fakeApi()
+    vi.mocked(api.login)
+      .mockImplementationOnce(() => firstLogin.promise)
+      .mockImplementationOnce(() => secondLogin.promise)
+    const session = createSessionStore({ api })
+    const cleanup = startDashboardApp(container, { api, session })
+
+    try {
+      await flushDashboard()
+      container.querySelector('form.login-card')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      container.querySelector('form.login-card')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+
+      secondLogin.reject(new Error('newer request failed'))
+      await flushDashboard()
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('newer request failed')
+
+      firstLogin.resolve({ token: 'older-token', user: memberUser })
+      await flushDashboard()
+
+      expect(session.getState()).toEqual({ status: 'anonymous' })
+      expect(sessionStorage.getItem(sessionTokenKey)).toBeNull()
+      expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).toBeNull()
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('newer request failed')
+    } finally {
+      cleanup()
+      container.remove()
+      sessionStorage.clear()
+    }
+  })
+
+  it('keeps the newest real session when an older rerendered login succeeds afterwards', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    sessionStorage.clear()
+    const firstLogin = deferred<Awaited<ReturnType<ApiClient['login']>>>()
+    const secondLogin = deferred<Awaited<ReturnType<ApiClient['login']>>>()
+    const api = fakeApi()
+    vi.mocked(api.login)
+      .mockImplementationOnce(() => firstLogin.promise)
+      .mockImplementationOnce(() => secondLogin.promise)
+    const session = createSessionStore({ api })
+    const cleanup = startDashboardApp(container, { api, session })
+
+    try {
+      await flushDashboard()
+      container.querySelector('form.login-card')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      container.querySelector('form.login-card')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+
+      secondLogin.resolve({ token: 'newer-token', user: adminUser })
+      await flushDashboard()
+      expect(session.getState()).toEqual({ status: 'authenticated', token: 'newer-token', user: adminUser })
+      expect(sessionStorage.getItem(sessionTokenKey)).toBe('newer-token')
+
+      firstLogin.resolve({ token: 'older-token', user: memberUser })
+      await flushDashboard()
+
+      expect(session.getState()).toEqual({ status: 'authenticated', token: 'newer-token', user: adminUser })
+      expect(sessionStorage.getItem(sessionTokenKey)).toBe('newer-token')
+      expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).not.toBeNull()
+    } finally {
+      cleanup()
+      container.remove()
+      sessionStorage.clear()
+    }
+  })
+
+  it('keeps the session and UI anonymous when logout invalidates a pending login success', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    sessionStorage.clear()
+    const pendingLogin = deferred<Awaited<ReturnType<ApiClient['login']>>>()
+    const api = fakeApi()
+    vi.mocked(api.login)
+      .mockImplementationOnce(() => pendingLogin.promise)
+      .mockResolvedValueOnce({ token: 'external-token', user: adminUser })
+    const session = createSessionStore({ api })
+    const cleanup = startDashboardApp(container, { api, session })
+
+    try {
+      await flushDashboard()
+      container.querySelector('form.login-card')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+
+      await session.login('external@example.com', 'external-password')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      container.querySelector<HTMLAnchorElement>('[data-sidebar-action="logout"]')!.click()
+
+      pendingLogin.resolve({ token: 'stale-token', user: memberUser })
+      await flushDashboard()
+
+      expect(session.getState().status).toBe('anonymous')
+      expect(sessionStorage.getItem(sessionTokenKey)).toBeNull()
+      expect(container.querySelector('h1')?.textContent).toBe('Sign in to NEXUS HIVE')
+      expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).toBeNull()
+      expect(container.querySelector('[role="alert"]')).toBeNull()
+    } finally {
+      cleanup()
+      container.remove()
+      sessionStorage.clear()
+    }
+  })
+
+  it('keeps the session and UI anonymous when logout invalidates a pending login failure', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    sessionStorage.clear()
+    const pendingLogin = deferred<Awaited<ReturnType<ApiClient['login']>>>()
+    const api = fakeApi()
+    vi.mocked(api.login)
+      .mockImplementationOnce(() => pendingLogin.promise)
+      .mockResolvedValueOnce({ token: 'external-token', user: adminUser })
+    const session = createSessionStore({ api })
+    const cleanup = startDashboardApp(container, { api, session })
+
+    try {
+      await flushDashboard()
+      container.querySelector('form.login-card')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+
+      await session.login('external@example.com', 'external-password')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      container.querySelector<HTMLAnchorElement>('[data-sidebar-action="logout"]')!.click()
+
+      pendingLogin.reject(new Error('stale request failed'))
+      await flushDashboard()
+
+      expect(session.getState().status).toBe('anonymous')
+      expect(sessionStorage.getItem(sessionTokenKey)).toBeNull()
+      expect(container.querySelector('h1')?.textContent).toBe('Sign in to NEXUS HIVE')
+      expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).toBeNull()
+      expect(container.querySelector('[role="alert"]')).toBeNull()
+    } finally {
+      cleanup()
+      container.remove()
+      sessionStorage.clear()
+    }
   })
 
   it('shows a useful error and keeps the login form when login fails', async () => {
@@ -2595,9 +2741,11 @@ function deferred<T>() {
 
 function fakeSessionStore(initial: ReturnType<SessionStore['getState']>): SessionStore {
   let state = initial
+  const login = vi.fn(async (_email: string, _password: string) => state)
   return {
     getState: () => state,
-    login: vi.fn(async () => state),
+    login,
+    loginWithOwnership: (email, password) => login(email, password),
     bootstrap: vi.fn(async () => state),
     logout: vi.fn(() => {
       state = { status: 'anonymous' }
