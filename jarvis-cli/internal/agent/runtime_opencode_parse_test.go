@@ -317,6 +317,69 @@ func TestParseOpenCodeConfig_PreservesHiveGrantOrderForLastMatchingVerification(
 	}
 }
 
+func TestOpenCodeMergeGeneratedConfig_PreservesOrderSensitiveHivePermissionGuardrail(t *testing.T) {
+	tmpHome := t.TempDir()
+	a := &OpenCodeAgent{home: tmpHome, templatesFS: testTemplatesFS}
+	settingsPath := filepath.Join(tmpHome, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatalf("create opencode dir: %v", err)
+	}
+	existing := `{
+  "agent": {
+    "sdd-apply": {
+      "permission": {
+        "task": "deny",
+        "edit": "allow",
+        "hive_mem_search": "allow",
+        "hive_mem_get_observation": "allow",
+        "hive_mem_save": "allow",
+        "hive_mem_context": "allow",
+        "hive_mem_session_summary": "allow",
+        "hive_mem_*": "deny"
+      }
+    }
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0644); err != nil {
+		t.Fatalf("write opencode.json: %v", err)
+	}
+
+	if err := a.MergeGeneratedConfig(defaultRuntimeConfig()); err != nil {
+		t.Fatalf("MergeGeneratedConfig: %v", err)
+	}
+	if err := a.MergeGeneratedConfig(defaultRuntimeConfig()); err != nil {
+		t.Fatalf("MergeGeneratedConfig rerun: %v", err)
+	}
+
+	parsed := parseOpenCodeConfig(settingsPath)
+	if !parsed.ParseSucceeded {
+		t.Fatal("ParseSucceeded must be true for merged JSON")
+	}
+	evidence := parsed.SDDSubagentHiveGrantEvidence["sdd-apply"]
+	assertHivePermissionEvidenceOrder(t, evidence, []string{
+		"hive_mem_search",
+		"hive_mem_get_observation",
+		"hive_mem_save",
+		"hive_mem_context",
+		"hive_mem_session_summary",
+		"hive_mem_*",
+	})
+
+	report := sddruntime.Verify("opencode", sddruntime.ObservedRuntime{
+		StoreMode:     "hive",
+		StoreReadFrom: []string{"hive"},
+		StoreWriteTo:  []string{"hive"},
+		OpenCode:      parsed,
+	})
+	check := findOpenCodeCheck(report.Checks, "invariant.opencode.sdd_hive_grants")
+	if check == nil {
+		t.Fatal("expected invariant.opencode.sdd_hive_grants check")
+	}
+	if check.Status != sddruntime.StatusFail || !strings.Contains(check.Message, "manually adjust") {
+		t.Fatalf("expected trailing guardrail to remain effective, got status=%q message=%q", check.Status, check.Message)
+	}
+}
+
 func writeOpenCodeConfigWithApplyPermission(t *testing.T, applyPermission string) string {
 	t.Helper()
 
@@ -385,6 +448,18 @@ func assertHivePermissionEvidence(t *testing.T, got []sddruntime.OpenCodePermiss
 		}
 	}
 	t.Fatalf("missing hive permission evidence %q=%q in %v", wantKey, wantAction, got)
+}
+
+func assertHivePermissionEvidenceOrder(t *testing.T, got []sddruntime.OpenCodePermissionEvidence, wantKeys []string) {
+	t.Helper()
+	if len(got) < len(wantKeys) {
+		t.Fatalf("evidence length = %d, want at least %d: %v", len(got), len(wantKeys), got)
+	}
+	for i, wantKey := range wantKeys {
+		if got[i].Key != wantKey {
+			t.Fatalf("evidence[%d].Key = %q, want %q; evidence=%v", i, got[i].Key, wantKey, got)
+		}
+	}
 }
 
 func TestIsMCPCommandNonEmpty(t *testing.T) {

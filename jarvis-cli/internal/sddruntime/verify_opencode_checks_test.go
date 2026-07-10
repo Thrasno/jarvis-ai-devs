@@ -631,6 +631,12 @@ func TestVerifyOpenCode_SDDSubagentHiveGrants_FailsWhenExactDenyOverridesWildcar
 	if check.Status != StatusFail {
 		t.Fatalf("expected StatusFail when exact deny overrides wildcard allow, got %q", check.Status)
 	}
+	if check.DriftClass != DriftNonOwned {
+		t.Fatalf("expected exact deny guardrail to be classified as non-owned drift, got %q", check.DriftClass)
+	}
+	if strings.Contains(check.Message, "jarvis init") || !strings.Contains(check.Message, "manually adjust") {
+		t.Fatalf("expected manual guardrail remediation, got %q", check.Message)
+	}
 	if !strings.Contains(check.Observed, "sdd-apply:hive_mem_save") {
 		t.Fatalf("expected observed drift for denied tool, got %q", check.Observed)
 	}
@@ -651,6 +657,12 @@ func TestVerifyOpenCode_SDDSubagentHiveGrants_FailsWhenExactAskOverridesWildcard
 	}
 	if check.Status != StatusFail {
 		t.Fatalf("expected StatusFail when exact ask overrides wildcard allow, got %q", check.Status)
+	}
+	if check.DriftClass != DriftNonOwned {
+		t.Fatalf("expected exact ask guardrail to be classified as non-owned drift, got %q", check.DriftClass)
+	}
+	if strings.Contains(check.Message, "jarvis init") || !strings.Contains(check.Message, "manually adjust") {
+		t.Fatalf("expected manual guardrail remediation, got %q", check.Message)
 	}
 	if !strings.Contains(check.Observed, "sdd-apply:hive_mem_get_observation") {
 		t.Fatalf("expected observed drift for ask-gated tool, got %q", check.Observed)

@@ -182,12 +182,12 @@ func verifyOpenCodeConfigInvariants(oc ObservedOpenCodeConfig, storeMode string)
 	if len(missingHiveGrants) > 0 {
 		hiveGrantStatus = hiveToolDriftStatus(storeMode)
 		hiveGrantDrift = DriftOwned
-		if openCodeHiveGrantsBlockedByStrictWildcard(oc.SDDSubagentHiveGrantEvidence) {
+		if openCodeHiveGrantsBlockedByUserGuardrail(oc.SDDSubagentHiveGrantEvidence) {
 			hiveGrantDrift = DriftNonOwned
 			if hiveGrantStatus == StatusFail {
-				hiveGrantMsg = "strict user-owned OpenCode Hive wildcard guardrail blocks generated Hive MCP access for Hive/hybrid mode; manually adjust or remove the hive_mem_* / hive_* guardrail, or add exact tool allows where appropriate"
+				hiveGrantMsg = "user-owned OpenCode Hive ask/deny guardrail blocks generated Hive MCP access for Hive/hybrid mode; manually adjust or remove the exact Hive tool or hive_mem_* / hive_* guardrail, or add later exact tool allows where appropriate"
 			} else {
-				hiveGrantMsg = "strict user-owned OpenCode Hive wildcard guardrail blocks generated Hive MCP access; advisory only because this SDD store mode does not require Hive persistence"
+				hiveGrantMsg = "user-owned OpenCode Hive ask/deny guardrail blocks generated Hive MCP access; advisory only because this SDD store mode does not require Hive persistence"
 			}
 		} else if hiveGrantStatus == StatusFail {
 			hiveGrantMsg = "generated OpenCode SDD subagent Hive MCP grants are missing for Hive/hybrid mode; re-run jarvis init or supported reconfiguration to regenerate opencode.json"
@@ -272,21 +272,30 @@ func openCodeMCPHiveDriftStatus(storeMode string) IntegrityStatus {
 	return StatusFail
 }
 
-func openCodeHiveGrantsBlockedByStrictWildcard(evidence map[string][]OpenCodePermissionEvidence) bool {
+func openCodeHiveGrantsBlockedByUserGuardrail(evidence map[string][]OpenCodePermissionEvidence) bool {
 	for _, agentName := range requiredOpenCodeSDDSubagents() {
 		agentEvidence := evidence[agentName]
 		for _, tool := range requiredOpenCodeHiveMCPTools() {
 			if openCodeHiveGrantEvidenceAllows(agentEvidence, tool) {
 				continue
 			}
-			for _, entry := range agentEvidence {
-				if (entry.Key == "hive_mem_*" || entry.Key == "hive_*") && openCodeHivePermissionSpecificity(entry.Key, tool) >= 0 && isOpenCodeStricterPermissionAction(entry.Action) {
-					return true
-				}
+			if openCodeHiveLastMatchingGuardrailBlocks(agentEvidence, tool) {
+				return true
 			}
 		}
 	}
 	return false
+}
+
+func openCodeHiveLastMatchingGuardrailBlocks(evidence []OpenCodePermissionEvidence, tool string) bool {
+	lastAction := ""
+	for _, entry := range evidence {
+		if openCodeHivePermissionSpecificity(entry.Key, tool) < 0 {
+			continue
+		}
+		lastAction = entry.Action
+	}
+	return isOpenCodeStricterPermissionAction(lastAction)
 }
 
 func missingOpenCodeSDDSubagentHiveGrants(evidence map[string][]OpenCodePermissionEvidence) []string {
