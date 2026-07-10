@@ -560,7 +560,7 @@ func TestOpenCodeAgent_MergeGeneratedConfig_PreservesExistingPermissionGuardrail
 	assertOpenCodeReadDenyCoverage(t, read)
 }
 
-func TestOpenCodeAgent_MergeGeneratedConfig_PreservesStrictHiveWildcardGuardrails(t *testing.T) {
+func TestOpenCodeAgent_MergeGeneratedConfig_PreservesStrictHiveWildcardGuardrailsAndExactExceptions(t *testing.T) {
 	tmpHome := t.TempDir()
 	a := &OpenCodeAgent{home: tmpHome, templatesFS: testTemplatesFS}
 	settingsPath := filepath.Join(tmpHome, ".config", "opencode", "opencode.json")
@@ -587,25 +587,35 @@ func TestOpenCodeAgent_MergeGeneratedConfig_PreservesStrictHiveWildcardGuardrail
 	if applyPermission["hive_mem_*"] != "deny" {
 		t.Fatalf("sdd-apply hive_mem_* guardrail = %v, want deny", applyPermission["hive_mem_*"])
 	}
-	for _, tool := range RequiredOpenCodeHiveMCPTools() {
-		if applyPermission[tool] == "allow" {
-			t.Fatalf("generated exact allow %q must not be added over strict hive_mem_* deny: %#v", tool, applyPermission)
+	for _, tool := range []string{"hive_mem_search", "hive_mem_save"} {
+		if applyPermission[tool] != "allow" {
+			t.Fatalf("user-owned exact allow %q must be preserved under strict hive_mem_* deny: %#v", tool, applyPermission)
 		}
 	}
 	if applyPermission["hive_mem_context"] != "ask" {
 		t.Fatalf("user-owned exact hive_mem_context ask must be preserved: %#v", applyPermission)
 	}
+	for _, tool := range []string{"hive_mem_get_observation", "hive_mem_session_summary"} {
+		if applyPermission[tool] == "allow" {
+			t.Fatalf("generated exact allow %q must not be added over strict hive_mem_* deny: %#v", tool, applyPermission)
+		}
+	}
 	verifyPermission := agents["sdd-verify"].(map[string]any)["permission"].(map[string]any)
 	if verifyPermission["hive_*"] != "ask" {
 		t.Fatalf("sdd-verify hive_* guardrail = %v, want ask", verifyPermission["hive_*"])
 	}
-	for _, tool := range RequiredOpenCodeHiveMCPTools() {
-		if verifyPermission[tool] == "allow" {
-			t.Fatalf("generated exact allow %q must not be added over strict hive_* ask: %#v", tool, verifyPermission)
+	for _, tool := range []string{"hive_mem_get_observation", "hive_mem_context"} {
+		if verifyPermission[tool] != "allow" {
+			t.Fatalf("user-owned exact allow %q must be preserved under strict hive_* ask: %#v", tool, verifyPermission)
 		}
 	}
 	if verifyPermission["hive_mem_session_summary"] != "deny" {
 		t.Fatalf("user-owned exact hive_mem_session_summary deny must be preserved: %#v", verifyPermission)
+	}
+	for _, tool := range []string{"hive_mem_search", "hive_mem_save"} {
+		if verifyPermission[tool] == "allow" {
+			t.Fatalf("generated exact allow %q must not be added over strict hive_* ask: %#v", tool, verifyPermission)
+		}
 	}
 }
 

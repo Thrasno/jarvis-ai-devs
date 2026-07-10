@@ -449,3 +449,51 @@ func TestMergeJSON_PreservesExistingPermissionValues(t *testing.T) {
 		t.Fatalf("unexpected agent permission merge: %#v", agentPerm)
 	}
 }
+
+func TestMergeJSON_PreservesExistingHiveExactAllowsUnderStrictWildcard(t *testing.T) {
+	base := `{
+		"agent": {
+			"sdd-apply": {
+				"permission": {
+					"hive_mem_*": "deny",
+					"hive_mem_search": "allow",
+					"hive_mem_context": "ask"
+				}
+			}
+		}
+	}`
+	patch := `{
+		"agent": {
+			"sdd-apply": {
+				"permission": {
+					"hive_mem_search": "allow",
+					"hive_mem_get_observation": "allow",
+					"hive_mem_context": "allow"
+				}
+			}
+		}
+	}`
+
+	out, err := MergeJSON([]byte(base), []byte(patch))
+	if err != nil {
+		t.Fatalf("MergeJSON: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	permission := result["agent"].(map[string]any)["sdd-apply"].(map[string]any)["permission"].(map[string]any)
+	if permission["hive_mem_*"] != "deny" {
+		t.Fatalf("strict wildcard guardrail was not preserved: %#v", permission)
+	}
+	if permission["hive_mem_search"] != "allow" {
+		t.Fatalf("existing exact allow must be preserved because ownership is not provable: %#v", permission)
+	}
+	if permission["hive_mem_context"] != "ask" {
+		t.Fatalf("existing exact ask must be preserved: %#v", permission)
+	}
+	if _, exists := permission["hive_mem_get_observation"]; exists {
+		t.Fatalf("new generated exact allow must not be added over strict wildcard guardrail: %#v", permission)
+	}
+}

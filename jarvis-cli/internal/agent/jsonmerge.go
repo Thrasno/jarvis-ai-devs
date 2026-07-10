@@ -106,10 +106,6 @@ func deepMergeWithContext(dst, src map[string]any, inPermission bool) map[string
 		result[k] = srcVal
 	}
 
-	if inPermission {
-		removeGeneratedHiveAllowsWeakenedByStrictWildcard(result)
-	}
-
 	return result
 }
 
@@ -128,20 +124,6 @@ func hasStrictHiveWildcardGuardrail(permission map[string]any, key string) bool 
 		}
 	}
 	return false
-}
-
-func removeGeneratedHiveAllowsWeakenedByStrictWildcard(permission map[string]any) {
-	for _, wildcard := range []string{"hive_mem_*", "hive_*"} {
-		if !isStrictPermissionValue(permission[wildcard]) {
-			continue
-		}
-		for _, key := range exactHiveMemPermissionKeys() {
-			if isGeneratedHiveAllow(permission[key]) {
-				delete(permission, key)
-			}
-		}
-		return
-	}
 }
 
 func exactHiveMemPermissionKeys() []string {
