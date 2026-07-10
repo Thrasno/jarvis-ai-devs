@@ -19,6 +19,21 @@ describe('Hive API client', () => {
     })
   })
 
+  it('forwards an explicit abort signal only for the login request', async () => {
+    const controller = new AbortController()
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ token: 'jwt-token', user: adminUser }))
+    const client = createApiClient({ fetch: fetchMock })
+
+    await client.login('admin@example.com', 'secret', controller.signal)
+
+    expect(fetchMock).toHaveBeenCalledWith('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'admin@example.com', password: 'secret' }),
+      signal: controller.signal
+    })
+  })
+
   it('loads the current user with a bearer token', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(adminUser))
     const client = createApiClient({ fetch: fetchMock })

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ActivityFeedResponse, ApiClient, Memory, MemoryList, MemorySearch, OverviewGrowth, OverviewStats, ProjectListResponse } from './api/client'
 import { createSessionStore, sessionTokenKey, type SessionStore } from './auth/session'
-import { loadDashboard, loadForRoute, renderApp, startDashboardApp } from './main'
+import { LOGIN_TIMEOUT_MS, loadDashboard, loadForRoute, renderApp, startDashboardApp } from './main'
 import { hiveOverviewFixture } from './fixtures/hive-dashboard/overview'
 import { memoryListToDiscoveryData } from './domain/knowledgeDiscovery'
 import { projectsFromApi } from './domain/dashboard'
@@ -20,6 +20,211 @@ describe('dashboard shell', () => {
     expect(container.querySelector('input[name="email"]')?.getAttribute('type')).toBe('email')
     expect(container.querySelector('button[type="submit"]')?.getAttribute('data-dashboard-primitive')).toBe('control')
     expect(container.textContent).not.toContain('daemon')
+  })
+
+  it('composes the login hierarchy around a native credential form', () => {
+    const container = document.createElement('main')
+
+    renderApp({ container, state: { status: 'anonymous' }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
+
+    const login = container.querySelector('.dashboard-login')
+    const form = login?.querySelector<HTMLFormElement>('form.login-card')
+    const email = form?.querySelector<HTMLInputElement>('input[name="email"]')
+    const password = form?.querySelector<HTMLInputElement>('input[name="password"]')
+
+    expect(login?.firstElementChild).toBe(form)
+    expect(form?.querySelector('.dashboard-brand--login')).not.toBeNull()
+    expect(form?.querySelector('.login-card__title')?.textContent).toBe('Sign in to NEXUS HIVE')
+    expect(email?.type).toBe('email')
+    expect(email?.autocomplete).toBe('email')
+    expect(email?.required).toBe(true)
+    expect(password?.type).toBe('password')
+    expect(password?.autocomplete).toBe('current-password')
+    expect(password?.required).toBe(true)
+  })
+
+  it('submits native FormData and synchronously prevents duplicate pending login submits', async () => {
+    const container = document.createElement('main')
+    const login = deferred<void>()
+    const onLogin = vi.fn(() => login.promise)
+
+    renderApp({ container, state: { status: 'anonymous' }, actions: { onLogin, onLogout: vi.fn() } })
+    const form = container.querySelector<HTMLFormElement>('form.login-card')!
+    form.querySelector<HTMLInputElement>('input[name="email"]')!.value = 'admin@example.com'
+    form.querySelector<HTMLInputElement>('input[name="password"]')!.value = 'correct-horse'
+
+    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+    const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]')!
+    expect(onLogin).toHaveBeenCalledWith('admin@example.com', 'correct-horse')
+    expect(submit.disabled).toBe(true)
+    expect(submit.textContent).toBe('Signing in…')
+
+    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+    expect(onLogin).toHaveBeenCalledTimes(1)
+
+    login.resolve()
+    await Promise.resolve()
+    expect(submit.disabled).toBe(false)
+    expect(submit.textContent).toBe('Sign in')
+  })
+
+  it('does not mutate the replacement login form when the original pending form unmounts', async () => {
+    const container = document.createElement('main')
+    const login = deferred<void>()
+
+    renderApp({ container, state: { status: 'anonymous' }, actions: { onLogin: () => login.promise, onLogout: vi.fn() } })
+    const originalForm = container.querySelector<HTMLFormElement>('form.login-card')!
+    originalForm.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+    expect(originalForm.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true)
+
+    renderApp({ container, state: { status: 'anonymous', error: 'Try again' }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
+    const replacement = container.querySelector<HTMLButtonElement>('form.login-card button[type="submit"]')!
+    login.resolve()
+    await Promise.resolve()
+
+    expect(replacement.disabled).toBe(false)
+    expect(replacement.textContent).toBe('Sign in')
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe('Try again')
+  })
+
+  it('recovers from a timed-out login and suppresses a late successful response', async () => {
+    vi.useFakeTimers()
+    const container = document.createElement('main')
+    document.body.append(container)
+    sessionStorage.clear()
+    const pendingLogin = deferred<Awaited<ReturnType<ApiClient['login']>>>()
+    const api = fakeApi()
+    vi.mocked(api.login).mockImplementation((_email, _password, signal) => pendingLogin.promise)
+    const session = createSessionStore({ api })
+    const cleanup = startDashboardApp(container, { api, session })
+
+    try {
+      await flushDashboard()
+      container.querySelector('form.login-card')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+      expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true)
+
+      await vi.advanceTimersByTimeAsync(LOGIN_TIMEOUT_MS)
+
+      expect(container.querySelector('h1')?.textContent).toBe('Sign in to NEXUS HIVE')
+      expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false)
+      expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.textContent).toBe('Sign in')
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe('Sign in timed out. Please try again.')
+      expect(vi.mocked(api.login).mock.calls[0]?.[2]?.aborted).toBe(true)
+
+      pendingLogin.resolve({ token: 'late-token', user: memberUser })
+      await flushDashboard()
+
+      expect(session.getState()).toEqual({ status: 'anonymous' })
+      expect(sessionStorage.getItem(sessionTokenKey)).toBeNull()
+      expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).toBeNull()
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe('Sign in timed out. Please try again.')
+    } finally {
+      cleanup()
+      container.remove()
+      sessionStorage.clear()
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not time out a successful login while the authenticated dashboard is loading', async () => {
+    vi.useFakeTimers()
+    const container = document.createElement('main')
+    document.body.append(container)
+    sessionStorage.clear()
+    const dashboardLoad = deferred<Awaited<ReturnType<ApiClient['health']>>>()
+    const api = fakeApi({ health: dashboardLoad.promise })
+    vi.mocked(api.login).mockResolvedValue({ token: 'jwt-token', user: adminUser })
+    const session = createSessionStore({ api })
+    const cleanup = startDashboardApp(container, { api, session })
+
+    try {
+      await flushDashboard()
+      container.querySelector('form.login-card')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+      await flushDashboard()
+      expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).not.toBeNull()
+
+      await vi.advanceTimersByTimeAsync(LOGIN_TIMEOUT_MS)
+
+      expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).not.toBeNull()
+      expect(container.querySelector('[role="alert"]')).toBeNull()
+    } finally {
+      dashboardLoad.resolve({ status: 'ok', db: 'connected', version: '1.0.0' })
+      await flushDashboard()
+      cleanup()
+      container.remove()
+      sessionStorage.clear()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the newer authenticated session when rerendered login attempts settle in reverse order', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const firstLogin = deferred<ReturnType<SessionStore['getState']>>()
+    const secondLogin = deferred<ReturnType<SessionStore['getState']>>()
+    const session = fakeSessionStore({ status: 'anonymous' })
+    vi.mocked(session.login)
+      .mockImplementationOnce(() => firstLogin.promise)
+      .mockImplementationOnce(() => secondLogin.promise)
+    const cleanup = startDashboardApp(container, { api: fakeApi(), session })
+
+    try {
+      await flushDashboard()
+      const firstForm = container.querySelector<HTMLFormElement>('form.login-card')!
+      firstForm.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      const secondForm = container.querySelector<HTMLFormElement>('form.login-card')!
+      secondForm.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+
+      secondLogin.resolve({ status: 'authenticated', token: 'newer-token', user: memberUser })
+      await flushDashboard()
+      expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).not.toBeNull()
+
+      firstLogin.reject(new Error('older request failed'))
+      await flushDashboard()
+
+      expect(session.login).toHaveBeenCalledTimes(2)
+      expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).not.toBeNull()
+      expect(container.querySelector('[role="alert"]')).toBeNull()
+    } finally {
+      cleanup()
+      container.remove()
+    }
+  })
+
+  it('keeps the newer login error when an older rerendered attempt succeeds afterwards', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const firstLogin = deferred<ReturnType<SessionStore['getState']>>()
+    const secondLogin = deferred<ReturnType<SessionStore['getState']>>()
+    const session = fakeSessionStore({ status: 'anonymous' })
+    vi.mocked(session.login)
+      .mockImplementationOnce(() => firstLogin.promise)
+      .mockImplementationOnce(() => secondLogin.promise)
+    const cleanup = startDashboardApp(container, { api: fakeApi(), session })
+
+    try {
+      await flushDashboard()
+      container.querySelector('form.login-card')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      container.querySelector('form.login-card')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+
+      secondLogin.reject(new Error('newer request failed'))
+      await flushDashboard()
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('newer request failed')
+
+      firstLogin.resolve({ status: 'authenticated', token: 'older-token', user: memberUser })
+      await flushDashboard()
+
+      expect(session.login).toHaveBeenCalledTimes(2)
+      expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).toBeNull()
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('newer request failed')
+    } finally {
+      cleanup()
+      container.remove()
+    }
   })
 
   it('does not persist an older real session when a newer rerendered login fails', async () => {
@@ -98,6 +303,74 @@ describe('dashboard shell', () => {
     }
   })
 
+  it('keeps the newer pending login unchanged when an older rerendered attempt fails first', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const firstLogin = deferred<ReturnType<SessionStore['getState']>>()
+    const secondLogin = deferred<ReturnType<SessionStore['getState']>>()
+    const session = fakeSessionStore({ status: 'anonymous' })
+    vi.mocked(session.login)
+      .mockImplementationOnce(() => firstLogin.promise)
+      .mockImplementationOnce(() => secondLogin.promise)
+    const cleanup = startDashboardApp(container, { api: fakeApi(), session })
+
+    try {
+      await flushDashboard()
+      container.querySelector('form.login-card')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      container.querySelector('form.login-card')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+
+      firstLogin.reject(new Error('older request failed'))
+      await flushDashboard()
+
+      expect(container.querySelector('[role="alert"]')).toBeNull()
+      expect(container.querySelector<HTMLButtonElement>('form.login-card button[type="submit"]')?.textContent).toBe('Signing in…')
+
+      secondLogin.resolve({ status: 'authenticated', token: 'newer-token', user: memberUser })
+      await flushDashboard()
+
+      expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).not.toBeNull()
+    } finally {
+      cleanup()
+      container.remove()
+    }
+  })
+
+  it('keeps the newer pending login unchanged when an older rerendered attempt succeeds first', async () => {
+    const container = document.createElement('main')
+    document.body.append(container)
+    const firstLogin = deferred<ReturnType<SessionStore['getState']>>()
+    const secondLogin = deferred<ReturnType<SessionStore['getState']>>()
+    const session = fakeSessionStore({ status: 'anonymous' })
+    vi.mocked(session.login)
+      .mockImplementationOnce(() => firstLogin.promise)
+      .mockImplementationOnce(() => secondLogin.promise)
+    const cleanup = startDashboardApp(container, { api: fakeApi(), session })
+
+    try {
+      await flushDashboard()
+      container.querySelector('form.login-card')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      container.querySelector('form.login-card')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+
+      firstLogin.resolve({ status: 'authenticated', token: 'older-token', user: memberUser })
+      await flushDashboard()
+
+      expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).toBeNull()
+      expect(container.querySelector<HTMLButtonElement>('form.login-card button[type="submit"]')?.textContent).toBe('Signing in…')
+
+      secondLogin.reject(new Error('newer request failed'))
+      await flushDashboard()
+
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('newer request failed')
+    } finally {
+      cleanup()
+      container.remove()
+    }
+  })
+
   it('keeps the session and UI anonymous when logout invalidates a pending login success', async () => {
     const container = document.createElement('main')
     document.body.append(container)
@@ -171,7 +444,7 @@ describe('dashboard shell', () => {
   it('shows a useful error and keeps the login form when login fails', async () => {
     const container = document.createElement('main')
     const session = fakeSessionStore({ status: 'anonymous' })
-    vi.mocked(session.login).mockRejectedValue(new Error('invalid credentials'))
+    vi.mocked(session.login).mockRejectedValue(new Error('<invalid credentials>'))
 
     const cleanup = startDashboardApp(container, { api: fakeApi(), session })
     try {
@@ -185,7 +458,9 @@ describe('dashboard shell', () => {
 
       expect(session.login).toHaveBeenCalledWith('admin@example.com', 'wrong')
       expect(container.querySelector('h1')?.textContent).toBe('Sign in to NEXUS HIVE')
-      expect(container.querySelector('[role="alert"]')?.textContent).toContain('invalid credentials')
+      const alert = container.querySelector('[role="alert"]')
+      expect(alert?.textContent).toContain('<invalid credentials>')
+      expect(alert?.innerHTML).toContain('&lt;invalid credentials&gt;')
     } finally {
       cleanup()
     }
@@ -249,20 +524,20 @@ describe('dashboard shell', () => {
     expect(img?.getAttribute('alt')).toBe('')
   })
 
-  it('renders the login tagline "Team memory, governed." on the login screen', () => {
+  it('renders the login tagline "Team memory governed" on the login screen', () => {
     const container = document.createElement('main')
 
     renderApp({ container, state: { status: 'anonymous' }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
 
-    expect(container.textContent).toContain('Team memory, governed.')
+    expect(container.textContent).toContain('Team memory governed')
   })
 
-  it('does not render the tagline "Team memory, governed." in the authenticated shell (login-only)', () => {
+  it('does not render the tagline "Team memory governed" in the authenticated shell (login-only)', () => {
     const container = document.createElement('main')
 
     renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: memberUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
 
-    expect(container.textContent).not.toContain('Team memory, governed.')
+    expect(container.textContent).not.toContain('Team memory governed')
   })
 
   it('does not mount a notification bell or notification drawer in the topbar (hard boundary)', () => {
@@ -2147,6 +2422,7 @@ describe('dashboard shell', () => {
 
       expect(container.querySelector('h1')?.textContent).toBe('Sign in to NEXUS HIVE')
       expect(container.querySelector('input[name="email"]')).not.toBeNull()
+      expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false)
       expect(container.querySelector('[role="alert"]')?.textContent).toContain('Unable to restore your session')
     } finally {
       cleanup()

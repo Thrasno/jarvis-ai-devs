@@ -86,7 +86,7 @@ export type SyncAttemptSummaryParams = { window?: SyncAttemptSummaryWindowKey; p
 export type ApiErrorCode = 'NETWORK_ERROR' | 'NON_JSON_RESPONSE' | 'UNAUTHORIZED' | 'FORBIDDEN' | 'VALIDATION_ERROR' | 'NOT_FOUND' | 'CONFLICT' | 'SERVER_ERROR' | 'REQUEST_FAILED' | string
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 export type ApiClient = {
-  login(email: string, password: string): Promise<LoginResponse>
+  login(email: string, password: string, signal?: AbortSignal): Promise<LoginResponse>
   currentUser(token: string): Promise<User>
   health(): Promise<Health>
   adminStats(token: string): Promise<AdminStats>
@@ -138,12 +138,14 @@ export function createApiClient(options: { baseUrl?: string; fetch?: Fetcher } =
   }
 
   return {
-    login(email, password) {
-      return request<LoginResponse>('/auth/login', {
+    login(email, password, signal) {
+      const init: RequestInit = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
-      })
+      }
+      if (signal) init.signal = signal
+      return request<LoginResponse>('/auth/login', init)
     },
     currentUser(token) {
       return request<User>('/auth/me', {
