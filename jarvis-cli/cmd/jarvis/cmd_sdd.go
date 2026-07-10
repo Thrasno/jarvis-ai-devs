@@ -121,6 +121,9 @@ func resolveSource(projectName string) (sddstatus.ArtifactSource, string, error)
 		osS := sddstatus.NewOpenSpecSource(root)
 		return sddstatus.NewHybridSource(hiveS, osS), string(contract.Mode), nil
 
+	case sddruntime.StoreModeNone:
+		return noneArtifactSource{}, string(contract.Mode), nil
+
 	default: // StoreModeHive
 		hc, err := hiveclient.NewFromEnv()
 		if err != nil {
@@ -128,6 +131,16 @@ func resolveSource(projectName string) (sddstatus.ArtifactSource, string, error)
 		}
 		return sddstatus.NewHiveSource(hc, projectName), string(contract.Mode), nil
 	}
+}
+
+type noneArtifactSource struct{}
+
+func (noneArtifactSource) FetchArtifacts(context.Context, string) (map[string]sddstatus.ArtifactState, map[string]string, error) {
+	return map[string]sddstatus.ArtifactState{}, map[string]string{}, nil
+}
+
+func (noneArtifactSource) ListChanges(context.Context) ([]string, error) {
+	return nil, nil
 }
 
 // resolveChangeName infers the change name when not provided explicitly.

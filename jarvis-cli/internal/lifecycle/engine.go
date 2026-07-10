@@ -79,20 +79,21 @@ func (e *Engine) verify(provider string, bootstrapLedger bool) (VerifyResult, er
 		return VerifyResult{}, err
 	}
 	report := sddruntime.Verify(provider, sddruntime.ObservedRuntime{
-		Manifest:            sddruntime.RuntimeManifestState{Present: true, ContractVersion: sddruntime.DefaultContract().Version, ManagedArtifactIDs: []string{"instructions", "orchestrator", "skills"}},
-		RegistryPath:        sddruntime.DefaultContract().RegistryPath,
-		PromptSourceIDs:     promptSourceIDs,
-		StoreMode:           string(storeContract.Mode),
-		StoreReadFrom:       storeContract.ReadFrom,
-		StoreWriteTo:        storeContract.WriteTo,
-		ArtifactTopics:      []string{"sdd/runtime/verify"},
-		GeneralMemoryTopics: []string{"runtime/notes"},
-		ModelAssignments:    sddruntime.DefaultContract().ModelAssignments,
-		Artifacts:           observed.Artifacts,
-		NonOwnedChanges:     observed.NonOwnedChanges,
-		UnknownChanges:      observed.UnknownChanges,
-		RegistryQuality:     registryQuality,
-		OpenCode:            observed.OpenCode,
+		Manifest:                   sddruntime.RuntimeManifestState{Present: true, ContractVersion: sddruntime.DefaultContract().Version, ManagedArtifactIDs: []string{"instructions", "orchestrator", "skills"}},
+		RegistryPath:               sddruntime.DefaultContract().RegistryPath,
+		PromptSourceIDs:            promptSourceIDs,
+		StoreMode:                  string(storeContract.Mode),
+		StoreReadFrom:              storeContract.ReadFrom,
+		StoreWriteTo:               storeContract.WriteTo,
+		ArtifactTopics:             []string{"sdd/runtime/verify"},
+		GeneralMemoryTopics:        []string{"runtime/notes"},
+		ModelAssignments:           sddruntime.DefaultContract().ModelAssignments,
+		Artifacts:                  observed.Artifacts,
+		NonOwnedChanges:            observed.NonOwnedChanges,
+		UnknownChanges:             observed.UnknownChanges,
+		RegistryQuality:            registryQuality,
+		OpenCode:                   observed.OpenCode,
+		ClaudeSDDSubagentHiveTools: observed.ClaudeSDDSubagentHiveTools,
 	})
 	return VerifyResult{Status: report.Status, Report: report}, nil
 }
@@ -338,6 +339,11 @@ func doctorStepFromCheck(check sddruntime.CheckResult) DoctorStep {
 			step.NextAction = "restore managed artifact from Jarvis managed runtime state"
 			return step
 		}
+		if isGeneratedAgentArtifactDrift(check.Key) {
+			step.ReasonCode = generatedAgentArtifactReasonCode(check.Key)
+			step.NextAction = "run jarvis init or supported reconfiguration to regenerate managed agent artifacts; preserve user-owned configuration through merge/no-clobber boundaries"
+			return step
+		}
 		if check.Key == "ledger.provider_schema_version" {
 			step.ReasonCode = "provider_schema_mismatch"
 			step.NextAction = "run managed-state migration before reconcile"
@@ -350,6 +356,10 @@ func doctorStepFromCheck(check sddruntime.CheckResult) DoctorStep {
 		step.ReasonCode = "non_owned_drift"
 		step.SafetyClass = "non-owned"
 		step.NextAction = "preserve user-owned changes and repair manually if needed"
+		if check.Key == "invariant.opencode.sdd_hive_grants" {
+			step.ReasonCode = "opencode_hive_guardrail_blocks_access"
+			step.NextAction = "manually adjust or remove the user-owned OpenCode exact Hive tool or hive_mem_* / hive_* guardrail, or add later exact Hive tool allows where appropriate; rerunning init will preserve the guardrail and will not repair this"
+		}
 		return step
 	case sddruntime.DriftUnknown:
 		step.ReasonCode = "unknown_drift"
@@ -379,4 +389,25 @@ func managedArtifactReasonCode(check sddruntime.CheckResult) string {
 		return "managed_artifact_missing"
 	}
 	return "managed_artifact_boundary_invalid"
+}
+
+func isGeneratedAgentArtifactDrift(checkKey string) bool {
+	switch checkKey {
+	case "invariant.opencode.sdd_hive_grants",
+		"invariant.opencode.plugin_hive",
+		"invariant.claude.sdd_hive_tools":
+		return true
+	default:
+		return false
+	}
+}
+
+func generatedAgentArtifactReasonCode(checkKey string) string {
+	if checkKey == "invariant.opencode.sdd_hive_grants" {
+		return "generated_sdd_hive_grants_outdated"
+	}
+	if checkKey == "invariant.claude.sdd_hive_tools" {
+		return "generated_claude_sdd_hive_tools_outdated"
+	}
+	return "generated_opencode_artifact_outdated"
 }

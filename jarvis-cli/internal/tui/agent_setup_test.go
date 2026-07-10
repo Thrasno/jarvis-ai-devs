@@ -767,20 +767,38 @@ func compliantOpenCodeObservedForTUI() sddruntime.ObservedOpenCodeConfig {
 		"review-risk", "review-readability", "review-reliability", "review-resilience",
 	}
 	return sddruntime.ObservedOpenCodeConfig{
-		ParseSucceeded:     true,
-		ShareMode:          "disabled",
-		DefaultAgent:       "sdd-orchestrator",
-		OrchestratorMode:   "primary",
-		OrchestratorModel:  "legacy=opus",
-		OrchestratorPrompt: "{file:./sdd-orchestrator.md}",
-		AgentNames:         append([]string{"sdd-orchestrator"}, subagents...),
-		HiddenSubagents:    subagents,
-		TaskAllows:         subagents,
-		TaskWildcardDeny:   true,
-		BashWildcardAllow:  true,
-		ReadSecretDenies:   true,
-		MCPHivePresent:     true,
-		MCPContext7Present: true,
-		PluginHiveExists:   true,
+		ParseSucceeded:               true,
+		ShareMode:                    "disabled",
+		DefaultAgent:                 "sdd-orchestrator",
+		OrchestratorMode:             "primary",
+		OrchestratorModel:            "legacy=opus",
+		OrchestratorPrompt:           "{file:./sdd-orchestrator.md}",
+		AgentNames:                   append([]string{"sdd-orchestrator"}, subagents...),
+		HiddenSubagents:              subagents,
+		TaskAllows:                   subagents,
+		TaskWildcardDeny:             true,
+		BashWildcardAllow:            true,
+		ReadSecretDenies:             true,
+		MCPHivePresent:               true,
+		MCPContext7Present:           true,
+		PluginHiveExists:             true,
+		SDDSubagentHiveGrantEvidence: compliantOpenCodeHiveGrantEvidenceForTUI(),
 	}
+}
+
+func compliantOpenCodeHiveGrantEvidenceForTUI() map[string][]sddruntime.OpenCodePermissionEvidence {
+	evidence := make(map[string][]sddruntime.OpenCodePermissionEvidence)
+	for _, definition := range agent.SDDPhaseAgentDefinitions() {
+		evidence[definition.Name] = compliantOpenCodeHiveToolEvidenceForTUI()
+	}
+	return evidence
+}
+
+func compliantOpenCodeHiveToolEvidenceForTUI() []sddruntime.OpenCodePermissionEvidence {
+	tools := agent.RequiredOpenCodeHiveMCPTools()
+	evidence := make([]sddruntime.OpenCodePermissionEvidence, 0, len(tools))
+	for _, tool := range tools {
+		evidence = append(evidence, sddruntime.OpenCodePermissionEvidence{Key: tool, Action: "allow"})
+	}
+	return evidence
 }

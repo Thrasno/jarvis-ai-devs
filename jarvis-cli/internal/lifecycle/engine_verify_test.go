@@ -112,6 +112,232 @@ func TestEngineDoctor_ReturnsReadOnlyPlan(t *testing.T) {
 	}
 }
 
+func TestEngineDoctor_RecommendsRegenerationForMissingSDDSubagentHiveGrants(t *testing.T) {
+	config := fakeCompliantOpenCodeConfig()
+	config.SDDSubagentHiveGrantEvidence["sdd-apply"] = nil
+	adapter := &fakeProviderAdapter{
+		name: "opencode",
+		observed: ObservedProviderState{
+			Artifacts: map[string]sddruntime.ObservedArtifact{
+				"instructions": {Exists: true, MarkersValid: true},
+				"orchestrator": {Exists: true},
+				"skills":       {Exists: true},
+			},
+			OpenCode: config,
+		},
+	}
+
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"opencode": adapter}, HomeDir: t.TempDir()})
+	plan, err := engine.Doctor("opencode")
+	if err != nil {
+		t.Fatalf("Doctor returned error: %v", err)
+	}
+
+	step := findStep(plan.Steps, "invariant.opencode.sdd_hive_grants")
+	if step == nil {
+		t.Fatalf("expected doctor step for missing SDD subagent Hive grants in %#v", plan.Steps)
+	}
+	if !plan.ReadOnly {
+		t.Fatal("doctor plan must remain read-only")
+	}
+	if step.SafeToAutoApply || step.SafetyClass != "manual-required" || step.ReasonCode != "generated_sdd_hive_grants_outdated" {
+		t.Fatalf("Hive grant drift must require explicit regeneration, got %+v", *step)
+	}
+	if !strings.Contains(step.NextAction, "jarvis init") || !strings.Contains(step.NextAction, "supported reconfiguration") {
+		t.Fatalf("doctor step lacks regeneration guidance: %+v", *step)
+	}
+	if !strings.Contains(step.NextAction, "preserve user-owned configuration") {
+		t.Fatalf("doctor step must state no-clobber behavior: %+v", *step)
+	}
+	if adapter.applyCalls != 0 {
+		t.Fatalf("doctor must not mutate state; apply calls = %d", adapter.applyCalls)
+	}
+}
+
+func TestEngineDoctor_RecommendsManualGuardrailChangeForStrictOpenCodeHiveGuardrail(t *testing.T) {
+	config := fakeCompliantOpenCodeConfig()
+	config.SDDSubagentHiveGrantEvidence["sdd-apply"] = []sddruntime.OpenCodePermissionEvidence{
+		{Key: "hive_mem_search", Action: "allow"},
+		{Key: "hive_mem_get_observation", Action: "allow"},
+		{Key: "hive_mem_save", Action: "allow"},
+		{Key: "hive_mem_context", Action: "allow"},
+		{Key: "hive_mem_session_summary", Action: "allow"},
+		{Key: "hive_mem_*", Action: "deny"},
+	}
+	adapter := &fakeProviderAdapter{
+		name: "opencode",
+		observed: ObservedProviderState{
+			Artifacts: map[string]sddruntime.ObservedArtifact{
+				"instructions": {Exists: true, MarkersValid: true},
+				"orchestrator": {Exists: true},
+				"skills":       {Exists: true},
+			},
+			OpenCode: config,
+		},
+	}
+
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"opencode": adapter}, HomeDir: t.TempDir()})
+	plan, err := engine.Doctor("opencode")
+	if err != nil {
+		t.Fatalf("Doctor returned error: %v", err)
+	}
+
+	step := findStep(plan.Steps, "invariant.opencode.sdd_hive_grants")
+	if step == nil {
+		t.Fatalf("expected doctor step for strict Hive guardrail in %#v", plan.Steps)
+	}
+	if step.SafeToAutoApply || step.SafetyClass != "non-owned" || step.ReasonCode != "opencode_hive_guardrail_blocks_access" {
+		t.Fatalf("strict Hive guardrail must require manual user-owned repair, got %+v", *step)
+	}
+	if strings.Contains(step.NextAction, "regenerate") || !strings.Contains(step.NextAction, "rerunning init will preserve the guardrail") {
+		t.Fatalf("doctor step must not claim regeneration will fix preserved guardrail: %+v", *step)
+	}
+}
+
+func TestEngineDoctor_RecommendsManualGuardrailChangeForExactOpenCodeHiveGuardrail(t *testing.T) {
+	config := fakeCompliantOpenCodeConfig()
+	config.SDDSubagentHiveGrantEvidence["sdd-apply"] = []sddruntime.OpenCodePermissionEvidence{
+		{Key: "hive_mem_*", Action: "allow"},
+		{Key: "hive_mem_save", Action: "deny"},
+	}
+	adapter := &fakeProviderAdapter{
+		name: "opencode",
+		observed: ObservedProviderState{
+			Artifacts: map[string]sddruntime.ObservedArtifact{
+				"instructions": {Exists: true, MarkersValid: true},
+				"orchestrator": {Exists: true},
+				"skills":       {Exists: true},
+			},
+			OpenCode: config,
+		},
+	}
+
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"opencode": adapter}, HomeDir: t.TempDir()})
+	plan, err := engine.Doctor("opencode")
+	if err != nil {
+		t.Fatalf("Doctor returned error: %v", err)
+	}
+
+	step := findStep(plan.Steps, "invariant.opencode.sdd_hive_grants")
+	if step == nil {
+		t.Fatalf("expected doctor step for exact Hive guardrail in %#v", plan.Steps)
+	}
+	if step.SafeToAutoApply || step.SafetyClass != "non-owned" || step.ReasonCode != "opencode_hive_guardrail_blocks_access" {
+		t.Fatalf("exact Hive guardrail must require manual user-owned repair, got %+v", *step)
+	}
+	if strings.Contains(step.NextAction, "regenerate") || !strings.Contains(step.NextAction, "exact Hive tool") || !strings.Contains(step.NextAction, "rerunning init will preserve the guardrail") {
+		t.Fatalf("doctor step must explain exact guardrail manual remediation: %+v", *step)
+	}
+}
+
+func TestEngineDoctor_RecommendsRegenerationForStaleClaudeSDDSubagentHiveTools(t *testing.T) {
+	adapter := &fakeProviderAdapter{
+		name: "claude",
+		observed: ObservedProviderState{
+			Artifacts: map[string]sddruntime.ObservedArtifact{
+				"instructions": {Exists: true, MarkersValid: true},
+				"orchestrator": {Exists: true},
+				"skills":       {Exists: true},
+			},
+			ClaudeSDDSubagentHiveTools: map[string][]string{
+				"sdd-apply": {"mcp__hive__mem_search"},
+			},
+		},
+	}
+
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"claude": adapter}, HomeDir: t.TempDir()})
+	plan, err := engine.Doctor("claude")
+	if err != nil {
+		t.Fatalf("Doctor returned error: %v", err)
+	}
+
+	step := findStep(plan.Steps, "invariant.claude.sdd_hive_tools")
+	if step == nil {
+		t.Fatalf("expected doctor step for stale Claude SDD Hive tools in %#v", plan.Steps)
+	}
+	if !plan.ReadOnly {
+		t.Fatal("doctor plan must remain read-only")
+	}
+	if step.SafeToAutoApply || step.SafetyClass != "manual-required" || step.ReasonCode != "generated_claude_sdd_hive_tools_outdated" {
+		t.Fatalf("Claude Hive tool drift must require explicit regeneration, got %+v", *step)
+	}
+	if !strings.Contains(step.NextAction, "jarvis init") || !strings.Contains(step.NextAction, "supported reconfiguration") {
+		t.Fatalf("doctor step lacks regeneration guidance: %+v", *step)
+	}
+	if adapter.applyCalls != 0 {
+		t.Fatalf("doctor must not mutate state; apply calls = %d", adapter.applyCalls)
+	}
+}
+
+func TestEngineDoctor_RecommendsRegenerationForMissingOpenCodeGeneratedPlugin(t *testing.T) {
+	config := fakeCompliantOpenCodeConfig()
+	config.PluginHiveExists = false
+	adapter := &fakeProviderAdapter{
+		name: "opencode",
+		observed: ObservedProviderState{
+			Artifacts: map[string]sddruntime.ObservedArtifact{
+				"instructions": {Exists: true, MarkersValid: true},
+				"orchestrator": {Exists: true},
+				"skills":       {Exists: true},
+			},
+			OpenCode: config,
+		},
+	}
+
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"opencode": adapter}, HomeDir: t.TempDir()})
+	plan, err := engine.Doctor("opencode")
+	if err != nil {
+		t.Fatalf("Doctor returned error: %v", err)
+	}
+
+	step := findStep(plan.Steps, "invariant.opencode.plugin_hive")
+	if step == nil {
+		t.Fatalf("expected doctor step for missing generated Hive plugin in %#v", plan.Steps)
+	}
+	if step.SafeToAutoApply || step.ReasonCode != "generated_opencode_artifact_outdated" {
+		t.Fatalf("generated OpenCode plugin drift must require regeneration, got %+v", *step)
+	}
+	if !strings.Contains(step.NextAction, "jarvis init") || !strings.Contains(step.NextAction, "supported reconfiguration") {
+		t.Fatalf("doctor step lacks regeneration guidance: %+v", *step)
+	}
+	if adapter.applyCalls != 0 {
+		t.Fatalf("doctor must not mutate state; apply calls = %d", adapter.applyCalls)
+	}
+}
+
+func TestEngineDoctor_KeepsOpenCodeSecurityInvariantAsManualDrift(t *testing.T) {
+	config := fakeCompliantOpenCodeConfig()
+	config.BashWildcardAllow = false
+	adapter := &fakeProviderAdapter{
+		name: "opencode",
+		observed: ObservedProviderState{
+			Artifacts: map[string]sddruntime.ObservedArtifact{
+				"instructions": {Exists: true, MarkersValid: true},
+				"orchestrator": {Exists: true},
+				"skills":       {Exists: true},
+			},
+			OpenCode: config,
+		},
+	}
+
+	engine := NewEngine(EngineDeps{Adapters: map[string]ProviderAdapter{"opencode": adapter}, HomeDir: t.TempDir()})
+	plan, err := engine.Doctor("opencode")
+	if err != nil {
+		t.Fatalf("Doctor returned error: %v", err)
+	}
+
+	step := findStep(plan.Steps, "invariant.opencode.permission_bash")
+	if step == nil {
+		t.Fatalf("expected doctor step for OpenCode bash permission drift in %#v", plan.Steps)
+	}
+	if step.ReasonCode != "manual_invariant_drift" {
+		t.Fatalf("security invariant must not be classified as generated artifact drift, got %+v", *step)
+	}
+	if strings.Contains(step.NextAction, "jarvis init") || strings.Contains(step.NextAction, "regenerate managed agent artifacts") {
+		t.Fatalf("security invariant should keep manual recovery guidance, got %+v", *step)
+	}
+}
+
 func TestEngineDoctor_DoesNotBootstrapMissingLedger(t *testing.T) {
 	home := t.TempDir()
 	ledgerPath := filepath.Join(home, ".jarvis", "managed-state.json")

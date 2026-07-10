@@ -175,6 +175,69 @@ func TestCatalogContract_SharedPersistenceContractUsesJarvisHiveModeContract(t *
 	}
 }
 
+func TestCatalogContract_SharedSDDProtocolsFailClearlyWhenHiveSubagentToolsAreUnavailable(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		path     string
+		required []string
+	}{
+		{
+			path: sharedPhaseCommonPath,
+			required: []string{
+				"## F. Hive/Hybrid Degraded Mode",
+				"If artifact store mode is `hive` or `hybrid` and required Hive MCP tools are unavailable to the phase sub-agent, STOP and return `blocked`.",
+				"Do not silently fall back to inline artifact context as the happy path.",
+				"Required Hive MCP tools: `mcp__hive__mem_search`, `mcp__hive__mem_get_observation`, `mcp__hive__mem_save`, `mcp__hive__mem_context`, and `mcp__hive__mem_session_summary`.",
+				"OpenCode permission entries use the corresponding `hive_mem_search`, `hive_mem_get_observation`, `hive_mem_save`, `hive_mem_context`, and `hive_mem_session_summary` tool names.",
+				"Remediation: run `jarvis init` or the supported reconfiguration flow to regenerate agent artifacts without clobbering user-owned configuration.",
+			},
+		},
+		{
+			path: sharedPersistenceContractPath,
+			required: []string{
+				"## Hive/Hybrid Degraded Mode",
+				"If Hive MCP tools cannot be exposed to SDD phase sub-agents, `hive` and `hybrid` modes are degraded and MUST fail clearly.",
+				"Do not silently downgrade `hive` or `hybrid` to inline-only context.",
+				"Required Hive MCP tools: `mcp__hive__mem_search`, `mcp__hive__mem_get_observation`, `mcp__hive__mem_save`, `mcp__hive__mem_context`, and `mcp__hive__mem_session_summary`.",
+				"OpenCode permission entries use the corresponding `hive_mem_search`, `hive_mem_get_observation`, `hive_mem_save`, `hive_mem_context`, and `hive_mem_session_summary` tool names.",
+				"The blocked response MUST name the missing Hive MCP capability and recommend `jarvis init` or supported reconfiguration.",
+				"This generated-artifact drift check is independent from the selected SDD artifact store mode; non-Hive modes do not require Hive persistence, but generated stale agents may still be reported as advisory drift when present.",
+				"Regeneration must preserve user-owned configuration through merge/no-clobber behavior.",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.path, func(t *testing.T) {
+			content := readEmbeddedSkillAsset(t, tc.path)
+			for _, snippet := range tc.required {
+				if !strings.Contains(content, snippet) {
+					t.Fatalf("expected %s to contain degraded-mode contract %q", tc.path, snippet)
+				}
+			}
+		})
+	}
+}
+
+func TestCatalogContract_SDDUserGuideDocumentsExistingInstallRegeneration(t *testing.T) {
+	t.Parallel()
+
+	content := readWorkspaceAsset(t, "docs/sdd-user-guide.md")
+	for _, snippet := range []string{
+		"## Existing install regeneration",
+		"Existing installations created by older Jarvis versions must regenerate generated agent artifacts before Hive or hybrid SDD subagents can rely on Hive MCP tools.",
+		"Run `jarvis init` or the supported reconfiguration flow for your installed provider.",
+		"Doctor is read-only: it reports outdated generated artifacts and does not silently mutate configuration.",
+		"Regeneration preserves user-owned configuration through merge/no-clobber behavior.",
+		"Hive/hybrid SDD phases fail clearly instead of silently falling back to inline artifact context when required Hive MCP tools are unavailable.",
+	} {
+		if !strings.Contains(content, snippet) {
+			t.Fatalf("expected docs/sdd-user-guide.md to contain %q", snippet)
+		}
+	}
+}
+
 func TestCatalogContract_SDDExploreHiveTopicAgreesAcrossSharedContractAndPhaseSkills(t *testing.T) {
 	t.Parallel()
 

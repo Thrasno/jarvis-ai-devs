@@ -450,6 +450,15 @@ func TestOpenCodeAgent_MergeGeneratedConfig_RendersTopologyPermissionsAndPreserv
 	if !strings.Contains(applyAgent["prompt"].(string), ".jarvis/skills/sdd-apply/SKILL.md") {
 		t.Fatalf("sdd-apply prompt should point at Jarvis skill path, got %q", applyAgent["prompt"])
 	}
+	for _, name := range openCodeSDDSubagents() {
+		sddAgent := agents[name].(map[string]any)
+		permission := sddAgent["permission"].(map[string]any)
+		for _, tool := range RequiredOpenCodeHiveMCPTools() {
+			if permission[tool] != "allow" {
+				t.Fatalf("agent.%s.permission[%q] = %v, want allow; permission=%#v", name, tool, permission[tool], permission)
+			}
+		}
+	}
 	permission := settings["permission"].(map[string]any)
 	bash := permission["bash"].(map[string]any)
 	if bash["*"] != "allow" || bash["git push --force*"] != "ask" || bash["git push * --force*"] != "ask" || bash["git push * --force-with-lease*"] != "ask" || bash["git reset --hard*"] != "ask" {
@@ -551,7 +560,66 @@ func TestOpenCodeAgent_MergeGeneratedConfig_PreservesExistingPermissionGuardrail
 	assertOpenCodeReadDenyCoverage(t, read)
 }
 
-func TestOpenCodeAgent_MergeGeneratedConfig_RemovesUnknownOrchestratorTaskAllows(t *testing.T) {
+func TestOpenCodeAgent_MergeGeneratedConfig_PreservesStrictHiveWildcardGuardrailsAndExactExceptions(t *testing.T) {
+	tmpHome := t.TempDir()
+	a := &OpenCodeAgent{home: tmpHome, templatesFS: testTemplatesFS}
+	settingsPath := filepath.Join(tmpHome, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatalf("create opencode dir: %v", err)
+	}
+	existing := `{
+		"agent": {
+			"sdd-apply": {"permission": {"task": "deny", "edit": "allow", "hive_mem_*": "deny", "hive_mem_search": "allow", "hive_mem_save": "allow", "hive_mem_context": "ask"}},
+			"sdd-verify": {"permission": {"task": "deny", "edit": "deny", "hive_*": "ask", "hive_mem_get_observation": "allow", "hive_mem_context": "allow", "hive_mem_session_summary": "deny"}}
+		}
+	}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0644); err != nil {
+		t.Fatalf("write opencode.json: %v", err)
+	}
+
+	if err := a.MergeGeneratedConfig(defaultRuntimeConfig()); err != nil {
+		t.Fatalf("MergeGeneratedConfig: %v", err)
+	}
+
+	settings := readJSONFile(t, settingsPath)
+	agents := settings["agent"].(map[string]any)
+	applyPermission := agents["sdd-apply"].(map[string]any)["permission"].(map[string]any)
+	if applyPermission["hive_mem_*"] != "deny" {
+		t.Fatalf("sdd-apply hive_mem_* guardrail = %v, want deny", applyPermission["hive_mem_*"])
+	}
+	for _, tool := range []string{"hive_mem_search", "hive_mem_save"} {
+		if applyPermission[tool] != "allow" {
+			t.Fatalf("user-owned exact allow %q must be preserved under strict hive_mem_* deny: %#v", tool, applyPermission)
+		}
+	}
+	if applyPermission["hive_mem_context"] != "ask" {
+		t.Fatalf("user-owned exact hive_mem_context ask must be preserved: %#v", applyPermission)
+	}
+	for _, tool := range []string{"hive_mem_get_observation", "hive_mem_session_summary"} {
+		if applyPermission[tool] == "allow" {
+			t.Fatalf("generated exact allow %q must not be added over strict hive_mem_* deny: %#v", tool, applyPermission)
+		}
+	}
+	verifyPermission := agents["sdd-verify"].(map[string]any)["permission"].(map[string]any)
+	if verifyPermission["hive_*"] != "ask" {
+		t.Fatalf("sdd-verify hive_* guardrail = %v, want ask", verifyPermission["hive_*"])
+	}
+	for _, tool := range []string{"hive_mem_get_observation", "hive_mem_context"} {
+		if verifyPermission[tool] != "allow" {
+			t.Fatalf("user-owned exact allow %q must be preserved under strict hive_* ask: %#v", tool, verifyPermission)
+		}
+	}
+	if verifyPermission["hive_mem_session_summary"] != "deny" {
+		t.Fatalf("user-owned exact hive_mem_session_summary deny must be preserved: %#v", verifyPermission)
+	}
+	for _, tool := range []string{"hive_mem_search", "hive_mem_save"} {
+		if verifyPermission[tool] == "allow" {
+			t.Fatalf("generated exact allow %q must not be added over strict hive_* ask: %#v", tool, verifyPermission)
+		}
+	}
+}
+
+func TestOpenCodeAgent_MergeGeneratedConfig_PreservesUserOwnedOrchestratorTaskAllows(t *testing.T) {
 	tmpHome := t.TempDir()
 	a := &OpenCodeAgent{home: tmpHome, templatesFS: testTemplatesFS}
 	settingsPath := filepath.Join(tmpHome, ".config", "opencode", "opencode.json")
@@ -583,8 +651,8 @@ func TestOpenCodeAgent_MergeGeneratedConfig_RemovesUnknownOrchestratorTaskAllows
 
 	settings := readJSONFile(t, settingsPath)
 	taskPerm := settings["agent"].(map[string]any)["sdd-orchestrator"].(map[string]any)["permission"].(map[string]any)["task"].(map[string]any)
-	if _, ok := taskPerm["some-random-agent"]; ok {
-		t.Fatalf("unknown orchestrator task allow was preserved: %#v", taskPerm)
+	if taskPerm["some-random-agent"] != "allow" {
+		t.Fatalf("user-owned orchestrator task allow was not preserved: %#v", taskPerm)
 	}
 	if taskPerm["*"] != "deny" || taskPerm["sdd-apply"] != "allow" || taskPerm["jd-judge-a"] != "allow" {
 		t.Fatalf("expected generated orchestrator task allows to remain: %#v", taskPerm)
@@ -621,8 +689,8 @@ func TestOpenCodeAgent_MergeGeneratedConfig_IgnoresMalformedTaskPermissionValues
 
 	settings := readJSONFile(t, settingsPath)
 	taskPerm := settings["agent"].(map[string]any)["sdd-orchestrator"].(map[string]any)["permission"].(map[string]any)["task"].(map[string]any)
-	if _, ok := taskPerm["some-random-agent"]; ok {
-		t.Fatalf("unknown string allow was preserved: %#v", taskPerm)
+	if taskPerm["some-random-agent"] != "allow" {
+		t.Fatalf("user-owned string allow was not preserved: %#v", taskPerm)
 	}
 	if _, ok := taskPerm["malformed-array"]; !ok {
 		t.Fatalf("malformed non-string value should be ignored by cleanup, got: %#v", taskPerm)

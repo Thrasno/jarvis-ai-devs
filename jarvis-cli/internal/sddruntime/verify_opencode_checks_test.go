@@ -283,7 +283,7 @@ func TestVerifyOpenCode_SubagentsPresent_PassesWhenExactly17(t *testing.T) {
 	}
 }
 
-func TestVerifyOpenCode_SubagentsPresent_FailsWhenCountAbove17(t *testing.T) {
+func TestVerifyOpenCode_SubagentsPresent_AllowsExtraUserOwnedSubagents(t *testing.T) {
 	observed := compliantOpenCodeRuntime(t)
 	observed.OpenCode.HiddenSubagents = append(observed.OpenCode.HiddenSubagents, "extra-agent")
 
@@ -293,8 +293,30 @@ func TestVerifyOpenCode_SubagentsPresent_FailsWhenCountAbove17(t *testing.T) {
 	if check == nil {
 		t.Fatal("expected invariant.opencode.subagents_present check")
 	}
+	if check.Status != StatusPass {
+		t.Fatalf("expected StatusPass with extra user-owned subagent, got %q", check.Status)
+	}
+}
+
+func TestVerifyOpenCode_SubagentsPresent_FailsWhen17WrongNames(t *testing.T) {
+	observed := compliantOpenCodeRuntime(t)
+	observed.OpenCode.HiddenSubagents = []string{
+		"wrong-01", "wrong-02", "wrong-03", "wrong-04", "wrong-05", "wrong-06",
+		"wrong-07", "wrong-08", "wrong-09", "wrong-10", "wrong-11", "wrong-12",
+		"wrong-13", "wrong-14", "wrong-15", "wrong-16", "wrong-17",
+	}
+
+	report := Verify("opencode", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.opencode.subagents_present")
+	if check == nil {
+		t.Fatal("expected invariant.opencode.subagents_present check")
+	}
 	if check.Status != StatusFail {
-		t.Fatalf("expected StatusFail for 18 subagents, got %q", check.Status)
+		t.Fatalf("expected StatusFail for wrong subagent names, got %q", check.Status)
+	}
+	if !strings.Contains(check.Observed, "missing=sdd-init") || !strings.Contains(check.Observed, "unexpected=wrong-01") {
+		t.Fatalf("expected useful missing/unexpected diagnostic, got observed=%q message=%q", check.Observed, check.Message)
 	}
 }
 
@@ -344,7 +366,7 @@ func TestVerifyOpenCode_TaskAllowlist_PassesWhenDenyAndExactly17Allows(t *testin
 	}
 }
 
-func TestVerifyOpenCode_TaskAllowlist_FailsWhenAllowsAbove17(t *testing.T) {
+func TestVerifyOpenCode_TaskAllowlist_AllowsExtraUserOwnedTaskAllows(t *testing.T) {
 	observed := compliantOpenCodeRuntime(t)
 	observed.OpenCode.TaskAllows = append(observed.OpenCode.TaskAllows, "extra-task")
 
@@ -354,8 +376,30 @@ func TestVerifyOpenCode_TaskAllowlist_FailsWhenAllowsAbove17(t *testing.T) {
 	if check == nil {
 		t.Fatal("expected invariant.opencode.task_allowlist check")
 	}
+	if check.Status != StatusPass {
+		t.Fatalf("expected StatusPass with extra user-owned task allow, got %q", check.Status)
+	}
+}
+
+func TestVerifyOpenCode_TaskAllowlist_FailsWhen17WrongNames(t *testing.T) {
+	observed := compliantOpenCodeRuntime(t)
+	observed.OpenCode.TaskAllows = []string{
+		"wrong-01", "wrong-02", "wrong-03", "wrong-04", "wrong-05", "wrong-06",
+		"wrong-07", "wrong-08", "wrong-09", "wrong-10", "wrong-11", "wrong-12",
+		"wrong-13", "wrong-14", "wrong-15", "wrong-16", "wrong-17",
+	}
+
+	report := Verify("opencode", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.opencode.task_allowlist")
+	if check == nil {
+		t.Fatal("expected invariant.opencode.task_allowlist check")
+	}
 	if check.Status != StatusFail {
-		t.Fatalf("expected StatusFail for 18 task allows, got %q", check.Status)
+		t.Fatalf("expected StatusFail for wrong task allow names, got %q", check.Status)
+	}
+	if !strings.Contains(check.Observed, "missing=sdd-init") || !strings.Contains(check.Observed, "unexpected=wrong-01") {
+		t.Fatalf("expected useful missing/unexpected diagnostic, got observed=%q message=%q", check.Observed, check.Message)
 	}
 }
 
@@ -452,6 +496,244 @@ func TestVerifyOpenCode_PluginHive_PassesWhenPluginHiveExistsTrue(t *testing.T) 
 	}
 }
 
+func TestVerifyOpenCode_SDDSubagentHiveGrants_FailsWhenGrantMissing(t *testing.T) {
+	observed := compliantOpenCodeRuntime(t)
+	observed.OpenCode.SDDSubagentHiveGrantEvidence["sdd-apply"] = []OpenCodePermissionEvidence{
+		{Key: "hive_mem_search", Action: "allow"},
+		{Key: "hive_mem_save", Action: "allow"},
+	}
+
+	report := Verify("opencode", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.opencode.sdd_hive_grants")
+	if check == nil {
+		t.Fatal("expected invariant.opencode.sdd_hive_grants check")
+	}
+	if check.Status != StatusFail {
+		t.Fatalf("expected StatusFail, got %q", check.Status)
+	}
+	if check.DriftClass != DriftOwned {
+		t.Fatalf("expected owned generated-artifact drift, got %q", check.DriftClass)
+	}
+	if !strings.Contains(check.Message, "jarvis init") {
+		t.Fatalf("missing regeneration guidance in message: %s", check.Message)
+	}
+}
+
+func TestVerifyOpenCode_SDDSubagentHiveGrants_WarnsWhenGrantMissingInOpenSpecMode(t *testing.T) {
+	observed := compliantOpenCodeRuntime(t)
+	observed.StoreMode = "openspec"
+	observed.StoreReadFrom = []string{"openspec"}
+	observed.StoreWriteTo = []string{"openspec"}
+	observed.OpenCode.SDDSubagentHiveGrantEvidence["sdd-apply"] = []OpenCodePermissionEvidence{
+		{Key: "hive_mem_search", Action: "allow"},
+		{Key: "hive_mem_save", Action: "allow"},
+	}
+
+	report := Verify("opencode", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.opencode.sdd_hive_grants")
+	if check == nil {
+		t.Fatal("expected invariant.opencode.sdd_hive_grants check")
+	}
+	if check.Status != StatusWarn {
+		t.Fatalf("expected StatusWarn for non-Hive advisory drift, got %q", check.Status)
+	}
+	if check.DriftClass != DriftOwned {
+		t.Fatalf("expected owned generated-artifact drift, got %q", check.DriftClass)
+	}
+	if report.Status == StatusFail {
+		t.Fatalf("missing Hive grants must not fail openspec verification, got %q", report.Status)
+	}
+	if !strings.Contains(check.Message, "advisory") {
+		t.Fatalf("expected advisory message for non-Hive mode, got %q", check.Message)
+	}
+}
+
+func TestVerifyOpenCode_SDDSubagentHiveGrants_WarnsWhenGrantMissingInNoneMode(t *testing.T) {
+	observed := compliantOpenCodeRuntime(t)
+	observed.StoreMode = "none"
+	observed.StoreReadFrom = nil
+	observed.StoreWriteTo = nil
+	observed.OpenCode.SDDSubagentHiveGrantEvidence["sdd-apply"] = []OpenCodePermissionEvidence{
+		{Key: "hive_mem_search", Action: "allow"},
+		{Key: "hive_mem_save", Action: "allow"},
+	}
+
+	report := Verify("opencode", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.opencode.sdd_hive_grants")
+	if check == nil {
+		t.Fatal("expected invariant.opencode.sdd_hive_grants check")
+	}
+	if check.Status != StatusWarn {
+		t.Fatalf("expected StatusWarn for none-mode advisory drift, got %q", check.Status)
+	}
+	if report.Status == StatusFail {
+		t.Fatalf("missing Hive grants must not fail none-mode verification, got %q", report.Status)
+	}
+}
+
+func TestVerifyOpenCode_SDDSubagentHiveGrants_FailsWhenGrantMissingInHiveMode(t *testing.T) {
+	observed := compliantOpenCodeRuntime(t)
+	observed.StoreMode = "hive"
+	observed.StoreReadFrom = []string{"hive"}
+	observed.StoreWriteTo = []string{"hive"}
+	observed.OpenCode.SDDSubagentHiveGrantEvidence["sdd-apply"] = []OpenCodePermissionEvidence{
+		{Key: "hive_mem_search", Action: "allow"},
+		{Key: "hive_mem_save", Action: "allow"},
+	}
+
+	report := Verify("opencode", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.opencode.sdd_hive_grants")
+	if check == nil {
+		t.Fatal("expected invariant.opencode.sdd_hive_grants check")
+	}
+	if check.Status != StatusFail {
+		t.Fatalf("expected StatusFail for Hive mode, got %q", check.Status)
+	}
+	if report.Status != StatusFail {
+		t.Fatalf("expected overall StatusFail for Hive mode, got %q", report.Status)
+	}
+}
+
+func TestVerifyOpenCode_SDDSubagentHiveGrants_PassesWithWildcardEvidence(t *testing.T) {
+	observed := compliantOpenCodeRuntime(t)
+	for _, name := range observed.OpenCode.HiddenSubagents[:10] {
+		observed.OpenCode.SDDSubagentHiveGrantEvidence[name] = []OpenCodePermissionEvidence{{Key: "hive_mem_*", Action: "allow"}}
+	}
+
+	report := Verify("opencode", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.opencode.sdd_hive_grants")
+	if check == nil {
+		t.Fatal("expected invariant.opencode.sdd_hive_grants check")
+	}
+	if check.Status != StatusPass {
+		t.Fatalf("expected StatusPass, got %q (message: %s)", check.Status, check.Message)
+	}
+}
+
+func TestVerifyOpenCode_SDDSubagentHiveGrants_FailsWhenExactDenyOverridesWildcardAllow(t *testing.T) {
+	observed := compliantOpenCodeRuntime(t)
+	observed.OpenCode.SDDSubagentHiveGrantEvidence["sdd-apply"] = []OpenCodePermissionEvidence{
+		{Key: "hive_mem_*", Action: "allow"},
+		{Key: "hive_mem_save", Action: "deny"},
+	}
+
+	report := Verify("opencode", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.opencode.sdd_hive_grants")
+	if check == nil {
+		t.Fatal("expected invariant.opencode.sdd_hive_grants check")
+	}
+	if check.Status != StatusFail {
+		t.Fatalf("expected StatusFail when exact deny overrides wildcard allow, got %q", check.Status)
+	}
+	if check.DriftClass != DriftNonOwned {
+		t.Fatalf("expected exact deny guardrail to be classified as non-owned drift, got %q", check.DriftClass)
+	}
+	if strings.Contains(check.Message, "jarvis init") || !strings.Contains(check.Message, "manually adjust") {
+		t.Fatalf("expected manual guardrail remediation, got %q", check.Message)
+	}
+	if !strings.Contains(check.Observed, "sdd-apply:hive_mem_save") {
+		t.Fatalf("expected observed drift for denied tool, got %q", check.Observed)
+	}
+}
+
+func TestVerifyOpenCode_SDDSubagentHiveGrants_FailsWhenExactAskOverridesWildcardAllow(t *testing.T) {
+	observed := compliantOpenCodeRuntime(t)
+	observed.OpenCode.SDDSubagentHiveGrantEvidence["sdd-apply"] = []OpenCodePermissionEvidence{
+		{Key: "hive_*", Action: "allow"},
+		{Key: "hive_mem_get_observation", Action: "ask"},
+	}
+
+	report := Verify("opencode", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.opencode.sdd_hive_grants")
+	if check == nil {
+		t.Fatal("expected invariant.opencode.sdd_hive_grants check")
+	}
+	if check.Status != StatusFail {
+		t.Fatalf("expected StatusFail when exact ask overrides wildcard allow, got %q", check.Status)
+	}
+	if check.DriftClass != DriftNonOwned {
+		t.Fatalf("expected exact ask guardrail to be classified as non-owned drift, got %q", check.DriftClass)
+	}
+	if strings.Contains(check.Message, "jarvis init") || !strings.Contains(check.Message, "manually adjust") {
+		t.Fatalf("expected manual guardrail remediation, got %q", check.Message)
+	}
+	if !strings.Contains(check.Observed, "sdd-apply:hive_mem_get_observation") {
+		t.Fatalf("expected observed drift for ask-gated tool, got %q", check.Observed)
+	}
+}
+
+func TestVerifyOpenCode_SDDSubagentHiveGrants_PassesWhenExactAllowsFollowStrictWildcard(t *testing.T) {
+	observed := compliantOpenCodeRuntime(t)
+	observed.OpenCode.SDDSubagentHiveGrantEvidence["sdd-apply"] = []OpenCodePermissionEvidence{
+		{Key: "hive_mem_*", Action: "deny"},
+		{Key: "hive_mem_search", Action: "allow"},
+		{Key: "hive_mem_get_observation", Action: "allow"},
+		{Key: "hive_mem_save", Action: "allow"},
+		{Key: "hive_mem_context", Action: "allow"},
+		{Key: "hive_mem_session_summary", Action: "allow"},
+	}
+
+	report := Verify("opencode", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.opencode.sdd_hive_grants")
+	if check == nil {
+		t.Fatal("expected invariant.opencode.sdd_hive_grants check")
+	}
+	if check.Status != StatusPass {
+		t.Fatalf("expected StatusPass when exact allows follow strict wildcard, got %q (message: %s)", check.Status, check.Message)
+	}
+}
+
+func TestVerifyOpenCode_SDDSubagentHiveGrants_FailsWhenStrictWildcardFollowsGeneratedExactAllows(t *testing.T) {
+	tests := []struct {
+		name   string
+		action string
+	}{
+		{name: "deny", action: "deny"},
+		{name: "ask", action: "ask"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			observed := compliantOpenCodeRuntime(t)
+			observed.OpenCode.SDDSubagentHiveGrantEvidence["sdd-apply"] = []OpenCodePermissionEvidence{
+				{Key: "hive_mem_search", Action: "allow"},
+				{Key: "hive_mem_get_observation", Action: "allow"},
+				{Key: "hive_mem_save", Action: "allow"},
+				{Key: "hive_mem_context", Action: "allow"},
+				{Key: "hive_mem_session_summary", Action: "allow"},
+				{Key: "hive_mem_*", Action: tt.action},
+			}
+
+			report := Verify("opencode", observed)
+
+			check := findCheckByKey(report.Checks, "invariant.opencode.sdd_hive_grants")
+			if check == nil {
+				t.Fatal("expected invariant.opencode.sdd_hive_grants check")
+			}
+			if check.Status != StatusFail {
+				t.Fatalf("expected StatusFail when strict wildcard %s follows generated exact allows, got %q", tt.action, check.Status)
+			}
+			if check.DriftClass != DriftNonOwned {
+				t.Fatalf("expected strict wildcard guardrail to be classified as non-owned drift, got %q", check.DriftClass)
+			}
+			if strings.Contains(check.Message, "jarvis init") || !strings.Contains(check.Message, "manually adjust") {
+				t.Fatalf("expected manual guardrail remediation, got %q", check.Message)
+			}
+			if !strings.Contains(check.Observed, "sdd-apply:hive_mem_search") {
+				t.Fatalf("expected observed drift for wildcard-%s tool, got %q", tt.action, check.Observed)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Phase 8: Warning-severity check keys
 // ---------------------------------------------------------------------------
@@ -460,6 +742,9 @@ func TestVerifyOpenCode_PluginHive_PassesWhenPluginHiveExistsTrue(t *testing.T) 
 
 func TestVerifyOpenCode_MCPHive_EmitsWarnWhenNotPresent(t *testing.T) {
 	observed := compliantOpenCodeRuntime(t)
+	observed.StoreMode = string(StoreModeOpenSpec)
+	observed.StoreReadFrom = []string{"openspec"}
+	observed.StoreWriteTo = []string{"openspec"}
 	observed.OpenCode.MCPHivePresent = false
 
 	report := Verify("opencode", observed)
@@ -471,6 +756,129 @@ func TestVerifyOpenCode_MCPHive_EmitsWarnWhenNotPresent(t *testing.T) {
 	if check.Status != StatusWarn {
 		t.Fatalf("expected StatusWarn (not fail), got %q", check.Status)
 	}
+	if !strings.Contains(check.Message, "Hive artifact persistence is not required for openspec or none modes") {
+		t.Fatalf("expected non-Hive mode scope in warning message, got %q", check.Message)
+	}
+}
+
+func TestVerifyOpenCode_MCPHive_FailsWhenNotPresentInHiveBackedModes(t *testing.T) {
+	tests := []struct {
+		name      string
+		storeMode string
+		readFrom  []string
+		writeTo   []string
+	}{
+		{
+			name:      "hive",
+			storeMode: string(StoreModeHive),
+			readFrom:  []string{"hive"},
+			writeTo:   []string{"hive"},
+		},
+		{
+			name:      "hybrid",
+			storeMode: string(StoreModeHybrid),
+			readFrom:  []string{"hive", "openspec"},
+			writeTo:   []string{"hive", "openspec"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			observed := compliantOpenCodeRuntime(t)
+			observed.StoreMode = tt.storeMode
+			observed.StoreReadFrom = tt.readFrom
+			observed.StoreWriteTo = tt.writeTo
+			observed.OpenCode.MCPHivePresent = false
+
+			report := Verify("opencode", observed)
+
+			check := findCheckByKey(report.Checks, "invariant.opencode.mcp_hive")
+			if check == nil {
+				t.Fatal("expected invariant.opencode.mcp_hive check")
+			}
+			if check.Status != StatusFail {
+				t.Fatalf("expected StatusFail for missing mcp.hive in %s mode, got %q", tt.storeMode, check.Status)
+			}
+			if !strings.Contains(check.Message, "Hive/hybrid mode requires top-level mcp.hive") {
+				t.Fatalf("expected Hive/hybrid blocking message, got %q", check.Message)
+			}
+			if report.Status != StatusFail {
+				t.Fatalf("expected overall StatusFail for missing mcp.hive in %s mode, got %q", tt.storeMode, report.Status)
+			}
+		})
+	}
+}
+
+func TestVerifyOpenCode_MCPHive_FailsClearlyWhenParsedCommandIsUnusable(t *testing.T) {
+	observed := compliantOpenCodeRuntime(t)
+	observed.StoreMode = string(StoreModeHive)
+	observed.StoreReadFrom = []string{"hive"}
+	observed.StoreWriteTo = []string{"hive"}
+	observed.OpenCode.MCPHivePresent = false
+
+	report := Verify("opencode", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.opencode.mcp_hive")
+	if check == nil {
+		t.Fatal("expected invariant.opencode.mcp_hive check")
+	}
+	if check.Status != StatusFail {
+		t.Fatalf("expected StatusFail for unusable parsed mcp.hive command in Hive mode, got %q", check.Status)
+	}
+	if !strings.Contains(check.Message, "Hive/hybrid mode requires top-level mcp.hive") {
+		t.Fatalf("expected clear Hive/hybrid remediation message, got %q", check.Message)
+	}
+	if !strings.Contains(check.Expected, `non-empty command`) {
+		t.Fatalf("expected check to require a non-empty command, got %q", check.Expected)
+	}
+}
+
+func TestVerifyOpenCode_MCPHive_WarnsWhenNotPresentInNonHiveModes(t *testing.T) {
+	tests := []struct {
+		name      string
+		storeMode string
+		readFrom  []string
+		writeTo   []string
+	}{
+		{
+			name:      "openspec",
+			storeMode: string(StoreModeOpenSpec),
+			readFrom:  []string{"openspec"},
+			writeTo:   []string{"openspec"},
+		},
+		{
+			name:      "none",
+			storeMode: string(StoreModeNone),
+			readFrom:  nil,
+			writeTo:   nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			observed := compliantOpenCodeRuntime(t)
+			observed.StoreMode = tt.storeMode
+			observed.StoreReadFrom = tt.readFrom
+			observed.StoreWriteTo = tt.writeTo
+			observed.OpenCode.MCPHivePresent = false
+
+			report := Verify("opencode", observed)
+
+			check := findCheckByKey(report.Checks, "invariant.opencode.mcp_hive")
+			if check == nil {
+				t.Fatal("expected invariant.opencode.mcp_hive check")
+			}
+			if check.Status != StatusWarn {
+				t.Fatalf("expected StatusWarn for missing mcp.hive in %s mode, got %q", tt.storeMode, check.Status)
+			}
+			if !strings.Contains(check.Message, "Hive artifact persistence is not required for openspec or none modes") {
+				t.Fatalf("expected non-Hive advisory message, got %q", check.Message)
+			}
+			if report.Status == StatusFail {
+				t.Fatalf("missing mcp.hive warning must not cause overall StatusFail in %s mode", tt.storeMode)
+			}
+		})
+	}
 }
 
 // TestVerifyOpenCode_MCPHive_WarnDoesNotCauseOverallFail asserts that a missing
@@ -479,6 +887,9 @@ func TestVerifyOpenCode_MCPHive_EmitsWarnWhenNotPresent(t *testing.T) {
 func TestVerifyOpenCode_MCPHive_WarnDoesNotCauseOverallFail(t *testing.T) {
 	const checkKey = "invariant.opencode.mcp_hive"
 	observed := compliantOpenCodeRuntime(t)
+	observed.StoreMode = string(StoreModeOpenSpec)
+	observed.StoreReadFrom = []string{"openspec"}
+	observed.StoreWriteTo = []string{"openspec"}
 	observed.OpenCode.MCPHivePresent = false
 
 	report := Verify("opencode", observed)

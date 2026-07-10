@@ -393,6 +393,126 @@ func TestVerify_LegacyLayoutOutsideOwnershipContractFailsFast(t *testing.T) {
 	}
 }
 
+func TestVerifyClaude_FailsWhenSDDSubagentHiveToolsAreMissing(t *testing.T) {
+	observed := compliantObservedRuntime(t)
+	observed.ClaudeSDDSubagentHiveTools = compliantClaudeSDDSubagentHiveTools()
+	observed.ClaudeSDDSubagentHiveTools["sdd-apply"] = []string{"mcp__hive__mem_search"}
+
+	report := Verify("claude", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.claude.sdd_hive_tools")
+	if check == nil {
+		t.Fatal("expected invariant.claude.sdd_hive_tools check")
+	}
+	if check.Status != StatusFail {
+		t.Fatalf("expected StatusFail for stale Claude SDD agent missing Hive tools, got %q", check.Status)
+	}
+	if check.DriftClass != DriftOwned {
+		t.Fatalf("expected owned generated-artifact drift, got %q", check.DriftClass)
+	}
+	if !strings.Contains(check.Message, "jarvis init") || !strings.Contains(check.Message, "regenerate") {
+		t.Fatalf("expected regeneration guidance, got %q", check.Message)
+	}
+}
+
+func TestVerifyClaude_FailsWhenSDDSubagentHiveToolEvidenceIsEmpty(t *testing.T) {
+	observed := compliantObservedRuntime(t)
+	observed.ClaudeSDDSubagentHiveTools = map[string][]string{}
+
+	report := Verify("claude", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.claude.sdd_hive_tools")
+	if check == nil {
+		t.Fatal("expected invariant.claude.sdd_hive_tools check")
+	}
+	if check.Status != StatusFail {
+		t.Fatalf("expected StatusFail for missing Claude SDD agents, got %q", check.Status)
+	}
+	if !strings.Contains(check.Message, "missing") || !strings.Contains(check.Message, "regenerate") {
+		t.Fatalf("expected actionable missing-agent guidance, got %q", check.Message)
+	}
+}
+
+func TestVerifyClaude_WarnsWhenSDDSubagentHiveToolEvidenceIsEmptyInNonHiveModes(t *testing.T) {
+	observed := compliantObservedRuntime(t)
+	setObservedStoreMode(t, &observed, "openspec")
+	observed.ClaudeSDDSubagentHiveTools = map[string][]string{}
+
+	report := Verify("claude", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.claude.sdd_hive_tools")
+	if check == nil {
+		t.Fatal("expected invariant.claude.sdd_hive_tools check")
+	}
+	if check.Status != StatusWarn {
+		t.Fatalf("expected StatusWarn for missing Claude SDD agents in openspec mode, got %q", check.Status)
+	}
+}
+
+func TestVerifyClaude_WarnsWhenSDDSubagentHiveToolsAreMissingInNonHiveModes(t *testing.T) {
+	tests := []struct {
+		name      string
+		storeMode string
+	}{
+		{name: "openspec mode", storeMode: "openspec"},
+		{name: "none mode", storeMode: "none"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			observed := compliantObservedRuntime(t)
+			setObservedStoreMode(t, &observed, tt.storeMode)
+			observed.ClaudeSDDSubagentHiveTools = compliantClaudeSDDSubagentHiveTools()
+			observed.ClaudeSDDSubagentHiveTools["sdd-apply"] = []string{"mcp__hive__mem_search"}
+
+			report := Verify("claude", observed)
+
+			if report.Status == StatusFail {
+				t.Fatalf("missing Claude SDD Hive tools must not fail non-Hive mode %q", tt.storeMode)
+			}
+			check := findCheckByKey(report.Checks, "invariant.claude.sdd_hive_tools")
+			if check == nil {
+				t.Fatal("expected invariant.claude.sdd_hive_tools check")
+			}
+			if check.Status != StatusWarn {
+				t.Fatalf("expected StatusWarn for non-Hive mode %q, got %q", tt.storeMode, check.Status)
+			}
+			if check.DriftClass != DriftOwned {
+				t.Fatalf("expected owned generated-artifact drift, got %q", check.DriftClass)
+			}
+			if !strings.Contains(check.Message, "openspec") || !strings.Contains(check.Message, "none") {
+				t.Fatalf("expected advisory non-Hive guidance in message, got %q", check.Message)
+			}
+		})
+	}
+}
+
+func TestVerifyClaude_PassesWhenSDDSubagentsIncludeHiveTools(t *testing.T) {
+	observed := compliantObservedRuntime(t)
+	observed.ClaudeSDDSubagentHiveTools = compliantClaudeSDDSubagentHiveTools()
+
+	report := Verify("claude", observed)
+
+	check := findCheckByKey(report.Checks, "invariant.claude.sdd_hive_tools")
+	if check == nil {
+		t.Fatal("expected invariant.claude.sdd_hive_tools check")
+	}
+	if check.Status != StatusPass {
+		t.Fatalf("expected StatusPass for current Claude SDD agents, got %q", check.Status)
+	}
+}
+
+func setObservedStoreMode(t *testing.T, observed *ObservedRuntime, mode string) {
+	t.Helper()
+	contract, err := ResolveStoreContract(mode)
+	if err != nil {
+		t.Fatalf("ResolveStoreContract(%q) returned error: %v", mode, err)
+	}
+	observed.StoreMode = mode
+	observed.StoreReadFrom = append([]string(nil), contract.ReadFrom...)
+	observed.StoreWriteTo = append([]string(nil), contract.WriteTo...)
+}
+
 func compliantObservedRuntime(t *testing.T) ObservedRuntime {
 	t.Helper()
 	plan, err := Build("opencode")
@@ -425,6 +545,28 @@ func compliantObservedRuntime(t *testing.T) ObservedRuntime {
 	}
 }
 
+func compliantClaudeSDDSubagentHiveTools() map[string][]string {
+	tools := []string{
+		"mcp__hive__mem_search",
+		"mcp__hive__mem_get_observation",
+		"mcp__hive__mem_save",
+		"mcp__hive__mem_context",
+		"mcp__hive__mem_session_summary",
+	}
+	return map[string][]string{
+		"sdd-explore": append([]string(nil), tools...),
+		"sdd-propose": append([]string(nil), tools...),
+		"sdd-spec":    append([]string(nil), tools...),
+		"sdd-design":  append([]string(nil), tools...),
+		"sdd-tasks":   append([]string(nil), tools...),
+		"sdd-apply":   append([]string(nil), tools...),
+		"sdd-verify":  append([]string(nil), tools...),
+		"sdd-archive": append([]string(nil), tools...),
+		"sdd-init":    append([]string(nil), tools...),
+		"sdd-onboard": append([]string(nil), tools...),
+	}
+}
+
 // compliantOpenCodeObserved returns an ObservedOpenCodeConfig with all
 // invariant fields set to their canonical passing values. It is used by
 // test helpers that build a fully-compliant ObservedRuntime for the opencode
@@ -453,6 +595,28 @@ func compliantOpenCodeObserved() ObservedOpenCodeConfig {
 		MCPHivePresent:     true,
 		MCPContext7Present: true,
 		PluginHiveExists:   true,
+		SDDSubagentHiveGrantEvidence: map[string][]OpenCodePermissionEvidence{
+			"sdd-explore": compliantOpenCodeHiveGrantEvidence(),
+			"sdd-propose": compliantOpenCodeHiveGrantEvidence(),
+			"sdd-spec":    compliantOpenCodeHiveGrantEvidence(),
+			"sdd-design":  compliantOpenCodeHiveGrantEvidence(),
+			"sdd-tasks":   compliantOpenCodeHiveGrantEvidence(),
+			"sdd-apply":   compliantOpenCodeHiveGrantEvidence(),
+			"sdd-verify":  compliantOpenCodeHiveGrantEvidence(),
+			"sdd-archive": compliantOpenCodeHiveGrantEvidence(),
+			"sdd-init":    compliantOpenCodeHiveGrantEvidence(),
+			"sdd-onboard": compliantOpenCodeHiveGrantEvidence(),
+		},
+	}
+}
+
+func compliantOpenCodeHiveGrantEvidence() []OpenCodePermissionEvidence {
+	return []OpenCodePermissionEvidence{
+		{Key: "hive_mem_search", Action: "allow"},
+		{Key: "hive_mem_get_observation", Action: "allow"},
+		{Key: "hive_mem_save", Action: "allow"},
+		{Key: "hive_mem_context", Action: "allow"},
+		{Key: "hive_mem_session_summary", Action: "allow"},
 	}
 }
 

@@ -116,11 +116,14 @@ func observeRuntimeWithConfig(configDir string, plan sddruntime.RuntimePlan, cfg
 	// Populate OpenCode-specific observed config for the opencode agent.
 	// Claude leaves this at zero value (ParseSucceeded==false), which is safe.
 	var openCodeCfg sddruntime.ObservedOpenCodeConfig
+	var claudeSDDHiveTools map[string][]string
 	if plan.Agent == "opencode" {
 		settingsPath := filepath.Join(configDir, filepath.Base(plan.Paths.Settings))
 		openCodeCfg = parseOpenCodeConfig(settingsPath)
 		// PluginHiveExists reflects whether plugins/hive.ts was observed present.
 		openCodeCfg.PluginHiveExists = artifacts["prompt_hook"].Exists
+	} else if plan.Agent == "claude" {
+		claudeSDDHiveTools = observeClaudeSDDSubagentHiveTools(filepath.Join(configDir, "agents"))
 	}
 
 	return sddruntime.ObservedRuntime{
@@ -130,18 +133,62 @@ func observeRuntimeWithConfig(configDir string, plan sddruntime.RuntimePlan, cfg
 			ContractVersion:    manifestVersion,
 			ManagedArtifactIDs: presentIDs,
 		},
-		RegistryPath:             plan.Contract.RegistryPath,
-		PromptSourceIDs:          promptSourceIDs,
-		StoreMode:                string(storeContract.Mode),
-		StoreReadFrom:            storeContract.ReadFrom,
-		StoreWriteTo:             storeContract.WriteTo,
-		ArtifactTopics:           []string{"sdd/runtime/verify"},
-		GeneralMemoryTopics:      []string{"runtime/notes"},
-		ModelAssignments:         modelAssignments,
-		ResolvedModelAssignments: resolvedAssignments,
-		Artifacts:                artifacts,
-		OpenCode:                 openCodeCfg,
+		RegistryPath:               plan.Contract.RegistryPath,
+		PromptSourceIDs:            promptSourceIDs,
+		StoreMode:                  string(storeContract.Mode),
+		StoreReadFrom:              storeContract.ReadFrom,
+		StoreWriteTo:               storeContract.WriteTo,
+		ArtifactTopics:             []string{"sdd/runtime/verify"},
+		GeneralMemoryTopics:        []string{"runtime/notes"},
+		ModelAssignments:           modelAssignments,
+		ResolvedModelAssignments:   resolvedAssignments,
+		Artifacts:                  artifacts,
+		OpenCode:                   openCodeCfg,
+		ClaudeSDDSubagentHiveTools: claudeSDDHiveTools,
 	}, nil
+}
+
+func observeClaudeSDDSubagentHiveTools(agentsDir string) map[string][]string {
+	observed := make(map[string][]string)
+	for _, def := range SDDPhaseAgentDefinitions() {
+		content, err := os.ReadFile(filepath.Join(agentsDir, def.Name+".md"))
+		if err != nil {
+			continue
+		}
+		observed[def.Name] = parseClaudeAgentToolsFrontmatter(string(content))
+	}
+	return observed
+}
+
+func parseClaudeAgentToolsFrontmatter(content string) []string {
+	inFrontmatter := false
+	for _, raw := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "---" {
+			if !inFrontmatter {
+				inFrontmatter = true
+				continue
+			}
+			return nil
+		}
+		if !inFrontmatter || !strings.HasPrefix(line, "tools:") {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(line, "tools:"))
+		if value == "" {
+			return nil
+		}
+		parts := strings.Split(value, ",")
+		tools := make([]string, 0, len(parts))
+		for _, part := range parts {
+			tool := strings.TrimSpace(part)
+			if tool != "" {
+				tools = append(tools, tool)
+			}
+		}
+		return tools
+	}
+	return nil
 }
 
 func observeOrchestratorModelAssignments(configDir string, paths sddruntime.RuntimePaths) (map[string]string, error) {

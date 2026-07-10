@@ -124,45 +124,7 @@ func (a *OpenCodeAgent) MergeGeneratedConfig(cfg *config.AppConfig) error {
 }
 
 func cleanupOpenCodeGeneratedConfig(configBytes []byte) ([]byte, error) {
-	var settings map[string]any
-	if err := json.Unmarshal(configBytes, &settings); err != nil {
-		return nil, err
-	}
-
-	allowedTasks := make(map[string]bool)
-	for _, name := range append(openCodeSDDSubagents(), append(openCodeJudgmentDaySubagents(), openCodeReviewSubagents()...)...) {
-		allowedTasks[name] = true
-	}
-
-	agents, ok := settings["agent"].(map[string]any)
-	if !ok {
-		return configBytes, nil
-	}
-	orchestrator, ok := agents["sdd-orchestrator"].(map[string]any)
-	if !ok {
-		return configBytes, nil
-	}
-	permission, ok := orchestrator["permission"].(map[string]any)
-	if !ok {
-		return configBytes, nil
-	}
-	task, ok := permission["task"].(map[string]any)
-	if !ok {
-		return configBytes, nil
-	}
-
-	for name, value := range task {
-		permission, ok := value.(string)
-		if ok && permission == "allow" && !allowedTasks[name] {
-			delete(task, name)
-		}
-	}
-
-	out, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
+	return configBytes, nil
 }
 
 func (a *OpenCodeAgent) renderGeneratedConfigPatch(cfg *config.AppConfig, includeSchema bool) ([]byte, error) {
@@ -308,6 +270,10 @@ func buildOpenCodeSDDGeneratedAgents(assignments, variants map[string]string) []
 	defs := SDDPhaseAgentDefinitions()
 	agents := make([]opencodeGeneratedAgent, 0, len(defs))
 	for _, def := range defs {
+		permission, err := withOpenCodeHiveMCPPermissions(def.OpenCodePermission)
+		if err != nil {
+			permission = def.OpenCodePermission
+		}
 		agents = append(agents, opencodeGeneratedAgent{
 			Name:        def.Name,
 			Description: def.Description,
@@ -316,10 +282,25 @@ func buildOpenCodeSDDGeneratedAgents(assignments, variants map[string]string) []
 			Model:       modelForGeneratedAgent(assignments, def.ModelKey),
 			Variant:     variants[def.ModelKey],
 			Prompt:      jarvisSkillPrompt(def.SkillID),
-			Permission:  def.OpenCodePermission,
+			Permission:  permission,
 		})
 	}
 	return agents
+}
+
+func withOpenCodeHiveMCPPermissions(raw string) (string, error) {
+	var permission map[string]any
+	if err := json.Unmarshal([]byte(raw), &permission); err != nil {
+		return "", err
+	}
+	for _, tool := range RequiredOpenCodeHiveMCPTools() {
+		permission[tool] = "allow"
+	}
+	out, err := json.Marshal(permission)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 func openCodeSDDSubagents() []string {
