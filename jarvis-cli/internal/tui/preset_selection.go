@@ -18,6 +18,7 @@ type customPresetDraft struct {
 const maxCustomPresetYAMLBytes = 64 * 1024
 
 var resolvePresetForWizard = persona.ResolvePreset
+var resolvePresetV2ForWizard = persona.ResolvePresetV2
 
 func resolveWizardPresetSelection(personaFS fs.FS, requestedSlug string, custom *customPresetDraft) (*persona.ResolvedPreset, error) {
 	normalized := persona.NormalizeSlug(requestedSlug)
@@ -32,25 +33,9 @@ func resolveWizardPresetSelection(personaFS fs.FS, requestedSlug string, custom 
 }
 
 func createWizardCustomPreset(personaFS fs.FS, draft customPresetDraft) (*persona.ResolvedPreset, error) {
-	name := strings.TrimSpace(draft.Name)
-	if name == "" {
-		return nil, fmt.Errorf("custom preset name is required")
-	}
-	displayName := strings.TrimSpace(draft.DisplayName)
-	if displayName == "" {
-		return nil, fmt.Errorf("custom preset display name is required")
-	}
-
-	slug := persona.NormalizeSlug(name)
-	if slug == "" || strings.Trim(slug, "-") == "" {
-		return nil, fmt.Errorf("custom preset name resolves to empty slug")
-	}
-	if slug == "custom" {
-		return nil, fmt.Errorf("custom preset slug %q is reserved; choose a different name", slug)
-	}
-	builtinPath := fmt.Sprintf("embed/personas/%s.yaml", slug)
-	if _, err := fs.Stat(personaFS, builtinPath); err == nil {
-		return nil, fmt.Errorf("custom preset slug %q collides with built-in preset slug", slug)
+	slug, displayName, err := normalizeWizardCustomPresetDraft(personaFS, draft)
+	if err != nil {
+		return nil, err
 	}
 
 	content, err := buildCustomPresetContent(personaFS, slug, displayName, strings.TrimSpace(draft.YAML))
@@ -76,6 +61,83 @@ func createWizardCustomPreset(personaFS fs.FS, draft customPresetDraft) (*person
 	}
 
 	return resolved, nil
+}
+
+// createWizardCustomPresetV2 is a dormant seam for the future V2 custom
+// wizard. Normal wizard selection continues to resolve V1 presets.
+func createWizardCustomPresetV2(personaFS fs.FS, draft customPresetDraft) (*persona.ResolvedPresetV2, error) {
+	slug, displayName, err := normalizeWizardCustomPresetDraft(personaFS, draft)
+	if err != nil {
+		return nil, err
+	}
+
+	content, err := buildCustomPresetContentV2(personaFS, slug, displayName)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := persona.ValidateAndDecode(content); err != nil {
+		return nil, fmt.Errorf("schema v2 validation failed: %w", err)
+	}
+
+	savedPath, err := persona.SaveUserPresetFile(slug, content)
+	if err != nil {
+		return nil, fmt.Errorf("persist schema v2 custom preset %q: %w", slug, err)
+	}
+
+	resolved, err := resolvePresetV2ForWizard(personaFS, slug)
+	if err != nil {
+		return nil, customPresetRecoveryError(slug, savedPath, fmt.Errorf("resolve persisted schema v2 custom preset: %w", err))
+	}
+	if resolved.Source != persona.PresetSourceUser {
+		return nil, customPresetRecoveryError(slug, savedPath, fmt.Errorf("resolved persisted schema v2 custom preset as %q source", resolved.Source))
+	}
+
+	return resolved, nil
+}
+
+func normalizeWizardCustomPresetDraft(personaFS fs.FS, draft customPresetDraft) (string, string, error) {
+	name := strings.TrimSpace(draft.Name)
+	if name == "" {
+		return "", "", fmt.Errorf("custom preset name is required")
+	}
+	displayName := strings.TrimSpace(draft.DisplayName)
+	if displayName == "" {
+		return "", "", fmt.Errorf("custom preset display name is required")
+	}
+
+	slug := persona.NormalizeSlug(name)
+	if slug == "" || strings.Trim(slug, "-") == "" {
+		return "", "", fmt.Errorf("custom preset name resolves to empty slug")
+	}
+	if slug == "custom" {
+		return "", "", fmt.Errorf("custom preset slug %q is reserved; choose a different name", slug)
+	}
+	builtinPath := fmt.Sprintf("embed/personas/%s.yaml", slug)
+	if _, err := fs.Stat(personaFS, builtinPath); err == nil {
+		return "", "", fmt.Errorf("custom preset slug %q collides with built-in preset slug", slug)
+	}
+
+	return slug, displayName, nil
+}
+
+func buildCustomPresetContentV2(personaFS fs.FS, slug, displayName string) ([]byte, error) {
+	content, err := fs.ReadFile(personaFS, "embed/personas-v2/custom.yaml.tmpl")
+	if err != nil {
+		return nil, fmt.Errorf("read schema v2 custom preset template: %w", err)
+	}
+
+	var raw map[string]any
+	if err := yaml.Unmarshal(content, &raw); err != nil {
+		return nil, fmt.Errorf("parse schema v2 custom preset template: %w", err)
+	}
+	raw["name"] = slug
+	raw["display_name"] = displayName
+
+	generated, err := yaml.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("marshal schema v2 custom preset %q: %w", slug, err)
+	}
+	return generated, nil
 }
 
 func customPresetRecoveryError(slug, savedPath string, cause error) error {

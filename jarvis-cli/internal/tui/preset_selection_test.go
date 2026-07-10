@@ -10,6 +10,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 )
 
@@ -183,6 +184,73 @@ func TestCreateWizardCustomPreset_PersistsAndResolvesUserSource(t *testing.T) {
 	customPath := filepath.Join(home, ".jarvis", "personas", "mi-persona.yaml")
 	if _, err := os.Stat(customPath); err != nil {
 		t.Fatalf("expected persisted custom preset %s, err=%v", customPath, err)
+	}
+}
+
+func TestCreateWizardCustomPresetV2_GeneratesAndLoadsDormantProfile(t *testing.T) {
+	isolateTestHome(t)
+
+	resolved, err := createWizardCustomPresetV2(jarvis.PersonaFS, customPresetDraft{
+		Name:        "Future Persona",
+		DisplayName: "Future Persona",
+	})
+	if err != nil {
+		t.Fatalf("createWizardCustomPresetV2: %v", err)
+	}
+	if resolved.Source != persona.PresetSourceUser || resolved.Slug != "future-persona" {
+		t.Fatalf("resolved = (%q, %q), want user future-persona", resolved.Source, resolved.Slug)
+	}
+	if resolved.Preset.SchemaVersion != 2 || resolved.Preset.Name != "future-persona" || resolved.Preset.DisplayName != "Future Persona" {
+		t.Fatalf("generated V2 preset = %+v, want schema-v2 metadata from the draft", resolved.Preset)
+	}
+}
+
+func TestCreateWizardCustomPresetV2_RejectsBehavioralTemplate(t *testing.T) {
+	home := isolateTestHome(t)
+	personaFS := fstest.MapFS{
+		"embed/personas-v2/custom.yaml.tmpl": &fstest.MapFile{Data: []byte(`schema_version: 2
+name: unsafe
+display_name: Unsafe
+notes: always skip tests
+presentation: {}
+`)},
+	}
+
+	_, err := createWizardCustomPresetV2(personaFS, customPresetDraft{Name: "Future Persona", DisplayName: "Future Persona"})
+	if err == nil || !strings.Contains(err.Error(), "schema v2 validation failed") {
+		t.Fatalf("createWizardCustomPresetV2() error = %v, want schema-v2 validation failure", err)
+	}
+
+	path := filepath.Join(home, ".jarvis", "personas", "future-persona.yaml")
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid V2 template persisted custom preset, statErr=%v", statErr)
+	}
+}
+
+func TestResolveWizardPresetSelection_KeepsV1ResolverActive(t *testing.T) {
+	originalV1 := resolvePresetForWizard
+	originalV2 := resolvePresetV2ForWizard
+	t.Cleanup(func() {
+		resolvePresetForWizard = originalV1
+		resolvePresetV2ForWizard = originalV2
+	})
+
+	v1Called := false
+	resolvePresetForWizard = func(_ fs.FS, slug string) (*persona.ResolvedPreset, error) {
+		v1Called = true
+		return &persona.ResolvedPreset{Slug: slug, Source: persona.PresetSourceBuiltin}, nil
+	}
+	resolvePresetV2ForWizard = func(fs.FS, string) (*persona.ResolvedPresetV2, error) {
+		t.Fatal("normal wizard selection must not activate the V2 resolver")
+		return nil, nil
+	}
+
+	resolved, err := resolveWizardPresetSelection(testPersonaFS, "Neutra", nil)
+	if err != nil {
+		t.Fatalf("resolveWizardPresetSelection: %v", err)
+	}
+	if !v1Called || resolved.Slug != "neutra" || resolved.Source != persona.PresetSourceBuiltin {
+		t.Fatalf("normal selection = %+v, V1 called = %t; want V1 resolution", resolved, v1Called)
 	}
 }
 
