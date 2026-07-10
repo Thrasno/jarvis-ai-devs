@@ -1,4 +1,4 @@
-import type { MetricCardViewModel, OverviewFixtureViewModel, OverviewLiveActivityViewModel, OverviewSyncHealthProjectViewModel } from '../domain/dashboard'
+import type { MetricCardViewModel, OverviewCommonViewModel, OverviewLiveActivityViewModel, OverviewSyncHealthProjectViewModel, OverviewViewModel } from '../domain/dashboard'
 import { renderChart } from '../components/Chart'
 import { append, emptyState, error, stack, statusDot, statusLabel, text } from '../components/dom'
 
@@ -102,20 +102,15 @@ function renderLiveActivity(activity: OverviewLiveActivityViewModel): HTMLElemen
   const section = document.createElement('section')
   section.setAttribute('role', 'region')
   section.setAttribute('aria-label', 'Live activity')
-
-  if (activity.count <= 0 || activity.newestSyncId.trim() === '') {
+  if (activity.count <= 0) {
     section.append(emptyState('No recent activity is available.'))
     return section
   }
-
-  section.append(
-    text(`${activity.count} recent sync ${activity.count === 1 ? 'event' : 'events'}`),
-    text(`Newest sync: ${activity.newestSyncId}`)
-  )
+  section.append(text(`${activity.count} recent sync ${activity.count === 1 ? 'event' : 'events'}`))
+  if (activity.newestSyncId?.trim()) section.append(text(`Newest sync: ${activity.newestSyncId}`))
   return section
 }
-
-function renderMostActiveProjects(points: OverviewFixtureViewModel['mostActiveProjects']): HTMLElement {
+function renderMostActiveProjects(points: OverviewCommonViewModel['mostActiveProjects']): HTMLElement {
   return renderChart({
     kind: 'categorical',
     title: 'Most active projects',
@@ -123,7 +118,7 @@ function renderMostActiveProjects(points: OverviewFixtureViewModel['mostActivePr
   })
 }
 
-export function renderOverview(state: ViewState<OverviewFixtureViewModel>): HTMLElement {
+export function renderOverview(state: ViewState<OverviewViewModel>): HTMLElement {
   const root = document.createElement('section')
   root.className = 'dashboard-overview'
   root.dataset.dashboardView = 'overview'
@@ -139,39 +134,34 @@ export function renderOverview(state: ViewState<OverviewFixtureViewModel>): HTML
     return error(root, state.message)
   }
 
-  const { totalMemories, activeProjects, healthyDaemons, openConflicts, knowledgeGrowth, syncHealthByProject, syncHealthByProjectSourceLabel, liveActivity, mostActiveProjects } = state.data
-
-  // Stat tiles row — 4 tiles with hex accent chips
+  const { totalMemories, activeProjects, liveActivity, mostActiveProjects } = state.data
   const statsRow = document.createElement('div')
   statsRow.className = 'dashboard-overview__stats'
   statsRow.append(
     statTile({ label: totalMemories.label, value: totalMemories.displayValue ?? String(totalMemories.value), detail: totalMemories.sourceLabel, accent: '#3B82E8' }),
-    statTile({ label: activeProjects.label, value: activeProjects.displayValue ?? String(activeProjects.value), detail: activeProjects.sourceLabel, accent: '#22B85C' }),
-    statTile({ label: healthyDaemons.label, value: syncHealthDisplay(healthyDaemons), detail: healthyDaemons.sourceLabel, accent: '#22B85C' }),
-    statTile({ label: openConflicts.label, value: openConflicts.displayValue ?? String(openConflicts.value), detail: openConflicts.sourceLabel, accent: '#E0246F' })
+    statTile({ label: activeProjects.label, value: activeProjects.displayValue ?? String(activeProjects.value), detail: activeProjects.sourceLabel, accent: '#22B85C' })
   )
 
-  // Row A: Knowledge growth + Sync health
-  const rowA = document.createElement('div')
-  rowA.className = 'dashboard-overview__row'
-  rowA.append(
-    flushPanel('Knowledge growth', renderChart({
-      kind: 'time-series',
-      title: knowledgeGrowth.label,
-      series: knowledgeGrowth
-    })),
-    flushPanel('Sync health by project', renderSyncHealthSection(syncHealthByProject, syncHealthByProjectSourceLabel))
-  )
+  const row = document.createElement('div')
+  row.className = 'dashboard-overview__row'
+  row.append(flushPanel('Live activity', renderLiveActivity(liveActivity)), flushPanel('Most active projects', renderMostActiveProjects(mostActiveProjects)))
 
-  // Row B: Live activity + Most active projects
-  const rowB = document.createElement('div')
-  rowB.className = 'dashboard-overview__row'
-  rowB.append(
-    flushPanel('Live activity', renderLiveActivity(liveActivity)),
-    flushPanel('Most active projects', renderMostActiveProjects(mostActiveProjects))
-  )
+  if (state.data.capability === 'admin') {
+    const { healthyDaemons, openConflicts, knowledgeGrowth, syncHealthByProject, syncHealthByProjectSourceLabel } = state.data
+    statsRow.append(
+      statTile({ label: healthyDaemons.label, value: syncHealthDisplay(healthyDaemons), detail: healthyDaemons.sourceLabel, accent: '#22B85C' }),
+      statTile({ label: openConflicts.label, value: openConflicts.displayValue ?? String(openConflicts.value), detail: openConflicts.sourceLabel, accent: '#E0246F' })
+    )
+    const operations = document.createElement('div')
+    operations.className = 'dashboard-overview__row'
+    operations.append(
+      flushPanel('Knowledge growth', renderChart({ kind: 'time-series', title: knowledgeGrowth.label, series: knowledgeGrowth })),
+      flushPanel('Sync health by project', renderSyncHealthSection(syncHealthByProject, syncHealthByProjectSourceLabel))
+    )
+    return append(root, statsRow, operations, row)
+  }
 
-  return append(root, statsRow, rowA, rowB)
+  return append(root, statsRow, row)
 }
 
 function statTile(input: { label: string; value: string; detail?: string; accent?: string }): HTMLElement {

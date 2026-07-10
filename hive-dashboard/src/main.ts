@@ -1,10 +1,10 @@
-import { createApiClient, type AdminStats, type ApiClient, type Count, type CreateUserRequest, type Health, type Memory, type MemoryList, type MemoryListParams, type MemorySearch, type OverviewGrowth, type OverviewProjectSyncHealth, type OverviewStats, type ProjectBlockRequest, type ProjectListResponse, type ProjectSummary, type SyncAttemptSummary, type User } from './api/client'
+import { createApiClient, type ApiClient, type CapabilityOverviewResponse, type CreateUserRequest, type Memory, type MemoryList, type MemoryListParams, type MemorySearch, type ProjectBlockRequest, type ProjectListResponse, type ProjectSummary, type SyncAttemptSummary, type User } from './api/client'
 import { parseDashboardFilters } from './api/urlFilters'
 import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
 import { renderBrand } from './components/Brand'
 import { renderSidebar, type UserLevel } from './components/Sidebar'
 import { activityFeedFromApi, appendActivityPage } from './domain/activityFeed'
-import { projectsFromApi, relativeActivityAgeLabel, type ActivityFeedViewModel, type CurrentProfileViewModel, type DashboardScreenKey, type OverviewFixtureViewModel, type ProjectListViewModel, type ProjectSyncStatus } from './domain/dashboard'
+import { projectsFromApi, relativeActivityAgeLabel, type ActivityFeedViewModel, type CurrentProfileViewModel, type DashboardScreenKey, type OverviewViewModel, type ProjectListViewModel, type ProjectSyncStatus } from './domain/dashboard'
 import { memoryListToDiscoveryData, type KnowledgeDiscoveryData } from './domain/knowledgeDiscovery'
 import { dashboardFixtures } from './fixtures/hive-dashboard/index'
 import { renderAuditSync } from './views/AuditSync'
@@ -36,14 +36,14 @@ export type MemoriesData = { recent: MemoryList; search: MemorySearch }
 export type MemoryDetailStateData = MemoryDetailData
 export type AuditSyncData = SyncAttemptSummary
 export type LoadedDashboardData = {
-  overview: ViewState<OverviewFixtureViewModel>
-  users: ViewState<UsersData>
-  memories: ViewState<MemoriesData>
+  overview: ViewState<OverviewViewModel>
+  users?: ViewState<UsersData>
+  memories?: ViewState<MemoriesData>
   memoryDetail?: MemoryDetailViewState
-  audit: ViewState<AuditSyncData>
+  audit?: ViewState<AuditSyncData>
   projects?: ViewState<ProjectListViewModel>
-  activity: ViewState<ActivityFeedViewModel>
-  knowledgeBrowser: ViewState<KnowledgeDiscoveryData>
+  activity?: ViewState<ActivityFeedViewModel>
+  knowledgeBrowser?: ViewState<KnowledgeDiscoveryData>
 }
 export type DashboardState = { status: 'loading' } | { status: 'ready'; data: Partial<LoadedDashboardData> }
 
@@ -110,7 +110,7 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
   overview: {
     path: '/dashboard',
     load: 'overview',
-    render: (vs) => renderOverview(vs as ViewState<OverviewFixtureViewModel>)
+    render: (vs) => renderOverview(vs as ViewState<OverviewViewModel>)
   },
   memories: {
     path: '/dashboard/memories',
@@ -146,7 +146,7 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
   knowledgeGraph: {
     path: '/dashboard/knowledgeGraph',
     load: 'overview',
-    render: (vs) => renderOverview(vs as ViewState<OverviewFixtureViewModel>)
+    render: (vs) => renderOverview(vs as ViewState<OverviewViewModel>)
   },
   activityFeed: {
     path: '/dashboard/activityFeed',
@@ -156,27 +156,27 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
   contributors: {
     path: '/dashboard/contributors',
     load: 'overview',
-    render: (vs) => renderOverview(vs as ViewState<OverviewFixtureViewModel>)
+    render: (vs) => renderOverview(vs as ViewState<OverviewViewModel>)
   },
   developerTimeline: {
     path: '/dashboard/developerTimeline',
     load: 'overview',
-    render: (vs) => renderOverview(vs as ViewState<OverviewFixtureViewModel>)
+    render: (vs) => renderOverview(vs as ViewState<OverviewViewModel>)
   },
   syncStatus: {
     path: '/dashboard/syncStatus',
     load: 'overview',
-    render: (vs) => renderOverview(vs as ViewState<OverviewFixtureViewModel>)
+    render: (vs) => renderOverview(vs as ViewState<OverviewViewModel>)
   },
   analytics: {
     path: '/dashboard/analytics',
     load: 'overview',
-    render: (vs) => renderOverview(vs as ViewState<OverviewFixtureViewModel>)
+    render: (vs) => renderOverview(vs as ViewState<OverviewViewModel>)
   },
   conflictViewer: {
     path: '/dashboard/conflictViewer',
     load: 'overview',
-    render: (vs) => renderOverview(vs as ViewState<OverviewFixtureViewModel>)
+    render: (vs) => renderOverview(vs as ViewState<OverviewViewModel>)
   }
 }
 
@@ -427,7 +427,7 @@ function renderAuthenticatedView(
 
   const route = ROUTES[screen]
   if (HIDDEN_DASHBOARD_SCREENS.has(screen)) {
-    return renderOverview(stateFor(state, 'overview') as ViewState<OverviewFixtureViewModel>)
+    return renderOverview(stateFor(state, 'overview') as ViewState<OverviewViewModel>)
   }
   if (screen === 'userManagement') {
     return renderUsers(stateFor(state, 'users') as ViewState<UsersData>, {
@@ -563,22 +563,10 @@ function memoryDetailForRoute(state: DashboardState, routeId: string): MemoryDet
   return detail
 }
 
-// Keep loadDashboard for backwards compat with the existing test that calls it directly
-export async function loadDashboard(api: ApiClient, token: string): Promise<{ status: 'ready'; data: LoadedDashboardData }> {
-  const [health, stats, overviewStatsResult, overviewGrowthResult, users, recent, search, audit, activity] = await Promise.allSettled([
-    api.health(), api.adminStats(token), api.overviewStats(token), api.overviewGrowth(token), api.adminUsers(token), api.memories(token, { limit: 5 }), api.searchMemories(token, { query: DEFAULT_MEMORY_SEARCH_QUERY, limit: 5 }), api.syncAttemptSummary(token), api.activity(token, { limit: DEFAULT_ACTIVITY_LIMIT })
-  ])
-  return {
-    status: 'ready',
-    data: {
-      overview: overviewState(health, stats, overviewStatsResult, overviewGrowthResult),
-      users: settledState(users),
-      memories: combinedState(recent, search, (recent, search) => ({ recent, search })),
-      audit: settledState(audit),
-      activity: activityState(activity),
-      knowledgeBrowser: discoveryListState(recent)
-    }
-  }
+// Retained for backwards-compatible tests; Overview no longer preloads unrelated Admin slices.
+export async function loadDashboard(api: ApiClient, token: string): Promise<{ status: 'ready'; data: Pick<LoadedDashboardData, 'overview'> }> {
+  const result = await Promise.allSettled([api.overview(token)])
+  return { status: 'ready', data: { overview: overviewState(result[0]) } }
 }
 
 export async function loadForRoute(
@@ -648,8 +636,8 @@ async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token:
     case 'memoryDetail':
       return { status: 'loading' }
     case 'overview': {
-      const [health, stats, overviewStatsResult, overviewGrowthResult] = await Promise.allSettled([api.health(), api.adminStats(token), api.overviewStats(token), api.overviewGrowth(token)])
-      return overviewState(health, stats, overviewStatsResult, overviewGrowthResult)
+      const result = await Promise.allSettled([api.overview(token)])
+      return overviewState(result[0])
     }
     case 'users': {
       const result = await Promise.allSettled([api.adminUsers(token)])
@@ -744,86 +732,38 @@ function activityState(result: PromiseSettledResult<Awaited<ReturnType<ApiClient
     : { status: 'error', message: messageFor(result.reason) }
 }
 
-function overviewState(
-  health: PromiseSettledResult<Health>,
-  stats: PromiseSettledResult<AdminStats>,
-  overviewStatsResult: PromiseSettledResult<OverviewStats>,
-  overviewGrowthResult: PromiseSettledResult<OverviewGrowth>
-): ViewState<OverviewFixtureViewModel> {
-  if (health.status === 'rejected') return { status: 'error', message: messageFor(health.reason) }
-  if (stats.status === 'rejected') return { status: 'error', message: messageFor(stats.reason) }
-  if (overviewStatsResult.status === 'rejected') return { status: 'error', message: messageFor(overviewStatsResult.reason) }
-  if (overviewGrowthResult.status === 'rejected') return { status: 'error', message: messageFor(overviewGrowthResult.reason) }
-
-  const healthMessage = degradedHealthMessage(health.value)
-  if (healthMessage) return { status: 'error', message: healthMessage }
-
-  return { status: 'ready', data: overviewFromLiveApi(stats.value, overviewStatsResult.value, overviewGrowthResult.value) }
-}
-
-function degradedHealthMessage(health: Health): string | null {
-  const status = health.status.trim() || 'unknown'
-  const db = health.db.trim() || 'unknown'
-  const apiReady = status.toLowerCase() === 'ok'
-  const dbReady = db.toLowerCase() === 'connected'
-
-  if (apiReady && dbReady) return null
-
-  const issues = [
-    ...(apiReady ? [] : [`status ${status}`]),
-    ...(dbReady ? [] : [`database ${db}`])
-  ]
-  return `NEXUS HIVE health is degraded: ${issues.join(', ')}`
-}
-
-function overviewFromLiveApi(stats: AdminStats, overviewStats: OverviewStats, overviewGrowth: OverviewGrowth): OverviewFixtureViewModel {
-  const activeProjects = activeProjectCount(stats)
-  return {
-    screen: 'overview',
-    totalMemories: { label: OVERVIEW_LABELS.totalMemories, value: stats.memories.total, displayValue: compactNumber(stats.memories.total) },
-    activeProjects: { label: OVERVIEW_LABELS.activeProjects, value: activeProjects, displayValue: String(activeProjects) },
-    healthyDaemons: {
-      label: OVERVIEW_LABELS.healthyDaemons,
-      value: overviewStats.daemon_health.healthy,
-      totalValue: overviewStats.daemon_health.total,
-      displayValue: `${overviewStats.daemon_health.healthy}/${overviewStats.daemon_health.total}`
-    },
-    openConflicts: { label: OVERVIEW_LABELS.openConflicts, value: overviewStats.conflicts.open },
-    knowledgeGrowth: { label: OVERVIEW_LABELS.knowledgeGrowth, points: overviewGrowth.knowledge_growth },
-    syncHealthByProject: overviewStats.sync_health_by_project.map(syncHealthProjectFromApi),
-    liveActivity: {
-      count: overviewStats.live_activity.count,
-      newestSyncId: overviewStats.live_activity.newest_sync_id
-    },
-    mostActiveProjects: overviewStats.most_active_projects.map(projectCountPoint)
-  }
-}
-
-function syncHealthProjectFromApi(project: OverviewProjectSyncHealth): OverviewFixtureViewModel['syncHealthByProject'][number] {
-  return {
-    id: project.project,
-    name: project.project,
-    region: project.region,
-    status: projectSyncStatus(project.status),
-    contributorCount: project.contributor_count,
-    lastActivityLabel: relativeActivityAgeLabel(project.last_activity_at)
-  }
-}
-
-function projectSyncStatus(status: string): ProjectSyncStatus {
-  return status === 'healthy' || status === 'degraded' || status === 'unknown' ? status : 'unknown'
-}
-
-function projectCountPoint(count: Count): OverviewFixtureViewModel['mostActiveProjects'][number] {
-  return { label: count.project ?? count.category ?? 'unknown', value: count.count }
-}
-
-function activeProjectCount(stats: AdminStats): number {
-  return stats.memories.by_project.filter((project) => project.count > 0).length
+function overviewState(result: PromiseSettledResult<CapabilityOverviewResponse>): ViewState<OverviewViewModel> {
+  if (result.status === 'rejected') return { status: 'error', message: messageFor(result.reason) }
+  const capability: string = result.value.capability
+  if (capability !== 'member' && capability !== 'admin') return { status: 'error', message: `Unsupported overview capability: ${capability}` }
+  return { status: 'ready', data: overviewFromApi(result.value) }
 }
 
 function compactNumber(value: number): string {
   return value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value)
+}
+
+function overviewFromApi(response: CapabilityOverviewResponse): OverviewViewModel {
+  const { summary } = response
+  const common = {
+    screen: 'overview' as const,
+    totalMemories: { label: OVERVIEW_LABELS.totalMemories, value: summary.total_memories, displayValue: compactNumber(summary.total_memories) },
+    activeProjects: { label: OVERVIEW_LABELS.activeProjects, value: summary.active_projects, displayValue: String(summary.active_projects) },
+    liveActivity: { count: summary.live_activity.count },
+    mostActiveProjects: summary.most_active_projects.map((project) => ({ label: project.project ?? project.category ?? 'unknown', value: project.count }))
+  }
+  if (response.capability === 'member') return { ...common, capability: 'member' }
+
+  const { operations } = response
+  return {
+    ...common,
+    capability: 'admin',
+    healthyDaemons: { label: OVERVIEW_LABELS.healthyDaemons, value: operations.daemon_health.healthy, totalValue: operations.daemon_health.total, displayValue: `${operations.daemon_health.healthy}/${operations.daemon_health.total}` },
+    openConflicts: { label: OVERVIEW_LABELS.openConflicts, value: operations.conflicts.open },
+    knowledgeGrowth: { label: OVERVIEW_LABELS.knowledgeGrowth, points: operations.knowledge_growth },
+    syncHealthByProject: operations.sync_health_by_project.map((project) => ({ id: project.project, name: project.project, region: project.region, status: project.status === 'healthy' || project.status === 'degraded' || project.status === 'unknown' ? project.status : 'unknown', contributorCount: project.contributor_count, lastActivityLabel: relativeActivityAgeLabel(project.last_activity_at) })),
+    liveActivity: { count: summary.live_activity.count, newestSyncId: operations.newest_sync_id }
+  }
 }
 
 function settledState<T>(result: PromiseSettledResult<T>): ViewState<T> {

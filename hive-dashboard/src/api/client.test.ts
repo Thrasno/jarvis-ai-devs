@@ -337,6 +337,19 @@ describe('Hive API client', () => {
   })
 })
 
+
+describe('capability overview contract', () => {
+  it('loads the capability overview through one authenticated endpoint', async () => {
+    const response = { capability: 'member', summary: { total_memories: 4, active_projects: 1, live_activity: { count: 2 }, most_active_projects: [] } } as const
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(response))
+
+    await expect(createApiClient({ fetch: fetchMock }).overview('jwt-token')).resolves.toEqual(response)
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock).toHaveBeenCalledWith('/overview', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
+  })
+})
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 }

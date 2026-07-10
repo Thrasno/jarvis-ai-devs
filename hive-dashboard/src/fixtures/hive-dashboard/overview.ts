@@ -1,11 +1,12 @@
-import type { OverviewFixtureViewModel } from '../../domain/dashboard'
+import type { AdminOverviewViewModel, MemberOverviewViewModel } from '../../domain/dashboard'
 import { conflictViewerFixture } from './governance'
 import { dashboardContributors, dashboardProjects } from './shared'
 
 const healthyContributors = dashboardContributors.filter((contributor) => contributor.status === 'healthy').length
 
-export const hiveOverviewFixture = {
+export const adminOverviewFixture = {
   screen: 'overview',
+  capability: 'admin',
   totalMemories: { label: 'Total Memories', value: 22375, displayValue: '22.4k' },
   activeProjects: { label: 'Active Projects', value: dashboardProjects.length, displayValue: '8' },
   healthyDaemons: { label: 'Healthy Daemons', value: healthyContributors, totalValue: dashboardContributors.length, displayValue: `${healthyContributors}/${dashboardContributors.length}` },
@@ -39,4 +40,15 @@ export const hiveOverviewFixture = {
     { label: 'auth-service', value: 2940 },
     { label: 'search-index', value: 2104 }
   ]
-} as const satisfies OverviewFixtureViewModel
+} as const satisfies AdminOverviewViewModel
+
+export const hiveOverviewFixture = adminOverviewFixture
+
+export const memberOverviewFixture = {
+  screen: 'overview',
+  capability: 'member',
+  totalMemories: { label: 'Total Memories', value: 0, displayValue: '0' },
+  activeProjects: { label: 'Active Projects', value: 0, displayValue: '0' },
+  liveActivity: { count: 0 },
+  mostActiveProjects: []
+} as const satisfies MemberOverviewViewModel

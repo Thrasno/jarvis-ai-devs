@@ -22,6 +22,11 @@ export type OverviewStats = {
   most_active_projects: Count[]
 }
 export type OverviewGrowth = { knowledge_growth: { label: string; value: number }[] }
+export type OverviewSummary = { total_memories: number; active_projects: number; live_activity: { count: number }; most_active_projects: Count[] }
+export type AdminOverviewOperations = { daemon_health: { healthy: number; total: number }; conflicts: { open: number }; knowledge_growth: { label: string; value: number }[]; sync_health_by_project: OverviewProjectSyncHealth[]; newest_sync_id: string }
+export type MemberOverviewResponse = { capability: 'member'; summary: OverviewSummary }
+export type AdminOverviewResponse = { capability: 'admin'; summary: OverviewSummary; operations: AdminOverviewOperations }
+export type CapabilityOverviewResponse = MemberOverviewResponse | AdminOverviewResponse
 export type Memory = { id: string; sync_id: string; project: string; category: string; title: string; content: string; tags: string[]; files_affected: string[]; created_by: string; created_at: string; updated_at: string; synced_at: string }
 export type MemoryList = { memories: Memory[]; total: number; limit: number; offset: number }
 export type MemorySearch = { memories: Memory[]; total: number; query: string; limit: number; offset: number }
@@ -92,6 +97,7 @@ export type ApiClient = {
   adminStats(token: string): Promise<AdminStats>
   overviewStats(token: string): Promise<OverviewStats>
   overviewGrowth(token: string): Promise<OverviewGrowth>
+  overview(token: string): Promise<CapabilityOverviewResponse>
   adminUsers(token: string): Promise<{ users: User[] }>
   createUser(token: string, request: CreateUserRequest): Promise<MutationMessage>
   setUserLevel(token: string, username: string, level: UserLevel): Promise<MutationMessage>
@@ -164,6 +170,9 @@ export function createApiClient(options: { baseUrl?: string; fetch?: Fetcher } =
     },
     overviewGrowth(token) {
       return request<OverviewGrowth>('/admin/overview/growth', authGet(token))
+    },
+    overview(token) {
+      return request<CapabilityOverviewResponse>('/overview', authGet(token))
     },
     adminUsers(token) {
       return request<{ users: User[] }>('/admin/users', authGet(token))

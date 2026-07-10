@@ -131,8 +131,8 @@ describe('dashboard shell', () => {
     const container = document.createElement('main')
     document.body.append(container)
     sessionStorage.clear()
-    const dashboardLoad = deferred<Awaited<ReturnType<ApiClient['health']>>>()
-    const api = fakeApi({ health: dashboardLoad.promise })
+    const dashboardLoad = deferred<Awaited<ReturnType<ApiClient['overview']>>>()
+    const api = fakeApi({ overview: dashboardLoad.promise })
     vi.mocked(api.login).mockResolvedValue({ token: 'jwt-token', user: adminUser })
     const session = createSessionStore({ api })
     const cleanup = startDashboardApp(container, { api, session })
@@ -148,7 +148,7 @@ describe('dashboard shell', () => {
       expect(container.querySelector('[data-dashboard-primitive="sidebar"]')).not.toBeNull()
       expect(container.querySelector('[role="alert"]')).toBeNull()
     } finally {
-      dashboardLoad.resolve({ status: 'ok', db: 'connected', version: '1.0.0' })
+      dashboardLoad.resolve(adminOverview())
       await flushDashboard()
       cleanup()
       container.remove()
@@ -2429,117 +2429,20 @@ describe('dashboard shell', () => {
     }
   })
 
-  it('keeps successful dashboard panels visible when one endpoint fails', async () => {
-    const rejectedStats = Promise.reject(new Error('stats unavailable'))
-    const api = fakeApi({ stats: rejectedStats })
-    const dashboard = await loadDashboard(api, 'jwt-token')
-
-    expect(dashboard.status).toBe('ready')
-    if (dashboard.status !== 'ready') throw new Error('expected ready dashboard')
-    expect(dashboard.data.overview).toEqual({ status: 'error', message: 'stats unavailable' })
-    expect(dashboard.data.users.status).toBe('ready')
-    expect(dashboard.data.memories.status).toBe('ready')
-    expect(dashboard.data.audit.status).toBe('ready')
-    expect(api.projects).not.toHaveBeenCalled()
-    expect(dashboard.data.projects).toBeUndefined()
+  it('maps Admin operations and Member-safe common summary from one capability response', async () => {
+    const admin = await loadDashboard(fakeApi({ overview: Promise.resolve(adminOverview()) }), 'admin-token')
+    const member = await loadDashboard(fakeApi({ overview: Promise.resolve(memberOverview()) }), 'member-token')
+    expect(admin.data.overview).toEqual({ status: 'ready', data: expect.objectContaining({ capability: 'admin', healthyDaemons: expect.any(Object), openConflicts: expect.any(Object) }) })
+    expect(member.data.overview).toEqual({ status: 'ready', data: expect.objectContaining({ capability: 'member', totalMemories: expect.any(Object), activeProjects: expect.any(Object) }) })
   })
 
-  it('loads the audit route from production sync attempt summaries instead of fixture or audit-log data', async () => {
-    const api = fakeApi()
-
-    const dashboard = await loadDashboard(api, 'jwt-token')
-
-    expect(dashboard.status).toBe('ready')
-    expect(api.syncAttemptSummary).toHaveBeenCalledWith('jwt-token')
-    expect(api.auditLogs).not.toHaveBeenCalled()
-    expect(dashboard.data.audit.status).toBe('ready')
-    if (dashboard.data.audit.status !== 'ready') throw new Error('expected ready audit data')
-    expect(dashboard.data.audit.data.windows.map((window) => window.window)).toEqual(['24h', '7d', '30d'])
-  })
-
-  it('surfaces unhealthy live health as an overview error instead of fixture-complemented daemon counts', async () => {
-    for (const [health, message] of [
-      [{ status: 'degraded', db: 'connected', version: '1.0.0' }, 'NEXUS HIVE health is degraded: status degraded'],
-      [{ status: 'ok', db: 'disconnected', version: '1.0.0' }, 'NEXUS HIVE health is degraded: database disconnected']
-    ] as const) {
-      const dashboard = await loadDashboard(fakeApi({ health: Promise.resolve(health) }), 'jwt-token')
-
-      expect(dashboard.status).toBe('ready')
-      expect(dashboard.data.overview).toMatchObject({ status: 'error', message })
-      expect(dashboard.data.users.status).toBe('ready')
-      expect(dashboard.data.memories.status).toBe('ready')
-      expect(dashboard.data.audit.status).toBe('ready')
-      expect(dashboard.data.projects).toBeUndefined()
-    }
-  })
-
-  it('maps overview KPI metrics from live admin stats', async () => {
-    const dashboard = await loadDashboard(fakeApi({ stats: Promise.resolve(adminStats({ totalMemories: 1234, activeProjectCounts: [10, 0, 5] })) }), 'jwt-token')
-
-    expect(dashboard.status).toBe('ready')
-    if (dashboard.status !== 'ready' || dashboard.data.overview.status !== 'ready') throw new Error('expected ready overview')
-    expect(dashboard.data.overview.data.totalMemories).toMatchObject({ value: 1234, displayValue: '1.2k' })
-    expect(dashboard.data.overview.data.activeProjects).toMatchObject({ value: 2, displayValue: '2' })
-    expect(dashboard.data.overview.data.totalMemories.sourceLabel).toBeUndefined()
-    expect(dashboard.data.overview.data.activeProjects.sourceLabel).toBeUndefined()
-    expect(dashboard.data.overview.data.openConflicts).toMatchObject({ value: 3 })
-    expect(dashboard.data.overview.data.openConflicts.sourceLabel).toBeUndefined()
-    expect(dashboard.data.overview.data.knowledgeGrowth.points).toEqual([{ label: 'Jun', value: 44 }])
-    expect(dashboard.data.overview.data.syncHealthByProjectSourceLabel).toBeUndefined()
-  })
-
-  it('loads overview health, admin totals, overview stats, and overview growth together', async () => {
-    const api = fakeApi({
-      stats: Promise.resolve(adminStats({ totalMemories: 4321, activeProjectCounts: [7, 0, 2] })),
-      overviewStats: Promise.resolve(overviewStats({ openConflicts: 6, liveActivityCount: 8, newestSyncId: 'sync-live' })),
-      overviewGrowth: Promise.resolve({ knowledge_growth: [{ label: 'Jun', value: 99 }] })
-    })
-
-    const dashboard = await loadDashboard(api, 'jwt-token')
-
-    expect(api.health).toHaveBeenCalledTimes(1)
-    expect(api.adminStats).toHaveBeenCalledWith('jwt-token')
-    expect(api.overviewStats).toHaveBeenCalledWith('jwt-token')
-    expect(api.overviewGrowth).toHaveBeenCalledWith('jwt-token')
-    expect(dashboard.status).toBe('ready')
-    if (dashboard.data.overview.status !== 'ready') throw new Error('expected ready overview')
-    expect(dashboard.data.overview.data.totalMemories).toMatchObject({ value: 4321, displayValue: '4.3k' })
-    expect(dashboard.data.overview.data.activeProjects).toMatchObject({ value: 2, displayValue: '2' })
-    expect(dashboard.data.overview.data.healthyDaemons).toMatchObject({ value: 1, totalValue: 2, displayValue: '1/2' })
-    expect(dashboard.data.overview.data.openConflicts).toMatchObject({ value: 6 })
-    expect(dashboard.data.overview.data.openConflicts.sourceLabel).toBeUndefined()
-    expect(dashboard.data.overview.data.liveActivity).toEqual({ count: 8, newestSyncId: 'sync-live' })
-    expect(dashboard.data.overview.data.mostActiveProjects).toEqual([{ label: 'jarvis-dev', value: 11 }])
-    expect(dashboard.data.overview.data.knowledgeGrowth.points).toEqual([{ label: 'Jun', value: 99 }])
-  })
-
-  it('renders route-loaded overview data without visible fixture complements', async () => {
-    const container = document.createElement('main')
-    document.body.append(container)
-    const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
-    const api = fakeApi({ overviewStats: Promise.resolve(overviewStats({ liveActivityCount: 2, newestSyncId: 'sync-live' })) })
-    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
-    history.pushState(null, '', '/dashboard')
-
-    const cleanup = startDashboardApp(container, { api, session })
-    try {
-      await flushDashboard()
-
-      expect(api.health).toHaveBeenCalledTimes(1)
-      expect(api.adminStats).toHaveBeenCalledWith('jwt-token')
-      expect(api.overviewStats).toHaveBeenCalledWith('jwt-token')
-      expect(api.overviewGrowth).toHaveBeenCalledWith('jwt-token')
-      const overview = container.querySelector<HTMLElement>('[data-dashboard-primitive="main"] section[role="region"]')
-      expect(overview?.textContent).toContain('Newest sync: sync-live')
-      expect(overview?.textContent).toContain('jarvis-dev')
-      expect(overview?.textContent).not.toContain('Demo fixture data')
-      expect(overview?.textContent).not.toContain('Gateway owns the auth boundary')
-    } finally {
-      cleanup()
-      history.pushState(null, '', originalPath)
-      container.remove()
-    }
-  })
+it('renders network failures and unknown capabilities as understandable overview errors', async () => {
+const dashboard = await loadDashboard(fakeApi({ overview: Promise.reject(new Error('overview unavailable')) }), 'member-token')
+expect(dashboard.data.overview).toEqual({ status: 'error', message: 'overview unavailable' })
+const hostileOverview: unknown = { ...adminOverview(), capability: 'operator' }
+const hostile = await loadDashboard(fakeApi({ overview: Promise.resolve(hostileOverview as Awaited<ReturnType<ApiClient['overview']>>) }), 'member-token')
+expect(hostile.data.overview).toEqual({ status: 'error', message: 'Unsupported overview capability: operator' })
+})
 })
 
 describe('shell search slot integration', () => {
@@ -3035,6 +2938,7 @@ function fakeApi(overrides: {
   stats?: Promise<Awaited<ReturnType<ApiClient['adminStats']>>>
   overviewStats?: Promise<OverviewStats>
   overviewGrowth?: Promise<OverviewGrowth>
+  overview?: Promise<Awaited<ReturnType<ApiClient['overview']>>>
   users?: Promise<Awaited<ReturnType<ApiClient['adminUsers']>>>[]
   createUser?: Promise<Awaited<ReturnType<ApiClient['createUser']>>>
   setUserLevel?: Promise<Awaited<ReturnType<ApiClient['setUserLevel']>>>
@@ -3064,6 +2968,7 @@ function fakeApi(overrides: {
     adminStats: vi.fn(() => overrides.stats ?? Promise.resolve({ users: { total: 1, active: 1, by_level: { admin: 1 } }, memories: { total: 1, by_project: [], by_category: [], last_synced_at: null } })),
     overviewStats: vi.fn(() => overrides.overviewStats ?? Promise.resolve(overviewStats())),
     overviewGrowth: vi.fn(() => overrides.overviewGrowth ?? Promise.resolve({ knowledge_growth: [{ label: 'Jun', value: 44 }] })),
+    overview: vi.fn(() => overrides.overview ?? Promise.resolve(adminOverview())),
     adminUsers: vi.fn(() => userResponses.shift() ?? Promise.resolve({ users: [adminUser] })),
     createUser: vi.fn(() => overrides.createUser ?? Promise.resolve({ message: 'user created' })),
     setUserLevel: vi.fn(() => overrides.setUserLevel ?? Promise.resolve({ message: 'level updated' })),
@@ -3201,6 +3106,13 @@ function adminStats(input: { totalMemories: number; activeProjectCounts: readonl
   }
 }
 
+function memberOverview() {
+  return { capability: 'member' as const, summary: { total_memories: 4, active_projects: 1, live_activity: { count: 2 }, most_active_projects: [{ project: 'jarvis-dev', count: 4 }] } }
+}
+function adminOverview() {
+  return { capability: 'admin' as const, summary: { total_memories: 4, active_projects: 1, live_activity: { count: 2 }, most_active_projects: [{ project: 'jarvis-dev', count: 4 }] }, operations: { daemon_health: { healthy: 1, total: 1 }, conflicts: { open: 0 }, knowledge_growth: [], sync_health_by_project: [], newest_sync_id: 'sync-admin' } }
+}
+
 function overviewStats(input: { openConflicts?: number; liveActivityCount?: number; newestSyncId?: string } = {}): OverviewStats {
   return {
     daemon_health: { healthy: 1, total: 2 },
@@ -3253,3 +3165,17 @@ function activityResponse(id: string, title: string, nextCursor?: string): Activ
     next_cursor: nextCursor ?? null
   }
 }
+describe('capability overview loading', () => {
+  it('uses exactly one overview request without role-unaware admin preloads', async () => {
+    const api = fakeApi({ overview: Promise.resolve({ capability: 'member', summary: { total_memories: 4, active_projects: 1, live_activity: { count: 2 }, most_active_projects: [] } }) })
+    const dashboard = await loadDashboard(api, 'member-token')
+    expect(dashboard.data.overview).toEqual({ status: 'ready', data: expect.objectContaining({ capability: 'member' }) })
+    expect(api.overview).toHaveBeenCalledWith('member-token')
+    expect(api.health).not.toHaveBeenCalled()
+    expect(api.adminStats).not.toHaveBeenCalled()
+    expect(api.overviewStats).not.toHaveBeenCalled()
+    expect(api.overviewGrowth).not.toHaveBeenCalled()
+    expect(api.adminUsers).not.toHaveBeenCalled()
+    expect(api.syncAttemptSummary).not.toHaveBeenCalled()
+  })
+})
