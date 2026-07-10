@@ -243,25 +243,45 @@ function renderLogin(
   state: Extract<AuthState, { status: 'anonymous' }>,
   actions: AppActions
 ): void {
+  const login = document.createElement('section')
+  login.className = 'dashboard-login'
   const form = document.createElement('form')
   form.className = 'dashboard-panel panel login-card'
   form.dataset.dashboardPrimitive = 'panel'
   form.innerHTML = `
-    ${renderBrand({ withTagline: true, size: 64 })}
-    <h1>Sign in to NEXUS HIVE</h1>
+    ${renderBrand({ variant: 'login' })}
+    <h1 class="login-card__title">Sign in to NEXUS HIVE</h1>
     ${state.error ? `<p class="error" role="alert">${escapeHtml(state.error)}</p>` : ''}
     <label>Email<input name="email" type="email" autocomplete="email" required /></label>
     <label>Password<input name="password" type="password" autocomplete="current-password" required /></label>
     <button type="submit">Sign in</button>
   `
-  form.querySelector('button')?.classList.add('dashboard-control', 'control')
-  form.querySelector('button')?.setAttribute('data-dashboard-primitive', 'control')
+  const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]')
+  submit?.classList.add('dashboard-control', 'control')
+  submit?.setAttribute('data-dashboard-primitive', 'control')
+  let pending = false
   form.addEventListener('submit', async (event) => {
     event.preventDefault()
+    if (pending) return
+    pending = true
+    if (submit) {
+      submit.disabled = true
+      submit.textContent = 'Signing in…'
+    }
     const data = new FormData(form)
-    await actions.onLogin(String(data.get('email') ?? ''), String(data.get('password') ?? ''))
+    try {
+      await actions.onLogin(String(data.get('email') ?? ''), String(data.get('password') ?? ''))
+    } finally {
+      if (!container.contains(form)) return
+      pending = false
+      if (submit) {
+        submit.disabled = false
+        submit.textContent = 'Sign in'
+      }
+    }
   })
-  container.append(form)
+  login.append(form)
+  container.append(login)
 }
 
 function renderShell(

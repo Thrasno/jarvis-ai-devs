@@ -1874,3 +1874,158 @@ body::before {
     padding: .85rem;
   }
 }
+
+/* ─── Anonymous login experience ─────────────────────────────────────────── */
+#app:has(.dashboard-login) {
+  display: block;
+  padding: 0;
+}
+
+body:has(.dashboard-login)::before {
+  background:
+    radial-gradient(900px circle at 14% -12%, rgba(59, 130, 232, 0.15), transparent 62%),
+    radial-gradient(760px circle at 100% 8%, rgba(139, 92, 246, 0.12), transparent 58%);
+}
+
+.dashboard-login {
+  align-items: center;
+  background:
+    radial-gradient(720px circle at 50% 22%, rgba(59, 130, 232, 0.08), transparent 65%),
+    var(--dashboard-background);
+  display: grid;
+  justify-items: center;
+  min-height: 100vh;
+  overflow: hidden;
+  padding: calc(var(--dashboard-spacing) * 2);
+  position: relative;
+}
+
+.dashboard-login .login-card {
+  background: rgba(14, 19, 32, 0.97);
+  border-color: rgba(139, 151, 168, 0.28);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 28px 68px rgba(0, 0, 0, 0.34);
+  display: grid;
+  gap: 1rem;
+  padding: 2.25rem;
+}
+
+.dashboard-login .dashboard-brand--login {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: .7rem;
+  text-align: center;
+}
+
+.dashboard-login .dashboard-brand--login .dashboard-brand__emblem-img {
+  height: clamp(4.5rem, 10vw, 6rem);
+  width: clamp(4.5rem, 10vw, 6rem);
+}
+
+.dashboard-login .dashboard-brand--login .dashboard-brand__lockup {
+  gap: .18rem;
+  justify-content: center;
+  width: 100%;
+}
+
+.dashboard-login .dashboard-brand--login .nexus-n {
+  height: clamp(2rem, 4vw, 2.5rem);
+  width: clamp(1.6rem, 3.2vw, 2rem);
+}
+
+.dashboard-login .dashboard-brand--login .dashboard-brand__wordmark {
+  font-size: clamp(1.5rem, 4vw, 2.25rem);
+  letter-spacing: -.06em;
+  line-height: 1;
+}
+
+.dashboard-login .dashboard-brand__tagline {
+  color: #8fa1b7;
+  font-family: var(--dashboard-font-mono);
+  font-size: .68rem;
+  font-weight: 700;
+  letter-spacing: .12em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.dashboard-login .login-card__title {
+  color: #a9c7ff;
+  font-size: 1.05rem;
+  letter-spacing: -.025em;
+  margin: .35rem 0 0;
+  text-align: center;
+}
+
+.dashboard-login .login-card label {
+  color: #b7c5d8;
+  font-family: var(--dashboard-font-mono);
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.dashboard-login .login-card input {
+  background: #121a2b;
+  border-color: rgba(139, 151, 168, 0.4);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  min-height: 3rem;
+}
+
+.dashboard-login .login-card input:focus-visible,
+.dashboard-login .login-card button:focus-visible {
+  outline: 3px solid #60a5fa;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px rgba(139, 92, 246, 0.32);
+}
+
+.dashboard-login .login-card button {
+  background: linear-gradient(135deg, rgba(59, 130, 232, 0.96), rgba(99, 102, 241, 0.9));
+  border: 1px solid rgba(147, 197, 253, 0.54);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 12px 28px rgba(37, 99, 235, 0.22);
+  min-height: 3rem;
+}
+
+.dashboard-login .login-card button:hover:not(:disabled) {
+  background: linear-gradient(135deg, #3b82e8, #6366f1);
+}
+
+.dashboard-login .login-card button:disabled {
+  background: #263a5e;
+  border-color: rgba(147, 197, 253, 0.24);
+  color: rgba(230, 237, 243, 0.66);
+  opacity: 1;
+}
+
+.dashboard-login .login-card .error {
+  background: rgba(127, 29, 29, 0.3);
+  border: 1px solid rgba(252, 165, 165, 0.54);
+  border-radius: 10px;
+  color: #fecaca;
+  margin: 0;
+  padding: .75rem .9rem;
+}
+
+@media (max-width: 600px) {
+  .dashboard-login {
+    align-items: start;
+    padding: 1rem;
+  }
+
+  .dashboard-login .login-card {
+    gap: .85rem;
+    margin-block: 1rem;
+    padding: 1.5rem;
+  }
+
+  .dashboard-login .dashboard-brand--login {
+    gap: .55rem;
+  }
+
+  .dashboard-login .login-card input,
+  .dashboard-login .login-card button {
+    width: 100%;
+  }
+}
