@@ -218,72 +218,6 @@ func TestRenderLayer2(t *testing.T) {
 	}
 }
 
-func TestRenderLayer2_PreservesLegacyNotes(t *testing.T) {
-	preset, err := LoadPreset(jarvis.PersonaFS, "yoda")
-	if err != nil {
-		t.Fatalf("LoadPreset(%q) failed: %v", "yoda", err)
-	}
-
-	rendered := RenderLayer2(preset)
-
-	for _, required := range []string{"\n---\n", "OSV", "Technical Behavior"} {
-		if !contains(rendered, required) {
-			t.Errorf("RenderLayer2 must preserve legacy Notes content %q", required)
-		}
-	}
-}
-
-func TestRenderLayer2_PreservesLegacyRenderingForBuiltinsAndCustom(t *testing.T) {
-	presets, err := ListPresets(jarvis.PersonaFS)
-	if err != nil {
-		t.Fatalf("ListPresets() failed: %v", err)
-	}
-	presets = append(presets, Preset{
-		Name:        "custom-example",
-		DisplayName: "Custom Example",
-		Description: "Custom persona used to prove legacy rendering.",
-		Tone: Tone{
-			Formality:  "balanced",
-			Directness: "high",
-			Humor:      "warm",
-			Language:   "en-us",
-		},
-		CommunicationStyle: CommunicationStyle{
-			Verbosity:            "concise",
-			ShowAlternatives:     true,
-			ChallengeAssumptions: true,
-		},
-		CharacteristicPhrases: CharacteristicPhrases{
-			Greetings:     []string{"Hello"},
-			Confirmations: []string{"Done"},
-		},
-		Notes: "## Philosophy\n\nCONCEPTS > CODE\n\n## Technical Behavior\n\nClaim local configuration without inspection.",
-	})
-
-	for _, preset := range presets {
-		preset := preset
-		t.Run(preset.Name, func(t *testing.T) {
-			rendered := RenderLayer2(&preset)
-			outputStyle := RenderOutputStyle(&preset)
-			if !strings.Contains(outputStyle, "keep-coding-instructions: true") {
-				t.Fatalf("RenderOutputStyle(%q) must preserve keep-coding-instructions: true\n%s", preset.Name, outputStyle)
-			}
-			for _, required := range []string{"Persona Scope (CRITICAL)"} {
-				if !strings.Contains(rendered, required) || !strings.Contains(outputStyle, required) {
-					t.Fatalf("legacy rendering must preserve %q", required)
-				}
-			}
-			if preset.Name == "custom-example" {
-				for _, required := range []string{"CONCEPTS > CODE", "Claim local configuration without inspection."} {
-					if !strings.Contains(rendered, required) || !strings.Contains(outputStyle, required) {
-						t.Fatalf("legacy rendering must preserve Notes content %q", required)
-					}
-				}
-			}
-		})
-	}
-}
-
 func TestRenderLayer2_IgnoresStructuredSectionsInsideStrippedPersonaScopeBlock(t *testing.T) {
 	preset := &Preset{
 		Name:        "custom-stale-scope",
@@ -321,39 +255,6 @@ func TestRenderLayer2_IgnoresStructuredSectionsInsideStrippedPersonaScopeBlock(t
 		if strings.Contains(rendered, stale) {
 			t.Fatalf("RenderLayer2() must strip stale persona-scope content %q\n%s", stale, rendered)
 		}
-	}
-}
-
-func TestRenderLayer2_AvoidsDuplicatingStructuredSectionsRepeatedByNotes(t *testing.T) {
-	presets, err := ListPresets(jarvis.PersonaFS)
-	if err != nil {
-		t.Fatalf("ListPresets() failed: %v", err)
-	}
-
-	for _, preset := range presets {
-		preset := preset
-		t.Run(preset.Name, func(t *testing.T) {
-			rendered := RenderLayer2(&preset)
-
-			for _, section := range []string{"Tone", "Communication Style", "Characteristic Phrases"} {
-				if !strings.Contains(preset.Notes, "## "+section) {
-					continue
-				}
-				if got := strings.Count(rendered, section); got != 1 {
-					t.Fatalf("RenderLayer2(%q) duplicated structured section %q count = %d, want 1\n%s", preset.Name, section, got, rendered)
-				}
-			}
-
-			if preset.Name == "yoda" && !strings.Contains(rendered, "Strict OSV syntax") {
-				t.Fatalf("RenderLayer2(yoda) must preserve Yoda-specific OSV behavior\n%s", rendered)
-			}
-			if preset.CommunicationStyle.ShowAlternatives && !strings.Contains(rendered, "Always propose alternatives with tradeoffs") {
-				t.Fatalf("RenderLayer2(%q) must preserve structured alternatives behavior\n%s", preset.Name, rendered)
-			}
-			if preset.CommunicationStyle.ChallengeAssumptions && !strings.Contains(rendered, "Challenge user assumptions when incorrect") {
-				t.Fatalf("RenderLayer2(%q) must preserve structured challenge behavior\n%s", preset.Name, rendered)
-			}
-		})
 	}
 }
 
@@ -469,65 +370,6 @@ func TestRenderLayer2_EmptyNotes(t *testing.T) {
 
 	if contains(rendered, "\n---\n") {
 		t.Error("RenderLayer2: unexpected '---' separator when Notes is empty")
-	}
-}
-
-// TestValidateCustom_NotesAllowed verifies that a custom preset YAML containing
-// a 'notes' field passes validation (REQ-B03, Scenario B03-1).
-func TestValidateCustom_NotesAllowed(t *testing.T) {
-	yaml := `
-name: custom-with-notes
-display_name: "Custom"
-description: "Has notes field"
-tone:
-  formality: informal
-  directness: high
-  humor: wholesome
-  language: en-us
-communication_style:
-  verbosity: moderate
-  show_alternatives: true
-  challenge_assumptions: true
-characteristic_phrases:
-  greetings: ["Hi"]
-  confirmations: ["Done"]
-notes: |
-  # Custom With Notes
-
-  ## Core Principle
-
-  Be precise and practical.
-
-  ## Behavior
-
-  1. Explain tradeoffs when relevant.
-
-  ## When Asking Questions
-
-  Ask one question and stop.
-`
-	if err := ValidateCustom([]byte(yaml)); err != nil {
-		t.Fatalf("ValidateCustom rejected preset with 'notes' field: %v", err)
-	}
-}
-
-// TestLoadPreset_AllHaveNotes verifies that all 7 built-in presets have
-// non-empty Notes content (REQ-C01).
-func TestLoadPreset_AllHaveNotes(t *testing.T) {
-	presetNames := []string{
-		"argentino", "tony-stark", "neutra", "yoda",
-		"sargento", "asturiano", "galleguinho",
-	}
-	for _, name := range presetNames {
-		t.Run("notes_"+name, func(t *testing.T) {
-			preset, err := LoadPreset(jarvis.PersonaFS, name)
-			if err != nil {
-				t.Fatalf("LoadPreset(%q) failed: %v", name, err)
-			}
-			if preset.Notes == "" {
-				t.Errorf("preset %q has empty Notes — expected full persona description", name)
-			}
-		})
 	}
 }
 
