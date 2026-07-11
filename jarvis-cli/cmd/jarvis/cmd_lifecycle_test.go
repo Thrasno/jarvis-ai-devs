@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -174,8 +175,16 @@ func TestLifecycleCommandValidation(t *testing.T) {
 }
 
 func TestRunPerProvider_AllFansOutDeterministically(t *testing.T) {
+	originalDetect := lifecycleDetectProviders
+	lifecycleDetectProviders = func() []string { return []string{"claude", "opencode"} }
+	t.Cleanup(func() { lifecycleDetectProviders = originalDetect })
+
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
 	var called []string
-	err := runPerProvider(&cobra.Command{}, "all", func(_ *lifecycle.Engine, provider string) error {
+	err := runPerProvider(cmd, "all", func(_ *lifecycle.Engine, provider string) error {
 		called = append(called, provider)
 		return nil
 	})
@@ -185,6 +194,86 @@ func TestRunPerProvider_AllFansOutDeterministically(t *testing.T) {
 	want := []string{"claude", "opencode"}
 	if !reflect.DeepEqual(called, want) {
 		t.Fatalf("providers called mismatch: got %v want %v", called, want)
+	}
+	if strings.Contains(out.String(), noProvidersDetectedMessage) {
+		t.Fatalf("expected no no-agents-detected message when providers were detected, got output: %q", out.String())
+	}
+}
+
+func TestRunPerProvider_AllWithOnlyClaudeDetectedSkipsOpencode(t *testing.T) {
+	originalDetect := lifecycleDetectProviders
+	lifecycleDetectProviders = func() []string { return []string{"claude"} }
+	t.Cleanup(func() { lifecycleDetectProviders = originalDetect })
+
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	var called []string
+	err := runPerProvider(cmd, "all", func(_ *lifecycle.Engine, provider string) error {
+		called = append(called, provider)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("runPerProvider returned error: %v", err)
+	}
+	want := []string{"claude"}
+	if !reflect.DeepEqual(called, want) {
+		t.Fatalf("providers called mismatch: got %v want %v (opencode must be skipped, not fatal)", called, want)
+	}
+	if strings.Contains(out.String(), noProvidersDetectedMessage) {
+		t.Fatalf("expected no no-agents-detected message when providers were detected, got output: %q", out.String())
+	}
+}
+
+func TestRunPerProvider_AllWithNoDetectedProvidersEmitsInfoAndIsNoop(t *testing.T) {
+	originalDetect := lifecycleDetectProviders
+	lifecycleDetectProviders = func() []string { return []string{} }
+	t.Cleanup(func() { lifecycleDetectProviders = originalDetect })
+
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	var called []string
+	err := runPerProvider(cmd, "all", func(_ *lifecycle.Engine, provider string) error {
+		called = append(called, provider)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("runPerProvider returned error: %v", err)
+	}
+	if len(called) != 0 {
+		t.Fatalf("expected no providers called with empty detection, got %v", called)
+	}
+	if !strings.Contains(out.String(), noProvidersDetectedMessage) {
+		t.Fatalf("expected no-agents-detected info message in output, got: %q", out.String())
+	}
+}
+
+func TestRunPerProvider_ExplicitProviderBypassesDetectionNarrowing(t *testing.T) {
+	// D7: only the "all" fan-out narrows to detected providers. An explicit
+	// provider must reach the engine unchanged, so requesting an undetected
+	// provider still hard-errors via the engine's unsupported-provider contract.
+	// Guard: detection seam must never be consulted on the explicit path.
+	originalDetect := lifecycleDetectProviders
+	lifecycleDetectProviders = func() []string {
+		t.Fatalf("lifecycleDetectProviders must not be called for an explicit provider")
+		return nil
+	}
+	t.Cleanup(func() { lifecycleDetectProviders = originalDetect })
+
+	var called []string
+	err := runPerProvider(&cobra.Command{}, "opencode", func(_ *lifecycle.Engine, provider string) error {
+		called = append(called, provider)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("runPerProvider returned error: %v", err)
+	}
+	want := []string{"opencode"}
+	if !reflect.DeepEqual(called, want) {
+		t.Fatalf("explicit provider mismatch: got %v want %v", called, want)
 	}
 }
 
