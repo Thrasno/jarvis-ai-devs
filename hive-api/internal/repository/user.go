@@ -35,6 +35,7 @@ type UserRepository interface {
 
 	// GetByID busca un usuario por su UUID. Devuelve ErrNotFound si no existe.
 	GetByID(ctx context.Context, id string) (*model.User, error)
+	GetByIDForUpdate(ctx context.Context, id string) (*model.User, error)
 
 	// GetByEmail busca un usuario por email. Devuelve ErrNotFound si no existe.
 	// Se usa en el login para verificar credenciales.
@@ -53,6 +54,7 @@ type UserRepository interface {
 	UpdateLevel(ctx context.Context, id string, level model.UserLevel) error
 
 	UpdatePassword(ctx context.Context, id string, passwordHash string) error
+	UpdatePasswordAndIncrementSecurityVersion(ctx context.Context, id string, passwordHash string) error
 
 	// CountAdmins devuelve cuántos usuarios tienen nivel admin.
 	// Se usa para enforcement del límite de 3 admins máximo.

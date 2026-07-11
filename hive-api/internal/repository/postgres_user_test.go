@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/migrations"
@@ -681,4 +682,42 @@ func TestPostgresUserRepository_LockActiveAdminInvariant(t *testing.T) {
 	})
 
 	require.NoError(t, err)
+}
+
+func TestPostgresUserRepository_UpdatePasswordAndIncrementSecurityVersion(t *testing.T) {
+	pool, cleanup := startPostgres(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewPostgresUserRepository(pool)
+	created, err := repo.Create(ctx, &model.User{Username: "password-version", Email: "password-version@example.com", Password: "old-hash", Level: model.LevelMember, IsActive: true})
+	require.NoError(t, err)
+
+	require.NoError(t, repo.UpdatePasswordAndIncrementSecurityVersion(ctx, created.ID, "new-hash"))
+	user, err := repo.GetByID(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "new-hash", user.Password)
+	assert.Equal(t, int64(1), user.SecurityVersion)
+}
+
+func TestPostgresUserRepository_GetByIDForUpdateSerializesPasswordMutation(t *testing.T) {
+	pool, cleanup := startPostgres(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewPostgresUserRepository(pool)
+	created, err := repo.Create(ctx, &model.User{Username: "password-lock", Email: "password-lock@example.com", Password: "old-hash", Level: model.LevelMember, IsActive: true})
+	require.NoError(t, err)
+
+	first, err := pool.Begin(ctx)
+	require.NoError(t, err)
+	lockedRepo := newPostgresUserRepositoryWithQuerier(first)
+	_, err = lockedRepo.GetByIDForUpdate(ctx, created.ID)
+	require.NoError(t, err)
+
+	blockedCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	_, err = pool.Exec(blockedCtx, `UPDATE users SET password = $1 WHERE id = $2`, "new-hash", created.ID)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	require.NoError(t, first.Rollback(ctx))
+	require.NoError(t, repo.UpdatePasswordAndIncrementSecurityVersion(ctx, created.ID, "new-hash"))
 }

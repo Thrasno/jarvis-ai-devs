@@ -53,6 +53,12 @@ func (r *postgresUserRepository) GetByID(ctx context.Context, id string) (*model
 	return r.scanUser(ctx, q, id)
 }
 
+func (r *postgresUserRepository) GetByIDForUpdate(ctx context.Context, id string) (*model.User, error) {
+	const q = `SELECT id, username, email, password, level, is_active, security_version, created_at, updated_at
+	           FROM users WHERE id = $1 FOR UPDATE`
+	return r.scanUser(ctx, q, id)
+}
+
 func (r *postgresUserRepository) GetByEmail(ctx context.Context, email string) (*model.User, error) {
 	const q = `SELECT id, username, email, password, level, is_active, security_version, created_at, updated_at
 	           FROM users WHERE email = $1`
@@ -109,6 +115,12 @@ func (r *postgresUserRepository) UpdatePassword(ctx context.Context, id string, 
 	const q = `UPDATE users SET password = $1, updated_at = $2 WHERE id = $3`
 	_, err := r.db.Exec(ctx, q, passwordHash, time.Now(), id)
 	return wrapPgError(err, "UpdatePassword")
+}
+
+func (r *postgresUserRepository) UpdatePasswordAndIncrementSecurityVersion(ctx context.Context, id string, passwordHash string) error {
+	const q = `UPDATE users SET password = $1, security_version = security_version + 1, updated_at = $2 WHERE id = $3`
+	_, err := r.db.Exec(ctx, q, passwordHash, time.Now(), id)
+	return wrapPgError(err, "UpdatePasswordAndIncrementSecurityVersion")
 }
 
 func (r *postgresUserRepository) CountAdmins(ctx context.Context) (int, error) {

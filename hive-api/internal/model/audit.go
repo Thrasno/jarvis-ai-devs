@@ -10,14 +10,15 @@ const (
 type AuditAction string
 
 const (
-	AuditActionSyncPush          AuditAction = "sync_push"
-	AuditActionSyncConflict      AuditAction = "sync_conflict"
-	AuditActionUserCreate        AuditAction = "user_create"
-	AuditActionUserPasswordReset AuditAction = "user_password_reset"
-	AuditActionUserActivate      AuditAction = "user_activate"
-	AuditActionUserLevelChange   AuditAction = "user_level_change"
-	AuditActionUserDeactivate    AuditAction = "user_deactivate"
-	AuditActionProjectBlock      AuditAction = "project_block"
+	AuditActionSyncPush           AuditAction = "sync_push"
+	AuditActionSyncConflict       AuditAction = "sync_conflict"
+	AuditActionUserCreate         AuditAction = "user_create"
+	AuditActionUserPasswordReset  AuditAction = "user_password_reset"
+	AuditActionUserPasswordChange AuditAction = "user_password_change"
+	AuditActionUserActivate       AuditAction = "user_activate"
+	AuditActionUserLevelChange    AuditAction = "user_level_change"
+	AuditActionUserDeactivate     AuditAction = "user_deactivate"
+	AuditActionProjectBlock       AuditAction = "project_block"
 )
 
 type AuditOutcome string
@@ -112,6 +113,8 @@ func auditMetadataAllowlist(action AuditAction) map[string]bool {
 			"target_user_id":  true,
 			"actor_username":  true,
 		}
+	case AuditActionUserPasswordChange:
+		return map[string]bool{"actor_username": true}
 	case AuditActionUserActivate:
 		return map[string]bool{
 			"target_username": true,
