@@ -3165,7 +3165,8 @@ func TestAPIConfig_Save_EnvActiveNotice(t *testing.T) {
 		t.Fatal("configEnvActive should be true after save with env-active response")
 	}
 	view := m.View()
-	assertContains(t, view, "env")
+	assertContains(t, view, "HIVE_API_*")
+	assertContains(t, view, "File changes remain")
 }
 
 // T2.3k — Test Connection dispatches TestConnection; shows inline result; does NOT navigate away.
@@ -3223,8 +3224,17 @@ func TestAPIConfig_TestConnection_FailureInline(t *testing.T) {
 	if m.screen != ScreenAPIConfig {
 		t.Fatalf("screen = %v, want ScreenAPIConfig", m.screen)
 	}
+	if len(svc.updateRequests) != 0 {
+		t.Fatalf("failed Test Connection saved %d times, want 0", len(svc.updateRequests))
+	}
+	if !m.configPasswordDirty {
+		t.Fatal("failed Test Connection cleared password dirty state")
+	}
 	view := m.View()
 	assertContains(t, view, "Connection failed")
+	if strings.Contains(view, "Save and restart hive-daemon to apply this credential.") {
+		t.Fatal("failed Test Connection offered successful-test restart guidance")
+	}
 }
 
 // T2.3m — Back: resets all config state.
@@ -3550,4 +3560,132 @@ func TestAPIHealthView_SummaryPanel_NilSummaryShowsFallback(t *testing.T) {
 		t.Fatal("View() must not be empty when SyncSummary is nil")
 	}
 	assertContains(t, view, "not available")
+}
+
+func TestAPIConfig_RecoveryGuidance_IsVisibleAndKeepsSecretsMasked(t *testing.T) {
+	m := newConfigModelWithService(&fakeConfigService{})
+	m.configLoading = false
+	m.configPassword = "recovery-secret"
+	m.configPasswordDirty = true
+
+	view := m.View()
+	assertContains(t, view, "After changing your Hive account password, enter the new password here.")
+	assertContains(t, view, "Saving updates the stored daemon credential; it does not change your Hive")
+	assertContains(t, view, "account password.")
+	if strings.Contains(view, "recovery-secret") {
+		t.Fatal("recovery guidance view exposed the password")
+	}
+}
+
+func TestAPIConfig_DirtyPasswordSave_ShowsRecoveryRestartMessage(t *testing.T) {
+	svc := &fakeConfigService{updateResult: hiveclient.ConfigUpdateResponse{
+		RestartHint: "Saved. Restart hive-daemon for the new configuration to take effect.",
+		Status:      hiveclient.ConfigStatus{APIURL: "https://api.example.com", Email: "operator@example.com", PasswordMasked: "********"},
+	}}
+	m := newConfigModelWithService(svc)
+	m.configLoading = false
+	m.configAPIURL = "https://api.example.com"
+	m.configEmail = "operator@example.com"
+	m.configPassword = "recovery-secret"
+	m.configPasswordDirty = true
+	m.configCursor = configFieldSave
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = updated.Update(cmd())
+	m = updated.(Model)
+
+	assertContains(t, m.View(), "Stored password updated. Restart hive-daemon to clear the rejected session")
+	assertContains(t, m.View(), "and load the new credential.")
+}
+
+func TestAPIConfig_EditAfterSuccessfulTest_InvalidatesResult(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		cursor configField
+	}{
+		{name: "email", cursor: configFieldEmail},
+		{name: "password", cursor: configFieldPassword},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newConfigModelWithService(&fakeConfigService{})
+			m.configLoading = false
+			m.configEmail = "operator@example.com"
+			m.configPassword = "recovery-secret"
+			m.configTestResult = &hiveclient.ConfigTestResult{OK: true, Message: "Connection succeeded"}
+			m.configCursor = tt.cursor
+
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+			m = updated.(Model)
+
+			if m.configTestResult != nil {
+				t.Fatal("editing a tested credential must invalidate the previous connection result")
+			}
+			if strings.Contains(m.View(), "Connection succeeded") {
+				t.Fatal("view implies an edited credential was tested")
+			}
+		})
+	}
+}
+
+func TestAPIConfig_DirtyPasswordSave_EnvActiveExplainsOverride(t *testing.T) {
+	svc := &fakeConfigService{updateResult: hiveclient.ConfigUpdateResponse{
+		EnvActive: true,
+		Status:    hiveclient.ConfigStatus{APIURL: "https://api.example.com", Email: "operator@example.com", PasswordMasked: "********", EnvActive: true},
+	}}
+	m := newConfigModelWithService(svc)
+	m.configLoading = false
+	m.configAPIURL = "https://api.example.com"
+	m.configEmail = "operator@example.com"
+	m.configPassword = "recovery-secret"
+	m.configPasswordDirty = true
+	m.configCursor = configFieldSave
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = updated.Update(cmd())
+	m = updated.(Model)
+
+	view := m.View()
+	assertContains(t, view, "HIVE_API_*")
+	assertContains(t, view, "update or unset")
+	assertContains(t, view, "restart hive-daemon")
+	if strings.Contains(view, "Stored password updated.") {
+		t.Fatal("env-active save must not imply the stored credential is active at runtime")
+	}
+}
+
+func TestAPIConfig_EnvOverride_ExplainsFileRemainsOverriddenUntilRestart(t *testing.T) {
+	m := newConfigModelWithService(&fakeConfigService{})
+	m.configLoading = false
+	m.configEnvActive = true
+
+	assertContains(t, m.View(), "File changes remain")
+	assertContains(t, m.View(), "overridden until HIVE_API_* variables are updated or unset and hive-daemon")
+	assertContains(t, m.View(), "is restarted.")
+}
+
+func TestAPIConfig_DirtyPasswordTest_SucceedsWithoutSavingAndGuidesRestart(t *testing.T) {
+	svc := &fakeConfigService{testResult: hiveclient.ConfigTestResult{OK: true, Message: "Connection succeeded"}}
+	m := newConfigModelWithService(svc)
+	m.configLoading = false
+	m.configAPIURL = "https://api.example.com"
+	m.configEmail = "operator@example.com"
+	m.configPassword = "recovery-secret"
+	m.configPasswordDirty = true
+	m.configCursor = configFieldTestConn
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = updated.Update(cmd())
+	m = updated.(Model)
+
+	if len(svc.updateRequests) != 0 {
+		t.Fatalf("Test Connection saved %d times, want 0", len(svc.updateRequests))
+	}
+	if !m.configPasswordDirty {
+		t.Fatal("Test Connection cleared password dirty state")
+	}
+	view := m.View()
+	assertContains(t, view, "Save and restart hive-daemon to apply this credential.")
+	if strings.Contains(view, "recovery-secret") {
+		t.Fatal("Test Connection view exposed the password")
+	}
 }

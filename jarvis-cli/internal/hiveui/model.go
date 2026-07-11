@@ -2607,7 +2607,10 @@ func (m Model) appendConfigFieldRune(r rune) Model {
 	case configFieldPassword:
 		m.configPassword += string(r)
 		m.configPasswordDirty = true
+	default:
+		return m
 	}
+	m.configTestResult = nil
 	return m
 }
 
@@ -2621,7 +2624,10 @@ func (m Model) removeConfigFieldRune() Model {
 	case configFieldPassword:
 		m.configPassword = trimLastRune(m.configPassword)
 		m.configPasswordDirty = true
+	default:
+		return m
 	}
+	m.configTestResult = nil
 	return m
 }
 
@@ -2679,7 +2685,15 @@ func (m Model) applyConfigSaveResult(msg configSaveResultMsg) Model {
 		m.configLoadErr = msg.err
 		return m
 	}
-	m.configRestartHint = msg.response.RestartHint
+	if m.configPasswordDirty {
+		if msg.response.EnvActive {
+			m.configRestartHint = "Saved the file credential. Environment variables (HIVE_API_*) still override it; update or unset HIVE_API_* and restart hive-daemon to apply the new credential."
+		} else {
+			m.configRestartHint = "Stored password updated. Restart hive-daemon to clear the rejected session and load the new credential."
+		}
+	} else {
+		m.configRestartHint = msg.response.RestartHint
+	}
 	m.configEnvActive = msg.response.EnvActive
 	// Refresh fields from the returned status.
 	m.configAPIURL = msg.response.Status.APIURL
@@ -2773,7 +2787,7 @@ func (m Model) apiConfigView() string {
 
 	// Env-active NOTICE: shown when env vars are active (independent of save).
 	if m.configEnvActive {
-		noticeContent := dimTextStyle.Render("Environment variables (HIVE_API_*) are active and override the file config at runtime. Changes saved here will take effect only after restarting hive-daemon with those env vars unset.")
+		noticeContent := dimTextStyle.Render("Environment variables (HIVE_API_*) are active. File changes remain overridden until HIVE_API_* variables are updated or unset and hive-daemon is restarted.")
 		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("NOTICE — ENV VARS ACTIVE", panelW)+noticeContent, panelW))
 		sb.WriteString("\n")
 	}
@@ -2783,6 +2797,7 @@ func (m Model) apiConfigView() string {
 	fieldContent += m.renderConfigField(configFieldEmail, "Email", visibleInput(m.configEmail), panelW)
 	// Password is ALWAYS rendered as masked — never the raw value.
 	fieldContent += m.renderConfigField(configFieldPassword, "Password", maskedInput(m.configPassword), panelW)
+	fieldContent += "  " + dimTextStyle.Render("After changing your Hive account password, enter the new password here. Saving updates the stored daemon credential; it does not change your Hive account password.") + "\n"
 	// AutoSync toggle.
 	autoSyncVal := "[ ] disabled"
 	if m.configAutoSync {
@@ -2812,6 +2827,9 @@ func (m Model) apiConfigView() string {
 		var resultContent string
 		if m.configTestResult.OK {
 			resultContent = lipgloss.NewStyle().Foreground(terminalui.ColorGreen).Render("Connection succeeded")
+			if m.configPasswordDirty {
+				resultContent += "\n" + dimTextStyle.Render("Save and restart hive-daemon to apply this credential.")
+			}
 		} else {
 			resultContent = lipgloss.NewStyle().Foreground(terminalui.ColorRed).Render("Connection failed: " + m.configTestResult.Message)
 		}
