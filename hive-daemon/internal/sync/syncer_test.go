@@ -26,6 +26,9 @@ type mockSyncStore struct {
 	unsynced                      []*models.Memory
 	lastSync                      time.Time
 	jwt                           string
+	events                        *observableEvents
+	clearJWTCalls                 int
+	clearJWTErr                   error
 	markedSynced                  []string
 	markSyncedErr                 error
 	markedMemoriesSyncedBySyncID  []string
@@ -317,6 +320,20 @@ func (m *mockSyncStore) GetJWT() string {
 
 func (m *mockSyncStore) SetJWT(token string, expiresAt time.Time) error {
 	m.jwt = token
+	return nil
+}
+
+func (m *mockSyncStore) ClearJWT() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clearJWTCalls++
+	if m.events != nil {
+		m.events.append("clear-jwt")
+	}
+	if m.clearJWTErr != nil {
+		return m.clearJWTErr
+	}
+	m.jwt = ""
 	return nil
 }
 
@@ -1273,7 +1290,7 @@ func TestSyncer_Sync_ProjectBlockAckFailureRecordedInAttemptLog(t *testing.T) {
 	require.NotEmpty(t, store.recordedSyncAttempts)
 	lastAttempt := store.recordedSyncAttempts[len(store.recordedSyncAttempts)-1]
 	require.Contains(t, lastAttempt.ErrorMessage, "project block ack failed (500)")
-	require.Contains(t, lastAttempt.ErrorMessage, "ack unavailable")
+	require.NotContains(t, lastAttempt.ErrorMessage, "ack unavailable")
 }
 
 func TestSyncer_Sync_RetriesPendingProjectBlockAcksBeforeNormalSync(t *testing.T) {
