@@ -321,13 +321,11 @@ func updatePersona(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		resolved, err := resolveWizardPresetSelection(m.PersonaFS, selected.Name, nil)
 		if err == nil {
-			m.selectedPreset = nil
 			m.selectedPresetV2 = resolved
 			m.cfg.PersonaPreset = resolved.Slug
 			m.cfg.Preset = resolved.Slug
 			m.cfg.PersonaPresetSource = string(resolved.Source)
 		} else {
-			m.selectedPreset = nil
 			m.cfg.PersonaPreset = selected.Name
 			m.cfg.Preset = selected.Name
 			m.cfg.PersonaPresetSource = string(persona.PresetSourceBuiltin)
@@ -352,7 +350,6 @@ func updatePersonaCustomEdit(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.Err = err
 			return m, nil
 		}
-		m.selectedPreset = nil
 		m.selectedPresetV2 = resolved
 		m.cfg.PersonaPreset = resolved.Slug
 		m.cfg.Preset = resolved.Slug

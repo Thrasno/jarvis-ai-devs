@@ -1231,32 +1231,6 @@ func TestStep_Persona_SelectAndAdvance(t *testing.T) {
 	}
 }
 
-func TestWizardPresetV2UsesSelectedCanonicalPreset(t *testing.T) {
-	v1 := &persona.ResolvedPreset{Slug: "fixture", Preset: &persona.Preset{Name: "fixture"}}
-	v2 := &persona.ResolvedPresetV2{Slug: "future", Preset: &persona.PresetV2{Name: "future"}}
-
-	tests := []struct {
-		name string
-		m    Model
-		want string
-	}{
-		{name: "V2 selection wins when both slots are populated", m: Model{selectedPreset: v1, selectedPresetV2: v2}, want: "v2"},
-		{name: "V2 selection is available", m: Model{selectedPresetV2: v2}, want: "v2"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resolved, ok := tt.m.wizardPresetV2()
-			if !ok {
-				t.Fatal("expected a selected preset")
-			}
-			if tt.want == "v2" && resolved != v2 {
-				t.Fatalf("resolved = %+v, want selected V2 preset", resolved)
-			}
-		})
-	}
-}
-
 func TestEnsurePresetV2ForApplyRejectsLegacyCustomProfileWithMigrationGuidance(t *testing.T) {
 	home := isolateTestHome(t)
 	legacyPath := filepath.Join(home, ".jarvis", "personas", "legacy-custom.yaml")

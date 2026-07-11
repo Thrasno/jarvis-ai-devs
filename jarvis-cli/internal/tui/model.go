@@ -76,7 +76,6 @@ type Model struct {
 	customField          int
 	customPresetName     string
 	customDisplayName    string
-	selectedPreset       *persona.ResolvedPreset
 	selectedPresetV2     *persona.ResolvedPresetV2
 	previousPresetSlug   string
 	previousPresetSource persona.PresetSource
