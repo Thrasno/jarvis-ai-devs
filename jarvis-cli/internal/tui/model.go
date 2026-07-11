@@ -220,9 +220,15 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 			Description: "Creá un preset propio con slug y display name, validado y persistido en ~/.jarvis/personas/<slug>.yaml.",
 		})
 		if m.cfg != nil {
-			if err := validateConfiguredPersonaPresetForV2Selection(m.PersonaFS, m.cfg.PersonaPreset); err != nil {
-				m.personaSelectionErr = err
+			configExists, configErr := hasPersistedConfig()
+			if configErr != nil {
+				m.personaSelectionErr = configErr
 				m.presetCur = -1
+			} else if configExists {
+				if err := validateConfiguredPersonaPresetForV2Selection(m.PersonaFS, m.cfg.PersonaPreset); err != nil {
+					m.personaSelectionErr = err
+					m.presetCur = -1
+				}
 			} else {
 				for i, p := range presets {
 					if p.Name == m.cfg.PersonaPreset {

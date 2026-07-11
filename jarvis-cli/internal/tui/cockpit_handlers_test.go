@@ -83,6 +83,8 @@ func TestCockpitHandlers_PersonaUsesCockpitNativePresetFlowAndReturnsToMenu(t *t
 		{Name: "neutra", DisplayName: "Neutra", Description: "Neutral Spanish"},
 		{Name: "custom", DisplayName: "Custom (crear nuevo)", Description: "Use installer custom validation path"},
 	}
+	m.presetCur = 0
+	m.personaSelectionErr = nil
 	m = selectCockpitAction(t, m, CockpitActionPersona)
 
 	if m.Screen == ScreenWizard || m.Step == StepSkills {
@@ -99,6 +101,21 @@ func TestCockpitHandlers_PersonaUsesCockpitNativePresetFlowAndReturnsToMenu(t *t
 	if m.cockpitMode != cockpitModeMenu || m.Screen != ScreenCockpit {
 		t.Fatalf("expected persona result to return to cockpit menu, got mode=%v screen=%v", m.cockpitMode, m.Screen)
 	}
+}
+
+func TestCockpitHandlers_PersonaBlocksMissingConfiguredPresetBeforeDefaultAcceptance(t *testing.T) {
+	runner := &fakeCockpitRunner{}
+	m := newCockpitHandlerTestModel(runner)
+	m.Presets = []persona.Preset{{Name: "argentino", DisplayName: "Argentino"}}
+	m.presetCur = -1
+	m.personaSelectionErr = errors.New("configured persona preset \"deleted-custom\" is stale or deleted; Recovery: explicitly select an available schema v2 preset")
+	m = selectCockpitAction(t, m, CockpitActionPersona)
+	m = sendCockpitKey(m, tea.KeyEnter)
+
+	if len(runner.calls) != 0 {
+		t.Fatalf("missing configured preset must not apply the default option, got calls %v", runner.calls)
+	}
+	assertViewContains(t, m.View(), "Persona error", "deleted-custom", "stale or deleted", "Recovery")
 }
 
 func TestCockpitHandlers_PersonaCustomOptionUsesExtensionSeamWithoutClaimingApply(t *testing.T) {

@@ -406,6 +406,55 @@ func TestNewModel_BlankPersonaAcceptanceBlocksLegacyV1PresetAndPreservesConfig(t
 	}
 }
 
+func TestNewModel_BlankPersonaAcceptanceBlocksMissingPresetAndPreservesConfig(t *testing.T) {
+	isolateTestHome(t)
+	if err := config.Save(&config.AppConfig{
+		SchemaVersion:       2,
+		APIURL:              config.DefaultAPIURL,
+		PersonaPreset:       "deleted-custom",
+		PersonaPresetSource: string(persona.PresetSourceUser),
+		Install:             config.InstallState{Agents: map[string]config.AgentState{}},
+	}); err != nil {
+		t.Fatalf("save seed config: %v", err)
+	}
+
+	m := NewModel(testWizardConfig(), false)
+	if m.presetCur != -1 {
+		t.Fatalf("missing preset must not default to catalog index 0, got %d", m.presetCur)
+	}
+	m = sendKey(m, tea.KeyEnter)
+	if m.Step != StepPersona {
+		t.Fatalf("expected scope acceptance to enter persona selection, got %v", m.Step)
+	}
+	m = sendKey(m, tea.KeyEnter)
+
+	if m.Step != StepPersona {
+		t.Fatalf("blank/default persona acceptance must stay blocked at persona step, got %v", m.Step)
+	}
+	if m.Err == nil {
+		t.Fatal("expected stale/deleted preset recovery guidance")
+	}
+	for _, want := range []string{"deleted-custom", "stale", "deleted", "recovery"} {
+		if !strings.Contains(strings.ToLower(m.Err.Error()), want) {
+			t.Fatalf("persona selection error = %q, want contains %q", m.Err, want)
+		}
+	}
+	if strings.Contains(strings.ToLower(m.Err.Error()), "migrate") {
+		t.Fatalf("missing preset error = %q, must not use V1 migration guidance", m.Err)
+	}
+	if m.cfg.PersonaPreset != "deleted-custom" || m.selectedPresetV2 != nil {
+		t.Fatalf("missing persona selection was overwritten in memory: cfg=%+v selected=%+v", m.cfg, m.selectedPresetV2)
+	}
+
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config after blocked default: %v", err)
+	}
+	if loaded.PersonaPreset != "deleted-custom" || loaded.PersonaPresetSource != string(persona.PresetSourceUser) {
+		t.Fatalf("missing persona config was overwritten on disk: %+v", loaded)
+	}
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // TestStep_HiveLocal_AdvancesOnEnter
 // ──────────────────────────────────────────────────────────────────────────────

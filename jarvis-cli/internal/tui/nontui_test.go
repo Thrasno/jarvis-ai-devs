@@ -290,6 +290,42 @@ func TestRunNoTUI_BlankPersonaInputBlocksLegacyV1PresetAndPreservesConfig(t *tes
 	}
 }
 
+func TestRunNoTUI_BlankPersonaInputBlocksMissingPresetAndPreservesConfig(t *testing.T) {
+	isolateTestHome(t)
+	t.Setenv("PATH", "")
+	seed := &config.AppConfig{
+		SchemaVersion:       2,
+		APIURL:              config.DefaultAPIURL,
+		PersonaPreset:       "deleted-custom",
+		PersonaPresetSource: string(persona.PresetSourceUser),
+		Install:             config.InstallState{Agents: map[string]config.AgentState{}},
+	}
+	if err := config.Save(seed); err != nil {
+		t.Fatalf("save seed config: %v", err)
+	}
+
+	err := runNoTUI(testWizardConfig(), strings.NewReader("\n\n"))
+	if err == nil {
+		t.Fatal("expected stale/deleted preset recovery guidance")
+	}
+	for _, want := range []string{"deleted-custom", "stale", "deleted", "recovery"} {
+		if !strings.Contains(strings.ToLower(err.Error()), want) {
+			t.Fatalf("runNoTUI() error = %q, want contains %q", err, want)
+		}
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "migrate") {
+		t.Fatalf("missing preset error = %q, must not use V1 migration guidance", err)
+	}
+
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config after blocked default: %v", err)
+	}
+	if loaded.PersonaPreset != "deleted-custom" || loaded.PersonaPresetSource != string(persona.PresetSourceUser) {
+		t.Fatalf("missing persona config was overwritten: %+v", loaded)
+	}
+}
+
 func TestRunNoTUI_CustomPresetPersistsUserFileAndCanonicalIdentity(t *testing.T) {
 	tmpHome := isolateTestHome(t)
 	t.Setenv("PATH", "")
@@ -987,7 +1023,7 @@ func TestRunNoTUI_LocalOnlyPurgesStoredCredentialsOnApply(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	seed := &config.AppConfig{Scope: config.ScopeLocalCloud, Cloud: &config.CloudConfig{Email: "old@example.com", SyncConfigured: true}, Email: "old@example.com", APIURL: config.DefaultAPIURL}
+	seed := &config.AppConfig{Scope: config.ScopeLocalCloud, Cloud: &config.CloudConfig{Email: "old@example.com", SyncConfigured: true}, Email: "old@example.com", APIURL: config.DefaultAPIURL, PersonaPreset: "fixture"}
 	if err := config.Save(seed); err != nil {
 		t.Fatalf("save seed config: %v", err)
 	}
@@ -1028,7 +1064,7 @@ func TestRunNoTUI_LocalCloudAuthFailureContinuesToApply(t *testing.T) {
 	}))
 	defer server.Close()
 
-	seed := &config.AppConfig{APIURL: server.URL, Scope: config.ScopeLocalOnly}
+	seed := &config.AppConfig{APIURL: server.URL, Scope: config.ScopeLocalOnly, PersonaPreset: "fixture"}
 	if err := config.Save(seed); err != nil {
 		t.Fatalf("save seed config: %v", err)
 	}
@@ -1088,7 +1124,7 @@ func TestRunNoTUI_LocalCloudSuccessfulAuthWritesSyncJSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	seed := &config.AppConfig{APIURL: server.URL, Scope: config.ScopeLocalOnly}
+	seed := &config.AppConfig{APIURL: server.URL, Scope: config.ScopeLocalOnly, PersonaPreset: "fixture"}
 	if err := config.Save(seed); err != nil {
 		t.Fatalf("save seed config: %v", err)
 	}
@@ -1136,7 +1172,7 @@ func TestRunNoTUI_LocalCloudLoginWithoutResolvedEmailFallsBackToInput(t *testing
 	}))
 	defer server.Close()
 
-	seed := &config.AppConfig{APIURL: server.URL, Scope: config.ScopeLocalOnly}
+	seed := &config.AppConfig{APIURL: server.URL, Scope: config.ScopeLocalOnly, PersonaPreset: "fixture"}
 	if err := config.Save(seed); err != nil {
 		t.Fatalf("save seed config: %v", err)
 	}

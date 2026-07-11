@@ -124,8 +124,14 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("list presets: %w", err)
 	}
-	if err := validateConfiguredPersonaPresetForV2Selection(wcfg.PersonaFS, cfg.PersonaPreset); err != nil {
+	configExists, err := hasPersistedConfig()
+	if err != nil {
 		return err
+	}
+	if configExists {
+		if err := validateConfiguredPersonaPresetForV2Selection(wcfg.PersonaFS, cfg.PersonaPreset); err != nil {
+			return err
+		}
 	}
 	presets = append(presets, persona.PresetV2{
 		Name:        "custom",

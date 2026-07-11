@@ -3,8 +3,10 @@ package tui
 import (
 	"fmt"
 	"io/fs"
+	"os"
 	"strings"
 
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"gopkg.in/yaml.v3"
 )
@@ -45,7 +47,21 @@ func validateConfiguredPersonaPresetForV2Selection(personaFS fs.FS, configuredSl
 	if _, err := resolvePresetForWizard(personaFS, normalized); err == nil {
 		return fmt.Errorf("configured persona preset %q is a legacy V1 profile and cannot be used by the schema v2 wizard; migrate it to a schema v2 presentation profile before reconfiguring", normalized)
 	}
-	return nil
+	return fmt.Errorf("configured persona preset %q is stale or deleted and is unavailable in both schema v2 and V1 profiles; Recovery: explicitly select an available schema v2 preset, or restore/recreate %q before reconfiguring", normalized, normalized)
+}
+
+func hasPersistedConfig() (bool, error) {
+	path, err := config.ConfigPath()
+	if err != nil {
+		return false, fmt.Errorf("locate config: %w", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat config: %w", err)
+	}
+	return true, nil
 }
 
 func createWizardCustomPreset(personaFS fs.FS, draft customPresetDraft) (*persona.ResolvedPreset, error) {
