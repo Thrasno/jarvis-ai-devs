@@ -350,6 +350,21 @@ describe('capability overview contract', () => {
   })
 })
 
+describe('account password contract', () => {
+it('changes only the authenticated account password with the exact request body', async () => {
+const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+const client = createApiClient({ fetch: fetchMock })
+
+await expect(client.changePassword('jwt-token', { current_password: 'old-password', new_password: 'new-password' })).resolves.toBeUndefined()
+
+expect(fetchMock).toHaveBeenCalledWith('/account/password', {
+method: 'PATCH',
+headers: { Authorization: 'Bearer jwt-token', 'Content-Type': 'application/json' },
+body: JSON.stringify({ current_password: 'old-password', new_password: 'new-password' })
+})
+})
+})
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 }

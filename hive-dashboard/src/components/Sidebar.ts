@@ -142,7 +142,7 @@ export function renderSidebar(container: HTMLElement, props: SidebarProps): void
 
   sidebar.append(nav)
 
-  renderProfileBlock(sidebar, { profile: props.profile, onLogout: props.onLogout })
+  renderProfileBlock(sidebar, { profile: props.profile, onLogout: props.onLogout, onNavigate: props.onNavigate })
 
   container.append(sidebar)
 }
@@ -150,6 +150,7 @@ export function renderSidebar(container: HTMLElement, props: SidebarProps): void
 type ProfileBlockProps = {
   readonly profile: CurrentProfileViewModel
   readonly onLogout: () => void
+  readonly onNavigate: (path: string) => void
 }
 
 function renderProfileBlock(container: HTMLElement, props: ProfileBlockProps): void {
@@ -183,7 +184,15 @@ function renderProfileBlock(container: HTMLElement, props: ProfileBlockProps): v
 
   textCol.append(name, email)
   profileRow.append(avatar, textCol)
-  block.append(profileRow)
+  const accountLink = document.createElement('a')
+  accountLink.href = '/dashboard/account'
+  accountLink.textContent = 'Account'
+  accountLink.setAttribute('aria-label', 'Account')
+  accountLink.addEventListener('click', (event) => {
+    event.preventDefault()
+    props.onNavigate('/dashboard/account')
+  })
+  block.append(profileRow, accountLink)
 
   // Footer row: role pill (left) + logout link (right)
   const footerRow = document.createElement('div')

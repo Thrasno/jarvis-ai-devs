@@ -53,6 +53,7 @@ export type SyncAttemptSummaryWindow = {
 export type SyncAttemptSummary = { windows: SyncAttemptSummaryWindow[] }
 export type MutationMessage = { message: string }
 export type CreateUserRequest = { username: string; email: string; level: UserLevel; temporary_password: string }
+export type ChangePasswordRequest = { current_password: string; new_password: string }
 export type ProjectBlockAction = 'quarantine' | 'purge_intent'
 export type ProjectBlockRequest = { project: string; action: ProjectBlockAction; reason: string; confirmation: string; export_marker: string }
 export type ProjectBlockResponse = { command_id: string; project: string; canonical_project_key: string; reason: string; blocked_at: string }
@@ -98,6 +99,7 @@ export type ApiClient = {
   overviewStats(token: string): Promise<OverviewStats>
   overviewGrowth(token: string): Promise<OverviewGrowth>
   overview(token: string): Promise<CapabilityOverviewResponse>
+  changePassword(token: string, request: ChangePasswordRequest): Promise<void>
   adminUsers(token: string): Promise<{ users: User[] }>
   createUser(token: string, request: CreateUserRequest): Promise<MutationMessage>
   setUserLevel(token: string, username: string, level: UserLevel): Promise<MutationMessage>
@@ -173,6 +175,9 @@ export function createApiClient(options: { baseUrl?: string; fetch?: Fetcher } =
     },
     overview(token) {
       return request<CapabilityOverviewResponse>('/overview', authGet(token))
+    },
+    async changePassword(token, changeRequest) {
+      await request<undefined>('/account/password', { method: 'PATCH', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(changeRequest) })
     },
     adminUsers(token) {
       return request<{ users: User[] }>('/admin/users', authGet(token))
