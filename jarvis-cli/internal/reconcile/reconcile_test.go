@@ -337,6 +337,44 @@ func TestBuildPlanBlocksDuplicateInventoryLocationsRegardlessOrder(t *testing.T)
 	}
 }
 
+func TestBuildPlanBlocksDuplicateDesiredLocationsRegardlessOrder(t *testing.T) {
+	const location = "shared/config.json"
+	identityA := DesiredArtifact{Identity: "identity-a", Location: location, Bytes: []byte("managed A bytes")}
+	identityB := DesiredArtifact{Identity: "identity-b", Location: location, Bytes: []byte("managed B bytes")}
+	desired := func(artifacts []DesiredArtifact) DesiredState {
+		return DesiredState{Manifest: Manifest{Version: "v1", Artifacts: map[string]ManifestEntry{
+			"identity-a": {Location: location, Digest: digestFor(identityA.Bytes)},
+			"identity-b": {Location: location, Digest: digestFor(identityB.Bytes)},
+		}}, Artifacts: artifacts}
+	}
+
+	for _, tt := range []struct {
+		name      string
+		artifacts []DesiredArtifact
+	}{
+		{name: "identity a first", artifacts: []DesiredArtifact{identityA, identityB}},
+		{name: "identity b first", artifacts: []DesiredArtifact{identityB, identityA}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newFakeStore(nil)
+			journal := &MemoryJournal{}
+			plan := BuildPlan(store.Inventory(), desired(tt.artifacts))
+			if !plan.Blocked() || len(plan.Operations) != 0 || len(plan.Blockers) != 1 {
+				t.Fatalf("plan = %#v, want one duplicate-location blocker without operations", plan)
+			}
+			if got := plan.Blockers[0]; got.Identity != "identity-a" || got.Location != location || got.RecoveryCommand != "jarvis reconcile recover --artifact identity-a" {
+				t.Fatalf("blocker = %#v, want deterministic actionable identity-a blocker", got)
+			}
+			if err := ApplyWithJournal(store, journal, plan); err == nil {
+				t.Fatal("ApplyWithJournal() error = nil, want duplicate desired location error")
+			}
+			if len(journal.Entries) != 0 || len(store.writes) != 0 || len(store.provenance) != 0 {
+				t.Fatalf("journal = %#v, writes = %#v, provenance = %#v, want no durable mutation", journal.Entries, store.writes, store.provenance)
+			}
+		})
+	}
+}
+
 type fakeStore struct {
 	files      map[string][]byte
 	provenance map[string]Provenance

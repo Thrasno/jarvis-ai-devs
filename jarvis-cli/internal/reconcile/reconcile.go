@@ -115,6 +115,10 @@ func Classify(artifact Artifact, manifest Manifest) Ownership {
 
 // BuildPlan creates mutations only for empty targets or proven Jarvis artifacts.
 func BuildPlan(inventory Inventory, desired DesiredState) Plan {
+	if blocker, duplicate := duplicateDesiredLocationBlocker(desired.Artifacts); duplicate {
+		return Plan{Blockers: []Blocker{blocker}}
+	}
+
 	byLocation := make(map[string]Artifact, len(inventory.Artifacts))
 	duplicateLocations := make(map[string]bool)
 	for _, artifact := range inventory.Artifacts {
@@ -155,6 +159,27 @@ func BuildPlan(inventory Inventory, desired DesiredState) Plan {
 		}
 	}
 	return plan
+}
+
+func duplicateDesiredLocationBlocker(artifacts []DesiredArtifact) (Blocker, bool) {
+	identitiesByLocation := make(map[string]string, len(artifacts))
+	var blocker Blocker
+	for _, artifact := range artifacts {
+		firstIdentity, seen := identitiesByLocation[artifact.Location]
+		if !seen {
+			identitiesByLocation[artifact.Location] = artifact.Identity
+			continue
+		}
+		if artifact.Identity < firstIdentity {
+			identitiesByLocation[artifact.Location] = artifact.Identity
+			firstIdentity = artifact.Identity
+		}
+		candidate := blockerFor(DesiredArtifact{Identity: firstIdentity, Location: artifact.Location}, OwnershipAmbiguousLegacy)
+		if blocker.Identity == "" || candidate.Location < blocker.Location || candidate.Location == blocker.Location && candidate.Identity < blocker.Identity {
+			blocker = candidate
+		}
+	}
+	return blocker, blocker.Identity != ""
 }
 
 func blockerFor(target DesiredArtifact, ownership Ownership) Blocker {
