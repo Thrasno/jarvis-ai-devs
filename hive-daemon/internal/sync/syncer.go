@@ -56,6 +56,11 @@ var maxDrainBatches = 5000
 var (
 	ErrSyncInFlight = errors.New("sync already in progress")
 	ErrSyncBackoff  = errors.New("sync blocked by backoff")
+	// ErrStoredCredentialsRejected is safe to return and tells operators how to recover.
+	ErrStoredCredentialsRejected = errors.New("Hive API rejected the stored credentials after invalidating the cached session. Open Jarvis → Hive API Config, enter the current account password, save, and restart hive-daemon. No further authentication attempts will run until restart.")
+	// ErrCachedSessionCleanupFailed is intentionally sanitized: database errors
+	// must not leak through the authentication boundary.
+	ErrCachedSessionCleanupFailed = errors.New("could not clear cached Hive API session after rejected credentials; resolve local storage and retry")
 )
 
 // SyncStore define los métodos del DB que necesita el Syncer.
@@ -85,6 +90,7 @@ type SyncStore interface {
 	RecordDrainOutcome(project, state, reason string, remaining int) error
 	GetJWT() string
 	SetJWT(token string, expiresAt time.Time) error
+	ClearJWT() error
 	GetUnsyncedPrompts(ctx context.Context, project string) ([]*models.Prompt, error)
 	// GetUnsyncedPromptsPage is the paged counterpart to GetUnsyncedPrompts
 	// (PR 1b-iii, hive-sync-batched-drain) — see GetUnsyncedPage doc.
@@ -218,11 +224,14 @@ type Result struct {
 
 // Syncer orquesta el ciclo completo de sincronización para un proyecto.
 type Syncer struct {
-	store    SyncStore
-	client   *client
-	deps     syncDeps
-	mu       sync.Mutex
-	inFlight map[string]bool
+	store                  SyncStore
+	client                 *client
+	deps                   syncDeps
+	mu                     sync.Mutex
+	inFlight               map[string]bool
+	authMu                 sync.Mutex
+	credentialsStale       bool
+	staleDiagnosticEmitted bool
 }
 
 type syncDeps struct {
@@ -1213,6 +1222,18 @@ func (s *Syncer) recordFailureAttemptLog(ctx context.Context, project string, st
 	if syncErr != nil {
 		message = syncErr.Error()
 	}
+	httpStatus := syncAttemptHTTPStatus(message)
+	errorCode := "sync_failed"
+	metadata := "{}"
+	var statusErr *HTTPStatusError
+	if errors.As(syncErr, &statusErr) {
+		httpStatus = statusErr.StatusCode
+	}
+	if errors.Is(syncErr, ErrStoredCredentialsRejected) {
+		httpStatus = 401
+		errorCode = "auth_credentials_stale"
+		metadata = `{"auth_recovery":"stopped"}`
+	}
 	attemptLog := db.SyncAttemptLog{
 		AttemptID:      s.deps.newAttemptID(),
 		DevID:          s.client.cfg.Email,
@@ -1221,11 +1242,11 @@ func (s *Syncer) recordFailureAttemptLog(ctx context.Context, project string, st
 		StartedAt:      startedAt,
 		EndedAt:        s.deps.now().UTC(),
 		Outcome:        db.SyncAttemptOutcomeFailure,
-		HTTPStatus:     syncAttemptHTTPStatus(message),
-		ErrorCode:      "sync_failed",
+		HTTPStatus:     httpStatus,
+		ErrorCode:      errorCode,
 		ErrorMessage:   message,
 		SyncCountsJSON: "{}",
-		MetadataJSON:   "{}",
+		MetadataJSON:   metadata,
 	}
 	if err := s.store.RecordSyncAttemptLog(ctx, attemptLog); err != nil {
 		logger.Log.Printf("warn: record failed sync attempt log %s: %v", attemptLog.AttemptID, err)
@@ -1281,17 +1302,36 @@ func computeBackoffDelay(consecutiveFailures int, jitter func(max time.Duration)
 	return delay + extra
 }
 
-// getOrRefreshToken devuelve el JWT cacheado si es válido, o hace login.
+// getOrRefreshToken returns a cached JWT or makes one initial login attempt.
+// A rejected stored credential is process-latched until the daemon restarts.
 func (s *Syncer) getOrRefreshToken(ctx context.Context) (string, error) {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	if s.credentialsStale {
+		return "", ErrStoredCredentialsRejected
+	}
 	if token := s.store.GetJWT(); token != "" {
 		return token, nil
 	}
 
 	token, expiresAt, err := s.client.login(ctx)
 	if err != nil {
+		var statusErr *HTTPStatusError
+		if errors.As(err, &statusErr) && statusErr.StatusCode == 401 {
+			if err := s.store.ClearJWT(); err != nil {
+				return "", ErrCachedSessionCleanupFailed
+			}
+			s.credentialsStale = true
+			if !s.staleDiagnosticEmitted {
+				s.staleDiagnosticEmitted = true
+				logger.Log.Printf("warn: %s", ErrStoredCredentialsRejected)
+			}
+			return "", ErrStoredCredentialsRejected
+		}
 		return "", err
 	}
-
-	_ = s.store.SetJWT(token, expiresAt)
+	if err := s.store.SetJWT(token, expiresAt); err != nil {
+		return "", fmt.Errorf("store login session: %w", err)
+	}
 	return token, nil
 }

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
@@ -17,6 +16,16 @@ import (
 const mutationProtocolVersion = 2
 
 var ErrProjectBlocked = errors.New("project is blocked")
+
+// HTTPStatusError safely preserves an HTTP outcome without retaining a response body.
+type HTTPStatusError struct {
+	Operation  string
+	StatusCode int
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("%s failed (%d)", e.Operation, e.StatusCode)
+}
 
 // PullCursor is a sync-package alias for db.PullCursor (defined in
 // internal/db alongside db.MutationCursor, PR 2b hive-sync-batched-drain).
@@ -84,7 +93,7 @@ func (c *client) login(ctx context.Context) (token string, expiresAt time.Time, 
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", time.Time{}, fmt.Errorf("login failed (status %d)", resp.StatusCode)
+		return "", time.Time{}, &HTTPStatusError{Operation: "login", StatusCode: resp.StatusCode}
 	}
 
 	var result struct {
@@ -351,8 +360,7 @@ func (c *client) sync(ctx context.Context, token, project string,
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("sync failed (%d): %s", resp.StatusCode, string(body))
+		return nil, &HTTPStatusError{Operation: "sync", StatusCode: resp.StatusCode}
 	}
 
 	var result syncResponse
@@ -380,8 +388,7 @@ func (c *client) ackProjectBlock(ctx context.Context, token string, ack db.Proje
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("project block ack failed (%d): %s", resp.StatusCode, string(body))
+		return &HTTPStatusError{Operation: "project block ack", StatusCode: resp.StatusCode}
 	}
 	return nil
 }
@@ -426,8 +433,7 @@ func (c *client) syncAttempts(ctx context.Context, token string, attempts []db.S
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("sync attempts failed (%d): %s", resp.StatusCode, string(body))
+		return nil, &HTTPStatusError{Operation: "sync attempts", StatusCode: resp.StatusCode}
 	}
 
 	var result syncAttemptIngestResponse

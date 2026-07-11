@@ -2562,3 +2562,16 @@ VALUES (?, ?, 'tie-sess-project', '', 'test', 'test', ?, ?, ?)`,
 	}
 	assert.Equal(t, wantIDs, gotIDs, "sessions with a created_at tie must still come back oldest-id-first (id ASC secondary key)")
 }
+
+func TestSyncDB_ClearJWTClearsOnlyAuthSession(t *testing.T) {
+	db := setupTestDB(t)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	require.NoError(t, db.SetJWT("cached-jwt", time.Now().Add(2*time.Hour)))
+	require.NoError(t, db.SetLastSync("project-a", time.Now().UTC()))
+
+	require.NoError(t, db.ClearJWT())
+	assert.Empty(t, db.GetJWT())
+	lastSync, err := db.GetLastSync("project-a")
+	require.NoError(t, err)
+	assert.False(t, lastSync.IsZero())
+}

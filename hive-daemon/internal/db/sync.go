@@ -985,6 +985,12 @@ ON CONFLICT(project) DO UPDATE SET
 	return err
 }
 
+// ClearJWT removes only the cached daemon auth session.
+func (d *DB) ClearJWT() error {
+	_, err := d.sqlDB.Exec(`UPDATE sync_state SET jwt_token = NULL, jwt_expires_at = NULL WHERE project = '__auth__'`)
+	return err
+}
+
 // --- helpers privados ---
 
 type syncScanner interface {
