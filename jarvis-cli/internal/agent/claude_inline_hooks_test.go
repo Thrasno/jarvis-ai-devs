@@ -50,6 +50,393 @@ func countEntriesByName(entries []any, name string) int {
 	return count
 }
 
+// countEntriesByToken counts entries whose nested hooks[].command contains the
+// given managed subcommand token. Path-agnostic: the count is stable across
+// binary-path drift and a stripped "name" field.
+func countEntriesByToken(entries []any, token string) int {
+	count := 0
+	for _, entry := range entries {
+		em, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		inner, ok := em["hooks"].([]any)
+		if !ok {
+			continue
+		}
+		for _, h := range inner {
+			hm, ok := h.(map[string]any)
+			if !ok {
+				continue
+			}
+			if cmd, ok := hm["command"].(string); ok && strings.Contains(cmd, token) {
+				count++
+				break
+			}
+		}
+	}
+	return count
+}
+
+// seedSettings writes settings.json into the claude dir for a test home.
+func seedSettings(t *testing.T, claudeDir string, settings map[string]any) {
+	t.Helper()
+	raw, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal seed settings: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), raw, 0644); err != nil {
+		t.Fatalf("write seed settings.json: %v", err)
+	}
+}
+
+// nativeHookEntry builds a Claude-NORMALIZED (name-stripped) hook group entry
+// wrapping a single inline command.
+func nativeHookEntry(command string) map[string]any {
+	return map[string]any{
+		"hooks": []any{
+			map[string]any{"type": "command", "command": command},
+		},
+	}
+}
+
+// setupClaudeHome creates a temp home with a .claude dir and stubs osExecutable
+// to the given absolute path, returning the agent and the claude dir.
+func setupClaudeHome(t *testing.T, exe string) (*ClaudeAgent, string) {
+	t.Helper()
+	home := t.TempDir()
+	setTestHome(t, home)
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+	origExe := osExecutable
+	osExecutable = func() (string, error) { return exe, nil }
+	t.Cleanup(func() { osExecutable = origExe })
+	return &ClaudeAgent{home: home, templatesFS: testTemplatesFS}, claudeDir
+}
+
+// ── InstallRegistryAutomation idempotency (token cleanup) ─────────────────────
+
+func TestInstallRegistryAutomation_IdempotentAfterNameStripped(t *testing.T) {
+	a, claudeDir := setupClaudeHome(t, "/usr/local/bin/jarvis")
+
+	// Prior entry in Claude-normalized shape (no "name"), stale path.
+	seedSettings(t, claudeDir, map[string]any{
+		"hooks": map[string]any{
+			"UserPromptSubmit": []any{
+				nativeHookEntry(`'/old/bin/jarvis' skill-registry refresh --quiet --cwd "${CLAUDE_PROJECT_DIR:-$PWD}" || true`),
+			},
+		},
+	})
+
+	if err := a.InstallRegistryAutomation(testHooksFS); err != nil {
+		t.Fatalf("InstallRegistryAutomation: %v", err)
+	}
+
+	settings := readSettingsMap(t, filepath.Join(claudeDir, "settings.json"))
+	entries := settings["hooks"].(map[string]any)["UserPromptSubmit"].([]any)
+	if n := countEntriesByToken(entries, registryRefreshHookToken); n != 1 {
+		t.Errorf("expected exactly 1 skill-registry entry after name-stripped reinstall, got %d", n)
+	}
+}
+
+func TestInstallRegistryAutomation_IdempotentAcrossBinaryPathDrift(t *testing.T) {
+	a, claudeDir := setupClaudeHome(t, "/usr/local/bin/jarvis")
+
+	seedSettings(t, claudeDir, map[string]any{
+		"hooks": map[string]any{
+			"UserPromptSubmit": []any{
+				map[string]any{
+					"name":  "jarvis-skill-registry-refresh",
+					"hooks": []any{map[string]any{"type": "command", "command": `'/stale/path/jarvis' skill-registry refresh --quiet --cwd "${CLAUDE_PROJECT_DIR:-$PWD}" || true`}},
+				},
+			},
+		},
+	})
+
+	if err := a.InstallRegistryAutomation(testHooksFS); err != nil {
+		t.Fatalf("InstallRegistryAutomation: %v", err)
+	}
+
+	settings := readSettingsMap(t, filepath.Join(claudeDir, "settings.json"))
+	entries := settings["hooks"].(map[string]any)["UserPromptSubmit"].([]any)
+	if n := countEntriesByToken(entries, registryRefreshHookToken); n != 1 {
+		t.Errorf("expected exactly 1 skill-registry entry after path drift, got %d", n)
+	}
+}
+
+func TestInstallRegistryAutomation_PreservesOtherUserPromptSubmitHooks(t *testing.T) {
+	a, claudeDir := setupClaudeHome(t, "/usr/local/bin/jarvis")
+
+	seedSettings(t, claudeDir, map[string]any{
+		"hooks": map[string]any{
+			"UserPromptSubmit": []any{
+				// Hive prompt-capture entry (different managed token) survives.
+				map[string]any{
+					"name":  "hive-prompt-capture",
+					"hooks": []any{map[string]any{"type": "command", "command": "'/usr/local/bin/jarvis' hook prompt-submit"}},
+				},
+				// Unrelated user hook survives.
+				map[string]any{
+					"name":  "user-audit",
+					"hooks": []any{map[string]any{"type": "command", "command": "'/usr/bin/jarvis' hook custom-audit"}},
+				},
+				// Stale skill-registry entry to be deduped.
+				nativeHookEntry(`'/old/bin/jarvis' skill-registry refresh --quiet --cwd "${CLAUDE_PROJECT_DIR:-$PWD}" || true`),
+			},
+		},
+	})
+
+	if err := a.InstallRegistryAutomation(testHooksFS); err != nil {
+		t.Fatalf("InstallRegistryAutomation: %v", err)
+	}
+
+	settings := readSettingsMap(t, filepath.Join(claudeDir, "settings.json"))
+	entries := settings["hooks"].(map[string]any)["UserPromptSubmit"].([]any)
+	if n := countEntriesByToken(entries, registryRefreshHookToken); n != 1 {
+		t.Errorf("expected exactly 1 skill-registry entry, got %d", n)
+	}
+	if n := countEntriesByToken(entries, promptSubmitHookToken); n != 1 {
+		t.Errorf("hive-prompt-capture entry must be preserved, got %d", n)
+	}
+	if n := countEntriesByName(entries, "user-audit"); n != 1 {
+		t.Errorf("unrelated user hook must be preserved, got %d", n)
+	}
+}
+
+// ── InstallCompactHook idempotency (token cleanup) ────────────────────────────
+
+func TestInstallCompactHook_IdempotentAfterNameStripped(t *testing.T) {
+	a, claudeDir := setupClaudeHome(t, "/usr/local/bin/jarvis")
+
+	seedSettings(t, claudeDir, map[string]any{
+		"hooks": map[string]any{
+			"SessionStart": []any{
+				// Normalized shape (no "name") with matcher retained.
+				map[string]any{
+					"matcher": "compact",
+					"hooks":   []any{map[string]any{"type": "command", "command": "'/usr/local/bin/jarvis' hook session-compact"}},
+				},
+			},
+		},
+	})
+
+	if err := a.InstallCompactHook(); err != nil {
+		t.Fatalf("InstallCompactHook: %v", err)
+	}
+
+	settings := readSettingsMap(t, filepath.Join(claudeDir, "settings.json"))
+	entries := settings["hooks"].(map[string]any)["SessionStart"].([]any)
+	if n := countEntriesByToken(entries, sessionCompactHookToken); n != 1 {
+		t.Errorf("expected exactly 1 session-compact entry after name-stripped reinstall, got %d", n)
+	}
+}
+
+func TestInstallCompactHook_IdempotentWithNamePresent(t *testing.T) {
+	a, claudeDir := setupClaudeHome(t, "/usr/local/bin/jarvis")
+
+	seedSettings(t, claudeDir, map[string]any{
+		"hooks": map[string]any{
+			"SessionStart": []any{
+				map[string]any{
+					"name":    "hive-session-compact",
+					"matcher": "compact",
+					"hooks":   []any{map[string]any{"type": "command", "command": "'/usr/local/bin/jarvis' hook session-compact"}},
+				},
+			},
+		},
+	})
+
+	if err := a.InstallCompactHook(); err != nil {
+		t.Fatalf("InstallCompactHook: %v", err)
+	}
+
+	settings := readSettingsMap(t, filepath.Join(claudeDir, "settings.json"))
+	entries := settings["hooks"].(map[string]any)["SessionStart"].([]any)
+	if n := countEntriesByToken(entries, sessionCompactHookToken); n != 1 {
+		t.Errorf("expected exactly 1 session-compact entry with name present, got %d", n)
+	}
+}
+
+func TestInstallCompactHook_IdempotentAcrossBinaryPathDrift(t *testing.T) {
+	a, claudeDir := setupClaudeHome(t, "/usr/local/bin/jarvis")
+
+	seedSettings(t, claudeDir, map[string]any{
+		"hooks": map[string]any{
+			"SessionStart": []any{
+				map[string]any{
+					"name":    "hive-session-compact",
+					"matcher": "compact",
+					"hooks":   []any{map[string]any{"type": "command", "command": "'/stale/path/jarvis' hook session-compact"}},
+				},
+			},
+		},
+	})
+
+	if err := a.InstallCompactHook(); err != nil {
+		t.Fatalf("InstallCompactHook: %v", err)
+	}
+
+	settings := readSettingsMap(t, filepath.Join(claudeDir, "settings.json"))
+	entries := settings["hooks"].(map[string]any)["SessionStart"].([]any)
+	if n := countEntriesByToken(entries, sessionCompactHookToken); n != 1 {
+		t.Errorf("expected exactly 1 session-compact entry after path drift, got %d", n)
+	}
+}
+
+// ── InstallSubagentStopHook idempotency (token cleanup) ───────────────────────
+
+func TestInstallSubagentStopHook_IdempotentAfterNameStripped(t *testing.T) {
+	a, claudeDir := setupClaudeHome(t, "/usr/local/bin/jarvis")
+
+	seedSettings(t, claudeDir, map[string]any{
+		"hooks": map[string]any{
+			"SubagentStop": []any{
+				nativeHookEntry("'/usr/local/bin/jarvis' hook subagent-stop"),
+			},
+		},
+	})
+
+	if err := a.InstallSubagentStopHook(); err != nil {
+		t.Fatalf("InstallSubagentStopHook: %v", err)
+	}
+
+	settings := readSettingsMap(t, filepath.Join(claudeDir, "settings.json"))
+	entries := settings["hooks"].(map[string]any)["SubagentStop"].([]any)
+	if n := countEntriesByToken(entries, subagentStopHookToken); n != 1 {
+		t.Errorf("expected exactly 1 subagent-stop entry after name-stripped reinstall, got %d", n)
+	}
+}
+
+func TestInstallSubagentStopHook_IdempotentWithNamePresent(t *testing.T) {
+	a, claudeDir := setupClaudeHome(t, "/usr/local/bin/jarvis")
+
+	seedSettings(t, claudeDir, map[string]any{
+		"hooks": map[string]any{
+			"SubagentStop": []any{
+				map[string]any{
+					"name":  "hive-subagent-stop",
+					"hooks": []any{map[string]any{"type": "command", "command": "'/usr/local/bin/jarvis' hook subagent-stop"}},
+				},
+			},
+		},
+	})
+
+	if err := a.InstallSubagentStopHook(); err != nil {
+		t.Fatalf("InstallSubagentStopHook: %v", err)
+	}
+
+	settings := readSettingsMap(t, filepath.Join(claudeDir, "settings.json"))
+	entries := settings["hooks"].(map[string]any)["SubagentStop"].([]any)
+	if n := countEntriesByToken(entries, subagentStopHookToken); n != 1 {
+		t.Errorf("expected exactly 1 subagent-stop entry with name present, got %d", n)
+	}
+}
+
+func TestInstallSubagentStopHook_IdempotentAcrossBinaryPathDrift(t *testing.T) {
+	a, claudeDir := setupClaudeHome(t, "/usr/local/bin/jarvis")
+
+	seedSettings(t, claudeDir, map[string]any{
+		"hooks": map[string]any{
+			"SubagentStop": []any{
+				nativeHookEntry("'/stale/path/jarvis' hook subagent-stop"),
+			},
+		},
+	})
+
+	if err := a.InstallSubagentStopHook(); err != nil {
+		t.Fatalf("InstallSubagentStopHook: %v", err)
+	}
+
+	settings := readSettingsMap(t, filepath.Join(claudeDir, "settings.json"))
+	entries := settings["hooks"].(map[string]any)["SubagentStop"].([]any)
+	if n := countEntriesByToken(entries, subagentStopHookToken); n != 1 {
+		t.Errorf("expected exactly 1 subagent-stop entry after path drift, got %d", n)
+	}
+}
+
+func TestInstallSubagentStopHook_PreservesUnrelatedJarvisHookWithDifferentSubcommand(t *testing.T) {
+	a, claudeDir := setupClaudeHome(t, "/usr/local/bin/jarvis")
+
+	seedSettings(t, claudeDir, map[string]any{
+		"hooks": map[string]any{
+			"SubagentStop": []any{
+				map[string]any{
+					"name":  "user-subagent-audit",
+					"hooks": []any{map[string]any{"type": "command", "command": "'/usr/bin/jarvis' hook custom-subagent"}},
+				},
+				nativeHookEntry("'/old/bin/jarvis' hook subagent-stop"),
+			},
+		},
+	})
+
+	if err := a.InstallSubagentStopHook(); err != nil {
+		t.Fatalf("InstallSubagentStopHook: %v", err)
+	}
+
+	settings := readSettingsMap(t, filepath.Join(claudeDir, "settings.json"))
+	entries := settings["hooks"].(map[string]any)["SubagentStop"].([]any)
+	if n := countEntriesByToken(entries, subagentStopHookToken); n != 1 {
+		t.Errorf("expected exactly 1 managed subagent-stop entry, got %d", n)
+	}
+	if n := countEntriesByName(entries, "user-subagent-audit"); n != 1 {
+		t.Errorf("unrelated jarvis hook with different subcommand must be preserved, got %d", n)
+	}
+}
+
+// ── D4 regression: session + prompt hooks survive binary path drift ───────────
+
+func TestInstallSessionHooks_IdempotentAcrossBinaryPathDrift(t *testing.T) {
+	a, claudeDir := setupClaudeHome(t, "/usr/local/bin/jarvis")
+
+	seedSettings(t, claudeDir, map[string]any{
+		"hooks": map[string]any{
+			"SessionStart": []any{
+				nativeHookEntry("'/stale/path/jarvis' hook session-start"),
+			},
+			"Stop": []any{
+				nativeHookEntry("'/stale/path/jarvis' hook session-stop"),
+			},
+		},
+	})
+
+	if err := a.InstallSessionHooks(testHooksFS); err != nil {
+		t.Fatalf("InstallSessionHooks: %v", err)
+	}
+
+	settings := readSettingsMap(t, filepath.Join(claudeDir, "settings.json"))
+	hooks := settings["hooks"].(map[string]any)
+	if n := countEntriesByToken(hooks["SessionStart"].([]any), sessionStartHookToken); n != 1 {
+		t.Errorf("expected exactly 1 session-start entry after path drift, got %d", n)
+	}
+	if n := countEntriesByToken(hooks["Stop"].([]any), sessionStopHookToken); n != 1 {
+		t.Errorf("expected exactly 1 session-stop entry after path drift, got %d", n)
+	}
+}
+
+func TestInstallPromptHook_IdempotentAcrossBinaryPathDrift(t *testing.T) {
+	a, claudeDir := setupClaudeHome(t, "/usr/local/bin/jarvis")
+
+	seedSettings(t, claudeDir, map[string]any{
+		"hooks": map[string]any{
+			"UserPromptSubmit": []any{
+				nativeHookEntry("'/stale/path/jarvis' hook prompt-submit"),
+			},
+		},
+	})
+
+	if err := a.InstallPromptHook(testHooksFS); err != nil {
+		t.Fatalf("InstallPromptHook: %v", err)
+	}
+
+	settings := readSettingsMap(t, filepath.Join(claudeDir, "settings.json"))
+	entries := settings["hooks"].(map[string]any)["UserPromptSubmit"].([]any)
+	if n := countEntriesByToken(entries, promptSubmitHookToken); n != 1 {
+		t.Errorf("expected exactly 1 prompt-submit entry after path drift, got %d", n)
+	}
+}
+
 // ── Task 3.2: InstallSessionHooks uses inline commands ───────────────────────
 
 // TestClaudeAgent_InstallSessionHooks_UsesInlineCommands verifies that after
