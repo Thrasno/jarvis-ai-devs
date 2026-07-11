@@ -61,6 +61,12 @@ var (
 	// ErrCachedSessionCleanupFailed is intentionally sanitized: database errors
 	// must not leak through the authentication boundary.
 	ErrCachedSessionCleanupFailed = errors.New("could not clear cached Hive API session after rejected credentials; resolve local storage and retry")
+	// ErrAuthReloginFailed marks a transient recovery-login failure without
+	// retaining credentials or response details.
+	ErrAuthReloginFailed = errors.New("Hive API re-authentication failed; retry after backoff")
+	// ErrReauthenticatedTokenRejected is terminal for this process: a newly
+	// issued token was rejected, so the daemon must not claim stale credentials.
+	ErrReauthenticatedTokenRejected = errors.New("Hive API rejected a newly authenticated session. Restart hive-daemon before retrying authentication.")
 )
 
 // SyncStore define los métodos del DB que necesita el Syncer.
@@ -224,14 +230,16 @@ type Result struct {
 
 // Syncer orquesta el ciclo completo de sincronización para un proyecto.
 type Syncer struct {
-	store                  SyncStore
-	client                 *client
-	deps                   syncDeps
-	mu                     sync.Mutex
-	inFlight               map[string]bool
-	authMu                 sync.Mutex
-	credentialsStale       bool
-	staleDiagnosticEmitted bool
+	store                          SyncStore
+	client                         *client
+	deps                           syncDeps
+	mu                             sync.Mutex
+	inFlight                       map[string]bool
+	authMu                         sync.Mutex
+	credentialsStale               bool
+	staleDiagnosticEmitted         bool
+	reauthenticatedTokenRejected   bool
+	tokenRejectedDiagnosticEmitted bool
 }
 
 type syncDeps struct {
@@ -479,6 +487,8 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 	// DrainOutcome.RemainingPush doc for why this is a floor, not an exact
 	// count, once paging is involved.
 	lastBatchBacklogSize := -1
+	// A Drain owns at most one cached-token recovery regardless of its batch count.
+	recoveryUsed := false
 
 	for {
 		if outcome.BatchesDone >= maxDrainBatches {
@@ -498,6 +508,25 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 			break
 		}
 		batch, resp, stepErr := s.syncBatchStepWithResponse(ctx, project, token)
+		if stepErr != nil && isMainSyncUnauthorized(stepErr) {
+			if recoveryUsed {
+				// A fresh token was already accepted earlier in this Drain. A later
+				// 401 must never start another recovery loop.
+				stepErr = fmt.Errorf("sync rejected reauthenticated session: %w", s.rejectReauthenticatedToken())
+			} else {
+				recoveryUsed = true
+				recoveredToken, recoveryErr := s.recoverCachedToken(ctx, token)
+				if recoveryErr != nil {
+					stepErr = fmt.Errorf("recover cached Hive API session: %w", recoveryErr)
+				} else {
+					token = recoveredToken
+					batch, resp, stepErr = s.syncBatchStepWithResponse(ctx, project, token)
+					if stepErr != nil && isMainSyncUnauthorized(stepErr) {
+						stepErr = fmt.Errorf("sync rejected reauthenticated session: %w", s.rejectReauthenticatedToken())
+					}
+				}
+			}
+		}
 		if stepErr != nil {
 			recordSyncErr := errors.Unwrap(stepErr)
 			var blockedErr *ProjectBlockedError
@@ -641,7 +670,7 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 		Outcome:        db.SyncAttemptOutcomeSuccess,
 		HTTPStatus:     httpStatusOK,
 		SyncCountsJSON: syncCountsJSON(result.Pushed, result.Pulled, result.Conflicts, result.PromptsPushed, result.MutationsPushed, result.MutationsPulled),
-		MetadataJSON:   "{}",
+		MetadataJSON:   successAttemptMetadata(recoveryUsed),
 	}
 	if err := s.store.RecordSyncAttemptLog(ctx, attemptLog); err != nil {
 		logger.Log.Printf("warn: record sync attempt log %s: %v", attemptLog.AttemptID, err)
@@ -1234,6 +1263,13 @@ func (s *Syncer) recordFailureAttemptLog(ctx context.Context, project string, st
 		errorCode = "auth_credentials_stale"
 		metadata = `{"auth_recovery":"stopped"}`
 	}
+	if errors.Is(syncErr, ErrReauthenticatedTokenRejected) {
+		httpStatus = 401
+		errorCode = "auth_token_rejected_after_login"
+	}
+	if errors.Is(syncErr, ErrAuthReloginFailed) {
+		errorCode = "auth_relogin_failed"
+	}
 	attemptLog := db.SyncAttemptLog{
 		AttemptID:      s.deps.newAttemptID(),
 		DevID:          s.client.cfg.Email,
@@ -1307,13 +1343,33 @@ func computeBackoffDelay(consecutiveFailures int, jitter func(max time.Duration)
 func (s *Syncer) getOrRefreshToken(ctx context.Context) (string, error) {
 	s.authMu.Lock()
 	defer s.authMu.Unlock()
-	if s.credentialsStale {
-		return "", ErrStoredCredentialsRejected
+	if err := s.latchedAuthErrorLocked(); err != nil {
+		return "", err
 	}
 	if token := s.store.GetJWT(); token != "" {
 		return token, nil
 	}
+	return s.loginLocked(ctx, false)
+}
 
+// recoverCachedToken is the sole owner of cached-token recovery for a Drain.
+// The caller has already observed a main-sync 401 and guarantees one call.
+func (s *Syncer) recoverCachedToken(ctx context.Context, rejectedToken string) (string, error) {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	if err := s.latchedAuthErrorLocked(); err != nil {
+		return "", err
+	}
+	if token := s.store.GetJWT(); token != "" && token != rejectedToken {
+		return token, nil
+	}
+	if err := s.store.ClearJWT(); err != nil {
+		return "", ErrCachedSessionCleanupFailed
+	}
+	return s.loginLocked(ctx, true)
+}
+
+func (s *Syncer) loginLocked(ctx context.Context, recovery bool) (string, error) {
 	token, expiresAt, err := s.client.login(ctx)
 	if err != nil {
 		var statusErr *HTTPStatusError
@@ -1328,10 +1384,54 @@ func (s *Syncer) getOrRefreshToken(ctx context.Context) (string, error) {
 			}
 			return "", ErrStoredCredentialsRejected
 		}
+		if recovery {
+			return "", fmt.Errorf("%w: %w", ErrAuthReloginFailed, err)
+		}
 		return "", err
 	}
 	if err := s.store.SetJWT(token, expiresAt); err != nil {
+		if recovery {
+			// Storage errors may contain local implementation details. Recovery
+			// remains transient and must not latch or report a successful session.
+			return "", ErrAuthReloginFailed
+		}
 		return "", fmt.Errorf("store login session: %w", err)
 	}
 	return token, nil
+}
+
+func (s *Syncer) rejectReauthenticatedToken() error {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	if err := s.store.ClearJWT(); err != nil {
+		return ErrCachedSessionCleanupFailed
+	}
+	s.reauthenticatedTokenRejected = true
+	if !s.tokenRejectedDiagnosticEmitted {
+		s.tokenRejectedDiagnosticEmitted = true
+		logger.Log.Printf("warn: %s", ErrReauthenticatedTokenRejected)
+	}
+	return ErrReauthenticatedTokenRejected
+}
+
+func isMainSyncUnauthorized(err error) bool {
+	var statusErr *HTTPStatusError
+	return errors.As(err, &statusErr) && statusErr.Operation == "sync" && statusErr.StatusCode == 401
+}
+
+func successAttemptMetadata(recoveryUsed bool) string {
+	if recoveryUsed {
+		return `{"auth_recovery":"token_refreshed"}`
+	}
+	return "{}"
+}
+
+func (s *Syncer) latchedAuthErrorLocked() error {
+	if s.credentialsStale {
+		return ErrStoredCredentialsRejected
+	}
+	if s.reauthenticatedTokenRejected {
+		return ErrReauthenticatedTokenRejected
+	}
+	return nil
 }
