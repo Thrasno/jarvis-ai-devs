@@ -255,13 +255,13 @@ func TestPersonaSetCmd_OpenCodeAgent_NoOutputStyle(t *testing.T) {
 	}
 }
 
-func TestApplyPersonaPresetSelectionAcceptsDormantV2WhilePersonaSetRemainsV1(t *testing.T) {
+func TestApplyPersonaPresetV2UsesCanonicalPipeline(t *testing.T) {
 	tempHome := isolateTestHome(t)
 	if err := os.MkdirAll(filepath.Join(tempHome, ".claude"), 0o755); err != nil {
 		t.Fatalf("create .claude dir: %v", err)
 	}
 	agents := agent.Detect(jarvis.TemplatesFS)
-	selection := persona.PresetSelection{V2: &persona.ResolvedPresetV2{
+	resolved := &persona.ResolvedPresetV2{
 		Slug:   "custom-mentor",
 		Source: persona.PresetSourceUser,
 		Preset: &persona.PresetV2{
@@ -272,10 +272,10 @@ func TestApplyPersonaPresetSelectionAcceptsDormantV2WhilePersonaSetRemainsV1(t *
 				TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded",
 			},
 		},
-	}}
+	}
 
-	if err := applyPersonaPresetSelection(agents, selection, persona.ApplyOptions{Layer1: config.Layer1Content()}); err != nil {
-		t.Fatalf("applyPersonaPresetSelection(V2) error = %v", err)
+	if err := applyPersonaPresetV2(agents, resolved, persona.ApplyOptions{Layer1: config.Layer1Content()}); err != nil {
+		t.Fatalf("applyPersonaPresetV2() error = %v", err)
 	}
 	content, err := os.ReadFile(filepath.Join(tempHome, ".claude", "CLAUDE.md"))
 	if err != nil {
@@ -286,13 +286,10 @@ func TestApplyPersonaPresetSelectionAcceptsDormantV2WhilePersonaSetRemainsV1(t *
 	}
 }
 
-func TestResolvePersonaSetSelectionUsesValidatedV2Route(t *testing.T) {
-	selection, resolved, err := resolvePersonaSetSelection(jarvis.PersonaFS, "Neutra")
+func TestResolvePersonaSetPresetUsesValidatedV2Route(t *testing.T) {
+	resolved, err := resolvePersonaSetPreset(jarvis.PersonaFS, "Neutra")
 	if err != nil {
-		t.Fatalf("resolvePersonaSetSelection: %v", err)
-	}
-	if selection.V1 != nil || selection.V2 == nil {
-		t.Fatalf("selection = %+v, want V2 only", selection)
+		t.Fatalf("resolvePersonaSetPreset: %v", err)
 	}
 	if resolved == nil || resolved.Slug != "neutra" || resolved.Preset.SchemaVersion != 2 {
 		t.Fatalf("resolved = %+v, want validated V2 neutra", resolved)
@@ -309,7 +306,7 @@ func TestResolvePersonaSetSelectionRejectsLegacyCustomProfileWithMigrationGuidan
 		t.Fatalf("write legacy preset: %v", err)
 	}
 
-	_, _, err := resolvePersonaSetSelection(jarvis.PersonaFS, "legacy custom")
+	_, err := resolvePersonaSetPreset(jarvis.PersonaFS, "legacy custom")
 	if err == nil || !contains(err.Error(), "migrate") {
 		t.Fatalf("resolvePersonaSetSelection() error = %v, want actionable migration guidance", err)
 	}

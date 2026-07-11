@@ -176,7 +176,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		customDraft = &customPresetDraft{Name: name, DisplayName: displayName, YAML: yamlOverride}
 	}
 
-	selection, resolvedPreset, err := resolveNoTUIPresetSelection(wcfg.PersonaFS, selectedPersona.Name, customDraft)
+	resolvedPreset, err := resolveNoTUIPreset(wcfg.PersonaFS, selectedPersona.Name, customDraft)
 	if err != nil {
 		return fmt.Errorf("resolve selected preset: %w", err)
 	}
@@ -376,7 +376,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		return fmt.Errorf("check statusline script: %w", err)
 	}
 
-	results := configureWizardAgents(agents, cfg, entry, context7Entry, selection, wizardPresetApplyContext{
+	results := configureWizardAgents(agents, cfg, entry, context7Entry, resolvedPreset, wizardPresetApplyContext{
 		Layer1:               config.Layer1Content(),
 		Skills:               skillInfos,
 		PreviousPresetSlug:   previousPresetSlug,
@@ -474,14 +474,14 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	return nil
 }
 
-// resolveNoTUIPresetSelection resolves a validated schema-v2 presentation
-// profile before forwarding it through the versioned apply seam.
-func resolveNoTUIPresetSelection(personaFS fs.FS, requestedSlug string, custom *customPresetDraft) (persona.PresetSelection, *persona.ResolvedPresetV2, error) {
+// resolveNoTUIPreset resolves a validated schema-v2 presentation profile for
+// direct application through the canonical V2 pipeline.
+func resolveNoTUIPreset(personaFS fs.FS, requestedSlug string, custom *customPresetDraft) (*persona.ResolvedPresetV2, error) {
 	resolved, err := resolveWizardPresetSelection(personaFS, requestedSlug, custom)
 	if err != nil {
-		return persona.PresetSelection{}, nil, err
+		return nil, err
 	}
-	return persona.PresetSelection{V2: resolved}, resolved, nil
+	return resolved, nil
 }
 
 func schemaV2PresetDescription(name string) string {

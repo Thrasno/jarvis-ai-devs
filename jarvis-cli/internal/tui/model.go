@@ -133,13 +133,12 @@ type Model struct {
 	cockpitPlan           string
 }
 
-// wizardPresetSelection returns only the validated schema-v2 profile selected
-// by the wizard. The V1 slot remains until the later runtime retirement slice.
-func (m Model) wizardPresetSelection() (persona.PresetSelection, bool) {
+// wizardPresetV2 returns the validated schema-v2 profile selected by the wizard.
+func (m Model) wizardPresetV2() (*persona.ResolvedPresetV2, bool) {
 	if m.selectedPresetV2 != nil {
-		return persona.PresetSelection{V2: m.selectedPresetV2}, true
+		return m.selectedPresetV2, true
 	}
-	return persona.PresetSelection{}, false
+	return nil, false
 }
 
 type phaseModelMode int

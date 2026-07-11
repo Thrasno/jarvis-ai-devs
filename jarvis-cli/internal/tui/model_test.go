@@ -1135,7 +1135,7 @@ func TestConfigureWizardAgents_AddsClaudeRestartGuidanceOnlyForClaude(t *testing
 	opencode := &mockAgent{name: "opencode", configDir: t.TempDir()}
 	cfg := &config.AppConfig{APIURL: config.DefaultAPIURL}
 
-	results := configureWizardAgents([]agent.Agent{claude, opencode}, cfg, agent.MCPEntry{Name: "hive", DaemonPath: "/tmp/hive-daemon"}, agent.MCPEntry{Name: "context7"}, persona.PresetSelection{}, wizardPresetApplyContext{}, nil, nil, nil, func() bool { return true })
+	results := configureWizardAgents([]agent.Agent{claude, opencode}, cfg, agent.MCPEntry{Name: "hive", DaemonPath: "/tmp/hive-daemon"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, nil, nil, nil, func() bool { return true })
 
 	if len(results) != 2 {
 		t.Fatalf("expected two results, got %#v", results)
@@ -1231,7 +1231,7 @@ func TestStep_Persona_SelectAndAdvance(t *testing.T) {
 	}
 }
 
-func TestWizardPresetSelectionUsesV2Only(t *testing.T) {
+func TestWizardPresetV2UsesSelectedCanonicalPreset(t *testing.T) {
 	v1 := &persona.ResolvedPreset{Slug: "fixture", Preset: &persona.Preset{Name: "fixture"}}
 	v2 := &persona.ResolvedPresetV2{Slug: "future", Preset: &persona.PresetV2{Name: "future"}}
 
@@ -1246,18 +1246,18 @@ func TestWizardPresetSelectionUsesV2Only(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			selection, ok := tt.m.wizardPresetSelection()
+			resolved, ok := tt.m.wizardPresetV2()
 			if !ok {
 				t.Fatal("expected a selected preset")
 			}
-			if tt.want == "v2" && (selection.V1 != nil || selection.V2 != v2) {
-				t.Fatalf("selection = %+v, want V2 only", selection)
+			if tt.want == "v2" && resolved != v2 {
+				t.Fatalf("resolved = %+v, want selected V2 preset", resolved)
 			}
 		})
 	}
 }
 
-func TestEnsurePresetSelectionForApplyRejectsLegacyCustomProfileWithMigrationGuidance(t *testing.T) {
+func TestEnsurePresetV2ForApplyRejectsLegacyCustomProfileWithMigrationGuidance(t *testing.T) {
 	home := isolateTestHome(t)
 	legacyPath := filepath.Join(home, ".jarvis", "personas", "legacy-custom.yaml")
 	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
@@ -1267,12 +1267,12 @@ func TestEnsurePresetSelectionForApplyRejectsLegacyCustomProfileWithMigrationGui
 		t.Fatalf("write legacy preset: %v", err)
 	}
 
-	_, err := ensurePresetSelectionForApply(Model{
+	_, err := ensurePresetV2ForApply(Model{
 		PersonaFS: testPersonaFS,
 		cfg:       &config.AppConfig{PersonaPreset: "legacy-custom", PersonaPresetSource: string(persona.PresetSourceUser)},
 	})
 	if err == nil || !strings.Contains(err.Error(), "migrate") {
-		t.Fatalf("ensurePresetSelectionForApply() error = %v, want actionable migration guidance", err)
+		t.Fatalf("ensurePresetV2ForApply() error = %v, want actionable migration guidance", err)
 	}
 }
 

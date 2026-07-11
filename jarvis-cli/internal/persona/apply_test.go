@@ -41,19 +41,6 @@ func (a *pipelineAgentStub) WriteInstructions(_ string, layer2 string, _ []confi
 
 func (a *pipelineAgentStub) SupportsOutputStyles() bool { return a.outputSupported }
 
-func (a *pipelineAgentStub) WriteOutputStyle(preset *Preset) error {
-	if !a.outputSupported {
-		return nil
-	}
-	if a.outputErr != nil {
-		return a.outputErr
-	}
-	styleName := testTitleCase(preset.Name)
-	a.settings["outputStyle"] = styleName
-	a.outputFiles[styleName+".md"] = RenderOutputStyle(preset)
-	return nil
-}
-
 func (a *pipelineAgentStub) WriteOutputStyleV2(preset *PresetV2) error {
 	if !a.outputSupported {
 		return nil
@@ -78,34 +65,6 @@ func (a *pipelineAgentStub) ClearOutputStyle(name string) error {
 	delete(a.outputFiles, name+".md")
 	delete(a.settings, "outputStyle")
 	return nil
-}
-
-func newResolvedPreset(slug string) *ResolvedPreset {
-	return &ResolvedPreset{
-		Slug:   slug,
-		Source: PresetSourceBuiltin,
-		Preset: &Preset{
-			Name:        slug,
-			DisplayName: testTitleCase(slug),
-			Description: "test preset",
-			Tone: Tone{
-				Formality:  "neutral",
-				Directness: "direct",
-				Humor:      "none",
-				Language:   "en-us",
-			},
-			CommunicationStyle: CommunicationStyle{
-				Verbosity:            "concise",
-				ShowAlternatives:     true,
-				ChallengeAssumptions: true,
-			},
-			CharacteristicPhrases: CharacteristicPhrases{
-				Greetings:     []string{"Hi"},
-				Confirmations: []string{"OK"},
-			},
-			Notes: "# Notes\n\nBody.",
-		},
-	}
 }
 
 func newResolvedPresetV2(slug string) *ResolvedPresetV2 {
@@ -256,31 +215,6 @@ func TestApplyPresetV2PipelineErrorPaths(t *testing.T) {
 				t.Fatalf("ApplyPresetV2Pipeline error = %q, want contains %q", err.Error(), tt.wantError)
 			}
 		})
-	}
-}
-
-func TestApplyPresetSelectionPipelineUsesV2PresentationAndOutputStyle(t *testing.T) {
-	agent := newPipelineAgentStub("claude", true)
-	v2 := newResolvedPresetV2("custom-mentor")
-
-	if err := ApplyPresetSelectionPipeline([]PresetAgent{agent}, PresetSelection{V2: v2}, ApplyOptions{PreviousPresetSlug: "neutra"}); err != nil {
-		t.Fatalf("ApplyPresetSelectionPipeline(V2) error = %v", err)
-	}
-	if !strings.Contains(agent.layer2, "### Presentation") || strings.Contains(agent.layer2, "Legacy Notes") {
-		t.Fatalf("V2 selection did not render only presentation data: %q", agent.layer2)
-	}
-	if _, ok := agent.outputFiles["CustomMentor.md"]; !ok {
-		t.Fatalf("V2 output style was not written: %v", keys(agent.outputFiles))
-	}
-}
-
-func TestApplyPresetSelectionPipelineRejectsAmbiguousSelections(t *testing.T) {
-	err := ApplyPresetSelectionPipeline(nil, PresetSelection{
-		V1: newResolvedPreset("neutra"),
-		V2: &ResolvedPresetV2{Slug: "custom-mentor", Preset: &PresetV2{Name: "custom-mentor"}},
-	}, ApplyOptions{})
-	if err == nil || !strings.Contains(err.Error(), "exactly one preset version") {
-		t.Fatalf("ApplyPresetSelectionPipeline() error = %v, want version-selection guidance", err)
 	}
 }
 

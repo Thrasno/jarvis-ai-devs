@@ -388,20 +388,17 @@ func TestRunNoTUI_CustomPresetInvalidYAMLBlocksContinuation(t *testing.T) {
 	}
 }
 
-func TestResolveNoTUIPresetSelectionUsesValidatedV2Route(t *testing.T) {
-	selection, resolved, err := resolveNoTUIPresetSelection(testPersonaFS, "fixture", nil)
+func TestResolveNoTUIPresetUsesValidatedV2Route(t *testing.T) {
+	resolved, err := resolveNoTUIPreset(testPersonaFS, "fixture", nil)
 	if err != nil {
-		t.Fatalf("resolveNoTUIPresetSelection: %v", err)
-	}
-	if selection.V1 != nil || selection.V2 == nil {
-		t.Fatalf("selection = %+v, want V2 only", selection)
+		t.Fatalf("resolveNoTUIPreset: %v", err)
 	}
 	if resolved == nil || resolved.Slug != "fixture" || resolved.Preset.SchemaVersion != 2 {
 		t.Fatalf("resolved = %+v, want validated V2 fixture", resolved)
 	}
 }
 
-func TestResolveNoTUIPresetSelectionRejectsLegacyCustomProfileWithMigrationGuidance(t *testing.T) {
+func TestResolveNoTUIPresetRejectsLegacyCustomProfileWithMigrationGuidance(t *testing.T) {
 	home := isolateTestHome(t)
 	legacyPath := filepath.Join(home, ".jarvis", "personas", "legacy-custom.yaml")
 	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
@@ -411,9 +408,9 @@ func TestResolveNoTUIPresetSelectionRejectsLegacyCustomProfileWithMigrationGuida
 		t.Fatalf("write legacy preset: %v", err)
 	}
 
-	_, _, err := resolveNoTUIPresetSelection(testPersonaFS, "legacy custom", nil)
+	_, err := resolveNoTUIPreset(testPersonaFS, "legacy custom", nil)
 	if err == nil || !strings.Contains(err.Error(), "migrate") {
-		t.Fatalf("resolveNoTUIPresetSelection() error = %v, want actionable migration guidance", err)
+		t.Fatalf("resolveNoTUIPreset() error = %v, want actionable migration guidance", err)
 	}
 }
 

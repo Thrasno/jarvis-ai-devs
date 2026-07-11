@@ -143,7 +143,7 @@ func configureWizardAgents(
 	cfg *config.AppConfig,
 	hiveEntry agent.MCPEntry,
 	context7Entry agent.MCPEntry,
-	selection persona.PresetSelection,
+	resolved *persona.ResolvedPresetV2,
 	presetCtx wizardPresetApplyContext,
 	skillsSubFS fs.FS,
 	selectedIDs []string,
@@ -170,8 +170,8 @@ func configureWizardAgents(
 		results = append(results, res)
 	}
 
-	if selection.V1 != nil || selection.V2 != nil {
-		if err := applyWizardPresetSelection(agents, selection, wizardPresetApplyContext{
+	if resolved != nil {
+		if err := applyWizardPresetV2(agents, resolved, wizardPresetApplyContext{
 			Layer1:               presetCtx.Layer1,
 			Skills:               presetCtx.Skills,
 			PreviousPresetSlug:   presetCtx.PreviousPresetSlug,
@@ -196,16 +196,19 @@ func configureWizardAgents(
 	return results
 }
 
-// applyWizardPresetSelection is the TUI adapter seam for an already resolved
-// persona version. The normal wizard passes V1 explicitly; V2 remains dormant
-// until a later activation path opts in.
-func applyWizardPresetSelection(agents []agent.Agent, selection persona.PresetSelection, presetCtx wizardPresetApplyContext) error {
-	pipelineAgents := make([]persona.PresetAgent, 0, len(agents))
+// applyWizardPresetV2 applies an already resolved schema-v2 profile through
+// the canonical V2 pipeline.
+func applyWizardPresetV2(agents []agent.Agent, resolved *persona.ResolvedPresetV2, presetCtx wizardPresetApplyContext) error {
+	pipelineAgents := make([]persona.PresetV2Agent, 0, len(agents))
 	for _, a := range agents {
-		pipelineAgents = append(pipelineAgents, a)
+		pipelineAgent, ok := a.(persona.PresetV2Agent)
+		if !ok {
+			return fmt.Errorf("agent %q does not support schema v2 presentation profiles", a.Name())
+		}
+		pipelineAgents = append(pipelineAgents, pipelineAgent)
 	}
 
-	return persona.ApplyPresetSelectionPipeline(pipelineAgents, selection, persona.ApplyOptions{
+	return persona.ApplyPresetV2Pipeline(pipelineAgents, resolved, persona.ApplyOptions{
 		Layer1:               presetCtx.Layer1,
 		Skills:               presetCtx.Skills,
 		PreviousPresetSlug:   presetCtx.PreviousPresetSlug,

@@ -26,7 +26,7 @@ var personaSetCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		presetName := args[0]
 
-		selection, resolved, err := resolvePersonaSetSelection(jarvis.PersonaFS, presetName)
+		resolved, err := resolvePersonaSetPreset(jarvis.PersonaFS, presetName)
 		if err != nil {
 			return fmt.Errorf("resolve preset %q: %w", presetName, err)
 		}
@@ -57,7 +57,7 @@ var personaSetCmd = &cobra.Command{
 		}
 
 		agents := agent.Detect(jarvis.TemplatesFS)
-		if err := applyPersonaPresetSelection(agents, selection, persona.ApplyOptions{
+		if err := applyPersonaPresetV2(agents, resolved, persona.ApplyOptions{
 			Layer1:               config.Layer1Content(),
 			Skills:               skillInfos,
 			PreviousPresetSlug:   cfg.PersonaPreset,
@@ -76,24 +76,28 @@ var personaSetCmd = &cobra.Command{
 	},
 }
 
-// resolvePersonaSetSelection resolves a validated schema-v2 presentation profile
-// before it reaches the apply pipeline.
-func resolvePersonaSetSelection(personaFS fs.FS, presetName string) (persona.PresetSelection, *persona.ResolvedPresetV2, error) {
+// resolvePersonaSetPreset resolves a validated schema-v2 presentation profile
+// before it reaches the canonical V2 apply pipeline.
+func resolvePersonaSetPreset(personaFS fs.FS, presetName string) (*persona.ResolvedPresetV2, error) {
 	resolved, err := persona.ResolvePresetV2(personaFS, presetName)
 	if err != nil {
-		return persona.PresetSelection{}, nil, err
+		return nil, err
 	}
-	return persona.PresetSelection{V2: resolved}, resolved, nil
+	return resolved, nil
 }
 
-// applyPersonaPresetSelection adapts resolved persona versions to installed
-// agents through the validated selected preset version.
-func applyPersonaPresetSelection(agents []agent.Agent, selection persona.PresetSelection, opts persona.ApplyOptions) error {
-	pipelineAgents := make([]persona.PresetAgent, 0, len(agents))
+// applyPersonaPresetV2 applies a validated schema-v2 preset through the
+// canonical V2 pipeline.
+func applyPersonaPresetV2(agents []agent.Agent, resolved *persona.ResolvedPresetV2, opts persona.ApplyOptions) error {
+	pipelineAgents := make([]persona.PresetV2Agent, 0, len(agents))
 	for _, a := range agents {
-		pipelineAgents = append(pipelineAgents, a)
+		pipelineAgent, ok := a.(persona.PresetV2Agent)
+		if !ok {
+			return fmt.Errorf("agent %q does not support schema v2 presentation profiles", a.Name())
+		}
+		pipelineAgents = append(pipelineAgents, pipelineAgent)
 	}
-	return persona.ApplyPresetSelectionPipeline(pipelineAgents, selection, opts)
+	return persona.ApplyPresetV2Pipeline(pipelineAgents, resolved, opts)
 }
 
 func normalizePersonaPresetSource(value string) persona.PresetSource {

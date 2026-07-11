@@ -1361,10 +1361,10 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		// Build SkillInfo list from registry for template rendering.
 		skillInfos := buildSkillInfoList(m)
 
-		selection := persona.PresetSelection{}
+		var resolvedPreset *persona.ResolvedPresetV2
 		if len(m.Agents) > 0 {
 			var err error
-			selection, err = ensurePresetSelectionForApply(m)
+			resolvedPreset, err = ensurePresetV2ForApply(m)
 			if err != nil {
 				return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: resolve preset %q: %v", m.cfg.PersonaPreset, err), done: true, failed: true}
 			}
@@ -1402,7 +1402,7 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		}
 
 		// Configure each detected agent and collect structured outcomes.
-		results := configureWizardAgents(m.Agents, m.cfg, entry, context7Entry, selection, wizardPresetApplyContext{
+		results := configureWizardAgents(m.Agents, m.cfg, entry, context7Entry, resolvedPreset, wizardPresetApplyContext{
 			Layer1:               config.Layer1Content(),
 			Skills:               skillInfos,
 			PreviousPresetSlug:   previousSlug,
@@ -1488,9 +1488,9 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 	}
 }
 
-func ensurePresetSelectionForApply(m Model) (persona.PresetSelection, error) {
-	if selection, ok := m.wizardPresetSelection(); ok {
-		return selection, nil
+func ensurePresetV2ForApply(m Model) (*persona.ResolvedPresetV2, error) {
+	if resolved, ok := m.wizardPresetV2(); ok {
+		return resolved, nil
 	}
 
 	requested := ""
@@ -1504,15 +1504,15 @@ func ensurePresetSelectionForApply(m Model) (persona.PresetSelection, error) {
 		}
 	}
 	if requested == "" {
-		return persona.PresetSelection{}, fmt.Errorf("no preset selected")
+		return nil, fmt.Errorf("no preset selected")
 	}
 
 	resolved, err := resolveWizardPresetSelection(m.PersonaFS, requested, nil)
 	if err != nil {
-		return persona.PresetSelection{}, err
+		return nil, err
 	}
 
-	return persona.PresetSelection{V2: resolved}, nil
+	return resolved, nil
 }
 
 // buildSelectedIDs returns a slice of skill IDs for all selected and core skills.

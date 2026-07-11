@@ -328,7 +328,7 @@ func TestConfigureWizardAgents_SurfacesRegistryAutomationWarningsWithoutFailing(
 		observeRuntime:        passingRuntimeObservation(t, "claude", assignments, nil),
 	}
 
-	results := configureWizardAgents([]agent.Agent{a}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, persona.PresetSelection{}, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
+	results := configureWizardAgents([]agent.Agent{a}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
 	if len(results) != 1 {
 		t.Fatalf("len(results) = %d, want 1", len(results))
 	}
@@ -495,7 +495,7 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 	tests := []struct {
 		name           string
 		agents         []agent.Agent
-		resolved       *persona.ResolvedPreset
+		resolved       *persona.ResolvedPresetV2
 		wantLen        int
 		wantConfigured bool
 		wantErrSubstr  string
@@ -527,7 +527,7 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 				&setupAgentStub{name: "claude"},
 				&setupAgentStub{name: "opencode", writeInstructionsErr: errors.New("instruction fail")},
 			},
-			resolved:       &persona.ResolvedPreset{Slug: "neutra", Source: persona.PresetSourceBuiltin, Preset: &persona.Preset{Name: "neutra", DisplayName: "Neutra", Description: "x", Tone: persona.Tone{Formality: "neutral", Directness: "direct", Humor: "none", Language: "en-us"}, CommunicationStyle: persona.CommunicationStyle{Verbosity: "concise"}, CharacteristicPhrases: persona.CharacteristicPhrases{Greetings: []string{"Hi"}, Confirmations: []string{"OK"}}}},
+			resolved:       &persona.ResolvedPresetV2{Slug: "neutra", Source: persona.PresetSourceBuiltin, Preset: &persona.PresetV2{Name: "neutra"}},
 			wantLen:        2,
 			wantConfigured: true,
 			wantErrSubstr:  "apply preset pipeline",
@@ -536,7 +536,7 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			results := configureWizardAgents(tt.agents, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, persona.PresetSelection{V1: tt.resolved}, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
+			results := configureWizardAgents(tt.agents, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, tt.resolved, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
 			if len(results) != tt.wantLen {
 				t.Fatalf("len(results) = %d, want %d", len(results), tt.wantLen)
 			}
@@ -561,9 +561,9 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 	}
 }
 
-func TestApplyWizardPresetSelectionAcceptsDormantV2(t *testing.T) {
+func TestApplyWizardPresetV2UsesCanonicalPipeline(t *testing.T) {
 	stub := &setupAgentStub{name: "claude"}
-	selection := persona.PresetSelection{V2: &persona.ResolvedPresetV2{
+	resolved := &persona.ResolvedPresetV2{
 		Slug: "custom-mentor",
 		Preset: &persona.PresetV2{
 			Name: "custom-mentor",
@@ -573,10 +573,10 @@ func TestApplyWizardPresetSelectionAcceptsDormantV2(t *testing.T) {
 				TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded",
 			},
 		},
-	}}
+	}
 
-	if err := applyWizardPresetSelection([]agent.Agent{stub}, selection, wizardPresetApplyContext{Layer1: "layer1"}); err != nil {
-		t.Fatalf("applyWizardPresetSelection() error = %v", err)
+	if err := applyWizardPresetV2([]agent.Agent{stub}, resolved, wizardPresetApplyContext{Layer1: "layer1"}); err != nil {
+		t.Fatalf("applyWizardPresetV2() error = %v", err)
 	}
 	if !strings.Contains(stub.layer2, "### Presentation") || strings.Contains(stub.layer2, "Behavioral Rules") {
 		t.Fatalf("V2 wizard layer2 = %q, want presentation-only content", stub.layer2)
@@ -586,9 +586,9 @@ func TestApplyWizardPresetSelectionAcceptsDormantV2(t *testing.T) {
 	}
 }
 
-func TestConfigureWizardAgentsAcceptsDormantV2Selection(t *testing.T) {
+func TestConfigureWizardAgentsUsesCanonicalV2Preset(t *testing.T) {
 	stub := &setupAgentStub{name: "claude", writeInstructionsErr: errors.New("instruction fail")}
-	selection := persona.PresetSelection{V2: &persona.ResolvedPresetV2{
+	resolved := &persona.ResolvedPresetV2{
 		Slug: "custom-mentor",
 		Preset: &persona.PresetV2{
 			Name: "custom-mentor",
@@ -598,9 +598,9 @@ func TestConfigureWizardAgentsAcceptsDormantV2Selection(t *testing.T) {
 				TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded",
 			},
 		},
-	}}
+	}
 
-	results := configureWizardAgents([]agent.Agent{stub}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, selection, wizardPresetApplyContext{Layer1: "layer1"}, testSkillsFS, nil, nil, func() bool { return true })
+	results := configureWizardAgents([]agent.Agent{stub}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, resolved, wizardPresetApplyContext{Layer1: "layer1"}, testSkillsFS, nil, nil, func() bool { return true })
 	if len(results) != 1 || results[0].Err == nil || !strings.Contains(results[0].Err.Error(), "apply preset pipeline") {
 		t.Fatalf("V2 selection was not forwarded through the agent setup seam: %+v", results)
 	}
@@ -672,7 +672,7 @@ func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			results := configureWizardAgents([]agent.Agent{tt.agent}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, persona.PresetSelection{}, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
+			results := configureWizardAgents([]agent.Agent{tt.agent}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
 			if len(results) != 1 {
 				t.Fatalf("len(results) = %d, want 1", len(results))
 			}
@@ -750,7 +750,7 @@ func TestConfigureWizardAgents_RuntimeVerificationUsesPendingConfigForOpenCodeDe
 		return observed, nil
 	}
 
-	results := configureWizardAgents([]agent.Agent{a}, pendingCfg, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, persona.PresetSelection{}, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
+	results := configureWizardAgents([]agent.Agent{a}, pendingCfg, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
 	if len(results) != 1 {
 		t.Fatalf("len(results) = %d, want 1", len(results))
 	}
