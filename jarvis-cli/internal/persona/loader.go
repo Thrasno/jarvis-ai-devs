@@ -13,25 +13,26 @@ import (
 	"unicode"
 )
 
-// Preset is a UI-option compatibility shim retained until the live TUI moves
-// to PresetV2 options. It is not decoded, rendered, resolved, or applied.
+// Preset is a UI-option compatibility shim retained until the remaining TUI
+// fixtures move to canonical Profile options. It is not decoded, rendered,
+// resolved, or applied.
 type Preset struct {
 	Name        string
 	DisplayName string
 	Description string
 }
 
-// ListPresetsV2 returns all validated schema-v2 built-in presentation profiles.
-func ListPresetsV2(fsys fs.FS) ([]PresetV2, error) {
+// ListProfiles returns all validated schema-v2 built-in presentation profiles.
+func ListProfiles(fsys fs.FS) ([]Profile, error) {
 	if fsys == nil {
 		return nil, nil
 	}
 
 	names := listPresetV2Names(fsys)
-	presets := make([]PresetV2, 0, len(names))
+	presets := make([]Profile, 0, len(names))
 
 	for _, name := range names {
-		resolved, err := ResolvePresetV2(fsys, name)
+		resolved, err := ResolveProfile(fsys, name)
 		if err != nil {
 			return nil, fmt.Errorf("load schema v2 preset %q: %w", name, err)
 		}
@@ -42,6 +43,12 @@ func ListPresetsV2(fsys fs.FS) ([]PresetV2, error) {
 	}
 
 	return presets, nil
+}
+
+// ListPresetsV2 is retained for compatibility until the remaining test
+// fixtures are migrated to ListProfiles.
+func ListPresetsV2(fsys fs.FS) ([]Profile, error) {
+	return ListProfiles(fsys)
 }
 
 func listPresetV2Names(fsys fs.FS) []string {
@@ -83,19 +90,26 @@ func listPresetNamesInDir(fsys fs.FS, directory string) []string {
 	return names
 }
 
-// RenderLayer2V2 renders a schema-v2 profile as presentation only. It is
-// intentionally separate from RenderLayer2 until V2 activation.
-func RenderLayer2V2(preset *PresetV2) string {
+// RenderLayer2 renders a schema-v2 profile as presentation only.
+func RenderLayer2(preset *Profile) string {
 	return renderPresentationV2(preset, false)
 }
 
-// RenderOutputStyleV2 renders schema-v2 presentation for Claude Code while
+// RenderOutputStyle renders schema-v2 presentation for Claude Code while
 // retaining Claude's Layer1 coding instructions.
-func RenderOutputStyleV2(preset *PresetV2) string {
+func RenderOutputStyle(preset *Profile) string {
 	return renderPresentationV2(preset, true)
 }
 
-func renderPresentationV2(preset *PresetV2, outputStyle bool) string {
+// RenderLayer2V2 is retained for compatibility until the remaining test
+// fixtures are migrated to RenderLayer2.
+func RenderLayer2V2(preset *Profile) string { return RenderLayer2(preset) }
+
+// RenderOutputStyleV2 is retained for compatibility until the remaining test
+// fixtures are migrated to RenderOutputStyle.
+func RenderOutputStyleV2(preset *Profile) string { return RenderOutputStyle(preset) }
+
+func renderPresentationV2(preset *Profile, outputStyle bool) string {
 	var sb strings.Builder
 	if outputStyle {
 		sb.WriteString("---\n")

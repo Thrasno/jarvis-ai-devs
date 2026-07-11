@@ -119,9 +119,9 @@ func TestPersonaSetCmd_ClaudeAgent_CreatesOutputStyle(t *testing.T) {
 	}
 
 	// Load a test preset
-	resolved, err := persona.ResolvePresetV2(jarvis.PersonaFS, "neutra")
+	resolved, err := persona.ResolveProfile(jarvis.PersonaFS, "neutra")
 	if err != nil {
-		t.Fatalf("ResolvePresetV2 failed: %v", err)
+		t.Fatalf("ResolveProfile failed: %v", err)
 	}
 
 	// Detect agents AFTER setting HOME env var
@@ -147,18 +147,18 @@ func TestPersonaSetCmd_ClaudeAgent_CreatesOutputStyle(t *testing.T) {
 	}
 
 	// Call WriteInstructions (required before WriteOutputStyle)
-	layer2 := persona.RenderLayer2V2(resolved.Preset)
+	layer2 := persona.RenderLayer2(resolved.Preset)
 	if err := claudeAgent.WriteInstructions(config.Layer1Content(), layer2, nil); err != nil {
 		t.Fatalf("WriteInstructions failed: %v", err)
 	}
 
-	// Call WriteOutputStyleV2 through the V2 adapter.
-	claudeV2, ok := claudeAgent.(persona.PresetV2Agent)
+	// Call the canonical presentation profile adapter.
+	profileAgent, ok := claudeAgent.(persona.ProfileAgent)
 	if !ok {
-		t.Fatal("ClaudeAgent must support schema-v2 output styles")
+		t.Fatal("ClaudeAgent must support presentation profile output styles")
 	}
-	if err := claudeV2.WriteOutputStyleV2(resolved.Preset); err != nil {
-		t.Fatalf("WriteOutputStyleV2 failed: %v", err)
+	if err := profileAgent.WriteOutputStyle(resolved.Preset); err != nil {
+		t.Fatalf("WriteOutputStyle failed: %v", err)
 	}
 
 	// ASSERT: CLAUDE.md should exist
@@ -202,9 +202,9 @@ func TestPersonaSetCmd_OpenCodeAgent_NoOutputStyle(t *testing.T) {
 	}
 
 	// Load a test preset
-	resolved, err := persona.ResolvePresetV2(jarvis.PersonaFS, "neutra")
+	resolved, err := persona.ResolveProfile(jarvis.PersonaFS, "neutra")
 	if err != nil {
-		t.Fatalf("ResolvePresetV2 failed: %v", err)
+		t.Fatalf("ResolveProfile failed: %v", err)
 	}
 
 	// Detect agents AFTER setting HOME env var
@@ -230,18 +230,18 @@ func TestPersonaSetCmd_OpenCodeAgent_NoOutputStyle(t *testing.T) {
 	}
 
 	// Call WriteInstructions
-	layer2 := persona.RenderLayer2V2(resolved.Preset)
+	layer2 := persona.RenderLayer2(resolved.Preset)
 	if err := openCodeAgent.WriteInstructions(config.Layer1Content(), layer2, nil); err != nil {
 		t.Fatalf("WriteInstructions failed: %v", err)
 	}
 
-	// Call WriteOutputStyleV2 (should be no-op)
-	openCodeV2, ok := openCodeAgent.(persona.PresetV2Agent)
+	// Call WriteOutputStyle (should be no-op).
+	profileAgent, ok := openCodeAgent.(persona.ProfileAgent)
 	if !ok {
-		t.Fatal("OpenCodeAgent must support schema-v2 output styles")
+		t.Fatal("OpenCodeAgent must support presentation profile output styles")
 	}
-	if err := openCodeV2.WriteOutputStyleV2(resolved.Preset); err != nil {
-		t.Fatalf("WriteOutputStyleV2 should not error: %v", err)
+	if err := profileAgent.WriteOutputStyle(resolved.Preset); err != nil {
+		t.Fatalf("WriteOutputStyle should not error: %v", err)
 	}
 
 	// ASSERT: AGENTS.md should exist
@@ -263,18 +263,18 @@ func TestPersonaSetCmd_OpenCodeAgent_NoOutputStyle(t *testing.T) {
 	}
 }
 
-func TestApplyPersonaPresetV2UsesCanonicalPipeline(t *testing.T) {
+func TestApplyPersonaProfileUsesCanonicalPipeline(t *testing.T) {
 	tempHome := isolateTestHome(t)
 	if err := os.MkdirAll(filepath.Join(tempHome, ".claude"), 0o755); err != nil {
 		t.Fatalf("create .claude dir: %v", err)
 	}
 	agents := agent.Detect(jarvis.TemplatesFS)
-	resolved := &persona.ResolvedPresetV2{
+	resolved := &persona.ResolvedProfile{
 		Slug:   "custom-mentor",
 		Source: persona.PresetSourceUser,
-		Preset: &persona.PresetV2{
+		Preset: &persona.Profile{
 			Name: "custom-mentor",
-			Presentation: persona.PresentationV2{
+			Presentation: persona.Presentation{
 				Language: "en-us", Register: "friendly-professional", Vocabulary: "plain-technical", Cadence: "measured",
 				Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured",
 				TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded",
@@ -282,25 +282,25 @@ func TestApplyPersonaPresetV2UsesCanonicalPipeline(t *testing.T) {
 		},
 	}
 
-	if err := applyPersonaPresetV2(agents, resolved, persona.ApplyOptions{Layer1: config.Layer1Content()}); err != nil {
-		t.Fatalf("applyPersonaPresetV2() error = %v", err)
+	if err := applyPersonaProfile(agents, resolved, persona.ApplyOptions{Layer1: config.Layer1Content()}); err != nil {
+		t.Fatalf("applyPersonaProfile() error = %v", err)
 	}
 	content, err := os.ReadFile(filepath.Join(tempHome, ".claude", "CLAUDE.md"))
 	if err != nil {
 		t.Fatalf("read CLAUDE.md: %v", err)
 	}
 	if !contains(string(content), "### Presentation") || contains(string(content), "### Behavioral Rules") {
-		t.Fatalf("V2 CLI adapter rendered unexpected Layer2:\n%s", content)
+		t.Fatalf("canonical CLI adapter rendered unexpected Layer2:\n%s", content)
 	}
 }
 
-func TestResolvePersonaSetPresetUsesValidatedV2Route(t *testing.T) {
+func TestResolvePersonaSetPresetUsesValidatedProfileRoute(t *testing.T) {
 	resolved, err := resolvePersonaSetPreset(jarvis.PersonaFS, "Neutra")
 	if err != nil {
 		t.Fatalf("resolvePersonaSetPreset: %v", err)
 	}
 	if resolved == nil || resolved.Slug != "neutra" || resolved.Preset.SchemaVersion != 2 {
-		t.Fatalf("resolved = %+v, want validated V2 neutra", resolved)
+		t.Fatalf("resolved = %+v, want validated profile neutra", resolved)
 	}
 }
 

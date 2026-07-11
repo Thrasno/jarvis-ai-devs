@@ -16,16 +16,16 @@ const (
 	maxDisplayNameRunesV2 = 80
 )
 
-// PresetV2 is a dormant, presentation-only persona profile.
-type PresetV2 struct {
-	SchemaVersion int            `yaml:"schema_version"`
-	Name          string         `yaml:"name"`
-	DisplayName   string         `yaml:"display_name"`
-	Presentation  PresentationV2 `yaml:"presentation"`
+// Profile is a validated, presentation-only persona profile.
+type Profile struct {
+	SchemaVersion int          `yaml:"schema_version"`
+	Name          string       `yaml:"name"`
+	DisplayName   string       `yaml:"display_name"`
+	Presentation  Presentation `yaml:"presentation"`
 }
 
-// PresentationV2 contains typed, renderer-owned presentation pack IDs.
-type PresentationV2 struct {
+// Presentation contains typed, renderer-owned presentation pack IDs.
+type Presentation struct {
 	Language          string `yaml:"language"`
 	Register          string `yaml:"register"`
 	Vocabulary        string `yaml:"vocabulary"`
@@ -41,15 +41,34 @@ type PresentationV2 struct {
 	AntiCaricature    string `yaml:"anti_caricature"`
 }
 
-// PresetV2ProfileClassification describes whether YAML can participate in the
-// schema-v2 persona selection flow without loading a V1 runtime profile.
-type PresetV2ProfileClassification string
+// PresetV2 is retained for compatibility until the remaining test fixtures are
+// migrated to the canonical Profile API.
+type PresetV2 = Profile
+
+// PresentationV2 is retained for compatibility until the remaining test
+// fixtures are migrated to the canonical Presentation API.
+type PresentationV2 = Presentation
+
+// ProfileClassification describes whether YAML can participate in the
+// schema-v2 persona selection flow without resolving a legacy profile.
+type ProfileClassification string
 
 const (
-	PresetV2ProfileValid     PresetV2ProfileClassification = "valid-v2"
-	PresetV2ProfileLegacy    PresetV2ProfileClassification = "legacy-v1"
-	PresetV2ProfileMalformed PresetV2ProfileClassification = "malformed"
-	PresetV2ProfileMissing   PresetV2ProfileClassification = "missing"
+	ProfileValid     ProfileClassification = "valid-v2"
+	ProfileLegacy    ProfileClassification = "legacy-v1"
+	ProfileMalformed ProfileClassification = "malformed"
+	ProfileMissing   ProfileClassification = "missing"
+)
+
+// PresetV2ProfileClassification and its values are retained for compatibility
+// until the remaining test fixtures are migrated to ProfileClassification.
+type PresetV2ProfileClassification = ProfileClassification
+
+const (
+	PresetV2ProfileValid     = ProfileValid
+	PresetV2ProfileLegacy    = ProfileLegacy
+	PresetV2ProfileMalformed = ProfileMalformed
+	PresetV2ProfileMissing   = ProfileMissing
 )
 
 var v2TopLevelFields = fieldSet("schema_version", "name", "display_name", "presentation")
@@ -88,7 +107,7 @@ func fieldSet(values ...string) map[string]struct{} {
 
 // ValidateAndDecode strictly decodes a schema-v2 profile without activating it
 // in the V1 loading or rendering path.
-func ValidateAndDecode(content []byte) (*PresetV2, error) {
+func ValidateAndDecode(content []byte) (*Profile, error) {
 	var document yaml.Node
 	if err := yaml.Unmarshal(content, &document); err != nil {
 		return nil, fmt.Errorf("invalid YAML: %w", err)
@@ -102,7 +121,7 @@ func ValidateAndDecode(content []byte) (*PresetV2, error) {
 
 	decoder := yaml.NewDecoder(bytes.NewReader(content))
 	decoder.KnownFields(true)
-	var preset PresetV2
+	var preset Profile
 	if err := decoder.Decode(&preset); err != nil {
 		return nil, fmt.Errorf("decode schema v2 profile: %w", err)
 	}
@@ -112,14 +131,14 @@ func ValidateAndDecode(content []byte) (*PresetV2, error) {
 	return &preset, nil
 }
 
-func classifyPresetV2Profile(content []byte) PresetV2ProfileClassification {
+func classifyPresetV2Profile(content []byte) ProfileClassification {
 	if _, err := ValidateAndDecode(content); err == nil {
-		return PresetV2ProfileValid
+		return ProfileValid
 	}
 
 	var document yaml.Node
 	if err := yaml.Unmarshal(content, &document); err != nil || len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
-		return PresetV2ProfileMalformed
+		return ProfileMalformed
 	}
 
 	root := document.Content[0]
@@ -130,7 +149,7 @@ func classifyPresetV2Profile(content []byte) PresetV2ProfileClassification {
 		if field == "schema_version" {
 			hasSchemaVersion = true
 			if root.Content[i+1].Value == "1" {
-				return PresetV2ProfileLegacy
+				return ProfileLegacy
 			}
 		}
 		if _, legacy := v2ForbiddenBehaviorFields[field]; legacy {
@@ -138,10 +157,10 @@ func classifyPresetV2Profile(content []byte) PresetV2ProfileClassification {
 		}
 	}
 	if !hasSchemaVersion && hasLegacyField {
-		return PresetV2ProfileLegacy
+		return ProfileLegacy
 	}
 
-	return PresetV2ProfileMalformed
+	return ProfileMalformed
 }
 
 func requireSingleYAMLDocument(content []byte) error {
@@ -195,7 +214,7 @@ func validatePresentationV2Node(node *yaml.Node) error {
 	return nil
 }
 
-func validatePresetV2(preset *PresetV2) error {
+func validatePresetV2(preset *Profile) error {
 	if preset.SchemaVersion != schemaVersionV2 {
 		return fmt.Errorf("schema_version %d is unsupported; migrate to schema_version: 2 and replace legacy presentation fields with presentation packs", preset.SchemaVersion)
 	}

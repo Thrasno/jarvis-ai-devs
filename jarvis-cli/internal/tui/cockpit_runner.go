@@ -72,15 +72,15 @@ func (defaultCockpitRunner) ApplyPersonaPreset(_ context.Context, req personaApp
 	if err != nil {
 		return "", fmt.Errorf("resolve preset: %w", err)
 	}
-	pipelineAgents := make([]persona.PresetV2Agent, 0, len(req.Agents))
+	pipelineAgents := make([]persona.ProfileAgent, 0, len(req.Agents))
 	for _, a := range req.Agents {
-		pipelineAgent, ok := a.(persona.PresetV2Agent)
+		pipelineAgent, ok := persona.AdaptProfileAgent(a)
 		if !ok {
 			return "", fmt.Errorf("agent %q does not support schema v2 presentation profiles", a.Name())
 		}
 		pipelineAgents = append(pipelineAgents, pipelineAgent)
 	}
-	if err := persona.ApplyPresetV2Pipeline(pipelineAgents, resolved, persona.ApplyOptions{
+	if err := persona.ApplyProfile(pipelineAgents, resolved, persona.ApplyOptions{
 		Layer1:               config.Layer1Content(),
 		Skills:               req.Skills,
 		PreviousPresetSlug:   req.PreviousPresetSlug,

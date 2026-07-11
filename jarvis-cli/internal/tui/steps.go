@@ -321,6 +321,7 @@ func updatePersona(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		resolved, err := resolveWizardPresetSelection(m.PersonaFS, selected.Name, nil)
 		if err == nil {
+			m.selectedProfile = resolved
 			m.selectedPresetV2 = resolved
 			m.cfg.PersonaPreset = resolved.Slug
 			m.cfg.Preset = resolved.Slug
@@ -350,6 +351,7 @@ func updatePersonaCustomEdit(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.Err = err
 			return m, nil
 		}
+		m.selectedProfile = resolved
 		m.selectedPresetV2 = resolved
 		m.cfg.PersonaPreset = resolved.Slug
 		m.cfg.Preset = resolved.Slug
@@ -1358,10 +1360,10 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		// Build SkillInfo list from registry for template rendering.
 		skillInfos := buildSkillInfoList(m)
 
-		var resolvedPreset *persona.ResolvedPresetV2
+		var resolvedPreset *persona.ResolvedProfile
 		if len(m.Agents) > 0 {
 			var err error
-			resolvedPreset, err = ensurePresetV2ForApply(m)
+			resolvedPreset, err = ensureProfileForApply(m)
 			if err != nil {
 				return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: resolve preset %q: %v", m.cfg.PersonaPreset, err), done: true, failed: true}
 			}
@@ -1485,8 +1487,8 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 	}
 }
 
-func ensurePresetV2ForApply(m Model) (*persona.ResolvedPresetV2, error) {
-	if resolved, ok := m.wizardPresetV2(); ok {
+func ensureProfileForApply(m Model) (*persona.ResolvedProfile, error) {
+	if resolved, ok := m.wizardProfile(); ok {
 		return resolved, nil
 	}
 
@@ -1495,7 +1497,7 @@ func ensurePresetV2ForApply(m Model) (*persona.ResolvedPresetV2, error) {
 		requested = strings.TrimSpace(m.cfg.PersonaPreset)
 	}
 	if requested == "" {
-		presets, err := persona.ListPresetsV2(m.PersonaFS)
+		presets, err := persona.ListProfiles(m.PersonaFS)
 		if err == nil && len(presets) > 0 {
 			requested = presets[0].Name
 		}
@@ -1510,6 +1512,15 @@ func ensurePresetV2ForApply(m Model) (*persona.ResolvedPresetV2, error) {
 	}
 
 	return resolved, nil
+}
+
+// ensurePresetV2ForApply is retained for compatibility until the remaining
+// test fixtures are migrated to ensureProfileForApply.
+func ensurePresetV2ForApply(m Model) (*persona.ResolvedProfile, error) {
+	if resolved, ok := m.wizardPresetV2(); ok {
+		return resolved, nil
+	}
+	return ensureProfileForApply(m)
 }
 
 // buildSelectedIDs returns a slice of skill IDs for all selected and core skills.

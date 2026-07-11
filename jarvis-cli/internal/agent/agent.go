@@ -57,7 +57,7 @@ type Agent interface {
 	// OpenCode does not have native output-style support.
 	SupportsOutputStyles() bool
 
-	// WriteOutputStyleV2 writes the schema-v2 output-style file and patches agent settings.
+	// WriteOutputStyleV2 is retained for compatibility with remaining fixtures.
 	// For agents that don't support output-styles, this is a no-op returning nil.
 	WriteOutputStyleV2(preset *persona.PresetV2) error
 

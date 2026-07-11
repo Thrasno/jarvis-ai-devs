@@ -22,7 +22,8 @@ import (
 
 var (
 	loadAppConfig                   = config.Load
-	listPersonaPresets              = persona.ListPresetsV2
+	listPersonaPresets              = persona.ListProfiles
+	listPersonaProfiles             = func(fsys fs.FS) ([]persona.Profile, error) { return listPersonaPresets(fsys) }
 	listAvailableSkills             = skills.ListSkills
 	detectInstalledAgents           = agent.Detect
 	noTUIStdout           io.Writer = os.Stdout
@@ -120,7 +121,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 
 	// ── Step 3: Persona ───────────────────────────────────────────────────────
 	fmt.Println("\n=== Jarvis-Dev Setup [3/7] Select Persona Preset ===")
-	presets, err := listPersonaPresets(wcfg.PersonaFS)
+	presets, err := listPersonaProfiles(wcfg.PersonaFS)
 	if err != nil {
 		return fmt.Errorf("list presets: %w", err)
 	}
@@ -133,7 +134,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 			return err
 		}
 	}
-	presets = append(presets, persona.PresetV2{
+	presets = append(presets, persona.Profile{
 		Name:        "custom",
 		DisplayName: "Custom (crear nuevo)",
 	})
@@ -475,8 +476,8 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 }
 
 // resolveNoTUIPreset resolves a validated schema-v2 presentation profile for
-// direct application through the canonical V2 pipeline.
-func resolveNoTUIPreset(personaFS fs.FS, requestedSlug string, custom *customPresetDraft) (*persona.ResolvedPresetV2, error) {
+// direct application through the canonical profile pipeline.
+func resolveNoTUIPreset(personaFS fs.FS, requestedSlug string, custom *customPresetDraft) (*persona.ResolvedProfile, error) {
 	resolved, err := resolveWizardPresetSelection(personaFS, requestedSlug, custom)
 	if err != nil {
 		return nil, err

@@ -143,7 +143,7 @@ func configureWizardAgents(
 	cfg *config.AppConfig,
 	hiveEntry agent.MCPEntry,
 	context7Entry agent.MCPEntry,
-	resolved *persona.ResolvedPresetV2,
+	resolved *persona.ResolvedProfile,
 	presetCtx wizardPresetApplyContext,
 	skillsSubFS fs.FS,
 	selectedIDs []string,
@@ -171,7 +171,7 @@ func configureWizardAgents(
 	}
 
 	if resolved != nil {
-		if err := applyWizardPresetV2(agents, resolved, wizardPresetApplyContext{
+		if err := applyWizardProfile(agents, resolved, wizardPresetApplyContext{
 			Layer1:               presetCtx.Layer1,
 			Skills:               presetCtx.Skills,
 			PreviousPresetSlug:   presetCtx.PreviousPresetSlug,
@@ -196,8 +196,29 @@ func configureWizardAgents(
 	return results
 }
 
-// applyWizardPresetV2 applies an already resolved schema-v2 profile through
-// the canonical V2 pipeline.
+// applyWizardProfile applies an already resolved schema-v2 profile through the
+// canonical profile pipeline.
+func applyWizardProfile(agents []agent.Agent, resolved *persona.ResolvedProfile, presetCtx wizardPresetApplyContext) error {
+	pipelineAgents := make([]persona.ProfileAgent, 0, len(agents))
+	for _, a := range agents {
+		pipelineAgent, ok := persona.AdaptProfileAgent(a)
+		if !ok {
+			return fmt.Errorf("agent %q does not support schema v2 presentation profiles", a.Name())
+		}
+		pipelineAgents = append(pipelineAgents, pipelineAgent)
+	}
+
+	return persona.ApplyProfile(pipelineAgents, resolved, persona.ApplyOptions{
+		Layer1:               presetCtx.Layer1,
+		Skills:               presetCtx.Skills,
+		PreviousPresetSlug:   presetCtx.PreviousPresetSlug,
+		PreviousPresetSource: presetCtx.PreviousPresetSource,
+		PersistConfig:        false,
+	})
+}
+
+// applyWizardPresetV2 is retained for compatibility until the remaining test
+// fixtures are migrated to applyWizardProfile.
 func applyWizardPresetV2(agents []agent.Agent, resolved *persona.ResolvedPresetV2, presetCtx wizardPresetApplyContext) error {
 	pipelineAgents := make([]persona.PresetV2Agent, 0, len(agents))
 	for _, a := range agents {
@@ -207,7 +228,6 @@ func applyWizardPresetV2(agents []agent.Agent, resolved *persona.ResolvedPresetV
 		}
 		pipelineAgents = append(pipelineAgents, pipelineAgent)
 	}
-
 	return persona.ApplyPresetV2Pipeline(pipelineAgents, resolved, persona.ApplyOptions{
 		Layer1:               presetCtx.Layer1,
 		Skills:               presetCtx.Skills,

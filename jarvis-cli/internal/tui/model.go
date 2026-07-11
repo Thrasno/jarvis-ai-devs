@@ -76,7 +76,8 @@ type Model struct {
 	customField          int
 	customPresetName     string
 	customDisplayName    string
-	selectedPresetV2     *persona.ResolvedPresetV2
+	selectedProfile      *persona.ResolvedProfile
+	selectedPresetV2     *persona.ResolvedPresetV2 // Compatibility mirror for legacy test fixtures.
 	previousPresetSlug   string
 	previousPresetSource persona.PresetSource
 	personaSelectionErr  error
@@ -132,7 +133,16 @@ type Model struct {
 	cockpitPlan           string
 }
 
-// wizardPresetV2 returns the validated schema-v2 profile selected by the wizard.
+// wizardProfile returns the validated schema-v2 profile selected by the wizard.
+func (m Model) wizardProfile() (*persona.ResolvedProfile, bool) {
+	if m.selectedProfile != nil {
+		return m.selectedProfile, true
+	}
+	return nil, false
+}
+
+// wizardPresetV2 is retained for compatibility until the remaining test
+// fixtures are migrated to wizardProfile.
 func (m Model) wizardPresetV2() (*persona.ResolvedPresetV2, bool) {
 	if m.selectedPresetV2 != nil {
 		return m.selectedPresetV2, true
@@ -210,9 +220,9 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 		m.Scope = config.ScopeLocalOnly
 	}
 
-	presets, err := persona.ListPresetsV2(m.PersonaFS)
+	presets, err := persona.ListProfiles(m.PersonaFS)
 	if err == nil {
-		m.Presets = append(m.Presets, presetV2Options(presets)...)
+		m.Presets = append(m.Presets, profileOptions(presets)...)
 		m.Presets = append(m.Presets, persona.Preset{
 			Name:        "custom",
 			DisplayName: "Custom (crear nuevo)",
@@ -276,7 +286,7 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 	return m
 }
 
-func presetV2Options(presets []persona.PresetV2) []persona.Preset {
+func profileOptions(presets []persona.Profile) []persona.Preset {
 	options := make([]persona.Preset, 0, len(presets))
 	for _, preset := range presets {
 		options = append(options, persona.Preset{
@@ -287,6 +297,10 @@ func presetV2Options(presets []persona.PresetV2) []persona.Preset {
 	}
 	return options
 }
+
+// presetV2Options is retained for compatibility until the remaining test
+// fixtures are migrated to profileOptions.
+func presetV2Options(presets []persona.PresetV2) []persona.Preset { return profileOptions(presets) }
 
 // NewCockpitModel creates the cockpit-first root model used by bare TTY runs.
 func NewCockpitModel(wcfg WizardConfig) Model {

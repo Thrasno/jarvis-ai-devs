@@ -118,11 +118,16 @@ func (a *setupAgentStub) InstallRegistryAutomation(fs.FS) error {
 	return a.registryAutomationErr
 }
 
-func (a *setupAgentStub) WriteOutputStyle(*persona.Preset) error {
+func (a *setupAgentStub) WriteLegacyOutputStyle(*persona.Preset) error {
 	return a.outputStyleErr
 }
 
 func (a *setupAgentStub) WriteOutputStyleV2(preset *persona.PresetV2) error {
+	a.v2OutputStyle = preset
+	return a.outputStyleErr
+}
+
+func (a *setupAgentStub) WriteOutputStyle(preset *persona.Profile) error {
 	a.v2OutputStyle = preset
 	return a.outputStyleErr
 }
@@ -561,13 +566,13 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 	}
 }
 
-func TestApplyWizardPresetV2UsesCanonicalPipeline(t *testing.T) {
+func TestApplyWizardProfileUsesCanonicalPipeline(t *testing.T) {
 	stub := &setupAgentStub{name: "claude"}
-	resolved := &persona.ResolvedPresetV2{
+	resolved := &persona.ResolvedProfile{
 		Slug: "custom-mentor",
-		Preset: &persona.PresetV2{
+		Preset: &persona.Profile{
 			Name: "custom-mentor",
-			Presentation: persona.PresentationV2{
+			Presentation: persona.Presentation{
 				Language: "en-us", Register: "friendly-professional", Vocabulary: "plain-technical", Cadence: "measured",
 				Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured",
 				TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded",
@@ -575,14 +580,14 @@ func TestApplyWizardPresetV2UsesCanonicalPipeline(t *testing.T) {
 		},
 	}
 
-	if err := applyWizardPresetV2([]agent.Agent{stub}, resolved, wizardPresetApplyContext{Layer1: "layer1"}); err != nil {
-		t.Fatalf("applyWizardPresetV2() error = %v", err)
+	if err := applyWizardProfile([]agent.Agent{stub}, resolved, wizardPresetApplyContext{Layer1: "layer1"}); err != nil {
+		t.Fatalf("applyWizardProfile() error = %v", err)
 	}
 	if !strings.Contains(stub.layer2, "### Presentation") || strings.Contains(stub.layer2, "Behavioral Rules") {
-		t.Fatalf("V2 wizard layer2 = %q, want presentation-only content", stub.layer2)
+		t.Fatalf("canonical wizard layer2 = %q, want presentation-only content", stub.layer2)
 	}
 	if stub.v2OutputStyle == nil || stub.v2OutputStyle.Name != "custom-mentor" {
-		t.Fatalf("V2 output style preset = %+v, want custom-mentor", stub.v2OutputStyle)
+		t.Fatalf("canonical output style profile = %+v, want custom-mentor", stub.v2OutputStyle)
 	}
 }
 

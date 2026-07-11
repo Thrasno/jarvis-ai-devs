@@ -537,10 +537,16 @@ func (a *OpenCodeAgent) SupportsOutputStyles() bool {
 	return false
 }
 
-// WriteOutputStyleV2 is a no-op for OpenCodeAgent because OpenCode has no
-// native output-style support.
-func (a *OpenCodeAgent) WriteOutputStyleV2(preset *persona.PresetV2) error {
+// WriteOutputStyle is a no-op for OpenCodeAgent because OpenCode has no native
+// output-style support.
+func (a *OpenCodeAgent) WriteOutputStyle(preset *persona.Profile) error {
 	return nil
+}
+
+// WriteOutputStyleV2 is retained for compatibility until the remaining test
+// fixtures are migrated to the canonical profile API.
+func (a *OpenCodeAgent) WriteOutputStyleV2(preset *persona.PresetV2) error {
+	return a.WriteOutputStyle(preset)
 }
 
 // ClearOutputStyle is a no-op for OpenCodeAgent since OpenCode has no

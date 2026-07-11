@@ -57,7 +57,7 @@ var personaSetCmd = &cobra.Command{
 		}
 
 		agents := agent.Detect(jarvis.TemplatesFS)
-		if err := applyPersonaPresetV2(agents, resolved, persona.ApplyOptions{
+		if err := applyPersonaProfile(agents, resolved, persona.ApplyOptions{
 			Layer1:               config.Layer1Content(),
 			Skills:               skillInfos,
 			PreviousPresetSlug:   cfg.PersonaPreset,
@@ -77,17 +77,31 @@ var personaSetCmd = &cobra.Command{
 }
 
 // resolvePersonaSetPreset resolves a validated schema-v2 presentation profile
-// before it reaches the canonical V2 apply pipeline.
-func resolvePersonaSetPreset(personaFS fs.FS, presetName string) (*persona.ResolvedPresetV2, error) {
-	resolved, err := persona.ResolvePresetV2(personaFS, presetName)
+// before it reaches the canonical apply pipeline.
+func resolvePersonaSetPreset(personaFS fs.FS, presetName string) (*persona.ResolvedProfile, error) {
+	resolved, err := persona.ResolveProfile(personaFS, presetName)
 	if err != nil {
 		return nil, err
 	}
 	return resolved, nil
 }
 
-// applyPersonaPresetV2 applies a validated schema-v2 preset through the
-// canonical V2 pipeline.
+// applyPersonaProfile applies a validated schema-v2 profile through the
+// canonical profile pipeline.
+func applyPersonaProfile(agents []agent.Agent, resolved *persona.ResolvedProfile, opts persona.ApplyOptions) error {
+	pipelineAgents := make([]persona.ProfileAgent, 0, len(agents))
+	for _, a := range agents {
+		pipelineAgent, ok := persona.AdaptProfileAgent(a)
+		if !ok {
+			return fmt.Errorf("agent %q does not support schema v2 presentation profiles", a.Name())
+		}
+		pipelineAgents = append(pipelineAgents, pipelineAgent)
+	}
+	return persona.ApplyProfile(pipelineAgents, resolved, opts)
+}
+
+// applyPersonaPresetV2 is retained for compatibility until the remaining test
+// fixtures are migrated to applyPersonaProfile.
 func applyPersonaPresetV2(agents []agent.Agent, resolved *persona.ResolvedPresetV2, opts persona.ApplyOptions) error {
 	pipelineAgents := make([]persona.PresetV2Agent, 0, len(agents))
 	for _, a := range agents {

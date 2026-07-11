@@ -21,16 +21,20 @@ const maxCustomPresetYAMLBytes = 64 * 1024
 
 var resolvePresetV2ForWizard = persona.ResolvePresetV2
 
-func resolveWizardPresetSelection(personaFS fs.FS, requestedSlug string, custom *customPresetDraft) (*persona.ResolvedPresetV2, error) {
+var resolveProfileForWizard = func(personaFS fs.FS, slug string) (*persona.ResolvedProfile, error) {
+	return resolvePresetV2ForWizard(personaFS, slug)
+}
+
+func resolveWizardPresetSelection(personaFS fs.FS, requestedSlug string, custom *customPresetDraft) (*persona.ResolvedProfile, error) {
 	normalized := persona.NormalizeSlug(requestedSlug)
 	if normalized == "custom" {
 		if custom == nil {
 			return nil, fmt.Errorf("custom preset creation requires name and display name")
 		}
-		return createWizardCustomPresetV2(personaFS, *custom)
+		return createWizardCustomProfile(personaFS, *custom)
 	}
 
-	return resolvePresetV2ForWizard(personaFS, normalized)
+	return resolveProfileForWizard(personaFS, normalized)
 }
 
 // validateConfiguredPersonaPresetForV2Selection prevents a configured V1
@@ -40,7 +44,7 @@ func validateConfiguredPersonaPresetForV2Selection(personaFS fs.FS, configuredSl
 	if normalized == "" {
 		return nil
 	}
-	if _, err := resolvePresetV2ForWizard(personaFS, normalized); err == nil {
+	if _, err := resolveProfileForWizard(personaFS, normalized); err == nil {
 		return nil
 	}
 	diagnostic, err := persona.ClassifyPresetForV2Migration(personaFS, normalized)
@@ -48,11 +52,11 @@ func validateConfiguredPersonaPresetForV2Selection(personaFS fs.FS, configuredSl
 		return fmt.Errorf("classify configured persona preset %q: %w", normalized, err)
 	}
 	switch diagnostic.Classification {
-	case persona.PresetV2ProfileLegacy:
+	case persona.ProfileLegacy:
 		return fmt.Errorf("configured persona preset %q is a legacy V1 profile and cannot be used by the schema v2 wizard; migrate it to a schema v2 presentation profile before reconfiguring", normalized)
-	case persona.PresetV2ProfileMissing:
+	case persona.ProfileMissing:
 		return fmt.Errorf("configured persona preset %q is stale or deleted and no profile file was found in the schema v2 catalog or user profile location; Recovery: explicitly select an available schema v2 preset, or restore/recreate %q before reconfiguring", normalized, normalized)
-	case persona.PresetV2ProfileMalformed:
+	case persona.ProfileMalformed:
 		return fmt.Errorf("configured persona preset %q is malformed or unsupported for schema v2 and cannot be used by the schema v2 wizard; Recovery: repair %s as a valid schema v2 presentation profile, or explicitly select an available schema v2 preset before reconfiguring", normalized, diagnostic.FilePath)
 	default:
 		return fmt.Errorf("configured persona preset %q could not be resolved as a schema v2 profile; Recovery: explicitly select an available schema v2 preset before reconfiguring", normalized)
@@ -73,7 +77,7 @@ func hasPersistedConfig() (bool, error) {
 	return true, nil
 }
 
-func createWizardCustomPresetV2(personaFS fs.FS, draft customPresetDraft) (*persona.ResolvedPresetV2, error) {
+func createWizardCustomProfile(personaFS fs.FS, draft customPresetDraft) (*persona.ResolvedProfile, error) {
 	if strings.TrimSpace(draft.YAML) != "" {
 		return nil, fmt.Errorf("custom YAML overrides are legacy V1 profiles and cannot be used with schema v2; migrate presentation choices to renderer-owned presentation packs")
 	}
@@ -83,7 +87,7 @@ func createWizardCustomPresetV2(personaFS fs.FS, draft customPresetDraft) (*pers
 		return nil, err
 	}
 
-	content, err := buildCustomPresetContentV2(personaFS, slug, displayName)
+	content, err := buildCustomProfileContent(personaFS, slug, displayName)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +100,7 @@ func createWizardCustomPresetV2(personaFS fs.FS, draft customPresetDraft) (*pers
 		return nil, fmt.Errorf("persist schema v2 custom preset %q: %w", slug, err)
 	}
 
-	resolved, err := resolvePresetV2ForWizard(personaFS, slug)
+	resolved, err := resolveProfileForWizard(personaFS, slug)
 	if err != nil {
 		return nil, customPresetRecoveryError(slug, savedPath, fmt.Errorf("resolve persisted schema v2 custom preset: %w", err))
 	}
@@ -105,6 +109,12 @@ func createWizardCustomPresetV2(personaFS fs.FS, draft customPresetDraft) (*pers
 	}
 
 	return resolved, nil
+}
+
+// createWizardCustomPresetV2 is retained for compatibility until the remaining
+// test fixtures are migrated to createWizardCustomProfile.
+func createWizardCustomPresetV2(personaFS fs.FS, draft customPresetDraft) (*persona.ResolvedProfile, error) {
+	return createWizardCustomProfile(personaFS, draft)
 }
 
 func normalizeWizardCustomPresetDraftForCatalog(personaFS fs.FS, draft customPresetDraft, catalogPath string) (string, string, error) {
@@ -132,7 +142,7 @@ func normalizeWizardCustomPresetDraftForCatalog(personaFS fs.FS, draft customPre
 	return slug, displayName, nil
 }
 
-func buildCustomPresetContentV2(personaFS fs.FS, slug, displayName string) ([]byte, error) {
+func buildCustomProfileContent(personaFS fs.FS, slug, displayName string) ([]byte, error) {
 	content, err := fs.ReadFile(personaFS, "embed/personas/custom.yaml.tmpl")
 	if err != nil {
 		return nil, fmt.Errorf("read schema v2 custom preset template: %w", err)
@@ -150,6 +160,12 @@ func buildCustomPresetContentV2(personaFS fs.FS, slug, displayName string) ([]by
 		return nil, fmt.Errorf("marshal schema v2 custom preset %q: %w", slug, err)
 	}
 	return generated, nil
+}
+
+// buildCustomPresetContentV2 is retained for compatibility until the remaining
+// test fixtures are migrated to buildCustomProfileContent.
+func buildCustomPresetContentV2(personaFS fs.FS, slug, displayName string) ([]byte, error) {
+	return buildCustomProfileContent(personaFS, slug, displayName)
 }
 
 func customPresetRecoveryError(slug, savedPath string, cause error) error {

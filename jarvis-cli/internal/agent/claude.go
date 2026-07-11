@@ -339,9 +339,15 @@ func (a *ClaudeAgent) SupportsOutputStyles() bool {
 	return true
 }
 
-// WriteOutputStyleV2 writes a schema-v2 presentation output style.
+// WriteOutputStyle writes a schema-v2 presentation output style.
+func (a *ClaudeAgent) WriteOutputStyle(preset *persona.Profile) error {
+	return a.writeOutputStyle(preset.Name, persona.RenderOutputStyle(preset))
+}
+
+// WriteOutputStyleV2 is retained for compatibility until the remaining test
+// fixtures are migrated to the canonical profile API.
 func (a *ClaudeAgent) WriteOutputStyleV2(preset *persona.PresetV2) error {
-	return a.writeOutputStyle(preset.Name, persona.RenderOutputStyleV2(preset))
+	return a.WriteOutputStyle(preset)
 }
 
 func (a *ClaudeAgent) writeOutputStyle(presetName, content string) error {
