@@ -102,6 +102,7 @@ type RouterDeps struct {
 	AdminSvc                 AdminService
 	OverviewSvc              OverviewService
 	ActivitySvc              ActivityService
+	AccountSvc               AccountService
 	DB                       DBPinger // puede ser nil en tests unitarios
 	AllowedOrigins           []string // orígenes permitidos para CORS (e.g. ["https://hive.hivemem.dev"])
 	DashboardAssetsDir       string   // directorio con assets compilados para servir /dashboard
@@ -152,6 +153,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 	adminH := NewAdminHandler(deps.AdminSvc)
 	overviewH := NewOverviewHandler(deps.AuthSvc, deps.OverviewSvc)
 	activityH := NewActivityHandler(deps.ActivitySvc)
+	accountH := NewAccountHandler(deps.AccountSvc)
 	healthH := NewHealthHandler(deps.DB)
 
 	// Rutas públicas (sin autenticación)
@@ -173,6 +175,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		auth.GET("/memories/:id", memH.GetByID)
 		auth.GET("/activity", activityH.List)
 		auth.GET("/overview", overviewH.Get)
+		auth.PATCH("/account/password", accountH.ChangePassword)
 
 		auth.POST("/sync", syncH.Sync)
 		auth.POST("/sync-attempts", syncAttemptH.Ingest)
