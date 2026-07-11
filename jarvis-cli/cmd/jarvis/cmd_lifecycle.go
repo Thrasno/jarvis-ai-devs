@@ -34,6 +34,20 @@ var uninstallLifecycle = func(engine *lifecycle.Engine, provider, mode string) (
 	return engine.Uninstall(provider, mode)
 }
 
+// lifecycleDetectProviders returns the provider names the "all" fan-out should
+// target, derived from the SAME detection source newLifecycleEngine uses so the
+// targets are exactly the adapters the engine can serve. agent.Detect appends
+// claude before opencode, so ordering is deterministic (claude then opencode)
+// with no explicit sort. Overridable in tests as a seam.
+var lifecycleDetectProviders = func() []string {
+	detected := agent.Detect(jarvis.TemplatesFS)
+	names := make([]string, 0, len(detected))
+	for _, a := range detected {
+		names = append(names, a.Name())
+	}
+	return names
+}
+
 func initLifecycleCommands() {
 	for _, cmd := range []*cobra.Command{verifyCmd, doctorCmd, reconcileCmd, backupCmd, restoreCmd, uninstallCmd} {
 		cmd.Flags().String("provider", "all", "provider to target: claude|opencode|all")
@@ -226,7 +240,7 @@ func runPerProvider(_ *cobra.Command, provider string, run func(*lifecycle.Engin
 	engine := newLifecycleEngine()
 	targets := []string{provider}
 	if provider == "all" {
-		targets = []string{"claude", "opencode"}
+		targets = lifecycleDetectProviders()
 	}
 	for _, target := range targets {
 		if err := run(engine, target); err != nil {
