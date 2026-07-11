@@ -8,57 +8,6 @@ import (
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 )
 
-func TestLoadPreset(t *testing.T) {
-	presetNames := []string{
-		"argentino",
-		"tony-stark",
-		"neutra",
-		"yoda",
-		"sargento",
-		"asturiano",
-		"galleguinho",
-	}
-
-	for _, name := range presetNames {
-		t.Run("load_"+name, func(t *testing.T) {
-			preset, err := LoadPreset(jarvis.PersonaFS, name)
-			if err != nil {
-				t.Fatalf("LoadPreset(%q) failed: %v", name, err)
-			}
-			if preset.Name == "" {
-				t.Error("preset.Name is empty")
-			}
-			if preset.DisplayName == "" {
-				t.Error("preset.DisplayName is empty")
-			}
-		})
-	}
-}
-
-func TestLoadPreset_Unknown(t *testing.T) {
-	_, err := LoadPreset(jarvis.PersonaFS, "unknown-preset-xyz")
-	if err == nil {
-		t.Fatal("expected error for unknown preset, got nil")
-	}
-}
-
-func TestListPresets(t *testing.T) {
-	presets, err := ListPresets(jarvis.PersonaFS)
-	if err != nil {
-		t.Fatalf("ListPresets() failed: %v", err)
-	}
-
-	if len(presets) < 7 {
-		t.Errorf("expected at least 7 presets, got %d", len(presets))
-	}
-
-	for _, p := range presets {
-		if p.Name == "" {
-			t.Error("preset with empty name found")
-		}
-	}
-}
-
 func TestListPresetNames_HardensTopLevelAndSlugContract(t *testing.T) {
 	fsys := fstest.MapFS{
 		"embed/personas/neutra.yaml":             &fstest.MapFile{Data: []byte("name: neutra")},
@@ -81,16 +30,6 @@ func TestListPresetNames_HardensTopLevelAndSlugContract(t *testing.T) {
 		if names[i] != want[i] {
 			t.Fatalf("listPresetNames[%d] = %q, want %q (all=%v)", i, names[i], want[i], names)
 		}
-	}
-}
-
-func TestResolvePreset_RejectsInvalidSlugPathSeparators(t *testing.T) {
-	_, err := ResolvePreset(jarvis.PersonaFS, "../neutra")
-	if err == nil {
-		t.Fatal("ResolvePreset expected invalid slug error, got nil")
-	}
-	if got := err.Error(); !contains(got, "path separators are not allowed") {
-		t.Fatalf("ResolvePreset error = %q, want path separator validation", got)
 	}
 }
 

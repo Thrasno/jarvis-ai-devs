@@ -7,7 +7,37 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 )
+
+func TestResolvePresetV2AcceptsCanonicalBuiltins(t *testing.T) {
+	for _, slug := range []string{
+		"argentino",
+		"asturiano",
+		"galleguinho",
+		"neutra",
+		"sargento",
+		"tony-stark",
+		"yoda",
+	} {
+		t.Run(slug, func(t *testing.T) {
+			resolved, err := ResolvePresetV2(jarvis.PersonaFS, slug)
+			if err != nil {
+				t.Fatalf("ResolvePresetV2(%q) error = %v", slug, err)
+			}
+			if resolved.Source != PresetSourceBuiltin {
+				t.Fatalf("ResolvePresetV2(%q) source = %q, want builtin", slug, resolved.Source)
+			}
+			if resolved.Slug != slug || resolved.FilePath != "embed/personas/"+slug+".yaml" {
+				t.Fatalf("ResolvePresetV2(%q) location = (%q, %q), want canonical built-in path", slug, resolved.Slug, resolved.FilePath)
+			}
+			if resolved.Preset.SchemaVersion != 2 || resolved.Preset.Name != slug || resolved.Preset.Presentation.Language == "" {
+				t.Fatalf("ResolvePresetV2(%q) profile = %+v, want validated schema-v2 presentation profile", slug, resolved.Preset)
+			}
+		})
+	}
+}
 
 func TestResolvePresetV2ReadsValidatedPresentationProfile(t *testing.T) {
 	fsys := fstest.MapFS{
@@ -37,6 +67,16 @@ func TestResolvePresetV2RejectsLegacyV1Profile(t *testing.T) {
 	_, err := ResolvePresetV2(fsys, "legacy")
 	if err == nil || !strings.Contains(err.Error(), "migrate presentation choices to presentation.*") {
 		t.Fatalf("ResolvePresetV2() error = %v, want schema-v2 migration guidance", err)
+	}
+}
+
+func TestResolvePresetV2RejectsInvalidSlugPathSeparators(t *testing.T) {
+	_, err := ResolvePresetV2(jarvis.PersonaFS, "../neutra")
+	if err == nil {
+		t.Fatal("ResolvePresetV2 expected invalid slug error, got nil")
+	}
+	if !strings.Contains(err.Error(), "path separators are not allowed") {
+		t.Fatalf("ResolvePresetV2 error = %q, want path separator validation", err)
 	}
 }
 
