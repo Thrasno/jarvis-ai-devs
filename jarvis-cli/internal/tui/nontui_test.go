@@ -223,7 +223,7 @@ func TestRunNoTUI_RerunKeepsExistingSelectionsOnBlankInput(t *testing.T) {
 	seed := &config.AppConfig{
 		SchemaVersion:    2,
 		APIURL:           config.DefaultAPIURL,
-		PersonaPreset:    "fixture",
+		PersonaPreset:    "second",
 		SelectedSkills:   []string{"fixture-skill"},
 		ConfiguredAgents: []string{},
 		Install: config.InstallState{
@@ -246,8 +246,8 @@ func TestRunNoTUI_RerunKeepsExistingSelectionsOnBlankInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config after rerun: %v", err)
 	}
-	if loaded.PersonaPreset != "fixture" {
-		t.Fatalf("expected persona preset to remain fixture, got %q", loaded.PersonaPreset)
+	if loaded.PersonaPreset != "second" {
+		t.Fatalf("expected persona preset to remain second, got %q", loaded.PersonaPreset)
 	}
 	if len(loaded.SelectedSkills) != 1 || loaded.SelectedSkills[0] != "fixture-skill" {
 		t.Fatalf("expected existing selected skills preserved, got %v", loaded.SelectedSkills)
@@ -332,7 +332,7 @@ func TestRunNoTUI_CustomPresetPersistsUserFileAndCanonicalIdentity(t *testing.T)
 
 	// scope default, choose custom option, provide name/display, keep generated YAML,
 	// default optional skills answer, apply=yes.
-	input := strings.NewReader("\n2\nmi persona\nMi Persona Display\n\nyes\n")
+	input := strings.NewReader("\n3\nmi persona\nMi Persona Display\n\nyes\n")
 
 	if err := runNoTUI(testWizardConfig(), input); err != nil {
 		t.Fatalf("runNoTUI custom preset: %v", err)
@@ -360,7 +360,7 @@ func TestRunNoTUI_CustomPresetInvalidYAMLBlocksContinuation(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	// scope default, choose custom option, provide name/display, invalid YAML override.
-	input := strings.NewReader("\n2\nbroken persona\nBroken Persona\nname: [\n")
+	input := strings.NewReader("\n3\nbroken persona\nBroken Persona\nname: [\n")
 
 	err := runNoTUI(testWizardConfig(), input)
 	if err == nil {

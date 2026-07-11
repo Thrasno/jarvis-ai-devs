@@ -329,7 +329,7 @@ func TestNewModel_PrefillsExistingConfigAndMode(t *testing.T) {
 	cfg := &config.AppConfig{
 		SchemaVersion:    2,
 		APIURL:           config.DefaultAPIURL,
-		PersonaPreset:    "fixture",
+		PersonaPreset:    "second",
 		SelectedSkills:   []string{"fixture-skill"},
 		Cloud:            &config.CloudConfig{Email: "prefill@example.com"},
 		ConfiguredAgents: []string{"claude"},
@@ -353,8 +353,32 @@ func TestNewModel_PrefillsExistingConfigAndMode(t *testing.T) {
 	if m.Email != "prefill@example.com" {
 		t.Fatalf("expected prefilled email, got %q", m.Email)
 	}
-	if m.cfg == nil || m.cfg.PersonaPreset != "fixture" {
-		t.Fatalf("expected prefilled persona preset fixture, got %+v", m.cfg)
+	if m.cfg == nil || m.cfg.PersonaPreset != "second" {
+		t.Fatalf("expected prefilled persona preset second, got %+v", m.cfg)
+	}
+	if m.presetCur != 1 {
+		t.Fatalf("expected existing V2 preset cursor at index 1, got %d", m.presetCur)
+	}
+
+	m.Step = StepPersona
+	m = sendKey(m, tea.KeyEnter)
+	if m.Step != StepExtraSkills || m.cfg.PersonaPreset != "second" || m.selectedPresetV2 == nil || m.selectedPresetV2.Slug != "second" {
+		t.Fatalf("blank persona acceptance changed existing V2 selection: step=%v cfg=%+v selected=%+v", m.Step, m.cfg, m.selectedPresetV2)
+	}
+}
+
+func TestNewModel_FreshDefaultsSelectFirstV2Preset(t *testing.T) {
+	isolateTestHome(t)
+
+	m := NewModel(testWizardConfig(), false)
+	if m.presetCur != 0 {
+		t.Fatalf("expected fresh default cursor at index 0, got %d", m.presetCur)
+	}
+
+	m.Step = StepPersona
+	m = sendKey(m, tea.KeyEnter)
+	if m.Step != StepExtraSkills || m.cfg.PersonaPreset != "fixture" || m.selectedPresetV2 == nil || m.selectedPresetV2.Slug != "fixture" {
+		t.Fatalf("fresh default persona acceptance selected unexpected preset: step=%v cfg=%+v selected=%+v", m.Step, m.cfg, m.selectedPresetV2)
 	}
 }
 

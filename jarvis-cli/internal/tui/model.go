@@ -229,7 +229,8 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 					m.personaSelectionErr = err
 					m.presetCur = -1
 				}
-			} else {
+			}
+			if m.personaSelectionErr == nil {
 				for i, p := range presets {
 					if p.Name == m.cfg.PersonaPreset {
 						m.presetCur = i
