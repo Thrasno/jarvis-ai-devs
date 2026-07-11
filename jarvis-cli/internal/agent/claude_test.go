@@ -712,7 +712,7 @@ func TestClaudeAgent_MergeConfig_Context7_IdempotentViaRemoveThenAdd(t *testing.
 func TestClaudeAgent_MergeConfig_FirstInstallMissingGetSkipsRemove(t *testing.T) {
 	runner := &stubClaudeRunner{
 		responses: []stubClaudeResponse{
-			{out: "Error: MCP server 'context7' not found", err: os.ErrNotExist},
+			{out: "Error: MCP server 'context7' not found", err: errors.New("exit status 1"), started: true},
 		},
 	}
 	agent := &ClaudeAgent{runCommand: runner.run}
@@ -728,7 +728,7 @@ func TestClaudeAgent_MergeConfig_FirstInstallMissingGetSkipsRemove(t *testing.T)
 	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--transport", "http", "--scope", "user", "context7", "https://mcp.context7.com/mcp")
 }
 
-func TestClaudeAgent_MergeConfig_FirstInstallMissingGet_WithGenericExitError(t *testing.T) {
+func TestClaudeAgent_MergeConfig_FirstInstallGenericGetErrorFailsClosed(t *testing.T) {
 	runner := &stubClaudeRunner{
 		responses: []stubClaudeResponse{
 			{out: "No server named 'context7' exists in user scope", err: errors.New("exit status 1")},
@@ -736,15 +736,14 @@ func TestClaudeAgent_MergeConfig_FirstInstallMissingGet_WithGenericExitError(t *
 	}
 	agent := &ClaudeAgent{runCommand: runner.run}
 
-	if err := agent.MergeConfig(MCPEntry{Name: "context7"}); err != nil {
-		t.Fatalf("expected missing get marker to be tolerated, got: %v", err)
+	if err := agent.MergeConfig(MCPEntry{Name: "context7"}); err == nil {
+		t.Fatal("expected ambiguous get error to fail closed")
 	}
 
-	if len(runner.calls) != 2 {
-		t.Fatalf("expected get+add when get reports missing entry, got %d", len(runner.calls))
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected get only when response is ambiguous, got %d", len(runner.calls))
 	}
 	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "get", "context7")
-	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--transport", "http", "--scope", "user", "context7", "https://mcp.context7.com/mcp")
 }
 
 func TestClaudeAgent_MergeConfig_GetFailureIsReturned(t *testing.T) {
@@ -802,7 +801,7 @@ func TestClaudeAgent_MergeConfig_ValidationAndAddFailures(t *testing.T) {
 	t.Run("add failure includes runner reason", func(t *testing.T) {
 		runner := &stubClaudeRunner{
 			responses: []stubClaudeResponse{
-				{out: "Error: MCP server 'context7' not found", err: os.ErrNotExist},
+				{out: "Error: MCP server 'context7' not found", err: errors.New("exit status 1"), started: true},
 				{out: "network unreachable", err: errors.New("exit status 1")},
 			},
 		}
@@ -821,35 +820,35 @@ func TestClaudeAgent_CommandRunnerFallbackAndCombinedOutput(t *testing.T) {
 	a := &ClaudeAgent{}
 	runner := a.commandRunner()
 	name, args := testCommand(t, "ok")
-	out, err := runner(name, args...)
-	if err != nil {
-		t.Fatalf("fallback commandRunner should execute commands, got error %v", err)
+	result := runner(name, args...)
+	if result.Err != nil {
+		t.Fatalf("fallback commandRunner should execute commands, got error %v", result.Err)
 	}
-	if out != "ok" {
-		t.Fatalf("unexpected fallback output %q", out)
+	if result.Output != "ok" || !result.Started {
+		t.Fatalf("unexpected fallback result %#v", result)
 	}
 }
 
 func TestRunCommandCombinedOutput_SuccessAndFailure(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		name, args := testCommand(t, "hello")
-		out, err := runCommandCombinedOutput(name, args...)
-		if err != nil {
-			t.Fatalf("expected success, got %v", err)
+		result := runCommandCombinedOutput(name, args...)
+		if result.Err != nil || !result.Started {
+			t.Fatalf("expected started success, got %#v", result)
 		}
-		if out != "hello" {
-			t.Fatalf("unexpected output %q", out)
+		if result.Output != "hello" {
+			t.Fatalf("unexpected output %q", result.Output)
 		}
 	})
 
 	t.Run("failure keeps combined output", func(t *testing.T) {
 		name, args := testCommand(t, "boom-fail")
-		out, err := runCommandCombinedOutput(name, args...)
-		if err == nil {
+		result := runCommandCombinedOutput(name, args...)
+		if result.Err == nil || !result.Started {
 			t.Fatal("expected non-nil error for exit status 7")
 		}
-		if out != "boom" {
-			t.Fatalf("expected combined output to be returned, got %q", out)
+		if result.Output != "boom" {
+			t.Fatalf("expected combined output to be returned, got %q", result.Output)
 		}
 	})
 }
@@ -934,8 +933,9 @@ type stubClaudeCall struct {
 }
 
 type stubClaudeResponse struct {
-	out string
-	err error
+	out     string
+	err     error
+	started bool
 }
 
 type stubClaudeRunner struct {
@@ -943,14 +943,14 @@ type stubClaudeRunner struct {
 	responses []stubClaudeResponse
 }
 
-func (s *stubClaudeRunner) run(name string, args ...string) (string, error) {
+func (s *stubClaudeRunner) run(name string, args ...string) claudeCommandResult {
 	s.calls = append(s.calls, stubClaudeCall{name: name, args: append([]string(nil), args...)})
 	if len(s.responses) == 0 {
-		return "", nil
+		return claudeCommandResult{Started: true}
 	}
 	resp := s.responses[0]
 	s.responses = s.responses[1:]
-	return resp.out, resp.err
+	return claudeCommandResult{Output: resp.out, Err: resp.err, Started: resp.started || resp.err == nil}
 }
 
 func assertClaudeCall(t *testing.T, call stubClaudeCall, wantName string, wantArgs ...string) {

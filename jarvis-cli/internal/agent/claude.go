@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,7 +24,15 @@ var _ Agent = (*ClaudeAgent)(nil)
 // Ensure ClaudeAgent implements the optional AgentInstaller capability.
 var _ AgentInstaller = (*ClaudeAgent)(nil)
 
-type claudeCommandRunner func(name string, args ...string) (string, error)
+type claudeCommandRunner func(name string, args ...string) claudeCommandResult
+
+// claudeCommandResult preserves whether the Claude CLI process started. A
+// non-zero CLI exit can report a missing MCP; a launch failure cannot.
+type claudeCommandResult struct {
+	Output  string
+	Err     error
+	Started bool
+}
 
 var claudeRuntimeGOOS = runtime.GOOS
 
@@ -226,29 +235,29 @@ func (a *ClaudeAgent) MergeConfig(entry MCPEntry) error {
 		return fmt.Errorf("unknown MCP entry name: %s", entry.Name)
 	}
 
-	getOut, err := a.commandRunner()("claude", "mcp", "get", entry.Name)
-	if err != nil {
-		if !isMissingClaudeMCP(getOut, err) {
-			return fmt.Errorf("get claude mcp %s: %w", entry.Name, err)
+	get := a.commandRunner()("claude", "mcp", "get", entry.Name)
+	if get.Err != nil {
+		if !isMissingClaudeMCP(get, entry.Name) {
+			return fmt.Errorf("get claude mcp %s: %w", entry.Name, get.Err)
 		}
 	} else {
-		removeOut, removeErr := a.commandRunner()("claude", "mcp", "remove", "--scope", "user", entry.Name)
-		if removeErr != nil {
-			reason := strings.TrimSpace(removeOut)
+		remove := a.commandRunner()("claude", "mcp", "remove", "--scope", "user", entry.Name)
+		if remove.Err != nil {
+			reason := strings.TrimSpace(remove.Output)
 			if reason != "" {
-				return fmt.Errorf("remove existing claude mcp %s: %w: %s", entry.Name, removeErr, reason)
+				return fmt.Errorf("remove existing claude mcp %s: %w: %s", entry.Name, remove.Err, reason)
 			}
-			return fmt.Errorf("remove existing claude mcp %s: %w", entry.Name, removeErr)
+			return fmt.Errorf("remove existing claude mcp %s: %w", entry.Name, remove.Err)
 		}
 	}
 
-	addOut, err := a.commandRunner()("claude", addArgs...)
-	if err != nil {
-		reason := strings.TrimSpace(addOut)
+	add := a.commandRunner()("claude", addArgs...)
+	if add.Err != nil {
+		reason := strings.TrimSpace(add.Output)
 		if reason != "" {
-			return fmt.Errorf("add claude mcp %s: %w: %s", entry.Name, err, reason)
+			return fmt.Errorf("add claude mcp %s: %w: %s", entry.Name, add.Err, reason)
 		}
-		return fmt.Errorf("add claude mcp %s: %w", entry.Name, err)
+		return fmt.Errorf("add claude mcp %s: %w", entry.Name, add.Err)
 	}
 
 	return nil
@@ -261,24 +270,24 @@ func (a *ClaudeAgent) commandRunner() claudeCommandRunner {
 	return runCommandCombinedOutput
 }
 
-func runCommandCombinedOutput(name string, args ...string) (string, error) {
+func runCommandCombinedOutput(name string, args ...string) claudeCommandResult {
 	cmd := exec.Command(name, args...)
 	out, err := cmd.CombinedOutput()
-	return string(out), err
+	result := claudeCommandResult{Output: string(out), Err: err}
+	if err == nil {
+		result.Started = true
+		return result
+	}
+	var exitErr *exec.ExitError
+	result.Started = errors.As(err, &exitErr)
+	return result
 }
 
-func isMissingClaudeMCP(output string, err error) bool {
-	if errors.Is(err, os.ErrNotExist) {
-		return true
+func isMissingClaudeMCP(result claudeCommandResult, identity string) bool {
+	if !result.Started || result.Err == nil || errors.Is(result.Err, os.ErrNotExist) || errors.Is(result.Err, os.ErrPermission) || errors.Is(result.Err, context.DeadlineExceeded) {
+		return false
 	}
-	lower := strings.ToLower(output + "\n" + err.Error())
-	markers := []string{"not found", "does not exist", "no mcp server", "unknown mcp", "no server named", "no server configured"}
-	for _, marker := range markers {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
+	return strings.TrimSpace(result.Output) == fmt.Sprintf("Error: MCP server '%s' not found", identity)
 }
 
 // WriteInstructions writes ~/.claude/CLAUDE.md with Layer1+Layer2 sentinel blocks.
