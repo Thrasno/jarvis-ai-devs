@@ -16,16 +16,6 @@ type ProfileAgent interface {
 	ClearOutputStyle(name string) error
 }
 
-// PresetV2Agent is retained for compatibility until the remaining test
-// fixtures are migrated to ProfileAgent.
-type PresetV2Agent interface {
-	Name() string
-	WriteInstructions(layer1, layer2 string, skills []config.SkillInfo) error
-	SupportsOutputStyles() bool
-	WriteOutputStyleV2(preset *Profile) error
-	ClearOutputStyle(name string) error
-}
-
 // ApplyOptions controls how preset apply is executed.
 type ApplyOptions struct {
 	Layer1               string
@@ -88,30 +78,10 @@ func ApplyProfile(agents []ProfileAgent, resolved *ResolvedProfile, opts ApplyOp
 	return nil
 }
 
-// ApplyPresetV2Pipeline is retained for compatibility until the remaining test
-// fixtures are migrated to ApplyProfile.
-func ApplyPresetV2Pipeline(agents []PresetV2Agent, resolved *ResolvedProfile, opts ApplyOptions) error {
-	canonicalAgents := make([]ProfileAgent, 0, len(agents))
-	for _, a := range agents {
-		canonicalAgents = append(canonicalAgents, presetV2AgentAdapter{PresetV2Agent: a})
-	}
-	return ApplyProfile(canonicalAgents, resolved, opts)
-}
-
-type presetV2AgentAdapter struct{ PresetV2Agent }
-
-func (a presetV2AgentAdapter) WriteOutputStyle(preset *Profile) error {
-	return a.WriteOutputStyleV2(preset)
-}
-
-// AdaptProfileAgent returns the canonical adapter when available and otherwise
-// adapts the retained V2 contract until its test fixtures are migrated.
+// AdaptProfileAgent verifies that a candidate supports the canonical profile contract.
 func AdaptProfileAgent(candidate any) (ProfileAgent, bool) {
 	if agent, ok := candidate.(ProfileAgent); ok {
 		return agent, true
-	}
-	if agent, ok := candidate.(PresetV2Agent); ok {
-		return presetV2AgentAdapter{PresetV2Agent: agent}, true
 	}
 	return nil, false
 }

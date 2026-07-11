@@ -100,20 +100,6 @@ func applyPersonaProfile(agents []agent.Agent, resolved *persona.ResolvedProfile
 	return persona.ApplyProfile(pipelineAgents, resolved, opts)
 }
 
-// applyPersonaPresetV2 is retained for compatibility until the remaining test
-// fixtures are migrated to applyPersonaProfile.
-func applyPersonaPresetV2(agents []agent.Agent, resolved *persona.ResolvedPresetV2, opts persona.ApplyOptions) error {
-	pipelineAgents := make([]persona.PresetV2Agent, 0, len(agents))
-	for _, a := range agents {
-		pipelineAgent, ok := a.(persona.PresetV2Agent)
-		if !ok {
-			return fmt.Errorf("agent %q does not support schema v2 presentation profiles", a.Name())
-		}
-		pipelineAgents = append(pipelineAgents, pipelineAgent)
-	}
-	return persona.ApplyPresetV2Pipeline(pipelineAgents, resolved, opts)
-}
-
 func normalizePersonaPresetSource(value string) persona.PresetSource {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case string(persona.PresetSourceUser):

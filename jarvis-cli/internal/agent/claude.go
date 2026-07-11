@@ -344,12 +344,6 @@ func (a *ClaudeAgent) WriteOutputStyle(preset *persona.Profile) error {
 	return a.writeOutputStyle(preset.Name, persona.RenderOutputStyle(preset))
 }
 
-// WriteOutputStyleV2 is retained for compatibility until the remaining test
-// fixtures are migrated to the canonical profile API.
-func (a *ClaudeAgent) WriteOutputStyleV2(preset *persona.PresetV2) error {
-	return a.WriteOutputStyle(preset)
-}
-
 func (a *ClaudeAgent) writeOutputStyle(presetName, content string) error {
 	// 1. Create output-styles directory
 	outputStylesDir := filepath.Join(a.ConfigDir(), "output-styles")

@@ -896,11 +896,7 @@ func (m *mockAgent) SupportsOutputStyles() bool {
 	return false
 }
 
-func (m *mockAgent) WriteOutputStyle(preset *persona.Preset) error {
-	return nil
-}
-
-func (m *mockAgent) WriteOutputStyleV2(preset *persona.PresetV2) error {
+func (m *mockAgent) WriteOutputStyle(preset *persona.Profile) error {
 	return nil
 }
 
@@ -1405,7 +1401,7 @@ func TestRunNoTUI_ListPresetsError(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	originalList := listPersonaPresets
-	listPersonaPresets = func(fsys fs.FS) ([]persona.PresetV2, error) {
+	listPersonaPresets = func(fsys fs.FS) ([]persona.Profile, error) {
 		return nil, errors.New("preset list failed")
 	}
 	t.Cleanup(func() { listPersonaPresets = originalList })

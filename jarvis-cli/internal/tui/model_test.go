@@ -45,7 +45,7 @@ func buildPersonaModel(n int) Model {
 		Selected: make(map[string]bool),
 	}
 	for i := 0; i < n; i++ {
-		m.Presets = append(m.Presets, persona.Preset{
+		m.Presets = append(m.Presets, persona.ProfileOption{
 			Name:        fmt.Sprintf("preset-%d", i),
 			DisplayName: fmt.Sprintf("Preset %d", i),
 			Description: fmt.Sprintf("Description for preset %d", i),
@@ -362,12 +362,12 @@ func TestNewModel_PrefillsExistingConfigAndMode(t *testing.T) {
 
 	m.Step = StepPersona
 	m = sendKey(m, tea.KeyEnter)
-	if m.Step != StepExtraSkills || m.cfg.PersonaPreset != "second" || m.selectedPresetV2 == nil || m.selectedPresetV2.Slug != "second" {
-		t.Fatalf("blank persona acceptance changed existing V2 selection: step=%v cfg=%+v selected=%+v", m.Step, m.cfg, m.selectedPresetV2)
+	if m.Step != StepExtraSkills || m.cfg.PersonaPreset != "second" || m.selectedProfile == nil || m.selectedProfile.Slug != "second" {
+		t.Fatalf("blank persona acceptance changed existing profile selection: step=%v cfg=%+v selected=%+v", m.Step, m.cfg, m.selectedProfile)
 	}
 }
 
-func TestNewModel_FreshDefaultsSelectFirstV2Preset(t *testing.T) {
+func TestNewModel_FreshDefaultsSelectFirstProfile(t *testing.T) {
 	isolateTestHome(t)
 
 	m := NewModel(testWizardConfig(), false)
@@ -377,8 +377,8 @@ func TestNewModel_FreshDefaultsSelectFirstV2Preset(t *testing.T) {
 
 	m.Step = StepPersona
 	m = sendKey(m, tea.KeyEnter)
-	if m.Step != StepExtraSkills || m.cfg.PersonaPreset != "fixture" || m.selectedPresetV2 == nil || m.selectedPresetV2.Slug != "fixture" {
-		t.Fatalf("fresh default persona acceptance selected unexpected preset: step=%v cfg=%+v selected=%+v", m.Step, m.cfg, m.selectedPresetV2)
+	if m.Step != StepExtraSkills || m.cfg.PersonaPreset != "fixture" || m.selectedProfile == nil || m.selectedProfile.Slug != "fixture" {
+		t.Fatalf("fresh default persona acceptance selected unexpected profile: step=%v cfg=%+v selected=%+v", m.Step, m.cfg, m.selectedProfile)
 	}
 }
 
@@ -417,8 +417,8 @@ func TestNewModel_BlankPersonaAcceptanceBlocksLegacyV1PresetAndPreservesConfig(t
 	if m.Err == nil || !strings.Contains(strings.ToLower(m.Err.Error()), "migrate") {
 		t.Fatalf("persona selection error = %v, want schema-v2 migration guidance", m.Err)
 	}
-	if m.cfg.PersonaPreset != "legacy-custom" || m.selectedPresetV2 != nil {
-		t.Fatalf("legacy persona selection was overwritten in memory: cfg=%+v selected=%+v", m.cfg, m.selectedPresetV2)
+	if m.cfg.PersonaPreset != "legacy-custom" || m.selectedProfile != nil {
+		t.Fatalf("legacy persona selection was overwritten in memory: cfg=%+v selected=%+v", m.cfg, m.selectedProfile)
 	}
 
 	loaded, err := config.Load()
@@ -466,8 +466,8 @@ func TestNewModel_BlankPersonaAcceptanceBlocksMissingPresetAndPreservesConfig(t 
 	if strings.Contains(strings.ToLower(m.Err.Error()), "migrate") {
 		t.Fatalf("missing preset error = %q, must not use V1 migration guidance", m.Err)
 	}
-	if m.cfg.PersonaPreset != "deleted-custom" || m.selectedPresetV2 != nil {
-		t.Fatalf("missing persona selection was overwritten in memory: cfg=%+v selected=%+v", m.cfg, m.selectedPresetV2)
+	if m.cfg.PersonaPreset != "deleted-custom" || m.selectedProfile != nil {
+		t.Fatalf("missing persona selection was overwritten in memory: cfg=%+v selected=%+v", m.cfg, m.selectedProfile)
 	}
 
 	loaded, err := config.Load()
@@ -1231,7 +1231,7 @@ func TestStep_Persona_SelectAndAdvance(t *testing.T) {
 	}
 }
 
-func TestEnsurePresetV2ForApplyRejectsLegacyCustomProfileWithMigrationGuidance(t *testing.T) {
+func TestEnsureProfileForApplyRejectsLegacyCustomProfileWithMigrationGuidance(t *testing.T) {
 	home := isolateTestHome(t)
 	legacyPath := filepath.Join(home, ".jarvis", "personas", "legacy-custom.yaml")
 	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
@@ -1241,12 +1241,12 @@ func TestEnsurePresetV2ForApplyRejectsLegacyCustomProfileWithMigrationGuidance(t
 		t.Fatalf("write legacy preset: %v", err)
 	}
 
-	_, err := ensurePresetV2ForApply(Model{
+	_, err := ensureProfileForApply(Model{
 		PersonaFS: testPersonaFS,
 		cfg:       &config.AppConfig{PersonaPreset: "legacy-custom", PersonaPresetSource: string(persona.PresetSourceUser)},
 	})
 	if err == nil || !strings.Contains(err.Error(), "migrate") {
-		t.Fatalf("ensurePresetV2ForApply() error = %v, want actionable migration guidance", err)
+		t.Fatalf("ensureProfileForApply() error = %v, want actionable migration guidance", err)
 	}
 }
 
@@ -2756,7 +2756,7 @@ func TestUpdatePersona_EnterCustomStartsEditMode(t *testing.T) {
 		Step:     StepPersona,
 		cfg:      &config.AppConfig{},
 		Selected: map[string]bool{},
-		Presets: []persona.Preset{
+		Presets: []persona.ProfileOption{
 			{Name: "custom", DisplayName: "Custom"},
 		},
 	}
@@ -2777,7 +2777,7 @@ func TestUpdatePersona_ResolveFailureFallsBackToBuiltinSlug(t *testing.T) {
 		cfg:       &config.AppConfig{},
 		Selected:  map[string]bool{},
 		PersonaFS: testPersonaFS,
-		Presets: []persona.Preset{
+		Presets: []persona.ProfileOption{
 			{Name: "non-existent-preset", DisplayName: "Missing"},
 		},
 	}

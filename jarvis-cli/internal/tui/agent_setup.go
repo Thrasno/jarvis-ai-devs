@@ -217,26 +217,6 @@ func applyWizardProfile(agents []agent.Agent, resolved *persona.ResolvedProfile,
 	})
 }
 
-// applyWizardPresetV2 is retained for compatibility until the remaining test
-// fixtures are migrated to applyWizardProfile.
-func applyWizardPresetV2(agents []agent.Agent, resolved *persona.ResolvedPresetV2, presetCtx wizardPresetApplyContext) error {
-	pipelineAgents := make([]persona.PresetV2Agent, 0, len(agents))
-	for _, a := range agents {
-		pipelineAgent, ok := a.(persona.PresetV2Agent)
-		if !ok {
-			return fmt.Errorf("agent %q does not support schema v2 presentation profiles", a.Name())
-		}
-		pipelineAgents = append(pipelineAgents, pipelineAgent)
-	}
-	return persona.ApplyPresetV2Pipeline(pipelineAgents, resolved, persona.ApplyOptions{
-		Layer1:               presetCtx.Layer1,
-		Skills:               presetCtx.Skills,
-		PreviousPresetSlug:   presetCtx.PreviousPresetSlug,
-		PreviousPresetSource: presetCtx.PreviousPresetSource,
-		PersistConfig:        false,
-	})
-}
-
 func verifyConfiguredAgentRuntime(a agent.Agent, cfg *config.AppConfig) error {
 	observed, err := agent.ObserveRuntimeWithConfig(a, cfg)
 	if err != nil {

@@ -31,7 +31,7 @@ type setupAgentStub struct {
 	registryAutomationErr   error
 	installedOrchestrator   string
 	layer2                  string
-	v2OutputStyle           *persona.PresetV2
+	outputStyle             *persona.Profile
 	observeCalls            int
 	registryAutomationCalls int
 
@@ -118,17 +118,8 @@ func (a *setupAgentStub) InstallRegistryAutomation(fs.FS) error {
 	return a.registryAutomationErr
 }
 
-func (a *setupAgentStub) WriteLegacyOutputStyle(*persona.Preset) error {
-	return a.outputStyleErr
-}
-
-func (a *setupAgentStub) WriteOutputStyleV2(preset *persona.PresetV2) error {
-	a.v2OutputStyle = preset
-	return a.outputStyleErr
-}
-
 func (a *setupAgentStub) WriteOutputStyle(preset *persona.Profile) error {
-	a.v2OutputStyle = preset
+	a.outputStyle = preset
 	return a.outputStyleErr
 }
 
@@ -500,7 +491,7 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 	tests := []struct {
 		name           string
 		agents         []agent.Agent
-		resolved       *persona.ResolvedPresetV2
+		resolved       *persona.ResolvedProfile
 		wantLen        int
 		wantConfigured bool
 		wantErrSubstr  string
@@ -532,7 +523,7 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 				&setupAgentStub{name: "claude"},
 				&setupAgentStub{name: "opencode", writeInstructionsErr: errors.New("instruction fail")},
 			},
-			resolved:       &persona.ResolvedPresetV2{Slug: "neutra", Source: persona.PresetSourceBuiltin, Preset: &persona.PresetV2{Name: "neutra"}},
+			resolved:       &persona.ResolvedProfile{Slug: "neutra", Source: persona.PresetSourceBuiltin, Preset: &persona.Profile{Name: "neutra"}},
 			wantLen:        2,
 			wantConfigured: true,
 			wantErrSubstr:  "apply preset pipeline",
@@ -586,18 +577,18 @@ func TestApplyWizardProfileUsesCanonicalPipeline(t *testing.T) {
 	if !strings.Contains(stub.layer2, "### Presentation") || strings.Contains(stub.layer2, "Behavioral Rules") {
 		t.Fatalf("canonical wizard layer2 = %q, want presentation-only content", stub.layer2)
 	}
-	if stub.v2OutputStyle == nil || stub.v2OutputStyle.Name != "custom-mentor" {
-		t.Fatalf("canonical output style profile = %+v, want custom-mentor", stub.v2OutputStyle)
+	if stub.outputStyle == nil || stub.outputStyle.Name != "custom-mentor" {
+		t.Fatalf("canonical output style profile = %+v, want custom-mentor", stub.outputStyle)
 	}
 }
 
-func TestConfigureWizardAgentsUsesCanonicalV2Preset(t *testing.T) {
+func TestConfigureWizardAgentsUsesCanonicalProfile(t *testing.T) {
 	stub := &setupAgentStub{name: "claude", writeInstructionsErr: errors.New("instruction fail")}
-	resolved := &persona.ResolvedPresetV2{
+	resolved := &persona.ResolvedProfile{
 		Slug: "custom-mentor",
-		Preset: &persona.PresetV2{
+		Preset: &persona.Profile{
 			Name: "custom-mentor",
-			Presentation: persona.PresentationV2{
+			Presentation: persona.Presentation{
 				Language: "en-us", Register: "friendly-professional", Vocabulary: "plain-technical", Cadence: "measured",
 				Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured",
 				TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded",
@@ -607,7 +598,7 @@ func TestConfigureWizardAgentsUsesCanonicalV2Preset(t *testing.T) {
 
 	results := configureWizardAgents([]agent.Agent{stub}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, resolved, wizardPresetApplyContext{Layer1: "layer1"}, testSkillsFS, nil, nil, func() bool { return true })
 	if len(results) != 1 || results[0].Err == nil || !strings.Contains(results[0].Err.Error(), "apply preset pipeline") {
-		t.Fatalf("V2 selection was not forwarded through the agent setup seam: %+v", results)
+		t.Fatalf("profile selection was not forwarded through the agent setup seam: %+v", results)
 	}
 }
 

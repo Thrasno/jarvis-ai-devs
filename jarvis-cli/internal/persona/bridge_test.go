@@ -11,7 +11,7 @@ import (
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 )
 
-func TestResolvePresetV2AcceptsCanonicalBuiltins(t *testing.T) {
+func TestResolveProfileAcceptsCanonicalBuiltins(t *testing.T) {
 	for _, slug := range []string{
 		"argentino",
 		"asturiano",
@@ -22,65 +22,65 @@ func TestResolvePresetV2AcceptsCanonicalBuiltins(t *testing.T) {
 		"yoda",
 	} {
 		t.Run(slug, func(t *testing.T) {
-			resolved, err := ResolvePresetV2(jarvis.PersonaFS, slug)
+			resolved, err := ResolveProfile(jarvis.PersonaFS, slug)
 			if err != nil {
-				t.Fatalf("ResolvePresetV2(%q) error = %v", slug, err)
+				t.Fatalf("ResolveProfile(%q) error = %v", slug, err)
 			}
 			if resolved.Source != PresetSourceBuiltin {
-				t.Fatalf("ResolvePresetV2(%q) source = %q, want builtin", slug, resolved.Source)
+				t.Fatalf("ResolveProfile(%q) source = %q, want builtin", slug, resolved.Source)
 			}
 			if resolved.Slug != slug || resolved.FilePath != "embed/personas/"+slug+".yaml" {
-				t.Fatalf("ResolvePresetV2(%q) location = (%q, %q), want canonical built-in path", slug, resolved.Slug, resolved.FilePath)
+				t.Fatalf("ResolveProfile(%q) location = (%q, %q), want canonical built-in path", slug, resolved.Slug, resolved.FilePath)
 			}
 			if resolved.Preset.SchemaVersion != 2 || resolved.Preset.Name != slug || resolved.Preset.Presentation.Language == "" {
-				t.Fatalf("ResolvePresetV2(%q) profile = %+v, want validated schema-v2 presentation profile", slug, resolved.Preset)
+				t.Fatalf("ResolveProfile(%q) profile = %+v, want validated schema-v2 presentation profile", slug, resolved.Preset)
 			}
 		})
 	}
 }
 
-func TestResolvePresetV2ReadsValidatedPresentationProfile(t *testing.T) {
+func TestResolveProfileReadsValidatedPresentationProfile(t *testing.T) {
 	fsys := fstest.MapFS{
 		"embed/personas/custom-mentor.yaml": &fstest.MapFile{Data: []byte(validPresetV2)},
 	}
 
-	resolved, err := ResolvePresetV2(fsys, "Custom Mentor")
+	resolved, err := ResolveProfile(fsys, "Custom Mentor")
 	if err != nil {
-		t.Fatalf("ResolvePresetV2() error = %v", err)
+		t.Fatalf("ResolveProfile() error = %v", err)
 	}
 	if resolved.Source != PresetSourceBuiltin {
-		t.Fatalf("ResolvePresetV2() source = %q, want builtin", resolved.Source)
+		t.Fatalf("ResolveProfile() source = %q, want builtin", resolved.Source)
 	}
 	if resolved.Slug != "custom-mentor" || resolved.FilePath != "embed/personas/custom-mentor.yaml" {
-		t.Fatalf("ResolvePresetV2() location = (%q, %q), want custom-mentor builtin path", resolved.Slug, resolved.FilePath)
+		t.Fatalf("ResolveProfile() location = (%q, %q), want custom-mentor builtin path", resolved.Slug, resolved.FilePath)
 	}
 	if resolved.Preset.Name != "custom-mentor" || resolved.Preset.Presentation.PhrasePack != "plain" {
-		t.Fatalf("ResolvePresetV2() profile = %+v, want validated presentation profile", resolved.Preset)
+		t.Fatalf("ResolveProfile() profile = %+v, want validated presentation profile", resolved.Preset)
 	}
 }
 
-func TestResolvePresetV2RejectsLegacyV1Profile(t *testing.T) {
+func TestResolveProfileRejectsLegacyV1Profile(t *testing.T) {
 	fsys := fstest.MapFS{
 		"embed/personas/legacy.yaml": &fstest.MapFile{Data: []byte("name: legacy\ndisplay_name: Legacy\ntone: {}\n")},
 	}
 
-	_, err := ResolvePresetV2(fsys, "legacy")
+	_, err := ResolveProfile(fsys, "legacy")
 	if err == nil || !strings.Contains(err.Error(), "migrate presentation choices to presentation.*") {
-		t.Fatalf("ResolvePresetV2() error = %v, want schema-v2 migration guidance", err)
+		t.Fatalf("ResolveProfile() error = %v, want schema-v2 migration guidance", err)
 	}
 }
 
-func TestResolvePresetV2RejectsInvalidSlugPathSeparators(t *testing.T) {
-	_, err := ResolvePresetV2(jarvis.PersonaFS, "../neutra")
+func TestResolveProfileRejectsInvalidSlugPathSeparators(t *testing.T) {
+	_, err := ResolveProfile(jarvis.PersonaFS, "../neutra")
 	if err == nil {
-		t.Fatal("ResolvePresetV2 expected invalid slug error, got nil")
+		t.Fatal("ResolveProfile expected invalid slug error, got nil")
 	}
 	if !strings.Contains(err.Error(), "path separators are not allowed") {
-		t.Fatalf("ResolvePresetV2 error = %q, want path separator validation", err)
+		t.Fatalf("ResolveProfile error = %q, want path separator validation", err)
 	}
 }
 
-func TestResolvePresetV2ReadsUserPresentationProfile(t *testing.T) {
+func TestResolveProfileReadsUserPresentationProfile(t *testing.T) {
 	home := isolateTestHome(t)
 	userPath := filepath.Join(home, ".jarvis", "personas", "custom-user.yaml")
 	if err := os.MkdirAll(filepath.Dir(userPath), 0o755); err != nil {
@@ -94,34 +94,34 @@ func TestResolvePresetV2ReadsUserPresentationProfile(t *testing.T) {
 		t.Fatalf("WriteFile(%q): %v", userPath, err)
 	}
 
-	resolved, err := ResolvePresetV2(fstest.MapFS{}, "Custom User")
+	resolved, err := ResolveProfile(fstest.MapFS{}, "Custom User")
 	if err != nil {
-		t.Fatalf("ResolvePresetV2() error = %v", err)
+		t.Fatalf("ResolveProfile() error = %v", err)
 	}
 	if resolved.Source != PresetSourceUser {
-		t.Fatalf("ResolvePresetV2() source = %q, want user", resolved.Source)
+		t.Fatalf("ResolveProfile() source = %q, want user", resolved.Source)
 	}
 	if resolved.Slug != "custom-user" || resolved.FilePath != userPath {
-		t.Fatalf("ResolvePresetV2() location = (%q, %q), want custom-user user path", resolved.Slug, resolved.FilePath)
+		t.Fatalf("ResolveProfile() location = (%q, %q), want custom-user user path", resolved.Slug, resolved.FilePath)
 	}
 	if resolved.Preset.Name != "custom-user" || resolved.Preset.Presentation.PhrasePack != "plain" {
-		t.Fatalf("ResolvePresetV2() profile = %+v, want validated user presentation profile", resolved.Preset)
+		t.Fatalf("ResolveProfile() profile = %+v, want validated user presentation profile", resolved.Preset)
 	}
 }
 
-func TestResolvePresetV2ReportsNotFoundAfterBuiltinAndUserMisses(t *testing.T) {
+func TestResolveProfileReportsNotFoundAfterBuiltinAndUserMisses(t *testing.T) {
 	isolateTestHome(t)
 
-	_, err := ResolvePresetV2(fstest.MapFS{}, "missing-v2")
+	_, err := ResolveProfile(fstest.MapFS{}, "missing-v2")
 	if err == nil {
-		t.Fatal("ResolvePresetV2() error = nil, want not-found error")
+		t.Fatal("ResolveProfile() error = nil, want not-found error")
 	}
 	for _, want := range []string{
 		`schema v2 preset "missing-v2" not found`,
 		"available built-ins:",
 	} {
 		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("ResolvePresetV2() error = %q, want %q", err, want)
+			t.Fatalf("ResolveProfile() error = %q, want %q", err, want)
 		}
 	}
 }
@@ -156,25 +156,25 @@ func TestRenderV2PresentationKeepsPolicyOutOfPresentationSurfaces(t *testing.T) 
 				t.Fatalf("ValidateAndDecode() error = %v", err)
 			}
 
-			layer2 := RenderLayer2V2(preset)
+			layer2 := RenderLayer2(preset)
 			for _, want := range []string{"## Persona: CustomMentor", "### Presentation", tt.wantLanguage, tt.wantRegister} {
 				if !strings.Contains(layer2, want) {
-					t.Fatalf("RenderLayer2V2() missing %q\n%s", want, layer2)
+					t.Fatalf("RenderLayer2() missing %q\n%s", want, layer2)
 				}
 			}
 			for _, forbidden := range []string{"Persona Scope (CRITICAL)", "Always propose alternatives with tradeoffs", "Technical Behavior"} {
 				if strings.Contains(layer2, forbidden) {
-					t.Fatalf("RenderLayer2V2() contains policy %q\n%s", forbidden, layer2)
+					t.Fatalf("RenderLayer2() contains policy %q\n%s", forbidden, layer2)
 				}
 			}
 
-			outputStyle := RenderOutputStyleV2(preset)
+			outputStyle := RenderOutputStyle(preset)
 			if !strings.Contains(outputStyle, "keep-coding-instructions: true") || !strings.Contains(outputStyle, tt.wantLanguage) {
-				t.Fatalf("RenderOutputStyleV2() = %q, want frontmatter and presentation", outputStyle)
+				t.Fatalf("RenderOutputStyle() = %q, want frontmatter and presentation", outputStyle)
 			}
 			for _, forbidden := range []string{"Persona Scope (CRITICAL)", "Always propose alternatives with tradeoffs", "Technical Behavior"} {
 				if strings.Contains(outputStyle, forbidden) {
-					t.Fatalf("RenderOutputStyleV2() contains policy %q\n%s", forbidden, outputStyle)
+					t.Fatalf("RenderOutputStyle() contains policy %q\n%s", forbidden, outputStyle)
 				}
 			}
 		})
@@ -206,8 +206,8 @@ func TestRenderV2PresentationRendersEverySelectedTrait(t *testing.T) {
 		name    string
 		content string
 	}{
-		{name: "Layer2", content: RenderLayer2V2(preset)},
-		{name: "Claude output style", content: RenderOutputStyleV2(preset)},
+		{name: "Layer2", content: RenderLayer2(preset)},
+		{name: "Claude output style", content: RenderOutputStyle(preset)},
 	} {
 		t.Run(rendered.name, func(t *testing.T) {
 			for _, want := range wantTraits {
@@ -235,8 +235,8 @@ func TestRenderV2PresentationUsesSlugHeadingInsteadOfDisplayNameMetadata(t *test
 		name    string
 		content string
 	}{
-		{name: "Layer2", content: RenderLayer2V2(preset)},
-		{name: "Claude output style", content: RenderOutputStyleV2(preset)},
+		{name: "Layer2", content: RenderLayer2(preset)},
+		{name: "Claude output style", content: RenderOutputStyle(preset)},
 	} {
 		t.Run(rendered.name, func(t *testing.T) {
 			if !strings.Contains(rendered.content, "## Persona: CustomMentor") {

@@ -78,7 +78,7 @@ func TestCockpitHandlers_ErrorSurfacingKeepsUserInResultPanel(t *testing.T) {
 func TestCockpitHandlers_PersonaUsesCockpitNativePresetFlowAndReturnsToMenu(t *testing.T) {
 	runner := &fakeCockpitRunner{personaSummary: "persona argentino applied to 1 agent"}
 	m := newCockpitHandlerTestModel(runner)
-	m.Presets = []persona.Preset{
+	m.Presets = []persona.ProfileOption{
 		{Name: "argentino", DisplayName: "Argentino", Description: "Rioplatense Spanish"},
 		{Name: "neutra", DisplayName: "Neutra", Description: "Neutral Spanish"},
 		{Name: "custom", DisplayName: "Custom (crear nuevo)", Description: "Use installer custom validation path"},
@@ -106,7 +106,7 @@ func TestCockpitHandlers_PersonaUsesCockpitNativePresetFlowAndReturnsToMenu(t *t
 func TestCockpitHandlers_PersonaBlocksMissingConfiguredPresetBeforeDefaultAcceptance(t *testing.T) {
 	runner := &fakeCockpitRunner{}
 	m := newCockpitHandlerTestModel(runner)
-	m.Presets = []persona.Preset{{Name: "argentino", DisplayName: "Argentino"}}
+	m.Presets = []persona.ProfileOption{{Name: "argentino", DisplayName: "Argentino"}}
 	m.presetCur = -1
 	m.personaSelectionErr = errors.New("configured persona preset \"deleted-custom\" is stale or deleted; Recovery: explicitly select an available schema v2 preset")
 	m = selectCockpitAction(t, m, CockpitActionPersona)
@@ -121,7 +121,7 @@ func TestCockpitHandlers_PersonaBlocksMissingConfiguredPresetBeforeDefaultAccept
 func TestCockpitHandlers_PersonaCustomOptionUsesExtensionSeamWithoutClaimingApply(t *testing.T) {
 	runner := &fakeCockpitRunner{}
 	m := newCockpitHandlerTestModel(runner)
-	m.Presets = []persona.Preset{
+	m.Presets = []persona.ProfileOption{
 		{Name: "argentino", DisplayName: "Argentino", Description: "Rioplatense Spanish"},
 		{Name: "custom", DisplayName: "Custom (crear nuevo)", Description: "Use installer custom validation path"},
 	}
@@ -145,7 +145,7 @@ func TestCockpitHandlers_PersonaEmptyAndRunnerErrorSurfaceAsResults(t *testing.T
 	assertViewContains(t, m.View(), "Persona error", "no persona presets available", "Enter: return")
 
 	m = newCockpitHandlerTestModel(runner)
-	m.Presets = []persona.Preset{{Name: "neutra", DisplayName: "Neutra"}}
+	m.Presets = []persona.ProfileOption{{Name: "neutra", DisplayName: "Neutra"}}
 	m = selectCockpitAction(t, m, CockpitActionPersona)
 	m = sendCockpitKey(m, tea.KeyEnter)
 
@@ -652,15 +652,15 @@ func TestDefaultCockpitRunner_ApplyPersonaPresetPersistsConfigAndWritesAgentArti
 	if err := config.Save(&config.AppConfig{SchemaVersion: 2, PersonaPreset: "old", PersonaPresetSource: "builtin"}); err != nil {
 		t.Fatalf("save config fixture: %v", err)
 	}
-	previousResolver := resolvePresetV2ForWizard
-	resolvePresetV2ForWizard = func(fs.FS, string) (*persona.ResolvedPresetV2, error) {
-		return &persona.ResolvedPresetV2{
+	previousResolver := resolveProfileForWizard
+	resolveProfileForWizard = func(fs.FS, string) (*persona.ResolvedProfile, error) {
+		return &persona.ResolvedProfile{
 			Slug:   "neutra",
 			Source: persona.PresetSourceBuiltin,
-			Preset: &persona.PresetV2{SchemaVersion: 2, Name: "neutra", DisplayName: "Neutra", Presentation: persona.PresentationV2{Language: "en-us", Register: "friendly-professional", Vocabulary: "plain-technical", Cadence: "measured", Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured", TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded"}},
+			Preset: &persona.Profile{SchemaVersion: 2, Name: "neutra", DisplayName: "Neutra", Presentation: persona.Presentation{Language: "en-us", Register: "friendly-professional", Vocabulary: "plain-technical", Cadence: "measured", Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured", TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded"}},
 		}, nil
 	}
-	t.Cleanup(func() { resolvePresetV2ForWizard = previousResolver })
+	t.Cleanup(func() { resolveProfileForWizard = previousResolver })
 	fakeAgent := &fakePersonaAgent{name: "claude", supportsOutputStyles: true}
 
 	summary, err := (defaultCockpitRunner{}).ApplyPersonaPreset(context.Background(), personaApplyRequest{
@@ -688,11 +688,11 @@ func TestDefaultCockpitRunner_ApplyPersonaPresetPersistsConfigAndWritesAgentArti
 }
 
 func TestDefaultCockpitRunner_ApplyPersonaPresetSurfacesResolverErrors(t *testing.T) {
-	previousResolver := resolvePresetV2ForWizard
-	resolvePresetV2ForWizard = func(fs.FS, string) (*persona.ResolvedPresetV2, error) {
+	previousResolver := resolveProfileForWizard
+	resolveProfileForWizard = func(fs.FS, string) (*persona.ResolvedProfile, error) {
 		return nil, errors.New("missing preset")
 	}
-	t.Cleanup(func() { resolvePresetV2ForWizard = previousResolver })
+	t.Cleanup(func() { resolveProfileForWizard = previousResolver })
 
 	_, err := (defaultCockpitRunner{}).ApplyPersonaPreset(context.Background(), personaApplyRequest{PresetName: "missing", PersonaFS: fstest.MapFS{}})
 	if err == nil || !strings.Contains(err.Error(), "resolve preset: missing preset") {
@@ -909,11 +909,7 @@ func (f *fakePersonaAgent) WriteInstructions(string, string, []config.SkillInfo)
 func (f *fakePersonaAgent) InstallSkills(fs.FS, []string) error { return nil }
 func (f *fakePersonaAgent) InstallOrchestrator([]byte) error    { return nil }
 func (f *fakePersonaAgent) SupportsOutputStyles() bool          { return f.supportsOutputStyles }
-func (f *fakePersonaAgent) WriteOutputStyle(*persona.Preset) error {
-	f.outputStyleWrites++
-	return nil
-}
-func (f *fakePersonaAgent) WriteOutputStyleV2(*persona.PresetV2) error {
+func (f *fakePersonaAgent) WriteOutputStyle(*persona.Profile) error {
 	f.outputStyleWrites++
 	return nil
 }

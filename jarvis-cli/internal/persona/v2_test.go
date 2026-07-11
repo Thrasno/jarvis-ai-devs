@@ -230,7 +230,7 @@ func presetV2WithDisplayName(displayName string) string {
 }
 
 func TestBuiltinProfilesV2MatchPresentationMatrix(t *testing.T) {
-	wantProfiles := map[string]PresentationV2{
+	wantProfiles := map[string]Presentation{
 		"argentino": {
 			Language: "es-rioplatense", Register: "warm-direct", Vocabulary: "rioplatense", Cadence: "energetic", Humor: "warm", EmotionalRange: "supportive", Verbosity: "detailed", Formatting: "structured", TeachingMetaphors: "architecture", Examples: "practical", AddressPack: "gentleman", PhrasePack: "gentleman", AntiCaricature: "gentleman",
 		},
@@ -279,7 +279,7 @@ func TestBuiltinProfilesV2MatchPresentationMatrix(t *testing.T) {
 				t.Fatalf("presentation = %+v, want %+v", preset.Presentation, want)
 			}
 
-			for _, rendered := range []string{RenderLayer2V2(preset), RenderOutputStyleV2(preset)} {
+			for _, rendered := range []string{RenderLayer2(preset), RenderOutputStyle(preset)} {
 				for _, forbidden := range []string{"CONCEPTS > CODE", "AI IS A TOOL", "Technical Behavior", "workflow_rules"} {
 					if strings.Contains(rendered, forbidden) {
 						t.Fatalf("presentation for %s contains shared policy %q:\n%s", name, forbidden, rendered)
@@ -327,8 +327,8 @@ func TestDormantV2RenderersExcludeRetiredV1NotesAndScopeContracts(t *testing.T) 
 			}
 
 			for surface, rendered := range map[string]string{
-				"Layer2":              RenderLayer2V2(preset),
-				"Claude output style": RenderOutputStyleV2(preset),
+				"Layer2":              RenderLayer2(preset),
+				"Claude output style": RenderOutputStyle(preset),
 			} {
 				for _, obsolete := range []string{
 					"Persona Scope (CRITICAL)",
@@ -378,12 +378,12 @@ func TestDormantV2ProfileDocsDoNotAdvertiseUnsupportedActivation(t *testing.T) {
 	}
 }
 
-func TestV1CatalogScannerExcludesDormantV2Namespace(t *testing.T) {
+func TestProfileCatalogScannerExcludesNonProfileNamespace(t *testing.T) {
 	fSys := fstest.MapFS{
-		"embed/personas-v2/dormant.yaml": &fstest.MapFile{Data: []byte(validPresetV2)},
+		"embed/personas-v2/non-profile.yaml": &fstest.MapFile{Data: []byte(validPresetV2)},
 	}
 
-	if names := listPresetNames(fSys); len(names) != 0 {
-		t.Fatalf("V1 catalog names = %v, want no V2 profiles", names)
+	if names := listProfileNames(fSys); len(names) != 0 {
+		t.Fatalf("profile catalog names = %v, want no entries outside the profile namespace", names)
 	}
 }

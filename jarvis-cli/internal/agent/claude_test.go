@@ -88,18 +88,18 @@ func TestClaudeAgent_SupportsOutputStyles(t *testing.T) {
 	}
 }
 
-// TestClaudeAgent_WriteOutputStyleV2_WritesPresentation verifies the output-style file is written
+// TestClaudeAgent_WriteOutputStyle_WritesPresentation verifies the output-style file is written
 // to the correct path with correct content (SPEC-003).
-func TestClaudeAgent_WriteOutputStyleV2_WritesPresentation(t *testing.T) {
+func TestClaudeAgent_WriteOutputStyle_WritesPresentation(t *testing.T) {
 	// Setup temp home directory
 	tmpHome := t.TempDir()
 	agent := &ClaudeAgent{home: tmpHome}
 
-	preset := testOutputStylePresetV2("argentino")
+	preset := testOutputStyleProfile("argentino")
 
-	err := agent.WriteOutputStyleV2(preset)
+	err := agent.WriteOutputStyle(preset)
 	if err != nil {
-		t.Fatalf("WriteOutputStyleV2() failed: %v", err)
+		t.Fatalf("WriteOutputStyle() failed: %v", err)
 	}
 
 	// Verify output-styles directory was created
@@ -131,22 +131,22 @@ func TestClaudeAgent_WriteOutputStyleV2_WritesPresentation(t *testing.T) {
 	}
 }
 
-func TestClaudeAgent_WriteOutputStyleV2(t *testing.T) {
+func TestClaudeAgent_WriteOutputStyle(t *testing.T) {
 	tmpHome := t.TempDir()
 	agent := &ClaudeAgent{home: tmpHome}
-	preset := &persona.PresetV2{
+	preset := &persona.Profile{
 		SchemaVersion: 2,
 		Name:          "custom-mentor",
 		DisplayName:   "Custom Mentor",
-		Presentation: persona.PresentationV2{
+		Presentation: persona.Presentation{
 			Language: "en-us", Register: "friendly-professional", Vocabulary: "plain-technical", Cadence: "measured",
 			Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured",
 			TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded",
 		},
 	}
 
-	if err := agent.WriteOutputStyleV2(preset); err != nil {
-		t.Fatalf("WriteOutputStyleV2() error = %v", err)
+	if err := agent.WriteOutputStyle(preset); err != nil {
+		t.Fatalf("WriteOutputStyle() error = %v", err)
 	}
 
 	content, err := os.ReadFile(filepath.Join(tmpHome, ".claude", "output-styles", "CustomMentor.md"))
@@ -166,11 +166,11 @@ func TestClaudeAgent_WriteOutputStyle_HyphenatedName(t *testing.T) {
 	tmpHome := t.TempDir()
 	agent := &ClaudeAgent{home: tmpHome}
 
-	preset := testOutputStylePresetV2("tony-stark")
+	preset := testOutputStyleProfile("tony-stark")
 
-	err := agent.WriteOutputStyleV2(preset)
+	err := agent.WriteOutputStyle(preset)
 	if err != nil {
-		t.Fatalf("WriteOutputStyleV2() failed: %v", err)
+		t.Fatalf("WriteOutputStyle() failed: %v", err)
 	}
 
 	// Verify file name is TonyStark.md (not tony-stark.md)
@@ -250,11 +250,11 @@ func TestClaudeAgent_WriteOutputStyle_SettingsJsonMerge(t *testing.T) {
 				t.Fatalf("write settings.json: %v", err)
 			}
 
-			preset := testOutputStylePresetV2(tt.presetName)
+			preset := testOutputStyleProfile(tt.presetName)
 
-			err := agent.WriteOutputStyleV2(preset)
+			err := agent.WriteOutputStyle(preset)
 			if err != nil {
-				t.Fatalf("WriteOutputStyleV2() failed: %v", err)
+				t.Fatalf("WriteOutputStyle() failed: %v", err)
 			}
 
 			// Read and verify settings.json
@@ -279,11 +279,11 @@ func TestClaudeAgent_WriteOutputStyle_SettingsJsonNotExists(t *testing.T) {
 	tmpHome := t.TempDir()
 	agent := &ClaudeAgent{home: tmpHome}
 
-	preset := testOutputStylePresetV2("argentino")
+	preset := testOutputStyleProfile("argentino")
 
-	err := agent.WriteOutputStyleV2(preset)
+	err := agent.WriteOutputStyle(preset)
 	if err != nil {
-		t.Fatalf("WriteOutputStyleV2() failed: %v", err)
+		t.Fatalf("WriteOutputStyle() failed: %v", err)
 	}
 
 	// Verify settings.json was created
@@ -320,9 +320,9 @@ func TestClaudeAgent_WriteOutputStyle_MalformedSettings(t *testing.T) {
 	}
 
 	agent := newClaudeAgent(emptyFS)
-	preset := testOutputStylePresetV2("neutra")
+	preset := testOutputStyleProfile("neutra")
 
-	err := agent.WriteOutputStyleV2(preset)
+	err := agent.WriteOutputStyle(preset)
 	if err == nil {
 		t.Fatal("expected error for malformed settings.json, got nil")
 	}
@@ -358,9 +358,9 @@ func TestClaudeAgent_WriteOutputStyle_ReadOnlyFilesystem(t *testing.T) {
 	})
 
 	agent := newClaudeAgent(emptyFS)
-	preset := testOutputStylePresetV2("argentino")
+	preset := testOutputStyleProfile("argentino")
 
-	err := agent.WriteOutputStyleV2(preset)
+	err := agent.WriteOutputStyle(preset)
 	if err == nil {
 		t.Fatal("expected error for read-only filesystem, got nil")
 	}
@@ -370,17 +370,17 @@ func TestClaudeAgent_WriteOutputStyle_ReadOnlyFilesystem(t *testing.T) {
 	}
 }
 
-// TestClaudeAgent_WriteOutputStyleV2_EmptyPresentation verifies an empty
+// TestClaudeAgent_WriteOutputStyle_EmptyPresentation verifies an empty
 // presentation value does not cause a panic while rendering (SPEC-008).
-func TestClaudeAgent_WriteOutputStyleV2_EmptyPresentation(t *testing.T) {
+func TestClaudeAgent_WriteOutputStyle_EmptyPresentation(t *testing.T) {
 	tmpHome := isolateTestHome(t)
 
 	agent := newClaudeAgent(emptyFS)
-	preset := &persona.PresetV2{Name: "neutra"}
+	preset := &persona.Profile{Name: "neutra"}
 
-	err := agent.WriteOutputStyleV2(preset)
+	err := agent.WriteOutputStyle(preset)
 	if err != nil {
-		t.Fatalf("WriteOutputStyleV2() with empty presentation failed: %v", err)
+		t.Fatalf("WriteOutputStyle() with empty presentation failed: %v", err)
 	}
 
 	// Verify file was created
@@ -400,11 +400,11 @@ func TestClaudeAgent_WriteOutputStyleV2_EmptyPresentation(t *testing.T) {
 	}
 }
 
-func testOutputStylePresetV2(name string) *persona.PresetV2 {
-	return &persona.PresetV2{
+func testOutputStyleProfile(name string) *persona.Profile {
+	return &persona.Profile{
 		SchemaVersion: 2,
 		Name:          name,
-		Presentation: persona.PresentationV2{
+		Presentation: persona.Presentation{
 			Language: "es-rioplatense", Register: "warm-direct", Vocabulary: "rioplatense", Cadence: "energetic",
 			Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured",
 			TeachingMetaphors: "architecture", Examples: "practical", AddressPack: "gentleman", PhrasePack: "gentleman", AntiCaricature: "grounded",

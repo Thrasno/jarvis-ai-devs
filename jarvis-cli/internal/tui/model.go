@@ -69,7 +69,7 @@ type Model struct {
 	APIToken    string
 	activeField int
 
-	Presets              []persona.Preset
+	Presets              []persona.ProfileOption
 	presetCur            int
 	CustomYAML           string
 	customEdit           bool
@@ -77,7 +77,6 @@ type Model struct {
 	customPresetName     string
 	customDisplayName    string
 	selectedProfile      *persona.ResolvedProfile
-	selectedPresetV2     *persona.ResolvedPresetV2 // Compatibility mirror for legacy test fixtures.
 	previousPresetSlug   string
 	previousPresetSource persona.PresetSource
 	personaSelectionErr  error
@@ -137,15 +136,6 @@ type Model struct {
 func (m Model) wizardProfile() (*persona.ResolvedProfile, bool) {
 	if m.selectedProfile != nil {
 		return m.selectedProfile, true
-	}
-	return nil, false
-}
-
-// wizardPresetV2 is retained for compatibility until the remaining test
-// fixtures are migrated to wizardProfile.
-func (m Model) wizardPresetV2() (*persona.ResolvedPresetV2, bool) {
-	if m.selectedPresetV2 != nil {
-		return m.selectedPresetV2, true
 	}
 	return nil, false
 }
@@ -223,7 +213,7 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 	presets, err := persona.ListProfiles(m.PersonaFS)
 	if err == nil {
 		m.Presets = append(m.Presets, profileOptions(presets)...)
-		m.Presets = append(m.Presets, persona.Preset{
+		m.Presets = append(m.Presets, persona.ProfileOption{
 			Name:        "custom",
 			DisplayName: "Custom (crear nuevo)",
 			Description: "Creá un preset propio con slug y display name, validado y persistido en ~/.jarvis/personas/<slug>.yaml.",
@@ -286,10 +276,10 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 	return m
 }
 
-func profileOptions(presets []persona.Profile) []persona.Preset {
-	options := make([]persona.Preset, 0, len(presets))
+func profileOptions(presets []persona.Profile) []persona.ProfileOption {
+	options := make([]persona.ProfileOption, 0, len(presets))
 	for _, preset := range presets {
-		options = append(options, persona.Preset{
+		options = append(options, persona.ProfileOption{
 			Name:        preset.Name,
 			DisplayName: preset.DisplayName,
 			Description: schemaV2PresetDescription(preset.Name),
@@ -297,10 +287,6 @@ func profileOptions(presets []persona.Profile) []persona.Preset {
 	}
 	return options
 }
-
-// presetV2Options is retained for compatibility until the remaining test
-// fixtures are migrated to profileOptions.
-func presetV2Options(presets []persona.PresetV2) []persona.Preset { return profileOptions(presets) }
 
 // NewCockpitModel creates the cockpit-first root model used by bare TTY runs.
 func NewCockpitModel(wcfg WizardConfig) Model {

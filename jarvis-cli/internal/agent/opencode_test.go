@@ -20,17 +20,17 @@ func TestOpenCodeAgent_SupportsOutputStyles(t *testing.T) {
 	}
 }
 
-// TestOpenCodeAgent_WriteOutputStyleV2_NoOp verifies WriteOutputStyleV2 is a no-op
+// TestOpenCodeAgent_WriteOutputStyle_NoOp verifies WriteOutputStyle is a no-op
 // and doesn't create any files (SPEC-001, SPEC-009).
-func TestOpenCodeAgent_WriteOutputStyleV2_NoOp(t *testing.T) {
+func TestOpenCodeAgent_WriteOutputStyle_NoOp(t *testing.T) {
 	tmpHome := t.TempDir()
 	agent := &OpenCodeAgent{home: tmpHome}
 
-	preset := &persona.PresetV2{Name: "argentino"}
+	preset := &persona.Profile{Name: "argentino"}
 
-	err := agent.WriteOutputStyleV2(preset)
+	err := agent.WriteOutputStyle(preset)
 	if err != nil {
-		t.Errorf("WriteOutputStyleV2() returned error: %v, want nil", err)
+		t.Errorf("WriteOutputStyle() returned error: %v, want nil", err)
 	}
 
 	// Verify no output-styles directory was created
@@ -48,25 +48,25 @@ func TestOpenCodeAgent_WriteOutputStyleV2_NoOp(t *testing.T) {
 	// Verify settings.json was not modified
 	settingsPath := filepath.Join(tmpHome, ".config", "opencode", "opencode.json")
 	if _, err := os.Stat(settingsPath); !os.IsNotExist(err) {
-		t.Error("settings file should not be created by WriteOutputStyleV2 for OpenCodeAgent")
+		t.Error("settings file should not be created by WriteOutputStyle for OpenCodeAgent")
 	}
 }
 
 func TestOpenCodeAgent_WriteInstructions_ProjectsCanonicalLayer1(t *testing.T) {
 	tmpHome := t.TempDir()
 	agent := &OpenCodeAgent{home: tmpHome, templatesFS: testTemplatesFS}
-	preset := &persona.PresetV2{
+	preset := &persona.Profile{
 		SchemaVersion: 2,
 		Name:          "presentation-only",
 		DisplayName:   "Presentation Only",
-		Presentation: persona.PresentationV2{
+		Presentation: persona.Presentation{
 			Language: "en-us", Register: "friendly-professional", Vocabulary: "plain-technical", Cadence: "measured",
 			Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured",
 			TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded",
 		},
 	}
 
-	if err := agent.WriteInstructions(config.Layer1Content(), persona.RenderLayer2V2(preset), nil); err != nil {
+	if err := agent.WriteInstructions(config.Layer1Content(), persona.RenderLayer2(preset), nil); err != nil {
 		t.Fatalf("WriteInstructions: %v", err)
 	}
 

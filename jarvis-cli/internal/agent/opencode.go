@@ -543,12 +543,6 @@ func (a *OpenCodeAgent) WriteOutputStyle(preset *persona.Profile) error {
 	return nil
 }
 
-// WriteOutputStyleV2 is retained for compatibility until the remaining test
-// fixtures are migrated to the canonical profile API.
-func (a *OpenCodeAgent) WriteOutputStyleV2(preset *persona.PresetV2) error {
-	return a.WriteOutputStyle(preset)
-}
-
 // ClearOutputStyle is a no-op for OpenCodeAgent since OpenCode has no
 // output-style artifact contract to clean.
 func (a *OpenCodeAgent) ClearOutputStyle(name string) error {

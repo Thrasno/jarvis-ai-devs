@@ -318,7 +318,7 @@ func (a *unsupportedRegistryAutomationAgent) WriteInstructions(string, string, [
 func (a *unsupportedRegistryAutomationAgent) InstallSkills(fs.FS, []string) error { return nil }
 func (a *unsupportedRegistryAutomationAgent) InstallOrchestrator([]byte) error    { return nil }
 func (a *unsupportedRegistryAutomationAgent) SupportsOutputStyles() bool          { return false }
-func (a *unsupportedRegistryAutomationAgent) WriteOutputStyleV2(*persona.PresetV2) error {
+func (a *unsupportedRegistryAutomationAgent) WriteOutputStyle(*persona.Profile) error {
 	return nil
 }
 func (a *unsupportedRegistryAutomationAgent) ClearOutputStyle(string) error { return nil }

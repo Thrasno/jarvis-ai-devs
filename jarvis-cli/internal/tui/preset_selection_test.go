@@ -63,15 +63,15 @@ func TestResolveWizardPresetSelection(t *testing.T) {
 	}
 }
 
-func TestCreateWizardCustomPresetV2_GeneratesAndLoadsActiveProfile(t *testing.T) {
+func TestCreateWizardCustomProfileGeneratesAndLoadsActiveProfile(t *testing.T) {
 	isolateTestHome(t)
 
-	resolved, err := createWizardCustomPresetV2(jarvis.PersonaFS, customPresetDraft{
+	resolved, err := createWizardCustomProfile(jarvis.PersonaFS, customPresetDraft{
 		Name:        "Future Persona",
 		DisplayName: "Future Persona",
 	})
 	if err != nil {
-		t.Fatalf("createWizardCustomPresetV2: %v", err)
+		t.Fatalf("createWizardCustomProfile: %v", err)
 	}
 	if resolved.Source != persona.PresetSourceUser || resolved.Slug != "future-persona" {
 		t.Fatalf("resolved = (%q, %q), want user future-persona", resolved.Source, resolved.Slug)
@@ -81,7 +81,7 @@ func TestCreateWizardCustomPresetV2_GeneratesAndLoadsActiveProfile(t *testing.T)
 	}
 }
 
-func TestCreateWizardCustomPresetV2_RejectsBehavioralTemplate(t *testing.T) {
+func TestCreateWizardCustomProfileRejectsBehavioralTemplate(t *testing.T) {
 	home := isolateTestHome(t)
 	personaFS := fstest.MapFS{
 		"embed/personas/custom.yaml.tmpl": &fstest.MapFile{Data: []byte(`schema_version: 2
@@ -92,9 +92,9 @@ presentation: {}
 `)},
 	}
 
-	_, err := createWizardCustomPresetV2(personaFS, customPresetDraft{Name: "Future Persona", DisplayName: "Future Persona"})
+	_, err := createWizardCustomProfile(personaFS, customPresetDraft{Name: "Future Persona", DisplayName: "Future Persona"})
 	if err == nil || !strings.Contains(err.Error(), "schema v2 validation failed") {
-		t.Fatalf("createWizardCustomPresetV2() error = %v, want schema-v2 validation failure", err)
+		t.Fatalf("createWizardCustomProfile() error = %v, want schema-v2 validation failure", err)
 	}
 
 	path := filepath.Join(home, ".jarvis", "personas", "future-persona.yaml")
@@ -103,24 +103,24 @@ presentation: {}
 	}
 }
 
-func TestResolveWizardPresetSelection_UsesV2Resolver(t *testing.T) {
-	originalV2 := resolvePresetV2ForWizard
+func TestResolveWizardPresetSelectionUsesProfileResolver(t *testing.T) {
+	original := resolveProfileForWizard
 	t.Cleanup(func() {
-		resolvePresetV2ForWizard = originalV2
+		resolveProfileForWizard = original
 	})
 
-	v2Called := false
-	resolvePresetV2ForWizard = func(_ fs.FS, slug string) (*persona.ResolvedPresetV2, error) {
-		v2Called = true
-		return &persona.ResolvedPresetV2{Slug: slug, Source: persona.PresetSourceBuiltin, Preset: &persona.PresetV2{SchemaVersion: 2}}, nil
+	called := false
+	resolveProfileForWizard = func(_ fs.FS, slug string) (*persona.ResolvedProfile, error) {
+		called = true
+		return &persona.ResolvedProfile{Slug: slug, Source: persona.PresetSourceBuiltin, Preset: &persona.Profile{SchemaVersion: 2}}, nil
 	}
 
 	resolved, err := resolveWizardPresetSelection(testPersonaFS, "Neutra", nil)
 	if err != nil {
 		t.Fatalf("resolveWizardPresetSelection: %v", err)
 	}
-	if !v2Called || resolved.Slug != "neutra" || resolved.Source != persona.PresetSourceBuiltin || resolved.Preset.SchemaVersion != 2 {
-		t.Fatalf("normal selection = %+v, V2 called = %t; want V2 resolution", resolved, v2Called)
+	if !called || resolved.Slug != "neutra" || resolved.Source != persona.PresetSourceBuiltin || resolved.Preset.SchemaVersion != 2 {
+		t.Fatalf("normal selection = %+v, resolver called = %t; want profile resolution", resolved, called)
 	}
 }
 
@@ -181,16 +181,16 @@ func TestValidateConfiguredPersonaPresetForV2SelectionClassifiesProfilesWithoutV
 	}
 }
 
-func TestCreateWizardCustomPresetV2_RejectsLegacyYAMLOverrideWithMigrationGuidance(t *testing.T) {
+func TestCreateWizardCustomProfileRejectsLegacyYAMLOverrideWithMigrationGuidance(t *testing.T) {
 	isolateTestHome(t)
 
-	_, err := createWizardCustomPresetV2(jarvis.PersonaFS, customPresetDraft{
+	_, err := createWizardCustomProfile(jarvis.PersonaFS, customPresetDraft{
 		Name:        "Legacy Custom",
 		DisplayName: "Legacy Custom",
 		YAML:        "notes: preserve legacy behavior",
 	})
 	if err == nil || !strings.Contains(err.Error(), "migrate") {
-		t.Fatalf("createWizardCustomPresetV2() error = %v, want actionable migration guidance", err)
+		t.Fatalf("createWizardCustomProfile() error = %v, want actionable migration guidance", err)
 	}
 }
 

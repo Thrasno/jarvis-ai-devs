@@ -1311,12 +1311,12 @@ func TestOpenCodeJSONTemplate_OrchestratorPromptUsesFileInjection(t *testing.T) 
 }
 
 func TestGeneratedRuntimeAcceptance_RenderedArtifactsProveGuardrails(t *testing.T) {
-	preset, err := persona.ResolvePresetV2(jarvis.PersonaFS, "argentino")
+	preset, err := persona.ResolveProfile(jarvis.PersonaFS, "argentino")
 	if err != nil {
-		t.Fatalf("ResolvePresetV2: %v", err)
+		t.Fatalf("ResolveProfile: %v", err)
 	}
 	layer1 := config.Layer1Content()
-	layer2 := persona.RenderLayer2V2(preset.Preset)
+	layer2 := persona.RenderLayer2(preset.Preset)
 	skills := []config.SkillInfo{{Name: "sdd-apply", Description: "Implement SDD tasks", Trigger: "implementing SDD tasks"}}
 
 	for _, tc := range []struct {

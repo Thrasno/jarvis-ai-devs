@@ -27,17 +27,17 @@ func TestNormalizeSlug(t *testing.T) {
 	}
 }
 
-func TestListPresetsV2LoadsValidatedCatalog(t *testing.T) {
-	presets, err := ListPresetsV2(jarvis.PersonaFS)
+func TestListProfilesLoadsValidatedCatalog(t *testing.T) {
+	presets, err := ListProfiles(jarvis.PersonaFS)
 	if err != nil {
-		t.Fatalf("ListPresetsV2() error = %v", err)
+		t.Fatalf("ListProfiles() error = %v", err)
 	}
 	if len(presets) != 7 {
-		t.Fatalf("ListPresetsV2() returned %d presets, want 7", len(presets))
+		t.Fatalf("ListProfiles() returned %d profiles, want 7", len(presets))
 	}
 	for _, preset := range presets {
 		if preset.SchemaVersion != 2 || preset.Name == "" || preset.DisplayName == "" {
-			t.Fatalf("ListPresetsV2() returned unvalidated profile: %+v", preset)
+			t.Fatalf("ListProfiles() returned unvalidated profile: %+v", preset)
 		}
 	}
 }

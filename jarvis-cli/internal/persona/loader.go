@@ -13,10 +13,8 @@ import (
 	"unicode"
 )
 
-// Preset is a UI-option compatibility shim retained until the remaining TUI
-// fixtures move to canonical Profile options. It is not decoded, rendered,
-// resolved, or applied.
-type Preset struct {
+// ProfileOption is the UI projection of a validated presentation profile.
+type ProfileOption struct {
 	Name        string
 	DisplayName string
 	Description string
@@ -28,7 +26,7 @@ func ListProfiles(fsys fs.FS) ([]Profile, error) {
 		return nil, nil
 	}
 
-	names := listPresetV2Names(fsys)
+	names := listProfileNames(fsys)
 	presets := make([]Profile, 0, len(names))
 
 	for _, name := range names {
@@ -45,23 +43,11 @@ func ListProfiles(fsys fs.FS) ([]Profile, error) {
 	return presets, nil
 }
 
-// ListPresetsV2 is retained for compatibility until the remaining test
-// fixtures are migrated to ListProfiles.
-func ListPresetsV2(fsys fs.FS) ([]Profile, error) {
-	return ListProfiles(fsys)
+func listProfileNames(fsys fs.FS) []string {
+	return listProfileNamesInDir(fsys, "embed/personas")
 }
 
-func listPresetV2Names(fsys fs.FS) []string {
-	return listPresetNamesInDir(fsys, "embed/personas")
-}
-
-// listPresetNames remains a package-private compatibility shim for catalog
-// consumers while all profile decoding is schema-v2 only.
-func listPresetNames(fsys fs.FS) []string {
-	return listPresetV2Names(fsys)
-}
-
-func listPresetNamesInDir(fsys fs.FS, directory string) []string {
+func listProfileNamesInDir(fsys fs.FS, directory string) []string {
 	namesSet := make(map[string]struct{})
 	_ = fs.WalkDir(fsys, directory, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -92,24 +78,16 @@ func listPresetNamesInDir(fsys fs.FS, directory string) []string {
 
 // RenderLayer2 renders a schema-v2 profile as presentation only.
 func RenderLayer2(preset *Profile) string {
-	return renderPresentationV2(preset, false)
+	return renderPresentation(preset, false)
 }
 
 // RenderOutputStyle renders schema-v2 presentation for Claude Code while
 // retaining Claude's Layer1 coding instructions.
 func RenderOutputStyle(preset *Profile) string {
-	return renderPresentationV2(preset, true)
+	return renderPresentation(preset, true)
 }
 
-// RenderLayer2V2 is retained for compatibility until the remaining test
-// fixtures are migrated to RenderLayer2.
-func RenderLayer2V2(preset *Profile) string { return RenderLayer2(preset) }
-
-// RenderOutputStyleV2 is retained for compatibility until the remaining test
-// fixtures are migrated to RenderOutputStyle.
-func RenderOutputStyleV2(preset *Profile) string { return RenderOutputStyle(preset) }
-
-func renderPresentationV2(preset *Profile, outputStyle bool) string {
+func renderPresentation(preset *Profile, outputStyle bool) string {
 	var sb strings.Builder
 	if outputStyle {
 		sb.WriteString("---\n")
@@ -120,8 +98,8 @@ func renderPresentationV2(preset *Profile, outputStyle bool) string {
 
 	fmt.Fprintf(&sb, "## Persona: %s\n\n", toTitleCase(preset.Name))
 	sb.WriteString("### Presentation\n")
-	fmt.Fprintf(&sb, "- Language: %s\n", presentationLanguageV2(preset.Presentation.Language))
-	fmt.Fprintf(&sb, "- Register: %s\n", presentationRegisterV2(preset.Presentation.Register))
+	fmt.Fprintf(&sb, "- Language: %s\n", presentationLanguage(preset.Presentation.Language))
+	fmt.Fprintf(&sb, "- Register: %s\n", presentationRegister(preset.Presentation.Register))
 	fmt.Fprintf(&sb, "- Vocabulary: %s\n", preset.Presentation.Vocabulary)
 	fmt.Fprintf(&sb, "- Cadence: %s\n", preset.Presentation.Cadence)
 	fmt.Fprintf(&sb, "- Humor: %s\n", preset.Presentation.Humor)
@@ -136,14 +114,14 @@ func renderPresentationV2(preset *Profile, outputStyle bool) string {
 	return sb.String()
 }
 
-func presentationLanguageV2(language string) string {
+func presentationLanguage(language string) string {
 	if language == "es-rioplatense" {
 		return "Rioplatense Spanish (voseo)"
 	}
 	return language
 }
 
-func presentationRegisterV2(register string) string {
+func presentationRegister(register string) string {
 	if register == "warm-direct" {
 		return "warm, energetic, and direct"
 	}

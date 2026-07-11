@@ -41,14 +41,6 @@ type Presentation struct {
 	AntiCaricature    string `yaml:"anti_caricature"`
 }
 
-// PresetV2 is retained for compatibility until the remaining test fixtures are
-// migrated to the canonical Profile API.
-type PresetV2 = Profile
-
-// PresentationV2 is retained for compatibility until the remaining test
-// fixtures are migrated to the canonical Presentation API.
-type PresentationV2 = Presentation
-
 // ProfileClassification describes whether YAML can participate in the
 // schema-v2 persona selection flow without resolving a legacy profile.
 type ProfileClassification string
@@ -58,17 +50,6 @@ const (
 	ProfileLegacy    ProfileClassification = "legacy-v1"
 	ProfileMalformed ProfileClassification = "malformed"
 	ProfileMissing   ProfileClassification = "missing"
-)
-
-// PresetV2ProfileClassification and its values are retained for compatibility
-// until the remaining test fixtures are migrated to ProfileClassification.
-type PresetV2ProfileClassification = ProfileClassification
-
-const (
-	PresetV2ProfileValid     = ProfileValid
-	PresetV2ProfileLegacy    = ProfileLegacy
-	PresetV2ProfileMalformed = ProfileMalformed
-	PresetV2ProfileMissing   = ProfileMissing
 )
 
 var v2TopLevelFields = fieldSet("schema_version", "name", "display_name", "presentation")
@@ -125,13 +106,13 @@ func ValidateAndDecode(content []byte) (*Profile, error) {
 	if err := decoder.Decode(&preset); err != nil {
 		return nil, fmt.Errorf("decode schema v2 profile: %w", err)
 	}
-	if err := validatePresetV2(&preset); err != nil {
+	if err := validateProfile(&preset); err != nil {
 		return nil, err
 	}
 	return &preset, nil
 }
 
-func classifyPresetV2Profile(content []byte) ProfileClassification {
+func classifyProfile(content []byte) ProfileClassification {
 	if _, err := ValidateAndDecode(content); err == nil {
 		return ProfileValid
 	}
@@ -193,7 +174,7 @@ func validateV2Document(document *yaml.Node) error {
 			return fmt.Errorf("field %q is not allowed in schema v2; use schema_version: 2 and renderer-owned presentation packs", field)
 		}
 		if field == "presentation" {
-			if err := validatePresentationV2Node(root.Content[i+1]); err != nil {
+			if err := validatePresentationNode(root.Content[i+1]); err != nil {
 				return err
 			}
 		}
@@ -201,7 +182,7 @@ func validateV2Document(document *yaml.Node) error {
 	return nil
 }
 
-func validatePresentationV2Node(node *yaml.Node) error {
+func validatePresentationNode(node *yaml.Node) error {
 	if node.Kind != yaml.MappingNode {
 		return fmt.Errorf("field \"presentation\" must be an object")
 	}
@@ -214,7 +195,7 @@ func validatePresentationV2Node(node *yaml.Node) error {
 	return nil
 }
 
-func validatePresetV2(preset *Profile) error {
+func validateProfile(preset *Profile) error {
 	if preset.SchemaVersion != schemaVersionV2 {
 		return fmt.Errorf("schema_version %d is unsupported; migrate to schema_version: 2 and replace legacy presentation fields with presentation packs", preset.SchemaVersion)
 	}

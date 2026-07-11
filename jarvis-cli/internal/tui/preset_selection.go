@@ -19,11 +19,7 @@ type customPresetDraft struct {
 
 const maxCustomPresetYAMLBytes = 64 * 1024
 
-var resolvePresetV2ForWizard = persona.ResolvePresetV2
-
-var resolveProfileForWizard = func(personaFS fs.FS, slug string) (*persona.ResolvedProfile, error) {
-	return resolvePresetV2ForWizard(personaFS, slug)
-}
+var resolveProfileForWizard = persona.ResolveProfile
 
 func resolveWizardPresetSelection(personaFS fs.FS, requestedSlug string, custom *customPresetDraft) (*persona.ResolvedProfile, error) {
 	normalized := persona.NormalizeSlug(requestedSlug)
@@ -47,7 +43,7 @@ func validateConfiguredPersonaPresetForV2Selection(personaFS fs.FS, configuredSl
 	if _, err := resolveProfileForWizard(personaFS, normalized); err == nil {
 		return nil
 	}
-	diagnostic, err := persona.ClassifyPresetForV2Migration(personaFS, normalized)
+	diagnostic, err := persona.ClassifyProfileForMigration(personaFS, normalized)
 	if err != nil {
 		return fmt.Errorf("classify configured persona preset %q: %w", normalized, err)
 	}
@@ -111,12 +107,6 @@ func createWizardCustomProfile(personaFS fs.FS, draft customPresetDraft) (*perso
 	return resolved, nil
 }
 
-// createWizardCustomPresetV2 is retained for compatibility until the remaining
-// test fixtures are migrated to createWizardCustomProfile.
-func createWizardCustomPresetV2(personaFS fs.FS, draft customPresetDraft) (*persona.ResolvedProfile, error) {
-	return createWizardCustomProfile(personaFS, draft)
-}
-
 func normalizeWizardCustomPresetDraftForCatalog(personaFS fs.FS, draft customPresetDraft, catalogPath string) (string, string, error) {
 	name := strings.TrimSpace(draft.Name)
 	if name == "" {
@@ -160,12 +150,6 @@ func buildCustomProfileContent(personaFS fs.FS, slug, displayName string) ([]byt
 		return nil, fmt.Errorf("marshal schema v2 custom preset %q: %w", slug, err)
 	}
 	return generated, nil
-}
-
-// buildCustomPresetContentV2 is retained for compatibility until the remaining
-// test fixtures are migrated to buildCustomProfileContent.
-func buildCustomPresetContentV2(personaFS fs.FS, slug, displayName string) ([]byte, error) {
-	return buildCustomProfileContent(personaFS, slug, displayName)
 }
 
 func customPresetRecoveryError(slug, savedPath string, cause error) error {

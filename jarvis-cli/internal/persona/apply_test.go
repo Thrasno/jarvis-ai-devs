@@ -41,7 +41,7 @@ func (a *pipelineAgentStub) WriteInstructions(_ string, layer2 string, _ []confi
 
 func (a *pipelineAgentStub) SupportsOutputStyles() bool { return a.outputSupported }
 
-func (a *pipelineAgentStub) WriteOutputStyleV2(preset *PresetV2) error {
+func (a *pipelineAgentStub) WriteOutputStyle(preset *Profile) error {
 	if !a.outputSupported {
 		return nil
 	}
@@ -50,7 +50,7 @@ func (a *pipelineAgentStub) WriteOutputStyleV2(preset *PresetV2) error {
 	}
 	styleName := testTitleCase(preset.Name)
 	a.settings["outputStyle"] = styleName
-	a.outputFiles[styleName+".md"] = RenderOutputStyleV2(preset)
+	a.outputFiles[styleName+".md"] = RenderOutputStyle(preset)
 	return nil
 }
 
@@ -67,15 +67,15 @@ func (a *pipelineAgentStub) ClearOutputStyle(name string) error {
 	return nil
 }
 
-func newResolvedPresetV2(slug string) *ResolvedPresetV2 {
-	return &ResolvedPresetV2{
+func newResolvedProfile(slug string) *ResolvedProfile {
+	return &ResolvedProfile{
 		Slug:   slug,
 		Source: PresetSourceBuiltin,
-		Preset: &PresetV2{
+		Preset: &Profile{
 			SchemaVersion: 2,
 			Name:          slug,
 			DisplayName:   testTitleCase(slug),
-			Presentation: PresentationV2{
+			Presentation: Presentation{
 				Language: "en-us", Register: "friendly-professional", Vocabulary: "plain-technical", Cadence: "measured",
 				Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured",
 				TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded",
@@ -84,7 +84,7 @@ func newResolvedPresetV2(slug string) *ResolvedPresetV2 {
 	}
 }
 
-func TestApplyPresetV2PipelineReplacesOutputStyleAndPersistsCanonicalIdentity(t *testing.T) {
+func TestApplyProfileReplacesOutputStyleAndPersistsCanonicalIdentity(t *testing.T) {
 	isolateTestHome(t)
 
 	if err := config.Save(&config.AppConfig{PersonaPreset: "argentino", PersonaPresetSource: "builtin", Preset: "argentino"}); err != nil {
@@ -93,16 +93,16 @@ func TestApplyPresetV2PipelineReplacesOutputStyleAndPersistsCanonicalIdentity(t 
 
 	agent := newPipelineAgentStub("claude", true)
 	agent.outputFiles["Argentino.md"] = "legacy output style"
-	resolved := newResolvedPresetV2("custom-mentor")
+	resolved := newResolvedProfile("custom-mentor")
 	resolved.Slug = "Custom Mentor"
 	resolved.Source = PresetSource(" USER ")
 
-	if err := ApplyPresetV2Pipeline([]PresetV2Agent{agent}, resolved, ApplyOptions{
+	if err := ApplyProfile([]ProfileAgent{agent}, resolved, ApplyOptions{
 		Layer1:             "layer1",
 		PreviousPresetSlug: "argentino",
 		PersistConfig:      true,
 	}); err != nil {
-		t.Fatalf("ApplyPresetV2Pipeline: %v", err)
+		t.Fatalf("ApplyProfile: %v", err)
 	}
 
 	if !strings.Contains(agent.layer2, "### Presentation") || strings.Contains(agent.layer2, "Technical Behavior") {
@@ -136,17 +136,17 @@ func TestApplyPresetV2PipelineReplacesOutputStyleAndPersistsCanonicalIdentity(t 
 	}
 }
 
-func TestApplyPresetV2PipelineDoesNotClearOutputStyleWhenNormalizedSlugsMatch(t *testing.T) {
+func TestApplyProfileDoesNotClearOutputStyleWhenNormalizedSlugsMatch(t *testing.T) {
 	agent := newPipelineAgentStub("claude", true)
 	agent.settings["outputStyle"] = "Argentino"
 	agent.outputFiles["Argentino.md"] = "active output style"
 	agent.clearErr = errors.New("active output style must not be cleared")
 
-	if err := ApplyPresetV2Pipeline([]PresetV2Agent{agent}, newResolvedPresetV2("Argentino"), ApplyOptions{
+	if err := ApplyProfile([]ProfileAgent{agent}, newResolvedProfile("Argentino"), ApplyOptions{
 		Layer1:             "layer1",
 		PreviousPresetSlug: "  argentino  ",
 	}); err != nil {
-		t.Fatalf("ApplyPresetV2Pipeline: %v", err)
+		t.Fatalf("ApplyProfile: %v", err)
 	}
 
 	if len(agent.clearCalls) != 0 {
@@ -160,11 +160,11 @@ func TestApplyPresetV2PipelineDoesNotClearOutputStyleWhenNormalizedSlugsMatch(t 
 	}
 }
 
-func TestApplyPresetV2PipelineErrorPaths(t *testing.T) {
+func TestApplyProfileErrorPaths(t *testing.T) {
 	tests := []struct {
 		name      string
-		agents    []PresetV2Agent
-		resolved  *ResolvedPresetV2
+		agents    []ProfileAgent
+		resolved  *ResolvedProfile
 		opts      ApplyOptions
 		wantError string
 	}{
@@ -174,24 +174,24 @@ func TestApplyPresetV2PipelineErrorPaths(t *testing.T) {
 		},
 		{
 			name:      "resolved preset without payload",
-			resolved:  &ResolvedPresetV2{Slug: "neutra", Source: PresetSourceBuiltin},
+			resolved:  &ResolvedProfile{Slug: "neutra", Source: PresetSourceBuiltin},
 			wantError: "resolved schema v2 preset is required",
 		},
 		{
 			name:      "empty resolved slug",
-			resolved:  newResolvedPresetV2(""),
+			resolved:  newResolvedProfile(""),
 			wantError: "resolved schema v2 preset slug cannot be empty",
 		},
 		{
 			name:      "write instructions failure",
-			agents:    []PresetV2Agent{&pipelineAgentStub{name: "claude", instructionsErr: errors.New("boom")}},
-			resolved:  newResolvedPresetV2("neutra"),
+			agents:    []ProfileAgent{&pipelineAgentStub{name: "claude", instructionsErr: errors.New("boom")}},
+			resolved:  newResolvedProfile("neutra"),
 			wantError: "apply schema v2 preset to claude instructions",
 		},
 		{
 			name:     "clear output style failure",
-			agents:   []PresetV2Agent{&pipelineAgentStub{name: "claude", outputSupported: true, clearErr: errors.New("cleanup failed"), settings: map[string]string{}, outputFiles: map[string]string{}}},
-			resolved: newResolvedPresetV2("tony-stark"),
+			agents:   []ProfileAgent{&pipelineAgentStub{name: "claude", outputSupported: true, clearErr: errors.New("cleanup failed"), settings: map[string]string{}, outputFiles: map[string]string{}}},
+			resolved: newResolvedProfile("tony-stark"),
 			opts: ApplyOptions{
 				PreviousPresetSlug: "argentino",
 			},
@@ -199,20 +199,20 @@ func TestApplyPresetV2PipelineErrorPaths(t *testing.T) {
 		},
 		{
 			name:      "write output style failure",
-			agents:    []PresetV2Agent{&pipelineAgentStub{name: "claude", outputSupported: true, outputErr: errors.New("write failed"), settings: map[string]string{}, outputFiles: map[string]string{}}},
-			resolved:  newResolvedPresetV2("tony-stark"),
+			agents:    []ProfileAgent{&pipelineAgentStub{name: "claude", outputSupported: true, outputErr: errors.New("write failed"), settings: map[string]string{}, outputFiles: map[string]string{}}},
+			resolved:  newResolvedProfile("tony-stark"),
 			wantError: "write schema v2 output-style for claude",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ApplyPresetV2Pipeline(tt.agents, tt.resolved, tt.opts)
+			err := ApplyProfile(tt.agents, tt.resolved, tt.opts)
 			if err == nil {
-				t.Fatalf("ApplyPresetV2Pipeline expected error containing %q", tt.wantError)
+				t.Fatalf("ApplyProfile expected error containing %q", tt.wantError)
 			}
 			if !strings.Contains(err.Error(), tt.wantError) {
-				t.Fatalf("ApplyPresetV2Pipeline error = %q, want contains %q", err.Error(), tt.wantError)
+				t.Fatalf("ApplyProfile error = %q, want contains %q", err.Error(), tt.wantError)
 			}
 		})
 	}

@@ -228,7 +228,7 @@ func (a *stubLifecycleAgent) WriteInstructions(string, string, []config.SkillInf
 func (a *stubLifecycleAgent) InstallSkills(fs.FS, []string) error                        { return nil }
 func (a *stubLifecycleAgent) InstallOrchestrator([]byte) error                           { return nil }
 func (a *stubLifecycleAgent) SupportsOutputStyles() bool                                 { return false }
-func (a *stubLifecycleAgent) WriteOutputStyleV2(*persona.PresetV2) error                 { return nil }
+func (a *stubLifecycleAgent) WriteOutputStyle(*persona.Profile) error                    { return nil }
 func (a *stubLifecycleAgent) ClearOutputStyle(string) error                              { return nil }
 func (a *stubLifecycleAgent) RuntimePlan() (sddruntime.RuntimePlan, error)               { return a.plan, nil }
 func (a *stubLifecycleAgent) ObserveRuntime() (sddruntime.ObservedRuntime, error) {

@@ -25,14 +25,10 @@ type ResolvedProfile struct {
 	Preset   *Profile
 }
 
-// ResolvedPresetV2 is retained for compatibility until the remaining test
-// fixtures are migrated to the canonical ResolvedProfile API.
-type ResolvedPresetV2 = ResolvedProfile
-
-// PresetV2MigrationDiagnostic describes a configured profile without loading
+// ProfileMigrationDiagnostic describes a configured profile without loading
 // it through a legacy resolver. It exists solely to provide safe migration
 // diagnostics for unsupported configured profiles.
-type PresetV2MigrationDiagnostic struct {
+type ProfileMigrationDiagnostic struct {
 	Classification ProfileClassification
 	Source         PresetSource
 	FilePath       string
@@ -59,7 +55,7 @@ func ResolveProfile(fsys fs.FS, slug string) (*ResolvedProfile, error) {
 	}
 
 	builtinPath := filepath.ToSlash(filepath.Join("embed", "personas", normalized+".yaml"))
-	if p, err := readPresetV2FromFS(fsys, builtinPath); err == nil {
+	if p, err := readProfileFromFS(fsys, builtinPath); err == nil {
 		return &ResolvedProfile{
 			Slug:     normalized,
 			Source:   PresetSourceBuiltin,
@@ -76,7 +72,7 @@ func ResolveProfile(fsys fs.FS, slug string) (*ResolvedProfile, error) {
 	}
 
 	userPath := filepath.Join(homeDir, ".jarvis", "personas", normalized+".yaml")
-	if p, err := readPresetV2FromOS(userPath); err == nil {
+	if p, err := readProfileFromOS(userPath); err == nil {
 		return &ResolvedProfile{
 			Slug:     normalized,
 			Source:   PresetSourceUser,
@@ -87,19 +83,13 @@ func ResolveProfile(fsys fs.FS, slug string) (*ResolvedProfile, error) {
 		return nil, fmt.Errorf("load user schema v2 preset %q: %w", normalized, err)
 	}
 
-	available := listPresetV2Names(fsys)
+	available := listProfileNames(fsys)
 	return nil, fmt.Errorf("schema v2 preset %q not found (available built-ins: %s)", normalized, strings.Join(available, ", "))
 }
 
-// ResolvePresetV2 is retained for compatibility until the remaining test
-// fixtures are migrated to ResolveProfile.
-func ResolvePresetV2(fsys fs.FS, slug string) (*ResolvedProfile, error) {
-	return ResolveProfile(fsys, slug)
-}
-
-// ClassifyPresetForV2Migration inspects the configured profile using only the
+// ClassifyProfileForMigration inspects the configured profile using only the
 // schema-v2 validator and YAML structure. It never resolves a V1 preset.
-func ClassifyPresetForV2Migration(fsys fs.FS, slug string) (*PresetV2MigrationDiagnostic, error) {
+func ClassifyProfileForMigration(fsys fs.FS, slug string) (*ProfileMigrationDiagnostic, error) {
 	if fsys == nil {
 		return nil, fmt.Errorf("classify schema v2 preset %q: persona catalog is unavailable", NormalizeSlug(slug))
 	}
@@ -111,8 +101,8 @@ func ClassifyPresetForV2Migration(fsys fs.FS, slug string) (*PresetV2MigrationDi
 
 	builtinPath := filepath.ToSlash(filepath.Join("embed", "personas", normalized+".yaml"))
 	if content, err := fs.ReadFile(fsys, builtinPath); err == nil {
-		return &PresetV2MigrationDiagnostic{
-			Classification: classifyPresetV2Profile(content),
+		return &ProfileMigrationDiagnostic{
+			Classification: classifyProfile(content),
 			Source:         PresetSourceBuiltin,
 			FilePath:       builtinPath,
 		}, nil
@@ -126,8 +116,8 @@ func ClassifyPresetForV2Migration(fsys fs.FS, slug string) (*PresetV2MigrationDi
 	}
 	userPath := filepath.Join(homeDir, ".jarvis", "personas", normalized+".yaml")
 	if content, err := os.ReadFile(userPath); err == nil {
-		return &PresetV2MigrationDiagnostic{
-			Classification: classifyPresetV2Profile(content),
+		return &ProfileMigrationDiagnostic{
+			Classification: classifyProfile(content),
 			Source:         PresetSourceUser,
 			FilePath:       userPath,
 		}, nil
@@ -135,26 +125,26 @@ func ClassifyPresetForV2Migration(fsys fs.FS, slug string) (*PresetV2MigrationDi
 		return nil, fmt.Errorf("read user schema v2 preset %q: %w", normalized, err)
 	}
 
-	return &PresetV2MigrationDiagnostic{Classification: PresetV2ProfileMissing}, nil
+	return &ProfileMigrationDiagnostic{Classification: ProfileMissing}, nil
 }
 
-func readPresetV2FromFS(fsys fs.FS, path string) (*Profile, error) {
+func readProfileFromFS(fsys fs.FS, path string) (*Profile, error) {
 	data, err := fs.ReadFile(fsys, path)
 	if err != nil {
 		return nil, err
 	}
-	return parsePresetV2(path, data)
+	return parseProfile(path, data)
 }
 
-func readPresetV2FromOS(path string) (*Profile, error) {
+func readProfileFromOS(path string) (*Profile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return parsePresetV2(path, data)
+	return parseProfile(path, data)
 }
 
-func parsePresetV2(path string, data []byte) (*Profile, error) {
+func parseProfile(path string, data []byte) (*Profile, error) {
 	preset, err := ValidateAndDecode(data)
 	if err != nil {
 		return nil, fmt.Errorf("validate schema v2 preset at %q: %w", path, err)

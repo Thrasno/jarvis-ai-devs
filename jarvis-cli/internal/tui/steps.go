@@ -322,7 +322,6 @@ func updatePersona(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		resolved, err := resolveWizardPresetSelection(m.PersonaFS, selected.Name, nil)
 		if err == nil {
 			m.selectedProfile = resolved
-			m.selectedPresetV2 = resolved
 			m.cfg.PersonaPreset = resolved.Slug
 			m.cfg.Preset = resolved.Slug
 			m.cfg.PersonaPresetSource = string(resolved.Source)
@@ -352,7 +351,6 @@ func updatePersonaCustomEdit(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.selectedProfile = resolved
-		m.selectedPresetV2 = resolved
 		m.cfg.PersonaPreset = resolved.Slug
 		m.cfg.Preset = resolved.Slug
 		m.cfg.PersonaPresetSource = string(resolved.Source)
@@ -1512,15 +1510,6 @@ func ensureProfileForApply(m Model) (*persona.ResolvedProfile, error) {
 	}
 
 	return resolved, nil
-}
-
-// ensurePresetV2ForApply is retained for compatibility until the remaining
-// test fixtures are migrated to ensureProfileForApply.
-func ensurePresetV2ForApply(m Model) (*persona.ResolvedProfile, error) {
-	if resolved, ok := m.wizardPresetV2(); ok {
-		return resolved, nil
-	}
-	return ensureProfileForApply(m)
 }
 
 // buildSelectedIDs returns a slice of skill IDs for all selected and core skills.
