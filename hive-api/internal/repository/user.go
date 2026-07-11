@@ -14,6 +14,11 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
 )
 
+type AuthState struct {
+	Active          bool
+	SecurityVersion int64
+}
+
 // UserRepository define todas las operaciones de base de datos para usuarios.
 //
 // Es una interfaz — solo declara qué métodos existen, no cómo están implementados.
@@ -41,6 +46,8 @@ type UserRepository interface {
 
 	// List devuelve todos los usuarios. Solo lo usa el admin para estadísticas.
 	List(ctx context.Context) ([]*model.User, error)
+
+	GetAuthState(ctx context.Context, id string) (AuthState, error)
 
 	// UpdateLevel cambia el nivel de acceso de un usuario.
 	UpdateLevel(ctx context.Context, id string, level model.UserLevel) error

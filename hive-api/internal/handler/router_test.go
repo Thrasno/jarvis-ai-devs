@@ -12,6 +12,8 @@
 package handler
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -296,6 +298,42 @@ func TestRouter_RoutesRegistered(t *testing.T) {
 		assert.True(t, routeMap[route], "ruta no registrada: %s", route)
 	}
 	assert.False(t, routeMap["GET:/dashboard/projects"], "projects API must not use /dashboard/*")
+}
+
+func TestRouter_DeactivatedMatchingVersionTokenNeverReachesOrdinaryHandlers(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "deactivated-matching-version-token").Return(nil, errors.New("token inválido")).Twice()
+	memorySvc := &mockMemorySvc{}
+	syncSvc := &mockSyncSvc{}
+	r := NewRouter(RouterDeps{
+		AuthSvc:     authSvc,
+		MemorySvc:   memorySvc,
+		SyncSvc:     syncSvc,
+		AdminSvc:    &mockAdminSvc{},
+		OverviewSvc: &mockOverviewSvc{},
+	})
+
+	for _, request := range []*http.Request{
+		testRequest(t, http.MethodGet, "/memories", nil),
+		testRequest(t, http.MethodPost, "/sync", nil),
+	} {
+		request.Header.Set("Authorization", "Bearer deactivated-matching-version-token")
+		response := httptest.NewRecorder()
+		r.ServeHTTP(response, request)
+		assert.Equal(t, http.StatusUnauthorized, response.Code)
+		assert.JSONEq(t, `{"error":"token inválido o expirado"}`, response.Body.String())
+	}
+
+	memorySvc.AssertNotCalled(t, "List")
+	syncSvc.AssertNotCalled(t, "Sync")
+	authSvc.AssertExpectations(t)
+}
+
+func testRequest(t *testing.T, method, target string, body io.Reader) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(method, target, body)
+	require.NoError(t, err)
+	return req
 }
 
 func TestRouter_AdminAuditLogsRequiresAuth(t *testing.T) {

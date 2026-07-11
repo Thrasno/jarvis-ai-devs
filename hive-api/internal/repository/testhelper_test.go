@@ -51,13 +51,12 @@ func startPostgres(t *testing.T) (*pgxpool.Pool, func()) {
 	pool, err := pgxpool.New(ctx, connStr)
 	require.NoError(t, err, "Failed to create connection pool")
 
-	// Ejecutar SOLO la migración 001 — `startPostgres` mantiene su contrato histórico
-	// (base schema sin session_id). Tests de migración 003 dependen de este punto de
-	// partida para insertar memorias sin session_id antes de ejecutar 003.
-	// Tests que requieren el schema completo (con sessions/session_id NOT NULL) deben
-	// usar `startPostgresWithSessions`.
+	// Keep the historical pre-session schema required by migration 003 tests, then
+	// apply independent user-table migrations needed by current repositories.
 	_, err = pool.Exec(ctx, migrations.InitialSQL)
-	require.NoError(t, err, "Failed to run migrations")
+	require.NoError(t, err, "Failed to run initial migration")
+	_, err = pool.Exec(ctx, migrations.UserSecurityVersionSQL)
+	require.NoError(t, err, "Failed to run user security version migration")
 
 	// Cleanup function: detiene el contenedor y cierra el pool
 	cleanup := func() {

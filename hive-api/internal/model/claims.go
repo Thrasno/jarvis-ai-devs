@@ -28,6 +28,8 @@ type Claims struct {
 	// el middleware admin pueda verificarlo sin tocar la DB en cada request.
 	Level UserLevel `json:"level"`
 
+	SecurityVersion int64 `json:"security_version,omitempty"`
+
 	// DaemonID and Client are optional signed device metadata. Project-block ACK
 	// authorization is bound to the signed account subject, not daemon metadata.
 	DaemonID string `json:"daemon_id,omitempty"`

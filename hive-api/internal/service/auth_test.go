@@ -7,12 +7,14 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/service"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
@@ -159,29 +161,33 @@ func TestValidateToken_Success(t *testing.T) {
 	// Paso 1: generar un token real mediante Login.
 	// Esto testea Login + ValidateToken juntos de forma realista.
 	activeUser := &model.User{
-		ID:       "user-id-123",
-		Username: "andres",
-		Level:    model.LevelAdmin,
-		IsActive: true,
-		Password: hashPassword(t, "secret123"),
+		ID:              "user-id-123",
+		Username:        "andres",
+		Level:           model.LevelAdmin,
+		IsActive:        true,
+		SecurityVersion: 7,
+		Password:        hashPassword(t, "secret123"),
 	}
 	mockRepo.On("GetByEmail", ctx, "andres@test.com").Return(activeUser, nil)
 
 	token, err := svc.Login(ctx, "andres@test.com", "secret123")
 	require.NoError(t, err)
 	require.NotEmpty(t, token)
+	mockRepo.On("GetAuthState", ctx, activeUser.ID).Return(repository.AuthState{Active: true, SecurityVersion: 7}, nil)
 
 	// Paso 2: validar el token y verificar que los Claims son correctos.
-	claims, err := svc.ValidateToken(token)
+	claims, err := svc.ValidateToken(ctx, token)
 
 	require.NoError(t, err)
 	require.NotNil(t, claims)
 	assert.Equal(t, "user-id-123", claims.Subject) // Subject es el estándar JWT para el ID del usuario
 	assert.Equal(t, "andres", claims.Username)
 	assert.Equal(t, model.LevelAdmin, claims.Level)
+	assert.Equal(t, int64(7), claims.SecurityVersion)
 
 	// El token debe expirar en el futuro (no ya).
 	assert.True(t, claims.ExpiresAt.Time.After(time.Now()))
+	mockRepo.AssertExpectations(t)
 }
 
 // TestValidateToken_InvalidSignature verifica que un token con firma incorrecta es rechazado.
@@ -209,7 +215,7 @@ func TestValidateToken_InvalidSignature(t *testing.T) {
 
 	// Validamos ese token con el service que tiene un SECRET DIFERENTE.
 	// Debe rechazarlo.
-	claims, err := differentSecretSvc.ValidateToken(token)
+	claims, err := differentSecretSvc.ValidateToken(context.Background(), token)
 
 	assert.Error(t, err)
 	assert.Nil(t, claims)
@@ -219,8 +225,107 @@ func TestValidateToken_InvalidSignature(t *testing.T) {
 func TestValidateToken_MalformedToken(t *testing.T) {
 	svc, _ := newTestAuthService(t)
 
-	claims, err := svc.ValidateToken("esto-no-es-un-jwt")
+	claims, err := svc.ValidateToken(context.Background(), "esto-no-es-un-jwt")
 
 	assert.Error(t, err)
 	assert.Nil(t, claims)
+}
+
+func TestValidateToken_RequiresCurrentActiveMatchingAuthState(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name      string
+		state     repository.AuthState
+		stateErr  error
+		claimVers int64
+		wantValid bool
+	}{
+		{name: "legacy claim is accepted for active version zero", state: repository.AuthState{Active: true, SecurityVersion: 0}, wantValid: true},
+		{name: "inactive subject is rejected", state: repository.AuthState{Active: false, SecurityVersion: 0}},
+		{name: "security version mismatch is rejected", state: repository.AuthState{Active: true, SecurityVersion: 2}, claimVers: 1},
+		{name: "missing subject is rejected", state: repository.AuthState{Active: true, SecurityVersion: 0}},
+		{name: "missing repository subject is rejected", stateErr: repository.ErrNotFound},
+		{name: "repository error is returned", stateErr: errors.New("database unavailable")},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, repo := newTestAuthService(t)
+			subject := "user-1"
+			if tt.name == "missing subject is rejected" {
+				subject = ""
+			} else {
+				repo.On("GetAuthState", ctx, subject).Return(tt.state, tt.stateErr)
+			}
+			token := signedTestToken(t, subject, tt.claimVers, jwt.SigningMethodHS256)
+
+			claims, err := svc.ValidateToken(ctx, token)
+
+			if tt.wantValid {
+				require.NoError(t, err)
+				require.NotNil(t, claims)
+				assert.Equal(t, subject, claims.Subject)
+			} else {
+				assert.Error(t, err)
+				assert.Nil(t, claims)
+				if tt.stateErr != nil && !errors.Is(tt.stateErr, repository.ErrNotFound) {
+					assert.ErrorIs(t, err, tt.stateErr)
+				}
+			}
+			repo.AssertExpectations(t)
+		})
+	}
+}
+
+func TestValidateToken_RejectsNonHS256Tokens(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newTestAuthService(t)
+
+	claims, err := svc.ValidateToken(ctx, signedTestToken(t, "user-1", 0, jwt.SigningMethodHS384))
+
+	assert.Error(t, err)
+	assert.Nil(t, claims)
+}
+
+func TestValidateToken_RequiresExpiration(t *testing.T) {
+	ctx := context.Background()
+	svc, repo := newTestAuthService(t)
+	repo.On("GetAuthState", ctx, "user-1").Return(repository.AuthState{Active: true, SecurityVersion: 4}, nil)
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, &model.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: "user-1"},
+		SecurityVersion:  4,
+	})
+	tokenString, err := token.SignedString([]byte(testJWTSecret))
+	require.NoError(t, err)
+
+	claims, err := svc.ValidateToken(ctx, tokenString)
+
+	assert.Error(t, err)
+	assert.Nil(t, claims)
+}
+
+func TestValidateToken_ClassifiesRepositoryFailureAsInternal(t *testing.T) {
+	ctx := context.Background()
+	svc, repo := newTestAuthService(t)
+	repositoryFailure := errors.New("database unavailable")
+	repo.On("GetAuthState", ctx, "user-1").Return(repository.AuthState{}, repositoryFailure)
+
+	claims, err := svc.ValidateToken(ctx, signedTestToken(t, "user-1", 0, jwt.SigningMethodHS256))
+
+	require.Error(t, err)
+	assert.Nil(t, claims)
+	assert.ErrorIs(t, err, service.ErrInternalAuth)
+	assert.ErrorIs(t, err, repositoryFailure)
+	repo.AssertExpectations(t)
+}
+
+func signedTestToken(t *testing.T, subject string, securityVersion int64, method jwt.SigningMethod) string {
+	t.Helper()
+	token := jwt.NewWithClaims(method, &model.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: subject, ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))},
+		SecurityVersion:  securityVersion,
+	})
+	signed, err := token.SignedString([]byte(testJWTSecret))
+	require.NoError(t, err)
+	return signed
 }

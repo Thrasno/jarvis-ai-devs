@@ -91,3 +91,6 @@ var ProjectBlocksSQL string
 //
 //go:embed 013_project_block_ack_subjects.sql
 var ProjectBlockAckSubjectsSQL string
+
+//go:embed 014_user_security_version.sql
+var UserSecurityVersionSQL string

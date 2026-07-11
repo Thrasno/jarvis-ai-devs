@@ -31,7 +31,7 @@ func (m *mockAuthSvc) LoginWithDevice(ctx context.Context, email, password strin
 	return args.String(0), args.Error(1)
 }
 
-func (m *mockAuthSvc) ValidateToken(tokenString string) (*model.Claims, error) {
+func (m *mockAuthSvc) ValidateToken(_ context.Context, tokenString string) (*model.Claims, error) {
 	args := m.Called(tokenString)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)

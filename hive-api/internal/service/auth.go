@@ -13,6 +13,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
@@ -33,6 +34,8 @@ var ErrInvalidCredentials = errors.New("credenciales inválidas")
 // ErrUserInactive se devuelve cuando el usuario existe pero está desactivado.
 // El handler lo mapea a HTTP 403 Forbidden (vs 401 para credenciales inválidas).
 var ErrUserInactive = errors.New("usuario inactivo")
+var ErrInvalidToken = errors.New("token inválido")
+var ErrInternalAuth = errors.New("internal authentication error")
 
 // --- Interfaz ---
 
@@ -52,7 +55,7 @@ type AuthService interface {
 	// ValidateToken verifica la firma y expiración del JWT.
 	// Devuelve los Claims (payload del token) si es válido.
 	// Devuelve error si el token está expirado, malformado, o tiene firma inválida.
-	ValidateToken(tokenString string) (*model.Claims, error)
+	ValidateToken(ctx context.Context, tokenString string) (*model.Claims, error)
 
 	// GetCurrentUser busca el usuario en la BD y verifica que sigue activo.
 	// Sirve para el endpoint GET /auth/me — re-valida is_active en cada request.
@@ -158,10 +161,11 @@ func (s *authService) generateToken(user *model.User, device model.ProjectBlockA
 		},
 		// Claims personalizados — información que necesitamos en cada request
 		// para no ir a la BD a buscar el usuario en cada llamada:
-		Username: user.Username,
-		Level:    user.Level,
-		DaemonID: device.DaemonID,
-		Client:   device.Client,
+		Username:        user.Username,
+		Level:           user.Level,
+		SecurityVersion: user.SecurityVersion,
+		DaemonID:        device.DaemonID,
+		Client:          device.Client,
 	}
 
 	// Creamos el token con el algoritmo HS256 (HMAC + SHA-256).
@@ -190,7 +194,7 @@ func (s *authService) GetCurrentUser(ctx context.Context, userID string) (*model
 
 // ValidateToken verifica y parsea un JWT.
 // Si el token es válido, devuelve los Claims para que el handler los use.
-func (s *authService) ValidateToken(tokenString string) (*model.Claims, error) {
+func (s *authService) ValidateToken(ctx context.Context, tokenString string) (*model.Claims, error) {
 	claims := &model.Claims{}
 
 	// jwt.ParseWithClaims hace tres cosas en una:
@@ -204,18 +208,29 @@ func (s *authService) ValidateToken(tokenString string) (*model.Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
 		// Verificación de seguridad: aseguramos que el token usa HS256.
 		// Sin esto, un atacante podría enviar un token con alg:"none" y eludir la verificación.
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, errors.New("método de firma inesperado")
+		if token.Method != jwt.SigningMethodHS256 {
+			return nil, ErrInvalidToken
 		}
 		return s.jwtSecret, nil
-	})
+	}, jwt.WithExpirationRequired())
 
 	if err != nil {
 		return nil, err // expirado, malformado, firma inválida, etc.
 	}
 
-	if !token.Valid {
-		return nil, errors.New("token inválido")
+	if !token.Valid || claims.Subject == "" {
+		return nil, ErrInvalidToken
+	}
+
+	state, err := s.userRepo.GetAuthState(ctx, claims.Subject)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, ErrInvalidToken
+		}
+		return nil, fmt.Errorf("%w: %w", ErrInternalAuth, err)
+	}
+	if !state.Active || state.SecurityVersion != claims.SecurityVersion {
+		return nil, ErrInvalidToken
 	}
 
 	return claims, nil
