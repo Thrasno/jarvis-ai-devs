@@ -694,8 +694,10 @@ func (a *ClaudeAgent) InstallSessionHooks(_ fs.FS) error {
 }
 
 // InstallCompactHook adds a second SessionStart entry with matcher "compact"
-// pointing to "jarvis hook session-compact". It is idempotent: if an entry
-// named "hive-session-compact" already exists it is not added again.
+// pointing to "jarvis hook session-compact". It is idempotent: any prior
+// managed entry is unconditionally stripped by its stable subcommand token
+// (regardless of "name" field or binary path) before the entry is re-added,
+// so re-running jarvis init never produces duplicate hooks.
 // This method is on *ClaudeAgent only (not on the AgentInstaller interface)
 // because OpenCode has no equivalent matcher concept.
 func (a *ClaudeAgent) InstallCompactHook() error {
@@ -745,7 +747,10 @@ func (a *ClaudeAgent) InstallCompactHook() error {
 }
 
 // InstallSubagentStopHook adds a SubagentStop entry pointing to
-// "jarvis hook subagent-stop". It is idempotent.
+// "jarvis hook subagent-stop". It is idempotent: any prior managed entry is
+// unconditionally stripped by its stable subcommand token (regardless of
+// "name" field or binary path) before the entry is re-added, so re-running
+// jarvis init never produces duplicate hooks.
 // This method is on *ClaudeAgent only (not on the AgentInstaller interface).
 func (a *ClaudeAgent) InstallSubagentStopHook() error {
 	executable, err := osExecutable()

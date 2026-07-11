@@ -64,12 +64,37 @@ func removeHookEntriesByCommand(settings []byte, event, command string) []byte {
 }
 
 // removeHookEntriesByCommandToken strips entries whose nested command CONTAINS
-// the stable managed subcommand token (e.g. " hook subagent-stop"). Unlike
-// exact-match, this survives binary-path drift across upgrades and a stripped
-// "name" field, while a leading-space-anchored token avoids matching unrelated
-// user hooks that invoke jarvis with a different subcommand.
+// the stable managed subcommand token (e.g. " hook subagent-stop") at a word
+// boundary. Unlike exact-match, this survives binary-path drift across
+// upgrades and a stripped "name" field, while a leading-space-anchored,
+// right-anchored token avoids matching unrelated user hooks that invoke
+// jarvis with a different (or merely longer) subcommand.
 func removeHookEntriesByCommandToken(settings []byte, event, token string) []byte {
-	return removeHookEntries(settings, event, func(c string) bool { return strings.Contains(c, token) })
+	return removeHookEntries(settings, event, func(c string) bool { return containsTokenAtWordBoundary(c, token) })
+}
+
+// containsTokenAtWordBoundary reports whether command contains token such
+// that the character immediately following the match, if any, is a word
+// boundary: a space, a shell quote ('\'' or '"'), or end-of-string. This
+// prevents a managed token like " hook subagent-stop" from over-matching a
+// longer subcommand such as " hook subagent-stopwatch".
+func containsTokenAtWordBoundary(command, token string) bool {
+	for i := 0; i+len(token) <= len(command); i++ {
+		idx := strings.Index(command[i:], token)
+		if idx < 0 {
+			return false
+		}
+		i += idx
+		end := i + len(token)
+		if end == len(command) {
+			return true
+		}
+		switch command[end] {
+		case ' ', '\'', '"':
+			return true
+		}
+	}
+	return false
 }
 
 // hookEntryMatches reports whether a hook group entry's nested "hooks" array
