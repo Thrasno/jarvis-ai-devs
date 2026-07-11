@@ -20,16 +20,32 @@ const maxCustomPresetYAMLBytes = 64 * 1024
 var resolvePresetForWizard = persona.ResolvePreset
 var resolvePresetV2ForWizard = persona.ResolvePresetV2
 
-func resolveWizardPresetSelection(personaFS fs.FS, requestedSlug string, custom *customPresetDraft) (*persona.ResolvedPreset, error) {
+func resolveWizardPresetSelection(personaFS fs.FS, requestedSlug string, custom *customPresetDraft) (*persona.ResolvedPresetV2, error) {
 	normalized := persona.NormalizeSlug(requestedSlug)
 	if normalized == "custom" {
 		if custom == nil {
 			return nil, fmt.Errorf("custom preset creation requires name and display name")
 		}
-		return createWizardCustomPreset(personaFS, *custom)
+		return createWizardCustomPresetV2(personaFS, *custom)
 	}
 
-	return resolvePresetForWizard(personaFS, normalized)
+	return resolvePresetV2ForWizard(personaFS, normalized)
+}
+
+// validateConfiguredPersonaPresetForV2Selection prevents a configured V1
+// profile from being silently replaced by the first schema-v2 catalog option.
+func validateConfiguredPersonaPresetForV2Selection(personaFS fs.FS, configuredSlug string) error {
+	normalized := persona.NormalizeSlug(configuredSlug)
+	if normalized == "" {
+		return nil
+	}
+	if _, err := resolvePresetV2ForWizard(personaFS, normalized); err == nil {
+		return nil
+	}
+	if _, err := resolvePresetForWizard(personaFS, normalized); err == nil {
+		return fmt.Errorf("configured persona preset %q is a legacy V1 profile and cannot be used by the schema v2 wizard; migrate it to a schema v2 presentation profile before reconfiguring", normalized)
+	}
+	return nil
 }
 
 func createWizardCustomPreset(personaFS fs.FS, draft customPresetDraft) (*persona.ResolvedPreset, error) {
@@ -63,10 +79,12 @@ func createWizardCustomPreset(personaFS fs.FS, draft customPresetDraft) (*person
 	return resolved, nil
 }
 
-// createWizardCustomPresetV2 is a dormant seam for the future V2 custom
-// wizard. Normal wizard selection continues to resolve V1 presets.
 func createWizardCustomPresetV2(personaFS fs.FS, draft customPresetDraft) (*persona.ResolvedPresetV2, error) {
-	slug, displayName, err := normalizeWizardCustomPresetDraft(personaFS, draft)
+	if strings.TrimSpace(draft.YAML) != "" {
+		return nil, fmt.Errorf("custom YAML overrides are legacy V1 profiles and cannot be used with schema v2; migrate presentation choices to renderer-owned presentation packs")
+	}
+
+	slug, displayName, err := normalizeWizardCustomPresetDraftForCatalog(personaFS, draft, "embed/personas-v2")
 	if err != nil {
 		return nil, err
 	}
@@ -96,6 +114,10 @@ func createWizardCustomPresetV2(personaFS fs.FS, draft customPresetDraft) (*pers
 }
 
 func normalizeWizardCustomPresetDraft(personaFS fs.FS, draft customPresetDraft) (string, string, error) {
+	return normalizeWizardCustomPresetDraftForCatalog(personaFS, draft, "embed/personas")
+}
+
+func normalizeWizardCustomPresetDraftForCatalog(personaFS fs.FS, draft customPresetDraft, catalogPath string) (string, string, error) {
 	name := strings.TrimSpace(draft.Name)
 	if name == "" {
 		return "", "", fmt.Errorf("custom preset name is required")
@@ -112,7 +134,7 @@ func normalizeWizardCustomPresetDraft(personaFS fs.FS, draft customPresetDraft) 
 	if slug == "custom" {
 		return "", "", fmt.Errorf("custom preset slug %q is reserved; choose a different name", slug)
 	}
-	builtinPath := fmt.Sprintf("embed/personas/%s.yaml", slug)
+	builtinPath := fmt.Sprintf("%s/%s.yaml", catalogPath, slug)
 	if _, err := fs.Stat(personaFS, builtinPath); err == nil {
 		return "", "", fmt.Errorf("custom preset slug %q collides with built-in preset slug", slug)
 	}

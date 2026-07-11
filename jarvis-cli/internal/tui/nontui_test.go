@@ -26,10 +26,10 @@ import (
 )
 
 // testPersonaFS and testSkillsFS embed the minimal fixture files used exclusively
-// by tests in this package. They mirror the path layout expected by persona.ListPresets
-// and skills.ListSkills (embed/personas/*.yaml, embed/skills/*.md).
+// by tests in this package. They mirror the schema-v2 persona and skills
+// catalog paths used by the wizard.
 //
-//go:embed embed/personas
+//go:embed embed/personas embed/personas-v2
 var testPersonaFS embed.FS
 
 //go:embed embed/skills
@@ -254,6 +254,42 @@ func TestRunNoTUI_RerunKeepsExistingSelectionsOnBlankInput(t *testing.T) {
 	}
 }
 
+func TestRunNoTUI_BlankPersonaInputBlocksLegacyV1PresetAndPreservesConfig(t *testing.T) {
+	home := isolateTestHome(t)
+	t.Setenv("PATH", "")
+	legacyPath := filepath.Join(home, ".jarvis", "personas", "legacy-custom.yaml")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatalf("create legacy preset dir: %v", err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("name: legacy-custom\ndisplay_name: Legacy Custom\ntone: {}\n"), 0o644); err != nil {
+		t.Fatalf("write legacy preset: %v", err)
+	}
+
+	seed := &config.AppConfig{
+		SchemaVersion:       2,
+		APIURL:              config.DefaultAPIURL,
+		PersonaPreset:       "legacy-custom",
+		PersonaPresetSource: string(persona.PresetSourceUser),
+		Install:             config.InstallState{Agents: map[string]config.AgentState{}},
+	}
+	if err := config.Save(seed); err != nil {
+		t.Fatalf("save seed config: %v", err)
+	}
+
+	err := runNoTUI(testWizardConfig(), strings.NewReader("\n\n"))
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "migrate") {
+		t.Fatalf("runNoTUI() error = %v, want schema-v2 migration guidance", err)
+	}
+
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config after blocked default: %v", err)
+	}
+	if loaded.PersonaPreset != "legacy-custom" || loaded.PersonaPresetSource != string(persona.PresetSourceUser) {
+		t.Fatalf("legacy persona config was overwritten: %+v", loaded)
+	}
+}
+
 func TestRunNoTUI_CustomPresetPersistsUserFileAndCanonicalIdentity(t *testing.T) {
 	tmpHome := isolateTestHome(t)
 	t.Setenv("PATH", "")
@@ -292,7 +328,10 @@ func TestRunNoTUI_CustomPresetInvalidYAMLBlocksContinuation(t *testing.T) {
 
 	err := runNoTUI(testWizardConfig(), input)
 	if err == nil {
-		t.Fatal("expected error when custom YAML is invalid")
+		t.Fatal("expected error when legacy custom YAML is provided")
+	}
+	if !strings.Contains(err.Error(), "migrate") {
+		t.Fatalf("runNoTUI custom YAML error = %v, want actionable migration guidance", err)
 	}
 
 	customPath := filepath.Join(tmpHome, ".jarvis", "personas", "broken-persona.yaml")
@@ -301,16 +340,32 @@ func TestRunNoTUI_CustomPresetInvalidYAMLBlocksContinuation(t *testing.T) {
 	}
 }
 
-func TestResolveNoTUIPresetSelectionKeepsNormalRouteOnV1(t *testing.T) {
+func TestResolveNoTUIPresetSelectionUsesValidatedV2Route(t *testing.T) {
 	selection, resolved, err := resolveNoTUIPresetSelection(testPersonaFS, "fixture", nil)
 	if err != nil {
 		t.Fatalf("resolveNoTUIPresetSelection: %v", err)
 	}
-	if selection.V1 == nil || selection.V2 != nil {
-		t.Fatalf("selection = %+v, want V1 only", selection)
+	if selection.V1 != nil || selection.V2 == nil {
+		t.Fatalf("selection = %+v, want V2 only", selection)
 	}
-	if resolved == nil || resolved.Slug != "fixture" {
-		t.Fatalf("resolved = %+v, want V1 fixture", resolved)
+	if resolved == nil || resolved.Slug != "fixture" || resolved.Preset.SchemaVersion != 2 {
+		t.Fatalf("resolved = %+v, want validated V2 fixture", resolved)
+	}
+}
+
+func TestResolveNoTUIPresetSelectionRejectsLegacyCustomProfileWithMigrationGuidance(t *testing.T) {
+	home := isolateTestHome(t)
+	legacyPath := filepath.Join(home, ".jarvis", "personas", "legacy-custom.yaml")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatalf("create legacy preset dir: %v", err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("name: legacy-custom\ndisplay_name: Legacy Custom\ntone: {}\n"), 0o644); err != nil {
+		t.Fatalf("write legacy preset: %v", err)
+	}
+
+	_, _, err := resolveNoTUIPresetSelection(testPersonaFS, "legacy custom", nil)
+	if err == nil || !strings.Contains(err.Error(), "migrate") {
+		t.Fatalf("resolveNoTUIPresetSelection() error = %v, want actionable migration guidance", err)
 	}
 }
 
@@ -753,6 +808,10 @@ func (m *mockAgent) SupportsOutputStyles() bool {
 }
 
 func (m *mockAgent) WriteOutputStyle(preset *persona.Preset) error {
+	return nil
+}
+
+func (m *mockAgent) WriteOutputStyleV2(preset *persona.PresetV2) error {
 	return nil
 }
 
@@ -1257,7 +1316,7 @@ func TestRunNoTUI_ListPresetsError(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	originalList := listPersonaPresets
-	listPersonaPresets = func(fsys embed.FS) ([]persona.Preset, error) {
+	listPersonaPresets = func(fsys embed.FS) ([]persona.PresetV2, error) {
 		return nil, errors.New("preset list failed")
 	}
 	t.Cleanup(func() { listPersonaPresets = originalList })

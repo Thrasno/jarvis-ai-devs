@@ -79,6 +79,7 @@ type Model struct {
 	selectedPresetV2     *persona.ResolvedPresetV2
 	previousPresetSlug   string
 	previousPresetSource persona.PresetSource
+	personaSelectionErr  error
 
 	SkillList    []skills.Skill
 	SkillPrompts []skillPrompt
@@ -131,12 +132,9 @@ type Model struct {
 	cockpitPlan           string
 }
 
-// wizardPresetSelection carries an explicitly selected version to the apply
-// seam. Interactive selection continues to populate V1 until activation.
+// wizardPresetSelection returns only the validated schema-v2 profile selected
+// by the wizard. The V1 slot remains until the later runtime retirement slice.
 func (m Model) wizardPresetSelection() (persona.PresetSelection, bool) {
-	if m.selectedPreset != nil {
-		return persona.PresetSelection{V1: m.selectedPreset}, true
-	}
 	if m.selectedPresetV2 != nil {
 		return persona.PresetSelection{V2: m.selectedPresetV2}, true
 	}
@@ -213,19 +211,24 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 		m.Scope = config.ScopeLocalOnly
 	}
 
-	presets, err := persona.ListPresets(m.PersonaFS)
+	presets, err := persona.ListPresetsV2(m.PersonaFS)
 	if err == nil {
-		m.Presets = append(m.Presets, presets...)
+		m.Presets = append(m.Presets, presetV2Options(presets)...)
 		m.Presets = append(m.Presets, persona.Preset{
 			Name:        "custom",
 			DisplayName: "Custom (crear nuevo)",
 			Description: "Creá un preset propio con slug y display name, validado y persistido en ~/.jarvis/personas/<slug>.yaml.",
 		})
 		if m.cfg != nil {
-			for i, p := range presets {
-				if p.Name == m.cfg.PersonaPreset {
-					m.presetCur = i
-					break
+			if err := validateConfiguredPersonaPresetForV2Selection(m.PersonaFS, m.cfg.PersonaPreset); err != nil {
+				m.personaSelectionErr = err
+				m.presetCur = -1
+			} else {
+				for i, p := range presets {
+					if p.Name == m.cfg.PersonaPreset {
+						m.presetCur = i
+						break
+					}
 				}
 			}
 		}
@@ -265,6 +268,18 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 	m = initializePhaseModelEditor(m)
 
 	return m
+}
+
+func presetV2Options(presets []persona.PresetV2) []persona.Preset {
+	options := make([]persona.Preset, 0, len(presets))
+	for _, preset := range presets {
+		options = append(options, persona.Preset{
+			Name:        preset.Name,
+			DisplayName: preset.DisplayName,
+			Description: schemaV2PresetDescription(preset.Name),
+		})
+	}
+	return options
 }
 
 // NewCockpitModel creates the cockpit-first root model used by bare TTY runs.

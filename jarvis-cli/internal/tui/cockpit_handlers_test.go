@@ -635,15 +635,15 @@ func TestDefaultCockpitRunner_ApplyPersonaPresetPersistsConfigAndWritesAgentArti
 	if err := config.Save(&config.AppConfig{SchemaVersion: 2, PersonaPreset: "old", PersonaPresetSource: "builtin"}); err != nil {
 		t.Fatalf("save config fixture: %v", err)
 	}
-	previousResolver := resolvePresetForWizard
-	resolvePresetForWizard = func(fs.FS, string) (*persona.ResolvedPreset, error) {
-		return &persona.ResolvedPreset{
+	previousResolver := resolvePresetV2ForWizard
+	resolvePresetV2ForWizard = func(fs.FS, string) (*persona.ResolvedPresetV2, error) {
+		return &persona.ResolvedPresetV2{
 			Slug:   "neutra",
 			Source: persona.PresetSourceBuiltin,
-			Preset: &persona.Preset{Name: "neutra", DisplayName: "Neutra", Description: "Neutral", Notes: "Use neutral tone."},
+			Preset: &persona.PresetV2{SchemaVersion: 2, Name: "neutra", DisplayName: "Neutra", Presentation: persona.PresentationV2{Language: "en-us", Register: "friendly-professional", Vocabulary: "plain-technical", Cadence: "measured", Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured", TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded"}},
 		}, nil
 	}
-	t.Cleanup(func() { resolvePresetForWizard = previousResolver })
+	t.Cleanup(func() { resolvePresetV2ForWizard = previousResolver })
 	fakeAgent := &fakePersonaAgent{name: "claude", supportsOutputStyles: true}
 
 	summary, err := (defaultCockpitRunner{}).ApplyPersonaPreset(context.Background(), personaApplyRequest{
@@ -671,11 +671,11 @@ func TestDefaultCockpitRunner_ApplyPersonaPresetPersistsConfigAndWritesAgentArti
 }
 
 func TestDefaultCockpitRunner_ApplyPersonaPresetSurfacesResolverErrors(t *testing.T) {
-	previousResolver := resolvePresetForWizard
-	resolvePresetForWizard = func(fs.FS, string) (*persona.ResolvedPreset, error) {
+	previousResolver := resolvePresetV2ForWizard
+	resolvePresetV2ForWizard = func(fs.FS, string) (*persona.ResolvedPresetV2, error) {
 		return nil, errors.New("missing preset")
 	}
-	t.Cleanup(func() { resolvePresetForWizard = previousResolver })
+	t.Cleanup(func() { resolvePresetV2ForWizard = previousResolver })
 
 	_, err := (defaultCockpitRunner{}).ApplyPersonaPreset(context.Background(), personaApplyRequest{PresetName: "missing", PersonaFS: fstest.MapFS{}})
 	if err == nil || !strings.Contains(err.Error(), "resolve preset: missing preset") {
@@ -893,6 +893,10 @@ func (f *fakePersonaAgent) InstallSkills(fs.FS, []string) error { return nil }
 func (f *fakePersonaAgent) InstallOrchestrator([]byte) error    { return nil }
 func (f *fakePersonaAgent) SupportsOutputStyles() bool          { return f.supportsOutputStyles }
 func (f *fakePersonaAgent) WriteOutputStyle(*persona.Preset) error {
+	f.outputStyleWrites++
+	return nil
+}
+func (f *fakePersonaAgent) WriteOutputStyleV2(*persona.PresetV2) error {
 	f.outputStyleWrites++
 	return nil
 }

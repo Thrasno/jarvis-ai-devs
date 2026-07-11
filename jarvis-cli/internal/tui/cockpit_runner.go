@@ -76,7 +76,7 @@ func (defaultCockpitRunner) ApplyPersonaPreset(_ context.Context, req personaApp
 	for _, a := range req.Agents {
 		pipelineAgents = append(pipelineAgents, a)
 	}
-	if err := persona.ApplyPresetPipeline(pipelineAgents, resolved, persona.ApplyOptions{
+	if err := persona.ApplyPresetSelectionPipeline(pipelineAgents, persona.PresetSelection{V2: resolved}, persona.ApplyOptions{
 		Layer1:               config.Layer1Content(),
 		Skills:               req.Skills,
 		PreviousPresetSlug:   req.PreviousPresetSlug,

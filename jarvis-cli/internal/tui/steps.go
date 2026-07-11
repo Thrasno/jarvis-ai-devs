@@ -279,6 +279,12 @@ func updatePersona(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.customEdit {
 		return updatePersonaCustomEdit(m, msg)
 	}
+	if m.personaSelectionErr != nil {
+		if msg.Type == tea.KeyEnter {
+			m.Err = m.personaSelectionErr
+		}
+		return m, nil
+	}
 
 	switch msg.Type {
 	case tea.KeyUp:
@@ -315,8 +321,8 @@ func updatePersona(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		resolved, err := resolveWizardPresetSelection(m.PersonaFS, selected.Name, nil)
 		if err == nil {
-			m.selectedPreset = resolved
-			m.selectedPresetV2 = nil
+			m.selectedPreset = nil
+			m.selectedPresetV2 = resolved
 			m.cfg.PersonaPreset = resolved.Slug
 			m.cfg.Preset = resolved.Slug
 			m.cfg.PersonaPresetSource = string(resolved.Source)
@@ -346,8 +352,8 @@ func updatePersonaCustomEdit(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.Err = err
 			return m, nil
 		}
-		m.selectedPreset = resolved
-		m.selectedPresetV2 = nil
+		m.selectedPreset = nil
+		m.selectedPresetV2 = resolved
 		m.cfg.PersonaPreset = resolved.Slug
 		m.cfg.Preset = resolved.Slug
 		m.cfg.PersonaPresetSource = string(resolved.Source)
@@ -1492,7 +1498,7 @@ func ensurePresetSelectionForApply(m Model) (persona.PresetSelection, error) {
 		requested = strings.TrimSpace(m.cfg.PersonaPreset)
 	}
 	if requested == "" {
-		presets, err := persona.ListPresets(m.PersonaFS)
+		presets, err := persona.ListPresetsV2(m.PersonaFS)
 		if err == nil && len(presets) > 0 {
 			requested = presets[0].Name
 		}
@@ -1506,7 +1512,7 @@ func ensurePresetSelectionForApply(m Model) (persona.PresetSelection, error) {
 		return persona.PresetSelection{}, err
 	}
 
-	return persona.PresetSelection{V1: resolved}, nil
+	return persona.PresetSelection{V2: resolved}, nil
 }
 
 // buildSelectedIDs returns a slice of skill IDs for all selected and core skills.

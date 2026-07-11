@@ -11,7 +11,7 @@ import (
 
 func TestResolvePresetV2ReadsValidatedPresentationProfile(t *testing.T) {
 	fsys := fstest.MapFS{
-		"embed/personas/custom-mentor.yaml": &fstest.MapFile{Data: []byte(validPresetV2)},
+		"embed/personas-v2/custom-mentor.yaml": &fstest.MapFile{Data: []byte(validPresetV2)},
 	}
 
 	resolved, err := ResolvePresetV2(fsys, "Custom Mentor")
@@ -21,7 +21,7 @@ func TestResolvePresetV2ReadsValidatedPresentationProfile(t *testing.T) {
 	if resolved.Source != PresetSourceBuiltin {
 		t.Fatalf("ResolvePresetV2() source = %q, want builtin", resolved.Source)
 	}
-	if resolved.Slug != "custom-mentor" || resolved.FilePath != "embed/personas/custom-mentor.yaml" {
+	if resolved.Slug != "custom-mentor" || resolved.FilePath != "embed/personas-v2/custom-mentor.yaml" {
 		t.Fatalf("ResolvePresetV2() location = (%q, %q), want custom-mentor builtin path", resolved.Slug, resolved.FilePath)
 	}
 	if resolved.Preset.Name != "custom-mentor" || resolved.Preset.Presentation.PhrasePack != "plain" {
@@ -31,7 +31,7 @@ func TestResolvePresetV2ReadsValidatedPresentationProfile(t *testing.T) {
 
 func TestResolvePresetV2RejectsLegacyV1Profile(t *testing.T) {
 	fsys := fstest.MapFS{
-		"embed/personas/legacy.yaml": &fstest.MapFile{Data: []byte("name: legacy\ndisplay_name: Legacy\ntone: {}\n")},
+		"embed/personas-v2/legacy.yaml": &fstest.MapFile{Data: []byte("name: legacy\ndisplay_name: Legacy\ntone: {}\n")},
 	}
 
 	_, err := ResolvePresetV2(fsys, "legacy")

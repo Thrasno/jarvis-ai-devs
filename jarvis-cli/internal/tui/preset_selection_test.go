@@ -227,7 +227,7 @@ presentation: {}
 	}
 }
 
-func TestResolveWizardPresetSelection_KeepsV1ResolverActive(t *testing.T) {
+func TestResolveWizardPresetSelection_UsesV2Resolver(t *testing.T) {
 	originalV1 := resolvePresetForWizard
 	originalV2 := resolvePresetV2ForWizard
 	t.Cleanup(func() {
@@ -235,22 +235,56 @@ func TestResolveWizardPresetSelection_KeepsV1ResolverActive(t *testing.T) {
 		resolvePresetV2ForWizard = originalV2
 	})
 
-	v1Called := false
+	v2Called := false
 	resolvePresetForWizard = func(_ fs.FS, slug string) (*persona.ResolvedPreset, error) {
-		v1Called = true
-		return &persona.ResolvedPreset{Slug: slug, Source: persona.PresetSourceBuiltin}, nil
-	}
-	resolvePresetV2ForWizard = func(fs.FS, string) (*persona.ResolvedPresetV2, error) {
-		t.Fatal("normal wizard selection must not activate the V2 resolver")
+		t.Fatal("normal wizard selection must not activate the V1 resolver")
 		return nil, nil
+	}
+	resolvePresetV2ForWizard = func(_ fs.FS, slug string) (*persona.ResolvedPresetV2, error) {
+		v2Called = true
+		return &persona.ResolvedPresetV2{Slug: slug, Source: persona.PresetSourceBuiltin, Preset: &persona.PresetV2{SchemaVersion: 2}}, nil
 	}
 
 	resolved, err := resolveWizardPresetSelection(testPersonaFS, "Neutra", nil)
 	if err != nil {
 		t.Fatalf("resolveWizardPresetSelection: %v", err)
 	}
-	if !v1Called || resolved.Slug != "neutra" || resolved.Source != persona.PresetSourceBuiltin {
-		t.Fatalf("normal selection = %+v, V1 called = %t; want V1 resolution", resolved, v1Called)
+	if !v2Called || resolved.Slug != "neutra" || resolved.Source != persona.PresetSourceBuiltin || resolved.Preset.SchemaVersion != 2 {
+		t.Fatalf("normal selection = %+v, V2 called = %t; want V2 resolution", resolved, v2Called)
+	}
+}
+
+func TestValidateConfiguredPersonaPresetForV2SelectionRejectsLegacyV1Profile(t *testing.T) {
+	home := isolateTestHome(t)
+	legacyPath := filepath.Join(home, ".jarvis", "personas", "legacy-custom.yaml")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatalf("create legacy preset dir: %v", err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("name: legacy-custom\ndisplay_name: Legacy Custom\ntone: {}\n"), 0o644); err != nil {
+		t.Fatalf("write legacy preset: %v", err)
+	}
+
+	err := validateConfiguredPersonaPresetForV2Selection(testPersonaFS, "legacy-custom")
+	if err == nil {
+		t.Fatal("expected configured legacy V1 preset to require migration")
+	}
+	for _, want := range []string{"legacy-custom", "migrate", "schema v2"} {
+		if !strings.Contains(strings.ToLower(err.Error()), want) {
+			t.Fatalf("error = %q, want contains %q", err.Error(), want)
+		}
+	}
+}
+
+func TestCreateWizardCustomPresetV2_RejectsLegacyYAMLOverrideWithMigrationGuidance(t *testing.T) {
+	isolateTestHome(t)
+
+	_, err := createWizardCustomPresetV2(jarvis.PersonaFS, customPresetDraft{
+		Name:        "Legacy Custom",
+		DisplayName: "Legacy Custom",
+		YAML:        "notes: preserve legacy behavior",
+	})
+	if err == nil || !strings.Contains(err.Error(), "migrate") {
+		t.Fatalf("createWizardCustomPresetV2() error = %v, want actionable migration guidance", err)
 	}
 }
 

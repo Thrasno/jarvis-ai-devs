@@ -255,6 +255,31 @@ func TestRunConfigSet_Preset_InvalidSlug_DoesNotMutateState(t *testing.T) {
 	}
 }
 
+func TestRunConfigSet_Preset_RejectsLegacyCustomProfileWithMigrationGuidance(t *testing.T) {
+	home := isolateTestHome(t)
+	writeCfg(t, home, "persona_preset: neutra\npersona_preset_source: builtin\npreset: neutra\napi_url: https://hivemem.dev\n")
+	legacyPath := filepath.Join(home, ".jarvis", "personas", "legacy-custom.yaml")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatalf("create legacy preset dir: %v", err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("name: legacy-custom\ndisplay_name: Legacy Custom\ntone: {}\n"), 0o644); err != nil {
+		t.Fatalf("write legacy preset: %v", err)
+	}
+
+	err := runConfigSet("preset", "legacy-custom")
+	if err == nil || !strings.Contains(err.Error(), "migrate") {
+		t.Fatalf("runConfigSet() error = %v, want actionable migration guidance", err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config after failed preset set: %v", err)
+	}
+	if cfg.PersonaPreset != "neutra" || cfg.Preset != "neutra" || cfg.PersonaPresetSource != "builtin" {
+		t.Fatalf("legacy custom rejection mutated config: %+v", cfg)
+	}
+}
+
 // TestRunConfigSet_APIUrl_InProcess verifies configSetCmd updates the api_url key.
 func TestRunConfigSet_APIUrl_InProcess(t *testing.T) {
 	home := isolateTestHome(t)

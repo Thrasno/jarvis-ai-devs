@@ -76,18 +76,18 @@ var personaSetCmd = &cobra.Command{
 	},
 }
 
-// resolvePersonaSetSelection keeps the normal CLI route explicitly on V1 while
-// passing the versioned selection shape used by the later V2 activation slice.
-func resolvePersonaSetSelection(personaFS fs.FS, presetName string) (persona.PresetSelection, *persona.ResolvedPreset, error) {
-	resolved, err := persona.ResolvePreset(personaFS, presetName)
+// resolvePersonaSetSelection resolves a validated schema-v2 presentation profile
+// before it reaches the apply pipeline.
+func resolvePersonaSetSelection(personaFS fs.FS, presetName string) (persona.PresetSelection, *persona.ResolvedPresetV2, error) {
+	resolved, err := persona.ResolvePresetV2(personaFS, presetName)
 	if err != nil {
 		return persona.PresetSelection{}, nil, err
 	}
-	return persona.PresetSelection{V1: resolved}, resolved, nil
+	return persona.PresetSelection{V2: resolved}, resolved, nil
 }
 
 // applyPersonaPresetSelection adapts resolved persona versions to installed
-// agents. persona set passes V1 explicitly until the V2 activation slice.
+// agents through the validated selected preset version.
 func applyPersonaPresetSelection(agents []agent.Agent, selection persona.PresetSelection, opts persona.ApplyOptions) error {
 	pipelineAgents := make([]persona.PresetAgent, 0, len(agents))
 	for _, a := range agents {

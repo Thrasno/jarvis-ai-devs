@@ -30,35 +30,23 @@ func TestPersonaSetCmd_UsesResolverAndPipeline_ForBuiltinAndUserPreset(t *testin
 			inputSlug:      "Mi Persona",
 			expectedSlug:   "mi-persona",
 			expectedSource: "user",
-			seedUserPresetYML: `name: mi-persona
+			seedUserPresetYML: `schema_version: 2
+name: mi-persona
 display_name: Mi Persona
-description: Persona de usuario para tests
-tone:
-  formality: casual
-  directness: high
-  humor: warm
+presentation:
   language: es-rioplatense
-communication_style:
-  verbosity: high
-  show_alternatives: true
-  challenge_assumptions: true
-characteristic_phrases:
-  greetings: ["che"]
-  confirmations: ["dale"]
-  transitions: ["a ver"]
-  sign_offs: ["vamos"]
-notes: |
-  ## Voice & Tone
-  Habla claro y directo.
-
-  ## Behavior Rules
-  Priorizá claridad y ejemplos.
-
-  ## Collaboration Protocol
-  Confirmá supuestos antes de avanzar.
-
-  ## Boundaries
-  No inventes datos.
+  register: warm-direct
+  vocabulary: rioplatense
+  cadence: energetic
+  humor: warm
+  emotional_range: supportive
+  verbosity: balanced
+  formatting: structured
+  teaching_metaphors: architecture
+  examples: practical
+  address_pack: gentleman
+  phrase_pack: gentleman
+  anti_caricature: grounded
 `,
 		},
 	}
@@ -298,16 +286,32 @@ func TestApplyPersonaPresetSelectionAcceptsDormantV2WhilePersonaSetRemainsV1(t *
 	}
 }
 
-func TestResolvePersonaSetSelectionKeepsNormalRouteOnV1(t *testing.T) {
+func TestResolvePersonaSetSelectionUsesValidatedV2Route(t *testing.T) {
 	selection, resolved, err := resolvePersonaSetSelection(jarvis.PersonaFS, "Neutra")
 	if err != nil {
 		t.Fatalf("resolvePersonaSetSelection: %v", err)
 	}
-	if selection.V1 == nil || selection.V2 != nil {
-		t.Fatalf("selection = %+v, want V1 only", selection)
+	if selection.V1 != nil || selection.V2 == nil {
+		t.Fatalf("selection = %+v, want V2 only", selection)
 	}
-	if resolved == nil || resolved.Slug != "neutra" {
-		t.Fatalf("resolved = %+v, want V1 neutra", resolved)
+	if resolved == nil || resolved.Slug != "neutra" || resolved.Preset.SchemaVersion != 2 {
+		t.Fatalf("resolved = %+v, want validated V2 neutra", resolved)
+	}
+}
+
+func TestResolvePersonaSetSelectionRejectsLegacyCustomProfileWithMigrationGuidance(t *testing.T) {
+	home := isolateTestHome(t)
+	legacyPath := filepath.Join(home, ".jarvis", "personas", "legacy-custom.yaml")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatalf("create legacy preset dir: %v", err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("name: legacy-custom\ndisplay_name: Legacy Custom\ntone: {}\n"), 0o644); err != nil {
+		t.Fatalf("write legacy preset: %v", err)
+	}
+
+	_, _, err := resolvePersonaSetSelection(jarvis.PersonaFS, "legacy custom")
+	if err == nil || !contains(err.Error(), "migrate") {
+		t.Fatalf("resolvePersonaSetSelection() error = %v, want actionable migration guidance", err)
 	}
 }
 

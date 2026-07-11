@@ -110,15 +110,42 @@ func ListPresets(fsys embed.FS) ([]Preset, error) {
 	return presets, nil
 }
 
+// ListPresetsV2 returns all validated schema-v2 built-in presentation profiles.
+func ListPresetsV2(fsys embed.FS) ([]PresetV2, error) {
+	names := listPresetV2Names(fsys)
+	presets := make([]PresetV2, 0, len(names))
+
+	for _, name := range names {
+		resolved, err := ResolvePresetV2(fsys, name)
+		if err != nil {
+			return nil, fmt.Errorf("load schema v2 preset %q: %w", name, err)
+		}
+		if resolved.Source != PresetSourceBuiltin {
+			return nil, fmt.Errorf("schema v2 preset %q is not a built-in preset", NormalizeSlug(name))
+		}
+		presets = append(presets, *resolved.Preset)
+	}
+
+	return presets, nil
+}
+
 // listPresetNames returns the names of all built-in presets by scanning the provided embed.FS.
 // Template files (*.tmpl) are excluded.
 func listPresetNames(fsys fs.FS) []string {
+	return listPresetNamesInDir(fsys, "embed/personas")
+}
+
+func listPresetV2Names(fsys fs.FS) []string {
+	return listPresetNamesInDir(fsys, "embed/personas-v2")
+}
+
+func listPresetNamesInDir(fsys fs.FS, directory string) []string {
 	namesSet := make(map[string]struct{})
-	_ = fs.WalkDir(fsys, "embed/personas", func(path string, d fs.DirEntry, err error) error {
+	_ = fs.WalkDir(fsys, directory, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		if filepath.ToSlash(filepath.Dir(path)) != "embed/personas" {
+		if filepath.ToSlash(filepath.Dir(path)) != directory {
 			return nil
 		}
 		if !strings.HasSuffix(path, ".yaml") || strings.HasSuffix(path, ".yaml.tmpl") {

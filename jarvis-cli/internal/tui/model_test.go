@@ -358,6 +358,54 @@ func TestNewModel_PrefillsExistingConfigAndMode(t *testing.T) {
 	}
 }
 
+func TestNewModel_BlankPersonaAcceptanceBlocksLegacyV1PresetAndPreservesConfig(t *testing.T) {
+	isolateTestHome(t)
+	legacyPath := filepath.Join(os.Getenv("HOME"), ".jarvis", "personas", "legacy-custom.yaml")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatalf("create legacy preset dir: %v", err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("name: legacy-custom\ndisplay_name: Legacy Custom\ntone: {}\n"), 0o644); err != nil {
+		t.Fatalf("write legacy preset: %v", err)
+	}
+	if err := config.Save(&config.AppConfig{
+		SchemaVersion:       2,
+		APIURL:              config.DefaultAPIURL,
+		PersonaPreset:       "legacy-custom",
+		PersonaPresetSource: string(persona.PresetSourceUser),
+		Install:             config.InstallState{Agents: map[string]config.AgentState{}},
+	}); err != nil {
+		t.Fatalf("save seed config: %v", err)
+	}
+
+	m := NewModel(testWizardConfig(), false)
+	if m.presetCur != -1 {
+		t.Fatalf("legacy V1 preset must not default to catalog index 0, got %d", m.presetCur)
+	}
+	m = sendKey(m, tea.KeyEnter)
+	if m.Step != StepPersona {
+		t.Fatalf("expected scope acceptance to enter persona selection, got %v", m.Step)
+	}
+	m = sendKey(m, tea.KeyEnter)
+
+	if m.Step != StepPersona {
+		t.Fatalf("blank/default persona acceptance must stay blocked at persona step, got %v", m.Step)
+	}
+	if m.Err == nil || !strings.Contains(strings.ToLower(m.Err.Error()), "migrate") {
+		t.Fatalf("persona selection error = %v, want schema-v2 migration guidance", m.Err)
+	}
+	if m.cfg.PersonaPreset != "legacy-custom" || m.selectedPresetV2 != nil {
+		t.Fatalf("legacy persona selection was overwritten in memory: cfg=%+v selected=%+v", m.cfg, m.selectedPresetV2)
+	}
+
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config after blocked default: %v", err)
+	}
+	if loaded.PersonaPreset != "legacy-custom" || loaded.PersonaPresetSource != string(persona.PresetSourceUser) {
+		t.Fatalf("legacy persona config was overwritten on disk: %+v", loaded)
+	}
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // TestStep_HiveLocal_AdvancesOnEnter
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1110,7 +1158,7 @@ func TestStep_Persona_SelectAndAdvance(t *testing.T) {
 	}
 }
 
-func TestWizardPresetSelectionKeepsV1ActiveUntilExplicitV2Selection(t *testing.T) {
+func TestWizardPresetSelectionUsesV2Only(t *testing.T) {
 	v1 := &persona.ResolvedPreset{Slug: "fixture", Preset: &persona.Preset{Name: "fixture"}}
 	v2 := &persona.ResolvedPresetV2{Slug: "future", Preset: &persona.PresetV2{Name: "future"}}
 
@@ -1119,8 +1167,8 @@ func TestWizardPresetSelectionKeepsV1ActiveUntilExplicitV2Selection(t *testing.T
 		m    Model
 		want string
 	}{
-		{name: "normal V1 selection wins", m: Model{selectedPreset: v1, selectedPresetV2: v2}, want: "v1"},
-		{name: "explicit V2 seam is available", m: Model{selectedPresetV2: v2}, want: "v2"},
+		{name: "V2 selection wins when both slots are populated", m: Model{selectedPreset: v1, selectedPresetV2: v2}, want: "v2"},
+		{name: "V2 selection is available", m: Model{selectedPresetV2: v2}, want: "v2"},
 	}
 
 	for _, tt := range tests {
@@ -1129,13 +1177,29 @@ func TestWizardPresetSelectionKeepsV1ActiveUntilExplicitV2Selection(t *testing.T
 			if !ok {
 				t.Fatal("expected a selected preset")
 			}
-			if tt.want == "v1" && (selection.V1 != v1 || selection.V2 != nil) {
-				t.Fatalf("selection = %+v, want V1 only", selection)
-			}
 			if tt.want == "v2" && (selection.V1 != nil || selection.V2 != v2) {
 				t.Fatalf("selection = %+v, want V2 only", selection)
 			}
 		})
+	}
+}
+
+func TestEnsurePresetSelectionForApplyRejectsLegacyCustomProfileWithMigrationGuidance(t *testing.T) {
+	home := isolateTestHome(t)
+	legacyPath := filepath.Join(home, ".jarvis", "personas", "legacy-custom.yaml")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatalf("create legacy preset dir: %v", err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("name: legacy-custom\ndisplay_name: Legacy Custom\ntone: {}\n"), 0o644); err != nil {
+		t.Fatalf("write legacy preset: %v", err)
+	}
+
+	_, err := ensurePresetSelectionForApply(Model{
+		PersonaFS: testPersonaFS,
+		cfg:       &config.AppConfig{PersonaPreset: "legacy-custom", PersonaPresetSource: string(persona.PresetSourceUser)},
+	})
+	if err == nil || !strings.Contains(err.Error(), "migrate") {
+		t.Fatalf("ensurePresetSelectionForApply() error = %v, want actionable migration guidance", err)
 	}
 }
 
@@ -1841,30 +1905,6 @@ func TestUpdatePersonaCustomEdit_CtrlS_PersistsCustomAsUserPreset(t *testing.T) 
 		customEdit:        true,
 		customPresetName:  "Mi Persona",
 		customDisplayName: "Mi Persona Display",
-		CustomYAML: `tone:
-  formality: neutral
-  directness: direct
-  humor: none
-  language: en-us
-communication_style:
-  verbosity: concise
-  show_alternatives: true
-  challenge_assumptions: true
-characteristic_phrases:
-  greetings: ["hello"]
-  confirmations: ["ok"]
-notes: |
-  # Custom Persona
-
-  ## Core Principle
-  Keep it concrete.
-
-  ## Behavior
-  Be direct.
-
-  ## When Asking Questions
-  Ask one question and stop.
-`,
 	}
 
 	m = sendKey(m, tea.KeyCtrlS)
@@ -1890,7 +1930,7 @@ notes: |
 	}
 }
 
-func TestUpdatePersonaCustomEdit_CtrlS_BlocksInvalidCustomYAML(t *testing.T) {
+func TestUpdatePersonaCustomEdit_CtrlS_BlocksLegacyCustomYAML(t *testing.T) {
 	tmpHome := t.TempDir()
 	setTestHome(t, tmpHome)
 
@@ -1907,15 +1947,18 @@ func TestUpdatePersonaCustomEdit_CtrlS_BlocksInvalidCustomYAML(t *testing.T) {
 
 	m = sendKey(m, tea.KeyCtrlS)
 	if m.Err == nil {
-		t.Fatal("expected validation error for invalid custom YAML")
+		t.Fatal("expected migration error for legacy custom YAML")
+	}
+	if !strings.Contains(m.Err.Error(), "migrate") {
+		t.Fatalf("custom YAML error = %v, want actionable migration guidance", m.Err)
 	}
 	if m.Step != StepPersona {
-		t.Fatalf("expected to stay on persona step when custom YAML is invalid, got %v", m.Step)
+		t.Fatalf("expected to stay on persona step when custom YAML is rejected, got %v", m.Step)
 	}
 
 	customPath := filepath.Join(tmpHome, ".jarvis", "personas", "broken-persona.yaml")
 	if _, err := os.Stat(customPath); !os.IsNotExist(err) {
-		t.Fatalf("expected no persisted file for invalid custom YAML, got err=%v", err)
+		t.Fatalf("expected no persisted file for rejected custom YAML, got err=%v", err)
 	}
 }
 

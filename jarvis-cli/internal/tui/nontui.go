@@ -22,7 +22,7 @@ import (
 
 var (
 	loadAppConfig                   = config.Load
-	listPersonaPresets              = persona.ListPresets
+	listPersonaPresets              = persona.ListPresetsV2
 	listAvailableSkills             = skills.ListSkills
 	detectInstalledAgents           = agent.Detect
 	noTUIStdout           io.Writer = os.Stdout
@@ -124,10 +124,12 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("list presets: %w", err)
 	}
-	presets = append(presets, persona.Preset{
+	if err := validateConfiguredPersonaPresetForV2Selection(wcfg.PersonaFS, cfg.PersonaPreset); err != nil {
+		return err
+	}
+	presets = append(presets, persona.PresetV2{
 		Name:        "custom",
 		DisplayName: "Custom (crear nuevo)",
-		Description: "Creá un preset propio con slug y display name, validado y persistido en ~/.jarvis/personas/<slug>.yaml.",
 	})
 	defaultPreset := cfg.PersonaPreset
 	if defaultPreset == "" {
@@ -145,7 +147,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		if name == "" {
 			name = p.Name
 		}
-		fmt.Printf("  %d) %-20s — %s\n", i+1, name, p.Description)
+		fmt.Printf("  %d) %-20s — %s\n", i+1, name, schemaV2PresetDescription(p.Name))
 	}
 	fmt.Printf("Select preset number (default: %d): ", defaultIdx+1)
 	choice := readLine(scanner)
@@ -466,14 +468,21 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	return nil
 }
 
-// resolveNoTUIPresetSelection keeps the non-interactive wizard on V1 while
-// forwarding its choice through the versioned apply seam.
-func resolveNoTUIPresetSelection(personaFS fs.FS, requestedSlug string, custom *customPresetDraft) (persona.PresetSelection, *persona.ResolvedPreset, error) {
+// resolveNoTUIPresetSelection resolves a validated schema-v2 presentation
+// profile before forwarding it through the versioned apply seam.
+func resolveNoTUIPresetSelection(personaFS fs.FS, requestedSlug string, custom *customPresetDraft) (persona.PresetSelection, *persona.ResolvedPresetV2, error) {
 	resolved, err := resolveWizardPresetSelection(personaFS, requestedSlug, custom)
 	if err != nil {
 		return persona.PresetSelection{}, nil, err
 	}
-	return persona.PresetSelection{V1: resolved}, resolved, nil
+	return persona.PresetSelection{V2: resolved}, resolved, nil
+}
+
+func schemaV2PresetDescription(name string) string {
+	if name == "custom" {
+		return "Create a schema-v2 presentation profile with a name and display label."
+	}
+	return "Validated schema-v2 presentation profile."
 }
 
 // readLine reads a single line from the scanner, trimming whitespace.

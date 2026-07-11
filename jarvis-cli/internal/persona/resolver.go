@@ -27,8 +27,7 @@ type ResolvedPreset struct {
 	Preset   *Preset
 }
 
-// ResolvedPresetV2 is the dormant schema-v2 result of preset resolution.
-// It intentionally does not replace ResolvedPreset while callers remain on V1.
+// ResolvedPresetV2 is the schema-v2 result of preset resolution.
 type ResolvedPresetV2 struct {
 	Slug     string
 	Source   PresetSource
@@ -87,14 +86,13 @@ func ResolvePreset(fsys fs.FS, slug string) (*ResolvedPreset, error) {
 }
 
 // ResolvePresetV2 resolves and validates a schema-v2 presentation profile.
-// It is an explicit dormant bridge; V1 callers continue to use ResolvePreset.
 func ResolvePresetV2(fsys fs.FS, slug string) (*ResolvedPresetV2, error) {
 	normalized := NormalizeSlug(slug)
 	if err := validatePresetSlug(normalized); err != nil {
 		return nil, err
 	}
 
-	builtinPath := filepath.ToSlash(filepath.Join("embed", "personas", normalized+".yaml"))
+	builtinPath := filepath.ToSlash(filepath.Join("embed", "personas-v2", normalized+".yaml"))
 	if p, err := readPresetV2FromFS(fsys, builtinPath); err == nil {
 		return &ResolvedPresetV2{
 			Slug:     normalized,
@@ -123,7 +121,7 @@ func ResolvePresetV2(fsys fs.FS, slug string) (*ResolvedPresetV2, error) {
 		return nil, fmt.Errorf("load user schema v2 preset %q: %w", normalized, err)
 	}
 
-	available := listPresetNames(fsys)
+	available := listPresetV2Names(fsys)
 	return nil, fmt.Errorf("schema v2 preset %q not found (available built-ins: %s)", normalized, strings.Join(available, ", "))
 }
 
