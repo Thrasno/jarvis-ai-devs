@@ -17,7 +17,7 @@ func (m *mockAuth) Login(ctx context.Context, email, password string) (string, e
 	args := m.Called(ctx, email, password)
 	return args.String(0), args.Error(1)
 }
-func (m *mockAuth) ValidateToken(t string) (*model.Claims, error) {
+func (m *mockAuth) ValidateToken(_ context.Context, t string) (*model.Claims, error) {
 	args := m.Called(t)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)

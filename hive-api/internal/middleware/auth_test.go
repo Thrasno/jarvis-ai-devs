@@ -1,12 +1,15 @@
 package middleware
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -19,6 +22,7 @@ import (
 // El middleware solo necesita la interfaz, no la implementación concreta.
 type mockAuthService struct {
 	mock.Mock
+	context context.Context
 }
 
 func (m *mockAuthService) Login(ctx interface{ Done() <-chan struct{} }, email, password string) (string, error) {
@@ -26,7 +30,8 @@ func (m *mockAuthService) Login(ctx interface{ Done() <-chan struct{} }, email, 
 	return args.String(0), args.Error(1)
 }
 
-func (m *mockAuthService) ValidateToken(tokenString string) (*model.Claims, error) {
+func (m *mockAuthService) ValidateToken(ctx context.Context, tokenString string) (*model.Claims, error) {
+	m.context = ctx
 	args := m.Called(tokenString)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
@@ -37,7 +42,7 @@ func (m *mockAuthService) ValidateToken(tokenString string) (*model.Claims, erro
 // tokenValidator es la interfaz mínima que necesita RequireAuth.
 // Extraer solo lo que necesitamos evita el import circular.
 type tokenValidator interface {
-	ValidateToken(tokenString string) (*model.Claims, error)
+	ValidateToken(ctx context.Context, tokenString string) (*model.Claims, error)
 }
 
 // helper: construye un router de test con RequireAuth y un handler protegido.
@@ -101,6 +106,24 @@ func TestRequireAuth_InvalidToken(t *testing.T) {
 	svc.AssertExpectations(t)
 }
 
+func TestRequireAuth_InternalValidatorFailureReturnsGenericServerError(t *testing.T) {
+	svc := &mockAuthService{}
+	svc.On("ValidateToken", "valid-token").Return(nil, fmt.Errorf("%w: database unavailable", service.ErrInternalAuth))
+	r := newAuthRouter(svc)
+
+	w := httptest.NewRecorder()
+	req, err := http.NewRequest(http.MethodGet, "/protected", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer valid-token")
+
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.JSONEq(t, `{"error":"error interno del servidor"}`, w.Body.String())
+	assert.NotContains(t, w.Body.String(), "database unavailable")
+	svc.AssertExpectations(t)
+}
+
 // TestRequireAuth_ValidToken verifica que un token válido pase al handler
 // con los claims inyectados en el contexto.
 func TestRequireAuth_ValidToken(t *testing.T) {
@@ -122,5 +145,24 @@ func TestRequireAuth_ValidToken(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.JSONEq(t, `{"user":"testuser"}`, w.Body.String())
+	svc.AssertExpectations(t)
+}
+
+func TestRequireAuth_PassesRequestContextToValidation(t *testing.T) {
+	type contextKey string
+	ctx := context.WithValue(context.Background(), contextKey("request-id"), "request-123")
+	svc := &mockAuthService{}
+	svc.On("ValidateToken", "good-token").Return(&model.Claims{Username: "testuser"}, nil)
+	r := newAuthRouter(svc)
+
+	w := httptest.NewRecorder()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "/protected", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer good-token")
+
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "request-123", svc.context.Value(contextKey("request-id")))
 	svc.AssertExpectations(t)
 }

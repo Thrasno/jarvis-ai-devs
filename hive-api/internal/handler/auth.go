@@ -66,7 +66,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	claims, err := h.svc.ValidateToken(token)
+	claims, err := h.svc.ValidateToken(c.Request.Context(), token)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "internal server error"})
 		return

@@ -250,7 +250,7 @@ func TestWireServices_WiresActivityServiceFromMemoryRepository(t *testing.T) {
 func TestStartupMigrationSQLIncludesDiscoveryIndexesAfterActivityFeedIndex(t *testing.T) {
 	startupMigrations := startupMigrationSQL()
 
-	require.Len(t, startupMigrations, 13)
+	require.Len(t, startupMigrations, 14)
 	assert.Equal(t, migrations.InitialSQL, startupMigrations[0])
 	assert.Equal(t, migrations.ActivityFeedIndexSQL, startupMigrations[7])
 	assert.Equal(t, migrations.MemoryDiscoveryIndexesSQL, startupMigrations[8])
@@ -260,7 +260,7 @@ func TestStartupMigrationSQLIncludesDiscoveryIndexesAfterActivityFeedIndex(t *te
 func TestStartupMigrationSQLIncludesPullCursorIndexesAfterDiscoveryIndexes(t *testing.T) {
 	startupMigrations := startupMigrationSQL()
 
-	require.Len(t, startupMigrations, 13)
+	require.Len(t, startupMigrations, 14)
 	assert.Equal(t, migrations.PullCursorIndexesSQL, startupMigrations[9])
 	assert.Contains(t, migrations.PullCursorIndexesSQL, "idx_memories_synced_at_sync_id")
 	assert.Contains(t, migrations.PullCursorIndexesSQL, "idx_sessions_synced_at_sync_id")
@@ -269,7 +269,7 @@ func TestStartupMigrationSQLIncludesPullCursorIndexesAfterDiscoveryIndexes(t *te
 func TestStartupMigrationSQLIncludesProjectScopedPullCursorIndexesAfterLegacyPullCursorIndexes(t *testing.T) {
 	startupMigrations := startupMigrationSQL()
 
-	require.Len(t, startupMigrations, 13)
+	require.Len(t, startupMigrations, 14)
 	assert.Equal(t, migrations.ProjectScopedPullCursorIndexesSQL, startupMigrations[10])
 	assert.Contains(t, migrations.ProjectScopedPullCursorIndexesSQL, "idx_memories_project_synced_at_sync_id")
 	assert.Contains(t, migrations.ProjectScopedPullCursorIndexesSQL, "idx_sessions_project_synced_at_sync_id")
@@ -279,7 +279,9 @@ func TestStartupMigrationSQLIncludesProjectScopedPullCursorIndexesAfterLegacyPul
 func TestStartupMigrationSQLIncludesProjectBlockAckSubjectsAfterProjectBlocks(t *testing.T) {
 	startupMigrations := startupMigrationSQL()
 
-	require.Len(t, startupMigrations, 13)
+	require.Len(t, startupMigrations, 14)
 	assert.Equal(t, migrations.ProjectBlocksSQL, startupMigrations[11])
 	assert.Equal(t, migrations.ProjectBlockAckSubjectsSQL, startupMigrations[12])
+	assert.Equal(t, migrations.UserSecurityVersionSQL, startupMigrations[13])
+	assert.Contains(t, migrations.UserSecurityVersionSQL, "ADD COLUMN IF NOT EXISTS security_version BIGINT NOT NULL DEFAULT 0")
 }

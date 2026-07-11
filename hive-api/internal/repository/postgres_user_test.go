@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/migrations"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -639,6 +640,35 @@ func TestPostgresUserRepository_CountAdmins(t *testing.T) {
 	count, err = repo.CountAdmins(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, 1, count, "should only count active admins")
+}
+
+func TestPostgresUserRepository_GetAuthStateReturnsPersistedActivityAndSecurityVersion(t *testing.T) {
+	pool, cleanup := startPostgres(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, RunMigrations(pool, migrations.UserSecurityVersionSQL))
+	require.NoError(t, RunMigrations(pool, migrations.UserSecurityVersionSQL))
+	repo := NewPostgresUserRepository(pool)
+	created, err := repo.Create(ctx, &model.User{
+		Username: "auth-state-user",
+		Email:    "auth-state@example.com",
+		Password: "hash",
+		Level:    model.LevelMember,
+		IsActive: true,
+	})
+	require.NoError(t, err)
+
+	state, err := repo.GetAuthState(ctx, created.ID)
+	require.NoError(t, err)
+	assert.True(t, state.Active)
+	assert.Equal(t, int64(0), state.SecurityVersion)
+
+	require.NoError(t, repo.Deactivate(ctx, created.ID))
+	state, err = repo.GetAuthState(ctx, created.ID)
+	require.NoError(t, err)
+	assert.False(t, state.Active)
+	assert.Equal(t, int64(0), state.SecurityVersion)
 }
 
 func TestPostgresUserRepository_LockActiveAdminInvariant(t *testing.T) {

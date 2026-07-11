@@ -56,8 +56,9 @@ type User struct {
 	// aparezca en ninguna respuesta de la API, aunque alguien lo intente.
 	Password string `json:"-"`
 
-	Level    UserLevel `json:"level"`
-	IsActive bool      `json:"is_active"`
+	Level           UserLevel `json:"level"`
+	IsActive        bool      `json:"is_active"`
+	SecurityVersion int64     `json:"-"`
 
 	// time.Time es el tipo de Go para fechas/horas. Cuando se serializa a JSON,
 	// Go lo convierte automáticamente a formato RFC3339 (ej: "2026-04-10T20:00:00Z"),

@@ -19,7 +19,7 @@ import (
 // "define la interfaz donde se usa, no donde se implementa".
 type AuthService interface {
 	Login(ctx context.Context, email, password string) (string, error)
-	ValidateToken(tokenString string) (*model.Claims, error)
+	ValidateToken(ctx context.Context, tokenString string) (*model.Claims, error)
 	GetCurrentUser(ctx context.Context, userID string) (*model.User, error)
 }
 

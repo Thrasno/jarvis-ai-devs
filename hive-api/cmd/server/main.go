@@ -191,6 +191,7 @@ func startupMigrationSQL() []string {
 		migrations.ProjectScopedPullCursorIndexesSQL,
 		migrations.ProjectBlocksSQL,
 		migrations.ProjectBlockAckSubjectsSQL,
+		migrations.UserSecurityVersionSQL,
 	}
 }
 

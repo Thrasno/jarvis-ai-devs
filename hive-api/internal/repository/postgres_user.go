@@ -35,12 +35,12 @@ func (r *postgresUserRepository) Create(ctx context.Context, user *model.User) (
 	const q = `
 		INSERT INTO users (username, email, password, level, is_active)
 		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, created_at, updated_at`
+		RETURNING id, security_version, created_at, updated_at`
 
 	row := r.db.QueryRow(ctx, q,
 		user.Username, user.Email, user.Password, user.Level, user.IsActive)
 
-	err := row.Scan(&user.ID, &user.CreatedAt, &user.UpdatedAt)
+	err := row.Scan(&user.ID, &user.SecurityVersion, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		return nil, wrapPgError(err, "Create user")
 	}
@@ -48,25 +48,25 @@ func (r *postgresUserRepository) Create(ctx context.Context, user *model.User) (
 }
 
 func (r *postgresUserRepository) GetByID(ctx context.Context, id string) (*model.User, error) {
-	const q = `SELECT id, username, email, password, level, is_active, created_at, updated_at
+	const q = `SELECT id, username, email, password, level, is_active, security_version, created_at, updated_at
 	           FROM users WHERE id = $1`
 	return r.scanUser(ctx, q, id)
 }
 
 func (r *postgresUserRepository) GetByEmail(ctx context.Context, email string) (*model.User, error) {
-	const q = `SELECT id, username, email, password, level, is_active, created_at, updated_at
+	const q = `SELECT id, username, email, password, level, is_active, security_version, created_at, updated_at
 	           FROM users WHERE email = $1`
 	return r.scanUser(ctx, q, email)
 }
 
 func (r *postgresUserRepository) GetByUsername(ctx context.Context, username string) (*model.User, error) {
-	const q = `SELECT id, username, email, password, level, is_active, created_at, updated_at
+	const q = `SELECT id, username, email, password, level, is_active, security_version, created_at, updated_at
 	           FROM users WHERE username = $1`
 	return r.scanUser(ctx, q, username)
 }
 
 func (r *postgresUserRepository) List(ctx context.Context) ([]*model.User, error) {
-	const q = `SELECT id, username, email, password, level, is_active, created_at, updated_at
+	const q = `SELECT id, username, email, password, level, is_active, security_version, created_at, updated_at
 	           FROM users ORDER BY created_at DESC`
 
 	rows, err := r.db.Query(ctx, q)
@@ -79,12 +79,24 @@ func (r *postgresUserRepository) List(ctx context.Context) ([]*model.User, error
 	for rows.Next() {
 		u := &model.User{}
 		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Password,
-			&u.Level, &u.IsActive, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			&u.Level, &u.IsActive, &u.SecurityVersion, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, wrapPgError(err, "scan user row")
 		}
 		users = append(users, u)
 	}
 	return users, rows.Err()
+}
+
+func (r *postgresUserRepository) GetAuthState(ctx context.Context, id string) (AuthState, error) {
+	var state AuthState
+	err := r.db.QueryRow(ctx, `SELECT is_active, security_version FROM users WHERE id = $1`, id).Scan(&state.Active, &state.SecurityVersion)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AuthState{}, ErrNotFound
+	}
+	if err != nil {
+		return AuthState{}, wrapPgError(err, "GetAuthState")
+	}
+	return state, nil
 }
 
 func (r *postgresUserRepository) UpdateLevel(ctx context.Context, id string, level model.UserLevel) error {
@@ -131,7 +143,7 @@ func (r *postgresUserRepository) scanUser(ctx context.Context, query string, arg
 	u := &model.User{}
 	err := r.db.QueryRow(ctx, query, arg).Scan(
 		&u.ID, &u.Username, &u.Email, &u.Password,
-		&u.Level, &u.IsActive, &u.CreatedAt, &u.UpdatedAt,
+		&u.Level, &u.IsActive, &u.SecurityVersion, &u.CreatedAt, &u.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

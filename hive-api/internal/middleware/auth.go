@@ -1,10 +1,13 @@
 package middleware
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -23,7 +26,7 @@ const ClaimsKey = "claims"
 // importara service también, Go lo permitiría, pero es una dependencia innecesaria.
 // Con esta interfaz local, middleware es independiente de service.
 type TokenValidator interface {
-	ValidateToken(tokenString string) (*model.Claims, error)
+	ValidateToken(ctx context.Context, tokenString string) (*model.Claims, error)
 }
 
 // RequireAuth devuelve un middleware que verifica el JWT en el header Authorization.
@@ -63,9 +66,13 @@ func RequireAuth(svc TokenValidator) gin.HandlerFunc {
 			return
 		}
 
-		claims, err := svc.ValidateToken(tokenString)
+		claims, err := svc.ValidateToken(c.Request.Context(), tokenString)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "token inválido o expirado"})
+			if errors.Is(err, service.ErrInternalAuth) {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "error interno del servidor"})
+			} else {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "token inválido o expirado"})
+			}
 			c.Abort()
 			return
 		}

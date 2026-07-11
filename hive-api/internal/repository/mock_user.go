@@ -71,6 +71,11 @@ func (m *MockUserRepository) List(ctx context.Context) ([]*model.User, error) {
 	return args.Get(0).([]*model.User), args.Error(1)
 }
 
+func (m *MockUserRepository) GetAuthState(ctx context.Context, id string) (AuthState, error) {
+	args := m.Called(ctx, id)
+	return args.Get(0).(AuthState), args.Error(1)
+}
+
 func (m *MockUserRepository) UpdateLevel(ctx context.Context, id string, level model.UserLevel) error {
 	args := m.Called(ctx, id, level)
 	return args.Error(0)
