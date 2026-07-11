@@ -119,7 +119,7 @@ func TestNativeMCPInventoryCommandTimeoutHelper(t *testing.T) {
 	if os.Getenv("GO_WANT_NATIVE_MCP_INVENTORY_TIMEOUT_HELPER") != "1" {
 		return
 	}
-	select {}
+	time.Sleep(2 * time.Second)
 }
 
 func TestNativeMCPSnapshotRejectsSelfConsistentForgedManifestWithoutTrustedFingerprint(t *testing.T) {
