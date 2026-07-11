@@ -100,7 +100,7 @@ func createWizardCustomPresetV2(personaFS fs.FS, draft customPresetDraft) (*pers
 		return nil, fmt.Errorf("custom YAML overrides are legacy V1 profiles and cannot be used with schema v2; migrate presentation choices to renderer-owned presentation packs")
 	}
 
-	slug, displayName, err := normalizeWizardCustomPresetDraftForCatalog(personaFS, draft, "embed/personas-v2")
+	slug, displayName, err := normalizeWizardCustomPresetDraftForCatalog(personaFS, draft, "embed/personas")
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +159,7 @@ func normalizeWizardCustomPresetDraftForCatalog(personaFS fs.FS, draft customPre
 }
 
 func buildCustomPresetContentV2(personaFS fs.FS, slug, displayName string) ([]byte, error) {
-	content, err := fs.ReadFile(personaFS, "embed/personas-v2/custom.yaml.tmpl")
+	content, err := fs.ReadFile(personaFS, "embed/personas/custom.yaml.tmpl")
 	if err != nil {
 		return nil, fmt.Errorf("read schema v2 custom preset template: %w", err)
 	}

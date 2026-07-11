@@ -4,9 +4,9 @@ package jarvis
 
 import "embed"
 
-// PersonaFS contains the active V1 and dormant V2 persona YAML catalogs.
+// PersonaFS contains the canonical schema-v2 persona YAML catalog.
 //
-//go:embed all:embed/personas all:embed/personas-v2
+//go:embed all:embed/personas
 var PersonaFS embed.FS
 
 // SkillsFS contains the embedded skill Markdown files.

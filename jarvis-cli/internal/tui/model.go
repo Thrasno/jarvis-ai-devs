@@ -4,6 +4,7 @@ package tui
 
 import (
 	"embed"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -58,7 +59,7 @@ type Model struct {
 	Mode   string
 	Scope  config.SetupScope
 
-	PersonaFS  embed.FS
+	PersonaFS  fs.FS
 	SkillsFS   embed.FS
 	TemplateFS embed.FS
 	ProjectCWD string
@@ -177,7 +178,7 @@ type openCodeModelOption struct {
 
 // WizardConfig carries FSes needed to run the wizard, injected by main.
 type WizardConfig struct {
-	PersonaFS  embed.FS
+	PersonaFS  fs.FS
 	SkillsFS   embed.FS
 	TemplateFS embed.FS
 	ProjectCWD string

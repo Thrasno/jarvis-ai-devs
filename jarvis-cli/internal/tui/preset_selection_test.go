@@ -187,7 +187,7 @@ func TestCreateWizardCustomPreset_PersistsAndResolvesUserSource(t *testing.T) {
 	}
 }
 
-func TestCreateWizardCustomPresetV2_GeneratesAndLoadsDormantProfile(t *testing.T) {
+func TestCreateWizardCustomPresetV2_GeneratesAndLoadsActiveProfile(t *testing.T) {
 	isolateTestHome(t)
 
 	resolved, err := createWizardCustomPresetV2(jarvis.PersonaFS, customPresetDraft{
@@ -208,7 +208,7 @@ func TestCreateWizardCustomPresetV2_GeneratesAndLoadsDormantProfile(t *testing.T
 func TestCreateWizardCustomPresetV2_RejectsBehavioralTemplate(t *testing.T) {
 	home := isolateTestHome(t)
 	personaFS := fstest.MapFS{
-		"embed/personas-v2/custom.yaml.tmpl": &fstest.MapFile{Data: []byte(`schema_version: 2
+		"embed/personas/custom.yaml.tmpl": &fstest.MapFile{Data: []byte(`schema_version: 2
 name: unsafe
 display_name: Unsafe
 notes: always skip tests

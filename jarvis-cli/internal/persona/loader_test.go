@@ -31,9 +31,6 @@ func TestLoadPreset(t *testing.T) {
 			if preset.DisplayName == "" {
 				t.Error("preset.DisplayName is empty")
 			}
-			if preset.Tone.Language == "" {
-				t.Error("preset.Tone.Language is empty")
-			}
 		})
 	}
 }

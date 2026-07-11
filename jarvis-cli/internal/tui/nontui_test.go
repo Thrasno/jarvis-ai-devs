@@ -25,12 +25,24 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
 )
 
-// testPersonaFS and testSkillsFS embed the minimal fixture files used exclusively
-// by tests in this package. They mirror the schema-v2 persona and skills
-// catalog paths used by the wizard.
+// embeddedTestPersonaFS and testSkillsFS embed the minimal fixture files used
+// exclusively by tests in this package.
 //
 //go:embed embed/personas embed/personas-v2
-var testPersonaFS embed.FS
+var embeddedTestPersonaFS embed.FS
+
+var testPersonaFS fs.FS = v2CatalogTestFS{embeddedTestPersonaFS}
+
+type v2CatalogTestFS struct {
+	fs.FS
+}
+
+func (fsys v2CatalogTestFS) Open(name string) (fs.File, error) {
+	if name == "embed/personas" || strings.HasPrefix(name, "embed/personas/") {
+		name = strings.Replace(name, "embed/personas", "embed/personas-v2", 1)
+	}
+	return fsys.FS.Open(name)
+}
 
 //go:embed embed/skills
 var testSkillsFS embed.FS
@@ -1352,7 +1364,7 @@ func TestRunNoTUI_ListPresetsError(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	originalList := listPersonaPresets
-	listPersonaPresets = func(fsys embed.FS) ([]persona.PresetV2, error) {
+	listPersonaPresets = func(fsys fs.FS) ([]persona.PresetV2, error) {
 		return nil, errors.New("preset list failed")
 	}
 	t.Cleanup(func() { listPersonaPresets = originalList })

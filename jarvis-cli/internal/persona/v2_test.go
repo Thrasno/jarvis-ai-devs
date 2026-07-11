@@ -254,9 +254,9 @@ func TestBuiltinProfilesV2MatchPresentationMatrix(t *testing.T) {
 		},
 	}
 
-	entries, err := jarvis.PersonaFS.ReadDir("embed/personas-v2")
+	entries, err := jarvis.PersonaFS.ReadDir("embed/personas")
 	if err != nil {
-		t.Fatalf("read dormant V2 persona assets: %v", err)
+		t.Fatalf("read canonical schema-v2 persona assets: %v", err)
 	}
 	if len(entries) != len(wantProfiles)+1 {
 		t.Fatalf("built-in persona assets = %d, want seven profiles plus custom template", len(entries))
@@ -264,7 +264,7 @@ func TestBuiltinProfilesV2MatchPresentationMatrix(t *testing.T) {
 
 	for name, want := range wantProfiles {
 		t.Run(name, func(t *testing.T) {
-			content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas-v2/"+name+".yaml")
+			content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas/"+name+".yaml")
 			if err != nil {
 				t.Fatalf("read %s profile: %v", name, err)
 			}
@@ -291,7 +291,7 @@ func TestBuiltinProfilesV2MatchPresentationMatrix(t *testing.T) {
 }
 
 func TestCustomTemplateV2ValidatesAsPresentationOnly(t *testing.T) {
-	content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas-v2/custom.yaml.tmpl")
+	content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas/custom.yaml.tmpl")
 	if err != nil {
 		t.Fatalf("read custom template: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestDormantV2RenderersExcludeRetiredV1NotesAndScopeContracts(t *testing.T) 
 
 	for _, name := range profiles {
 		t.Run(name, func(t *testing.T) {
-			content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas-v2/"+name+".yaml")
+			content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas/"+name+".yaml")
 			if err != nil {
 				t.Fatalf("read dormant V2 profile: %v", err)
 			}
@@ -346,7 +346,7 @@ func TestDormantV2RenderersExcludeRetiredV1NotesAndScopeContracts(t *testing.T) 
 }
 
 func TestDormantV2ProfileDocsDoNotAdvertiseUnsupportedActivation(t *testing.T) {
-	template, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas-v2/custom.yaml.tmpl")
+	template, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas/custom.yaml.tmpl")
 	if err != nil {
 		t.Fatalf("read custom template: %v", err)
 	}
@@ -367,8 +367,8 @@ func TestDormantV2ProfileDocsDoNotAdvertiseUnsupportedActivation(t *testing.T) {
 			if strings.Contains(content, "jarvis persona set --custom") {
 				t.Fatalf("%s advertises unsupported V2 custom-profile activation", name)
 			}
-			if !strings.Contains(content, "not user-activatable until the final V2 activation slice") {
-				t.Fatalf("%s must state that dormant V2 profiles are not user-activatable", name)
+			if strings.Contains(strings.ToLower(content), "dormant") || strings.Contains(content, "not user-activatable") {
+				t.Fatalf("%s describes the active V2 catalog as dormant or unavailable", name)
 			}
 		})
 	}

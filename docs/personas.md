@@ -33,7 +33,7 @@ All values are renderer-owned IDs. A profile cannot contain freeform notes,
 behavior, technical instructions, workflow rules, expertise, or tool policy.
 The decoder rejects those fields with migration guidance instead of silently
 removing them. Start from
-`jarvis-cli/embed/personas-v2/custom.yaml.tmpl` when creating a profile.
+`jarvis-cli/embed/personas/custom.yaml.tmpl` when creating a profile.
 
 ## Built-in presentation matrix
 
@@ -51,11 +51,8 @@ The shared contract supplies the same help-first teaching, concepts-first
 learning, human-directed AI, foundations, evidence, safety, and language
 boundaries for every row. These are not persona fields.
 
-## Current rollout state
+## Active catalog
 
-Schema-v2 assets validate through the dormant V2 path. Existing V1 selection
-and loading behavior remains active until the final V2 activation slice. V2 custom
-profiles and the V2 catalog are not user-activatable until the final V2 activation slice.
-To select a currently supported built-in V1 preset, use
-`jarvis persona set <preset>`. Do not rely on V2 assets to change an installed
-persona yet.
+The schema-v2 catalog is active. To select a built-in presentation profile, use
+`jarvis persona set <preset>`. Existing V1 profiles and custom YAML require an
+explicit migration to schema version 2 before they can be applied.

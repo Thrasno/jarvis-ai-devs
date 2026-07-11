@@ -87,12 +87,16 @@ func ResolvePreset(fsys fs.FS, slug string) (*ResolvedPreset, error) {
 
 // ResolvePresetV2 resolves and validates a schema-v2 presentation profile.
 func ResolvePresetV2(fsys fs.FS, slug string) (*ResolvedPresetV2, error) {
+	if fsys == nil {
+		return nil, fmt.Errorf("resolve schema v2 preset %q: persona catalog is unavailable", NormalizeSlug(slug))
+	}
+
 	normalized := NormalizeSlug(slug)
 	if err := validatePresetSlug(normalized); err != nil {
 		return nil, err
 	}
 
-	builtinPath := filepath.ToSlash(filepath.Join("embed", "personas-v2", normalized+".yaml"))
+	builtinPath := filepath.ToSlash(filepath.Join("embed", "personas", normalized+".yaml"))
 	if p, err := readPresetV2FromFS(fsys, builtinPath); err == nil {
 		return &ResolvedPresetV2{
 			Slug:     normalized,

@@ -111,7 +111,11 @@ func ListPresets(fsys embed.FS) ([]Preset, error) {
 }
 
 // ListPresetsV2 returns all validated schema-v2 built-in presentation profiles.
-func ListPresetsV2(fsys embed.FS) ([]PresetV2, error) {
+func ListPresetsV2(fsys fs.FS) ([]PresetV2, error) {
+	if fsys == nil {
+		return nil, nil
+	}
+
 	names := listPresetV2Names(fsys)
 	presets := make([]PresetV2, 0, len(names))
 
@@ -136,7 +140,7 @@ func listPresetNames(fsys fs.FS) []string {
 }
 
 func listPresetV2Names(fsys fs.FS) []string {
-	return listPresetNamesInDir(fsys, "embed/personas-v2")
+	return listPresetNamesInDir(fsys, "embed/personas")
 }
 
 func listPresetNamesInDir(fsys fs.FS, directory string) []string {
