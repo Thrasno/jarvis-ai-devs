@@ -29,6 +29,7 @@ type mockSyncStore struct {
 	events                        *observableEvents
 	clearJWTCalls                 int
 	clearJWTErr                   error
+	setJWTErr                     error
 	markedSynced                  []string
 	markSyncedErr                 error
 	markedMemoriesSyncedBySyncID  []string
@@ -319,6 +320,11 @@ func (m *mockSyncStore) GetJWT() string {
 }
 
 func (m *mockSyncStore) SetJWT(token string, expiresAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.setJWTErr != nil {
+		return m.setJWTErr
+	}
 	m.jwt = token
 	return nil
 }
@@ -967,19 +973,13 @@ func TestSyncer_Run_AuthFailureRetry(t *testing.T) {
 
 	syncer := New(cfg, store)
 
-	// Note: Current implementation doesn't auto-retry on 401
-	// This test documents the EXPECTED behavior (401 returns error)
-	// If retry logic is added later, update this test
 	_, err := syncer.Sync(context.Background(), "test-project")
 
-	// Current behavior: 401 causes error (no auto-retry in syncer.Sync)
-	assert.Error(t, err, "sync should fail with 401 (no auto-retry in current implementation)")
-	assert.Contains(t, err.Error(), "401", "error should mention 401")
-
-	// If we implement retry logic, the test should become:
-	// assert.NoError(t, err)
-	// assert.Equal(t, 2, syncAttempts, "should retry after 401")
-	// assert.Equal(t, 1, loginAttempts, "should refresh token")
+	require.NoError(t, err)
+	assert.Equal(t, 2, syncAttempts, "must retry the rejected batch exactly once")
+	assert.Equal(t, 1, loginAttempts, "must perform exactly one recovery login")
+	assert.Equal(t, 1, store.clearJWTCalls, "must clear the rejected cached token before login")
+	assert.Equal(t, "refreshed-token", store.jwt)
 }
 
 // TestSyncer_Run_PersistentError tests that persistent errors are returned.
