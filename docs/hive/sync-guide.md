@@ -20,7 +20,15 @@ Hive ↔ Hive API sync is separate from installing or rerunning Jarvis. Installa
 | `~/.jarvis/sync.json` | File-based sync credentials and optional `auto_sync`. |
 | `auto_sync` | Enables background sync when explicitly true/configured. |
 
-Environment variables take precedence over file configuration at runtime.
+Environment variables take precedence over file configuration at runtime. File changes remain overridden until `HIVE_API_*` variables are updated or unset and `hive-daemon` is restarted.
+
+## Recover after changing an account password
+
+1. Open Jarvis → Hive API Config.
+2. Enter the new Hive account password and save. This updates the stored daemon credential; it does not change the account password.
+3. Restart `hive-daemon` to clear the rejected session and load the new credential.
+
+Test Connection is read-only. A successful test does not update the running daemon or clear its rejected-session latch; save and restart after testing a replacement password.
 
 ## Manual vs automatic sync
 
