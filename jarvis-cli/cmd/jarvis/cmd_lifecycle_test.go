@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -178,8 +179,12 @@ func TestRunPerProvider_AllFansOutDeterministically(t *testing.T) {
 	lifecycleDetectProviders = func() []string { return []string{"claude", "opencode"} }
 	t.Cleanup(func() { lifecycleDetectProviders = originalDetect })
 
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
 	var called []string
-	err := runPerProvider(&cobra.Command{}, "all", func(_ *lifecycle.Engine, provider string) error {
+	err := runPerProvider(cmd, "all", func(_ *lifecycle.Engine, provider string) error {
 		called = append(called, provider)
 		return nil
 	})
@@ -190,6 +195,9 @@ func TestRunPerProvider_AllFansOutDeterministically(t *testing.T) {
 	if !reflect.DeepEqual(called, want) {
 		t.Fatalf("providers called mismatch: got %v want %v", called, want)
 	}
+	if strings.Contains(out.String(), noProvidersDetectedMessage) {
+		t.Fatalf("expected no no-agents-detected message when providers were detected, got output: %q", out.String())
+	}
 }
 
 func TestRunPerProvider_AllWithOnlyClaudeDetectedSkipsOpencode(t *testing.T) {
@@ -197,8 +205,12 @@ func TestRunPerProvider_AllWithOnlyClaudeDetectedSkipsOpencode(t *testing.T) {
 	lifecycleDetectProviders = func() []string { return []string{"claude"} }
 	t.Cleanup(func() { lifecycleDetectProviders = originalDetect })
 
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
 	var called []string
-	err := runPerProvider(&cobra.Command{}, "all", func(_ *lifecycle.Engine, provider string) error {
+	err := runPerProvider(cmd, "all", func(_ *lifecycle.Engine, provider string) error {
 		called = append(called, provider)
 		return nil
 	})
@@ -209,15 +221,22 @@ func TestRunPerProvider_AllWithOnlyClaudeDetectedSkipsOpencode(t *testing.T) {
 	if !reflect.DeepEqual(called, want) {
 		t.Fatalf("providers called mismatch: got %v want %v (opencode must be skipped, not fatal)", called, want)
 	}
+	if strings.Contains(out.String(), noProvidersDetectedMessage) {
+		t.Fatalf("expected no no-agents-detected message when providers were detected, got output: %q", out.String())
+	}
 }
 
-func TestRunPerProvider_AllWithNoDetectedProvidersIsNoop(t *testing.T) {
+func TestRunPerProvider_AllWithNoDetectedProvidersEmitsInfoAndIsNoop(t *testing.T) {
 	originalDetect := lifecycleDetectProviders
 	lifecycleDetectProviders = func() []string { return []string{} }
 	t.Cleanup(func() { lifecycleDetectProviders = originalDetect })
 
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
 	var called []string
-	err := runPerProvider(&cobra.Command{}, "all", func(_ *lifecycle.Engine, provider string) error {
+	err := runPerProvider(cmd, "all", func(_ *lifecycle.Engine, provider string) error {
 		called = append(called, provider)
 		return nil
 	})
@@ -226,6 +245,9 @@ func TestRunPerProvider_AllWithNoDetectedProvidersIsNoop(t *testing.T) {
 	}
 	if len(called) != 0 {
 		t.Fatalf("expected no providers called with empty detection, got %v", called)
+	}
+	if !strings.Contains(out.String(), noProvidersDetectedMessage) {
+		t.Fatalf("expected no-agents-detected info message in output, got: %q", out.String())
 	}
 }
 

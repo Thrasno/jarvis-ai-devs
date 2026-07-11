@@ -233,7 +233,12 @@ func flagStringFresh(cmd *cobra.Command, name, def string) string {
 	return v
 }
 
-func runPerProvider(_ *cobra.Command, provider string, run func(*lifecycle.Engine, string) error) error {
+// noProvidersDetectedMessage is emitted when a "--provider all" fan-out finds
+// no configured agents to operate on. This keeps the command informational
+// (exit 0) rather than silently doing nothing.
+const noProvidersDetectedMessage = "no configured agents detected; nothing to run"
+
+func runPerProvider(cmd *cobra.Command, provider string, run func(*lifecycle.Engine, string) error) error {
 	if err := validateProvider(provider); err != nil {
 		return err
 	}
@@ -241,6 +246,10 @@ func runPerProvider(_ *cobra.Command, provider string, run func(*lifecycle.Engin
 	targets := []string{provider}
 	if provider == "all" {
 		targets = lifecycleDetectProviders()
+		if len(targets) == 0 {
+			fmt.Fprintln(cmd.OutOrStdout(), noProvidersDetectedMessage)
+			return nil
+		}
 	}
 	for _, target := range targets {
 		if err := run(engine, target); err != nil {
