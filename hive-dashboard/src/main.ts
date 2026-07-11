@@ -1,4 +1,4 @@
-import { createApiClient, type ApiClient, type CapabilityOverviewResponse, type CreateUserRequest, type Memory, type MemoryList, type MemoryListParams, type MemorySearch, type ProjectBlockRequest, type ProjectListResponse, type ProjectSummary, type SyncAttemptSummary, type User } from './api/client'
+import { ApiError, createApiClient, type ApiClient, type CapabilityOverviewResponse, type ChangePasswordRequest, type CreateUserRequest, type Memory, type MemoryList, type MemoryListParams, type MemorySearch, type ProjectBlockRequest, type ProjectListResponse, type ProjectSummary, type SyncAttemptSummary, type User } from './api/client'
 import { parseDashboardFilters } from './api/urlFilters'
 import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
 import { renderBrand } from './components/Brand'
@@ -8,6 +8,7 @@ import { projectsFromApi, relativeActivityAgeLabel, type ActivityFeedViewModel, 
 import { memoryListToDiscoveryData, type KnowledgeDiscoveryData } from './domain/knowledgeDiscovery'
 import { dashboardFixtures } from './fixtures/hive-dashboard/index'
 import { renderAuditSync } from './views/AuditSync'
+import { renderAccount } from './views/Account'
 import { renderKnowledgeBrowser } from './views/KnowledgeBrowser'
 import { renderMemories, type MemoryDetailData, type MemoryDetailRoute, type MemoryDetailViewState } from './views/Memories'
 import { renderOverview, type ViewState } from './views/Overview'
@@ -59,6 +60,7 @@ export type AppActions = {
   onActivateUser?(username: string): Promise<void>
   onLoadMoreActivity?(): Promise<void>
   onBlockProject?(request: ProjectBlockRequest): Promise<void>
+  onChangePassword?(request: ChangePasswordRequest): Promise<void>
 }
 
 export type UserManagementState = {
@@ -127,6 +129,10 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
     load: 'audit',
     render: (vs) => renderAuditSync(vs as ViewState<AuditSyncData>)
   },
+  account: {
+    path: '/dashboard/account',
+    render: (_vs, _routePath, actions) => renderAccount({ onChangePassword: (request) => actions.onChangePassword?.(request) ?? Promise.resolve() })
+  },
   projects: {
     path: '/dashboard/projects',
     load: 'projects',
@@ -192,6 +198,7 @@ const SCREEN_TITLES: Record<DashboardScreenKey, [string, string]> = {
   activityFeed:     ['Activity Feed',       'recently saved memory across the team'],
   userManagement:   ['User Management',     'roles, access & governance'],
   auditLog:         ['Audit Log',           'system operations & governance events'],
+  account:          ['Account',             'password and session security'],
   // Hidden/deferred screens fall back to their nearest visible equivalents
   knowledgeGraph:   ['Hive Overview',       'central memory · live sync · governance'],
   contributors:     ['Hive Overview',       'central memory · live sync · governance'],
@@ -429,6 +436,7 @@ function renderAuthenticatedView(
   if (HIDDEN_DASHBOARD_SCREENS.has(screen)) {
     return renderOverview(stateFor(state, 'overview') as ViewState<OverviewViewModel>)
   }
+  if (screen === 'account') return renderAccount({ onChangePassword: (request) => actions.onChangePassword?.(request) ?? Promise.resolve() })
   if (screen === 'userManagement') {
     return renderUsers(stateFor(state, 'users') as ViewState<UsersData>, {
       currentUsername: auth.user.username,
@@ -890,10 +898,42 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     onResetTemporaryPassword(username, temporaryPassword) {
       return runUserMutation(username, 'reset-password', (token) => api.resetTemporaryPassword(token, username, temporaryPassword))
     },
-    onActivateUser(username) {
-      return runUserMutation(username, 'activate', (token) => api.activateUser(token, username))
-    },
-    async onLoadMoreActivity() {
+        onActivateUser(username) {
+          return runUserMutation(username, 'activate', (token) => api.activateUser(token, username))
+        },
+        async onChangePassword(request) {
+          if (disposed) return
+          const state = session.getState()
+          if (state.status !== 'authenticated') return
+          const token = state.token
+          const ownsToken = () => {
+            const current = session.getState()
+            return current.status === 'authenticated' && current.token === token
+          }
+          try {
+            await api.changePassword(token, request)
+          } catch (error) {
+            if (error instanceof ApiError && error.code === 'UNAUTHORIZED' && ownsToken()) {
+              const anonymous = session.logout()
+              if (!disposed) {
+                loadVersion += 1
+                dashboard = { status: 'loading' }
+                rerender(anonymous)
+              }
+            }
+            throw error
+          }
+          if (!ownsToken()) return
+          const anonymous = session.logout()
+          if (disposed) return
+          loadVersion += 1
+          dashboard = { status: 'loading' }
+          userManagementState = {}
+          projectBlockState = {}
+          history.replaceState(null, '', '/dashboard')
+          rerender({ status: 'anonymous', error: 'Password changed. Sign in again.' })
+        },
+        async onLoadMoreActivity() {
       await loadMoreActivity()
     },
     async onBlockProject(request) {

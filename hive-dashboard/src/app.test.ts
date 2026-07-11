@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ActivityFeedResponse, ApiClient, Memory, MemoryList, MemorySearch, OverviewGrowth, OverviewStats, ProjectListResponse } from './api/client'
+import { ApiError, type ActivityFeedResponse, type ApiClient, type Memory, type MemoryList, type MemorySearch, type OverviewGrowth, type OverviewStats, type ProjectListResponse } from './api/client'
 import { createSessionStore, sessionTokenKey, type SessionStore } from './auth/session'
 import { LOGIN_TIMEOUT_MS, loadDashboard, loadForRoute, renderApp, startDashboardApp } from './main'
 import { hiveOverviewFixture } from './fixtures/hive-dashboard/overview'
@@ -2933,12 +2933,135 @@ function fakeSessionStore(initial: ReturnType<SessionStore['getState']>): Sessio
   }
 }
 
+it('exposes the separate Account link to both Member and Admin profiles', () => {
+for (const user of [memberUser, adminUser]) {
+const container = document.createElement('main')
+renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
+expect(container.querySelector<HTMLAnchorElement>('a[aria-label="Account"]')?.getAttribute('href')).toBe('/dashboard/account')
+expect(container.querySelector('a[data-sidebar-action="logout"]')).not.toBeNull()
+}
+})
+
+it('navigates to Account and ends the session without reusing a changed-password token', async () => {
+const container = document.createElement('main')
+document.body.append(container)
+sessionStorage.clear()
+const api = fakeApi()
+vi.mocked(api.login).mockResolvedValue({ token: 'old-token', user: memberUser })
+vi.mocked(api.currentUser).mockResolvedValue(memberUser)
+vi.mocked(api.changePassword).mockRejectedValueOnce(new ApiError('Invalid current password', 400, 'CURRENT_PASSWORD_INVALID'))
+const session = createSessionStore({ api })
+await session.login('member@example.com', 'password')
+const originalPath = window.location.pathname
+history.replaceState(null, '', '/dashboard')
+const cleanup = startDashboardApp(container, { api, session })
+
+try {
+await flushDashboard()
+;(container.querySelector<HTMLAnchorElement>('a[aria-label="Account"]')!).click()
+await flushDashboard()
+const form = container.querySelector<HTMLFormElement>('form[aria-label="Change password"]')!
+for (const [name, value] of [['current_password', 'old-password'], ['new_password', 'new-password'], ['confirmation', 'new-password']] as const) {
+form.querySelector<HTMLInputElement>(`input[name="${name}"]`)!.value = value
+}
+      form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+      await flushDashboard()
+      expect(session.getState()).toMatchObject({ status: 'authenticated', token: 'old-token' })
+
+      for (const [name, value] of [['current_password', 'old-password'], ['new_password', 'new-password'], ['confirmation', 'new-password']] as const) {
+        form.querySelector<HTMLInputElement>(`input[name="${name}"]`)!.value = value
+      }
+      const callsBeforeSuccess = vi.mocked(api.overview).mock.calls.length
+      form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+      await flushDashboard()
+
+      expect(api.changePassword).toHaveBeenCalledWith('old-token', { current_password: 'old-password', new_password: 'new-password' })
+      expect(session.getState()).toEqual({ status: 'anonymous' })
+expect(sessionStorage.getItem(sessionTokenKey)).toBeNull()
+expect(window.location.pathname).toBe('/dashboard')
+expect(container.textContent).toContain('Password changed. Sign in again.')
+expect(vi.mocked(api.overview).mock.calls).toHaveLength(callsBeforeSuccess)
+} finally {
+cleanup()
+history.replaceState(null, '', originalPath)
+container.remove()
+sessionStorage.clear()
+}
+})
+
+it('clears the captured token after a successful password change when disposed', async () => {
+  const container = document.createElement('main')
+  document.body.append(container)
+  sessionStorage.clear()
+  const passwordChange = deferred<void>()
+  const api = fakeApi({ changePassword: passwordChange.promise })
+  vi.mocked(api.login).mockResolvedValue({ token: 'old-token', user: memberUser })
+  vi.mocked(api.currentUser).mockResolvedValue(memberUser)
+  const session = createSessionStore({ api })
+  await session.login('member@example.com', 'password')
+  const cleanup = startDashboardApp(container, { api, session })
+  try {
+    await flushDashboard()
+    await submitAccountPasswordChange(container)
+    cleanup()
+    passwordChange.resolve()
+    await flushDashboard()
+    expect(session.getState()).toEqual({ status: 'anonymous' })
+    expect(sessionStorage.getItem(sessionTokenKey)).toBeNull()
+  } finally {
+    container.remove()
+    sessionStorage.clear()
+  }
+})
+
+it.each(['success', 'unauthorized'] as const)('ignores a stale password-change %s after a newer login', async (outcome) => {
+  const container = document.createElement('main')
+  document.body.append(container)
+  sessionStorage.clear()
+  const passwordChange = deferred<void>()
+  const api = fakeApi({ changePassword: passwordChange.promise })
+  vi.mocked(api.login).mockResolvedValueOnce({ token: 'old-token', user: memberUser }).mockResolvedValueOnce({ token: 'new-token', user: adminUser })
+  vi.mocked(api.currentUser).mockResolvedValue(memberUser)
+  const session = createSessionStore({ api })
+  await session.login('member@example.com', 'password')
+  const originalPath = window.location.pathname
+  history.replaceState(null, '', '/dashboard/account')
+  const cleanup = startDashboardApp(container, { api, session })
+  try {
+    await flushDashboard()
+    await submitAccountPasswordChange(container)
+    await session.login('admin@example.com', 'password')
+    history.replaceState(null, '', '/dashboard/projects')
+    if (outcome === 'success') passwordChange.resolve()
+    else passwordChange.reject(new ApiError('Expired session', 401, 'UNAUTHORIZED'))
+    await flushDashboard()
+    expect(session.getState()).toMatchObject({ status: 'authenticated', token: 'new-token' })
+    expect(window.location.pathname).toBe('/dashboard/projects')
+    expect(container.textContent).not.toContain('Password changed. Sign in again.')
+  } finally {
+    cleanup()
+    history.replaceState(null, '', originalPath)
+    container.remove()
+    sessionStorage.clear()
+  }
+})
+
+async function submitAccountPasswordChange(container: HTMLElement): Promise<void> {
+  container.querySelector<HTMLAnchorElement>('a[aria-label="Account"]')?.click()
+  await flushDashboard()
+  const form = container.querySelector<HTMLFormElement>('form[aria-label="Change password"]')!
+  for (const [name, value] of [['current_password', 'old-password'], ['new_password', 'new-password'], ['confirmation', 'new-password']] as const) form.querySelector<HTMLInputElement>(`input[name="${name}"]`)!.value = value
+  form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+  await Promise.resolve()
+}
+
 function fakeApi(overrides: {
   health?: Promise<Awaited<ReturnType<ApiClient['health']>>>
   stats?: Promise<Awaited<ReturnType<ApiClient['adminStats']>>>
   overviewStats?: Promise<OverviewStats>
   overviewGrowth?: Promise<OverviewGrowth>
   overview?: Promise<Awaited<ReturnType<ApiClient['overview']>>>
+  changePassword?: Promise<void>
   users?: Promise<Awaited<ReturnType<ApiClient['adminUsers']>>>[]
   createUser?: Promise<Awaited<ReturnType<ApiClient['createUser']>>>
   setUserLevel?: Promise<Awaited<ReturnType<ApiClient['setUserLevel']>>>
@@ -2969,6 +3092,7 @@ function fakeApi(overrides: {
     overviewStats: vi.fn(() => overrides.overviewStats ?? Promise.resolve(overviewStats())),
     overviewGrowth: vi.fn(() => overrides.overviewGrowth ?? Promise.resolve({ knowledge_growth: [{ label: 'Jun', value: 44 }] })),
     overview: vi.fn(() => overrides.overview ?? Promise.resolve(adminOverview())),
+    changePassword: vi.fn(() => overrides.changePassword ?? Promise.resolve()),
     adminUsers: vi.fn(() => userResponses.shift() ?? Promise.resolve({ users: [adminUser] })),
     createUser: vi.fn(() => overrides.createUser ?? Promise.resolve({ message: 'user created' })),
     setUserLevel: vi.fn(() => overrides.setUserLevel ?? Promise.resolve({ message: 'level updated' })),
