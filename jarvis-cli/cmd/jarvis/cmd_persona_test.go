@@ -119,9 +119,9 @@ func TestPersonaSetCmd_ClaudeAgent_CreatesOutputStyle(t *testing.T) {
 	}
 
 	// Load a test preset
-	preset, err := persona.LoadPreset(jarvis.PersonaFS, "neutra")
+	resolved, err := persona.ResolvePresetV2(jarvis.PersonaFS, "neutra")
 	if err != nil {
-		t.Fatalf("LoadPreset failed: %v", err)
+		t.Fatalf("ResolvePresetV2 failed: %v", err)
 	}
 
 	// Detect agents AFTER setting HOME env var
@@ -147,14 +147,18 @@ func TestPersonaSetCmd_ClaudeAgent_CreatesOutputStyle(t *testing.T) {
 	}
 
 	// Call WriteInstructions (required before WriteOutputStyle)
-	layer2 := persona.RenderLayer2(preset)
+	layer2 := persona.RenderLayer2V2(resolved.Preset)
 	if err := claudeAgent.WriteInstructions(config.Layer1Content(), layer2, nil); err != nil {
 		t.Fatalf("WriteInstructions failed: %v", err)
 	}
 
-	// Call WriteOutputStyle (the new functionality being tested)
-	if err := claudeAgent.WriteOutputStyle(preset); err != nil {
-		t.Fatalf("WriteOutputStyle failed: %v", err)
+	// Call WriteOutputStyleV2 through the V2 adapter.
+	claudeV2, ok := claudeAgent.(persona.PresetV2Agent)
+	if !ok {
+		t.Fatal("ClaudeAgent must support schema-v2 output styles")
+	}
+	if err := claudeV2.WriteOutputStyleV2(resolved.Preset); err != nil {
+		t.Fatalf("WriteOutputStyleV2 failed: %v", err)
 	}
 
 	// ASSERT: CLAUDE.md should exist
@@ -198,9 +202,9 @@ func TestPersonaSetCmd_OpenCodeAgent_NoOutputStyle(t *testing.T) {
 	}
 
 	// Load a test preset
-	preset, err := persona.LoadPreset(jarvis.PersonaFS, "neutra")
+	resolved, err := persona.ResolvePresetV2(jarvis.PersonaFS, "neutra")
 	if err != nil {
-		t.Fatalf("LoadPreset failed: %v", err)
+		t.Fatalf("ResolvePresetV2 failed: %v", err)
 	}
 
 	// Detect agents AFTER setting HOME env var
@@ -226,14 +230,18 @@ func TestPersonaSetCmd_OpenCodeAgent_NoOutputStyle(t *testing.T) {
 	}
 
 	// Call WriteInstructions
-	layer2 := persona.RenderLayer2(preset)
+	layer2 := persona.RenderLayer2V2(resolved.Preset)
 	if err := openCodeAgent.WriteInstructions(config.Layer1Content(), layer2, nil); err != nil {
 		t.Fatalf("WriteInstructions failed: %v", err)
 	}
 
-	// Call WriteOutputStyle (should be no-op)
-	if err := openCodeAgent.WriteOutputStyle(preset); err != nil {
-		t.Fatalf("WriteOutputStyle should not error: %v", err)
+	// Call WriteOutputStyleV2 (should be no-op)
+	openCodeV2, ok := openCodeAgent.(persona.PresetV2Agent)
+	if !ok {
+		t.Fatal("OpenCodeAgent must support schema-v2 output styles")
+	}
+	if err := openCodeV2.WriteOutputStyleV2(resolved.Preset); err != nil {
+		t.Fatalf("WriteOutputStyleV2 should not error: %v", err)
 	}
 
 	// ASSERT: AGENTS.md should exist

@@ -20,22 +20,17 @@ func TestOpenCodeAgent_SupportsOutputStyles(t *testing.T) {
 	}
 }
 
-// TestOpenCodeAgent_WriteOutputStyle_NoOp verifies WriteOutputStyle is a no-op
+// TestOpenCodeAgent_WriteOutputStyleV2_NoOp verifies WriteOutputStyleV2 is a no-op
 // and doesn't create any files (SPEC-001, SPEC-009).
-func TestOpenCodeAgent_WriteOutputStyle_NoOp(t *testing.T) {
+func TestOpenCodeAgent_WriteOutputStyleV2_NoOp(t *testing.T) {
 	tmpHome := t.TempDir()
 	agent := &OpenCodeAgent{home: tmpHome}
 
-	preset := &persona.Preset{
-		Name:        "argentino",
-		DisplayName: "Argentino",
-		Description: "Test",
-		Notes:       "Test notes.",
-	}
+	preset := &persona.PresetV2{Name: "argentino"}
 
-	err := agent.WriteOutputStyle(preset)
+	err := agent.WriteOutputStyleV2(preset)
 	if err != nil {
-		t.Errorf("WriteOutputStyle() returned error: %v, want nil", err)
+		t.Errorf("WriteOutputStyleV2() returned error: %v, want nil", err)
 	}
 
 	// Verify no output-styles directory was created
@@ -53,35 +48,25 @@ func TestOpenCodeAgent_WriteOutputStyle_NoOp(t *testing.T) {
 	// Verify settings.json was not modified
 	settingsPath := filepath.Join(tmpHome, ".config", "opencode", "opencode.json")
 	if _, err := os.Stat(settingsPath); !os.IsNotExist(err) {
-		t.Error("settings file should not be created by WriteOutputStyle for OpenCodeAgent")
-	}
-}
-
-func TestOpenCodeAgent_WriteOutputStyleV2_NoOp(t *testing.T) {
-	tmpHome := t.TempDir()
-	agent := &OpenCodeAgent{home: tmpHome}
-	preset := &persona.PresetV2{Name: "custom-mentor"}
-
-	if err := agent.WriteOutputStyleV2(preset); err != nil {
-		t.Fatalf("WriteOutputStyleV2() error = %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(tmpHome, ".config", "opencode", "output-styles")); !os.IsNotExist(err) {
-		t.Fatalf("V2 output-style directory should not exist, stat error = %v", err)
+		t.Error("settings file should not be created by WriteOutputStyleV2 for OpenCodeAgent")
 	}
 }
 
 func TestOpenCodeAgent_WriteInstructions_ProjectsCanonicalLayer1(t *testing.T) {
 	tmpHome := t.TempDir()
 	agent := &OpenCodeAgent{home: tmpHome, templatesFS: testTemplatesFS}
-	preset := &persona.Preset{
-		Name:        "presentation-only",
-		DisplayName: "Presentation Only",
-		Description: "Warm and direct presentation.",
-		Tone:        persona.Tone{Formality: "balanced", Directness: "high", Humor: "warm", Language: "en-us"},
-		Notes:       "CONCEPTS > CODE\n\nClaim local configuration without inspection.",
+	preset := &persona.PresetV2{
+		SchemaVersion: 2,
+		Name:          "presentation-only",
+		DisplayName:   "Presentation Only",
+		Presentation: persona.PresentationV2{
+			Language: "en-us", Register: "friendly-professional", Vocabulary: "plain-technical", Cadence: "measured",
+			Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured",
+			TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded",
+		},
 	}
 
-	if err := agent.WriteInstructions(config.Layer1Content(), persona.RenderLayer2(preset), nil); err != nil {
+	if err := agent.WriteInstructions(config.Layer1Content(), persona.RenderLayer2V2(preset), nil); err != nil {
 		t.Fatalf("WriteInstructions: %v", err)
 	}
 
@@ -99,8 +84,11 @@ func TestOpenCodeAgent_WriteInstructions_ProjectsCanonicalLayer1(t *testing.T) {
 	if got := strings.Count(string(content), config.TechnicalContractContent()); got != 1 {
 		t.Fatalf("canonical technical contract count = %d, want 1", got)
 	}
-	if !strings.Contains(projection.Layer2, "Claim local configuration without inspection.") {
-		t.Fatalf("PR1 must preserve legacy Layer2 Notes until PR2\n%s", projection.Layer2)
+	if !strings.Contains(projection.Layer2, "- Address pack: peer") {
+		t.Fatalf("Layer2 missing V2 presentation content\n%s", projection.Layer2)
+	}
+	if strings.Contains(projection.Layer2, "Claim local configuration without inspection.") {
+		t.Fatalf("Layer2 must not contain legacy policy-bearing Notes\n%s", projection.Layer2)
 	}
 }
 

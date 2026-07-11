@@ -88,23 +88,18 @@ func TestClaudeAgent_SupportsOutputStyles(t *testing.T) {
 	}
 }
 
-// TestClaudeAgent_WriteOutputStyle verifies the output-style file is written
+// TestClaudeAgent_WriteOutputStyleV2_WritesPresentation verifies the output-style file is written
 // to the correct path with correct content (SPEC-003).
-func TestClaudeAgent_WriteOutputStyle(t *testing.T) {
+func TestClaudeAgent_WriteOutputStyleV2_WritesPresentation(t *testing.T) {
 	// Setup temp home directory
 	tmpHome := t.TempDir()
 	agent := &ClaudeAgent{home: tmpHome}
 
-	preset := &persona.Preset{
-		Name:        "argentino",
-		DisplayName: "Argentino",
-		Description: "Mentor apasionado",
-		Notes:       "Use voseo and passion.",
-	}
+	preset := testOutputStylePresetV2("argentino")
 
-	err := agent.WriteOutputStyle(preset)
+	err := agent.WriteOutputStyleV2(preset)
 	if err != nil {
-		t.Fatalf("WriteOutputStyle() failed: %v", err)
+		t.Fatalf("WriteOutputStyleV2() failed: %v", err)
 	}
 
 	// Verify output-styles directory was created
@@ -125,14 +120,14 @@ func TestClaudeAgent_WriteOutputStyle(t *testing.T) {
 	if !strings.Contains(contentStr, "name: Argentino") {
 		t.Errorf("output-style file missing 'name: Argentino', got:\n%s", contentStr)
 	}
-	if !strings.Contains(contentStr, "description: Mentor apasionado") {
-		t.Errorf("output-style file missing description, got:\n%s", contentStr)
+	if !strings.Contains(contentStr, "description: Jarvis presentation profile") {
+		t.Errorf("output-style file missing V2 description, got:\n%s", contentStr)
 	}
 	if !strings.Contains(contentStr, "keep-coding-instructions: true") {
 		t.Errorf("output-style file missing keep-coding-instructions, got:\n%s", contentStr)
 	}
-	if !strings.Contains(contentStr, "Use voseo and passion.") {
-		t.Errorf("output-style file missing Notes content, got:\n%s", contentStr)
+	if !strings.Contains(contentStr, "- Language: Rioplatense Spanish (voseo)") {
+		t.Errorf("output-style file missing V2 presentation content, got:\n%s", contentStr)
 	}
 }
 
@@ -171,16 +166,11 @@ func TestClaudeAgent_WriteOutputStyle_HyphenatedName(t *testing.T) {
 	tmpHome := t.TempDir()
 	agent := &ClaudeAgent{home: tmpHome}
 
-	preset := &persona.Preset{
-		Name:        "tony-stark",
-		DisplayName: "Tony Stark",
-		Description: "Genius",
-		Notes:       "Innovation.",
-	}
+	preset := testOutputStylePresetV2("tony-stark")
 
-	err := agent.WriteOutputStyle(preset)
+	err := agent.WriteOutputStyleV2(preset)
 	if err != nil {
-		t.Fatalf("WriteOutputStyle() failed: %v", err)
+		t.Fatalf("WriteOutputStyleV2() failed: %v", err)
 	}
 
 	// Verify file name is TonyStark.md (not tony-stark.md)
@@ -260,16 +250,11 @@ func TestClaudeAgent_WriteOutputStyle_SettingsJsonMerge(t *testing.T) {
 				t.Fatalf("write settings.json: %v", err)
 			}
 
-			preset := &persona.Preset{
-				Name:        tt.presetName,
-				DisplayName: strings.ToUpper(tt.presetName[:1]) + tt.presetName[1:],
-				Description: "Test",
-				Notes:       "Test notes.",
-			}
+			preset := testOutputStylePresetV2(tt.presetName)
 
-			err := agent.WriteOutputStyle(preset)
+			err := agent.WriteOutputStyleV2(preset)
 			if err != nil {
-				t.Fatalf("WriteOutputStyle() failed: %v", err)
+				t.Fatalf("WriteOutputStyleV2() failed: %v", err)
 			}
 
 			// Read and verify settings.json
@@ -294,16 +279,11 @@ func TestClaudeAgent_WriteOutputStyle_SettingsJsonNotExists(t *testing.T) {
 	tmpHome := t.TempDir()
 	agent := &ClaudeAgent{home: tmpHome}
 
-	preset := &persona.Preset{
-		Name:        "argentino",
-		DisplayName: "Argentino",
-		Description: "Test",
-		Notes:       "Test.",
-	}
+	preset := testOutputStylePresetV2("argentino")
 
-	err := agent.WriteOutputStyle(preset)
+	err := agent.WriteOutputStyleV2(preset)
 	if err != nil {
-		t.Fatalf("WriteOutputStyle() failed: %v", err)
+		t.Fatalf("WriteOutputStyleV2() failed: %v", err)
 	}
 
 	// Verify settings.json was created
@@ -340,14 +320,9 @@ func TestClaudeAgent_WriteOutputStyle_MalformedSettings(t *testing.T) {
 	}
 
 	agent := newClaudeAgent(emptyFS)
-	preset := &persona.Preset{
-		Name:        "neutra",
-		DisplayName: "Neutra",
-		Description: "Test",
-		Notes:       "Test.",
-	}
+	preset := testOutputStylePresetV2("neutra")
 
-	err := agent.WriteOutputStyle(preset)
+	err := agent.WriteOutputStyleV2(preset)
 	if err == nil {
 		t.Fatal("expected error for malformed settings.json, got nil")
 	}
@@ -383,14 +358,9 @@ func TestClaudeAgent_WriteOutputStyle_ReadOnlyFilesystem(t *testing.T) {
 	})
 
 	agent := newClaudeAgent(emptyFS)
-	preset := &persona.Preset{
-		Name:        "argentino",
-		DisplayName: "Argentino",
-		Description: "Test",
-		Notes:       "Test.",
-	}
+	preset := testOutputStylePresetV2("argentino")
 
-	err := agent.WriteOutputStyle(preset)
+	err := agent.WriteOutputStyleV2(preset)
 	if err == nil {
 		t.Fatal("expected error for read-only filesystem, got nil")
 	}
@@ -400,22 +370,17 @@ func TestClaudeAgent_WriteOutputStyle_ReadOnlyFilesystem(t *testing.T) {
 	}
 }
 
-// TestClaudeAgent_WriteOutputStyle_NilNotes verifies that nil or empty Notes
-// field does not cause panic (SPEC-008).
-func TestClaudeAgent_WriteOutputStyle_NilNotes(t *testing.T) {
+// TestClaudeAgent_WriteOutputStyleV2_EmptyPresentation verifies an empty
+// presentation value does not cause a panic while rendering (SPEC-008).
+func TestClaudeAgent_WriteOutputStyleV2_EmptyPresentation(t *testing.T) {
 	tmpHome := isolateTestHome(t)
 
 	agent := newClaudeAgent(emptyFS)
-	preset := &persona.Preset{
-		Name:        "neutra",
-		DisplayName: "Neutra",
-		Description: "Neutral tone",
-		Notes:       "", // Empty notes
-	}
+	preset := &persona.PresetV2{Name: "neutra"}
 
-	err := agent.WriteOutputStyle(preset)
+	err := agent.WriteOutputStyleV2(preset)
 	if err != nil {
-		t.Fatalf("WriteOutputStyle() with empty Notes failed: %v", err)
+		t.Fatalf("WriteOutputStyleV2() with empty presentation failed: %v", err)
 	}
 
 	// Verify file was created
@@ -426,14 +391,24 @@ func TestClaudeAgent_WriteOutputStyle_NilNotes(t *testing.T) {
 	}
 
 	content := string(data)
-	// Should have frontmatter but empty body
+	// Should have frontmatter and a renderer-owned presentation section.
 	if !strings.Contains(content, "name: Neutra") {
 		t.Error("output-style missing frontmatter")
 	}
-	// Body after "---\n" should be minimal (just potential newline)
-	parts := strings.Split(content, "---")
-	if len(parts) < 3 {
-		t.Error("output-style missing closing frontmatter delimiter")
+	if !strings.Contains(content, "### Presentation") {
+		t.Error("output-style missing presentation section")
+	}
+}
+
+func testOutputStylePresetV2(name string) *persona.PresetV2 {
+	return &persona.PresetV2{
+		SchemaVersion: 2,
+		Name:          name,
+		Presentation: persona.PresentationV2{
+			Language: "es-rioplatense", Register: "warm-direct", Vocabulary: "rioplatense", Cadence: "energetic",
+			Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured",
+			TeachingMetaphors: "architecture", Examples: "practical", AddressPack: "gentleman", PhrasePack: "gentleman", AntiCaricature: "grounded",
+		},
 	}
 }
 
