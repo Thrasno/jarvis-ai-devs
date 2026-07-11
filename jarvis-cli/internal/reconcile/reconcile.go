@@ -272,11 +272,14 @@ type Journal interface{ Record(Plan) error }
 // ApplyWithJournal records the plan before the first mutation so a later
 // recovery implementation has deterministic, scoped evidence to consume.
 func ApplyWithJournal(store Store, journal Journal, plan Plan) error {
-	if journal == nil {
-		return errors.New("reconciliation journal is required")
-	}
 	if err := validatePlan(plan); err != nil {
 		return err
+	}
+	if len(plan.Operations) == 0 {
+		return nil
+	}
+	if journal == nil {
+		return errors.New("reconciliation journal is required")
 	}
 	if err := journal.Record(plan); err != nil {
 		return fmt.Errorf("record reconciliation journal: %w", err)

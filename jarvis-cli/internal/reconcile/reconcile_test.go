@@ -135,6 +135,25 @@ func TestReconciliationConvergesAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestJournaledReconciliationConvergesWithoutDurableNoOp(t *testing.T) {
+	const location = "opencode/opencode.json"
+	desiredBytes := []byte(`{"mcp":{"hive":{"type":"local"}}}`)
+	desired := DesiredState{Manifest: Manifest{Version: "v1", Artifacts: map[string]ManifestEntry{
+		"opencode-config": {Location: location, Digest: digestFor(desiredBytes)},
+	}}, Artifacts: []DesiredArtifact{{Identity: "opencode-config", Location: location, Bytes: desiredBytes}}}
+	store := newFakeStore(nil)
+	journal := &MemoryJournal{}
+
+	for run := 0; run < 2; run++ {
+		if err := ApplyWithJournal(store, journal, BuildPlan(store.Inventory(), desired)); err != nil {
+			t.Fatalf("reconciliation run %d: %v", run+1, err)
+		}
+	}
+	if len(journal.Entries) != 1 || len(store.writes) != 1 || len(store.provenance) != 1 {
+		t.Fatalf("journal = %#v, writes = %#v, provenance = %#v, want only the initial durable mutation", journal.Entries, store.writes, store.provenance)
+	}
+}
+
 func TestBuildPlanBlocksDesiredManifestMismatchWithoutMutation(t *testing.T) {
 	store := newFakeStore(nil)
 	desired := DesiredState{Manifest: Manifest{Version: "v1", Artifacts: map[string]ManifestEntry{
