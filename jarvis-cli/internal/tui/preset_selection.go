@@ -44,10 +44,20 @@ func validateConfiguredPersonaPresetForV2Selection(personaFS fs.FS, configuredSl
 	if _, err := resolvePresetV2ForWizard(personaFS, normalized); err == nil {
 		return nil
 	}
-	if _, err := resolvePresetForWizard(personaFS, normalized); err == nil {
-		return fmt.Errorf("configured persona preset %q is a legacy V1 profile and cannot be used by the schema v2 wizard; migrate it to a schema v2 presentation profile before reconfiguring", normalized)
+	diagnostic, err := persona.ClassifyPresetForV2Migration(personaFS, normalized)
+	if err != nil {
+		return fmt.Errorf("classify configured persona preset %q: %w", normalized, err)
 	}
-	return fmt.Errorf("configured persona preset %q is stale or deleted and is unavailable in both schema v2 and V1 profiles; Recovery: explicitly select an available schema v2 preset, or restore/recreate %q before reconfiguring", normalized, normalized)
+	switch diagnostic.Classification {
+	case persona.PresetV2ProfileLegacy:
+		return fmt.Errorf("configured persona preset %q is a legacy V1 profile and cannot be used by the schema v2 wizard; migrate it to a schema v2 presentation profile before reconfiguring", normalized)
+	case persona.PresetV2ProfileMissing:
+		return fmt.Errorf("configured persona preset %q is stale or deleted and no profile file was found in the schema v2 catalog or user profile location; Recovery: explicitly select an available schema v2 preset, or restore/recreate %q before reconfiguring", normalized, normalized)
+	case persona.PresetV2ProfileMalformed:
+		return fmt.Errorf("configured persona preset %q is malformed or unsupported for schema v2 and cannot be used by the schema v2 wizard; Recovery: repair %s as a valid schema v2 presentation profile, or explicitly select an available schema v2 preset before reconfiguring", normalized, diagnostic.FilePath)
+	default:
+		return fmt.Errorf("configured persona preset %q could not be resolved as a schema v2 profile; Recovery: explicitly select an available schema v2 preset before reconfiguring", normalized)
+	}
 }
 
 func hasPersistedConfig() (bool, error) {

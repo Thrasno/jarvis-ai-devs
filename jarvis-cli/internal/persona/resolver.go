@@ -35,6 +35,15 @@ type ResolvedPresetV2 struct {
 	Preset   *PresetV2
 }
 
+// PresetV2MigrationDiagnostic describes a configured profile without loading
+// it through the V1 resolver. It exists solely to provide safe migration
+// diagnostics while the V1 runtime remains available for later removal.
+type PresetV2MigrationDiagnostic struct {
+	Classification PresetV2ProfileClassification
+	Source         PresetSource
+	FilePath       string
+}
+
 // NormalizeSlug canonicalizes a preset slug.
 // Rules: trim outer spaces, lowercase, and replace spaces with hyphens.
 func NormalizeSlug(slug string) string {
@@ -127,6 +136,47 @@ func ResolvePresetV2(fsys fs.FS, slug string) (*ResolvedPresetV2, error) {
 
 	available := listPresetV2Names(fsys)
 	return nil, fmt.Errorf("schema v2 preset %q not found (available built-ins: %s)", normalized, strings.Join(available, ", "))
+}
+
+// ClassifyPresetForV2Migration inspects the configured profile using only the
+// schema-v2 validator and YAML structure. It never resolves a V1 preset.
+func ClassifyPresetForV2Migration(fsys fs.FS, slug string) (*PresetV2MigrationDiagnostic, error) {
+	if fsys == nil {
+		return nil, fmt.Errorf("classify schema v2 preset %q: persona catalog is unavailable", NormalizeSlug(slug))
+	}
+
+	normalized := NormalizeSlug(slug)
+	if err := validatePresetSlug(normalized); err != nil {
+		return nil, err
+	}
+
+	builtinPath := filepath.ToSlash(filepath.Join("embed", "personas", normalized+".yaml"))
+	if content, err := fs.ReadFile(fsys, builtinPath); err == nil {
+		return &PresetV2MigrationDiagnostic{
+			Classification: classifyPresetV2Profile(content),
+			Source:         PresetSourceBuiltin,
+			FilePath:       builtinPath,
+		}, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("read builtin schema v2 preset %q: %w", normalized, err)
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve user home dir: %w", err)
+	}
+	userPath := filepath.Join(homeDir, ".jarvis", "personas", normalized+".yaml")
+	if content, err := os.ReadFile(userPath); err == nil {
+		return &PresetV2MigrationDiagnostic{
+			Classification: classifyPresetV2Profile(content),
+			Source:         PresetSourceUser,
+			FilePath:       userPath,
+		}, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("read user schema v2 preset %q: %w", normalized, err)
+	}
+
+	return &PresetV2MigrationDiagnostic{Classification: PresetV2ProfileMissing}, nil
 }
 
 func readPresetFromFS(fsys fs.FS, path string) (*Preset, error) {

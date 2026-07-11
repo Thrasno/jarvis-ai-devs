@@ -254,24 +254,67 @@ func TestResolveWizardPresetSelection_UsesV2Resolver(t *testing.T) {
 	}
 }
 
-func TestValidateConfiguredPersonaPresetForV2SelectionRejectsLegacyV1Profile(t *testing.T) {
-	home := isolateTestHome(t)
-	legacyPath := filepath.Join(home, ".jarvis", "personas", "legacy-custom.yaml")
-	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
-		t.Fatalf("create legacy preset dir: %v", err)
+func TestValidateConfiguredPersonaPresetForV2SelectionClassifiesProfilesWithoutV1Resolution(t *testing.T) {
+	originalV1 := resolvePresetForWizard
+	resolvePresetForWizard = func(_ fs.FS, slug string) (*persona.ResolvedPreset, error) {
+		t.Fatalf("migration diagnostics must not resolve V1 profile %q", slug)
+		return nil, nil
 	}
-	if err := os.WriteFile(legacyPath, []byte("name: legacy-custom\ndisplay_name: Legacy Custom\ntone: {}\n"), 0o644); err != nil {
-		t.Fatalf("write legacy preset: %v", err)
+	t.Cleanup(func() { resolvePresetForWizard = originalV1 })
+
+	tests := []struct {
+		name     string
+		slug     string
+		userYAML string
+		wantErr  string
+	}{
+		{
+			name: "valid schema v2 profile remains active",
+			slug: "fixture",
+		},
+		{
+			name:     "legacy V1 YAML requires migration",
+			slug:     "legacy-custom",
+			userYAML: "name: legacy-custom\ndisplay_name: Legacy Custom\ntone: {}\n",
+			wantErr:  "migrate",
+		},
+		{
+			name:    "stale missing profile offers recovery",
+			slug:    "deleted-custom",
+			wantErr: "stale",
+		},
+		{
+			name:     "malformed profile offers repair guidance",
+			slug:     "broken-custom",
+			userYAML: "schema_version: 2\nname: [\n",
+			wantErr:  "repair",
+		},
 	}
 
-	err := validateConfiguredPersonaPresetForV2Selection(testPersonaFS, "legacy-custom")
-	if err == nil {
-		t.Fatal("expected configured legacy V1 preset to require migration")
-	}
-	for _, want := range []string{"legacy-custom", "migrate", "schema v2"} {
-		if !strings.Contains(strings.ToLower(err.Error()), want) {
-			t.Fatalf("error = %q, want contains %q", err.Error(), want)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := isolateTestHome(t)
+			if tt.userYAML != "" {
+				path := filepath.Join(home, ".jarvis", "personas", tt.slug+".yaml")
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatalf("create user persona directory: %v", err)
+				}
+				if err := os.WriteFile(path, []byte(tt.userYAML), 0o644); err != nil {
+					t.Fatalf("write user persona: %v", err)
+				}
+			}
+
+			err := validateConfiguredPersonaPresetForV2Selection(testPersonaFS, tt.slug)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateConfiguredPersonaPresetForV2Selection(%q): %v", tt.slug, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), tt.wantErr) {
+				t.Fatalf("error = %v, want contains %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 

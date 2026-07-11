@@ -338,6 +338,50 @@ func TestRunNoTUI_BlankPersonaInputBlocksMissingPresetAndPreservesConfig(t *test
 	}
 }
 
+func TestRunNoTUI_BlankPersonaInputBlocksMalformedPresetAndPreservesConfig(t *testing.T) {
+	home := isolateTestHome(t)
+	t.Setenv("PATH", "")
+	malformedPath := filepath.Join(home, ".jarvis", "personas", "broken-custom.yaml")
+	if err := os.MkdirAll(filepath.Dir(malformedPath), 0o755); err != nil {
+		t.Fatalf("create malformed preset dir: %v", err)
+	}
+	if err := os.WriteFile(malformedPath, []byte("schema_version: 2\nname: [\n"), 0o644); err != nil {
+		t.Fatalf("write malformed preset: %v", err)
+	}
+
+	seed := &config.AppConfig{
+		SchemaVersion:       2,
+		APIURL:              config.DefaultAPIURL,
+		PersonaPreset:       "broken-custom",
+		PersonaPresetSource: string(persona.PresetSourceUser),
+		Install:             config.InstallState{Agents: map[string]config.AgentState{}},
+	}
+	if err := config.Save(seed); err != nil {
+		t.Fatalf("save seed config: %v", err)
+	}
+	configPath, err := config.ConfigPath()
+	if err != nil {
+		t.Fatalf("config path: %v", err)
+	}
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read seeded config: %v", err)
+	}
+
+	err = runNoTUI(testWizardConfig(), strings.NewReader("\n\n"))
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "repair") {
+		t.Fatalf("runNoTUI() error = %v, want malformed schema-v2 repair guidance", err)
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after blocked default: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("malformed persona config was rewritten:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 func TestRunNoTUI_CustomPresetPersistsUserFileAndCanonicalIdentity(t *testing.T) {
 	tmpHome := isolateTestHome(t)
 	t.Setenv("PATH", "")

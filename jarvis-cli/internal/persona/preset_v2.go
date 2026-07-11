@@ -41,6 +41,17 @@ type PresentationV2 struct {
 	AntiCaricature    string `yaml:"anti_caricature"`
 }
 
+// PresetV2ProfileClassification describes whether YAML can participate in the
+// schema-v2 persona selection flow without loading a V1 runtime profile.
+type PresetV2ProfileClassification string
+
+const (
+	PresetV2ProfileValid     PresetV2ProfileClassification = "valid-v2"
+	PresetV2ProfileLegacy    PresetV2ProfileClassification = "legacy-v1"
+	PresetV2ProfileMalformed PresetV2ProfileClassification = "malformed"
+	PresetV2ProfileMissing   PresetV2ProfileClassification = "missing"
+)
+
 var v2TopLevelFields = fieldSet("schema_version", "name", "display_name", "presentation")
 var v2PresentationFields = fieldSet(
 	"language", "register", "vocabulary", "cadence", "humor", "emotional_range", "verbosity",
@@ -99,6 +110,38 @@ func ValidateAndDecode(content []byte) (*PresetV2, error) {
 		return nil, err
 	}
 	return &preset, nil
+}
+
+func classifyPresetV2Profile(content []byte) PresetV2ProfileClassification {
+	if _, err := ValidateAndDecode(content); err == nil {
+		return PresetV2ProfileValid
+	}
+
+	var document yaml.Node
+	if err := yaml.Unmarshal(content, &document); err != nil || len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return PresetV2ProfileMalformed
+	}
+
+	root := document.Content[0]
+	hasSchemaVersion := false
+	hasLegacyField := false
+	for i := 0; i < len(root.Content); i += 2 {
+		field := root.Content[i].Value
+		if field == "schema_version" {
+			hasSchemaVersion = true
+			if root.Content[i+1].Value == "1" {
+				return PresetV2ProfileLegacy
+			}
+		}
+		if _, legacy := v2ForbiddenBehaviorFields[field]; legacy {
+			hasLegacyField = true
+		}
+	}
+	if !hasSchemaVersion && hasLegacyField {
+		return PresetV2ProfileLegacy
+	}
+
+	return PresetV2ProfileMalformed
 }
 
 func requireSingleYAMLDocument(content []byte) error {
