@@ -96,7 +96,7 @@ func (m NativeMCPManager) runner() claudeCommandRunner {
 	if m.run != nil {
 		return m.run
 	}
-	return runCommandCombinedOutput
+	return runNativeMCPInventoryCommand
 }
 
 func validateNativeMCPDefinition(definition NativeMCPDefinition) error {

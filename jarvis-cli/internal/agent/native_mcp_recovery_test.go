@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNativeMCPSnapshotBlocksUnownedSameNameAfterGetOnly(t *testing.T) {
@@ -96,6 +97,29 @@ func TestNativeMCPSnapshotCreatesOnlyForExplicitClaudeMCPAbsentResponse(t *testi
 			}
 		})
 	}
+}
+
+func TestRunNativeMCPInventoryCommandReturnsDeadlineExceededAfterStartingProcess(t *testing.T) {
+	previousTimeout := nativeMCPInventoryCommandTimeout
+	nativeMCPInventoryCommandTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { nativeMCPInventoryCommandTimeout = previousTimeout })
+	t.Setenv("GO_WANT_NATIVE_MCP_INVENTORY_TIMEOUT_HELPER", "1")
+
+	result := runNativeMCPInventoryCommand(os.Args[0], "-test.run=TestNativeMCPInventoryCommandTimeoutHelper", "--")
+
+	if !result.Started {
+		t.Fatal("Started = false, want process-start evidence")
+	}
+	if !errors.Is(result.Err, context.DeadlineExceeded) {
+		t.Fatalf("Err = %v, want context deadline exceeded", result.Err)
+	}
+}
+
+func TestNativeMCPInventoryCommandTimeoutHelper(t *testing.T) {
+	if os.Getenv("GO_WANT_NATIVE_MCP_INVENTORY_TIMEOUT_HELPER") != "1" {
+		return
+	}
+	select {}
 }
 
 func TestNativeMCPSnapshotRejectsSelfConsistentForgedManifestWithoutTrustedFingerprint(t *testing.T) {

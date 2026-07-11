@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
@@ -35,6 +36,10 @@ type claudeCommandResult struct {
 }
 
 var claudeRuntimeGOOS = runtime.GOOS
+
+const defaultNativeMCPInventoryCommandTimeout = 5 * time.Second
+
+var nativeMCPInventoryCommandTimeout = defaultNativeMCPInventoryCommandTimeout
 
 // osExecutable is a package-level variable wrapping os.Executable so tests
 // can inject a fake path without spawning a real subprocess.
@@ -271,15 +276,25 @@ func (a *ClaudeAgent) commandRunner() claudeCommandRunner {
 }
 
 func runCommandCombinedOutput(name string, args ...string) claudeCommandResult {
-	cmd := exec.Command(name, args...)
+	return runCommandCombinedOutputContext(context.Background(), name, args...)
+}
+
+// runNativeMCPInventoryCommand bounds the read-only inventory query so a
+// stalled Claude CLI cannot block installation or reconfiguration forever.
+func runNativeMCPInventoryCommand(name string, args ...string) claudeCommandResult {
+	ctx, cancel := context.WithTimeout(context.Background(), nativeMCPInventoryCommandTimeout)
+	defer cancel()
+	return runCommandCombinedOutputContext(ctx, name, args...)
+}
+
+func runCommandCombinedOutputContext(ctx context.Context, name string, args ...string) claudeCommandResult {
+	cmd := exec.CommandContext(ctx, name, args...)
 	out, err := cmd.CombinedOutput()
-	result := claudeCommandResult{Output: string(out), Err: err}
-	if err == nil {
-		result.Started = true
-		return result
+	if err != nil && ctx.Err() != nil {
+		err = ctx.Err()
 	}
-	var exitErr *exec.ExitError
-	result.Started = errors.As(err, &exitErr)
+	result := claudeCommandResult{Output: string(out), Err: err}
+	result.Started = cmd.Process != nil
 	return result
 }
 
