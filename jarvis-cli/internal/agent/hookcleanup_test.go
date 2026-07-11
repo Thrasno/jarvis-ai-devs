@@ -126,6 +126,92 @@ func TestRemoveHookEntriesByCommand_MissingEventReturnsOriginal(t *testing.T) {
 	}
 }
 
+// ── Unit tests for removeHookEntriesByCommandToken ────────────────────────────
+
+// TestRemoveHookEntriesByCommandToken_StripsEntriesAcrossBinaryPaths proves the
+// token matcher removes managed entries regardless of the absolute binary path
+// embedded in the command (upgrade path drift).
+func TestRemoveHookEntriesByCommandToken_StripsEntriesAcrossBinaryPaths(t *testing.T) {
+	input := `{
+  "hooks": {
+    "SubagentStop": [
+      {
+        "hooks": [{"type":"command","command":"'/old/install/bin/jarvis' hook subagent-stop","timeout":10}]
+      },
+      {
+        "hooks": [{"type":"command","command":"'/new/install/bin/jarvis' hook subagent-stop","timeout":10}]
+      }
+    ]
+  }
+}`
+	result := removeHookEntriesByCommandToken([]byte(input), "SubagentStop", " hook subagent-stop")
+
+	var root map[string]any
+	if err := json.Unmarshal(result, &root); err != nil {
+		t.Fatalf("result is invalid JSON: %v", err)
+	}
+	hooks := root["hooks"].(map[string]any)
+	entries := hooks["SubagentStop"].([]any)
+	if len(entries) != 0 {
+		t.Errorf("expected 0 entries after token removal across paths, got %d", len(entries))
+	}
+}
+
+// TestRemoveHookEntriesByCommandToken_KeepsUnrelatedUserHooks proves a
+// user-authored jarvis hook invoking a different subcommand is preserved.
+func TestRemoveHookEntriesByCommandToken_KeepsUnrelatedUserHooks(t *testing.T) {
+	input := `{
+  "hooks": {
+    "SubagentStop": [
+      {
+        "name": "user-custom",
+        "hooks": [{"type":"command","command":"'/usr/bin/jarvis' hook custom-thing"}]
+      },
+      {
+        "hooks": [{"type":"command","command":"'/usr/bin/jarvis' hook subagent-stop"}]
+      }
+    ]
+  }
+}`
+	result := removeHookEntriesByCommandToken([]byte(input), "SubagentStop", " hook subagent-stop")
+
+	var root map[string]any
+	if err := json.Unmarshal(result, &root); err != nil {
+		t.Fatalf("result is invalid JSON: %v", err)
+	}
+	hooks := root["hooks"].(map[string]any)
+	entries := hooks["SubagentStop"].([]any)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 surviving user entry, got %d", len(entries))
+	}
+	em := entries[0].(map[string]any)
+	if em["name"] != "user-custom" {
+		t.Errorf("preserved entry name = %v, want 'user-custom'", em["name"])
+	}
+}
+
+// TestRemoveHookEntriesByCommandToken_ReturnsInputWhenNoMatchOrUnparseable
+// documents that empty, unparseable, and no-match inputs return the bytes
+// unchanged, matching the exact-match helper's early-return semantics.
+func TestRemoveHookEntriesByCommandToken_ReturnsInputWhenNoMatchOrUnparseable(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: "empty settings", input: ""},
+		{name: "invalid JSON", input: `{not json}`},
+		{name: "no matching token", input: `{"hooks":{"SubagentStop":[{"hooks":[{"command":"'/usr/bin/jarvis' hook prompt-submit"}]}]}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := removeHookEntriesByCommandToken([]byte(tt.input), "SubagentStop", " hook subagent-stop")
+			if string(result) != tt.input {
+				t.Errorf("expected input returned unchanged, got %q", result)
+			}
+		})
+	}
+}
+
 // ── Unit tests for hookEntryContainsCommand ───────────────────────────────────
 
 func TestHookEntryContainsCommand_Match(t *testing.T) {
