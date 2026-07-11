@@ -510,6 +510,21 @@ func (a *ClaudeAgent) InstallOrchestrator(orchestratorContent []byte) error {
 	return installOrchestrator(destPath, orchestratorContent)
 }
 
+// Managed Claude hook subcommand tokens, co-located with the command builders
+// below. Each token anchors on the leading space after the shell-quoted jarvis
+// executable so cleanup matches the stable managed subcommand regardless of
+// binary-path drift or trailing args, and never strips a user hook that invokes
+// jarvis with a different subcommand. A future subcommand rename MUST update the
+// token and its command builder in lockstep.
+const (
+	promptSubmitHookToken    = " hook prompt-submit"
+	registryRefreshHookToken = " skill-registry refresh"
+	sessionStartHookToken    = " hook session-start"
+	sessionStopHookToken     = " hook session-stop"
+	sessionCompactHookToken  = " hook session-compact"
+	subagentStopHookToken    = " hook subagent-stop"
+)
+
 // InstallPromptHook writes the Hive UserPromptSubmit hook for Claude Code.
 // After migration to native Go hooks, the Claude implementation emits an inline
 // command using the jarvis binary path from os.Executable(). The hooksFS
@@ -546,9 +561,10 @@ func (a *ClaudeAgent) InstallPromptHook(_ fs.FS) error {
 	if err != nil {
 		return fmt.Errorf("read settings.json: %w", err)
 	}
-	// Strip legacy entries (no "name" field) that match the same command so that
-	// re-running jarvis init on an old install does not produce duplicate hooks.
-	existing = removeHookEntriesByCommand(existing, "UserPromptSubmit", command)
+	// Strip any prior managed entry (legacy name-less, Claude-normalized, or a
+	// stale binary path) by the stable subcommand token so re-running jarvis
+	// init never produces duplicate hooks.
+	existing = removeHookEntriesByCommandToken(existing, "UserPromptSubmit", promptSubmitHookToken)
 
 	merged, err := MergeJSON(existing, patchBytes)
 	if err != nil {
@@ -595,6 +611,10 @@ func (a *ClaudeAgent) InstallRegistryAutomation(_ fs.FS) error {
 	if err != nil {
 		return fmt.Errorf("read settings.json: %w", err)
 	}
+	// Strip any prior managed entry (legacy name-less, Claude-normalized, or a
+	// stale binary path) by the stable subcommand token so re-running jarvis
+	// init never produces duplicate hooks.
+	existing = removeHookEntriesByCommandToken(existing, "UserPromptSubmit", registryRefreshHookToken)
 	merged, err := MergeJSON(existing, patchBytes)
 	if err != nil {
 		return fmt.Errorf("merge settings.json: %w", err)
@@ -659,10 +679,11 @@ func (a *ClaudeAgent) InstallSessionHooks(_ fs.FS) error {
 	if err != nil {
 		return fmt.Errorf("read settings.json: %w", err)
 	}
-	// Strip legacy entries (no "name" field) that match the same commands so that
-	// re-running jarvis init on an old install does not produce duplicate hooks.
-	existing = removeHookEntriesByCommand(existing, "SessionStart", startCommand)
-	existing = removeHookEntriesByCommand(existing, "Stop", stopCommand)
+	// Strip any prior managed entries (legacy name-less, Claude-normalized, or a
+	// stale binary path) by the stable subcommand tokens so re-running jarvis
+	// init never produces duplicate hooks.
+	existing = removeHookEntriesByCommandToken(existing, "SessionStart", sessionStartHookToken)
+	existing = removeHookEntriesByCommandToken(existing, "Stop", sessionStopHookToken)
 
 	merged, err := MergeJSON(existing, patchBytes)
 	if err != nil {
@@ -673,8 +694,10 @@ func (a *ClaudeAgent) InstallSessionHooks(_ fs.FS) error {
 }
 
 // InstallCompactHook adds a second SessionStart entry with matcher "compact"
-// pointing to "jarvis hook session-compact". It is idempotent: if an entry
-// named "hive-session-compact" already exists it is not added again.
+// pointing to "jarvis hook session-compact". It is idempotent: any prior
+// managed entry is unconditionally stripped by its stable subcommand token
+// (regardless of "name" field or binary path) before the entry is re-added,
+// so re-running jarvis init never produces duplicate hooks.
 // This method is on *ClaudeAgent only (not on the AgentInstaller interface)
 // because OpenCode has no equivalent matcher concept.
 func (a *ClaudeAgent) InstallCompactHook() error {
@@ -684,25 +707,14 @@ func (a *ClaudeAgent) InstallCompactHook() error {
 	}
 	command := shellSingleQuote(executable) + " hook session-compact"
 
-	// Check for existing entry before patching (idempotency).
 	existing, err := readFileOrEmpty(a.settingsPath())
 	if err != nil {
 		return fmt.Errorf("read settings.json: %w", err)
 	}
-	if len(strings.TrimSpace(string(existing))) > 0 {
-		var decoded map[string]any
-		if err := json.Unmarshal(existing, &decoded); err == nil {
-			if hooks, ok := decoded["hooks"].(map[string]any); ok {
-				if sessionStart, ok := hooks["SessionStart"].([]any); ok {
-					for _, entry := range sessionStart {
-						if em, ok := entry.(map[string]any); ok && em["name"] == "hive-session-compact" {
-							return nil // already installed
-						}
-					}
-				}
-			}
-		}
-	}
+	// Strip any prior managed entry (legacy name-less, Claude-normalized, or a
+	// stale binary path) by the stable subcommand token so re-running jarvis
+	// init never produces duplicate hooks.
+	existing = removeHookEntriesByCommandToken(existing, "SessionStart", sessionCompactHookToken)
 
 	patch := map[string]any{
 		"hooks": map[string]any{
@@ -735,7 +747,10 @@ func (a *ClaudeAgent) InstallCompactHook() error {
 }
 
 // InstallSubagentStopHook adds a SubagentStop entry pointing to
-// "jarvis hook subagent-stop". It is idempotent.
+// "jarvis hook subagent-stop". It is idempotent: any prior managed entry is
+// unconditionally stripped by its stable subcommand token (regardless of
+// "name" field or binary path) before the entry is re-added, so re-running
+// jarvis init never produces duplicate hooks.
 // This method is on *ClaudeAgent only (not on the AgentInstaller interface).
 func (a *ClaudeAgent) InstallSubagentStopHook() error {
 	executable, err := osExecutable()
@@ -744,25 +759,14 @@ func (a *ClaudeAgent) InstallSubagentStopHook() error {
 	}
 	command := shellSingleQuote(executable) + " hook subagent-stop"
 
-	// Check for existing entry before patching (idempotency).
 	existing, err := readFileOrEmpty(a.settingsPath())
 	if err != nil {
 		return fmt.Errorf("read settings.json: %w", err)
 	}
-	if len(strings.TrimSpace(string(existing))) > 0 {
-		var decoded map[string]any
-		if err := json.Unmarshal(existing, &decoded); err == nil {
-			if hooks, ok := decoded["hooks"].(map[string]any); ok {
-				if subagentStop, ok := hooks["SubagentStop"].([]any); ok {
-					for _, entry := range subagentStop {
-						if em, ok := entry.(map[string]any); ok && em["name"] == "hive-subagent-stop" {
-							return nil // already installed
-						}
-					}
-				}
-			}
-		}
-	}
+	// Strip any prior managed entry (legacy name-less, Claude-normalized, or a
+	// stale binary path) by the stable subcommand token so re-running jarvis
+	// init never produces duplicate hooks.
+	existing = removeHookEntriesByCommandToken(existing, "SubagentStop", subagentStopHookToken)
 
 	patch := map[string]any{
 		"hooks": map[string]any{
