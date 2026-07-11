@@ -57,11 +57,9 @@ type Agent interface {
 	// OpenCode does not have native output-style support.
 	SupportsOutputStyles() bool
 
-	// WriteOutputStyle writes the persona's output-style file and patches agent settings.
+	// WriteOutputStyleV2 writes the schema-v2 output-style file and patches agent settings.
 	// For agents that don't support output-styles, this is a no-op returning nil.
-	// For ClaudeAgent, writes to ~/.claude/output-styles/{TitleCaseName}.md and patches
-	// settings.json with {"outputStyle": "{TitleCaseName}"}.
-	WriteOutputStyle(preset *persona.Preset) error
+	WriteOutputStyleV2(preset *persona.PresetV2) error
 
 	// ClearOutputStyle removes a previously generated output-style artifact and clears
 	// the settings reference when it points to the provided style name.

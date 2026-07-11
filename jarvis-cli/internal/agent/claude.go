@@ -339,15 +339,7 @@ func (a *ClaudeAgent) SupportsOutputStyles() bool {
 	return true
 }
 
-// WriteOutputStyle writes the output-style file to ~/.claude/output-styles/{Name}.md
-// and patches settings.json with {"outputStyle": "{Name}"}.
-// Implements SPEC-002, SPEC-003, SPEC-004.
-func (a *ClaudeAgent) WriteOutputStyle(preset *persona.Preset) error {
-	return a.writeOutputStyle(preset.Name, persona.RenderOutputStyle(preset))
-}
-
-// WriteOutputStyleV2 writes a dormant schema-v2 presentation output style.
-// Normal CLI and TUI flows remain on WriteOutputStyle until V2 activation.
+// WriteOutputStyleV2 writes a schema-v2 presentation output style.
 func (a *ClaudeAgent) WriteOutputStyleV2(preset *persona.PresetV2) error {
 	return a.writeOutputStyle(preset.Name, persona.RenderOutputStyleV2(preset))
 }

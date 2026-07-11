@@ -537,14 +537,8 @@ func (a *OpenCodeAgent) SupportsOutputStyles() bool {
 	return false
 }
 
-// WriteOutputStyle is a no-op for OpenCodeAgent since OpenCode doesn't support
-// output-styles. Returns nil to allow graceful handling in mixed agent environments.
-func (a *OpenCodeAgent) WriteOutputStyle(preset *persona.Preset) error {
-	return nil
-}
-
 // WriteOutputStyleV2 is a no-op for OpenCodeAgent because OpenCode has no
-// native output-style support. It allows dormant V2 adapters to remain uniform.
+// native output-style support.
 func (a *OpenCodeAgent) WriteOutputStyleV2(preset *persona.PresetV2) error {
 	return nil
 }
