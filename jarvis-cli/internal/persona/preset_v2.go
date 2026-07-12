@@ -221,6 +221,26 @@ func validateProfile(preset *Profile) error {
 			return fmt.Errorf("presentation.%s %q is invalid; use a renderer-owned allowed value", field.name, field.value)
 		}
 	}
+	return validateArgentinePresentation(preset)
+}
+
+func validateArgentinePresentation(preset *Profile) error {
+	if preset.Name != "argentino" {
+		return nil
+	}
+	for _, field := range []struct {
+		path        string
+		value       string
+		replacement string
+	}{
+		{"address_pack", preset.Presentation.AddressPack, "peer"},
+		{"phrase_pack", preset.Presentation.PhrasePack, "plain"},
+		{"anti_caricature", preset.Presentation.AntiCaricature, "grounded"},
+	} {
+		if field.value != field.replacement {
+			return fmt.Errorf("presentation.%s value %q is not allowed for argentino; replace with %q; keep Gentle technical policy in Layer 1", field.path, field.value, field.replacement)
+		}
+	}
 	return nil
 }
 

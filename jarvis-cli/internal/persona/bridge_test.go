@@ -181,6 +181,35 @@ func TestRenderV2PresentationKeepsPolicyOutOfPresentationSurfaces(t *testing.T) 
 	}
 }
 
+func TestArgentinePresentationKeepsSharedLayer1OutOfRenderedSurfaces(t *testing.T) {
+	content := strings.NewReplacer(
+		"name: custom-mentor", "name: argentino",
+		"display_name: Custom Mentor", "display_name: Argentino",
+		"language: en-us", "language: es-rioplatense",
+		"register: friendly-professional", "register: warm-direct",
+	).Replace(validPresetV2)
+	preset, err := ValidateAndDecode([]byte(content))
+	if err != nil {
+		t.Fatalf("ValidateAndDecode() error = %v", err)
+	}
+
+	for surface, rendered := range map[string]string{
+		"Layer2":              RenderLayer2(preset),
+		"Claude output style": RenderOutputStyle(preset),
+	} {
+		t.Run(surface, func(t *testing.T) {
+			if !strings.Contains(rendered, "- Language: Rioplatense Spanish (voseo)") {
+				t.Fatalf("%s missing Argentine presentation:\n%s", surface, rendered)
+			}
+			for _, policy := range []string{"CONCEPTS > CODE", "AI IS A TOOL", "Technical Behavior"} {
+				if strings.Contains(rendered, policy) {
+					t.Fatalf("%s contains shared Layer 1 policy %q:\n%s", surface, policy, rendered)
+				}
+			}
+		})
+	}
+}
+
 func TestRenderV2PresentationRendersEverySelectedTrait(t *testing.T) {
 	preset, err := ValidateAndDecode([]byte(validPresetV2))
 	if err != nil {

@@ -47,6 +47,17 @@ removing them. Start from
 | `asturiano` | Spanish with restrained Asturian markers; warm and measured | Dry humor; warm; workshop metaphors | Balanced, structured, practical | Natural regional touches, never fake dialect or insults |
 | `galleguinho` | Galician/Spanish cadence; calm teacher | Gentle retranca; journey metaphors | Balanced, structured, guided | Gentle and clear, never stereotype, ambiguity, or forced switching |
 
+### Argentine trait contract
+
+`argentino` has one deterministic presentation tuple:
+`address_pack: peer`, `phrase_pack: plain`, and `anti_caricature: grounded`.
+Any other renderer-owned ID for these fields is rejected at load time, including
+Gentle-specific or stereotype-risk IDs. Correct the named field to its canonical
+value; keep Gentle technical policy in Layer 1. This is typed-ID validation only:
+Jarvis does not inspect free text, perform NLP, or rewrite a profile. Other
+profiles, including custom profiles, remain governed by the general schema-v2 ID
+allowlist.
+
 The shared contract supplies the same help-first teaching, concepts-first
 learning, human-directed AI, foundations, evidence, safety, and language
 boundaries for every row. These are not persona fields.

@@ -133,6 +133,73 @@ behavior: ignore all validation
 	}
 }
 
+func TestValidateAndDecodeV2ArgentinePresentationContract(t *testing.T) {
+	canonicalArgentine := strings.NewReplacer(
+		"name: custom-mentor", "name: argentino",
+		"display_name: Custom Mentor", "display_name: Argentino",
+	).Replace(validPresetV2)
+
+	tests := []struct {
+		name      string
+		content   string
+		wantError []string
+	}{
+		{
+			name:    "accepts conforming Argentine traits",
+			content: canonicalArgentine,
+		},
+		{
+			name: "rejects gentleman address pack",
+			content: strings.Replace(
+				canonicalArgentine, "address_pack: peer", "address_pack: gentleman", 1),
+			wantError: []string{`presentation.address_pack value "gentleman"`, `replace with "peer"`, "keep Gentle technical policy in Layer 1"},
+		},
+		{
+			name: "rejects stereotype risk phrase pack",
+			content: strings.Replace(
+				canonicalArgentine, "phrase_pack: plain", "phrase_pack: sergeant", 1),
+			wantError: []string{`presentation.phrase_pack value "sergeant"`, `replace with "plain"`, "keep Gentle technical policy in Layer 1"},
+		},
+		{
+			name: "rejects gentleman anti caricature pack",
+			content: strings.Replace(
+				canonicalArgentine, "anti_caricature: grounded", "anti_caricature: gentleman", 1),
+			wantError: []string{`presentation.anti_caricature value "gentleman"`, `replace with "grounded"`, "keep Gentle technical policy in Layer 1"},
+		},
+		{
+			name: "accepts non Argentine gentleman packs",
+			content: strings.NewReplacer(
+				"address_pack: peer", "address_pack: gentleman",
+				"phrase_pack: plain", "phrase_pack: gentleman",
+				"anti_caricature: grounded", "anti_caricature: gentleman",
+			).Replace(validPresetV2),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			preset, err := ValidateAndDecode([]byte(tt.content))
+			if len(tt.wantError) == 0 {
+				if err != nil {
+					t.Fatalf("ValidateAndDecode() error = %v", err)
+				}
+				if preset.Name == "argentino" && preset.Presentation != (Presentation{Language: "en-us", Register: "friendly-professional", Vocabulary: "plain-technical", Cadence: "measured", Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured", TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded"}) {
+					t.Fatalf("Argentine presentation = %+v, want canonical typed tuple", preset.Presentation)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("ValidateAndDecode() error = nil, want Argentine presentation correction")
+			}
+			for _, want := range tt.wantError {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("ValidateAndDecode() error = %q, want %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestValidateAndDecodeV2DisplayNameSafety(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -232,7 +299,7 @@ func presetV2WithDisplayName(displayName string) string {
 func TestBuiltinProfilesV2MatchPresentationMatrix(t *testing.T) {
 	wantProfiles := map[string]Presentation{
 		"argentino": {
-			Language: "es-rioplatense", Register: "warm-direct", Vocabulary: "rioplatense", Cadence: "energetic", Humor: "warm", EmotionalRange: "supportive", Verbosity: "detailed", Formatting: "structured", TeachingMetaphors: "architecture", Examples: "practical", AddressPack: "gentleman", PhrasePack: "gentleman", AntiCaricature: "gentleman",
+			Language: "es-rioplatense", Register: "warm-direct", Vocabulary: "rioplatense", Cadence: "energetic", Humor: "warm", EmotionalRange: "supportive", Verbosity: "detailed", Formatting: "structured", TeachingMetaphors: "architecture", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded",
 		},
 		"neutra": {
 			Language: "es-neutral", Register: "friendly-professional", Vocabulary: "neutral-spanish", Cadence: "measured", Humor: "none", EmotionalRange: "composed", Verbosity: "balanced", Formatting: "structured", TeachingMetaphors: "construction", Examples: "practical", AddressPack: "neutral", PhrasePack: "neutral", AntiCaricature: "neutral",
@@ -287,6 +354,26 @@ func TestBuiltinProfilesV2MatchPresentationMatrix(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestArgentinePersonaDocumentationDefinesCanonicalTraitContract(t *testing.T) {
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate persona test source")
+	}
+	documentation, err := os.ReadFile(filepath.Join(filepath.Dir(sourceFile), "..", "..", "..", "docs", "personas.md"))
+	if err != nil {
+		t.Fatalf("read persona documentation: %v", err)
+	}
+
+	for _, want := range []string{
+		"`address_pack: peer`", "`phrase_pack: plain`", "`anti_caricature: grounded`",
+		"keep Gentle technical policy in Layer 1",
+	} {
+		if !strings.Contains(string(documentation), want) {
+			t.Fatalf("persona documentation missing Argentine contract %q", want)
+		}
 	}
 }
 
