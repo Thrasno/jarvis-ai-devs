@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 )
 
@@ -36,6 +38,42 @@ const (
 const nativeMCPFixForwardGuidance = "correct the native MCP error and rerun Install/Reconfigure"
 
 const nativeMCPUserScope = "user"
+
+const (
+	claudeHiveIdentity        = "hive"
+	claudeContext7Identity    = "context7"
+	claudeMCPDefinitionSchema = "v1"
+	context7MCPURL            = "https://mcp.context7.com/mcp"
+)
+
+// ClaudeUserMCPDefinitions returns the canonical user-scoped Hive and Context7
+// definitions used for managed Claude reconciliation.
+func ClaudeUserMCPDefinitions(hiveDaemonPath string) (NativeMCPDefinition, NativeMCPDefinition, error) {
+	hiveDaemonPath = strings.TrimSpace(hiveDaemonPath)
+	if !validHiveDaemonPath(hiveDaemonPath) {
+		return NativeMCPDefinition{}, NativeMCPDefinition{}, errors.New("Hive daemon executable is unavailable; repair installation and rerun Install/Reconfigure")
+	}
+	hive := NativeMCPDefinition{
+		Identity:            claudeHiveIdentity,
+		Scope:               nativeMCPUserScope,
+		SchemaVersion:       claudeMCPDefinitionSchema,
+		AddArgs:             []string{"mcp", "add", "--transport", "stdio", "--scope", nativeMCPUserScope, claudeHiveIdentity, "--", hiveDaemonPath},
+		ExpectedFingerprint: nativeMCPFingerprint(`{"type":"stdio","command":` + strconv.Quote(hiveDaemonPath) + `,"args":[]}`),
+	}
+	context7 := NativeMCPDefinition{
+		Identity:            claudeContext7Identity,
+		Scope:               nativeMCPUserScope,
+		SchemaVersion:       claudeMCPDefinitionSchema,
+		AddArgs:             []string{"mcp", "add", "--transport", "http", "--scope", nativeMCPUserScope, claudeContext7Identity, context7MCPURL},
+		ExpectedFingerprint: nativeMCPFingerprint(`{"type":"http","url":` + strconv.Quote(context7MCPURL) + `}`),
+	}
+	return hive, context7, nil
+}
+
+func validHiveDaemonPath(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+}
 
 // NativeMCPInventory is safe to persist or report: it contains no command
 // output, command arguments, or configuration values.
@@ -210,11 +248,24 @@ func validateNativeMCPDefinition(definition NativeMCPDefinition) error {
 }
 
 func validateNativeMCPMutationDefinition(definition NativeMCPDefinition) error {
-	if definition.Identity == "" || definition.Scope != nativeMCPUserScope || len(definition.AddArgs) < 5 || definition.AddArgs[0] != "mcp" || definition.AddArgs[1] != "add" ||
-		definition.AddArgs[2] != "--scope" || definition.AddArgs[3] != nativeMCPUserScope || definition.AddArgs[4] != definition.Identity {
+	if definition.Identity == "" || definition.Scope != nativeMCPUserScope || !nativeMCPAddArgsMatchDefinition(definition.AddArgs, definition.Identity) {
 		return fmt.Errorf("native MCP %s: add arguments do not match definition", definition.Identity)
 	}
 	return nil
+}
+
+func nativeMCPAddArgsMatchDefinition(args []string, identity string) bool {
+	if len(args) < 5 || args[0] != "mcp" || args[1] != "add" {
+		return false
+	}
+	scopeIndex := 2
+	if args[2] == "--transport" {
+		if len(args) < 7 || (args[3] != "stdio" && args[3] != "http") {
+			return false
+		}
+		scopeIndex = 4
+	}
+	return args[scopeIndex] == "--scope" && args[scopeIndex+1] == nativeMCPUserScope && args[scopeIndex+2] == identity
 }
 
 func validateNativeMCPProvenance(output string, definition NativeMCPDefinition) (string, bool) {

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -206,6 +208,89 @@ func nativeMCPDefinition(identity, secret string) NativeMCPDefinition {
 		SchemaVersion:       "v1",
 		AddArgs:             []string{"mcp", "add", "--scope", "user", identity, secret},
 		ExpectedFingerprint: nativeMCPFingerprint(configuration),
+	}
+}
+
+func TestClaudeUserMCPDefinitionsReturnsCanonicalDefinitions(t *testing.T) {
+	directory := t.TempDir()
+	daemonPath := filepath.Join(directory, "hive-daemon")
+	if err := os.WriteFile(daemonPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	hive, context7, err := ClaudeUserMCPDefinitions(" \t" + daemonPath + "\n")
+	if err != nil {
+		t.Fatalf("ClaudeUserMCPDefinitions() error = %v", err)
+	}
+
+	assertNativeMCPDefinition(t, hive, NativeMCPDefinition{
+		Identity:            "hive",
+		Scope:               nativeMCPUserScope,
+		SchemaVersion:       "v1",
+		AddArgs:             []string{"mcp", "add", "--transport", "stdio", "--scope", "user", "hive", "--", daemonPath},
+		ExpectedFingerprint: nativeMCPFingerprint(`{"type":"stdio","command":` + strconv.Quote(daemonPath) + `,"args":[]}`),
+	})
+	assertNativeMCPDefinition(t, context7, NativeMCPDefinition{
+		Identity:            "context7",
+		Scope:               nativeMCPUserScope,
+		SchemaVersion:       "v1",
+		AddArgs:             []string{"mcp", "add", "--transport", "http", "--scope", "user", "context7", "https://mcp.context7.com/mcp"},
+		ExpectedFingerprint: nativeMCPFingerprint(`{"type":"http","url":"https://mcp.context7.com/mcp"}`),
+	})
+}
+
+func TestClaudeUserMCPDefinitionsRejectsInvalidDaemonPaths(t *testing.T) {
+	directory := t.TempDir()
+	nonExecutablePath := filepath.Join(directory, "not-executable")
+	if err := os.WriteFile(nonExecutablePath, []byte("daemon"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	for _, path := range []string{"", directory, filepath.Join(directory, "missing"), nonExecutablePath} {
+		t.Run(path, func(t *testing.T) {
+			_, _, err := ClaudeUserMCPDefinitions(path)
+			if err == nil {
+				t.Fatal("ClaudeUserMCPDefinitions() error = nil, want rejection")
+			}
+			if path != "" && strings.Contains(err.Error(), path) {
+				t.Fatalf("error %q exposes daemon path %q", err, path)
+			}
+		})
+	}
+}
+
+func TestClaudeUserMCPDefinitionsBuildsWizardRequestWithoutTUIPolicy(t *testing.T) {
+	directory := t.TempDir()
+	daemonPath := filepath.Join(directory, "hive-daemon")
+	if err := os.WriteFile(daemonPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	hive, context7, err := ClaudeUserMCPDefinitions(daemonPath)
+	if err != nil {
+		t.Fatalf("ClaudeUserMCPDefinitions() error = %v", err)
+	}
+	request, err := BuildWizardReconcileRequest(WizardReconcileInput{
+		SelectedAgents: []string{"claude"},
+		Root:           directory,
+		EvidencePath:   filepath.Join(directory, "recovery.json"),
+		ClaudeHive:     hive,
+		ClaudeContext7: context7,
+	})
+	if err != nil {
+		t.Fatalf("BuildWizardReconcileRequest() error = %v", err)
+	}
+	if len(request.DesiredMCPs) != 2 {
+		t.Fatalf("DesiredMCPs = %#v, want both canonical definitions", request.DesiredMCPs)
+	}
+	assertNativeMCPDefinition(t, request.DesiredMCPs[0], hive)
+	assertNativeMCPDefinition(t, request.DesiredMCPs[1], context7)
+}
+
+func assertNativeMCPDefinition(t *testing.T, got, want NativeMCPDefinition) {
+	t.Helper()
+	if got.Identity != want.Identity || got.Scope != want.Scope || got.SchemaVersion != want.SchemaVersion ||
+		got.ExpectedFingerprint != want.ExpectedFingerprint || !sameNativeMCPCall(got.AddArgs, want.AddArgs) {
+		t.Fatalf("definition = %#v, want %#v", got, want)
 	}
 }
 
