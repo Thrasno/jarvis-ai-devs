@@ -3,6 +3,7 @@ package agent
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -51,7 +52,23 @@ type WizardReconcileInput struct {
 // It is deliberately not a general purpose filesystem adapter.
 type FileCompensationStore struct {
 	root    string
-	allowed map[string]struct{}
+	allowed map[string]string
+}
+
+const openCodeProvenanceManifestLocation = ".jarvis/metadata/reconcile/opencode-global-config.json"
+
+var (
+	readOpenCodePairFile   = readPairFile
+	writeOpenCodePairFile  = writePrivateFile
+	removeOpenCodePairFile = removePairFile
+)
+
+type openCodeProvenanceManifest struct {
+	Version    string               `json:"version"`
+	Identity   string               `json:"identity"`
+	Location   string               `json:"location"`
+	Digest     string               `json:"digest"`
+	Provenance reconcile.Provenance `json:"provenance"`
 }
 
 // NewFileCompensationStore creates a managed-only Store rooted in root.
@@ -59,7 +76,7 @@ func NewFileCompensationStore(root string, outputs []RenderedManagedOutput) (*Fi
 	if strings.TrimSpace(root) == "" {
 		return nil, errors.New("managed Store root is required")
 	}
-	store := &FileCompensationStore{root: filepath.Clean(root), allowed: make(map[string]struct{}, len(outputs))}
+	store := &FileCompensationStore{root: filepath.Clean(root), allowed: make(map[string]string, len(outputs))}
 	if err := validateManagedRoot(store.root); err != nil {
 		return nil, err
 	}
@@ -74,7 +91,10 @@ func NewFileCompensationStore(root string, outputs []RenderedManagedOutput) (*Fi
 		if _, exists := store.allowed[location]; exists {
 			return nil, fmt.Errorf("duplicate managed output location %q", location)
 		}
-		store.allowed[location] = struct{}{}
+		if (output.Identity == openCodeGlobalConfigIdentity) != (location == openCodeGlobalConfigLocation) {
+			return nil, errors.New("OpenCode managed artifact binding is invalid")
+		}
+		store.allowed[location] = output.Identity
 	}
 	return store, nil
 }
@@ -83,6 +103,9 @@ func (s *FileCompensationStore) Snapshot(location string) (reconcile.Snapshot, e
 	path, err := s.pathFor(location)
 	if err != nil {
 		return reconcile.Snapshot{}, err
+	}
+	if s.identityFor(location) == openCodeGlobalConfigIdentity {
+		return s.openCodeSnapshot(path)
 	}
 	bytes, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -94,10 +117,44 @@ func (s *FileCompensationStore) Snapshot(location string) (reconcile.Snapshot, e
 	return reconcile.Snapshot{Exists: true, Bytes: bytes}, nil
 }
 
-func (s *FileCompensationStore) Write(location string, content []byte, _ reconcile.Provenance) error {
+func (s *FileCompensationStore) openCodeSnapshot(path string) (reconcile.Snapshot, error) {
+	manifestPath, err := s.openCodeManifestPath()
+	if err != nil {
+		return reconcile.Snapshot{}, err
+	}
+	content, artifactExists, err := readOpenCodePairFile(path)
+	if err != nil {
+		return reconcile.Snapshot{}, errors.New("OpenCode managed artifact is unavailable; repair it and rerun Install/Reconfigure")
+	}
+	manifest, manifestExists, err := readOpenCodePairFile(manifestPath)
+	if err != nil {
+		return reconcile.Snapshot{}, errors.New("OpenCode managed provenance is unavailable; repair it and rerun Install/Reconfigure")
+	}
+	if !artifactExists {
+		if manifestExists {
+			return reconcile.Snapshot{}, errors.New("OpenCode managed artifact/provenance pair is incomplete; repair it and rerun Install/Reconfigure")
+		}
+		return reconcile.Snapshot{}, nil
+	}
+	snapshot := reconcile.Snapshot{Exists: true, Bytes: content}
+	provenance, err := openCodeProvenance(content, manifest, manifestExists)
+	if err != nil {
+		return reconcile.Snapshot{}, err
+	}
+	snapshot.Provenance = provenance
+	return snapshot, nil
+}
+
+func (s *FileCompensationStore) Write(location string, content []byte, provenance reconcile.Provenance) error {
 	path, err := s.pathFor(location)
 	if err != nil {
 		return err
+	}
+	if s.identityFor(location) == openCodeGlobalConfigIdentity {
+		if err := validateOpenCodeProvenance(content, provenance); err != nil {
+			return err
+		}
+		return s.writeOpenCodePair(path, content, provenance)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return errors.New("managed Store directory is unavailable; repair it and rerun Install/Reconfigure")
@@ -112,6 +169,9 @@ func (s *FileCompensationStore) Delete(location string) error {
 	path, err := s.pathFor(location)
 	if err != nil {
 		return err
+	}
+	if s.identityFor(location) == openCodeGlobalConfigIdentity {
+		return s.deleteOpenCodePair(path)
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return errors.New("managed Store removal failed; repair the managed artifact and rerun Install/Reconfigure")
@@ -135,6 +195,185 @@ func (s *FileCompensationStore) pathFor(location string) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+func (s *FileCompensationStore) identityFor(location string) string {
+	location, err := safeManagedLocation(location)
+	if err != nil || s == nil {
+		return ""
+	}
+	return s.allowed[location]
+}
+
+func (s *FileCompensationStore) openCodeManifestPath() (string, error) {
+	path := filepath.Join(s.root, filepath.FromSlash(openCodeProvenanceManifestLocation))
+	if err := rejectManagedPathSymlinks(s.root, path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func openCodeProvenance(content, manifestData []byte, manifestExists bool) (reconcile.Provenance, error) {
+	if !manifestExists {
+		if openCodeContainsManagedMCP(content) {
+			return reconcile.Provenance{}, errors.New("OpenCode managed ownership is ambiguous; repair it and rerun Install/Reconfigure")
+		}
+		return reconcile.Provenance{}, nil
+	}
+	var manifest openCodeProvenanceManifest
+	if json.Unmarshal(manifestData, &manifest) != nil || !validOpenCodeManifest(manifest, content) {
+		return reconcile.Provenance{}, errors.New("OpenCode managed provenance does not match; repair it and rerun Install/Reconfigure")
+	}
+	return manifest.Provenance, nil
+}
+
+func openCodeContainsManagedMCP(content []byte) bool {
+	var document map[string]json.RawMessage
+	return json.Unmarshal(content, &document) == nil && hasJarvisManagedMCP(document)
+}
+
+func validateOpenCodeProvenance(content []byte, provenance reconcile.Provenance) error {
+	if provenance.Version != "v1" || provenance.ManagedIdentity != openCodeGlobalConfigIdentity ||
+		provenance.Location != openCodeGlobalConfigLocation || provenance.ManifestDigest != managedOutputDigest(content) {
+		return errors.New("OpenCode managed provenance is invalid; repair it and rerun Install/Reconfigure")
+	}
+	return nil
+}
+
+func validOpenCodeManifest(manifest openCodeProvenanceManifest, content []byte) bool {
+	return manifest.Version == "v1" && manifest.Identity == openCodeGlobalConfigIdentity &&
+		manifest.Location == openCodeGlobalConfigLocation && manifest.Digest == managedOutputDigest(content) &&
+		manifest.Provenance.Version == "v1" && manifest.Provenance.ManagedIdentity == manifest.Identity &&
+		manifest.Provenance.Location == manifest.Location && manifest.Provenance.ManifestDigest == manifest.Digest
+}
+
+func (s *FileCompensationStore) writeOpenCodePair(path string, content []byte, provenance reconcile.Provenance) error {
+	manifestPath, err := s.openCodeManifestPath()
+	if err != nil {
+		return err
+	}
+	manifest, err := json.Marshal(openCodeProvenanceManifest{Version: "v1", Identity: openCodeGlobalConfigIdentity, Location: openCodeGlobalConfigLocation, Digest: managedOutputDigest(content), Provenance: provenance})
+	if err != nil {
+		return errors.New("OpenCode managed provenance cannot be recorded; rerun Install/Reconfigure")
+	}
+	priorArtifact, artifactExists, err := readOpenCodePairFile(path)
+	if err != nil {
+		return openCodePairReadFailure("artifact")
+	}
+	priorManifest, manifestExists, err := readOpenCodePairFile(manifestPath)
+	if err != nil {
+		return openCodePairReadFailure("manifest")
+	}
+	if err := writeOpenCodePairFile(path, content); err != nil || writeOpenCodePairFile(manifestPath, manifest) != nil {
+		if restoreErr := s.restoreOpenCodePair(path, priorArtifact, artifactExists, manifestPath, priorManifest, manifestExists); restoreErr != nil {
+			return openCodePairRestoreFailure("write", restoreErr)
+		}
+		return errors.New("OpenCode managed Store write failed; repair it and rerun Install/Reconfigure")
+	}
+	return nil
+}
+
+func (s *FileCompensationStore) deleteOpenCodePair(path string) error {
+	manifestPath, err := s.openCodeManifestPath()
+	if err != nil {
+		return err
+	}
+	priorArtifact, artifactExists, err := readOpenCodePairFile(path)
+	if err != nil {
+		return openCodePairReadFailure("artifact")
+	}
+	priorManifest, manifestExists, err := readOpenCodePairFile(manifestPath)
+	if err != nil {
+		return openCodePairReadFailure("manifest")
+	}
+	if err := removeOpenCodePairFile(path); err != nil || removeOpenCodePairFile(manifestPath) != nil {
+		if restoreErr := s.restoreOpenCodePair(path, priorArtifact, artifactExists, manifestPath, priorManifest, manifestExists); restoreErr != nil {
+			return openCodePairRestoreFailure("removal", restoreErr)
+		}
+		return errors.New("OpenCode managed Store removal failed; repair it and rerun Install/Reconfigure")
+	}
+	return nil
+}
+
+func (s *FileCompensationStore) restoreOpenCodePair(path string, artifact []byte, artifactExists bool, manifestPath string, manifest []byte, manifestExists bool) error {
+	failed := make([]string, 0, 2)
+	if artifactExists {
+		if err := writeOpenCodePairFile(path, artifact); err != nil {
+			failed = append(failed, "artifact")
+		}
+	} else {
+		if err := removeOpenCodePairFile(path); err != nil {
+			failed = append(failed, "artifact")
+		}
+	}
+	if manifestExists {
+		if err := writeOpenCodePairFile(manifestPath, manifest); err != nil {
+			failed = append(failed, "manifest")
+		}
+	} else {
+		if err := removeOpenCodePairFile(manifestPath); err != nil {
+			failed = append(failed, "manifest")
+		}
+	}
+	if len(failed) == 0 {
+		return nil
+	}
+	return errors.New(strings.Join(failed, " and "))
+}
+
+func readPairFile(path string) ([]byte, bool, error) {
+	data, err := os.ReadFile(path)
+	if err == nil {
+		return data, true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	return nil, false, err
+}
+
+func openCodePairReadFailure(component string) error {
+	return fmt.Errorf("OpenCode managed Store prior %s is unavailable; repair the OpenCode %s and rerun Install/Reconfigure", component, component)
+}
+
+func openCodePairRestoreFailure(operation string, restoreErr error) error {
+	return fmt.Errorf("OpenCode managed Store %s failed; paired restoration is incomplete for %s; repair the OpenCode %s and rerun Install/Reconfigure", operation, restoreErr.Error(), restoreErr.Error())
+}
+
+func writePrivateFile(path string, content []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), ".jarvis-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o600); err != nil {
+		temp.Close()
+		return err
+	}
+	if _, err := temp.Write(content); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
+}
+
+func removePairFile(path string) error {
+	err := os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 func safeManagedLocation(location string) (string, error) {

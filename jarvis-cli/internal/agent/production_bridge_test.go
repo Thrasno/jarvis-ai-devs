@@ -27,6 +27,17 @@ func TestFileCompensationStoreRejectsPathsOutsideRenderedManagedOutputs(t *testi
 	}
 }
 
+func TestFileCompensationStoreRejectsOpenCodeIdentityPathMismatch(t *testing.T) {
+	for _, output := range []RenderedManagedOutput{
+		{Identity: openCodeGlobalConfigIdentity, Location: "other/opencode.json"},
+		{Identity: "other-managed-output", Location: openCodeGlobalConfigLocation},
+	} {
+		if _, err := NewFileCompensationStore(t.TempDir(), []RenderedManagedOutput{output}); err == nil {
+			t.Fatalf("NewFileCompensationStore(%#v) error = nil, want OpenCode binding rejection", output)
+		}
+	}
+}
+
 func TestFileCompensationStoreRejectsManagedPathSymlinks(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "user-owned")
@@ -99,6 +110,480 @@ func TestFileCompensationStoreRechecksRootBeforeMutation(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(outside, "claude", "CLAUDE.md")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("outside managed artifact = %v, want no mutation", statErr)
 	}
+}
+
+func TestFileCompensationStorePersistsOpenCodeProvenanceForFreshReconfigure(t *testing.T) {
+	root := t.TempDir()
+	location := openCodeGlobalConfigLocation
+	content := []byte(`{"theme":"night","mcp":{"hive":{"type":"local"}}}`)
+	provenance := reconcile.Provenance{
+		Version:         "v1",
+		ManagedIdentity: openCodeGlobalConfigIdentity,
+		Location:        location,
+		ManifestDigest:  managedOutputDigest(content),
+	}
+	outputs := []RenderedManagedOutput{{Identity: openCodeGlobalConfigIdentity, Location: location}}
+	store, err := NewFileCompensationStore(root, outputs)
+	if err != nil {
+		t.Fatalf("NewFileCompensationStore() error = %v", err)
+	}
+	if err := store.Write(location, content, provenance); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	fresh, err := NewFileCompensationStore(root, outputs)
+	if err != nil {
+		t.Fatalf("fresh NewFileCompensationStore() error = %v", err)
+	}
+	snapshot, err := fresh.Snapshot(location)
+	if err != nil {
+		t.Fatalf("fresh Snapshot() error = %v", err)
+	}
+	if !snapshot.Exists || string(snapshot.Bytes) != string(content) || snapshot.Provenance != provenance {
+		t.Fatalf("fresh Snapshot() = %#v, want exact bytes and provenance", snapshot)
+	}
+
+	output, err := NewOpenCodeGlobalAdapter(osFS{}, root).RenderWithProvenance(
+		OpenCodeManagedMCPs{"hive": `{"type":"local"}`}, &snapshot.Provenance,
+	)
+	if err != nil {
+		t.Fatalf("RenderWithProvenance() error = %v", err)
+	}
+	request, err := BuildWizardReconcileRequest(WizardReconcileInput{
+		SelectedAgents: []string{"opencode"}, Root: root, EvidencePath: filepath.Join(root, "state", "recovery.json"), RenderedOutputs: []RenderedManagedOutput{output},
+	})
+	if err != nil || request.StorePlan.Blocked() || len(request.StorePlan.Operations) != 0 {
+		t.Fatalf("fresh reconfigure = (%#v, %v), want stable accepted output", request.StorePlan, err)
+	}
+}
+
+func TestFileCompensationStoreFailsClosedForAmbiguousOrCorruptOpenCodeProvenance(t *testing.T) {
+	root := t.TempDir()
+	location := openCodeGlobalConfigLocation
+	content := []byte(`{"mcp":{"hive":{"token":"fixture-secret"}}}`)
+	path := filepath.Join(root, filepath.FromSlash(location))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	outputs := []RenderedManagedOutput{{Identity: openCodeGlobalConfigIdentity, Location: location}}
+	store, err := NewFileCompensationStore(root, outputs)
+	if err != nil {
+		t.Fatalf("NewFileCompensationStore() error = %v", err)
+	}
+	if _, err := store.Snapshot(location); err == nil || strings.Contains(err.Error(), "fixture-secret") || strings.Contains(err.Error(), path) {
+		t.Fatalf("Snapshot() error = %v, want sanitized ambiguous-ownership rejection", err)
+	}
+
+	manifestPath := filepath.Join(root, ".jarvis", "metadata", "reconcile", "opencode-global-config.json")
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll(manifest) error = %v", err)
+	}
+	if err := os.WriteFile(manifestPath, []byte(`{"version":"unknown","token":"fixture-secret"}`), 0o600); err != nil {
+		t.Fatalf("WriteFile(manifest) error = %v", err)
+	}
+	if _, err := store.Snapshot(location); err == nil || strings.Contains(err.Error(), "fixture-secret") || strings.Contains(err.Error(), manifestPath) {
+		t.Fatalf("Snapshot() error = %v, want sanitized corrupt-manifest rejection", err)
+	}
+}
+
+func TestFileCompensationStoreSnapshotsOpenCodePairStates(t *testing.T) {
+	location := openCodeGlobalConfigLocation
+	artifact := []byte(`{"theme":"night"}`)
+	manifest := []byte(`{"token":"fixture-secret"}`)
+	tests := []struct {
+		name          string
+		artifact      []byte
+		artifactFound bool
+		artifactErr   error
+		manifest      []byte
+		manifestFound bool
+		manifestErr   error
+		wantExists    bool
+		wantErr       string
+	}{
+		{name: "both absent is clean", wantExists: false},
+		{name: "artifact only is unmanaged", artifact: artifact, artifactFound: true, wantExists: true},
+		{name: "manifest only fails closed", manifest: manifest, manifestFound: true, wantErr: "incomplete"},
+		{name: "artifact read failure is sanitized", artifactErr: errors.New("read token=fixture-secret"), wantErr: "unavailable"},
+		{name: "manifest read failure is sanitized", artifact: artifact, artifactFound: true, manifestErr: errors.New("read token=fixture-secret"), wantErr: "unavailable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			store, err := NewFileCompensationStore(root, []RenderedManagedOutput{{Identity: openCodeGlobalConfigIdentity, Location: location}})
+			if err != nil {
+				t.Fatalf("NewFileCompensationStore() error = %v", err)
+			}
+			artifactPath := filepath.Join(root, filepath.FromSlash(location))
+			manifestPath := filepath.Join(root, ".jarvis", "metadata", "reconcile", "opencode-global-config.json")
+			originalRead := readOpenCodePairFile
+			t.Cleanup(func() { readOpenCodePairFile = originalRead })
+			readOpenCodePairFile = func(path string) ([]byte, bool, error) {
+				switch path {
+				case artifactPath:
+					return tt.artifact, tt.artifactFound, tt.artifactErr
+				case manifestPath:
+					return tt.manifest, tt.manifestFound, tt.manifestErr
+				default:
+					t.Fatalf("unexpected pair path %q", path)
+					return nil, false, nil
+				}
+			}
+
+			snapshot, err := store.Snapshot(location)
+			if tt.wantErr == "" {
+				if err != nil || snapshot.Exists != tt.wantExists || (tt.wantExists && string(snapshot.Bytes) != string(artifact)) {
+					t.Fatalf("Snapshot() = (%#v, %v), want exists=%t", snapshot, err, tt.wantExists)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) || strings.Contains(err.Error(), "fixture-secret") || strings.Contains(err.Error(), root) {
+				t.Fatalf("Snapshot() error = %v, want sanitized %q failure", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestFileCompensationStoreRejectsOpenCodeManifestBindingMismatches(t *testing.T) {
+	content := []byte(`{"mcp":{"hive":{"type":"local"}}}`)
+	digest := managedOutputDigest(content)
+	tests := []struct {
+		name     string
+		manifest string
+	}{
+		{name: "identity", manifest: `{"version":"v1","identity":"other","location":".config/opencode/opencode.json","digest":"` + digest + `","provenance":{"version":"v1","managed_identity":"opencode-global-config","location":".config/opencode/opencode.json","manifest_digest":"` + digest + `"}}`},
+		{name: "path", manifest: `{"version":"v1","identity":"opencode-global-config","location":"other.json","digest":"` + digest + `","provenance":{"version":"v1","managed_identity":"opencode-global-config","location":"other.json","manifest_digest":"` + digest + `"}}`},
+		{name: "digest", manifest: `{"version":"v1","identity":"opencode-global-config","location":".config/opencode/opencode.json","digest":"sha256:wrong","provenance":{"version":"v1","managed_identity":"opencode-global-config","location":".config/opencode/opencode.json","manifest_digest":"sha256:wrong"}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			location := openCodeGlobalConfigLocation
+			path := filepath.Join(root, filepath.FromSlash(location))
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatalf("MkdirAll() error = %v", err)
+			}
+			if err := os.WriteFile(path, content, 0o600); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			manifestPath := filepath.Join(root, ".jarvis", "metadata", "reconcile", "opencode-global-config.json")
+			if err := os.MkdirAll(filepath.Dir(manifestPath), 0o700); err != nil {
+				t.Fatalf("MkdirAll(manifest) error = %v", err)
+			}
+			if err := os.WriteFile(manifestPath, []byte(tt.manifest), 0o600); err != nil {
+				t.Fatalf("WriteFile(manifest) error = %v", err)
+			}
+			store, err := NewFileCompensationStore(root, []RenderedManagedOutput{{Identity: openCodeGlobalConfigIdentity, Location: location}})
+			if err != nil {
+				t.Fatalf("NewFileCompensationStore() error = %v", err)
+			}
+			if _, err := store.Snapshot(location); err == nil || strings.Contains(err.Error(), manifestPath) {
+				t.Fatalf("Snapshot() error = %v, want sanitized mismatch rejection", err)
+			}
+		})
+	}
+}
+
+func TestFileCompensationStoreRestoresOpenCodeBytesAndProvenanceAsAPair(t *testing.T) {
+	root := t.TempDir()
+	location := openCodeGlobalConfigLocation
+	outputs := []RenderedManagedOutput{{Identity: openCodeGlobalConfigIdentity, Location: location}}
+	store, err := NewFileCompensationStore(root, outputs)
+	if err != nil {
+		t.Fatalf("NewFileCompensationStore() error = %v", err)
+	}
+	prior := []byte(`{"mcp":{"hive":{"type":"local"}}}`)
+	priorProvenance := reconcile.Provenance{Version: "v1", ManagedIdentity: openCodeGlobalConfigIdentity, Location: location, ManifestDigest: managedOutputDigest(prior)}
+	if err := store.Write(location, prior, priorProvenance); err != nil {
+		t.Fatalf("Write(prior) error = %v", err)
+	}
+	snapshot, err := store.Snapshot(location)
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	updated := []byte(`{"mcp":{"hive":{"type":"remote"}}}`)
+	updatedProvenance := reconcile.Provenance{Version: "v1", ManagedIdentity: openCodeGlobalConfigIdentity, Location: location, ManifestDigest: managedOutputDigest(updated)}
+	if err := store.Write(location, updated, updatedProvenance); err != nil {
+		t.Fatalf("Write(updated) error = %v", err)
+	}
+	if err := store.Write(location, snapshot.Bytes, snapshot.Provenance); err != nil {
+		t.Fatalf("Write(restore) error = %v", err)
+	}
+
+	restored, err := NewFileCompensationStore(root, outputs)
+	if err != nil || string(restoredSnapshotBytes(t, restored, location)) != string(prior) {
+		t.Fatalf("fresh restored Snapshot() error = %v, want prior bytes", err)
+	}
+	got, err := restored.Snapshot(location)
+	if err != nil || got.Provenance != priorProvenance {
+		t.Fatalf("fresh restored Snapshot() = %#v, %v; want prior provenance", got, err)
+	}
+}
+
+func TestFileCompensationStoreCompensatesOpenCodeBytesAndProvenance(t *testing.T) {
+	root := t.TempDir()
+	location := openCodeGlobalConfigLocation
+	outputs := []RenderedManagedOutput{{Identity: openCodeGlobalConfigIdentity, Location: location}}
+	store, err := NewFileCompensationStore(root, outputs)
+	if err != nil {
+		t.Fatalf("NewFileCompensationStore() error = %v", err)
+	}
+	prior := []byte(`{"mcp":{"hive":{"type":"local"}}}`)
+	priorProvenance := reconcile.Provenance{Version: "v1", ManagedIdentity: openCodeGlobalConfigIdentity, Location: location, ManifestDigest: managedOutputDigest(prior)}
+	if err := store.Write(location, prior, priorProvenance); err != nil {
+		t.Fatalf("Write(prior) error = %v", err)
+	}
+	updated := []byte(`{"mcp":{"hive":{"type":"remote"}}}`)
+	plan := reconcile.BuildPlan(reconcile.Inventory{Artifacts: []reconcile.Artifact{{Identity: openCodeGlobalConfigIdentity, Location: location, Bytes: prior, Provenance: &priorProvenance}}}, reconcile.DesiredState{
+		Manifest:  reconcile.Manifest{Version: "v1", Artifacts: map[string]reconcile.ManifestEntry{openCodeGlobalConfigIdentity: {Location: location, Digest: managedOutputDigest(updated)}}},
+		Artifacts: []reconcile.DesiredArtifact{{Identity: openCodeGlobalConfigIdentity, Location: location, Bytes: updated}},
+	})
+	if plan.Blocked() {
+		t.Fatalf("BuildPlan() = %#v, want writable plan", plan)
+	}
+	_, err = reconcile.ApplyWithCompensation(&failAfterWriteStore{FileCompensationStore: store}, nil, plan)
+	if err == nil {
+		t.Fatal("ApplyWithCompensation() error = nil, want compensated Store failure")
+	}
+	restored, err := NewFileCompensationStore(root, outputs)
+	if err != nil {
+		t.Fatalf("fresh NewFileCompensationStore() error = %v", err)
+	}
+	got, err := restored.Snapshot(location)
+	if err != nil || string(got.Bytes) != string(prior) || got.Provenance != priorProvenance {
+		t.Fatalf("fresh Snapshot() = %#v, %v; want compensated prior pair", got, err)
+	}
+}
+
+func TestFileCompensationStoreRestoresPairWhenManifestDeleteFails(t *testing.T) {
+	root := t.TempDir()
+	location := openCodeGlobalConfigLocation
+	content := []byte(`{"mcp":{"hive":{"type":"local"}}}`)
+	provenance := reconcile.Provenance{Version: "v1", ManagedIdentity: openCodeGlobalConfigIdentity, Location: location, ManifestDigest: managedOutputDigest(content)}
+	outputs := []RenderedManagedOutput{{Identity: openCodeGlobalConfigIdentity, Location: location}}
+	store, err := NewFileCompensationStore(root, outputs)
+	if err != nil {
+		t.Fatalf("NewFileCompensationStore() error = %v", err)
+	}
+	if err := store.Write(location, content, provenance); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	originalRemove := removeOpenCodePairFile
+	t.Cleanup(func() { removeOpenCodePairFile = originalRemove })
+	calls := 0
+	removeOpenCodePairFile = func(path string) error {
+		calls++
+		if calls == 2 {
+			return errors.New("remove token=fixture-secret")
+		}
+		return originalRemove(path)
+	}
+	if err := store.Delete(location); err == nil || strings.Contains(err.Error(), "fixture-secret") {
+		t.Fatalf("Delete() error = %v, want sanitized pair failure", err)
+	}
+	restored, err := NewFileCompensationStore(root, outputs)
+	if err != nil {
+		t.Fatalf("fresh NewFileCompensationStore() error = %v", err)
+	}
+	got, err := restored.Snapshot(location)
+	if err != nil || string(got.Bytes) != string(content) || got.Provenance != provenance {
+		t.Fatalf("fresh Snapshot() = %#v, %v; want restored pair", got, err)
+	}
+}
+
+func TestFileCompensationStoreRestoresPriorPairAfterOpenCodePublishFailures(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		failPath  func(string, string) bool
+		component string
+	}{
+		{name: "artifact", failPath: func(path, artifactPath string) bool { return path == artifactPath }, component: "artifact"},
+		{name: "manifest", failPath: func(path, artifactPath string) bool { return path != artifactPath }, component: "manifest"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root, store, location, prior, priorProvenance := newOpenCodeStoreWithPriorPair(t)
+			artifactPath := filepath.Join(root, filepath.FromSlash(location))
+			originalWrite := writeOpenCodePairFile
+			t.Cleanup(func() { writeOpenCodePairFile = originalWrite })
+			failedPublish := false
+			writeOpenCodePairFile = func(path string, content []byte) error {
+				if !failedPublish && tt.failPath(path, artifactPath) && string(content) != string(prior) {
+					failedPublish = true
+					return errors.New("publish token=fixture-secret")
+				}
+				return originalWrite(path, content)
+			}
+
+			updated := []byte(`{"mcp":{"hive":{"type":"remote"}}}`)
+			err := store.Write(location, updated, openCodeTestProvenance(location, updated))
+			if err == nil || strings.Contains(err.Error(), "fixture-secret") || !strings.Contains(err.Error(), "write failed") {
+				t.Fatalf("Write() error = %v, want sanitized %s publish failure", err, tt.component)
+			}
+			assertOpenCodePair(t, root, location, prior, priorProvenance)
+			assertNoOpenCodePairTemps(t, root)
+		})
+	}
+}
+
+func TestFileCompensationStoreFailsClosedWhenOpenCodePairRestorationIsIncomplete(t *testing.T) {
+	t.Run("restore write", func(t *testing.T) {
+		root, store, location, prior, _ := newOpenCodeStoreWithPriorPair(t)
+		artifactPath := filepath.Join(root, filepath.FromSlash(location))
+		originalWrite := writeOpenCodePairFile
+		t.Cleanup(func() { writeOpenCodePairFile = originalWrite })
+		failedPublish := false
+		writeOpenCodePairFile = func(path string, content []byte) error {
+			if path != artifactPath && !failedPublish && string(content) != string(prior) {
+				failedPublish = true
+				return errors.New("publish token=fixture-secret")
+			}
+			if failedPublish && path == artifactPath && string(content) == string(prior) {
+				return errors.New("restore token=fixture-secret")
+			}
+			return originalWrite(path, content)
+		}
+
+		updated := []byte(`{"mcp":{"hive":{"type":"remote"}}}`)
+		err := store.Write(location, updated, openCodeTestProvenance(location, updated))
+		if err == nil || strings.Contains(err.Error(), "fixture-secret") || !strings.Contains(err.Error(), "artifact") || !strings.Contains(err.Error(), "incomplete") {
+			t.Fatalf("Write() error = %v, want sanitized artifact restoration evidence", err)
+		}
+		assertNoOpenCodePairTemps(t, root)
+	})
+
+	t.Run("restore delete", func(t *testing.T) {
+		root := t.TempDir()
+		location := openCodeGlobalConfigLocation
+		store, err := NewFileCompensationStore(root, []RenderedManagedOutput{{Identity: openCodeGlobalConfigIdentity, Location: location}})
+		if err != nil {
+			t.Fatalf("NewFileCompensationStore() error = %v", err)
+		}
+		originalWrite, originalRemove := writeOpenCodePairFile, removeOpenCodePairFile
+		t.Cleanup(func() {
+			writeOpenCodePairFile = originalWrite
+			removeOpenCodePairFile = originalRemove
+		})
+		writeOpenCodePairFile = func(path string, content []byte) error {
+			if strings.HasSuffix(path, "opencode-global-config.json") {
+				return errors.New("publish token=fixture-secret")
+			}
+			return originalWrite(path, content)
+		}
+		removeOpenCodePairFile = func(path string) error {
+			if strings.HasSuffix(path, "opencode.json") {
+				return errors.New("restore token=fixture-secret")
+			}
+			return originalRemove(path)
+		}
+
+		content := []byte(`{"mcp":{"hive":{"type":"remote"}}}`)
+		err = store.Write(location, content, openCodeTestProvenance(location, content))
+		if err == nil || strings.Contains(err.Error(), "fixture-secret") || !strings.Contains(err.Error(), "artifact") || !strings.Contains(err.Error(), "incomplete") {
+			t.Fatalf("Write() error = %v, want sanitized artifact restoration evidence", err)
+		}
+		assertNoOpenCodePairTemps(t, root)
+	})
+}
+
+func TestFileCompensationStoreFailsClosedWhenOpenCodePriorPairCannotBeRead(t *testing.T) {
+	for _, component := range []string{"artifact", "manifest"} {
+		t.Run(component, func(t *testing.T) {
+			root, store, location, prior, _ := newOpenCodeStoreWithPriorPair(t)
+			artifactPath := filepath.Join(root, filepath.FromSlash(location))
+			originalRead := readOpenCodePairFile
+			t.Cleanup(func() { readOpenCodePairFile = originalRead })
+			readOpenCodePairFile = func(path string) ([]byte, bool, error) {
+				if (component == "artifact") == (path == artifactPath) {
+					return nil, false, errors.New("read token=fixture-secret")
+				}
+				return originalRead(path)
+			}
+
+			updated := []byte(`{"mcp":{"hive":{"type":"remote"}}}`)
+			err := store.Write(location, updated, openCodeTestProvenance(location, updated))
+			if err == nil || strings.Contains(err.Error(), "fixture-secret") || !strings.Contains(err.Error(), component) || !strings.Contains(err.Error(), "unavailable") {
+				t.Fatalf("Write() error = %v, want sanitized %s read evidence", err, component)
+			}
+			readOpenCodePairFile = originalRead
+			assertOpenCodePair(t, root, location, prior, openCodeTestProvenance(location, prior))
+		})
+	}
+}
+
+func newOpenCodeStoreWithPriorPair(t *testing.T) (string, *FileCompensationStore, string, []byte, reconcile.Provenance) {
+	t.Helper()
+	root := t.TempDir()
+	location := openCodeGlobalConfigLocation
+	prior := []byte(`{"mcp":{"hive":{"type":"local"}}}`)
+	store, err := NewFileCompensationStore(root, []RenderedManagedOutput{{Identity: openCodeGlobalConfigIdentity, Location: location}})
+	if err != nil {
+		t.Fatalf("NewFileCompensationStore() error = %v", err)
+	}
+	provenance := openCodeTestProvenance(location, prior)
+	if err := store.Write(location, prior, provenance); err != nil {
+		t.Fatalf("Write(prior) error = %v", err)
+	}
+	return root, store, location, prior, provenance
+}
+
+func openCodeTestProvenance(location string, content []byte) reconcile.Provenance {
+	return reconcile.Provenance{Version: "v1", ManagedIdentity: openCodeGlobalConfigIdentity, Location: location, ManifestDigest: managedOutputDigest(content)}
+}
+
+func assertOpenCodePair(t *testing.T, root, location string, content []byte, provenance reconcile.Provenance) {
+	t.Helper()
+	fresh, err := NewFileCompensationStore(root, []RenderedManagedOutput{{Identity: openCodeGlobalConfigIdentity, Location: location}})
+	if err != nil {
+		t.Fatalf("fresh NewFileCompensationStore() error = %v", err)
+	}
+	snapshot, err := fresh.Snapshot(location)
+	if err != nil || !snapshot.Exists || string(snapshot.Bytes) != string(content) || snapshot.Provenance != provenance {
+		t.Fatalf("fresh Snapshot() = %#v, %v; want coherent prior pair", snapshot, err)
+	}
+}
+
+func assertNoOpenCodePairTemps(t *testing.T, root string) {
+	t.Helper()
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), ".jarvis-") {
+			t.Fatalf("temporary pair file remained: %s", entry.Name())
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir() error = %v", err)
+	}
+}
+
+type failAfterWriteStore struct {
+	*FileCompensationStore
+	failed bool
+}
+
+func (s *failAfterWriteStore) Write(location string, content []byte, provenance reconcile.Provenance) error {
+	if err := s.FileCompensationStore.Write(location, content, provenance); err != nil {
+		return err
+	}
+	if s.failed {
+		return nil
+	}
+	s.failed = true
+	return errors.New("write token=fixture-secret")
+}
+
+func restoredSnapshotBytes(t *testing.T, store *FileCompensationStore, location string) []byte {
+	t.Helper()
+	snapshot, err := store.Snapshot(location)
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	return snapshot.Bytes
 }
 
 func TestProductionExecutorPersistsRecoveryEvidenceForFreshReload(t *testing.T) {
