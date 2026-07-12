@@ -4,8 +4,12 @@ package reconcile
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 )
 
 // Ownership is the result of evidence-based artifact classification.
@@ -232,6 +236,170 @@ type Store interface {
 	Write(path string, content []byte, provenance Provenance) error
 }
 
+// Snapshot is the prior Store representation for one managed target.
+// Exists distinguishes a new target from a target whose content must be restored.
+type Snapshot struct {
+	Exists     bool
+	Bytes      []byte
+	Provenance Provenance
+}
+
+// CompensationStore provides the controlled Store operations needed to reverse
+// a failed file/config transaction. Native MCP mutations deliberately do not use
+// this boundary because they have no lossless restoration guarantee.
+type CompensationStore interface {
+	Store
+	Snapshot(path string) (Snapshot, error)
+	Delete(path string) error
+}
+
+// RecoveryEvidenceStore is the durable boundary for degraded Store recovery.
+// Implementations persist only RecoveryEvidence's secret-safe metadata.
+type RecoveryEvidenceStore interface {
+	PersistDegradedRecovery(RecoveryEvidence) error
+}
+
+const recoveryEvidenceAction = "fix the Store failure and rerun Install/Reconfigure"
+
+// FileRecoveryEvidenceStore is the production durable boundary for degraded
+// Store recovery evidence. It deliberately stores only sanitized metadata.
+type FileRecoveryEvidenceStore struct {
+	path string
+}
+
+var (
+	createRecoveryEvidenceTemp          = os.CreateTemp
+	renameRecoveryEvidenceFile          = os.Rename
+	syncRecoveryEvidenceParentDirectory = syncRecoveryEvidenceDirectory
+)
+
+// NewFileRecoveryEvidenceStore validates the evidence file location without
+// creating it. The caller retains ownership of creating the parent directory.
+func NewFileRecoveryEvidenceStore(path string) (*FileRecoveryEvidenceStore, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, errors.New("recovery evidence path is required")
+	}
+	path = filepath.Clean(path)
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return nil, errors.New("recovery evidence path must name a file")
+	}
+	parent := filepath.Dir(path)
+	info, err := os.Stat(parent)
+	if err != nil {
+		return nil, errors.New("recovery evidence directory is unavailable; create it and rerun Install/Reconfigure")
+	}
+	if !info.IsDir() {
+		return nil, errors.New("recovery evidence parent must be a directory")
+	}
+	return &FileRecoveryEvidenceStore{path: path}, nil
+}
+
+// PersistDegradedRecovery writes one deterministic replacement record. The
+// temporary file is created beside the destination so rename remains atomic on
+// supported filesystems.
+func (s *FileRecoveryEvidenceStore) PersistDegradedRecovery(evidence RecoveryEvidence) error {
+	if s == nil || s.path == "" {
+		return errors.New("recovery evidence store is not configured")
+	}
+	data, err := json.Marshal(sanitizeRecoveryEvidence(evidence))
+	if err != nil {
+		return errors.New("recovery evidence serialization failed; rerun Install/Reconfigure")
+	}
+	path := filepath.Clean(s.path)
+	temp, err := createRecoveryEvidenceTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return errors.New("recovery evidence temporary write failed; verify directory access and rerun Install/Reconfigure")
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o600); err != nil {
+		temp.Close()
+		return errors.New("recovery evidence permissions could not be secured; rerun Install/Reconfigure")
+	}
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		return errors.New("recovery evidence write failed; verify available storage and rerun Install/Reconfigure")
+	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return errors.New("recovery evidence sync failed; rerun Install/Reconfigure")
+	}
+	if err := temp.Close(); err != nil {
+		return errors.New("recovery evidence close failed; rerun Install/Reconfigure")
+	}
+	if err := renameRecoveryEvidenceFile(tempPath, path); err != nil {
+		return errors.New("recovery evidence replacement failed; verify directory access and rerun Install/Reconfigure")
+	}
+	if err := syncRecoveryEvidenceParentDirectory(filepath.Dir(path)); err != nil {
+		return errors.New("recovery evidence directory sync failed; verify durable storage and rerun Install/Reconfigure")
+	}
+	return nil
+}
+
+// LoadDegradedRecovery reads evidence through a fresh adapter/process boundary.
+func (s *FileRecoveryEvidenceStore) LoadDegradedRecovery() (RecoveryEvidence, error) {
+	if s == nil || s.path == "" {
+		return RecoveryEvidence{}, errors.New("recovery evidence store is not configured")
+	}
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		return RecoveryEvidence{}, errors.New("recovery evidence is unavailable; rerun Install/Reconfigure after repairing Store targets")
+	}
+	var evidence RecoveryEvidence
+	if err := json.Unmarshal(data, &evidence); err != nil {
+		return RecoveryEvidence{}, errors.New("recovery evidence is invalid; repair Store targets and rerun Install/Reconfigure")
+	}
+	return sanitizeRecoveryEvidence(evidence), nil
+}
+
+func sanitizeRecoveryEvidence(evidence RecoveryEvidence) RecoveryEvidence {
+	return RecoveryEvidence{
+		FailedTarget:         sanitizeRecoveryTarget(evidence.FailedTarget),
+		AffectedTargets:      sanitizeRecoveryTargets(evidence.AffectedTargets),
+		CompensationFailures: sanitizeRecoveryTargets(evidence.CompensationFailures),
+		RecoveryAction:       recoveryEvidenceAction,
+	}
+}
+
+func sanitizeRecoveryTargets(targets []string) []string {
+	sanitized := make([]string, 0, len(targets))
+	for _, target := range targets {
+		sanitized = append(sanitized, sanitizeRecoveryTarget(target))
+	}
+	return sanitized
+}
+
+func sanitizeRecoveryTarget(target string) string {
+	parts := strings.Split(target, "/")
+	for i, part := range parts {
+		if strings.ContainsAny(part, "=?:&") {
+			parts[i] = "<redacted>"
+		}
+	}
+	return strings.Join(parts, "/")
+}
+
+type Outcome string
+
+const (
+	OutcomeCompensated          Outcome = "compensated-store-failure"
+	OutcomeDegradedPartialStore Outcome = "degraded-partial-store"
+)
+
+// RecoveryEvidence is deterministic and secret-safe: it identifies affected
+// targets and the fix-forward action without retaining Store error text or bytes.
+type RecoveryEvidence struct {
+	FailedTarget         string
+	AffectedTargets      []string
+	CompensationFailures []string
+	RecoveryAction       string
+}
+
+type ApplyReport struct {
+	Outcome  Outcome
+	Recovery RecoveryEvidence
+}
+
 // Apply writes a complete non-blocked plan. A blocked plan is never partially applied.
 func Apply(store Store, plan Plan) error {
 	if err := validatePlan(plan); err != nil {
@@ -243,6 +411,76 @@ func Apply(store Store, plan Plan) error {
 		}
 	}
 	return nil
+}
+
+type compensationEntry struct {
+	operation Operation
+	snapshot  Snapshot
+}
+
+// ApplyWithCompensation writes a Store plan transactionally where possible. A
+// failed write triggers best-effort reverse compensation of every attempted
+// target, including a write that may have partially mutated before returning an
+// error. It always fails closed: compensated failures remain failures, while a
+// failed compensation returns an explicit degraded partial Store outcome.
+func ApplyWithCompensation(store CompensationStore, evidenceStore RecoveryEvidenceStore, plan Plan) (ApplyReport, error) {
+	if err := validatePlan(plan); err != nil {
+		return ApplyReport{}, err
+	}
+
+	journal := make([]compensationEntry, 0, len(plan.Operations))
+	for _, operation := range plan.Operations {
+		snapshot, err := store.Snapshot(operation.Location)
+		if err != nil {
+			return ApplyReport{}, storeFailure(operation.Location)
+		}
+		journal = append(journal, compensationEntry{operation: operation, snapshot: snapshot})
+		if err := store.Write(operation.Location, operation.content, operation.Provenance); err != nil {
+			return compensate(store, evidenceStore, journal, operation.Location)
+		}
+	}
+	return ApplyReport{}, nil
+}
+
+func compensate(store CompensationStore, evidenceStore RecoveryEvidenceStore, journal []compensationEntry, failedTarget string) (ApplyReport, error) {
+	evidence := RecoveryEvidence{
+		FailedTarget:   failedTarget,
+		RecoveryAction: recoveryEvidenceAction,
+	}
+	for i := len(journal) - 1; i >= 0; i-- {
+		entry := journal[i]
+		evidence.AffectedTargets = append(evidence.AffectedTargets, entry.operation.Location)
+		if err := restore(store, entry); err != nil {
+			evidence.CompensationFailures = append(evidence.CompensationFailures, entry.operation.Location)
+		}
+	}
+	if len(evidence.CompensationFailures) > 0 {
+		report := ApplyReport{Outcome: OutcomeDegradedPartialStore, Recovery: evidence}
+		if evidenceStore == nil || evidenceStore.PersistDegradedRecovery(evidence) != nil {
+			return report, degradedRecoveryPersistenceFailure(failedTarget)
+		}
+		return report, degradedStoreFailure(failedTarget)
+	}
+	return ApplyReport{Outcome: OutcomeCompensated, Recovery: evidence}, storeFailure(failedTarget)
+}
+
+func restore(store CompensationStore, entry compensationEntry) error {
+	if !entry.snapshot.Exists {
+		return store.Delete(entry.operation.Location)
+	}
+	return store.Write(entry.operation.Location, entry.snapshot.Bytes, entry.snapshot.Provenance)
+}
+
+func storeFailure(target string) error {
+	return fmt.Errorf("Store transition failed at %q; fix the Store failure and rerun Install/Reconfigure", target)
+}
+
+func degradedStoreFailure(target string) error {
+	return fmt.Errorf("Store transition reached degraded partial state at %q; repair affected Store targets and rerun Install/Reconfigure", target)
+}
+
+func degradedRecoveryPersistenceFailure(target string) error {
+	return fmt.Errorf("Store transition reached degraded partial state at %q; recovery evidence persistence failed; repair affected Store targets and rerun Install/Reconfigure", target)
 }
 
 func validatePlan(plan Plan) error {

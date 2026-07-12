@@ -4,6 +4,11 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -394,10 +399,424 @@ func TestBuildPlanBlocksDuplicateDesiredLocationsRegardlessOrder(t *testing.T) {
 	}
 }
 
+func TestApplyWithCompensationRestoresTouchedTargetsAfterPartialLaterWriteFailure(t *testing.T) {
+	_ = t.TempDir() // The fake Store deliberately keeps all filesystem effects isolated from a real user configuration.
+	store := newFakeStore(map[string][]byte{
+		"claude/CLAUDE.md":       []byte("old claude"),
+		"opencode/opencode.json": []byte("old opencode"),
+	})
+	oldClaudeProvenance := Provenance{Version: "v1", ManagedIdentity: "claude", Location: "claude/CLAUDE.md", ManifestDigest: digestFor([]byte("old claude"))}
+	oldOpenCodeProvenance := Provenance{Version: "v1", ManagedIdentity: "opencode", Location: "opencode/opencode.json", ManifestDigest: digestFor([]byte("old opencode"))}
+	store.provenance["claude/CLAUDE.md"] = oldClaudeProvenance
+	store.provenance["opencode/opencode.json"] = oldOpenCodeProvenance
+	store.writeFailures = map[string][]fakeWriteFailure{
+		"opencode/opencode.json": {{err: errors.New("credential=super-secret"), mutateBeforeFail: true}},
+	}
+
+	report, err := ApplyWithCompensation(store, nil, compensationPlan())
+	if err == nil {
+		t.Fatal("ApplyWithCompensation() error = nil, want failed transition")
+	}
+	if report.Outcome != OutcomeCompensated {
+		t.Fatalf("outcome = %q, want %q", report.Outcome, OutcomeCompensated)
+	}
+	if !bytes.Equal(store.files["claude/CLAUDE.md"], []byte("old claude")) || !bytes.Equal(store.files["opencode/opencode.json"], []byte("old opencode")) {
+		t.Fatalf("files after compensation = %#v, want prior bytes", store.files)
+	}
+	if store.provenance["claude/CLAUDE.md"] != oldClaudeProvenance || store.provenance["opencode/opencode.json"] != oldOpenCodeProvenance {
+		t.Fatalf("provenance after compensation = %#v, want prior provenance", store.provenance)
+	}
+	if got, want := store.writes, []string{"claude/CLAUDE.md", "opencode/opencode.json", "opencode/opencode.json", "claude/CLAUDE.md"}; !equalStrings(got, want) {
+		t.Fatalf("write order = %#v, want %#v", got, want)
+	}
+	if report.Recovery.FailedTarget != "opencode/opencode.json" || report.Recovery.RecoveryAction != "fix the Store failure and rerun Install/Reconfigure" {
+		t.Fatalf("recovery evidence = %#v", report.Recovery)
+	}
+	if bytes.Contains([]byte(err.Error()), []byte("super-secret")) {
+		t.Fatalf("error leaked secret: %v", err)
+	}
+}
+
+func TestApplyWithCompensationReportsDeterministicDegradedRecoveryEvidence(t *testing.T) {
+	_ = t.TempDir()
+	store := newFakeStore(map[string][]byte{
+		"claude/CLAUDE.md":       []byte("old claude"),
+		"opencode/opencode.json": []byte("old opencode"),
+	})
+	store.provenance["claude/CLAUDE.md"] = Provenance{Version: "v1", ManagedIdentity: "claude", Location: "claude/CLAUDE.md", ManifestDigest: digestFor([]byte("old claude"))}
+	store.provenance["opencode/opencode.json"] = Provenance{Version: "v1", ManagedIdentity: "opencode", Location: "opencode/opencode.json", ManifestDigest: digestFor([]byte("old opencode"))}
+	store.writeFailures = map[string][]fakeWriteFailure{
+		"opencode/opencode.json": {
+			{err: errors.New("token=initial-secret"), mutateBeforeFail: true},
+			{err: errors.New("token=rollback-secret")},
+		},
+		"claude/CLAUDE.md": {{}, {err: errors.New("token=second-rollback-secret")}},
+	}
+
+	report, err := ApplyWithCompensation(store, nil, compensationPlan())
+	if err == nil {
+		t.Fatal("ApplyWithCompensation() error = nil, want degraded partial Store error")
+	}
+	if report.Outcome != OutcomeDegradedPartialStore {
+		t.Fatalf("outcome = %q, want %q", report.Outcome, OutcomeDegradedPartialStore)
+	}
+	if got, want := report.Recovery.AffectedTargets, []string{"opencode/opencode.json", "claude/CLAUDE.md"}; !equalStrings(got, want) {
+		t.Fatalf("affected targets = %#v, want %#v", got, want)
+	}
+	if got, want := report.Recovery.CompensationFailures, []string{"opencode/opencode.json", "claude/CLAUDE.md"}; !equalStrings(got, want) {
+		t.Fatalf("compensation failures = %#v, want %#v", got, want)
+	}
+	for _, secret := range []string{"initial-secret", "rollback-secret", "second-rollback-secret"} {
+		if bytes.Contains([]byte(err.Error()), []byte(secret)) {
+			t.Fatalf("error leaked secret %q: %v", secret, err)
+		}
+	}
+}
+
+func TestApplyWithCompensationRemovesTargetsCreatedBeforeFailure(t *testing.T) {
+	_ = t.TempDir()
+	store := newFakeStore(map[string][]byte{"opencode/opencode.json": []byte("old opencode")})
+	store.provenance["opencode/opencode.json"] = Provenance{Version: "v1", ManagedIdentity: "opencode", Location: "opencode/opencode.json", ManifestDigest: digestFor([]byte("old opencode"))}
+	store.writeFailures = map[string][]fakeWriteFailure{
+		"opencode/opencode.json": {{err: errors.New("token=secret"), mutateBeforeFail: true}},
+	}
+
+	report, err := ApplyWithCompensation(store, nil, compensationPlan())
+	if err == nil || report.Outcome != OutcomeCompensated {
+		t.Fatalf("result = (%#v, %v), want compensated failed transition", report, err)
+	}
+	if _, exists := store.files["claude/CLAUDE.md"]; exists {
+		t.Fatalf("new target remained after compensation: %#v", store.files)
+	}
+	if got, want := report.Recovery.AffectedTargets, []string{"opencode/opencode.json", "claude/CLAUDE.md"}; !equalStrings(got, want) {
+		t.Fatalf("affected targets = %#v, want %#v", got, want)
+	}
+}
+
+func TestApplyWithCompensationPersistsDegradedRecoveryEvidenceBeforeReturning(t *testing.T) {
+	store := newFakeStore(map[string][]byte{
+		"claude/CLAUDE.md":       []byte("old claude"),
+		"opencode/opencode.json": []byte("old opencode"),
+	})
+	store.writeFailures = map[string][]fakeWriteFailure{
+		"opencode/opencode.json": {
+			{err: errors.New("token=initial-secret"), mutateBeforeFail: true},
+			{err: errors.New("token=rollback-secret")},
+		},
+	}
+	evidenceStore := &fakeRecoveryEvidenceStore{beforePersist: func() {
+		if got, want := len(store.writes), 4; got != want {
+			t.Fatalf("writes before evidence persistence = %d, want %d after all compensation attempts", got, want)
+		}
+	}}
+
+	report, err := ApplyWithCompensation(store, evidenceStore, compensationPlan())
+	if err == nil || report.Outcome != OutcomeDegradedPartialStore {
+		t.Fatalf("result = (%#v, %v), want degraded failed transition", report, err)
+	}
+	if len(evidenceStore.persisted) != 1 {
+		t.Fatalf("persisted evidence = %#v, want one entry", evidenceStore.persisted)
+	}
+	if got, want := evidenceStore.persisted[0], report.Recovery; got.FailedTarget != want.FailedTarget || !equalStrings(got.AffectedTargets, want.AffectedTargets) || !equalStrings(got.CompensationFailures, want.CompensationFailures) || got.RecoveryAction != want.RecoveryAction {
+		t.Fatalf("persisted evidence = %#v, want %#v", got, want)
+	}
+	if got, want := evidenceStore.events, []string{"persist:opencode/opencode.json"}; !equalStrings(got, want) {
+		t.Fatalf("persistence order = %#v, want %#v", got, want)
+	}
+	for _, secret := range []string{"initial-secret", "rollback-secret"} {
+		if bytes.Contains([]byte(evidenceStore.persisted[0].RecoveryAction), []byte(secret)) || bytes.Contains([]byte(err.Error()), []byte(secret)) {
+			t.Fatalf("persistence leaked secret %q", secret)
+		}
+	}
+
+	rerun, rerunErr := ApplyWithCompensation(store, evidenceStore, compensationPlan())
+	if rerunErr != nil || rerun.Outcome != "" {
+		t.Fatalf("deterministic rerun = (%#v, %v), want success", rerun, rerunErr)
+	}
+	if len(evidenceStore.persisted) != 1 {
+		t.Fatalf("persisted evidence after successful rerun = %#v, want original evidence only", evidenceStore.persisted)
+	}
+}
+
+func TestApplyWithCompensationFailsClosedWhenDegradedEvidencePersistenceFails(t *testing.T) {
+	store := newFakeStore(map[string][]byte{
+		"claude/CLAUDE.md":       []byte("old claude"),
+		"opencode/opencode.json": []byte("old opencode"),
+	})
+	store.writeFailures = map[string][]fakeWriteFailure{
+		"opencode/opencode.json": {
+			{err: errors.New("token=initial-secret"), mutateBeforeFail: true},
+			{err: errors.New("token=rollback-secret")},
+		},
+	}
+	evidenceStore := &fakeRecoveryEvidenceStore{err: errors.New("credential=evidence-secret")}
+
+	report, err := ApplyWithCompensation(store, evidenceStore, compensationPlan())
+	if err == nil || report.Outcome != OutcomeDegradedPartialStore {
+		t.Fatalf("result = (%#v, %v), want degraded failed transition", report, err)
+	}
+	if len(evidenceStore.persisted) != 1 || report.Recovery.FailedTarget != "opencode/opencode.json" || len(report.Recovery.CompensationFailures) != 1 {
+		t.Fatalf("recovery classification = %#v, persisted = %#v, want actionable sanitized evidence", report.Recovery, evidenceStore.persisted)
+	}
+	for _, secret := range []string{"initial-secret", "rollback-secret", "evidence-secret"} {
+		if bytes.Contains([]byte(err.Error()), []byte(secret)) {
+			t.Fatalf("error leaked secret %q: %v", secret, err)
+		}
+	}
+	if !bytes.Contains([]byte(err.Error()), []byte("recovery evidence persistence failed")) {
+		t.Fatalf("error = %v, want sanitized persistence classification", err)
+	}
+}
+
+func TestApplyWithCompensationDoesNotPersistEvidenceAfterSuccessOrFullCompensation(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		store *fakeStore
+		want  Outcome
+	}{
+		{name: "success", store: newFakeStore(nil)},
+		{name: "full compensation", store: func() *fakeStore {
+			store := newFakeStore(nil)
+			store.writeFailures = map[string][]fakeWriteFailure{"opencode/opencode.json": {{err: errors.New("token=secret"), mutateBeforeFail: true}}}
+			return store
+		}(), want: OutcomeCompensated},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			evidenceStore := &fakeRecoveryEvidenceStore{}
+			report, err := ApplyWithCompensation(tt.store, evidenceStore, compensationPlan())
+			if tt.want == "" && err != nil {
+				t.Fatalf("ApplyWithCompensation() error = %v, want nil", err)
+			}
+			if tt.want != "" && (err == nil || report.Outcome != tt.want) {
+				t.Fatalf("result = (%#v, %v), want %q failure", report, err, tt.want)
+			}
+			if len(evidenceStore.persisted) != 0 {
+				t.Fatalf("persisted evidence = %#v, want none", evidenceStore.persisted)
+			}
+		})
+	}
+}
+
+func TestFileRecoveryEvidenceStorePersistsDeterministicSanitizedReplacementEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "recovery-evidence.json")
+	store, err := NewFileRecoveryEvidenceStore(path)
+	if err != nil {
+		t.Fatalf("NewFileRecoveryEvidenceStore() error = %v", err)
+	}
+	first := RecoveryEvidence{
+		FailedTarget:         "opencode/token=super-secret",
+		AffectedTargets:      []string{"claude/CLAUDE.md", "opencode/token=super-secret"},
+		CompensationFailures: []string{"opencode/token=super-secret"},
+		RecoveryAction:       "do not persist this caller-controlled action",
+	}
+	if err := store.PersistDegradedRecovery(first); err != nil {
+		t.Fatalf("PersistDegradedRecovery() error = %v", err)
+	}
+	firstBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if strings.Contains(string(firstBytes), "super-secret") || strings.Contains(string(firstBytes), "caller-controlled") {
+		t.Fatalf("persisted evidence leaked unsafe input: %s", firstBytes)
+	}
+
+	fresh, err := NewFileRecoveryEvidenceStore(path)
+	if err != nil {
+		t.Fatalf("fresh NewFileRecoveryEvidenceStore() error = %v", err)
+	}
+	got, err := fresh.LoadDegradedRecovery()
+	if err != nil {
+		t.Fatalf("LoadDegradedRecovery() error = %v", err)
+	}
+	wantFirst := RecoveryEvidence{
+		FailedTarget:         "opencode/<redacted>",
+		AffectedTargets:      []string{"claude/CLAUDE.md", "opencode/<redacted>"},
+		CompensationFailures: []string{"opencode/<redacted>"},
+		RecoveryAction:       "fix the Store failure and rerun Install/Reconfigure",
+	}
+	if got.FailedTarget != wantFirst.FailedTarget || !equalStrings(got.AffectedTargets, wantFirst.AffectedTargets) || !equalStrings(got.CompensationFailures, wantFirst.CompensationFailures) || got.RecoveryAction != wantFirst.RecoveryAction {
+		t.Fatalf("loaded evidence = %#v, want %#v", got, wantFirst)
+	}
+	if err := store.PersistDegradedRecovery(first); err != nil {
+		t.Fatalf("second PersistDegradedRecovery() error = %v", err)
+	}
+	secondBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("second ReadFile() error = %v", err)
+	}
+	if !bytes.Equal(firstBytes, secondBytes) {
+		t.Fatalf("serialized bytes changed across equivalent writes: %q != %q", firstBytes, secondBytes)
+	}
+
+	replacement := RecoveryEvidence{FailedTarget: "claude/CLAUDE.md", AffectedTargets: []string{"claude/CLAUDE.md"}, RecoveryAction: "ignored"}
+	if err := store.PersistDegradedRecovery(replacement); err != nil {
+		t.Fatalf("replacement PersistDegradedRecovery() error = %v", err)
+	}
+	got, err = fresh.LoadDegradedRecovery()
+	if err != nil {
+		t.Fatalf("LoadDegradedRecovery() after replacement error = %v", err)
+	}
+	if got.FailedTarget != replacement.FailedTarget || !equalStrings(got.AffectedTargets, replacement.AffectedTargets) || got.RecoveryAction != "fix the Store failure and rerun Install/Reconfigure" {
+		t.Fatalf("replacement evidence = %#v", got)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("Stat() error = %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("permissions = %o, want 600", got)
+		}
+	}
+}
+
+func TestFileRecoveryEvidenceStoreRejectsInvalidPathsAndCleansFailedTemporaryFiles(t *testing.T) {
+	if _, err := NewFileRecoveryEvidenceStore(""); err == nil {
+		t.Fatal("NewFileRecoveryEvidenceStore(\"\") error = nil, want validation failure")
+	}
+	if _, err := NewFileRecoveryEvidenceStore(t.TempDir()); err == nil {
+		t.Fatal("NewFileRecoveryEvidenceStore(directory) error = nil, want validation failure")
+	}
+	parentFile := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(parentFile, []byte("file"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if _, err := NewFileRecoveryEvidenceStore(filepath.Join(parentFile, "recovery.json")); err == nil {
+		t.Fatal("NewFileRecoveryEvidenceStore(file parent) error = nil, want validation failure")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "recovery.json")
+	store, err := NewFileRecoveryEvidenceStore(path)
+	if err != nil {
+		t.Fatalf("NewFileRecoveryEvidenceStore() error = %v", err)
+	}
+	originalRename := renameRecoveryEvidenceFile
+	renameRecoveryEvidenceFile = func(_, _ string) error { return errors.New("credential=rename-secret") }
+	t.Cleanup(func() { renameRecoveryEvidenceFile = originalRename })
+	if err := store.PersistDegradedRecovery(RecoveryEvidence{FailedTarget: "claude/CLAUDE.md"}); err == nil {
+		t.Fatal("PersistDegradedRecovery() error = nil, want rename failure")
+	} else if strings.Contains(err.Error(), "rename-secret") {
+		t.Fatalf("error leaked raw rename failure: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temporary debris = %#v, want none", entries)
+	}
+}
+
+func TestFileRecoveryEvidenceStoreSanitizesTemporaryWriteFailures(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewFileRecoveryEvidenceStore(filepath.Join(dir, "recovery.json"))
+	if err != nil {
+		t.Fatalf("NewFileRecoveryEvidenceStore() error = %v", err)
+	}
+	originalCreateTemp := createRecoveryEvidenceTemp
+	createRecoveryEvidenceTemp = func(_, _ string) (*os.File, error) { return nil, errors.New("token=write-secret") }
+	t.Cleanup(func() { createRecoveryEvidenceTemp = originalCreateTemp })
+	if err := store.PersistDegradedRecovery(RecoveryEvidence{FailedTarget: "claude/CLAUDE.md"}); err == nil {
+		t.Fatal("PersistDegradedRecovery() error = nil, want write failure")
+	} else if strings.Contains(err.Error(), "write-secret") {
+		t.Fatalf("error leaked raw write failure: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temporary debris = %#v, want none", entries)
+	}
+}
+
+func TestFileRecoveryEvidenceStoreSyncsParentDirectoryAfterRenameAndFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "recovery.json")
+	store, err := NewFileRecoveryEvidenceStore(path)
+	if err != nil {
+		t.Fatalf("NewFileRecoveryEvidenceStore() error = %v", err)
+	}
+
+	originalSyncDirectory := syncRecoveryEvidenceParentDirectory
+	t.Cleanup(func() { syncRecoveryEvidenceParentDirectory = originalSyncDirectory })
+
+	for _, tt := range []struct {
+		name      string
+		syncErr   error
+		wantError string
+	}{
+		{name: "syncs renamed evidence", wantError: ""},
+		{name: "fails closed when directory sync is uncertain", syncErr: errors.New("credential=directory-sync-secret"), wantError: "directory sync failed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			syncRecoveryEvidenceParentDirectory = func(got string) error {
+				called = true
+				if got != dir {
+					t.Fatalf("directory sync path = %q, want %q", got, dir)
+				}
+				return tt.syncErr
+			}
+
+			err := store.PersistDegradedRecovery(RecoveryEvidence{FailedTarget: "claude/CLAUDE.md"})
+			if !called {
+				t.Fatal("PersistDegradedRecovery() did not sync the parent directory after rename")
+			}
+			if tt.wantError == "" {
+				if err != nil {
+					t.Fatalf("PersistDegradedRecovery() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("PersistDegradedRecovery() error = %v, want sanitized %q failure", err, tt.wantError)
+			}
+			if strings.Contains(err.Error(), "directory-sync-secret") {
+				t.Fatalf("error leaked raw directory sync failure: %v", err)
+			}
+			if _, readErr := os.ReadFile(path); readErr != nil {
+				t.Fatalf("renamed evidence is unavailable after directory sync failure: %v", readErr)
+			}
+			entries, readErr := os.ReadDir(dir)
+			if readErr != nil {
+				t.Fatalf("ReadDir() error = %v", readErr)
+			}
+			if len(entries) != 1 || entries[0].Name() != "recovery.json" {
+				t.Fatalf("directory state = %#v, want only renamed evidence", entries)
+			}
+		})
+	}
+}
+
+type fakeRecoveryEvidenceStore struct {
+	persisted     []RecoveryEvidence
+	events        []string
+	err           error
+	beforePersist func()
+}
+
+func (s *fakeRecoveryEvidenceStore) PersistDegradedRecovery(evidence RecoveryEvidence) error {
+	if s.beforePersist != nil {
+		s.beforePersist()
+	}
+	s.persisted = append(s.persisted, evidence)
+	s.events = append(s.events, "persist:"+evidence.FailedTarget)
+	return s.err
+}
+
 type fakeStore struct {
-	files      map[string][]byte
-	provenance map[string]Provenance
-	writes     []string
+	files          map[string][]byte
+	provenance     map[string]Provenance
+	writes         []string
+	writeFailures  map[string][]fakeWriteFailure
+	deleteFailures map[string]error
+}
+
+type fakeWriteFailure struct {
+	err              error
+	mutateBeforeFail bool
 }
 
 func newFakeStore(files map[string][]byte) *fakeStore {
@@ -409,9 +828,36 @@ func newFakeStore(files map[string][]byte) *fakeStore {
 }
 
 func (s *fakeStore) Write(path string, content []byte, provenance Provenance) error {
+	s.writes = append(s.writes, path)
+	if failures := s.writeFailures[path]; len(failures) > 0 {
+		failure := failures[0]
+		s.writeFailures[path] = failures[1:]
+		if failure.mutateBeforeFail {
+			s.files[path] = append([]byte(nil), content...)
+			s.provenance[path] = provenance
+		}
+		return failure.err
+	}
 	s.files[path] = append([]byte(nil), content...)
 	s.provenance[path] = provenance
-	s.writes = append(s.writes, path)
+	return nil
+}
+
+func (s *fakeStore) Snapshot(path string) (Snapshot, error) {
+	content, exists := s.files[path]
+	if !exists {
+		return Snapshot{}, nil
+	}
+	return Snapshot{Exists: true, Bytes: append([]byte(nil), content...), Provenance: s.provenance[path]}, nil
+}
+
+func (s *fakeStore) Delete(path string) error {
+	if err := s.deleteFailures[path]; err != nil {
+		delete(s.deleteFailures, path)
+		return err
+	}
+	delete(s.files, path)
+	delete(s.provenance, path)
 	return nil
 }
 
@@ -432,4 +878,25 @@ func (s *fakeStore) Inventory() Inventory {
 func digestFor(content []byte) string {
 	sum := sha256.Sum256(content)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func compensationPlan() Plan {
+	claude := []byte("new claude")
+	opencode := []byte("new opencode")
+	return Plan{Operations: []Operation{
+		{Kind: OperationWrite, Identity: "claude", Location: "claude/CLAUDE.md", Digest: digestFor(claude), Provenance: Provenance{Version: "v1", ManagedIdentity: "claude", Location: "claude/CLAUDE.md", ManifestDigest: digestFor(claude)}, content: claude},
+		{Kind: OperationWrite, Identity: "opencode", Location: "opencode/opencode.json", Digest: digestFor(opencode), Provenance: Provenance{Version: "v1", ManagedIdentity: "opencode", Location: "opencode/opencode.json", ManifestDigest: digestFor(opencode)}, content: opencode},
+	}}
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
