@@ -213,7 +213,7 @@ func nativeMCPDefinition(identity, secret string) NativeMCPDefinition {
 
 func TestClaudeUserMCPDefinitionsReturnsCanonicalDefinitions(t *testing.T) {
 	directory := t.TempDir()
-	daemonPath := filepath.Join(directory, "hive-daemon")
+	daemonPath := filepath.Join(directory, "hive-daemon.exe")
 	if err := os.WriteFile(daemonPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -261,7 +261,7 @@ func TestClaudeUserMCPDefinitionsRejectsInvalidDaemonPaths(t *testing.T) {
 
 func TestClaudeUserMCPDefinitionsBuildsWizardRequestWithoutTUIPolicy(t *testing.T) {
 	directory := t.TempDir()
-	daemonPath := filepath.Join(directory, "hive-daemon")
+	daemonPath := filepath.Join(directory, "hive-daemon.exe")
 	if err := os.WriteFile(daemonPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}

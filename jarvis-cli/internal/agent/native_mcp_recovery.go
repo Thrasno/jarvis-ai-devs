@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -68,11 +67,6 @@ func ClaudeUserMCPDefinitions(hiveDaemonPath string) (NativeMCPDefinition, Nativ
 		ExpectedFingerprint: nativeMCPFingerprint(`{"type":"http","url":` + strconv.Quote(context7MCPURL) + `}`),
 	}
 	return hive, context7, nil
-}
-
-func validHiveDaemonPath(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
 }
 
 // NativeMCPInventory is safe to persist or report: it contains no command
