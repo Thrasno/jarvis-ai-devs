@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -62,14 +63,23 @@ func (s *nativeMCPReplacerStub) Replace(definitions []agent.NativeMCPDefinition)
 	return &agent.NativeMCPResult{Phase: agent.NativeMCPVerified, TargetName: definitions[len(definitions)-1].Identity}, nil
 }
 
-func useConcreteWizardExecutor(t *testing.T, home string, replacement agent.NativeMCPReplacer) {
+func useConcreteWizardExecutor(t *testing.T, home string, replacement agent.NativeMCPReplacer) string {
 	t.Helper()
-	daemon := filepath.Join(home, "bin", "hive-daemon")
+	daemonName := "hive-daemon"
+	if runtime.GOOS == "windows" {
+		daemonName += ".exe"
+	}
+	daemon := filepath.Join(home, "bin", daemonName)
 	if err := os.MkdirAll(filepath.Dir(daemon), 0o700); err != nil {
 		t.Fatalf("create fake daemon directory: %v", err)
 	}
-	if err := os.WriteFile(daemon, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+	if err := os.WriteFile(daemon, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
 		t.Fatalf("create fake daemon: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(daemon, 0o700); err != nil {
+			t.Fatalf("make fake daemon executable: %v", err)
+		}
 	}
 	originalExecutor := newWizardMCPExecutor
 	originalDaemonPath := wizardHiveDaemonPath
@@ -81,13 +91,14 @@ func useConcreteWizardExecutor(t *testing.T, home string, replacement agent.Nati
 		newWizardMCPExecutor = originalExecutor
 		wizardHiveDaemonPath = originalDaemonPath
 	})
+	return daemon
 }
 
 func TestTUIManagedMCPAcknowledgementGatesConcreteExecutorMutation(t *testing.T) {
 	home := isolateTestHome(t)
 	replacement := &nativeMCPReplacerStub{}
-	useConcreteWizardExecutor(t, home, replacement)
-	seedProvenancedOpenCodeConfig(t, home, filepath.Join(home, "bin", "hive-daemon"))
+	daemon := useConcreteWizardExecutor(t, home, replacement)
+	seedProvenancedOpenCodeConfig(t, home, daemon)
 
 	m := Model{
 		Step:         StepReview,

@@ -807,8 +807,8 @@ func TestRunNoTUIManagedMCPRoutesUseConcreteExecutorForInstallAndReconfigure(t *
 				}
 			}
 			replacement := &nativeMCPReplacerStub{}
-			useConcreteWizardExecutor(t, home, replacement)
-			seedProvenancedOpenCodeConfig(t, home, filepath.Join(home, "bin", "hive-daemon"))
+			daemon := useConcreteWizardExecutor(t, home, replacement)
+			seedProvenancedOpenCodeConfig(t, home, daemon)
 
 			originalDetect := detectInstalledAgents
 			detectInstalledAgents = func(fs.FS) []agent.Agent {
@@ -863,8 +863,8 @@ func TestRunNoTUIManagedMCPCancellationAndNoAgentRemainMutationFree(t *testing.T
 func TestRunNoTUIManagedMCPFailureStopsAtConcreteExecutorBoundary(t *testing.T) {
 	home := isolateTestHome(t)
 	replacement := &nativeMCPReplacerStub{err: errors.New("native boundary unavailable")}
-	useConcreteWizardExecutor(t, home, replacement)
-	seedProvenancedOpenCodeConfig(t, home, filepath.Join(home, "bin", "hive-daemon"))
+	daemon := useConcreteWizardExecutor(t, home, replacement)
+	seedProvenancedOpenCodeConfig(t, home, daemon)
 	originalDetect := detectInstalledAgents
 	detectInstalledAgents = func(fs.FS) []agent.Agent {
 		return []agent.Agent{
