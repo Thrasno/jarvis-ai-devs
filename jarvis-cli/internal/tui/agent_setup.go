@@ -2,8 +2,11 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
@@ -43,7 +46,22 @@ type sddPhaseAgentInstaller interface {
 
 const claudeRestartGuidance = "Restart Claude Code to discover refreshed Jarvis-managed SDD agents."
 
+const mcpReplacementAcknowledgement = "I ACKNOWLEDGE"
+
+const mcpReplacementWarning = "WARNING: Manually configured MCPs with a Jarvis-managed name at the user level will be replaced. Prior same-name configuration cannot be guaranteed restored. A failure may leave that MCP absent or partial. The operation stops; fix the cause and rerun. Do not edit the managed user-level MCP configuration while this operation runs."
+
 var refreshProjectSkillRegistry = projectregistry.Refresh
+
+// wizardMCPExecutor is the production boundary for the wizard's managed-MCP
+// handoff. Production uses the concrete executor; tests can drive the same
+// TUI and no-TUI routes without a real home or native CLI.
+type wizardMCPExecutor interface {
+	ExecuteWizard(agent.WizardReconcileInput) (agent.ReconcileInstallResult, error)
+}
+
+var newWizardMCPExecutor = func() wizardMCPExecutor { return agent.NewProductionExecutor() }
+
+var wizardHiveDaemonPath = agent.HiveDaemonBinaryPath
 
 // statuslineInstaller is implemented by agents that support the Jarvis-managed
 // Claude Code statusline. The confirm callback decides overwrite vs. skip when
@@ -67,12 +85,11 @@ func configureWizardAgent(
 	agentsSubFS fs.FS,
 	statuslineConfirm func() bool,
 ) ([]string, error) {
-	if err := a.MergeConfig(hiveEntry); err != nil {
-		return nil, fmt.Errorf("hive MCP config: %w", err)
-	}
-	if err := a.MergeConfig(context7Entry); err != nil {
-		return nil, fmt.Errorf("context7 MCP config: %w", err)
-	}
+	// MCP reconciliation is intentionally performed once by ExecuteWizard before
+	// this per-agent artifact pipeline. Keep these legacy parameters while callers
+	// converge so no agent can directly merge a managed MCP configuration here.
+	_ = hiveEntry
+	_ = context7Entry
 	if generatedAgent, ok := a.(generatedConfigAgent); ok {
 		if err := generatedAgent.MergeGeneratedConfig(cfg); err != nil {
 			return nil, fmt.Errorf("generated config guardrails: %w", err)
@@ -132,6 +149,98 @@ func configureWizardAgent(
 	}
 	return warnings, nil
 }
+
+func requiresMCPReplacementAcknowledgement(agents []agent.Agent) bool {
+	for _, configured := range agents {
+		name := strings.ToLower(strings.TrimSpace(configured.Name()))
+		if name == "claude" || name == "opencode" {
+			return true
+		}
+	}
+	return false
+}
+
+func mcpReplacementAcknowledged(input string) bool {
+	return strings.TrimSpace(input) == mcpReplacementAcknowledgement
+}
+
+// reconcileWizardMCPs is the sole setup handoff for managed MCPs. It renders
+// OpenCode's fixed user-global JSON target and supplies canonical Claude
+// definitions to the agent-layer executor; it never calls Agent.MergeConfig.
+func reconcileWizardMCPs(agents []agent.Agent, home string) error {
+	selected := make([]string, 0, 2)
+	for _, configured := range agents {
+		name := strings.ToLower(strings.TrimSpace(configured.Name()))
+		if name == "claude" || name == "opencode" {
+			selected = append(selected, name)
+		}
+	}
+	if len(selected) == 0 {
+		return nil
+	}
+
+	input := agent.WizardReconcileInput{
+		SelectedAgents: selected,
+		Root:           home,
+		EvidencePath:   filepath.Join(home, ".jarvis", "metadata", "reconcile", "recovery.json"),
+	}
+	if hasSelectedAgent(selected, "claude") {
+		hive, context7, err := agent.ClaudeUserMCPDefinitions(wizardHiveDaemonPath(home))
+		if err != nil {
+			return err
+		}
+		input.ClaudeHive, input.ClaudeContext7 = hive, context7
+	}
+	if hasSelectedAgent(selected, "opencode") {
+		output, err := renderWizardOpenCodeMCPs(home)
+		if err != nil {
+			return err
+		}
+		input.RenderedOutputs = []agent.RenderedManagedOutput{output}
+	}
+	_, err := newWizardMCPExecutor().ExecuteWizard(input)
+	return err
+}
+
+func hasSelectedAgent(selected []string, wanted string) bool {
+	for _, name := range selected {
+		if name == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func renderWizardOpenCodeMCPs(home string) (agent.RenderedManagedOutput, error) {
+	hive, err := json.Marshal(map[string]any{
+		"type":    "local",
+		"command": []string{wizardHiveDaemonPath(home)},
+	})
+	if err != nil {
+		return agent.RenderedManagedOutput{}, fmt.Errorf("render OpenCode Hive MCP desired state: %w", err)
+	}
+	managed := agent.OpenCodeManagedMCPs{
+		"hive":     string(hive),
+		"context7": `{"type":"remote","url":"https://mcp.context7.com/mcp","enabled":true}`,
+	}
+	adapter := agent.NewOpenCodeGlobalAdapter(osFS{}, home)
+	store, err := agent.NewFileCompensationStore(home, []agent.RenderedManagedOutput{{Identity: "opencode-global-config", Location: ".config/opencode/opencode.json"}})
+	if err != nil {
+		return agent.RenderedManagedOutput{}, err
+	}
+	snapshot, err := store.Snapshot(".config/opencode/opencode.json")
+	if err != nil {
+		return agent.RenderedManagedOutput{}, err
+	}
+	if snapshot.Exists && snapshot.Provenance.Version == "v1" {
+		return adapter.RenderWithProvenance(managed, &snapshot.Provenance)
+	}
+	return adapter.Render(managed)
+}
+
+type osFS struct{}
+
+func (osFS) ReadFile(path string) ([]byte, error) { return os.ReadFile(path) }
 
 // configureWizardAgents applies setup to all detected agents and returns
 // per-agent structured outcomes. If one agent fails, callers can abort before

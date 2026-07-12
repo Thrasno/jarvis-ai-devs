@@ -328,6 +328,13 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	agents := detectInstalledAgents(wcfg.TemplateFS)
 	if len(agents) == 0 {
 		fmt.Println("No agents detected. Install Claude Code or OpenCode and re-run jarvis.")
+	} else if requiresMCPReplacementAcknowledgement(agents) {
+		fmt.Println(mcpReplacementWarning)
+		fmt.Printf("Type %q to acknowledge and continue: ", mcpReplacementAcknowledgement)
+		if !mcpReplacementAcknowledged(readLine(scanner)) {
+			fmt.Println("Aborted before apply. Existing config remains unchanged.")
+			return nil
+		}
 	}
 
 	// Build the sub-FS rooted at embed/skills for InstallSkills.
@@ -362,12 +369,9 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		}
 	}
 
-	// Point MCP directly to the binary — credentials are read from ~/.jarvis/sync.json.
-	entry := agent.MCPEntry{
-		Name:       "hive",
-		DaemonPath: agent.HiveDaemonBinaryPath(home),
+	if err := reconcileWizardMCPs(agents, home); err != nil {
+		return fmt.Errorf("reconcile managed MCPs: %w", err)
 	}
-	context7Entry := agent.MCPEntry{Name: "context7"}
 
 	// Determine statusline overwrite policy before the pipeline goroutine.
 	// If the script already exists, prompt the user once; otherwise use a no-op
@@ -377,7 +381,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		return fmt.Errorf("check statusline script: %w", err)
 	}
 
-	results := configureWizardAgents(agents, cfg, entry, context7Entry, resolvedPreset, wizardPresetApplyContext{
+	results := configureWizardAgents(agents, cfg, agent.MCPEntry{}, agent.MCPEntry{}, resolvedPreset, wizardPresetApplyContext{
 		Layer1:               config.Layer1Content(),
 		Skills:               skillInfos,
 		PreviousPresetSlug:   previousPresetSlug,

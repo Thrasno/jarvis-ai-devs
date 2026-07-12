@@ -30,6 +30,7 @@ const (
 	StepSkills
 	StepPhaseModels
 	StepReview
+	StepMCPDisclosure
 	StepStatuslineConfirm
 	StepApply
 	StepDone
@@ -91,6 +92,8 @@ type Model struct {
 	reviewChoice             int
 	statuslineOverwriteReady bool // true once the overwrite/skip decision has been captured
 	statuslineOverwrite      bool // the captured decision: true = overwrite, false = skip
+	mcpAcknowledgement       string
+	mcpAcknowledged          bool
 
 	phaseModelRows                []phaseModelRow
 	phaseModelActiveRow           int
@@ -349,6 +352,8 @@ func (m Model) updateStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return updatePhaseModels(m, msg)
 	case StepReview:
 		return updateReview(m, msg)
+	case StepMCPDisclosure:
+		return updateMCPDisclosure(m, msg)
 	case StepStatuslineConfirm:
 		return updateStatuslineConfirm(m, msg)
 	case StepApply:
@@ -377,6 +382,8 @@ func (m Model) View() string {
 		return viewPhaseModels(m)
 	case StepReview:
 		return viewReview(m)
+	case StepMCPDisclosure:
+		return viewMCPDisclosure(m)
 	case StepStatuslineConfirm:
 		return viewStatuslineConfirm(m)
 	case StepApply:

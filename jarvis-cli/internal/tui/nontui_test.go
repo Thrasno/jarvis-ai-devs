@@ -744,6 +744,22 @@ func TestRunNoTUI_PersistsEditedPhaseModels(t *testing.T) {
 func TestRunNoTUI_InstallsClaudeSDDAgentsWithSelectedModelAndEffort(t *testing.T) {
 	tmpHome := isolateTestHome(t)
 	t.Setenv("PATH", "")
+	executor := &recordingWizardMCPExecutor{}
+	originalExecutor := newWizardMCPExecutor
+	originalDaemonPath := wizardHiveDaemonPath
+	newWizardMCPExecutor = func() wizardMCPExecutor { return executor }
+	daemon := filepath.Join(tmpHome, "bin", "hive-daemon")
+	if err := os.MkdirAll(filepath.Dir(daemon), 0o700); err != nil {
+		t.Fatalf("create fake daemon directory: %v", err)
+	}
+	if err := os.WriteFile(daemon, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("create fake daemon: %v", err)
+	}
+	wizardHiveDaemonPath = func(string) string { return daemon }
+	t.Cleanup(func() {
+		newWizardMCPExecutor = originalExecutor
+		wizardHiveDaemonPath = originalDaemonPath
+	})
 
 	originalDetect := detectInstalledAgents
 	detectInstalledAgents = func(fsys fs.FS) []agent.Agent {
@@ -755,10 +771,13 @@ func TestRunNoTUI_InstallsClaudeSDDAgentsWithSelectedModelAndEffort(t *testing.T
 		phaseEditorPromptNewlinesBefore("sdd-design") +
 		"\nhaiku\nmax\n" +
 		phaseEditorPromptNewlinesAfter("sdd-design") +
-		"yes\n")
+		"yes\nI ACKNOWLEDGE\n")
 
 	if err := runNoTUI(testWizardConfig(), input); err != nil {
 		t.Fatalf("runNoTUI Claude SDD install: %v", err)
+	}
+	if len(executor.inputs) != 1 || strings.Join(executor.inputs[0].SelectedAgents, ",") != "claude" {
+		t.Fatalf("managed MCP handoff = %+v, want one Claude production request", executor.inputs)
 	}
 
 	content, err := os.ReadFile(filepath.Join(tmpHome, ".claude", "agents", "sdd-design.md"))
@@ -768,6 +787,102 @@ func TestRunNoTUI_InstallsClaudeSDDAgentsWithSelectedModelAndEffort(t *testing.T
 	text := string(content)
 	if !strings.Contains(text, "model: haiku") || !strings.Contains(text, "effort: max") {
 		t.Fatalf("generated sdd-design.md did not use selected Claude route:\n%s", text)
+	}
+}
+
+func TestRunNoTUIManagedMCPRoutesUseConcreteExecutorForInstallAndReconfigure(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		seedConfigure bool
+	}{
+		{name: "install"},
+		{name: "reconfigure", seedConfigure: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := isolateTestHome(t)
+			t.Setenv("PATH", "")
+			if tt.seedConfigure {
+				if err := config.Save(&config.AppConfig{APIURL: config.DefaultAPIURL, PersonaPreset: "fixture"}); err != nil {
+					t.Fatalf("seed reconfigure config: %v", err)
+				}
+			}
+			replacement := &nativeMCPReplacerStub{}
+			useConcreteWizardExecutor(t, home, replacement)
+			seedProvenancedOpenCodeConfig(t, home, filepath.Join(home, "bin", "hive-daemon"))
+
+			originalDetect := detectInstalledAgents
+			detectInstalledAgents = func(fs.FS) []agent.Agent {
+				return []agent.Agent{
+					&mockAgent{name: "claude", configDir: filepath.Join(home, ".claude")},
+					&mockAgent{name: "opencode", configDir: filepath.Join(home, ".config", "opencode")},
+				}
+			}
+			t.Cleanup(func() { detectInstalledAgents = originalDetect })
+
+			err := runNoTUI(testWizardConfig(), strings.NewReader("\n\nyes\nI ACKNOWLEDGE\n"))
+			if err == nil || strings.Contains(err.Error(), "reconcile managed MCPs") {
+				t.Fatalf("no-TUI route did not pass concrete reconciliation: %v", err)
+			}
+			assertConcreteWizardMutation(t, home, replacement)
+		})
+	}
+}
+
+func TestRunNoTUIManagedMCPCancellationAndNoAgentRemainMutationFree(t *testing.T) {
+	t.Run("cancellation", func(t *testing.T) {
+		home := isolateTestHome(t)
+		replacement := &nativeMCPReplacerStub{}
+		useConcreteWizardExecutor(t, home, replacement)
+		originalDetect := detectInstalledAgents
+		detectInstalledAgents = func(fs.FS) []agent.Agent {
+			return []agent.Agent{&mockAgent{name: "claude", configDir: filepath.Join(home, ".claude")}}
+		}
+		t.Cleanup(func() { detectInstalledAgents = originalDetect })
+
+		if err := runNoTUI(testWizardConfig(), strings.NewReader("\n\nyes\nno\n")); err != nil {
+			t.Fatalf("no-TUI cancellation: %v", err)
+		}
+		assertNoManagedMCPMutation(t, home, replacement)
+	})
+
+	t.Run("no agents", func(t *testing.T) {
+		home := isolateTestHome(t)
+		replacement := &nativeMCPReplacerStub{}
+		useConcreteWizardExecutor(t, home, replacement)
+		originalDetect := detectInstalledAgents
+		detectInstalledAgents = func(fs.FS) []agent.Agent { return nil }
+		t.Cleanup(func() { detectInstalledAgents = originalDetect })
+
+		if err := runNoTUI(testWizardConfig(), strings.NewReader("\n\nyes\n")); err != nil {
+			t.Fatalf("no-TUI no-agent continuation: %v", err)
+		}
+		assertNoManagedMCPMutation(t, home, replacement)
+	})
+}
+
+func TestRunNoTUIManagedMCPFailureStopsAtConcreteExecutorBoundary(t *testing.T) {
+	home := isolateTestHome(t)
+	replacement := &nativeMCPReplacerStub{err: errors.New("native boundary unavailable")}
+	useConcreteWizardExecutor(t, home, replacement)
+	seedProvenancedOpenCodeConfig(t, home, filepath.Join(home, "bin", "hive-daemon"))
+	originalDetect := detectInstalledAgents
+	detectInstalledAgents = func(fs.FS) []agent.Agent {
+		return []agent.Agent{
+			&mockAgent{name: "claude", configDir: filepath.Join(home, ".claude")},
+			&mockAgent{name: "opencode", configDir: filepath.Join(home, ".config", "opencode")},
+		}
+	}
+	t.Cleanup(func() { detectInstalledAgents = originalDetect })
+
+	err := runNoTUI(testWizardConfig(), strings.NewReader("\n\nyes\nI ACKNOWLEDGE\n"))
+	if err == nil || !strings.Contains(err.Error(), "reconcile managed MCPs: reconciliation failed") {
+		t.Fatalf("expected sanitized fail-stop evidence from no-TUI route, got %v", err)
+	}
+	if len(replacement.definitions) != 1 {
+		t.Fatalf("native replacement calls = %d, want 1", len(replacement.definitions))
+	}
+	if _, statErr := os.Stat(filepath.Join(home, ".jarvis", "config.yaml")); !os.IsNotExist(statErr) {
+		t.Fatalf("config persisted after managed MCP failure = %v, want absent", statErr)
 	}
 }
 
@@ -986,9 +1101,9 @@ func (m *sddInstallingMockAgent) ObserveRuntimeWithConfig(cfg *config.AppConfig)
 // TestRunAgentConfigSequence_Context7AfterHive
 // ──────────────────────────────────────────────────────────────────────────────
 
-// TestRunAgentConfigSequence_Context7AfterHive verifies Context7 is configured
-// AFTER Hive in the wizard sequence (Spec R1).
-func TestRunAgentConfigSequence_Context7AfterHive(t *testing.T) {
+// TestRunAgentConfigSequence_DoesNotDirectlyMergeManagedMCPs verifies the
+// per-agent pipeline cannot bypass the ExecuteWizard reconciliation boundary.
+func TestRunAgentConfigSequence_DoesNotDirectlyMergeManagedMCPs(t *testing.T) {
 	tmpHome := isolateTestHome(t)
 
 	mockConfigDir := filepath.Join(tmpHome, ".mock-agent")
@@ -1025,38 +1140,11 @@ func TestRunAgentConfigSequence_Context7AfterHive(t *testing.T) {
 		t.Errorf("expected done=true, got done=%v line=%q", pr.done, pr.line)
 	}
 
-	// Verify BOTH hive and context7 were configured
-	if len(mock.mergedEntries) != 2 {
-		t.Fatalf("expected 2 MergeConfig calls (hive + context7), got %d", len(mock.mergedEntries))
+	if len(mock.mergedEntries) != 0 {
+		t.Fatalf("direct managed MCP MergeConfig calls = %d, want 0", len(mock.mergedEntries))
 	}
-
-	// Verify ORDER: hive first, context7 second
-	if mock.mergedEntries[0].Name != "hive" {
-		t.Errorf("expected first MergeConfig call to be 'hive', got %q", mock.mergedEntries[0].Name)
-	}
-
-	if mock.mergedEntries[1].Name != "context7" {
-		t.Errorf("expected second MergeConfig call to be 'context7', got %q", mock.mergedEntries[1].Name)
-	}
-
-	// Verify settings.json was written with both entries
-	settingsPath := filepath.Join(mockConfigDir, "settings.json")
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
-		t.Fatalf("settings.json not created: %v", err)
-	}
-
-	var settings map[string]any
-	if err := json.Unmarshal(data, &settings); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
-
-	mcpServers := settings["mcpServers"].(map[string]any)
-	if _, ok := mcpServers["hive"]; !ok {
-		t.Error("hive entry missing from settings.json")
-	}
-	if _, ok := mcpServers["context7"]; !ok {
-		t.Error("context7 entry missing from settings.json")
+	if _, err := os.Stat(filepath.Join(mockConfigDir, "settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("legacy settings mutation = %v, want no direct managed MCP write", err)
 	}
 }
 

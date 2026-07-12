@@ -564,6 +564,13 @@ func NewProductionExecutor() ProductionExecutor {
 	return ProductionExecutor{Native: NativeMCPManager{}, reconcile: ReconcileInstall}
 }
 
+// NewProductionExecutorWithNative preserves the production reconciliation
+// composition while allowing callers to supply only the native command boundary.
+// Production construction must continue to use NewProductionExecutor.
+func NewProductionExecutorWithNative(native NativeMCPReplacer) ProductionExecutor {
+	return ProductionExecutor{Native: native, reconcile: ReconcileInstall}
+}
+
 func (e ProductionExecutor) Execute(input ProductionReconcileInput) (ReconcileInstallResult, error) {
 	request, err := BuildProductionReconcileRequest(input)
 	if err != nil {

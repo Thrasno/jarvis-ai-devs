@@ -15,6 +15,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 type setupAgentStub struct {
@@ -36,6 +37,158 @@ type setupAgentStub struct {
 	registryAutomationCalls int
 
 	mergeCalls int
+}
+
+type recordingWizardMCPExecutor struct {
+	inputs []agent.WizardReconcileInput
+	err    error
+}
+
+func (e *recordingWizardMCPExecutor) ExecuteWizard(input agent.WizardReconcileInput) (agent.ReconcileInstallResult, error) {
+	e.inputs = append(e.inputs, input)
+	return agent.ReconcileInstallResult{}, e.err
+}
+
+type nativeMCPReplacerStub struct {
+	definitions [][]agent.NativeMCPDefinition
+	err         error
+}
+
+func (s *nativeMCPReplacerStub) Replace(definitions []agent.NativeMCPDefinition) (*agent.NativeMCPResult, error) {
+	s.definitions = append(s.definitions, append([]agent.NativeMCPDefinition(nil), definitions...))
+	if s.err != nil {
+		return &agent.NativeMCPResult{Phase: agent.NativeMCPAdded, TargetName: definitions[0].Identity}, s.err
+	}
+	return &agent.NativeMCPResult{Phase: agent.NativeMCPVerified, TargetName: definitions[len(definitions)-1].Identity}, nil
+}
+
+func useConcreteWizardExecutor(t *testing.T, home string, replacement agent.NativeMCPReplacer) {
+	t.Helper()
+	daemon := filepath.Join(home, "bin", "hive-daemon")
+	if err := os.MkdirAll(filepath.Dir(daemon), 0o700); err != nil {
+		t.Fatalf("create fake daemon directory: %v", err)
+	}
+	if err := os.WriteFile(daemon, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("create fake daemon: %v", err)
+	}
+	originalExecutor := newWizardMCPExecutor
+	originalDaemonPath := wizardHiveDaemonPath
+	newWizardMCPExecutor = func() wizardMCPExecutor {
+		return agent.NewProductionExecutorWithNative(replacement)
+	}
+	wizardHiveDaemonPath = func(string) string { return daemon }
+	t.Cleanup(func() {
+		newWizardMCPExecutor = originalExecutor
+		wizardHiveDaemonPath = originalDaemonPath
+	})
+}
+
+func TestTUIManagedMCPAcknowledgementGatesConcreteExecutorMutation(t *testing.T) {
+	home := isolateTestHome(t)
+	replacement := &nativeMCPReplacerStub{}
+	useConcreteWizardExecutor(t, home, replacement)
+	seedProvenancedOpenCodeConfig(t, home, filepath.Join(home, "bin", "hive-daemon"))
+
+	m := Model{
+		Step:         StepReview,
+		reviewChoice: 2,
+		Agents: []agent.Agent{
+			&mockAgent{name: "claude", configDir: filepath.Join(home, ".claude")},
+			&mockAgent{name: "opencode", configDir: filepath.Join(home, ".config", "opencode")},
+		},
+		PersonaFS: testPersonaFS,
+		Selected:  map[string]bool{},
+		cfg:       &config.AppConfig{APIURL: config.DefaultAPIURL, PersonaPreset: "fixture"},
+	}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.Step != StepMCPDisclosure || cmd != nil {
+		t.Fatalf("review apply before acknowledgement = step %v, cmd nil=%t", m.Step, cmd == nil)
+	}
+	assertNoManagedMCPMutation(t, home, replacement)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(mcpReplacementAcknowledgement)})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if !m.mcpAcknowledged || m.Step != StepReview {
+		t.Fatalf("acknowledgement state = acknowledged=%t step=%v", m.mcpAcknowledged, m.Step)
+	}
+
+	progress := runAgentConfigSequence(m)().(agentProgressMsg)
+	if strings.Contains(progress.line, "reconcile managed MCPs") {
+		t.Fatalf("concrete executor route failed before the artifact pipeline: %s", progress.line)
+	}
+	assertConcreteWizardMutation(t, home, replacement)
+}
+
+func TestReconcileWizardMCPsUsesInjectableProductionBoundaryForNamedManagedAgents(t *testing.T) {
+	home := t.TempDir()
+	daemon := filepath.Join(home, "bin", "hive-daemon")
+	if err := os.MkdirAll(filepath.Dir(daemon), 0o700); err != nil {
+		t.Fatalf("create daemon directory: %v", err)
+	}
+	if err := os.WriteFile(daemon, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("create fake daemon: %v", err)
+	}
+	executor := &recordingWizardMCPExecutor{}
+	original := newWizardMCPExecutor
+	originalDaemonPath := wizardHiveDaemonPath
+	newWizardMCPExecutor = func() wizardMCPExecutor { return executor }
+	wizardHiveDaemonPath = func(string) string { return daemon }
+	t.Cleanup(func() {
+		newWizardMCPExecutor = original
+		wizardHiveDaemonPath = originalDaemonPath
+	})
+
+	if err := reconcileWizardMCPs([]agent.Agent{
+		&setupAgentStub{name: "claude"},
+		&setupAgentStub{name: "opencode"},
+	}, home); err != nil {
+		t.Fatalf("reconcileWizardMCPs() error = %v", err)
+	}
+	if len(executor.inputs) != 1 {
+		t.Fatalf("ExecuteWizard calls = %d, want 1", len(executor.inputs))
+	}
+	input := executor.inputs[0]
+	if got, want := strings.Join(input.SelectedAgents, ","), "claude,opencode"; got != want {
+		t.Fatalf("selected agents = %q, want %q", got, want)
+	}
+	if input.Root != home || len(input.RenderedOutputs) != 1 || input.ClaudeHive.Identity != "hive" || input.ClaudeContext7.Identity != "context7" {
+		t.Fatalf("unexpected production input: %+v", input)
+	}
+}
+
+func TestReconcileWizardMCPsContinuesWithoutManagedAgents(t *testing.T) {
+	executor := &recordingWizardMCPExecutor{}
+	original := newWizardMCPExecutor
+	newWizardMCPExecutor = func() wizardMCPExecutor { return executor }
+	t.Cleanup(func() { newWizardMCPExecutor = original })
+
+	if err := reconcileWizardMCPs([]agent.Agent{&setupAgentStub{name: "other"}}, t.TempDir()); err != nil {
+		t.Fatalf("reconcileWizardMCPs() error = %v", err)
+	}
+	if len(executor.inputs) != 0 {
+		t.Fatalf("ExecuteWizard calls = %d, want 0", len(executor.inputs))
+	}
+}
+
+func TestMCPReplacementAcknowledgementIsExactAndOnlyRequiredForManagedAgents(t *testing.T) {
+	if !requiresMCPReplacementAcknowledgement([]agent.Agent{&setupAgentStub{name: "claude"}}) {
+		t.Fatal("Claude must require the managed MCP acknowledgement")
+	}
+	if requiresMCPReplacementAcknowledgement([]agent.Agent{&setupAgentStub{name: "other"}}) {
+		t.Fatal("unmanaged agents must not require the managed MCP acknowledgement")
+	}
+	for _, input := range []string{"", "yes", "i acknowledge", "I ACKNOWLEDGE!"} {
+		if mcpReplacementAcknowledged(input) {
+			t.Fatalf("mcpReplacementAcknowledged(%q) = true, want false", input)
+		}
+	}
+	if !mcpReplacementAcknowledged(mcpReplacementAcknowledgement) {
+		t.Fatal("the exact acknowledgement must be accepted")
+	}
 }
 
 func (a *setupAgentStub) Name() string                  { return a.name }
@@ -256,8 +409,6 @@ func TestConfigureWizardAgent_ErrorPropagation(t *testing.T) {
 		agent   agent.Agent
 		wantErr string
 	}{
-		{name: "hive merge fails", agent: &setupAgentStub{name: "claude", mergeErrAt: 1}, wantErr: "hive MCP config"},
-		{name: "context7 merge fails", agent: &setupAgentStub{name: "claude", mergeErrAt: 2}, wantErr: "context7 MCP config"},
 		{name: "install skills fails", agent: &setupAgentStub{name: "claude", installSkillsErr: errors.New("skills fail")}, wantErr: "install skills"},
 		{name: "install orchestrator fails", agent: &setupAgentStub{name: "claude", installOrchErr: errors.New("orchestrator fail")}, wantErr: "install orchestrator"},
 		{
@@ -499,13 +650,13 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 		{
 			name: "stops on first setup failure",
 			agents: []agent.Agent{
-				&setupAgentStub{name: "claude", mergeErrAt: 1},
+				&setupAgentStub{name: "claude", installSkillsErr: errors.New("skills failed")},
 				&setupAgentStub{name: "opencode"},
 			},
 			resolved:       nil,
 			wantLen:        1,
 			wantConfigured: false,
-			wantErrSubstr:  "hive MCP config",
+			wantErrSubstr:  "install skills",
 		},
 		{
 			name: "returns configured results when no preset to apply",

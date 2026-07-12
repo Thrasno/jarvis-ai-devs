@@ -1218,6 +1218,11 @@ func updateReview(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.Done = true
 			return m, tea.Quit
 		case 2: // Apply
+			if requiresMCPReplacementAcknowledgement(m.Agents) && !m.mcpAcknowledged {
+				m.Step = StepMCPDisclosure
+				m.mcpAcknowledgement = ""
+				return m, nil
+			}
 			// Check if the statusline script already exists. If so, show the
 			// overwrite/skip confirmation step before launching the apply pipeline.
 			home, homeErr := os.UserHomeDir()
@@ -1247,6 +1252,33 @@ func updateReview(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func updateMCPDisclosure(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyBackspace, tea.KeyCtrlH:
+		if m.mcpAcknowledgement != "" {
+			m.mcpAcknowledgement = m.mcpAcknowledgement[:len(m.mcpAcknowledgement)-1]
+		}
+	case tea.KeyRunes:
+		m.mcpAcknowledgement += string(msg.Runes)
+	case tea.KeyEnter:
+		if !mcpReplacementAcknowledged(m.mcpAcknowledgement) {
+			m.mcpAcknowledgement = ""
+			m.Err = fmt.Errorf("acknowledgement did not match; type %s or cancel", mcpReplacementAcknowledgement)
+			return m, nil
+		}
+		m.mcpAcknowledged = true
+		m.Err = nil
+		m.Step = StepReview
+	}
+	return m, nil
+}
+
+func viewMCPDisclosure(m Model) string {
+	w := terminalui.PanelWidth(m.width)
+	content := warningStyle.Render(mcpReplacementWarning) + "\n\nType " + mcpReplacementAcknowledgement + " to acknowledge: " + m.mcpAcknowledgement
+	return terminalui.HeaderRow("Setup › Managed MCP Disclosure", terminalui.ModeBadge("warning"), m.width) + "\n\n" + terminalui.BorderedPanel(content, w) + "\n" + terminalui.HelpBar([]terminalui.KeyHint{{Key: "Enter", Desc: "acknowledge"}, {Key: "Ctrl+C", Desc: "cancel"}}, "warning", m.width)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1378,15 +1410,9 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			previousSource = persona.PresetSourceUser
 		}
 
-		// MCP entry for hive-daemon — point directly to the binary.
-		// Credentials are read by hive-daemon from ~/.jarvis/sync.json (written above).
-		entry := agent.MCPEntry{
-			Name:       "hive",
-			DaemonPath: agent.HiveDaemonBinaryPath(home),
+		if err := reconcileWizardMCPs(m.Agents, home); err != nil {
+			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: reconcile managed MCPs: %v", err), done: true, failed: true}
 		}
-
-		// MCP entry for Context7 — auto-configured after Hive.
-		context7Entry := agent.MCPEntry{Name: "context7"}
 
 		// Determine statusline overwrite policy. The decision must be made here
 		// (before the goroutine enters the pipeline) so the Bubbletea
@@ -1399,7 +1425,7 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		}
 
 		// Configure each detected agent and collect structured outcomes.
-		results := configureWizardAgents(m.Agents, m.cfg, entry, context7Entry, resolvedPreset, wizardPresetApplyContext{
+		results := configureWizardAgents(m.Agents, m.cfg, agent.MCPEntry{}, agent.MCPEntry{}, resolvedPreset, wizardPresetApplyContext{
 			Layer1:               config.Layer1Content(),
 			Skills:               skillInfos,
 			PreviousPresetSlug:   previousSlug,
