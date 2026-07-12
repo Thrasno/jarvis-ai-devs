@@ -154,6 +154,9 @@ func BuildPlan(inventory Inventory, desired DesiredState) Plan {
 		}
 
 		ownership := Classify(existing, desired.Manifest)
+		if ownership != OwnershipProvenJarvis && provenJarvisReplacement(existing, target, desired.Manifest) {
+			ownership = OwnershipProvenJarvis
+		}
 		if ownership != OwnershipProvenJarvis || existing.Identity != target.Identity {
 			plan.Blockers = append(plan.Blockers, blockerFor(target, ownership))
 			continue
@@ -163,6 +166,19 @@ func BuildPlan(inventory Inventory, desired DesiredState) Plan {
 		}
 	}
 	return plan
+}
+
+// provenJarvisReplacement admits a changed desired artifact only when the
+// observed bytes are bound by current durable provenance for that same managed
+// identity and location. The write operation will replace that provenance with
+// the digest of the desired bytes.
+func provenJarvisReplacement(artifact Artifact, target DesiredArtifact, manifest Manifest) bool {
+	entry, registered := manifest.Artifacts[target.Identity]
+	marker := artifact.Provenance
+	return registered && marker != nil && marker.Version == manifest.Version &&
+		artifact.Identity == target.Identity && artifact.Location == target.Location &&
+		entry.Location == target.Location && marker.ManagedIdentity == target.Identity &&
+		marker.Location == target.Location && marker.ManifestDigest == digest(artifact.Bytes)
 }
 
 func duplicateDesiredLocationBlocker(artifacts []DesiredArtifact) (Blocker, bool) {
