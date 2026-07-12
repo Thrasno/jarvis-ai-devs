@@ -65,6 +65,22 @@ func (s *nativeMCPReplacerStub) Replace(definitions []agent.NativeMCPDefinition)
 
 func useConcreteWizardExecutor(t *testing.T, home string, replacement agent.NativeMCPReplacer) string {
 	t.Helper()
+	daemon := createPortableHiveDaemon(t, home)
+	originalExecutor := newWizardMCPExecutor
+	originalDaemonPath := wizardHiveDaemonPath
+	newWizardMCPExecutor = func() wizardMCPExecutor {
+		return agent.NewProductionExecutorWithNative(replacement)
+	}
+	wizardHiveDaemonPath = func(string) string { return daemon }
+	t.Cleanup(func() {
+		newWizardMCPExecutor = originalExecutor
+		wizardHiveDaemonPath = originalDaemonPath
+	})
+	return daemon
+}
+
+func createPortableHiveDaemon(t *testing.T, home string) string {
+	t.Helper()
 	daemonName := "hive-daemon"
 	if runtime.GOOS == "windows" {
 		daemonName += ".exe"
@@ -81,16 +97,6 @@ func useConcreteWizardExecutor(t *testing.T, home string, replacement agent.Nati
 			t.Fatalf("make fake daemon executable: %v", err)
 		}
 	}
-	originalExecutor := newWizardMCPExecutor
-	originalDaemonPath := wizardHiveDaemonPath
-	newWizardMCPExecutor = func() wizardMCPExecutor {
-		return agent.NewProductionExecutorWithNative(replacement)
-	}
-	wizardHiveDaemonPath = func(string) string { return daemon }
-	t.Cleanup(func() {
-		newWizardMCPExecutor = originalExecutor
-		wizardHiveDaemonPath = originalDaemonPath
-	})
 	return daemon
 }
 
@@ -136,13 +142,7 @@ func TestTUIManagedMCPAcknowledgementGatesConcreteExecutorMutation(t *testing.T)
 
 func TestReconcileWizardMCPsUsesInjectableProductionBoundaryForNamedManagedAgents(t *testing.T) {
 	home := t.TempDir()
-	daemon := filepath.Join(home, "bin", "hive-daemon")
-	if err := os.MkdirAll(filepath.Dir(daemon), 0o700); err != nil {
-		t.Fatalf("create daemon directory: %v", err)
-	}
-	if err := os.WriteFile(daemon, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-		t.Fatalf("create fake daemon: %v", err)
-	}
+	daemon := createPortableHiveDaemon(t, home)
 	executor := &recordingWizardMCPExecutor{}
 	original := newWizardMCPExecutor
 	originalDaemonPath := wizardHiveDaemonPath

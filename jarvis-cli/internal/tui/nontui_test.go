@@ -748,13 +748,7 @@ func TestRunNoTUI_InstallsClaudeSDDAgentsWithSelectedModelAndEffort(t *testing.T
 	originalExecutor := newWizardMCPExecutor
 	originalDaemonPath := wizardHiveDaemonPath
 	newWizardMCPExecutor = func() wizardMCPExecutor { return executor }
-	daemon := filepath.Join(tmpHome, "bin", "hive-daemon")
-	if err := os.MkdirAll(filepath.Dir(daemon), 0o700); err != nil {
-		t.Fatalf("create fake daemon directory: %v", err)
-	}
-	if err := os.WriteFile(daemon, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-		t.Fatalf("create fake daemon: %v", err)
-	}
+	daemon := createPortableHiveDaemon(t, tmpHome)
 	wizardHiveDaemonPath = func(string) string { return daemon }
 	t.Cleanup(func() {
 		newWizardMCPExecutor = originalExecutor
