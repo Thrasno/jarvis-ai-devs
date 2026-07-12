@@ -31,6 +31,22 @@ type ProductionReconcileInput struct {
 	ClaudeMCPs      []NativeMCPDefinition
 }
 
+const (
+	openCodeGlobalConfigIdentity = "opencode-global-config"
+	openCodeGlobalConfigLocation = ".config/opencode/opencode.json"
+)
+
+// WizardReconcileInput is the UI-neutral, already-rendered input to managed
+// reconciliation. Callers must supply rather than discover ownership evidence.
+type WizardReconcileInput struct {
+	SelectedAgents  []string
+	Root            string
+	EvidencePath    string
+	RenderedOutputs []RenderedManagedOutput
+	ClaudeHive      NativeMCPDefinition
+	ClaudeContext7  NativeMCPDefinition
+}
+
 // FileCompensationStore writes only paths declared by rendered managed output.
 // It is deliberately not a general purpose filesystem adapter.
 type FileCompensationStore struct {
@@ -214,6 +230,87 @@ func BuildProductionReconcileRequest(input ProductionReconcileInput) (ReconcileI
 	return request, nil
 }
 
+// BuildWizardReconcileRequest validates wizard-derived data before it reaches
+// the executor. It does not read, merge, write, or infer configuration state.
+func BuildWizardReconcileRequest(input WizardReconcileInput) (ReconcileInstallRequest, error) {
+	if err := validateWizardInput(input); err != nil {
+		return ReconcileInstallRequest{}, err
+	}
+	production := ProductionReconcileInput{
+		SelectedAgents:  append([]string(nil), input.SelectedAgents...),
+		Root:            input.Root,
+		EvidencePath:    input.EvidencePath,
+		RenderedOutputs: append([]RenderedManagedOutput(nil), input.RenderedOutputs...),
+	}
+	if selectedAgent(input.SelectedAgents, "claude") {
+		production.ClaudeMCPs = []NativeMCPDefinition{input.ClaudeHive, input.ClaudeContext7}
+	}
+	request, err := BuildProductionReconcileRequest(production)
+	if err != nil {
+		return ReconcileInstallRequest{}, err
+	}
+	if request.StorePlan.Blocked() {
+		return ReconcileInstallRequest{}, errors.New("wizard rendered provenance or inventory does not authorize reconciliation")
+	}
+	return request, nil
+}
+
+func validateWizardInput(input WizardReconcileInput) error {
+	if strings.TrimSpace(input.Root) == "" {
+		return errors.New("wizard reconciliation root is required")
+	}
+	if err := validateWizardEvidencePath(input.Root, input.EvidencePath); err != nil {
+		return err
+	}
+	selected := make(map[string]struct{}, len(input.SelectedAgents))
+	for _, agentName := range input.SelectedAgents {
+		name := strings.ToLower(strings.TrimSpace(agentName))
+		if name != "claude" && name != "opencode" {
+			return errors.New("wizard selected agent is unsupported")
+		}
+		if _, duplicate := selected[name]; duplicate {
+			return errors.New("wizard selected agents are duplicated")
+		}
+		selected[name] = struct{}{}
+	}
+
+	opencodeOutput, foundOpenCodeOutput := wizardOpenCodeOutput(input.RenderedOutputs)
+	if _, selectedOpenCode := selected["opencode"]; selectedOpenCode != foundOpenCodeOutput {
+		return errors.New("wizard OpenCode rendered artifact does not match selected agents")
+	}
+	if foundOpenCodeOutput && (opencodeOutput.Identity != openCodeGlobalConfigIdentity || opencodeOutput.Location != openCodeGlobalConfigLocation || len(opencodeOutput.Bytes) == 0) {
+		return errors.New("wizard OpenCode rendered artifact is incomplete")
+	}
+	if _, selectedClaude := selected["claude"]; selectedClaude {
+		if input.ClaudeHive.Identity != "hive" || input.ClaudeContext7.Identity != "context7" ||
+			validateNativeMCPDefinition(input.ClaudeHive) != nil || validateNativeMCPMutationDefinition(input.ClaudeHive) != nil ||
+			validateNativeMCPDefinition(input.ClaudeContext7) != nil || validateNativeMCPMutationDefinition(input.ClaudeContext7) != nil {
+			return errors.New("wizard Claude MCP definitions are incomplete or invalid")
+		}
+	}
+	return nil
+}
+
+func wizardOpenCodeOutput(outputs []RenderedManagedOutput) (RenderedManagedOutput, bool) {
+	for _, output := range outputs {
+		if output.Identity == openCodeGlobalConfigIdentity || output.Location == openCodeGlobalConfigLocation {
+			return output, true
+		}
+	}
+	return RenderedManagedOutput{}, false
+}
+
+func validateWizardEvidencePath(root, evidencePath string) error {
+	if strings.TrimSpace(evidencePath) == "" {
+		return errors.New("recovery evidence path is required")
+	}
+	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(evidencePath))
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return errors.New("recovery evidence path must be inside the wizard reconciliation root")
+	}
+	return nil
+}
+
 // ProductionExecutor is the shared, non-UI execution seam consumed by PR5B.
 type productionReconciler func(ReconcileInstallRequest, NativeMCPReplacer) (ReconcileInstallResult, error)
 
@@ -229,21 +326,36 @@ func NewProductionExecutor() ProductionExecutor {
 }
 
 func (e ProductionExecutor) Execute(input ProductionReconcileInput) (ReconcileInstallResult, error) {
-	if strings.TrimSpace(input.EvidencePath) == "" {
-		return ReconcileInstallResult{}, errors.New("recovery evidence path is required")
-	}
-	if err := os.MkdirAll(filepath.Dir(input.EvidencePath), 0o700); err != nil {
-		return ReconcileInstallResult{}, errors.New("recovery evidence directory is unavailable; repair it and rerun Install/Reconfigure")
-	}
 	request, err := BuildProductionReconcileRequest(input)
 	if err != nil {
 		return ReconcileInstallResult{}, err
+	}
+	return e.executeRequest(request)
+}
+
+// ExecuteWizard is the future TUI/no-TUI handoff. It validates all rendered
+// inputs before creating recovery directories or invoking reconciliation.
+func (e ProductionExecutor) ExecuteWizard(input WizardReconcileInput) (ReconcileInstallResult, error) {
+	request, err := BuildWizardReconcileRequest(input)
+	if err != nil {
+		return ReconcileInstallResult{}, err
+	}
+	return e.executeRequest(request)
+}
+
+func (e ProductionExecutor) executeRequest(request ReconcileInstallRequest) (ReconcileInstallResult, error) {
+	if err := os.MkdirAll(filepath.Dir(request.EvidencePath), 0o700); err != nil {
+		return ReconcileInstallResult{}, errors.New("recovery evidence directory is unavailable; repair it and rerun Install/Reconfigure")
 	}
 	reconcileInstall := e.reconcile
 	if reconcileInstall == nil {
 		reconcileInstall = ReconcileInstall
 	}
-	result, err := reconcileInstall(request, e.Native)
+	native := e.Native
+	if len(request.DesiredMCPs) == 0 {
+		native = nil
+	}
+	result, err := reconcileInstall(request, native)
 	if err != nil {
 		return result, errors.New("reconciliation failed; repair managed artifacts and rerun Install/Reconfigure")
 	}
