@@ -4,7 +4,7 @@ package jarvis
 
 import "embed"
 
-// PersonaFS contains the embedded persona YAML preset files.
+// PersonaFS contains the canonical schema-v2 persona YAML catalog.
 //
 //go:embed all:embed/personas
 var PersonaFS embed.FS
@@ -38,3 +38,9 @@ var AgentsFS embed.FS
 //
 //go:embed embed/hive-protocol.md
 var HiveProtocol string
+
+// TechnicalContract contains the canonical technical and educational policy
+// composed into Layer1 for every generated agent instruction.
+//
+//go:embed embed/technical-contract.md
+var TechnicalContract string

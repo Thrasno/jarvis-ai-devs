@@ -181,3 +181,54 @@ func TestLayer1Content_IncludesRuntimeGuardrailSelfChecks(t *testing.T) {
 		}
 	}
 }
+
+func TestLayer1Content_ComposesCanonicalTechnicalContractExactlyOnce(t *testing.T) {
+	contract := TechnicalContractContent()
+	layer1 := Layer1Content()
+
+	if contract == "" {
+		t.Fatal("TechnicalContractContent() returned empty content")
+	}
+	if got := strings.Count(layer1, contract); got != 1 {
+		t.Fatalf("canonical technical contract count = %d, want 1", got)
+	}
+	for _, required := range []string{
+		"CONCEPTS > CODE",
+		"AI IS A TOOL",
+		"FOUNDATIONS FIRST",
+		"AGAINST IMMEDIACY",
+		"authoritative source",
+		"Generated technical artifacts default to English",
+	} {
+		if !strings.Contains(contract, required) {
+			t.Fatalf("canonical technical contract missing %q", required)
+		}
+	}
+}
+
+func TestTechnicalContract_StatesPolicyInvarianceWithoutModelDeterminism(t *testing.T) {
+	contract := TechnicalContractContent()
+	if !strings.Contains(contract, "Jarvis guarantees controlled policy and configuration invariance; it does not guarantee deterministic model output.") {
+		t.Fatal("technical contract must limit Jarvis guarantees to policy/configuration, not deterministic model output")
+	}
+}
+
+func TestTechnicalContract_QualifiesUnavailableAuthoritativeInspection(t *testing.T) {
+	contract := TechnicalContractContent()
+	if !strings.Contains(contract, "If inspection is unavailable, investigate or state the uncertainty explicitly.") {
+		t.Fatal("technical contract must require investigation or qualified uncertainty when authoritative inspection is unavailable")
+	}
+}
+
+func TestProjectInstruction_SeparatesLayer1AndLayer2(t *testing.T) {
+	projection, err := ProjectInstruction("<!-- JARVIS:LAYER1:START -->\npolicy\n<!-- JARVIS:LAYER1:END -->\n<!-- JARVIS:LAYER2:START -->\npresentation\n<!-- JARVIS:LAYER2:END -->")
+	if err != nil {
+		t.Fatalf("ProjectInstruction: %v", err)
+	}
+	if projection.Layer1 != "policy" {
+		t.Fatalf("Layer1 = %q, want policy", projection.Layer1)
+	}
+	if projection.Layer2 != "presentation" {
+		t.Fatalf("Layer2 = %q, want presentation", projection.Layer2)
+	}
+}

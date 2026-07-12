@@ -57,7 +57,7 @@ func runWizardNoTUIAndCaptureSnapshot(t *testing.T, home string, targetPreset st
 		t.Fatalf("seed config for wizard flow: %v", err)
 	}
 
-	input := "\n\n\n\n\nyes\n"
+	input := "\n\n\n\n\nyes\nI ACKNOWLEDGE\n"
 	if err := runWithStdinString(input, func() error {
 		return tui.RunNoTUI(tui.WizardConfig{
 			PersonaFS:  jarvis.PersonaFS,

@@ -70,7 +70,7 @@ func runConfigSet(key, value string) error {
 
 	switch key {
 	case "preset":
-		resolved, err := persona.ResolvePreset(jarvis.PersonaFS, value)
+		resolved, err := persona.ResolveProfile(jarvis.PersonaFS, value)
 		if err != nil {
 			return fmt.Errorf("invalid preset %q: %w", value, err)
 		}

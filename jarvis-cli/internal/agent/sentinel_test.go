@@ -181,4 +181,3 @@ func TestValidateSentinels(t *testing.T) {
 		})
 	}
 }
-

@@ -30,35 +30,23 @@ func TestPersonaSetCmd_UsesResolverAndPipeline_ForBuiltinAndUserPreset(t *testin
 			inputSlug:      "Mi Persona",
 			expectedSlug:   "mi-persona",
 			expectedSource: "user",
-			seedUserPresetYML: `name: mi-persona
+			seedUserPresetYML: `schema_version: 2
+name: mi-persona
 display_name: Mi Persona
-description: Persona de usuario para tests
-tone:
-  formality: casual
-  directness: high
-  humor: warm
+presentation:
   language: es-rioplatense
-communication_style:
-  verbosity: high
-  show_alternatives: true
-  challenge_assumptions: true
-characteristic_phrases:
-  greetings: ["che"]
-  confirmations: ["dale"]
-  transitions: ["a ver"]
-  sign_offs: ["vamos"]
-notes: |
-  ## Voice & Tone
-  Habla claro y directo.
-
-  ## Behavior Rules
-  Priorizá claridad y ejemplos.
-
-  ## Collaboration Protocol
-  Confirmá supuestos antes de avanzar.
-
-  ## Boundaries
-  No inventes datos.
+  register: warm-direct
+  vocabulary: rioplatense
+  cadence: energetic
+  humor: warm
+  emotional_range: supportive
+  verbosity: balanced
+  formatting: structured
+  teaching_metaphors: architecture
+  examples: practical
+  address_pack: gentleman
+  phrase_pack: gentleman
+  anti_caricature: grounded
 `,
 		},
 	}
@@ -131,9 +119,9 @@ func TestPersonaSetCmd_ClaudeAgent_CreatesOutputStyle(t *testing.T) {
 	}
 
 	// Load a test preset
-	preset, err := persona.LoadPreset(jarvis.PersonaFS, "neutra")
+	resolved, err := persona.ResolveProfile(jarvis.PersonaFS, "neutra")
 	if err != nil {
-		t.Fatalf("LoadPreset failed: %v", err)
+		t.Fatalf("ResolveProfile failed: %v", err)
 	}
 
 	// Detect agents AFTER setting HOME env var
@@ -159,13 +147,17 @@ func TestPersonaSetCmd_ClaudeAgent_CreatesOutputStyle(t *testing.T) {
 	}
 
 	// Call WriteInstructions (required before WriteOutputStyle)
-	layer2 := persona.RenderLayer2(preset)
+	layer2 := persona.RenderLayer2(resolved.Preset)
 	if err := claudeAgent.WriteInstructions(config.Layer1Content(), layer2, nil); err != nil {
 		t.Fatalf("WriteInstructions failed: %v", err)
 	}
 
-	// Call WriteOutputStyle (the new functionality being tested)
-	if err := claudeAgent.WriteOutputStyle(preset); err != nil {
+	// Call the canonical presentation profile adapter.
+	profileAgent, ok := claudeAgent.(persona.ProfileAgent)
+	if !ok {
+		t.Fatal("ClaudeAgent must support presentation profile output styles")
+	}
+	if err := profileAgent.WriteOutputStyle(resolved.Preset); err != nil {
 		t.Fatalf("WriteOutputStyle failed: %v", err)
 	}
 
@@ -210,9 +202,9 @@ func TestPersonaSetCmd_OpenCodeAgent_NoOutputStyle(t *testing.T) {
 	}
 
 	// Load a test preset
-	preset, err := persona.LoadPreset(jarvis.PersonaFS, "neutra")
+	resolved, err := persona.ResolveProfile(jarvis.PersonaFS, "neutra")
 	if err != nil {
-		t.Fatalf("LoadPreset failed: %v", err)
+		t.Fatalf("ResolveProfile failed: %v", err)
 	}
 
 	// Detect agents AFTER setting HOME env var
@@ -238,13 +230,17 @@ func TestPersonaSetCmd_OpenCodeAgent_NoOutputStyle(t *testing.T) {
 	}
 
 	// Call WriteInstructions
-	layer2 := persona.RenderLayer2(preset)
+	layer2 := persona.RenderLayer2(resolved.Preset)
 	if err := openCodeAgent.WriteInstructions(config.Layer1Content(), layer2, nil); err != nil {
 		t.Fatalf("WriteInstructions failed: %v", err)
 	}
 
-	// Call WriteOutputStyle (should be no-op)
-	if err := openCodeAgent.WriteOutputStyle(preset); err != nil {
+	// Call WriteOutputStyle (should be no-op).
+	profileAgent, ok := openCodeAgent.(persona.ProfileAgent)
+	if !ok {
+		t.Fatal("OpenCodeAgent must support presentation profile output styles")
+	}
+	if err := profileAgent.WriteOutputStyle(resolved.Preset); err != nil {
 		t.Fatalf("WriteOutputStyle should not error: %v", err)
 	}
 
@@ -264,6 +260,63 @@ func TestPersonaSetCmd_OpenCodeAgent_NoOutputStyle(t *testing.T) {
 	settingsPath := filepath.Join(tempOpenCodeDir, "settings.json")
 	if _, err := os.Stat(settingsPath); !os.IsNotExist(err) {
 		t.Error("settings.json should not exist for OpenCodeAgent")
+	}
+}
+
+func TestApplyPersonaProfileUsesCanonicalPipeline(t *testing.T) {
+	tempHome := isolateTestHome(t)
+	if err := os.MkdirAll(filepath.Join(tempHome, ".claude"), 0o755); err != nil {
+		t.Fatalf("create .claude dir: %v", err)
+	}
+	agents := agent.Detect(jarvis.TemplatesFS)
+	resolved := &persona.ResolvedProfile{
+		Slug:   "custom-mentor",
+		Source: persona.PresetSourceUser,
+		Preset: &persona.Profile{
+			Name: "custom-mentor",
+			Presentation: persona.Presentation{
+				Language: "en-us", Register: "friendly-professional", Vocabulary: "plain-technical", Cadence: "measured",
+				Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured",
+				TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded",
+			},
+		},
+	}
+
+	if err := applyPersonaProfile(agents, resolved, persona.ApplyOptions{Layer1: config.Layer1Content()}); err != nil {
+		t.Fatalf("applyPersonaProfile() error = %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(tempHome, ".claude", "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	if !contains(string(content), "### Presentation") || contains(string(content), "### Behavioral Rules") {
+		t.Fatalf("canonical CLI adapter rendered unexpected Layer2:\n%s", content)
+	}
+}
+
+func TestResolvePersonaSetPresetUsesValidatedProfileRoute(t *testing.T) {
+	resolved, err := resolvePersonaSetPreset(jarvis.PersonaFS, "Neutra")
+	if err != nil {
+		t.Fatalf("resolvePersonaSetPreset: %v", err)
+	}
+	if resolved == nil || resolved.Slug != "neutra" || resolved.Preset.SchemaVersion != 2 {
+		t.Fatalf("resolved = %+v, want validated profile neutra", resolved)
+	}
+}
+
+func TestResolvePersonaSetSelectionRejectsLegacyCustomProfileWithMigrationGuidance(t *testing.T) {
+	home := isolateTestHome(t)
+	legacyPath := filepath.Join(home, ".jarvis", "personas", "legacy-custom.yaml")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatalf("create legacy preset dir: %v", err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("name: legacy-custom\ndisplay_name: Legacy Custom\ntone: {}\n"), 0o644); err != nil {
+		t.Fatalf("write legacy preset: %v", err)
+	}
+
+	_, err := resolvePersonaSetPreset(jarvis.PersonaFS, "legacy custom")
+	if err == nil || !contains(err.Error(), "migrate") {
+		t.Fatalf("resolvePersonaSetSelection() error = %v, want actionable migration guidance", err)
 	}
 }
 

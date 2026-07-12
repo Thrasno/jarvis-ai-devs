@@ -26,12 +26,7 @@ func TestOpenCodeAgent_WriteOutputStyle_NoOp(t *testing.T) {
 	tmpHome := t.TempDir()
 	agent := &OpenCodeAgent{home: tmpHome}
 
-	preset := &persona.Preset{
-		Name:        "argentino",
-		DisplayName: "Argentino",
-		Description: "Test",
-		Notes:       "Test notes.",
-	}
+	preset := &persona.Profile{Name: "argentino"}
 
 	err := agent.WriteOutputStyle(preset)
 	if err != nil {
@@ -54,6 +49,46 @@ func TestOpenCodeAgent_WriteOutputStyle_NoOp(t *testing.T) {
 	settingsPath := filepath.Join(tmpHome, ".config", "opencode", "opencode.json")
 	if _, err := os.Stat(settingsPath); !os.IsNotExist(err) {
 		t.Error("settings file should not be created by WriteOutputStyle for OpenCodeAgent")
+	}
+}
+
+func TestOpenCodeAgent_WriteInstructions_ProjectsCanonicalLayer1(t *testing.T) {
+	tmpHome := t.TempDir()
+	agent := &OpenCodeAgent{home: tmpHome, templatesFS: testTemplatesFS}
+	preset := &persona.Profile{
+		SchemaVersion: 2,
+		Name:          "presentation-only",
+		DisplayName:   "Presentation Only",
+		Presentation: persona.Presentation{
+			Language: "en-us", Register: "friendly-professional", Vocabulary: "plain-technical", Cadence: "measured",
+			Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured",
+			TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded",
+		},
+	}
+
+	if err := agent.WriteInstructions(config.Layer1Content(), persona.RenderLayer2(preset), nil); err != nil {
+		t.Fatalf("WriteInstructions: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(agent.ConfigDir(), "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	projection, err := config.ProjectInstruction(string(content))
+	if err != nil {
+		t.Fatalf("ProjectInstruction: %v", err)
+	}
+	if projection.Layer1 != config.Layer1Content() {
+		t.Fatal("Layer1 projection does not derive from the canonical Layer1 source")
+	}
+	if got := strings.Count(string(content), config.TechnicalContractContent()); got != 1 {
+		t.Fatalf("canonical technical contract count = %d, want 1", got)
+	}
+	if !strings.Contains(projection.Layer2, "- Address pack: peer") {
+		t.Fatalf("Layer2 missing V2 presentation content\n%s", projection.Layer2)
+	}
+	if strings.Contains(projection.Layer2, "Claim local configuration without inspection.") {
+		t.Fatalf("Layer2 must not contain legacy policy-bearing Notes\n%s", projection.Layer2)
 	}
 }
 

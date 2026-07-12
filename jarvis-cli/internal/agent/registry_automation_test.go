@@ -315,11 +315,13 @@ func (a *unsupportedRegistryAutomationAgent) MergeConfig(MCPEntry) error { retur
 func (a *unsupportedRegistryAutomationAgent) WriteInstructions(string, string, []config.SkillInfo) error {
 	return nil
 }
-func (a *unsupportedRegistryAutomationAgent) InstallSkills(fs.FS, []string) error    { return nil }
-func (a *unsupportedRegistryAutomationAgent) InstallOrchestrator([]byte) error       { return nil }
-func (a *unsupportedRegistryAutomationAgent) SupportsOutputStyles() bool             { return false }
-func (a *unsupportedRegistryAutomationAgent) WriteOutputStyle(*persona.Preset) error { return nil }
-func (a *unsupportedRegistryAutomationAgent) ClearOutputStyle(string) error          { return nil }
+func (a *unsupportedRegistryAutomationAgent) InstallSkills(fs.FS, []string) error { return nil }
+func (a *unsupportedRegistryAutomationAgent) InstallOrchestrator([]byte) error    { return nil }
+func (a *unsupportedRegistryAutomationAgent) SupportsOutputStyles() bool          { return false }
+func (a *unsupportedRegistryAutomationAgent) WriteOutputStyle(*persona.Profile) error {
+	return nil
+}
+func (a *unsupportedRegistryAutomationAgent) ClearOutputStyle(string) error { return nil }
 func (a *unsupportedRegistryAutomationAgent) RuntimePlan() (sddruntime.RuntimePlan, error) {
 	return sddruntime.Build("claude")
 }

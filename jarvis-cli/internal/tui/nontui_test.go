@@ -25,12 +25,24 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
 )
 
-// testPersonaFS and testSkillsFS embed the minimal fixture files used exclusively
-// by tests in this package. They mirror the path layout expected by persona.ListPresets
-// and skills.ListSkills (embed/personas/*.yaml, embed/skills/*.md).
+// embeddedTestPersonaFS and testSkillsFS embed the minimal fixture files used
+// exclusively by tests in this package.
 //
-//go:embed embed/personas
-var testPersonaFS embed.FS
+//go:embed embed/personas embed/personas-v2
+var embeddedTestPersonaFS embed.FS
+
+var testPersonaFS fs.FS = v2CatalogTestFS{embeddedTestPersonaFS}
+
+type v2CatalogTestFS struct {
+	fs.FS
+}
+
+func (fsys v2CatalogTestFS) Open(name string) (fs.File, error) {
+	if name == "embed/personas" || strings.HasPrefix(name, "embed/personas/") {
+		name = strings.Replace(name, "embed/personas", "embed/personas-v2", 1)
+	}
+	return fsys.FS.Open(name)
+}
 
 //go:embed embed/skills
 var testSkillsFS embed.FS
@@ -223,7 +235,7 @@ func TestRunNoTUI_RerunKeepsExistingSelectionsOnBlankInput(t *testing.T) {
 	seed := &config.AppConfig{
 		SchemaVersion:    2,
 		APIURL:           config.DefaultAPIURL,
-		PersonaPreset:    "fixture",
+		PersonaPreset:    "second",
 		SelectedSkills:   []string{"fixture-skill"},
 		ConfiguredAgents: []string{},
 		Install: config.InstallState{
@@ -246,11 +258,127 @@ func TestRunNoTUI_RerunKeepsExistingSelectionsOnBlankInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config after rerun: %v", err)
 	}
-	if loaded.PersonaPreset != "fixture" {
-		t.Fatalf("expected persona preset to remain fixture, got %q", loaded.PersonaPreset)
+	if loaded.PersonaPreset != "second" {
+		t.Fatalf("expected persona preset to remain second, got %q", loaded.PersonaPreset)
 	}
 	if len(loaded.SelectedSkills) != 1 || loaded.SelectedSkills[0] != "fixture-skill" {
 		t.Fatalf("expected existing selected skills preserved, got %v", loaded.SelectedSkills)
+	}
+}
+
+func TestRunNoTUI_BlankPersonaInputBlocksLegacyV1PresetAndPreservesConfig(t *testing.T) {
+	home := isolateTestHome(t)
+	t.Setenv("PATH", "")
+	legacyPath := filepath.Join(home, ".jarvis", "personas", "legacy-custom.yaml")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatalf("create legacy preset dir: %v", err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("name: legacy-custom\ndisplay_name: Legacy Custom\ntone: {}\n"), 0o644); err != nil {
+		t.Fatalf("write legacy preset: %v", err)
+	}
+
+	seed := &config.AppConfig{
+		SchemaVersion:       2,
+		APIURL:              config.DefaultAPIURL,
+		PersonaPreset:       "legacy-custom",
+		PersonaPresetSource: string(persona.PresetSourceUser),
+		Install:             config.InstallState{Agents: map[string]config.AgentState{}},
+	}
+	if err := config.Save(seed); err != nil {
+		t.Fatalf("save seed config: %v", err)
+	}
+
+	err := runNoTUI(testWizardConfig(), strings.NewReader("\n\n"))
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "migrate") {
+		t.Fatalf("runNoTUI() error = %v, want schema-v2 migration guidance", err)
+	}
+
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config after blocked default: %v", err)
+	}
+	if loaded.PersonaPreset != "legacy-custom" || loaded.PersonaPresetSource != string(persona.PresetSourceUser) {
+		t.Fatalf("legacy persona config was overwritten: %+v", loaded)
+	}
+}
+
+func TestRunNoTUI_BlankPersonaInputBlocksMissingPresetAndPreservesConfig(t *testing.T) {
+	isolateTestHome(t)
+	t.Setenv("PATH", "")
+	seed := &config.AppConfig{
+		SchemaVersion:       2,
+		APIURL:              config.DefaultAPIURL,
+		PersonaPreset:       "deleted-custom",
+		PersonaPresetSource: string(persona.PresetSourceUser),
+		Install:             config.InstallState{Agents: map[string]config.AgentState{}},
+	}
+	if err := config.Save(seed); err != nil {
+		t.Fatalf("save seed config: %v", err)
+	}
+
+	err := runNoTUI(testWizardConfig(), strings.NewReader("\n\n"))
+	if err == nil {
+		t.Fatal("expected stale/deleted preset recovery guidance")
+	}
+	for _, want := range []string{"deleted-custom", "stale", "deleted", "recovery"} {
+		if !strings.Contains(strings.ToLower(err.Error()), want) {
+			t.Fatalf("runNoTUI() error = %q, want contains %q", err, want)
+		}
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "migrate") {
+		t.Fatalf("missing preset error = %q, must not use V1 migration guidance", err)
+	}
+
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config after blocked default: %v", err)
+	}
+	if loaded.PersonaPreset != "deleted-custom" || loaded.PersonaPresetSource != string(persona.PresetSourceUser) {
+		t.Fatalf("missing persona config was overwritten: %+v", loaded)
+	}
+}
+
+func TestRunNoTUI_BlankPersonaInputBlocksMalformedPresetAndPreservesConfig(t *testing.T) {
+	home := isolateTestHome(t)
+	t.Setenv("PATH", "")
+	malformedPath := filepath.Join(home, ".jarvis", "personas", "broken-custom.yaml")
+	if err := os.MkdirAll(filepath.Dir(malformedPath), 0o755); err != nil {
+		t.Fatalf("create malformed preset dir: %v", err)
+	}
+	if err := os.WriteFile(malformedPath, []byte("schema_version: 2\nname: [\n"), 0o644); err != nil {
+		t.Fatalf("write malformed preset: %v", err)
+	}
+
+	seed := &config.AppConfig{
+		SchemaVersion:       2,
+		APIURL:              config.DefaultAPIURL,
+		PersonaPreset:       "broken-custom",
+		PersonaPresetSource: string(persona.PresetSourceUser),
+		Install:             config.InstallState{Agents: map[string]config.AgentState{}},
+	}
+	if err := config.Save(seed); err != nil {
+		t.Fatalf("save seed config: %v", err)
+	}
+	configPath, err := config.ConfigPath()
+	if err != nil {
+		t.Fatalf("config path: %v", err)
+	}
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read seeded config: %v", err)
+	}
+
+	err = runNoTUI(testWizardConfig(), strings.NewReader("\n\n"))
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "repair") {
+		t.Fatalf("runNoTUI() error = %v, want malformed schema-v2 repair guidance", err)
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after blocked default: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("malformed persona config was rewritten:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
 
@@ -260,7 +388,7 @@ func TestRunNoTUI_CustomPresetPersistsUserFileAndCanonicalIdentity(t *testing.T)
 
 	// scope default, choose custom option, provide name/display, keep generated YAML,
 	// default optional skills answer, apply=yes.
-	input := strings.NewReader("\n2\nmi persona\nMi Persona Display\n\nyes\n")
+	input := strings.NewReader("\n3\nmi persona\nMi Persona Display\n\nyes\n")
 
 	if err := runNoTUI(testWizardConfig(), input); err != nil {
 		t.Fatalf("runNoTUI custom preset: %v", err)
@@ -288,16 +416,45 @@ func TestRunNoTUI_CustomPresetInvalidYAMLBlocksContinuation(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	// scope default, choose custom option, provide name/display, invalid YAML override.
-	input := strings.NewReader("\n2\nbroken persona\nBroken Persona\nname: [\n")
+	input := strings.NewReader("\n3\nbroken persona\nBroken Persona\nname: [\n")
 
 	err := runNoTUI(testWizardConfig(), input)
 	if err == nil {
-		t.Fatal("expected error when custom YAML is invalid")
+		t.Fatal("expected error when legacy custom YAML is provided")
+	}
+	if !strings.Contains(err.Error(), "migrate") {
+		t.Fatalf("runNoTUI custom YAML error = %v, want actionable migration guidance", err)
 	}
 
 	customPath := filepath.Join(tmpHome, ".jarvis", "personas", "broken-persona.yaml")
 	if _, statErr := os.Stat(customPath); !os.IsNotExist(statErr) {
 		t.Fatalf("expected invalid custom preset not to be persisted, got err=%v", statErr)
+	}
+}
+
+func TestResolveNoTUIPresetUsesValidatedV2Route(t *testing.T) {
+	resolved, err := resolveNoTUIPreset(testPersonaFS, "fixture", nil)
+	if err != nil {
+		t.Fatalf("resolveNoTUIPreset: %v", err)
+	}
+	if resolved == nil || resolved.Slug != "fixture" || resolved.Preset.SchemaVersion != 2 {
+		t.Fatalf("resolved = %+v, want validated V2 fixture", resolved)
+	}
+}
+
+func TestResolveNoTUIPresetRejectsLegacyCustomProfileWithMigrationGuidance(t *testing.T) {
+	home := isolateTestHome(t)
+	legacyPath := filepath.Join(home, ".jarvis", "personas", "legacy-custom.yaml")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatalf("create legacy preset dir: %v", err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("name: legacy-custom\ndisplay_name: Legacy Custom\ntone: {}\n"), 0o644); err != nil {
+		t.Fatalf("write legacy preset: %v", err)
+	}
+
+	_, err := resolveNoTUIPreset(testPersonaFS, "legacy custom", nil)
+	if err == nil || !strings.Contains(err.Error(), "migrate") {
+		t.Fatalf("resolveNoTUIPreset() error = %v, want actionable migration guidance", err)
 	}
 }
 
@@ -587,6 +744,16 @@ func TestRunNoTUI_PersistsEditedPhaseModels(t *testing.T) {
 func TestRunNoTUI_InstallsClaudeSDDAgentsWithSelectedModelAndEffort(t *testing.T) {
 	tmpHome := isolateTestHome(t)
 	t.Setenv("PATH", "")
+	executor := &recordingWizardMCPExecutor{}
+	originalExecutor := newWizardMCPExecutor
+	originalDaemonPath := wizardHiveDaemonPath
+	newWizardMCPExecutor = func() wizardMCPExecutor { return executor }
+	daemon := createPortableHiveDaemon(t, tmpHome)
+	wizardHiveDaemonPath = func(string) string { return daemon }
+	t.Cleanup(func() {
+		newWizardMCPExecutor = originalExecutor
+		wizardHiveDaemonPath = originalDaemonPath
+	})
 
 	originalDetect := detectInstalledAgents
 	detectInstalledAgents = func(fsys fs.FS) []agent.Agent {
@@ -598,10 +765,13 @@ func TestRunNoTUI_InstallsClaudeSDDAgentsWithSelectedModelAndEffort(t *testing.T
 		phaseEditorPromptNewlinesBefore("sdd-design") +
 		"\nhaiku\nmax\n" +
 		phaseEditorPromptNewlinesAfter("sdd-design") +
-		"yes\n")
+		"yes\nI ACKNOWLEDGE\n")
 
 	if err := runNoTUI(testWizardConfig(), input); err != nil {
 		t.Fatalf("runNoTUI Claude SDD install: %v", err)
+	}
+	if len(executor.inputs) != 1 || strings.Join(executor.inputs[0].SelectedAgents, ",") != "claude" {
+		t.Fatalf("managed MCP handoff = %+v, want one Claude production request", executor.inputs)
 	}
 
 	content, err := os.ReadFile(filepath.Join(tmpHome, ".claude", "agents", "sdd-design.md"))
@@ -611,6 +781,102 @@ func TestRunNoTUI_InstallsClaudeSDDAgentsWithSelectedModelAndEffort(t *testing.T
 	text := string(content)
 	if !strings.Contains(text, "model: haiku") || !strings.Contains(text, "effort: max") {
 		t.Fatalf("generated sdd-design.md did not use selected Claude route:\n%s", text)
+	}
+}
+
+func TestRunNoTUIManagedMCPRoutesUseConcreteExecutorForInstallAndReconfigure(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		seedConfigure bool
+	}{
+		{name: "install"},
+		{name: "reconfigure", seedConfigure: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := isolateTestHome(t)
+			t.Setenv("PATH", "")
+			if tt.seedConfigure {
+				if err := config.Save(&config.AppConfig{APIURL: config.DefaultAPIURL, PersonaPreset: "fixture"}); err != nil {
+					t.Fatalf("seed reconfigure config: %v", err)
+				}
+			}
+			replacement := &nativeMCPReplacerStub{}
+			daemon := useConcreteWizardExecutor(t, home, replacement)
+			seedProvenancedOpenCodeConfig(t, home, daemon)
+
+			originalDetect := detectInstalledAgents
+			detectInstalledAgents = func(fs.FS) []agent.Agent {
+				return []agent.Agent{
+					&mockAgent{name: "claude", configDir: filepath.Join(home, ".claude")},
+					&mockAgent{name: "opencode", configDir: filepath.Join(home, ".config", "opencode")},
+				}
+			}
+			t.Cleanup(func() { detectInstalledAgents = originalDetect })
+
+			err := runNoTUI(testWizardConfig(), strings.NewReader("\n\nyes\nI ACKNOWLEDGE\n"))
+			if err == nil || strings.Contains(err.Error(), "reconcile managed MCPs") {
+				t.Fatalf("no-TUI route did not pass concrete reconciliation: %v", err)
+			}
+			assertConcreteWizardMutation(t, home, replacement)
+		})
+	}
+}
+
+func TestRunNoTUIManagedMCPCancellationAndNoAgentRemainMutationFree(t *testing.T) {
+	t.Run("cancellation", func(t *testing.T) {
+		home := isolateTestHome(t)
+		replacement := &nativeMCPReplacerStub{}
+		useConcreteWizardExecutor(t, home, replacement)
+		originalDetect := detectInstalledAgents
+		detectInstalledAgents = func(fs.FS) []agent.Agent {
+			return []agent.Agent{&mockAgent{name: "claude", configDir: filepath.Join(home, ".claude")}}
+		}
+		t.Cleanup(func() { detectInstalledAgents = originalDetect })
+
+		if err := runNoTUI(testWizardConfig(), strings.NewReader("\n\nyes\nno\n")); err != nil {
+			t.Fatalf("no-TUI cancellation: %v", err)
+		}
+		assertNoManagedMCPMutation(t, home, replacement)
+	})
+
+	t.Run("no agents", func(t *testing.T) {
+		home := isolateTestHome(t)
+		replacement := &nativeMCPReplacerStub{}
+		useConcreteWizardExecutor(t, home, replacement)
+		originalDetect := detectInstalledAgents
+		detectInstalledAgents = func(fs.FS) []agent.Agent { return nil }
+		t.Cleanup(func() { detectInstalledAgents = originalDetect })
+
+		if err := runNoTUI(testWizardConfig(), strings.NewReader("\n\nyes\n")); err != nil {
+			t.Fatalf("no-TUI no-agent continuation: %v", err)
+		}
+		assertNoManagedMCPMutation(t, home, replacement)
+	})
+}
+
+func TestRunNoTUIManagedMCPFailureStopsAtConcreteExecutorBoundary(t *testing.T) {
+	home := isolateTestHome(t)
+	replacement := &nativeMCPReplacerStub{err: errors.New("native boundary unavailable")}
+	daemon := useConcreteWizardExecutor(t, home, replacement)
+	seedProvenancedOpenCodeConfig(t, home, daemon)
+	originalDetect := detectInstalledAgents
+	detectInstalledAgents = func(fs.FS) []agent.Agent {
+		return []agent.Agent{
+			&mockAgent{name: "claude", configDir: filepath.Join(home, ".claude")},
+			&mockAgent{name: "opencode", configDir: filepath.Join(home, ".config", "opencode")},
+		}
+	}
+	t.Cleanup(func() { detectInstalledAgents = originalDetect })
+
+	err := runNoTUI(testWizardConfig(), strings.NewReader("\n\nyes\nI ACKNOWLEDGE\n"))
+	if err == nil || !strings.Contains(err.Error(), "reconcile managed MCPs: reconciliation failed") {
+		t.Fatalf("expected sanitized fail-stop evidence from no-TUI route, got %v", err)
+	}
+	if len(replacement.definitions) != 1 {
+		t.Fatalf("native replacement calls = %d, want 1", len(replacement.definitions))
+	}
+	if _, statErr := os.Stat(filepath.Join(home, ".jarvis", "config.yaml")); !os.IsNotExist(statErr) {
+		t.Fatalf("config persisted after managed MCP failure = %v, want absent", statErr)
 	}
 }
 
@@ -739,7 +1005,7 @@ func (m *mockAgent) SupportsOutputStyles() bool {
 	return false
 }
 
-func (m *mockAgent) WriteOutputStyle(preset *persona.Preset) error {
+func (m *mockAgent) WriteOutputStyle(preset *persona.Profile) error {
 	return nil
 }
 
@@ -829,9 +1095,9 @@ func (m *sddInstallingMockAgent) ObserveRuntimeWithConfig(cfg *config.AppConfig)
 // TestRunAgentConfigSequence_Context7AfterHive
 // ──────────────────────────────────────────────────────────────────────────────
 
-// TestRunAgentConfigSequence_Context7AfterHive verifies Context7 is configured
-// AFTER Hive in the wizard sequence (Spec R1).
-func TestRunAgentConfigSequence_Context7AfterHive(t *testing.T) {
+// TestRunAgentConfigSequence_DoesNotDirectlyMergeManagedMCPs verifies the
+// per-agent pipeline cannot bypass the ExecuteWizard reconciliation boundary.
+func TestRunAgentConfigSequence_DoesNotDirectlyMergeManagedMCPs(t *testing.T) {
 	tmpHome := isolateTestHome(t)
 
 	mockConfigDir := filepath.Join(tmpHome, ".mock-agent")
@@ -868,38 +1134,11 @@ func TestRunAgentConfigSequence_Context7AfterHive(t *testing.T) {
 		t.Errorf("expected done=true, got done=%v line=%q", pr.done, pr.line)
 	}
 
-	// Verify BOTH hive and context7 were configured
-	if len(mock.mergedEntries) != 2 {
-		t.Fatalf("expected 2 MergeConfig calls (hive + context7), got %d", len(mock.mergedEntries))
+	if len(mock.mergedEntries) != 0 {
+		t.Fatalf("direct managed MCP MergeConfig calls = %d, want 0", len(mock.mergedEntries))
 	}
-
-	// Verify ORDER: hive first, context7 second
-	if mock.mergedEntries[0].Name != "hive" {
-		t.Errorf("expected first MergeConfig call to be 'hive', got %q", mock.mergedEntries[0].Name)
-	}
-
-	if mock.mergedEntries[1].Name != "context7" {
-		t.Errorf("expected second MergeConfig call to be 'context7', got %q", mock.mergedEntries[1].Name)
-	}
-
-	// Verify settings.json was written with both entries
-	settingsPath := filepath.Join(mockConfigDir, "settings.json")
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
-		t.Fatalf("settings.json not created: %v", err)
-	}
-
-	var settings map[string]any
-	if err := json.Unmarshal(data, &settings); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
-
-	mcpServers := settings["mcpServers"].(map[string]any)
-	if _, ok := mcpServers["hive"]; !ok {
-		t.Error("hive entry missing from settings.json")
-	}
-	if _, ok := mcpServers["context7"]; !ok {
-		t.Error("context7 entry missing from settings.json")
+	if _, err := os.Stat(filepath.Join(mockConfigDir, "settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("legacy settings mutation = %v, want no direct managed MCP write", err)
 	}
 }
 
@@ -915,7 +1154,7 @@ func TestRunNoTUI_LocalOnlyPurgesStoredCredentialsOnApply(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	seed := &config.AppConfig{Scope: config.ScopeLocalCloud, Cloud: &config.CloudConfig{Email: "old@example.com", SyncConfigured: true}, Email: "old@example.com", APIURL: config.DefaultAPIURL}
+	seed := &config.AppConfig{Scope: config.ScopeLocalCloud, Cloud: &config.CloudConfig{Email: "old@example.com", SyncConfigured: true}, Email: "old@example.com", APIURL: config.DefaultAPIURL, PersonaPreset: "fixture"}
 	if err := config.Save(seed); err != nil {
 		t.Fatalf("save seed config: %v", err)
 	}
@@ -956,7 +1195,7 @@ func TestRunNoTUI_LocalCloudAuthFailureContinuesToApply(t *testing.T) {
 	}))
 	defer server.Close()
 
-	seed := &config.AppConfig{APIURL: server.URL, Scope: config.ScopeLocalOnly}
+	seed := &config.AppConfig{APIURL: server.URL, Scope: config.ScopeLocalOnly, PersonaPreset: "fixture"}
 	if err := config.Save(seed); err != nil {
 		t.Fatalf("save seed config: %v", err)
 	}
@@ -1016,7 +1255,7 @@ func TestRunNoTUI_LocalCloudSuccessfulAuthWritesSyncJSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	seed := &config.AppConfig{APIURL: server.URL, Scope: config.ScopeLocalOnly}
+	seed := &config.AppConfig{APIURL: server.URL, Scope: config.ScopeLocalOnly, PersonaPreset: "fixture"}
 	if err := config.Save(seed); err != nil {
 		t.Fatalf("save seed config: %v", err)
 	}
@@ -1064,7 +1303,7 @@ func TestRunNoTUI_LocalCloudLoginWithoutResolvedEmailFallsBackToInput(t *testing
 	}))
 	defer server.Close()
 
-	seed := &config.AppConfig{APIURL: server.URL, Scope: config.ScopeLocalOnly}
+	seed := &config.AppConfig{APIURL: server.URL, Scope: config.ScopeLocalOnly, PersonaPreset: "fixture"}
 	if err := config.Save(seed); err != nil {
 		t.Fatalf("save seed config: %v", err)
 	}
@@ -1244,7 +1483,7 @@ func TestRunNoTUI_ListPresetsError(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	originalList := listPersonaPresets
-	listPersonaPresets = func(fsys embed.FS) ([]persona.Preset, error) {
+	listPersonaPresets = func(fsys fs.FS) ([]persona.Profile, error) {
 		return nil, errors.New("preset list failed")
 	}
 	t.Cleanup(func() { listPersonaPresets = originalList })

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -25,7 +26,7 @@ var personaSetCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		presetName := args[0]
 
-		resolved, err := persona.ResolvePreset(jarvis.PersonaFS, presetName)
+		resolved, err := resolvePersonaSetPreset(jarvis.PersonaFS, presetName)
 		if err != nil {
 			return fmt.Errorf("resolve preset %q: %w", presetName, err)
 		}
@@ -56,12 +57,7 @@ var personaSetCmd = &cobra.Command{
 		}
 
 		agents := agent.Detect(jarvis.TemplatesFS)
-		pipelineAgents := make([]persona.PresetAgent, 0, len(agents))
-		for _, a := range agents {
-			pipelineAgents = append(pipelineAgents, a)
-		}
-
-		if err := persona.ApplyPresetPipeline(pipelineAgents, resolved, persona.ApplyOptions{
+		if err := applyPersonaProfile(agents, resolved, persona.ApplyOptions{
 			Layer1:               config.Layer1Content(),
 			Skills:               skillInfos,
 			PreviousPresetSlug:   cfg.PersonaPreset,
@@ -78,6 +74,30 @@ var personaSetCmd = &cobra.Command{
 		fmt.Printf("Persona set to %q (%s).\n", resolved.Slug, displayName)
 		return nil
 	},
+}
+
+// resolvePersonaSetPreset resolves a validated schema-v2 presentation profile
+// before it reaches the canonical apply pipeline.
+func resolvePersonaSetPreset(personaFS fs.FS, presetName string) (*persona.ResolvedProfile, error) {
+	resolved, err := persona.ResolveProfile(personaFS, presetName)
+	if err != nil {
+		return nil, err
+	}
+	return resolved, nil
+}
+
+// applyPersonaProfile applies a validated schema-v2 profile through the
+// canonical profile pipeline.
+func applyPersonaProfile(agents []agent.Agent, resolved *persona.ResolvedProfile, opts persona.ApplyOptions) error {
+	pipelineAgents := make([]persona.ProfileAgent, 0, len(agents))
+	for _, a := range agents {
+		pipelineAgent, ok := persona.AdaptProfileAgent(a)
+		if !ok {
+			return fmt.Errorf("agent %q does not support schema v2 presentation profiles", a.Name())
+		}
+		pipelineAgents = append(pipelineAgents, pipelineAgent)
+	}
+	return persona.ApplyProfile(pipelineAgents, resolved, opts)
 }
 
 func normalizePersonaPresetSource(value string) persona.PresetSource {

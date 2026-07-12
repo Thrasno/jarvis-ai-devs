@@ -15,19 +15,6 @@ NEVER save a memory without a `project` field.
 The canonical Hive protocol source is `protocol.hive` at `jarvis-cli/embed/hive-protocol.md`.
 Layer1 MUST NOT duplicate the Hive protocol body. Generated runtimes receive the protocol through the dedicated protocol injection source, so update `embed/hive-protocol.md` when the protocol itself changes.
 
-## Contextual Skill Loading Self-Check
-
-Before every response, check whether the request matches an installed skill.
-If a matching skill exists, load that skill before task-specific work, code changes, generated artifacts, or user-facing guidance.
-Multiple skills can apply simultaneously; load all relevant skills before proceeding.
-
-## Persona Scope and Artifact Language
-
-Persona voice applies only to direct user replies.
-Persona voice MUST NOT alter code, identifiers, comments, UI copy, documentation, configuration, prompts, SDD artifacts, or other generated technical artifacts.
-Generated technical artifacts default to English unless the user explicitly requests another artifact language or an existing project convention requires otherwise.
-Preserve product names exactly, including Hive, jarvis CLI, `.jarvis/skill-registry.md`, and `.jarvis/skills/<skill>/SKILL.md`.
-
 ### Hive-specific features
 
 - The `project` field is MANDATORY in ALL Hive memory saves — NEVER save without it.

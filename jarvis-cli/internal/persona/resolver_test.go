@@ -1,8 +1,6 @@
 package persona
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
@@ -29,94 +27,17 @@ func TestNormalizeSlug(t *testing.T) {
 	}
 }
 
-func TestResolvePreset(t *testing.T) {
-	const customPresetYAML = `
-name: custom-mentor
-display_name: "Custom Mentor"
-description: "User-defined preset"
-tone:
-  formality: informal
-  directness: high
-  humor: wholesome
-  language: en-us
-communication_style:
-  verbosity: moderate
-  show_alternatives: true
-  challenge_assumptions: true
-characteristic_phrases:
-  greetings: ["Hey"]
-  confirmations: ["Done"]
-  transitions: ["Now"]
-  sign_offs: ["Bye"]
-notes: |
-  Keep things practical.
-`
-
-	tests := []struct {
-		name            string
-		requestedSlug   string
-		setupUserPreset bool
-		wantSource      PresetSource
-		wantSlug        string
-		wantErr         bool
-	}{
-		{
-			name:          "resolve builtin slug",
-			requestedSlug: "Tony Stark",
-			wantSource:    PresetSourceBuiltin,
-			wantSlug:      "tony-stark",
-		},
-		{
-			name:            "resolve user-defined slug",
-			requestedSlug:   "Custom Mentor",
-			setupUserPreset: true,
-			wantSource:      PresetSourceUser,
-			wantSlug:        "custom-mentor",
-		},
-		{
-			name:          "missing slug fails fast",
-			requestedSlug: "does-not-exist",
-			wantErr:       true,
-		},
+func TestListProfilesLoadsValidatedCatalog(t *testing.T) {
+	presets, err := ListProfiles(jarvis.PersonaFS)
+	if err != nil {
+		t.Fatalf("ListProfiles() error = %v", err)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			home := isolateTestHome(t)
-
-			if tt.setupUserPreset {
-				presetPath := filepath.Join(home, ".jarvis", "personas", "custom-mentor.yaml")
-				if err := os.MkdirAll(filepath.Dir(presetPath), 0o755); err != nil {
-					t.Fatalf("MkdirAll(%q): %v", filepath.Dir(presetPath), err)
-				}
-				if err := os.WriteFile(presetPath, []byte(customPresetYAML), 0o644); err != nil {
-					t.Fatalf("WriteFile(%q): %v", presetPath, err)
-				}
-			}
-
-			resolved, err := ResolvePreset(jarvis.PersonaFS, tt.requestedSlug)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("ResolvePreset(%q) expected error, got nil", tt.requestedSlug)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("ResolvePreset(%q) unexpected error: %v", tt.requestedSlug, err)
-			}
-
-			if resolved == nil {
-				t.Fatalf("ResolvePreset(%q) returned nil result", tt.requestedSlug)
-			}
-			if resolved.Source != tt.wantSource {
-				t.Fatalf("ResolvePreset(%q) source = %q, want %q", tt.requestedSlug, resolved.Source, tt.wantSource)
-			}
-			if resolved.Slug != tt.wantSlug {
-				t.Fatalf("ResolvePreset(%q) slug = %q, want %q", tt.requestedSlug, resolved.Slug, tt.wantSlug)
-			}
-			if resolved.Preset == nil {
-				t.Fatalf("ResolvePreset(%q) returned nil preset", tt.requestedSlug)
-			}
-		})
+	if len(presets) != 7 {
+		t.Fatalf("ListProfiles() returned %d profiles, want 7", len(presets))
+	}
+	for _, preset := range presets {
+		if preset.SchemaVersion != 2 || preset.Name == "" || preset.DisplayName == "" {
+			t.Fatalf("ListProfiles() returned unvalidated profile: %+v", preset)
+		}
 	}
 }

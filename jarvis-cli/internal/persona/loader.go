@@ -5,7 +5,6 @@
 package persona
 
 import (
-	"embed"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -14,83 +13,47 @@ import (
 	"unicode"
 )
 
-// Tone describes the communication tone settings of a persona.
-type Tone struct {
-	Formality  string `yaml:"formality"`
-	Directness string `yaml:"directness"`
-	Humor      string `yaml:"humor"`
-	Language   string `yaml:"language"`
+// ProfileOption is the UI projection of a validated presentation profile.
+type ProfileOption struct {
+	Name        string
+	DisplayName string
+	Description string
 }
 
-// CommunicationStyle describes how the persona communicates.
-type CommunicationStyle struct {
-	Verbosity            string `yaml:"verbosity"`
-	ShowAlternatives     bool   `yaml:"show_alternatives"`
-	ChallengeAssumptions bool   `yaml:"challenge_assumptions"`
-}
-
-// CharacteristicPhrases holds persona-specific phrases used in responses.
-type CharacteristicPhrases struct {
-	Greetings     []string `yaml:"greetings"`
-	Confirmations []string `yaml:"confirmations"`
-	Transitions   []string `yaml:"transitions"`
-	SignOffs      []string `yaml:"sign_offs"`
-}
-
-// Preset represents a complete persona configuration loaded from a YAML preset file.
-type Preset struct {
-	Name                  string                `yaml:"name"`
-	DisplayName           string                `yaml:"display_name"`
-	Description           string                `yaml:"description"`
-	Tone                  Tone                  `yaml:"tone"`
-	CommunicationStyle    CommunicationStyle    `yaml:"communication_style"`
-	CharacteristicPhrases CharacteristicPhrases `yaml:"characteristic_phrases"`
-	// Notes holds the full persona description — language rules, philosophy, speech
-	// patterns, and behavior rules. Written as a freeform markdown block in the YAML
-	// and appended verbatim to the Layer2 output after a horizontal rule.
-	Notes string `yaml:"notes"`
-}
-
-// LoadPreset loads a named preset from the provided embed.FS.
-// fs must be the root-package PersonaFS (embed/personas directory embedded at root).
-// name must be one of the 7 built-in preset names (e.g. "argentino", "tony-stark").
-func LoadPreset(fsys embed.FS, name string) (*Preset, error) {
-	resolved, err := ResolvePreset(fsys, name)
-	if err != nil {
-		return nil, err
-	}
-	if resolved.Source != PresetSourceBuiltin {
-		return nil, fmt.Errorf("preset %q is not a built-in preset", NormalizeSlug(name))
+// ListProfiles returns all validated schema-v2 built-in presentation profiles.
+func ListProfiles(fsys fs.FS) ([]Profile, error) {
+	if fsys == nil {
+		return nil, nil
 	}
 
-	return resolved.Preset, nil
-}
-
-// ListPresets returns all built-in presets loaded from the provided embed.FS.
-func ListPresets(fsys embed.FS) ([]Preset, error) {
-	names := listPresetNames(fsys)
-	presets := make([]Preset, 0, len(names))
+	names := listProfileNames(fsys)
+	presets := make([]Profile, 0, len(names))
 
 	for _, name := range names {
-		p, err := LoadPreset(fsys, name)
+		resolved, err := ResolveProfile(fsys, name)
 		if err != nil {
-			return nil, fmt.Errorf("load preset %q: %w", name, err)
+			return nil, fmt.Errorf("load schema v2 preset %q: %w", name, err)
 		}
-		presets = append(presets, *p)
+		if resolved.Source != PresetSourceBuiltin {
+			return nil, fmt.Errorf("schema v2 preset %q is not a built-in preset", NormalizeSlug(name))
+		}
+		presets = append(presets, *resolved.Preset)
 	}
 
 	return presets, nil
 }
 
-// listPresetNames returns the names of all built-in presets by scanning the provided embed.FS.
-// Template files (*.tmpl) are excluded.
-func listPresetNames(fsys fs.FS) []string {
+func listProfileNames(fsys fs.FS) []string {
+	return listProfileNamesInDir(fsys, "embed/personas")
+}
+
+func listProfileNamesInDir(fsys fs.FS, directory string) []string {
 	namesSet := make(map[string]struct{})
-	_ = fs.WalkDir(fsys, "embed/personas", func(path string, d fs.DirEntry, err error) error {
+	_ = fs.WalkDir(fsys, directory, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		if filepath.ToSlash(filepath.Dir(path)) != "embed/personas" {
+		if filepath.ToSlash(filepath.Dir(path)) != directory {
 			return nil
 		}
 		if !strings.HasSuffix(path, ".yaml") || strings.HasSuffix(path, ".yaml.tmpl") {
@@ -113,159 +76,56 @@ func listPresetNames(fsys fs.FS) []string {
 	return names
 }
 
-// ValidateCustom validates a user-provided custom persona YAML.
-// Returns a descriptive error if required fields are missing or Layer1 fields
-// are present (Layer1 fields must not be overridden via persona presets).
-func ValidateCustom(content []byte) error {
-	return ValidatePreset(content)
+// RenderLayer2 renders a schema-v2 profile as presentation only.
+func RenderLayer2(preset *Profile) string {
+	return renderPresentation(preset, false)
 }
 
-// RenderLayer2 renders a Layer2 markdown block from a preset.
-// This is the content that goes between the LAYER2 sentinel markers.
-func RenderLayer2(preset *Preset) string {
+// RenderOutputStyle renders schema-v2 presentation for Claude Code while
+// retaining Claude's Layer1 coding instructions.
+func RenderOutputStyle(preset *Profile) string {
+	return renderPresentation(preset, true)
+}
+
+func renderPresentation(preset *Profile, outputStyle bool) string {
 	var sb strings.Builder
-	notes := withoutPersonaScopeGuardrail(preset.Notes)
-
-	fmt.Fprintf(&sb, "## Persona: %s\n\n", preset.DisplayName)
-	fmt.Fprintf(&sb, "%s\n\n", preset.Description)
-
-	if !notesHasStructuredSection(notes, "Tone") {
-		sb.WriteString("### Tone\n")
-		fmt.Fprintf(&sb, "- **Formality**: %s\n", preset.Tone.Formality)
-		fmt.Fprintf(&sb, "- **Directness**: %s\n", preset.Tone.Directness)
-		fmt.Fprintf(&sb, "- **Humor**: %s\n", preset.Tone.Humor)
-		fmt.Fprintf(&sb, "- **Language**: %s\n\n", preset.Tone.Language)
+	if outputStyle {
+		sb.WriteString("---\n")
+		fmt.Fprintf(&sb, "name: %s\n", toTitleCase(preset.Name))
+		sb.WriteString("description: Jarvis presentation profile\n")
+		sb.WriteString("keep-coding-instructions: true\n---\n\n")
 	}
 
-	if !notesHasStructuredSection(notes, "Communication Style") {
-		sb.WriteString("### Communication Style\n")
-		if preset.CommunicationStyle.ShowAlternatives {
-			sb.WriteString("- Always propose alternatives with tradeoffs\n")
-		}
-		if preset.CommunicationStyle.ChallengeAssumptions {
-			sb.WriteString("- Challenge user assumptions when incorrect\n")
-		}
-		fmt.Fprintf(&sb, "- Verbosity: %s\n\n", preset.CommunicationStyle.Verbosity)
-	} else if hasStructuredCommunicationBehavior(preset) {
-		sb.WriteString("### Behavioral Rules\n")
-		writeStructuredCommunicationBehavior(&sb, preset)
-		sb.WriteString("\n")
-	}
-
-	if len(preset.CharacteristicPhrases.Greetings) > 0 && !notesHasStructuredSection(notes, "Characteristic Phrases") {
-		sb.WriteString("### Characteristic Phrases\n")
-		sb.WriteString("**Greetings**: " + strings.Join(preset.CharacteristicPhrases.Greetings, " / ") + "\n")
-		sb.WriteString("**Confirmations**: " + strings.Join(preset.CharacteristicPhrases.Confirmations, " / ") + "\n")
-		if len(preset.CharacteristicPhrases.SignOffs) > 0 {
-			sb.WriteString("**Sign-off**: " + preset.CharacteristicPhrases.SignOffs[0] + "\n")
-		}
-	}
-
-	if notes != "" {
-		sb.WriteString("\n---\n")
-		sb.WriteString(notes)
-	}
-
-	sb.WriteString("\n\n")
-	sb.WriteString(personaScopeGuardrail)
-
+	fmt.Fprintf(&sb, "## Persona: %s\n\n", toTitleCase(preset.Name))
+	sb.WriteString("### Presentation\n")
+	fmt.Fprintf(&sb, "- Language: %s\n", presentationLanguage(preset.Presentation.Language))
+	fmt.Fprintf(&sb, "- Register: %s\n", presentationRegister(preset.Presentation.Register))
+	fmt.Fprintf(&sb, "- Vocabulary: %s\n", preset.Presentation.Vocabulary)
+	fmt.Fprintf(&sb, "- Cadence: %s\n", preset.Presentation.Cadence)
+	fmt.Fprintf(&sb, "- Humor: %s\n", preset.Presentation.Humor)
+	fmt.Fprintf(&sb, "- Emotional range: %s\n", preset.Presentation.EmotionalRange)
+	fmt.Fprintf(&sb, "- Verbosity: %s\n", preset.Presentation.Verbosity)
+	fmt.Fprintf(&sb, "- Formatting: %s\n", preset.Presentation.Formatting)
+	fmt.Fprintf(&sb, "- Teaching metaphors: %s\n", preset.Presentation.TeachingMetaphors)
+	fmt.Fprintf(&sb, "- Examples: %s\n", preset.Presentation.Examples)
+	fmt.Fprintf(&sb, "- Address pack: %s\n", preset.Presentation.AddressPack)
+	fmt.Fprintf(&sb, "- Phrase pack: %s\n", preset.Presentation.PhrasePack)
+	fmt.Fprintf(&sb, "- Anti-caricature: %s\n", preset.Presentation.AntiCaricature)
 	return sb.String()
 }
 
-// RenderOutputStyle renders output-style markdown with YAML frontmatter for Claude Code.
-// Format: ---\nname: TitleCase\ndescription: ...\nkeep-coding-instructions: true\n---\n{Notes}
-// Implements SPEC-002.
-func RenderOutputStyle(preset *Preset) string {
-	var sb strings.Builder
-	notes := withoutPersonaScopeGuardrail(preset.Notes)
-
-	// Convert name to TitleCase (e.g., "tony-stark" -> "TonyStark")
-	titleCaseName := toTitleCase(preset.Name)
-
-	// YAML frontmatter
-	sb.WriteString("---\n")
-	fmt.Fprintf(&sb, "name: %s\n", titleCaseName)
-	fmt.Fprintf(&sb, "description: %s\n", preset.Description)
-	sb.WriteString("keep-coding-instructions: true\n")
-	sb.WriteString("---\n")
-
-	// Append Notes after frontmatter, then append fixed guardrails last so
-	// preset-provided instructions cannot override renderer-owned scope rules.
-	sb.WriteString("\n")
-	if notes != "" {
-		sb.WriteString(notes)
-		sb.WriteString("\n\n")
+func presentationLanguage(language string) string {
+	if language == "es-rioplatense" {
+		return "Rioplatense Spanish (voseo)"
 	}
-	sb.WriteString(personaScopeGuardrail)
-
-	return sb.String()
+	return language
 }
 
-func hasStructuredCommunicationBehavior(preset *Preset) bool {
-	return preset.CommunicationStyle.ShowAlternatives ||
-		preset.CommunicationStyle.ChallengeAssumptions ||
-		preset.CommunicationStyle.Verbosity != ""
-}
-
-func writeStructuredCommunicationBehavior(sb *strings.Builder, preset *Preset) {
-	if preset.CommunicationStyle.ShowAlternatives {
-		sb.WriteString("- Always propose alternatives with tradeoffs\n")
+func presentationRegister(register string) string {
+	if register == "warm-direct" {
+		return "warm, energetic, and direct"
 	}
-	if preset.CommunicationStyle.ChallengeAssumptions {
-		sb.WriteString("- Challenge user assumptions when incorrect\n")
-	}
-	if preset.CommunicationStyle.Verbosity != "" {
-		fmt.Fprintf(sb, "- Verbosity: %s\n", preset.CommunicationStyle.Verbosity)
-	}
-}
-
-func notesHasStructuredSection(notes, section string) bool {
-	return strings.Contains(notes, "## "+section)
-}
-
-func withoutPersonaScopeGuardrail(notes string) string {
-	notes = stripMarkedPersonaScopeBlocks(notes)
-	notes = strings.ReplaceAll(notes, personaScopeGuardrail, "")
-	for strings.Contains(notes, "## Persona Scope (CRITICAL)") {
-		notes = stripMarkdownSection(notes, "## Persona Scope (CRITICAL)")
-	}
-	return strings.TrimSpace(notes)
-}
-
-func stripMarkedPersonaScopeBlocks(content string) string {
-	const startMarker = "<!-- gentle-ai:persona-scope -->"
-	const endMarker = "<!-- /gentle-ai:persona-scope -->"
-
-	for {
-		start := strings.Index(content, startMarker)
-		if start == -1 {
-			return content
-		}
-
-		endSearchStart := start + len(startMarker)
-		end := strings.Index(content[endSearchStart:], endMarker)
-		if end == -1 {
-			return content
-		}
-
-		end = endSearchStart + end + len(endMarker)
-		content = content[:start] + content[end:]
-	}
-}
-
-func stripMarkdownSection(content, heading string) string {
-	start := strings.Index(content, heading)
-	if start == -1 {
-		return content
-	}
-
-	sectionEnd := len(content)
-	searchStart := start + len(heading)
-	if next := strings.Index(content[searchStart:], "\n## "); next != -1 {
-		sectionEnd = searchStart + next
-	}
-
-	return content[:start] + content[sectionEnd:]
+	return register
 }
 
 // toTitleCase converts a persona name to TitleCase format.

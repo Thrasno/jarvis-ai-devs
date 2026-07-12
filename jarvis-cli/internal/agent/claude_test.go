@@ -88,19 +88,14 @@ func TestClaudeAgent_SupportsOutputStyles(t *testing.T) {
 	}
 }
 
-// TestClaudeAgent_WriteOutputStyle verifies the output-style file is written
+// TestClaudeAgent_WriteOutputStyle_WritesPresentation verifies the output-style file is written
 // to the correct path with correct content (SPEC-003).
-func TestClaudeAgent_WriteOutputStyle(t *testing.T) {
+func TestClaudeAgent_WriteOutputStyle_WritesPresentation(t *testing.T) {
 	// Setup temp home directory
 	tmpHome := t.TempDir()
 	agent := &ClaudeAgent{home: tmpHome}
 
-	preset := &persona.Preset{
-		Name:        "argentino",
-		DisplayName: "Argentino",
-		Description: "Mentor apasionado",
-		Notes:       "Use voseo and passion.",
-	}
+	preset := testOutputStyleProfile("argentino")
 
 	err := agent.WriteOutputStyle(preset)
 	if err != nil {
@@ -125,14 +120,43 @@ func TestClaudeAgent_WriteOutputStyle(t *testing.T) {
 	if !strings.Contains(contentStr, "name: Argentino") {
 		t.Errorf("output-style file missing 'name: Argentino', got:\n%s", contentStr)
 	}
-	if !strings.Contains(contentStr, "description: Mentor apasionado") {
-		t.Errorf("output-style file missing description, got:\n%s", contentStr)
+	if !strings.Contains(contentStr, "description: Jarvis presentation profile") {
+		t.Errorf("output-style file missing V2 description, got:\n%s", contentStr)
 	}
 	if !strings.Contains(contentStr, "keep-coding-instructions: true") {
 		t.Errorf("output-style file missing keep-coding-instructions, got:\n%s", contentStr)
 	}
-	if !strings.Contains(contentStr, "Use voseo and passion.") {
-		t.Errorf("output-style file missing Notes content, got:\n%s", contentStr)
+	if !strings.Contains(contentStr, "- Language: Rioplatense Spanish (voseo)") {
+		t.Errorf("output-style file missing V2 presentation content, got:\n%s", contentStr)
+	}
+}
+
+func TestClaudeAgent_WriteOutputStyle(t *testing.T) {
+	tmpHome := t.TempDir()
+	agent := &ClaudeAgent{home: tmpHome}
+	preset := &persona.Profile{
+		SchemaVersion: 2,
+		Name:          "custom-mentor",
+		DisplayName:   "Custom Mentor",
+		Presentation: persona.Presentation{
+			Language: "en-us", Register: "friendly-professional", Vocabulary: "plain-technical", Cadence: "measured",
+			Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured",
+			TeachingMetaphors: "construction", Examples: "practical", AddressPack: "peer", PhrasePack: "plain", AntiCaricature: "grounded",
+		},
+	}
+
+	if err := agent.WriteOutputStyle(preset); err != nil {
+		t.Fatalf("WriteOutputStyle() error = %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tmpHome, ".claude", "output-styles", "CustomMentor.md"))
+	if err != nil {
+		t.Fatalf("read V2 output-style: %v", err)
+	}
+	for _, want := range []string{"name: CustomMentor", "keep-coding-instructions: true", "### Presentation", "- Address pack: peer"} {
+		if !strings.Contains(string(content), want) {
+			t.Fatalf("V2 output-style missing %q:\n%s", want, content)
+		}
 	}
 }
 
@@ -142,12 +166,7 @@ func TestClaudeAgent_WriteOutputStyle_HyphenatedName(t *testing.T) {
 	tmpHome := t.TempDir()
 	agent := &ClaudeAgent{home: tmpHome}
 
-	preset := &persona.Preset{
-		Name:        "tony-stark",
-		DisplayName: "Tony Stark",
-		Description: "Genius",
-		Notes:       "Innovation.",
-	}
+	preset := testOutputStyleProfile("tony-stark")
 
 	err := agent.WriteOutputStyle(preset)
 	if err != nil {
@@ -231,12 +250,7 @@ func TestClaudeAgent_WriteOutputStyle_SettingsJsonMerge(t *testing.T) {
 				t.Fatalf("write settings.json: %v", err)
 			}
 
-			preset := &persona.Preset{
-				Name:        tt.presetName,
-				DisplayName: strings.ToUpper(tt.presetName[:1]) + tt.presetName[1:],
-				Description: "Test",
-				Notes:       "Test notes.",
-			}
+			preset := testOutputStyleProfile(tt.presetName)
 
 			err := agent.WriteOutputStyle(preset)
 			if err != nil {
@@ -265,12 +279,7 @@ func TestClaudeAgent_WriteOutputStyle_SettingsJsonNotExists(t *testing.T) {
 	tmpHome := t.TempDir()
 	agent := &ClaudeAgent{home: tmpHome}
 
-	preset := &persona.Preset{
-		Name:        "argentino",
-		DisplayName: "Argentino",
-		Description: "Test",
-		Notes:       "Test.",
-	}
+	preset := testOutputStyleProfile("argentino")
 
 	err := agent.WriteOutputStyle(preset)
 	if err != nil {
@@ -311,12 +320,7 @@ func TestClaudeAgent_WriteOutputStyle_MalformedSettings(t *testing.T) {
 	}
 
 	agent := newClaudeAgent(emptyFS)
-	preset := &persona.Preset{
-		Name:        "neutra",
-		DisplayName: "Neutra",
-		Description: "Test",
-		Notes:       "Test.",
-	}
+	preset := testOutputStyleProfile("neutra")
 
 	err := agent.WriteOutputStyle(preset)
 	if err == nil {
@@ -354,12 +358,7 @@ func TestClaudeAgent_WriteOutputStyle_ReadOnlyFilesystem(t *testing.T) {
 	})
 
 	agent := newClaudeAgent(emptyFS)
-	preset := &persona.Preset{
-		Name:        "argentino",
-		DisplayName: "Argentino",
-		Description: "Test",
-		Notes:       "Test.",
-	}
+	preset := testOutputStyleProfile("argentino")
 
 	err := agent.WriteOutputStyle(preset)
 	if err == nil {
@@ -371,22 +370,17 @@ func TestClaudeAgent_WriteOutputStyle_ReadOnlyFilesystem(t *testing.T) {
 	}
 }
 
-// TestClaudeAgent_WriteOutputStyle_NilNotes verifies that nil or empty Notes
-// field does not cause panic (SPEC-008).
-func TestClaudeAgent_WriteOutputStyle_NilNotes(t *testing.T) {
+// TestClaudeAgent_WriteOutputStyle_EmptyPresentation verifies an empty
+// presentation value does not cause a panic while rendering (SPEC-008).
+func TestClaudeAgent_WriteOutputStyle_EmptyPresentation(t *testing.T) {
 	tmpHome := isolateTestHome(t)
 
 	agent := newClaudeAgent(emptyFS)
-	preset := &persona.Preset{
-		Name:        "neutra",
-		DisplayName: "Neutra",
-		Description: "Neutral tone",
-		Notes:       "", // Empty notes
-	}
+	preset := &persona.Profile{Name: "neutra"}
 
 	err := agent.WriteOutputStyle(preset)
 	if err != nil {
-		t.Fatalf("WriteOutputStyle() with empty Notes failed: %v", err)
+		t.Fatalf("WriteOutputStyle() with empty presentation failed: %v", err)
 	}
 
 	// Verify file was created
@@ -397,14 +391,24 @@ func TestClaudeAgent_WriteOutputStyle_NilNotes(t *testing.T) {
 	}
 
 	content := string(data)
-	// Should have frontmatter but empty body
+	// Should have frontmatter and a renderer-owned presentation section.
 	if !strings.Contains(content, "name: Neutra") {
 		t.Error("output-style missing frontmatter")
 	}
-	// Body after "---\n" should be minimal (just potential newline)
-	parts := strings.Split(content, "---")
-	if len(parts) < 3 {
-		t.Error("output-style missing closing frontmatter delimiter")
+	if !strings.Contains(content, "### Presentation") {
+		t.Error("output-style missing presentation section")
+	}
+}
+
+func testOutputStyleProfile(name string) *persona.Profile {
+	return &persona.Profile{
+		SchemaVersion: 2,
+		Name:          name,
+		Presentation: persona.Presentation{
+			Language: "es-rioplatense", Register: "warm-direct", Vocabulary: "rioplatense", Cadence: "energetic",
+			Humor: "warm", EmotionalRange: "supportive", Verbosity: "balanced", Formatting: "structured",
+			TeachingMetaphors: "architecture", Examples: "practical", AddressPack: "gentleman", PhrasePack: "gentleman", AntiCaricature: "grounded",
+		},
 	}
 }
 
@@ -708,7 +712,7 @@ func TestClaudeAgent_MergeConfig_Context7_IdempotentViaRemoveThenAdd(t *testing.
 func TestClaudeAgent_MergeConfig_FirstInstallMissingGetSkipsRemove(t *testing.T) {
 	runner := &stubClaudeRunner{
 		responses: []stubClaudeResponse{
-			{out: "Error: MCP server 'context7' not found", err: os.ErrNotExist},
+			{out: "Error: MCP server 'context7' not found", err: errors.New("exit status 1"), started: true},
 		},
 	}
 	agent := &ClaudeAgent{runCommand: runner.run}
@@ -724,7 +728,7 @@ func TestClaudeAgent_MergeConfig_FirstInstallMissingGetSkipsRemove(t *testing.T)
 	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--transport", "http", "--scope", "user", "context7", "https://mcp.context7.com/mcp")
 }
 
-func TestClaudeAgent_MergeConfig_FirstInstallMissingGet_WithGenericExitError(t *testing.T) {
+func TestClaudeAgent_MergeConfig_FirstInstallGenericGetErrorFailsClosed(t *testing.T) {
 	runner := &stubClaudeRunner{
 		responses: []stubClaudeResponse{
 			{out: "No server named 'context7' exists in user scope", err: errors.New("exit status 1")},
@@ -732,15 +736,14 @@ func TestClaudeAgent_MergeConfig_FirstInstallMissingGet_WithGenericExitError(t *
 	}
 	agent := &ClaudeAgent{runCommand: runner.run}
 
-	if err := agent.MergeConfig(MCPEntry{Name: "context7"}); err != nil {
-		t.Fatalf("expected missing get marker to be tolerated, got: %v", err)
+	if err := agent.MergeConfig(MCPEntry{Name: "context7"}); err == nil {
+		t.Fatal("expected ambiguous get error to fail closed")
 	}
 
-	if len(runner.calls) != 2 {
-		t.Fatalf("expected get+add when get reports missing entry, got %d", len(runner.calls))
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected get only when response is ambiguous, got %d", len(runner.calls))
 	}
 	assertClaudeCall(t, runner.calls[0], "claude", "mcp", "get", "context7")
-	assertClaudeCall(t, runner.calls[1], "claude", "mcp", "add", "--transport", "http", "--scope", "user", "context7", "https://mcp.context7.com/mcp")
 }
 
 func TestClaudeAgent_MergeConfig_GetFailureIsReturned(t *testing.T) {
@@ -798,7 +801,7 @@ func TestClaudeAgent_MergeConfig_ValidationAndAddFailures(t *testing.T) {
 	t.Run("add failure includes runner reason", func(t *testing.T) {
 		runner := &stubClaudeRunner{
 			responses: []stubClaudeResponse{
-				{out: "Error: MCP server 'context7' not found", err: os.ErrNotExist},
+				{out: "Error: MCP server 'context7' not found", err: errors.New("exit status 1"), started: true},
 				{out: "network unreachable", err: errors.New("exit status 1")},
 			},
 		}
@@ -817,35 +820,35 @@ func TestClaudeAgent_CommandRunnerFallbackAndCombinedOutput(t *testing.T) {
 	a := &ClaudeAgent{}
 	runner := a.commandRunner()
 	name, args := testCommand(t, "ok")
-	out, err := runner(name, args...)
-	if err != nil {
-		t.Fatalf("fallback commandRunner should execute commands, got error %v", err)
+	result := runner(name, args...)
+	if result.Err != nil {
+		t.Fatalf("fallback commandRunner should execute commands, got error %v", result.Err)
 	}
-	if out != "ok" {
-		t.Fatalf("unexpected fallback output %q", out)
+	if result.Output != "ok" || !result.Started {
+		t.Fatalf("unexpected fallback result %#v", result)
 	}
 }
 
 func TestRunCommandCombinedOutput_SuccessAndFailure(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		name, args := testCommand(t, "hello")
-		out, err := runCommandCombinedOutput(name, args...)
-		if err != nil {
-			t.Fatalf("expected success, got %v", err)
+		result := runCommandCombinedOutput(name, args...)
+		if result.Err != nil || !result.Started {
+			t.Fatalf("expected started success, got %#v", result)
 		}
-		if out != "hello" {
-			t.Fatalf("unexpected output %q", out)
+		if result.Output != "hello" {
+			t.Fatalf("unexpected output %q", result.Output)
 		}
 	})
 
 	t.Run("failure keeps combined output", func(t *testing.T) {
 		name, args := testCommand(t, "boom-fail")
-		out, err := runCommandCombinedOutput(name, args...)
-		if err == nil {
+		result := runCommandCombinedOutput(name, args...)
+		if result.Err == nil || !result.Started {
 			t.Fatal("expected non-nil error for exit status 7")
 		}
-		if out != "boom" {
-			t.Fatalf("expected combined output to be returned, got %q", out)
+		if result.Output != "boom" {
+			t.Fatalf("expected combined output to be returned, got %q", result.Output)
 		}
 	})
 }
@@ -930,8 +933,9 @@ type stubClaudeCall struct {
 }
 
 type stubClaudeResponse struct {
-	out string
-	err error
+	out     string
+	err     error
+	started bool
 }
 
 type stubClaudeRunner struct {
@@ -939,14 +943,14 @@ type stubClaudeRunner struct {
 	responses []stubClaudeResponse
 }
 
-func (s *stubClaudeRunner) run(name string, args ...string) (string, error) {
+func (s *stubClaudeRunner) run(name string, args ...string) claudeCommandResult {
 	s.calls = append(s.calls, stubClaudeCall{name: name, args: append([]string(nil), args...)})
 	if len(s.responses) == 0 {
-		return "", nil
+		return claudeCommandResult{Started: true}
 	}
 	resp := s.responses[0]
 	s.responses = s.responses[1:]
-	return resp.out, resp.err
+	return claudeCommandResult{Output: resp.out, Err: resp.err, Started: resp.started || resp.err == nil}
 }
 
 func assertClaudeCall(t *testing.T, call stubClaudeCall, wantName string, wantArgs ...string) {

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
@@ -23,9 +25,21 @@ var _ Agent = (*ClaudeAgent)(nil)
 // Ensure ClaudeAgent implements the optional AgentInstaller capability.
 var _ AgentInstaller = (*ClaudeAgent)(nil)
 
-type claudeCommandRunner func(name string, args ...string) (string, error)
+type claudeCommandRunner func(name string, args ...string) claudeCommandResult
+
+// claudeCommandResult preserves whether the Claude CLI process started. A
+// non-zero CLI exit can report a missing MCP; a launch failure cannot.
+type claudeCommandResult struct {
+	Output  string
+	Err     error
+	Started bool
+}
 
 var claudeRuntimeGOOS = runtime.GOOS
+
+const defaultNativeMCPInventoryCommandTimeout = 5 * time.Second
+
+var nativeMCPInventoryCommandTimeout = defaultNativeMCPInventoryCommandTimeout
 
 // osExecutable is a package-level variable wrapping os.Executable so tests
 // can inject a fake path without spawning a real subprocess.
@@ -226,29 +240,29 @@ func (a *ClaudeAgent) MergeConfig(entry MCPEntry) error {
 		return fmt.Errorf("unknown MCP entry name: %s", entry.Name)
 	}
 
-	getOut, err := a.commandRunner()("claude", "mcp", "get", entry.Name)
-	if err != nil {
-		if !isMissingClaudeMCP(getOut, err) {
-			return fmt.Errorf("get claude mcp %s: %w", entry.Name, err)
+	get := a.commandRunner()("claude", "mcp", "get", entry.Name)
+	if get.Err != nil {
+		if !isMissingClaudeMCP(get, entry.Name) {
+			return fmt.Errorf("get claude mcp %s: %w", entry.Name, get.Err)
 		}
 	} else {
-		removeOut, removeErr := a.commandRunner()("claude", "mcp", "remove", "--scope", "user", entry.Name)
-		if removeErr != nil {
-			reason := strings.TrimSpace(removeOut)
+		remove := a.commandRunner()("claude", "mcp", "remove", "--scope", "user", entry.Name)
+		if remove.Err != nil {
+			reason := strings.TrimSpace(remove.Output)
 			if reason != "" {
-				return fmt.Errorf("remove existing claude mcp %s: %w: %s", entry.Name, removeErr, reason)
+				return fmt.Errorf("remove existing claude mcp %s: %w: %s", entry.Name, remove.Err, reason)
 			}
-			return fmt.Errorf("remove existing claude mcp %s: %w", entry.Name, removeErr)
+			return fmt.Errorf("remove existing claude mcp %s: %w", entry.Name, remove.Err)
 		}
 	}
 
-	addOut, err := a.commandRunner()("claude", addArgs...)
-	if err != nil {
-		reason := strings.TrimSpace(addOut)
+	add := a.commandRunner()("claude", addArgs...)
+	if add.Err != nil {
+		reason := strings.TrimSpace(add.Output)
 		if reason != "" {
-			return fmt.Errorf("add claude mcp %s: %w: %s", entry.Name, err, reason)
+			return fmt.Errorf("add claude mcp %s: %w: %s", entry.Name, add.Err, reason)
 		}
-		return fmt.Errorf("add claude mcp %s: %w", entry.Name, err)
+		return fmt.Errorf("add claude mcp %s: %w", entry.Name, add.Err)
 	}
 
 	return nil
@@ -261,24 +275,34 @@ func (a *ClaudeAgent) commandRunner() claudeCommandRunner {
 	return runCommandCombinedOutput
 }
 
-func runCommandCombinedOutput(name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+func runCommandCombinedOutput(name string, args ...string) claudeCommandResult {
+	return runCommandCombinedOutputContext(context.Background(), name, args...)
 }
 
-func isMissingClaudeMCP(output string, err error) bool {
-	if errors.Is(err, os.ErrNotExist) {
-		return true
+// runNativeMCPInventoryCommand bounds the read-only inventory query so a
+// stalled Claude CLI cannot block installation or reconfiguration forever.
+func runNativeMCPInventoryCommand(name string, args ...string) claudeCommandResult {
+	ctx, cancel := context.WithTimeout(context.Background(), nativeMCPInventoryCommandTimeout)
+	defer cancel()
+	return runCommandCombinedOutputContext(ctx, name, args...)
+}
+
+func runCommandCombinedOutputContext(ctx context.Context, name string, args ...string) claudeCommandResult {
+	cmd := exec.CommandContext(ctx, name, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil && ctx.Err() != nil {
+		err = ctx.Err()
 	}
-	lower := strings.ToLower(output + "\n" + err.Error())
-	markers := []string{"not found", "does not exist", "no mcp server", "unknown mcp", "no server named", "no server configured"}
-	for _, marker := range markers {
-		if strings.Contains(lower, marker) {
-			return true
-		}
+	result := claudeCommandResult{Output: string(out), Err: err}
+	result.Started = cmd.Process != nil
+	return result
+}
+
+func isMissingClaudeMCP(result claudeCommandResult, identity string) bool {
+	if !result.Started || result.Err == nil || errors.Is(result.Err, os.ErrNotExist) || errors.Is(result.Err, os.ErrPermission) || errors.Is(result.Err, context.DeadlineExceeded) {
+		return false
 	}
-	return false
+	return strings.TrimSpace(result.Output) == fmt.Sprintf("Error: MCP server '%s' not found", identity)
 }
 
 // WriteInstructions writes ~/.claude/CLAUDE.md with Layer1+Layer2 sentinel blocks.
@@ -339,27 +363,26 @@ func (a *ClaudeAgent) SupportsOutputStyles() bool {
 	return true
 }
 
-// WriteOutputStyle writes the output-style file to ~/.claude/output-styles/{Name}.md
-// and patches settings.json with {"outputStyle": "{Name}"}.
-// Implements SPEC-002, SPEC-003, SPEC-004.
-func (a *ClaudeAgent) WriteOutputStyle(preset *persona.Preset) error {
+// WriteOutputStyle writes a schema-v2 presentation output style.
+func (a *ClaudeAgent) WriteOutputStyle(preset *persona.Profile) error {
+	return a.writeOutputStyle(preset.Name, persona.RenderOutputStyle(preset))
+}
+
+func (a *ClaudeAgent) writeOutputStyle(presetName, content string) error {
 	// 1. Create output-styles directory
 	outputStylesDir := filepath.Join(a.ConfigDir(), "output-styles")
 	if err := os.MkdirAll(outputStylesDir, 0755); err != nil {
 		return fmt.Errorf("create output-styles dir: %w", err)
 	}
 
-	// 2. Render output-style content
-	content := persona.RenderOutputStyle(preset)
-
-	// 3. Write output-style file atomically
-	titleCaseName := toTitleCase(preset.Name)
+	// 2. Write output-style file atomically
+	titleCaseName := toTitleCase(presetName)
 	outputStylePath := filepath.Join(outputStylesDir, titleCaseName+".md")
 	if err := writeFileAtomic(outputStylePath, []byte(content), 0644); err != nil {
 		return fmt.Errorf("write output-style file: %w", err)
 	}
 
-	// 4. Patch settings.json with outputStyle key
+	// 3. Patch settings.json with outputStyle key
 	patch := map[string]any{
 		"outputStyle": titleCaseName,
 	}

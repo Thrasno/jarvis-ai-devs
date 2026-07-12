@@ -4,6 +4,7 @@ package tui
 
 import (
 	"embed"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,6 +30,7 @@ const (
 	StepSkills
 	StepPhaseModels
 	StepReview
+	StepMCPDisclosure
 	StepStatuslineConfirm
 	StepApply
 	StepDone
@@ -58,7 +60,7 @@ type Model struct {
 	Mode   string
 	Scope  config.SetupScope
 
-	PersonaFS  embed.FS
+	PersonaFS  fs.FS
 	SkillsFS   embed.FS
 	TemplateFS embed.FS
 	ProjectCWD string
@@ -68,16 +70,17 @@ type Model struct {
 	APIToken    string
 	activeField int
 
-	Presets              []persona.Preset
+	Presets              []persona.ProfileOption
 	presetCur            int
 	CustomYAML           string
 	customEdit           bool
 	customField          int
 	customPresetName     string
 	customDisplayName    string
-	selectedPreset       *persona.ResolvedPreset
+	selectedProfile      *persona.ResolvedProfile
 	previousPresetSlug   string
 	previousPresetSource persona.PresetSource
+	personaSelectionErr  error
 
 	SkillList    []skills.Skill
 	SkillPrompts []skillPrompt
@@ -89,6 +92,8 @@ type Model struct {
 	reviewChoice             int
 	statuslineOverwriteReady bool // true once the overwrite/skip decision has been captured
 	statuslineOverwrite      bool // the captured decision: true = overwrite, false = skip
+	mcpAcknowledgement       string
+	mcpAcknowledged          bool
 
 	phaseModelRows                []phaseModelRow
 	phaseModelActiveRow           int
@@ -130,6 +135,14 @@ type Model struct {
 	cockpitPlan           string
 }
 
+// wizardProfile returns the validated schema-v2 profile selected by the wizard.
+func (m Model) wizardProfile() (*persona.ResolvedProfile, bool) {
+	if m.selectedProfile != nil {
+		return m.selectedProfile, true
+	}
+	return nil, false
+}
+
 type phaseModelMode int
 
 const (
@@ -166,7 +179,7 @@ type openCodeModelOption struct {
 
 // WizardConfig carries FSes needed to run the wizard, injected by main.
 type WizardConfig struct {
-	PersonaFS  embed.FS
+	PersonaFS  fs.FS
 	SkillsFS   embed.FS
 	TemplateFS embed.FS
 	ProjectCWD string
@@ -200,19 +213,31 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 		m.Scope = config.ScopeLocalOnly
 	}
 
-	presets, err := persona.ListPresets(m.PersonaFS)
+	presets, err := persona.ListProfiles(m.PersonaFS)
 	if err == nil {
-		m.Presets = append(m.Presets, presets...)
-		m.Presets = append(m.Presets, persona.Preset{
+		m.Presets = append(m.Presets, profileOptions(presets)...)
+		m.Presets = append(m.Presets, persona.ProfileOption{
 			Name:        "custom",
 			DisplayName: "Custom (crear nuevo)",
 			Description: "Creá un preset propio con slug y display name, validado y persistido en ~/.jarvis/personas/<slug>.yaml.",
 		})
 		if m.cfg != nil {
-			for i, p := range presets {
-				if p.Name == m.cfg.PersonaPreset {
-					m.presetCur = i
-					break
+			configExists, configErr := hasPersistedConfig()
+			if configErr != nil {
+				m.personaSelectionErr = configErr
+				m.presetCur = -1
+			} else if configExists {
+				if err := validateConfiguredPersonaPresetForV2Selection(m.PersonaFS, m.cfg.PersonaPreset); err != nil {
+					m.personaSelectionErr = err
+					m.presetCur = -1
+				}
+			}
+			if m.personaSelectionErr == nil {
+				for i, p := range presets {
+					if p.Name == m.cfg.PersonaPreset {
+						m.presetCur = i
+						break
+					}
 				}
 			}
 		}
@@ -252,6 +277,18 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 	m = initializePhaseModelEditor(m)
 
 	return m
+}
+
+func profileOptions(presets []persona.Profile) []persona.ProfileOption {
+	options := make([]persona.ProfileOption, 0, len(presets))
+	for _, preset := range presets {
+		options = append(options, persona.ProfileOption{
+			Name:        preset.Name,
+			DisplayName: preset.DisplayName,
+			Description: schemaV2PresetDescription(preset.Name),
+		})
+	}
+	return options
 }
 
 // NewCockpitModel creates the cockpit-first root model used by bare TTY runs.
@@ -315,6 +352,8 @@ func (m Model) updateStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return updatePhaseModels(m, msg)
 	case StepReview:
 		return updateReview(m, msg)
+	case StepMCPDisclosure:
+		return updateMCPDisclosure(m, msg)
 	case StepStatuslineConfirm:
 		return updateStatuslineConfirm(m, msg)
 	case StepApply:
@@ -343,6 +382,8 @@ func (m Model) View() string {
 		return viewPhaseModels(m)
 	case StepReview:
 		return viewReview(m)
+	case StepMCPDisclosure:
+		return viewMCPDisclosure(m)
 	case StepStatuslineConfirm:
 		return viewStatuslineConfirm(m)
 	case StepApply:

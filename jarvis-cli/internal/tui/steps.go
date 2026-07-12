@@ -279,6 +279,12 @@ func updatePersona(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.customEdit {
 		return updatePersonaCustomEdit(m, msg)
 	}
+	if m.personaSelectionErr != nil {
+		if msg.Type == tea.KeyEnter {
+			m.Err = m.personaSelectionErr
+		}
+		return m, nil
+	}
 
 	switch msg.Type {
 	case tea.KeyUp:
@@ -315,12 +321,11 @@ func updatePersona(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		resolved, err := resolveWizardPresetSelection(m.PersonaFS, selected.Name, nil)
 		if err == nil {
-			m.selectedPreset = resolved
+			m.selectedProfile = resolved
 			m.cfg.PersonaPreset = resolved.Slug
 			m.cfg.Preset = resolved.Slug
 			m.cfg.PersonaPresetSource = string(resolved.Source)
 		} else {
-			m.selectedPreset = nil
 			m.cfg.PersonaPreset = selected.Name
 			m.cfg.Preset = selected.Name
 			m.cfg.PersonaPresetSource = string(persona.PresetSourceBuiltin)
@@ -345,7 +350,7 @@ func updatePersonaCustomEdit(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.Err = err
 			return m, nil
 		}
-		m.selectedPreset = resolved
+		m.selectedProfile = resolved
 		m.cfg.PersonaPreset = resolved.Slug
 		m.cfg.Preset = resolved.Slug
 		m.cfg.PersonaPresetSource = string(resolved.Source)
@@ -1213,6 +1218,11 @@ func updateReview(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.Done = true
 			return m, tea.Quit
 		case 2: // Apply
+			if requiresMCPReplacementAcknowledgement(m.Agents) && !m.mcpAcknowledged {
+				m.Step = StepMCPDisclosure
+				m.mcpAcknowledgement = ""
+				return m, nil
+			}
 			// Check if the statusline script already exists. If so, show the
 			// overwrite/skip confirmation step before launching the apply pipeline.
 			home, homeErr := os.UserHomeDir()
@@ -1242,6 +1252,33 @@ func updateReview(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func updateMCPDisclosure(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyBackspace, tea.KeyCtrlH:
+		if m.mcpAcknowledgement != "" {
+			m.mcpAcknowledgement = m.mcpAcknowledgement[:len(m.mcpAcknowledgement)-1]
+		}
+	case tea.KeyRunes:
+		m.mcpAcknowledgement += string(msg.Runes)
+	case tea.KeyEnter:
+		if !mcpReplacementAcknowledged(m.mcpAcknowledgement) {
+			m.mcpAcknowledgement = ""
+			m.Err = fmt.Errorf("acknowledgement did not match; type %s or cancel", mcpReplacementAcknowledgement)
+			return m, nil
+		}
+		m.mcpAcknowledged = true
+		m.Err = nil
+		m.Step = StepReview
+	}
+	return m, nil
+}
+
+func viewMCPDisclosure(m Model) string {
+	w := terminalui.PanelWidth(m.width)
+	content := warningStyle.Render(mcpReplacementWarning) + "\n\nType " + mcpReplacementAcknowledgement + " to acknowledge: " + m.mcpAcknowledgement
+	return terminalui.HeaderRow("Setup › Managed MCP Disclosure", terminalui.ModeBadge("warning"), m.width) + "\n\n" + terminalui.BorderedPanel(content, w) + "\n" + terminalui.HelpBar([]terminalui.KeyHint{{Key: "Enter", Desc: "acknowledge"}, {Key: "Ctrl+C", Desc: "cancel"}}, "warning", m.width)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1353,10 +1390,10 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		// Build SkillInfo list from registry for template rendering.
 		skillInfos := buildSkillInfoList(m)
 
-		var resolved *persona.ResolvedPreset
+		var resolvedPreset *persona.ResolvedProfile
 		if len(m.Agents) > 0 {
 			var err error
-			resolved, err = ensureResolvedPresetForApply(m)
+			resolvedPreset, err = ensureProfileForApply(m)
 			if err != nil {
 				return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: resolve preset %q: %v", m.cfg.PersonaPreset, err), done: true, failed: true}
 			}
@@ -1373,15 +1410,9 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			previousSource = persona.PresetSourceUser
 		}
 
-		// MCP entry for hive-daemon — point directly to the binary.
-		// Credentials are read by hive-daemon from ~/.jarvis/sync.json (written above).
-		entry := agent.MCPEntry{
-			Name:       "hive",
-			DaemonPath: agent.HiveDaemonBinaryPath(home),
+		if err := reconcileWizardMCPs(m.Agents, home); err != nil {
+			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: reconcile managed MCPs: %v", err), done: true, failed: true}
 		}
-
-		// MCP entry for Context7 — auto-configured after Hive.
-		context7Entry := agent.MCPEntry{Name: "context7"}
 
 		// Determine statusline overwrite policy. The decision must be made here
 		// (before the goroutine enters the pipeline) so the Bubbletea
@@ -1394,7 +1425,7 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		}
 
 		// Configure each detected agent and collect structured outcomes.
-		results := configureWizardAgents(m.Agents, m.cfg, entry, context7Entry, resolved, wizardPresetApplyContext{
+		results := configureWizardAgents(m.Agents, m.cfg, agent.MCPEntry{}, agent.MCPEntry{}, resolvedPreset, wizardPresetApplyContext{
 			Layer1:               config.Layer1Content(),
 			Skills:               skillInfos,
 			PreviousPresetSlug:   previousSlug,
@@ -1480,9 +1511,9 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 	}
 }
 
-func ensureResolvedPresetForApply(m Model) (*persona.ResolvedPreset, error) {
-	if m.selectedPreset != nil {
-		return m.selectedPreset, nil
+func ensureProfileForApply(m Model) (*persona.ResolvedProfile, error) {
+	if resolved, ok := m.wizardProfile(); ok {
+		return resolved, nil
 	}
 
 	requested := ""
@@ -1490,7 +1521,7 @@ func ensureResolvedPresetForApply(m Model) (*persona.ResolvedPreset, error) {
 		requested = strings.TrimSpace(m.cfg.PersonaPreset)
 	}
 	if requested == "" {
-		presets, err := persona.ListPresets(m.PersonaFS)
+		presets, err := persona.ListProfiles(m.PersonaFS)
 		if err == nil && len(presets) > 0 {
 			requested = presets[0].Name
 		}

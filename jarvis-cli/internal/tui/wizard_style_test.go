@@ -129,7 +129,7 @@ func TestViewPersonaList_HasSelectedRow(t *testing.T) {
 		width:    100,
 		cfg:      &config.AppConfig{},
 		Selected: make(map[string]bool),
-		Presets: []persona.Preset{
+		Presets: []persona.ProfileOption{
 			{Name: "architect", DisplayName: "Architect", Description: "Architecture persona"},
 			{Name: "junior", DisplayName: "Junior Dev", Description: "Junior persona"},
 		},
@@ -161,7 +161,7 @@ func TestViewPersonaList_EmptyState(t *testing.T) {
 		width:    100,
 		cfg:      &config.AppConfig{},
 		Selected: make(map[string]bool),
-		Presets:  []persona.Preset{},
+		Presets:  []persona.ProfileOption{},
 	}
 	result := viewPersona(m)
 	if result == "" {

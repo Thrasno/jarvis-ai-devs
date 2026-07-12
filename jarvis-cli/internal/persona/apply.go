@@ -7,13 +7,12 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 )
 
-// PresetAgent defines the minimal contract required by ApplyPresetPipeline.
-// agent.Agent satisfies this interface without introducing package cycles.
-type PresetAgent interface {
+// ProfileAgent is the adapter contract for validated presentation profiles.
+type ProfileAgent interface {
 	Name() string
 	WriteInstructions(layer1, layer2 string, skills []config.SkillInfo) error
 	SupportsOutputStyles() bool
-	WriteOutputStyle(preset *Preset) error
+	WriteOutputStyle(preset *Profile) error
 	ClearOutputStyle(name string) error
 }
 
@@ -26,23 +25,21 @@ type ApplyOptions struct {
 	PersistConfig        bool
 }
 
-// ApplyPresetPipeline applies a resolved preset with clean replacement semantics.
-// It rewrites Layer2 instructions, clears previous output-style references/files,
-// writes the new output-style, and optionally persists canonical preset identity.
-func ApplyPresetPipeline(agents []PresetAgent, resolved *ResolvedPreset, opts ApplyOptions) error {
+// ApplyProfile applies a previously validated schema-v2 presentation profile.
+func ApplyProfile(agents []ProfileAgent, resolved *ResolvedProfile, opts ApplyOptions) error {
 	if resolved == nil || resolved.Preset == nil {
-		return fmt.Errorf("resolved preset is required")
+		return fmt.Errorf("resolved schema v2 preset is required")
 	}
 
 	resolvedSlug := NormalizeSlug(resolved.Slug)
 	if resolvedSlug == "" {
-		return fmt.Errorf("resolved preset slug cannot be empty")
+		return fmt.Errorf("resolved schema v2 preset slug cannot be empty")
 	}
 
 	layer2 := RenderLayer2(resolved.Preset)
 	for _, a := range agents {
 		if err := a.WriteInstructions(opts.Layer1, layer2, opts.Skills); err != nil {
-			return fmt.Errorf("apply preset to %s instructions: %w", a.Name(), err)
+			return fmt.Errorf("apply schema v2 preset to %s instructions: %w", a.Name(), err)
 		}
 
 		if !a.SupportsOutputStyles() {
@@ -57,7 +54,7 @@ func ApplyPresetPipeline(agents []PresetAgent, resolved *ResolvedPreset, opts Ap
 		}
 
 		if err := a.WriteOutputStyle(resolved.Preset); err != nil {
-			return fmt.Errorf("write output-style for %s: %w", a.Name(), err)
+			return fmt.Errorf("write schema v2 output-style for %s: %w", a.Name(), err)
 		}
 	}
 
@@ -79,6 +76,14 @@ func ApplyPresetPipeline(agents []PresetAgent, resolved *ResolvedPreset, opts Ap
 	}
 
 	return nil
+}
+
+// AdaptProfileAgent verifies that a candidate supports the canonical profile contract.
+func AdaptProfileAgent(candidate any) (ProfileAgent, bool) {
+	if agent, ok := candidate.(ProfileAgent); ok {
+		return agent, true
+	}
+	return nil, false
 }
 
 func normalizePresetSourceForConfig(source PresetSource) string {

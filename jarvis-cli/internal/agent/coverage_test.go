@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -167,7 +168,7 @@ func TestClaudeAgent_MergeConfig_UsesNativeCLI(t *testing.T) {
 // MCP server during get does not block subsequent add.
 func TestClaudeAgent_MergeConfig_GetNotFoundStillAdds(t *testing.T) {
 	runner := &stubClaudeRunner{
-		responses: []stubClaudeResponse{{out: "not found", err: os.ErrNotExist}},
+		responses: []stubClaudeResponse{{out: "Error: MCP server 'hive' not found", err: errors.New("exit status 1"), started: true}},
 	}
 	a := &ClaudeAgent{runCommand: runner.run}
 

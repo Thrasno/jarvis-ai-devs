@@ -63,18 +63,18 @@ func (s *stubAgentInstaller) MergeConfig(MCPEntry) error {
 func (s *stubAgentInstaller) WriteInstructions(string, string, []config.SkillInfo) error {
 	return nil
 }
-func (s *stubAgentInstaller) InstallSkills(fs.FS, []string) error    { return nil }
-func (s *stubAgentInstaller) InstallOrchestrator([]byte) error       { return nil }
-func (s *stubAgentInstaller) SupportsOutputStyles() bool             { return false }
-func (s *stubAgentInstaller) WriteOutputStyle(*persona.Preset) error { return nil }
-func (s *stubAgentInstaller) ClearOutputStyle(string) error          { return nil }
+func (s *stubAgentInstaller) InstallSkills(fs.FS, []string) error     { return nil }
+func (s *stubAgentInstaller) InstallOrchestrator([]byte) error        { return nil }
+func (s *stubAgentInstaller) SupportsOutputStyles() bool              { return false }
+func (s *stubAgentInstaller) WriteOutputStyle(*persona.Profile) error { return nil }
+func (s *stubAgentInstaller) ClearOutputStyle(string) error           { return nil }
 func (s *stubAgentInstaller) RuntimePlan() (sddruntime.RuntimePlan, error) {
 	return sddruntime.Build("claude")
 }
 func (s *stubAgentInstaller) ObserveRuntime() (sddruntime.ObservedRuntime, error) {
 	return sddruntime.ObservedRuntime{}, nil
 }
-func (s *stubAgentInstaller) InstallPromptHook(fs.FS) error  { return nil }
+func (s *stubAgentInstaller) InstallPromptHook(fs.FS) error   { return nil }
 func (s *stubAgentInstaller) InstallSessionHooks(fs.FS) error { return nil }
 func (s *stubAgentInstaller) InstallAgents(agentsFS fs.FS) error {
 	s.callCount++
@@ -90,15 +90,15 @@ func (a *unsupportedAgentInstaller) IsInstalled() bool { return true }
 func (a *unsupportedAgentInstaller) ConfigDir() string {
 	return a.home + "/.unsupported-installer"
 }
-func (a *unsupportedAgentInstaller) MergeConfig(MCPEntry) error               { return nil }
+func (a *unsupportedAgentInstaller) MergeConfig(MCPEntry) error { return nil }
 func (a *unsupportedAgentInstaller) WriteInstructions(string, string, []config.SkillInfo) error {
 	return nil
 }
-func (a *unsupportedAgentInstaller) InstallSkills(fs.FS, []string) error    { return nil }
-func (a *unsupportedAgentInstaller) InstallOrchestrator([]byte) error       { return nil }
-func (a *unsupportedAgentInstaller) SupportsOutputStyles() bool             { return false }
-func (a *unsupportedAgentInstaller) WriteOutputStyle(*persona.Preset) error { return nil }
-func (a *unsupportedAgentInstaller) ClearOutputStyle(string) error          { return nil }
+func (a *unsupportedAgentInstaller) InstallSkills(fs.FS, []string) error     { return nil }
+func (a *unsupportedAgentInstaller) InstallOrchestrator([]byte) error        { return nil }
+func (a *unsupportedAgentInstaller) SupportsOutputStyles() bool              { return false }
+func (a *unsupportedAgentInstaller) WriteOutputStyle(*persona.Profile) error { return nil }
+func (a *unsupportedAgentInstaller) ClearOutputStyle(string) error           { return nil }
 func (a *unsupportedAgentInstaller) RuntimePlan() (sddruntime.RuntimePlan, error) {
 	return sddruntime.Build("claude")
 }

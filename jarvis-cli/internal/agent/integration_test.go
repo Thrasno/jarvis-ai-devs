@@ -1311,12 +1311,12 @@ func TestOpenCodeJSONTemplate_OrchestratorPromptUsesFileInjection(t *testing.T) 
 }
 
 func TestGeneratedRuntimeAcceptance_RenderedArtifactsProveGuardrails(t *testing.T) {
-	preset, err := persona.LoadPreset(jarvis.PersonaFS, "argentino")
+	preset, err := persona.ResolveProfile(jarvis.PersonaFS, "argentino")
 	if err != nil {
-		t.Fatalf("LoadPreset: %v", err)
+		t.Fatalf("ResolveProfile: %v", err)
 	}
 	layer1 := config.Layer1Content()
-	layer2 := persona.RenderLayer2(preset)
+	layer2 := persona.RenderLayer2(preset.Preset)
 	skills := []config.SkillInfo{{Name: "sdd-apply", Description: "Implement SDD tasks", Trigger: "implementing SDD tasks"}}
 
 	for _, tc := range []struct {
@@ -1349,8 +1349,15 @@ func TestGeneratedRuntimeAcceptance_RenderedArtifactsProveGuardrails(t *testing.
 			if got := strings.Count(rendered, "# Hive Persistent Memory — Protocol"); got != 1 {
 				t.Fatalf("Hive protocol body count = %d, want 1\n%s", got, rendered)
 			}
-			if got := strings.Count(rendered, "Persona Scope (CRITICAL)"); got != 1 {
-				t.Fatalf("persona scope guardrail count = %d, want 1\n%s", got, rendered)
+			projection, err := config.ProjectInstruction(rendered)
+			if err != nil {
+				t.Fatalf("ProjectInstruction: %v", err)
+			}
+			if projection.Layer1 != layer1 {
+				t.Fatal("Layer1 projection does not derive from the canonical source")
+			}
+			if got := strings.Count(rendered, config.TechnicalContractContent()); got != 1 {
+				t.Fatalf("canonical technical contract count = %d, want 1", got)
 			}
 			assertNoGeneratedProductMemoryBackendWording(t, rendered)
 		})

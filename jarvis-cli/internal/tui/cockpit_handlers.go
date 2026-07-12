@@ -165,6 +165,12 @@ func updateCockpitPersona(m Model, key keyInput) Model {
 	if !key.enter {
 		return m
 	}
+	if m.presetCur < 0 || m.presetCur >= len(m.Presets) {
+		if m.personaSelectionErr != nil {
+			return cockpitError(m, "Persona", m.personaSelectionErr)
+		}
+		m.presetCur = 0
+	}
 
 	selected := m.Presets[m.presetCur]
 	if persona.NormalizeSlug(selected.Name) == "custom" {
