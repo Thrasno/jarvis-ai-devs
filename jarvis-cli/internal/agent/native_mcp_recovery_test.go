@@ -140,7 +140,11 @@ func TestNativeMCPInventoryDefaultAllowsCommandsLongerThanFiveSeconds(t *testing
 		t.Fatalf("default timeout = %s, want 30s", defaultNativeMCPInventoryCommandTimeout)
 	}
 	previousTimeout := nativeMCPInventoryCommandTimeout
-	nativeMCPInventoryCommandTimeout = 150 * time.Millisecond
+	// Generous ceiling relative to the helper's ~110ms of work. The command
+	// returns as soon as it finishes, so a large timeout adds no latency to the
+	// passing case while keeping a slow process spawn (e.g. Windows cold-start
+	// plus antivirus scan) from tripping the deadline and flaking this test.
+	nativeMCPInventoryCommandTimeout = 5 * time.Second
 	t.Cleanup(func() { nativeMCPInventoryCommandTimeout = previousTimeout })
 	t.Setenv("GO_WANT_NATIVE_MCP_INVENTORY_DELAY_HELPER", "1")
 
