@@ -86,8 +86,13 @@ func TestClaudeAgent_InstallRegistryAutomation_MergesUserPromptSubmitHookIdempot
 	registryHook := namedHook(t, hooks, "jarvis-skill-registry-refresh")
 	commands := registryHook["hooks"].([]any)
 	command := commands[0].(map[string]any)
-	if command["type"] != "command" || command["timeout"] != float64(registryAutomationTimeoutSeconds) {
+	if command["type"] != "command" || command["timeout"] != float64(claudeRegistryHookTimeoutSeconds) {
 		t.Fatalf("unexpected registry hook command contract: %#v", command)
+	}
+	// The registry refresh is a pure side-effect (writes the registry file, injects
+	// nothing into the session), so it runs async to stay off the blocking prompt path.
+	if async, _ := command["async"].(bool); !async {
+		t.Fatalf("registry refresh hook must be async, got %#v", command)
 	}
 	wantCommand := shellSingleQuote(executable) + ` skill-registry refresh --quiet --cwd "${CLAUDE_PROJECT_DIR:-$PWD}" || true`
 	if command["command"] != wantCommand {

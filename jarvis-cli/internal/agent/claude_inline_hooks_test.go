@@ -702,6 +702,18 @@ func TestClaudeAgent_InstallPromptHook_UsesInlineCommand(t *testing.T) {
 	if strings.HasSuffix(promptCmd, ".sh") || strings.HasSuffix(promptCmd, ".ps1") {
 		t.Errorf("prompt hook command must not reference a script file, got %q", promptCmd)
 	}
+
+	// The prompt hook must stay synchronous: it conditionally injects the
+	// first-prompt systemMessage, which Claude Code discards for async hooks.
+	// Its timeout must be generous enough to absorb cold-start on Windows.
+	promptHook := namedHook(t, hooks["UserPromptSubmit"].([]any), "hive-prompt-capture")
+	promptInner := promptHook["hooks"].([]any)[0].(map[string]any)
+	if timeout, ok := promptInner["timeout"].(float64); !ok || int(timeout) != claudePromptHookTimeoutSeconds {
+		t.Errorf("prompt hook timeout = %v, want %d", promptInner["timeout"], claudePromptHookTimeoutSeconds)
+	}
+	if _, hasAsync := promptInner["async"]; hasAsync {
+		t.Errorf("prompt hook must remain synchronous, got async=%v", promptInner["async"])
+	}
 }
 
 // TestClaudeAgent_InstallPromptHook_NoScriptFileCreated verifies no script

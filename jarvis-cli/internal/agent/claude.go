@@ -549,6 +549,15 @@ func (a *ClaudeAgent) InstallOrchestrator(orchestratorContent []byte) error {
 // binary-path drift or trailing args, and never strips a user hook that invokes
 // jarvis with a different subcommand. A future subcommand rename MUST update the
 // token and its command builder in lockstep.
+// Claude UserPromptSubmit hook timeouts (seconds). Decoupled from the OpenCode
+// plugin's internal refresh budget: these bound how long Claude Code waits for
+// the hook process, which on Windows must absorb cold-start plus antivirus scan
+// of the freshly installed binary on every spawn.
+const (
+	claudePromptHookTimeoutSeconds   = 8
+	claudeRegistryHookTimeoutSeconds = 8
+)
+
 const (
 	promptSubmitHookToken    = " hook prompt-submit"
 	registryRefreshHookToken = " skill-registry refresh"
@@ -578,7 +587,7 @@ func (a *ClaudeAgent) InstallPromptHook(_ fs.FS) error {
 						map[string]any{
 							"type":    "command",
 							"command": command,
-							"timeout": 2,
+							"timeout": claudePromptHookTimeoutSeconds,
 						},
 					},
 				},
@@ -629,7 +638,11 @@ func (a *ClaudeAgent) InstallRegistryAutomation(_ fs.FS) error {
 						map[string]any{
 							"type":    "command",
 							"command": command,
-							"timeout": registryAutomationTimeoutSeconds,
+							"timeout": claudeRegistryHookTimeoutSeconds,
+							// Pure side-effect (writes the registry file, injects nothing
+							// into the session), so run async to keep it off the blocking
+							// prompt path.
+							"async": true,
 						},
 					},
 				},
