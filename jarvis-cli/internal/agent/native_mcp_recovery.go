@@ -1,11 +1,13 @@
 package agent
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -134,14 +136,17 @@ func (m NativeMCPManager) Snapshot(definitions []NativeMCPDefinition) (*NativeMC
 		}
 		seen[definition.Identity] = struct{}{}
 
-		result := m.runner()("claude", "mcp", "get", definition.Identity)
+		result, retried := m.getNativeMCP(definition.Identity)
 		if result.Err != nil {
 			if isMissingClaudeMCP(result, definition.Identity) {
 				continue
 			}
-			return nil, fmt.Errorf("inventory native MCP %s: %w", definition.Identity, result.Err)
+			return nil, fmt.Errorf("native MCP %s failed (inspection/%s): %s", definition.Identity, nativeMCPCommandErrorCode(result), nativeMCPFixForwardGuidance)
 		}
-		if code, user := nativeMCPGetUserScope(result.Output); !user {
+		if retried && !nativeMCPGetRecordUsable(result, definition.Identity) {
+			return nil, fmt.Errorf("native MCP %s failed (inspection/invalid-record): %s", definition.Identity, nativeMCPFixForwardGuidance)
+		}
+		if code, user := nativeMCPGetUserScope(result.Output, definition.Identity); !user {
 			return nil, fmt.Errorf("native MCP %s failed (wrong-scope/%s): %s", definition.Identity, code, nativeMCPFixForwardGuidance)
 		}
 		journal.Managed = append(journal.Managed, NativeMCPInventory{Identity: definition.Identity, Fingerprint: definition.ExpectedFingerprint})
@@ -170,9 +175,12 @@ func (m NativeMCPManager) Replace(definitions []NativeMCPDefinition) (*NativeMCP
 	var completed *NativeMCPResult
 	for _, definition := range definitions {
 		result := newNativeMCPResult(definition.Identity)
-		command := m.runner()("claude", "mcp", "get", definition.Identity)
+		command, retried := m.getNativeMCP(definition.Identity)
+		if retried && command.Err == nil && !nativeMCPGetRecordUsable(command, definition.Identity) {
+			return m.replaceFailure(result, "inspection", "invalid-record")
+		}
 		if command.Err == nil {
-			if code, user := nativeMCPGetUserScope(command.Output); !user {
+			if code, user := nativeMCPGetUserScope(command.Output, definition.Identity); !user {
 				return m.replaceFailure(result, "wrong-scope", code)
 			}
 			result.Phase = NativeMCPRemoved
@@ -181,21 +189,24 @@ func (m NativeMCPManager) Replace(definitions []NativeMCPDefinition) (*NativeMCP
 				return m.replaceCommandFailure(result, NativeMCPRemoved, command)
 			}
 		} else if !isMissingClaudeMCP(command, definition.Identity) {
-			return m.replaceCommandFailure(result, NativeMCPInspected, command)
+			return m.replaceFailure(result, "inspection", nativeMCPCommandErrorCode(command))
 		}
 		result.Phase = NativeMCPAdded
 		if command := m.runner()("claude", definition.AddArgs...); command.Err != nil {
 			return m.replaceCommandFailure(result, NativeMCPAdded, command)
 		}
 		result.Phase = NativeMCPVerifying
-		command = m.runner()("claude", "mcp", "get", definition.Identity)
+		command, retried = m.getNativeMCP(definition.Identity)
+		if retried && command.Err == nil && !nativeMCPGetRecordUsable(command, definition.Identity) {
+			return m.replaceFailure(result, "verification", "invalid-record")
+		}
 		if command.Err != nil {
 			if isMissingClaudeMCP(command, definition.Identity) {
 				return m.replaceFailure(result, "verification", "user-scope-presence")
 			}
-			return m.replaceCommandFailure(result, NativeMCPVerifying, command)
+			return m.replaceFailure(result, "verification", nativeMCPCommandErrorCode(command))
 		}
-		if code, user := nativeMCPGetUserScope(command.Output); !user {
+		if code, user := nativeMCPGetUserScope(command.Output, definition.Identity); !user {
 			return m.replaceFailure(result, "wrong-scope", code)
 		}
 		result.Phase = NativeMCPVerified
@@ -232,22 +243,78 @@ func nativeMCPCommandErrorCode(result claudeCommandResult) string {
 	}
 }
 
-func nativeMCPGetUserScope(output string) (string, bool) {
-	for _, line := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
+func nativeMCPGetRecordUsable(result claudeCommandResult, identity string) bool {
+	if !result.Started || errors.Is(result.Err, os.ErrNotExist) || errors.Is(result.Err, os.ErrPermission) || errors.Is(result.Err, context.DeadlineExceeded) {
+		return false
+	}
+	_, user := nativeMCPGetUserScope(result.Output, identity)
+	return user
+}
+
+func (m NativeMCPManager) getNativeMCP(identity string) (claudeCommandResult, bool) {
+	run := m.runner()
+	result := run("claude", "mcp", "get", identity)
+	if result.Err != nil && nativeMCPGetRecordUsable(result, identity) {
+		return run("claude", "mcp", "get", identity), true
+	}
+	return result, false
+}
+
+func nativeMCPGetUserScope(output, identity string) (string, bool) {
+	lines := strings.Split(strings.ReplaceAll(stripANSI(output), "\r\n", "\n"), "\n")
+	first := ""
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			first = strings.TrimSpace(line)
+			break
+		}
+	}
+	if first != identity+":" {
+		return "identity", false
+	}
+	scope := ""
+	for _, line := range lines {
 		key, value, found := strings.Cut(line, ":")
 		if !found || !strings.EqualFold(strings.TrimSpace(key), "scope") {
 			continue
 		}
-		normalized := strings.ToLower(strings.Join(strings.Fields(value), "-"))
-		if normalized == "user-config" {
-			return normalized, true
-		}
-		if normalized == "" {
+		fields := strings.Fields(strings.ToLower(value))
+		if len(fields) == 0 {
 			return "missing", false
 		}
-		return normalized, false
+		current := fields[0]
+		if current != "user" && current != "local" && current != "project" {
+			return "unknown", false
+		}
+		if scope != "" && scope != current {
+			return "conflicting", false
+		}
+		scope = current
 	}
-	return "missing", false
+	if scope == "" {
+		return "missing", false
+	}
+	return scope, scope == nativeMCPUserScope
+}
+
+func stripANSI(value string) string {
+	var clean strings.Builder
+	for index := 0; index < len(value); {
+		if value[index] == 0x1b && index+1 < len(value) && value[index+1] == '[' {
+			index += 2
+			for index < len(value) {
+				character := value[index]
+				index++
+				if character >= 0x40 && character <= 0x7e {
+					break
+				}
+			}
+			continue
+		}
+		clean.WriteByte(value[index])
+		index++
+	}
+	return clean.String()
 }
 
 func (m NativeMCPManager) runner() claudeCommandRunner {

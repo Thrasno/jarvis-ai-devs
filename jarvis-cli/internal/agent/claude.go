@@ -302,7 +302,9 @@ func isMissingClaudeMCP(result claudeCommandResult, identity string) bool {
 	if !result.Started || result.Err == nil || errors.Is(result.Err, os.ErrNotExist) || errors.Is(result.Err, os.ErrPermission) || errors.Is(result.Err, context.DeadlineExceeded) {
 		return false
 	}
-	return strings.TrimSpace(result.Output) == fmt.Sprintf("Error: MCP server '%s' not found", identity)
+	output := strings.TrimSpace(result.Output)
+	return output == fmt.Sprintf("Error: MCP server '%s' not found", identity) ||
+		output == fmt.Sprintf("No MCP server named %q found.", identity)
 }
 
 // WriteInstructions writes ~/.claude/CLAUDE.md with Layer1+Layer2 sentinel blocks.

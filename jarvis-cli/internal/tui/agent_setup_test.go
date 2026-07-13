@@ -125,8 +125,18 @@ func TestTUIManagedMCPAcknowledgementGatesConcreteExecutorMutation(t *testing.T)
 	}
 	assertNoManagedMCPMutation(t, home, replacement)
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(mcpReplacementAcknowledgement)})
-	m = updated.(Model)
+	for _, msg := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("I")},
+		{Type: tea.KeySpace},
+		{Type: tea.KeyRunes, Runes: []rune("ACKNOWLEDGE")},
+	} {
+		updated, _ = m.Update(msg)
+		m = updated.(Model)
+		if m.mcpAcknowledged || m.Step != StepMCPDisclosure {
+			t.Fatalf("acknowledgement mutated before Enter: acknowledged=%t step=%v", m.mcpAcknowledged, m.Step)
+		}
+		assertNoManagedMCPMutation(t, home, replacement)
+	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
 	if !m.mcpAcknowledged || m.Step != StepReview {
@@ -138,6 +148,38 @@ func TestTUIManagedMCPAcknowledgementGatesConcreteExecutorMutation(t *testing.T)
 		t.Fatalf("concrete executor route failed before the artifact pipeline: %s", progress.line)
 	}
 	assertConcreteWizardMutation(t, home, replacement)
+}
+
+func TestMCPDisclosureAcceptsPasteAndBackspaceSafely(t *testing.T) {
+	tests := []struct {
+		name string
+		msgs []tea.KeyMsg
+	}{
+		{name: "full rune paste", msgs: []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune(mcpReplacementAcknowledgement)}}},
+		{name: "empty and unicode backspace", msgs: []tea.KeyMsg{
+			{Type: tea.KeyBackspace},
+			{Type: tea.KeyRunes, Runes: []rune("I ACKNOWLEDGÉ")},
+			{Type: tea.KeyBackspace},
+			{Type: tea.KeyRunes, Runes: []rune("E")},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := Model{Step: StepMCPDisclosure}
+			for _, msg := range tt.msgs {
+				updated, _ := m.Update(msg)
+				m = updated.(Model)
+			}
+			if m.mcpAcknowledged || m.Step != StepMCPDisclosure {
+				t.Fatal("input must not acknowledge before Enter")
+			}
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			m = updated.(Model)
+			if !m.mcpAcknowledged || m.Step != StepReview {
+				t.Fatalf("acknowledgement state = acknowledged=%t step=%v", m.mcpAcknowledged, m.Step)
+			}
+		})
+	}
 }
 
 func TestReconcileWizardMCPsUsesInjectableProductionBoundaryForNamedManagedAgents(t *testing.T) {
