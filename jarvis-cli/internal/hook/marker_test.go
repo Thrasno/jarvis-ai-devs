@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSafeSessionID_ReplacesSlash(t *testing.T) {
@@ -48,14 +49,14 @@ func TestSafeSessionID_EmptyInput(t *testing.T) {
 }
 
 func TestMarkerPath_ContainsSessionID(t *testing.T) {
-	p := markerPath("mysession")
+	p := markerPath("mysession", markerFirstPrompt)
 	if !strings.Contains(p, "mysession") {
 		t.Errorf("markerPath should contain session ID: got %q", p)
 	}
 }
 
 func TestMarkerPath_ContainsJarvisHiveSubpath(t *testing.T) {
-	p := markerPath("s1")
+	p := markerPath("s1", markerFirstPrompt)
 	if !strings.Contains(p, "jarvis-hive") {
 		t.Errorf("markerPath should contain jarvis-hive: got %q", p)
 	}
@@ -78,7 +79,7 @@ func TestMarkerPath_UsesXDGRuntimeDir_WhenSet(t *testing.T) {
 	t.Setenv("TEMP", "")
 	t.Setenv("TMP", "")
 
-	p := markerPath("s1")
+	p := markerPath("s1", markerFirstPrompt)
 	if !strings.HasPrefix(p, dir) {
 		t.Errorf("expected path to start with XDG_RUNTIME_DIR %q, got %q", dir, p)
 	}
@@ -91,9 +92,91 @@ func TestMarkerPath_UsesTMPDIR_WhenXDGAbsent(t *testing.T) {
 	t.Setenv("TEMP", "")
 	t.Setenv("TMP", "")
 
-	p := markerPath("s1")
+	p := markerPath("s1", markerFirstPrompt)
 	if !strings.HasPrefix(p, dir) {
 		t.Errorf("expected path to start with TMPDIR %q, got %q", dir, p)
+	}
+}
+
+func TestMarkerPath_UsesNameAsPrefix(t *testing.T) {
+	p := markerPath("s1", markerMemoryReminder)
+	if !strings.Contains(p, "memory-reminder-s1.done") {
+		t.Errorf("markerPath should use the name as prefix: got %q", p)
+	}
+}
+
+func TestReadMarkerTime_ParsesStoredTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+
+	sessionID := "read-marker-ok"
+	if err := RewriteMarker(sessionID, markerMemoryReminder); err != nil {
+		t.Fatalf("RewriteMarker: %v", err)
+	}
+
+	ts, err := ReadMarkerTime(sessionID, markerMemoryReminder)
+	if err != nil {
+		t.Fatalf("ReadMarkerTime: %v", err)
+	}
+	if ts.IsZero() {
+		t.Error("ReadMarkerTime should return a non-zero timestamp")
+	}
+	if time.Since(ts) > time.Minute {
+		t.Errorf("timestamp should be recent, got %v", ts)
+	}
+}
+
+func TestReadMarkerTime_MissingFile_Errors(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+
+	if _, err := ReadMarkerTime("no-such-session", markerMemoryReminder); err == nil {
+		t.Error("ReadMarkerTime should error when the marker file is missing")
+	}
+}
+
+func TestReadMarkerTime_CorruptContent_Errors(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+
+	sessionID := "corrupt-marker"
+	p := markerPath(sessionID, markerMemoryReminder)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(p, []byte("not-a-timestamp\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if _, err := ReadMarkerTime(sessionID, markerMemoryReminder); err == nil {
+		t.Error("ReadMarkerTime should error on corrupt (unparseable) content")
+	}
+}
+
+func TestRewriteMarker_OverwritesTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+
+	sessionID := "rewrite-marker"
+	// Seed with an old timestamp.
+	p := markerPath(sessionID, markerMemoryReminder)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	old := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
+	if err := os.WriteFile(p, []byte(old+"\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if err := RewriteMarker(sessionID, markerMemoryReminder); err != nil {
+		t.Fatalf("RewriteMarker: %v", err)
+	}
+	ts, err := ReadMarkerTime(sessionID, markerMemoryReminder)
+	if err != nil {
+		t.Fatalf("ReadMarkerTime: %v", err)
+	}
+	if time.Since(ts) > time.Minute {
+		t.Errorf("RewriteMarker should overwrite with a fresh timestamp, got %v", ts)
 	}
 }
 
@@ -106,7 +189,7 @@ func TestCreateMarker_CreatesFile(t *testing.T) {
 		t.Fatalf("CreateMarker returned error: %v", err)
 	}
 
-	p := markerPath(sessionID)
+	p := markerPath(sessionID, markerFirstPrompt)
 	if _, err := os.Stat(p); err != nil {
 		t.Errorf("marker file not created at %q: %v", p, err)
 	}
@@ -122,7 +205,7 @@ func TestCreateMarker_CreatesParentDirs(t *testing.T) {
 	}
 
 	// Verify the parent directory was created
-	p := markerPath(sessionID)
+	p := markerPath(sessionID, markerFirstPrompt)
 	parent := filepath.Dir(p)
 	if _, err := os.Stat(parent); err != nil {
 		t.Errorf("parent dir not created at %q: %v", parent, err)
@@ -142,6 +225,41 @@ func TestCreateMarker_IsIdempotent(t *testing.T) {
 	}
 }
 
+// TestCreateMarker_PreservesTimestampWhenExists proves CreateMarker honors its
+// documented idempotent contract: a second call on an existing marker must NOT
+// rewrite the stored timestamp. This is the session-age baseline used by the
+// mid-session memory reminder; a resume (which re-runs SessionStart →
+// CreateMarker) must not reset that baseline.
+func TestCreateMarker_PreservesTimestampWhenExists(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+
+	sessionID := "test-preserve-timestamp"
+
+	// Seed the marker with an old timestamp to simulate an existing session.
+	p := markerPath(sessionID, markerFirstPrompt)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	old := time.Now().Add(-1 * time.Hour).UTC().Truncate(time.Second)
+	if err := os.WriteFile(p, []byte(old.Format(time.RFC3339)+"\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// A second CreateMarker (e.g. on resume) must leave the timestamp untouched.
+	if err := CreateMarker(sessionID); err != nil {
+		t.Fatalf("CreateMarker on existing marker: %v", err)
+	}
+
+	got, err := ReadMarkerTime(sessionID, markerFirstPrompt)
+	if err != nil {
+		t.Fatalf("ReadMarkerTime: %v", err)
+	}
+	if !got.Equal(old) {
+		t.Errorf("CreateMarker must preserve existing timestamp: want %v, got %v", old, got)
+	}
+}
+
 func TestDeleteMarker_DeletesFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", dir)
@@ -155,7 +273,7 @@ func TestDeleteMarker_DeletesFile(t *testing.T) {
 		t.Fatalf("DeleteMarker: %v", err)
 	}
 
-	p := markerPath(sessionID)
+	p := markerPath(sessionID, markerFirstPrompt)
 	if _, err := os.Stat(p); !os.IsNotExist(err) {
 		t.Errorf("marker file should be deleted, got stat err: %v", err)
 	}

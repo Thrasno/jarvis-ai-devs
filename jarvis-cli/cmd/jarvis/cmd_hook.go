@@ -49,7 +49,12 @@ var hookPromptSubmitCmd = &cobra.Command{
 	Use:   "prompt-submit",
 	Short: "Handle Claude Code UserPromptSubmit event",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		// 3s budget: RunPromptSubmit runs PostPrompt (1500ms client timeout) then
+		// LatestSaveAt (1s client timeout) sequentially = up to 2.5s. A 2s parent
+		// deadline would starve LatestSaveAt and misclassify a slow-but-reachable
+		// daemon as Unreachable, suppressing the reminder under load. 3s covers the
+		// worst case plus margin and stays well within Claude Code's 8s hook timeout.
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		baseURL := resolveHiveBaseURL()
 		hook.RunPromptSubmit(ctx, os.Stdin, cmd.OutOrStdout(), baseURL)

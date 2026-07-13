@@ -1,6 +1,34 @@
 package hook
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
+
+// Mid-session memory-reminder thresholds. These are intentionally hardcoded Go
+// constants — there is NO settings, environment, or CLI-flag override path.
+const (
+	// SessionAgeGate is the minimum session age (now − first-prompt marker
+	// timestamp) before the memory reminder may fire.
+	SessionAgeGate = 5 * time.Minute
+	// MemoryReminderThreshold is the minimum time since the last save before the
+	// memory reminder may fire.
+	MemoryReminderThreshold = 15 * time.Minute
+	// MemoryReminderCooldown is the minimum interval between consecutive
+	// reminders (aligns with engram's 900s save cadence).
+	MemoryReminderCooldown = 15 * time.Minute
+)
+
+// Marker file base names. markerPath composes "<name>-<safeSessionID>.done".
+const (
+	markerFirstPrompt    = "first-prompt"
+	markerMemoryReminder = "memory-reminder"
+)
+
+// MemoryReminderSystemMessage is the systemMessage emitted mid-session when a
+// session has run a while without saving to Hive. It nudges the agent to call
+// mem_save so decisions, discoveries, and completed work are not lost.
+const MemoryReminderSystemMessage = `Memory checkpoint: this session has gone a while without saving to Hive. If you made any decisions, discoveries, or completed work, call mem_save now so team knowledge isn't lost.`
 
 // HiveProtocolText is the Hive Memory Protocol instruction block injected into
 // Claude Code at session start via additionalContext.
