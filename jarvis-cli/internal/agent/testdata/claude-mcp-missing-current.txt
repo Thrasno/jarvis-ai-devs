@@ -1,0 +1,1 @@
+[31mNo MCP server named "jarvis-hive".[0m Configured servers: context7, hive
