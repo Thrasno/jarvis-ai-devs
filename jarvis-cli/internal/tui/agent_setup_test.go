@@ -208,7 +208,7 @@ func TestReconcileWizardMCPsUsesInjectableProductionBoundaryForNamedManagedAgent
 	if got, want := strings.Join(input.SelectedAgents, ","), "claude,opencode"; got != want {
 		t.Fatalf("selected agents = %q, want %q", got, want)
 	}
-	if input.Root != home || len(input.RenderedOutputs) != 1 || input.ClaudeHive.Identity != "hive" || input.ClaudeContext7.Identity != "context7" {
+	if input.Root != home || len(input.RenderedOutputs) != 0 || len(input.OpenCodeMCPs) != 2 || input.ClaudeHive.Identity != "hive" || input.ClaudeContext7.Identity != "context7" {
 		t.Fatalf("unexpected production input: %+v", input)
 	}
 }
