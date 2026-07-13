@@ -14,15 +14,15 @@ import (
 
 func TestNativeMCPSnapshotBlocksUnownedSameNameAfterGetOnly(t *testing.T) {
 	fake := newNativeMCPInventoryFake(map[string]string{
-		"jarvis-hive": `{"token":"foreign-secret"}`,
+		"jarvis-hive": "jarvis-hive:\n  Scope: Project config\n  Token: foreign-secret",
 	})
 
 	_, err := (NativeMCPManager{run: fake.run}).Snapshot([]NativeMCPDefinition{nativeMCPDefinition("jarvis-hive", "expected-secret")})
-	if err == nil || !strings.Contains(err.Error(), "ownership is not proven") {
-		t.Fatalf("Snapshot() error = %v, want ownership rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "wrong-scope/project-config") {
+		t.Fatalf("Snapshot() error = %v, want sanitized scope rejection", err)
 	}
-	if len(fake.calls) != 1 || !sameNativeMCPCall(fake.calls[0], []string{"mcp", "get", "--scope", "user", "jarvis-hive"}) {
-		t.Fatalf("calls = %#v, want one user-scope get only", fake.calls)
+	if len(fake.calls) != 1 || !sameNativeMCPCall(fake.calls[0], []string{"mcp", "get", "jarvis-hive"}) {
+		t.Fatalf("calls = %#v, want one unscoped get only", fake.calls)
 	}
 }
 
@@ -35,8 +35,8 @@ func TestNativeMCPSnapshotClassifiesAbsentDesiredIdentityAsCreatable(t *testing.
 	if len(journal.Managed) != 0 {
 		t.Fatalf("managed = %#v, want no managed identities", journal.Managed)
 	}
-	if len(fake.calls) != 1 || !sameNativeMCPCall(fake.calls[0], []string{"mcp", "get", "--scope", "user", "jarvis-hive"}) {
-		t.Fatalf("calls = %#v, want one user-scope get only", fake.calls)
+	if len(fake.calls) != 1 || !sameNativeMCPCall(fake.calls[0], []string{"mcp", "get", "jarvis-hive"}) {
+		t.Fatalf("calls = %#v, want one unscoped get only", fake.calls)
 	}
 }
 
@@ -124,20 +124,9 @@ func TestNativeMCPInventoryCommandTimeoutHelper(t *testing.T) {
 	time.Sleep(2 * time.Second)
 }
 
-func TestNativeMCPSnapshotRejectsSelfConsistentForgedManifestWithoutTrustedFingerprint(t *testing.T) {
-	trusted := nativeMCPDefinition("jarvis-hive", "trusted-secret")
-	forged := nativeMCPOutput("jarvis-hive", "forged-secret")
-	fake := newNativeMCPInventoryFake(map[string]string{"jarvis-hive": forged})
-
-	_, err := (NativeMCPManager{run: fake.run}).Snapshot([]NativeMCPDefinition{trusted})
-	if err == nil || !strings.Contains(err.Error(), "ownership is not proven") {
-		t.Fatalf("Snapshot() error = %v, want independently trusted fingerprint rejection", err)
-	}
-}
-
 func TestNativeMCPSnapshotStoresOnlySecretSafeInventoryEvidence(t *testing.T) {
 	definition := nativeMCPDefinition("jarvis-hive", "super-secret")
-	fake := newNativeMCPInventoryFake(map[string]string{"jarvis-hive": nativeMCPOutput("jarvis-hive", "super-secret")})
+	fake := newNativeMCPInventoryFake(map[string]string{"jarvis-hive": teammateClaudeMCPGetOutput("jarvis-hive")})
 
 	journal, err := (NativeMCPManager{run: fake.run}).Snapshot([]NativeMCPDefinition{definition})
 	if err != nil {
@@ -151,24 +140,21 @@ func TestNativeMCPSnapshotStoresOnlySecretSafeInventoryEvidence(t *testing.T) {
 	}
 }
 
-func TestNativeMCPSnapshotInspectsOnlyUserScopedSameName(t *testing.T) {
+func TestNativeMCPSnapshotFailsClosedWhenGetIsShadowedByNonUserScope(t *testing.T) {
 	desired := nativeMCPDefinition("jarvis-hive", "expected-secret")
 	fake := newNativeMCPScopeFake(map[string]map[string]string{
-		"local":   {desired.Identity: nativeMCPOutput(desired.Identity, "local-secret")},
-		"project": {desired.Identity: nativeMCPOutput(desired.Identity, "project-secret")},
+		"local":   {desired.Identity: "Scope: Local config\nToken: local-secret"},
+		"project": {desired.Identity: "Scope: Project config\nToken: project-secret"},
 		"user":    {},
 	})
 
-	journal, err := (NativeMCPManager{run: fake.run}).Snapshot([]NativeMCPDefinition{desired})
+	_, err := (NativeMCPManager{run: fake.run}).Snapshot([]NativeMCPDefinition{desired})
 
-	if err != nil {
-		t.Fatalf("Snapshot() error = %v, want absent user-scoped identity to be creatable", err)
+	if err == nil || !strings.Contains(err.Error(), "wrong-scope/local-config") {
+		t.Fatalf("Snapshot() error = %v, want fail-closed shadowing diagnostic", err)
 	}
-	if len(journal.Managed) != 0 {
-		t.Fatalf("managed = %#v, want local/project variants ignored", journal.Managed)
-	}
-	if len(fake.calls) != 1 || !sameNativeMCPCall(fake.calls[0], []string{"mcp", "get", "--scope", "user", desired.Identity}) {
-		t.Fatalf("calls = %#v, want one explicit user-scope get", fake.calls)
+	if len(fake.calls) != 1 || !sameNativeMCPCall(fake.calls[0], []string{"mcp", "get", desired.Identity}) {
+		t.Fatalf("calls = %#v, want one unscoped get", fake.calls)
 	}
 	if fake.servers["local"][desired.Identity] == "" || fake.servers["project"][desired.Identity] == "" {
 		t.Fatalf("same-name local/project variants were changed: %#v", fake.servers)
@@ -190,12 +176,12 @@ func newNativeMCPInventoryFake(servers map[string]string) *nativeMCPInventoryFak
 
 func (f *nativeMCPInventoryFake) run(_ string, args ...string) claudeCommandResult {
 	f.calls = append(f.calls, append([]string(nil), args...))
-	if len(args) != 5 || args[0] != "mcp" || args[1] != "get" || args[2] != "--scope" || args[3] != nativeMCPUserScope {
+	if len(args) != 3 || args[0] != "mcp" || args[1] != "get" {
 		return claudeCommandResult{Err: fmt.Errorf("unexpected command: %v", args)}
 	}
-	output, exists := f.servers[args[4]]
+	output, exists := f.servers[args[2]]
 	if !exists {
-		return claudeCommandResult{Output: "Error: MCP server '" + args[4] + "' not found", Err: errors.New("exit status 1"), Started: true}
+		return claudeCommandResult{Output: "Error: MCP server '" + args[2] + "' not found", Err: errors.New("exit status 1"), Started: true}
 	}
 	return claudeCommandResult{Output: output, Started: true}
 }
@@ -333,22 +319,22 @@ func TestNativeMCPReplaceSkipsEmptyInputWithoutCommands(t *testing.T) {
 func TestNativeMCPReplaceConvergesNameGloballyAndPreservesNonTargets(t *testing.T) {
 	desired := nativeMCPDefinition("jarvis-hive", "desired-secret")
 	fake := newNativeMCPScopeFake(map[string]map[string]string{
-		"local":   {desired.Identity: `{"token":"manual-local"}`},
-		"project": {desired.Identity: nativeMCPOutput(desired.Identity, "managed-project")},
-		"user":    {desired.Identity: `{"token":"manual-user"}`, "unrelated": `{"token":"leave-me"}`},
+		"local":   {"local-only": `{"token":"manual-local"}`},
+		"project": {"project-only": `{"token":"managed-project"}`},
+		"user":    {desired.Identity: teammateClaudeMCPGetOutput(desired.Identity), "unrelated": `{"token":"leave-me"}`},
 	})
-	fake.addOutput = nativeMCPOutput(desired.Identity, "desired-secret")
+	fake.addOutput = teammateClaudeMCPGetOutput(desired.Identity)
 
 	result, err := (NativeMCPManager{run: fake.run}).Replace([]NativeMCPDefinition{desired})
 
 	if err != nil || result.Phase != NativeMCPVerified || result.TargetName != desired.Identity || result.FixedLocation != "claude --scope user" {
 		t.Fatalf("Replace() = (%#v, %v), want verified user result", result, err)
 	}
-	if got := fake.servers["local"][desired.Identity]; got != `{"token":"manual-local"}` {
-		t.Fatalf("local desired-name variant = %q, want untouched", got)
+	if got := fake.servers["local"]["local-only"]; got != `{"token":"manual-local"}` {
+		t.Fatalf("local non-target = %q, want untouched", got)
 	}
-	if got := fake.servers["project"][desired.Identity]; got != nativeMCPOutput(desired.Identity, "managed-project") {
-		t.Fatalf("project desired-name variant = %q, want untouched", got)
+	if got := fake.servers["project"]["project-only"]; got != `{"token":"managed-project"}` {
+		t.Fatalf("project non-target = %q, want untouched", got)
 	}
 	if got := fake.servers["user"][desired.Identity]; got != fake.addOutput {
 		t.Fatalf("user desired server = %q, want desired output", got)
@@ -359,6 +345,76 @@ func TestNativeMCPReplaceConvergesNameGloballyAndPreservesNonTargets(t *testing.
 	for _, call := range fake.calls {
 		if call[len(call)-1] == "unrelated" || containsString(call, "local") || containsString(call, "project") {
 			t.Fatalf("calls = %#v, non-target received a command", fake.calls)
+		}
+	}
+}
+
+func TestNativeMCPReplaceCommandContractAndScopeParsing(t *testing.T) {
+	tests := []struct {
+		name       string
+		getOutput  string
+		wantCode   string
+		wantRemove bool
+	}{
+		{name: "teammate Windows output", getOutput: teammateClaudeMCPGetOutput("hive"), wantRemove: true},
+		{name: "casing and spacing", getOutput: "hive:\r\n\t sCoPe  :   uSeR CoNfIg  \r\n", wantRemove: true},
+		{name: "project shadow", getOutput: "Scope: Project config", wantCode: "project-config"},
+		{name: "local shadow", getOutput: " scope : local CONFIG ", wantCode: "local-config"},
+		{name: "missing scope", getOutput: "Status: Connected", wantCode: "missing"},
+		{name: "malformed scope", getOutput: "Scope user config", wantCode: "missing"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			desired := nativeMCPDefinition("hive", "desired-secret")
+			fake := newNativeMCPScopeFake(map[string]map[string]string{"user": {"hive": tt.getOutput}})
+			fake.addOutput = teammateClaudeMCPGetOutput("hive")
+
+			result, err := (NativeMCPManager{run: fake.run}).Replace([]NativeMCPDefinition{desired})
+			if tt.wantCode == "" {
+				if err != nil || result.Phase != NativeMCPVerified {
+					t.Fatalf("Replace() = (%#v, %v), want verified", result, err)
+				}
+			} else if err == nil || result.ErrorCategory != "wrong-scope" || result.ErrorCode != tt.wantCode {
+				t.Fatalf("Replace() = (%#v, %v), want wrong-scope/%s", result, err, tt.wantCode)
+			}
+			for _, call := range fake.calls {
+				if len(call) >= 2 && call[1] == "get" && (!sameNativeMCPCall(call, []string{"mcp", "get", "hive"}) || containsString(call, "--scope")) {
+					t.Fatalf("get argv = %#v, want exact unscoped get", call)
+				}
+				if len(call) >= 2 && (call[1] == "add" || call[1] == "remove") && !containsScopeUser(call) {
+					t.Fatalf("mutation argv = %#v, want --scope user", call)
+				}
+			}
+			if !tt.wantRemove && containsNativeMCPCall(fake.calls, []string{"mcp", "remove", "--scope", "user", "hive"}) {
+				t.Fatalf("calls = %#v, wrong scope authorized removal", fake.calls)
+			}
+		})
+	}
+}
+
+func TestNativeMCPReplaceUsesUnscopedGetAndUserScopedMutationsForHiveAndContext7(t *testing.T) {
+	definitions := []NativeMCPDefinition{
+		nativeMCPDefinition("hive", "hive-secret"),
+		nativeMCPDefinition("context7", "context7-secret"),
+	}
+	fake := newNativeMCPScopeFake(nil)
+	fake.addOutput = "Scope: User config"
+
+	result, err := (NativeMCPManager{run: fake.run}).Replace(definitions)
+	if err != nil || result.Phase != NativeMCPVerified || result.TargetName != "context7" {
+		t.Fatalf("Replace() = (%#v, %v), want both managed names verified", result, err)
+	}
+	for _, identity := range []string{"hive", "context7"} {
+		if !containsNativeMCPCall(fake.calls, []string{"mcp", "get", identity}) {
+			t.Fatalf("calls = %#v, want exact unscoped get for %s", fake.calls, identity)
+		}
+		if !containsNativeMCPCall(fake.calls, []string{"mcp", "add", "--scope", "user", identity, identity + "-secret"}) {
+			t.Fatalf("calls = %#v, want user-scoped add for %s", fake.calls, identity)
+		}
+	}
+	for _, call := range fake.calls {
+		if len(call) >= 2 && call[1] == "get" && containsString(call, "--scope") {
+			t.Fatalf("get argv contains forbidden --scope: %#v", call)
 		}
 	}
 }
@@ -405,8 +461,8 @@ func TestNativeMCPReplaceStopsAtEachFailureWithoutSecrets(t *testing.T) {
 	desired := nativeMCPDefinition("jarvis-hive", "desired-secret")
 	for _, phase := range []NativeMCPPhase{NativeMCPInspected, NativeMCPRemoved, NativeMCPAdded, NativeMCPVerifying} {
 		t.Run(string(phase), func(t *testing.T) {
-			fake := newNativeMCPScopeFake(map[string]map[string]string{"user": {desired.Identity: `{"token":"manual-secret"}`}})
-			fake.addOutput = nativeMCPOutput(desired.Identity, "desired-secret")
+			fake := newNativeMCPScopeFake(map[string]map[string]string{"user": {desired.Identity: teammateClaudeMCPGetOutput(desired.Identity)}})
+			fake.addOutput = teammateClaudeMCPGetOutput(desired.Identity)
 			fake.failPhase = phase
 
 			result, err := (NativeMCPManager{run: fake.run}).Replace([]NativeMCPDefinition{desired})
@@ -426,8 +482,8 @@ func TestNativeMCPReplaceStopsAtEachFailureWithoutSecrets(t *testing.T) {
 
 func TestNativeMCPReplaceRerunConvergesAfterPartialAddFailure(t *testing.T) {
 	desired := nativeMCPDefinition("jarvis-hive", "desired-secret")
-	fake := newNativeMCPScopeFake(map[string]map[string]string{"project": {desired.Identity: `{"token":"manual"}`}})
-	fake.addOutput = nativeMCPOutput(desired.Identity, "desired-secret")
+	fake := newNativeMCPScopeFake(nil)
+	fake.addOutput = teammateClaudeMCPGetOutput(desired.Identity)
 	fake.failPhase = NativeMCPAdded
 	fake.mutateBeforeFailure = true
 
@@ -465,7 +521,7 @@ func newNativeMCPScopeFake(servers map[string]map[string]string) *nativeMCPScope
 
 func (f *nativeMCPScopeFake) run(_ string, args ...string) claudeCommandResult {
 	f.calls = append(f.calls, append([]string(nil), args...))
-	if len(args) < 5 || args[0] != "mcp" || args[2] != "--scope" {
+	if len(args) < 3 || args[0] != "mcp" {
 		return claudeCommandResult{Err: errors.New("unexpected command"), Started: true}
 	}
 	phase := NativeMCPPhase(map[string]NativeMCPPhase{"get": NativeMCPInspected, "remove": NativeMCPRemoved, "add": NativeMCPAdded}[args[1]])
@@ -480,24 +536,47 @@ func (f *nativeMCPScopeFake) run(_ string, args ...string) claudeCommandResult {
 		}
 		return claudeCommandResult{Output: "token=manual-secret", Err: errors.New("exit status 17: desired-secret"), Started: true}
 	}
-	scope, name := args[3], args[4]
 	switch args[1] {
 	case "get":
-		output, exists := f.servers[scope][name]
+		if len(args) != 3 {
+			return claudeCommandResult{Err: errors.New("unexpected get command"), Started: true}
+		}
+		name := args[2]
+		for _, scope := range []string{"local", "project", "user"} {
+			if output, exists := f.servers[scope][name]; exists {
+				return claudeCommandResult{Output: output, Started: true}
+			}
+		}
+		_, exists := f.servers["user"][name]
 		if !exists {
 			return claudeCommandResult{Output: "Error: MCP server '" + name + "' not found", Err: errors.New("exit status 1"), Started: true}
 		}
-		return claudeCommandResult{Output: output, Started: true}
 	case "remove":
+		scope, name := args[3], args[4]
 		delete(f.servers[scope], name)
 		return claudeCommandResult{Started: true}
 	case "add":
+		scope, name := args[3], args[4]
 		f.servers[scope][name] = f.addOutput
 		f.added = true
 		return claudeCommandResult{Started: true}
 	default:
 		return claudeCommandResult{Err: errors.New("unexpected command"), Started: true}
 	}
+	return claudeCommandResult{Err: errors.New("unexpected command"), Started: true}
+}
+
+func teammateClaudeMCPGetOutput(name string) string {
+	return name + ":\r\n  Scope: User config\r\n  Status: Connected\r\n  Command: C:\\Users\\teammate\\hive-daemon.exe\r\n"
+}
+
+func containsScopeUser(args []string) bool {
+	for index := 0; index+1 < len(args); index++ {
+		if args[index] == "--scope" && args[index+1] == "user" {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *nativeMCPScopeFake) hasAddedDesired() bool {
