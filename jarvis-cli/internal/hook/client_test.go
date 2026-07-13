@@ -186,3 +186,118 @@ func TestDaemonClient_PostPassiveObservation_ServerDown_ReturnsNil(t *testing.T)
 		t.Errorf("expected nil (non-fatal), got: %v", err)
 	}
 }
+
+// --- LatestSaveAt (3-valued: Found / Empty / Unreachable) ---
+
+func TestLatestSaveAt_Found(t *testing.T) {
+	want := time.Now().UTC().Truncate(time.Second)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"last_save_at": want.Format(time.RFC3339)})
+	}))
+	defer srv.Close()
+
+	c := &DaemonClient{BaseURL: srv.URL, Timeout: time.Second}
+	ts, status := c.LatestSaveAt(context.Background(), "proj")
+	if status != SaveFound {
+		t.Fatalf("status: got %v, want SaveFound", status)
+	}
+	if !ts.Equal(want) {
+		t.Errorf("ts: got %v, want %v", ts, want)
+	}
+}
+
+func TestLatestSaveAt_Empty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"last_save_at": ""})
+	}))
+	defer srv.Close()
+
+	c := &DaemonClient{BaseURL: srv.URL, Timeout: time.Second}
+	_, status := c.LatestSaveAt(context.Background(), "proj")
+	if status != SaveEmpty {
+		t.Fatalf("status: got %v, want SaveEmpty", status)
+	}
+}
+
+func TestLatestSaveAt_ServerDown_Unreachable(t *testing.T) {
+	c := &DaemonClient{BaseURL: "http://127.0.0.1:19876", Timeout: 300 * time.Millisecond}
+	_, status := c.LatestSaveAt(context.Background(), "proj")
+	if status != SaveUnreachable {
+		t.Fatalf("status: got %v, want SaveUnreachable", status)
+	}
+}
+
+func TestLatestSaveAt_Non200_Unreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := &DaemonClient{BaseURL: srv.URL, Timeout: time.Second}
+	_, status := c.LatestSaveAt(context.Background(), "proj")
+	if status != SaveUnreachable {
+		t.Fatalf("status: got %v, want SaveUnreachable", status)
+	}
+}
+
+func TestLatestSaveAt_MalformedJSON_Unreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "not json{")
+	}))
+	defer srv.Close()
+
+	c := &DaemonClient{BaseURL: srv.URL, Timeout: time.Second}
+	_, status := c.LatestSaveAt(context.Background(), "proj")
+	if status != SaveUnreachable {
+		t.Fatalf("status: got %v, want SaveUnreachable", status)
+	}
+}
+
+func TestLatestSaveAt_UnparseableTimestamp_Unreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"last_save_at": "yesterday"})
+	}))
+	defer srv.Close()
+
+	c := &DaemonClient{BaseURL: srv.URL, Timeout: time.Second}
+	_, status := c.LatestSaveAt(context.Background(), "proj")
+	if status != SaveUnreachable {
+		t.Fatalf("status: got %v, want SaveUnreachable", status)
+	}
+}
+
+func TestLatestSaveAt_Timeout_Unreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"last_save_at": time.Now().UTC().Format(time.RFC3339)})
+	}))
+	defer srv.Close()
+
+	c := &DaemonClient{BaseURL: srv.URL, Timeout: 50 * time.Millisecond}
+	_, status := c.LatestSaveAt(context.Background(), "proj")
+	if status != SaveUnreachable {
+		t.Fatalf("status: got %v, want SaveUnreachable (timeout)", status)
+	}
+}
+
+func TestLatestSaveAt_EscapesProjectPath(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"last_save_at": ""})
+	}))
+	defer srv.Close()
+
+	c := &DaemonClient{BaseURL: srv.URL, Timeout: time.Second}
+	_, _ = c.LatestSaveAt(context.Background(), "org/team proj")
+	want := "/projects/org%2Fteam%20proj/last-save"
+	if gotPath != want {
+		t.Errorf("escaped path: got %q, want %q", gotPath, want)
+	}
+}

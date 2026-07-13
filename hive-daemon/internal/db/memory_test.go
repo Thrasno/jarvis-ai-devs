@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"strings"
 	"testing"
@@ -60,6 +61,54 @@ func newMemory(project, title, content string) *models.Memory {
 		Content:   content,
 		SessionID: "manual-save-" + project,
 	}
+}
+
+// ─── LatestMemoryTimestamp ─────────────────────────────────────────────────
+
+func TestLatestMemoryTimestamp_ReturnsMostRecent(t *testing.T) {
+	d := openTestDB(t)
+
+	if _, err := saveTestMemory(t, d, newMemory("projX", "T1", "C1")); err != nil {
+		t.Fatalf("save first memory: %v", err)
+	}
+	if _, err := saveTestMemory(t, d, newMemory("projX", "T2", "C2")); err != nil {
+		t.Fatalf("save second memory: %v", err)
+	}
+
+	ts, found, err := d.LatestMemoryTimestamp("projX")
+	require.NoError(t, err)
+	assert.True(t, found, "found should be true when memories exist")
+	assert.False(t, ts.IsZero(), "timestamp should be populated when found")
+}
+
+func TestLatestMemoryTimestamp_EmptyProject_ReturnsFoundFalse(t *testing.T) {
+	d := openTestDB(t)
+
+	ts, found, err := d.LatestMemoryTimestamp("no-such-project")
+	require.NoError(t, err)
+	assert.False(t, found, "found should be false when project has no memories")
+	assert.True(t, ts.IsZero(), "timestamp should be zero when not found")
+}
+
+func TestLatestMemoryTimestamp_BlockedProject_ReturnsFoundFalse(t *testing.T) {
+	d := openTestDB(t)
+
+	if _, err := saveTestMemory(t, d, newMemory("blockedProj", "T1", "C1")); err != nil {
+		t.Fatalf("save memory: %v", err)
+	}
+	if _, err := d.RecordProjectBlock(context.Background(), ProjectBlockCommand{
+		CommandID:           "cmd-blocked",
+		AckToken:            "ack-blocked",
+		Project:             "blockedProj",
+		CanonicalProjectKey: "blockedProj",
+	}); err != nil {
+		t.Fatalf("block project: %v", err)
+	}
+
+	ts, found, err := d.LatestMemoryTimestamp("blockedProj")
+	require.NoError(t, err)
+	assert.False(t, found, "blocked project must be treated as having no memories")
+	assert.True(t, ts.IsZero())
 }
 
 // ─── 3.1 SaveMemory ────────────────────────────────────────────────────────

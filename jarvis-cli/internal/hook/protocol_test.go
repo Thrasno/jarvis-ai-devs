@@ -3,7 +3,39 @@ package hook
 import (
 	"strings"
 	"testing"
+	"time"
 )
+
+// TestMemoryReminderThresholds pins the hardcoded, non-configurable threshold
+// constants used by the mid-session memory reminder.
+func TestMemoryReminderThresholds(t *testing.T) {
+	t.Parallel()
+
+	if SessionAgeGate != 5*time.Minute {
+		t.Errorf("SessionAgeGate: got %v, want 5m", SessionAgeGate)
+	}
+	if MemoryReminderThreshold != 15*time.Minute {
+		t.Errorf("MemoryReminderThreshold: got %v, want 15m", MemoryReminderThreshold)
+	}
+	if MemoryReminderCooldown != 15*time.Minute {
+		t.Errorf("MemoryReminderCooldown: got %v, want 15m", MemoryReminderCooldown)
+	}
+}
+
+// TestMemoryReminderSystemMessage verifies the reminder text nudges toward
+// mem_save for decisions, discoveries, and completed work.
+func TestMemoryReminderSystemMessage(t *testing.T) {
+	t.Parallel()
+
+	if MemoryReminderSystemMessage == "" {
+		t.Fatal("MemoryReminderSystemMessage must not be empty")
+	}
+	for _, want := range []string{"mem_save", "decisions", "discoveries"} {
+		if !strings.Contains(MemoryReminderSystemMessage, want) {
+			t.Errorf("MemoryReminderSystemMessage should mention %q; got: %q", want, MemoryReminderSystemMessage)
+		}
+	}
+}
 
 // TestBuildHiveProtocolText_EmptyCanonical_ReturnsBaseline verifies that
 // BuildHiveProtocolText("") returns the standard HiveProtocolText unchanged

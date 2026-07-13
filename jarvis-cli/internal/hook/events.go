@@ -77,10 +77,70 @@ func RunPromptSubmit(ctx context.Context, r io.Reader, w io.Writer, baseURL stri
 	// marker as absent and both inject systemMessage.
 	created, _ := CreateMarkerExclusive(sessionID)
 	if created {
-		WriteResponse(w, HookResponse{SystemMessage: FirstPromptSystemMessage})
+		// Deliver to BOTH the model (nested hookSpecificOutput.additionalContext)
+		// and the user (systemMessage) so the first-action instruction is acted on.
+		WriteResponse(w, PromptSubmitMessage(FirstPromptSystemMessage))
+		return
+	}
+
+	// Non-first prompt: evaluate the mid-session memory-save reminder. Fail-safe —
+	// any marker error, daemon failure, or unmet gate yields an empty response.
+	if msg := memoryReminder(ctx, sessionID, canonical, baseURL); msg != "" {
+		// Same dual delivery: the agent must see the nudge (model context) and
+		// the user should see it too (systemMessage).
+		WriteResponse(w, PromptSubmitMessage(msg))
 		return
 	}
 	WriteEmpty(w)
+}
+
+// memoryReminder evaluates the mid-session memory-save reminder gates and
+// returns the systemMessage to emit, or "" when no reminder should fire.
+//
+// Gate order (all must hold):
+//  1. session age (now − first-prompt marker timestamp) > SessionAgeGate
+//  2. last save: daemon reports Found with elapsed > MemoryReminderThreshold, OR
+//     Empty (never saved). Unreachable → fail-safe, no reminder.
+//  3. cooldown: no reminder marker, or elapsed since it > MemoryReminderCooldown
+//
+// On firing it rewrites the reminder marker (best-effort) with the current time.
+// Any error along the way results in "" so the hook always writes valid JSON.
+func memoryReminder(ctx context.Context, sessionID, project, baseURL string) string {
+	now := time.Now()
+
+	// Gate 1: session age from the first-prompt marker timestamp.
+	firstAt, err := ReadMarkerTime(sessionID, markerFirstPrompt)
+	if err != nil {
+		return ""
+	}
+	if now.Sub(firstAt) <= SessionAgeGate {
+		return ""
+	}
+
+	// Gate 2: time since last save, via the daemon (fail-safe).
+	client := &DaemonClient{BaseURL: baseURL, Timeout: 1 * time.Second}
+	lastAt, status := client.LatestSaveAt(ctx, project)
+	switch status {
+	case SaveFound:
+		if now.Sub(lastAt) <= MemoryReminderThreshold {
+			return ""
+		}
+	case SaveEmpty:
+		// Never saved → treat as infinitely stale; eligible to fire.
+	default: // SaveUnreachable — fail-safe, never nudge on failure.
+		return ""
+	}
+
+	// Gate 3: cooldown since the last reminder fired.
+	if lastReminder, err := ReadMarkerTime(sessionID, markerMemoryReminder); err == nil {
+		if now.Sub(lastReminder) <= MemoryReminderCooldown {
+			return ""
+		}
+	}
+
+	// Fire: rewrite the cooldown marker (best-effort) and emit the reminder.
+	_ = RewriteMarker(sessionID, markerMemoryReminder)
+	return MemoryReminderSystemMessage
 }
 
 // RunSubagentStop handles the Claude Code SubagentStop hook event.

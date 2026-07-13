@@ -5,9 +5,27 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
+)
+
+// SaveStatus is the three-valued result of querying the daemon for a project's
+// most recent save timestamp.
+type SaveStatus int
+
+const (
+	// SaveUnreachable means the daemon could not be reached or returned an
+	// unusable response (transport error, timeout, non-200, malformed body, or
+	// an unparseable timestamp). Fail-safe: callers MUST NOT fire a reminder.
+	SaveUnreachable SaveStatus = iota
+	// SaveFound means the daemon returned a real, parseable last-save timestamp.
+	SaveFound
+	// SaveEmpty means the daemon was reachable but the project has never saved.
+	SaveEmpty
 )
 
 // DaemonClient is a fire-and-forget HTTP client for the local hive-daemon.
@@ -64,6 +82,63 @@ func (c *DaemonClient) post(ctx context.Context, path string, body any, nonFatal
 	}
 	// All errors discarded — caller never receives an error from this client.
 	return nil
+}
+
+// get sends a GET to path and returns the response body and true on a 200
+// response. Any transport error, timeout, non-200 status, or read failure
+// returns (nil, false). Like post, it is fail-safe and never surfaces an error.
+func (c *DaemonClient) get(ctx context.Context, path string) ([]byte, bool) {
+	tctx, cancel := context.WithTimeout(ctx, c.Timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(tctx, http.MethodGet, c.BaseURL+path, nil)
+	if err != nil {
+		return nil, false
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, false // daemon down, timeout, refused
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, false
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, false
+	}
+	return data, true
+}
+
+// LatestSaveAt queries the daemon for the most recent save timestamp of project.
+//
+// It is fail-safe: any transport error, timeout, non-200 status, malformed body,
+// or unparseable timestamp yields SaveUnreachable so the caller never fires a
+// reminder on failure. A reachable daemon with no saves yields SaveEmpty; a real
+// timestamp yields SaveFound.
+func (c *DaemonClient) LatestSaveAt(ctx context.Context, project string) (time.Time, SaveStatus) {
+	path := "/projects/" + url.PathEscape(project) + "/last-save"
+	data, ok := c.get(ctx, path)
+	if !ok {
+		return time.Time{}, SaveUnreachable
+	}
+
+	var body struct {
+		LastSaveAt string `json:"last_save_at"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
+		return time.Time{}, SaveUnreachable
+	}
+	if strings.TrimSpace(body.LastSaveAt) == "" {
+		return time.Time{}, SaveEmpty
+	}
+	ts, err := time.Parse(time.RFC3339, body.LastSaveAt)
+	if err != nil {
+		return time.Time{}, SaveUnreachable
+	}
+	return ts, SaveFound
 }
 
 // PostPrompt sends the user prompt to the daemon's /prompts endpoint.

@@ -161,6 +161,21 @@ LIMIT ?`
 	return results, nil
 }
 
+// LatestMemoryTimestamp returns the created_at of the most recent active memory
+// for a project. The bool reports whether any memory exists; when false, the
+// returned time is the zero value. Blocked projects are treated as having no
+// memories (found=false), inheriting ListMemories' blocked-project handling.
+func (d *DB) LatestMemoryTimestamp(project string) (time.Time, bool, error) {
+	mems, err := d.ListMemories(project, 1)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if len(mems) == 0 {
+		return time.Time{}, false, nil
+	}
+	return mems[0].CreatedAt, true, nil
+}
+
 type DeletedMemory struct {
 	Memory       *models.Memory
 	DeletedAt    time.Time

@@ -6,11 +6,228 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// seedFirstPromptMarker writes the first-prompt marker for sessionID with a
+// specific timestamp so tests can control session age.
+func seedFirstPromptMarker(t *testing.T, sessionID string, at time.Time) {
+	t.Helper()
+	p := markerPath(sessionID, markerFirstPrompt)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatalf("mkdir marker dir: %v", err)
+	}
+	if err := os.WriteFile(p, []byte(at.UTC().Format(time.RFC3339)+"\n"), 0o644); err != nil {
+		t.Fatalf("write first-prompt marker: %v", err)
+	}
+}
+
+// lastSaveServer returns an httptest.Server that answers the last-save GET with
+// the given JSON body/status and any other request with 200.
+func lastSaveServer(t *testing.T, status int, lastSaveAt string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "last-save") {
+			w.WriteHeader(status)
+			if status == http.StatusOK {
+				_ = json.NewEncoder(w).Encode(map[string]string{"last_save_at": lastSaveAt})
+			}
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// promptSubmitResult is the decoded prompt-submit hook output. The prompt-submit
+// hook now emits nested hookSpecificOutput (model-visible) plus top-level
+// systemMessage (user-visible), so we decode both plus the raw bytes.
+type promptSubmitResult struct {
+	SystemMessage      string `json:"systemMessage"`
+	AdditionalContext  string `json:"additionalContext"`
+	HookSpecificOutput *struct {
+		HookEventName     string `json:"hookEventName"`
+		AdditionalContext string `json:"additionalContext"`
+	} `json:"hookSpecificOutput"`
+	Raw string `json:"-"`
+}
+
+func runPromptSubmitResp(t *testing.T, sessionID, baseURL string) promptSubmitResult {
+	t.Helper()
+	var out bytes.Buffer
+	payload := `{"session_id":"` + sessionID + `","prompt":"hi"}`
+	RunPromptSubmit(context.Background(), strings.NewReader(payload), &out, baseURL)
+	var resp promptSubmitResult
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON output: %v (%q)", err, out.String())
+	}
+	resp.Raw = out.String()
+	return resp
+}
+
+func TestRunPromptSubmit_Reminder_FiresWhenFoundStale(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	sessionID := "reminder-found-stale"
+	seedFirstPromptMarker(t, sessionID, time.Now().Add(-30*time.Minute))
+	srv := lastSaveServer(t, http.StatusOK, time.Now().Add(-20*time.Minute).UTC().Format(time.RFC3339))
+
+	resp := runPromptSubmitResp(t, sessionID, srv.URL)
+	assertReminderFired(t, resp)
+}
+
+// assertReminderFired verifies the reminder reached BOTH the model (nested
+// hookSpecificOutput.additionalContext with hookEventName "UserPromptSubmit")
+// and the user (top-level systemMessage).
+func assertReminderFired(t *testing.T, resp promptSubmitResult) {
+	t.Helper()
+	if resp.SystemMessage != MemoryReminderSystemMessage {
+		t.Errorf("systemMessage: got %q, want reminder message", resp.SystemMessage)
+	}
+	if resp.HookSpecificOutput == nil {
+		t.Fatalf("hookSpecificOutput missing; raw: %q", resp.Raw)
+	}
+	if resp.HookSpecificOutput.HookEventName != "UserPromptSubmit" {
+		t.Errorf("hookEventName: got %q, want UserPromptSubmit", resp.HookSpecificOutput.HookEventName)
+	}
+	if resp.HookSpecificOutput.AdditionalContext != MemoryReminderSystemMessage {
+		t.Errorf("nested additionalContext: got %q, want reminder message", resp.HookSpecificOutput.AdditionalContext)
+	}
+}
+
+func TestRunPromptSubmit_Reminder_FiresWhenEmpty(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	sessionID := "reminder-empty"
+	seedFirstPromptMarker(t, sessionID, time.Now().Add(-30*time.Minute))
+	srv := lastSaveServer(t, http.StatusOK, "") // reachable, never saved
+
+	resp := runPromptSubmitResp(t, sessionID, srv.URL)
+	assertReminderFired(t, resp)
+}
+
+func TestRunPromptSubmit_Reminder_NoFireWhenSessionYoung(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	sessionID := "reminder-young"
+	seedFirstPromptMarker(t, sessionID, time.Now().Add(-2*time.Minute))
+	srv := lastSaveServer(t, http.StatusOK, "")
+
+	resp := runPromptSubmitResp(t, sessionID, srv.URL)
+	if resp.Raw != "{}" {
+		t.Errorf("expected empty {} for young session, got: %q", resp.Raw)
+	}
+}
+
+func TestRunPromptSubmit_Reminder_NoFireWhenRecentSave(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	sessionID := "reminder-recent-save"
+	seedFirstPromptMarker(t, sessionID, time.Now().Add(-30*time.Minute))
+	srv := lastSaveServer(t, http.StatusOK, time.Now().Add(-2*time.Minute).UTC().Format(time.RFC3339))
+
+	resp := runPromptSubmitResp(t, sessionID, srv.URL)
+	if resp.Raw != "{}" {
+		t.Errorf("expected empty {} for recent save, got: %q", resp.Raw)
+	}
+}
+
+func TestRunPromptSubmit_Reminder_NoFireWhenCooldownActive(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	sessionID := "reminder-cooldown"
+	seedFirstPromptMarker(t, sessionID, time.Now().Add(-30*time.Minute))
+	// A reminder fired recently — within the cooldown window.
+	p := markerPath(sessionID, markerMemoryReminder)
+	_ = os.MkdirAll(filepath.Dir(p), 0o755)
+	_ = os.WriteFile(p, []byte(time.Now().Add(-1*time.Minute).UTC().Format(time.RFC3339)+"\n"), 0o644)
+	srv := lastSaveServer(t, http.StatusOK, "")
+
+	resp := runPromptSubmitResp(t, sessionID, srv.URL)
+	if resp.Raw != "{}" {
+		t.Errorf("expected empty {} during cooldown, got: %q", resp.Raw)
+	}
+}
+
+func TestRunPromptSubmit_Reminder_NoFireWhenDaemonUnreachable(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	sessionID := "reminder-daemon-down"
+	seedFirstPromptMarker(t, sessionID, time.Now().Add(-30*time.Minute))
+
+	resp := runPromptSubmitResp(t, sessionID, "http://127.0.0.1:19876")
+	if resp.Raw != "{}" {
+		t.Errorf("expected empty {} when daemon unreachable (fail-safe), got: %q", resp.Raw)
+	}
+}
+
+func TestRunPromptSubmit_Reminder_NoFireWhenDaemon500(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	sessionID := "reminder-daemon-500"
+	seedFirstPromptMarker(t, sessionID, time.Now().Add(-30*time.Minute))
+	srv := lastSaveServer(t, http.StatusInternalServerError, "")
+
+	resp := runPromptSubmitResp(t, sessionID, srv.URL)
+	if resp.Raw != "{}" {
+		t.Errorf("expected empty {} on non-200 (fail-safe), got: %q", resp.Raw)
+	}
+}
+
+func TestRunPromptSubmit_Reminder_NoFireWhenFirstMarkerCorrupt(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	sessionID := "reminder-corrupt-marker"
+	// Corrupt first-prompt marker → session age unknown → fail-safe.
+	p := markerPath(sessionID, markerFirstPrompt)
+	_ = os.MkdirAll(filepath.Dir(p), 0o755)
+	_ = os.WriteFile(p, []byte("garbage\n"), 0o644)
+	srv := lastSaveServer(t, http.StatusOK, "")
+
+	resp := runPromptSubmitResp(t, sessionID, srv.URL)
+	if resp.Raw != "{}" {
+		t.Errorf("expected empty {} for corrupt first-prompt marker, got: %q", resp.Raw)
+	}
+}
+
+func TestRunPromptSubmit_Reminder_RewritesCooldownMarkerOnFire(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	sessionID := "reminder-rewrites"
+	seedFirstPromptMarker(t, sessionID, time.Now().Add(-30*time.Minute))
+	srv := lastSaveServer(t, http.StatusOK, "")
+
+	resp := runPromptSubmitResp(t, sessionID, srv.URL)
+	assertReminderFired(t, resp)
+	// Cooldown marker must now exist with a fresh timestamp.
+	ts, err := ReadMarkerTime(sessionID, markerMemoryReminder)
+	if err != nil {
+		t.Fatalf("cooldown marker should exist after firing: %v", err)
+	}
+	if time.Since(ts) > time.Minute {
+		t.Errorf("cooldown marker should be freshly written, got %v", ts)
+	}
+}
+
+func TestRunPromptSubmit_Reminder_ConcurrentInvocationsValidJSON(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	sessionID := "reminder-concurrent"
+	seedFirstPromptMarker(t, sessionID, time.Now().Add(-30*time.Minute))
+	srv := lastSaveServer(t, http.StatusOK, "")
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var out bytes.Buffer
+			payload := `{"session_id":"` + sessionID + `","prompt":"hi"}`
+			RunPromptSubmit(context.Background(), strings.NewReader(payload), &out, srv.URL)
+			var resp promptSubmitResult
+			if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+				t.Errorf("invalid JSON from concurrent invocation: %v (%q)", err, out.String())
+			}
+		}()
+	}
+	wg.Wait()
+}
 
 // --- RunSessionStart ---
 
@@ -39,6 +256,37 @@ func TestRunSessionStart_HappyPath_InjectsProtocol(t *testing.T) {
 	// Marker should have been created
 	if !MarkerExists("start-test-session") {
 		t.Error("marker should exist after session-start")
+	}
+}
+
+// TestRunSessionStart_OutputShapeUnchanged is a regression guard: SessionStart
+// must keep emitting top-level additionalContext and MUST NOT adopt the nested
+// hookSpecificOutput wrapper used by the prompt-submit hook.
+func TestRunSessionStart_OutputShapeUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+	t.Setenv("HIVE_CLAUDE_SESSION_ID", "start-shape-session")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	var out bytes.Buffer
+	RunSessionStart(context.Background(), strings.NewReader(`{"session_id":"start-shape-session"}`), &out, srv.URL)
+
+	var got map[string]interface{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if _, ok := got["additionalContext"]; !ok {
+		t.Error("SessionStart must emit top-level additionalContext")
+	}
+	if _, ok := got["hookSpecificOutput"]; ok {
+		t.Error("SessionStart must NOT emit hookSpecificOutput wrapper")
+	}
+	if _, ok := got["systemMessage"]; ok {
+		t.Error("SessionStart must NOT emit systemMessage")
 	}
 }
 
@@ -163,12 +411,23 @@ func TestRunPromptSubmit_FirstPrompt_CreatesMarkerAndReturnsSystemMessage(t *tes
 	payload := `{"prompt":"test","session_id":"prompt-first-session","directory":"/dir","project":"proj"}`
 	RunPromptSubmit(context.Background(), strings.NewReader(payload), &out, srv.URL)
 
-	var resp map[string]string
+	var resp promptSubmitResult
 	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	if resp["systemMessage"] == "" {
-		t.Error("first prompt should return systemMessage")
+	// First prompt must reach BOTH the user (systemMessage) and the model
+	// (nested hookSpecificOutput.additionalContext with hookEventName).
+	if resp.SystemMessage != FirstPromptSystemMessage {
+		t.Errorf("systemMessage: got %q, want FirstPromptSystemMessage", resp.SystemMessage)
+	}
+	if resp.HookSpecificOutput == nil {
+		t.Fatalf("hookSpecificOutput missing; raw: %q", out.String())
+	}
+	if resp.HookSpecificOutput.HookEventName != "UserPromptSubmit" {
+		t.Errorf("hookEventName: got %q, want UserPromptSubmit", resp.HookSpecificOutput.HookEventName)
+	}
+	if resp.HookSpecificOutput.AdditionalContext != FirstPromptSystemMessage {
+		t.Errorf("nested additionalContext: got %q, want FirstPromptSystemMessage", resp.HookSpecificOutput.AdditionalContext)
 	}
 	if !MarkerExists("prompt-first-session") {
 		t.Error("marker should be created on first prompt")
@@ -212,12 +471,15 @@ func TestRunPromptSubmit_DaemonDown_StillHandlesMarker(t *testing.T) {
 	RunPromptSubmit(context.Background(), strings.NewReader(payload), &out, "http://127.0.0.1:19876")
 
 	// Should still apply first-prompt logic despite daemon being down
-	var resp map[string]string
+	var resp promptSubmitResult
 	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	if resp["systemMessage"] == "" {
+	if resp.SystemMessage == "" {
 		t.Error("should return systemMessage on first prompt even when daemon is down")
+	}
+	if resp.HookSpecificOutput == nil || resp.HookSpecificOutput.AdditionalContext == "" {
+		t.Error("should return nested additionalContext on first prompt even when daemon is down")
 	}
 }
 
