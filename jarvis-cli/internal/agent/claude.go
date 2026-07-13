@@ -37,7 +37,7 @@ type claudeCommandResult struct {
 
 var claudeRuntimeGOOS = runtime.GOOS
 
-const defaultNativeMCPInventoryCommandTimeout = 5 * time.Second
+const defaultNativeMCPInventoryCommandTimeout = 30 * time.Second
 
 var nativeMCPInventoryCommandTimeout = defaultNativeMCPInventoryCommandTimeout
 
@@ -302,9 +302,17 @@ func isMissingClaudeMCP(result claudeCommandResult, identity string) bool {
 	if !result.Started || result.Err == nil || errors.Is(result.Err, os.ErrNotExist) || errors.Is(result.Err, os.ErrPermission) || errors.Is(result.Err, context.DeadlineExceeded) {
 		return false
 	}
-	output := strings.TrimSpace(result.Output)
-	return output == fmt.Sprintf("Error: MCP server '%s' not found", identity) ||
-		output == fmt.Sprintf("No MCP server named %q found.", identity)
+	output := strings.Trim(strings.ReplaceAll(stripANSI(result.Output), "\r\n", "\n"), " \r\n")
+	if output == "" || strings.ContainsAny(output, "\r\n") {
+		return false
+	}
+	legacy := fmt.Sprintf("No MCP server named %q found.", identity)
+	current := fmt.Sprintf("No MCP server named %q.", identity)
+	const separator = " Configured servers: "
+	left, diagnostic, found := strings.Cut(output, separator)
+	configured := found && left == current && diagnostic != "" &&
+		!strings.Contains(diagnostic, separator) && strings.IndexFunc(diagnostic, unicode.IsControl) < 0
+	return output == fmt.Sprintf("Error: MCP server '%s' not found", identity) || output == legacy || output == current || configured
 }
 
 // WriteInstructions writes ~/.claude/CLAUDE.md with Layer1+Layer2 sentinel blocks.

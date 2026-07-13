@@ -74,14 +74,23 @@ func TestNativeMCPSnapshotCreatesOnlyForExplicitClaudeMCPAbsentResponse(t *testi
 			wantCreatable: true,
 		},
 		{
-			name:          "current exact Claude MCP-absent response",
+			name:          "legacy exact Claude MCP-absent response",
 			result:        claudeCommandResult{Output: `No MCP server named "jarvis-hive" found.`, Err: errors.New("exit status 1"), Started: true},
 			wantCreatable: true,
 		},
-		{
-			name:   "missing response for another identity",
-			result: claudeCommandResult{Output: `No MCP server named "jarvis-hive-old" found.`, Err: errors.New("exit status 1"), Started: true},
-		},
+		{name: "current exact Claude MCP-absent response from fixture", result: claudeCommandResult{Output: readNativeMCPFixture(t, "claude-mcp-missing-current.txt"), Err: errors.New("exit status 1"), Started: true}, wantCreatable: true},
+		{name: "current response with same-line server summary", result: claudeCommandResult{Output: `No MCP server named "jarvis-hive". Configured servers: context7, todoist`, Err: errors.New("exit status 1"), Started: true}, wantCreatable: true},
+		{name: "current response embedded in unrelated text", result: claudeCommandResult{Output: `warning: No MCP server named "jarvis-hive". Configured servers: hive`, Err: errors.New("exit status 1"), Started: true}},
+		{name: "current response followed by diagnostic line", result: claudeCommandResult{Output: "No MCP server named \"jarvis-hive\". Configured servers: hive\nwarning: configuration unreadable", Err: errors.New("exit status 1"), Started: true}},
+		{name: "current response followed by carriage-return diagnostic", result: claudeCommandResult{Output: "No MCP server named \"jarvis-hive\". Configured servers: hive\rwarning: configuration unreadable", Err: errors.New("exit status 1"), Started: true}},
+		{name: "current response with empty server summary", result: claudeCommandResult{Output: `No MCP server named "jarvis-hive". Configured servers: `, Err: errors.New("exit status 1"), Started: true}},
+		{name: "current response with duplicate separator", result: claudeCommandResult{Output: `No MCP server named "jarvis-hive". Configured servers: hive Configured servers: todoist`, Err: errors.New("exit status 1"), Started: true}},
+		{name: "current response with control in diagnostic", result: claudeCommandResult{Output: "No MCP server named \"jarvis-hive\". Configured servers: hive\ttodoist", Err: errors.New("exit status 1"), Started: true}},
+		{name: "current response with trailing tab", result: claudeCommandResult{Output: "No MCP server named \"jarvis-hive\". Configured servers: hive\t", Err: errors.New("exit status 1"), Started: true}},
+		{name: "current response with trailing text", result: claudeCommandResult{Output: `No MCP server named "jarvis-hive". unexpected`, Err: errors.New("exit status 1"), Started: true}},
+		{name: "current response with misleading quote", result: claudeCommandResult{Output: `No MCP server named "jarvis-hive"." Configured servers: hive`, Err: errors.New("exit status 1"), Started: true}},
+		{name: "missing response for another identity", result: claudeCommandResult{Output: `No MCP server named "jarvis-hive-old". Configured servers: hive`, Err: errors.New("exit status 1"), Started: true}},
+		{name: "legacy response with trailing text", result: claudeCommandResult{Output: `No MCP server named "jarvis-hive" found. Configured servers: hive`, Err: errors.New("exit status 1"), Started: true}},
 	}
 
 	for _, tt := range tests {
@@ -126,11 +135,42 @@ func TestRunNativeMCPInventoryCommandReturnsDeadlineExceededAfterStartingProcess
 	}
 }
 
+func TestNativeMCPInventoryDefaultAllowsCommandsLongerThanFiveSeconds(t *testing.T) {
+	if defaultNativeMCPInventoryCommandTimeout != 30*time.Second {
+		t.Fatalf("default timeout = %s, want 30s", defaultNativeMCPInventoryCommandTimeout)
+	}
+	previousTimeout := nativeMCPInventoryCommandTimeout
+	nativeMCPInventoryCommandTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { nativeMCPInventoryCommandTimeout = previousTimeout })
+	t.Setenv("GO_WANT_NATIVE_MCP_INVENTORY_DELAY_HELPER", "1")
+
+	result := runNativeMCPInventoryCommand(os.Args[0], "-test.run=TestNativeMCPInventoryCommandDelayHelper", "--")
+	if result.Err != nil || !result.Started {
+		t.Fatalf("result = %#v, want controlled command to finish before scaled default", result)
+	}
+}
+
+func TestNativeMCPInventoryCommandDelayHelper(t *testing.T) {
+	if os.Getenv("GO_WANT_NATIVE_MCP_INVENTORY_DELAY_HELPER") != "1" {
+		return
+	}
+	time.Sleep(110 * time.Millisecond)
+}
+
 func TestNativeMCPInventoryCommandTimeoutHelper(t *testing.T) {
 	if os.Getenv("GO_WANT_NATIVE_MCP_INVENTORY_TIMEOUT_HELPER") != "1" {
 		return
 	}
 	time.Sleep(2 * time.Second)
+}
+
+func readNativeMCPFixture(t *testing.T, name string) string {
+	t.Helper()
+	content, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	return string(content)
 }
 
 func TestNativeMCPSnapshotStoresOnlySecretSafeInventoryEvidence(t *testing.T) {
@@ -426,8 +466,8 @@ func TestNativeMCPGetRetriesAmbiguousNonzeroRecordOnce(t *testing.T) {
 		{name: "verification retry reports missing", responses: []claudeCommandResult{missing, {}, nonzeroValid, missing}, wantPhase: NativeMCPVerifying, wantCategory: "verification", wantCode: "user-scope-presence", wantCalls: 4},
 		{name: "verification retry is malformed", responses: []claudeCommandResult{missing, {}, nonzeroValid, {Output: "hive:\nScope: Team config", Started: true}}, wantPhase: NativeMCPVerifying, wantCategory: "verification", wantCode: "invalid-record", wantCalls: 4},
 		{name: "launch is not retried", responses: []claudeCommandResult{{Output: valid, Err: os.ErrNotExist}}, wantPhase: NativeMCPInspected, wantCategory: "inspection", wantCode: "not-started", wantCalls: 1},
-		{name: "permission is not retried", responses: []claudeCommandResult{{Output: valid, Err: os.ErrPermission, Started: true}}, wantPhase: NativeMCPInspected, wantCategory: "inspection", wantCode: "nonzero-exit", wantCalls: 1},
-		{name: "timeout is not retried", responses: []claudeCommandResult{{Output: valid, Err: context.DeadlineExceeded, Started: true}}, wantPhase: NativeMCPInspected, wantCategory: "inspection", wantCode: "nonzero-exit", wantCalls: 1},
+		{name: "permission is not retried", responses: []claudeCommandResult{{Output: valid, Err: os.ErrPermission, Started: true}}, wantPhase: NativeMCPInspected, wantCategory: "inspection", wantCode: "permission", wantCalls: 1},
+		{name: "timeout is not retried", responses: []claudeCommandResult{{Output: valid, Err: context.DeadlineExceeded, Started: true}}, wantPhase: NativeMCPInspected, wantCategory: "inspection", wantCode: "timeout", wantCalls: 1},
 		{name: "malformed initial record is not retried", responses: []claudeCommandResult{{Output: "hive:\nScope: Team config", Err: errors.New("exit status 1"), Started: true}}, wantPhase: NativeMCPInspected, wantCategory: "inspection", wantCode: "nonzero-exit", wantCalls: 1},
 	}
 

@@ -236,6 +236,10 @@ func (m NativeMCPManager) replaceFailure(result *NativeMCPResult, category, code
 
 func nativeMCPCommandErrorCode(result claudeCommandResult) string {
 	switch {
+	case errors.Is(result.Err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(result.Err, os.ErrPermission):
+		return "permission"
 	case !result.Started:
 		return "not-started"
 	default:
