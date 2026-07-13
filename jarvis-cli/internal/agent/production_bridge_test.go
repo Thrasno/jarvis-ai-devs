@@ -143,18 +143,6 @@ func TestFileCompensationStorePersistsOpenCodeProvenanceForFreshReconfigure(t *t
 		t.Fatalf("fresh Snapshot() = %#v, want exact bytes and provenance", snapshot)
 	}
 
-	output, err := NewOpenCodeGlobalAdapter(osFS{}, root).RenderWithProvenance(
-		OpenCodeManagedMCPs{"hive": `{"type":"local"}`}, &snapshot.Provenance,
-	)
-	if err != nil {
-		t.Fatalf("RenderWithProvenance() error = %v", err)
-	}
-	request, err := BuildWizardReconcileRequest(WizardReconcileInput{
-		SelectedAgents: []string{"opencode"}, Root: root, EvidencePath: filepath.Join(root, "state", "recovery.json"), RenderedOutputs: []RenderedManagedOutput{output},
-	})
-	if err != nil || request.StorePlan.Blocked() || len(request.StorePlan.Operations) != 0 {
-		t.Fatalf("fresh reconfigure = (%#v, %v), want stable accepted output", request.StorePlan, err)
-	}
 }
 
 func TestFileCompensationStoreFailsClosedForAmbiguousOrCorruptOpenCodeProvenance(t *testing.T) {

@@ -29,6 +29,7 @@ type ProductionReconcileInput struct {
 	Root            string
 	EvidencePath    string
 	RenderedOutputs []RenderedManagedOutput
+	OpenCodeMCPs    OpenCodeManagedMCPs
 	ClaudeMCPs      []NativeMCPDefinition
 }
 
@@ -44,6 +45,7 @@ type WizardReconcileInput struct {
 	Root            string
 	EvidencePath    string
 	RenderedOutputs []RenderedManagedOutput
+	OpenCodeMCPs    OpenCodeManagedMCPs
 	ClaudeHive      NativeMCPDefinition
 	ClaudeContext7  NativeMCPDefinition
 }
@@ -446,6 +448,9 @@ func BuildProductionReconcileRequest(input ProductionReconcileInput) (ReconcileI
 		if err != nil {
 			return ReconcileInstallRequest{}, err
 		}
+		if output.Identity == openCodeGlobalConfigIdentity || location == openCodeGlobalConfigLocation {
+			return ReconcileInstallRequest{}, errors.New("OpenCode must use the managed subdocument Store")
+		}
 		if _, exists := desired.Manifest.Artifacts[output.Identity]; exists {
 			return ReconcileInstallRequest{}, fmt.Errorf("duplicate managed output identity %q", output.Identity)
 		}
@@ -480,6 +485,7 @@ func BuildWizardReconcileRequest(input WizardReconcileInput) (ReconcileInstallRe
 		Root:            input.Root,
 		EvidencePath:    input.EvidencePath,
 		RenderedOutputs: append([]RenderedManagedOutput(nil), input.RenderedOutputs...),
+		OpenCodeMCPs:    input.OpenCodeMCPs,
 	}
 	if selectedAgent(input.SelectedAgents, "claude") {
 		production.ClaudeMCPs = []NativeMCPDefinition{input.ClaudeHive, input.ClaudeContext7}
@@ -513,12 +519,14 @@ func validateWizardInput(input WizardReconcileInput) error {
 		selected[name] = struct{}{}
 	}
 
-	opencodeOutput, foundOpenCodeOutput := wizardOpenCodeOutput(input.RenderedOutputs)
-	if _, selectedOpenCode := selected["opencode"]; selectedOpenCode != foundOpenCodeOutput {
-		return errors.New("wizard OpenCode rendered artifact does not match selected agents")
+	_, selectedOpenCode := selected["opencode"]
+	if selectedOpenCode != (len(input.OpenCodeMCPs) > 0) {
+		return errors.New("wizard OpenCode desired state does not match selected agents")
 	}
-	if foundOpenCodeOutput && (opencodeOutput.Identity != openCodeGlobalConfigIdentity || opencodeOutput.Location != openCodeGlobalConfigLocation || len(opencodeOutput.Bytes) == 0) {
-		return errors.New("wizard OpenCode rendered artifact is incomplete")
+	if selectedOpenCode {
+		if _, err := canonicalManagedMCPs(input.OpenCodeMCPs); err != nil {
+			return err
+		}
 	}
 	if _, selectedClaude := selected["claude"]; selectedClaude {
 		if input.ClaudeHive.Identity != "hive" || input.ClaudeContext7.Identity != "context7" ||
@@ -528,15 +536,6 @@ func validateWizardInput(input WizardReconcileInput) error {
 		}
 	}
 	return nil
-}
-
-func wizardOpenCodeOutput(outputs []RenderedManagedOutput) (RenderedManagedOutput, bool) {
-	for _, output := range outputs {
-		if output.Identity == openCodeGlobalConfigIdentity || output.Location == openCodeGlobalConfigLocation {
-			return output, true
-		}
-	}
-	return RenderedManagedOutput{}, false
 }
 
 func validateWizardEvidencePath(root, evidencePath string) error {
@@ -576,6 +575,9 @@ func (e ProductionExecutor) Execute(input ProductionReconcileInput) (ReconcileIn
 	if err != nil {
 		return ReconcileInstallResult{}, err
 	}
+	if err := e.convergeOpenCode(input.Root, input.EvidencePath, input.OpenCodeMCPs); err != nil {
+		return ReconcileInstallResult{}, err
+	}
 	return e.executeRequest(request)
 }
 
@@ -586,7 +588,28 @@ func (e ProductionExecutor) ExecuteWizard(input WizardReconcileInput) (Reconcile
 	if err != nil {
 		return ReconcileInstallResult{}, err
 	}
+	if err := e.convergeOpenCode(input.Root, input.EvidencePath, input.OpenCodeMCPs); err != nil {
+		return ReconcileInstallResult{}, err
+	}
 	return e.executeRequest(request)
+}
+
+func (e ProductionExecutor) convergeOpenCode(root, evidencePath string, desired OpenCodeManagedMCPs) error {
+	if len(desired) == 0 {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(evidencePath), 0o700); err != nil {
+		return errors.New("recovery evidence directory is unavailable; repair it and rerun Install/Reconfigure")
+	}
+	evidence, err := reconcile.NewFileRecoveryEvidenceStore(evidencePath)
+	if err != nil {
+		return errors.New("OpenCode recovery evidence adapter is unavailable; repair its location and rerun Install/Reconfigure")
+	}
+	store, err := NewOpenCodeManagedStore(osOpenCodeManagedFS{}, root, evidence)
+	if err != nil {
+		return err
+	}
+	return store.Converge(desired)
 }
 
 func (e ProductionExecutor) executeRequest(request ReconcileInstallRequest) (ReconcileInstallResult, error) {

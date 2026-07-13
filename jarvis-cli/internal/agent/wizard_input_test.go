@@ -5,22 +5,16 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/reconcile"
 )
 
-func TestBuildWizardReconcileRequestMapsGlobalOpenCodeAndClaudeDefinitions(t *testing.T) {
+func TestBuildWizardReconcileRequestKeepsOpenCodeOutOfWholeFilePlan(t *testing.T) {
 	root := t.TempDir()
 	evidencePath := filepath.Join(root, "state", "recovery.json")
 	request, err := BuildWizardReconcileRequest(WizardReconcileInput{
 		SelectedAgents: []string{"opencode", "claude"},
 		Root:           root,
 		EvidencePath:   evidencePath,
-		RenderedOutputs: []RenderedManagedOutput{{
-			Identity: openCodeGlobalConfigIdentity,
-			Location: openCodeGlobalConfigLocation,
-			Bytes:    []byte(`{"mcp":{"hive":{}}}`),
-		}},
+		OpenCodeMCPs:   OpenCodeManagedMCPs{"hive": `{}`},
 		ClaudeHive:     nativeMCPDefinition("hive", "hive-secret"),
 		ClaudeContext7: nativeMCPDefinition("context7", "context7-secret"),
 	})
@@ -30,8 +24,8 @@ func TestBuildWizardReconcileRequestMapsGlobalOpenCodeAndClaudeDefinitions(t *te
 	if request.EvidencePath != evidencePath {
 		t.Fatalf("EvidencePath = %q, want %q", request.EvidencePath, evidencePath)
 	}
-	if len(request.StorePlan.Operations) != 1 || request.StorePlan.Operations[0].Location != openCodeGlobalConfigLocation {
-		t.Fatalf("StorePlan = %#v, want global OpenCode config artifact", request.StorePlan)
+	if len(request.StorePlan.Operations) != 0 {
+		t.Fatalf("StorePlan = %#v, want no whole-file OpenCode artifact", request.StorePlan)
 	}
 	if len(request.DesiredMCPs) != 2 || request.DesiredMCPs[0].Identity != "hive" || request.DesiredMCPs[1].Identity != "context7" {
 		t.Fatalf("DesiredMCPs = %#v, want Hive and Context7 definitions", request.DesiredMCPs)
@@ -70,10 +64,8 @@ func TestProductionExecutorExecuteWizardRejectsInvalidInputBeforeReconciliation(
 			SelectedAgents: []string{"claude", "opencode"},
 			Root:           root,
 			EvidencePath:   filepath.Join(root, "state", "recovery.json"),
-			RenderedOutputs: []RenderedManagedOutput{{
-				Identity: openCodeGlobalConfigIdentity, Location: openCodeGlobalConfigLocation, Bytes: []byte(`{}`),
-			}},
-			ClaudeHive: nativeMCPDefinition("hive", "hive-secret"), ClaudeContext7: nativeMCPDefinition("context7", "context7-secret"),
+			OpenCodeMCPs:   OpenCodeManagedMCPs{"hive": `{}`},
+			ClaudeHive:     nativeMCPDefinition("hive", "hive-secret"), ClaudeContext7: nativeMCPDefinition("context7", "context7-secret"),
 		}
 	}
 	tests := []struct {
@@ -83,10 +75,7 @@ func TestProductionExecutorExecuteWizardRejectsInvalidInputBeforeReconciliation(
 		{name: "unknown selection", mutate: func(input *WizardReconcileInput) { input.SelectedAgents = []string{"other"} }},
 		{name: "missing root", mutate: func(input *WizardReconcileInput) { input.Root = "" }},
 		{name: "missing evidence", mutate: func(input *WizardReconcileInput) { input.EvidencePath = "" }},
-		{name: "OpenCode artifact mismatch", mutate: func(input *WizardReconcileInput) { input.RenderedOutputs[0].Location = "project/opencode.json" }},
-		{name: "unprovenanced OpenCode inventory", mutate: func(input *WizardReconcileInput) {
-			input.RenderedOutputs[0].Existing = &reconcile.Artifact{Identity: openCodeGlobalConfigIdentity, Location: openCodeGlobalConfigLocation, Bytes: []byte("user-owned")}
-		}},
+		{name: "missing OpenCode desired state", mutate: func(input *WizardReconcileInput) { input.OpenCodeMCPs = nil }},
 		{name: "missing Claude Context7", mutate: func(input *WizardReconcileInput) { input.ClaudeContext7 = NativeMCPDefinition{} }},
 		{name: "Claude project scope", mutate: func(input *WizardReconcileInput) { input.ClaudeHive.Scope = "project" }},
 	}

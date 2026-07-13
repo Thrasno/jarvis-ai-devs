@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -192,11 +191,11 @@ func reconcileWizardMCPs(agents []agent.Agent, home string) error {
 		input.ClaudeHive, input.ClaudeContext7 = hive, context7
 	}
 	if hasSelectedAgent(selected, "opencode") {
-		output, err := renderWizardOpenCodeMCPs(home)
+		managed, err := renderWizardOpenCodeMCPs(home)
 		if err != nil {
 			return err
 		}
-		input.RenderedOutputs = []agent.RenderedManagedOutput{output}
+		input.OpenCodeMCPs = managed
 	}
 	_, err := newWizardMCPExecutor().ExecuteWizard(input)
 	return err
@@ -211,36 +210,19 @@ func hasSelectedAgent(selected []string, wanted string) bool {
 	return false
 }
 
-func renderWizardOpenCodeMCPs(home string) (agent.RenderedManagedOutput, error) {
+func renderWizardOpenCodeMCPs(home string) (agent.OpenCodeManagedMCPs, error) {
 	hive, err := json.Marshal(map[string]any{
 		"type":    "local",
 		"command": []string{wizardHiveDaemonPath(home)},
 	})
 	if err != nil {
-		return agent.RenderedManagedOutput{}, fmt.Errorf("render OpenCode Hive MCP desired state: %w", err)
+		return nil, fmt.Errorf("render OpenCode Hive MCP desired state: %w", err)
 	}
-	managed := agent.OpenCodeManagedMCPs{
+	return agent.OpenCodeManagedMCPs{
 		"hive":     string(hive),
 		"context7": `{"type":"remote","url":"https://mcp.context7.com/mcp","enabled":true}`,
-	}
-	adapter := agent.NewOpenCodeGlobalAdapter(osFS{}, home)
-	store, err := agent.NewFileCompensationStore(home, []agent.RenderedManagedOutput{{Identity: "opencode-global-config", Location: ".config/opencode/opencode.json"}})
-	if err != nil {
-		return agent.RenderedManagedOutput{}, err
-	}
-	snapshot, err := store.Snapshot(".config/opencode/opencode.json")
-	if err != nil {
-		return agent.RenderedManagedOutput{}, err
-	}
-	if snapshot.Exists && snapshot.Provenance.Version == "v1" {
-		return adapter.RenderWithProvenance(managed, &snapshot.Provenance)
-	}
-	return adapter.Render(managed)
+	}, nil
 }
-
-type osFS struct{}
-
-func (osFS) ReadFile(path string) ([]byte, error) { return os.ReadFile(path) }
 
 // configureWizardAgents applies setup to all detected agents and returns
 // per-agent structured outcomes. If one agent fails, callers can abort before
