@@ -35,6 +35,14 @@ type PromptStore interface {
 	SavePromptForSession(ctx context.Context, project, sessionID, content string) (*models.Prompt, error)
 }
 
+// MemoryStore is the minimal interface httpapi needs to expose the most recent
+// per-project save timestamp. *db.DB satisfies this structurally; the daemon
+// passes the same *db.DB it uses for prompts, wired via type-assertion so no
+// constructor signature changes.
+type MemoryStore interface {
+	LatestMemoryTimestamp(project string) (time.Time, bool, error)
+}
+
 // SessionStore is the interface httpapi needs for session-lifecycle and
 // passive-observation endpoints. *db.DB satisfies this structurally.
 type SessionStore interface {
@@ -68,6 +76,7 @@ type GovernanceService interface {
 type Server struct {
 	addr       string
 	prompts    PromptStore
+	memories   MemoryStore
 	sessions   SessionStore
 	projects   project.Store
 	governance GovernanceService
@@ -120,8 +129,16 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 		sess = sessions[0]
 	}
 	s := &Server{addr: addr, prompts: prompts, sessions: sess, projects: projects, governance: governance, config: config, health: health}
+	// The real daemon passes the same *db.DB for prompts and memories; wire the
+	// memory store structurally so no constructor signature changes. nil-safe.
+	if ms, ok := prompts.(MemoryStore); ok {
+		s.memories = ms
+	}
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("/prompts", s.handlePrompts)
+	// Latest-save lookup (hook-initiated memory reminder). Registered
+	// unconditionally — handler is nil-safe on s.memories.
+	s.mux.HandleFunc("GET /projects/{project}/last-save", s.handleProjectLastSave)
 	// Session-lifecycle and passive-observation routes (hook-initiated).
 	// Registered unconditionally — handlers are nil-safe on s.sessions.
 	s.mux.HandleFunc("POST /sessions", s.handleSessionsCreate)
@@ -816,6 +833,38 @@ func (s *Server) handleSessionsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleProjectLastSave handles GET /projects/{project}/last-save.
+//
+// It returns the most recent memory (SAVE) timestamp for a project as
+// {"last_save_at":"<RFC3339>"}. When the project has no saved memories it
+// returns 200 with an empty last_save_at (a distinct "reachable but empty"
+// signal, never a 4xx/5xx). The route is registered unconditionally; when the
+// memory store is unavailable the handler responds 503.
+func (s *Server) handleProjectLastSave(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	projectName := r.PathValue("project")
+	if strings.TrimSpace(projectName) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is required"})
+		return
+	}
+	if s.memories == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "memory store not configured"})
+		return
+	}
+	ts, found, err := s.memories.LatestMemoryTimestamp(projectName)
+	if err != nil {
+		writeInternalError(w, "latest memory timestamp", err)
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusOK, map[string]string{"last_save_at": ""})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"last_save_at": ts.UTC().Format(time.RFC3339)})
 }
 
 // handleSessionsEnd handles POST /sessions/{id}/end.
