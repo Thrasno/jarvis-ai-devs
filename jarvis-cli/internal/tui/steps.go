@@ -1257,9 +1257,12 @@ func updateReview(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func updateMCPDisclosure(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyBackspace, tea.KeyCtrlH:
-		if m.mcpAcknowledgement != "" {
-			m.mcpAcknowledgement = m.mcpAcknowledgement[:len(m.mcpAcknowledgement)-1]
+		runes := []rune(m.mcpAcknowledgement)
+		if len(runes) > 0 {
+			m.mcpAcknowledgement = string(runes[:len(runes)-1])
 		}
+	case tea.KeySpace:
+		m.mcpAcknowledgement += " "
 	case tea.KeyRunes:
 		m.mcpAcknowledgement += string(msg.Runes)
 	case tea.KeyEnter:

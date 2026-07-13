@@ -18,7 +18,7 @@ func TestNativeMCPSnapshotBlocksUnownedSameNameAfterGetOnly(t *testing.T) {
 	})
 
 	_, err := (NativeMCPManager{run: fake.run}).Snapshot([]NativeMCPDefinition{nativeMCPDefinition("jarvis-hive", "expected-secret")})
-	if err == nil || !strings.Contains(err.Error(), "wrong-scope/project-config") {
+	if err == nil || !strings.Contains(err.Error(), "wrong-scope/project") {
 		t.Fatalf("Snapshot() error = %v, want sanitized scope rejection", err)
 	}
 	if len(fake.calls) != 1 || !sameNativeMCPCall(fake.calls[0], []string{"mcp", "get", "jarvis-hive"}) {
@@ -54,11 +54,11 @@ func TestNativeMCPSnapshotCreatesOnlyForExplicitClaudeMCPAbsentResponse(t *testi
 		},
 		{
 			name:   "permission denied",
-			result: claudeCommandResult{Err: os.ErrPermission},
+			result: claudeCommandResult{Output: teammateClaudeMCPGetOutput(identity), Err: os.ErrPermission, Started: true},
 		},
 		{
 			name:   "timeout",
-			result: claudeCommandResult{Err: context.DeadlineExceeded, Started: true},
+			result: claudeCommandResult{Output: teammateClaudeMCPGetOutput(identity), Err: context.DeadlineExceeded, Started: true},
 		},
 		{
 			name:   "malformed output",
@@ -72,6 +72,15 @@ func TestNativeMCPSnapshotCreatesOnlyForExplicitClaudeMCPAbsentResponse(t *testi
 			name:          "explicit Claude MCP-absent response",
 			result:        claudeCommandResult{Output: "Error: MCP server 'jarvis-hive' not found", Err: errors.New("exit status 1"), Started: true},
 			wantCreatable: true,
+		},
+		{
+			name:          "current exact Claude MCP-absent response",
+			result:        claudeCommandResult{Output: `No MCP server named "jarvis-hive" found.`, Err: errors.New("exit status 1"), Started: true},
+			wantCreatable: true,
+		},
+		{
+			name:   "missing response for another identity",
+			result: claudeCommandResult{Output: `No MCP server named "jarvis-hive-old" found.`, Err: errors.New("exit status 1"), Started: true},
 		},
 	}
 
@@ -143,14 +152,14 @@ func TestNativeMCPSnapshotStoresOnlySecretSafeInventoryEvidence(t *testing.T) {
 func TestNativeMCPSnapshotFailsClosedWhenGetIsShadowedByNonUserScope(t *testing.T) {
 	desired := nativeMCPDefinition("jarvis-hive", "expected-secret")
 	fake := newNativeMCPScopeFake(map[string]map[string]string{
-		"local":   {desired.Identity: "Scope: Local config\nToken: local-secret"},
-		"project": {desired.Identity: "Scope: Project config\nToken: project-secret"},
+		"local":   {desired.Identity: desired.Identity + ":\nScope: Local config\nToken: local-secret"},
+		"project": {desired.Identity: desired.Identity + ":\nScope: Project config\nToken: project-secret"},
 		"user":    {},
 	})
 
 	_, err := (NativeMCPManager{run: fake.run}).Snapshot([]NativeMCPDefinition{desired})
 
-	if err == nil || !strings.Contains(err.Error(), "wrong-scope/local-config") {
+	if err == nil || !strings.Contains(err.Error(), "wrong-scope/local") {
 		t.Fatalf("Snapshot() error = %v, want fail-closed shadowing diagnostic", err)
 	}
 	if len(fake.calls) != 1 || !sameNativeMCPCall(fake.calls[0], []string{"mcp", "get", desired.Identity}) {
@@ -357,11 +366,15 @@ func TestNativeMCPReplaceCommandContractAndScopeParsing(t *testing.T) {
 		wantRemove bool
 	}{
 		{name: "teammate Windows output", getOutput: teammateClaudeMCPGetOutput("hive"), wantRemove: true},
-		{name: "casing and spacing", getOutput: "hive:\r\n\t sCoPe  :   uSeR CoNfIg  \r\n", wantRemove: true},
-		{name: "project shadow", getOutput: "Scope: Project config", wantCode: "project-config"},
-		{name: "local shadow", getOutput: " scope : local CONFIG ", wantCode: "local-config"},
-		{name: "missing scope", getOutput: "Status: Connected", wantCode: "missing"},
-		{name: "malformed scope", getOutput: "Scope user config", wantCode: "missing"},
+		{name: "current user scope", getOutput: "hive:\n  Scope: User config (available in all your projects)\n  Status: Disconnected\n", wantRemove: true},
+		{name: "casing spacing CRLF and ANSI", getOutput: "\x1b[32mhive:\x1b[0m\r\n\t sCoPe  :   uSeR CoNfIg  \r\nStatus: Connected\r\n", wantRemove: true},
+		{name: "project shadow", getOutput: "hive:\nScope: Project config", wantCode: "project"},
+		{name: "local shadow", getOutput: "hive:\n scope : local CONFIG ", wantCode: "local"},
+		{name: "conflicting scopes", getOutput: "hive:\nScope: User config\nScope: Project config", wantCode: "conflicting"},
+		{name: "missing scope", getOutput: "hive:\nStatus: Connected", wantCode: "missing"},
+		{name: "unknown scope", getOutput: "hive:\nScope: Team config", wantCode: "unknown"},
+		{name: "wrong identity", getOutput: "hive-old:\nScope: User config", wantCode: "identity"},
+		{name: "malformed scope", getOutput: "hive:\nScope user config", wantCode: "missing"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -392,13 +405,69 @@ func TestNativeMCPReplaceCommandContractAndScopeParsing(t *testing.T) {
 	}
 }
 
+func TestNativeMCPGetRetriesAmbiguousNonzeroRecordOnce(t *testing.T) {
+	valid := teammateClaudeMCPGetOutput("hive")
+	missing := claudeCommandResult{Output: `No MCP server named "hive" found.`, Err: errors.New("exit status 1"), Started: true}
+	nonzeroValid := claudeCommandResult{Output: valid, Err: errors.New("exit status 1"), Started: true}
+	tests := []struct {
+		name         string
+		responses    []claudeCommandResult
+		wantPhase    NativeMCPPhase
+		wantCategory string
+		wantCode     string
+		wantCalls    int
+	}{
+		{name: "inspection retry succeeds", responses: []claudeCommandResult{nonzeroValid, {Output: valid, Started: true}, {}, {}, {Output: valid, Started: true}}, wantPhase: NativeMCPVerified, wantCalls: 5},
+		{name: "inspection retry remains nonzero", responses: []claudeCommandResult{nonzeroValid, nonzeroValid}, wantPhase: NativeMCPInspected, wantCategory: "inspection", wantCode: "nonzero-exit", wantCalls: 2},
+		{name: "inspection retry proves missing", responses: []claudeCommandResult{nonzeroValid, missing, {}, {Output: valid, Started: true}}, wantPhase: NativeMCPVerified, wantCalls: 4},
+		{name: "inspection retry is malformed", responses: []claudeCommandResult{nonzeroValid, {Output: "hive-old:\nScope: User config", Started: true}}, wantPhase: NativeMCPInspected, wantCategory: "inspection", wantCode: "invalid-record", wantCalls: 2},
+		{name: "verification retry succeeds", responses: []claudeCommandResult{missing, {}, nonzeroValid, {Output: valid, Started: true}}, wantPhase: NativeMCPVerified, wantCalls: 4},
+		{name: "verification retry remains nonzero", responses: []claudeCommandResult{missing, {}, nonzeroValid, nonzeroValid}, wantPhase: NativeMCPVerifying, wantCategory: "verification", wantCode: "nonzero-exit", wantCalls: 4},
+		{name: "verification retry reports missing", responses: []claudeCommandResult{missing, {}, nonzeroValid, missing}, wantPhase: NativeMCPVerifying, wantCategory: "verification", wantCode: "user-scope-presence", wantCalls: 4},
+		{name: "verification retry is malformed", responses: []claudeCommandResult{missing, {}, nonzeroValid, {Output: "hive:\nScope: Team config", Started: true}}, wantPhase: NativeMCPVerifying, wantCategory: "verification", wantCode: "invalid-record", wantCalls: 4},
+		{name: "launch is not retried", responses: []claudeCommandResult{{Output: valid, Err: os.ErrNotExist}}, wantPhase: NativeMCPInspected, wantCategory: "inspection", wantCode: "not-started", wantCalls: 1},
+		{name: "permission is not retried", responses: []claudeCommandResult{{Output: valid, Err: os.ErrPermission, Started: true}}, wantPhase: NativeMCPInspected, wantCategory: "inspection", wantCode: "nonzero-exit", wantCalls: 1},
+		{name: "timeout is not retried", responses: []claudeCommandResult{{Output: valid, Err: context.DeadlineExceeded, Started: true}}, wantPhase: NativeMCPInspected, wantCategory: "inspection", wantCode: "nonzero-exit", wantCalls: 1},
+		{name: "malformed initial record is not retried", responses: []claudeCommandResult{{Output: "hive:\nScope: Team config", Err: errors.New("exit status 1"), Started: true}}, wantPhase: NativeMCPInspected, wantCategory: "inspection", wantCode: "nonzero-exit", wantCalls: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			responses := append([]claudeCommandResult(nil), tt.responses...)
+			var calls [][]string
+			manager := NativeMCPManager{run: func(_ string, args ...string) claudeCommandResult {
+				calls = append(calls, append([]string(nil), args...))
+				response := responses[0]
+				responses = responses[1:]
+				return response
+			}}
+
+			result, err := manager.Replace([]NativeMCPDefinition{nativeMCPDefinition("hive", "desired-secret")})
+			if len(calls) != tt.wantCalls {
+				t.Fatalf("calls = %#v, want %d", calls, tt.wantCalls)
+			}
+			if tt.wantCategory == "" {
+				if err != nil || result.Phase != tt.wantPhase {
+					t.Fatalf("Replace() = (%#v, %v), want phase %s", result, err, tt.wantPhase)
+				}
+			} else if err == nil || result.Phase != tt.wantPhase || result.ErrorCategory != tt.wantCategory || result.ErrorCode != tt.wantCode {
+				t.Fatalf("Replace() = (%#v, %v), want %s/%s", result, err, tt.wantCategory, tt.wantCode)
+			}
+			for index := 1; index < len(calls); index++ {
+				if len(calls[index-1]) >= 2 && calls[index-1][1] == "get" && len(calls[index]) >= 2 && calls[index][1] == "get" && (!sameNativeMCPCall(calls[index-1], []string{"mcp", "get", "hive"}) || !sameNativeMCPCall(calls[index-1], calls[index])) {
+					t.Fatalf("retry calls differ: %#v then %#v", calls[index-1], calls[index])
+				}
+			}
+		})
+	}
+}
+
 func TestNativeMCPReplaceUsesUnscopedGetAndUserScopedMutationsForHiveAndContext7(t *testing.T) {
 	definitions := []NativeMCPDefinition{
 		nativeMCPDefinition("hive", "hive-secret"),
 		nativeMCPDefinition("context7", "context7-secret"),
 	}
 	fake := newNativeMCPScopeFake(nil)
-	fake.addOutput = "Scope: User config"
 
 	result, err := (NativeMCPManager{run: fake.run}).Replace(definitions)
 	if err != nil || result.Phase != NativeMCPVerified || result.TargetName != "context7" {
@@ -557,7 +626,11 @@ func (f *nativeMCPScopeFake) run(_ string, args ...string) claudeCommandResult {
 		return claudeCommandResult{Started: true}
 	case "add":
 		scope, name := args[3], args[4]
-		f.servers[scope][name] = f.addOutput
+		output := f.addOutput
+		if output == "" {
+			output = teammateClaudeMCPGetOutput(name)
+		}
+		f.servers[scope][name] = output
 		f.added = true
 		return claudeCommandResult{Started: true}
 	default:
