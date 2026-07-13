@@ -665,6 +665,33 @@ func TestProductionExecutorSanitizesFilesystemAndNativeAdapterFailures(t *testin
 	}
 }
 
+func TestProductionExecutorSurfacesSafeStructuredNativeFailure(t *testing.T) {
+	executor := ProductionExecutor{reconcile: func(ReconcileInstallRequest, NativeMCPReplacer) (ReconcileInstallResult, error) {
+		return ReconcileInstallResult{Native: NativeMCPResult{
+			Phase: NativeMCPInspected, TargetName: "hive", FixedLocation: "claude --scope user",
+			ErrorCategory: "wrong-scope", ErrorCode: "project-config", Guidance: nativeMCPFixForwardGuidance,
+		}}, errors.New("Scope: Project config token=super-secret C:\\Users\\teammate")
+	}}
+	root := t.TempDir()
+	_, err := executor.Execute(ProductionReconcileInput{
+		Root: root, EvidencePath: filepath.Join(root, "state", "recovery.json"),
+		RenderedOutputs: []RenderedManagedOutput{{Identity: "jarvis-instructions", Location: "claude/CLAUDE.md", Bytes: []byte("managed")}},
+	})
+	if err == nil {
+		t.Fatal("Execute() error = nil, want structured native failure")
+	}
+	for _, want := range []string{"phase=inspected", "target=hive", "error=wrong-scope/project-config"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Execute() error = %v, want %q", err, want)
+		}
+	}
+	for _, forbidden := range []string{"super-secret", `C:\Users`, "Scope: Project config"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("Execute() error leaked %q: %v", forbidden, err)
+		}
+	}
+}
+
 func TestProductionExecutorBuildsManagedStorePlanAndSkipsNativeWithoutClaude(t *testing.T) {
 	root := t.TempDir()
 	evidencePath := filepath.Join(root, "state", "recovery.json")

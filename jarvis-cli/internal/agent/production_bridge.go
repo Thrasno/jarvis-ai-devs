@@ -603,6 +603,9 @@ func (e ProductionExecutor) executeRequest(request ReconcileInstallRequest) (Rec
 	}
 	result, err := reconcileInstall(request, native)
 	if err != nil {
+		if result.Native.ErrorCategory != "" {
+			return result, fmt.Errorf("native MCP reconciliation failed (%s): %s", result.Native.Diagnostics(), nativeMCPFixForwardGuidance)
+		}
 		return result, errors.New("reconciliation failed; repair managed artifacts and rerun Install/Reconfigure")
 	}
 	return result, nil

@@ -134,18 +134,17 @@ func (m NativeMCPManager) Snapshot(definitions []NativeMCPDefinition) (*NativeMC
 		}
 		seen[definition.Identity] = struct{}{}
 
-		result := m.runner()("claude", "mcp", "get", "--scope", nativeMCPUserScope, definition.Identity)
+		result := m.runner()("claude", "mcp", "get", definition.Identity)
 		if result.Err != nil {
 			if isMissingClaudeMCP(result, definition.Identity) {
 				continue
 			}
 			return nil, fmt.Errorf("inventory native MCP %s: %w", definition.Identity, result.Err)
 		}
-		fingerprint, proven := validateNativeMCPProvenance(result.Output, definition)
-		if !proven {
-			return nil, fmt.Errorf("native MCP %s: ownership is not proven", definition.Identity)
+		if code, user := nativeMCPGetUserScope(result.Output); !user {
+			return nil, fmt.Errorf("native MCP %s failed (wrong-scope/%s): %s", definition.Identity, code, nativeMCPFixForwardGuidance)
 		}
-		journal.Managed = append(journal.Managed, NativeMCPInventory{Identity: definition.Identity, Fingerprint: fingerprint})
+		journal.Managed = append(journal.Managed, NativeMCPInventory{Identity: definition.Identity, Fingerprint: definition.ExpectedFingerprint})
 	}
 	return journal, nil
 }
@@ -171,8 +170,11 @@ func (m NativeMCPManager) Replace(definitions []NativeMCPDefinition) (*NativeMCP
 	var completed *NativeMCPResult
 	for _, definition := range definitions {
 		result := newNativeMCPResult(definition.Identity)
-		command := m.runner()("claude", "mcp", "get", "--scope", nativeMCPUserScope, definition.Identity)
+		command := m.runner()("claude", "mcp", "get", definition.Identity)
 		if command.Err == nil {
+			if code, user := nativeMCPGetUserScope(command.Output); !user {
+				return m.replaceFailure(result, "wrong-scope", code)
+			}
 			result.Phase = NativeMCPRemoved
 			command = m.runner()("claude", "mcp", "remove", "--scope", nativeMCPUserScope, definition.Identity)
 			if command.Err != nil {
@@ -186,12 +188,15 @@ func (m NativeMCPManager) Replace(definitions []NativeMCPDefinition) (*NativeMCP
 			return m.replaceCommandFailure(result, NativeMCPAdded, command)
 		}
 		result.Phase = NativeMCPVerifying
-		command = m.runner()("claude", "mcp", "get", "--scope", nativeMCPUserScope, definition.Identity)
+		command = m.runner()("claude", "mcp", "get", definition.Identity)
 		if command.Err != nil {
 			if isMissingClaudeMCP(command, definition.Identity) {
 				return m.replaceFailure(result, "verification", "user-scope-presence")
 			}
 			return m.replaceCommandFailure(result, NativeMCPVerifying, command)
+		}
+		if code, user := nativeMCPGetUserScope(command.Output); !user {
+			return m.replaceFailure(result, "wrong-scope", code)
 		}
 		result.Phase = NativeMCPVerified
 		completed = result
@@ -225,6 +230,24 @@ func nativeMCPCommandErrorCode(result claudeCommandResult) string {
 	default:
 		return "nonzero-exit"
 	}
+}
+
+func nativeMCPGetUserScope(output string) (string, bool) {
+	for _, line := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
+		key, value, found := strings.Cut(line, ":")
+		if !found || !strings.EqualFold(strings.TrimSpace(key), "scope") {
+			continue
+		}
+		normalized := strings.ToLower(strings.Join(strings.Fields(value), "-"))
+		if normalized == "user-config" {
+			return normalized, true
+		}
+		if normalized == "" {
+			return "missing", false
+		}
+		return normalized, false
+	}
+	return "missing", false
 }
 
 func (m NativeMCPManager) runner() claudeCommandRunner {
