@@ -130,22 +130,27 @@ func TestRenderV2PresentationKeepsPolicyOutOfPresentationSurfaces(t *testing.T) 
 	tests := []struct {
 		name         string
 		content      string
-		wantLanguage string
 		wantRegister string
+		wantBehavior string
+		boundDialect bool
 	}{
 		{
-			name:         "plain technical presentation",
+			name:         "portable technical presentation",
 			content:      validPresetV2,
-			wantLanguage: "- Language: en-us",
 			wantRegister: "- Register: friendly-professional",
+			wantBehavior: "- Portability: this character and its register apply in whatever language the user writes; the reply always follows the user's language.",
+			boundDialect: false,
 		},
 		{
-			name: "rioplatense presentation",
-			content: strings.ReplaceAll(
-				strings.ReplaceAll(validPresetV2, "language: en-us", "language: es-rioplatense"),
-				"register: friendly-professional", "register: warm-direct"),
-			wantLanguage: "- Language: Rioplatense Spanish (voseo)",
+			name: "bound rioplatense presentation",
+			content: strings.NewReplacer(
+				"language: en-us", "language: es-rioplatense",
+				"register: friendly-professional", "register: warm-direct",
+				"vocabulary: plain-technical", "vocabulary: rioplatense",
+			).Replace(validPresetV2),
 			wantRegister: "- Register: warm, energetic, and direct",
+			wantBehavior: "- Dialect gating: the Rioplatense Spanish (voseo) dialect layer",
+			boundDialect: true,
 		},
 	}
 
@@ -157,10 +162,19 @@ func TestRenderV2PresentationKeepsPolicyOutOfPresentationSurfaces(t *testing.T) 
 			}
 
 			layer2 := RenderLayer2(preset)
-			for _, want := range []string{"## Persona: CustomMentor", "### Presentation", tt.wantLanguage, tt.wantRegister} {
+			for _, want := range []string{"## Persona: CustomMentor", "### Presentation", "### Language Behavior", tt.wantRegister, tt.wantBehavior} {
 				if !strings.Contains(layer2, want) {
 					t.Fatalf("RenderLayer2() missing %q\n%s", want, layer2)
 				}
+			}
+			if strings.Contains(layer2, "- Language:") {
+				t.Fatalf("RenderLayer2() must not emit legacy language bullet\n%s", layer2)
+			}
+			if tt.boundDialect && !strings.Contains(layer2, "- Dialect gating:") {
+				t.Fatalf("RenderLayer2() missing dialect-gating clause for bound preset\n%s", layer2)
+			}
+			if !tt.boundDialect && strings.Contains(layer2, "- Dialect gating:") {
+				t.Fatalf("RenderLayer2() must not gate dialect for portable preset\n%s", layer2)
 			}
 			for _, forbidden := range []string{"Persona Scope (CRITICAL)", "Always propose alternatives with tradeoffs", "Technical Behavior"} {
 				if strings.Contains(layer2, forbidden) {
@@ -169,8 +183,8 @@ func TestRenderV2PresentationKeepsPolicyOutOfPresentationSurfaces(t *testing.T) 
 			}
 
 			outputStyle := RenderOutputStyle(preset)
-			if !strings.Contains(outputStyle, "keep-coding-instructions: true") || !strings.Contains(outputStyle, tt.wantLanguage) {
-				t.Fatalf("RenderOutputStyle() = %q, want frontmatter and presentation", outputStyle)
+			if !strings.Contains(outputStyle, "keep-coding-instructions: true") || !strings.Contains(outputStyle, tt.wantBehavior) {
+				t.Fatalf("RenderOutputStyle() = %q, want frontmatter and language behavior", outputStyle)
 			}
 			for _, forbidden := range []string{"Persona Scope (CRITICAL)", "Always propose alternatives with tradeoffs", "Technical Behavior"} {
 				if strings.Contains(outputStyle, forbidden) {
@@ -187,6 +201,7 @@ func TestArgentinePresentationKeepsSharedLayer1OutOfRenderedSurfaces(t *testing.
 		"display_name: Custom Mentor", "display_name: Argentino",
 		"language: en-us", "language: es-rioplatense",
 		"register: friendly-professional", "register: warm-direct",
+		"vocabulary: plain-technical", "vocabulary: rioplatense",
 	).Replace(validPresetV2)
 	preset, err := ValidateAndDecode([]byte(content))
 	if err != nil {
@@ -198,8 +213,8 @@ func TestArgentinePresentationKeepsSharedLayer1OutOfRenderedSurfaces(t *testing.
 		"Claude output style": RenderOutputStyle(preset),
 	} {
 		t.Run(surface, func(t *testing.T) {
-			if !strings.Contains(rendered, "- Language: Rioplatense Spanish (voseo)") {
-				t.Fatalf("%s missing Argentine presentation:\n%s", surface, rendered)
+			if !strings.Contains(rendered, "- Dialect gating: the Rioplatense Spanish (voseo) dialect layer") {
+				t.Fatalf("%s missing Argentine dialect-gating clause:\n%s", surface, rendered)
 			}
 			for _, policy := range []string{"CONCEPTS > CODE", "AI IS A TOOL", "Technical Behavior"} {
 				if strings.Contains(rendered, policy) {
@@ -217,7 +232,7 @@ func TestRenderV2PresentationRendersEverySelectedTrait(t *testing.T) {
 	}
 
 	wantTraits := []string{
-		"- Language: en-us",
+		"- Portability: this character and its register apply in whatever language the user writes; the reply always follows the user's language.",
 		"- Register: friendly-professional",
 		"- Vocabulary: plain-technical",
 		"- Cadence: measured",

@@ -126,7 +126,7 @@ func TestClaudeAgent_WriteOutputStyle_WritesPresentation(t *testing.T) {
 	if !strings.Contains(contentStr, "keep-coding-instructions: true") {
 		t.Errorf("output-style file missing keep-coding-instructions, got:\n%s", contentStr)
 	}
-	if !strings.Contains(contentStr, "- Language: Rioplatense Spanish (voseo)") {
+	if !strings.Contains(contentStr, "- Dialect gating: the Rioplatense Spanish (voseo) dialect layer") {
 		t.Errorf("output-style file missing V2 presentation content, got:\n%s", contentStr)
 	}
 }

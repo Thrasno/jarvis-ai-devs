@@ -220,6 +220,34 @@ func TestTechnicalContract_QualifiesUnavailableAuthoritativeInspection(t *testin
 	}
 }
 
+func TestTechnicalContract_DefinesSupremacyClauseWithEnumeratedRules(t *testing.T) {
+	contract := TechnicalContractContent()
+	for _, required := range []string{
+		"## Contract Supremacy",
+		"absolute precedence",
+		"Verify claims with evidence before asserting",
+		"Distinguish confirmed facts from assumptions",
+		"Ask one focused clarifying question when blocked",
+		"styles delivery only",
+	} {
+		if !strings.Contains(contract, required) {
+			t.Fatalf("technical contract missing supremacy element %q", required)
+		}
+	}
+}
+
+func TestTechnicalContract_DefinesAuthoritativeReplyLanguageRule(t *testing.T) {
+	contract := TechnicalContractContent()
+	for _, required := range []string{
+		"## Reply Language",
+		"Reply in the language the user writes in",
+	} {
+		if !strings.Contains(contract, required) {
+			t.Fatalf("technical contract missing reply-language element %q", required)
+		}
+	}
+}
+
 func TestProjectInstruction_SeparatesLayer1AndLayer2(t *testing.T) {
 	projection, err := ProjectInstruction("<!-- JARVIS:LAYER1:START -->\npolicy\n<!-- JARVIS:LAYER1:END -->\n<!-- JARVIS:LAYER2:START -->\npresentation\n<!-- JARVIS:LAYER2:END -->")
 	if err != nil {

@@ -96,27 +96,91 @@ func renderPresentation(preset *Profile, outputStyle bool) string {
 		sb.WriteString("keep-coding-instructions: true\n---\n\n")
 	}
 
+	p := preset.Presentation
 	fmt.Fprintf(&sb, "## Persona: %s\n\n", toTitleCase(preset.Name))
 	sb.WriteString("### Presentation\n")
-	fmt.Fprintf(&sb, "- Language: %s\n", presentationLanguage(preset.Presentation.Language))
-	fmt.Fprintf(&sb, "- Register: %s\n", presentationRegister(preset.Presentation.Register))
-	fmt.Fprintf(&sb, "- Vocabulary: %s\n", preset.Presentation.Vocabulary)
-	fmt.Fprintf(&sb, "- Cadence: %s\n", preset.Presentation.Cadence)
-	fmt.Fprintf(&sb, "- Humor: %s\n", preset.Presentation.Humor)
-	fmt.Fprintf(&sb, "- Emotional range: %s\n", preset.Presentation.EmotionalRange)
-	fmt.Fprintf(&sb, "- Verbosity: %s\n", preset.Presentation.Verbosity)
-	fmt.Fprintf(&sb, "- Formatting: %s\n", preset.Presentation.Formatting)
-	fmt.Fprintf(&sb, "- Teaching metaphors: %s\n", preset.Presentation.TeachingMetaphors)
-	fmt.Fprintf(&sb, "- Examples: %s\n", preset.Presentation.Examples)
-	fmt.Fprintf(&sb, "- Address pack: %s\n", preset.Presentation.AddressPack)
-	fmt.Fprintf(&sb, "- Phrase pack: %s\n", preset.Presentation.PhrasePack)
-	fmt.Fprintf(&sb, "- Anti-caricature: %s\n", preset.Presentation.AntiCaricature)
+	fmt.Fprintf(&sb, "- Register: %s\n", presentationRegister(p.Register))
+	fmt.Fprintf(&sb, "- Vocabulary: %s\n", proseFor(vocabularyProse, p.Vocabulary))
+	fmt.Fprintf(&sb, "- Cadence: %s\n", p.Cadence)
+	fmt.Fprintf(&sb, "- Humor: %s\n", proseFor(humorProse, p.Humor))
+	fmt.Fprintf(&sb, "- Emotional range: %s\n", p.EmotionalRange)
+	fmt.Fprintf(&sb, "- Verbosity: %s\n", p.Verbosity)
+	fmt.Fprintf(&sb, "- Formatting: %s\n", p.Formatting)
+	fmt.Fprintf(&sb, "- Teaching metaphors: %s\n", p.TeachingMetaphors)
+	fmt.Fprintf(&sb, "- Examples: %s\n", p.Examples)
+	fmt.Fprintf(&sb, "- Address pack: %s\n", proseFor(addressPackProse, p.AddressPack))
+	fmt.Fprintf(&sb, "- Phrase pack: %s\n", proseFor(phrasePackProse, p.PhrasePack))
+	fmt.Fprintf(&sb, "- Anti-caricature: %s\n", proseFor(antiCaricatureProse, p.AntiCaricature))
+
+	sb.WriteString("\n### Language Behavior\n")
+	sb.WriteString("- Portability: this character and its register apply in whatever language the user writes; the reply always follows the user's language.\n")
+	if isBoundDialect(p) {
+		native := presentationLanguage(p.Language)
+		fmt.Fprintf(&sb, "- Dialect gating: the %s dialect layer (regional vocabulary and phrasing) applies only when replying in %s. In any other language, drop only the dialect markers and keep the register and the Layer 1 mentor approach — never collapse into a generic, character-less voice.\n", native, native)
+	}
 	return sb.String()
 }
 
+// regionalLanguages are the regional Spanish variants whose personas carry a
+// gated dialect layer (voseo, Asturian, Galician) rather than a portable voice.
+var regionalLanguages = map[string]struct{}{
+	"es-rioplatense": {},
+	"es-asturian":    {},
+	"es-galician":    {},
+}
+
+// regionalPacks are the vocabulary/phrase/address pack IDs that encode a
+// specific regional dialect. A persona is bound only when its regional language
+// is paired with at least one regional pack; regional language plus generic
+// packs stays portable.
+var regionalPacks = map[string]struct{}{
+	"rioplatense": {},
+	"asturian":    {},
+	"galician":    {},
+}
+
+// isBoundDialect classifies a presentation as dialect-bound (true) or portable
+// (false) using only the in-memory Presentation struct — no schema/YAML field.
+func isBoundDialect(p Presentation) bool {
+	if _, ok := regionalLanguages[p.Language]; !ok {
+		return false
+	}
+	for _, pack := range []string{p.Vocabulary, p.PhrasePack, p.AddressPack} {
+		if _, ok := regionalPacks[pack]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// proseFor resolves a presentation enum ID to its human-readable prose. Prose
+// maps ship empty in this change, so every value falls back to its raw enum ID
+// and never renders empty.
+func proseFor(table map[string]string, id string) string {
+	if prose, ok := table[id]; ok && strings.TrimSpace(prose) != "" {
+		return prose
+	}
+	return id
+}
+
+// Renderer-owned prose maps. Empty for now: each presentation value falls back
+// to its raw enum ID via proseFor until human-readable prose is added here.
+var (
+	vocabularyProse     = map[string]string{}
+	humorProse          = map[string]string{}
+	phrasePackProse     = map[string]string{}
+	addressPackProse    = map[string]string{}
+	antiCaricatureProse = map[string]string{}
+)
+
 func presentationLanguage(language string) string {
-	if language == "es-rioplatense" {
+	switch language {
+	case "es-rioplatense":
 		return "Rioplatense Spanish (voseo)"
+	case "es-asturian":
+		return "Asturian"
+	case "es-galician":
+		return "Galician"
 	}
 	return language
 }
