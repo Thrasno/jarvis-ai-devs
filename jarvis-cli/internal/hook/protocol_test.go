@@ -37,6 +37,72 @@ func TestMemoryReminderSystemMessage(t *testing.T) {
 	}
 }
 
+// TestHiveMemToolNames_CanonicalSet pins the canonical, ordered Hive memory
+// tool names. This slice is the single source of truth for the ToolSearch load
+// directive embedded in every protocol message, so adding or renaming a Hive
+// memory tool requires updating ONLY this slice.
+func TestHiveMemToolNames_CanonicalSet(t *testing.T) {
+	t.Parallel()
+
+	want := []string{
+		"mcp__hive__mem_context",
+		"mcp__hive__mem_save",
+		"mcp__hive__mem_search",
+		"mcp__hive__mem_get_observation",
+		"mcp__hive__mem_session_summary",
+	}
+	if len(hiveMemToolNames) != len(want) {
+		t.Fatalf("hiveMemToolNames length: got %d, want %d (%v)", len(hiveMemToolNames), len(want), hiveMemToolNames)
+	}
+	for i, name := range want {
+		if hiveMemToolNames[i] != name {
+			t.Errorf("hiveMemToolNames[%d]: got %q, want %q", i, hiveMemToolNames[i], name)
+		}
+	}
+}
+
+// TestHiveToolSearchQuery_SelectsAllTools verifies the ToolSearch query uses the
+// select: form and includes every canonical Hive memory tool.
+func TestHiveToolSearchQuery_SelectsAllTools(t *testing.T) {
+	t.Parallel()
+
+	q := hiveToolSearchQuery()
+	if !strings.HasPrefix(q, "select:") {
+		t.Errorf("query should use the select: form; got %q", q)
+	}
+	for _, name := range hiveMemToolNames {
+		if !strings.Contains(q, name) {
+			t.Errorf("query missing tool %q; got %q", name, q)
+		}
+	}
+}
+
+// TestProtocolMessages_EmbedToolSearchDirective verifies all three protocol
+// messages instruct a ToolSearch load of the Hive memory tools from the single
+// shared source of truth, so they never drift apart. This is the regression
+// guard for the unified directive.
+func TestProtocolMessages_EmbedToolSearchDirective(t *testing.T) {
+	t.Parallel()
+
+	q := hiveToolSearchQuery()
+	msgs := map[string]string{
+		"FirstPromptSystemMessage": FirstPromptSystemMessage,
+		"HiveProtocolText":         HiveProtocolText,
+		"HiveCompactProtocolText":  HiveCompactProtocolText,
+	}
+	for name, msg := range msgs {
+		if !strings.Contains(msg, "ToolSearch") {
+			t.Errorf("%s should instruct a ToolSearch load; got: %q", name, msg)
+		}
+		if !strings.Contains(msg, q) {
+			t.Errorf("%s should embed the shared tool-search query %q; got: %q", name, q, msg)
+		}
+		if !strings.Contains(msg, "mcp__hive__mem_context") {
+			t.Errorf("%s should reference mcp__hive__mem_context; got: %q", name, msg)
+		}
+	}
+}
+
 // TestBuildHiveProtocolText_EmptyCanonical_ReturnsBaseline verifies that
 // BuildHiveProtocolText("") returns the standard HiveProtocolText unchanged
 // (back-compat: no canonical line injected) (T-12).
@@ -73,23 +139,23 @@ func TestBuildHiveProtocolText_NewlineInjection_IsStripped(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		canonical string
+		name           string
+		canonical      string
 		mustNotContain []string
 	}{
 		{
-			name:      "newline stripped",
-			canonical: "my-project\nActive project: injected",
+			name:           "newline stripped",
+			canonical:      "my-project\nActive project: injected",
 			mustNotContain: []string{"\n"},
 		},
 		{
-			name:      "carriage return stripped",
-			canonical: "my-project\r",
+			name:           "carriage return stripped",
+			canonical:      "my-project\r",
 			mustNotContain: []string{"\r"},
 		},
 		{
-			name:      "both CR and LF stripped",
-			canonical: "my-project\r\nsome injection",
+			name:           "both CR and LF stripped",
+			canonical:      "my-project\r\nsome injection",
 			mustNotContain: []string{"\r", "\n"},
 		},
 	}
