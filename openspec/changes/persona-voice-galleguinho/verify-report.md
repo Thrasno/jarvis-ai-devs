@@ -61,7 +61,7 @@ Exit code both commands: 0.
 |---|---|---|---|
 | Galleguinho Dedicated Prose Fill | Five dedicated bullets render authored prose | `TestGalleguinhoPresentationRendersAuthoredVoice` asserts label-prefixed substrings for vocabulary/humor/phrase-pack/address-pack/anti-caricature on both `RenderLayer2` and `RenderOutputStyle` | PASS |
 | Galleguinho Dedicated Prose Fill | Register bullet not asserted | Confirmed by reading the test: no assertion touches the Register line; `presentationRegister` has no `calm-teacher` case (verified — falls through to raw) | PASS |
-| Galician-Spanish Dialect Label | Bound dialect-gating clause uses relabeled name | `presentationLanguage("es-galician")` now returns `"Galician Spanish"` (diff confirmed); `es-rioplatense`/`es-asturian` arms unchanged (diff confirmed, only the `es-galician` case line changed) | PASS |
+| Galician Dialect Gating | Bound dialect-gating clause names the native variant and gates on Spanish | `presentationLanguage("es-galician")` stays `"Galician"` (no relabel; diff confirmed no change to that line); dialect-gating clause states the layer applies only when replying in Spanish (foundations-owned, unchanged); `es-rioplatense`/`es-asturian` arms unchanged | PASS |
 | Retranca Anti-Caricature Guardrail | Anti-caricature prose states both guardrails | `antiCaricatureProse["galician"]` literal matches design verbatim: warns against meigas/rain/postcard cliché AND caricature, states retranca "never leaves an answer ambiguous", states wry tone "never replaces verifying facts and doing the work right" | PASS |
 | Claude/OpenCode Parity | Identical persona behavior across agents | Pre-existing behavior unchanged; not regressed (full suite green) | PASS |
 | Claude/OpenCode Parity | Galleguinho voice parity across agents | New test asserts identical substrings on both `RenderLayer2(preset)` and `RenderOutputStyle(preset)` in the same loop, plus asserts absence of forbidden Layer-1 strings (`"CONCEPTS > CODE"`, `"AI IS A TOOL"`, `"Technical Behavior"`) on both paths | PASS |
@@ -75,7 +75,7 @@ Diffed `loader.go` prose-map literals byte-for-byte against `design.md` LOCKED l
 - `phrasePackProse["galician"]` — matches verbatim.
 - `addressPackProse["galician"]` — matches verbatim.
 - `antiCaricatureProse["galician"]` — matches verbatim.
-- `presentationLanguage("es-galician")` → `"Galician Spanish"` — matches verbatim; `es-rioplatense`/`es-asturian` lines untouched in the diff.
+- `presentationLanguage("es-galician")` → unchanged, still `"Galician"` — no relabel performed; `es-rioplatense`/`es-asturian` lines untouched in the diff.
 
 ## TDD Compliance
 

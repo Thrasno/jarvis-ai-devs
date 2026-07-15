@@ -8,9 +8,9 @@ Galleguinho (persona 6/6, last regional/BOUND) ships with empty foundations pros
 
 ### In Scope
 - Fill 5 DEDICATED foundations prose maps in `loader.go` with the locked literals: `humorProse["retranca"]`, `vocabularyProse["galician"]`, `phrasePackProse["galician"]`, `addressPackProse["galician"]`, `antiCaricatureProse["galician"]`.
-- Relabel `presentationLanguage("es-galician")` from "Galician" to "Galician Spanish" (Option A — Galician-flavored Spanish, parallels Argentino voseo + Asturiano).
-- Update the existing foundations test `TestBoundDialectClauseUsesReadableLanguageName`: galleguinho arm "Galician" → "Galician Spanish".
-- New RED test asserting the 5 dedicated bullets render authored prose and dialect-gating uses "Galician Spanish".
+- No relabel of `presentationLanguage("es-galician")` — it stays "Galician"; the dialect-gating clause (foundations-owned) already states the layer applies only when replying in Spanish.
+- No change to the existing foundations test `TestBoundDialectClauseUsesReadableLanguageName`: galleguinho arm stays "Galician".
+- New RED test asserting the 5 dedicated bullets render authored prose and dialect-gating names "Galician" and states it applies only when replying in Spanish.
 
 ### Out of Scope
 - Register `calm-teacher` arm — OWNED by the Yoda change (PR #424). Do NOT author it; do NOT assert the Register bullet (renders raw until integration).
@@ -22,11 +22,11 @@ Galleguinho (persona 6/6, last regional/BOUND) ships with empty foundations pros
 - None.
 
 ### Modified Capabilities
-- None (voice/prose-map fill + one language relabel; no spec-level requirement change).
+- None (voice/prose-map fill only; no language relabel; no spec-level requirement change).
 
 ## Approach
 
-Author verbatim locked literals into the shared single-line prose-map var declarations in `loader.go`, expanding each map with the disjoint galician/retranca keys. Relabel the es-galician case in the shared `renderPresentation` language helper. Claude + OpenCode parity via that shared helper. Strict TDD: update the one existing bound-dialect test assertion, add the RED dedicated-prose test, then fill to green.
+Author verbatim locked literals into the shared single-line prose-map var declarations in `loader.go`, expanding each map with the disjoint galician/retranca keys. No change to the es-galician case in the shared `renderPresentation` language helper — it stays "Galician". Claude + OpenCode parity via that shared helper. Strict TDD: keep the existing bound-dialect test assertion unchanged, add the RED dedicated-prose test, then fill to green.
 
 ## Product Rules
 
@@ -38,7 +38,7 @@ Author verbatim locked literals into the shared single-line prose-map var declar
 
 | Area | Impact | Description |
 |------|--------|-------------|
-| `jarvis-cli/internal/persona/loader.go` | Modified | Fill 5 prose maps; relabel es-galician language name |
+| `jarvis-cli/internal/persona/loader.go` | Modified | Fill 5 prose maps; no relabel of es-galician language name |
 | `jarvis-cli/internal/persona/v2_test.go` | Modified | Update 1 assertion; add dedicated-prose RED test |
 
 ## Risks
@@ -50,7 +50,7 @@ Author verbatim locked literals into the shared single-line prose-map var declar
 
 ## Rollback Plan
 
-Revert the two-file diff on `loader.go` + `v2_test.go`; maps return empty and es-galician label reverts to "Galician". No data migration.
+Revert the two-file diff on `loader.go` + `v2_test.go`; maps return empty. No data migration (es-galician label is untouched by this change either way).
 
 ## Dependencies
 
@@ -59,6 +59,6 @@ Revert the two-file diff on `loader.go` + `v2_test.go`; maps return empty and es
 ## Success Criteria
 
 - [ ] 5 dedicated galician/retranca bullets render authored locked prose.
-- [ ] Bound-dialect clause uses "Galician Spanish".
+- [ ] Bound-dialect clause names the native variant "Galician" and states it applies only when replying in Spanish.
 - [ ] Register bullet not asserted (calm-teacher inherited/raw).
 - [ ] `go test ./...` and `go vet ./...` pass.

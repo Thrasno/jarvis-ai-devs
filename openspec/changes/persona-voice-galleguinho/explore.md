@@ -17,11 +17,13 @@ fires for regional language + regional pack.
 - galician packs (vocabulary/phrase/address/anti-caricature): galleguinho-only → DEDICATED.
 - `dry` shared (yoda/asturiano/sargento) — out of scope, not used by galleguinho.
 
-## Modeling (Option A, consistent with Asturiano/Argentino — confirm in product round)
-Galician-flavored SPANISH. Relabel presentationLanguage("es-galician") "Galician"→"Galician
-Spanish" and update the foundations test `TestBoundDialectClauseUsesReadableLanguageName`
-(galleguinho→"Galician Spanish"). Only the es-galician arm changes here (es-asturian is on the
-asturiano branch, es-rioplatense on argentino).
+## Modeling (Option A, consistent with Asturiano/Argentino — confirmed in product round)
+Galician-flavored SPANISH. NO relabel: presentationLanguage("es-galician") stays "Galician";
+the foundations test `TestBoundDialectClauseUsesReadableLanguageName` (galleguinho) is
+unchanged. Activation is handled by the foundations dialect-gating clause, which reads "...the
+Galician dialect layer ... applies only when replying in Spanish". No arm of
+`presentationLanguage` changes for this branch (es-asturian is on the asturiano branch,
+es-rioplatense on argentino).
 
 ## Fills required (DEDICATED)
 vocabularyProse["galician"], phrasePackProse["galician"], addressPackProse["galician"],
@@ -36,13 +38,15 @@ retranca/warmth as seasoning, no meigas-postcard cliché/parody; flavor never bl
 verification. Bound: full flavor in native register, neutral fallback outside. Mentor stays Layer 1.
 
 ## Test impact
-MODIFY TestBoundDialectClauseUsesReadableLanguageName (galleguinho→"Galician Spanish"). NEW RED
-test for the 4 galician bullets + retranca humor + dialect-gating "Galician Spanish". Do NOT
-assert the Register bullet (calm-teacher inherited from Yoda).
+NO CHANGE to TestBoundDialectClauseUsesReadableLanguageName (galleguinho stays "Galician"). NEW
+RED test for the 4 galician bullets + retranca humor + dialect-gating "the Galician dialect
+layer ... applies only when replying in Spanish". Do NOT assert the Register bullet (calm-teacher
+inherited from Yoda).
 
 ## Merge-conflict surface
 Prose-map keys disjoint (galician/retranca vs others); shared var-literal block → mechanical
 union only. NO presentationRegister edit (calm-teacher is Yoda's) → no register 3-way overlap
-from this branch. presentationLanguage es-galician relabel touches shared helper + one test.
+from this branch. NO presentationLanguage relabel — es-galician arm is untouched, so no shared
+helper conflict beyond the prose-map literals.
 
 Engram artifact: `sdd/persona-voice-galleguinho/explore` (id 4519).

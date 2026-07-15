@@ -5,11 +5,15 @@
 VOICE-ONLY change. Galleguinho already renders through the Change 1 mechanism
 (`renderPresentation` → `proseFor` → empty prose maps → raw enum IDs). This
 change fills the 5 dedicated prose-map keys galleguinho consumes with
-USER-APPROVED, LOCKED literals, and relabels the `es-galician` arm of
-`presentationLanguage` so the bound-dialect clause reads naturally.
+USER-APPROVED, LOCKED literals. The `es-galician` arm of
+`presentationLanguage` is NOT relabeled — it keeps returning `"Galician"`;
+the dialect-gating clause (owned by `persona-voice-foundations`) already
+reads naturally by stating the dialect layer applies only when replying in
+Spanish.
 
-No schema/yaml change. No `presentationRegister` edit. Two source files only:
-`internal/persona/loader.go` (voice literals + one relabel) and
+No schema/yaml change. No `presentationRegister` edit. No relabel of any
+`presentationLanguage` arm. Two source files only:
+`internal/persona/loader.go` (voice literals only) and
 `internal/persona/v2_test.go` (1 assertion update + 1 new RED test). Claude
 (`RenderOutputStyle`) and OpenCode (`RenderLayer2`) share `renderPresentation`,
 so both surfaces get the voice from one edit — parity is automatic.
@@ -25,12 +29,12 @@ falls back to raw — intentionally, Yoda (PR #424) owns that arm.
 |---|---|---|
 | Where voice lives | Renderer prose maps in `loader.go` | Same mechanism Change 1 shipped; disjoint keys, no schema touch. Rejected: yaml field (violates freeze). |
 | Shared keys `"galician"` | Union of disjoint keys across regional branches | vocabulary/phrase/address/anti-caricature all key on `"galician"`; each map is independent, no collision with rioplatense/asturian. |
-| Language relabel | `"Galician"` → `"Galician Spanish"` (Option A) | Parallels "Rioplatense Spanish (voseo)"; keeps es-galician BOUND and the dialect clause readable. es-rioplatense/es-asturian arms UNCHANGED. |
+| Language label | No relabel — `presentationLanguage("es-galician")` stays `"Galician"` | The dialect-gating clause (foundations-owned) already reads naturally as "the Galician dialect layer ... applies only when replying in Spanish"; no per-language relabel is needed. es-rioplatense/es-asturian arms UNCHANGED. |
 | Register calm-teacher | OUT OF SCOPE — not authored, not asserted | Owned by Yoda PR #424; renders raw `calm-teacher` until integration. No `presentationRegister` edit here. |
 
 ## LOCKED literals (record VERBATIM — final Go)
 
-**`presentationLanguage("es-galician")`**: `return "Galician Spanish"` — readable bound-dialect label; parallels voseo/Asturian.
+**`presentationLanguage("es-galician")`**: unchanged, `return "Galician"` — the readable bound-dialect label stays "Galician"; no relabel is performed. Activation ("applies only when replying in Spanish") is handled by the foundations dialect-gating clause, not by this string.
 
 **`humorProse["retranca"]`** = `"Galician retranca — dry, indirect irony and gentle ambiguity: answer a question with a question, understate, lean on the 'haberlas, haylas' spirit. Wry and warm, never at the user's expense. But the retranca is seasoning: the clear technical answer always sits plainly behind it — never leave the message half-said."` — signature humor, always-clear guardrail baked in.
 
@@ -46,15 +50,15 @@ falls back to raw — intentionally, Yoda (PR #424) owns that arm.
 
 | File | Action | Description |
 |---|---|---|
-| `jarvis-cli/internal/persona/loader.go` | Modify | Populate 5 prose-map keys with locked literals; relabel es-galician arm to "Galician Spanish". No presentationRegister change. |
-| `jarvis-cli/internal/persona/v2_test.go` | Modify | Update galleguinho assertion (:421) "Galician" → "Galician Spanish"; add new RED authored-voice test. |
+| `jarvis-cli/internal/persona/loader.go` | Modify | Populate 5 prose-map keys with locked literals. No relabel of the es-galician arm (stays "Galician"). No presentationRegister change. |
+| `jarvis-cli/internal/persona/v2_test.go` | Modify | Galleguinho assertion (:421) stays `"Galician"` (no change needed); add new RED authored-voice test. |
 
 ## Testing Strategy (TDD — RED first)
 
 | Test | Change |
 |---|---|
-| `TestBoundDialectClauseUsesReadableLanguageName` (:421) | galleguinho `"Galician"` → `"Galician Spanish"`. Only this line changes. |
-| NEW `TestGalleguinhoPresentationRendersAuthoredVoice` | Load built-in galleguinho; assert BOTH `RenderLayer2` and `RenderOutputStyle` contain stable label-prefix substrings: `- Vocabulary: Galician-flavored Spanish`, `- Humor: Galician retranca`, `- Phrase pack: Calm, unhurried, warm phrasing with a touch of morriña`, `- Address pack: Address the user as a warm, close paisano`, `- Anti-caricature: The retranca and Galician warmth are seasoning`, `- Dialect gating: the Galician Spanish dialect layer`. Assert absence of forbidden Layer-1 strings. Do NOT assert the Register bullet. |
+| `TestBoundDialectClauseUsesReadableLanguageName` (:421) | No change — galleguinho stays `"Galician"`. |
+| NEW `TestGalleguinhoPresentationRendersAuthoredVoice` | Load built-in galleguinho; assert BOTH `RenderLayer2` and `RenderOutputStyle` contain stable label-prefix substrings: `- Vocabulary: Galician-flavored Spanish`, `- Humor: Galician retranca`, `- Phrase pack: Calm, unhurried, warm phrasing with a touch of morriña`, `- Address pack: Address the user as a warm, close paisano`, `- Anti-caricature: The retranca and Galician warmth are seasoning`, `- Dialect gating: the Galician dialect layer ... applies only when replying in Spanish`. Assert absence of forbidden Layer-1 strings. Do NOT assert the Register bullet. |
 
 No other existing assertion breaks: the 5 keys were empty (raw-ID fallback), so populating them only affects galleguinho's rendered bullets; no other persona consumes `retranca` or `galician`.
 

@@ -33,19 +33,23 @@ change fills it.
 - WHEN a test inspects the Register field
 - THEN no assertion is made about its content in this change's test suite
 
-### Requirement: Galician-Spanish Dialect Label
+### Requirement: Galician Dialect Gating
 
-The `presentationLanguage` value `es-galician` MUST render its human-readable
-language name as "Galician Spanish", not "Galician". This is the only
-language-name change made by this change; `es-rioplatense` and `es-asturian`
-labels are unaffected.
+The `presentationLanguage` value `es-galician` MUST keep its human-readable
+language name "Galician" (no relabel). This change does not alter any
+language-name output; `es-rioplatense`, `es-asturian`, and `es-galician`
+labels are unaffected. The dialect-gating clause states that the Galician
+dialect layer applies only when replying in Spanish (handled by the
+foundations gate), and drops the dialect markers — while keeping the register
+and Layer 1 mentor approach — for any other reply language.
 
-#### Scenario: Bound dialect-gating clause uses relabeled name
+#### Scenario: Bound dialect-gating clause names the native variant and gates on Spanish
 
 - GIVEN the `galleguinho` preset is rendered (bound: `es-galician` + galician
   pack)
 - WHEN the dialect-gating clause is inspected
-- THEN it names the native variant "Galician Spanish"
+- THEN it names the native variant "Galician"
+- AND it states the dialect layer applies only when replying in Spanish
 
 ### Requirement: Retranca Anti-Caricature Guardrail
 
@@ -74,12 +78,13 @@ Layer 1 content, never in `RenderOutputStyle`-only frontmatter, so that
 `RenderLayer2` (OpenCode path) and `RenderOutputStyle` (Claude path) stay
 behaviorally identical for supremacy, reply-language, portability, and
 prose-fallback content. This additionally covers the Galleguinho dedicated
-prose fill and the Galician-Spanish dialect label: both MUST render
+prose fill and the Galician dialect-gating clause: both MUST render
 identically across `RenderLayer2` and `RenderOutputStyle`, with no
 `display_name` leak and no forbidden-string invariant violated on either
 path.
 (Previously: parity scope covered only the four foundations-era behaviors;
-now explicitly extended to the Galleguinho dedicated fill and label.)
+now explicitly extended to the Galleguinho dedicated fill and dialect-gating
+clause.)
 
 #### Scenario: Identical persona behavior across agents
 
@@ -96,5 +101,6 @@ now explicitly extended to the Galleguinho dedicated fill and label.)
 - GIVEN the `galleguinho` preset rendered via `RenderLayer2` and via
   `RenderOutputStyle`
 - WHEN the five dedicated bullets and the dialect-gating clause are compared
-- THEN the authored prose and the "Galician Spanish" label are identical on
-  both paths
+- THEN the authored prose is identical on both paths, and the dialect-gating
+  clause names the native variant "Galician" and states it applies only when
+  replying in Spanish, identically on both paths
