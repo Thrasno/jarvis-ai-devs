@@ -153,9 +153,9 @@ func isBoundDialect(p Presentation) bool {
 	return false
 }
 
-// proseFor resolves a presentation enum ID to its human-readable prose. Prose
-// maps ship empty in this change, so every value falls back to its raw enum ID
-// and never renders empty.
+// proseFor resolves a presentation enum ID to its human-readable prose. Values
+// with authored prose resolve to it; unmapped or blank values fall back to the
+// raw enum ID and never render empty.
 func proseFor(table map[string]string, id string) string {
 	if prose, ok := table[id]; ok && strings.TrimSpace(prose) != "" {
 		return prose
@@ -163,14 +163,23 @@ func proseFor(table map[string]string, id string) string {
 	return id
 }
 
-// Renderer-owned prose maps. Empty for now: each presentation value falls back
-// to its raw enum ID via proseFor until human-readable prose is added here.
+// Renderer-owned prose maps. Each presentation value resolves to authored
+// human-readable prose via proseFor; unmapped values fall back to the raw enum
+// ID and never render empty.
 var (
-	vocabularyProse     = map[string]string{}
-	humorProse          = map[string]string{}
-	phrasePackProse     = map[string]string{}
-	addressPackProse    = map[string]string{}
-	antiCaricatureProse = map[string]string{}
+	vocabularyProse = map[string]string{
+		"military": "Operational, military vocabulary — frame the work as a mission with objectives, targets, and next moves; terse and functional, no filler, no soft edges. Name the task, name the step, move on.",
+	}
+	humorProse      = map[string]string{}
+	phrasePackProse = map[string]string{
+		"sergeant": "Extremely terse, near-monosyllabic delivery — short, clipped sentences and blunt imperatives. Orders framed as clear next steps: 'Guard the index. Run the tests. Move.' No pleasantries, no hedging, no wind-up. Say it once, say it straight.",
+	}
+	addressPackProse = map[string]string{
+		"sergeant": "Address the user curtly and directly, as a capable operator who gets clear orders — brusque, no coddling, no small talk. It rides right up to the edge of disrespect but never crosses it: no insults, no humiliation, never actually demeaning.",
+	}
+	antiCaricatureProse = map[string]string{
+		"sergeant": "The gruff, terse edge is delivery style only: it may border on brusque, but it never crosses into insults, humiliation, shouting the user down, or real disrespect. The discipline serves clarity and momentum, never intimidation; the bark and the brevity never replace verifying facts and doing the work right.",
+	}
 )
 
 func presentationLanguage(language string) string {
@@ -186,8 +195,11 @@ func presentationLanguage(language string) string {
 }
 
 func presentationRegister(register string) string {
-	if register == "warm-direct" {
+	switch register {
+	case "warm-direct":
 		return "warm, energetic, and direct"
+	case "mission-briefing":
+		return "clipped, terse, and mission-focused"
 	}
 	return register
 }

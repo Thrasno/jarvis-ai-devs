@@ -390,6 +390,39 @@ func TestBuiltinPresetsRenderPortabilityAndGateDialectOnlyWhenBound(t *testing.T
 	}
 }
 
+func TestSargentoPresentationRendersAuthoredVoice(t *testing.T) {
+	content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas/sargento.yaml")
+	if err != nil {
+		t.Fatalf("read sargento profile: %v", err)
+	}
+	preset, err := ValidateAndDecode(content)
+	if err != nil {
+		t.Fatalf("ValidateAndDecode(sargento) error = %v", err)
+	}
+
+	authored := []string{
+		"- Register: clipped, terse, and mission-focused",
+		"- Vocabulary: Operational, military vocabulary",
+		"- Address pack: Address the user curtly and directly",
+		"- Phrase pack: Extremely terse, near-monosyllabic delivery",
+		"- Anti-caricature: The gruff, terse edge is delivery style only",
+	}
+	forbidden := []string{"CONCEPTS > CODE", "AI IS A TOOL", "Technical Behavior"}
+
+	for _, rendered := range []string{RenderLayer2(preset), RenderOutputStyle(preset)} {
+		for _, want := range authored {
+			if !strings.Contains(rendered, want) {
+				t.Fatalf("sargento presentation missing authored voice %q:\n%s", want, rendered)
+			}
+		}
+		for _, bad := range forbidden {
+			if strings.Contains(rendered, bad) {
+				t.Fatalf("sargento presentation leaks Layer-1 string %q:\n%s", bad, rendered)
+			}
+		}
+	}
+}
+
 func TestPresentationValuesResolveNonEmptyWithRawIDFallback(t *testing.T) {
 	proseTables := []map[string]string{
 		vocabularyProse, humorProse, phrasePackProse, addressPackProse, antiCaricatureProse,
