@@ -1566,8 +1566,8 @@ func TestCatalogContract_ComplementarySkillsMatchUpstreamContract(t *testing.T) 
 				"Create Gentle AI issues with issue-first checks",
 				"Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/issue-creation/SKILL.md",
 				"adapted for Jarvis packaging",
-				"Every issue gets `status:needs-review` automatically",
-				"A maintainer MUST add `status:approved`",
+				"Inspect issue templates, configuration, labels, blank-issue policy, approval workflow, and Discussions availability",
+				"Do not hard-code a repository URL, labels, approval state, or language policy.",
 			},
 		},
 	}
@@ -1761,6 +1761,141 @@ func TestCatalogContract_GentleAIParityRunbookProtectsSourceTemplates(t *testing
 		"Accepted changes", "Jarvis source templates/assets only",
 		"Generated artifacts", "team environments", "untouched",
 	)
+}
+
+func TestCatalogContract_GentleAIV215LedgerRecordsCompleteDispositionInventory(t *testing.T) {
+	ledger := readWorkspaceAsset(t, "docs/maintenance/skill-parity-run-gentle-ai-v2.1.5.md")
+
+	for _, required := range []string{
+		"v2.1.5",
+		"0b4532b5a73c12b7347c1954ef37cb372056c914",
+		"1b5a5f59f74d3f6dab7de01c1603d5ce1b77af17",
+		"## Invokable Skills (19)",
+		"## Meta-Tooling Packages (3)",
+		"## Shared Support Files (8)",
+		"`hermes-ephemeral-delegation`",
+		"`judgment-day`",
+		"Excluded",
+		"#365",
+		"#366",
+		"#367",
+		"#363",
+		"#420",
+		"#421",
+		"#422",
+	} {
+		if !strings.Contains(ledger, required) {
+			t.Fatalf("expected v2.1.5 ledger to contain %q", required)
+		}
+	}
+
+	for _, skill := range []string{
+		"branch-pr", "chained-pr", "cognitive-doc-design", "comment-writer", "go-testing",
+		"hermes-ephemeral-delegation", "issue-creation", "judgment-day", "sdd-explore", "sdd-propose",
+		"sdd-spec", "sdd-design", "sdd-tasks", "sdd-init", "sdd-onboard", "sdd-apply", "sdd-verify",
+		"sdd-archive", "work-unit-commits", "skill-creator", "skill-improver", "skill-registry",
+		"_shared/SKILL.md", "engram-convention.md", "openspec-convention.md", "persistence-contract.md",
+		"review-ledger-contract.md", "sdd-phase-common.md", "sdd-status-contract.md", "skill-resolver.md",
+	} {
+		if !strings.Contains(ledger, "`"+skill+"`") {
+			t.Fatalf("expected v2.1.5 ledger to record %q", skill)
+		}
+	}
+}
+
+func TestCatalogContract_GentleAIV215AssetsPreserveApprovedBoundaries(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		"embed/skills/go-testing/references/examples.md",
+		"embed/skills/skill-creator/references/skill-style-guide.md",
+	} {
+		content := readEmbeddedSkillAsset(t, path)
+		if !strings.Contains(content, "gentle-ai v2.1.5 selective sync") {
+			t.Fatalf("expected %s to record the approved v2.1.5 selective sync", path)
+		}
+	}
+
+	for _, path := range []string{
+		"embed/skills/comment-writer/SKILL.md",
+		"embed/skills/issue-creation/SKILL.md",
+		"embed/skills/go-testing/SKILL.md",
+		"embed/skills/skill-creator/SKILL.md",
+	} {
+		content := readEmbeddedSkillAsset(t, path)
+		if strings.Contains(content, "Bilingual GitHub policy") {
+			t.Fatalf("expected generic asset %s not to couple to repository language policy", path)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"reviewGate", "exit-125", "semantic validity", "positive review routing",
+		"transaction, snapshot, receipt",
+	} {
+		content := readEmbeddedSkillAsset(t, "embed/skills/sdd-apply/SKILL.md")
+		if strings.Contains(strings.ToLower(content), strings.ToLower(forbidden)) {
+			t.Fatalf("expected sdd-apply not to introduce deferred authority %q", forbidden)
+		}
+	}
+
+	for _, missing := range []string{
+		"embed/skills/_shared/SKILL.md",
+		"embed/skills/_shared/review-ledger-contract.md",
+		"embed/skills/_shared/sdd-status-contract.md",
+	} {
+		if _, err := fs.Stat(jarvis.SkillsFS, missing); err == nil {
+			t.Fatalf("expected deferred shared asset %s not to be embedded", missing)
+		}
+	}
+}
+
+func TestCatalogContract_GentleAIV215GenericAssetsMatchPinnedFixtures(t *testing.T) {
+	t.Parallel()
+
+	for asset, fixture := range map[string]string{
+		"embed/skills/comment-writer/SKILL.md":                       "internal/skills/testdata/gentle-ai-v2.1.5/comment-writer.md",
+		"embed/skills/go-testing/SKILL.md":                           "internal/skills/testdata/gentle-ai-v2.1.5/go-testing.md",
+		"embed/skills/go-testing/references/examples.md":             "internal/skills/testdata/gentle-ai-v2.1.5/go-testing-examples.md",
+		"embed/skills/skill-creator/SKILL.md":                        "internal/skills/testdata/gentle-ai-v2.1.5/skill-creator.md",
+		"embed/skills/skill-creator/references/skill-style-guide.md": "internal/skills/testdata/gentle-ai-v2.1.5/skill-style-guide.md",
+	} {
+		want := readLocalOrEmbeddedAsset(t, fixture)
+		got := readEmbeddedSkillAsset(t, asset)
+		if got != want {
+			t.Fatalf("%s drifted from its pinned v2.1.5 fixture", asset)
+		}
+	}
+}
+
+func TestCatalogContract_RegistryCachePolicyIsConsistentAndDeferredAuthorityIsAbsent(t *testing.T) {
+	t.Parallel()
+
+	for _, doc := range []string{"docs/configuration.md", "docs/security-privacy.md", "docs/generated-artifacts.md"} {
+		content := readWorkspaceAsset(t, doc)
+		if !strings.Contains(strings.ToLower(content), "auto-refreshed") || !strings.Contains(strings.ToLower(content), "gitignored by default") {
+			t.Fatalf("%s must describe the registry as the canonical auto-refreshed gitignored local cache", doc)
+		}
+		if strings.Contains(content, "intended to be shared") || strings.Contains(content, "committed when the team should share") {
+			t.Fatalf("%s contradicts the local-cache policy", doc)
+		}
+	}
+
+	forbidden := []string{"reviewGate", "exit-125", "semantic-validity", "positive review routing"}
+	err := fs.WalkDir(jarvis.SkillsFS, "embed/skills", func(filePath string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(filePath, ".md") {
+			return err
+		}
+		content := strings.ToLower(readEmbeddedSkillAsset(t, filePath))
+		for _, phrase := range forbidden {
+			if strings.Contains(content, strings.ToLower(phrase)) {
+				t.Fatalf("%s imports deferred authority %q", filePath, phrase)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir(embed/skills): %v", err)
+	}
 }
 
 func TestCatalogContract_GentleAIParityRunReportTemplateCapturesRequiredDecisions(t *testing.T) {
