@@ -149,7 +149,7 @@ func TestRenderV2PresentationKeepsPolicyOutOfPresentationSurfaces(t *testing.T) 
 				"vocabulary: plain-technical", "vocabulary: rioplatense",
 			).Replace(validPresetV2),
 			wantRegister: "- Register: warm, energetic, and direct",
-			wantBehavior: "- Dialect gating: the Rioplatense Spanish (voseo) dialect layer",
+			wantBehavior: "- Dialect gating: the Rioplatense (voseo) dialect layer",
 			boundDialect: true,
 		},
 	}
@@ -213,7 +213,7 @@ func TestArgentinePresentationKeepsSharedLayer1OutOfRenderedSurfaces(t *testing.
 		"Claude output style": RenderOutputStyle(preset),
 	} {
 		t.Run(surface, func(t *testing.T) {
-			if !strings.Contains(rendered, "- Dialect gating: the Rioplatense Spanish (voseo) dialect layer") {
+			if !strings.Contains(rendered, "- Dialect gating: the Rioplatense (voseo) dialect layer") {
 				t.Fatalf("%s missing Argentine dialect-gating clause:\n%s", surface, rendered)
 			}
 			for _, policy := range []string{"CONCEPTS > CODE", "AI IS A TOOL", "Technical Behavior"} {
