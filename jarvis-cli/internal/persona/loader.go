@@ -116,41 +116,28 @@ func renderPresentation(preset *Profile, outputStyle bool) string {
 	sb.WriteString("- Portability: this character and its register apply in whatever language the user writes; the reply always follows the user's language.\n")
 	if isBoundDialect(p) {
 		native := presentationLanguage(p.Language)
-		fmt.Fprintf(&sb, "- Dialect gating: the %s dialect layer (regional vocabulary and phrasing) applies only when replying in %s. In any other language, drop only the dialect markers and keep the register and the Layer 1 mentor approach — never collapse into a generic, character-less voice.\n", native, native)
+		fmt.Fprintf(&sb, "- Dialect gating: the %s dialect layer (regional vocabulary and phrasing) applies only when replying in Spanish. In any other language, drop only the dialect markers and keep the register and the Layer 1 mentor approach — never collapse into a generic, character-less voice.\n", native)
 	}
 	return sb.String()
 }
 
-// regionalLanguages are the regional Spanish variants whose personas carry a
-// gated dialect layer (voseo, Asturian, Galician) rather than a portable voice.
-var regionalLanguages = map[string]struct{}{
-	"es-rioplatense": {},
-	"es-asturian":    {},
-	"es-galician":    {},
-}
-
-// regionalPacks are the vocabulary/phrase/address pack IDs that encode a
-// specific regional dialect. A persona is bound only when its regional language
-// is paired with at least one regional pack; regional language plus generic
-// packs stays portable.
-var regionalPacks = map[string]struct{}{
-	"rioplatense": {},
-	"asturian":    {},
-	"galician":    {},
+// regionalDialects maps each regional Spanish language to the pack ID encoding
+// its matching dialect. A persona is dialect-bound only when its language is
+// paired with its OWN regional pack (a mismatched pack stays portable).
+var regionalDialects = map[string]string{
+	"es-rioplatense": "rioplatense",
+	"es-asturian":    "asturian",
+	"es-galician":    "galician",
 }
 
 // isBoundDialect classifies a presentation as dialect-bound (true) or portable
 // (false) using only the in-memory Presentation struct — no schema/YAML field.
 func isBoundDialect(p Presentation) bool {
-	if _, ok := regionalLanguages[p.Language]; !ok {
+	pack, ok := regionalDialects[p.Language]
+	if !ok {
 		return false
 	}
-	for _, pack := range []string{p.Vocabulary, p.PhrasePack, p.AddressPack} {
-		if _, ok := regionalPacks[pack]; ok {
-			return true
-		}
-	}
-	return false
+	return p.Vocabulary == pack || p.PhrasePack == pack || p.AddressPack == pack
 }
 
 // proseFor resolves a presentation enum ID to its human-readable prose. Any
@@ -187,7 +174,7 @@ var (
 func presentationLanguage(language string) string {
 	switch language {
 	case "es-rioplatense":
-		return "Rioplatense Spanish (voseo)"
+		return "Rioplatense (voseo)"
 	case "es-asturian":
 		return "Asturian"
 	case "es-galician":
