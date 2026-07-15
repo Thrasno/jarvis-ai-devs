@@ -449,7 +449,7 @@ func TestPresentationValuesResolveNonEmptyWithRawIDFallback(t *testing.T) {
 
 func TestBoundDialectClauseUsesReadableLanguageName(t *testing.T) {
 	readable := map[string]string{
-		"argentino":   "Rioplatense Spanish (voseo)",
+		"argentino":   "Rioplatense (voseo)",
 		"asturiano":   "Asturian",
 		"galleguinho": "Galician",
 	}
@@ -489,11 +489,49 @@ func TestIsBoundDialectRequiresRegionalLanguageAndPack(t *testing.T) {
 		{"regional language + generic packs => portable", Presentation{Language: "es-rioplatense", Vocabulary: "plain-technical", PhrasePack: "plain", AddressPack: "peer"}, false},
 		{"non-regional language + regional pack => portable", Presentation{Language: "es-neutral", Vocabulary: "asturian"}, false},
 		{"neutral language + generic pack => portable", Presentation{Language: "en-us", Vocabulary: "plain-technical"}, false},
+		{"regional language + mismatched regional pack => portable", Presentation{Language: "es-rioplatense", Vocabulary: "asturian"}, false},
+		{"asturian language + mismatched regional pack => portable", Presentation{Language: "es-asturian", Vocabulary: "rioplatense"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := isBoundDialect(tc.p); got != tc.want {
 				t.Fatalf("isBoundDialect(%+v) = %v, want %v", tc.p, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBoundRegionalVoicesActivateOnlyInSpanish(t *testing.T) {
+	const activation = "applies only when replying in Spanish"
+	layerNames := map[string]string{
+		"argentino":   "the Rioplatense (voseo) dialect layer",
+		"asturiano":   "the Asturian dialect layer",
+		"galleguinho": "the Galician dialect layer",
+	}
+	rawEnums := []string{"es-rioplatense", "es-asturian", "es-galician"}
+
+	for name, layerName := range layerNames {
+		t.Run(name, func(t *testing.T) {
+			content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas/"+name+".yaml")
+			if err != nil {
+				t.Fatalf("read %s profile: %v", name, err)
+			}
+			preset, err := ValidateAndDecode(content)
+			if err != nil {
+				t.Fatalf("ValidateAndDecode(%s) error = %v", name, err)
+			}
+			for _, rendered := range []string{RenderLayer2(preset), RenderOutputStyle(preset)} {
+				if !strings.Contains(rendered, activation) {
+					t.Fatalf("%s dialect gating must activate only when replying in Spanish:\n%s", name, rendered)
+				}
+				if !strings.Contains(rendered, layerName) {
+					t.Fatalf("%s dialect gating must name layer %q:\n%s", name, layerName, rendered)
+				}
+				for _, raw := range rawEnums {
+					if strings.Contains(rendered, raw) {
+						t.Fatalf("%s rendered surface leaks raw language enum %q:\n%s", name, raw, rendered)
+					}
+				}
 			}
 		})
 	}
