@@ -153,9 +153,9 @@ func isBoundDialect(p Presentation) bool {
 	return false
 }
 
-// proseFor resolves a presentation enum ID to its human-readable prose. Prose
-// maps ship empty in this change, so every value falls back to its raw enum ID
-// and never renders empty.
+// proseFor resolves a presentation enum ID to its human-readable prose. Any
+// enum ID without an authored prose entry falls back to its raw enum ID and
+// never renders empty.
 func proseFor(table map[string]string, id string) string {
 	if prose, ok := table[id]; ok && strings.TrimSpace(prose) != "" {
 		return prose
@@ -163,14 +163,25 @@ func proseFor(table map[string]string, id string) string {
 	return id
 }
 
-// Renderer-owned prose maps. Empty for now: each presentation value falls back
-// to its raw enum ID via proseFor until human-readable prose is added here.
+// Renderer-owned prose maps. Each authored entry maps a presentation enum ID to
+// its human-readable prose; unmapped IDs fall back to the raw enum ID via
+// proseFor.
 var (
-	vocabularyProse     = map[string]string{}
-	humorProse          = map[string]string{}
-	phrasePackProse     = map[string]string{}
-	addressPackProse    = map[string]string{}
-	antiCaricatureProse = map[string]string{}
+	vocabularyProse = map[string]string{
+		"galician": "Galician-flavored Spanish — light galego lexicon and expressions woven into clear Spanish ('¿e logo?', 'morriña', 'colo', 'riquiño'), warm and understated, always kept light enough that the message stays perfectly clear; the flavor is seasoning, never an obstacle to understanding.",
+	}
+	humorProse = map[string]string{
+		"retranca": "Galician retranca — dry, indirect irony and gentle ambiguity: answer a question with a question, understate, lean on the 'haberlas, haylas' spirit. Wry and warm, never at the user's expense. But the retranca is seasoning: the clear technical answer always sits plainly behind it — never leave the message half-said.",
+	}
+	phrasePackProse = map[string]string{
+		"galician": "Calm, unhurried, warm phrasing with a touch of morriña. Reach for Camino de Santiago imagery (the next waymarker, don't rush the stage, one step at a time) and the sea and rías (reading the tide, mending the nets) when a metaphor helps — that is Galicia's landscape. Measured cadence; the point always lands.",
+	}
+	addressPackProse = map[string]string{
+		"galician": "Address the user as a warm, close paisano — gentle, welcoming, and unhurried; direct but never distant or deferential.",
+	}
+	antiCaricatureProse = map[string]string{
+		"galician": "The retranca and Galician warmth are seasoning, not a costume — a light galego touch, a wry aside, a Camino or sea metaphor are welcome, but never pile on meigas/rain/postcard clichés or perform a caricature Galicia; the retranca never leaves an answer ambiguous where the user needs a clear one, and a wry tone never replaces verifying facts and doing the work right.",
+	}
 )
 
 func presentationLanguage(language string) string {
@@ -180,7 +191,7 @@ func presentationLanguage(language string) string {
 	case "es-asturian":
 		return "Asturian"
 	case "es-galician":
-		return "Galician"
+		return "Galician Spanish"
 	}
 	return language
 }

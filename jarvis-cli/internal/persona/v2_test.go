@@ -418,7 +418,7 @@ func TestBoundDialectClauseUsesReadableLanguageName(t *testing.T) {
 	readable := map[string]string{
 		"argentino":   "Rioplatense Spanish (voseo)",
 		"asturiano":   "Asturian",
-		"galleguinho": "Galician",
+		"galleguinho": "Galician Spanish",
 	}
 	rawEnums := []string{"es-rioplatense", "es-asturian", "es-galician"}
 
@@ -443,6 +443,40 @@ func TestBoundDialectClauseUsesReadableLanguageName(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestGalleguinhoPresentationRendersAuthoredVoice(t *testing.T) {
+	content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas/galleguinho.yaml")
+	if err != nil {
+		t.Fatalf("read galleguinho profile: %v", err)
+	}
+	preset, err := ValidateAndDecode(content)
+	if err != nil {
+		t.Fatalf("ValidateAndDecode(galleguinho) error = %v", err)
+	}
+
+	wantSubstrings := []string{
+		"- Vocabulary: Galician-flavored Spanish",
+		"- Humor: Galician retranca",
+		"- Phrase pack: Calm, unhurried, warm phrasing with a touch of morriña",
+		"- Address pack: Address the user as a warm, close paisano",
+		"- Anti-caricature: The retranca and Galician warmth are seasoning",
+		"- Dialect gating: the Galician Spanish dialect layer",
+	}
+	forbidden := []string{"CONCEPTS > CODE", "AI IS A TOOL", "Technical Behavior"}
+
+	for _, rendered := range []string{RenderLayer2(preset), RenderOutputStyle(preset)} {
+		for _, want := range wantSubstrings {
+			if !strings.Contains(rendered, want) {
+				t.Fatalf("galleguinho voice missing %q:\n%s", want, rendered)
+			}
+		}
+		for _, bad := range forbidden {
+			if strings.Contains(rendered, bad) {
+				t.Fatalf("galleguinho voice must not restate Layer 1 clause %q:\n%s", bad, rendered)
+			}
+		}
 	}
 }
 
