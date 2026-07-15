@@ -8,54 +8,36 @@ Define required Hive MCP tool access, verification, regeneration guidance, and d
 
 ### Requirement: Claude Code SDD Hive Tool Grants
 
-Generated Claude Code SDD phase agents MUST explicitly allow the Hive MCP tools required to retrieve and persist SDD artifacts in Hive or hybrid artifact store modes.
+Generated Claude Code SDD phase agents MUST explicitly allow the Hive MCP tools required to retrieve and persist SDD artifacts in `hive`, `hybrid`, `openspec`, or `none` store modes, while preserving phase-specific filesystem permissions. The four-store contract MUST remain exactly `hive | openspec | hybrid | none`.
+(Previously: grants covered Hive or hybrid persistence without stating the complete four-store contract.)
 
-#### Scenario: Generated Claude agents include Hive tools
-
+#### Scenario: Generated Claude agents include bounded Hive access
 - GIVEN Claude Code SDD phase agents are generated
-- WHEN an SDD phase agent definition is rendered
-- THEN its tool allowlist MUST include the required Hive MCP memory tools
-- AND the grant MUST apply consistently to every generated SDD phase agent
-
-#### Scenario: Existing file permissions remain bounded
-
-- GIVEN Hive MCP tools are added to a Claude SDD phase agent
-- WHEN the generated agent has read-only or phase-specific filesystem permissions
-- THEN Hive memory access MUST NOT expand filesystem edit permissions
+- WHEN an agent definition is rendered
+- THEN required Hive access is present where the selected store requires it
+- AND memory access does not expand filesystem permissions
 
 ### Requirement: OpenCode SDD Hive Tool Grants
 
-Generated OpenCode SDD subagents MUST explicitly declare per-subagent Hive MCP tool access when Hive or hybrid artifact storage can require subagent memory operations.
+Generated OpenCode SDD subagents MUST expose explicit per-subagent Hive access when required, and runtime verification MUST retain grant evidence for all four store modes.
+(Previously: verification covered Hive-configured runtimes without the complete store model.)
 
-#### Scenario: Generated OpenCode subagents expose Hive tools
-
-- GIVEN OpenCode configuration is generated with SDD subagents
-- WHEN Hive MCP is configured for the runtime
-- THEN each SDD subagent MUST include explicit Hive MCP tool access using the runtime's supported tool naming or pattern semantics
-
-#### Scenario: OpenCode parser preserves grant evidence
-
-- GIVEN an existing OpenCode configuration contains generated SDD subagents
-- WHEN runtime verification parses the configuration
-- THEN the observed model MUST retain enough per-subagent grant evidence to verify Hive MCP access
+#### Scenario: Parser preserves grant evidence
+- GIVEN generated OpenCode subagents use any supported store mode
+- WHEN configuration verification parses them
+- THEN per-subagent grant evidence remains testable
+- AND `none` and `openspec` do not require Hive persistence
 
 ### Requirement: Verification and Doctor Diagnostics
 
-The verifier and doctor MUST detect missing or outdated generated SDD subagent Hive grants and SHOULD provide actionable regeneration guidance without mutating user configuration.
+Verifier and doctor MUST detect missing or outdated generated grants, report drift, and explain regeneration without mutating user configuration. Generated files MUST be treated as outputs; source templates and embedded assets remain the edit sources. `AGENTS.md.tmpl` and `CLAUDE.md.tmpl` MUST remain equivalent.
+(Previously: diagnostics required regeneration guidance but did not state source-only editing and template parity.)
 
-#### Scenario: Missing grant is reported as drift
-
-- GIVEN a generated SDD subagent is present without required Hive MCP access
-- WHEN verification or doctor checks run
-- THEN the result MUST report the missing grant as generated artifact drift
-- AND it MUST recommend rerunning `jarvis init` or the supported reconfiguration flow
-
-#### Scenario: Doctor remains read-only
-
-- GIVEN doctor detects outdated generated Claude or OpenCode artifacts
-- WHEN it reports the problem
-- THEN it MUST NOT silently rewrite user configuration
-- AND it MUST explain the regeneration action needed
+#### Scenario: Drift is actionable and read-only
+- GIVEN generated artifacts lack required grants or differ from source
+- WHEN doctor runs
+- THEN it reports drift and recommends `jarvis init` or reconfiguration
+- AND it does not rewrite user-owned files
 
 ### Requirement: Existing Install Regeneration Guidance
 
@@ -70,18 +52,33 @@ The system MUST guide existing installations to regenerate generated agent artif
 
 ### Requirement: Hive Mode Degraded Behavior
 
-Hive and hybrid SDD flows MUST fail clearly when the active runtime cannot expose required Hive MCP tools to SDD subagents; they MUST NOT silently fall back to inline artifact context.
+Hive and hybrid flows MUST fail clearly when required Hive access is unavailable and MUST NOT silently inline artifact context. Persistence MUST use Hive and preserve four-store semantics; per-phase model rows remain Go-template-owned, persona voice MUST NOT enter technical artifacts, and `.jarvis` is canonical with `.atl` read fallback.
+(Previously: degraded behavior only specified missing Hive tools and non-Hive advisory behavior.)
 
-#### Scenario: Runtime cannot expose Hive tools
+#### Scenario: Required runtime capability is absent
+- GIVEN mode is `hive` or `hybrid`
+- WHEN required Hive access is unavailable
+- THEN the phase reports the missing capability and remedy
+- AND it does not silently fall back
 
-- GIVEN artifact store mode is Hive or hybrid
-- WHEN an SDD subagent cannot access required Hive MCP tools
-- THEN the phase MUST fail with an actionable degraded-mode message
-- AND the message MUST name the missing capability and regeneration or configuration remedy
+#### Scenario: Existing install regenerates safely
+- GIVEN an older installation has generated SDD agents
+- WHEN verification evaluates it
+- THEN regeneration guidance identifies the supported flow
+- AND user-owned configuration is not clobbered
 
-#### Scenario: Non-Hive modes are unaffected
+### Requirement: Neutral Status-Core and Review Boundary
 
-- GIVEN artifact store mode does not require Hive MCP access
-- WHEN SDD phase verification runs
-- THEN missing subagent Hive MCP grants MAY be reported as advisory drift only when generated artifacts are present
-- AND the phase MUST NOT require Hive persistence behavior
+The sync MAY introduce only the minimum current-state status-core fields required by updated phases; it MUST NOT import unsupported future fields or the complete authority-bearing status contract. Executors MUST preserve negative boundaries and MUST NOT launch positive review, remediation, transaction, receipt, or authority workflows; #363 owns final routing and complete `jarvis.sdd-status`.
+
+#### Scenario: Status dependency is absent
+- GIVEN updated phases do not require status-core data
+- WHEN the sync is applied
+- THEN no status contract is added
+- AND deferred #363/#420/#421/#422 capabilities remain unimplemented
+
+#### Scenario: Executor encounters review work
+- GIVEN a phase executor reaches a review or remediation boundary
+- WHEN it continues execution
+- THEN it records the safe negative boundary
+- AND it does not invoke or implement the deferred capability
