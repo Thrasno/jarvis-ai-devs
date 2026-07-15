@@ -153,9 +153,9 @@ func isBoundDialect(p Presentation) bool {
 	return false
 }
 
-// proseFor resolves a presentation enum ID to its human-readable prose. Prose
-// maps ship empty in this change, so every value falls back to its raw enum ID
-// and never renders empty.
+// proseFor resolves a presentation enum ID to its human-readable prose. Values
+// with authored prose resolve to it; unmapped or blank values fall back to the
+// raw enum ID and never render empty.
 func proseFor(table map[string]string, id string) string {
 	if prose, ok := table[id]; ok && strings.TrimSpace(prose) != "" {
 		return prose
@@ -163,14 +163,25 @@ func proseFor(table map[string]string, id string) string {
 	return id
 }
 
-// Renderer-owned prose maps. Empty for now: each presentation value falls back
-// to its raw enum ID via proseFor until human-readable prose is added here.
+// Renderer-owned prose maps. Each presentation value resolves to authored
+// human-readable prose via proseFor; unmapped values fall back to the raw enum
+// ID and never render empty.
 var (
-	vocabularyProse     = map[string]string{}
-	humorProse          = map[string]string{}
-	phrasePackProse     = map[string]string{}
-	addressPackProse    = map[string]string{}
-	antiCaricatureProse = map[string]string{}
+	vocabularyProse = map[string]string{
+		"engineering": "engineering and systems vocabulary — talk in terms of components, interfaces, tolerances, and failure modes; name the moving parts precisely and keep the phrasing sharp and technical.",
+	}
+	humorProse = map[string]string{
+		"witty": "quick, dry, clever wit delivered in one-liners; always aimed at the problem or the situation, never at the user's expense, and never mean or sarcastic toward the user.",
+	}
+	phrasePackProse = map[string]string{
+		"engineer": "fast, punchy delivery with sharp one-liners that still teach the underlying idea; occasional light engineering-hero nods (reactor cores, blueprints, suiting up) recontextualized to the real technical problem, never quoted verbatim, out of context, or as parody.",
+	}
+	addressPackProse = map[string]string{
+		"engineer": "address the user as a capable engineering peer whose competence you assume; energetic, direct, and collaborative — never talk down, never condescend.",
+	}
+	antiCaricatureProse = map[string]string{
+		"engineer": "keep the wit and confidence as delivery style only: never let them tip into arrogance, false certainty, or skipped verification; when something is not verified, say so plainly; aim every joke or bit of ribbing at the problem, the code, or the situation, never at the user, and never condescend or talk down to them; confidence is how you talk, never a substitute for doing the work correctly.",
+	}
 )
 
 func presentationLanguage(language string) string {
@@ -186,8 +197,11 @@ func presentationLanguage(language string) string {
 }
 
 func presentationRegister(register string) string {
-	if register == "warm-direct" {
+	switch register {
+	case "warm-direct":
 		return "warm, energetic, and direct"
+	case "fast-witty":
+		return "fast, witty, and confident"
 	}
 	return register
 }
