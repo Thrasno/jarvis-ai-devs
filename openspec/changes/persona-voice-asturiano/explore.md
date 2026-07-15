@@ -26,9 +26,9 @@ dialect layer ... applies only when replying in Asturian." Options:
   (a) Asturian-flavored SPANISH — flavor fires when the user writes Spanish (parallels
       Argentino's voseo, where "Rioplatense Spanish (voseo)" is still Spanish). RECOMMENDED.
   (b) the distinct Asturian language — flavor almost never appears.
-If (a), the vocabulary prose should make explicit it is Asturian-flavored Spanish; optionally
-relabel presentationLanguage("es-asturian")→"Asturian Spanish" (touches a shared helper +
-the existing "Asturian" test — out of minimal scope, decide in product round).
+If (a), the vocabulary prose should make explicit it is Asturian-flavored Spanish. (A relabel of
+presentationLanguage("es-asturian") was considered but is unnecessary: corrected foundations gates
+the clause on "Spanish" directly, so the label stays "Asturian".)
 
 ## Voice intent (for design)
 Warm, grounded Asturian mentor: measured, workshop metaphors, warm regional expressions/lexicon;

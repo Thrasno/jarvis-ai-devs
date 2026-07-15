@@ -21,18 +21,18 @@ Claude+OpenCode parity automatically. `asturiano.yaml` already selects
 |---|---|---|
 | Prose home | 4 dedicated `asturian` keys in existing renderer maps | Matches foundations scaffolding; keyed by pack enum ID. Rejected: YAML prose field (violates schema freeze). |
 | Dialect firing model | Option A — Asturian-flavored **Spanish** | Flavor fires when replying in Spanish, parallel to Argentino voseo. Rejected: pure bable (would gate to a language users rarely write). |
-| Language label | `presentationLanguage("es-asturian")` → `"Asturian Spanish"` | Gating clause must name the language users actually reply in. Rejected: keep `"Asturian"` (implies non-Spanish, mismatched to Option A voice). |
+| Language label | `presentationLanguage("es-asturian")` stays `"Asturian"` | Corrected foundations gates the clause on "Spanish" directly, so the label only names the dialect layer. Earlier relabel reverted as redundant. |
 | Humor `dry` | Leave `humorProse` empty → renders raw ID `dry` | Out of scope (owned by Yoda PR #424). Not authored, not asserted. |
 | Register | `warm-direct` arm unchanged | Already expanded to "warm, energetic, and direct" in foundations; no new arm. |
 
 ## Exact locked literals (author VERBATIM as final Go)
 
-**`presentationLanguage`** — change ONLY the es-asturian arm; leave
+**`presentationLanguage`** — es-asturian arm stays `"Asturian"` (no relabel);
 `es-rioplatense` and `es-galician` untouched:
 
 ```go
 case "es-asturian":
-    return "Asturian Spanish"
+    return "Asturian"
 ```
 
 **`vocabularyProse["asturian"]`** — Asturian-flavored Spanish; light bable as
@@ -53,9 +53,8 @@ blocks verification:
 ## Render behavior (unchanged mechanism)
 
 - Asturiano stays **BOUND** (`es-asturian` + `asturian` packs) → dialect-gating
-  clause renders with `"Asturian Spanish"`: `- Dialect gating: the Asturian
-  Spanish dialect layer (regional vocabulary and phrasing) applies only when
-  replying in Asturian Spanish...`.
+  clause renders: `- Dialect gating: the Asturian dialect layer (regional
+  vocabulary and phrasing) applies only when replying in Spanish...`.
 - Bullets Vocabulary / Address pack / Phrase pack / Anti-caricature now render
   the locked prose instead of raw enum IDs; Humor bullet still renders raw `dry`.
 
@@ -63,15 +62,15 @@ blocks verification:
 
 | File | Action | Description |
 |---|---|---|
-| `internal/persona/loader.go` | Modify | Fill 4 `asturian` prose keys; relabel es-asturian arm to "Asturian Spanish" |
+| `internal/persona/loader.go` | Modify | Fill 4 `asturian` prose keys; es-asturian arm stays "Asturian" |
 | `internal/persona/v2_test.go` | Modify | Update `TestBoundDialectClauseUsesReadableLanguageName` asturiano expectation; add new authored-voice test |
 
 ## Testing Strategy (TDD — RED first)
 
 | Test | Change |
 |---|---|
-| `TestBoundDialectClauseUsesReadableLanguageName` (v2_test.go:420) | asturiano `readable` expectation `"Asturian"` → `"Asturian Spanish"`. `rawEnums` still asserts `es-asturian` absent — `"Asturian Spanish"` does not contain it, so it passes. RED before relabel. |
-| NEW `TestAsturianoPresentationRendersAuthoredVoice` | Load built-in `asturiano`; for BOTH `RenderLayer2` and `RenderOutputStyle` assert stable label-prefix substrings: `- Vocabulary: Asturian-flavored Spanish`, `- Phrase pack: Warm, measured phrasing with a wink of Asturian retranca`, `- Address pack: Address the user as a warm, close peer`, `- Anti-caricature: The Asturian warmth and retranca are seasoning`, and `- Dialect gating: the Asturian Spanish dialect layer`. Assert absence of forbidden Layer-1 strings (supremacy / reply-language). Do NOT assert the Humor bullet. |
+| `TestBoundDialectClauseUsesReadableLanguageName` (v2_test.go) | asturiano `readable` expectation stays `"Asturian"` (matches corrected foundations). `rawEnums` still asserts `es-asturian` absent. GREEN. |
+| NEW `TestAsturianoPresentationRendersAuthoredVoice` | Load built-in `asturiano`; for BOTH `RenderLayer2` and `RenderOutputStyle` assert stable label-prefix substrings: `- Vocabulary: Asturian-flavored Spanish`, `- Phrase pack: Warm, measured phrasing with a wink of Asturian retranca`, `- Address pack: Address the user as a warm, close peer`, `- Anti-caricature: The Asturian warmth and retranca are seasoning`, `- Dialect gating: the Asturian dialect layer`, and `applies only when replying in Spanish`. Assert absence of forbidden Layer-1 strings (supremacy / reply-language). Do NOT assert the Humor bullet. |
 
 No other existing assertion breaks: no test elsewhere asserts asturiano→"Asturian"
 (only line 420, being updated). Verify: `go test ./...` and `go vet ./...` green.

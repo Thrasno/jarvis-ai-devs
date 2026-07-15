@@ -9,7 +9,7 @@
 
 | Task | RED (test first) | GREEN (impl passes) | REFACTOR |
 |------|------------------|---------------------|----------|
-| 1.x relabel es-asturian | v2_test.go readable map "Asturian"→"Asturian Spanish"; ran focused test → FAIL as expected | loader.go presentationLanguage es-asturian arm → "Asturian Spanish"; test GREEN | Doc comments refreshed |
+| 1.x es-asturian label | v2_test.go readable map asturiano expectation stays "Asturian" (matches corrected foundations) | loader.go presentationLanguage es-asturian arm returns "Asturian"; test GREEN | Doc comments refreshed |
 | 2.x authored voice | Added TestAsturianoPresentationRendersAuthoredVoice; ran → FAIL (raw enum IDs) | 4 prose-map literals filled; test GREEN | gofmt applied |
 
 ## Work Unit Evidence
@@ -23,7 +23,7 @@
 ## Files Changed
 | File | Action | What |
 |------|--------|------|
-| `jarvis-cli/internal/persona/loader.go` | Modified | es-asturian arm → "Asturian Spanish"; filled vocabulary/phrasePack/addressPack/antiCaricature asturian prose keys; refreshed 2 stale doc comments |
+| `jarvis-cli/internal/persona/loader.go` | Modified | es-asturian arm stays "Asturian"; filled vocabulary/phrasePack/addressPack/antiCaricature asturian prose keys; refreshed 2 stale doc comments |
 | `jarvis-cli/internal/persona/v2_test.go` | Modified | Updated TestBoundDialectClauseUsesReadableLanguageName expectation; added TestAsturianoPresentationRendersAuthoredVoice |
 | `openspec/changes/persona-voice-asturiano/tasks.md` | Modified | All tasks marked [x] |
 

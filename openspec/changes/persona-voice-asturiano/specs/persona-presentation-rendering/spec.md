@@ -51,18 +51,18 @@ affirming that a lively tone never replaces verification.
 - THEN it shows authored prose forbidding regional-cliché performance and
   affirming verification is never replaced by tone
 
-### Requirement: Asturiano Native Language Name Relabel
+### Requirement: Asturiano Dialect-Gating Clause
 
-The dialect-gating clause for the `asturiano` preset MUST name the native
-Spanish variant as "Asturian Spanish", not "Asturian", so the gating clause
-reads as applying only when replying in Asturian Spanish.
+The dialect-gating clause for the `asturiano` preset MUST name the dialect
+layer "Asturian" and MUST gate activation on replying in Spanish, matching the
+corrected foundations mechanism.
 
-#### Scenario: Gating clause uses relabeled native name
+#### Scenario: Gating clause names the Asturian layer and gates on Spanish
 
 - GIVEN the `asturiano` preset is rendered
 - WHEN the dialect-gating clause is inspected
-- THEN it contains the string "Asturian Spanish"
-- AND it does NOT read as gating on the bare word "Asturian" alone
+- THEN it contains the string "- Dialect gating: the Asturian dialect layer"
+- AND it contains the string "applies only when replying in Spanish"
 
 ## MODIFIED Requirements
 
