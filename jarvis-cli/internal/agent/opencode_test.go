@@ -84,7 +84,7 @@ func TestOpenCodeAgent_WriteInstructions_ProjectsCanonicalLayer1(t *testing.T) {
 	if got := strings.Count(string(content), config.TechnicalContractContent()); got != 1 {
 		t.Fatalf("canonical technical contract count = %d, want 1", got)
 	}
-	if !strings.Contains(projection.Layer2, "- Address pack: peer") {
+	if !strings.Contains(projection.Layer2, "- Address pack: Address the user as a capable colleague") {
 		t.Fatalf("Layer2 missing V2 presentation content\n%s", projection.Layer2)
 	}
 	if strings.Contains(projection.Layer2, "Claim local configuration without inspection.") {

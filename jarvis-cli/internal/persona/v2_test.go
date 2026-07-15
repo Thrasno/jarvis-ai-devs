@@ -357,6 +357,42 @@ func TestBuiltinProfilesV2MatchPresentationMatrix(t *testing.T) {
 	}
 }
 
+func TestTonyStarkPresentationRendersAuthoredVoice(t *testing.T) {
+	content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas/tony-stark.yaml")
+	if err != nil {
+		t.Fatalf("read tony-stark profile: %v", err)
+	}
+	preset, err := ValidateAndDecode(content)
+	if err != nil {
+		t.Fatalf("ValidateAndDecode(tony-stark) error = %v", err)
+	}
+
+	wantSubstrings := []string{
+		"- Register: fast, witty, and confident",
+		"- Vocabulary: engineering and systems vocabulary",
+		"- Humor: quick, dry, clever wit",
+		"- Address pack: address the user as a capable engineering peer",
+		"- Phrase pack: fast, punchy delivery with sharp one-liners",
+		"- Anti-caricature: keep the wit and confidence as delivery style only",
+		// The anti-caricature guardrail must itself forbid condescension (spec requirement).
+		"never at the user, and never condescend or talk down to them",
+	}
+	forbidden := []string{"CONCEPTS > CODE", "AI IS A TOOL", "Technical Behavior"}
+
+	for _, rendered := range []string{RenderLayer2(preset), RenderOutputStyle(preset)} {
+		for _, want := range wantSubstrings {
+			if !strings.Contains(rendered, want) {
+				t.Fatalf("tony-stark render missing authored voice %q:\n%s", want, rendered)
+			}
+		}
+		for _, bad := range forbidden {
+			if strings.Contains(rendered, bad) {
+				t.Fatalf("tony-stark render leaks Layer-1 string %q:\n%s", bad, rendered)
+			}
+		}
+	}
+}
+
 func TestBuiltinPresetsRenderPortabilityAndGateDialectOnlyWhenBound(t *testing.T) {
 	const portabilityClause = "- Portability: this character and its register apply in whatever language the user writes; the reply always follows the user's language."
 	boundPresets := map[string]bool{
@@ -444,6 +480,43 @@ func TestPresentationValuesResolveNonEmptyWithRawIDFallback(t *testing.T) {
 	// A blank/whitespace mapping must fall back to the raw ID, never render empty.
 	if got := proseFor(map[string]string{"yoda": "   "}, "yoda"); got != "yoda" {
 		t.Fatalf("proseFor(blank, yoda) = %q, want raw-ID fallback", got)
+	}
+}
+
+func TestYodaVoiceRendersAuthoredProseOnBothSurfaces(t *testing.T) {
+	content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas/yoda.yaml")
+	if err != nil {
+		t.Fatalf("read yoda profile: %v", err)
+	}
+	preset, err := ValidateAndDecode(content)
+	if err != nil {
+		t.Fatalf("ValidateAndDecode(yoda) error = %v", err)
+	}
+
+	wantSubstrings := []string{
+		"- Register: calm, patient, and reassuring",
+		"- Vocabulary: Invert clauses for emphasis in the character's cadence",
+		"- Humor: Dry, understated humor",
+		"- Address pack: Address the user as a calm mentor guides an apprentice",
+		"- Phrase pack: Phrase things in a reflective, measured way",
+		"- Anti-caricature: Clarity beats mysticism",
+	}
+	forbiddenLayer1 := []string{"CONCEPTS > CODE", "AI IS A TOOL", "Technical Behavior"}
+
+	for surface, rendered := range map[string]string{
+		"Layer2":              RenderLayer2(preset),
+		"Claude output style": RenderOutputStyle(preset),
+	} {
+		for _, want := range wantSubstrings {
+			if !strings.Contains(rendered, want) {
+				t.Fatalf("%s missing authored yoda prose %q:\n%s", surface, want, rendered)
+			}
+		}
+		for _, forbidden := range forbiddenLayer1 {
+			if strings.Contains(rendered, forbidden) {
+				t.Fatalf("%s leaks forbidden Layer-1 string %q:\n%s", surface, forbidden, rendered)
+			}
+		}
 	}
 }
 
