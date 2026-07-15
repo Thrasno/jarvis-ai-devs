@@ -17,7 +17,7 @@ jarvis verify --provider all
 | `~/.jarvis/config.yaml` | User-level Jarvis CLI configuration. | Written by setup, reconfiguration, and supported config commands. |
 | `~/.jarvis/sync.json` | Hive API sync credentials for `hive-daemon`. | Contains secrets; do not commit. |
 | `~/.jarvis/personas/<slug>.yaml` | User-defined persona presets. | Optional. |
-| `.jarvis/skill-registry.md` | Project-local skill registry. | Intended to be committed and shared with the team. |
+| `.jarvis/skill-registry.md` | Canonical auto-refreshed project-local skill registry cache. | Gitignored by default because it may include machine-local paths; share tracked skill sources and conventions instead. `.atl/skill-registry.md` is a legacy read fallback only. Use `--no-gitignore` only when a team explicitly chooses to version the cache. |
 | `.jarvis/skills/<skill>/SKILL.md` | Project-local skill copies when installed/configured. | Treat as project workflow assets. |
 
 ## Supported `jarvis config set` keys
@@ -70,7 +70,7 @@ Generated user-machine files include Claude/OpenCode settings and injected proto
 ## Checklist
 
 - [ ] Secrets are outside the repository.
-- [ ] Project `.jarvis/skill-registry.md` is committed when the team should share skill suggestions.
+- [ ] Project skill sources and conventions are tracked; the auto-refreshed `.jarvis/skill-registry.md` cache remains gitignored unless `--no-gitignore` was explicitly chosen.
 - [ ] Generated agent files are regenerated through Jarvis, not manually patched.
 - [ ] Optional dashboard settings are only documented as active when configured.
 
