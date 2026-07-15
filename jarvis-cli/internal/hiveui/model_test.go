@@ -1699,8 +1699,11 @@ func TestUnsyncedText_Sum(t *testing.T) {
 }
 
 func TestLastSyncText_MaxValue(t *testing.T) {
-	t1 := time.Now().Add(-48 * time.Hour)
-	t2 := time.Now().Add(-24 * time.Hour)
+	// Offsets sit well inside a day bucket (not on the 24h/48h boundary) so the
+	// two separate time.Now() reads in `want` and `got` cannot straddle a bucket
+	// edge on coarse-resolution clocks (e.g. Windows). t2 stays the max.
+	t1 := time.Now().Add(-49 * time.Hour) // stable "3d ago"
+	t2 := time.Now().Add(-25 * time.Hour) // stable "2d ago"
 	snapshot := Snapshot{
 		Health: []hiveclient.Health{
 			{Project: "a", LastSuccessAt: t1},
