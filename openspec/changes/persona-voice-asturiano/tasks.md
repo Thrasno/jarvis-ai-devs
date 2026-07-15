@@ -4,7 +4,7 @@
 
 | Field | Value |
 |-------|-------|
-| Estimated changed lines | ~35-50 (4 prose literals + 1 relabel + 1 modified assertion + 1 new test) |
+| Estimated changed lines | ~35-50 (4 prose literals + 1 kept-as-is arm confirmation + 1 modified assertion + 1 new test) |
 | 400-line budget risk | Low |
 | Chained PRs recommended | No |
 | Suggested split | single PR |
@@ -20,7 +20,7 @@ Chain strategy: size-exception
 
 | Unit | Goal | Likely PR | Focused test command | Runtime harness | Rollback boundary |
 |------|------|-----------|----------------------|-----------------|-------------------|
-| 1 | Fill 4 asturian prose keys + relabel es-asturian, RED→GREEN | PR 1 (single-pr) | `go test ./internal/persona/... -run 'Asturian|BoundDialectClause'` | N/A — pure text-rendering unit test, no external runtime scenario | Revert confined to `internal/persona/loader.go` + `internal/persona/v2_test.go` |
+| 1 | Fill 4 asturian prose keys, keep es-asturian labeled "Asturian" (no relabel), RED→GREEN | PR 1 (single-pr) | `go test ./internal/persona/... -run 'Asturian|BoundDialectClause'` | N/A — pure text-rendering unit test, no external runtime scenario | Revert confined to `internal/persona/loader.go` + `internal/persona/v2_test.go` |
 
 ## Phase 1: Existing Test — Readable Language Name
 

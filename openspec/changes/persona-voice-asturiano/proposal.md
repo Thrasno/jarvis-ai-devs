@@ -2,7 +2,7 @@
 
 ## Intent
 
-Foundations (Change 1) shipped the render mechanism but the 5 prose maps ship EMPTY, so every Asturiano bullet renders its raw enum ID (e.g. "asturian") instead of a voice. Author Asturiano's VOICE — a warm Asturian-flavored-Spanish mentor (light bable, mining metaphors, sidra/retranca as seasoning) — by filling 4 dedicated `asturian` prose maps and relabeling presentationLanguage for es-asturian. Voice prose is USER-APPROVED and LOCKED.
+Foundations (Change 1) shipped the render mechanism but the 5 prose maps ship EMPTY, so every Asturiano bullet renders its raw enum ID (e.g. "asturian") instead of a voice. Author Asturiano's VOICE — a warm Asturian-flavored-Spanish mentor (light bable, mining metaphors, sidra/retranca as seasoning) — by filling 4 dedicated `asturian` prose maps. `presentationLanguage("es-asturian")` KEEPS its readable label "Asturian" (no relabel); the corrected foundations dialect-gating clause now applies only when replying in Spanish. Voice prose is USER-APPROVED and LOCKED.
 
 ## Scope
 
@@ -25,7 +25,7 @@ Foundations (Change 1) shipped the render mechanism but the 5 prose maps ship EM
 - None.
 
 ### Modified Capabilities
-- None (prose-map fill + helper relabel; no spec-level requirement change).
+- None (prose-map fill only; `presentationLanguage` unchanged, no relabel; no spec-level requirement change).
 
 ## Approach
 
@@ -42,7 +42,7 @@ Option A (user-approved): Asturian-flavored SPANISH. Voice is seasoning woven in
 
 | Area | Impact | Description |
 |------|--------|-------------|
-| `jarvis-cli/internal/persona/loader.go` | Modified | 4 dedicated `asturian` prose keys + presentationLanguage relabel (shared helper) |
+| `jarvis-cli/internal/persona/loader.go` | Modified | 4 dedicated `asturian` prose keys; `presentationLanguage` (shared helper) unchanged, no relabel |
 | `jarvis-cli/internal/persona/v2_test.go` | Modified | Update `TestBoundDialectClauseUsesReadableLanguageName`; add 4 bullet + gating assertions |
 
 ## Risks
@@ -55,7 +55,7 @@ Option A (user-approved): Asturian-flavored SPANISH. Voice is seasoning woven in
 
 ## Rollback Plan
 
-Revert the `loader.go` prose-key additions and the presentationLanguage relabel, and revert the test assertion back to "Asturian". Keys are disjoint and the diff is small; clean revert.
+Revert the `loader.go` prose-key additions (the `presentationLanguage` es-asturian arm is untouched, staying "Asturian"), and revert the test assertion back to "Asturian". Keys are disjoint and the diff is small; clean revert.
 
 ## Dependencies
 

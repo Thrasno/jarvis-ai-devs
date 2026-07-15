@@ -5,8 +5,10 @@
 Foundations (Change 1) shipped the render mechanism: 5 empty prose maps with
 raw-ID fallback via `proseFor`, the `isBoundDialect` classifier, and the
 `### Language Behavior` dialect-gating clause. This change is VOICE-ONLY: fill
-the 4 dedicated `asturian` keys with USER-APPROVED, LOCKED literals and relabel
-the `es-asturian` arm of `presentationLanguage`. No schema, no YAML, no
+the 4 dedicated `asturian` keys with USER-APPROVED, LOCKED literals. The
+`es-asturian` arm of `presentationLanguage` KEEPS its readable label
+"Asturian" (no relabel); the corrected foundations dialect-gating clause
+already applies only when replying in Spanish. No schema, no YAML, no
 generated `~/.claude/*`. Source of truth: `internal/persona/loader.go` only.
 
 Both `RenderLayer2` (OpenCode Layer-2) and `RenderOutputStyle` (Claude
@@ -82,8 +84,9 @@ classification, or process-integration boundary. Pure text rendering.
 
 ## Migration / Rollout
 
-No migration. Revert the 4 prose additions + the one-arm relabel + test edits =
-clean git revert. No schema/YAML/generated-artifact change.
+No migration. Revert the 4 prose additions + test edits = clean git revert
+(the `es-asturian` arm of `presentationLanguage` is not touched — no relabel).
+No schema/YAML/generated-artifact change.
 
 ## Open Questions
 

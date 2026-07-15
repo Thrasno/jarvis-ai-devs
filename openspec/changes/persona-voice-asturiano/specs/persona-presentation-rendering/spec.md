@@ -2,9 +2,10 @@
 
 Builds on the foundations baseline (Exhaustive Prose Fallback, Dialect-Gating
 Clause, Claude/OpenCode Parity). No schema or YAML change. Fills the 4
-dedicated `asturian` prose keys and relabels `es-asturian`'s native language
-name. Humor `dry` is out of scope (owned separately) and MUST NOT be
-asserted here.
+dedicated `asturian` prose keys; `presentationLanguage("es-asturian")` keeps
+its readable label "Asturian" (no relabel), since the corrected foundations
+dialect-gating clause now applies only when replying in Spanish. Humor `dry`
+is out of scope (owned separately) and MUST NOT be asserted here.
 
 ## ADDED Requirements
 
@@ -107,5 +108,6 @@ unmapped and continues to fall back to the raw ID.
   Layer 2 output.
 - No `display_name` value MUST leak into rendered prose.
 - `RenderLayer2` and `RenderOutputStyle` MUST render the 4 Asturiano
-  bullets and the relabeled gating clause identically (Claude/OpenCode
-  parity), per the foundations Claude/OpenCode Parity requirement.
+  bullets and the "applies only when replying in Spanish" gating clause
+  identically (Claude/OpenCode parity), per the foundations Claude/OpenCode
+  Parity requirement.

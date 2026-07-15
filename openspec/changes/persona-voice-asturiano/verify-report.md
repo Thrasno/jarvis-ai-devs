@@ -10,7 +10,7 @@
 |---|---|
 | Phase 1: RED — update existing test | ✅ complete |
 | Phase 2: RED — new authored-voice test | ✅ complete |
-| Phase 3: GREEN — fill prose maps + relabel | ✅ complete |
+| Phase 3: GREEN — fill prose maps (no relabel) | ✅ complete |
 | Phase 4: Verification | ✅ complete |
 
 All 15 tasks marked `[x]` in `openspec/changes/persona-voice-asturiano/tasks.md`; matches apply-progress.
@@ -92,7 +92,7 @@ PASS
 | Design decision | Implementation | Match |
 |---|---|---|
 | Prose home: 4 dedicated `asturian` keys in existing renderer maps | Confirmed in diff | ✅ |
-| Language label relabel: only es-asturian arm | Confirmed in diff | ✅ |
+| Language label: es-asturian arm stays "Asturian" (no relabel) | Confirmed in diff | ✅ |
 | Humor `dry` left out of scope | Confirmed — `humorProse` untouched | ✅ |
 | Register (`warm-direct`) unchanged | Confirmed | ✅ |
 | Locked literals verbatim | Byte-compared design.md literals against loader.go diff — identical | ✅ |
@@ -103,7 +103,7 @@ PASS
 | Check | Result | Details |
 |---|---|---|
 | TDD Evidence reported | ✅ | Found in apply-progress (`TDD Cycle Evidence` table, 2 rows) |
-| All tasks have tests | ✅ | 2/2 behavior changes (relabel, authored voice) have RED→GREEN evidence |
+| All tasks have tests | ✅ | 2/2 behavior changes (kept-label gating clause, authored voice) have RED→GREEN evidence |
 | RED confirmed (tests exist) | ✅ | `v2_test.go` contains both the updated existing test and the new test, verified by reading the file/diff |
 | GREEN confirmed (tests pass) | ✅ | 2/2 — confirmed by fresh re-run above |
 | Triangulation adequate | ✅ | New test asserts 5 distinct substrings × 2 render paths = 10 assertions, plus 3 negative (forbidden-string) assertions × 2 = 6; existing table-driven test covers 3 dialect cases |

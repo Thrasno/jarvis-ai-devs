@@ -18,7 +18,7 @@
 |---|---|
 | Focused test | `go test ./internal/persona/... -run 'Asturian\|BoundDialectClause'` → ok |
 | Runtime harness | N/A — pure text-rendering unit test, no runtime/shell/subprocess boundary |
-| Rollback boundary | Revert confined to loader.go + v2_test.go (4 prose literals + 1 relabel + 2 doc comments + 2 test edits) |
+| Rollback boundary | Revert confined to loader.go + v2_test.go (4 prose literals + 2 doc comments + 2 test edits; presentationLanguage untouched, no relabel) |
 
 ## Files Changed
 | File | Action | What |
@@ -35,7 +35,7 @@
 ## Constraints Honored
 - No schema/YAML change: preset_v2.go, personas/*.yaml untouched.
 - humorProse["dry"] NOT authored (Yoda owns it); Humor bullet not asserted.
-- Only es-asturian arm of presentationLanguage changed.
+- es-asturian arm of presentationLanguage kept as "Asturian" (no relabel); only its doc comment refreshed.
 - presentationRegister warm-direct arm untouched.
 - Prose is voice-only; no Layer-1 restatement leaked.
 - Claude + OpenCode parity via shared renderPresentation (both asserted).
