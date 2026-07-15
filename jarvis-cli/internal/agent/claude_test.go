@@ -129,6 +129,12 @@ func TestClaudeAgent_WriteOutputStyle_WritesPresentation(t *testing.T) {
 	if !strings.Contains(contentStr, "- Dialect gating: the Rioplatense (voseo) dialect layer") {
 		t.Errorf("output-style file missing V2 presentation content, got:\n%s", contentStr)
 	}
+	if !strings.Contains(contentStr, "- Vocabulary: When replying in Spanish, speak Rioplatense with full voseo") {
+		t.Errorf("output-style file missing Spanish-scoped Rioplatense vocabulary prose, got:\n%s", contentStr)
+	}
+	if !strings.Contains(contentStr, "Outside Spanish, drop the voseo") {
+		t.Errorf("output-style file missing out-of-Spanish dialect-drop scoping, got:\n%s", contentStr)
+	}
 }
 
 func TestClaudeAgent_WriteOutputStyle(t *testing.T) {
@@ -153,7 +159,7 @@ func TestClaudeAgent_WriteOutputStyle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read V2 output-style: %v", err)
 	}
-	for _, want := range []string{"name: CustomMentor", "keep-coding-instructions: true", "### Presentation", "- Address pack: peer"} {
+	for _, want := range []string{"name: CustomMentor", "keep-coding-instructions: true", "### Presentation", "- Address pack: Address the user as a capable colleague"} {
 		if !strings.Contains(string(content), want) {
 			t.Fatalf("V2 output-style missing %q:\n%s", want, content)
 		}
