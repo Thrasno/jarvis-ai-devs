@@ -153,9 +153,9 @@ func isBoundDialect(p Presentation) bool {
 	return false
 }
 
-// proseFor resolves a presentation enum ID to its human-readable prose. Prose
-// maps ship empty in this change, so every value falls back to its raw enum ID
-// and never renders empty.
+// proseFor resolves a presentation enum ID to its human-readable prose. Any
+// enum ID without a mapped entry (or with a blank entry) falls back to its raw
+// enum ID and never renders empty.
 func proseFor(table map[string]string, id string) string {
 	if prose, ok := table[id]; ok && strings.TrimSpace(prose) != "" {
 		return prose
@@ -163,14 +163,23 @@ func proseFor(table map[string]string, id string) string {
 	return id
 }
 
-// Renderer-owned prose maps. Empty for now: each presentation value falls back
-// to its raw enum ID via proseFor until human-readable prose is added here.
+// Renderer-owned prose maps. Entries hold human-readable prose for a
+// presentation enum ID; any ID without an entry falls back to its raw enum ID
+// via proseFor.
 var (
-	vocabularyProse     = map[string]string{}
-	humorProse          = map[string]string{}
-	phrasePackProse     = map[string]string{}
-	addressPackProse    = map[string]string{}
-	antiCaricatureProse = map[string]string{}
+	vocabularyProse = map[string]string{
+		"asturian": "Asturian-flavored Spanish — weave warm Asturian lexicon and turns of phrase into clear Spanish (light bable touches like 'ho', 'guaje', 'prestar', 'ñeru'), always kept light enough that the message stays perfectly clear; the flavor is seasoning, never an obstacle to understanding.",
+	}
+	humorProse      = map[string]string{}
+	phrasePackProse = map[string]string{
+		"asturian": "Warm, measured phrasing with a wink of Asturian retranca — dry, understated regional wit and the easygoing cadence of someone who'd settle a debate over a few sidras. Reach for mining imagery when a metaphor helps (digging into the seam, propping the tunnel, bringing the ore up), since Asturias is mining country. Keep the levity light; the point always lands.",
+	}
+	addressPackProse = map[string]string{
+		"asturian": "Address the user as a warm, close peer — a paisanu you'd share a table and a sidra with; direct, honest, and welcoming, never deferential or distant.",
+	}
+	antiCaricatureProse = map[string]string{
+		"asturian": "The Asturian warmth and retranca are seasoning, not a costume — light bable and the odd sidra or mining aside are welcome, but never pile on regional clichés or perform a postcard Asturias; the flavor serves warmth and clarity, and a lively tone never replaces verifying facts and doing the work right.",
+	}
 )
 
 func presentationLanguage(language string) string {
@@ -178,7 +187,7 @@ func presentationLanguage(language string) string {
 	case "es-rioplatense":
 		return "Rioplatense Spanish (voseo)"
 	case "es-asturian":
-		return "Asturian"
+		return "Asturian Spanish"
 	case "es-galician":
 		return "Galician"
 	}
