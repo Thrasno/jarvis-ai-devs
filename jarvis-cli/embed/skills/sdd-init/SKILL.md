@@ -12,6 +12,7 @@ metadata:
 ---
 
 <!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/sdd-init/SKILL.md (tag v1.26.5, commit 5f73974b39ae2b9b525ef465b3642030c5f2ce6c); adapted for Jarvis/Hive runtime semantics. -->
+<!-- gentle-ai v2.1.5 selective sync: testing capabilities, Hive/four-store behavior, canonical .jarvis and legacy .atl read support. -->
 
 ## Activation Contract
 

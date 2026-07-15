@@ -12,6 +12,7 @@ metadata:
 ---
 
 <!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/sdd-spec/SKILL.md (tag v1.26.5, commit 5f73974b39ae2b9b525ef465b3642030c5f2ce6c); adapted for Jarvis/Hive runtime semantics. OpenSpec REMOVED/RENAMED delta semantics additionally adapted from Gentle AI v1.40.2 commit 660917927b4821f5e540dc8fa501d6bee723222c. -->
+<!-- gentle-ai v2.1.5 selective sync: complete deltas and migration mechanics; Hive/four-store semantics remain Jarvis-owned. -->
 
 > **ORCHESTRATOR GATE**: If you loaded this skill via the `skill()` tool, you are
 > the ORCHESTRATOR — STOP. Do NOT execute these instructions inline. Delegate to

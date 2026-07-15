@@ -1,5 +1,7 @@
 # Hive Convention — topic_key and Project Field Rules
 
+<!-- gentle-ai v2.1.5 selective sync: Hive naming and automated-artifact persistence conventions. -->
+
 ## topic_key Naming Format
 
 Format: `{domain}/{identifier}` or `{domain}/{change}/{phase}`

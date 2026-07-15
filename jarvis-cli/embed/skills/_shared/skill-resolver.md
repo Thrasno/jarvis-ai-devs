@@ -1,5 +1,7 @@
 # Skill Resolver Protocol — Jarvis Version
 
+<!-- gentle-ai v2.1.5 selective sync: `.jarvis/skill-registry.md` is canonical; `.atl/skill-registry.md` is legacy read fallback. -->
+
 ## Purpose
 
 The orchestrator uses this protocol to find project-specific skills and inject exact `SKILL.md` paths into sub-agent prompts BEFORE task-specific instructions. Sub-agents read the full skill files themselves before task-specific work.

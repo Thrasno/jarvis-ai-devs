@@ -10,6 +10,7 @@ metadata:
 ---
 
 <!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/work-unit-commits/SKILL.md -->
+<!-- gentle-ai v2.1.5 selective sync: focused tests, runtime-or-N/A, rollback, and authored-line treatment only. -->
 
 ## When to Use
 
