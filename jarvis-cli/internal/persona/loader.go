@@ -178,7 +178,7 @@ func presentationLanguage(language string) string {
 	case "es-asturian":
 		return "Asturian"
 	case "es-galician":
-		return "Galician Spanish"
+		return "Galician"
 	}
 	return language
 }

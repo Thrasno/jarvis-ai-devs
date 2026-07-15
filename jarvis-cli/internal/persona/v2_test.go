@@ -418,7 +418,7 @@ func TestBoundDialectClauseUsesReadableLanguageName(t *testing.T) {
 	readable := map[string]string{
 		"argentino":   "Rioplatense (voseo)",
 		"asturiano":   "Asturian",
-		"galleguinho": "Galician Spanish",
+		"galleguinho": "Galician",
 	}
 	rawEnums := []string{"es-rioplatense", "es-asturian", "es-galician"}
 
@@ -462,7 +462,8 @@ func TestGalleguinhoPresentationRendersAuthoredVoice(t *testing.T) {
 		"- Phrase pack: Calm, unhurried, warm phrasing with a touch of morriña",
 		"- Address pack: Address the user as a warm, close paisano",
 		"- Anti-caricature: The retranca and Galician warmth are seasoning",
-		"- Dialect gating: the Galician Spanish dialect layer",
+		"- Dialect gating: the Galician dialect layer",
+		"applies only when replying in Spanish",
 	}
 	forbidden := []string{"CONCEPTS > CODE", "AI IS A TOOL", "Technical Behavior"}
 
