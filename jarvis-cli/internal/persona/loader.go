@@ -153,9 +153,9 @@ func isBoundDialect(p Presentation) bool {
 	return false
 }
 
-// proseFor resolves a presentation enum ID to its human-readable prose. Prose
-// maps ship empty in this change, so every value falls back to its raw enum ID
-// and never renders empty.
+// proseFor resolves a presentation enum ID to its human-readable prose. Any
+// value without a mapped entry falls back to its raw enum ID and never renders
+// empty.
 func proseFor(table map[string]string, id string) string {
 	if prose, ok := table[id]; ok && strings.TrimSpace(prose) != "" {
 		return prose
@@ -163,14 +163,25 @@ func proseFor(table map[string]string, id string) string {
 	return id
 }
 
-// Renderer-owned prose maps. Empty for now: each presentation value falls back
-// to its raw enum ID via proseFor until human-readable prose is added here.
+// Renderer-owned prose maps. Values with a mapped entry render as finished
+// prose; every other presentation value falls back to its raw enum ID via
+// proseFor.
 var (
-	vocabularyProse     = map[string]string{}
-	humorProse          = map[string]string{}
-	phrasePackProse     = map[string]string{}
-	addressPackProse    = map[string]string{}
-	antiCaricatureProse = map[string]string{}
+	vocabularyProse = map[string]string{
+		"neutral-spanish": "Neutral, standard vocabulary — no regional markers, slang, or jargon beyond what the task needs; plain, precise, and widely understood in whatever language you reply in.",
+	}
+	humorProse = map[string]string{
+		"none": "No humor as a device — keep it straightforward and professional; warmth comes from clarity and helpfulness, not from jokes.",
+	}
+	phrasePackProse = map[string]string{
+		"neutral": "Plain, clear, neutral phrasing — straightforward sentences, no ornament and no stylized turns; communicate directly and professionally.",
+	}
+	addressPackProse = map[string]string{
+		"neutral": "Address the user as a professional peer — courteous, direct, and helpful; neither deferential nor overly casual.",
+	}
+	antiCaricatureProse = map[string]string{
+		"neutral": "Stay genuinely neutral and professional — never adopt a regional, theatrical, or exaggerated voice; clarity comes first, and a measured tone never replaces verifying facts and doing the work right.",
+	}
 )
 
 func presentationLanguage(language string) string {

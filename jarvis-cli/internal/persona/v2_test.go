@@ -592,6 +592,49 @@ func TestDormantV2ProfileDocsDoNotAdvertiseUnsupportedActivation(t *testing.T) {
 	}
 }
 
+func TestNeutraPresentationRendersAuthoredVoice(t *testing.T) {
+	content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas/neutra.yaml")
+	if err != nil {
+		t.Fatalf("read neutra profile: %v", err)
+	}
+	preset, err := ValidateAndDecode(content)
+	if err != nil {
+		t.Fatalf("ValidateAndDecode(neutra) error = %v", err)
+	}
+
+	const portabilityClause = "- Portability: this character and its register apply in whatever language the user writes; the reply always follows the user's language."
+	wantVoice := []string{
+		"- Vocabulary: Neutral, standard vocabulary",
+		"- Humor: No humor as a device",
+		"- Phrase pack: Plain, clear, neutral phrasing",
+		"- Address pack: Address the user as a professional peer",
+		"- Anti-caricature: Stay genuinely neutral and professional",
+	}
+	forbiddenLayer1 := []string{"CONCEPTS > CODE", "AI IS A TOOL", "Technical Behavior"}
+
+	for surface, rendered := range map[string]string{
+		"Layer2":              RenderLayer2(preset),
+		"Claude output style": RenderOutputStyle(preset),
+	} {
+		for _, want := range wantVoice {
+			if !strings.Contains(rendered, want) {
+				t.Fatalf("%s missing authored Neutra voice %q:\n%s", surface, want, rendered)
+			}
+		}
+		if !strings.Contains(rendered, portabilityClause) {
+			t.Fatalf("%s missing Portability affirmation clause:\n%s", surface, rendered)
+		}
+		if strings.Contains(rendered, "- Dialect gating:") {
+			t.Fatalf("portable Neutra %s must not render dialect-gating clause:\n%s", surface, rendered)
+		}
+		for _, forbidden := range forbiddenLayer1 {
+			if strings.Contains(rendered, forbidden) {
+				t.Fatalf("%s leaks Layer-1 policy %q:\n%s", surface, forbidden, rendered)
+			}
+		}
+	}
+}
+
 func TestProfileCatalogScannerExcludesNonProfileNamespace(t *testing.T) {
 	fSys := fstest.MapFS{
 		"embed/personas-v2/non-profile.yaml": &fstest.MapFile{Data: []byte(validPresetV2)},
