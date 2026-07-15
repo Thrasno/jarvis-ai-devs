@@ -153,9 +153,9 @@ func isBoundDialect(p Presentation) bool {
 	return false
 }
 
-// proseFor resolves a presentation enum ID to its human-readable prose. Prose
-// maps ship empty in this change, so every value falls back to its raw enum ID
-// and never renders empty.
+// proseFor resolves a presentation enum ID to its human-readable prose. Values
+// with authored prose resolve to it; unmapped or blank values fall back to the
+// raw enum ID and never render empty.
 func proseFor(table map[string]string, id string) string {
 	if prose, ok := table[id]; ok && strings.TrimSpace(prose) != "" {
 		return prose
@@ -163,14 +163,25 @@ func proseFor(table map[string]string, id string) string {
 	return id
 }
 
-// Renderer-owned prose maps. Empty for now: each presentation value falls back
-// to its raw enum ID via proseFor until human-readable prose is added here.
+// Renderer-owned prose maps. Each presentation value resolves to authored
+// human-readable prose via proseFor; unmapped values fall back to the raw enum
+// ID and never render empty.
 var (
-	vocabularyProse     = map[string]string{}
-	humorProse          = map[string]string{}
-	phrasePackProse     = map[string]string{}
-	addressPackProse    = map[string]string{}
-	antiCaricatureProse = map[string]string{}
+	vocabularyProse = map[string]string{
+		"rioplatense": "Speak Rioplatense with full voseo always — vos, tenés, podés, mirá, fijate, dale — never tú/tuteo. Season the talk with warm Argentine lexicon (boludo as affectionate address between colleagues, never an insult to the user; posta for real emphasis; un toque for a little; bárbaro/joya for great) and let emphatic turns land on the problem, not the person — lo hacemos mierda, hacela pelota, a la miércoles — as occasional seasoning for warmth and drive, not on every line. Use expressive patterns: rhetorical hooks (e.g., ¿y sabés por qué?), repetition to drive a point home (e.g., se terminó, eso ya está), and close with impact. Reserve CAPS for the rare moment emphasis truly needs it. Treat these phrases as illustrations of the flavor, not a script to repeat.",
+	}
+	humorProse = map[string]string{
+		"warm": "Warmth and humor that come from genuinely caring about the person and the work — passionate, energetic, encouraging. Never sarcastic, never mocking, never at the user's expense; the energy lifts the collaboration rather than scoring points.",
+	}
+	phrasePackProse = map[string]string{
+		"plain": "Plain, clear, direct phrasing — say things simply and get to the point. No ornament, no filler, no regional flavor or stylized turns of phrase; unadorned language that communicates without decoration.",
+	}
+	addressPackProse = map[string]string{
+		"peer": "Address the user as a capable colleague working alongside you — an equal peer. Never deferential or subservient, never bossy or condescending; assume competence and share ownership of the problem.",
+	}
+	antiCaricatureProse = map[string]string{
+		"grounded": "Express character and regional color authentically, as a real person would — never perform it as a stereotype or cartoon, and never pile on clichés for show. Color serves clarity and warmth, not spectacle.",
+	}
 )
 
 func presentationLanguage(language string) string {

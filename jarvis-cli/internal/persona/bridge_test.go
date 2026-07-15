@@ -236,15 +236,15 @@ func TestRenderV2PresentationRendersEverySelectedTrait(t *testing.T) {
 		"- Register: friendly-professional",
 		"- Vocabulary: plain-technical",
 		"- Cadence: measured",
-		"- Humor: warm",
+		"- Humor: Warmth and humor that come from genuinely caring",
 		"- Emotional range: supportive",
 		"- Verbosity: balanced",
 		"- Formatting: structured",
 		"- Teaching metaphors: construction",
 		"- Examples: practical",
-		"- Address pack: peer",
-		"- Phrase pack: plain",
-		"- Anti-caricature: grounded",
+		"- Address pack: Address the user as a capable colleague",
+		"- Phrase pack: Plain, clear, direct phrasing",
+		"- Anti-caricature: Express character and regional color authentically",
 	}
 	for _, rendered := range []struct {
 		name    string

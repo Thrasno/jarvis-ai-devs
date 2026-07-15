@@ -153,7 +153,7 @@ func TestClaudeAgent_WriteOutputStyle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read V2 output-style: %v", err)
 	}
-	for _, want := range []string{"name: CustomMentor", "keep-coding-instructions: true", "### Presentation", "- Address pack: peer"} {
+	for _, want := range []string{"name: CustomMentor", "keep-coding-instructions: true", "### Presentation", "- Address pack: Address the user as a capable colleague"} {
 		if !strings.Contains(string(content), want) {
 			t.Fatalf("V2 output-style missing %q:\n%s", want, content)
 		}
