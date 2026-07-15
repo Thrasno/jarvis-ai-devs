@@ -414,6 +414,43 @@ func TestPresentationValuesResolveNonEmptyWithRawIDFallback(t *testing.T) {
 	}
 }
 
+func TestYodaVoiceRendersAuthoredProseOnBothSurfaces(t *testing.T) {
+	content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas/yoda.yaml")
+	if err != nil {
+		t.Fatalf("read yoda profile: %v", err)
+	}
+	preset, err := ValidateAndDecode(content)
+	if err != nil {
+		t.Fatalf("ValidateAndDecode(yoda) error = %v", err)
+	}
+
+	wantSubstrings := []string{
+		"- Register: calm, patient, and reassuring",
+		"- Vocabulary: Invert clauses for emphasis in the character's cadence",
+		"- Humor: Dry, understated humor",
+		"- Address pack: Address the user as a calm mentor guides an apprentice",
+		"- Phrase pack: Phrase things in a reflective, measured way",
+		"- Anti-caricature: Clarity beats mysticism",
+	}
+	forbiddenLayer1 := []string{"CONCEPTS > CODE", "AI IS A TOOL", "Technical Behavior"}
+
+	for surface, rendered := range map[string]string{
+		"Layer2":              RenderLayer2(preset),
+		"Claude output style": RenderOutputStyle(preset),
+	} {
+		for _, want := range wantSubstrings {
+			if !strings.Contains(rendered, want) {
+				t.Fatalf("%s missing authored yoda prose %q:\n%s", surface, want, rendered)
+			}
+		}
+		for _, forbidden := range forbiddenLayer1 {
+			if strings.Contains(rendered, forbidden) {
+				t.Fatalf("%s leaks forbidden Layer-1 string %q:\n%s", surface, forbidden, rendered)
+			}
+		}
+	}
+}
+
 func TestBoundDialectClauseUsesReadableLanguageName(t *testing.T) {
 	readable := map[string]string{
 		"argentino":   "Rioplatense (voseo)",
