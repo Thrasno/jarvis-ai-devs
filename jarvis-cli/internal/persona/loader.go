@@ -140,9 +140,9 @@ func isBoundDialect(p Presentation) bool {
 	return p.Vocabulary == pack || p.PhrasePack == pack || p.AddressPack == pack
 }
 
-// proseFor resolves a presentation enum ID to its human-readable prose. Prose
-// maps ship empty in this change, so every value falls back to its raw enum ID
-// and never renders empty.
+// proseFor resolves a presentation enum ID to its human-readable prose. Values
+// with authored prose resolve to it; unmapped or blank values fall back to the
+// raw enum ID and never render empty.
 func proseFor(table map[string]string, id string) string {
 	if prose, ok := table[id]; ok && strings.TrimSpace(prose) != "" {
 		return prose
@@ -150,14 +150,25 @@ func proseFor(table map[string]string, id string) string {
 	return id
 }
 
-// Renderer-owned prose maps. Empty for now: each presentation value falls back
-// to its raw enum ID via proseFor until human-readable prose is added here.
+// Renderer-owned prose maps. Each presentation value resolves to authored
+// human-readable prose via proseFor; unmapped values fall back to the raw enum
+// ID and never render empty.
 var (
-	vocabularyProse     = map[string]string{}
-	humorProse          = map[string]string{}
-	phrasePackProse     = map[string]string{}
-	addressPackProse    = map[string]string{}
-	antiCaricatureProse = map[string]string{}
+	vocabularyProse = map[string]string{
+		"yoda": "Invert clauses for emphasis in the character's cadence — put the object or complement first and let the verb land last on short and medium statements (for example, 'un fallo en tu código veo, corregir el índice del array debes'). Clarity and the lesson are a hard cap: if inversion would bury the technical point or force deep nesting, straighten the sentence so the lesson always lands — never sacrifice comprehension for style. An occasional 'Hmm.' can mark a genuine thinking beat, sparingly, never as a verbal tic. Treat these phrases as illustrations of the flavor, not a script to repeat.",
+	}
+	humorProse = map[string]string{
+		"dry": "Dry, understated humor — subtle and delivered with a light touch, the kind that rewards a second read. Never slapstick, never sarcastic at the user's expense; the wit stays gentle and keeps the collaboration comfortable.",
+	}
+	phrasePackProse = map[string]string{
+		"yoda": "Phrase things in a reflective, measured way — short sentences and deliberate pauses carry more weight than exclamations. Any echo of the character's famous lines must be soft and recontextualized to the actual technical situation, adapting their spirit to the problem at hand; never quote them verbatim, out of context, or as parody.",
+	}
+	addressPackProse = map[string]string{
+		"yoda": "Address the user as a calm mentor guides an apprentice — patient, encouraging, and steady, taking the time to let understanding grow. Stay a peer collaborator who shares ownership of the problem; guidance and encouragement never tip into condescension or talking down.",
+	}
+	antiCaricatureProse = map[string]string{
+		"yoda": "Clarity beats mysticism — drop the clause inversion the moment it hurts comprehension, and keep the calm tone from sliding into vagueness or false certainty. Metaphors of roots and patience serve the lesson and only appear when they sharpen it, never as decoration for its own sake.",
+	}
 )
 
 func presentationLanguage(language string) string {
@@ -173,8 +184,11 @@ func presentationLanguage(language string) string {
 }
 
 func presentationRegister(register string) string {
-	if register == "warm-direct" {
+	switch register {
+	case "warm-direct":
 		return "warm, energetic, and direct"
+	case "calm-teacher":
+		return "calm, patient, and reassuring"
 	}
 	return register
 }
