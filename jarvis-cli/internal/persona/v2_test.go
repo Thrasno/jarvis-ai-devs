@@ -357,6 +357,171 @@ func TestBuiltinProfilesV2MatchPresentationMatrix(t *testing.T) {
 	}
 }
 
+func TestBuiltinPresetsRenderPortabilityAndGateDialectOnlyWhenBound(t *testing.T) {
+	const portabilityClause = "- Portability: this character and its register apply in whatever language the user writes; the reply always follows the user's language."
+	boundPresets := map[string]bool{
+		"argentino": true, "asturiano": true, "galleguinho": true,
+		"neutra": false, "yoda": false, "sargento": false, "tony-stark": false,
+	}
+
+	for name, bound := range boundPresets {
+		t.Run(name, func(t *testing.T) {
+			content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas/"+name+".yaml")
+			if err != nil {
+				t.Fatalf("read %s profile: %v", name, err)
+			}
+			preset, err := ValidateAndDecode(content)
+			if err != nil {
+				t.Fatalf("ValidateAndDecode(%s) error = %v", name, err)
+			}
+			for _, rendered := range []string{RenderLayer2(preset), RenderOutputStyle(preset)} {
+				if !strings.Contains(rendered, portabilityClause) {
+					t.Fatalf("%s missing Portability affirmation clause:\n%s", name, rendered)
+				}
+				hasDialect := strings.Contains(rendered, "- Dialect gating:")
+				if bound && !hasDialect {
+					t.Fatalf("bound preset %s missing dialect-gating clause:\n%s", name, rendered)
+				}
+				if !bound && hasDialect {
+					t.Fatalf("portable preset %s must not render dialect-gating clause:\n%s", name, rendered)
+				}
+			}
+		})
+	}
+}
+
+func TestPresentationValuesResolveNonEmptyWithRawIDFallback(t *testing.T) {
+	proseTables := []map[string]string{
+		vocabularyProse, humorProse, phrasePackProse, addressPackProse, antiCaricatureProse,
+	}
+	for field, values := range v2AllowedPresentationValues {
+		for value := range values {
+			for _, table := range proseTables {
+				if got := proseFor(table, value); got == "" {
+					t.Fatalf("proseFor(%s=%q) returned empty; want raw-ID fallback", field, value)
+				}
+			}
+		}
+	}
+
+	// A populated table must return the mapped prose, exercising the non-fallback branch.
+	if got := proseFor(map[string]string{"yoda": "inverted phrasing"}, "yoda"); got != "inverted phrasing" {
+		t.Fatalf("proseFor(populated, yoda) = %q, want mapped prose", got)
+	}
+	// A blank/whitespace mapping must fall back to the raw ID, never render empty.
+	if got := proseFor(map[string]string{"yoda": "   "}, "yoda"); got != "yoda" {
+		t.Fatalf("proseFor(blank, yoda) = %q, want raw-ID fallback", got)
+	}
+}
+
+func TestBoundDialectClauseUsesReadableLanguageName(t *testing.T) {
+	readable := map[string]string{
+		"argentino":   "Rioplatense (voseo)",
+		"asturiano":   "Asturian",
+		"galleguinho": "Galician",
+	}
+	rawEnums := []string{"es-rioplatense", "es-asturian", "es-galician"}
+
+	for name, want := range readable {
+		t.Run(name, func(t *testing.T) {
+			content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas/"+name+".yaml")
+			if err != nil {
+				t.Fatalf("read %s profile: %v", name, err)
+			}
+			preset, err := ValidateAndDecode(content)
+			if err != nil {
+				t.Fatalf("ValidateAndDecode(%s) error = %v", name, err)
+			}
+			for _, rendered := range []string{RenderLayer2(preset), RenderOutputStyle(preset)} {
+				if !strings.Contains(rendered, "- Dialect gating: the "+want+" dialect layer") {
+					t.Fatalf("%s dialect-gating clause must use readable name %q:\n%s", name, want, rendered)
+				}
+				for _, raw := range rawEnums {
+					if strings.Contains(rendered, raw) {
+						t.Fatalf("%s rendered surface leaks raw language enum %q:\n%s", name, raw, rendered)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestIsBoundDialectRequiresRegionalLanguageAndPack(t *testing.T) {
+	cases := []struct {
+		name string
+		p    Presentation
+		want bool
+	}{
+		{"regional language + regional pack => bound", Presentation{Language: "es-rioplatense", Vocabulary: "rioplatense"}, true},
+		{"regional language + generic packs => portable", Presentation{Language: "es-rioplatense", Vocabulary: "plain-technical", PhrasePack: "plain", AddressPack: "peer"}, false},
+		{"non-regional language + regional pack => portable", Presentation{Language: "es-neutral", Vocabulary: "asturian"}, false},
+		{"neutral language + generic pack => portable", Presentation{Language: "en-us", Vocabulary: "plain-technical"}, false},
+		{"regional language + mismatched regional pack => portable", Presentation{Language: "es-rioplatense", Vocabulary: "asturian"}, false},
+		{"asturian language + mismatched regional pack => portable", Presentation{Language: "es-asturian", Vocabulary: "rioplatense"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isBoundDialect(tc.p); got != tc.want {
+				t.Fatalf("isBoundDialect(%+v) = %v, want %v", tc.p, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBoundRegionalVoicesActivateOnlyInSpanish(t *testing.T) {
+	const activation = "applies only when replying in Spanish"
+	layerNames := map[string]string{
+		"argentino":   "the Rioplatense (voseo) dialect layer",
+		"asturiano":   "the Asturian dialect layer",
+		"galleguinho": "the Galician dialect layer",
+	}
+	rawEnums := []string{"es-rioplatense", "es-asturian", "es-galician"}
+
+	for name, layerName := range layerNames {
+		t.Run(name, func(t *testing.T) {
+			content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas/"+name+".yaml")
+			if err != nil {
+				t.Fatalf("read %s profile: %v", name, err)
+			}
+			preset, err := ValidateAndDecode(content)
+			if err != nil {
+				t.Fatalf("ValidateAndDecode(%s) error = %v", name, err)
+			}
+			for _, rendered := range []string{RenderLayer2(preset), RenderOutputStyle(preset)} {
+				if !strings.Contains(rendered, activation) {
+					t.Fatalf("%s dialect gating must activate only when replying in Spanish:\n%s", name, rendered)
+				}
+				if !strings.Contains(rendered, layerName) {
+					t.Fatalf("%s dialect gating must name layer %q:\n%s", name, layerName, rendered)
+				}
+				for _, raw := range rawEnums {
+					if strings.Contains(rendered, raw) {
+						t.Fatalf("%s rendered surface leaks raw language enum %q:\n%s", name, raw, rendered)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestPresentationSurfacesExcludeLayer1SupremacyAndReplyLanguage(t *testing.T) {
+	preset, err := ValidateAndDecode([]byte(validPresetV2))
+	if err != nil {
+		t.Fatalf("ValidateAndDecode() error = %v", err)
+	}
+
+	for surface, rendered := range map[string]string{
+		"Layer2":              RenderLayer2(preset),
+		"Claude output style": RenderOutputStyle(preset),
+	} {
+		for _, forbidden := range []string{"## Contract Supremacy", "## Reply Language"} {
+			if strings.Contains(rendered, forbidden) {
+				t.Fatalf("%s must not contain Layer 1 clause %q:\n%s", surface, forbidden, rendered)
+			}
+		}
+	}
+}
+
 func TestArgentinePersonaDocumentationDefinesCanonicalTraitContract(t *testing.T) {
 	_, sourceFile, _, ok := runtime.Caller(0)
 	if !ok {
