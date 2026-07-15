@@ -552,6 +552,40 @@ func TestBoundDialectClauseUsesReadableLanguageName(t *testing.T) {
 	}
 }
 
+func TestAsturianoPresentationRendersAuthoredVoice(t *testing.T) {
+	content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas/asturiano.yaml")
+	if err != nil {
+		t.Fatalf("read asturiano profile: %v", err)
+	}
+	preset, err := ValidateAndDecode(content)
+	if err != nil {
+		t.Fatalf("ValidateAndDecode(asturiano) error = %v", err)
+	}
+
+	wantSubstrings := []string{
+		"- Vocabulary: Asturian-flavored Spanish",
+		"- Phrase pack: Warm, measured phrasing with a wink of Asturian retranca",
+		"- Address pack: Address the user as a warm, close peer",
+		"- Anti-caricature: The Asturian warmth and retranca are seasoning",
+		"- Dialect gating: the Asturian dialect layer",
+		"applies only when replying in Spanish",
+	}
+	forbiddenSubstrings := []string{"CONCEPTS > CODE", "AI IS A TOOL", "Technical Behavior"}
+
+	for _, rendered := range []string{RenderLayer2(preset), RenderOutputStyle(preset)} {
+		for _, want := range wantSubstrings {
+			if !strings.Contains(rendered, want) {
+				t.Fatalf("asturiano presentation missing authored voice %q:\n%s", want, rendered)
+			}
+		}
+		for _, forbidden := range forbiddenSubstrings {
+			if strings.Contains(rendered, forbidden) {
+				t.Fatalf("asturiano presentation leaks Layer-1 content %q:\n%s", forbidden, rendered)
+			}
+		}
+	}
+}
+
 func TestGalleguinhoPresentationRendersAuthoredVoice(t *testing.T) {
 	content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas/galleguinho.yaml")
 	if err != nil {
