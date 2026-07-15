@@ -16,6 +16,7 @@ Create or update a skill when a reusable AI behavior, workflow, convention, or d
 ## Hard Rules
 
 - A skill is an LLM instruction contract, not a tutorial.
+- Follow the bundled [references/skill-style-guide.md](references/skill-style-guide.md) as the normative structure; fall back to the compact rules here when it is unavailable.
 - Use valid YAML frontmatter with `name`, one-line quoted `description`, `license`, `metadata.author`, and `metadata.version`.
 - Put trigger words first in `description`; preserve the exact phrases users or agents will say.
 - Do not add a `Keywords` section.
@@ -35,7 +36,7 @@ Create or update a skill when a reusable AI behavior, workflow, convention, or d
 
 1. Check whether the skill already exists and whether the pattern is reusable.
 2. Draft the trigger phrase before writing the body.
-3. Write compact sections: Activation Contract, Hard Rules, Decision Gates, Execution Steps, Output Contract, References.
+3. Apply [references/skill-style-guide.md](references/skill-style-guide.md), then write compact sections: Activation Contract, Hard Rules, Decision Gates, Execution Steps, Output Contract, References.
 4. Add focused trigger/output checks; use [references/quality-loop.md](references/quality-loop.md) when deeper iteration is needed.
 5. Register or update discovery metadata when the project has a skill catalog.
 
@@ -45,4 +46,5 @@ Return files created or modified, style source used, registry changes, supportin
 
 ## References
 
+- [references/skill-style-guide.md](references/skill-style-guide.md) — normative LLM-first skill style guide.
 - [references/quality-loop.md](references/quality-loop.md) — optional trigger and output quality loop.
