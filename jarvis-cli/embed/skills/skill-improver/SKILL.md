@@ -10,10 +10,11 @@ metadata:
 ---
 
 Packaged for Jarvis skill registry and path-injected loading.
+<!-- gentle-ai v2.1.5 selective sync: minimal .jarvis canonical / .atl read-fallback adaptation. -->
 
 ## Activation Contract
 
-Use this skill when the user asks to improve skills, audit skills, refactor skills, or evaluate skill quality. Prefer project-discovered skill paths from `.jarvis/skill-registry.md`, especially `.jarvis/skills/<skill>/SKILL.md` entries.
+Use this skill when the user asks to improve skills, audit skills, refactor skills, or evaluate skill quality. Prefer project-discovered skill paths from `.jarvis/skill-registry.md`, especially `.jarvis/skills/<skill>/SKILL.md` entries, with `.atl/skill-registry.md` as legacy read fallback.
 
 ## Hard Safety Rules
 

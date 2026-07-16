@@ -13,6 +13,7 @@ metadata:
 ---
 
 <!-- Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.40.2/internal/assets/skills/sdd-apply/SKILL.md (tag v1.40.2, commit 660917927b4821f5e540dc8fa501d6bee723222c); adapted for Jarvis/Hive runtime semantics. -->
+<!-- gentle-ai v2.1.5 selective sync: bounded work-unit evidence and negative no-review/remediation executor boundary only. -->
 
 > **ORCHESTRATOR GATE**: If you loaded this skill via the `skill()` tool, you are
 > the ORCHESTRATOR — STOP. Do NOT execute these instructions inline. Delegate to

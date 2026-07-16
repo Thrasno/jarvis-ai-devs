@@ -2,6 +2,8 @@
 <!-- Upstream commit: 660917927b4821f5e540dc8fa501d6bee723222c; adapted for Jarvis/Hive runtime wording. -->
 # Persistence Contract — Jarvis SDD Artifact Stores
 
+<!-- gentle-ai v2.1.5 selective sync: preserve Hive, openspec, hybrid, and none modes without authority state. -->
+
 Artifact store mode (`hive | openspec | hybrid | none`) controls where SDD phase artifacts and supported state/reference artifacts are read from and written to. Resolve it once before a phase starts, carry it through the whole phase, and do not re-resolve mid-skill.
 
 This contract is about assistant/prompt SDD persistence only. Do not treat Jarvis product Hive, Hive API, or Hive ↔ Hive API synchronization as SDD artifact persistence.

@@ -2,6 +2,8 @@
 
 # SDD Phase — Common Protocol
 
+<!-- gentle-ai v2.1.5 selective sync: neutral loading, persistence, return-order, workload, golden, and degraded-mode mechanics only. -->
+
 Boilerplate identical across all SDD phase skills. Sub-agents MUST load this alongside their phase-specific SKILL.md.
 
 Executor boundary: every SDD phase agent is an EXECUTOR, not an orchestrator. Do the phase work yourself. Do NOT launch sub-agents, do NOT call `delegate`/`task`, and do NOT bounce work back unless the phase skill explicitly says to stop and report a blocker.

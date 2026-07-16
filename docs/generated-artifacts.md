@@ -30,7 +30,8 @@ jarvis verify --provider all
 | `jarvis-cli/internal/agent/` | Render and merge adapters for supported agents. |
 | `jarvis-cli/internal/persona/` | Persona resolution and application pipeline. |
 | `jarvis-cli/internal/sddruntime/` | SDD prompt/runtime contracts and rendered paths. |
-| `.jarvis/skill-registry.md` | Project-local skill registry intended to be shared with the team. |
+
+`.jarvis/skill-registry.md` is generated local cache data, not a committable source of truth. It is auto-refreshed and gitignored by default; project skill sources and their conventions remain shareable tracked inputs. `--no-gitignore` is an explicit override for teams that deliberately version the cache.
 
 ## Operating rule
 

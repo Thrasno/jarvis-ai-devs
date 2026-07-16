@@ -11,6 +11,8 @@ metadata:
   version: "1.0"
 ---
 
+<!-- gentle-ai v2.1.5 selective sync: Hive-aware canonical .jarvis cache with .atl legacy read fallback. -->
+
 ## Purpose
 
 You generate or update the **skill registry** — an index-first, path-first catalog of all available skills. Delegators inject exact `SKILL.md` paths into sub-agent prompts under `## Skills to load before work`, and sub-agents read those skill files before task-specific work.

@@ -17,7 +17,7 @@ Jarvis is designed around local-first memory and explicit team sharing. Local Hi
 | Jarvis CLI config | `~/.jarvis/config.yaml` | Local user settings. |
 | Hive sync credentials | `~/.jarvis/sync.json` or `HIVE_API_*` env vars | Sensitive; do not commit or print. |
 | Hive local memory | Local Hive storage managed by `hive-daemon` | Local-first; available without Hive API. |
-| Project skill registry | `.jarvis/skill-registry.md` | Intended to be shared with the repository when useful. |
+| Project skill registry | `.jarvis/skill-registry.md` | Canonical auto-refreshed local metadata cache that can include machine paths; gitignored by default. `.atl/skill-registry.md` is a legacy read fallback only. Share tracked sources and conventions, not the cache. |
 | Generated agent files | `~/.claude/**`, `~/.config/opencode/**` | Generated from Jarvis sources; not source of truth. |
 | Hive API shared memory | PostgreSQL behind `hive-api` | Shared team data when sync is enabled/configured. |
 
