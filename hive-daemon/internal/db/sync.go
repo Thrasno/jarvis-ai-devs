@@ -101,6 +101,7 @@ type MutationTombstonePayload struct {
 
 type memoryMutationRecord struct {
 	EventID      string
+	RequestID    string
 	EntitySyncID string
 	Project      string
 	Op           MutationOp
@@ -149,9 +150,9 @@ func insertMemoryMutation(tx *sql.Tx, record memoryMutationRecord) error {
 	}
 	_, err = tx.Exec(`
 INSERT INTO memory_mutations
-    (event_id, entity_type, entity_sync_id, project, op, occurred_at, actor_id, payload_json)
-VALUES (?, 'memory', ?, ?, ?, ?, ?, ?)`,
-		record.EventID, record.EntitySyncID, record.Project, string(record.Op), record.OccurredAt, record.ActorID, string(payload),
+    (event_id, request_id, entity_type, entity_sync_id, project, op, occurred_at, actor_id, payload_json)
+VALUES (?, NULLIF(?, ''), 'memory', ?, ?, ?, ?, ?, ?)`,
+		record.EventID, record.RequestID, record.EntitySyncID, record.Project, string(record.Op), record.OccurredAt, record.ActorID, string(payload),
 	)
 	return err
 }
@@ -403,6 +404,42 @@ func (d *DB) MarkMutationsSynced(eventIDs []string, at time.Time) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// MarkMutationsRejected stops retrying terminal Hive API rejections without
+// claiming that the guarded local change was shared successfully.
+func (d *DB) MarkMutationsRejected(eventIDs []string, at time.Time) error {
+	if len(eventIDs) == 0 {
+		return nil
+	}
+	tx, err := d.sqlDB.Begin()
+	if err != nil {
+		return fmt.Errorf("begin mark mutations rejected: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	formatted := at.UTC().Format("2006-01-02 15:04:05")
+	for _, eventID := range eventIDs {
+		if _, err := tx.Exec(`UPDATE memory_mutations SET synced_at = ? WHERE event_id = ?`, formatted, eventID); err != nil {
+			return fmt.Errorf("mark rejected mutation %s: %w", eventID, err)
+		}
+		if _, err := tx.Exec(`UPDATE mutation_receipts SET shared_status = 'failed' WHERE event_id = ? AND shared_status = 'pending'`, eventID); err != nil {
+			return fmt.Errorf("mark rejected mutation receipt %s: %w", eventID, err)
+		}
+	}
+	return tx.Commit()
+}
+
+// MarkMutationReceiptsLegacyUnsupported records that a guarded mutation could
+// not be propagated by a legacy row-state peer. The local mutation remains
+// pending and retryable; this status must never claim shared completion.
+func (d *DB) MarkMutationReceiptsLegacyUnsupported(eventIDs []string) error {
+	for _, eventID := range eventIDs {
+		if _, err := d.sqlDB.Exec(`UPDATE mutation_receipts SET shared_status = 'legacy_unsupported' WHERE event_id = ? AND shared_status = 'pending'`, eventID); err != nil {
+			return fmt.Errorf("mark mutation receipt legacy unsupported %s: %w", eventID, err)
+		}
+	}
+	return nil
 }
 
 // MarkMutationsAndMemoriesSynced acks the given mutation journal event_ids

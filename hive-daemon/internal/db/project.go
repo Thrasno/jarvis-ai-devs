@@ -19,6 +19,7 @@ var (
 	ErrGovernanceProjectMergeInvalid  = errors.New("governance project merge source and target must differ")
 	ErrGovernanceProjectMergeConflict = errors.New("governance project already merged into another target")
 	ErrGovernanceMemoryNotFound       = errors.New("governance memory not found")
+	ErrGovernanceMemoryFilterConflict = errors.New("include_deleted and deleted_only cannot be combined")
 )
 
 type GovernanceProject struct {
@@ -60,7 +61,9 @@ type GovernanceMemory struct {
 
 type GovernanceMemoryFilter struct {
 	Project        string
+	ID             int64
 	IncludeDeleted bool
+	DeletedOnly    bool
 	Limit          int
 	Categories     []string // empty = no category filter (all types returned)
 	OrderAsc       bool     // false = DESC (default); true = ASC
@@ -166,13 +169,22 @@ func (d *DB) ListGovernanceMemories(ctx context.Context, filter GovernanceMemory
 		limit = 100
 	}
 
+	if filter.IncludeDeleted && filter.DeletedOnly {
+		return nil, ErrGovernanceMemoryFilterConflict
+	}
 	q := `
 SELECT id, sync_id, project, topic_key, category, title, content, created_by, created_at, session_id,
        deleted_at, deleted_by, delete_reason
 FROM memories
 WHERE project = ?`
 	args := []any{project}
-	if !filter.IncludeDeleted {
+	if filter.ID > 0 {
+		q += ` AND id = ?`
+		args = append(args, filter.ID)
+	}
+	if filter.DeletedOnly {
+		q += ` AND deleted_at IS NOT NULL`
+	} else if !filter.IncludeDeleted {
 		q += ` AND deleted_at IS NULL`
 	}
 	if len(filter.Categories) > 0 {

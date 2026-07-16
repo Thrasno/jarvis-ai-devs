@@ -85,6 +85,14 @@ func LoadSnapshot(ctx context.Context, c *hiveclient.Client, baseURL string, sel
 		// Non-API errors (transport) are silently dropped; snap.Memories stays nil.
 	}
 	snap.Memories = memories
+	deleted, err := c.Memories(ctx, hiveclient.MemoryFilter{DeletedOnly: true})
+	if err == nil {
+		snap.DeletedMemories = deleted
+	}
+	capabilities, err := c.Capabilities(ctx)
+	if err == nil {
+		snap.Capabilities = &capabilities
+	}
 
 	// Timeline memories — only when a project is selected.
 	if selectedProject != "" {
@@ -143,6 +151,8 @@ func RunHiveTUI(ctx context.Context, baseURL string) error {
 
 	snap := LoadSnapshot(ctx, client, baseURL, "")
 	m := NewModelWithConfig(snap, client, client, client, client, client, client, client)
+	m.guardWorkflow = client
+	m.guardEnabled = snap.Capabilities != nil && snap.Capabilities.SupportsGuardedDeleteRestore()
 
 	return runProgram(m)
 }
@@ -172,6 +182,8 @@ func RunTimelineTUI(ctx context.Context, baseURL string, project string) error {
 	}
 
 	m := NewModelWithConfig(snap, client, client, client, client, client, client, client)
+	m.guardWorkflow = client
+	m.guardEnabled = snap.Capabilities != nil && snap.Capabilities.SupportsGuardedDeleteRestore()
 	m.screen = ScreenTimeline
 	m.projectIndex = projectIndex
 

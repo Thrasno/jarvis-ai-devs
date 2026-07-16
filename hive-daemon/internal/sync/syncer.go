@@ -113,6 +113,8 @@ type SyncStore interface {
 
 	GetPendingMutations(project string, limit int) ([]db.MutationEnvelope, error)
 	MarkMutationsSynced(eventIDs []string, at time.Time) error
+	MarkMutationsRejected(eventIDs []string, at time.Time) error
+	MarkMutationReceiptsLegacyUnsupported(eventIDs []string) error
 	// MarkMutationsAndMemoriesSynced acks the mutation journal event_ids and
 	// the correlated legacy memories.sync_id rows atomically, in a single
 	// transaction. The mutation-sync-v2 path in Sync uses this instead of
@@ -926,6 +928,9 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 	// el servidor confirmó el modo row-state. En v2, hive-api ignora memories[]
 	// cuando procesa mutations[], así que ackear filas legacy acá perdería datos.
 	if compatibilityMode == compatibilityModeLegacy {
+		if err := s.store.MarkMutationReceiptsLegacyUnsupported(mutationEventIDs(pendingMutations)); err != nil {
+			return batchResult{}, nil, fmt.Errorf("marcar recibos legacy no soportados: %w", err)
+		}
 		for _, m := range unsynced {
 			if err := s.store.MarkSynced(m.SyncID, now); err != nil {
 				// No abortamos — mejor tener datos duplicados que perder el sync
@@ -1027,14 +1032,19 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 		// both halves atomically means a partial failure rolls the mutation
 		// ack back too, so the next Sync() call re-derives and retries both
 		// together from a consistent pending state.
+		rejected := rejectedMutationIDs(resp.MutationResults, pendingMutations)
+		if err := s.store.MarkMutationsRejected(rejected, now); err != nil {
+			return batchResult{}, nil, fmt.Errorf("marcar mutaciones rechazadas: %w", err)
+		}
+		confirmed := confirmedMutationIDs(resp.MutationResults, pendingMutations, resp.CompatibilityMode == compatibilityModeLegacy)
 		if err := s.store.MarkMutationsAndMemoriesSynced(
-			mutationEventIDs(pendingMutations),
-			confirmedMemorySyncIDs(pendingMutations),
+			confirmed,
+			confirmedMemorySyncIDsByEventID(pendingMutations, confirmed),
 			now,
 		); err != nil {
 			return batchResult{}, nil, fmt.Errorf("marcar mutaciones sincronizadas: %w", err)
 		}
-		mutationsPushed = len(pendingMutations)
+		mutationsPushed = len(confirmed)
 		recordsMarkedSynced += mutationsPushed
 	}
 
@@ -1217,6 +1227,53 @@ func confirmedMemorySyncIDs(mutations []db.MutationEnvelope) []string {
 		}
 	}
 	return ids
+}
+
+func confirmedMutationIDs(results []mutationResult, pending []db.MutationEnvelope, legacyAcknowledgement bool) []string {
+	if len(results) == 0 && legacyAcknowledgement {
+		// Only an explicit legacy response can use historical batch acknowledgement.
+		// A mutation-v2 response without per-event receipts is ambiguous and must retry.
+		return mutationEventIDs(pending)
+	}
+	pendingIDs := make(map[string]bool, len(pending))
+	for _, mutation := range pending {
+		pendingIDs[mutation.EventID] = true
+	}
+	ids := make([]string, 0, len(results))
+	for _, result := range results {
+		if pendingIDs[result.EventID] && (result.Applied || result.Duplicate) {
+			ids = append(ids, result.EventID)
+		}
+	}
+	return ids
+}
+
+func rejectedMutationIDs(results []mutationResult, pending []db.MutationEnvelope) []string {
+	pendingIDs := make(map[string]bool, len(pending))
+	for _, mutation := range pending {
+		pendingIDs[mutation.EventID] = true
+	}
+	ids := make([]string, 0, len(results))
+	for _, result := range results {
+		if result.Rejected && pendingIDs[result.EventID] {
+			ids = append(ids, result.EventID)
+		}
+	}
+	return ids
+}
+
+func confirmedMemorySyncIDsByEventID(mutations []db.MutationEnvelope, eventIDs []string) []string {
+	confirmed := make(map[string]bool, len(eventIDs))
+	for _, id := range eventIDs {
+		confirmed[id] = true
+	}
+	filtered := make([]db.MutationEnvelope, 0, len(mutations))
+	for _, mutation := range mutations {
+		if confirmed[mutation.EventID] {
+			filtered = append(filtered, mutation)
+		}
+	}
+	return confirmedMemorySyncIDs(filtered)
 }
 
 func (s *Syncer) tryReserve(project string) bool {

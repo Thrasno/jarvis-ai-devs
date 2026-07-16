@@ -127,12 +127,28 @@ CREATE TABLE IF NOT EXISTS memory_mutations (
     actor_id       TEXT NOT NULL DEFAULT '',
     base_updated_at DATETIME,
     payload_json   TEXT NOT NULL DEFAULT '{}',
+    request_id     TEXT,
     synced_at      DATETIME
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_mutations_event_id ON memory_mutations(event_id);
 CREATE INDEX IF NOT EXISTS idx_memory_mutations_project_unsynced ON memory_mutations(project, sequence) WHERE synced_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_memory_mutations_entity ON memory_mutations(entity_type, entity_sync_id, sequence);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_mutations_request_id ON memory_mutations(request_id) WHERE request_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS mutation_receipts (
+    request_id     TEXT PRIMARY KEY,
+    operation      TEXT NOT NULL,
+    target_id      INTEGER NOT NULL,
+    project        TEXT NOT NULL,
+    entity_sync_id TEXT NOT NULL,
+    event_id       TEXT NOT NULL,
+    actor_id       TEXT NOT NULL DEFAULT '',
+    reason         TEXT NOT NULL DEFAULT '',
+    local_status   TEXT NOT NULL,
+    shared_status  TEXT NOT NULL,
+    created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 
 CREATE TABLE IF NOT EXISTS mutation_cursors (
     consumer       TEXT NOT NULL,
@@ -422,9 +438,12 @@ func initSchema(sqlDB *sql.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_sync_id ON sessions(sync_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_project_active ON memories(project, created_at DESC) WHERE deleted_at IS NULL`,
 		`CREATE TABLE IF NOT EXISTS memory_mutations (sequence INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE, entity_type TEXT NOT NULL DEFAULT 'memory', entity_sync_id TEXT NOT NULL, project TEXT NOT NULL, op TEXT NOT NULL, occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, actor_id TEXT NOT NULL DEFAULT '', base_updated_at DATETIME, payload_json TEXT NOT NULL DEFAULT '{}', synced_at DATETIME)`,
+		`ALTER TABLE memory_mutations ADD COLUMN request_id TEXT`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_mutations_event_id ON memory_mutations(event_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_mutations_project_unsynced ON memory_mutations(project, sequence) WHERE synced_at IS NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_mutations_entity ON memory_mutations(entity_type, entity_sync_id, sequence)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_mutations_request_id ON memory_mutations(request_id) WHERE request_id IS NOT NULL`,
+		`CREATE TABLE IF NOT EXISTS mutation_receipts (request_id TEXT PRIMARY KEY, operation TEXT NOT NULL, target_id INTEGER NOT NULL, project TEXT NOT NULL, entity_sync_id TEXT NOT NULL, event_id TEXT NOT NULL, actor_id TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '', local_status TEXT NOT NULL, shared_status TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
 		`CREATE TABLE IF NOT EXISTS mutation_cursors (consumer TEXT NOT NULL, project TEXT NOT NULL, sequence INTEGER NOT NULL DEFAULT 0, event_id TEXT NOT NULL DEFAULT '', updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (consumer, project))`,
 		`CREATE TABLE IF NOT EXISTS memory_prompt_links (memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE, prompt_id INTEGER NOT NULL REFERENCES user_prompts(id) ON DELETE CASCADE, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (memory_id, prompt_id))`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_prompt_links_prompt_id ON memory_prompt_links(prompt_id)`,

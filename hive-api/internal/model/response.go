@@ -80,6 +80,7 @@ type SyncResponse struct {
 
 	NextMutationCursor *MutationCursor    `json:"next_mutation_cursor,omitempty"`
 	PulledMutations    []MutationEnvelope `json:"pulled_mutations,omitempty"`
+	MutationResults    []MutationApplyResult `json:"mutation_results,omitempty"`
 	CompatibilityMode  string             `json:"compatibility_mode,omitempty"`
 
 	// Bounded legacy pull pagination (PR 2a, design §2.2). These fields cover the
