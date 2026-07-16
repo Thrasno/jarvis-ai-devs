@@ -34,9 +34,11 @@ func init() {
 func TestRouter_DashboardServesConfiguredAssets(t *testing.T) {
 	dashboardDir := t.TempDir()
 	assetsDir := filepath.Join(dashboardDir, "assets")
-	require.NoError(t, os.Mkdir(assetsDir, 0o755))
+	nestedAssetsDir := filepath.Join(assetsDir, "js", "chunks")
+	require.NoError(t, os.MkdirAll(nestedAssetsDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dashboardDir, "index.html"), []byte("<html>Hive Dashboard</html>"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(assetsDir, "app.js"), []byte("console.log('dashboard')"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(nestedAssetsDir, "vendor.js"), []byte("console.log('vendor')"), 0o644))
 
 	r := newTestRouterWithDashboard(dashboardDir)
 
@@ -71,6 +73,17 @@ func TestRouter_DashboardServesConfiguredAssets(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.Contains(t, w.Body.String(), "console.log('dashboard')")
+	})
+
+	t.Run("nested asset route returns static asset", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req, err := http.NewRequest(http.MethodGet, "/dashboard/assets/js/chunks/vendor.js", nil)
+		require.NoError(t, err)
+
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Contains(t, w.Body.String(), "console.log('vendor')")
 	})
 }
 
@@ -150,11 +163,11 @@ func TestRouter_DashboardRejectsSymlinkAssetFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dashboardDir, "index.html"), []byte("<html>Hive Dashboard</html>"), 0o644))
 	targetAsset := filepath.Join(dashboardDir, "target.js")
 	require.NoError(t, os.WriteFile(targetAsset, []byte("console.log('target')"), 0o644))
-	require.NoError(t, os.Symlink(targetAsset, filepath.Join(assetsDir, "linked.js")))
+	require.NoError(t, os.Symlink(dashboardDir, filepath.Join(assetsDir, "linked")))
 	r := newTestRouterWithDashboard(dashboardDir)
 
 	w := httptest.NewRecorder()
-	req, err := http.NewRequest(http.MethodGet, "/dashboard/assets/linked.js", nil)
+	req, err := http.NewRequest(http.MethodGet, "/dashboard/assets/linked/target.js", nil)
 	require.NoError(t, err)
 
 	r.ServeHTTP(w, req)
