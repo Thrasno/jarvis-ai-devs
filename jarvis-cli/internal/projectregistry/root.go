@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const rootResolutionTimeout = 2 * time.Second
+const rootResolutionTimeout = 10 * time.Second
 
 var ErrNotGitWorktree = errors.New("not a git worktree")
 
