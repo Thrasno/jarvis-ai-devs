@@ -858,6 +858,88 @@ func TestMemoryRestoreRequiresDeletedRow(t *testing.T) {
 	assert.Equal(t, 0, count)
 }
 
+func TestExecuteGuardedMemoryMutationUsesIdentityCASAndRequestIdempotency(t *testing.T) {
+	d := openTestDB(t)
+	id, err := saveTestMemory(t, d, newMemory("guarded", "Target", "Content"))
+	require.NoError(t, err)
+	var syncID string
+	require.NoError(t, d.sqlDB.QueryRow(`SELECT sync_id FROM memories WHERE id = ?`, id).Scan(&syncID))
+
+	request := GuardedMemoryMutation{RequestID: "request-delete-1", Operation: MutationOpDelete, TargetID: id, ExpectedProject: "guarded", ExpectedSyncID: syncID, ActorID: "tester", Reason: "duplicate"}
+	receipt, err := d.ExecuteGuardedMemoryMutation(request)
+	require.NoError(t, err)
+	assert.Equal(t, GuardedMutationLocalCommitted, receipt.LocalStatus)
+	assert.Equal(t, GuardedMutationSharedPending, receipt.SharedStatus)
+	assert.Equal(t, syncID, receipt.EntitySyncID)
+	_, err = d.GetDeletedMemory(id)
+	require.NoError(t, err)
+
+	retry, err := d.ExecuteGuardedMemoryMutation(request)
+	require.NoError(t, err)
+	assert.Equal(t, receipt, retry)
+	var mutations int
+	require.NoError(t, d.sqlDB.QueryRow(`SELECT COUNT(*) FROM memory_mutations WHERE request_id = ?`, request.RequestID).Scan(&mutations))
+	assert.Equal(t, 1, mutations)
+
+	_, err = d.ExecuteGuardedMemoryMutation(GuardedMemoryMutation{RequestID: request.RequestID, Operation: MutationOpDelete, TargetID: id, ExpectedProject: "guarded", ExpectedSyncID: syncID, ActorID: "tester", Reason: "different"})
+	require.ErrorIs(t, err, ErrGuardedMutationRequestConflict)
+
+	_, err = d.ExecuteGuardedMemoryMutation(GuardedMemoryMutation{RequestID: "request-drift", Operation: MutationOpRestore, TargetID: id, ExpectedProject: "other", ExpectedSyncID: syncID, ActorID: "tester", Reason: "undo"})
+	require.ErrorIs(t, err, ErrGuardedMutationIdentityMismatch)
+	_, err = d.GetDeletedMemory(id)
+	require.NoError(t, err)
+}
+
+func TestMutationReceiptLookupRequiresMatchingTargetIdentity(t *testing.T) {
+	d := openTestDB(t)
+	id, err := saveTestMemory(t, d, newMemory("receipt", "Target", "Content"))
+	require.NoError(t, err)
+	var syncID string
+	require.NoError(t, d.sqlDB.QueryRow(`SELECT sync_id FROM memories WHERE id = ?`, id).Scan(&syncID))
+	created, err := d.ExecuteGuardedMemoryMutation(GuardedMemoryMutation{RequestID: "receipt-lookup", Operation: MutationOpDelete, TargetID: id, ExpectedProject: "receipt", ExpectedSyncID: syncID, Reason: "cleanup"})
+	require.NoError(t, err)
+	found, err := d.MutationReceipt("receipt-lookup", id, "receipt", syncID)
+	require.NoError(t, err)
+	assert.Equal(t, created, found)
+	_, err = d.MutationReceipt("receipt-lookup", id, "other", syncID)
+	require.ErrorIs(t, err, ErrGuardedMutationIdentityMismatch)
+}
+
+func TestMutationReceiptDerivesSharedStatusFromJournalAcknowledgement(t *testing.T) {
+	d := openTestDB(t)
+	id, err := saveTestMemory(t, d, newMemory("status", "Target", "Content"))
+	require.NoError(t, err)
+	var syncID string
+	require.NoError(t, d.sqlDB.QueryRow(`SELECT sync_id FROM memories WHERE id = ?`, id).Scan(&syncID))
+	created, err := d.ExecuteGuardedMemoryMutation(GuardedMemoryMutation{RequestID: "status-receipt", Operation: MutationOpDelete, TargetID: id, ExpectedProject: "status", ExpectedSyncID: syncID, Reason: "cleanup"})
+	require.NoError(t, err)
+	require.NoError(t, d.MarkMutationsSynced([]string{created.EventID}, time.Now().UTC()))
+	receipt, err := d.MutationReceipt(created.RequestID, id, "status", syncID)
+	require.NoError(t, err)
+	assert.Equal(t, "completed", receipt.SharedStatus)
+}
+
+func TestMutationReceiptPreservesTerminalRejectionStatus(t *testing.T) {
+	d := openTestDB(t)
+	id, err := saveTestMemory(t, d, newMemory("test-project", "Target", "Content"))
+	require.NoError(t, err)
+	var syncID string
+	require.NoError(t, d.sqlDB.QueryRow(`SELECT sync_id FROM memories WHERE id = ?`, id).Scan(&syncID))
+	created, err := d.ExecuteGuardedMemoryMutation(GuardedMemoryMutation{RequestID: "rejected-receipt", Operation: MutationOpDelete, TargetID: id, ExpectedProject: "test-project", ExpectedSyncID: syncID, Reason: "test"})
+	require.NoError(t, err)
+	pending, err := d.GetPendingMutations("test-project", 10)
+	require.NoError(t, err)
+	require.Len(t, pending, 2)
+
+	require.NoError(t, d.MarkMutationsRejected([]string{created.EventID}, time.Now().UTC()))
+	remaining, err := d.GetPendingMutations("test-project", 10)
+	require.NoError(t, err)
+	assert.Len(t, remaining, 1)
+	receipt, err := d.MutationReceipt(created.RequestID, id, "test-project", syncID)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", receipt.SharedStatus)
+}
+
 func assertRecentTime(t *testing.T, got time.Time) {
 	t.Helper()
 	assert.WithinDuration(t, time.Now().UTC(), got, 5*time.Second)

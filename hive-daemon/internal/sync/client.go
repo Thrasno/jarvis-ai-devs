@@ -179,6 +179,7 @@ type syncResponse struct {
 	PulledSessions     []sessionPayload      `json:"pulled_sessions,omitempty"`
 	NextMutationCursor *db.MutationCursor    `json:"next_mutation_cursor,omitempty"`
 	PulledMutations    []db.MutationEnvelope `json:"pulled_mutations,omitempty"`
+	MutationResults    []mutationResult      `json:"mutation_results,omitempty"`
 	CompatibilityMode  string                `json:"compatibility_mode,omitempty"`
 
 	// Bounded legacy pull pagination (PR 2a/2b, hive-sync-batched-drain).
@@ -191,6 +192,13 @@ type syncResponse struct {
 	NextPullCursor        *PullCursor `json:"next_pull_cursor,omitempty"`
 	PulledSessionsHasMore bool        `json:"pulled_sessions_has_more,omitempty"`
 	NextSessionCursor     *PullCursor `json:"next_session_cursor,omitempty"`
+}
+
+type mutationResult struct {
+	EventID   string `json:"event_id"`
+	Applied   bool   `json:"applied"`
+	Duplicate bool   `json:"duplicate"`
+	Rejected  bool   `json:"rejected"`
 }
 
 type projectBlockCommand struct {

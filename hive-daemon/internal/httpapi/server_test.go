@@ -798,6 +798,62 @@ func TestGovernanceGETEndpointsReturnReadOnlyViews(t *testing.T) {
 	}
 }
 
+func TestGovernanceCapabilitiesAreReadOnlyAndAdvertiseCompleteGuardContract(t *testing.T) {
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, governance.NewService(store))
+
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/governance/capabilities", nil)
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, req)
+			if method == http.MethodGet {
+				if rr.Code != http.StatusOK {
+					t.Fatalf("GET status = %d, want 200: %s", rr.Code, rr.Body.String())
+				}
+				var body struct {
+					Capabilities governance.CapabilitySet `json:"capabilities"`
+				}
+				if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				if !body.Capabilities.DeleteRestore || !body.Capabilities.ExpectedIdentity || !body.Capabilities.RequestReceipts || !body.Capabilities.MutationSyncV2 {
+					t.Fatalf("capabilities = %+v, want complete contract", body.Capabilities)
+				}
+				return
+			}
+			if rr.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("POST status = %d, want 405", rr.Code)
+			}
+		})
+	}
+}
+
+func TestGovernanceMutationReceiptRequiresTargetIdentity(t *testing.T) {
+	store, backup, srv := newHTTPGuardTestServer(t)
+	id := saveHTTPGuardMemory(t, store, "receipt-http")
+	var syncID string
+	if err := store.RawDB().QueryRow(`SELECT sync_id FROM memories WHERE id = ?`, id).Scan(&syncID); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"operation":"delete","target_type":"memory","target_id":%d,"backup_id":%q,"confirmation":%q,"reason":"cleanup","expected_project":"alpha","expected_sync_id":%q,"request_id":"receipt-http-1"}`, id, backup.ID, governance.GuardConfirmation(governance.GuardOperationDelete, governance.GuardTargetMemory, id), syncID)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/governance/guards/execute", bytes.NewBufferString(body)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("guard status = %d: %s", rr.Code, rr.Body.String())
+	}
+	path := fmt.Sprintf("/governance/mutations/receipt-http-1?target_id=%d&project=alpha&sync_id=%s", id, syncID)
+	rr = httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"local_status":"committed"`) {
+		t.Fatalf("receipt status = %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestGovernanceWarningsEndpointReturnsPersistedWarnings(t *testing.T) {
 	store, err := db.Open(":memory:")
 	if err != nil {
@@ -1357,6 +1413,23 @@ func TestGovernanceMemoriesHTTPDefaultListExcludesTombstones(t *testing.T) {
 	}
 }
 
+func TestGovernanceMemoriesHTTPDeletedOnlyReturnsTombstones(t *testing.T) {
+	store, backup, srv := newHTTPGuardTestServer(t)
+	activeID := saveHTTPGuardMemoryInProject(t, store, "deleted-only-http", "active")
+	deletedID := saveHTTPGuardMemoryInProject(t, store, "deleted-only-http", "deleted")
+	body := fmt.Sprintf(`{"operation":"delete","target_type":"memory","target_id":%d,"backup_id":%q,"confirmation":%q,"reason":"cleanup"}`, deletedID, backup.ID, governance.GuardConfirmation(governance.GuardOperationDelete, governance.GuardTargetMemory, deletedID))
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/governance/guards/execute", bytes.NewBufferString(body)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("delete=%d: %s", rr.Code, rr.Body.String())
+	}
+	rr = httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/governance/memories?project=deleted-only-http&id=%d&deleted_only=true", deletedID), nil))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), fmt.Sprintf(`"id":%d`, deletedID)) || strings.Contains(rr.Body.String(), fmt.Sprintf(`"id":%d`, activeID)) {
+		t.Fatalf("deleted-only=%d: %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestGovernanceGuardExecuteHTTPInvalidBackupArchiveDoesNotMutate(t *testing.T) {
 	tempDir := t.TempDir()
 	dbDir := filepath.Join(tempDir, "live-db")
@@ -1483,7 +1556,7 @@ func TestGovernanceGuardExecuteHTTPMapsRestoreTargetStateErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store, backup, srv := newHTTPGuardTestServer(t)
 			memoryID := tt.prepareID(t, store)
-			body := fmt.Sprintf(`{"operation":"restore","target_type":"memory","target_id":%d,"backup_id":%q,"confirmation":%q}`, memoryID, backup.ID, governance.GuardConfirmation(governance.GuardOperationRestore, governance.GuardTargetMemory, memoryID))
+			body := fmt.Sprintf(`{"operation":"restore","target_type":"memory","target_id":%d,"backup_id":%q,"confirmation":%q,"reason":"restore selected memory"}`, memoryID, backup.ID, governance.GuardConfirmation(governance.GuardOperationRestore, governance.GuardTargetMemory, memoryID))
 			req := httptest.NewRequest(http.MethodPost, "/governance/guards/execute", bytes.NewBufferString(body))
 			rr := httptest.NewRecorder()
 

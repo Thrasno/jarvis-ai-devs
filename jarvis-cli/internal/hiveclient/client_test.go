@@ -63,6 +63,59 @@ func TestClientExecutesGuardWithExactConfirmation(t *testing.T) {
 	}
 }
 
+func TestClientLoadsSafetyCapabilitiesAndCreatesFreshBackup(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/governance/capabilities":
+			if r.Method != http.MethodGet {
+				t.Fatalf("method = %s, want GET", r.Method)
+			}
+			_, _ = w.Write([]byte(`{"capabilities":{"delete_restore":true,"expected_identity":true,"request_receipts":true,"mutation_sync_v2":true}}`))
+		case "/governance/backups":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method = %s, want POST", r.Method)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"backup":{"id":"fresh-backup","created_at":"2026-07-15T10:00:00Z"}}`))
+		default:
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	capabilities, err := client.Capabilities(context.Background())
+	if err != nil || !capabilities.SupportsGuardedDeleteRestore() {
+		t.Fatalf("capabilities = %+v, err = %v", capabilities, err)
+	}
+	backup, err := client.CreateBackup(context.Background())
+	if err != nil || backup.ID != "fresh-backup" {
+		t.Fatalf("backup = %+v, err = %v", backup, err)
+	}
+}
+
+func TestClientReadsMutationReceiptWithTargetIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/governance/mutations/request-1" || r.URL.Query().Get("target_id") != "7" || r.URL.Query().Get("project") != "alpha" || r.URL.Query().Get("sync_id") != "sync-7" {
+			t.Fatalf("request = %s", r.URL.String())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"receipt":{"request_id":"request-1","operation":"delete","target_id":7,"project":"alpha","entity_sync_id":"sync-7","event_id":"event-1","local_status":"committed","shared_status":"pending"}}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := client.MutationReceipt(context.Background(), "request-1", 7, "alpha", "sync-7")
+	if err != nil || receipt.LocalStatus != "committed" || receipt.SharedStatus != "pending" {
+		t.Fatalf("receipt=%+v err=%v", receipt, err)
+	}
+}
+
 func TestClientArchivesProjectWithExactConfirmation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/governance/projects/alpha/archive" {
@@ -288,6 +341,25 @@ func TestClientListsMemoriesWithFilters(t *testing.T) {
 	}
 }
 
+func TestClientListsDeletedOnlyMemories(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("deleted_only") != "true" || r.URL.Query().Get("include_deleted") != "" {
+			t.Fatalf("query=%s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"memories":[{"id":9,"sync_id":"sync-9","project":"alpha","title":"Deleted","deleted":true}]}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memories, err := client.Memories(context.Background(), MemoryFilter{Project: "alpha", DeletedOnly: true})
+	if err != nil || len(memories) != 1 || !memories[0].Deleted {
+		t.Fatalf("memories=%+v err=%v", memories, err)
+	}
+}
+
 func TestClientWarningsReturnsDaemonErrorOnMissingEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.NotFoundHandler())
 	defer server.Close()
@@ -373,6 +445,26 @@ func TestClient_MemoryByID_NotFound_APIError(t *testing.T) {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
 		t.Fatalf("MemoryByID error = %#v, want APIError 404", err)
+	}
+}
+
+func TestClientDeletedMemoryByIDUsesDeletedOnlyBoundary(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/governance/memories" || r.URL.Query().Get("project") != "alpha" || r.URL.Query().Get("id") != "42" || r.URL.Query().Get("deleted_only") != "true" {
+			t.Fatalf("request = %s", r.URL.String())
+		}
+		_, _ = w.Write([]byte(`{"memories":[{"id":42,"sync_id":"s-1","project":"alpha","deleted":true}]}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	memory, err := client.DeletedMemoryByID(context.Background(), 42, "alpha")
+
+	if err != nil || memory.ID != 42 || !memory.Deleted {
+		t.Fatalf("memory=%+v err=%v", memory, err)
 	}
 }
 
