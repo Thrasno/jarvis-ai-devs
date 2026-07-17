@@ -9,6 +9,7 @@ import (
 
 func TestRunInitPreservesFirstRunNonGitDirectory(t *testing.T) {
 	isolateTestHome(t)
+	t.Setenv("PATH", "")
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/nongit\n"), 0644); err != nil {
 		t.Fatalf("write go.mod: %v", err)
