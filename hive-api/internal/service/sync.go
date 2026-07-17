@@ -290,6 +290,7 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 	}
 
 	var pulledMutations []model.MutationEnvelope
+	var mutationResults []model.MutationApplyResult
 	var nextMutationCursor *model.MutationCursor
 	compatibilityMode := ""
 	if mutationProtocolAuthoritative {
@@ -297,6 +298,12 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 		for _, mutation := range req.Mutations {
 			if mutationProjectMismatch(mutation, req.Project) {
 				conflicts++
+				mutationResults = append(mutationResults, model.MutationApplyResult{
+					EventID:  mutation.EventID,
+					Op:       mutation.Op,
+					Rejected: true,
+					Reason:   "mutation project does not match sync project",
+				})
 				continue
 			}
 
@@ -307,6 +314,16 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 				}
 				if errors.Is(err, repository.ErrMemoryTombstoned) || errors.Is(err, repository.ErrNotFound) {
 					conflicts++
+					reason := "mutation target was not found"
+					if errors.Is(err, repository.ErrMemoryTombstoned) {
+						reason = "mutation target is tombstoned"
+					}
+					mutationResults = append(mutationResults, model.MutationApplyResult{
+						EventID:  mutation.EventID,
+						Op:       mutation.Op,
+						Rejected: true,
+						Reason:   reason,
+					})
 					continue
 				}
 				return nil, err
@@ -314,6 +331,7 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 			if result == nil {
 				continue
 			}
+			mutationResults = append(mutationResults, *result)
 			if result.Applied {
 				pushed++
 			}
@@ -344,6 +362,7 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 		Conflicts:          conflicts,
 		PromptsPushed:      promptsPushed,
 		PulledMutations:    pulledMutations,
+		MutationResults:    mutationResults,
 		NextMutationCursor: nextMutationCursor,
 		CompatibilityMode:  compatibilityMode,
 	}
@@ -495,6 +514,7 @@ func (s *syncService) syncResponseWithPull(ctx context.Context, req model.SyncRe
 		PulledSessions:        pulledSessions,
 		NextMutationCursor:    pushResp.NextMutationCursor,
 		PulledMutations:       pushResp.PulledMutations,
+		MutationResults:       pushResp.MutationResults,
 		CompatibilityMode:     pushResp.CompatibilityMode,
 		PulledHasMore:         pullResult.MemoriesHasMore,
 		NextPullCursor:        pullResult.NextPullCursor,

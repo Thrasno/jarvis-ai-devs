@@ -182,6 +182,60 @@ func TestServiceGuardedMemoryDeleteRequiresReasonBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestCapabilitiesRequireTheCompleteGuardContract(t *testing.T) {
+	capabilities := Capabilities()
+	require.True(t, capabilities.DeleteRestore)
+	require.True(t, capabilities.ExpectedIdentity)
+	require.True(t, capabilities.RequestReceipts)
+	require.True(t, capabilities.MutationSyncV2)
+}
+
+func TestExecuteGuardRejectsIdentityDriftAndRequiresReasonForRestore(t *testing.T) {
+	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	memoryID := saveGovernanceServiceTestMemory(t, store, "alpha", "Selected memory")
+	service := NewServiceWithBackup(store, fakeGuardBackupStore{backups: []BackupManifest{{ID: "fresh", CreatedAt: now.Add(-time.Minute)}}})
+	service.now = func() time.Time { return now }
+
+	_, err = service.ExecuteGuard(context.Background(), GuardRequest{
+		Operation: GuardOperationDelete, TargetType: GuardTargetMemory, TargetID: memoryID,
+		BackupID: "fresh", Confirmation: GuardConfirmation(GuardOperationDelete, GuardTargetMemory, memoryID),
+		Reason: "cleanup", ExpectedProject: "other", ExpectedSyncID: "wrong",
+	})
+	require.ErrorIs(t, err, ErrDestructiveIdentityMismatch)
+	requireMemoryActive(t, store, memoryID)
+
+	require.NoError(t, store.DeleteMemory(memoryID, "tester", "prepare restore"))
+	_, err = service.ExecuteGuard(context.Background(), GuardRequest{
+		Operation: GuardOperationRestore, TargetType: GuardTargetMemory, TargetID: memoryID,
+		BackupID: "fresh", Confirmation: GuardConfirmation(GuardOperationRestore, GuardTargetMemory, memoryID),
+		ExpectedProject: "alpha", ExpectedSyncID: requireMemorySyncID(t, store, memoryID),
+	})
+	require.ErrorIs(t, err, ErrDestructiveReasonRequired)
+	requireMemoryDeleted(t, store, memoryID)
+}
+
+func TestExecuteGuardReturnsStoredReceiptForIdempotentRequest(t *testing.T) {
+	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	store, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	memoryID := saveGovernanceServiceTestMemory(t, store, "alpha", "Selected memory")
+	syncID := requireMemorySyncID(t, store, memoryID)
+	service := NewServiceWithBackup(store, fakeGuardBackupStore{backups: []BackupManifest{{ID: "fresh", CreatedAt: now.Add(-time.Minute)}}})
+	service.now = func() time.Time { return now }
+	req := GuardRequest{Operation: GuardOperationDelete, TargetType: GuardTargetMemory, TargetID: memoryID, BackupID: "fresh", Confirmation: GuardConfirmation(GuardOperationDelete, GuardTargetMemory, memoryID), Reason: "cleanup", ExpectedProject: "alpha", ExpectedSyncID: syncID, RequestID: "delete-request-1"}
+	first, err := service.ExecuteGuard(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, first.Receipt)
+	require.Equal(t, db.GuardedMutationLocalCommitted, first.Receipt.LocalStatus)
+	retry, err := service.ExecuteGuard(context.Background(), req)
+	require.NoError(t, err)
+	require.Equal(t, first.Receipt, retry.Receipt)
+}
+
 func TestServiceGuardedMemoryOperationsMutateOnlySelectedLocalTarget(t *testing.T) {
 	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
 	store, err := db.Open(":memory:")
@@ -231,6 +285,7 @@ func TestServiceGuardedMemoryOperationsMutateOnlySelectedLocalTarget(t *testing.
 		BackupID:     "fresh-backup",
 		Confirmation: GuardConfirmation(GuardOperationRestore, GuardTargetMemory, restoreTargetID),
 		ActorID:      "tester",
+		Reason:       "restore selected memory",
 	})
 	require.NoError(t, err)
 	require.Equal(t, GuardOperationRestore, restored.Operation)

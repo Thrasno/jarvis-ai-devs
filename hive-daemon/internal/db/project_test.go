@@ -172,6 +172,31 @@ func TestGovernanceMemoryReadModelsRespectTombstoneFilter(t *testing.T) {
 	}
 }
 
+func TestGovernanceMemoryDeletedOnlyFilterExcludesActiveRows(t *testing.T) {
+	d, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	activeID := saveGovernanceTestMemory(t, d, "deleted-only", "Active")
+	deletedID := saveGovernanceTestMemory(t, d, "deleted-only", "Deleted")
+	if err := d.DeleteMemory(deletedID, "tester", "duplicate"); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := d.ListGovernanceMemories(context.Background(), hivedb.GovernanceMemoryFilter{Project: "deleted-only", DeletedOnly: true, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deleted) != 1 || deleted[0].ID != deletedID || !deleted[0].Deleted {
+		t.Fatalf("deleted-only = %+v; active id %d must be excluded", deleted, activeID)
+	}
+	_, err = d.ListGovernanceMemories(context.Background(), hivedb.GovernanceMemoryFilter{Project: "deleted-only", IncludeDeleted: true, DeletedOnly: true, Limit: 10})
+	if err == nil {
+		t.Fatal("combined include_deleted and deleted_only must be rejected")
+	}
+}
+
 func TestGovernanceReadModelsDoNotMutateRecordsOrSyncState(t *testing.T) {
 	t.Parallel()
 
@@ -517,7 +542,6 @@ func saveGovernanceTestMemory(t *testing.T, d *hivedb.DB, projectName, title str
 	}
 	return id
 }
-
 
 func requireMemoryProject(t *testing.T, d *hivedb.DB, id int64) string {
 	t.Helper()
