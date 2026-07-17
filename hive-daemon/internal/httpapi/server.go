@@ -145,6 +145,7 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 	s.mux.HandleFunc("POST /sessions/{id}/end", s.handleSessionsEnd)
 	s.mux.HandleFunc("POST /observations/passive", s.handleObservationsPassive)
 	if governance != nil {
+		s.mux.HandleFunc("/governance/capabilities", s.handleGovernanceCapabilities)
 		s.mux.HandleFunc("/governance/projects", s.handleGovernanceProjects)
 		s.mux.HandleFunc("/governance/projects/merge", s.handleGovernanceProjectMergeBatch)
 		s.mux.HandleFunc("/governance/projects/", s.handleGovernanceProject)
@@ -155,6 +156,7 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 		s.mux.HandleFunc("/governance/backups", s.handleGovernanceBackups)
 		s.mux.HandleFunc("/governance/restores", s.handleGovernanceRestores)
 		s.mux.HandleFunc("/governance/guards/execute", s.handleGovernanceGuardExecute)
+		s.mux.HandleFunc("GET /governance/mutations/{request_id}", s.handleGovernanceMutationReceipt)
 		s.mux.HandleFunc("POST /governance/imports/engram/preview", s.handleGovernanceEngramImportPreview)
 		s.mux.HandleFunc("POST /governance/imports/engram/execute", s.handleGovernanceEngramImportExecute)
 		s.mux.HandleFunc("GET /governance/imports/engram/jobs/{id}", s.handleGovernanceEngramImportJob)
@@ -337,6 +339,13 @@ func writeProjectValidationError(w http.ResponseWriter, err error) {
 	}
 	w.WriteHeader(http.StatusBadRequest)
 	_ = json.NewEncoder(w).Encode(validationErr)
+}
+
+func (s *Server) handleGovernanceCapabilities(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"capabilities": governance.Capabilities()})
 }
 
 func (s *Server) handleGovernanceProjects(w http.ResponseWriter, r *http.Request) {
@@ -522,14 +531,34 @@ func (s *Server) handleGovernanceMemories(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	idRaw := strings.TrimSpace(r.URL.Query().Get("id"))
+	id := int64(0)
+	if idRaw != "" {
+		id, err = strconv.ParseInt(idRaw, 10, 64)
+		if err != nil || id <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id must be a positive integer"})
+			return
+		}
+	}
 	includeDeleted, err := parseOptionalBool(r.URL.Query().Get("include_deleted"))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	deletedOnly, err := parseOptionalBool(r.URL.Query().Get("deleted_only"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "deleted_only must be a boolean"})
+		return
+	}
+	if includeDeleted && deletedOnly {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "include_deleted and deleted_only cannot be combined"})
+		return
+	}
 	memories, err := s.governance.Memories(r.Context(), governance.MemoryFilter{
 		Project:        r.URL.Query().Get("project"),
+		ID:             id,
 		IncludeDeleted: includeDeleted,
+		DeletedOnly:    deletedOnly,
 		Limit:          limit,
 	})
 	if err != nil {
@@ -639,6 +668,28 @@ func (s *Server) handleGovernanceGuardExecute(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"result": result})
+}
+
+func (s *Server) handleGovernanceMutationReceipt(w http.ResponseWriter, r *http.Request) {
+	targetID, err := strconv.ParseInt(r.URL.Query().Get("target_id"), 10, 64)
+	if err != nil || targetID <= 0 || strings.TrimSpace(r.URL.Query().Get("project")) == "" || strings.TrimSpace(r.URL.Query().Get("sync_id")) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "target identity is required"})
+		return
+	}
+	type receiptReader interface {
+		MutationReceipt(context.Context, string, int64, string, string) (db.MutationReceipt, error)
+	}
+	reader, ok := s.governance.(receiptReader)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mutation receipt support is unavailable"})
+		return
+	}
+	receipt, err := reader.MutationReceipt(r.Context(), r.PathValue("request_id"), targetID, r.URL.Query().Get("project"), r.URL.Query().Get("sync_id"))
+	if err != nil {
+		writeGuardError(w, "governance mutation receipt", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"receipt": receipt})
 }
 
 func (s *Server) handleGovernanceEngramImportPreview(w http.ResponseWriter, r *http.Request) {

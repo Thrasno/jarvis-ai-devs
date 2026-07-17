@@ -23,6 +23,7 @@ var (
 	ErrDestructiveConfirmationRequired  = errors.New("destructive operation confirmation is required")
 	ErrDestructiveConfirmationMismatch  = errors.New("destructive operation confirmation mismatch")
 	ErrDestructiveReasonRequired        = errors.New("delete reason is required")
+	ErrDestructiveIdentityMismatch      = errors.New("destructive operation target identity changed")
 	ErrDestructiveTargetRequired        = errors.New("destructive operation target is required")
 	ErrDestructiveOperationUnsupported  = errors.New("destructive operation is unsupported")
 	ErrDestructiveMutationStoreRequired = errors.New("destructive mutation store is not configured")
@@ -42,9 +43,26 @@ const (
 	destructiveBackupFreshness = 10 * time.Minute
 )
 
+// CapabilitySet advertises the complete safety contract required by the
+// installed Jarvis Hive delete/restore workflow. Clients must keep destructive
+// actions disabled when any required capability is absent.
+type CapabilitySet struct {
+	DeleteRestore    bool `json:"delete_restore"`
+	ExpectedIdentity bool `json:"expected_identity"`
+	RequestReceipts  bool `json:"request_receipts"`
+	MutationSyncV2   bool `json:"mutation_sync_v2"`
+}
+
+// Capabilities returns the contract implemented by this daemon version.
+func Capabilities() CapabilitySet {
+	return CapabilitySet{DeleteRestore: true, ExpectedIdentity: true, RequestReceipts: true, MutationSyncV2: true}
+}
+
 type MemoryFilter struct {
 	Project        string
+	ID             int64
 	IncludeDeleted bool
+	DeletedOnly    bool
 	Limit          int
 	Categories     []string // empty = no category filter (all types returned)
 	OrderAsc       bool     // false = DESC (default); true = ASC
@@ -73,6 +91,14 @@ type backupStore interface {
 type memoryMutationStore interface {
 	DeleteMemory(id int64, actorID, reason string) error
 	RestoreMemory(id int64, actorID string) error
+}
+
+type guardedMemoryMutationStore interface {
+	ExecuteGuardedMemoryMutation(db.GuardedMemoryMutation) (db.MutationReceipt, error)
+}
+
+type mutationReceiptStore interface {
+	MutationReceipt(string, int64, string, string) (db.MutationReceipt, error)
 }
 
 type projectArchiveStore interface {
@@ -118,21 +144,25 @@ type ProjectMergeBatchResult struct {
 }
 
 type GuardRequest struct {
-	Operation    string `json:"operation"`
-	TargetType   string `json:"target_type"`
-	TargetID     int64  `json:"target_id"`
-	BackupID     string `json:"backup_id"`
-	Confirmation string `json:"confirmation"`
-	ActorID      string `json:"actor_id,omitempty"`
-	Reason       string `json:"reason,omitempty"`
+	Operation       string `json:"operation"`
+	TargetType      string `json:"target_type"`
+	TargetID        int64  `json:"target_id"`
+	BackupID        string `json:"backup_id"`
+	Confirmation    string `json:"confirmation"`
+	ActorID         string `json:"actor_id,omitempty"`
+	Reason          string `json:"reason,omitempty"`
+	ExpectedProject string `json:"expected_project,omitempty"`
+	ExpectedSyncID  string `json:"expected_sync_id,omitempty"`
+	RequestID       string `json:"request_id,omitempty"`
 }
 
 type GuardResult struct {
-	Operation  string `json:"operation"`
-	TargetType string `json:"target_type"`
-	TargetID   int64  `json:"target_id"`
-	BackupID   string `json:"backup_id"`
-	Mutated    bool   `json:"mutated"`
+	Operation  string              `json:"operation"`
+	TargetType string              `json:"target_type"`
+	TargetID   int64               `json:"target_id"`
+	BackupID   string              `json:"backup_id"`
+	Mutated    bool                `json:"mutated"`
+	Receipt    *db.MutationReceipt `json:"receipt,omitempty"`
 }
 
 type ProjectArchiveRequest struct {
@@ -229,7 +259,9 @@ func (s *Service) Memories(ctx context.Context, filter MemoryFilter) ([]Memory, 
 	}
 	return s.store.ListGovernanceMemories(ctx, db.GovernanceMemoryFilter{
 		Project:        project,
+		ID:             filter.ID,
 		IncludeDeleted: filter.IncludeDeleted,
+		DeletedOnly:    filter.DeletedOnly,
 		Limit:          filter.Limit,
 		Categories:     filter.Categories,
 		OrderAsc:       filter.OrderAsc,
@@ -308,8 +340,14 @@ func (s *Service) ExecuteGuard(ctx context.Context, req GuardRequest) (GuardResu
 	if operation != GuardOperationDelete && operation != GuardOperationRestore || targetType != GuardTargetMemory {
 		return GuardResult{}, ErrDestructiveOperationUnsupported
 	}
-	if operation == GuardOperationDelete && reason == "" {
+	if reason == "" {
 		return GuardResult{}, ErrDestructiveReasonRequired
+	}
+	usesTransactionalCAS := strings.TrimSpace(req.RequestID) != "" && strings.TrimSpace(req.ExpectedProject) != "" && strings.TrimSpace(req.ExpectedSyncID) != ""
+	if !usesTransactionalCAS {
+		if err := s.validateGuardIdentity(ctx, req); err != nil {
+			return GuardResult{}, err
+		}
 	}
 	backupID, err := s.requireFreshBackup(ctx, req.BackupID)
 	if err != nil {
@@ -325,6 +363,13 @@ func (s *Service) ExecuteGuard(ctx context.Context, req GuardRequest) (GuardResu
 	if !ok {
 		return GuardResult{}, ErrDestructiveMutationStoreRequired
 	}
+	if guarded, ok := s.store.(guardedMemoryMutationStore); ok && usesTransactionalCAS {
+		receipt, err := guarded.ExecuteGuardedMemoryMutation(db.GuardedMemoryMutation{RequestID: req.RequestID, Operation: db.MutationOp(operation), TargetID: req.TargetID, ExpectedProject: req.ExpectedProject, ExpectedSyncID: req.ExpectedSyncID, ActorID: req.ActorID, Reason: reason})
+		if err != nil {
+			return GuardResult{}, err
+		}
+		return GuardResult{Operation: operation, TargetType: targetType, TargetID: req.TargetID, BackupID: backupID, Mutated: true, Receipt: &receipt}, nil
+	}
 	switch operation {
 	case GuardOperationDelete:
 		if err := mutator.DeleteMemory(req.TargetID, req.ActorID, reason); err != nil {
@@ -336,6 +381,30 @@ func (s *Service) ExecuteGuard(ctx context.Context, req GuardRequest) (GuardResu
 		}
 	}
 	return GuardResult{Operation: operation, TargetType: targetType, TargetID: req.TargetID, BackupID: backupID, Mutated: true}, nil
+}
+
+func (s *Service) MutationReceipt(_ context.Context, requestID string, targetID int64, project, syncID string) (db.MutationReceipt, error) {
+	store, ok := s.store.(mutationReceiptStore)
+	if !ok {
+		return db.MutationReceipt{}, ErrDestructiveMutationStoreRequired
+	}
+	return store.MutationReceipt(requestID, targetID, project, syncID)
+}
+
+func (s *Service) validateGuardIdentity(ctx context.Context, req GuardRequest) error {
+	// Expected identity is additive for compatibility with older local callers;
+	// the HTTP capability contract requires new clients to provide both values.
+	if strings.TrimSpace(req.ExpectedProject) == "" && strings.TrimSpace(req.ExpectedSyncID) == "" {
+		return nil
+	}
+	memory, err := s.MemoryByID(ctx, req.TargetID)
+	if err != nil {
+		return err
+	}
+	if memory.Project != req.ExpectedProject || memory.SyncID != req.ExpectedSyncID {
+		return ErrDestructiveIdentityMismatch
+	}
+	return nil
 }
 
 func (s *Service) ExecuteProjectArchive(ctx context.Context, req ProjectArchiveRequest) (ProjectArchiveResult, error) {

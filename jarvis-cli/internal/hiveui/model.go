@@ -2,6 +2,8 @@ package hiveui
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -29,6 +31,7 @@ const (
 	ScreenDashboard Screen = iota
 	ScreenProjects
 	ScreenProjectMemories
+	ScreenDeletedMemories
 	ScreenMemoryDetail
 	ScreenTimeline
 	ScreenWarnings
@@ -79,11 +82,27 @@ type MemoryLoader interface {
 	MemoryByID(context.Context, int64) (hiveclient.Memory, error)
 }
 
+type DeletedMemoryLoader interface {
+	DeletedMemoryByID(context.Context, int64, string) (hiveclient.Memory, error)
+}
+
+// GuardedMemoryWorkflow is the complete daemon-owned safety boundary used by
+// the canonical human delete/restore flow.
+type GuardedMemoryWorkflow interface {
+	GuardExecutor
+	MemoryLoader
+	DeletedMemoryLoader
+	CreateBackup(context.Context) (hiveclient.Backup, error)
+	MutationReceipt(context.Context, string, int64, string, string) (hiveclient.MutationReceipt, error)
+}
+
 type Snapshot struct {
 	DashboardState    DashboardState
 	DaemonURL         string
 	Projects          []hiveclient.Project
 	Memories          []hiveclient.Memory
+	DeletedMemories   []hiveclient.Memory
+	Capabilities      *hiveclient.Capabilities
 	TimelineMemories  []hiveclient.Memory
 	TimelineTruncated bool // true when the daemon hit the 500-entry timeline limit
 	Health            []hiveclient.Health
@@ -117,6 +136,9 @@ type Model struct {
 	guardStep         memoryGuardStep
 	guardSubmitting   bool
 	guardMemory       hiveclient.Memory
+	guardWorkflow     GuardedMemoryWorkflow
+	guardEnabled      bool
+	guardRequestID    string
 
 	projectArchiveExecutor     ProjectArchiveExecutor
 	projectArchiveProject      hiveclient.Project
@@ -312,6 +334,14 @@ func NewModelWithSnapshotAndGuardExecutor(snapshot Snapshot, executor GuardExecu
 	return m
 }
 
+// NewModelWithGuardedMemoryWorkflow enables the capability-gated workflow.
+func NewModelWithGuardedMemoryWorkflow(snapshot Snapshot, workflow GuardedMemoryWorkflow) Model {
+	m := NewModelWithSnapshotAndGuardExecutor(snapshot, workflow)
+	m.guardWorkflow = workflow
+	m.guardEnabled = snapshot.Capabilities != nil && snapshot.Capabilities.SupportsGuardedDeleteRestore()
+	return m
+}
+
 func NewModelWithSnapshotAndProjectArchiveExecutor(snapshot Snapshot, executor ProjectArchiveExecutor) Model {
 	m := NewModelWithSnapshot(snapshot)
 	m.projectArchiveExecutor = executor
@@ -433,10 +463,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Type == tea.KeyEsc || key.Type == tea.KeyBackspace:
 		m = m.back()
-	case m.screen == ScreenMemoryDetail && runeKey(key, 'd') && !m.selectedMemory().Deleted:
+	case m.screen == ScreenMemoryDetail && runeKey(key, 'd') && !m.selectedMemory().Deleted && (!m.hasGuardedWorkflow() || m.guardEnabled):
 		m = m.startMemoryGuard("delete")
-	case m.screen == ScreenMemoryDetail && runeKey(key, 'r') && m.selectedMemory().Deleted:
+	case m.screen == ScreenMemoryDetail && runeKey(key, 'r') && m.selectedMemory().Deleted && (!m.hasGuardedWorkflow() || m.guardEnabled):
 		m = m.startMemoryGuard("restore")
+	case m.screen == ScreenProjectMemories && runeKey(key, 'x'):
+		m.screen = ScreenDeletedMemories
+		m.memoryIndex = 0
+	case m.screen == ScreenDeletedMemories && runeKey(key, 'x'):
+		m.screen = ScreenProjectMemories
+		m.memoryIndex = 0
 	case m.screen == ScreenProjects && runeKey(key, 'a') && m.projectArchiveExecutor != nil:
 		m = m.startProjectArchive()
 	case m.screen == ScreenProjects && runeKey(key, 'm') && m.projectMergeBatchExecutor != nil:
@@ -497,6 +533,8 @@ func (m Model) View() string {
 	case ScreenProjects:
 		return m.projectsView()
 	case ScreenProjectMemories:
+		return m.projectMemoriesView()
+	case ScreenDeletedMemories:
 		return m.projectMemoriesView()
 	case ScreenMemoryDetail:
 		return m.memoryDetailView()
@@ -602,7 +640,7 @@ func (m Model) move(delta int) Model {
 	switch m.screen {
 	case ScreenProjects:
 		m.projectIndex = wrapIndex(m.projectIndex+delta, len(m.snapshot.Projects))
-	case ScreenProjectMemories, ScreenTimeline:
+	case ScreenProjectMemories, ScreenDeletedMemories, ScreenTimeline:
 		m.memoryIndex = wrapIndex(m.memoryIndex+delta, len(m.screenMemories()))
 	case ScreenWarnings:
 		m.warningIndex = wrapIndex(m.warningIndex+delta, len(m.snapshot.Warnings))
@@ -624,7 +662,7 @@ func (m Model) open() Model {
 		m.memoryIndex = 0
 		return m
 	}
-	if m.screen == ScreenProjectMemories || m.screen == ScreenTimeline {
+	if m.screen == ScreenProjectMemories || m.screen == ScreenDeletedMemories || m.screen == ScreenTimeline {
 		if len(m.screenMemories()) == 0 {
 			m.message = "No item is available to open."
 			return m
@@ -681,7 +719,11 @@ func (m Model) back() Model {
 		if m.detailReturn == ScreenTimeline {
 			m.screen = ScreenTimeline
 		} else {
-			m.screen = ScreenProjectMemories
+			if m.detailReturn == ScreenDeletedMemories {
+				m.screen = ScreenDeletedMemories
+			} else {
+				m.screen = ScreenProjectMemories
+			}
 		}
 	case ScreenMemoryGuard:
 		m.screen = ScreenMemoryDetail
@@ -701,6 +743,8 @@ func (m Model) back() Model {
 		m.mergeBatchSubmitting = false
 	case ScreenProjectMemories:
 		m.screen = ScreenProjects
+	case ScreenDeletedMemories:
+		m.screen = ScreenProjectMemories
 	case ScreenTimeline:
 		m.screen = ScreenDashboard
 	case ScreenBackupDetail:
@@ -780,12 +824,16 @@ func (m Model) projectsView() string {
 }
 
 func (m Model) projectMemoriesView() string {
-	memories := m.projectMemories()
+	memories := m.screenMemories()
 	project := m.selectedProject().Name
 	w := max(m.width, 80)
 	panelW := terminalui.PanelWidth(w)
 
-	crumb := breadcrumbStyle.Render("dashboard / projects / ") + breadcrumbCurrent.Render(project)
+	section := "active memories"
+	if m.screen == ScreenDeletedMemories {
+		section = "recently deleted"
+	}
+	crumb := breadcrumbStyle.Render("dashboard / projects / ") + breadcrumbCurrent.Render(project+" / "+section)
 	countBadge := dimTextStyle.Render(fmt.Sprintf("%d memories", len(memories)))
 
 	var sb strings.Builder
@@ -814,13 +862,13 @@ func (m Model) projectMemoriesView() string {
 		}
 		listContent.WriteString(cursor + row + "\n")
 	}
-	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("MEMORIES", panelW)+listContent.String(), panelW))
+	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader(strings.ToUpper(section), panelW)+listContent.String(), panelW))
 
 	if m.message != "" {
 		fmt.Fprintf(&sb, "\n%s\n", m.message)
 	}
 	sb.WriteString("\n")
-	sb.WriteString(helpBar([]KeyHint{{"j/k", "move"}, {"⏎", "open"}, {"t", "timeline"}, {"esc", "back"}, {"q", "quit"}}, "normal", w))
+	sb.WriteString(helpBar([]KeyHint{{"j/k", "move"}, {"⏎", "open"}, {"x", "archived"}, {"esc", "back"}, {"q", "quit"}}, "normal", w))
 	return sb.String()
 }
 
@@ -866,7 +914,9 @@ func (m Model) memoryDetailView() string {
 	}
 	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("CONTENT", panelW)+contentBody, panelW))
 
-	if m.guardExecutor != nil && memory.ID != 0 && memory.Deleted {
+	if m.hasGuardedWorkflow() && !m.guardEnabled {
+		sb.WriteString("\nDelete and restore are unavailable: hive-daemon does not advertise the complete safety contract.\n")
+	} else if m.guardExecutor != nil && memory.ID != 0 && memory.Deleted {
 		sb.WriteString("\nr restore guarded by backup ID and exact confirmation\n")
 	} else if m.guardExecutor != nil && memory.ID != 0 {
 		sb.WriteString("\nd delete guarded by backup ID, delete reason, and exact confirmation\n")
@@ -897,6 +947,9 @@ func (m Model) startMemoryGuard(operation string) Model {
 	m.guardOperation = operation
 	m.guardMemory = memory
 	m.guardStep = memoryGuardBackupID
+	if m.hasGuardedWorkflow() {
+		m.guardStep = memoryGuardReason
+	}
 	m.guardBackupID = ""
 	m.guardReason = ""
 	m.guardConfirmation = ""
@@ -941,7 +994,7 @@ func (m Model) submitMemoryGuard() (tea.Model, tea.Cmd) {
 			m.message = fmt.Sprintf("Backup ID is required before guarded %s.", m.guardOperation)
 			return m, nil
 		}
-		if m.guardOperation == "delete" {
+		if m.guardOperation == "delete" || m.hasGuardedWorkflow() {
 			m.guardStep = memoryGuardReason
 			return m, nil
 		}
@@ -951,7 +1004,7 @@ func (m Model) submitMemoryGuard() (tea.Model, tea.Cmd) {
 	if m.guardStep == memoryGuardReason {
 		reason := strings.TrimSpace(m.guardReason)
 		if reason == "" {
-			m.message = "Delete reason is required before guarded delete."
+			m.message = strings.Title(m.guardOperation) + " reason is required before guarded " + m.guardOperation + "."
 			return m, nil
 		}
 		m.guardReason = reason
@@ -975,10 +1028,43 @@ func (m Model) submitMemoryGuard() (tea.Model, tea.Cmd) {
 		BackupID:     strings.TrimSpace(m.guardBackupID),
 		Confirmation: m.guardConfirmation,
 	}
-	if m.guardOperation == "delete" {
+	if m.guardOperation == "delete" || m.hasGuardedWorkflow() {
 		request.Reason = strings.TrimSpace(m.guardReason)
 	}
 	m.guardSubmitting = true
+	if m.hasGuardedWorkflow() {
+		requestID := newGuardRequestID()
+		m.guardRequestID = requestID
+		workflow := m.guardWorkflow
+		memory := m.guardMemory
+		return m, func() tea.Msg {
+			backup, err := workflow.CreateBackup(context.Background())
+			if err != nil {
+				return memoryGuardResultMsg{operation: request.Operation, targetType: request.TargetType, targetID: request.TargetID, err: err}
+			}
+			var current hiveclient.Memory
+			if memory.Deleted {
+				current, err = workflow.DeletedMemoryByID(context.Background(), memory.ID, memory.Project)
+			} else {
+				current, err = workflow.MemoryByID(context.Background(), memory.ID)
+			}
+			if err != nil || current.ID != memory.ID || current.Project != memory.Project || current.SyncID != memory.SyncID || current.Deleted != memory.Deleted {
+				if err == nil {
+					err = fmt.Errorf("Memory identity changed during revalidation")
+				}
+				return memoryGuardResultMsg{operation: request.Operation, targetType: request.TargetType, targetID: request.TargetID, backupID: backup.ID, err: err}
+			}
+			request.BackupID, request.ExpectedProject, request.ExpectedSyncID, request.RequestID = backup.ID, current.Project, current.SyncID, requestID
+			result, err := workflow.ExecuteGuard(context.Background(), request)
+			if err != nil {
+				receipt, receiptErr := workflow.MutationReceipt(context.Background(), requestID, memory.ID, memory.Project, memory.SyncID)
+				if receiptErr == nil {
+					result.Receipt, err = &receipt, nil
+				}
+			}
+			return memoryGuardResultMsg{operation: request.Operation, targetType: request.TargetType, targetID: request.TargetID, backupID: backup.ID, result: result, err: err}
+		}
+	}
 	return m, func() tea.Msg {
 		result, err := executor.ExecuteGuard(context.Background(), request)
 		return memoryGuardResultMsg{operation: request.Operation, targetType: request.TargetType, targetID: request.TargetID, backupID: request.BackupID, result: result, err: err}
@@ -986,7 +1072,7 @@ func (m Model) submitMemoryGuard() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) applyMemoryGuardResult(msg memoryGuardResultMsg) Model {
-	if !m.guardSubmitting || msg.operation != m.guardOperation || msg.targetType != "memory" || msg.targetID != m.guardMemory.ID || msg.backupID != strings.TrimSpace(m.guardBackupID) {
+	if !m.guardSubmitting || msg.operation != m.guardOperation || msg.targetType != "memory" || msg.targetID != m.guardMemory.ID || (!m.hasGuardedWorkflow() && msg.backupID != strings.TrimSpace(m.guardBackupID)) {
 		return m
 	}
 	m.screen = ScreenMemoryDetail
@@ -995,14 +1081,27 @@ func (m Model) applyMemoryGuardResult(msg memoryGuardResultMsg) Model {
 		m.message = fmt.Sprintf("Guarded memory %s failed through hive-daemon: %v", msg.operation, msg.err)
 		return m
 	}
-	m.message = fmt.Sprintf("Guarded memory %s dispatched through hive-daemon. No direct SQLite or cloud mutation was performed by the TUI.", msg.operation)
+	verb := "dispatched"
+	if m.hasGuardedWorkflow() {
+		verb = "committed"
+	}
+	m.message = fmt.Sprintf("Guarded memory %s %s through hive-daemon. No direct SQLite or cloud mutation was performed by the TUI.", msg.operation, verb)
+	if msg.result.Receipt != nil {
+		m.message += fmt.Sprintf(" Local status: %s. Shared status: %s.", msg.result.Receipt.LocalStatus, msg.result.Receipt.SharedStatus)
+	}
 	if msg.operation == "delete" {
+		deleted := m.guardMemory
+		deleted.Deleted = true
+		m.snapshot.DeletedMemories = append(m.snapshot.DeletedMemories, deleted)
 		m = m.removeMemoryFromNormalSnapshot(msg.targetID)
 		if m.detailReturn == ScreenTimeline {
 			m.screen = ScreenTimeline
 		} else {
 			m.screen = ScreenProjectMemories
 		}
+	} else if msg.operation == "restore" {
+		m = m.restoreMemoryToActiveSnapshot(m.guardMemory)
+		m.screen = ScreenProjectMemories
 		m.memoryContent = ""
 		m.memoryLoading = false
 		m.memoryLoadErr = nil
@@ -1058,6 +1157,33 @@ func (m Model) removeMemoryFromNormalSnapshot(id int64) Model {
 		return m
 	}
 	m.memoryIndex = wrapIndex(m.memoryIndex, len(m.projectMemories()))
+	return m
+}
+
+func (m Model) restoreMemoryToActiveSnapshot(memory hiveclient.Memory) Model {
+	for i := range m.snapshot.DeletedMemories {
+		if m.snapshot.DeletedMemories[i].ID == memory.ID {
+			m.snapshot.DeletedMemories = append(m.snapshot.DeletedMemories[:i], m.snapshot.DeletedMemories[i+1:]...)
+			break
+		}
+	}
+	memory.Deleted = false
+	m.snapshot.Memories = append(m.snapshot.Memories, memory)
+	for i := range m.snapshot.TimelineMemories {
+		if m.snapshot.TimelineMemories[i].ID == memory.ID {
+			m.snapshot.TimelineMemories[i] = memory
+			break
+		}
+	}
+	for i := range m.snapshot.Projects {
+		if m.snapshot.Projects[i].Name == memory.Project {
+			m.snapshot.Projects[i].ActiveMemoryCount++
+			if m.snapshot.Projects[i].DeletedMemoryCount > 0 {
+				m.snapshot.Projects[i].DeletedMemoryCount--
+			}
+			break
+		}
+	}
 	return m
 }
 
@@ -1137,10 +1263,10 @@ func (m Model) memoryGuardView() string {
 
 	// SAFETY panel
 	safetyContent := fmt.Sprintf("Backup ID is required: %s\n", visibleInput(m.guardBackupID))
-	if m.guardOperation == "delete" {
+	if m.guardOperation == "delete" || m.hasGuardedWorkflow() {
 		safetyContent += fmt.Sprintf("Delete reason is required: %s\n", visibleInput(m.guardReason))
 	}
-	if m.guardOperation == "delete" && m.guardStep != memoryGuardConfirmation {
+	if (m.guardOperation == "delete" || m.hasGuardedWorkflow()) && m.guardStep != memoryGuardConfirmation {
 		safetyContent += "Confirmation must match exactly after backup ID and delete reason are provided.\n"
 	} else {
 		safetyContent += fmt.Sprintf("Confirmation must match exactly. Type exactly: %s\n", memoryGuardConfirmationPhrase(m.guardOperation, memory))
@@ -1149,7 +1275,7 @@ func (m Model) memoryGuardView() string {
 		safetyContent += fmt.Sprintf("confirmation: %s\n", visibleInput(m.guardConfirmation))
 	}
 	fieldScope := "both fields"
-	if m.guardOperation == "delete" {
+	if m.guardOperation == "delete" || m.hasGuardedWorkflow() {
 		fieldScope = "all fields"
 	}
 	safetyContent += fmt.Sprintf("No %s will run until %s pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation.", m.guardOperation, fieldScope)
@@ -2989,7 +3115,7 @@ func (m Model) projectMemories() []hiveclient.Memory {
 	project := m.selectedProject().Name
 	memories := make([]hiveclient.Memory, 0, len(m.snapshot.Memories))
 	for _, memory := range m.snapshot.Memories {
-		if memory.Project == project {
+		if memory.Project == project && (!memory.Deleted || m.snapshot.DeletedMemories == nil) {
 			memories = append(memories, memory)
 		}
 	}
@@ -3003,7 +3129,27 @@ func (m Model) screenMemories() []hiveclient.Memory {
 	if m.screen == ScreenTimeline {
 		return m.snapshot.TimelineMemories
 	}
+	if m.screen == ScreenDeletedMemories || (m.screen == ScreenMemoryDetail && m.detailReturn == ScreenDeletedMemories) {
+		project := m.selectedProject().Name
+		memories := make([]hiveclient.Memory, 0, len(m.snapshot.DeletedMemories))
+		for _, memory := range m.snapshot.DeletedMemories {
+			if memory.Project == project && memory.Deleted {
+				memories = append(memories, memory)
+			}
+		}
+		return memories
+	}
 	return m.projectMemories()
+}
+
+func (m Model) hasGuardedWorkflow() bool { return m.guardWorkflow != nil }
+
+func newGuardRequestID() string {
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		return fmt.Sprintf("guard-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(bytes)
 }
 
 func (m Model) selectedMemory() hiveclient.Memory {

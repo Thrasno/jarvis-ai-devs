@@ -29,6 +29,18 @@ func TestHiveCmd_DaemonURLFlag(t *testing.T) {
 	}
 }
 
+func TestResolveHiveDaemonURLHonorsManagedRuntimeOverrides(t *testing.T) {
+	t.Setenv("HIVE_DAEMON_URL", "http://127.0.0.1:7444")
+	t.Setenv("HIVE_HTTP_PORT", "7555")
+	if got := resolveHiveDaemonURL(); got != "http://127.0.0.1:7444" {
+		t.Fatalf("resolveHiveDaemonURL() = %q, want HIVE_DAEMON_URL override", got)
+	}
+	t.Setenv("HIVE_DAEMON_URL", "")
+	if got := resolveHiveDaemonURL(); got != "http://127.0.0.1:7555" {
+		t.Fatalf("resolveHiveDaemonURL() = %q, want loopback port override", got)
+	}
+}
+
 func TestHiveCmd_RegisteredOnRootCmd(t *testing.T) {
 	found := false
 	for _, cmd := range rootCmd.Commands() {

@@ -25,6 +25,7 @@ const (
 )
 
 var ErrNotAvailable = errors.New("governance endpoint is not available")
+var ErrDeletedMemoryNotFound = errors.New("deleted memory not found")
 
 type Client struct {
 	baseURL *url.URL
@@ -72,7 +73,9 @@ type Memory struct {
 
 type MemoryFilter struct {
 	Project        string
+	ID             int64
 	IncludeDeleted bool
+	DeletedOnly    bool
 	Limit          int
 }
 
@@ -106,22 +109,51 @@ type Backup struct {
 	SizeBytes    int64     `json:"size_bytes"`
 }
 
+// Capabilities is the daemon's advertised guarded-mutation safety contract.
+// The UI must require all fields before enabling delete or restore.
+type Capabilities struct {
+	DeleteRestore    bool `json:"delete_restore"`
+	ExpectedIdentity bool `json:"expected_identity"`
+	RequestReceipts  bool `json:"request_receipts"`
+	MutationSyncV2   bool `json:"mutation_sync_v2"`
+}
+
+func (c Capabilities) SupportsGuardedDeleteRestore() bool {
+	return c.DeleteRestore && c.ExpectedIdentity && c.RequestReceipts && c.MutationSyncV2
+}
+
 type GuardRequest struct {
-	Operation    string `json:"operation"`
-	TargetType   string `json:"target_type"`
-	TargetID     int64  `json:"target_id"`
-	BackupID     string `json:"backup_id"`
-	Confirmation string `json:"confirmation"`
-	ActorID      string `json:"actor_id,omitempty"`
-	Reason       string `json:"reason,omitempty"`
+	Operation       string `json:"operation"`
+	TargetType      string `json:"target_type"`
+	TargetID        int64  `json:"target_id"`
+	BackupID        string `json:"backup_id"`
+	Confirmation    string `json:"confirmation"`
+	ActorID         string `json:"actor_id,omitempty"`
+	Reason          string `json:"reason,omitempty"`
+	ExpectedProject string `json:"expected_project,omitempty"`
+	ExpectedSyncID  string `json:"expected_sync_id,omitempty"`
+	RequestID       string `json:"request_id,omitempty"`
 }
 
 type GuardResult struct {
-	Operation  string `json:"operation"`
-	TargetType string `json:"target_type"`
-	TargetID   int64  `json:"target_id"`
-	BackupID   string `json:"backup_id"`
-	Mutated    bool   `json:"mutated"`
+	Operation  string           `json:"operation"`
+	TargetType string           `json:"target_type"`
+	TargetID   int64            `json:"target_id"`
+	BackupID   string           `json:"backup_id"`
+	Mutated    bool             `json:"mutated"`
+	Receipt    *MutationReceipt `json:"receipt,omitempty"`
+}
+
+// MutationReceipt is the durable outcome for one guarded local mutation.
+type MutationReceipt struct {
+	RequestID    string `json:"request_id"`
+	Operation    string `json:"operation"`
+	TargetID     int64  `json:"target_id"`
+	Project      string `json:"project"`
+	EntitySyncID string `json:"entity_sync_id"`
+	EventID      string `json:"event_id"`
+	LocalStatus  string `json:"local_status"`
+	SharedStatus string `json:"shared_status"`
 }
 
 type ProjectArchiveRequest struct {
@@ -416,8 +448,14 @@ func (c *Client) Projects(ctx context.Context) ([]Project, error) {
 
 func (c *Client) Memories(ctx context.Context, filter MemoryFilter) ([]Memory, error) {
 	query := url.Values{"project": {filter.Project}}
+	if filter.ID > 0 {
+		query.Set("id", strconv.FormatInt(filter.ID, 10))
+	}
 	if filter.IncludeDeleted {
 		query.Set("include_deleted", "true")
+	}
+	if filter.DeletedOnly {
+		query.Set("deleted_only", "true")
 	}
 	if filter.Limit > 0 {
 		query.Set("limit", strconv.Itoa(filter.Limit))
@@ -442,6 +480,19 @@ func (c *Client) MemoryByID(ctx context.Context, id int64) (Memory, error) {
 	return body.Memory, nil
 }
 
+func (c *Client) DeletedMemoryByID(ctx context.Context, id int64, project string) (Memory, error) {
+	memories, err := c.Memories(ctx, MemoryFilter{Project: project, ID: id, DeletedOnly: true})
+	if err != nil {
+		return Memory{}, err
+	}
+	for _, memory := range memories {
+		if memory.ID == id {
+			return memory, nil
+		}
+	}
+	return Memory{}, fmt.Errorf("%w: id=%d", ErrDeletedMemoryNotFound, id)
+}
+
 func (c *Client) Warnings(ctx context.Context) ([]Warning, error) {
 	var body struct {
 		Warnings []Warning `json:"warnings"`
@@ -462,6 +513,26 @@ func (c *Client) Backups(ctx context.Context) ([]Backup, error) {
 	return body.Backups, nil
 }
 
+func (c *Client) CreateBackup(ctx context.Context) (Backup, error) {
+	var body struct {
+		Backup Backup `json:"backup"`
+	}
+	if err := c.post(ctx, "/governance/backups", struct{}{}, &body); err != nil {
+		return Backup{}, err
+	}
+	return body.Backup, nil
+}
+
+func (c *Client) Capabilities(ctx context.Context) (Capabilities, error) {
+	var body struct {
+		Capabilities Capabilities `json:"capabilities"`
+	}
+	if err := c.get(ctx, "/governance/capabilities", nil, &body, true); err != nil {
+		return Capabilities{}, err
+	}
+	return body.Capabilities, nil
+}
+
 func (c *Client) ExecuteGuard(ctx context.Context, guard GuardRequest) (GuardResult, error) {
 	var body struct {
 		Result GuardResult `json:"result"`
@@ -470,6 +541,17 @@ func (c *Client) ExecuteGuard(ctx context.Context, guard GuardRequest) (GuardRes
 		return GuardResult{}, err
 	}
 	return body.Result, nil
+}
+
+func (c *Client) MutationReceipt(ctx context.Context, requestID string, targetID int64, project, syncID string) (MutationReceipt, error) {
+	query := url.Values{"target_id": {strconv.FormatInt(targetID, 10)}, "project": {project}, "sync_id": {syncID}}
+	var body struct {
+		Receipt MutationReceipt `json:"receipt"`
+	}
+	if err := c.get(ctx, "/governance/mutations/"+url.PathEscape(strings.TrimSpace(requestID)), query, &body, false); err != nil {
+		return MutationReceipt{}, err
+	}
+	return body.Receipt, nil
 }
 
 func (c *Client) ArchiveProject(ctx context.Context, req ProjectArchiveRequest) (ProjectArchiveResult, error) {
