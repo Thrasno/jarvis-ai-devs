@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -230,7 +231,7 @@ func dashboardHandler(dashboardAssetsDir string) gin.HandlerFunc {
 		}
 
 		relPath := strings.TrimPrefix(c.Param("path"), "/")
-		cleanPath := filepath.Clean(relPath)
+		cleanPath := path.Clean(relPath)
 		if cleanPath == "." {
 			serveDashboardIndex(c, dashboardAssetsDir)
 			return
@@ -262,7 +263,8 @@ func serveDashboardIndex(c *gin.Context, dashboardAssetsDir string) {
 
 func serveDashboardAsset(c *gin.Context, dashboardAssetsDir, cleanPath string) {
 	assetPath := filepath.Join(dashboardAssetsDir, cleanPath)
-	if !regularFileExists(assetPath) {
+	resolvedPath, err := filepath.EvalSymlinks(assetPath)
+	if err != nil || resolvedPath != assetPath || !regularFileExists(assetPath) {
 		jsonNotFound(c)
 		return
 	}
@@ -282,6 +284,9 @@ func isDashboardAssetTraversal(rawPath string) bool {
 	}
 	if !strings.HasPrefix(path, "/dashboard/assets/") {
 		return false
+	}
+	if strings.Contains(path, `\`) {
+		return true
 	}
 
 	for _, segment := range strings.Split(path, "/") {
