@@ -2,6 +2,10 @@ module github.com/Thrasno/jarvis-ai-devs/jarvis-cli
 
 go 1.26.2
 
+require github.com/Thrasno/jarvis-ai-devs/hivederive v0.0.0
+
+replace github.com/Thrasno/jarvis-ai-devs/hivederive => ../hivederive
+
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0

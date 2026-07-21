@@ -1,76 +1,25 @@
 package project
 
 import (
-	"os"
-	"os/exec"
-	"path/filepath"
-	"regexp"
 	"strings"
+
+	"github.com/Thrasno/jarvis-ai-devs/hivederive"
 )
 
-// safeNamePattern matches characters allowed in a canonical project name.
-// Allowed: ASCII letters, digits, dot, underscore, hyphen.
-// parity anchor: jarvis-cli/internal/project/detector.go:safeNamePattern
-var safeNamePattern = regexp.MustCompile(`[^A-Za-z0-9._-]`)
-
-// DeriveFromDirectory returns the canonical project name for dir using the
-// SAME resolution order as jarvis-cli DetectProject:
-//  1. git remote get-url origin -> repo name (.git stripped)  [cmd.Dir = dir]
-//  2. basename(dir)
-//  3. "default"
-//
-// The directory must exist on the filesystem. If os.Stat(dir) fails for a
-// non-empty dir, "default" is returned rather than deriving from the basename
-// of a fabricated path.
+// DeriveFromDirectory returns the canonical project name for dir, delegating to
+// the shared hivederive.Derive source of truth (git remote → basename, with
+// WSL/Windows path normalization). On any derivation error it returns the
+// internal "default" sentinel so the existing `!= "default"` provenance guards
+// keep working unchanged; hivederive itself never returns the literal
+// "default".
 //
 // parity anchor: jarvis-cli/internal/project/detector.go:DetectProject
 func DeriveFromDirectory(dir string) string {
-	if strings.TrimSpace(dir) == "" {
+	name, err := hivederive.Derive(dir)
+	if err != nil {
 		return "default"
 	}
-	// Trust-boundary guard: only derive from directories that actually exist.
-	if _, err := os.Stat(dir); err != nil {
-		return "default"
-	}
-	cmd := exec.Command("git", "remote", "get-url", "origin")
-	cmd.Dir = dir
-	if out, err := cmd.Output(); err == nil {
-		if name := extractRepoName(strings.TrimSpace(string(out))); name != "" {
-			return name
-		}
-	}
-	if base := filepath.Base(dir); base != "" && base != "." && base != "/" {
-		return base
-	}
-	return "default"
-}
-
-// extractRepoName parses a git remote URL and returns the repository name.
-// Handles both HTTPS (https://github.com/org/repo.git) and SSH (git@github.com:org/repo.git).
-// The returned name is sanitized: only [A-Za-z0-9._-] characters are kept.
-// This prevents prompt-injection via crafted remote URLs.
-// parity anchor: jarvis-cli/internal/project/detector.go:extractRepoName
-func extractRepoName(remoteURL string) string {
-	remoteURL = strings.TrimSuffix(remoteURL, ".git")
-	remoteURL = strings.TrimSpace(remoteURL)
-	if remoteURL == "" {
-		return ""
-	}
-	// Find last segment separator — whichever of '/' or ':' comes last.
-	lastSlash := strings.LastIndex(remoteURL, "/")
-	lastColon := strings.LastIndex(remoteURL, ":")
-	sep := lastSlash
-	if lastColon > sep {
-		sep = lastColon
-	}
-	var name string
-	if sep < 0 || sep == len(remoteURL)-1 {
-		name = remoteURL
-	} else {
-		name = remoteURL[sep+1:]
-	}
-	// Sanitize: strip any character outside [A-Za-z0-9._-].
-	return safeNamePattern.ReplaceAllString(name, "")
+	return name
 }
 
 // ResolveEffectiveProject returns the project name to use for persistence and

@@ -357,6 +357,56 @@ func TestRunSessionStart_MalformedInput_OutputsProtocol(t *testing.T) {
 	}
 }
 
+// TestRunSessionStart_DerivationError_FailsSafe verifies that when the supplied
+// directory cannot be derived (empty directory → hivederive.ErrEmptyDir, mapped
+// to an empty canonical name), the SessionStart hook still emits valid JSON,
+// injects the unpinned protocol text, and never crashes. The pin line is
+// absent because there is no canonical name to pin.
+func TestRunSessionStart_DerivationError_FailsSafe(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+	t.Setenv("HIVE_CLAUDE_SESSION_ID", "derive-error-start")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	var out bytes.Buffer
+	// No directory/cwd in payload → DetectProject("") returns "" (ErrEmptyDir).
+	RunSessionStart(context.Background(), strings.NewReader(`{"session_id":"derive-error-start"}`), &out, srv.URL)
+
+	var resp map[string]string
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("derivation error must still yield valid JSON: %v (%q)", err, out.String())
+	}
+	if !strings.Contains(resp["additionalContext"], "Hive Memory Protocol") {
+		t.Errorf("expected protocol text even on derivation error, got: %q", resp["additionalContext"])
+	}
+	if strings.Contains(resp["additionalContext"], "Active project:") {
+		t.Errorf("no pin line expected when derivation fails, got: %q", resp["additionalContext"])
+	}
+}
+
+// TestRunPromptSubmit_DerivationError_FailsSafe verifies the prompt-submit hook
+// degrades safely when derivation fails: valid JSON, no crash, no non-zero exit.
+func TestRunPromptSubmit_DerivationError_FailsSafe(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	var out bytes.Buffer
+	// No directory → derivation error path; first prompt still returns a message.
+	RunPromptSubmit(context.Background(), strings.NewReader(`{"session_id":"derive-error-prompt","prompt":"hi"}`), &out, srv.URL)
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("derivation error must still yield valid JSON: %v (%q)", err, out.String())
+	}
+}
+
 // --- RunSessionCompact ---
 
 func TestRunSessionCompact_OutputsCompactProtocol(t *testing.T) {
