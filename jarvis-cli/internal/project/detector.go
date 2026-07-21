@@ -3,15 +3,11 @@ package project
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
-)
 
-// safeNamePattern matches characters allowed in a canonical project name.
-// Allowed: ASCII letters, digits, dot, underscore, hyphen.
-var safeNamePattern = regexp.MustCompile(`[^A-Za-z0-9._-]`)
+	"github.com/Thrasno/jarvis-ai-devs/hivederive"
+)
 
 // Stack represents the detected technology stack of a project.
 type Stack string
@@ -79,22 +75,17 @@ func DetectStack(dir string) Stack {
 	return StackUnknown
 }
 
-// DetectProject returns the project name. Resolution order:
-//  1. git remote get-url origin → last path/colon-segment, .git stripped
-//  2. basename of dir
-//  3. "default"
+// DetectProject returns the canonical project name for dir, delegating to the
+// shared hivederive.Derive source of truth (git remote → basename). On any
+// derivation error — empty directory, unresolvable path, or no derivable name —
+// it returns "" so hook callers treat it as "no pin / skip register" rather
+// than leaking an ambient-cwd repo name or the silent "default" sentinel.
 func DetectProject(dir string) string {
-	cmd := exec.Command("git", "remote", "get-url", "origin")
-	cmd.Dir = dir
-	if out, err := cmd.Output(); err == nil {
-		if name := extractRepoName(strings.TrimSpace(string(out))); name != "" {
-			return name
-		}
+	name, err := hivederive.Derive(dir)
+	if err != nil {
+		return ""
 	}
-	if base := filepath.Base(dir); base != "" && base != "." && base != "/" {
-		return base
-	}
-	return "default"
+	return name
 }
 
 // SkillsForStack returns the skill list for a given stack.
@@ -110,32 +101,4 @@ func SkillsForStack(stack Stack) []string {
 		skills = append(skills, "zoho-deluge")
 	}
 	return skills
-}
-
-// extractRepoName parses a git remote URL and returns the repository name.
-// Handles both HTTPS (https://github.com/org/repo.git) and SSH (git@github.com:org/repo.git).
-// The returned name is sanitized: only [A-Za-z0-9._-] characters are kept.
-// This prevents prompt-injection via crafted remote URLs.
-// parity anchor: hive-daemon/internal/project/derive.go:extractRepoName
-func extractRepoName(remoteURL string) string {
-	remoteURL = strings.TrimSuffix(remoteURL, ".git")
-	remoteURL = strings.TrimSpace(remoteURL)
-	if remoteURL == "" {
-		return ""
-	}
-	// Find last segment separator — whichever of '/' or ':' comes last.
-	lastSlash := strings.LastIndex(remoteURL, "/")
-	lastColon := strings.LastIndex(remoteURL, ":")
-	sep := lastSlash
-	if lastColon > sep {
-		sep = lastColon
-	}
-	var name string
-	if sep < 0 || sep == len(remoteURL)-1 {
-		name = remoteURL
-	} else {
-		name = remoteURL[sep+1:]
-	}
-	// Sanitize: strip any character outside [A-Za-z0-9._-].
-	return safeNamePattern.ReplaceAllString(name, "")
 }
