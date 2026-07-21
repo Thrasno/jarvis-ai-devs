@@ -16,6 +16,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sanitize"
 	hivesync "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sync"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -129,6 +130,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 			"properties": {
 				"content":    {"type": "string", "description": "Session summary in markdown"},
 				"project":    {"type": "string", "description": "Project identifier"},
+				"directory":  {"type": "string", "description": "Working directory; the daemon derives the canonical project name from this path to self-heal an unknown/stale project. The filesystem-derived name wins over the supplied project on conflict."},
 				"session_id": {"type": "string", "description": "Optional session ID; absent triggers lazy manual-save fallback"},
 				"recovery_token": {"type": "string", "description": "Recovery token returned by an ambiguous project response"},
 				"project_choice_reason": {"type": "string", "description": "Original ambiguous project/context used when retrying with recovery_token"}
@@ -487,6 +489,7 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 		var p struct {
 			Content             string `json:"content"`
 			Project             string `json:"project"`
+			Directory           string `json:"directory"`
 			SessionID           string `json:"session_id"`
 			RecoveryToken       string `json:"recovery_token"`
 			ProjectChoiceReason string `json:"project_choice_reason"`
@@ -497,13 +500,48 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 		if p.Content == "" {
 			return toolError(fmt.Errorf("content is required")), nil
 		}
+
+		// Self-heal registration: when a directory is supplied (outside a
+		// recovery retry), the filesystem-derived canonical name is the source
+		// of truth and wins over any caller-supplied project name — recovering
+		// from a stale or unknown project instead of failing the summary.
+		//
+		// We call hivederive.Derive directly (not the DeriveFromDirectory
+		// adapter) so derivation failures surface as typed errors rather than
+		// collapsing into the "default" sentinel string: an underivable path
+		// leaves the caller-supplied project untouched (derived=false) instead
+		// of masquerading as a derived name. The provenance flag then gates the
+		// project_unknown escape exactly like memSaveHandler does.
+		derived := false
+		if p.RecoveryToken == "" && strings.TrimSpace(p.Directory) != "" {
+			if name, derr := hivederive.Derive(p.Directory); derr == nil && name != "" {
+				p.Project = name
+				derived = true
+			}
+		}
+
 		if p.Project == "" {
 			return toolError(fmt.Errorf("project is required")), nil
 		}
 
 		resolved, err := project.ValidateWriteProject(context.Background(), store, project.WriteInput{Project: p.Project, SessionID: p.SessionID, RecoveryToken: p.RecoveryToken, ProjectChoiceReason: p.ProjectChoiceReason})
 		if err != nil {
-			return toolValidationError(err), nil
+			var validationErr *project.ValidationError
+			if errors.As(err, &validationErr) &&
+				validationErr.Code == project.CodeProjectUnknown &&
+				derived &&
+				p.Project != "default" {
+				// Provenance-gated escape mirroring memSaveHandler (tools.go
+				// escape block): the name came from real git/filesystem
+				// derivation, so allow the write — the session-summary row
+				// itself registers the derived project in KnownProjects.
+				// "default" is excluded: it is the reserved sentinel for
+				// "no real name" and must never auto-register as a pooling
+				// target, keeping strict parity with mem_save.
+				resolved = project.Result{Project: p.Project}
+			} else {
+				return toolValidationError(err), nil
+			}
 		}
 		p.Project = resolved.Project
 
