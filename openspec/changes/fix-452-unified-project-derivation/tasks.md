@@ -52,11 +52,11 @@ Branch naming: tracker `fix/452-project-autodetection` (draft, no-merge). PR1 br
 
 ## Phase 3: PR3 — marker decoupling (base: PR2 branch)
 
-- [ ] 3.1 RED: `jarvis-cli/internal/hook/events_test.go` — `RunSessionStart` writes `markerSessionStart` only, not `markerFirstPrompt` (spec: Distinct SessionStart Marker).
-- [ ] 3.2 RED: `RunPromptSubmit` exclusive-creates `markerFirstPrompt`, nudge fires once per real session, not on subsequent prompts (spec: First-Prompt Marker Owned Exclusively, FIRST ACTION Nudge Fires Once).
-- [ ] 3.3 RED: compaction-path regression test — first-prompt marker pre-exists after compaction, nudge not re-triggered (spec: Compaction Path Unaffected).
-- [ ] 3.4 GREEN: add `markerSessionStart` constant to `jarvis-cli/internal/hook/protocol.go`; update `RunSessionStart` in `events.go` to write it (idempotent, timestamp-preserving); confirm `RunPromptSubmit` sole ownership of `markerFirstPrompt`.
-- [ ] 3.5 Verify: `go test ./jarvis-cli/internal/hook/...` and `go vet ./jarvis-cli/...`.
+- [x] 3.1 RED: `jarvis-cli/internal/hook/marker_decoupling_test.go` — `RunSessionStart` writes `markerSessionStart` only, not `markerFirstPrompt` (`TestRunSessionStart_WritesSessionStartMarkerOnly`; also tightened existing `TestRunSessionStart_HappyPath_InjectsProtocol`) (spec: Distinct SessionStart Marker).
+- [x] 3.2 RED: `TestFirstActionNudge_FiresAfterSessionStart` — after SessionStart, first `RunPromptSubmit` exclusive-creates `markerFirstPrompt` and emits `FirstPromptSystemMessage`; second prompt returns `{}` (spec: First-Prompt Marker Owned Exclusively, FIRST ACTION Nudge Fires Once).
+- [x] 3.3 RED: `TestCompaction_DoesNotRetriggerNudge` — first-prompt marker pre-exists after compaction, `RunSessionCompact` touches no markers, next prompt does not re-fire the nudge (spec: Compaction Path Unaffected).
+- [x] 3.4 GREEN: added `markerSessionStart` constant to `protocol.go`; `RunSessionStart` now writes it via new `CreateSessionStartMarker` (idempotent, timestamp-preserving); extracted shared `createMarkerExclusive` core; `RunPromptSubmit` retains sole ownership of `markerFirstPrompt`.
+- [x] 3.5 Verify: `go test ./... -count=1` and `go vet ./...` GREEN in `jarvis-cli/`; touched files gofmt-clean.
 
 ## Phase 4: PR4 — loud failure + honest docs (base: PR3 branch)
 
