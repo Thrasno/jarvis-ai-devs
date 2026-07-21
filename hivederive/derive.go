@@ -27,9 +27,9 @@ var (
 	// ErrPathUnresolvable is returned when a non-empty directory cannot be
 	// stat'd, even after WSL/Windows normalization.
 	ErrPathUnresolvable = errors.New("hivederive: path cannot be resolved")
-	// ErrDefaultOnly is returned when the directory resolves but no real name
+	// ErrNoDerivableName is returned when the directory resolves but no real name
 	// (neither git remote nor usable basename) can be derived from it.
-	ErrDefaultOnly = errors.New("hivederive: no real name derivable")
+	ErrNoDerivableName = errors.New("hivederive: no real name derivable")
 )
 
 // osStat is the injectable stat function (defaults to os.Stat).
@@ -48,7 +48,7 @@ var safeNamePattern = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 // ErrEmptyDir without touching the filesystem or the process's ambient cwd. A
 // non-empty directory that cannot be stat'd (after normalization) yields
 // ErrPathUnresolvable. A resolvable directory with no derivable name yields
-// ErrDefaultOnly.
+// ErrNoDerivableName.
 func Derive(dir string) (string, error) {
 	if strings.TrimSpace(dir) == "" {
 		return "", ErrEmptyDir
@@ -63,7 +63,7 @@ func Derive(dir string) (string, error) {
 	if base := filepath.Base(resolved); base != "" && base != "." && base != "/" {
 		return base, nil
 	}
-	return "", ErrDefaultOnly
+	return "", ErrNoDerivableName
 }
 
 // resolveDir stats dir and returns the path that actually exists. It tries the

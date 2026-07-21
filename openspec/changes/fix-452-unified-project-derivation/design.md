@@ -40,7 +40,7 @@ One derivation source of truth in a new committed module `hivederive`, consumed 
 var (
     ErrEmptyDir         = errors.New("hivederive: empty directory")
     ErrPathUnresolvable = errors.New("hivederive: path cannot be resolved")
-    ErrDefaultOnly      = errors.New("hivederive: no real name derivable")
+    ErrNoDerivableName  = errors.New("hivederive: no real name derivable")
 )
 func Derive(dir string) (string, error)        // normalize → stat → git remote → basename → typed err (never "default")
 func NormalizePath(dir string) (string, error) // WSL/Windows translation, gated
