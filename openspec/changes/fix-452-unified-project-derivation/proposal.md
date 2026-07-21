@@ -30,7 +30,7 @@ None.
 
 ## Approach
 
-**Decision: Approach A (shared Go module via relative `replace`).** Create `github.com/Thrasno/jarvis-ai-devs/hivederive` with `Derive(dir) (string, error)` returning typed errors (`ErrEmptyDir`, `ErrPathUnresolvable`, `ErrDefaultOnly`) and `NormalizePath(dir)` (translate `C:\...`, `/mnt/c/...`, UNC `\\wsl$\...`, backslashes) applied **before** `os.Stat`. Consume it via relative `replace` in `jarvis-cli/go.mod` and `hive-daemon/go.mod`. It is the only option that ends parity drift while staying committed and reproducible.
+**Decision: Approach A (shared Go module via relative `replace`).** Create `github.com/Thrasno/jarvis-ai-devs/hivederive` with `Derive(dir) (string, error)` returning typed errors (`ErrEmptyDir`, `ErrPathUnresolvable`, `ErrNoDerivableName`) and `NormalizePath(dir)` (translate `C:\...`, `/mnt/c/...`, UNC `\\wsl$\...`, backslashes) applied **before** `os.Stat`. Consume it via relative `replace` in `jarvis-cli/go.mod` and `hive-daemon/go.mod`. It is the only option that ends parity drift while staying committed and reproducible.
 
 **Fallback trigger → Approach C** (parity copies + cross-module parity test): adopt only if GoReleaser/CI verification proves the `replace` directive breaks per-binary release builds. Validate `docs/release-runbook.md` + goreleaser configs in PR1 before committing to A.
 

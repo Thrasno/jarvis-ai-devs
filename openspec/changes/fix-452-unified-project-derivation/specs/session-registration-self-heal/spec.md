@@ -61,7 +61,7 @@ The self-heal path MUST NOT register a project literally named `"default"`.
 
 #### Scenario: Derivation would yield default is refused
 
-- GIVEN derivation from `directory` would otherwise resolve to the sentinel value `"default"` (e.g. `ErrDefaultOnly` or an empty/degenerate basename)
+- GIVEN derivation from `directory` would otherwise resolve to the sentinel value `"default"` (e.g. `ErrNoDerivableName` or an empty/degenerate basename)
 - WHEN the self-heal path evaluates the derived name
 - THEN it refuses to register `"default"`
 - AND the call fails with a typed error rather than silently registering `"default"`

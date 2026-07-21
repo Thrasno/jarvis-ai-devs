@@ -32,7 +32,7 @@ Branch naming: tracker `fix/452-project-autodetection` (draft, no-merge). PR1 br
 
 - [x] 1.1 RED: `hivederive/derive_test.go` table tests — git-remote name, basename fallback, empty dir → `ErrEmptyDir`, unresolvable path → `ErrPathUnresolvable`, sanitized `extractRepoName` (spec: Single Derivation Source of Truth, No Ambient-CWD Derivation, Unresolvable Path Typed Error).
 - [x] 1.2 RED: `hivederive/normalize_test.go` table tests — `C:\a\b`, `/mnt/c/a/b`, UNC `\\wsl$\...`, backslashes, injectable stat + WSL-marker fns, native-Windows pass-through (spec: Cross-Platform Path Normalization, Normalization Gating by Runtime).
-- [x] 1.3 GREEN: create `hivederive/go.mod` (`github.com/Thrasno/jarvis-ai-devs/hivederive`), implement `Derive`, `NormalizePath`, typed errors (`ErrEmptyDir`, `ErrPathUnresolvable`, `ErrDefaultOnly`), moved `extractRepoName`.
+- [x] 1.3 GREEN: create `hivederive/go.mod` (`github.com/Thrasno/jarvis-ai-devs/hivederive`), implement `Derive`, `NormalizePath`, typed errors (`ErrEmptyDir`, `ErrPathUnresolvable`, `ErrNoDerivableName`), moved `extractRepoName`.
 - [x] 1.4 Decision checkpoint: at checkpoint the module-only diff was 479 lines (forecast ~500-750), under 800 → continued. Final PR1 authored diff landed at 822 (565 add / 257 del, go.sum excluded), 22 over budget due to duplicate-code deletions. Committed as PR1a (module, ~479) + PR1b (wiring, ~343) boundary; flagged to orchestrator as a risk.
 - [x] 1.5 Wire `jarvis-cli/go.mod` — add `require`+`replace ../hivederive`; update `jarvis-cli/internal/project/detector.go` `DetectProject` to call `hivederive.Derive`, return `""` on error (no ambient cwd, stat guard).
 - [x] 1.6 Wire `hive-daemon/go.mod` — add `require`+`replace ../hivederive`; update `hive-daemon/internal/project/derive.go` `DeriveFromDirectory` to call `hivederive.Derive`, map typed errors to internal `"default"` sentinel (preserve existing `!=default` guards).
@@ -42,13 +42,13 @@ Branch naming: tracker `fix/452-project-autodetection` (draft, no-merge). PR1 br
 
 ## Phase 2: PR2 — self-healing writes (base: PR1 branch)
 
-- [ ] 2.1 RED: `hive-daemon/internal/mcp/tools_test.go` — `mem_session_summary` with `directory` after `project_unknown` self-heals and proceeds; without `directory` still fails `project_unknown` (spec: Directory Parameter, Self-Heal on project_unknown).
-- [ ] 2.2 RED: idempotent registration test — repeated calls, same directory, no duplicate/error (spec: Idempotent Registration).
-- [ ] 2.3 RED: conflict test — derived name overrides stale caller-supplied project name (spec: Filesystem-Derived Name Wins on Conflict).
-- [ ] 2.4 RED: refusal test — derivation resolving to `"default"` is refused with typed error, never registered (spec: Never Register "default").
-- [ ] 2.5 RED: parity test — existing `mem_save` escape (`derived && project!="default"`) at tools.go:285-311 unchanged (spec: mem_save Escape Behavior Unchanged).
-- [ ] 2.6 GREEN: add `directory` field to `memSessionSummaryHandler` (tools.go:485), call `ResolveEffectiveProject`, mirror the tools.go:285-311 escape.
-- [ ] 2.7 Verify: `go test ./hive-daemon/...` and `go vet ./hive-daemon/...`.
+- [x] 2.1 RED: `hive-daemon/internal/mcp/session_summary_selfheal_test.go` — `mem_session_summary` with `directory` after `project_unknown` self-heals and proceeds; without `directory` still fails `project_unknown` (spec: Directory Parameter, Self-Heal on project_unknown).
+- [x] 2.2 RED: idempotent registration test — repeated calls, same directory, no duplicate/error (spec: Idempotent Registration).
+- [x] 2.3 RED: conflict test — derived name overrides stale caller-supplied project name (spec: Filesystem-Derived Name Wins on Conflict).
+- [x] 2.4 RED: refusal test — derivation resolving to `"default"` is refused, never registered; underivable path (typed error) does not self-heal. Documented decision: a directory whose basename is literally `"default"` is also refused to preserve the reserved pooling-sentinel guard and strict `mem_save` parity (spec: Never Register "default").
+- [x] 2.5 RED: parity test — existing `mem_save` escape (`derived && project!="default"`) unchanged (spec: mem_save Escape Behavior Unchanged).
+- [x] 2.6 GREEN: added `directory` field to `memSessionSummaryHandler` (tools.go) + schema; derive via `hivederive.Derive` directly (typed errors, derived-name-wins), mirror the memSaveHandler provenance-gated escape. Deviation from design's "call ResolveEffectiveProject": that helper does not derive when a project name is supplied, so it cannot satisfy the derived-name-wins-on-conflict requirement; direct `Derive` is used and the escape guard is preserved verbatim.
+- [x] 2.7 Verify: `go test ./...` and `go vet ./...` GREEN in `hive-daemon/`; gofmt clean.
 
 ## Phase 3: PR3 — marker decoupling (base: PR2 branch)
 
