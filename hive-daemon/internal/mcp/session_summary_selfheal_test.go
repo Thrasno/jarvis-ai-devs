@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
@@ -363,4 +364,145 @@ func TestMemSave_ProvenanceEscape_Parity_Unchanged(t *testing.T) {
 			t.Fatal("SaveMemory must not be called for the 'default' sentinel")
 		}
 	})
+}
+
+// ─── PR2 correction: caller-supplied valid project must win ──────────────────
+
+// TestMemSessionSummary_ValidKnownProject_NotOverriddenByDirectory is the
+// regression guard for the CRITICAL finding: a valid, KNOWN caller-supplied
+// project must never be silently overridden by a directory that derives to a
+// DIFFERENT known project. Self-heal derivation is a fallback for an unknown or
+// empty caller project only — it must not hijack an authoritative one. This
+// mirrors memSaveHandler / ResolveEffectiveProject, where a non-empty caller
+// project short-circuits derivation.
+func TestMemSessionSummary_ValidKnownProject_NotOverriddenByDirectory(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	dir := t.TempDir()
+	initGitRepoMCP(t, dir, "https://github.com/org/team-beta.git")
+
+	var savedProject string
+	store := &mockStore{
+		knownProjectsFn: func(context.Context) ([]project.KnownProject, error) {
+			// Both the caller's project and the directory-derived name are known.
+			return []project.KnownProject{{Name: "team-alpha"}, {Name: "team-beta"}}, nil
+		},
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			savedProject = m.Project
+			return 1, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_session_summary", map[string]any{
+		"content":   "## Goal\nvalid known caller project must win",
+		"project":   "team-alpha",
+		"directory": dir, // derives to team-beta
+	})
+
+	if res.IsError {
+		t.Fatalf("valid known project summary should succeed, got error: %s", textContent(t, res))
+	}
+	if savedProject != "team-alpha" {
+		t.Errorf("saved project = %q, want %q (a valid known caller project must not be overridden by the directory)", savedProject, "team-alpha")
+	}
+}
+
+// ─── PR2 correction: masked derive failure surfaces structured error ─────────
+
+// TestMemSessionSummary_EmptyProject_UnderivableDirectory_StructuredError is the
+// regression guard for the masked-derive-failure finding: when self-heal is
+// attempted (empty project + directory present) but hivederive.Derive fails, the
+// caller must receive a structured project_unknown ValidationError (preserving
+// the recovery_token contract) whose message carries the typed derive reason —
+// not a generic uncoded "project is required" plain-text error.
+func TestMemSessionSummary_EmptyProject_UnderivableDirectory_StructuredError(t *testing.T) {
+	t.Parallel()
+
+	var saveCalled bool
+	store := &mockStore{
+		knownProjectsFn: func(context.Context) ([]project.KnownProject, error) {
+			return []project.KnownProject{}, nil
+		},
+		saveMemoryFn: func(*models.Memory) (int64, error) {
+			saveCalled = true
+			return 1, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_session_summary", map[string]any{
+		"content":   "## Goal\nempty project, underivable directory",
+		"project":   "",
+		"directory": "/totally/nonexistent/path/that/does/not/exist/xyz789",
+	})
+
+	if !res.IsError {
+		t.Fatal("expected IsError=true: an underivable directory must not self-heal")
+	}
+	body := decodeJSONResponse(t, res)
+	if got := body["error_code"]; got != string(project.CodeProjectUnknown) {
+		t.Fatalf("error_code = %v, want %q; body=%v", got, project.CodeProjectUnknown, body)
+	}
+	msg, _ := body["error"].(string)
+	if !strings.Contains(msg, "directory") {
+		t.Errorf("error message %q should explain the directory-derivation failure reason", msg)
+	}
+	if saveCalled {
+		t.Fatal("SaveMemory must not be called when derivation fails")
+	}
+}
+
+// ─── PR2 correction: recovery_token retry skips derivation ───────────────────
+
+// TestMemSessionSummary_RecoveryToken_SkipsDerivation is the missing coverage
+// for the recovery-retry path: when a recovery_token is supplied together with a
+// directory, derivation is skipped entirely and the retry project is preserved
+// byte-identical through validation to the persisted row. This keeps the
+// ambiguous-project recovery contract intact.
+func TestMemSessionSummary_RecoveryToken_SkipsDerivation(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	dir := t.TempDir()
+	initGitRepoMCP(t, dir, "https://github.com/org/derived-repo.git")
+
+	var savedProject string
+	var validatedProject string
+	store := &mockStore{
+		validateRecoveryTokenFn: func(_ context.Context, v project.TokenValidation) error {
+			validatedProject = v.SelectedProject
+			return nil
+		},
+		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			savedProject = m.Project
+			return 1, nil
+		},
+	}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_session_summary", map[string]any{
+		"content":               "## Goal\nrecovery retry keeps its project",
+		"project":               "retry-project",
+		"directory":             dir, // would derive to derived-repo if derivation ran
+		"recovery_token":        "tok-123",
+		"project_choice_reason": "retry-project",
+	})
+
+	if res.IsError {
+		t.Fatalf("recovery retry should succeed, got error: %s", textContent(t, res))
+	}
+	if validatedProject != "retry-project" {
+		t.Errorf("recovery validation selected project = %q, want %q", validatedProject, "retry-project")
+	}
+	if savedProject != "retry-project" {
+		t.Errorf("saved project = %q, want %q (recovery retry must skip derivation)", savedProject, "retry-project")
+	}
 }

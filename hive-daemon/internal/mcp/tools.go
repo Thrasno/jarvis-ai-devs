@@ -501,49 +501,56 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 			return toolError(fmt.Errorf("content is required")), nil
 		}
 
-		// Self-heal registration: when a directory is supplied (outside a
-		// recovery retry), the filesystem-derived canonical name is the source
-		// of truth and wins over any caller-supplied project name — recovering
-		// from a stale or unknown project instead of failing the summary.
+		ctx := context.Background()
+
+		// Validate the caller-supplied project FIRST. A valid, known project is
+		// authoritative and is never overridden by the working directory — this
+		// mirrors memSaveHandler / ResolveEffectiveProject, where a non-empty
+		// caller project short-circuits derivation.
 		//
-		// We call hivederive.Derive directly (not the DeriveFromDirectory
-		// adapter) so derivation failures surface as typed errors rather than
-		// collapsing into the "default" sentinel string: an underivable path
-		// leaves the caller-supplied project untouched (derived=false) instead
-		// of masquerading as a derived name. The provenance flag then gates the
-		// project_unknown escape exactly like memSaveHandler does.
-		derived := false
-		if p.RecoveryToken == "" && strings.TrimSpace(p.Directory) != "" {
-			if name, derr := hivederive.Derive(p.Directory); derr == nil && name != "" {
-				p.Project = name
-				derived = true
-			}
-		}
-
-		if p.Project == "" {
-			return toolError(fmt.Errorf("project is required")), nil
-		}
-
-		resolved, err := project.ValidateWriteProject(context.Background(), store, project.WriteInput{Project: p.Project, SessionID: p.SessionID, RecoveryToken: p.RecoveryToken, ProjectChoiceReason: p.ProjectChoiceReason})
+		// Filesystem derivation is a SELF-HEAL fallback that runs ONLY when the
+		// caller project is unknown (or empty) AND a usable directory is present,
+		// outside a recovery retry. In that escape the filesystem-derived name
+		// wins — recovering an unknown/stale project instead of failing the
+		// summary — because the caller could not name a project the daemon knows.
+		resolved, err := project.ValidateWriteProject(ctx, store, project.WriteInput{Project: p.Project, SessionID: p.SessionID, RecoveryToken: p.RecoveryToken, ProjectChoiceReason: p.ProjectChoiceReason})
 		if err != nil {
 			var validationErr *project.ValidationError
-			if errors.As(err, &validationErr) &&
+			canSelfHeal := errors.As(err, &validationErr) &&
 				validationErr.Code == project.CodeProjectUnknown &&
-				derived &&
-				p.Project != "default" {
-				// Provenance-gated escape mirroring memSaveHandler (tools.go
-				// escape block): the name came from real git/filesystem
-				// derivation, so allow the write — the session-summary row
-				// itself registers the derived project in KnownProjects.
-				// "default" is excluded: it is the reserved sentinel for
-				// "no real name" and must never auto-register as a pooling
-				// target, keeping strict parity with mem_save.
-				resolved = project.Result{Project: p.Project}
-			} else {
+				p.RecoveryToken == "" &&
+				strings.TrimSpace(p.Directory) != ""
+			if !canSelfHeal {
 				return toolValidationError(err), nil
 			}
+
+			// Derive directly from the real filesystem (not the
+			// "default"-collapsing DeriveFromDirectory adapter) so a failure
+			// surfaces as a typed error rather than masquerading as a derived
+			// name.
+			name, derr := hivederive.Derive(p.Directory)
+			if derr != nil {
+				// Surface a structured project_unknown carrying the typed derive
+				// reason instead of a generic uncoded "project is required", so
+				// the caller keeps the recovery_token contract and gets an
+				// actionable message.
+				return toolValidationError(&project.ValidationError{
+					Code:    project.CodeProjectUnknown,
+					Message: fmt.Sprintf("project is required: could not derive a project name from directory %q: %v", p.Directory, derr),
+				}), nil
+			}
+			if name == "" || name == "default" {
+				// "default" is the reserved pooling sentinel: it must never
+				// auto-register as a project. Keep the original project_unknown.
+				return toolValidationError(err), nil
+			}
+
+			// Derived name wins on conflict: the caller project was unknown, so
+			// the session-summary row registers the derived project instead.
+			p.Project = name
+		} else {
+			p.Project = resolved.Project
 		}
-		p.Project = resolved.Project
 
 		// Guard: same 50K rune limit as memSaveHandler.
 		if runeCount := utf8.RuneCountInString(p.Content); runeCount > MaxObservationLength {
