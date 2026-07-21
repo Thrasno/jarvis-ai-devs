@@ -86,6 +86,12 @@ mcp__hive__mem_get_observation(id: 42)
 
 **When to use**: At the start of a session to recover recent context. Before mem_search when looking for recent work.
 
+**Note on project registration**: `mem_context` does NOT register the project. Registration
+happens automatically via the SessionStart hook, and self-healing writes register the project
+on demand — `mem_save` and `mem_session_summary` derive and register from the supplied directory
+when the project is not yet known. If a write returns `project_unknown`, retry it with the
+working directory rather than relying on `mem_context`.
+
 ---
 
 ### mcp__hive__mem_session_summary

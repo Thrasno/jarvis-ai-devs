@@ -35,8 +35,13 @@ func RunSessionStart(ctx context.Context, r io.Reader, w io.Writer, baseURL stri
 
 	// Notify daemon with the derived canonical name — non-fatal.
 	// This registers the canonical project before any mem_save call.
+	// The error is intentionally non-fatal (the hook must always emit valid
+	// JSON), but it is logged to stderr with the reason so a failed
+	// registration becomes diagnosable instead of silently swallowed.
 	client := &DaemonClient{BaseURL: baseURL, Timeout: 4 * time.Second}
-	_ = client.PostSessionStart(ctx, sessionID, canonical, directory)
+	if err := client.PostSessionStart(ctx, sessionID, canonical, directory); err != nil {
+		logger.Printf("session-start registration failed: session=%q project=%q: %v", sessionID, canonical, err)
+	}
 
 	WriteResponse(w, HookResponse{AdditionalContext: BuildHiveProtocolText(canonical)})
 }

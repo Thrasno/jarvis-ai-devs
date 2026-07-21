@@ -60,9 +60,9 @@ Branch naming: tracker `fix/452-project-autodetection` (draft, no-merge). PR1 br
 
 ## Phase 4: PR4 — loud failure + honest docs (base: PR3 branch)
 
-- [ ] 4.1 RED: `events_test.go` — `PostSessionStart` error is captured and logged with reason via stderr logger, hook still degrades fail-safe (spec: Registration Failures Are Logged, Never Swallowed).
-- [ ] 4.2 RED: daemon test — derive fallback/refusal path logs `derive: %q unresolved (%v); refusing to register "default"`, never falls back to registering `"default"` (spec: No Fallback to "default" Registration).
-- [ ] 4.3 GREEN: unswallow `PostSessionStart` error in `events.go:36`, add stderr log line with session/project/reason; add matching log line at `hive-daemon/internal/mcp/server.go` `handleSessionsCreate` (~871).
-- [ ] 4.4 Update `embed/hive-protocol.md` and `embed/skills/hive/SKILL.md` — remove claim that `mem_context` registers projects; describe SessionStart hook / self-healing writes as actual registration mechanism (spec: Documentation Reflects Actual Registration Behavior).
-- [ ] 4.5 RED/regression: add a doc-claim check (grep-based test or doc assertion) that fails if the old incorrect claim reappears.
-- [ ] 4.6 Verify: `go test ./...` and `go vet ./...` across `jarvis-cli/`, `hive-daemon/`.
+- [x] 4.1 RED: `loud_failure_test.go` — `PostSessionStart` error is captured and logged with reason via the hook stderr logger (`session-start registration failed: session=%q project=%q: %v`), hook still emits valid JSON and degrades fail-safe (spec: Registration Failures Are Logged, Never Swallowed). Also updated `client_test.go` (`_ServerDown_ReturnsError`) for the surfaced-error contract.
+- [x] 4.2 RED: `loud_derive_test.go` — derive refusal path on session create logs `derive: %q unresolved (%v); refusing to register "default"`, never falls back to registering `"default"`, and never creates the session (spec: No Fallback to "default" Registration).
+- [x] 4.3 GREEN: added `internal/hook/logger.go` (stderr `[jarvis] ` logger); split client `sendJSON` (surfaces errors) from fire-and-forget `post`; `PostSessionStart` now reports its error; `events.go` logs the reason on failure. Added matching refusal log in `hive-daemon/internal/httpapi/server.go` `handleSessionsCreate` via direct `hivederive.Derive` (the swallowed `DeriveFromDirectory` sentinel cannot carry the typed error). Note: the function lives in package `httpapi`, not `mcp` as the task path stated.
+- [x] 4.4 Updated `embed/hive-protocol.md` and `embed/skills/hive/SKILL.md` — removed the claim that `mem_context` registers projects; both now describe the SessionStart hook and self-healing writes (mem_save / mem_session_summary with directory) as the actual registration mechanism (spec: Documentation Reflects Actual Registration Behavior).
+- [x] 4.5 RED/regression: `doc_claim_test.go` (root `jarvis_test`) fails if any false registration claim reappears in either embed doc, and positively asserts the SessionStart-hook mechanism is documented.
+- [x] 4.6 Verify: `go test ./...` and `go vet ./...` GREEN across `jarvis-cli/` and `hive-daemon/` (-count=1); touched files gofmt-clean.
