@@ -170,6 +170,20 @@ func TestDetectProject_NoGit(t *testing.T) {
 	}
 }
 
+// TestDetectProject_UnresolvablePath_ReturnsEmpty verifies that a non-empty
+// directory that cannot be stat'd yields "" (no basename guessing). The shared
+// hivederive.Derive returns a typed error for unresolvable paths, and the
+// DetectProject adapter maps every error to "" so hook callers skip the pin and
+// never leak an ambient-cwd repo name.
+func TestDetectProject_UnresolvablePath_ReturnsEmpty(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "does-not-exist")
+
+	got := DetectProject(dir)
+	if got != "" {
+		t.Errorf("DetectProject(unresolvable path) = %q, want %q", got, "")
+	}
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // SkillsForStack tests
 // ──────────────────────────────────────────────────────────────────────────────
