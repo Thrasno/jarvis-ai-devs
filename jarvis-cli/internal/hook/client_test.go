@@ -97,11 +97,17 @@ func TestDaemonClient_PostSessionStart_HappyPath(t *testing.T) {
 	}
 }
 
-func TestDaemonClient_PostSessionStart_ServerDown_ReturnsNil(t *testing.T) {
+// TestDaemonClient_PostSessionStart_ServerDown_ReturnsError verifies that
+// session registration surfaces a real error when the daemon is unreachable.
+// Unlike the other fire-and-forget notifications, PostSessionStart reports its
+// failure so the caller can log it — a silent registration failure would leave
+// a session with no project, undiagnosable (spec: Registration Failures Are
+// Logged, Never Swallowed). The caller still treats the error as non-fatal.
+func TestDaemonClient_PostSessionStart_ServerDown_ReturnsError(t *testing.T) {
 	c := &DaemonClient{BaseURL: "http://127.0.0.1:19999", Timeout: 200 * time.Millisecond}
 	err := c.PostSessionStart(context.Background(), "sid", "proj", "/dir")
-	if err != nil {
-		t.Errorf("expected nil (non-fatal), got: %v", err)
+	if err == nil {
+		t.Error("expected a non-nil error when the daemon is unreachable so it can be logged")
 	}
 }
 
