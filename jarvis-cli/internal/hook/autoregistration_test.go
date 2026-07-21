@@ -87,6 +87,48 @@ func TestRunSessionStart_NoDirectory_AlwaysOutputsProtocol(t *testing.T) {
 	}
 }
 
+// TestRunSessionStart_UnresolvableDirectory_PostsEmptyAndOmitsPin verifies that
+// when the payload directory cannot be resolved (non-existent path), derivation
+// yields "" — RunSessionStart POSTs project="" to /sessions and the protocol
+// text omits the "Active project:" pin line (no basename guessing, no leaked
+// ambient repo name).
+func TestRunSessionStart_UnresolvableDirectory_PostsEmptyAndOmitsPin(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("HIVE_CLAUDE_SESSION_ID", "session-unresolvable-test")
+
+	nonExistent := filepath.Join(t.TempDir(), "does-not-exist")
+
+	var captured map[string]string
+	posted := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sessions" {
+			posted = true
+			_ = json.NewDecoder(r.Body).Decode(&captured)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	payload := `{"session_id":"session-unresolvable-test","directory":"` + jsonEscape(nonExistent) + `"}`
+	var out bytes.Buffer
+	RunSessionStart(context.Background(), strings.NewReader(payload), &out, srv.URL)
+
+	if !posted {
+		t.Fatal("expected a POST /sessions call")
+	}
+	if captured["project"] != "" {
+		t.Errorf("POST /sessions project = %q, want empty string", captured["project"])
+	}
+
+	var resp map[string]string
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON output: %v\noutput: %q", err, out.String())
+	}
+	if strings.Contains(resp["additionalContext"], "Active project:") {
+		t.Errorf("additionalContext should omit the 'Active project:' pin for an unresolvable directory\ngot: %q", resp["additionalContext"])
+	}
+}
+
 // ─── T-14: RunPromptSubmit derives canonical locally ─────────────────────────
 
 // TestRunPromptSubmit_WithGitDirectory_PostsCanonicalProject verifies that

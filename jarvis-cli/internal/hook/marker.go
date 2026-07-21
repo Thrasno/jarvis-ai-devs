@@ -51,35 +51,56 @@ func markerPath(sessionID, name string) string {
 	return filepath.Join(base, "jarvis-hive", "claude-hooks", name+"-"+safe+".done")
 }
 
-// CreateMarker creates the marker file for the given session ID.
-// It creates all intermediate directories as needed.
-// If the file already exists the call is a no-op (idempotent): the existing
-// timestamp is PRESERVED, never rewritten. This matters because the first-prompt
-// marker's timestamp is the session-age baseline for the mid-session memory
-// reminder, and RunSessionStart calls CreateMarker on every SessionStart
-// (including resume/clear). Rewriting it would reset the session-age clock and
-// suppress the reminder on long/resumed sessions.
-//
-// Idempotency is achieved via an exclusive create (O_CREATE|O_EXCL): the
-// timestamp is written only when this call actually created the file; if the
-// file already exists the call leaves it untouched and returns nil.
-func CreateMarker(sessionID string) error {
-	p := markerPath(sessionID, markerFirstPrompt)
+// createMarkerExclusive is the shared core for the exclusive, timestamp-preserving
+// marker create. It atomically creates the named marker for sessionID using
+// O_CREATE|O_EXCL, creating parent directories as needed. It returns
+// created=true only when this call actually created the file; created=false with
+// a nil error when the file already existed (idempotent no-op, timestamp
+// preserved). Any other OS error is returned as err.
+func createMarkerExclusive(sessionID, name string) (created bool, err error) {
+	p := markerPath(sessionID, name)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
+		return false, err
 	}
 	f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
 		if os.IsExist(err) {
 			// Marker already exists — preserve its timestamp (idempotent no-op).
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
 	}
 	defer f.Close()
 	// Write a timestamp so the file is non-empty and human-readable.
 	_, _ = f.WriteString(time.Now().UTC().Format(time.RFC3339) + "\n")
-	return nil
+	return true, nil
+}
+
+// CreateMarker creates the first-prompt marker file for the given session ID.
+// It creates all intermediate directories as needed.
+// If the file already exists the call is a no-op (idempotent): the existing
+// timestamp is PRESERVED, never rewritten. This matters because the first-prompt
+// marker's timestamp is the session-age baseline for the mid-session memory
+// reminder. Rewriting it would reset the session-age clock and suppress the
+// reminder on long/resumed sessions.
+//
+// Idempotency is achieved via an exclusive create (O_CREATE|O_EXCL): the
+// timestamp is written only when this call actually created the file; if the
+// file already exists the call leaves it untouched and returns nil.
+func CreateMarker(sessionID string) error {
+	_, err := createMarkerExclusive(sessionID, markerFirstPrompt)
+	return err
+}
+
+// CreateSessionStartMarker creates the dedicated SessionStart marker for the
+// given session ID. It is idempotent and timestamp-preserving, exactly like
+// CreateMarker, but writes markerSessionStart instead of markerFirstPrompt so
+// SessionStart never pre-populates the first-prompt marker. Keeping the two
+// markers distinct is what lets RunPromptSubmit's exclusive create observe
+// created=true on the first real prompt and fire the FIRST ACTION nudge.
+func CreateSessionStartMarker(sessionID string) error {
+	_, err := createMarkerExclusive(sessionID, markerSessionStart)
+	return err
 }
 
 // DeleteMarker removes the marker file for the given session ID.
@@ -108,21 +129,7 @@ func MarkerExists(sessionID string) bool {
 // Use this instead of the MarkerExists + CreateMarker two-step when only one
 // concurrent caller should act (e.g. first-prompt detection in RunPromptSubmit).
 func CreateMarkerExclusive(sessionID string) (created bool, err error) {
-	p := markerPath(sessionID, markerFirstPrompt)
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return false, err
-	}
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err != nil {
-		if os.IsExist(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	defer f.Close()
-	// Write a timestamp so the file is non-empty and human-readable.
-	_, _ = f.WriteString(time.Now().UTC().Format(time.RFC3339) + "\n")
-	return true, nil
+	return createMarkerExclusive(sessionID, markerFirstPrompt)
 }
 
 // ReadMarkerTime reads the timestamp stored on the first line of the named

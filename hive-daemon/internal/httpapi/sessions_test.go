@@ -103,6 +103,31 @@ func TestPostSessions_EmptyDevIDAndClient_Returns200(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rr.Code)
 }
 
+func TestPostSessions_EmptyProjectAndDirectory_Returns400_NoPersist(t *testing.T) {
+	var createCalled bool
+	store := &mockSessionStore{
+		createSessionFn: func(id, project, directory, devID, client string) error {
+			createCalled = true
+			return nil
+		},
+	}
+	srv := newServerWithSessions(store)
+
+	// No project and no directory to derive from: the effective project stays
+	// empty. Persisting a session row with project="" corrupts the sessions
+	// table (project is TEXT NOT NULL but admits empty string), so the handler
+	// must reject before touching the store.
+	body := `{"id":"sess-empty","project":"","directory":"","dev_id":"","client":""}`
+	rr := postJSON(srv, "/sessions", body)
+
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+	assert.False(t, createCalled, "CreateSession must not be called when the effective project is empty")
+
+	var resp map[string]string
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+	assert.Equal(t, "project is required", resp["error"])
+}
+
 func TestPostSessions_MissingID_Returns400(t *testing.T) {
 	store := &mockSessionStore{}
 	srv := newServerWithSessions(store)

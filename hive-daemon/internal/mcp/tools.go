@@ -16,6 +16,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sanitize"
 	hivesync "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sync"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -129,6 +130,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 			"properties": {
 				"content":    {"type": "string", "description": "Session summary in markdown"},
 				"project":    {"type": "string", "description": "Project identifier"},
+				"directory":  {"type": "string", "description": "Working directory; the daemon derives the canonical project name from this path to self-heal an unknown/stale project. The filesystem-derived name wins over the supplied project on conflict."},
 				"session_id": {"type": "string", "description": "Optional session ID; absent triggers lazy manual-save fallback"},
 				"recovery_token": {"type": "string", "description": "Recovery token returned by an ambiguous project response"},
 				"project_choice_reason": {"type": "string", "description": "Original ambiguous project/context used when retrying with recovery_token"}
@@ -487,6 +489,7 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 		var p struct {
 			Content             string `json:"content"`
 			Project             string `json:"project"`
+			Directory           string `json:"directory"`
 			SessionID           string `json:"session_id"`
 			RecoveryToken       string `json:"recovery_token"`
 			ProjectChoiceReason string `json:"project_choice_reason"`
@@ -497,15 +500,57 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 		if p.Content == "" {
 			return toolError(fmt.Errorf("content is required")), nil
 		}
-		if p.Project == "" {
-			return toolError(fmt.Errorf("project is required")), nil
-		}
 
-		resolved, err := project.ValidateWriteProject(context.Background(), store, project.WriteInput{Project: p.Project, SessionID: p.SessionID, RecoveryToken: p.RecoveryToken, ProjectChoiceReason: p.ProjectChoiceReason})
+		ctx := context.Background()
+
+		// Validate the caller-supplied project FIRST. A valid, known project is
+		// authoritative and is never overridden by the working directory — this
+		// mirrors memSaveHandler / ResolveEffectiveProject, where a non-empty
+		// caller project short-circuits derivation.
+		//
+		// Filesystem derivation is a SELF-HEAL fallback that runs ONLY when the
+		// caller project is unknown (or empty) AND a usable directory is present,
+		// outside a recovery retry. In that escape the filesystem-derived name
+		// wins — recovering an unknown/stale project instead of failing the
+		// summary — because the caller could not name a project the daemon knows.
+		resolved, err := project.ValidateWriteProject(ctx, store, project.WriteInput{Project: p.Project, SessionID: p.SessionID, RecoveryToken: p.RecoveryToken, ProjectChoiceReason: p.ProjectChoiceReason})
 		if err != nil {
-			return toolValidationError(err), nil
+			var validationErr *project.ValidationError
+			canSelfHeal := errors.As(err, &validationErr) &&
+				validationErr.Code == project.CodeProjectUnknown &&
+				p.RecoveryToken == "" &&
+				strings.TrimSpace(p.Directory) != ""
+			if !canSelfHeal {
+				return toolValidationError(err), nil
+			}
+
+			// Derive directly from the real filesystem (not the
+			// "default"-collapsing DeriveFromDirectory adapter) so a failure
+			// surfaces as a typed error rather than masquerading as a derived
+			// name.
+			name, derr := hivederive.Derive(p.Directory)
+			if derr != nil {
+				// Surface a structured project_unknown carrying the typed derive
+				// reason instead of a generic uncoded "project is required", so
+				// the caller keeps the recovery_token contract and gets an
+				// actionable message.
+				return toolValidationError(&project.ValidationError{
+					Code:    project.CodeProjectUnknown,
+					Message: fmt.Sprintf("project is required: could not derive a project name from directory %q: %v", p.Directory, derr),
+				}), nil
+			}
+			if name == "" || name == "default" {
+				// "default" is the reserved pooling sentinel: it must never
+				// auto-register as a project. Keep the original project_unknown.
+				return toolValidationError(err), nil
+			}
+
+			// Derived name wins on conflict: the caller project was unknown, so
+			// the session-summary row registers the derived project instead.
+			p.Project = name
+		} else {
+			p.Project = resolved.Project
 		}
-		p.Project = resolved.Project
 
 		// Guard: same 50K rune limit as memSaveHandler.
 		if runeCount := utf8.RuneCountInString(p.Content); runeCount > MaxObservationLength {
