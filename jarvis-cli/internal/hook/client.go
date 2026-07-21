@@ -29,8 +29,11 @@ const (
 )
 
 // DaemonClient is a fire-and-forget HTTP client for the local hive-daemon.
-// All methods are non-fatal: they swallow errors and return nil so that hook
-// subcommands never block or fail Claude Code.
+// Most methods are non-fatal: they swallow errors and return nil so that hook
+// subcommands never block or fail Claude Code. The one exception is
+// PostSessionStart, which surfaces its error so a failed session registration
+// can be logged (silent registration failures are undiagnosable); callers still
+// treat that error as non-fatal.
 type DaemonClient struct {
 	BaseURL string
 	Timeout time.Duration
@@ -49,14 +52,15 @@ func NewDaemonClient() *DaemonClient {
 	}
 }
 
-// post marshals body to JSON and sends a POST to the given path.
-// Returns nil on any network or HTTP error — all calls are fire-and-forget.
-// Optionally, statusOK lists additional status codes considered successful;
-// if nil, only 2xx responses are considered OK but errors are still discarded.
-func (c *DaemonClient) post(ctx context.Context, path string, body any, nonFatalStatus ...int) error {
+// sendJSON marshals body to JSON and sends a POST to the given path, returning
+// a real error on any transport failure or on an unexpected response status
+// (non-2xx and not in nonFatalStatus). Unlike post, it does NOT discard errors:
+// callers that need observability — notably session registration — use it so a
+// failure can be logged with its reason instead of vanishing silently.
+func (c *DaemonClient) sendJSON(ctx context.Context, path string, body any, nonFatalStatus ...int) error {
 	data, err := json.Marshal(body)
 	if err != nil {
-		return nil // discard
+		return fmt.Errorf("marshal %s body: %w", path, err)
 	}
 
 	tctx, cancel := context.WithTimeout(ctx, c.Timeout)
@@ -64,23 +68,33 @@ func (c *DaemonClient) post(ctx context.Context, path string, body any, nonFatal
 
 	req, err := http.NewRequestWithContext(tctx, http.MethodPost, c.BaseURL+path, bytes.NewReader(data))
 	if err != nil {
-		return nil // discard
+		return fmt.Errorf("build %s request: %w", path, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil // discard — daemon down, timeout, refused
+		return fmt.Errorf("post %s: %w", path, err) // daemon down, timeout, refused
 	}
 	defer resp.Body.Close()
 
-	// Check if this status is in the explicitly non-fatal list.
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	// A caller-declared non-fatal status (e.g. 404 on session end) is not an error.
 	for _, s := range nonFatalStatus {
 		if resp.StatusCode == s {
 			return nil
 		}
 	}
-	// All errors discarded — caller never receives an error from this client.
+	return fmt.Errorf("post %s: unexpected status %d", path, resp.StatusCode)
+}
+
+// post is the fire-and-forget wrapper over sendJSON: it sends the request and
+// discards any error, preserving the non-fatal contract for the prompt,
+// observation, and session-end notifications that never need to fail Claude Code.
+func (c *DaemonClient) post(ctx context.Context, path string, body any, nonFatalStatus ...int) error {
+	_ = c.sendJSON(ctx, path, body, nonFatalStatus...)
 	return nil
 }
 
@@ -152,8 +166,12 @@ func (c *DaemonClient) PostPrompt(ctx context.Context, sessionID, directory, pro
 }
 
 // PostSessionStart notifies the daemon that a new session has started.
+//
+// Unlike the other notifications, it surfaces its error (via sendJSON) so the
+// caller can log a failed registration. The caller still treats the error as
+// non-fatal and always emits a valid hook response.
 func (c *DaemonClient) PostSessionStart(ctx context.Context, sessionID, project, directory string) error {
-	return c.post(ctx, "/sessions", map[string]string{
+	return c.sendJSON(ctx, "/sessions", map[string]string{
 		"id":        sessionID,
 		"project":   project,
 		"directory": directory,

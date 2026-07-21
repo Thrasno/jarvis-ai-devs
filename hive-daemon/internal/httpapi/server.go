@@ -19,6 +19,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sanitize"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive"
 	sqlite "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -867,10 +868,22 @@ func (s *Server) handleSessionsCreate(w http.ResponseWriter, r *http.Request) {
 	// Derive the effective project from directory when project is empty.
 	// Sessions create has no validator gate; only apply when derivation yields
 	// a concrete name (not "default") so non-existent dirs don't pollute sessions.
+	// On a derivation error, log the reason and refuse to register "default"
+	// so a silent, unattributable fallback becomes diagnosable.
 	if strings.TrimSpace(body.Project) == "" && strings.TrimSpace(body.Directory) != "" {
-		if derived := project.DeriveFromDirectory(body.Directory); derived != "default" && derived != "" {
+		if derived, err := hivederive.Derive(body.Directory); err != nil {
+			logger.Log.Printf("derive: %q unresolved (%v); refusing to register %q", body.Directory, err, "default")
+		} else if derived != "default" && derived != "" {
 			body.Project = derived
 		}
+	}
+	// Reject when the effective project is still empty. sessions.project is
+	// TEXT NOT NULL but admits the empty string, so persisting here would
+	// corrupt the table with an unattributable session row. Mirror the
+	// "project is required" validation the prompts handler uses.
+	if strings.TrimSpace(body.Project) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is required"})
+		return
 	}
 	err := s.sessions.CreateSession(body.ID, body.Project, body.Directory, body.DevID, body.Client)
 	if err != nil {

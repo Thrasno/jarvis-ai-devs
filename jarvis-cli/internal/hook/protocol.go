@@ -21,6 +21,12 @@ const (
 
 // Marker file base names. markerPath composes "<name>-<safeSessionID>.done".
 const (
+	// markerSessionStart is the dedicated baseline marker written by
+	// RunSessionStart. It is intentionally distinct from markerFirstPrompt so
+	// SessionStart never pre-populates the first-prompt marker; otherwise the
+	// exclusive create in RunPromptSubmit would always observe created=false and
+	// the FIRST ACTION nudge would never fire (issue #452).
+	markerSessionStart   = "session-start"
 	markerFirstPrompt    = "first-prompt"
 	markerMemoryReminder = "memory-reminder"
 )

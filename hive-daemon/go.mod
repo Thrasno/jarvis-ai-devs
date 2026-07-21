@@ -2,6 +2,10 @@ module github.com/Thrasno/jarvis-ai-devs/hive-daemon
 
 go 1.26.2
 
+require github.com/Thrasno/jarvis-ai-devs/hivederive v0.0.0
+
+replace github.com/Thrasno/jarvis-ai-devs/hivederive => ../hivederive
+
 require (
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.5.0
