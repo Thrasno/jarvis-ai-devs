@@ -32,7 +32,7 @@ Branch naming: tracker `fix/452-project-autodetection` (draft, no-merge). PR1 br
 
 - [x] 1.1 RED: `hivederive/derive_test.go` table tests — git-remote name, basename fallback, empty dir → `ErrEmptyDir`, unresolvable path → `ErrPathUnresolvable`, sanitized `extractRepoName` (spec: Single Derivation Source of Truth, No Ambient-CWD Derivation, Unresolvable Path Typed Error).
 - [x] 1.2 RED: `hivederive/normalize_test.go` table tests — `C:\a\b`, `/mnt/c/a/b`, UNC `\\wsl$\...`, backslashes, injectable stat + WSL-marker fns, native-Windows pass-through (spec: Cross-Platform Path Normalization, Normalization Gating by Runtime).
-- [x] 1.3 GREEN: create `hivederive/go.mod` (`github.com/Thrasno/jarvis-ai-devs/hivederive`), implement `Derive`, `NormalizePath`, typed errors (`ErrEmptyDir`, `ErrPathUnresolvable`, `ErrDefaultOnly`), moved `extractRepoName`.
+- [x] 1.3 GREEN: create `hivederive/go.mod` (`github.com/Thrasno/jarvis-ai-devs/hivederive`), implement `Derive`, `NormalizePath`, typed errors (`ErrEmptyDir`, `ErrPathUnresolvable`, `ErrNoDerivableName`), moved `extractRepoName`.
 - [x] 1.4 Decision checkpoint: at checkpoint the module-only diff was 479 lines (forecast ~500-750), under 800 → continued. Final PR1 authored diff landed at 822 (565 add / 257 del, go.sum excluded), 22 over budget due to duplicate-code deletions. Committed as PR1a (module, ~479) + PR1b (wiring, ~343) boundary; flagged to orchestrator as a risk.
 - [x] 1.5 Wire `jarvis-cli/go.mod` — add `require`+`replace ../hivederive`; update `jarvis-cli/internal/project/detector.go` `DetectProject` to call `hivederive.Derive`, return `""` on error (no ambient cwd, stat guard).
 - [x] 1.6 Wire `hive-daemon/go.mod` — add `require`+`replace ../hivederive`; update `hive-daemon/internal/project/derive.go` `DeriveFromDirectory` to call `hivederive.Derive`, map typed errors to internal `"default"` sentinel (preserve existing `!=default` guards).
@@ -42,27 +42,27 @@ Branch naming: tracker `fix/452-project-autodetection` (draft, no-merge). PR1 br
 
 ## Phase 2: PR2 — self-healing writes (base: PR1 branch)
 
-- [ ] 2.1 RED: `hive-daemon/internal/mcp/tools_test.go` — `mem_session_summary` with `directory` after `project_unknown` self-heals and proceeds; without `directory` still fails `project_unknown` (spec: Directory Parameter, Self-Heal on project_unknown).
-- [ ] 2.2 RED: idempotent registration test — repeated calls, same directory, no duplicate/error (spec: Idempotent Registration).
-- [ ] 2.3 RED: conflict test — derived name overrides stale caller-supplied project name (spec: Filesystem-Derived Name Wins on Conflict).
-- [ ] 2.4 RED: refusal test — derivation resolving to `"default"` is refused with typed error, never registered (spec: Never Register "default").
-- [ ] 2.5 RED: parity test — existing `mem_save` escape (`derived && project!="default"`) at tools.go:285-311 unchanged (spec: mem_save Escape Behavior Unchanged).
-- [ ] 2.6 GREEN: add `directory` field to `memSessionSummaryHandler` (tools.go:485), call `ResolveEffectiveProject`, mirror the tools.go:285-311 escape.
-- [ ] 2.7 Verify: `go test ./hive-daemon/...` and `go vet ./hive-daemon/...`.
+- [x] 2.1 RED: `hive-daemon/internal/mcp/session_summary_selfheal_test.go` — `mem_session_summary` with `directory` after `project_unknown` self-heals and proceeds; without `directory` still fails `project_unknown` (spec: Directory Parameter, Self-Heal on project_unknown).
+- [x] 2.2 RED: idempotent registration test — repeated calls, same directory, no duplicate/error (spec: Idempotent Registration).
+- [x] 2.3 RED: conflict test — derived name overrides stale caller-supplied project name (spec: Filesystem-Derived Name Wins on Conflict).
+- [x] 2.4 RED: refusal test — derivation resolving to `"default"` is refused, never registered; underivable path (typed error) does not self-heal. Documented decision: a directory whose basename is literally `"default"` is also refused to preserve the reserved pooling-sentinel guard and strict `mem_save` parity (spec: Never Register "default").
+- [x] 2.5 RED: parity test — existing `mem_save` escape (`derived && project!="default"`) unchanged (spec: mem_save Escape Behavior Unchanged).
+- [x] 2.6 GREEN: added `directory` field to `memSessionSummaryHandler` (tools.go) + schema; derive via `hivederive.Derive` directly (typed errors, derived-name-wins), mirror the memSaveHandler provenance-gated escape. Deviation from design's "call ResolveEffectiveProject": that helper does not derive when a project name is supplied, so it cannot satisfy the derived-name-wins-on-conflict requirement; direct `Derive` is used and the escape guard is preserved verbatim.
+- [x] 2.7 Verify: `go test ./...` and `go vet ./...` GREEN in `hive-daemon/`; gofmt clean.
 
 ## Phase 3: PR3 — marker decoupling (base: PR2 branch)
 
-- [ ] 3.1 RED: `jarvis-cli/internal/hook/events_test.go` — `RunSessionStart` writes `markerSessionStart` only, not `markerFirstPrompt` (spec: Distinct SessionStart Marker).
-- [ ] 3.2 RED: `RunPromptSubmit` exclusive-creates `markerFirstPrompt`, nudge fires once per real session, not on subsequent prompts (spec: First-Prompt Marker Owned Exclusively, FIRST ACTION Nudge Fires Once).
-- [ ] 3.3 RED: compaction-path regression test — first-prompt marker pre-exists after compaction, nudge not re-triggered (spec: Compaction Path Unaffected).
-- [ ] 3.4 GREEN: add `markerSessionStart` constant to `jarvis-cli/internal/hook/protocol.go`; update `RunSessionStart` in `events.go` to write it (idempotent, timestamp-preserving); confirm `RunPromptSubmit` sole ownership of `markerFirstPrompt`.
-- [ ] 3.5 Verify: `go test ./jarvis-cli/internal/hook/...` and `go vet ./jarvis-cli/...`.
+- [x] 3.1 RED: `jarvis-cli/internal/hook/marker_decoupling_test.go` — `RunSessionStart` writes `markerSessionStart` only, not `markerFirstPrompt` (`TestRunSessionStart_WritesSessionStartMarkerOnly`; also tightened existing `TestRunSessionStart_HappyPath_InjectsProtocol`) (spec: Distinct SessionStart Marker).
+- [x] 3.2 RED: `TestFirstActionNudge_FiresAfterSessionStart` — after SessionStart, first `RunPromptSubmit` exclusive-creates `markerFirstPrompt` and emits `FirstPromptSystemMessage`; second prompt returns `{}` (spec: First-Prompt Marker Owned Exclusively, FIRST ACTION Nudge Fires Once).
+- [x] 3.3 RED: `TestCompaction_DoesNotRetriggerNudge` — first-prompt marker pre-exists after compaction, `RunSessionCompact` touches no markers, next prompt does not re-fire the nudge (spec: Compaction Path Unaffected).
+- [x] 3.4 GREEN: added `markerSessionStart` constant to `protocol.go`; `RunSessionStart` now writes it via new `CreateSessionStartMarker` (idempotent, timestamp-preserving); extracted shared `createMarkerExclusive` core; `RunPromptSubmit` retains sole ownership of `markerFirstPrompt`.
+- [x] 3.5 Verify: `go test ./... -count=1` and `go vet ./...` GREEN in `jarvis-cli/`; touched files gofmt-clean.
 
 ## Phase 4: PR4 — loud failure + honest docs (base: PR3 branch)
 
-- [ ] 4.1 RED: `events_test.go` — `PostSessionStart` error is captured and logged with reason via stderr logger, hook still degrades fail-safe (spec: Registration Failures Are Logged, Never Swallowed).
-- [ ] 4.2 RED: daemon test — derive fallback/refusal path logs `derive: %q unresolved (%v); refusing to register "default"`, never falls back to registering `"default"` (spec: No Fallback to "default" Registration).
-- [ ] 4.3 GREEN: unswallow `PostSessionStart` error in `events.go:36`, add stderr log line with session/project/reason; add matching log line at `hive-daemon/internal/mcp/server.go` `handleSessionsCreate` (~871).
-- [ ] 4.4 Update `embed/hive-protocol.md` and `embed/skills/hive/SKILL.md` — remove claim that `mem_context` registers projects; describe SessionStart hook / self-healing writes as actual registration mechanism (spec: Documentation Reflects Actual Registration Behavior).
-- [ ] 4.5 RED/regression: add a doc-claim check (grep-based test or doc assertion) that fails if the old incorrect claim reappears.
-- [ ] 4.6 Verify: `go test ./...` and `go vet ./...` across `jarvis-cli/`, `hive-daemon/`.
+- [x] 4.1 RED: `loud_failure_test.go` — `PostSessionStart` error is captured and logged with reason via the hook stderr logger (`session-start registration failed: session=%q project=%q: %v`), hook still emits valid JSON and degrades fail-safe (spec: Registration Failures Are Logged, Never Swallowed). Also updated `client_test.go` (`_ServerDown_ReturnsError`) for the surfaced-error contract.
+- [x] 4.2 RED: `loud_derive_test.go` — derive refusal path on session create logs `derive: %q unresolved (%v); refusing to register "default"`, never falls back to registering `"default"`, and never creates the session (spec: No Fallback to "default" Registration).
+- [x] 4.3 GREEN: added `internal/hook/logger.go` (stderr `[jarvis] ` logger); split client `sendJSON` (surfaces errors) from fire-and-forget `post`; `PostSessionStart` now reports its error; `events.go` logs the reason on failure. Added matching refusal log in `hive-daemon/internal/httpapi/server.go` `handleSessionsCreate` via direct `hivederive.Derive` (the swallowed `DeriveFromDirectory` sentinel cannot carry the typed error). Note: the function lives in package `httpapi`, not `mcp` as the task path stated.
+- [x] 4.4 Updated `embed/hive-protocol.md` and `embed/skills/hive/SKILL.md` — removed the claim that `mem_context` registers projects; both now describe the SessionStart hook and self-healing writes (mem_save / mem_session_summary with directory) as the actual registration mechanism (spec: Documentation Reflects Actual Registration Behavior).
+- [x] 4.5 RED/regression: `doc_claim_test.go` (root `jarvis_test`) fails if any false registration claim reappears in either embed doc, and positively asserts the SessionStart-hook mechanism is documented.
+- [x] 4.6 Verify: `go test ./...` and `go vet ./...` GREEN across `jarvis-cli/` and `hive-daemon/` (-count=1); touched files gofmt-clean.

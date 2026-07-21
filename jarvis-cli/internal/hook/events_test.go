@@ -253,9 +253,13 @@ func TestRunSessionStart_HappyPath_InjectsProtocol(t *testing.T) {
 	if !strings.Contains(ctx, "Hive Memory Protocol") {
 		t.Errorf("additionalContext should contain protocol text, got: %q", ctx)
 	}
-	// Marker should have been created
-	if !MarkerExists("start-test-session") {
-		t.Error("marker should exist after session-start")
+	// The dedicated SessionStart marker should have been created; the first-prompt
+	// marker must remain untouched (owned exclusively by RunPromptSubmit).
+	if !sessionStartMarkerExists("start-test-session") {
+		t.Error("session-start marker should exist after session-start")
+	}
+	if MarkerExists("start-test-session") {
+		t.Error("session-start must NOT create the first-prompt marker")
 	}
 }
 

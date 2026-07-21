@@ -5,10 +5,15 @@ This protocol is MANDATORY and ALWAYS ACTIVE — not something you activate on d
 
 ## SESSION START (mandatory — do this FIRST, before anything else)
 
-Call `mem_context` at the start of every session before responding to the user.
+Call `mem_context` at the start of every session before responding to the user, to
+recover recent context.
 
-This is required because `mem_context` registers the current project with Hive. Without it,
-any subsequent `mem_save` call will fail with a `project_unknown` error.
+Project registration is NOT performed by `mem_context`. The project is registered
+automatically by the SessionStart hook when the session begins, and any write that
+supplies a directory self-heals registration on its own: `mem_save` and
+`mem_session_summary` derive and register the project from the directory when it is
+not yet known. If a `mem_save` ever fails with `project_unknown`, retry it with the
+working directory so the write self-heals — do not rely on `mem_context` to register.
 
 If `mem_context` is not yet available as a tool, call `ToolSearch` with query `"mem_context"` to load it first.
 

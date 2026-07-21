@@ -13,7 +13,7 @@ import (
 // It:
 //  1. Parses the stdin payload
 //  2. Resolves the session ID
-//  3. Creates the first-prompt marker (idempotent)
+//  3. Creates the dedicated SessionStart marker (idempotent)
 //  4. POSTs to /sessions to notify the daemon
 //  5. Returns additionalContext containing the Hive Memory Protocol text
 //
@@ -27,13 +27,21 @@ func RunSessionStart(ctx context.Context, r io.Reader, w io.Writer, baseURL stri
 	// so the pinned name equals the registered name (same function, same input).
 	canonical := project.DetectProject(directory)
 
-	// Create marker — idempotent; ignore error (non-fatal)
-	_ = CreateMarker(sessionID)
+	// Create the SessionStart marker — idempotent; ignore error (non-fatal).
+	// This is deliberately NOT the first-prompt marker: that one is owned
+	// exclusively by RunPromptSubmit so its exclusive create can detect the
+	// first real prompt and fire the FIRST ACTION nudge (issue #452).
+	_ = CreateSessionStartMarker(sessionID)
 
 	// Notify daemon with the derived canonical name — non-fatal.
 	// This registers the canonical project before any mem_save call.
+	// The error is intentionally non-fatal (the hook must always emit valid
+	// JSON), but it is logged to stderr with the reason so a failed
+	// registration becomes diagnosable instead of silently swallowed.
 	client := &DaemonClient{BaseURL: baseURL, Timeout: 4 * time.Second}
-	_ = client.PostSessionStart(ctx, sessionID, canonical, directory)
+	if err := client.PostSessionStart(ctx, sessionID, canonical, directory); err != nil {
+		logger.Printf("session-start registration failed: session=%q project=%q: %v", sessionID, canonical, err)
+	}
 
 	WriteResponse(w, HookResponse{AdditionalContext: BuildHiveProtocolText(canonical)})
 }
