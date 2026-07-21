@@ -12,8 +12,6 @@ import (
 // internal "default" sentinel so the existing `!= "default"` provenance guards
 // keep working unchanged; hivederive itself never returns the literal
 // "default".
-//
-// parity anchor: jarvis-cli/internal/project/detector.go:DetectProject
 func DeriveFromDirectory(dir string) string {
 	name, err := hivederive.Derive(dir)
 	if err != nil {
