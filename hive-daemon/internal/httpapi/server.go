@@ -872,6 +872,14 @@ func (s *Server) handleSessionsCreate(w http.ResponseWriter, r *http.Request) {
 			body.Project = derived
 		}
 	}
+	// Reject when the effective project is still empty. sessions.project is
+	// TEXT NOT NULL but admits the empty string, so persisting here would
+	// corrupt the table with an unattributable session row. Mirror the
+	// "project is required" validation the prompts handler uses.
+	if strings.TrimSpace(body.Project) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is required"})
+		return
+	}
 	err := s.sessions.CreateSession(body.ID, body.Project, body.Directory, body.DevID, body.Client)
 	if err != nil {
 		// Treat duplicate-key errors as idempotent (hook may fire more than once).
