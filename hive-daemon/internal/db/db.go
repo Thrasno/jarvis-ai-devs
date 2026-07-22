@@ -134,7 +134,11 @@ CREATE TABLE IF NOT EXISTS memory_mutations (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_mutations_event_id ON memory_mutations(event_id);
 CREATE INDEX IF NOT EXISTS idx_memory_mutations_project_unsynced ON memory_mutations(project, sequence) WHERE synced_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_memory_mutations_entity ON memory_mutations(entity_type, entity_sync_id, sequence);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_mutations_request_id ON memory_mutations(request_id) WHERE request_id IS NOT NULL;
+-- idx_memory_mutations_request_id is created in the migrations slice, AFTER the
+-- ALTER TABLE that adds request_id. Declaring it here breaks upgraded DBs whose
+-- memory_mutations predates the column: CREATE TABLE IF NOT EXISTS is a no-op,
+-- the index references a missing column, and the fatal base-schema exec kills
+-- the daemon before migrations run (issue #459). Same class as idx_memories_session.
 
 CREATE TABLE IF NOT EXISTS mutation_receipts (
     request_id     TEXT PRIMARY KEY,
