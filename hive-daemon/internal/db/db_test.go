@@ -357,6 +357,73 @@ func TestMigration_UserVersion3_DropsUniqueIndex(t *testing.T) {
 	assert.Equal(t, 1, count, "existing row must survive migration v3")
 }
 
+// seedOldShapeMemoryMutations creates a memory_mutations table as it existed
+// before the request_id column and its partial unique index were introduced.
+// It mirrors the CREATE TABLE in the migrations slice that predates the
+// `ALTER TABLE memory_mutations ADD COLUMN request_id TEXT` migration.
+func seedOldShapeMemoryMutations(t *testing.T, sqlDB *sql.DB) {
+	t.Helper()
+	_, err := sqlDB.Exec(`CREATE TABLE memory_mutations (
+		sequence       INTEGER PRIMARY KEY AUTOINCREMENT,
+		event_id       TEXT NOT NULL UNIQUE,
+		entity_type    TEXT NOT NULL DEFAULT 'memory',
+		entity_sync_id TEXT NOT NULL,
+		project        TEXT NOT NULL,
+		op             TEXT NOT NULL,
+		occurred_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		actor_id       TEXT NOT NULL DEFAULT '',
+		base_updated_at DATETIME,
+		payload_json   TEXT NOT NULL DEFAULT '{}',
+		synced_at      DATETIME
+	)`)
+	require.NoError(t, err)
+	for _, stmt := range []string{
+		`CREATE UNIQUE INDEX idx_memory_mutations_event_id ON memory_mutations(event_id)`,
+		`CREATE INDEX idx_memory_mutations_project_unsynced ON memory_mutations(project, sequence) WHERE synced_at IS NULL`,
+		`CREATE INDEX idx_memory_mutations_entity ON memory_mutations(entity_type, entity_sync_id, sequence)`,
+	} {
+		_, err := sqlDB.Exec(stmt)
+		require.NoError(t, err)
+	}
+}
+
+// TestOpen_UpgradesMemoryMutationsWithoutRequestID reproduces issue #459: on an
+// upgraded DB whose memory_mutations table predates request_id, the base schema
+// CREATE TABLE IF NOT EXISTS is a no-op, so a base-schema index referencing
+// request_id fails fatally with "no such column: request_id" before the
+// log-and-continue migrations slice (which adds the column and the index) can
+// run. Open must succeed and leave both the column and the partial unique
+// index in place.
+func TestOpen_UpgradesMemoryMutationsWithoutRequestID(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "legacy-mutations.db")
+
+	rawDB, err := sql.Open("sqlite", dbPath)
+	require.NoError(t, err)
+	seedOldShapeMemoryMutations(t, rawDB)
+	require.NoError(t, rawDB.Close())
+
+	d, err := Open(dbPath)
+	require.NoError(t, err, "Open must not fail on a DB whose memory_mutations predates request_id")
+	defer func() { _ = d.Close() }()
+
+	var column string
+	err = d.sqlDB.QueryRow(
+		`SELECT name FROM pragma_table_info('memory_mutations') WHERE name = 'request_id'`,
+	).Scan(&column)
+	require.NoError(t, err, "request_id column should be added by the migrations slice")
+	assert.Equal(t, "request_id", column)
+
+	var idxSQL string
+	err = d.sqlDB.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_memory_mutations_request_id'`,
+	).Scan(&idxSQL)
+	require.NoError(t, err, "idx_memory_mutations_request_id should exist after migrations")
+	upper := strings.ToUpper(idxSQL)
+	assert.Contains(t, upper, "UNIQUE", "index must be UNIQUE")
+	assert.Contains(t, upper, "WHERE REQUEST_ID IS NOT NULL", "index must keep its partial predicate")
+}
+
 func TestOpen_MigratesLegacySyncStateHealthColumns(t *testing.T) {
 	tests := []struct {
 		name         string
