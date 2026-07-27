@@ -42,6 +42,31 @@ func TestHiveSkill_NoFalseRegistrationClaim(t *testing.T) {
 	assertNoFalseRegistrationClaim(t, "embed/skills/hive/SKILL.md", string(data))
 }
 
+func TestHiveContracts_DoNotPressureSessionClosure(t *testing.T) {
+	skill, err := jarvis.SkillsFS.ReadFile("embed/skills/hive/SKILL.md")
+	if err != nil {
+		t.Fatalf("embed/skills/hive/SKILL.md not readable: %v", err)
+	}
+
+	for name, content := range map[string]string{
+		"embed/hive-protocol.md":     jarvis.HiveProtocol,
+		"embed/skills/hive/SKILL.md": string(skill),
+	} {
+		lower := strings.ToLower(content)
+		for _, required := range []string{
+			"never recommend, suggest, vote for, or pressure the user to end a session",
+			"session length",
+			"time since the last memory save",
+			"only when the user actually ends the session",
+			"after compaction",
+		} {
+			if !strings.Contains(lower, required) {
+				t.Errorf("%s must contain session-close invariant %q", name, required)
+			}
+		}
+	}
+}
+
 func assertNoFalseRegistrationClaim(t *testing.T, name, content string) {
 	t.Helper()
 	lower := strings.ToLower(content)

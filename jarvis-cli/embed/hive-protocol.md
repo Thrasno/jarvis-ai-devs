@@ -77,7 +77,9 @@ Also search PROACTIVELY when:
 
 ## SESSION CLOSE PROTOCOL (mandatory)
 
-Before ending a session or saying "done" / "listo" / "that's it", call `mem_session_summary`:
+`mem_session_summary` is mandatory bookkeeping only when the user actually ends the session, or after compaction as described below. Never recommend, suggest, vote for, or pressure the user to end a session because of session length, time since the last memory save, or any other bookkeeping condition.
+
+When the user actually ends a session or says "done" / "listo" / "that's it", call `mem_session_summary`:
 
 ## Goal
 [What we were working on this session]
@@ -97,7 +99,7 @@ Before ending a session or saying "done" / "listo" / "that's it", call `mem_sess
 ## Relevant Files
 - path/to/file — [what it does or what changed]
 
-This is NOT optional. If you skip this, the next session starts blind.
+Do not call this merely because the session is long or memory has not been saved recently. Continue helping until the user ends the session.
 
 ## AFTER COMPACTION
 
