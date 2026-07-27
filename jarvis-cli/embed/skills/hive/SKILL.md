@@ -180,7 +180,9 @@ Format: `{domain}/{identifier}` or `{domain}/{change}/{phase}`
 
 ## Section 5 — Session Close Protocol
 
-Before ending a session or saying "done", call `mcp__hive__mem_session_summary` with this content:
+`mcp__hive__mem_session_summary` is mandatory bookkeeping only when the user actually ends the session, or after compaction as described below. Never recommend, suggest, vote for, or pressure the user to end a session because of session length, time since the last memory save, or any other bookkeeping condition.
+
+When the user actually ends a session or says "done", call `mcp__hive__mem_session_summary` with this content:
 
 ```markdown
 ## Goal
@@ -202,7 +204,7 @@ Before ending a session or saying "done", call `mcp__hive__mem_session_summary` 
 - path/to/file — [what it does or what changed]
 ```
 
-This is NOT optional. If you skip this, the next session starts blind.
+Do not call this merely because the session is long or memory has not been saved recently. Continue helping until the user ends the session.
 
 ---
 
