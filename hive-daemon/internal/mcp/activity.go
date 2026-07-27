@@ -130,14 +130,14 @@ func (a *ActivityTracker) NudgeIfNeeded(project string) string {
 		)
 	}
 
-	// Time-based nudge (existing behavior)
+	// Time-based nudge. Elapsed time stays internal so the reminder does not
+	// create an ever-growing pressure signal for ending the session.
 	sinceLastSave := a.now().Sub(pa.lastSave)
 	if sinceLastSave > 10*time.Minute && pa.toolCalls >= 3 {
-		minutes := int(sinceLastSave.Minutes())
 		return fmt.Sprintf(
-			"\n\n⚠️ No mem_save calls for project %q in %d minutes. "+
-				"Did you make any decisions, fix bugs, or discover something worth persisting?",
-			project, minutes,
+			"\n\n⚠️ Consider calling mem_save for project %q if this work produced important learnings, "+
+				"such as decisions, bug fixes, or non-obvious discoveries worth persisting.",
+			project,
 		)
 	}
 

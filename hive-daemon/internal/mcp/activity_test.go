@@ -93,7 +93,7 @@ func TestActivityTracker_RecordToolCallForSession_KeyedBySessionID(t *testing.T)
 	}
 }
 
-func TestActivityTracker_NudgeAfterInactivity(t *testing.T) {
+func TestActivityTracker_TimeBasedNudgeRequestsSaveWithoutElapsedPressure(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	tracker := hivemcp.NewActivityTrackerWithClock(func() time.Time { return now })
 
@@ -109,11 +109,14 @@ func TestActivityTracker_NudgeAfterInactivity(t *testing.T) {
 	if nudge == "" {
 		t.Error("expected nudge after 11 minutes of inactivity with 3 tool calls and 0 saves")
 	}
-	if !strings.Contains(nudge, "11 minutes") {
-		t.Errorf("nudge should mention duration, got: %s", nudge)
+	if strings.Contains(nudge, "11 minutes") || strings.Contains(nudge, "minutes") {
+		t.Errorf("nudge must not expose elapsed time, got: %s", nudge)
 	}
 	if !strings.Contains(nudge, "proj") {
 		t.Errorf("nudge should mention the project name, got: %s", nudge)
+	}
+	if !strings.Contains(nudge, "mem_save") || !strings.Contains(nudge, "important learnings") {
+		t.Errorf("nudge should request saving important learnings, got: %s", nudge)
 	}
 }
 
