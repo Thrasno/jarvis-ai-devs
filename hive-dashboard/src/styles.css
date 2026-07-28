@@ -618,6 +618,8 @@ body::before {
   font-family: var(--dashboard-font-mono);
   font-size: 1.1rem;
   margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .dashboard-project-card__health {

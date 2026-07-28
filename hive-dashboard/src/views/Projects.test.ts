@@ -1,7 +1,11 @@
+// @ts-expect-error Node types are not installed; Vitest still runs tests in Node.
+import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { projectsFromApi } from '../domain/dashboard'
 import type { ProjectListResponse } from '../api/client'
 import { renderProjects } from './Projects'
+
+const styles = readFileSync('src/styles.css', 'utf8')
 
 describe('projects view', () => {
   it('renders a bespoke Projects root with heading, repository count, and no generic panel chrome', () => {
@@ -103,6 +107,18 @@ describe('projects view', () => {
     ])) })
 
     expect(view.querySelector<HTMLAnchorElement>('a')?.getAttribute('href')).toBe('/dashboard/knowledgeBrowser?project=team%2Falpha+project')
+  })
+
+  it('keeps long unbroken project names accessible and allows the title flex item to wrap', () => {
+    const name = 'project-with-an-extremely-long-unbroken-name-that-must-not-hide-health'
+    const view = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([
+      { name, memoryCount: 1, sessionCount: 1, lastActivityAt: null, syncHealth: 'healthy' }
+    ])) })
+    const card = view.querySelector<HTMLElement>('.dashboard-project-card')!
+
+    expect(card.getAttribute('aria-label')).toContain(name)
+    expect(card.querySelector('.dashboard-project-card__identity h3')?.textContent).toBe(name)
+    expect(styles).toMatch(/\.dashboard-project-card__identity h3\s*{[^}]*min-width:\s*0;[^}]*overflow-wrap:\s*anywhere;/s)
   })
 
   it('renders blocked badges, status, reason, export marker, and admin quarantine form guard copy', () => {
