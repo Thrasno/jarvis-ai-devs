@@ -1,9 +1,34 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { hiveOverviewFixture } from '../fixtures/hive-dashboard/overview'
 import { insightsScreenFixtures } from '../fixtures/hive-dashboard/insights'
-import { renderChart, type ChartInput } from './Chart'
+import { createTimeSeriesChartModel, renderChart, type ChartInput } from './Chart'
+
+class ResizeObserverMock {
+  static instances: ResizeObserverMock[] = []
+
+  readonly disconnect = vi.fn()
+  readonly observe = vi.fn()
+
+  constructor(private readonly callback: ResizeObserverCallback) {
+    ResizeObserverMock.instances.push(this)
+  }
+
+  resize(target: Element, width: number): void {
+    this.callback([
+      {
+        target,
+        contentRect: { width } as DOMRectReadOnly
+      } as ResizeObserverEntry
+    ], this as unknown as ResizeObserver)
+  }
+}
 
 describe('dashboard chart foundation', () => {
+  beforeEach(() => {
+    ResizeObserverMock.instances = []
+    vi.stubGlobal('ResizeObserver', ResizeObserverMock)
+  })
+
   it('renders time-series as SVG with accessible wrapper and SVG elements', () => {
     const chart = renderChart({
       kind: 'time-series',
@@ -61,6 +86,83 @@ describe('dashboard chart foundation', () => {
     const texts = Array.from(svg?.querySelectorAll('text') ?? []).map((t) => t.textContent)
     // At least one x-axis label from the data should appear
     expect(texts.some((t) => hiveOverviewFixture.knowledgeGrowth.points.some((p) => t?.includes(p.label)))).toBe(true)
+  })
+
+  it('computes proportional chart geometry with bounded mobile and desktop heights', () => {
+    const points = [{ label: 'Jul 1', value: 40 }, { label: 'Jul 2', value: 80 }]
+
+    expect(createTimeSeriesChartModel(280, points).height).toBe(180)
+    expect(createTimeSeriesChartModel(600, points).height).toBe(240)
+    expect(createTimeSeriesChartModel(900, points).height).toBe(280)
+    expect(createTimeSeriesChartModel(900, points).width).toBe(900)
+  })
+
+  it('uses deterministic zero-based cumulative scale thresholds and truthful ticks', () => {
+    const belowThreshold = createTimeSeriesChartModel(600, [
+      { label: 'Jul 1', value: 40 },
+      { label: 'Jul 2', value: 99 }
+    ])
+    const aboveThreshold = createTimeSeriesChartModel(600, [
+      { label: 'Jul 1', value: 40 },
+      { label: 'Jul 2', value: 101 }
+    ])
+
+    expect(belowThreshold.yMax).toBe(100)
+    expect(belowThreshold.yTicks).toEqual([100, 50, 0])
+    expect(aboveThreshold.yMax).toBe(200)
+    expect(aboveThreshold.yTicks).toEqual([200, 100, 0])
+  })
+
+  it('keeps historical cumulative coordinates stable while growth remains within the scale threshold', () => {
+    const history = [{ label: 'Jul 1', value: 40 }, { label: 'Jul 2', value: 60 }]
+    const initial = createTimeSeriesChartModel(600, history)
+    const grown = createTimeSeriesChartModel(600, [...history, { label: 'Jul 3', value: 90 }])
+
+    expect(initial.yMax).toBe(grown.yMax)
+    expect(grown.points.slice(0, 2).map((point) => point.y)).toEqual(initial.points.map((point) => point.y))
+  })
+
+  it('recomputes SVG geometry from ResizeObserver measurements and retains source point values', () => {
+    const points = [{ label: 'Jul 1', value: 40 }, { label: 'Jul 2', value: 80 }]
+    const chart = renderChart({
+      kind: 'time-series',
+      title: 'Knowledge Growth',
+      series: { label: 'Memories', points }
+    })
+    document.body.append(chart)
+
+    const observer = ResizeObserverMock.instances[0]
+    expect(observer.observe).toHaveBeenCalledWith(chart)
+
+    observer.resize(chart, 900)
+
+    const svg = chart.querySelector('svg')
+    expect(svg?.getAttribute('viewBox')).toBe('0 0 900 280')
+    expect(svg?.getAttribute('height')).toBe('280')
+    expect(svg?.getAttribute('preserveAspectRatio')).not.toBe('none')
+    expect(svg?.getAttribute('aria-label')).toBe('Knowledge Growth chart')
+    expect(Array.from(svg?.querySelectorAll('[data-chart-point]') ?? []).map((point) => ({
+      label: point.getAttribute('data-label'),
+      value: point.getAttribute('data-value')
+    }))).toEqual([
+      { label: 'Jul 1', value: '40' },
+      { label: 'Jul 2', value: '80' }
+    ])
+  })
+
+  it('disconnects its resize observer when notified after chart removal', () => {
+    const chart = renderChart({
+      kind: 'time-series',
+      title: 'Knowledge Growth',
+      series: { label: 'Memories', points: [{ label: 'Jul 1', value: 40 }] }
+    })
+    document.body.append(chart)
+    const observer = ResizeObserverMock.instances[0]
+
+    chart.remove()
+    observer.resize(chart, 600)
+
+    expect(observer.disconnect).toHaveBeenCalledOnce()
   })
 
   it('renders categorical bar labels from point labels', () => {

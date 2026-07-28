@@ -241,7 +241,16 @@ body { margin: 0; background: var(--dashboard-background); }
 }
 
 /* ─── Chart SVG baseline ──────────────────────────────────────────────────── */
-.chart svg { overflow: visible; }
+.chart {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.chart svg {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+}
 
 label { display: grid; gap: .4rem; margin-block: 1rem; }
 input, select, button { border-radius: 10px; font: inherit; padding: .8rem 1rem; }
