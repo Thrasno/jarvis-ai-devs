@@ -18,12 +18,32 @@ export type ChartInput =
 const SVG_NS = 'http://www.w3.org/2000/svg'
 
 // Chart layout constants
-const CHART_HEIGHT = 188
-const PAD_L = 38
+const DEFAULT_CHART_WIDTH = 600
+const MIN_CHART_HEIGHT = 180
+const MAX_CHART_HEIGHT = 280
+const CHART_ASPECT_HEIGHT = 0.4
+const PAD_L = 42
 const PAD_B = 22
 const PAD_T = 12
-const PAD_R = 8
+const PAD_R = 12
 const VIEW_W = 600
+
+interface TimeSeriesChartPoint {
+  readonly label: string
+  readonly value: number
+  readonly x: number
+  readonly y: number
+}
+
+export interface TimeSeriesChartModel {
+  readonly width: number
+  readonly height: number
+  readonly plotBottom: number
+  readonly plotRight: number
+  readonly yMax: number
+  readonly yTicks: readonly number[]
+  readonly points: readonly TimeSeriesChartPoint[]
+}
 
 export function renderChart(input: ChartInput): HTMLElement {
   if (!isSupportedChartInput(input)) return fallbackChart()
@@ -36,7 +56,8 @@ export function renderChart(input: ChartInput): HTMLElement {
       chart.append(emptyState(`No chart data is available for ${input.title}.`))
       return chart
     }
-    chart.append(renderLineChart(points))
+    chart.append(renderLineChart(input.title, points, DEFAULT_CHART_WIDTH))
+    observeTimeSeriesChart(chart, input.title, points)
   } else {
     const points = input.points
     if (points.length === 0) {
@@ -73,29 +94,67 @@ function chartRoot(label: string, kind: ChartKind | 'unsupported'): HTMLElement 
   return chart
 }
 
-function renderLineChart(points: readonly ChartPointViewModel[]): SVGSVGElement {
+export function createTimeSeriesChartModel(width: number, points: readonly ChartPointViewModel[]): TimeSeriesChartModel {
+  const safeWidth = Math.max(1, Math.round(width))
+  const height = Math.round(Math.min(MAX_CHART_HEIGHT, Math.max(MIN_CHART_HEIGHT, safeWidth * CHART_ASPECT_HEIGHT)))
   const n = points.length
-  const innerW = VIEW_W - PAD_L - PAD_R
-  const innerH = CHART_HEIGHT - PAD_B - PAD_T
+  const innerW = Math.max(1, safeWidth - PAD_L - PAD_R)
+  const innerH = height - PAD_B - PAD_T
+  const maxValue = Math.max(...points.map((point) => point.value), 0)
+  const yMax = niceCumulativeCeiling(maxValue)
 
-  const vals = points.map((p) => p.value)
-  const maxV = Math.max(...vals)
-  const minV = Math.min(...vals)
-  const range = maxV - minV || 1
+  function xOf(index: number): number {
+    return n === 1 ? PAD_L + innerW / 2 : PAD_L + (index / (n - 1)) * innerW
+  }
+  function yOf(value: number): number {
+    return PAD_T + innerH - (Math.max(0, value) / yMax) * innerH
+  }
 
-  function xOf(i: number): number {
-    return n === 1 ? PAD_L + innerW / 2 : PAD_L + (i / (n - 1)) * innerW
+  return {
+    width: safeWidth,
+    height,
+    plotBottom: PAD_T + innerH,
+    plotRight: PAD_L + innerW,
+    yMax,
+    yTicks: [yMax, yMax / 2, 0],
+    points: points.map((point, index) => ({ ...point, x: xOf(index), y: yOf(point.value) }))
   }
-  function yOf(v: number): number {
-    return PAD_T + innerH - ((v - minV) / range) * innerH
-  }
+}
+
+function niceCumulativeCeiling(value: number): number {
+  if (value <= 1) return 1
+  const magnitude = 10 ** Math.floor(Math.log10(value))
+  const normalized = value / magnitude
+  const multiplier = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10
+  return multiplier * magnitude
+}
+
+function observeTimeSeriesChart(chart: HTMLElement, title: string, points: readonly ChartPointViewModel[]): void {
+  if (typeof ResizeObserver === 'undefined') return
+  let renderedWidth = DEFAULT_CHART_WIDTH
+  const observer = new ResizeObserver((entries) => {
+    if (!chart.isConnected) {
+      observer.disconnect()
+      return
+    }
+    const width = Math.round(entries[0]?.contentRect.width ?? 0)
+    if (width <= 0 || width === renderedWidth) return
+    renderedWidth = width
+    chart.querySelector('svg')?.replaceWith(renderLineChart(title, points, width))
+  })
+  observer.observe(chart)
+}
+
+function renderLineChart(title: string, points: readonly ChartPointViewModel[], width: number): SVGSVGElement {
+  const model = createTimeSeriesChartModel(width, points)
 
   const svg = document.createElementNS(SVG_NS, 'svg')
-  svg.setAttribute('viewBox', `0 0 ${VIEW_W} ${CHART_HEIGHT}`)
+  svg.setAttribute('viewBox', `0 0 ${model.width} ${model.height}`)
   svg.setAttribute('width', '100%')
-  svg.setAttribute('height', String(CHART_HEIGHT))
-  svg.setAttribute('preserveAspectRatio', 'none')
-  svg.setAttribute('aria-hidden', 'true')
+  svg.setAttribute('height', String(model.height))
+  svg.setAttribute('preserveAspectRatio', 'xMidYMid meet')
+  svg.setAttribute('role', 'img')
+  svg.setAttribute('aria-label', `${title} chart`)
 
   // Defs — vertical area gradient
   const defs = document.createElementNS(SVG_NS, 'defs')
@@ -122,18 +181,13 @@ function renderLineChart(points: readonly ChartPointViewModel[]): SVGSVGElement 
   defs.append(grad)
   svg.append(defs)
 
-  // 3 horizontal gridlines at max / mid / min
-  const gridYs = [
-    yOf(maxV),
-    yOf((maxV + minV) / 2),
-    yOf(minV)
-  ]
-  const gridLabels = [maxV, (maxV + minV) / 2, minV]
+  // Three stable, zero-based cumulative ticks.
+  const gridYs = [PAD_T, PAD_T + (model.plotBottom - PAD_T) / 2, model.plotBottom]
   for (let gi = 0; gi < 3; gi++) {
     const gLine = document.createElementNS(SVG_NS, 'line')
     gLine.setAttribute('x1', String(PAD_L))
     gLine.setAttribute('y1', String(gridYs[gi]))
-    gLine.setAttribute('x2', String(PAD_L + innerW))
+    gLine.setAttribute('x2', String(model.plotRight))
     gLine.setAttribute('y2', String(gridYs[gi]))
     gLine.setAttribute('stroke', 'rgba(255,255,255,0.05)')
     gLine.setAttribute('stroke-width', '1')
@@ -146,16 +200,16 @@ function renderLineChart(points: readonly ChartPointViewModel[]): SVGSVGElement 
     gText.setAttribute('fill', '#5A6472')
     gText.setAttribute('font-size', '9')
     gText.setAttribute('font-family', 'monospace')
-    gText.textContent = String(Math.round(gridLabels[gi]))
+    gText.textContent = String(model.yTicks[gi])
     svg.append(gText)
   }
 
   // Build point coordinates
-  const linePts = points.map((p, i) => `${xOf(i)},${yOf(p.value)}`).join(' ')
+  const linePts = model.points.map((point) => `${point.x},${point.y}`).join(' ')
 
   // Area polygon (filled with gradient)
   const area = document.createElementNS(SVG_NS, 'polygon')
-  area.setAttribute('points', `${PAD_L},${PAD_T + innerH} ${linePts} ${PAD_L + innerW},${PAD_T + innerH}`)
+  area.setAttribute('points', `${PAD_L},${model.plotBottom} ${linePts} ${model.plotRight},${model.plotBottom}`)
   area.setAttribute('fill', `url(#${gradId})`)
   svg.append(area)
 
@@ -169,12 +223,27 @@ function renderLineChart(points: readonly ChartPointViewModel[]): SVGSVGElement 
   line.setAttribute('stroke-linecap', 'round')
   svg.append(line)
 
+  for (const point of model.points) {
+    const marker = document.createElementNS(SVG_NS, 'circle')
+    marker.dataset.chartPoint = ''
+    marker.dataset.label = point.label
+    marker.dataset.value = String(point.value)
+    marker.setAttribute('cx', String(point.x))
+    marker.setAttribute('cy', String(point.y))
+    marker.setAttribute('r', '2.5')
+    marker.setAttribute('fill', '#3B82E8')
+    const pointTitle = document.createElementNS(SVG_NS, 'title')
+    pointTitle.textContent = `${point.label}: ${point.value}`
+    marker.append(pointTitle)
+    svg.append(marker)
+  }
+
   // X-axis labels every ~6 points
-  const labelStep = Math.max(1, Math.floor(n / 6))
-  for (let i = 0; i < n; i += labelStep) {
+  const labelStep = Math.max(1, Math.floor(points.length / 6))
+  for (let i = 0; i < points.length; i += labelStep) {
     const xLabel = document.createElementNS(SVG_NS, 'text')
-    xLabel.setAttribute('x', String(xOf(i)))
-    xLabel.setAttribute('y', String(PAD_T + innerH + PAD_B - 4))
+    xLabel.setAttribute('x', String(model.points[i].x))
+    xLabel.setAttribute('y', String(model.height - 4))
     xLabel.setAttribute('text-anchor', 'middle')
     xLabel.setAttribute('fill', '#5A6472')
     xLabel.setAttribute('font-size', '9')
