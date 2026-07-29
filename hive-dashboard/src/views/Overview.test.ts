@@ -18,7 +18,7 @@ describe('overview view', () => {
 
   it('renders KPI cards as native links to their destination views', () => {
     const view = renderOverview({ status: 'ready', data: hiveOverviewFixture })
-    const metrics = getAllByRole(view, 'link')
+    const metrics = Array.from(view.querySelectorAll<HTMLElement>('.dashboard-metric'))
 
     expect(metrics).toHaveLength(4)
     expect(metrics.map((metric) => ({ name: accessibleName(metric), href: metric.getAttribute('href') }))).toEqual([
@@ -99,15 +99,18 @@ describe('overview view', () => {
     expect(syncHealth.textContent).not.toContain('unavailable')
   })
 
-  it('renders sync health rows — one row per project', () => {
+  it('renders an accessible sync health table with associated column headers', () => {
     const view = renderOverview({ status: 'ready', data: hiveOverviewFixture })
-    const syncHealth = getByRole(view, 'list', { name: 'Sync health by project rows' })
-    const rows = getAllByRole(syncHealth, 'listitem')
+    const syncHealth = getByRole(view, 'region', { name: 'Sync health by project' })
+    const table = syncHealth.querySelector('table[aria-label="Sync health by project"]')
+    const headers = Array.from(table?.querySelectorAll('th[scope="col"]') ?? []).map((header) => header.textContent)
 
-    expect(rows).toHaveLength(hiveOverviewFixture.syncHealthByProject.length)
+    expect(table).not.toBeNull()
+    expect(headers).toEqual(['Status', 'Project', 'Contributors', 'Last sync'])
+    expect(table?.querySelectorAll('tbody tr')).toHaveLength(5)
   })
 
-  it('caps sync health rows in the overview and announces additional projects', () => {
+  it('orders sync health by priority and activity, caps it at five, and links to Projects', () => {
     const highProjectCountFixture: OverviewFixtureViewModel = {
       ...hiveOverviewFixture,
       syncHealthByProject: Array.from({ length: 12 }, (_, index) => {
@@ -120,45 +123,35 @@ describe('overview view', () => {
     }
     const view = renderOverview({ status: 'ready', data: highProjectCountFixture })
     const syncHealthRegion = getByRole(view, 'region', { name: 'Sync health by project' })
-    const syncHealth = getByRole(syncHealthRegion, 'list', { name: 'Sync health by project rows' })
-    const rows = getAllByRole(syncHealth, 'listitem')
-    const overflowNote = getByRole(syncHealthRegion, 'note', {
-      name: 'Showing 8 of 12 projects. 4 more projects are not shown in Overview.'
-    })
+    const rows = Array.from(syncHealthRegion.querySelectorAll<HTMLElement>('tbody tr'))
+    const footerLink = getByRole(syncHealthRegion, 'link', { name: 'View all projects' })
 
     expect(syncHealthRegion.classList.contains('dashboard-sync-health')).toBe(true)
-    expect(syncHealth.classList.contains('dashboard-sync-health__list')).toBe(true)
-    expect(syncHealth.tabIndex).toBe(0)
-    expect(rows).toHaveLength(8)
-    expect(rows.map(accessibleName)).toEqual(
-      expect.arrayContaining([
-        'project-1: Healthy, 6 contributors, 2m ago, region eu-west-1',
-        'project-8: Unknown, 4 contributors, 1d ago, region us-east-1'
-      ])
-    )
-    expect(syncHealthRegion.textContent).not.toContain('project-9')
-    expect(overflowNote).toBeDefined()
+    expect(rows).toHaveLength(5)
+    expect(rows.map((row) => row.querySelector('.dashboard-sync-health__project')?.textContent)).toEqual([
+      'project-11',
+      'project-3',
+      'project-6',
+      'project-8',
+      'project-5'
+    ])
+    expect(syncHealthRegion.textContent).toContain('Showing 5 of 12')
+    expect(footerLink.getAttribute('href')).toBe('/dashboard/projects')
   })
 
-  it('renders compact sync health rows with status dot, project, metric, and activity age', () => {
+  it('renders textual shared status badges and responsive row grouping hooks', () => {
     const view = renderOverview({ status: 'ready', data: hiveOverviewFixture })
-    const project = hiveOverviewFixture.syncHealthByProject[0]
-    const syncHealth = getByRole(view, 'list', { name: 'Sync health by project rows' })
+    const syncHealth = getByRole(view, 'region', { name: 'Sync health by project' })
+    const row = syncHealth.querySelector<HTMLElement>('tbody tr')
+    const badge = row?.querySelector('[data-dashboard-primitive="status"]')
 
-    const row = getByRole(syncHealth, 'listitem', {
-      name: `${project.name}: Healthy, ${project.contributorCount} contributors, ${project.lastActivityLabel}, region ${project.region}`
-    })
-    const statusDot = row.querySelector('[data-dashboard-primitive="status-dot"]')
-
-    expect(row).toBeDefined()
-    expect(row.classList.contains('dashboard-sync-health__row')).toBe(true)
-    expect(statusDot?.getAttribute('data-dashboard-status')).toBe('healthy')
-    expect(statusDot?.getAttribute('aria-hidden')).toBe('true')
-    expect(row.textContent).toBe(`${project.name}${project.contributorCount} contributors${project.lastActivityLabel}`)
-    expect(row.title).toContain(`region ${project.region}`)
-    expect(row.textContent).not.toContain(project.region)
-    expect(row.textContent).not.toContain('memories')
-    expect(row.textContent).not.toContain('last synced')
+    expect(row?.classList.contains('dashboard-sync-health__row')).toBe(true)
+    expect(badge?.textContent).toBe('DEGRADED')
+    expect(badge?.getAttribute('data-dashboard-status')).toBe('warning')
+    expect(row?.querySelector('.dashboard-sync-health__status')).not.toBeNull()
+    expect(row?.querySelector('.dashboard-sync-health__project')).not.toBeNull()
+    expect(row?.querySelector('.dashboard-sync-health__metric')).not.toBeNull()
+    expect(row?.querySelector('.dashboard-sync-health__activity')).not.toBeNull()
   })
 
   it('omits sync health region text and ARIA copy when region is blank', () => {
@@ -172,10 +165,10 @@ describe('overview view', () => {
       ]
     }
     const view = renderOverview({ status: 'ready', data: fixture })
-    const syncHealth = getByRole(view, 'list', { name: 'Sync health by project rows' })
+    const syncHealth = getByRole(view, 'region', { name: 'Sync health by project' })
 
-    const emptyRegionRow = getByRole(syncHealth, 'listitem', { name: 'core-api: Healthy, 6 contributors, 2m ago' })
-    const whitespaceRegionRow = getByRole(syncHealth, 'listitem', { name: 'billing-worker: Degraded, 3 contributors, 38m ago' })
+    const emptyRegionRow = getByRole(syncHealth, 'row', { name: 'core-api: Healthy, 6 contributors, 2m ago' })
+    const whitespaceRegionRow = getByRole(syncHealth, 'row', { name: 'billing-worker: Degraded, 3 contributors, 38m ago' })
 
     expect(accessibleName(emptyRegionRow)).not.toContain('region')
     expect(accessibleName(whitespaceRegionRow)).not.toContain('region')
@@ -204,7 +197,8 @@ describe('overview view', () => {
     const emptyState = getByRole(syncHealth, 'status')
 
     expect(emptyState.textContent).toBe('No project sync health data is available.')
-    expect(queryAllByRole(syncHealth, 'listitem')).toHaveLength(0)
+    expect(syncHealth.querySelector('table')).toBeNull()
+    expect(queryAllByRole(syncHealth, 'row')).toHaveLength(0)
   })
 
   it('renders chart as SVG even when all growth values are zero', () => {
@@ -225,17 +219,23 @@ describe('overview view', () => {
     expect(svg?.querySelector('polygon')).not.toBeNull()
   })
 
-  it('renders degraded project badge distinct from healthy', () => {
+  it('renders degraded, unknown, and healthy badges without relying on color', () => {
     const view = renderOverview({ status: 'ready', data: hiveOverviewFixture })
-    const syncHealth = getByRole(view, 'list', { name: 'Sync health by project rows' })
+    const syncHealth = getByRole(view, 'region', { name: 'Sync health by project' })
+    const badges = Array.from(syncHealth.querySelectorAll('[data-dashboard-primitive="status"]'))
 
-    const healthyRow = getByRole(syncHealth, 'listitem', { name: 'core-api: Healthy, 6 contributors, 2m ago, region eu-west-1' })
-    const degradedRow = getByRole(syncHealth, 'listitem', {
-      name: 'billing-worker: Degraded, 3 contributors, 38m ago, region us-east-1'
-    })
+    expect(badges.map((badge) => badge.textContent)).toEqual(['DEGRADED', 'DEGRADED', 'UNKNOWN', 'HEALTHY', 'HEALTHY'])
+  })
 
-    expect(healthyRow.querySelector('[data-dashboard-primitive="status-dot"]')?.getAttribute('data-dashboard-status')).toBe('healthy')
-    expect(degradedRow.querySelector('[data-dashboard-primitive="status-dot"]')?.getAttribute('data-dashboard-status')).toBe('warning')
+  it('preserves the #311 containment hooks for the neighboring overview panels', () => {
+    const view = renderOverview({ status: 'ready', data: hiveOverviewFixture })
+    const operationsRow = view.querySelectorAll('.dashboard-overview__row')[0]
+    const panels = operationsRow?.querySelectorAll('.dashboard-panel--flush')
+
+    expect(panels).toHaveLength(2)
+    expect(panels?.[0].textContent).toContain('Knowledge growth')
+    expect(panels?.[1].querySelector('.dashboard-sync-health')).not.toBeNull()
+    expect(panels?.[1].querySelector('.dashboard-sync-health__list')).toBeNull()
   })
 
   it('renders live activity using only count and newest sync id from the backend', () => {

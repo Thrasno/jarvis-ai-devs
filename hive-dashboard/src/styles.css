@@ -174,32 +174,76 @@ body { margin: 0; background: var(--dashboard-background); }
 
 .dashboard-sync-health {
   display: grid;
-  max-block-size: min(360px, 52vh);
-  overflow: hidden;
+  min-width: 0;
 }
 
-.dashboard-sync-health__list {
-  max-block-size: min(320px, 44vh);
-  overflow-y: auto;
-  overscroll-behavior: contain;
+.dashboard-sync-health__table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.dashboard-sync-health__table th {
+  color: var(--dashboard-text-muted);
+  font-family: var(--dashboard-font-mono);
+  font-size: 0.625rem;
+  font-weight: 600;
+  height: 32px;
+  letter-spacing: 0.08em;
+  padding: 0 8px;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.dashboard-sync-health__table th:first-child,
+.dashboard-sync-health__row td:first-child {
+  padding-inline-start: 16px;
+  width: 92px;
+}
+
+.dashboard-sync-health__table th:nth-child(3),
+.dashboard-sync-health__table th:nth-child(4),
+.dashboard-sync-health__metric,
+.dashboard-sync-health__activity {
+  text-align: right;
+}
+
+.dashboard-sync-health__table th:last-child,
+.dashboard-sync-health__row td:last-child {
+  padding-inline-end: 16px;
 }
 
 .dashboard-sync-health__row {
-  align-items: center;
   border-bottom: 1px solid rgba(37, 48, 67, 0.55);
-  display: grid;
-  gap: 10px;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  min-block-size: 34px;
-  padding: 6px 16px;
+  height: 46px;
 }
 
-.dashboard-status-dot {
-  background: currentColor;
-  border-radius: 999px;
-  display: inline-block;
-  height: 8px;
-  width: 8px;
+.dashboard-sync-health__row td {
+  padding: 0 8px;
+  vertical-align: middle;
+}
+
+.dashboard-sync-health__status .dashboard-status {
+  font-family: var(--dashboard-font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+  margin: 0;
+  padding: 0.2rem 0.45rem;
+}
+
+.dashboard-sync-health__status [data-dashboard-status="healthy"] {
+  background: rgba(34, 184, 92, 0.08);
+  border-color: rgba(34, 184, 92, 0.35);
+}
+
+.dashboard-sync-health__status [data-dashboard-status="warning"] {
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.dashboard-sync-health__status [data-dashboard-status="neutral"] {
+  background: rgba(148, 163, 184, 0.08);
+  border-color: rgba(148, 163, 184, 0.25);
 }
 
 .dashboard-sync-health__project,
@@ -213,23 +257,79 @@ body { margin: 0; background: var(--dashboard-background); }
   white-space: nowrap;
 }
 
+.dashboard-sync-health__project {
+  color: var(--dashboard-text);
+  font-weight: 700;
+}
+
 .dashboard-sync-health__metric,
 .dashboard-sync-health__activity {
   color: var(--dashboard-text-muted);
 }
 
-.dashboard-sync-health__overflow-note {
+.dashboard-sync-health__footer {
+  align-items: center;
   border-top: 1px solid var(--dashboard-border);
+  display: flex;
+  justify-content: space-between;
+  min-height: 40px;
+  padding: 0 16px;
+}
+
+.dashboard-sync-health__count,
+.dashboard-sync-health__footer a {
   color: var(--dashboard-text-muted);
   font-family: var(--dashboard-font-mono);
   font-size: 0.6875rem;
   margin: 0;
-  padding: 10px 16px 12px;
+}
+
+.dashboard-sync-health__footer a {
+  color: var(--dashboard-accent);
 }
 
 @media (max-width: 768px) {
   .dashboard-overview__row {
     grid-template-columns: 1fr;
+  }
+
+  .dashboard-sync-health__table thead {
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    height: 1px;
+    overflow: hidden;
+    position: absolute;
+    white-space: nowrap;
+    width: 1px;
+  }
+
+  .dashboard-sync-health__row {
+    display: grid;
+    grid-template-columns: minmax(88px, auto) minmax(0, 1fr);
+    height: auto;
+    min-height: 64px;
+    padding: 8px 16px;
+  }
+
+  .dashboard-sync-health__row td,
+  .dashboard-sync-health__row td:first-child,
+  .dashboard-sync-health__row td:last-child {
+    padding: 0;
+  }
+
+  .dashboard-sync-health__project,
+  .dashboard-sync-health__status {
+    align-self: end;
+  }
+
+  .dashboard-sync-health__metric,
+  .dashboard-sync-health__activity {
+    align-self: start;
+    text-align: left;
+  }
+
+  .dashboard-sync-health__activity {
+    text-align: right;
   }
 }
 
