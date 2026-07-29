@@ -16,19 +16,19 @@ describe('overview view', () => {
     expect(alert.textContent).toContain('network failure')
   })
 
-  it('renders KPI cards for all four metrics', () => {
+  it('renders KPI cards as native links to their destination views', () => {
     const view = renderOverview({ status: 'ready', data: hiveOverviewFixture })
-    const metrics = getAllByRole(view, 'group')
+    const metrics = getAllByRole(view, 'link')
 
     expect(metrics).toHaveLength(4)
-    expect(metrics.map(accessibleName)).toEqual(
-      expect.arrayContaining([
-        'Total Memories: 22.4k',
-        'Active Projects: 8',
-        'SYNCING USERS · 24H: 56% · 5/9',
-        'DEGRADED PROJECTS: 2 / 5'
-      ])
-    )
+    expect(metrics.map((metric) => ({ name: accessibleName(metric), href: metric.getAttribute('href') }))).toEqual([
+      { name: 'Total Memories: 22.4k. View Knowledge Browser', href: '/dashboard/knowledgeBrowser' },
+      { name: 'Active Projects: 8. View Projects', href: '/dashboard/projects' },
+      { name: 'SYNCING USERS · 24H: 56% · 5/9. View User Management', href: '/dashboard/userManagement' },
+      { name: 'DEGRADED PROJECTS: 2 / 5. View degraded Projects', href: '/dashboard/projects?health=degraded' }
+    ])
+    expect(metrics.every((metric) => metric.tagName === 'A')).toBe(true)
+    expect(metrics.every((metric) => metric.querySelector('a, button, input, select, textarea') === null)).toBe(true)
   })
 
   it('renders sync health display as "78% · 7/9" for syncing users card', () => {
@@ -37,7 +37,7 @@ describe('overview view', () => {
       syncingUsers: { label: 'SYNCING USERS · 24H', value: 7, displayValue: '7/9' }
     }
     const view = renderOverview({ status: 'ready', data: fixture })
-    expect(getByRole(view, 'group', { name: 'SYNCING USERS · 24H: 78% · 7/9' })).toBeDefined()
+    expect(getByRole(view, 'link', { name: 'SYNCING USERS · 24H: 78% · 7/9. View User Management' })).toBeDefined()
   })
 
   it('renders exactly 0 / 0 without a percentage for zero syncing users', () => {
@@ -48,14 +48,14 @@ describe('overview view', () => {
 
     const view = renderOverview({ status: 'ready', data: fixture })
 
-    expect(getByRole(view, 'group', { name: 'SYNCING USERS · 24H: 0 / 0' })).toBeDefined()
+    expect(getByRole(view, 'link', { name: 'SYNCING USERS · 24H: 0 / 0. View User Management' })).toBeDefined()
   })
 
   it('renders degraded projects from the overview fixture contract', () => {
     const view = renderOverview({ status: 'ready', data: hiveOverviewFixture })
     expect(
-      getByRole(view, 'group', {
-        name: 'DEGRADED PROJECTS: 2 / 5'
+      getByRole(view, 'link', {
+        name: 'DEGRADED PROJECTS: 2 / 5. View degraded Projects'
       })
     ).toBeDefined()
   })
@@ -68,7 +68,7 @@ describe('overview view', () => {
 
     const view = renderOverview({ status: 'ready', data: fixture })
 
-    expect(getByRole(view, 'group', { name: 'DEGRADED PROJECTS: 2 / 5' })).toBeDefined()
+    expect(getByRole(view, 'link', { name: 'DEGRADED PROJECTS: 2 / 5. View degraded Projects' })).toBeDefined()
     expect(view.textContent).not.toContain('Open Conflicts')
   })
 
@@ -93,7 +93,7 @@ describe('overview view', () => {
     const syncHealth = getByRole(view, 'region', { name: 'Sync health by project' })
 
     expect(view.textContent).not.toContain('Demo fixture data')
-    expect(getByRole(view, 'group', { name: 'DEGRADED PROJECTS: 2 / 5' })).toBeDefined()
+    expect(getByRole(view, 'link', { name: 'DEGRADED PROJECTS: 2 / 5. View degraded Projects' })).toBeDefined()
     // No descriptive summary text — polish spec removes these sentences
     expect(getByRole(view, 'figure', { name: 'Knowledge Growth' }).textContent).not.toContain('Knowledge growth over time.')
     expect(syncHealth.textContent).not.toContain('unavailable')
@@ -190,8 +190,8 @@ describe('overview view', () => {
       activeProjects: { label: 'Active Projects', value: 0 }
     }
     const view = renderOverview({ status: 'ready', data: zeroFixture })
-    expect(getByRole(view, 'group', { name: 'Total Memories: 0' })).toBeDefined()
-    expect(getByRole(view, 'group', { name: 'Active Projects: 0' })).toBeDefined()
+    expect(getByRole(view, 'link', { name: 'Total Memories: 0. View Knowledge Browser' })).toBeDefined()
+    expect(getByRole(view, 'link', { name: 'Active Projects: 0. View Projects' })).toBeDefined()
   })
 
   it('handles empty syncHealthByProject safely', () => {
@@ -352,7 +352,10 @@ describe('overview view', () => {
       mostActiveProjects: [{ label: 'jarvis-dev', value: 4 }]
     }
     const view = renderOverview({ status: 'ready', data: member })
+    const metrics = getAllByRole(view, 'link')
 
+    expect(metrics).toHaveLength(2)
+    expect(metrics.map((metric) => metric.getAttribute('href'))).toEqual(['/dashboard/knowledgeBrowser', '/dashboard/projects'])
     expect(view.textContent).toContain('Total Memories')
     expect(view.textContent).toContain('Active Projects')
     expect(view.textContent).toContain('Live activity')
@@ -388,6 +391,7 @@ function elementRole(element: HTMLElement): string | undefined {
   if (explicitRole) return explicitRole
 
   if (/^H[1-6]$/.test(element.tagName)) return 'heading'
+  if (element.tagName === 'A' && element.hasAttribute('href')) return 'link'
   if (element.tagName === 'OL' || element.tagName === 'UL') return 'list'
   if (element.tagName === 'LI') return 'listitem'
   return undefined
