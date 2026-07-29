@@ -36,14 +36,14 @@ func (r *postgresSyncAttemptRepository) UpsertBatch(ctx context.Context, attempt
 
 		const q = `
 INSERT INTO sync_attempt_logs
-    (attempt_id, source_dev_id, project, client, daemon_id, started_at, ended_at, outcome,
-     http_status, error_code, error_message, request_id, sync_counts, metadata)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+	    (attempt_id, source_dev_id, project, client, daemon_id, started_at, ended_at, outcome,
+	     http_status, error_code, error_message, request_id, sync_counts, metadata, portal_user_id, portal_user_source)
+	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 ON CONFLICT (source_dev_id, attempt_id) DO NOTHING`
 		tag, err := r.db.Exec(ctx, q,
 			attempt.AttemptID, attempt.DevID, attempt.Project, attempt.Client, attempt.DaemonID,
 			attempt.StartedAt, attempt.EndedAt, string(attempt.Outcome), attempt.HTTPStatus,
-			attempt.ErrorCode, attempt.ErrorMessage, attempt.RequestID, syncCounts, metadata,
+			attempt.ErrorCode, attempt.ErrorMessage, attempt.RequestID, syncCounts, metadata, attempt.PortalUserID, attempt.PortalUserSource,
 		)
 		if err != nil {
 			return result, wrapPgError(err, "Upsert sync attempt")
@@ -179,6 +179,47 @@ func (r *postgresSyncAttemptRepository) SyncHealthByProject(ctx context.Context,
 		return nil, wrapPgError(err, "iterate SyncHealthByProject rows")
 	}
 	return result, nil
+}
+
+func (r *postgresSyncAttemptRepository) ProjectSyncHealth(ctx context.Context) (model.ProjectSyncHealthProjection, error) {
+	q := fmt.Sprintf(`
+		WITH latest AS (
+			SELECT DISTINCT ON (s.project, s.portal_user_id)
+				s.project, s.outcome, COALESCE(s.ended_at, s.started_at) AS activity_at
+			FROM sync_attempt_logs s
+			JOIN users u ON u.id = s.portal_user_id AND u.is_active = true
+			WHERE s.project <> '' AND s.portal_user_id IS NOT NULL AND %s
+			ORDER BY s.project, s.portal_user_id, COALESCE(s.ended_at, s.started_at) DESC,
+				s.ingested_at DESC, s.attempt_id DESC, s.id DESC
+		), health AS (
+			SELECT project,
+				CASE WHEN BOOL_OR(outcome = 'failure') THEN 'failure' ELSE 'success' END AS outcome,
+				COUNT(*)::int AS contributors, MAX(activity_at) AS last_activity_at
+			FROM latest GROUP BY project
+		)
+		SELECT project, outcome, contributors, last_activity_at,
+			COUNT(*) OVER (), COUNT(*) FILTER (WHERE outcome = 'failure') OVER ()
+		FROM health
+		ORDER BY CASE WHEN outcome = 'failure' THEN 0 ELSE 1 END, last_activity_at DESC, project`, unblockedProjectPredicate("s.project"))
+	rows, err := r.db.Query(ctx, q)
+	if err != nil {
+		return model.ProjectSyncHealthProjection{}, wrapPgError(err, "ProjectSyncHealth")
+	}
+	defer rows.Close()
+	projection := model.ProjectSyncHealthProjection{Rows: []model.ProjectSyncHealthRow{}}
+	for rows.Next() {
+		var row model.ProjectSyncHealthRow
+		var outcome string
+		if err := rows.Scan(&row.Project, &outcome, &row.ContributorCount, &row.LastActivityAt, &projection.Total, &projection.Degraded); err != nil {
+			return model.ProjectSyncHealthProjection{}, wrapPgError(err, "scan ProjectSyncHealth row")
+		}
+		row.LastOutcome = model.SyncAttemptOutcome(outcome)
+		projection.Rows = append(projection.Rows, row)
+	}
+	if err := rows.Err(); err != nil {
+		return model.ProjectSyncHealthProjection{}, wrapPgError(err, "iterate ProjectSyncHealth rows")
+	}
+	return projection, nil
 }
 
 func nonNilIntMap(values map[string]int) map[string]int {

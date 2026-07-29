@@ -16,6 +16,7 @@ func startPostgresWithSyncAttempts(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
 	pool, cleanup := startPostgres(t)
 	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptLogsSQL))
+	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptPortalUsersSQL))
 	return pool, cleanup
 }
 
@@ -25,8 +26,11 @@ func TestPostgresSyncAttemptRepository_UpsertBatchIsIdempotentByDevAndAttempt(t 
 	ctx := context.Background()
 	repo := NewPostgresSyncAttemptRepository(pool)
 	now := time.Now().UTC()
+	_, err := pool.Exec(ctx, `INSERT INTO users (id, username, email, password) VALUES ('00000000-0000-0000-0000-000000000001', 'member', 'dev@example.com', 'hash')`)
+	require.NoError(t, err)
 
-	attempt := model.SyncAttemptLog{AttemptID: "attempt-1", DevID: "dev@example.com", Project: "jarvis-dev", StartedAt: now, Outcome: model.SyncAttemptOutcomeSuccess}
+	portalUserID, portalUserSource := "00000000-0000-0000-0000-000000000001", model.SyncAttemptPortalUserSourceAuthSubject
+	attempt := model.SyncAttemptLog{AttemptID: "attempt-1", DevID: "dev@example.com", Project: "jarvis-dev", StartedAt: now, Outcome: model.SyncAttemptOutcomeSuccess, PortalUserID: &portalUserID, PortalUserSource: &portalUserSource}
 	first, err := repo.UpsertBatch(ctx, []model.SyncAttemptLog{attempt})
 	require.NoError(t, err)
 	second, err := repo.UpsertBatch(ctx, []model.SyncAttemptLog{attempt})
@@ -39,6 +43,27 @@ func TestPostgresSyncAttemptRepository_UpsertBatchIsIdempotentByDevAndAttempt(t 
 	var count int
 	require.NoError(t, pool.QueryRow(ctx, `SELECT COUNT(*) FROM sync_attempt_logs WHERE source_dev_id=$1 AND attempt_id=$2`, "dev@example.com", "attempt-1").Scan(&count))
 	assert.Equal(t, 1, count)
+	var persistedUserID, persistedSource string
+	require.NoError(t, pool.QueryRow(ctx, `SELECT portal_user_id, portal_user_source FROM sync_attempt_logs WHERE attempt_id = 'attempt-1'`).Scan(&persistedUserID, &persistedSource))
+	assert.Equal(t, portalUserID, persistedUserID)
+	assert.Equal(t, portalUserSource, persistedSource)
+}
+
+func TestSyncAttemptPortalUsersMigration_BackfillsExactEmail(t *testing.T) {
+	pool, cleanup := startPostgres(t)
+	defer cleanup()
+	ctx := context.Background()
+	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptLogsSQL))
+	_, err := pool.Exec(ctx, `INSERT INTO users (id, username, email, password) VALUES ('00000000-0000-0000-0000-000000000001', 'ada', 'ada@example.com', 'hash')`)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `INSERT INTO sync_attempt_logs (attempt_id, source_dev_id, project, started_at, outcome) VALUES ('legacy', 'ada@example.com', 'jarvis-dev', now(), 'success')`)
+	require.NoError(t, err)
+
+	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptPortalUsersSQL))
+	var userID, source string
+	require.NoError(t, pool.QueryRow(ctx, `SELECT portal_user_id, portal_user_source FROM sync_attempt_logs WHERE attempt_id = 'legacy'`).Scan(&userID, &source))
+	assert.Equal(t, "00000000-0000-0000-0000-000000000001", userID)
+	assert.Equal(t, "legacy_email", source)
 }
 
 func TestPostgresSyncAttemptRepository_DeleteOlderThan(t *testing.T) {

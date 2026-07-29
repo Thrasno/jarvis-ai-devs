@@ -23,7 +23,7 @@ describe('projects view', () => {
   it('renders segmented project cards with honest live labels and project-name Knowledge Browser links', () => {
     const view = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([healthyProject(), unknownProject(), degradedProject()])) })
     const cards = Array.from(view.querySelectorAll<HTMLElement>('[role="listitem"]'))
-    const browseLinks = Array.from(view.querySelectorAll<HTMLAnchorElement>('a'))
+    const browseLinks = Array.from(view.querySelectorAll<HTMLAnchorElement>('.dashboard-project-card a'))
 
     expect(cards).toHaveLength(3)
     expect(cards.map((card) => card.getAttribute('aria-label'))).toEqual([
@@ -85,6 +85,18 @@ describe('projects view', () => {
     expect(empty.querySelectorAll('[role="listitem"]')).toHaveLength(0)
   })
 
+  it('renders accessible All and Degraded links and a degraded empty state without nested controls', () => {
+    const view = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([])) }, { health: 'degraded' })
+    const links = Array.from(view.querySelectorAll<HTMLAnchorElement>('[data-project-health-filter]'))
+
+    expect(links.map((link) => [link.textContent, link.getAttribute('href'), link.getAttribute('aria-current')])).toEqual([
+      ['All', '/dashboard/projects', null],
+      ['Degraded', '/dashboard/projects?health=degraded', 'page']
+    ])
+    expect(view.querySelector('[role="status"]')?.textContent).toBe('No degraded projects found.')
+    expect(view.querySelectorAll('a button, button a')).toHaveLength(0)
+  })
+
   it('does not render fixture-only region, contributor, developer, card, or last-sync claims', () => {
     const view = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([healthyProject()])) })
     const text = view.textContent ?? ''
@@ -106,7 +118,7 @@ describe('projects view', () => {
       { name: 'team/alpha project', memoryCount: 1, sessionCount: 1, lastActivityAt: null, syncHealth: 'healthy' }
     ])) })
 
-    expect(view.querySelector<HTMLAnchorElement>('a')?.getAttribute('href')).toBe('/dashboard/knowledgeBrowser?project=team%2Falpha+project')
+    expect(view.querySelector<HTMLAnchorElement>('.dashboard-project-card a')?.getAttribute('href')).toBe('/dashboard/knowledgeBrowser?project=team%2Falpha+project')
   })
 
   it('keeps long unbroken project names accessible and allows the title flex item to wrap', () => {

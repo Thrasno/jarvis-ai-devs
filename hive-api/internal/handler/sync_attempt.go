@@ -28,7 +28,8 @@ func (h *SyncAttemptHandler) Ingest(c *gin.Context) {
 		c.JSON(http.StatusForbidden, model.ErrorResponse{Error: "sync attempt dev_id is not authorized for this caller"})
 		return
 	}
-	resp, err := h.svc.Ingest(c.Request.Context(), req)
+	claims := claimsFromCtx(c)
+	resp, err := h.svc.Ingest(c.Request.Context(), req, model.SyncAttemptActor{UserID: claims.Subject, Level: claims.Level})
 	if err != nil {
 		if errors.Is(err, service.ErrSyncAttemptBatchTooLarge) {
 			c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: err.Error()})

@@ -1,5 +1,4 @@
 import type { AdminOverviewViewModel, MemberOverviewViewModel } from '../../domain/dashboard'
-import { conflictViewerFixture } from './governance'
 import { dashboardContributors, dashboardProjects } from './shared'
 
 const healthyContributors = dashboardContributors.filter((contributor) => contributor.status === 'healthy').length
@@ -10,7 +9,7 @@ export const adminOverviewFixture = {
   totalMemories: { label: 'Total Memories', value: 22375, displayValue: '22.4k' },
   activeProjects: { label: 'Active Projects', value: dashboardProjects.length, displayValue: '8' },
   healthyDaemons: { label: 'Healthy Daemons', value: healthyContributors, totalValue: dashboardContributors.length, displayValue: `${healthyContributors}/${dashboardContributors.length}` },
-  openConflicts: { label: 'Open Conflicts', value: conflictViewerFixture.summary.open },
+  degradedProjects: { label: 'DEGRADED PROJECTS', value: 2, totalValue: 5, displayValue: '2 / 5' },
   knowledgeGrowth: {
     label: 'Knowledge Growth',
     points: [

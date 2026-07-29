@@ -16,79 +16,76 @@ func TestProjectService_ListMapsAggregatesToSummaries(t *testing.T) {
 	success := model.SyncAttemptOutcomeSuccess
 	failure := model.SyncAttemptOutcomeFailure
 
-	tests := []struct {
-		name      string
-		record    model.ProjectAggregate
-		want      model.ProjectSummary
-		wantTotal int
-	}{
+	repo := &fakeProjectRepository{records: []model.ProjectAggregate{
 		{
-			name: "latest activity uses max timestamp and successful sync is healthy",
-			record: model.ProjectAggregate{
-				Name:              "alpha",
-				MemoryCount:       2,
-				SessionCount:      1,
-				LastMemoryAt:      timePtr(base.Add(-3 * time.Hour)),
-				LastSessionAt:     timePtr(base.Add(-2 * time.Hour)),
-				LastSyncAt:        timePtr(base.Add(-1 * time.Hour)),
-				LatestSyncOutcome: &success,
-			},
-			want: model.ProjectSummary{
-				Name:           "alpha",
-				MemoryCount:    2,
-				SessionCount:   1,
-				LastActivityAt: timePtr(base.Add(-1 * time.Hour)),
-				SyncHealth:     model.ProjectSyncHealthHealthy,
-			},
-			wantTotal: 1,
+			Name:              "alpha",
+			MemoryCount:       2,
+			SessionCount:      1,
+			LastMemoryAt:      timePtr(base.Add(-3 * time.Hour)),
+			LastSessionAt:     timePtr(base.Add(-2 * time.Hour)),
+			LastSyncAt:        timePtr(base.Add(-1 * time.Hour)),
+			LatestSyncOutcome: &failure,
 		},
 		{
-			name: "failed latest sync is degraded",
-			record: model.ProjectAggregate{
-				Name:              "beta",
-				LastMemoryAt:      timePtr(base.Add(-30 * time.Minute)),
-				LastSyncAt:        timePtr(base.Add(-90 * time.Minute)),
-				LatestSyncOutcome: &failure,
-			},
-			want: model.ProjectSummary{
-				Name:           "beta",
-				LastActivityAt: timePtr(base.Add(-30 * time.Minute)),
-				SyncHealth:     model.ProjectSyncHealthDegraded,
-			},
-			wantTotal: 1,
+			Name:              "beta",
+			LastMemoryAt:      timePtr(base.Add(-30 * time.Minute)),
+			LastSyncAt:        timePtr(base.Add(-90 * time.Minute)),
+			LatestSyncOutcome: &success,
 		},
 		{
-			name: "missing sync outcome is unknown and activity can be nil",
-			record: model.ProjectAggregate{
-				Name: "gamma",
-			},
-			want: model.ProjectSummary{
-				Name:       "gamma",
-				SyncHealth: model.ProjectSyncHealthUnknown,
-			},
-			wantTotal: 1,
+			Name:              "gamma",
+			LatestSyncOutcome: &failure,
 		},
-	}
+	}}
+	healthRepo := &fakeProjectHealthRepository{projection: model.ProjectSyncHealthProjection{Rows: []model.ProjectSyncHealthRow{
+		{Project: "alpha", LastOutcome: model.SyncAttemptOutcomeSuccess, LastActivityAt: base.Add(-1 * time.Hour)},
+		{Project: "beta", LastOutcome: model.SyncAttemptOutcomeFailure, LastActivityAt: base.Add(-90 * time.Minute)},
+	}}}
+	svc := service.NewProjectService(repo, healthRepo)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			repo := &fakeProjectRepository{records: []model.ProjectAggregate{tt.record}}
-			svc := service.NewProjectService(repo)
+	got, err := svc.List(context.Background(), "")
 
-			got, err := svc.List(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []model.ProjectSummary{
+		{Name: "alpha", MemoryCount: 2, SessionCount: 1, LastActivityAt: timePtr(base.Add(-1 * time.Hour)), SyncHealth: stringPtr(model.ProjectSyncHealthHealthy)},
+		{Name: "beta", LastActivityAt: timePtr(base.Add(-30 * time.Minute)), SyncHealth: stringPtr(model.ProjectSyncHealthDegraded)},
+		{Name: "gamma", SyncHealth: nil},
+	}, got.Projects)
+	assert.Equal(t, 3, got.Total)
 
-			require.NoError(t, err)
-			require.Len(t, got.Projects, 1)
-			assert.Equal(t, tt.wantTotal, got.Total)
-			assert.Equal(t, tt.want, got.Projects[0])
-		})
-	}
+	degraded, err := svc.List(context.Background(), model.ProjectSyncHealthDegraded)
+	require.NoError(t, err)
+	assert.Equal(t, []model.ProjectSummary{{Name: "beta", LastActivityAt: timePtr(base.Add(-30 * time.Minute)), SyncHealth: stringPtr(model.ProjectSyncHealthDegraded)}}, degraded.Projects)
+	assert.Equal(t, 1, degraded.Total)
+}
+
+func TestProjectService_ListKeepsSyncActivityForNonParticipatingProjects(t *testing.T) {
+	base := time.Date(2026, 6, 22, 10, 0, 0, 0, time.UTC)
+	failure := model.SyncAttemptOutcomeFailure
+
+	repo := &fakeProjectRepository{records: []model.ProjectAggregate{{
+		Name:              "orphaned",
+		LastMemoryAt:      timePtr(base.Add(-5 * time.Hour)),
+		LastSyncAt:        timePtr(base.Add(-1 * time.Hour)),
+		LatestSyncOutcome: &failure,
+	}}}
+	healthRepo := &fakeProjectHealthRepository{projection: model.ProjectSyncHealthProjection{}}
+	svc := service.NewProjectService(repo, healthRepo)
+
+	got, err := svc.List(context.Background(), "")
+
+	require.NoError(t, err)
+	assert.Equal(t, []model.ProjectSummary{{
+		Name:           "orphaned",
+		LastActivityAt: timePtr(base.Add(-1 * time.Hour)),
+		SyncHealth:     nil,
+	}}, got.Projects)
 }
 
 func TestProjectService_ListReturnsNonNilEmptyResponse(t *testing.T) {
-	svc := service.NewProjectService(&fakeProjectRepository{})
+	svc := service.NewProjectService(&fakeProjectRepository{}, &fakeProjectHealthRepository{})
 
-	got, err := svc.List(context.Background())
+	got, err := svc.List(context.Background(), "")
 
 	require.NoError(t, err)
 	assert.NotNil(t, got.Projects)
@@ -107,4 +104,17 @@ func (f *fakeProjectRepository) ListAggregates(context.Context) ([]model.Project
 
 func timePtr(t time.Time) *time.Time {
 	return &t
+}
+
+type fakeProjectHealthRepository struct {
+	projection model.ProjectSyncHealthProjection
+	err        error
+}
+
+func (f *fakeProjectHealthRepository) ProjectSyncHealth(context.Context) (model.ProjectSyncHealthProjection, error) {
+	return f.projection, f.err
+}
+
+func stringPtr(value string) *string {
+	return &value
 }

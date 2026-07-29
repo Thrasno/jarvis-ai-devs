@@ -32,20 +32,20 @@ type CapabilityOverviewResponse struct {
 
 // AdminOverviewOperations contains fields intentionally excluded from Member projections.
 type AdminOverviewOperations struct {
-	DaemonHealth        OverviewDaemonHealth `json:"daemon_health"`
-	Conflicts           OverviewConflicts    `json:"conflicts"`
-	KnowledgeGrowth     []OverviewChartPoint `json:"knowledge_growth"`
-	SyncHealthByProject []ProjectSyncHealth  `json:"sync_health_by_project"`
-	NewestSyncID        string               `json:"newest_sync_id"`
+	DaemonHealth        OverviewDaemonHealth     `json:"daemon_health"`
+	DegradedProjects    OverviewDegradedProjects `json:"degraded_projects"`
+	KnowledgeGrowth     []OverviewChartPoint     `json:"knowledge_growth"`
+	SyncHealthByProject []ProjectSyncHealth      `json:"sync_health_by_project"`
+	NewestSyncID        string                   `json:"newest_sync_id"`
 }
 
 // OverviewStatsResponse is the response for GET /admin/overview/stats.
 type OverviewStatsResponse struct {
-	DaemonHealth        OverviewDaemonHealth `json:"daemon_health"`
-	Conflicts           OverviewConflicts    `json:"conflicts"`
-	SyncHealthByProject []ProjectSyncHealth  `json:"sync_health_by_project"`
-	LiveActivity        OverviewLiveActivity `json:"live_activity"`
-	MostActiveProjects  []ProjectCount       `json:"most_active_projects"`
+	DaemonHealth        OverviewDaemonHealth     `json:"daemon_health"`
+	DegradedProjects    OverviewDegradedProjects `json:"degraded_projects"`
+	SyncHealthByProject []ProjectSyncHealth      `json:"sync_health_by_project"`
+	LiveActivity        OverviewLiveActivity     `json:"live_activity"`
+	MostActiveProjects  []ProjectCount           `json:"most_active_projects"`
 }
 
 // OverviewDaemonHealth holds daemon health counts.
@@ -54,9 +54,10 @@ type OverviewDaemonHealth struct {
 	Total   int `json:"total"`
 }
 
-// OverviewConflicts holds open conflict count.
-type OverviewConflicts struct {
-	Open int `json:"open"`
+// OverviewDegradedProjects holds the canonical degraded-project KPI.
+type OverviewDegradedProjects struct {
+	Degraded int `json:"degraded"`
+	Total    int `json:"total"`
 }
 
 // ProjectSyncHealth holds per-project sync health status.

@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import { conflictViewerFixture } from '../fixtures/hive-dashboard/governance'
 import { hiveOverviewFixture } from '../fixtures/hive-dashboard/overview'
 import type { OverviewFixtureViewModel } from '../domain/dashboard'
 import { renderOverview } from './Overview'
@@ -27,7 +26,7 @@ describe('overview view', () => {
         'Total Memories: 22.4k',
         'Active Projects: 8',
         'Healthy Daemons: 56% · 5/9',
-        `Open Conflicts: ${conflictViewerFixture.summary.open}`
+        'DEGRADED PROJECTS: 2 / 5'
       ])
     )
   })
@@ -41,13 +40,25 @@ describe('overview view', () => {
     expect(getByRole(view, 'group', { name: 'Healthy Daemons: 78% · 7/9' })).toBeDefined()
   })
 
-  it('renders Open Conflicts from the governance fixture contract', () => {
+  it('renders degraded projects from the overview fixture contract', () => {
     const view = renderOverview({ status: 'ready', data: hiveOverviewFixture })
     expect(
       getByRole(view, 'group', {
-        name: `Open Conflicts: ${conflictViewerFixture.summary.open}`
+        name: 'DEGRADED PROJECTS: 2 / 5'
       })
     ).toBeDefined()
+  })
+
+  it('renders the canonical degraded-project total instead of open conflicts', () => {
+    const fixture = {
+      ...hiveOverviewFixture,
+      degradedProjects: { label: 'DEGRADED PROJECTS', value: 2, totalValue: 5, displayValue: '2 / 5' }
+    } as unknown as OverviewFixtureViewModel
+
+    const view = renderOverview({ status: 'ready', data: fixture })
+
+    expect(getByRole(view, 'group', { name: 'DEGRADED PROJECTS: 2 / 5' })).toBeDefined()
+    expect(view.textContent).not.toContain('Open Conflicts')
   })
 
   it('renders Knowledge Growth chart as SVG with polyline and polygon', () => {
@@ -71,7 +82,7 @@ describe('overview view', () => {
     const syncHealth = getByRole(view, 'region', { name: 'Sync health by project' })
 
     expect(view.textContent).not.toContain('Demo fixture data')
-    expect(getByRole(view, 'group', { name: `Open Conflicts: ${conflictViewerFixture.summary.open}` })).toBeDefined()
+    expect(getByRole(view, 'group', { name: 'DEGRADED PROJECTS: 2 / 5' })).toBeDefined()
     // No descriptive summary text — polish spec removes these sentences
     expect(getByRole(view, 'figure', { name: 'Knowledge Growth' }).textContent).not.toContain('Knowledge growth over time.')
     expect(syncHealth.textContent).not.toContain('unavailable')
@@ -335,7 +346,7 @@ describe('overview view', () => {
     expect(view.textContent).toContain('Active Projects')
     expect(view.textContent).toContain('Live activity')
     expect(view.textContent).toContain('Most active projects')
-    for (const forbidden of ['Healthy Daemons', 'Open Conflicts', 'Knowledge Growth', 'Sync health', 'Newest sync', 'newest_sync_id', 'daemon_health', 'operations', 'contributor', 'actor', 'timestamp']) {
+    for (const forbidden of ['Healthy Daemons', 'DEGRADED PROJECTS', 'Knowledge Growth', 'Sync health', 'Newest sync', 'newest_sync_id', 'daemon_health', 'operations', 'contributor', 'actor', 'timestamp']) {
       expect(view.textContent?.toLowerCase()).not.toContain(forbidden.toLowerCase())
     }
   })

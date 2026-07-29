@@ -78,10 +78,10 @@ type SyncResponse struct {
 	// Procesadas por el daemon ANTES de las pulled memories para satisfacer la FK.
 	PulledSessions []SyncSessionResponse `json:"pulled_sessions,omitempty"`
 
-	NextMutationCursor *MutationCursor    `json:"next_mutation_cursor,omitempty"`
-	PulledMutations    []MutationEnvelope `json:"pulled_mutations,omitempty"`
+	NextMutationCursor *MutationCursor       `json:"next_mutation_cursor,omitempty"`
+	PulledMutations    []MutationEnvelope    `json:"pulled_mutations,omitempty"`
 	MutationResults    []MutationApplyResult `json:"mutation_results,omitempty"`
-	CompatibilityMode  string             `json:"compatibility_mode,omitempty"`
+	CompatibilityMode  string                `json:"compatibility_mode,omitempty"`
 
 	// Bounded legacy pull pagination (PR 2a, design §2.2). These fields cover the
 	// two previously-unbounded legacy pull channels: Pulled (memories) and
@@ -175,7 +175,7 @@ type ProjectSummary struct {
 	MemoryCount    int64      `json:"memoryCount"`
 	SessionCount   int64      `json:"sessionCount"`
 	LastActivityAt *time.Time `json:"lastActivityAt"`
-	SyncHealth     string     `json:"syncHealth"`
+	SyncHealth     *string    `json:"syncHealth,omitempty"`
 }
 
 type ProjectAggregate struct {

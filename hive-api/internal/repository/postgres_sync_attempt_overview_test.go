@@ -18,6 +18,7 @@ func startPostgresWithSyncAttemptsAndSessions(t *testing.T) (*pgxpool.Pool, func
 	t.Helper()
 	pool, cleanup := startPostgresWithSessions(t)
 	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptLogsSQL))
+	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptPortalUsersSQL))
 	return pool, cleanup
 }
 
@@ -222,6 +223,54 @@ func TestPostgresSyncAttemptRepository_SyncHealthByProjectExcludesBlockedProject
 	require.NoError(t, err)
 	require.Equal(t, []string{"visible-sync"}, projectNames(rows))
 }
+
+func TestPostgresSyncAttemptRepository_ProjectSyncHealth(t *testing.T) {
+	pool, cleanup := startPostgresWithSyncAttemptsAndProjectBlocks(t)
+	defer cleanup()
+	ctx, repo := context.Background(), NewPostgresSyncAttemptRepository(pool)
+	const alice = "00000000-0000-0000-0000-000000000011"
+	const bob = "00000000-0000-0000-0000-000000000012"
+	const disabled = "00000000-0000-0000-0000-000000000013"
+	_, err := pool.Exec(ctx, `INSERT INTO users (id, username, email, password, is_active) VALUES
+		($1, 'alice', 'alice@example.com', 'hash', true), ($2, 'bob', 'bob@example.com', 'hash', true), ($3, 'disabled', 'disabled@example.com', 'hash', false)`, alice, bob, disabled)
+	require.NoError(t, err)
+	now, source := time.Now().UTC(), model.SyncAttemptPortalUserSourceAuthSubject
+	_, err = repo.UpsertBatch(ctx, []model.SyncAttemptLog{
+		{AttemptID: "healthy-old", DevID: "device-a", Project: "healthy", StartedAt: now.Add(-2 * time.Hour), Outcome: model.SyncAttemptOutcomeFailure, PortalUserID: healthStringPtr(alice), PortalUserSource: &source},
+		{AttemptID: "healthy-new", DevID: "device-b", Project: "healthy", StartedAt: now.Add(-time.Hour), Outcome: model.SyncAttemptOutcomeSuccess, PortalUserID: healthStringPtr(alice), PortalUserSource: &source},
+		{AttemptID: "degraded-a", DevID: "device-a", Project: "degraded", StartedAt: now.Add(-time.Hour), Outcome: model.SyncAttemptOutcomeSuccess, PortalUserID: healthStringPtr(alice), PortalUserSource: &source},
+		{AttemptID: "degraded-b", DevID: "device-b", Project: "degraded", StartedAt: now.Add(-time.Hour), Outcome: model.SyncAttemptOutcomeFailure, PortalUserID: healthStringPtr(bob), PortalUserSource: &source},
+		{AttemptID: "tie-success", DevID: "device-a", Project: "tie", StartedAt: now, Outcome: model.SyncAttemptOutcomeSuccess, PortalUserID: healthStringPtr(alice), PortalUserSource: &source},
+		{AttemptID: "tie-failure", DevID: "device-b", Project: "tie", StartedAt: now, Outcome: model.SyncAttemptOutcomeFailure, PortalUserID: healthStringPtr(alice), PortalUserSource: &source},
+		{AttemptID: "disabled", DevID: "device-c", Project: "disabled", StartedAt: now, Outcome: model.SyncAttemptOutcomeFailure, PortalUserID: healthStringPtr(disabled), PortalUserSource: &source},
+		{AttemptID: "blocked", DevID: "device-d", Project: "blocked", StartedAt: now, Outcome: model.SyncAttemptOutcomeFailure, PortalUserID: healthStringPtr(alice), PortalUserSource: &source},
+	})
+	require.NoError(t, err)
+	_, err = NewPostgresProjectBlockRepository(pool).BlockProject(ctx, model.ProjectBlockCreate{Project: "blocked", CanonicalProjectKey: "blocked", Action: model.ProjectBlockActionQuarantine, Reason: "test", Confirmation: "blocked", ExportMarker: "test", ActorUserID: alice})
+	require.NoError(t, err)
+
+	projection, err := repo.ProjectSyncHealth(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 2, projection.Degraded)
+	assert.Equal(t, 3, projection.Total)
+	assert.Equal(t, []string{"tie", "degraded", "healthy"}, projectNames(projection.Rows))
+	assert.Equal(t, []model.SyncAttemptOutcome{model.SyncAttemptOutcomeFailure, model.SyncAttemptOutcomeFailure, model.SyncAttemptOutcomeSuccess}, []model.SyncAttemptOutcome{projection.Rows[0].LastOutcome, projection.Rows[1].LastOutcome, projection.Rows[2].LastOutcome})
+	assert.Equal(t, 2, projection.Rows[1].ContributorCount)
+}
+
+func TestPostgresSyncAttemptRepository_ProjectSyncHealth_Empty(t *testing.T) {
+	pool, cleanup := startPostgresWithSyncAttemptsAndProjectBlocks(t)
+	defer cleanup()
+
+	projection, err := NewPostgresSyncAttemptRepository(pool).ProjectSyncHealth(context.Background())
+
+	require.NoError(t, err)
+	assert.Empty(t, projection.Rows)
+	assert.Zero(t, projection.Degraded)
+	assert.Zero(t, projection.Total)
+}
+
+func healthStringPtr(value string) *string { return &value }
 
 func projectNames(rows []model.ProjectSyncHealthRow) []string {
 	names := make([]string, 0, len(rows))

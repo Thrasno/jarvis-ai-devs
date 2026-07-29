@@ -22,6 +22,7 @@ export type DashboardUrlFilters = {
   client?: OptionalString
   daemon_id?: OptionalString
   error_code?: OptionalString
+  health?: OptionalString
   limit?: OptionalNumber
   offset?: OptionalNumber
 }
@@ -48,6 +49,7 @@ const scalarFilters: readonly { key: ScalarFilterKey; param: string }[] = [
   { key: 'client', param: 'client' },
   { key: 'daemon_id', param: 'daemon_id' },
   { key: 'error_code', param: 'error_code' },
+  { key: 'health', param: 'health' },
   { key: 'limit', param: 'limit' },
   { key: 'offset', param: 'offset' }
 ]
@@ -85,6 +87,7 @@ export function parseDashboardFilters(input: string | URLSearchParams): Dashboar
   setString(filters, 'client', first(params, 'client'))
   setString(filters, 'daemon_id', first(params, 'daemon_id'))
   setString(filters, 'error_code', first(params, 'error_code'))
+  setString(filters, 'health', first(params, 'health'))
   setNumber(filters, 'limit', first(params, 'limit'))
   setNumber(filters, 'offset', first(params, 'offset'))
 

@@ -19,9 +19,41 @@ func newTestOverviewService(t *testing.T) (service.OverviewService, *repository.
 	t.Helper()
 	memRepo := &repository.MockMemoryRepository{}
 	syncRepo := &repository.MockSyncAttemptRepository{}
+	syncRepo.On("ProjectSyncHealth", mock.Anything).Return(model.ProjectSyncHealthProjection{Rows: []model.ProjectSyncHealthRow{}}, nil)
 	auditRepo := &repository.MockAuditRepository{}
 	svc := service.NewOverviewService(memRepo, syncRepo, auditRepo)
 	return svc, memRepo, syncRepo, auditRepo
+}
+
+func TestOverviewService_GetStatsUsesCanonicalDegradedProjectsProjection(t *testing.T) {
+	memRepo := &repository.MockMemoryRepository{}
+	syncRepo := &repository.MockSyncAttemptRepository{}
+	svc := service.NewOverviewService(memRepo, syncRepo, &repository.MockAuditRepository{})
+	ctx := context.Background()
+	activity := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+
+	syncRepo.On("DaemonHealth", ctx, mock.Anything, mock.Anything).Return(1, 2, nil)
+	syncRepo.On("ProjectSyncHealth", ctx).Return(model.ProjectSyncHealthProjection{
+		Rows: []model.ProjectSyncHealthRow{
+			{Project: "degraded", LastOutcome: model.SyncAttemptOutcomeFailure, ContributorCount: 2, LastActivityAt: activity},
+			{Project: "healthy", LastOutcome: model.SyncAttemptOutcomeSuccess, ContributorCount: 1, LastActivityAt: activity},
+		},
+		Degraded: 1,
+		Total:    2,
+	}, nil).Once()
+	memRepo.On("CountLiveActivity", ctx, mock.Anything).Return(0, "", nil)
+	memRepo.On("CountByProject", ctx, model.MemoryFilter{}).Return([]model.ProjectCount{}, nil)
+
+	stats, err := svc.GetStats(ctx)
+	require.NoError(t, err)
+	encoded, err := json.Marshal(stats)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &payload))
+	assert.Equal(t, map[string]any{"degraded": float64(1), "total": float64(2)}, payload["degraded_projects"])
+	assert.NotContains(t, string(encoded), `"conflicts"`)
+	syncRepo.AssertExpectations(t)
 }
 
 // --- GetStats tests ---
@@ -39,6 +71,9 @@ func TestOverviewService_GetStats_FullyPopulated(t *testing.T) {
 		Return([]model.ProjectSyncHealthRow{
 			{Project: "proj-a", LastOutcome: model.SyncAttemptOutcomeSuccess, ContributorCount: 2, LastActivityAt: lastActivityAt},
 		}, nil)
+	syncRepo.ExpectedCalls[0].ReturnArguments = mock.Arguments{model.ProjectSyncHealthProjection{Rows: []model.ProjectSyncHealthRow{
+		{Project: "proj-a", LastOutcome: model.SyncAttemptOutcomeSuccess, ContributorCount: 2, LastActivityAt: lastActivityAt},
+	}}, nil}
 	memRepo.On("CountLiveActivity", ctx, mock.AnythingOfType("time.Time")).
 		Return(10, "sync-id-abc", nil)
 	memRepo.On("CountByProject", ctx, model.MemoryFilter{}).
@@ -53,7 +88,7 @@ func TestOverviewService_GetStats_FullyPopulated(t *testing.T) {
 
 	assert.Equal(t, 2, stats.DaemonHealth.Healthy)
 	assert.Equal(t, 5, stats.DaemonHealth.Total)
-	assert.Equal(t, 3, stats.Conflicts.Open)
+	assert.Equal(t, model.OverviewDegradedProjects{}, stats.DegradedProjects)
 	assert.Len(t, stats.SyncHealthByProject, 1)
 	assert.Equal(t, "proj-a", stats.SyncHealthByProject[0].Project)
 	assert.Equal(t, "healthy", stats.SyncHealthByProject[0].Status)
@@ -94,7 +129,7 @@ func TestOverviewService_GetStats_ConflictsZero(t *testing.T) {
 
 	stats, err := svc.GetStats(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 0, stats.Conflicts.Open)
+	assert.Equal(t, model.OverviewDegradedProjects{}, stats.DegradedProjects)
 }
 
 func TestOverviewService_GetStats_SyncHealthByProjectEmpty(t *testing.T) {
@@ -167,26 +202,25 @@ func TestOverviewService_GetStats_DaemonHealthError(t *testing.T) {
 	assert.ErrorIs(t, err, repoErr)
 }
 
-func TestOverviewService_GetStats_ConflictsError(t *testing.T) {
-	svc, _, syncRepo, auditRepo := newTestOverviewService(t)
+func TestOverviewService_GetStats_ProjectSyncHealthError(t *testing.T) {
+	svc, _, syncRepo, _ := newTestOverviewService(t)
 	ctx := context.Background()
 	repoErr := errors.New("audit db error")
 
 	syncRepo.On("DaemonHealth", ctx, mock.Anything, mock.Anything).Return(1, 1, nil)
-	auditRepo.On("CountSyncConflicts", ctx, mock.AnythingOfType("time.Time")).Return(0, repoErr)
+	syncRepo.ExpectedCalls[0].ReturnArguments = mock.Arguments{model.ProjectSyncHealthProjection{}, repoErr}
 
 	_, err := svc.GetStats(ctx)
 	assert.ErrorIs(t, err, repoErr)
 }
 
-func TestOverviewService_GetStats_SyncHealthByProjectError(t *testing.T) {
-	svc, _, syncRepo, auditRepo := newTestOverviewService(t)
+func TestOverviewService_GetStats_ProjectSyncHealthErrorAfterDaemonHealth(t *testing.T) {
+	svc, _, syncRepo, _ := newTestOverviewService(t)
 	ctx := context.Background()
 	repoErr := errors.New("sync health error")
 
 	syncRepo.On("DaemonHealth", ctx, mock.Anything, mock.Anything).Return(1, 1, nil)
-	auditRepo.On("CountSyncConflicts", ctx, mock.AnythingOfType("time.Time")).Return(0, nil)
-	syncRepo.On("SyncHealthByProject", ctx, mock.Anything).Return(nil, repoErr)
+	syncRepo.ExpectedCalls[0].ReturnArguments = mock.Arguments{model.ProjectSyncHealthProjection{}, repoErr}
 
 	_, err := svc.GetStats(ctx)
 	assert.ErrorIs(t, err, repoErr)
@@ -264,6 +298,10 @@ func TestOverviewService_GetStats_SyncHealthStatusMapping(t *testing.T) {
 		{Project: "proj-success", LastOutcome: model.SyncAttemptOutcomeSuccess, ContributorCount: 1},
 		{Project: "proj-fail", LastOutcome: model.SyncAttemptOutcomeFailure, ContributorCount: 2},
 	}, nil)
+	syncRepo.ExpectedCalls[0].ReturnArguments = mock.Arguments{model.ProjectSyncHealthProjection{Rows: []model.ProjectSyncHealthRow{
+		{Project: "proj-success", LastOutcome: model.SyncAttemptOutcomeSuccess, ContributorCount: 1},
+		{Project: "proj-fail", LastOutcome: model.SyncAttemptOutcomeFailure, ContributorCount: 2},
+	}}, nil}
 	memRepo.On("CountLiveActivity", ctx, mock.AnythingOfType("time.Time")).Return(0, "", nil)
 	memRepo.On("CountByProject", ctx, model.MemoryFilter{}).Return([]model.ProjectCount{}, nil)
 
@@ -286,15 +324,12 @@ func TestOverviewService_GetStats_SyncHealthStatusMapping(t *testing.T) {
 // Ensure CountLiveActivity is called with a time.Time (not duration) argument.
 // This test verifies the since argument is in the past.
 func TestOverviewService_GetStats_LiveActivitySinceIsInPast(t *testing.T) {
-	svc, memRepo, syncRepo, auditRepo := newTestOverviewService(t)
+	svc, memRepo, syncRepo, _ := newTestOverviewService(t)
 	ctx := context.Background()
 
 	before := time.Now().UTC()
 
 	syncRepo.On("DaemonHealth", ctx, mock.Anything, mock.Anything).Return(0, 0, nil)
-	auditRepo.On("CountSyncConflicts", ctx, mock.MatchedBy(func(since time.Time) bool {
-		return since.Before(before)
-	})).Return(0, nil)
 	syncRepo.On("SyncHealthByProject", ctx, mock.Anything).Return([]model.ProjectSyncHealthRow{}, nil)
 	memRepo.On("CountLiveActivity", ctx, mock.MatchedBy(func(since time.Time) bool {
 		return since.Before(before)
@@ -304,11 +339,10 @@ func TestOverviewService_GetStats_LiveActivitySinceIsInPast(t *testing.T) {
 	_, err := svc.GetStats(ctx)
 	require.NoError(t, err)
 	memRepo.AssertExpectations(t)
-	auditRepo.AssertExpectations(t)
 }
 
 func TestOverviewService_GetForLevel_MemberProjectsAndLiveActivityAreAllowlisted(t *testing.T) {
-	svc, memRepo, syncRepo, auditRepo := newTestOverviewService(t)
+	svc, memRepo, syncRepo, _ := newTestOverviewService(t)
 	ctx := context.Background()
 	projects := []model.ProjectCount{
 		{Project: "alpha", Count: 10},
@@ -335,7 +369,6 @@ func TestOverviewService_GetForLevel_MemberProjectsAndLiveActivityAreAllowlisted
 	memRepo.AssertExpectations(t)
 	syncRepo.AssertNotCalled(t, "DaemonHealth", mock.Anything, mock.Anything, mock.Anything)
 	syncRepo.AssertNotCalled(t, "SyncHealthByProject", mock.Anything, mock.Anything)
-	auditRepo.AssertNotCalled(t, "CountSyncConflicts", mock.Anything, mock.Anything)
 	memRepo.AssertNotCalled(t, "CountGrowthByMonth", mock.Anything, mock.Anything)
 }
 
@@ -404,7 +437,7 @@ func TestOverviewService_GetForLevel_MemberEmptyAndErrors(t *testing.T) {
 }
 
 func TestOverviewService_GetForLevel_AdminIncludesOperations(t *testing.T) {
-	svc, memRepo, syncRepo, auditRepo := newTestOverviewService(t)
+	svc, memRepo, syncRepo, _ := newTestOverviewService(t)
 	ctx := context.Background()
 	projects := []model.ProjectCount{{Project: "alpha", Count: 10}}
 
@@ -412,8 +445,6 @@ func TestOverviewService_GetForLevel_AdminIncludesOperations(t *testing.T) {
 	memRepo.On("CountByProject", ctx, model.MemoryFilter{}).Return(projects, nil)
 	memRepo.On("CountLiveActivity", ctx, mock.AnythingOfType("time.Time")).Return(2, "newest-sync", nil)
 	syncRepo.On("DaemonHealth", ctx, mock.AnythingOfType("time.Duration"), mock.AnythingOfType("time.Duration")).Return(2, 3, nil).Once()
-	auditRepo.On("CountSyncConflicts", ctx, mock.AnythingOfType("time.Time")).Return(1, nil).Once()
-	syncRepo.On("SyncHealthByProject", ctx, mock.AnythingOfType("time.Duration")).Return([]model.ProjectSyncHealthRow{}, nil).Once()
 	memRepo.On("CountGrowthByMonth", ctx, 5).Return([]model.MonthCount{{Label: "Jul", Value: 10}}, nil).Once()
 
 	resp, err := svc.GetForLevel(ctx, model.LevelAdmin)
@@ -423,11 +454,10 @@ func TestOverviewService_GetForLevel_AdminIncludesOperations(t *testing.T) {
 	assert.Equal(t, int64(10), resp.Summary.TotalMemories)
 	assert.Equal(t, "newest-sync", resp.Operations.NewestSyncID)
 	assert.Equal(t, 2, resp.Operations.DaemonHealth.Healthy)
-	assert.Equal(t, 1, resp.Operations.Conflicts.Open)
+	assert.Equal(t, model.OverviewDegradedProjects{}, resp.Operations.DegradedProjects)
 	assert.Equal(t, []model.OverviewChartPoint{{Label: "Jul", Value: 10}}, resp.Operations.KnowledgeGrowth)
 	memRepo.AssertExpectations(t)
 	syncRepo.AssertExpectations(t)
-	auditRepo.AssertExpectations(t)
 }
 
 func TestOverviewService_GetForLevel_MemberOmitsLiveActivitySourceSyncID(t *testing.T) {

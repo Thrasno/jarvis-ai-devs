@@ -168,7 +168,7 @@ export type MemberOverviewViewModel = OverviewCommonViewModel & {
 export type AdminOverviewViewModel = OverviewCommonViewModel & {
   readonly capability: 'admin'
   readonly healthyDaemons: MetricCardViewModel
-  readonly openConflicts: MetricCardViewModel
+  readonly degradedProjects: MetricCardViewModel
   readonly knowledgeGrowth: ChartSeriesViewModel
   readonly syncHealthByProject: readonly OverviewSyncHealthProjectViewModel[]
   readonly syncHealthByProjectSourceLabel?: string

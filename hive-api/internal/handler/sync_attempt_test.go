@@ -113,6 +113,8 @@ func TestSyncAttempts_AdminCanIngestForAnotherDeveloper(t *testing.T) {
 	}, "admin-token")
 
 	assert.Equal(t, http.StatusOK, w.Code)
+	require.NotNil(t, svc.actor)
+	assert.Equal(t, model.SyncAttemptActor{UserID: "admin-uuid-123", Level: model.LevelAdmin}, *svc.actor)
 	svc.AssertExpectations(t)
 	authSvc.AssertExpectations(t)
 }
