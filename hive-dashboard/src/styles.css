@@ -147,6 +147,23 @@ body { margin: 0; background: var(--dashboard-background); }
   gap: 16px;
 }
 
+.dashboard-overview__stats .dashboard-metric {
+  color: inherit;
+  text-decoration: none;
+  transition: background-color 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.dashboard-overview__stats .dashboard-metric:hover {
+  background: rgba(59, 130, 232, 0.06);
+  border-color: rgba(59, 130, 232, 0.7);
+  transform: translateY(-2px);
+}
+
+.dashboard-overview__stats .dashboard-metric:focus-visible {
+  background: rgba(59, 130, 232, 0.08);
+  border-color: var(--dashboard-accent);
+}
+
 /* ─── Overview two-column panel rows ─────────────────────────────────────── */
 .dashboard-overview__row {
   align-items: start;
