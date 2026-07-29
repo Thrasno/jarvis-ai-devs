@@ -1,10 +1,15 @@
-import type { MetricCardViewModel, OverviewCommonViewModel, OverviewLiveActivityViewModel, OverviewSyncHealthProjectViewModel, OverviewViewModel } from '../domain/dashboard'
+import type { MetricCardViewModel, OverviewCommonViewModel, OverviewLiveActivityViewModel, OverviewSyncHealthProjectViewModel, OverviewViewModel, ProjectSyncStatus } from '../domain/dashboard'
 import { renderChart } from '../components/Chart'
-import { append, emptyState, error, stack, statusDot, statusLabel, text } from '../components/dom'
+import { append, emptyState, error, statusBadge, statusLabel, text } from '../components/dom'
 
 export type ViewState<T> = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; data: T }
 
-const SYNC_HEALTH_OVERVIEW_PROJECT_LIMIT = 8
+const SYNC_HEALTH_OVERVIEW_PROJECT_LIMIT = 5
+const SYNC_HEALTH_PRIORITY: Record<ProjectSyncStatus, number> = {
+  degraded: 0,
+  unknown: 1,
+  healthy: 2
+}
 
 function syncHealthDisplay(vm: MetricCardViewModel): string {
   if (vm.totalValue !== undefined && vm.totalValue > 0) {
@@ -20,8 +25,8 @@ function syncHealthDisplay(vm: MetricCardViewModel): string {
   return `${pct}% · ${raw}`
 }
 
-function renderSyncHealthRow(project: OverviewSyncHealthProjectViewModel): HTMLElement {
-  const row = document.createElement('div')
+function renderSyncHealthRow(project: OverviewSyncHealthProjectViewModel): HTMLTableRowElement {
+  const row = document.createElement('tr')
   const region = project.region.trim()
   const contributors = contributorLabel(project.contributorCount)
   const ariaParts = [
@@ -31,27 +36,25 @@ function renderSyncHealthRow(project: OverviewSyncHealthProjectViewModel): HTMLE
     ...(region ? [`region ${region}`] : [])
   ]
   row.className = 'dashboard-sync-health__row'
-  row.setAttribute('role', 'listitem')
+  row.setAttribute('role', 'row')
   row.setAttribute('aria-label', ariaParts.join(', '))
   row.title = ariaParts.join(' · ')
-  return append(
-    row,
-    statusDot(project.status, { decorative: true }),
-    inlineText(project.name, 'dashboard-sync-health__project'),
-    inlineText(contributors, 'dashboard-sync-health__metric'),
-    inlineText(project.lastActivityLabel, 'dashboard-sync-health__activity')
-  )
+
+  const badge = statusBadge(project.status)
+  badge.textContent = statusLabel(project.status).toUpperCase()
+  return append(row, tableCell(badge, 'dashboard-sync-health__status'), tableCell(project.name, 'dashboard-sync-health__project'), tableCell(contributors, 'dashboard-sync-health__metric'), tableCell(project.lastActivityLabel, 'dashboard-sync-health__activity'))
 }
 
 function contributorLabel(count: number): string {
   return `${count} ${count === 1 ? 'contributor' : 'contributors'}`
 }
 
-function inlineText(value: string, className: string): HTMLSpanElement {
-  const span = document.createElement('span')
-  span.className = className
-  span.textContent = value
-  return span
+function tableCell(content: string | HTMLElement, className: string): HTMLTableCellElement {
+  const cell = document.createElement('td')
+  cell.className = className
+  cell.setAttribute('role', 'cell')
+  cell.append(content)
+  return cell
 }
 
 function renderSyncHealthSection(projects: readonly OverviewSyncHealthProjectViewModel[], sourceLabel?: string): HTMLElement {
@@ -67,29 +70,69 @@ function renderSyncHealthSection(projects: readonly OverviewSyncHealthProjectVie
     return section
   }
 
-  const visibleProjects = projects.slice(0, SYNC_HEALTH_OVERVIEW_PROJECT_LIMIT)
-  const hiddenProjectCount = projects.length - visibleProjects.length
-  const list = stack(visibleProjects.map(renderSyncHealthRow))
-  list.classList.add('dashboard-sync-health__list')
-  list.setAttribute('role', 'list')
-  list.setAttribute('aria-label', 'Sync health by project rows')
-  list.tabIndex = 0
-  section.append(list)
-
-  if (hiddenProjectCount > 0) {
-    section.append(syncHealthOverflowNote(visibleProjects.length, projects.length, hiddenProjectCount))
-  }
+  const visibleProjects = sortSyncHealthProjects(projects).slice(0, SYNC_HEALTH_OVERVIEW_PROJECT_LIMIT)
+  const table = document.createElement('table')
+  table.className = 'dashboard-sync-health__table'
+  table.setAttribute('aria-label', 'Sync health by project')
+  table.append(syncHealthTableHeader(), tableBody(visibleProjects.map(renderSyncHealthRow)))
+  section.append(table, syncHealthFooter(visibleProjects.length, projects.length))
 
   return section
 }
 
-function syncHealthOverflowNote(visibleProjectCount: number, totalProjectCount: number, hiddenProjectCount: number): HTMLElement {
-  const note = text(
-    `Showing ${visibleProjectCount} of ${totalProjectCount} projects. ${hiddenProjectCount} more ${hiddenProjectCount === 1 ? 'project is' : 'projects are'} not shown in Overview.`,
-    'dashboard-sync-health__overflow-note'
-  )
-  note.setAttribute('role', 'note')
-  return note
+function syncHealthTableHeader(): HTMLTableSectionElement {
+  const head = document.createElement('thead')
+  const row = document.createElement('tr')
+  row.setAttribute('role', 'row')
+  for (const label of ['Status', 'Project', 'Contributors', 'Last sync']) {
+    const header = document.createElement('th')
+    header.scope = 'col'
+    header.setAttribute('role', 'columnheader')
+    header.textContent = label
+    row.append(header)
+  }
+  head.append(row)
+  return head
+}
+
+function tableBody(rows: readonly HTMLTableRowElement[]): HTMLTableSectionElement {
+  const body = document.createElement('tbody')
+  body.append(...rows)
+  return body
+}
+
+function syncHealthFooter(visibleProjectCount: number, totalProjectCount: number): HTMLElement {
+  const footer = document.createElement('footer')
+  footer.className = 'dashboard-sync-health__footer'
+  const count = text(`Showing ${visibleProjectCount} of ${totalProjectCount}`, 'dashboard-sync-health__count')
+  const link = document.createElement('a')
+  link.href = '/dashboard/projects'
+  link.setAttribute('aria-label', 'View all projects')
+  link.textContent = 'View all projects →'
+  footer.append(count, link)
+  return footer
+}
+
+function sortSyncHealthProjects(projects: readonly OverviewSyncHealthProjectViewModel[]): OverviewSyncHealthProjectViewModel[] {
+  return [...projects].sort((left, right) => {
+    const statusComparison = SYNC_HEALTH_PRIORITY[left.status] - SYNC_HEALTH_PRIORITY[right.status]
+    if (statusComparison !== 0) return statusComparison
+
+    const activityComparison = activityAgeInMinutes(left.lastActivityLabel) - activityAgeInMinutes(right.lastActivityLabel)
+    if (activityComparison !== 0) return activityComparison
+    return left.name.localeCompare(right.name, undefined, { sensitivity: 'accent' })
+  })
+}
+
+function activityAgeInMinutes(label: string): number {
+  const normalized = label.trim().toLowerCase()
+  if (normalized === 'just now') return 0
+  const match = normalized.match(/^(\d+)([mhd]) ago$/)
+  if (!match) return Number.POSITIVE_INFINITY
+  const value = Number(match[1])
+  if (match[2] === 'h') return value * 60
+  if (match[2] === 'd') return value * 24 * 60
+  return value
 }
 
 function sourceNotice(message: string): HTMLElement {
