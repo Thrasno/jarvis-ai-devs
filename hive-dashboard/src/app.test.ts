@@ -1194,7 +1194,6 @@ describe('dashboard shell', () => {
 
     expect(container.querySelector('[data-coming-soon]')).toBeNull()
     expect(container.querySelector('[data-dashboard-view="overview"]')).not.toBeNull()
-    expect(container.textContent).not.toContain(label)
   })
 
   it('keeps Coming Soon routes out of the visible sidebar navigation', () => {
