@@ -2464,7 +2464,7 @@ describe('dashboard shell', () => {
   it('maps Admin operations and Member-safe common summary from one capability response', async () => {
     const admin = await loadDashboard(fakeApi({ overview: Promise.resolve(adminOverview()) }), 'admin-token')
     const member = await loadDashboard(fakeApi({ overview: Promise.resolve(memberOverview()) }), 'member-token')
-    expect(admin.data.overview).toEqual({ status: 'ready', data: expect.objectContaining({ capability: 'admin', healthyDaemons: expect.any(Object), degradedProjects: expect.any(Object) }) })
+    expect(admin.data.overview).toEqual({ status: 'ready', data: expect.objectContaining({ capability: 'admin', syncingUsers: expect.any(Object), degradedProjects: expect.any(Object) }) })
     expect(member.data.overview).toEqual({ status: 'ready', data: expect.objectContaining({ capability: 'member', totalMemories: expect.any(Object), activeProjects: expect.any(Object) }) })
   })
 
@@ -3266,12 +3266,12 @@ function memberOverview() {
   return { capability: 'member' as const, summary: { total_memories: 4, active_projects: 1, live_activity: { count: 2 }, most_active_projects: [{ project: 'jarvis-dev', count: 4 }] } }
 }
 function adminOverview() {
-  return { capability: 'admin' as const, summary: { total_memories: 4, active_projects: 1, live_activity: { count: 2 }, most_active_projects: [{ project: 'jarvis-dev', count: 4 }] }, operations: { daemon_health: { healthy: 1, total: 1 }, degraded_projects: { degraded: 0, total: 0 }, knowledge_growth: [], sync_health_by_project: [], newest_sync_id: 'sync-admin' } }
+  return { capability: 'admin' as const, summary: { total_memories: 4, active_projects: 1, live_activity: { count: 2 }, most_active_projects: [{ project: 'jarvis-dev', count: 4 }] }, operations: { syncing_users: { syncing: 1, total: 1 }, degraded_projects: { degraded: 0, total: 0 }, knowledge_growth: [], sync_health_by_project: [], newest_sync_id: 'sync-admin' } }
 }
 
 function overviewStats(input: { degradedProjects?: number; liveActivityCount?: number; newestSyncId?: string } = {}): OverviewStats {
   return {
-    daemon_health: { healthy: 1, total: 2 },
+    syncing_users: { syncing: 1, total: 2 },
     degraded_projects: { degraded: input.degradedProjects ?? 3, total: 5 },
     sync_health_by_project: [{ project: 'jarvis-dev', status: 'healthy', region: 'local', contributor_count: 2 }],
     live_activity: { count: input.liveActivityCount ?? 4, newest_sync_id: input.newestSyncId ?? 'sync-newest' },

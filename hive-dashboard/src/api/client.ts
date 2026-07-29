@@ -1,6 +1,13 @@
 import { appendDashboardFilters, type DashboardUrlFilters, type MemoryDiscoveryUrlFilters } from './urlFilters'
 
 export type UserLevel = 'viewer' | 'member' | 'admin'
+export const userSyncStatuses = {
+  last24h: 'last_24h',
+  inactive: 'inactive',
+  never: 'never',
+  unknown: 'unknown'
+} as const
+export type UserSyncStatus = (typeof userSyncStatuses)[keyof typeof userSyncStatuses]
 export type User = {
   id: string
   username: string
@@ -8,6 +15,8 @@ export type User = {
   level: UserLevel
   is_active: boolean
   created_at: string
+	 sync_status?: UserSyncStatus
+	 last_sync_at?: string | null
 }
 export type LoginResponse = { token: string; expires_at?: string; user: User }
 export type Health = { status: string; db: string; version: string }
@@ -17,7 +26,7 @@ export const projectHealthFilters = { degraded: 'degraded' } as const
 export type ProjectListParams = { health?: typeof projectHealthFilters.degraded }
 export type OverviewProjectSyncHealth = { project: string; status: 'healthy' | 'degraded' | 'unknown' | string; region: string; contributor_count: number; last_activity_at?: string | null }
 export type OverviewStats = {
-  daemon_health: { healthy: number; total: number }
+  syncing_users: { syncing: number; total: number }
   degraded_projects: { degraded: number; total: number }
   sync_health_by_project: OverviewProjectSyncHealth[]
   live_activity: { count: number; newest_sync_id: string }
@@ -25,7 +34,7 @@ export type OverviewStats = {
 }
 export type OverviewGrowth = { knowledge_growth: { label: string; value: number }[] }
 export type OverviewSummary = { total_memories: number; active_projects: number; live_activity: { count: number }; most_active_projects: Count[] }
-export type AdminOverviewOperations = { daemon_health: { healthy: number; total: number }; degraded_projects: { degraded: number; total: number }; knowledge_growth: { label: string; value: number }[]; sync_health_by_project: OverviewProjectSyncHealth[]; newest_sync_id: string }
+export type AdminOverviewOperations = { syncing_users: { syncing: number; total: number }; degraded_projects: { degraded: number; total: number }; knowledge_growth: { label: string; value: number }[]; sync_health_by_project: OverviewProjectSyncHealth[]; newest_sync_id: string }
 export type MemberOverviewResponse = { capability: 'member'; summary: OverviewSummary }
 export type AdminOverviewResponse = { capability: 'admin'; summary: OverviewSummary; operations: AdminOverviewOperations }
 export type CapabilityOverviewResponse = MemberOverviewResponse | AdminOverviewResponse

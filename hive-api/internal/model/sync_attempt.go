@@ -144,3 +144,24 @@ type ProjectSyncHealthProjection struct {
 	Degraded int
 	Total    int
 }
+
+type UserSyncProjectionRow struct {
+	PortalUserID         string
+	IsActive             bool
+	LatestEndedAt        *time.Time
+	LatestOutcome        *SyncAttemptOutcome
+	LatestSuccessEndedAt *time.Time
+}
+
+type UserSyncProjection struct {
+	Rows []UserSyncProjectionRow
+}
+
+type UserSyncStatus string
+
+const (
+	UserSyncStatusLast24h  UserSyncStatus = "last_24h"
+	UserSyncStatusInactive UserSyncStatus = "inactive"
+	UserSyncStatusNever    UserSyncStatus = "never"
+	UserSyncStatusUnknown  UserSyncStatus = "unknown"
+)

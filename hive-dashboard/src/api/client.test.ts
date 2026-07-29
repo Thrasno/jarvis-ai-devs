@@ -88,7 +88,7 @@ describe('Hive API client', () => {
 
   it('loads live overview stats and growth endpoints with a bearer token', async () => {
     const overviewStats = {
-      daemon_health: { healthy: 2, total: 3 },
+      syncing_users: { syncing: 2, total: 3 },
       degraded_projects: { degraded: 2, total: 5 },
       sync_health_by_project: [{ project: 'jarvis-dev', status: 'healthy', region: 'local', contributor_count: 2 }],
       live_activity: { count: 5, newest_sync_id: 'sync-newest' },

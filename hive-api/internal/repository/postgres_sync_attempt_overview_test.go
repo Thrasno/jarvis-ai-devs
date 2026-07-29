@@ -19,6 +19,7 @@ func startPostgresWithSyncAttemptsAndSessions(t *testing.T) (*pgxpool.Pool, func
 	pool, cleanup := startPostgresWithSessions(t)
 	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptLogsSQL))
 	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptPortalUsersSQL))
+	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptUserProjectionSQL))
 	return pool, cleanup
 }
 
@@ -27,46 +28,6 @@ func startPostgresWithSyncAttemptsAndProjectBlocks(t *testing.T) (*pgxpool.Pool,
 	pool, cleanup := startPostgresWithSyncAttemptsAndSessions(t)
 	require.NoError(t, RunMigrations(pool, migrations.ProjectBlocksSQL))
 	return pool, cleanup
-}
-
-// --- DaemonHealth tests ---
-
-func TestPostgresSyncAttemptRepository_DaemonHealth_CorrectCounts(t *testing.T) {
-	pool, cleanup := startPostgresWithSyncAttemptsAndSessions(t)
-	defer cleanup()
-
-	ctx := context.Background()
-	repo := NewPostgresSyncAttemptRepository(pool)
-	now := time.Now().UTC()
-
-	attempts := []model.SyncAttemptLog{
-		// daemon-A: success <24h → counts healthy and total
-		{AttemptID: "a1", DevID: "dev1", Project: "p1", DaemonID: "daemon-A", StartedAt: now.Add(-1 * time.Hour), Outcome: model.SyncAttemptOutcomeSuccess},
-		// daemon-B: failure <24h → counts total only (not healthy)
-		{AttemptID: "b1", DevID: "dev2", Project: "p1", DaemonID: "daemon-B", StartedAt: now.Add(-2 * time.Hour), Outcome: model.SyncAttemptOutcomeFailure},
-		// daemon-C: >24h but <30d → counts in total (30d window), not in healthy (24h window)
-		{AttemptID: "c1", DevID: "dev3", Project: "p1", DaemonID: "daemon-C", StartedAt: now.Add(-25 * time.Hour), Outcome: model.SyncAttemptOutcomeSuccess},
-	}
-	_, err := repo.UpsertBatch(ctx, attempts)
-	require.NoError(t, err)
-
-	healthy, total, err := repo.DaemonHealth(ctx, 24*time.Hour, 30*24*time.Hour)
-	require.NoError(t, err)
-	assert.Equal(t, 1, healthy, "only daemon-A had success within 24h")
-	assert.Equal(t, 3, total, "daemon-A, B, C all within 30d")
-}
-
-func TestPostgresSyncAttemptRepository_DaemonHealth_EmptyTable(t *testing.T) {
-	pool, cleanup := startPostgresWithSyncAttemptsAndSessions(t)
-	defer cleanup()
-
-	ctx := context.Background()
-	repo := NewPostgresSyncAttemptRepository(pool)
-
-	healthy, total, err := repo.DaemonHealth(ctx, 24*time.Hour, 30*24*time.Hour)
-	require.NoError(t, err)
-	assert.Equal(t, 0, healthy)
-	assert.Equal(t, 0, total)
 }
 
 // --- SyncHealthByProject tests ---

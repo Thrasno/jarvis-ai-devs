@@ -34,7 +34,7 @@ func (h *AdminHandler) ListUsers(c *gin.Context) {
 	}
 
 	if users == nil {
-		users = []*model.User{}
+		users = []model.AdminUserResponse{}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"users": users})

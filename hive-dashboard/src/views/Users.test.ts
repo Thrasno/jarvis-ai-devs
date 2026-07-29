@@ -23,6 +23,25 @@ describe('users view', () => {
     expect(rowByName(view, 'viewer')?.textContent).not.toContain('State: inactive')
   })
 
+  it('renders account status, sync status, and Never last sync independently', () => {
+    const user = {
+      ...viewerUser,
+      sync_status: 'never' as const,
+      last_sync_at: null
+    }
+    const view = renderUsers({ status: 'ready', data: { users: [user] } })
+
+    expect(columnHeaders(view)).toEqual(['User', 'Email', 'Role', 'Admin seat', 'Account status', 'Sync status', 'Last sync', 'Actions'])
+    expect(rowByName(view, 'viewer')?.textContent).toContain('Inactive')
+    expect(rowByName(view, 'viewer')?.textContent).toContain('Never')
+  })
+
+  it('renders unavailable projection status truthfully', () => {
+    const view = renderUsers({ status: 'ready', data: { users: [{ ...adminUser, sync_status: 'unknown' as const }] } })
+
+    expect(rowByName(view, 'admin')?.textContent).toContain('Unavailable')
+  })
+
   it('renders an empty state', () => {
     const view = renderUsers({ status: 'ready', data: { users: [] } })
 
@@ -161,10 +180,10 @@ describe('users view', () => {
     expect(view.querySelector('[data-dashboard-primitive="panel"]')).toBeNull()
     expect(view.querySelector('article[role="listitem"]')).toBeNull()
     expect(view.querySelector('[role="table"]')?.getAttribute('aria-label')).toBe('Managed users')
-    expect(columnHeaders(view)).toEqual(['User', 'Email', 'Role', 'Admin seat', 'Status', 'Actions'])
+    expect(columnHeaders(view)).toEqual(['User', 'Email', 'Role', 'Admin seat', 'Account status', 'Sync status', 'Last sync', 'Actions'])
     expect(rowByName(view, 'admin')?.textContent).toContain('admin@example.com')
     expect(rowByName(view, 'member')?.textContent).toContain('member@example.com')
-    expect(view.textContent).not.toMatch(/last sync|last synced|synced at/i)
+    expect(view.textContent).toContain('Last sync')
   })
 
   it('shows active admin-seat usage in a banner for admins', () => {
