@@ -9,7 +9,15 @@ type SyncAttemptOutcome string
 const (
 	SyncAttemptOutcomeSuccess SyncAttemptOutcome = "success"
 	SyncAttemptOutcomeFailure SyncAttemptOutcome = "failure"
+
+	SyncAttemptPortalUserSourceAuthSubject = "auth_subject"
+	SyncAttemptPortalUserSourceAdminDevID  = "admin_dev_id"
 )
+
+type SyncAttemptActor struct {
+	UserID string
+	Level  UserLevel
+}
 
 type SyncAttemptIngestRequest struct {
 	Attempts []SyncAttemptPayload `json:"attempts" binding:"max=100,dive"`
@@ -33,20 +41,22 @@ type SyncAttemptPayload struct {
 }
 
 type SyncAttemptLog struct {
-	AttemptID    string
-	DevID        string
-	Project      string
-	Client       string
-	DaemonID     string
-	StartedAt    time.Time
-	EndedAt      *time.Time
-	Outcome      SyncAttemptOutcome
-	HTTPStatus   *int
-	ErrorCode    *string
-	ErrorMessage *string
-	RequestID    string
-	SyncCounts   map[string]int
-	Metadata     map[string]string
+	AttemptID        string
+	DevID            string
+	Project          string
+	Client           string
+	DaemonID         string
+	StartedAt        time.Time
+	EndedAt          *time.Time
+	Outcome          SyncAttemptOutcome
+	HTTPStatus       *int
+	ErrorCode        *string
+	ErrorMessage     *string
+	RequestID        string
+	SyncCounts       map[string]int
+	Metadata         map[string]string
+	PortalUserID     *string
+	PortalUserSource *string
 }
 
 type SyncAttemptStoreResult struct {
@@ -127,4 +137,10 @@ type ProjectSyncHealthRow struct {
 	LastOutcome      SyncAttemptOutcome
 	ContributorCount int
 	LastActivityAt   time.Time
+}
+
+type ProjectSyncHealthProjection struct {
+	Rows     []ProjectSyncHealthRow
+	Degraded int
+	Total    int
 }

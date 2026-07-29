@@ -21,6 +21,14 @@ type fakeSyncAttemptRepo struct {
 	cutoffs    []time.Time
 }
 
+type fakeSyncAttemptUserLookup struct {
+	users map[string]*model.User
+}
+
+func (r *fakeSyncAttemptUserLookup) GetByEmail(_ context.Context, email string) (*model.User, error) {
+	return r.users[email], nil
+}
+
 func (r *fakeSyncAttemptRepo) UpsertBatch(ctx context.Context, attempts []model.SyncAttemptLog) (model.SyncAttemptStoreResult, error) {
 	if r.accepted == nil {
 		r.accepted = map[string]model.SyncAttemptLog{}
@@ -60,6 +68,10 @@ func (r *fakeSyncAttemptRepo) DaemonHealth(_ context.Context, _, _ time.Duration
 
 func (r *fakeSyncAttemptRepo) SyncHealthByProject(_ context.Context, _ time.Duration) ([]model.ProjectSyncHealthRow, error) {
 	return nil, nil
+}
+
+func (r *fakeSyncAttemptRepo) ProjectSyncHealth(context.Context) (model.ProjectSyncHealthProjection, error) {
+	return model.ProjectSyncHealthProjection{}, nil
 }
 
 func TestSyncAttemptService_IngestValidationAndIdempotency(t *testing.T) {
@@ -103,6 +115,63 @@ func TestSyncAttemptService_IngestValidationAndIdempotency(t *testing.T) {
 		assert.Equal(t, []string{"attempt-1"}, second.DuplicateIDs)
 		assert.Len(t, repo.accepted, 1)
 	})
+}
+
+func TestSyncAttemptService_ResolvesPortalIdentityWithoutTrustingDeviceMetadata(t *testing.T) {
+	now := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	userLookup := &fakeSyncAttemptUserLookup{users: map[string]*model.User{
+		"developer@example.com": {ID: "developer-id", Email: "developer@example.com", IsActive: true},
+	}}
+
+	tests := []struct {
+		name       string
+		actor      model.SyncAttemptActor
+		devID      string
+		wantUserID *string
+		wantSource *string
+	}{
+		{
+			name:       "member uses authenticated subject instead of device metadata",
+			actor:      model.SyncAttemptActor{UserID: "member-id", Level: model.LevelMember},
+			devID:      "spoofed-device@example.com",
+			wantUserID: stringPtr("member-id"),
+			wantSource: stringPtr(model.SyncAttemptPortalUserSourceAuthSubject),
+		},
+		{
+			name:       "admin resolves exact developer email",
+			actor:      model.SyncAttemptActor{UserID: "admin-id", Level: model.LevelAdmin},
+			devID:      "developer@example.com",
+			wantUserID: stringPtr("developer-id"),
+			wantSource: stringPtr(model.SyncAttemptPortalUserSourceAdminDevID),
+		},
+		{
+			name:  "unresolved admin attempt remains audit only",
+			actor: model.SyncAttemptActor{UserID: "admin-id", Level: model.LevelAdmin},
+			devID: "missing@example.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeSyncAttemptRepo{}
+			svc := NewSyncAttemptService(repo, userLookup)
+
+			resp, err := svc.Ingest(context.Background(), model.SyncAttemptIngestRequest{Attempts: []model.SyncAttemptPayload{{
+				AttemptID: "attempt-" + tt.actor.UserID,
+				DevID:     tt.devID,
+				Project:   "jarvis-dev",
+				DaemonID:  "untrusted-device-id",
+				StartedAt: now,
+				Outcome:   model.SyncAttemptOutcomeSuccess,
+			}}}, tt.actor)
+
+			require.NoError(t, err)
+			require.Equal(t, []string{"attempt-" + tt.actor.UserID}, resp.AcceptedIDs)
+			stored := repo.accepted[tt.devID+":attempt-"+tt.actor.UserID]
+			assert.Equal(t, tt.wantUserID, stored.PortalUserID)
+			assert.Equal(t, tt.wantSource, stored.PortalUserSource)
+		})
+	}
 }
 
 func TestSyncAttemptService_ResponseDistinguishesAcceptedDuplicateRejected(t *testing.T) {

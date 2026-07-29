@@ -1,4 +1,4 @@
-import { ApiError, createApiClient, type ApiClient, type CapabilityOverviewResponse, type ChangePasswordRequest, type CreateUserRequest, type Memory, type MemoryList, type MemoryListParams, type MemorySearch, type ProjectBlockRequest, type ProjectListResponse, type ProjectSummary, type SyncAttemptSummary, type User } from './api/client'
+import { ApiError, createApiClient, projectHealthFilters, type ApiClient, type CapabilityOverviewResponse, type ChangePasswordRequest, type CreateUserRequest, type Memory, type MemoryList, type MemoryListParams, type MemorySearch, type ProjectBlockRequest, type ProjectListParams, type ProjectListResponse, type ProjectSummary, type SyncAttemptSummary, type User } from './api/client'
 import { parseDashboardFilters } from './api/urlFilters'
 import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
 import { renderBrand } from './components/Brand'
@@ -27,7 +27,7 @@ const OVERVIEW_LABELS = {
   totalMemories: 'Total Memories',
   activeProjects: 'Active Projects',
   healthyDaemons: 'Healthy Daemons',
-  openConflicts: 'Open Conflicts',
+  degradedProjects: 'DEGRADED PROJECTS',
   knowledgeGrowth: 'Knowledge Growth'
 } as const
 
@@ -136,7 +136,8 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
   projects: {
     path: '/dashboard/projects',
     load: 'projects',
-    render: (vs, _routePath, actions, context) => renderProjects(vs as ViewState<ProjectListViewModel>, {
+    render: (vs, routePath, actions, context) => renderProjects(vs as ViewState<ProjectListViewModel>, {
+      health: projectListParamsFromRoute(routePath)?.health,
       currentUserLevel: context.auth.user.level,
       onBlockProject: actions.onBlockProject,
       pendingBlockProject: context.projectBlockState.pendingProject,
@@ -663,7 +664,7 @@ async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token:
       return settledState(result[0])
     }
     case 'projects': {
-      const response = await loadProjects(api, token, userLevel)
+      const response = await loadProjects(api, token, userLevel, routePath)
       return { status: 'ready', data: projectsFromApi(response) }
     }
     case 'activity': {
@@ -677,8 +678,9 @@ async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token:
   }
 }
 
-async function loadProjects(api: ApiClient, token: string, userLevel?: UserLevel | string): Promise<ProjectListResponse> {
-  const response = await api.projects(token)
+async function loadProjects(api: ApiClient, token: string, userLevel?: UserLevel | string, routePath = ''): Promise<ProjectListResponse> {
+  const params = projectListParamsFromRoute(routePath)
+  const response = params ? await api.projects(token, params) : await api.projects(token)
   if (userLevel !== 'admin' || response.projects.length === 0) return response
   const statuses = await Promise.all(response.projects.map((project) => api.projectBlockStatus(token, project.name)))
   const projects = response.projects.map((project, index) => projectWithBlockStatus(project, statuses[index]))
@@ -734,6 +736,12 @@ function memoryListParamsFromRoute(routePath: string): MemoryListParams {
   }
 }
 
+function projectListParamsFromRoute(routePath: string): ProjectListParams | undefined {
+  return new URLSearchParams(queryFromRoutePath(routePath)).get('health') === projectHealthFilters.degraded
+    ? { health: projectHealthFilters.degraded }
+    : undefined
+}
+
 function activityState(result: PromiseSettledResult<Awaited<ReturnType<ApiClient['activity']>>>): ViewState<ActivityFeedViewModel> {
   return result.status === 'fulfilled'
     ? { status: 'ready', data: activityFeedFromApi(result.value) }
@@ -767,7 +775,7 @@ function overviewFromApi(response: CapabilityOverviewResponse): OverviewViewMode
     ...common,
     capability: 'admin',
     healthyDaemons: { label: OVERVIEW_LABELS.healthyDaemons, value: operations.daemon_health.healthy, totalValue: operations.daemon_health.total, displayValue: `${operations.daemon_health.healthy}/${operations.daemon_health.total}` },
-    openConflicts: { label: OVERVIEW_LABELS.openConflicts, value: operations.conflicts.open },
+    degradedProjects: { label: OVERVIEW_LABELS.degradedProjects, value: operations.degraded_projects.degraded, totalValue: operations.degraded_projects.total, displayValue: `${operations.degraded_projects.degraded} / ${operations.degraded_projects.total}` },
     knowledgeGrowth: { label: OVERVIEW_LABELS.knowledgeGrowth, points: operations.knowledge_growth },
     syncHealthByProject: operations.sync_health_by_project.map((project) => ({ id: project.project, name: project.project, region: project.region, status: project.status === 'healthy' || project.status === 'degraded' || project.status === 'unknown' ? project.status : 'unknown', contributorCount: project.contributor_count, lastActivityLabel: relativeActivityAgeLabel(project.last_activity_at) })),
     liveActivity: { count: summary.live_activity.count, newestSyncId: operations.newest_sync_id }

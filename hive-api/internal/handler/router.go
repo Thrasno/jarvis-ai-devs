@@ -57,12 +57,12 @@ type ProjectGovernanceService interface {
 }
 
 type SyncAttemptService interface {
-	Ingest(ctx context.Context, req model.SyncAttemptIngestRequest) (model.SyncAttemptIngestResponse, error)
+	Ingest(ctx context.Context, req model.SyncAttemptIngestRequest, actors ...model.SyncAttemptActor) (model.SyncAttemptIngestResponse, error)
 	Summary(ctx context.Context, query model.SyncAttemptSummaryQuery) (model.SyncAttemptSummaryResponse, error)
 }
 
 type ProjectService interface {
-	List(ctx context.Context) (model.ProjectListResponse, error)
+	List(ctx context.Context, health string) (model.ProjectListResponse, error)
 }
 
 // AdminService define las operaciones de administración.

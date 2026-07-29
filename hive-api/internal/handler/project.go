@@ -16,7 +16,12 @@ func NewProjectHandler(svc ProjectService) *ProjectHandler {
 }
 
 func (h *ProjectHandler) List(c *gin.Context) {
-	resp, err := h.svc.List(c.Request.Context())
+	health := c.Query("health")
+	if health != "" && health != model.ProjectSyncHealthDegraded {
+		c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: "unsupported health filter"})
+		return
+	}
+	resp, err := h.svc.List(c.Request.Context(), health)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "error al listar proyectos"})
 		return

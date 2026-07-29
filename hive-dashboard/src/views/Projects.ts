@@ -1,9 +1,11 @@
 import { append, emptyState, text } from '../components/dom'
 import type { ProjectListViewModel, ProjectLiveSummaryViewModel } from '../domain/dashboard'
+import { projectHealthFilters } from '../api/client'
 import type { ViewState } from './Overview'
 
 let projectCardId = 0
 type ProjectViewOptions = {
+  health?: typeof projectHealthFilters.degraded
   currentUserLevel?: 'admin' | 'member' | 'viewer' | string
   onBlockProject?: (request: { project: string; action: 'quarantine'; reason: string; confirmation: string; export_marker: string }) => Promise<void> | void
   pendingBlockProject?: string
@@ -12,12 +14,12 @@ type ProjectViewOptions = {
 }
 
 export function renderProjects(state: ViewState<ProjectListViewModel>, options: ProjectViewOptions = {}): HTMLElement {
-  const root = projectsRoot(state.status === 'ready' ? state.data.totalProjects : 0)
+  const root = projectsRoot(state.status === 'ready' ? state.data.totalProjects : 0, options.health)
   if (state.status === 'loading') return append(root, statusText('Loading live project summaries…'))
   if (state.status === 'error') return append(root, alertText(state.message))
 
   if (state.data.projects.length === 0) {
-    root.append(emptyState('No live project summaries found.'))
+    root.append(emptyState(options.health === projectHealthFilters.degraded ? 'No degraded projects found.' : 'No live project summaries found.'))
     return root
   }
 
@@ -30,7 +32,7 @@ export function renderProjects(state: ViewState<ProjectListViewModel>, options: 
   return root
 }
 
-function projectsRoot(totalProjects: number): HTMLElement {
+function projectsRoot(totalProjects: number, health?: typeof projectHealthFilters.degraded): HTMLElement {
   const root = document.createElement('section')
   root.className = 'dashboard-projects'
   root.dataset.dashboardView = 'projects'
@@ -48,7 +50,17 @@ function projectsRoot(totalProjects: number): HTMLElement {
   title.className = 'dashboard-projects__title'
   title.textContent = 'Projects'
 
-  header.append(eyebrow, title)
+  const filters = document.createElement('nav')
+  filters.setAttribute('aria-label', 'Project health filter')
+  for (const [label, href, active] of [['All', '/dashboard/projects', health === undefined], ['Degraded', '/dashboard/projects?health=degraded', health === projectHealthFilters.degraded]] as const) {
+    const link = document.createElement('a')
+    link.dataset.projectHealthFilter = label.toLowerCase()
+    link.href = href
+    link.textContent = label
+    if (active) link.setAttribute('aria-current', 'page')
+    filters.append(link)
+  }
+  header.append(eyebrow, title, filters)
   root.append(header)
   return root
 }

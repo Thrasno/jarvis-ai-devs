@@ -19,4 +19,5 @@ type SyncAttemptRepository interface {
 
 	// SyncHealthByProject returns per-project sync health rows for the given window.
 	SyncHealthByProject(ctx context.Context, window time.Duration) ([]model.ProjectSyncHealthRow, error)
+	ProjectSyncHealth(ctx context.Context) (model.ProjectSyncHealthProjection, error)
 }

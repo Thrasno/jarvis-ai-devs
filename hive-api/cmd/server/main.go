@@ -61,7 +61,7 @@ type serviceFactories struct {
 	newMemoryService            func(repository.MemoryRepository, repository.SessionRepository, repository.ProjectBlockRepository, repository.TxManager) handler.MemoryService
 	newSyncService              func(repository.MemoryRepository, repository.PromptRepository, repository.SessionRepository, repository.AuditRepository, repository.ProjectBlockRepository, repository.TxManager) handler.SyncService
 	newSyncAttemptService       func(repository.SyncAttemptRepository) handler.SyncAttemptService
-	newProjectService           func(repository.ProjectRepository) handler.ProjectService
+	newProjectService           func(repository.ProjectRepository, repository.SyncAttemptRepository) handler.ProjectService
 	newProjectGovernanceService func(repository.ProjectBlockRepository, repository.AuditRepository, repository.TxManager) handler.ProjectGovernanceService
 	newAdminService             func(repository.UserRepository, repository.MemoryRepository, repository.AuditRepository, repository.TxManager) handler.AdminService
 	newOverviewService          func(repository.MemoryRepository, repository.SyncAttemptRepository, repository.AuditRepository) handler.OverviewService
@@ -92,8 +92,8 @@ func defaultServiceFactories() serviceFactories {
 		newSyncAttemptService: func(syncAttemptRepo repository.SyncAttemptRepository) handler.SyncAttemptService {
 			return service.NewSyncAttemptService(syncAttemptRepo)
 		},
-		newProjectService: func(projectRepo repository.ProjectRepository) handler.ProjectService {
-			return service.NewProjectService(projectRepo)
+		newProjectService: func(projectRepo repository.ProjectRepository, syncAttemptRepo repository.SyncAttemptRepository) handler.ProjectService {
+			return service.NewProjectService(projectRepo, syncAttemptRepo)
 		},
 		newProjectGovernanceService: func(blockRepo repository.ProjectBlockRepository, auditRepo repository.AuditRepository, tx repository.TxManager) handler.ProjectGovernanceService {
 			return service.NewProjectGovernanceService(blockRepo, auditRepo, tx)
@@ -159,7 +159,7 @@ func wireServicesWithFactories(pool *pgxpool.Pool, cfg *config.Config, factories
 	memorySvc := factories.newMemoryService(memRepo, sessionRepo, projectBlockRepo, txManager)
 	syncSvc := factories.newSyncService(memRepo, promptRepo, sessionRepo, auditRepo, projectBlockRepo, txManager)
 	syncAttemptSvc := factories.newSyncAttemptService(syncAttemptRepo)
-	projectSvc := factories.newProjectService(projectRepo)
+	projectSvc := factories.newProjectService(projectRepo, syncAttemptRepo)
 	projectGovernanceSvc := factories.newProjectGovernanceService(projectBlockRepo, auditRepo, txManager)
 	adminSvc := factories.newAdminService(userRepo, memRepo, auditRepo, txManager)
 	overviewSvc := factories.newOverviewService(memRepo, syncAttemptRepo, auditRepo)
@@ -200,6 +200,7 @@ func startupMigrationSQL() []string {
 		migrations.ProjectBlocksSQL,
 		migrations.ProjectBlockAckSubjectsSQL,
 		migrations.UserSecurityVersionSQL,
+		migrations.SyncAttemptPortalUsersSQL,
 	}
 }
 

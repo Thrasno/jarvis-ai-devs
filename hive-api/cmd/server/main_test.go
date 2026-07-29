@@ -119,7 +119,9 @@ func TestWireServices_ProjectBlockAckWiredWhenAdminMutationDisabledByDefault(t *
 		return &mockSync{}
 	}
 	factories.newSyncAttemptService = func(repository.SyncAttemptRepository) handler.SyncAttemptService { return nil }
-	factories.newProjectService = func(repository.ProjectRepository) handler.ProjectService { return &mockProject{} }
+	factories.newProjectService = func(repository.ProjectRepository, repository.SyncAttemptRepository) handler.ProjectService {
+		return &mockProject{}
+	}
 	factories.newProjectGovernanceService = func(repository.ProjectBlockRepository, repository.AuditRepository, repository.TxManager) handler.ProjectGovernanceService {
 		called = true
 		return &mockProjectGovernance{}
@@ -171,13 +173,14 @@ func TestBuildApp_ProjectBlockAckRouteReachableWhenAdminMutationDisabled(t *test
 func TestWireServices_WiresProjectRepositoryIntoRouterDeps(t *testing.T) {
 	projectRepo := &repository.MockProjectRepository{}
 	projectSvc := &mockProject{}
+	syncAttemptRepo := &repository.MockSyncAttemptRepository{}
 	factories := defaultServiceFactories()
 	factories.newUserRepo = func(*pgxpool.Pool) repository.UserRepository { return nil }
 	factories.newMemoryRepo = func(*pgxpool.Pool) repository.MemoryRepository { return nil }
 	factories.newPromptRepo = func(*pgxpool.Pool) repository.PromptRepository { return nil }
 	factories.newSessionRepo = func(*pgxpool.Pool) repository.SessionRepository { return nil }
 	factories.newAuditRepo = func(*pgxpool.Pool) repository.AuditRepository { return nil }
-	factories.newSyncAttemptRepo = func(*pgxpool.Pool) repository.SyncAttemptRepository { return nil }
+	factories.newSyncAttemptRepo = func(*pgxpool.Pool) repository.SyncAttemptRepository { return syncAttemptRepo }
 	factories.newProjectRepo = func(*pgxpool.Pool) repository.ProjectRepository { return projectRepo }
 	factories.newProjectBlockRepo = func(*pgxpool.Pool) repository.ProjectBlockRepository { return nil }
 	factories.newTxManager = func(*pgxpool.Pool) repository.TxManager { return nil }
@@ -189,8 +192,9 @@ func TestWireServices_WiresProjectRepositoryIntoRouterDeps(t *testing.T) {
 		return &mockSync{}
 	}
 	factories.newSyncAttemptService = func(repository.SyncAttemptRepository) handler.SyncAttemptService { return nil }
-	factories.newProjectService = func(got repository.ProjectRepository) handler.ProjectService {
+	factories.newProjectService = func(got repository.ProjectRepository, gotHealth repository.SyncAttemptRepository) handler.ProjectService {
 		require.Same(t, projectRepo, got)
+		require.Same(t, syncAttemptRepo, gotHealth)
 		return projectSvc
 	}
 	factories.newProjectGovernanceService = func(repository.ProjectBlockRepository, repository.AuditRepository, repository.TxManager) handler.ProjectGovernanceService {
@@ -227,7 +231,9 @@ func TestWireServices_WiresActivityServiceFromMemoryRepository(t *testing.T) {
 		return &mockSync{}
 	}
 	factories.newSyncAttemptService = func(repository.SyncAttemptRepository) handler.SyncAttemptService { return nil }
-	factories.newProjectService = func(repository.ProjectRepository) handler.ProjectService { return &mockProject{} }
+	factories.newProjectService = func(repository.ProjectRepository, repository.SyncAttemptRepository) handler.ProjectService {
+		return &mockProject{}
+	}
 	factories.newAdminService = func(repository.UserRepository, repository.MemoryRepository, repository.AuditRepository, repository.TxManager) handler.AdminService {
 		return &mockAdmin{}
 	}
@@ -250,7 +256,7 @@ func TestWireServices_WiresActivityServiceFromMemoryRepository(t *testing.T) {
 func TestStartupMigrationSQLIncludesDiscoveryIndexesAfterActivityFeedIndex(t *testing.T) {
 	startupMigrations := startupMigrationSQL()
 
-	require.Len(t, startupMigrations, 14)
+	require.Len(t, startupMigrations, 15)
 	assert.Equal(t, migrations.InitialSQL, startupMigrations[0])
 	assert.Equal(t, migrations.ActivityFeedIndexSQL, startupMigrations[7])
 	assert.Equal(t, migrations.MemoryDiscoveryIndexesSQL, startupMigrations[8])
@@ -260,7 +266,7 @@ func TestStartupMigrationSQLIncludesDiscoveryIndexesAfterActivityFeedIndex(t *te
 func TestStartupMigrationSQLIncludesPullCursorIndexesAfterDiscoveryIndexes(t *testing.T) {
 	startupMigrations := startupMigrationSQL()
 
-	require.Len(t, startupMigrations, 14)
+	require.Len(t, startupMigrations, 15)
 	assert.Equal(t, migrations.PullCursorIndexesSQL, startupMigrations[9])
 	assert.Contains(t, migrations.PullCursorIndexesSQL, "idx_memories_synced_at_sync_id")
 	assert.Contains(t, migrations.PullCursorIndexesSQL, "idx_sessions_synced_at_sync_id")
@@ -269,7 +275,7 @@ func TestStartupMigrationSQLIncludesPullCursorIndexesAfterDiscoveryIndexes(t *te
 func TestStartupMigrationSQLIncludesProjectScopedPullCursorIndexesAfterLegacyPullCursorIndexes(t *testing.T) {
 	startupMigrations := startupMigrationSQL()
 
-	require.Len(t, startupMigrations, 14)
+	require.Len(t, startupMigrations, 15)
 	assert.Equal(t, migrations.ProjectScopedPullCursorIndexesSQL, startupMigrations[10])
 	assert.Contains(t, migrations.ProjectScopedPullCursorIndexesSQL, "idx_memories_project_synced_at_sync_id")
 	assert.Contains(t, migrations.ProjectScopedPullCursorIndexesSQL, "idx_sessions_project_synced_at_sync_id")
@@ -279,7 +285,7 @@ func TestStartupMigrationSQLIncludesProjectScopedPullCursorIndexesAfterLegacyPul
 func TestStartupMigrationSQLIncludesProjectBlockAckSubjectsAfterProjectBlocks(t *testing.T) {
 	startupMigrations := startupMigrationSQL()
 
-	require.Len(t, startupMigrations, 14)
+	require.Len(t, startupMigrations, 15)
 	assert.Equal(t, migrations.ProjectBlocksSQL, startupMigrations[11])
 	assert.Equal(t, migrations.ProjectBlockAckSubjectsSQL, startupMigrations[12])
 	assert.Equal(t, migrations.UserSecurityVersionSQL, startupMigrations[13])

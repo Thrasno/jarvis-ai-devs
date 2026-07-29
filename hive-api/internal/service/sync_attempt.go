@@ -20,20 +20,29 @@ const maxSyncAttemptErrorMessageRune = 500
 var ErrSyncAttemptBatchTooLarge = errors.New("sync attempt batch exceeds maximum size")
 
 type SyncAttemptService interface {
-	Ingest(ctx context.Context, req model.SyncAttemptIngestRequest) (model.SyncAttemptIngestResponse, error)
+	Ingest(ctx context.Context, req model.SyncAttemptIngestRequest, actors ...model.SyncAttemptActor) (model.SyncAttemptIngestResponse, error)
 	Summary(ctx context.Context, query model.SyncAttemptSummaryQuery) (model.SyncAttemptSummaryResponse, error)
 	DeleteExpired(ctx context.Context, now time.Time) (int64, error)
 }
 
 type syncAttemptService struct {
-	repo repository.SyncAttemptRepository
+	repo       repository.SyncAttemptRepository
+	userLookup syncAttemptUserLookup
 }
 
-func NewSyncAttemptService(repo repository.SyncAttemptRepository) SyncAttemptService {
-	return &syncAttemptService{repo: repo}
+type syncAttemptUserLookup interface {
+	GetByEmail(ctx context.Context, email string) (*model.User, error)
 }
 
-func (s *syncAttemptService) Ingest(ctx context.Context, req model.SyncAttemptIngestRequest) (model.SyncAttemptIngestResponse, error) {
+func NewSyncAttemptService(repo repository.SyncAttemptRepository, userLookups ...syncAttemptUserLookup) SyncAttemptService {
+	var userLookup syncAttemptUserLookup
+	if len(userLookups) > 0 {
+		userLookup = userLookups[0]
+	}
+	return &syncAttemptService{repo: repo, userLookup: userLookup}
+}
+
+func (s *syncAttemptService) Ingest(ctx context.Context, req model.SyncAttemptIngestRequest, actors ...model.SyncAttemptActor) (model.SyncAttemptIngestResponse, error) {
 	if len(req.Attempts) > model.MaxSyncAttemptBatchSize {
 		return model.SyncAttemptIngestResponse{}, ErrSyncAttemptBatchTooLarge
 	}
@@ -45,6 +54,9 @@ func (s *syncAttemptService) Ingest(ctx context.Context, req model.SyncAttemptIn
 		if rejection != nil {
 			resp.Rejected = append(resp.Rejected, *rejection)
 			continue
+		}
+		if len(actors) > 0 {
+			s.resolvePortalUser(ctx, &log, actors[0])
 		}
 		valid = append(valid, log)
 	}
@@ -62,6 +74,28 @@ func (s *syncAttemptService) Ingest(ctx context.Context, req model.SyncAttemptIn
 	resp.AcceptedIDs = append(resp.AcceptedIDs, stored.AcceptedIDs...)
 	resp.DuplicateIDs = append(resp.DuplicateIDs, stored.DuplicateIDs...)
 	return resp, nil
+}
+
+func (s *syncAttemptService) resolvePortalUser(ctx context.Context, log *model.SyncAttemptLog, actor model.SyncAttemptActor) {
+	if actor.Level != model.LevelAdmin {
+		if actor.UserID == "" {
+			return
+		}
+		log.PortalUserID = &actor.UserID
+		source := model.SyncAttemptPortalUserSourceAuthSubject
+		log.PortalUserSource = &source
+		return
+	}
+	if s.userLookup == nil {
+		return
+	}
+	user, err := s.userLookup.GetByEmail(ctx, log.DevID)
+	if err != nil || user == nil || user.ID == "" {
+		return
+	}
+	log.PortalUserID = &user.ID
+	source := model.SyncAttemptPortalUserSourceAdminDevID
+	log.PortalUserSource = &source
 }
 
 func (s *syncAttemptService) DeleteExpired(ctx context.Context, now time.Time) (int64, error) {

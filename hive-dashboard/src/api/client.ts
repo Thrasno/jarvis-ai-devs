@@ -13,17 +13,19 @@ export type LoginResponse = { token: string; expires_at?: string; user: User }
 export type Health = { status: string; db: string; version: string }
 export type AdminStats = { users: { total: number; active: number; by_level: Record<string, number> }; memories: { total: number; by_project: Count[]; by_category: Count[]; last_synced_at: string | null } }
 export type Count = { project?: string; category?: string; count: number }
+export const projectHealthFilters = { degraded: 'degraded' } as const
+export type ProjectListParams = { health?: typeof projectHealthFilters.degraded }
 export type OverviewProjectSyncHealth = { project: string; status: 'healthy' | 'degraded' | 'unknown' | string; region: string; contributor_count: number; last_activity_at?: string | null }
 export type OverviewStats = {
   daemon_health: { healthy: number; total: number }
-  conflicts: { open: number }
+  degraded_projects: { degraded: number; total: number }
   sync_health_by_project: OverviewProjectSyncHealth[]
   live_activity: { count: number; newest_sync_id: string }
   most_active_projects: Count[]
 }
 export type OverviewGrowth = { knowledge_growth: { label: string; value: number }[] }
 export type OverviewSummary = { total_memories: number; active_projects: number; live_activity: { count: number }; most_active_projects: Count[] }
-export type AdminOverviewOperations = { daemon_health: { healthy: number; total: number }; conflicts: { open: number }; knowledge_growth: { label: string; value: number }[]; sync_health_by_project: OverviewProjectSyncHealth[]; newest_sync_id: string }
+export type AdminOverviewOperations = { daemon_health: { healthy: number; total: number }; degraded_projects: { degraded: number; total: number }; knowledge_growth: { label: string; value: number }[]; sync_health_by_project: OverviewProjectSyncHealth[]; newest_sync_id: string }
 export type MemberOverviewResponse = { capability: 'member'; summary: OverviewSummary }
 export type AdminOverviewResponse = { capability: 'admin'; summary: OverviewSummary; operations: AdminOverviewOperations }
 export type CapabilityOverviewResponse = MemberOverviewResponse | AdminOverviewResponse
@@ -113,7 +115,7 @@ export type ApiClient = {
   auditLogs(token: string, params?: AuditLogParams): Promise<AuditLogList>
   syncAttemptSummary(token: string, params?: SyncAttemptSummaryParams): Promise<SyncAttemptSummary>
   activity(token: string, params?: ActivityFeedParams): Promise<ActivityFeedResponse>
-  projects(token: string): Promise<ProjectListResponse>
+  projects(token: string, params?: ProjectListParams): Promise<ProjectListResponse>
   projectBlockStatus(token: string, project: string): Promise<ProjectBlockStatusResponse>
   blockProject(token: string, request: ProjectBlockRequest): Promise<ProjectBlockResponse>
 }
@@ -218,8 +220,8 @@ export function createApiClient(options: { baseUrl?: string; fetch?: Fetcher } =
     activity(token, params = {}) {
       return request<ActivityFeedResponse>(activityPath(params), authGet(token))
     },
-    projects(token) {
-      return request<ProjectListResponse>('/projects', authGet(token))
+    projects(token, params) {
+      return request<ProjectListResponse>(withQuery('/projects', params ?? {}), authGet(token))
     },
     projectBlockStatus(token, project) {
       return request<ProjectBlockStatusResponse>(withQuery('/admin/project-blocks/status', { project }), authGet(token))

@@ -74,7 +74,7 @@ func (s *overviewService) GetForLevel(ctx context.Context, level model.UserLevel
 		Summary:    summary,
 		Operations: &model.AdminOverviewOperations{
 			DaemonHealth:        stats.DaemonHealth,
-			Conflicts:           stats.Conflicts,
+			DegradedProjects:    stats.DegradedProjects,
 			KnowledgeGrowth:     growth.KnowledgeGrowth,
 			SyncHealthByProject: stats.SyncHealthByProject,
 			NewestSyncID:        stats.LiveActivity.NewestSyncID,
@@ -129,19 +129,15 @@ func (s *overviewService) GetStats(ctx context.Context) (*model.OverviewStatsRes
 	}
 	resp.DaemonHealth = model.OverviewDaemonHealth{Healthy: healthy, Total: total}
 
-	// 2. Conflicts (open sync conflicts in 30d)
-	conflicts, err := s.auditRepo.CountSyncConflicts(ctx, time.Now().UTC().Add(-overviewWindow30d))
+	// 2. Canonical project health drives both the KPI and overview rows.
+	projection, err := s.syncRepo.ProjectSyncHealth(ctx)
 	if err != nil {
 		return nil, err
 	}
-	resp.Conflicts = model.OverviewConflicts{Open: conflicts}
+	resp.DegradedProjects = model.OverviewDegradedProjects{Degraded: projection.Degraded, Total: projection.Total}
 
 	// 3. Sync health by project
-	healthRows, err := s.syncRepo.SyncHealthByProject(ctx, overviewWindow30d)
-	if err != nil {
-		return nil, err
-	}
-	for _, row := range healthRows {
+	for _, row := range projection.Rows {
 		status := "degraded"
 		if row.LastOutcome == model.SyncAttemptOutcomeSuccess {
 			status = "healthy"
