@@ -168,6 +168,7 @@ func (m *mockSyncSvc) PullAll(ctx context.Context, project string, since time.Ti
 
 type mockSyncAttemptSvc struct {
 	mock.Mock
+	actor *model.SyncAttemptActor
 }
 
 type mockProjectGovernanceSvc struct {
@@ -189,7 +190,10 @@ func (m *mockProjectGovernanceSvc) Acknowledge(ctx context.Context, ack model.Pr
 	return args.Get(0).(model.ProjectBlockAck), args.Error(1)
 }
 
-func (m *mockSyncAttemptSvc) Ingest(ctx context.Context, req model.SyncAttemptIngestRequest) (model.SyncAttemptIngestResponse, error) {
+func (m *mockSyncAttemptSvc) Ingest(ctx context.Context, req model.SyncAttemptIngestRequest, actors ...model.SyncAttemptActor) (model.SyncAttemptIngestResponse, error) {
+	if len(actors) > 0 {
+		m.actor = &actors[0]
+	}
 	args := m.Called(ctx, req)
 	return args.Get(0).(model.SyncAttemptIngestResponse), args.Error(1)
 }
@@ -203,8 +207,8 @@ type mockProjectSvc struct {
 	mock.Mock
 }
 
-func (m *mockProjectSvc) List(ctx context.Context) (model.ProjectListResponse, error) {
-	args := m.Called(ctx)
+func (m *mockProjectSvc) List(ctx context.Context, health string) (model.ProjectListResponse, error) {
+	args := m.Called(ctx, health)
 	return args.Get(0).(model.ProjectListResponse), args.Error(1)
 }
 

@@ -3,6 +3,7 @@ package service_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -954,6 +955,26 @@ func TestListAuditLogs_ReturnsEntriesAndTotalForAppliedFilters(t *testing.T) {
 	assert.Equal(t, int64(12), result.Total)
 	assert.Equal(t, 5, result.Limit)
 	assert.Equal(t, 10, result.Offset)
+	mockAuditRepo.AssertExpectations(t)
+}
+
+func TestListAuditLogs_SyncConflictRemainsHistoricalEventWithoutOpenConflictWording(t *testing.T) {
+	svc, _, _, mockAuditRepo, _ := newTestAdminService(t)
+	ctx := context.Background()
+	action := model.AuditActionSyncConflict
+	filter := model.AuditFilter{Action: &action, Limit: 1}
+	entries := []*model.AuditEntry{{ID: "audit-1", Action: action, Outcome: model.AuditOutcomeConflict, Metadata: model.AuditMetadata{}}}
+
+	mockAuditRepo.On("List", ctx, filter).Return(entries, nil)
+	mockAuditRepo.On("Count", ctx, filter).Return(int64(1), nil)
+
+	result, err := svc.ListAuditLogs(ctx, filter)
+	require.NoError(t, err)
+	payload, err := json.Marshal(result)
+	require.NoError(t, err)
+	assert.Contains(t, string(payload), `"action":"sync_conflict"`)
+	assert.NotContains(t, string(payload), "open_conflicts")
+	assert.NotContains(t, string(payload), "open conflict")
 	mockAuditRepo.AssertExpectations(t)
 }
 

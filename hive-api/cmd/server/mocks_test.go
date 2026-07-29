@@ -90,8 +90,8 @@ func (m *mockSync) PullAll(ctx context.Context, project string, since time.Time,
 
 type mockProject struct{ mock.Mock }
 
-func (m *mockProject) List(ctx context.Context) (model.ProjectListResponse, error) {
-	args := m.Called(ctx)
+func (m *mockProject) List(ctx context.Context, health string) (model.ProjectListResponse, error) {
+	args := m.Called(ctx, health)
 	return args.Get(0).(model.ProjectListResponse), args.Error(1)
 }
 

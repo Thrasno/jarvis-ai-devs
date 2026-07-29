@@ -147,10 +147,10 @@ export function renderOverview(state: ViewState<OverviewViewModel>): HTMLElement
   row.append(flushPanel('Live activity', renderLiveActivity(liveActivity)), flushPanel('Most active projects', renderMostActiveProjects(mostActiveProjects)))
 
   if (state.data.capability === 'admin') {
-    const { healthyDaemons, openConflicts, knowledgeGrowth, syncHealthByProject, syncHealthByProjectSourceLabel } = state.data
+    const { healthyDaemons, degradedProjects, knowledgeGrowth, syncHealthByProject, syncHealthByProjectSourceLabel } = state.data
     statsRow.append(
       statTile({ label: healthyDaemons.label, value: syncHealthDisplay(healthyDaemons), detail: healthyDaemons.sourceLabel, accent: '#22B85C' }),
-      statTile({ label: openConflicts.label, value: openConflicts.displayValue ?? String(openConflicts.value), detail: openConflicts.sourceLabel, accent: '#E0246F' })
+      statTile({ label: degradedProjects.label, value: degradedProjects.displayValue ?? String(degradedProjects.value), detail: degradedProjects.sourceLabel, accent: '#E0246F' })
     )
     const operations = document.createElement('div')
     operations.className = 'dashboard-overview__row'

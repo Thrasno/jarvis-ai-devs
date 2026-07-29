@@ -45,3 +45,8 @@ func (m *MockSyncAttemptRepository) SyncHealthByProject(ctx context.Context, win
 	}
 	return args.Get(0).([]model.ProjectSyncHealthRow), args.Error(1)
 }
+
+func (m *MockSyncAttemptRepository) ProjectSyncHealth(ctx context.Context) (model.ProjectSyncHealthProjection, error) {
+	args := m.Called(ctx)
+	return args.Get(0).(model.ProjectSyncHealthProjection), args.Error(1)
+}

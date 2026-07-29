@@ -94,3 +94,6 @@ var ProjectBlockAckSubjectsSQL string
 
 //go:embed 014_user_security_version.sql
 var UserSecurityVersionSQL string
+
+//go:embed 015_sync_attempt_portal_users.sql
+var SyncAttemptPortalUsersSQL string

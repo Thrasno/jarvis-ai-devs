@@ -50,8 +50,8 @@ func TestOverviewHandler_GetStats_AdminJWT_Returns200(t *testing.T) {
 	overviewSvc := &mockOverviewSvc{}
 	overviewSvc.On("GetStats", context.Background()).Return(&model.OverviewStatsResponse{
 		DaemonHealth:        model.OverviewDaemonHealth{Healthy: 2, Total: 5},
-		Conflicts:           model.OverviewConflicts{Open: 1},
-		SyncHealthByProject: []model.ProjectSyncHealth{},
+		DegradedProjects:    model.OverviewDegradedProjects{Degraded: 1, Total: 2},
+		SyncHealthByProject: []model.ProjectSyncHealth{{Project: "project", Status: "degraded", ContributorCount: 2}},
 		LiveActivity:        model.OverviewLiveActivity{Count: 3, NewestSyncID: "abc"},
 		MostActiveProjects:  []model.ProjectCount{},
 	}, nil)
@@ -64,7 +64,11 @@ func TestOverviewHandler_GetStats_AdminJWT_Returns200(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, 2, resp.DaemonHealth.Healthy)
 	assert.Equal(t, 5, resp.DaemonHealth.Total)
-	assert.Equal(t, 1, resp.Conflicts.Open)
+	assert.Equal(t, model.OverviewDegradedProjects{Degraded: 1, Total: 2}, resp.DegradedProjects)
+	assert.Contains(t, w.Body.String(), `"status":"degraded"`)
+	assert.NotContains(t, w.Body.String(), `"dev_id"`)
+	assert.NotContains(t, w.Body.String(), `"daemon_id"`)
+	assert.NotContains(t, w.Body.String(), `"device_classification"`)
 	overviewSvc.AssertExpectations(t)
 }
 
