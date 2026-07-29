@@ -32,6 +32,18 @@ type UserResponse struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// AdminUserResponse is the complete user-management projection.
+type AdminUserResponse struct {
+	ID         string         `json:"id"`
+	Username   string         `json:"username"`
+	Email      string         `json:"email"`
+	Level      UserLevel      `json:"level"`
+	IsActive   bool           `json:"is_active"`
+	CreatedAt  time.Time      `json:"created_at"`
+	SyncStatus UserSyncStatus `json:"sync_status"`
+	LastSyncAt *time.Time     `json:"last_sync_at"`
+}
+
 // SyncSessionPayload (response side) se usa en pulled_sessions.
 // Reutiliza los campos de SyncSessionPayload del request (mismo wire format).
 type SyncSessionResponse = SyncSessionPayload

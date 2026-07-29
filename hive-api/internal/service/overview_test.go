@@ -20,6 +20,7 @@ func newTestOverviewService(t *testing.T) (service.OverviewService, *repository.
 	memRepo := &repository.MockMemoryRepository{}
 	syncRepo := &repository.MockSyncAttemptRepository{}
 	syncRepo.On("ProjectSyncHealth", mock.Anything).Return(model.ProjectSyncHealthProjection{Rows: []model.ProjectSyncHealthRow{}}, nil)
+	syncRepo.On("UserSyncProjection", mock.Anything, mock.Anything).Return(model.UserSyncProjection{Rows: []model.UserSyncProjectionRow{}}, nil)
 	auditRepo := &repository.MockAuditRepository{}
 	svc := service.NewOverviewService(memRepo, syncRepo, auditRepo)
 	return svc, memRepo, syncRepo, auditRepo
@@ -32,7 +33,6 @@ func TestOverviewService_GetStatsUsesCanonicalDegradedProjectsProjection(t *test
 	ctx := context.Background()
 	activity := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
 
-	syncRepo.On("DaemonHealth", ctx, mock.Anything, mock.Anything).Return(1, 2, nil)
 	syncRepo.On("ProjectSyncHealth", ctx).Return(model.ProjectSyncHealthProjection{
 		Rows: []model.ProjectSyncHealthRow{
 			{Project: "degraded", LastOutcome: model.SyncAttemptOutcomeFailure, ContributorCount: 2, LastActivityAt: activity},
@@ -62,8 +62,6 @@ func TestOverviewService_GetStats_FullyPopulated(t *testing.T) {
 	svc, memRepo, syncRepo, auditRepo := newTestOverviewService(t)
 	ctx := context.Background()
 
-	syncRepo.On("DaemonHealth", ctx, mock.AnythingOfType("time.Duration"), mock.AnythingOfType("time.Duration")).
-		Return(2, 5, nil)
 	auditRepo.On("CountSyncConflicts", ctx, mock.AnythingOfType("time.Time")).
 		Return(3, nil)
 	lastActivityAt := time.Date(2026, 7, 4, 12, 30, 0, 0, time.UTC)
@@ -86,8 +84,8 @@ func TestOverviewService_GetStats_FullyPopulated(t *testing.T) {
 	stats, err := svc.GetStats(ctx)
 	require.NoError(t, err)
 
-	assert.Equal(t, 2, stats.DaemonHealth.Healthy)
-	assert.Equal(t, 5, stats.DaemonHealth.Total)
+	assert.Equal(t, 0, stats.SyncingUsers.Syncing)
+	assert.Equal(t, 0, stats.SyncingUsers.Total)
 	assert.Equal(t, model.OverviewDegradedProjects{}, stats.DegradedProjects)
 	assert.Len(t, stats.SyncHealthByProject, 1)
 	assert.Equal(t, "proj-a", stats.SyncHealthByProject[0].Project)
@@ -101,11 +99,10 @@ func TestOverviewService_GetStats_FullyPopulated(t *testing.T) {
 	assert.NotNil(t, stats.MostActiveProjects)
 }
 
-func TestOverviewService_GetStats_DaemonHealthZero(t *testing.T) {
+func TestOverviewService_GetStats_SyncingUsersZero(t *testing.T) {
 	svc, memRepo, syncRepo, auditRepo := newTestOverviewService(t)
 	ctx := context.Background()
 
-	syncRepo.On("DaemonHealth", ctx, mock.Anything, mock.Anything).Return(0, 0, nil)
 	auditRepo.On("CountSyncConflicts", ctx, mock.AnythingOfType("time.Time")).Return(0, nil)
 	syncRepo.On("SyncHealthByProject", ctx, mock.Anything).Return([]model.ProjectSyncHealthRow{}, nil)
 	memRepo.On("CountLiveActivity", ctx, mock.AnythingOfType("time.Time")).Return(0, "", nil)
@@ -113,15 +110,14 @@ func TestOverviewService_GetStats_DaemonHealthZero(t *testing.T) {
 
 	stats, err := svc.GetStats(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 0, stats.DaemonHealth.Healthy)
-	assert.Equal(t, 0, stats.DaemonHealth.Total)
+	assert.Equal(t, 0, stats.SyncingUsers.Syncing)
+	assert.Equal(t, 0, stats.SyncingUsers.Total)
 }
 
 func TestOverviewService_GetStats_ConflictsZero(t *testing.T) {
 	svc, memRepo, syncRepo, auditRepo := newTestOverviewService(t)
 	ctx := context.Background()
 
-	syncRepo.On("DaemonHealth", ctx, mock.Anything, mock.Anything).Return(1, 1, nil)
 	auditRepo.On("CountSyncConflicts", ctx, mock.AnythingOfType("time.Time")).Return(0, nil)
 	syncRepo.On("SyncHealthByProject", ctx, mock.Anything).Return([]model.ProjectSyncHealthRow{}, nil)
 	memRepo.On("CountLiveActivity", ctx, mock.AnythingOfType("time.Time")).Return(0, "", nil)
@@ -136,7 +132,6 @@ func TestOverviewService_GetStats_SyncHealthByProjectEmpty(t *testing.T) {
 	svc, memRepo, syncRepo, auditRepo := newTestOverviewService(t)
 	ctx := context.Background()
 
-	syncRepo.On("DaemonHealth", ctx, mock.Anything, mock.Anything).Return(0, 0, nil)
 	auditRepo.On("CountSyncConflicts", ctx, mock.AnythingOfType("time.Time")).Return(0, nil)
 	syncRepo.On("SyncHealthByProject", ctx, mock.Anything).Return([]model.ProjectSyncHealthRow{}, nil)
 	memRepo.On("CountLiveActivity", ctx, mock.AnythingOfType("time.Time")).Return(0, "", nil)
@@ -152,7 +147,6 @@ func TestOverviewService_GetStats_MostActiveProjectsCappedAtFive(t *testing.T) {
 	svc, memRepo, syncRepo, auditRepo := newTestOverviewService(t)
 	ctx := context.Background()
 
-	syncRepo.On("DaemonHealth", ctx, mock.Anything, mock.Anything).Return(0, 0, nil)
 	auditRepo.On("CountSyncConflicts", ctx, mock.AnythingOfType("time.Time")).Return(0, nil)
 	syncRepo.On("SyncHealthByProject", ctx, mock.Anything).Return([]model.ProjectSyncHealthRow{}, nil)
 	memRepo.On("CountLiveActivity", ctx, mock.AnythingOfType("time.Time")).Return(0, "", nil)
@@ -176,7 +170,6 @@ func TestOverviewService_GetStats_MostActiveProjectsUnderFive(t *testing.T) {
 	svc, memRepo, syncRepo, auditRepo := newTestOverviewService(t)
 	ctx := context.Background()
 
-	syncRepo.On("DaemonHealth", ctx, mock.Anything, mock.Anything).Return(0, 0, nil)
 	auditRepo.On("CountSyncConflicts", ctx, mock.AnythingOfType("time.Time")).Return(0, nil)
 	syncRepo.On("SyncHealthByProject", ctx, mock.Anything).Return([]model.ProjectSyncHealthRow{}, nil)
 	memRepo.On("CountLiveActivity", ctx, mock.AnythingOfType("time.Time")).Return(0, "", nil)
@@ -191,12 +184,12 @@ func TestOverviewService_GetStats_MostActiveProjectsUnderFive(t *testing.T) {
 	assert.Len(t, stats.MostActiveProjects, 3)
 }
 
-func TestOverviewService_GetStats_DaemonHealthError(t *testing.T) {
+func TestOverviewService_GetStats_UserSyncProjectionError(t *testing.T) {
 	svc, _, syncRepo, _ := newTestOverviewService(t)
 	ctx := context.Background()
 	repoErr := errors.New("db error")
 
-	syncRepo.On("DaemonHealth", ctx, mock.Anything, mock.Anything).Return(0, 0, repoErr)
+	syncRepo.ExpectedCalls[1].ReturnArguments = mock.Arguments{model.UserSyncProjection{}, repoErr}
 
 	_, err := svc.GetStats(ctx)
 	assert.ErrorIs(t, err, repoErr)
@@ -207,19 +200,6 @@ func TestOverviewService_GetStats_ProjectSyncHealthError(t *testing.T) {
 	ctx := context.Background()
 	repoErr := errors.New("audit db error")
 
-	syncRepo.On("DaemonHealth", ctx, mock.Anything, mock.Anything).Return(1, 1, nil)
-	syncRepo.ExpectedCalls[0].ReturnArguments = mock.Arguments{model.ProjectSyncHealthProjection{}, repoErr}
-
-	_, err := svc.GetStats(ctx)
-	assert.ErrorIs(t, err, repoErr)
-}
-
-func TestOverviewService_GetStats_ProjectSyncHealthErrorAfterDaemonHealth(t *testing.T) {
-	svc, _, syncRepo, _ := newTestOverviewService(t)
-	ctx := context.Background()
-	repoErr := errors.New("sync health error")
-
-	syncRepo.On("DaemonHealth", ctx, mock.Anything, mock.Anything).Return(1, 1, nil)
 	syncRepo.ExpectedCalls[0].ReturnArguments = mock.Arguments{model.ProjectSyncHealthProjection{}, repoErr}
 
 	_, err := svc.GetStats(ctx)
@@ -231,7 +211,6 @@ func TestOverviewService_GetStats_LiveActivityError(t *testing.T) {
 	ctx := context.Background()
 	repoErr := errors.New("live activity error")
 
-	syncRepo.On("DaemonHealth", ctx, mock.Anything, mock.Anything).Return(1, 1, nil)
 	auditRepo.On("CountSyncConflicts", ctx, mock.AnythingOfType("time.Time")).Return(0, nil)
 	syncRepo.On("SyncHealthByProject", ctx, mock.Anything).Return([]model.ProjectSyncHealthRow{}, nil)
 	memRepo.On("CountLiveActivity", ctx, mock.AnythingOfType("time.Time")).Return(0, "", repoErr)
@@ -245,7 +224,6 @@ func TestOverviewService_GetStats_CountByProjectError(t *testing.T) {
 	ctx := context.Background()
 	repoErr := errors.New("count by project error")
 
-	syncRepo.On("DaemonHealth", ctx, mock.Anything, mock.Anything).Return(1, 1, nil)
 	auditRepo.On("CountSyncConflicts", ctx, mock.AnythingOfType("time.Time")).Return(0, nil)
 	syncRepo.On("SyncHealthByProject", ctx, mock.Anything).Return([]model.ProjectSyncHealthRow{}, nil)
 	memRepo.On("CountLiveActivity", ctx, mock.AnythingOfType("time.Time")).Return(0, "", nil)
@@ -292,7 +270,6 @@ func TestOverviewService_GetStats_SyncHealthStatusMapping(t *testing.T) {
 	svc, memRepo, syncRepo, auditRepo := newTestOverviewService(t)
 	ctx := context.Background()
 
-	syncRepo.On("DaemonHealth", ctx, mock.Anything, mock.Anything).Return(1, 1, nil)
 	auditRepo.On("CountSyncConflicts", ctx, mock.AnythingOfType("time.Time")).Return(0, nil)
 	syncRepo.On("SyncHealthByProject", ctx, mock.Anything).Return([]model.ProjectSyncHealthRow{
 		{Project: "proj-success", LastOutcome: model.SyncAttemptOutcomeSuccess, ContributorCount: 1},
@@ -329,7 +306,6 @@ func TestOverviewService_GetStats_LiveActivitySinceIsInPast(t *testing.T) {
 
 	before := time.Now().UTC()
 
-	syncRepo.On("DaemonHealth", ctx, mock.Anything, mock.Anything).Return(0, 0, nil)
 	syncRepo.On("SyncHealthByProject", ctx, mock.Anything).Return([]model.ProjectSyncHealthRow{}, nil)
 	memRepo.On("CountLiveActivity", ctx, mock.MatchedBy(func(since time.Time) bool {
 		return since.Before(before)
@@ -367,7 +343,7 @@ func TestOverviewService_GetForLevel_MemberProjectsAndLiveActivityAreAllowlisted
 	assert.Equal(t, projects[:5], resp.Summary.MostActiveProjects)
 	assert.Nil(t, resp.Operations)
 	memRepo.AssertExpectations(t)
-	syncRepo.AssertNotCalled(t, "DaemonHealth", mock.Anything, mock.Anything, mock.Anything)
+	syncRepo.AssertNotCalled(t, "UserSyncProjection", mock.Anything, mock.Anything)
 	syncRepo.AssertNotCalled(t, "SyncHealthByProject", mock.Anything, mock.Anything)
 	memRepo.AssertNotCalled(t, "CountGrowthByMonth", mock.Anything, mock.Anything)
 }
@@ -430,7 +406,7 @@ func TestOverviewService_GetForLevel_MemberEmptyAndErrors(t *testing.T) {
 				assert.NotNil(t, resp.Summary.MostActiveProjects)
 			}
 			memRepo.AssertExpectations(t)
-			syncRepo.AssertNotCalled(t, "DaemonHealth", mock.Anything, mock.Anything, mock.Anything)
+			syncRepo.AssertNotCalled(t, "UserSyncProjection", mock.Anything, mock.Anything)
 			auditRepo.AssertNotCalled(t, "CountSyncConflicts", mock.Anything, mock.Anything)
 		})
 	}
@@ -444,7 +420,6 @@ func TestOverviewService_GetForLevel_AdminIncludesOperations(t *testing.T) {
 	memRepo.On("Count", ctx, model.MemoryFilter{}).Return(int64(10), nil).Once()
 	memRepo.On("CountByProject", ctx, model.MemoryFilter{}).Return(projects, nil)
 	memRepo.On("CountLiveActivity", ctx, mock.AnythingOfType("time.Time")).Return(2, "newest-sync", nil)
-	syncRepo.On("DaemonHealth", ctx, mock.AnythingOfType("time.Duration"), mock.AnythingOfType("time.Duration")).Return(2, 3, nil).Once()
 	memRepo.On("CountGrowthByMonth", ctx, 5).Return([]model.MonthCount{{Label: "Jul", Value: 10}}, nil).Once()
 
 	resp, err := svc.GetForLevel(ctx, model.LevelAdmin)
@@ -453,7 +428,7 @@ func TestOverviewService_GetForLevel_AdminIncludesOperations(t *testing.T) {
 	assert.Equal(t, model.OverviewCapabilityAdmin, resp.Capability)
 	assert.Equal(t, int64(10), resp.Summary.TotalMemories)
 	assert.Equal(t, "newest-sync", resp.Operations.NewestSyncID)
-	assert.Equal(t, 2, resp.Operations.DaemonHealth.Healthy)
+	assert.Equal(t, 0, resp.Operations.SyncingUsers.Syncing)
 	assert.Equal(t, model.OverviewDegradedProjects{}, resp.Operations.DegradedProjects)
 	assert.Equal(t, []model.OverviewChartPoint{{Label: "Jul", Value: 10}}, resp.Operations.KnowledgeGrowth)
 	memRepo.AssertExpectations(t)
@@ -482,11 +457,11 @@ func TestOverviewService_GetForLevel_MemberDoesNotDependOnAdminOnlyFailure(t *te
 	memRepo.On("Count", ctx, model.MemoryFilter{}).Return(int64(1), nil).Once()
 	memRepo.On("CountByProject", ctx, model.MemoryFilter{}).Return([]model.ProjectCount{{Project: "alpha", Count: 1}}, nil).Once()
 	memRepo.On("CountLiveActivity", ctx, mock.AnythingOfType("time.Time")).Return(1, "discarded", nil).Once()
-	syncRepo.On("DaemonHealth", ctx, mock.Anything, mock.Anything).Return(0, 0, errors.New("admin-only failure"))
+	syncRepo.ExpectedCalls[1].ReturnArguments = mock.Arguments{model.UserSyncProjection{}, errors.New("admin-only failure")}
 
 	resp, err := svc.GetForLevel(ctx, model.LevelMember)
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
-	syncRepo.AssertNotCalled(t, "DaemonHealth", mock.Anything, mock.Anything, mock.Anything)
+	syncRepo.AssertNotCalled(t, "UserSyncProjection", mock.Anything, mock.Anything)
 	auditRepo.AssertNotCalled(t, "CountSyncConflicts", mock.Anything, mock.Anything)
 }

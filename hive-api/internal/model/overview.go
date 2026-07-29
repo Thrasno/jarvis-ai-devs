@@ -32,7 +32,7 @@ type CapabilityOverviewResponse struct {
 
 // AdminOverviewOperations contains fields intentionally excluded from Member projections.
 type AdminOverviewOperations struct {
-	DaemonHealth        OverviewDaemonHealth     `json:"daemon_health"`
+	SyncingUsers        OverviewSyncingUsers     `json:"syncing_users"`
 	DegradedProjects    OverviewDegradedProjects `json:"degraded_projects"`
 	KnowledgeGrowth     []OverviewChartPoint     `json:"knowledge_growth"`
 	SyncHealthByProject []ProjectSyncHealth      `json:"sync_health_by_project"`
@@ -41,16 +41,16 @@ type AdminOverviewOperations struct {
 
 // OverviewStatsResponse is the response for GET /admin/overview/stats.
 type OverviewStatsResponse struct {
-	DaemonHealth        OverviewDaemonHealth     `json:"daemon_health"`
+	SyncingUsers        OverviewSyncingUsers     `json:"syncing_users"`
 	DegradedProjects    OverviewDegradedProjects `json:"degraded_projects"`
 	SyncHealthByProject []ProjectSyncHealth      `json:"sync_health_by_project"`
 	LiveActivity        OverviewLiveActivity     `json:"live_activity"`
 	MostActiveProjects  []ProjectCount           `json:"most_active_projects"`
 }
 
-// OverviewDaemonHealth holds daemon health counts.
-type OverviewDaemonHealth struct {
-	Healthy int `json:"healthy"`
+// OverviewSyncingUsers holds active users whose current sync state qualifies in 24h.
+type OverviewSyncingUsers struct {
+	Syncing int `json:"syncing"`
 	Total   int `json:"total"`
 }
 

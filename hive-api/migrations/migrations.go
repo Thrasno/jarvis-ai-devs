@@ -97,3 +97,6 @@ var UserSecurityVersionSQL string
 
 //go:embed 015_sync_attempt_portal_users.sql
 var SyncAttemptPortalUsersSQL string
+
+//go:embed 016_sync_attempt_user_projection.sql
+var SyncAttemptUserProjectionSQL string

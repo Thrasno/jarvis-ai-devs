@@ -31,7 +31,7 @@ const auditBestEffortTimeout = 2 * time.Second
 // AdminService gestiona las operaciones de administración del sistema.
 type AdminService interface {
 	// ListUsers devuelve todos los usuarios registrados.
-	ListUsers(ctx context.Context) ([]*model.User, error)
+	ListUsers(ctx context.Context) ([]model.AdminUserResponse, error)
 
 	// SetLevel cambia el nivel de acceso de un usuario identificado por username.
 	// Si newLevel es LevelAdmin, verifica que no se supere el límite de 3 admins.
@@ -65,21 +65,59 @@ type adminService struct {
 	memRepo   repository.MemoryRepository
 	auditRepo repository.AuditRepository
 	tx        repository.TxManager
+	syncRepo  repository.SyncAttemptRepository
+	now       func() time.Time
 }
 
 // NewAdminService crea el AdminService con los repositorios inyectados.
 // Inyectamos memRepo aunque aún no lo usemos — lo necesitaremos para estadísticas.
-func NewAdminService(userRepo repository.UserRepository, memRepo repository.MemoryRepository, auditRepo repository.AuditRepository, tx repository.TxManager) AdminService {
-	return &adminService{
+func NewAdminService(userRepo repository.UserRepository, memRepo repository.MemoryRepository, auditRepo repository.AuditRepository, tx repository.TxManager, options ...any) AdminService {
+	svc := &adminService{
 		userRepo:  userRepo,
 		memRepo:   memRepo,
 		auditRepo: auditRepo,
 		tx:        tx,
+		now:       func() time.Time { return time.Now().UTC() },
 	}
+	if len(options) > 0 {
+		svc.syncRepo, _ = options[0].(repository.SyncAttemptRepository)
+	}
+	if len(options) > 1 {
+		if clock, ok := options[1].(func() time.Time); ok {
+			svc.now = clock
+		}
+	}
+	return svc
 }
 
-func (s *adminService) ListUsers(ctx context.Context) ([]*model.User, error) {
-	return s.userRepo.List(ctx)
+func (s *adminService) ListUsers(ctx context.Context) ([]model.AdminUserResponse, error) {
+	users, err := s.userRepo.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := s.now().UTC()
+	rows := map[string]model.UserSyncProjectionRow{}
+	projectionAvailable := true
+	if s.syncRepo != nil {
+		projection, projectionErr := s.syncRepo.UserSyncProjection(ctx, now)
+		projectionAvailable = projectionErr == nil
+		if projectionAvailable {
+			for _, row := range projection.Rows {
+				rows[row.PortalUserID] = row
+			}
+		}
+	}
+	response := make([]model.AdminUserResponse, 0, len(users))
+	for _, user := range users {
+		row := rows[user.ID]
+		row.IsActive = user.IsActive
+		status := userSyncStatus(row, now)
+		if !projectionAvailable {
+			status = model.UserSyncStatusUnknown
+		}
+		response = append(response, model.AdminUserResponse{ID: user.ID, Username: user.Username, Email: user.Email, Level: user.Level, IsActive: user.IsActive, CreatedAt: user.CreatedAt, SyncStatus: status, LastSyncAt: userSyncLastSyncAt(row)})
+	}
+	return response, nil
 }
 
 func (s *adminService) ListAuditLogs(ctx context.Context, filter model.AuditFilter) (model.AuditListResponse, error) {

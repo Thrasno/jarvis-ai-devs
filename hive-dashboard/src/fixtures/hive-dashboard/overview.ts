@@ -8,7 +8,7 @@ export const adminOverviewFixture = {
   capability: 'admin',
   totalMemories: { label: 'Total Memories', value: 22375, displayValue: '22.4k' },
   activeProjects: { label: 'Active Projects', value: dashboardProjects.length, displayValue: '8' },
-  healthyDaemons: { label: 'Healthy Daemons', value: healthyContributors, totalValue: dashboardContributors.length, displayValue: `${healthyContributors}/${dashboardContributors.length}` },
+  syncingUsers: { label: 'SYNCING USERS · 24H', value: healthyContributors, totalValue: dashboardContributors.length, displayValue: `${healthyContributors} / ${dashboardContributors.length}` },
   degradedProjects: { label: 'DEGRADED PROJECTS', value: 2, totalValue: 5, displayValue: '2 / 5' },
   knowledgeGrowth: {
     label: 'Knowledge Growth',

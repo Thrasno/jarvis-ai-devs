@@ -62,16 +62,16 @@ func (r *fakeSyncAttemptRepo) ListForSummary(ctx context.Context, filter model.S
 	return r.summary, nil
 }
 
-func (r *fakeSyncAttemptRepo) DaemonHealth(_ context.Context, _, _ time.Duration) (int, int, error) {
-	return 0, 0, nil
-}
-
 func (r *fakeSyncAttemptRepo) SyncHealthByProject(_ context.Context, _ time.Duration) ([]model.ProjectSyncHealthRow, error) {
 	return nil, nil
 }
 
 func (r *fakeSyncAttemptRepo) ProjectSyncHealth(context.Context) (model.ProjectSyncHealthProjection, error) {
 	return model.ProjectSyncHealthProjection{}, nil
+}
+
+func (r *fakeSyncAttemptRepo) UserSyncProjection(context.Context, time.Time) (model.UserSyncProjection, error) {
+	return model.UserSyncProjection{}, nil
 }
 
 func TestSyncAttemptService_IngestValidationAndIdempotency(t *testing.T) {

@@ -218,12 +218,12 @@ type mockAdminSvc struct {
 	mock.Mock
 }
 
-func (m *mockAdminSvc) ListUsers(ctx context.Context) ([]*model.User, error) {
+func (m *mockAdminSvc) ListUsers(ctx context.Context) ([]model.AdminUserResponse, error) {
 	args := m.Called(ctx)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).([]*model.User), args.Error(1)
+	return args.Get(0).([]model.AdminUserResponse), args.Error(1)
 }
 
 func (m *mockAdminSvc) CreateUser(ctx context.Context, actor model.AdminActor, req model.CreateUserRequest) error {

@@ -67,7 +67,7 @@ type ProjectService interface {
 
 // AdminService define las operaciones de administración.
 type AdminService interface {
-	ListUsers(ctx context.Context) ([]*model.User, error)
+	ListUsers(ctx context.Context) ([]model.AdminUserResponse, error)
 	CreateUser(ctx context.Context, actor model.AdminActor, req model.CreateUserRequest) error
 	ResetTemporaryPassword(ctx context.Context, actor model.AdminActor, username string, req model.ResetTemporaryPasswordRequest) error
 	Activate(ctx context.Context, actor model.AdminActor, username string) error

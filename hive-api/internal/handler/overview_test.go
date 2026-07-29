@@ -49,7 +49,7 @@ func TestOverviewHandler_GetStats_AdminJWT_Returns200(t *testing.T) {
 
 	overviewSvc := &mockOverviewSvc{}
 	overviewSvc.On("GetStats", context.Background()).Return(&model.OverviewStatsResponse{
-		DaemonHealth:        model.OverviewDaemonHealth{Healthy: 2, Total: 5},
+		SyncingUsers:        model.OverviewSyncingUsers{Syncing: 2, Total: 5},
 		DegradedProjects:    model.OverviewDegradedProjects{Degraded: 1, Total: 2},
 		SyncHealthByProject: []model.ProjectSyncHealth{{Project: "project", Status: "degraded", ContributorCount: 2}},
 		LiveActivity:        model.OverviewLiveActivity{Count: 3, NewestSyncID: "abc"},
@@ -62,8 +62,8 @@ func TestOverviewHandler_GetStats_AdminJWT_Returns200(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	var resp model.OverviewStatsResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, 2, resp.DaemonHealth.Healthy)
-	assert.Equal(t, 5, resp.DaemonHealth.Total)
+	assert.Equal(t, 2, resp.SyncingUsers.Syncing)
+	assert.Equal(t, 5, resp.SyncingUsers.Total)
 	assert.Equal(t, model.OverviewDegradedProjects{Degraded: 1, Total: 2}, resp.DegradedProjects)
 	assert.Contains(t, w.Body.String(), `"status":"degraded"`)
 	assert.NotContains(t, w.Body.String(), `"dev_id"`)
@@ -296,7 +296,7 @@ func TestOverviewHandler_Get_MissingOrInvalidClaimsReturns500(t *testing.T) {
 func assertNoOverviewForbiddenKeys(t *testing.T, value any) {
 	t.Helper()
 	forbidden := map[string]bool{
-		"operations": true, "newest_sync_id": true, "daemon_health": true, "conflicts": true,
+		"operations": true, "newest_sync_id": true, "conflicts": true,
 		"knowledge_growth": true, "growth": true, "sync_health_by_project": true,
 		"contributor_count": true, "correlation_id": true, "raw_activity": true,
 		"raw_memory": true, "raw_memories": true, "activity": true, "activity_feed": true,
