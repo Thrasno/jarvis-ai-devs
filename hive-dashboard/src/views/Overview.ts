@@ -138,8 +138,8 @@ export function renderOverview(state: ViewState<OverviewViewModel>): HTMLElement
   const statsRow = document.createElement('div')
   statsRow.className = 'dashboard-overview__stats'
   statsRow.append(
-    statTile({ label: totalMemories.label, value: totalMemories.displayValue ?? String(totalMemories.value), detail: totalMemories.sourceLabel, accent: '#3B82E8' }),
-    statTile({ label: activeProjects.label, value: activeProjects.displayValue ?? String(activeProjects.value), detail: activeProjects.sourceLabel, accent: '#22B85C' })
+    statTile({ label: totalMemories.label, value: totalMemories.displayValue ?? String(totalMemories.value), detail: totalMemories.sourceLabel, accent: '#3B82E8', href: '/dashboard/knowledgeBrowser', destination: 'Knowledge Browser' }),
+    statTile({ label: activeProjects.label, value: activeProjects.displayValue ?? String(activeProjects.value), detail: activeProjects.sourceLabel, accent: '#22B85C', href: '/dashboard/projects', destination: 'Projects' })
   )
 
   const row = document.createElement('div')
@@ -149,8 +149,8 @@ export function renderOverview(state: ViewState<OverviewViewModel>): HTMLElement
   if (state.data.capability === 'admin') {
     const { syncingUsers, degradedProjects, knowledgeGrowth, syncHealthByProject, syncHealthByProjectSourceLabel } = state.data
     statsRow.append(
-      statTile({ label: syncingUsers.label, value: syncHealthDisplay(syncingUsers), detail: syncingUsers.sourceLabel, accent: '#22B85C' }),
-      statTile({ label: degradedProjects.label, value: degradedProjects.displayValue ?? String(degradedProjects.value), detail: degradedProjects.sourceLabel, accent: '#E0246F' })
+      statTile({ label: syncingUsers.label, value: syncHealthDisplay(syncingUsers), detail: syncingUsers.sourceLabel, accent: '#22B85C', href: '/dashboard/userManagement', destination: 'User Management' }),
+      statTile({ label: degradedProjects.label, value: degradedProjects.displayValue ?? String(degradedProjects.value), detail: degradedProjects.sourceLabel, accent: '#E0246F', href: '/dashboard/projects?health=degraded', destination: 'degraded Projects' })
     )
     const operations = document.createElement('div')
     operations.className = 'dashboard-overview__row'
@@ -164,12 +164,12 @@ export function renderOverview(state: ViewState<OverviewViewModel>): HTMLElement
   return append(root, statsRow, row)
 }
 
-function statTile(input: { label: string; value: string; detail?: string; accent?: string }): HTMLElement {
-  const metric = document.createElement('article')
+function statTile(input: { label: string; value: string; detail?: string; accent?: string; href: string; destination: string }): HTMLElement {
+  const metric = document.createElement('a')
   metric.className = 'dashboard-metric metric'
   metric.dataset.dashboardPrimitive = 'metric'
-  metric.setAttribute('role', 'group')
-  metric.setAttribute('aria-label', input.detail ? `${input.label}: ${input.value}, ${input.detail}` : `${input.label}: ${input.value}`)
+  metric.href = input.href
+  metric.setAttribute('aria-label', `${input.label}: ${input.value}. View ${input.destination}`)
 
   // Label row with optional accent chip
   const labelRow = document.createElement('div')
