@@ -26,7 +26,7 @@ const LEGACY_GLOBAL_SEARCH_PATH = '/dashboard/globalSearch'
 const OVERVIEW_LABELS = {
   totalMemories: 'Total Memories',
   activeProjects: 'Active Projects',
-  healthyDaemons: 'Healthy Daemons',
+  syncingUsers: 'SYNCING USERS · 24H',
   degradedProjects: 'DEGRADED PROJECTS',
   knowledgeGrowth: 'Knowledge Growth'
 } as const
@@ -774,7 +774,7 @@ function overviewFromApi(response: CapabilityOverviewResponse): OverviewViewMode
   return {
     ...common,
     capability: 'admin',
-    healthyDaemons: { label: OVERVIEW_LABELS.healthyDaemons, value: operations.daemon_health.healthy, totalValue: operations.daemon_health.total, displayValue: `${operations.daemon_health.healthy}/${operations.daemon_health.total}` },
+    syncingUsers: { label: OVERVIEW_LABELS.syncingUsers, value: operations.syncing_users.syncing, totalValue: operations.syncing_users.total, displayValue: `${operations.syncing_users.syncing} / ${operations.syncing_users.total}` },
     degradedProjects: { label: OVERVIEW_LABELS.degradedProjects, value: operations.degraded_projects.degraded, totalValue: operations.degraded_projects.total, displayValue: `${operations.degraded_projects.degraded} / ${operations.degraded_projects.total}` },
     knowledgeGrowth: { label: OVERVIEW_LABELS.knowledgeGrowth, points: operations.knowledge_growth },
     syncHealthByProject: operations.sync_health_by_project.map((project) => ({ id: project.project, name: project.project, region: project.region, status: project.status === 'healthy' || project.status === 'degraded' || project.status === 'unknown' ? project.status : 'unknown', contributorCount: project.contributor_count, lastActivityLabel: relativeActivityAgeLabel(project.last_activity_at) })),

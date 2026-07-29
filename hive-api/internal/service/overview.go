@@ -10,11 +10,9 @@ import (
 )
 
 const (
-	overviewDaemonHealthyWindow = 24 * time.Hour
-	overviewWindow30d           = 30 * 24 * time.Hour
-	overviewLiveWindow          = time.Hour
-	overviewGrowthMonths        = 5
-	overviewTopProjects         = 5
+	overviewLiveWindow   = time.Hour
+	overviewGrowthMonths = 5
+	overviewTopProjects  = 5
 )
 
 // OverviewService provides aggregated dashboard metrics.
@@ -73,7 +71,7 @@ func (s *overviewService) GetForLevel(ctx context.Context, level model.UserLevel
 		Capability: model.OverviewCapabilityAdmin,
 		Summary:    summary,
 		Operations: &model.AdminOverviewOperations{
-			DaemonHealth:        stats.DaemonHealth,
+			SyncingUsers:        stats.SyncingUsers,
 			DegradedProjects:    stats.DegradedProjects,
 			KnowledgeGrowth:     growth.KnowledgeGrowth,
 			SyncHealthByProject: stats.SyncHealthByProject,
@@ -122,22 +120,31 @@ func (s *overviewService) GetStats(ctx context.Context) (*model.OverviewStatsRes
 		MostActiveProjects:  []model.ProjectCount{},
 	}
 
-	// 1. Daemon health
-	healthy, total, err := s.syncRepo.DaemonHealth(ctx, overviewDaemonHealthyWindow, overviewWindow30d)
+	// 1. User synchronization KPI.
+	now := time.Now().UTC()
+	projection, err := s.syncRepo.UserSyncProjection(ctx, now)
 	if err != nil {
 		return nil, err
 	}
-	resp.DaemonHealth = model.OverviewDaemonHealth{Healthy: healthy, Total: total}
+	for _, row := range projection.Rows {
+		if !row.IsActive {
+			continue
+		}
+		resp.SyncingUsers.Total++
+		if userSyncStatus(row, now) == model.UserSyncStatusLast24h {
+			resp.SyncingUsers.Syncing++
+		}
+	}
 
-	// 2. Canonical project health drives both the KPI and overview rows.
-	projection, err := s.syncRepo.ProjectSyncHealth(ctx)
+	// 2. Canonical project health drives the project rows.
+	projectProjection, err := s.syncRepo.ProjectSyncHealth(ctx)
 	if err != nil {
 		return nil, err
 	}
-	resp.DegradedProjects = model.OverviewDegradedProjects{Degraded: projection.Degraded, Total: projection.Total}
+	resp.DegradedProjects = model.OverviewDegradedProjects{Degraded: projectProjection.Degraded, Total: projectProjection.Total}
 
 	// 3. Sync health by project
-	for _, row := range projection.Rows {
+	for _, row := range projectProjection.Rows {
 		status := "degraded"
 		if row.LastOutcome == model.SyncAttemptOutcomeSuccess {
 			status = "healthy"

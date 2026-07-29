@@ -17,6 +17,7 @@ func startPostgresWithSyncAttempts(t *testing.T) (*pgxpool.Pool, func()) {
 	pool, cleanup := startPostgres(t)
 	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptLogsSQL))
 	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptPortalUsersSQL))
+	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptUserProjectionSQL))
 	return pool, cleanup
 }
 

@@ -147,7 +147,7 @@ function tableHeader(): HTMLElement {
   const header = document.createElement('div')
   header.className = 'dashboard-users__row dashboard-users__row--header'
   header.setAttribute('role', 'row')
-  for (const label of ['User', 'Email', 'Role', 'Admin seat', 'Status', 'Actions']) {
+  for (const label of ['User', 'Email', 'Role', 'Admin seat', 'Account status', 'Sync status', 'Last sync', 'Actions']) {
     const cell = document.createElement('div')
     cell.setAttribute('role', 'columnheader')
     cell.textContent = label
@@ -168,9 +168,22 @@ function userRow(user: User, options: UserManagementOptions): HTMLElement {
     cell(roleSwitcher(user, options)),
     cell(text(`Admin seat: ${isAdminSeat(user) ? 'yes' : 'no'}`, 'dashboard-users__seat-state')),
     cell(statusCell(user, options)),
+    cell(text(syncStatusLabel(user.sync_status), 'dashboard-users__sync-status')),
+    cell(text(lastSyncLabel(user.last_sync_at), 'dashboard-users__last-sync')),
     cell(managementControls(user, options))
   )
   return row
+}
+
+function syncStatusLabel(status: User['sync_status']): string {
+  if (status === 'last_24h') return 'Last 24h'
+  if (status === 'inactive') return 'Inactive'
+  if (status === 'unknown') return 'Unavailable'
+  return 'Never'
+}
+
+function lastSyncLabel(value: User['last_sync_at']): string {
+  return value ? new Date(value).toLocaleString() : 'Never'
 }
 
 function identityCell(user: User): HTMLElement {

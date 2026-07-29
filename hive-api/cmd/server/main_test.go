@@ -83,7 +83,7 @@ func TestWireServices_InjectsAuditRepositoryIntoAdminAndSyncServices(t *testing.
 	factories.newProjectGovernanceService = func(repository.ProjectBlockRepository, repository.AuditRepository, repository.TxManager) handler.ProjectGovernanceService {
 		return &mockProjectGovernance{}
 	}
-	factories.newAdminService = func(_ repository.UserRepository, _ repository.MemoryRepository, got repository.AuditRepository, _ repository.TxManager) handler.AdminService {
+	factories.newAdminService = func(_ repository.UserRepository, _ repository.MemoryRepository, got repository.AuditRepository, _ repository.TxManager, _ repository.SyncAttemptRepository) handler.AdminService {
 		require.Same(t, auditRepo, got)
 		return &mockAdmin{}
 	}
@@ -126,7 +126,7 @@ func TestWireServices_ProjectBlockAckWiredWhenAdminMutationDisabledByDefault(t *
 		called = true
 		return &mockProjectGovernance{}
 	}
-	factories.newAdminService = func(repository.UserRepository, repository.MemoryRepository, repository.AuditRepository, repository.TxManager) handler.AdminService {
+	factories.newAdminService = func(repository.UserRepository, repository.MemoryRepository, repository.AuditRepository, repository.TxManager, repository.SyncAttemptRepository) handler.AdminService {
 		return &mockAdmin{}
 	}
 	factories.newOverviewService = func(repository.MemoryRepository, repository.SyncAttemptRepository, repository.AuditRepository) handler.OverviewService {
@@ -200,7 +200,7 @@ func TestWireServices_WiresProjectRepositoryIntoRouterDeps(t *testing.T) {
 	factories.newProjectGovernanceService = func(repository.ProjectBlockRepository, repository.AuditRepository, repository.TxManager) handler.ProjectGovernanceService {
 		return &mockProjectGovernance{}
 	}
-	factories.newAdminService = func(repository.UserRepository, repository.MemoryRepository, repository.AuditRepository, repository.TxManager) handler.AdminService {
+	factories.newAdminService = func(repository.UserRepository, repository.MemoryRepository, repository.AuditRepository, repository.TxManager, repository.SyncAttemptRepository) handler.AdminService {
 		return &mockAdmin{}
 	}
 
@@ -234,7 +234,7 @@ func TestWireServices_WiresActivityServiceFromMemoryRepository(t *testing.T) {
 	factories.newProjectService = func(repository.ProjectRepository, repository.SyncAttemptRepository) handler.ProjectService {
 		return &mockProject{}
 	}
-	factories.newAdminService = func(repository.UserRepository, repository.MemoryRepository, repository.AuditRepository, repository.TxManager) handler.AdminService {
+	factories.newAdminService = func(repository.UserRepository, repository.MemoryRepository, repository.AuditRepository, repository.TxManager, repository.SyncAttemptRepository) handler.AdminService {
 		return &mockAdmin{}
 	}
 	factories.newProjectGovernanceService = func(repository.ProjectBlockRepository, repository.AuditRepository, repository.TxManager) handler.ProjectGovernanceService {
@@ -256,7 +256,7 @@ func TestWireServices_WiresActivityServiceFromMemoryRepository(t *testing.T) {
 func TestStartupMigrationSQLIncludesDiscoveryIndexesAfterActivityFeedIndex(t *testing.T) {
 	startupMigrations := startupMigrationSQL()
 
-	require.Len(t, startupMigrations, 15)
+	require.Len(t, startupMigrations, 16)
 	assert.Equal(t, migrations.InitialSQL, startupMigrations[0])
 	assert.Equal(t, migrations.ActivityFeedIndexSQL, startupMigrations[7])
 	assert.Equal(t, migrations.MemoryDiscoveryIndexesSQL, startupMigrations[8])
@@ -266,7 +266,7 @@ func TestStartupMigrationSQLIncludesDiscoveryIndexesAfterActivityFeedIndex(t *te
 func TestStartupMigrationSQLIncludesPullCursorIndexesAfterDiscoveryIndexes(t *testing.T) {
 	startupMigrations := startupMigrationSQL()
 
-	require.Len(t, startupMigrations, 15)
+	require.Len(t, startupMigrations, 16)
 	assert.Equal(t, migrations.PullCursorIndexesSQL, startupMigrations[9])
 	assert.Contains(t, migrations.PullCursorIndexesSQL, "idx_memories_synced_at_sync_id")
 	assert.Contains(t, migrations.PullCursorIndexesSQL, "idx_sessions_synced_at_sync_id")
@@ -275,7 +275,7 @@ func TestStartupMigrationSQLIncludesPullCursorIndexesAfterDiscoveryIndexes(t *te
 func TestStartupMigrationSQLIncludesProjectScopedPullCursorIndexesAfterLegacyPullCursorIndexes(t *testing.T) {
 	startupMigrations := startupMigrationSQL()
 
-	require.Len(t, startupMigrations, 15)
+	require.Len(t, startupMigrations, 16)
 	assert.Equal(t, migrations.ProjectScopedPullCursorIndexesSQL, startupMigrations[10])
 	assert.Contains(t, migrations.ProjectScopedPullCursorIndexesSQL, "idx_memories_project_synced_at_sync_id")
 	assert.Contains(t, migrations.ProjectScopedPullCursorIndexesSQL, "idx_sessions_project_synced_at_sync_id")
@@ -285,9 +285,12 @@ func TestStartupMigrationSQLIncludesProjectScopedPullCursorIndexesAfterLegacyPul
 func TestStartupMigrationSQLIncludesProjectBlockAckSubjectsAfterProjectBlocks(t *testing.T) {
 	startupMigrations := startupMigrationSQL()
 
-	require.Len(t, startupMigrations, 15)
+	require.Len(t, startupMigrations, 16)
 	assert.Equal(t, migrations.ProjectBlocksSQL, startupMigrations[11])
 	assert.Equal(t, migrations.ProjectBlockAckSubjectsSQL, startupMigrations[12])
 	assert.Equal(t, migrations.UserSecurityVersionSQL, startupMigrations[13])
 	assert.Contains(t, migrations.UserSecurityVersionSQL, "ADD COLUMN IF NOT EXISTS security_version BIGINT NOT NULL DEFAULT 0")
+	assert.Equal(t, migrations.SyncAttemptPortalUsersSQL, startupMigrations[14])
+	assert.Equal(t, migrations.SyncAttemptUserProjectionSQL, startupMigrations[15])
+	assert.Contains(t, migrations.SyncAttemptUserProjectionSQL, "portal_user_id, ended_at DESC, ingested_at DESC, attempt_id DESC, id DESC")
 }

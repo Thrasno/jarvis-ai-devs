@@ -25,19 +25,30 @@ describe('overview view', () => {
       expect.arrayContaining([
         'Total Memories: 22.4k',
         'Active Projects: 8',
-        'Healthy Daemons: 56% · 5/9',
+        'SYNCING USERS · 24H: 56% · 5/9',
         'DEGRADED PROJECTS: 2 / 5'
       ])
     )
   })
 
-  it('renders sync health display as "78% · 7/9" for healthyDaemons card', () => {
+  it('renders sync health display as "78% · 7/9" for syncing users card', () => {
     const fixture: OverviewFixtureViewModel = {
       ...hiveOverviewFixture,
-      healthyDaemons: { label: 'Healthy Daemons', value: 7, displayValue: '7/9' }
+      syncingUsers: { label: 'SYNCING USERS · 24H', value: 7, displayValue: '7/9' }
     }
     const view = renderOverview({ status: 'ready', data: fixture })
-    expect(getByRole(view, 'group', { name: 'Healthy Daemons: 78% · 7/9' })).toBeDefined()
+    expect(getByRole(view, 'group', { name: 'SYNCING USERS · 24H: 78% · 7/9' })).toBeDefined()
+  })
+
+  it('renders exactly 0 / 0 without a percentage for zero syncing users', () => {
+    const fixture = {
+      ...hiveOverviewFixture,
+      syncingUsers: { label: 'SYNCING USERS · 24H', value: 0, totalValue: 0, displayValue: '0 / 0' }
+    } as unknown as OverviewFixtureViewModel
+
+    const view = renderOverview({ status: 'ready', data: fixture })
+
+    expect(getByRole(view, 'group', { name: 'SYNCING USERS · 24H: 0 / 0' })).toBeDefined()
   })
 
   it('renders degraded projects from the overview fixture contract', () => {

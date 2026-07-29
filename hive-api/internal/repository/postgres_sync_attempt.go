@@ -99,40 +99,6 @@ ORDER BY started_at DESC`
 	return records, nil
 }
 
-// DaemonHealth returns healthy and total daemon counts.
-// total = distinct daemons with any attempt in totalWindow (30d).
-// healthy = daemons whose last attempt in healthyWindow (24h) was a success.
-func (r *postgresSyncAttemptRepository) DaemonHealth(ctx context.Context, healthyWindow, totalWindow time.Duration) (int, int, error) {
-	now := time.Now().UTC()
-	totalSince := now.Add(-totalWindow)
-	healthySince := now.Add(-healthyWindow)
-
-	const qTotal = `
-		SELECT COUNT(DISTINCT daemon_id)
-		FROM sync_attempt_logs
-		WHERE daemon_id <> '' AND started_at >= $1`
-
-	var total int
-	if err := r.db.QueryRow(ctx, qTotal, totalSince).Scan(&total); err != nil {
-		return 0, 0, wrapPgError(err, "DaemonHealth total")
-	}
-
-	const qHealthy = `
-		SELECT COUNT(*) FROM (
-		  SELECT DISTINCT ON (daemon_id) daemon_id, outcome
-		  FROM sync_attempt_logs
-		  WHERE daemon_id <> '' AND started_at >= $1
-		  ORDER BY daemon_id, started_at DESC
-		) t WHERE t.outcome = 'success'`
-
-	var healthy int
-	if err := r.db.QueryRow(ctx, qHealthy, healthySince).Scan(&healthy); err != nil {
-		return 0, 0, wrapPgError(err, "DaemonHealth healthy")
-	}
-
-	return healthy, total, nil
-}
-
 // SyncHealthByProject returns per-project sync health for the given window.
 func (r *postgresSyncAttemptRepository) SyncHealthByProject(ctx context.Context, window time.Duration) ([]model.ProjectSyncHealthRow, error) {
 	since := time.Now().UTC().Add(-window)
@@ -218,6 +184,51 @@ func (r *postgresSyncAttemptRepository) ProjectSyncHealth(ctx context.Context) (
 	}
 	if err := rows.Err(); err != nil {
 		return model.ProjectSyncHealthProjection{}, wrapPgError(err, "iterate ProjectSyncHealth rows")
+	}
+	return projection, nil
+}
+
+func (r *postgresSyncAttemptRepository) UserSyncProjection(ctx context.Context, now time.Time) (model.UserSyncProjection, error) {
+	const q = `
+		WITH completed_attempts AS (
+			SELECT portal_user_id, ended_at, outcome,
+				ROW_NUMBER() OVER (
+					PARTITION BY portal_user_id
+					ORDER BY ended_at DESC, ingested_at DESC, attempt_id DESC, id DESC
+				) AS latest_rank,
+				MAX(ended_at) FILTER (WHERE outcome = 'success' AND ended_at <= $1) OVER (
+					PARTITION BY portal_user_id
+				) AS latest_success_ended_at
+			FROM sync_attempt_logs
+			WHERE portal_user_id IS NOT NULL
+				AND ended_at IS NOT NULL
+		)
+		SELECT u.id::text, u.is_active, a.ended_at, a.outcome, a.latest_success_ended_at
+		FROM users u
+		LEFT JOIN completed_attempts a ON a.portal_user_id = u.id AND a.latest_rank = 1
+		ORDER BY u.id`
+
+	rows, err := r.db.Query(ctx, q, now.UTC())
+	if err != nil {
+		return model.UserSyncProjection{}, wrapPgError(err, "UserSyncProjection")
+	}
+	defer rows.Close()
+
+	projection := model.UserSyncProjection{Rows: []model.UserSyncProjectionRow{}}
+	for rows.Next() {
+		var row model.UserSyncProjectionRow
+		var outcome *string
+		if err := rows.Scan(&row.PortalUserID, &row.IsActive, &row.LatestEndedAt, &outcome, &row.LatestSuccessEndedAt); err != nil {
+			return model.UserSyncProjection{}, wrapPgError(err, "scan UserSyncProjection row")
+		}
+		if outcome != nil {
+			value := model.SyncAttemptOutcome(*outcome)
+			row.LatestOutcome = &value
+		}
+		projection.Rows = append(projection.Rows, row)
+	}
+	if err := rows.Err(); err != nil {
+		return model.UserSyncProjection{}, wrapPgError(err, "iterate UserSyncProjection rows")
 	}
 	return projection, nil
 }

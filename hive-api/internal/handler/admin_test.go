@@ -44,7 +44,7 @@ func TestListUsers_Success(t *testing.T) {
 	authSvc := &mockAuthSvc{}
 	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
 
-	users := []*model.User{{ID: "1", Username: "user1"}}
+	users := []model.AdminUserResponse{{ID: "1", Username: "user1", SyncStatus: model.UserSyncStatusNever}}
 	adminSvc := &mockAdminSvc{}
 	adminSvc.On("ListUsers", context.Background()).Return(users, nil)
 

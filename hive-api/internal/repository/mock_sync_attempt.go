@@ -33,11 +33,6 @@ func (m *MockSyncAttemptRepository) DeleteOlderThan(ctx context.Context, cutoff 
 	return args.Get(0).(int64), args.Error(1)
 }
 
-func (m *MockSyncAttemptRepository) DaemonHealth(ctx context.Context, healthyWindow, totalWindow time.Duration) (int, int, error) {
-	args := m.Called(ctx, healthyWindow, totalWindow)
-	return args.Int(0), args.Int(1), args.Error(2)
-}
-
 func (m *MockSyncAttemptRepository) SyncHealthByProject(ctx context.Context, window time.Duration) ([]model.ProjectSyncHealthRow, error) {
 	args := m.Called(ctx, window)
 	if args.Get(0) == nil {
@@ -49,4 +44,14 @@ func (m *MockSyncAttemptRepository) SyncHealthByProject(ctx context.Context, win
 func (m *MockSyncAttemptRepository) ProjectSyncHealth(ctx context.Context) (model.ProjectSyncHealthProjection, error) {
 	args := m.Called(ctx)
 	return args.Get(0).(model.ProjectSyncHealthProjection), args.Error(1)
+}
+
+func (m *MockSyncAttemptRepository) UserSyncProjection(ctx context.Context, now time.Time) (model.UserSyncProjection, error) {
+	for _, call := range m.ExpectedCalls {
+		if call.Method == "UserSyncProjection" {
+			args := m.Called(ctx, now)
+			return args.Get(0).(model.UserSyncProjection), args.Error(1)
+		}
+	}
+	return model.UserSyncProjection{Rows: []model.UserSyncProjectionRow{}}, nil
 }
