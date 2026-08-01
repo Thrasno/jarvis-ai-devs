@@ -244,6 +244,34 @@ func TestSDDOrchestrator_PreflightPromptsAndMappingsAreLocalizedAndCanonical(t *
 	}
 }
 
+func TestSDDOrchestrator_UsesNativeStructuredQuestionsWithCompleteFallbacks(t *testing.T) {
+	orchestrator := readPolicyFile(t, "embed/orchestrator/sdd-orchestrator.md")
+	preflightSection := markdownSection(t, orchestrator, "### sdd session preflight", "### review workload guard")
+	executionSection := markdownSection(t, orchestrator, "### execution mode", "#### automatic mode gatekeeper")
+
+	for _, required := range []string{
+		"native structured question tool",
+		"complete envelope",
+		"all four decision groups in one call",
+		"recommended options",
+		"fall back to the complete numbered plain-text prompt",
+	} {
+		if !strings.Contains(preflightSection, required) {
+			t.Fatalf("orchestrator native preflight contract missing %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"native structured question tool",
+		"all 3–5 questions in one call",
+		"fall back to the complete plain-text question round",
+		"headless",
+	} {
+		if !strings.Contains(executionSection, required) {
+			t.Fatalf("orchestrator native proposal-question contract missing %q", required)
+		}
+	}
+}
 
 func TestSDDOrchestrator_NativeStatusJSONIsRoutingAuthority(t *testing.T) {
 	orchestrator := readPolicyFile(t, "embed/orchestrator/sdd-orchestrator.md")

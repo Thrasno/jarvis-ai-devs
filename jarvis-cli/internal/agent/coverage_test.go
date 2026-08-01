@@ -45,7 +45,7 @@ var testTemplatesFS fs.FS = fstest.MapFS{
       "variant": {{json .OrchestratorVariant}},
 {{- end }}
       "prompt": "{file:./sdd-orchestrator.md}",
-      "permission": {"task": {"*": "deny"{{range .TaskAllows}}, {{json .}}: "allow"{{end}}}}
+      "permission": {"question": "allow", "task": {"*": "deny"{{range .TaskAllows}}, {{json .}}: "allow"{{end}}}}
     }{{if .Agents}},{{end}}
 {{- range .Agents }}
     {{json .Name}}: {
