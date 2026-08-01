@@ -1859,7 +1859,7 @@ describe('dashboard shell', () => {
       await flushDashboard()
 
       expect(api.memory).toHaveBeenCalledWith('jwt-token', 'kb-memory-1')
-      expect(container.querySelector('section h2')?.textContent).toBe('Opened memory detail')
+      expect(container.querySelector('.memory-detail h1')?.textContent).toBe('Opened memory detail')
       expect(container.textContent).toContain('Detail content from Knowledge Browser')
 
       container.querySelector<HTMLButtonElement>('button[aria-label="Back to memories"]')?.click()
@@ -1892,7 +1892,7 @@ describe('dashboard shell', () => {
       await flushDashboard()
 
       expect(api.memory).toHaveBeenCalledWith('jwt-token', 'search-memory-1')
-      expect(container.querySelector('section h2')?.textContent).toBe('Opened search memory detail')
+      expect(container.querySelector('.memory-detail h1')?.textContent).toBe('Opened search memory detail')
       expect(container.textContent).toContain('Detail content from Knowledge Browser')
 
       container.querySelector<HTMLButtonElement>('button[aria-label="Back to memories"]')?.click()
@@ -2113,7 +2113,7 @@ describe('dashboard shell', () => {
       requestedMemory.resolve(memory({ id: 'mem-detail-1', title: 'Loaded detail memory', content: 'Full detail content' }))
       await flushDashboard()
 
-      expect(container.querySelector('section h2')?.textContent).toBe('Loaded detail memory')
+      expect(container.querySelector('.memory-detail h1')?.textContent).toBe('Loaded detail memory')
       expect(container.textContent).toContain('Full detail content')
     } finally {
       cleanup()
@@ -2135,7 +2135,7 @@ describe('dashboard shell', () => {
       await flushDashboard()
 
       expect(api.memory).not.toHaveBeenCalled()
-      expect(container.querySelector('section h2')?.textContent).toBe('Memories')
+      expect(container.querySelector('.memory-detail h1')?.textContent).toBe('Memories')
       expect(container.querySelector('[role="alert"]')?.textContent).toContain('Malformed memory ID')
       expect(container.textContent).not.toContain('Memory detail is unavailable')
     } finally {
@@ -2239,7 +2239,7 @@ describe('dashboard shell', () => {
     const cleanup = startDashboardApp(container, { api, session })
     try {
       await flushDashboard()
-      expect(container.querySelector('section h2')?.textContent).toBe('Loaded detail memory')
+      expect(container.querySelector('.memory-detail h1')?.textContent).toBe('Loaded detail memory')
 
       container.querySelector<HTMLButtonElement>('button[aria-label="Back to memories"]')?.click()
       await flushDashboard()
@@ -2279,7 +2279,7 @@ describe('dashboard shell', () => {
     const cleanup = startDashboardApp(container, { api, session })
     try {
       await flushDashboard()
-      expect(container.querySelector('section h2')?.textContent).toBe('Loaded detail memory')
+      expect(container.querySelector('.memory-detail h1')?.textContent).toBe('Loaded detail memory')
 
       container.querySelector<HTMLButtonElement>('button[aria-label="Back to memories"]')?.click()
       await flushDashboard()
@@ -2306,7 +2306,7 @@ describe('dashboard shell', () => {
     const cleanup = startDashboardApp(container, { api, session })
     try {
       await flushDashboard()
-      expect(container.querySelector('section h2')?.textContent).toBe('Loaded detail memory')
+      expect(container.querySelector('.memory-detail h1')?.textContent).toBe('Loaded detail memory')
 
       container.querySelector<HTMLButtonElement>('button[aria-label="Back to memories"]')?.click()
       await flushDashboard()
@@ -2331,9 +2331,9 @@ describe('dashboard shell', () => {
       routePath: '/dashboard/memories/gateway-auth-boundary'
     })
 
-    expect(container.querySelector('section h2')?.textContent).toBe('Gateway memory detail')
+    expect(container.querySelector('.memory-detail h1')?.textContent).toBe('Gateway memory detail')
     expect(container.querySelector('[data-coming-soon]')).toBeNull()
-    expect(container.textContent).toContain('Memory ID: gateway-auth-boundary')
+    expect(container.querySelector('details')?.textContent).toContain('Memory IDgateway-auth-boundary')
   })
 
   it('shows memory detail loading independently from the memories list state', () => {
@@ -2345,7 +2345,7 @@ describe('dashboard shell', () => {
 
       renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard, routePath: '/dashboard/memories/gateway-auth-boundary' })
 
-      expect(container.querySelector('section h2')?.textContent).toBe('Memories')
+      expect(container.querySelector('.memory-detail h1')?.textContent).toBe('Memories')
       expect(container.querySelector('[role="status"]')?.textContent).toBe('Loading memory gateway-auth-boundary…')
       expect(container.textContent).not.toContain('Loading memories…')
       expect(container.textContent).not.toContain('memories unavailable')
@@ -2357,7 +2357,7 @@ describe('dashboard shell', () => {
 
     expect(() => renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath: '/dashboard/memories/%E0%A4%A' })).not.toThrow()
 
-    expect(container.querySelector('section h2')?.textContent).toBe('Memories')
+    expect(container.querySelector('.memory-detail h1')?.textContent).toBe('Memories')
     expect(container.querySelector('[data-coming-soon]')).toBeNull()
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('Malformed memory ID')
   })
@@ -2368,7 +2368,7 @@ describe('dashboard shell', () => {
 
       renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user: adminUser }, actions: { onLogin: vi.fn(), onLogout: vi.fn() }, dashboard: dashboardState(), routePath })
 
-      expect(container.querySelector('section h2')?.textContent).toBe('Memories')
+      expect(container.querySelector('.memory-detail h1')?.textContent).toBe('Memories')
       expect(container.querySelector('[role="status"]')?.textContent).toContain('Loading memory')
       expect(container.textContent).not.toContain('Users')
       expect(container.textContent).not.toContain('Audit Sync')

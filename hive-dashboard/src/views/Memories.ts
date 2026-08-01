@@ -1,5 +1,6 @@
 import type { Memory, MemoryList, MemorySearch } from '../api/client'
 import { append, control, error, list, panel, text } from '../components/dom'
+import { markdownViewer } from '../components/MarkdownViewer'
 import type { ViewState } from './Overview'
 
 export type MemoryDetailRoute =
@@ -37,26 +38,36 @@ function describe(memories: Memory[]): string[] {
 function renderMemoryDetail(options: MemoriesViewOptions): HTMLElement {
   const route = options.detailRoute
   const detail = options.detail
-  const title = detail?.status === 'ready' ? detail.data.memory.title : 'Memories'
-  const card = panel(title)
-  card.append(backButton(options.onBackToMemories))
+  const page = document.createElement('section')
+  page.className = 'memory-detail'
+  page.append(backButton(options.onBackToMemories))
 
-  if (!route || route.kind === 'none') return card
-  if (route.kind === 'malformed') return detailError(card, 'Malformed memory ID. Open a valid memory link from Search or Knowledge Browser.')
-  if (!detail || detail.status === 'loading') return append(card, statusText(`Loading memory ${route.id}…`))
-  if (detail.status === 'error') return detailError(card, detail.message)
+  if (!route || route.kind === 'none') return append(page, detailStateTitle())
+  if (route.kind === 'malformed') return detailError(append(page, detailStateTitle()), 'Malformed memory ID. Open a valid memory link from Search or Knowledge Browser.')
+  if (!detail || detail.status === 'loading') return append(page, detailStateTitle(), statusText(`Loading memory ${route.id}…`))
+  if (detail.status === 'error') return detailError(append(page, detailStateTitle()), detail.message)
 
   const memory = detail.data.memory
-  return append(card,
-    text(memory.content),
-    detailList(memory),
-    optionalList(memory.tags, 'Tag'),
-    optionalList(memory.files_affected, 'File')
-  )
+  const header = memoryHeader(memory)
+  const content = document.createElement('main')
+  content.className = 'memory-detail__document'
+  content.append(memory.content ? markdownViewer(memory.content, `${memory.title} content`) : statusText('This memory has no content.'))
+
+  const layout = document.createElement('div')
+  layout.className = 'memory-detail__layout'
+  layout.append(content, memoryDetails(memory))
+  return append(page, header, layout)
+}
+
+function detailStateTitle(): HTMLHeadingElement {
+  const title = document.createElement('h1')
+  title.textContent = 'Memories'
+  return title
 }
 
 function backButton(onBackToMemories?: () => void): HTMLButtonElement {
-  const button = control('Back to memories')
+  const button = control('← Back to memories')
+  button.className = 'memory-detail__back'
   button.setAttribute('aria-label', 'Back to memories')
   button.addEventListener('click', () => onBackToMemories?.())
   return button
@@ -76,27 +87,140 @@ function detailError<T extends HTMLElement>(root: T, message: string): T {
   return root
 }
 
-function detailList(memory: Memory): HTMLElement {
-  const items = [
-    `Project: ${memory.project}`,
-    `Category: ${memory.category}`,
-    `Created by: ${memory.created_by}`,
-    `Created: ${memory.created_at}`,
-    `Updated: ${memory.updated_at}`,
-    memory.synced_at ? `Synced: ${memory.synced_at}` : '',
-    `Sync ID: ${memory.sync_id}`,
-    `Memory ID: ${memory.id}`
-  ].filter(Boolean)
-  return list(items)
+function memoryHeader(memory: Memory): HTMLElement {
+  const header = document.createElement('header')
+  header.className = 'memory-detail__header'
+
+  const badges = document.createElement('div')
+  badges.className = 'memory-detail__badges'
+  badges.append(badge(memory.category), badge(memory.project))
+
+  const title = document.createElement('h1')
+  title.textContent = memory.title
+
+  const context = document.createElement('p')
+  context.className = 'memory-detail__context'
+  context.append(`By ${memory.created_by} · Created `, dateTime(memory.created_at), ' · Updated ', dateTime(memory.updated_at))
+
+  const actions = document.createElement('div')
+  actions.className = 'memory-detail__actions'
+  const feedback = document.createElement('p')
+  feedback.className = 'memory-detail__copy-feedback'
+  feedback.setAttribute('aria-live', 'polite')
+  actions.append(copyButton('Copy Markdown', memory.content, 'Markdown', feedback), copyButton('Copy link', window.location.href, 'Link', feedback), feedback)
+
+  return append(header, badges, title, context, actions)
 }
 
-function optionalList(values: readonly string[], label: string): HTMLElement {
-  const items = values.filter(Boolean).map((value) => `${label}: ${value}`)
-  const node = document.createElement('ul')
-  for (const item of items) {
-    const li = document.createElement('li')
-    li.textContent = item
-    node.append(li)
-  }
+function badge(value: string): HTMLElement {
+  const node = document.createElement('span')
+  node.className = 'memory-detail__badge'
+  node.textContent = value
   return node
+}
+
+function dateTime(value: string): HTMLTimeElement {
+  const node = document.createElement('time')
+  node.dateTime = value
+  const parsed = new Date(value)
+  node.textContent = Number.isNaN(parsed.getTime()) ? value : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(parsed)
+  return node
+}
+
+function memoryDetails(memory: Memory): HTMLElement {
+  const aside = document.createElement('aside')
+  aside.className = 'memory-detail__aside'
+  aside.setAttribute('aria-labelledby', 'memory-details-title')
+  const title = document.createElement('h2')
+  title.id = 'memory-details-title'
+  title.textContent = 'Memory Details'
+  const metadata = document.createElement('dl')
+  metadata.append(
+    metadataItem('Project', memory.project),
+    metadataItem('Category', memory.category),
+    metadataItem('Author', memory.created_by),
+    metadataItem('Created', dateTime(memory.created_at)),
+    metadataItem('Updated', dateTime(memory.updated_at)),
+    metadataItem('Synced', memory.synced_at ? dateTime(memory.synced_at) : 'Not synced')
+  )
+  return append(aside, title, metadata, valuesSection('Tags', memory.tags, 'memory-detail__tag', 'No tags'), valuesSection('Affected files', memory.files_affected, 'memory-detail__file', 'No affected files'), identifiers(memory))
+}
+
+function metadataItem(label: string, value: string | HTMLElement): DocumentFragment {
+  const fragment = document.createDocumentFragment()
+  const term = document.createElement('dt')
+  term.textContent = label
+  const description = document.createElement('dd')
+  description.append(value)
+  fragment.append(term, description)
+  return fragment
+}
+
+function valuesSection(titleText: string, values: readonly string[], itemClass: string, emptyText: string): HTMLElement {
+  const section = document.createElement('section')
+  const title = document.createElement('h3')
+  title.textContent = titleText
+  const list = document.createElement('ul')
+  list.className = `${itemClass}-list`
+  const visibleValues = values.filter(Boolean)
+  for (const value of visibleValues) {
+    const li = document.createElement('li')
+    li.className = itemClass
+    li.textContent = value
+    list.append(li)
+  }
+  if (visibleValues.length === 0) {
+    const empty = document.createElement('li')
+    empty.className = 'dashboard-state'
+    empty.textContent = emptyText
+    list.append(empty)
+  }
+  return append(section, title, list)
+}
+
+function identifiers(memory: Memory): HTMLDetailsElement {
+  const disclosure = document.createElement('details')
+  const summary = document.createElement('summary')
+  summary.textContent = 'Technical identifiers'
+  const values = document.createElement('dl')
+  values.append(metadataItem('Memory ID', memory.id), metadataItem('Sync ID', memory.sync_id))
+  disclosure.append(summary, values)
+  return disclosure
+}
+
+function copyButton(label: string, value: string, subject: string, feedback: HTMLElement): HTMLButtonElement {
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = 'memory-detail__copy'
+  button.textContent = label
+  button.addEventListener('click', () => {
+    void copyText(value).then((copied) => {
+      feedback.setAttribute('role', copied ? 'status' : 'alert')
+      feedback.textContent = copied ? `${subject} copied.` : `Could not copy ${subject.toLowerCase()}.`
+    })
+  })
+  return button
+}
+
+async function copyText(value: string): Promise<boolean> {
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable')
+    await navigator.clipboard.writeText(value)
+    return true
+  } catch {
+    const field = document.createElement('textarea')
+    field.value = value
+    field.setAttribute('readonly', '')
+    field.style.position = 'fixed'
+    field.style.opacity = '0'
+    document.body.append(field)
+    field.select()
+    try {
+      return document.execCommand?.('copy') === true
+    } catch {
+      return false
+    } finally {
+      field.remove()
+    }
+  }
 }
