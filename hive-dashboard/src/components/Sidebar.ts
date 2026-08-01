@@ -59,20 +59,6 @@ export function navIconForScreen(screenId: DashboardScreenKey, active: boolean):
   return `<svg class="dashboard-nav-icon" ${baseAttrs}>${shapes}</svg>`
 }
 
-/**
- * Returns the role pill color tokens for a given role.
- */
-function rolePillStyle(role: string): { border: string; bg: string; color: string } {
-  if (role === 'admin') {
-    return { border: 'rgba(224,36,111,0.4)', bg: 'rgba(224,36,111,0.12)', color: '#E0246F' }
-  }
-  if (role === 'member') {
-    return { border: 'rgba(59,130,232,0.4)', bg: 'rgba(59,130,232,0.12)', color: '#3B82E8' }
-  }
-  // viewer / unknown
-  return { border: 'rgba(139,151,168,0.35)', bg: 'rgba(139,151,168,0.08)', color: '#8B97A8' }
-}
-
 export function renderSidebar(container: HTMLElement, props: SidebarProps): void {
   container.replaceChildren()
 
@@ -142,12 +128,18 @@ export function renderSidebar(container: HTMLElement, props: SidebarProps): void
 
   sidebar.append(nav)
 
-  renderProfileBlock(sidebar, { profile: props.profile, onLogout: props.onLogout, onNavigate: props.onNavigate })
+  renderProfileBlock(sidebar, {
+    currentPath: props.currentPath,
+    profile: props.profile,
+    onLogout: props.onLogout,
+    onNavigate: props.onNavigate
+  })
 
   container.append(sidebar)
 }
 
 type ProfileBlockProps = {
+  readonly currentPath: string
   readonly profile: CurrentProfileViewModel
   readonly onLogout: () => void
   readonly onNavigate: (path: string) => void
@@ -174,61 +166,62 @@ function renderProfileBlock(container: HTMLElement, props: ProfileBlockProps): v
   const textCol = document.createElement('div')
   textCol.className = 'dashboard-sidebar__profile-text'
 
+  const identity = document.createElement('div')
+  identity.className = 'dashboard-sidebar__profile-identity'
+
   const name = document.createElement('p')
   name.className = 'dashboard-sidebar__profile-name'
   name.textContent = props.profile.name
+
+  const rolePill = document.createElement('span')
+  rolePill.className = 'dashboard-sidebar__role-pill'
+  rolePill.dataset.sidebarRolePill = ''
+  rolePill.dataset.userRole = props.profile.role
+  rolePill.textContent = props.profile.role
+  identity.append(name, rolePill)
 
   const email = document.createElement('p')
   email.className = 'dashboard-sidebar__profile-email'
   email.textContent = props.profile.email
 
-  textCol.append(name, email)
+  textCol.append(identity, email)
   profileRow.append(avatar, textCol)
+
+  const actionsRow = document.createElement('div')
+  actionsRow.className = 'dashboard-sidebar__profile-actions'
+
   const accountLink = document.createElement('a')
   accountLink.href = '/dashboard/account'
-  accountLink.textContent = 'Account'
+  accountLink.className = 'dashboard-sidebar__account'
+  accountLink.dataset.sidebarAction = 'account'
   accountLink.setAttribute('aria-label', 'Account')
+  if (props.currentPath === '/dashboard/account') {
+    accountLink.classList.add('dashboard-sidebar__account--active')
+    accountLink.setAttribute('aria-current', 'page')
+  }
+
+  const accountIcon = document.createElement('span')
+  accountIcon.className = 'dashboard-sidebar__account-icon'
+  accountIcon.setAttribute('aria-hidden', 'true')
+  accountIcon.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5" r="2.5"/><path d="M3.5 13c.5-2.4 2-3.6 4.5-3.6s4 1.2 4.5 3.6"/></svg>'
+  const accountLabel = document.createElement('span')
+  accountLabel.textContent = 'Account'
+  accountLink.append(accountIcon, accountLabel)
   accountLink.addEventListener('click', (event) => {
     event.preventDefault()
     props.onNavigate('/dashboard/account')
   })
-  block.append(profileRow, accountLink)
-
-  // Footer row: role pill (left) + logout link (right)
-  const footerRow = document.createElement('div')
-  footerRow.className = 'dashboard-sidebar__profile-footer'
-
-  // Role pill
-  const roleStyle = rolePillStyle(props.profile.role)
-  const rolePill = document.createElement('span')
-  rolePill.className = 'dashboard-sidebar__role-pill'
-  rolePill.dataset.sidebarRolePill = ''
-  rolePill.textContent = props.profile.role
-  rolePill.style.cssText = [
-    `font-family:var(--dashboard-font-mono)`,
-    `font-size:10.5px`,
-    `text-transform:uppercase`,
-    `letter-spacing:0.08em`,
-    `padding:3px 9px`,
-    `border-radius:6px`,
-    `border:1px solid ${roleStyle.border}`,
-    `background:${roleStyle.bg}`,
-    `color:${roleStyle.color}`
-  ].join(';')
-
-  // Logout link
-  const logoutLink = document.createElement('a')
-  logoutLink.href = '#'
-  logoutLink.className = 'dashboard-sidebar__logout'
-  logoutLink.dataset.sidebarAction = 'logout'
-  logoutLink.textContent = props.profile.logoutLabel
-  logoutLink.addEventListener('click', (event) => {
-    event.preventDefault()
+  const logoutButton = document.createElement('button')
+  logoutButton.type = 'button'
+  logoutButton.className = 'dashboard-sidebar__logout'
+  logoutButton.dataset.sidebarAction = 'logout'
+  logoutButton.textContent = props.profile.logoutLabel
+  logoutButton.addEventListener('click', () => {
     props.onLogout()
   })
 
-  footerRow.append(rolePill, logoutLink)
-  block.append(footerRow)
+  actionsRow.append(accountLink, logoutButton)
+  block.append(profileRow, actionsRow)
 
   container.append(block)
 }

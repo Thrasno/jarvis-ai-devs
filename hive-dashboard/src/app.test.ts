@@ -2964,12 +2964,12 @@ function fakeSessionStore(initial: ReturnType<SessionStore['getState']>): Sessio
   }
 }
 
-it('exposes the separate Account link to both Member and Admin profiles', () => {
+it('exposes Account navigation and Logout action to both Member and Admin profiles', () => {
 for (const user of [memberUser, adminUser]) {
 const container = document.createElement('main')
 renderApp({ container, state: { status: 'authenticated', token: 'jwt-token', user }, actions: { onLogin: vi.fn(), onLogout: vi.fn() } })
 expect(container.querySelector<HTMLAnchorElement>('a[aria-label="Account"]')?.getAttribute('href')).toBe('/dashboard/account')
-expect(container.querySelector('a[data-sidebar-action="logout"]')).not.toBeNull()
+expect(container.querySelector('button[type="button"][data-sidebar-action="logout"]')).not.toBeNull()
 }
 })
 
