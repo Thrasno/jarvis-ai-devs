@@ -575,15 +575,21 @@ func TestMemSessionEnd_ClearsActivityTracker(t *testing.T) {
 
 // ─── mem_save lazy fallback (T2.4) ────────────────────────────────────────
 
-func TestMemSave_WithoutSessionID_CallsEnsureManualSaveSession(t *testing.T) {
-	var ensureCalled bool
+func TestMemSave_WithoutSessionID_UsesAtomicManualSessionSave(t *testing.T) {
+	var atomicSaveCalled bool
 	var savedSessionID string
 	store := &mockStore{
 		ensureManualSaveSessionFn: func(project string) (string, error) {
-			ensureCalled = true
-			return "manual-save-" + project, nil
+			t.Fatalf("EnsureManualSaveSession called for %q", project)
+			return "", nil
 		},
 		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			t.Fatalf("SaveMemory called for no-session save")
+			return 0, nil
+		},
+		saveMemoryWithManualSessionFn: func(m *models.Memory) (int64, error) {
+			atomicSaveCalled = true
+			m.SessionID = "manual-save-" + m.Project
 			savedSessionID = m.SessionID
 			return 1, nil
 		},
@@ -601,8 +607,8 @@ func TestMemSave_WithoutSessionID_CallsEnsureManualSaveSession(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("expected success, got error: %s", textContent(t, res))
 	}
-	if !ensureCalled {
-		t.Error("EnsureManualSaveSession should be called when session_id is absent")
+	if !atomicSaveCalled {
+		t.Error("SaveMemoryWithManualSession should be called when session_id is absent")
 	}
 	if savedSessionID != "manual-save-jarvis-dev" {
 		t.Errorf("SaveMemory called with SessionID=%q, want 'manual-save-jarvis-dev'", savedSessionID)
@@ -1865,15 +1871,21 @@ func TestMemGetObservation_MissingID_ReturnsError(t *testing.T) {
 
 // ─── mem_session_summary lazy fallback (T2.6) ─────────────────────────────
 
-func TestMemSessionSummary_WithoutSessionID_CallsEnsureManualSave(t *testing.T) {
-	var ensureCalled bool
+func TestMemSessionSummary_WithoutSessionID_UsesAtomicManualSessionSave(t *testing.T) {
+	var atomicSaveCalled bool
 	var savedSessionID string
 	store := &mockStore{
 		ensureManualSaveSessionFn: func(project string) (string, error) {
-			ensureCalled = true
-			return "manual-save-" + project, nil
+			t.Fatalf("EnsureManualSaveSession called for %q", project)
+			return "", nil
 		},
 		saveMemoryFn: func(m *models.Memory) (int64, error) {
+			t.Fatalf("SaveMemory called for no-session summary")
+			return 0, nil
+		},
+		saveMemoryWithManualSessionFn: func(m *models.Memory) (int64, error) {
+			atomicSaveCalled = true
+			m.SessionID = "manual-save-" + m.Project
 			savedSessionID = m.SessionID
 			return 10, nil
 		},
@@ -1889,8 +1901,8 @@ func TestMemSessionSummary_WithoutSessionID_CallsEnsureManualSave(t *testing.T) 
 	if res.IsError {
 		t.Fatalf("expected success, got error: %s", textContent(t, res))
 	}
-	if !ensureCalled {
-		t.Error("EnsureManualSaveSession should be called when session_id is absent")
+	if !atomicSaveCalled {
+		t.Error("SaveMemoryWithManualSession should be called when session_id is absent")
 	}
 	if savedSessionID != "manual-save-jarvis-dev" {
 		t.Errorf("SessionID = %q, want 'manual-save-jarvis-dev'", savedSessionID)
