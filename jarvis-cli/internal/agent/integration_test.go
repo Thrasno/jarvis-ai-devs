@@ -1308,6 +1308,9 @@ func TestOpenCodeJSONTemplate_OrchestratorPromptUsesFileInjection(t *testing.T) 
 	if strings.Contains(template, "Read and follow") {
 		t.Errorf("opencode.json.tmpl must not contain old prose prompt 'Read and follow'")
 	}
+	if !strings.Contains(template, `"permission": {"question": "allow", "task":`) {
+		t.Errorf("opencode.json.tmpl sdd-orchestrator must allow the native question tool, got template:\n%s", template)
+	}
 }
 
 func TestGeneratedRuntimeAcceptance_RenderedArtifactsProveGuardrails(t *testing.T) {
@@ -1386,7 +1389,11 @@ func TestGeneratedRuntimeAcceptance_ConfigArtifactsProveRolloutSafety(t *testing
 	if orchestrator["mode"] != "primary" {
 		t.Fatalf("sdd-orchestrator mode = %v, want primary", orchestrator["mode"])
 	}
-	taskPerm := orchestrator["permission"].(map[string]any)["task"].(map[string]any)
+	orchestratorPerm := orchestrator["permission"].(map[string]any)
+	if orchestratorPerm["question"] != "allow" {
+		t.Fatalf("sdd-orchestrator question permission = %v, want allow", orchestratorPerm["question"])
+	}
+	taskPerm := orchestratorPerm["task"].(map[string]any)
 	if taskPerm["sdd-orchestrator"] == "allow" {
 		t.Fatal("sdd-orchestrator must not allow task delegation to itself")
 	}

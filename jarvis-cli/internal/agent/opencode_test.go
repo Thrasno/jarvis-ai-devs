@@ -468,7 +468,11 @@ func TestOpenCodeAgent_MergeGeneratedConfig_RendersTopologyPermissionsAndPreserv
 	if orchestrator["model"] != "openai/gpt-5.1-codex-max" {
 		t.Fatalf("sdd-orchestrator model = %v, want provider-qualified runtime assignment", orchestrator["model"])
 	}
-	taskPerm := orchestrator["permission"].(map[string]any)["task"].(map[string]any)
+	orchestratorPerm := orchestrator["permission"].(map[string]any)
+	if orchestratorPerm["question"] != "allow" {
+		t.Fatalf("sdd-orchestrator question permission = %v, want allow", orchestratorPerm["question"])
+	}
+	taskPerm := orchestratorPerm["task"].(map[string]any)
 	if taskPerm["*"] != "deny" || taskPerm["sdd-apply"] != "allow" || taskPerm["jd-judge-a"] != "allow" {
 		t.Fatalf("unexpected orchestrator task permission: %#v", taskPerm)
 	}
