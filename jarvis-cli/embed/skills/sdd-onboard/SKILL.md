@@ -54,7 +54,9 @@ Criteria for a good onboarding change:
     └── A TODO or FIXME comment in the code with clear intent
 ```
 
-Present 2-3 options to the user. Let them choose or suggest their own.
+For every guided choice point in this onboarding flow, use the harness's native structured question tool when it is available and can represent the complete envelope: the full prompt, every choice and description, single- or multi-select behavior as required, and a custom answer. If the tool is unavailable, rejects questions because no interactive client is attached, or cannot represent the complete envelope, use the complete plain-text fallback without dropping options. Never emit both forms in the same attempt.
+
+Present 2-3 options to the user through that native structured question tool. Let them choose or suggest their own. The complete plain-text fallback must include all 2-3 options and the invitation to suggest another.
 
 ### Phase 2: Explore (narrated)
 
@@ -86,7 +88,7 @@ Create the change folder and write `proposal.md` following `sdd-propose` format.
  this tells the next step exactly which spec files to create."
 ```
 
-Show the user the proposal and let them review it. Ask if they want to adjust anything before continuing.
+Show the user the proposal and let them review it. Ask if they want to adjust anything before continuing, using the native structured question tool and complete plain-text fallback contract above.
 
 ### Phase 4: Specs (narrated)
 

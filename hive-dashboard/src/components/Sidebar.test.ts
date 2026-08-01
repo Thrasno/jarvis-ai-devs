@@ -102,25 +102,28 @@ describe('Sidebar', () => {
 })
 
 describe('Sidebar profile block', () => {
-  it('shows initials avatar, email, and role badge for a member user', () => {
+  it.each(['admin', 'member', 'viewer'] as const)('keeps the %s role token aligned on the avatar and compact role pill', (role) => {
     const container = document.createElement('div')
     const profile = {
       initials: 'A',
       name: 'alice',
       email: 'alice@example.com',
-      role: 'member' as const,
+      role,
       logoutLabel: 'Sign out'
     }
 
-    renderSidebar(container, { ...baseProps, userLevel: 'member', profile, onLogout: vi.fn() })
+    renderSidebar(container, { ...baseProps, userLevel: role, profile, onLogout: vi.fn() })
 
     const profileBlock = container.querySelector('[data-sidebar-profile]')
     const avatar = container.querySelector('.dashboard-sidebar__profile-avatar')
+    const rolePill = container.querySelector('[data-sidebar-role-pill]')
     expect(profileBlock).not.toBeNull()
-    expect(avatar?.getAttribute('data-user-role')).toBe('member')
+    expect(avatar?.getAttribute('data-user-role')).toBe(role)
+    expect(rolePill?.getAttribute('data-user-role')).toBe(role)
+    expect(rolePill?.getAttribute('style')).toBeNull()
     expect(profileBlock?.textContent).toContain('A')
     expect(profileBlock?.textContent).toContain('alice@example.com')
-    expect(profileBlock?.textContent).toContain('member')
+    expect(profileBlock?.textContent).toContain(role)
   })
 
   it('shows display name when provided instead of raw email prefix', () => {
@@ -149,6 +152,16 @@ describe('Sidebar profile block', () => {
     expect(logoutControl).not.toBeNull()
     logoutControl!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(onLogout).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders role beside the name and keeps the email truncation hook', () => {
+    const container = document.createElement('div')
+    renderSidebar(container, { ...baseProps })
+
+    const identity = container.querySelector('.dashboard-sidebar__profile-identity')
+    expect(identity?.querySelector('.dashboard-sidebar__profile-name')).not.toBeNull()
+    expect(identity?.querySelector('[data-sidebar-role-pill]')).not.toBeNull()
+    expect(container.querySelector('.dashboard-sidebar__profile-email')).not.toBeNull()
   })
 })
 
@@ -207,7 +220,7 @@ describe('Sidebar nav icons', () => {
   })
 })
 
-describe('Sidebar profile footer', () => {
+describe('Sidebar profile actions', () => {
   it('renders a role pill with the user role text', () => {
     const container = document.createElement('div')
     renderSidebar(container, { ...baseProps, userLevel: 'admin' })
@@ -217,22 +230,40 @@ describe('Sidebar profile footer', () => {
     expect(rolePill?.textContent).toContain('admin')
   })
 
-  it('renders logout as a link element (not a button)', () => {
+  it('renders Account as navigation and Logout as a button action', () => {
     const container = document.createElement('div')
     renderSidebar(container, { ...baseProps })
 
+    const accountControl = container.querySelector('[data-sidebar-action="account"]')
     const logoutControl = container.querySelector('[data-sidebar-action="logout"]')
+    expect(accountControl?.tagName.toLowerCase()).toBe('a')
+    expect(accountControl?.getAttribute('href')).toBe('/dashboard/account')
     expect(logoutControl).not.toBeNull()
-    expect(logoutControl?.tagName.toLowerCase()).toBe('a')
+    expect(logoutControl?.tagName.toLowerCase()).toBe('button')
+    expect(logoutControl?.getAttribute('type')).toBe('button')
+    expect(logoutControl?.getAttribute('href')).toBeNull()
   })
 
-  it('does not render a large filled logout button', () => {
+  it('renders only Account and Logout in the lower action row', () => {
     const container = document.createElement('div')
     renderSidebar(container, { ...baseProps })
 
-    // The old button.dashboard-control.dashboard-sidebar__logout should no longer exist
-    const oldButton = container.querySelector('button.dashboard-sidebar__logout')
-    expect(oldButton).toBeNull()
+    const actions = container.querySelector('.dashboard-sidebar__profile-actions')
+    expect(actions?.children).toHaveLength(2)
+    expect(actions?.querySelector('[data-sidebar-role-pill]')).toBeNull()
+  })
+
+  it('marks Account active only on the account route and navigates once', () => {
+    const container = document.createElement('div')
+    const onNavigate = vi.fn()
+    renderSidebar(container, { ...baseProps, currentPath: '/dashboard/account', onNavigate })
+
+    const accountControl = container.querySelector<HTMLAnchorElement>('[data-sidebar-action="account"]')
+    expect(accountControl?.classList.contains('dashboard-sidebar__account--active')).toBe(true)
+    expect(accountControl?.getAttribute('aria-current')).toBe('page')
+    accountControl?.click()
+    expect(onNavigate).toHaveBeenCalledTimes(1)
+    expect(onNavigate).toHaveBeenCalledWith('/dashboard/account')
   })
 
   it('profile row contains hex avatar, name, and email', () => {

@@ -76,21 +76,37 @@ describe('ActivityFeed', () => {
     ])
   })
 
-  it('renders Load More from nextCursor and exposes loading and pagination error states', () => {
+  it('renders compact pagination copy and prevents duplicate requests immediately', () => {
     const onLoadMore = vi.fn()
     const { element } = renderActivityFeed(ready(feed({ nextCursor: 'cursor-2' })), { onNavigate: vi.fn(), onLoadMore })
     const button = element.querySelector<HTMLButtonElement>('button[data-load-more-activity]')
 
-    expect(button?.textContent).toBe('Load More')
+    expect(button?.type).toBe('button')
+    expect(button?.classList.contains('dashboard-activity-feed__load-more')).toBe(true)
+    expect(button?.textContent).toBe('Load older activity ↓')
+    button?.click()
     button?.click()
     expect(onLoadMore).toHaveBeenCalledTimes(1)
+    expect(button?.disabled).toBe(true)
+    expect(button?.getAttribute('aria-disabled')).toBe('true')
+  })
 
+  it('exposes loading progress and preserves pagination error retry', () => {
+    const onLoadMore = vi.fn()
     const loading = renderActivityFeed(ready(feed({ nextCursor: 'cursor-2', loadingMore: true })), { onNavigate: vi.fn(), onLoadMore }).element
-    expect(loading.querySelector<HTMLButtonElement>('button[data-load-more-activity]')?.disabled).toBe(true)
-    expect(loading.querySelector<HTMLButtonElement>('button[data-load-more-activity]')?.textContent).toBe('Loading more…')
+    const loadingButton = loading.querySelector<HTMLButtonElement>('button[data-load-more-activity]')
+    expect(loadingButton?.disabled).toBe(true)
+    expect(loadingButton?.getAttribute('aria-busy')).toBe('true')
+    expect(loadingButton?.textContent).toBe('Loading older activity…')
+    expect(loadingButton?.getAttribute('aria-label')).toBe('Loading older activity…')
+    expect(loadingButton?.querySelector('[role="progressbar"]')).not.toBeNull()
 
     const failed = renderActivityFeed(ready(feed({ nextCursor: 'cursor-2', paginationError: 'next page failed' })), { onNavigate: vi.fn(), onLoadMore }).element
     expect(failed.querySelector('[role="alert"]')?.textContent).toContain('next page failed')
+    const retry = failed.querySelector<HTMLButtonElement>('button[data-load-more-activity]')
+    expect(retry?.disabled).toBe(false)
+    retry?.click()
+    expect(onLoadMore).toHaveBeenCalledTimes(1)
   })
 })
 

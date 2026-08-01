@@ -263,6 +263,47 @@ func TestCatalogContract_SDDExploreHiveTopicAgreesAcrossSharedContractAndPhaseSk
 	}
 }
 
+func TestCatalogContract_SDDQuestionFlowsPreferNativeUIWithCompleteFallbacks(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		path     string
+		required []string
+	}{
+		{
+			path: "embed/skills/sdd-propose/SKILL.md",
+			required: []string{
+				"native structured question tool",
+				"complete envelope",
+				"all 3–5 questions in one call",
+				"complete plain-text question round",
+				"Headless / CI fallback",
+			},
+		},
+		{
+			path: "embed/skills/sdd-onboard/SKILL.md",
+			required: []string{
+				"native structured question tool",
+				"complete envelope",
+				"complete plain-text fallback",
+				"Present 2-3 options",
+				"Ask if they want to adjust anything before continuing",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			content := readEmbeddedSkillAsset(t, tt.path)
+			for _, required := range tt.required {
+				if !strings.Contains(content, required) {
+					t.Fatalf("expected %s to contain %q", tt.path, required)
+				}
+			}
+		})
+	}
+}
+
 func TestCatalogContract_SDDExploreOpenSpecPathAgreesWithRuntimeSourceConvention(t *testing.T) {
 	t.Parallel()
 
