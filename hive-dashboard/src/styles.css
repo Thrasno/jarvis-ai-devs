@@ -378,6 +378,37 @@ button:disabled, .dashboard-control:disabled { cursor: not-allowed; opacity: .55
 header { margin-bottom: 1rem; }
 a { color: var(--dashboard-accent); }
 
+.dashboard-markdown {
+  color: var(--dashboard-text);
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-markdown > :first-child { margin-block-start: 0; }
+.dashboard-markdown > :last-child { margin-block-end: 0; }
+.dashboard-markdown h1,
+.dashboard-markdown h2,
+.dashboard-markdown h3,
+.dashboard-markdown h4,
+.dashboard-markdown h5,
+.dashboard-markdown h6 { line-height: 1.25; margin-block: 1.6em .65em; }
+.dashboard-markdown p,
+.dashboard-markdown ul,
+.dashboard-markdown ol,
+.dashboard-markdown blockquote,
+.dashboard-markdown pre,
+.dashboard-markdown table { margin-block: 1em; }
+.dashboard-markdown blockquote { border-inline-start: 3px solid var(--dashboard-data-blue); color: var(--dashboard-text-muted); margin-inline: 0; padding-inline-start: 1rem; }
+.dashboard-markdown code { background: var(--dashboard-surface-raised); border-radius: 5px; font-family: var(--dashboard-font-mono); font-size: .9em; padding: .15em .35em; }
+.dashboard-markdown pre { background: #070a11; border: 1px solid var(--dashboard-border); border-radius: 10px; overflow-x: auto; padding: 1rem; }
+.dashboard-markdown pre code { background: transparent; padding: 0; }
+.dashboard-markdown table { border-collapse: collapse; display: block; max-width: 100%; overflow-x: auto; }
+.dashboard-markdown th,
+.dashboard-markdown td { border: 1px solid var(--dashboard-border); padding: .55rem .75rem; text-align: start; }
+.dashboard-markdown th { background: var(--dashboard-surface-raised); }
+.dashboard-markdown input[type="checkbox"] { accent-color: var(--dashboard-data-blue); margin-inline-end: .5rem; }
+.dashboard-markdown hr { border: 0; border-top: 1px solid var(--dashboard-border); margin-block: 2rem; }
+
 h1, h2, .dashboard-header__title, .dashboard-coming-soon__title { font-family: var(--dashboard-font-mono); }
 
 /* ─── NEXUS radial backdrop ────────────────────────────────────────────────── */

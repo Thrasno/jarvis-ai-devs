@@ -60,6 +60,10 @@ For production, copy `hive-dashboard/dist` to a stable path on the same host or 
 - The dashboard uses existing Hive API auth/admin endpoints and stores the current browser JWT in `sessionStorage`.
 - Production deployments should terminate TLS at the reverse proxy before forwarding traffic to `hive-api`.
 
+## Markdown rendering
+
+Dashboard document content must use the shared `markdownViewer(markdown, accessibleLabel)` component. It uses `marked` for maintained GitHub-Flavoured Markdown parsing and DOMPurify for browser-native sanitisation. Marked deliberately does not sanitise its output, so the viewer disables raw HTML at the renderer boundary and then applies a strict DOMPurify tag, attribute, and URL allowlist as defence in depth. Inline styles, event handlers, scripts, iframes, and dangerous URL protocols are not permitted, and consumers cannot override this policy.
+
 ## Explicit scope boundary
 
 The dashboard observes and administers an active Hive API deployment. It does **not** start, stop, configure, monitor, or otherwise manage local `hive-daemon` processes.
