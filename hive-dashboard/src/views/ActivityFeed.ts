@@ -126,9 +126,26 @@ export function renderActivityFeed(
   }
 
   if (state.data.nextCursor) {
-    const button = control(state.data.loadingMore ? 'Loading more…' : 'Load More', { disabled: state.data.loadingMore })
+    const button = control(state.data.loadingMore ? '' : 'Load older activity ↓', { disabled: state.data.loadingMore })
+    button.classList.add('dashboard-activity-feed__load-more')
     button.setAttribute('data-load-more-activity', '')
-    button.addEventListener('click', () => deps.onLoadMore?.())
+    if (state.data.loadingMore) {
+      button.setAttribute('aria-busy', 'true')
+      button.setAttribute('aria-label', 'Loading older activity…')
+      const progress = document.createElement('span')
+      progress.className = 'dashboard-activity-feed__load-more-progress'
+      progress.setAttribute('role', 'progressbar')
+      progress.setAttribute('aria-label', 'Loading older activity')
+      const label = document.createElement('span')
+      label.textContent = 'Loading older activity…'
+      button.append(progress, label)
+    }
+    button.addEventListener('click', () => {
+      if (button.disabled) return
+      button.disabled = true
+      button.setAttribute('aria-disabled', 'true')
+      deps.onLoadMore?.()
+    })
     card.append(button)
   }
 
