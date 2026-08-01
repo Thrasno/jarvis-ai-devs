@@ -54,11 +54,30 @@ type MutationReceipt struct {
 // an identity key — saving twice with the same topic_key creates two distinct
 // rows (Issue #119). sync_id is the idempotency key. Returns the new row's id.
 func (d *DB) SaveMemory(mem *models.Memory) (int64, error) {
+	return d.saveMemory(mem, nil)
+}
+
+// SaveMemoryWithManualSession atomically creates the project's manual session
+// when needed and saves the memory attributed to it.
+func (d *DB) SaveMemoryWithManualSession(mem *models.Memory) (int64, error) {
+	return d.saveMemory(mem, func(tx *sql.Tx) error {
+		mem.SessionID = "manual-save-" + mem.Project
+		_, err := tx.Exec(`
+			INSERT OR IGNORE INTO sessions
+			    (id, sync_id, project, directory, dev_id, client)
+			VALUES (?, lower(hex(randomblob(16))), ?, '', ?, 'manual')`,
+			mem.SessionID, mem.Project, resolveDevID(),
+		)
+		if err != nil {
+			return fmt.Errorf("ensure manual save session: %w", err)
+		}
+		return nil
+	})
+}
+
+func (d *DB) saveMemory(mem *models.Memory, prepareTx func(*sql.Tx) error) (int64, error) {
 	if err := mem.Validate(); err != nil {
 		return 0, fmt.Errorf("invalid memory: %w", err)
-	}
-	if err := d.ensureProjectWritable(context.Background(), mem.Project); err != nil {
-		return 0, err
 	}
 
 	tagsJSON, err := marshalStringSlice(mem.Tags)
@@ -75,16 +94,24 @@ func (d *DB) SaveMemory(mem *models.Memory) (int64, error) {
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")
 	op := MutationOpCreate
 
-	var sessionID sql.NullString
-	if mem.SessionID != "" {
-		sessionID = sql.NullString{String: mem.SessionID, Valid: true}
-	}
-
 	tx, err := d.sqlDB.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("begin save memory: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := ensureProjectWritableInTx(tx, mem.Project); err != nil {
+		return 0, err
+	}
+	if prepareTx != nil {
+		if err := prepareTx(tx); err != nil {
+			return 0, err
+		}
+	}
+
+	var sessionID sql.NullString
+	if mem.SessionID != "" {
+		sessionID = sql.NullString{String: mem.SessionID, Valid: true}
+	}
 
 	const q = `
 INSERT INTO memories

@@ -312,10 +312,9 @@ func memSaveHandler(store MemoryStore, syncRuntime *syncRuntime, activity *Activ
 		}
 		p.Project = resolved.Project
 
-		// Lazy session fallback: when session_id is absent, resolve via EnsureManualSaveSession.
-		sessionID, err := resolveSessionID(p.SessionID, p.Project, store)
-		if err != nil {
-			return toolError(fmt.Errorf("resolve session: %w", err)), nil
+		sessionID := p.SessionID
+		if sessionID == "" {
+			sessionID = "manual-save-" + p.Project
 		}
 
 		// Guard: reject content exceeding MaxObservationLength runes (Unicode-safe).
@@ -354,7 +353,12 @@ func memSaveHandler(store MemoryStore, syncRuntime *syncRuntime, activity *Activ
 			PromptID:      promptID,
 		}
 
-		id, err := store.SaveMemory(mem)
+		var id int64
+		if p.SessionID == "" {
+			id, err = store.SaveMemoryWithManualSession(mem)
+		} else {
+			id, err = store.SaveMemory(mem)
+		}
 		if err != nil {
 			return toolError(fmt.Errorf("save failed: %w", err)), nil
 		}
@@ -560,8 +564,8 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 			)), nil
 		}
 
-		// When session_id is explicit: validate the session is open before saving.
-		// When absent: lazy fallback to manual-save-{project}.
+		// Explicit sessions retain lifecycle validation. The store creates manual
+		// fallback sessions atomically with the memory below.
 		var effectiveSessionID string
 		if p.SessionID != "" {
 			sess, err := store.GetSession(p.SessionID)
@@ -573,11 +577,7 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 			}
 			effectiveSessionID = p.SessionID
 		} else {
-			var err error
-			effectiveSessionID, err = store.EnsureManualSaveSession(p.Project)
-			if err != nil {
-				return toolError(fmt.Errorf("resolve session: %w", err)), nil
-			}
+			effectiveSessionID = "manual-save-" + p.Project
 		}
 
 		// Strip private tags from content. Title is derived from stripped content (ADR-6).
@@ -591,7 +591,12 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 			SessionID: effectiveSessionID,
 		}
 
-		id, err := store.SaveMemory(mem)
+		var id int64
+		if p.SessionID == "" {
+			id, err = store.SaveMemoryWithManualSession(mem)
+		} else {
+			id, err = store.SaveMemory(mem)
+		}
 		if err != nil {
 			return toolError(fmt.Errorf("save failed: %w", err)), nil
 		}

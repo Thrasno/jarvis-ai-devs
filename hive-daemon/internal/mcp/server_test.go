@@ -26,27 +26,39 @@ var _ hivemcp.MemoryStore = (*mockStore)(nil)
 
 // mockStore implements hivemcp.MemoryStore and hivemcp.PromptStore for testing.
 type mockStore struct {
-	saveMemoryFn              func(*models.Memory) (int64, error)
-	getMemoryFn               func(int64) (*models.Memory, error)
-	listMemoriesFn            func(string, int) ([]*models.Memory, error)
-	searchFn                  func(string, string, string, int) ([]*models.Memory, error)
-	savePromptFn              func(context.Context, string, string) (*models.Prompt, error)
-	savePromptForSessionFn    func(context.Context, string, string, string) (*models.Prompt, error)
-	latestPromptForSessionFn  func(context.Context, string, string) (*models.Prompt, error)
-	listRecentPromptsFn       func(context.Context, string, int) ([]*models.Prompt, error)
-	createSessionFn           func(id, project, directory, devID, client string) error
-	endSessionFn              func(id, summary string) error
-	getSessionFn              func(id string) (*models.Session, error)
-	ensureManualSaveSessionFn func(project string) (string, error)
-	knownProjectsFn           func(context.Context) ([]project.KnownProject, error)
-	sessionProjectFn          func(context.Context, string) (string, error)
-	createRecoveryTokenFn     func(context.Context, project.TokenRequest) (string, error)
-	validateRecoveryTokenFn   func(context.Context, project.TokenValidation) error
-	consumeRecoveryTokenFn    func(context.Context, project.TokenValidation) error
-	resolveAliasFn            func(context.Context, string) (string, bool, error)
+	saveMemoryFn                  func(*models.Memory) (int64, error)
+	saveMemoryWithManualSessionFn func(*models.Memory) (int64, error)
+	getMemoryFn                   func(int64) (*models.Memory, error)
+	listMemoriesFn                func(string, int) ([]*models.Memory, error)
+	searchFn                      func(string, string, string, int) ([]*models.Memory, error)
+	savePromptFn                  func(context.Context, string, string) (*models.Prompt, error)
+	savePromptForSessionFn        func(context.Context, string, string, string) (*models.Prompt, error)
+	latestPromptForSessionFn      func(context.Context, string, string) (*models.Prompt, error)
+	listRecentPromptsFn           func(context.Context, string, int) ([]*models.Prompt, error)
+	createSessionFn               func(id, project, directory, devID, client string) error
+	endSessionFn                  func(id, summary string) error
+	getSessionFn                  func(id string) (*models.Session, error)
+	ensureManualSaveSessionFn     func(project string) (string, error)
+	knownProjectsFn               func(context.Context) ([]project.KnownProject, error)
+	sessionProjectFn              func(context.Context, string) (string, error)
+	createRecoveryTokenFn         func(context.Context, project.TokenRequest) (string, error)
+	validateRecoveryTokenFn       func(context.Context, project.TokenValidation) error
+	consumeRecoveryTokenFn        func(context.Context, project.TokenValidation) error
+	resolveAliasFn                func(context.Context, string) (string, bool, error)
 }
 
 func (m *mockStore) SaveMemory(mem *models.Memory) (int64, error) {
+	if m.saveMemoryFn != nil {
+		return m.saveMemoryFn(mem)
+	}
+	return 1, nil
+}
+
+func (m *mockStore) SaveMemoryWithManualSession(mem *models.Memory) (int64, error) {
+	if m.saveMemoryWithManualSessionFn != nil {
+		return m.saveMemoryWithManualSessionFn(mem)
+	}
+	mem.SessionID = "manual-save-" + mem.Project
 	if m.saveMemoryFn != nil {
 		return m.saveMemoryFn(mem)
 	}

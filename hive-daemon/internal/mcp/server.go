@@ -22,6 +22,7 @@ type PromptStore interface {
 // MemoryStore es la interfaz que usan los handlers para acceder a la BD local.
 type MemoryStore interface {
 	SaveMemory(mem *models.Memory) (int64, error)
+	SaveMemoryWithManualSession(mem *models.Memory) (int64, error)
 	GetMemory(id int64) (*models.Memory, error)
 	ListMemories(project string, limit int) ([]*models.Memory, error)
 	Search(query, project, category string, limit int) ([]*models.Memory, error)
