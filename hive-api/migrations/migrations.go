@@ -100,3 +100,15 @@ var SyncAttemptPortalUsersSQL string
 
 //go:embed 016_sync_attempt_user_projection.sql
 var SyncAttemptUserProjectionSQL string
+
+// QuarantineContractSQL is migration 017. It retains legacy audit fields while
+// preparing existing project block rows for generation-based lifecycle changes.
+//
+//go:embed 017_quarantine_contract.sql
+var QuarantineContractSQL string
+
+// DistributedQuarantineSQL is migration 018. It retains every generation
+// command while project_blocks remains the mutable current-state head.
+//
+//go:embed 018_distributed_quarantine.sql
+var DistributedQuarantineSQL string

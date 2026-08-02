@@ -202,6 +202,8 @@ func startupMigrationSQL() []string {
 		migrations.UserSecurityVersionSQL,
 		migrations.SyncAttemptPortalUsersSQL,
 		migrations.SyncAttemptUserProjectionSQL,
+		migrations.QuarantineContractSQL,
+		migrations.DistributedQuarantineSQL,
 	}
 }
 

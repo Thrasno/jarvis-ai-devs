@@ -148,7 +148,7 @@ describe('Hive API client', () => {
     })
   })
 
-  it('calls admin project block status and quarantine endpoints with guard fields', async () => {
+  it('calls admin project block status and lifecycle endpoints with truthful guard fields', async () => {
     const status = { project: 'Jarvis Dev', canonical_project_key: 'jarvis-dev', blocked: true, reason: 'duplicate', ack: { status: 'applied' } }
     const block = { command_id: 'cmd-1', project: 'Jarvis Dev', canonical_project_key: 'jarvis-dev', reason: 'duplicate', blocked_at: '2026-07-06T10:00:00Z' }
     const fetchMock = vi.fn()
@@ -159,10 +159,9 @@ describe('Hive API client', () => {
     await expect(client.projectBlockStatus('jwt-token', 'Jarvis Dev')).resolves.toEqual(status)
     await expect(client.blockProject('jwt-token', {
       project: 'Jarvis Dev',
-      action: 'quarantine',
+      action: 'block',
       reason: 'duplicate project',
-      confirmation: 'jarvis-dev',
-      export_marker: 'export-2026-07-06'
+      confirmation: 'jarvis-dev'
     })).resolves.toEqual(block)
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/admin/project-blocks/status?project=Jarvis+Dev', {
@@ -172,7 +171,33 @@ describe('Hive API client', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/admin/project-blocks/block', {
       method: 'POST',
       headers: { Authorization: 'Bearer jwt-token', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project: 'Jarvis Dev', action: 'quarantine', reason: 'duplicate project', confirmation: 'jarvis-dev', export_marker: 'export-2026-07-06' })
+      body: JSON.stringify({ project: 'Jarvis Dev', action: 'block', reason: 'duplicate project', confirmation: 'jarvis-dev' })
+    })
+  })
+
+  it('loads generation-pinned quarantine data through admin-only endpoints', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ quarantines: [] }))
+      .mockResolvedValueOnce(jsonResponse({ project: 'Jarvis Dev', canonical_project_key: 'jarvis-dev', generation: 14, action: 'BLOCK', state: 'QUARANTINING', transitioned_at: '2026-08-01T12:00:00Z', totals: { active: 1, acknowledged: 0, pending: 1 }, progress: [{ username: 'ada', state: 'pending' }] }))
+    const client = createApiClient({ fetch: fetchMock })
+
+    await client.quarantines('jwt-token')
+    await client.quarantineProgress('jwt-token', 'jarvis-dev', 14, 'opaque')
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/admin/quarantines', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/admin/quarantines/jarvis-dev?generation=14&after=opaque', { method: 'GET', headers: { Authorization: 'Bearer jwt-token' } })
+  })
+
+  it('forwards an abort signal when polling quarantine progress', async () => {
+    const controller = new AbortController()
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ project: 'Jarvis Dev', canonical_project_key: 'jarvis-dev', generation: 14, action: 'BLOCK', state: 'QUARANTINING', transitioned_at: '2026-08-01T12:00:00Z', totals: { active: 1, acknowledged: 0, pending: 1 }, progress: [] }))
+
+    await createApiClient({ fetch: fetchMock }).quarantineProgress('jwt-token', 'jarvis-dev', 14, 'opaque', controller.signal)
+
+    expect(fetchMock).toHaveBeenCalledWith('/admin/quarantines/jarvis-dev?generation=14&after=opaque', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer jwt-token' },
+      signal: controller.signal
     })
   })
 

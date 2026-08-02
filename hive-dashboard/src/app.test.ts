@@ -1462,7 +1462,7 @@ describe('dashboard shell', () => {
     }
   })
 
-  it('submits admin project quarantine guards and refreshes Projects after success', async () => {
+  it('submits admin project block guards and refreshes Projects after success', async () => {
     const container = document.createElement('main')
     document.body.append(container)
     const session = fakeSessionStore({ status: 'authenticated', token: 'jwt-token', user: adminUser })
@@ -1483,13 +1483,12 @@ describe('dashboard shell', () => {
     try {
       await flushDashboard()
       container.querySelector<HTMLInputElement>('input[name="reason"]')!.value = 'duplicate import'
-      container.querySelector<HTMLInputElement>('input[name="export_marker"]')!.value = 'export-123'
       container.querySelector<HTMLInputElement>('input[name="confirmation"]')!.value = 'garbage-project'
 
       container.querySelector('form[aria-label="Block Garbage Project"]')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
       await flushDashboard()
 
-      expect(api.blockProject).toHaveBeenCalledWith('jwt-token', { project: 'Garbage Project', action: 'quarantine', reason: 'duplicate import', confirmation: 'garbage-project', export_marker: 'export-123' })
+      expect(api.blockProject).toHaveBeenCalledWith('jwt-token', { project: 'Garbage Project', action: 'block', reason: 'duplicate import', confirmation: 'garbage-project' })
       expect(api.projects).toHaveBeenCalledTimes(2)
       expect(container.textContent).toContain('BLOCKED')
       expect(container.textContent).toContain('Status: ACK applied')
@@ -1543,7 +1542,6 @@ describe('dashboard shell', () => {
     try {
       await flushDashboard()
       container.querySelector<HTMLInputElement>('input[name="reason"]')!.value = 'duplicate import'
-      container.querySelector<HTMLInputElement>('input[name="export_marker"]')!.value = 'export-123'
       container.querySelector<HTMLInputElement>('input[name="confirmation"]')!.value = 'garbage-project'
 
       const form = container.querySelector('form[aria-label="Block Garbage Project"]')!
@@ -1583,7 +1581,6 @@ describe('dashboard shell', () => {
     try {
       await flushDashboard()
       container.querySelector<HTMLInputElement>('input[name="reason"]')!.value = 'duplicate import'
-      container.querySelector<HTMLInputElement>('input[name="export_marker"]')!.value = 'export-123'
       container.querySelector<HTMLInputElement>('input[name="confirmation"]')!.value = 'garbage-project'
 
       container.querySelector('form[aria-label="Block Garbage Project"]')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
@@ -1628,7 +1625,6 @@ describe('dashboard shell', () => {
     try {
       await flushDashboard()
       container.querySelector<HTMLInputElement>('input[name="reason"]')!.value = 'duplicate import'
-      container.querySelector<HTMLInputElement>('input[name="export_marker"]')!.value = 'export-123'
       container.querySelector<HTMLInputElement>('input[name="confirmation"]')!.value = 'garbage-project'
 
       container.querySelector('form[aria-label="Block Garbage Project"]')!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
@@ -3107,6 +3103,8 @@ function fakeApi(overrides: {
   projects?: Array<Promise<ProjectListResponse> | (() => Promise<ProjectListResponse>)>
   projectBlockStatus?: Array<Promise<Awaited<ReturnType<ApiClient['projectBlockStatus']>>> | (() => Promise<Awaited<ReturnType<ApiClient['projectBlockStatus']>>>)>
   blockProject?: Promise<Awaited<ReturnType<ApiClient['blockProject']>>>
+  quarantines?: Promise<Awaited<ReturnType<ApiClient['quarantines']>>>
+  quarantineProgress?: Promise<Awaited<ReturnType<ApiClient['quarantineProgress']>>>
 } = {}): ApiClient {
   const userResponses = [...(overrides.users ?? [])]
   const activityResponses = [...(overrides.activity ?? [])]
@@ -3163,7 +3161,9 @@ function fakeApi(overrides: {
       if (typeof next === 'function') return next()
       return next ?? Promise.resolve({ project, canonical_project_key: projectSummary({ name: project }).canonicalProjectKey ?? project, blocked: false })
     }),
-    blockProject: vi.fn(() => overrides.blockProject ?? Promise.resolve({ command_id: 'cmd-1', project: 'Core API', canonical_project_key: 'core-api', reason: 'duplicate', blocked_at: '2026-07-06T10:00:00Z' }))
+    blockProject: vi.fn(() => overrides.blockProject ?? Promise.resolve({ command_id: 'cmd-1', project: 'Core API', canonical_project_key: 'core-api', reason: 'duplicate', blocked_at: '2026-07-06T10:00:00Z' })),
+    quarantines: vi.fn(() => overrides.quarantines ?? Promise.resolve({ quarantines: [] })),
+    quarantineProgress: vi.fn(() => overrides.quarantineProgress ?? Promise.reject(new Error('no quarantine selected')))
   }
 }
 

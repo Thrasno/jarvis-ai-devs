@@ -27,6 +27,7 @@ func startPostgresWithSyncAttemptsAndProjectBlocks(t *testing.T) (*pgxpool.Pool,
 	t.Helper()
 	pool, cleanup := startPostgresWithSyncAttemptsAndSessions(t)
 	require.NoError(t, RunMigrations(pool, migrations.ProjectBlocksSQL))
+	require.NoError(t, RunMigrations(pool, migrations.QuarantineContractSQL))
 	return pool, cleanup
 }
 

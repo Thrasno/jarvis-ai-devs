@@ -25,4 +25,5 @@ type TxRepositories struct {
 
 type TxManager interface {
 	WithinTx(ctx context.Context, fn func(ctx context.Context, repos TxRepositories) error) error
+	ReadOnlyRepeatableRead(ctx context.Context, fn func(ctx context.Context, repos TxRepositories) error) error
 }

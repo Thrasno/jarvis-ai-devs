@@ -190,6 +190,24 @@ func (m *mockProjectGovernanceSvc) Acknowledge(ctx context.Context, ack model.Pr
 	return args.Get(0).(model.ProjectBlockAck), args.Error(1)
 }
 
+func (m *mockProjectGovernanceSvc) Inbox(ctx context.Context, subject model.ProjectBlockAckSubject) ([]model.ProjectBlockCommand, error) {
+	args := m.Called(ctx, subject)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]model.ProjectBlockCommand), args.Error(1)
+}
+
+func (m *mockProjectGovernanceSvc) QuarantineProgress(ctx context.Context, canonicalProjectKey string, generation int64, after string, limit int) (model.QuarantineProgressResponse, error) {
+	args := m.Called(ctx, canonicalProjectKey, generation, after, limit)
+	return args.Get(0).(model.QuarantineProgressResponse), args.Error(1)
+}
+
+func (m *mockProjectGovernanceSvc) ListQuarantines(ctx context.Context) ([]model.QuarantineSummary, error) {
+	args := m.Called(ctx)
+	return args.Get(0).([]model.QuarantineSummary), args.Error(1)
+}
+
 func (m *mockSyncAttemptSvc) Ingest(ctx context.Context, req model.SyncAttemptIngestRequest, actors ...model.SyncAttemptActor) (model.SyncAttemptIngestResponse, error) {
 	if len(actors) > 0 {
 		m.actor = &actors[0]

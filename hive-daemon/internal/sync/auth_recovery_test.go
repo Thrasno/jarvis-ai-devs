@@ -199,6 +199,8 @@ func TestSyncer_ConcurrentCachedTokenRecoveryReusesReplacement(t *testing.T) {
 		case "/auth/login":
 			logins.Add(1)
 			_, _ = w.Write([]byte(`{"token":"replacement-jwt","expires_at":"2030-01-01T00:00:00Z"}`))
+		case "/project-blocks/inbox":
+			_, _ = w.Write([]byte(`{"commands":[]}`))
 		case "/sync":
 			if r.Header.Get("Authorization") == "Bearer rejected-jwt" {
 				oldSyncs <- struct{}{}
@@ -242,6 +244,8 @@ func TestSyncer_CachedToken401RecoversOnceAndRecordsOneSuccess(t *testing.T) {
 		case "/auth/login":
 			logins.Add(1)
 			_, _ = w.Write([]byte(`{"token":"fresh-jwt","expires_at":"2030-01-01T00:00:00Z"}`))
+		case "/project-blocks/inbox":
+			_, _ = w.Write([]byte(`{"commands":[]}`))
 		case "/sync":
 			if syncs.Add(1) == 1 {
 				w.WriteHeader(http.StatusUnauthorized)

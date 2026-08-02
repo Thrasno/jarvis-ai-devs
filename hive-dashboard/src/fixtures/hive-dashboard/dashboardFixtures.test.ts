@@ -42,9 +42,10 @@ describe('Hive dashboard shared fixtures', () => {
       'Knowledge Browser',
       'Activity Feed',
       'User Management',
-      'Audit Log'
+      'Audit Log',
+      'Quarantine Center'
     ])
-    expect(screenLabels).toHaveLength(6)
+    expect(screenLabels).toHaveLength(7)
   })
 
   it('preserves the PDF profile and notification summary counts', () => {
@@ -355,7 +356,8 @@ describe('Hive dashboard final screen fixture registry', () => {
       'knowledgeBrowser',
       'activityFeed',
       'userManagement',
-      'auditLog'
+      'auditLog',
+      'quarantines'
     ])
     expect(Object.keys(dashboardScreenFixtures)).toContain('analytics')
     expect(Object.keys(dashboardScreenFixtures)).toContain('conflictViewer')

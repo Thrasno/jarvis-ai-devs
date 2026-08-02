@@ -43,7 +43,8 @@ export const dashboardNavigationGroups = [
     label: 'Governance',
     entries: [
       { screen: 'userManagement', label: 'User Management' },
-      { screen: 'auditLog', label: 'Audit Log' }
+      { screen: 'auditLog', label: 'Audit Log' },
+      { screen: 'quarantines', label: 'Quarantine Center' }
     ]
   }
 ] as const satisfies readonly NavigationGroupViewModel[]

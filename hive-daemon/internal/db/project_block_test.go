@@ -75,6 +75,43 @@ func TestDB_RecordProjectBlockCanonicalizesAndPersistsAck(t *testing.T) {
 	require.Equal(t, ackAt, acked.AckAppliedAt)
 }
 
+func TestDB_RecordProjectBlockAppliesNewerUnblockWithoutDeletingHistory(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	_, err := d.RecordProjectBlock(ctx, ProjectBlockCommand{CommandID: "cmd-block", AckToken: "token-block", Project: "alpha", CanonicalProjectKey: "alpha", Action: "block", Generation: 1})
+	require.NoError(t, err)
+	_, err = d.RecordProjectBlock(ctx, ProjectBlockCommand{CommandID: "cmd-unblock", AckToken: "token-unblock", Project: "alpha", CanonicalProjectKey: "alpha", Action: "unblock", Generation: 2})
+	require.NoError(t, err)
+
+	blocked, err := d.IsProjectBlocked(ctx, "alpha")
+	require.NoError(t, err)
+	require.False(t, blocked)
+
+	current, err := d.GetProjectBlock(ctx, "alpha")
+	require.NoError(t, err)
+	require.Equal(t, int64(2), current.Generation)
+	require.Equal(t, "unblock", current.Action)
+}
+
+func TestDB_RecordProjectBlockIgnoresDuplicateOrStaleGeneration(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	_, err := d.RecordProjectBlock(ctx, ProjectBlockCommand{CommandID: "cmd-8", AckToken: "token-8", Project: "alpha", CanonicalProjectKey: "alpha", Action: "block", Generation: 8})
+	require.NoError(t, err)
+	_, err = d.RecordProjectBlock(ctx, ProjectBlockCommand{CommandID: "cmd-7", AckToken: "token-7", Project: "alpha", CanonicalProjectKey: "alpha", Action: "unblock", Generation: 7})
+	require.NoError(t, err)
+	_, err = d.RecordProjectBlock(ctx, ProjectBlockCommand{CommandID: "cmd-8-replay", AckToken: "token-8-replay", Project: "alpha", CanonicalProjectKey: "alpha", Action: "unblock", Generation: 8})
+	require.NoError(t, err)
+
+	current, err := d.GetProjectBlock(ctx, "alpha")
+	require.NoError(t, err)
+	require.Equal(t, "cmd-8", current.CommandID)
+	require.Equal(t, int64(8), current.Generation)
+	require.True(t, current.Blocked)
+}
+
 func TestDB_ListPendingProjectBlockAcks(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
@@ -260,6 +297,45 @@ func TestDB_QuarantineProjectArchiveDoesNotHardPurge(t *testing.T) {
 
 	_, err = d.SaveMemory(&models.Memory{Project: "other", Title: "ok", Content: "ok", SessionID: "manual-save-other"})
 	require.False(t, errors.Is(err, ErrProjectBlocked), "unblocked projects must not trip block guard")
+}
+
+func TestDB_QuarantineProjectRestoresOnlyArchiveOwnedByBlock(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	_, err := d.EnsureManualSaveSession("owned")
+	require.NoError(t, err)
+	_, err = d.SaveMemory(&models.Memory{Project: "owned", Title: "existing", Content: "memory", SessionID: "manual-save-owned"})
+	require.NoError(t, err)
+
+	_, err = d.RecordProjectBlock(ctx, ProjectBlockCommand{CommandID: "cmd-block", AckToken: "token-block", Project: "owned", CanonicalProjectKey: "owned", Action: "block", Generation: 1})
+	require.NoError(t, err)
+	_, err = d.QuarantineBlockedProject(ctx, "owned", "daemon", "quarantine", time.Now().UTC())
+	require.NoError(t, err)
+
+	_, err = d.RecordProjectBlock(ctx, ProjectBlockCommand{CommandID: "cmd-unblock", AckToken: "token-unblock", Project: "owned", CanonicalProjectKey: "owned", Action: "unblock", Generation: 2})
+	require.NoError(t, err)
+	restored, err := d.QuarantineBlockedProject(ctx, "owned", "daemon", "release", time.Now().UTC())
+	require.NoError(t, err)
+	require.True(t, restored.Mutated)
+
+	project, err := d.GetGovernanceProject(ctx, "owned")
+	require.NoError(t, err)
+	require.False(t, project.Archived)
+
+	_, err = d.ArchiveGovernanceProject(ctx, "owned", "operator", "manual", time.Now().UTC())
+	require.NoError(t, err)
+	_, err = d.RecordProjectBlock(ctx, ProjectBlockCommand{CommandID: "cmd-block-3", AckToken: "token-block-3", Project: "owned", CanonicalProjectKey: "owned", Action: "block", Generation: 3})
+	require.NoError(t, err)
+	_, err = d.QuarantineBlockedProject(ctx, "owned", "daemon", "quarantine", time.Now().UTC())
+	require.NoError(t, err)
+	_, err = d.RecordProjectBlock(ctx, ProjectBlockCommand{CommandID: "cmd-unblock-4", AckToken: "token-unblock-4", Project: "owned", CanonicalProjectKey: "owned", Action: "unblock", Generation: 4})
+	require.NoError(t, err)
+	_, err = d.QuarantineBlockedProject(ctx, "owned", "daemon", "release", time.Now().UTC())
+	require.NoError(t, err)
+
+	project, err = d.GetGovernanceProject(ctx, "owned")
+	require.NoError(t, err)
+	require.True(t, project.Archived, "a pre-existing manual archive must not be restored by UNBLOCK")
 }
 
 func TestDB_QuarantineBlockedProjectRecordsUnsafeRootWarning(t *testing.T) {
