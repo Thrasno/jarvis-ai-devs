@@ -13,6 +13,7 @@ export const dashboardScreenKeys = [
   'analytics',
   'userManagement',
   'auditLog',
+  'quarantines',
   'account',
   'conflictViewer'
 ] as const

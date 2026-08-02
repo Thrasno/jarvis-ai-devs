@@ -65,6 +65,9 @@ body { margin: 0; background: var(--dashboard-background); }
   margin-block: 0.35rem 0;
 }
 .dashboard-state, .state { color: var(--dashboard-text-muted); }
+.dashboard-quarantine { display: grid; gap: 1rem; }
+.dashboard-quarantine table { border-collapse: collapse; width: 100%; }
+.dashboard-quarantine th, .dashboard-quarantine td { border-bottom: 1px solid var(--dashboard-border); padding: .6rem; text-align: left; }
 .dashboard-status, .status { border: 1px solid var(--dashboard-border); border-radius: 999px; display: inline-flex; font-size: .78rem; font-weight: 800; margin-inline-start: .5rem; padding: .2rem .55rem; }
 [data-dashboard-status="healthy"], [data-dashboard-status="active"] { color: var(--dashboard-success); }
 [data-dashboard-status="warning"], [data-dashboard-status="pending"] { color: var(--dashboard-warning); }

@@ -133,15 +133,15 @@ describe('projects view', () => {
     expect(styles).toMatch(/\.dashboard-project-card__identity h3\s*{[^}]*min-width:\s*0;[^}]*overflow-wrap:\s*anywhere;/s)
   })
 
-  it('renders blocked badges, status, reason, export marker, and admin quarantine form guard copy', () => {
+  it('renders blocked badges, status, reason, and a truthful admin block form', () => {
     const view = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([
-      { name: 'Blocked Project', memoryCount: 0, sessionCount: 0, lastActivityAt: null, syncHealth: 'degraded', blocked: true, canonicalProjectKey: 'blocked-project', blockReason: 'duplicate import', exportMarker: 'export-123', blockAckStatus: 'applied' }
+      { name: 'Blocked Project', memoryCount: 0, sessionCount: 0, lastActivityAt: null, syncHealth: 'degraded', blocked: true, canonicalProjectKey: 'blocked-project', blockReason: 'duplicate import', blockAckStatus: 'applied' }
     ])) }, { currentUserLevel: 'admin' })
 
     expect(view.textContent).toContain('BLOCKED')
     expect(view.textContent).toContain('Status: ACK applied')
     expect(view.textContent).toContain('Reason: duplicate import')
-    expect(view.textContent).toContain('Export marker: export-123')
+    expect(view.textContent).not.toContain('Export marker')
     expect(view.querySelector('form[aria-label="Block Blocked Project"]')).not.toBeNull()
     expect(view.querySelector('input[name="confirmation"]')?.getAttribute('placeholder')).toBe('blocked-project')
     expect(view.textContent).toContain('Type blocked-project exactly')
@@ -154,7 +154,7 @@ describe('projects view', () => {
     expect(view.querySelector('form[aria-label^="Block "]')).toBeNull()
   })
 
-  it('rejects admin block submission until reason, export marker, and exact canonical confirmation are present', () => {
+  it('rejects admin block submission until reason and exact canonical confirmation are present', () => {
     const onBlockProject = vi.fn()
     const view = renderProjects({ status: 'ready', data: projectsFromApi(projectResponse([
       { name: 'Blocked Project', memoryCount: 0, sessionCount: 0, lastActivityAt: null, syncHealth: 'degraded', canonicalProjectKey: 'blocked-project' }
@@ -162,12 +162,11 @@ describe('projects view', () => {
     const form = view.querySelector<HTMLFormElement>('form[aria-label="Block Blocked Project"]')!
 
     form.querySelector<HTMLInputElement>('input[name="reason"]')!.value = 'duplicate import'
-    form.querySelector<HTMLInputElement>('input[name="export_marker"]')!.value = 'export-123'
     form.querySelector<HTMLInputElement>('input[name="confirmation"]')!.value = 'wrong-project'
     form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
 
     expect(onBlockProject).not.toHaveBeenCalled()
-    expect(form.querySelector('[role="alert"]')?.textContent).toBe('Reason, export marker, and exact canonical confirmation are required.')
+    expect(form.querySelector('[role="alert"]')?.textContent).toBe('Reason and exact canonical confirmation are required.')
   })
 
   it('rejects padded canonical confirmation instead of trimming it before validation', () => {
@@ -178,12 +177,11 @@ describe('projects view', () => {
     const form = view.querySelector<HTMLFormElement>('form[aria-label="Block Blocked Project"]')!
 
     form.querySelector<HTMLInputElement>('input[name="reason"]')!.value = 'duplicate import'
-    form.querySelector<HTMLInputElement>('input[name="export_marker"]')!.value = 'export-123'
     form.querySelector<HTMLInputElement>('input[name="confirmation"]')!.value = ' blocked-project '
     form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
 
     expect(onBlockProject).not.toHaveBeenCalled()
-    expect(form.querySelector('[role="alert"]')?.textContent).toBe('Reason, export marker, and exact canonical confirmation are required.')
+    expect(form.querySelector('[role="alert"]')?.textContent).toBe('Reason and exact canonical confirmation are required.')
   })
 
   it('preserves exact confirmation input in the admin block request and disables duplicate submits while pending', async () => {

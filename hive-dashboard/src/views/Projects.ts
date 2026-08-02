@@ -1,13 +1,13 @@
 import { append, emptyState, text } from '../components/dom'
 import type { ProjectListViewModel, ProjectLiveSummaryViewModel } from '../domain/dashboard'
-import { projectHealthFilters } from '../api/client'
+import { projectBlockActions, projectHealthFilters } from '../api/client'
 import type { ViewState } from './Overview'
 
 let projectCardId = 0
 type ProjectViewOptions = {
   health?: typeof projectHealthFilters.degraded
   currentUserLevel?: 'admin' | 'member' | 'viewer' | string
-  onBlockProject?: (request: { project: string; action: 'quarantine'; reason: string; confirmation: string; export_marker: string }) => Promise<void> | void
+  onBlockProject?: (request: { project: string; action: typeof projectBlockActions.BLOCK; reason: string; confirmation: string }) => Promise<void> | void
   pendingBlockProject?: string
   mutationError?: string
   refreshError?: string
@@ -109,7 +109,6 @@ function governanceSection(project: ProjectLiveSummaryViewModel, options: Projec
   if (project.blocked) {
     section.append(governanceLine(`Status: ACK ${project.blockAckStatus ?? 'pending'}`))
     if (project.blockReason) section.append(governanceLine(`Reason: ${project.blockReason}`))
-    if (project.exportMarker) section.append(governanceLine(`Export marker: ${project.exportMarker}`))
   }
   if (options.currentUserLevel === 'admin') {
     section.append(blockForm(project, options.onBlockProject, options.pendingBlockProject === project.name))
@@ -135,7 +134,6 @@ function blockForm(project: ProjectLiveSummaryViewModel, onBlockProject?: Projec
   form.append(
     formHelp(`Type ${project.canonicalProjectKey} exactly`),
     input('reason', 'Reason', 'Duplicate or garbage project'),
-    input('export_marker', 'Export marker', 'backup/export id'),
     input('confirmation', 'Exact confirmation', project.canonicalProjectKey),
     ...(pending ? [statusText('Quarantine request in progress…')] : []),
     quarantineButton(pending)
@@ -144,19 +142,17 @@ function blockForm(project: ProjectLiveSummaryViewModel, onBlockProject?: Projec
     event.preventDefault()
     const data = new FormData(form)
     const reason = String(data.get('reason') ?? '').trim()
-    const exportMarker = String(data.get('export_marker') ?? '').trim()
     const confirmation = String(data.get('confirmation') ?? '')
     clearFormError(form)
-    if (reason === '' || exportMarker === '' || confirmation !== project.canonicalProjectKey) {
-      form.insertBefore(formError('Reason, export marker, and exact canonical confirmation are required.'), form.firstChild)
+	if (reason === '' || confirmation !== project.canonicalProjectKey) {
+		form.insertBefore(formError('Reason and exact canonical confirmation are required.'), form.firstChild)
       return
     }
     await onBlockProject?.({
       project: project.name,
-      action: 'quarantine',
-      reason,
-      confirmation,
-      export_marker: exportMarker
+		action: projectBlockActions.BLOCK,
+		reason,
+		confirmation
     })
   })
   return form
