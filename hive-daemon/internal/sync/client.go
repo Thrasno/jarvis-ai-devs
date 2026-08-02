@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -207,7 +208,13 @@ type projectBlockCommand struct {
 	Project             string    `json:"project"`
 	CanonicalProjectKey string    `json:"canonical_project_key"`
 	Reason              string    `json:"reason"`
+	Action              string    `json:"action"`
+	Generation          int64     `json:"generation"`
 	BlockedAt           time.Time `json:"blocked_at"`
+}
+
+type projectBlockInboxResponse struct {
+	Commands []projectBlockCommand `json:"commands"`
 }
 
 type projectBlockedErrorResponse struct {
@@ -399,6 +406,32 @@ func (c *client) ackProjectBlock(ctx context.Context, token string, ack db.Proje
 		return &HTTPStatusError{Operation: "project block ack", StatusCode: resp.StatusCode}
 	}
 	return nil
+}
+
+func (c *client) projectBlockInbox(ctx context.Context, token string) ([]projectBlockCommand, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.cfg.APIURL+"/project-blocks/inbox", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build project block inbox request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("project block inbox request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil // mixed-version API without inbox support
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPStatusError{Operation: "project block inbox", StatusCode: resp.StatusCode}
+	}
+	var result projectBlockInboxResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); errors.Is(err, io.EOF) {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("decode project block inbox response: %w", err)
+	}
+	return result.Commands, nil
 }
 
 func (c *client) syncAttempts(ctx context.Context, token string, attempts []db.SyncAttemptLog) (*syncAttemptIngestResponse, error) {

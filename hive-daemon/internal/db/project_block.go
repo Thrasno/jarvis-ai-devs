@@ -29,6 +29,8 @@ type ProjectBlockCommand struct {
 	Project             string    `json:"project"`
 	CanonicalProjectKey string    `json:"canonical_project_key"`
 	Reason              string    `json:"reason"`
+	Action              string    `json:"action"`
+	Generation          int64     `json:"generation"`
 	BlockedAt           time.Time `json:"blocked_at"`
 }
 
@@ -38,6 +40,9 @@ type ProjectBlock struct {
 	Project             string
 	CanonicalProjectKey string
 	Reason              string
+	Action              string
+	Generation          int64
+	Blocked             bool
 	BlockedAt           time.Time
 	AckPending          bool
 	AckStatus           string
@@ -78,20 +83,36 @@ func (d *DB) RecordProjectBlock(ctx context.Context, cmd ProjectBlockCommand) (P
 		blockedAt = time.Now().UTC()
 	}
 	blockedAtStr := formatDBTime(blockedAt)
+	action := strings.TrimSpace(cmd.Action)
+	if action == "" {
+		action = "block"
+	}
+	if action != "block" && action != "unblock" {
+		return ProjectBlock{}, fmt.Errorf("project block command has unsupported action %q", action)
+	}
+	generation := cmd.Generation
+	if generation < 1 {
+		generation = 1
+	}
+	blocked := action == "block"
 	_, err := d.sqlDB.ExecContext(ctx, `
-	INSERT INTO project_blocks (canonical_project_key, project, command_id, ack_token, reason, blocked_at, ack_pending, ack_status, ack_warning, ack_applied_at, updated_at)
-	VALUES (?, ?, ?, ?, ?, ?, 1, '', '', NULL, CURRENT_TIMESTAMP)
+	INSERT INTO project_blocks (canonical_project_key, project, command_id, ack_token, reason, action, generation, blocked, blocked_at, ack_pending, ack_status, ack_warning, ack_applied_at, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, '', '', NULL, CURRENT_TIMESTAMP)
 ON CONFLICT(canonical_project_key) DO UPDATE SET
     project = excluded.project,
     command_id = excluded.command_id,
 	ack_token = excluded.ack_token,
     reason = excluded.reason,
+	    action = excluded.action,
+	    generation = excluded.generation,
+	    blocked = excluded.blocked,
     blocked_at = excluded.blocked_at,
     ack_pending = CASE WHEN project_blocks.command_id = excluded.command_id THEN project_blocks.ack_pending ELSE 1 END,
     ack_status = CASE WHEN project_blocks.command_id = excluded.command_id THEN project_blocks.ack_status ELSE '' END,
     ack_warning = CASE WHEN project_blocks.command_id = excluded.command_id THEN project_blocks.ack_warning ELSE '' END,
     ack_applied_at = CASE WHEN project_blocks.command_id = excluded.command_id THEN project_blocks.ack_applied_at ELSE NULL END,
-	    updated_at = CURRENT_TIMESTAMP`, canonical, projectName, cmd.CommandID, ackToken, cmd.Reason, blockedAtStr)
+	    updated_at = CURRENT_TIMESTAMP
+	WHERE excluded.generation > project_blocks.generation`, canonical, projectName, cmd.CommandID, ackToken, cmd.Reason, action, generation, blocked, blockedAtStr)
 	if err != nil {
 		return ProjectBlock{}, fmt.Errorf("record project block: %w", err)
 	}
@@ -106,19 +127,20 @@ func (d *DB) GetProjectBlock(ctx context.Context, project string) (ProjectBlock,
 	var (
 		block                         ProjectBlock
 		blockedAtStr, ackAppliedAtStr sql.NullString
-		ackPendingInt                 int
+		ackPendingInt, blockedInt     int
 	)
 	err := d.sqlDB.QueryRowContext(ctx, `
-SELECT command_id, ack_token, project, canonical_project_key, reason, blocked_at, ack_pending, ack_status, ack_warning, ack_applied_at
+	SELECT command_id, ack_token, project, canonical_project_key, reason, action, generation, blocked, blocked_at, ack_pending, ack_status, ack_warning, ack_applied_at
 FROM project_blocks
 WHERE canonical_project_key = ?`, canonical).Scan(
-		&block.CommandID, &block.AckToken, &block.Project, &block.CanonicalProjectKey, &block.Reason, &blockedAtStr,
+		&block.CommandID, &block.AckToken, &block.Project, &block.CanonicalProjectKey, &block.Reason, &block.Action, &block.Generation, &blockedInt, &blockedAtStr,
 		&ackPendingInt, &block.AckStatus, &block.AckWarning, &ackAppliedAtStr,
 	)
 	if err != nil {
 		return ProjectBlock{}, err
 	}
 	block.AckPending = ackPendingInt != 0
+	block.Blocked = blockedInt != 0
 	if blockedAtStr.Valid {
 		block.BlockedAt, _ = parseTimeStr(blockedAtStr.String)
 	}
@@ -129,14 +151,14 @@ WHERE canonical_project_key = ?`, canonical).Scan(
 }
 
 func (d *DB) IsProjectBlocked(ctx context.Context, project string) (bool, error) {
-	_, err := d.GetProjectBlock(ctx, project)
+	block, err := d.GetProjectBlock(ctx, project)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("check project block: %w", err)
 	}
-	return true, nil
+	return block.Blocked, nil
 }
 
 func (d *DB) RecordProjectBlockAck(ctx context.Context, ack ProjectBlockAck) (ProjectBlockAck, error) {
@@ -262,9 +284,26 @@ func (d *DB) QuarantineBlockedProject(ctx context.Context, projectName, actorID,
 	if err != nil {
 		return ProjectQuarantineResult{}, err
 	}
-	mutated, err := d.ArchiveGovernanceProject(ctx, block.Project, actorID, reason, at)
-	if err != nil {
-		return ProjectQuarantineResult{}, err
+	var mutated bool
+	if block.Blocked {
+		mutated, err = d.ArchiveGovernanceProject(ctx, block.Project, actorID, reason, at)
+		if err != nil {
+			return ProjectQuarantineResult{}, err
+		}
+		if mutated {
+			if _, err := d.sqlDB.ExecContext(ctx, `
+				INSERT INTO project_quarantine_archives (canonical_project_key, project, command_id)
+				VALUES (?, ?, ?)
+				ON CONFLICT(canonical_project_key) DO UPDATE SET project = excluded.project, command_id = excluded.command_id`,
+				block.CanonicalProjectKey, block.Project, block.CommandID); err != nil {
+				return ProjectQuarantineResult{}, fmt.Errorf("record quarantine-owned archive: %w", err)
+			}
+		}
+	} else {
+		mutated, err = d.restoreQuarantineOwnedArchive(ctx, block)
+		if err != nil {
+			return ProjectQuarantineResult{}, err
+		}
 	}
 	result := ProjectQuarantineResult{Project: block.Project, Mutated: mutated}
 	if warning := d.blockedProjectRootWarning(ctx, block.Project); warning != "" {
@@ -272,6 +311,44 @@ func (d *DB) QuarantineBlockedProject(ctx context.Context, projectName, actorID,
 		_, _ = d.SaveHiveWarning(HiveWarningInput{Severity: "warning", Source: "project-block:" + block.Project, Message: warning})
 	}
 	return result, nil
+}
+
+func (d *DB) restoreQuarantineOwnedArchive(ctx context.Context, block ProjectBlock) (bool, error) {
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin restore quarantine archive: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var project string
+	err = tx.QueryRowContext(ctx, `SELECT project FROM project_quarantine_archives WHERE canonical_project_key = ?`, block.CanonicalProjectKey).Scan(&project)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read quarantine-owned archive: %w", err)
+	}
+	if project != block.Project {
+		return false, fmt.Errorf("quarantine-owned archive project mismatch")
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE hive_project_governance
+		SET archived_at = NULL, archived_by = '', archive_reason = ''
+		WHERE project = ? AND merged_at IS NULL`, project)
+	if err != nil {
+		return false, fmt.Errorf("restore quarantine-owned archive: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM project_quarantine_archives WHERE canonical_project_key = ?`, block.CanonicalProjectKey); err != nil {
+		return false, fmt.Errorf("delete quarantine-owned archive marker: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit restore quarantine archive: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("restore quarantine-owned archive rows affected: %w", err)
+	}
+	return rows > 0, nil
 }
 
 func (d *DB) blockedProjectRootWarning(ctx context.Context, projectName string) string {
@@ -306,7 +383,7 @@ func ensureProjectWritableInTx(tx *sql.Tx, project string) error {
 		return nil
 	}
 	var exists int
-	err := tx.QueryRow(`SELECT 1 FROM project_blocks WHERE canonical_project_key = ? LIMIT 1`, canonical).Scan(&exists)
+	err := tx.QueryRow(`SELECT 1 FROM project_blocks WHERE canonical_project_key = ? AND blocked = 1 LIMIT 1`, canonical).Scan(&exists)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -317,7 +394,7 @@ func ensureProjectWritableInTx(tx *sql.Tx, project string) error {
 }
 
 func (d *DB) blockedProjectKeys(ctx context.Context) (map[string]struct{}, error) {
-	rows, err := d.sqlDB.QueryContext(ctx, `SELECT canonical_project_key FROM project_blocks`)
+	rows, err := d.sqlDB.QueryContext(ctx, `SELECT canonical_project_key FROM project_blocks WHERE blocked = 1`)
 	if err != nil {
 		return nil, fmt.Errorf("list blocked project keys: %w", err)
 	}
