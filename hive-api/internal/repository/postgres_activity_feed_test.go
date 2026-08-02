@@ -144,6 +144,7 @@ func TestPostgresMemoryRepository_ListActivityFeedExcludesBlockedProjects(t *tes
 	ctx := context.Background()
 	require.NoError(t, RunMigrations(pool, migrations.MemoryMutationsSQL))
 	require.NoError(t, RunMigrations(pool, migrations.ProjectBlocksSQL))
+	require.NoError(t, RunMigrations(pool, migrations.QuarantineContractSQL))
 	repo := NewPostgresMemoryRepository(pool)
 	blockRepo := NewPostgresProjectBlockRepository(pool)
 	visibleSessionID := ensureManualSavePtr(t, pool, "visible-activity")

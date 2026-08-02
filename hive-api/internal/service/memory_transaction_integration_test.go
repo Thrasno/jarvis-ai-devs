@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -51,6 +52,8 @@ func startPostgresForMemoryServiceProjectBlocks(t *testing.T) (*pgxpool.Pool, fu
 		migrations.PullCursorIndexesSQL,
 		migrations.ProjectScopedPullCursorIndexesSQL,
 		migrations.ProjectBlocksSQL,
+		migrations.QuarantineContractSQL,
+		migrations.DistributedQuarantineSQL,
 	} {
 		require.NoError(t, repository.RunMigrations(pool, sql))
 	}
@@ -59,6 +62,95 @@ func startPostgresForMemoryServiceProjectBlocks(t *testing.T) (*pgxpool.Pool, fu
 		if err := container.Terminate(ctx); err != nil {
 			t.Logf("terminate postgres container: %v", err)
 		}
+	}
+}
+
+func TestProjectGovernanceService_ConcurrentTransitionsPreserveStrictGenerationHistory(t *testing.T) {
+	pool, cleanup := startPostgresForMemoryServiceProjectBlocks(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	service := service.NewProjectGovernanceService(
+		repository.NewPostgresProjectBlockRepository(pool),
+		repository.NewPostgresAuditRepository(pool),
+		repository.NewPostgresTxManager(pool),
+	)
+	project := "Concurrent Project"
+	canonical := "concurrent-project"
+	requests := []model.ProjectBlockRequest{
+		{Action: model.ProjectBlockActionBlock, Reason: "first transition", Confirmation: canonical},
+		{Action: model.ProjectBlockActionUnblock, Reason: "second transition", Confirmation: canonical},
+	}
+	start := make(chan struct{})
+	errs := make(chan error, len(requests))
+	var wg sync.WaitGroup
+	for index, request := range requests {
+		wg.Add(1)
+		go func(index int, request model.ProjectBlockRequest) {
+			defer wg.Done()
+			<-start
+			_, err := service.BlockProject(ctx, model.AdminActor{UserID: fmt.Sprintf("00000000-0000-0000-0000-%012d", index+81)}, project, request)
+			errs <- err
+		}(index, request)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	rows, err := pool.Query(ctx, `SELECT generation, action FROM project_quarantine_commands WHERE canonical_project_key = $1 ORDER BY generation ASC`, canonical)
+	require.NoError(t, err)
+	defer rows.Close()
+	var generations []int64
+	var actions []string
+	for rows.Next() {
+		var generation int64
+		var action string
+		require.NoError(t, rows.Scan(&generation, &action))
+		generations = append(generations, generation)
+		actions = append(actions, action)
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, []int64{1, 2}, generations)
+	require.ElementsMatch(t, []string{model.ProjectBlockActionBlock, model.ProjectBlockActionUnblock}, actions)
+
+	var headGeneration int64
+	require.NoError(t, pool.QueryRow(ctx, `SELECT generation FROM project_blocks WHERE canonical_project_key = $1`, canonical).Scan(&headGeneration))
+	require.Equal(t, int64(2), headGeneration)
+}
+
+func TestProjectGovernanceService_ListQuarantinesLoadsRetainedCurrentGenerationAfterRelease(t *testing.T) {
+	pool, cleanup := startPostgresForMemoryServiceProjectBlocks(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	governance := service.NewProjectGovernanceService(
+		repository.NewPostgresProjectBlockRepository(pool),
+		repository.NewPostgresAuditRepository(pool),
+		repository.NewPostgresTxManager(pool),
+	)
+	actor := model.AdminActor{UserID: "00000000-0000-0000-0000-000000000091"}
+	_, err := governance.BlockProject(ctx, actor, "Retained Project", model.ProjectBlockRequest{Action: model.ProjectBlockActionBlock, Reason: "quarantine", Confirmation: "retained-project"})
+	require.NoError(t, err)
+	_, err = governance.BlockProject(ctx, actor, "Retained Project", model.ProjectBlockRequest{Action: model.ProjectBlockActionUnblock, Reason: "release", Confirmation: "retained-project"})
+	require.NoError(t, err)
+
+	summaries, err := governance.ListQuarantines(ctx)
+
+	require.NoError(t, err)
+	require.Equal(t, []model.QuarantineSummary{{
+		Project: "Retained Project", CanonicalProjectKey: "retained-project", Generation: 2,
+		Action: model.ProjectBlockActionUnblock, State: model.ProjectBlockProgressPending,
+		TransitionedAt: summaries[0].TransitionedAt,
+	}}, summaries)
+	require.NotEmpty(t, summaries[0].TransitionedAt)
+	payload, err := json.Marshal(summaries[0])
+	require.NoError(t, err)
+	forbidden := []string{"actor_user_id", "ack_token", "auth_subject"}
+	for _, field := range forbidden {
+		require.NotContains(t, string(payload), field)
 	}
 }
 
@@ -106,7 +198,7 @@ func TestMemoryService_CreateConcurrentWithBlockCannotWriteAfterBlock(t *testing
 			defer wg.Done()
 			<-start
 			_, blockErr = govSvc.BlockProject(ctx, model.AdminActor{UserID: "00000000-0000-0000-0000-0000000000a1"}, project, model.ProjectBlockRequest{
-				Action:       model.ProjectBlockActionQuarantine,
+				Action:       model.ProjectBlockActionBlock,
 				Reason:       "garbage project",
 				Confirmation: canonical,
 				ExportMarker: "export-1",

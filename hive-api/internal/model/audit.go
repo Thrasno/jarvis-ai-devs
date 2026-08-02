@@ -151,11 +151,11 @@ func auditMetadataAllowlist(action AuditAction) map[string]bool {
 		}
 	case AuditActionProjectBlock:
 		return map[string]bool{
-			"project":       true,
-			"reason":        true,
-			"confirmation":  true,
-			"export_marker": true,
-			"action":        true,
+			"project":    true,
+			"reason":     true,
+			"action":     true,
+			"generation": true,
+			"actor":      true,
 		}
 	default:
 		return map[string]bool{}

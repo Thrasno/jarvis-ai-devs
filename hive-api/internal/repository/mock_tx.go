@@ -29,3 +29,7 @@ func (m *MockTxManager) WithinTx(ctx context.Context, fn func(context.Context, T
 	m.Committed = true
 	return nil
 }
+
+func (m *MockTxManager) ReadOnlyRepeatableRead(ctx context.Context, fn func(context.Context, TxRepositories) error) error {
+	return fn(ctx, TxRepositories{Users: m.Users, Audit: m.Audit, ProjectBlocks: m.ProjectBlocks, Memory: m.Memory, Prompt: m.Prompt, Session: m.Session, ProjectKeyLocks: m.ProjectKeyLocks})
+}

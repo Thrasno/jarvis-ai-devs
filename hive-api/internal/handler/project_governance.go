@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
@@ -12,6 +13,44 @@ import (
 
 type ProjectGovernanceHandler struct {
 	svc ProjectGovernanceService
+}
+
+func (h *ProjectGovernanceHandler) QuarantineProgress(c *gin.Context) {
+	generation, err := strconv.ParseInt(c.Query("generation"), 10, 64)
+	if err != nil || generation < 1 {
+		c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: "invalid generation"})
+		return
+	}
+	limit := 50
+	if value := c.Query("limit"); value != "" {
+		limit, err = strconv.Atoi(value)
+		if err != nil || limit < 1 || limit > 100 {
+			c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: "invalid limit"})
+			return
+		}
+	}
+	result, err := h.svc.QuarantineProgress(c.Request.Context(), c.Param("project"), generation, c.Query("after"), limit)
+	if err != nil {
+		if errors.Is(err, model.ErrInvalidQuarantineCursor) {
+			c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: "invalid cursor"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "error loading quarantine progress"})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func (h *ProjectGovernanceHandler) ListQuarantines(c *gin.Context) {
+	result, err := h.svc.ListQuarantines(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "error loading quarantines"})
+		return
+	}
+	if result == nil {
+		result = []model.QuarantineSummary{}
+	}
+	c.JSON(http.StatusOK, gin.H{"quarantines": result})
 }
 
 func NewProjectGovernanceHandler(svc ProjectGovernanceService) *ProjectGovernanceHandler {
@@ -62,6 +101,20 @@ func (h *ProjectGovernanceHandler) Status(c *gin.Context) {
 		resp.Ack = nil
 	}
 	c.JSON(http.StatusOK, resp)
+}
+
+func (h *ProjectGovernanceHandler) Inbox(c *gin.Context) {
+	subject := projectBlockAckSubjectFromClaims(claimsFromCtx(c))
+	if !subject.Valid() {
+		c.JSON(http.StatusForbidden, model.ErrorResponse{Error: "forbidden"})
+		return
+	}
+	commands, err := h.svc.Inbox(c.Request.Context(), subject)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "error loading project quarantine inbox"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"commands": commands})
 }
 
 func (h *ProjectGovernanceHandler) Acknowledge(c *gin.Context) {

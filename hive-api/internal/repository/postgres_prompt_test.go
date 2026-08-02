@@ -25,6 +25,8 @@ func startPostgresWithPrompts(t *testing.T) (*pgxpool.Pool, func()) {
 
 	err = RunMigrations(pool, migrations.ProjectBlocksSQL)
 	require.NoError(t, err, "Failed to run project_blocks migration")
+	err = RunMigrations(pool, migrations.QuarantineContractSQL)
+	require.NoError(t, err, "Failed to run quarantine contract migration")
 
 	return pool, cleanup
 }
