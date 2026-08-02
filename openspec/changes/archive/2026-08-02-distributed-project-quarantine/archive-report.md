@@ -96,7 +96,7 @@ The following main specifications now reflect the new distributed-quarantine beh
 **Verification**:
 - Hive API: All tests PASS, all vet checks PASS
 - Hive Daemon: All tests PASS, all vet checks PASS
-- Hive Dashboard: All Vitest PASS (392/392), lint PASS, no vulnerabilities
+- Hive Dashboard: All Vitest PASS (393/393 across 26 files), lint PASS, no vulnerabilities
 - PostgreSQL Testcontainers: PASS
 - Repository integrity: `git diff --check` PASS
 
@@ -106,7 +106,7 @@ This archive report reflects the state of the change AT CLOSE, not intermediate 
 
 The definitive verification verdict transitioned from FAIL to PASS WITH WARNINGS through:
 1. Five CRITICAL behavioral findings identified in the prior failing report
-2. Corrective rerun of apply phase (May 4–5 / 2026-08-02) resolved all findings
+2. Corrective rerun of apply phase (2026-08-02) resolved all findings
 3. Final verification run confirms all 15 requirements and 27 scenarios as compliant
 4. Zero blockers remain
 5. Two WARNING findings (low coverage and R1/R3 test-first assertions) and one SUGGESTION (E2E coverage) are informational and do not block archive
@@ -128,4 +128,19 @@ The four new domain specifications are now authoritative sources of truth for di
 - Change name: distributed-project-quarantine
 - Artifact store: hybrid (OpenSpec + Engram)
 - Observation IDs verified: 7 primary artifacts + 2 supporting discovery records
-- Hybrid parity: ✅ confirmed after canonical terminal-newline normalization
+- Hybrid parity: ✅ confirmed by byte-for-byte comparison against the merged
+  source of truth in commit `1f4cf91f`
+
+## Archive Integrity Note
+
+The initial archive pass did not preserve artifact bytes. It rewrote content
+instead of copying it, converting typographic quotes and apostrophes to ASCII
+in `proposal.md`, `specs/distributed-quarantine-lifecycle/spec.md` and
+`specs/quarantine-convergence-read-model/spec.md`, and it left the original
+change folder in place beside a partial archive.
+
+Both defects were detected and repaired before the closing commit. Every
+archived artifact and every promoted main spec was then re-verified as
+byte-identical to its merged version in `1f4cf91f`. The earlier parity claim,
+which cited only terminal-newline normalization, could not have detected a
+difference in body text and is superseded by this note.
