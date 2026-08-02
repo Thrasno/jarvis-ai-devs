@@ -24,7 +24,8 @@ const SCREEN_PATHS: Partial<Record<DashboardScreenKey, string>> = {
   knowledgeBrowser: '/dashboard/knowledgeBrowser',
   activityFeed: '/dashboard/activityFeed',
   userManagement: '/dashboard/userManagement',
-  auditLog: '/dashboard/auditLog'
+  auditLog: '/dashboard/auditLog',
+  quarantines: '/dashboard/quarantines'
 }
 
 const HIDDEN_NAV_SCREENS = new Set<DashboardScreenKey>([
@@ -52,7 +53,8 @@ export function navIconForScreen(screenId: DashboardScreenKey, active: boolean):
     knowledgeBrowser: `<rect x="3" y="2.5" width="14" height="15" rx="1"/><line x1="6" y1="6.5" x2="14" y2="6.5"/><line x1="6" y1="10" x2="14" y2="10"/><line x1="6" y1="13.5" x2="11" y2="13.5"/>`,
     activityFeed: `<path d="M2.5 10h3l2.5-6 3.5 12 2.5-6h3.5"/>`,
     userManagement: `<path d="M10 2.5l6 2.2v4.6c0 4-2.6 6.6-6 7.7-3.4-1.1-6-3.7-6-7.7V4.7z"/><path d="M7.5 10l1.8 1.8L13 8"/>`,
-    auditLog: `<rect x="4" y="3" width="12" height="14" rx="1"/><line x1="7" y1="7" x2="13" y2="7"/><line x1="7" y1="10" x2="13" y2="10"/><line x1="7" y1="13" x2="11" y2="13"/>`
+    auditLog: `<rect x="4" y="3" width="12" height="14" rx="1"/><line x1="7" y1="7" x2="13" y2="7"/><line x1="7" y1="10" x2="13" y2="10"/><line x1="7" y1="13" x2="11" y2="13"/>`,
+    quarantines: `<path d="M10 2.5l6 2.2v4.6c0 4-2.6 6.6-6 7.7-3.4-1.1-6-3.7-6-7.7V4.7z"/><path d="M7 10h6M10 7v6"/>`
   }
 
   const shapes = iconShapes[screenId] ?? `<circle cx="10" cy="10" r="5"/>`

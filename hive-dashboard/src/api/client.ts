@@ -65,11 +65,20 @@ export type SyncAttemptSummary = { windows: SyncAttemptSummaryWindow[] }
 export type MutationMessage = { message: string }
 export type CreateUserRequest = { username: string; email: string; level: UserLevel; temporary_password: string }
 export type ChangePasswordRequest = { current_password: string; new_password: string }
-export type ProjectBlockAction = 'quarantine' | 'purge_intent'
-export type ProjectBlockRequest = { project: string; action: ProjectBlockAction; reason: string; confirmation: string; export_marker: string }
+export const projectBlockActions = {
+  BLOCK: 'block',
+  UNBLOCK: 'unblock'
+} as const
+export type ProjectBlockAction = typeof projectBlockActions[keyof typeof projectBlockActions]
+export type ProjectBlockRequest = { project: string; action: ProjectBlockAction; reason: string; confirmation: string }
 export type ProjectBlockResponse = { command_id: string; project: string; canonical_project_key: string; reason: string; blocked_at: string }
 export type ProjectBlockAckStatus = 'applied' | 'failed' | 'skipped' | string
 export type ProjectBlockStatusResponse = { project: string; canonical_project_key: string; blocked: boolean; reason?: string; ack?: { status?: ProjectBlockAckStatus; warning?: string } | null }
+export type QuarantineState = 'QUARANTINING' | 'QUARANTINED' | 'RELEASING' | 'ACTIVE' | string
+export type QuarantineSummary = { project: string; canonical_project_key: string; generation: number; action: string; state: QuarantineState; transitioned_at: string }
+export type QuarantineProgressRow = { username: string; state: 'pending' | 'applied' | 'failed' | 'skipped' | string; acknowledged_at?: string }
+export type QuarantineDetailResponse = QuarantineSummary & { totals: { active: number; acknowledged: number; pending: number }; progress: QuarantineProgressRow[]; next_cursor?: string }
+export type QuarantineListResponse = { quarantines: QuarantineSummary[] }
 export type ProjectSummary = {
   name: string
   memoryCount: number
@@ -126,7 +135,9 @@ export type ApiClient = {
   activity(token: string, params?: ActivityFeedParams): Promise<ActivityFeedResponse>
   projects(token: string, params?: ProjectListParams): Promise<ProjectListResponse>
   projectBlockStatus(token: string, project: string): Promise<ProjectBlockStatusResponse>
-  blockProject(token: string, request: ProjectBlockRequest): Promise<ProjectBlockResponse>
+  blockProject(token: string, request: ProjectBlockRequest, signal?: AbortSignal): Promise<ProjectBlockResponse>
+  quarantines(token: string): Promise<QuarantineListResponse>
+  quarantineProgress(token: string, project: string, generation: number, after?: string, signal?: AbortSignal): Promise<QuarantineDetailResponse>
 }
 
 export class ApiError extends Error {
@@ -235,8 +246,16 @@ export function createApiClient(options: { baseUrl?: string; fetch?: Fetcher } =
     projectBlockStatus(token, project) {
       return request<ProjectBlockStatusResponse>(withQuery('/admin/project-blocks/status', { project }), authGet(token))
     },
-    blockProject(token, blockRequest) {
-      return request<ProjectBlockResponse>('/admin/project-blocks/block', authPost(token, blockRequest))
+    blockProject(token, blockRequest, signal) {
+      return request<ProjectBlockResponse>('/admin/project-blocks/block', { ...authPost(token, blockRequest), signal })
+    },
+    quarantines(token) {
+      return request<QuarantineListResponse>('/admin/quarantines', authGet(token))
+    },
+    quarantineProgress(token, project, generation, after, signal) {
+      const query = new URLSearchParams({ generation: String(generation) })
+      if (after) query.set('after', after)
+      return request<QuarantineDetailResponse>(`/admin/quarantines/${encodeURIComponent(project)}?${query.toString()}`, { ...authGet(token), signal })
     }
   }
 }

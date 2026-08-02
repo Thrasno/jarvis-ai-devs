@@ -106,11 +106,25 @@ type mockSyncStore struct {
 	// tests to assert the mutations fetch is skipped entirely (not merely
 	// filtered after the fact) while sessions are still pending, mirroring
 	// getUnsyncedPageLimits for memories.
-	getPendingMutationsCalls int
-	recordedProjectBlocks    []db.ProjectBlockCommand
-	quarantinedProjects      []string
-	recordedBlockAcks        []db.ProjectBlockAck
-	pendingBlockAcks         []db.ProjectBlockAck
+	getPendingMutationsCalls  int
+	recordedProjectBlocks     []db.ProjectBlockCommand
+	quarantinedProjects       []string
+	recordedBlockAcks         []db.ProjectBlockAck
+	pendingBlockAcks          []db.ProjectBlockAck
+	recordProjectBlockReplies []db.ProjectBlock
+}
+
+// serveProjectBlockInbox makes legacy sync harnesses model the required
+// account-authenticated inbox barrier without relaxing their sync assertions.
+func serveProjectBlockInbox(t *testing.T, w http.ResponseWriter, r *http.Request) bool {
+	t.Helper()
+	if r.URL.Path != "/project-blocks/inbox" {
+		return false
+	}
+	require.Equal(t, http.MethodGet, r.Method)
+	require.NotEmpty(t, r.Header.Get("Authorization"), "inbox requests must be authenticated")
+	require.NoError(t, json.NewEncoder(w).Encode(projectBlockInboxResponse{}))
+	return true
 }
 
 type pullCursorCall struct {
@@ -183,6 +197,11 @@ func (m *mockSyncStore) RecordProjectBlock(ctx context.Context, cmd db.ProjectBl
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.recordedProjectBlocks = append(m.recordedProjectBlocks, cmd)
+	if len(m.recordProjectBlockReplies) > 0 {
+		reply := m.recordProjectBlockReplies[0]
+		m.recordProjectBlockReplies = m.recordProjectBlockReplies[1:]
+		return reply, nil
+	}
 	return db.ProjectBlock{CommandID: cmd.CommandID, AckToken: cmd.AckToken, Project: cmd.Project, CanonicalProjectKey: cmd.CanonicalProjectKey, AckPending: true}, nil
 }
 
@@ -1155,6 +1174,9 @@ func TestSyncer_Sync_HealthLifecycle(t *testing.T) {
 			}
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveProjectBlockInbox(t, w, r) {
+					return
+				}
 				if r.URL.Path != "/sync" {
 					t.Fatalf("unexpected path %s", r.URL.Path)
 				}
@@ -1224,6 +1246,8 @@ func TestSyncer_Sync_ProjectBlockCommandQuarantinesAndDoesNotMarkRowsSynced(t *t
 	ackRequests := make(chan db.ProjectBlockAck, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/project-blocks/inbox":
+			require.NoError(t, json.NewEncoder(w).Encode(projectBlockInboxResponse{}))
 		case "/sync":
 			w.WriteHeader(http.StatusLocked)
 			require.NoError(t, json.NewEncoder(w).Encode(projectBlockedErrorResponse{
@@ -1284,6 +1308,8 @@ func TestSyncer_Sync_ProjectBlockAckFailureRecordedInAttemptLog(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/project-blocks/inbox":
+			require.NoError(t, json.NewEncoder(w).Encode(projectBlockInboxResponse{}))
 		case "/sync":
 			w.WriteHeader(http.StatusLocked)
 			require.NoError(t, json.NewEncoder(w).Encode(projectBlockedErrorResponse{
@@ -1332,6 +1358,8 @@ func TestSyncer_Sync_RetriesPendingProjectBlockAcksBeforeNormalSync(t *testing.T
 	ackRequests := make(chan db.ProjectBlockAck, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/project-blocks/inbox":
+			require.NoError(t, json.NewEncoder(w).Encode(projectBlockInboxResponse{}))
 		case "/admin/project-blocks/ack":
 			var ack db.ProjectBlockAck
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&ack))
@@ -1360,6 +1388,44 @@ func TestSyncer_Sync_RetriesPendingProjectBlockAcksBeforeNormalSync(t *testing.T
 	}
 	require.Len(t, store.recordedBlockAcks, 1)
 	require.Equal(t, "cmd-pending", store.recordedBlockAcks[0].CommandID)
+}
+
+func TestSyncer_Sync_PollsInboxBeforeSyncAndDropsDelayedOlderBlock(t *testing.T) {
+	baseNow := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
+	store := &mockSyncStore{jwt: "valid-token"}
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/project-blocks/inbox":
+			require.Equal(t, http.MethodGet, r.Method)
+			require.Equal(t, "Bearer valid-token", r.Header.Get("Authorization"))
+			require.NoError(t, json.NewEncoder(w).Encode(projectBlockInboxResponse{Commands: []projectBlockCommand{
+				{CommandID: "new-unblock", AckToken: "unblock-token", Project: "alpha", CanonicalProjectKey: "alpha", Action: "unblock", Generation: 2, BlockedAt: baseNow.Add(time.Minute)},
+				{CommandID: "late-block", AckToken: "block-token", Project: "alpha", CanonicalProjectKey: "alpha", Action: "block", Generation: 1, BlockedAt: baseNow},
+			}}))
+		case "/admin/project-blocks/ack":
+			w.WriteHeader(http.StatusOK)
+		case "/sync":
+			require.Len(t, store.recordedProjectBlocks, 2)
+			require.Equal(t, "new-unblock", store.recordedProjectBlocks[0].CommandID)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{}))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	store.recordProjectBlockReplies = []db.ProjectBlock{
+		{CommandID: "new-unblock", AckToken: "unblock-token", Project: "alpha", CanonicalProjectKey: "alpha", Action: "unblock", Generation: 2},
+		{CommandID: "new-unblock", AckToken: "unblock-token", Project: "alpha", CanonicalProjectKey: "alpha", Action: "unblock", Generation: 2},
+	}
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{now: func() time.Time { return baseNow }})
+	_, err := syncer.Sync(context.Background(), "alpha")
+	require.NoError(t, err)
+	require.Equal(t, []string{"/project-blocks/inbox", "/admin/project-blocks/ack", "/admin/project-blocks/ack", "/sync"}, paths,
+		"only authenticated inbox processing and its ACKs may precede normal sync")
+	require.Equal(t, db.ProjectBlockAckSkipped, store.recordedBlockAcks[1].Status)
 }
 
 func TestSyncer_Sync_RespectsPersistedBackoffAfterRestart(t *testing.T) {
@@ -1516,6 +1582,10 @@ func TestSyncer_Sync_InFlightIsolation(t *testing.T) {
 			var syncCalls atomic.Int32
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveProjectBlockInbox(t, w, r) {
+					return
+				}
+				require.Equal(t, "/sync", r.URL.Path)
 				syncCalls.Add(1)
 				started <- struct{}{}
 				<-release
@@ -1669,6 +1739,9 @@ func TestSyncer_Sync_MutationProtocolV2PushPullAndCursor(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveProjectBlockInbox(t, w, r) {
+			return
+		}
 		require.Equal(t, "/sync", r.URL.Path)
 		var req syncRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
@@ -1754,6 +1827,10 @@ func TestSyncer_Sync_MutationProtocolV2AcksLegacyRowsCorrelatedByConfirmedMutati
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveProjectBlockInbox(t, w, r) {
+			return
+		}
+		require.Equal(t, "/sync", r.URL.Path)
 		var req syncRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
 		assert.Equal(t, mutationProtocolVersion, req.ProtocolVersion)
@@ -1884,6 +1961,10 @@ func TestSyncer_Sync_MutationProtocolV2EmptyMutationsAcksLegacyRowsInLegacyMode(
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveProjectBlockInbox(t, w, r) {
+			return
+		}
+		require.Equal(t, "/sync", r.URL.Path)
 		var req syncRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
 		assert.Equal(t, mutationProtocolVersion, req.ProtocolVersion)
@@ -1932,6 +2013,10 @@ func TestSyncer_Sync_MutationProtocolV2SendsDeleteAfterCreateResponseLoss(t *tes
 	}}
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveProjectBlockInbox(t, w, r) {
+			return
+		}
+		require.Equal(t, "/sync", r.URL.Path)
 		var req syncRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
 		requests++
@@ -1986,6 +2071,10 @@ func TestSyncer_Sync_MutationProtocolErrorPathsDoNotAckPendingMutations(t *testi
 			server: func(t *testing.T) *httptest.Server {
 				t.Helper()
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if serveProjectBlockInbox(t, w, r) {
+						return
+					}
+					require.Equal(t, "/sync", r.URL.Path)
 					var req syncRequest
 					require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
 					require.Len(t, req.Mutations, 1)
@@ -2010,6 +2099,10 @@ func TestSyncer_Sync_MutationProtocolErrorPathsDoNotAckPendingMutations(t *testi
 			server: func(t *testing.T) *httptest.Server {
 				t.Helper()
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if serveProjectBlockInbox(t, w, r) {
+						return
+					}
+					require.Equal(t, "/sync", r.URL.Path)
 					w.WriteHeader(http.StatusOK)
 					require.NoError(t, json.NewEncoder(w).Encode(syncResponse{
 						Pushed:            1,
@@ -2289,6 +2382,10 @@ func TestSyncer_Sync_LegacyFallbackDoesNotAckMutationJournal(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveProjectBlockInbox(t, w, r) {
+			return
+		}
+		require.Equal(t, "/sync", r.URL.Path)
 		var req syncRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
 		assert.Equal(t, mutationProtocolVersion, req.ProtocolVersion)
@@ -2328,6 +2425,9 @@ func TestSyncer_Sync_FlushesAttemptLogsBestEffortAfterRecordingCurrentResult(t *
 
 	var postedAttemptIDs []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveProjectBlockInbox(t, w, r) {
+			return
+		}
 		switch r.URL.Path {
 		case "/sync":
 			w.WriteHeader(http.StatusOK)
@@ -2371,6 +2471,9 @@ func TestSyncer_Sync_AttemptFlushFailureIsNonFatalAndLeavesAttemptsPending(t *te
 	store := &mockSyncStore{jwt: "valid-token", queueRecordedAttempts: true, deleteSyncAttemptErr: fmt.Errorf("retention cleanup unavailable")}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveProjectBlockInbox(t, w, r) {
+			return
+		}
 		switch r.URL.Path {
 		case "/sync":
 			w.WriteHeader(http.StatusOK)
@@ -2404,6 +2507,9 @@ func TestSyncer_Sync_FailedMemorySyncRecordsPendingFailureAttempt(t *testing.T) 
 
 	var attemptUploadCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveProjectBlockInbox(t, w, r) {
+			return
+		}
 		switch r.URL.Path {
 		case "/sync":
 			http.Error(w, "upstream temporarily unavailable", http.StatusBadGateway)

@@ -53,7 +53,10 @@ type SyncService interface {
 type ProjectGovernanceService interface {
 	BlockProject(ctx context.Context, actor model.AdminActor, project string, req model.ProjectBlockRequest) (model.ProjectBlockResponse, error)
 	Status(ctx context.Context, project string) (model.ProjectBlockStatusResponse, error)
+	Inbox(ctx context.Context, subject model.ProjectBlockAckSubject) ([]model.ProjectBlockCommand, error)
 	Acknowledge(ctx context.Context, ack model.ProjectBlockAck) (model.ProjectBlockAck, error)
+	ListQuarantines(ctx context.Context) ([]model.QuarantineSummary, error)
+	QuarantineProgress(ctx context.Context, canonicalProjectKey string, generation int64, after string, limit int) (model.QuarantineProgressResponse, error)
 }
 
 type SyncAttemptService interface {
@@ -181,6 +184,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		auth.POST("/sync", syncH.Sync)
 		auth.POST("/sync-attempts", syncAttemptH.Ingest)
 		if projectGovernanceH != nil {
+			auth.GET("/project-blocks/inbox", projectGovernanceH.Inbox)
 			auth.POST("/admin/project-blocks/ack", projectGovernanceH.Acknowledge)
 		}
 	}
@@ -201,6 +205,8 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		admin.GET("/overview/stats", overviewH.GetStats)
 		admin.GET("/overview/growth", overviewH.GetGrowth)
 		if projectGovernanceH != nil && deps.ProjectBlockAdminEnabled {
+			admin.GET("/quarantines", projectGovernanceH.ListQuarantines)
+			admin.GET("/quarantines/:project", projectGovernanceH.QuarantineProgress)
 			admin.GET("/project-blocks/status", projectGovernanceH.Status)
 			admin.POST("/project-blocks/block", projectGovernanceH.BlockProject)
 		}

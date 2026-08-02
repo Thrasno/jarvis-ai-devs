@@ -28,7 +28,24 @@ func (e *ProjectBlockedError) Error() string {
 type ProjectGovernanceService interface {
 	BlockProject(ctx context.Context, actor model.AdminActor, project string, req model.ProjectBlockRequest) (model.ProjectBlockResponse, error)
 	Status(ctx context.Context, project string) (model.ProjectBlockStatusResponse, error)
+	Inbox(ctx context.Context, subject model.ProjectBlockAckSubject) ([]model.ProjectBlockCommand, error)
 	Acknowledge(ctx context.Context, ack model.ProjectBlockAck) (model.ProjectBlockAck, error)
+	ListQuarantines(ctx context.Context) ([]model.QuarantineSummary, error)
+	QuarantineProgress(ctx context.Context, canonicalProjectKey string, generation int64, after string, limit int) (model.QuarantineProgressResponse, error)
+}
+
+func (s *projectGovernanceService) ListQuarantines(ctx context.Context) ([]model.QuarantineSummary, error) {
+	if s.blockRepo == nil {
+		return nil, ErrProjectBlockUnavailable
+	}
+	return s.blockRepo.ListQuarantines(ctx)
+}
+
+func (s *projectGovernanceService) Inbox(ctx context.Context, subject model.ProjectBlockAckSubject) ([]model.ProjectBlockCommand, error) {
+	if s.blockRepo == nil || !subject.Valid() {
+		return nil, ErrProjectBlockUnavailable
+	}
+	return s.blockRepo.ListInboxCommands(ctx, subject)
 }
 
 type projectGovernanceService struct {
@@ -103,6 +120,22 @@ func (s *projectGovernanceService) Status(ctx context.Context, project string) (
 	return resp, nil
 }
 
+func (s *projectGovernanceService) QuarantineProgress(ctx context.Context, canonicalProjectKey string, generation int64, after string, limit int) (model.QuarantineProgressResponse, error) {
+	if s.tx == nil {
+		return model.QuarantineProgressResponse{}, ErrProjectBlockUnavailable
+	}
+	var result model.QuarantineProgressResponse
+	err := s.tx.ReadOnlyRepeatableRead(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
+		if repos.ProjectBlocks == nil {
+			return ErrProjectBlockUnavailable
+		}
+		var err error
+		result, err = repos.ProjectBlocks.QuarantineProgress(ctx, projectkey.Canonicalize(canonicalProjectKey), generation, after, limit)
+		return err
+	})
+	return result, err
+}
+
 func (s *projectGovernanceService) Acknowledge(ctx context.Context, ack model.ProjectBlockAck) (model.ProjectBlockAck, error) {
 	if s.blockRepo == nil {
 		return model.ProjectBlockAck{}, ErrProjectBlockUnavailable
@@ -123,12 +156,12 @@ func (s *projectGovernanceService) Acknowledge(ctx context.Context, ack model.Pr
 		}
 		block, err := repos.ProjectBlocks.GetByCanonicalKey(ctx, ack.CanonicalProjectKey)
 		if err != nil {
-			if errors.Is(err, repository.ErrNotFound) {
-				return ErrProjectBlockInvalidRequest
+			if !errors.Is(err, repository.ErrNotFound) {
+				return err
 			}
-			return err
+			block = nil // UNBLOCK is already released from the current blocked head.
 		}
-		if block.CommandID != ack.CommandID || !ack.AckSubject.Valid() {
+		if (block != nil && block.CommandID != ack.CommandID) || !ack.AckSubject.Valid() {
 			return ErrProjectBlockInvalidRequest
 		}
 		delivery, err := repos.ProjectBlocks.GetAckDelivery(ctx, ack.CanonicalProjectKey, ack.CommandID, ack.AckSubject)
@@ -168,11 +201,11 @@ func emitProjectBlockAudit(ctx context.Context, auditRepo repository.AuditReposi
 		Outcome:     model.AuditOutcomeSuccess,
 		EntryCount:  1,
 		Metadata: model.AuditMetadata{
-			"project":       block.Project,
-			"reason":        req.Reason,
-			"confirmation":  req.Confirmation,
-			"export_marker": req.ExportMarker,
-			"action":        req.Action,
+			"project":    block.Project,
+			"reason":     req.Reason,
+			"action":     block.Action,
+			"generation": block.Generation,
+			"actor":      actor.UserID,
 		},
 	}); err != nil {
 		return fmt.Errorf("record project block audit: %w", err)

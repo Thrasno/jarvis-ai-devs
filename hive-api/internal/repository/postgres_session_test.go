@@ -41,6 +41,8 @@ func startPostgresWithSessions(t *testing.T) (*pgxpool.Pool, func()) {
 
 	err = RunMigrations(pool, migrations.ProjectBlocksSQL)
 	require.NoError(t, err, "failed to run migration 012")
+	err = RunMigrations(pool, migrations.QuarantineContractSQL)
+	require.NoError(t, err, "failed to run migration 017")
 
 	return pool, cleanup
 }

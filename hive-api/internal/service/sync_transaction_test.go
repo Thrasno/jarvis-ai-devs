@@ -169,7 +169,7 @@ func TestProjectGovernanceService_BlockProjectLocksCanonicalProjectKeyBeforeWrit
 	tx.ProjectBlocks = txBlockRepo
 	tx.ProjectKeyLocks = txLocks
 	svc := service.NewProjectGovernanceService(&repository.MockProjectBlockRepository{}, nil, tx)
-	req := model.ProjectBlockRequest{Action: model.ProjectBlockActionQuarantine, Reason: "duplicate", Confirmation: "jarvis-dev", ExportMarker: "export-1"}
+	req := model.ProjectBlockRequest{Action: model.ProjectBlockActionBlock, Reason: "duplicate", Confirmation: "jarvis-dev", ExportMarker: "export-1"}
 	block := &model.ProjectBlock{CommandID: "cmd-1", Project: "Jarvis Dev", CanonicalProjectKey: "jarvis-dev", Reason: req.Reason, BlockedAt: time.Now().UTC()}
 	callOrder := []string{}
 

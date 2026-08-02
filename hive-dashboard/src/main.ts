@@ -1,4 +1,4 @@
-import { ApiError, createApiClient, projectHealthFilters, type ApiClient, type CapabilityOverviewResponse, type ChangePasswordRequest, type CreateUserRequest, type Memory, type MemoryList, type MemoryListParams, type MemorySearch, type ProjectBlockRequest, type ProjectListParams, type ProjectListResponse, type ProjectSummary, type SyncAttemptSummary, type User } from './api/client'
+import { ApiError, createApiClient, projectBlockActions, projectHealthFilters, type ApiClient, type CapabilityOverviewResponse, type ChangePasswordRequest, type CreateUserRequest, type Memory, type MemoryList, type MemoryListParams, type MemorySearch, type ProjectBlockRequest, type ProjectListParams, type ProjectListResponse, type ProjectSummary, type QuarantineDetailResponse, type QuarantineListResponse, type SyncAttemptSummary, type User } from './api/client'
 import { parseDashboardFilters } from './api/urlFilters'
 import { createSessionStore, type AuthState, type SessionStore } from './auth/session'
 import { renderBrand } from './components/Brand'
@@ -13,6 +13,7 @@ import { renderKnowledgeBrowser } from './views/KnowledgeBrowser'
 import { renderMemories, type MemoryDetailData, type MemoryDetailRoute, type MemoryDetailViewState } from './views/Memories'
 import { renderOverview, type ViewState } from './views/Overview'
 import { renderProjects } from './views/Projects'
+import { createQuarantineController, renderQuarantine, type QuarantineControllerState, type QuarantineViewData } from './views/Quarantine'
 import { renderUsers, type UserManagementActions, type UserManagementActionType } from './views/Users'
 import { renderActivityFeed } from './views/ActivityFeed'
 import './styles.css'
@@ -36,6 +37,7 @@ export type UsersData = { users: User[] }
 export type MemoriesData = { recent: MemoryList; search: MemorySearch }
 export type MemoryDetailStateData = MemoryDetailData
 export type AuditSyncData = SyncAttemptSummary
+export type QuarantinesData = QuarantineViewData
 export type LoadedDashboardData = {
   overview: ViewState<OverviewViewModel>
   users?: ViewState<UsersData>
@@ -45,6 +47,7 @@ export type LoadedDashboardData = {
   projects?: ViewState<ProjectListViewModel>
   activity?: ViewState<ActivityFeedViewModel>
   knowledgeBrowser?: ViewState<KnowledgeDiscoveryData>
+  quarantines?: ViewState<QuarantinesData>
 }
 export type DashboardState = { status: 'loading' } | { status: 'ready'; data: Partial<LoadedDashboardData> }
 
@@ -61,6 +64,10 @@ export type AppActions = {
   onLoadMoreActivity?(): Promise<void>
   onBlockProject?(request: ProjectBlockRequest): Promise<void>
   onChangePassword?(request: ChangePasswordRequest): Promise<void>
+  onQuarantineRelease?(): void
+  onQuarantineNextPage?(): void
+  onQuarantineScroll?(scrollTop: number): void
+  quarantineState?(): QuarantineControllerState | undefined
 }
 
 export type UserManagementState = {
@@ -128,6 +135,24 @@ export const ROUTES: Record<DashboardScreenKey, ScreenRoute> = {
     path: '/dashboard/auditLog',
     load: 'audit',
     render: (vs) => renderAuditSync(vs as ViewState<AuditSyncData>)
+  },
+  quarantines: {
+    path: '/dashboard/quarantines',
+    load: 'quarantines',
+    render: (vs, routePath, actions) => {
+      const runtime = actions.quarantineState?.()
+      return renderQuarantine(vs as ViewState<QuarantinesData>, {
+      selectedProject: runtime?.selectedProject ?? new URLSearchParams(queryFromRoutePath(routePath)).get('project') ?? undefined,
+      filter: runtime?.filter ?? new URLSearchParams(queryFromRoutePath(routePath)).get('filter') ?? '',
+      pendingRelease: runtime?.pendingRelease,
+      message: runtime?.message,
+      scrollTop: runtime?.scrollTop,
+      onSelect: (project) => actions.onNavigate?.(`${ROUTES.quarantines.path}?project=${encodeURIComponent(project)}`),
+      onRelease: () => actions.onQuarantineRelease?.(),
+      onNextPage: () => actions.onQuarantineNextPage?.(),
+      onScrollTop: (scrollTop) => actions.onQuarantineScroll?.(scrollTop)
+    })
+    }
   },
   account: {
     path: '/dashboard/account',
@@ -199,6 +224,7 @@ const SCREEN_TITLES: Record<DashboardScreenKey, [string, string]> = {
   activityFeed:     ['Activity Feed',       'recently saved memory across the team'],
   userManagement:   ['User Management',     'roles, access & governance'],
   auditLog:         ['Audit Log',           'system operations & governance events'],
+  quarantines:      ['Quarantine Center',   'reversible project protection'],
   account:          ['Account',             'password and session security'],
   // Hidden/deferred screens fall back to their nearest visible equivalents
   knowledgeGraph:   ['Hive Overview',       'central memory · live sync · governance'],
@@ -448,6 +474,12 @@ function renderAuthenticatedView(
       actions: userManagementActionsFromAppActions(actions)
     })
   }
+  if (screen === 'quarantines' && auth.user.level !== 'admin') {
+    const denied = document.createElement('p')
+    denied.setAttribute('role', 'alert')
+    denied.textContent = 'Administrator access required.'
+    return denied
+  }
   if (screen === 'memories') {
     const detailRoute = memoryDetailRouteFromPath(routePath)
     return renderMemories(stateFor(state, 'memories') as ViewState<MemoriesData>, {
@@ -667,6 +699,14 @@ async function fetchSlice(key: keyof LoadedDashboardData, api: ApiClient, token:
       const response = await loadProjects(api, token, userLevel, routePath)
       return { status: 'ready', data: projectsFromApi(response) }
     }
+    case 'quarantines': {
+      const list: QuarantineListResponse = await api.quarantines(token)
+      const selected = new URLSearchParams(queryFromRoutePath(routePath)).get('project')
+        ?? list.quarantines[0]?.canonical_project_key
+      const summary = list.quarantines.find((item) => item.canonical_project_key === selected)
+      const detail = summary ? await api.quarantineProgress(token, summary.canonical_project_key, summary.generation) : undefined
+      return { status: 'ready', data: { summaries: list.quarantines, detail } }
+    }
     case 'activity': {
       const result = await Promise.allSettled([api.activity(token, { limit: DEFAULT_ACTIVITY_LIMIT })])
       return activityState(result[0])
@@ -704,7 +744,7 @@ function discoveryListState(result: PromiseSettledResult<MemoryList>): ViewState
 }
 
 function isQuerySensitiveDiscoveryKey(key: keyof LoadedDashboardData): boolean {
-  return key === 'knowledgeBrowser'
+  return key === 'knowledgeBrowser' || key === 'quarantines'
 }
 
 function isQuerySensitiveDiscoveryScreen(screen: DashboardScreenKey): boolean {
@@ -825,6 +865,54 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
   let projectBlockOperationId = 0
   let loginAttemptVersion = 0
   let disposed = false
+  let quarantineController: ReturnType<typeof createQuarantineController> | undefined
+
+  function stopQuarantinePolling(): void {
+    quarantineController?.destroy()
+    quarantineController = undefined
+  }
+
+  function configureQuarantinePolling(state: Extract<AuthState, { status: 'authenticated' }>, screen: DashboardScreenKey): void {
+    if (screen !== 'quarantines' || dashboard.status !== 'ready') {
+      stopQuarantinePolling()
+      return
+    }
+    const slice = dashboard.data.quarantines
+    if (!slice || slice.status !== 'ready' || !slice.data.detail) return
+    const detail = slice.data.detail
+    if (quarantineController?.state.selectedProject === detail.canonical_project_key) {
+      quarantineController.hydrate(detail)
+      return
+    }
+    stopQuarantinePolling()
+    quarantineController = createQuarantineController({
+      fetchDetail: (project, generation, after, signal) => api.quarantineProgress(state.token, project, generation ?? detail.generation, after, signal),
+      release: (releaseDetail, signal) => api.blockProject(state.token, {
+        project: releaseDetail.project,
+        action: projectBlockActions.UNBLOCK,
+        reason: 'Authorized release from Quarantine Center',
+        confirmation: releaseDetail.canonical_project_key
+      }, signal),
+      onReleaseSuccess: () => loadAndRender(state, 'quarantines'),
+      onUnauthorized: () => actions.onLogout(),
+      onUpdate: (next) => {
+        if (disposed || next.detail === undefined || dashboard.status !== 'ready') return
+        const current = session.getState()
+        if (current.status !== 'authenticated' || current.token !== state.token || screenFromPath(currentRoutePath()) !== 'quarantines') return
+        const quarantines = dashboard.data.quarantines
+        if (!quarantines || quarantines.status !== 'ready') return
+        dashboard = { status: 'ready', data: { ...dashboard.data, quarantines: { status: 'ready', data: { ...quarantines.data, detail: next.detail } } } }
+        rerender(current)
+      }
+    })
+    quarantineController.select(detail.canonical_project_key)
+    quarantineController.hydrate(detail)
+    quarantineController.setVisibility(document.hidden)
+    quarantineController.startPolling()
+  }
+
+  const visibilityHandler = () => quarantineController?.setVisibility(document.hidden)
+  document.addEventListener('visibilitychange', visibilityHandler)
 
   const rerender = (state: AuthState) => {
     if (disposed) return
@@ -876,10 +964,12 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
       dashboard = { status: 'loading' }
       userManagementState = {}
       projectBlockState = {}
+      stopQuarantinePolling()
       rerender(session.logout())
     },
     async onNavigate(path) {
       if (disposed) return
+      stopQuarantinePolling()
       history.pushState(null, '', canonicalDashboardRoutePath(path))
       loadVersion += 1
       projectBlockState = {}
@@ -946,7 +1036,17 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     },
     async onBlockProject(request) {
       await runProjectBlock(request)
-    }
+    },
+    onQuarantineRelease() { void quarantineController?.release() },
+    onQuarantineNextPage() {
+      const controller = quarantineController
+      const cursor = controller?.state.nextCursor
+      if (!cursor) return
+      controller.setCursor(cursor)
+      void controller.refresh()
+    },
+    onQuarantineScroll(scrollTop) { quarantineController?.setScrollTop(scrollTop) },
+    quarantineState() { return quarantineController?.state }
   }
 
   async function runProjectBlock(request: ProjectBlockRequest): Promise<void> {
@@ -1143,6 +1243,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     if (discoveryRouteKey !== undefined && (screenFromPath(currentRoutePath()) !== screen || routeAndQueryFromRoutePath(currentRoutePath()) !== discoveryRouteKey)) return
     if (memoryDetailRouteKey !== undefined && memoryDetailRouteKeyForScreen(screen, currentRoutePath()) !== memoryDetailRouteKey) return
     dashboard = loaded
+    configureQuarantinePolling(current, screen)
     rerender(current)
   }
 
@@ -1165,6 +1266,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
       if (discoveryRouteKey !== undefined && (screenFromPath(currentRoutePath()) !== screen || routeAndQueryFromRoutePath(currentRoutePath()) !== discoveryRouteKey)) return
       if (memoryDetailRouteKey !== undefined && memoryDetailRouteKeyForScreen(screen, currentRoutePath()) !== memoryDetailRouteKey) return
       dashboard = loaded
+      configureQuarantinePolling(current, screen)
       rerender(current)
     }
   }
@@ -1172,6 +1274,7 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
   const handler = () => {
     if (disposed) return
     loadVersion += 1
+    stopQuarantinePolling()
     projectBlockState = {}
     const state = session.getState()
     canonicalizeCurrentRoutePath()
@@ -1194,7 +1297,9 @@ export function startDashboardApp(root: HTMLElement, options: StartOptions = {})
     if (disposed) return
     disposed = true
     loadVersion += 1
+    stopQuarantinePolling()
     window.removeEventListener('popstate', handler)
+    document.removeEventListener('visibilitychange', visibilityHandler)
     disposeActivityFeed()
   }
 }

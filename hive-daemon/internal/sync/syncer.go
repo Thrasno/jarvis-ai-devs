@@ -470,6 +470,12 @@ func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy
 		return nil, DrainOutcome{}, fmt.Errorf("autenticación: %w", err)
 	}
 	s.retryPendingProjectBlockAcks(ctx, token)
+	if err := s.applyProjectBlockInbox(ctx, token); err != nil {
+		if recordErr := s.recordFailure(project, health, now, err); recordErr != nil {
+			return nil, DrainOutcome{}, recordErr
+		}
+		return nil, DrainOutcome{}, fmt.Errorf("project block inbox: %w", err)
+	}
 
 	result := &Result{Project: project}
 	outcome := DrainOutcome{}
@@ -694,6 +700,8 @@ func (s *Syncer) handleProjectBlocked(ctx context.Context, token, localProject s
 		Project:             blockedErr.Command.Project,
 		CanonicalProjectKey: blockedErr.Command.CanonicalProjectKey,
 		Reason:              blockedErr.Command.Reason,
+		Action:              blockedErr.Command.Action,
+		Generation:          blockedErr.Command.Generation,
 		BlockedAt:           blockedErr.Command.BlockedAt,
 	}
 	block, err := s.store.RecordProjectBlock(ctx, cmd)
@@ -722,6 +730,43 @@ func (s *Syncer) handleProjectBlocked(ctx context.Context, token, localProject s
 	}
 	if _, err := s.store.RecordProjectBlockAck(ctx, ack); err != nil {
 		return fmt.Errorf("record local project block ack: %w", err)
+	}
+	return nil
+}
+
+func (s *Syncer) applyProjectBlockInbox(ctx context.Context, token string) error {
+	commands, err := s.client.projectBlockInbox(ctx, token)
+	if err != nil {
+		return err
+	}
+	for _, command := range commands {
+		cmd := db.ProjectBlockCommand{CommandID: command.CommandID, AckToken: command.AckToken, Project: command.Project, CanonicalProjectKey: command.CanonicalProjectKey, Reason: command.Reason, Action: command.Action, Generation: command.Generation, BlockedAt: command.BlockedAt}
+		block, err := s.store.RecordProjectBlock(ctx, cmd)
+		if err != nil {
+			return fmt.Errorf("record inbox project block: %w", err)
+		}
+		ack := db.ProjectBlockAck{CommandID: cmd.CommandID, AckToken: cmd.AckToken, CanonicalProjectKey: cmd.CanonicalProjectKey, AppliedAt: s.deps.now().UTC()}
+		if block.CommandID != cmd.CommandID || block.Generation != cmd.Generation {
+			ack.Status = db.ProjectBlockAckSkipped
+		} else {
+			ack.Status = db.ProjectBlockAckApplied
+			quarantine, quarantineErr := s.store.QuarantineBlockedProject(ctx, block.Project, "hive-daemon", "project quarantine inbox command", ack.AppliedAt)
+			if quarantineErr != nil {
+				ack.Status = db.ProjectBlockAckFailed
+				ack.Warning = quarantineErr.Error()
+			} else {
+				ack.Warning = quarantine.Warning
+			}
+		}
+		if err := s.store.RecordPendingProjectBlockAck(ctx, ack); err != nil {
+			return fmt.Errorf("record inbox project block ACK: %w", err)
+		}
+		if err := s.client.ackProjectBlock(ctx, token, ack); err != nil {
+			return fmt.Errorf("report inbox project block ACK: %w", err)
+		}
+		if _, err := s.store.RecordProjectBlockAck(ctx, ack); err != nil {
+			return fmt.Errorf("record inbox project block ACK: %w", err)
+		}
 	}
 	return nil
 }

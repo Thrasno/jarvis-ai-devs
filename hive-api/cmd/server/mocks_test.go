@@ -105,9 +105,27 @@ func (m *mockProjectGovernance) Status(ctx context.Context, project string) (mod
 	args := m.Called(ctx, project)
 	return args.Get(0).(model.ProjectBlockStatusResponse), args.Error(1)
 }
+func (m *mockProjectGovernance) Inbox(ctx context.Context, subject model.ProjectBlockAckSubject) ([]model.ProjectBlockCommand, error) {
+	args := m.Called(ctx, subject)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]model.ProjectBlockCommand), args.Error(1)
+}
 func (m *mockProjectGovernance) Acknowledge(ctx context.Context, ack model.ProjectBlockAck) (model.ProjectBlockAck, error) {
 	args := m.Called(ctx, ack)
 	return args.Get(0).(model.ProjectBlockAck), args.Error(1)
+}
+func (m *mockProjectGovernance) ListQuarantines(ctx context.Context) ([]model.QuarantineSummary, error) {
+	args := m.Called(ctx)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]model.QuarantineSummary), args.Error(1)
+}
+func (m *mockProjectGovernance) QuarantineProgress(ctx context.Context, project string, generation int64, after string, limit int) (model.QuarantineProgressResponse, error) {
+	args := m.Called(ctx, project, generation, after, limit)
+	return args.Get(0).(model.QuarantineProgressResponse), args.Error(1)
 }
 
 type mockAdmin struct{ mock.Mock }

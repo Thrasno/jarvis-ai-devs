@@ -1,6 +1,8 @@
 package model
 
 import (
+	"encoding/base64"
+	"strings"
 	"testing"
 	"time"
 )
@@ -13,10 +15,10 @@ func TestProjectBlockRequestValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:    "valid quarantine request confirms canonical key exactly",
+			name:    "valid block request confirms canonical key exactly",
 			project: "jarvis-dev",
 			req: ProjectBlockRequest{
-				Action:       ProjectBlockActionQuarantine,
+				Action:       ProjectBlockActionBlock,
 				Reason:       "duplicate garbage project",
 				Confirmation: "jarvis-dev",
 				ExportMarker: "export-2026-07-05",
@@ -25,25 +27,25 @@ func TestProjectBlockRequestValidate(t *testing.T) {
 		{
 			name:    "rejects display-name confirmation when canonical key is required",
 			project: "jarvis-dev",
-			req:     ProjectBlockRequest{Action: ProjectBlockActionQuarantine, Reason: "duplicate", Confirmation: "Jarvis Dev", ExportMarker: "export-1"},
+			req:     ProjectBlockRequest{Action: ProjectBlockActionBlock, Reason: "duplicate", Confirmation: "Jarvis Dev", ExportMarker: "export-1"},
 			wantErr: true,
 		},
 		{
 			name:    "rejects confirmation with surrounding whitespace",
 			project: "jarvis-dev",
-			req:     ProjectBlockRequest{Action: ProjectBlockActionQuarantine, Reason: "duplicate", Confirmation: " jarvis-dev ", ExportMarker: "export-1"},
+			req:     ProjectBlockRequest{Action: ProjectBlockActionBlock, Reason: "duplicate", Confirmation: " jarvis-dev ", ExportMarker: "export-1"},
 			wantErr: true,
 		},
 		{
 			name:    "rejects missing reason",
 			project: "jarvis-dev",
-			req:     ProjectBlockRequest{Action: ProjectBlockActionQuarantine, Confirmation: "jarvis-dev", ExportMarker: "export-1"},
+			req:     ProjectBlockRequest{Action: ProjectBlockActionBlock, Confirmation: "jarvis-dev", ExportMarker: "export-1"},
 			wantErr: true,
 		},
 		{
 			name:    "rejects wrong confirmation",
 			project: "jarvis-dev",
-			req:     ProjectBlockRequest{Action: ProjectBlockActionQuarantine, Reason: "duplicate", Confirmation: "other", ExportMarker: "export-1"},
+			req:     ProjectBlockRequest{Action: ProjectBlockActionBlock, Reason: "duplicate", Confirmation: "other", ExportMarker: "export-1"},
 			wantErr: true,
 		},
 	}
@@ -51,6 +53,52 @@ func TestProjectBlockRequestValidate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.req.Validate(tt.project)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
+func TestProjectBlockRequestValidateUsesQuarantineActionsWithoutLegacyExportMarker(t *testing.T) {
+	tests := []struct {
+		name    string
+		req     ProjectBlockRequest
+		wantErr bool
+	}{
+		{
+			name: "accepts block without historical export marker",
+			req: ProjectBlockRequest{
+				Action:       ProjectBlockActionBlock,
+				Reason:       "policy violation",
+				Confirmation: "jarvis-dev",
+			},
+		},
+		{
+			name: "accepts unblock without historical export marker",
+			req: ProjectBlockRequest{
+				Action:       ProjectBlockActionUnblock,
+				Reason:       "release approved",
+				Confirmation: "jarvis-dev",
+			},
+		},
+		{
+			name: "rejects purge intent before a write can happen",
+			req: ProjectBlockRequest{
+				Action:       ProjectBlockActionPurgeIntent,
+				Reason:       "not supported",
+				Confirmation: "jarvis-dev",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.req.Validate("jarvis-dev")
 			if tt.wantErr && err == nil {
 				t.Fatal("expected validation error")
 			}
@@ -150,5 +198,104 @@ func TestProjectBlockCommandRedactedRemovesAckAuthority(t *testing.T) {
 	}
 	if redacted.Reason != "" {
 		t.Fatalf("redacted command leaked reason %q", redacted.Reason)
+	}
+}
+
+func TestProjectBlockCommandValidateRequiresMonotonicLifecycleFacts(t *testing.T) {
+	tests := []struct {
+		name    string
+		command ProjectBlockCommand
+		wantErr bool
+	}{
+		{
+			name: "accepts a generation scoped block command",
+			command: ProjectBlockCommand{
+				CommandID:           "cmd-2",
+				AckToken:            "ack-token-2",
+				Project:             "Jarvis Dev",
+				CanonicalProjectKey: "jarvis-dev",
+				Action:              ProjectBlockActionBlock,
+				Generation:          2,
+			},
+		},
+		{
+			name: "rejects an unsupported legacy action as a new command",
+			command: ProjectBlockCommand{
+				CommandID:           "cmd-2",
+				AckToken:            "ack-token-2",
+				CanonicalProjectKey: "jarvis-dev",
+				Action:              ProjectBlockActionQuarantine,
+				Generation:          2,
+			},
+			wantErr: true,
+		},
+		{
+			name: "rejects a command without a generation",
+			command: ProjectBlockCommand{
+				CommandID:           "cmd-2",
+				AckToken:            "ack-token-2",
+				CanonicalProjectKey: "jarvis-dev",
+				Action:              ProjectBlockActionUnblock,
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.command.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
+func TestQuarantineCursorBindsPaginationToProjectAndGeneration(t *testing.T) {
+	cursor := QuarantineCursor{
+		CanonicalProjectKey: "org-repo",
+		Generation:          7,
+		Username:            "Ada",
+		CursorID:            "opaque-user-ordering-key",
+	}
+
+	decoded, err := DecodeQuarantineCursor(cursor.Encode(), "org-repo", 7)
+	if err != nil {
+		t.Fatalf("DecodeQuarantineCursor() error = %v", err)
+	}
+	if decoded != cursor {
+		t.Fatalf("DecodeQuarantineCursor() = %#v, want %#v", decoded, cursor)
+	}
+
+	for _, target := range []struct {
+		project    string
+		generation int64
+	}{
+		{project: "other-repo", generation: 7},
+		{project: "org-repo", generation: 8},
+	} {
+		if _, err := DecodeQuarantineCursor(cursor.Encode(), target.project, target.generation); err == nil {
+			t.Fatalf("DecodeQuarantineCursor() accepted cursor for %q generation %d", target.project, target.generation)
+		}
+	}
+}
+
+func TestQuarantineCursorDoesNotEmbedAccountID(t *testing.T) {
+	cursor := QuarantineCursor{
+		CanonicalProjectKey: "org-repo",
+		Generation:          7,
+		Username:            "Ada",
+		CursorID:            "opaque-user-ordering-key",
+	}
+
+	encoded, err := base64.RawURLEncoding.DecodeString(cursor.Encode())
+	if err != nil {
+		t.Fatalf("DecodeString() error = %v", err)
+	}
+	if strings.Contains(string(encoded), "user_id") {
+		t.Fatalf("cursor unexpectedly serializes user_id: %s", encoded)
 	}
 }
