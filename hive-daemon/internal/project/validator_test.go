@@ -92,19 +92,25 @@ func TestValidateWriteProject_ExplicitProjectResolution(t *testing.T) {
 			wantCode: project.CodeProjectUnknown,
 		},
 		{
-			name:  "known explicit project passes with canonical name",
-			known: []project.KnownProject{{Name: "jarvis-dev"}},
-			input: project.WriteInput{Project: "Jarvis Dev"},
-			want:  "jarvis-dev",
+			name:  "known explicit project matches with unicode case folding",
+			known: []project.KnownProject{{Name: "Straße"}},
+			input: project.WriteInput{Project: "STRASSE"},
+			want:  "Straße",
 		},
 		{
-			name: "normalized collision fails deterministically",
+			name:     "space is not a substitute for a dash separator",
+			known:    []project.KnownProject{{Name: "jarvis-dev"}},
+			input:    project.WriteInput{Project: "Jarvis Dev"},
+			wantCode: project.CodeProjectUnknown,
+		},
+		{
+			name: "separator variants do not collide",
 			known: []project.KnownProject{
 				{Name: "jarvis-dev"},
 				{Name: "jarvis_dev"},
 			},
 			input:    project.WriteInput{Project: "jarvis dev"},
-			wantCode: project.CodeProjectAmbiguous,
+			wantCode: project.CodeProjectUnknown,
 		},
 	}
 
@@ -233,11 +239,11 @@ func TestValidateWriteProject_SessionProjectMismatchFails(t *testing.T) {
 func TestValidateWriteProject_AmbiguityIssuesRecoveryToken(t *testing.T) {
 	store := &fakeStore{known: []project.KnownProject{
 		{Name: "jarvis-dev", Directory: "/repo/jarvis"},
-		{Name: "jarvis.dev", Directory: "/repo/dot"},
+		{Name: "JARVIS-DEV", Directory: "/repo/upper"},
 	}}
 	now := time.Date(2026, 5, 9, 18, 0, 0, 0, time.UTC)
 
-	_, err := project.ValidateWriteProjectWithConfig(context.Background(), store, project.WriteInput{Project: "jarvis dev", SessionID: "sess-1"}, project.ValidationConfig{
+	_, err := project.ValidateWriteProjectWithConfig(context.Background(), store, project.WriteInput{Project: "Jarvis-Dev", SessionID: "sess-1"}, project.ValidationConfig{
 		Now:      func() time.Time { return now },
 		TokenTTL: 15 * time.Minute,
 	})
@@ -258,8 +264,8 @@ func TestValidateWriteProject_AmbiguityIssuesRecoveryToken(t *testing.T) {
 	if len(store.createdTokens) != 1 {
 		t.Fatalf("created token requests = %d, want 1", len(store.createdTokens))
 	}
-	if store.createdTokens[0].RequestedProject != "jarvis dev" {
-		t.Fatalf("requested project = %q, want jarvis dev", store.createdTokens[0].RequestedProject)
+	if store.createdTokens[0].RequestedProject != "Jarvis-Dev" {
+		t.Fatalf("requested project = %q, want Jarvis-Dev", store.createdTokens[0].RequestedProject)
 	}
 }
 

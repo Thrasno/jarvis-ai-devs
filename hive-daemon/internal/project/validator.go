@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 )
 
 type ErrorCode string
@@ -319,13 +321,7 @@ func resolveByDirectory(known []KnownProject, requested string) (string, []Candi
 }
 
 func normalizeName(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	replacer := strings.NewReplacer("_", "-", " ", "-", ".", "-")
-	s = replacer.Replace(s)
-	for strings.Contains(s, "--") {
-		s = strings.ReplaceAll(s, "--", "-")
-	}
-	return strings.Trim(s, "-")
+	return projectidentity.Canonical(s).String()
 }
 
 func canonicalPath(path string) string {

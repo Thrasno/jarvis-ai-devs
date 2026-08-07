@@ -1,16 +1,8 @@
 package projectkey
 
-import (
-	"regexp"
-	"strings"
-)
-
-var separatorRun = regexp.MustCompile(`[^a-z0-9.]+`)
+import "github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 
 // Canonicalize returns the stable project key used by API tombstones.
 func Canonicalize(project string) string {
-	key := strings.ToLower(strings.TrimSpace(project))
-	key = separatorRun.ReplaceAllString(key, "-")
-	key = strings.Trim(key, "-")
-	return key
+	return projectidentity.Canonical(project).String()
 }

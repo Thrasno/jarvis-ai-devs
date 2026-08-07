@@ -9,10 +9,11 @@ func TestCanonicalize(t *testing.T) {
 		want string
 	}{
 		{name: "trims and lowercases", in: "  Jarvis-Dev  ", want: "jarvis-dev"},
-		{name: "collapses whitespace to dash", in: "My Garbage Project", want: "my-garbage-project"},
-		{name: "normalizes underscores and path separators", in: "Team_Project/Feature", want: "team-project-feature"},
-		{name: "removes duplicate separators", in: "Team---Project___Feature", want: "team-project-feature"},
-		{name: "preserves dots in names", in: "github.com/Org/Repo", want: "github.com-org-repo"},
+		{name: "preserves interior whitespace", in: "My Garbage Project", want: "my garbage project"},
+		{name: "preserves underscore and slash separators", in: "Team_Project/Feature", want: "team_project/feature"},
+		{name: "preserves repeated separators", in: "Team---Project___Feature", want: "team---project___feature"},
+		{name: "preserves dots and slashes", in: "github.com/Org/Repo", want: "github.com/org/repo"},
+		{name: "uses unicode case folding", in: "Straße", want: "strasse"},
 	}
 
 	for _, tt := range tests {
