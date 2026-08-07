@@ -70,6 +70,61 @@ func TestProjectMigrationExecutorRejectsStaleFingerprint(t *testing.T) {
 	}
 }
 
+func TestProjectMigrationExecutorRekeysSafeFullState(t *testing.T) {
+	database := newMigrationExecutorDB(t)
+	project := " Foo.Bar "
+	seedMigrationProject(t, database, project)
+	for _, statement := range []string{
+		`INSERT INTO sync_state (project) VALUES (?)`,
+		`INSERT INTO memory_mutations (event_id, entity_sync_id, project, op) VALUES ('event', 'memory-sync', ?, 'save')`,
+		`INSERT INTO mutation_receipts (request_id, operation, target_id, project, entity_sync_id, event_id, local_status, shared_status) VALUES ('request', 'save', 1, ?, 'memory-sync', 'event', 'done', 'done')`,
+		`INSERT INTO user_prompts (sync_id, project, content) VALUES ('prompt', ?, 'content')`,
+		`INSERT INTO passive_observations (project, content) VALUES (?, 'content')`,
+		`INSERT INTO sync_attempt_logs (attempt_id, project, started_at, ended_at, outcome) VALUES ('attempt', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'success')`,
+		`INSERT INTO recovery_tokens (token, reason, requested_project, candidates_json, context_hash, created_at, expires_at) VALUES ('token', 'reason', ?, '[]', 'hash', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+	} {
+		if _, err := database.sqlDB.Exec(statement, project); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan, err := ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil {
+		t.Fatalf("ReadProjectMigrationPlan() error = %v", err)
+	}
+	fail := errors.New("rollback all project state")
+	if err := ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error { return nil }, func() error { return fail }); !errors.Is(err, fail) {
+		t.Fatalf("ExecuteProjectMigration() error = %v, want failpoint", err)
+	}
+	for _, table := range []string{"sync_state", "memory_mutations", "mutation_receipts", "user_prompts", "passive_observations", "sync_attempt_logs"} {
+		var count int
+		if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM `+table+` WHERE project = ?`, project).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("%s rollback rows = %d, want 1", table, count)
+		}
+	}
+	if err := ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error { return nil }, nil); err != nil {
+		t.Fatalf("ExecuteProjectMigration() error = %v", err)
+	}
+	for _, table := range []string{"sync_state", "memory_mutations", "mutation_receipts", "user_prompts", "passive_observations", "sync_attempt_logs"} {
+		var count int
+		if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM ` + table + ` WHERE project = 'foo-bar'`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("%s canonical rows = %d, want 1", table, count)
+		}
+	}
+	var requestedProject string
+	if err := database.sqlDB.QueryRow(`SELECT requested_project FROM recovery_tokens WHERE token = 'token'`).Scan(&requestedProject); err != nil {
+		t.Fatal(err)
+	}
+	if requestedProject != "foo-bar" {
+		t.Fatalf("recovery token project = %q, want canonical spelling", requestedProject)
+	}
+}
+
 func newMigrationExecutorDB(t *testing.T) *DB {
 	t.Helper()
 	database, err := Open(":memory:")

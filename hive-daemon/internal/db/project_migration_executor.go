@@ -25,9 +25,9 @@ func ReadProjectMigrationPlan(ctx context.Context, database *DB) (ProjectMigrati
 	return BuildProjectMigrationPlan(records), nil
 }
 
-// ExecuteProjectMigration performs the narrow, lossless SQLite executor core.
-// It currently rekeys only memories and sessions; all other non-canonical state
-// is rejected rather than guessed at or partially mutated.
+// ExecuteProjectMigration rekeys the lossless subset of SQLite project state in
+// one transaction. States with composite identity or governance semantics remain
+// deliberately unsupported until their deterministic coalescing rules exist.
 func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigrationPlan, backup func(context.Context) error, failpoint func() error) error {
 	if !plan.Executable || len(plan.Conflicts) != 0 {
 		return ErrProjectMigrationPlanUnsafe
@@ -62,11 +62,12 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 	}
 	// Re-key each raw spelling separately: SQLite deliberately does not derive keys.
 	for _, record := range records {
-		if record.Table != ProjectStateMemories && record.Table != ProjectStateSessions {
+		column, ok := rekeyableProjectColumns[record.Table]
+		if !ok {
 			continue
 		}
 		key := projectidentity.Canonical(record.Project).String()
-		if _, err := tx.ExecContext(ctx, `UPDATE `+string(record.Table)+` SET project = ? WHERE project = ?`, key, record.Project); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE `+string(record.Table)+` SET `+column+` = ? WHERE `+column+` = ?`, key, record.Project); err != nil {
 			return err
 		}
 	}
@@ -89,11 +90,26 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 
 func requireSupportedProjectMigration(records []ProjectStateRecord) error {
 	for _, record := range records {
-		if projectidentity.Canonical(record.Project).String() != record.Project && record.Table != ProjectStateMemories && record.Table != ProjectStateSessions {
+		if projectidentity.Canonical(record.Project).String() != record.Project {
+			if _, ok := rekeyableProjectColumns[record.Table]; ok {
+				continue
+			}
 			return fmt.Errorf("%w: %s", ErrProjectMigrationUnsupported, record.Table)
 		}
 	}
 	return nil
+}
+
+var rekeyableProjectColumns = map[ProjectState]string{
+	ProjectStateMemories:            "project",
+	ProjectStateSessions:            "project",
+	ProjectStateSyncState:           "project",
+	ProjectStateMemoryMutations:     "project",
+	ProjectStateMutationReceipts:    "project",
+	ProjectStatePrompts:             "project",
+	ProjectStatePassiveObservations: "project",
+	ProjectStateSyncAttempts:        "project",
+	ProjectStateRecoveryTokens:      "requested_project",
 }
 
 type projectMigrationQuerier interface {
