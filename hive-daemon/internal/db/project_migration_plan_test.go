@@ -21,18 +21,18 @@ func TestProjectMigrationPlanInventoryAndDisplayPrecedence(t *testing.T) {
 
 	oldest := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	plan := BuildProjectMigrationPlan([]ProjectStateRecord{
-		{Table: ProjectStateMemories, Project: " Foo.Bar ", Identity: "memory-1", Value: "same", RegisteredAt: oldest.Add(time.Hour), StableID: "2"},
-		{Table: ProjectStateMemories, Project: "foo.bar", Identity: "memory-1", Value: "same", RegisteredAt: oldest, StableID: "1"},
+		{Table: ProjectStateMemories, Project: " Foo Bar ", Identity: "memory-1", Value: "same", RegisteredAt: oldest.Add(time.Hour), StableID: "2"},
+		{Table: ProjectStateMemories, Project: "foo/bar", Identity: "memory-1", Value: "same", RegisteredAt: oldest, StableID: "1"},
 		{Table: ProjectStateSessions, Project: "FOO_BAR", Identity: "session-1", Value: "same", RegisteredAt: oldest, StableID: "3", RemoteDisplay: "Foo_Bar"},
 	})
-	if !plan.Executable || len(plan.Groups) != 2 {
-		t.Fatalf("plan = %#v, want two executable groups", plan)
+	if !plan.Executable || len(plan.Groups) != 1 {
+		t.Fatalf("plan = %#v, want one executable group", plan)
 	}
-	if got := plan.Groups[0]; got.Key != "foo.bar" || got.Display != "foo.bar" || got.DisplaySource != DisplaySourceOldestRegistration || got.Coalesced != 1 {
-		t.Fatalf("first group = %#v", got)
+	if got := plan.Groups[0]; got.Key != "foo-bar" || got.Display != "Foo_Bar" || got.DisplaySource != DisplaySourceRemote || got.Records != 3 || got.Coalesced != 1 {
+		t.Fatalf("group = %#v", got)
 	}
-	if got := plan.Groups[1]; got.Key != "foo_bar" || got.Display != "Foo_Bar" || got.DisplaySource != DisplaySourceRemote {
-		t.Fatalf("second group = %#v", got)
+	if got := plan.Actions; !reflect.DeepEqual(got, []ProjectMigrationAction{{Key: "foo-bar"}}) {
+		t.Fatalf("Actions = %#v, want one canonical action", got)
 	}
 }
 
