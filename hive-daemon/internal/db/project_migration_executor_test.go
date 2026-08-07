@@ -125,6 +125,65 @@ func TestProjectMigrationExecutorRekeysSafeFullState(t *testing.T) {
 	}
 }
 
+func TestProjectMigrationExecutorCoalescesCompositeCursors(t *testing.T) {
+	database := newMigrationExecutorDB(t)
+	seedMigrationProject(t, database, " Foo.Bar ")
+	for _, statement := range []string{
+		`INSERT INTO mutation_cursors (consumer, project, sequence, event_id) VALUES ('daemon', ' Foo.Bar ', 4, 'event-4')`,
+		`INSERT INTO mutation_cursors (consumer, project, sequence, event_id) VALUES ('daemon', 'foo/bar', 7, 'event-7')`,
+		`INSERT INTO pull_cursors (consumer, project, channel, synced_at, sync_id) VALUES ('daemon', ' Foo.Bar ', 'memories', '2026-01-01T00:00:00Z', 'pull-1')`,
+		`INSERT INTO pull_cursors (consumer, project, channel, synced_at, sync_id) VALUES ('daemon', 'foo/bar', 'memories', '2026-01-02T00:00:00Z', 'pull-2')`,
+	} {
+		if _, err := database.sqlDB.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan, err := ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error { return nil }, nil); err != nil {
+		t.Fatalf("ExecuteProjectMigration() error = %v", err)
+	}
+	for _, query := range []string{
+		`SELECT COUNT(*) FROM mutation_cursors WHERE project = 'foo-bar' AND sequence = 7 AND event_id = 'event-7'`,
+		`SELECT COUNT(*) FROM pull_cursors WHERE project = 'foo-bar' AND sync_id = 'pull-2'`,
+	} {
+		var count int
+		if err := database.sqlDB.QueryRow(query).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("%s count = %d, want 1", query, count)
+		}
+	}
+}
+
+func TestProjectMigrationExecutorRejectsAmbiguousCompositeCursor(t *testing.T) {
+	database := newMigrationExecutorDB(t)
+	seedMigrationProject(t, database, "Foo")
+	for _, project := range []string{"Foo", "foo"} {
+		if _, err := database.sqlDB.Exec(`INSERT INTO mutation_cursors (consumer, project, sequence, event_id) VALUES ('daemon', ?, 7, ?)`, project, "event-"+project); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan, err := ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error { return nil }, nil)
+	if !errors.Is(err, ErrProjectMigrationConflict) {
+		t.Fatalf("ExecuteProjectMigration() error = %v, want composite conflict", err)
+	}
+	var count int
+	if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM mutation_cursors WHERE project IN ('Foo', 'foo')`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("cursor rows after conflict = %d, want 2", count)
+	}
+}
+
 func newMigrationExecutorDB(t *testing.T) *DB {
 	t.Helper()
 	database, err := Open(":memory:")

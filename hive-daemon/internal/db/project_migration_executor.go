@@ -13,6 +13,7 @@ var (
 	ErrProjectMigrationPlanUnsafe  = errors.New("project migration plan is not executable")
 	ErrProjectMigrationPlanStale   = errors.New("project migration plan changed before execution")
 	ErrProjectMigrationUnsupported = errors.New("project migration contains unsupported state")
+	ErrProjectMigrationConflict    = errors.New("project migration contains an unmergeable composite row")
 )
 
 // ReadProjectMigrationPlan inventories every known daemon-local project-bearing
@@ -25,9 +26,9 @@ func ReadProjectMigrationPlan(ctx context.Context, database *DB) (ProjectMigrati
 	return BuildProjectMigrationPlan(records), nil
 }
 
-// ExecuteProjectMigration rekeys the lossless subset of SQLite project state in
-// one transaction. States with composite identity or governance semantics remain
-// deliberately unsupported until their deterministic coalescing rules exist.
+// ExecuteProjectMigration rekeys the lossless SQLite subset in one transaction.
+// Cursor heads coalesce by their explicit ordering fields; remaining governance
+// composites stay unsupported until their deterministic rules exist.
 func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigrationPlan, backup func(context.Context) error, failpoint func() error) error {
 	if !plan.Executable || len(plan.Conflicts) != 0 {
 		return ErrProjectMigrationPlanUnsafe
@@ -59,6 +60,9 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 	}
 	if BuildProjectMigrationPlan(records).Fingerprint != plan.Fingerprint {
 		return ErrProjectMigrationPlanStale
+	}
+	if err := rekeyCompositeCursors(ctx, tx); err != nil {
+		return err
 	}
 	// Re-key each raw spelling separately: SQLite deliberately does not derive keys.
 	for _, record := range records {
@@ -110,6 +114,8 @@ var rekeyableProjectColumns = map[ProjectState]string{
 	ProjectStatePassiveObservations: "project",
 	ProjectStateSyncAttempts:        "project",
 	ProjectStateRecoveryTokens:      "requested_project",
+	ProjectStateMutationCursors:     "project",
+	ProjectStatePullCursors:         "project",
 }
 
 type projectMigrationQuerier interface {
@@ -126,8 +132,8 @@ func readProjectMigrationRecords(ctx context.Context, queryer projectMigrationQu
 		{ProjectStateSyncState, `SELECT project, project, project FROM sync_state WHERE project != '__auth__'`},
 		{ProjectStateMemoryMutations, `SELECT project, event_id, CAST(sequence AS TEXT) FROM memory_mutations`},
 		{ProjectStateMutationReceipts, `SELECT project, request_id, event_id FROM mutation_receipts`},
-		{ProjectStateMutationCursors, `SELECT project, consumer, event_id FROM mutation_cursors`},
-		{ProjectStatePullCursors, `SELECT project, consumer || ':' || channel, sync_id FROM pull_cursors`},
+		{ProjectStateMutationCursors, `SELECT project, consumer || ':' || CAST(sequence AS TEXT) || ':' || event_id, event_id FROM mutation_cursors`},
+		{ProjectStatePullCursors, `SELECT project, consumer || ':' || channel || ':' || synced_at || ':' || sync_id, sync_id FROM pull_cursors`},
 		{ProjectStatePrompts, `SELECT project, sync_id, CAST(id AS TEXT) FROM user_prompts`},
 		{ProjectStateAliases, `SELECT source_project, source_project, target_project FROM project_aliases`},
 		{ProjectStateBlocks, `SELECT project, canonical_project_key, command_id FROM project_blocks`},
@@ -162,4 +168,106 @@ func readProjectMigrationRecords(ctx context.Context, queryer projectMigrationQu
 		_ = rows.Close()
 	}
 	return records, nil
+}
+
+type migrationMutationCursor struct {
+	consumer, project, eventID, updatedAt string
+	sequence                              int64
+}
+
+type migrationPullCursor struct {
+	consumer, project, channel, syncedAt, syncID, updatedAt string
+}
+
+func rekeyCompositeCursors(ctx context.Context, tx *sql.Tx) error {
+	mutation, err := readMutationCursors(ctx, tx)
+	if err != nil {
+		return err
+	}
+	pull, err := readPullCursors(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if err := replaceMutationCursors(ctx, tx, mutation); err != nil {
+		return err
+	}
+	return replacePullCursors(ctx, tx, pull)
+}
+
+func readMutationCursors(ctx context.Context, tx *sql.Tx) (map[string]migrationMutationCursor, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT consumer, project, sequence, event_id, updated_at FROM mutation_cursors`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	result := map[string]migrationMutationCursor{}
+	for rows.Next() {
+		var cursor migrationMutationCursor
+		if err := rows.Scan(&cursor.consumer, &cursor.project, &cursor.sequence, &cursor.eventID, &cursor.updatedAt); err != nil {
+			return nil, err
+		}
+		cursor.project = projectidentity.Canonical(cursor.project).String()
+		key := cursor.consumer + "\x00" + cursor.project
+		if prior, ok := result[key]; ok {
+			if prior.sequence == cursor.sequence && prior.eventID != cursor.eventID {
+				return nil, fmt.Errorf("%w: mutation_cursors %s", ErrProjectMigrationConflict, key)
+			}
+			if prior.sequence >= cursor.sequence {
+				continue
+			}
+		}
+		result[key] = cursor
+	}
+	return result, rows.Err()
+}
+
+func replaceMutationCursors(ctx context.Context, tx *sql.Tx, cursors map[string]migrationMutationCursor) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM mutation_cursors`); err != nil {
+		return err
+	}
+	for _, cursor := range cursors {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO mutation_cursors (consumer, project, sequence, event_id, updated_at) VALUES (?, ?, ?, ?, ?)`, cursor.consumer, cursor.project, cursor.sequence, cursor.eventID, cursor.updatedAt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func readPullCursors(ctx context.Context, tx *sql.Tx) (map[string]migrationPullCursor, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT consumer, project, channel, synced_at, sync_id, updated_at FROM pull_cursors`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	result := map[string]migrationPullCursor{}
+	for rows.Next() {
+		var cursor migrationPullCursor
+		if err := rows.Scan(&cursor.consumer, &cursor.project, &cursor.channel, &cursor.syncedAt, &cursor.syncID, &cursor.updatedAt); err != nil {
+			return nil, err
+		}
+		cursor.project = projectidentity.Canonical(cursor.project).String()
+		key := cursor.consumer + "\x00" + cursor.project + "\x00" + cursor.channel
+		if prior, ok := result[key]; ok {
+			if prior.syncedAt == cursor.syncedAt && prior.syncID != cursor.syncID {
+				return nil, fmt.Errorf("%w: pull_cursors %s", ErrProjectMigrationConflict, key)
+			}
+			if prior.syncedAt >= cursor.syncedAt {
+				continue
+			}
+		}
+		result[key] = cursor
+	}
+	return result, rows.Err()
+}
+
+func replacePullCursors(ctx context.Context, tx *sql.Tx, cursors map[string]migrationPullCursor) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM pull_cursors`); err != nil {
+		return err
+	}
+	for _, cursor := range cursors {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO pull_cursors (consumer, project, channel, synced_at, sync_id, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, cursor.consumer, cursor.project, cursor.channel, cursor.syncedAt, cursor.syncID, cursor.updatedAt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
