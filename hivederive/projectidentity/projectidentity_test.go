@@ -25,6 +25,16 @@ func TestCanonicalConformanceVectors(t *testing.T) {
 	}
 }
 
+func TestCanonicalPreservesHistoricalSeparatorEquivalence(t *testing.T) {
+	for _, input := range []string{" Foo.Bar ", "foo/bar", "foo_bar", "foo-bar", "FOO BAR"} {
+		t.Run(input, func(t *testing.T) {
+			if got, want := projectidentity.Canonical(input).String(), "foo-bar"; got != want {
+				t.Fatalf("Canonical(%q) = %q, want %q", input, got, want)
+			}
+		})
+	}
+}
+
 func TestDisplayNamePrecedence(t *testing.T) {
 	oldest := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	newest := oldest.Add(time.Hour)

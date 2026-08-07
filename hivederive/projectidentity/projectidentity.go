@@ -17,7 +17,17 @@ type Key string
 
 // Canonical returns the contract key for a project spelling.
 func Canonical(project string) Key {
-	return Key(fold.String(strings.TrimSpace(project)))
+	parts := strings.FieldsFunc(fold.String(strings.TrimSpace(project)), isSeparator)
+	return Key(strings.Join(parts, "-"))
+}
+
+func isSeparator(r rune) bool {
+	switch r {
+	case ' ', '/', '_', '.', '-':
+		return true
+	default:
+		return false
+	}
 }
 
 func (key Key) String() string {
@@ -37,11 +47,12 @@ func ConformanceVectors() []Vector {
 }
 
 var conformanceVectors = []Vector{
-	{Name: "trims outer whitespace", Input: " Foo.Bar ", Want: "foo.bar"},
+	{Name: "trims outer whitespace and folds dots", Input: " Foo.Bar ", Want: "foo-bar"},
 	{Name: "folds unicode case", Input: "Straße", Want: "strasse"},
-	{Name: "preserves dot separator", Input: "foo.bar", Want: "foo.bar"},
-	{Name: "preserves underscore separator", Input: "foo_bar", Want: "foo_bar"},
-	{Name: "preserves dash separator", Input: "foo-bar", Want: "foo-bar"},
+	{Name: "folds slash separator", Input: "foo/bar", Want: "foo-bar"},
+	{Name: "folds underscore separator", Input: "foo_bar", Want: "foo-bar"},
+	{Name: "folds dash separator", Input: "foo-bar", Want: "foo-bar"},
+	{Name: "collapses separator runs", Input: "foo---bar___baz", Want: "foo-bar-baz"},
 }
 
 // Registration records a project spelling observed at a point in time.

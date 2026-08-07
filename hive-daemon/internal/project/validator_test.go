@@ -98,19 +98,19 @@ func TestValidateWriteProject_ExplicitProjectResolution(t *testing.T) {
 			want:  "Straße",
 		},
 		{
-			name:     "space is not a substitute for a dash separator",
-			known:    []project.KnownProject{{Name: "jarvis-dev"}},
-			input:    project.WriteInput{Project: "Jarvis Dev"},
-			wantCode: project.CodeProjectUnknown,
+			name:  "space is a substitute for a dash separator",
+			known: []project.KnownProject{{Name: "jarvis-dev"}},
+			input: project.WriteInput{Project: "Jarvis Dev"},
+			want:  "jarvis-dev",
 		},
 		{
-			name: "separator variants do not collide",
+			name: "separator variants collide and require recovery",
 			known: []project.KnownProject{
 				{Name: "jarvis-dev"},
 				{Name: "jarvis_dev"},
 			},
 			input:    project.WriteInput{Project: "jarvis dev"},
-			wantCode: project.CodeProjectUnknown,
+			wantCode: project.CodeProjectAmbiguous,
 		},
 	}
 
