@@ -6,7 +6,7 @@ const MigrationStateReady = "ready"
 const MigrationStateBlocked = "migration-blocked"
 
 const defaultMigrationBlockedReason = "migration status is unavailable"
-const defaultMigrationContinuation = "hive project identity resolve then retry"
+const defaultMigrationContinuation = "hive project identity status"
 
 // MigrationStatus is the boundary-neutral contract every Hive access surface
 // can use to fail closed while migration governance is unresolved.
@@ -35,9 +35,7 @@ func NewMigrationGate(status MigrationStatus) *MigrationGate {
 		if status.Reason == "" {
 			status.Reason = defaultMigrationBlockedReason
 		}
-		if status.Continuation == "" {
-			status.Continuation = defaultMigrationContinuation
-		}
+		status.Continuation = defaultMigrationContinuation
 	}
 	return &MigrationGate{status: status}
 }

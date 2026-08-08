@@ -35,7 +35,7 @@ func TestMigrationGateBlocksHTTPMemoryAndSessionServicesButLeavesGovernanceReach
 		State:        project.MigrationStateBlocked,
 		Reason:       "duplicate canonical project",
 		BackupID:     "backup-42",
-		Continuation: "hive project identity resolve then retry",
+		Continuation: "hive project identity status",
 	}))
 
 	for _, tt := range []struct {
@@ -84,13 +84,35 @@ func TestMigrationGateAllowsHTTPMemoryServiceWhenReady(t *testing.T) {
 	}
 }
 
+func TestMigrationGateExposesIdentityStatusThroughGovernance(t *testing.T) {
+	srv := httpapi.NewServer("127.0.0.1:0", &mockPromptStore{})
+	srv.SetMigrationGate(project.NewMigrationGate(project.MigrationStatus{
+		State:        project.MigrationStateBlocked,
+		Reason:       "duplicate canonical project",
+		BackupID:     "migration-backup-1",
+		Continuation: "hive project identity status",
+	}))
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/governance/project-identity/status", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var status project.MigrationStatus
+	if err := json.NewDecoder(rr.Body).Decode(&status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if status.State != project.MigrationStateBlocked || status.BackupID != "migration-backup-1" || status.Continuation == "" {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
 func assertMigrationBlockedHTTP(t *testing.T, rr *httptest.ResponseRecorder) {
 	t.Helper()
 	var body project.MigrationStatus
 	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
 		t.Fatalf("decode blocked response: %v", err)
 	}
-	if body.State != project.MigrationStateBlocked || body.Reason != "duplicate canonical project" || body.BackupID != "backup-42" || body.Continuation != "hive project identity resolve then retry" {
+	if body.State != project.MigrationStateBlocked || body.Reason != "duplicate canonical project" || body.BackupID != "backup-42" || body.Continuation != "hive project identity status" {
 		t.Fatalf("blocked response = %#v", body)
 	}
 }

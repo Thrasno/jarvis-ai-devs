@@ -14,7 +14,7 @@ func TestMigrationGateBlocksEveryMCPMemoryToolWithStructuredRecovery(t *testing.
 		State:        project.MigrationStateBlocked,
 		Reason:       "duplicate canonical project",
 		BackupID:     "backup-42",
-		Continuation: "hive project identity resolve then retry",
+		Continuation: "hive project identity status",
 	})
 	session := connectMigrationGateServer(t, gate)
 
@@ -39,7 +39,7 @@ func TestMigrationGateBlocksEveryMCPMemoryToolWithStructuredRecovery(t *testing.
 				t.Fatalf("%s unexpectedly succeeded", tt.name)
 			}
 			body := decodeJSONResponse(t, res)
-			if body["state"] != project.MigrationStateBlocked || body["reason"] != "duplicate canonical project" || body["backup_id"] != "backup-42" || body["continuation"] != "hive project identity resolve then retry" {
+			if body["state"] != project.MigrationStateBlocked || body["reason"] != "duplicate canonical project" || body["backup_id"] != "backup-42" || body["continuation"] != "hive project identity status" {
 				t.Fatalf("blocked response = %#v", body)
 			}
 		})

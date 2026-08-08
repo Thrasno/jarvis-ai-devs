@@ -143,6 +143,7 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 		s.memories = ms
 	}
 	s.mux = http.NewServeMux()
+	s.mux.HandleFunc("GET /governance/project-identity/status", s.handleMigrationIdentityStatus)
 	s.mux.HandleFunc("/prompts", s.handlePrompts)
 	// Latest-save lookup (hook-initiated memory reminder). Registered
 	// unconditionally — handler is nil-safe on s.memories.
@@ -194,6 +195,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.mux.ServeHTTP(w, r)
+}
+
+func (s *Server) handleMigrationIdentityStatus(w http.ResponseWriter, _ *http.Request) {
+	if s.gate == nil {
+		writeJSON(w, http.StatusOK, project.MigrationStatus{State: project.MigrationStateReady})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.gate.Status())
 }
 
 // Start launches the HTTP listener as a goroutine and wires ctx cancellation

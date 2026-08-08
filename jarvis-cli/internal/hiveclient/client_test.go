@@ -33,6 +33,45 @@ func TestClientListsProjectsFromGovernanceEndpoint(t *testing.T) {
 	}
 }
 
+func TestClientReadsMigrationIdentityStatusAndRequestsRollback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/governance/project-identity/status":
+			if r.Method != http.MethodGet {
+				t.Fatalf("method = %s, want GET", r.Method)
+			}
+			_, _ = w.Write([]byte(`{"state":"migration-blocked","reason":"duplicate canonical project","backup_id":"migration-backup-1","conflicts":["project_aliases"],"variants":["Foo-Bar"]}`))
+		case "/governance/restores":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method = %s, want POST", r.Method)
+			}
+			var request map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatalf("decode rollback: %v", err)
+			}
+			if request["backup_id"] != "migration-backup-1" || request["confirmation"] != "RESTORE migration-backup-1" {
+				t.Fatalf("rollback = %#v, want exact explicit selection", request)
+			}
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	status, err := client.MigrationIdentityStatus(context.Background())
+	if err != nil || status.BackupID != "migration-backup-1" || len(status.Conflicts) != 1 || len(status.Variants) != 1 {
+		t.Fatalf("status = %+v, err = %v", status, err)
+	}
+	if err := client.RestoreMigrationBackup(context.Background(), "migration-backup-1", "RESTORE migration-backup-1"); err != nil {
+		t.Fatalf("RestoreMigrationBackup: %v", err)
+	}
+}
+
 func TestClientExecutesGuardWithExactConfirmation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/governance/guards/execute" {

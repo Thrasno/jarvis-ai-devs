@@ -434,11 +434,11 @@ func TestRunStartupMigrationBlocksAndPersistsContinuationOnFailure(t *testing.T)
 		t.Fatalf("migration gate error = %v, want migration-blocked", err)
 	}
 	status := gate.Status()
-	if status.State != "migration-blocked" || status.Reason != failure.Error() || status.Continuation != "hive project identity resolve then retry" {
+	if status.State != "migration-blocked" || status.Reason != failure.Error() || status.Continuation != "hive project identity status" {
 		t.Fatalf("migration status = %+v, want blocked structured continuation", status)
 	}
 	warnings, err := store.ListHiveWarnings(db.HiveWarningFilter{ResolutionState: "active"})
-	if err != nil || len(warnings) != 1 || !strings.Contains(warnings[0].Message, `"state":"migration-blocked"`) {
+	if err != nil || len(warnings) != 1 || !strings.Contains(warnings[0].Message, `"continuation":"hive project identity status"`) || strings.Contains(warnings[0].Message, " then ") {
 		t.Fatalf("persisted migration warning = %v, %v", warnings, err)
 	}
 }
@@ -464,7 +464,7 @@ func TestRunStartupMigrationAmbiguityRetainsDatabaseAndBackup(t *testing.T) {
 		t.Fatalf("migration ambiguity gate = %v, want migration-blocked", err)
 	}
 	status := gate.Status()
-	if status.BackupID == "" || status.Continuation != "hive project identity resolve then retry" {
+	if status.BackupID == "" || status.Continuation != "hive project identity status" {
 		t.Fatalf("migration ambiguity status = %+v, want retained backup and continuation", status)
 	}
 	var cursorCount int

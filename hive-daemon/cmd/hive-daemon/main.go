@@ -143,7 +143,7 @@ func runStartupMigrationWithBackup(ctx context.Context, store *db.DB, execute fu
 	status := project.MigrationStatus{
 		State:        project.MigrationStateBlocked,
 		Reason:       err.Error(),
-		Continuation: "hive project identity resolve then retry",
+		Continuation: "hive project identity status",
 	}
 	if backupID != nil {
 		status.BackupID = backupID()

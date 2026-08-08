@@ -109,6 +109,17 @@ type Backup struct {
 	SizeBytes    int64     `json:"size_bytes"`
 }
 
+// MigrationIdentityStatus is the recovery state exposed while normal Hive
+// operations are blocked by canonical project identity migration.
+type MigrationIdentityStatus struct {
+	State        string   `json:"state"`
+	Reason       string   `json:"reason,omitempty"`
+	Continuation string   `json:"continuation,omitempty"`
+	BackupID     string   `json:"backup_id,omitempty"`
+	Conflicts    []string `json:"conflicts,omitempty"`
+	Variants     []string `json:"variants,omitempty"`
+}
+
 // Capabilities is the daemon's advertised guarded-mutation safety contract.
 // The UI must require all fields before enabling delete or restore.
 type Capabilities struct {
@@ -511,6 +522,18 @@ func (c *Client) Backups(ctx context.Context) ([]Backup, error) {
 		return nil, err
 	}
 	return body.Backups, nil
+}
+
+func (c *Client) MigrationIdentityStatus(ctx context.Context) (MigrationIdentityStatus, error) {
+	var status MigrationIdentityStatus
+	if err := c.get(ctx, "/governance/project-identity/status", nil, &status, false); err != nil {
+		return MigrationIdentityStatus{}, err
+	}
+	return status, nil
+}
+
+func (c *Client) RestoreMigrationBackup(ctx context.Context, backupID, confirmation string) error {
+	return c.post(ctx, "/governance/restores", map[string]string{"backup_id": backupID, "confirmation": confirmation}, &struct{}{})
 }
 
 func (c *Client) CreateBackup(ctx context.Context) (Backup, error) {
