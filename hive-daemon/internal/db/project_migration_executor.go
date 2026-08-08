@@ -104,6 +104,9 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 		if err := rebuildStandaloneProjectOwnershipTables(ctx, tx); err != nil {
 			return err
 		}
+		if err := rebuildContentProjectOwnershipTables(ctx, tx); err != nil {
+			return err
+		}
 	}
 	if failpoint != nil {
 		if err := failpoint(); err != nil {
@@ -232,7 +235,7 @@ func rebuildProjectMigrationState(ctx context.Context, tx *sql.Tx) error {
 }
 
 func projectSchemaOwnershipNeeded(ctx context.Context, queryer projectIdentityQuerier) (bool, error) {
-	for _, table := range []string{"sync_state", "memory_mutations", "mutation_receipts", "sync_attempt_logs"} {
+	for _, table := range []string{"sync_state", "memory_mutations", "mutation_receipts", "sync_attempt_logs", "sessions", "memories", "user_prompts"} {
 		rows, err := queryer.QueryContext(ctx, `SELECT "table" FROM pragma_foreign_key_list('`+table+`') WHERE "table" = 'project_identities'`)
 		if err != nil {
 			return false, err
@@ -301,6 +304,47 @@ func rebuildStandaloneProjectOwnershipTables(ctx context.Context, tx *sql.Tx) er
 			if _, err := tx.ExecContext(ctx, index); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+func rebuildContentProjectOwnershipTables(ctx context.Context, tx *sql.Tx) error {
+	for _, trigger := range []string{"memories_ai", "memories_au", "memories_ad", "user_prompts_ai", "user_prompts_au", "user_prompts_ad"} {
+		var name string
+		if err := tx.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?`, trigger).Scan(&name); err != nil {
+			return fmt.Errorf("%w: missing schema trigger %s", ErrProjectMigrationConflict, trigger)
+		}
+	}
+	for _, statement := range []string{
+		`CREATE TABLE sessions_new (id TEXT PRIMARY KEY, sync_id TEXT NOT NULL UNIQUE, project TEXT NOT NULL REFERENCES project_identities(project_key), directory TEXT NOT NULL DEFAULT '', dev_id TEXT NOT NULL, client TEXT NOT NULL, started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ended_at DATETIME, summary TEXT, synced_at DATETIME, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+		`CREATE TABLE memories_new (id INTEGER PRIMARY KEY AUTOINCREMENT, sync_id TEXT NOT NULL, project TEXT NOT NULL REFERENCES project_identities(project_key), topic_key TEXT, category TEXT NOT NULL DEFAULT '', title TEXT NOT NULL, content TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', files_affected TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL DEFAULT 'unknown', created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, synced_at DATETIME, deleted_at DATETIME, deleted_by TEXT, delete_reason TEXT, restored_at DATETIME, confidence TEXT NOT NULL DEFAULT '', impact_score INTEGER NOT NULL DEFAULT 0, session_id TEXT NOT NULL REFERENCES sessions_new(id))`,
+		`CREATE TABLE user_prompts_new (id INTEGER PRIMARY KEY AUTOINCREMENT, sync_id TEXT NOT NULL DEFAULT '', project TEXT NOT NULL DEFAULT '', project_key TEXT GENERATED ALWAYS AS (NULLIF(project, '')) STORED REFERENCES project_identities(project_key), session_id TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, synced_at DATETIME)`,
+		`CREATE TABLE memory_prompt_links_new (memory_id INTEGER NOT NULL REFERENCES memories_new(id) ON DELETE CASCADE, prompt_id INTEGER NOT NULL REFERENCES user_prompts_new(id) ON DELETE CASCADE, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (memory_id, prompt_id))`,
+		`INSERT INTO sessions_new SELECT * FROM sessions`,
+		`INSERT INTO memories_new SELECT * FROM memories`,
+		`INSERT INTO user_prompts_new (id, sync_id, project, session_id, content, created_at, synced_at) SELECT id, sync_id, project, session_id, content, created_at, synced_at FROM user_prompts`,
+		`INSERT INTO memory_prompt_links_new SELECT * FROM memory_prompt_links`,
+		`DROP TABLE memory_prompt_links`,
+		`DROP TRIGGER memories_ai`, `DROP TRIGGER memories_au`, `DROP TRIGGER memories_ad`, `DROP TABLE memories_fts`,
+		`DROP TRIGGER user_prompts_ai`, `DROP TRIGGER user_prompts_au`, `DROP TRIGGER user_prompts_ad`, `DROP TABLE user_prompts_fts`,
+		`DROP TABLE memories`, `DROP TABLE sessions`, `DROP TABLE user_prompts`,
+		`ALTER TABLE sessions_new RENAME TO sessions`, `ALTER TABLE memories_new RENAME TO memories`, `ALTER TABLE user_prompts_new RENAME TO user_prompts`, `ALTER TABLE memory_prompt_links_new RENAME TO memory_prompt_links`,
+		`CREATE INDEX idx_sessions_project ON sessions(project)`, `CREATE INDEX idx_sessions_started_at ON sessions(started_at DESC)`, `CREATE INDEX idx_sessions_dev_id ON sessions(dev_id)`, `CREATE UNIQUE INDEX idx_sessions_sync_id ON sessions(sync_id)`,
+		`CREATE INDEX idx_memories_topic_key ON memories(project, topic_key) WHERE topic_key IS NOT NULL`, `CREATE INDEX idx_memories_project ON memories(project)`, `CREATE INDEX idx_memories_created_at ON memories(created_at DESC)`, `CREATE INDEX idx_memories_project_active ON memories(project, created_at DESC) WHERE deleted_at IS NULL`, `CREATE INDEX idx_memories_session ON memories(session_id)`, `CREATE UNIQUE INDEX idx_memories_sync_id ON memories(sync_id) WHERE sync_id != ''`,
+		`CREATE INDEX idx_user_prompts_project_created ON user_prompts(project, created_at DESC)`, `CREATE INDEX idx_user_prompts_project_session_created ON user_prompts(project, session_id, created_at DESC, id DESC)`, `CREATE INDEX idx_memory_prompt_links_prompt_id ON memory_prompt_links(prompt_id)`,
+		`CREATE VIRTUAL TABLE memories_fts USING fts5(title, content, tags, content='memories', content_rowid='id', tokenize='unicode61')`,
+		`CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN INSERT INTO memories_fts(rowid, title, content, tags) VALUES (new.id, new.title, new.content, new.tags); END`,
+		`CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN INSERT INTO memories_fts(memories_fts, rowid, title, content, tags) VALUES ('delete', old.id, old.title, old.content, old.tags); INSERT INTO memories_fts(rowid, title, content, tags) VALUES (new.id, new.title, new.content, new.tags); END`,
+		`CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN INSERT INTO memories_fts(memories_fts, rowid, title, content, tags) VALUES ('delete', old.id, old.title, old.content, old.tags); END`,
+		`CREATE VIRTUAL TABLE user_prompts_fts USING fts5(content, content='user_prompts', content_rowid='id', tokenize='unicode61')`,
+		`CREATE TRIGGER user_prompts_ai AFTER INSERT ON user_prompts BEGIN INSERT INTO user_prompts_fts(rowid, content) VALUES (new.id, new.content); END`,
+		`CREATE TRIGGER user_prompts_au AFTER UPDATE ON user_prompts BEGIN INSERT INTO user_prompts_fts(user_prompts_fts, rowid, content) VALUES ('delete', old.id, old.content); INSERT INTO user_prompts_fts(rowid, content) VALUES (new.id, new.content); END`,
+		`CREATE TRIGGER user_prompts_ad AFTER DELETE ON user_prompts BEGIN INSERT INTO user_prompts_fts(user_prompts_fts, rowid, content) VALUES ('delete', old.id, old.content); END`,
+		`INSERT INTO memories_fts(memories_fts) VALUES ('rebuild')`, `INSERT INTO user_prompts_fts(user_prompts_fts) VALUES ('rebuild')`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("rebuild content project ownership: %w", err)
 		}
 	}
 	return nil

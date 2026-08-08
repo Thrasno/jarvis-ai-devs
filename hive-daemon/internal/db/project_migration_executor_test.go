@@ -485,6 +485,86 @@ func TestProjectMigrationExecutorRebuildsStandaloneProjectOwnershipTables(t *tes
 	}
 }
 
+func TestProjectMigrationExecutorRebuildsContentProjectOwnership(t *testing.T) {
+	database := newMigrationExecutorDB(t)
+	seedMigrationProject(t, database, " Foo.Bar ")
+	for _, statement := range []string{
+		`INSERT INTO user_prompts (sync_id, project, session_id, content) VALUES ('prompt-sync', ' Foo.Bar ', 's', 'findable prompt')`,
+		`INSERT INTO user_prompts (sync_id, project, content) VALUES ('legacy-prompt-sync', '', 'unscoped legacy prompt')`,
+		`INSERT INTO memory_prompt_links (memory_id, prompt_id) VALUES (1, 1)`,
+	} {
+		if _, err := database.sqlDB.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan, err := ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fail := errors.New("content rebuild failpoint")
+	if err := ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error { return nil }, func() error { return fail }); !errors.Is(err, fail) {
+		t.Fatalf("ExecuteProjectMigration() error = %v, want failpoint", err)
+	}
+	if got := migrationProjectValues(t, database); got != [2]string{" Foo.Bar ", " Foo.Bar "} {
+		t.Fatalf("rollback projects = %q, want original spellings", got)
+	}
+	if err := ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error { return nil }, nil); err != nil {
+		t.Fatalf("ExecuteProjectMigration() error = %v", err)
+	}
+	for _, table := range []string{"sessions", "memories", "user_prompts"} {
+		var foreignKeys int
+		if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM pragma_foreign_key_list('` + table + `') WHERE "table" = 'project_identities'`).Scan(&foreignKeys); err != nil {
+			t.Fatal(err)
+		}
+		if foreignKeys != 1 {
+			t.Fatalf("%s project identity foreign keys = %d, want 1", table, foreignKeys)
+		}
+	}
+	var sessionForeignKeys int
+	if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM pragma_foreign_key_list('memories') WHERE "table" = 'sessions'`).Scan(&sessionForeignKeys); err != nil {
+		t.Fatal(err)
+	}
+	if sessionForeignKeys != 1 {
+		t.Fatalf("memories session foreign keys = %d, want 1", sessionForeignKeys)
+	}
+	for _, query := range []string{
+		`SELECT COUNT(*) FROM memories WHERE sync_id = 'memory-sync' AND project = 'foo-bar' AND session_id = 's'`,
+		`SELECT COUNT(*) FROM user_prompts WHERE sync_id = 'prompt-sync' AND project = 'foo-bar' AND session_id = 's'`,
+		`SELECT COUNT(*) FROM user_prompts WHERE sync_id = 'legacy-prompt-sync' AND project = '' AND session_id = ''`,
+		`SELECT COUNT(*) FROM memory_prompt_links WHERE memory_id = 1 AND prompt_id = 1`,
+		`SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'title'`,
+		`SELECT COUNT(*) FROM user_prompts_fts WHERE user_prompts_fts MATCH 'findable OR unscoped'`,
+	} {
+		var count int
+		if err := database.sqlDB.QueryRow(query).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		want := 1
+		if query == `SELECT COUNT(*) FROM user_prompts_fts WHERE user_prompts_fts MATCH 'findable OR unscoped'` {
+			want = 2
+		}
+		if count != want {
+			t.Fatalf("%s count = %d, want %d", query, count, want)
+		}
+	}
+	for _, name := range []string{"idx_memories_sync_id", "idx_sessions_sync_id", "idx_user_prompts_project_created", "memories_ai", "user_prompts_ai"} {
+		var count int
+		if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name = ?`, name).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("schema object %s was not rebuilt", name)
+		}
+	}
+	var foreignKeyViolations int
+	if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&foreignKeyViolations); err != nil {
+		t.Fatal(err)
+	}
+	if foreignKeyViolations != 0 {
+		t.Fatalf("foreign key violations = %d, want 0", foreignKeyViolations)
+	}
+}
+
 func newMigrationExecutorDB(t *testing.T) *DB {
 	t.Helper()
 	database, err := Open(":memory:")
