@@ -9,6 +9,12 @@ import (
 	"path/filepath"
 )
 
+// ErrPendingRestoreReplayable reports that a restore replaced the live database
+// but its request could not be durably cleared, so the next daemon start would
+// replay it. Serving in that state would silently discard every write made in
+// between, so the daemon must stop instead of surviving this error.
+var ErrPendingRestoreReplayable = errors.New("pending restore request may be replayed on the next start")
+
 // PendingRestorePath is deliberately adjacent to the database so the daemon
 // lifecycle owner can restore it before opening SQLite on the next process.
 func PendingRestorePath(dbPath string) string {
@@ -59,6 +65,23 @@ func writePendingRestore(pendingPath string, pending pendingRestore) error {
 	if err := os.Rename(tempPath, pendingPath); err != nil {
 		return fmt.Errorf("activate pending restore: %w", err)
 	}
+	// The rename itself must reach the disk: without it a power loss can lose a
+	// request the operator was already told had been accepted.
+	return syncDir(filepath.Dir(pendingPath))
+}
+
+func syncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open pending restore dir: %w", err)
+	}
+	if err := dir.Sync(); err != nil {
+		_ = dir.Close()
+		return fmt.Errorf("sync pending restore dir: %w", err)
+	}
+	if err := dir.Close(); err != nil {
+		return fmt.Errorf("close pending restore dir: %w", err)
+	}
 	return nil
 }
 
@@ -66,20 +89,43 @@ func writePendingRestore(pendingPath string, pending pendingRestore) error {
 // daemon opens SQLite. A failure retains the request and leaves the live DB
 // untouched unless BackupStore.Restore has completed its atomic replacement.
 func ExecuteScheduledRestore(ctx context.Context, dbPath string) (bool, error) {
-	return executeScheduledRestore(ctx, dbPath, os.Remove)
+	return executeScheduledRestore(ctx, dbPath, restoreIO{})
 }
 
-func executeScheduledRestore(ctx context.Context, dbPath string, remove func(string) error) (bool, error) {
+// restoreIO isolates the filesystem effects that run after the live database has
+// already been replaced, so tests can exercise their failure paths.
+type restoreIO struct {
+	remove func(string) error
+	write  func(string, pendingRestore) error
+}
+
+func (r restoreIO) removeFile(path string) error {
+	if r.remove == nil {
+		return os.Remove(path)
+	}
+	return r.remove(path)
+}
+
+func (r restoreIO) writePending(path string, pending pendingRestore) error {
+	if r.write == nil {
+		return writePendingRestore(path, pending)
+	}
+	return r.write(path, pending)
+}
+
+func executeScheduledRestore(ctx context.Context, dbPath string, r restoreIO) (bool, error) {
 	pendingPath := PendingRestorePath(dbPath)
 	completedPath := pendingPath + ".completed"
 	if _, err := os.Stat(completedPath); err == nil {
-		if err := remove(pendingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return true, fmt.Errorf("clear completed pending restore: %w", err)
+		// A completion marker means an earlier start already restored these
+		// bytes; this start only clears markers and restores nothing.
+		if err := r.removeFile(pendingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("clear completed pending restore: %w", err)
 		}
-		if err := remove(completedPath); err != nil {
-			return true, fmt.Errorf("clear restore completion marker: %w", err)
+		if err := r.removeFile(completedPath); err != nil {
+			return false, fmt.Errorf("clear restore completion marker: %w", err)
 		}
-		return true, nil
+		return false, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, fmt.Errorf("inspect restore completion marker: %w", err)
 	}
@@ -97,13 +143,15 @@ func executeScheduledRestore(ctx context.Context, dbPath string, remove func(str
 	if _, err := NewBackupStore(dbPath, "").Restore(ctx, pending.RestoreRequest); err != nil {
 		return false, err
 	}
-	if err := writePendingRestore(completedPath, pending); err != nil {
-		return true, fmt.Errorf("record completed pending restore: %w", err)
+	if err := r.writePending(completedPath, pending); err != nil {
+		// The request is still on disk with nothing recording that it already
+		// ran, so the next start would restore these bytes again.
+		return true, fmt.Errorf("%w: record completed pending restore: %w", ErrPendingRestoreReplayable, err)
 	}
-	if err := remove(pendingPath); err != nil {
+	if err := r.removeFile(pendingPath); err != nil {
 		return true, fmt.Errorf("clear completed pending restore: %w", err)
 	}
-	if err := remove(completedPath); err != nil {
+	if err := r.removeFile(completedPath); err != nil {
 		return true, fmt.Errorf("clear restore completion marker: %w", err)
 	}
 	return true, nil

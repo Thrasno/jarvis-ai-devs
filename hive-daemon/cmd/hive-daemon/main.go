@@ -32,8 +32,12 @@ func run() int {
 	defer stop()
 
 	dbPath := dbFilePath()
-	if restored, err := governance.ExecuteScheduledRestore(rootCtx, dbPath); err != nil {
-		logger.Log.Printf("pending migration restore: %v", err)
+	restored, restoreErr := governance.ExecuteScheduledRestore(rootCtx, dbPath)
+	if err := pendingRestoreStartupError(restored, restoreErr); err != nil {
+		logger.Log.Fatalf("pending migration restore: %v", err)
+	}
+	if restoreErr != nil {
+		logger.Log.Printf("pending migration restore: %v", restoreErr)
 	} else if restored {
 		logger.Log.Printf("restored pending migration backup before opening database")
 	}
@@ -110,6 +114,19 @@ func run() int {
 		return 1
 	}
 	return 0
+}
+
+// pendingRestoreStartupError reports the restore outcomes the daemon must not
+// survive. A restore that replaced the live database but could not clear its own
+// request would run again on the next start and discard everything this session
+// writes; a local-first product must fail loudly there instead of serving. Every
+// other failure left the live database untouched, so startup continues and the
+// operator still sees the logged error.
+func pendingRestoreStartupError(restored bool, err error) error {
+	if restored && errors.Is(err, governance.ErrPendingRestoreReplayable) {
+		return err
+	}
+	return nil
 }
 
 func isCleanServerShutdown(ctx context.Context, runErr error) bool {

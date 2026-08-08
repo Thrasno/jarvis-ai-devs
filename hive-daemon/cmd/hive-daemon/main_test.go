@@ -837,3 +837,19 @@ func TestE2E_TopicKeyAlwaysInserts(t *testing.T) {
 		t.Errorf("expected 2 results for two saves with same topic_key, got: %s", searchBody)
 	}
 }
+
+func TestPendingRestoreThatMayReplayStopsStartup(t *testing.T) {
+	replayable := fmt.Errorf("%w: record completed pending restore", governance.ErrPendingRestoreReplayable)
+	if err := pendingRestoreStartupError(true, replayable); !errors.Is(err, governance.ErrPendingRestoreReplayable) {
+		t.Fatalf("startup error = %v, want the daemon to refuse to serve", err)
+	}
+}
+
+func TestPendingRestoreFailureThatLeftLiveDatabaseIntactKeepsServing(t *testing.T) {
+	if err := pendingRestoreStartupError(false, errors.New("backup archive is missing")); err != nil {
+		t.Fatalf("startup error = %v, want startup to continue on an unapplied restore", err)
+	}
+	if err := pendingRestoreStartupError(true, nil); err != nil {
+		t.Fatalf("startup error = %v, want startup to continue after a cleared restore", err)
+	}
+}
