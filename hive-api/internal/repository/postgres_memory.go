@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/projectkey"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,6 +27,13 @@ func NewPostgresMemoryRepository(pool *pgxpool.Pool) MemoryRepository {
 
 func newPostgresMemoryRepositoryWithQuerier(db pgxQuerier) MemoryRepository {
 	return &postgresMemoryRepository{db: db}
+}
+
+func (r *postgresMemoryRepository) ProjectExists(ctx context.Context, canonicalProjectKey string) (bool, error) {
+	canonicalProjectKey = projectkey.Canonicalize(canonicalProjectKey)
+	var exists bool
+	err := r.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM project_identities WHERE project_key = $1)`, canonicalProjectKey).Scan(&exists)
+	return exists, wrapPgError(err, "check project identity")
 }
 
 // Create inserta una nueva memoria y devuelve el registro completo (con ID del servidor).

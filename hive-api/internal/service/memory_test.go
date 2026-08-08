@@ -21,6 +21,7 @@ func newTestMemoryService(t *testing.T) (service.MemoryService, *repository.Mock
 	// Existing tests don't trigger the lazy-fallback path; allow it to be called 0+ times.
 	mockSessionRepo.On("EnsureManualSaveSession", mock.Anything, mock.Anything).
 		Return("manual-save-jarvis-dev", nil).Maybe()
+	mockRepo.On("ProjectExists", mock.Anything, mock.Anything).Return(true, nil).Maybe()
 	svc := service.NewMemoryService(mockRepo, mockSessionRepo, nil)
 	return svc, mockRepo
 }
@@ -30,6 +31,7 @@ func newTestMemoryServiceWithSession(t *testing.T) (service.MemoryService, *repo
 	t.Helper()
 	mockRepo := &repository.MockMemoryRepository{}
 	mockSessionRepo := &repository.MockSessionRepository{}
+	mockRepo.On("ProjectExists", mock.Anything, mock.Anything).Return(true, nil).Maybe()
 	svc := service.NewMemoryService(mockRepo, mockSessionRepo, nil)
 	return svc, mockRepo, mockSessionRepo
 }

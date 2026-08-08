@@ -332,6 +332,28 @@ func TestListMemories_CanonicalizesProjectFilter(t *testing.T) {
 	memSvc.AssertExpectations(t)
 }
 
+func TestListMemories_EquivalentUnknownProjectsReturnProjectUnknown(t *testing.T) {
+	for _, project := range []string{" Ghost.Project ", "ghost/project"} {
+		t.Run(project, func(t *testing.T) {
+			authSvc := &mockAuthSvc{}
+			authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+			memSvc := &mockMemorySvc{}
+			memSvc.On("List", context.Background(), mock.MatchedBy(func(filter model.MemoryFilter) bool {
+				return filter.Project == "ghost-project"
+			})).Return(nil, int64(0), service.ErrProjectUnknown)
+
+			w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodGet, "/memories?project="+project, nil, "valid-token")
+
+			require.Equal(t, http.StatusNotFound, w.Code)
+			var body model.ErrorResponse
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+			require.Equal(t, "project_unknown", body.Error)
+			require.NotContains(t, w.Body.String(), "memories")
+			memSvc.AssertExpectations(t)
+		})
+	}
+}
+
 func TestListMemories_WithQueryReturnsListResponseFromSearch(t *testing.T) {
 	authSvc := &mockAuthSvc{}
 	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)

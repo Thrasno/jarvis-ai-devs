@@ -13,6 +13,9 @@ import (
 // que ya existe. El handler lo mapea a HTTP 200 devolviendo el registro existente.
 var ErrSyncIDExists = errors.New("sync_id ya existe")
 
+// ErrProjectUnknown distinguishes an unregistered project identity from a known project with no memories.
+var ErrProjectUnknown = errors.New("project_unknown")
+
 // defaultMemoryLimit es cuántas memorias devolver cuando el caller no especifica.
 // 20 es un número cómodo — suficiente para una pantalla, no tan grande como para
 // sobrecargar la respuesta JSON.
@@ -127,6 +130,9 @@ func (s *memoryService) GetByID(ctx context.Context, id string) (*model.Memory, 
 // Este es el único lugar donde vive esta regla de negocio.
 func (s *memoryService) List(ctx context.Context, filter model.MemoryFilter) ([]*model.Memory, int64, error) {
 	filter.Project = projectkey.Canonicalize(filter.Project)
+	if err := s.requireKnownProject(ctx, filter.Project); err != nil {
+		return nil, 0, err
+	}
 	if filter.Limit == 0 {
 		filter.Limit = defaultMemoryLimit
 	}
@@ -170,6 +176,9 @@ func (s *memoryService) List(ctx context.Context, filter model.MemoryFilter) ([]
 
 func (s *memoryService) Search(ctx context.Context, query string, filter model.MemoryFilter) ([]*model.Memory, int64, error) {
 	filter.Project = projectkey.Canonicalize(filter.Project)
+	if err := s.requireKnownProject(ctx, filter.Project); err != nil {
+		return nil, 0, err
+	}
 	if filter.Limit == 0 {
 		filter.Limit = defaultMemoryLimit
 	}
@@ -196,4 +205,18 @@ func (s *memoryService) Search(ctx context.Context, query string, filter model.M
 	}
 
 	return mems, cr.count, nil
+}
+
+func (s *memoryService) requireKnownProject(ctx context.Context, canonicalProjectKey string) error {
+	if canonicalProjectKey == "" {
+		return nil
+	}
+	exists, err := s.repo.ProjectExists(ctx, canonicalProjectKey)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrProjectUnknown
+	}
+	return nil
 }

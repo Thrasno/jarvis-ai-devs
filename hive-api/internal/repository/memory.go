@@ -12,6 +12,10 @@ import (
 // El método más complejo es Upsert — implementa la lógica de sincronización.
 // Los demás son operaciones CRUD estándar.
 type MemoryRepository interface {
+	// ProjectExists reports whether the canonical project identity is registered.
+	// Callers use it only for explicit project filters; an omitted filter remains global.
+	ProjectExists(ctx context.Context, canonicalProjectKey string) (bool, error)
+
 	// Create inserta una nueva memoria. Devuelve la memoria con los campos
 	// generados por el servidor (ID, SyncedAt, CreatedAt, UpdatedAt).
 	Create(ctx context.Context, mem *model.Memory) (*model.Memory, error)

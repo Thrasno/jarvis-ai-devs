@@ -107,6 +107,10 @@ func (h *MemoryHandler) List(c *gin.Context) {
 		mems, total, err = h.svc.List(c.Request.Context(), filter)
 	}
 	if err != nil {
+		if errors.Is(err, service.ErrProjectUnknown) {
+			c.JSON(http.StatusNotFound, model.ErrorResponse{Error: service.ErrProjectUnknown.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "error al listar memorias"})
 		return
 	}
@@ -160,6 +164,10 @@ func (h *MemoryHandler) Search(c *gin.Context) {
 
 	mems, total, err := h.svc.Search(c.Request.Context(), q.Query, filter)
 	if err != nil {
+		if errors.Is(err, service.ErrProjectUnknown) {
+			c.JSON(http.StatusNotFound, model.ErrorResponse{Error: service.ErrProjectUnknown.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "error en la búsqueda"})
 		return
 	}
