@@ -32,6 +32,11 @@ func run() int {
 	defer stop()
 
 	dbPath := dbFilePath()
+	if restored, err := governance.ExecuteScheduledRestore(rootCtx, dbPath); err != nil {
+		logger.Log.Printf("pending migration restore: %v", err)
+	} else if restored {
+		logger.Log.Printf("restored pending migration backup before opening database")
+	}
 
 	store, err := db.Open(dbPath)
 	if err != nil {
@@ -72,6 +77,9 @@ func run() int {
 		srv := httpapi.NewServerWithAll(httpAddr(), store, store, govSvc, configSvc, healthSvc, store)
 		srv.SetMigrationGate(gate)
 		srv.SetMigrationRetry(stop)
+		srv.SetMigrationRestore(func(_ context.Context, req governance.RestoreRequest) error {
+			return governance.ScheduleRestore(dbPath, req)
+		})
 		if err := srv.Start(rootCtx); err != nil {
 			logger.Log.Printf("http server stopped: %v (mcp continues)", err)
 		}
