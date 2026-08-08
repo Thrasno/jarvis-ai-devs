@@ -579,6 +579,37 @@ func TestPostgresSessionRepository_ListSessionsByProject(t *testing.T) {
 	}
 }
 
+func TestPostgresSessionRepository_ProjectVariantsConvergeWithoutRewritingStoredSpelling(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresSessionRepository(pool)
+	startedAt := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	for i, project := range []string{" Foo_Bar ", "foo/bar"} {
+		require.NoError(t, repo.CreateSession(ctx, &model.Session{
+			ID:        fmt.Sprintf("variant-session-%d", i),
+			SyncID:    fmt.Sprintf("f1000000-0000-0000-0000-%012d", i),
+			Project:   project,
+			DevID:     "tester",
+			Client:    "test",
+			StartedAt: startedAt.Add(time.Duration(i) * time.Minute),
+		}))
+	}
+
+	sessions, err := repo.ListSessionsByProject(ctx, "FOO_BAR")
+	require.NoError(t, err)
+	require.Len(t, sessions, 2)
+	assert.Equal(t, []string{"foo/bar", " Foo_Bar "}, []string{sessions[0].Project, sessions[1].Project})
+
+	firstID, err := repo.EnsureManualSaveSession(ctx, " Foo_Bar ")
+	require.NoError(t, err)
+	secondID, err := repo.EnsureManualSaveSession(ctx, "foo/bar")
+	require.NoError(t, err)
+	assert.Equal(t, "manual-save-foo-bar", firstID)
+	assert.Equal(t, firstID, secondID)
+}
+
 // ─── T4.8: ListSessionsSince ─────────────────────────────────────────────────
 
 // TestPostgresSessionRepository_ListSessionsSince verifica que ListSessionsSince devuelve

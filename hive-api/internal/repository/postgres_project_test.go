@@ -19,6 +19,7 @@ func startPostgresWithProjectSources(t *testing.T) (*pgxpool.Pool, func()) {
 	require.NoError(t, RunMigrations(pool, migrations.MemoryMutationsSQL), "failed to run migration 005")
 	require.NoError(t, RunMigrations(pool, migrations.DropTopicKeyUniqueConstraintSQL), "failed to run migration 006")
 	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptLogsSQL), "failed to run migration 007")
+	require.NoError(t, RunMigrations(pool, migrations.CanonicalProjectRegistrySQL), "failed to run canonical project registry migration")
 
 	return pool, cleanup
 }
@@ -73,6 +74,30 @@ func TestPostgresProjectRepository_ListAggregates(t *testing.T) {
 	require.NotNil(t, byName["health-project"].LatestSyncOutcome)
 	assert.Equal(t, model.SyncAttemptOutcomeSuccess, *byName["health-project"].LatestSyncOutcome, "latest sync outcome should win")
 	assertTimePtrEqual(t, latestSuccessEnd, byName["health-project"].LastSyncAt, "latest sync activity should use ended_at when present")
+}
+
+func TestPostgresProjectRepository_ListAggregatesCoalescesVariantsAndUsesRegistryDisplay(t *testing.T) {
+	pool, cleanup := startPostgresWithProjectSources(t)
+	defer cleanup()
+	require.NoError(t, RunMigrations(pool, migrations.CanonicalProjectRegistrySQL))
+
+	ctx := context.Background()
+	base := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	require.NoError(t, RegisterProjectIdentity(ctx, pool, " Foo_Bar ", "FOO_BAR", base))
+	insertProjectSession(t, pool, "aggregate-variant-session", "foo/bar", base, nil)
+	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000203", "foo_bar", "aggregate-variant-session", base, base, nil)
+	insertProjectSyncAttempt(t, pool, "aggregate-variant-sync", "foo-bar", model.SyncAttemptOutcomeSuccess, base, nil)
+
+	aggregates, err := NewPostgresProjectRepository(pool).ListAggregates(ctx)
+	require.NoError(t, err)
+	require.Len(t, aggregates, 1)
+	assert.Equal(t, "FOO_BAR", aggregates[0].Name)
+	assert.EqualValues(t, 1, aggregates[0].MemoryCount)
+	assert.EqualValues(t, 1, aggregates[0].SessionCount)
+	assertTimePtrEqual(t, base, aggregates[0].LastMemoryAt)
+	assertTimePtrEqual(t, base, aggregates[0].LastSessionAt)
+	assertTimePtrEqual(t, base, aggregates[0].LastSyncAt)
+	require.Equal(t, syncOutcomePtr(model.SyncAttemptOutcomeSuccess), aggregates[0].LatestSyncOutcome)
 }
 
 func TestBackfillProjectIdentityRegistryCoalescesEquivalentLegacySpellings(t *testing.T) {
@@ -165,4 +190,8 @@ func assertTimePtrEqual(t *testing.T, want time.Time, got *time.Time, msgAndArgs
 	t.Helper()
 	require.NotNil(t, got, msgAndArgs...)
 	assert.True(t, got.Equal(want), "got %s want %s", got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
+}
+
+func syncOutcomePtr(outcome model.SyncAttemptOutcome) *model.SyncAttemptOutcome {
+	return &outcome
 }

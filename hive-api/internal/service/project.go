@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/projectkey"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
 )
 
@@ -36,12 +37,12 @@ func (s *projectService) List(ctx context.Context, health string) (model.Project
 	}
 	healthByProject := make(map[string]model.ProjectSyncHealthRow, len(projection.Rows))
 	for _, row := range projection.Rows {
-		healthByProject[row.Project] = row
+		healthByProject[projectkey.Canonicalize(row.Project)] = row
 	}
 
 	projects := make([]model.ProjectSummary, 0, len(records))
 	for _, record := range records {
-		row, participates := healthByProject[record.Name]
+		row, participates := healthByProject[projectkey.Canonicalize(record.Name)]
 		summary := model.ProjectSummary{
 			Name:           record.Name,
 			MemoryCount:    record.MemoryCount,

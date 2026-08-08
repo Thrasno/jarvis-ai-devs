@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/projectkey"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -149,7 +150,8 @@ func (r *postgresSessionRepository) GetSession(ctx context.Context, sessionID st
 // ON CONFLICT (id) DO NOTHING garantiza idempotencia y seguridad bajo concurrencia.
 // La semántica de 'manual-save-*': client='manual', ended_at=NULL forever.
 func (r *postgresSessionRepository) EnsureManualSaveSession(ctx context.Context, project string) (string, error) {
-	id := "manual-save-" + project
+	canonical := projectkey.Canonicalize(project)
+	id := "manual-save-" + canonical
 
 	const q = `
 		INSERT INTO sessions (id, project, dev_id, client, started_at)
@@ -169,10 +171,10 @@ func (r *postgresSessionRepository) ListSessionsByProject(ctx context.Context, p
 		SELECT id, sync_id, project, directory, dev_id, client,
 		       started_at, ended_at, summary, synced_at, created_at, updated_at
 		FROM sessions
-		WHERE project = $1
+		WHERE canonical_project_key(project) = $1
 		ORDER BY started_at DESC`
 
-	rows, err := r.db.Query(ctx, q, project)
+	rows, err := r.db.Query(ctx, q, projectkey.Canonicalize(project))
 	if err != nil {
 		return nil, wrapPgError(err, "ListSessionsByProject")
 	}
@@ -213,8 +215,8 @@ func (r *postgresSessionRepository) ListSessionsByProject(ctx context.Context, p
 // exactamente igual a `since`; el cursor compuesto (synced_at, sync_id) reanuda
 // estrictamente después de la última fila vista y evita duplicados.
 func (r *postgresSessionRepository) ListSessionsSince(ctx context.Context, project string, since time.Time, cursor model.PullCursor, limit int) ([]*model.Session, bool, error) {
-	args := []interface{}{project}
-	where := "project = $1 AND " + unblockedProjectPredicate("sessions.project")
+	args := []interface{}{projectkey.Canonicalize(project)}
+	where := "canonical_project_key(project) = $1 AND " + unblockedProjectPredicate("sessions.project")
 	argIdx := 2
 
 	if !since.IsZero() {

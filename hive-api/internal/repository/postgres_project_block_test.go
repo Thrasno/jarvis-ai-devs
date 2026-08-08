@@ -17,6 +17,7 @@ func startPostgresWithProjectBlocks(t *testing.T) (*pgxpool.Pool, func()) {
 	require.NoError(t, RunMigrations(pool, migrations.ProjectBlocksSQL), "failed to run project blocks migration")
 	require.NoError(t, RunMigrations(pool, migrations.QuarantineContractSQL), "failed to run quarantine contract migration")
 	require.NoError(t, RunMigrations(pool, migrations.DistributedQuarantineSQL), "failed to run distributed quarantine migration")
+	require.NoError(t, RunMigrations(pool, migrations.CanonicalProjectRegistrySQL), "failed to run canonical project registry migration")
 	return pool, cleanup
 }
 
@@ -123,6 +124,33 @@ func TestPostgresProjectBlockRepository_BlockStatusAndAck(t *testing.T) {
 	require.Equal(t, block.CommandID, latest.CommandID)
 	require.Equal(t, model.ProjectBlockAckApplied, latest.Status)
 	require.Equal(t, ack.AppliedAt, latest.AppliedAt)
+}
+
+func TestPostgresProjectBlockRepository_EquivalentKeysShareBlockAndQuarantineProgress(t *testing.T) {
+	pool, cleanup := startPostgresWithProjectBlocks(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresProjectBlockRepository(pool)
+	block, err := repo.BlockProject(ctx, model.ProjectBlockCreate{
+		Project:             " Foo.Bar ",
+		CanonicalProjectKey: "foo/bar",
+		Action:              model.ProjectBlockActionBlock,
+		Reason:              "duplicate",
+		Confirmation:        "foo-bar",
+		ActorUserID:         "admin-1",
+	})
+	require.NoError(t, err)
+
+	stored, err := repo.GetByCanonicalKey(ctx, "FOO_BAR")
+	require.NoError(t, err)
+	require.Equal(t, " Foo.Bar ", stored.Project)
+	require.Equal(t, "foo-bar", stored.CanonicalProjectKey)
+
+	progress, err := repo.QuarantineProgress(ctx, " Foo/Bar ", block.Generation, "", 10)
+	require.NoError(t, err)
+	require.Equal(t, "foo-bar", progress.CanonicalProjectKey)
+	require.Equal(t, " Foo.Bar ", progress.Project)
 }
 
 func TestPostgresProjectBlockRepository_ReblockRotatesCommandID(t *testing.T) {

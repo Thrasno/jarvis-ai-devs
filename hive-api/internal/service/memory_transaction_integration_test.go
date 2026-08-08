@@ -54,6 +54,7 @@ func startPostgresForMemoryServiceProjectBlocks(t *testing.T) (*pgxpool.Pool, fu
 		migrations.ProjectBlocksSQL,
 		migrations.QuarantineContractSQL,
 		migrations.DistributedQuarantineSQL,
+		migrations.CanonicalProjectRegistrySQL,
 	} {
 		require.NoError(t, repository.RunMigrations(pool, sql))
 	}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/projectkey"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -24,6 +25,10 @@ func newPostgresProjectBlockRepositoryWithQuerier(db pgxQuerier) ProjectBlockRep
 }
 
 func (r *postgresProjectBlockRepository) BlockProject(ctx context.Context, create model.ProjectBlockCreate) (*model.ProjectBlock, error) {
+	create.CanonicalProjectKey = projectkey.Canonicalize(create.CanonicalProjectKey)
+	if create.CanonicalProjectKey == "" {
+		create.CanonicalProjectKey = projectkey.Canonicalize(create.Project)
+	}
 	const q = `
 	INSERT INTO project_blocks (project, canonical_project_key, action, reason, confirmation, export_marker, actor_user_id, blocked, blocked_at)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $3 <> 'unblock', now())
@@ -47,6 +52,7 @@ func (r *postgresProjectBlockRepository) BlockProject(ctx context.Context, creat
 }
 
 func (r *postgresProjectBlockRepository) GetByCanonicalKey(ctx context.Context, canonicalProjectKey string) (*model.ProjectBlock, error) {
+	canonicalProjectKey = projectkey.Canonicalize(canonicalProjectKey)
 	const q = `
 		SELECT id::text, command_id::text, ack_token, project, canonical_project_key, action, generation, reason, confirmation, export_marker,
        COALESCE(actor_user_id, ''), blocked, blocked_at, created_at, updated_at
@@ -105,6 +111,7 @@ func (r *postgresProjectBlockRepository) ListInboxCommands(ctx context.Context, 
 }
 
 func (r *postgresProjectBlockRepository) RecordAck(ctx context.Context, ack model.ProjectBlockAck) (model.ProjectBlockAck, error) {
+	ack.CanonicalProjectKey = projectkey.Canonicalize(ack.CanonicalProjectKey)
 	ack.AppliedAt = time.Now().UTC()
 	const q = `
 			INSERT INTO project_block_acks (command_id, canonical_project_key, ack_token, ack_auth_subject, ack_daemon_id, ack_client, status, warning, applied_at)
@@ -137,6 +144,7 @@ func (r *postgresProjectBlockRepository) EnsureAckDelivery(ctx context.Context, 
 			    ack_client = EXCLUDED.ack_client,
 			    updated_at = now()
 			RETURNING ack_token`
+	block.CanonicalProjectKey = projectkey.Canonicalize(block.CanonicalProjectKey)
 	cmd := block.Command()
 	if err := r.db.QueryRow(ctx, q, block.CommandID, block.CanonicalProjectKey, subject.AuthSubject, subject.DaemonID, subject.Client).Scan(&cmd.AckToken); err != nil {
 		return model.ProjectBlockCommand{}, wrapPgError(err, "ensure project block ack delivery")
@@ -145,6 +153,7 @@ func (r *postgresProjectBlockRepository) EnsureAckDelivery(ctx context.Context, 
 }
 
 func (r *postgresProjectBlockRepository) GetAckDelivery(ctx context.Context, canonicalProjectKey, commandID string, subject model.ProjectBlockAckSubject) (*model.ProjectBlockAckDelivery, error) {
+	canonicalProjectKey = projectkey.Canonicalize(canonicalProjectKey)
 	const q = `
 			SELECT command_id::text, canonical_project_key, ack_token, ack_auth_subject, ack_daemon_id, ack_client
 			FROM project_block_ack_deliveries
@@ -161,6 +170,7 @@ func (r *postgresProjectBlockRepository) GetAckDelivery(ctx context.Context, can
 }
 
 func (r *postgresProjectBlockRepository) LatestAckForCommand(ctx context.Context, canonicalProjectKey, commandID string) (*model.ProjectBlockAck, error) {
+	canonicalProjectKey = projectkey.Canonicalize(canonicalProjectKey)
 	const q = `
 		SELECT command_id::text, canonical_project_key, ack_token, ack_auth_subject, ack_daemon_id, ack_client, status, warning, applied_at
 	FROM project_block_acks
@@ -182,7 +192,7 @@ func (r *postgresProjectBlockRepository) QuarantineProgress(ctx context.Context,
 	if limit < 1 || limit > 100 {
 		return model.QuarantineProgressResponse{}, ErrNotFound
 	}
-	canonicalProjectKey = strings.TrimSpace(canonicalProjectKey)
+	canonicalProjectKey = projectkey.Canonicalize(canonicalProjectKey)
 	if canonicalProjectKey == "" || generation < 1 {
 		return model.QuarantineProgressResponse{}, ErrNotFound
 	}
@@ -252,7 +262,7 @@ func (r *postgresProjectBlockRepository) ListQuarantines(ctx context.Context) ([
 			FROM project_quarantine_commands
 			ORDER BY canonical_project_key, generation DESC
 		)
-		SELECT c.project, c.canonical_project_key, c.generation, c.action,
+		SELECT COALESCE(NULLIF(i.remote_spelling, ''), i.first_spelling, c.project), c.canonical_project_key, c.generation, c.action,
 			COALESCE((
 				SELECT a.status
 				FROM project_block_acks a
@@ -264,6 +274,7 @@ func (r *postgresProjectBlockRepository) ListQuarantines(ctx context.Context) ([
 			), 'pending') AS state,
 			c.blocked_at
 		FROM current_commands c
+		LEFT JOIN project_identities i ON i.project_key = c.canonical_project_key
 		ORDER BY c.canonical_project_key ASC
 		LIMIT 100`
 	rows, err := r.db.Query(ctx, q)

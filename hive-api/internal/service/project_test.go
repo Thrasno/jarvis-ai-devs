@@ -93,6 +93,28 @@ func TestProjectService_ListReturnsNonNilEmptyResponse(t *testing.T) {
 	assert.Equal(t, 0, got.Total)
 }
 
+func TestProjectService_ListJoinsHealthByCanonicalIdentity(t *testing.T) {
+	base := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	success := model.SyncAttemptOutcomeSuccess
+	svc := service.NewProjectService(
+		&fakeProjectRepository{records: []model.ProjectAggregate{{Name: "FOO_BAR", LastSyncAt: timePtr(base)}}},
+		&fakeProjectHealthRepository{projection: model.ProjectSyncHealthProjection{Rows: []model.ProjectSyncHealthRow{{
+			Project:        "foo/bar",
+			LastOutcome:    success,
+			LastActivityAt: base.Add(time.Minute),
+		}}}},
+	)
+
+	got, err := svc.List(context.Background(), "")
+
+	require.NoError(t, err)
+	require.Equal(t, []model.ProjectSummary{{
+		Name:           "FOO_BAR",
+		LastActivityAt: timePtr(base.Add(time.Minute)),
+		SyncHealth:     stringPtr(model.ProjectSyncHealthHealthy),
+	}}, got.Projects)
+}
+
 type fakeProjectRepository struct {
 	records []model.ProjectAggregate
 	err     error
