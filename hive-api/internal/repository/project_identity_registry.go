@@ -34,6 +34,12 @@ func (r *postgresProjectIdentityRepository) Register(ctx context.Context, spelli
 // RegisterProjectIdentity records a new API-facing spelling without changing
 // legacy project columns. A current remote spelling wins display precedence;
 // otherwise the earliest observed spelling remains the fallback.
+//
+// Both the observed spelling and the canonical key it folds to are registered.
+// The sync path canonicalizes payload projects before storing them, so rows
+// carry the canonical key as their literal project value; without its own
+// spelling row that value would stay unresolvable in the registry. Canonical
+// keys are idempotent, so registering one as a spelling is always sound.
 func RegisterProjectIdentity(ctx context.Context, pool *pgxpool.Pool, spelling, remoteSpelling string, seenAt time.Time) error {
 	return registerProjectIdentity(ctx, pool, spelling, remoteSpelling, seenAt)
 }
@@ -62,7 +68,8 @@ func registerProjectIdentity(ctx context.Context, db pgxQuerier, spelling, remot
 			updated_at = now()
 		RETURNING project_key)
 		INSERT INTO project_identity_spellings (spelling, project_key)
-		SELECT $2, project_key FROM registered
+		SELECT DISTINCT observed.spelling, registered.project_key
+		FROM registered, unnest(ARRAY[$2, $1]) AS observed(spelling)
 		ON CONFLICT (spelling) DO UPDATE SET project_key = EXCLUDED.project_key`, key, spelling, seenAt, remoteSpelling)
 	if err != nil {
 		return wrapPgError(err, "register project identity")
