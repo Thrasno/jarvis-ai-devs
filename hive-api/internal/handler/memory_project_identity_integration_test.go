@@ -97,13 +97,21 @@ func TestMemoryCreateRegistersCanonicalProjectAndRollsBackOnWriteFailure(t *test
 	defer cleanup()
 	ctx := context.Background()
 	memoryRepo := repository.NewPostgresMemoryRepository(pool)
-	memoryService := service.NewMemoryService(memoryRepo, repository.NewPostgresSessionRepository(pool), repository.NewPostgresProjectBlockRepository(pool), repository.NewPostgresTxManager(pool))
+	sessionRepo := repository.NewPostgresSessionRepository(pool)
+	blockRepo := repository.NewPostgresProjectBlockRepository(pool)
+	tx := repository.NewPostgresTxManager(pool)
+	memoryService := service.NewMemoryService(memoryRepo, sessionRepo, blockRepo, tx)
+	syncService := service.NewSyncService(memoryRepo, repository.NewPostgresPromptRepository(pool), sessionRepo, repository.NewPostgresAuditRepository(pool), blockRepo, tx)
 	now := time.Now().UTC()
 
 	_, err := memoryService.Create(ctx, &model.Memory{SyncID: "20000000-0000-0000-0000-000000000001", Project: " Direct.Project ", Category: model.CatDecision, Title: "registered", Content: "content", CreatedBy: "user", CreatedAt: now, UpdatedAt: now})
 	require.NoError(t, err)
 	_, err = memoryService.Create(ctx, &model.Memory{SyncID: "20000000-0000-0000-0000-000000000001", Project: "Ghost.Project", Category: model.CatDecision, CreatedBy: "user", CreatedAt: now, UpdatedAt: now})
 	require.Error(t, err)
+	pulled, err := syncService.PullAll(ctx, "direct-project", time.Time{}, nil, 10, model.PullCursor{}, model.PullCursor{})
+	require.NoError(t, err)
+	require.Len(t, pulled.Memories, 1)
+	require.Equal(t, " Direct.Project ", pulled.Memories[0].Project, "pull retains the stored display spelling")
 
 	var key, spelling string
 	require.NoError(t, pool.QueryRow(ctx, `SELECT project_key, first_spelling FROM project_identities WHERE project_key = 'direct-project'`).Scan(&key, &spelling))

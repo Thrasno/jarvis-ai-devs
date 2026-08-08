@@ -117,6 +117,122 @@ func TestBackfillProjectIdentityRegistryRekeysBlockWithAcknowledgementsAndDelive
 	}
 }
 
+func TestBackfillProjectIdentityRegistryCoalescesCompatibleBlockHeadsLosslessly(t *testing.T) {
+	pool, cleanup := startPostgresWithProjectBlocks(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	var olderCommand, newerCommand string
+	for _, row := range []struct {
+		project, key string
+		action       string
+		blocked      bool
+		generation   int64
+		command      *string
+	}{
+		{"Foo.Bar", "Foo.Bar", "block", true, 1, &olderCommand},
+		{"foo-bar", "foo-bar", "unblock", false, 2, &newerCommand},
+	} {
+		require.NoError(t, pool.QueryRow(ctx, `
+			INSERT INTO project_blocks (project, canonical_project_key, action, generation, reason, confirmation, export_marker, blocked)
+			VALUES ($1, $2, $3, $4, 'compatible legacy head', $1, '', $5)
+			RETURNING command_id::text`, row.project, row.key, row.action, row.generation, row.blocked).Scan(row.command))
+	}
+	for _, commandID := range []string{olderCommand, newerCommand} {
+		_, err := pool.Exec(ctx, `INSERT INTO project_block_ack_deliveries (command_id, canonical_project_key, ack_token, ack_auth_subject, ack_daemon_id)
+			SELECT $1, canonical_project_key, ack_token, $2, 'daemon-1' FROM project_blocks WHERE command_id = $1::uuid`, commandID, "user-"+commandID)
+		require.NoError(t, err)
+		_, err = pool.Exec(ctx, `INSERT INTO project_block_acks (command_id, canonical_project_key, ack_token, ack_auth_subject, ack_daemon_id, status)
+			SELECT $1, canonical_project_key, ack_token, $2, 'daemon-1', 'applied' FROM project_blocks WHERE command_id = $1::uuid`, commandID, "user-"+commandID)
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool))
+	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool), "coalesced startup backfill must be idempotent")
+	for _, table := range []string{"project_blocks", "project_quarantine_commands", "project_block_acks", "project_block_ack_deliveries"} {
+		var count int
+		require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE canonical_project_key = 'foo-bar'").Scan(&count))
+		if table == "project_blocks" {
+			require.Equal(t, 1, count, table)
+		} else {
+			require.Equal(t, 2, count, table)
+		}
+	}
+	var generation int64
+	var action, reason, confirmation, marker string
+	var blocked bool
+	require.NoError(t, pool.QueryRow(ctx, `SELECT generation, action, reason, confirmation, export_marker, blocked FROM project_blocks WHERE canonical_project_key = 'foo-bar'`).Scan(&generation, &action, &reason, &confirmation, &marker, &blocked))
+	require.EqualValues(t, 2, generation, "the highest generation is the unambiguous current head")
+	require.Equal(t, "unblock", action)
+	require.Equal(t, "compatible legacy head", reason)
+	require.Equal(t, "foo-bar", confirmation)
+	require.Empty(t, marker)
+	require.False(t, blocked)
+
+	next, err := NewPostgresProjectBlockRepository(pool).BlockProject(ctx, model.ProjectBlockCreate{
+		Project:      "Foo.Bar",
+		Action:       "block",
+		Reason:       "next transition",
+		Confirmation: "Foo.Bar",
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 3, next.Generation)
+}
+
+func TestBackfillProjectIdentityRegistryCoalescesCompatibleGenerationOneHeads(t *testing.T) {
+	pool, cleanup := startPostgresWithProjectBlocks(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	for _, row := range []struct{ project, key string }{{"Foo.Bar", "Foo.Bar"}, {"foo-bar", "foo-bar"}} {
+		_, err := pool.Exec(ctx, `INSERT INTO project_blocks (project, canonical_project_key, action, generation, reason, confirmation, export_marker, blocked)
+			VALUES ($1, $2, 'block', 1, 'same state', 'same confirmation', 'same marker', true)`, row.project, row.key)
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool))
+	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool), "coalesced startup backfill must be idempotent")
+	var heads, commands int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM project_blocks WHERE canonical_project_key = 'foo-bar'`).Scan(&heads))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM project_quarantine_commands WHERE canonical_project_key = 'foo-bar'`).Scan(&commands))
+	require.Equal(t, 1, heads)
+	require.Equal(t, 2, commands, "both command identities must be retained")
+	var duplicateGenerations int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM (SELECT generation FROM project_quarantine_commands WHERE canonical_project_key = 'foo-bar' GROUP BY generation HAVING count(*) > 1) duplicates`).Scan(&duplicateGenerations))
+	require.Zero(t, duplicateGenerations)
+	var headGeneration, maxCommandGeneration int64
+	require.NoError(t, pool.QueryRow(ctx, `SELECT generation FROM project_blocks WHERE canonical_project_key = 'foo-bar'`).Scan(&headGeneration))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT max(generation) FROM project_quarantine_commands WHERE canonical_project_key = 'foo-bar'`).Scan(&maxCommandGeneration))
+	require.Equal(t, maxCommandGeneration, headGeneration)
+	next, err := NewPostgresProjectBlockRepository(pool).BlockProject(ctx, model.ProjectBlockCreate{Project: "Foo.Bar", Action: "block", Reason: "next transition", Confirmation: "Foo.Bar"})
+	require.NoError(t, err)
+	require.Equal(t, maxCommandGeneration+1, next.Generation)
+}
+
+func TestBackfillProjectIdentityRegistryRejectsIncompatibleBlockHeadsWithoutMutation(t *testing.T) {
+	pool, cleanup := startPostgresWithProjectBlocks(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	for _, row := range []struct{ project, key string }{{"Foo.Bar", "Foo.Bar"}, {"foo-bar", "foo-bar"}} {
+		_, err := pool.Exec(ctx, `INSERT INTO project_blocks (project, canonical_project_key, action, generation, reason, confirmation, export_marker, blocked)
+			VALUES ($1, $2, 'block', 1, 'competing legacy head', $1, '', true)`, row.project, row.key)
+		require.NoError(t, err)
+	}
+
+	err := BackfillProjectIdentityRegistry(ctx, pool)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "project identity conflict")
+	for _, table := range []string{"project_blocks", "project_quarantine_commands"} {
+		var count int
+		require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE canonical_project_key IN ('Foo.Bar', 'foo-bar')").Scan(&count))
+		require.Equal(t, 2, count, table, "transaction rollback must preserve legacy rows")
+	}
+	var identities int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM project_identities`).Scan(&identities))
+	require.Zero(t, identities, "conflict must not partially register project identity spellings")
+}
+
 func memoryProjects(memories []*model.Memory) []string {
 	projects := make([]string, 0, len(memories))
 	for _, memory := range memories {
@@ -644,8 +760,9 @@ func TestPostgresMemoryRepository_PullSinceExcludesBlockedProjects(t *testing.T)
 		ActorUserID:         "admin-1",
 	})
 	require.NoError(t, err)
+	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool))
 
-	memories, hasMore, err := memoryRepo.PullSince(ctx, "Blocked Pull", time.Time{}, nil, model.PullCursor{}, 10)
+	memories, hasMore, err := memoryRepo.PullSince(ctx, "blocked/pull", time.Time{}, nil, model.PullCursor{}, 10)
 	require.NoError(t, err)
 	require.False(t, hasMore)
 	require.Empty(t, memories)

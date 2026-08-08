@@ -23,7 +23,8 @@ CREATE OR REPLACE FUNCTION record_project_quarantine_command() RETURNS trigger A
 BEGIN
     IF NEW.action IN ('block', 'unblock') THEN
         INSERT INTO project_quarantine_commands (command_id, canonical_project_key, generation, project, action, reason, actor_user_id, blocked_at)
-        VALUES (NEW.command_id, NEW.canonical_project_key, NEW.generation, NEW.project, NEW.action, NEW.reason, NEW.actor_user_id, NEW.blocked_at);
+        VALUES (NEW.command_id, NEW.canonical_project_key, NEW.generation, NEW.project, NEW.action, NEW.reason, NEW.actor_user_id, NEW.blocked_at)
+        ON CONFLICT (command_id) DO UPDATE SET generation = EXCLUDED.generation;
     END IF;
     RETURN NEW;
 END;
