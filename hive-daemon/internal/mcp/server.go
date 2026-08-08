@@ -54,13 +54,23 @@ type SyncRunner interface {
 // cfg puede ser nil — en ese caso AutoSync está deshabilitado.
 // prompts puede ser nil — en ese caso mem_save_prompt devuelve error.
 func NewServer(store MemoryStore, syncStore hivesync.SyncStore, syncer SyncRunner, cfg *hivesync.Config, prompts PromptStore) *sdkmcp.Server {
-	return NewServerWithConfig(store, syncStore, syncer, cfg, prompts)
+	return NewServerWithMigrationGate(store, syncStore, syncer, cfg, prompts, nil)
+}
+
+// NewServerWithMigrationGate configures every MCP memory tool behind one
+// migration gate. A nil gate preserves standalone/test server behavior.
+func NewServerWithMigrationGate(store MemoryStore, syncStore hivesync.SyncStore, syncer SyncRunner, cfg *hivesync.Config, prompts PromptStore, gate *project.MigrationGate) *sdkmcp.Server {
+	return newServer(store, syncStore, syncer, cfg, prompts, gate)
 }
 
 // NewServerWithConfig crea un servidor con configuración personalizada para testing.
 // cfg puede ser nil — en ese caso AutoSync está deshabilitado.
 // prompts puede ser nil — en ese caso mem_save_prompt devuelve error.
 func NewServerWithConfig(store MemoryStore, syncStore hivesync.SyncStore, syncer SyncRunner, cfg *hivesync.Config, prompts PromptStore) *sdkmcp.Server {
+	return newServer(store, syncStore, syncer, cfg, prompts, nil)
+}
+
+func newServer(store MemoryStore, syncStore hivesync.SyncStore, syncer SyncRunner, cfg *hivesync.Config, prompts PromptStore, gate *project.MigrationGate) *sdkmcp.Server {
 	s := sdkmcp.NewServer(&sdkmcp.Implementation{
 		Name:    "hive-daemon",
 		Version: "1.0.0",
@@ -68,7 +78,7 @@ func NewServerWithConfig(store MemoryStore, syncStore hivesync.SyncStore, syncer
 
 	activity := NewActivityTracker()
 	syncRuntime := newSyncRuntime(syncStore, syncer, cfg)
-	registerTools(s, store, syncRuntime, activity, prompts)
+	registerTools(s, store, syncRuntime, activity, prompts, gate)
 
 	syncStatus := "sin sync"
 	if syncer != nil {

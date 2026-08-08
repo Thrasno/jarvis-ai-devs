@@ -65,6 +65,7 @@ func main() {
 		configSvc := httpapi.NewSyncServiceAdapter(hivesync.NewService())
 		healthSvc := httpapi.NewHealthServiceAdapter(hivesync.NewHealthService(store, nil))
 		srv := httpapi.NewServerWithAll(httpAddr(), store, store, govSvc, configSvc, healthSvc, store)
+		srv.SetMigrationGate(gate)
 		if err := srv.Start(rootCtx); err != nil {
 			logger.Log.Printf("http server stopped: %v (mcp continues)", err)
 		}
@@ -78,7 +79,7 @@ func main() {
 		logger.Log.Printf("auto-closed %d stale session(s)", closed)
 	}
 
-	server := hivemcp.NewServer(store, store, syncer, cfg, store)
+	server := hivemcp.NewServerWithMigrationGate(store, store, syncer, cfg, store, gate)
 
 	runErr := server.Run(rootCtx, &sdkmcp.StdioTransport{})
 	stop()

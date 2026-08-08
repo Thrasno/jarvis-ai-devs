@@ -83,7 +83,14 @@ type Server struct {
 	governance GovernanceService
 	config     ConfigService
 	health     HealthService
+	gate       *project.MigrationGate
 	mux        *http.ServeMux
+}
+
+// SetMigrationGate installs the daemon-wide migration gate after startup has
+// determined whether the local identity migration is safe to access.
+func (s *Server) SetMigrationGate(gate *project.MigrationGate) {
+	s.gate = gate
 }
 
 // NewServer constructs a Server bound to addr.
@@ -175,6 +182,17 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 
 // ServeHTTP implements http.Handler — allows use with httptest.NewRecorder.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !strings.HasPrefix(r.URL.Path, "/governance/") && s.gate != nil {
+		if err := s.gate.Check(); err != nil {
+			var blocked *project.MigrationBlockedError
+			if errors.As(err, &blocked) {
+				writeJSON(w, http.StatusServiceUnavailable, blocked.Status)
+				return
+			}
+			writeJSON(w, http.StatusServiceUnavailable, project.MigrationStatus{State: project.MigrationStateBlocked})
+			return
+		}
+	}
 	s.mux.ServeHTTP(w, r)
 }
 
@@ -187,7 +205,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	srv := &http.Server{
 		Addr:              s.addr,
-		Handler:           s.mux,
+		Handler:           s,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      5 * time.Second,
