@@ -359,12 +359,12 @@ func TestHiveProjectIdentityCommandsExposeBlockedRecovery(t *testing.T) {
 		t.Fatalf("continuation tokens = %q, command = %v, error = %v; want registered status command", tokens, command, err)
 	}
 
-	resolved, err := executeHiveCommand(t, NewRootCommand(client), "project", "identity", "resolve", "--source", "Foo-Bar", "--target", "foo/bar", "--backup-id", "migration-backup-1", "--confirmation", "MERGE project Foo-Bar INTO foo/bar")
+	resolved, err := executeHiveCommand(t, NewRootCommand(client), "project", "identity", "resolve", "--source", "Foo-Bar", "--target", "foo/bar", "--backup-id", "migration-backup-1", "--confirmation", "RESOLVE project identity Foo-Bar INTO foo/bar")
 	if err != nil {
 		t.Fatalf("identity resolve: %v", err)
 	}
-	if client.mergeRequest.SourceProject != "Foo-Bar" || client.mergeRequest.TargetProject != "foo/bar" {
-		t.Fatalf("resolve request = %+v, want explicit source and target", client.mergeRequest)
+	if client.identityResolution.SourceProject != "Foo-Bar" || client.identityResolution.TargetProject != "foo/bar" || client.mergeCalled {
+		t.Fatalf("resolve request = %+v mergeCalled=%v, want dedicated explicit resolution", client.identityResolution, client.mergeCalled)
 	}
 	if !strings.Contains(resolved, "hive project identity retry") {
 		t.Fatalf("resolve output = %q, want retry guidance", resolved)
@@ -399,7 +399,7 @@ func TestHiveProjectIdentityCommandsRejectGuessedResolutionAndRestoreBackup(t *t
 	for _, args := range [][]string{
 		{"project", "identity", "resolve", "--source", "Foo-Bar"},
 		{"project", "identity", "resolve", "--target", "foo/bar"},
-		{"project", "identity", "resolve", "--source", "Foo-Bar", "--target", "foo/bar", "--backup-id", "migration-backup-1", "--confirmation", "MERGE project Foo-Bar INTO foo/bar "},
+		{"project", "identity", "resolve", "--source", "Foo-Bar", "--target", "foo/bar", "--backup-id", "migration-backup-1", "--confirmation", "RESOLVE project identity Foo-Bar INTO foo/bar "},
 		{"project", "identity", "rollback"},
 	} {
 		out, err := executeHiveCommand(t, NewRootCommand(client), args...)
@@ -445,6 +445,7 @@ type fakeHiveClient struct {
 	archiveRequest      hiveclient.ProjectArchiveRequest
 	mergeRequest        hiveclient.ProjectMergeRequest
 	identityStatus      hiveclient.MigrationIdentityStatus
+	identityResolution  hiveclient.IdentityResolutionRequest
 	restoreBackupID     string
 	restoreConfirmation string
 	memoriesCalled      bool
@@ -488,6 +489,10 @@ func (f *fakeHiveClient) MergeProject(_ context.Context, req hiveclient.ProjectM
 }
 func (f *fakeHiveClient) MigrationIdentityStatus(context.Context) (hiveclient.MigrationIdentityStatus, error) {
 	return f.identityStatus, nil
+}
+func (f *fakeHiveClient) ResolveMigrationIdentity(_ context.Context, req hiveclient.IdentityResolutionRequest) error {
+	f.identityResolution = req
+	return nil
 }
 func (f *fakeHiveClient) RestoreMigrationBackup(_ context.Context, backupID, confirmation string) error {
 	f.restoreCalled = true

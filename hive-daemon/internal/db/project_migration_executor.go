@@ -14,11 +14,12 @@ import (
 )
 
 var (
-	ErrProjectMigrationPlanUnsafe  = errors.New("project migration plan is not executable")
-	ErrProjectMigrationPlanStale   = errors.New("project migration plan changed before execution")
-	ErrProjectMigrationUnsupported = errors.New("project migration contains unsupported state")
-	ErrProjectMigrationConflict    = errors.New("project migration contains an unmergeable composite row")
-	ErrProjectMigrationInProgress  = errors.New("project migration is already executing")
+	ErrProjectMigrationPlanUnsafe     = errors.New("project migration plan is not executable")
+	ErrProjectMigrationPlanStale      = errors.New("project migration plan changed before execution")
+	ErrProjectMigrationUnsupported    = errors.New("project migration contains unsupported state")
+	ErrProjectMigrationConflict       = errors.New("project migration contains an unmergeable composite row")
+	ErrProjectMigrationInProgress     = errors.New("project migration is already executing")
+	ErrProjectIdentityResolutionStale = errors.New("project identity resolution is stale or unrelated")
 )
 
 // ReadProjectMigrationPlan inventories every known daemon-local project-bearing
@@ -29,6 +30,41 @@ func ReadProjectMigrationPlan(ctx context.Context, database *DB) (ProjectMigrati
 		return ProjectMigrationPlan{}, err
 	}
 	return BuildProjectMigrationPlan(records), nil
+}
+
+// ResolveProjectIdentityConflict records the explicit winner for a singleton
+// sync-state collision before the complete migration is replanned.
+func (d *DB) ResolveProjectIdentityConflict(ctx context.Context, source, target string) error {
+	source, target = strings.TrimSpace(source), strings.TrimSpace(target)
+	if source == "" || target == "" || source == target || canonicalProjectKey(source) != canonicalProjectKey(target) {
+		return ErrProjectIdentityResolutionStale
+	}
+	var sourceCount, targetCount int
+	if err := d.sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sync_state WHERE project = ?`, source).Scan(&sourceCount); err != nil {
+		return err
+	}
+	if err := d.sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sync_state WHERE project = ?`, target).Scan(&targetCount); err != nil {
+		return err
+	}
+	if sourceCount != 1 || targetCount != 1 {
+		return ErrProjectIdentityResolutionStale
+	}
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sync_state WHERE project = ?`, source); err != nil {
+		return err
+	}
+	key, err := registerProjectIdentity(ctx, tx, target)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE project_identities SET remote_spelling = ? WHERE project_key = ?`, target, key); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ExecuteProjectMigration rekeys the lossless SQLite subset in one transaction.

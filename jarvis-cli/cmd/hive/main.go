@@ -22,6 +22,7 @@ type governanceClient interface {
 	ArchiveProject(context.Context, hiveclient.ProjectArchiveRequest) (hiveclient.ProjectArchiveResult, error)
 	MergeProject(context.Context, hiveclient.ProjectMergeRequest) (hiveclient.ProjectMergeResult, error)
 	MigrationIdentityStatus(context.Context) (hiveclient.MigrationIdentityStatus, error)
+	ResolveMigrationIdentity(context.Context, hiveclient.IdentityResolutionRequest) error
 	RequestMigrationRetry(context.Context) error
 	RestoreMigrationBackup(context.Context, string, string) error
 }
@@ -191,11 +192,11 @@ func projectIdentityResolveCommand(client governanceClient) *cobra.Command {
 		if strings.TrimSpace(backupID) == "" {
 			return fmt.Errorf("--backup-id is required for hive project identity resolve")
 		}
-		expected := "MERGE project " + source + " INTO " + target
+		expected := "RESOLVE project identity " + source + " INTO " + target
 		if confirmation != expected {
 			return fmt.Errorf("confirmation must match exactly: %s", expected)
 		}
-		if _, err := client.MergeProject(cmd.Context(), hiveclient.ProjectMergeRequest{SourceProject: source, TargetProject: target, BackupID: backupID, Confirmation: confirmation}); err != nil {
+		if err := client.ResolveMigrationIdentity(cmd.Context(), hiveclient.IdentityResolutionRequest{SourceProject: source, TargetProject: target, BackupID: backupID, Confirmation: confirmation}); err != nil {
 			return err
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Resolution recorded. Run: hive project identity retry")

@@ -59,6 +59,12 @@ func TestClientReadsMigrationIdentityStatusAndRequestsRollback(t *testing.T) {
 				t.Fatalf("method = %s, want POST", r.Method)
 			}
 			_, _ = w.Write([]byte(`{"state":"restart-requested"}`))
+		case "/governance/project-identity/resolve":
+			var request IdentityResolutionRequest
+			if r.Method != http.MethodPost || json.NewDecoder(r.Body).Decode(&request) != nil || request.SourceProject != "Foo-Bar" || request.TargetProject != "foo-bar" {
+				t.Fatalf("identity resolve request = %s %+v", r.Method, request)
+			}
+			_, _ = w.Write([]byte(`{"state":"resolution-recorded"}`))
 		default:
 			t.Fatalf("path = %s", r.URL.Path)
 		}
@@ -74,6 +80,9 @@ func TestClientReadsMigrationIdentityStatusAndRequestsRollback(t *testing.T) {
 	}
 	if err := client.RestoreMigrationBackup(context.Background(), "migration-backup-1", "RESTORE migration-backup-1"); err != nil {
 		t.Fatalf("RestoreMigrationBackup: %v", err)
+	}
+	if err := client.ResolveMigrationIdentity(context.Background(), IdentityResolutionRequest{SourceProject: "Foo-Bar", TargetProject: "foo-bar", BackupID: "migration-backup-1", Confirmation: "RESOLVE project identity Foo-Bar INTO foo-bar"}); err != nil {
+		t.Fatalf("ResolveMigrationIdentity: %v", err)
 	}
 	if err := client.RequestMigrationRetry(context.Background()); err != nil {
 		t.Fatalf("RequestMigrationRetry: %v", err)

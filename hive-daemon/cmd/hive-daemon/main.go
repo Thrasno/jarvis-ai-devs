@@ -80,6 +80,15 @@ func run() int {
 		srv.SetMigrationRestore(func(_ context.Context, req governance.RestoreRequest) error {
 			return governance.ScheduleRestore(dbPath, req)
 		})
+		srv.SetMigrationIdentityResolver(func(ctx context.Context, req project.IdentityResolutionRequest) error {
+			if req.BackupID != gate.Status().BackupID {
+				return project.ErrIdentityResolutionStale
+			}
+			if _, err := backupStore.ValidateArchive(ctx, req.BackupID); err != nil {
+				return err
+			}
+			return store.ResolveProjectIdentityConflict(ctx, req.SourceProject, req.TargetProject)
+		})
 		if err := srv.Start(rootCtx); err != nil {
 			logger.Log.Printf("http server stopped: %v (mcp continues)", err)
 		}

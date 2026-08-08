@@ -1,12 +1,28 @@
 package project
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 const MigrationStateReady = "ready"
 const MigrationStateBlocked = "migration-blocked"
 
 const defaultMigrationBlockedReason = "migration status is unavailable"
 const defaultMigrationContinuation = "hive project identity status"
+
+var ErrIdentityResolutionStale = errors.New("project identity resolution is stale or unrelated")
+
+type IdentityResolutionRequest struct {
+	SourceProject string `json:"source_project"`
+	TargetProject string `json:"target_project"`
+	BackupID      string `json:"backup_id"`
+	Confirmation  string `json:"confirmation"`
+}
+
+func IdentityResolutionConfirmation(source, target string) string {
+	return "RESOLVE project identity " + source + " INTO " + target
+}
 
 // MigrationStatus is the boundary-neutral contract every Hive access surface
 // can use to fail closed while migration governance is unresolved.

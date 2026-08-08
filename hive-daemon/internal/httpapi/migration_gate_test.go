@@ -139,7 +139,7 @@ func TestMigrationGateAllowsOnlyIdentityRecoveryRoutes(t *testing.T) {
 	for _, tt := range []struct {
 		method, path string
 		wantStatus   int
-	}{{http.MethodGet, "/governance/project-identity/status", http.StatusOK}, {http.MethodPost, "/governance/project-identity/retry", http.StatusServiceUnavailable}, {http.MethodPost, "/governance/restores", http.StatusNotFound}} {
+	}{{http.MethodGet, "/governance/project-identity/status", http.StatusOK}, {http.MethodPost, "/governance/project-identity/retry", http.StatusServiceUnavailable}, {http.MethodPost, "/governance/project-identity/resolve", http.StatusBadRequest}, {http.MethodPost, "/governance/restores", http.StatusNotFound}} {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
 			rr := httptest.NewRecorder()
 			srv.ServeHTTP(rr, httptest.NewRequest(tt.method, tt.path, nil))

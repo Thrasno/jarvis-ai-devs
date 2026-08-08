@@ -120,6 +120,13 @@ type MigrationIdentityStatus struct {
 	Variants     []string `json:"variants,omitempty"`
 }
 
+type IdentityResolutionRequest struct {
+	SourceProject string `json:"source_project"`
+	TargetProject string `json:"target_project"`
+	BackupID      string `json:"backup_id"`
+	Confirmation  string `json:"confirmation"`
+}
+
 // Capabilities is the daemon's advertised guarded-mutation safety contract.
 // The UI must require all fields before enabling delete or restore.
 type Capabilities struct {
@@ -537,6 +544,10 @@ func (c *Client) MigrationIdentityStatus(ctx context.Context) (MigrationIdentity
 // complete migration during normal startup.
 func (c *Client) RequestMigrationRetry(ctx context.Context) error {
 	return c.post(ctx, "/governance/project-identity/retry", struct{}{}, &struct{}{})
+}
+
+func (c *Client) ResolveMigrationIdentity(ctx context.Context, req IdentityResolutionRequest) error {
+	return c.post(ctx, "/governance/project-identity/resolve", req, &struct{}{})
 }
 
 func (c *Client) RestoreMigrationBackup(ctx context.Context, backupID, confirmation string) error {
