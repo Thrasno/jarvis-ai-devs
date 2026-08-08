@@ -22,6 +22,51 @@ var (
 	ErrProjectIdentityResolutionStale = errors.New("project identity resolution is stale or unrelated")
 )
 
+// syncStateMergeRow carries the sync_state columns that must survive when two
+// canonically-equivalent rows collapse into one. Every column is addressed by
+// name so a schema change cannot silently apply one column's policy to another.
+type syncStateMergeRow struct {
+	LastSyncAt          sql.NullString
+	JWTToken            sql.NullString
+	JWTExpiresAt        sql.NullString
+	LastAttemptAt       sql.NullString
+	LastSuccessAt       sql.NullString
+	LastFailureAt       sql.NullString
+	ConsecutiveFailures sql.NullString
+	BackoffUntil        sql.NullString
+	LastError           sql.NullString
+	LastDrainState      sql.NullString
+	LastDrainReason     sql.NullString
+	LastDrainRemaining  sql.NullString
+}
+
+type syncStateMergeColumn struct {
+	name  string
+	value *sql.NullString
+}
+
+// columns binds every merged field to its sync_state column. It is the single
+// source of truth for the SELECT, for the UPDATE ... SET, and for the merge
+// policy: an unlisted column is never read nor written, and
+// TestSyncStateMergeColumnsMatchSchema fails when this list drifts from either
+// the sync_state schema or the struct.
+func (row *syncStateMergeRow) columns() []syncStateMergeColumn {
+	return []syncStateMergeColumn{
+		{"last_sync_at", &row.LastSyncAt},
+		{"jwt_token", &row.JWTToken},
+		{"jwt_expires_at", &row.JWTExpiresAt},
+		{"last_attempt_at", &row.LastAttemptAt},
+		{"last_success_at", &row.LastSuccessAt},
+		{"last_failure_at", &row.LastFailureAt},
+		{"consecutive_failures", &row.ConsecutiveFailures},
+		{"backoff_until", &row.BackoffUntil},
+		{"last_error", &row.LastError},
+		{"last_drain_state", &row.LastDrainState},
+		{"last_drain_reason", &row.LastDrainReason},
+		{"last_drain_remaining", &row.LastDrainRemaining},
+	}
+}
+
 // ReadProjectMigrationPlan inventories every known daemon-local project-bearing
 // state before passing its observations to the deterministic planner.
 func ReadProjectMigrationPlan(ctx context.Context, database *DB) (ProjectMigrationPlan, error) {
@@ -54,7 +99,7 @@ func (d *DB) ResolveProjectIdentityConflict(ctx context.Context, source, target 
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM sync_state WHERE project = ?`, source); err != nil {
+	if err := mergeSyncStateInto(ctx, tx, source, target); err != nil {
 		return err
 	}
 	key, err := registerProjectIdentity(ctx, tx, target)
@@ -65,6 +110,86 @@ func (d *DB) ResolveProjectIdentityConflict(ctx context.Context, source, target 
 		return err
 	}
 	return tx.Commit()
+}
+
+func mergeSyncStateInto(ctx context.Context, tx *sql.Tx, source, target string) error {
+	sourceRow, err := readSyncStateRow(ctx, tx, source)
+	if err != nil {
+		return err
+	}
+	targetRow, err := readSyncStateRow(ctx, tx, target)
+	if err != nil {
+		return err
+	}
+	merged := mergeSyncStateRows(sourceRow, targetRow)
+	columns := merged.columns()
+	assignments := make([]string, len(columns))
+	args := make([]any, len(columns)+1)
+	for i, column := range columns {
+		assignments[i] = column.name + " = ?"
+		if column.value.Valid {
+			args[i] = column.value.String
+		}
+	}
+	args[len(columns)] = target
+	if _, err := tx.ExecContext(ctx, `UPDATE sync_state SET `+strings.Join(assignments, ",")+` WHERE project = ?`, args...); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `DELETE FROM sync_state WHERE project = ?`, source)
+	return err
+}
+
+func readSyncStateRow(ctx context.Context, tx *sql.Tx, project string) (syncStateMergeRow, error) {
+	var row syncStateMergeRow
+	columns := row.columns()
+	reads := make([]string, len(columns))
+	scan := make([]any, len(columns))
+	for i, column := range columns {
+		// CAST to TEXT: DATETIME columns would otherwise round-trip through the driver's time layout.
+		reads[i] = `CAST(` + column.name + ` AS TEXT)`
+		scan[i] = column.value
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT `+strings.Join(reads, ",")+` FROM sync_state WHERE project = ?`, project).Scan(scan...); err != nil {
+		return syncStateMergeRow{}, err
+	}
+	return row, nil
+}
+
+// mergeSyncStateRows keeps the more valuable value per column: cursor timestamps only
+// advance, credentials move as a token/expiry pair, and drain telemetry follows the
+// surviving cursor. The failure triple resets, because a stale backoff_until inherited
+// from a spelling that no longer exists would wedge the identity just repaired.
+func mergeSyncStateRows(source, target syncStateMergeRow) syncStateMergeRow {
+	merged := target
+	sourceOwnsCursor := advancesSyncValue(source.LastSyncAt, target.LastSyncAt)
+	keepLaterSyncValue(&merged.LastSyncAt, source.LastSyncAt)
+	keepLaterSyncValue(&merged.LastAttemptAt, source.LastAttemptAt)
+	keepLaterSyncValue(&merged.LastSuccessAt, source.LastSuccessAt)
+	keepLaterSyncValue(&merged.LastFailureAt, source.LastFailureAt)
+	// Token and expiry move together: a token must never inherit a foreign expiry.
+	if target.JWTToken.String == "" {
+		merged.JWTToken, merged.JWTExpiresAt = source.JWTToken, source.JWTExpiresAt
+	}
+	merged.ConsecutiveFailures = sql.NullString{String: "0", Valid: true}
+	merged.BackoffUntil = sql.NullString{}
+	merged.LastError = sql.NullString{Valid: true}
+	// Drain telemetry is only meaningful next to the cursor that produced it.
+	if sourceOwnsCursor {
+		merged.LastDrainState, merged.LastDrainReason, merged.LastDrainRemaining = source.LastDrainState, source.LastDrainReason, source.LastDrainRemaining
+	}
+	return merged
+}
+
+// keepLaterSyncValue advances a merged timestamp only when the candidate is
+// later; any real value beats NULL.
+func keepLaterSyncValue(current *sql.NullString, candidate sql.NullString) {
+	if advancesSyncValue(candidate, *current) {
+		*current = candidate
+	}
+}
+
+func advancesSyncValue(candidate, current sql.NullString) bool {
+	return candidate.Valid && (!current.Valid || candidate.String > current.String)
 }
 
 // ExecuteProjectMigration rekeys the lossless SQLite subset in one transaction.

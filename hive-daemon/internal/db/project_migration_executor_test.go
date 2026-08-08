@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -692,4 +695,106 @@ func migrationProjectValues(t *testing.T, database *DB) [2]string {
 		t.Fatal(err)
 	}
 	return values
+}
+
+func TestResolveProjectIdentityConflictMergesSyncStateIntoTarget(t *testing.T) {
+	const columns = `(project, last_sync_at, jwt_token, jwt_expires_at, last_attempt_at, last_success_at, last_failure_at, consecutive_failures, backoff_until, last_error, last_drain_state, last_drain_reason, last_drain_remaining)`
+	const source = `('Foo', '2026-01-10', 'source-token', '2026-03-01', '2026-01-11', '2026-01-10', '2026-01-30', 4, '2099-01-01', 'boom', 'partial', 'budget', 7)`
+	for _, testCase := range []struct {
+		name, target string
+		want         string
+	}{
+		{
+			name:   "never synced target adopts the losing cursor and credentials",
+			target: `('foo', NULL, '', NULL, NULL, NULL, NULL, 0, NULL, '', NULL, NULL, NULL)`,
+			want:   "2026-01-10|source-token|2026-03-01|2026-01-11|2026-01-10|2026-01-30|0|||partial|budget|7",
+		},
+		{
+			name:   "already synced target keeps its own advanced cursor and token",
+			target: `('foo', '2026-02-20', 'target-token', '2026-04-01', '2026-02-21', '2026-02-20', NULL, 1, NULL, '', 'complete', 'drained', 0)`,
+			want:   "2026-02-20|target-token|2026-04-01|2026-02-21|2026-02-20|2026-01-30|0|||complete|drained|0",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			database := newMigrationExecutorDB(t)
+			if _, err := database.sqlDB.Exec(`INSERT INTO sync_state ` + columns + ` VALUES ` + source + `,` + testCase.target); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.ResolveProjectIdentityConflict(context.Background(), "Foo", "foo"); err != nil {
+				t.Fatalf("ResolveProjectIdentityConflict() error = %v", err)
+			}
+			if got := syncStateRowValues(t, database, "foo"); got != testCase.want {
+				t.Fatalf("merged sync_state = %q, want %q", got, testCase.want)
+			}
+			var rows int
+			if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM sync_state`).Scan(&rows); err != nil {
+				t.Fatal(err)
+			}
+			if rows != 1 {
+				t.Fatalf("sync_state rows = %d, want 1", rows)
+			}
+		})
+	}
+}
+
+func syncStateRowValues(t *testing.T, database *DB, project string) string {
+	t.Helper()
+	columns := syncStateMergeColumnNames()
+	values := make([]string, len(columns))
+	scan := make([]any, len(values))
+	for i := range values {
+		scan[i] = &values[i]
+	}
+	query := `SELECT IFNULL(` + strings.Join(columns, `,''), IFNULL(`) + `,'') FROM sync_state WHERE project = ?`
+	if err := database.sqlDB.QueryRow(query, project).Scan(scan...); err != nil {
+		t.Fatal(err)
+	}
+	return strings.Join(values, "|")
+}
+
+func syncStateMergeColumnNames() []string {
+	var row syncStateMergeRow
+	columns := row.columns()
+	names := make([]string, len(columns))
+	for i, column := range columns {
+		names[i] = column.name
+	}
+	return names
+}
+
+// TestSyncStateMergeColumnsMatchSchema keeps the merge column list the single
+// source of truth: a sync_state column added without a merge policy, or a merged
+// field left unbound to a column, fails here instead of silently mis-merging.
+func TestSyncStateMergeColumnsMatchSchema(t *testing.T) {
+	var row syncStateMergeRow
+	if got, want := len(row.columns()), reflect.TypeOf(row).NumField(); got != want {
+		t.Fatalf("columns() binds %d columns for %d struct fields; every merged field must be bound", got, want)
+	}
+	database := newMigrationExecutorDB(t)
+	rows, err := database.sqlDB.Query(`SELECT name FROM pragma_table_info('sync_state')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	// project identifies the row and project_key is generated from it, so neither is merged.
+	identity := map[string]bool{"project": true, "project_key": true}
+	var schema []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		if !identity[name] {
+			schema = append(schema, name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	merged := syncStateMergeColumnNames()
+	sort.Strings(schema)
+	sort.Strings(merged)
+	if got, want := strings.Join(merged, ","), strings.Join(schema, ","); got != want {
+		t.Fatalf("merged sync_state columns = %q, want %q", got, want)
+	}
 }
