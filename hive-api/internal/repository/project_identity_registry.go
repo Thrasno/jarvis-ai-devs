@@ -30,6 +30,7 @@ func RegisterProjectIdentity(ctx context.Context, pool *pgxpool.Pool, spelling, 
 	}
 	remoteSpelling = strings.TrimSpace(remoteSpelling)
 	_, err := pool.Exec(ctx, `
+		WITH registered AS (
 		INSERT INTO project_identities (project_key, first_spelling, first_seen_at, remote_spelling, remote_seen_at)
 		VALUES ($1, $2, $3::timestamptz, NULLIF($4, ''), CASE WHEN $4 = '' THEN NULL ELSE $3::timestamptz END)
 		ON CONFLICT (project_key) DO UPDATE SET
@@ -40,7 +41,11 @@ func RegisterProjectIdentity(ctx context.Context, pool *pgxpool.Pool, spelling, 
 			first_seen_at = LEAST(project_identities.first_seen_at, EXCLUDED.first_seen_at),
 			remote_spelling = COALESCE(EXCLUDED.remote_spelling, project_identities.remote_spelling),
 			remote_seen_at = COALESCE(EXCLUDED.remote_seen_at, project_identities.remote_seen_at),
-			updated_at = now()`, key, spelling, seenAt, remoteSpelling)
+			updated_at = now()
+		RETURNING project_key)
+		INSERT INTO project_identity_spellings (spelling, project_key)
+		SELECT $2, project_key FROM registered
+		ON CONFLICT (spelling) DO UPDATE SET project_key = EXCLUDED.project_key`, key, spelling, seenAt, remoteSpelling)
 	if err != nil {
 		return wrapPgError(err, "register project identity")
 	}
@@ -75,6 +80,13 @@ func BackfillProjectIdentityRegistry(ctx context.Context, pool *pgxpool.Pool) er
 			ON CONFLICT (project_key) DO NOTHING`,
 			key, registration.spelling, registration.seenAt); err != nil {
 			return wrapPgError(err, "register canonical project identity")
+		}
+		if _, err := tx.Exec(ctx, `
+				INSERT INTO project_identity_spellings (spelling, project_key)
+				VALUES ($1, $2)
+				ON CONFLICT (spelling) DO UPDATE SET project_key = EXCLUDED.project_key`,
+			registration.spelling, key); err != nil {
+			return wrapPgError(err, "register project identity spelling")
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE project_blocks

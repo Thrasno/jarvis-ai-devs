@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -49,6 +50,79 @@ func TestPostgresProjectBlockRepository_ReadsHistoricalLegacyActions(t *testing.
 			require.EqualValues(t, 1, block.Generation)
 		})
 	}
+}
+
+func TestBlockedProjectPredicateUsesSharedCanonicalIdentityForLegacySpellings(t *testing.T) {
+	pool, cleanup := startPostgresWithProjectBlocks(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	base := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	for i, project := range []string{"Foo.Bar", "foo/bar", "STRAßE", "visible"} {
+		sessionID := "canonical-policy-" + project
+		insertProjectSession(t, pool, sessionID, project, base, nil)
+		insertProjectMemory(t, pool, fmt.Sprintf("00000000-0000-0000-0000-%012d", 900+i), project, sessionID, base, base, nil)
+	}
+	_, err := pool.Exec(ctx, `
+		INSERT INTO project_blocks (project, canonical_project_key, action, reason, confirmation, export_marker, blocked)
+		VALUES ('Foo.Bar', 'foo.bar', 'block', 'legacy dotted key', 'Foo.Bar', '', true),
+		       ('STRAßE', 'stra-e', 'block', 'legacy ASCII key', 'STRAßE', '', true)`)
+	require.NoError(t, err)
+	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool))
+
+	repo := NewPostgresMemoryRepository(pool)
+	listed, err := repo.List(ctx, model.MemoryFilter{Limit: 20})
+	require.NoError(t, err)
+	require.Equal(t, []string{"visible"}, memoryProjects(listed))
+	searched, err := repo.Search(ctx, "project", model.MemoryFilter{Limit: 20})
+	require.NoError(t, err)
+	require.Equal(t, []string{"visible"}, memoryProjects(searched))
+
+	for _, spelling := range []string{"Foo.Bar", "foo/bar", "STRAßE", "strasse"} {
+		err = checkProjectBlocked(ctx, pool, spelling)
+		require.ErrorIs(t, err, ErrProjectBlocked, spelling)
+	}
+}
+
+func TestBackfillProjectIdentityRegistryRekeysBlockWithAcknowledgementsAndDeliveries(t *testing.T) {
+	pool, cleanup := startPostgresWithProjectBlocks(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	var commandID string
+	require.NoError(t, pool.QueryRow(ctx, `
+		INSERT INTO project_blocks (project, canonical_project_key, action, reason, confirmation, export_marker, blocked)
+		VALUES ('Foo.Bar', 'foo.bar', 'quarantine', 'legacy dotted key', 'Foo.Bar', 'export-1', true)
+		RETURNING command_id::text`).Scan(&commandID))
+	_, err := pool.Exec(ctx, `
+		INSERT INTO project_block_ack_deliveries
+			(command_id, canonical_project_key, ack_token, ack_auth_subject, ack_daemon_id)
+		VALUES ($1, 'foo.bar', 'delivery-token', 'user-1', 'daemon-1')`, commandID)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO project_block_acks
+			(command_id, canonical_project_key, ack_token, ack_auth_subject, ack_daemon_id, status)
+		VALUES ($1, 'foo.bar', 'delivery-token', 'user-1', 'daemon-1', 'applied')`, commandID)
+	require.NoError(t, err)
+
+	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool))
+	require.NoError(t, RunMigrations(pool, migrations.CanonicalProjectRegistrySQL), "startup schema migration must be repeatable")
+	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool), "startup backfill must be repeatable")
+	for _, table := range []string{"project_blocks", "project_block_acks", "project_block_ack_deliveries"} {
+		var key string
+		var count int
+		require.NoError(t, pool.QueryRow(ctx, "SELECT canonical_project_key, count(*) OVER () FROM "+table).Scan(&key, &count))
+		require.Equal(t, "foo-bar", key, table)
+		require.Equal(t, 1, count, table)
+	}
+}
+
+func memoryProjects(memories []*model.Memory) []string {
+	projects := make([]string, 0, len(memories))
+	for _, memory := range memories {
+		projects = append(projects, memory.Project)
+	}
+	return projects
 }
 
 func TestPostgresProjectBlockRepository_BlockStatusAndAck(t *testing.T) {

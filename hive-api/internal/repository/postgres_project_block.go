@@ -30,7 +30,17 @@ func (r *postgresProjectBlockRepository) BlockProject(ctx context.Context, creat
 		create.CanonicalProjectKey = projectkey.Canonicalize(create.Project)
 	}
 	const q = `
-	INSERT INTO project_blocks (project, canonical_project_key, action, reason, confirmation, export_marker, actor_user_id, blocked, blocked_at)
+		WITH identity AS (
+			INSERT INTO project_identities (project_key, first_spelling, first_seen_at)
+			VALUES ($2, $1, now())
+			ON CONFLICT (project_key) DO UPDATE SET updated_at = now()
+			RETURNING project_key
+		), spelling AS (
+			INSERT INTO project_identity_spellings (spelling, project_key)
+			SELECT $1, project_key FROM identity
+			ON CONFLICT (spelling) DO UPDATE SET project_key = EXCLUDED.project_key
+		)
+		INSERT INTO project_blocks (project, canonical_project_key, action, reason, confirmation, export_marker, actor_user_id, blocked, blocked_at)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $3 <> 'unblock', now())
 	ON CONFLICT (canonical_project_key) DO UPDATE SET
     project = EXCLUDED.project,

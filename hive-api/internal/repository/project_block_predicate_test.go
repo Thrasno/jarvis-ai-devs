@@ -8,11 +8,11 @@ import (
 
 func TestBlockedProjectPredicateHelpers(t *testing.T) {
 	require.Equal(t,
-		"NOT EXISTS (SELECT 1 FROM project_blocks pb WHERE pb.blocked = true AND pb.canonical_project_key = canonical_project_key(memories.project))",
+		"NOT EXISTS (SELECT 1 FROM project_identity_spellings pis JOIN project_blocks pb ON pb.canonical_project_key = pis.project_key WHERE pb.blocked = true AND pis.spelling = memories.project)",
 		unblockedProjectPredicate("memories.project"),
 	)
 	require.Equal(t,
-		"EXISTS (SELECT 1 FROM project_blocks pb WHERE pb.blocked = true AND pb.canonical_project_key = canonical_project_key($1))",
+		"EXISTS (SELECT 1 FROM project_identity_spellings pis JOIN project_blocks pb ON pb.canonical_project_key = pis.project_key WHERE pb.blocked = true AND pis.spelling = $1)",
 		blockedProjectPredicate("$1"),
 	)
 }
