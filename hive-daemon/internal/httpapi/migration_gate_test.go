@@ -69,8 +69,8 @@ func TestMigrationGateBlocksHTTPMemoryAndSessionServicesButLeavesGovernanceReach
 	governanceServer.SetMigrationGate(project.NewMigrationGate(project.MigrationStatus{State: project.MigrationStateBlocked}))
 	rr := httptest.NewRecorder()
 	governanceServer.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/governance/capabilities", nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("governance status = %d, want 200: %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("governance status = %d, want 503: %s", rr.Code, rr.Body.String())
 	}
 }
 
@@ -163,6 +163,32 @@ func TestMigrationGateRetryIsSingleShotAndPreservesBlockedStatus(t *testing.T) {
 	srv.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/governance/project-identity/status", nil))
 	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"state":"migration-blocked"`) || !strings.Contains(status.Body.String(), `"backup_id":"backup-42"`) {
 		t.Fatalf("blocked status after retry = %d %s, want persisted blocked recovery state", status.Code, status.Body.String())
+	}
+}
+
+func TestMigrationGateAllowsOnlyIdentityRecoveryRoutes(t *testing.T) {
+	srv := httpapi.NewServer("127.0.0.1:0", nil)
+	srv.SetMigrationGate(project.NewMigrationGate(project.MigrationStatus{State: project.MigrationStateBlocked, Reason: "identity conflict"}))
+	for _, tt := range []struct {
+		method, path string
+		wantStatus   int
+	}{{http.MethodGet, "/governance/project-identity/status", http.StatusOK}, {http.MethodPost, "/governance/project-identity/retry", http.StatusServiceUnavailable}, {http.MethodPost, "/governance/restores", http.StatusNotFound}} {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, httptest.NewRequest(tt.method, tt.path, nil))
+			if rr.Code != tt.wantStatus {
+				t.Fatalf("recovery route status = %d, want %d: %s", rr.Code, tt.wantStatus, rr.Body.String())
+			}
+		})
+	}
+	for _, tt := range []struct{ method, path string }{{http.MethodPost, "/governance/guards/execute"}, {http.MethodPost, "/governance/projects/alpha/archive"}, {http.MethodPost, "/governance/projects/merge"}, {http.MethodDelete, "/governance/projects/alpha"}, {http.MethodPost, "/governance/imports/engram/execute"}, {http.MethodGet, "/governance/backups"}} {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, httptest.NewRequest(tt.method, tt.path, nil))
+			if rr.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want migration blocked", rr.Code)
+			}
+		})
 	}
 }
 
