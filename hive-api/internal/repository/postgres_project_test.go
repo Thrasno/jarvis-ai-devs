@@ -164,8 +164,8 @@ func projectAggregatesByName(records []model.ProjectAggregate) map[string]model.
 func insertProjectSession(t *testing.T, pool *pgxpool.Pool, id, project string, startedAt time.Time, endedAt *time.Time) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(), `
-		INSERT INTO sessions (id, project, dev_id, client, started_at, ended_at)
-		VALUES ($1, $2, 'tester', 'test', $3, $4)`, id, project, startedAt, endedAt)
+		INSERT INTO sessions (id, project, dev_id, client, started_at, ended_at, created_at, updated_at)
+		VALUES ($1, $2, 'tester', 'test', $3, $4, $3, $3)`, id, project, startedAt, endedAt)
 	require.NoError(t, err)
 }
 
