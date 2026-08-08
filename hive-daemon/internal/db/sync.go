@@ -630,6 +630,15 @@ func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
 	if aliasErr == nil {
 		event.Project = aliasTarget
 	}
+	rawProject := event.Project
+	canonicalProject, err := registerProjectIdentity(context.Background(), tx, rawProject)
+	if err != nil {
+		return false, err
+	}
+	event.Project = canonicalProject
+	if event.Memory != nil && event.Memory.SessionID == "manual-save-"+rawProject {
+		event.Memory.SessionID = "manual-save-" + event.Project
+	}
 	if err := ensureProjectWritableInTx(tx, event.Project); err != nil {
 		return false, err
 	}
@@ -809,6 +818,12 @@ func (d *DB) SaveFromRemote(mem *models.Memory) error {
 		// Remapping sessions on sync receive would require creating artificial sessions
 		// under the target project, which adds noise to KnownProjects and session history.
 	}
+	rawProject := project
+	canonicalProject, err := registerProjectIdentity(context.Background(), d.sqlDB, rawProject)
+	if err != nil {
+		return err
+	}
+	project = canonicalProject
 	if err := d.ensureProjectWritable(context.Background(), project); err != nil {
 		return err
 	}
@@ -816,6 +831,9 @@ func (d *DB) SaveFromRemote(mem *models.Memory) error {
 	// R2-CRIT-3: resolve session_id BEFORE the INSERT. memories.session_id is NOT NULL,
 	// and `INSERT OR IGNORE` would silently drop the row on any constraint failure.
 	sessionID := mem.SessionID
+	if sessionID == "manual-save-"+rawProject {
+		sessionID = "manual-save-" + project
+	}
 	if sessionID == "" {
 		resolved, err := d.EnsureManualSaveSession(project)
 		if err != nil {

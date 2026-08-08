@@ -78,13 +78,14 @@ func (d *DB) KnownProjects(ctx context.Context) ([]project.KnownProject, error) 
 			UNION
 			SELECT project, '' AS directory FROM user_prompts GROUP BY project
 		)
-		SELECT project, MAX(directory) AS directory
+		SELECT COALESCE(NULLIF(i.remote_spelling, ''), i.first_spelling, known.project), MAX(known.directory) AS directory
 		FROM known
-		WHERE project != ''
-		  AND project NOT IN (SELECT source_project FROM project_aliases)
-		  AND project NOT IN (SELECT project FROM hive_project_governance WHERE archived_at IS NOT NULL)
-		GROUP BY project
-		ORDER BY project`)
+		LEFT JOIN project_identities i ON i.project_key = known.project
+		WHERE known.project != ''
+		  AND known.project NOT IN (SELECT source_project FROM project_aliases)
+		  AND known.project NOT IN (SELECT project FROM hive_project_governance WHERE archived_at IS NOT NULL)
+		GROUP BY known.project, i.remote_spelling, i.first_spelling
+		ORDER BY known.project`)
 	if err != nil {
 		return nil, fmt.Errorf("known projects: %w", err)
 	}

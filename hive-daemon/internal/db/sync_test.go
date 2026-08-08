@@ -1877,7 +1877,7 @@ func TestSaveFromRemote_RemapsAliasedProject(t *testing.T) {
 	var storedProject string
 	err := db.sqlDB.QueryRow(`SELECT project FROM memories WHERE sync_id = ?`, "sync-remap-001").Scan(&storedProject)
 	require.NoError(t, err, "row must exist")
-	assert.Equal(t, "Bar", storedProject, "project must be rewritten to alias target")
+	assert.Equal(t, "bar", storedProject, "project must be rewritten to the canonical alias target")
 }
 
 // TestSaveFromRemote_NonAliasedProjectStoredAsIs verifies that SaveFromRemote
@@ -1905,7 +1905,7 @@ func TestSaveFromRemote_NonAliasedProjectStoredAsIs(t *testing.T) {
 	var storedProject string
 	err := db.sqlDB.QueryRow(`SELECT project FROM memories WHERE sync_id = ?`, "sync-noalias-001").Scan(&storedProject)
 	require.NoError(t, err, "row must exist")
-	assert.Equal(t, "Qux", storedProject, "project must be unchanged when no alias exists")
+	assert.Equal(t, "qux", storedProject, "project must be stored under its canonical key")
 }
 
 // TestCountUnsyncedMemories tests the global count of unsynced memories.
@@ -2194,7 +2194,7 @@ func TestApplyRemoteMutation_RemapsAliasedProject(t *testing.T) {
 		CreatedBy: "tester",
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
-		SessionID: "manual-save-Bar",
+		SessionID: "manual-save-bar",
 	}
 	_, ensureErr := db.EnsureManualSaveSession("Bar")
 	require.NoError(t, ensureErr, "EnsureManualSaveSession")
@@ -2233,7 +2233,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, '2026-01-01 00:00:00', '2026-01-01 00:00:00')`,
 	var mutProject string
 	err = db.sqlDB.QueryRow(`SELECT project FROM memory_mutations WHERE event_id = ?`, "evt-remap-001").Scan(&mutProject)
 	require.NoError(t, err, "mutation record must exist")
-	assert.Equal(t, "Bar", mutProject, "mutation project must be rewritten to alias target")
+	assert.Equal(t, "bar", mutProject, "mutation project must be rewritten to the canonical alias target")
 }
 
 // TestStripHTTPErrorBody verifies the stripHTTPErrorBody function correctly

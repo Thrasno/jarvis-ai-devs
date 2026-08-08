@@ -473,8 +473,8 @@ func TestListRecentPrompts_ReturnsPromptsSavedForProject(t *testing.T) {
 		t.Errorf("expected 3 prompts for proj-X, got %d", len(result))
 	}
 	for _, p := range result {
-		if p.Project != "proj-X" {
-			t.Errorf("expected project 'proj-X', got %q", p.Project)
+		if p.Project != "proj-x" {
+			t.Errorf("expected project 'proj-x', got %q", p.Project)
 		}
 	}
 }
@@ -644,8 +644,8 @@ func TestGetUnsyncedPrompts_ReturnsOnlyUnsyncedForProject(t *testing.T) {
 	if result[0].SyncedAt != nil {
 		t.Error("expected SyncedAt == nil for unsynced prompt")
 	}
-	if result[0].Project != "proj-A" {
-		t.Errorf("expected project 'proj-A', got %q", result[0].Project)
+	if result[0].Project != "proj-a" {
+		t.Errorf("expected project 'proj-a', got %q", result[0].Project)
 	}
 }
 

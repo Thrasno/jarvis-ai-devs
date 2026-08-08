@@ -921,9 +921,9 @@ func TestMergeGovernanceProject_RollsBackWhenAddAliasTxFails(t *testing.T) {
 	// Seed alias X→A so that A is already a target.
 	// When MergeGovernanceProject("A", "B", ...) runs, addAliasTx("A", "B", ...)
 	// will hit the bidirectional chain guard and return ErrAliasSourceIsTarget.
-	seedAlias(t, d, "X", "A")
+	seedAlias(t, d, "x", "a")
 
-	_, err := d.MergeGovernanceProject(context.Background(), "A", "B", "actor", "test rollback", time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC))
+	_, err := d.MergeGovernanceProject(context.Background(), "a", "b", "actor", "test rollback", time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC))
 	if err == nil {
 		t.Fatal("MergeGovernanceProject: expected error due to alias chain guard, got nil")
 	}
@@ -1807,7 +1807,7 @@ func TestKnownProjects_ExcludesAliasedSources(t *testing.T) {
 		saveGovernanceTestMemory(t, d, "Foo", "Foo memory")
 		saveGovernanceTestMemory(t, d, "Bar", "Bar memory")
 
-		seedAlias(t, d, "Foo", "Bar")
+		seedAlias(t, d, "foo", "bar")
 
 		projects, err := d.KnownProjects(context.Background())
 		if err != nil {

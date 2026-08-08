@@ -79,6 +79,14 @@ func (d *DB) saveMemory(mem *models.Memory, prepareTx func(*sql.Tx) error) (int6
 	if err := mem.Validate(); err != nil {
 		return 0, fmt.Errorf("invalid memory: %w", err)
 	}
+	rawProject := mem.Project
+	mem.Project = canonicalProjectKey(rawProject)
+	if mem.Project == "" {
+		return 0, fmt.Errorf("invalid memory: project is required")
+	}
+	if mem.SessionID == "manual-save-"+rawProject {
+		mem.SessionID = "manual-save-" + mem.Project
+	}
 
 	tagsJSON, err := marshalStringSlice(mem.Tags)
 	if err != nil {
@@ -99,6 +107,9 @@ func (d *DB) saveMemory(mem *models.Memory, prepareTx func(*sql.Tx) error) (int6
 		return 0, fmt.Errorf("begin save memory: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if _, err := registerProjectIdentity(context.Background(), tx, rawProject); err != nil {
+		return 0, err
+	}
 	if err := ensureProjectWritableInTx(tx, mem.Project); err != nil {
 		return 0, err
 	}
@@ -185,6 +196,7 @@ FROM memories WHERE id = ? AND deleted_at IS NULL`
 
 // ListMemories returns active memories for a project, ordered by created_at DESC.
 func (d *DB) ListMemories(project string, limit int) ([]*models.Memory, error) {
+	project = canonicalProjectKey(project)
 	blocked, err := d.IsProjectBlocked(context.Background(), project)
 	if err != nil {
 		return nil, fmt.Errorf("list memories block check: %w", err)

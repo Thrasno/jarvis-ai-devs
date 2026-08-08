@@ -25,6 +25,11 @@ func (d *DB) SavePromptForSession(ctx context.Context, project, sessionID, conte
 	if strings.TrimSpace(project) == "" {
 		return nil, errors.New("project is required")
 	}
+	canonicalProject, err := registerProjectIdentity(ctx, d.sqlDB, project)
+	if err != nil {
+		return nil, err
+	}
+	project = canonicalProject
 	if err := d.ensureProjectWritable(ctx, project); err != nil {
 		return nil, err
 	}
@@ -40,7 +45,7 @@ RETURNING id, created_at`
 		id           int64
 		createdAtStr string
 	)
-	err := d.sqlDB.QueryRowContext(ctx, q, syncID, project, sessionID, content).Scan(&id, &createdAtStr)
+	err = d.sqlDB.QueryRowContext(ctx, q, syncID, project, sessionID, content).Scan(&id, &createdAtStr)
 	if err != nil {
 		return nil, fmt.Errorf("save prompt: %w", err)
 	}
@@ -65,6 +70,7 @@ func (d *DB) LatestPromptForSession(ctx context.Context, project, sessionID stri
 	if strings.TrimSpace(project) == "" || strings.TrimSpace(sessionID) == "" {
 		return nil, nil
 	}
+	project = canonicalProjectKey(project)
 	blocked, err := d.IsProjectBlocked(ctx, project)
 	if err != nil {
 		return nil, fmt.Errorf("latest prompt block check: %w", err)
@@ -96,6 +102,7 @@ func (d *DB) ListRecentPrompts(ctx context.Context, project string, limit int) (
 	if project == "" || limit <= 0 {
 		return nil, nil
 	}
+	project = canonicalProjectKey(project)
 	blocked, err := d.IsProjectBlocked(ctx, project)
 	if err != nil {
 		return nil, fmt.Errorf("list recent prompts block check: %w", err)
@@ -143,6 +150,7 @@ func (d *DB) GetUnsyncedPrompts(ctx context.Context, project string) ([]*models.
 	if project == "" {
 		return nil, nil
 	}
+	project = canonicalProjectKey(project)
 	blocked, err := d.IsProjectBlocked(ctx, project)
 	if err != nil {
 		return nil, fmt.Errorf("get unsynced prompts block check: %w", err)
@@ -196,6 +204,7 @@ func (d *DB) GetUnsyncedPromptsPage(ctx context.Context, project string, limit i
 	if project == "" {
 		return nil, nil
 	}
+	project = canonicalProjectKey(project)
 	blocked, err := d.IsProjectBlocked(ctx, project)
 	if err != nil {
 		return nil, fmt.Errorf("get unsynced prompts page block check: %w", err)

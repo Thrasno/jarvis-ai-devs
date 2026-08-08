@@ -23,13 +23,18 @@ var ErrSessionNotFound = errors.New("session not found")
 // with an empty dev_id. hive-api rejects empty dev_id via binding:"required", and a
 // single poisoned row blocks the whole batched sync push.
 func (d *DB) CreateSession(id, project, directory, devID, client string) error {
+	canonicalProject, err := registerProjectIdentity(context.Background(), d.sqlDB, project)
+	if err != nil {
+		return err
+	}
+	project = canonicalProject
 	if err := d.ensureProjectWritable(context.Background(), project); err != nil {
 		return err
 	}
 	if strings.TrimSpace(devID) == "" {
 		devID = resolveDevID()
 	}
-	_, err := d.sqlDB.Exec(`
+	_, err = d.sqlDB.Exec(`
 		INSERT INTO sessions (id, sync_id, project, directory, dev_id, client)
 		VALUES (?, lower(hex(randomblob(16))), ?, ?, ?, ?)`,
 		id, project, directory, devID, client,
@@ -113,6 +118,7 @@ func (d *DB) EndSession(id, summary string) error {
 
 // ListSessions returns sessions for a project ordered by started_at DESC, capped at limit.
 func (d *DB) ListSessions(project string, limit int) ([]*models.Session, error) {
+	project = canonicalProjectKey(project)
 	blocked, err := d.IsProjectBlocked(context.Background(), project)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions block check: %w", err)
@@ -150,13 +156,18 @@ func (d *DB) ListSessions(project string, limit int) ([]*models.Session, error) 
 // returns its id. Uses INSERT OR IGNORE so concurrent calls are safe.
 // This session is never auto-closed by AutoCloseStale (exempt by id prefix).
 func (d *DB) EnsureManualSaveSession(project string) (string, error) {
+	canonicalProject, err := registerProjectIdentity(context.Background(), d.sqlDB, project)
+	if err != nil {
+		return "", err
+	}
+	project = canonicalProject
 	if err := d.ensureProjectWritable(context.Background(), project); err != nil {
 		return "", err
 	}
 	id := "manual-save-" + project
 	devID := resolveDevID()
 
-	_, err := d.sqlDB.Exec(`
+	_, err = d.sqlDB.Exec(`
 		INSERT OR IGNORE INTO sessions
 		    (id, sync_id, project, directory, dev_id, client)
 		VALUES (?, lower(hex(randomblob(16))), ?, '', ?, 'manual')`,
@@ -193,6 +204,7 @@ func (d *DB) AutoCloseStale(threshold time.Duration, nowFn func() time.Time) (in
 // ListUnsyncedSessions returns all sessions for the project that haven't been synced yet
 // (synced_at IS NULL). Used by the Syncer to build the sessions[] push payload.
 func (d *DB) ListUnsyncedSessions(project string) ([]*models.Session, error) {
+	project = canonicalProjectKey(project)
 	blocked, err := d.IsProjectBlocked(context.Background(), project)
 	if err != nil {
 		return nil, fmt.Errorf("list unsynced sessions block check: %w", err)
@@ -234,6 +246,7 @@ func (d *DB) ListUnsyncedSessions(project string) ([]*models.Session, error) {
 // filter shifts between fetches. ListUnsyncedSessions itself is left
 // untouched for any other existing callers.
 func (d *DB) ListUnsyncedSessionsPage(project string, limit int) ([]*models.Session, error) {
+	project = canonicalProjectKey(project)
 	blocked, err := d.IsProjectBlocked(context.Background(), project)
 	if err != nil {
 		return nil, fmt.Errorf("list unsynced sessions page block check: %w", err)
