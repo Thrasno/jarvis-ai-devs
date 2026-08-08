@@ -12,9 +12,17 @@ import (
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 )
 
 const maxSyncLastErrorRunes = 500
+
+func canonicalSyncStateProject(project string) string {
+	if project == "__auth__" {
+		return project
+	}
+	return projectidentity.Canonical(project).String()
+}
 
 type SyncHealth struct {
 	Project             string    `json:"project"`
@@ -484,6 +492,7 @@ func (d *DB) MarkMutationsAndMemoriesSynced(eventIDs []string, syncIDs []string,
 }
 
 func (d *DB) GetMutationCursor(consumer, project string) (MutationCursor, error) {
+	project = projectidentity.Canonical(project).String()
 	var cursor MutationCursor
 	err := d.sqlDB.QueryRow(`
 SELECT sequence, event_id
@@ -499,6 +508,7 @@ WHERE consumer = ? AND project = ?`, consumer, project).Scan(&cursor.Sequence, &
 }
 
 func (d *DB) SetMutationCursor(consumer, project string, cursor MutationCursor, at time.Time) error {
+	project = projectidentity.Canonical(project).String()
 	_, err := d.sqlDB.Exec(`
 INSERT INTO mutation_cursors (consumer, project, sequence, event_id, updated_at)
 VALUES (?, ?, ?, ?, ?)
@@ -530,6 +540,7 @@ const pullCursorTimeLayout = time.RFC3339Nano
 // (never synced, or first bounded pull for this project) returns the zero
 // value, matching GetMutationCursor's contract.
 func (d *DB) GetPullCursor(consumer, project, channel string) (PullCursor, error) {
+	project = projectidentity.Canonical(project).String()
 	var cursor PullCursor
 	var syncedAt string
 	err := d.sqlDB.QueryRow(`
@@ -558,6 +569,7 @@ WHERE consumer = ? AND project = ? AND channel = ?`, consumer, project, channel)
 // ON CONFLICT DO UPDATE shape, keyed one level deeper to keep the memories
 // and sessions pull channels independent for the same project.
 func (d *DB) SetPullCursor(consumer, project, channel string, cursor PullCursor, at time.Time) error {
+	project = projectidentity.Canonical(project).String()
 	_, err := d.sqlDB.Exec(`
 INSERT INTO pull_cursors (consumer, project, channel, synced_at, sync_id, updated_at)
 VALUES (?, ?, ?, ?, ?, ?)
@@ -576,6 +588,7 @@ ON CONFLICT(consumer, project, channel) DO UPDATE SET
 // ClearPullCursor deletes the bounded-pull resume position for one channel.
 // Deleting a missing row is a successful no-op.
 func (d *DB) ClearPullCursor(consumer, project, channel string) error {
+	project = projectidentity.Canonical(project).String()
 	_, err := d.sqlDB.Exec(`
 DELETE FROM pull_cursors
 WHERE consumer = ? AND project = ? AND channel = ?`, consumer, project, channel)
@@ -857,6 +870,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 
 // GetLastSync devuelve el timestamp del último sync exitoso para un proyecto.
 func (d *DB) GetLastSync(project string) (time.Time, error) {
+	project = canonicalSyncStateProject(project)
 	var ts sql.NullString
 	err := d.sqlDB.QueryRow(
 		`SELECT last_sync_at FROM sync_state WHERE project = ?`, project,
@@ -878,6 +892,7 @@ func (d *DB) SetLastSync(project string, at time.Time) error {
 }
 
 func (d *DB) GetSyncHealth(project string) (SyncHealth, error) {
+	project = canonicalSyncStateProject(project)
 	var (
 		health                                SyncHealth
 		lastAttempt, lastSuccess, lastFailure sql.NullString
@@ -1221,6 +1236,7 @@ type syncStateUpdate struct {
 }
 
 func (d *DB) upsertSyncState(project string, update syncStateUpdate) error {
+	project = canonicalSyncStateProject(project)
 	if _, err := d.sqlDB.Exec(`
 INSERT OR IGNORE INTO sync_state (project, consecutive_failures, last_error)
 VALUES (?, 0, '')`, project); err != nil {

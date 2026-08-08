@@ -12,11 +12,13 @@ import (
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 )
 
 const mutationProtocolVersion = 2
 
 var ErrProjectBlocked = errors.New("project is blocked")
+var ErrProjectIdentityIncompatible = errors.New("incompatible project identity contract")
 
 // HTTPStatusError safely preserves an HTTP outcome without retaining a response body.
 type HTTPStatusError struct {
@@ -133,14 +135,15 @@ type sessionPayload struct {
 // syncRequest es el payload que enviamos a POST /sync.
 // Sessions precede a memories para satisfacer la FK memories.session_id → sessions(id).
 type syncRequest struct {
-	Project         string                `json:"project"`
-	Sessions        []sessionPayload      `json:"sessions"`
-	Memories        []memoryPayload       `json:"memories"`
-	Prompts         []promptPayload       `json:"prompts,omitempty"`
-	LastSync        *time.Time            `json:"last_sync,omitempty"`
-	ProtocolVersion int                   `json:"protocol_version,omitempty"`
-	MutationCursor  *db.MutationCursor    `json:"mutation_cursor,omitempty"`
-	Mutations       []db.MutationEnvelope `json:"mutations,omitempty"`
+	Project                string                `json:"project"`
+	ProjectIdentityVersion string                `json:"project_identity_version,omitempty"`
+	Sessions               []sessionPayload      `json:"sessions"`
+	Memories               []memoryPayload       `json:"memories"`
+	Prompts                []promptPayload       `json:"prompts,omitempty"`
+	LastSync               *time.Time            `json:"last_sync,omitempty"`
+	ProtocolVersion        int                   `json:"protocol_version,omitempty"`
+	MutationCursor         *db.MutationCursor    `json:"mutation_cursor,omitempty"`
+	Mutations              []db.MutationEnvelope `json:"mutations,omitempty"`
 
 	// Bounded legacy pull pagination (PR 2a/2b, hive-sync-batched-drain).
 	// PullLimit is an explicit opt-in: omitted/0 means an unbounded legacy
@@ -173,15 +176,16 @@ type memoryPayload struct {
 // syncResponse es lo que devuelve hive-api tras el sync.
 // PulledSessions se aplica ANTES de Pulled para satisfacer la FK.
 type syncResponse struct {
-	Pushed             int                   `json:"pushed"`
-	Pulled             []apiMemory           `json:"pulled"`
-	Conflicts          int                   `json:"conflicts"`
-	PromptsPushed      int                   `json:"prompts_pushed"`
-	PulledSessions     []sessionPayload      `json:"pulled_sessions,omitempty"`
-	NextMutationCursor *db.MutationCursor    `json:"next_mutation_cursor,omitempty"`
-	PulledMutations    []db.MutationEnvelope `json:"pulled_mutations,omitempty"`
-	MutationResults    []mutationResult      `json:"mutation_results,omitempty"`
-	CompatibilityMode  string                `json:"compatibility_mode,omitempty"`
+	Pushed                 int                   `json:"pushed"`
+	Pulled                 []apiMemory           `json:"pulled"`
+	Conflicts              int                   `json:"conflicts"`
+	PromptsPushed          int                   `json:"prompts_pushed"`
+	PulledSessions         []sessionPayload      `json:"pulled_sessions,omitempty"`
+	NextMutationCursor     *db.MutationCursor    `json:"next_mutation_cursor,omitempty"`
+	PulledMutations        []db.MutationEnvelope `json:"pulled_mutations,omitempty"`
+	MutationResults        []mutationResult      `json:"mutation_results,omitempty"`
+	CompatibilityMode      string                `json:"compatibility_mode,omitempty"`
+	ProjectIdentityVersion string                `json:"project_identity_version,omitempty"`
 
 	// Bounded legacy pull pagination (PR 2a/2b, hive-sync-batched-drain).
 	// omitempty on all four fields preserves backward compat both ways: an
@@ -292,12 +296,13 @@ func (c *client) sync(ctx context.Context, token, project string,
 	sessions []*models.Session, toSend []*models.Memory, prompts []*models.Prompt, lastSync *time.Time,
 	mutations []db.MutationEnvelope, mutationCursor *db.MutationCursor, pullOpts pullOptions) (*syncResponse, error) {
 
+	project = projectidentity.Canonical(project).String()
 	sessionPayloads := make([]sessionPayload, 0, len(sessions))
 	for _, s := range sessions {
 		sessionPayloads = append(sessionPayloads, sessionPayload{
 			ID:        s.ID,
 			SyncID:    s.SyncID,
-			Project:   s.Project,
+			Project:   projectidentity.Canonical(s.Project).String(),
 			Directory: s.Directory,
 			DevID:     s.DevID,
 			Client:    s.Client,
@@ -311,7 +316,7 @@ func (c *client) sync(ctx context.Context, token, project string,
 	for _, m := range toSend {
 		payloads = append(payloads, memoryPayload{
 			SyncID:        m.SyncID,
-			Project:       m.Project,
+			Project:       projectidentity.Canonical(m.Project).String(),
 			TopicKey:      m.TopicKey,
 			Category:      m.Category,
 			Title:         m.Title,
@@ -329,24 +334,32 @@ func (c *client) sync(ctx context.Context, token, project string,
 	for _, p := range prompts {
 		promptPayloads = append(promptPayloads, promptPayload{
 			SyncID:    p.SyncID,
-			Project:   p.Project,
+			Project:   projectidentity.Canonical(p.Project).String(),
 			Content:   p.Content,
 			CreatedAt: p.CreatedAt,
 		})
 	}
 
+	canonicalMutations := append([]db.MutationEnvelope(nil), mutations...)
+	for i := range canonicalMutations {
+		canonicalMutations[i].Project = projectidentity.Canonical(canonicalMutations[i].Project).String()
+		if canonicalMutations[i].Memory != nil {
+			canonicalMutations[i].Memory.Project = projectidentity.Canonical(canonicalMutations[i].Memory.Project).String()
+		}
+	}
 	reqBody, err := json.Marshal(syncRequest{
-		Project:           project,
-		Sessions:          sessionPayloads,
-		Memories:          payloads,
-		Prompts:           promptPayloads,
-		LastSync:          lastSync,
-		ProtocolVersion:   mutationProtocolVersion,
-		MutationCursor:    mutationCursor,
-		Mutations:         mutations,
-		PullLimit:         pullOpts.Limit,
-		PullCursor:        pullOpts.MemoriesCursor,
-		PullSessionCursor: pullOpts.SessionsCursor,
+		Project:                project,
+		ProjectIdentityVersion: projectidentity.ContractVersion,
+		Sessions:               sessionPayloads,
+		Memories:               payloads,
+		Prompts:                promptPayloads,
+		LastSync:               lastSync,
+		ProtocolVersion:        mutationProtocolVersion,
+		MutationCursor:         mutationCursor,
+		Mutations:              canonicalMutations,
+		PullLimit:              pullOpts.Limit,
+		PullCursor:             pullOpts.MemoriesCursor,
+		PullSessionCursor:      pullOpts.SessionsCursor,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal sync request: %w", err)
@@ -381,6 +394,9 @@ func (c *client) sync(ctx context.Context, token, project string,
 	var result syncResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode sync response: %w", err)
+	}
+	if result.ProjectIdentityVersion != "" && result.ProjectIdentityVersion != projectidentity.ContractVersion {
+		return nil, ErrProjectIdentityIncompatible
 	}
 
 	return &result, nil

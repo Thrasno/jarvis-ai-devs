@@ -1044,6 +1044,31 @@ func TestSyncDB_MutationCursorHelpers(t *testing.T) {
 	}
 }
 
+func TestSyncDB_ProjectIdentityCanonicalizesCursorsAndSyncState(t *testing.T) {
+	db := setupTestDB(t)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	at := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+
+	require.NoError(t, db.SetMutationCursor("hive-api", " Jarvis.Dev ", MutationCursor{Sequence: 7, EventID: "event-7"}, at))
+	mutationCursor, err := db.GetMutationCursor("hive-api", "JARVIS_DEV")
+	require.NoError(t, err)
+	require.Equal(t, MutationCursor{Sequence: 7, EventID: "event-7"}, mutationCursor)
+
+	require.NoError(t, db.SetPullCursor("hive-api", "jarvis/dev", "memories", PullCursor{SyncedAt: at, SyncID: "memory-7"}, at))
+	pullCursor, err := db.GetPullCursor("hive-api", "Jarvis Dev", "memories")
+	require.NoError(t, err)
+	require.Equal(t, PullCursor{SyncedAt: at, SyncID: "memory-7"}, pullCursor)
+
+	require.NoError(t, db.SetLastSync("Jarvis.Dev", at))
+	lastSync, err := db.GetLastSync("jarvis_dev")
+	require.NoError(t, err)
+	require.Equal(t, at, lastSync)
+	require.NoError(t, db.ClearPullCursor("hive-api", "JARVIS-DEV", "memories"))
+	cleared, err := db.GetPullCursor("hive-api", "jarvis-dev", "memories")
+	require.NoError(t, err)
+	require.Equal(t, PullCursor{}, cleared)
+}
+
 func TestSyncDB_MutationCursorHelpersReturnDBErrors(t *testing.T) {
 	tests := []struct {
 		name    string

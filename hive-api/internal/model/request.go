@@ -3,6 +3,8 @@ package model
 import (
 	"errors"
 	"time"
+
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 )
 
 // LoginRequest es el body del POST /auth/login.
@@ -44,6 +46,10 @@ type CreateMemoryRequest struct {
 // Contiene un batch de memorias a subir y el timestamp del último sync.
 type SyncRequest struct {
 	Project string `json:"project" binding:"required"`
+
+	// ProjectIdentityVersion declares the canonical project-key contract used by
+	// a newer daemon. Omitted remains valid for API-first rollout.
+	ProjectIdentityVersion string `json:"project_identity_version,omitempty"`
 
 	// Sessions es el batch de sesiones a enviar al servidor.
 	// Opcional — daemons anteriores a Slice 4 no envían este campo.
@@ -97,6 +103,33 @@ type SyncRequest struct {
 	PullSessionCursor *PullCursor `json:"pull_session_cursor,omitempty"`
 
 	AckSubject ProjectBlockAckSubject `json:"-"`
+}
+
+var ErrProjectIdentityVersionUnsupported = errors.New("unsupported project identity contract version")
+
+// CanonicalSyncProjectIdentity converts every project-bearing sync field to the
+// shared key before service, repository, cursor, or replay handling.
+func CanonicalSyncProjectIdentity(req SyncRequest) (SyncRequest, error) {
+	if req.ProjectIdentityVersion != "" && req.ProjectIdentityVersion != projectidentity.ContractVersion {
+		return SyncRequest{}, ErrProjectIdentityVersionUnsupported
+	}
+	req.Project = projectidentity.Canonical(req.Project).String()
+	for i := range req.Sessions {
+		req.Sessions[i].Project = projectidentity.Canonical(req.Sessions[i].Project).String()
+	}
+	for i := range req.Memories {
+		req.Memories[i].Project = projectidentity.Canonical(req.Memories[i].Project).String()
+	}
+	for i := range req.Prompts {
+		req.Prompts[i].Project = projectidentity.Canonical(req.Prompts[i].Project).String()
+	}
+	for i := range req.Mutations {
+		req.Mutations[i].Project = projectidentity.Canonical(req.Mutations[i].Project).String()
+		if req.Mutations[i].Memory != nil {
+			req.Mutations[i].Memory.Project = projectidentity.Canonical(req.Mutations[i].Memory.Project).String()
+		}
+	}
+	return req, nil
 }
 
 // SyncSessionPayload es el formato de sesión en el wire protocol de sync.

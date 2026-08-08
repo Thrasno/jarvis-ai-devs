@@ -90,10 +90,11 @@ type SyncResponse struct {
 	// Procesadas por el daemon ANTES de las pulled memories para satisfacer la FK.
 	PulledSessions []SyncSessionResponse `json:"pulled_sessions,omitempty"`
 
-	NextMutationCursor *MutationCursor       `json:"next_mutation_cursor,omitempty"`
-	PulledMutations    []MutationEnvelope    `json:"pulled_mutations,omitempty"`
-	MutationResults    []MutationApplyResult `json:"mutation_results,omitempty"`
-	CompatibilityMode  string                `json:"compatibility_mode,omitempty"`
+	NextMutationCursor     *MutationCursor       `json:"next_mutation_cursor,omitempty"`
+	PulledMutations        []MutationEnvelope    `json:"pulled_mutations,omitempty"`
+	MutationResults        []MutationApplyResult `json:"mutation_results,omitempty"`
+	CompatibilityMode      string                `json:"compatibility_mode,omitempty"`
+	ProjectIdentityVersion string                `json:"project_identity_version,omitempty"`
 
 	// Bounded legacy pull pagination (PR 2a, design §2.2). These fields cover the
 	// two previously-unbounded legacy pull channels: Pulled (memories) and

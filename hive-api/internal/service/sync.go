@@ -9,6 +9,7 @@ import (
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 )
 
 // Sentinel errors surfaced by Push for handler-level 4xx classification (R2-CRIT-6).
@@ -101,6 +102,11 @@ func NewSyncService(memRepo repository.MemoryRepository, promptRepo repository.P
 // El campo CreatedBy se asigna aquí, en el service — el repositorio no sabe
 // quién está haciendo el sync. Ese dato viene del JWT (validado por el middleware).
 func (s *syncService) Push(ctx context.Context, req model.SyncRequest, userID string) (*model.SyncResponse, error) {
+	canonical, err := model.CanonicalSyncProjectIdentity(req)
+	if err != nil {
+		return nil, err
+	}
+	req = canonical
 	return s.pushWithRepos(ctx, req, userID, syncPushRepos{Memory: s.repo, Prompt: s.promptRepo, Session: s.sessionRepo, Audit: s.auditRepo, ProjectBlocks: s.blockRepo})
 }
 
@@ -108,9 +114,14 @@ func (s *syncService) Sync(ctx context.Context, req model.SyncRequest, userID st
 	if s.tx == nil {
 		return nil, ErrProjectBlockUnavailable
 	}
+	canonical, err := model.CanonicalSyncProjectIdentity(req)
+	if err != nil {
+		return nil, err
+	}
+	req = canonical
 
 	var resp *model.SyncResponse
-	err := s.tx.WithinTx(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
+	err = s.tx.WithinTx(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
 		txRepos := syncTransactionReposFrom(repos)
 		if !txRepos.Valid() {
 			return ErrProjectBlockUnavailable
@@ -358,13 +369,14 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 	}
 
 	resp := &model.SyncResponse{
-		Pushed:             pushed,
-		Conflicts:          conflicts,
-		PromptsPushed:      promptsPushed,
-		PulledMutations:    pulledMutations,
-		MutationResults:    mutationResults,
-		NextMutationCursor: nextMutationCursor,
-		CompatibilityMode:  compatibilityMode,
+		Pushed:                 pushed,
+		Conflicts:              conflicts,
+		PromptsPushed:          promptsPushed,
+		PulledMutations:        pulledMutations,
+		MutationResults:        mutationResults,
+		NextMutationCursor:     nextMutationCursor,
+		CompatibilityMode:      compatibilityMode,
+		ProjectIdentityVersion: projectidentity.ContractVersion,
 	}
 	if err := s.emitSyncAudit(ctx, repos.Audit, req.Project, userID, pushed, conflicts, promptsPushed); err != nil {
 		return nil, err
@@ -507,19 +519,20 @@ func (s *syncService) syncResponseWithPull(ctx context.Context, req model.SyncRe
 		pulled = []*model.Memory{}
 	}
 	return &model.SyncResponse{
-		Pushed:                pushResp.Pushed,
-		Pulled:                pulled,
-		Conflicts:             pushResp.Conflicts,
-		PromptsPushed:         pushResp.PromptsPushed,
-		PulledSessions:        pulledSessions,
-		NextMutationCursor:    pushResp.NextMutationCursor,
-		PulledMutations:       pushResp.PulledMutations,
-		MutationResults:       pushResp.MutationResults,
-		CompatibilityMode:     pushResp.CompatibilityMode,
-		PulledHasMore:         pullResult.MemoriesHasMore,
-		NextPullCursor:        pullResult.NextPullCursor,
-		PulledSessionsHasMore: pullResult.SessionsHasMore,
-		NextSessionCursor:     pullResult.NextSessionCursor,
+		Pushed:                 pushResp.Pushed,
+		Pulled:                 pulled,
+		Conflicts:              pushResp.Conflicts,
+		PromptsPushed:          pushResp.PromptsPushed,
+		PulledSessions:         pulledSessions,
+		NextMutationCursor:     pushResp.NextMutationCursor,
+		PulledMutations:        pushResp.PulledMutations,
+		MutationResults:        pushResp.MutationResults,
+		CompatibilityMode:      pushResp.CompatibilityMode,
+		ProjectIdentityVersion: pushResp.ProjectIdentityVersion,
+		PulledHasMore:          pullResult.MemoriesHasMore,
+		NextPullCursor:         pullResult.NextPullCursor,
+		PulledSessionsHasMore:  pullResult.SessionsHasMore,
+		NextSessionCursor:      pullResult.NextSessionCursor,
 	}, nil
 }
 
