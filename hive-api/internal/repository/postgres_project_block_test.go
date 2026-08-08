@@ -22,9 +22,8 @@ func startPostgresWithProjectBlocks(t *testing.T) (*pgxpool.Pool, func()) {
 }
 
 func TestPostgresProjectBlockRepository_ReadsHistoricalLegacyActions(t *testing.T) {
-	pool, cleanup := startPostgresWithProjectSources(t)
+	pool, cleanup := startPostgresWithProjectBlocks(t)
 	defer cleanup()
-	require.NoError(t, RunMigrations(pool, migrations.ProjectBlocksSQL))
 
 	ctx := context.Background()
 	for _, action := range []string{"export_marker", model.ProjectBlockActionPurgeIntent} {
@@ -36,14 +35,16 @@ func TestPostgresProjectBlockRepository_ReadsHistoricalLegacyActions(t *testing.
 			require.NoError(t, err)
 		})
 	}
-	require.NoError(t, RunMigrations(pool, migrations.QuarantineContractSQL))
+	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool))
+	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool), "canonical backfill must remain idempotent")
 
 	for _, action := range []string{"export_marker", model.ProjectBlockActionPurgeIntent} {
 		t.Run("read "+action, func(t *testing.T) {
 			canonical := "legacy-" + action
-			block, err := NewPostgresProjectBlockRepository(pool).GetByCanonicalKey(ctx, canonical)
+			block, err := NewPostgresProjectBlockRepository(pool).GetByCanonicalKey(ctx, "LEGACY/"+action)
 			require.NoError(t, err)
 			require.Equal(t, action, block.Action)
+			require.Equal(t, canonical, block.Project)
 			require.Equal(t, "legacy export", block.ExportMarker)
 			require.EqualValues(t, 1, block.Generation)
 		})

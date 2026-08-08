@@ -68,12 +68,19 @@ func BackfillProjectIdentityRegistry(ctx context.Context, pool *pgxpool.Pool) er
 		return err
 	}
 	for _, registration := range registrations {
+		key := projectkey.Canonicalize(registration.spelling)
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO project_identities (project_key, first_spelling, first_seen_at)
 			VALUES ($1, $2, $3)
 			ON CONFLICT (project_key) DO NOTHING`,
-			projectkey.Canonicalize(registration.spelling), registration.spelling, registration.seenAt); err != nil {
+			key, registration.spelling, registration.seenAt); err != nil {
 			return wrapPgError(err, "register canonical project identity")
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE project_blocks
+			SET canonical_project_key = $1
+			WHERE project = $2 AND canonical_project_key <> $1`, key, registration.spelling); err != nil {
+			return wrapPgError(err, "canonicalize project block identity")
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
