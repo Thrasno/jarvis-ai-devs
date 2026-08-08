@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -40,6 +41,13 @@ func TestProjectMigrationExecutorRollsBackFailpointAndRetries(t *testing.T) {
 	}
 	if got := migrationProjectValues(t, database); got[0] != " Foo.Bar " || got[1] != " Foo.Bar " {
 		t.Fatalf("rollback projects = %q, want original spelling", got)
+	}
+	var registered int
+	if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM project_identities WHERE project_key = 'foo-bar'`).Scan(&registered); err != nil {
+		t.Fatal(err)
+	}
+	if registered != 0 {
+		t.Fatalf("registry rows after rollback = %d, want 0", registered)
 	}
 	if err := ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error {
 		backups++
@@ -333,6 +341,75 @@ func TestProjectMigrationExecutorRejectsDivergentEqualGenerationBlock(t *testing
 	}
 	if blocks != 2 || sessions != 1 {
 		t.Fatalf("rows after conflict = blocks:%d sessions:%d, want 2 and 1", blocks, sessions)
+	}
+}
+
+func TestProjectMigrationExecutorRegistersCanonicalIdentityAndPreservesRemoteDisplay(t *testing.T) {
+	database := newMigrationExecutorDB(t)
+	seedMigrationProject(t, database, " Foo.Bar ")
+	if _, err := database.sqlDB.Exec(`INSERT INTO project_identities (project_key, first_spelling, first_seen_at, first_source, remote_spelling, remote_seen_at, remote_source) VALUES ('foo-bar', 'oldest-name', '2025-01-01T00:00:00Z', 'migration', 'Remote-Name', '2025-02-01T00:00:00Z', 'git-remote')`); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error { return nil }, nil); err != nil {
+		t.Fatalf("ExecuteProjectMigration() error = %v", err)
+	}
+	var key, first, source, remote, remoteSource string
+	if err := database.sqlDB.QueryRow(`SELECT project_key, first_spelling, first_source, remote_spelling, remote_source FROM project_identities WHERE project_key = 'foo-bar'`).Scan(&key, &first, &source, &remote, &remoteSource); err != nil {
+		t.Fatal(err)
+	}
+	if key != "foo-bar" || first != "oldest-name" || source != "migration" || remote != "Remote-Name" || remoteSource != "git-remote" {
+		t.Fatalf("registry = %q %q %q %q %q", key, first, source, remote, remoteSource)
+	}
+}
+
+func TestProjectIdentityRegistryMigratesExistingDatabaseAndReopensIdempotently(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hive.db")
+	database, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedMigrationProject(t, database, " Foo.Bar ")
+	plan, err := ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error { return nil }, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen database: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	var count int
+	if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM project_identities WHERE project_key = 'foo-bar' AND first_spelling = ' Foo.Bar ' AND first_source = 'migration'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("canonical registry rows = %d, want 1", count)
+	}
+}
+
+func TestProjectIdentityRegistryDisplayPrefersRemoteThenOldestRegistration(t *testing.T) {
+	database := newMigrationExecutorDB(t)
+	if _, err := database.sqlDB.Exec(`INSERT INTO project_identities (project_key, first_spelling, first_seen_at, first_source) VALUES ('foo-bar', 'Oldest Name', '2025-01-01T00:00:00Z', 'migration')`); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := projectIdentityDisplay(context.Background(), database.sqlDB, "foo-bar"); err != nil || got != "Oldest Name" {
+		t.Fatalf("projectIdentityDisplay() = %q, %v; want oldest registration", got, err)
+	}
+	if _, err := database.sqlDB.Exec(`UPDATE project_identities SET remote_spelling = 'Remote Name', remote_seen_at = '2025-02-01T00:00:00Z', remote_source = 'git-remote' WHERE project_key = 'foo-bar'`); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := projectIdentityDisplay(context.Background(), database.sqlDB, "foo-bar"); err != nil || got != "Remote Name" {
+		t.Fatalf("projectIdentityDisplay() = %q, %v; want remote display", got, err)
 	}
 }
 

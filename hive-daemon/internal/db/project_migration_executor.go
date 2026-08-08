@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 )
@@ -53,7 +54,11 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 	if err := requireSupportedProjectMigration(records); err != nil {
 		return err
 	}
-	if !projectMigrationNeeded(records) {
+	registryNeeded, err := projectIdentityRegistryNeeded(ctx, database.sqlDB, records)
+	if err != nil {
+		return err
+	}
+	if !projectMigrationNeeded(records) && !registryNeeded {
 		return nil
 	}
 	if err := backup(ctx); err != nil {
@@ -70,6 +75,9 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 	}
 	if BuildProjectMigrationPlan(records).Fingerprint != plan.Fingerprint {
 		return ErrProjectMigrationPlanStale
+	}
+	if err := populateProjectIdentityRegistry(ctx, tx, records); err != nil {
+		return err
 	}
 	if err := rekeyCompositeCursors(ctx, tx); err != nil {
 		return err
@@ -108,6 +116,60 @@ func projectMigrationNeeded(records []ProjectStateRecord) bool {
 	return false
 }
 
+type projectIdentityQuerier interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func projectIdentityRegistryNeeded(ctx context.Context, queryer projectIdentityQuerier, records []ProjectStateRecord) (bool, error) {
+	keys := canonicalProjectRegistrations(records)
+	for key := range keys {
+		rows, err := queryer.QueryContext(ctx, `SELECT project_key FROM project_identities WHERE project_key = ?`, key)
+		if err != nil {
+			return false, err
+		}
+		present := rows.Next()
+		if err := rows.Close(); err != nil {
+			return false, err
+		}
+		if !present {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func populateProjectIdentityRegistry(ctx context.Context, tx *sql.Tx, records []ProjectStateRecord) error {
+	for key, record := range canonicalProjectRegistrations(records) {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO project_identities (project_key, first_spelling, first_seen_at, first_source) VALUES (?, ?, ?, 'migration') ON CONFLICT(project_key) DO NOTHING`, key, record.Project, record.RegisteredAt.UTC().Format(time.RFC3339Nano)); err != nil {
+			return fmt.Errorf("register canonical project identity: %w", err)
+		}
+	}
+	return nil
+}
+
+func canonicalProjectRegistrations(records []ProjectStateRecord) map[string]ProjectStateRecord {
+	registrations := make(map[string]ProjectStateRecord)
+	for _, record := range records {
+		key := projectidentity.Canonical(record.Project).String()
+		prior, exists := registrations[key]
+		if !exists || record.RegisteredAt.Before(prior.RegisteredAt) || (record.RegisteredAt.Equal(prior.RegisteredAt) && record.StableID < prior.StableID) {
+			registrations[key] = record
+		}
+	}
+	return registrations
+}
+
+func projectIdentityDisplay(ctx context.Context, database *sql.DB, key string) (string, error) {
+	var remote, first string
+	if err := database.QueryRowContext(ctx, `SELECT remote_spelling, first_spelling FROM project_identities WHERE project_key = ?`, key).Scan(&remote, &first); err != nil {
+		return "", err
+	}
+	if remote != "" {
+		return remote, nil
+	}
+	return first, nil
+}
+
 func rebuildProjectMigrationState(ctx context.Context, tx *sql.Tx) error {
 	for _, statement := range []string{
 		`REINDEX`,
@@ -143,6 +205,11 @@ func rebuildProjectMigrationState(ctx context.Context, tx *sql.Tx) error {
 	after, err := readProjectMigrationRecords(ctx, tx)
 	if err != nil {
 		return err
+	}
+	if needed, err := projectIdentityRegistryNeeded(ctx, tx, after); err != nil {
+		return err
+	} else if needed {
+		return fmt.Errorf("%w: missing project identity registry entry", ErrProjectMigrationConflict)
 	}
 	if projectMigrationNeeded(after) {
 		return ErrProjectMigrationPlanUnsafe
@@ -333,23 +400,23 @@ func readProjectMigrationRecords(ctx context.Context, queryer projectMigrationQu
 		state ProjectState
 		query string
 	}{
-		{ProjectStateMemories, `SELECT project, sync_id, CAST(id AS TEXT) FROM memories`},
-		{ProjectStateSessions, `SELECT project, id, sync_id FROM sessions`},
-		{ProjectStateSyncState, `SELECT project, project, project FROM sync_state WHERE project != '__auth__'`},
-		{ProjectStateMemoryMutations, `SELECT project, event_id, CAST(sequence AS TEXT) FROM memory_mutations`},
-		{ProjectStateMutationReceipts, `SELECT project, request_id, event_id FROM mutation_receipts`},
-		{ProjectStateMutationCursors, `SELECT project, consumer || ':' || CAST(sequence AS TEXT) || ':' || event_id, event_id FROM mutation_cursors`},
-		{ProjectStatePullCursors, `SELECT project, consumer || ':' || channel || ':' || synced_at || ':' || sync_id, sync_id FROM pull_cursors`},
-		{ProjectStatePrompts, `SELECT project, sync_id, CAST(id AS TEXT) FROM user_prompts`},
-		{ProjectStateAliases, `SELECT source_project, source_project, target_project FROM project_aliases`},
-		{ProjectStateBlocks, `SELECT project, canonical_project_key, command_id FROM project_blocks`},
-		{ProjectStateQuarantineArchives, `SELECT project, canonical_project_key, command_id FROM project_quarantine_archives`},
-		{ProjectStateGovernance, `SELECT project, project, merge_target FROM hive_project_governance`},
-		{ProjectStateImportAliases, `SELECT source_project, source_system || ':' || source_table || ':' || source_id, hive_sync_id FROM import_source_aliases`},
-		{ProjectStatePassiveObservations, `SELECT project, CAST(id AS TEXT), COALESCE(sync_id, '') FROM passive_observations`},
-		{ProjectStateSyncAttempts, `SELECT project, attempt_id, attempt_id FROM sync_attempt_logs`},
-		{ProjectStateRecoveryTokens, `SELECT requested_project, token, context_hash FROM recovery_tokens`},
-		{ProjectStateMemoryPromptLinks, `SELECT m.project, CAST(l.memory_id AS TEXT) || ':' || CAST(l.prompt_id AS TEXT), CAST(l.memory_id AS TEXT) FROM memory_prompt_links l JOIN memories m ON m.id = l.memory_id`},
+		{ProjectStateMemories, `SELECT project, sync_id, CAST(id AS TEXT), created_at FROM memories`},
+		{ProjectStateSessions, `SELECT project, id, sync_id, created_at FROM sessions`},
+		{ProjectStateSyncState, `SELECT project, project, project, COALESCE(last_sync_at, '') FROM sync_state WHERE project != '__auth__'`},
+		{ProjectStateMemoryMutations, `SELECT project, event_id, CAST(sequence AS TEXT), occurred_at FROM memory_mutations`},
+		{ProjectStateMutationReceipts, `SELECT project, request_id, event_id, created_at FROM mutation_receipts`},
+		{ProjectStateMutationCursors, `SELECT project, consumer || ':' || CAST(sequence AS TEXT) || ':' || event_id, event_id, updated_at FROM mutation_cursors`},
+		{ProjectStatePullCursors, `SELECT project, consumer || ':' || channel || ':' || synced_at || ':' || sync_id, sync_id, updated_at FROM pull_cursors`},
+		{ProjectStatePrompts, `SELECT project, sync_id, CAST(id AS TEXT), created_at FROM user_prompts`},
+		{ProjectStateAliases, `SELECT source_project, source_project, target_project, created_at FROM project_aliases`},
+		{ProjectStateBlocks, `SELECT project, canonical_project_key, command_id, created_at FROM project_blocks`},
+		{ProjectStateQuarantineArchives, `SELECT project, canonical_project_key, command_id, created_at FROM project_quarantine_archives`},
+		{ProjectStateGovernance, `SELECT project, project, merge_target, COALESCE(archived_at, merged_at, '') FROM hive_project_governance`},
+		{ProjectStateImportAliases, `SELECT source_project, source_system || ':' || source_table || ':' || source_id, hive_sync_id, created_at FROM import_source_aliases`},
+		{ProjectStatePassiveObservations, `SELECT project, CAST(id AS TEXT), COALESCE(sync_id, ''), created_at FROM passive_observations`},
+		{ProjectStateSyncAttempts, `SELECT project, attempt_id, attempt_id, created_at FROM sync_attempt_logs`},
+		{ProjectStateRecoveryTokens, `SELECT requested_project, token, context_hash, created_at FROM recovery_tokens`},
+		{ProjectStateMemoryPromptLinks, `SELECT m.project, CAST(l.memory_id AS TEXT) || ':' || CAST(l.prompt_id AS TEXT), CAST(l.memory_id AS TEXT), l.created_at FROM memory_prompt_links l JOIN memories m ON m.id = l.memory_id`},
 	}
 	var records []ProjectStateRecord
 	for _, item := range queries {
@@ -360,11 +427,13 @@ func readProjectMigrationRecords(ctx context.Context, queryer projectMigrationQu
 		for rows.Next() {
 			var record ProjectStateRecord
 			record.Table = item.state
-			if err := rows.Scan(&record.Project, &record.Identity, &record.Value); err != nil {
+			var registeredAt string
+			if err := rows.Scan(&record.Project, &record.Identity, &record.Value, &registeredAt); err != nil {
 				_ = rows.Close()
 				return nil, err
 			}
 			record.StableID = record.Identity
+			record.RegisteredAt = parseMigrationRegisteredAt(registeredAt)
 			records = append(records, record)
 		}
 		if err := rows.Err(); err != nil {
@@ -374,6 +443,15 @@ func readProjectMigrationRecords(ctx context.Context, queryer projectMigrationQu
 		_ = rows.Close()
 	}
 	return records, nil
+}
+
+func parseMigrationRegisteredAt(value string) time.Time {
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05"} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed.UTC()
+		}
+	}
+	return time.Time{}
 }
 
 type migrationMutationCursor struct {

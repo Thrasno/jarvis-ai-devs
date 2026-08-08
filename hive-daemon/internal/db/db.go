@@ -14,6 +14,22 @@ const schema = `
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
 
+-- project_identities is the authoritative local mapping from canonical storage
+-- keys to their stable display metadata. Project-bearing tables retain TEXT keys
+-- because SQLite cannot add a foreign key to an existing column in place.
+CREATE TABLE IF NOT EXISTS project_identities (
+    project_key       TEXT PRIMARY KEY,
+    first_spelling    TEXT NOT NULL,
+    first_seen_at     DATETIME NOT NULL,
+    first_source      TEXT NOT NULL,
+    remote_spelling   TEXT NOT NULL DEFAULT '',
+    remote_seen_at    DATETIME,
+    remote_source     TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_identities_first_seen
+ON project_identities(first_seen_at, project_key);
+
 CREATE TABLE IF NOT EXISTS memories (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     sync_id         TEXT NOT NULL,
@@ -417,6 +433,8 @@ func initSchema(sqlDB *sql.DB) error {
 	// SQLite no soporta ALTER TABLE ADD COLUMN IF NOT EXISTS — ignoramos el error
 	// si la columna ya existe (error "duplicate column name").
 	migrations := []string{
+		`CREATE TABLE IF NOT EXISTS project_identities (project_key TEXT PRIMARY KEY, first_spelling TEXT NOT NULL, first_seen_at DATETIME NOT NULL, first_source TEXT NOT NULL, remote_spelling TEXT NOT NULL DEFAULT '', remote_seen_at DATETIME, remote_source TEXT NOT NULL DEFAULT '')`,
+		`CREATE INDEX IF NOT EXISTS idx_project_identities_first_seen ON project_identities(first_seen_at, project_key)`,
 		// SQLite no acepta DEFAULT CURRENT_TIMESTAMP en ALTER TABLE — solo defaults constantes.
 		// Usamos epoch como placeholder; las rows existentes se actualizan abajo.
 		`ALTER TABLE memories ADD COLUMN updated_at DATETIME NOT NULL DEFAULT '1970-01-01 00:00:00'`,
