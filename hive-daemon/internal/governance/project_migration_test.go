@@ -49,7 +49,7 @@ func TestTemporaryMigrationBackupPrunesOnlyAfterRetention(t *testing.T) {
 	store := NewBackupStore(path, filepath.Join(t.TempDir(), "backups"))
 	createdAt := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return createdAt }
-	backup, err := store.CreateTemporaryMigrationBackup(context.Background())
+	backup, err := store.CreateTemporaryMigrationBackup(context.Background(), "plan-fingerprint")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,6 +65,85 @@ func TestTemporaryMigrationBackupPrunesOnlyAfterRetention(t *testing.T) {
 	if retained, err := store.List(context.Background()); err != nil || len(retained) != 0 {
 		t.Fatalf("backups at retention = %v, %v; want no retained backup", retained, err)
 	}
+}
+
+func TestProjectMigrationReusesUnexpiredBackupForSamePlan(t *testing.T) {
+	database, path := migrationFixture(t)
+	backups := NewSQLiteBackupStore(path, filepath.Join(t.TempDir(), "backups"), database.RawDB())
+	fail := errors.New("forced migration failure")
+
+	for attempt := 0; attempt < 3; attempt++ {
+		plan, err := db.ReadProjectMigrationPlan(context.Background(), database)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := executeProjectMigrationWithBackup(context.Background(), database, plan, backups, func() error { return fail }); !errors.Is(err, fail) {
+			t.Fatalf("attempt %d error = %v, want failpoint", attempt, err)
+		}
+	}
+
+	retained, err := backups.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retained) != 1 {
+		t.Fatalf("backups after repeated blocked migrations = %d, want a single reused backup", len(retained))
+	}
+}
+
+func TestProjectMigrationCreatesFreshBackupForDifferentPlan(t *testing.T) {
+	database, path := migrationFixture(t)
+	backups := NewSQLiteBackupStore(path, filepath.Join(t.TempDir(), "backups"), database.RawDB())
+	fail := errors.New("forced migration failure")
+
+	plan, err := db.ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := executeProjectMigrationWithBackup(context.Background(), database, plan, backups, func() error { return fail }); !errors.Is(err, fail) {
+		t.Fatalf("first attempt error = %v, want failpoint", err)
+	}
+
+	if _, err := database.RawDB().Exec(`INSERT INTO sessions (id, sync_id, project, dev_id, client) VALUES ('s2', 'session-2', ' Other.Project ', 'dev', 'test')`); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := db.ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Fingerprint == plan.Fingerprint {
+		t.Fatal("plan fingerprint did not change; fixture cannot prove a fresh backup")
+	}
+	if err := executeProjectMigrationWithBackup(context.Background(), database, changed, backups, func() error { return fail }); !errors.Is(err, fail) {
+		t.Fatalf("second attempt error = %v, want failpoint", err)
+	}
+
+	retained, err := backups.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retained) != 2 {
+		t.Fatalf("backups for two distinct plans = %d, want one backup per plan", len(retained))
+	}
+}
+
+// migrationFixture returns an open database whose project spellings require the
+// canonical identity migration, plus its on-disk path.
+func migrationFixture(t *testing.T) (*db.DB, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "memory.db")
+	database, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if _, err := database.RawDB().Exec(`INSERT INTO sessions (id, sync_id, project, dev_id, client) VALUES ('s', 'session', ' Foo.Bar ', 'dev', 'test')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.RawDB().Exec(`INSERT INTO memories (sync_id, project, title, content, session_id) VALUES ('memory', ' Foo.Bar ', 'title', 'content', 's')`); err != nil {
+		t.Fatal(err)
+	}
+	return database, path
 }
 
 func TestProjectMigrationBackupSurvivesFailedExecution(t *testing.T) {

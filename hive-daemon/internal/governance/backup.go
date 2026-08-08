@@ -53,6 +53,11 @@ type BackupManifest struct {
 	SourceOperation string    `json:"source_operation,omitempty"`
 	Temporary       bool      `json:"temporary,omitempty"`
 	RetainUntil     time.Time `json:"retain_until,omitempty"`
+	// PlanFingerprint records which migration plan this backup was taken for.
+	// It lives in the manifest rather than in the backup id so ids stay opaque
+	// and collision-free (timestamp + uuid), and so reuse is decided by reading
+	// the same durable record List already returns.
+	PlanFingerprint string `json:"plan_fingerprint,omitempty"`
 }
 
 type RestoreRequest struct {
@@ -153,8 +158,9 @@ func (s *BackupStore) Create(ctx context.Context) (BackupManifest, error) {
 }
 
 // ExecuteProjectMigrationWithBackup composes the migration executor with the
-// daemon's SQLite-safe backup store. Failed migrations retain their new backup;
-// only expired temporary migration backups are pruned before a later attempt.
+// daemon's SQLite-safe backup store. Failed migrations retain their backup and a
+// later attempt on the same plan reuses it; only expired temporary migration
+// backups are pruned before a new one is taken.
 func ExecuteProjectMigrationWithBackup(ctx context.Context, database *db.DB, plan db.ProjectMigrationPlan, backups *BackupStore) error {
 	return executeProjectMigrationWithBackup(ctx, database, plan, backups, nil)
 }
@@ -167,12 +173,65 @@ func executeProjectMigrationWithBackup(ctx context.Context, database *db.DB, pla
 		return fmt.Errorf("prune expired migration backups: %w", err)
 	}
 	return db.ExecuteProjectMigration(ctx, database, plan, func(ctx context.Context) error {
-		_, err := backups.CreateTemporaryMigrationBackup(ctx)
+		_, err := backups.EnsureTemporaryMigrationBackup(ctx, plan.Fingerprint)
 		return err
 	}, failpoint)
 }
 
-func (s *BackupStore) CreateTemporaryMigrationBackup(ctx context.Context) (BackupManifest, error) {
+// EnsureTemporaryMigrationBackup returns an existing unexpired backup taken for
+// the same migration plan instead of copying the database again.
+//
+// hive-daemon is an MCP stdio server, so a client spawns a fresh process per
+// session and a blocked migration is re-attempted on every start. Copying
+// memory.db each time fills the disk, and a full disk is exactly what makes the
+// next attempt fail. Reuse is safe because a blocked migration gates every write
+// surface off, so the live database cannot have changed since the archive was
+// taken; a genuinely different plan still gets its own fresh backup.
+func (s *BackupStore) EnsureTemporaryMigrationBackup(ctx context.Context, planFingerprint string) (BackupManifest, error) {
+	reusable, found, err := s.reusableMigrationBackup(ctx, planFingerprint)
+	if err != nil {
+		return BackupManifest{}, err
+	}
+	if found {
+		return reusable, nil
+	}
+	return s.CreateTemporaryMigrationBackup(ctx, planFingerprint)
+}
+
+func (s *BackupStore) reusableMigrationBackup(ctx context.Context, planFingerprint string) (BackupManifest, bool, error) {
+	if strings.TrimSpace(planFingerprint) == "" {
+		return BackupManifest{}, false, nil
+	}
+	stored, err := s.List(ctx)
+	if err != nil {
+		return BackupManifest{}, false, err
+	}
+	now := s.now().UTC()
+	for _, backup := range stored {
+		if !backup.Temporary || backup.SourceOperation != ProjectMigrationBackupOperation {
+			continue
+		}
+		if backup.PlanFingerprint != planFingerprint || backup.DBPath != s.dbPath {
+			continue
+		}
+		if backup.RetainUntil.IsZero() || !backup.RetainUntil.After(now) {
+			continue
+		}
+		archivePath := filepath.Join(s.backupRoot, backup.ID, backupArchiveFile)
+		if err := verifyManifestArchivePath(backup.ArchivePath, archivePath); err != nil {
+			continue
+		}
+		// A reused archive must still be the one its manifest describes; paying
+		// for a fresh copy beats rolling back onto a truncated one.
+		if err := s.validateArchive(ctx, backup, archivePath); err != nil {
+			continue
+		}
+		return backup, true, nil
+	}
+	return BackupManifest{}, false, nil
+}
+
+func (s *BackupStore) CreateTemporaryMigrationBackup(ctx context.Context, planFingerprint string) (BackupManifest, error) {
 	backup, err := s.Create(ctx)
 	if err != nil {
 		return BackupManifest{}, err
@@ -180,6 +239,7 @@ func (s *BackupStore) CreateTemporaryMigrationBackup(ctx context.Context) (Backu
 	backup.SourceOperation = ProjectMigrationBackupOperation
 	backup.Temporary = true
 	backup.RetainUntil = backup.CreatedAt.Add(ProjectMigrationBackupRetention)
+	backup.PlanFingerprint = planFingerprint
 	if err := persistBackupManifest(backup); err != nil {
 		return BackupManifest{}, err
 	}
