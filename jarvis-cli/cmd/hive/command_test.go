@@ -329,19 +329,20 @@ func TestHiveProjectMergeCommandRejectsNonExactConfirmationBeforeDaemonCall(t *t
 
 func TestHiveProjectIdentityCommandsExposeBlockedRecovery(t *testing.T) {
 	client := &fakeHiveClient{identityStatus: hiveclient.MigrationIdentityStatus{
-		State:        "migration-blocked",
-		Reason:       "duplicate canonical project",
-		BackupID:     "migration-backup-1",
-		Continuation: "hive project identity resolve then retry",
-		Conflicts:    []string{"project_aliases foo-bar"},
-		Variants:     []string{"Foo-Bar", "foo/bar"},
+		State:           "migration-blocked",
+		Reason:          "duplicate canonical project",
+		BackupID:        "migration-backup-1",
+		PlanFingerprint: "migration-plan-1",
+		Continuation:    "hive project identity resolve then retry",
+		Conflicts:       []string{"project_aliases foo-bar"},
+		Variants:        []string{"Foo-Bar", "foo/bar"},
 	}}
 
 	status, err := executeHiveCommand(t, NewRootCommand(client), "project", "identity", "status")
 	if err != nil {
 		t.Fatalf("identity status: %v", err)
 	}
-	for _, want := range []string{"state=migration-blocked", "reason=duplicate canonical project", "backup=migration-backup-1", "conflict=project_aliases foo-bar", "variant=Foo-Bar", "continuation=hive project identity status", "Choose explicit --source and --target"} {
+	for _, want := range []string{"state=migration-blocked", "reason=duplicate canonical project", "backup=migration-backup-1", "plan=migration-plan-1", "conflict=project_aliases foo-bar", "variant=Foo-Bar", "continuation=hive project identity status", "Choose explicit --source and --target"} {
 		if !strings.Contains(status, want) {
 			t.Fatalf("identity status output = %q, want %q", status, want)
 		}
@@ -359,9 +360,12 @@ func TestHiveProjectIdentityCommandsExposeBlockedRecovery(t *testing.T) {
 		t.Fatalf("continuation tokens = %q, command = %v, error = %v; want registered status command", tokens, command, err)
 	}
 
-	resolved, err := executeHiveCommand(t, NewRootCommand(client), "project", "identity", "resolve", "--source", "Foo-Bar", "--target", "foo/bar", "--backup-id", "migration-backup-1", "--confirmation", "RESOLVE project identity Foo-Bar INTO foo/bar")
+	resolved, err := executeHiveCommand(t, NewRootCommand(client), "project", "identity", "resolve", "--source", "Foo-Bar", "--target", "foo/bar", "--plan-fingerprint", "migration-plan-1", "--confirmation", "RESOLVE project identity Foo-Bar INTO foo/bar")
 	if err != nil {
 		t.Fatalf("identity resolve: %v", err)
+	}
+	if client.identityResolution.PlanFingerprint != "migration-plan-1" || client.identityResolution.BackupID != "" {
+		t.Fatalf("resolve request = %+v, want plan-fingerprint guard without a backup id", client.identityResolution)
 	}
 	if client.identityResolution.SourceProject != "Foo-Bar" || client.identityResolution.TargetProject != "foo/bar" || client.mergeCalled {
 		t.Fatalf("resolve request = %+v mergeCalled=%v, want dedicated explicit resolution", client.identityResolution, client.mergeCalled)
@@ -394,12 +398,32 @@ func TestHiveProjectIdentityCommandsExposeBlockedRecovery(t *testing.T) {
 	}
 }
 
+// A preflight conflict never mutates the database, so no migration backup
+// exists. Status must say that instead of implying a rollback is available.
+func TestHiveProjectIdentityStatusReportsMissingMigrationBackupHonestly(t *testing.T) {
+	client := &fakeHiveClient{identityStatus: hiveclient.MigrationIdentityStatus{
+		State:           "migration-blocked",
+		Reason:          "project migration plan is not executable",
+		PlanFingerprint: "migration-plan-2",
+	}}
+	status, err := executeHiveCommand(t, NewRootCommand(client), "project", "identity", "status")
+	if err != nil {
+		t.Fatalf("identity status: %v", err)
+	}
+	for _, want := range []string{"backup=-", "plan=migration-plan-2", "No migration backup was created for this block; rollback is unavailable."} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("identity status output = %q, want %q", status, want)
+		}
+	}
+}
+
 func TestHiveProjectIdentityCommandsRejectGuessedResolutionAndRestoreBackup(t *testing.T) {
 	client := &fakeHiveClient{}
 	for _, args := range [][]string{
 		{"project", "identity", "resolve", "--source", "Foo-Bar"},
 		{"project", "identity", "resolve", "--target", "foo/bar"},
-		{"project", "identity", "resolve", "--source", "Foo-Bar", "--target", "foo/bar", "--backup-id", "migration-backup-1", "--confirmation", "RESOLVE project identity Foo-Bar INTO foo/bar "},
+		{"project", "identity", "resolve", "--source", "Foo-Bar", "--target", "foo/bar", "--plan-fingerprint", "migration-plan-1", "--confirmation", "RESOLVE project identity Foo-Bar INTO foo/bar "},
+		{"project", "identity", "resolve", "--source", "Foo-Bar", "--target", "foo/bar", "--confirmation", "RESOLVE project identity Foo-Bar INTO foo/bar"},
 		{"project", "identity", "rollback"},
 	} {
 		out, err := executeHiveCommand(t, NewRootCommand(client), args...)

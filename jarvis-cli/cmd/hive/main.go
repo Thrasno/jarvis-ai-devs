@@ -168,7 +168,7 @@ func projectIdentityStatusCommand(client governanceClient) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "state=%s reason=%s backup=%s\n", emptyDash(status.State), emptyDash(status.Reason), emptyDash(status.BackupID))
+		fmt.Fprintf(cmd.OutOrStdout(), "state=%s reason=%s backup=%s plan=%s\n", emptyDash(status.State), emptyDash(status.Reason), emptyDash(status.BackupID), emptyDash(status.PlanFingerprint))
 		for _, conflict := range status.Conflicts {
 			fmt.Fprintf(cmd.OutOrStdout(), "conflict=%s\n", conflict)
 		}
@@ -177,6 +177,9 @@ func projectIdentityStatusCommand(client governanceClient) *cobra.Command {
 		}
 		if status.State == "migration-blocked" {
 			fmt.Fprintln(cmd.OutOrStdout(), "continuation=hive project identity status")
+			if status.BackupID == "" {
+				fmt.Fprintln(cmd.OutOrStdout(), "No migration backup was created for this block; rollback is unavailable.")
+			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Choose explicit --source and --target before a concrete resolve command can exist.")
 		}
 		return nil
@@ -184,19 +187,21 @@ func projectIdentityStatusCommand(client governanceClient) *cobra.Command {
 }
 
 func projectIdentityResolveCommand(client governanceClient) *cobra.Command {
-	var source, target, backupID, confirmation string
+	var source, target, planFingerprint, confirmation string
 	cmd := &cobra.Command{Use: "resolve", Short: "Apply an explicit identity conflict choice", RunE: func(cmd *cobra.Command, _ []string) error {
 		if strings.TrimSpace(source) == "" || strings.TrimSpace(target) == "" {
 			return fmt.Errorf("--source and --target are required; Hive never chooses an identity resolution")
 		}
-		if strings.TrimSpace(backupID) == "" {
-			return fmt.Errorf("--backup-id is required for hive project identity resolve")
+		// A blocked preflight never mutated the database and never created a
+		// backup, so the plan the operator was shown is the only honest guard.
+		if strings.TrimSpace(planFingerprint) == "" {
+			return fmt.Errorf("--plan-fingerprint is required for hive project identity resolve; read plan= from hive project identity status")
 		}
 		expected := "RESOLVE project identity " + source + " INTO " + target
 		if confirmation != expected {
 			return fmt.Errorf("confirmation must match exactly: %s", expected)
 		}
-		if err := client.ResolveMigrationIdentity(cmd.Context(), hiveclient.IdentityResolutionRequest{SourceProject: source, TargetProject: target, BackupID: backupID, Confirmation: confirmation}); err != nil {
+		if err := client.ResolveMigrationIdentity(cmd.Context(), hiveclient.IdentityResolutionRequest{SourceProject: source, TargetProject: target, PlanFingerprint: planFingerprint, Confirmation: confirmation}); err != nil {
 			return err
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Resolution recorded. Run: hive project identity retry")
@@ -204,7 +209,7 @@ func projectIdentityResolveCommand(client governanceClient) *cobra.Command {
 	}}
 	cmd.Flags().StringVar(&source, "source", "", "explicit variant to merge")
 	cmd.Flags().StringVar(&target, "target", "", "explicit surviving project spelling")
-	cmd.Flags().StringVar(&backupID, "backup-id", "", "retained migration backup id")
+	cmd.Flags().StringVar(&planFingerprint, "plan-fingerprint", "", "migration plan fingerprint reported by hive project identity status")
 	cmd.Flags().StringVar(&confirmation, "confirmation", "", "exact merge confirmation")
 	return cmd
 }

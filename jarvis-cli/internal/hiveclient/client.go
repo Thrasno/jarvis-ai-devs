@@ -111,20 +111,25 @@ type Backup struct {
 
 // MigrationIdentityStatus is the recovery state exposed while normal Hive
 // operations are blocked by canonical project identity migration.
+// BackupID is present only when the blocked migration itself created that
+// backup. PlanFingerprint identifies the exact plan the operator was shown and
+// is the guard an identity resolution must echo back.
 type MigrationIdentityStatus struct {
-	State        string   `json:"state"`
-	Reason       string   `json:"reason,omitempty"`
-	Continuation string   `json:"continuation,omitempty"`
-	BackupID     string   `json:"backup_id,omitempty"`
-	Conflicts    []string `json:"conflicts,omitempty"`
-	Variants     []string `json:"variants,omitempty"`
+	State           string   `json:"state"`
+	Reason          string   `json:"reason,omitempty"`
+	Continuation    string   `json:"continuation,omitempty"`
+	BackupID        string   `json:"backup_id,omitempty"`
+	PlanFingerprint string   `json:"plan_fingerprint,omitempty"`
+	Conflicts       []string `json:"conflicts,omitempty"`
+	Variants        []string `json:"variants,omitempty"`
 }
 
 type IdentityResolutionRequest struct {
-	SourceProject string `json:"source_project"`
-	TargetProject string `json:"target_project"`
-	BackupID      string `json:"backup_id"`
-	Confirmation  string `json:"confirmation"`
+	SourceProject   string `json:"source_project"`
+	TargetProject   string `json:"target_project"`
+	BackupID        string `json:"backup_id,omitempty"`
+	PlanFingerprint string `json:"plan_fingerprint"`
+	Confirmation    string `json:"confirmation"`
 }
 
 // Capabilities is the daemon's advertised guarded-mutation safety contract.

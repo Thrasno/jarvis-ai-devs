@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +21,7 @@ import (
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/governance"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/httpapi"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 	hivesync "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -604,7 +607,7 @@ func TestRunStartupMigrationAmbiguityRetainsDatabaseAndBackup(t *testing.T) {
 	}
 }
 
-func TestProjectIdentityResolveCanonicalEquivalentVariantsUnblocksMigrationEndToEnd(t *testing.T) {
+func TestRunStartupMigrationPreflightConflictLeavesDatabaseUnmutatedAndCreatesNoBackup(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "memory.db")
 	store, err := db.Open(path)
 	if err != nil {
@@ -637,12 +640,100 @@ func TestProjectIdentityResolveCanonicalEquivalentVariantsUnblocksMigrationEndTo
 	if err := store.RawDB().QueryRow(`SELECT COUNT(*) FROM sync_state WHERE project IN ('Foo.Bar', 'foo-bar')`).Scan(&variants); err != nil || variants != 2 {
 		t.Fatalf("sync state after blocked restart = %d, %v; want both original variants", variants, err)
 	}
-	if err := store.ResolveProjectIdentityConflict(context.Background(), "Foo.Bar", "foo-bar"); err != nil {
-		t.Fatalf("ResolveProjectIdentityConflict() error = %v", err)
+}
+
+// TestProjectIdentityResolveThroughDaemonResolverUnblocksMigrationWithoutBackup
+// drives recovery through the real resolver closure and the real HTTP recovery
+// route, because the preflight-conflict path never creates a migration backup
+// and therefore can never present a backup id to authorize resolution.
+func TestProjectIdentityResolveThroughDaemonResolverUnblocksMigrationWithoutBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory.db")
+	store, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	for _, projectName := range []string{"Foo.Bar", "foo-bar"} {
+		if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES (?, ?)`, projectName, projectName); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gate := runStartupMigration(context.Background(), store, path)
+	status := gate.Status()
+	if status.State != project.MigrationStateBlocked || status.BackupID != "" || status.PlanFingerprint == "" {
+		t.Fatalf("startup status = %+v, want preflight block with plan fingerprint and no backup", status)
+	}
+	srv := httpapi.NewServer("127.0.0.1:0", store)
+	srv.SetMigrationGate(gate)
+	srv.SetMigrationIdentityResolver(newMigrationIdentityResolver(store, gate))
+
+	confirmation := project.IdentityResolutionConfirmation("Foo.Bar", "foo-bar")
+	stale := postIdentityResolution(t, srv, project.IdentityResolutionRequest{
+		SourceProject:   "Foo.Bar",
+		TargetProject:   "foo-bar",
+		PlanFingerprint: "not-the-plan-the-operator-was-shown",
+		Confirmation:    confirmation,
+	})
+	if stale.Code != http.StatusConflict || !strings.Contains(stale.Body.String(), "stale") {
+		t.Fatalf("stale fingerprint resolve = %d %s, want 409 stale rejection", stale.Code, stale.Body.String())
+	}
+	var untouched int
+	if err := store.RawDB().QueryRow(`SELECT COUNT(*) FROM sync_state WHERE project IN ('Foo.Bar', 'foo-bar')`).Scan(&untouched); err != nil || untouched != 2 {
+		t.Fatalf("sync state after rejected resolve = %d, %v; want both variants untouched", untouched, err)
+	}
+
+	accepted := postIdentityResolution(t, srv, project.IdentityResolutionRequest{
+		SourceProject:   "Foo.Bar",
+		TargetProject:   "foo-bar",
+		PlanFingerprint: status.PlanFingerprint,
+		Confirmation:    confirmation,
+	})
+	if accepted.Code != http.StatusOK {
+		t.Fatalf("resolve through daemon resolver = %d %s, want 200", accepted.Code, accepted.Body.String())
 	}
 	if err := runStartupMigration(context.Background(), store, path).Check(); err != nil {
 		t.Fatalf("full migration replan after resolution = %v, want ready", err)
 	}
+}
+
+// TestRunStartupMigrationPreflightBlockNeverReportsUnrelatedBackup proves the
+// reported backup identifies a backup this migration created, so a rollback can
+// never restore an unrelated older database.
+func TestRunStartupMigrationPreflightBlockNeverReportsUnrelatedBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory.db")
+	store, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	backups := governance.NewSQLiteBackupStore(path, "", store.RawDB())
+	unrelated, err := backups.Create(context.Background())
+	if err != nil {
+		t.Fatalf("create unrelated backup: %v", err)
+	}
+	for _, projectName := range []string{"Foo.Bar", "foo-bar"} {
+		if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES (?, ?)`, projectName, projectName); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status := runStartupMigration(context.Background(), store, path).Status()
+	if status.State != project.MigrationStateBlocked {
+		t.Fatalf("startup status = %+v, want migration-blocked", status)
+	}
+	if status.BackupID != "" {
+		t.Fatalf("reported backup = %q, want empty; unrelated backup %q must never authorize a rollback", status.BackupID, unrelated.ID)
+	}
+}
+
+func postIdentityResolution(t *testing.T, srv *httpapi.Server, req project.IdentityResolutionRequest) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/governance/project-identity/resolve", bytes.NewReader(body)))
+	return rr
 }
 
 func TestRunStartupMigrationFreshDatabaseMigratesAndRestartsWithoutRestore(t *testing.T) {

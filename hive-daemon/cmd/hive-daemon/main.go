@@ -80,15 +80,7 @@ func run() int {
 		srv.SetMigrationRestore(func(_ context.Context, req governance.RestoreRequest) error {
 			return governance.ScheduleRestore(dbPath, req)
 		})
-		srv.SetMigrationIdentityResolver(func(ctx context.Context, req project.IdentityResolutionRequest) error {
-			if req.BackupID != gate.Status().BackupID {
-				return project.ErrIdentityResolutionStale
-			}
-			if _, err := backupStore.ValidateArchive(ctx, req.BackupID); err != nil {
-				return err
-			}
-			return store.ResolveProjectIdentityConflict(ctx, req.SourceProject, req.TargetProject)
-		})
+		srv.SetMigrationIdentityResolver(newMigrationIdentityResolver(store, gate))
 		if err := srv.Start(rootCtx); err != nil {
 			logger.Log.Printf("http server stopped: %v (mcp continues)", err)
 		}
@@ -144,17 +136,57 @@ func runStartup(store *db.DB) (int64, error) {
 	return store.AutoCloseStale(24*time.Hour, time.Now)
 }
 
+// newMigrationIdentityResolver binds resolution to the migration plan the
+// operator was shown. The preflight-conflict path never mutates the database and
+// therefore never creates a rollback archive, so a backup id can never authorize
+// resolution there; the plan fingerprint is the invariant the guard wants.
+func newMigrationIdentityResolver(store *db.DB, gate *project.MigrationGate) func(context.Context, project.IdentityResolutionRequest) error {
+	return func(ctx context.Context, req project.IdentityResolutionRequest) error {
+		status := gate.Status()
+		if status.PlanFingerprint == "" || req.PlanFingerprint != status.PlanFingerprint {
+			return project.ErrIdentityResolutionStale
+		}
+		return store.ResolveProjectIdentityConflict(ctx, req.SourceProject, req.TargetProject)
+	}
+}
+
 func runStartupMigration(ctx context.Context, store *db.DB, dbPath string) *project.MigrationGate {
 	backups := governance.NewSQLiteBackupStore(dbPath, "", store.RawDB())
+	preexisting := existingBackupIDs(ctx, backups)
 	return runStartupMigrationWithBackup(ctx, store, func(ctx context.Context, plan db.ProjectMigrationPlan) error {
 		return governance.ExecuteProjectMigrationWithBackup(ctx, store, plan, backups)
 	}, func() string {
-		created, err := backups.List(ctx)
-		if err != nil || len(created) == 0 {
-			return ""
-		}
-		return created[0].ID
+		return newestMigrationBackupID(ctx, backups, preexisting)
 	})
+}
+
+// existingBackupIDs snapshots the backups present before migration runs so a
+// later block can only report a backup this migration itself created.
+func existingBackupIDs(ctx context.Context, backups *governance.BackupStore) map[string]struct{} {
+	existing := make(map[string]struct{})
+	created, err := backups.List(ctx)
+	if err != nil {
+		return existing
+	}
+	for _, backup := range created {
+		existing[backup.ID] = struct{}{}
+	}
+	return existing
+}
+
+// newestMigrationBackupID returns the newest backup absent from the pre-migration
+// snapshot, or empty when this migration created none.
+func newestMigrationBackupID(ctx context.Context, backups *governance.BackupStore, preexisting map[string]struct{}) string {
+	created, err := backups.List(ctx)
+	if err != nil {
+		return ""
+	}
+	for _, backup := range created {
+		if _, existed := preexisting[backup.ID]; !existed {
+			return backup.ID
+		}
+	}
+	return ""
 }
 
 func runStartupMigrationWith(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error) *project.MigrationGate {
@@ -173,9 +205,10 @@ func runStartupMigrationWithBackup(ctx context.Context, store *db.DB, execute fu
 		return project.NewMigrationGate(project.MigrationStatus{State: project.MigrationStateReady})
 	}
 	status := project.MigrationStatus{
-		State:        project.MigrationStateBlocked,
-		Reason:       err.Error(),
-		Continuation: "hive project identity status",
+		State:           project.MigrationStateBlocked,
+		Reason:          err.Error(),
+		Continuation:    "hive project identity status",
+		PlanFingerprint: plan.Fingerprint,
 	}
 	if backupID != nil {
 		status.BackupID = backupID()
