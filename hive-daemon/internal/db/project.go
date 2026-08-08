@@ -105,6 +105,21 @@ func (d *DB) KnownProjects(ctx context.Context) ([]project.KnownProject, error) 
 	return projects, nil
 }
 
+func (d *DB) ContextProjectCounts(ctx context.Context) (known, allowed int, err error) {
+	err = d.sqlDB.QueryRowContext(ctx, `
+WITH known AS (
+	SELECT project FROM sessions UNION SELECT project FROM memories UNION SELECT project FROM user_prompts
+)
+SELECT COUNT(*), COUNT(CASE WHEN NOT EXISTS (
+	SELECT 1 FROM project_blocks b WHERE b.canonical_project_key = known.project AND b.blocked = 1
+) THEN 1 END)
+FROM known WHERE project != ''`).Scan(&known, &allowed)
+	if err != nil {
+		return 0, 0, fmt.Errorf("count context projects: %w", err)
+	}
+	return known, allowed, nil
+}
+
 func (d *DB) SessionProject(ctx context.Context, sessionID string) (string, error) {
 	var projectName string
 	err := d.sqlDB.QueryRowContext(ctx, `SELECT project FROM sessions WHERE id = ?`, sessionID).Scan(&projectName)

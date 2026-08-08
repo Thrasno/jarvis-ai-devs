@@ -207,3 +207,18 @@ func TestBuildHiveProtocolText_CanonicalIsExact(t *testing.T) {
 		})
 	}
 }
+
+func TestMigrationBlockedProtocol_UsesNeutralStatusContinuation(t *testing.T) {
+	got := BuildMigrationBlockedProtocol("canonical conflict", "backup-42")
+	for _, want := range []string{"migration-blocked", "canonical conflict", "backup-42", MigrationStatusCommand} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("protocol = %q, missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "retry") {
+		t.Fatalf("protocol must not advertise an executable retry command: %q", got)
+	}
+	if strings.Contains(strings.ToLower(got), "persona") {
+		t.Fatalf("protocol must not leak persona language: %q", got)
+	}
+}

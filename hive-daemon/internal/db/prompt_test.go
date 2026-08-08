@@ -412,7 +412,7 @@ func TestSavePrompt_TwoCalls_ProduceDistinctSyncIDs(t *testing.T) {
 
 // ─── T-DB-3: ListRecentPrompts tests ──────────────────────────────────────
 
-func TestListRecentPrompts_EmptyProject_ReturnsNil(t *testing.T) {
+func TestListRecentPrompts_EmptyProject_ReturnsGlobalEmpty(t *testing.T) {
 	d, err := db.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -423,8 +423,8 @@ func TestListRecentPrompts_EmptyProject_ReturnsNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result != nil {
-		t.Errorf("expected nil for empty project, got %v", result)
+	if len(result) != 0 {
+		t.Errorf("expected no global prompts, got %v", result)
 	}
 }
 

@@ -34,6 +34,7 @@ type MemoryStore interface {
 	EnsureManualSaveSession(project string) (string, error)
 
 	KnownProjects(ctx context.Context) ([]project.KnownProject, error)
+	ContextProjectCounts(ctx context.Context) (known, allowed int, err error)
 	SessionProject(ctx context.Context, sessionID string) (string, error)
 	CreateRecoveryToken(ctx context.Context, req project.TokenRequest) (string, error)
 	ValidateRecoveryToken(ctx context.Context, validation project.TokenValidation) error

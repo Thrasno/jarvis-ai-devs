@@ -144,7 +144,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"project": {"type": "string", "description": "Filter by project (omit for all)"},
+					"project": {"type": "string", "description": "Filter by project; omit intentionally to query all allowed projects"},
 				"limit":   {"type": "integer", "description": "Max results (default 20)"}
 			}
 		}`),
@@ -656,12 +656,29 @@ func memContextHandler(store MemoryStore, prompts PromptStore, activity *Activit
 		}
 
 		formatted := formatContext(recentPrompts, results, p.Project)
+		if p.Project == "" && len(results) == 0 && len(recentPrompts) == 0 {
+			known, allowed, countErr := store.ContextProjectCounts(ctx)
+			if countErr != nil {
+				return toolError(fmt.Errorf("count context projects: %w", countErr)), nil
+			}
+			formatted += "\n\nContext outcome: " + globalContextOutcome(known, allowed) + "."
+		}
 		formatted += activity.NudgeIfNeeded(p.Project)
 
 		return &sdkmcp.CallToolResult{
 			Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: formatted}},
 		}, nil
 	}
+}
+
+func globalContextOutcome(known, allowed int) string {
+	if known == 0 {
+		return "unknown"
+	}
+	if allowed == 0 {
+		return "global-empty"
+	}
+	return "known-empty"
 }
 
 func memSavePromptHandler(store MemoryStore, prompts PromptStore, activity *ActivityTracker) sdkmcp.ToolHandler {
@@ -736,6 +753,14 @@ func formatContext(recentPrompts []*models.Prompt, memories []*models.Memory, pr
 		b.WriteString("### Recent User Prompts\n")
 		for _, p := range recentPrompts {
 			content := truncateRunes(p.Content, 200)
+			if project == "" {
+				display := p.DisplayProject
+				if display == "" {
+					display = p.Project
+				}
+				fmt.Fprintf(&b, "- %s — Project: %s (canonical: %s) — %s\n", p.CreatedAt.Format("2006-01-02 15:04"), display, p.Project, content)
+				continue
+			}
 			fmt.Fprintf(&b, "- %s — %s\n", p.CreatedAt.Format("2006-01-02 15:04"), content)
 		}
 		b.WriteString("\n")

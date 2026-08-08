@@ -2280,6 +2280,63 @@ func TestMemContext_NoResults_ReturnsNoMemoriesMessage(t *testing.T) {
 	}
 }
 
+func TestMemContext_OmittedProject_DistinguishesGlobalOutcomes(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name           string
+		known, allowed int
+		want           string
+	}{
+		{"unknown", 0, 0, "Context outcome: unknown."},
+		{"known empty", 2, 2, "Context outcome: known-empty."},
+		{"all governed", 2, 0, "Context outcome: global-empty."},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &mockStore{contextProjectCountsFn: func(context.Context) (int, int, error) {
+				return tt.known, tt.allowed, nil
+			}}
+			res := callTool(t, connectTestServer(t, store), "mem_context", map[string]any{})
+			if got := textContent(t, res); !strings.Contains(got, tt.want) {
+				t.Fatalf("context = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMemContext_OmittedProject_ReturnsStoredGlobalContext(t *testing.T) {
+	database, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.CreateSession("global-context", "Foo.Bar", "/repo", "dev", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.SaveMemory(&models.Memory{Project: "Foo.Bar", Title: "Global memory", Content: "visible", Category: "decision", SessionID: "global-context"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.SavePrompt(context.Background(), "Other_Project", "global prompt"); err != nil {
+		t.Fatal(err)
+	}
+
+	res := callTool(t, connectTestServerFull(t, database, database), "mem_context", map[string]any{})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	got := textContent(t, res)
+	for _, want := range []string{"Global memory", "global prompt", "foo-bar", "Project: Other_Project (canonical: other-project)"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("context = %q, missing %q", got, want)
+		}
+	}
+
+	res = callTool(t, connectTestServerFull(t, database, database), "mem_context", map[string]any{"project": "Other_Project"})
+	if scoped := textContent(t, res); strings.Contains(scoped, "Project:") || !strings.Contains(scoped, "global prompt") {
+		t.Fatalf("scoped context = %q, want coherent prompt without global attribution", scoped)
+	}
+}
+
 // connectTestServerFull creates a server+client pair with separate memory and prompt stores.
 func connectTestServerFull(t *testing.T, mem hivemcp.MemoryStore, ps hivemcp.PromptStore) *sdkmcp.ClientSession {
 	t.Helper()

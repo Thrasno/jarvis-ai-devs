@@ -17,6 +17,7 @@ const (
 	// MemoryReminderCooldown is the minimum interval between consecutive
 	// reminders (aligns with engram's 900s save cadence).
 	MemoryReminderCooldown = 15 * time.Minute
+	MigrationStatusCommand = "hive project identity status"
 )
 
 // Marker file base names. markerPath composes "<name>-<safeSessionID>.done".
@@ -108,4 +109,12 @@ func BuildHiveProtocolText(canonicalProject string) string {
 	// extractRepoName, but we guard at the injection point as well.
 	safe := strings.NewReplacer("\r", "", "\n", "").Replace(canonicalProject)
 	return HiveProtocolText + "\n\nActive project: " + safe + " — use this exact name as the project argument in all mem_* calls."
+}
+
+func BuildMigrationBlockedProtocol(reason, backupID string) string {
+	return "## Hive Migration Blocked\n\n" +
+		"State: migration-blocked\n" +
+		"Reason: " + strings.TrimSpace(reason) + "\n" +
+		"Backup: " + strings.TrimSpace(backupID) + "\n" +
+		"Continue with: " + MigrationStatusCommand
 }

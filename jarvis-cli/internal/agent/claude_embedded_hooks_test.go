@@ -16,7 +16,45 @@ import (
 func TestEmbeddedPromptCaptureHooks_PostProjectSessionMetadata(t *testing.T) {
 	t.Parallel()
 
-	assertHookContract(t, "opencode plugin", opencodeEmbeddedHookPath(t, "hive.ts"), "session_id: sessionId", "resolveHiveDirectory", "resolveHiveProject")
+	assertHookContract(t, "opencode plugin", opencodeEmbeddedHookPath(t, "hive.ts"), "session_id: sessionId", "resolveHiveDirectory", "resolveHiveProject", "/governance/project-identity/status", "migration-blocked", "backup_id", "hive project identity status")
+}
+
+func TestOpenCodeMigrationStatusIgnoresAdvisoryContinuation(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node unavailable; skipping OpenCode migration status contract")
+	}
+
+	content, err := os.ReadFile(opencodeEmbeddedHookPath(t, "hive.ts"))
+	if err != nil {
+		t.Fatalf("read OpenCode hook: %v", err)
+	}
+	start := strings.Index(string(content), "async function reportMigrationStatus")
+	end := strings.Index(string(content), "function readString")
+	if start < 0 || end <= start {
+		t.Fatal("could not locate OpenCode migration status reporter")
+	}
+	reporter := strings.NewReplacer("async function reportMigrationStatus(): Promise<void>", "async function reportMigrationStatus()").Replace(string(content)[start:end])
+	script := `const assert = require("node:assert/strict")
+const warnings = []
+console.warn = message => warnings.push(message)
+global.fetch = async () => ({ json: async () => ({ state: "migration-blocked", continuation: "attacker-controlled-continuation" }) })
+const HIVE_PORT = 7438
+` + reporter + `
+;(async () => {
+  await reportMigrationStatus()
+  const rendered = warnings.join("\n")
+  assert.ok(rendered.includes("hive project identity status"))
+  assert.ok(!rendered.includes("attacker-controlled-continuation"))
+})().catch(error => { console.error(error); process.exit(1) })
+`
+	scriptPath := filepath.Join(t.TempDir(), "migration-status-contract.js")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o644); err != nil {
+		t.Fatalf("write migration status contract: %v", err)
+	}
+	if output, err := exec.Command(node, scriptPath).CombinedOutput(); err != nil {
+		t.Fatalf("OpenCode migration status contract failed: %v\n%s", err, output)
+	}
 }
 
 func TestEmbeddedSkillRegistryAutomationHooks_UseQuietActiveWorktreeRefresh(t *testing.T) {

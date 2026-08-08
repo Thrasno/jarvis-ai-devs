@@ -43,7 +43,11 @@ func RunSessionStart(ctx context.Context, r io.Reader, w io.Writer, baseURL stri
 		logger.Printf("session-start registration failed: session=%q project=%q: %v", sessionID, canonical, err)
 	}
 
-	WriteResponse(w, HookResponse{AdditionalContext: BuildHiveProtocolText(canonical)})
+	protocol := BuildHiveProtocolText(canonical)
+	if status := client.MigrationStatus(ctx); status != nil {
+		protocol += "\n\n" + BuildMigrationBlockedProtocol(status.Reason, status.BackupID)
+	}
+	WriteResponse(w, HookResponse{AdditionalContext: protocol})
 }
 
 // RunSessionCompact handles the Claude Code SessionStart hook event when the

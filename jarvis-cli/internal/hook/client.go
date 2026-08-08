@@ -39,6 +39,13 @@ type DaemonClient struct {
 	Timeout time.Duration
 }
 
+type MigrationStatus struct {
+	State        string `json:"state"`
+	Reason       string `json:"reason"`
+	Continuation string `json:"continuation"`
+	BackupID     string `json:"backup_id"`
+}
+
 // NewDaemonClient creates a DaemonClient using the HIVE_HTTP_PORT env var
 // (default 7438) to derive the base URL.
 func NewDaemonClient() *DaemonClient {
@@ -124,6 +131,18 @@ func (c *DaemonClient) get(ctx context.Context, path string) ([]byte, bool) {
 		return nil, false
 	}
 	return data, true
+}
+
+func (c *DaemonClient) MigrationStatus(ctx context.Context) *MigrationStatus {
+	data, ok := c.get(ctx, "/governance/project-identity/status")
+	if !ok {
+		return nil
+	}
+	var status MigrationStatus
+	if json.Unmarshal(data, &status) != nil || status.State != "migration-blocked" {
+		return nil
+	}
+	return &status
 }
 
 // LatestSaveAt queries the daemon for the most recent save timestamp of project.

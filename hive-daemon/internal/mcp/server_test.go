@@ -40,6 +40,7 @@ type mockStore struct {
 	getSessionFn                  func(id string) (*models.Session, error)
 	ensureManualSaveSessionFn     func(project string) (string, error)
 	knownProjectsFn               func(context.Context) ([]project.KnownProject, error)
+	contextProjectCountsFn        func(context.Context) (int, int, error)
 	sessionProjectFn              func(context.Context, string) (string, error)
 	createRecoveryTokenFn         func(context.Context, project.TokenRequest) (string, error)
 	validateRecoveryTokenFn       func(context.Context, project.TokenValidation) error
@@ -155,6 +156,13 @@ func (m *mockStore) KnownProjects(ctx context.Context) ([]project.KnownProject, 
 		{Name: "test-proj"},
 		{Name: "e2e-project"},
 	}, nil
+}
+
+func (m *mockStore) ContextProjectCounts(ctx context.Context) (int, int, error) {
+	if m.contextProjectCountsFn != nil {
+		return m.contextProjectCountsFn(ctx)
+	}
+	return 0, 0, nil
 }
 
 func (m *mockStore) SessionProject(ctx context.Context, sessionID string) (string, error) {
@@ -317,6 +325,27 @@ func TestNewServer_RegistersTenTools(t *testing.T) {
 	if total != 10 {
 		t.Errorf("total registered tools = %d, want 10", total)
 	}
+}
+
+func TestMemContextSchema_DescribesIntentionalGlobalScope(t *testing.T) {
+	session := connectTestServer(t, &mockStore{})
+	for tool, err := range session.Tools(context.Background(), nil) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tool.Name != "mem_context" {
+			continue
+		}
+		schema, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(schema), "all allowed projects") {
+			t.Fatalf("mem_context schema must document intentional global scope: %s", schema)
+		}
+		return
+	}
+	t.Fatal("mem_context not found")
 }
 
 func TestNewServer_DoesNotExposeMemoryDeleteOrGuardExecuteTools(t *testing.T) {

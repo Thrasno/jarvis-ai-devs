@@ -99,10 +99,13 @@ LIMIT 1`
 // ListRecentPrompts returns the most recent prompts for a project, ordered by
 // created_at DESC. Returns nil when project is empty or limit is <= 0.
 func (d *DB) ListRecentPrompts(ctx context.Context, project string, limit int) ([]*models.Prompt, error) {
-	if project == "" || limit <= 0 {
+	if limit <= 0 {
 		return nil, nil
 	}
 	project = canonicalProjectKey(project)
+	if project == "" {
+		return d.listGlobalRecentPrompts(ctx, limit)
+	}
 	blocked, err := d.IsProjectBlocked(ctx, project)
 	if err != nil {
 		return nil, fmt.Errorf("list recent prompts block check: %w", err)
@@ -140,6 +143,55 @@ LIMIT ?`
 	}
 
 	return prompts, nil
+}
+
+func (d *DB) listGlobalRecentPrompts(ctx context.Context, limit int) ([]*models.Prompt, error) {
+	if limit > 100 {
+		limit = 100
+	}
+	rows, err := d.sqlDB.QueryContext(ctx, `
+SELECT id, sync_id, project, session_id, content, created_at, synced_at
+FROM user_prompts
+WHERE NOT EXISTS (SELECT 1 FROM project_blocks b WHERE b.canonical_project_key = user_prompts.project AND b.blocked = 1)
+ORDER BY created_at DESC, id DESC
+LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list global recent prompts: %w", err)
+	}
+	defer rows.Close()
+	prompts := make([]*models.Prompt, 0)
+	for rows.Next() {
+		prompt, err := scanPromptRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan prompt row: %w", err)
+		}
+		prompts = append(prompts, prompt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for _, prompt := range prompts {
+		if err := d.setPromptDisplayProject(ctx, prompt); err != nil {
+			return nil, err
+		}
+	}
+	return prompts, nil
+}
+
+func (d *DB) setPromptDisplayProject(ctx context.Context, prompt *models.Prompt) error {
+	display, err := projectIdentityDisplay(ctx, d.sqlDB, prompt.Project)
+	if errors.Is(err, sql.ErrNoRows) {
+		prompt.DisplayProject = prompt.Project
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("prompt project display: %w", err)
+	}
+	prompt.DisplayProject = display
+	return nil
 }
 
 // GetUnsyncedPrompts returns prompts for the project where synced_at IS NULL,
