@@ -418,8 +418,8 @@ func TestHiveProjectIdentityCommandsRejectGuessedResolutionAndRestoreBackup(t *t
 	if client.restoreBackupID != "migration-backup-1" || client.restoreConfirmation != "RESTORE migration-backup-1" {
 		t.Fatalf("rollback request = backup %q confirmation %q, want exact explicit values", client.restoreBackupID, client.restoreConfirmation)
 	}
-	if !strings.Contains(out, "hive project identity retry") {
-		t.Fatalf("rollback output = %q, want retry guidance", out)
+	if !strings.Contains(out, "was scheduled") || strings.Contains(out, "Run: hive project identity retry") {
+		t.Fatalf("rollback output = %q, want managed restore continuation without manual retry", out)
 	}
 }
 

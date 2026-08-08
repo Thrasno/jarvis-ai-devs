@@ -232,7 +232,7 @@ func projectIdentityRollbackCommand(client governanceClient) *cobra.Command {
 		if err := client.RestoreMigrationBackup(cmd.Context(), backupID, confirmation); err != nil {
 			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "Backup restore is validated for safe daemon coordination. Run: hive project identity retry")
+		fmt.Fprintln(cmd.OutOrStdout(), "Backup restore was scheduled. The managed daemon will restart, restore it before reopening SQLite, and re-run migration planning.")
 		return nil
 	}}
 	cmd.Flags().StringVar(&backupID, "backup-id", "", "retained migration backup id")
