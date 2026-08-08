@@ -184,6 +184,81 @@ func TestProjectMigrationExecutorRejectsAmbiguousCompositeCursor(t *testing.T) {
 	}
 }
 
+func TestProjectMigrationExecutorCoalescesGovernanceComposites(t *testing.T) {
+	database := newMigrationExecutorDB(t)
+	seedMigrationProject(t, database, " Foo.Bar ")
+	for _, statement := range []string{
+		`INSERT INTO project_aliases (source_project, target_project, scope, reason, created_at, created_by) VALUES (' Foo.Bar ', 'Other.Project', 'global', 'merge', '2026-01-01', 'user')`,
+		`INSERT INTO project_aliases (source_project, target_project, scope, reason, created_at, created_by) VALUES ('foo/bar', 'other/project', 'global', 'merge', '2026-01-01', 'user')`,
+		`INSERT INTO project_blocks (canonical_project_key, project, command_id, ack_token, generation, blocked, blocked_at, ack_pending) VALUES (' Foo.Bar ', ' Foo.Bar ', 'command-1', 'ack-1', 1, 1, '2026-01-01', 1)`,
+		`INSERT INTO project_blocks (canonical_project_key, project, command_id, ack_token, generation, blocked, blocked_at, ack_pending) VALUES ('foo/bar', 'foo/bar', 'command-2', 'ack-2', 2, 1, '2026-01-02', 0)`,
+		`INSERT INTO project_quarantine_archives (canonical_project_key, project, command_id) VALUES (' Foo.Bar ', ' Foo.Bar ', 'quarantine')`,
+		`INSERT INTO project_quarantine_archives (canonical_project_key, project, command_id) VALUES ('foo/bar', 'foo/bar', 'quarantine')`,
+		`INSERT INTO hive_project_governance (project, archived_at, archived_by, archive_reason) VALUES (' Foo.Bar ', '2026-01-01', 'user', 'reason')`,
+		`INSERT INTO hive_project_governance (project, archived_at, archived_by, archive_reason) VALUES ('foo/bar', '2026-01-01', 'user', 'reason')`,
+		`INSERT INTO import_runs (id, source_system) VALUES ('run', 'engram')`,
+		`INSERT INTO import_source_aliases (source_system, source_table, source_id, source_project, hive_table, hive_pk, hive_sync_id, run_id) VALUES ('engram', 'observations', 'source', ' Foo.Bar ', 'memories', '1', 'memory-sync', 'run')`,
+		`INSERT INTO import_source_aliases (source_system, source_table, source_id, source_project, hive_table, hive_pk, hive_sync_id, run_id) VALUES ('engram', 'observations', 'source', 'foo/bar', 'memories', '1', 'memory-sync', 'run')`,
+		`INSERT INTO user_prompts (sync_id, project, content) VALUES ('prompt', ' Foo.Bar ', 'content')`,
+		`INSERT INTO memory_prompt_links (memory_id, prompt_id) VALUES (1, 1)`,
+	} {
+		if _, err := database.sqlDB.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan, err := ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error { return nil }, nil); err != nil {
+		t.Fatalf("ExecuteProjectMigration() error = %v", err)
+	}
+	for _, query := range []string{
+		`SELECT COUNT(*) FROM project_aliases WHERE source_project = 'foo-bar' AND target_project = 'other-project'`,
+		`SELECT COUNT(*) FROM project_blocks WHERE canonical_project_key = 'foo-bar' AND command_id = 'command-2' AND ack_token = 'ack-2' AND generation = 2`,
+		`SELECT COUNT(*) FROM project_quarantine_archives WHERE canonical_project_key = 'foo-bar' AND command_id = 'quarantine'`,
+		`SELECT COUNT(*) FROM hive_project_governance WHERE project = 'foo-bar' AND archived_by = 'user'`,
+		`SELECT COUNT(*) FROM import_source_aliases WHERE source_project = 'foo-bar' AND hive_sync_id = 'memory-sync'`,
+		`SELECT COUNT(*) FROM memory_prompt_links`,
+	} {
+		var count int
+		if err := database.sqlDB.QueryRow(query).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("%s count = %d, want 1", query, count)
+		}
+	}
+}
+
+func TestProjectMigrationExecutorRejectsDivergentEqualGenerationBlock(t *testing.T) {
+	database := newMigrationExecutorDB(t)
+	seedMigrationProject(t, database, "Foo")
+	for _, project := range []string{"Foo", "foo"} {
+		if _, err := database.sqlDB.Exec(`INSERT INTO project_blocks (canonical_project_key, project, command_id, ack_token, generation, blocked, blocked_at, ack_pending) VALUES (?, ?, ?, 'ack', 2, 1, '2026-01-01', 1)`, project, project, "command-"+project); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan, err := ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error { return nil }, nil)
+	if !errors.Is(err, ErrProjectMigrationConflict) {
+		t.Fatalf("ExecuteProjectMigration() error = %v, want composite conflict", err)
+	}
+	var blocks, sessions int
+	if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM project_blocks WHERE project IN ('Foo', 'foo')`).Scan(&blocks); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM sessions WHERE project = 'Foo'`).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if blocks != 2 || sessions != 1 {
+		t.Fatalf("rows after conflict = blocks:%d sessions:%d, want 2 and 1", blocks, sessions)
+	}
+}
+
 func newMigrationExecutorDB(t *testing.T) *DB {
 	t.Helper()
 	database, err := Open(":memory:")
