@@ -23,6 +23,103 @@ func TestProjectMigrationExecutorRejectsUnsafePlansBeforeBackup(t *testing.T) {
 	}
 }
 
+func TestProjectMigrationPlanRejectsDivergentCanonicalSyncStateRowsBeforeExecution(t *testing.T) {
+	database := newMigrationExecutorDB(t)
+	for _, statement := range []string{
+		`INSERT INTO sync_state (project, jwt_token, consecutive_failures, last_error) VALUES ('Foo', 'left-token', 1, 'left-error')`,
+		`INSERT INTO sync_state (project, jwt_token, consecutive_failures, last_error) VALUES ('foo', 'right-token', 2, 'right-error')`,
+	} {
+		if _, err := database.sqlDB.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan, err := ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil {
+		t.Fatalf("ReadProjectMigrationPlan() error = %v", err)
+	}
+	if plan.Executable || len(plan.Conflicts) != 1 || plan.Conflicts[0].Kind != ConflictDivergentSyncState {
+		t.Fatalf("plan = %#v, want divergent sync-state conflict", plan)
+	}
+	backedUp := false
+	err = ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error {
+		backedUp = true
+		return nil
+	}, nil)
+	if !errors.Is(err, ErrProjectMigrationPlanUnsafe) || backedUp {
+		t.Fatalf("ExecuteProjectMigration() error = %v, backedUp = %v", err, backedUp)
+	}
+	var rows int
+	if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM sync_state WHERE project IN ('Foo', 'foo')`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 2 {
+		t.Fatalf("sync-state rows after preflight = %d, want 2", rows)
+	}
+}
+
+func TestProjectMigrationExecutorCoalescesEquivalentCanonicalSyncStateRows(t *testing.T) {
+	database := newMigrationExecutorDB(t)
+	for _, project := range []string{"Foo", "foo"} {
+		if _, err := database.sqlDB.Exec(`INSERT INTO sync_state (project, last_sync_at, jwt_token, jwt_expires_at, last_attempt_at, last_success_at, last_failure_at, consecutive_failures, backoff_until, last_error, last_drain_state, last_drain_reason, last_drain_remaining) VALUES (?, '2026-01-01', 'token', '2026-02-01', '2026-01-02', '2026-01-03', '2026-01-04', 3, '2026-01-05', 'error', 'partial', 'remaining', 4)`, project); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.sqlDB.Exec(`INSERT INTO sync_state (project, jwt_token) VALUES ('__auth__', 'auth-token')`); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil {
+		t.Fatalf("ReadProjectMigrationPlan() error = %v", err)
+	}
+	if !plan.Executable || len(plan.Groups) != 1 || plan.Groups[0].Coalesced != 1 {
+		t.Fatalf("plan = %#v, want one equivalent coalescence excluding __auth__", plan)
+	}
+	if err := ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error { return nil }, nil); err != nil {
+		t.Fatalf("ExecuteProjectMigration() error = %v", err)
+	}
+	var rows int
+	if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM sync_state WHERE project = 'foo' AND jwt_token = 'token' AND consecutive_failures = 3 AND last_error = 'error'`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("canonical equivalent rows = %d, want 1", rows)
+	}
+	var authToken string
+	if err := database.sqlDB.QueryRow(`SELECT jwt_token FROM sync_state WHERE project = '__auth__'`).Scan(&authToken); err != nil || authToken != "auth-token" {
+		t.Fatalf("auth sentinel token = %q, error = %v", authToken, err)
+	}
+}
+
+func TestProjectMigrationExecutorRetriesAfterExplicitSyncStateResolution(t *testing.T) {
+	database := newMigrationExecutorDB(t)
+	for _, statement := range []string{
+		`INSERT INTO sync_state (project, jwt_token) VALUES ('Foo', 'loser')`,
+		`INSERT INTO sync_state (project, jwt_token) VALUES ('foo', 'winner')`,
+	} {
+		if _, err := database.sqlDB.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	blocked, err := ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil || blocked.Executable {
+		t.Fatalf("blocked plan = %#v, error = %v", blocked, err)
+	}
+	if err := database.ResolveProjectIdentityConflict(context.Background(), "Foo", "foo"); err != nil {
+		t.Fatalf("ResolveProjectIdentityConflict() error = %v", err)
+	}
+	resolved, err := ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil || !resolved.Executable {
+		t.Fatalf("resolved plan = %#v, error = %v", resolved, err)
+	}
+	if err := ExecuteProjectMigration(context.Background(), database, resolved, func(context.Context) error { return nil }, nil); err != nil {
+		t.Fatalf("retry ExecuteProjectMigration() error = %v", err)
+	}
+	var token string
+	if err := database.sqlDB.QueryRow(`SELECT jwt_token FROM sync_state WHERE project = 'foo'`).Scan(&token); err != nil || token != "winner" {
+		t.Fatalf("resolved token = %q, error = %v", token, err)
+	}
+}
+
 func TestProjectMigrationExecutorRollsBackFailpointAndRetries(t *testing.T) {
 	database := newMigrationExecutorDB(t)
 	seedMigrationProject(t, database, " Foo.Bar ")

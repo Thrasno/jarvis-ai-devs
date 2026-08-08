@@ -60,6 +60,7 @@ type MigrationConflictKind string
 
 const (
 	ConflictDivergentGlobalEntity       MigrationConflictKind = "divergent-global-entity"
+	ConflictDivergentSyncState          MigrationConflictKind = "divergent-sync-state"
 	ConflictIncompatibleSessionSentinel MigrationConflictKind = "incompatible-session-sentinel"
 	ConflictContradictoryAlias          MigrationConflictKind = "contradictory-alias"
 	ConflictNonMonotonicCursorProtocol  MigrationConflictKind = "non-monotonic-cursor-protocol"
@@ -178,6 +179,8 @@ func displayFor(records []ProjectStateRecord) (string, DisplaySource) {
 
 func conflictKind(table ProjectState) MigrationConflictKind {
 	switch table {
+	case ProjectStateSyncState:
+		return ConflictDivergentSyncState
 	case ProjectStateSessions:
 		return ConflictIncompatibleSessionSentinel
 	case ProjectStateAliases:

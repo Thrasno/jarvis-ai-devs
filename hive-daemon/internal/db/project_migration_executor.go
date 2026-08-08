@@ -125,6 +125,9 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 	if err := rekeyGovernanceComposites(ctx, tx); err != nil {
 		return err
 	}
+	if err := coalesceEquivalentSyncState(ctx, tx, records); err != nil {
+		return err
+	}
 	// Re-key each raw spelling separately: SQLite deliberately does not derive keys.
 	for _, record := range records {
 		column, ok := rekeyableProjectColumns[record.Table]
@@ -162,6 +165,34 @@ func projectMigrationNeeded(records []ProjectStateRecord) bool {
 		}
 	}
 	return false
+}
+
+func coalesceEquivalentSyncState(ctx context.Context, tx *sql.Tx, records []ProjectStateRecord) error {
+	groups := make(map[string][]ProjectStateRecord)
+	for _, record := range records {
+		if record.Table == ProjectStateSyncState {
+			key := projectidentity.Canonical(record.Project).String()
+			groups[key] = append(groups[key], record)
+		}
+	}
+	for key, group := range groups {
+		if len(group) < 2 {
+			continue
+		}
+		sort.Slice(group, func(i, j int) bool { return group[i].Project < group[j].Project })
+		for _, record := range group[1:] {
+			if record.Value != group[0].Value {
+				return fmt.Errorf("%w: sync_state %s", ErrProjectMigrationConflict, key)
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM sync_state WHERE project = ?`, record.Project); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE sync_state SET project = ? WHERE project = ?`, key, group[0].Project); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type projectIdentityQuerier interface {
@@ -571,7 +602,7 @@ func readProjectMigrationRecords(ctx context.Context, queryer projectMigrationQu
 	}{
 		{ProjectStateMemories, `SELECT project, sync_id, CAST(id AS TEXT), created_at FROM memories`},
 		{ProjectStateSessions, `SELECT project, id, sync_id, created_at FROM sessions`},
-		{ProjectStateSyncState, `SELECT project, project, project, COALESCE(last_sync_at, '') FROM sync_state WHERE project != '__auth__'`},
+		{ProjectStateSyncState, `SELECT project, 'canonical-project', json_array(last_sync_at, jwt_token, jwt_expires_at, last_attempt_at, last_success_at, last_failure_at, consecutive_failures, backoff_until, last_error, last_drain_state, last_drain_reason, last_drain_remaining), '' FROM sync_state WHERE project != '__auth__'`},
 		{ProjectStateMemoryMutations, `SELECT project, event_id, CAST(sequence AS TEXT), occurred_at FROM memory_mutations`},
 		{ProjectStateMutationReceipts, `SELECT project, request_id, event_id, created_at FROM mutation_receipts`},
 		{ProjectStateMutationCursors, `SELECT project, consumer || ':' || CAST(sequence AS TEXT) || ':' || event_id, event_id, updated_at FROM mutation_cursors`},

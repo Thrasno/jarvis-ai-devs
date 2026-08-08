@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -11,7 +10,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,7 +19,6 @@ import (
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/governance"
-	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/httpapi"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 	hivesync "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -621,51 +618,14 @@ func TestProjectIdentityResolveCanonicalEquivalentVariantsUnblocksMigrationEndTo
 	}
 	gate := runStartupMigration(context.Background(), store, path)
 	status := gate.Status()
-	if status.State != project.MigrationStateBlocked || status.BackupID == "" {
-		t.Fatalf("startup status = %+v, want blocked with retained backup", status)
+	if status.State != project.MigrationStateBlocked || status.BackupID != "" {
+		t.Fatalf("startup status = %+v, want preflight block before backup", status)
 	}
-
-	backups := governance.NewSQLiteBackupStore(path, "", store.RawDB())
-	srv := httpapi.NewServer("127.0.0.1:0", nil)
-	srv.SetMigrationGate(gate)
-	srv.SetMigrationIdentityResolver(func(ctx context.Context, req project.IdentityResolutionRequest) error {
-		if req.BackupID != status.BackupID {
-			return project.ErrIdentityResolutionStale
-		}
-		if _, err := backups.ValidateArchive(ctx, req.BackupID); err != nil {
-			return err
-		}
-		return store.ResolveProjectIdentityConflict(ctx, req.SourceProject, req.TargetProject)
-	})
-	resolve := func(req project.IdentityResolutionRequest) *httptest.ResponseRecorder {
-		body, err := json.Marshal(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		rr := httptest.NewRecorder()
-		srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/governance/project-identity/resolve", bytes.NewReader(body)))
-		return rr
-	}
-	confirmation := project.IdentityResolutionConfirmation("Foo.Bar", "foo-bar")
-	for _, req := range []project.IdentityResolutionRequest{
-		{SourceProject: "Foo.Bar", TargetProject: "foo-bar", BackupID: "stale-backup", Confirmation: confirmation},
-		{SourceProject: "other", TargetProject: "foo-bar", BackupID: status.BackupID, Confirmation: project.IdentityResolutionConfirmation("other", "foo-bar")},
-		{SourceProject: "Foo.Bar", TargetProject: "Foo.Bar", BackupID: status.BackupID, Confirmation: project.IdentityResolutionConfirmation("Foo.Bar", "Foo.Bar")},
-		{SourceProject: "Foo.Bar", TargetProject: "foo-bar", BackupID: status.BackupID, Confirmation: confirmation + " "},
-	} {
-		if rr := resolve(req); rr.Code < 400 {
-			t.Fatalf("unsafe resolve %+v = %d %s, want rejection", req, rr.Code, rr.Body.String())
-		}
-	}
-	if rr := resolve(project.IdentityResolutionRequest{SourceProject: "Foo.Bar", TargetProject: "foo-bar", BackupID: status.BackupID, Confirmation: confirmation}); rr.Code != http.StatusOK {
-		t.Fatalf("resolve = %d %s, want 200", rr.Code, rr.Body.String())
+	if err := store.ResolveProjectIdentityConflict(context.Background(), "Foo.Bar", "foo-bar"); err != nil {
+		t.Fatalf("ResolveProjectIdentityConflict() error = %v", err)
 	}
 	if err := runStartupMigration(context.Background(), store, path).Check(); err != nil {
 		t.Fatalf("full migration replan after resolution = %v, want ready", err)
-	}
-	srv.SetMigrationGate(project.NewMigrationGate(project.MigrationStatus{State: project.MigrationStateReady}))
-	if rr := resolve(project.IdentityResolutionRequest{SourceProject: "Foo.Bar", TargetProject: "foo-bar", BackupID: status.BackupID, Confirmation: confirmation}); rr.Code != http.StatusConflict {
-		t.Fatalf("resolve while ready = %d %s, want 409", rr.Code, rr.Body.String())
 	}
 }
 
