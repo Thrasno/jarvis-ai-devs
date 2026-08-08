@@ -375,15 +375,15 @@ func TestHiveProjectIdentityCommandsExposeBlockedRecovery(t *testing.T) {
 		t.Fatalf("identity retry: %v", err)
 	}
 	for _, want := range []string{
-		"Migration retry is pending an operator-managed daemon restart.",
-		"Check: hive project identity status",
+		"Migration retry requested; the daemon will stop cleanly and its MCP lifecycle owner will start one fresh daemon.",
+		"Check after restart: hive project identity status",
 	} {
 		if !strings.Contains(retried, want) {
 			t.Fatalf("retry output = %q, want %q", retried, want)
 		}
 	}
-	if strings.Contains(retried, "hive-daemon restart") {
-		t.Fatalf("retry output = %q, must not advertise a nonexistent restart command", retried)
+	if !client.retryCalled {
+		t.Fatal("identity retry did not request the daemon-owned lifecycle restart")
 	}
 	checked, err := executeHiveCommand(t, NewRootCommand(client), tokens[1:]...)
 	if err != nil {
@@ -452,6 +452,7 @@ type fakeHiveClient struct {
 	archiveCalled       bool
 	mergeCalled         bool
 	restoreCalled       bool
+	retryCalled         bool
 }
 
 func (f *fakeHiveClient) Status(context.Context) ([]hiveclient.Health, error) { return f.health, nil }
@@ -492,5 +493,10 @@ func (f *fakeHiveClient) RestoreMigrationBackup(_ context.Context, backupID, con
 	f.restoreCalled = true
 	f.restoreBackupID = backupID
 	f.restoreConfirmation = confirmation
+	return nil
+}
+
+func (f *fakeHiveClient) RequestMigrationRetry(context.Context) error {
+	f.retryCalled = true
 	return nil
 }

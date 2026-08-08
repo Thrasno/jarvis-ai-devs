@@ -22,6 +22,7 @@ type governanceClient interface {
 	ArchiveProject(context.Context, hiveclient.ProjectArchiveRequest) (hiveclient.ProjectArchiveResult, error)
 	MergeProject(context.Context, hiveclient.ProjectMergeRequest) (hiveclient.ProjectMergeResult, error)
 	MigrationIdentityStatus(context.Context) (hiveclient.MigrationIdentityStatus, error)
+	RequestMigrationRetry(context.Context) error
 	RestoreMigrationBackup(context.Context, string, string) error
 }
 
@@ -156,7 +157,7 @@ func projectCommand(client governanceClient) *cobra.Command {
 
 func projectIdentityCommand(client governanceClient) *cobra.Command {
 	cmd := &cobra.Command{Use: "identity", Short: "Recover canonical project identity migration"}
-	cmd.AddCommand(projectIdentityStatusCommand(client), projectIdentityResolveCommand(client), projectIdentityRetryCommand(), projectIdentityRollbackCommand(client))
+	cmd.AddCommand(projectIdentityStatusCommand(client), projectIdentityResolveCommand(client), projectIdentityRetryCommand(client), projectIdentityRollbackCommand(client))
 	return cmd
 }
 
@@ -207,10 +208,13 @@ func projectIdentityResolveCommand(client governanceClient) *cobra.Command {
 	return cmd
 }
 
-func projectIdentityRetryCommand() *cobra.Command {
+func projectIdentityRetryCommand(client governanceClient) *cobra.Command {
 	return &cobra.Command{Use: "retry", Short: "Print the full migration retry continuation", RunE: func(cmd *cobra.Command, _ []string) error {
-		fmt.Fprintln(cmd.OutOrStdout(), "Migration retry is pending an operator-managed daemon restart. Stop the running daemon with the same process manager that started it; Hive has no daemon lifecycle command.")
-		fmt.Fprintln(cmd.OutOrStdout(), "Check: hive project identity status")
+		if err := client.RequestMigrationRetry(cmd.Context()); err != nil {
+			return err
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "Migration retry requested; the daemon will stop cleanly and its MCP lifecycle owner will start one fresh daemon.")
+		fmt.Fprintln(cmd.OutOrStdout(), "Check after restart: hive project identity status")
 		return nil
 	}}
 }

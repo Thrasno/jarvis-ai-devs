@@ -5,8 +5,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -183,6 +186,124 @@ func TestDaemon_Starts_AndRegisters10Tools(t *testing.T) {
 	if len(toolNames) != 10 {
 		t.Errorf("expected 10 tools, got %d: %v", len(toolNames), toolNames)
 	}
+}
+
+func TestDaemonLifecycleRetryExitsCleanlyAndReleasesDatabase(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	seedBlockedDaemonDB(t, dbPath)
+
+	port := reserveLoopbackPort(t)
+	cmd := startDaemonForLifecycleRetry(t, dbPath, port)
+
+	requestLifecycleRetry(t, "http://127.0.0.1:"+port+"/governance/project-identity/retry")
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("lifecycle retry exit = %v, want clean exit", err)
+	}
+	// A new managed daemon instance must replan the whole migration against the
+	// same database, rather than replacing its live SQLite connection in-process.
+	successorPort := reserveLoopbackPort(t)
+	successor := startDaemonForLifecycleRetry(t, dbPath, successorPort)
+	requestLifecycleRetry(t, "http://127.0.0.1:"+successorPort+"/governance/project-identity/retry")
+	if err := successor.Wait(); err != nil {
+		t.Fatalf("successor lifecycle retry exit = %v, want clean exit", err)
+	}
+
+	store, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open database after lifecycle retry: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	if err := store.RawDB().Ping(); err != nil {
+		t.Fatalf("database remains unavailable after lifecycle retry: %v", err)
+	}
+}
+
+func startDaemonForLifecycleRetry(t *testing.T, dbPath, port string) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command(binaryPath)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("daemon stdin: %v", err)
+	}
+	cmd.Env = append(os.Environ(), "HIVE_DB_PATH="+dbPath, "HIVE_HTTP_PORT="+port)
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start daemon: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+	return cmd
+}
+
+func TestIsCleanServerShutdown(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for _, tt := range []struct {
+		name   string
+		ctx    context.Context
+		runErr error
+		want   bool
+	}{
+		{name: "retry cancellation is clean", ctx: canceled, runErr: context.Canceled, want: true},
+		{name: "unexpected server error remains fatal", ctx: canceled, runErr: errors.New("stdio failed"), want: false},
+		{name: "unrequested cancellation remains fatal", ctx: context.Background(), runErr: context.Canceled, want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isCleanServerShutdown(tt.ctx, tt.runErr); got != tt.want {
+				t.Fatalf("isCleanServerShutdown(%v, %v) = %v, want %v", tt.ctx.Err(), tt.runErr, got, tt.want)
+			}
+		})
+	}
+}
+
+func seedBlockedDaemonDB(t *testing.T, path string) {
+	t.Helper()
+	store, err := db.Open(path)
+	if err != nil {
+		t.Fatalf("seed database: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	if _, err := store.RawDB().Exec(`INSERT INTO sessions (id, sync_id, project, dev_id, client) VALUES ('s', 'session', 'Foo', 'dev', 'test')`); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	for _, projectName := range []string{"Foo", "foo"} {
+		if _, err := store.RawDB().Exec(`INSERT INTO mutation_cursors (consumer, project, sequence, event_id) VALUES ('daemon', ?, 7, ?)`, projectName, "event-"+projectName); err != nil {
+			t.Fatalf("seed cursor: %v", err)
+		}
+	}
+}
+
+func reserveLoopbackPort(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve loopback port: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+	return strings.TrimPrefix(listener.Addr().String(), "127.0.0.1:")
+}
+
+func requestLifecycleRetry(t *testing.T, endpoint string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Post(endpoint, "application/json", nil)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusAccepted {
+				t.Fatalf("lifecycle retry status = %d, want %d", resp.StatusCode, http.StatusAccepted)
+			}
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("daemon retry endpoint did not become available")
 }
 
 // ─── 6.2 Stdout Purity (DIOS Mitigation #3) ────────────────────────────────

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -84,6 +85,9 @@ type Server struct {
 	config     ConfigService
 	health     HealthService
 	gate       *project.MigrationGate
+	retry      func()
+	retryMu    sync.Mutex
+	retrying   bool
 	mux        *http.ServeMux
 }
 
@@ -91,6 +95,12 @@ type Server struct {
 // determined whether the local identity migration is safe to access.
 func (s *Server) SetMigrationGate(gate *project.MigrationGate) {
 	s.gate = gate
+}
+
+// SetMigrationRetry installs the daemon lifecycle owner used to stop this
+// process after an identity retry is accepted. It never starts a second daemon.
+func (s *Server) SetMigrationRetry(retry func()) {
+	s.retry = retry
 }
 
 // NewServer constructs a Server bound to addr.
@@ -144,6 +154,7 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 	}
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("GET /governance/project-identity/status", s.handleMigrationIdentityStatus)
+	s.mux.HandleFunc("POST /governance/project-identity/retry", s.handleMigrationIdentityRetry)
 	s.mux.HandleFunc("/prompts", s.handlePrompts)
 	// Latest-save lookup (hook-initiated memory reminder). Registered
 	// unconditionally — handler is nil-safe on s.memories.
@@ -203,6 +214,27 @@ func (s *Server) handleMigrationIdentityStatus(w http.ResponseWriter, _ *http.Re
 		return
 	}
 	writeJSON(w, http.StatusOK, s.gate.Status())
+}
+
+func (s *Server) handleMigrationIdentityRetry(w http.ResponseWriter, _ *http.Request) {
+	if s.gate == nil || s.gate.Status().State != project.MigrationStateBlocked {
+		writeJSON(w, http.StatusConflict, map[string]string{"state": "retry-not-needed"})
+		return
+	}
+	if s.retry == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"state": "retry-unavailable"})
+		return
+	}
+	s.retryMu.Lock()
+	if s.retrying {
+		s.retryMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"state": "restart-pending"})
+		return
+	}
+	s.retrying = true
+	s.retryMu.Unlock()
+	defer s.retry()
+	writeJSON(w, http.StatusAccepted, map[string]string{"state": "restart-requested"})
 }
 
 // Start launches the HTTP listener as a goroutine and wires ctx cancellation

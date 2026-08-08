@@ -532,6 +532,13 @@ func (c *Client) MigrationIdentityStatus(ctx context.Context) (MigrationIdentity
 	return status, nil
 }
 
+// RequestMigrationRetry asks the running daemon to shut down cleanly. Its MCP
+// lifecycle owner starts the single replacement process, which replans the
+// complete migration during normal startup.
+func (c *Client) RequestMigrationRetry(ctx context.Context) error {
+	return c.post(ctx, "/governance/project-identity/retry", struct{}{}, &struct{}{})
+}
+
 func (c *Client) RestoreMigrationBackup(ctx context.Context, backupID, confirmation string) error {
 	return c.post(ctx, "/governance/restores", map[string]string{"backup_id": backupID, "confirmation": confirmation}, &struct{}{})
 }

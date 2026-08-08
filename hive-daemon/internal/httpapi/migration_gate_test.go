@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/governance"
@@ -103,6 +104,65 @@ func TestMigrationGateExposesIdentityStatusThroughGovernance(t *testing.T) {
 	}
 	if status.State != project.MigrationStateBlocked || status.BackupID != "migration-backup-1" || status.Continuation == "" {
 		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestMigrationGateRetryRequestsLifecycleRestartOnlyWhenBlocked(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		state      string
+		wantStatus int
+		wantCalls  int
+	}{
+		{name: "blocked requests one clean restart", state: project.MigrationStateBlocked, wantStatus: http.StatusAccepted, wantCalls: 1},
+		{name: "ready does not restart a live daemon", state: project.MigrationStateReady, wantStatus: http.StatusConflict, wantCalls: 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			srv := httpapi.NewServer("127.0.0.1:0", &mockPromptStore{})
+			srv.SetMigrationGate(project.NewMigrationGate(project.MigrationStatus{State: tt.state}))
+			srv.SetMigrationRetry(func() { calls++ })
+
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/governance/project-identity/retry", nil))
+			if rr.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rr.Code, tt.wantStatus, rr.Body.String())
+			}
+			if calls != tt.wantCalls {
+				t.Fatalf("restart calls = %d, want %d", calls, tt.wantCalls)
+			}
+			if tt.wantCalls == 1 && !strings.Contains(rr.Body.String(), `"state":"restart-requested"`) {
+				t.Fatalf("retry response = %s, want deterministic restart status", rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestMigrationGateRetryIsSingleShotAndPreservesBlockedStatus(t *testing.T) {
+	calls := 0
+	srv := httpapi.NewServer("127.0.0.1:0", &mockPromptStore{})
+	srv.SetMigrationGate(project.NewMigrationGate(project.MigrationStatus{
+		State:    project.MigrationStateBlocked,
+		Reason:   "duplicate canonical project",
+		BackupID: "backup-42",
+	}))
+	srv.SetMigrationRetry(func() { calls++ })
+
+	for _, wantStatus := range []int{http.StatusAccepted, http.StatusConflict} {
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/governance/project-identity/retry", nil))
+		if rr.Code != wantStatus {
+			t.Fatalf("retry status = %d, want %d: %s", rr.Code, wantStatus, rr.Body.String())
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("restart calls = %d, want one clean daemon shutdown", calls)
+	}
+
+	status := httptest.NewRecorder()
+	srv.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/governance/project-identity/status", nil))
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"state":"migration-blocked"`) || !strings.Contains(status.Body.String(), `"backup_id":"backup-42"`) {
+		t.Fatalf("blocked status after retry = %d %s, want persisted blocked recovery state", status.Code, status.Body.String())
 	}
 }
 

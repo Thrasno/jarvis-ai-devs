@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -23,6 +24,10 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -66,6 +71,7 @@ func main() {
 		healthSvc := httpapi.NewHealthServiceAdapter(hivesync.NewHealthService(store, nil))
 		srv := httpapi.NewServerWithAll(httpAddr(), store, store, govSvc, configSvc, healthSvc, store)
 		srv.SetMigrationGate(gate)
+		srv.SetMigrationRetry(stop)
 		if err := srv.Start(rootCtx); err != nil {
 			logger.Log.Printf("http server stopped: %v (mcp continues)", err)
 		}
@@ -87,9 +93,18 @@ func main() {
 	// Always wait for HTTP goroutine before closing DB or exiting.
 	<-httpDone
 
-	if runErr != nil {
-		logger.Log.Fatalf("server stopped: %v", runErr)
+	if isCleanServerShutdown(rootCtx, runErr) {
+		return 0
 	}
+	if runErr != nil {
+		logger.Log.Printf("server stopped: %v", runErr)
+		return 1
+	}
+	return 0
+}
+
+func isCleanServerShutdown(ctx context.Context, runErr error) bool {
+	return ctx.Err() != nil && errors.Is(runErr, context.Canceled)
 }
 
 // httpAddr returns the address for the HTTP server, preferring HIVE_HTTP_PORT env var

@@ -54,6 +54,11 @@ func TestClientReadsMigrationIdentityStatusAndRequestsRollback(t *testing.T) {
 				t.Fatalf("rollback = %#v, want exact explicit selection", request)
 			}
 			_, _ = w.Write([]byte(`{}`))
+		case "/governance/project-identity/retry":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method = %s, want POST", r.Method)
+			}
+			_, _ = w.Write([]byte(`{"state":"restart-requested"}`))
 		default:
 			t.Fatalf("path = %s", r.URL.Path)
 		}
@@ -69,6 +74,9 @@ func TestClientReadsMigrationIdentityStatusAndRequestsRollback(t *testing.T) {
 	}
 	if err := client.RestoreMigrationBackup(context.Background(), "migration-backup-1", "RESTORE migration-backup-1"); err != nil {
 		t.Fatalf("RestoreMigrationBackup: %v", err)
+	}
+	if err := client.RequestMigrationRetry(context.Background()); err != nil {
+		t.Fatalf("RequestMigrationRetry: %v", err)
 	}
 }
 
