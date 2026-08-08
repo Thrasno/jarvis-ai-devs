@@ -853,3 +853,58 @@ func TestPendingRestoreFailureThatLeftLiveDatabaseIntactKeepsServing(t *testing.
 		t.Fatalf("startup error = %v, want startup to continue after a cleared restore", err)
 	}
 }
+
+// TestRunStartupMigrationRetriesContentionInsteadOfBlockingTheSession proves a
+// concurrent daemon that lost the race is not gated off for its whole session,
+// and that the race leaves no error warning behind.
+func TestRunStartupMigrationRetriesContentionInsteadOfBlockingTheSession(t *testing.T) {
+	store := migratableStore(t)
+	attempts := 0
+	gate := runStartupMigrationWith(context.Background(), store, func(ctx context.Context, plan db.ProjectMigrationPlan) error {
+		attempts++
+		if attempts == 1 {
+			return db.ErrProjectMigrationPlanStale
+		}
+		return nil
+	})
+	if err := gate.Check(); err != nil {
+		t.Fatalf("gate after contention retry = %v, want ready", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("execute attempts = %d, want one retry after contention", attempts)
+	}
+	warnings, err := store.ListHiveWarnings(db.HiveWarningFilter{ResolutionState: "active"})
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("warnings after contention retry = %v, %v; want none persisted", warnings, err)
+	}
+}
+
+// TestRunStartupMigrationBlocksWhenContentionDoesNotClear keeps a genuinely
+// unresolvable failure a block instead of retrying forever.
+func TestRunStartupMigrationBlocksWhenContentionDoesNotClear(t *testing.T) {
+	store := migratableStore(t)
+	attempts := 0
+	gate := runStartupMigrationWith(context.Background(), store, func(ctx context.Context, plan db.ProjectMigrationPlan) error {
+		attempts++
+		return db.ErrProjectMigrationPlanStale
+	})
+	if err := gate.Check(); err == nil {
+		t.Fatal("gate after repeated contention = ready, want blocked")
+	}
+	if attempts != 2 {
+		t.Fatalf("execute attempts = %d, want exactly one retry", attempts)
+	}
+}
+
+func migratableStore(t *testing.T) *db.DB {
+	t.Helper()
+	store, err := db.Open(filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES (' Foo.Bar ', 'x')`); err != nil {
+		t.Fatal(err)
+	}
+	return store
+}

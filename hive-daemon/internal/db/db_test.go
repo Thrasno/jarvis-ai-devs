@@ -518,3 +518,50 @@ func TestOpen_MigratesLegacySyncStateHealthColumns(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenWaitsOutConcurrentWriterInsteadOfFailing proves a second daemon
+// process over the same memory.db waits for an in-flight write transaction
+// instead of failing immediately with SQLITE_BUSY. Without that wait, a second
+// MCP session meeting the startup migration would treat contention as a
+// migration failure and gate itself off for its whole session.
+func TestOpenWaitsOutConcurrentWriterInsteadOfFailing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory.db")
+	first, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+	second, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+
+	var timeout int
+	if err := second.RawDB().QueryRow(`PRAGMA busy_timeout`).Scan(&timeout); err != nil {
+		t.Fatal(err)
+	}
+	if timeout != int(sqliteBusyTimeout.Milliseconds()) {
+		t.Fatalf("busy_timeout = %d ms, want %d ms", timeout, sqliteBusyTimeout.Milliseconds())
+	}
+
+	tx, err := first.RawDB().Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`INSERT INTO sync_state (project, last_error) VALUES ('holder', 'x')`); err != nil {
+		t.Fatal(err)
+	}
+	committed := make(chan error, 1)
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		committed <- tx.Commit()
+	}()
+
+	if _, err := second.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES ('waiter', 'x')`); err != nil {
+		t.Fatalf("concurrent write = %v, want a wait for the in-flight transaction", err)
+	}
+	if err := <-committed; err != nil {
+		t.Fatal(err)
+	}
+}

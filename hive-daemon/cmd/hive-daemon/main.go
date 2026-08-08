@@ -206,17 +206,29 @@ func newestMigrationBackupID(ctx context.Context, backups *governance.BackupStor
 	return ""
 }
 
-func runStartupMigrationWith(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error) *project.MigrationGate {
-	return runStartupMigrationWithBackup(ctx, store, execute, nil)
-}
-
-func runStartupMigrationWithBackup(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error, backupID func() string) *project.MigrationGate {
+func planAndExecuteMigration(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error) (db.ProjectMigrationPlan, error) {
 	plan, err := db.ReadProjectMigrationPlan(ctx, store)
 	if err == nil && !plan.Executable {
 		err = db.ErrProjectMigrationPlanUnsafe
 	}
 	if err == nil {
 		err = execute(ctx, plan)
+	}
+	return plan, err
+}
+
+func runStartupMigrationWith(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error) *project.MigrationGate {
+	return runStartupMigrationWithBackup(ctx, store, execute, nil)
+}
+
+func runStartupMigrationWithBackup(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error, backupID func() string) *project.MigrationGate {
+	plan, err := planAndExecuteMigration(ctx, store, execute)
+	if db.IsProjectMigrationContention(err) {
+		// Another daemon process was migrating the same database. Its
+		// transaction has committed or rolled back by now, so re-planning
+		// against the current state either finds nothing left to do or applies
+		// cleanly; only a second failure is a real block on this session.
+		plan, err = planAndExecuteMigration(ctx, store, execute)
 	}
 	if err == nil {
 		return project.NewMigrationGate(project.MigrationStatus{State: project.MigrationStateReady})

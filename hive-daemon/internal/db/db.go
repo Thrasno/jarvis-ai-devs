@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 	_ "modernc.org/sqlite"
@@ -388,10 +389,19 @@ type DB struct {
 	migrationMu sync.Mutex
 }
 
+// sqliteBusyTimeout bounds how long a connection waits for a lock held by
+// another process before reporting SQLITE_BUSY. hive-daemon is an MCP stdio
+// server, so several client sessions run several processes over the same
+// memory.db, and the startup identity migration holds one long exclusive write
+// transaction. Without a wait the other processes fail instantly and gate their
+// whole session off. 15s comfortably covers that rebuild while staying well
+// under the startup budget an MCP client allows before it gives up on us.
+const sqliteBusyTimeout = 15 * time.Second
+
 // Open opens (or creates) a SQLite database at dsn, initializes the schema,
 // and validates that all required triggers exist. Use ":memory:" for tests.
 func Open(dsn string) (*DB, error) {
-	sqlDB, err := sql.Open("sqlite", dsn)
+	sqlDB, err := sql.Open("sqlite", sqliteDSNWithBusyTimeout(dsn))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -407,6 +417,17 @@ func Open(dsn string) (*DB, error) {
 		return nil, fmt.Errorf("validate schema: %w", err)
 	}
 	return &DB{sqlDB: sqlDB}, nil
+}
+
+// sqliteDSNWithBusyTimeout applies the busy timeout through the DSN so every
+// connection the pool opens carries it, including reconnects after an idle
+// connection is dropped.
+func sqliteDSNWithBusyTimeout(dsn string) string {
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	return fmt.Sprintf("%s%s_pragma=busy_timeout(%d)", dsn, separator, sqliteBusyTimeout.Milliseconds())
 }
 
 // Close closes the underlying database connection.

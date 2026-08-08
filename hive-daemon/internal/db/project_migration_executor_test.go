@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -796,5 +797,42 @@ func TestSyncStateMergeColumnsMatchSchema(t *testing.T) {
 	sort.Strings(merged)
 	if got, want := strings.Join(merged, ","), strings.Join(schema, ","); got != want {
 		t.Fatalf("merged sync_state columns = %q, want %q", got, want)
+	}
+}
+
+// TestIsProjectMigrationContentionRecognizesRealSQLiteBusy pins the classifier
+// against an error SQLite actually produces, not a hand-built one.
+func TestIsProjectMigrationContentionRecognizesRealSQLiteBusy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory.db")
+	database, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	// No busy timeout here, so the second writer reports SQLITE_BUSY at once.
+	impatient, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = impatient.Close() })
+
+	tx, err := database.RawDB().Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`INSERT INTO sync_state (project, last_error) VALUES ('holder', 'x')`); err != nil {
+		t.Fatal(err)
+	}
+
+	_, busyErr := impatient.Exec(`INSERT INTO sync_state (project, last_error) VALUES ('waiter', 'x')`)
+	if busyErr == nil {
+		t.Fatal("concurrent write succeeded; cannot prove busy classification")
+	}
+	if !IsProjectMigrationContention(busyErr) {
+		t.Fatalf("IsProjectMigrationContention(%v) = false, want contention", busyErr)
+	}
+	if IsProjectMigrationContention(ErrProjectMigrationConflict) {
+		t.Fatal("an unmergeable row is a real block, not contention")
 	}
 }

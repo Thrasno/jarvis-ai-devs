@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
+	"modernc.org/sqlite"
 )
 
 var (
@@ -21,6 +22,25 @@ var (
 	ErrProjectMigrationInProgress     = errors.New("project migration is already executing")
 	ErrProjectIdentityResolutionStale = errors.New("project identity resolution is stale or unrelated")
 )
+
+// sqliteBusyCode is the primary result code SQLITE_BUSY. Extended result codes
+// are enabled on these connections, so every busy variant is matched by masking
+// the extended bits off.
+const sqliteBusyCode = 5
+
+// IsProjectMigrationContention reports a migration failure caused by another
+// writer rather than by the state of this database. hive-daemon runs one process
+// per MCP client session, so a second daemon can meet the first one's startup
+// migration: it either waits out the lock and finds the plan already applied, or
+// exhausts its busy timeout. Neither outcome means this database is broken, so
+// callers may retry instead of gating the session off permanently.
+func IsProjectMigrationContention(err error) bool {
+	if errors.Is(err, ErrProjectMigrationPlanStale) || errors.Is(err, ErrProjectMigrationInProgress) {
+		return true
+	}
+	var sqliteErr *sqlite.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.Code()&0xff == sqliteBusyCode
+}
 
 // syncStateMergeRow carries the sync_state columns that must survive when two
 // canonically-equivalent rows collapse into one. Every column is addressed by
