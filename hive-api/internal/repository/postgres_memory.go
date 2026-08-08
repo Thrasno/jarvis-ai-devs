@@ -859,7 +859,7 @@ func (r *postgresMemoryRepository) CountGrowthByMonth(ctx context.Context, month
 
 func appendMemoryFilterPredicates(where string, args []interface{}, argIdx int, filter model.MemoryFilter) (string, []interface{}, int) {
 	if filter.Project != "" {
-		where += fmt.Sprintf(" AND project = $%d", argIdx)
+		where += fmt.Sprintf(" AND canonical_project_key(project) = $%d", argIdx)
 		args = append(args, filter.Project)
 		argIdx++
 	}

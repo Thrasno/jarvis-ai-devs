@@ -318,6 +318,20 @@ func TestListMemories_PassesStructuredDiscoveryFilters(t *testing.T) {
 	memSvc.AssertExpectations(t)
 }
 
+func TestListMemories_CanonicalizesProjectFilter(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+	memSvc := &mockMemorySvc{}
+	memSvc.On("List", context.Background(), mock.MatchedBy(func(filter model.MemoryFilter) bool {
+		return filter.Project == "jarvis-dev"
+	})).Return([]*model.Memory{}, int64(0), nil)
+
+	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodGet, "/memories?project=Jarvis_Dev", nil, "valid-token")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	memSvc.AssertExpectations(t)
+}
+
 func TestListMemories_WithQueryReturnsListResponseFromSearch(t *testing.T) {
 	authSvc := &mockAuthSvc{}
 	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)

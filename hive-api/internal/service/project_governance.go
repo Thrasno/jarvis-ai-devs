@@ -140,6 +140,7 @@ func (s *projectGovernanceService) Acknowledge(ctx context.Context, ack model.Pr
 	if s.blockRepo == nil {
 		return model.ProjectBlockAck{}, ErrProjectBlockUnavailable
 	}
+	ack.CanonicalProjectKey = projectkey.Canonicalize(ack.CanonicalProjectKey)
 	if err := ack.Validate(); err != nil {
 		return model.ProjectBlockAck{}, err
 	}

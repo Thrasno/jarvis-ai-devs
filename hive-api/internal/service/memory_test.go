@@ -473,3 +473,21 @@ func TestSearch_DelegatesToRepo(t *testing.T) {
 	assert.Equal(t, int64(7), total)
 	mockRepo.AssertExpectations(t)
 }
+
+func TestMemoryService_CanonicalizesProjectBoundaries(t *testing.T) {
+	ctx := context.Background()
+	svc, repo := newTestMemoryService(t)
+
+	filter := model.MemoryFilter{Project: " Foo.Bar ", Limit: 5}
+	want := model.MemoryFilter{Project: "foo-bar", Limit: 5}
+	repo.On("List", ctx, want).Return([]*model.Memory{}, nil).Once()
+	repo.On("Count", ctx, want).Return(int64(0), nil).Once()
+	repo.On("Search", ctx, "identity", want).Return([]*model.Memory{}, nil).Once()
+	repo.On("CountSearch", ctx, "identity", want).Return(int64(0), nil).Once()
+
+	_, _, err := svc.List(ctx, filter)
+	require.NoError(t, err)
+	_, _, err = svc.Search(ctx, "identity", filter)
+	require.NoError(t, err)
+	repo.AssertExpectations(t)
+}

@@ -148,6 +148,29 @@ func TestProjectGovernanceService_AcknowledgeValidatesStatusAndCommand(t *testin
 	txBlockRepo.AssertExpectations(t)
 }
 
+func TestProjectGovernanceService_AcknowledgeCanonicalizesEquivalentProjectKey(t *testing.T) {
+	ctx := context.Background()
+	blockRepo := &repository.MockProjectBlockRepository{}
+	locks := &repository.MockProjectKeyLockRepository{}
+	tx := repository.NewMockTxManager(nil, nil)
+	tx.ProjectBlocks = blockRepo
+	tx.ProjectKeyLocks = locks
+	svc := service.NewProjectGovernanceService(blockRepo, nil, tx)
+	ack := model.ProjectBlockAck{CommandID: "cmd-1", CanonicalProjectKey: " Jarvis_Dev ", AckToken: "token", Status: model.ProjectBlockAckApplied, AckSubject: model.ProjectBlockAckSubject{AuthSubject: "user-1"}}
+
+	locks.On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
+	blockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(&model.ProjectBlock{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev"}, nil).Once()
+	blockRepo.On("GetAckDelivery", ctx, "jarvis-dev", "cmd-1", ack.AckSubject).Return(&model.ProjectBlockAckDelivery{AckToken: "token"}, nil).Once()
+	blockRepo.On("RecordAck", ctx, mock.MatchedBy(func(got model.ProjectBlockAck) bool {
+		return got.CanonicalProjectKey == "jarvis-dev"
+	})).Return(model.ProjectBlockAck{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", Status: model.ProjectBlockAckApplied}, nil).Once()
+
+	got, err := svc.Acknowledge(ctx, ack)
+	require.NoError(t, err)
+	require.Equal(t, "jarvis-dev", got.CanonicalProjectKey)
+	blockRepo.AssertExpectations(t)
+}
+
 func TestProjectGovernanceService_AcknowledgeRejectsDifferentSignedSubject(t *testing.T) {
 	ctx := context.Background()
 	txBlockRepo := &repository.MockProjectBlockRepository{}
