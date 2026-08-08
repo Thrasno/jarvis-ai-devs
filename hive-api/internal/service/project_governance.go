@@ -77,6 +77,12 @@ func (s *projectGovernanceService) BlockProject(ctx context.Context, actor model
 		if err := repos.ProjectKeyLocks.LockCanonicalProjectKeys(ctx, []string{canonical}); err != nil {
 			return err
 		}
+		if repos.ProjectIdentities == nil {
+			return ErrProjectBlockUnavailable
+		}
+		if err := repos.ProjectIdentities.Register(ctx, project, "", time.Now().UTC()); err != nil {
+			return err
+		}
 		var err error
 		block, err = repos.ProjectBlocks.BlockProject(ctx, model.ProjectBlockCreate{
 			Project:             project,

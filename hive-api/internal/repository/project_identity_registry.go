@@ -17,10 +17,28 @@ type projectIdentityRegistration struct {
 	seenAt   time.Time
 }
 
+type ProjectIdentityRepository interface {
+	Register(ctx context.Context, spelling, remoteSpelling string, seenAt time.Time) error
+}
+
+type postgresProjectIdentityRepository struct{ db pgxQuerier }
+
+func newPostgresProjectIdentityRepositoryWithQuerier(db pgxQuerier) ProjectIdentityRepository {
+	return &postgresProjectIdentityRepository{db: db}
+}
+
+func (r *postgresProjectIdentityRepository) Register(ctx context.Context, spelling, remoteSpelling string, seenAt time.Time) error {
+	return registerProjectIdentity(ctx, r.db, spelling, remoteSpelling, seenAt)
+}
+
 // RegisterProjectIdentity records a new API-facing spelling without changing
 // legacy project columns. A current remote spelling wins display precedence;
 // otherwise the earliest observed spelling remains the fallback.
 func RegisterProjectIdentity(ctx context.Context, pool *pgxpool.Pool, spelling, remoteSpelling string, seenAt time.Time) error {
+	return registerProjectIdentity(ctx, pool, spelling, remoteSpelling, seenAt)
+}
+
+func registerProjectIdentity(ctx context.Context, db pgxQuerier, spelling, remoteSpelling string, seenAt time.Time) error {
 	key := projectkey.Canonicalize(spelling)
 	if key == "" {
 		return fmt.Errorf("canonical project key is required")
@@ -29,7 +47,7 @@ func RegisterProjectIdentity(ctx context.Context, pool *pgxpool.Pool, spelling, 
 		seenAt = time.Now().UTC()
 	}
 	remoteSpelling = strings.TrimSpace(remoteSpelling)
-	_, err := pool.Exec(ctx, `
+	_, err := db.Exec(ctx, `
 		WITH registered AS (
 		INSERT INTO project_identities (project_key, first_spelling, first_seen_at, remote_spelling, remote_seen_at)
 		VALUES ($1, $2, $3::timestamptz, NULLIF($4, ''), CASE WHEN $4 = '' THEN NULL ELSE $3::timestamptz END)

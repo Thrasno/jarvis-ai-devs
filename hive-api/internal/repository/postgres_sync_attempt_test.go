@@ -18,6 +18,10 @@ func startPostgresWithSyncAttempts(t *testing.T) (*pgxpool.Pool, func()) {
 	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptLogsSQL))
 	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptPortalUsersSQL))
 	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptUserProjectionSQL))
+	require.NoError(t, RunMigrations(pool, migrations.ProjectBlocksSQL))
+	require.NoError(t, RunMigrations(pool, migrations.QuarantineContractSQL))
+	require.NoError(t, RunMigrations(pool, migrations.DistributedQuarantineSQL))
+	require.NoError(t, RunMigrations(pool, migrations.CanonicalProjectRegistrySQL))
 	return pool, cleanup
 }
 
@@ -48,6 +52,9 @@ func TestPostgresSyncAttemptRepository_UpsertBatchIsIdempotentByDevAndAttempt(t 
 	require.NoError(t, pool.QueryRow(ctx, `SELECT portal_user_id, portal_user_source FROM sync_attempt_logs WHERE attempt_id = 'attempt-1'`).Scan(&persistedUserID, &persistedSource))
 	assert.Equal(t, portalUserID, persistedUserID)
 	assert.Equal(t, portalUserSource, persistedSource)
+	var registered bool
+	require.NoError(t, pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM project_identities WHERE project_key = 'jarvis-dev')`).Scan(&registered))
+	require.True(t, registered)
 }
 
 func TestSyncAttemptPortalUsersMigration_BackfillsExactEmail(t *testing.T) {

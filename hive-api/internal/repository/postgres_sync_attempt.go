@@ -11,11 +11,12 @@ import (
 )
 
 type postgresSyncAttemptRepository struct {
-	db pgxQuerier
+	db   pgxQuerier
+	pool *pgxpool.Pool
 }
 
 func NewPostgresSyncAttemptRepository(pool *pgxpool.Pool) SyncAttemptRepository {
-	return newPostgresSyncAttemptRepositoryWithQuerier(pool)
+	return &postgresSyncAttemptRepository{db: pool, pool: pool}
 }
 
 func newPostgresSyncAttemptRepositoryWithQuerier(db pgxQuerier) SyncAttemptRepository {
@@ -23,8 +24,35 @@ func newPostgresSyncAttemptRepositoryWithQuerier(db pgxQuerier) SyncAttemptRepos
 }
 
 func (r *postgresSyncAttemptRepository) UpsertBatch(ctx context.Context, attempts []model.SyncAttemptLog) (model.SyncAttemptStoreResult, error) {
+	if r.pool == nil {
+		return r.upsertBatch(ctx, r.db, attempts)
+	}
 	result := model.SyncAttemptStoreResult{}
 	for _, attempt := range attempts {
+		tx, err := r.pool.Begin(ctx)
+		if err != nil {
+			return result, wrapPgError(err, "begin sync attempt write")
+		}
+		stored, err := r.upsertBatch(ctx, tx, []model.SyncAttemptLog{attempt})
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return result, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return result, wrapPgError(err, "commit sync attempt write")
+		}
+		result.AcceptedIDs = append(result.AcceptedIDs, stored.AcceptedIDs...)
+		result.DuplicateIDs = append(result.DuplicateIDs, stored.DuplicateIDs...)
+	}
+	return result, nil
+}
+
+func (r *postgresSyncAttemptRepository) upsertBatch(ctx context.Context, db pgxQuerier, attempts []model.SyncAttemptLog) (model.SyncAttemptStoreResult, error) {
+	result := model.SyncAttemptStoreResult{}
+	for _, attempt := range attempts {
+		if err := registerProjectIdentity(ctx, db, attempt.Project, "", attempt.StartedAt); err != nil {
+			return result, err
+		}
 		syncCounts, err := json.Marshal(nonNilIntMap(attempt.SyncCounts))
 		if err != nil {
 			return result, fmt.Errorf("marshal sync attempt counts: %w", err)
@@ -40,7 +68,7 @@ INSERT INTO sync_attempt_logs
 	     http_status, error_code, error_message, request_id, sync_counts, metadata, portal_user_id, portal_user_source)
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 ON CONFLICT (source_dev_id, attempt_id) DO NOTHING`
-		tag, err := r.db.Exec(ctx, q,
+		tag, err := db.Exec(ctx, q,
 			attempt.AttemptID, attempt.DevID, attempt.Project, attempt.Client, attempt.DaemonID,
 			attempt.StartedAt, attempt.EndedAt, string(attempt.Outcome), attempt.HTTPStatus,
 			attempt.ErrorCode, attempt.ErrorMessage, attempt.RequestID, syncCounts, metadata, attempt.PortalUserID, attempt.PortalUserSource,

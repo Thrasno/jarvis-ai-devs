@@ -114,6 +114,7 @@ func (s *syncService) Sync(ctx context.Context, req model.SyncRequest, userID st
 	if s.tx == nil {
 		return nil, ErrProjectBlockUnavailable
 	}
+	projectSpelling := req.Project
 	canonical, err := model.CanonicalSyncProjectIdentity(req)
 	if err != nil {
 		return nil, err
@@ -131,6 +132,12 @@ func (s *syncService) Sync(ctx context.Context, req model.SyncRequest, userID st
 			if errors.Is(err, repository.ErrProjectKeyLockBusy) {
 				log.Printf("warn: project-key lock contention during sync projects=%v", keys)
 			}
+			return err
+		}
+		if repos.ProjectIdentities == nil {
+			return ErrProjectBlockUnavailable
+		}
+		if err := repos.ProjectIdentities.Register(ctx, projectSpelling, "", time.Now().UTC()); err != nil {
 			return err
 		}
 		pushResp, err := s.pushWithRepos(ctx, req, userID, txRepos.Push)

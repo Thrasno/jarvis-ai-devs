@@ -2,11 +2,13 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/service"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/migrations"
@@ -64,6 +66,69 @@ func TestMemoryHandler_ProjectIdentityDistinguishesUnknownKnownEmptyAndGlobalQue
 		})
 	}
 	authSvc.AssertExpectations(t)
+}
+
+func TestMemorySyncRegistersNewProjectBeforeFilteredReadInSameServerLifetime(t *testing.T) {
+	pool, cleanup := startMemoryHandlerPostgres(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	memoryRepo := repository.NewPostgresMemoryRepository(pool)
+	sessionRepo := repository.NewPostgresSessionRepository(pool)
+	blockRepo := repository.NewPostgresProjectBlockRepository(pool)
+	tx := repository.NewPostgresTxManager(pool)
+	syncService := service.NewSyncService(memoryRepo, repository.NewPostgresPromptRepository(pool), sessionRepo, repository.NewPostgresAuditRepository(pool), blockRepo, tx)
+	memoryService := service.NewMemoryService(memoryRepo, sessionRepo, blockRepo, tx)
+	now := time.Now().UTC()
+	_, err := syncService.Sync(ctx, model.SyncRequest{
+		Project:  " Fresh.Project ",
+		Sessions: []model.SyncSessionPayload{{ID: "session-fresh", SyncID: "10000000-0000-0000-0000-000000000001", Project: "fresh/project", DevID: "dev", Client: "test", StartedAt: now}},
+	}, "00000000-0000-0000-0000-000000000001")
+	require.NoError(t, err)
+
+	_, _, err = memoryService.List(ctx, model.MemoryFilter{Project: "FRESH_project"})
+	require.NoError(t, err)
+	_, _, err = memoryService.Search(ctx, "needle", model.MemoryFilter{Project: "fresh-project"})
+	require.NoError(t, err)
+}
+
+func TestMemoryCreateRegistersCanonicalProjectAndRollsBackOnWriteFailure(t *testing.T) {
+	pool, cleanup := startMemoryHandlerPostgres(t)
+	defer cleanup()
+	ctx := context.Background()
+	memoryRepo := repository.NewPostgresMemoryRepository(pool)
+	memoryService := service.NewMemoryService(memoryRepo, repository.NewPostgresSessionRepository(pool), repository.NewPostgresProjectBlockRepository(pool), repository.NewPostgresTxManager(pool))
+	now := time.Now().UTC()
+
+	_, err := memoryService.Create(ctx, &model.Memory{SyncID: "20000000-0000-0000-0000-000000000001", Project: " Direct.Project ", Category: model.CatDecision, Title: "registered", Content: "content", CreatedBy: "user", CreatedAt: now, UpdatedAt: now})
+	require.NoError(t, err)
+	_, err = memoryService.Create(ctx, &model.Memory{SyncID: "20000000-0000-0000-0000-000000000001", Project: "Ghost.Project", Category: model.CatDecision, CreatedBy: "user", CreatedAt: now, UpdatedAt: now})
+	require.Error(t, err)
+
+	var key, spelling string
+	require.NoError(t, pool.QueryRow(ctx, `SELECT project_key, first_spelling FROM project_identities WHERE project_key = 'direct-project'`).Scan(&key, &spelling))
+	require.Equal(t, "direct-project", key)
+	require.Equal(t, " Direct.Project ", spelling)
+	var ghost bool
+	require.NoError(t, pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM project_identities WHERE project_key = 'ghost-project')`).Scan(&ghost))
+	require.False(t, ghost)
+	_, _, err = memoryService.List(ctx, model.MemoryFilter{Project: "direct/project"})
+	require.False(t, errors.Is(err, service.ErrProjectUnknown))
+}
+
+func TestMemoryCreateRollsBackDomainWriteWhenIdentityRegistrationFails(t *testing.T) {
+	pool, cleanup := startMemoryHandlerPostgres(t)
+	defer cleanup()
+	ctx := context.Background()
+	memoryService := service.NewMemoryService(repository.NewPostgresMemoryRepository(pool), repository.NewPostgresSessionRepository(pool), repository.NewPostgresProjectBlockRepository(pool), repository.NewPostgresTxManager(pool))
+	require.NoError(t, repository.RunMigrations(pool, `DROP TABLE project_identity_spellings`))
+	now := time.Now().UTC()
+
+	_, err := memoryService.Create(ctx, &model.Memory{SyncID: "30000000-0000-0000-0000-000000000001", Project: "Broken.Registry", Category: model.CatDecision, Title: "must rollback", Content: "content", CreatedBy: "user", CreatedAt: now, UpdatedAt: now})
+	require.Error(t, err)
+	var count int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM memories WHERE project = 'Broken.Registry'`).Scan(&count))
+	require.Zero(t, count)
 }
 
 func startMemoryHandlerPostgres(t *testing.T) (*pgxpool.Pool, func()) {
