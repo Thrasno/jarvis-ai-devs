@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -84,5 +85,48 @@ func TestScheduledRestoreFailureLeavesLiveBytesAndPendingRecovery(t *testing.T) 
 	}
 	if _, err := os.Stat(PendingRestorePath(dbPath)); err != nil {
 		t.Fatalf("pending recovery was removed after failure: %v", err)
+	}
+}
+
+func TestScheduledRestoreCleanupFailureNeverRepeatsCompletedRestore(t *testing.T) {
+	dir := t.TempDir()
+	dbDir := filepath.Join(dir, "live")
+	if err := os.Mkdir(dbDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dbDir, "memory.db")
+	if err := os.WriteFile(dbPath, []byte("before-migration"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := NewBackupStore(dbPath, "").Create(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dbPath, []byte("blocked-state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ScheduleRestore(dbPath, RestoreRequest{BackupID: backup.ID, Confirmation: RestoreConfirmation(backup.ID)}); err != nil {
+		t.Fatal(err)
+	}
+
+	removeFailure := errors.New("marker removal failed")
+	if restored, err := executeScheduledRestore(context.Background(), dbPath, func(string) error { return removeFailure }); !restored || !errors.Is(err, removeFailure) {
+		t.Fatalf("first restore = %v, %v; want completed restore with cleanup failure", restored, err)
+	}
+	if err := os.WriteFile(dbPath, []byte("valid-post-recovery-write"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if restored, err := ExecuteScheduledRestore(context.Background(), dbPath); err != nil || !restored {
+		t.Fatalf("restart cleanup = %v, %v; want completed marker cleanup only", restored, err)
+	}
+	got, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "valid-post-recovery-write" {
+		t.Fatalf("restart database = %q, want post-recovery write preserved", got)
+	}
+	if restored, err := ExecuteScheduledRestore(context.Background(), dbPath); err != nil || restored {
+		t.Fatalf("second restart = %v, %v; want no pending recovery", restored, err)
 	}
 }

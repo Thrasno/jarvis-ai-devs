@@ -23,11 +23,18 @@ func ScheduleRestore(dbPath string, req RestoreRequest) error {
 	if _, err := store.PlanRestore(context.Background(), req); err != nil {
 		return err
 	}
-	data, err := json.Marshal(req)
+	return writePendingRestore(PendingRestorePath(dbPath), pendingRestore{RestoreRequest: req})
+}
+
+type pendingRestore struct {
+	RestoreRequest
+}
+
+func writePendingRestore(pendingPath string, pending pendingRestore) error {
+	data, err := json.Marshal(pending)
 	if err != nil {
 		return fmt.Errorf("encode pending restore: %w", err)
 	}
-	pendingPath := PendingRestorePath(dbPath)
 	temp, err := os.CreateTemp(filepath.Dir(pendingPath), ".restore-pending-*")
 	if err != nil {
 		return fmt.Errorf("create pending restore: %w", err)
@@ -59,7 +66,23 @@ func ScheduleRestore(dbPath string, req RestoreRequest) error {
 // daemon opens SQLite. A failure retains the request and leaves the live DB
 // untouched unless BackupStore.Restore has completed its atomic replacement.
 func ExecuteScheduledRestore(ctx context.Context, dbPath string) (bool, error) {
+	return executeScheduledRestore(ctx, dbPath, os.Remove)
+}
+
+func executeScheduledRestore(ctx context.Context, dbPath string, remove func(string) error) (bool, error) {
 	pendingPath := PendingRestorePath(dbPath)
+	completedPath := pendingPath + ".completed"
+	if _, err := os.Stat(completedPath); err == nil {
+		if err := remove(pendingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return true, fmt.Errorf("clear completed pending restore: %w", err)
+		}
+		if err := remove(completedPath); err != nil {
+			return true, fmt.Errorf("clear restore completion marker: %w", err)
+		}
+		return true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("inspect restore completion marker: %w", err)
+	}
 	data, err := os.ReadFile(pendingPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -67,15 +90,21 @@ func ExecuteScheduledRestore(ctx context.Context, dbPath string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("read pending restore: %w", err)
 	}
-	var req RestoreRequest
-	if err := json.Unmarshal(data, &req); err != nil {
+	var pending pendingRestore
+	if err := json.Unmarshal(data, &pending); err != nil {
 		return false, fmt.Errorf("decode pending restore: %w", err)
 	}
-	if _, err := NewBackupStore(dbPath, "").Restore(ctx, req); err != nil {
+	if _, err := NewBackupStore(dbPath, "").Restore(ctx, pending.RestoreRequest); err != nil {
 		return false, err
 	}
-	if err := os.Remove(pendingPath); err != nil {
-		return false, fmt.Errorf("clear completed pending restore: %w", err)
+	if err := writePendingRestore(completedPath, pending); err != nil {
+		return true, fmt.Errorf("record completed pending restore: %w", err)
+	}
+	if err := remove(pendingPath); err != nil {
+		return true, fmt.Errorf("clear completed pending restore: %w", err)
+	}
+	if err := remove(completedPath); err != nil {
+		return true, fmt.Errorf("clear restore completion marker: %w", err)
 	}
 	return true, nil
 }

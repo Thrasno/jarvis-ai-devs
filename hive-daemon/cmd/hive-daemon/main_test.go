@@ -621,11 +621,51 @@ func TestProjectIdentityResolveCanonicalEquivalentVariantsUnblocksMigrationEndTo
 	if status.State != project.MigrationStateBlocked || status.BackupID != "" {
 		t.Fatalf("startup status = %+v, want preflight block before backup", status)
 	}
+	backups := governance.NewSQLiteBackupStore(path, "", store.RawDB())
+	if created, err := backups.List(context.Background()); err != nil || len(created) != 0 {
+		t.Fatalf("preflight backups = %v, %v; want none before mutation", created, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = db.Open(path)
+	if err != nil {
+		t.Fatalf("reopen unchanged blocked database: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	var variants int
+	if err := store.RawDB().QueryRow(`SELECT COUNT(*) FROM sync_state WHERE project IN ('Foo.Bar', 'foo-bar')`).Scan(&variants); err != nil || variants != 2 {
+		t.Fatalf("sync state after blocked restart = %d, %v; want both original variants", variants, err)
+	}
 	if err := store.ResolveProjectIdentityConflict(context.Background(), "Foo.Bar", "foo-bar"); err != nil {
 		t.Fatalf("ResolveProjectIdentityConflict() error = %v", err)
 	}
 	if err := runStartupMigration(context.Background(), store, path).Check(); err != nil {
 		t.Fatalf("full migration replan after resolution = %v, want ready", err)
+	}
+}
+
+func TestRunStartupMigrationFreshDatabaseMigratesAndRestartsWithoutRestore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory.db")
+	store, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := runStartupMigration(context.Background(), store, path).Check(); err != nil {
+		t.Fatalf("fresh startup migration = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = db.Open(path)
+	if err != nil {
+		t.Fatalf("reopen fresh migrated database: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := runStartupMigration(context.Background(), store, path).Check(); err != nil {
+		t.Fatalf("fresh database restart migration = %v", err)
 	}
 }
 
