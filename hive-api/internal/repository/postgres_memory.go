@@ -268,7 +268,7 @@ func (r *postgresMemoryRepository) update(ctx context.Context, id string, mem *m
 // recorta a limit antes de devolver.
 func (r *postgresMemoryRepository) PullSince(ctx context.Context, project string, since time.Time, excludeSyncIDs []string, cursor model.PullCursor, limit int) ([]*model.Memory, bool, error) {
 	args := []interface{}{projectkey.Canonicalize(project)}
-	where := `(memories.project = $1 OR EXISTS (SELECT 1 FROM project_identity_spellings pis WHERE pis.spelling = memories.project AND pis.project_key = $1)) AND deleted_at IS NULL AND ` + unblockedProjectPredicate("memories.project")
+	where := resolvedProjectKeyExpr("memories.project") + " = $1 AND deleted_at IS NULL AND " + unblockedProjectPredicate("memories.project")
 	argIdx := 2
 
 	if !since.IsZero() {

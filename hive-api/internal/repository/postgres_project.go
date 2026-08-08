@@ -21,37 +21,51 @@ func newPostgresProjectRepositoryWithQuerier(db pgxQuerier) ProjectRepository {
 }
 
 func (r *postgresProjectRepository) ListAggregates(ctx context.Context) ([]model.ProjectAggregate, error) {
+	// Every source row is resolved to the shared Go canonical key once, so
+	// grouping, the UNION and the project_identities join all agree on one key.
 	q := fmt.Sprintf(`
-WITH projects AS (
-    SELECT canonical_project_key(project) AS project_key FROM memories WHERE %s
+WITH memory_rows AS (
+    SELECT %s AS project_key, created_at, updated_at, deleted_at, restored_at
+    FROM memories WHERE %s
+),
+session_rows AS (
+    SELECT %s AS project_key, started_at, ended_at
+    FROM sessions WHERE %s
+),
+sync_rows AS (
+    SELECT %s AS project_key, outcome, started_at, ended_at, ingested_at, id
+    FROM sync_attempt_logs WHERE %s
+),
+projects AS (
+    SELECT project_key FROM memory_rows
     UNION
-    SELECT canonical_project_key(project) FROM sessions WHERE %s
+    SELECT project_key FROM session_rows
     UNION
-    SELECT canonical_project_key(project) FROM sync_attempt_logs WHERE %s
+    SELECT project_key FROM sync_rows
 ),
 memory_agg AS (
     SELECT
-        canonical_project_key(project) AS project_key,
+        project_key,
         COUNT(*) FILTER (WHERE deleted_at IS NULL) AS memory_count,
         MAX(GREATEST(created_at, updated_at, COALESCE(deleted_at, '-infinity'::timestamptz), COALESCE(restored_at, '-infinity'::timestamptz))) AS last_memory_at
-    FROM memories
-    GROUP BY canonical_project_key(project)
+    FROM memory_rows
+    GROUP BY project_key
 ),
 session_agg AS (
     SELECT
-        canonical_project_key(project) AS project_key,
+        project_key,
         COUNT(*) AS session_count,
         MAX(COALESCE(ended_at, started_at)) AS last_session_at
-    FROM sessions
-    GROUP BY canonical_project_key(project)
+    FROM session_rows
+    GROUP BY project_key
 ),
 latest_sync AS (
-    SELECT DISTINCT ON (canonical_project_key(project))
-        canonical_project_key(project) AS project_key,
+    SELECT DISTINCT ON (project_key)
+        project_key,
         outcome,
         COALESCE(ended_at, started_at) AS last_sync_at
-    FROM sync_attempt_logs
-    ORDER BY canonical_project_key(project), COALESCE(ended_at, started_at) DESC, ingested_at DESC, id DESC
+    FROM sync_rows
+    ORDER BY project_key, COALESCE(ended_at, started_at) DESC, ingested_at DESC, id DESC
 )
 SELECT
     COALESCE(NULLIF(i.remote_spelling, ''), i.first_spelling, p.project_key),
@@ -66,7 +80,10 @@ LEFT JOIN project_identities i ON i.project_key = p.project_key
 LEFT JOIN memory_agg m ON m.project_key = p.project_key
 LEFT JOIN session_agg s ON s.project_key = p.project_key
 LEFT JOIN latest_sync ls ON ls.project_key = p.project_key
-ORDER BY COALESCE(NULLIF(i.remote_spelling, ''), i.first_spelling, p.project_key)`, unblockedProjectPredicate("memories.project"), unblockedProjectPredicate("sessions.project"), unblockedProjectPredicate("sync_attempt_logs.project"))
+ORDER BY COALESCE(NULLIF(i.remote_spelling, ''), i.first_spelling, p.project_key)`,
+		resolvedProjectKeyExpr("memories.project"), unblockedProjectPredicate("memories.project"),
+		resolvedProjectKeyExpr("sessions.project"), unblockedProjectPredicate("sessions.project"),
+		resolvedProjectKeyExpr("sync_attempt_logs.project"), unblockedProjectPredicate("sync_attempt_logs.project"))
 
 	rows, err := r.db.Query(ctx, q)
 	if err != nil {

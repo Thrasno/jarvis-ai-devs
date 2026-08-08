@@ -36,14 +36,6 @@ func blockedProjectPredicate(projectExpr string) string {
 	return fmt.Sprintf("EXISTS (SELECT 1 FROM project_blocks pb WHERE pb.blocked = true AND (pb.project = %[1]s OR pb.canonical_project_key IN (%[1]s, %[2]s, COALESCE((SELECT pbs.project_key FROM project_identity_spellings pbs WHERE pbs.spelling = %[1]s), ''))))", projectExpr, asciiSeparatorFoldExpr(projectExpr))
 }
 
-// asciiSeparatorFoldExpr mirrors projectidentity.Canonical for ASCII spellings:
-// lower-case, collapse separator runs to '-', drop outer separators. It exists
-// only to widen quarantine matching and must never be used to derive a stored
-// key.
-func asciiSeparatorFoldExpr(projectExpr string) string {
-	return fmt.Sprintf("trim(both '-' from regexp_replace(lower(%s), '[[:space:]/_.-]+', '-', 'g'))", projectExpr)
-}
-
 func unblockedProjectPredicate(projectExpr string) string {
 	return "NOT " + blockedProjectPredicate(projectExpr)
 }
