@@ -413,6 +413,78 @@ func TestProjectIdentityRegistryDisplayPrefersRemoteThenOldestRegistration(t *te
 	}
 }
 
+func TestProjectMigrationExecutorRebuildsStandaloneProjectOwnershipTables(t *testing.T) {
+	database := newMigrationExecutorDB(t)
+	seedMigrationProject(t, database, " Foo.Bar ")
+	for _, statement := range []string{
+		`INSERT INTO sync_state (project, jwt_token) VALUES (' Foo.Bar ', 'project-token')`,
+		`INSERT INTO sync_state (project, jwt_token) VALUES ('__auth__', 'auth-token')`,
+		`INSERT INTO memory_mutations (event_id, entity_sync_id, project, op) VALUES ('event', 'memory-sync', ' Foo.Bar ', 'save')`,
+		`INSERT INTO mutation_receipts (request_id, operation, target_id, project, entity_sync_id, event_id, local_status, shared_status) VALUES ('request', 'save', 1, ' Foo.Bar ', 'memory-sync', 'event', 'done', 'done')`,
+		`INSERT INTO sync_attempt_logs (attempt_id, project, started_at, ended_at, outcome) VALUES ('attempt', ' Foo.Bar ', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'success')`,
+	} {
+		if _, err := database.sqlDB.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan, err := ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error { return nil }, nil); err != nil {
+		t.Fatalf("ExecuteProjectMigration() error = %v", err)
+	}
+	for _, table := range []string{"sync_state", "memory_mutations", "mutation_receipts", "sync_attempt_logs"} {
+		var foreignKeys int
+		if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM pragma_foreign_key_list('` + table + `') WHERE "table" = 'project_identities'`).Scan(&foreignKeys); err != nil {
+			t.Fatal(err)
+		}
+		if foreignKeys != 1 {
+			t.Fatalf("%s project identity foreign keys = %d, want 1", table, foreignKeys)
+		}
+	}
+	var projectToken, authToken string
+	if err := database.sqlDB.QueryRow(`SELECT jwt_token FROM sync_state WHERE project = 'foo-bar'`).Scan(&projectToken); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.sqlDB.QueryRow(`SELECT jwt_token FROM sync_state WHERE project = '__auth__'`).Scan(&authToken); err != nil {
+		t.Fatal(err)
+	}
+	if projectToken != "project-token" || authToken != "auth-token" {
+		t.Fatalf("sync tokens = %q, %q; want project and auth tokens preserved", projectToken, authToken)
+	}
+	for _, index := range []string{"idx_memory_mutations_project_unsynced", "idx_memory_mutations_entity", "idx_sync_attempt_logs_pending", "idx_sync_attempt_logs_retention"} {
+		var count int
+		if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, index).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("index %s was not recreated", index)
+		}
+	}
+	var foreignKeyViolations int
+	if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&foreignKeyViolations); err != nil {
+		t.Fatal(err)
+	}
+	if foreignKeyViolations != 0 {
+		t.Fatalf("foreign key violations = %d, want 0", foreignKeyViolations)
+	}
+	plan, err = ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backups := 0
+	if err := ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error {
+		backups++
+		return nil
+	}, nil); err != nil {
+		t.Fatalf("idempotent ExecuteProjectMigration() error = %v", err)
+	}
+	if backups != 0 {
+		t.Fatalf("idempotent migration created %d backups, want 0", backups)
+	}
+}
+
 func newMigrationExecutorDB(t *testing.T) *DB {
 	t.Helper()
 	database, err := Open(":memory:")

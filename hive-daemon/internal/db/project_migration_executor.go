@@ -58,7 +58,11 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 	if err != nil {
 		return err
 	}
-	if !projectMigrationNeeded(records) && !registryNeeded {
+	ownershipNeeded, err := projectSchemaOwnershipNeeded(ctx, database.sqlDB)
+	if err != nil {
+		return err
+	}
+	if !projectMigrationNeeded(records) && !registryNeeded && !ownershipNeeded {
 		return nil
 	}
 	if err := backup(ctx); err != nil {
@@ -93,6 +97,11 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 		}
 		key := projectidentity.Canonical(record.Project).String()
 		if _, err := tx.ExecContext(ctx, `UPDATE `+string(record.Table)+` SET `+column+` = ? WHERE `+column+` = ?`, key, record.Project); err != nil {
+			return err
+		}
+	}
+	if ownershipNeeded {
+		if err := rebuildStandaloneProjectOwnershipTables(ctx, tx); err != nil {
 			return err
 		}
 	}
@@ -213,6 +222,86 @@ func rebuildProjectMigrationState(ctx context.Context, tx *sql.Tx) error {
 	}
 	if projectMigrationNeeded(after) {
 		return ErrProjectMigrationPlanUnsafe
+	}
+	if needed, err := projectSchemaOwnershipNeeded(ctx, tx); err != nil {
+		return err
+	} else if needed {
+		return fmt.Errorf("%w: missing project identity ownership constraint", ErrProjectMigrationConflict)
+	}
+	return nil
+}
+
+func projectSchemaOwnershipNeeded(ctx context.Context, queryer projectIdentityQuerier) (bool, error) {
+	for _, table := range []string{"sync_state", "memory_mutations", "mutation_receipts", "sync_attempt_logs"} {
+		rows, err := queryer.QueryContext(ctx, `SELECT "table" FROM pragma_foreign_key_list('`+table+`') WHERE "table" = 'project_identities'`)
+		if err != nil {
+			return false, err
+		}
+		owned := rows.Next()
+		if err := rows.Close(); err != nil {
+			return false, err
+		}
+		if !owned {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func rebuildStandaloneProjectOwnershipTables(ctx context.Context, tx *sql.Tx) error {
+	tables := []struct {
+		name, columns, create string
+		indexes               []string
+	}{
+		{
+			name:    "sync_state",
+			columns: "project,last_sync_at,jwt_token,jwt_expires_at,last_attempt_at,last_success_at,last_failure_at,consecutive_failures,backoff_until,last_error,last_drain_state,last_drain_reason,last_drain_remaining",
+			create:  `CREATE TABLE sync_state (project TEXT PRIMARY KEY, project_key TEXT GENERATED ALWAYS AS (CASE WHEN project = '__auth__' THEN NULL ELSE project END) STORED REFERENCES project_identities(project_key), last_sync_at DATETIME, jwt_token TEXT, jwt_expires_at DATETIME, last_attempt_at DATETIME, last_success_at DATETIME, last_failure_at DATETIME, consecutive_failures INTEGER NOT NULL DEFAULT 0, backoff_until DATETIME, last_error TEXT NOT NULL DEFAULT '', last_drain_state TEXT, last_drain_reason TEXT, last_drain_remaining INTEGER)`,
+		},
+		{
+			name:    "memory_mutations",
+			columns: "sequence,event_id,entity_type,entity_sync_id,project,op,occurred_at,actor_id,base_updated_at,payload_json,request_id,synced_at",
+			create:  `CREATE TABLE memory_mutations (sequence INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE, entity_type TEXT NOT NULL DEFAULT 'memory', entity_sync_id TEXT NOT NULL, project TEXT NOT NULL REFERENCES project_identities(project_key), op TEXT NOT NULL, occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, actor_id TEXT NOT NULL DEFAULT '', base_updated_at DATETIME, payload_json TEXT NOT NULL DEFAULT '{}', request_id TEXT, synced_at DATETIME)`,
+			indexes: []string{
+				`CREATE UNIQUE INDEX idx_memory_mutations_event_id ON memory_mutations(event_id)`,
+				`CREATE INDEX idx_memory_mutations_project_unsynced ON memory_mutations(project, sequence) WHERE synced_at IS NULL`,
+				`CREATE INDEX idx_memory_mutations_entity ON memory_mutations(entity_type, entity_sync_id, sequence)`,
+				`CREATE UNIQUE INDEX idx_memory_mutations_request_id ON memory_mutations(request_id) WHERE request_id IS NOT NULL`,
+			},
+		},
+		{
+			name:    "mutation_receipts",
+			columns: "request_id,operation,target_id,project,entity_sync_id,event_id,actor_id,reason,local_status,shared_status,created_at",
+			create:  `CREATE TABLE mutation_receipts (request_id TEXT PRIMARY KEY, operation TEXT NOT NULL, target_id INTEGER NOT NULL, project TEXT NOT NULL REFERENCES project_identities(project_key), entity_sync_id TEXT NOT NULL, event_id TEXT NOT NULL, actor_id TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '', local_status TEXT NOT NULL, shared_status TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+		},
+		{
+			name:    "sync_attempt_logs",
+			columns: "attempt_id,dev_id,project,client,daemon_id,started_at,ended_at,outcome,http_status,error_code,error_message,request_id,sync_counts_json,metadata_json,delivered_at,created_at",
+			create:  `CREATE TABLE sync_attempt_logs (attempt_id TEXT PRIMARY KEY, dev_id TEXT NOT NULL DEFAULT '', project TEXT NOT NULL REFERENCES project_identities(project_key), client TEXT NOT NULL DEFAULT '', daemon_id TEXT NOT NULL DEFAULT '', started_at DATETIME NOT NULL, ended_at DATETIME NOT NULL, outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure')), http_status INTEGER NOT NULL DEFAULT 0, error_code TEXT NOT NULL DEFAULT '', error_message TEXT NOT NULL DEFAULT '', request_id TEXT NOT NULL DEFAULT '', sync_counts_json TEXT NOT NULL DEFAULT '{}', metadata_json TEXT NOT NULL DEFAULT '{}', delivered_at DATETIME, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+			indexes: []string{
+				`CREATE INDEX idx_sync_attempt_logs_pending ON sync_attempt_logs(delivered_at, started_at) WHERE delivered_at IS NULL AND dev_id != ''`,
+				`CREATE INDEX idx_sync_attempt_logs_retention ON sync_attempt_logs(ended_at)`,
+			},
+		},
+	}
+	for _, table := range tables {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE `+table.name+` RENAME TO `+table.name+`_legacy`); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, table.create); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO `+table.name+` (`+table.columns+`) SELECT `+table.columns+` FROM `+table.name+`_legacy`); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DROP TABLE `+table.name+`_legacy`); err != nil {
+			return err
+		}
+		for _, index := range table.indexes {
+			if _, err := tx.ExecContext(ctx, index); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
