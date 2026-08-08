@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
 	"github.com/google/uuid"
 )
 
@@ -36,14 +37,22 @@ var (
 
 const RestoreStatusCoordinationRequired = "coordination_required"
 
+const (
+	ProjectMigrationBackupOperation = "canonical-project-identity-migration"
+	ProjectMigrationBackupRetention = 24 * time.Hour
+)
+
 type BackupManifest struct {
-	ID           string    `json:"id"`
-	CreatedAt    time.Time `json:"created_at"`
-	DBPath       string    `json:"db_path"`
-	ArchivePath  string    `json:"archive_path"`
-	ManifestPath string    `json:"manifest_path"`
-	Checksum     string    `json:"checksum"`
-	SizeBytes    int64     `json:"size_bytes"`
+	ID              string    `json:"id"`
+	CreatedAt       time.Time `json:"created_at"`
+	DBPath          string    `json:"db_path"`
+	ArchivePath     string    `json:"archive_path"`
+	ManifestPath    string    `json:"manifest_path"`
+	Checksum        string    `json:"checksum"`
+	SizeBytes       int64     `json:"size_bytes"`
+	SourceOperation string    `json:"source_operation,omitempty"`
+	Temporary       bool      `json:"temporary,omitempty"`
+	RetainUntil     time.Time `json:"retain_until,omitempty"`
 }
 
 type RestoreRequest struct {
@@ -136,15 +145,61 @@ func (s *BackupStore) Create(ctx context.Context) (BackupManifest, error) {
 		Checksum:     checksum,
 		SizeBytes:    size,
 	}
-	data, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return BackupManifest{}, fmt.Errorf("encode backup manifest: %w", err)
-	}
-	if err := os.WriteFile(manifest.ManifestPath, append(data, '\n'), 0o600); err != nil {
-		return BackupManifest{}, fmt.Errorf("write backup manifest: %w", err)
+	if err := persistBackupManifest(manifest); err != nil {
+		return BackupManifest{}, err
 	}
 	cleanupDir = false
 	return manifest, nil
+}
+
+// ExecuteProjectMigrationWithBackup composes the migration executor with the
+// daemon's SQLite-safe backup store. Failed migrations retain their new backup;
+// only expired temporary migration backups are pruned before a later attempt.
+func ExecuteProjectMigrationWithBackup(ctx context.Context, database *db.DB, plan db.ProjectMigrationPlan, backups *BackupStore) error {
+	return executeProjectMigrationWithBackup(ctx, database, plan, backups, nil)
+}
+
+func executeProjectMigrationWithBackup(ctx context.Context, database *db.DB, plan db.ProjectMigrationPlan, backups *BackupStore, failpoint func() error) error {
+	if backups == nil {
+		return ErrBackupStoreRequired
+	}
+	if err := backups.PruneExpiredTemporaryMigrationBackups(ctx, backups.now().UTC()); err != nil {
+		return fmt.Errorf("prune expired migration backups: %w", err)
+	}
+	return db.ExecuteProjectMigration(ctx, database, plan, func(ctx context.Context) error {
+		_, err := backups.CreateTemporaryMigrationBackup(ctx)
+		return err
+	}, failpoint)
+}
+
+func (s *BackupStore) CreateTemporaryMigrationBackup(ctx context.Context) (BackupManifest, error) {
+	backup, err := s.Create(ctx)
+	if err != nil {
+		return BackupManifest{}, err
+	}
+	backup.SourceOperation = ProjectMigrationBackupOperation
+	backup.Temporary = true
+	backup.RetainUntil = backup.CreatedAt.Add(ProjectMigrationBackupRetention)
+	if err := persistBackupManifest(backup); err != nil {
+		return BackupManifest{}, err
+	}
+	return backup, nil
+}
+
+func (s *BackupStore) PruneExpiredTemporaryMigrationBackups(ctx context.Context, now time.Time) error {
+	backups, err := s.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, backup := range backups {
+		if !backup.Temporary || backup.SourceOperation != ProjectMigrationBackupOperation || backup.RetainUntil.IsZero() || backup.RetainUntil.After(now) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Dir(backup.ManifestPath)); err != nil {
+			return fmt.Errorf("remove expired migration backup %s: %w", backup.ID, err)
+		}
+	}
+	return nil
 }
 
 func (s *BackupStore) List(ctx context.Context) ([]BackupManifest, error) {
@@ -326,6 +381,17 @@ func readBackupManifest(path string) (BackupManifest, error) {
 		return BackupManifest{}, fmt.Errorf("decode backup manifest: %w", err)
 	}
 	return backup, nil
+}
+
+func persistBackupManifest(backup BackupManifest) error {
+	data, err := json.MarshalIndent(backup, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode backup manifest: %w", err)
+	}
+	if err := os.WriteFile(backup.ManifestPath, append(data, '\n'), 0o600); err != nil {
+		return fmt.Errorf("write backup manifest: %w", err)
+	}
+	return nil
 }
 
 func verifyManifestArchivePath(manifestArchivePath, expectedArchivePath string) error {

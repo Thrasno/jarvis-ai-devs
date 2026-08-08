@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 	_ "modernc.org/sqlite"
@@ -367,7 +368,8 @@ ON passive_observations(project, created_at DESC);
 
 // DB wraps an SQLite connection with schema validation.
 type DB struct {
-	sqlDB *sql.DB
+	sqlDB       *sql.DB
+	migrationMu sync.Mutex
 }
 
 // Open opens (or creates) a SQLite database at dsn, initializes the schema,

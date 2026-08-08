@@ -17,6 +17,7 @@ var (
 	ErrProjectMigrationPlanStale   = errors.New("project migration plan changed before execution")
 	ErrProjectMigrationUnsupported = errors.New("project migration contains unsupported state")
 	ErrProjectMigrationConflict    = errors.New("project migration contains an unmergeable composite row")
+	ErrProjectMigrationInProgress  = errors.New("project migration is already executing")
 )
 
 // ReadProjectMigrationPlan inventories every known daemon-local project-bearing
@@ -32,6 +33,10 @@ func ReadProjectMigrationPlan(ctx context.Context, database *DB) (ProjectMigrati
 // ExecuteProjectMigration rekeys the lossless SQLite subset in one transaction.
 // Cursor and governance composites coalesce before scalar project columns move.
 func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigrationPlan, backup func(context.Context) error, failpoint func() error) error {
+	if !database.migrationMu.TryLock() {
+		return ErrProjectMigrationInProgress
+	}
+	defer database.migrationMu.Unlock()
 	if !plan.Executable || len(plan.Conflicts) != 0 {
 		return ErrProjectMigrationPlanUnsafe
 	}
@@ -47,6 +52,9 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 	}
 	if err := requireSupportedProjectMigration(records); err != nil {
 		return err
+	}
+	if !projectMigrationNeeded(records) {
+		return nil
 	}
 	if err := backup(ctx); err != nil {
 		return fmt.Errorf("create pre-mutation backup: %w", err)
@@ -85,19 +93,61 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 			return err
 		}
 	}
+	if err := rebuildProjectMigrationState(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func projectMigrationNeeded(records []ProjectStateRecord) bool {
+	for _, record := range records {
+		if projectidentity.Canonical(record.Project).String() != record.Project {
+			return true
+		}
+	}
+	return false
+}
+
+func rebuildProjectMigrationState(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{
+		`REINDEX`,
+		`INSERT INTO memories_fts(memories_fts) VALUES ('rebuild')`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("rebuild project migration state: %w", err)
+		}
+	}
+	if err := validateMigrationLinks(ctx, tx); err != nil {
+		return err
+	}
+	for _, trigger := range []string{"memories_ai", "memories_au", "memories_ad", "user_prompts_ai", "user_prompts_au", "user_prompts_ad"} {
+		var name string
+		if err := tx.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?`, trigger).Scan(&name); err != nil {
+			return fmt.Errorf("%w: missing schema trigger %s", ErrProjectMigrationConflict, trigger)
+		}
+	}
+	var foreignKeyViolations int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&foreignKeyViolations); err != nil {
+		return err
+	}
+	if foreignKeyViolations != 0 {
+		return fmt.Errorf("%w: foreign key violations", ErrProjectMigrationConflict)
+	}
+	var integrity string
+	if err := tx.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&integrity); err != nil {
+		return err
+	}
+	if integrity != "ok" {
+		return fmt.Errorf("%w: SQLite integrity %s", ErrProjectMigrationConflict, integrity)
+	}
 	after, err := readProjectMigrationRecords(ctx, tx)
 	if err != nil {
 		return err
 	}
-	for _, record := range after {
-		if projectidentity.Canonical(record.Project).String() != record.Project {
-			if isCompositeMigrationState(record.Table) {
-				continue
-			}
-			return ErrProjectMigrationPlanUnsafe
-		}
+	if projectMigrationNeeded(after) {
+		return ErrProjectMigrationPlanUnsafe
 	}
-	return tx.Commit()
+	return nil
 }
 
 func requireSupportedProjectMigration(records []ProjectStateRecord) error {

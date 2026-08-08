@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -51,6 +52,82 @@ func TestProjectMigrationExecutorRollsBackFailpointAndRetries(t *testing.T) {
 	}
 	if backups != 2 {
 		t.Fatalf("backups = %d, want 2 pre-mutation backups", backups)
+	}
+}
+
+func TestProjectMigrationExecutorRejectsConcurrentExecution(t *testing.T) {
+	database := newMigrationExecutorDB(t)
+	seedMigrationProject(t, database, " Foo.Bar ")
+	plan, err := ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil {
+		t.Fatalf("ReadProjectMigrationPlan() error = %v", err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var first error
+	var wait sync.WaitGroup
+	wait.Add(1)
+	go func() {
+		defer wait.Done()
+		first = ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error {
+			close(entered)
+			<-release
+			return nil
+		}, nil)
+	}()
+	<-entered
+	if err := ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error { return nil }, nil); !errors.Is(err, ErrProjectMigrationInProgress) {
+		t.Fatalf("concurrent ExecuteProjectMigration() error = %v, want in-progress error", err)
+	}
+	close(release)
+	wait.Wait()
+	if first != nil {
+		t.Fatalf("first ExecuteProjectMigration() error = %v", first)
+	}
+}
+
+func TestProjectMigrationExecutorRebuildsSQLiteStateAfterRekey(t *testing.T) {
+	database := newMigrationExecutorDB(t)
+	seedMigrationProject(t, database, " Foo.Bar ")
+	plan, err := ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil {
+		t.Fatalf("ReadProjectMigrationPlan() error = %v", err)
+	}
+	if err := ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error { return nil }, nil); err != nil {
+		t.Fatalf("ExecuteProjectMigration() error = %v", err)
+	}
+	var integrity string
+	if err := database.sqlDB.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil {
+		t.Fatal(err)
+	}
+	if integrity != "ok" {
+		t.Fatalf("SQLite integrity = %q, want ok", integrity)
+	}
+	var foreignKeyViolations int
+	if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&foreignKeyViolations); err != nil {
+		t.Fatal(err)
+	}
+	if foreignKeyViolations != 0 {
+		t.Fatalf("foreign key violations = %d, want 0", foreignKeyViolations)
+	}
+}
+
+func TestProjectMigrationExecutorRollsBackWhenSchemaInvariantFails(t *testing.T) {
+	database := newMigrationExecutorDB(t)
+	seedMigrationProject(t, database, " Foo.Bar ")
+	plan, err := ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil {
+		t.Fatalf("ReadProjectMigrationPlan() error = %v", err)
+	}
+	if _, err := database.sqlDB.Exec(`DROP TRIGGER memories_ai`); err != nil {
+		t.Fatal(err)
+	}
+	err = ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error { return nil }, nil)
+	if !errors.Is(err, ErrProjectMigrationConflict) {
+		t.Fatalf("ExecuteProjectMigration() error = %v, want schema invariant conflict", err)
+	}
+	if got := migrationProjectValues(t, database); got[0] != " Foo.Bar " || got[1] != " Foo.Bar " {
+		t.Fatalf("schema invariant rollback projects = %q, want original spelling", got)
 	}
 }
 
