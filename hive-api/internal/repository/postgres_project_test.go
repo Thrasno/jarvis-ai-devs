@@ -75,6 +75,59 @@ func TestPostgresProjectRepository_ListAggregates(t *testing.T) {
 	assertTimePtrEqual(t, latestSuccessEnd, byName["health-project"].LastSyncAt, "latest sync activity should use ended_at when present")
 }
 
+func TestBackfillProjectIdentityRegistryCoalescesEquivalentLegacySpellings(t *testing.T) {
+	pool, cleanup := startPostgresWithProjectSources(t)
+	defer cleanup()
+	require.NoError(t, RunMigrations(pool, migrations.UserPromptsSQL))
+	require.NoError(t, RunMigrations(pool, migrations.ProjectBlocksSQL))
+	require.NoError(t, RunMigrations(pool, migrations.QuarantineContractSQL))
+	require.NoError(t, RunMigrations(pool, migrations.DistributedQuarantineSQL))
+	require.NoError(t, RunMigrations(pool, migrations.CanonicalProjectRegistrySQL))
+
+	ctx := context.Background()
+	base := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	insertProjectSession(t, pool, "registry-oldest", " Foo.Bar ", base, nil)
+	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000201", "foo/bar", "registry-oldest", base.Add(time.Minute), base.Add(time.Minute), nil)
+	insertProjectSyncAttempt(t, pool, "registry-unicode", "STRAßE", model.SyncAttemptOutcomeSuccess, base.Add(2*time.Minute), nil)
+
+	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool))
+	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool), "backfill must be idempotent")
+
+	rows, err := pool.Query(ctx, `SELECT project_key, first_spelling FROM project_identities ORDER BY project_key`)
+	require.NoError(t, err)
+	defer rows.Close()
+
+	type identity struct{ key, spelling string }
+	got := make([]identity, 0)
+	for rows.Next() {
+		var row identity
+		require.NoError(t, rows.Scan(&row.key, &row.spelling))
+		got = append(got, row)
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, []identity{{key: "foo-bar", spelling: " Foo.Bar "}, {key: "strasse", spelling: "STRAßE"}}, got)
+}
+
+func TestRegisterProjectIdentityPrefersRemoteDisplayAndKeepsOldestFallback(t *testing.T) {
+	pool, cleanup := startPostgresWithProjectSources(t)
+	defer cleanup()
+	require.NoError(t, RunMigrations(pool, migrations.CanonicalProjectRegistrySQL))
+
+	ctx := context.Background()
+	firstSeen := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	require.NoError(t, RegisterProjectIdentity(ctx, pool, "Old Project", "", firstSeen))
+	require.NoError(t, RegisterProjectIdentity(ctx, pool, "old/project", "Remote Project", firstSeen.Add(time.Hour)))
+
+	var spelling, remote string
+	var remoteSeen *time.Time
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT first_spelling, COALESCE(remote_spelling, ''), remote_seen_at
+		FROM project_identities WHERE project_key = 'old-project'`).Scan(&spelling, &remote, &remoteSeen))
+	require.Equal(t, "Old Project", spelling)
+	require.Equal(t, "Remote Project", remote)
+	require.NotNil(t, remoteSeen)
+}
+
 func projectAggregatesByName(records []model.ProjectAggregate) map[string]model.ProjectAggregate {
 	byName := make(map[string]model.ProjectAggregate, len(records))
 	for _, record := range records {

@@ -204,6 +204,7 @@ func startupMigrationSQL() []string {
 		migrations.SyncAttemptUserProjectionSQL,
 		migrations.QuarantineContractSQL,
 		migrations.DistributedQuarantineSQL,
+		migrations.CanonicalProjectRegistrySQL,
 	}
 }
 
@@ -213,7 +214,7 @@ func runStartupMigrations(pool *pgxpool.Pool) error {
 			return err
 		}
 	}
-	return nil
+	return repository.BackfillProjectIdentityRegistry(context.Background(), pool)
 }
 
 func main() {

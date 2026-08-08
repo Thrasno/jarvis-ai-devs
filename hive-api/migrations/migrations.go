@@ -112,3 +112,9 @@ var QuarantineContractSQL string
 //
 //go:embed 018_distributed_quarantine.sql
 var DistributedQuarantineSQL string
+
+// CanonicalProjectRegistrySQL is migration 019. The API backfills this additive
+// registry through the shared Go canonicalizer after applying the schema.
+//
+//go:embed 019_canonical_project_identity.sql
+var CanonicalProjectRegistrySQL string

@@ -29,3 +29,20 @@ func TestDistributedQuarantineMigrationRetainsImmutableCommands(t *testing.T) {
 		}
 	}
 }
+
+func TestCanonicalProjectRegistryMigrationUsesSharedKeysAndPreservesLegacyRows(t *testing.T) {
+	for _, statement := range []string{
+		"CREATE TABLE IF NOT EXISTS project_identities",
+		"project_key text PRIMARY KEY",
+		"first_spelling text NOT NULL",
+		"remote_spelling text",
+		"first_seen_at timestamptz NOT NULL",
+		"remote_seen_at timestamptz",
+		"CHECK (btrim(project_key) <> '')",
+		"idx_project_identities_first_seen",
+	} {
+		if !strings.Contains(CanonicalProjectRegistrySQL, statement) {
+			t.Fatalf("canonical project registry migration must contain %q", statement)
+		}
+	}
+}
