@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/governance"
 	hivesync "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -381,6 +382,103 @@ func TestRunStartup_ManualSaveSessionExempt(t *testing.T) {
 	}
 	if sess.EndedAt != nil {
 		t.Error("manual-save session must NOT be auto-closed by runStartup")
+	}
+}
+
+func TestRunStartupMigrationExecutesOnceAndExposesReadyGate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory.db")
+	store, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.RawDB().Exec(`INSERT INTO sessions (id, sync_id, project, dev_id, client) VALUES ('s', 'session', ' Foo.Bar ', 'dev', 'test')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RawDB().Exec(`INSERT INTO memories (sync_id, project, title, content, session_id) VALUES ('memory', ' Foo.Bar ', 'title', 'content', 's')`); err != nil {
+		t.Fatal(err)
+	}
+
+	gate := runStartupMigration(context.Background(), store, path)
+	if err := gate.Check(); err != nil {
+		t.Fatalf("startup migration gate = %v", err)
+	}
+	if status := gate.Status(); status.State != "ready" || status.Reason != "" || status.Continuation != "" {
+		t.Fatalf("startup migration status = %+v, want ready status", status)
+	}
+	backups := governance.NewSQLiteBackupStore(path, "", store.RawDB())
+	created, err := backups.List(context.Background())
+	if err != nil || len(created) != 1 {
+		t.Fatalf("migration backups = %v, %v; want one backup", created, err)
+	}
+	if gate.Status().BackupID != "" {
+		t.Fatalf("ready migration status backup = %q, want no rollback reference", gate.Status().BackupID)
+	}
+
+	if err := runStartupMigration(context.Background(), store, path).Check(); err != nil {
+		t.Fatalf("repeated startup migration = %v", err)
+	}
+	created, err = backups.List(context.Background())
+	if err != nil || len(created) != 1 {
+		t.Fatalf("repeated migration backups = %v, %v; want no new backup", created, err)
+	}
+}
+
+func TestRunStartupMigrationBlocksAndPersistsContinuationOnFailure(t *testing.T) {
+	store := openTestDB(t)
+	failure := fmt.Errorf("migration conflict")
+	gate := runStartupMigrationWith(context.Background(), store, func(context.Context, db.ProjectMigrationPlan) error {
+		return failure
+	})
+	if err := gate.Check(); err == nil || !strings.Contains(err.Error(), "migration-blocked") {
+		t.Fatalf("migration gate error = %v, want migration-blocked", err)
+	}
+	status := gate.Status()
+	if status.State != "migration-blocked" || status.Reason != failure.Error() || status.Continuation != "hive project identity resolve then retry" {
+		t.Fatalf("migration status = %+v, want blocked structured continuation", status)
+	}
+	warnings, err := store.ListHiveWarnings(db.HiveWarningFilter{ResolutionState: "active"})
+	if err != nil || len(warnings) != 1 || !strings.Contains(warnings[0].Message, `"state":"migration-blocked"`) {
+		t.Fatalf("persisted migration warning = %v, %v", warnings, err)
+	}
+}
+
+func TestRunStartupMigrationAmbiguityRetainsDatabaseAndBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory.db")
+	store, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.RawDB().Exec(`INSERT INTO sessions (id, sync_id, project, dev_id, client) VALUES ('s', 'session', 'Foo', 'dev', 'test')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, projectName := range []string{"Foo", "foo"} {
+		if _, err := store.RawDB().Exec(`INSERT INTO mutation_cursors (consumer, project, sequence, event_id) VALUES ('daemon', ?, 7, ?)`, projectName, "event-"+projectName); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	gate := runStartupMigration(context.Background(), store, path)
+	if err := gate.Check(); err == nil || !strings.Contains(err.Error(), "migration-blocked") {
+		t.Fatalf("migration ambiguity gate = %v, want migration-blocked", err)
+	}
+	status := gate.Status()
+	if status.BackupID == "" || status.Continuation != "hive project identity resolve then retry" {
+		t.Fatalf("migration ambiguity status = %+v, want retained backup and continuation", status)
+	}
+	var cursorCount int
+	if err := store.RawDB().QueryRow(`SELECT COUNT(*) FROM mutation_cursors WHERE project IN ('Foo', 'foo')`).Scan(&cursorCount); err != nil || cursorCount != 2 {
+		t.Fatalf("cursor rows after blocked startup = %d, %v; want 2 unchanged rows", cursorCount, err)
+	}
+	backups := governance.NewSQLiteBackupStore(path, "", store.RawDB())
+	created, err := backups.List(context.Background())
+	if err != nil || len(created) != 1 || created[0].ID != status.BackupID {
+		t.Fatalf("blocked migration backup = %v, %v; want status backup", created, err)
+	}
+	warnings, err := store.ListHiveWarnings(db.HiveWarningFilter{ResolutionState: "active"})
+	if err != nil || len(warnings) != 1 || !strings.Contains(warnings[0].Message, `"backup_id":"`+status.BackupID+`"`) {
+		t.Fatalf("persisted blocked status = %v, %v; want rollback backup reference", warnings, err)
 	}
 }
 

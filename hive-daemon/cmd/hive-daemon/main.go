@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -50,6 +51,10 @@ func main() {
 		logger.Log.Printf("sync habilitado → %s", cfg.APIURL)
 	} else {
 		logger.Log.Printf("sync desactivado (define HIVE_API_URL/HIVE_API_EMAIL/HIVE_API_PASSWORD o crea ~/.jarvis/sync.json)")
+	}
+	gate := runStartupMigration(rootCtx, store, dbPath)
+	if err := gate.Check(); err != nil {
+		logger.Log.Printf("project identity migration: %v", err)
 	}
 
 	httpDone := make(chan struct{})
@@ -104,6 +109,54 @@ func httpAddr() string {
 // stale sessions that were auto-closed. Extracted for testability.
 func runStartup(store *db.DB) (int64, error) {
 	return store.AutoCloseStale(24*time.Hour, time.Now)
+}
+
+func runStartupMigration(ctx context.Context, store *db.DB, dbPath string) *project.MigrationGate {
+	backups := governance.NewSQLiteBackupStore(dbPath, "", store.RawDB())
+	return runStartupMigrationWithBackup(ctx, store, func(ctx context.Context, plan db.ProjectMigrationPlan) error {
+		return governance.ExecuteProjectMigrationWithBackup(ctx, store, plan, backups)
+	}, func() string {
+		created, err := backups.List(ctx)
+		if err != nil || len(created) == 0 {
+			return ""
+		}
+		return created[0].ID
+	})
+}
+
+func runStartupMigrationWith(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error) *project.MigrationGate {
+	return runStartupMigrationWithBackup(ctx, store, execute, nil)
+}
+
+func runStartupMigrationWithBackup(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error, backupID func() string) *project.MigrationGate {
+	plan, err := db.ReadProjectMigrationPlan(ctx, store)
+	if err == nil && !plan.Executable {
+		err = db.ErrProjectMigrationPlanUnsafe
+	}
+	if err == nil {
+		err = execute(ctx, plan)
+	}
+	if err == nil {
+		return project.NewMigrationGate(project.MigrationStatus{State: project.MigrationStateReady})
+	}
+	status := project.MigrationStatus{
+		State:        project.MigrationStateBlocked,
+		Reason:       err.Error(),
+		Continuation: "hive project identity resolve then retry",
+	}
+	if backupID != nil {
+		status.BackupID = backupID()
+	}
+	if encoded, marshalErr := json.Marshal(status); marshalErr == nil {
+		if _, warningErr := store.SaveHiveWarning(db.HiveWarningInput{
+			Severity: "error",
+			Source:   "startup/project-identity-migration",
+			Message:  string(encoded),
+		}); warningErr != nil {
+			logger.Log.Printf("could not persist project migration block: %v", warningErr)
+		}
+	}
+	return project.NewMigrationGate(status)
 }
 
 // applyStartupSyncConfig loads sync configuration. On error it records a
