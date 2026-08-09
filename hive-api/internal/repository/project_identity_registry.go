@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/projectkey"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -31,55 +30,50 @@ func (r *postgresProjectIdentityRepository) Register(ctx context.Context, spelli
 	return registerProjectIdentity(ctx, r.db, spelling, remoteSpelling, seenAt)
 }
 
-// RegisterProjectIdentity records a new API-facing spelling without changing
-// legacy project columns. A current remote spelling wins display precedence;
-// otherwise the earliest observed spelling remains the fallback.
+// RegisterProjectIdentity records a project literal the API has observed,
+// without changing legacy project columns. A current remote spelling wins
+// display precedence.
 //
-// Both the observed spelling and the canonical key it folds to are registered.
-// The registry answers "has the API ever seen this project?", grouping the
-// spellings a human would call the same project; it is NOT how rows are
-// selected. Reads and quarantine match the stored literal with plain equality
-// and never consult it. Canonical keys are idempotent, so registering one as a
-// spelling is always sound.
+// The registry is keyed by the literal, so it is a table of project names, not
+// a canonical grouping. It answers exactly one question — has the API ever seen
+// THIS project? — and that answer now agrees with what a caller can read, since
+// rows are selected by the same plain equality.
+//
+// It was keyed canonically, which grouped spellings a human might call the same
+// project. That grouping was not the API's to make: the daemon is the sole
+// authority on project identity. It also made the registry a live identity fold
+// that a read query could join against, which is precisely how one project came
+// to read another's rows.
 func RegisterProjectIdentity(ctx context.Context, pool *pgxpool.Pool, spelling, remoteSpelling string, seenAt time.Time) error {
 	return registerProjectIdentity(ctx, pool, spelling, remoteSpelling, seenAt)
 }
 
 func registerProjectIdentity(ctx context.Context, db pgxQuerier, spelling, remoteSpelling string, seenAt time.Time) error {
-	key := projectkey.Canonicalize(spelling)
-	if key == "" {
-		return fmt.Errorf("canonical project key is required")
+	if strings.TrimSpace(spelling) == "" {
+		return fmt.Errorf("project spelling is required")
 	}
 	if seenAt.IsZero() {
 		seenAt = time.Now().UTC()
 	}
 	remoteSpelling = strings.TrimSpace(remoteSpelling)
 	_, err := db.Exec(ctx, `
-		WITH registered AS (
 		INSERT INTO project_identities (project_key, first_spelling, first_seen_at, remote_spelling, remote_seen_at)
-		VALUES ($1, $2, $3::timestamptz, NULLIF($4, ''), CASE WHEN $4 = '' THEN NULL ELSE $3::timestamptz END)
+		VALUES ($1, $1, $2::timestamptz, NULLIF($3, ''), CASE WHEN $3 = '' THEN NULL ELSE $2::timestamptz END)
 		ON CONFLICT (project_key) DO UPDATE SET
-			first_spelling = CASE
-				WHEN EXCLUDED.first_seen_at < project_identities.first_seen_at
-					OR (EXCLUDED.first_seen_at = project_identities.first_seen_at AND EXCLUDED.first_spelling < project_identities.first_spelling)
-				THEN EXCLUDED.first_spelling ELSE project_identities.first_spelling END,
 			first_seen_at = LEAST(project_identities.first_seen_at, EXCLUDED.first_seen_at),
 			remote_spelling = COALESCE(EXCLUDED.remote_spelling, project_identities.remote_spelling),
 			remote_seen_at = COALESCE(EXCLUDED.remote_seen_at, project_identities.remote_seen_at),
-			updated_at = now()
-		RETURNING project_key)
-		INSERT INTO project_identity_spellings (spelling, project_key)
-		SELECT DISTINCT observed.spelling, registered.project_key
-		FROM registered, unnest(ARRAY[$2, $1]) AS observed(spelling)
-		ON CONFLICT (spelling) DO UPDATE SET project_key = EXCLUDED.project_key`, key, spelling, seenAt, remoteSpelling)
+			updated_at = now()`, spelling, seenAt, remoteSpelling)
 	if err != nil {
 		return wrapPgError(err, "register project identity")
 	}
 	return nil
 }
 
-// BackfillProjectIdentityRegistry records every legacy project spelling under
-// the shared canonical key without changing legacy project columns.
+// BackfillProjectIdentityRegistry records every legacy project literal the
+// existing rows carry, without changing legacy project columns. Each literal is
+// its own registry key, so a project whose rows predate the registry stays
+// readable through the exact spelling those rows store.
 func BackfillProjectIdentityRegistry(ctx context.Context, pool *pgxpool.Pool) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -104,20 +98,12 @@ func BackfillProjectIdentityRegistry(ctx context.Context, pool *pgxpool.Pool) er
 	// (or at none), and folding two block heads together would quarantine a
 	// project no admin named.
 	for _, registration := range registrations {
-		key := projectkey.Canonicalize(registration.spelling)
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO project_identities (project_key, first_spelling, first_seen_at)
-			VALUES ($1, $2, $3)
+			VALUES ($1, $1, $2)
 			ON CONFLICT (project_key) DO NOTHING`,
-			key, registration.spelling, registration.seenAt); err != nil {
-			return wrapPgError(err, "register canonical project identity")
-		}
-		if _, err := tx.Exec(ctx, `
-				INSERT INTO project_identity_spellings (spelling, project_key)
-				VALUES ($1, $2)
-				ON CONFLICT (spelling) DO UPDATE SET project_key = EXCLUDED.project_key`,
-			registration.spelling, key); err != nil {
-			return wrapPgError(err, "register project identity spelling")
+			registration.spelling, registration.seenAt); err != nil {
+			return wrapPgError(err, "register project identity")
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -152,17 +138,14 @@ func readProjectIdentityRegistrations(ctx context.Context, tx pgx.Tx) ([]project
 		if err := rows.Scan(&registration.spelling, &registration.seenAt); err != nil {
 			return nil, wrapPgError(err, "scan legacy project registration")
 		}
-		if projectkey.Canonicalize(registration.spelling) != "" {
-			registrations = append(registrations, registration)
-		}
+		registrations = append(registrations, registration)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, wrapPgError(err, "iterate legacy project registrations")
 	}
 	sort.SliceStable(registrations, func(i, j int) bool {
-		left, right := projectkey.Canonicalize(registrations[i].spelling), projectkey.Canonicalize(registrations[j].spelling)
-		if left != right {
-			return left < right
+		if registrations[i].spelling != registrations[j].spelling {
+			return registrations[i].spelling < registrations[j].spelling
 		}
 		return registrations[i].seenAt.Before(registrations[j].seenAt)
 	})

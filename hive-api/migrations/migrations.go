@@ -125,3 +125,10 @@ var CanonicalProjectRegistrySQL string
 //
 //go:embed 020_legacy_quarantine_rekey.sql
 var LegacyQuarantineRekeySQL string
+
+// DropProjectIdentityFoldsSQL is migration 021. It removes the spelling registry
+// table and the SQL key function, the two schema constructs that could derive
+// project identity behind the daemon's back.
+//
+//go:embed 021_drop_project_identity_folds.sql
+var DropProjectIdentityFoldsSQL string

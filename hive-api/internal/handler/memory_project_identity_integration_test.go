@@ -40,6 +40,10 @@ func TestMemoryHandler_ProjectIdentityDistinguishesUnknownKnownEmptyAndGlobalQue
 		AdminSvc: &mockAdminSvc{},
 	})
 
+	// "Known" means the API has observed this exact literal. A spelling it never
+	// saw is unknown even when a human would read it as the same project: the
+	// daemon owns identity, and the rows of "Known.Project" are unreachable
+	// through any other spelling, so answering 200-empty would be a lie.
 	for _, tc := range []struct {
 		name string
 		path string
@@ -47,8 +51,10 @@ func TestMemoryHandler_ProjectIdentityDistinguishesUnknownKnownEmptyAndGlobalQue
 	}{
 		{name: "unknown list", path: "/memories?project=Ghost.Project", want: http.StatusNotFound},
 		{name: "unknown search", path: "/memories/search?query=needle&project=ghost/project", want: http.StatusNotFound},
-		{name: "known empty list", path: "/memories?project=KNOWN_project", want: http.StatusOK},
-		{name: "known empty search", path: "/memories/search?query=needle&project=known/project", want: http.StatusOK},
+		{name: "other spelling of a known project is unknown", path: "/memories?project=KNOWN_project", want: http.StatusNotFound},
+		{name: "other spelling search", path: "/memories/search?query=needle&project=known/project", want: http.StatusNotFound},
+		{name: "known empty list", path: "/memories?project=Known.Project", want: http.StatusOK},
+		{name: "known empty search", path: "/memories/search?query=needle&project=Known.Project", want: http.StatusOK},
 		{name: "global list", path: "/memories", want: http.StatusOK},
 		{name: "global search", path: "/memories/search?query=needle", want: http.StatusOK},
 	} {
@@ -88,13 +94,21 @@ func TestMemorySyncRegistersNewProjectBeforeFilteredReadInSameServerLifetime(t *
 	}, "00000000-0000-0000-0000-000000000001")
 	require.NoError(t, err)
 
+	// The literal the sync registered is readable in the same server lifetime...
+	_, _, err = memoryService.List(ctx, model.MemoryFilter{Project: " Fresh.Project "})
+	require.NoError(t, err)
+	_, _, err = memoryService.Search(ctx, "needle", model.MemoryFilter{Project: " Fresh.Project "})
+	require.NoError(t, err)
+
+	// ...and no other spelling of it is, because no other spelling can read a
+	// single one of its rows.
 	_, _, err = memoryService.List(ctx, model.MemoryFilter{Project: "FRESH_project"})
-	require.NoError(t, err)
+	require.ErrorIs(t, err, service.ErrProjectUnknown)
 	_, _, err = memoryService.Search(ctx, "needle", model.MemoryFilter{Project: "fresh-project"})
-	require.NoError(t, err)
+	require.ErrorIs(t, err, service.ErrProjectUnknown)
 }
 
-func TestMemoryCreateRegistersCanonicalProjectAndRollsBackOnWriteFailure(t *testing.T) {
+func TestMemoryCreateRegistersTheLiteralProjectAndRollsBackOnWriteFailure(t *testing.T) {
 	pool, cleanup := startMemoryHandlerPostgres(t)
 	defer cleanup()
 	ctx := context.Background()
@@ -117,17 +131,16 @@ func TestMemoryCreateRegistersCanonicalProjectAndRollsBackOnWriteFailure(t *test
 	require.Equal(t, " Direct.Project ", pulled.Memories[0].Project, "pull retains the stored display spelling")
 
 	var key, spelling string
-	require.NoError(t, pool.QueryRow(ctx, `SELECT project_key, first_spelling FROM project_identities WHERE project_key = 'direct-project'`).Scan(&key, &spelling))
-	require.Equal(t, "direct-project", key)
+	require.NoError(t, pool.QueryRow(ctx, `SELECT project_key, first_spelling FROM project_identities WHERE project_key = ' Direct.Project '`).Scan(&key, &spelling))
+	require.Equal(t, " Direct.Project ", key, "the registry records the literal, not a derived key")
 	require.Equal(t, " Direct.Project ", spelling)
 	var ghost bool
-	require.NoError(t, pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM project_identities WHERE project_key = 'ghost-project')`).Scan(&ghost))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM project_identities WHERE project_key = 'Ghost.Project')`).Scan(&ghost))
 	require.False(t, ghost)
-	// "Is this project known?" is answered by the identity registry, which keys
-	// spellings canonically, so any spelling of a registered project is known.
-	// The rows themselves are still selected by exact equality on the literal.
+	// "Is this project known?" and "can this caller read its rows?" are now the
+	// same question, both answered by plain equality on the literal.
 	_, _, err = memoryService.List(ctx, model.MemoryFilter{Project: "direct/project"})
-	require.False(t, errors.Is(err, service.ErrProjectUnknown))
+	require.True(t, errors.Is(err, service.ErrProjectUnknown))
 }
 
 func TestMemoryCreateRollsBackDomainWriteWhenIdentityRegistrationFails(t *testing.T) {
@@ -135,7 +148,7 @@ func TestMemoryCreateRollsBackDomainWriteWhenIdentityRegistrationFails(t *testin
 	defer cleanup()
 	ctx := context.Background()
 	memoryService := service.NewMemoryService(repository.NewPostgresMemoryRepository(pool), repository.NewPostgresSessionRepository(pool), repository.NewPostgresProjectBlockRepository(pool), repository.NewPostgresTxManager(pool))
-	require.NoError(t, repository.RunMigrations(pool, `DROP TABLE project_identity_spellings`))
+	require.NoError(t, repository.RunMigrations(pool, `DROP TABLE project_identities CASCADE`))
 	now := time.Now().UTC()
 
 	_, err := memoryService.Create(ctx, &model.Memory{SyncID: "30000000-0000-0000-0000-000000000001", Project: "Broken.Registry", Category: model.CatDecision, Title: "must rollback", Content: "content", CreatedBy: "user", CreatedAt: now, UpdatedAt: now})
@@ -165,6 +178,7 @@ func startMemoryHandlerPostgres(t *testing.T) (*pgxpool.Pool, func()) {
 		migrations.ActivityFeedIndexSQL, migrations.MemoryDiscoveryIndexesSQL, migrations.PullCursorIndexesSQL,
 		migrations.ProjectScopedPullCursorIndexesSQL, migrations.ProjectBlocksSQL, migrations.QuarantineContractSQL,
 		migrations.DistributedQuarantineSQL, migrations.CanonicalProjectRegistrySQL,
+		migrations.LegacyQuarantineRekeySQL, migrations.DropProjectIdentityFoldsSQL,
 	} {
 		require.NoError(t, repository.RunMigrations(pool, sql))
 	}

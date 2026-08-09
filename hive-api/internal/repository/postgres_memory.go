@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
-	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/projectkey"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,10 +28,13 @@ func newPostgresMemoryRepositoryWithQuerier(db pgxQuerier) MemoryRepository {
 	return &postgresMemoryRepository{db: db}
 }
 
-func (r *postgresMemoryRepository) ProjectExists(ctx context.Context, canonicalProjectKey string) (bool, error) {
-	canonicalProjectKey = projectkey.Canonicalize(canonicalProjectKey)
+// ProjectExists reports whether the API has ever observed this exact project
+// literal. The registry is keyed by the literal, so "known" and "readable" are
+// the same question — a folded lookup answered yes for spellings whose rows this
+// caller can never read.
+func (r *postgresMemoryRepository) ProjectExists(ctx context.Context, project string) (bool, error) {
 	var exists bool
-	err := r.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM project_identities WHERE project_key = $1)`, canonicalProjectKey).Scan(&exists)
+	err := r.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM project_identities WHERE project_key = $1)`, project).Scan(&exists)
 	return exists, wrapPgError(err, "check project identity")
 }
 
@@ -867,7 +869,10 @@ func (r *postgresMemoryRepository) CountGrowthByMonth(ctx context.Context, month
 
 func appendMemoryFilterPredicates(where string, args []interface{}, argIdx int, filter model.MemoryFilter) (string, []interface{}, int) {
 	if filter.Project != "" {
-		where += fmt.Sprintf(" AND (project = $%d OR EXISTS (SELECT 1 FROM project_identity_spellings pis WHERE pis.spelling = project AND pis.project_key = $%d))", argIdx, argIdx)
+		// Plain equality on the stored literal, the same rule PullSince uses.
+		// Widening this with the identity registry let one spelling read
+		// another project's rows.
+		where += fmt.Sprintf(" AND project = $%d", argIdx)
 		args = append(args, filter.Project)
 		argIdx++
 	}

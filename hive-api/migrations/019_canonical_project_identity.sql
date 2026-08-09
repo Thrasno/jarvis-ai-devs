@@ -1,5 +1,6 @@
--- Canonical keys are derived only by the shared Go projectidentity contract.
--- This registry is additive so older API clients can continue using project.
+-- The registry of project literals the API has observed. project_key holds the
+-- literal itself: the API never derives identity, so this table records names,
+-- it does not group them. Additive, so older API clients keep using project.
 CREATE TABLE IF NOT EXISTS project_identities (
     project_key text PRIMARY KEY,
     first_spelling text NOT NULL,
@@ -16,14 +17,10 @@ CREATE TABLE IF NOT EXISTS project_identities (
 CREATE INDEX IF NOT EXISTS idx_project_identities_first_seen
     ON project_identities (first_seen_at ASC, project_key ASC);
 
--- SQL consumes canonical keys produced by Go; it never derives them.
-CREATE TABLE IF NOT EXISTS project_identity_spellings (
-    spelling text PRIMARY KEY,
-    project_key text NOT NULL REFERENCES project_identities(project_key) ON UPDATE CASCADE ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_project_identity_spellings_key
-    ON project_identity_spellings (project_key);
+-- A separate spelling->key table used to live here. It is gone: the registry is
+-- keyed by the project literal, so a spelling map would be redundant with
+-- project_identities and is the join that leaked one project's rows to another.
+-- Migration 021 drops it from databases that already have it.
 
 DO $$
 DECLARE
