@@ -756,6 +756,13 @@ func (r *postgresMemoryRepository) applyRestoreMutation(ctx context.Context, tx 
 // envelope, cannot be carried out under any state of the database. A caller
 // naming a source the row does not hold IS a valid instruction — it simply
 // matches nothing (see applyReprojectMutation).
+//
+// The daemon runs the same five checks on its own side, in
+// hive-daemon/internal/db.reprojectInstructionError, and that duplication is
+// deliberate: each end refuses a malformed envelope on its own terms rather than
+// trusting the other to have refused it first. Keep the two in step — a check
+// added here without its twin lets the daemon apply locally what the server
+// rejects, which is exactly the split identity a reproject exists to heal.
 func reprojectInstructionError(mutation model.MutationEnvelope) string {
 	// A reproject rewrites one column and writes no content, but
 	// insertMemoryMutation marshals Memory and Tombstone unconditionally and

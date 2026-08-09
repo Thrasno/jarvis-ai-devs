@@ -42,15 +42,15 @@ func (r *postgresProjectRepository) ListAggregates(ctx context.Context) ([]model
 	// the database may break either way between two calls.
 	q := fmt.Sprintf(`
 WITH memory_rows AS (
-    SELECT %s AS project_key, created_at, updated_at, deleted_at, restored_at
+    SELECT memories.project AS project_key, created_at, updated_at, deleted_at, restored_at
     FROM memories WHERE %s
 ),
 session_rows AS (
-    SELECT %s AS project_key, started_at, ended_at
+    SELECT sessions.project AS project_key, started_at, ended_at
     FROM sessions WHERE %s
 ),
 sync_rows AS (
-    SELECT %s AS project_key, outcome, started_at, ended_at, ingested_at, id
+    SELECT sync_attempt_logs.project AS project_key, outcome, started_at, ended_at, ingested_at, id
     FROM sync_attempt_logs WHERE %s
 ),
 projects AS (
@@ -97,9 +97,9 @@ LEFT JOIN memory_agg m ON m.project_key = p.project_key
 LEFT JOIN session_agg s ON s.project_key = p.project_key
 LEFT JOIN latest_sync ls ON ls.project_key = p.project_key
 ORDER BY p.project_key`,
-		"memories.project", unblockedProjectPredicate("memories.project"),
-		"sessions.project", unblockedProjectPredicate("sessions.project"),
-		"sync_attempt_logs.project", unblockedProjectPredicate("sync_attempt_logs.project"))
+		unblockedProjectPredicate("memories.project"),
+		unblockedProjectPredicate("sessions.project"),
+		unblockedProjectPredicate("sync_attempt_logs.project"))
 
 	rows, err := r.db.Query(ctx, q)
 	if err != nil {

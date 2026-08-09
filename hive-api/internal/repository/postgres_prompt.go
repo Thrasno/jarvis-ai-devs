@@ -24,35 +24,35 @@ func newPostgresPromptRepositoryWithQuerier(db pgxQuerier) PromptRepository {
 	return &postgresPromptRepository{db: db}
 }
 
-// Upsert inserta un nuevo prompt si el sync_id no existe todavía.
+// Upsert inserts a prompt when its sync_id is not stored yet.
 //
-// Los prompts siguen siendo inmutables: un re-push del mismo sync_id no cambia
-// contenido, autor ni fechas. La ÚNICA excepción es `project`, porque el daemon
-// es la autoridad sobre la identidad de proyecto: cuando su migración local
-// reescribe la ortografía ("Foo.Bar" -> "foo-bar") y reenvía la fila, el
-// servidor debe aceptar esa corrección o el mismo prompt queda bajo dos nombres
-// de proyecto distintos. Ver UpsertSession para la nota completa.
+// Prompts stay immutable: re-pushing the same sync_id changes no content, no
+// author and no timestamps. `project` is the ONE exception, because the daemon
+// is the sole authority on project identity: when its local migration rewrites
+// a spelling ("Foo.Bar" -> "foo-bar") and re-pushes the row, the server has to
+// accept that correction or the same prompt lives under two project names. See
+// UpsertSession for the full rationale.
 //
-// Esa corrección está condicionada a que el push NOMBRE el literal que la fila
-// tiene ahora (`WHERE user_prompts.project = $6`, ver Session.FromProject y
-// UpsertSession). Sin esa precondición el conflicto no corregía una fila
-// conocida: reubicaba la fila que ese sync_id encontrase, sacándola incluso de
-// una cuarentena que la request nunca nombra.
+// The correction is conditional on the push NAMING the literal the row holds
+// right now (`WHERE user_prompts.project = $6`, see Session.FromProject and
+// UpsertSession). Without that precondition the conflict was not correcting a
+// known row: it relocated whatever row that sync_id happened to hit, carrying it
+// even out of a quarantine the request never names.
 //
-// A diferencia de la corrección de sesiones, esta NO refresca synced_at: los
-// prompts no tienen canal de pull incremental (nada lee user_prompts), así que
-// no hay watermark al que hacerlos visibles. Si algún día se añade un
-// ListPromptsSince, esta rama debe empezar a moverlo — igual que UpsertSession y
-// applyReprojectMutation — o la corrección quedará fuera del alcance de los
-// pullers del proyecto destino.
+// Unlike the session correction, this one does NOT refresh synced_at: prompts
+// have no incremental pull channel (nothing reads user_prompts), so there is no
+// watermark to make them visible behind. If a ListPromptsSince is ever added,
+// this branch has to start moving it — exactly as UpsertSession and
+// applyReprojectMutation do — or the correction stays out of reach of the target
+// project's pullers.
 //
-// El valor devuelto sigue significando exactamente "se insertó una fila nueva":
-// como el conflicto puede ejecutar un UPDATE, RowsAffected() valdría 1 también
-// para una corrección, así que la distinción se hace con `xmax = 0`, que solo es
-// verdadero para la fila realmente insertada por este statement. Así
-// prompts_pushed no cuenta ni un re-push idéntico ni una corrección. Cuando el
-// WHERE no se cumple el conflicto no actualiza nada y RETURNING no devuelve
-// fila: eso es "no insertado", no un error.
+// The return value still means exactly "a new row was inserted". Since the
+// conflict can run an UPDATE, RowsAffected() would be 1 for a correction too, so
+// the distinction is made with `xmax = 0`, which is true only for the row this
+// statement actually inserted. That keeps prompts_pushed from counting either an
+// identical re-push or a correction. When the WHERE does not hold the conflict
+// updates nothing and RETURNING yields no row: that is "not inserted", not an
+// error.
 func (r *postgresPromptRepository) Upsert(ctx context.Context, p *model.Prompt) (bool, error) {
 	if err := r.rejectRelocationEnds(ctx, p); err != nil {
 		return false, err

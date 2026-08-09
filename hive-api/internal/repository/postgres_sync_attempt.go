@@ -19,10 +19,6 @@ func NewPostgresSyncAttemptRepository(pool *pgxpool.Pool) SyncAttemptRepository 
 	return &postgresSyncAttemptRepository{db: pool, pool: pool}
 }
 
-func newPostgresSyncAttemptRepositoryWithQuerier(db pgxQuerier) SyncAttemptRepository {
-	return &postgresSyncAttemptRepository{db: db}
-}
-
 func (r *postgresSyncAttemptRepository) UpsertBatch(ctx context.Context, attempts []model.SyncAttemptLog) (model.SyncAttemptStoreResult, error) {
 	if r.pool == nil {
 		return r.upsertBatch(ctx, r.db, attempts)

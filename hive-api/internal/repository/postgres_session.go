@@ -36,9 +36,9 @@ const sessionCorrectionConflict = `
 	  SET project = EXCLUDED.project, synced_at = now()
 	  WHERE sessions.project = $10`
 
-// CreateSession inserta una nueva sesión. El conflicto en sync_id significa "esta
-// es la misma sesión reenviada": todo se mantiene idempotente salvo project, la
-// única columna sobre la que el daemon es autoridad (ver UpsertSession).
+// CreateSession inserts a new session. A conflict on sync_id means "this is the
+// same session, resent": everything stays idempotent except project, the one
+// column the daemon is authority over (see UpsertSession).
 func (r *postgresSessionRepository) CreateSession(ctx context.Context, s *model.Session) error {
 	if err := r.rejectRelocationEnds(ctx, s); err != nil {
 		return err

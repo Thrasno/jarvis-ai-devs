@@ -1,6 +1,10 @@
 -- The registry of project literals the API has observed. project_key holds the
 -- literal itself: the API never derives identity, so this table records names,
 -- it does not group them. Additive, so older API clients keep using project.
+--
+-- Superseded: migration 022 drops this table in the same boot pass. It survives
+-- here only so the ordered migration list stays replayable from an empty
+-- database; nothing reads project_identities after 022 runs.
 CREATE TABLE IF NOT EXISTS project_identities (
     project_key text PRIMARY KEY,
     first_spelling text NOT NULL,

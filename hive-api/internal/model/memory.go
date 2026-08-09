@@ -199,6 +199,10 @@ type MemoryPayload struct {
 //
 // ToProject duplicates the envelope's Project on purpose, so a journal entry
 // read on its own still says where the memory went; the two must agree.
+//
+// It is the wire twin of hive-daemon's db.MutationReprojectPayload. The two
+// modules ship separately, so each owns its own decoding of the same JSON shape;
+// the tags are the contract between them.
 type ReprojectPayload struct {
 	FromProject string `json:"from_project"`
 	ToProject   string `json:"to_project"`

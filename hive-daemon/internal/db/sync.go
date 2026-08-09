@@ -17,6 +17,13 @@ import (
 
 const maxSyncLastErrorRunes = 500
 
+// canonicalSyncStateProject folds a sync_state key to the canonical project
+// identity, except for the one row that is not a project.
+//
+// sync_state is keyed by project, but the row spelled '__auth__' is a sentinel
+// holding the global JWT (see the schema in db.go); no project is ever named
+// that. Folding it would rewrite the key the token is read and written under,
+// and the daemon would lose its credentials.
 func canonicalSyncStateProject(project string) string {
 	if project == "__auth__" {
 		return project
@@ -122,6 +129,10 @@ type MutationTombstonePayload struct {
 // replay after the row already moved matches nothing instead of dragging some
 // other row out of some other project. ToProject duplicates the envelope's
 // Project on purpose — the server rejects an envelope whose two disagree.
+//
+// It is the wire twin of hive-api's model.ReprojectPayload. The two modules ship
+// separately, so each owns its own decoding of the same JSON shape; the tags are
+// the contract between them.
 type MutationReprojectPayload struct {
 	FromProject string `json:"from_project"`
 	ToProject   string `json:"to_project"`
@@ -674,6 +685,13 @@ WHERE consumer = ? AND project = ? AND channel = ?`, consumer, project, channel)
 // one column and writes no content, so a payload riding along would be journaled
 // and re-pushed with the weight of a create while never being written to any
 // row; hive-api rejects it for the same reason.
+//
+// hive-api/internal/repository.reprojectInstructionError is the twin of this
+// function, with the same five checks, and the duplication is deliberate: each
+// end refuses a malformed envelope on its own terms rather than trusting the
+// other to have refused it first. Keep the two in step — a check added here
+// without its twin lets this daemon reject locally what the server accepts, so
+// the row moves on the server and stays put here.
 func reprojectInstructionError(event MutationEnvelope) string {
 	if event.Memory != nil {
 		return "reproject mutation must not carry a memory payload"
