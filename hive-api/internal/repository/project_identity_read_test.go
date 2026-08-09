@@ -68,13 +68,4 @@ func TestProjectIdentityRegistryIsKeyedByTheLiteralSpelling(t *testing.T) {
 		`SELECT project_key, first_spelling FROM project_identities`).Scan(&key, &spelling))
 	assert.Equal(t, " Foo.Bar ", key, "the registry key is the literal, byte for byte")
 	assert.Equal(t, " Foo.Bar ", spelling)
-
-	repo := NewPostgresMemoryRepository(pool)
-	known, err := repo.ProjectExists(ctx, " Foo.Bar ")
-	require.NoError(t, err)
-	assert.True(t, known)
-
-	folded, err := repo.ProjectExists(ctx, "foo-bar")
-	require.NoError(t, err)
-	assert.False(t, folded, "a spelling the API never saw is not a known project")
 }

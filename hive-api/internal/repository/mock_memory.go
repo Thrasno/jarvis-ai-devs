@@ -26,11 +26,6 @@ type MockMemoryRepository struct {
 // el compilador dice exactamente cuál falta. Sin esto, el error aparece en los tests.
 var _ MemoryRepository = (*MockMemoryRepository)(nil)
 
-func (m *MockMemoryRepository) ProjectExists(ctx context.Context, canonicalProjectKey string) (bool, error) {
-	args := m.Called(ctx, canonicalProjectKey)
-	return args.Bool(0), args.Error(1)
-}
-
 func (m *MockMemoryRepository) Create(ctx context.Context, mem *model.Memory) (*model.Memory, error) {
 	args := m.Called(ctx, mem)
 	if args.Get(0) == nil {

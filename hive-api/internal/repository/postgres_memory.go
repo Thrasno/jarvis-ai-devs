@@ -28,16 +28,6 @@ func newPostgresMemoryRepositoryWithQuerier(db pgxQuerier) MemoryRepository {
 	return &postgresMemoryRepository{db: db}
 }
 
-// ProjectExists reports whether the API has ever observed this exact project
-// literal. The registry is keyed by the literal, so "known" and "readable" are
-// the same question — a folded lookup answered yes for spellings whose rows this
-// caller can never read.
-func (r *postgresMemoryRepository) ProjectExists(ctx context.Context, project string) (bool, error) {
-	var exists bool
-	err := r.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM project_identities WHERE project_key = $1)`, project).Scan(&exists)
-	return exists, wrapPgError(err, "check project identity")
-}
-
 // Create inserta una nueva memoria y devuelve el registro completo (con ID del servidor).
 func (r *postgresMemoryRepository) Create(ctx context.Context, mem *model.Memory) (*model.Memory, error) {
 	if err := r.rejectBlockedProject(ctx, mem.Project); err != nil {

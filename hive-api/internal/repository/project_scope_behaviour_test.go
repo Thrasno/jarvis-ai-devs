@@ -178,14 +178,6 @@ func projectScopedReads() []projectScopedRead {
 			},
 		},
 		{
-			name: "MemoryRepository.ProjectExists",
-			count: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, project string) int {
-				exists, err := NewPostgresMemoryRepository(pool).ProjectExists(ctx, project)
-				require.NoError(t, err)
-				return boolCount(exists)
-			},
-		},
-		{
 			name: "SessionRepository.ListSessionsSince",
 			count: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, project string) int {
 				sessions, _, err := NewPostgresSessionRepository(pool).ListSessionsSince(ctx, project, time.Time{}, model.PullCursor{}, 0)
