@@ -289,13 +289,8 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 		return err
 	}
 	// Re-key each raw spelling separately: SQLite deliberately does not derive keys.
-	for _, record := range records {
-		column, ok := rekeyableProjectColumns[record.Table]
-		if !ok {
-			continue
-		}
-		key := projectidentity.Canonical(record.Project).String()
-		if _, err := tx.ExecContext(ctx, `UPDATE `+string(record.Table)+` SET `+column+` = ? WHERE `+column+` = ?`, key, record.Project); err != nil {
+	for _, rekey := range planProjectRekeys(records) {
+		if _, err := tx.ExecContext(ctx, `UPDATE `+string(rekey.Table)+` SET `+rekey.Column+` = ? WHERE `+rekey.Column+` = ?`, rekey.To, rekey.From); err != nil {
 			return err
 		}
 	}
@@ -720,6 +715,65 @@ func isCompositeMigrationState(state ProjectState) bool {
 	default:
 		return false
 	}
+}
+
+// projectRekey is one scalar-column UPDATE the migration owes: move every row of
+// Table whose Column reads From to the canonical spelling To.
+type projectRekey struct {
+	Table  ProjectState
+	Column string
+	From   string
+	To     string
+}
+
+// planProjectRekeys reduces the per-ROW inventory to the per-SPELLING work the
+// rekey actually owes.
+//
+// records holds one entry per row, and the loop this replaces executed one UPDATE
+// per entry. Two things made that quadratic rather than merely redundant:
+//
+//   - A spelling shared by N rows produced N identical statements. Only the first
+//     matched anything; the rest scanned the table to move nothing.
+//   - A spelling that was ALREADY canonical produced N statements that each
+//     matched all N rows and rewrote them — every write firing the FTS
+//     delete/insert triggers. A first startup on an already-canonical database
+//     (the normal case for anyone whose project names never needed folding, who
+//     still runs this migration because the schema ownership rebuild is owed)
+//     therefore cost O(rows²): measured at 3.1s for 250 memories, 12.6s for 500,
+//     51.5s for 1000 and 3m31s for 2000, i.e. roughly 22 minutes at 5000.
+//
+// Both are dropped here rather than in SQL because both are pure no-ops: setting
+// a column to the value it already holds changes no row, and the FTS content is
+// rebuilt wholesale by rebuildProjectMigrationState afterwards either way.
+//
+// The result is ordered (table, then spelling) so the statement sequence is
+// deterministic and a failure is reproducible.
+func planProjectRekeys(records []ProjectStateRecord) []projectRekey {
+	seen := make(map[projectRekey]bool, len(records))
+	rekeys := make([]projectRekey, 0, len(records))
+	for _, record := range records {
+		column, ok := rekeyableProjectColumns[record.Table]
+		if !ok {
+			continue
+		}
+		canonical := projectidentity.Canonical(record.Project).String()
+		if canonical == record.Project {
+			continue
+		}
+		rekey := projectRekey{Table: record.Table, Column: column, From: record.Project, To: canonical}
+		if seen[rekey] {
+			continue
+		}
+		seen[rekey] = true
+		rekeys = append(rekeys, rekey)
+	}
+	sort.Slice(rekeys, func(i, j int) bool {
+		if rekeys[i].Table != rekeys[j].Table {
+			return rekeys[i].Table < rekeys[j].Table
+		}
+		return rekeys[i].From < rekeys[j].From
+	})
+	return rekeys
 }
 
 var rekeyableProjectColumns = map[ProjectState]string{
