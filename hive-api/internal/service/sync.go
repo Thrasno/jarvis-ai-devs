@@ -308,12 +308,8 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 		for _, mutation := range req.Mutations {
 			if mutationProjectMismatch(mutation, req.Project) {
 				conflicts++
-				mutationResults = append(mutationResults, model.MutationApplyResult{
-					EventID:  mutation.EventID,
-					Op:       mutation.Op,
-					Rejected: true,
-					Reason:   "mutation project does not match sync project",
-				})
+				mutationResults = append(mutationResults, rejectedMutation(mutation, req.Project,
+					"mutation project does not match sync project"))
 				continue
 			}
 
@@ -328,12 +324,7 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 					if errors.Is(err, repository.ErrMemoryTombstoned) {
 						reason = "mutation target is tombstoned"
 					}
-					mutationResults = append(mutationResults, model.MutationApplyResult{
-						EventID:  mutation.EventID,
-						Op:       mutation.Op,
-						Rejected: true,
-						Reason:   reason,
-					})
+					mutationResults = append(mutationResults, rejectedMutation(mutation, req.Project, reason))
 					continue
 				}
 				return nil, err
@@ -347,6 +338,7 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 			}
 			if result.Rejected {
 				conflicts++
+				logRejectedMutation(result.EventID, result.Op, req.Project, result.Reason)
 			}
 		}
 
@@ -359,7 +351,7 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 			return nil, err
 		}
 		if batch != nil {
-			pulledMutations = deliverableMutations(batch.Events, req.SyncCapabilities)
+			pulledMutations = deliverableMutations(batch.Events, req.Project, req.SyncCapabilities)
 			next := batch.Next
 			nextMutationCursor = &next
 		}
@@ -404,14 +396,53 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 // as the ordinary memory row under its new project, since applyReprojectMutation
 // bumps synced_at. That is a weaker guarantee than replay, and it is the one an
 // un-upgraded daemon can actually be given.
-func deliverableMutations(events []model.MutationEnvelope, capabilities []string) []model.MutationEnvelope {
+//
+// Every withheld event is logged, because withholding is silent everywhere else:
+// the daemon reports a clean sync, ListActivityFeed filters reproject out by op,
+// and emitSyncAudit counts only memories, conflicts and prompts. A client that
+// declares its capability with the wrong spelling would otherwise lose every
+// reproject forever while both ends reported health. The server is the only side
+// that knows both what it held back and what the client declared, so the line
+// carries both.
+func deliverableMutations(events []model.MutationEnvelope, project string, capabilities []string) []model.MutationEnvelope {
 	deliverable := make([]model.MutationEnvelope, 0, len(events))
 	for _, event := range events {
 		if model.ClientUnderstandsMutationOp(event.Op, capabilities) {
 			deliverable = append(deliverable, event)
+			continue
 		}
+		log.Printf("warn: withheld mutation event_id=%s op=%q project=%q required_capability=%q declared_capabilities=%q",
+			event.EventID, event.Op, project, model.MutationOpCapability(event.Op), capabilities)
 	}
 	return deliverable
+}
+
+// rejectedMutation builds a rejection result and logs it in one place, so no
+// rejection path can be added without its log line.
+func rejectedMutation(mutation model.MutationEnvelope, project, reason string) model.MutationApplyResult {
+	logRejectedMutation(mutation.EventID, mutation.Op, project, reason)
+	return model.MutationApplyResult{
+		EventID:  mutation.EventID,
+		Op:       mutation.Op,
+		Rejected: true,
+		Reason:   reason,
+	}
+}
+
+// logRejectedMutation records what the server discarded and why.
+//
+// A rejection is more destructive than it looks: the daemon's
+// MarkMutationsRejected drops the event from its local journal and never
+// surfaces result.Reason to a human, so the event and its explanation are gone
+// the moment the response is processed. Soft-rejecting an op the server does not
+// know is still right — the old hard error poisoned the entire batch — but it
+// makes this the only surviving record of the loss.
+//
+// The reason goes last and unquoted: it is free-form prose that already carries
+// its own quotes (`unsupported memory mutation op "…"`), and %q would escape
+// them into unreadability. Being the final field, it needs no delimiter.
+func logRejectedMutation(eventID string, op model.MutationOp, project, reason string) {
+	log.Printf("warn: rejected mutation event_id=%s op=%q project=%q reason: %s", eventID, op, project, reason)
 }
 
 func syncRequestProjects(req model.SyncRequest) []string {

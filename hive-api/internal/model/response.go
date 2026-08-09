@@ -144,6 +144,15 @@ var mutationOpCapabilities = map[MutationOp]string{
 	MutationOpReproject: SyncCapabilityReproject,
 }
 
+// MutationOpCapability names the capability a client must declare before the
+// server will send this op, or "" when the op is baseline and never withheld.
+// It exists so a withhold can be reported in terms of the exact string the
+// client failed to send, which is the whole diagnosis when the client sent a
+// near-miss spelling.
+func MutationOpCapability(op MutationOp) string {
+	return mutationOpCapabilities[op]
+}
+
 // ClientUnderstandsMutationOp reports whether a client declaring these
 // capabilities can apply this op. It is the pull-side gate: an event the client
 // cannot apply must not enter its stream, because failing to apply one aborts
