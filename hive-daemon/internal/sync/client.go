@@ -19,8 +19,9 @@ const mutationProtocolVersion = 2
 
 // syncCapabilityReproject is the exact string hive-api matches on before it will
 // send a reproject event. A near miss is worse than silence: the server withholds
-// every reproject forever while both ends report a healthy sync.
-const syncCapabilityReproject = "mutation.reproject"
+// every reproject forever while both ends report a healthy sync — which is why
+// the string is owned by the shared contract module rather than copied here.
+const syncCapabilityReproject = projectidentity.CapabilityReproject
 
 // clientSyncCapabilities names the optional mutation ops this build can actually
 // apply. It is a promise about ApplyRemoteMutation, not a wish list: the server

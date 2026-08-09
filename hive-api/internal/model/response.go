@@ -1,6 +1,10 @@
 package model
 
-import "time"
+import (
+	"time"
+
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
+)
 
 // ErrorResponse es el envelope de error estándar de la API.
 // TODOS los errores de la API devuelven este formato — nunca texto plano.
@@ -129,7 +133,10 @@ const CompatibilityModeMutationV2 = "mutation-sync-v2"
 // SyncCapabilityReproject tells the daemon this server understands the
 // reproject mutation op, and that sending one will move the memory rather than
 // be rejected as an op nobody knows.
-const SyncCapabilityReproject = "mutation.reproject"
+//
+// The string itself is owned by the shared contract module, so the daemon that
+// must declare it and the server that matches on it cannot drift apart.
+const SyncCapabilityReproject = projectidentity.CapabilityReproject
 
 // ServerSyncCapabilities is what this build advertises on every sync response.
 func ServerSyncCapabilities() []string {

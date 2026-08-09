@@ -9,6 +9,17 @@ import (
 
 const ContractVersion = "v1"
 
+// CapabilityReproject is the exact sync capability string a client declares to
+// receive reproject mutations, and the exact string hive-api matches on before
+// it sends one.
+//
+// It lives in this shared module because a near miss is worse than silence: with
+// two hand-maintained copies, one side renaming or mistyping the string makes
+// the server withhold every reproject forever while both ends keep reporting a
+// healthy sync. Referencing one constant makes that desynchronisation a compile
+// error instead.
+const CapabilityReproject = "mutation.reproject"
+
 var fold = cases.Fold()
 
 // Key is a canonical project identity suitable for storage and lookup.
