@@ -32,10 +32,10 @@ func (r *postgresProjectRepository) ListAggregates(ctx context.Context) ([]model
 	// such a name writes a quarantine matching no row, and internal/service
 	// joins sync health on the same literal and would drop the project instead.
 	//
-	// project_identities is deliberately NOT joined here for a name. It holds
-	// legacy rows keyed canonically with the raw spelling in first_spelling, so
-	// on any upgraded database the join renames a project to a spelling none of
-	// its rows carry. remote_spelling has no production writer at all.
+	// There is no registry of project names to join for one either. There was —
+	// project_identities — and migration 022 drops it: on an upgraded database
+	// its rows were keyed canonically with the raw spelling in first_spelling,
+	// so joining it renamed a project to a spelling none of its rows carry.
 	//
 	// Ordering is on the row literal because it is the only unique value here:
 	// the projects CTE is a UNION over it. Ordering on anything else leaves ties

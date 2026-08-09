@@ -126,6 +126,13 @@ var CanonicalProjectRegistrySQL string
 //go:embed 021_drop_project_identity_folds.sql
 var DropProjectIdentityFoldsSQL string
 
+// DropProjectIdentityRegistrySQL is migration 022. It removes project_identities,
+// the registry whose only reader turned an unlisted project into a 404 — a
+// whitelist the API has no business keeping.
+//
+//go:embed 022_drop_project_identity_registry.sql
+var DropProjectIdentityRegistrySQL string
+
 // Ordered returns every migration in the order the server applies it at boot.
 //
 // This module has no migration ledger: each boot replays the whole slice from
@@ -157,5 +164,6 @@ func Ordered() []string {
 		DistributedQuarantineSQL,
 		CanonicalProjectRegistrySQL,
 		DropProjectIdentityFoldsSQL,
+		DropProjectIdentityRegistrySQL,
 	}
 }

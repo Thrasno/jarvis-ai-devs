@@ -118,40 +118,6 @@ func TestPostgresProjectRepository_ListAggregatesNamesProjectsByTheStoredSpellin
 	assert.EqualValues(t, 1, sibling.SessionCount)
 }
 
-// TestPostgresProjectRepository_ListAggregatesNamesLegacyRegistryRowsByTheirRows
-// is the case that made naming through the registry a defect rather than a
-// cosmetic choice.
-//
-// An earlier release keyed project_identities canonically and stored the raw
-// spelling in first_spelling. Migration 019 is CREATE TABLE IF NOT EXISTS and
-// nothing rewrites those rows, so every database upgraded from that release
-// still holds project_key='foo-bar' alongside first_spelling='Foo.Bar' while
-// its memories and sessions carry 'foo-bar'.
-//
-// Naming through the registry publishes 'Foo.Bar' there — a name that matches
-// no stored row. An admin who blocks it from the dashboard writes a quarantine
-// keyed 'Foo.Bar' against rows spelled 'foo-bar': the block reports Blocked and
-// quarantines nothing. The name must be what the rows carry.
-func TestPostgresProjectRepository_ListAggregatesNamesLegacyRegistryRowsByTheirRows(t *testing.T) {
-	pool, cleanup := startPostgresWithProjectSources(t)
-	defer cleanup()
-	require.NoError(t, RunMigrations(pool, migrations.CanonicalProjectRegistrySQL))
-
-	ctx := context.Background()
-	base := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
-	_, err := pool.Exec(ctx, `
-		INSERT INTO project_identities (project_key, first_spelling, first_seen_at)
-		VALUES ('foo-bar', 'Foo.Bar', $1)`, base)
-	require.NoError(t, err)
-	insertProjectSession(t, pool, "legacy-registry-session", "foo-bar", base, nil)
-
-	aggregates, err := NewPostgresProjectRepository(pool).ListAggregates(ctx)
-	require.NoError(t, err)
-	require.Len(t, aggregates, 1)
-	require.Equal(t, "foo-bar", aggregates[0].Name,
-		"a legacy registry row must not rename a project to a spelling none of its rows carry")
-}
-
 // TestPostgresProjectRepository_ListAggregatesOrdersByTheProjectKey pins a
 // deterministic order. The row literal is unique across the result — the
 // projects CTE is a UNION over it — so ordering by it is total. Nothing else

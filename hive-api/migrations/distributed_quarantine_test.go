@@ -46,3 +46,40 @@ func TestCanonicalProjectRegistryMigrationUsesSharedKeysAndPreservesLegacyRows(t
 		}
 	}
 }
+
+// TestDropProjectIdentityRegistryMigrationDropsTheTableWithoutCascade pins the
+// shape of the drop. CASCADE would take unnamed dependents with it; a plain
+// DROP fails loudly instead, which is what we want if anything still points
+// here. TestFullMigrationSetRemovesTheLegacyProjectIdentitySchema proves the
+// effect on a database that already has the table.
+func TestDropProjectIdentityRegistryMigrationDropsTheTableWithoutCascade(t *testing.T) {
+	if !strings.Contains(DropProjectIdentityRegistrySQL, "DROP TABLE IF EXISTS project_identities;") {
+		t.Fatal("registry drop migration must drop project_identities")
+	}
+	if strings.Contains(DropProjectIdentityRegistrySQL, "CASCADE") {
+		t.Fatal("registry drop migration must not CASCADE; an unexpected dependent has to fail loudly")
+	}
+}
+
+// TestOrderedRunsTheRegistryDropAfterTheSpellingDrop pins the one ordering this
+// module cannot get wrong. project_identity_spellings carries a foreign key to
+// project_identities on every upgraded database, so dropping the registry first
+// would fail. There is no migration ledger here — order IS the contract.
+func TestOrderedRunsTheRegistryDropAfterTheSpellingDrop(t *testing.T) {
+	ordered := Ordered()
+	folds, registry := -1, -1
+	for index, sql := range ordered {
+		switch sql {
+		case DropProjectIdentityFoldsSQL:
+			folds = index
+		case DropProjectIdentityRegistrySQL:
+			registry = index
+		}
+	}
+	if folds < 0 || registry < 0 {
+		t.Fatalf("both drop migrations must be in Ordered(); folds=%d registry=%d", folds, registry)
+	}
+	if registry < folds {
+		t.Fatalf("the registry drop must run after the spelling drop; folds=%d registry=%d", folds, registry)
+	}
+}
