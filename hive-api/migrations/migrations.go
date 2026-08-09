@@ -133,6 +133,14 @@ var DropProjectIdentityFoldsSQL string
 //go:embed 022_drop_project_identity_registry.sql
 var DropProjectIdentityRegistrySQL string
 
+// ReprojectMutationSQL is migration 023. It widens the memory_mutations op
+// constraint with 'reproject' and adds the column that carries its payload, so
+// the daemon's decision to rename a project can reach the server as a mutation
+// instead of never arriving at all.
+//
+//go:embed 023_reproject_mutation.sql
+var ReprojectMutationSQL string
+
 // Ordered returns every migration in the order the server applies it at boot.
 //
 // This module has no migration ledger: each boot replays the whole slice from
@@ -165,5 +173,6 @@ func Ordered() []string {
 		CanonicalProjectRegistrySQL,
 		DropProjectIdentityFoldsSQL,
 		DropProjectIdentityRegistrySQL,
+		ReprojectMutationSQL,
 	}
 }

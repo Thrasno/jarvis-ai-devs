@@ -348,12 +348,23 @@ func (r *postgresMemoryRepository) applyMemoryMutationInTx(ctx context.Context, 
 		return rejectedMutationResult(mutation, "project mismatch between mutation envelope and memory payload"), nil
 	}
 
-	existing, err := memoryBySyncIDForUpdate(ctx, tx, mutation.EntitySyncID)
-	if err != nil {
-		return nil, err
-	}
-	if existing != nil && existing.Project != mutation.Project {
-		return rejectedMutationResult(mutation, "project mismatch for existing memory row"), nil
+	// Reproject is the one op whose purpose IS to change the row's project, so
+	// it cannot pass the guard below — the stored project is expected to differ
+	// from the envelope's. It does not skip the precondition, it replaces it:
+	// its own statement carries `AND project = from_project`, so the caller must
+	// still name the literal the row currently holds. See applyReprojectMutation.
+	if mutation.Op == model.MutationOpReproject {
+		if reason := reprojectInstructionError(mutation); reason != "" {
+			return rejectedMutationResult(mutation, reason), nil
+		}
+	} else {
+		existing, err := memoryBySyncIDForUpdate(ctx, tx, mutation.EntitySyncID)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil && existing.Project != mutation.Project {
+			return rejectedMutationResult(mutation, "project mismatch for existing memory row"), nil
+		}
 	}
 
 	var changed bool
@@ -366,6 +377,8 @@ func (r *postgresMemoryRepository) applyMemoryMutationInTx(ctx context.Context, 
 		changed, err = r.applyDeleteMutation(ctx, tx, mutation)
 	case model.MutationOpRestore:
 		changed, err = r.applyRestoreMutation(ctx, tx, mutation)
+	case model.MutationOpReproject:
+		changed, err = r.applyReprojectMutation(ctx, tx, mutation)
 	default:
 		return nil, fmt.Errorf("unsupported memory mutation op %q", mutation.Op)
 	}
@@ -402,7 +415,7 @@ func (r *postgresMemoryRepository) ListMemoryMutations(ctx context.Context, proj
 
 	rows, err := r.db.Query(ctx, `
 		SELECT sequence, event_id::text, entity_type, entity_sync_id::text, project, op,
-		       occurred_at, COALESCE(actor_id, ''), base_updated_at, memory, tombstone
+		       occurred_at, COALESCE(actor_id, ''), base_updated_at, memory, tombstone, reproject
 		FROM memory_mutations
 		WHERE project = $1
 		  AND (sequence > $2 OR (sequence = $2 AND event_id::text > $3))
@@ -417,9 +430,9 @@ func (r *postgresMemoryRepository) ListMemoryMutations(ctx context.Context, proj
 	for rows.Next() {
 		var event model.MutationEnvelope
 		var op string
-		var memoryRaw, tombstoneRaw []byte
+		var memoryRaw, tombstoneRaw, reprojectRaw []byte
 		err := rows.Scan(&event.Sequence, &event.EventID, &event.EntityType, &event.EntitySyncID,
-			&event.Project, &op, &event.OccurredAt, &event.ActorID, &event.BaseUpdatedAt, &memoryRaw, &tombstoneRaw)
+			&event.Project, &op, &event.OccurredAt, &event.ActorID, &event.BaseUpdatedAt, &memoryRaw, &tombstoneRaw, &reprojectRaw)
 		if err != nil {
 			return nil, wrapPgError(err, "scan memory mutation")
 		}
@@ -429,6 +442,9 @@ func (r *postgresMemoryRepository) ListMemoryMutations(ctx context.Context, proj
 		}
 		if len(tombstoneRaw) > 0 {
 			_ = json.Unmarshal(tombstoneRaw, &event.Tombstone)
+		}
+		if len(reprojectRaw) > 0 {
+			_ = json.Unmarshal(reprojectRaw, &event.Reproject)
 		}
 		batch.Events = append(batch.Events, event)
 		batch.Next = model.MutationCursor{Sequence: event.Sequence, EventID: event.EventID}
@@ -701,6 +717,58 @@ func (r *postgresMemoryRepository) applyRestoreMutation(ctx context.Context, tx 
 	return cmd.RowsAffected() > 0, nil
 }
 
+// reprojectInstructionError validates a reproject envelope on its own terms and
+// returns the rejection reason, or "" when the instruction is well formed.
+//
+// These are malformed instructions, not failed preconditions: a reproject that
+// names no source, or moves a project onto itself, or disagrees with its own
+// envelope, cannot be carried out under any state of the database. A caller
+// naming a source the row does not hold IS a valid instruction — it simply
+// matches nothing (see applyReprojectMutation).
+func reprojectInstructionError(mutation model.MutationEnvelope) string {
+	if mutation.Reproject == nil {
+		return "reproject mutation requires a reproject payload"
+	}
+	if mutation.Reproject.FromProject == "" || mutation.Reproject.ToProject == "" {
+		return "reproject mutation requires both from_project and to_project"
+	}
+	if mutation.Reproject.ToProject != mutation.Project {
+		return "reproject to_project disagrees with the mutation envelope project"
+	}
+	if mutation.Reproject.FromProject == mutation.Reproject.ToProject {
+		return "reproject from_project and to_project are the same project"
+	}
+	return ""
+}
+
+// applyReprojectMutation rewrites the one column no other op can touch.
+//
+// `AND project = $3` is the whole safety story. It is not a formality: it is why
+// the op can be exposed at all. A caller must name the literal the row currently
+// holds, so a stale or invented source moves nothing, and a replay after the row
+// already moved matches zero rows and reports not-applied instead of erroring or
+// moving something else.
+//
+// synced_at = now() is the propagation mechanism: it places the row inside the
+// normal PullSince window of every puller on the target project, which is how
+// the move reaches other daemons without a channel of its own.
+//
+// Tombstoned rows move too — deliberately. Identity belongs to the row, not to
+// its liveness, and leaving tombstones behind would strand a delete under the
+// old name and let a later restore resurface the memory under a project the
+// daemon no longer uses.
+func (r *postgresMemoryRepository) applyReprojectMutation(ctx context.Context, tx mutationTx, mutation model.MutationEnvelope) (bool, error) {
+	cmd, err := tx.Exec(ctx, `
+		UPDATE memories
+		SET project = $1, synced_at = now()
+		WHERE sync_id = $2 AND project = $3`,
+		mutation.Reproject.ToProject, mutation.EntitySyncID, mutation.Reproject.FromProject)
+	if err != nil {
+		return false, wrapPgError(err, "apply reproject memory mutation")
+	}
+	return cmd.RowsAffected() > 0, nil
+}
+
 func insertMemoryMutation(ctx context.Context, tx mutationTx, mutation model.MutationEnvelope) (int64, error) {
 	memoryJSON, err := json.Marshal(mutation.Memory)
 	if err != nil {
@@ -710,15 +778,19 @@ func insertMemoryMutation(ctx context.Context, tx mutationTx, mutation model.Mut
 	if err != nil {
 		return 0, fmt.Errorf("marshal mutation tombstone payload: %w", err)
 	}
+	reprojectJSON, err := json.Marshal(mutation.Reproject)
+	if err != nil {
+		return 0, fmt.Errorf("marshal mutation reproject payload: %w", err)
+	}
 
 	var sequence int64
 	err = tx.QueryRow(ctx, `
 		INSERT INTO memory_mutations
-			(event_id, entity_type, entity_sync_id, project, op, occurred_at, actor_id, base_updated_at, memory, tombstone)
-		VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7, ''),$8,$9,$10)
+			(event_id, entity_type, entity_sync_id, project, op, occurred_at, actor_id, base_updated_at, memory, tombstone, reproject)
+		VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7, ''),$8,$9,$10,$11)
 		RETURNING sequence`,
 		mutation.EventID, mutation.EntityType, mutation.EntitySyncID, mutation.Project,
-		mutation.Op, mutation.OccurredAt, mutation.ActorID, mutation.BaseUpdatedAt, memoryJSON, tombstoneJSON).Scan(&sequence)
+		mutation.Op, mutation.OccurredAt, mutation.ActorID, mutation.BaseUpdatedAt, memoryJSON, tombstoneJSON, reprojectJSON).Scan(&sequence)
 	if err != nil {
 		return 0, wrapPgError(err, "insert memory mutation")
 	}

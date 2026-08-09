@@ -397,6 +397,14 @@ func syncRequestProjects(req model.SyncRequest) []string {
 		if mutation.Memory != nil {
 			projects = append(projects, mutation.Memory.Project)
 		}
+		// A reproject names two projects and the envelope carries only one of
+		// them. Both ends belong here: this list is what the quarantine
+		// precheck and the project-key lock are built from, so omitting the
+		// source would let a reproject carry rows out of a quarantined project,
+		// and would take the lock on only half the projects it writes.
+		if mutation.Reproject != nil {
+			projects = append(projects, mutation.Reproject.FromProject, mutation.Reproject.ToProject)
+		}
 	}
 	return projects
 }
