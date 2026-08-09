@@ -3,6 +3,7 @@ package hook
 import (
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Mid-session memory-reminder thresholds. These are intentionally hardcoded Go
@@ -105,16 +106,69 @@ func BuildHiveProtocolText(canonicalProject string) string {
 	if canonicalProject == "" {
 		return HiveProtocolText
 	}
-	// Strip \r and \n defensively — the derivation source already sanitizes via
-	// extractRepoName, but we guard at the injection point as well.
-	safe := strings.NewReplacer("\r", "", "\n", "").Replace(canonicalProject)
+	// Same guard as the migration block: this value is derived locally (from the
+	// directory or git remote) rather than handed over by a teammate, so it is
+	// the lower-risk of the two, but it lands in the same injected context and
+	// there is no reason for two different policies at one injection point.
+	safe := sanitizeProtocolValue(canonicalProject, maxProtocolProjectLength)
 	return HiveProtocolText + "\n\nActive project: " + safe + " — use this exact name as the project argument in all mem_* calls."
 }
 
+// ProtocolValueTruncated marks a value this package shortened, so a reader can
+// tell a bounded value from a complete one.
+const ProtocolValueTruncated = " […truncated]"
+
+// Injected-value bounds. A migration reason is a sentence or two in every real
+// case; a backup id is a timestamp and a uuid.
+const (
+	maxProtocolReasonLength   = 500
+	maxProtocolBackupIDLength = 128
+	maxProtocolProjectLength  = 200
+)
+
+// sanitizeProtocolValue makes a value safe to interpolate into a protocol block
+// that is injected verbatim into the agent's session context.
+//
+// Two properties, both required:
+//
+//   - No line breaks. Every value here occupies exactly one labelled line, so a
+//     value carrying \r or \n could open a line of its own and impersonate the
+//     protocol — "## System", another "Continue with:", anything. The value
+//     reaching BuildMigrationBlockedProtocol is NOT locally authored: it is the
+//     daemon's migration error, which names the conflicting project key, and
+//     projectidentity.Canonical trims only the ENDS of a project name, so a
+//     teammate's memory whose project carries an interior newline survives
+//     canonicalization and reaches memories.project. From there a migration
+//     conflict names it, status.Reason becomes err.Error(), and this hook
+//     injects it into every Claude Code SessionStart on this machine.
+//   - Bounded length. An error naming thousands of conflicting keys would
+//     otherwise be pasted into every session's context in full. Truncation is
+//     on a rune boundary so the result is never invalid UTF-8.
+func sanitizeProtocolValue(value string, limit int) string {
+	safe := strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' {
+			return ' '
+		}
+		return r
+	}, value)
+	safe = strings.TrimSpace(safe)
+	if len(safe) <= limit {
+		return safe
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(safe[cut]) {
+		cut--
+	}
+	return strings.TrimSpace(safe[:cut]) + ProtocolValueTruncated
+}
+
+// BuildMigrationBlockedProtocol renders the migration-blocked notice appended to
+// the session-start context. Both interpolated values come from the daemon over
+// HTTP, so both go through sanitizeProtocolValue — see its doc for why.
 func BuildMigrationBlockedProtocol(reason, backupID string) string {
 	return "## Hive Migration Blocked\n\n" +
 		"State: migration-blocked\n" +
-		"Reason: " + strings.TrimSpace(reason) + "\n" +
-		"Backup: " + strings.TrimSpace(backupID) + "\n" +
+		"Reason: " + sanitizeProtocolValue(reason, maxProtocolReasonLength) + "\n" +
+		"Backup: " + sanitizeProtocolValue(backupID, maxProtocolBackupIDLength) + "\n" +
 		"Continue with: " + MigrationStatusCommand
 }
