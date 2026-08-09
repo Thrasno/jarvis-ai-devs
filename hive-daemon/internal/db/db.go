@@ -123,7 +123,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     summary     TEXT,
     synced_at   DATETIME,
     created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- sync_from_project is a pending write-side precondition, not history: it
+    -- names the project literal the SERVER still holds for this row after the
+    -- local identity migration renamed it here. The push sends it as
+    -- from_project so the server moves that exact row and nothing else, and it
+    -- is cleared the moment the row is acked. Empty means "no relocation
+    -- pending", which is every row's normal state.
+    sync_from_project TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_project    ON sessions(project);
@@ -213,7 +220,9 @@ CREATE TABLE IF NOT EXISTS user_prompts (
     session_id TEXT    NOT NULL DEFAULT '',
     content    TEXT    NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    synced_at  DATETIME
+    synced_at  DATETIME,
+    -- See sessions.sync_from_project: same pending relocation precondition.
+    sync_from_project TEXT NOT NULL DEFAULT ''
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS user_prompts_fts USING fts5(
@@ -560,6 +569,14 @@ func initSchema(sqlDB *sql.DB) error {
 		// CreateSession's TrimSpace guard so whitespace-only values heal too.
 		// Idempotent — safe to run on every daemon start.
 		`UPDATE sessions SET dev_id = 'unknown' WHERE TRIM(dev_id) = ''`,
+		// sync_from_project: the pending relocation precondition the project
+		// identity migration stamps on rows the server already holds. Added
+		// last on both tables so an upgraded DB ends up with the same column
+		// order as a fresh one — rebuildContentProjectOwnershipTables copies
+		// these tables by name, but keeping the two shapes identical keeps any
+		// positional reader honest.
+		`ALTER TABLE sessions ADD COLUMN sync_from_project TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE user_prompts ADD COLUMN sync_from_project TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, m := range migrations {
 		if _, err := sqlDB.Exec(m); err != nil {

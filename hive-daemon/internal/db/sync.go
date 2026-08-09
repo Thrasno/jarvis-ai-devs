@@ -50,6 +50,13 @@ const (
 	MutationOpUpdate  MutationOp = "update"
 	MutationOpDelete  MutationOp = "delete"
 	MutationOpRestore MutationOp = "restore"
+
+	// MutationOpReproject moves a memory the server already holds from one
+	// project literal to another. It is the only op that changes a row's
+	// project, and it carries no content: the daemon is the sole authority on
+	// project identity, so when its local identity migration folds a spelling
+	// variant it must tell the server which name the row moved from and to.
+	MutationOpReproject MutationOp = "reproject"
 )
 
 type MutationEnvelope struct {
@@ -64,6 +71,7 @@ type MutationEnvelope struct {
 	BaseUpdatedAt *time.Time                `json:"base_updated_at,omitempty"`
 	Memory        *MutationMemoryPayload    `json:"memory,omitempty"`
 	Tombstone     *MutationTombstonePayload `json:"tombstone,omitempty"`
+	Reproject     *MutationReprojectPayload `json:"reproject,omitempty"`
 }
 
 type MutationCursor struct {
@@ -107,6 +115,18 @@ type MutationTombstonePayload struct {
 	Reason    string    `json:"reason,omitempty"`
 }
 
+// MutationReprojectPayload names both ends of a project move.
+//
+// FromProject is not redundant with the project the server already stores: the
+// server applies the move only to a row that currently holds FromProject, so a
+// replay after the row already moved matches nothing instead of dragging some
+// other row out of some other project. ToProject duplicates the envelope's
+// Project on purpose — the server rejects an envelope whose two disagree.
+type MutationReprojectPayload struct {
+	FromProject string `json:"from_project"`
+	ToProject   string `json:"to_project"`
+}
+
 type memoryMutationRecord struct {
 	EventID      string
 	RequestID    string
@@ -121,6 +141,7 @@ type memoryMutationRecord struct {
 type mutationPayload struct {
 	Memory    *MutationMemoryPayload    `json:"memory,omitempty"`
 	Tombstone *MutationTombstonePayload `json:"tombstone,omitempty"`
+	Reproject *MutationReprojectPayload `json:"reproject,omitempty"`
 }
 
 func memoryPayloadFromModel(mem *models.Memory, syncID, createdBy string, occurredAt time.Time) *MutationMemoryPayload {
@@ -1180,13 +1201,11 @@ func scanMutationEnvelope(s syncScanner) (MutationEnvelope, error) {
 			mutation.BaseUpdatedAt = &parsed
 		}
 	}
-	var payload struct {
-		Memory    *MutationMemoryPayload    `json:"memory"`
-		Tombstone *MutationTombstonePayload `json:"tombstone"`
-	}
+	var payload mutationPayload
 	if err := json.Unmarshal([]byte(payloadJSON), &payload); err == nil {
 		mutation.Memory = payload.Memory
 		mutation.Tombstone = payload.Tombstone
+		mutation.Reproject = payload.Reproject
 	}
 	return mutation, nil
 }

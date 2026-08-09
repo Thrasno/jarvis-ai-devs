@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
+	"github.com/google/uuid"
 	"modernc.org/sqlite"
 )
 
@@ -273,6 +274,13 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 	if err := coalesceEquivalentSyncState(ctx, tx, records); err != nil {
 		return err
 	}
+	// Propagation is enqueued BEFORE the rekey, while each row still carries the
+	// raw spelling that identifies which old literal the server holds for it.
+	// After the rekey two folded spellings ("Foo.Bar" and "foo.bar") are
+	// indistinguishable, and from_project would be a guess.
+	if err := enqueueProjectRelocationPropagation(ctx, tx, records); err != nil {
+		return err
+	}
 	// Re-key each raw spelling separately: SQLite deliberately does not derive keys.
 	for _, record := range records {
 		column, ok := rekeyableProjectColumns[record.Table]
@@ -301,6 +309,114 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 		return err
 	}
 	return tx.Commit()
+}
+
+// enqueueProjectRelocationPropagation tells the server about the rename the
+// local rekey is about to perform.
+//
+// The rekey rewrites this daemon's own rows, but every push selects only rows
+// with synced_at IS NULL. Without this step each row the server already holds
+// would keep the old spelling there forever and the same memory would live
+// under two project names — the exact split the migration exists to end.
+//
+// Two kinds of rows, two mechanisms:
+//
+//   - Sessions and prompts re-push. Clearing synced_at puts them back into the
+//     push selection; sync_from_project carries the literal the server still
+//     holds, so the server relocates that exact row and nothing else.
+//   - Memories do not re-push — an ordinary upsert cannot move the project
+//     column. They get a reproject mutation, the only op that can.
+//
+// Rows with synced_at IS NULL are deliberately left alone: the server has never
+// seen them, they push under the new name on their own, and stamping a
+// from_project on them would assert a server-side precondition that was never
+// true.
+//
+// This runs inside the migration's single transaction on purpose. Enqueuing
+// after the commit would need its own durable pending marker, its own
+// idempotency and its own crash recovery — everything the transaction already
+// guarantees. These statements take no new lock, do no I/O outside the
+// transaction, and add no abort path the rekey did not already have.
+//
+// records holds one entry per ROW, so each (table, spelling) pair is collapsed
+// first: the rekey UPDATE is idempotent under repetition, but inserting the same
+// reproject mutation once per memory row is not.
+func enqueueProjectRelocationPropagation(ctx context.Context, tx *sql.Tx, records []ProjectStateRecord) error {
+	type relocation struct {
+		table   ProjectState
+		project string
+	}
+	seen := map[relocation]bool{}
+	occurredAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+	for _, record := range records {
+		target := projectidentity.Canonical(record.Project).String()
+		if target == record.Project {
+			continue
+		}
+		key := relocation{table: record.Table, project: record.Project}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		switch record.Table {
+		case ProjectStateSessions, ProjectStatePrompts:
+			if _, err := tx.ExecContext(ctx, `UPDATE `+string(record.Table)+`
+SET synced_at = NULL, sync_from_project = ?
+WHERE project = ? AND synced_at IS NOT NULL`, record.Project, record.Project); err != nil {
+				return err
+			}
+		case ProjectStateMemories:
+			if err := enqueueMemoryReprojections(ctx, tx, record.Project, target, occurredAt); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// enqueueMemoryReprojections journals one reproject mutation per memory the
+// server already holds under the old spelling.
+//
+// The sync_ids are collected before the first insert because the read cursor and
+// the writes share one SQLite connection, and the reproject carries no memory or
+// tombstone payload: hive-api rejects a reproject that does, since such a
+// payload would reach every puller with the weight of a create while never being
+// written to any row.
+func enqueueMemoryReprojections(ctx context.Context, tx *sql.Tx, fromProject, toProject, occurredAt string) error {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT sync_id FROM memories WHERE project = ? AND synced_at IS NOT NULL AND sync_id != ''`, fromProject)
+	if err != nil {
+		return err
+	}
+	var syncIDs []string
+	for rows.Next() {
+		var syncID string
+		if err := rows.Scan(&syncID); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		syncIDs = append(syncIDs, syncID)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, syncID := range syncIDs {
+		if err := insertMemoryMutation(tx, memoryMutationRecord{
+			EventID:      uuid.NewString(),
+			EntitySyncID: syncID,
+			Project:      toProject,
+			Op:           MutationOpReproject,
+			OccurredAt:   occurredAt,
+			Payload:      mutationPayload{Reproject: &MutationReprojectPayload{FromProject: fromProject, ToProject: toProject}},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func projectMigrationNeeded(records []ProjectStateRecord) bool {
@@ -529,13 +645,16 @@ func rebuildContentProjectOwnershipTables(ctx context.Context, tx *sql.Tx) error
 		}
 	}
 	for _, statement := range []string{
-		`CREATE TABLE sessions_new (id TEXT PRIMARY KEY, sync_id TEXT NOT NULL UNIQUE, project TEXT NOT NULL REFERENCES project_identities(project_key), directory TEXT NOT NULL DEFAULT '', dev_id TEXT NOT NULL, client TEXT NOT NULL, started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ended_at DATETIME, summary TEXT, synced_at DATETIME, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+		`CREATE TABLE sessions_new (id TEXT PRIMARY KEY, sync_id TEXT NOT NULL UNIQUE, project TEXT NOT NULL REFERENCES project_identities(project_key), directory TEXT NOT NULL DEFAULT '', dev_id TEXT NOT NULL, client TEXT NOT NULL, started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ended_at DATETIME, summary TEXT, synced_at DATETIME, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, sync_from_project TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE memories_new (id INTEGER PRIMARY KEY AUTOINCREMENT, sync_id TEXT NOT NULL, project TEXT NOT NULL REFERENCES project_identities(project_key), topic_key TEXT, category TEXT NOT NULL DEFAULT '', title TEXT NOT NULL, content TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', files_affected TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL DEFAULT 'unknown', created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, synced_at DATETIME, deleted_at DATETIME, deleted_by TEXT, delete_reason TEXT, restored_at DATETIME, confidence TEXT NOT NULL DEFAULT '', impact_score INTEGER NOT NULL DEFAULT 0, session_id TEXT NOT NULL REFERENCES sessions_new(id))`,
-		`CREATE TABLE user_prompts_new (id INTEGER PRIMARY KEY AUTOINCREMENT, sync_id TEXT NOT NULL DEFAULT '', project TEXT NOT NULL DEFAULT '', project_key TEXT GENERATED ALWAYS AS (NULLIF(project, '')) STORED REFERENCES project_identities(project_key), session_id TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, synced_at DATETIME)`,
+		`CREATE TABLE user_prompts_new (id INTEGER PRIMARY KEY AUTOINCREMENT, sync_id TEXT NOT NULL DEFAULT '', project TEXT NOT NULL DEFAULT '', project_key TEXT GENERATED ALWAYS AS (NULLIF(project, '')) STORED REFERENCES project_identities(project_key), session_id TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, synced_at DATETIME, sync_from_project TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE memory_prompt_links_new (memory_id INTEGER NOT NULL REFERENCES memories_new(id) ON DELETE CASCADE, prompt_id INTEGER NOT NULL REFERENCES user_prompts_new(id) ON DELETE CASCADE, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (memory_id, prompt_id))`,
-		`INSERT INTO sessions_new SELECT * FROM sessions`,
+		// Column lists are explicit on both relocation-bearing tables: a bare
+		// SELECT * matches by position, so the next column added to either
+		// table would silently land in the wrong slot or abort the rebuild.
+		`INSERT INTO sessions_new (id, sync_id, project, directory, dev_id, client, started_at, ended_at, summary, synced_at, created_at, updated_at, sync_from_project) SELECT id, sync_id, project, directory, dev_id, client, started_at, ended_at, summary, synced_at, created_at, updated_at, sync_from_project FROM sessions`,
 		`INSERT INTO memories_new SELECT * FROM memories`,
-		`INSERT INTO user_prompts_new (id, sync_id, project, session_id, content, created_at, synced_at) SELECT id, sync_id, project, session_id, content, created_at, synced_at FROM user_prompts`,
+		`INSERT INTO user_prompts_new (id, sync_id, project, session_id, content, created_at, synced_at, sync_from_project) SELECT id, sync_id, project, session_id, content, created_at, synced_at, sync_from_project FROM user_prompts`,
 		`INSERT INTO memory_prompt_links_new SELECT * FROM memory_prompt_links`,
 		`DROP TABLE memory_prompt_links`,
 		`DROP TRIGGER memories_ai`, `DROP TRIGGER memories_au`, `DROP TRIGGER memories_ad`, `DROP TABLE memories_fts`,

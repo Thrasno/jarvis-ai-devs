@@ -116,6 +116,9 @@ type promptPayload struct {
 	Project   string    `json:"project"`
 	Content   string    `json:"content"`
 	CreatedAt time.Time `json:"created_at"`
+
+	// FromProject is the same relocation precondition sessionPayload carries.
+	FromProject string `json:"from_project,omitempty"`
 }
 
 // sessionPayload es el formato de sesión en el wire protocol.
@@ -130,6 +133,13 @@ type sessionPayload struct {
 	StartedAt time.Time  `json:"started_at"`
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
 	Summary   *string    `json:"summary,omitempty"`
+
+	// FromProject names the project literal the server currently holds for this
+	// row, and asks it to relocate that exact row to Project. It is sent only
+	// after a local identity migration renamed the row here; omitempty keeps an
+	// ordinary push a plain idempotent re-push, since an empty from_project
+	// matches nothing server-side.
+	FromProject string `json:"from_project,omitempty"`
 }
 
 // syncRequest es el payload que enviamos a POST /sync.
@@ -309,6 +319,10 @@ func (c *client) sync(ctx context.Context, token, project string,
 			StartedAt: s.StartedAt,
 			EndedAt:   s.EndedAt,
 			Summary:   nilStringPtr(s.Summary),
+			// Deliberately NOT canonicalized: this is the literal the server
+			// stores, and folding it would make it equal to Project and match
+			// nothing.
+			FromProject: s.SyncFromProject,
 		})
 	}
 
@@ -337,6 +351,8 @@ func (c *client) sync(ctx context.Context, token, project string,
 			Project:   projectidentity.Canonical(p.Project).String(),
 			Content:   p.Content,
 			CreatedAt: p.CreatedAt,
+			// Verbatim, for the same reason as sessionPayload.FromProject.
+			FromProject: p.SyncFromProject,
 		})
 	}
 

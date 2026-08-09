@@ -12,4 +12,9 @@ type Prompt struct {
 	Content        string     `json:"content"`
 	CreatedAt      time.Time  `json:"created_at"`
 	SyncedAt       *time.Time `json:"synced_at"`
+	// SyncFromProject is the same pending relocation precondition
+	// Session.SyncFromProject carries; see it for the full rationale. Not
+	// serialized: it is a sync-internal concern, never part of a prompt's
+	// public shape.
+	SyncFromProject string `json:"-"`
 }

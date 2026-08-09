@@ -128,7 +128,7 @@ func (d *DB) ListSessions(project string, limit int) ([]*models.Session, error) 
 	}
 	rows, err := d.sqlDB.Query(`
 		SELECT id, sync_id, project, directory, dev_id, client,
-		       started_at, ended_at, summary, synced_at
+		       started_at, ended_at, summary, synced_at, sync_from_project
 		FROM sessions WHERE project = ?
 		ORDER BY started_at DESC
 		LIMIT ?`, project, limit,
@@ -214,7 +214,7 @@ func (d *DB) ListUnsyncedSessions(project string) ([]*models.Session, error) {
 	}
 	rows, err := d.sqlDB.Query(`
 		SELECT id, sync_id, project, directory, dev_id, client,
-		       started_at, ended_at, summary, synced_at
+		       started_at, ended_at, summary, synced_at, sync_from_project
 		FROM sessions WHERE project = ? AND synced_at IS NULL`, project,
 	)
 	if err != nil {
@@ -259,7 +259,7 @@ func (d *DB) ListUnsyncedSessionsPage(project string, limit int) ([]*models.Sess
 	}
 	rows, err := d.sqlDB.Query(`
 		SELECT id, sync_id, project, directory, dev_id, client,
-		       started_at, ended_at, summary, synced_at
+		       started_at, ended_at, summary, synced_at, sync_from_project
 		FROM sessions WHERE project = ? AND synced_at IS NULL
 		ORDER BY created_at ASC, id ASC LIMIT ?`, project, limit,
 	)
@@ -282,7 +282,10 @@ func (d *DB) ListUnsyncedSessionsPage(project string, limit int) ([]*models.Sess
 // MarkSessionSynced sets synced_at for a session identified by id.
 func (d *DB) MarkSessionSynced(id string, at time.Time) error {
 	result, err := d.sqlDB.Exec(
-		`UPDATE sessions SET synced_at = ? WHERE id = ?`,
+		// Clearing sync_from_project is part of the ack: the server now holds
+		// this row under its new name, so re-asserting the old one on every
+		// later push would claim a relocation that already happened.
+		`UPDATE sessions SET synced_at = ?, sync_from_project = '' WHERE id = ?`,
 		at.UTC().Format("2006-01-02 15:04:05"), id,
 	)
 	if err != nil {
@@ -355,7 +358,7 @@ func scanSession(s sessionScanner) (*models.Session, error) {
 
 	err := s.Scan(
 		&sess.ID, &sess.SyncID, &sess.Project, &sess.Directory, &sess.DevID, &sess.Client,
-		&startedAtStr, &endedAt, &summary, &syncedAt,
+		&startedAtStr, &endedAt, &summary, &syncedAt, &sess.SyncFromProject,
 	)
 	if err != nil {
 		return nil, err
