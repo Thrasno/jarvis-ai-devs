@@ -396,6 +396,10 @@ ON passive_observations(project, created_at DESC);
 type DB struct {
 	sqlDB       *sql.DB
 	migrationMu sync.Mutex
+
+	// Observability only — see LastProjectMigrationSummary.
+	migrationSummaryMu sync.Mutex
+	migrationSummary   ProjectMigrationSummary
 }
 
 // sqliteBusyTimeout bounds how long a connection waits for a lock held by

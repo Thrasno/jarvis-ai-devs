@@ -221,7 +221,29 @@ func runStartupMigrationWith(ctx context.Context, store *db.DB, execute func(con
 	return runStartupMigrationWithBackup(ctx, store, execute, nil)
 }
 
+// logProjectMigrationSummary reports a migration that actually moved rows.
+//
+// A successful migration used to be entirely silent, which is exactly what makes
+// a slow one undiagnosable: this runs before the MCP transport is served, so an
+// operator staring at a client that has not come up cannot tell a hung daemon
+// from a working one. "migrated 5,200 rows in 2.1s" turns "did it hang?" into
+// "it is working".
+//
+// A no-op stays quiet — every daemon start after the first one is a no-op, and a
+// line per start about zero work trains an operator to ignore the line that
+// matters. logger.Log, not stdout: this is an MCP stdio server.
+func logProjectMigrationSummary(summary db.ProjectMigrationSummary, elapsed time.Duration) {
+	if !summary.Ran {
+		return
+	}
+	logger.Log.Printf(
+		"project identity migration: rows rekeyed=%d, reprojects enqueued=%d, sessions re-queued=%d, prompts re-queued=%d in %s",
+		summary.RowsRekeyed, summary.ReprojectsEnqueued, summary.SessionsRequeued, summary.PromptsRequeued,
+		elapsed.Round(time.Millisecond))
+}
+
 func runStartupMigrationWithBackup(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error, backupID func() string) *project.MigrationGate {
+	started := time.Now()
 	plan, err := planAndExecuteMigration(ctx, store, execute)
 	if db.IsProjectMigrationContention(err) {
 		// Another daemon process was migrating the same database. Its
@@ -231,6 +253,7 @@ func runStartupMigrationWithBackup(ctx context.Context, store *db.DB, execute fu
 		plan, err = planAndExecuteMigration(ctx, store, execute)
 	}
 	if err == nil {
+		logProjectMigrationSummary(store.LastProjectMigrationSummary(), time.Since(started))
 		return project.NewMigrationGate(project.MigrationStatus{State: project.MigrationStateReady})
 	}
 	status := project.MigrationStatus{

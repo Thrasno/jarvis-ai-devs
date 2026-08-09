@@ -251,9 +251,11 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 	if err != nil {
 		return err
 	}
+	database.setProjectMigrationSummary(ProjectMigrationSummary{})
 	if !projectMigrationNeeded(records) && !registryNeeded && !ownershipNeeded {
 		return nil
 	}
+	summary := ProjectMigrationSummary{Ran: true}
 	if err := backup(ctx); err != nil {
 		return fmt.Errorf("create pre-mutation backup: %w", err)
 	}
@@ -285,13 +287,17 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 	// raw spelling that identifies which old literal the server holds for it.
 	// After the rekey two folded spellings ("Foo.Bar" and "foo.bar") are
 	// indistinguishable, and from_project would be a guess.
-	if err := enqueueProjectRelocationPropagation(ctx, tx, records); err != nil {
+	if err := enqueueProjectRelocationPropagation(ctx, tx, records, &summary); err != nil {
 		return err
 	}
 	// Re-key each raw spelling separately: SQLite deliberately does not derive keys.
 	for _, rekey := range planProjectRekeys(records) {
-		if _, err := tx.ExecContext(ctx, `UPDATE `+string(rekey.Table)+` SET `+rekey.Column+` = ? WHERE `+rekey.Column+` = ?`, rekey.To, rekey.From); err != nil {
+		result, err := tx.ExecContext(ctx, `UPDATE `+string(rekey.Table)+` SET `+rekey.Column+` = ? WHERE `+rekey.Column+` = ?`, rekey.To, rekey.From)
+		if err != nil {
 			return err
+		}
+		if affected, err := result.RowsAffected(); err == nil {
+			summary.RowsRekeyed += affected
 		}
 	}
 	if ownershipNeeded {
@@ -310,7 +316,13 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 	if err := rebuildProjectMigrationState(ctx, tx); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Only after the commit: a summary describing a rolled-back transaction
+	// would report work that did not survive.
+	database.setProjectMigrationSummary(summary)
+	return nil
 }
 
 // enqueueProjectRelocationPropagation tells the server about the rename the
@@ -343,7 +355,7 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 // records holds one entry per ROW, so each (table, spelling) pair is collapsed
 // first: the rekey UPDATE is idempotent under repetition, but inserting the same
 // reproject mutation once per memory row is not.
-func enqueueProjectRelocationPropagation(ctx context.Context, tx *sql.Tx, records []ProjectStateRecord) error {
+func enqueueProjectRelocationPropagation(ctx context.Context, tx *sql.Tx, records []ProjectStateRecord, summary *ProjectMigrationSummary) error {
 	type relocation struct {
 		table   ProjectState
 		project string
@@ -374,15 +386,25 @@ func enqueueProjectRelocationPropagation(ctx context.Context, tx *sql.Tx, record
 			if record.Table == ProjectStatePrompts {
 				pushable = ` AND sync_id != ''`
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE `+string(record.Table)+`
+			result, err := tx.ExecContext(ctx, `UPDATE `+string(record.Table)+`
 SET synced_at = NULL, sync_from_project = ?
-WHERE project = ? AND synced_at IS NOT NULL`+pushable, record.Project, record.Project); err != nil {
+WHERE project = ? AND synced_at IS NOT NULL`+pushable, record.Project, record.Project)
+			if err != nil {
 				return err
+			}
+			if affected, err := result.RowsAffected(); err == nil {
+				if record.Table == ProjectStateSessions {
+					summary.SessionsRequeued += affected
+				} else {
+					summary.PromptsRequeued += affected
+				}
 			}
 		case ProjectStateMemories:
-			if err := enqueueMemoryReprojections(ctx, tx, record.Project, target, occurredAt); err != nil {
+			enqueued, err := enqueueMemoryReprojections(ctx, tx, record.Project, target, occurredAt)
+			if err != nil {
 				return err
 			}
+			summary.ReprojectsEnqueued += enqueued
 		}
 	}
 	return nil
@@ -396,27 +418,27 @@ WHERE project = ? AND synced_at IS NOT NULL`+pushable, record.Project, record.Pr
 // tombstone payload: hive-api rejects a reproject that does, since such a
 // payload would reach every puller with the weight of a create while never being
 // written to any row.
-func enqueueMemoryReprojections(ctx context.Context, tx *sql.Tx, fromProject, toProject, occurredAt string) error {
+func enqueueMemoryReprojections(ctx context.Context, tx *sql.Tx, fromProject, toProject, occurredAt string) (int64, error) {
 	rows, err := tx.QueryContext(ctx,
 		`SELECT sync_id FROM memories WHERE project = ? AND synced_at IS NOT NULL AND sync_id != ''`, fromProject)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var syncIDs []string
 	for rows.Next() {
 		var syncID string
 		if err := rows.Scan(&syncID); err != nil {
 			_ = rows.Close()
-			return err
+			return 0, err
 		}
 		syncIDs = append(syncIDs, syncID)
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
-		return err
+		return 0, err
 	}
 	if err := rows.Close(); err != nil {
-		return err
+		return 0, err
 	}
 	for _, syncID := range syncIDs {
 		if err := insertMemoryMutation(tx, memoryMutationRecord{
@@ -428,10 +450,10 @@ func enqueueMemoryReprojections(ctx context.Context, tx *sql.Tx, fromProject, to
 			ActorID:      projectMigrationActorID,
 			Payload:      mutationPayload{Reproject: &MutationReprojectPayload{FromProject: fromProject, ToProject: toProject}},
 		}); err != nil {
-			return err
+			return 0, err
 		}
 	}
-	return nil
+	return int64(len(syncIDs)), nil
 }
 
 func projectMigrationNeeded(records []ProjectStateRecord) bool {
@@ -715,6 +737,40 @@ func isCompositeMigrationState(state ProjectState) bool {
 	default:
 		return false
 	}
+}
+
+// ProjectMigrationSummary is what one migration actually did. It exists so a
+// successful startup migration can say so: this runs before the MCP transport is
+// served, so an operator staring at a client that has not come up otherwise has
+// no way to tell a hung daemon from a working one.
+//
+// Ran distinguishes "did nothing because there was nothing to do" — every daemon
+// start after the first — from a migration that moved rows. Only the latter is
+// worth a line.
+type ProjectMigrationSummary struct {
+	Ran                bool
+	RowsRekeyed        int64
+	ReprojectsEnqueued int64
+	SessionsRequeued   int64
+	PromptsRequeued    int64
+}
+
+// LastProjectMigrationSummary reports what the most recent ExecuteProjectMigration
+// on this handle did.
+//
+// It is carried on the handle rather than returned because the executor's error
+// return is load-bearing at ~60 call sites, and this is observability: a caller
+// that ignores it loses a log line, not correctness.
+func (d *DB) LastProjectMigrationSummary() ProjectMigrationSummary {
+	d.migrationSummaryMu.Lock()
+	defer d.migrationSummaryMu.Unlock()
+	return d.migrationSummary
+}
+
+func (d *DB) setProjectMigrationSummary(summary ProjectMigrationSummary) {
+	d.migrationSummaryMu.Lock()
+	defer d.migrationSummaryMu.Unlock()
+	d.migrationSummary = summary
 }
 
 // projectRekey is one scalar-column UPDATE the migration owes: move every row of
