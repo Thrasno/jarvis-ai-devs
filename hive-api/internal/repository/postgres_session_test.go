@@ -691,7 +691,7 @@ func TestPostgresSessionRepository_ListSessionsSince_FiltersBlockedProject(t *te
 	insertSess("sess-open", "ab100000-0000-0000-0000-000000000002", "open-project")
 	_, err := blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
 		Project:             "Blocked Project",
-		CanonicalProjectKey: "blocked-project",
+		CanonicalProjectKey: "Blocked Project",
 		Action:              model.ProjectBlockActionQuarantine,
 		Reason:              "duplicate",
 		Confirmation:        "blocked-project",

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
-	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/projectkey"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
 )
 
@@ -62,8 +61,10 @@ func (s *projectGovernanceService) BlockProject(ctx context.Context, actor model
 	if s.blockRepo == nil {
 		return model.ProjectBlockResponse{}, ErrProjectBlockUnavailable
 	}
-	canonical := projectkey.Canonicalize(project)
-	if err := req.Validate(canonical); err != nil {
+	// The admin confirms the exact project spelling. Nothing derives a key from
+	// it: the block is matched against stored literals with plain equality, so a
+	// derived key would quarantine a project nobody named.
+	if err := req.Validate(project); err != nil {
 		return model.ProjectBlockResponse{}, err
 	}
 	if s.tx == nil {
@@ -74,7 +75,7 @@ func (s *projectGovernanceService) BlockProject(ctx context.Context, actor model
 		if repos.ProjectBlocks == nil || repos.Audit == nil || repos.ProjectKeyLocks == nil {
 			return ErrProjectBlockUnavailable
 		}
-		if err := repos.ProjectKeyLocks.LockCanonicalProjectKeys(ctx, []string{canonical}); err != nil {
+		if err := repos.ProjectKeyLocks.LockCanonicalProjectKeys(ctx, []string{project}); err != nil {
 			return err
 		}
 		if repos.ProjectIdentities == nil {
@@ -86,7 +87,7 @@ func (s *projectGovernanceService) BlockProject(ctx context.Context, actor model
 		var err error
 		block, err = repos.ProjectBlocks.BlockProject(ctx, model.ProjectBlockCreate{
 			Project:             project,
-			CanonicalProjectKey: canonical,
+			CanonicalProjectKey: project,
 			Action:              req.Action,
 			Reason:              req.Reason,
 			Confirmation:        req.Confirmation,
@@ -108,17 +109,16 @@ func (s *projectGovernanceService) Status(ctx context.Context, project string) (
 	if s.blockRepo == nil {
 		return model.ProjectBlockStatusResponse{}, ErrProjectBlockUnavailable
 	}
-	canonical := projectkey.Canonicalize(project)
-	block, err := s.blockRepo.GetByCanonicalKey(ctx, canonical)
+	block, err := s.blockRepo.GetByCanonicalKey(ctx, project)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
-			return model.ProjectBlockStatusResponse{Project: project, CanonicalProjectKey: canonical, Blocked: false}, nil
+			return model.ProjectBlockStatusResponse{Project: project, CanonicalProjectKey: project, Blocked: false}, nil
 		}
 		return model.ProjectBlockStatusResponse{}, err
 	}
 	cmd := block.Command().Redacted()
 	resp := model.ProjectBlockStatusResponse{Project: block.Project, CanonicalProjectKey: block.CanonicalProjectKey, Blocked: true, Reason: block.Reason, Command: &cmd}
-	ack, err := s.blockRepo.LatestAckForCommand(ctx, canonical, block.CommandID)
+	ack, err := s.blockRepo.LatestAckForCommand(ctx, project, block.CommandID)
 	if err != nil && !errors.Is(err, repository.ErrNotFound) {
 		return model.ProjectBlockStatusResponse{}, err
 	}
@@ -136,7 +136,7 @@ func (s *projectGovernanceService) QuarantineProgress(ctx context.Context, canon
 			return ErrProjectBlockUnavailable
 		}
 		var err error
-		result, err = repos.ProjectBlocks.QuarantineProgress(ctx, projectkey.Canonicalize(canonicalProjectKey), generation, after, limit)
+		result, err = repos.ProjectBlocks.QuarantineProgress(ctx, canonicalProjectKey, generation, after, limit)
 		return err
 	})
 	return result, err
@@ -146,7 +146,7 @@ func (s *projectGovernanceService) Acknowledge(ctx context.Context, ack model.Pr
 	if s.blockRepo == nil {
 		return model.ProjectBlockAck{}, ErrProjectBlockUnavailable
 	}
-	ack.CanonicalProjectKey = projectkey.Canonicalize(ack.CanonicalProjectKey)
+
 	if err := ack.Validate(); err != nil {
 		return model.ProjectBlockAck{}, err
 	}
@@ -245,7 +245,7 @@ func projectBlockedErrorForProjectDelivery(ctx context.Context, blockRepo reposi
 	if blockRepo == nil {
 		return repository.ErrProjectBlocked
 	}
-	block, err := blockRepo.GetByCanonicalKey(ctx, projectkey.Canonicalize(project))
+	block, err := blockRepo.GetByCanonicalKey(ctx, project)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			return repository.ErrProjectBlocked
@@ -259,7 +259,7 @@ func projectBlockedErrorForProject(ctx context.Context, blockRepo repository.Pro
 	if blockRepo == nil {
 		return repository.ErrProjectBlocked
 	}
-	block, err := blockRepo.GetByCanonicalKey(ctx, projectkey.Canonicalize(project))
+	block, err := blockRepo.GetByCanonicalKey(ctx, project)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			return repository.ErrProjectBlocked

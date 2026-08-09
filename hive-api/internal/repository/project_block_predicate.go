@@ -5,54 +5,41 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/projectkey"
 	"github.com/jackc/pgx/v5"
 )
 
 // blockedProjectPredicate reports whether a stored project spelling belongs to
 // a quarantined project.
 //
-// Quarantine must fail closed: a spelling the identity registry does not know
-// must never read as unblocked. The predicate therefore over-approximates the
-// candidate keys for a row instead of trusting a single lookup:
+// The API asks exactly one question about a project: is this literal
+// quarantined? It never derives, folds or reconciles a key to answer it, so the
+// predicate is plain equality between the stored spelling and the literal an
+// admin blocked.
 //
-//   - the literal spelling recorded on the block itself;
-//   - the registry mapping, authoritative once the spelling was registered;
-//   - the stored value itself, which already is the shared Go canonical key for
-//     every row written through the sync path;
-//   - an ASCII separator fold, which reproduces the Go contract for ASCII
-//     spellings and covers raw legacy rows that predate the registry.
+// It used to over-approximate across the block's own spelling, the identity
+// registry, and an ASCII separator fold, guarded by a COALESCE fallback to the
+// empty string. Over-blocking looked safe and was not: the fold quarantined
+// unrelated projects that merely spelled their name similarly, and the sentinel
+// matched every row whose canonical key was the empty string.
 //
-// Over-approximating can only ever block more, never less, so it is safe here.
-// Identity resolution (scoping, grouping, joining) must never use it, because
-// there over-approximating would mix distinct projects.
-//
-// Known residual: the Go contract applies Unicode full case folding (ß -> ss),
-// which SQL cannot reproduce. A non-ASCII legacy spelling is therefore covered
-// by the registry (populated on every write and by the startup backfill), not
-// by the fold.
+// Admins block the exact spelling. Two spellings are one project only once an
+// admin has merged them.
 func blockedProjectPredicate(projectExpr string) string {
-	return fmt.Sprintf("EXISTS (SELECT 1 FROM project_blocks pb WHERE pb.blocked = true AND (pb.project = %[1]s OR pb.canonical_project_key IN (%[1]s, %[2]s, COALESCE((SELECT pbs.project_key FROM project_identity_spellings pbs WHERE pbs.spelling = %[1]s), ''))))", projectExpr, asciiSeparatorFoldExpr(projectExpr))
-}
-
-// asciiSeparatorFoldExpr mirrors projectidentity.Canonical for ASCII spellings:
-// lower-case, collapse separator runs to '-', drop outer separators. It exists
-// only to widen the quarantine predicate above so an unregistered legacy
-// spelling cannot read as unblocked. Nothing that resolves identity may use it.
-//
-// It is deliberately conservative: SQL lower() leaves ß intact where Go folds
-// it to ss, so the fold never merges two spellings the Go contract keeps apart.
-func asciiSeparatorFoldExpr(projectExpr string) string {
-	return fmt.Sprintf("trim(both '-' from regexp_replace(lower(%s), '[[:space:]/_.-]+', '-', 'g'))", projectExpr)
+	return fmt.Sprintf("EXISTS (SELECT 1 FROM project_blocks pb WHERE pb.blocked = true AND pb.canonical_project_key = %s)", projectExpr)
 }
 
 func unblockedProjectPredicate(projectExpr string) string {
 	return "NOT " + blockedProjectPredicate(projectExpr)
 }
 
+// checkProjectBlocked is the write-side counterpart of blockedProjectPredicate
+// and must resolve the same block for the same literal. It therefore does NOT
+// canonicalize its argument: the read predicate compares against a stored
+// column and cannot canonicalize its side without deriving identity in SQL, so
+// agreement is only possible with both sides literal.
 func checkProjectBlocked(ctx context.Context, db pgxQuerier, project string) error {
 	var blocked bool
-	if err := db.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM project_blocks WHERE blocked = true AND canonical_project_key = $1)", projectkey.Canonicalize(project)).Scan(&blocked); err != nil {
+	if err := db.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM project_blocks WHERE blocked = true AND canonical_project_key = $1)", project).Scan(&blocked); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}

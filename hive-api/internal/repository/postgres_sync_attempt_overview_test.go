@@ -172,7 +172,7 @@ func TestPostgresSyncAttemptRepository_SyncHealthByProjectExcludesBlockedProject
 	require.NoError(t, err)
 	_, err = blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
 		Project:             "Blocked Sync",
-		CanonicalProjectKey: "blocked-sync",
+		CanonicalProjectKey: "Blocked Sync",
 		Action:              model.ProjectBlockActionQuarantine,
 		Reason:              "garbage",
 		Confirmation:        "blocked-sync",

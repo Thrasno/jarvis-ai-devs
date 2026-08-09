@@ -77,7 +77,7 @@ func TestProjectGovernanceService_ConcurrentTransitionsPreserveStrictGenerationH
 		repository.NewPostgresTxManager(pool),
 	)
 	project := "Concurrent Project"
-	canonical := "concurrent-project"
+	canonical := project
 	requests := []model.ProjectBlockRequest{
 		{Action: model.ProjectBlockActionBlock, Reason: "first transition", Confirmation: canonical},
 		{Action: model.ProjectBlockActionUnblock, Reason: "second transition", Confirmation: canonical},
@@ -133,16 +133,16 @@ func TestProjectGovernanceService_ListQuarantinesLoadsRetainedCurrentGenerationA
 		repository.NewPostgresTxManager(pool),
 	)
 	actor := model.AdminActor{UserID: "00000000-0000-0000-0000-000000000091"}
-	_, err := governance.BlockProject(ctx, actor, "Retained Project", model.ProjectBlockRequest{Action: model.ProjectBlockActionBlock, Reason: "quarantine", Confirmation: "retained-project"})
+	_, err := governance.BlockProject(ctx, actor, "Retained Project", model.ProjectBlockRequest{Action: model.ProjectBlockActionBlock, Reason: "quarantine", Confirmation: "Retained Project"})
 	require.NoError(t, err)
-	_, err = governance.BlockProject(ctx, actor, "Retained Project", model.ProjectBlockRequest{Action: model.ProjectBlockActionUnblock, Reason: "release", Confirmation: "retained-project"})
+	_, err = governance.BlockProject(ctx, actor, "Retained Project", model.ProjectBlockRequest{Action: model.ProjectBlockActionUnblock, Reason: "release", Confirmation: "Retained Project"})
 	require.NoError(t, err)
 
 	summaries, err := governance.ListQuarantines(ctx)
 
 	require.NoError(t, err)
 	require.Equal(t, []model.QuarantineSummary{{
-		Project: "Retained Project", CanonicalProjectKey: "retained-project", Generation: 2,
+		Project: "Retained Project", CanonicalProjectKey: "Retained Project", Generation: 2,
 		Action: model.ProjectBlockActionUnblock, State: model.ProjectBlockProgressPending,
 		TransitionedAt: summaries[0].TransitionedAt,
 	}}, summaries)
@@ -174,7 +174,7 @@ func TestMemoryService_CreateConcurrentWithBlockCannotWriteAfterBlock(t *testing
 
 	for i := 0; i < 4; i++ {
 		project := fmt.Sprintf("Race Project %d", i)
-		canonical := fmt.Sprintf("race-project-%d", i)
+		canonical := project
 		start := make(chan struct{})
 		var wg sync.WaitGroup
 		wg.Add(2)

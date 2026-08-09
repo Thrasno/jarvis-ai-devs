@@ -42,7 +42,7 @@ func TestPostgresProjectBlockRepository_ReadsHistoricalLegacyActions(t *testing.
 	for _, action := range []string{"export_marker", model.ProjectBlockActionPurgeIntent} {
 		t.Run("read "+action, func(t *testing.T) {
 			canonical := "legacy-" + action
-			block, err := NewPostgresProjectBlockRepository(pool).GetByCanonicalKey(ctx, "LEGACY/"+action)
+			block, err := NewPostgresProjectBlockRepository(pool).GetByCanonicalKey(ctx, canonical)
 			require.NoError(t, err)
 			require.Equal(t, action, block.Action)
 			require.Equal(t, canonical, block.Project)
@@ -52,7 +52,11 @@ func TestPostgresProjectBlockRepository_ReadsHistoricalLegacyActions(t *testing.
 	}
 }
 
-func TestBlockedProjectPredicateUsesSharedCanonicalIdentityForLegacySpellings(t *testing.T) {
+// TestBlockedProjectPredicateBlocksOnlyTheSpellingItNames proves the read path
+// hides exactly the projects an admin quarantined by their stored literal, and
+// nothing else. The predicate used to over-approximate across an ASCII fold, so
+// blocking "Foo.Bar" also hid "foo/bar" - a different project.
+func TestBlockedProjectPredicateBlocksOnlyTheSpellingItNames(t *testing.T) {
 	pool, cleanup := startPostgresWithProjectBlocks(t)
 	defer cleanup()
 
@@ -65,26 +69,30 @@ func TestBlockedProjectPredicateUsesSharedCanonicalIdentityForLegacySpellings(t 
 	}
 	_, err := pool.Exec(ctx, `
 		INSERT INTO project_blocks (project, canonical_project_key, action, reason, confirmation, export_marker, blocked)
-		VALUES ('Foo.Bar', 'foo.bar', 'block', 'legacy dotted key', 'Foo.Bar', '', true),
-		       ('STRAßE', 'stra-e', 'block', 'legacy ASCII key', 'STRAßE', '', true)`)
+		VALUES ('Foo.Bar', 'Foo.Bar', 'block', 'exact dotted spelling', 'Foo.Bar', '', true),
+		       ('STRAßE', 'STRAßE', 'block', 'exact unicode spelling', 'STRAßE', '', true)`)
 	require.NoError(t, err)
 	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool))
 
 	repo := NewPostgresMemoryRepository(pool)
 	listed, err := repo.List(ctx, model.MemoryFilter{Limit: 20})
 	require.NoError(t, err)
-	require.Equal(t, []string{"visible"}, memoryProjects(listed))
-	searched, err := repo.Search(ctx, "project", model.MemoryFilter{Limit: 20})
-	require.NoError(t, err)
-	require.Equal(t, []string{"visible"}, memoryProjects(searched))
+	require.ElementsMatch(t, []string{"foo/bar", "visible"}, memoryProjects(listed),
+		"only the two quarantined literals are hidden")
 
-	for _, spelling := range []string{"Foo.Bar", "foo/bar", "STRAßE", "strasse"} {
-		err = checkProjectBlocked(ctx, pool, spelling)
-		require.ErrorIs(t, err, ErrProjectBlocked, spelling)
+	for _, spelling := range []string{"Foo.Bar", "STRAßE"} {
+		require.ErrorIs(t, checkProjectBlocked(ctx, pool, spelling), ErrProjectBlocked, spelling)
+	}
+	for _, spelling := range []string{"foo/bar", "foo-bar", "strasse", "visible"} {
+		require.NoError(t, checkProjectBlocked(ctx, pool, spelling), spelling)
 	}
 }
 
-func TestBackfillProjectIdentityRegistryRekeysBlockWithAcknowledgementsAndDeliveries(t *testing.T) {
+// TestBackfillProjectIdentityRegistryLeavesProjectBlocksUntouched proves the
+// startup backfill only populates the spelling registry. It used to rekey and
+// coalesce quarantine heads onto a canonical key, which silently repointed a
+// block at a project no admin had named.
+func TestBackfillProjectIdentityRegistryLeavesProjectBlocksUntouched(t *testing.T) {
 	pool, cleanup := startPostgresWithProjectBlocks(t)
 	defer cleanup()
 
@@ -92,124 +100,37 @@ func TestBackfillProjectIdentityRegistryRekeysBlockWithAcknowledgementsAndDelive
 	var commandID string
 	require.NoError(t, pool.QueryRow(ctx, `
 		INSERT INTO project_blocks (project, canonical_project_key, action, reason, confirmation, export_marker, blocked)
-		VALUES ('Foo.Bar', 'foo.bar', 'quarantine', 'legacy dotted key', 'Foo.Bar', 'export-1', true)
+		VALUES ('Foo.Bar', 'Foo.Bar', 'quarantine', 'exact dotted key', 'Foo.Bar', 'export-1', true)
 		RETURNING command_id::text`).Scan(&commandID))
 	_, err := pool.Exec(ctx, `
 		INSERT INTO project_block_ack_deliveries
 			(command_id, canonical_project_key, ack_token, ack_auth_subject, ack_daemon_id)
-		VALUES ($1, 'foo.bar', 'delivery-token', 'user-1', 'daemon-1')`, commandID)
+		VALUES ($1, 'Foo.Bar', 'delivery-token', 'user-1', 'daemon-1')`, commandID)
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `
 		INSERT INTO project_block_acks
 			(command_id, canonical_project_key, ack_token, ack_auth_subject, ack_daemon_id, status)
-		VALUES ($1, 'foo.bar', 'delivery-token', 'user-1', 'daemon-1', 'applied')`, commandID)
+		VALUES ($1, 'Foo.Bar', 'delivery-token', 'user-1', 'daemon-1', 'applied')`, commandID)
 	require.NoError(t, err)
 
 	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool))
 	require.NoError(t, RunMigrations(pool, migrations.CanonicalProjectRegistrySQL), "startup schema migration must be repeatable")
 	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool), "startup backfill must be repeatable")
+
 	for _, table := range []string{"project_blocks", "project_block_acks", "project_block_ack_deliveries"} {
 		var key string
 		var count int
 		require.NoError(t, pool.QueryRow(ctx, "SELECT canonical_project_key, count(*) OVER () FROM "+table).Scan(&key, &count))
-		require.Equal(t, "foo-bar", key, table)
+		require.Equal(t, "Foo.Bar", key, table)
 		require.Equal(t, 1, count, table)
 	}
 }
 
-func TestBackfillProjectIdentityRegistryCoalescesCompatibleBlockHeadsLosslessly(t *testing.T) {
-	pool, cleanup := startPostgresWithProjectBlocks(t)
-	defer cleanup()
-
-	ctx := context.Background()
-	var olderCommand, newerCommand string
-	for _, row := range []struct {
-		project, key string
-		action       string
-		blocked      bool
-		generation   int64
-		command      *string
-	}{
-		{"Foo.Bar", "Foo.Bar", "block", true, 1, &olderCommand},
-		{"foo-bar", "foo-bar", "unblock", false, 2, &newerCommand},
-	} {
-		require.NoError(t, pool.QueryRow(ctx, `
-			INSERT INTO project_blocks (project, canonical_project_key, action, generation, reason, confirmation, export_marker, blocked)
-			VALUES ($1, $2, $3, $4, 'compatible legacy head', $1, '', $5)
-			RETURNING command_id::text`, row.project, row.key, row.action, row.generation, row.blocked).Scan(row.command))
-	}
-	for _, commandID := range []string{olderCommand, newerCommand} {
-		_, err := pool.Exec(ctx, `INSERT INTO project_block_ack_deliveries (command_id, canonical_project_key, ack_token, ack_auth_subject, ack_daemon_id)
-			SELECT $1, canonical_project_key, ack_token, $2, 'daemon-1' FROM project_blocks WHERE command_id = $1::uuid`, commandID, "user-"+commandID)
-		require.NoError(t, err)
-		_, err = pool.Exec(ctx, `INSERT INTO project_block_acks (command_id, canonical_project_key, ack_token, ack_auth_subject, ack_daemon_id, status)
-			SELECT $1, canonical_project_key, ack_token, $2, 'daemon-1', 'applied' FROM project_blocks WHERE command_id = $1::uuid`, commandID, "user-"+commandID)
-		require.NoError(t, err)
-	}
-
-	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool))
-	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool), "coalesced startup backfill must be idempotent")
-	for _, table := range []string{"project_blocks", "project_quarantine_commands", "project_block_acks", "project_block_ack_deliveries"} {
-		var count int
-		require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE canonical_project_key = 'foo-bar'").Scan(&count))
-		if table == "project_blocks" {
-			require.Equal(t, 1, count, table)
-		} else {
-			require.Equal(t, 2, count, table)
-		}
-	}
-	var generation int64
-	var action, reason, confirmation, marker string
-	var blocked bool
-	require.NoError(t, pool.QueryRow(ctx, `SELECT generation, action, reason, confirmation, export_marker, blocked FROM project_blocks WHERE canonical_project_key = 'foo-bar'`).Scan(&generation, &action, &reason, &confirmation, &marker, &blocked))
-	require.EqualValues(t, 2, generation, "the highest generation is the unambiguous current head")
-	require.Equal(t, "unblock", action)
-	require.Equal(t, "compatible legacy head", reason)
-	require.Equal(t, "foo-bar", confirmation)
-	require.Empty(t, marker)
-	require.False(t, blocked)
-
-	next, err := NewPostgresProjectBlockRepository(pool).BlockProject(ctx, model.ProjectBlockCreate{
-		Project:      "Foo.Bar",
-		Action:       "block",
-		Reason:       "next transition",
-		Confirmation: "Foo.Bar",
-	})
-	require.NoError(t, err)
-	require.EqualValues(t, 3, next.Generation)
-}
-
-func TestBackfillProjectIdentityRegistryCoalescesCompatibleGenerationOneHeads(t *testing.T) {
-	pool, cleanup := startPostgresWithProjectBlocks(t)
-	defer cleanup()
-
-	ctx := context.Background()
-	for _, row := range []struct{ project, key string }{{"Foo.Bar", "Foo.Bar"}, {"foo-bar", "foo-bar"}} {
-		_, err := pool.Exec(ctx, `INSERT INTO project_blocks (project, canonical_project_key, action, generation, reason, confirmation, export_marker, blocked)
-			VALUES ($1, $2, 'block', 1, 'same state', 'same confirmation', 'same marker', true)`, row.project, row.key)
-		require.NoError(t, err)
-	}
-
-	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool))
-	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool), "coalesced startup backfill must be idempotent")
-	var heads, commands int
-	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM project_blocks WHERE canonical_project_key = 'foo-bar'`).Scan(&heads))
-	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM project_quarantine_commands WHERE canonical_project_key = 'foo-bar'`).Scan(&commands))
-	require.Equal(t, 1, heads)
-	require.Equal(t, 2, commands, "both command identities must be retained")
-	var duplicateGenerations int
-	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM (SELECT generation FROM project_quarantine_commands WHERE canonical_project_key = 'foo-bar' GROUP BY generation HAVING count(*) > 1) duplicates`).Scan(&duplicateGenerations))
-	require.Zero(t, duplicateGenerations)
-	var headGeneration, maxCommandGeneration int64
-	require.NoError(t, pool.QueryRow(ctx, `SELECT generation FROM project_blocks WHERE canonical_project_key = 'foo-bar'`).Scan(&headGeneration))
-	require.NoError(t, pool.QueryRow(ctx, `SELECT max(generation) FROM project_quarantine_commands WHERE canonical_project_key = 'foo-bar'`).Scan(&maxCommandGeneration))
-	require.Equal(t, maxCommandGeneration, headGeneration)
-	next, err := NewPostgresProjectBlockRepository(pool).BlockProject(ctx, model.ProjectBlockCreate{Project: "Foo.Bar", Action: "block", Reason: "next transition", Confirmation: "Foo.Bar"})
-	require.NoError(t, err)
-	require.Equal(t, maxCommandGeneration+1, next.Generation)
-}
-
-func TestBackfillProjectIdentityRegistryRejectsIncompatibleBlockHeadsWithoutMutation(t *testing.T) {
+// TestBackfillProjectIdentityRegistryKeepsFoldedBlockHeadsSeparate proves two
+// quarantine heads that a canonical fold would merge stay two independent
+// heads. The old coalescer merged them and, on divergent state, rejected the
+// whole startup transaction.
+func TestBackfillProjectIdentityRegistryKeepsFoldedBlockHeadsSeparate(t *testing.T) {
 	pool, cleanup := startPostgresWithProjectBlocks(t)
 	defer cleanup()
 
@@ -220,17 +141,12 @@ func TestBackfillProjectIdentityRegistryRejectsIncompatibleBlockHeadsWithoutMuta
 		require.NoError(t, err)
 	}
 
-	err := BackfillProjectIdentityRegistry(ctx, pool)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "project identity conflict")
-	for _, table := range []string{"project_blocks", "project_quarantine_commands"} {
-		var count int
-		require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE canonical_project_key IN ('Foo.Bar', 'foo-bar')").Scan(&count))
-		require.Equal(t, 2, count, table, "transaction rollback must preserve legacy rows")
-	}
-	var identities int
-	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM project_identities`).Scan(&identities))
-	require.Zero(t, identities, "conflict must not partially register project identity spellings")
+	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool),
+		"divergent heads are two projects, not a conflict")
+
+	var count int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM project_blocks WHERE canonical_project_key IN ('Foo.Bar', 'foo-bar')`).Scan(&count))
+	require.Equal(t, 2, count, "both heads survive untouched")
 }
 
 func memoryProjects(memories []*model.Memory) []string {
@@ -250,7 +166,7 @@ func TestPostgresProjectBlockRepository_BlockStatusAndAck(t *testing.T) {
 
 	block, err := repo.BlockProject(ctx, model.ProjectBlockCreate{
 		Project:             "Jarvis Dev",
-		CanonicalProjectKey: "jarvis-dev",
+		CanonicalProjectKey: "Jarvis Dev",
 		Action:              model.ProjectBlockActionQuarantine,
 		Reason:              "duplicate garbage project",
 		Confirmation:        "Jarvis Dev",
@@ -258,11 +174,11 @@ func TestPostgresProjectBlockRepository_BlockStatusAndAck(t *testing.T) {
 		ActorUserID:         "admin-1",
 	})
 	require.NoError(t, err)
-	require.Equal(t, "jarvis-dev", block.CanonicalProjectKey)
+	require.Equal(t, "Jarvis Dev", block.CanonicalProjectKey)
 	require.NotEmpty(t, block.CommandID)
 	require.NotEmpty(t, block.AckToken)
 
-	status, err := repo.GetByCanonicalKey(ctx, "jarvis-dev")
+	status, err := repo.GetByCanonicalKey(ctx, "Jarvis Dev")
 	require.NoError(t, err)
 	require.True(t, status.Blocked)
 	require.Equal(t, "duplicate garbage project", status.Reason)
@@ -275,7 +191,7 @@ func TestPostgresProjectBlockRepository_BlockStatusAndAck(t *testing.T) {
 	beforeRecord := time.Now().UTC()
 	ack, err := repo.RecordAck(ctx, model.ProjectBlockAck{
 		CommandID:           block.CommandID,
-		CanonicalProjectKey: "jarvis-dev",
+		CanonicalProjectKey: "Jarvis Dev",
 		AckToken:            delivery.AckToken,
 		Status:              model.ProjectBlockAckApplied,
 		Warning:             "quarantined locally from stale client clock",
@@ -294,7 +210,7 @@ func TestPostgresProjectBlockRepository_BlockStatusAndAck(t *testing.T) {
 	beforeRecord = time.Now().UTC()
 	ack, err = repo.RecordAck(ctx, model.ProjectBlockAck{
 		CommandID:           block.CommandID,
-		CanonicalProjectKey: "jarvis-dev",
+		CanonicalProjectKey: "Jarvis Dev",
 		AckToken:            delivery.AckToken,
 		Status:              model.ProjectBlockAckApplied,
 		Warning:             "quarantined locally from future client clock",
@@ -309,7 +225,7 @@ func TestPostgresProjectBlockRepository_BlockStatusAndAck(t *testing.T) {
 	require.WithinDuration(t, afterRecord, ack.AppliedAt, time.Second, "ack applied_at should be assigned near the server recording time")
 	require.True(t, ack.AppliedAt.After(beforeRecord.Add(-time.Second)), "ack applied_at should not preserve a future client timestamp")
 
-	latest, err := repo.LatestAckForCommand(ctx, "jarvis-dev", block.CommandID)
+	latest, err := repo.LatestAckForCommand(ctx, "Jarvis Dev", block.CommandID)
 	require.NoError(t, err)
 	require.NotNil(t, latest)
 	require.Equal(t, block.CommandID, latest.CommandID)
@@ -317,7 +233,10 @@ func TestPostgresProjectBlockRepository_BlockStatusAndAck(t *testing.T) {
 	require.Equal(t, ack.AppliedAt, latest.AppliedAt)
 }
 
-func TestPostgresProjectBlockRepository_EquivalentKeysShareBlockAndQuarantineProgress(t *testing.T) {
+// TestPostgresProjectBlockRepository_KeyLookupsAreExact proves the block is
+// found by the exact key it was created with, and by nothing else. A folded
+// lookup returned another project's quarantine state.
+func TestPostgresProjectBlockRepository_KeyLookupsAreExact(t *testing.T) {
 	pool, cleanup := startPostgresWithProjectBlocks(t)
 	defer cleanup()
 
@@ -325,23 +244,29 @@ func TestPostgresProjectBlockRepository_EquivalentKeysShareBlockAndQuarantinePro
 	repo := NewPostgresProjectBlockRepository(pool)
 	block, err := repo.BlockProject(ctx, model.ProjectBlockCreate{
 		Project:             " Foo.Bar ",
-		CanonicalProjectKey: "foo/bar",
+		CanonicalProjectKey: " Foo.Bar ",
 		Action:              model.ProjectBlockActionBlock,
 		Reason:              "duplicate",
-		Confirmation:        "foo-bar",
+		Confirmation:        " Foo.Bar ",
 		ActorUserID:         "admin-1",
 	})
 	require.NoError(t, err)
 
-	stored, err := repo.GetByCanonicalKey(ctx, "FOO_BAR")
+	stored, err := repo.GetByCanonicalKey(ctx, " Foo.Bar ")
 	require.NoError(t, err)
 	require.Equal(t, " Foo.Bar ", stored.Project)
-	require.Equal(t, "foo-bar", stored.CanonicalProjectKey)
+	require.Equal(t, " Foo.Bar ", stored.CanonicalProjectKey)
 
-	progress, err := repo.QuarantineProgress(ctx, " Foo/Bar ", block.Generation, "", 10)
+	_, err = repo.GetByCanonicalKey(ctx, "FOO_BAR")
+	require.ErrorIs(t, err, ErrNotFound, "an equivalent-looking spelling is a different project")
+
+	progress, err := repo.QuarantineProgress(ctx, " Foo.Bar ", block.Generation, "", 10)
 	require.NoError(t, err)
-	require.Equal(t, "foo-bar", progress.CanonicalProjectKey)
+	require.Equal(t, " Foo.Bar ", progress.CanonicalProjectKey)
 	require.Equal(t, " Foo.Bar ", progress.Project)
+
+	_, err = repo.QuarantineProgress(ctx, " Foo/Bar ", block.Generation, "", 10)
+	require.ErrorIs(t, err, ErrNotFound, "an equivalent-looking spelling is a different project")
 }
 
 func TestPostgresProjectBlockRepository_ReblockRotatesCommandID(t *testing.T) {
@@ -352,7 +277,7 @@ func TestPostgresProjectBlockRepository_ReblockRotatesCommandID(t *testing.T) {
 	repo := NewPostgresProjectBlockRepository(pool)
 	first, err := repo.BlockProject(ctx, model.ProjectBlockCreate{
 		Project:             "Jarvis Dev",
-		CanonicalProjectKey: "jarvis-dev",
+		CanonicalProjectKey: "Jarvis Dev",
 		Action:              model.ProjectBlockActionQuarantine,
 		Reason:              "first reason",
 		Confirmation:        "jarvis-dev",
@@ -362,7 +287,7 @@ func TestPostgresProjectBlockRepository_ReblockRotatesCommandID(t *testing.T) {
 	require.NoError(t, err)
 	second, err := repo.BlockProject(ctx, model.ProjectBlockCreate{
 		Project:             "Jarvis Dev",
-		CanonicalProjectKey: "jarvis-dev",
+		CanonicalProjectKey: "Jarvis Dev",
 		Action:              model.ProjectBlockActionQuarantine,
 		Reason:              "changed reason",
 		Confirmation:        "jarvis-dev",
@@ -387,7 +312,7 @@ func TestPostgresProjectBlockRepository_UnblockAdvancesGenerationAndReleasesClou
 	require.NoError(t, err)
 	require.False(t, released.Blocked)
 	require.Equal(t, first.Generation+1, released.Generation)
-	_, err = repo.GetByCanonicalKey(ctx, "jarvis-dev")
+	_, err = repo.GetByCanonicalKey(ctx, "Jarvis Dev")
 	require.ErrorIs(t, err, ErrNotFound, "released projects must stop returning HTTP 423 immediately")
 
 	var history int
@@ -403,7 +328,7 @@ func TestPostgresProjectBlockRepository_AckDeliveryIsSubjectBound(t *testing.T) 
 	repo := NewPostgresProjectBlockRepository(pool)
 	block, err := repo.BlockProject(ctx, model.ProjectBlockCreate{
 		Project:             "Jarvis Dev",
-		CanonicalProjectKey: "jarvis-dev",
+		CanonicalProjectKey: "Jarvis Dev",
 		Action:              model.ProjectBlockActionQuarantine,
 		Reason:              "duplicate",
 		Confirmation:        "jarvis-dev",
@@ -425,7 +350,7 @@ func TestPostgresProjectBlockRepository_AckDeliveryIsSubjectBound(t *testing.T) 
 	require.NoError(t, err)
 	require.Equal(t, deliveryA.AckToken, deliveryAAgain.AckToken)
 
-	got, err := repo.GetAckDelivery(ctx, "jarvis-dev", block.CommandID, subjectA)
+	got, err := repo.GetAckDelivery(ctx, "Jarvis Dev", block.CommandID, subjectA)
 	require.NoError(t, err)
 	require.Equal(t, deliveryA.AckToken, got.AckToken)
 	require.Equal(t, subjectA, got.AckSubject)
@@ -439,7 +364,7 @@ func TestPostgresProjectBlockRepository_AckDeliveryIsAccountBound(t *testing.T) 
 	repo := NewPostgresProjectBlockRepository(pool)
 	block, err := repo.BlockProject(ctx, model.ProjectBlockCreate{
 		Project:             "Jarvis Dev",
-		CanonicalProjectKey: "jarvis-dev",
+		CanonicalProjectKey: "Jarvis Dev",
 		Action:              model.ProjectBlockActionQuarantine,
 		Reason:              "duplicate",
 		Confirmation:        "jarvis-dev",
@@ -460,7 +385,7 @@ func TestPostgresProjectBlockRepository_AckDeliveryIsAccountBound(t *testing.T) 
 	require.NoError(t, err)
 	require.NotEqual(t, delivery.AckToken, differentAccountDelivery.AckToken)
 
-	got, err := repo.GetAckDelivery(ctx, "jarvis-dev", block.CommandID, sameAccountWithDaemon)
+	got, err := repo.GetAckDelivery(ctx, "Jarvis Dev", block.CommandID, sameAccountWithDaemon)
 	require.NoError(t, err)
 	require.Equal(t, delivery.AckToken, got.AckToken)
 	require.Equal(t, accountOnly.AuthSubject, got.AckSubject.AuthSubject)
@@ -667,7 +592,7 @@ func TestPostgresMemoryRepository_GetByIDExcludesBlockedProject(t *testing.T) {
 
 	_, err = blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
 		Project:             "Blocked Project",
-		CanonicalProjectKey: "blocked-project",
+		CanonicalProjectKey: "Blocked Project",
 		Action:              model.ProjectBlockActionQuarantine,
 		Reason:              "garbage",
 		Confirmation:        "blocked-project",
@@ -696,7 +621,7 @@ func TestPostgresProjectRepository_ListAggregatesExcludesBlockedProjects(t *test
 
 	_, err := blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
 		Project:             "Blocked Project",
-		CanonicalProjectKey: "blocked-project",
+		CanonicalProjectKey: "Blocked Project",
 		Action:              model.ProjectBlockActionQuarantine,
 		Reason:              "garbage",
 		Confirmation:        "Blocked Project",
@@ -726,7 +651,7 @@ func TestPostgresMemoryRepository_CountByProjectExcludesBlockedProjects(t *testi
 	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000702", "Blocked Count", "blocked-count-session", base, base, nil)
 	_, err := blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
 		Project:             "Blocked Count",
-		CanonicalProjectKey: "blocked-count",
+		CanonicalProjectKey: "Blocked Count",
 		Action:              model.ProjectBlockActionQuarantine,
 		Reason:              "garbage",
 		Confirmation:        "blocked-count",
@@ -752,7 +677,7 @@ func TestPostgresMemoryRepository_PullSinceExcludesBlockedProjects(t *testing.T)
 	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000801", "Blocked Pull", "blocked-pull-session", base, base, nil)
 	_, err := blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
 		Project:             "Blocked Pull",
-		CanonicalProjectKey: "blocked-pull",
+		CanonicalProjectKey: "Blocked Pull",
 		Action:              model.ProjectBlockActionQuarantine,
 		Reason:              "garbage",
 		Confirmation:        "blocked-pull",
@@ -782,7 +707,7 @@ func TestPostgresMemoryRepository_CountLiveActivityExcludesBlockedProjects(t *te
 	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000502", "Blocked Live", "blocked-live-session", base.Add(time.Minute), base.Add(time.Minute), nil)
 	_, err := blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
 		Project:             "Blocked Live",
-		CanonicalProjectKey: "blocked-live",
+		CanonicalProjectKey: "Blocked Live",
 		Action:              model.ProjectBlockActionQuarantine,
 		Reason:              "garbage",
 		Confirmation:        "blocked-live",
@@ -811,7 +736,7 @@ func TestPostgresMemoryRepository_CountGrowthByMonthExcludesBlockedProjects(t *t
 	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000602", "Blocked Growth", "blocked-growth-session", now, now, nil)
 	_, err := blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
 		Project:             "Blocked Growth",
-		CanonicalProjectKey: "blocked-growth",
+		CanonicalProjectKey: "Blocked Growth",
 		Action:              model.ProjectBlockActionQuarantine,
 		Reason:              "garbage",
 		Confirmation:        "blocked-growth",

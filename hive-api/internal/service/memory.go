@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
-	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/projectkey"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
 )
 
@@ -65,8 +64,7 @@ func (s *memoryService) Create(ctx context.Context, mem *model.Memory) (*model.M
 			if repos.Memory == nil || repos.Session == nil || repos.ProjectBlocks == nil || repos.ProjectKeyLocks == nil {
 				return ErrProjectBlockUnavailable
 			}
-			canonical := projectkey.Canonicalize(mem.Project)
-			if err := repos.ProjectKeyLocks.LockCanonicalProjectKeys(ctx, []string{canonical}); err != nil {
+			if err := repos.ProjectKeyLocks.LockCanonicalProjectKeys(ctx, []string{mem.Project}); err != nil {
 				return err
 			}
 			if repos.ProjectIdentities == nil {
@@ -92,7 +90,7 @@ func (s *memoryService) Create(ctx context.Context, mem *model.Memory) (*model.M
 
 func (s *memoryService) createWithRepos(ctx context.Context, mem *model.Memory, memRepo repository.MemoryRepository, sessionRepo repository.SessionRepository, blockRepo repository.ProjectBlockRepository) (*model.Memory, error) {
 	if blockRepo != nil {
-		block, err := blockRepo.GetByCanonicalKey(ctx, projectkey.Canonicalize(mem.Project))
+		block, err := blockRepo.GetByCanonicalKey(ctx, mem.Project)
 		if err != nil && !errors.Is(err, repository.ErrNotFound) {
 			return nil, err
 		}

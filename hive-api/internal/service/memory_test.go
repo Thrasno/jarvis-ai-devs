@@ -328,8 +328,8 @@ func TestCreateMemory_UsesProjectKeyTransactionLock(t *testing.T) {
 		Category: model.CatDecision,
 	}
 
-	lockRepo.On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
-	blockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(nil, repository.ErrNotFound).Once()
+	lockRepo.On("LockCanonicalProjectKeys", ctx, []string{"Jarvis Dev"}).Return(nil).Once()
+	blockRepo.On("GetByCanonicalKey", ctx, "Jarvis Dev").Return(nil, repository.ErrNotFound).Once()
 	txRepo.On("GetBySyncID", ctx, "direct-create-lock-1").Return(nil, nil).Once()
 	sessionRepo.On("EnsureManualSaveSession", ctx, "Jarvis Dev").Return("manual-save-jarvis-dev", nil).Once()
 	txRepo.On("Create", ctx, mock.MatchedBy(func(m *model.Memory) bool {
@@ -370,8 +370,8 @@ func TestCreateMemory_RejectsBlockedProjectInsideProjectKeyLock(t *testing.T) {
 		Blocked:             true,
 		BlockedAt:           time.Now().UTC(),
 	}
-	lockRepo.On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
-	blockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(block, nil).Once()
+	lockRepo.On("LockCanonicalProjectKeys", ctx, []string{"Jarvis Dev"}).Return(nil).Once()
+	blockRepo.On("GetByCanonicalKey", ctx, "Jarvis Dev").Return(block, nil).Once()
 
 	_, err := svc.Create(ctx, &model.Memory{SyncID: "blocked-direct", Project: "Jarvis Dev", Category: model.CatDecision})
 	require.Error(t, err)

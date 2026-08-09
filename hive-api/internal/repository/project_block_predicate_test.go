@@ -7,17 +7,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBlockedProjectPredicateConsidersEveryCandidateKey(t *testing.T) {
+func TestBlockedProjectPredicateComparesTheStoredLiteralExactly(t *testing.T) {
 	predicate := blockedProjectPredicate("memories.project")
 
-	assert.Contains(t, predicate, "pb.project = memories.project",
-		"the literal spelling recorded on the block must match")
-	assert.Contains(t, predicate, "pb.canonical_project_key IN (memories.project,",
-		"a stored canonical key must match itself")
-	assert.Contains(t, predicate, "regexp_replace(lower(memories.project), '[[:space:]/_.-]+', '-', 'g')",
-		"raw legacy spellings must be folded before matching")
-	assert.Contains(t, predicate, "FROM project_identity_spellings pbs WHERE pbs.spelling = memories.project",
-		"the identity registry must stay authoritative when it knows the spelling")
+	assert.Equal(t,
+		"EXISTS (SELECT 1 FROM project_blocks pb WHERE pb.blocked = true AND pb.canonical_project_key = memories.project)",
+		predicate)
+	assert.NotContains(t, predicate, "regexp_replace",
+		"quarantine must not fold spellings together")
+	assert.NotContains(t, predicate, "COALESCE",
+		"the empty-string sentinel could quarantine every row on the backend")
+	assert.NotContains(t, predicate, "project_identity_spellings",
+		"quarantine must not resolve identity through the registry")
 	assert.NotContains(t, predicate, "canonical_project_key(",
 		"quarantine must not depend on the diverging SQL key function")
 }
