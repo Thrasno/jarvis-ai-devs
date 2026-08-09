@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -450,4 +451,69 @@ func TestApplyMemoryMutation_ReprojectResultIsAlwaysAckable(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, reprojectFrom, after.Project, "the row must not have moved")
 	})
+}
+
+// TestMigration023_DoesNotRevalidateTheJournalOnEveryBoot pins the cost of a
+// restart, not a schema shape.
+//
+// This module has no migration ledger: migrations.Ordered() replays the whole
+// slice on every boot. An unguarded DROP CONSTRAINT + ADD CONSTRAINT therefore
+// takes ACCESS EXCLUSIVE on memory_mutations and full-scans the journal to
+// validate the check — every single boot, at a cost that grows with the journal.
+// On a single-instance deploy that is plain downtime.
+//
+// A constraint's OID is the observable proof: re-adding it mints a new one, so a
+// stable OID across a replay means the migration recognised its own work and did
+// nothing.
+func TestMigration023_DoesNotRevalidateTheJournalOnEveryBoot(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	before := memoryMutationsOpConstraintOID(ctx, t, pool)
+
+	require.NoError(t, RunMigrations(pool, migrations.ReprojectMutationSQL), "migration 023 must replay cleanly")
+
+	after := memoryMutationsOpConstraintOID(ctx, t, pool)
+	assert.Equal(t, before, after,
+		"a replay must leave the existing constraint alone — dropping and re-adding it re-scans the whole journal under ACCESS EXCLUSIVE")
+}
+
+// TestMigration023_UpgradesTheOldFourOpConstraint is the other half: skipping
+// the work must never mean skipping the upgrade. A database that predates this
+// migration carries a constraint with the SAME NAME and only four ops, so a
+// guard that tested the name alone would leave it there and reject every
+// reproject the feature exists to journal.
+func TestMigration023_UpgradesTheOldFourOpConstraint(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Rewind to the pre-023 shape: same constraint name, no 'reproject'.
+	_, err := pool.Exec(ctx, `
+		ALTER TABLE memory_mutations DROP CONSTRAINT chk_memory_mutations_op;
+		ALTER TABLE memory_mutations ADD CONSTRAINT chk_memory_mutations_op
+			CHECK (op IN ('create', 'update', 'delete', 'restore'))`)
+	require.NoError(t, err)
+
+	require.NoError(t, RunMigrations(pool, migrations.ReprojectMutationSQL))
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO memory_mutations
+			(event_id, entity_type, entity_sync_id, project, op, occurred_at, reproject)
+		VALUES ('9b0e8400-e29b-41d4-a716-446655440001', 'memory',
+		        '9b0e8400-e29b-41d4-a716-446655440101', $1, 'reproject', now(), $2)`,
+		reprojectTo, []byte(`{"from_project":"Foo.Bar","to_project":"foo-bar"}`))
+	require.NoError(t, err, "an old four-op constraint must be replaced, not left in place")
+}
+
+func memoryMutationsOpConstraintOID(ctx context.Context, t *testing.T, pool *pgxpool.Pool) uint32 {
+	t.Helper()
+	var oid uint32
+	err := pool.QueryRow(ctx, `
+		SELECT oid FROM pg_constraint
+		WHERE conrelid = 'memory_mutations'::regclass AND conname = 'chk_memory_mutations_op'`).Scan(&oid)
+	require.NoError(t, err, "migration 023 must leave the op check constraint in place")
+	return oid
 }
