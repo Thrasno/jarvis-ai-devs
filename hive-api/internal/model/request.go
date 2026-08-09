@@ -73,6 +73,24 @@ type SyncRequest struct {
 	// solo devuelve las memorias más nuevas que esa fecha.
 	LastSync *time.Time `json:"last_sync"`
 
+	// SyncCapabilities names the optional protocol features THIS CLIENT
+	// understands. It is the client-side counterpart of
+	// SyncResponse.SyncCapabilities, and it exists because capability had to
+	// travel in both directions: the server already said what it could do, but
+	// nothing told the server what the daemon could do.
+	//
+	// protocol_version cannot answer that question — the daemon hardcodes it to
+	// MutationProtocolVersion, so a daemon that understands `reproject` and one
+	// that does not send the identical value. Handing an op to a daemon that
+	// cannot apply it is not a harmless no-op: its apply loop errors out, which
+	// aborts the batch before it advances its mutation cursor, so it silently
+	// stops receiving remote mutations.
+	//
+	// Omitted means "only the baseline", which is exactly what an un-upgraded
+	// daemon means. Unknown entries are ignored, so the field degrades in both
+	// directions and never needs a version bump.
+	SyncCapabilities []string `json:"sync_capabilities,omitempty"`
+
 	// Mutation sync v2 fields. Legacy clients omit these and keep the row-state path.
 	ProtocolVersion int                `json:"protocol_version,omitempty"`
 	MutationCursor  *MutationCursor    `json:"mutation_cursor,omitempty"`

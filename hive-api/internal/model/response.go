@@ -136,6 +136,34 @@ func ServerSyncCapabilities() []string {
 	return []string{SyncCapabilityReproject}
 }
 
+// mutationOpCapabilities maps each mutation op that a client may not understand
+// to the capability it must declare before the server will send it. An op absent
+// from this map is baseline: every client that speaks the mutation protocol at
+// all can apply it, and it is never withheld.
+var mutationOpCapabilities = map[MutationOp]string{
+	MutationOpReproject: SyncCapabilityReproject,
+}
+
+// ClientUnderstandsMutationOp reports whether a client declaring these
+// capabilities can apply this op. It is the pull-side gate: an event the client
+// cannot apply must not enter its stream, because failing to apply one aborts
+// its whole batch and strands its cursor.
+//
+// Absent capabilities mean "baseline only" — the honest reading of a request
+// from a daemon that predates the field.
+func ClientUnderstandsMutationOp(op MutationOp, capabilities []string) bool {
+	required, gated := mutationOpCapabilities[op]
+	if !gated {
+		return true
+	}
+	for _, declared := range capabilities {
+		if declared == required {
+			return true
+		}
+	}
+	return false
+}
+
 // ListMemoriesResponse es la respuesta del GET /memories.
 // Incluye los datos de paginación para que el cliente sepa cuántas páginas hay.
 type ListMemoriesResponse struct {

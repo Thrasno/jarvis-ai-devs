@@ -359,7 +359,7 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 			return nil, err
 		}
 		if batch != nil {
-			pulledMutations = batch.Events
+			pulledMutations = deliverableMutations(batch.Events, req.SyncCapabilities)
 			next := batch.Next
 			nextMutationCursor = &next
 		}
@@ -382,6 +382,36 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 		return nil, err
 	}
 	return resp, nil
+}
+
+// deliverableMutations withholds the events this client has not declared it can
+// apply.
+//
+// The daemon's apply loop returns a hard error on an op it does not know, which
+// aborts the batch before it advances its mutation cursor and before it acks the
+// mutations it just pushed — so a single undeliverable event silently and
+// permanently stops that daemon from receiving its teammates' work. The server
+// is the only side that can prevent it, and the only thing it needs is the
+// client's own declaration.
+//
+// The filter runs here rather than in the SQL: the cursor MUST keep advancing
+// over a withheld event, or the daemon would stall on it forever instead of
+// merely missing it. batch.Next already points past every row the page scanned,
+// so dropping events after the fact keeps the stream moving.
+//
+// The withheld event is not queued for later. A client that upgrades starts from
+// its stored cursor, which is past these events; a reproject it missed reaches it
+// as the ordinary memory row under its new project, since applyReprojectMutation
+// bumps synced_at. That is a weaker guarantee than replay, and it is the one an
+// un-upgraded daemon can actually be given.
+func deliverableMutations(events []model.MutationEnvelope, capabilities []string) []model.MutationEnvelope {
+	deliverable := make([]model.MutationEnvelope, 0, len(events))
+	for _, event := range events {
+		if model.ClientUnderstandsMutationOp(event.Op, capabilities) {
+			deliverable = append(deliverable, event)
+		}
+	}
+	return deliverable
 }
 
 func syncRequestProjects(req model.SyncRequest) []string {
