@@ -21,13 +21,15 @@ func newPostgresProjectRepositoryWithQuerier(db pgxQuerier) ProjectRepository {
 }
 
 func (r *postgresProjectRepository) ListAggregates(ctx context.Context) ([]model.ProjectAggregate, error) {
-	// Rows group on the literal project spelling they carry, and that literal is
-	// the project's name. The API never derives a key, so two spellings are one
-	// project only when they are equal.
+	// Rows group on the literal project spelling they carry. The API never
+	// derives a key, so two spellings are one project only when they are equal.
 	//
-	// The display name is deliberately NOT resolved through project_identities:
-	// that table is keyed canonically, so joining it would give two distinct
-	// projects the same name on the dashboard.
+	// The display name is then resolved through project_identities, which is
+	// keyed by that same literal. The join is therefore exact equality: it can
+	// only attach a name to a project, never merge two of them. Grouping stays on
+	// the row literal so the join cannot influence which rows belong together.
+	//
+	// A project with no registry row falls back to the literal its rows carry.
 	q := fmt.Sprintf(`
 WITH memory_rows AS (
     SELECT %s AS project_key, created_at, updated_at, deleted_at, restored_at
@@ -73,7 +75,7 @@ latest_sync AS (
     ORDER BY project_key, COALESCE(ended_at, started_at) DESC, ingested_at DESC, id DESC
 )
 SELECT
-    p.project_key,
+    COALESCE(NULLIF(i.remote_spelling, ''), i.first_spelling, p.project_key),
     COALESCE(m.memory_count, 0),
     COALESCE(s.session_count, 0),
     m.last_memory_at,
@@ -81,10 +83,11 @@ SELECT
     ls.last_sync_at,
     ls.outcome
 FROM projects p
+LEFT JOIN project_identities i ON i.project_key = p.project_key
 LEFT JOIN memory_agg m ON m.project_key = p.project_key
 LEFT JOIN session_agg s ON s.project_key = p.project_key
 LEFT JOIN latest_sync ls ON ls.project_key = p.project_key
-ORDER BY p.project_key`,
+ORDER BY COALESCE(NULLIF(i.remote_spelling, ''), i.first_spelling, p.project_key)`,
 		"memories.project", unblockedProjectPredicate("memories.project"),
 		"sessions.project", unblockedProjectPredicate("sessions.project"),
 		"sync_attempt_logs.project", unblockedProjectPredicate("sync_attempt_logs.project"))

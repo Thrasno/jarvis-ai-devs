@@ -77,9 +77,13 @@ func TestPostgresProjectRepository_ListAggregates(t *testing.T) {
 }
 
 // TestPostgresProjectRepository_ListAggregatesNamesProjectsByTheStoredSpelling
-// proves the aggregate is grouped and named by the literal on each row. The
-// registry display-name join is gone: it is keyed canonically, so it gave two
-// distinct projects one dashboard name.
+// proves the aggregate is grouped by the literal on each row, and named through
+// the identity registry.
+//
+// The registry is keyed by that same literal, so the join is exact equality: it
+// can attach a display name to a project, and it cannot merge two of them. The
+// spelling a remote reported for a project is that project's display name;
+// every other project keeps the literal its rows carry.
 func TestPostgresProjectRepository_ListAggregatesNamesProjectsByTheStoredSpelling(t *testing.T) {
 	pool, cleanup := startPostgresWithProjectSources(t)
 	defer cleanup()
@@ -92,16 +96,28 @@ func TestPostgresProjectRepository_ListAggregatesNamesProjectsByTheStoredSpellin
 	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000203", " Foo_Bar ", "aggregate-variant-session", base, base, nil)
 	insertProjectSyncAttempt(t, pool, "aggregate-variant-sync", " Foo_Bar ", model.SyncAttemptOutcomeSuccess, base, nil)
 
+	// A spelling the daemon would fold onto the same key. It is a different
+	// project here, and it borrows neither the aggregate nor the display name.
+	insertProjectSession(t, pool, "aggregate-sibling-session", "foo-bar", base, nil)
+
 	aggregates, err := NewPostgresProjectRepository(pool).ListAggregates(ctx)
 	require.NoError(t, err)
-	require.Len(t, aggregates, 1)
-	assert.Equal(t, " Foo_Bar ", aggregates[0].Name, "the stored literal is the project name, not the registry spelling")
-	assert.EqualValues(t, 1, aggregates[0].MemoryCount)
-	assert.EqualValues(t, 1, aggregates[0].SessionCount)
-	assertTimePtrEqual(t, base, aggregates[0].LastMemoryAt)
-	assertTimePtrEqual(t, base, aggregates[0].LastSessionAt)
-	assertTimePtrEqual(t, base, aggregates[0].LastSyncAt)
-	require.Equal(t, syncOutcomePtr(model.SyncAttemptOutcomeSuccess), aggregates[0].LatestSyncOutcome)
+	require.Len(t, aggregates, 2, "two spellings are two projects")
+
+	byName := projectAggregatesByName(aggregates)
+	named, ok := byName["FOO_BAR"]
+	require.True(t, ok, "the registered remote spelling is the project display name")
+	assert.EqualValues(t, 1, named.MemoryCount)
+	assert.EqualValues(t, 1, named.SessionCount)
+	assertTimePtrEqual(t, base, named.LastMemoryAt)
+	assertTimePtrEqual(t, base, named.LastSessionAt)
+	assertTimePtrEqual(t, base, named.LastSyncAt)
+	require.Equal(t, syncOutcomePtr(model.SyncAttemptOutcomeSuccess), named.LatestSyncOutcome)
+
+	sibling, ok := byName["foo-bar"]
+	require.True(t, ok, "an unregistered project is named by the literal its rows carry")
+	assert.EqualValues(t, 0, sibling.MemoryCount)
+	assert.EqualValues(t, 1, sibling.SessionCount)
 }
 
 // TestBackfillProjectIdentityRegistryRecordsEveryLegacyLiteral replaces the
