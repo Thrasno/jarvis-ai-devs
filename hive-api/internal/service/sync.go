@@ -102,11 +102,9 @@ func NewSyncService(memRepo repository.MemoryRepository, promptRepo repository.P
 // El campo CreatedBy se asigna aquí, en el service — el repositorio no sabe
 // quién está haciendo el sync. Ese dato viene del JWT (validado por el middleware).
 func (s *syncService) Push(ctx context.Context, req model.SyncRequest, userID string) (*model.SyncResponse, error) {
-	canonical, err := model.CanonicalSyncProjectIdentity(req)
-	if err != nil {
+	if err := model.ValidateSyncProjectIdentity(req); err != nil {
 		return nil, err
 	}
-	req = canonical
 	return s.pushWithRepos(ctx, req, userID, syncPushRepos{Memory: s.repo, Prompt: s.promptRepo, Session: s.sessionRepo, Audit: s.auditRepo, ProjectBlocks: s.blockRepo})
 }
 
@@ -115,14 +113,12 @@ func (s *syncService) Sync(ctx context.Context, req model.SyncRequest, userID st
 		return nil, ErrProjectBlockUnavailable
 	}
 	projectSpelling := req.Project
-	canonical, err := model.CanonicalSyncProjectIdentity(req)
-	if err != nil {
+	if err := model.ValidateSyncProjectIdentity(req); err != nil {
 		return nil, err
 	}
-	req = canonical
 
 	var resp *model.SyncResponse
-	err = s.tx.WithinTx(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
+	err := s.tx.WithinTx(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
 		txRepos := syncTransactionReposFrom(repos)
 		if !txRepos.Valid() {
 			return ErrProjectBlockUnavailable

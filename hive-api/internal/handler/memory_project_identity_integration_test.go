@@ -80,9 +80,11 @@ func TestMemorySyncRegistersNewProjectBeforeFilteredReadInSameServerLifetime(t *
 	syncService := service.NewSyncService(memoryRepo, repository.NewPostgresPromptRepository(pool), sessionRepo, repository.NewPostgresAuditRepository(pool), blockRepo, tx)
 	memoryService := service.NewMemoryService(memoryRepo, sessionRepo, blockRepo, tx)
 	now := time.Now().UTC()
+	// The API no longer folds spellings together, so a session payload belongs to
+	// the request project only when its spelling is byte-for-byte identical.
 	_, err := syncService.Sync(ctx, model.SyncRequest{
 		Project:  " Fresh.Project ",
-		Sessions: []model.SyncSessionPayload{{ID: "session-fresh", SyncID: "10000000-0000-0000-0000-000000000001", Project: "fresh/project", DevID: "dev", Client: "test", StartedAt: now}},
+		Sessions: []model.SyncSessionPayload{{ID: "session-fresh", SyncID: "10000000-0000-0000-0000-000000000001", Project: " Fresh.Project ", DevID: "dev", Client: "test", StartedAt: now}},
 	}, "00000000-0000-0000-0000-000000000001")
 	require.NoError(t, err)
 
