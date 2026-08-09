@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
@@ -71,6 +72,79 @@ type pullOptions struct {
 type client struct {
 	cfg        *Config
 	httpClient *http.Client
+
+	// serverCapabilities is what the server declared on the last response that
+	// declared anything. It is learned, never assumed: the zero value means
+	// "nothing known yet", which withholds every optional op. See
+	// serverSupports.
+	capabilitiesMu     sync.RWMutex
+	serverCapabilities map[string]bool
+}
+
+// serverSupports reports whether the server has DECLARED it understands an
+// optional mutation op.
+//
+// It fails closed on purpose. The daemon already sends sync_capabilities and
+// hive-api already echoes back what it understands, but the response field was
+// never read, so this daemon pushed reproject at any server. Against a server
+// that predates the op that is unrecoverable: the push is a hard error, the
+// mutations are never REJECTED, and only rejection drops them from the journal —
+// so they resend forever and sync is dead with nothing saying why.
+//
+// The owner's deploy order (API first, always before a release is cut) makes
+// that near-impossible going forward; this covers the residual case, an API
+// rollback after a release is already out.
+//
+// Unknown-until-proven costs one sync cycle at daemon startup: the first batch
+// withholds reprojects, learns the declaration from that batch's own response,
+// and the next batch sends them. Withheld mutations stay in the journal
+// untouched, so nothing is lost either way.
+func (c *client) serverSupports(capability string) bool {
+	c.capabilitiesMu.RLock()
+	defer c.capabilitiesMu.RUnlock()
+	return c.serverCapabilities[capability]
+}
+
+// learnServerCapabilities records a server's declaration.
+//
+// An empty declaration is ignored rather than treated as a withdrawal: hive-api
+// sends the field with omitempty, so a response that simply carries nothing is
+// not evidence the server stopped understanding the op, and forgetting on every
+// quiet response would flap the daemon between pushing and withholding.
+func (c *client) learnServerCapabilities(declared []string) {
+	if len(declared) == 0 {
+		return
+	}
+	capabilities := make(map[string]bool, len(declared))
+	for _, capability := range declared {
+		capabilities[capability] = true
+	}
+	c.capabilitiesMu.Lock()
+	defer c.capabilitiesMu.Unlock()
+	c.serverCapabilities = capabilities
+}
+
+// withheldUnsupportedMutations splits the pending journal page into what this
+// server can be sent and how many rows were held back.
+//
+// Only reproject is optional today, so the rule is written as the one gate it
+// needs rather than as a capability framework: every other op predates the
+// handshake and every server understands it. Order is preserved — the caller
+// correlates the response back to these exact rows.
+func withheldUnsupportedMutations(pending []db.MutationEnvelope, reprojectSupported bool) ([]db.MutationEnvelope, int) {
+	if reprojectSupported {
+		return pending, 0
+	}
+	sendable := make([]db.MutationEnvelope, 0, len(pending))
+	withheld := 0
+	for _, mutation := range pending {
+		if mutation.Op == db.MutationOpReproject {
+			withheld++
+			continue
+		}
+		sendable = append(sendable, mutation)
+	}
+	return sendable, withheld
 }
 
 func newClient(cfg *Config) *client {
@@ -217,6 +291,12 @@ type syncResponse struct {
 	MutationResults        []mutationResult      `json:"mutation_results,omitempty"`
 	CompatibilityMode      string                `json:"compatibility_mode,omitempty"`
 	ProjectIdentityVersion string                `json:"project_identity_version,omitempty"`
+
+	// SyncCapabilities is the server's half of the handshake this client's
+	// request opens: the optional mutation ops IT understands. Absent means an
+	// API that predates the field, which understands none of them — see
+	// client.serverSupports.
+	SyncCapabilities []string `json:"sync_capabilities,omitempty"`
 
 	// Bounded legacy pull pagination (PR 2a/2b, hive-sync-batched-drain).
 	// omitempty on all four fields preserves backward compat both ways: an
@@ -459,6 +539,7 @@ func (c *client) sync(ctx context.Context, token, project string,
 	if result.ProjectIdentityVersion != "" && result.ProjectIdentityVersion != projectidentity.ContractVersion {
 		return nil, ErrProjectIdentityIncompatible
 	}
+	c.learnServerCapabilities(result.SyncCapabilities)
 
 	return &result, nil
 }

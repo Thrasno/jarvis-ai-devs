@@ -881,6 +881,17 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 		if err != nil {
 			return batchResult{}, nil, fmt.Errorf("obtener mutaciones pendientes: %w", err)
 		}
+
+		// Never push an op the server has not declared it understands. The
+		// filter runs HERE, before backlogSize below, so a withheld row does not
+		// count as backlog the drain loop would spin on: the withheld rows stay
+		// in the journal and the next batch — which by then has learned the
+		// server's declaration from this batch's own response — sends them.
+		var withheldMutations int
+		pendingMutations, withheldMutations = withheldUnsupportedMutations(pendingMutations, s.client.serverSupports(syncCapabilityReproject))
+		if withheldMutations > 0 {
+			logger.Log.Printf("info: sync project=%s withholding %d reproject mutation(s) — server has not declared %s", project, withheldMutations, syncCapabilityReproject)
+		}
 	} else {
 		// Visibility improvement (PR 2b fresh-review WARNING #2): log once per
 		// gated batch so a session that never drains (and therefore keeps
