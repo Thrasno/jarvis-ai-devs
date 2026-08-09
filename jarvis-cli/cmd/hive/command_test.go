@@ -398,8 +398,10 @@ func TestHiveProjectIdentityCommandsExposeBlockedRecovery(t *testing.T) {
 	}
 }
 
-// A preflight conflict never mutates the database, so no migration backup
-// exists. Status must say that instead of implying a rollback is available.
+// An empty backup id no longer means "no backup was created": the daemon also
+// reports nothing when the archive it took has passed its retention or failed
+// its own checksum. Status must not name a cause it cannot distinguish, because
+// the daemon logs the corruption case while this line would deny it happened.
 func TestHiveProjectIdentityStatusReportsMissingMigrationBackupHonestly(t *testing.T) {
 	client := &fakeHiveClient{identityStatus: hiveclient.MigrationIdentityStatus{
 		State:           "migration-blocked",
@@ -410,10 +412,18 @@ func TestHiveProjectIdentityStatusReportsMissingMigrationBackupHonestly(t *testi
 	if err != nil {
 		t.Fatalf("identity status: %v", err)
 	}
-	for _, want := range []string{"backup=-", "plan=migration-plan-2", "No migration backup was created for this block; rollback is unavailable."} {
+	for _, want := range []string{"backup=-", "plan=migration-plan-2", "rollback is unavailable"} {
 		if !strings.Contains(status, want) {
 			t.Fatalf("identity status output = %q, want %q", status, want)
 		}
+	}
+	for _, cause := range []string{"none was created", "expired", "checksum"} {
+		if !strings.Contains(status, cause) {
+			t.Fatalf("identity status output = %q, want the possible cause %q kept open", status, cause)
+		}
+	}
+	if strings.Contains(status, "No migration backup was created for this block") {
+		t.Fatalf("identity status output = %q, want no claim that none was created", status)
 	}
 }
 

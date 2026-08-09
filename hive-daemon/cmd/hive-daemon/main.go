@@ -123,17 +123,21 @@ func run() int {
 // other failure left the live database untouched, so startup continues and the
 // operator still sees the logged error.
 //
-// The stop can be permanent: if the request could not be cleared for a lasting
-// reason (a full or read-only ~/.jarvis), every following start replays the same
-// restore and stops again. Deleting the request file is the only way out, so
-// this message names that absolute path and the step, instead of leaving a
-// recovery path nobody can reach.
+// The stop can be permanent: if the completion marker could not be written at
+// all for a lasting reason (a full or read-only ~/.jarvis), every following
+// start replays the same restore and stops again. It can also be a single stop:
+// when only the marker's durability flush failed, the rename already put the
+// marker on disk and the next start short-circuits on it and serves normally.
+// The message reports the replay as possible rather than certain, because an
+// operator told to expect a permanent stop that never returns stops trusting
+// the line that does mean it. Deleting the request file is correct either way,
+// so this message names that absolute path and the step.
 func pendingRestoreStartupError(restored bool, err error, dbPath string) error {
 	if !restored || !errors.Is(err, governance.ErrPendingRestoreReplayable) {
 		return nil
 	}
 	return fmt.Errorf(
-		"%w; every start from now on replays this restore and stops here, discarding whatever was written in between; to recover, stop the daemon and delete %s, then start it again",
+		"%w; while this request is on disk a following start can replay this restore and stop here again, discarding whatever was written in between; to recover, stop the daemon and delete %s, then start it again",
 		err,
 		absolutePathForOperator(governance.PendingRestorePath(dbPath)),
 	)

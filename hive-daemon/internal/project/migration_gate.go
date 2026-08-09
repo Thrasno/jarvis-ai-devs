@@ -31,8 +31,11 @@ func IdentityResolutionConfirmation(source, target string) string {
 
 // MigrationStatus is the boundary-neutral contract every Hive access surface
 // can use to fail closed while migration governance is unresolved.
-// BackupID is reported only when this migration created that backup, so a
-// rollback can never restore an unrelated older database. PlanFingerprint
+// BackupID is reported only for an archive taken for this exact plan
+// fingerprint that still passes its own checksum and has not passed its
+// retention, so a rollback can never restore an unrelated older database. It
+// need not have been taken during this run: a blocked migration is re-attempted
+// on every daemon start and reuses the archive it already took. PlanFingerprint
 // identifies the exact plan the operator was shown and is the resolution guard.
 type MigrationStatus struct {
 	State           string `json:"state"`

@@ -164,6 +164,40 @@ func TestUnusableMigrationBackupIsReportedBeforeRecopyingTheDatabase(t *testing.
 	}
 }
 
+// TestUnusableMigrationBackupReportIsReadFromTwoCallersSoItNamesNoRemedy pins
+// the one line both reuse and rollback reporting share. MigrationBackupForPlan
+// copies nothing, so a report promising a fresh copy tells an operator watching
+// a blocked start that an action happened which never did.
+func TestUnusableMigrationBackupReportIsReadFromTwoCallersSoItNamesNoRemedy(t *testing.T) {
+	database, path := migrationFixture(t)
+	backups := NewSQLiteBackupStore(path, filepath.Join(t.TempDir(), "backups"), database.RawDB())
+	corrupt, err := backups.CreateTemporaryMigrationBackup(context.Background(), "plan-fingerprint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(corrupt.ArchivePath, []byte("truncated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var log bytes.Buffer
+	restore := captureDaemonLog(t, &log)
+	_, found, err := backups.MigrationBackupForPlan(context.Background(), "plan-fingerprint")
+	restore()
+
+	if err != nil {
+		t.Fatalf("MigrationBackupForPlan = %v, want a corrupt archive rejected quietly", err)
+	}
+	if found {
+		t.Fatal("corrupt archive was offered as a rollback point")
+	}
+	if !strings.Contains(log.String(), corrupt.ID) || !strings.Contains(log.String(), "checksum") {
+		t.Fatalf("log = %q, want the rejected backup and its reason reported", log.String())
+	}
+	if strings.Contains(log.String(), "taking a fresh copy") {
+		t.Fatalf("log = %q, want no copy claimed by a caller that copies nothing", log.String())
+	}
+}
+
 // captureDaemonLog redirects the daemon's stderr logger for one assertion and
 // returns the restore step.
 func captureDaemonLog(t *testing.T, into *bytes.Buffer) func() {

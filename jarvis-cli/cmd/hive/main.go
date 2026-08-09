@@ -183,7 +183,11 @@ func projectIdentityStatusCommand(client governanceClient) *cobra.Command {
 		if status.State == "migration-blocked" {
 			fmt.Fprintln(cmd.OutOrStdout(), "continuation=hive project identity status")
 			if status.BackupID == "" {
-				fmt.Fprintln(cmd.OutOrStdout(), "No migration backup was created for this block; rollback is unavailable.")
+				// An empty backup id covers three outcomes the daemon cannot tell
+				// apart on the wire: none was created, the archive passed its
+				// retention, or it failed its checksum. Naming only the first
+				// would contradict the daemon's own corruption log.
+				fmt.Fprintln(cmd.OutOrStdout(), "No migration backup is available for this block (none was created, its retention expired, or its archive failed checksum validation); rollback is unavailable.")
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Choose explicit --source and --target before a concrete resolve command can exist.")
 		}

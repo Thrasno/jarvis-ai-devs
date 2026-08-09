@@ -100,16 +100,23 @@ func syncDirWith(path string, syncFile func(*os.File) error) error {
 // session's writes.
 //
 // Windows returns ERROR_ACCESS_DENIED from FlushFileBuffers on a directory
-// handle, and container/network filesystems answer EINVAL, ENOTSUP or ENOSYS.
-// A directory the process genuinely may not read already failed at os.Open
-// above, so tolerating a permission error here cannot hide that case.
+// handle, which fs.ErrPermission matches (it also matches EPERM). Container and
+// network filesystems answer ENOTSUP, EOPNOTSUPP or ENOSYS, which
+// errors.ErrUnsupported matches, or EINVAL, which nothing wraps: errors.Is on a
+// bare syscall.EINVAL is the only way to reach it, since fs.ErrInvalid is a
+// distinct sentinel os.File raises for a nil or closed handle and never for an
+// errno. Do not read syscall.EINVAL as the redundant spelling of an idiomatic
+// wrapper and delete it; removing it silently reintroduces the replayed
+// restore, and TestPendingRestoreAcceptedWhereDirectoryFsyncIsUnsupported is
+// what catches that. Treat this list as the set that has come up, not as
+// exhaustive. A directory the process genuinely may not read already failed at
+// os.Open above, so tolerating a permission error here cannot hide that case.
 //
 // EIO and ENOSPC are deliberately not tolerated: they signal device trouble
 // that threatens the request file itself, not just the rename's durability.
 func directoryFsyncUnsupported(err error) bool {
 	return errors.Is(err, errors.ErrUnsupported) ||
 		errors.Is(err, fs.ErrPermission) ||
-		errors.Is(err, fs.ErrInvalid) ||
 		errors.Is(err, syscall.EINVAL)
 }
 

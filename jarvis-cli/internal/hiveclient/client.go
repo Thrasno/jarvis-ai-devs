@@ -137,9 +137,11 @@ const RestoreStatusRestartRequested = "restart-requested"
 
 // MigrationIdentityStatus is the recovery state exposed while normal Hive
 // operations are blocked by canonical project identity migration.
-// BackupID is present only when the blocked migration itself created that
-// backup. PlanFingerprint identifies the exact plan the operator was shown and
-// is the guard an identity resolution must echo back.
+// BackupID is present only for an archive taken for this exact plan
+// fingerprint that is still retained and still passes its own checksum; an
+// earlier start of the same blocked migration may be the one that took it.
+// PlanFingerprint identifies the exact plan the operator was shown and is the
+// guard an identity resolution must echo back.
 type MigrationIdentityStatus struct {
 	State           string   `json:"state"`
 	Reason          string   `json:"reason,omitempty"`

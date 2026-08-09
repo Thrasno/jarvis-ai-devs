@@ -247,8 +247,13 @@ func (s *BackupStore) reusableMigrationBackup(ctx context.Context, planFingerpri
 // damaged one is never reusable, so the daemon copies the whole database again
 // on every start; left silent, that cost and the lost rollback point look like
 // normal operation.
+//
+// It reports only the rejection, never what follows it. Both callers of
+// reusableMigrationBackup reach here, and MigrationBackupForPlan copies nothing,
+// so naming a remedy would tell an operator on a blocked start that a fresh
+// copy was taken when none was.
 func reportUnusableMigrationBackup(backup BackupManifest, err error) {
-	logger.Log.Printf("migration backup %s cannot be reused as a rollback point, taking a fresh copy: %v", backup.ID, err)
+	logger.Log.Printf("migration backup %s cannot be reused as a rollback point: %v", backup.ID, err)
 }
 
 func (s *BackupStore) CreateTemporaryMigrationBackup(ctx context.Context, planFingerprint string) (BackupManifest, error) {

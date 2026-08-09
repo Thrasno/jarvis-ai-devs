@@ -879,6 +879,28 @@ func TestPendingRestoreStartupFailureNamesTheFileThatUnblocksTheDaemon(t *testin
 	}
 }
 
+// TestPendingRestoreStartupFailureDoesNotPromisePermanentReplay covers the
+// sub-case where only the completion marker's durability flush failed: the
+// rename already put that marker on disk, so the next start short-circuits and
+// serves normally. Promising a replay on every start from now on sends the
+// operator hunting for a stop that will not happen again.
+func TestPendingRestoreStartupFailureDoesNotPromisePermanentReplay(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	replayable := fmt.Errorf("%w: record completed pending restore: sync pending restore dir: input/output error", governance.ErrPendingRestoreReplayable)
+
+	err := pendingRestoreStartupError(true, replayable, dbPath)
+	if err == nil {
+		t.Fatal("startup error = nil, want the daemon to refuse to serve")
+	}
+	message := err.Error()
+	if strings.Contains(message, "every start from now on") {
+		t.Fatalf("startup error = %q, want no claim that every following start replays", message)
+	}
+	if !strings.Contains(message, "can replay") {
+		t.Fatalf("startup error = %q, want the replay reported as possible", message)
+	}
+}
+
 // TestPendingRestoreStartupFailureNamesAnAbsolutePath keeps the instruction
 // usable from any working directory: HIVE_DB_PATH may be relative, and the
 // operator reads this line from a log, not from the daemon's shell.
