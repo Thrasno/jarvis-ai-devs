@@ -452,11 +452,53 @@ func (d *DB) MarkMutationsRejected(eventIDs []string, at time.Time) error {
 		if _, err := tx.Exec(`UPDATE memory_mutations SET synced_at = ? WHERE event_id = ?`, formatted, eventID); err != nil {
 			return fmt.Errorf("mark rejected mutation %s: %w", eventID, err)
 		}
-		if _, err := tx.Exec(`UPDATE mutation_receipts SET shared_status = 'failed' WHERE event_id = ? AND shared_status = 'pending'`, eventID); err != nil {
+		result, err := tx.Exec(`UPDATE mutation_receipts SET shared_status = 'failed' WHERE event_id = ? AND shared_status = 'pending'`, eventID)
+		if err != nil {
 			return fmt.Errorf("mark rejected mutation receipt %s: %w", eventID, err)
+		}
+		receipts, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("mark rejected mutation receipt %s: %w", eventID, err)
+		}
+		if receipts == 0 {
+			reportUnreceiptedRejection(tx, eventID)
 		}
 	}
 	return tx.Commit()
+}
+
+// reportUnreceiptedRejection makes a terminal rejection visible when nothing
+// else records it. A mutation raised by a user command carries a request_id and
+// therefore a mutation_receipts row that now reads shared_status='failed'; the
+// reprojects enqueued by the project identity migration carry neither, so the
+// event would be marked done and print nothing at all.
+//
+// A log is the whole remedy on purpose. Retrying is not available here: the
+// enqueue and the local rekey share one transaction, so after the migration the
+// old spelling this reproject names no longer exists locally to re-derive, and
+// the migration is one-shot — it will not observe this row again. The rejected
+// memory_mutations row survives with its from_project/to_project payload, which
+// is the durable evidence an operator needs to repair the split by hand.
+//
+// Output goes through logger.Log like every other diagnostic in this package:
+// hive-daemon speaks MCP JSON-RPC on stdout, so stderr is the only channel a
+// message may use.
+func reportUnreceiptedRejection(tx *sql.Tx, eventID string) {
+	var op, project, entitySyncID, payloadJSON string
+	if err := tx.QueryRow(`SELECT op, project, entity_sync_id, payload_json FROM memory_mutations WHERE event_id = ?`, eventID).Scan(&op, &project, &entitySyncID, &payloadJSON); err != nil {
+		logger.Log.Printf("warn: MarkMutationsRejected: Hive API rejected mutation event_id=%s and its local row could not be read: %v", eventID, err)
+		return
+	}
+	detail := ""
+	if MutationOp(op) == MutationOpReproject {
+		var payload mutationPayload
+		if err := json.Unmarshal([]byte(payloadJSON), &payload); err == nil && payload.Reproject != nil {
+			detail = fmt.Sprintf(" — the server keeps it under %q instead of %q and the one-shot project migration will not retry; repair it by hand",
+				payload.Reproject.FromProject, payload.Reproject.ToProject)
+		}
+	}
+	logger.Log.Printf("warn: MarkMutationsRejected: Hive API rejected %s mutation event_id=%s project=%s entity_sync_id=%s with no receipt to record it%s",
+		op, eventID, project, entitySyncID, detail)
 }
 
 // MarkMutationReceiptsLegacyUnsupported records that a guarded mutation could

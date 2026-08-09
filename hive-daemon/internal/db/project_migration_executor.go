@@ -24,6 +24,13 @@ var (
 	ErrProjectIdentityResolutionStale = errors.New("project identity resolution is stale or unrelated")
 )
 
+// projectMigrationActorID attributes a reproject to the daemon itself. Every
+// other insertMemoryMutation call site names a human (detectUsername) or the
+// importer (importActorID); no user asked for this move, so the audit trail
+// names the actor that did make it, using the same spelling the daemon already
+// records for its own governance actions.
+const projectMigrationActorID = "hive-daemon"
+
 // sqliteBusyCode is the primary result code SQLITE_BUSY. Extended result codes
 // are enabled on these connections, so every busy variant is matched by masking
 // the extended bits off.
@@ -360,9 +367,21 @@ func enqueueProjectRelocationPropagation(ctx context.Context, tx *sql.Tx, record
 		seen[key] = true
 		switch record.Table {
 		case ProjectStateSessions, ProjectStatePrompts:
+			// The predicate must mirror each table's own push selection, or
+			// clearing synced_at hands the row to a pusher that will never
+			// pick it up. GetUnsyncedPromptsPage requires a non-empty sync_id,
+			// so a legacy prompt that predates sync_id assignment would end up
+			// permanently pending locally AND still under the old project name
+			// on the server; leaving it synced keeps it exactly as the server
+			// already has it. ListUnsyncedSessionsPage has no such guard and
+			// MarkSessionSynced acks by id, so sessions relocate unconditionally.
+			pushable := ""
+			if record.Table == ProjectStatePrompts {
+				pushable = ` AND sync_id != ''`
+			}
 			if _, err := tx.ExecContext(ctx, `UPDATE `+string(record.Table)+`
 SET synced_at = NULL, sync_from_project = ?
-WHERE project = ? AND synced_at IS NOT NULL`, record.Project, record.Project); err != nil {
+WHERE project = ? AND synced_at IS NOT NULL`+pushable, record.Project, record.Project); err != nil {
 				return err
 			}
 		case ProjectStateMemories:
@@ -411,6 +430,7 @@ func enqueueMemoryReprojections(ctx context.Context, tx *sql.Tx, fromProject, to
 			Project:      toProject,
 			Op:           MutationOpReproject,
 			OccurredAt:   occurredAt,
+			ActorID:      projectMigrationActorID,
 			Payload:      mutationPayload{Reproject: &MutationReprojectPayload{FromProject: fromProject, ToProject: toProject}},
 		}); err != nil {
 			return err

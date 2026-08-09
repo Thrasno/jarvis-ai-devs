@@ -1,9 +1,15 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 )
 
 // TestProjectMigrationEnqueuesServerPropagation pins the half of the identity
@@ -111,6 +117,102 @@ func TestProjectMigrationLeavesUnseenRowsAlone(t *testing.T) {
 		t.Fatalf("pending mutations = %d, want none for rows the server never saw", len(mutations))
 	}
 	assertRelocationAbsent(t, database, `SELECT synced_at, sync_from_project FROM sessions WHERE id = ?`, "s")
+}
+
+// TestProjectMigrationReprojectNamesTheDaemonAsActor pins the audit trail. No
+// user asked for this move, so the reproject must still name the actor that did
+// it; every other insertMemoryMutation call site names a human or the importer,
+// and an empty actor_id makes "who moved this memory" unanswerable.
+func TestProjectMigrationReprojectNamesTheDaemonAsActor(t *testing.T) {
+	database := newMigrationExecutorDB(t)
+	seedPropagationProject(t, database, "Foo.Bar")
+	runPropagationMigration(t, database)
+
+	var actorID string
+	if err := database.sqlDB.QueryRow(`SELECT actor_id FROM memory_mutations WHERE op = ?`, string(MutationOpReproject)).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	if actorID != projectMigrationActorID {
+		t.Fatalf("reproject actor_id = %q, want %q", actorID, projectMigrationActorID)
+	}
+}
+
+// TestProjectMigrationLeavesPromptsWithoutSyncIDSynced pins the guard the
+// memories half already has. GetUnsyncedPromptsPage selects only prompts with a
+// non-empty sync_id, so clearing synced_at on a legacy prompt that predates
+// sync_id assignment would strand it: permanently pending locally and still
+// under the old project name on the server. Sessions have no such guard in
+// ListUnsyncedSessionsPage, so they must keep relocating.
+func TestProjectMigrationLeavesPromptsWithoutSyncIDSynced(t *testing.T) {
+	database := newMigrationExecutorDB(t)
+	seedPropagationProject(t, database, "Foo.Bar")
+	if _, err := database.sqlDB.Exec(`INSERT INTO user_prompts (sync_id, project, session_id, content, synced_at) VALUES ('', 'Foo.Bar', 'synced-session', 'legacy', '2026-01-01 00:00:00')`); err != nil {
+		t.Fatal(err)
+	}
+	runPropagationMigration(t, database)
+
+	var syncedAt *string
+	var fromProject string
+	if err := database.sqlDB.QueryRow(`SELECT synced_at, sync_from_project FROM user_prompts WHERE sync_id = '' AND content = 'legacy'`).Scan(&syncedAt, &fromProject); err != nil {
+		t.Fatal(err)
+	}
+	if syncedAt == nil {
+		t.Fatal("legacy prompt without a sync_id was flipped to unsynced; GetUnsyncedPromptsPage can never push it again")
+	}
+	if fromProject != "" {
+		t.Fatalf("legacy prompt sync_from_project = %q, want empty for a row that can never push", fromProject)
+	}
+	// The rows that can push must still relocate.
+	assertRelocationPending(t, database, `SELECT synced_at, sync_from_project FROM user_prompts WHERE sync_id = ?`, "synced-prompt", "Foo.Bar")
+	assertRelocationPending(t, database, `SELECT synced_at, sync_from_project FROM sessions WHERE id = ?`, "synced-session", "Foo.Bar")
+}
+
+// TestRejectedReprojectIsReported pins the operator signal. A reproject carries
+// no request_id, so MarkMutationsRejected finds no mutation_receipts row to
+// stamp: without an explicit log a server-side rejection would mark the event
+// done and print nothing, leaving the memory split under the old project name
+// with the one-shot migration never running again.
+func TestRejectedReprojectIsReported(t *testing.T) {
+	database := newMigrationExecutorDB(t)
+	seedPropagationProject(t, database, "Foo.Bar")
+	runPropagationMigration(t, database)
+
+	mutations, err := database.GetPendingMutations("foo-bar", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mutations) != 1 {
+		t.Fatalf("pending mutations = %d, want exactly one reproject", len(mutations))
+	}
+
+	var buf bytes.Buffer
+	logger.Log.SetOutput(&buf)
+	defer logger.Log.SetOutput(os.Stderr)
+
+	if err := database.MarkMutationsRejected([]string{mutations[0].EventID}, time.Now()); err != nil {
+		t.Fatalf("MarkMutationsRejected() error = %v", err)
+	}
+
+	logged := buf.String()
+	for _, want := range []string{mutations[0].EventID, "synced-memory", "Foo.Bar", "foo-bar", string(MutationOpReproject)} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("rejected reproject log = %q, want it to mention %q", logged, want)
+		}
+	}
+}
+
+func runPropagationMigration(t *testing.T, database *DB) {
+	t.Helper()
+	plan, err := ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil {
+		t.Fatalf("ReadProjectMigrationPlan() error = %v", err)
+	}
+	if !plan.Executable {
+		t.Fatalf("plan = %#v, want executable", plan)
+	}
+	if err := ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error { return nil }, nil); err != nil {
+		t.Fatalf("ExecuteProjectMigration() error = %v", err)
+	}
 }
 
 // seedPropagationProject seeds one already-pushed and one never-pushed row of
