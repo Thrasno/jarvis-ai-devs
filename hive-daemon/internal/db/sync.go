@@ -619,6 +619,41 @@ WHERE consumer = ? AND project = ? AND channel = ?`, consumer, project, channel)
 	return nil
 }
 
+// reprojectInstructionError validates a reproject envelope on its own terms and
+// returns the reason it is unusable, or "" when it is well formed.
+//
+// These are malformed instructions, not failed preconditions: an envelope that
+// names no source, or moves a project onto itself, or disagrees with its own
+// project, cannot be carried out under any state of the database. Naming a
+// source the row does not hold IS a valid instruction — it simply matches
+// nothing.
+//
+// A memory or tombstone payload is malformed by definition. A reproject rewrites
+// one column and writes no content, so a payload riding along would be journaled
+// and re-pushed with the weight of a create while never being written to any
+// row; hive-api rejects it for the same reason.
+func reprojectInstructionError(event MutationEnvelope) string {
+	if event.Memory != nil {
+		return "reproject mutation must not carry a memory payload"
+	}
+	if event.Tombstone != nil {
+		return "reproject mutation must not carry a tombstone payload"
+	}
+	if event.Reproject == nil {
+		return "reproject mutation requires a reproject payload"
+	}
+	if event.Reproject.FromProject == "" || event.Reproject.ToProject == "" {
+		return "reproject mutation requires both from_project and to_project"
+	}
+	if event.Reproject.ToProject != event.Project {
+		return "reproject to_project disagrees with the mutation envelope project"
+	}
+	if event.Reproject.FromProject == event.Reproject.ToProject {
+		return "reproject from_project and to_project are the same project"
+	}
+	return ""
+}
+
 func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
 	if event.EventID == "" {
 		return false, fmt.Errorf("event_id is required")
@@ -643,6 +678,14 @@ func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
 	}
 	if event.OccurredAt.IsZero() {
 		event.OccurredAt = time.Now().UTC()
+	}
+	// The reproject envelope is checked against the raw project literal, before
+	// canonicalization rewrites it: to_project has to agree with the project the
+	// sender put on the envelope, not with what this daemon would fold it into.
+	if event.Op == MutationOpReproject {
+		if reason := reprojectInstructionError(event); reason != "" {
+			return false, errors.New(reason)
+		}
 	}
 
 	tx, err := d.sqlDB.Begin()
@@ -779,8 +822,36 @@ WHERE sync_id = ? AND deleted_at IS NULL`,
 				return false, fmt.Errorf("memory not deleted for restore: sync_id=%s", event.EntitySyncID)
 			}
 		}
+	case MutationOpReproject:
+		// Mirrors the server exactly, precondition included: the row moves only
+		// if it currently holds from_project. A stale or invented source moves
+		// nothing rather than dragging some other row out of some other
+		// project, and a replay after the row already moved matches zero rows.
+		//
+		// Matching nothing is therefore NOT an error, unlike delete/restore
+		// above: it is the documented idempotent path, and it is also what a
+		// daemon that already ran its own identity migration sees.
+		movedAt := event.OccurredAt.UTC().Format("2006-01-02 15:04:05")
+		var result sql.Result
+		result, err = tx.Exec(
+			`UPDATE memories SET project = ?, synced_at = ? WHERE sync_id = ? AND project = ?`,
+			event.Project, movedAt, event.EntitySyncID, event.Reproject.FromProject)
+		if err == nil {
+			if rows, _ := result.RowsAffected(); rows == 0 {
+				// Nothing happened, so nothing is journaled: a replay of a
+				// no-op is safe, and claiming the move locally would be a lie.
+				return false, nil
+			}
+		}
 	default:
-		return false, fmt.Errorf("unsupported mutation op %q", event.Op)
+		// Skip, do not fail. An unknown op returned as an error aborts the whole
+		// batch in syncer.go before SetMutationCursor and before the mutations
+		// this daemon just pushed are acked, so one event this build cannot
+		// apply would permanently stop it from receiving its teammates' work.
+		// Skipping costs exactly that one event. Nothing is journaled either —
+		// this build did not apply it and must not claim it did.
+		logger.Log.Printf("warn: skipping mutation event_id=%s: unsupported op %q", event.EventID, event.Op)
+		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("apply remote %s mutation: %w", event.Op, err)
@@ -795,6 +866,12 @@ WHERE sync_id = ? AND deleted_at IS NULL`,
 			DeletedAt: event.Tombstone.DeletedAt,
 			DeletedBy: event.Tombstone.DeletedBy,
 			Reason:    event.Tombstone.Reason,
+		}
+	}
+	if event.Reproject != nil {
+		payload.Reproject = &MutationReprojectPayload{
+			FromProject: event.Reproject.FromProject,
+			ToProject:   event.Reproject.ToProject,
 		}
 	}
 	if err := insertMemoryMutation(tx, memoryMutationRecord{

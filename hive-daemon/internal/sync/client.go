@@ -17,6 +17,20 @@ import (
 
 const mutationProtocolVersion = 2
 
+// syncCapabilityReproject is the exact string hive-api matches on before it will
+// send a reproject event. A near miss is worse than silence: the server withholds
+// every reproject forever while both ends report a healthy sync.
+const syncCapabilityReproject = "mutation.reproject"
+
+// clientSyncCapabilities names the optional mutation ops this build can actually
+// apply. It is a promise about ApplyRemoteMutation, not a wish list: the server
+// withholds any op absent from it, and the pull cursor advances past the
+// withheld event either way, so declaring an op this build cannot apply would
+// abort the batch and strand the cursor instead of merely missing the event.
+func clientSyncCapabilities() []string {
+	return []string{syncCapabilityReproject}
+}
+
 var ErrProjectBlocked = errors.New("project is blocked")
 var ErrProjectIdentityIncompatible = errors.New("incompatible project identity contract")
 
@@ -154,6 +168,12 @@ type syncRequest struct {
 	ProtocolVersion        int                   `json:"protocol_version,omitempty"`
 	MutationCursor         *db.MutationCursor    `json:"mutation_cursor,omitempty"`
 	Mutations              []db.MutationEnvelope `json:"mutations,omitempty"`
+
+	// SyncCapabilities declares the optional mutation ops this client can
+	// apply; see clientSyncCapabilities. A server that predates the field
+	// ignores it, and a daemon that declares nothing keeps working and simply
+	// never sees the gated ops.
+	SyncCapabilities []string `json:"sync_capabilities,omitempty"`
 
 	// Bounded legacy pull pagination (PR 2a/2b, hive-sync-batched-drain).
 	// PullLimit is an explicit opt-in: omitted/0 means an unbounded legacy
@@ -373,6 +393,7 @@ func (c *client) sync(ctx context.Context, token, project string,
 		ProtocolVersion:        mutationProtocolVersion,
 		MutationCursor:         mutationCursor,
 		Mutations:              canonicalMutations,
+		SyncCapabilities:       clientSyncCapabilities(),
 		PullLimit:              pullOpts.Limit,
 		PullCursor:             pullOpts.MemoriesCursor,
 		PullSessionCursor:      pullOpts.SessionsCursor,

@@ -1657,17 +1657,9 @@ func TestSyncDB_ApplyRemoteMutationValidationErrors(t *testing.T) {
 			},
 			wantErr: "memory payload required",
 		},
-		{
-			name: "unsupported operation",
-			event: MutationEnvelope{
-				EventID:      "validation-unsupported-op",
-				EntityType:   "memory",
-				EntitySyncID: "validation-sync-id",
-				Project:      "validation-project",
-				Op:           MutationOp("archive"),
-			},
-			wantErr: "unsupported mutation op",
-		},
+		// An unsupported op is no longer an error: it is skipped so one event
+		// this build cannot apply does not abort the batch and strand the
+		// mutation cursor. See TestApplyRemoteMutationSkipsUnknownOps.
 	}
 
 	for _, tt := range tests {
