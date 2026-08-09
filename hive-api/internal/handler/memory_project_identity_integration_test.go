@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -19,7 +18,15 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-func TestMemoryHandler_ProjectIdentityDistinguishesUnknownKnownEmptyAndGlobalQueries(t *testing.T) {
+// TestMemoryHandler_ProjectFilterAnswersEveryLiteralWithAnEmptyResult pins that
+// the API has no opinion about which projects exist.
+//
+// It used to answer 404 project_unknown for any literal absent from the
+// identity registry, which is a whitelist: the API deciding which projects are
+// real. The daemon is the sole authority on project identity, so ?project= is a
+// query and nothing else — a literal with no rows has no rows, which is a
+// 200 with an empty list, not a missing resource.
+func TestMemoryHandler_ProjectFilterAnswersEveryLiteralWithAnEmptyResult(t *testing.T) {
 	pool, cleanup := startMemoryHandlerPostgres(t)
 	defer cleanup()
 
@@ -40,23 +47,21 @@ func TestMemoryHandler_ProjectIdentityDistinguishesUnknownKnownEmptyAndGlobalQue
 		AdminSvc: &mockAdminSvc{},
 	})
 
-	// "Known" means the API has observed this exact literal. A spelling it never
-	// saw is unknown even when a human would read it as the same project: the
-	// daemon owns identity, and the rows of "Known.Project" are unreachable
-	// through any other spelling, so answering 200-empty would be a lie.
+	// Every one of these answers 200 with zero memories. A spelling the API has
+	// never seen and a registered spelling with no rows are indistinguishable,
+	// and that is the point: both are simply projects with nothing to return.
 	for _, tc := range []struct {
 		name string
 		path string
-		want int
 	}{
-		{name: "unknown list", path: "/memories?project=Ghost.Project", want: http.StatusNotFound},
-		{name: "unknown search", path: "/memories/search?query=needle&project=ghost/project", want: http.StatusNotFound},
-		{name: "other spelling of a known project is unknown", path: "/memories?project=KNOWN_project", want: http.StatusNotFound},
-		{name: "other spelling search", path: "/memories/search?query=needle&project=known/project", want: http.StatusNotFound},
-		{name: "known empty list", path: "/memories?project=Known.Project", want: http.StatusOK},
-		{name: "known empty search", path: "/memories/search?query=needle&project=Known.Project", want: http.StatusOK},
-		{name: "global list", path: "/memories", want: http.StatusOK},
-		{name: "global search", path: "/memories/search?query=needle", want: http.StatusOK},
+		{name: "unregistered list", path: "/memories?project=Ghost.Project"},
+		{name: "unregistered search", path: "/memories/search?query=needle&project=ghost/project"},
+		{name: "other spelling of a registered project", path: "/memories?project=KNOWN_project"},
+		{name: "other spelling search", path: "/memories/search?query=needle&project=known/project"},
+		{name: "registered empty list", path: "/memories?project=Known.Project"},
+		{name: "registered empty search", path: "/memories/search?query=needle&project=Known.Project"},
+		{name: "global list", path: "/memories"},
+		{name: "global search", path: "/memories/search?query=needle"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
@@ -65,16 +70,17 @@ func TestMemoryHandler_ProjectIdentityDistinguishesUnknownKnownEmptyAndGlobalQue
 
 			router.ServeHTTP(response, req)
 
-			require.Equal(t, tc.want, response.Code)
-			if tc.want == http.StatusNotFound {
-				require.JSONEq(t, `{"error":"project_unknown"}`, response.Body.String())
-			}
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			require.Contains(t, response.Body.String(), `"total":0`)
 		})
 	}
 	authSvc.AssertExpectations(t)
 }
 
-func TestMemorySyncRegistersNewProjectBeforeFilteredReadInSameServerLifetime(t *testing.T) {
+// TestMemoryReadsAnswerOnlyForTheSyncedLiteral proves the service read path
+// scopes on the exact literal a sync stored, and that every other spelling is
+// answered — with nothing — rather than refused.
+func TestMemoryReadsAnswerOnlyForTheSyncedLiteral(t *testing.T) {
 	pool, cleanup := startMemoryHandlerPostgres(t)
 	defer cleanup()
 	ctx := context.Background()
@@ -86,26 +92,39 @@ func TestMemorySyncRegistersNewProjectBeforeFilteredReadInSameServerLifetime(t *
 	syncService := service.NewSyncService(memoryRepo, repository.NewPostgresPromptRepository(pool), sessionRepo, repository.NewPostgresAuditRepository(pool), blockRepo, tx)
 	memoryService := service.NewMemoryService(memoryRepo, sessionRepo, blockRepo, tx)
 	now := time.Now().UTC()
-	// The API no longer folds spellings together, so a session payload belongs to
+	// The API never folds spellings together, so a session payload belongs to
 	// the request project only when its spelling is byte-for-byte identical.
 	_, err := syncService.Sync(ctx, model.SyncRequest{
 		Project:  " Fresh.Project ",
 		Sessions: []model.SyncSessionPayload{{ID: "session-fresh", SyncID: "10000000-0000-0000-0000-000000000001", Project: " Fresh.Project ", DevID: "dev", Client: "test", StartedAt: now}},
 	}, "00000000-0000-0000-0000-000000000001")
 	require.NoError(t, err)
-
-	// The literal the sync registered is readable in the same server lifetime...
-	_, _, err = memoryService.List(ctx, model.MemoryFilter{Project: " Fresh.Project "})
-	require.NoError(t, err)
-	_, _, err = memoryService.Search(ctx, "needle", model.MemoryFilter{Project: " Fresh.Project "})
+	sessionID := "session-fresh"
+	_, err = memoryService.Create(ctx, &model.Memory{SyncID: "10000000-0000-0000-0000-000000000002", Project: " Fresh.Project ", SessionID: &sessionID, Category: model.CatDecision, Title: "needle", Content: "needle", CreatedBy: "user", CreatedAt: now, UpdatedAt: now})
 	require.NoError(t, err)
 
-	// ...and no other spelling of it is, because no other spelling can read a
-	// single one of its rows.
-	_, _, err = memoryService.List(ctx, model.MemoryFilter{Project: "FRESH_project"})
-	require.ErrorIs(t, err, service.ErrProjectUnknown)
-	_, _, err = memoryService.Search(ctx, "needle", model.MemoryFilter{Project: "fresh-project"})
-	require.ErrorIs(t, err, service.ErrProjectUnknown)
+	listed, total, err := memoryService.List(ctx, model.MemoryFilter{Project: " Fresh.Project "})
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	require.EqualValues(t, 1, total)
+	found, total, err := memoryService.Search(ctx, "needle", model.MemoryFilter{Project: " Fresh.Project "})
+	require.NoError(t, err)
+	require.Len(t, found, 1)
+	require.EqualValues(t, 1, total)
+
+	// No other spelling reads a single one of those rows, and asking about one
+	// is an ordinary empty answer rather than an error.
+	for _, other := range []string{"FRESH_project", "fresh-project", "Fresh.Project"} {
+		listed, total, err = memoryService.List(ctx, model.MemoryFilter{Project: other})
+		require.NoError(t, err, other)
+		require.Empty(t, listed, other)
+		require.Zero(t, total, other)
+
+		found, total, err = memoryService.Search(ctx, "needle", model.MemoryFilter{Project: other})
+		require.NoError(t, err, other)
+		require.Empty(t, found, other)
+		require.Zero(t, total, other)
+	}
 }
 
 func TestMemoryCreateRegistersTheLiteralProjectAndRollsBackOnWriteFailure(t *testing.T) {
@@ -137,10 +156,12 @@ func TestMemoryCreateRegistersTheLiteralProjectAndRollsBackOnWriteFailure(t *tes
 	var ghost bool
 	require.NoError(t, pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM project_identities WHERE project_key = 'Ghost.Project')`).Scan(&ghost))
 	require.False(t, ghost)
-	// "Is this project known?" and "can this caller read its rows?" are now the
-	// same question, both answered by plain equality on the literal.
-	_, _, err = memoryService.List(ctx, model.MemoryFilter{Project: "direct/project"})
-	require.True(t, errors.Is(err, service.ErrProjectUnknown))
+	// Another spelling reads none of those rows, and says so with an empty list
+	// rather than by refusing the query.
+	listed, total, err := memoryService.List(ctx, model.MemoryFilter{Project: "direct/project"})
+	require.NoError(t, err)
+	require.Empty(t, listed)
+	require.Zero(t, total)
 }
 
 func TestMemoryCreateRollsBackDomainWriteWhenIdentityRegistrationFails(t *testing.T) {

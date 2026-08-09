@@ -335,7 +335,11 @@ func TestListMemories_PassesTheProjectFilterThroughVerbatim(t *testing.T) {
 	memSvc.AssertExpectations(t)
 }
 
-func TestListMemories_UnknownProjectsReturnProjectUnknown(t *testing.T) {
+// TestListMemories_ProjectsWithNoRowsReturnAnEmptyList replaces the coverage
+// that pinned 404 project_unknown. The API keeps no whitelist of projects, so a
+// literal it has never seen is not a missing resource — it is a project with
+// nothing to list.
+func TestListMemories_ProjectsWithNoRowsReturnAnEmptyList(t *testing.T) {
 	for _, project := range []string{" Ghost.Project ", "ghost/project"} {
 		t.Run(project, func(t *testing.T) {
 			authSvc := &mockAuthSvc{}
@@ -343,15 +347,15 @@ func TestListMemories_UnknownProjectsReturnProjectUnknown(t *testing.T) {
 			memSvc := &mockMemorySvc{}
 			memSvc.On("List", context.Background(), mock.MatchedBy(func(filter model.MemoryFilter) bool {
 				return filter.Project == project
-			})).Return(nil, int64(0), service.ErrProjectUnknown)
+			})).Return([]*model.Memory{}, int64(0), nil)
 
 			w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodGet, "/memories?project="+project, nil, "valid-token")
 
-			require.Equal(t, http.StatusNotFound, w.Code)
-			var body model.ErrorResponse
+			require.Equal(t, http.StatusOK, w.Code)
+			var body model.ListMemoriesResponse
 			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-			require.Equal(t, "project_unknown", body.Error)
-			require.NotContains(t, w.Body.String(), "memories")
+			require.Empty(t, body.Memories)
+			require.Zero(t, body.Total)
 			memSvc.AssertExpectations(t)
 		})
 	}

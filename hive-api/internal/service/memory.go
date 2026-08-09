@@ -12,9 +12,6 @@ import (
 // que ya existe. El handler lo mapea a HTTP 200 devolviendo el registro existente.
 var ErrSyncIDExists = errors.New("sync_id ya existe")
 
-// ErrProjectUnknown distinguishes an unregistered project identity from a known project with no memories.
-var ErrProjectUnknown = errors.New("project_unknown")
-
 // defaultMemoryLimit es cuántas memorias devolver cuando el caller no especifica.
 // 20 es un número cómodo — suficiente para una pantalla, no tan grande como para
 // sobrecargar la respuesta JSON.
@@ -33,6 +30,10 @@ type MemoryService interface {
 	// List devuelve memorias paginadas con el total para la paginación.
 	// Si filter.Limit es 0, aplica el default (20).
 	// Devuelve: memorias, total de registros que coinciden, error.
+	//
+	// filter.Project is a query, never an identity decision. Every literal is a
+	// valid project: the daemon owns identity and the API keeps no whitelist, so
+	// a project with no matching rows returns an empty result, not an error.
 	List(ctx context.Context, filter model.MemoryFilter) ([]*model.Memory, int64, error)
 
 	// Search realiza búsqueda de texto completo en memorias.
@@ -133,9 +134,6 @@ func (s *memoryService) GetByID(ctx context.Context, id string) (*model.Memory, 
 // List aplica el default de Limit antes de delegar al repo.
 // Este es el único lugar donde vive esta regla de negocio.
 func (s *memoryService) List(ctx context.Context, filter model.MemoryFilter) ([]*model.Memory, int64, error) {
-	if err := s.requireKnownProject(ctx, filter.Project); err != nil {
-		return nil, 0, err
-	}
 	if filter.Limit == 0 {
 		filter.Limit = defaultMemoryLimit
 	}
@@ -178,9 +176,6 @@ func (s *memoryService) List(ctx context.Context, filter model.MemoryFilter) ([]
 }
 
 func (s *memoryService) Search(ctx context.Context, query string, filter model.MemoryFilter) ([]*model.Memory, int64, error) {
-	if err := s.requireKnownProject(ctx, filter.Project); err != nil {
-		return nil, 0, err
-	}
 	if filter.Limit == 0 {
 		filter.Limit = defaultMemoryLimit
 	}
@@ -207,18 +202,4 @@ func (s *memoryService) Search(ctx context.Context, query string, filter model.M
 	}
 
 	return mems, cr.count, nil
-}
-
-func (s *memoryService) requireKnownProject(ctx context.Context, canonicalProjectKey string) error {
-	if canonicalProjectKey == "" {
-		return nil
-	}
-	exists, err := s.repo.ProjectExists(ctx, canonicalProjectKey)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return ErrProjectUnknown
-	}
-	return nil
 }
