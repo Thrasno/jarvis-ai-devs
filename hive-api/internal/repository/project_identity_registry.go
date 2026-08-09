@@ -95,8 +95,9 @@ func BackfillProjectIdentityRegistry(ctx context.Context, pool *pgxpool.Pool) er
 	// The backfill populates the identity registry only. It must never touch
 	// project_blocks: quarantine matches a stored literal with plain equality, so
 	// rewriting a block's key here would silently repoint it at another project
-	// (or at none) on every boot. Migration 020 is the one-time correction for
-	// blocks written before the exact-equality contract.
+	// (or at none) on every boot. No migration corrects a block's key either: a
+	// pre-contract block was keyed with the shared Go canonicalizer, which is the
+	// same spelling the daemon pushes, so plain equality already matches its rows.
 	for _, registration := range registrations {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO project_identities (project_key, first_spelling, first_seen_at)

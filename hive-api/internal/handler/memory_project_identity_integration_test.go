@@ -178,7 +178,7 @@ func startMemoryHandlerPostgres(t *testing.T) (*pgxpool.Pool, func()) {
 		migrations.ActivityFeedIndexSQL, migrations.MemoryDiscoveryIndexesSQL, migrations.PullCursorIndexesSQL,
 		migrations.ProjectScopedPullCursorIndexesSQL, migrations.ProjectBlocksSQL, migrations.QuarantineContractSQL,
 		migrations.DistributedQuarantineSQL, migrations.CanonicalProjectRegistrySQL,
-		migrations.LegacyQuarantineRekeySQL, migrations.DropProjectIdentityFoldsSQL,
+		migrations.DropProjectIdentityFoldsSQL,
 	} {
 		require.NoError(t, repository.RunMigrations(pool, sql))
 	}
