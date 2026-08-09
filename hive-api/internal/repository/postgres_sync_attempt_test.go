@@ -52,9 +52,6 @@ func TestPostgresSyncAttemptRepository_UpsertBatchIsIdempotentByDevAndAttempt(t 
 	require.NoError(t, pool.QueryRow(ctx, `SELECT portal_user_id, portal_user_source FROM sync_attempt_logs WHERE attempt_id = 'attempt-1'`).Scan(&persistedUserID, &persistedSource))
 	assert.Equal(t, portalUserID, persistedUserID)
 	assert.Equal(t, portalUserSource, persistedSource)
-	var registered bool
-	require.NoError(t, pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM project_identities WHERE project_key = 'jarvis-dev')`).Scan(&registered))
-	require.True(t, registered)
 }
 
 func TestSyncAttemptPortalUsersMigration_BackfillsExactEmail(t *testing.T) {

@@ -82,8 +82,7 @@ func TestPostgresProjectRepository_ListAggregates(t *testing.T) {
 // Under this contract the name IS the key. Every other project-scoped call
 // takes a project string and compares it to the stored literal with plain
 // equality, so a name the dashboard shows that is not that literal is a name
-// nothing else in the system will answer to. Registering a different display
-// spelling must not change what this reports.
+// nothing else in the system will answer to.
 func TestPostgresProjectRepository_ListAggregatesNamesProjectsByTheStoredSpelling(t *testing.T) {
 	pool, cleanup := startPostgresWithProjectSources(t)
 	defer cleanup()
@@ -91,7 +90,6 @@ func TestPostgresProjectRepository_ListAggregatesNamesProjectsByTheStoredSpellin
 
 	ctx := context.Background()
 	base := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
-	require.NoError(t, RegisterProjectIdentity(ctx, pool, " Foo_Bar ", "FOO_BAR", base))
 	insertProjectSession(t, pool, "aggregate-variant-session", " Foo_Bar ", base, nil)
 	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000203", " Foo_Bar ", "aggregate-variant-session", base, base, nil)
 	insertProjectSyncAttempt(t, pool, "aggregate-variant-sync", " Foo_Bar ", model.SyncAttemptOutcomeSuccess, base, nil)
@@ -178,82 +176,6 @@ func TestPostgresProjectRepository_ListAggregatesOrdersByTheProjectKey(t *testin
 		names = append(names, aggregate.Name)
 	}
 	require.Equal(t, []string{"alpha", "mike", "zulu"}, names)
-}
-
-// TestBackfillProjectIdentityRegistryRecordsEveryLegacyLiteral replaces the
-// coalescing behaviour this test used to pin.
-//
-// Coalescing " Foo.Bar " and "foo/bar" into one registry row asserted that the
-// API may decide two spellings are the same project. It may not — the daemon is
-// the sole authority on identity, and rows are selected by exact equality, so a
-// coalesced key made "known" and "readable" different questions.
-func TestBackfillProjectIdentityRegistryRecordsEveryLegacyLiteral(t *testing.T) {
-	pool, cleanup := startPostgresWithProjectSources(t)
-	defer cleanup()
-	require.NoError(t, RunMigrations(pool, migrations.UserPromptsSQL))
-	require.NoError(t, RunMigrations(pool, migrations.ProjectBlocksSQL))
-	require.NoError(t, RunMigrations(pool, migrations.QuarantineContractSQL))
-	require.NoError(t, RunMigrations(pool, migrations.DistributedQuarantineSQL))
-	require.NoError(t, RunMigrations(pool, migrations.CanonicalProjectRegistrySQL))
-
-	ctx := context.Background()
-	base := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
-	insertProjectSession(t, pool, "registry-oldest", " Foo.Bar ", base, nil)
-	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000201", "foo/bar", "registry-oldest", base.Add(time.Minute), base.Add(time.Minute), nil)
-	insertProjectSyncAttempt(t, pool, "registry-unicode", "STRAßE", model.SyncAttemptOutcomeSuccess, base.Add(2*time.Minute), nil)
-
-	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool))
-	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool), "backfill must be idempotent")
-
-	rows, err := pool.Query(ctx, `SELECT project_key, first_spelling FROM project_identities ORDER BY project_key`)
-	require.NoError(t, err)
-	defer rows.Close()
-
-	type identity struct{ key, spelling string }
-	got := make([]identity, 0)
-	for rows.Next() {
-		var row identity
-		require.NoError(t, rows.Scan(&row.key, &row.spelling))
-		got = append(got, row)
-	}
-	require.NoError(t, rows.Err())
-	require.Equal(t, []identity{
-		{key: " Foo.Bar ", spelling: " Foo.Bar "},
-		{key: "STRAßE", spelling: "STRAßE"},
-		{key: "foo/bar", spelling: "foo/bar"},
-	}, got)
-}
-
-// TestRegisterProjectIdentityKeepsTheRemoteDisplayNamePerLiteral pins that a
-// remote display name attaches to the exact literal that reported it. Two
-// spellings are two registry rows, so one project's remote name can never
-// become another's display name.
-func TestRegisterProjectIdentityKeepsTheRemoteDisplayNamePerLiteral(t *testing.T) {
-	pool, cleanup := startPostgresWithProjectSources(t)
-	defer cleanup()
-	require.NoError(t, RunMigrations(pool, migrations.CanonicalProjectRegistrySQL))
-
-	ctx := context.Background()
-	firstSeen := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
-	require.NoError(t, RegisterProjectIdentity(ctx, pool, "Old Project", "", firstSeen))
-	require.NoError(t, RegisterProjectIdentity(ctx, pool, "Old Project", "Remote Project", firstSeen.Add(time.Hour)))
-	require.NoError(t, RegisterProjectIdentity(ctx, pool, "old/project", "", firstSeen.Add(time.Hour)))
-
-	var spelling, remote string
-	var remoteSeen *time.Time
-	require.NoError(t, pool.QueryRow(ctx, `
-		SELECT first_spelling, COALESCE(remote_spelling, ''), remote_seen_at
-		FROM project_identities WHERE project_key = 'Old Project'`).Scan(&spelling, &remote, &remoteSeen))
-	require.Equal(t, "Old Project", spelling)
-	require.Equal(t, "Remote Project", remote)
-	require.NotNil(t, remoteSeen)
-
-	require.NoError(t, pool.QueryRow(ctx, `
-		SELECT first_spelling, COALESCE(remote_spelling, ''), remote_seen_at
-		FROM project_identities WHERE project_key = 'old/project'`).Scan(&spelling, &remote, &remoteSeen))
-	require.Equal(t, "old/project", spelling)
-	require.Empty(t, remote, "a different spelling is a different project and borrows no display name")
-	require.Nil(t, remoteSeen)
 }
 
 func projectAggregatesByName(records []model.ProjectAggregate) map[string]model.ProjectAggregate {

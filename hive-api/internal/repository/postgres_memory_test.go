@@ -979,8 +979,6 @@ func TestPostgresMemoryRepository_PullSinceMatchesTheStoredSpellingExactly(t *te
 		_, err := repo.Create(ctx, &model.Memory{SyncID: fmt.Sprintf("810e8400-0000-0000-0000-%012d", i), Project: project, Category: model.CatDecision, Title: project, Content: project, CreatedBy: "tester", CreatedAt: base, UpdatedAt: base, SessionID: sessionID})
 		require.NoError(t, err)
 	}
-	require.NoError(t, RegisterProjectIdentity(ctx, pool, "Foo.Bar", "", base))
-	require.NoError(t, RegisterProjectIdentity(ctx, pool, "foo-bar", "", base))
 
 	unrelated, hasMore, err := repo.PullSince(ctx, "foo/bar", time.Time{}, nil, model.PullCursor{}, 1)
 	require.NoError(t, err)

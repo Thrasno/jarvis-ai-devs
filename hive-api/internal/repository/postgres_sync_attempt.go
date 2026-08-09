@@ -50,9 +50,6 @@ func (r *postgresSyncAttemptRepository) UpsertBatch(ctx context.Context, attempt
 func (r *postgresSyncAttemptRepository) upsertBatch(ctx context.Context, db pgxQuerier, attempts []model.SyncAttemptLog) (model.SyncAttemptStoreResult, error) {
 	result := model.SyncAttemptStoreResult{}
 	for _, attempt := range attempts {
-		if err := registerProjectIdentity(ctx, db, attempt.Project, "", attempt.StartedAt); err != nil {
-			return result, err
-		}
 		syncCounts, err := json.Marshal(nonNilIntMap(attempt.SyncCounts))
 		if err != nil {
 			return result, fmt.Errorf("marshal sync attempt counts: %w", err)

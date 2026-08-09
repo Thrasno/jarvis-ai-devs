@@ -50,9 +50,6 @@ func (r *postgresProjectBlockRepository) blockProject(ctx context.Context, db pg
 	if create.CanonicalProjectKey == "" {
 		create.CanonicalProjectKey = create.Project
 	}
-	if err := registerProjectIdentity(ctx, db, create.Project, "", time.Now().UTC()); err != nil {
-		return nil, err
-	}
 	const q = `
 			INSERT INTO project_blocks (project, canonical_project_key, action, reason, confirmation, export_marker, actor_user_id, blocked, blocked_at)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $3 <> 'unblock', now())

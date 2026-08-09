@@ -62,7 +62,6 @@ func TestLegacyQuarantineKeepsBlockingTheSpellingItsRowsCarry(t *testing.T) {
 	} {
 		require.NoError(t, RunMigrations(pool, migration))
 	}
-	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool))
 
 	require.ErrorIs(t, checkProjectBlocked(ctx, pool, "foo-bar"), ErrProjectBlocked,
 		"the quarantine must still block the spelling the daemon pushes")

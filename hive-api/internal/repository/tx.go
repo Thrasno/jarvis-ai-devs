@@ -14,14 +14,13 @@ type pgxQuerier interface {
 }
 
 type TxRepositories struct {
-	Users             UserRepository
-	Audit             AuditRepository
-	ProjectBlocks     ProjectBlockRepository
-	Memory            MemoryRepository
-	Prompt            PromptRepository
-	Session           SessionRepository
-	ProjectKeyLocks   ProjectKeyLockRepository
-	ProjectIdentities ProjectIdentityRepository
+	Users           UserRepository
+	Audit           AuditRepository
+	ProjectBlocks   ProjectBlockRepository
+	Memory          MemoryRepository
+	Prompt          PromptRepository
+	Session         SessionRepository
+	ProjectKeyLocks ProjectKeyLockRepository
 }
 
 type TxManager interface {

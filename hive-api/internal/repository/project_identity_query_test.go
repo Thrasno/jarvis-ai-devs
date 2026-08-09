@@ -26,7 +26,6 @@ func TestProjectQueriesMatchTheStoredSpellingExactly(t *testing.T) {
 	const stored = "Foo.Bar"
 	const other = "foo-bar"
 
-	require.NoError(t, RegisterProjectIdentity(ctx, pool, stored, "", base))
 	insertProjectSession(t, pool, "identity-session", stored, base, nil)
 	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000501", stored, "identity-session", base, base, nil)
 
@@ -61,8 +60,6 @@ func TestProjectAggregatesGroupOnTheStoredSpelling(t *testing.T) {
 
 	ctx := context.Background()
 	base := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
-	require.NoError(t, RegisterProjectIdentity(ctx, pool, "Foo.Bar", "Foo.Bar", base))
-
 	insertProjectSession(t, pool, "dotted-session", "Foo.Bar", base, nil)
 	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000401", "foo_bar", "dotted-session", base, base, nil)
 	insertProjectSyncAttempt(t, pool, "dotted-sync", "foo-bar", model.SyncAttemptOutcomeSuccess, base, nil)

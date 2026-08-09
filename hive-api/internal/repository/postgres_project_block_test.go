@@ -36,8 +36,6 @@ func TestPostgresProjectBlockRepository_ReadsHistoricalLegacyActions(t *testing.
 			require.NoError(t, err)
 		})
 	}
-	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool))
-	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool), "canonical backfill must remain idempotent")
 
 	for _, action := range []string{"export_marker", model.ProjectBlockActionPurgeIntent} {
 		t.Run("read "+action, func(t *testing.T) {
@@ -72,7 +70,6 @@ func TestBlockedProjectPredicateBlocksOnlyTheSpellingItNames(t *testing.T) {
 		VALUES ('Foo.Bar', 'Foo.Bar', 'block', 'exact dotted spelling', 'Foo.Bar', '', true),
 		       ('STRAßE', 'STRAßE', 'block', 'exact unicode spelling', 'STRAßE', '', true)`)
 	require.NoError(t, err)
-	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool))
 
 	repo := NewPostgresMemoryRepository(pool)
 	listed, err := repo.List(ctx, model.MemoryFilter{Limit: 20})
@@ -86,67 +83,6 @@ func TestBlockedProjectPredicateBlocksOnlyTheSpellingItNames(t *testing.T) {
 	for _, spelling := range []string{"foo/bar", "foo-bar", "strasse", "visible"} {
 		require.NoError(t, checkProjectBlocked(ctx, pool, spelling), spelling)
 	}
-}
-
-// TestBackfillProjectIdentityRegistryLeavesProjectBlocksUntouched proves the
-// startup backfill only populates the spelling registry. It used to rekey and
-// coalesce quarantine heads onto a canonical key, which silently repointed a
-// block at a project no admin had named.
-func TestBackfillProjectIdentityRegistryLeavesProjectBlocksUntouched(t *testing.T) {
-	pool, cleanup := startPostgresWithProjectBlocks(t)
-	defer cleanup()
-
-	ctx := context.Background()
-	var commandID string
-	require.NoError(t, pool.QueryRow(ctx, `
-		INSERT INTO project_blocks (project, canonical_project_key, action, reason, confirmation, export_marker, blocked)
-		VALUES ('Foo.Bar', 'Foo.Bar', 'quarantine', 'exact dotted key', 'Foo.Bar', 'export-1', true)
-		RETURNING command_id::text`).Scan(&commandID))
-	_, err := pool.Exec(ctx, `
-		INSERT INTO project_block_ack_deliveries
-			(command_id, canonical_project_key, ack_token, ack_auth_subject, ack_daemon_id)
-		VALUES ($1, 'Foo.Bar', 'delivery-token', 'user-1', 'daemon-1')`, commandID)
-	require.NoError(t, err)
-	_, err = pool.Exec(ctx, `
-		INSERT INTO project_block_acks
-			(command_id, canonical_project_key, ack_token, ack_auth_subject, ack_daemon_id, status)
-		VALUES ($1, 'Foo.Bar', 'delivery-token', 'user-1', 'daemon-1', 'applied')`, commandID)
-	require.NoError(t, err)
-
-	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool))
-	require.NoError(t, RunMigrations(pool, migrations.CanonicalProjectRegistrySQL), "startup schema migration must be repeatable")
-	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool), "startup backfill must be repeatable")
-
-	for _, table := range []string{"project_blocks", "project_block_acks", "project_block_ack_deliveries"} {
-		var key string
-		var count int
-		require.NoError(t, pool.QueryRow(ctx, "SELECT canonical_project_key, count(*) OVER () FROM "+table).Scan(&key, &count))
-		require.Equal(t, "Foo.Bar", key, table)
-		require.Equal(t, 1, count, table)
-	}
-}
-
-// TestBackfillProjectIdentityRegistryKeepsFoldedBlockHeadsSeparate proves two
-// quarantine heads that a canonical fold would merge stay two independent
-// heads. The old coalescer merged them and, on divergent state, rejected the
-// whole startup transaction.
-func TestBackfillProjectIdentityRegistryKeepsFoldedBlockHeadsSeparate(t *testing.T) {
-	pool, cleanup := startPostgresWithProjectBlocks(t)
-	defer cleanup()
-
-	ctx := context.Background()
-	for _, row := range []struct{ project, key string }{{"Foo.Bar", "Foo.Bar"}, {"foo-bar", "foo-bar"}} {
-		_, err := pool.Exec(ctx, `INSERT INTO project_blocks (project, canonical_project_key, action, generation, reason, confirmation, export_marker, blocked)
-			VALUES ($1, $2, 'block', 1, 'competing legacy head', $1, '', true)`, row.project, row.key)
-		require.NoError(t, err)
-	}
-
-	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool),
-		"divergent heads are two projects, not a conflict")
-
-	var count int
-	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM project_blocks WHERE canonical_project_key IN ('Foo.Bar', 'foo-bar')`).Scan(&count))
-	require.Equal(t, 2, count, "both heads survive untouched")
 }
 
 func memoryProjects(memories []*model.Memory) []string {
@@ -685,7 +621,6 @@ func TestPostgresMemoryRepository_PullSinceExcludesBlockedProjects(t *testing.T)
 		ActorUserID:         "admin-1",
 	})
 	require.NoError(t, err)
-	require.NoError(t, BackfillProjectIdentityRegistry(ctx, pool))
 
 	memories, hasMore, err := memoryRepo.PullSince(ctx, "blocked/pull", time.Time{}, nil, model.PullCursor{}, 10)
 	require.NoError(t, err)

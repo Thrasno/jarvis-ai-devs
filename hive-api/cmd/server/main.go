@@ -196,7 +196,7 @@ func runStartupMigrations(pool *pgxpool.Pool) error {
 			return err
 		}
 	}
-	return repository.BackfillProjectIdentityRegistry(context.Background(), pool)
+	return nil
 }
 
 func main() {

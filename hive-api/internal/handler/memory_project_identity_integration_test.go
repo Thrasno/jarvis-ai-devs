@@ -30,9 +30,6 @@ func TestMemoryHandler_ProjectFilterAnswersEveryLiteralWithAnEmptyResult(t *test
 	pool, cleanup := startMemoryHandlerPostgres(t)
 	defer cleanup()
 
-	ctx := context.Background()
-	require.NoError(t, repository.RegisterProjectIdentity(ctx, pool, "Known.Project", "", time.Now().UTC()))
-
 	authSvc := &mockAuthSvc{}
 	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
 	router := NewRouter(RouterDeps{
@@ -47,19 +44,19 @@ func TestMemoryHandler_ProjectFilterAnswersEveryLiteralWithAnEmptyResult(t *test
 		AdminSvc: &mockAdminSvc{},
 	})
 
-	// Every one of these answers 200 with zero memories. A spelling the API has
-	// never seen and a registered spelling with no rows are indistinguishable,
-	// and that is the point: both are simply projects with nothing to return.
+	// Every one of these answers 200 with zero memories. The API cannot tell a
+	// project it has never heard of from one whose rows simply do not match, and
+	// that is the point: both are projects with nothing to return.
 	for _, tc := range []struct {
 		name string
 		path string
 	}{
-		{name: "unregistered list", path: "/memories?project=Ghost.Project"},
-		{name: "unregistered search", path: "/memories/search?query=needle&project=ghost/project"},
-		{name: "other spelling of a registered project", path: "/memories?project=KNOWN_project"},
-		{name: "other spelling search", path: "/memories/search?query=needle&project=known/project"},
-		{name: "registered empty list", path: "/memories?project=Known.Project"},
-		{name: "registered empty search", path: "/memories/search?query=needle&project=Known.Project"},
+		{name: "list", path: "/memories?project=Ghost.Project"},
+		{name: "search", path: "/memories/search?query=needle&project=ghost/project"},
+		{name: "another spelling list", path: "/memories?project=KNOWN_project"},
+		{name: "another spelling search", path: "/memories/search?query=needle&project=known/project"},
+		{name: "dotted list", path: "/memories?project=Known.Project"},
+		{name: "dotted search", path: "/memories/search?query=needle&project=Known.Project"},
 		{name: "global list", path: "/memories"},
 		{name: "global search", path: "/memories/search?query=needle"},
 	} {
@@ -127,7 +124,10 @@ func TestMemoryReadsAnswerOnlyForTheSyncedLiteral(t *testing.T) {
 	}
 }
 
-func TestMemoryCreateRegistersTheLiteralProjectAndRollsBackOnWriteFailure(t *testing.T) {
+// TestMemoryCreateStoresTheLiteralProjectAndRollsBackOnWriteFailure proves a
+// create stores the project spelling verbatim and that a failed create leaves
+// nothing behind.
+func TestMemoryCreateStoresTheLiteralProjectAndRollsBackOnWriteFailure(t *testing.T) {
 	pool, cleanup := startMemoryHandlerPostgres(t)
 	defer cleanup()
 	ctx := context.Background()
@@ -143,40 +143,21 @@ func TestMemoryCreateRegistersTheLiteralProjectAndRollsBackOnWriteFailure(t *tes
 	require.NoError(t, err)
 	_, err = memoryService.Create(ctx, &model.Memory{SyncID: "20000000-0000-0000-0000-000000000001", Project: "Ghost.Project", Category: model.CatDecision, CreatedBy: "user", CreatedAt: now, UpdatedAt: now})
 	require.Error(t, err)
-	// The pull selects on the stored literal, not on the registry key.
+	// The pull selects on the stored literal.
 	pulled, err := syncService.PullAll(ctx, " Direct.Project ", time.Time{}, nil, 10, model.PullCursor{}, model.PullCursor{})
 	require.NoError(t, err)
 	require.Len(t, pulled.Memories, 1)
 	require.Equal(t, " Direct.Project ", pulled.Memories[0].Project, "pull retains the stored display spelling")
 
-	var key, spelling string
-	require.NoError(t, pool.QueryRow(ctx, `SELECT project_key, first_spelling FROM project_identities WHERE project_key = ' Direct.Project '`).Scan(&key, &spelling))
-	require.Equal(t, " Direct.Project ", key, "the registry records the literal, not a derived key")
-	require.Equal(t, " Direct.Project ", spelling)
-	var ghost bool
-	require.NoError(t, pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM project_identities WHERE project_key = 'Ghost.Project')`).Scan(&ghost))
-	require.False(t, ghost)
+	var ghost int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM memories WHERE project = 'Ghost.Project'`).Scan(&ghost))
+	require.Zero(t, ghost, "the rejected create left no row behind")
 	// Another spelling reads none of those rows, and says so with an empty list
 	// rather than by refusing the query.
 	listed, total, err := memoryService.List(ctx, model.MemoryFilter{Project: "direct/project"})
 	require.NoError(t, err)
 	require.Empty(t, listed)
 	require.Zero(t, total)
-}
-
-func TestMemoryCreateRollsBackDomainWriteWhenIdentityRegistrationFails(t *testing.T) {
-	pool, cleanup := startMemoryHandlerPostgres(t)
-	defer cleanup()
-	ctx := context.Background()
-	memoryService := service.NewMemoryService(repository.NewPostgresMemoryRepository(pool), repository.NewPostgresSessionRepository(pool), repository.NewPostgresProjectBlockRepository(pool), repository.NewPostgresTxManager(pool))
-	require.NoError(t, repository.RunMigrations(pool, `DROP TABLE project_identities CASCADE`))
-	now := time.Now().UTC()
-
-	_, err := memoryService.Create(ctx, &model.Memory{SyncID: "30000000-0000-0000-0000-000000000001", Project: "Broken.Registry", Category: model.CatDecision, Title: "must rollback", Content: "content", CreatedBy: "user", CreatedAt: now, UpdatedAt: now})
-	require.Error(t, err)
-	var count int
-	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM memories WHERE project = 'Broken.Registry'`).Scan(&count))
-	require.Zero(t, count)
 }
 
 func startMemoryHandlerPostgres(t *testing.T) (*pgxpool.Pool, func()) {

@@ -696,8 +696,6 @@ func seedProjectRows(t *testing.T, ctx context.Context, pool *pgxpool.Pool, proj
 		VALUES ($1, 'tester', $2, now(), now(), 'success', $3)`,
 		"scope-attempt-"+scopeSuffix(index), project, userID)
 	require.NoError(t, err)
-
-	require.NoError(t, RegisterProjectIdentity(ctx, pool, project, "", scopeBaseTime))
 }
 
 func newScopeMemory(project, syncID string) *model.Memory {
