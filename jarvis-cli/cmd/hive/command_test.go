@@ -418,7 +418,13 @@ func TestHiveProjectIdentityStatusReportsMissingMigrationBackupHonestly(t *testi
 }
 
 func TestHiveProjectIdentityCommandsRejectGuessedResolutionAndRestoreBackup(t *testing.T) {
-	client := &fakeHiveClient{}
+	// The rollback below exercises the BLOCKED path, where the daemon really
+	// does schedule the restore and stop itself. The ready path answers
+	// coordination_required instead and is covered in rollback_report_test.go.
+	client := &fakeHiveClient{restoreResult: hiveclient.RestoreResult{
+		BackupID: "migration-backup-1", Status: hiveclient.RestoreStatusRestartRequested,
+		RequiresDaemonRestart: true,
+	}}
 	for _, args := range [][]string{
 		{"project", "identity", "resolve", "--source", "Foo-Bar"},
 		{"project", "identity", "resolve", "--target", "foo/bar"},
@@ -472,6 +478,7 @@ type fakeHiveClient struct {
 	identityResolution  hiveclient.IdentityResolutionRequest
 	restoreBackupID     string
 	restoreConfirmation string
+	restoreResult       hiveclient.RestoreResult
 	memoriesCalled      bool
 	guardCalled         bool
 	archiveCalled       bool
@@ -518,11 +525,11 @@ func (f *fakeHiveClient) ResolveMigrationIdentity(_ context.Context, req hivecli
 	f.identityResolution = req
 	return nil
 }
-func (f *fakeHiveClient) RestoreMigrationBackup(_ context.Context, backupID, confirmation string) error {
+func (f *fakeHiveClient) RestoreMigrationBackup(_ context.Context, backupID, confirmation string) (hiveclient.RestoreResult, error) {
 	f.restoreCalled = true
 	f.restoreBackupID = backupID
 	f.restoreConfirmation = confirmation
-	return nil
+	return f.restoreResult, nil
 }
 
 func (f *fakeHiveClient) RequestMigrationRetry(context.Context) error {

@@ -107,7 +107,33 @@ type Backup struct {
 	ManifestPath string    `json:"manifest_path"`
 	Checksum     string    `json:"checksum"`
 	SizeBytes    int64     `json:"size_bytes"`
+
+	// RetainUntil is when the daemon reclaims this archive. A migration backup
+	// is kept 24h and is the ONLY rollback artifact for that migration, so an
+	// operator who cannot see the deadline discovers it by finding the backup
+	// gone. The zero value means no deadline (an operator-created backup).
+	RetainUntil time.Time `json:"retain_until,omitempty"`
 }
+
+// RestoreResult is what the daemon actually did with a restore request.
+//
+// The two outcomes are genuinely different actions, not two descriptions of one:
+// with the migration gate BLOCKED the daemon schedules the restore and stops
+// itself, while with the gate ready it only validates the archive and answers
+// coordination_required — nothing is scheduled and nothing is replaced.
+type RestoreResult struct {
+	BackupID              string    `json:"backup_id"`
+	DBPath                string    `json:"db_path"`
+	RestoredAt            time.Time `json:"restored_at,omitempty"`
+	ArchivePath           string    `json:"archive_path"`
+	Status                string    `json:"status,omitempty"`
+	RequiresDaemonRestart bool      `json:"requires_daemon_restart,omitempty"`
+	Message               string    `json:"message,omitempty"`
+}
+
+// RestoreStatusRestartRequested is the one status that means the daemon took
+// ownership of the restart. Every other status leaves the operator holding it.
+const RestoreStatusRestartRequested = "restart-requested"
 
 // MigrationIdentityStatus is the recovery state exposed while normal Hive
 // operations are blocked by canonical project identity migration.
@@ -555,8 +581,14 @@ func (c *Client) ResolveMigrationIdentity(ctx context.Context, req IdentityResol
 	return c.post(ctx, "/governance/project-identity/resolve", req, &struct{}{})
 }
 
-func (c *Client) RestoreMigrationBackup(ctx context.Context, backupID, confirmation string) error {
-	return c.post(ctx, "/governance/restores", map[string]string{"backup_id": backupID, "confirmation": confirmation}, &struct{}{})
+func (c *Client) RestoreMigrationBackup(ctx context.Context, backupID, confirmation string) (RestoreResult, error) {
+	var body struct {
+		Restore RestoreResult `json:"restore"`
+	}
+	if err := c.post(ctx, "/governance/restores", map[string]string{"backup_id": backupID, "confirmation": confirmation}, &body); err != nil {
+		return RestoreResult{}, err
+	}
+	return body.Restore, nil
 }
 
 func (c *Client) CreateBackup(ctx context.Context) (Backup, error) {

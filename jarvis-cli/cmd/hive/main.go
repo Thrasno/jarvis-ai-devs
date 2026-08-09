@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -24,7 +25,7 @@ type governanceClient interface {
 	MigrationIdentityStatus(context.Context) (hiveclient.MigrationIdentityStatus, error)
 	ResolveMigrationIdentity(context.Context, hiveclient.IdentityResolutionRequest) error
 	RequestMigrationRetry(context.Context) error
-	RestoreMigrationBackup(context.Context, string, string) error
+	RestoreMigrationBackup(context.Context, string, string) (hiveclient.RestoreResult, error)
 }
 
 func main() {
@@ -138,7 +139,11 @@ func backupsCommand(client governanceClient) *cobra.Command {
 			return nil
 		}
 		for _, b := range backups {
-			fmt.Fprintf(cmd.OutOrStdout(), "id=%s bytes=%d archive=%s created_at=%s\n", b.ID, b.SizeBytes, b.ArchivePath, formatTime(b.CreatedAt))
+			// retain_until is load-bearing, not decoration: a migration backup
+			// is the ONLY rollback artifact for that migration and the daemon
+			// reclaims it after 24h, so an operator who cannot see the deadline
+			// discovers it by finding the backup gone.
+			fmt.Fprintf(cmd.OutOrStdout(), "id=%s bytes=%d archive=%s created_at=%s retain_until=%s\n", b.ID, b.SizeBytes, b.ArchivePath, formatTime(b.CreatedAt), formatTime(b.RetainUntil))
 		}
 		return nil
 	}}
@@ -225,6 +230,28 @@ func projectIdentityRetryCommand(client governanceClient) *cobra.Command {
 	}}
 }
 
+// printRestoreOutcome reports what the daemon actually did, which is not always
+// what this command used to claim.
+//
+// The daemon has two genuinely different branches. With the migration gate
+// BLOCKED it schedules the restore and stops itself, so the managed restart
+// message is true. With the gate READY it takes the other branch entirely:
+// RestoreBackup is PlanRestore, which validates the archive and answers
+// coordination_required — nothing is scheduled and the live database is
+// untouched. Printing the restart message there tells an operator the rollback
+// is handled when in fact they still have to stop the daemon themselves.
+func printRestoreOutcome(out io.Writer, result hiveclient.RestoreResult) {
+	if result.Status == hiveclient.RestoreStatusRestartRequested {
+		fmt.Fprintln(out, "Backup restore was scheduled. The managed daemon will restart, restore it before reopening SQLite, and re-run migration planning.")
+		return
+	}
+	fmt.Fprintf(out, "Backup restore was validated but not applied (status: %s).\n", emptyDash(result.Status))
+	if message := strings.TrimSpace(result.Message); message != "" {
+		fmt.Fprintln(out, message)
+	}
+	fmt.Fprintln(out, "The daemon is serving normally, so it did not schedule the restore. Stop hive-daemon yourself before the live database can be replaced.")
+}
+
 func projectIdentityRollbackCommand(client governanceClient) *cobra.Command {
 	var backupID, confirmation string
 	cmd := &cobra.Command{Use: "rollback", Short: "Restore the retained migration backup", RunE: func(cmd *cobra.Command, _ []string) error {
@@ -235,10 +262,11 @@ func projectIdentityRollbackCommand(client governanceClient) *cobra.Command {
 		if confirmation != expected {
 			return fmt.Errorf("confirmation must match exactly: %s", expected)
 		}
-		if err := client.RestoreMigrationBackup(cmd.Context(), backupID, confirmation); err != nil {
+		result, err := client.RestoreMigrationBackup(cmd.Context(), backupID, confirmation)
+		if err != nil {
 			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "Backup restore was scheduled. The managed daemon will restart, restore it before reopening SQLite, and re-run migration planning.")
+		printRestoreOutcome(cmd.OutOrStdout(), result)
 		return nil
 	}}
 	cmd.Flags().StringVar(&backupID, "backup-id", "", "retained migration backup id")
