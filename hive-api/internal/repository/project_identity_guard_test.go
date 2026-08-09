@@ -10,11 +10,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// callArgument matches the argument list of a single call, without escaping it:
-// it consumes anything but parentheses, plus at most one nested call. A pattern
-// built on it therefore asks "does THIS call mention a project", not "does the
-// word project appear somewhere later in the file".
-const callArgument = `(?:[^()]|\([^()]*\))*?`
+// callArgument matches the text between a call's opening parenthesis and a
+// token inside it, at any nesting depth.
+//
+// It consumes anything except a CLOSING parenthesis. Opening ones are allowed,
+// so the scan descends into nested calls; the closing one is the wall, so the
+// scan can never leave the call it started in and read a token belonging to the
+// next one. That is what makes a match mean "this call mentions a project".
+//
+// The earlier version allowed at most one fully-closed nested call, which let
+// it step OVER a nested call but never into one — so lower(coalesce(project))
+// and regexp_replace(btrim(project)) both read as clean, and the fold this
+// guard exists to prevent was spelled with exactly that shape.
+const callArgument = `(?:[^()]|\()*?`
+
+// screamingIdentifier matches when the token a rule landed on is part of a
+// SCREAMING_SNAKE_CASE name — an environment variable or a constant, never a
+// column. Applied to the match, so it can only ever narrow a rule.
+//
+// Descending into nested calls made this necessary: reading a config flag named
+// JARVIS_ENABLE_PROJECT_BLOCK_ADMIN through strings.EqualFold is not a project
+// predicate, and a guard that reports it is a guard someone deletes.
+var screamingIdentifier = regexp.MustCompile(`[A-Z]_[A-Z_]*$`)
 
 // foldFunctions are the SQL and Go functions that can turn one project spelling
 // into another. btrim/trim are absent on purpose: this module uses them to test
@@ -68,17 +85,34 @@ var forbiddenIdentityDerivation = []forbiddenConstruct{
 			"The project_blocks column of the same name is a stored literal and is fine",
 	},
 	{
-		pattern: regexp.MustCompile(`(?i)create\s+(or\s+replace\s+)?function\s+[\w.]+\s*\([^)]*\)\s*returns\s+text`),
-		why: "a SQL function returning text is how the key fold was spelled; renaming it changes nothing. " +
+		pattern: regexp.MustCompile(`(?i)create\s+(or\s+replace\s+)?function\s+[\w.]*(project|canonical|slug|fold|normali[sz]e)[\w.]*\s*\([^)]*\)\s*returns\s+(text|varchar|character\s+varying|citext|name|char)`),
+		why: "a SQL function returning a string type is how the key fold was spelled, and renaming it changed nothing. " +
 			"Project identity is resolved in Go, by the daemon, and never in the database",
 	},
 	{
+		pattern: regexp.MustCompile(`(?i)\bnormalize\s*\(` + callArgument + `project`),
+		allowed: screamingIdentifier,
+		why:     "normalize() folds Unicode spellings of a project into one; the stored literal is compared byte for byte",
+	},
+	{
+		pattern: regexp.MustCompile(`(?i)\b[\w.]*project\w*\s+collate\b|\bcollate\b[^,;)]*\bproject`),
+		why: "a non-binary collation makes = itself a fold, so the predicate stops being plain equality " +
+			"without any function appearing in it",
+	},
+	{
+		pattern: regexp.MustCompile(`(?i)alter\s+column\s+[\w.]*project\w*\s+(set\s+data\s+)?type\s+citext`),
+		why: "citext makes every comparison on the column case-insensitive, which folds identity in the schema " +
+			"rather than in any query",
+	},
+	{
 		pattern: regexp.MustCompile(`(?i)\b(` + foldFunctions + `)\s*\(` + callArgument + `project`),
+		allowed: screamingIdentifier,
 		why: "a project predicate must be plain equality on the stored literal, not a fold. " +
 			"This covers the canonical_project_key column as well as the project column",
 	},
 	{
 		pattern: regexp.MustCompile(`(?i)\bbtrim\s*\(` + callArgument + `project` + callArgument + `,`),
+		allowed: screamingIdentifier,
 		why:     "btrim with a cutset folds a project spelling; only the no-cutset emptiness check is allowed",
 	},
 	{
@@ -171,25 +205,34 @@ func identityViolations(source string, isSQL bool) []string {
 	return violations
 }
 
-// TestNoProjectIdentityDerivationInAPISources pins the one architectural rule
-// this module has about projects: the daemon is the sole authority on project
-// identity, hive-api stores the literal it receives, and two spellings are the
-// same project only when they are byte-for-byte equal.
+// TestNoProjectIdentityDerivationInAPISources is a cheap hint, not a guarantee.
 //
-// It scans .sql as well as .go. The Go type system sees neither: a
-// project-scoped predicate lives in a Go string literal or in a migration file,
-// and the fold this rule exists to prevent was defined in a migration.
+// The guarantee is project_scope_behaviour_test.go, which stores rows under one
+// spelling and requires every project-scoped path to answer for that spelling
+// and no other. That is a claim about what the code DOES, so it holds however a
+// fold is written, wherever it lives, and whether or not its source is in this
+// repository. This file only reads the source, so it is worth exactly the list
+// of spellings someone thought of, and it has now twice been shipped claiming
+// coverage it did not have.
 //
-// What this guard cannot see, and what no static scan of this module could:
-//   - a fold assembled at runtime (fmt.Sprintf over a name held in a constant,
-//     or split across statements so no single call shows both halves);
-//   - a fold applied by a dependency, or by SQL running outside this repository
-//     (a view, a trigger, or a DBA-created function this module merely calls);
-//   - a fold whose SQL function is renamed AND defined elsewhere — the rule
-//     above catches the definition, not a call to an already-existing one.
+// It earns its place by failing fast and by naming the construct, and by seeing
+// one thing behaviour cannot: a fold added to code no test exercises yet. It
+// runs in a quarter of a second against every .go and .sql file; the behavioural
+// suite needs a container. Treat a failure here as real and a pass here as
+// nothing at all.
 //
-// Those are the reasons the predicate is also covered by behavioural tests
-// against a real database, not by this scan alone.
+// Concretely, this scan does NOT see:
+//   - a fold assembled at runtime — fmt.Sprintf over a name in a constant, or
+//     split across statements so no single expression shows both halves;
+//   - a fold applied by a dependency, or by SQL living outside this repository:
+//     a view, a trigger, a rule, or a DBA-created function this module calls;
+//   - a call to an already-existing fold function, under any name. The rules
+//     below catch a DEFINITION whose name suggests identity, which is a guess;
+//   - a fold spelled with a function nobody listed in foldFunctions, or reached
+//     through an operator rather than a call;
+//   - anything at all in testdata/, which is skipped.
+//
+// Every one of those is caught behaviourally, by the rows the query returns.
 func TestNoProjectIdentityDerivationInAPISources(t *testing.T) {
 	root, err := filepath.Abs("../..")
 	require.NoError(t, err)
@@ -318,6 +361,51 @@ var evasions = []struct {
 		name:   "pattern match on the canonical_project_key column",
 		sample: "const q = `SELECT 1 FROM project_blocks WHERE canonical_project_key LIKE $1`",
 	},
+	// Everything below was shown to slip past an earlier version of this guard.
+	// They are the reason the file no longer claims to be the guarantee.
+	{
+		name:   "fold reaching a project through a nested call",
+		sample: "const q = `SELECT 1 FROM memories WHERE lower(coalesce(memories.project, '')) = lower($1)`",
+	},
+	{
+		name:   "fold reaching a project through two nested calls",
+		isSQL:  true,
+		sample: "CREATE UNIQUE INDEX idx_memories_project ON memories (lower(btrim(project)));",
+	},
+	{
+		name:   "fold reaching a project column inside a rewrite",
+		isSQL:  true,
+		sample: "UPDATE project_blocks SET canonical_project_key = regexp_replace(btrim(project), '[^a-z]+','-','g');",
+	},
+	{
+		name:   "hand-rolled Go fold through nested calls",
+		sample: "key := strings.ToLower(strings.TrimSpace(project))",
+	},
+	{
+		name:   "renamed fold returning varchar instead of text",
+		isSQL:  true,
+		sample: "CREATE FUNCTION project_fold(input text) RETURNS varchar LANGUAGE sql AS $$ SELECT lower(input) $$;",
+	},
+	{
+		name:   "renamed fold returning citext",
+		isSQL:  true,
+		sample: "CREATE FUNCTION canonical_slug(input text) RETURNS citext LANGUAGE sql AS $$ SELECT input $$;",
+	},
+	{
+		name:   "Unicode normalization of a project",
+		isSQL:  true,
+		sample: "SELECT 1 FROM memories WHERE normalize(project, NFKC) = $1;",
+	},
+	{
+		name:   "case-insensitive collation on a project predicate",
+		isSQL:  true,
+		sample: "SELECT 1 FROM memories WHERE project COLLATE \"und-u-ks-level2\" = $1;",
+	},
+	{
+		name:   "folding the project column by changing its type",
+		isSQL:  true,
+		sample: "ALTER TABLE memories ALTER COLUMN project TYPE citext;",
+	},
 }
 
 func TestIdentityGuardRejectsEveryKnownEvasion(t *testing.T) {
@@ -385,6 +473,24 @@ var legitimate = []struct {
 	{
 		name:   "a Go comment describing the forbidden fold",
 		sample: "// lower(project) and projectidentity.Canonical are both forbidden here.",
+	},
+	{
+		name:   "a text-returning function that has nothing to do with projects",
+		isSQL:  true,
+		sample: "CREATE FUNCTION audit_actor(actor uuid) RETURNS text LANGUAGE sql AS $$ SELECT 'system' $$;",
+	},
+	{
+		name:   "a fold whose nested call ends before the project token",
+		sample: "const q = `SELECT lower(u.username) AS username_key FROM users u WHERE u.project_key = $1`",
+	},
+	{
+		name:   "a collation on a column that is not a project",
+		isSQL:  true,
+		sample: "SELECT 1 FROM users WHERE username COLLATE \"C\" = $1;",
+	},
+	{
+		name:   "reading a config flag whose env var name contains PROJECT",
+		sample: "enabled := strings.EqualFold(strings.TrimSpace(os.Getenv(\"JARVIS_ENABLE_PROJECT_BLOCK_ADMIN\")), \"true\")",
 	},
 }
 
