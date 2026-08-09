@@ -118,3 +118,10 @@ var DistributedQuarantineSQL string
 //
 //go:embed 019_canonical_project_identity.sql
 var CanonicalProjectRegistrySQL string
+
+// LegacyQuarantineRekeySQL is migration 020. It is a one-time correction that
+// repoints every pre-contract quarantine at the literal spelling its admin
+// named, so a block written before exact-equality matching keeps quarantining.
+//
+//go:embed 020_legacy_quarantine_rekey.sql
+var LegacyQuarantineRekeySQL string

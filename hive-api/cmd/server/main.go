@@ -205,6 +205,7 @@ func startupMigrationSQL() []string {
 		migrations.QuarantineContractSQL,
 		migrations.DistributedQuarantineSQL,
 		migrations.CanonicalProjectRegistrySQL,
+		migrations.LegacyQuarantineRekeySQL,
 	}
 }
 
