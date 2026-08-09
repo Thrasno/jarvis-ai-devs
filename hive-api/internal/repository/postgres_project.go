@@ -21,15 +21,25 @@ func newPostgresProjectRepositoryWithQuerier(db pgxQuerier) ProjectRepository {
 }
 
 func (r *postgresProjectRepository) ListAggregates(ctx context.Context) ([]model.ProjectAggregate, error) {
-	// Rows group on the literal project spelling they carry. The API never
-	// derives a key, so two spellings are one project only when they are equal.
+	// Rows group on the literal project spelling they carry, and that literal is
+	// also the name this returns. The API never derives a key, so two spellings
+	// are one project only when they are equal.
 	//
-	// The display name is then resolved through project_identities, which is
-	// keyed by that same literal. The join is therefore exact equality: it can
-	// only attach a name to a project, never merge two of them. Grouping stays on
-	// the row literal so the join cannot influence which rows belong together.
+	// There is no separate display name to resolve. Under this contract the name
+	// IS the key: every other project-scoped call takes a project string and
+	// compares it to the stored literal with plain equality, so a name that is
+	// not that literal is a name nothing else answers to. A dashboard block on
+	// such a name writes a quarantine matching no row, and internal/service
+	// joins sync health on the same literal and would drop the project instead.
 	//
-	// A project with no registry row falls back to the literal its rows carry.
+	// project_identities is deliberately NOT joined here for a name. It holds
+	// legacy rows keyed canonically with the raw spelling in first_spelling, so
+	// on any upgraded database the join renames a project to a spelling none of
+	// its rows carry. remote_spelling has no production writer at all.
+	//
+	// Ordering is on the row literal because it is the only unique value here:
+	// the projects CTE is a UNION over it. Ordering on anything else leaves ties
+	// the database may break either way between two calls.
 	q := fmt.Sprintf(`
 WITH memory_rows AS (
     SELECT %s AS project_key, created_at, updated_at, deleted_at, restored_at
@@ -75,7 +85,7 @@ latest_sync AS (
     ORDER BY project_key, COALESCE(ended_at, started_at) DESC, ingested_at DESC, id DESC
 )
 SELECT
-    COALESCE(NULLIF(i.remote_spelling, ''), i.first_spelling, p.project_key),
+    p.project_key,
     COALESCE(m.memory_count, 0),
     COALESCE(s.session_count, 0),
     m.last_memory_at,
@@ -83,11 +93,10 @@ SELECT
     ls.last_sync_at,
     ls.outcome
 FROM projects p
-LEFT JOIN project_identities i ON i.project_key = p.project_key
 LEFT JOIN memory_agg m ON m.project_key = p.project_key
 LEFT JOIN session_agg s ON s.project_key = p.project_key
 LEFT JOIN latest_sync ls ON ls.project_key = p.project_key
-ORDER BY COALESCE(NULLIF(i.remote_spelling, ''), i.first_spelling, p.project_key)`,
+ORDER BY p.project_key`,
 		"memories.project", unblockedProjectPredicate("memories.project"),
 		"sessions.project", unblockedProjectPredicate("sessions.project"),
 		"sync_attempt_logs.project", unblockedProjectPredicate("sync_attempt_logs.project"))

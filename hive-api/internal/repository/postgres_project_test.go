@@ -77,13 +77,13 @@ func TestPostgresProjectRepository_ListAggregates(t *testing.T) {
 }
 
 // TestPostgresProjectRepository_ListAggregatesNamesProjectsByTheStoredSpelling
-// proves the aggregate is grouped by the literal on each row, and named through
-// the identity registry.
+// proves the aggregate is grouped AND named by the literal on each row.
 //
-// The registry is keyed by that same literal, so the join is exact equality: it
-// can attach a display name to a project, and it cannot merge two of them. The
-// spelling a remote reported for a project is that project's display name;
-// every other project keeps the literal its rows carry.
+// Under this contract the name IS the key. Every other project-scoped call
+// takes a project string and compares it to the stored literal with plain
+// equality, so a name the dashboard shows that is not that literal is a name
+// nothing else in the system will answer to. Registering a different display
+// spelling must not change what this reports.
 func TestPostgresProjectRepository_ListAggregatesNamesProjectsByTheStoredSpelling(t *testing.T) {
 	pool, cleanup := startPostgresWithProjectSources(t)
 	defer cleanup()
@@ -97,7 +97,7 @@ func TestPostgresProjectRepository_ListAggregatesNamesProjectsByTheStoredSpellin
 	insertProjectSyncAttempt(t, pool, "aggregate-variant-sync", " Foo_Bar ", model.SyncAttemptOutcomeSuccess, base, nil)
 
 	// A spelling the daemon would fold onto the same key. It is a different
-	// project here, and it borrows neither the aggregate nor the display name.
+	// project here, and it borrows neither the aggregate nor the name.
 	insertProjectSession(t, pool, "aggregate-sibling-session", "foo-bar", base, nil)
 
 	aggregates, err := NewPostgresProjectRepository(pool).ListAggregates(ctx)
@@ -105,8 +105,8 @@ func TestPostgresProjectRepository_ListAggregatesNamesProjectsByTheStoredSpellin
 	require.Len(t, aggregates, 2, "two spellings are two projects")
 
 	byName := projectAggregatesByName(aggregates)
-	named, ok := byName["FOO_BAR"]
-	require.True(t, ok, "the registered remote spelling is the project display name")
+	named, ok := byName[" Foo_Bar "]
+	require.True(t, ok, "the stored literal is the project name, not a registered display spelling")
 	assert.EqualValues(t, 1, named.MemoryCount)
 	assert.EqualValues(t, 1, named.SessionCount)
 	assertTimePtrEqual(t, base, named.LastMemoryAt)
@@ -115,9 +115,69 @@ func TestPostgresProjectRepository_ListAggregatesNamesProjectsByTheStoredSpellin
 	require.Equal(t, syncOutcomePtr(model.SyncAttemptOutcomeSuccess), named.LatestSyncOutcome)
 
 	sibling, ok := byName["foo-bar"]
-	require.True(t, ok, "an unregistered project is named by the literal its rows carry")
+	require.True(t, ok, "a differently spelled project is its own aggregate")
 	assert.EqualValues(t, 0, sibling.MemoryCount)
 	assert.EqualValues(t, 1, sibling.SessionCount)
+}
+
+// TestPostgresProjectRepository_ListAggregatesNamesLegacyRegistryRowsByTheirRows
+// is the case that made naming through the registry a defect rather than a
+// cosmetic choice.
+//
+// An earlier release keyed project_identities canonically and stored the raw
+// spelling in first_spelling. Migration 019 is CREATE TABLE IF NOT EXISTS and
+// nothing rewrites those rows, so every database upgraded from that release
+// still holds project_key='foo-bar' alongside first_spelling='Foo.Bar' while
+// its memories and sessions carry 'foo-bar'.
+//
+// Naming through the registry publishes 'Foo.Bar' there — a name that matches
+// no stored row. An admin who blocks it from the dashboard writes a quarantine
+// keyed 'Foo.Bar' against rows spelled 'foo-bar': the block reports Blocked and
+// quarantines nothing. The name must be what the rows carry.
+func TestPostgresProjectRepository_ListAggregatesNamesLegacyRegistryRowsByTheirRows(t *testing.T) {
+	pool, cleanup := startPostgresWithProjectSources(t)
+	defer cleanup()
+	require.NoError(t, RunMigrations(pool, migrations.CanonicalProjectRegistrySQL))
+
+	ctx := context.Background()
+	base := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	_, err := pool.Exec(ctx, `
+		INSERT INTO project_identities (project_key, first_spelling, first_seen_at)
+		VALUES ('foo-bar', 'Foo.Bar', $1)`, base)
+	require.NoError(t, err)
+	insertProjectSession(t, pool, "legacy-registry-session", "foo-bar", base, nil)
+
+	aggregates, err := NewPostgresProjectRepository(pool).ListAggregates(ctx)
+	require.NoError(t, err)
+	require.Len(t, aggregates, 1)
+	require.Equal(t, "foo-bar", aggregates[0].Name,
+		"a legacy registry row must not rename a project to a spelling none of its rows carry")
+}
+
+// TestPostgresProjectRepository_ListAggregatesOrdersByTheProjectKey pins a
+// deterministic order. The row literal is unique across the result — the
+// projects CTE is a UNION over it — so ordering by it is total. Nothing else
+// about a project is unique, so ordering by anything else leaves ties the
+// database may break either way between two calls.
+func TestPostgresProjectRepository_ListAggregatesOrdersByTheProjectKey(t *testing.T) {
+	pool, cleanup := startPostgresWithProjectSources(t)
+	defer cleanup()
+	require.NoError(t, RunMigrations(pool, migrations.CanonicalProjectRegistrySQL))
+
+	ctx := context.Background()
+	base := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	for _, project := range []string{"zulu", "alpha", "mike"} {
+		insertProjectSession(t, pool, "order-"+project, project, base, nil)
+	}
+
+	aggregates, err := NewPostgresProjectRepository(pool).ListAggregates(ctx)
+	require.NoError(t, err)
+
+	names := make([]string, 0, len(aggregates))
+	for _, aggregate := range aggregates {
+		names = append(names, aggregate.Name)
+	}
+	require.Equal(t, []string{"alpha", "mike", "zulu"}, names)
 }
 
 // TestBackfillProjectIdentityRegistryRecordsEveryLegacyLiteral replaces the
