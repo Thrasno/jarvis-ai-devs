@@ -64,7 +64,7 @@ func (s *memoryService) Create(ctx context.Context, mem *model.Memory) (*model.M
 			if repos.Memory == nil || repos.Session == nil || repos.ProjectBlocks == nil || repos.ProjectKeyLocks == nil {
 				return ErrProjectBlockUnavailable
 			}
-			if err := repos.ProjectKeyLocks.LockCanonicalProjectKeys(ctx, []string{mem.Project}); err != nil {
+			if err := repos.ProjectKeyLocks.LockProjectKeys(ctx, []string{mem.Project}); err != nil {
 				return err
 			}
 			if repos.ProjectIdentities == nil {

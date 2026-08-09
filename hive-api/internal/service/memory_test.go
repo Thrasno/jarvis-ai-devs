@@ -328,7 +328,7 @@ func TestCreateMemory_UsesProjectKeyTransactionLock(t *testing.T) {
 		Category: model.CatDecision,
 	}
 
-	lockRepo.On("LockCanonicalProjectKeys", ctx, []string{"Jarvis Dev"}).Return(nil).Once()
+	lockRepo.On("LockProjectKeys", ctx, []string{"Jarvis Dev"}).Return(nil).Once()
 	blockRepo.On("GetByCanonicalKey", ctx, "Jarvis Dev").Return(nil, repository.ErrNotFound).Once()
 	txRepo.On("GetBySyncID", ctx, "direct-create-lock-1").Return(nil, nil).Once()
 	sessionRepo.On("EnsureManualSaveSession", ctx, "Jarvis Dev").Return("manual-save-jarvis-dev", nil).Once()
@@ -370,7 +370,7 @@ func TestCreateMemory_RejectsBlockedProjectInsideProjectKeyLock(t *testing.T) {
 		Blocked:             true,
 		BlockedAt:           time.Now().UTC(),
 	}
-	lockRepo.On("LockCanonicalProjectKeys", ctx, []string{"Jarvis Dev"}).Return(nil).Once()
+	lockRepo.On("LockProjectKeys", ctx, []string{"Jarvis Dev"}).Return(nil).Once()
 	blockRepo.On("GetByCanonicalKey", ctx, "Jarvis Dev").Return(block, nil).Once()
 
 	_, err := svc.Create(ctx, &model.Memory{SyncID: "blocked-direct", Project: "Jarvis Dev", Category: model.CatDecision})

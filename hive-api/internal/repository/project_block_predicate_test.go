@@ -13,14 +13,11 @@ func TestBlockedProjectPredicateComparesTheStoredLiteralExactly(t *testing.T) {
 	assert.Equal(t,
 		"EXISTS (SELECT 1 FROM project_blocks pb WHERE pb.blocked = true AND pb.canonical_project_key = memories.project)",
 		predicate)
-	assert.NotContains(t, predicate, "regexp_replace",
-		"quarantine must not fold spellings together")
+	// The identity-fold vocabulary this predicate must avoid is pinned
+	// module-wide by TestNoProjectIdentityDerivationInAPISources; only the
+	// COALESCE sentinel is specific to this predicate.
 	assert.NotContains(t, predicate, "COALESCE",
 		"the empty-string sentinel could quarantine every row on the backend")
-	assert.NotContains(t, predicate, "project_identity_spellings",
-		"quarantine must not resolve identity through the registry")
-	assert.NotContains(t, predicate, "canonical_project_key(",
-		"quarantine must not depend on the diverging SQL key function")
 }
 
 func TestUnblockedProjectPredicateNegatesTheBlockedPredicate(t *testing.T) {

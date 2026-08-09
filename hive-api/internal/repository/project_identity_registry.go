@@ -89,14 +89,14 @@ func BackfillProjectIdentityRegistry(ctx context.Context, pool *pgxpool.Pool) er
 	for _, registration := range registrations {
 		keys = append(keys, registration.spelling)
 	}
-	if err := newPostgresProjectKeyLockRepositoryWithQuerier(tx).LockCanonicalProjectKeys(ctx, keys); err != nil {
+	if err := newPostgresProjectKeyLockRepositoryWithQuerier(tx).LockProjectKeys(ctx, keys); err != nil {
 		return err
 	}
-	// The backfill populates the spelling registry only. It must never touch
+	// The backfill populates the identity registry only. It must never touch
 	// project_blocks: quarantine matches a stored literal with plain equality, so
 	// rewriting a block's key here would silently repoint it at another project
-	// (or at none), and folding two block heads together would quarantine a
-	// project no admin named.
+	// (or at none) on every boot. Migration 020 is the one-time correction for
+	// blocks written before the exact-equality contract.
 	for _, registration := range registrations {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO project_identities (project_key, first_spelling, first_seen_at)

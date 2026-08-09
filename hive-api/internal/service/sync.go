@@ -124,8 +124,8 @@ func (s *syncService) Sync(ctx context.Context, req model.SyncRequest, userID st
 		if !txRepos.Valid() {
 			return ErrProjectBlockUnavailable
 		}
-		keys := repository.CanonicalProjectKeys(syncRequestProjects(req))
-		if err := txRepos.ProjectKeyLocks.LockCanonicalProjectKeys(ctx, keys); err != nil {
+		keys := repository.ProjectLockKeys(syncRequestProjects(req))
+		if err := txRepos.ProjectKeyLocks.LockProjectKeys(ctx, keys); err != nil {
 			if errors.Is(err, repository.ErrProjectKeyLockBusy) {
 				log.Printf("warn: project-key lock contention during sync projects=%v", keys)
 			}

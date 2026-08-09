@@ -75,7 +75,7 @@ func (s *projectGovernanceService) BlockProject(ctx context.Context, actor model
 		if repos.ProjectBlocks == nil || repos.Audit == nil || repos.ProjectKeyLocks == nil {
 			return ErrProjectBlockUnavailable
 		}
-		if err := repos.ProjectKeyLocks.LockCanonicalProjectKeys(ctx, []string{project}); err != nil {
+		if err := repos.ProjectKeyLocks.LockProjectKeys(ctx, []string{project}); err != nil {
 			return err
 		}
 		if repos.ProjectIdentities == nil {
@@ -158,7 +158,7 @@ func (s *projectGovernanceService) Acknowledge(ctx context.Context, ack model.Pr
 		if repos.ProjectBlocks == nil || repos.ProjectKeyLocks == nil {
 			return ErrProjectBlockUnavailable
 		}
-		if err := repos.ProjectKeyLocks.LockCanonicalProjectKeys(ctx, []string{ack.CanonicalProjectKey}); err != nil {
+		if err := repos.ProjectKeyLocks.LockProjectKeys(ctx, []string{ack.CanonicalProjectKey}); err != nil {
 			return err
 		}
 		block, err := repos.ProjectBlocks.GetByCanonicalKey(ctx, ack.CanonicalProjectKey)

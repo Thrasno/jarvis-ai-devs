@@ -213,7 +213,7 @@ func TestSync_ProjectBlockedResponseFromServicePrecheckPreservesAckToken(t *test
 	subject := model.ProjectBlockAckSubject{AuthSubject: "user-uuid-123", DaemonID: "daemon-1", Client: "hive-daemon"}
 	block := &model.ProjectBlock{CommandID: "cmd-real-precheck", AckToken: "legacy-global-token", Project: "Jarvis Dev", CanonicalProjectKey: "Jarvis Dev", Reason: "sensitive admin reason", BlockedAt: blockedAt}
 
-	txLocks.On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
+	txLocks.On("LockProjectKeys", ctx, []string{"Jarvis Dev"}).Return(nil).Once()
 	txBlockRepo.On("GetByCanonicalKey", ctx, "Jarvis Dev").Return(block, nil).Once()
 	txBlockRepo.On("EnsureAckDelivery", ctx, block, subject).Return(model.ProjectBlockCommand{CommandID: "cmd-real-precheck", AckToken: "ack-delivery-subject", Project: "Jarvis Dev", CanonicalProjectKey: "Jarvis Dev", Reason: "sensitive admin reason", BlockedAt: blockedAt}, nil).Once()
 

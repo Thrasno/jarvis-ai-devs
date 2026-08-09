@@ -8,19 +8,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCanonicalProjectKeysSortsDedupesAndDropsEmpty(t *testing.T) {
-	got := CanonicalProjectKeys([]string{
+// TestProjectLockKeysSortsDedupesLiteralsAndDropsBlank pins that the lock scope
+// is the project literal. It used to fold its input, which made distinct
+// projects contend on one lock and, more importantly, kept a canonicalizer
+// alive in a module that must never derive identity.
+func TestProjectLockKeysSortsDedupesLiteralsAndDropsBlank(t *testing.T) {
+	got := ProjectLockKeys([]string{
 		" Beta Project ",
 		"alpha/project",
 		"beta-project",
 		"",
+		"   ",
 		"Alpha Project",
+		"alpha/project",
 	})
 
-	require.Equal(t, []string{"alpha-project", "beta-project"}, got)
+	require.Equal(t, []string{" Beta Project ", "Alpha Project", "alpha/project", "beta-project"}, got)
 }
 
-func TestPostgresProjectKeyLockRepository_TransactionLockBlocksSameCanonicalKey(t *testing.T) {
+func TestPostgresProjectKeyLockRepository_TransactionLockBlocksTheSameLiteral(t *testing.T) {
 	pool, cleanup := startPostgresWithSessions(t)
 	defer cleanup()
 
@@ -32,14 +38,18 @@ func TestPostgresProjectKeyLockRepository_TransactionLockBlocksSameCanonicalKey(
 	defer tx1.Rollback(ctx) //nolint:errcheck
 
 	locks1 := newPostgresProjectKeyLockRepositoryWithQuerier(tx1)
-	require.NoError(t, locks1.LockCanonicalProjectKeys(ctx, []string{"jarvis-dev"}))
+	require.NoError(t, locks1.LockProjectKeys(ctx, []string{"jarvis-dev"}))
 
 	tx2, err := pool.Begin(ctx)
 	require.NoError(t, err)
 	defer tx2.Rollback(ctx) //nolint:errcheck
 
+	locks2 := newPostgresProjectKeyLockRepositoryWithQuerier(tx2)
+	require.NoError(t, locks2.LockProjectKeys(ctx, []string{"Jarvis Dev"}),
+		"a different spelling is a different project and must not contend")
+
 	start := time.Now()
-	err = newPostgresProjectKeyLockRepositoryWithQuerier(tx2).LockCanonicalProjectKeys(ctx, []string{"Jarvis Dev"})
+	err = locks2.LockProjectKeys(ctx, []string{"jarvis-dev"})
 	require.ErrorIs(t, err, ErrProjectKeyLockBusy)
 	require.Less(t, time.Since(start), time.Second, "lock acquisition must be bounded, not wait for the first transaction to commit")
 
@@ -68,11 +78,11 @@ func TestPostgresProjectKeyLockRepository_ReversedOrderDoesNotDeadlock(t *testin
 	done := make(chan lockResult, 2)
 	go func() {
 		<-start
-		done <- lockResult{tx: 1, err: newPostgresProjectKeyLockRepositoryWithQuerier(tx1).LockCanonicalProjectKeys(ctx, []string{"beta", "alpha"})}
+		done <- lockResult{tx: 1, err: newPostgresProjectKeyLockRepositoryWithQuerier(tx1).LockProjectKeys(ctx, []string{"beta", "alpha"})}
 	}()
 	go func() {
 		<-start
-		done <- lockResult{tx: 2, err: newPostgresProjectKeyLockRepositoryWithQuerier(tx2).LockCanonicalProjectKeys(ctx, []string{"alpha", "beta"})}
+		done <- lockResult{tx: 2, err: newPostgresProjectKeyLockRepositoryWithQuerier(tx2).LockProjectKeys(ctx, []string{"alpha", "beta"})}
 	}()
 
 	close(start)
