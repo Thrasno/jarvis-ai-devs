@@ -317,6 +317,35 @@ type apiMemory struct {
 	SessionID     string    `json:"session_id,omitempty"`
 }
 
+// canonicalizedMutations returns the wire form of the caller's journal rows,
+// with every project literal folded to the canonical spelling.
+//
+// The caller keeps its own envelopes untouched: it correlates the response back
+// to the journal by the literals it read, and a retry must resend the same rows.
+// Memory is a pointer, so the envelope has to be deep-copied to that depth —
+// copying only the slice would leave the payload shared, and folding through it
+// would rewrite the caller's row while the sibling write to Project stayed local
+// to the copy. Tombstone and Reproject carry no project this folds, so they are
+// shared by pointer and never written through.
+//
+// Pinned by TestSyncDoesNotCanonicalizeTheCallersMutations.
+func canonicalizedMutations(mutations []db.MutationEnvelope) []db.MutationEnvelope {
+	if len(mutations) == 0 {
+		return nil
+	}
+	canonical := make([]db.MutationEnvelope, len(mutations))
+	for i, mutation := range mutations {
+		mutation.Project = projectidentity.Canonical(mutation.Project).String()
+		if mutation.Memory != nil {
+			memory := *mutation.Memory
+			memory.Project = projectidentity.Canonical(memory.Project).String()
+			mutation.Memory = &memory
+		}
+		canonical[i] = mutation
+	}
+	return canonical
+}
+
 // sync envía sesiones, memorias y prompts locales, y recibe del servidor para un proyecto.
 // sessions se serializa ANTES de memories (Decision 11: FK ordering).
 // pullOpts opts into bounded legacy pull pagination (PR 2a/2b) — its zero
@@ -376,13 +405,7 @@ func (c *client) sync(ctx context.Context, token, project string,
 		})
 	}
 
-	canonicalMutations := append([]db.MutationEnvelope(nil), mutations...)
-	for i := range canonicalMutations {
-		canonicalMutations[i].Project = projectidentity.Canonical(canonicalMutations[i].Project).String()
-		if canonicalMutations[i].Memory != nil {
-			canonicalMutations[i].Memory.Project = projectidentity.Canonical(canonicalMutations[i].Memory.Project).String()
-		}
-	}
+	canonicalMutations := canonicalizedMutations(mutations)
 	reqBody, err := json.Marshal(syncRequest{
 		Project:                project,
 		ProjectIdentityVersion: projectidentity.ContractVersion,
