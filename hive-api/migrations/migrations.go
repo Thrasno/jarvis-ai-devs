@@ -125,3 +125,37 @@ var CanonicalProjectRegistrySQL string
 //
 //go:embed 021_drop_project_identity_folds.sql
 var DropProjectIdentityFoldsSQL string
+
+// Ordered returns every migration in the order the server applies it at boot.
+//
+// This module has no migration ledger: each boot replays the whole slice from
+// the start, so a file's effect is only final if no earlier file undoes it. That
+// makes the ORDER part of the contract, not an implementation detail of main.
+//
+// It lives here so a test can exercise the set the server actually runs. A test
+// that hardcodes its own subset proves nothing about the last file in this list,
+// which is exactly how a drop migration came to be covered by no test at all.
+func Ordered() []string {
+	return []string{
+		InitialSQL,
+		UserPromptsSQL,
+		SessionsSQL,
+		AuditLogsSQL,
+		MemoryMutationsSQL,
+		DropTopicKeyUniqueConstraintSQL,
+		SyncAttemptLogsSQL,
+		ActivityFeedIndexSQL,
+		MemoryDiscoveryIndexesSQL,
+		PullCursorIndexesSQL,
+		ProjectScopedPullCursorIndexesSQL,
+		ProjectBlocksSQL,
+		ProjectBlockAckSubjectsSQL,
+		UserSecurityVersionSQL,
+		SyncAttemptPortalUsersSQL,
+		SyncAttemptUserProjectionSQL,
+		QuarantineContractSQL,
+		DistributedQuarantineSQL,
+		CanonicalProjectRegistrySQL,
+		DropProjectIdentityFoldsSQL,
+	}
+}

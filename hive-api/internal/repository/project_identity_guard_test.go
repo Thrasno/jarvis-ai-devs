@@ -55,10 +55,10 @@ var forbiddenIdentityDerivation = []forbiddenConstruct{
 		why:     "internal/projectkey was deleted; it existed only to canonicalize",
 	},
 	{
-		pattern: regexp.MustCompile(`(?i)(drop\s+table\s+(if\s+exists\s+)?)?project_identity_spellings`),
-		allowed: regexp.MustCompile(`(?i)^drop`),
+		pattern: regexp.MustCompile(`(?i)(drop\s+table\s+(if\s+exists\s+)?|to_regclass\s*\(\s*')?project_identity_spellings`),
+		allowed: regexp.MustCompile(`(?i)^(drop|to_regclass)`),
 		why: "the spelling registry was dropped in migration 021; joining it let one project read another's rows. " +
-			"Only migration 021's DROP TABLE may name it",
+			"Only removing it (DROP TABLE) or asserting its absence (to_regclass) may name it",
 	},
 	{
 		pattern: regexp.MustCompile(`(?i)(drop\s+function\s+(if\s+exists\s+)?|to_regprocedure\s*\(\s*')?canonical_project_key\s*\(`),
@@ -202,8 +202,17 @@ func TestNoProjectIdentityDerivationInAPISources(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		if info.IsDir() {
+			// testdata/ is never compiled and never applied to a database. The
+			// fixture that reproduces the released fold lives there precisely
+			// so it can spell the forbidden construct without being one.
+			if info.Name() == "testdata" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		isSQL := strings.HasSuffix(path, ".sql")
-		if info.IsDir() || (!isSQL && !strings.HasSuffix(path, ".go")) || path == self {
+		if (!isSQL && !strings.HasSuffix(path, ".go")) || path == self {
 			return nil
 		}
 		source, err := os.ReadFile(path)
