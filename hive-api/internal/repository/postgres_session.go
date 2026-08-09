@@ -28,21 +28,28 @@ func newPostgresSessionRepositoryWithQuerier(db pgxQuerier) SessionRepository {
 	return &postgresSessionRepository{db: db}
 }
 
+// sessionCorrectionConflict is the sync_id conflict clause shared by
+// CreateSession and UpsertSession. See UpsertSession for the full rationale;
+// $10 is the from-project precondition.
+const sessionCorrectionConflict = `
+	ON CONFLICT (sync_id) DO UPDATE
+	  SET project = EXCLUDED.project
+	  WHERE sessions.project = $10`
+
 // CreateSession inserta una nueva sesión. El conflicto en sync_id significa "esta
 // es la misma sesión reenviada": todo se mantiene idempotente salvo project, la
 // única columna sobre la que el daemon es autoridad (ver UpsertSession).
 func (r *postgresSessionRepository) CreateSession(ctx context.Context, s *model.Session) error {
-	if err := r.rejectBlockedProject(ctx, s.Project); err != nil {
+	if err := r.rejectRelocationEnds(ctx, s); err != nil {
 		return err
 	}
 	const q = `
 		INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at, ended_at, summary)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		ON CONFLICT (sync_id) DO UPDATE SET project = EXCLUDED.project`
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)` + sessionCorrectionConflict
 
 	_, err := r.db.Exec(ctx, q,
 		s.ID, s.SyncID, s.Project, s.Directory, s.DevID, s.Client,
-		s.StartedAt, s.EndedAt, s.Summary,
+		s.StartedAt, s.EndedAt, s.Summary, s.FromProject,
 	)
 	return wrapPgError(err, "CreateSession")
 }
@@ -58,6 +65,23 @@ func (r *postgresSessionRepository) CreateSession(ctx context.Context, s *model.
 // So on a sync_id conflict — "this is the same row, resent" — `project` is taken
 // from EXCLUDED. Nothing else is: every other column stays first-write-wins, so
 // the correction cannot rewrite content, attribution or timestamps.
+//
+// # The from-project precondition
+//
+// Taking EXCLUDED.project is gated on `WHERE sessions.project = FromProject`.
+// Without that gate the branch was not a correction, it was a relocation of
+// whatever row the sync_id happened to hit, out of whatever project it happened
+// to sit in — and the quarantine precheck could not see it, because
+// syncRequestProjects only collects the projects a REQUEST names, never the one
+// a row currently holds. The very flow this branch exists for (fold "Foo.Bar" ->
+// "foo-bar", re-push) therefore carried every quarantined session out of its
+// quarantine. The gate is the exact counterpart of applyReprojectMutation's
+// `AND project = $3`: name the literal the row holds, or move nothing. An empty
+// FromProject matches nothing, so a caller that asks for no move gets none.
+//
+// The source end is checked against the quarantine too (rejectRelocationEnds),
+// which is the other half of the memory path's guarantee — there it comes from
+// syncRequestProjects feeding BOTH reproject ends into the precheck.
 //
 // The id-keyed branches below deliberately do NOT take it, and neither does
 // EnsureManualSaveSession: their id embeds the project literal, so a genuine
@@ -76,7 +100,7 @@ func (r *postgresSessionRepository) CreateSession(ctx context.Context, s *model.
 //   - Regular sessions (UUID-style id): conflict on (sync_id), and the project
 //     column follows the daemon.
 func (r *postgresSessionRepository) UpsertSession(ctx context.Context, s *model.Session) error {
-	if err := r.rejectBlockedProject(ctx, s.Project); err != nil {
+	if err := r.rejectRelocationEnds(ctx, s); err != nil {
 		return err
 	}
 	if strings.HasPrefix(s.ID, "manual-save-") {
@@ -118,12 +142,11 @@ func (r *postgresSessionRepository) UpsertSession(ctx context.Context, s *model.
 
 	const q = `
 		INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at, ended_at, summary)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		ON CONFLICT (sync_id) DO UPDATE SET project = EXCLUDED.project`
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)` + sessionCorrectionConflict
 
 	_, err := r.db.Exec(ctx, q,
 		s.ID, s.SyncID, s.Project, s.Directory, s.DevID, s.Client,
-		s.StartedAt, s.EndedAt, s.Summary,
+		s.StartedAt, s.EndedAt, s.Summary, s.FromProject,
 	)
 	return wrapPgError(err, "UpsertSession")
 }
@@ -203,6 +226,20 @@ func (r *postgresSessionRepository) EnsureManualSaveSession(ctx context.Context,
 // session id, and it can never create a row.
 func (r *postgresSessionRepository) rejectBlockedProject(ctx context.Context, project string) error {
 	return checkProjectBlocked(ctx, r.db, project)
+}
+
+// rejectRelocationEnds checks BOTH ends a session write can touch: the project
+// the row is being written into, and — when the write asks to move an existing
+// row — the project it is being moved out of. A quarantine must hold in both
+// directions, and the source end is the one a sync request never names.
+func (r *postgresSessionRepository) rejectRelocationEnds(ctx context.Context, s *model.Session) error {
+	if err := r.rejectBlockedProject(ctx, s.Project); err != nil {
+		return err
+	}
+	if s.FromProject == "" || s.FromProject == s.Project {
+		return nil
+	}
+	return r.rejectBlockedProject(ctx, s.FromProject)
 }
 
 // ListSessionsSince devuelve una página de sesiones del proyecto cuyo synced_at >=

@@ -121,9 +121,18 @@ func ValidateSyncProjectIdentity(req SyncRequest) error {
 
 // SyncSessionPayload es el formato de sesión en el wire protocol de sync.
 type SyncSessionPayload struct {
-	ID        string     `json:"id"        binding:"required"`
-	SyncID    string     `json:"sync_id"   binding:"required"`
-	Project   string     `json:"project"   binding:"required"`
+	ID      string `json:"id"        binding:"required"`
+	SyncID  string `json:"sync_id"   binding:"required"`
+	Project string `json:"project"   binding:"required"`
+
+	// FromProject names the project literal the daemon believes this row
+	// currently holds server-side. It is the precondition for the ONE column a
+	// re-push may change: the server moves `project` only when the stored value
+	// equals it. Omitted (the pre-correction wire shape) means "no move
+	// requested" — the re-push stays fully idempotent. It mirrors
+	// ReprojectPayload.from_project on the memory path.
+	FromProject string `json:"from_project,omitempty"`
+
 	Directory string     `json:"directory"`
 	DevID     string     `json:"dev_id"    binding:"required"`
 	Client    string     `json:"client"    binding:"required"`
@@ -141,6 +150,11 @@ type SyncPromptPayload struct {
 
 	// Project identifica a qué proyecto pertenece el prompt (S5).
 	Project string `json:"project" binding:"required,max=100"`
+
+	// FromProject es la misma precondición que SyncSessionPayload.FromProject
+	// documenta: el servidor mueve `project` solo si el valor almacenado la
+	// iguala.
+	FromProject string `json:"from_project,omitempty"`
 
 	// Content es el texto del prompt. No puede estar vacío (S6) ni superar 50000 chars.
 	// 50000 coincide con MaxObservationLength del daemon (mcp/tools.go).

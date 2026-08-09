@@ -201,15 +201,16 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 				sp.ID, sp.Project, req.Project, ErrSessionProjectMismatch)
 		}
 		sess := &model.Session{
-			ID:        sp.ID,
-			SyncID:    sp.SyncID,
-			Project:   sp.Project,
-			Directory: sp.Directory,
-			DevID:     sp.DevID,
-			Client:    sp.Client,
-			StartedAt: sp.StartedAt,
-			EndedAt:   sp.EndedAt,
-			Summary:   sp.Summary,
+			ID:          sp.ID,
+			SyncID:      sp.SyncID,
+			Project:     sp.Project,
+			FromProject: sp.FromProject,
+			Directory:   sp.Directory,
+			DevID:       sp.DevID,
+			Client:      sp.Client,
+			StartedAt:   sp.StartedAt,
+			EndedAt:     sp.EndedAt,
+			Summary:     sp.Summary,
 		}
 		if err := repos.Session.UpsertSession(ctx, sess); err != nil {
 			return nil, fmt.Errorf("upsert session %s: %w", sp.ID, err)
@@ -279,11 +280,12 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 	var promptsPushed int
 	for _, payload := range req.Prompts {
 		p := &model.Prompt{
-			SyncID:    payload.SyncID,
-			Project:   payload.Project,
-			Content:   payload.Content,
-			CreatedBy: userID,
-			CreatedAt: payload.CreatedAt,
+			SyncID:      payload.SyncID,
+			Project:     payload.Project,
+			FromProject: payload.FromProject,
+			Content:     payload.Content,
+			CreatedBy:   userID,
+			CreatedAt:   payload.CreatedAt,
 		}
 		saved, err := repos.Prompt.Upsert(ctx, p)
 		if err != nil {
@@ -384,14 +386,18 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 
 func syncRequestProjects(req model.SyncRequest) []string {
 	projects := []string{req.Project}
+	// A session or prompt push that names a from_project is a relocation and
+	// names two projects, exactly like a reproject: the source belongs here or
+	// the quarantine precheck would see only the end the row is moving INTO, and
+	// the push would carry rows out of a quarantine the request never mentions.
 	for _, payload := range req.Sessions {
-		projects = append(projects, payload.Project)
+		projects = append(projects, payload.Project, payload.FromProject)
 	}
 	for _, payload := range req.Memories {
 		projects = append(projects, payload.Project)
 	}
 	for _, payload := range req.Prompts {
-		projects = append(projects, payload.Project)
+		projects = append(projects, payload.Project, payload.FromProject)
 	}
 	for _, mutation := range req.Mutations {
 		projects = append(projects, mutation.Project)

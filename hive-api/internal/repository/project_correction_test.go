@@ -79,15 +79,16 @@ func TestUpsertSession_RepushUnderCorrectedProjectMovesOnlyTheProject(t *testing
 	// The daemon folded the project locally and re-pushes the same sync_id.
 	// Every other field also differs, and every other field must be ignored.
 	corrected := &model.Session{
-		ID:        original.ID,
-		SyncID:    original.SyncID,
-		Project:   "foo-bar",
-		Directory: "/somewhere/else",
-		DevID:     "dev-2",
-		Client:    "opencode",
-		StartedAt: started.Add(24 * time.Hour),
-		EndedAt:   nil,
-		Summary:   nil,
+		ID:          original.ID,
+		SyncID:      original.SyncID,
+		Project:     "foo-bar",
+		FromProject: "Foo.Bar",
+		Directory:   "/somewhere/else",
+		DevID:       "dev-2",
+		Client:      "opencode",
+		StartedAt:   started.Add(24 * time.Hour),
+		EndedAt:     nil,
+		Summary:     nil,
 	}
 	require.NoError(t, repo.UpsertSession(ctx, corrected))
 
@@ -129,6 +130,7 @@ func TestCreateSession_RepushUnderCorrectedProjectMovesOnlyTheProject(t *testing
 
 	corrected := *original
 	corrected.Project = "foo-bar"
+	corrected.FromProject = "Foo.Bar"
 	corrected.Directory = "/somewhere/else"
 	corrected.DevID = "dev-2"
 	require.NoError(t, repo.CreateSession(ctx, &corrected))
@@ -139,6 +141,89 @@ func TestCreateSession_RepushUnderCorrectedProjectMovesOnlyTheProject(t *testing
 	assert.Equal(t, before.DevID, after.DevID)
 	assert.Equal(t, before.StartedAt, after.StartedAt)
 	assert.Equal(t, before.CreatedAt, after.CreatedAt)
+}
+
+// TestUpsertSession_RepushWithoutNamingTheCurrentProjectMovesNothing pins the
+// precondition the correction branch was missing. A conflict on sync_id may only
+// move `project` when the push NAMES the literal the row currently holds. Taking
+// EXCLUDED.project unconditionally relocated whatever row the sync_id happened
+// to hit, out of whatever project it happened to sit in — including a
+// quarantined one the request never names and no block check ever sees.
+//
+// This mirrors applyReprojectMutation's `AND project = $3`: a stale or absent
+// source matches nothing and moves nothing.
+func TestUpsertSession_RepushWithoutNamingTheCurrentProjectMovesNothing(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresSessionRepository(pool)
+	started := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+
+	original := &model.Session{
+		ID:        "0e1e8400-e29b-41d4-a716-446655440001",
+		SyncID:    "0e1e8400-e29b-41d4-a716-446655440101",
+		Project:   "Foo.Bar",
+		DevID:     "dev-1",
+		Client:    "claude",
+		StartedAt: started,
+	}
+	require.NoError(t, repo.UpsertSession(ctx, original))
+
+	cases := []struct {
+		name        string
+		fromProject string
+	}{
+		{"no source named", ""},
+		{"a source the row does not hold", "some-other-project"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			moved := *original
+			moved.Project = "foo-bar"
+			moved.FromProject = tc.fromProject
+			require.NoError(t, repo.UpsertSession(ctx, &moved))
+
+			after := readSessionRow(ctx, t, pool, original.ID)
+			assert.Equal(t, "Foo.Bar", after.Project,
+				"a push that does not name the row's current project must move nothing")
+		})
+	}
+}
+
+// TestUpsertSession_ARowInsideAQuarantineCannotBeMovedOut is the symmetric half
+// of the memory guarantee. The target project of a session push is the request
+// project, which the quarantine precheck already covers; the SOURCE was covered
+// by nothing, so the very flow this change enables — the daemon folds
+// "Foo.Bar" -> "foo-bar" and re-pushes — carried every quarantined session
+// straight out of the quarantine.
+func TestUpsertSession_ARowInsideAQuarantineCannotBeMovedOut(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresSessionRepository(pool)
+	started := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+
+	original := &model.Session{
+		ID:        "0f1e8400-e29b-41d4-a716-446655440001",
+		SyncID:    "0f1e8400-e29b-41d4-a716-446655440101",
+		Project:   "Foo.Bar",
+		DevID:     "dev-1",
+		Client:    "claude",
+		StartedAt: started,
+	}
+	require.NoError(t, repo.UpsertSession(ctx, original))
+	blockProject(t, pool, "Foo.Bar", "Foo.Bar")
+
+	moved := *original
+	moved.Project = "foo-bar"
+	moved.FromProject = "Foo.Bar"
+	err := repo.UpsertSession(ctx, &moved)
+
+	require.ErrorIs(t, err, ErrProjectBlocked)
+	after := readSessionRow(ctx, t, pool, original.ID)
+	assert.Equal(t, "Foo.Bar", after.Project, "a quarantined row must stay in its quarantine")
 }
 
 // TestUpsertSession_SentinelBranchesRefuseAProjectMove pins the deliberate
@@ -215,11 +300,12 @@ func TestPromptUpsert_RepushUnderCorrectedProjectMovesOnlyTheProject(t *testing.
 	require.True(t, saved, "the first write is an insert")
 
 	saved, err = repo.Upsert(ctx, &model.Prompt{
-		SyncID:    syncID,
-		Project:   "foo-bar",
-		Content:   "rewritten content",
-		CreatedBy: "dev-2",
-		CreatedAt: createdAt.Add(time.Hour),
+		SyncID:      syncID,
+		Project:     "foo-bar",
+		FromProject: "Foo.Bar",
+		Content:     "rewritten content",
+		CreatedBy:   "dev-2",
+		CreatedAt:   createdAt.Add(time.Hour),
 	})
 	require.NoError(t, err)
 	assert.False(t, saved, "a correction is not a new prompt: prompts_pushed must not count it")
@@ -234,4 +320,92 @@ func TestPromptUpsert_RepushUnderCorrectedProjectMovesOnlyTheProject(t *testing.
 	assert.Equal(t, "original content", content, "prompts stay immutable in every other column")
 	assert.Equal(t, "dev-1", createdBy)
 	assert.Equal(t, createdAt, storedCreatedAt.UTC())
+}
+
+// TestPromptUpsert_RepushWithoutNamingTheCurrentProjectMovesNothing is the
+// prompt half of the from-project precondition. It also pins that a re-push
+// which moves nothing is still not counted as a newly pushed prompt.
+func TestPromptUpsert_RepushWithoutNamingTheCurrentProjectMovesNothing(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresPromptRepository(pool)
+	createdAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+
+	cases := []struct {
+		name        string
+		syncID      string
+		fromProject string
+	}{
+		{"no source named", "0e2e8400-e29b-41d4-a716-446655440101", ""},
+		{"a source the row does not hold", "0e2e8400-e29b-41d4-a716-446655440102", "some-other-project"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			saved, err := repo.Upsert(ctx, &model.Prompt{
+				SyncID:    tc.syncID,
+				Project:   "Foo.Bar",
+				Content:   "original content",
+				CreatedBy: "dev-1",
+				CreatedAt: createdAt,
+			})
+			require.NoError(t, err)
+			require.True(t, saved)
+
+			saved, err = repo.Upsert(ctx, &model.Prompt{
+				SyncID:      tc.syncID,
+				Project:     "foo-bar",
+				FromProject: tc.fromProject,
+				Content:     "rewritten content",
+				CreatedBy:   "dev-2",
+				CreatedAt:   createdAt,
+			})
+			require.NoError(t, err)
+			assert.False(t, saved, "a re-push is never a new prompt")
+
+			var project string
+			require.NoError(t, pool.QueryRow(ctx,
+				`SELECT project FROM user_prompts WHERE sync_id = $1`, tc.syncID).Scan(&project))
+			assert.Equal(t, "Foo.Bar", project,
+				"a push that does not name the row's current project must move nothing")
+		})
+	}
+}
+
+// TestPromptUpsert_ARowInsideAQuarantineCannotBeMovedOut mirrors the session
+// guarantee: the source end of a relocation is checked, not just the target.
+func TestPromptUpsert_ARowInsideAQuarantineCannotBeMovedOut(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresPromptRepository(pool)
+	createdAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	const syncID = "0e3e8400-e29b-41d4-a716-446655440101"
+
+	_, err := repo.Upsert(ctx, &model.Prompt{
+		SyncID:    syncID,
+		Project:   "Foo.Bar",
+		Content:   "original content",
+		CreatedBy: "dev-1",
+		CreatedAt: createdAt,
+	})
+	require.NoError(t, err)
+	blockProject(t, pool, "Foo.Bar", "Foo.Bar")
+
+	_, err = repo.Upsert(ctx, &model.Prompt{
+		SyncID:      syncID,
+		Project:     "foo-bar",
+		FromProject: "Foo.Bar",
+		Content:     "rewritten content",
+		CreatedBy:   "dev-2",
+		CreatedAt:   createdAt,
+	})
+
+	require.ErrorIs(t, err, ErrProjectBlocked)
+	var project string
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT project FROM user_prompts WHERE sync_id = $1`, syncID).Scan(&project))
+	assert.Equal(t, "Foo.Bar", project, "a quarantined row must stay in its quarantine")
 }
