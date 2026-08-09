@@ -541,46 +541,6 @@ func TestPostgresSessionRepository_EnsureManualSaveSession_Idempotent(t *testing
 	assert.Equal(t, 1, count, "exactly one row must exist")
 }
 
-// TestPostgresSessionRepository_ListSessionsByProject verifica que ListSessionsByProject
-// devuelve todas las sesiones del proyecto.
-func TestPostgresSessionRepository_ListSessionsByProject(t *testing.T) {
-	pool, cleanup := startPostgresWithSessions(t)
-	defer cleanup()
-
-	ctx := context.Background()
-	repo := NewPostgresSessionRepository(pool)
-
-	now := time.Now().UTC().Truncate(time.Second)
-
-	// Create sessions for two different projects
-	for i, id := range []string{"sess-a-1", "sess-a-2"} {
-		require.NoError(t, repo.CreateSession(ctx, &model.Session{
-			ID:        id,
-			SyncID:    fmt.Sprintf("f%da4b5c6-0000-0000-0000-000000000001", i),
-			Project:   "project-a",
-			DevID:     "dev@host",
-			Client:    "claude-code",
-			StartedAt: now.Add(time.Duration(i) * time.Minute),
-		}))
-	}
-	require.NoError(t, repo.CreateSession(ctx, &model.Session{
-		ID:        "sess-b-1",
-		SyncID:    "f3a4b5c6-0000-0000-0000-000000000099",
-		Project:   "project-b",
-		DevID:     "dev@host",
-		Client:    "claude-code",
-		StartedAt: now,
-	}))
-
-	sessions, err := repo.ListSessionsByProject(ctx, "project-a")
-	require.NoError(t, err)
-	assert.Len(t, sessions, 2)
-
-	for _, s := range sessions {
-		assert.Equal(t, "project-a", s.Project)
-	}
-}
-
 // TestPostgresSessionRepository_ProjectSpellingsStayDistinct proves session
 // reads and the lazy manual-save session both key on the literal spelling.
 // Deriving the manual-save id from a folded key handed one spelling a session
@@ -603,16 +563,16 @@ func TestPostgresSessionRepository_ProjectSpellingsStayDistinct(t *testing.T) {
 		}))
 	}
 
-	unrelated, err := repo.ListSessionsByProject(ctx, "FOO_BAR")
+	unrelated, _, err := repo.ListSessionsSince(ctx, "FOO_BAR", time.Time{}, model.PullCursor{}, model.UnboundedPullLimit)
 	require.NoError(t, err)
 	require.Empty(t, unrelated, "a spelling nobody stored is a different project")
 
-	underscored, err := repo.ListSessionsByProject(ctx, " Foo_Bar ")
+	underscored, _, err := repo.ListSessionsSince(ctx, " Foo_Bar ", time.Time{}, model.PullCursor{}, model.UnboundedPullLimit)
 	require.NoError(t, err)
 	require.Len(t, underscored, 1)
 	assert.Equal(t, " Foo_Bar ", underscored[0].Project)
 
-	slashed, err := repo.ListSessionsByProject(ctx, "foo/bar")
+	slashed, _, err := repo.ListSessionsSince(ctx, "foo/bar", time.Time{}, model.PullCursor{}, model.UnboundedPullLimit)
 	require.NoError(t, err)
 	require.Len(t, slashed, 1)
 	assert.Equal(t, "foo/bar", slashed[0].Project)

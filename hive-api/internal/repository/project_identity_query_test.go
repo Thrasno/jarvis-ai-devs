@@ -33,10 +33,6 @@ func TestProjectQueriesMatchTheStoredSpellingExactly(t *testing.T) {
 	sessions := NewPostgresSessionRepository(pool)
 	memories := NewPostgresMemoryRepository(pool)
 
-	byProject, err := sessions.ListSessionsByProject(ctx, stored)
-	require.NoError(t, err)
-	require.Len(t, byProject, 1, "ListSessionsByProject must find the stored spelling")
-
 	since, _, err := sessions.ListSessionsSince(ctx, stored, time.Time{}, model.PullCursor{}, model.UnboundedPullLimit)
 	require.NoError(t, err)
 	require.Len(t, since, 1, "ListSessionsSince must find the stored spelling")
@@ -46,10 +42,6 @@ func TestProjectQueriesMatchTheStoredSpellingExactly(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, pulled, 1, "PullSince must find the stored spelling")
 	assert.Equal(t, stored, pulled[0].Project, "the stored literal is returned verbatim")
-
-	otherSessions, err := sessions.ListSessionsByProject(ctx, other)
-	require.NoError(t, err)
-	assert.Empty(t, otherSessions, "a different spelling is a different project")
 
 	otherSince, _, err := sessions.ListSessionsSince(ctx, other, time.Time{}, model.PullCursor{}, model.UnboundedPullLimit)
 	require.NoError(t, err)

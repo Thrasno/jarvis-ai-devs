@@ -186,32 +186,6 @@ func (r *postgresSessionRepository) rejectBlockedProject(ctx context.Context, pr
 	return checkProjectBlocked(ctx, r.db, project)
 }
 
-// ListSessionsByProject devuelve todas las sesiones de un proyecto ordenadas por started_at DESC.
-func (r *postgresSessionRepository) ListSessionsByProject(ctx context.Context, project string) ([]model.Session, error) {
-	const q = `
-		SELECT id, sync_id, project, directory, dev_id, client,
-		       started_at, ended_at, summary, synced_at, created_at, updated_at
-		FROM sessions
-		WHERE sessions.project = $1
-		ORDER BY started_at DESC`
-
-	rows, err := r.db.Query(ctx, q, project)
-	if err != nil {
-		return nil, wrapPgError(err, "ListSessionsByProject")
-	}
-	defer rows.Close()
-
-	var sessions []model.Session
-	for rows.Next() {
-		s, err := scanSession(rows)
-		if err != nil {
-			return nil, wrapPgError(err, "scan session row")
-		}
-		sessions = append(sessions, *s)
-	}
-	return sessions, rows.Err()
-}
-
 // ListSessionsSince devuelve una página de sesiones del proyecto cuyo synced_at >=
 // since, ordenadas por (synced_at ASC, sync_id ASC) para paginación por keyset.
 // Cuando since es zero, el barrido arranca desde el principio. El filtro por

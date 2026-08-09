@@ -32,9 +32,6 @@ type SessionRepository interface {
 	// Seguro bajo concurrencia: múltiples goroutines pueden llamarlo para el mismo proyecto.
 	EnsureManualSaveSession(ctx context.Context, project string) (sessionID string, err error)
 
-	// ListSessionsByProject devuelve todas las sesiones de un proyecto, ordenadas por started_at DESC.
-	ListSessionsByProject(ctx context.Context, project string) ([]model.Session, error)
-
 	// ListSessionsSince devuelve una página de sesiones del proyecto cuyo synced_at
 	// > since, ordenadas por (synced_at ASC, sync_id ASC) para paginación por keyset.
 	// Cuando since es zero, el barrido arranca desde el principio (primer sync

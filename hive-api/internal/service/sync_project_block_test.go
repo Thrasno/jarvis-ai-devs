@@ -37,6 +37,52 @@ func TestSync_Push_BlockedProjectReturnsCommandWithoutPersisting(t *testing.T) {
 	sessionRepo.AssertNotCalled(t, "UpsertSession", mock.Anything, mock.Anything)
 }
 
+// TestSync_Push_BlockedProjectNeverReachesTheMutationJournal pins the only
+// thing standing between a quarantined project and its mutation journal.
+//
+// MemoryRepository.ListMemoryMutations carries no block predicate of its own:
+// asked for a blocked project it will happily return that project's events.
+// The pull is safe today because its single production caller, pushWithRepos,
+// runs precheckBlockedProjects first and aborts the whole push. This test
+// fails if that precheck ever stops covering the pull — reordered, made
+// conditional, or scoped to the write half only.
+//
+// It cannot see a NEW caller added elsewhere. That constraint is documented at
+// quarantineReaders in internal/repository/project_scope_behaviour_test.go.
+func TestSync_Push_BlockedProjectNeverReachesTheMutationJournal(t *testing.T) {
+	ctx := context.Background()
+	memRepo := &repository.MockMemoryRepository{}
+	promptRepo := &repository.MockPromptRepository{}
+	sessionRepo := &repository.MockSessionRepository{}
+	blockRepo := &repository.MockProjectBlockRepository{}
+	svc := service.NewSyncService(memRepo, promptRepo, sessionRepo, nil, blockRepo)
+	const blocked = "jarvis-dev"
+	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: blocked, CanonicalProjectKey: blocked, Reason: "duplicate", BlockedAt: time.Now().UTC()}
+
+	blockRepo.On("GetByCanonicalKey", ctx, blocked).Return(block, nil)
+
+	// A request that would pull the journal if the project were not blocked:
+	// protocol v2 with at least one mutation makes the pull authoritative.
+	_, err := svc.Push(ctx, model.SyncRequest{
+		Project:         blocked,
+		ProtocolVersion: model.MutationProtocolVersion,
+		MutationCursor:  &model.MutationCursor{},
+		Mutations: []model.MutationEnvelope{{
+			EventID:      "960e8400-e29b-41d4-a716-446655440001",
+			EntityType:   model.MutationEntityMemory,
+			EntitySyncID: "960e8400-e29b-41d4-a716-446655440101",
+			Project:      blocked,
+			Op:           model.MutationOpDelete,
+		}},
+	}, "user-1")
+
+	require.Error(t, err)
+	blockedErr := &service.ProjectBlockedError{}
+	require.True(t, errors.As(err, &blockedErr))
+	memRepo.AssertNotCalled(t, "ListMemoryMutations", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	memRepo.AssertNotCalled(t, "ApplyMemoryMutation", mock.Anything, mock.Anything)
+}
+
 func TestSync_Push_AllowsUnblockedProject(t *testing.T) {
 	ctx := context.Background()
 	memRepo := &repository.MockMemoryRepository{}

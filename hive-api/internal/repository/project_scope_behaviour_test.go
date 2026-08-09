@@ -194,14 +194,6 @@ func projectScopedReads() []projectScopedRead {
 			},
 		},
 		{
-			name: "SessionRepository.ListSessionsByProject",
-			count: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, project string) int {
-				sessions, err := NewPostgresSessionRepository(pool).ListSessionsByProject(ctx, project)
-				require.NoError(t, err)
-				return len(sessions)
-			},
-		},
-		{
 			name: "SyncAttemptRepository.ListForSummary",
 			count: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, project string) int {
 				records, err := NewPostgresSyncAttemptRepository(pool).ListForSummary(ctx, model.SyncAttemptSummaryFilter{Project: project})
@@ -281,10 +273,31 @@ type quarantineConsumer struct {
 
 // quarantineReaders is every read path that applies the block predicate.
 //
-// ListSessionsByProject, ListMemoryMutations and ListForSummary are absent on
-// purpose: they carry no block predicate today, so asserting one here would
-// pin behaviour the module does not have. They are still in the table above,
-// where their project scoping is proved.
+// ListMemoryMutations and ListForSummary are absent on purpose. They carry no
+// block predicate, so asserting one here would pin behaviour the module does
+// not have. Their project scoping is still proved in the table above. Each is
+// absent for a different reason, and the difference matters:
+//
+//   - ListMemoryMutations SHOULD NOT return rows for a quarantined project, and
+//     nothing in the query stops it. It is safe today only because it has
+//     exactly one production caller — syncService.pushWithRepos in
+//     internal/service/sync.go — and that function calls precheckBlockedProjects
+//     on its first line, aborting the whole push before the pull ever runs.
+//     The guard therefore lives in the caller, not in the query. A second caller
+//     that reaches this method without running that precheck first will hand a
+//     daemon the mutation journal of a quarantined project. If you are adding
+//     such a caller, you have two options: precheck the project the same way
+//     pushWithRepos does, or push the predicate down into the query
+//     (unblockedProjectPredicate, as ListSessionsSince does) and add
+//     ListMemoryMutations to the table below.
+//     TestSync_Push_BlockedProjectNeverReachesTheMutationJournal in
+//     internal/service pins the existing caller's guard.
+//
+//   - ListForSummary is intentionally not quarantined. It reads sync-attempt
+//     telemetry, not user memory content: the record that a project attempted to
+//     sync, and whether it succeeded. Blocking a project is a reason to stop
+//     serving its content, not a reason to erase the operational history of the
+//     block taking effect. Do not add a predicate here.
 //
 // CountLiveActivity and CountGrowthByMonth are block consumers but report
 // totals, not per-project rows, so the shape here cannot express them.
