@@ -517,3 +517,83 @@ func memoryMutationsOpConstraintOID(ctx context.Context, t *testing.T, pool *pgx
 	require.NoError(t, err, "migration 023 must leave the op check constraint in place")
 	return oid
 }
+
+// TestApplyMemoryMutation_ReprojectRefusesToCarryAWritePayload closes a door
+// nobody was watching.
+//
+// reprojectInstructionError validated the reproject block and nothing else, and
+// the reproject branch skips the memoryBySyncIDForUpdate precondition every
+// other op runs. So a caller could send op=reproject with a well-formed
+// reproject block AND a memory payload whose project matches the envelope:
+// insertMemoryMutation marshals mutation.Memory unconditionally and
+// ListMemoryMutations unmarshals it straight back out, so that payload reached
+// every daemon pulling the target project.
+//
+// It was never written to `memories`, which is what makes it dangerous rather
+// than merely redundant: invisible to list, search, admin and the quarantine
+// export, while carrying the same weight on a client as a `create`.
+//
+// A reproject changes one column. It has no business carrying content at all.
+func TestApplyMemoryMutation_ReprojectRefusesToCarryAWritePayload(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+
+	tests := []struct {
+		name    string
+		eventID string
+		syncID  string
+		mutate  func(*model.MutationEnvelope)
+	}{
+		{
+			name:    "a memory payload",
+			eventID: "8a2e8400-e29b-41d4-a716-446655440001",
+			syncID:  "8a2e8400-e29b-41d4-a716-446655440101",
+			mutate: func(m *model.MutationEnvelope) {
+				m.Memory = &model.MemoryPayload{
+					SyncID:  m.EntitySyncID,
+					Project: reprojectTo,
+					Title:   "smuggled",
+					Content: "content no server table ever stores",
+				}
+			},
+		},
+		{
+			name:    "a tombstone payload",
+			eventID: "8a2e8400-e29b-41d4-a716-446655440002",
+			syncID:  "8a2e8400-e29b-41d4-a716-446655440102",
+			mutate: func(m *model.MutationEnvelope) {
+				m.Tombstone = &model.TombstonePayload{DeletedAt: time.Now().UTC(), DeletedBy: "attacker", Reason: "smuggled"}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			seedReprojectMemory(ctx, t, pool, tt.syncID)
+			event := reprojectEvent(tt.eventID, tt.syncID, reprojectFrom, reprojectTo)
+			tt.mutate(&event)
+
+			result, err := repo.ApplyMemoryMutation(ctx, event)
+			require.NoError(t, err, "a malformed instruction must not fail the whole batch")
+			require.NotNil(t, result)
+			assert.True(t, result.Rejected)
+			assert.False(t, result.Applied)
+			assert.NotEmpty(t, result.Reason)
+			assertNoMemoryMutationRow(t, pool, event.EventID)
+
+			after, err := repo.GetBySyncID(ctx, tt.syncID)
+			require.NoError(t, err)
+			assert.Equal(t, reprojectFrom, after.Project, "a rejected reproject moves nothing")
+
+			batch, err := repo.ListMemoryMutations(ctx, reprojectTo, model.MutationCursor{}, 10)
+			require.NoError(t, err)
+			for _, delivered := range batch.Events {
+				assert.NotEqual(t, event.EventID, delivered.EventID,
+					"the payload must never reach a puller")
+			}
+		})
+	}
+}

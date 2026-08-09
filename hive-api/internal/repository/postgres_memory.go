@@ -740,6 +740,19 @@ func (r *postgresMemoryRepository) applyRestoreMutation(ctx context.Context, tx 
 // naming a source the row does not hold IS a valid instruction — it simply
 // matches nothing (see applyReprojectMutation).
 func reprojectInstructionError(mutation model.MutationEnvelope) string {
+	// A reproject rewrites one column and writes no content, but
+	// insertMemoryMutation marshals Memory and Tombstone unconditionally and
+	// ListMemoryMutations hands them straight back to every puller on the target
+	// project. A payload riding along here would therefore reach every daemon
+	// with the same weight as a `create` while never being written to `memories`
+	// — invisible to list, search, admin and the quarantine export. The op has no
+	// use for either field, so carrying one is malformed by definition.
+	if mutation.Memory != nil {
+		return "reproject mutation must not carry a memory payload"
+	}
+	if mutation.Tombstone != nil {
+		return "reproject mutation must not carry a tombstone payload"
+	}
 	if mutation.Reproject == nil {
 		return "reproject mutation requires a reproject payload"
 	}
