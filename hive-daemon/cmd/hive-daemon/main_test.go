@@ -840,17 +840,59 @@ func TestE2E_TopicKeyAlwaysInserts(t *testing.T) {
 
 func TestPendingRestoreThatMayReplayStopsStartup(t *testing.T) {
 	replayable := fmt.Errorf("%w: record completed pending restore", governance.ErrPendingRestoreReplayable)
-	if err := pendingRestoreStartupError(true, replayable); !errors.Is(err, governance.ErrPendingRestoreReplayable) {
+	if err := pendingRestoreStartupError(true, replayable, filepath.Join(t.TempDir(), "memory.db")); !errors.Is(err, governance.ErrPendingRestoreReplayable) {
 		t.Fatalf("startup error = %v, want the daemon to refuse to serve", err)
 	}
 }
 
 func TestPendingRestoreFailureThatLeftLiveDatabaseIntactKeepsServing(t *testing.T) {
-	if err := pendingRestoreStartupError(false, errors.New("backup archive is missing")); err != nil {
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	if err := pendingRestoreStartupError(false, errors.New("backup archive is missing"), dbPath); err != nil {
 		t.Fatalf("startup error = %v, want startup to continue on an unapplied restore", err)
 	}
-	if err := pendingRestoreStartupError(true, nil); err != nil {
+	if err := pendingRestoreStartupError(true, nil, dbPath); err != nil {
 		t.Fatalf("startup error = %v, want startup to continue after a cleared restore", err)
+	}
+}
+
+// TestPendingRestoreStartupFailureNamesTheFileThatUnblocksTheDaemon covers the
+// only exit from this stop: a persistent write failure keeps the request on
+// disk, so every following start replays the same restore and fails the same
+// way. The daemon must not leave the operator guessing which file to delete.
+func TestPendingRestoreStartupFailureNamesTheFileThatUnblocksTheDaemon(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	replayable := fmt.Errorf("%w: record completed pending restore: no space left on device", governance.ErrPendingRestoreReplayable)
+
+	err := pendingRestoreStartupError(true, replayable, dbPath)
+	if err == nil {
+		t.Fatal("startup error = nil, want the daemon to refuse to serve")
+	}
+	message := err.Error()
+	if !strings.Contains(message, governance.PendingRestorePath(dbPath)) {
+		t.Fatalf("startup error = %q, want the pending restore path named", message)
+	}
+	if !strings.Contains(message, "delete") {
+		t.Fatalf("startup error = %q, want the recovery step spelled out", message)
+	}
+	if !strings.Contains(message, "no space left on device") {
+		t.Fatalf("startup error = %q, want the underlying failure kept", message)
+	}
+}
+
+// TestPendingRestoreStartupFailureNamesAnAbsolutePath keeps the instruction
+// usable from any working directory: HIVE_DB_PATH may be relative, and the
+// operator reads this line from a log, not from the daemon's shell.
+func TestPendingRestoreStartupFailureNamesAnAbsolutePath(t *testing.T) {
+	err := pendingRestoreStartupError(true, governance.ErrPendingRestoreReplayable, filepath.Join("relative", "memory.db"))
+	if err == nil {
+		t.Fatal("startup error = nil, want the daemon to refuse to serve")
+	}
+	absolute, absErr := filepath.Abs(governance.PendingRestorePath(filepath.Join("relative", "memory.db")))
+	if absErr != nil {
+		t.Fatal(absErr)
+	}
+	if !strings.Contains(err.Error(), absolute) {
+		t.Fatalf("startup error = %q, want the absolute path %q", err.Error(), absolute)
 	}
 }
 

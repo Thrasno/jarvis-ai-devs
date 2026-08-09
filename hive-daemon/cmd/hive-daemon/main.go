@@ -33,7 +33,7 @@ func run() int {
 
 	dbPath := dbFilePath()
 	restored, restoreErr := governance.ExecuteScheduledRestore(rootCtx, dbPath)
-	if err := pendingRestoreStartupError(restored, restoreErr); err != nil {
+	if err := pendingRestoreStartupError(restored, restoreErr, dbPath); err != nil {
 		logger.Log.Fatalf("pending migration restore: %v", err)
 	}
 	if restoreErr != nil {
@@ -122,11 +122,32 @@ func run() int {
 // writes; a local-first product must fail loudly there instead of serving. Every
 // other failure left the live database untouched, so startup continues and the
 // operator still sees the logged error.
-func pendingRestoreStartupError(restored bool, err error) error {
-	if restored && errors.Is(err, governance.ErrPendingRestoreReplayable) {
-		return err
+//
+// The stop can be permanent: if the request could not be cleared for a lasting
+// reason (a full or read-only ~/.jarvis), every following start replays the same
+// restore and stops again. Deleting the request file is the only way out, so
+// this message names that absolute path and the step, instead of leaving a
+// recovery path nobody can reach.
+func pendingRestoreStartupError(restored bool, err error, dbPath string) error {
+	if !restored || !errors.Is(err, governance.ErrPendingRestoreReplayable) {
+		return nil
 	}
-	return nil
+	return fmt.Errorf(
+		"%w; every start from now on replays this restore and stops here, discarding whatever was written in between; to recover, stop the daemon and delete %s, then start it again",
+		err,
+		absolutePathForOperator(governance.PendingRestorePath(dbPath)),
+	)
+}
+
+// absolutePathForOperator resolves a path the operator has to act on. HIVE_DB_PATH
+// may be relative, and this instruction is read from a log rather than from the
+// daemon's working directory.
+func absolutePathForOperator(path string) string {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return absolute
 }
 
 func isCleanServerShutdown(ctx context.Context, runErr error) bool {
