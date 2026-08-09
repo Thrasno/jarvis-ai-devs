@@ -23,13 +23,19 @@ func newPostgresPromptRepositoryWithQuerier(db pgxQuerier) PromptRepository {
 }
 
 // Upsert inserta un nuevo prompt si el sync_id no existe todavía.
-// Implementa el contrato de idempotencia: ON CONFLICT (sync_id) DO NOTHING.
 //
-//   - Si la fila se insertó → RowsAffected() == 1 → saved=true
-//   - Si el sync_id ya existía → RowsAffected() == 0 → saved=false
+// Los prompts siguen siendo inmutables: un re-push del mismo sync_id no cambia
+// contenido, autor ni fechas. La ÚNICA excepción es `project`, porque el daemon
+// es la autoridad sobre la identidad de proyecto: cuando su migración local
+// reescribe la ortografía ("Foo.Bar" -> "foo-bar") y reenvía la fila, el
+// servidor debe aceptar esa corrección o el mismo prompt queda bajo dos nombres
+// de proyecto distintos. Ver UpsertSession para la nota completa.
 //
-// Este patrón es el mismo que se usa en ON CONFLICT DO NOTHING de PostgreSQL:
-// no hay UPDATE, los prompts son inmutables una vez creados.
+// El valor devuelto sigue significando exactamente "se insertó una fila nueva":
+// como ahora el conflicto ejecuta un UPDATE, RowsAffected() valdría 1 también
+// para una corrección, así que la distinción se hace con `xmax = 0`, que solo es
+// verdadero para la fila realmente insertada por este statement. Así
+// prompts_pushed no cuenta ni un re-push idéntico ni una corrección.
 func (r *postgresPromptRepository) Upsert(ctx context.Context, p *model.Prompt) (bool, error) {
 	if err := r.rejectBlockedProject(ctx, p.Project); err != nil {
 		return false, err
@@ -37,22 +43,22 @@ func (r *postgresPromptRepository) Upsert(ctx context.Context, p *model.Prompt) 
 	const q = `
 		INSERT INTO user_prompts (sync_id, project, content, created_by, created_at, synced_at)
 		VALUES ($1, $2, $3, $4, $5, now())
-		ON CONFLICT (sync_id) DO NOTHING`
+		ON CONFLICT (sync_id) DO UPDATE SET project = EXCLUDED.project
+		RETURNING (xmax = 0)`
 
-	tag, err := r.db.Exec(ctx, q,
+	var inserted bool
+	err := r.db.QueryRow(ctx, q,
 		p.SyncID,
 		p.Project,
 		p.Content,
 		p.CreatedBy,
 		p.CreatedAt,
-	)
+	).Scan(&inserted)
 	if err != nil {
 		return false, fmt.Errorf("upsert prompt: %w", err)
 	}
 
-	// RowsAffected() == 1 → fila insertada (nueva)
-	// RowsAffected() == 0 → conflicto en sync_id, DO NOTHING se activó
-	return tag.RowsAffected() == 1, nil
+	return inserted, nil
 }
 
 func (r *postgresPromptRepository) rejectBlockedProject(ctx context.Context, project string) error {

@@ -28,8 +28,9 @@ func newPostgresSessionRepositoryWithQuerier(db pgxQuerier) SessionRepository {
 	return &postgresSessionRepository{db: db}
 }
 
-// CreateSession inserta una nueva sesión usando ON CONFLICT (sync_id) DO NOTHING
-// para sesiones normales — el daemon puede reenviar el mismo sync sin duplicar.
+// CreateSession inserta una nueva sesión. El conflicto en sync_id significa "esta
+// es la misma sesión reenviada": todo se mantiene idempotente salvo project, la
+// única columna sobre la que el daemon es autoridad (ver UpsertSession).
 func (r *postgresSessionRepository) CreateSession(ctx context.Context, s *model.Session) error {
 	if err := r.rejectBlockedProject(ctx, s.Project); err != nil {
 		return err
@@ -37,7 +38,7 @@ func (r *postgresSessionRepository) CreateSession(ctx context.Context, s *model.
 	const q = `
 		INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at, ended_at, summary)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		ON CONFLICT (sync_id) DO NOTHING`
+		ON CONFLICT (sync_id) DO UPDATE SET project = EXCLUDED.project`
 
 	_, err := r.db.Exec(ctx, q,
 		s.ID, s.SyncID, s.Project, s.Directory, s.DevID, s.Client,
@@ -48,6 +49,23 @@ func (r *postgresSessionRepository) CreateSession(ctx context.Context, s *model.
 
 // UpsertSession upserts a session from the sync wire.
 //
+// # Project correction
+//
+// The daemon is the sole authority on project identity. When its local identity
+// migration rewrites its own rows ("Foo.Bar" -> "foo-bar") it re-pushes them
+// under the corrected literal; without accepting that, the server would keep the
+// old spelling forever and the same session would live under two project names.
+// So on a sync_id conflict — "this is the same row, resent" — `project` is taken
+// from EXCLUDED. Nothing else is: every other column stays first-write-wins, so
+// the correction cannot rewrite content, attribution or timestamps.
+//
+// The id-keyed branches below deliberately do NOT take it, and neither does
+// EnsureManualSaveSession: their id embeds the project literal, so a genuine
+// rename produces a different id — a new row, never a conflict. Accepting
+// EXCLUDED.project there would add no correction path and would let a push of
+// id="manual-save-A" carrying project="B" move A's sentinel into B. Pinned by
+// TestUpsertSession_SentinelBranchesRefuseAProjectMove.
+//
 // Three conflict patterns (Decision 12 — refined CRIT-4):
 //   - manual-save-*: conflict on (id), keep LEAST(started_at) so concurrent
 //     daemons converge to the earliest seen start.
@@ -55,7 +73,8 @@ func (r *postgresSessionRepository) CreateSession(ctx context.Context, s *model.
 //     created the canonical row; daemons re-pushing the same id must not
 //     overwrite it (and the LEAST semantics do not apply because each daemon's
 //     local sentinel is independently backfilled to MIN(memories.created_at)).
-//   - Regular sessions (UUID-style id): conflict on (sync_id), DO NOTHING.
+//   - Regular sessions (UUID-style id): conflict on (sync_id), and the project
+//     column follows the daemon.
 func (r *postgresSessionRepository) UpsertSession(ctx context.Context, s *model.Session) error {
 	if err := r.rejectBlockedProject(ctx, s.Project); err != nil {
 		return err
@@ -100,7 +119,7 @@ func (r *postgresSessionRepository) UpsertSession(ctx context.Context, s *model.
 	const q = `
 		INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at, ended_at, summary)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		ON CONFLICT (sync_id) DO NOTHING`
+		ON CONFLICT (sync_id) DO UPDATE SET project = EXCLUDED.project`
 
 	_, err := r.db.Exec(ctx, q,
 		s.ID, s.SyncID, s.Project, s.Directory, s.DevID, s.Client,
