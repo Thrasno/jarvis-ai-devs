@@ -938,6 +938,129 @@ func TestRunStartupMigrationBlocksWhenContentionDoesNotClear(t *testing.T) {
 	}
 }
 
+// TestRunStartupMigrationBlockReportsTheReusedBackupOnEveryRestart covers the
+// daemon's real shape: a client spawns a fresh process per session, so a blocked
+// migration is re-attempted on every start and reuses the archive it already
+// took. The rollback the operator is offered must survive that reuse.
+func TestRunStartupMigrationBlockReportsTheReusedBackupOnEveryRestart(t *testing.T) {
+	path, store := blockedMigrationStore(t)
+
+	first := runStartupMigration(context.Background(), store, path).Status()
+	if first.State != project.MigrationStateBlocked || first.BackupID == "" {
+		t.Fatalf("first blocked status = %+v, want a reported rollback backup", first)
+	}
+	second := runStartupMigration(context.Background(), store, path).Status()
+	if second.BackupID != first.BackupID {
+		t.Fatalf("restart backup = %q, want the reused archive %q; a validated rollback must not disappear", second.BackupID, first.BackupID)
+	}
+	backups := governance.NewSQLiteBackupStore(path, "", store.RawDB())
+	stored, err := backups.List(context.Background())
+	if err != nil || len(stored) != 1 {
+		t.Fatalf("archives after two blocked starts = %v, %v; want the single reused copy", stored, err)
+	}
+}
+
+// TestRunStartupMigrationContentionRetryReusesTheBackupItAlreadyTook crosses the
+// two seams the existing suites keep apart: the contention retry re-plans, and
+// the backup store decides reuse from the plan fingerprint. Re-planning against
+// an unchanged database yields the same plan, so the retry must cost no second
+// copy of memory.db and must still report the archive it can roll back to.
+func TestRunStartupMigrationContentionRetryReusesTheBackupItAlreadyTook(t *testing.T) {
+	path, store := blockedMigrationStore(t)
+	backups := governance.NewSQLiteBackupStore(path, "", store.RawDB())
+	attempts := 0
+
+	status := runStartupMigrationWithBackup(context.Background(), store, func(ctx context.Context, plan db.ProjectMigrationPlan) error {
+		attempts++
+		if attempts == 1 {
+			// A peer daemon won the write lock only after this attempt had
+			// already paid for its pre-mutation backup.
+			if _, err := backups.EnsureTemporaryMigrationBackup(ctx, plan.Fingerprint); err != nil {
+				t.Fatalf("first attempt backup: %v", err)
+			}
+			return db.ErrProjectMigrationPlanStale
+		}
+		return governance.ExecuteProjectMigrationWithBackup(ctx, store, plan, backups)
+	}, backups).Status()
+
+	if attempts != 2 {
+		t.Fatalf("execute attempts = %d, want one contention retry", attempts)
+	}
+	stored, err := backups.List(context.Background())
+	if err != nil || len(stored) != 1 {
+		t.Fatalf("archives after a contention retry = %v, %v; want one copy of memory.db", stored, err)
+	}
+	if status.BackupID != stored[0].ID {
+		t.Fatalf("reported backup = %q, want the retained archive %q", status.BackupID, stored[0].ID)
+	}
+}
+
+// TestRunStartupMigrationContentionRetryReportsTheBackupForTheReplannedPlan
+// covers the other half of the same cross: when a concurrent writer changes the
+// database, the retry plans different work and needs its own pre-mutation
+// archive. The earlier one no longer matches the live database, so reporting it
+// would offer a rollback onto a state that never existed.
+func TestRunStartupMigrationContentionRetryReportsTheBackupForTheReplannedPlan(t *testing.T) {
+	path, store := blockedMigrationStore(t)
+	backups := governance.NewSQLiteBackupStore(path, "", store.RawDB())
+	attempts := 0
+	var supersededPlan string
+
+	status := runStartupMigrationWithBackup(context.Background(), store, func(ctx context.Context, plan db.ProjectMigrationPlan) error {
+		attempts++
+		if attempts == 1 {
+			supersededPlan = plan.Fingerprint
+			if _, err := backups.EnsureTemporaryMigrationBackup(ctx, plan.Fingerprint); err != nil {
+				t.Fatalf("first attempt backup: %v", err)
+			}
+			if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES ('Other.Project', 'x')`); err != nil {
+				t.Fatalf("concurrent write: %v", err)
+			}
+			return db.ErrProjectMigrationPlanStale
+		}
+		if plan.Fingerprint == supersededPlan {
+			t.Fatalf("retry plan = %q, want a replanned migration", plan.Fingerprint)
+		}
+		return governance.ExecuteProjectMigrationWithBackup(ctx, store, plan, backups)
+	}, backups).Status()
+
+	if status.State != project.MigrationStateBlocked || status.BackupID == "" {
+		t.Fatalf("status after replanned retry = %+v, want a blocked plan with its own rollback", status)
+	}
+	superseded, found, err := backups.MigrationBackupForPlan(context.Background(), supersededPlan)
+	if err != nil || !found {
+		t.Fatalf("superseded archive = %+v, %v; want the abandoned plan's copy retained", superseded, err)
+	}
+	if status.BackupID == superseded.ID {
+		t.Fatalf("reported backup = %q, want the replanned plan's archive, not the superseded one", status.BackupID)
+	}
+	current, found, err := backups.MigrationBackupForPlan(context.Background(), status.PlanFingerprint)
+	if err != nil || !found || current.ID != status.BackupID {
+		t.Fatalf("reported backup = %q, want the archive bound to plan %q", status.BackupID, status.PlanFingerprint)
+	}
+}
+
+// blockedMigrationStore opens a database whose migration plan is executable,
+// takes its pre-mutation backup, and then fails on an unmergeable composite.
+func blockedMigrationStore(t *testing.T) (string, *db.DB) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "memory.db")
+	store, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.RawDB().Exec(`INSERT INTO sessions (id, sync_id, project, dev_id, client) VALUES ('s', 'session', 'Foo', 'dev', 'test')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, projectName := range []string{"Foo", "foo"} {
+		if _, err := store.RawDB().Exec(`INSERT INTO mutation_cursors (consumer, project, sequence, event_id) VALUES ('daemon', ?, 7, ?)`, projectName, "event-"+projectName); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return path, store
+}
+
 func migratableStore(t *testing.T) *db.DB {
 	t.Helper()
 	store, err := db.Open(filepath.Join(t.TempDir(), "memory.db"))

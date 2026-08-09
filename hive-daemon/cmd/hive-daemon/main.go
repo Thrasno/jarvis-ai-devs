@@ -190,41 +190,30 @@ func newMigrationIdentityResolver(store *db.DB, gate *project.MigrationGate) fun
 
 func runStartupMigration(ctx context.Context, store *db.DB, dbPath string) *project.MigrationGate {
 	backups := governance.NewSQLiteBackupStore(dbPath, "", store.RawDB())
-	preexisting := existingBackupIDs(ctx, backups)
 	return runStartupMigrationWithBackup(ctx, store, func(ctx context.Context, plan db.ProjectMigrationPlan) error {
 		return governance.ExecuteProjectMigrationWithBackup(ctx, store, plan, backups)
-	}, func() string {
-		return newestMigrationBackupID(ctx, backups, preexisting)
-	})
+	}, backups)
 }
 
-// existingBackupIDs snapshots the backups present before migration runs so a
-// later block can only report a backup this migration itself created.
-func existingBackupIDs(ctx context.Context, backups *governance.BackupStore) map[string]struct{} {
-	existing := make(map[string]struct{})
-	created, err := backups.List(ctx)
-	if err != nil {
-		return existing
-	}
-	for _, backup := range created {
-		existing[backup.ID] = struct{}{}
-	}
-	return existing
-}
-
-// newestMigrationBackupID returns the newest backup absent from the pre-migration
-// snapshot, or empty when this migration created none.
-func newestMigrationBackupID(ctx context.Context, backups *governance.BackupStore, preexisting map[string]struct{}) string {
-	created, err := backups.List(ctx)
-	if err != nil {
+// migrationBackupIDForPlan returns the archive that rolls back the plan this
+// block reports, or empty when the plan never reached a mutation and therefore
+// never took one.
+//
+// The backup is identified by the plan it was taken for rather than by being new
+// on disk. A blocked migration is re-attempted on every daemon start and reuses
+// the archive it already took, so "created during this run" stops being true
+// from the second start onward while the validated archive is still sitting
+// there. Binding to the fingerprint also keeps BackupID and PlanFingerprint
+// describing the same plan after a contention retry re-plans: an archive taken
+// for a superseded plan no longer matches the live database and must not be
+// offered as its rollback. Unrelated backups carry no migration fingerprint at
+// all and stay unreportable.
+func migrationBackupIDForPlan(ctx context.Context, backups *governance.BackupStore, planFingerprint string) string {
+	backup, found, err := backups.MigrationBackupForPlan(ctx, planFingerprint)
+	if err != nil || !found {
 		return ""
 	}
-	for _, backup := range created {
-		if _, existed := preexisting[backup.ID]; !existed {
-			return backup.ID
-		}
-	}
-	return ""
+	return backup.ID
 }
 
 func planAndExecuteMigration(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error) (db.ProjectMigrationPlan, error) {
@@ -242,7 +231,7 @@ func runStartupMigrationWith(ctx context.Context, store *db.DB, execute func(con
 	return runStartupMigrationWithBackup(ctx, store, execute, nil)
 }
 
-func runStartupMigrationWithBackup(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error, backupID func() string) *project.MigrationGate {
+func runStartupMigrationWithBackup(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error, backups *governance.BackupStore) *project.MigrationGate {
 	plan, err := planAndExecuteMigration(ctx, store, execute)
 	if db.IsProjectMigrationContention(err) {
 		// Another daemon process was migrating the same database. Its
@@ -260,8 +249,8 @@ func runStartupMigrationWithBackup(ctx context.Context, store *db.DB, execute fu
 		Continuation:    "hive project identity status",
 		PlanFingerprint: plan.Fingerprint,
 	}
-	if backupID != nil {
-		status.BackupID = backupID()
+	if backups != nil {
+		status.BackupID = migrationBackupIDForPlan(ctx, backups, plan.Fingerprint)
 	}
 	if encoded, marshalErr := json.Marshal(status); marshalErr == nil {
 		if _, warningErr := store.SaveHiveWarning(db.HiveWarningInput{
