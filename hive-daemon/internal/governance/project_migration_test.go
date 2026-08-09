@@ -1,14 +1,17 @@
 package governance
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 )
 
 func TestExecuteProjectMigrationWithBackupCreatesRetainedTemporaryBackup(t *testing.T) {
@@ -125,6 +128,49 @@ func TestProjectMigrationCreatesFreshBackupForDifferentPlan(t *testing.T) {
 	if len(retained) != 2 {
 		t.Fatalf("backups for two distinct plans = %d, want one backup per plan", len(retained))
 	}
+}
+
+// TestUnusableMigrationBackupIsReportedBeforeRecopyingTheDatabase covers a
+// corrupt archive: it can never be reused, so every daemon start pays for a
+// fresh full copy of the database. That is the disk cost reuse exists to avoid,
+// and skipping it silently leaves nobody able to see why.
+func TestUnusableMigrationBackupIsReportedBeforeRecopyingTheDatabase(t *testing.T) {
+	database, path := migrationFixture(t)
+	backups := NewSQLiteBackupStore(path, filepath.Join(t.TempDir(), "backups"), database.RawDB())
+	corrupt, err := backups.CreateTemporaryMigrationBackup(context.Background(), "plan-fingerprint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(corrupt.ArchivePath, []byte("truncated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var log bytes.Buffer
+	restore := captureDaemonLog(t, &log)
+	fresh, err := backups.EnsureTemporaryMigrationBackup(context.Background(), "plan-fingerprint")
+	restore()
+
+	if err != nil {
+		t.Fatalf("EnsureTemporaryMigrationBackup = %v, want a fresh copy instead of a corrupt rollback", err)
+	}
+	if fresh.ID == corrupt.ID {
+		t.Fatal("corrupt archive was reused as a rollback point")
+	}
+	if !strings.Contains(log.String(), corrupt.ID) {
+		t.Fatalf("log = %q, want the rejected backup %q named", log.String(), corrupt.ID)
+	}
+	if !strings.Contains(log.String(), "checksum") {
+		t.Fatalf("log = %q, want the rejection reason reported", log.String())
+	}
+}
+
+// captureDaemonLog redirects the daemon's stderr logger for one assertion and
+// returns the restore step.
+func captureDaemonLog(t *testing.T, into *bytes.Buffer) func() {
+	t.Helper()
+	previous := logger.Log.Writer()
+	logger.Log.SetOutput(into)
+	return func() { logger.Log.SetOutput(previous) }
 }
 
 // migrationFixture returns an open database whose project spellings require the

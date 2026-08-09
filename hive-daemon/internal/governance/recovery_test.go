@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -130,6 +131,47 @@ func TestScheduledRestoreCleanupFailureNeverRepeatsCompletedRestore(t *testing.T
 	}
 	if restored, err := ExecuteScheduledRestore(context.Background(), dbPath); err != nil || restored {
 		t.Fatalf("second restart = %v, %v; want no pending recovery", restored, err)
+	}
+}
+
+// TestPendingRestoreAcceptedWhereDirectoryFsyncIsUnsupported covers the platforms
+// that cannot flush a directory handle at all. The rename already committed the
+// request before the flush is attempted, so reporting these as failures would
+// tell the operator nothing happened while the next start silently restores.
+func TestPendingRestoreAcceptedWhereDirectoryFsyncIsUnsupported(t *testing.T) {
+	unsupported := []struct {
+		name string
+		err  error
+	}{
+		{"windows flushes no directory handle", syscall.EACCES},
+		{"filesystem does not implement the operation", syscall.ENOTSUP},
+		{"kernel does not implement the call", syscall.ENOSYS},
+		{"directory handle rejected as an invalid target", syscall.EINVAL},
+	}
+	for _, tc := range unsupported {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			err := syncDirWith(dir, func(*os.File) error {
+				return &os.PathError{Op: "sync", Path: dir, Err: tc.err}
+			})
+			if err != nil {
+				t.Fatalf("syncDirWith = %v, want an accepted request on a filesystem without directory fsync", err)
+			}
+		})
+	}
+}
+
+// TestPendingRestoreReportsGenuineDirectorySyncFailures keeps real device trouble
+// visible: it threatens the request file itself, not only the rename's durability.
+func TestPendingRestoreReportsGenuineDirectorySyncFailures(t *testing.T) {
+	for _, failure := range []error{syscall.EIO, syscall.ENOSPC} {
+		dir := t.TempDir()
+		err := syncDirWith(dir, func(*os.File) error {
+			return &os.PathError{Op: "sync", Path: dir, Err: failure}
+		})
+		if !errors.Is(err, failure) {
+			t.Fatalf("syncDirWith = %v, want the %v failure surfaced", err, failure)
+		}
 	}
 }
 

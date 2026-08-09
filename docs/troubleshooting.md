@@ -28,6 +28,28 @@ jarvis reconcile --provider all --yes
 | File-based sync changes are ignored | `HIVE_API_*` environment variables override `~/.jarvis/sync.json`. | Restart `hive-daemon` with env vars unset, or update the env vars instead. |
 | Dashboard returns 404 | Dashboard assets are not configured or not built. | Set `DASHBOARD_ASSETS_DIR` to a valid compiled dashboard directory and restart `hive-api`. |
 | Dashboard login fails | Invalid credentials, missing server configuration, or expired session. | Check Hive API health, credentials, `JWT_SECRET`, and deployment logs. |
+| `hive-daemon` stops at `pending migration restore` on every start | A scheduled restore replaced the database but could not clear its own request. | Follow [Recovery from a stuck pending restore](#recovery-from-a-stuck-pending-restore). |
+
+## Recovery from a stuck pending restore
+
+A rollback to a migration backup is scheduled as a request file next to the
+database and applied by the next `hive-daemon` start, before SQLite is opened.
+Once those bytes are back in place the daemon must clear the request. If it
+cannot — a full disk, a read-only `~/.jarvis`, or missing permissions — it stops
+instead of serving, because serving would let the next start replay the same
+restore and discard everything written in between.
+
+The daemon logs the exact file to remove. It is always the database path plus
+`.restore-pending`, so with the default database it is:
+
+```bash
+rm ~/.jarvis/memory.db.restore-pending
+```
+
+Fix the underlying cause first — free disk space or restore write access to
+`~/.jarvis` — otherwise the next scheduled restore stops in the same place. Then
+start `hive-daemon` again. The restore itself already succeeded, so nothing is
+lost by deleting the request.
 
 ## Recovery workflow for managed agent configuration
 

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 	"github.com/google/uuid"
 )
 
@@ -198,6 +199,15 @@ func (s *BackupStore) EnsureTemporaryMigrationBackup(ctx context.Context, planFi
 	return s.CreateTemporaryMigrationBackup(ctx, planFingerprint)
 }
 
+// MigrationBackupForPlan returns the archive that can roll back the migration
+// planned as planFingerprint, if one is still retained and still passes its own
+// checksum. It answers the same question EnsureTemporaryMigrationBackup asks
+// before reusing an archive, so a caller reporting a rollback offers exactly the
+// copy the next attempt would reuse.
+func (s *BackupStore) MigrationBackupForPlan(ctx context.Context, planFingerprint string) (BackupManifest, bool, error) {
+	return s.reusableMigrationBackup(ctx, planFingerprint)
+}
+
 func (s *BackupStore) reusableMigrationBackup(ctx context.Context, planFingerprint string) (BackupManifest, bool, error) {
 	if strings.TrimSpace(planFingerprint) == "" {
 		return BackupManifest{}, false, nil
@@ -219,16 +229,26 @@ func (s *BackupStore) reusableMigrationBackup(ctx context.Context, planFingerpri
 		}
 		archivePath := filepath.Join(s.backupRoot, backup.ID, backupArchiveFile)
 		if err := verifyManifestArchivePath(backup.ArchivePath, archivePath); err != nil {
+			reportUnusableMigrationBackup(backup, err)
 			continue
 		}
 		// A reused archive must still be the one its manifest describes; paying
 		// for a fresh copy beats rolling back onto a truncated one.
 		if err := s.validateArchive(ctx, backup, archivePath); err != nil {
+			reportUnusableMigrationBackup(backup, err)
 			continue
 		}
 		return backup, true, nil
 	}
 	return BackupManifest{}, false, nil
+}
+
+// reportUnusableMigrationBackup makes a rejected archive visible. A permanently
+// damaged one is never reusable, so the daemon copies the whole database again
+// on every start; left silent, that cost and the lost rollback point look like
+// normal operation.
+func reportUnusableMigrationBackup(backup BackupManifest, err error) {
+	logger.Log.Printf("migration backup %s cannot be reused as a rollback point, taking a fresh copy: %v", backup.ID, err)
 }
 
 func (s *BackupStore) CreateTemporaryMigrationBackup(ctx context.Context, planFingerprint string) (BackupManifest, error) {

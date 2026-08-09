@@ -33,7 +33,7 @@ func run() int {
 
 	dbPath := dbFilePath()
 	restored, restoreErr := governance.ExecuteScheduledRestore(rootCtx, dbPath)
-	if err := pendingRestoreStartupError(restored, restoreErr); err != nil {
+	if err := pendingRestoreStartupError(restored, restoreErr, dbPath); err != nil {
 		logger.Log.Fatalf("pending migration restore: %v", err)
 	}
 	if restoreErr != nil {
@@ -122,11 +122,32 @@ func run() int {
 // writes; a local-first product must fail loudly there instead of serving. Every
 // other failure left the live database untouched, so startup continues and the
 // operator still sees the logged error.
-func pendingRestoreStartupError(restored bool, err error) error {
-	if restored && errors.Is(err, governance.ErrPendingRestoreReplayable) {
-		return err
+//
+// The stop can be permanent: if the request could not be cleared for a lasting
+// reason (a full or read-only ~/.jarvis), every following start replays the same
+// restore and stops again. Deleting the request file is the only way out, so
+// this message names that absolute path and the step, instead of leaving a
+// recovery path nobody can reach.
+func pendingRestoreStartupError(restored bool, err error, dbPath string) error {
+	if !restored || !errors.Is(err, governance.ErrPendingRestoreReplayable) {
+		return nil
 	}
-	return nil
+	return fmt.Errorf(
+		"%w; every start from now on replays this restore and stops here, discarding whatever was written in between; to recover, stop the daemon and delete %s, then start it again",
+		err,
+		absolutePathForOperator(governance.PendingRestorePath(dbPath)),
+	)
+}
+
+// absolutePathForOperator resolves a path the operator has to act on. HIVE_DB_PATH
+// may be relative, and this instruction is read from a log rather than from the
+// daemon's working directory.
+func absolutePathForOperator(path string) string {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return absolute
 }
 
 func isCleanServerShutdown(ctx context.Context, runErr error) bool {
@@ -169,41 +190,30 @@ func newMigrationIdentityResolver(store *db.DB, gate *project.MigrationGate) fun
 
 func runStartupMigration(ctx context.Context, store *db.DB, dbPath string) *project.MigrationGate {
 	backups := governance.NewSQLiteBackupStore(dbPath, "", store.RawDB())
-	preexisting := existingBackupIDs(ctx, backups)
 	return runStartupMigrationWithBackup(ctx, store, func(ctx context.Context, plan db.ProjectMigrationPlan) error {
 		return governance.ExecuteProjectMigrationWithBackup(ctx, store, plan, backups)
-	}, func() string {
-		return newestMigrationBackupID(ctx, backups, preexisting)
-	})
+	}, backups)
 }
 
-// existingBackupIDs snapshots the backups present before migration runs so a
-// later block can only report a backup this migration itself created.
-func existingBackupIDs(ctx context.Context, backups *governance.BackupStore) map[string]struct{} {
-	existing := make(map[string]struct{})
-	created, err := backups.List(ctx)
-	if err != nil {
-		return existing
-	}
-	for _, backup := range created {
-		existing[backup.ID] = struct{}{}
-	}
-	return existing
-}
-
-// newestMigrationBackupID returns the newest backup absent from the pre-migration
-// snapshot, or empty when this migration created none.
-func newestMigrationBackupID(ctx context.Context, backups *governance.BackupStore, preexisting map[string]struct{}) string {
-	created, err := backups.List(ctx)
-	if err != nil {
+// migrationBackupIDForPlan returns the archive that rolls back the plan this
+// block reports, or empty when the plan never reached a mutation and therefore
+// never took one.
+//
+// The backup is identified by the plan it was taken for rather than by being new
+// on disk. A blocked migration is re-attempted on every daemon start and reuses
+// the archive it already took, so "created during this run" stops being true
+// from the second start onward while the validated archive is still sitting
+// there. Binding to the fingerprint also keeps BackupID and PlanFingerprint
+// describing the same plan after a contention retry re-plans: an archive taken
+// for a superseded plan no longer matches the live database and must not be
+// offered as its rollback. Unrelated backups carry no migration fingerprint at
+// all and stay unreportable.
+func migrationBackupIDForPlan(ctx context.Context, backups *governance.BackupStore, planFingerprint string) string {
+	backup, found, err := backups.MigrationBackupForPlan(ctx, planFingerprint)
+	if err != nil || !found {
 		return ""
 	}
-	for _, backup := range created {
-		if _, existed := preexisting[backup.ID]; !existed {
-			return backup.ID
-		}
-	}
-	return ""
+	return backup.ID
 }
 
 func planAndExecuteMigration(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error) (db.ProjectMigrationPlan, error) {
@@ -242,7 +252,7 @@ func logProjectMigrationSummary(summary db.ProjectMigrationSummary, elapsed time
 		elapsed.Round(time.Millisecond))
 }
 
-func runStartupMigrationWithBackup(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error, backupID func() string) *project.MigrationGate {
+func runStartupMigrationWithBackup(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error, backups *governance.BackupStore) *project.MigrationGate {
 	started := time.Now()
 	plan, err := planAndExecuteMigration(ctx, store, execute)
 	if db.IsProjectMigrationContention(err) {
@@ -262,8 +272,8 @@ func runStartupMigrationWithBackup(ctx context.Context, store *db.DB, execute fu
 		Continuation:    "hive project identity status",
 		PlanFingerprint: plan.Fingerprint,
 	}
-	if backupID != nil {
-		status.BackupID = backupID()
+	if backups != nil {
+		status.BackupID = migrationBackupIDForPlan(ctx, backups, plan.Fingerprint)
 	}
 	if encoded, marshalErr := json.Marshal(status); marshalErr == nil {
 		if _, warningErr := store.SaveHiveWarning(db.HiveWarningInput{
