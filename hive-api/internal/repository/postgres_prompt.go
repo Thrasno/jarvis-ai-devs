@@ -72,7 +72,7 @@ func (r *postgresPromptRepository) Upsert(ctx context.Context, p *model.Prompt) 
 		p.Content,
 		p.CreatedBy,
 		p.CreatedAt,
-		p.FromProject,
+		relocationSource(p.Project, p.FromProject),
 	).Scan(&inserted)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

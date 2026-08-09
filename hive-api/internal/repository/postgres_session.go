@@ -49,7 +49,7 @@ func (r *postgresSessionRepository) CreateSession(ctx context.Context, s *model.
 
 	_, err := r.db.Exec(ctx, q,
 		s.ID, s.SyncID, s.Project, s.Directory, s.DevID, s.Client,
-		s.StartedAt, s.EndedAt, s.Summary, s.FromProject,
+		s.StartedAt, s.EndedAt, s.Summary, relocationSource(s.Project, s.FromProject),
 	)
 	return wrapPgError(err, "CreateSession")
 }
@@ -156,7 +156,7 @@ func (r *postgresSessionRepository) UpsertSession(ctx context.Context, s *model.
 
 	_, err := r.db.Exec(ctx, q,
 		s.ID, s.SyncID, s.Project, s.Directory, s.DevID, s.Client,
-		s.StartedAt, s.EndedAt, s.Summary, s.FromProject,
+		s.StartedAt, s.EndedAt, s.Summary, relocationSource(s.Project, s.FromProject),
 	)
 	return wrapPgError(err, "UpsertSession")
 }

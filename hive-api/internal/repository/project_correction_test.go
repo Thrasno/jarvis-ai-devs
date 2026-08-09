@@ -466,3 +466,118 @@ func TestUpsertSession_CorrectionIsDiscoverableByTheTargetProjectPull(t *testing
 	require.NoError(t, err)
 	assert.Empty(t, stale, "and must be out of reach of a puller on the old name")
 }
+
+// A from_project equal to the row's project is not a relocation — it asks to
+// move a project onto itself. The memory path names that instruction malformed
+// and rejects it outright (reprojectInstructionError). Sessions and prompts only
+// skipped the SOURCE-END quarantine check when the two were equal; the conflict
+// clause still fired, because `WHERE sessions.project = from_project` is
+// trivially true for an unchanged row.
+//
+// For sessions that is not cosmetic: the conflict branch sets synced_at = now(),
+// and ListSessionsSince filters on `synced_at >= since`. So a Group 4 daemon
+// that populates from_project unconditionally — the natural reading of "the
+// project this row currently holds" — would drag every session it ever re-pushes
+// back into every teammate's pull window, on every cycle.
+//
+// Latent today because no daemon sends from_project. This closes it before one
+// does. A self-move is treated as the no-op it is rather than as a hard error:
+// unlike a mutation, a session push has no per-row result vocabulary, so
+// rejecting would fail the whole sync for an instruction that asks for nothing.
+func TestUpsertSession_ASelfMoveIsNotARelocation(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresSessionRepository(pool)
+	started := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+
+	original := &model.Session{
+		ID:        "0f1e8400-e29b-41d4-a716-446655440001",
+		SyncID:    "0f1e8400-e29b-41d4-a716-446655440101",
+		Project:   "foo-bar",
+		Directory: "/home/dev/foo-bar",
+		DevID:     "dev-1",
+		Client:    "claude",
+		StartedAt: started,
+	}
+	require.NoError(t, repo.UpsertSession(ctx, original))
+	before := readSessionRow(ctx, t, pool, original.ID)
+
+	repush := *original
+	repush.FromProject = repush.Project // the natural, wrong, unconditional daemon
+	require.NoError(t, repo.UpsertSession(ctx, &repush))
+
+	after := readSessionRow(ctx, t, pool, original.ID)
+	assert.Equal(t, "foo-bar", after.Project, "nothing moved, because nothing was asked to move")
+	assert.Equal(t, before.SyncedAt, after.SyncedAt,
+		"an ordinary re-push must not re-enter every teammate's ListSessionsSince window")
+}
+
+func TestCreateSession_ASelfMoveIsNotARelocation(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresSessionRepository(pool)
+	started := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+
+	original := &model.Session{
+		ID:        "0f2e8400-e29b-41d4-a716-446655440001",
+		SyncID:    "0f2e8400-e29b-41d4-a716-446655440101",
+		Project:   "foo-bar",
+		Directory: "/home/dev/foo-bar",
+		DevID:     "dev-1",
+		Client:    "claude",
+		StartedAt: started,
+	}
+	require.NoError(t, repo.CreateSession(ctx, original))
+	before := readSessionRow(ctx, t, pool, original.ID)
+
+	repush := *original
+	repush.FromProject = repush.Project
+	require.NoError(t, repo.CreateSession(ctx, &repush))
+
+	after := readSessionRow(ctx, t, pool, original.ID)
+	assert.Equal(t, "foo-bar", after.Project)
+	assert.Equal(t, before.SyncedAt, after.SyncedAt)
+}
+
+// The prompt path has no synced_at bump to protect today, so the symmetry is the
+// point: user_prompts.synced_at exists, the conflict branch is one line away
+// from moving it (see the note on postgresPromptRepository.Upsert), and a
+// self-move must never be the thing that starts moving it. It also must not be
+// counted as a newly pushed prompt.
+func TestPromptUpsert_ASelfMoveIsNotARelocation(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresPromptRepository(pool)
+	createdAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	const syncID = "0f3e8400-e29b-41d4-a716-446655440101"
+
+	saved, err := repo.Upsert(ctx, &model.Prompt{
+		SyncID: syncID, Project: "foo-bar", Content: "original content",
+		CreatedBy: "dev-1", CreatedAt: createdAt,
+	})
+	require.NoError(t, err)
+	require.True(t, saved)
+
+	var beforeSyncedAt time.Time
+	require.NoError(t, pool.QueryRow(ctx, `SELECT synced_at FROM user_prompts WHERE sync_id = $1`, syncID).Scan(&beforeSyncedAt))
+
+	saved, err = repo.Upsert(ctx, &model.Prompt{
+		SyncID: syncID, Project: "foo-bar", FromProject: "foo-bar",
+		Content: "original content", CreatedBy: "dev-1", CreatedAt: createdAt,
+	})
+	require.NoError(t, err)
+	assert.False(t, saved, "a re-push is not a new prompt")
+
+	var project string
+	var afterSyncedAt time.Time
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT project, synced_at FROM user_prompts WHERE sync_id = $1`, syncID).Scan(&project, &afterSyncedAt))
+	assert.Equal(t, "foo-bar", project)
+	assert.Equal(t, beforeSyncedAt, afterSyncedAt, "a self-move must touch nothing")
+}
