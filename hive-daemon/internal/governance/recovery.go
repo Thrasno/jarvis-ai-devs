@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // ErrPendingRestoreReplayable reports that a restore replaced the live database
@@ -71,11 +73,15 @@ func writePendingRestore(pendingPath string, pending pendingRestore) error {
 }
 
 func syncDir(path string) error {
+	return syncDirWith(path, (*os.File).Sync)
+}
+
+func syncDirWith(path string, syncFile func(*os.File) error) error {
 	dir, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open pending restore dir: %w", err)
 	}
-	if err := dir.Sync(); err != nil {
+	if err := syncFile(dir); err != nil && !directoryFsyncUnsupported(err) {
 		_ = dir.Close()
 		return fmt.Errorf("sync pending restore dir: %w", err)
 	}
@@ -83,6 +89,28 @@ func syncDir(path string) error {
 		return fmt.Errorf("close pending restore dir: %w", err)
 	}
 	return nil
+}
+
+// directoryFsyncUnsupported reports the failures that mean "this platform or
+// filesystem does not flush directory handles", as opposed to a real I/O
+// failure. Flushing the directory only hardens the rename that already
+// committed the request, so on those platforms the operation succeeded and must
+// be reported as such: a false failure makes the operator believe no restore is
+// pending while the next daemon start silently applies it and discards the
+// session's writes.
+//
+// Windows returns ERROR_ACCESS_DENIED from FlushFileBuffers on a directory
+// handle, and container/network filesystems answer EINVAL, ENOTSUP or ENOSYS.
+// A directory the process genuinely may not read already failed at os.Open
+// above, so tolerating a permission error here cannot hide that case.
+//
+// EIO and ENOSPC are deliberately not tolerated: they signal device trouble
+// that threatens the request file itself, not just the rename's durability.
+func directoryFsyncUnsupported(err error) bool {
+	return errors.Is(err, errors.ErrUnsupported) ||
+		errors.Is(err, fs.ErrPermission) ||
+		errors.Is(err, fs.ErrInvalid) ||
+		errors.Is(err, syscall.EINVAL)
 }
 
 // ExecuteScheduledRestore restores a previously validated backup before the
