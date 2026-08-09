@@ -428,7 +428,10 @@ func deliverableMutations(events []model.MutationEnvelope, project string, capab
 			deliverable = append(deliverable, event)
 			continue
 		}
-		log.Printf("warn: withheld mutation event_id=%s op=%q project=%q required_capability=%q declared_capabilities=%q",
+		// event_id is quoted for the reason given on logRejectedMutation: it is
+		// unvalidated wire input, and this line is the only notice that
+		// propagation stopped for this client.
+		log.Printf("warn: withheld mutation event_id=%q op=%q project=%q required_capability=%q declared_capabilities=%q",
 			event.EventID, event.Op, project, model.MutationOpCapability(event.Op), capabilities)
 	}
 	return deliverable
@@ -457,9 +460,22 @@ func rejectedMutation(mutation model.MutationEnvelope, project, reason string) m
 //
 // The reason goes last and unquoted: it is free-form prose that already carries
 // its own quotes (`unsupported memory mutation op "…"`), and %q would escape
-// them into unreadability. Being the final field, it needs no delimiter.
+// them into unreadability. Being the final field, it needs no delimiter. That is
+// safe only because every reason is server-authored and every attacker-derived
+// part it interpolates is already %q-wrapped at the point it is built — see
+// rejectedMutationResult's callers in the memory repository.
+//
+// event_id is quoted for the opposite reason. It is wire input with no binding
+// tag and no validation beyond `!= ""`, and this rejection path is reached
+// entirely in memory by mutationProjectMismatch, so the uuid column type never
+// sees it. Printed raw, a client could embed a newline plus its own well-formed
+// `warn: rejected mutation …` line naming someone else's project and have the
+// server emit it. %q runs the value through strconv.Quote, which escapes \n, \r,
+// NUL, and the other control characters — including U+0085 and U+2028, which
+// some log readers also treat as line breaks — so the whole id stays on one
+// line, escaped rather than dropped and still greppable.
 func logRejectedMutation(eventID string, op model.MutationOp, project, reason string) {
-	log.Printf("warn: rejected mutation event_id=%s op=%q project=%q reason: %s", eventID, op, project, reason)
+	log.Printf("warn: rejected mutation event_id=%q op=%q project=%q reason: %s", eventID, op, project, reason)
 }
 
 func syncRequestProjects(req model.SyncRequest) []string {

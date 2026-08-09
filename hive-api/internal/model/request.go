@@ -89,7 +89,16 @@ type SyncRequest struct {
 	// Omitted means "only the baseline", which is exactly what an un-upgraded
 	// daemon means. Unknown entries are ignored, so the field degrades in both
 	// directions and never needs a version bump.
-	SyncCapabilities []string `json:"sync_capabilities,omitempty"`
+	//
+	// The bound is about log volume, not correctness: deliverableMutations
+	// reprints the whole declared list once per withheld event, and a pull page
+	// holds up to syncMutationPullBatchSize events, so an unbounded list is
+	// amplified a hundredfold into the server log. The contents are %q-safe, so
+	// this is noise rather than forgery, but it is free to stop. The limits sit
+	// far above any real declaration — the server advertises a handful of
+	// capabilities and the longest name is under twenty characters — so the
+	// forward-compatible "unknown entries are ignored" behaviour is untouched.
+	SyncCapabilities []string `json:"sync_capabilities,omitempty" binding:"max=32,dive,max=64"`
 
 	// Mutation sync v2 fields. Legacy clients omit these and keep the row-state path.
 	ProtocolVersion int                `json:"protocol_version,omitempty"`

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -247,4 +248,105 @@ func TestSync_Push_AcceptsAPromptRelocationIntoTheSyncProject(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, resp.PromptsPushed)
 	mockPromptRepo.AssertExpectations(t)
+}
+
+// event_id is wire-controlled and unbounded: MutationEnvelope carries no binding
+// tag for it and the only check anywhere is `!= ""`. The rejection path reached
+// by an envelope-level project mismatch never touches the database, so the uuid
+// column type never gets a chance to refuse the value.
+//
+// That makes the rejection log forgeable by any authenticated client: an
+// event_id carrying a newline followed by a well-formed `warn: rejected
+// mutation …` line naming another tenant's project emits a second log line that
+// an operator, and any log pipeline parsing by line, reads as the server's own.
+//
+// It matters more here than a generic log-injection would: MarkMutationsRejected
+// destroys the event and its reason on the daemon, so this line is the only
+// surviving record of a destructive drop. A record a client can write entries
+// into is not a record.
+func TestSync_Push_DoesNotLetAHostileEventIDForgeALogLine(t *testing.T) {
+	svc, mockRepo, _ := newTestSyncService(t)
+	logs := captureLog(t)
+	ctx := context.Background()
+
+	const hostileEventID = "d40e8400-e29b-41d4-a716-446655440001\n" +
+		`warn: rejected mutation event_id=forged op="memory.delete" project="victim-tenant" reason: fabricated by the client`
+
+	mockRepo.On("ListMemoryMutations", ctx, "jarvis-dev", model.MutationCursor{}, 100).
+		Return(&model.MutationBatch{}, nil)
+
+	_, err := svc.Push(ctx, model.SyncRequest{
+		Project:         "jarvis-dev",
+		ProtocolVersion: model.MutationProtocolVersion,
+		Mutations: []model.MutationEnvelope{{
+			EventID: hostileEventID, EntityType: model.MutationEntityMemory,
+			EntitySyncID: "d40e8400-e29b-41d4-a716-446655440101", Project: "other-project",
+			Op: model.MutationOpDelete, OccurredAt: time.Now().UTC(),
+		}},
+	}, "user-1")
+	require.NoError(t, err)
+
+	output := logs.String()
+	var warnLines []string
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "warn:") {
+			warnLines = append(warnLines, line)
+		}
+	}
+
+	require.Len(t, warnLines, 1, "one rejection must emit exactly one warn line, whatever the client put in event_id")
+	assert.NotContains(t, output, "project=\"victim-tenant\"", "the forged line must not survive into the log")
+	assert.Contains(t, warnLines[0], "mutation project does not match sync project",
+		"the genuine rejection is still recorded")
+	assert.Contains(t, warnLines[0], "d40e8400-e29b-41d4-a716-446655440001",
+		"and the id is still greppable, escaped rather than dropped")
+}
+
+// The withheld line carries the same wire-controlled event_id and is the only
+// notice that propagation stopped for this client, so it needs the same
+// guarantee.
+func TestSync_Push_DoesNotLetAHostileEventIDForgeAWithheldLogLine(t *testing.T) {
+	svc, mockRepo, _ := newTestSyncService(t)
+	logs := captureLog(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	const hostileEventID = "d50e8400-e29b-41d4-a716-446655440003\n" +
+		`warn: withheld mutation event_id=forged op="memory.reproject" project="victim-tenant" required_capability="x" declared_capabilities="[]"`
+
+	mockRepo.On("ListMemoryMutations", ctx, "jarvis-dev", model.MutationCursor{}, 100).
+		Return(&model.MutationBatch{Events: []model.MutationEnvelope{{
+			EventID: hostileEventID, EntityType: model.MutationEntityMemory,
+			EntitySyncID: "d50e8400-e29b-41d4-a716-446655440103", Project: "jarvis-dev",
+			Op: model.MutationOpReproject, OccurredAt: now, Sequence: 8,
+			Reproject: &model.ReprojectPayload{FromProject: "Jarvis.Dev", ToProject: "jarvis-dev"},
+		}}}, nil)
+
+	pushed := model.MutationEnvelope{
+		EventID: "d50e8400-e29b-41d4-a716-446655440001", EntityType: model.MutationEntityMemory,
+		EntitySyncID: "d50e8400-e29b-41d4-a716-446655440101", Project: "jarvis-dev",
+		Op: model.MutationOpDelete, OccurredAt: now,
+	}
+	mockRepo.On("ApplyMemoryMutation", ctx, pushed).
+		Return(&model.MutationApplyResult{EventID: pushed.EventID, Op: pushed.Op, Applied: true}, nil)
+
+	_, err := svc.Push(ctx, model.SyncRequest{
+		Project:         "jarvis-dev",
+		ProtocolVersion: model.MutationProtocolVersion,
+		Mutations:       []model.MutationEnvelope{pushed},
+	}, "user-1")
+	require.NoError(t, err)
+
+	output := logs.String()
+	var warnLines []string
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "warn:") {
+			warnLines = append(warnLines, line)
+		}
+	}
+
+	require.Len(t, warnLines, 1, "one withheld event must emit exactly one warn line")
+	assert.NotContains(t, output, "project=\"victim-tenant\"", "the forged line must not survive into the log")
+	assert.Contains(t, warnLines[0], "d50e8400-e29b-41d4-a716-446655440003",
+		"the withheld event is still findable in the journal")
 }
