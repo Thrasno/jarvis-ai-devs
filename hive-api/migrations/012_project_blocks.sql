@@ -1,12 +1,16 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
-CREATE OR REPLACE FUNCTION canonical_project_key(input text)
-RETURNS text
-LANGUAGE sql
-IMMUTABLE
-AS $$
-    SELECT trim(both '-' from regexp_replace(lower(btrim(coalesce(input, ''))), '[^a-z0-9.]+', '-', 'g'))
-$$;
+-- This file used to CREATE OR REPLACE FUNCTION canonical_project_key(text), an
+-- in-SQL fold of project spellings. It is gone: the daemon is the sole authority
+-- on project identity and the API matches the literal it stores.
+--
+-- It is removed here rather than left for migration 021 to drop, because there
+-- is no migration ledger — every boot replays every file in order, so this CREATE
+-- re-created on each startup what 021 drops, and the function existed for the
+-- whole window in between. 021 still drops it, for databases that already have it.
+--
+-- canonical_project_key below is a plain text column holding a stored literal.
+-- It shares the name and nothing else.
 
 CREATE TABLE IF NOT EXISTS project_blocks (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
