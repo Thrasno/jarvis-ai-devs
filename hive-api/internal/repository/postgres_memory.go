@@ -397,6 +397,9 @@ func (r *postgresMemoryRepository) applyMemoryMutationInTx(ctx context.Context, 
 		return nil, err
 	}
 	if !changed {
+		if mutation.Op == model.MutationOpReproject {
+			return reprojectNotAppliedResult(ctx, tx, mutation)
+		}
 		return &model.MutationApplyResult{EventID: mutation.EventID, Op: mutation.Op, Applied: false}, nil
 	}
 
@@ -778,6 +781,44 @@ func (r *postgresMemoryRepository) applyReprojectMutation(ctx context.Context, t
 		return false, wrapPgError(err, "apply reproject memory mutation")
 	}
 	return cmd.RowsAffected() > 0, nil
+}
+
+// reprojectNotAppliedResult turns "the statement matched zero rows" into a
+// result the daemon can act on.
+//
+// The daemon acks on Applied || Duplicate and drops on Rejected, so a result
+// with all three false matches neither path: the event stays pending and is
+// re-sent every cycle, forever. That is not an edge case for this op — matching
+// zero rows IS the documented idempotent success path, so it is the routine
+// outcome of a replay.
+//
+// The result vocabulary already had the right word for "the effect you asked for
+// is present and this event changed nothing": Duplicate. Reusing it fixes the
+// loop for daemons as they are today — no new field for the client to learn
+// first, which matters because the client half ships separately. What it must
+// not do is swallow a genuine failure, so the two ways a reproject can match
+// nothing stay apart: a row already at the target is a success, a row that is
+// missing or holds a third project is a rejection carrying its reason. Neither
+// journals anything — nothing happened.
+func reprojectNotAppliedResult(ctx context.Context, tx mutationTx, mutation model.MutationEnvelope) (*model.MutationApplyResult, error) {
+	var stored string
+	err := tx.QueryRow(ctx, `SELECT project FROM memories WHERE sync_id = $1`, mutation.EntitySyncID).Scan(&stored)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return rejectedMutationResult(mutation, "reproject target memory does not exist on this server"), nil
+	}
+	if err != nil {
+		return nil, wrapPgError(err, "inspect reproject target")
+	}
+	if stored == mutation.Reproject.ToProject {
+		return &model.MutationApplyResult{
+			EventID:   mutation.EventID,
+			Op:        mutation.Op,
+			Duplicate: true,
+			Reason:    "memory already lives under the target project",
+		}, nil
+	}
+	return rejectedMutationResult(mutation,
+		fmt.Sprintf("reproject from_project %q is not the project the memory holds", mutation.Reproject.FromProject)), nil
 }
 
 func insertMemoryMutation(ctx context.Context, tx mutationTx, mutation model.MutationEnvelope) (int64, error) {

@@ -159,6 +159,7 @@ func TestApplyMemoryMutation_ReprojectReplayIsANoOp(t *testing.T) {
 		require.NotNil(t, result)
 		assert.False(t, result.Applied, "the row already moved: zero rows matched")
 		assert.False(t, result.Rejected, "a no-op replay is not a rejection")
+		assert.True(t, result.Duplicate, "and it must still be ackable, or it retries forever")
 		assertNoMemoryMutationRow(t, pool, replay.EventID)
 	})
 
@@ -380,4 +381,73 @@ func TestApplyMemoryMutation_UnknownOpIsRejectedNotFatal(t *testing.T) {
 	after, err := repo.GetBySyncID(ctx, syncID)
 	require.NoError(t, err)
 	assert.Equal(t, reprojectFrom, after.Project, "an unknown op changes nothing")
+}
+
+// TestApplyMemoryMutation_ReprojectResultIsAlwaysAckable closes the retry loop.
+//
+// The daemon acks a mutation on Applied || Duplicate, and drops it on Rejected.
+// A reproject that matched zero rows used to return all three false, so it
+// matched neither path: it stayed pending and was re-sent on every cycle,
+// forever. And "matched zero rows" is not an edge case here — the design calls
+// it the idempotent success path, so it is the ROUTINE outcome of a replay.
+//
+// Every outcome must therefore land in one of the two ackable classes, and the
+// two reasons a reproject can match nothing must stay distinguishable: a row
+// that is already where the caller wants it is a success, a row that is missing
+// or somewhere else entirely is not.
+func TestApplyMemoryMutation_ReprojectResultIsAlwaysAckable(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+
+	t.Run("already at the target is a success the daemon can ack", func(t *testing.T) {
+		const syncID = "8c1e8400-e29b-41d4-a716-446655440101"
+		seedReprojectMemory(ctx, t, pool, syncID)
+		_, err := repo.ApplyMemoryMutation(ctx, reprojectEvent("8c1e8400-e29b-41d4-a716-446655440001", syncID, reprojectFrom, reprojectTo))
+		require.NoError(t, err)
+
+		replay := reprojectEvent("8c1e8400-e29b-41d4-a716-446655440002", syncID, reprojectFrom, reprojectTo)
+		result, err := repo.ApplyMemoryMutation(ctx, replay)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.True(t, result.Duplicate, "the row is already where the caller wants it")
+		assert.False(t, result.Applied)
+		assert.False(t, result.Rejected, "already-at-target is not a failure")
+		assertNoMemoryMutationRow(t, pool, replay.EventID)
+	})
+
+	t.Run("a missing target is a rejection, not a retry", func(t *testing.T) {
+		event := reprojectEvent("8c1e8400-e29b-41d4-a716-446655440003",
+			"8c1e8400-e29b-41d4-a716-446655440199", reprojectFrom, reprojectTo)
+		result, err := repo.ApplyMemoryMutation(ctx, event)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.True(t, result.Rejected, "there is nothing to move and retrying will never help")
+		assert.False(t, result.Applied)
+		assert.False(t, result.Duplicate, "a missing row must stay distinguishable from an already-moved one")
+		assert.NotEmpty(t, result.Reason)
+		assertNoMemoryMutationRow(t, pool, event.EventID)
+	})
+
+	t.Run("a stale from_project is a rejection", func(t *testing.T) {
+		const syncID = "8c1e8400-e29b-41d4-a716-446655440102"
+		seedReprojectMemory(ctx, t, pool, syncID)
+
+		event := reprojectEvent("8c1e8400-e29b-41d4-a716-446655440004", syncID, "some-other-project", reprojectTo)
+		result, err := repo.ApplyMemoryMutation(ctx, event)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.True(t, result.Rejected)
+		assert.False(t, result.Duplicate)
+		assert.NotEmpty(t, result.Reason)
+
+		after, err := repo.GetBySyncID(ctx, syncID)
+		require.NoError(t, err)
+		assert.Equal(t, reprojectFrom, after.Project, "the row must not have moved")
+	})
 }
