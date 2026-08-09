@@ -339,3 +339,45 @@ func TestMigration023_MemoryMutationsAcceptReprojectOp(t *testing.T) {
 		        '9a0e8400-e29b-41d4-a716-446655440102', $1, 'nonsense', now())`, reprojectTo)
 	require.Error(t, err, "the constraint must still reject an op nobody defined")
 }
+
+// TestApplyMemoryMutation_UnknownOpIsRejectedNotFatal covers the other half of
+// the capability contract.
+//
+// An op arrives from the wire and is not validated anywhere before the switch,
+// so an unknown value is untrusted input, not a broken invariant. It used to
+// return a hard error, which failed the ENTIRE mutation batch: one daemon ahead
+// of its server could not sync at all, and every well-formed mutation travelling
+// with the unknown one was lost too. Rejecting just that event lets the rest of
+// the batch through and tells the daemon precisely which event the server did
+// not understand.
+func TestApplyMemoryMutation_UnknownOpIsRejectedNotFatal(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+	const syncID = "8b1e8400-e29b-41d4-a716-446655440101"
+	seedReprojectMemory(ctx, t, pool, syncID)
+
+	event := model.MutationEnvelope{
+		EventID:      "8b1e8400-e29b-41d4-a716-446655440001",
+		EntityType:   model.MutationEntityMemory,
+		EntitySyncID: syncID,
+		Project:      reprojectFrom,
+		Op:           model.MutationOp("teleport"),
+		OccurredAt:   time.Now().UTC(),
+	}
+
+	result, err := repo.ApplyMemoryMutation(ctx, event)
+
+	require.NoError(t, err, "an op this server does not know must not fail the whole batch")
+	require.NotNil(t, result)
+	assert.True(t, result.Rejected)
+	assert.False(t, result.Applied)
+	assert.Contains(t, result.Reason, "teleport")
+	assertNoMemoryMutationRow(t, pool, event.EventID)
+
+	after, err := repo.GetBySyncID(ctx, syncID)
+	require.NoError(t, err)
+	assert.Equal(t, reprojectFrom, after.Project, "an unknown op changes nothing")
+}

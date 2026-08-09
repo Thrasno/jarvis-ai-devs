@@ -380,7 +380,18 @@ func (r *postgresMemoryRepository) applyMemoryMutationInTx(ctx context.Context, 
 	case model.MutationOpReproject:
 		changed, err = r.applyReprojectMutation(ctx, tx, mutation)
 	default:
-		return nil, fmt.Errorf("unsupported memory mutation op %q", mutation.Op)
+		// `op` arrives from the wire and nothing validates it before this
+		// switch, so an unknown value is untrusted input, not a broken
+		// invariant. Returning an error here failed the ENTIRE batch: a daemon
+		// one version ahead of its server could not sync at all, and every
+		// well-formed mutation travelling with the unknown one was lost too.
+		// Rejecting just this event tells the daemon exactly which one the
+		// server did not understand and lets the rest through.
+		//
+		// This is not hiding a server-side bug: a genuinely new op added
+		// without its case would fail its own tests, and the memory_mutations
+		// op CHECK constraint still enumerates what may be journaled.
+		return rejectedMutationResult(mutation, fmt.Sprintf("unsupported memory mutation op %q", mutation.Op)), nil
 	}
 	if err != nil {
 		return nil, err

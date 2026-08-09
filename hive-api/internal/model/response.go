@@ -96,6 +96,18 @@ type SyncResponse struct {
 	CompatibilityMode      string                `json:"compatibility_mode,omitempty"`
 	ProjectIdentityVersion string                `json:"project_identity_version,omitempty"`
 
+	// SyncCapabilities names optional protocol features this server understands,
+	// so a daemon can decide whether to use one instead of discovering the answer
+	// from a rejected mutation.
+	//
+	// This is deliberately not project_identity_version. That field is a
+	// strict-equality handshake — the daemon errors out when the server's value
+	// differs from its own contract version — so announcing a new ability there
+	// would break every daemon that has not been upgraded, in both directions. A
+	// capability must degrade: an old daemon ignores an unknown list entry, and a
+	// new daemon that does not find its capability simply does not use it.
+	SyncCapabilities []string `json:"sync_capabilities,omitempty"`
+
 	// Bounded legacy pull pagination (PR 2a, design §2.2). These fields cover the
 	// two previously-unbounded legacy pull channels: Pulled (memories) and
 	// PulledSessions. omitempty preserves backward compat — an old daemon that
@@ -113,6 +125,16 @@ const MutationProtocolVersion = 2
 const CompatibilityModeLegacy = "legacy-row-state"
 
 const CompatibilityModeMutationV2 = "mutation-sync-v2"
+
+// SyncCapabilityReproject tells the daemon this server understands the
+// reproject mutation op, and that sending one will move the memory rather than
+// be rejected as an op nobody knows.
+const SyncCapabilityReproject = "mutation.reproject"
+
+// ServerSyncCapabilities is what this build advertises on every sync response.
+func ServerSyncCapabilities() []string {
+	return []string{SyncCapabilityReproject}
+}
 
 // ListMemoriesResponse es la respuesta del GET /memories.
 // Incluye los datos de paginación para que el cliente sepa cuántas páginas hay.

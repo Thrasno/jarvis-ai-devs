@@ -374,6 +374,7 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 		NextMutationCursor:     nextMutationCursor,
 		CompatibilityMode:      compatibilityMode,
 		ProjectIdentityVersion: projectidentity.ContractVersion,
+		SyncCapabilities:       model.ServerSyncCapabilities(),
 	}
 	if err := s.emitSyncAudit(ctx, repos.Audit, req.Project, userID, pushed, conflicts, promptsPushed); err != nil {
 		return nil, err
@@ -557,6 +558,7 @@ func (s *syncService) syncResponseWithPull(ctx context.Context, req model.SyncRe
 		MutationResults:        pushResp.MutationResults,
 		CompatibilityMode:      pushResp.CompatibilityMode,
 		ProjectIdentityVersion: pushResp.ProjectIdentityVersion,
+		SyncCapabilities:       pushResp.SyncCapabilities,
 		PulledHasMore:          pullResult.MemoriesHasMore,
 		NextPullCursor:         pullResult.NextPullCursor,
 		PulledSessionsHasMore:  pullResult.SessionsHasMore,
