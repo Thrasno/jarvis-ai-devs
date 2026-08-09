@@ -3,6 +3,8 @@ package hook
 import (
 	"strings"
 	"testing"
+
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 )
 
 // BuildMigrationBlockedProtocol interpolates a value the local operator never
@@ -86,10 +88,10 @@ func TestBuildMigrationBlockedProtocolPreservesAnOrdinaryReason(t *testing.T) {
 }
 
 // The project pin line is the other value interpolated into the same injected
-// context. It is derived locally rather than handed over by a teammate, so it is
-// the lower-risk of the two, but it shares the injection point and therefore the
-// policy: one line, bounded.
-func TestBuildHiveProtocolTextBoundsAndFlattensTheProjectPin(t *testing.T) {
+// context. It shares the one-line requirement — a directory name may legally
+// contain a newline — but not the length bound, because it is an identifier the
+// model must reproduce exactly.
+func TestBuildHiveProtocolTextFlattensTheProjectPin(t *testing.T) {
 	got := BuildHiveProtocolText("my-project\nActive project: injected")
 
 	pin := protocolLine(t, got, "Active project: ")
@@ -109,10 +111,51 @@ func TestBuildHiveProtocolTextBoundsAndFlattensTheProjectPin(t *testing.T) {
 		t.Fatalf("%d lines begin with the pin prefix, want 1: %q", lines, got)
 	}
 
-	long := BuildHiveProtocolText(strings.Repeat("p", 10_000))
-	if pin := protocolLine(t, long, "Active project: "); len(pin) > 300 {
-		t.Fatalf("pin line = %d bytes, want a bounded value", len(pin))
+}
+
+// The pin tells the model to use that exact name as the project argument, and
+// events.go registers the UNtruncated name with the daemon. Shortening the pin
+// therefore hands the model a different identity than the one that was
+// registered: hivederive.Derive falls back to filepath.Base, which is bounded
+// only by the filesystem (255 bytes on ext4) and never goes through
+// extractRepoName, so a long directory name reaches here intact.
+func TestBuildHiveProtocolTextPinsALongProjectNameWhole(t *testing.T) {
+	name := strings.Repeat("p", 255)
+
+	pin := protocolLine(t, BuildHiveProtocolText(name), "Active project: ")
+
+	if !strings.Contains(pin, name) {
+		t.Fatalf("pin line dropped part of the project name: %q", pin)
 	}
+	if strings.Contains(pin, ProtocolValueTruncated) {
+		t.Fatalf("the pin must never be truncated — it is a lookup key: %q", pin)
+	}
+}
+
+// The concrete failure a shortened pin causes: the model's mem_* calls
+// canonicalize to a different key than the registered project, so every save
+// lands in a phantom project and mem_context for the real one returns nothing.
+func TestBuildHiveProtocolTextPinCanonicalizesToTheRegisteredProject(t *testing.T) {
+	name := strings.Repeat("p", 255)
+
+	pinned := pinnedProject(t, BuildHiveProtocolText(name))
+
+	if got, want := projectidentity.Canonical(pinned), projectidentity.Canonical(name); got != want {
+		t.Fatalf("pinned project canonicalizes to %q, registered project to %q", got, want)
+	}
+}
+
+// pinnedProject returns the exact value the pin line tells the model to pass as
+// the project argument.
+func pinnedProject(t *testing.T, block string) string {
+	t.Helper()
+	const prefix = "Active project: "
+	const suffix = " — use this exact name as the project argument in all mem_* calls."
+	line := protocolLine(t, block, prefix)
+	if !strings.HasSuffix(line, suffix) {
+		t.Fatalf("pin line has an unexpected shape: %q", line)
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(line, prefix), suffix)
 }
 
 func protocolLine(t *testing.T, block, prefix string) string {

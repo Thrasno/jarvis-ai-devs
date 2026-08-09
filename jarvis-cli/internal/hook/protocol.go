@@ -101,16 +101,13 @@ var FirstPromptSystemMessage = "Memory protocol is active. FIRST ACTION before r
 // (back-compat: no pin line injected).
 //
 // Defensive sanitization: \r and \n are stripped from canonicalProject before
-// interpolation to prevent prompt-injection via crafted git remote URLs.
+// interpolation to prevent prompt-injection via crafted git remote URLs. The
+// name itself is never shortened — see sanitizeProtocolIdentifier.
 func BuildHiveProtocolText(canonicalProject string) string {
 	if canonicalProject == "" {
 		return HiveProtocolText
 	}
-	// Same guard as the migration block: this value is derived locally (from the
-	// directory or git remote) rather than handed over by a teammate, so it is
-	// the lower-risk of the two, but it lands in the same injected context and
-	// there is no reason for two different policies at one injection point.
-	safe := sanitizeProtocolValue(canonicalProject, maxProtocolProjectLength)
+	safe := sanitizeProtocolIdentifier(canonicalProject)
 	return HiveProtocolText + "\n\nActive project: " + safe + " — use this exact name as the project argument in all mem_* calls."
 }
 
@@ -119,39 +116,52 @@ func BuildHiveProtocolText(canonicalProject string) string {
 const ProtocolValueTruncated = " […truncated]"
 
 // Injected-value bounds. A migration reason is a sentence or two in every real
-// case; a backup id is a timestamp and a uuid.
+// case; a backup id is a timestamp and a uuid. There is deliberately NO bound
+// for the project pin — see sanitizeProtocolIdentifier.
 const (
 	maxProtocolReasonLength   = 500
 	maxProtocolBackupIDLength = 128
-	maxProtocolProjectLength  = 200
 )
 
-// sanitizeProtocolValue makes a value safe to interpolate into a protocol block
-// that is injected verbatim into the agent's session context.
+// The two kinds of value this package interpolates into the session context are
+// NOT interchangeable, and the difference is why there are two sanitizers:
 //
-// Two properties, both required:
+//   - An IDENTIFIER (the project pin) is an instruction to the model to pass
+//     that exact string as an argument. It must round-trip. Shortening it — with
+//     or without a marker — makes the model address a project that does not
+//     exist, because projectidentity.Canonical folds a shortened spelling into a
+//     different key than the full name the hook registered with the daemon.
+//   - PROSE (the migration reason, the backup id) is text for a human to read.
+//     Nothing looks it up, so it can be cut at any length.
 //
-//   - No line breaks. Every value here occupies exactly one labelled line, so a
-//     value carrying \r or \n could open a line of its own and impersonate the
-//     protocol — "## System", another "Continue with:", anything. The value
-//     reaching BuildMigrationBlockedProtocol is NOT locally authored: it is the
-//     daemon's migration error, which names the conflicting project key, and
-//     projectidentity.Canonical trims only the ENDS of a project name, so a
-//     teammate's memory whose project carries an interior newline survives
-//     canonicalization and reaches memories.project. From there a migration
-//     conflict names it, status.Reason becomes err.Error(), and this hook
-//     injects it into every Claude Code SessionStart on this machine.
-//   - Bounded length. An error naming thousands of conflicting keys would
-//     otherwise be pasted into every session's context in full. Truncation is
-//     on a rune boundary so the result is never invalid UTF-8.
-func sanitizeProtocolValue(value string, limit int) string {
-	safe := strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' {
-			return ' '
-		}
-		return r
-	}, value)
-	safe = strings.TrimSpace(safe)
+// Both kinds share exactly one requirement — no line breaks. Every value here
+// occupies one labelled line, so a value carrying \r or \n could open a line of
+// its own and impersonate the protocol ("## System", another "Continue with:",
+// anything). That hazard is real for prose and for identifiers alike: a
+// directory name may legally contain a newline.
+//
+// Do not merge these two functions back into one policy.
+
+// sanitizeProtocolIdentifier flattens line breaks in a value the model is told
+// to reproduce verbatim as a lookup key. It never shortens the value.
+func sanitizeProtocolIdentifier(value string) string {
+	return strings.TrimSpace(flattenLineBreaks(value))
+}
+
+// sanitizeProtocolProse flattens line breaks and bounds the length of a value
+// shown to a human.
+//
+// The value reaching BuildMigrationBlockedProtocol is NOT locally authored: it
+// is the daemon's migration error, which names the conflicting project key, and
+// projectidentity.Canonical trims only the ENDS of a project name, so a
+// teammate's memory whose project carries an interior newline survives
+// canonicalization and reaches memories.project. From there a migration conflict
+// names it, status.Reason becomes err.Error(), and this hook injects it into
+// every Claude Code SessionStart on this machine. An error naming thousands of
+// conflicting keys would otherwise be pasted into every session's context in
+// full. Truncation is on a rune boundary so the result is never invalid UTF-8.
+func sanitizeProtocolProse(value string, limit int) string {
+	safe := strings.TrimSpace(flattenLineBreaks(value))
 	if len(safe) <= limit {
 		return safe
 	}
@@ -162,13 +172,22 @@ func sanitizeProtocolValue(value string, limit int) string {
 	return strings.TrimSpace(safe[:cut]) + ProtocolValueTruncated
 }
 
+func flattenLineBreaks(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' {
+			return ' '
+		}
+		return r
+	}, value)
+}
+
 // BuildMigrationBlockedProtocol renders the migration-blocked notice appended to
 // the session-start context. Both interpolated values come from the daemon over
-// HTTP, so both go through sanitizeProtocolValue — see its doc for why.
+// HTTP and are prose a human reads, so both go through sanitizeProtocolProse.
 func BuildMigrationBlockedProtocol(reason, backupID string) string {
 	return "## Hive Migration Blocked\n\n" +
 		"State: migration-blocked\n" +
-		"Reason: " + sanitizeProtocolValue(reason, maxProtocolReasonLength) + "\n" +
-		"Backup: " + sanitizeProtocolValue(backupID, maxProtocolBackupIDLength) + "\n" +
+		"Reason: " + sanitizeProtocolProse(reason, maxProtocolReasonLength) + "\n" +
+		"Backup: " + sanitizeProtocolProse(backupID, maxProtocolBackupIDLength) + "\n" +
 		"Continue with: " + MigrationStatusCommand
 }
