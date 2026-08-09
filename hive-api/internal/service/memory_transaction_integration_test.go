@@ -235,3 +235,54 @@ func TestMemoryService_CreateConcurrentWithBlockCannotWriteAfterBlock(t *testing
 		require.Zero(t, postBlockWrites)
 	}
 }
+
+// TestMemoryCreateDerivesTheManualSaveSessionFromTheLiteralProject drives the
+// whole seam with the real repository: Create -> validateSessionAttribution ->
+// EnsureManualSaveSession, with a project spelling that is not its own
+// canonical form.
+//
+// The id derivation was pinned only at the repository seam, while every
+// service-level test mocked a pair the real repository can no longer produce
+// ("Jarvis Dev" -> "manual-save-jarvis-dev"). Under that mocking, reverting the
+// derivation to a canonical key breaks nothing here — yet it is exactly what
+// would hand one spelling a session owned by another, because the attribution
+// check builds its expected id from the literal project.
+func TestMemoryCreateDerivesTheManualSaveSessionFromTheLiteralProject(t *testing.T) {
+	pool, cleanup := startPostgresForMemoryServiceProjectBlocks(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	svc := service.NewMemoryService(
+		repository.NewPostgresMemoryRepository(pool),
+		repository.NewPostgresSessionRepository(pool),
+		repository.NewPostgresProjectBlockRepository(pool),
+		repository.NewPostgresTxManager(pool),
+	)
+	const project = "Jarvis Dev"
+	now := time.Now().UTC()
+
+	created, err := svc.Create(ctx, &model.Memory{
+		SyncID: "40000000-0000-0000-0000-000000000001", Project: project,
+		Category: model.CatDecision, Title: "lazy fallback", Content: "content",
+		CreatedBy: "user", CreatedAt: now, UpdatedAt: now,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created.SessionID)
+	require.Equal(t, "manual-save-"+project, *created.SessionID,
+		"the lazy-fallback session id is derived from the literal project")
+
+	var sessionProject string
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT project FROM sessions WHERE id = $1`, "manual-save-"+project).Scan(&sessionProject))
+	require.Equal(t, project, sessionProject)
+
+	// The attribution check builds its expected id from the same literal, so a
+	// memory pointing at another spelling's manual-save session is rejected.
+	foreign := "manual-save-jarvis-dev"
+	_, err = svc.Create(ctx, &model.Memory{
+		SyncID: "40000000-0000-0000-0000-000000000002", Project: project, SessionID: &foreign,
+		Category: model.CatDecision, Title: "cross project", Content: "content",
+		CreatedBy: "user", CreatedAt: now, UpdatedAt: now,
+	})
+	require.ErrorIs(t, err, service.ErrSessionProjectMismatch)
+}

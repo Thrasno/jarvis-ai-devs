@@ -331,9 +331,9 @@ func TestCreateMemory_UsesProjectKeyTransactionLock(t *testing.T) {
 	lockRepo.On("LockProjectKeys", ctx, []string{"Jarvis Dev"}).Return(nil).Once()
 	blockRepo.On("GetByCanonicalKey", ctx, "Jarvis Dev").Return(nil, repository.ErrNotFound).Once()
 	txRepo.On("GetBySyncID", ctx, "direct-create-lock-1").Return(nil, nil).Once()
-	sessionRepo.On("EnsureManualSaveSession", ctx, "Jarvis Dev").Return("manual-save-jarvis-dev", nil).Once()
+	sessionRepo.On("EnsureManualSaveSession", ctx, "Jarvis Dev").Return("manual-save-Jarvis Dev", nil).Once()
 	txRepo.On("Create", ctx, mock.MatchedBy(func(m *model.Memory) bool {
-		return m.SyncID == "direct-create-lock-1" && m.SessionID != nil && *m.SessionID == "manual-save-jarvis-dev"
+		return m.SyncID == "direct-create-lock-1" && m.SessionID != nil && *m.SessionID == "manual-save-Jarvis Dev"
 	})).Return(&model.Memory{ID: "created-direct-lock"}, nil).Once()
 
 	created, err := svc.Create(ctx, input)
