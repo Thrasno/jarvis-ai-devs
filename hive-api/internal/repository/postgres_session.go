@@ -33,7 +33,7 @@ func newPostgresSessionRepositoryWithQuerier(db pgxQuerier) SessionRepository {
 // $10 is the from-project precondition.
 const sessionCorrectionConflict = `
 	ON CONFLICT (sync_id) DO UPDATE
-	  SET project = EXCLUDED.project
+	  SET project = EXCLUDED.project, synced_at = now()
 	  WHERE sessions.project = $10`
 
 // CreateSession inserta una nueva sesión. El conflicto en sync_id significa "esta
@@ -82,6 +82,16 @@ func (r *postgresSessionRepository) CreateSession(ctx context.Context, s *model.
 // The source end is checked against the quarantine too (rejectRelocationEnds),
 // which is the other half of the memory path's guarantee — there it comes from
 // syncRequestProjects feeding BOTH reproject ends into the precheck.
+//
+// # Why the correction also bumps synced_at
+//
+// synced_at is the propagation mechanism, exactly as it is for a reprojected
+// memory. ListSessionsSince filters on `synced_at >= since` and keysets on
+// (synced_at, sync_id), so a row whose project moved without its synced_at
+// moving stays behind the watermark of every daemon already syncing the target
+// project: the session now belongs to them and none of them is ever told.
+// Bumping it places the row inside their normal pull window. updated_at stays
+// put — it describes the session, not the moment it was synced.
 //
 // The id-keyed branches below deliberately do NOT take it, and neither does
 // EnsureManualSaveSession: their id embeds the project literal, so a genuine

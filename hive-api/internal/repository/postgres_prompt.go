@@ -39,6 +39,13 @@ func newPostgresPromptRepositoryWithQuerier(db pgxQuerier) PromptRepository {
 // conocida: reubicaba la fila que ese sync_id encontrase, sacándola incluso de
 // una cuarentena que la request nunca nombra.
 //
+// A diferencia de la corrección de sesiones, esta NO refresca synced_at: los
+// prompts no tienen canal de pull incremental (nada lee user_prompts), así que
+// no hay watermark al que hacerlos visibles. Si algún día se añade un
+// ListPromptsSince, esta rama debe empezar a moverlo — igual que UpsertSession y
+// applyReprojectMutation — o la corrección quedará fuera del alcance de los
+// pullers del proyecto destino.
+//
 // El valor devuelto sigue significando exactamente "se insertó una fila nueva":
 // como el conflicto puede ejecutar un UPDATE, RowsAffected() valdría 1 también
 // para una corrección, así que la distinción se hace con `xmax = 0`, que solo es

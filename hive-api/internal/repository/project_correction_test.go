@@ -101,9 +101,13 @@ func TestUpsertSession_RepushUnderCorrectedProjectMovesOnlyTheProject(t *testing
 	assert.Equal(t, before.StartedAt, after.StartedAt)
 	assert.Equal(t, before.EndedAt, after.EndedAt)
 	assert.Equal(t, before.Summary, after.Summary)
-	assert.Equal(t, before.SyncedAt, after.SyncedAt)
+	// synced_at is the ONE column besides project that a correction moves, and
+	// it moves for a reason: it is what makes the corrected row visible to a
+	// puller on the new project. See
+	// TestUpsertSession_CorrectionIsDiscoverableByTheTargetProjectPull.
+	assert.True(t, after.SyncedAt.After(before.SyncedAt))
 	assert.Equal(t, before.CreatedAt, after.CreatedAt)
-	assert.Equal(t, before.UpdatedAt, after.UpdatedAt)
+	assert.Equal(t, before.UpdatedAt, after.UpdatedAt, "updated_at describes the session, not the sync")
 }
 
 // TestCreateSession_RepushUnderCorrectedProjectMovesOnlyTheProject covers the
@@ -408,4 +412,57 @@ func TestPromptUpsert_ARowInsideAQuarantineCannotBeMovedOut(t *testing.T) {
 	require.NoError(t, pool.QueryRow(ctx,
 		`SELECT project FROM user_prompts WHERE sync_id = $1`, syncID).Scan(&project))
 	assert.Equal(t, "Foo.Bar", project, "a quarantined row must stay in its quarantine")
+}
+
+// TestUpsertSession_CorrectionIsDiscoverableByTheTargetProjectPull proves the
+// correction is deliverable rather than assuming it.
+//
+// ListSessionsSince filters on `synced_at >= since` and keysets on
+// (synced_at, sync_id). A correction that moves `project` without moving
+// synced_at leaves the row behind every puller whose watermark is already past
+// the original sync: the row now belongs to the target project and no daemon on
+// that project will ever be told. The memory path solved this the other way
+// round — applyReprojectMutation sets synced_at = now() and calls that "the
+// propagation mechanism". This is the same mechanism for sessions.
+func TestUpsertSession_CorrectionIsDiscoverableByTheTargetProjectPull(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresSessionRepository(pool)
+	started := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+
+	original := &model.Session{
+		ID:        "0f2e8400-e29b-41d4-a716-446655440001",
+		SyncID:    "0f2e8400-e29b-41d4-a716-446655440101",
+		Project:   "Foo.Bar",
+		DevID:     "dev-1",
+		Client:    "claude",
+		StartedAt: started,
+	}
+	require.NoError(t, repo.UpsertSession(ctx, original))
+	before := readSessionRow(ctx, t, pool, original.ID)
+
+	// A puller on the target project whose watermark is already past the row's
+	// original sync — the ordinary case for a daemon that has been syncing.
+	since := before.SyncedAt.Add(time.Microsecond)
+
+	corrected := *original
+	corrected.Project = "foo-bar"
+	corrected.FromProject = "Foo.Bar"
+	require.NoError(t, repo.UpsertSession(ctx, &corrected))
+
+	after := readSessionRow(ctx, t, pool, original.ID)
+	require.Equal(t, "foo-bar", after.Project)
+	assert.True(t, after.SyncedAt.After(before.SyncedAt),
+		"synced_at must be bumped — it is how pullers on the new name discover the row")
+
+	sessions, _, err := repo.ListSessionsSince(ctx, "foo-bar", since, model.PullCursor{}, model.UnboundedPullLimit)
+	require.NoError(t, err)
+	require.Len(t, sessions, 1, "the corrected session must reach a puller on the target project")
+	assert.Equal(t, original.ID, sessions[0].ID)
+
+	stale, _, err := repo.ListSessionsSince(ctx, "Foo.Bar", since, model.PullCursor{}, model.UnboundedPullLimit)
+	require.NoError(t, err)
+	assert.Empty(t, stale, "and must be out of reach of a puller on the old name")
 }
