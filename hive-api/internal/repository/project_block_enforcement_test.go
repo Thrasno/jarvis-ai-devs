@@ -98,3 +98,41 @@ func TestQuarantineWriteCheckAgreesWithTheReadPredicate(t *testing.T) {
 	require.NoError(t, checkProjectBlocked(ctx, pool, "foo-bar"),
 		"a different spelling is a different project and stays writable")
 }
+
+// TestQuarantineRejectsEverySessionWriteThatCarriesAProject closes the hole the
+// memory and prompt repositories already covered.
+//
+// Sync push is not transactional, so a sessions-only push never reaches a
+// memory or prompt write. Without a write-side check on the session repository
+// the quarantine had no enforcement at all on that path: the rows landed and no
+// error was returned. Every session write that carries a project literal must
+// resolve the same block the read predicate resolves.
+func TestQuarantineRejectsEverySessionWriteThatCarriesAProject(t *testing.T) {
+	pool, cleanup := startPostgresWithProjectSources(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	const blocked = "Foo.Bar"
+	blockProject(t, pool, blocked, blocked)
+	repo := NewPostgresSessionRepository(pool)
+	session := &model.Session{
+		ID: "blocked-session", SyncID: "00000000-0000-0000-0000-000000000401", Project: blocked,
+		DevID: "dev", Client: "test", StartedAt: time.Now().UTC(),
+	}
+
+	require.ErrorIs(t, repo.CreateSession(ctx, session), ErrProjectBlocked)
+	require.ErrorIs(t, repo.UpsertSession(ctx, session), ErrProjectBlocked)
+	_, err := repo.EnsureManualSaveSession(ctx, blocked)
+	require.ErrorIs(t, err, ErrProjectBlocked)
+
+	var count int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM sessions WHERE project = $1`, blocked).Scan(&count))
+	assert.Zero(t, count, "no session row may land inside a quarantined project")
+
+	unblocked := &model.Session{
+		ID: "readable-session", SyncID: "00000000-0000-0000-0000-000000000402", Project: "foo-bar",
+		DevID: "dev", Client: "test", StartedAt: time.Now().UTC(),
+	}
+	require.NoError(t, repo.CreateSession(ctx, unblocked),
+		"a different spelling is a different project and stays writable")
+}

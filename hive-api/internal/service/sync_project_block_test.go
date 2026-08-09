@@ -21,9 +21,9 @@ func TestSync_Push_BlockedProjectReturnsCommandWithoutPersisting(t *testing.T) {
 	blockRepo := &repository.MockProjectBlockRepository{}
 	svc := service.NewSyncService(memRepo, promptRepo, sessionRepo, nil, blockRepo)
 	blockedAt := time.Date(2026, 7, 5, 20, 0, 0, 0, time.UTC)
-	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "Jarvis Dev", CanonicalProjectKey: "jarvis-dev", Reason: "duplicate", BlockedAt: blockedAt}
+	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "Jarvis Dev", CanonicalProjectKey: "Jarvis Dev", Reason: "duplicate", BlockedAt: blockedAt}
 
-	blockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(block, nil)
+	blockRepo.On("GetByCanonicalKey", ctx, "Jarvis Dev").Return(block, nil)
 
 	_, err := svc.Push(ctx, model.SyncRequest{Project: "Jarvis Dev", Memories: []model.SyncMemoryPayload{makePayload("11111111-1111-1111-1111-111111111111", time.Now())}}, "user-1")
 	require.Error(t, err)
@@ -89,12 +89,12 @@ func TestSync_Push_PrechecksEveryPayloadProjectBeforeWriting(t *testing.T) {
 	blockRepo := &repository.MockProjectBlockRepository{}
 	svc := service.NewSyncService(memRepo, promptRepo, sessionRepo, nil, blockRepo)
 	blockedAt := time.Date(2026, 7, 5, 20, 0, 0, 0, time.UTC)
-	block := &model.ProjectBlock{CommandID: "cmd-blocked", AckToken: "ack-token-blocked", Project: "Blocked Project", CanonicalProjectKey: "blocked-project", Reason: "duplicate", BlockedAt: blockedAt}
+	block := &model.ProjectBlock{CommandID: "cmd-blocked", AckToken: "ack-token-blocked", Project: "Blocked Project", CanonicalProjectKey: "Blocked Project", Reason: "duplicate", BlockedAt: blockedAt}
 	payload := makePayload("44444444-4444-4444-4444-444444444444", time.Now())
 	payload.Project = "Blocked Project"
 
 	blockRepo.On("GetByCanonicalKey", ctx, "visible-project").Return(nil, repository.ErrNotFound).Once()
-	blockRepo.On("GetByCanonicalKey", ctx, "blocked-project").Return(block, nil).Once()
+	blockRepo.On("GetByCanonicalKey", ctx, "Blocked Project").Return(block, nil).Once()
 
 	_, err := svc.Push(ctx, model.SyncRequest{
 		Project:  "visible-project",
@@ -110,4 +110,37 @@ func TestSync_Push_PrechecksEveryPayloadProjectBeforeWriting(t *testing.T) {
 	sessionRepo.AssertNotCalled(t, "UpsertSession", mock.Anything, mock.Anything)
 	memRepo.AssertNotCalled(t, "Upsert", mock.Anything, mock.Anything)
 	promptRepo.AssertNotCalled(t, "Upsert", mock.Anything, mock.Anything)
+}
+
+// TestSync_Push_PrechecksTheLiteralSpellingAnAdminBlocked pins the precheck to
+// the same literal the block row stores.
+//
+// The admin quarantines "Foo.Bar" and the row carries that literal. A precheck
+// that folds the request project to "foo-bar" asks about a project nobody
+// blocked, finds nothing, and lets the push through. That bypass is total for a
+// sessions-only push: Push is not transactional and session writes carry no
+// write-side block check, so the rows land inside the quarantine silently.
+func TestSync_Push_PrechecksTheLiteralSpellingAnAdminBlocked(t *testing.T) {
+	ctx := context.Background()
+	memRepo := &repository.MockMemoryRepository{}
+	promptRepo := &repository.MockPromptRepository{}
+	sessionRepo := &repository.MockSessionRepository{}
+	blockRepo := &repository.MockProjectBlockRepository{}
+	svc := service.NewSyncService(memRepo, promptRepo, sessionRepo, nil, blockRepo)
+	const blocked = "Foo.Bar"
+	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: blocked, CanonicalProjectKey: blocked, Reason: "duplicate", BlockedAt: time.Now().UTC()}
+
+	blockRepo.On("GetByCanonicalKey", ctx, blocked).Return(block, nil).Once()
+
+	_, err := svc.Push(ctx, model.SyncRequest{
+		Project:  blocked,
+		Sessions: []model.SyncSessionPayload{{ID: "s-1", SyncID: "s-1", Project: blocked, StartedAt: time.Now()}},
+	}, "user-1")
+
+	require.Error(t, err)
+	blockedErr := &service.ProjectBlockedError{}
+	require.True(t, errors.As(err, &blockedErr))
+	require.Equal(t, "cmd-1", blockedErr.Command.CommandID)
+	sessionRepo.AssertNotCalled(t, "UpsertSession", mock.Anything, mock.Anything)
+	blockRepo.AssertExpectations(t)
 }

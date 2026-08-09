@@ -31,6 +31,9 @@ func newPostgresSessionRepositoryWithQuerier(db pgxQuerier) SessionRepository {
 // CreateSession inserta una nueva sesión usando ON CONFLICT (sync_id) DO NOTHING
 // para sesiones normales — el daemon puede reenviar el mismo sync sin duplicar.
 func (r *postgresSessionRepository) CreateSession(ctx context.Context, s *model.Session) error {
+	if err := r.rejectBlockedProject(ctx, s.Project); err != nil {
+		return err
+	}
 	const q = `
 		INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at, ended_at, summary)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -54,6 +57,9 @@ func (r *postgresSessionRepository) CreateSession(ctx context.Context, s *model.
 //     local sentinel is independently backfilled to MIN(memories.created_at)).
 //   - Regular sessions (UUID-style id): conflict on (sync_id), DO NOTHING.
 func (r *postgresSessionRepository) UpsertSession(ctx context.Context, s *model.Session) error {
+	if err := r.rejectBlockedProject(ctx, s.Project); err != nil {
+		return err
+	}
 	if strings.HasPrefix(s.ID, "manual-save-") {
 		// R3-FIX-1 — refresh dev_id/client when EXCLUDED carries an attributed value
 		// (different from placeholder defaults 'unknown'/'manual') so the lazy-fallback
@@ -149,6 +155,9 @@ func (r *postgresSessionRepository) GetSession(ctx context.Context, sessionID st
 // ON CONFLICT (id) DO NOTHING garantiza idempotencia y seguridad bajo concurrencia.
 // La semántica de 'manual-save-*': client='manual', ended_at=NULL forever.
 func (r *postgresSessionRepository) EnsureManualSaveSession(ctx context.Context, project string) (string, error) {
+	if err := r.rejectBlockedProject(ctx, project); err != nil {
+		return "", err
+	}
 	// The id is derived from the literal spelling, not a canonical key: the
 	// caller's cross-project attribution check compares against
 	// "manual-save-" + project, and the row stores the literal in `project`.
@@ -165,6 +174,16 @@ func (r *postgresSessionRepository) EnsureManualSaveSession(ctx context.Context,
 		return "", wrapPgError(err, "EnsureManualSaveSession")
 	}
 	return id, nil
+}
+
+// rejectBlockedProject is the session counterpart of the memory and prompt
+// write-side checks. Every session write that carries a project literal runs it,
+// so a sessions-only sync push cannot land rows inside a quarantine.
+//
+// EndSession is deliberately excluded: it carries no project literal, only a
+// session id, and it can never create a row.
+func (r *postgresSessionRepository) rejectBlockedProject(ctx context.Context, project string) error {
+	return checkProjectBlocked(ctx, r.db, project)
 }
 
 // ListSessionsByProject devuelve todas las sesiones de un proyecto ordenadas por started_at DESC.

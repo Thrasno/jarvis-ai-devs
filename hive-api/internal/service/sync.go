@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
@@ -407,12 +408,35 @@ func syncRequestProjects(req model.SyncRequest) []string {
 	return projects
 }
 
+// distinctProjects preserves every project literal a request carries, deduped
+// in first-seen order. It deliberately does NOT canonicalize: the daemon is the
+// sole authority on project identity, and each literal is looked up against the
+// literal a block row stores.
+func distinctProjects(projects []string) []string {
+	seen := make(map[string]struct{}, len(projects))
+	distinct := make([]string, 0, len(projects))
+	for _, project := range projects {
+		if strings.TrimSpace(project) == "" {
+			continue
+		}
+		if _, ok := seen[project]; ok {
+			continue
+		}
+		seen[project] = struct{}{}
+		distinct = append(distinct, project)
+	}
+	return distinct
+}
+
 func (s *syncService) precheckBlockedProjects(ctx context.Context, req model.SyncRequest, blockRepo repository.ProjectBlockRepository) error {
 	if blockRepo == nil {
 		return nil
 	}
-	for _, canonical := range repository.CanonicalProjectKeys(syncRequestProjects(req)) {
-		block, err := blockRepo.GetByCanonicalKey(ctx, canonical)
+	// Look the block up under the literal an admin quarantined. Folding the
+	// request project to a canonical key asked about a project nobody blocked,
+	// found nothing, and let the push straight through the quarantine.
+	for _, project := range distinctProjects(syncRequestProjects(req)) {
+		block, err := blockRepo.GetByCanonicalKey(ctx, project)
 		if err != nil && !errors.Is(err, repository.ErrNotFound) {
 			return err
 		}
