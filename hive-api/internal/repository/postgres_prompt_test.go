@@ -149,13 +149,13 @@ func TestPostgresPromptRepository_UpsertRejectsBlockedProject(t *testing.T) {
 	blockRepo := NewPostgresProjectBlockRepository(pool)
 
 	_, err := blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
-		Project:             "Blocked Prompt Project",
-		CanonicalProjectKey: "Blocked Prompt Project",
-		Action:              model.ProjectBlockActionQuarantine,
-		Reason:              "duplicate garbage project",
-		Confirmation:        "blocked-prompt-project",
-		ExportMarker:        "export-2026-07-06",
-		ActorUserID:         "admin-1",
+		Project:      "Blocked Prompt Project",
+		ProjectKey:   "Blocked Prompt Project",
+		Action:       model.ProjectBlockActionQuarantine,
+		Reason:       "duplicate garbage project",
+		Confirmation: "blocked-prompt-project",
+		ExportMarker: "export-2026-07-06",
+		ActorUserID:  "admin-1",
 	})
 	require.NoError(t, err)
 

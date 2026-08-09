@@ -171,13 +171,13 @@ func TestPostgresSyncAttemptRepository_SyncHealthByProjectExcludesBlockedProject
 	})
 	require.NoError(t, err)
 	_, err = blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
-		Project:             "Blocked Sync",
-		CanonicalProjectKey: "Blocked Sync",
-		Action:              model.ProjectBlockActionQuarantine,
-		Reason:              "garbage",
-		Confirmation:        "blocked-sync",
-		ExportMarker:        "export-1",
-		ActorUserID:         "admin-1",
+		Project:      "Blocked Sync",
+		ProjectKey:   "Blocked Sync",
+		Action:       model.ProjectBlockActionQuarantine,
+		Reason:       "garbage",
+		Confirmation: "blocked-sync",
+		ExportMarker: "export-1",
+		ActorUserID:  "admin-1",
 	})
 	require.NoError(t, err)
 
@@ -208,7 +208,7 @@ func TestPostgresSyncAttemptRepository_ProjectSyncHealth(t *testing.T) {
 		{AttemptID: "blocked", DevID: "device-d", Project: "blocked", StartedAt: now, Outcome: model.SyncAttemptOutcomeFailure, PortalUserID: healthStringPtr(alice), PortalUserSource: &source},
 	})
 	require.NoError(t, err)
-	_, err = NewPostgresProjectBlockRepository(pool).BlockProject(ctx, model.ProjectBlockCreate{Project: "blocked", CanonicalProjectKey: "blocked", Action: model.ProjectBlockActionQuarantine, Reason: "test", Confirmation: "blocked", ExportMarker: "test", ActorUserID: alice})
+	_, err = NewPostgresProjectBlockRepository(pool).BlockProject(ctx, model.ProjectBlockCreate{Project: "blocked", ProjectKey: "blocked", Action: model.ProjectBlockActionQuarantine, Reason: "test", Confirmation: "blocked", ExportMarker: "test", ActorUserID: alice})
 	require.NoError(t, err)
 
 	projection, err := repo.ProjectSyncHealth(ctx)

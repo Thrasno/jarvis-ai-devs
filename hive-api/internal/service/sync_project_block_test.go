@@ -21,9 +21,9 @@ func TestSync_Push_BlockedProjectReturnsCommandWithoutPersisting(t *testing.T) {
 	blockRepo := &repository.MockProjectBlockRepository{}
 	svc := service.NewSyncService(memRepo, promptRepo, sessionRepo, nil, blockRepo)
 	blockedAt := time.Date(2026, 7, 5, 20, 0, 0, 0, time.UTC)
-	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "Jarvis Dev", CanonicalProjectKey: "Jarvis Dev", Reason: "duplicate", BlockedAt: blockedAt}
+	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "Jarvis Dev", ProjectKey: "Jarvis Dev", Reason: "duplicate", BlockedAt: blockedAt}
 
-	blockRepo.On("GetByCanonicalKey", ctx, "Jarvis Dev").Return(block, nil)
+	blockRepo.On("GetByProjectKey", ctx, "Jarvis Dev").Return(block, nil)
 
 	_, err := svc.Push(ctx, model.SyncRequest{Project: "Jarvis Dev", Memories: []model.SyncMemoryPayload{makePayload("11111111-1111-1111-1111-111111111111", time.Now())}}, "user-1")
 	require.Error(t, err)
@@ -57,9 +57,9 @@ func TestSync_Push_BlockedProjectNeverReachesTheMutationJournal(t *testing.T) {
 	blockRepo := &repository.MockProjectBlockRepository{}
 	svc := service.NewSyncService(memRepo, promptRepo, sessionRepo, nil, blockRepo)
 	const blocked = "jarvis-dev"
-	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: blocked, CanonicalProjectKey: blocked, Reason: "duplicate", BlockedAt: time.Now().UTC()}
+	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: blocked, ProjectKey: blocked, Reason: "duplicate", BlockedAt: time.Now().UTC()}
 
-	blockRepo.On("GetByCanonicalKey", ctx, blocked).Return(block, nil)
+	blockRepo.On("GetByProjectKey", ctx, blocked).Return(block, nil)
 
 	// A request that would pull the journal if the project were not blocked:
 	// protocol v2 with at least one mutation makes the pull authoritative.
@@ -93,7 +93,7 @@ func TestSync_Push_AllowsUnblockedProject(t *testing.T) {
 	payload := makePayload("22222222-2222-2222-2222-222222222222", time.Now())
 	expected := expectedMem(payload, "user-1")
 
-	blockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(nil, repository.ErrNotFound)
+	blockRepo.On("GetByProjectKey", ctx, "jarvis-dev").Return(nil, repository.ErrNotFound)
 	sessionRepo.On("EnsureManualSaveSession", mock.Anything, mock.Anything).Return("manual-save-jarvis-dev", nil)
 	memRepo.On("Upsert", ctx, expected).Return(&model.Memory{ID: "server-1", SyncID: payload.SyncID}, true, nil)
 
@@ -110,13 +110,13 @@ func TestSync_Push_MapsRepositoryBlockedErrorToCommand(t *testing.T) {
 	blockRepo := &repository.MockProjectBlockRepository{}
 	svc := service.NewSyncService(memRepo, promptRepo, sessionRepo, nil, blockRepo)
 	payload := makePayload("33333333-3333-3333-3333-333333333333", time.Now())
-	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "jarvis-dev", CanonicalProjectKey: "jarvis-dev", Reason: "duplicate", BlockedAt: time.Now().UTC()}
+	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "jarvis-dev", ProjectKey: "jarvis-dev", Reason: "duplicate", BlockedAt: time.Now().UTC()}
 	expected := expectedMem(payload, "user-1")
 
-	blockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(nil, repository.ErrNotFound).Once()
+	blockRepo.On("GetByProjectKey", ctx, "jarvis-dev").Return(nil, repository.ErrNotFound).Once()
 	sessionRepo.On("EnsureManualSaveSession", mock.Anything, mock.Anything).Return("manual-save-jarvis-dev", nil)
 	memRepo.On("Upsert", ctx, expected).Return(nil, false, repository.ErrProjectBlocked)
-	blockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(block, nil).Once()
+	blockRepo.On("GetByProjectKey", ctx, "jarvis-dev").Return(block, nil).Once()
 
 	_, err := svc.Push(ctx, model.SyncRequest{Project: "jarvis-dev", Memories: []model.SyncMemoryPayload{payload}}, "user-1")
 	require.Error(t, err)
@@ -135,12 +135,12 @@ func TestSync_Push_PrechecksEveryPayloadProjectBeforeWriting(t *testing.T) {
 	blockRepo := &repository.MockProjectBlockRepository{}
 	svc := service.NewSyncService(memRepo, promptRepo, sessionRepo, nil, blockRepo)
 	blockedAt := time.Date(2026, 7, 5, 20, 0, 0, 0, time.UTC)
-	block := &model.ProjectBlock{CommandID: "cmd-blocked", AckToken: "ack-token-blocked", Project: "Blocked Project", CanonicalProjectKey: "Blocked Project", Reason: "duplicate", BlockedAt: blockedAt}
+	block := &model.ProjectBlock{CommandID: "cmd-blocked", AckToken: "ack-token-blocked", Project: "Blocked Project", ProjectKey: "Blocked Project", Reason: "duplicate", BlockedAt: blockedAt}
 	payload := makePayload("44444444-4444-4444-4444-444444444444", time.Now())
 	payload.Project = "Blocked Project"
 
-	blockRepo.On("GetByCanonicalKey", ctx, "visible-project").Return(nil, repository.ErrNotFound).Once()
-	blockRepo.On("GetByCanonicalKey", ctx, "Blocked Project").Return(block, nil).Once()
+	blockRepo.On("GetByProjectKey", ctx, "visible-project").Return(nil, repository.ErrNotFound).Once()
+	blockRepo.On("GetByProjectKey", ctx, "Blocked Project").Return(block, nil).Once()
 
 	_, err := svc.Push(ctx, model.SyncRequest{
 		Project:  "visible-project",
@@ -174,9 +174,9 @@ func TestSync_Push_PrechecksTheLiteralSpellingAnAdminBlocked(t *testing.T) {
 	blockRepo := &repository.MockProjectBlockRepository{}
 	svc := service.NewSyncService(memRepo, promptRepo, sessionRepo, nil, blockRepo)
 	const blocked = "Foo.Bar"
-	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: blocked, CanonicalProjectKey: blocked, Reason: "duplicate", BlockedAt: time.Now().UTC()}
+	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: blocked, ProjectKey: blocked, Reason: "duplicate", BlockedAt: time.Now().UTC()}
 
-	blockRepo.On("GetByCanonicalKey", ctx, blocked).Return(block, nil).Once()
+	blockRepo.On("GetByProjectKey", ctx, blocked).Return(block, nil).Once()
 
 	_, err := svc.Push(ctx, model.SyncRequest{
 		Project:  blocked,

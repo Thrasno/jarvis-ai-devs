@@ -211,7 +211,7 @@ func TestHandlerMemory_Create_SessionNotFound_Returns400(t *testing.T) {
 func TestHandlerMemory_Create_ProjectBlockedReturns423(t *testing.T) {
 	authSvc := &mockAuthSvc{}
 	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
-	cmd := model.ProjectBlockCommand{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "jarvis-dev", CanonicalProjectKey: "jarvis-dev", Reason: "duplicate", BlockedAt: time.Now().UTC()}
+	cmd := model.ProjectBlockCommand{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "jarvis-dev", ProjectKey: "jarvis-dev", Reason: "duplicate", BlockedAt: time.Now().UTC()}
 
 	memSvc := &mockMemorySvc{}
 	memSvc.On("Create", context.Background(), mock.AnythingOfType("*model.Memory")).

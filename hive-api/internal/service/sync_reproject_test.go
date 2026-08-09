@@ -45,15 +45,15 @@ func TestSync_Push_ReprojectIsBlockedByAQuarantineOnEitherEnd(t *testing.T) {
 			svc := service.NewSyncService(memRepo, promptRepo, sessionRepo, nil, blockRepo)
 
 			block := &model.ProjectBlock{
-				CommandID:           "cmd-1",
-				AckToken:            "ack-token-1",
-				Project:             blocked,
-				CanonicalProjectKey: blocked,
-				Reason:              "duplicate",
-				BlockedAt:           time.Now().UTC(),
+				CommandID:  "cmd-1",
+				AckToken:   "ack-token-1",
+				Project:    blocked,
+				ProjectKey: blocked,
+				Reason:     "duplicate",
+				BlockedAt:  time.Now().UTC(),
 			}
-			blockRepo.On("GetByCanonicalKey", ctx, blocked).Return(block, nil)
-			blockRepo.On("GetByCanonicalKey", ctx, mock.Anything).Return(nil, repository.ErrNotFound)
+			blockRepo.On("GetByProjectKey", ctx, blocked).Return(block, nil)
+			blockRepo.On("GetByProjectKey", ctx, mock.Anything).Return(nil, repository.ErrNotFound)
 
 			_, err := svc.Push(ctx, reprojectRequest, "user-1")
 

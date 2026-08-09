@@ -142,7 +142,7 @@ func TestProjectGovernanceService_ListQuarantinesLoadsRetainedCurrentGenerationA
 
 	require.NoError(t, err)
 	require.Equal(t, []model.QuarantineSummary{{
-		Project: "Retained Project", CanonicalProjectKey: "Retained Project", Generation: 2,
+		Project: "Retained Project", ProjectKey: "Retained Project", Generation: 2,
 		Action: model.ProjectBlockActionUnblock, State: model.ProjectBlockProgressPending,
 		TransitionedAt: summaries[0].TransitionedAt,
 	}}, summaries)

@@ -198,8 +198,8 @@ func (m *mockProjectGovernanceSvc) Inbox(ctx context.Context, subject model.Proj
 	return args.Get(0).([]model.ProjectBlockCommand), args.Error(1)
 }
 
-func (m *mockProjectGovernanceSvc) QuarantineProgress(ctx context.Context, canonicalProjectKey string, generation int64, after string, limit int) (model.QuarantineProgressResponse, error) {
-	args := m.Called(ctx, canonicalProjectKey, generation, after, limit)
+func (m *mockProjectGovernanceSvc) QuarantineProgress(ctx context.Context, projectKey string, generation int64, after string, limit int) (model.QuarantineProgressResponse, error) {
+	args := m.Called(ctx, projectKey, generation, after, limit)
 	return args.Get(0).(model.QuarantineProgressResponse), args.Error(1)
 }
 

@@ -146,8 +146,8 @@ func TestBuildApp_ProjectBlockAckRouteReachableWhenAdminMutationDisabled(t *test
 	authSvc.On("ValidateToken", "valid-token").Return(&model.Claims{RegisteredClaims: jwt.RegisteredClaims{Subject: "daemon-user"}, Username: "daemon", Level: model.LevelMember, DaemonID: "daemon-1", Client: "hive-daemon"}, nil)
 	ackAt := time.Date(2026, 7, 6, 10, 0, 0, 0, time.UTC)
 	govSvc := &mockProjectGovernance{}
-	govSvc.On("Acknowledge", mock.Anything, model.ProjectBlockAck{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: model.ProjectBlockAckApplied, AckSubject: model.ProjectBlockAckSubject{AuthSubject: "daemon-user", DaemonID: "daemon-1", Client: "hive-daemon"}}).
-		Return(model.ProjectBlockAck{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: model.ProjectBlockAckApplied, AppliedAt: ackAt}, nil)
+	govSvc.On("Acknowledge", mock.Anything, model.ProjectBlockAck{CommandID: "cmd-1", ProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: model.ProjectBlockAckApplied, AckSubject: model.ProjectBlockAckSubject{AuthSubject: "daemon-user", DaemonID: "daemon-1", Client: "hive-daemon"}}).
+		Return(model.ProjectBlockAck{CommandID: "cmd-1", ProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: model.ProjectBlockAckApplied, AppliedAt: ackAt}, nil)
 	app := buildApp(buildAppDeps{
 		authSvc:                  authSvc,
 		memorySvc:                &mockMemory{},

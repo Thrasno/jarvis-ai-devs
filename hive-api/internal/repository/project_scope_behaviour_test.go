@@ -102,7 +102,7 @@ type projectScopedRead struct {
 //
 // Also absent, and each for its own reason:
 //
-//   - GetByCanonicalKey needs a block to exist before it can answer, so it is
+//   - GetByProjectKey needs a block to exist before it can answer, so it is
 //     asserted in TestQuarantineAppliesOnlyToTheBlockedLiteral instead.
 //   - ProjectLockKeys is pure Go over the literals it is handed and reads no
 //     row, so it has no answer to be wrong about; project_key_lock_test.go
@@ -112,6 +112,18 @@ type projectScopedRead struct {
 //     canonical_project_key or on a command id. The literal a block is stored
 //     and found under is proved by the quarantine table below; these report on
 //     a block that already exists rather than deciding which project it is.
+//   - ListInboxCommands takes no project at all. It selects by acknowledging
+//     subject and returns whatever blocks that subject still owes an ack for, so
+//     there is no project spelling for it to answer wrongly.
+//   - EnsureAckDelivery is handed the block row itself, not a project name; the
+//     literal it records is the one already stored on that row.
+//   - RecordAck is a write. Its project literal is one third of the ack's
+//     composite key (command id, project literal, acknowledging subject), so it
+//     is stored and compared verbatim like every other literal here, and the
+//     value is the one the daemon echoes back from the command it was delivered.
+//     It decides no project: canonical_project_key carries a foreign key to
+//     project_blocks, so a spelling no block was stored under cannot be acked at
+//     all.
 //
 // Everything named above is plain equality on the stored literal today. Listing
 // them is not a claim that they are proved here — it is the record of a
@@ -552,17 +564,17 @@ func TestQuarantineAppliesOnlyToTheBlockedLiteral(t *testing.T) {
 		})
 	}
 
-	t.Run("read/ProjectBlockRepository.GetByCanonicalKey", func(t *testing.T) {
+	t.Run("read/ProjectBlockRepository.GetByProjectKey", func(t *testing.T) {
 		blocks := NewPostgresProjectBlockRepository(pool)
-		block, err := blocks.GetByCanonicalKey(ctx, storedProject)
+		block, err := blocks.GetByProjectKey(ctx, storedProject)
 		require.NoError(t, err)
-		require.Equal(t, storedProject, block.CanonicalProjectKey,
+		require.Equal(t, storedProject, block.ProjectKey,
 			"the block is stored and found under the exact literal the admin supplied")
 
 		for _, sibling := range siblings {
-			_, err = blocks.GetByCanonicalKey(ctx, sibling)
+			_, err = blocks.GetByProjectKey(ctx, sibling)
 			require.ErrorIs(t, err, ErrNotFound,
-				"GetByCanonicalKey resolved a block for %q, which nobody blocked", sibling)
+				"GetByProjectKey resolved a block for %q, which nobody blocked", sibling)
 		}
 	})
 }

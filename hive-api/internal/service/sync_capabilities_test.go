@@ -30,7 +30,7 @@ func TestSync_Push_AdvertisesTheReprojectCapability(t *testing.T) {
 	sessionRepo := &repository.MockSessionRepository{}
 	blockRepo := &repository.MockProjectBlockRepository{}
 	svc := service.NewSyncService(memRepo, promptRepo, sessionRepo, nil, blockRepo)
-	blockRepo.On("GetByCanonicalKey", ctx, mock.Anything).Return(nil, repository.ErrNotFound)
+	blockRepo.On("GetByProjectKey", ctx, mock.Anything).Return(nil, repository.ErrNotFound)
 
 	resp, err := svc.Push(ctx, model.SyncRequest{Project: "jarvis-dev"}, "user-1")
 
@@ -55,7 +55,7 @@ func TestSync_SyncResponseCarriesTheCapabilityThroughThePull(t *testing.T) {
 	svc := service.NewSyncService(mem, prompt, session, nil, blocks, tx)
 
 	locks.On("LockProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil)
-	blocks.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(nil, repository.ErrNotFound)
+	blocks.On("GetByProjectKey", ctx, "jarvis-dev").Return(nil, repository.ErrNotFound)
 	audit.On("Insert", ctx, mock.Anything).Return(nil)
 	session.On("ListSessionsSince", ctx, "jarvis-dev", time.Time{}, model.PullCursor{}, model.UnboundedPullLimit).Return(nil, false, nil)
 	mem.On("PullSince", ctx, "jarvis-dev", time.Time{}, []string{}, model.PullCursor{}, model.UnboundedPullLimit).Return(nil, false, nil)

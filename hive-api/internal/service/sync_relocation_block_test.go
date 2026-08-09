@@ -58,15 +58,15 @@ func TestSync_Push_ARelocationIsBlockedByAQuarantineOnEitherEnd(t *testing.T) {
 				svc := service.NewSyncService(memRepo, promptRepo, sessionRepo, nil, blockRepo)
 
 				block := &model.ProjectBlock{
-					CommandID:           "cmd-1",
-					AckToken:            "ack-token-1",
-					Project:             blocked,
-					CanonicalProjectKey: blocked,
-					Reason:              "duplicate",
-					BlockedAt:           now,
+					CommandID:  "cmd-1",
+					AckToken:   "ack-token-1",
+					Project:    blocked,
+					ProjectKey: blocked,
+					Reason:     "duplicate",
+					BlockedAt:  now,
 				}
-				blockRepo.On("GetByCanonicalKey", ctx, blocked).Return(block, nil)
-				blockRepo.On("GetByCanonicalKey", ctx, mock.Anything).Return(nil, repository.ErrNotFound)
+				blockRepo.On("GetByProjectKey", ctx, blocked).Return(block, nil)
+				blockRepo.On("GetByProjectKey", ctx, mock.Anything).Return(nil, repository.ErrNotFound)
 
 				_, err := svc.Push(ctx, req, "user-1")
 
@@ -92,7 +92,7 @@ func TestSync_Push_ForwardsTheDeclaredFromProjectToTheRepositories(t *testing.T)
 	svc := service.NewSyncService(memRepo, promptRepo, sessionRepo, nil, blockRepo)
 	now := time.Now().UTC()
 
-	blockRepo.On("GetByCanonicalKey", ctx, mock.Anything).Return(nil, repository.ErrNotFound)
+	blockRepo.On("GetByProjectKey", ctx, mock.Anything).Return(nil, repository.ErrNotFound)
 	sessionRepo.On("UpsertSession", ctx, mock.MatchedBy(func(s *model.Session) bool {
 		return s.FromProject == "Foo.Bar"
 	})).Return(nil)

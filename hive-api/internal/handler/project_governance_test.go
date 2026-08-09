@@ -32,14 +32,14 @@ func TestProjectGovernance_BlockProject(t *testing.T) {
 	req := model.ProjectBlockRequest{Project: "Org/Repo", Action: model.ProjectBlockActionBlock, Reason: "duplicate", Confirmation: "org-repo", ExportMarker: "export-1"}
 	blockedAt := time.Date(2026, 7, 5, 20, 0, 0, 0, time.UTC)
 	govSvc.On("BlockProject", context.Background(), model.AdminActor{UserID: "admin-uuid-123", Username: "adminuser"}, "Org/Repo", req).
-		Return(model.ProjectBlockResponse{CommandID: "cmd-1", Project: "Org/Repo", CanonicalProjectKey: "org-repo", BlockedAt: blockedAt}, nil)
+		Return(model.ProjectBlockResponse{CommandID: "cmd-1", Project: "Org/Repo", ProjectKey: "org-repo", BlockedAt: blockedAt}, nil)
 
 	w := doAuthRequest(t, governanceDeps(authSvc, govSvc, &mockSyncSvc{}), http.MethodPost, "/admin/project-blocks/block", req, "admin-token")
 	require.Equal(t, http.StatusCreated, w.Code)
 
 	var resp model.ProjectBlockResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	require.Equal(t, "org-repo", resp.CanonicalProjectKey)
+	require.Equal(t, "org-repo", resp.ProjectKey)
 	govSvc.AssertExpectations(t)
 }
 
@@ -50,7 +50,7 @@ func TestProjectGovernance_AckProjectBlockAllowsAuthenticatedDaemonUser(t *testi
 	claims.Client = "hive-daemon"
 	authSvc.On("ValidateToken", "valid-token").Return(claims, nil)
 	govSvc := &mockProjectGovernanceSvc{}
-	req := model.ProjectBlockAck{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: model.ProjectBlockAckApplied, AppliedAt: time.Now().UTC()}
+	req := model.ProjectBlockAck{CommandID: "cmd-1", ProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: model.ProjectBlockAckApplied, AppliedAt: time.Now().UTC()}
 	govSvc.On("Acknowledge", context.Background(), mock.MatchedBy(func(got model.ProjectBlockAck) bool {
 		return got.CommandID == req.CommandID && got.AckToken == req.AckToken &&
 			got.AckSubject == (model.ProjectBlockAckSubject{AuthSubject: "user-uuid-123", DaemonID: "daemon-1", Client: "hive-daemon"})
@@ -69,7 +69,7 @@ func TestProjectGovernance_InboxDeliversOnlyAuthenticatedAccountCommands(t *test
 	authSvc.On("ValidateToken", "valid-token").Return(claims, nil)
 	govSvc := &mockProjectGovernanceSvc{}
 	govSvc.On("Inbox", context.Background(), model.ProjectBlockAckSubject{AuthSubject: "user-uuid-123", DaemonID: "daemon-1", Client: "hive-daemon"}).
-		Return([]model.ProjectBlockCommand{{CommandID: "cmd-2", AckToken: "account-token", Project: "alpha", CanonicalProjectKey: "alpha", Action: model.ProjectBlockActionUnblock, Generation: 2}}, nil)
+		Return([]model.ProjectBlockCommand{{CommandID: "cmd-2", AckToken: "account-token", Project: "alpha", ProjectKey: "alpha", Action: model.ProjectBlockActionUnblock, Generation: 2}}, nil)
 
 	w := doAuthRequest(t, governanceDeps(authSvc, govSvc, &mockSyncSvc{}), http.MethodGet, "/project-blocks/inbox", nil, "valid-token")
 	require.Equal(t, http.StatusOK, w.Code)
@@ -117,7 +117,7 @@ func TestProjectGovernance_ListQuarantinesUsesAdminProjection(t *testing.T) {
 	govSvc := &mockProjectGovernanceSvc{}
 	transitionedAt := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	govSvc.On("ListQuarantines", context.Background()).Return([]model.QuarantineSummary{{
-		Project: "Org/Repo", CanonicalProjectKey: "org-repo", Generation: 7,
+		Project: "Org/Repo", ProjectKey: "org-repo", Generation: 7,
 		Action: model.ProjectBlockActionBlock, State: model.ProjectBlockAckApplied, TransitionedAt: transitionedAt,
 	}}, nil)
 
@@ -134,7 +134,7 @@ func TestProjectGovernance_AckProjectBlockAllowsUserTokenWithoutDaemonClaims(t *
 	authSvc := &mockAuthSvc{}
 	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
 	govSvc := &mockProjectGovernanceSvc{}
-	req := model.ProjectBlockAck{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: model.ProjectBlockAckApplied}
+	req := model.ProjectBlockAck{CommandID: "cmd-1", ProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: model.ProjectBlockAckApplied}
 	govSvc.On("Acknowledge", context.Background(), mock.MatchedBy(func(got model.ProjectBlockAck) bool {
 		return got.CommandID == req.CommandID && got.AckSubject == (model.ProjectBlockAckSubject{AuthSubject: "user-uuid-123"})
 	})).Return(req, nil)
@@ -148,7 +148,7 @@ func TestProjectGovernance_AckProjectBlockAllowsAdmin(t *testing.T) {
 	authSvc := &mockAuthSvc{}
 	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
 	govSvc := &mockProjectGovernanceSvc{}
-	req := model.ProjectBlockAck{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: model.ProjectBlockAckApplied, AppliedAt: time.Now().UTC()}
+	req := model.ProjectBlockAck{CommandID: "cmd-1", ProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: model.ProjectBlockAckApplied, AppliedAt: time.Now().UTC()}
 	govSvc.On("Acknowledge", context.Background(), mock.MatchedBy(func(got model.ProjectBlockAck) bool {
 		return got.CommandID == req.CommandID && got.AckSubject == (model.ProjectBlockAckSubject{AuthSubject: "admin-uuid-123"})
 	})).Return(req, nil)
@@ -162,7 +162,7 @@ func TestProjectGovernance_AckProjectBlockInvalidRequestReturns400(t *testing.T)
 	authSvc := &mockAuthSvc{}
 	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
 	govSvc := &mockProjectGovernanceSvc{}
-	req := model.ProjectBlockAck{CommandID: "forged-cmd", CanonicalProjectKey: "jarvis-dev", AckToken: "forged-token", Status: model.ProjectBlockAckApplied, AppliedAt: time.Now().UTC()}
+	req := model.ProjectBlockAck{CommandID: "forged-cmd", ProjectKey: "jarvis-dev", AckToken: "forged-token", Status: model.ProjectBlockAckApplied, AppliedAt: time.Now().UTC()}
 	admin := adminClaims()
 	admin.DaemonID = "daemon-admin"
 	admin.Client = "hive-daemon"
@@ -187,8 +187,8 @@ func TestProjectGovernance_StatusShowsCommandToAdmin(t *testing.T) {
 	authSvc := &mockAuthSvc{}
 	authSvc.On("ValidateToken", "admin-token").Return(adminClaims(), nil)
 	govSvc := &mockProjectGovernanceSvc{}
-	cmd := model.ProjectBlockCommand{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "Org/Repo", CanonicalProjectKey: "org-repo", Reason: "duplicate", BlockedAt: time.Now().UTC()}
-	govSvc.On("Status", context.Background(), "Org/Repo").Return(model.ProjectBlockStatusResponse{Project: "Org/Repo", CanonicalProjectKey: "org-repo", Blocked: true, Reason: "duplicate", Command: &cmd}, nil)
+	cmd := model.ProjectBlockCommand{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "Org/Repo", ProjectKey: "org-repo", Reason: "duplicate", BlockedAt: time.Now().UTC()}
+	govSvc.On("Status", context.Background(), "Org/Repo").Return(model.ProjectBlockStatusResponse{Project: "Org/Repo", ProjectKey: "org-repo", Blocked: true, Reason: "duplicate", Command: &cmd}, nil)
 
 	w := doAuthRequest(t, governanceDeps(authSvc, govSvc, &mockSyncSvc{}), http.MethodGet, "/admin/project-blocks/status?project=Org%2FRepo", nil, "admin-token")
 	require.Equal(t, http.StatusOK, w.Code)
@@ -205,7 +205,7 @@ func TestProjectGovernance_QuarantineDetailIsAdminOnlyAndRedacted(t *testing.T) 
 	govSvc := &mockProjectGovernanceSvc{}
 	acknowledgedAt := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	govSvc.On("QuarantineProgress", context.Background(), "org-repo", int64(7), "", 20).Return(model.QuarantineProgressResponse{
-		Project: "Org/Repo", CanonicalProjectKey: "org-repo", Generation: 7, Action: model.ProjectBlockActionBlock,
+		Project: "Org/Repo", ProjectKey: "org-repo", Generation: 7, Action: model.ProjectBlockActionBlock,
 		Totals:   model.QuarantineProgressTotals{Active: 2, Acknowledged: 1, Pending: 1},
 		Progress: []model.QuarantineProgressRow{{Username: "ada", State: model.ProjectBlockAckApplied, AcknowledgedAt: &acknowledgedAt}, {Username: "zoe", State: "pending"}},
 	}, nil)
@@ -250,7 +250,7 @@ func TestSync_BlockedProjectMapsToHTTP423(t *testing.T) {
 	authSvc := &mockAuthSvc{}
 	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
 	syncSvc := &mockSyncSvc{}
-	cmd := model.ProjectBlockCommand{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "jarvis-dev", CanonicalProjectKey: "jarvis-dev", Reason: "duplicate", BlockedAt: time.Now().UTC()}
+	cmd := model.ProjectBlockCommand{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "jarvis-dev", ProjectKey: "jarvis-dev", Reason: "duplicate", BlockedAt: time.Now().UTC()}
 	syncSvc.On("Push", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").Return(nil, &service.ProjectBlockedError{Command: cmd})
 
 	w := doAuthRequest(t, governanceDeps(authSvc, &mockProjectGovernanceSvc{}, syncSvc), http.MethodPost, "/sync", map[string]any{"project": "jarvis-dev", "memories": []any{}}, "valid-token")

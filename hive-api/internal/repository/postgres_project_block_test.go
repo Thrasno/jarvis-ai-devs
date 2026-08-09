@@ -40,7 +40,7 @@ func TestPostgresProjectBlockRepository_ReadsHistoricalLegacyActions(t *testing.
 	for _, action := range []string{"export_marker", model.ProjectBlockActionPurgeIntent} {
 		t.Run("read "+action, func(t *testing.T) {
 			canonical := "legacy-" + action
-			block, err := NewPostgresProjectBlockRepository(pool).GetByCanonicalKey(ctx, canonical)
+			block, err := NewPostgresProjectBlockRepository(pool).GetByProjectKey(ctx, canonical)
 			require.NoError(t, err)
 			require.Equal(t, action, block.Action)
 			require.Equal(t, canonical, block.Project)
@@ -101,20 +101,20 @@ func TestPostgresProjectBlockRepository_BlockStatusAndAck(t *testing.T) {
 	repo := NewPostgresProjectBlockRepository(pool)
 
 	block, err := repo.BlockProject(ctx, model.ProjectBlockCreate{
-		Project:             "Jarvis Dev",
-		CanonicalProjectKey: "Jarvis Dev",
-		Action:              model.ProjectBlockActionQuarantine,
-		Reason:              "duplicate garbage project",
-		Confirmation:        "Jarvis Dev",
-		ExportMarker:        "export-2026-07-05",
-		ActorUserID:         "admin-1",
+		Project:      "Jarvis Dev",
+		ProjectKey:   "Jarvis Dev",
+		Action:       model.ProjectBlockActionQuarantine,
+		Reason:       "duplicate garbage project",
+		Confirmation: "Jarvis Dev",
+		ExportMarker: "export-2026-07-05",
+		ActorUserID:  "admin-1",
 	})
 	require.NoError(t, err)
-	require.Equal(t, "Jarvis Dev", block.CanonicalProjectKey)
+	require.Equal(t, "Jarvis Dev", block.ProjectKey)
 	require.NotEmpty(t, block.CommandID)
 	require.NotEmpty(t, block.AckToken)
 
-	status, err := repo.GetByCanonicalKey(ctx, "Jarvis Dev")
+	status, err := repo.GetByProjectKey(ctx, "Jarvis Dev")
 	require.NoError(t, err)
 	require.True(t, status.Blocked)
 	require.Equal(t, "duplicate garbage project", status.Reason)
@@ -126,13 +126,13 @@ func TestPostgresProjectBlockRepository_BlockStatusAndAck(t *testing.T) {
 	clientSuppliedAppliedAt := time.Date(2000, 7, 5, 21, 0, 0, 0, time.UTC)
 	beforeRecord := time.Now().UTC()
 	ack, err := repo.RecordAck(ctx, model.ProjectBlockAck{
-		CommandID:           block.CommandID,
-		CanonicalProjectKey: "Jarvis Dev",
-		AckToken:            delivery.AckToken,
-		Status:              model.ProjectBlockAckApplied,
-		Warning:             "quarantined locally from stale client clock",
-		AppliedAt:           clientSuppliedAppliedAt,
-		AckSubject:          subject,
+		CommandID:  block.CommandID,
+		ProjectKey: "Jarvis Dev",
+		AckToken:   delivery.AckToken,
+		Status:     model.ProjectBlockAckApplied,
+		Warning:    "quarantined locally from stale client clock",
+		AppliedAt:  clientSuppliedAppliedAt,
+		AckSubject: subject,
 	})
 	afterRecord := time.Now().UTC()
 	require.NoError(t, err)
@@ -145,13 +145,13 @@ func TestPostgresProjectBlockRepository_BlockStatusAndAck(t *testing.T) {
 	clientSuppliedAppliedAt = time.Date(2035, 7, 5, 21, 0, 0, 0, time.UTC)
 	beforeRecord = time.Now().UTC()
 	ack, err = repo.RecordAck(ctx, model.ProjectBlockAck{
-		CommandID:           block.CommandID,
-		CanonicalProjectKey: "Jarvis Dev",
-		AckToken:            delivery.AckToken,
-		Status:              model.ProjectBlockAckApplied,
-		Warning:             "quarantined locally from future client clock",
-		AppliedAt:           clientSuppliedAppliedAt,
-		AckSubject:          subject,
+		CommandID:  block.CommandID,
+		ProjectKey: "Jarvis Dev",
+		AckToken:   delivery.AckToken,
+		Status:     model.ProjectBlockAckApplied,
+		Warning:    "quarantined locally from future client clock",
+		AppliedAt:  clientSuppliedAppliedAt,
+		AckSubject: subject,
 	})
 	afterRecord = time.Now().UTC()
 	require.NoError(t, err)
@@ -179,26 +179,26 @@ func TestPostgresProjectBlockRepository_KeyLookupsAreExact(t *testing.T) {
 	ctx := context.Background()
 	repo := NewPostgresProjectBlockRepository(pool)
 	block, err := repo.BlockProject(ctx, model.ProjectBlockCreate{
-		Project:             " Foo.Bar ",
-		CanonicalProjectKey: " Foo.Bar ",
-		Action:              model.ProjectBlockActionBlock,
-		Reason:              "duplicate",
-		Confirmation:        " Foo.Bar ",
-		ActorUserID:         "admin-1",
+		Project:      " Foo.Bar ",
+		ProjectKey:   " Foo.Bar ",
+		Action:       model.ProjectBlockActionBlock,
+		Reason:       "duplicate",
+		Confirmation: " Foo.Bar ",
+		ActorUserID:  "admin-1",
 	})
 	require.NoError(t, err)
 
-	stored, err := repo.GetByCanonicalKey(ctx, " Foo.Bar ")
+	stored, err := repo.GetByProjectKey(ctx, " Foo.Bar ")
 	require.NoError(t, err)
 	require.Equal(t, " Foo.Bar ", stored.Project)
-	require.Equal(t, " Foo.Bar ", stored.CanonicalProjectKey)
+	require.Equal(t, " Foo.Bar ", stored.ProjectKey)
 
-	_, err = repo.GetByCanonicalKey(ctx, "FOO_BAR")
+	_, err = repo.GetByProjectKey(ctx, "FOO_BAR")
 	require.ErrorIs(t, err, ErrNotFound, "an equivalent-looking spelling is a different project")
 
 	progress, err := repo.QuarantineProgress(ctx, " Foo.Bar ", block.Generation, "", 10)
 	require.NoError(t, err)
-	require.Equal(t, " Foo.Bar ", progress.CanonicalProjectKey)
+	require.Equal(t, " Foo.Bar ", progress.ProjectKey)
 	require.Equal(t, " Foo.Bar ", progress.Project)
 
 	_, err = repo.QuarantineProgress(ctx, " Foo/Bar ", block.Generation, "", 10)
@@ -212,23 +212,23 @@ func TestPostgresProjectBlockRepository_ReblockRotatesCommandID(t *testing.T) {
 	ctx := context.Background()
 	repo := NewPostgresProjectBlockRepository(pool)
 	first, err := repo.BlockProject(ctx, model.ProjectBlockCreate{
-		Project:             "Jarvis Dev",
-		CanonicalProjectKey: "Jarvis Dev",
-		Action:              model.ProjectBlockActionQuarantine,
-		Reason:              "first reason",
-		Confirmation:        "jarvis-dev",
-		ExportMarker:        "export-1",
-		ActorUserID:         "admin-1",
+		Project:      "Jarvis Dev",
+		ProjectKey:   "Jarvis Dev",
+		Action:       model.ProjectBlockActionQuarantine,
+		Reason:       "first reason",
+		Confirmation: "jarvis-dev",
+		ExportMarker: "export-1",
+		ActorUserID:  "admin-1",
 	})
 	require.NoError(t, err)
 	second, err := repo.BlockProject(ctx, model.ProjectBlockCreate{
-		Project:             "Jarvis Dev",
-		CanonicalProjectKey: "Jarvis Dev",
-		Action:              model.ProjectBlockActionQuarantine,
-		Reason:              "changed reason",
-		Confirmation:        "jarvis-dev",
-		ExportMarker:        "export-2",
-		ActorUserID:         "admin-2",
+		Project:      "Jarvis Dev",
+		ProjectKey:   "Jarvis Dev",
+		Action:       model.ProjectBlockActionQuarantine,
+		Reason:       "changed reason",
+		Confirmation: "jarvis-dev",
+		ExportMarker: "export-2",
+		ActorUserID:  "admin-2",
 	})
 	require.NoError(t, err)
 	require.NotEqual(t, first.CommandID, second.CommandID)
@@ -240,15 +240,15 @@ func TestPostgresProjectBlockRepository_UnblockAdvancesGenerationAndReleasesClou
 
 	ctx := context.Background()
 	repo := NewPostgresProjectBlockRepository(pool)
-	first, err := repo.BlockProject(ctx, model.ProjectBlockCreate{Project: "Jarvis Dev", CanonicalProjectKey: "jarvis-dev", Action: model.ProjectBlockActionBlock, Reason: "duplicate", Confirmation: "jarvis-dev", ActorUserID: "admin-1"})
+	first, err := repo.BlockProject(ctx, model.ProjectBlockCreate{Project: "Jarvis Dev", ProjectKey: "jarvis-dev", Action: model.ProjectBlockActionBlock, Reason: "duplicate", Confirmation: "jarvis-dev", ActorUserID: "admin-1"})
 	require.NoError(t, err)
 	require.True(t, first.Blocked)
 
-	released, err := repo.BlockProject(ctx, model.ProjectBlockCreate{Project: "Jarvis Dev", CanonicalProjectKey: "jarvis-dev", Action: model.ProjectBlockActionUnblock, Reason: "restored", Confirmation: "jarvis-dev", ActorUserID: "admin-2"})
+	released, err := repo.BlockProject(ctx, model.ProjectBlockCreate{Project: "Jarvis Dev", ProjectKey: "jarvis-dev", Action: model.ProjectBlockActionUnblock, Reason: "restored", Confirmation: "jarvis-dev", ActorUserID: "admin-2"})
 	require.NoError(t, err)
 	require.False(t, released.Blocked)
 	require.Equal(t, first.Generation+1, released.Generation)
-	_, err = repo.GetByCanonicalKey(ctx, "Jarvis Dev")
+	_, err = repo.GetByProjectKey(ctx, "Jarvis Dev")
 	require.ErrorIs(t, err, ErrNotFound, "released projects must stop returning HTTP 423 immediately")
 
 	var history int
@@ -263,13 +263,13 @@ func TestPostgresProjectBlockRepository_AckDeliveryIsSubjectBound(t *testing.T) 
 	ctx := context.Background()
 	repo := NewPostgresProjectBlockRepository(pool)
 	block, err := repo.BlockProject(ctx, model.ProjectBlockCreate{
-		Project:             "Jarvis Dev",
-		CanonicalProjectKey: "Jarvis Dev",
-		Action:              model.ProjectBlockActionQuarantine,
-		Reason:              "duplicate",
-		Confirmation:        "jarvis-dev",
-		ExportMarker:        "export-1",
-		ActorUserID:         "admin-1",
+		Project:      "Jarvis Dev",
+		ProjectKey:   "Jarvis Dev",
+		Action:       model.ProjectBlockActionQuarantine,
+		Reason:       "duplicate",
+		Confirmation: "jarvis-dev",
+		ExportMarker: "export-1",
+		ActorUserID:  "admin-1",
 	})
 	require.NoError(t, err)
 	subjectA := model.ProjectBlockAckSubject{AuthSubject: "user-1", DaemonID: "daemon-1", Client: "hive-daemon"}
@@ -299,13 +299,13 @@ func TestPostgresProjectBlockRepository_AckDeliveryIsAccountBound(t *testing.T) 
 	ctx := context.Background()
 	repo := NewPostgresProjectBlockRepository(pool)
 	block, err := repo.BlockProject(ctx, model.ProjectBlockCreate{
-		Project:             "Jarvis Dev",
-		CanonicalProjectKey: "Jarvis Dev",
-		Action:              model.ProjectBlockActionQuarantine,
-		Reason:              "duplicate",
-		Confirmation:        "jarvis-dev",
-		ExportMarker:        "export-1",
-		ActorUserID:         "admin-1",
+		Project:      "Jarvis Dev",
+		ProjectKey:   "Jarvis Dev",
+		Action:       model.ProjectBlockActionQuarantine,
+		Reason:       "duplicate",
+		Confirmation: "jarvis-dev",
+		ExportMarker: "export-1",
+		ActorUserID:  "admin-1",
 	})
 	require.NoError(t, err)
 	accountOnly := model.ProjectBlockAckSubject{AuthSubject: "user-1"}
@@ -333,7 +333,7 @@ func TestPostgresProjectBlockRepository_QuarantineProgressUsesActiveAccountsAndC
 
 	ctx := context.Background()
 	repo := NewPostgresProjectBlockRepository(pool)
-	block, err := repo.BlockProject(ctx, model.ProjectBlockCreate{Project: "Org/Repo", CanonicalProjectKey: "org-repo", Action: model.ProjectBlockActionBlock, Reason: "duplicate", Confirmation: "org-repo", ActorUserID: "admin-1"})
+	block, err := repo.BlockProject(ctx, model.ProjectBlockCreate{Project: "Org/Repo", ProjectKey: "org-repo", Action: model.ProjectBlockActionBlock, Reason: "duplicate", Confirmation: "org-repo", ActorUserID: "admin-1"})
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `INSERT INTO users (id, username, email, password, is_active) VALUES
 		('00000000-0000-0000-0000-000000000011', 'Zoe', 'zoe@example.com', 'hash', true),
@@ -343,7 +343,7 @@ func TestPostgresProjectBlockRepository_QuarantineProgressUsesActiveAccountsAndC
 	for _, subject := range []string{"00000000-0000-0000-0000-000000000011", "00000000-0000-0000-0000-000000000013"} {
 		delivery, err := repo.EnsureAckDelivery(ctx, block, model.ProjectBlockAckSubject{AuthSubject: subject})
 		require.NoError(t, err)
-		_, err = repo.RecordAck(ctx, model.ProjectBlockAck{CommandID: block.CommandID, CanonicalProjectKey: block.CanonicalProjectKey, AckToken: delivery.AckToken, AckSubject: model.ProjectBlockAckSubject{AuthSubject: subject}, Status: model.ProjectBlockAckApplied})
+		_, err = repo.RecordAck(ctx, model.ProjectBlockAck{CommandID: block.CommandID, ProjectKey: block.ProjectKey, AckToken: delivery.AckToken, AckSubject: model.ProjectBlockAckSubject{AuthSubject: subject}, Status: model.ProjectBlockAckApplied})
 		require.NoError(t, err)
 	}
 
@@ -364,7 +364,7 @@ func TestPostgresProjectBlockRepository_QuarantineProgressCollapsesDuplicateAckn
 
 	ctx := context.Background()
 	repo := NewPostgresProjectBlockRepository(pool)
-	block, err := repo.BlockProject(ctx, model.ProjectBlockCreate{Project: "Org/Repo", CanonicalProjectKey: "org-repo", Action: model.ProjectBlockActionBlock, Reason: "duplicate", Confirmation: "org-repo", ActorUserID: "admin-1"})
+	block, err := repo.BlockProject(ctx, model.ProjectBlockCreate{Project: "Org/Repo", ProjectKey: "org-repo", Action: model.ProjectBlockActionBlock, Reason: "duplicate", Confirmation: "org-repo", ActorUserID: "admin-1"})
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `INSERT INTO users (id, username, email, password, is_active) VALUES
 		('00000000-0000-0000-0000-000000000021', 'Ada', 'ada@example.com', 'hash', true),
@@ -375,26 +375,26 @@ func TestPostgresProjectBlockRepository_QuarantineProgressCollapsesDuplicateAckn
 	ada := model.ProjectBlockAckSubject{AuthSubject: "00000000-0000-0000-0000-000000000021"}
 	delivery, err := repo.EnsureAckDelivery(ctx, block, ada)
 	require.NoError(t, err)
-	_, err = repo.RecordAck(ctx, model.ProjectBlockAck{CommandID: block.CommandID, CanonicalProjectKey: block.CanonicalProjectKey, AckToken: delivery.AckToken, AckSubject: ada, Status: model.ProjectBlockAckFailed})
+	_, err = repo.RecordAck(ctx, model.ProjectBlockAck{CommandID: block.CommandID, ProjectKey: block.ProjectKey, AckToken: delivery.AckToken, AckSubject: ada, Status: model.ProjectBlockAckFailed})
 	require.NoError(t, err)
-	_, err = repo.RecordAck(ctx, model.ProjectBlockAck{CommandID: block.CommandID, CanonicalProjectKey: block.CanonicalProjectKey, AckToken: delivery.AckToken, AckSubject: ada, Status: model.ProjectBlockAckApplied})
+	_, err = repo.RecordAck(ctx, model.ProjectBlockAck{CommandID: block.CommandID, ProjectKey: block.ProjectKey, AckToken: delivery.AckToken, AckSubject: ada, Status: model.ProjectBlockAckApplied})
 	require.NoError(t, err)
 
-	first, err := repo.QuarantineProgress(ctx, block.CanonicalProjectKey, block.Generation, "", 1)
+	first, err := repo.QuarantineProgress(ctx, block.ProjectKey, block.Generation, "", 1)
 	require.NoError(t, err)
 	require.Equal(t, model.QuarantineProgressTotals{Active: 3, Acknowledged: 1, Pending: 2}, first.Totals)
 	require.Equal(t, []model.QuarantineProgressRow{{Username: "Ada", State: model.ProjectBlockAckApplied, AcknowledgedAt: first.Progress[0].AcknowledgedAt}}, first.Progress)
 	require.NotNil(t, first.Progress[0].AcknowledgedAt)
 	require.NotEmpty(t, first.NextCursor)
 
-	second, err := repo.QuarantineProgress(ctx, block.CanonicalProjectKey, block.Generation, first.NextCursor, 1)
+	second, err := repo.QuarantineProgress(ctx, block.ProjectKey, block.Generation, first.NextCursor, 1)
 	require.NoError(t, err)
 	require.Equal(t, model.QuarantineProgressTotals{Active: 3, Acknowledged: 1, Pending: 2}, second.Totals)
 	require.Equal(t, []model.QuarantineProgressRow{{Username: "Bea", State: "pending"}}, second.Progress)
 
 	_, err = repo.QuarantineProgress(ctx, "other-repo", block.Generation, first.NextCursor, 1)
 	require.Error(t, err)
-	_, err = repo.QuarantineProgress(ctx, block.CanonicalProjectKey, block.Generation+1, first.NextCursor, 1)
+	_, err = repo.QuarantineProgress(ctx, block.ProjectKey, block.Generation+1, first.NextCursor, 1)
 	require.Error(t, err)
 }
 
@@ -404,27 +404,27 @@ func TestPostgresProjectBlockRepository_QuarantineProgressKeepsOlderGenerationCo
 
 	ctx := context.Background()
 	repo := NewPostgresProjectBlockRepository(pool)
-	first, err := repo.BlockProject(ctx, model.ProjectBlockCreate{Project: "Org/Repo", CanonicalProjectKey: "org-repo", Action: model.ProjectBlockActionBlock, Reason: "first", Confirmation: "org-repo", ActorUserID: "admin-1"})
+	first, err := repo.BlockProject(ctx, model.ProjectBlockCreate{Project: "Org/Repo", ProjectKey: "org-repo", Action: model.ProjectBlockActionBlock, Reason: "first", Confirmation: "org-repo", ActorUserID: "admin-1"})
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `INSERT INTO users (id, username, email, password, is_active) VALUES ('00000000-0000-0000-0000-000000000031', 'Ada', 'ada@example.com', 'hash', true)`)
 	require.NoError(t, err)
 	subject := model.ProjectBlockAckSubject{AuthSubject: "00000000-0000-0000-0000-000000000031"}
 	delivery, err := repo.EnsureAckDelivery(ctx, first, subject)
 	require.NoError(t, err)
-	_, err = repo.RecordAck(ctx, model.ProjectBlockAck{CommandID: first.CommandID, CanonicalProjectKey: first.CanonicalProjectKey, AckToken: delivery.AckToken, AckSubject: subject, Status: model.ProjectBlockAckApplied})
+	_, err = repo.RecordAck(ctx, model.ProjectBlockAck{CommandID: first.CommandID, ProjectKey: first.ProjectKey, AckToken: delivery.AckToken, AckSubject: subject, Status: model.ProjectBlockAckApplied})
 	require.NoError(t, err)
 
-	second, err := repo.BlockProject(ctx, model.ProjectBlockCreate{Project: "Org/Repo", CanonicalProjectKey: "org-repo", Action: model.ProjectBlockActionUnblock, Reason: "release", Confirmation: "org-repo", ActorUserID: "admin-1"})
+	second, err := repo.BlockProject(ctx, model.ProjectBlockCreate{Project: "Org/Repo", ProjectKey: "org-repo", Action: model.ProjectBlockActionUnblock, Reason: "release", Confirmation: "org-repo", ActorUserID: "admin-1"})
 	require.NoError(t, err)
 	require.Equal(t, first.Generation+1, second.Generation)
 
-	older, err := repo.QuarantineProgress(ctx, first.CanonicalProjectKey, first.Generation, "", 10)
+	older, err := repo.QuarantineProgress(ctx, first.ProjectKey, first.Generation, "", 10)
 	require.NoError(t, err)
 	require.Equal(t, first.Generation, older.Generation)
 	require.Equal(t, model.QuarantineProgressTotals{Active: 1, Acknowledged: 1, Pending: 0}, older.Totals)
 	require.Equal(t, model.ProjectBlockAckApplied, older.Progress[0].State)
 
-	current, err := repo.QuarantineProgress(ctx, second.CanonicalProjectKey, second.Generation, "", 10)
+	current, err := repo.QuarantineProgress(ctx, second.ProjectKey, second.Generation, "", 10)
 	require.NoError(t, err)
 	require.Equal(t, second.Generation, current.Generation)
 	require.Equal(t, model.QuarantineProgressTotals{Active: 1, Acknowledged: 0, Pending: 1}, current.Totals)
@@ -437,7 +437,7 @@ func TestPostgresProjectBlockRepository_ListQuarantinesDerivesCurrentGenerationO
 
 	ctx := context.Background()
 	repo := NewPostgresProjectBlockRepository(pool)
-	block, err := repo.BlockProject(ctx, model.ProjectBlockCreate{Project: "Org/Repo", CanonicalProjectKey: "org-repo", Action: model.ProjectBlockActionBlock, Reason: "duplicate", Confirmation: "org-repo", ActorUserID: "admin-1"})
+	block, err := repo.BlockProject(ctx, model.ProjectBlockCreate{Project: "Org/Repo", ProjectKey: "org-repo", Action: model.ProjectBlockActionBlock, Reason: "duplicate", Confirmation: "org-repo", ActorUserID: "admin-1"})
 	require.NoError(t, err)
 
 	_, err = pool.Exec(ctx, `INSERT INTO users (id, username, email, password, is_active) VALUES ('00000000-0000-0000-0000-000000000041', 'Ada', 'ada@example.com', 'hash', true)`)
@@ -445,14 +445,14 @@ func TestPostgresProjectBlockRepository_ListQuarantinesDerivesCurrentGenerationO
 	subject := model.ProjectBlockAckSubject{AuthSubject: "00000000-0000-0000-0000-000000000041"}
 	delivery, err := repo.EnsureAckDelivery(ctx, block, subject)
 	require.NoError(t, err)
-	_, err = repo.RecordAck(ctx, model.ProjectBlockAck{CommandID: block.CommandID, CanonicalProjectKey: block.CanonicalProjectKey, AckToken: delivery.AckToken, AckSubject: subject, Status: model.ProjectBlockAckApplied})
+	_, err = repo.RecordAck(ctx, model.ProjectBlockAck{CommandID: block.CommandID, ProjectKey: block.ProjectKey, AckToken: delivery.AckToken, AckSubject: subject, Status: model.ProjectBlockAckApplied})
 	require.NoError(t, err)
 
 	summaries, err := repo.ListQuarantines(ctx)
 
 	require.NoError(t, err)
 	require.Equal(t, []model.QuarantineSummary{{
-		Project: "Org/Repo", CanonicalProjectKey: "org-repo", Generation: block.Generation,
+		Project: "Org/Repo", ProjectKey: "org-repo", Generation: block.Generation,
 		Action: model.ProjectBlockActionBlock, State: model.ProjectBlockAckApplied, TransitionedAt: block.BlockedAt,
 	}}, summaries)
 	for _, summary := range summaries {
@@ -467,7 +467,7 @@ func TestPostgresTxManager_ReadOnlyRepeatableReadKeepsAdminSnapshotDuringConcurr
 
 	ctx := context.Background()
 	repo := NewPostgresProjectBlockRepository(pool)
-	first, err := repo.BlockProject(ctx, model.ProjectBlockCreate{Project: "Org/Repo", CanonicalProjectKey: "org-repo", Action: model.ProjectBlockActionBlock, Reason: "first", Confirmation: "org-repo", ActorUserID: "admin-1"})
+	first, err := repo.BlockProject(ctx, model.ProjectBlockCreate{Project: "Org/Repo", ProjectKey: "org-repo", Action: model.ProjectBlockActionBlock, Reason: "first", Confirmation: "org-repo", ActorUserID: "admin-1"})
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `INSERT INTO users (id, username, email, password, is_active) VALUES ('00000000-0000-0000-0000-000000000042', 'Ada', 'ada@example.com', 'hash', true)`)
 	require.NoError(t, err)
@@ -476,17 +476,17 @@ func TestPostgresTxManager_ReadOnlyRepeatableReadKeepsAdminSnapshotDuringConcurr
 	var summaries []model.QuarantineSummary
 	err = NewPostgresTxManager(pool).ReadOnlyRepeatableRead(ctx, func(ctx context.Context, repos TxRepositories) error {
 		var snapshotErr error
-		before, snapshotErr = repos.ProjectBlocks.QuarantineProgress(ctx, first.CanonicalProjectKey, first.Generation, "", 10)
+		before, snapshotErr = repos.ProjectBlocks.QuarantineProgress(ctx, first.ProjectKey, first.Generation, "", 10)
 		if snapshotErr != nil {
 			return snapshotErr
 		}
 
-		_, mutationErr := repo.BlockProject(ctx, model.ProjectBlockCreate{Project: "Org/Repo", CanonicalProjectKey: "org-repo", Action: model.ProjectBlockActionUnblock, Reason: "release", Confirmation: "org-repo", ActorUserID: "admin-2"})
+		_, mutationErr := repo.BlockProject(ctx, model.ProjectBlockCreate{Project: "Org/Repo", ProjectKey: "org-repo", Action: model.ProjectBlockActionUnblock, Reason: "release", Confirmation: "org-repo", ActorUserID: "admin-2"})
 		if mutationErr != nil {
 			return mutationErr
 		}
 
-		after, snapshotErr = repos.ProjectBlocks.QuarantineProgress(ctx, first.CanonicalProjectKey, first.Generation, "", 10)
+		after, snapshotErr = repos.ProjectBlocks.QuarantineProgress(ctx, first.ProjectKey, first.Generation, "", 10)
 		if snapshotErr != nil {
 			return snapshotErr
 		}
@@ -498,7 +498,7 @@ func TestPostgresTxManager_ReadOnlyRepeatableReadKeepsAdminSnapshotDuringConcurr
 	require.Equal(t, first.Generation, before.Generation)
 	require.Equal(t, before, after)
 	require.Equal(t, []model.QuarantineSummary{{
-		Project: "Org/Repo", CanonicalProjectKey: "org-repo", Generation: first.Generation,
+		Project: "Org/Repo", ProjectKey: "org-repo", Generation: first.Generation,
 		Action: model.ProjectBlockActionBlock, State: model.ProjectBlockProgressPending, TransitionedAt: first.BlockedAt,
 	}}, summaries)
 
@@ -527,13 +527,13 @@ func TestPostgresMemoryRepository_GetByIDExcludesBlockedProject(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
-		Project:             "Blocked Project",
-		CanonicalProjectKey: "Blocked Project",
-		Action:              model.ProjectBlockActionQuarantine,
-		Reason:              "garbage",
-		Confirmation:        "blocked-project",
-		ExportMarker:        "export-1",
-		ActorUserID:         "admin-1",
+		Project:      "Blocked Project",
+		ProjectKey:   "Blocked Project",
+		Action:       model.ProjectBlockActionQuarantine,
+		Reason:       "garbage",
+		Confirmation: "blocked-project",
+		ExportMarker: "export-1",
+		ActorUserID:  "admin-1",
 	})
 	require.NoError(t, err)
 
@@ -556,13 +556,13 @@ func TestPostgresProjectRepository_ListAggregatesExcludesBlockedProjects(t *test
 	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000302", "Blocked Project", "blocked-session", base, base, nil)
 
 	_, err := blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
-		Project:             "Blocked Project",
-		CanonicalProjectKey: "Blocked Project",
-		Action:              model.ProjectBlockActionQuarantine,
-		Reason:              "garbage",
-		Confirmation:        "Blocked Project",
-		ExportMarker:        "export-1",
-		ActorUserID:         "admin-1",
+		Project:      "Blocked Project",
+		ProjectKey:   "Blocked Project",
+		Action:       model.ProjectBlockActionQuarantine,
+		Reason:       "garbage",
+		Confirmation: "Blocked Project",
+		ExportMarker: "export-1",
+		ActorUserID:  "admin-1",
 	})
 	require.NoError(t, err)
 
@@ -586,13 +586,13 @@ func TestPostgresMemoryRepository_CountByProjectExcludesBlockedProjects(t *testi
 	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000701", "visible-count", "visible-count-session", base, base, nil)
 	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000702", "Blocked Count", "blocked-count-session", base, base, nil)
 	_, err := blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
-		Project:             "Blocked Count",
-		CanonicalProjectKey: "Blocked Count",
-		Action:              model.ProjectBlockActionQuarantine,
-		Reason:              "garbage",
-		Confirmation:        "blocked-count",
-		ExportMarker:        "export-1",
-		ActorUserID:         "admin-1",
+		Project:      "Blocked Count",
+		ProjectKey:   "Blocked Count",
+		Action:       model.ProjectBlockActionQuarantine,
+		Reason:       "garbage",
+		Confirmation: "blocked-count",
+		ExportMarker: "export-1",
+		ActorUserID:  "admin-1",
 	})
 	require.NoError(t, err)
 
@@ -612,13 +612,13 @@ func TestPostgresMemoryRepository_PullSinceExcludesBlockedProjects(t *testing.T)
 	insertProjectSession(t, pool, "blocked-pull-session", "Blocked Pull", base, nil)
 	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000801", "Blocked Pull", "blocked-pull-session", base, base, nil)
 	_, err := blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
-		Project:             "Blocked Pull",
-		CanonicalProjectKey: "Blocked Pull",
-		Action:              model.ProjectBlockActionQuarantine,
-		Reason:              "garbage",
-		Confirmation:        "blocked-pull",
-		ExportMarker:        "export-1",
-		ActorUserID:         "admin-1",
+		Project:      "Blocked Pull",
+		ProjectKey:   "Blocked Pull",
+		Action:       model.ProjectBlockActionQuarantine,
+		Reason:       "garbage",
+		Confirmation: "blocked-pull",
+		ExportMarker: "export-1",
+		ActorUserID:  "admin-1",
 	})
 	require.NoError(t, err)
 
@@ -641,13 +641,13 @@ func TestPostgresMemoryRepository_CountLiveActivityExcludesBlockedProjects(t *te
 	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000501", "visible-live", "visible-live-session", base, base, nil)
 	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000502", "Blocked Live", "blocked-live-session", base.Add(time.Minute), base.Add(time.Minute), nil)
 	_, err := blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
-		Project:             "Blocked Live",
-		CanonicalProjectKey: "Blocked Live",
-		Action:              model.ProjectBlockActionQuarantine,
-		Reason:              "garbage",
-		Confirmation:        "blocked-live",
-		ExportMarker:        "export-1",
-		ActorUserID:         "admin-1",
+		Project:      "Blocked Live",
+		ProjectKey:   "Blocked Live",
+		Action:       model.ProjectBlockActionQuarantine,
+		Reason:       "garbage",
+		Confirmation: "blocked-live",
+		ExportMarker: "export-1",
+		ActorUserID:  "admin-1",
 	})
 	require.NoError(t, err)
 
@@ -670,13 +670,13 @@ func TestPostgresMemoryRepository_CountGrowthByMonthExcludesBlockedProjects(t *t
 	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000601", "visible-growth", "visible-growth-session", now, now, nil)
 	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000602", "Blocked Growth", "blocked-growth-session", now, now, nil)
 	_, err := blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
-		Project:             "Blocked Growth",
-		CanonicalProjectKey: "Blocked Growth",
-		Action:              model.ProjectBlockActionQuarantine,
-		Reason:              "garbage",
-		Confirmation:        "blocked-growth",
-		ExportMarker:        "export-1",
-		ActorUserID:         "admin-1",
+		Project:      "Blocked Growth",
+		ProjectKey:   "Blocked Growth",
+		Action:       model.ProjectBlockActionQuarantine,
+		Reason:       "garbage",
+		Confirmation: "blocked-growth",
+		ExportMarker: "export-1",
+		ActorUserID:  "admin-1",
 	})
 	require.NoError(t, err)
 

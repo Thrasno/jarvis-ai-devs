@@ -85,7 +85,7 @@ func (s *memoryService) Create(ctx context.Context, mem *model.Memory) (*model.M
 
 func (s *memoryService) createWithRepos(ctx context.Context, mem *model.Memory, memRepo repository.MemoryRepository, sessionRepo repository.SessionRepository, blockRepo repository.ProjectBlockRepository) (*model.Memory, error) {
 	if blockRepo != nil {
-		block, err := blockRepo.GetByCanonicalKey(ctx, mem.Project)
+		block, err := blockRepo.GetByProjectKey(ctx, mem.Project)
 		if err != nil && !errors.Is(err, repository.ErrNotFound) {
 			return nil, err
 		}

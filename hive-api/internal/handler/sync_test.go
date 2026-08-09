@@ -173,7 +173,7 @@ func TestSync_ProjectBlockedResponseRedactsReason(t *testing.T) {
 
 	syncSvc := &mockSyncSvc{}
 	syncSvc.On("Sync", context.Background(), mock.AnythingOfType("model.SyncRequest"), "user-uuid-123").Return(nil, &service.ProjectBlockedError{Command: model.ProjectBlockCommand{
-		CommandID: "cmd-1", AckToken: "ack-token-1", Project: "Jarvis Dev", CanonicalProjectKey: "Jarvis Dev", Reason: "sensitive admin reason", BlockedAt: time.Now().UTC(),
+		CommandID: "cmd-1", AckToken: "ack-token-1", Project: "Jarvis Dev", ProjectKey: "Jarvis Dev", Reason: "sensitive admin reason", BlockedAt: time.Now().UTC(),
 	}})
 
 	w := doAuthRequest(t, syncDeps(authSvc, syncSvc), http.MethodPost, "/sync",
@@ -184,7 +184,7 @@ func TestSync_ProjectBlockedResponseRedactsReason(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	require.Equal(t, "cmd-1", body.Command.CommandID)
 	require.Equal(t, "ack-token-1", body.Command.AckToken)
-	require.Equal(t, "Jarvis Dev", body.Command.CanonicalProjectKey)
+	require.Equal(t, "Jarvis Dev", body.Command.ProjectKey)
 	require.Empty(t, body.Command.Reason)
 }
 
@@ -211,11 +211,11 @@ func TestSync_ProjectBlockedResponseFromServicePrecheckPreservesAckToken(t *test
 	syncSvc := service.NewSyncService(&repository.MockMemoryRepository{}, &repository.MockPromptRepository{}, &repository.MockSessionRepository{}, nil, &repository.MockProjectBlockRepository{}, tx)
 	blockedAt := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 	subject := model.ProjectBlockAckSubject{AuthSubject: "user-uuid-123", DaemonID: "daemon-1", Client: "hive-daemon"}
-	block := &model.ProjectBlock{CommandID: "cmd-real-precheck", AckToken: "legacy-global-token", Project: "Jarvis Dev", CanonicalProjectKey: "Jarvis Dev", Reason: "sensitive admin reason", BlockedAt: blockedAt}
+	block := &model.ProjectBlock{CommandID: "cmd-real-precheck", AckToken: "legacy-global-token", Project: "Jarvis Dev", ProjectKey: "Jarvis Dev", Reason: "sensitive admin reason", BlockedAt: blockedAt}
 
 	txLocks.On("LockProjectKeys", ctx, []string{"Jarvis Dev"}).Return(nil).Once()
-	txBlockRepo.On("GetByCanonicalKey", ctx, "Jarvis Dev").Return(block, nil).Once()
-	txBlockRepo.On("EnsureAckDelivery", ctx, block, subject).Return(model.ProjectBlockCommand{CommandID: "cmd-real-precheck", AckToken: "ack-delivery-subject", Project: "Jarvis Dev", CanonicalProjectKey: "Jarvis Dev", Reason: "sensitive admin reason", BlockedAt: blockedAt}, nil).Once()
+	txBlockRepo.On("GetByProjectKey", ctx, "Jarvis Dev").Return(block, nil).Once()
+	txBlockRepo.On("EnsureAckDelivery", ctx, block, subject).Return(model.ProjectBlockCommand{CommandID: "cmd-real-precheck", AckToken: "ack-delivery-subject", Project: "Jarvis Dev", ProjectKey: "Jarvis Dev", Reason: "sensitive admin reason", BlockedAt: blockedAt}, nil).Once()
 
 	w := doAuthRequest(t, RouterDeps{AuthSvc: authSvc, MemorySvc: &mockMemorySvc{}, SyncSvc: syncSvc, AdminSvc: &mockAdminSvc{}}, http.MethodPost, "/sync",
 		map[string]interface{}{"project": "Jarvis Dev", "memories": []interface{}{}}, "valid-token")
@@ -225,7 +225,7 @@ func TestSync_ProjectBlockedResponseFromServicePrecheckPreservesAckToken(t *test
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	require.Equal(t, "cmd-real-precheck", body.Command.CommandID)
 	require.Equal(t, "ack-delivery-subject", body.Command.AckToken)
-	require.Equal(t, "Jarvis Dev", body.Command.CanonicalProjectKey)
+	require.Equal(t, "Jarvis Dev", body.Command.ProjectKey)
 	require.Empty(t, body.Command.Reason)
 	require.True(t, tx.RolledBack)
 	txMemRepo.AssertNotCalled(t, "Upsert", mock.Anything, mock.Anything)

@@ -514,6 +514,12 @@ func syncRequestProjects(req model.SyncRequest) []string {
 // in first-seen order. It deliberately does NOT canonicalize: the daemon is the
 // sole authority on project identity, and each literal is looked up against the
 // literal a block row stores.
+//
+// repository.ProjectLockKeys dedupes the same literals for the advisory lock and
+// SORTS them instead. The orderings differ on purpose: sorting is what stops two
+// overlapping transactions deadlocking on the same locks, while first-seen order
+// is what makes the rejection here name the projects in the order the request
+// presented them. Neither ordering is safe in the other's place.
 func distinctProjects(projects []string) []string {
 	seen := make(map[string]struct{}, len(projects))
 	distinct := make([]string, 0, len(projects))
@@ -538,7 +544,7 @@ func (s *syncService) precheckBlockedProjects(ctx context.Context, req model.Syn
 	// request project to a canonical key asked about a project nobody blocked,
 	// found nothing, and let the push straight through the quarantine.
 	for _, project := range distinctProjects(syncRequestProjects(req)) {
-		block, err := blockRepo.GetByCanonicalKey(ctx, project)
+		block, err := blockRepo.GetByProjectKey(ctx, project)
 		if err != nil && !errors.Is(err, repository.ErrNotFound) {
 			return err
 		}

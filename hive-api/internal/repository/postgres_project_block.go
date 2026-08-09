@@ -47,8 +47,8 @@ func (r *postgresProjectBlockRepository) blockProject(ctx context.Context, db pg
 	// The block stores the exact literal the admin supplied. It is compared with
 	// plain equality against the literal each row carries, so deriving a key
 	// here would quarantine a project nobody named.
-	if create.CanonicalProjectKey == "" {
-		create.CanonicalProjectKey = create.Project
+	if create.ProjectKey == "" {
+		create.ProjectKey = create.Project
 	}
 	const q = `
 			INSERT INTO project_blocks (project, canonical_project_key, action, reason, confirmation, export_marker, actor_user_id, blocked, blocked_at)
@@ -68,17 +68,17 @@ func (r *postgresProjectBlockRepository) blockProject(ctx context.Context, db pg
 		RETURNING id::text, command_id::text, ack_token, project, canonical_project_key, action, generation, reason, confirmation, export_marker,
 	          COALESCE(actor_user_id, ''), blocked, blocked_at, created_at, updated_at`
 
-	row := db.QueryRow(ctx, q, create.Project, create.CanonicalProjectKey, create.Action, create.Reason, create.Confirmation, create.ExportMarker, create.ActorUserID)
+	row := db.QueryRow(ctx, q, create.Project, create.ProjectKey, create.Action, create.Reason, create.Confirmation, create.ExportMarker, create.ActorUserID)
 	return scanProjectBlock(row)
 }
 
-func (r *postgresProjectBlockRepository) GetByCanonicalKey(ctx context.Context, canonicalProjectKey string) (*model.ProjectBlock, error) {
+func (r *postgresProjectBlockRepository) GetByProjectKey(ctx context.Context, projectKey string) (*model.ProjectBlock, error) {
 	const q = `
 		SELECT id::text, command_id::text, ack_token, project, canonical_project_key, action, generation, reason, confirmation, export_marker,
        COALESCE(actor_user_id, ''), blocked, blocked_at, created_at, updated_at
 FROM project_blocks
 	WHERE canonical_project_key = $1 AND blocked = true`
-	block, err := scanProjectBlock(r.db.QueryRow(ctx, q, canonicalProjectKey))
+	block, err := scanProjectBlock(r.db.QueryRow(ctx, q, projectKey))
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, ErrNotFound
@@ -119,7 +119,7 @@ func (r *postgresProjectBlockRepository) ListInboxCommands(ctx context.Context, 
 	commands := make([]model.ProjectBlockCommand, 0)
 	for rows.Next() {
 		var command model.ProjectBlockCommand
-		if err := rows.Scan(&command.CommandID, &command.AckToken, &command.Project, &command.CanonicalProjectKey, &command.Reason, &command.Action, &command.Generation, &command.BlockedAt); err != nil {
+		if err := rows.Scan(&command.CommandID, &command.AckToken, &command.Project, &command.ProjectKey, &command.Reason, &command.Action, &command.Generation, &command.BlockedAt); err != nil {
 			return nil, wrapPgError(err, "scan project quarantine inbox")
 		}
 		commands = append(commands, command)
@@ -144,8 +144,8 @@ func (r *postgresProjectBlockRepository) RecordAck(ctx context.Context, ack mode
 		    applied_at = EXCLUDED.applied_at,
 	    updated_at = now()
 		RETURNING command_id::text, canonical_project_key, ack_token, ack_auth_subject, ack_daemon_id, ack_client, status, warning, applied_at`
-	row := r.db.QueryRow(ctx, q, ack.CommandID, ack.CanonicalProjectKey, ack.AckToken, ack.AckSubject.AuthSubject, ack.AckSubject.DaemonID, ack.AckSubject.Client, ack.Status, ack.Warning, ack.AppliedAt)
-	if err := row.Scan(&ack.CommandID, &ack.CanonicalProjectKey, &ack.AckToken, &ack.AckSubject.AuthSubject, &ack.AckSubject.DaemonID, &ack.AckSubject.Client, &ack.Status, &ack.Warning, &ack.AppliedAt); err != nil {
+	row := r.db.QueryRow(ctx, q, ack.CommandID, ack.ProjectKey, ack.AckToken, ack.AckSubject.AuthSubject, ack.AckSubject.DaemonID, ack.AckSubject.Client, ack.Status, ack.Warning, ack.AppliedAt)
+	if err := row.Scan(&ack.CommandID, &ack.ProjectKey, &ack.AckToken, &ack.AckSubject.AuthSubject, &ack.AckSubject.DaemonID, &ack.AckSubject.Client, &ack.Status, &ack.Warning, &ack.AppliedAt); err != nil {
 		return model.ProjectBlockAck{}, wrapPgError(err, "record project block ack")
 	}
 	return ack, nil
@@ -164,19 +164,19 @@ func (r *postgresProjectBlockRepository) EnsureAckDelivery(ctx context.Context, 
 			    updated_at = now()
 			RETURNING ack_token`
 	cmd := block.Command()
-	if err := r.db.QueryRow(ctx, q, block.CommandID, block.CanonicalProjectKey, subject.AuthSubject, subject.DaemonID, subject.Client).Scan(&cmd.AckToken); err != nil {
+	if err := r.db.QueryRow(ctx, q, block.CommandID, block.ProjectKey, subject.AuthSubject, subject.DaemonID, subject.Client).Scan(&cmd.AckToken); err != nil {
 		return model.ProjectBlockCommand{}, wrapPgError(err, "ensure project block ack delivery")
 	}
 	return cmd, nil
 }
 
-func (r *postgresProjectBlockRepository) GetAckDelivery(ctx context.Context, canonicalProjectKey, commandID string, subject model.ProjectBlockAckSubject) (*model.ProjectBlockAckDelivery, error) {
+func (r *postgresProjectBlockRepository) GetAckDelivery(ctx context.Context, projectKey, commandID string, subject model.ProjectBlockAckSubject) (*model.ProjectBlockAckDelivery, error) {
 	const q = `
 			SELECT command_id::text, canonical_project_key, ack_token, ack_auth_subject, ack_daemon_id, ack_client
 			FROM project_block_ack_deliveries
 			WHERE canonical_project_key = $1 AND command_id = $2::uuid AND ack_auth_subject = $3`
 	delivery := &model.ProjectBlockAckDelivery{}
-	err := r.db.QueryRow(ctx, q, canonicalProjectKey, commandID, subject.AuthSubject).Scan(&delivery.CommandID, &delivery.CanonicalProjectKey, &delivery.AckToken, &delivery.AckSubject.AuthSubject, &delivery.AckSubject.DaemonID, &delivery.AckSubject.Client)
+	err := r.db.QueryRow(ctx, q, projectKey, commandID, subject.AuthSubject).Scan(&delivery.CommandID, &delivery.ProjectKey, &delivery.AckToken, &delivery.AckSubject.AuthSubject, &delivery.AckSubject.DaemonID, &delivery.AckSubject.Client)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, ErrNotFound
@@ -186,7 +186,7 @@ func (r *postgresProjectBlockRepository) GetAckDelivery(ctx context.Context, can
 	return delivery, nil
 }
 
-func (r *postgresProjectBlockRepository) LatestAckForCommand(ctx context.Context, canonicalProjectKey, commandID string) (*model.ProjectBlockAck, error) {
+func (r *postgresProjectBlockRepository) LatestAckForCommand(ctx context.Context, projectKey, commandID string) (*model.ProjectBlockAck, error) {
 	const q = `
 		SELECT command_id::text, canonical_project_key, ack_token, ack_auth_subject, ack_daemon_id, ack_client, status, warning, applied_at
 	FROM project_block_acks
@@ -194,7 +194,7 @@ func (r *postgresProjectBlockRepository) LatestAckForCommand(ctx context.Context
 	ORDER BY updated_at DESC, created_at DESC
 	LIMIT 1`
 	ack := &model.ProjectBlockAck{}
-	err := r.db.QueryRow(ctx, q, canonicalProjectKey, commandID).Scan(&ack.CommandID, &ack.CanonicalProjectKey, &ack.AckToken, &ack.AckSubject.AuthSubject, &ack.AckSubject.DaemonID, &ack.AckSubject.Client, &ack.Status, &ack.Warning, &ack.AppliedAt)
+	err := r.db.QueryRow(ctx, q, projectKey, commandID).Scan(&ack.CommandID, &ack.ProjectKey, &ack.AckToken, &ack.AckSubject.AuthSubject, &ack.AckSubject.DaemonID, &ack.AckSubject.Client, &ack.Status, &ack.Warning, &ack.AppliedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, ErrNotFound
@@ -204,20 +204,20 @@ func (r *postgresProjectBlockRepository) LatestAckForCommand(ctx context.Context
 	return ack, nil
 }
 
-func (r *postgresProjectBlockRepository) QuarantineProgress(ctx context.Context, canonicalProjectKey string, generation int64, after string, limit int) (model.QuarantineProgressResponse, error) {
+func (r *postgresProjectBlockRepository) QuarantineProgress(ctx context.Context, projectKey string, generation int64, after string, limit int) (model.QuarantineProgressResponse, error) {
 	if limit < 1 || limit > 100 {
 		return model.QuarantineProgressResponse{}, ErrNotFound
 	}
-	if canonicalProjectKey == "" || generation < 1 {
+	if projectKey == "" || generation < 1 {
 		return model.QuarantineProgressResponse{}, ErrNotFound
 	}
-	cursor, err := model.DecodeQuarantineCursor(after, canonicalProjectKey, generation)
+	cursor, err := model.DecodeQuarantineCursor(after, projectKey, generation)
 	if err != nil {
 		return model.QuarantineProgressResponse{}, err
 	}
 	const commandQuery = `SELECT project, action FROM project_quarantine_commands WHERE canonical_project_key = $1 AND generation = $2`
-	result := model.QuarantineProgressResponse{CanonicalProjectKey: canonicalProjectKey, Generation: generation, Progress: []model.QuarantineProgressRow{}}
-	if err := r.db.QueryRow(ctx, commandQuery, canonicalProjectKey, generation).Scan(&result.Project, &result.Action); err != nil {
+	result := model.QuarantineProgressResponse{ProjectKey: projectKey, Generation: generation, Progress: []model.QuarantineProgressRow{}}
+	if err := r.db.QueryRow(ctx, commandQuery, projectKey, generation).Scan(&result.Project, &result.Action); err != nil {
 		if err == pgx.ErrNoRows {
 			return model.QuarantineProgressResponse{}, ErrNotFound
 		}
@@ -242,7 +242,7 @@ func (r *postgresProjectBlockRepository) QuarantineProgress(ctx context.Context,
 		FROM counted
 		WHERE ($3 = '' OR (username_key, username, md5(user_id)) > ($3, $4, $5))
 		ORDER BY username_key ASC, username ASC, md5(user_id) ASC LIMIT $6`
-	rows, err := r.db.Query(ctx, q, canonicalProjectKey, generation, strings.ToLower(cursor.Username), cursor.Username, cursor.CursorID, limit+1)
+	rows, err := r.db.Query(ctx, q, projectKey, generation, strings.ToLower(cursor.Username), cursor.Username, cursor.CursorID, limit+1)
 	if err != nil {
 		return model.QuarantineProgressResponse{}, wrapPgError(err, "load quarantine progress")
 	}
@@ -263,7 +263,7 @@ func (r *postgresProjectBlockRepository) QuarantineProgress(ctx context.Context,
 			continue
 		}
 		result.Progress = append(result.Progress, model.QuarantineProgressRow{Username: username, State: state, AcknowledgedAt: acknowledgedAt})
-		last = model.QuarantineCursor{CanonicalProjectKey: canonicalProjectKey, Generation: generation, Username: username, CursorID: cursorID}
+		last = model.QuarantineCursor{ProjectKey: projectKey, Generation: generation, Username: username, CursorID: cursorID}
 	}
 	if err := rows.Err(); err != nil {
 		return model.QuarantineProgressResponse{}, wrapPgError(err, "iterate quarantine progress")
@@ -299,7 +299,7 @@ func (r *postgresProjectBlockRepository) ListQuarantines(ctx context.Context) ([
 	result := make([]model.QuarantineSummary, 0)
 	for rows.Next() {
 		var summary model.QuarantineSummary
-		if err := rows.Scan(&summary.Project, &summary.CanonicalProjectKey, &summary.Generation, &summary.Action, &summary.State, &summary.TransitionedAt); err != nil {
+		if err := rows.Scan(&summary.Project, &summary.ProjectKey, &summary.Generation, &summary.Action, &summary.State, &summary.TransitionedAt); err != nil {
 			return nil, wrapPgError(err, "scan quarantine summary")
 		}
 		result = append(result, summary)
@@ -309,7 +309,7 @@ func (r *postgresProjectBlockRepository) ListQuarantines(ctx context.Context) ([
 
 func scanProjectBlock(row pgx.Row) (*model.ProjectBlock, error) {
 	block := &model.ProjectBlock{}
-	err := row.Scan(&block.ID, &block.CommandID, &block.AckToken, &block.Project, &block.CanonicalProjectKey, &block.Action, &block.Generation, &block.Reason,
+	err := row.Scan(&block.ID, &block.CommandID, &block.AckToken, &block.Project, &block.ProjectKey, &block.Action, &block.Generation, &block.Reason,
 		&block.Confirmation, &block.ExportMarker, &block.ActorUserID, &block.Blocked, &block.BlockedAt, &block.CreatedAt, &block.UpdatedAt)
 	if err != nil {
 		return nil, err

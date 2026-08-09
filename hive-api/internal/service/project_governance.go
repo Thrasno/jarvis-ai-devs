@@ -30,7 +30,7 @@ type ProjectGovernanceService interface {
 	Inbox(ctx context.Context, subject model.ProjectBlockAckSubject) ([]model.ProjectBlockCommand, error)
 	Acknowledge(ctx context.Context, ack model.ProjectBlockAck) (model.ProjectBlockAck, error)
 	ListQuarantines(ctx context.Context) ([]model.QuarantineSummary, error)
-	QuarantineProgress(ctx context.Context, canonicalProjectKey string, generation int64, after string, limit int) (model.QuarantineProgressResponse, error)
+	QuarantineProgress(ctx context.Context, projectKey string, generation int64, after string, limit int) (model.QuarantineProgressResponse, error)
 }
 
 func (s *projectGovernanceService) ListQuarantines(ctx context.Context) ([]model.QuarantineSummary, error) {
@@ -80,13 +80,13 @@ func (s *projectGovernanceService) BlockProject(ctx context.Context, actor model
 		}
 		var err error
 		block, err = repos.ProjectBlocks.BlockProject(ctx, model.ProjectBlockCreate{
-			Project:             project,
-			CanonicalProjectKey: project,
-			Action:              req.Action,
-			Reason:              req.Reason,
-			Confirmation:        req.Confirmation,
-			ExportMarker:        req.ExportMarker,
-			ActorUserID:         actor.UserID,
+			Project:      project,
+			ProjectKey:   project,
+			Action:       req.Action,
+			Reason:       req.Reason,
+			Confirmation: req.Confirmation,
+			ExportMarker: req.ExportMarker,
+			ActorUserID:  actor.UserID,
 		})
 		if err != nil {
 			return err
@@ -103,15 +103,15 @@ func (s *projectGovernanceService) Status(ctx context.Context, project string) (
 	if s.blockRepo == nil {
 		return model.ProjectBlockStatusResponse{}, ErrProjectBlockUnavailable
 	}
-	block, err := s.blockRepo.GetByCanonicalKey(ctx, project)
+	block, err := s.blockRepo.GetByProjectKey(ctx, project)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
-			return model.ProjectBlockStatusResponse{Project: project, CanonicalProjectKey: project, Blocked: false}, nil
+			return model.ProjectBlockStatusResponse{Project: project, ProjectKey: project, Blocked: false}, nil
 		}
 		return model.ProjectBlockStatusResponse{}, err
 	}
 	cmd := block.Command().Redacted()
-	resp := model.ProjectBlockStatusResponse{Project: block.Project, CanonicalProjectKey: block.CanonicalProjectKey, Blocked: true, Reason: block.Reason, Command: &cmd}
+	resp := model.ProjectBlockStatusResponse{Project: block.Project, ProjectKey: block.ProjectKey, Blocked: true, Reason: block.Reason, Command: &cmd}
 	ack, err := s.blockRepo.LatestAckForCommand(ctx, project, block.CommandID)
 	if err != nil && !errors.Is(err, repository.ErrNotFound) {
 		return model.ProjectBlockStatusResponse{}, err
@@ -120,7 +120,7 @@ func (s *projectGovernanceService) Status(ctx context.Context, project string) (
 	return resp, nil
 }
 
-func (s *projectGovernanceService) QuarantineProgress(ctx context.Context, canonicalProjectKey string, generation int64, after string, limit int) (model.QuarantineProgressResponse, error) {
+func (s *projectGovernanceService) QuarantineProgress(ctx context.Context, projectKey string, generation int64, after string, limit int) (model.QuarantineProgressResponse, error) {
 	if s.tx == nil {
 		return model.QuarantineProgressResponse{}, ErrProjectBlockUnavailable
 	}
@@ -130,7 +130,7 @@ func (s *projectGovernanceService) QuarantineProgress(ctx context.Context, canon
 			return ErrProjectBlockUnavailable
 		}
 		var err error
-		result, err = repos.ProjectBlocks.QuarantineProgress(ctx, canonicalProjectKey, generation, after, limit)
+		result, err = repos.ProjectBlocks.QuarantineProgress(ctx, projectKey, generation, after, limit)
 		return err
 	})
 	return result, err
@@ -152,10 +152,10 @@ func (s *projectGovernanceService) Acknowledge(ctx context.Context, ack model.Pr
 		if repos.ProjectBlocks == nil || repos.ProjectKeyLocks == nil {
 			return ErrProjectBlockUnavailable
 		}
-		if err := repos.ProjectKeyLocks.LockProjectKeys(ctx, []string{ack.CanonicalProjectKey}); err != nil {
+		if err := repos.ProjectKeyLocks.LockProjectKeys(ctx, []string{ack.ProjectKey}); err != nil {
 			return err
 		}
-		block, err := repos.ProjectBlocks.GetByCanonicalKey(ctx, ack.CanonicalProjectKey)
+		block, err := repos.ProjectBlocks.GetByProjectKey(ctx, ack.ProjectKey)
 		if err != nil {
 			if !errors.Is(err, repository.ErrNotFound) {
 				return err
@@ -165,7 +165,7 @@ func (s *projectGovernanceService) Acknowledge(ctx context.Context, ack model.Pr
 		if (block != nil && block.CommandID != ack.CommandID) || !ack.AckSubject.Valid() {
 			return ErrProjectBlockInvalidRequest
 		}
-		delivery, err := repos.ProjectBlocks.GetAckDelivery(ctx, ack.CanonicalProjectKey, ack.CommandID, ack.AckSubject)
+		delivery, err := repos.ProjectBlocks.GetAckDelivery(ctx, ack.ProjectKey, ack.CommandID, ack.AckSubject)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return ErrProjectBlockInvalidRequest
@@ -193,7 +193,7 @@ func emitProjectBlockAudit(ctx context.Context, auditRepo repository.AuditReposi
 	if block == nil {
 		return fmt.Errorf("project block audit requires persisted block")
 	}
-	project := block.CanonicalProjectKey
+	project := block.ProjectKey
 	actorID := actor.UserID
 	if err := auditRepo.Insert(ctx, &model.AuditEntry{
 		ActorUserID: &actorID,
@@ -239,7 +239,7 @@ func projectBlockedErrorForProjectDelivery(ctx context.Context, blockRepo reposi
 	if blockRepo == nil {
 		return repository.ErrProjectBlocked
 	}
-	block, err := blockRepo.GetByCanonicalKey(ctx, project)
+	block, err := blockRepo.GetByProjectKey(ctx, project)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			return repository.ErrProjectBlocked
@@ -253,7 +253,7 @@ func projectBlockedErrorForProject(ctx context.Context, blockRepo repository.Pro
 	if blockRepo == nil {
 		return repository.ErrProjectBlocked
 	}
-	block, err := blockRepo.GetByCanonicalKey(ctx, project)
+	block, err := blockRepo.GetByProjectKey(ctx, project)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			return repository.ErrProjectBlocked
