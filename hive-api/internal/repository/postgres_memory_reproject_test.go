@@ -597,3 +597,79 @@ func TestApplyMemoryMutation_ReprojectRefusesToCarryAWritePayload(t *testing.T) 
 		})
 	}
 }
+
+// TestApplyMemoryMutation_ReprojectClassifiesUnderTheRowLock pins the one thing
+// that separates a Duplicate from a Rejected under concurrency.
+//
+// When the reproject UPDATE matches zero rows it takes NO lock — the row it did
+// not match is not locked. reprojectNotAppliedResult then ran a plain
+// `SELECT project`, and under READ COMMITTED that statement takes a FRESH
+// snapshot. So a concurrent move committing in between turned a legitimate
+// Duplicate (the row is already at the target; ack it) into a Rejected — and
+// MarkMutationsRejected drops a rejected event locally and forever.
+//
+// The fix is the same tool every other op in this file already uses:
+// memoryBySyncIDForUpdate. Note that FOR UPDATE on the classification SELECT
+// alone would NOT have closed the window — the lock has to be held BEFORE the
+// UPDATE, or there is still a gap between the two statements for a committed
+// move to slip through.
+//
+// This test proves the lock is actually held, by making a concurrent
+// transaction own the row and requiring the reproject to wait for it.
+func TestApplyMemoryMutation_ReprojectClassifiesUnderTheRowLock(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+	const syncID = "8a3e8400-e29b-41d4-a716-446655440101"
+	seedReprojectMemory(ctx, t, pool, syncID)
+
+	// Get the row to the target, so a replay is a genuine Duplicate.
+	first, err := repo.ApplyMemoryMutation(ctx, reprojectEvent("8a3e8400-e29b-41d4-a716-446655440001", syncID, reprojectFrom, reprojectTo))
+	require.NoError(t, err)
+	require.True(t, first.Applied)
+
+	// A concurrent transaction takes the row.
+	blocker, err := pool.Begin(ctx)
+	require.NoError(t, err)
+	defer blocker.Rollback(ctx) //nolint:errcheck
+	var held string
+	require.NoError(t, blocker.QueryRow(ctx, `SELECT project FROM memories WHERE sync_id = $1 FOR UPDATE`, syncID).Scan(&held))
+	require.Equal(t, reprojectTo, held)
+
+	type outcome struct {
+		result *model.MutationApplyResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := repo.ApplyMemoryMutation(context.Background(),
+			reprojectEvent("8a3e8400-e29b-41d4-a716-446655440002", syncID, reprojectFrom, reprojectTo))
+		done <- outcome{result, err}
+	}()
+
+	select {
+	case got := <-done:
+		t.Fatalf("reproject classified the row without holding its lock (result=%+v err=%v) — "+
+			"a move committing in this window flips a Duplicate into a permanently dropped Rejected", got.result, got.err)
+	case <-time.After(500 * time.Millisecond):
+		// Correct: it is waiting for the row.
+	}
+
+	// The blocker moves the row somewhere else entirely and commits.
+	_, err = blocker.Exec(ctx, `UPDATE memories SET project = 'third-project' WHERE sync_id = $1`, syncID)
+	require.NoError(t, err)
+	require.NoError(t, blocker.Commit(ctx))
+
+	select {
+	case got := <-done:
+		require.NoError(t, got.err)
+		require.NotNil(t, got.result)
+		assert.True(t, got.result.Rejected,
+			"serialized behind the move, the row genuinely holds a third project — that IS a rejection")
+		assert.False(t, got.result.Duplicate)
+	case <-time.After(10 * time.Second):
+		t.Fatal("reproject never completed after the blocking transaction committed")
+	}
+}

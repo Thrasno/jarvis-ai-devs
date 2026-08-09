@@ -353,9 +353,26 @@ func (r *postgresMemoryRepository) applyMemoryMutationInTx(ctx context.Context, 
 	// from the envelope's. It does not skip the precondition, it replaces it:
 	// its own statement carries `AND project = from_project`, so the caller must
 	// still name the literal the row currently holds. See applyReprojectMutation.
+	// storedProject is the row's project as observed under the row lock, and it
+	// is only meaningful on the reproject path — see reprojectNotAppliedResult.
+	var storedProject *string
 	if mutation.Op == model.MutationOpReproject {
 		if reason := reprojectInstructionError(mutation); reason != "" {
 			return rejectedMutationResult(mutation, reason), nil
+		}
+		// The lock is taken HERE, before the UPDATE, and not because reproject
+		// needs the row's contents — it does not. When the UPDATE matches zero
+		// rows it locks nothing, so without this the classification that follows
+		// read the row under a fresh READ COMMITTED snapshot and a move
+		// committing in between turned a legitimate Duplicate into a Rejected,
+		// which the daemon then drops forever. Locking after the UPDATE would
+		// leave the same gap; the lock has to span both statements.
+		existing, err := memoryBySyncIDForUpdate(ctx, tx, mutation.EntitySyncID)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil {
+			storedProject = &existing.Project
 		}
 	} else {
 		existing, err := memoryBySyncIDForUpdate(ctx, tx, mutation.EntitySyncID)
@@ -398,7 +415,7 @@ func (r *postgresMemoryRepository) applyMemoryMutationInTx(ctx context.Context, 
 	}
 	if !changed {
 		if mutation.Op == model.MutationOpReproject {
-			return reprojectNotAppliedResult(ctx, tx, mutation)
+			return reprojectNotAppliedResult(mutation, storedProject), nil
 		}
 		return &model.MutationApplyResult{EventID: mutation.EventID, Op: mutation.Op, Applied: false}, nil
 	}
@@ -813,25 +830,27 @@ func (r *postgresMemoryRepository) applyReprojectMutation(ctx context.Context, t
 // nothing stay apart: a row already at the target is a success, a row that is
 // missing or holds a third project is a rejection carrying its reason. Neither
 // journals anything — nothing happened.
-func reprojectNotAppliedResult(ctx context.Context, tx mutationTx, mutation model.MutationEnvelope) (*model.MutationApplyResult, error) {
-	var stored string
-	err := tx.QueryRow(ctx, `SELECT project FROM memories WHERE sync_id = $1`, mutation.EntitySyncID).Scan(&stored)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return rejectedMutationResult(mutation, "reproject target memory does not exist on this server"), nil
+//
+// storedProject is the project read under the row lock BEFORE the UPDATE ran
+// (nil when there is no such row). It is passed in rather than re-queried
+// because a second query would take a fresh READ COMMITTED snapshot, and the
+// whole point is that this classification and the UPDATE it explains must
+// describe the same version of the row. Getting that wrong downgrades a
+// Duplicate to a Rejected, which the daemon discards permanently.
+func reprojectNotAppliedResult(mutation model.MutationEnvelope, storedProject *string) *model.MutationApplyResult {
+	if storedProject == nil {
+		return rejectedMutationResult(mutation, "reproject target memory does not exist on this server")
 	}
-	if err != nil {
-		return nil, wrapPgError(err, "inspect reproject target")
-	}
-	if stored == mutation.Reproject.ToProject {
+	if *storedProject == mutation.Reproject.ToProject {
 		return &model.MutationApplyResult{
 			EventID:   mutation.EventID,
 			Op:        mutation.Op,
 			Duplicate: true,
 			Reason:    "memory already lives under the target project",
-		}, nil
+		}
 	}
 	return rejectedMutationResult(mutation,
-		fmt.Sprintf("reproject from_project %q is not the project the memory holds", mutation.Reproject.FromProject)), nil
+		fmt.Sprintf("reproject from_project %q is not the project the memory holds", mutation.Reproject.FromProject))
 }
 
 func insertMemoryMutation(ctx context.Context, tx mutationTx, mutation model.MutationEnvelope) (int64, error) {
