@@ -23,6 +23,11 @@ var (
 	// ErrSessionNotFound — incoming session_id is unknown server-side and not present
 	// in the push payload's sessions[]. Handler should return 400 Bad Request.
 	ErrSessionNotFound = errors.New("session not found on server and not in push payload")
+
+	// ErrPromptProjectMismatch — a prompt payload names a project other than the
+	// one the request claims. The prompt counterpart of ErrSessionProjectMismatch;
+	// handler should return 400 Bad Request.
+	ErrPromptProjectMismatch = errors.New("prompt project mismatch with request project")
 )
 
 const syncMutationPullBatchSize = 100
@@ -279,6 +284,18 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 	// Re-sync de prompts ya conocidos no incrementa el contador.
 	var promptsPushed int
 	for _, payload := range req.Prompts {
+		// The prompt counterpart of the session check above. Quarantine and the
+		// project-key lock already cover both ends of a prompt relocation
+		// (syncRequestProjects collects Project and FromProject), so this is not
+		// an authorization gain — it is an attribution one. emitSyncAudit books
+		// the whole sync under req.Project, so a prompt written into, or
+		// relocated into, some other project was recorded against a project that
+		// never touched it. The audit trail is what an operator reads to answer
+		// "who moved this".
+		if payload.Project != req.Project {
+			return nil, fmt.Errorf("prompt %q project mismatch: payload says %q, request says %q: %w",
+				payload.SyncID, payload.Project, req.Project, ErrPromptProjectMismatch)
+		}
 		p := &model.Prompt{
 			SyncID:      payload.SyncID,
 			Project:     payload.Project,

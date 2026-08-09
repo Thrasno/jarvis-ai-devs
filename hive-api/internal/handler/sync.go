@@ -58,7 +58,7 @@ func (h *SyncHandler) Sync(c *gin.Context) {
 		}
 		// R2-CRIT-6 — clasificar errores de validación del push como 4xx (no 500).
 		// El daemon necesita ajustar su payload, no es una falla del servidor.
-		if errors.Is(err, service.ErrSessionProjectMismatch) || errors.Is(err, service.ErrSessionNotFound) || errors.Is(err, model.ErrProjectIdentityVersionUnsupported) {
+		if errors.Is(err, service.ErrSessionProjectMismatch) || errors.Is(err, service.ErrPromptProjectMismatch) || errors.Is(err, service.ErrSessionNotFound) || errors.Is(err, model.ErrProjectIdentityVersionUnsupported) {
 			c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: err.Error()})
 			return
 		}

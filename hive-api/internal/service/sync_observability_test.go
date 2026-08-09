@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/service"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -187,4 +189,62 @@ func TestSync_Push_LogsAProjectMismatchRejectionToo(t *testing.T) {
 	assert.Contains(t, output, "warn: rejected mutation")
 	assert.Contains(t, output, "d30e8400-e29b-41d4-a716-446655440001")
 	assert.Contains(t, output, "mutation project does not match sync project")
+}
+
+// Sessions confine their relocation target to req.Project with a hard error, so
+// a push cannot write a row into a project the request never claimed. Prompts
+// had no equivalent check.
+//
+// Quarantine and the project-key lock still cover both ends — syncRequestProjects
+// collects payload.Project and payload.FromProject for prompts too — so this is
+// not an authorization gain. What it fixes is attribution: emitSyncAudit records
+// the sync under req.Project alone, so a prompt written into (or relocated
+// into) another project was booked against a project that never touched it. The
+// audit trail is the thing an operator reads to answer "who moved this", and it
+// was quietly wrong.
+func TestSync_Push_RejectsAPromptWhoseProjectIsNotTheSyncProject(t *testing.T) {
+	svc, _, mockPromptRepo := newTestSyncService(t)
+	ctx := context.Background()
+
+	_, err := svc.Push(ctx, model.SyncRequest{
+		Project: "beta",
+		Prompts: []model.SyncPromptPayload{{
+			SyncID:    "e00e8400-e29b-41d4-a716-446655440001",
+			Project:   "alpha",
+			Content:   "a prompt attributed to a project this request never claimed",
+			CreatedAt: time.Now().UTC(),
+		}},
+	}, "user-1")
+
+	require.Error(t, err, "a prompt payload naming another project must be rejected")
+	assert.ErrorIs(t, err, service.ErrPromptProjectMismatch)
+	mockPromptRepo.AssertNotCalled(t, "Upsert", mock.Anything, mock.Anything)
+}
+
+// The relocation target is the same question in its more dangerous form: a
+// from_project pointing at a third project asks the server to pull a row out of
+// a project the request never named, and book it against req.Project.
+func TestSync_Push_AcceptsAPromptRelocationIntoTheSyncProject(t *testing.T) {
+	svc, _, mockPromptRepo := newTestSyncService(t)
+	ctx := context.Background()
+	createdAt := time.Now().UTC()
+
+	mockPromptRepo.On("Upsert", ctx, mock.MatchedBy(func(p *model.Prompt) bool {
+		return p.Project == "beta" && p.FromProject == "Beta.Legacy"
+	})).Return(true, nil)
+
+	resp, err := svc.Push(ctx, model.SyncRequest{
+		Project: "beta",
+		Prompts: []model.SyncPromptPayload{{
+			SyncID:      "e10e8400-e29b-41d4-a716-446655440001",
+			Project:     "beta",
+			FromProject: "Beta.Legacy",
+			Content:     "a genuine identity correction still goes through",
+			CreatedAt:   createdAt,
+		}},
+	}, "user-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, resp.PromptsPushed)
+	mockPromptRepo.AssertExpectations(t)
 }
