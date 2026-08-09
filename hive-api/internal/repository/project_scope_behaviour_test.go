@@ -28,9 +28,11 @@ import (
 //   - a quarantine applies to the exact literal an admin blocked, and to
 //     nothing else.
 //
-// The tables name every path. A path added without a row in one of them is a
-// path nobody proved, and the gap is visible in review rather than in a
-// dashboard reading another project's memories.
+// The tables name every path they cover, and each table is followed by the list
+// of project-keyed paths deliberately left out of it, with the reason. A path
+// that is in neither the table nor that list is a path nobody proved, and the
+// gap is visible in review rather than in a dashboard reading another project's
+// memories.
 
 const (
 	// storedProject and foldedProject are the same project to a human and two
@@ -97,8 +99,24 @@ type projectScopedRead struct {
 // GetBySyncID, EndSession, GetSession, DeleteOlderThan, UserSyncProjection, and
 // the whole user/audit surface. Write paths are covered by the quarantine table
 // below, which is the only project-identity decision a write makes.
-// GetByCanonicalKey needs a block to exist before it can answer, so it is
-// asserted in TestQuarantineAppliesOnlyToTheBlockedLiteral instead.
+//
+// Also absent, and each for its own reason:
+//
+//   - GetByCanonicalKey needs a block to exist before it can answer, so it is
+//     asserted in TestQuarantineAppliesOnlyToTheBlockedLiteral instead.
+//   - ProjectLockKeys is pure Go over the literals it is handed and reads no
+//     row, so it has no answer to be wrong about; project_key_lock_test.go
+//     covers it.
+//   - ListQuarantines, QuarantineProgress, GetAckDelivery and
+//     LatestAckForCommand are quarantine-lifecycle paths keyed on
+//     canonical_project_key or on a command id. The literal a block is stored
+//     and found under is proved by the quarantine table below; these report on
+//     a block that already exists rather than deciding which project it is.
+//
+// Everything named above is plain equality on the stored literal today. Listing
+// them is not a claim that they are proved here — it is the record of a
+// deliberate decision, so a reader can tell "absent because covered elsewhere"
+// from "absent because nobody looked".
 func projectScopedReads() []projectScopedRead {
 	return []projectScopedRead{
 		{
