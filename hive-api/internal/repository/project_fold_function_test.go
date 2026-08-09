@@ -88,7 +88,7 @@ func TestFullMigrationSetRemovesTheLegacyProjectIdentitySchema(t *testing.T) {
 	require.False(t, spellingRegistryExists(t, pool),
 		"an upgraded database kept the legacy spelling registry; the join that leaked one project's rows to another is still joinable")
 	require.False(t, identityRegistryExists(t, pool),
-		"the boot left project_identities behind; nothing reads or writes it, and a table of project names invites a future query to treat it as the list of projects that exist")
+		"the boot left the legacy identity registry behind; nothing reads or writes it, and a table of project names invites a future query to treat it as the list of projects that exist")
 }
 
 func sqlProjectFoldExists(t *testing.T, pool *pgxpool.Pool) bool {

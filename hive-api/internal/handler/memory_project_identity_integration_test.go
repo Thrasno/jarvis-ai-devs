@@ -124,10 +124,16 @@ func TestMemoryReadsAnswerOnlyForTheSyncedLiteral(t *testing.T) {
 	}
 }
 
-// TestMemoryCreateStoresTheLiteralProjectAndRollsBackOnWriteFailure proves a
-// create stores the project spelling verbatim and that a failed create leaves
-// nothing behind.
-func TestMemoryCreateStoresTheLiteralProjectAndRollsBackOnWriteFailure(t *testing.T) {
+// TestMemoryCreateStoresTheLiteralProjectAndRejectsADuplicateSyncID proves a
+// create stores the project spelling verbatim, and that a second create reusing
+// a sync_id is refused without writing a row.
+//
+// It does not prove rollback, and it used to say it did. The duplicate is
+// caught by the sync_id lookup, which runs before anything is written, so the
+// count below would be zero however the transaction behaved. There is no
+// rollback to cover here anyway: once the identity registry was deleted, Create
+// had no failure mode left after its single write.
+func TestMemoryCreateStoresTheLiteralProjectAndRejectsADuplicateSyncID(t *testing.T) {
 	pool, cleanup := startMemoryHandlerPostgres(t)
 	defer cleanup()
 	ctx := context.Background()
@@ -151,7 +157,7 @@ func TestMemoryCreateStoresTheLiteralProjectAndRollsBackOnWriteFailure(t *testin
 
 	var ghost int
 	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM memories WHERE project = 'Ghost.Project'`).Scan(&ghost))
-	require.Zero(t, ghost, "the rejected create left no row behind")
+	require.Zero(t, ghost, "the duplicate sync_id was refused before any row was written")
 	// Another spelling reads none of those rows, and says so with an empty list
 	// rather than by refusing the query.
 	listed, total, err := memoryService.List(ctx, model.MemoryFilter{Project: "direct/project"})

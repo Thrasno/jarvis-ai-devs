@@ -78,6 +78,17 @@ var forbiddenIdentityDerivation = []forbiddenConstruct{
 			"Only removing it (DROP TABLE) or asserting its absence (to_regclass) may name it",
 	},
 	{
+		pattern: regexp.MustCompile(`(?i)(create\s+table\s+(if\s+not\s+exists\s+)?|` +
+			`create\s+index\s+(if\s+not\s+exists\s+)?idx_|\bon\s+|` +
+			`drop\s+table\s+(if\s+exists\s+)?|to_regclass\s*\(\s*')?project_identities`),
+		allowed: regexp.MustCompile(`(?i)^(create|on|drop|to_regclass)`),
+		why: "the identity registry was dropped in migration 022; its one reader answered 404 for any literal " +
+			"absent from it, which is the API deciding which projects are real. Migration 019 still creates it " +
+			"(CREATE TABLE, CREATE INDEX) as the record of a schema that shipped, and 022 removes it in the same " +
+			"boot pass. Only creating it there, removing it (DROP TABLE) or asserting its absence (to_regclass) " +
+			"may name it — never a FROM, JOIN, INSERT or UPDATE",
+	},
+	{
 		pattern: regexp.MustCompile(`(?i)(drop\s+function\s+(if\s+exists\s+)?|to_regprocedure\s*\(\s*')?canonical_project_key\s*\(`),
 		allowed: regexp.MustCompile(`(?i)^(drop|to_regprocedure)`),
 		why: "the SQL key function was dropped in migration 021; it diverged from the Go contract it shadowed. " +
@@ -354,6 +365,19 @@ var evasions = []struct {
 		sample: "const q = `SELECT project_key FROM project_identity_spellings WHERE spelling = $1`",
 	},
 	{
+		name:   "the dropped identity registry read as the list of projects that exist",
+		sample: "const q = `SELECT 1 FROM project_identities WHERE project_key = $1`",
+	},
+	{
+		name:   "the dropped identity registry joined into a memory query",
+		sample: "const q = `SELECT m.id FROM memories m JOIN project_identities pi ON pi.project_key = m.project`",
+	},
+	{
+		name:   "a write back into the dropped identity registry",
+		isSQL:  true,
+		sample: "INSERT INTO project_identities (project_key, first_spelling, first_seen_at) VALUES ($1, $2, now());",
+	},
+	{
 		name:   "pattern match on a project column",
 		sample: "const q = `SELECT 1 FROM memories WHERE project ILIKE $1`",
 	},
@@ -434,6 +458,20 @@ var legitimate = []struct {
 		name:   "migration 021 removing the spelling registry",
 		isSQL:  true,
 		sample: "DROP TABLE IF EXISTS project_identity_spellings;",
+	},
+	{
+		name:   "migration 022 removing the identity registry",
+		isSQL:  true,
+		sample: "DROP TABLE IF EXISTS project_identities;",
+	},
+	{
+		name:   "migration 019 creating the registry it later loses",
+		isSQL:  true,
+		sample: "CREATE TABLE IF NOT EXISTS project_identities (\n    project_key text PRIMARY KEY\n);\n\nCREATE INDEX IF NOT EXISTS idx_project_identities_first_seen\n    ON project_identities (first_seen_at ASC, project_key ASC);",
+	},
+	{
+		name:   "a test asserting the identity registry does not exist",
+		sample: "pool.QueryRow(ctx, `SELECT to_regclass('project_identities') IS NOT NULL`)",
 	},
 	{
 		name:   "a test asserting the fold does not exist",
