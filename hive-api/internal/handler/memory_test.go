@@ -318,12 +318,15 @@ func TestListMemories_PassesStructuredDiscoveryFilters(t *testing.T) {
 	memSvc.AssertExpectations(t)
 }
 
-func TestListMemories_CanonicalizesProjectFilter(t *testing.T) {
+// TestListMemories_PassesTheProjectFilterThroughVerbatim proves ?project= is a
+// query, not identity input: the handler forwards the literal it was given. A
+// dashboard typo returning zero results is the intended behaviour.
+func TestListMemories_PassesTheProjectFilterThroughVerbatim(t *testing.T) {
 	authSvc := &mockAuthSvc{}
 	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
 	memSvc := &mockMemorySvc{}
 	memSvc.On("List", context.Background(), mock.MatchedBy(func(filter model.MemoryFilter) bool {
-		return filter.Project == "jarvis-dev"
+		return filter.Project == "Jarvis_Dev"
 	})).Return([]*model.Memory{}, int64(0), nil)
 
 	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodGet, "/memories?project=Jarvis_Dev", nil, "valid-token")
@@ -332,14 +335,14 @@ func TestListMemories_CanonicalizesProjectFilter(t *testing.T) {
 	memSvc.AssertExpectations(t)
 }
 
-func TestListMemories_EquivalentUnknownProjectsReturnProjectUnknown(t *testing.T) {
+func TestListMemories_UnknownProjectsReturnProjectUnknown(t *testing.T) {
 	for _, project := range []string{" Ghost.Project ", "ghost/project"} {
 		t.Run(project, func(t *testing.T) {
 			authSvc := &mockAuthSvc{}
 			authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
 			memSvc := &mockMemorySvc{}
 			memSvc.On("List", context.Background(), mock.MatchedBy(func(filter model.MemoryFilter) bool {
-				return filter.Project == "ghost-project"
+				return filter.Project == project
 			})).Return(nil, int64(0), service.ErrProjectUnknown)
 
 			w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodGet, "/memories?project="+project, nil, "valid-token")

@@ -476,12 +476,15 @@ func TestSearch_DelegatesToRepo(t *testing.T) {
 	mockRepo.AssertExpectations(t)
 }
 
-func TestMemoryService_CanonicalizesProjectBoundaries(t *testing.T) {
+// TestMemoryService_PassesTheProjectFilterThroughVerbatim proves the service
+// never rewrites the project a caller asked for. Discovery queries match the
+// stored literal exactly, so a spelling nobody stored returns nothing.
+func TestMemoryService_PassesTheProjectFilterThroughVerbatim(t *testing.T) {
 	ctx := context.Background()
 	svc, repo := newTestMemoryService(t)
 
 	filter := model.MemoryFilter{Project: " Foo.Bar ", Limit: 5}
-	want := model.MemoryFilter{Project: "foo-bar", Limit: 5}
+	want := model.MemoryFilter{Project: " Foo.Bar ", Limit: 5}
 	repo.On("List", ctx, want).Return([]*model.Memory{}, nil).Once()
 	repo.On("Count", ctx, want).Return(int64(0), nil).Once()
 	repo.On("Search", ctx, "identity", want).Return([]*model.Memory{}, nil).Once()

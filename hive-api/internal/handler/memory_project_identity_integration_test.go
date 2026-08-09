@@ -110,7 +110,8 @@ func TestMemoryCreateRegistersCanonicalProjectAndRollsBackOnWriteFailure(t *test
 	require.NoError(t, err)
 	_, err = memoryService.Create(ctx, &model.Memory{SyncID: "20000000-0000-0000-0000-000000000001", Project: "Ghost.Project", Category: model.CatDecision, CreatedBy: "user", CreatedAt: now, UpdatedAt: now})
 	require.Error(t, err)
-	pulled, err := syncService.PullAll(ctx, "direct-project", time.Time{}, nil, 10, model.PullCursor{}, model.PullCursor{})
+	// The pull selects on the stored literal, not on the registry key.
+	pulled, err := syncService.PullAll(ctx, " Direct.Project ", time.Time{}, nil, 10, model.PullCursor{}, model.PullCursor{})
 	require.NoError(t, err)
 	require.Len(t, pulled.Memories, 1)
 	require.Equal(t, " Direct.Project ", pulled.Memories[0].Project, "pull retains the stored display spelling")
@@ -122,6 +123,9 @@ func TestMemoryCreateRegistersCanonicalProjectAndRollsBackOnWriteFailure(t *test
 	var ghost bool
 	require.NoError(t, pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM project_identities WHERE project_key = 'ghost-project')`).Scan(&ghost))
 	require.False(t, ghost)
+	// "Is this project known?" is answered by the identity registry, which keys
+	// spellings canonically, so any spelling of a registered project is known.
+	// The rows themselves are still selected by exact equality on the literal.
 	_, _, err = memoryService.List(ctx, model.MemoryFilter{Project: "direct/project"})
 	require.False(t, errors.Is(err, service.ErrProjectUnknown))
 }

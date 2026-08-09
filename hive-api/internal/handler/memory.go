@@ -8,7 +8,6 @@ import (
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/middleware"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
-	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/projectkey"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -193,7 +192,9 @@ func buildMemoryDiscoveryFilter(project, category, fromRaw, untilRaw string, lim
 	if limit == 0 {
 		limit = defaultMemoryQueryLimit
 	}
-	filter := model.MemoryFilter{Project: projectkey.Canonicalize(project), CreatedFrom: createdFrom, CreatedUntil: createdUntil, Limit: limit, Offset: offset}
+	// ?project= is a query, not identity input: it is matched literally. A typo
+	// returning zero results is the intended behaviour.
+	filter := model.MemoryFilter{Project: project, CreatedFrom: createdFrom, CreatedUntil: createdUntil, Limit: limit, Offset: offset}
 	if category != "" {
 		cat := model.MemoryCategory(category)
 		if !cat.IsValid() {

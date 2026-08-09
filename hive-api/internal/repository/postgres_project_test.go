@@ -76,7 +76,11 @@ func TestPostgresProjectRepository_ListAggregates(t *testing.T) {
 	assertTimePtrEqual(t, latestSuccessEnd, byName["health-project"].LastSyncAt, "latest sync activity should use ended_at when present")
 }
 
-func TestPostgresProjectRepository_ListAggregatesCoalescesVariantsAndUsesRegistryDisplay(t *testing.T) {
+// TestPostgresProjectRepository_ListAggregatesNamesProjectsByTheStoredSpelling
+// proves the aggregate is grouped and named by the literal on each row. The
+// registry display-name join is gone: it is keyed canonically, so it gave two
+// distinct projects one dashboard name.
+func TestPostgresProjectRepository_ListAggregatesNamesProjectsByTheStoredSpelling(t *testing.T) {
 	pool, cleanup := startPostgresWithProjectSources(t)
 	defer cleanup()
 	require.NoError(t, RunMigrations(pool, migrations.CanonicalProjectRegistrySQL))
@@ -84,14 +88,14 @@ func TestPostgresProjectRepository_ListAggregatesCoalescesVariantsAndUsesRegistr
 	ctx := context.Background()
 	base := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
 	require.NoError(t, RegisterProjectIdentity(ctx, pool, " Foo_Bar ", "FOO_BAR", base))
-	insertProjectSession(t, pool, "aggregate-variant-session", "foo/bar", base, nil)
-	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000203", "foo_bar", "aggregate-variant-session", base, base, nil)
-	insertProjectSyncAttempt(t, pool, "aggregate-variant-sync", "foo-bar", model.SyncAttemptOutcomeSuccess, base, nil)
+	insertProjectSession(t, pool, "aggregate-variant-session", " Foo_Bar ", base, nil)
+	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000203", " Foo_Bar ", "aggregate-variant-session", base, base, nil)
+	insertProjectSyncAttempt(t, pool, "aggregate-variant-sync", " Foo_Bar ", model.SyncAttemptOutcomeSuccess, base, nil)
 
 	aggregates, err := NewPostgresProjectRepository(pool).ListAggregates(ctx)
 	require.NoError(t, err)
 	require.Len(t, aggregates, 1)
-	assert.Equal(t, "FOO_BAR", aggregates[0].Name)
+	assert.Equal(t, " Foo_Bar ", aggregates[0].Name, "the stored literal is the project name, not the registry spelling")
 	assert.EqualValues(t, 1, aggregates[0].MemoryCount)
 	assert.EqualValues(t, 1, aggregates[0].SessionCount)
 	assertTimePtrEqual(t, base, aggregates[0].LastMemoryAt)

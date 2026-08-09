@@ -135,7 +135,6 @@ func (s *memoryService) GetByID(ctx context.Context, id string) (*model.Memory, 
 // List aplica el default de Limit antes de delegar al repo.
 // Este es el único lugar donde vive esta regla de negocio.
 func (s *memoryService) List(ctx context.Context, filter model.MemoryFilter) ([]*model.Memory, int64, error) {
-	filter.Project = projectkey.Canonicalize(filter.Project)
 	if err := s.requireKnownProject(ctx, filter.Project); err != nil {
 		return nil, 0, err
 	}
@@ -181,7 +180,6 @@ func (s *memoryService) List(ctx context.Context, filter model.MemoryFilter) ([]
 }
 
 func (s *memoryService) Search(ctx context.Context, query string, filter model.MemoryFilter) ([]*model.Memory, int64, error) {
-	filter.Project = projectkey.Canonicalize(filter.Project)
 	if err := s.requireKnownProject(ctx, filter.Project); err != nil {
 		return nil, 0, err
 	}

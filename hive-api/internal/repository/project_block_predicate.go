@@ -25,8 +25,7 @@ import (
 //
 // Over-approximating can only ever block more, never less, so it is safe here.
 // Identity resolution (scoping, grouping, joining) must never use it, because
-// there over-approximating would mix distinct projects — see
-// resolvedProjectKeyExpr.
+// there over-approximating would mix distinct projects.
 //
 // Known residual: the Go contract applies Unicode full case folding (ß -> ss),
 // which SQL cannot reproduce. A non-ASCII legacy spelling is therefore covered
@@ -34,6 +33,17 @@ import (
 // by the fold.
 func blockedProjectPredicate(projectExpr string) string {
 	return fmt.Sprintf("EXISTS (SELECT 1 FROM project_blocks pb WHERE pb.blocked = true AND (pb.project = %[1]s OR pb.canonical_project_key IN (%[1]s, %[2]s, COALESCE((SELECT pbs.project_key FROM project_identity_spellings pbs WHERE pbs.spelling = %[1]s), ''))))", projectExpr, asciiSeparatorFoldExpr(projectExpr))
+}
+
+// asciiSeparatorFoldExpr mirrors projectidentity.Canonical for ASCII spellings:
+// lower-case, collapse separator runs to '-', drop outer separators. It exists
+// only to widen the quarantine predicate above so an unregistered legacy
+// spelling cannot read as unblocked. Nothing that resolves identity may use it.
+//
+// It is deliberately conservative: SQL lower() leaves ß intact where Go folds
+// it to ss, so the fold never merges two spellings the Go contract keeps apart.
+func asciiSeparatorFoldExpr(projectExpr string) string {
+	return fmt.Sprintf("trim(both '-' from regexp_replace(lower(%s), '[[:space:]/_.-]+', '-', 'g'))", projectExpr)
 }
 
 func unblockedProjectPredicate(projectExpr string) string {

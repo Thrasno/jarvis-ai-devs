@@ -93,11 +93,18 @@ func TestProjectService_ListReturnsNonNilEmptyResponse(t *testing.T) {
 	assert.Equal(t, 0, got.Total)
 }
 
-func TestProjectService_ListJoinsHealthByCanonicalIdentity(t *testing.T) {
+// TestProjectService_ListJoinsHealthOnTheStoredSpelling proves the aggregate
+// and health projections join on the literal project each row carries. A row
+// spelled differently is a different project and contributes no health, so no
+// project can ever be shown another project's sync status.
+func TestProjectService_ListJoinsHealthOnTheStoredSpelling(t *testing.T) {
 	base := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
 	success := model.SyncAttemptOutcomeSuccess
 	svc := service.NewProjectService(
-		&fakeProjectRepository{records: []model.ProjectAggregate{{Name: "FOO_BAR", LastSyncAt: timePtr(base)}}},
+		&fakeProjectRepository{records: []model.ProjectAggregate{
+			{Name: "FOO_BAR", LastSyncAt: timePtr(base)},
+			{Name: "foo/bar", LastSyncAt: timePtr(base)},
+		}},
 		&fakeProjectHealthRepository{projection: model.ProjectSyncHealthProjection{Rows: []model.ProjectSyncHealthRow{{
 			Project:        "foo/bar",
 			LastOutcome:    success,
@@ -108,11 +115,18 @@ func TestProjectService_ListJoinsHealthByCanonicalIdentity(t *testing.T) {
 	got, err := svc.List(context.Background(), "")
 
 	require.NoError(t, err)
-	require.Equal(t, []model.ProjectSummary{{
-		Name:           "FOO_BAR",
-		LastActivityAt: timePtr(base.Add(time.Minute)),
-		SyncHealth:     stringPtr(model.ProjectSyncHealthHealthy),
-	}}, got.Projects)
+	require.Equal(t, []model.ProjectSummary{
+		{
+			Name:           "FOO_BAR",
+			LastActivityAt: timePtr(base),
+			SyncHealth:     nil,
+		},
+		{
+			Name:           "foo/bar",
+			LastActivityAt: timePtr(base.Add(time.Minute)),
+			SyncHealth:     stringPtr(model.ProjectSyncHealthHealthy),
+		},
+	}, got.Projects)
 }
 
 type fakeProjectRepository struct {

@@ -581,7 +581,11 @@ func TestPostgresSessionRepository_ListSessionsByProject(t *testing.T) {
 	}
 }
 
-func TestPostgresSessionRepository_ProjectVariantsConvergeWithoutRewritingStoredSpelling(t *testing.T) {
+// TestPostgresSessionRepository_ProjectSpellingsStayDistinct proves session
+// reads and the lazy manual-save session both key on the literal spelling.
+// Deriving the manual-save id from a folded key handed one spelling a session
+// owned by another, which the caller's attribution check then rejected.
+func TestPostgresSessionRepository_ProjectSpellingsStayDistinct(t *testing.T) {
 	pool, cleanup := startPostgresWithSessions(t)
 	defer cleanup()
 
@@ -599,17 +603,26 @@ func TestPostgresSessionRepository_ProjectVariantsConvergeWithoutRewritingStored
 		}))
 	}
 
-	sessions, err := repo.ListSessionsByProject(ctx, "FOO_BAR")
+	unrelated, err := repo.ListSessionsByProject(ctx, "FOO_BAR")
 	require.NoError(t, err)
-	require.Len(t, sessions, 2)
-	assert.Equal(t, []string{"foo/bar", " Foo_Bar "}, []string{sessions[0].Project, sessions[1].Project})
+	require.Empty(t, unrelated, "a spelling nobody stored is a different project")
+
+	underscored, err := repo.ListSessionsByProject(ctx, " Foo_Bar ")
+	require.NoError(t, err)
+	require.Len(t, underscored, 1)
+	assert.Equal(t, " Foo_Bar ", underscored[0].Project)
+
+	slashed, err := repo.ListSessionsByProject(ctx, "foo/bar")
+	require.NoError(t, err)
+	require.Len(t, slashed, 1)
+	assert.Equal(t, "foo/bar", slashed[0].Project)
 
 	firstID, err := repo.EnsureManualSaveSession(ctx, " Foo_Bar ")
 	require.NoError(t, err)
 	secondID, err := repo.EnsureManualSaveSession(ctx, "foo/bar")
 	require.NoError(t, err)
-	assert.Equal(t, "manual-save-foo-bar", firstID)
-	assert.Equal(t, firstID, secondID)
+	assert.Equal(t, "manual-save- Foo_Bar ", firstID)
+	assert.Equal(t, "manual-save-foo/bar", secondID)
 }
 
 // ─── T4.8: ListSessionsSince ─────────────────────────────────────────────────

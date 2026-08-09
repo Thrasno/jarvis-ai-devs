@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
-	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/projectkey"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
 )
 
@@ -35,14 +34,17 @@ func (s *projectService) List(ctx context.Context, health string) (model.Project
 	if err != nil {
 		return model.ProjectListResponse{}, err
 	}
+	// Both sides carry the literal project spelling stored on the row, so they
+	// join on exact equality. Folding here would attach one project's sync
+	// health to a different project that merely spells its name similarly.
 	healthByProject := make(map[string]model.ProjectSyncHealthRow, len(projection.Rows))
 	for _, row := range projection.Rows {
-		healthByProject[projectkey.Canonicalize(row.Project)] = row
+		healthByProject[row.Project] = row
 	}
 
 	projects := make([]model.ProjectSummary, 0, len(records))
 	for _, record := range records {
-		row, participates := healthByProject[projectkey.Canonicalize(record.Name)]
+		row, participates := healthByProject[record.Name]
 		summary := model.ProjectSummary{
 			Name:           record.Name,
 			MemoryCount:    record.MemoryCount,
