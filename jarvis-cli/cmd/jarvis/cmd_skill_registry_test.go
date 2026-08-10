@@ -22,7 +22,7 @@ func TestSkillRegistryRefreshCommand(t *testing.T) {
 			t.Fatalf("create subdir: %v", err)
 		}
 
-		output, err := executeSkillRegistryCommand("refresh", "--cwd", subdir)
+		output, err := executeSkillRegistryCommand("refresh", "--cwd", subdir, "--allow-non-git-root")
 
 		if err != nil {
 			t.Fatalf("skill-registry refresh returned error: %v\noutput:\n%s", err, output)
@@ -37,6 +37,33 @@ func TestSkillRegistryRefreshCommand(t *testing.T) {
 			}
 		}
 		assertCommandOutputPathSame(t, output, registryPath)
+	})
+
+	t.Run("explicitly allows automatic refresh for a non-git directory", func(t *testing.T) {
+		isolateTestHome(t)
+		root := t.TempDir()
+
+		output, err := executeSkillRegistryCommand("refresh", "--cwd", root, "--allow-non-git-root")
+
+		if err != nil {
+			t.Fatalf("non-git automatic refresh returned error: %v\noutput:\n%s", err, output)
+		}
+		registryPath := filepath.Join(root, ".jarvis", "skill-registry.md")
+		assertCommandFileContains(t, registryPath, "Canonical registry path: `.jarvis/skill-registry.md`")
+		assertCommandOutputPathSame(t, output, registryPath)
+	})
+
+	t.Run("allow non-git does not tolerate inaccessible paths", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "missing")
+
+		output, err := executeSkillRegistryCommand("refresh", "--cwd", missing, "--allow-non-git-root")
+
+		if err == nil {
+			t.Fatalf("expected inaccessible path error, got nil output:\n%s", output)
+		}
+		if !strings.Contains(err.Error(), "not accessible") {
+			t.Fatalf("expected inaccessible path error, got %v", err)
+		}
 	})
 
 	t.Run("defaults cwd to current working directory", func(t *testing.T) {

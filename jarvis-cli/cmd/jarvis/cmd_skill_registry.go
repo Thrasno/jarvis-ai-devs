@@ -26,6 +26,7 @@ func newSkillRegistryRefreshCmd() *cobra.Command {
 	var force bool
 	var quiet bool
 	var noGitignore bool
+	var allowNonGitRoot bool
 
 	cmd := &cobra.Command{
 		Use:   "refresh",
@@ -41,9 +42,10 @@ func newSkillRegistryRefreshCmd() *cobra.Command {
 			}
 
 			result, err := projectregistry.Refresh(cmd.Context(), projectregistry.RefreshOptions{
-				CWD:         refreshCWD,
-				Force:       force,
-				NoGitignore: noGitignore,
+				CWD:             refreshCWD,
+				Force:           force,
+				NoGitignore:     noGitignore,
+				AllowNonGitRoot: allowNonGitRoot,
 			})
 			if err != nil {
 				return err
@@ -65,6 +67,7 @@ func newSkillRegistryRefreshCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "rewrite the registry even when generated content is unchanged")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress success output; warnings remain visible")
 	cmd.Flags().BoolVar(&noGitignore, "no-gitignore", false, "skip adding skill registry paths to .gitignore")
+	cmd.Flags().BoolVar(&allowNonGitRoot, "allow-non-git-root", false, "use the explicit project directory when it is not a git worktree")
 	return cmd
 }
 

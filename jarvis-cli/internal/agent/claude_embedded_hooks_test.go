@@ -22,7 +22,7 @@ func TestEmbeddedPromptCaptureHooks_PostProjectSessionMetadata(t *testing.T) {
 func TestEmbeddedSkillRegistryAutomationHooks_UseQuietActiveWorktreeRefresh(t *testing.T) {
 	t.Parallel()
 
-	assertHookContract(t, "opencode registry plugin", opencodeEmbeddedHookPath(t, "skill-registry.ts"), "skill-registry", "--quiet", "--cwd", "context.directory", "context.worktree", "process.cwd()", "timeout: {{JARVIS_REFRESH_TIMEOUT_MILLIS}}", "{{JARVIS_EXECUTABLE}}")
+	assertHookContract(t, "opencode registry plugin", opencodeEmbeddedHookPath(t, "skill-registry.ts"), "skill-registry", "--quiet", "--cwd", "--allow-non-git-root", "context.directory", "context.worktree", "process.cwd()", "refreshed = refreshSkillRegistry", "timeout: {{JARVIS_REFRESH_TIMEOUT_MILLIS}}", "{{JARVIS_EXECUTABLE}}")
 }
 
 func TestClaudeSkillRegistryAutomation_DoesNotShipWrapperScripts(t *testing.T) {
@@ -76,7 +76,7 @@ func TestOpenCodeRegistryPlugin_PassesInitializerContextToResolver(t *testing.T)
 		t.Fatalf("read opencode registry plugin: %v", err)
 	}
 	text := string(content)
-	assertHookContract(t, "opencode registry plugin", opencodeEmbeddedHookPath(t, "skill-registry.ts"), "function resolveDirectory(context: any, input: any): string", "context.worktree", "context.directory")
+	assertHookContract(t, "opencode registry plugin", opencodeEmbeddedHookPath(t, "skill-registry.ts"), "function resolveDirectory(context: any, input: any): string", "context.directory", "context.worktree")
 	if !strings.Contains(text, "resolveDirectory(context ?? {}, input ?? {})") {
 		t.Fatalf("OpenCode registry plugin must pass initializer context into resolveDirectory:\n%s", text)
 	}
@@ -105,9 +105,9 @@ process.env.JARVIS_WORKSPACE_DIRECTORY = "/env-jarvis"
 process.env.PWD = "/env-pwd"
 
 assert.equal(resolveDirectory(
-  { worktree: " /context-worktree ", directory: "/context-directory" },
+  { worktree: " / ", directory: "/context-directory" },
   { worktree: "/input-worktree", directory: "/input-directory" },
-), "/context-worktree")
+), "/context-directory")
 assert.equal(resolveDirectory(
   { directory: "/context-directory" },
   { worktree: "/input-worktree", directory: "/input-directory" },
@@ -115,7 +115,7 @@ assert.equal(resolveDirectory(
 assert.equal(resolveDirectory(
   {},
   { worktree: "/input-worktree", directory: "/input-directory" },
-), "/input-worktree")
+), "/input-directory")
 assert.equal(resolveDirectory({}, { directory: "/input-directory" }), "/input-directory")
 assert.equal(resolveDirectory({}, {}), "/env-hive")
 delete process.env.HIVE_PROJECT_DIRECTORY

@@ -13,11 +13,11 @@ function readString(value: unknown): string {
 }
 
 function resolveDirectory(context: any, input: any): string {
-  const fromContext = readString(context.worktree) || readString(context.directory) || readString(context.cwd) ||
+  const fromContext = readString(context.directory) || readString(context.worktree) || readString(context.cwd) ||
     readString(context.workspace?.directory)
   if (fromContext) return fromContext
 
-  const fromInput = readString(input.worktree) || readString(input.directory) || readString(input.cwd) ||
+  const fromInput = readString(input.directory) || readString(input.worktree) || readString(input.cwd) ||
     readString(input.workspace?.directory)
   if (fromInput) return fromInput
 
@@ -34,15 +34,15 @@ function resolveDirectory(context: any, input: any): string {
   return readString(process.env["PWD"])
 }
 
-function refreshSkillRegistry(directory: string): void {
+function refreshSkillRegistry(directory: string): boolean {
   if (!directory) {
     console.error("Project skill registry warning: active project directory unavailable")
-    return
+    return false
   }
 
   const child = execFile(
     JARVIS_EXECUTABLE,
-    ["skill-registry", "refresh", "--quiet", "--cwd", directory],
+    ["skill-registry", "refresh", "--quiet", "--cwd", directory, "--allow-non-git-root"],
     { timeout: {{JARVIS_REFRESH_TIMEOUT_MILLIS}} },
     (error, _stdout, stderr) => {
       if (error) {
@@ -59,6 +59,7 @@ function refreshSkillRegistry(directory: string): void {
   child.on("error", () => {
     console.error("Project skill registry warning: jarvis executable unavailable")
   })
+  return true
 }
 
 export const SkillRegistry: Plugin = async (context: any = {}) => {
@@ -66,13 +67,11 @@ export const SkillRegistry: Plugin = async (context: any = {}) => {
   return {
     event: async (input: any) => {
       if (refreshed) return
-      refreshed = true
-      refreshSkillRegistry(resolveDirectory(context ?? {}, input ?? {}))
+      refreshed = refreshSkillRegistry(resolveDirectory(context ?? {}, input ?? {}))
     },
     "chat.message": async (input: any) => {
       if (refreshed) return
-      refreshed = true
-      refreshSkillRegistry(resolveDirectory(context ?? {}, input ?? {}))
+      refreshed = refreshSkillRegistry(resolveDirectory(context ?? {}, input ?? {}))
     },
   }
 }
