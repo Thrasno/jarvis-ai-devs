@@ -21,9 +21,9 @@ func TestSync_Push_BlockedProjectReturnsCommandWithoutPersisting(t *testing.T) {
 	blockRepo := &repository.MockProjectBlockRepository{}
 	svc := service.NewSyncService(memRepo, promptRepo, sessionRepo, nil, blockRepo)
 	blockedAt := time.Date(2026, 7, 5, 20, 0, 0, 0, time.UTC)
-	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "Jarvis Dev", CanonicalProjectKey: "jarvis-dev", Reason: "duplicate", BlockedAt: blockedAt}
+	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "Jarvis Dev", ProjectKey: "Jarvis Dev", Reason: "duplicate", BlockedAt: blockedAt}
 
-	blockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(block, nil)
+	blockRepo.On("GetByProjectKey", ctx, "Jarvis Dev").Return(block, nil)
 
 	_, err := svc.Push(ctx, model.SyncRequest{Project: "Jarvis Dev", Memories: []model.SyncMemoryPayload{makePayload("11111111-1111-1111-1111-111111111111", time.Now())}}, "user-1")
 	require.Error(t, err)
@@ -37,6 +37,52 @@ func TestSync_Push_BlockedProjectReturnsCommandWithoutPersisting(t *testing.T) {
 	sessionRepo.AssertNotCalled(t, "UpsertSession", mock.Anything, mock.Anything)
 }
 
+// TestSync_Push_BlockedProjectNeverReachesTheMutationJournal pins the only
+// thing standing between a quarantined project and its mutation journal.
+//
+// MemoryRepository.ListMemoryMutations carries no block predicate of its own:
+// asked for a blocked project it will happily return that project's events.
+// The pull is safe today because its single production caller, pushWithRepos,
+// runs precheckBlockedProjects first and aborts the whole push. This test
+// fails if that precheck ever stops covering the pull — reordered, made
+// conditional, or scoped to the write half only.
+//
+// It cannot see a NEW caller added elsewhere. That constraint is documented at
+// quarantineReaders in internal/repository/project_scope_behaviour_test.go.
+func TestSync_Push_BlockedProjectNeverReachesTheMutationJournal(t *testing.T) {
+	ctx := context.Background()
+	memRepo := &repository.MockMemoryRepository{}
+	promptRepo := &repository.MockPromptRepository{}
+	sessionRepo := &repository.MockSessionRepository{}
+	blockRepo := &repository.MockProjectBlockRepository{}
+	svc := service.NewSyncService(memRepo, promptRepo, sessionRepo, nil, blockRepo)
+	const blocked = "jarvis-dev"
+	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: blocked, ProjectKey: blocked, Reason: "duplicate", BlockedAt: time.Now().UTC()}
+
+	blockRepo.On("GetByProjectKey", ctx, blocked).Return(block, nil)
+
+	// A request that would pull the journal if the project were not blocked:
+	// protocol v2 with at least one mutation makes the pull authoritative.
+	_, err := svc.Push(ctx, model.SyncRequest{
+		Project:         blocked,
+		ProtocolVersion: model.MutationProtocolVersion,
+		MutationCursor:  &model.MutationCursor{},
+		Mutations: []model.MutationEnvelope{{
+			EventID:      "960e8400-e29b-41d4-a716-446655440001",
+			EntityType:   model.MutationEntityMemory,
+			EntitySyncID: "960e8400-e29b-41d4-a716-446655440101",
+			Project:      blocked,
+			Op:           model.MutationOpDelete,
+		}},
+	}, "user-1")
+
+	require.Error(t, err)
+	blockedErr := &service.ProjectBlockedError{}
+	require.True(t, errors.As(err, &blockedErr))
+	memRepo.AssertNotCalled(t, "ListMemoryMutations", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	memRepo.AssertNotCalled(t, "ApplyMemoryMutation", mock.Anything, mock.Anything)
+}
+
 func TestSync_Push_AllowsUnblockedProject(t *testing.T) {
 	ctx := context.Background()
 	memRepo := &repository.MockMemoryRepository{}
@@ -47,7 +93,7 @@ func TestSync_Push_AllowsUnblockedProject(t *testing.T) {
 	payload := makePayload("22222222-2222-2222-2222-222222222222", time.Now())
 	expected := expectedMem(payload, "user-1")
 
-	blockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(nil, repository.ErrNotFound)
+	blockRepo.On("GetByProjectKey", ctx, "jarvis-dev").Return(nil, repository.ErrNotFound)
 	sessionRepo.On("EnsureManualSaveSession", mock.Anything, mock.Anything).Return("manual-save-jarvis-dev", nil)
 	memRepo.On("Upsert", ctx, expected).Return(&model.Memory{ID: "server-1", SyncID: payload.SyncID}, true, nil)
 
@@ -64,13 +110,13 @@ func TestSync_Push_MapsRepositoryBlockedErrorToCommand(t *testing.T) {
 	blockRepo := &repository.MockProjectBlockRepository{}
 	svc := service.NewSyncService(memRepo, promptRepo, sessionRepo, nil, blockRepo)
 	payload := makePayload("33333333-3333-3333-3333-333333333333", time.Now())
-	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "jarvis-dev", CanonicalProjectKey: "jarvis-dev", Reason: "duplicate", BlockedAt: time.Now().UTC()}
+	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "jarvis-dev", ProjectKey: "jarvis-dev", Reason: "duplicate", BlockedAt: time.Now().UTC()}
 	expected := expectedMem(payload, "user-1")
 
-	blockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(nil, repository.ErrNotFound).Once()
+	blockRepo.On("GetByProjectKey", ctx, "jarvis-dev").Return(nil, repository.ErrNotFound).Once()
 	sessionRepo.On("EnsureManualSaveSession", mock.Anything, mock.Anything).Return("manual-save-jarvis-dev", nil)
 	memRepo.On("Upsert", ctx, expected).Return(nil, false, repository.ErrProjectBlocked)
-	blockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(block, nil).Once()
+	blockRepo.On("GetByProjectKey", ctx, "jarvis-dev").Return(block, nil).Once()
 
 	_, err := svc.Push(ctx, model.SyncRequest{Project: "jarvis-dev", Memories: []model.SyncMemoryPayload{payload}}, "user-1")
 	require.Error(t, err)
@@ -89,12 +135,12 @@ func TestSync_Push_PrechecksEveryPayloadProjectBeforeWriting(t *testing.T) {
 	blockRepo := &repository.MockProjectBlockRepository{}
 	svc := service.NewSyncService(memRepo, promptRepo, sessionRepo, nil, blockRepo)
 	blockedAt := time.Date(2026, 7, 5, 20, 0, 0, 0, time.UTC)
-	block := &model.ProjectBlock{CommandID: "cmd-blocked", AckToken: "ack-token-blocked", Project: "Blocked Project", CanonicalProjectKey: "blocked-project", Reason: "duplicate", BlockedAt: blockedAt}
+	block := &model.ProjectBlock{CommandID: "cmd-blocked", AckToken: "ack-token-blocked", Project: "Blocked Project", ProjectKey: "Blocked Project", Reason: "duplicate", BlockedAt: blockedAt}
 	payload := makePayload("44444444-4444-4444-4444-444444444444", time.Now())
 	payload.Project = "Blocked Project"
 
-	blockRepo.On("GetByCanonicalKey", ctx, "visible-project").Return(nil, repository.ErrNotFound).Once()
-	blockRepo.On("GetByCanonicalKey", ctx, "blocked-project").Return(block, nil).Once()
+	blockRepo.On("GetByProjectKey", ctx, "visible-project").Return(nil, repository.ErrNotFound).Once()
+	blockRepo.On("GetByProjectKey", ctx, "Blocked Project").Return(block, nil).Once()
 
 	_, err := svc.Push(ctx, model.SyncRequest{
 		Project:  "visible-project",
@@ -110,4 +156,37 @@ func TestSync_Push_PrechecksEveryPayloadProjectBeforeWriting(t *testing.T) {
 	sessionRepo.AssertNotCalled(t, "UpsertSession", mock.Anything, mock.Anything)
 	memRepo.AssertNotCalled(t, "Upsert", mock.Anything, mock.Anything)
 	promptRepo.AssertNotCalled(t, "Upsert", mock.Anything, mock.Anything)
+}
+
+// TestSync_Push_PrechecksTheLiteralSpellingAnAdminBlocked pins the precheck to
+// the same literal the block row stores.
+//
+// The admin quarantines "Foo.Bar" and the row carries that literal. A precheck
+// that folds the request project to "foo-bar" asks about a project nobody
+// blocked, finds nothing, and lets the push through. That bypass is total for a
+// sessions-only push: Push is not transactional and session writes carry no
+// write-side block check, so the rows land inside the quarantine silently.
+func TestSync_Push_PrechecksTheLiteralSpellingAnAdminBlocked(t *testing.T) {
+	ctx := context.Background()
+	memRepo := &repository.MockMemoryRepository{}
+	promptRepo := &repository.MockPromptRepository{}
+	sessionRepo := &repository.MockSessionRepository{}
+	blockRepo := &repository.MockProjectBlockRepository{}
+	svc := service.NewSyncService(memRepo, promptRepo, sessionRepo, nil, blockRepo)
+	const blocked = "Foo.Bar"
+	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: blocked, ProjectKey: blocked, Reason: "duplicate", BlockedAt: time.Now().UTC()}
+
+	blockRepo.On("GetByProjectKey", ctx, blocked).Return(block, nil).Once()
+
+	_, err := svc.Push(ctx, model.SyncRequest{
+		Project:  blocked,
+		Sessions: []model.SyncSessionPayload{{ID: "s-1", SyncID: "s-1", Project: blocked, StartedAt: time.Now()}},
+	}, "user-1")
+
+	require.Error(t, err)
+	blockedErr := &service.ProjectBlockedError{}
+	require.True(t, errors.As(err, &blockedErr))
+	require.Equal(t, "cmd-1", blockedErr.Command.CommandID)
+	sessionRepo.AssertNotCalled(t, "UpsertSession", mock.Anything, mock.Anything)
+	blockRepo.AssertExpectations(t)
 }

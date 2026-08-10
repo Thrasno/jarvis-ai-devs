@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 	"github.com/google/uuid"
 )
 
@@ -36,14 +38,27 @@ var (
 
 const RestoreStatusCoordinationRequired = "coordination_required"
 
+const (
+	ProjectMigrationBackupOperation = "canonical-project-identity-migration"
+	ProjectMigrationBackupRetention = 24 * time.Hour
+)
+
 type BackupManifest struct {
-	ID           string    `json:"id"`
-	CreatedAt    time.Time `json:"created_at"`
-	DBPath       string    `json:"db_path"`
-	ArchivePath  string    `json:"archive_path"`
-	ManifestPath string    `json:"manifest_path"`
-	Checksum     string    `json:"checksum"`
-	SizeBytes    int64     `json:"size_bytes"`
+	ID              string    `json:"id"`
+	CreatedAt       time.Time `json:"created_at"`
+	DBPath          string    `json:"db_path"`
+	ArchivePath     string    `json:"archive_path"`
+	ManifestPath    string    `json:"manifest_path"`
+	Checksum        string    `json:"checksum"`
+	SizeBytes       int64     `json:"size_bytes"`
+	SourceOperation string    `json:"source_operation,omitempty"`
+	Temporary       bool      `json:"temporary,omitempty"`
+	RetainUntil     time.Time `json:"retain_until,omitempty"`
+	// PlanFingerprint records which migration plan this backup was taken for.
+	// It lives in the manifest rather than in the backup id so ids stay opaque
+	// and collision-free (timestamp + uuid), and so reuse is decided by reading
+	// the same durable record List already returns.
+	PlanFingerprint string `json:"plan_fingerprint,omitempty"`
 }
 
 type RestoreRequest struct {
@@ -136,15 +151,140 @@ func (s *BackupStore) Create(ctx context.Context) (BackupManifest, error) {
 		Checksum:     checksum,
 		SizeBytes:    size,
 	}
-	data, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return BackupManifest{}, fmt.Errorf("encode backup manifest: %w", err)
-	}
-	if err := os.WriteFile(manifest.ManifestPath, append(data, '\n'), 0o600); err != nil {
-		return BackupManifest{}, fmt.Errorf("write backup manifest: %w", err)
+	if err := persistBackupManifest(manifest); err != nil {
+		return BackupManifest{}, err
 	}
 	cleanupDir = false
 	return manifest, nil
+}
+
+// ExecuteProjectMigrationWithBackup composes the migration executor with the
+// daemon's SQLite-safe backup store. Failed migrations retain their backup and a
+// later attempt on the same plan reuses it; only expired temporary migration
+// backups are pruned before a new one is taken.
+func ExecuteProjectMigrationWithBackup(ctx context.Context, database *db.DB, plan db.ProjectMigrationPlan, backups *BackupStore) error {
+	return executeProjectMigrationWithBackup(ctx, database, plan, backups, nil)
+}
+
+func executeProjectMigrationWithBackup(ctx context.Context, database *db.DB, plan db.ProjectMigrationPlan, backups *BackupStore, failpoint func() error) error {
+	if backups == nil {
+		return ErrBackupStoreRequired
+	}
+	if err := backups.PruneExpiredTemporaryMigrationBackups(ctx, backups.now().UTC()); err != nil {
+		return fmt.Errorf("prune expired migration backups: %w", err)
+	}
+	return db.ExecuteProjectMigration(ctx, database, plan, func(ctx context.Context) error {
+		_, err := backups.EnsureTemporaryMigrationBackup(ctx, plan.Fingerprint)
+		return err
+	}, failpoint)
+}
+
+// EnsureTemporaryMigrationBackup returns an existing unexpired backup taken for
+// the same migration plan instead of copying the database again.
+//
+// hive-daemon is an MCP stdio server, so a client spawns a fresh process per
+// session and a blocked migration is re-attempted on every start. Copying
+// memory.db each time fills the disk, and a full disk is exactly what makes the
+// next attempt fail. Reuse is safe because a blocked migration gates every write
+// surface off, so the live database cannot have changed since the archive was
+// taken; a genuinely different plan still gets its own fresh backup.
+func (s *BackupStore) EnsureTemporaryMigrationBackup(ctx context.Context, planFingerprint string) (BackupManifest, error) {
+	reusable, found, err := s.reusableMigrationBackup(ctx, planFingerprint)
+	if err != nil {
+		return BackupManifest{}, err
+	}
+	if found {
+		return reusable, nil
+	}
+	return s.CreateTemporaryMigrationBackup(ctx, planFingerprint)
+}
+
+// MigrationBackupForPlan returns the archive that can roll back the migration
+// planned as planFingerprint, if one is still retained and still passes its own
+// checksum. It answers the same question EnsureTemporaryMigrationBackup asks
+// before reusing an archive, so a caller reporting a rollback offers exactly the
+// copy the next attempt would reuse.
+func (s *BackupStore) MigrationBackupForPlan(ctx context.Context, planFingerprint string) (BackupManifest, bool, error) {
+	return s.reusableMigrationBackup(ctx, planFingerprint)
+}
+
+func (s *BackupStore) reusableMigrationBackup(ctx context.Context, planFingerprint string) (BackupManifest, bool, error) {
+	if strings.TrimSpace(planFingerprint) == "" {
+		return BackupManifest{}, false, nil
+	}
+	stored, err := s.List(ctx)
+	if err != nil {
+		return BackupManifest{}, false, err
+	}
+	now := s.now().UTC()
+	for _, backup := range stored {
+		if !backup.Temporary || backup.SourceOperation != ProjectMigrationBackupOperation {
+			continue
+		}
+		if backup.PlanFingerprint != planFingerprint || backup.DBPath != s.dbPath {
+			continue
+		}
+		if backup.RetainUntil.IsZero() || !backup.RetainUntil.After(now) {
+			continue
+		}
+		archivePath := filepath.Join(s.backupRoot, backup.ID, backupArchiveFile)
+		if err := verifyManifestArchivePath(backup.ArchivePath, archivePath); err != nil {
+			reportUnusableMigrationBackup(backup, err)
+			continue
+		}
+		// A reused archive must still be the one its manifest describes; paying
+		// for a fresh copy beats rolling back onto a truncated one.
+		if err := s.validateArchive(ctx, backup, archivePath); err != nil {
+			reportUnusableMigrationBackup(backup, err)
+			continue
+		}
+		return backup, true, nil
+	}
+	return BackupManifest{}, false, nil
+}
+
+// reportUnusableMigrationBackup makes a rejected archive visible. A permanently
+// damaged one is never reusable, so the daemon copies the whole database again
+// on every start; left silent, that cost and the lost rollback point look like
+// normal operation.
+//
+// It reports only the rejection, never what follows it. Both callers of
+// reusableMigrationBackup reach here, and MigrationBackupForPlan copies nothing,
+// so naming a remedy would tell an operator on a blocked start that a fresh
+// copy was taken when none was.
+func reportUnusableMigrationBackup(backup BackupManifest, err error) {
+	logger.Log.Printf("migration backup %s cannot be reused as a rollback point: %v", backup.ID, err)
+}
+
+func (s *BackupStore) CreateTemporaryMigrationBackup(ctx context.Context, planFingerprint string) (BackupManifest, error) {
+	backup, err := s.Create(ctx)
+	if err != nil {
+		return BackupManifest{}, err
+	}
+	backup.SourceOperation = ProjectMigrationBackupOperation
+	backup.Temporary = true
+	backup.RetainUntil = backup.CreatedAt.Add(ProjectMigrationBackupRetention)
+	backup.PlanFingerprint = planFingerprint
+	if err := persistBackupManifest(backup); err != nil {
+		return BackupManifest{}, err
+	}
+	return backup, nil
+}
+
+func (s *BackupStore) PruneExpiredTemporaryMigrationBackups(ctx context.Context, now time.Time) error {
+	backups, err := s.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, backup := range backups {
+		if !backup.Temporary || backup.SourceOperation != ProjectMigrationBackupOperation || backup.RetainUntil.IsZero() || backup.RetainUntil.After(now) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Dir(backup.ManifestPath)); err != nil {
+			return fmt.Errorf("remove expired migration backup %s: %w", backup.ID, err)
+		}
+	}
+	return nil
 }
 
 func (s *BackupStore) List(ctx context.Context) ([]BackupManifest, error) {
@@ -326,6 +466,17 @@ func readBackupManifest(path string) (BackupManifest, error) {
 		return BackupManifest{}, fmt.Errorf("decode backup manifest: %w", err)
 	}
 	return backup, nil
+}
+
+func persistBackupManifest(backup BackupManifest) error {
+	data, err := json.MarshalIndent(backup, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode backup manifest: %w", err)
+	}
+	if err := os.WriteFile(backup.ManifestPath, append(data, '\n'), 0o600); err != nil {
+		return fmt.Errorf("write backup manifest: %w", err)
+	}
+	return nil
 }
 
 func verifyManifestArchivePath(manifestArchivePath, expectedArchivePath string) error {

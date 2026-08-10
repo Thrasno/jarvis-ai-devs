@@ -1044,6 +1044,31 @@ func TestSyncDB_MutationCursorHelpers(t *testing.T) {
 	}
 }
 
+func TestSyncDB_ProjectIdentityCanonicalizesCursorsAndSyncState(t *testing.T) {
+	db := setupTestDB(t)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	at := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+
+	require.NoError(t, db.SetMutationCursor("hive-api", " Jarvis.Dev ", MutationCursor{Sequence: 7, EventID: "event-7"}, at))
+	mutationCursor, err := db.GetMutationCursor("hive-api", "JARVIS_DEV")
+	require.NoError(t, err)
+	require.Equal(t, MutationCursor{Sequence: 7, EventID: "event-7"}, mutationCursor)
+
+	require.NoError(t, db.SetPullCursor("hive-api", "jarvis/dev", "memories", PullCursor{SyncedAt: at, SyncID: "memory-7"}, at))
+	pullCursor, err := db.GetPullCursor("hive-api", "Jarvis Dev", "memories")
+	require.NoError(t, err)
+	require.Equal(t, PullCursor{SyncedAt: at, SyncID: "memory-7"}, pullCursor)
+
+	require.NoError(t, db.SetLastSync("Jarvis.Dev", at))
+	lastSync, err := db.GetLastSync("jarvis_dev")
+	require.NoError(t, err)
+	require.Equal(t, at, lastSync)
+	require.NoError(t, db.ClearPullCursor("hive-api", "JARVIS-DEV", "memories"))
+	cleared, err := db.GetPullCursor("hive-api", "jarvis-dev", "memories")
+	require.NoError(t, err)
+	require.Equal(t, PullCursor{}, cleared)
+}
+
 func TestSyncDB_MutationCursorHelpersReturnDBErrors(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1632,17 +1657,9 @@ func TestSyncDB_ApplyRemoteMutationValidationErrors(t *testing.T) {
 			},
 			wantErr: "memory payload required",
 		},
-		{
-			name: "unsupported operation",
-			event: MutationEnvelope{
-				EventID:      "validation-unsupported-op",
-				EntityType:   "memory",
-				EntitySyncID: "validation-sync-id",
-				Project:      "validation-project",
-				Op:           MutationOp("archive"),
-			},
-			wantErr: "unsupported mutation op",
-		},
+		// An unsupported op is no longer an error: it is skipped so one event
+		// this build cannot apply does not abort the batch and strand the
+		// mutation cursor. See TestApplyRemoteMutationSkipsUnknownOps.
 	}
 
 	for _, tt := range tests {
@@ -1877,7 +1894,7 @@ func TestSaveFromRemote_RemapsAliasedProject(t *testing.T) {
 	var storedProject string
 	err := db.sqlDB.QueryRow(`SELECT project FROM memories WHERE sync_id = ?`, "sync-remap-001").Scan(&storedProject)
 	require.NoError(t, err, "row must exist")
-	assert.Equal(t, "Bar", storedProject, "project must be rewritten to alias target")
+	assert.Equal(t, "bar", storedProject, "project must be rewritten to the canonical alias target")
 }
 
 // TestSaveFromRemote_NonAliasedProjectStoredAsIs verifies that SaveFromRemote
@@ -1905,7 +1922,7 @@ func TestSaveFromRemote_NonAliasedProjectStoredAsIs(t *testing.T) {
 	var storedProject string
 	err := db.sqlDB.QueryRow(`SELECT project FROM memories WHERE sync_id = ?`, "sync-noalias-001").Scan(&storedProject)
 	require.NoError(t, err, "row must exist")
-	assert.Equal(t, "Qux", storedProject, "project must be unchanged when no alias exists")
+	assert.Equal(t, "qux", storedProject, "project must be stored under its canonical key")
 }
 
 // TestCountUnsyncedMemories tests the global count of unsynced memories.
@@ -2194,7 +2211,7 @@ func TestApplyRemoteMutation_RemapsAliasedProject(t *testing.T) {
 		CreatedBy: "tester",
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
-		SessionID: "manual-save-Bar",
+		SessionID: "manual-save-bar",
 	}
 	_, ensureErr := db.EnsureManualSaveSession("Bar")
 	require.NoError(t, ensureErr, "EnsureManualSaveSession")
@@ -2233,7 +2250,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, '2026-01-01 00:00:00', '2026-01-01 00:00:00')`,
 	var mutProject string
 	err = db.sqlDB.QueryRow(`SELECT project FROM memory_mutations WHERE event_id = ?`, "evt-remap-001").Scan(&mutProject)
 	require.NoError(t, err, "mutation record must exist")
-	assert.Equal(t, "Bar", mutProject, "mutation project must be rewritten to alias target")
+	assert.Equal(t, "bar", mutProject, "mutation project must be rewritten to the canonical alias target")
 }
 
 // TestStripHTTPErrorBody verifies the stripHTTPErrorBody function correctly

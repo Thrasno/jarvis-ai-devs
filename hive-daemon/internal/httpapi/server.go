@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -83,7 +84,35 @@ type Server struct {
 	governance GovernanceService
 	config     ConfigService
 	health     HealthService
+	gate       *project.MigrationGate
+	retry      func()
+	restore    func(context.Context, governance.RestoreRequest) error
+	resolve    func(context.Context, project.IdentityResolutionRequest) error
+	retryMu    sync.Mutex
+	retrying   bool
 	mux        *http.ServeMux
+}
+
+// SetMigrationGate installs the daemon-wide migration gate after startup has
+// determined whether the local identity migration is safe to access.
+func (s *Server) SetMigrationGate(gate *project.MigrationGate) {
+	s.gate = gate
+}
+
+// SetMigrationRetry installs the daemon lifecycle owner used to stop this
+// process after an identity retry is accepted. It never starts a second daemon.
+func (s *Server) SetMigrationRetry(retry func()) {
+	s.retry = retry
+}
+
+// SetMigrationRestore installs the lifecycle-owned recovery scheduler. The
+// scheduler persists a request for execution before SQLite is reopened.
+func (s *Server) SetMigrationRestore(restore func(context.Context, governance.RestoreRequest) error) {
+	s.restore = restore
+}
+
+func (s *Server) SetMigrationIdentityResolver(resolve func(context.Context, project.IdentityResolutionRequest) error) {
+	s.resolve = resolve
 }
 
 // NewServer constructs a Server bound to addr.
@@ -136,6 +165,9 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 		s.memories = ms
 	}
 	s.mux = http.NewServeMux()
+	s.mux.HandleFunc("GET /governance/project-identity/status", s.handleMigrationIdentityStatus)
+	s.mux.HandleFunc("POST /governance/project-identity/retry", s.handleMigrationIdentityRetry)
+	s.mux.HandleFunc("POST /governance/project-identity/resolve", s.handleMigrationIdentityResolve)
 	s.mux.HandleFunc("/prompts", s.handlePrompts)
 	// Latest-save lookup (hook-initiated memory reminder). Registered
 	// unconditionally — handler is nil-safe on s.memories.
@@ -175,7 +207,77 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 
 // ServeHTTP implements http.Handler — allows use with httptest.NewRecorder.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.gate != nil && !isMigrationRecoveryRoute(r) {
+		if err := s.gate.Check(); err != nil {
+			var blocked *project.MigrationBlockedError
+			if errors.As(err, &blocked) {
+				writeJSON(w, http.StatusServiceUnavailable, blocked.Status)
+				return
+			}
+			writeJSON(w, http.StatusServiceUnavailable, project.MigrationStatus{State: project.MigrationStateBlocked})
+			return
+		}
+	}
 	s.mux.ServeHTTP(w, r)
+}
+
+func isMigrationRecoveryRoute(r *http.Request) bool {
+	return r.Method == http.MethodGet && r.URL.Path == "/governance/project-identity/status" ||
+		r.Method == http.MethodPost && (r.URL.Path == "/governance/project-identity/retry" || r.URL.Path == "/governance/project-identity/resolve" || r.URL.Path == "/governance/restores")
+}
+
+func (s *Server) handleMigrationIdentityResolve(w http.ResponseWriter, r *http.Request) {
+	if s.gate == nil || s.gate.Status().State != project.MigrationStateBlocked {
+		writeJSON(w, http.StatusConflict, map[string]string{"state": "resolution-not-needed"})
+		return
+	}
+	var req project.IdentityResolutionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	if req.Confirmation != project.IdentityResolutionConfirmation(req.SourceProject, req.TargetProject) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "confirmation mismatch"})
+		return
+	}
+	if s.resolve == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"state": "resolution-unavailable"})
+		return
+	}
+	if err := s.resolve(r.Context(), req); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"state": "resolution-recorded"})
+}
+
+func (s *Server) handleMigrationIdentityStatus(w http.ResponseWriter, _ *http.Request) {
+	if s.gate == nil {
+		writeJSON(w, http.StatusOK, project.MigrationStatus{State: project.MigrationStateReady})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.gate.Status())
+}
+
+func (s *Server) handleMigrationIdentityRetry(w http.ResponseWriter, _ *http.Request) {
+	if s.gate == nil || s.gate.Status().State != project.MigrationStateBlocked {
+		writeJSON(w, http.StatusConflict, map[string]string{"state": "retry-not-needed"})
+		return
+	}
+	if s.retry == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"state": "retry-unavailable"})
+		return
+	}
+	s.retryMu.Lock()
+	if s.retrying {
+		s.retryMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"state": "restart-pending"})
+		return
+	}
+	s.retrying = true
+	s.retryMu.Unlock()
+	defer s.retry()
+	writeJSON(w, http.StatusAccepted, map[string]string{"state": "restart-requested"})
 }
 
 // Start launches the HTTP listener as a goroutine and wires ctx cancellation
@@ -187,7 +289,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	srv := &http.Server{
 		Addr:              s.addr,
-		Handler:           s.mux,
+		Handler:           s,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      5 * time.Second,
@@ -641,16 +743,48 @@ func (s *Server) handleGovernanceRestores(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 		return
 	}
+	if s.gate == nil || s.gate.Status().State != project.MigrationStateBlocked {
+		restore, err := s.governance.RestoreBackup(r.Context(), body)
+		if err != nil {
+			writeBackupError(w, "governance restore", err)
+			return
+		}
+		status := http.StatusOK
+		if restore.Status == governance.RestoreStatusCoordinationRequired {
+			status = http.StatusAccepted
+		}
+		writeJSON(w, status, map[string]any{"restore": restore})
+		return
+	}
+	if s.restore == nil || s.retry == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"state": "restore-unavailable"})
+		return
+	}
+	s.retryMu.Lock()
+	if s.retrying {
+		s.retryMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"state": "restart-pending"})
+		return
+	}
+	s.retrying = true
 	restore, err := s.governance.RestoreBackup(r.Context(), body)
 	if err != nil {
+		s.retrying = false
+		s.retryMu.Unlock()
 		writeBackupError(w, "governance restore", err)
 		return
 	}
-	status := http.StatusOK
-	if restore.Status == governance.RestoreStatusCoordinationRequired {
-		status = http.StatusAccepted
+	if err := s.restore(r.Context(), body); err != nil {
+		s.retrying = false
+		s.retryMu.Unlock()
+		writeBackupError(w, "schedule governance restore", err)
+		return
 	}
-	writeJSON(w, status, map[string]any{"restore": restore})
+	s.retryMu.Unlock()
+	restore.Status = "restart-requested"
+	restore.Message = "restore scheduled; the daemon will restart and restore the backup before reopening SQLite"
+	writeJSON(w, http.StatusAccepted, map[string]any{"restore": restore})
+	s.retry()
 }
 
 func (s *Server) handleGovernanceGuardExecute(w http.ResponseWriter, r *http.Request) {

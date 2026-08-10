@@ -1,6 +1,8 @@
 package repository
 
-import "context"
+import (
+	"context"
+)
 
 type MockTxManager struct {
 	Users           UserRepository

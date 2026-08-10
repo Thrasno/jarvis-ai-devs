@@ -33,6 +33,69 @@ func TestClientListsProjectsFromGovernanceEndpoint(t *testing.T) {
 	}
 }
 
+func TestClientReadsMigrationIdentityStatusAndRequestsRollback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/governance/project-identity/status":
+			if r.Method != http.MethodGet {
+				t.Fatalf("method = %s, want GET", r.Method)
+			}
+			_, _ = w.Write([]byte(`{"state":"migration-blocked","reason":"duplicate canonical project","backup_id":"migration-backup-1","conflicts":["project_aliases"],"variants":["Foo-Bar"]}`))
+		case "/governance/restores":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method = %s, want POST", r.Method)
+			}
+			var request map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatalf("decode rollback: %v", err)
+			}
+			if request["backup_id"] != "migration-backup-1" || request["confirmation"] != "RESTORE migration-backup-1" {
+				t.Fatalf("rollback = %#v, want exact explicit selection", request)
+			}
+			_, _ = w.Write([]byte(`{"restore":{"backup_id":"migration-backup-1","status":"restart-requested","requires_daemon_restart":true,"message":"restore scheduled"}}`))
+		case "/governance/project-identity/retry":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method = %s, want POST", r.Method)
+			}
+			_, _ = w.Write([]byte(`{"state":"restart-requested"}`))
+		case "/governance/project-identity/resolve":
+			var request IdentityResolutionRequest
+			if r.Method != http.MethodPost || json.NewDecoder(r.Body).Decode(&request) != nil || request.SourceProject != "Foo-Bar" || request.TargetProject != "foo-bar" {
+				t.Fatalf("identity resolve request = %s %+v", r.Method, request)
+			}
+			_, _ = w.Write([]byte(`{"state":"resolution-recorded"}`))
+		default:
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	status, err := client.MigrationIdentityStatus(context.Background())
+	if err != nil || status.BackupID != "migration-backup-1" || len(status.Conflicts) != 1 || len(status.Variants) != 1 {
+		t.Fatalf("status = %+v, err = %v", status, err)
+	}
+	restore, err := client.RestoreMigrationBackup(context.Background(), "migration-backup-1", "RESTORE migration-backup-1")
+	if err != nil {
+		t.Fatalf("RestoreMigrationBackup: %v", err)
+	}
+	// The daemon's outcome must survive decoding: the CLI decides between
+	// "the daemon scheduled the restart" and "you must stop the daemon
+	// yourself" from exactly this status.
+	if restore.Status != RestoreStatusRestartRequested || !restore.RequiresDaemonRestart || restore.Message != "restore scheduled" {
+		t.Fatalf("restore = %+v, want the daemon's own outcome", restore)
+	}
+	if err := client.ResolveMigrationIdentity(context.Background(), IdentityResolutionRequest{SourceProject: "Foo-Bar", TargetProject: "foo-bar", BackupID: "migration-backup-1", Confirmation: "RESOLVE project identity Foo-Bar INTO foo-bar"}); err != nil {
+		t.Fatalf("ResolveMigrationIdentity: %v", err)
+	}
+	if err := client.RequestMigrationRetry(context.Background()); err != nil {
+		t.Fatalf("RequestMigrationRetry: %v", err)
+	}
+}
+
 func TestClientExecutesGuardWithExactConfirmation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/governance/guards/execute" {

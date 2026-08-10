@@ -35,8 +35,8 @@ func TestSyncService_SyncRunsPrecheckWritesAndPullInsideProjectKeyTransaction(t 
 	now := time.Now().UTC()
 	payload := makePayload("tx-sync-memory", now)
 
-	txLocks.On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
-	txBlockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(nil, repository.ErrNotFound).Once()
+	txLocks.On("LockProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
+	txBlockRepo.On("GetByProjectKey", ctx, "jarvis-dev").Return(nil, repository.ErrNotFound).Once()
 	txSessionRepo.On("EnsureManualSaveSession", ctx, "jarvis-dev").Return("manual-save-jarvis-dev", nil).Once()
 	txMemRepo.On("Upsert", ctx, expectedMem(payload, "user-1")).Return(&model.Memory{ID: "server-id", SyncID: payload.SyncID}, true, nil).Once()
 	txAuditRepo.On("Insert", ctx, mock.MatchedBy(func(entry *model.AuditEntry) bool {
@@ -54,7 +54,7 @@ func TestSyncService_SyncRunsPrecheckWritesAndPullInsideProjectKeyTransaction(t 
 	require.Len(t, resp.PulledSessions, 1)
 	outerMemRepo.AssertNotCalled(t, "Upsert", mock.Anything, mock.Anything)
 	outerMemRepo.AssertNotCalled(t, "PullSince", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
-	outerBlockRepo.AssertNotCalled(t, "GetByCanonicalKey", mock.Anything, mock.Anything)
+	outerBlockRepo.AssertNotCalled(t, "GetByProjectKey", mock.Anything, mock.Anything)
 }
 
 func TestSyncService_SyncRequiresTransactionManager(t *testing.T) {
@@ -84,8 +84,8 @@ func TestSyncService_SyncRollsBackWhenRequiredAuditFails(t *testing.T) {
 	now := time.Now().UTC()
 	payload := makePayload("audit-failure-memory", now)
 
-	txLocks.On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
-	txBlockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(nil, repository.ErrNotFound).Once()
+	txLocks.On("LockProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
+	txBlockRepo.On("GetByProjectKey", ctx, "jarvis-dev").Return(nil, repository.ErrNotFound).Once()
 	txSessionRepo.On("EnsureManualSaveSession", ctx, "jarvis-dev").Return("manual-save-jarvis-dev", nil).Once()
 	txMemRepo.On("Upsert", ctx, expectedMem(payload, "user-1")).Return(&model.Memory{ID: "server-id", SyncID: payload.SyncID}, true, nil).Once()
 	txAuditRepo.On("Insert", ctx, mock.AnythingOfType("*model.AuditEntry")).Return(errors.New("audit unavailable")).Once()
@@ -120,8 +120,8 @@ func TestSyncService_SyncRequiresTransactionScopedAuditRepository(t *testing.T) 
 	require.ErrorIs(t, err, service.ErrProjectBlockUnavailable)
 	require.True(t, tx.RolledBack)
 	require.False(t, tx.Committed)
-	txLocks.AssertNotCalled(t, "LockCanonicalProjectKeys", mock.Anything, mock.Anything)
-	txBlockRepo.AssertNotCalled(t, "GetByCanonicalKey", mock.Anything, mock.Anything)
+	txLocks.AssertNotCalled(t, "LockProjectKeys", mock.Anything, mock.Anything)
+	txBlockRepo.AssertNotCalled(t, "GetByProjectKey", mock.Anything, mock.Anything)
 	txMemRepo.AssertNotCalled(t, "Upsert", mock.Anything, mock.Anything)
 }
 
@@ -140,13 +140,13 @@ func TestSyncService_SyncRollsBackWhenConcurrentBlockAppearsAfterLock(t *testing
 	tx.ProjectBlocks = txBlockRepo
 	tx.ProjectKeyLocks = txLocks
 	svc := service.NewSyncService(&repository.MockMemoryRepository{}, &repository.MockPromptRepository{}, &repository.MockSessionRepository{}, nil, &repository.MockProjectBlockRepository{}, tx)
-	block := &model.ProjectBlock{CommandID: "cmd-block", AckToken: "ack-token-tx", Project: "Jarvis Dev", CanonicalProjectKey: "jarvis-dev", Reason: "blocked", BlockedAt: time.Now().UTC()}
+	block := &model.ProjectBlock{CommandID: "cmd-block", AckToken: "ack-token-tx", Project: "jarvis-dev", ProjectKey: "jarvis-dev", Reason: "blocked", BlockedAt: time.Now().UTC()}
 	payload := makePayload("tx-blocked-memory", time.Now().UTC())
 
-	txLocks.On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
-	txBlockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(block, nil).Once()
+	txLocks.On("LockProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
+	txBlockRepo.On("GetByProjectKey", ctx, "jarvis-dev").Return(block, nil).Once()
 
-	_, err := svc.Sync(ctx, model.SyncRequest{Project: "Jarvis Dev", Memories: []model.SyncMemoryPayload{payload}}, "user-1")
+	_, err := svc.Sync(ctx, model.SyncRequest{Project: "jarvis-dev", Memories: []model.SyncMemoryPayload{payload}}, "user-1")
 
 	require.Error(t, err)
 	blockedErr := &service.ProjectBlockedError{}
@@ -160,7 +160,7 @@ func TestSyncService_SyncRollsBackWhenConcurrentBlockAppearsAfterLock(t *testing
 	txPromptRepo.AssertNotCalled(t, "Upsert", mock.Anything, mock.Anything)
 }
 
-func TestProjectGovernanceService_BlockProjectLocksCanonicalProjectKeyBeforeWrites(t *testing.T) {
+func TestProjectGovernanceService_BlockProjectLocksProjectKeyBeforeWrites(t *testing.T) {
 	ctx := context.Background()
 	txBlockRepo := &repository.MockProjectBlockRepository{}
 	txAuditRepo := &repository.MockAuditRepository{}
@@ -170,14 +170,14 @@ func TestProjectGovernanceService_BlockProjectLocksCanonicalProjectKeyBeforeWrit
 	tx.ProjectKeyLocks = txLocks
 	svc := service.NewProjectGovernanceService(&repository.MockProjectBlockRepository{}, nil, tx)
 	req := model.ProjectBlockRequest{Action: model.ProjectBlockActionBlock, Reason: "duplicate", Confirmation: "jarvis-dev", ExportMarker: "export-1"}
-	block := &model.ProjectBlock{CommandID: "cmd-1", Project: "Jarvis Dev", CanonicalProjectKey: "jarvis-dev", Reason: req.Reason, BlockedAt: time.Now().UTC()}
+	block := &model.ProjectBlock{CommandID: "cmd-1", Project: "jarvis-dev", ProjectKey: "jarvis-dev", Reason: req.Reason, BlockedAt: time.Now().UTC()}
 	callOrder := []string{}
 
-	txLocks.On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Run(func(mock.Arguments) { callOrder = append(callOrder, "lock") }).Return(nil).Once()
+	txLocks.On("LockProjectKeys", ctx, []string{"jarvis-dev"}).Run(func(mock.Arguments) { callOrder = append(callOrder, "lock") }).Return(nil).Once()
 	txBlockRepo.On("BlockProject", ctx, mock.AnythingOfType("model.ProjectBlockCreate")).Run(func(mock.Arguments) { callOrder = append(callOrder, "block") }).Return(block, nil).Once()
 	txAuditRepo.On("Insert", ctx, mock.AnythingOfType("*model.AuditEntry")).Return(nil).Once()
 
-	_, err := svc.BlockProject(ctx, model.AdminActor{UserID: "admin-1"}, "Jarvis Dev", req)
+	_, err := svc.BlockProject(ctx, model.AdminActor{UserID: "admin-1"}, "jarvis-dev", req)
 
 	require.NoError(t, err)
 	require.Equal(t, []string{"lock", "block"}, callOrder)

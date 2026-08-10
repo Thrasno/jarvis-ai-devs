@@ -14,4 +14,9 @@ type Session struct {
 	EndedAt   *time.Time
 	Summary   string
 	SyncedAt  *time.Time
+	// SyncFromProject names the project literal the server still holds for this
+	// session after a local identity migration renamed it here. It is a pending
+	// write-side precondition sent as from_project, not history: empty means no
+	// relocation is pending, and the ack clears it.
+	SyncFromProject string
 }

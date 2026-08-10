@@ -21,8 +21,8 @@ func (m *MockProjectBlockRepository) BlockProject(ctx context.Context, create mo
 	return args.Get(0).(*model.ProjectBlock), args.Error(1)
 }
 
-func (m *MockProjectBlockRepository) GetByCanonicalKey(ctx context.Context, canonicalProjectKey string) (*model.ProjectBlock, error) {
-	args := m.Called(ctx, canonicalProjectKey)
+func (m *MockProjectBlockRepository) GetByProjectKey(ctx context.Context, projectKey string) (*model.ProjectBlock, error) {
+	args := m.Called(ctx, projectKey)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
@@ -42,8 +42,8 @@ func (m *MockProjectBlockRepository) EnsureAckDelivery(ctx context.Context, bloc
 	return args.Get(0).(model.ProjectBlockCommand), args.Error(1)
 }
 
-func (m *MockProjectBlockRepository) GetAckDelivery(ctx context.Context, canonicalProjectKey, commandID string, subject model.ProjectBlockAckSubject) (*model.ProjectBlockAckDelivery, error) {
-	args := m.Called(ctx, canonicalProjectKey, commandID, subject)
+func (m *MockProjectBlockRepository) GetAckDelivery(ctx context.Context, projectKey, commandID string, subject model.ProjectBlockAckSubject) (*model.ProjectBlockAckDelivery, error) {
+	args := m.Called(ctx, projectKey, commandID, subject)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
@@ -55,16 +55,16 @@ func (m *MockProjectBlockRepository) RecordAck(ctx context.Context, ack model.Pr
 	return args.Get(0).(model.ProjectBlockAck), args.Error(1)
 }
 
-func (m *MockProjectBlockRepository) LatestAckForCommand(ctx context.Context, canonicalProjectKey, commandID string) (*model.ProjectBlockAck, error) {
-	args := m.Called(ctx, canonicalProjectKey, commandID)
+func (m *MockProjectBlockRepository) LatestAckForCommand(ctx context.Context, projectKey, commandID string) (*model.ProjectBlockAck, error) {
+	args := m.Called(ctx, projectKey, commandID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*model.ProjectBlockAck), args.Error(1)
 }
 
-func (m *MockProjectBlockRepository) QuarantineProgress(ctx context.Context, canonicalProjectKey string, generation int64, after string, limit int) (model.QuarantineProgressResponse, error) {
-	args := m.Called(ctx, canonicalProjectKey, generation, after, limit)
+func (m *MockProjectBlockRepository) QuarantineProgress(ctx context.Context, projectKey string, generation int64, after string, limit int) (model.QuarantineProgressResponse, error) {
+	args := m.Called(ctx, projectKey, generation, after, limit)
 	return args.Get(0).(model.QuarantineProgressResponse), args.Error(1)
 }
 

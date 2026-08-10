@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 )
 
 // Sentinel errors surfaced by Push for handler-level 4xx classification (R2-CRIT-6).
@@ -21,6 +23,11 @@ var (
 	// ErrSessionNotFound — incoming session_id is unknown server-side and not present
 	// in the push payload's sessions[]. Handler should return 400 Bad Request.
 	ErrSessionNotFound = errors.New("session not found on server and not in push payload")
+
+	// ErrPromptProjectMismatch — a prompt payload names a project other than the
+	// one the request claims. The prompt counterpart of ErrSessionProjectMismatch;
+	// handler should return 400 Bad Request.
+	ErrPromptProjectMismatch = errors.New("prompt project mismatch with request project")
 )
 
 const syncMutationPullBatchSize = 100
@@ -101,12 +108,18 @@ func NewSyncService(memRepo repository.MemoryRepository, promptRepo repository.P
 // El campo CreatedBy se asigna aquí, en el service — el repositorio no sabe
 // quién está haciendo el sync. Ese dato viene del JWT (validado por el middleware).
 func (s *syncService) Push(ctx context.Context, req model.SyncRequest, userID string) (*model.SyncResponse, error) {
+	if err := model.ValidateSyncProjectIdentity(req); err != nil {
+		return nil, err
+	}
 	return s.pushWithRepos(ctx, req, userID, syncPushRepos{Memory: s.repo, Prompt: s.promptRepo, Session: s.sessionRepo, Audit: s.auditRepo, ProjectBlocks: s.blockRepo})
 }
 
 func (s *syncService) Sync(ctx context.Context, req model.SyncRequest, userID string) (*model.SyncResponse, error) {
 	if s.tx == nil {
 		return nil, ErrProjectBlockUnavailable
+	}
+	if err := model.ValidateSyncProjectIdentity(req); err != nil {
+		return nil, err
 	}
 
 	var resp *model.SyncResponse
@@ -115,8 +128,8 @@ func (s *syncService) Sync(ctx context.Context, req model.SyncRequest, userID st
 		if !txRepos.Valid() {
 			return ErrProjectBlockUnavailable
 		}
-		keys := repository.CanonicalProjectKeys(syncRequestProjects(req))
-		if err := txRepos.ProjectKeyLocks.LockCanonicalProjectKeys(ctx, keys); err != nil {
+		keys := repository.ProjectLockKeys(syncRequestProjects(req))
+		if err := txRepos.ProjectKeyLocks.LockProjectKeys(ctx, keys); err != nil {
 			if errors.Is(err, repository.ErrProjectKeyLockBusy) {
 				log.Printf("warn: project-key lock contention during sync projects=%v", keys)
 			}
@@ -193,15 +206,16 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 				sp.ID, sp.Project, req.Project, ErrSessionProjectMismatch)
 		}
 		sess := &model.Session{
-			ID:        sp.ID,
-			SyncID:    sp.SyncID,
-			Project:   sp.Project,
-			Directory: sp.Directory,
-			DevID:     sp.DevID,
-			Client:    sp.Client,
-			StartedAt: sp.StartedAt,
-			EndedAt:   sp.EndedAt,
-			Summary:   sp.Summary,
+			ID:          sp.ID,
+			SyncID:      sp.SyncID,
+			Project:     sp.Project,
+			FromProject: sp.FromProject,
+			Directory:   sp.Directory,
+			DevID:       sp.DevID,
+			Client:      sp.Client,
+			StartedAt:   sp.StartedAt,
+			EndedAt:     sp.EndedAt,
+			Summary:     sp.Summary,
 		}
 		if err := repos.Session.UpsertSession(ctx, sess); err != nil {
 			return nil, fmt.Errorf("upsert session %s: %w", sp.ID, err)
@@ -270,12 +284,25 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 	// Re-sync de prompts ya conocidos no incrementa el contador.
 	var promptsPushed int
 	for _, payload := range req.Prompts {
+		// The prompt counterpart of the session check above. Quarantine and the
+		// project-key lock already cover both ends of a prompt relocation
+		// (syncRequestProjects collects Project and FromProject), so this is not
+		// an authorization gain — it is an attribution one. emitSyncAudit books
+		// the whole sync under req.Project, so a prompt written into, or
+		// relocated into, some other project was recorded against a project that
+		// never touched it. The audit trail is what an operator reads to answer
+		// "who moved this".
+		if payload.Project != req.Project {
+			return nil, fmt.Errorf("prompt %q project mismatch: payload says %q, request says %q: %w",
+				payload.SyncID, payload.Project, req.Project, ErrPromptProjectMismatch)
+		}
 		p := &model.Prompt{
-			SyncID:    payload.SyncID,
-			Project:   payload.Project,
-			Content:   payload.Content,
-			CreatedBy: userID,
-			CreatedAt: payload.CreatedAt,
+			SyncID:      payload.SyncID,
+			Project:     payload.Project,
+			FromProject: payload.FromProject,
+			Content:     payload.Content,
+			CreatedBy:   userID,
+			CreatedAt:   payload.CreatedAt,
 		}
 		saved, err := repos.Prompt.Upsert(ctx, p)
 		if err != nil {
@@ -298,12 +325,8 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 		for _, mutation := range req.Mutations {
 			if mutationProjectMismatch(mutation, req.Project) {
 				conflicts++
-				mutationResults = append(mutationResults, model.MutationApplyResult{
-					EventID:  mutation.EventID,
-					Op:       mutation.Op,
-					Rejected: true,
-					Reason:   "mutation project does not match sync project",
-				})
+				mutationResults = append(mutationResults, rejectedMutation(mutation, req.Project,
+					"mutation project does not match sync project"))
 				continue
 			}
 
@@ -318,12 +341,7 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 					if errors.Is(err, repository.ErrMemoryTombstoned) {
 						reason = "mutation target is tombstoned"
 					}
-					mutationResults = append(mutationResults, model.MutationApplyResult{
-						EventID:  mutation.EventID,
-						Op:       mutation.Op,
-						Rejected: true,
-						Reason:   reason,
-					})
+					mutationResults = append(mutationResults, rejectedMutation(mutation, req.Project, reason))
 					continue
 				}
 				return nil, err
@@ -337,6 +355,7 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 			}
 			if result.Rejected {
 				conflicts++
+				logRejectedMutation(result.EventID, result.Op, req.Project, result.Reason)
 			}
 		}
 
@@ -349,7 +368,7 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 			return nil, err
 		}
 		if batch != nil {
-			pulledMutations = batch.Events
+			pulledMutations = deliverableMutations(batch.Events, req.Project, req.SyncCapabilities)
 			next := batch.Next
 			nextMutationCursor = &next
 		}
@@ -358,13 +377,15 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 	}
 
 	resp := &model.SyncResponse{
-		Pushed:             pushed,
-		Conflicts:          conflicts,
-		PromptsPushed:      promptsPushed,
-		PulledMutations:    pulledMutations,
-		MutationResults:    mutationResults,
-		NextMutationCursor: nextMutationCursor,
-		CompatibilityMode:  compatibilityMode,
+		Pushed:                 pushed,
+		Conflicts:              conflicts,
+		PromptsPushed:          promptsPushed,
+		PulledMutations:        pulledMutations,
+		MutationResults:        mutationResults,
+		NextMutationCursor:     nextMutationCursor,
+		CompatibilityMode:      compatibilityMode,
+		ProjectIdentityVersion: projectidentity.ContractVersion,
+		SyncCapabilities:       model.ServerSyncCapabilities(),
 	}
 	if err := s.emitSyncAudit(ctx, repos.Audit, req.Project, userID, pushed, conflicts, promptsPushed); err != nil {
 		return nil, err
@@ -372,32 +393,158 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 	return resp, nil
 }
 
+// deliverableMutations withholds the events this client has not declared it can
+// apply.
+//
+// The daemon's apply loop returns a hard error on an op it does not know, which
+// aborts the batch before it advances its mutation cursor and before it acks the
+// mutations it just pushed — so a single undeliverable event silently and
+// permanently stops that daemon from receiving its teammates' work. The server
+// is the only side that can prevent it, and the only thing it needs is the
+// client's own declaration.
+//
+// The filter runs here rather than in the SQL: the cursor MUST keep advancing
+// over a withheld event, or the daemon would stall on it forever instead of
+// merely missing it. batch.Next already points past every row the page scanned,
+// so dropping events after the fact keeps the stream moving.
+//
+// The withheld event is not queued for later. A client that upgrades starts from
+// its stored cursor, which is past these events; a reproject it missed reaches it
+// as the ordinary memory row under its new project, since applyReprojectMutation
+// bumps synced_at. That is a weaker guarantee than replay, and it is the one an
+// un-upgraded daemon can actually be given.
+//
+// Every withheld event is logged, because withholding is silent everywhere else:
+// the daemon reports a clean sync, ListActivityFeed filters reproject out by op,
+// and emitSyncAudit counts only memories, conflicts and prompts. A client that
+// declares its capability with the wrong spelling would otherwise lose every
+// reproject forever while both ends reported health. The server is the only side
+// that knows both what it held back and what the client declared, so the line
+// carries both.
+func deliverableMutations(events []model.MutationEnvelope, project string, capabilities []string) []model.MutationEnvelope {
+	deliverable := make([]model.MutationEnvelope, 0, len(events))
+	for _, event := range events {
+		if model.ClientUnderstandsMutationOp(event.Op, capabilities) {
+			deliverable = append(deliverable, event)
+			continue
+		}
+		// event_id is quoted for the reason given on logRejectedMutation: it is
+		// unvalidated wire input, and this line is the only notice that
+		// propagation stopped for this client.
+		log.Printf("warn: withheld mutation event_id=%q op=%q project=%q required_capability=%q declared_capabilities=%q",
+			event.EventID, event.Op, project, model.MutationOpCapability(event.Op), capabilities)
+	}
+	return deliverable
+}
+
+// rejectedMutation builds a rejection result and logs it in one place, so no
+// rejection path can be added without its log line.
+func rejectedMutation(mutation model.MutationEnvelope, project, reason string) model.MutationApplyResult {
+	logRejectedMutation(mutation.EventID, mutation.Op, project, reason)
+	return model.MutationApplyResult{
+		EventID:  mutation.EventID,
+		Op:       mutation.Op,
+		Rejected: true,
+		Reason:   reason,
+	}
+}
+
+// logRejectedMutation records what the server discarded and why.
+//
+// A rejection is more destructive than it looks: the daemon's
+// MarkMutationsRejected drops the event from its local journal and never
+// surfaces result.Reason to a human, so the event and its explanation are gone
+// the moment the response is processed. Soft-rejecting an op the server does not
+// know is still right — the old hard error poisoned the entire batch — but it
+// makes this the only surviving record of the loss.
+//
+// The reason goes last and unquoted: it is free-form prose that already carries
+// its own quotes (`unsupported memory mutation op "…"`), and %q would escape
+// them into unreadability. Being the final field, it needs no delimiter. That is
+// safe only because every reason is server-authored and every attacker-derived
+// part it interpolates is already %q-wrapped at the point it is built — see
+// rejectedMutationResult's callers in the memory repository.
+//
+// event_id is quoted for the opposite reason. It is wire input with no binding
+// tag and no validation beyond `!= ""`, and this rejection path is reached
+// entirely in memory by mutationProjectMismatch, so the uuid column type never
+// sees it. Printed raw, a client could embed a newline plus its own well-formed
+// `warn: rejected mutation …` line naming someone else's project and have the
+// server emit it. %q runs the value through strconv.Quote, which escapes \n, \r,
+// NUL, and the other control characters — including U+0085 and U+2028, which
+// some log readers also treat as line breaks — so the whole id stays on one
+// line, escaped rather than dropped and still greppable.
+func logRejectedMutation(eventID string, op model.MutationOp, project, reason string) {
+	log.Printf("warn: rejected mutation event_id=%q op=%q project=%q reason: %s", eventID, op, project, reason)
+}
+
 func syncRequestProjects(req model.SyncRequest) []string {
 	projects := []string{req.Project}
+	// A session or prompt push that names a from_project is a relocation and
+	// names two projects, exactly like a reproject: the source belongs here or
+	// the quarantine precheck would see only the end the row is moving INTO, and
+	// the push would carry rows out of a quarantine the request never mentions.
 	for _, payload := range req.Sessions {
-		projects = append(projects, payload.Project)
+		projects = append(projects, payload.Project, payload.FromProject)
 	}
 	for _, payload := range req.Memories {
 		projects = append(projects, payload.Project)
 	}
 	for _, payload := range req.Prompts {
-		projects = append(projects, payload.Project)
+		projects = append(projects, payload.Project, payload.FromProject)
 	}
 	for _, mutation := range req.Mutations {
 		projects = append(projects, mutation.Project)
 		if mutation.Memory != nil {
 			projects = append(projects, mutation.Memory.Project)
 		}
+		// A reproject names two projects and the envelope carries only one of
+		// them. Both ends belong here: this list is what the quarantine
+		// precheck and the project-key lock are built from, so omitting the
+		// source would let a reproject carry rows out of a quarantined project,
+		// and would take the lock on only half the projects it writes.
+		if mutation.Reproject != nil {
+			projects = append(projects, mutation.Reproject.FromProject, mutation.Reproject.ToProject)
+		}
 	}
 	return projects
+}
+
+// distinctProjects preserves every project literal a request carries, deduped
+// in first-seen order. It deliberately does NOT canonicalize: the daemon is the
+// sole authority on project identity, and each literal is looked up against the
+// literal a block row stores.
+//
+// repository.ProjectLockKeys dedupes the same literals for the advisory lock and
+// SORTS them instead. The orderings differ on purpose: sorting is what stops two
+// overlapping transactions deadlocking on the same locks, while first-seen order
+// is what makes the rejection here name the projects in the order the request
+// presented them. Neither ordering is safe in the other's place.
+func distinctProjects(projects []string) []string {
+	seen := make(map[string]struct{}, len(projects))
+	distinct := make([]string, 0, len(projects))
+	for _, project := range projects {
+		if strings.TrimSpace(project) == "" {
+			continue
+		}
+		if _, ok := seen[project]; ok {
+			continue
+		}
+		seen[project] = struct{}{}
+		distinct = append(distinct, project)
+	}
+	return distinct
 }
 
 func (s *syncService) precheckBlockedProjects(ctx context.Context, req model.SyncRequest, blockRepo repository.ProjectBlockRepository) error {
 	if blockRepo == nil {
 		return nil
 	}
-	for _, canonical := range repository.CanonicalProjectKeys(syncRequestProjects(req)) {
-		block, err := blockRepo.GetByCanonicalKey(ctx, canonical)
+	// Look the block up under the literal an admin quarantined. Folding the
+	// request project to a canonical key asked about a project nobody blocked,
+	// found nothing, and let the push straight through the quarantine.
+	for _, project := range distinctProjects(syncRequestProjects(req)) {
+		block, err := blockRepo.GetByProjectKey(ctx, project)
 		if err != nil && !errors.Is(err, repository.ErrNotFound) {
 			return err
 		}
@@ -507,19 +654,21 @@ func (s *syncService) syncResponseWithPull(ctx context.Context, req model.SyncRe
 		pulled = []*model.Memory{}
 	}
 	return &model.SyncResponse{
-		Pushed:                pushResp.Pushed,
-		Pulled:                pulled,
-		Conflicts:             pushResp.Conflicts,
-		PromptsPushed:         pushResp.PromptsPushed,
-		PulledSessions:        pulledSessions,
-		NextMutationCursor:    pushResp.NextMutationCursor,
-		PulledMutations:       pushResp.PulledMutations,
-		MutationResults:       pushResp.MutationResults,
-		CompatibilityMode:     pushResp.CompatibilityMode,
-		PulledHasMore:         pullResult.MemoriesHasMore,
-		NextPullCursor:        pullResult.NextPullCursor,
-		PulledSessionsHasMore: pullResult.SessionsHasMore,
-		NextSessionCursor:     pullResult.NextSessionCursor,
+		Pushed:                 pushResp.Pushed,
+		Pulled:                 pulled,
+		Conflicts:              pushResp.Conflicts,
+		PromptsPushed:          pushResp.PromptsPushed,
+		PulledSessions:         pulledSessions,
+		NextMutationCursor:     pushResp.NextMutationCursor,
+		PulledMutations:        pushResp.PulledMutations,
+		MutationResults:        pushResp.MutationResults,
+		CompatibilityMode:      pushResp.CompatibilityMode,
+		ProjectIdentityVersion: pushResp.ProjectIdentityVersion,
+		SyncCapabilities:       pushResp.SyncCapabilities,
+		PulledHasMore:          pullResult.MemoriesHasMore,
+		NextPullCursor:         pullResult.NextPullCursor,
+		PulledSessionsHasMore:  pullResult.SessionsHasMore,
+		NextSessionCursor:      pullResult.NextSessionCursor,
 	}, nil
 }
 

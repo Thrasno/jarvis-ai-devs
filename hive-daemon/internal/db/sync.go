@@ -12,9 +12,24 @@ import (
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 )
 
 const maxSyncLastErrorRunes = 500
+
+// canonicalSyncStateProject folds a sync_state key to the canonical project
+// identity, except for the one row that is not a project.
+//
+// sync_state is keyed by project, but the row spelled '__auth__' is a sentinel
+// holding the global JWT (see the schema in db.go); no project is ever named
+// that. Folding it would rewrite the key the token is read and written under,
+// and the daemon would lose its credentials.
+func canonicalSyncStateProject(project string) string {
+	if project == "__auth__" {
+		return project
+	}
+	return projectidentity.Canonical(project).String()
+}
 
 type SyncHealth struct {
 	Project             string    `json:"project"`
@@ -42,6 +57,13 @@ const (
 	MutationOpUpdate  MutationOp = "update"
 	MutationOpDelete  MutationOp = "delete"
 	MutationOpRestore MutationOp = "restore"
+
+	// MutationOpReproject moves a memory the server already holds from one
+	// project literal to another. It is the only op that changes a row's
+	// project, and it carries no content: the daemon is the sole authority on
+	// project identity, so when its local identity migration folds a spelling
+	// variant it must tell the server which name the row moved from and to.
+	MutationOpReproject MutationOp = "reproject"
 )
 
 type MutationEnvelope struct {
@@ -56,6 +78,7 @@ type MutationEnvelope struct {
 	BaseUpdatedAt *time.Time                `json:"base_updated_at,omitempty"`
 	Memory        *MutationMemoryPayload    `json:"memory,omitempty"`
 	Tombstone     *MutationTombstonePayload `json:"tombstone,omitempty"`
+	Reproject     *MutationReprojectPayload `json:"reproject,omitempty"`
 }
 
 type MutationCursor struct {
@@ -99,6 +122,22 @@ type MutationTombstonePayload struct {
 	Reason    string    `json:"reason,omitempty"`
 }
 
+// MutationReprojectPayload names both ends of a project move.
+//
+// FromProject is not redundant with the project the server already stores: the
+// server applies the move only to a row that currently holds FromProject, so a
+// replay after the row already moved matches nothing instead of dragging some
+// other row out of some other project. ToProject duplicates the envelope's
+// Project on purpose — the server rejects an envelope whose two disagree.
+//
+// It is the wire twin of hive-api's model.ReprojectPayload. The two modules ship
+// separately, so each owns its own decoding of the same JSON shape; the tags are
+// the contract between them.
+type MutationReprojectPayload struct {
+	FromProject string `json:"from_project"`
+	ToProject   string `json:"to_project"`
+}
+
 type memoryMutationRecord struct {
 	EventID      string
 	RequestID    string
@@ -113,6 +152,7 @@ type memoryMutationRecord struct {
 type mutationPayload struct {
 	Memory    *MutationMemoryPayload    `json:"memory,omitempty"`
 	Tombstone *MutationTombstonePayload `json:"tombstone,omitempty"`
+	Reproject *MutationReprojectPayload `json:"reproject,omitempty"`
 }
 
 func memoryPayloadFromModel(mem *models.Memory, syncID, createdBy string, occurredAt time.Time) *MutationMemoryPayload {
@@ -423,11 +463,53 @@ func (d *DB) MarkMutationsRejected(eventIDs []string, at time.Time) error {
 		if _, err := tx.Exec(`UPDATE memory_mutations SET synced_at = ? WHERE event_id = ?`, formatted, eventID); err != nil {
 			return fmt.Errorf("mark rejected mutation %s: %w", eventID, err)
 		}
-		if _, err := tx.Exec(`UPDATE mutation_receipts SET shared_status = 'failed' WHERE event_id = ? AND shared_status = 'pending'`, eventID); err != nil {
+		result, err := tx.Exec(`UPDATE mutation_receipts SET shared_status = 'failed' WHERE event_id = ? AND shared_status = 'pending'`, eventID)
+		if err != nil {
 			return fmt.Errorf("mark rejected mutation receipt %s: %w", eventID, err)
+		}
+		receipts, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("mark rejected mutation receipt %s: %w", eventID, err)
+		}
+		if receipts == 0 {
+			reportUnreceiptedRejection(tx, eventID)
 		}
 	}
 	return tx.Commit()
+}
+
+// reportUnreceiptedRejection makes a terminal rejection visible when nothing
+// else records it. A mutation raised by a user command carries a request_id and
+// therefore a mutation_receipts row that now reads shared_status='failed'; the
+// reprojects enqueued by the project identity migration carry neither, so the
+// event would be marked done and print nothing at all.
+//
+// A log is the whole remedy on purpose. Retrying is not available here: the
+// enqueue and the local rekey share one transaction, so after the migration the
+// old spelling this reproject names no longer exists locally to re-derive, and
+// the migration is one-shot — it will not observe this row again. The rejected
+// memory_mutations row survives with its from_project/to_project payload, which
+// is the durable evidence an operator needs to repair the split by hand.
+//
+// Output goes through logger.Log like every other diagnostic in this package:
+// hive-daemon speaks MCP JSON-RPC on stdout, so stderr is the only channel a
+// message may use.
+func reportUnreceiptedRejection(tx *sql.Tx, eventID string) {
+	var op, project, entitySyncID, payloadJSON string
+	if err := tx.QueryRow(`SELECT op, project, entity_sync_id, payload_json FROM memory_mutations WHERE event_id = ?`, eventID).Scan(&op, &project, &entitySyncID, &payloadJSON); err != nil {
+		logger.Log.Printf("warn: MarkMutationsRejected: Hive API rejected mutation event_id=%s and its local row could not be read: %v", eventID, err)
+		return
+	}
+	detail := ""
+	if MutationOp(op) == MutationOpReproject {
+		var payload mutationPayload
+		if err := json.Unmarshal([]byte(payloadJSON), &payload); err == nil && payload.Reproject != nil {
+			detail = fmt.Sprintf(" — the server keeps it under %q instead of %q and the one-shot project migration will not retry; repair it by hand",
+				payload.Reproject.FromProject, payload.Reproject.ToProject)
+		}
+	}
+	logger.Log.Printf("warn: MarkMutationsRejected: Hive API rejected %s mutation event_id=%s project=%s entity_sync_id=%s with no receipt to record it%s",
+		op, eventID, project, entitySyncID, detail)
 }
 
 // MarkMutationReceiptsLegacyUnsupported records that a guarded mutation could
@@ -484,6 +566,7 @@ func (d *DB) MarkMutationsAndMemoriesSynced(eventIDs []string, syncIDs []string,
 }
 
 func (d *DB) GetMutationCursor(consumer, project string) (MutationCursor, error) {
+	project = projectidentity.Canonical(project).String()
 	var cursor MutationCursor
 	err := d.sqlDB.QueryRow(`
 SELECT sequence, event_id
@@ -499,6 +582,7 @@ WHERE consumer = ? AND project = ?`, consumer, project).Scan(&cursor.Sequence, &
 }
 
 func (d *DB) SetMutationCursor(consumer, project string, cursor MutationCursor, at time.Time) error {
+	project = projectidentity.Canonical(project).String()
 	_, err := d.sqlDB.Exec(`
 INSERT INTO mutation_cursors (consumer, project, sequence, event_id, updated_at)
 VALUES (?, ?, ?, ?, ?)
@@ -530,6 +614,7 @@ const pullCursorTimeLayout = time.RFC3339Nano
 // (never synced, or first bounded pull for this project) returns the zero
 // value, matching GetMutationCursor's contract.
 func (d *DB) GetPullCursor(consumer, project, channel string) (PullCursor, error) {
+	project = projectidentity.Canonical(project).String()
 	var cursor PullCursor
 	var syncedAt string
 	err := d.sqlDB.QueryRow(`
@@ -558,6 +643,7 @@ WHERE consumer = ? AND project = ? AND channel = ?`, consumer, project, channel)
 // ON CONFLICT DO UPDATE shape, keyed one level deeper to keep the memories
 // and sessions pull channels independent for the same project.
 func (d *DB) SetPullCursor(consumer, project, channel string, cursor PullCursor, at time.Time) error {
+	project = projectidentity.Canonical(project).String()
 	_, err := d.sqlDB.Exec(`
 INSERT INTO pull_cursors (consumer, project, channel, synced_at, sync_id, updated_at)
 VALUES (?, ?, ?, ?, ?, ?)
@@ -576,6 +662,7 @@ ON CONFLICT(consumer, project, channel) DO UPDATE SET
 // ClearPullCursor deletes the bounded-pull resume position for one channel.
 // Deleting a missing row is a successful no-op.
 func (d *DB) ClearPullCursor(consumer, project, channel string) error {
+	project = projectidentity.Canonical(project).String()
 	_, err := d.sqlDB.Exec(`
 DELETE FROM pull_cursors
 WHERE consumer = ? AND project = ? AND channel = ?`, consumer, project, channel)
@@ -583,6 +670,48 @@ WHERE consumer = ? AND project = ? AND channel = ?`, consumer, project, channel)
 		return fmt.Errorf("clear pull cursor: %w", err)
 	}
 	return nil
+}
+
+// reprojectInstructionError validates a reproject envelope on its own terms and
+// returns the reason it is unusable, or "" when it is well formed.
+//
+// These are malformed instructions, not failed preconditions: an envelope that
+// names no source, or moves a project onto itself, or disagrees with its own
+// project, cannot be carried out under any state of the database. Naming a
+// source the row does not hold IS a valid instruction — it simply matches
+// nothing.
+//
+// A memory or tombstone payload is malformed by definition. A reproject rewrites
+// one column and writes no content, so a payload riding along would be journaled
+// and re-pushed with the weight of a create while never being written to any
+// row; hive-api rejects it for the same reason.
+//
+// hive-api/internal/repository.reprojectInstructionError is the twin of this
+// function, with the same five checks, and the duplication is deliberate: each
+// end refuses a malformed envelope on its own terms rather than trusting the
+// other to have refused it first. Keep the two in step — a check added here
+// without its twin lets this daemon reject locally what the server accepts, so
+// the row moves on the server and stays put here.
+func reprojectInstructionError(event MutationEnvelope) string {
+	if event.Memory != nil {
+		return "reproject mutation must not carry a memory payload"
+	}
+	if event.Tombstone != nil {
+		return "reproject mutation must not carry a tombstone payload"
+	}
+	if event.Reproject == nil {
+		return "reproject mutation requires a reproject payload"
+	}
+	if event.Reproject.FromProject == "" || event.Reproject.ToProject == "" {
+		return "reproject mutation requires both from_project and to_project"
+	}
+	if event.Reproject.ToProject != event.Project {
+		return "reproject to_project disagrees with the mutation envelope project"
+	}
+	if event.Reproject.FromProject == event.Reproject.ToProject {
+		return "reproject from_project and to_project are the same project"
+	}
+	return ""
 }
 
 func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
@@ -610,6 +739,14 @@ func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
 	if event.OccurredAt.IsZero() {
 		event.OccurredAt = time.Now().UTC()
 	}
+	// The reproject envelope is checked against the raw project literal, before
+	// canonicalization rewrites it: to_project has to agree with the project the
+	// sender put on the envelope, not with what this daemon would fold it into.
+	if event.Op == MutationOpReproject {
+		if reason := reprojectInstructionError(event); reason != "" {
+			return false, errors.New(reason)
+		}
+	}
 
 	tx, err := d.sqlDB.Begin()
 	if err != nil {
@@ -629,6 +766,15 @@ func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
 	}
 	if aliasErr == nil {
 		event.Project = aliasTarget
+	}
+	rawProject := event.Project
+	canonicalProject, err := registerProjectIdentity(context.Background(), tx, rawProject)
+	if err != nil {
+		return false, err
+	}
+	event.Project = canonicalProject
+	if event.Memory != nil && event.Memory.SessionID == "manual-save-"+rawProject {
+		event.Memory.SessionID = "manual-save-" + event.Project
 	}
 	if err := ensureProjectWritableInTx(tx, event.Project); err != nil {
 		return false, err
@@ -736,8 +882,36 @@ WHERE sync_id = ? AND deleted_at IS NULL`,
 				return false, fmt.Errorf("memory not deleted for restore: sync_id=%s", event.EntitySyncID)
 			}
 		}
+	case MutationOpReproject:
+		// Mirrors the server exactly, precondition included: the row moves only
+		// if it currently holds from_project. A stale or invented source moves
+		// nothing rather than dragging some other row out of some other
+		// project, and a replay after the row already moved matches zero rows.
+		//
+		// Matching nothing is therefore NOT an error, unlike delete/restore
+		// above: it is the documented idempotent path, and it is also what a
+		// daemon that already ran its own identity migration sees.
+		movedAt := event.OccurredAt.UTC().Format("2006-01-02 15:04:05")
+		var result sql.Result
+		result, err = tx.Exec(
+			`UPDATE memories SET project = ?, synced_at = ? WHERE sync_id = ? AND project = ?`,
+			event.Project, movedAt, event.EntitySyncID, event.Reproject.FromProject)
+		if err == nil {
+			if rows, _ := result.RowsAffected(); rows == 0 {
+				// Nothing happened, so nothing is journaled: a replay of a
+				// no-op is safe, and claiming the move locally would be a lie.
+				return false, nil
+			}
+		}
 	default:
-		return false, fmt.Errorf("unsupported mutation op %q", event.Op)
+		// Skip, do not fail. An unknown op returned as an error aborts the whole
+		// batch in syncer.go before SetMutationCursor and before the mutations
+		// this daemon just pushed are acked, so one event this build cannot
+		// apply would permanently stop it from receiving its teammates' work.
+		// Skipping costs exactly that one event. Nothing is journaled either —
+		// this build did not apply it and must not claim it did.
+		logger.Log.Printf("warn: skipping mutation event_id=%s: unsupported op %q", event.EventID, event.Op)
+		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("apply remote %s mutation: %w", event.Op, err)
@@ -752,6 +926,12 @@ WHERE sync_id = ? AND deleted_at IS NULL`,
 			DeletedAt: event.Tombstone.DeletedAt,
 			DeletedBy: event.Tombstone.DeletedBy,
 			Reason:    event.Tombstone.Reason,
+		}
+	}
+	if event.Reproject != nil {
+		payload.Reproject = &MutationReprojectPayload{
+			FromProject: event.Reproject.FromProject,
+			ToProject:   event.Reproject.ToProject,
 		}
 	}
 	if err := insertMemoryMutation(tx, memoryMutationRecord{
@@ -809,6 +989,12 @@ func (d *DB) SaveFromRemote(mem *models.Memory) error {
 		// Remapping sessions on sync receive would require creating artificial sessions
 		// under the target project, which adds noise to KnownProjects and session history.
 	}
+	rawProject := project
+	canonicalProject, err := registerProjectIdentity(context.Background(), d.sqlDB, rawProject)
+	if err != nil {
+		return err
+	}
+	project = canonicalProject
 	if err := d.ensureProjectWritable(context.Background(), project); err != nil {
 		return err
 	}
@@ -816,6 +1002,9 @@ func (d *DB) SaveFromRemote(mem *models.Memory) error {
 	// R2-CRIT-3: resolve session_id BEFORE the INSERT. memories.session_id is NOT NULL,
 	// and `INSERT OR IGNORE` would silently drop the row on any constraint failure.
 	sessionID := mem.SessionID
+	if sessionID == "manual-save-"+rawProject {
+		sessionID = "manual-save-" + project
+	}
 	if sessionID == "" {
 		resolved, err := d.EnsureManualSaveSession(project)
 		if err != nil {
@@ -839,6 +1028,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 
 // GetLastSync devuelve el timestamp del último sync exitoso para un proyecto.
 func (d *DB) GetLastSync(project string) (time.Time, error) {
+	project = canonicalSyncStateProject(project)
 	var ts sql.NullString
 	err := d.sqlDB.QueryRow(
 		`SELECT last_sync_at FROM sync_state WHERE project = ?`, project,
@@ -860,6 +1050,7 @@ func (d *DB) SetLastSync(project string, at time.Time) error {
 }
 
 func (d *DB) GetSyncHealth(project string) (SyncHealth, error) {
+	project = canonicalSyncStateProject(project)
 	var (
 		health                                SyncHealth
 		lastAttempt, lastSuccess, lastFailure sql.NullString
@@ -1147,13 +1338,11 @@ func scanMutationEnvelope(s syncScanner) (MutationEnvelope, error) {
 			mutation.BaseUpdatedAt = &parsed
 		}
 	}
-	var payload struct {
-		Memory    *MutationMemoryPayload    `json:"memory"`
-		Tombstone *MutationTombstonePayload `json:"tombstone"`
-	}
+	var payload mutationPayload
 	if err := json.Unmarshal([]byte(payloadJSON), &payload); err == nil {
 		mutation.Memory = payload.Memory
 		mutation.Tombstone = payload.Tombstone
+		mutation.Reproject = payload.Reproject
 	}
 	return mutation, nil
 }
@@ -1203,6 +1392,7 @@ type syncStateUpdate struct {
 }
 
 func (d *DB) upsertSyncState(project string, update syncStateUpdate) error {
+	project = canonicalSyncStateProject(project)
 	if _, err := d.sqlDB.Exec(`
 INSERT OR IGNORE INTO sync_state (project, consecutive_failures, last_error)
 VALUES (?, 0, '')`, project); err != nil {

@@ -9,6 +9,20 @@ import type { Plugin } from "@opencode-ai/plugin"
 const HIVE_PORT = parseInt(process.env["HIVE_HTTP_PORT"] ?? "7438", 10)
 const HIVE_URL = `http://127.0.0.1:${HIVE_PORT}/prompts`
 
+async function reportMigrationStatus(): Promise<void> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${HIVE_PORT}/governance/project-identity/status`, {
+      signal: AbortSignal.timeout(1000),
+    })
+    const status = await response.json()
+    if (status?.state === "migration-blocked") {
+      console.warn(`Hive migration-blocked: ${status.reason ?? "unknown reason"}. Backup: ${status.backup_id ?? "unavailable"}. Continue with: hive project identity status`)
+    }
+  } catch {
+    // Startup status is advisory and must not block OpenCode.
+  }
+}
+
 function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : ""
 }
@@ -56,6 +70,7 @@ function resolveHiveProject(input: unknown, output: unknown): string {
 }
 
 export const Hive: Plugin = async () => {
+  await reportMigrationStatus()
   return {
     "chat.message": async (input: unknown, output: any) => {
       const content = (output?.parts ?? [])

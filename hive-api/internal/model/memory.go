@@ -106,6 +106,12 @@ const (
 	MutationOpUpdate  MutationOp = "update"
 	MutationOpDelete  MutationOp = "delete"
 	MutationOpRestore MutationOp = "restore"
+
+	// MutationOpReproject carries the daemon's decision that a memory's project
+	// literal changed. Every other op uses `project` to FIND its row and can
+	// never change it, which is why the daemon's local identity migration
+	// ("Foo.Bar" -> "foo-bar") had no way to reach the server at all.
+	MutationOpReproject MutationOp = "reproject"
 )
 
 const MutationEntityMemory = "memory"
@@ -183,6 +189,25 @@ type MemoryPayload struct {
 	SessionID     string         `json:"session_id,omitempty"`
 }
 
+// ReprojectPayload names both ends of a project move.
+//
+// FromProject is not redundant with the row the server already has: it is the
+// precondition. The server moves the row only if it currently holds
+// FromProject, so a caller working from a stale idea of the row's project moves
+// nothing instead of moving the wrong thing, and a replay after the move
+// matches zero rows.
+//
+// ToProject duplicates the envelope's Project on purpose, so a journal entry
+// read on its own still says where the memory went; the two must agree.
+//
+// It is the wire twin of hive-daemon's db.MutationReprojectPayload. The two
+// modules ship separately, so each owns its own decoding of the same JSON shape;
+// the tags are the contract between them.
+type ReprojectPayload struct {
+	FromProject string `json:"from_project"`
+	ToProject   string `json:"to_project"`
+}
+
 type MutationEnvelope struct {
 	EventID       string            `json:"event_id"`
 	EntityType    string            `json:"entity_type"`
@@ -195,6 +220,7 @@ type MutationEnvelope struct {
 	BaseUpdatedAt *time.Time        `json:"base_updated_at,omitempty"`
 	Memory        *MemoryPayload    `json:"memory,omitempty"`
 	Tombstone     *TombstonePayload `json:"tombstone,omitempty"`
+	Reproject     *ReprojectPayload `json:"reproject,omitempty"`
 }
 
 type MutationApplyResult struct {

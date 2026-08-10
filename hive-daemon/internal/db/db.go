@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 	_ "modernc.org/sqlite"
@@ -12,6 +14,22 @@ import (
 const schema = `
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
+
+-- project_identities is the authoritative local mapping from canonical storage
+-- keys to their stable display metadata. Project-bearing tables retain TEXT keys
+-- because SQLite cannot add a foreign key to an existing column in place.
+CREATE TABLE IF NOT EXISTS project_identities (
+    project_key       TEXT PRIMARY KEY,
+    first_spelling    TEXT NOT NULL,
+    first_seen_at     DATETIME NOT NULL,
+    first_source      TEXT NOT NULL,
+    remote_spelling   TEXT NOT NULL DEFAULT '',
+    remote_seen_at    DATETIME,
+    remote_source     TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_identities_first_seen
+ON project_identities(first_seen_at, project_key);
 
 CREATE TABLE IF NOT EXISTS memories (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,7 +123,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     summary     TEXT,
     synced_at   DATETIME,
     created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- sync_from_project is a pending write-side precondition, not history: it
+    -- names the project literal the SERVER still holds for this row after the
+    -- local identity migration renamed it here. The push sends it as
+    -- from_project so the server moves that exact row and nothing else, and it
+    -- is cleared the moment the row is acked. Empty means "no relocation
+    -- pending", which is every row's normal state.
+    sync_from_project TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_project    ON sessions(project);
@@ -195,7 +220,9 @@ CREATE TABLE IF NOT EXISTS user_prompts (
     session_id TEXT    NOT NULL DEFAULT '',
     content    TEXT    NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    synced_at  DATETIME
+    synced_at  DATETIME,
+    -- See sessions.sync_from_project: same pending relocation precondition.
+    sync_from_project TEXT NOT NULL DEFAULT ''
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS user_prompts_fts USING fts5(
@@ -367,13 +394,27 @@ ON passive_observations(project, created_at DESC);
 
 // DB wraps an SQLite connection with schema validation.
 type DB struct {
-	sqlDB *sql.DB
+	sqlDB       *sql.DB
+	migrationMu sync.Mutex
+
+	// Observability only — see LastProjectMigrationSummary.
+	migrationSummaryMu sync.Mutex
+	migrationSummary   ProjectMigrationSummary
 }
+
+// sqliteBusyTimeout bounds how long a connection waits for a lock held by
+// another process before reporting SQLITE_BUSY. hive-daemon is an MCP stdio
+// server, so several client sessions run several processes over the same
+// memory.db, and the startup identity migration holds one long exclusive write
+// transaction. Without a wait the other processes fail instantly and gate their
+// whole session off. 15s comfortably covers that rebuild while staying well
+// under the startup budget an MCP client allows before it gives up on us.
+const sqliteBusyTimeout = 15 * time.Second
 
 // Open opens (or creates) a SQLite database at dsn, initializes the schema,
 // and validates that all required triggers exist. Use ":memory:" for tests.
 func Open(dsn string) (*DB, error) {
-	sqlDB, err := sql.Open("sqlite", dsn)
+	sqlDB, err := sql.Open("sqlite", sqliteDSNWithBusyTimeout(dsn))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -389,6 +430,17 @@ func Open(dsn string) (*DB, error) {
 		return nil, fmt.Errorf("validate schema: %w", err)
 	}
 	return &DB{sqlDB: sqlDB}, nil
+}
+
+// sqliteDSNWithBusyTimeout applies the busy timeout through the DSN so every
+// connection the pool opens carries it, including reconnects after an idle
+// connection is dropped.
+func sqliteDSNWithBusyTimeout(dsn string) string {
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	return fmt.Sprintf("%s%s_pragma=busy_timeout(%d)", dsn, separator, sqliteBusyTimeout.Milliseconds())
 }
 
 // Close closes the underlying database connection.
@@ -415,6 +467,8 @@ func initSchema(sqlDB *sql.DB) error {
 	// SQLite no soporta ALTER TABLE ADD COLUMN IF NOT EXISTS — ignoramos el error
 	// si la columna ya existe (error "duplicate column name").
 	migrations := []string{
+		`CREATE TABLE IF NOT EXISTS project_identities (project_key TEXT PRIMARY KEY, first_spelling TEXT NOT NULL, first_seen_at DATETIME NOT NULL, first_source TEXT NOT NULL, remote_spelling TEXT NOT NULL DEFAULT '', remote_seen_at DATETIME, remote_source TEXT NOT NULL DEFAULT '')`,
+		`CREATE INDEX IF NOT EXISTS idx_project_identities_first_seen ON project_identities(first_seen_at, project_key)`,
 		// SQLite no acepta DEFAULT CURRENT_TIMESTAMP en ALTER TABLE — solo defaults constantes.
 		// Usamos epoch como placeholder; las rows existentes se actualizan abajo.
 		`ALTER TABLE memories ADD COLUMN updated_at DATETIME NOT NULL DEFAULT '1970-01-01 00:00:00'`,
@@ -519,6 +573,14 @@ func initSchema(sqlDB *sql.DB) error {
 		// CreateSession's TrimSpace guard so whitespace-only values heal too.
 		// Idempotent — safe to run on every daemon start.
 		`UPDATE sessions SET dev_id = 'unknown' WHERE TRIM(dev_id) = ''`,
+		// sync_from_project: the pending relocation precondition the project
+		// identity migration stamps on rows the server already holds. Added
+		// last on both tables so an upgraded DB ends up with the same column
+		// order as a fresh one — rebuildContentProjectOwnershipTables copies
+		// these tables by name, but keeping the two shapes identical keeps any
+		// positional reader honest.
+		`ALTER TABLE sessions ADD COLUMN sync_from_project TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE user_prompts ADD COLUMN sync_from_project TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, m := range migrations {
 		if _, err := sqlDB.Exec(m); err != nil {

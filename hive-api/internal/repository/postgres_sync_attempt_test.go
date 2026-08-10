@@ -18,6 +18,10 @@ func startPostgresWithSyncAttempts(t *testing.T) (*pgxpool.Pool, func()) {
 	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptLogsSQL))
 	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptPortalUsersSQL))
 	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptUserProjectionSQL))
+	require.NoError(t, RunMigrations(pool, migrations.ProjectBlocksSQL))
+	require.NoError(t, RunMigrations(pool, migrations.QuarantineContractSQL))
+	require.NoError(t, RunMigrations(pool, migrations.DistributedQuarantineSQL))
+	require.NoError(t, RunMigrations(pool, migrations.CanonicalProjectRegistrySQL))
 	return pool, cleanup
 }
 

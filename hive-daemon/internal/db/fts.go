@@ -34,6 +34,7 @@ func buildFTS5Query(query string) string {
 // When project is empty, searches across all projects.
 // When category is non-empty, only observations with that category are returned.
 func (d *DB) Search(query, project, category string, limit int) ([]*models.Memory, error) {
+	project = canonicalProjectKey(project)
 	blockedKeys, err := d.blockedProjectKeys(context.Background())
 	if err != nil {
 		return nil, err

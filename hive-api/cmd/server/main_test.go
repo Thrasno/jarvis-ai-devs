@@ -146,8 +146,8 @@ func TestBuildApp_ProjectBlockAckRouteReachableWhenAdminMutationDisabled(t *test
 	authSvc.On("ValidateToken", "valid-token").Return(&model.Claims{RegisteredClaims: jwt.RegisteredClaims{Subject: "daemon-user"}, Username: "daemon", Level: model.LevelMember, DaemonID: "daemon-1", Client: "hive-daemon"}, nil)
 	ackAt := time.Date(2026, 7, 6, 10, 0, 0, 0, time.UTC)
 	govSvc := &mockProjectGovernance{}
-	govSvc.On("Acknowledge", mock.Anything, model.ProjectBlockAck{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: model.ProjectBlockAckApplied, AckSubject: model.ProjectBlockAckSubject{AuthSubject: "daemon-user", DaemonID: "daemon-1", Client: "hive-daemon"}}).
-		Return(model.ProjectBlockAck{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: model.ProjectBlockAckApplied, AppliedAt: ackAt}, nil)
+	govSvc.On("Acknowledge", mock.Anything, model.ProjectBlockAck{CommandID: "cmd-1", ProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: model.ProjectBlockAckApplied, AckSubject: model.ProjectBlockAckSubject{AuthSubject: "daemon-user", DaemonID: "daemon-1", Client: "hive-daemon"}}).
+		Return(model.ProjectBlockAck{CommandID: "cmd-1", ProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: model.ProjectBlockAckApplied, AppliedAt: ackAt}, nil)
 	app := buildApp(buildAppDeps{
 		authSvc:                  authSvc,
 		memorySvc:                &mockMemory{},
@@ -256,7 +256,7 @@ func TestWireServices_WiresActivityServiceFromMemoryRepository(t *testing.T) {
 func TestStartupMigrationSQLIncludesDiscoveryIndexesAfterActivityFeedIndex(t *testing.T) {
 	startupMigrations := startupMigrationSQL()
 
-	require.Len(t, startupMigrations, 18)
+	require.Len(t, startupMigrations, 22)
 	assert.Equal(t, migrations.InitialSQL, startupMigrations[0])
 	assert.Equal(t, migrations.ActivityFeedIndexSQL, startupMigrations[7])
 	assert.Equal(t, migrations.MemoryDiscoveryIndexesSQL, startupMigrations[8])
@@ -266,7 +266,7 @@ func TestStartupMigrationSQLIncludesDiscoveryIndexesAfterActivityFeedIndex(t *te
 func TestStartupMigrationSQLIncludesPullCursorIndexesAfterDiscoveryIndexes(t *testing.T) {
 	startupMigrations := startupMigrationSQL()
 
-	require.Len(t, startupMigrations, 18)
+	require.Len(t, startupMigrations, 22)
 	assert.Equal(t, migrations.PullCursorIndexesSQL, startupMigrations[9])
 	assert.Contains(t, migrations.PullCursorIndexesSQL, "idx_memories_synced_at_sync_id")
 	assert.Contains(t, migrations.PullCursorIndexesSQL, "idx_sessions_synced_at_sync_id")
@@ -275,7 +275,7 @@ func TestStartupMigrationSQLIncludesPullCursorIndexesAfterDiscoveryIndexes(t *te
 func TestStartupMigrationSQLIncludesProjectScopedPullCursorIndexesAfterLegacyPullCursorIndexes(t *testing.T) {
 	startupMigrations := startupMigrationSQL()
 
-	require.Len(t, startupMigrations, 18)
+	require.Len(t, startupMigrations, 22)
 	assert.Equal(t, migrations.ProjectScopedPullCursorIndexesSQL, startupMigrations[10])
 	assert.Contains(t, migrations.ProjectScopedPullCursorIndexesSQL, "idx_memories_project_synced_at_sync_id")
 	assert.Contains(t, migrations.ProjectScopedPullCursorIndexesSQL, "idx_sessions_project_synced_at_sync_id")
@@ -285,7 +285,7 @@ func TestStartupMigrationSQLIncludesProjectScopedPullCursorIndexesAfterLegacyPul
 func TestStartupMigrationSQLIncludesProjectBlockAckSubjectsAfterProjectBlocks(t *testing.T) {
 	startupMigrations := startupMigrationSQL()
 
-	require.Len(t, startupMigrations, 18)
+	require.Len(t, startupMigrations, 22)
 	assert.Equal(t, migrations.ProjectBlocksSQL, startupMigrations[11])
 	assert.Equal(t, migrations.ProjectBlockAckSubjectsSQL, startupMigrations[12])
 	assert.Equal(t, migrations.UserSecurityVersionSQL, startupMigrations[13])
@@ -295,4 +295,7 @@ func TestStartupMigrationSQLIncludesProjectBlockAckSubjectsAfterProjectBlocks(t 
 	assert.Contains(t, migrations.SyncAttemptUserProjectionSQL, "portal_user_id, ended_at DESC, ingested_at DESC, attempt_id DESC, id DESC")
 	assert.Equal(t, migrations.QuarantineContractSQL, startupMigrations[16])
 	assert.Equal(t, migrations.DistributedQuarantineSQL, startupMigrations[17])
+	assert.Equal(t, migrations.CanonicalProjectRegistrySQL, startupMigrations[18])
+	assert.Equal(t, migrations.DropProjectIdentityFoldsSQL, startupMigrations[19])
+	assert.Equal(t, migrations.DropProjectIdentityRegistrySQL, startupMigrations[20])
 }

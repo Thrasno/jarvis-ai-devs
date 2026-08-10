@@ -1,6 +1,10 @@
 package model
 
-import "time"
+import (
+	"time"
+
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
+)
 
 // ErrorResponse es el envelope de error estándar de la API.
 // TODOS los errores de la API devuelven este formato — nunca texto plano.
@@ -90,10 +94,23 @@ type SyncResponse struct {
 	// Procesadas por el daemon ANTES de las pulled memories para satisfacer la FK.
 	PulledSessions []SyncSessionResponse `json:"pulled_sessions,omitempty"`
 
-	NextMutationCursor *MutationCursor       `json:"next_mutation_cursor,omitempty"`
-	PulledMutations    []MutationEnvelope    `json:"pulled_mutations,omitempty"`
-	MutationResults    []MutationApplyResult `json:"mutation_results,omitempty"`
-	CompatibilityMode  string                `json:"compatibility_mode,omitempty"`
+	NextMutationCursor     *MutationCursor       `json:"next_mutation_cursor,omitempty"`
+	PulledMutations        []MutationEnvelope    `json:"pulled_mutations,omitempty"`
+	MutationResults        []MutationApplyResult `json:"mutation_results,omitempty"`
+	CompatibilityMode      string                `json:"compatibility_mode,omitempty"`
+	ProjectIdentityVersion string                `json:"project_identity_version,omitempty"`
+
+	// SyncCapabilities names optional protocol features this server understands,
+	// so a daemon can decide whether to use one instead of discovering the answer
+	// from a rejected mutation.
+	//
+	// This is deliberately not project_identity_version. That field is a
+	// strict-equality handshake — the daemon errors out when the server's value
+	// differs from its own contract version — so announcing a new ability there
+	// would break every daemon that has not been upgraded, in both directions. A
+	// capability must degrade: an old daemon ignores an unknown list entry, and a
+	// new daemon that does not find its capability simply does not use it.
+	SyncCapabilities []string `json:"sync_capabilities,omitempty"`
 
 	// Bounded legacy pull pagination (PR 2a, design §2.2). These fields cover the
 	// two previously-unbounded legacy pull channels: Pulled (memories) and
@@ -112,6 +129,56 @@ const MutationProtocolVersion = 2
 const CompatibilityModeLegacy = "legacy-row-state"
 
 const CompatibilityModeMutationV2 = "mutation-sync-v2"
+
+// SyncCapabilityReproject tells the daemon this server understands the
+// reproject mutation op, and that sending one will move the memory rather than
+// be rejected as an op nobody knows.
+//
+// The string itself is owned by the shared contract module, so the daemon that
+// must declare it and the server that matches on it cannot drift apart.
+const SyncCapabilityReproject = projectidentity.CapabilityReproject
+
+// ServerSyncCapabilities is what this build advertises on every sync response.
+func ServerSyncCapabilities() []string {
+	return []string{SyncCapabilityReproject}
+}
+
+// mutationOpCapabilities maps each mutation op that a client may not understand
+// to the capability it must declare before the server will send it. An op absent
+// from this map is baseline: every client that speaks the mutation protocol at
+// all can apply it, and it is never withheld.
+var mutationOpCapabilities = map[MutationOp]string{
+	MutationOpReproject: SyncCapabilityReproject,
+}
+
+// MutationOpCapability names the capability a client must declare before the
+// server will send this op, or "" when the op is baseline and never withheld.
+// It exists so a withhold can be reported in terms of the exact string the
+// client failed to send, which is the whole diagnosis when the client sent a
+// near-miss spelling.
+func MutationOpCapability(op MutationOp) string {
+	return mutationOpCapabilities[op]
+}
+
+// ClientUnderstandsMutationOp reports whether a client declaring these
+// capabilities can apply this op. It is the pull-side gate: an event the client
+// cannot apply must not enter its stream, because failing to apply one aborts
+// its whole batch and strands its cursor.
+//
+// Absent capabilities mean "baseline only" — the honest reading of a request
+// from a daemon that predates the field.
+func ClientUnderstandsMutationOp(op MutationOp, capabilities []string) bool {
+	required, gated := mutationOpCapabilities[op]
+	if !gated {
+		return true
+	}
+	for _, declared := range capabilities {
+		if declared == required {
+			return true
+		}
+	}
+	return false
+}
 
 // ListMemoriesResponse es la respuesta del GET /memories.
 // Incluye los datos de paginación para que el cliente sepa cuántas páginas hay.

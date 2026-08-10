@@ -115,12 +115,12 @@ func TestProjectBlockAckValidate(t *testing.T) {
 		ack     ProjectBlockAck
 		wantErr bool
 	}{
-		{name: "allows applied with ack token", ack: ProjectBlockAck{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: ProjectBlockAckApplied}},
-		{name: "allows failed with ack token", ack: ProjectBlockAck{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: ProjectBlockAckFailed}},
-		{name: "allows skipped with ack token", ack: ProjectBlockAck{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: ProjectBlockAckSkipped}},
-		{name: "rejects forged status", ack: ProjectBlockAck{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: "owned"}, wantErr: true},
-		{name: "rejects missing command", ack: ProjectBlockAck{CanonicalProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: ProjectBlockAckApplied}, wantErr: true},
-		{name: "rejects missing ack token", ack: ProjectBlockAck{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", Status: ProjectBlockAckApplied}, wantErr: true},
+		{name: "allows applied with ack token", ack: ProjectBlockAck{CommandID: "cmd-1", ProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: ProjectBlockAckApplied}},
+		{name: "allows failed with ack token", ack: ProjectBlockAck{CommandID: "cmd-1", ProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: ProjectBlockAckFailed}},
+		{name: "allows skipped with ack token", ack: ProjectBlockAck{CommandID: "cmd-1", ProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: ProjectBlockAckSkipped}},
+		{name: "rejects forged status", ack: ProjectBlockAck{CommandID: "cmd-1", ProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: "owned"}, wantErr: true},
+		{name: "rejects missing command", ack: ProjectBlockAck{ProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: ProjectBlockAckApplied}, wantErr: true},
+		{name: "rejects missing ack token", ack: ProjectBlockAck{CommandID: "cmd-1", ProjectKey: "jarvis-dev", Status: ProjectBlockAckApplied}, wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -161,17 +161,17 @@ func TestProjectBlockedErrorResponseCarriesCommand(t *testing.T) {
 	payload := ProjectBlockedErrorResponse{
 		Error: "project is blocked",
 		Command: ProjectBlockCommand{
-			CommandID:           "cmd-1",
-			AckToken:            "ack-token-1",
-			Project:             "Jarvis Dev",
-			CanonicalProjectKey: "jarvis-dev",
-			Reason:              "duplicate",
-			BlockedAt:           blockedAt,
+			CommandID:  "cmd-1",
+			AckToken:   "ack-token-1",
+			Project:    "Jarvis Dev",
+			ProjectKey: "jarvis-dev",
+			Reason:     "duplicate",
+			BlockedAt:  blockedAt,
 		},
 	}
 
-	if payload.Command.CanonicalProjectKey != "jarvis-dev" {
-		t.Fatalf("canonical key = %q", payload.Command.CanonicalProjectKey)
+	if payload.Command.ProjectKey != "jarvis-dev" {
+		t.Fatalf("canonical key = %q", payload.Command.ProjectKey)
 	}
 	if payload.Command.BlockedAt.IsZero() {
 		t.Fatal("blocked_at must be included in the 423 command payload")
@@ -180,17 +180,17 @@ func TestProjectBlockedErrorResponseCarriesCommand(t *testing.T) {
 
 func TestProjectBlockCommandRedactedRemovesAckAuthority(t *testing.T) {
 	cmd := ProjectBlockCommand{
-		CommandID:           "cmd-1",
-		AckToken:            "ack-token-secret",
-		Project:             "Jarvis Dev",
-		CanonicalProjectKey: "jarvis-dev",
-		Reason:              "duplicate",
-		BlockedAt:           time.Date(2026, 7, 5, 20, 0, 0, 0, time.UTC),
+		CommandID:  "cmd-1",
+		AckToken:   "ack-token-secret",
+		Project:    "Jarvis Dev",
+		ProjectKey: "jarvis-dev",
+		Reason:     "duplicate",
+		BlockedAt:  time.Date(2026, 7, 5, 20, 0, 0, 0, time.UTC),
 	}
 
 	redacted := cmd.Redacted()
 
-	if redacted.CommandID != "cmd-1" || redacted.CanonicalProjectKey != "jarvis-dev" {
+	if redacted.CommandID != "cmd-1" || redacted.ProjectKey != "jarvis-dev" {
 		t.Fatalf("redacted command lost routing identity: %#v", redacted)
 	}
 	if redacted.AckToken != "" {
@@ -210,32 +210,32 @@ func TestProjectBlockCommandValidateRequiresMonotonicLifecycleFacts(t *testing.T
 		{
 			name: "accepts a generation scoped block command",
 			command: ProjectBlockCommand{
-				CommandID:           "cmd-2",
-				AckToken:            "ack-token-2",
-				Project:             "Jarvis Dev",
-				CanonicalProjectKey: "jarvis-dev",
-				Action:              ProjectBlockActionBlock,
-				Generation:          2,
+				CommandID:  "cmd-2",
+				AckToken:   "ack-token-2",
+				Project:    "Jarvis Dev",
+				ProjectKey: "jarvis-dev",
+				Action:     ProjectBlockActionBlock,
+				Generation: 2,
 			},
 		},
 		{
 			name: "rejects an unsupported legacy action as a new command",
 			command: ProjectBlockCommand{
-				CommandID:           "cmd-2",
-				AckToken:            "ack-token-2",
-				CanonicalProjectKey: "jarvis-dev",
-				Action:              ProjectBlockActionQuarantine,
-				Generation:          2,
+				CommandID:  "cmd-2",
+				AckToken:   "ack-token-2",
+				ProjectKey: "jarvis-dev",
+				Action:     ProjectBlockActionQuarantine,
+				Generation: 2,
 			},
 			wantErr: true,
 		},
 		{
 			name: "rejects a command without a generation",
 			command: ProjectBlockCommand{
-				CommandID:           "cmd-2",
-				AckToken:            "ack-token-2",
-				CanonicalProjectKey: "jarvis-dev",
-				Action:              ProjectBlockActionUnblock,
+				CommandID:  "cmd-2",
+				AckToken:   "ack-token-2",
+				ProjectKey: "jarvis-dev",
+				Action:     ProjectBlockActionUnblock,
 			},
 			wantErr: true,
 		},
@@ -256,10 +256,10 @@ func TestProjectBlockCommandValidateRequiresMonotonicLifecycleFacts(t *testing.T
 
 func TestQuarantineCursorBindsPaginationToProjectAndGeneration(t *testing.T) {
 	cursor := QuarantineCursor{
-		CanonicalProjectKey: "org-repo",
-		Generation:          7,
-		Username:            "Ada",
-		CursorID:            "opaque-user-ordering-key",
+		ProjectKey: "org-repo",
+		Generation: 7,
+		Username:   "Ada",
+		CursorID:   "opaque-user-ordering-key",
 	}
 
 	decoded, err := DecodeQuarantineCursor(cursor.Encode(), "org-repo", 7)
@@ -285,10 +285,10 @@ func TestQuarantineCursorBindsPaginationToProjectAndGeneration(t *testing.T) {
 
 func TestQuarantineCursorDoesNotEmbedAccountID(t *testing.T) {
 	cursor := QuarantineCursor{
-		CanonicalProjectKey: "org-repo",
-		Generation:          7,
-		Username:            "Ada",
-		CursorID:            "opaque-user-ordering-key",
+		ProjectKey: "org-repo",
+		Generation: 7,
+		Username:   "Ada",
+		CursorID:   "opaque-user-ordering-key",
 	}
 
 	encoded, err := base64.RawURLEncoding.DecodeString(cursor.Encode())

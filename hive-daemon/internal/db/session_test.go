@@ -505,7 +505,7 @@ func TestListSessions_HappyPath(t *testing.T) {
 	assert.Len(t, sessions, 2)
 
 	for _, s := range sessions {
-		assert.Equal(t, "projA", s.Project)
+		assert.Equal(t, "proja", s.Project)
 	}
 }
 

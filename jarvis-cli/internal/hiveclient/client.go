@@ -107,6 +107,57 @@ type Backup struct {
 	ManifestPath string    `json:"manifest_path"`
 	Checksum     string    `json:"checksum"`
 	SizeBytes    int64     `json:"size_bytes"`
+
+	// RetainUntil is when the daemon reclaims this archive. A migration backup
+	// is kept 24h and is the ONLY rollback artifact for that migration, so an
+	// operator who cannot see the deadline discovers it by finding the backup
+	// gone. The zero value means no deadline (an operator-created backup).
+	RetainUntil time.Time `json:"retain_until,omitempty"`
+}
+
+// RestoreResult is what the daemon actually did with a restore request.
+//
+// The two outcomes are genuinely different actions, not two descriptions of one:
+// with the migration gate BLOCKED the daemon schedules the restore and stops
+// itself, while with the gate ready it only validates the archive and answers
+// coordination_required — nothing is scheduled and nothing is replaced.
+type RestoreResult struct {
+	BackupID              string    `json:"backup_id"`
+	DBPath                string    `json:"db_path"`
+	RestoredAt            time.Time `json:"restored_at,omitempty"`
+	ArchivePath           string    `json:"archive_path"`
+	Status                string    `json:"status,omitempty"`
+	RequiresDaemonRestart bool      `json:"requires_daemon_restart,omitempty"`
+	Message               string    `json:"message,omitempty"`
+}
+
+// RestoreStatusRestartRequested is the one status that means the daemon took
+// ownership of the restart. Every other status leaves the operator holding it.
+const RestoreStatusRestartRequested = "restart-requested"
+
+// MigrationIdentityStatus is the recovery state exposed while normal Hive
+// operations are blocked by canonical project identity migration.
+// BackupID is present only for an archive taken for this exact plan
+// fingerprint that is still retained and still passes its own checksum; an
+// earlier start of the same blocked migration may be the one that took it.
+// PlanFingerprint identifies the exact plan the operator was shown and is the
+// guard an identity resolution must echo back.
+type MigrationIdentityStatus struct {
+	State           string   `json:"state"`
+	Reason          string   `json:"reason,omitempty"`
+	Continuation    string   `json:"continuation,omitempty"`
+	BackupID        string   `json:"backup_id,omitempty"`
+	PlanFingerprint string   `json:"plan_fingerprint,omitempty"`
+	Conflicts       []string `json:"conflicts,omitempty"`
+	Variants        []string `json:"variants,omitempty"`
+}
+
+type IdentityResolutionRequest struct {
+	SourceProject   string `json:"source_project"`
+	TargetProject   string `json:"target_project"`
+	BackupID        string `json:"backup_id,omitempty"`
+	PlanFingerprint string `json:"plan_fingerprint"`
+	Confirmation    string `json:"confirmation"`
 }
 
 // Capabilities is the daemon's advertised guarded-mutation safety contract.
@@ -511,6 +562,35 @@ func (c *Client) Backups(ctx context.Context) ([]Backup, error) {
 		return nil, err
 	}
 	return body.Backups, nil
+}
+
+func (c *Client) MigrationIdentityStatus(ctx context.Context) (MigrationIdentityStatus, error) {
+	var status MigrationIdentityStatus
+	if err := c.get(ctx, "/governance/project-identity/status", nil, &status, false); err != nil {
+		return MigrationIdentityStatus{}, err
+	}
+	return status, nil
+}
+
+// RequestMigrationRetry asks the running daemon to shut down cleanly. Its MCP
+// lifecycle owner starts the single replacement process, which replans the
+// complete migration during normal startup.
+func (c *Client) RequestMigrationRetry(ctx context.Context) error {
+	return c.post(ctx, "/governance/project-identity/retry", struct{}{}, &struct{}{})
+}
+
+func (c *Client) ResolveMigrationIdentity(ctx context.Context, req IdentityResolutionRequest) error {
+	return c.post(ctx, "/governance/project-identity/resolve", req, &struct{}{})
+}
+
+func (c *Client) RestoreMigrationBackup(ctx context.Context, backupID, confirmation string) (RestoreResult, error) {
+	var body struct {
+		Restore RestoreResult `json:"restore"`
+	}
+	if err := c.post(ctx, "/governance/restores", map[string]string{"backup_id": backupID, "confirmation": confirmation}, &body); err != nil {
+		return RestoreResult{}, err
+	}
+	return body.Restore, nil
 }
 
 func (c *Client) CreateBackup(ctx context.Context) (Backup, error) {

@@ -25,6 +25,11 @@ func (d *DB) SavePromptForSession(ctx context.Context, project, sessionID, conte
 	if strings.TrimSpace(project) == "" {
 		return nil, errors.New("project is required")
 	}
+	canonicalProject, err := registerProjectIdentity(ctx, d.sqlDB, project)
+	if err != nil {
+		return nil, err
+	}
+	project = canonicalProject
 	if err := d.ensureProjectWritable(ctx, project); err != nil {
 		return nil, err
 	}
@@ -40,7 +45,7 @@ RETURNING id, created_at`
 		id           int64
 		createdAtStr string
 	)
-	err := d.sqlDB.QueryRowContext(ctx, q, syncID, project, sessionID, content).Scan(&id, &createdAtStr)
+	err = d.sqlDB.QueryRowContext(ctx, q, syncID, project, sessionID, content).Scan(&id, &createdAtStr)
 	if err != nil {
 		return nil, fmt.Errorf("save prompt: %w", err)
 	}
@@ -65,6 +70,7 @@ func (d *DB) LatestPromptForSession(ctx context.Context, project, sessionID stri
 	if strings.TrimSpace(project) == "" || strings.TrimSpace(sessionID) == "" {
 		return nil, nil
 	}
+	project = canonicalProjectKey(project)
 	blocked, err := d.IsProjectBlocked(ctx, project)
 	if err != nil {
 		return nil, fmt.Errorf("latest prompt block check: %w", err)
@@ -74,7 +80,7 @@ func (d *DB) LatestPromptForSession(ctx context.Context, project, sessionID stri
 	}
 
 	const q = `
-SELECT id, sync_id, project, session_id, content, created_at, synced_at
+SELECT id, sync_id, project, session_id, content, created_at, synced_at, sync_from_project
 FROM user_prompts
 WHERE project = ? AND session_id = ?
 ORDER BY created_at DESC, id DESC
@@ -93,8 +99,12 @@ LIMIT 1`
 // ListRecentPrompts returns the most recent prompts for a project, ordered by
 // created_at DESC. Returns nil when project is empty or limit is <= 0.
 func (d *DB) ListRecentPrompts(ctx context.Context, project string, limit int) ([]*models.Prompt, error) {
-	if project == "" || limit <= 0 {
+	if limit <= 0 {
 		return nil, nil
+	}
+	project = canonicalProjectKey(project)
+	if project == "" {
+		return d.listGlobalRecentPrompts(ctx, limit)
 	}
 	blocked, err := d.IsProjectBlocked(ctx, project)
 	if err != nil {
@@ -108,7 +118,7 @@ func (d *DB) ListRecentPrompts(ctx context.Context, project string, limit int) (
 	}
 
 	const q = `
-SELECT id, sync_id, project, session_id, content, created_at, synced_at
+SELECT id, sync_id, project, session_id, content, created_at, synced_at, sync_from_project
 FROM user_prompts
 WHERE project = ?
 ORDER BY created_at DESC
@@ -135,6 +145,55 @@ LIMIT ?`
 	return prompts, nil
 }
 
+func (d *DB) listGlobalRecentPrompts(ctx context.Context, limit int) ([]*models.Prompt, error) {
+	if limit > 100 {
+		limit = 100
+	}
+	rows, err := d.sqlDB.QueryContext(ctx, `
+SELECT id, sync_id, project, session_id, content, created_at, synced_at, sync_from_project
+FROM user_prompts
+WHERE NOT EXISTS (SELECT 1 FROM project_blocks b WHERE b.canonical_project_key = user_prompts.project AND b.blocked = 1)
+ORDER BY created_at DESC, id DESC
+LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list global recent prompts: %w", err)
+	}
+	defer rows.Close()
+	prompts := make([]*models.Prompt, 0)
+	for rows.Next() {
+		prompt, err := scanPromptRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan prompt row: %w", err)
+		}
+		prompts = append(prompts, prompt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for _, prompt := range prompts {
+		if err := d.setPromptDisplayProject(ctx, prompt); err != nil {
+			return nil, err
+		}
+	}
+	return prompts, nil
+}
+
+func (d *DB) setPromptDisplayProject(ctx context.Context, prompt *models.Prompt) error {
+	display, err := projectIdentityDisplay(ctx, d.sqlDB, prompt.Project)
+	if errors.Is(err, sql.ErrNoRows) {
+		prompt.DisplayProject = prompt.Project
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("prompt project display: %w", err)
+	}
+	prompt.DisplayProject = display
+	return nil
+}
+
 // GetUnsyncedPrompts returns prompts for the project where synced_at IS NULL,
 // ordered by created_at ASC (oldest first — sync in order of capture).
 // Rows with sync_id = "" are excluded — they predate UUID generation and would
@@ -143,6 +202,7 @@ func (d *DB) GetUnsyncedPrompts(ctx context.Context, project string) ([]*models.
 	if project == "" {
 		return nil, nil
 	}
+	project = canonicalProjectKey(project)
 	blocked, err := d.IsProjectBlocked(ctx, project)
 	if err != nil {
 		return nil, fmt.Errorf("get unsynced prompts block check: %w", err)
@@ -151,7 +211,7 @@ func (d *DB) GetUnsyncedPrompts(ctx context.Context, project string) ([]*models.
 		return []*models.Prompt{}, nil
 	}
 	const q = `
-SELECT id, sync_id, project, session_id, content, created_at, synced_at
+SELECT id, sync_id, project, session_id, content, created_at, synced_at, sync_from_project
 FROM user_prompts
 WHERE project = ? AND synced_at IS NULL AND sync_id != ''
 ORDER BY created_at ASC`
@@ -196,6 +256,7 @@ func (d *DB) GetUnsyncedPromptsPage(ctx context.Context, project string, limit i
 	if project == "" {
 		return nil, nil
 	}
+	project = canonicalProjectKey(project)
 	blocked, err := d.IsProjectBlocked(ctx, project)
 	if err != nil {
 		return nil, fmt.Errorf("get unsynced prompts page block check: %w", err)
@@ -207,7 +268,7 @@ func (d *DB) GetUnsyncedPromptsPage(ctx context.Context, project string, limit i
 		limit = 100
 	}
 	const q = `
-SELECT id, sync_id, project, session_id, content, created_at, synced_at
+SELECT id, sync_id, project, session_id, content, created_at, synced_at, sync_from_project
 FROM user_prompts
 WHERE project = ? AND synced_at IS NULL AND sync_id != ''
 ORDER BY created_at ASC, id ASC LIMIT ?`
@@ -236,7 +297,8 @@ ORDER BY created_at ASC, id ASC LIMIT ?`
 // MarkPromptSynced sets synced_at for the given sync_id.
 // If syncID doesn't match any row, logs a warning and returns nil (non-fatal).
 func (d *DB) MarkPromptSynced(ctx context.Context, syncID string, at time.Time) error {
-	const q = `UPDATE user_prompts SET synced_at = ? WHERE sync_id = ?`
+	// Clearing sync_from_project is part of the ack — see MarkSessionSynced.
+	const q = `UPDATE user_prompts SET synced_at = ?, sync_from_project = '' WHERE sync_id = ?`
 	result, err := d.sqlDB.ExecContext(ctx, q, at.UTC().Format("2006-01-02 15:04:05"), syncID)
 	if err != nil {
 		return fmt.Errorf("mark prompt synced: %w", err)
@@ -256,8 +318,9 @@ func scanPromptRow(s scanner) (*models.Prompt, error) {
 		content      string
 		createdAtStr string
 		syncedAtStr  *string
+		fromProject  string
 	)
-	if err := s.Scan(&id, &syncID, &project, &sessionID, &content, &createdAtStr, &syncedAtStr); err != nil {
+	if err := s.Scan(&id, &syncID, &project, &sessionID, &content, &createdAtStr, &syncedAtStr, &fromProject); err != nil {
 		return nil, err
 	}
 
@@ -284,6 +347,8 @@ func scanPromptRow(s scanner) (*models.Prompt, error) {
 		Content:   content,
 		CreatedAt: createdAt,
 		SyncedAt:  syncedAt,
+
+		SyncFromProject: fromProject,
 	}, nil
 }
 

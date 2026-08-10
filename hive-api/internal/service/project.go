@@ -34,6 +34,14 @@ func (s *projectService) List(ctx context.Context, health string) (model.Project
 	if err != nil {
 		return model.ProjectListResponse{}, err
 	}
+	// Both sides carry the literal project spelling stored on the row, so they
+	// join on exact equality. Folding here would attach one project's sync
+	// health to a different project that merely spells its name similarly.
+	//
+	// This is also why ListAggregates must return that literal as the name and
+	// not a display spelling: the lookup below is keyed on it. A record named
+	// anything else silently finds no health row, which drops the project out of
+	// ?health=degraded entirely rather than showing it as degraded.
 	healthByProject := make(map[string]model.ProjectSyncHealthRow, len(projection.Rows))
 	for _, row := range projection.Rows {
 		healthByProject[row.Project] = row

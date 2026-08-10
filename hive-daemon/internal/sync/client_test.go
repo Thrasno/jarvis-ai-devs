@@ -478,6 +478,71 @@ func TestClient_Sync_MutationProtocolV2PayloadAndResponse(t *testing.T) {
 	assert.Equal(t, "evt-remote-9", resp.PulledMutations[0].EventID)
 }
 
+func TestClient_Sync_CanonicalizesProjectIdentityAndRejectsIncompatibleResponse(t *testing.T) {
+	t.Run("canonicalizes every project-bearing payload", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req syncRequest
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+			require.Equal(t, "v1", req.ProjectIdentityVersion)
+			require.Equal(t, "jarvis-dev", req.Project)
+			require.Equal(t, "jarvis-dev", req.Sessions[0].Project)
+			require.Equal(t, "jarvis-dev", req.Memories[0].Project)
+			require.Equal(t, "jarvis-dev", req.Prompts[0].Project)
+			require.Equal(t, "jarvis-dev", req.Mutations[0].Project)
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{ProjectIdentityVersion: "v1", Pulled: []apiMemory{}}))
+		}))
+		defer server.Close()
+
+		memory := createTestSyncMemory("local-sync-canonical")
+		memory.Project = "jarvis/dev"
+		session := &models.Session{Project: "JARVIS_DEV"}
+		prompt := createTestPrompt("prompt-sync-canonical", "Jarvis Dev", "prompt")
+		mutation := db.MutationEnvelope{Project: "jarvis.dev"}
+		client := newClient(&Config{APIURL: server.URL})
+		_, err := client.sync(context.Background(), "test-token", " Jarvis.Dev ", []*models.Session{session}, []*models.Memory{memory}, []*models.Prompt{prompt}, nil, []db.MutationEnvelope{mutation}, nil, pullOptions{})
+		require.NoError(t, err)
+	})
+
+	t.Run("fails safely when the API reports an incompatible identity contract", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{ProjectIdentityVersion: "v99", Pulled: []apiMemory{}}))
+		}))
+		defer server.Close()
+
+		client := newClient(&Config{APIURL: server.URL})
+		_, err := client.sync(context.Background(), "test-token", "jarvis-dev", nil, nil, nil, nil, nil, nil, pullOptions{})
+		require.ErrorIs(t, err, ErrProjectIdentityIncompatible)
+	})
+
+	t.Run("daemon-first replay keeps an offline queued event on one canonical project", func(t *testing.T) {
+		var projects []string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req syncRequest
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+			projects = append(projects, req.Project+":"+req.Mutations[0].Project)
+			if len(projects) == 1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{
+				Pulled: []apiMemory{},
+				MutationResults: []mutationResult{{
+					EventID: "event-offline", Duplicate: true,
+				}},
+			}))
+		}))
+		defer server.Close()
+
+		client := newClient(&Config{APIURL: server.URL})
+		queued := []db.MutationEnvelope{{EventID: "event-offline", Project: "Jarvis.Dev"}}
+		_, err := client.sync(context.Background(), "test-token", "JARVIS_DEV", nil, nil, nil, nil, queued, nil, pullOptions{})
+		require.Error(t, err)
+		_, err = client.sync(context.Background(), "test-token", "jarvis/dev", nil, nil, nil, nil, queued, nil, pullOptions{})
+		require.NoError(t, err)
+		require.Equal(t, []string{"jarvis-dev:jarvis-dev", "jarvis-dev:jarvis-dev"}, projects)
+	})
+}
+
 func TestClient_Sync_LegacyResponseLeavesMutationProtocolFieldsEmpty(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

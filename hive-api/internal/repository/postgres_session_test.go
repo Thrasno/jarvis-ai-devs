@@ -43,6 +43,10 @@ func startPostgresWithSessions(t *testing.T) (*pgxpool.Pool, func()) {
 	require.NoError(t, err, "failed to run migration 012")
 	err = RunMigrations(pool, migrations.QuarantineContractSQL)
 	require.NoError(t, err, "failed to run migration 017")
+	err = RunMigrations(pool, migrations.CanonicalProjectRegistrySQL)
+	require.NoError(t, err, "failed to run migration 019")
+	err = RunMigrations(pool, migrations.ReprojectMutationSQL)
+	require.NoError(t, err, "failed to run migration 023")
 
 	return pool, cleanup
 }
@@ -539,44 +543,48 @@ func TestPostgresSessionRepository_EnsureManualSaveSession_Idempotent(t *testing
 	assert.Equal(t, 1, count, "exactly one row must exist")
 }
 
-// TestPostgresSessionRepository_ListSessionsByProject verifica que ListSessionsByProject
-// devuelve todas las sesiones del proyecto.
-func TestPostgresSessionRepository_ListSessionsByProject(t *testing.T) {
+// TestPostgresSessionRepository_ProjectSpellingsStayDistinct proves session
+// reads and the lazy manual-save session both key on the literal spelling.
+// Deriving the manual-save id from a folded key handed one spelling a session
+// owned by another, which the caller's attribution check then rejected.
+func TestPostgresSessionRepository_ProjectSpellingsStayDistinct(t *testing.T) {
 	pool, cleanup := startPostgresWithSessions(t)
 	defer cleanup()
 
 	ctx := context.Background()
 	repo := NewPostgresSessionRepository(pool)
-
-	now := time.Now().UTC().Truncate(time.Second)
-
-	// Create sessions for two different projects
-	for i, id := range []string{"sess-a-1", "sess-a-2"} {
+	startedAt := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	for i, project := range []string{" Foo_Bar ", "foo/bar"} {
 		require.NoError(t, repo.CreateSession(ctx, &model.Session{
-			ID:        id,
-			SyncID:    fmt.Sprintf("f%da4b5c6-0000-0000-0000-000000000001", i),
-			Project:   "project-a",
-			DevID:     "dev@host",
-			Client:    "claude-code",
-			StartedAt: now.Add(time.Duration(i) * time.Minute),
+			ID:        fmt.Sprintf("variant-session-%d", i),
+			SyncID:    fmt.Sprintf("f1000000-0000-0000-0000-%012d", i),
+			Project:   project,
+			DevID:     "tester",
+			Client:    "test",
+			StartedAt: startedAt.Add(time.Duration(i) * time.Minute),
 		}))
 	}
-	require.NoError(t, repo.CreateSession(ctx, &model.Session{
-		ID:        "sess-b-1",
-		SyncID:    "f3a4b5c6-0000-0000-0000-000000000099",
-		Project:   "project-b",
-		DevID:     "dev@host",
-		Client:    "claude-code",
-		StartedAt: now,
-	}))
 
-	sessions, err := repo.ListSessionsByProject(ctx, "project-a")
+	unrelated, _, err := repo.ListSessionsSince(ctx, "FOO_BAR", time.Time{}, model.PullCursor{}, model.UnboundedPullLimit)
 	require.NoError(t, err)
-	assert.Len(t, sessions, 2)
+	require.Empty(t, unrelated, "a spelling nobody stored is a different project")
 
-	for _, s := range sessions {
-		assert.Equal(t, "project-a", s.Project)
-	}
+	underscored, _, err := repo.ListSessionsSince(ctx, " Foo_Bar ", time.Time{}, model.PullCursor{}, model.UnboundedPullLimit)
+	require.NoError(t, err)
+	require.Len(t, underscored, 1)
+	assert.Equal(t, " Foo_Bar ", underscored[0].Project)
+
+	slashed, _, err := repo.ListSessionsSince(ctx, "foo/bar", time.Time{}, model.PullCursor{}, model.UnboundedPullLimit)
+	require.NoError(t, err)
+	require.Len(t, slashed, 1)
+	assert.Equal(t, "foo/bar", slashed[0].Project)
+
+	firstID, err := repo.EnsureManualSaveSession(ctx, " Foo_Bar ")
+	require.NoError(t, err)
+	secondID, err := repo.EnsureManualSaveSession(ctx, "foo/bar")
+	require.NoError(t, err)
+	assert.Equal(t, "manual-save- Foo_Bar ", firstID)
+	assert.Equal(t, "manual-save-foo/bar", secondID)
 }
 
 // ─── T4.8: ListSessionsSince ─────────────────────────────────────────────────
@@ -644,13 +652,13 @@ func TestPostgresSessionRepository_ListSessionsSince_FiltersBlockedProject(t *te
 	insertSess("sess-blocked", "ab100000-0000-0000-0000-000000000001", "Blocked Project")
 	insertSess("sess-open", "ab100000-0000-0000-0000-000000000002", "open-project")
 	_, err := blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
-		Project:             "Blocked Project",
-		CanonicalProjectKey: "blocked-project",
-		Action:              model.ProjectBlockActionQuarantine,
-		Reason:              "duplicate",
-		Confirmation:        "blocked-project",
-		ExportMarker:        "export-1",
-		ActorUserID:         "admin-1",
+		Project:      "Blocked Project",
+		ProjectKey:   "Blocked Project",
+		Action:       model.ProjectBlockActionQuarantine,
+		Reason:       "duplicate",
+		Confirmation: "blocked-project",
+		ExportMarker: "export-1",
+		ActorUserID:  "admin-1",
 	})
 	require.NoError(t, err)
 

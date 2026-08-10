@@ -2,11 +2,16 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +20,9 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/governance"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/httpapi"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 	hivesync "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -182,6 +190,124 @@ func TestDaemon_Starts_AndRegisters10Tools(t *testing.T) {
 	if len(toolNames) != 10 {
 		t.Errorf("expected 10 tools, got %d: %v", len(toolNames), toolNames)
 	}
+}
+
+func TestDaemonLifecycleRetryExitsCleanlyAndReleasesDatabase(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	seedBlockedDaemonDB(t, dbPath)
+
+	port := reserveLoopbackPort(t)
+	cmd := startDaemonForLifecycleRetry(t, dbPath, port)
+
+	requestLifecycleRetry(t, "http://127.0.0.1:"+port+"/governance/project-identity/retry")
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("lifecycle retry exit = %v, want clean exit", err)
+	}
+	// A new managed daemon instance must replan the whole migration against the
+	// same database, rather than replacing its live SQLite connection in-process.
+	successorPort := reserveLoopbackPort(t)
+	successor := startDaemonForLifecycleRetry(t, dbPath, successorPort)
+	requestLifecycleRetry(t, "http://127.0.0.1:"+successorPort+"/governance/project-identity/retry")
+	if err := successor.Wait(); err != nil {
+		t.Fatalf("successor lifecycle retry exit = %v, want clean exit", err)
+	}
+
+	store, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open database after lifecycle retry: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	if err := store.RawDB().Ping(); err != nil {
+		t.Fatalf("database remains unavailable after lifecycle retry: %v", err)
+	}
+}
+
+func startDaemonForLifecycleRetry(t *testing.T, dbPath, port string) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command(binaryPath)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("daemon stdin: %v", err)
+	}
+	cmd.Env = append(os.Environ(), "HIVE_DB_PATH="+dbPath, "HIVE_HTTP_PORT="+port)
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start daemon: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+	return cmd
+}
+
+func TestIsCleanServerShutdown(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for _, tt := range []struct {
+		name   string
+		ctx    context.Context
+		runErr error
+		want   bool
+	}{
+		{name: "retry cancellation is clean", ctx: canceled, runErr: context.Canceled, want: true},
+		{name: "unexpected server error remains fatal", ctx: canceled, runErr: errors.New("stdio failed"), want: false},
+		{name: "unrequested cancellation remains fatal", ctx: context.Background(), runErr: context.Canceled, want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isCleanServerShutdown(tt.ctx, tt.runErr); got != tt.want {
+				t.Fatalf("isCleanServerShutdown(%v, %v) = %v, want %v", tt.ctx.Err(), tt.runErr, got, tt.want)
+			}
+		})
+	}
+}
+
+func seedBlockedDaemonDB(t *testing.T, path string) {
+	t.Helper()
+	store, err := db.Open(path)
+	if err != nil {
+		t.Fatalf("seed database: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	if _, err := store.RawDB().Exec(`INSERT INTO sessions (id, sync_id, project, dev_id, client) VALUES ('s', 'session', 'Foo', 'dev', 'test')`); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	for _, projectName := range []string{"Foo", "foo"} {
+		if _, err := store.RawDB().Exec(`INSERT INTO mutation_cursors (consumer, project, sequence, event_id) VALUES ('daemon', ?, 7, ?)`, projectName, "event-"+projectName); err != nil {
+			t.Fatalf("seed cursor: %v", err)
+		}
+	}
+}
+
+func reserveLoopbackPort(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve loopback port: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+	return strings.TrimPrefix(listener.Addr().String(), "127.0.0.1:")
+}
+
+func requestLifecycleRetry(t *testing.T, endpoint string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Post(endpoint, "application/json", nil)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusAccepted {
+				t.Fatalf("lifecycle retry status = %d, want %d", resp.StatusCode, http.StatusAccepted)
+			}
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("daemon retry endpoint did not become available")
 }
 
 // ─── 6.2 Stdout Purity (DIOS Mitigation #3) ────────────────────────────────
@@ -384,6 +510,256 @@ func TestRunStartup_ManualSaveSessionExempt(t *testing.T) {
 	}
 }
 
+func TestRunStartupMigrationExecutesOnceAndExposesReadyGate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory.db")
+	store, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.RawDB().Exec(`INSERT INTO sessions (id, sync_id, project, dev_id, client) VALUES ('s', 'session', ' Foo.Bar ', 'dev', 'test')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RawDB().Exec(`INSERT INTO memories (sync_id, project, title, content, session_id) VALUES ('memory', ' Foo.Bar ', 'title', 'content', 's')`); err != nil {
+		t.Fatal(err)
+	}
+
+	gate := runStartupMigration(context.Background(), store, path)
+	if err := gate.Check(); err != nil {
+		t.Fatalf("startup migration gate = %v", err)
+	}
+	if status := gate.Status(); status.State != "ready" || status.Reason != "" || status.Continuation != "" {
+		t.Fatalf("startup migration status = %+v, want ready status", status)
+	}
+	backups := governance.NewSQLiteBackupStore(path, "", store.RawDB())
+	created, err := backups.List(context.Background())
+	if err != nil || len(created) != 1 {
+		t.Fatalf("migration backups = %v, %v; want one backup", created, err)
+	}
+	if gate.Status().BackupID != "" {
+		t.Fatalf("ready migration status backup = %q, want no rollback reference", gate.Status().BackupID)
+	}
+
+	if err := runStartupMigration(context.Background(), store, path).Check(); err != nil {
+		t.Fatalf("repeated startup migration = %v", err)
+	}
+	created, err = backups.List(context.Background())
+	if err != nil || len(created) != 1 {
+		t.Fatalf("repeated migration backups = %v, %v; want no new backup", created, err)
+	}
+}
+
+func TestRunStartupMigrationBlocksAndPersistsContinuationOnFailure(t *testing.T) {
+	store := openTestDB(t)
+	failure := fmt.Errorf("migration conflict")
+	gate := runStartupMigrationWith(context.Background(), store, func(context.Context, db.ProjectMigrationPlan) error {
+		return failure
+	})
+	if err := gate.Check(); err == nil || !strings.Contains(err.Error(), "migration-blocked") {
+		t.Fatalf("migration gate error = %v, want migration-blocked", err)
+	}
+	status := gate.Status()
+	if status.State != "migration-blocked" || status.Reason != failure.Error() || status.Continuation != "hive project identity status" {
+		t.Fatalf("migration status = %+v, want blocked structured continuation", status)
+	}
+	warnings, err := store.ListHiveWarnings(db.HiveWarningFilter{ResolutionState: "active"})
+	if err != nil || len(warnings) != 1 || !strings.Contains(warnings[0].Message, `"continuation":"hive project identity status"`) || strings.Contains(warnings[0].Message, " then ") {
+		t.Fatalf("persisted migration warning = %v, %v", warnings, err)
+	}
+}
+
+func TestRunStartupMigrationAmbiguityRetainsDatabaseAndBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory.db")
+	store, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.RawDB().Exec(`INSERT INTO sessions (id, sync_id, project, dev_id, client) VALUES ('s', 'session', 'Foo', 'dev', 'test')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, projectName := range []string{"Foo", "foo"} {
+		if _, err := store.RawDB().Exec(`INSERT INTO mutation_cursors (consumer, project, sequence, event_id) VALUES ('daemon', ?, 7, ?)`, projectName, "event-"+projectName); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	gate := runStartupMigration(context.Background(), store, path)
+	if err := gate.Check(); err == nil || !strings.Contains(err.Error(), "migration-blocked") {
+		t.Fatalf("migration ambiguity gate = %v, want migration-blocked", err)
+	}
+	status := gate.Status()
+	if status.BackupID == "" || status.Continuation != "hive project identity status" {
+		t.Fatalf("migration ambiguity status = %+v, want retained backup and continuation", status)
+	}
+	var cursorCount int
+	if err := store.RawDB().QueryRow(`SELECT COUNT(*) FROM mutation_cursors WHERE project IN ('Foo', 'foo')`).Scan(&cursorCount); err != nil || cursorCount != 2 {
+		t.Fatalf("cursor rows after blocked startup = %d, %v; want 2 unchanged rows", cursorCount, err)
+	}
+	backups := governance.NewSQLiteBackupStore(path, "", store.RawDB())
+	created, err := backups.List(context.Background())
+	if err != nil || len(created) != 1 || created[0].ID != status.BackupID {
+		t.Fatalf("blocked migration backup = %v, %v; want status backup", created, err)
+	}
+	warnings, err := store.ListHiveWarnings(db.HiveWarningFilter{ResolutionState: "active"})
+	if err != nil || len(warnings) != 1 || !strings.Contains(warnings[0].Message, `"backup_id":"`+status.BackupID+`"`) {
+		t.Fatalf("persisted blocked status = %v, %v; want rollback backup reference", warnings, err)
+	}
+}
+
+func TestRunStartupMigrationPreflightConflictLeavesDatabaseUnmutatedAndCreatesNoBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory.db")
+	store, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	for _, projectName := range []string{"Foo.Bar", "foo-bar"} {
+		if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES (?, ?)`, projectName, projectName); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gate := runStartupMigration(context.Background(), store, path)
+	status := gate.Status()
+	if status.State != project.MigrationStateBlocked || status.BackupID != "" {
+		t.Fatalf("startup status = %+v, want preflight block before backup", status)
+	}
+	backups := governance.NewSQLiteBackupStore(path, "", store.RawDB())
+	if created, err := backups.List(context.Background()); err != nil || len(created) != 0 {
+		t.Fatalf("preflight backups = %v, %v; want none before mutation", created, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = db.Open(path)
+	if err != nil {
+		t.Fatalf("reopen unchanged blocked database: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	var variants int
+	if err := store.RawDB().QueryRow(`SELECT COUNT(*) FROM sync_state WHERE project IN ('Foo.Bar', 'foo-bar')`).Scan(&variants); err != nil || variants != 2 {
+		t.Fatalf("sync state after blocked restart = %d, %v; want both original variants", variants, err)
+	}
+}
+
+// TestProjectIdentityResolveThroughDaemonResolverUnblocksMigrationWithoutBackup
+// drives recovery through the real resolver closure and the real HTTP recovery
+// route, because the preflight-conflict path never creates a migration backup
+// and therefore can never present a backup id to authorize resolution.
+func TestProjectIdentityResolveThroughDaemonResolverUnblocksMigrationWithoutBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory.db")
+	store, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	for _, projectName := range []string{"Foo.Bar", "foo-bar"} {
+		if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES (?, ?)`, projectName, projectName); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gate := runStartupMigration(context.Background(), store, path)
+	status := gate.Status()
+	if status.State != project.MigrationStateBlocked || status.BackupID != "" || status.PlanFingerprint == "" {
+		t.Fatalf("startup status = %+v, want preflight block with plan fingerprint and no backup", status)
+	}
+	srv := httpapi.NewServer("127.0.0.1:0", store)
+	srv.SetMigrationGate(gate)
+	srv.SetMigrationIdentityResolver(newMigrationIdentityResolver(store, gate))
+
+	confirmation := project.IdentityResolutionConfirmation("Foo.Bar", "foo-bar")
+	stale := postIdentityResolution(t, srv, project.IdentityResolutionRequest{
+		SourceProject:   "Foo.Bar",
+		TargetProject:   "foo-bar",
+		PlanFingerprint: "not-the-plan-the-operator-was-shown",
+		Confirmation:    confirmation,
+	})
+	if stale.Code != http.StatusConflict || !strings.Contains(stale.Body.String(), "stale") {
+		t.Fatalf("stale fingerprint resolve = %d %s, want 409 stale rejection", stale.Code, stale.Body.String())
+	}
+	var untouched int
+	if err := store.RawDB().QueryRow(`SELECT COUNT(*) FROM sync_state WHERE project IN ('Foo.Bar', 'foo-bar')`).Scan(&untouched); err != nil || untouched != 2 {
+		t.Fatalf("sync state after rejected resolve = %d, %v; want both variants untouched", untouched, err)
+	}
+
+	accepted := postIdentityResolution(t, srv, project.IdentityResolutionRequest{
+		SourceProject:   "Foo.Bar",
+		TargetProject:   "foo-bar",
+		PlanFingerprint: status.PlanFingerprint,
+		Confirmation:    confirmation,
+	})
+	if accepted.Code != http.StatusOK {
+		t.Fatalf("resolve through daemon resolver = %d %s, want 200", accepted.Code, accepted.Body.String())
+	}
+	if err := runStartupMigration(context.Background(), store, path).Check(); err != nil {
+		t.Fatalf("full migration replan after resolution = %v, want ready", err)
+	}
+}
+
+// TestRunStartupMigrationPreflightBlockNeverReportsUnrelatedBackup proves the
+// reported backup identifies a backup this migration created, so a rollback can
+// never restore an unrelated older database.
+func TestRunStartupMigrationPreflightBlockNeverReportsUnrelatedBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory.db")
+	store, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	backups := governance.NewSQLiteBackupStore(path, "", store.RawDB())
+	unrelated, err := backups.Create(context.Background())
+	if err != nil {
+		t.Fatalf("create unrelated backup: %v", err)
+	}
+	for _, projectName := range []string{"Foo.Bar", "foo-bar"} {
+		if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES (?, ?)`, projectName, projectName); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status := runStartupMigration(context.Background(), store, path).Status()
+	if status.State != project.MigrationStateBlocked {
+		t.Fatalf("startup status = %+v, want migration-blocked", status)
+	}
+	if status.BackupID != "" {
+		t.Fatalf("reported backup = %q, want empty; unrelated backup %q must never authorize a rollback", status.BackupID, unrelated.ID)
+	}
+}
+
+func postIdentityResolution(t *testing.T, srv *httpapi.Server, req project.IdentityResolutionRequest) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/governance/project-identity/resolve", bytes.NewReader(body)))
+	return rr
+}
+
+func TestRunStartupMigrationFreshDatabaseMigratesAndRestartsWithoutRestore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory.db")
+	store, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := runStartupMigration(context.Background(), store, path).Check(); err != nil {
+		t.Fatalf("fresh startup migration = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = db.Open(path)
+	if err != nil {
+		t.Fatalf("reopen fresh migrated database: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := runStartupMigration(context.Background(), store, path).Check(); err != nil {
+		t.Fatalf("fresh database restart migration = %v", err)
+	}
+}
+
 // TestE2E_TopicKeyAlwaysInserts verifies the new topic_key semantics (Issue #119):
 // saving twice with the same topic_key creates two distinct rows. The second save
 // must return a different id, and both rows should appear in search results.
@@ -460,4 +836,262 @@ func TestE2E_TopicKeyAlwaysInserts(t *testing.T) {
 	if !strings.Contains(searchBody, "2 results") {
 		t.Errorf("expected 2 results for two saves with same topic_key, got: %s", searchBody)
 	}
+}
+
+func TestPendingRestoreThatMayReplayStopsStartup(t *testing.T) {
+	replayable := fmt.Errorf("%w: record completed pending restore", governance.ErrPendingRestoreReplayable)
+	if err := pendingRestoreStartupError(true, replayable, filepath.Join(t.TempDir(), "memory.db")); !errors.Is(err, governance.ErrPendingRestoreReplayable) {
+		t.Fatalf("startup error = %v, want the daemon to refuse to serve", err)
+	}
+}
+
+func TestPendingRestoreFailureThatLeftLiveDatabaseIntactKeepsServing(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	if err := pendingRestoreStartupError(false, errors.New("backup archive is missing"), dbPath); err != nil {
+		t.Fatalf("startup error = %v, want startup to continue on an unapplied restore", err)
+	}
+	if err := pendingRestoreStartupError(true, nil, dbPath); err != nil {
+		t.Fatalf("startup error = %v, want startup to continue after a cleared restore", err)
+	}
+}
+
+// TestPendingRestoreStartupFailureNamesTheFileThatUnblocksTheDaemon covers the
+// only exit from this stop: a persistent write failure keeps the request on
+// disk, so every following start replays the same restore and fails the same
+// way. The daemon must not leave the operator guessing which file to delete.
+func TestPendingRestoreStartupFailureNamesTheFileThatUnblocksTheDaemon(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	replayable := fmt.Errorf("%w: record completed pending restore: no space left on device", governance.ErrPendingRestoreReplayable)
+
+	err := pendingRestoreStartupError(true, replayable, dbPath)
+	if err == nil {
+		t.Fatal("startup error = nil, want the daemon to refuse to serve")
+	}
+	message := err.Error()
+	if !strings.Contains(message, governance.PendingRestorePath(dbPath)) {
+		t.Fatalf("startup error = %q, want the pending restore path named", message)
+	}
+	if !strings.Contains(message, "delete") {
+		t.Fatalf("startup error = %q, want the recovery step spelled out", message)
+	}
+	if !strings.Contains(message, "no space left on device") {
+		t.Fatalf("startup error = %q, want the underlying failure kept", message)
+	}
+}
+
+// TestPendingRestoreStartupFailureDoesNotPromisePermanentReplay covers the
+// sub-case where only the completion marker's durability flush failed: the
+// rename already put that marker on disk, so the next start short-circuits and
+// serves normally. Promising a replay on every start from now on sends the
+// operator hunting for a stop that will not happen again.
+func TestPendingRestoreStartupFailureDoesNotPromisePermanentReplay(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	replayable := fmt.Errorf("%w: record completed pending restore: sync pending restore dir: input/output error", governance.ErrPendingRestoreReplayable)
+
+	err := pendingRestoreStartupError(true, replayable, dbPath)
+	if err == nil {
+		t.Fatal("startup error = nil, want the daemon to refuse to serve")
+	}
+	message := err.Error()
+	if strings.Contains(message, "every start from now on") {
+		t.Fatalf("startup error = %q, want no claim that every following start replays", message)
+	}
+	if !strings.Contains(message, "can replay") {
+		t.Fatalf("startup error = %q, want the replay reported as possible", message)
+	}
+}
+
+// TestPendingRestoreStartupFailureNamesAnAbsolutePath keeps the instruction
+// usable from any working directory: HIVE_DB_PATH may be relative, and the
+// operator reads this line from a log, not from the daemon's shell.
+func TestPendingRestoreStartupFailureNamesAnAbsolutePath(t *testing.T) {
+	err := pendingRestoreStartupError(true, governance.ErrPendingRestoreReplayable, filepath.Join("relative", "memory.db"))
+	if err == nil {
+		t.Fatal("startup error = nil, want the daemon to refuse to serve")
+	}
+	absolute, absErr := filepath.Abs(governance.PendingRestorePath(filepath.Join("relative", "memory.db")))
+	if absErr != nil {
+		t.Fatal(absErr)
+	}
+	if !strings.Contains(err.Error(), absolute) {
+		t.Fatalf("startup error = %q, want the absolute path %q", err.Error(), absolute)
+	}
+}
+
+// TestRunStartupMigrationRetriesContentionInsteadOfBlockingTheSession proves a
+// concurrent daemon that lost the race is not gated off for its whole session,
+// and that the race leaves no error warning behind.
+func TestRunStartupMigrationRetriesContentionInsteadOfBlockingTheSession(t *testing.T) {
+	store := migratableStore(t)
+	attempts := 0
+	gate := runStartupMigrationWith(context.Background(), store, func(ctx context.Context, plan db.ProjectMigrationPlan) error {
+		attempts++
+		if attempts == 1 {
+			return db.ErrProjectMigrationPlanStale
+		}
+		return nil
+	})
+	if err := gate.Check(); err != nil {
+		t.Fatalf("gate after contention retry = %v, want ready", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("execute attempts = %d, want one retry after contention", attempts)
+	}
+	warnings, err := store.ListHiveWarnings(db.HiveWarningFilter{ResolutionState: "active"})
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("warnings after contention retry = %v, %v; want none persisted", warnings, err)
+	}
+}
+
+// TestRunStartupMigrationBlocksWhenContentionDoesNotClear keeps a genuinely
+// unresolvable failure a block instead of retrying forever.
+func TestRunStartupMigrationBlocksWhenContentionDoesNotClear(t *testing.T) {
+	store := migratableStore(t)
+	attempts := 0
+	gate := runStartupMigrationWith(context.Background(), store, func(ctx context.Context, plan db.ProjectMigrationPlan) error {
+		attempts++
+		return db.ErrProjectMigrationPlanStale
+	})
+	if err := gate.Check(); err == nil {
+		t.Fatal("gate after repeated contention = ready, want blocked")
+	}
+	if attempts != 2 {
+		t.Fatalf("execute attempts = %d, want exactly one retry", attempts)
+	}
+}
+
+// TestRunStartupMigrationBlockReportsTheReusedBackupOnEveryRestart covers the
+// daemon's real shape: a client spawns a fresh process per session, so a blocked
+// migration is re-attempted on every start and reuses the archive it already
+// took. The rollback the operator is offered must survive that reuse.
+func TestRunStartupMigrationBlockReportsTheReusedBackupOnEveryRestart(t *testing.T) {
+	path, store := blockedMigrationStore(t)
+
+	first := runStartupMigration(context.Background(), store, path).Status()
+	if first.State != project.MigrationStateBlocked || first.BackupID == "" {
+		t.Fatalf("first blocked status = %+v, want a reported rollback backup", first)
+	}
+	second := runStartupMigration(context.Background(), store, path).Status()
+	if second.BackupID != first.BackupID {
+		t.Fatalf("restart backup = %q, want the reused archive %q; a validated rollback must not disappear", second.BackupID, first.BackupID)
+	}
+	backups := governance.NewSQLiteBackupStore(path, "", store.RawDB())
+	stored, err := backups.List(context.Background())
+	if err != nil || len(stored) != 1 {
+		t.Fatalf("archives after two blocked starts = %v, %v; want the single reused copy", stored, err)
+	}
+}
+
+// TestRunStartupMigrationContentionRetryReusesTheBackupItAlreadyTook crosses the
+// two seams the existing suites keep apart: the contention retry re-plans, and
+// the backup store decides reuse from the plan fingerprint. Re-planning against
+// an unchanged database yields the same plan, so the retry must cost no second
+// copy of memory.db and must still report the archive it can roll back to.
+func TestRunStartupMigrationContentionRetryReusesTheBackupItAlreadyTook(t *testing.T) {
+	path, store := blockedMigrationStore(t)
+	backups := governance.NewSQLiteBackupStore(path, "", store.RawDB())
+	attempts := 0
+
+	status := runStartupMigrationWithBackup(context.Background(), store, func(ctx context.Context, plan db.ProjectMigrationPlan) error {
+		attempts++
+		if attempts == 1 {
+			// A peer daemon won the write lock only after this attempt had
+			// already paid for its pre-mutation backup.
+			if _, err := backups.EnsureTemporaryMigrationBackup(ctx, plan.Fingerprint); err != nil {
+				t.Fatalf("first attempt backup: %v", err)
+			}
+			return db.ErrProjectMigrationPlanStale
+		}
+		return governance.ExecuteProjectMigrationWithBackup(ctx, store, plan, backups)
+	}, backups).Status()
+
+	if attempts != 2 {
+		t.Fatalf("execute attempts = %d, want one contention retry", attempts)
+	}
+	stored, err := backups.List(context.Background())
+	if err != nil || len(stored) != 1 {
+		t.Fatalf("archives after a contention retry = %v, %v; want one copy of memory.db", stored, err)
+	}
+	if status.BackupID != stored[0].ID {
+		t.Fatalf("reported backup = %q, want the retained archive %q", status.BackupID, stored[0].ID)
+	}
+}
+
+// TestRunStartupMigrationContentionRetryReportsTheBackupForTheReplannedPlan
+// covers the other half of the same cross: when a concurrent writer changes the
+// database, the retry plans different work and needs its own pre-mutation
+// archive. The earlier one no longer matches the live database, so reporting it
+// would offer a rollback onto a state that never existed.
+func TestRunStartupMigrationContentionRetryReportsTheBackupForTheReplannedPlan(t *testing.T) {
+	path, store := blockedMigrationStore(t)
+	backups := governance.NewSQLiteBackupStore(path, "", store.RawDB())
+	attempts := 0
+	var supersededPlan string
+
+	status := runStartupMigrationWithBackup(context.Background(), store, func(ctx context.Context, plan db.ProjectMigrationPlan) error {
+		attempts++
+		if attempts == 1 {
+			supersededPlan = plan.Fingerprint
+			if _, err := backups.EnsureTemporaryMigrationBackup(ctx, plan.Fingerprint); err != nil {
+				t.Fatalf("first attempt backup: %v", err)
+			}
+			if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES ('Other.Project', 'x')`); err != nil {
+				t.Fatalf("concurrent write: %v", err)
+			}
+			return db.ErrProjectMigrationPlanStale
+		}
+		if plan.Fingerprint == supersededPlan {
+			t.Fatalf("retry plan = %q, want a replanned migration", plan.Fingerprint)
+		}
+		return governance.ExecuteProjectMigrationWithBackup(ctx, store, plan, backups)
+	}, backups).Status()
+
+	if status.State != project.MigrationStateBlocked || status.BackupID == "" {
+		t.Fatalf("status after replanned retry = %+v, want a blocked plan with its own rollback", status)
+	}
+	superseded, found, err := backups.MigrationBackupForPlan(context.Background(), supersededPlan)
+	if err != nil || !found {
+		t.Fatalf("superseded archive = %+v, %v; want the abandoned plan's copy retained", superseded, err)
+	}
+	if status.BackupID == superseded.ID {
+		t.Fatalf("reported backup = %q, want the replanned plan's archive, not the superseded one", status.BackupID)
+	}
+	current, found, err := backups.MigrationBackupForPlan(context.Background(), status.PlanFingerprint)
+	if err != nil || !found || current.ID != status.BackupID {
+		t.Fatalf("reported backup = %q, want the archive bound to plan %q", status.BackupID, status.PlanFingerprint)
+	}
+}
+
+// blockedMigrationStore opens a database whose migration plan is executable,
+// takes its pre-mutation backup, and then fails on an unmergeable composite.
+func blockedMigrationStore(t *testing.T) (string, *db.DB) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "memory.db")
+	store, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.RawDB().Exec(`INSERT INTO sessions (id, sync_id, project, dev_id, client) VALUES ('s', 'session', 'Foo', 'dev', 'test')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, projectName := range []string{"Foo", "foo"} {
+		if _, err := store.RawDB().Exec(`INSERT INTO mutation_cursors (consumer, project, sequence, event_id) VALUES ('daemon', ?, 7, ?)`, projectName, "event-"+projectName); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return path, store
+}
+
+func migratableStore(t *testing.T) *db.DB {
+	t.Helper()
+	store, err := db.Open(filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES (' Foo.Bar ', 'x')`); err != nil {
+		t.Fatal(err)
+	}
+	return store
 }

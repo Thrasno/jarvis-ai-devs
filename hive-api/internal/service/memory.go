@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
-	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/projectkey"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
 )
 
@@ -31,6 +30,10 @@ type MemoryService interface {
 	// List devuelve memorias paginadas con el total para la paginación.
 	// Si filter.Limit es 0, aplica el default (20).
 	// Devuelve: memorias, total de registros que coinciden, error.
+	//
+	// filter.Project is a query, never an identity decision. Every literal is a
+	// valid project: the daemon owns identity and the API keeps no whitelist, so
+	// a project with no matching rows returns an empty result, not an error.
 	List(ctx context.Context, filter model.MemoryFilter) ([]*model.Memory, int64, error)
 
 	// Search realiza búsqueda de texto completo en memorias.
@@ -62,8 +65,7 @@ func (s *memoryService) Create(ctx context.Context, mem *model.Memory) (*model.M
 			if repos.Memory == nil || repos.Session == nil || repos.ProjectBlocks == nil || repos.ProjectKeyLocks == nil {
 				return ErrProjectBlockUnavailable
 			}
-			canonical := projectkey.Canonicalize(mem.Project)
-			if err := repos.ProjectKeyLocks.LockCanonicalProjectKeys(ctx, []string{canonical}); err != nil {
+			if err := repos.ProjectKeyLocks.LockProjectKeys(ctx, []string{mem.Project}); err != nil {
 				return err
 			}
 			result, err := s.createWithRepos(ctx, mem, repos.Memory, repos.Session, repos.ProjectBlocks)
@@ -83,7 +85,7 @@ func (s *memoryService) Create(ctx context.Context, mem *model.Memory) (*model.M
 
 func (s *memoryService) createWithRepos(ctx context.Context, mem *model.Memory, memRepo repository.MemoryRepository, sessionRepo repository.SessionRepository, blockRepo repository.ProjectBlockRepository) (*model.Memory, error) {
 	if blockRepo != nil {
-		block, err := blockRepo.GetByCanonicalKey(ctx, projectkey.Canonicalize(mem.Project))
+		block, err := blockRepo.GetByProjectKey(ctx, mem.Project)
 		if err != nil && !errors.Is(err, repository.ErrNotFound) {
 			return nil, err
 		}

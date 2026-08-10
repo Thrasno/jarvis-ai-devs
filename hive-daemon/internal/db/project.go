@@ -78,13 +78,14 @@ func (d *DB) KnownProjects(ctx context.Context) ([]project.KnownProject, error) 
 			UNION
 			SELECT project, '' AS directory FROM user_prompts GROUP BY project
 		)
-		SELECT project, MAX(directory) AS directory
+		SELECT COALESCE(NULLIF(i.remote_spelling, ''), i.first_spelling, known.project), MAX(known.directory) AS directory
 		FROM known
-		WHERE project != ''
-		  AND project NOT IN (SELECT source_project FROM project_aliases)
-		  AND project NOT IN (SELECT project FROM hive_project_governance WHERE archived_at IS NOT NULL)
-		GROUP BY project
-		ORDER BY project`)
+		LEFT JOIN project_identities i ON i.project_key = known.project
+		WHERE known.project != ''
+		  AND known.project NOT IN (SELECT source_project FROM project_aliases)
+		  AND known.project NOT IN (SELECT project FROM hive_project_governance WHERE archived_at IS NOT NULL)
+		GROUP BY known.project, i.remote_spelling, i.first_spelling
+		ORDER BY known.project`)
 	if err != nil {
 		return nil, fmt.Errorf("known projects: %w", err)
 	}
@@ -102,6 +103,21 @@ func (d *DB) KnownProjects(ctx context.Context) ([]project.KnownProject, error) 
 		return nil, fmt.Errorf("iterate known projects: %w", err)
 	}
 	return projects, nil
+}
+
+func (d *DB) ContextProjectCounts(ctx context.Context) (known, allowed int, err error) {
+	err = d.sqlDB.QueryRowContext(ctx, `
+WITH known AS (
+	SELECT project FROM sessions UNION SELECT project FROM memories UNION SELECT project FROM user_prompts
+)
+SELECT COUNT(*), COUNT(CASE WHEN NOT EXISTS (
+	SELECT 1 FROM project_blocks b WHERE b.canonical_project_key = known.project AND b.blocked = 1
+) THEN 1 END)
+FROM known WHERE project != ''`).Scan(&known, &allowed)
+	if err != nil {
+		return 0, 0, fmt.Errorf("count context projects: %w", err)
+	}
+	return known, allowed, nil
 }
 
 func (d *DB) SessionProject(ctx context.Context, sessionID string) (string, error) {
@@ -142,7 +158,8 @@ func (d *DB) GetGovernanceProject(ctx context.Context, name string) (GovernanceP
 	if name == "" {
 		return GovernanceProject{}, ErrGovernanceProjectRequired
 	}
-	project, err := scanGovernanceProject(d.sqlDB.QueryRowContext(ctx, governanceProjectsQuery+` WHERE project_names.project = ?`, name))
+	key := canonicalProjectKey(name)
+	project, err := scanGovernanceProject(d.sqlDB.QueryRowContext(ctx, governanceProjectsQuery+` WHERE project_names.project = ?`, key))
 	if errors.Is(err, sql.ErrNoRows) {
 		return GovernanceProject{}, fmt.Errorf("%w: %s", ErrGovernanceProjectNotFound, name)
 	}
@@ -246,6 +263,7 @@ func (d *DB) ArchiveGovernanceProject(ctx context.Context, name, actorID, reason
 	if name == "" {
 		return false, ErrGovernanceProjectRequired
 	}
+	name = canonicalProjectKey(name)
 
 	// Check governance record first — merged projects may have no rows after
 	// physical migration, so we must detect them via the governance table.
@@ -319,6 +337,9 @@ func (d *DB) MergeGovernanceProject(ctx context.Context, source, target, actorID
 	if source == "" || target == "" {
 		return false, ErrGovernanceProjectRequired
 	}
+	source = canonicalProjectKey(source)
+	targetSpelling := target
+	target = canonicalProjectKey(target)
 	if source == target {
 		return false, ErrGovernanceProjectMergeInvalid
 	}
@@ -383,6 +404,9 @@ WHERE project = ?`, target).Scan(&tgtMergedAt, &tgtArchivedAt)
 	}
 	if tgtMergedAt.Valid && tgtMergedAt.String != "" {
 		return false, ErrGovernanceProjectMergeConflict
+	}
+	if _, err := registerProjectIdentity(ctx, tx, targetSpelling); err != nil {
+		return false, err
 	}
 
 	if actorID == "" {
@@ -653,7 +677,7 @@ WITH project_names AS (
     WHERE synced_at IS NULL AND deleted_at IS NULL
     GROUP BY project
 )
-SELECT project_names.project,
+SELECT COALESCE(NULLIF(identity.remote_spelling, ''), NULLIF(identity.first_spelling, ''), project_names.project),
        COALESCE(directories.directory, ''),
        COALESCE(memory_counts.active_count, 0),
        COALESCE(memory_counts.deleted_count, 0),
@@ -663,18 +687,20 @@ SELECT project_names.project,
        project_governance.archived_at,
        COALESCE(project_governance.archived_by, ''),
        COALESCE(project_governance.archive_reason, ''),
-       COALESCE(project_governance.merge_target, ''),
+       COALESCE(NULLIF(merge_identity.remote_spelling, ''), NULLIF(merge_identity.first_spelling, ''), project_governance.merge_target, ''),
        project_governance.merged_at,
        COALESCE(project_governance.merged_by, ''),
        COALESCE(project_governance.merge_reason, ''),
        COALESCE(unsynced_counts.unsynced_count, 0)
 FROM project_names
+LEFT JOIN project_identities AS identity ON identity.project_key = project_names.project
 LEFT JOIN directories ON directories.project = project_names.project
 LEFT JOIN memory_counts ON memory_counts.project = project_names.project
 LEFT JOIN session_counts ON session_counts.project = project_names.project
 LEFT JOIN prompt_counts ON prompt_counts.project = project_names.project
 LEFT JOIN activity ON activity.project = project_names.project
 LEFT JOIN hive_project_governance AS project_governance ON project_governance.project = project_names.project
+LEFT JOIN project_identities AS merge_identity ON merge_identity.project_key = project_governance.merge_target
 LEFT JOIN unsynced_counts ON unsynced_counts.project = project_names.project`
 
 func scanGovernanceProject(scanner interface{ Scan(...any) error }) (GovernanceProject, error) {

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -230,6 +231,34 @@ func TestRunPromptSubmit_Reminder_ConcurrentInvocationsValidJSON(t *testing.T) {
 }
 
 // --- RunSessionStart ---
+
+func TestRunSessionStart_MigrationBlocked_SurfacesRecovery(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/governance/project-identity/status" {
+			_ = json.NewEncoder(w).Encode(MigrationStatus{State: "migration-blocked", Reason: "canonical conflict", BackupID: "backup-42"})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	var out bytes.Buffer
+	RunSessionStart(context.Background(), strings.NewReader(`{"session_id":"blocked"}`), &out, srv.URL)
+	var response struct {
+		AdditionalContext string `json:"additionalContext"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"migration-blocked", "canonical conflict", "backup-42", MigrationStatusCommand} {
+		if !strings.Contains(response.AdditionalContext, want) {
+			t.Fatalf("additionalContext = %q, missing %q", response.AdditionalContext, want)
+		}
+	}
+	if got, want := strings.Fields(MigrationStatusCommand), []string{"hive", "project", "identity", "status"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("continuation tokens = %q, want %q", got, want)
+	}
+}
 
 func TestRunSessionStart_HappyPath_InjectsProtocol(t *testing.T) {
 	dir := t.TempDir()

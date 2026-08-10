@@ -54,6 +54,7 @@ func startPostgresForMemoryServiceProjectBlocks(t *testing.T) (*pgxpool.Pool, fu
 		migrations.ProjectBlocksSQL,
 		migrations.QuarantineContractSQL,
 		migrations.DistributedQuarantineSQL,
+		migrations.CanonicalProjectRegistrySQL,
 	} {
 		require.NoError(t, repository.RunMigrations(pool, sql))
 	}
@@ -76,7 +77,7 @@ func TestProjectGovernanceService_ConcurrentTransitionsPreserveStrictGenerationH
 		repository.NewPostgresTxManager(pool),
 	)
 	project := "Concurrent Project"
-	canonical := "concurrent-project"
+	canonical := project
 	requests := []model.ProjectBlockRequest{
 		{Action: model.ProjectBlockActionBlock, Reason: "first transition", Confirmation: canonical},
 		{Action: model.ProjectBlockActionUnblock, Reason: "second transition", Confirmation: canonical},
@@ -132,16 +133,16 @@ func TestProjectGovernanceService_ListQuarantinesLoadsRetainedCurrentGenerationA
 		repository.NewPostgresTxManager(pool),
 	)
 	actor := model.AdminActor{UserID: "00000000-0000-0000-0000-000000000091"}
-	_, err := governance.BlockProject(ctx, actor, "Retained Project", model.ProjectBlockRequest{Action: model.ProjectBlockActionBlock, Reason: "quarantine", Confirmation: "retained-project"})
+	_, err := governance.BlockProject(ctx, actor, "Retained Project", model.ProjectBlockRequest{Action: model.ProjectBlockActionBlock, Reason: "quarantine", Confirmation: "Retained Project"})
 	require.NoError(t, err)
-	_, err = governance.BlockProject(ctx, actor, "Retained Project", model.ProjectBlockRequest{Action: model.ProjectBlockActionUnblock, Reason: "release", Confirmation: "retained-project"})
+	_, err = governance.BlockProject(ctx, actor, "Retained Project", model.ProjectBlockRequest{Action: model.ProjectBlockActionUnblock, Reason: "release", Confirmation: "Retained Project"})
 	require.NoError(t, err)
 
 	summaries, err := governance.ListQuarantines(ctx)
 
 	require.NoError(t, err)
 	require.Equal(t, []model.QuarantineSummary{{
-		Project: "Retained Project", CanonicalProjectKey: "retained-project", Generation: 2,
+		Project: "Retained Project", ProjectKey: "Retained Project", Generation: 2,
 		Action: model.ProjectBlockActionUnblock, State: model.ProjectBlockProgressPending,
 		TransitionedAt: summaries[0].TransitionedAt,
 	}}, summaries)
@@ -173,7 +174,7 @@ func TestMemoryService_CreateConcurrentWithBlockCannotWriteAfterBlock(t *testing
 
 	for i := 0; i < 4; i++ {
 		project := fmt.Sprintf("Race Project %d", i)
-		canonical := fmt.Sprintf("race-project-%d", i)
+		canonical := project
 		start := make(chan struct{})
 		var wg sync.WaitGroup
 		wg.Add(2)
@@ -233,4 +234,55 @@ func TestMemoryService_CreateConcurrentWithBlockCannotWriteAfterBlock(t *testing
 		require.NoError(t, err)
 		require.Zero(t, postBlockWrites)
 	}
+}
+
+// TestMemoryCreateDerivesTheManualSaveSessionFromTheLiteralProject drives the
+// whole seam with the real repository: Create -> validateSessionAttribution ->
+// EnsureManualSaveSession, with a project spelling that is not its own
+// canonical form.
+//
+// The id derivation was pinned only at the repository seam, while every
+// service-level test mocked a pair the real repository can no longer produce
+// ("Jarvis Dev" -> "manual-save-jarvis-dev"). Under that mocking, reverting the
+// derivation to a canonical key breaks nothing here — yet it is exactly what
+// would hand one spelling a session owned by another, because the attribution
+// check builds its expected id from the literal project.
+func TestMemoryCreateDerivesTheManualSaveSessionFromTheLiteralProject(t *testing.T) {
+	pool, cleanup := startPostgresForMemoryServiceProjectBlocks(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	svc := service.NewMemoryService(
+		repository.NewPostgresMemoryRepository(pool),
+		repository.NewPostgresSessionRepository(pool),
+		repository.NewPostgresProjectBlockRepository(pool),
+		repository.NewPostgresTxManager(pool),
+	)
+	const project = "Jarvis Dev"
+	now := time.Now().UTC()
+
+	created, err := svc.Create(ctx, &model.Memory{
+		SyncID: "40000000-0000-0000-0000-000000000001", Project: project,
+		Category: model.CatDecision, Title: "lazy fallback", Content: "content",
+		CreatedBy: "user", CreatedAt: now, UpdatedAt: now,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created.SessionID)
+	require.Equal(t, "manual-save-"+project, *created.SessionID,
+		"the lazy-fallback session id is derived from the literal project")
+
+	var sessionProject string
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT project FROM sessions WHERE id = $1`, "manual-save-"+project).Scan(&sessionProject))
+	require.Equal(t, project, sessionProject)
+
+	// The attribution check builds its expected id from the same literal, so a
+	// memory pointing at another spelling's manual-save session is rejected.
+	foreign := "manual-save-jarvis-dev"
+	_, err = svc.Create(ctx, &model.Memory{
+		SyncID: "40000000-0000-0000-0000-000000000002", Project: project, SessionID: &foreign,
+		Category: model.CatDecision, Title: "cross project", Content: "content",
+		CreatedBy: "user", CreatedAt: now, UpdatedAt: now,
+	})
+	require.ErrorIs(t, err, service.ErrSessionProjectMismatch)
 }

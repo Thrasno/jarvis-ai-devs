@@ -12,6 +12,6 @@ type MockProjectKeyLockRepository struct {
 
 var _ ProjectKeyLockRepository = (*MockProjectKeyLockRepository)(nil)
 
-func (m *MockProjectKeyLockRepository) LockCanonicalProjectKeys(ctx context.Context, canonicalKeys []string) error {
+func (m *MockProjectKeyLockRepository) LockProjectKeys(ctx context.Context, canonicalKeys []string) error {
 	return m.Called(ctx, canonicalKeys).Error(0)
 }

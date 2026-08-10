@@ -15,6 +15,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestProjectGovernanceService_BlockProjectValidatesAndAudits uses a project
+// spelling that is NOT its own canonical form.
+//
+// With "jarvis-dev" the test passes identically under canonicalizing code,
+// which makes it blind to the very change it exists to pin: that the admin's
+// exact spelling reaches the block row, the lock, and the audit trail untouched.
+// The confirmation must match that spelling, not a derived key.
 func TestProjectGovernanceService_BlockProjectValidatesAndAudits(t *testing.T) {
 	ctx := context.Background()
 	blockRepo := &repository.MockProjectBlockRepository{}
@@ -27,25 +34,26 @@ func TestProjectGovernanceService_BlockProjectValidatesAndAudits(t *testing.T) {
 	req := model.ProjectBlockRequest{
 		Action:       model.ProjectBlockActionBlock,
 		Reason:       "duplicate garbage project",
-		Confirmation: "jarvis-dev",
+		Confirmation: "Jarvis Dev",
 		ExportMarker: "export-2026-07-05",
 	}
 	blockedAt := time.Date(2026, 7, 5, 20, 0, 0, 0, time.UTC)
 
-	tx.ProjectKeyLocks.(*repository.MockProjectKeyLockRepository).On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil)
+	tx.ProjectKeyLocks.(*repository.MockProjectKeyLockRepository).On("LockProjectKeys", ctx, []string{"Jarvis Dev"}).Return(nil)
 	blockRepo.On("BlockProject", ctx, mock.MatchedBy(func(create model.ProjectBlockCreate) bool {
 		return create.Project == "Jarvis Dev" &&
-			create.CanonicalProjectKey == "jarvis-dev" &&
+			create.ProjectKey == "Jarvis Dev" &&
 			create.ActorUserID == "admin-1" &&
 			create.Reason == req.Reason &&
 			create.ExportMarker == req.ExportMarker &&
 			create.Action == model.ProjectBlockActionBlock
-	})).Return(&model.ProjectBlock{CommandID: "cmd-1", Project: "Jarvis Dev", CanonicalProjectKey: "jarvis-dev", Action: model.ProjectBlockActionBlock, Generation: 1, Reason: req.Reason, BlockedAt: blockedAt}, nil)
+	})).Return(&model.ProjectBlock{CommandID: "cmd-1", Project: "Jarvis Dev", ProjectKey: "Jarvis Dev", Action: model.ProjectBlockActionBlock, Generation: 1, Reason: req.Reason, BlockedAt: blockedAt}, nil)
 	auditRepo.On("Insert", ctx, mock.MatchedBy(func(entry *model.AuditEntry) bool {
 		return entry.Action == model.AuditActionProjectBlock &&
 			entry.Outcome == model.AuditOutcomeSuccess &&
 			entry.ActorUserID != nil && *entry.ActorUserID == "admin-1" &&
-			entry.Project != nil && *entry.Project == "jarvis-dev" &&
+			entry.Project != nil && *entry.Project == "Jarvis Dev" &&
+			entry.Metadata["project"] == "Jarvis Dev" &&
 			entry.Metadata["action"] == model.ProjectBlockActionBlock &&
 			entry.Metadata["generation"] == int64(1) &&
 			entry.Metadata["actor"] == "admin-1" &&
@@ -55,9 +63,32 @@ func TestProjectGovernanceService_BlockProjectValidatesAndAudits(t *testing.T) {
 	got, err := svc.BlockProject(ctx, actor, "Jarvis Dev", req)
 	require.NoError(t, err)
 	require.Equal(t, "cmd-1", got.CommandID)
-	require.Equal(t, "jarvis-dev", got.CanonicalProjectKey)
+	// The block row keeps the admin's display spelling as its key, so the row it
+	// quarantines is the row an admin named.
+	require.Equal(t, "Jarvis Dev", got.ProjectKey)
+	require.Equal(t, "Jarvis Dev", got.Project)
 	blockRepo.AssertExpectations(t)
 	auditRepo.AssertExpectations(t)
+}
+
+// TestProjectGovernanceService_BlockProjectRejectsAConfirmationOfADerivedKey
+// pins the other half: an admin who types the canonical form of a project whose
+// real spelling differs has NOT confirmed that project.
+func TestProjectGovernanceService_BlockProjectRejectsAConfirmationOfADerivedKey(t *testing.T) {
+	blockRepo := &repository.MockProjectBlockRepository{}
+	tx := repository.NewMockTxManager(nil, nil)
+	tx.ProjectBlocks = blockRepo
+	tx.ProjectKeyLocks = &repository.MockProjectKeyLockRepository{}
+	svc := service.NewProjectGovernanceService(blockRepo, nil, tx)
+
+	_, err := svc.BlockProject(context.Background(), model.AdminActor{UserID: "admin-1"}, "Jarvis Dev", model.ProjectBlockRequest{
+		Action:       model.ProjectBlockActionBlock,
+		Reason:       "duplicate garbage project",
+		Confirmation: "jarvis-dev",
+	})
+
+	require.ErrorIs(t, err, service.ErrProjectBlockInvalidRequest)
+	blockRepo.AssertNotCalled(t, "BlockProject", mock.Anything, mock.Anything)
 }
 
 func TestProjectGovernanceService_QuarantineProgressUsesReadOnlySnapshot(t *testing.T) {
@@ -65,15 +96,15 @@ func TestProjectGovernanceService_QuarantineProgressUsesReadOnlySnapshot(t *test
 	blockRepo := &repository.MockProjectBlockRepository{}
 	tx := repository.NewMockTxManager(nil, nil)
 	tx.ProjectBlocks = blockRepo
-	blockRepo.On("QuarantineProgress", ctx, "org-repo", int64(3), "", 20).Return(model.QuarantineProgressResponse{
-		CanonicalProjectKey: "org-repo", Generation: 3,
+	blockRepo.On("QuarantineProgress", ctx, "Org/Repo", int64(3), "", 20).Return(model.QuarantineProgressResponse{
+		ProjectKey: "Org/Repo", Generation: 3,
 		Totals:   model.QuarantineProgressTotals{Active: 1, Acknowledged: 1},
 		Progress: []model.QuarantineProgressRow{{Username: "ada", State: model.ProjectBlockAckApplied}},
 	}, nil)
 
 	got, err := service.NewProjectGovernanceService(blockRepo, nil, tx).QuarantineProgress(ctx, "Org/Repo", 3, "", 20)
 	require.NoError(t, err)
-	require.Equal(t, "org-repo", got.CanonicalProjectKey)
+	require.Equal(t, "Org/Repo", got.ProjectKey)
 	require.Equal(t, []model.QuarantineProgressRow{{Username: "ada", State: model.ProjectBlockAckApplied}}, got.Progress)
 	blockRepo.AssertExpectations(t)
 }
@@ -86,10 +117,10 @@ func TestProjectGovernanceService_BlockProjectReturnsAuditFailure(t *testing.T) 
 	tx.ProjectBlocks = blockRepo
 	tx.ProjectKeyLocks = &repository.MockProjectKeyLockRepository{}
 	svc := service.NewProjectGovernanceService(blockRepo, auditRepo, tx)
-	req := model.ProjectBlockRequest{Action: model.ProjectBlockActionBlock, Reason: "duplicate", Confirmation: "jarvis-dev", ExportMarker: "export-1"}
-	block := &model.ProjectBlock{CommandID: "cmd-1", Project: "Jarvis Dev", CanonicalProjectKey: "jarvis-dev", Reason: req.Reason, BlockedAt: time.Now().UTC()}
+	req := model.ProjectBlockRequest{Action: model.ProjectBlockActionBlock, Reason: "duplicate", Confirmation: "Jarvis Dev", ExportMarker: "export-1"}
+	block := &model.ProjectBlock{CommandID: "cmd-1", Project: "Jarvis Dev", ProjectKey: "Jarvis Dev", Reason: req.Reason, BlockedAt: time.Now().UTC()}
 
-	tx.ProjectKeyLocks.(*repository.MockProjectKeyLockRepository).On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil)
+	tx.ProjectKeyLocks.(*repository.MockProjectKeyLockRepository).On("LockProjectKeys", ctx, []string{"Jarvis Dev"}).Return(nil)
 	blockRepo.On("BlockProject", ctx, mock.AnythingOfType("model.ProjectBlockCreate")).Return(block, nil)
 	auditRepo.On("Insert", ctx, mock.AnythingOfType("*model.AuditEntry")).Return(errors.New("audit unavailable"))
 
@@ -108,9 +139,9 @@ func TestProjectGovernanceService_BlockProjectAuditFailureDoesNotLeaveActiveBloc
 	tx.ProjectKeyLocks = &repository.MockProjectKeyLockRepository{}
 	svc := service.NewProjectGovernanceService(outerBlockRepo, nil, tx)
 	req := model.ProjectBlockRequest{Action: model.ProjectBlockActionBlock, Reason: "duplicate", Confirmation: "jarvis-dev", ExportMarker: "export-1"}
-	block := &model.ProjectBlock{CommandID: "cmd-1", Project: "jarvis-dev", CanonicalProjectKey: "jarvis-dev", Reason: req.Reason, BlockedAt: time.Now().UTC()}
+	block := &model.ProjectBlock{CommandID: "cmd-1", Project: "jarvis-dev", ProjectKey: "jarvis-dev", Reason: req.Reason, BlockedAt: time.Now().UTC()}
 
-	tx.ProjectKeyLocks.(*repository.MockProjectKeyLockRepository).On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil)
+	tx.ProjectKeyLocks.(*repository.MockProjectKeyLockRepository).On("LockProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil)
 	txBlockRepo.On("BlockProject", ctx, mock.AnythingOfType("model.ProjectBlockCreate")).Return(block, nil)
 	txAuditRepo.On("Insert", ctx, mock.AnythingOfType("*model.AuditEntry")).Return(errors.New("audit unavailable"))
 
@@ -131,21 +162,47 @@ func TestProjectGovernanceService_AcknowledgeValidatesStatusAndCommand(t *testin
 	tx.ProjectKeyLocks = txLocks
 	svc := service.NewProjectGovernanceService(outerBlockRepo, nil, tx)
 	subject := model.ProjectBlockAckSubject{AuthSubject: "user-1", DaemonID: "daemon-1", Client: "hive-daemon"}
-	ack := model.ProjectBlockAck{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", AckToken: "ack-token-delivery", Status: model.ProjectBlockAckApplied, AckSubject: subject}
-	block := &model.ProjectBlock{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev"}
-	txLocks.On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
-	txBlockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(block, nil).Once()
-	txBlockRepo.On("GetAckDelivery", ctx, "jarvis-dev", "cmd-1", subject).Return(&model.ProjectBlockAckDelivery{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", AckToken: "ack-token-delivery", AckSubject: subject}, nil).Once()
+	ack := model.ProjectBlockAck{CommandID: "cmd-1", ProjectKey: "jarvis-dev", AckToken: "ack-token-delivery", Status: model.ProjectBlockAckApplied, AckSubject: subject}
+	block := &model.ProjectBlock{CommandID: "cmd-1", ProjectKey: "jarvis-dev"}
+	txLocks.On("LockProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
+	txBlockRepo.On("GetByProjectKey", ctx, "jarvis-dev").Return(block, nil).Once()
+	txBlockRepo.On("GetAckDelivery", ctx, "jarvis-dev", "cmd-1", subject).Return(&model.ProjectBlockAckDelivery{CommandID: "cmd-1", ProjectKey: "jarvis-dev", AckToken: "ack-token-delivery", AckSubject: subject}, nil).Once()
 	txBlockRepo.On("RecordAck", ctx, mock.MatchedBy(func(got model.ProjectBlockAck) bool {
-		return got.CommandID == ack.CommandID && got.CanonicalProjectKey == ack.CanonicalProjectKey && got.AckToken == ack.AckToken && got.Status == ack.Status && got.AckSubject == subject && !got.AppliedAt.IsZero()
-	})).Return(model.ProjectBlockAck{CommandID: ack.CommandID, CanonicalProjectKey: ack.CanonicalProjectKey, AckToken: ack.AckToken, Status: ack.Status, AppliedAt: time.Now().UTC()}, nil).Once()
+		return got.CommandID == ack.CommandID && got.ProjectKey == ack.ProjectKey && got.AckToken == ack.AckToken && got.Status == ack.Status && got.AckSubject == subject && !got.AppliedAt.IsZero()
+	})).Return(model.ProjectBlockAck{CommandID: ack.CommandID, ProjectKey: ack.ProjectKey, AckToken: ack.AckToken, Status: ack.Status, AppliedAt: time.Now().UTC()}, nil).Once()
 
 	got, err := svc.Acknowledge(ctx, ack)
 	require.NoError(t, err)
 	require.Equal(t, model.ProjectBlockAckApplied, got.Status)
 	require.True(t, tx.Committed)
-	outerBlockRepo.AssertNotCalled(t, "GetByCanonicalKey", mock.Anything, mock.Anything)
+	outerBlockRepo.AssertNotCalled(t, "GetByProjectKey", mock.Anything, mock.Anything)
 	txBlockRepo.AssertExpectations(t)
+}
+
+// TestProjectGovernanceService_AcknowledgeUsesTheProjectKeyVerbatim proves the
+// ack path carries the key the daemon was handed in its quarantine command,
+// unmodified. Rewriting it would look up a block nobody issued.
+func TestProjectGovernanceService_AcknowledgeUsesTheProjectKeyVerbatim(t *testing.T) {
+	ctx := context.Background()
+	blockRepo := &repository.MockProjectBlockRepository{}
+	locks := &repository.MockProjectKeyLockRepository{}
+	tx := repository.NewMockTxManager(nil, nil)
+	tx.ProjectBlocks = blockRepo
+	tx.ProjectKeyLocks = locks
+	svc := service.NewProjectGovernanceService(blockRepo, nil, tx)
+	ack := model.ProjectBlockAck{CommandID: "cmd-1", ProjectKey: " Jarvis_Dev ", AckToken: "token", Status: model.ProjectBlockAckApplied, AckSubject: model.ProjectBlockAckSubject{AuthSubject: "user-1"}}
+
+	locks.On("LockProjectKeys", ctx, []string{" Jarvis_Dev "}).Return(nil).Once()
+	blockRepo.On("GetByProjectKey", ctx, " Jarvis_Dev ").Return(&model.ProjectBlock{CommandID: "cmd-1", ProjectKey: " Jarvis_Dev "}, nil).Once()
+	blockRepo.On("GetAckDelivery", ctx, " Jarvis_Dev ", "cmd-1", ack.AckSubject).Return(&model.ProjectBlockAckDelivery{AckToken: "token"}, nil).Once()
+	blockRepo.On("RecordAck", ctx, mock.MatchedBy(func(got model.ProjectBlockAck) bool {
+		return got.ProjectKey == " Jarvis_Dev "
+	})).Return(model.ProjectBlockAck{CommandID: "cmd-1", ProjectKey: " Jarvis_Dev ", Status: model.ProjectBlockAckApplied}, nil).Once()
+
+	got, err := svc.Acknowledge(ctx, ack)
+	require.NoError(t, err)
+	require.Equal(t, " Jarvis_Dev ", got.ProjectKey)
+	blockRepo.AssertExpectations(t)
 }
 
 func TestProjectGovernanceService_AcknowledgeRejectsDifferentSignedSubject(t *testing.T) {
@@ -158,10 +215,10 @@ func TestProjectGovernanceService_AcknowledgeRejectsDifferentSignedSubject(t *te
 	svc := service.NewProjectGovernanceService(&repository.MockProjectBlockRepository{}, nil, tx)
 	deliverySubject := model.ProjectBlockAckSubject{AuthSubject: "user-1", DaemonID: "daemon-1", Client: "hive-daemon"}
 	attackerSubject := model.ProjectBlockAckSubject{AuthSubject: "user-2", DaemonID: "daemon-2", Client: "hive-daemon"}
-	ack := model.ProjectBlockAck{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", AckToken: "ack-token-delivery", Status: model.ProjectBlockAckApplied, AckSubject: attackerSubject}
-	block := &model.ProjectBlock{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev"}
-	txLocks.On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
-	txBlockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(block, nil).Once()
+	ack := model.ProjectBlockAck{CommandID: "cmd-1", ProjectKey: "jarvis-dev", AckToken: "ack-token-delivery", Status: model.ProjectBlockAckApplied, AckSubject: attackerSubject}
+	block := &model.ProjectBlock{CommandID: "cmd-1", ProjectKey: "jarvis-dev"}
+	txLocks.On("LockProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
+	txBlockRepo.On("GetByProjectKey", ctx, "jarvis-dev").Return(block, nil).Once()
 	txBlockRepo.On("GetAckDelivery", ctx, "jarvis-dev", "cmd-1", attackerSubject).Return(nil, repository.ErrNotFound).Once()
 	// A delivery exists for a different subject, but it must not authorize this caller.
 	_ = deliverySubject
@@ -182,14 +239,14 @@ func TestProjectGovernanceService_AcknowledgeAllowsSameAccountWithDifferentDaemo
 	svc := service.NewProjectGovernanceService(&repository.MockProjectBlockRepository{}, nil, tx)
 	deliverySubject := model.ProjectBlockAckSubject{AuthSubject: "user-1"}
 	ackSubject := model.ProjectBlockAckSubject{AuthSubject: "user-1", DaemonID: "daemon-after-reconfigure", Client: "hive-daemon"}
-	ack := model.ProjectBlockAck{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", AckToken: "account-token", Status: model.ProjectBlockAckApplied, AckSubject: ackSubject}
-	block := &model.ProjectBlock{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev"}
-	txLocks.On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
-	txBlockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(block, nil).Once()
-	txBlockRepo.On("GetAckDelivery", ctx, "jarvis-dev", "cmd-1", ackSubject).Return(&model.ProjectBlockAckDelivery{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", AckToken: "account-token", AckSubject: deliverySubject}, nil).Once()
+	ack := model.ProjectBlockAck{CommandID: "cmd-1", ProjectKey: "jarvis-dev", AckToken: "account-token", Status: model.ProjectBlockAckApplied, AckSubject: ackSubject}
+	block := &model.ProjectBlock{CommandID: "cmd-1", ProjectKey: "jarvis-dev"}
+	txLocks.On("LockProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
+	txBlockRepo.On("GetByProjectKey", ctx, "jarvis-dev").Return(block, nil).Once()
+	txBlockRepo.On("GetAckDelivery", ctx, "jarvis-dev", "cmd-1", ackSubject).Return(&model.ProjectBlockAckDelivery{CommandID: "cmd-1", ProjectKey: "jarvis-dev", AckToken: "account-token", AckSubject: deliverySubject}, nil).Once()
 	txBlockRepo.On("RecordAck", ctx, mock.MatchedBy(func(got model.ProjectBlockAck) bool {
 		return got.CommandID == ack.CommandID && got.AckToken == ack.AckToken && got.AckSubject == ackSubject
-	})).Return(model.ProjectBlockAck{CommandID: ack.CommandID, CanonicalProjectKey: ack.CanonicalProjectKey, AckToken: ack.AckToken, Status: ack.Status, AckSubject: ackSubject, AppliedAt: time.Now().UTC()}, nil).Once()
+	})).Return(model.ProjectBlockAck{CommandID: ack.CommandID, ProjectKey: ack.ProjectKey, AckToken: ack.AckToken, Status: ack.Status, AckSubject: ackSubject, AppliedAt: time.Now().UTC()}, nil).Once()
 
 	got, err := svc.Acknowledge(ctx, ack)
 	require.NoError(t, err)
@@ -205,10 +262,10 @@ func TestProjectGovernanceService_AcknowledgeRejectsReblockedCommandUnderLock(t 
 	tx.ProjectBlocks = txBlockRepo
 	tx.ProjectKeyLocks = txLocks
 	svc := service.NewProjectGovernanceService(&repository.MockProjectBlockRepository{}, nil, tx)
-	ack := model.ProjectBlockAck{CommandID: "old-command", CanonicalProjectKey: "jarvis-dev", AckToken: "old-token", Status: model.ProjectBlockAckApplied, AckSubject: model.ProjectBlockAckSubject{AuthSubject: "user-1", DaemonID: "daemon-1", Client: "hive-daemon"}}
-	reblocked := &model.ProjectBlock{CommandID: "new-command", CanonicalProjectKey: "jarvis-dev"}
-	txLocks.On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
-	txBlockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(reblocked, nil).Once()
+	ack := model.ProjectBlockAck{CommandID: "old-command", ProjectKey: "jarvis-dev", AckToken: "old-token", Status: model.ProjectBlockAckApplied, AckSubject: model.ProjectBlockAckSubject{AuthSubject: "user-1", DaemonID: "daemon-1", Client: "hive-daemon"}}
+	reblocked := &model.ProjectBlock{CommandID: "new-command", ProjectKey: "jarvis-dev"}
+	txLocks.On("LockProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
+	txBlockRepo.On("GetByProjectKey", ctx, "jarvis-dev").Return(reblocked, nil).Once()
 
 	_, err := svc.Acknowledge(ctx, ack)
 
@@ -224,11 +281,11 @@ func TestProjectGovernanceService_AcknowledgeRejectsForgedCommand(t *testing.T) 
 	tx.ProjectBlocks = blockRepo
 	tx.ProjectKeyLocks = &repository.MockProjectKeyLockRepository{}
 	svc := service.NewProjectGovernanceService(blockRepo, nil, tx)
-	ack := model.ProjectBlockAck{CommandID: "forged-cmd", CanonicalProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: model.ProjectBlockAckApplied, AckSubject: model.ProjectBlockAckSubject{AuthSubject: "user-1", DaemonID: "daemon-1", Client: "hive-daemon"}}
-	block := &model.ProjectBlock{CommandID: "real-cmd", AckToken: "ack-token-1", Project: "Jarvis Dev", CanonicalProjectKey: "jarvis-dev", Reason: "duplicate"}
+	ack := model.ProjectBlockAck{CommandID: "forged-cmd", ProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: model.ProjectBlockAckApplied, AckSubject: model.ProjectBlockAckSubject{AuthSubject: "user-1", DaemonID: "daemon-1", Client: "hive-daemon"}}
+	block := &model.ProjectBlock{CommandID: "real-cmd", AckToken: "ack-token-1", Project: "jarvis-dev", ProjectKey: "jarvis-dev", Reason: "duplicate"}
 
-	tx.ProjectKeyLocks.(*repository.MockProjectKeyLockRepository).On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
-	blockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(block, nil)
+	tx.ProjectKeyLocks.(*repository.MockProjectKeyLockRepository).On("LockProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
+	blockRepo.On("GetByProjectKey", ctx, "jarvis-dev").Return(block, nil)
 
 	_, err := svc.Acknowledge(ctx, ack)
 	require.ErrorIs(t, err, service.ErrProjectBlockInvalidRequest)
@@ -243,12 +300,12 @@ func TestProjectGovernanceService_AcknowledgeRejectsForgedAckToken(t *testing.T)
 	tx.ProjectKeyLocks = &repository.MockProjectKeyLockRepository{}
 	svc := service.NewProjectGovernanceService(blockRepo, nil, tx)
 	subject := model.ProjectBlockAckSubject{AuthSubject: "user-1", DaemonID: "daemon-1", Client: "hive-daemon"}
-	ack := model.ProjectBlockAck{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", AckToken: "stolen-or-guessed-token", Status: model.ProjectBlockAckApplied, AckSubject: subject}
-	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "real-token-only-sync-caller-saw", Project: "Jarvis Dev", CanonicalProjectKey: "jarvis-dev", Reason: "duplicate"}
+	ack := model.ProjectBlockAck{CommandID: "cmd-1", ProjectKey: "jarvis-dev", AckToken: "stolen-or-guessed-token", Status: model.ProjectBlockAckApplied, AckSubject: subject}
+	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "real-token-only-sync-caller-saw", Project: "jarvis-dev", ProjectKey: "jarvis-dev", Reason: "duplicate"}
 
-	tx.ProjectKeyLocks.(*repository.MockProjectKeyLockRepository).On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
-	blockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(block, nil)
-	blockRepo.On("GetAckDelivery", ctx, "jarvis-dev", "cmd-1", subject).Return(&model.ProjectBlockAckDelivery{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", AckToken: "real-token-only-sync-caller-saw", AckSubject: subject}, nil)
+	tx.ProjectKeyLocks.(*repository.MockProjectKeyLockRepository).On("LockProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
+	blockRepo.On("GetByProjectKey", ctx, "jarvis-dev").Return(block, nil)
+	blockRepo.On("GetAckDelivery", ctx, "jarvis-dev", "cmd-1", subject).Return(&model.ProjectBlockAckDelivery{CommandID: "cmd-1", ProjectKey: "jarvis-dev", AckToken: "real-token-only-sync-caller-saw", AckSubject: subject}, nil)
 
 	_, err := svc.Acknowledge(ctx, ack)
 	require.ErrorIs(t, err, service.ErrProjectBlockInvalidRequest)
@@ -259,14 +316,16 @@ func TestProjectGovernanceService_StatusIncludesLatestAck(t *testing.T) {
 	ctx := context.Background()
 	blockRepo := &repository.MockProjectBlockRepository{}
 	svc := service.NewProjectGovernanceService(blockRepo, nil, nil)
-	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "Jarvis Dev", CanonicalProjectKey: "jarvis-dev", Reason: "duplicate", BlockedAt: time.Now().UTC()}
-	ack := &model.ProjectBlockAck{CommandID: "cmd-1", CanonicalProjectKey: "jarvis-dev", AckToken: "ack-token-1", Status: model.ProjectBlockAckApplied}
+	block := &model.ProjectBlock{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "Jarvis Dev", ProjectKey: "Jarvis Dev", Reason: "duplicate", BlockedAt: time.Now().UTC()}
+	ack := &model.ProjectBlockAck{CommandID: "cmd-1", ProjectKey: "Jarvis Dev", AckToken: "ack-token-1", Status: model.ProjectBlockAckApplied}
 
-	blockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(block, nil)
-	blockRepo.On("LatestAckForCommand", ctx, "jarvis-dev", "cmd-1").Return(ack, nil)
+	blockRepo.On("GetByProjectKey", ctx, "Jarvis Dev").Return(block, nil)
+	blockRepo.On("LatestAckForCommand", ctx, "Jarvis Dev", "cmd-1").Return(ack, nil)
 
 	status, err := svc.Status(ctx, "Jarvis Dev")
 	require.NoError(t, err)
+	require.Equal(t, "Jarvis Dev", status.Project, "status reports the spelling the block row stores")
+	require.Equal(t, "Jarvis Dev", status.ProjectKey)
 	require.NotNil(t, status.Ack)
 	require.Equal(t, model.ProjectBlockAckApplied, status.Ack.Status)
 	body, err := json.Marshal(status)
@@ -278,10 +337,10 @@ func TestProjectGovernanceService_StatusIgnoresStaleAckForPreviousCommand(t *tes
 	ctx := context.Background()
 	blockRepo := &repository.MockProjectBlockRepository{}
 	svc := service.NewProjectGovernanceService(blockRepo, nil, nil)
-	block := &model.ProjectBlock{CommandID: "new-command", Project: "Jarvis Dev", CanonicalProjectKey: "jarvis-dev", Reason: "duplicate", BlockedAt: time.Now().UTC()}
+	block := &model.ProjectBlock{CommandID: "new-command", Project: "Jarvis Dev", ProjectKey: "Jarvis Dev", Reason: "duplicate", BlockedAt: time.Now().UTC()}
 
-	blockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(block, nil)
-	blockRepo.On("LatestAckForCommand", ctx, "jarvis-dev", "new-command").Return(nil, repository.ErrNotFound)
+	blockRepo.On("GetByProjectKey", ctx, "Jarvis Dev").Return(block, nil)
+	blockRepo.On("LatestAckForCommand", ctx, "Jarvis Dev", "new-command").Return(nil, repository.ErrNotFound)
 
 	status, err := svc.Status(ctx, "Jarvis Dev")
 	require.NoError(t, err)
@@ -323,8 +382,8 @@ func TestProjectGovernanceService_AuditRecordsTruthfulQuarantineTransition(t *te
 	svc := service.NewProjectGovernanceService(blockRepo, auditRepo, tx)
 	req := model.ProjectBlockRequest{Action: model.ProjectBlockActionBlock, Reason: "policy", Confirmation: "jarvis-dev"}
 
-	tx.ProjectKeyLocks.(*repository.MockProjectKeyLockRepository).On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil)
-	blockRepo.On("BlockProject", ctx, mock.AnythingOfType("model.ProjectBlockCreate")).Return(&model.ProjectBlock{CommandID: "cmd-1", Project: "jarvis-dev", CanonicalProjectKey: "jarvis-dev", Action: model.ProjectBlockActionBlock, Generation: 1}, nil)
+	tx.ProjectKeyLocks.(*repository.MockProjectKeyLockRepository).On("LockProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil)
+	blockRepo.On("BlockProject", ctx, mock.AnythingOfType("model.ProjectBlockCreate")).Return(&model.ProjectBlock{CommandID: "cmd-1", Project: "jarvis-dev", ProjectKey: "jarvis-dev", Action: model.ProjectBlockActionBlock, Generation: 1}, nil)
 	auditRepo.On("Insert", ctx, mock.MatchedBy(func(entry *model.AuditEntry) bool {
 		return entry.Metadata["action"] == model.ProjectBlockActionBlock &&
 			entry.Metadata["generation"] == int64(1) &&

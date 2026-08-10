@@ -19,6 +19,7 @@ func startPostgresWithProjectSources(t *testing.T) (*pgxpool.Pool, func()) {
 	require.NoError(t, RunMigrations(pool, migrations.MemoryMutationsSQL), "failed to run migration 005")
 	require.NoError(t, RunMigrations(pool, migrations.DropTopicKeyUniqueConstraintSQL), "failed to run migration 006")
 	require.NoError(t, RunMigrations(pool, migrations.SyncAttemptLogsSQL), "failed to run migration 007")
+	require.NoError(t, RunMigrations(pool, migrations.CanonicalProjectRegistrySQL), "failed to run canonical project registry migration")
 
 	return pool, cleanup
 }
@@ -75,6 +76,74 @@ func TestPostgresProjectRepository_ListAggregates(t *testing.T) {
 	assertTimePtrEqual(t, latestSuccessEnd, byName["health-project"].LastSyncAt, "latest sync activity should use ended_at when present")
 }
 
+// TestPostgresProjectRepository_ListAggregatesNamesProjectsByTheStoredSpelling
+// proves the aggregate is grouped AND named by the literal on each row.
+//
+// Under this contract the name IS the key. Every other project-scoped call
+// takes a project string and compares it to the stored literal with plain
+// equality, so a name the dashboard shows that is not that literal is a name
+// nothing else in the system will answer to.
+func TestPostgresProjectRepository_ListAggregatesNamesProjectsByTheStoredSpelling(t *testing.T) {
+	pool, cleanup := startPostgresWithProjectSources(t)
+	defer cleanup()
+	require.NoError(t, RunMigrations(pool, migrations.CanonicalProjectRegistrySQL))
+
+	ctx := context.Background()
+	base := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	insertProjectSession(t, pool, "aggregate-variant-session", " Foo_Bar ", base, nil)
+	insertProjectMemory(t, pool, "00000000-0000-0000-0000-000000000203", " Foo_Bar ", "aggregate-variant-session", base, base, nil)
+	insertProjectSyncAttempt(t, pool, "aggregate-variant-sync", " Foo_Bar ", model.SyncAttemptOutcomeSuccess, base, nil)
+
+	// A spelling the daemon would fold onto the same key. It is a different
+	// project here, and it borrows neither the aggregate nor the name.
+	insertProjectSession(t, pool, "aggregate-sibling-session", "foo-bar", base, nil)
+
+	aggregates, err := NewPostgresProjectRepository(pool).ListAggregates(ctx)
+	require.NoError(t, err)
+	require.Len(t, aggregates, 2, "two spellings are two projects")
+
+	byName := projectAggregatesByName(aggregates)
+	named, ok := byName[" Foo_Bar "]
+	require.True(t, ok, "the stored literal is the project name, not a registered display spelling")
+	assert.EqualValues(t, 1, named.MemoryCount)
+	assert.EqualValues(t, 1, named.SessionCount)
+	assertTimePtrEqual(t, base, named.LastMemoryAt)
+	assertTimePtrEqual(t, base, named.LastSessionAt)
+	assertTimePtrEqual(t, base, named.LastSyncAt)
+	require.Equal(t, syncOutcomePtr(model.SyncAttemptOutcomeSuccess), named.LatestSyncOutcome)
+
+	sibling, ok := byName["foo-bar"]
+	require.True(t, ok, "a differently spelled project is its own aggregate")
+	assert.EqualValues(t, 0, sibling.MemoryCount)
+	assert.EqualValues(t, 1, sibling.SessionCount)
+}
+
+// TestPostgresProjectRepository_ListAggregatesOrdersByTheProjectKey pins a
+// deterministic order. The row literal is unique across the result — the
+// projects CTE is a UNION over it — so ordering by it is total. Nothing else
+// about a project is unique, so ordering by anything else leaves ties the
+// database may break either way between two calls.
+func TestPostgresProjectRepository_ListAggregatesOrdersByTheProjectKey(t *testing.T) {
+	pool, cleanup := startPostgresWithProjectSources(t)
+	defer cleanup()
+	require.NoError(t, RunMigrations(pool, migrations.CanonicalProjectRegistrySQL))
+
+	ctx := context.Background()
+	base := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	for _, project := range []string{"zulu", "alpha", "mike"} {
+		insertProjectSession(t, pool, "order-"+project, project, base, nil)
+	}
+
+	aggregates, err := NewPostgresProjectRepository(pool).ListAggregates(ctx)
+	require.NoError(t, err)
+
+	names := make([]string, 0, len(aggregates))
+	for _, aggregate := range aggregates {
+		names = append(names, aggregate.Name)
+	}
+	require.Equal(t, []string{"alpha", "mike", "zulu"}, names)
+}
+
 func projectAggregatesByName(records []model.ProjectAggregate) map[string]model.ProjectAggregate {
 	byName := make(map[string]model.ProjectAggregate, len(records))
 	for _, record := range records {
@@ -86,8 +155,8 @@ func projectAggregatesByName(records []model.ProjectAggregate) map[string]model.
 func insertProjectSession(t *testing.T, pool *pgxpool.Pool, id, project string, startedAt time.Time, endedAt *time.Time) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(), `
-		INSERT INTO sessions (id, project, dev_id, client, started_at, ended_at)
-		VALUES ($1, $2, 'tester', 'test', $3, $4)`, id, project, startedAt, endedAt)
+		INSERT INTO sessions (id, project, dev_id, client, started_at, ended_at, created_at, updated_at)
+		VALUES ($1, $2, 'tester', 'test', $3, $4, $3, $3)`, id, project, startedAt, endedAt)
 	require.NoError(t, err)
 }
 
@@ -112,4 +181,8 @@ func assertTimePtrEqual(t *testing.T, want time.Time, got *time.Time, msgAndArgs
 	t.Helper()
 	require.NotNil(t, got, msgAndArgs...)
 	assert.True(t, got.Equal(want), "got %s want %s", got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
+}
+
+func syncOutcomePtr(outcome model.SyncAttemptOutcome) *model.SyncAttemptOutcome {
+	return &outcome
 }

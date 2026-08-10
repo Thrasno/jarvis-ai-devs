@@ -131,8 +131,8 @@ func TestSyncService_SyncPreservesMutationResultsAfterPull(t *testing.T) {
 	tx.Memory, tx.Prompt, tx.Session, tx.ProjectBlocks, tx.ProjectKeyLocks = mem, prompt, session, blocks, locks
 	svc := service.NewSyncService(mem, prompt, session, nil, blocks, tx)
 	mutation := model.MutationEnvelope{EventID: "event-1", EntityType: model.MutationEntityMemory, EntitySyncID: "memory-1", Project: "jarvis-dev", Op: model.MutationOpDelete}
-	locks.On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil)
-	blocks.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(nil, repository.ErrNotFound)
+	locks.On("LockProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil)
+	blocks.On("GetByProjectKey", ctx, "jarvis-dev").Return(nil, repository.ErrNotFound)
 	mem.On("ApplyMemoryMutation", ctx, mutation).Return(&model.MutationApplyResult{EventID: mutation.EventID, Applied: true}, nil)
 	mem.On("ListMemoryMutations", ctx, "jarvis-dev", model.MutationCursor{}, mock.Anything).Return(nil, nil)
 	audit.On("Insert", ctx, mock.Anything).Return(nil)

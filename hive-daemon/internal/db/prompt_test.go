@@ -412,7 +412,7 @@ func TestSavePrompt_TwoCalls_ProduceDistinctSyncIDs(t *testing.T) {
 
 // ─── T-DB-3: ListRecentPrompts tests ──────────────────────────────────────
 
-func TestListRecentPrompts_EmptyProject_ReturnsNil(t *testing.T) {
+func TestListRecentPrompts_EmptyProject_ReturnsGlobalEmpty(t *testing.T) {
 	d, err := db.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -423,8 +423,8 @@ func TestListRecentPrompts_EmptyProject_ReturnsNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result != nil {
-		t.Errorf("expected nil for empty project, got %v", result)
+	if len(result) != 0 {
+		t.Errorf("expected no global prompts, got %v", result)
 	}
 }
 
@@ -473,8 +473,8 @@ func TestListRecentPrompts_ReturnsPromptsSavedForProject(t *testing.T) {
 		t.Errorf("expected 3 prompts for proj-X, got %d", len(result))
 	}
 	for _, p := range result {
-		if p.Project != "proj-X" {
-			t.Errorf("expected project 'proj-X', got %q", p.Project)
+		if p.Project != "proj-x" {
+			t.Errorf("expected project 'proj-x', got %q", p.Project)
 		}
 	}
 }
@@ -644,8 +644,8 @@ func TestGetUnsyncedPrompts_ReturnsOnlyUnsyncedForProject(t *testing.T) {
 	if result[0].SyncedAt != nil {
 		t.Error("expected SyncedAt == nil for unsynced prompt")
 	}
-	if result[0].Project != "proj-A" {
-		t.Errorf("expected project 'proj-A', got %q", result[0].Project)
+	if result[0].Project != "proj-a" {
+		t.Errorf("expected project 'proj-a', got %q", result[0].Project)
 	}
 }
 

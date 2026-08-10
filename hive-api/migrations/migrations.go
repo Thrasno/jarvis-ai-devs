@@ -112,3 +112,67 @@ var QuarantineContractSQL string
 //
 //go:embed 018_distributed_quarantine.sql
 var DistributedQuarantineSQL string
+
+// CanonicalProjectRegistrySQL is migration 019. The API backfills this additive
+// registry through the shared Go canonicalizer after applying the schema.
+//
+//go:embed 019_canonical_project_identity.sql
+var CanonicalProjectRegistrySQL string
+
+// DropProjectIdentityFoldsSQL is migration 021. It removes the spelling registry
+// table and the SQL key function, the two schema constructs that could derive
+// project identity behind the daemon's back.
+//
+//go:embed 021_drop_project_identity_folds.sql
+var DropProjectIdentityFoldsSQL string
+
+// DropProjectIdentityRegistrySQL is migration 022. It removes project_identities,
+// the registry whose only reader turned an unlisted project into a 404 — a
+// whitelist the API has no business keeping.
+//
+//go:embed 022_drop_project_identity_registry.sql
+var DropProjectIdentityRegistrySQL string
+
+// ReprojectMutationSQL is migration 023. It widens the memory_mutations op
+// constraint with 'reproject' and adds the column that carries its payload, so
+// the daemon's decision to rename a project can reach the server as a mutation
+// instead of never arriving at all.
+//
+//go:embed 023_reproject_mutation.sql
+var ReprojectMutationSQL string
+
+// Ordered returns every migration in the order the server applies it at boot.
+//
+// This module has no migration ledger: each boot replays the whole slice from
+// the start, so a file's effect is only final if no earlier file undoes it. That
+// makes the ORDER part of the contract, not an implementation detail of main.
+//
+// It lives here so a test can exercise the set the server actually runs. A test
+// that hardcodes its own subset proves nothing about the last file in this list,
+// which is exactly how a drop migration came to be covered by no test at all.
+func Ordered() []string {
+	return []string{
+		InitialSQL,
+		UserPromptsSQL,
+		SessionsSQL,
+		AuditLogsSQL,
+		MemoryMutationsSQL,
+		DropTopicKeyUniqueConstraintSQL,
+		SyncAttemptLogsSQL,
+		ActivityFeedIndexSQL,
+		MemoryDiscoveryIndexesSQL,
+		PullCursorIndexesSQL,
+		ProjectScopedPullCursorIndexesSQL,
+		ProjectBlocksSQL,
+		ProjectBlockAckSubjectsSQL,
+		UserSecurityVersionSQL,
+		SyncAttemptPortalUsersSQL,
+		SyncAttemptUserProjectionSQL,
+		QuarantineContractSQL,
+		DistributedQuarantineSQL,
+		CanonicalProjectRegistrySQL,
+		DropProjectIdentityFoldsSQL,
+		DropProjectIdentityRegistrySQL,
+		ReprojectMutationSQL,
+	}
+}

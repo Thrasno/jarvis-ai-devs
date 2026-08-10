@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -22,10 +24,23 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	dbPath := dbFilePath()
+	restored, restoreErr := governance.ExecuteScheduledRestore(rootCtx, dbPath)
+	if err := pendingRestoreStartupError(restored, restoreErr, dbPath); err != nil {
+		logger.Log.Fatalf("pending migration restore: %v", err)
+	}
+	if restoreErr != nil {
+		logger.Log.Printf("pending migration restore: %v", restoreErr)
+	} else if restored {
+		logger.Log.Printf("restored pending migration backup before opening database")
+	}
 
 	store, err := db.Open(dbPath)
 	if err != nil {
@@ -51,6 +66,10 @@ func main() {
 	} else {
 		logger.Log.Printf("sync desactivado (define HIVE_API_URL/HIVE_API_EMAIL/HIVE_API_PASSWORD o crea ~/.jarvis/sync.json)")
 	}
+	gate := runStartupMigration(rootCtx, store, dbPath)
+	if err := gate.Check(); err != nil {
+		logger.Log.Printf("project identity migration: %v", err)
+	}
 
 	httpDone := make(chan struct{})
 	go func() {
@@ -60,6 +79,12 @@ func main() {
 		configSvc := httpapi.NewSyncServiceAdapter(hivesync.NewService())
 		healthSvc := httpapi.NewHealthServiceAdapter(hivesync.NewHealthService(store, nil))
 		srv := httpapi.NewServerWithAll(httpAddr(), store, store, govSvc, configSvc, healthSvc, store)
+		srv.SetMigrationGate(gate)
+		srv.SetMigrationRetry(stop)
+		srv.SetMigrationRestore(func(_ context.Context, req governance.RestoreRequest) error {
+			return governance.ScheduleRestore(dbPath, req)
+		})
+		srv.SetMigrationIdentityResolver(newMigrationIdentityResolver(store, gate))
 		if err := srv.Start(rootCtx); err != nil {
 			logger.Log.Printf("http server stopped: %v (mcp continues)", err)
 		}
@@ -73,7 +98,7 @@ func main() {
 		logger.Log.Printf("auto-closed %d stale session(s)", closed)
 	}
 
-	server := hivemcp.NewServer(store, store, syncer, cfg, store)
+	server := hivemcp.NewServerWithMigrationGate(store, store, syncer, cfg, store, gate)
 
 	runErr := server.Run(rootCtx, &sdkmcp.StdioTransport{})
 	stop()
@@ -81,9 +106,56 @@ func main() {
 	// Always wait for HTTP goroutine before closing DB or exiting.
 	<-httpDone
 
-	if runErr != nil {
-		logger.Log.Fatalf("server stopped: %v", runErr)
+	if isCleanServerShutdown(rootCtx, runErr) {
+		return 0
 	}
+	if runErr != nil {
+		logger.Log.Printf("server stopped: %v", runErr)
+		return 1
+	}
+	return 0
+}
+
+// pendingRestoreStartupError reports the restore outcomes the daemon must not
+// survive. A restore that replaced the live database but could not clear its own
+// request would run again on the next start and discard everything this session
+// writes; a local-first product must fail loudly there instead of serving. Every
+// other failure left the live database untouched, so startup continues and the
+// operator still sees the logged error.
+//
+// The stop can be permanent: if the completion marker could not be written at
+// all for a lasting reason (a full or read-only ~/.jarvis), every following
+// start replays the same restore and stops again. It can also be a single stop:
+// when only the marker's durability flush failed, the rename already put the
+// marker on disk and the next start short-circuits on it and serves normally.
+// The message reports the replay as possible rather than certain, because an
+// operator told to expect a permanent stop that never returns stops trusting
+// the line that does mean it. Deleting the request file is correct either way,
+// so this message names that absolute path and the step.
+func pendingRestoreStartupError(restored bool, err error, dbPath string) error {
+	if !restored || !errors.Is(err, governance.ErrPendingRestoreReplayable) {
+		return nil
+	}
+	return fmt.Errorf(
+		"%w; while this request is on disk a following start can replay this restore and stop here again, discarding whatever was written in between; to recover, stop the daemon and delete %s, then start it again",
+		err,
+		absolutePathForOperator(governance.PendingRestorePath(dbPath)),
+	)
+}
+
+// absolutePathForOperator resolves a path the operator has to act on. HIVE_DB_PATH
+// may be relative, and this instruction is read from a log rather than from the
+// daemon's working directory.
+func absolutePathForOperator(path string) string {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return absolute
+}
+
+func isCleanServerShutdown(ctx context.Context, runErr error) bool {
+	return ctx.Err() != nil && errors.Is(runErr, context.Canceled)
 }
 
 // httpAddr returns the address for the HTTP server, preferring HIVE_HTTP_PORT env var
@@ -104,6 +176,119 @@ func httpAddr() string {
 // stale sessions that were auto-closed. Extracted for testability.
 func runStartup(store *db.DB) (int64, error) {
 	return store.AutoCloseStale(24*time.Hour, time.Now)
+}
+
+// newMigrationIdentityResolver binds resolution to the migration plan the
+// operator was shown. The preflight-conflict path never mutates the database and
+// therefore never creates a rollback archive, so a backup id can never authorize
+// resolution there; the plan fingerprint is the invariant the guard wants.
+func newMigrationIdentityResolver(store *db.DB, gate *project.MigrationGate) func(context.Context, project.IdentityResolutionRequest) error {
+	return func(ctx context.Context, req project.IdentityResolutionRequest) error {
+		status := gate.Status()
+		if status.PlanFingerprint == "" || req.PlanFingerprint != status.PlanFingerprint {
+			return project.ErrIdentityResolutionStale
+		}
+		return store.ResolveProjectIdentityConflict(ctx, req.SourceProject, req.TargetProject)
+	}
+}
+
+func runStartupMigration(ctx context.Context, store *db.DB, dbPath string) *project.MigrationGate {
+	backups := governance.NewSQLiteBackupStore(dbPath, "", store.RawDB())
+	return runStartupMigrationWithBackup(ctx, store, func(ctx context.Context, plan db.ProjectMigrationPlan) error {
+		return governance.ExecuteProjectMigrationWithBackup(ctx, store, plan, backups)
+	}, backups)
+}
+
+// migrationBackupIDForPlan returns the archive that rolls back the plan this
+// block reports, or empty when the plan never reached a mutation and therefore
+// never took one.
+//
+// The backup is identified by the plan it was taken for rather than by being new
+// on disk. A blocked migration is re-attempted on every daemon start and reuses
+// the archive it already took, so "created during this run" stops being true
+// from the second start onward while the validated archive is still sitting
+// there. Binding to the fingerprint also keeps BackupID and PlanFingerprint
+// describing the same plan after a contention retry re-plans: an archive taken
+// for a superseded plan no longer matches the live database and must not be
+// offered as its rollback. Unrelated backups carry no migration fingerprint at
+// all and stay unreportable.
+func migrationBackupIDForPlan(ctx context.Context, backups *governance.BackupStore, planFingerprint string) string {
+	backup, found, err := backups.MigrationBackupForPlan(ctx, planFingerprint)
+	if err != nil || !found {
+		return ""
+	}
+	return backup.ID
+}
+
+func planAndExecuteMigration(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error) (db.ProjectMigrationPlan, error) {
+	plan, err := db.ReadProjectMigrationPlan(ctx, store)
+	if err == nil && !plan.Executable {
+		err = db.ErrProjectMigrationPlanUnsafe
+	}
+	if err == nil {
+		err = execute(ctx, plan)
+	}
+	return plan, err
+}
+
+func runStartupMigrationWith(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error) *project.MigrationGate {
+	return runStartupMigrationWithBackup(ctx, store, execute, nil)
+}
+
+// logProjectMigrationSummary reports a migration that actually moved rows.
+//
+// A successful migration used to be entirely silent, which is exactly what makes
+// a slow one undiagnosable: this runs before the MCP transport is served, so an
+// operator staring at a client that has not come up cannot tell a hung daemon
+// from a working one. "migrated 5,200 rows in 2.1s" turns "did it hang?" into
+// "it is working".
+//
+// A no-op stays quiet — every daemon start after the first one is a no-op, and a
+// line per start about zero work trains an operator to ignore the line that
+// matters. logger.Log, not stdout: this is an MCP stdio server.
+func logProjectMigrationSummary(summary db.ProjectMigrationSummary, elapsed time.Duration) {
+	if !summary.Ran {
+		return
+	}
+	logger.Log.Printf(
+		"project identity migration: rows rekeyed=%d, reprojects enqueued=%d, sessions re-queued=%d, prompts re-queued=%d in %s",
+		summary.RowsRekeyed, summary.ReprojectsEnqueued, summary.SessionsRequeued, summary.PromptsRequeued,
+		elapsed.Round(time.Millisecond))
+}
+
+func runStartupMigrationWithBackup(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error, backups *governance.BackupStore) *project.MigrationGate {
+	started := time.Now()
+	plan, err := planAndExecuteMigration(ctx, store, execute)
+	if db.IsProjectMigrationContention(err) {
+		// Another daemon process was migrating the same database. Its
+		// transaction has committed or rolled back by now, so re-planning
+		// against the current state either finds nothing left to do or applies
+		// cleanly; only a second failure is a real block on this session.
+		plan, err = planAndExecuteMigration(ctx, store, execute)
+	}
+	if err == nil {
+		logProjectMigrationSummary(store.LastProjectMigrationSummary(), time.Since(started))
+		return project.NewMigrationGate(project.MigrationStatus{State: project.MigrationStateReady})
+	}
+	status := project.MigrationStatus{
+		State:           project.MigrationStateBlocked,
+		Reason:          err.Error(),
+		Continuation:    "hive project identity status",
+		PlanFingerprint: plan.Fingerprint,
+	}
+	if backups != nil {
+		status.BackupID = migrationBackupIDForPlan(ctx, backups, plan.Fingerprint)
+	}
+	if encoded, marshalErr := json.Marshal(status); marshalErr == nil {
+		if _, warningErr := store.SaveHiveWarning(db.HiveWarningInput{
+			Severity: "error",
+			Source:   "startup/project-identity-migration",
+			Message:  string(encoded),
+		}); warningErr != nil {
+			logger.Log.Printf("could not persist project migration block: %v", warningErr)
+		}
+	}
+	return project.NewMigrationGate(status)
 }
 
 // applyStartupSyncConfig loads sync configuration. On error it records a

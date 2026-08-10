@@ -327,6 +327,142 @@ func TestHiveProjectMergeCommandRejectsNonExactConfirmationBeforeDaemonCall(t *t
 	}
 }
 
+func TestHiveProjectIdentityCommandsExposeBlockedRecovery(t *testing.T) {
+	client := &fakeHiveClient{identityStatus: hiveclient.MigrationIdentityStatus{
+		State:           "migration-blocked",
+		Reason:          "duplicate canonical project",
+		BackupID:        "migration-backup-1",
+		PlanFingerprint: "migration-plan-1",
+		Continuation:    "hive project identity resolve then retry",
+		Conflicts:       []string{"project_aliases foo-bar"},
+		Variants:        []string{"Foo-Bar", "foo/bar"},
+	}}
+
+	status, err := executeHiveCommand(t, NewRootCommand(client), "project", "identity", "status")
+	if err != nil {
+		t.Fatalf("identity status: %v", err)
+	}
+	for _, want := range []string{"state=migration-blocked", "reason=duplicate canonical project", "backup=migration-backup-1", "plan=migration-plan-1", "conflict=project_aliases foo-bar", "variant=Foo-Bar", "continuation=hive project identity status", "Choose explicit --source and --target"} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("identity status output = %q, want %q", status, want)
+		}
+	}
+	if strings.Contains(status, " then ") {
+		t.Fatalf("identity status output = %q, must not emit a connector as a command", status)
+	}
+	continuation := strings.TrimPrefix(strings.TrimSpace(strings.Split(status, "\n")[4]), "continuation=")
+	tokens := strings.Fields(continuation)
+	if len(tokens) < 2 || tokens[0] != "hive" {
+		t.Fatalf("continuation tokens = %q, want complete hive command", tokens)
+	}
+	command, _, err := NewRootCommand(client).Find(tokens[1:])
+	if err != nil || command == nil || command.CommandPath() != "hive project identity status" {
+		t.Fatalf("continuation tokens = %q, command = %v, error = %v; want registered status command", tokens, command, err)
+	}
+
+	resolved, err := executeHiveCommand(t, NewRootCommand(client), "project", "identity", "resolve", "--source", "Foo-Bar", "--target", "foo/bar", "--plan-fingerprint", "migration-plan-1", "--confirmation", "RESOLVE project identity Foo-Bar INTO foo/bar")
+	if err != nil {
+		t.Fatalf("identity resolve: %v", err)
+	}
+	if client.identityResolution.PlanFingerprint != "migration-plan-1" || client.identityResolution.BackupID != "" {
+		t.Fatalf("resolve request = %+v, want plan-fingerprint guard without a backup id", client.identityResolution)
+	}
+	if client.identityResolution.SourceProject != "Foo-Bar" || client.identityResolution.TargetProject != "foo/bar" || client.mergeCalled {
+		t.Fatalf("resolve request = %+v mergeCalled=%v, want dedicated explicit resolution", client.identityResolution, client.mergeCalled)
+	}
+	if !strings.Contains(resolved, "hive project identity retry") {
+		t.Fatalf("resolve output = %q, want retry guidance", resolved)
+	}
+
+	retried, err := executeHiveCommand(t, NewRootCommand(client), "project", "identity", "retry")
+	if err != nil {
+		t.Fatalf("identity retry: %v", err)
+	}
+	for _, want := range []string{
+		"Migration retry requested; the daemon will stop cleanly and its MCP lifecycle owner will start one fresh daemon.",
+		"Check after restart: hive project identity status",
+	} {
+		if !strings.Contains(retried, want) {
+			t.Fatalf("retry output = %q, want %q", retried, want)
+		}
+	}
+	if !client.retryCalled {
+		t.Fatal("identity retry did not request the daemon-owned lifecycle restart")
+	}
+	checked, err := executeHiveCommand(t, NewRootCommand(client), tokens[1:]...)
+	if err != nil {
+		t.Fatalf("printed retry status continuation: %v", err)
+	}
+	if !strings.Contains(checked, "state=migration-blocked") {
+		t.Fatalf("printed retry status continuation output = %q, want migration state", checked)
+	}
+}
+
+// An empty backup id no longer means "no backup was created": the daemon also
+// reports nothing when the archive it took has passed its retention or failed
+// its own checksum. Status must not name a cause it cannot distinguish, because
+// the daemon logs the corruption case while this line would deny it happened.
+func TestHiveProjectIdentityStatusReportsMissingMigrationBackupHonestly(t *testing.T) {
+	client := &fakeHiveClient{identityStatus: hiveclient.MigrationIdentityStatus{
+		State:           "migration-blocked",
+		Reason:          "project migration plan is not executable",
+		PlanFingerprint: "migration-plan-2",
+	}}
+	status, err := executeHiveCommand(t, NewRootCommand(client), "project", "identity", "status")
+	if err != nil {
+		t.Fatalf("identity status: %v", err)
+	}
+	for _, want := range []string{"backup=-", "plan=migration-plan-2", "rollback is unavailable"} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("identity status output = %q, want %q", status, want)
+		}
+	}
+	for _, cause := range []string{"none was created", "expired", "checksum"} {
+		if !strings.Contains(status, cause) {
+			t.Fatalf("identity status output = %q, want the possible cause %q kept open", status, cause)
+		}
+	}
+	if strings.Contains(status, "No migration backup was created for this block") {
+		t.Fatalf("identity status output = %q, want no claim that none was created", status)
+	}
+}
+
+func TestHiveProjectIdentityCommandsRejectGuessedResolutionAndRestoreBackup(t *testing.T) {
+	// The rollback below exercises the BLOCKED path, where the daemon really
+	// does schedule the restore and stop itself. The ready path answers
+	// coordination_required instead and is covered in rollback_report_test.go.
+	client := &fakeHiveClient{restoreResult: hiveclient.RestoreResult{
+		BackupID: "migration-backup-1", Status: hiveclient.RestoreStatusRestartRequested,
+		RequiresDaemonRestart: true,
+	}}
+	for _, args := range [][]string{
+		{"project", "identity", "resolve", "--source", "Foo-Bar"},
+		{"project", "identity", "resolve", "--target", "foo/bar"},
+		{"project", "identity", "resolve", "--source", "Foo-Bar", "--target", "foo/bar", "--plan-fingerprint", "migration-plan-1", "--confirmation", "RESOLVE project identity Foo-Bar INTO foo/bar "},
+		{"project", "identity", "resolve", "--source", "Foo-Bar", "--target", "foo/bar", "--confirmation", "RESOLVE project identity Foo-Bar INTO foo/bar"},
+		{"project", "identity", "rollback"},
+	} {
+		out, err := executeHiveCommand(t, NewRootCommand(client), args...)
+		if err == nil || out != "" {
+			t.Fatalf("%v = output %q, error %v; want local validation error without output", args, out, err)
+		}
+	}
+	if client.mergeCalled || client.restoreCalled {
+		t.Fatal("identity command called daemon without explicit safe choices")
+	}
+
+	out, err := executeHiveCommand(t, NewRootCommand(client), "project", "identity", "rollback", "--backup-id", "migration-backup-1", "--confirmation", "RESTORE migration-backup-1")
+	if err != nil {
+		t.Fatalf("identity rollback: %v", err)
+	}
+	if client.restoreBackupID != "migration-backup-1" || client.restoreConfirmation != "RESTORE migration-backup-1" {
+		t.Fatalf("rollback request = backup %q confirmation %q, want exact explicit values", client.restoreBackupID, client.restoreConfirmation)
+	}
+	if !strings.Contains(out, "was scheduled") || strings.Contains(out, "Run: hive project identity retry") {
+		t.Fatalf("rollback output = %q, want managed restore continuation without manual retry", out)
+	}
+}
+
 func executeHiveCommand(t *testing.T, cmd *cobra.Command, args ...string) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
@@ -338,20 +474,27 @@ func executeHiveCommand(t *testing.T, cmd *cobra.Command, args ...string) (strin
 }
 
 type fakeHiveClient struct {
-	health         []hiveclient.Health
-	projects       []hiveclient.Project
-	memories       []hiveclient.Memory
-	warnings       []hiveclient.Warning
-	backups        []hiveclient.Backup
-	warningsErr    error
-	memoryFilter   hiveclient.MemoryFilter
-	guardRequest   hiveclient.GuardRequest
-	archiveRequest hiveclient.ProjectArchiveRequest
-	mergeRequest   hiveclient.ProjectMergeRequest
-	memoriesCalled bool
-	guardCalled    bool
-	archiveCalled  bool
-	mergeCalled    bool
+	health              []hiveclient.Health
+	projects            []hiveclient.Project
+	memories            []hiveclient.Memory
+	warnings            []hiveclient.Warning
+	backups             []hiveclient.Backup
+	warningsErr         error
+	memoryFilter        hiveclient.MemoryFilter
+	guardRequest        hiveclient.GuardRequest
+	archiveRequest      hiveclient.ProjectArchiveRequest
+	mergeRequest        hiveclient.ProjectMergeRequest
+	identityStatus      hiveclient.MigrationIdentityStatus
+	identityResolution  hiveclient.IdentityResolutionRequest
+	restoreBackupID     string
+	restoreConfirmation string
+	restoreResult       hiveclient.RestoreResult
+	memoriesCalled      bool
+	guardCalled         bool
+	archiveCalled       bool
+	mergeCalled         bool
+	restoreCalled       bool
+	retryCalled         bool
 }
 
 func (f *fakeHiveClient) Status(context.Context) ([]hiveclient.Health, error) { return f.health, nil }
@@ -384,4 +527,22 @@ func (f *fakeHiveClient) MergeProject(_ context.Context, req hiveclient.ProjectM
 	f.mergeCalled = true
 	f.mergeRequest = req
 	return hiveclient.ProjectMergeResult{Operation: "merge", TargetType: "project", SourceProject: req.SourceProject, TargetProject: req.TargetProject, BackupID: req.BackupID, Mutated: true, CloudHandoffNote: "Local project merge metadata recorded. No direct cloud mutation was performed."}, nil
+}
+func (f *fakeHiveClient) MigrationIdentityStatus(context.Context) (hiveclient.MigrationIdentityStatus, error) {
+	return f.identityStatus, nil
+}
+func (f *fakeHiveClient) ResolveMigrationIdentity(_ context.Context, req hiveclient.IdentityResolutionRequest) error {
+	f.identityResolution = req
+	return nil
+}
+func (f *fakeHiveClient) RestoreMigrationBackup(_ context.Context, backupID, confirmation string) (hiveclient.RestoreResult, error) {
+	f.restoreCalled = true
+	f.restoreBackupID = backupID
+	f.restoreConfirmation = confirmation
+	return f.restoreResult, nil
+}
+
+func (f *fakeHiveClient) RequestMigrationRetry(context.Context) error {
+	f.retryCalled = true
+	return nil
 }

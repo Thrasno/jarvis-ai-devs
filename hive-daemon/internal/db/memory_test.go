@@ -597,6 +597,30 @@ func TestListMemories_EmptyProject_ReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestListMemories_OmittedProject_ReturnsAllowedProjectsOnly(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	_, err := saveTestMemory(t, d, newMemory("open", "visible", "visible content"))
+	require.NoError(t, err)
+	_, err = saveTestMemory(t, d, newMemory("blocked", "hidden", "hidden content"))
+	require.NoError(t, err)
+	_, err = d.SavePrompt(ctx, "open", "visible prompt")
+	require.NoError(t, err)
+	_, err = d.SavePrompt(ctx, "blocked", "hidden prompt")
+	require.NoError(t, err)
+	_, err = d.RecordProjectBlock(ctx, ProjectBlockCommand{CommandID: "global-context", AckToken: "ack", Project: "blocked", CanonicalProjectKey: "blocked", BlockedAt: time.Now().UTC()})
+	require.NoError(t, err)
+
+	memories, err := d.ListMemories("", 10)
+	require.NoError(t, err)
+	require.Len(t, memories, 1)
+	require.Equal(t, "open", memories[0].Project)
+	prompts, err := d.ListRecentPrompts(ctx, "", 10)
+	require.NoError(t, err)
+	require.Len(t, prompts, 1)
+	require.Equal(t, "open", prompts[0].Project)
+}
+
 // R2-WARN-1 — GetMemory and ListMemories must include session_id in their SELECT
 // projections AND scan it into models.Memory. Otherwise local read paths (mcp tools
 // `mem_get_observation`, `mem_context`) silently strip attribution.

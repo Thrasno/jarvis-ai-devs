@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -21,6 +22,10 @@ type governanceClient interface {
 	ExecuteGuard(context.Context, hiveclient.GuardRequest) (hiveclient.GuardResult, error)
 	ArchiveProject(context.Context, hiveclient.ProjectArchiveRequest) (hiveclient.ProjectArchiveResult, error)
 	MergeProject(context.Context, hiveclient.ProjectMergeRequest) (hiveclient.ProjectMergeResult, error)
+	MigrationIdentityStatus(context.Context) (hiveclient.MigrationIdentityStatus, error)
+	ResolveMigrationIdentity(context.Context, hiveclient.IdentityResolutionRequest) error
+	RequestMigrationRetry(context.Context) error
+	RestoreMigrationBackup(context.Context, string, string) (hiveclient.RestoreResult, error)
 }
 
 func main() {
@@ -134,7 +139,11 @@ func backupsCommand(client governanceClient) *cobra.Command {
 			return nil
 		}
 		for _, b := range backups {
-			fmt.Fprintf(cmd.OutOrStdout(), "id=%s bytes=%d archive=%s created_at=%s\n", b.ID, b.SizeBytes, b.ArchivePath, formatTime(b.CreatedAt))
+			// retain_until is load-bearing, not decoration: a migration backup
+			// is the ONLY rollback artifact for that migration and the daemon
+			// reclaims it after 24h, so an operator who cannot see the deadline
+			// discovers it by finding the backup gone.
+			fmt.Fprintf(cmd.OutOrStdout(), "id=%s bytes=%d archive=%s created_at=%s retain_until=%s\n", b.ID, b.SizeBytes, b.ArchivePath, formatTime(b.CreatedAt), formatTime(b.RetainUntil))
 		}
 		return nil
 	}}
@@ -148,7 +157,124 @@ func memoryCommand(client governanceClient) *cobra.Command {
 
 func projectCommand(client governanceClient) *cobra.Command {
 	cmd := &cobra.Command{Use: "project", Short: "Run guarded local project operations"}
-	cmd.AddCommand(projectArchiveCommand(client), projectMergeCommand(client))
+	cmd.AddCommand(projectArchiveCommand(client), projectMergeCommand(client), projectIdentityCommand(client))
+	return cmd
+}
+
+func projectIdentityCommand(client governanceClient) *cobra.Command {
+	cmd := &cobra.Command{Use: "identity", Short: "Recover canonical project identity migration"}
+	cmd.AddCommand(projectIdentityStatusCommand(client), projectIdentityResolveCommand(client), projectIdentityRetryCommand(client), projectIdentityRollbackCommand(client))
+	return cmd
+}
+
+func projectIdentityStatusCommand(client governanceClient) *cobra.Command {
+	return &cobra.Command{Use: "status", Short: "Show canonical identity migration recovery state", RunE: func(cmd *cobra.Command, _ []string) error {
+		status, err := client.MigrationIdentityStatus(cmd.Context())
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "state=%s reason=%s backup=%s plan=%s\n", emptyDash(status.State), emptyDash(status.Reason), emptyDash(status.BackupID), emptyDash(status.PlanFingerprint))
+		for _, conflict := range status.Conflicts {
+			fmt.Fprintf(cmd.OutOrStdout(), "conflict=%s\n", conflict)
+		}
+		for _, variant := range status.Variants {
+			fmt.Fprintf(cmd.OutOrStdout(), "variant=%s\n", variant)
+		}
+		if status.State == "migration-blocked" {
+			fmt.Fprintln(cmd.OutOrStdout(), "continuation=hive project identity status")
+			if status.BackupID == "" {
+				// An empty backup id covers three outcomes the daemon cannot tell
+				// apart on the wire: none was created, the archive passed its
+				// retention, or it failed its checksum. Naming only the first
+				// would contradict the daemon's own corruption log.
+				fmt.Fprintln(cmd.OutOrStdout(), "No migration backup is available for this block (none was created, its retention expired, or its archive failed checksum validation); rollback is unavailable.")
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "Choose explicit --source and --target before a concrete resolve command can exist.")
+		}
+		return nil
+	}}
+}
+
+func projectIdentityResolveCommand(client governanceClient) *cobra.Command {
+	var source, target, planFingerprint, confirmation string
+	cmd := &cobra.Command{Use: "resolve", Short: "Apply an explicit identity conflict choice", RunE: func(cmd *cobra.Command, _ []string) error {
+		if strings.TrimSpace(source) == "" || strings.TrimSpace(target) == "" {
+			return fmt.Errorf("--source and --target are required; Hive never chooses an identity resolution")
+		}
+		// A blocked preflight never mutated the database and never created a
+		// backup, so the plan the operator was shown is the only honest guard.
+		if strings.TrimSpace(planFingerprint) == "" {
+			return fmt.Errorf("--plan-fingerprint is required for hive project identity resolve; read plan= from hive project identity status")
+		}
+		expected := "RESOLVE project identity " + source + " INTO " + target
+		if confirmation != expected {
+			return fmt.Errorf("confirmation must match exactly: %s", expected)
+		}
+		if err := client.ResolveMigrationIdentity(cmd.Context(), hiveclient.IdentityResolutionRequest{SourceProject: source, TargetProject: target, PlanFingerprint: planFingerprint, Confirmation: confirmation}); err != nil {
+			return err
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "Resolution recorded. Run: hive project identity retry")
+		return nil
+	}}
+	cmd.Flags().StringVar(&source, "source", "", "explicit variant to merge")
+	cmd.Flags().StringVar(&target, "target", "", "explicit surviving project spelling")
+	cmd.Flags().StringVar(&planFingerprint, "plan-fingerprint", "", "migration plan fingerprint reported by hive project identity status")
+	cmd.Flags().StringVar(&confirmation, "confirmation", "", "exact merge confirmation")
+	return cmd
+}
+
+func projectIdentityRetryCommand(client governanceClient) *cobra.Command {
+	return &cobra.Command{Use: "retry", Short: "Print the full migration retry continuation", RunE: func(cmd *cobra.Command, _ []string) error {
+		if err := client.RequestMigrationRetry(cmd.Context()); err != nil {
+			return err
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "Migration retry requested; the daemon will stop cleanly and its MCP lifecycle owner will start one fresh daemon.")
+		fmt.Fprintln(cmd.OutOrStdout(), "Check after restart: hive project identity status")
+		return nil
+	}}
+}
+
+// printRestoreOutcome reports what the daemon actually did, which is not always
+// what this command used to claim.
+//
+// The daemon has two genuinely different branches. With the migration gate
+// BLOCKED it schedules the restore and stops itself, so the managed restart
+// message is true. With the gate READY it takes the other branch entirely:
+// RestoreBackup is PlanRestore, which validates the archive and answers
+// coordination_required — nothing is scheduled and the live database is
+// untouched. Printing the restart message there tells an operator the rollback
+// is handled when in fact they still have to stop the daemon themselves.
+func printRestoreOutcome(out io.Writer, result hiveclient.RestoreResult) {
+	if result.Status == hiveclient.RestoreStatusRestartRequested {
+		fmt.Fprintln(out, "Backup restore was scheduled. The managed daemon will restart, restore it before reopening SQLite, and re-run migration planning.")
+		return
+	}
+	fmt.Fprintf(out, "Backup restore was validated but not applied (status: %s).\n", emptyDash(result.Status))
+	if message := strings.TrimSpace(result.Message); message != "" {
+		fmt.Fprintln(out, message)
+	}
+	fmt.Fprintln(out, "The daemon is serving normally, so it did not schedule the restore. Stop hive-daemon yourself before the live database can be replaced.")
+}
+
+func projectIdentityRollbackCommand(client governanceClient) *cobra.Command {
+	var backupID, confirmation string
+	cmd := &cobra.Command{Use: "rollback", Short: "Restore the retained migration backup", RunE: func(cmd *cobra.Command, _ []string) error {
+		if strings.TrimSpace(backupID) == "" {
+			return fmt.Errorf("--backup-id is required for hive project identity rollback")
+		}
+		expected := "RESTORE " + backupID
+		if confirmation != expected {
+			return fmt.Errorf("confirmation must match exactly: %s", expected)
+		}
+		result, err := client.RestoreMigrationBackup(cmd.Context(), backupID, confirmation)
+		if err != nil {
+			return err
+		}
+		printRestoreOutcome(cmd.OutOrStdout(), result)
+		return nil
+	}}
+	cmd.Flags().StringVar(&backupID, "backup-id", "", "retained migration backup id")
+	cmd.Flags().StringVar(&confirmation, "confirmation", "", "exact restore confirmation")
 	return cmd
 }
 

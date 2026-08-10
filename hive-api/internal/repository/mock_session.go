@@ -43,14 +43,6 @@ func (m *MockSessionRepository) EnsureManualSaveSession(ctx context.Context, pro
 	return args.String(0), args.Error(1)
 }
 
-func (m *MockSessionRepository) ListSessionsByProject(ctx context.Context, project string) ([]model.Session, error) {
-	args := m.Called(ctx, project)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).([]model.Session), args.Error(1)
-}
-
 func (m *MockSessionRepository) ListSessionsSince(ctx context.Context, project string, since time.Time, cursor model.PullCursor, limit int) ([]*model.Session, bool, error) {
 	args := m.Called(ctx, project, since, cursor, limit)
 	if args.Get(0) == nil {

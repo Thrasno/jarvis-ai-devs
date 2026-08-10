@@ -27,7 +27,7 @@ const MaxObservationLength = 50_000
 // MaxRecentPrompts is the maximum number of recent user prompts to include in mem_context.
 const MaxRecentPrompts = 10
 
-func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime, activity *ActivityTracker, prompts PromptStore) {
+func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime, activity *ActivityTracker, prompts PromptStore, gate *project.MigrationGate) {
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_session_start",
 		Description: "Start a new named session to track tool calls and memory saves under a single lifecycle.",
@@ -43,7 +43,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 				"session_id": {"type": "string", "description": "Unused — present for schema symmetry only"}
 			}
 		}`),
-	}, memSessionStartHandler(store, activity))
+	}, gateTool(gate, memSessionStartHandler(store, activity)))
 
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_session_end",
@@ -56,7 +56,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 				"summary": {"type": "string", "description": "Optional final session summary"}
 			}
 		}`),
-	}, memSessionEndHandler(store, activity))
+	}, gateTool(gate, memSessionEndHandler(store, activity)))
 
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_save",
@@ -79,7 +79,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 				"project_choice_reason": {"type": "string", "description": "Original ambiguous project/context used when retrying with recovery_token"}
 			}
 		}`),
-	}, memSaveHandler(store, syncRuntime, activity, prompts))
+	}, gateTool(gate, memSaveHandler(store, syncRuntime, activity, prompts)))
 
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_suggest_topic_key",
@@ -92,7 +92,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 				"type":  {"type": "string", "enum": ["architecture", "bugfix", "decision", "pattern", "config", "discovery", "preference"], "description": "Supported category: architecture, bugfix, decision, pattern, config, discovery, preference"}
 			}
 		}`),
-	}, memSuggestTopicKeyHandler())
+	}, gateTool(gate, memSuggestTopicKeyHandler()))
 
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_search",
@@ -107,7 +107,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 				"limit":   {"type": "integer", "description": "Max results (default 10, max 50)"}
 			}
 		}`),
-	}, memSearchHandler(store, activity))
+	}, gateTool(gate, memSearchHandler(store, activity)))
 
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_get_observation",
@@ -119,7 +119,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 				"id": {"type": "integer", "description": "Observation ID"}
 			}
 		}`),
-	}, memGetObservationHandler(store, activity))
+	}, gateTool(gate, memGetObservationHandler(store, activity)))
 
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_session_summary",
@@ -136,7 +136,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 				"project_choice_reason": {"type": "string", "description": "Original ambiguous project/context used when retrying with recovery_token"}
 			}
 		}`),
-	}, memSessionSummaryHandler(store, activity))
+	}, gateTool(gate, memSessionSummaryHandler(store, activity)))
 
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_context",
@@ -144,11 +144,11 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"project": {"type": "string", "description": "Filter by project (omit for all)"},
+					"project": {"type": "string", "description": "Filter by project; omit intentionally to query all allowed projects"},
 				"limit":   {"type": "integer", "description": "Max results (default 20)"}
 			}
 		}`),
-	}, memContextHandler(store, prompts, activity))
+	}, gateTool(gate, memContextHandler(store, prompts, activity)))
 
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_sync",
@@ -160,7 +160,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 				"project": {"type": "string", "description": "Project to sync (e.g. 'jarvis-dev')"}
 			}
 		}`),
-	}, memSyncHandler(syncRuntime))
+	}, gateTool(gate, memSyncHandler(syncRuntime)))
 
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_save_prompt",
@@ -176,7 +176,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 				"project_choice_reason": {"type": "string", "description": "Original ambiguous project/context used when retrying with recovery_token"}
 			}
 		}`),
-	}, memSavePromptHandler(store, prompts, activity))
+	}, gateTool(gate, memSavePromptHandler(store, prompts, activity)))
 }
 
 // ─── Handlers ──────────────────────────────────────────────────────────────
@@ -656,12 +656,29 @@ func memContextHandler(store MemoryStore, prompts PromptStore, activity *Activit
 		}
 
 		formatted := formatContext(recentPrompts, results, p.Project)
+		if p.Project == "" && len(results) == 0 && len(recentPrompts) == 0 {
+			known, allowed, countErr := store.ContextProjectCounts(ctx)
+			if countErr != nil {
+				return toolError(fmt.Errorf("count context projects: %w", countErr)), nil
+			}
+			formatted += "\n\nContext outcome: " + globalContextOutcome(known, allowed) + "."
+		}
 		formatted += activity.NudgeIfNeeded(p.Project)
 
 		return &sdkmcp.CallToolResult{
 			Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: formatted}},
 		}, nil
 	}
+}
+
+func globalContextOutcome(known, allowed int) string {
+	if known == 0 {
+		return "unknown"
+	}
+	if allowed == 0 {
+		return "global-empty"
+	}
+	return "known-empty"
 }
 
 func memSavePromptHandler(store MemoryStore, prompts PromptStore, activity *ActivityTracker) sdkmcp.ToolHandler {
@@ -736,6 +753,14 @@ func formatContext(recentPrompts []*models.Prompt, memories []*models.Memory, pr
 		b.WriteString("### Recent User Prompts\n")
 		for _, p := range recentPrompts {
 			content := truncateRunes(p.Content, 200)
+			if project == "" {
+				display := p.DisplayProject
+				if display == "" {
+					display = p.Project
+				}
+				fmt.Fprintf(&b, "- %s — Project: %s (canonical: %s) — %s\n", p.CreatedAt.Format("2006-01-02 15:04"), display, p.Project, content)
+				continue
+			}
 			fmt.Fprintf(&b, "- %s — %s\n", p.CreatedAt.Format("2006-01-02 15:04"), content)
 		}
 		b.WriteString("\n")
@@ -891,6 +916,30 @@ func writeSlugHyphen(b *strings.Builder, lastWasHyphen *bool) {
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
+
+func gateTool(gate *project.MigrationGate, handler sdkmcp.ToolHandler) sdkmcp.ToolHandler {
+	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+		if gate != nil {
+			if err := gate.Check(); err != nil {
+				var blocked *project.MigrationBlockedError
+				if errors.As(err, &blocked) {
+					return migrationBlockedToolResult(blocked.Status), nil
+				}
+				return toolError(err), nil
+			}
+		}
+		return handler(ctx, req)
+	}
+}
+
+func migrationBlockedToolResult(status project.MigrationStatus) *sdkmcp.CallToolResult {
+	result, err := toolJSON(status)
+	if err != nil {
+		return toolError(err)
+	}
+	result.IsError = true
+	return result
+}
 
 func toolError(err error) *sdkmcp.CallToolResult {
 	r := &sdkmcp.CallToolResult{}

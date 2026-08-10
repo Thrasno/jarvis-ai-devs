@@ -326,12 +326,12 @@ func TestCreateMemory_UsesProjectKeyTransactionLock(t *testing.T) {
 		Category: model.CatDecision,
 	}
 
-	lockRepo.On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
-	blockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(nil, repository.ErrNotFound).Once()
+	lockRepo.On("LockProjectKeys", ctx, []string{"Jarvis Dev"}).Return(nil).Once()
+	blockRepo.On("GetByProjectKey", ctx, "Jarvis Dev").Return(nil, repository.ErrNotFound).Once()
 	txRepo.On("GetBySyncID", ctx, "direct-create-lock-1").Return(nil, nil).Once()
-	sessionRepo.On("EnsureManualSaveSession", ctx, "Jarvis Dev").Return("manual-save-jarvis-dev", nil).Once()
+	sessionRepo.On("EnsureManualSaveSession", ctx, "Jarvis Dev").Return("manual-save-Jarvis Dev", nil).Once()
 	txRepo.On("Create", ctx, mock.MatchedBy(func(m *model.Memory) bool {
-		return m.SyncID == "direct-create-lock-1" && m.SessionID != nil && *m.SessionID == "manual-save-jarvis-dev"
+		return m.SyncID == "direct-create-lock-1" && m.SessionID != nil && *m.SessionID == "manual-save-Jarvis Dev"
 	})).Return(&model.Memory{ID: "created-direct-lock"}, nil).Once()
 
 	created, err := svc.Create(ctx, input)
@@ -362,14 +362,14 @@ func TestCreateMemory_RejectsBlockedProjectInsideProjectKeyLock(t *testing.T) {
 	svc := service.NewMemoryService(outerRepo, sessionRepo, blockRepo, tx)
 
 	block := &model.ProjectBlock{
-		Project:             "Jarvis Dev",
-		CanonicalProjectKey: "jarvis-dev",
-		CommandID:           "command-1",
-		Blocked:             true,
-		BlockedAt:           time.Now().UTC(),
+		Project:    "Jarvis Dev",
+		ProjectKey: "jarvis-dev",
+		CommandID:  "command-1",
+		Blocked:    true,
+		BlockedAt:  time.Now().UTC(),
 	}
-	lockRepo.On("LockCanonicalProjectKeys", ctx, []string{"jarvis-dev"}).Return(nil).Once()
-	blockRepo.On("GetByCanonicalKey", ctx, "jarvis-dev").Return(block, nil).Once()
+	lockRepo.On("LockProjectKeys", ctx, []string{"Jarvis Dev"}).Return(nil).Once()
+	blockRepo.On("GetByProjectKey", ctx, "Jarvis Dev").Return(block, nil).Once()
 
 	_, err := svc.Create(ctx, &model.Memory{SyncID: "blocked-direct", Project: "Jarvis Dev", Category: model.CatDecision})
 	require.Error(t, err)
@@ -472,4 +472,25 @@ func TestSearch_DelegatesToRepo(t *testing.T) {
 	assert.Len(t, result, 1)
 	assert.Equal(t, int64(7), total)
 	mockRepo.AssertExpectations(t)
+}
+
+// TestMemoryService_PassesTheProjectFilterThroughVerbatim proves the service
+// never rewrites the project a caller asked for. Discovery queries match the
+// stored literal exactly, so a spelling nobody stored returns nothing.
+func TestMemoryService_PassesTheProjectFilterThroughVerbatim(t *testing.T) {
+	ctx := context.Background()
+	svc, repo := newTestMemoryService(t)
+
+	filter := model.MemoryFilter{Project: " Foo.Bar ", Limit: 5}
+	want := model.MemoryFilter{Project: " Foo.Bar ", Limit: 5}
+	repo.On("List", ctx, want).Return([]*model.Memory{}, nil).Once()
+	repo.On("Count", ctx, want).Return(int64(0), nil).Once()
+	repo.On("Search", ctx, "identity", want).Return([]*model.Memory{}, nil).Once()
+	repo.On("CountSearch", ctx, "identity", want).Return(int64(0), nil).Once()
+
+	_, _, err := svc.List(ctx, filter)
+	require.NoError(t, err)
+	_, _, err = svc.Search(ctx, "identity", filter)
+	require.NoError(t, err)
+	repo.AssertExpectations(t)
 }

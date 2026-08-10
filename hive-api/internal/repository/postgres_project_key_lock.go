@@ -21,11 +21,11 @@ func newPostgresProjectKeyLockRepositoryWithQuerier(db pgxQuerier) ProjectKeyLoc
 	return &postgresProjectKeyLockRepository{db: db}
 }
 
-func (r *postgresProjectKeyLockRepository) LockCanonicalProjectKeys(ctx context.Context, canonicalKeys []string) error {
+func (r *postgresProjectKeyLockRepository) LockProjectKeys(ctx context.Context, projects []string) error {
 	ctx, cancel := context.WithTimeout(ctx, projectKeyLockTimeout)
 	defer cancel()
-	for _, canonical := range CanonicalProjectKeys(canonicalKeys) {
-		lockID := projectKeyAdvisoryLockID(canonical)
+	for _, project := range ProjectLockKeys(projects) {
+		lockID := projectKeyAdvisoryLockID(project)
 		for {
 			var acquired bool
 			if err := r.db.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock($1)`, lockID).Scan(&acquired); err != nil {

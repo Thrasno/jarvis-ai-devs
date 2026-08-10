@@ -79,6 +79,14 @@ func (d *DB) saveMemory(mem *models.Memory, prepareTx func(*sql.Tx) error) (int6
 	if err := mem.Validate(); err != nil {
 		return 0, fmt.Errorf("invalid memory: %w", err)
 	}
+	rawProject := mem.Project
+	mem.Project = canonicalProjectKey(rawProject)
+	if mem.Project == "" {
+		return 0, fmt.Errorf("invalid memory: project is required")
+	}
+	if mem.SessionID == "manual-save-"+rawProject {
+		mem.SessionID = "manual-save-" + mem.Project
+	}
 
 	tagsJSON, err := marshalStringSlice(mem.Tags)
 	if err != nil {
@@ -99,6 +107,9 @@ func (d *DB) saveMemory(mem *models.Memory, prepareTx func(*sql.Tx) error) (int6
 		return 0, fmt.Errorf("begin save memory: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if _, err := registerProjectIdentity(context.Background(), tx, rawProject); err != nil {
+		return 0, err
+	}
 	if err := ensureProjectWritableInTx(tx, mem.Project); err != nil {
 		return 0, err
 	}
@@ -185,6 +196,10 @@ FROM memories WHERE id = ? AND deleted_at IS NULL`
 
 // ListMemories returns active memories for a project, ordered by created_at DESC.
 func (d *DB) ListMemories(project string, limit int) ([]*models.Memory, error) {
+	project = canonicalProjectKey(project)
+	if project == "" {
+		return d.listGlobalMemories(limit)
+	}
 	blocked, err := d.IsProjectBlocked(context.Background(), project)
 	if err != nil {
 		return nil, fmt.Errorf("list memories block check: %w", err)
@@ -218,6 +233,30 @@ LIMIT ?`
 		return nil, fmt.Errorf("rows error: %w", err)
 	}
 	return results, nil
+}
+
+func (d *DB) listGlobalMemories(limit int) ([]*models.Memory, error) {
+	rows, err := d.sqlDB.Query(`
+SELECT id, sync_id, project, topic_key, category, title, content, tags, files_affected,
+	       created_by, created_at, session_id
+FROM memories
+WHERE deleted_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM project_blocks b WHERE b.canonical_project_key = memories.project AND b.blocked = 1)
+ORDER BY created_at DESC, id DESC
+LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list global memories: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var results []*models.Memory
+	for rows.Next() {
+		memory, err := scanMemory(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan memory row: %w", err)
+		}
+		results = append(results, memory)
+	}
+	return results, rows.Err()
 }
 
 // LatestMemoryTimestamp returns the created_at of the most recent active memory

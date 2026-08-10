@@ -1,0 +1,22 @@
+-- Remove the last table that recorded which projects the API believes exist.
+--
+-- project_identities was a registry of every project literal the API had ever
+-- observed. Its one reader answered GET /memories?project=X with 404 whenever X
+-- had no row, which is a whitelist: the API deciding which projects are real.
+-- The daemon is the sole authority on project identity, the API stores the
+-- literal it receives and matches by exact equality, and a query that matches
+-- no row is an empty result. With that reader gone the writes were bookkeeping
+-- nobody consulted.
+--
+-- Dropping the table means a future query cannot mistake it for the list of
+-- projects that exist. Nothing references it: migration 019 created only the
+-- table, its primary key and idx_project_identities_first_seen, all of which go
+-- with it, and the one foreign key that ever pointed here belonged to
+-- project_identity_spellings, which migration 021 drops immediately before this
+-- file runs. The drop is deliberately not cascading, so an unexpected dependent
+-- fails loudly instead of being dropped silently.
+--
+-- Migration 019 still creates this table on every boot and this file removes it
+-- again in the same pass, before the server accepts a request. 019 is left
+-- intact as the record of a schema that shipped.
+DROP TABLE IF EXISTS project_identities;

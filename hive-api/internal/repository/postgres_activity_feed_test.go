@@ -170,13 +170,13 @@ func TestPostgresMemoryRepository_ListActivityFeedExcludesBlockedProjects(t *tes
 		SessionID:    *blockedSessionID,
 	})
 	_, err := blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
-		Project:             "Blocked Activity",
-		CanonicalProjectKey: "blocked-activity",
-		Action:              model.ProjectBlockActionQuarantine,
-		Reason:              "garbage",
-		Confirmation:        "blocked-activity",
-		ExportMarker:        "export-1",
-		ActorUserID:         "admin-1",
+		Project:      "Blocked Activity",
+		ProjectKey:   "Blocked Activity",
+		Action:       model.ProjectBlockActionQuarantine,
+		Reason:       "garbage",
+		Confirmation: "blocked-activity",
+		ExportMarker: "export-1",
+		ActorUserID:  "admin-1",
 	})
 	require.NoError(t, err)
 

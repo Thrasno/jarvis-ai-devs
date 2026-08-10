@@ -22,7 +22,17 @@ type Session struct {
 	// UNIQUE — garantiza idempotencia: el daemon puede reenviar sin duplicar.
 	SyncID string `json:"sync_id" db:"sync_id"`
 
-	Project   string `json:"project"   db:"project"`
+	Project string `json:"project"   db:"project"`
+
+	// FromProject is a write-side precondition, never a stored column: it names
+	// the project literal the caller believes the row currently holds. The
+	// sync_id conflict branch moves `project` only when the stored value equals
+	// it, which is what makes a re-push a correction of a KNOWN row instead of a
+	// blind relocation of whatever row that sync_id happens to hit. Empty means
+	// "no move requested" and matches nothing, since a stored project is never
+	// empty. Mirrors ReprojectPayload.FromProject on the memory path.
+	FromProject string `json:"-" db:"-"`
+
 	Directory string `json:"directory" db:"directory"`
 	DevID     string `json:"dev_id"    db:"dev_id"`
 	Client    string `json:"client"    db:"client"`

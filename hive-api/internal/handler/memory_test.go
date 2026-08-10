@@ -211,7 +211,7 @@ func TestHandlerMemory_Create_SessionNotFound_Returns400(t *testing.T) {
 func TestHandlerMemory_Create_ProjectBlockedReturns423(t *testing.T) {
 	authSvc := &mockAuthSvc{}
 	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
-	cmd := model.ProjectBlockCommand{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "jarvis-dev", CanonicalProjectKey: "jarvis-dev", Reason: "duplicate", BlockedAt: time.Now().UTC()}
+	cmd := model.ProjectBlockCommand{CommandID: "cmd-1", AckToken: "ack-token-1", Project: "jarvis-dev", ProjectKey: "jarvis-dev", Reason: "duplicate", BlockedAt: time.Now().UTC()}
 
 	memSvc := &mockMemorySvc{}
 	memSvc.On("Create", context.Background(), mock.AnythingOfType("*model.Memory")).
@@ -316,6 +316,49 @@ func TestListMemories_PassesStructuredDiscoveryFilters(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	memSvc.AssertExpectations(t)
+}
+
+// TestListMemories_PassesTheProjectFilterThroughVerbatim proves ?project= is a
+// query, not identity input: the handler forwards the literal it was given. A
+// dashboard typo returning zero results is the intended behaviour.
+func TestListMemories_PassesTheProjectFilterThroughVerbatim(t *testing.T) {
+	authSvc := &mockAuthSvc{}
+	authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+	memSvc := &mockMemorySvc{}
+	memSvc.On("List", context.Background(), mock.MatchedBy(func(filter model.MemoryFilter) bool {
+		return filter.Project == "Jarvis_Dev"
+	})).Return([]*model.Memory{}, int64(0), nil)
+
+	w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodGet, "/memories?project=Jarvis_Dev", nil, "valid-token")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	memSvc.AssertExpectations(t)
+}
+
+// TestListMemories_ProjectsWithNoRowsReturnAnEmptyList replaces the coverage
+// that pinned 404 project_unknown. The API keeps no whitelist of projects, so a
+// literal it has never seen is not a missing resource — it is a project with
+// nothing to list.
+func TestListMemories_ProjectsWithNoRowsReturnAnEmptyList(t *testing.T) {
+	for _, project := range []string{" Ghost.Project ", "ghost/project"} {
+		t.Run(project, func(t *testing.T) {
+			authSvc := &mockAuthSvc{}
+			authSvc.On("ValidateToken", "valid-token").Return(testClaims(), nil)
+			memSvc := &mockMemorySvc{}
+			memSvc.On("List", context.Background(), mock.MatchedBy(func(filter model.MemoryFilter) bool {
+				return filter.Project == project
+			})).Return([]*model.Memory{}, int64(0), nil)
+
+			w := doAuthRequest(t, authDeps(authSvc, memSvc), http.MethodGet, "/memories?project="+project, nil, "valid-token")
+
+			require.Equal(t, http.StatusOK, w.Code)
+			var body model.ListMemoriesResponse
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+			require.Empty(t, body.Memories)
+			require.Zero(t, body.Total)
+			memSvc.AssertExpectations(t)
+		})
+	}
 }
 
 func TestListMemories_WithQueryReturnsListResponseFromSearch(t *testing.T) {

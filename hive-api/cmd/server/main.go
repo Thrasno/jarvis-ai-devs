@@ -184,27 +184,10 @@ func wireServicesWithFactories(pool *pgxpool.Pool, cfg *config.Config, factories
 	}
 }
 
+// startupMigrationSQL is the boot order, owned by the migrations package so the
+// tests that prove a migration's effect run the same slice the server does.
 func startupMigrationSQL() []string {
-	return []string{
-		migrations.InitialSQL,
-		migrations.UserPromptsSQL,
-		migrations.SessionsSQL,
-		migrations.AuditLogsSQL,
-		migrations.MemoryMutationsSQL,
-		migrations.DropTopicKeyUniqueConstraintSQL,
-		migrations.SyncAttemptLogsSQL,
-		migrations.ActivityFeedIndexSQL,
-		migrations.MemoryDiscoveryIndexesSQL,
-		migrations.PullCursorIndexesSQL,
-		migrations.ProjectScopedPullCursorIndexesSQL,
-		migrations.ProjectBlocksSQL,
-		migrations.ProjectBlockAckSubjectsSQL,
-		migrations.UserSecurityVersionSQL,
-		migrations.SyncAttemptPortalUsersSQL,
-		migrations.SyncAttemptUserProjectionSQL,
-		migrations.QuarantineContractSQL,
-		migrations.DistributedQuarantineSQL,
-	}
+	return migrations.Ordered()
 }
 
 func runStartupMigrations(pool *pgxpool.Pool) error {

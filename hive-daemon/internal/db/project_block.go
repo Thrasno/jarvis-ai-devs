@@ -410,16 +410,6 @@ func (d *DB) blockedProjectKeys(ctx context.Context) (map[string]struct{}, error
 	return keys, rows.Err()
 }
 
-func canonicalProjectKey(project string) string {
-	trimmed := strings.TrimSpace(project)
-	if trimmed == "" {
-		return ""
-	}
-	key := strings.ToLower(trimmed)
-	key = projectBlockSeparatorRun.ReplaceAllString(key, "-")
-	return strings.Trim(key, "-")
-}
-
 func formatDBTime(t time.Time) string {
 	return t.UTC().Format("2006-01-02 15:04:05")
 }

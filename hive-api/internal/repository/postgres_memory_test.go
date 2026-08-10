@@ -963,6 +963,42 @@ func TestPostgresMemoryRepository_PullSince_FullCursorWalkVisitsEveryRowOnce(t *
 	}
 }
 
+// TestPostgresMemoryRepository_PullSinceMatchesTheStoredSpellingExactly proves
+// the pull selects on the literal stored in memories.project. Both the SQL side
+// and the argument side are literal, so a repointed registry can never make a
+// row unpullable, and a neighbouring spelling never leaks into the page.
+func TestPostgresMemoryRepository_PullSinceMatchesTheStoredSpellingExactly(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+	base := time.Now().Add(-time.Hour)
+	for i, project := range []string{"Foo.Bar", "foo-bar"} {
+		sessionID := ensureManualSavePtr(t, pool, project)
+		_, err := repo.Create(ctx, &model.Memory{SyncID: fmt.Sprintf("810e8400-0000-0000-0000-%012d", i), Project: project, Category: model.CatDecision, Title: project, Content: project, CreatedBy: "tester", CreatedAt: base, UpdatedAt: base, SessionID: sessionID})
+		require.NoError(t, err)
+	}
+
+	unrelated, hasMore, err := repo.PullSince(ctx, "foo/bar", time.Time{}, nil, model.PullCursor{}, 1)
+	require.NoError(t, err)
+	require.False(t, hasMore)
+	require.Empty(t, unrelated, "a spelling nobody stored is a different project and pulls nothing")
+
+	dotted, hasMore, err := repo.PullSince(ctx, "Foo.Bar", time.Time{}, nil, model.PullCursor{}, 1)
+	require.NoError(t, err)
+	require.False(t, hasMore, "only the one row spelled Foo.Bar belongs to this project")
+	require.Len(t, dotted, 1)
+	require.Equal(t, "Foo.Bar", dotted[0].Project)
+
+	dashed, hasMore, err := repo.PullSince(ctx, "foo-bar", time.Time{}, nil, model.PullCursor{}, 1)
+	require.NoError(t, err)
+	require.False(t, hasMore)
+	require.Len(t, dashed, 1)
+	require.Equal(t, "foo-bar", dashed[0].Project)
+	require.NotEqual(t, dotted[0].SyncID, dashed[0].SyncID, "the two spellings are two distinct projects")
+}
+
 // TestPostgresMemoryRepository_PullSince_TiebreakOnIdenticalSyncedAt verifies
 // that two rows sharing the exact same synced_at are ordered deterministically
 // by sync_id and that neither is skipped nor duplicated across a page boundary

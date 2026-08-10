@@ -3,6 +3,8 @@ package model
 import (
 	"errors"
 	"time"
+
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 )
 
 // LoginRequest es el body del POST /auth/login.
@@ -45,6 +47,10 @@ type CreateMemoryRequest struct {
 type SyncRequest struct {
 	Project string `json:"project" binding:"required"`
 
+	// ProjectIdentityVersion declares the canonical project-key contract used by
+	// a newer daemon. Omitted remains valid for API-first rollout.
+	ProjectIdentityVersion string `json:"project_identity_version,omitempty"`
+
 	// Sessions es el batch de sesiones a enviar al servidor.
 	// Opcional — daemons anteriores a Slice 4 no envían este campo.
 	// Procesado ANTES de memories para satisfacer la FK memories.session_id.
@@ -66,6 +72,33 @@ type SyncRequest struct {
 	// TODAS las memorias del proyecto en el pull. Si tiene valor,
 	// solo devuelve las memorias más nuevas que esa fecha.
 	LastSync *time.Time `json:"last_sync"`
+
+	// SyncCapabilities names the optional protocol features THIS CLIENT
+	// understands. It is the client-side counterpart of
+	// SyncResponse.SyncCapabilities, and it exists because capability had to
+	// travel in both directions: the server already said what it could do, but
+	// nothing told the server what the daemon could do.
+	//
+	// protocol_version cannot answer that question — the daemon hardcodes it to
+	// MutationProtocolVersion, so a daemon that understands `reproject` and one
+	// that does not send the identical value. Handing an op to a daemon that
+	// cannot apply it is not a harmless no-op: its apply loop errors out, which
+	// aborts the batch before it advances its mutation cursor, so it silently
+	// stops receiving remote mutations.
+	//
+	// Omitted means "only the baseline", which is exactly what an un-upgraded
+	// daemon means. Unknown entries are ignored, so the field degrades in both
+	// directions and never needs a version bump.
+	//
+	// The bound is about log volume, not correctness: deliverableMutations
+	// reprints the whole declared list once per withheld event, and a pull page
+	// holds up to syncMutationPullBatchSize events, so an unbounded list is
+	// amplified a hundredfold into the server log. The contents are %q-safe, so
+	// this is noise rather than forgery, but it is free to stop. The limits sit
+	// far above any real declaration — the server advertises a handful of
+	// capabilities and the longest name is under twenty characters — so the
+	// forward-compatible "unknown entries are ignored" behaviour is untouched.
+	SyncCapabilities []string `json:"sync_capabilities,omitempty" binding:"max=32,dive,max=64"`
 
 	// Mutation sync v2 fields. Legacy clients omit these and keep the row-state path.
 	ProtocolVersion int                `json:"protocol_version,omitempty"`
@@ -99,11 +132,34 @@ type SyncRequest struct {
 	AckSubject ProjectBlockAckSubject `json:"-"`
 }
 
+var ErrProjectIdentityVersionUnsupported = errors.New("unsupported project identity contract version")
+
+// ValidateSyncProjectIdentity checks the wire-compatibility of the project
+// identity contract a sync request declares. It does NOT rewrite anything: the
+// daemon is the sole authority on project identity, so every project-bearing
+// field is stored exactly as it arrived. All project spellings are valid, and
+// two spellings are the same project only when they are byte-for-byte equal.
+func ValidateSyncProjectIdentity(req SyncRequest) error {
+	if req.ProjectIdentityVersion != "" && req.ProjectIdentityVersion != projectidentity.ContractVersion {
+		return ErrProjectIdentityVersionUnsupported
+	}
+	return nil
+}
+
 // SyncSessionPayload es el formato de sesión en el wire protocol de sync.
 type SyncSessionPayload struct {
-	ID        string     `json:"id"        binding:"required"`
-	SyncID    string     `json:"sync_id"   binding:"required"`
-	Project   string     `json:"project"   binding:"required"`
+	ID      string `json:"id"        binding:"required"`
+	SyncID  string `json:"sync_id"   binding:"required"`
+	Project string `json:"project"   binding:"required"`
+
+	// FromProject names the project literal the daemon believes this row
+	// currently holds server-side. It is the precondition for the ONE column a
+	// re-push may change: the server moves `project` only when the stored value
+	// equals it. Omitted (the pre-correction wire shape) means "no move
+	// requested" — the re-push stays fully idempotent. It mirrors
+	// ReprojectPayload.from_project on the memory path.
+	FromProject string `json:"from_project,omitempty"`
+
 	Directory string     `json:"directory"`
 	DevID     string     `json:"dev_id"    binding:"required"`
 	Client    string     `json:"client"    binding:"required"`
@@ -121,6 +177,11 @@ type SyncPromptPayload struct {
 
 	// Project identifica a qué proyecto pertenece el prompt (S5).
 	Project string `json:"project" binding:"required,max=100"`
+
+	// FromProject es la misma precondición que SyncSessionPayload.FromProject
+	// documenta: el servidor mueve `project` solo si el valor almacenado la
+	// iguala.
+	FromProject string `json:"from_project,omitempty"`
 
 	// Content es el texto del prompt. No puede estar vacío (S6) ni superar 50000 chars.
 	// 50000 coincide con MaxObservationLength del daemon (mcp/tools.go).

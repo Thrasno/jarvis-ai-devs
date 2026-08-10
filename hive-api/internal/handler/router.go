@@ -56,7 +56,7 @@ type ProjectGovernanceService interface {
 	Inbox(ctx context.Context, subject model.ProjectBlockAckSubject) ([]model.ProjectBlockCommand, error)
 	Acknowledge(ctx context.Context, ack model.ProjectBlockAck) (model.ProjectBlockAck, error)
 	ListQuarantines(ctx context.Context) ([]model.QuarantineSummary, error)
-	QuarantineProgress(ctx context.Context, canonicalProjectKey string, generation int64, after string, limit int) (model.QuarantineProgressResponse, error)
+	QuarantineProgress(ctx context.Context, projectKey string, generation int64, after string, limit int) (model.QuarantineProgressResponse, error)
 }
 
 type SyncAttemptService interface {

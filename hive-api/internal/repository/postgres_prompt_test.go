@@ -27,6 +27,8 @@ func startPostgresWithPrompts(t *testing.T) (*pgxpool.Pool, func()) {
 	require.NoError(t, err, "Failed to run project_blocks migration")
 	err = RunMigrations(pool, migrations.QuarantineContractSQL)
 	require.NoError(t, err, "Failed to run quarantine contract migration")
+	err = RunMigrations(pool, migrations.CanonicalProjectRegistrySQL)
+	require.NoError(t, err, "Failed to run canonical project registry migration")
 
 	return pool, cleanup
 }
@@ -147,13 +149,13 @@ func TestPostgresPromptRepository_UpsertRejectsBlockedProject(t *testing.T) {
 	blockRepo := NewPostgresProjectBlockRepository(pool)
 
 	_, err := blockRepo.BlockProject(ctx, model.ProjectBlockCreate{
-		Project:             "Blocked Prompt Project",
-		CanonicalProjectKey: "blocked-prompt-project",
-		Action:              model.ProjectBlockActionQuarantine,
-		Reason:              "duplicate garbage project",
-		Confirmation:        "blocked-prompt-project",
-		ExportMarker:        "export-2026-07-06",
-		ActorUserID:         "admin-1",
+		Project:      "Blocked Prompt Project",
+		ProjectKey:   "Blocked Prompt Project",
+		Action:       model.ProjectBlockActionQuarantine,
+		Reason:       "duplicate garbage project",
+		Confirmation: "blocked-prompt-project",
+		ExportMarker: "export-2026-07-06",
+		ActorUserID:  "admin-1",
 	})
 	require.NoError(t, err)
 
