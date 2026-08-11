@@ -701,14 +701,16 @@ func TestGuardedMemoryDeleteRequiresBackupAndExactConfirmationBeforeDispatch(t *
 	m = sendKey(m, tea.KeyEnter)
 	assertContains(t, m.View(), "Type exactly: DELETE memory 7")
 
-	m = sendText(m, "DELETE memory 7 ")
+	m = sendText(m, "WRONG")
 	m = sendKey(m, tea.KeyEnter)
 	if len(executor.requests) != 0 {
-		t.Fatalf("dispatch count = %d, want 0 when confirmation has trailing space", len(executor.requests))
+		t.Fatalf("dispatch count = %d, want 0 when the confirmation wording is wrong", len(executor.requests))
 	}
-	assertContains(t, m.View(), "Confirmation mismatch. Type the phrase exactly; input is not trimmed")
+	assertContains(t, m.View(), "Confirmation mismatch")
 
-	m = sendKey(m, tea.KeyBackspace)
+	m = clearTypedText(m, "WRONG")
+	// Surrounding and repeated whitespace is normalized away before comparison.
+	m = sendText(m, " DELETE  memory 7 ")
 	m = submitGuardAndApplyResult(t, m)
 
 	if len(executor.requests) != 1 {
@@ -867,14 +869,15 @@ func TestGuardedMemoryRestoreRequiresBackupAndExactConfirmationBeforeDispatch(t 
 	m = sendKey(m, tea.KeyEnter)
 	assertContains(t, m.View(), "Type exactly: RESTORE memory 7")
 
-	m = sendText(m, "RESTORE memory 7 ")
+	m = sendText(m, "WRONG")
 	m = sendKey(m, tea.KeyEnter)
 	if len(executor.requests) != 0 {
-		t.Fatalf("dispatch count = %d, want 0 when confirmation has trailing space", len(executor.requests))
+		t.Fatalf("dispatch count = %d, want 0 when the confirmation wording is wrong", len(executor.requests))
 	}
-	assertContains(t, m.View(), "Confirmation mismatch. Type the phrase exactly; input is not trimmed")
+	assertContains(t, m.View(), "Confirmation mismatch")
 
-	m = sendKey(m, tea.KeyBackspace)
+	m = clearTypedText(m, "WRONG")
+	m = sendText(m, " RESTORE  memory 7 ")
 	m = submitGuardAndApplyResult(t, m)
 
 	if len(executor.requests) != 1 {
@@ -984,14 +987,15 @@ func TestProjectArchiveRequiresBackupAndExactConfirmationBeforeDispatch(t *testi
 
 	m = sendText(m, "backup-archive")
 	m = sendKey(m, tea.KeyEnter)
-	m = sendText(m, "ARCHIVE project alpha ")
+	m = sendText(m, "WRONG")
 	m = sendKey(m, tea.KeyEnter)
 	if len(executor.requests) != 0 {
-		t.Fatalf("dispatch count = %d, want 0 when confirmation has trailing space", len(executor.requests))
+		t.Fatalf("dispatch count = %d, want 0 when the confirmation wording is wrong", len(executor.requests))
 	}
-	assertContains(t, m.View(), "Confirmation mismatch. Type the phrase exactly; input is not trimmed")
+	assertContains(t, m.View(), "Confirmation mismatch")
 
-	m = sendKey(m, tea.KeyBackspace)
+	m = clearTypedText(m, "WRONG")
+	m = sendText(m, " ARCHIVE  project alpha ")
 	m = submitProjectArchiveAndApplyResult(t, m)
 
 	if len(executor.requests) != 1 {
@@ -1104,12 +1108,13 @@ func TestProjectMergeRequiresTargetBackupAndExactConfirmationBeforeDispatch(t *t
 	m = sendKey(m, tea.KeyEnter)
 	assertContains(t, m.View(), "Type exactly: MERGE project alpha INTO beta")
 
-	m = sendText(m, "MERGE project alpha INTO beta ")
+	m = sendText(m, "WRONG")
 	m = sendKey(m, tea.KeyEnter)
-	assertNoProjectMergeDispatch(t, executor, "when confirmation has trailing space")
-	assertContains(t, m.View(), "Confirmation mismatch. Type the phrase exactly; input is not trimmed")
+	assertNoProjectMergeDispatch(t, executor, "when the confirmation wording is wrong")
+	assertContains(t, m.View(), "Confirmation mismatch")
 
-	m = sendKey(m, tea.KeyBackspace)
+	m = clearTypedText(m, "WRONG")
+	m = sendText(m, " MERGE  project alpha INTO beta ")
 	m = submitProjectMergeAndApplyResult(t, m)
 
 	if len(executor.requests) != 1 {
@@ -1471,6 +1476,15 @@ func sendKey(m Model, key tea.KeyType) Model {
 func sendRune(m Model, r rune) Model {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	return updated.(Model)
+}
+
+// clearTypedText removes exactly the runes of text with backspaces so a field
+// can be retyped from scratch.
+func clearTypedText(m Model, text string) Model {
+	for range []rune(text) {
+		m = sendKey(m, tea.KeyBackspace)
+	}
+	return m
 }
 
 func sendText(m Model, text string) Model {
