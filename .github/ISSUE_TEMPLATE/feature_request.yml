@@ -1,0 +1,84 @@
+name: Feature Request / Solicitud de funcionalidad
+description: Propose an improvement to the Jarvis Dev ecosystem / Propón una mejora para el ecosistema Jarvis Dev
+title: "feat: "
+labels: ["enhancement", "status:needs-review"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## How this works
+
+        1. Submit the request. It receives `status:needs-review` automatically.
+        2. A maintainer reviews scope and applies `status:approved` when the request is ready for implementation.
+        3. Open a pull request only after approval. The pull request must close the approved issue and have exactly one `type:*` label.
+
+        ## Cómo funciona
+
+        1. Envía la solicitud. Recibirá `status:needs-review` automáticamente.
+        2. Una persona responsable del mantenimiento revisará el alcance y aplicará `status:approved` cuando la solicitud esté lista para implementarse.
+        3. Abre una pull request únicamente después de la aprobación. La pull request debe cerrar la issue aprobada y tener exactamente una etiqueta `type:*`.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight checklist / Lista de comprobación previa
+      options:
+        - label: I searched the existing issues and found no duplicate. / He buscado entre las issues existentes y no he encontrado ningún duplicado.
+          required: true
+        - label: I understand that implementation must wait until this issue has `status:approved`. / Entiendo que la implementación debe esperar hasta que esta issue tenga `status:approved`.
+          required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area / Área afectada
+      options:
+        - CLI and installation / CLI e instalación
+        - Hive local memory / Memoria local de Hive
+        - Hive API and shared memory / Hive API y memoria compartida
+        - Hive sync / Sincronización de Hive
+        - Hive dashboard / Panel de Hive
+        - SDD prompts and skills / Prompts y skills de SDD
+        - Diagnostics and reconfiguration / Diagnóstico y reconfiguración
+        - Documentation / Documentación
+        - Other / Otra
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or opportunity / Problema u oportunidad
+      description: Explain the user need, limitation, or outcome. / Explica la necesidad de la persona usuaria, la limitación o el resultado deseado.
+      placeholder: What cannot be done reliably today, and why does it matter? / ¿Qué no puede hacerse de forma fiable actualmente y por qué es importante?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed outcome / Resultado propuesto
+      description: Describe the expected behaviour without assuming an implementation. / Describe el comportamiento esperado sin dar por sentada una implementación.
+      placeholder: Include an example workflow or CLI interaction when useful. / Incluye un flujo de trabajo o una interacción con la CLI de ejemplo cuando resulte útil.
+    validations:
+      required: true
+
+  - type: textarea
+    id: ecosystem_impact
+    attributes:
+      label: Ecosystem impact / Impacto en el ecosistema
+      description: Note effects on installation, local or shared memory, sync, diagnostics, or team workflows. / Indica los efectos sobre la instalación, la memoria local o compartida, la sincronización, el diagnóstico o los flujos de trabajo del equipo.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered / Alternativas consideradas
+      description: Describe current workarounds or other approaches. / Describe las soluciones provisionales actuales u otros enfoques.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context / Contexto adicional
+      description: Add examples, screenshots, or supporting evidence. Remove secrets and private data. / Añade ejemplos, capturas de pantalla o pruebas de apoyo. Elimina secretos y datos privados.
