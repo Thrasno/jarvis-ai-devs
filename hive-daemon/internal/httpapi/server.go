@@ -88,6 +88,7 @@ type Server struct {
 	retry      func()
 	restore    func(context.Context, governance.RestoreRequest) error
 	resolve    func(context.Context, project.IdentityResolutionRequest) error
+	execution  MigrationExecutionService
 	retryMu    sync.Mutex
 	retrying   bool
 	mux        *http.ServeMux
@@ -168,6 +169,13 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 	s.mux.HandleFunc("GET /governance/project-identity/status", s.handleMigrationIdentityStatus)
 	s.mux.HandleFunc("POST /governance/project-identity/retry", s.handleMigrationIdentityRetry)
 	s.mux.HandleFunc("POST /governance/project-identity/resolve", s.handleMigrationIdentityResolve)
+	// The operator's normalization wizard: review the plan, approve the fold, watch
+	// it run. Registered unconditionally — the handlers are nil-safe on s.execution
+	// and answer "unavailable" rather than 404, so a client can tell a daemon that
+	// cannot fold from one that is refusing to.
+	s.mux.HandleFunc("GET /governance/project-identity/plan", s.handleMigrationIdentityPlan)
+	s.mux.HandleFunc("GET /governance/project-identity/progress", s.handleMigrationIdentityProgress)
+	s.mux.HandleFunc("POST /governance/project-identity/execute", s.handleMigrationIdentityExecute)
 	s.mux.HandleFunc("/prompts", s.handlePrompts)
 	// Latest-save lookup (hook-initiated memory reminder). Registered
 	// unconditionally — handler is nil-safe on s.memories.
@@ -239,7 +247,30 @@ func isMigrationRecoveryRoute(r *http.Request, status project.MigrationStatus) b
 	if status.State != project.MigrationStatePendingOperatorReview {
 		return false
 	}
-	return isMigrationSnapshotReadRoute(r)
+	return isMigrationSnapshotReadRoute(r) || isMigrationWizardRoute(r)
+}
+
+// isMigrationWizardRoute admits the three routes the normalization wizard is made
+// of. It is scoped to the pending state by its only caller, and deliberately so:
+// the execute route is the one write allowed through a closed gate, and it is only
+// safe because pending means the preflight stopped before touching anything, so
+// the fold it approves is the first mutation this database sees. A migration that
+// failed mid-flight proves nothing about what is on disk, and offering to fold it
+// again there would be exactly the wrong move.
+//
+// The write itself is still guarded three times over: the runner refuses a
+// non-pending gate, a stale plan fingerprint and a phrase it did not derive
+// itself.
+func isMigrationWizardRoute(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet:
+		return r.URL.Path == "/governance/project-identity/plan" ||
+			r.URL.Path == "/governance/project-identity/progress"
+	case http.MethodPost:
+		return r.URL.Path == "/governance/project-identity/execute"
+	default:
+		return false
+	}
 }
 
 // migrationSnapshotReadPaths is the exact set of GET paths

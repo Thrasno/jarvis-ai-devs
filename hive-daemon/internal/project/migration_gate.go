@@ -3,6 +3,7 @@ package project
 import (
 	"errors"
 	"fmt"
+	"sync"
 )
 
 const MigrationStateReady = "ready"
@@ -48,6 +49,17 @@ func IdentityResolutionConfirmation(source, target string) string {
 	return "RESOLVE project identity " + source + " INTO " + target
 }
 
+// MigrationExecuteRequest authorizes the one fold the operator reviewed.
+//
+// Both fields are echoes, not instructions. PlanFingerprint is the plan the
+// operator saw, so a database that moved underneath them refuses the request
+// instead of folding something else; Confirmation is compared against the phrase
+// the daemon derives from that same plan, never trusted as the source of truth.
+type MigrationExecuteRequest struct {
+	PlanFingerprint string `json:"plan_fingerprint"`
+	Confirmation    string `json:"confirmation"`
+}
+
 // MigrationStatus is the boundary-neutral contract every Hive access surface
 // can use to fail closed while migration governance is unresolved.
 // BackupID is reported only for an archive taken for this exact plan
@@ -64,7 +76,11 @@ type MigrationStatus struct {
 	PlanFingerprint string `json:"plan_fingerprint,omitempty"`
 }
 
+// MigrationGate is shared by every access surface — HTTP and MCP hold the same
+// pointer — so its status is guarded: it is now written after construction, by the
+// operator's own fold succeeding, while requests are being served.
 type MigrationGate struct {
+	mu     sync.RWMutex
 	status MigrationStatus
 }
 
@@ -82,6 +98,24 @@ func (e *MigrationBlockedError) Error() string {
 // understand can never come up permissive or under-described.
 func NewMigrationGate(status MigrationStatus) *MigrationGate {
 	return &MigrationGate{status: normalizeMigrationStatus(status)}
+}
+
+// Adopt replaces the gate's status in place, through the same normalization
+// NewMigrationGate applies.
+//
+// It exists because the operator's approved fold has to open the gate without a
+// restart. hive-daemon is spawned by an MCP client, so "restart the daemon" means
+// "restart your editor session" — an absurd thing to ask of someone who just
+// approved the repair themselves. Every surface holds this one pointer, so
+// flipping it here is what makes Hive usable again everywhere at once.
+func (g *MigrationGate) Adopt(status MigrationStatus) {
+	if g == nil {
+		return
+	}
+	normalized := normalizeMigrationStatus(status)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.status = normalized
 }
 
 func normalizeMigrationStatus(status MigrationStatus) MigrationStatus {
@@ -106,6 +140,8 @@ func (g *MigrationGate) Status() MigrationStatus {
 	if g == nil {
 		return MigrationStatus{State: MigrationStateReady}
 	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	return g.status
 }
 
@@ -121,6 +157,8 @@ func (g *MigrationGate) Check() error {
 	if g == nil {
 		return nil
 	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	if g.status.State == MigrationStateReady {
 		return nil
 	}

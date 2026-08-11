@@ -50,6 +50,8 @@ func run() int {
 
 	logger.Log.Printf("database: %s", dbPath)
 
+	adoptInterruptedMigrationRuns(rootCtx, store)
+
 	recoveryTTL, err := project.ParseRecoveryTokenTTL(os.Getenv("HIVE_RECOVERY_TOKEN_TTL"))
 	if err != nil {
 		logger.Log.Fatalf("invalid HIVE_RECOVERY_TOKEN_TTL: %v", err)
@@ -85,6 +87,11 @@ func run() int {
 			return governance.ScheduleRestore(dbPath, req)
 		})
 		srv.SetMigrationIdentityResolver(newMigrationIdentityResolver(store, gate))
+		// The wizard's fold owner holds the same gate pointer every other surface
+		// holds, so a successful fold opens Hive back up in place — MCP tools
+		// included — without asking the operator to restart the editor session that
+		// spawned this daemon.
+		srv.SetMigrationExecution(governance.NewProjectMigrationRunner(store, backupStore, gate))
 		if err := srv.Start(rootCtx); err != nil {
 			logger.Log.Printf("http server stopped: %v (mcp continues)", err)
 		}
@@ -189,6 +196,23 @@ func newMigrationIdentityResolver(store *db.DB, gate *project.MigrationGate) fun
 			return project.ErrIdentityResolutionStale
 		}
 		return store.ResolveProjectIdentityConflict(ctx, req.SourceProject, req.TargetProject)
+	}
+}
+
+// adoptInterruptedMigrationRuns settles a fold record left behind by a process
+// that died mid-transaction.
+//
+// hive-daemon is spawned per MCP client session, so a fold can genuinely be cut
+// off by the client going away. The transaction rolled back with the process, so
+// nothing was applied, but the persisted record still claims a fold is in flight
+// and nothing would ever contradict it. This runs before anything is served so the
+// first progress read an operator makes already tells them the truth.
+//
+// A failure here is logged and survived: it costs one stale progress line, and
+// refusing to serve Hive over it would be a far worse trade.
+func adoptInterruptedMigrationRuns(ctx context.Context, store *db.DB) {
+	if err := store.FailInterruptedProjectMigrationRuns(ctx); err != nil {
+		logger.Log.Printf("could not settle an interrupted project migration run: %v", err)
 	}
 }
 
