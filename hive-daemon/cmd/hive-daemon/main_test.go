@@ -510,6 +510,15 @@ func TestRunStartup_ManualSaveSessionExempt(t *testing.T) {
 	}
 }
 
+// TestRunStartupMigrationExecutesOnceAndExposesReadyGate covers the maintenance
+// half of the startup migration: schema-ownership rebuild and canonical identity
+// registration, which fold no identity and therefore still run unattended behind
+// their mandatory pre-mutation backup.
+//
+// The fixture used to carry the non-canonical spelling " Foo.Bar ". Startup no
+// longer folds spellings on its own authority, so that fixture now expresses the
+// pending-review case instead and this test would have been asserting the wrong
+// path. The project is written already-canonical so only maintenance is owed.
 func TestRunStartupMigrationExecutesOnceAndExposesReadyGate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "memory.db")
 	store, err := db.Open(path)
@@ -517,10 +526,10 @@ func TestRunStartupMigrationExecutesOnceAndExposesReadyGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	if _, err := store.RawDB().Exec(`INSERT INTO sessions (id, sync_id, project, dev_id, client) VALUES ('s', 'session', ' Foo.Bar ', 'dev', 'test')`); err != nil {
+	if _, err := store.RawDB().Exec(`INSERT INTO sessions (id, sync_id, project, dev_id, client) VALUES ('s', 'session', 'foobar', 'dev', 'test')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.RawDB().Exec(`INSERT INTO memories (sync_id, project, title, content, session_id) VALUES ('memory', ' Foo.Bar ', 'title', 'content', 's')`); err != nil {
+	if _, err := store.RawDB().Exec(`INSERT INTO memories (sync_id, project, title, content, session_id) VALUES ('memory', 'foobar', 'title', 'content', 's')`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -569,13 +578,13 @@ func TestRunStartupMigrationBlocksAndPersistsContinuationOnFailure(t *testing.T)
 }
 
 // TestRunStartupMigrationExecutorFailureRetainsDatabaseAndBackup covers the seam
-// where a migration already paid for its pre-mutation backup and then aborted
-// inside its transaction: the rollback it offers must be the archive bound to that
-// exact plan, and the database must be untouched.
+// where the maintenance migration already paid for its pre-mutation backup and
+// then aborted inside its transaction: the rollback it offers must be the archive
+// bound to that exact plan, and the database must be untouched.
 //
-// It was named "Ambiguity" while its fixture was two cursors sharing a sequence.
-// The preflight now reports that collision before any mutation, so the fixture
-// moved to a failure the executor can still reach, and the name follows it.
+// It was named "Ambiguity" while its fixture was two spellings of one project.
+// Ambiguity is no longer executed at all, so the fixture moved to a failure that
+// the maintenance path can still reach, and the name follows it.
 func TestRunStartupMigrationExecutorFailureRetainsDatabaseAndBackup(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "memory.db")
 	store, err := db.Open(path)
@@ -618,8 +627,8 @@ func TestRunStartupMigrationPreflightConflictLeavesDatabaseUnmutatedAndCreatesNo
 	seedPreflightProjectConflict(t, store)
 	gate := runStartupMigration(context.Background(), store, path)
 	status := gate.Status()
-	if status.State != project.MigrationStateBlocked || status.BackupID != "" {
-		t.Fatalf("startup status = %+v, want preflight block before backup", status)
+	if status.State != project.MigrationStatePendingOperatorReview || status.BackupID != "" {
+		t.Fatalf("startup status = %+v, want a pending-review preflight stop before any backup", status)
 	}
 	backups := governance.NewSQLiteBackupStore(path, "", store.RawDB())
 	if created, err := backups.List(context.Background()); err != nil || len(created) != 0 {
@@ -683,8 +692,8 @@ func TestProjectIdentityResolveThroughDaemonResolverMergesSyncStateWithoutBackup
 	}
 	gate := runStartupMigration(context.Background(), store, path)
 	status := gate.Status()
-	if status.State != project.MigrationStateBlocked || status.BackupID != "" || status.PlanFingerprint == "" {
-		t.Fatalf("startup status = %+v, want preflight block with plan fingerprint and no backup", status)
+	if status.State != project.MigrationStatePendingOperatorReview || status.BackupID != "" || status.PlanFingerprint == "" {
+		t.Fatalf("startup status = %+v, want a pending-review stop with plan fingerprint and no backup", status)
 	}
 	srv := httpapi.NewServer("127.0.0.1:0", store)
 	srv.SetMigrationGate(gate)
@@ -744,8 +753,8 @@ func TestRunStartupMigrationPreflightBlockNeverReportsUnrelatedBackup(t *testing
 	}
 	seedPreflightProjectConflict(t, store)
 	status := runStartupMigration(context.Background(), store, path).Status()
-	if status.State != project.MigrationStateBlocked {
-		t.Fatalf("startup status = %+v, want migration-blocked", status)
+	if status.State != project.MigrationStatePendingOperatorReview {
+		t.Fatalf("startup status = %+v, want the pending-review state", status)
 	}
 	if status.BackupID != "" {
 		t.Fatalf("reported backup = %q, want empty; unrelated backup %q must never authorize a rollback", status.BackupID, unrelated.ID)
@@ -1062,7 +1071,7 @@ func TestRunStartupMigrationContentionRetryReportsTheBackupForTheReplannedPlan(t
 			if _, err := backups.EnsureTemporaryMigrationBackup(ctx, plan.Fingerprint); err != nil {
 				t.Fatalf("first attempt backup: %v", err)
 			}
-			if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES ('Other.Project', 'x')`); err != nil {
+			if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES ('other-project', 'x')`); err != nil {
 				t.Fatalf("concurrent write: %v", err)
 			}
 			return db.ErrProjectMigrationPlanStale
@@ -1089,8 +1098,9 @@ func TestRunStartupMigrationContentionRetryReportsTheBackupForTheReplannedPlan(t
 	}
 }
 
-// blockedMigrationStore opens a database whose migration plan is executable,
-// takes its pre-mutation backup, and then fails inside its transaction.
+// blockedMigrationStore opens a database whose migration plan is executable and
+// needs no operator review, takes its pre-mutation backup, and then fails inside
+// its transaction.
 func blockedMigrationStore(t *testing.T) (string, *db.DB) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "memory.db")
@@ -1108,11 +1118,13 @@ func blockedMigrationStore(t *testing.T) (string, *db.DB) {
 // that need "backup already paid for, then blocked" keep covering that seam.
 //
 // It used to be built out of two mutation cursors sharing a sequence with
-// different event ids. That collision is now reported by the read-only preflight —
-// the cursor inventory identity no longer embeds the event id it can disagree on —
-// so it can never reach the executor any more.
+// different event ids, then out of an alias whose two project columns collapse
+// into a self-reference once canonicalized. Both of those needed a non-canonical
+// spelling, which startup now refuses to execute at all, so neither can reach the
+// executor any more.
 //
-// A missing FTS trigger can: the plan is executable, the executor takes its
+// A missing FTS trigger can: the project is already canonical so the preflight
+// approves it and only unattended maintenance is owed, the executor takes its
 // backup, and the schema-ownership rebuild then refuses to rebuild content tables
 // whose triggers it cannot recreate faithfully.
 func seedInTransactionMigrationConflict(t *testing.T, store *db.DB) {
@@ -1125,6 +1137,9 @@ func seedInTransactionMigrationConflict(t *testing.T, store *db.DB) {
 	}
 }
 
+// migratableStore opens a database whose startup migration reaches execution:
+// the project spelling is already canonical, so only the unattended maintenance
+// work is owed and the contention paths below still exercise a real execute call.
 func migratableStore(t *testing.T) *db.DB {
 	t.Helper()
 	store, err := db.Open(filepath.Join(t.TempDir(), "memory.db"))
@@ -1132,7 +1147,7 @@ func migratableStore(t *testing.T) *db.DB {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES (' Foo.Bar ', 'x')`); err != nil {
+	if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES ('foobar', 'x')`); err != nil {
 		t.Fatal(err)
 	}
 	return store
