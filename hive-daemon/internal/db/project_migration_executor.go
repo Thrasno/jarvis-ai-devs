@@ -127,7 +127,7 @@ func (d *DB) ResolveProjectIdentityConflict(ctx context.Context, source, target 
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := mergeSyncStateInto(ctx, tx, source, target); err != nil {
+	if _, err := mergeSyncStateInto(ctx, tx, source, target); err != nil {
 		return err
 	}
 	key, err := registerProjectIdentity(ctx, tx, target)
@@ -140,17 +140,19 @@ func (d *DB) ResolveProjectIdentityConflict(ctx context.Context, source, target 
 	return tx.Commit()
 }
 
-// mergeSyncStateInto folds source's sync_state row into target's.
-func mergeSyncStateInto(ctx context.Context, tx *sql.Tx, source, target string) error {
+// mergeSyncStateInto folds source's sync_state row into target's and reports
+// whether the merge gave up a usable pull watermark — see resetsSyncWatermark.
+func mergeSyncStateInto(ctx context.Context, tx *sql.Tx, source, target string) (bool, error) {
 	sourceRow, err := readSyncStateRow(ctx, tx, source)
 	if err != nil {
-		return err
+		return false, err
 	}
 	targetRow, err := readSyncStateRow(ctx, tx, target)
 	if err != nil {
-		return err
+		return false, err
 	}
 	merged := mergeSyncStateRows(sourceRow, targetRow)
+	watermarkReset := resetsSyncWatermark(sourceRow, targetRow, merged)
 	columns := merged.columns()
 	assignments := make([]string, len(columns))
 	args := make([]any, len(columns)+1)
@@ -162,10 +164,39 @@ func mergeSyncStateInto(ctx context.Context, tx *sql.Tx, source, target string) 
 	}
 	args[len(columns)] = target
 	if _, err := tx.ExecContext(ctx, `UPDATE sync_state SET `+strings.Join(assignments, ",")+` WHERE project = ?`, args...); err != nil {
-		return err
+		return false, err
 	}
-	_, err = tx.ExecContext(ctx, `DELETE FROM sync_state WHERE project = ?`, source)
-	return err
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sync_state WHERE project = ?`, source); err != nil {
+		return false, err
+	}
+	return watermarkReset, nil
+}
+
+// resetsSyncWatermark reports a merge that cleared a pull position the project
+// could actually have used.
+//
+// keepEarlierSyncWatermark clears last_sync_at whenever the two rows cannot be
+// ordered, which makes that project re-pull its full window on its next sync. That
+// is safe and idempotent — SaveFromRemote uses INSERT OR IGNORE — but from the
+// outside it is indistinguishable from a fold that lost the sync position, so it
+// has to be reported by name rather than left for the operator to notice.
+//
+// "Could actually have used" is the whole condition: a watermark that was already
+// NULL or already unparseable was never a usable position, so clearing it gives up
+// nothing and reporting it would cry wolf on every merge of two never-synced rows.
+func resetsSyncWatermark(source, target, merged syncStateMergeRow) bool {
+	if merged.LastSyncAt.Valid {
+		return false
+	}
+	for _, candidate := range []sql.NullString{source.LastSyncAt, target.LastSyncAt} {
+		if !candidate.Valid {
+			continue
+		}
+		if _, err := parseTimeStr(candidate.String); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func readSyncStateRow(ctx context.Context, tx *sql.Tx, project string) (syncStateMergeRow, error) {
@@ -313,6 +344,7 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 		return nil
 	}
 	summary := ProjectMigrationSummary{Ran: true}
+	database.reportProjectMigrationPhase(ProjectMigrationPhaseBackup)
 	if err := backup(ctx); err != nil {
 		return fmt.Errorf("create pre-mutation backup: %w", err)
 	}
@@ -321,6 +353,7 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	database.reportProjectMigrationPhase(ProjectMigrationPhaseRevalidate)
 	records, err = readProjectMigrationRecords(ctx, tx)
 	if err != nil {
 		return err
@@ -328,25 +361,30 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 	if BuildProjectMigrationPlan(records).Fingerprint != plan.Fingerprint {
 		return ErrProjectMigrationPlanStale
 	}
+	database.reportProjectMigrationPhase(ProjectMigrationPhaseRegistry)
 	if err := populateProjectIdentityRegistry(ctx, tx, records); err != nil {
 		return err
 	}
+	database.reportProjectMigrationPhase(ProjectMigrationPhaseCompositeCursors)
 	if err := rekeyCompositeCursors(ctx, tx); err != nil {
 		return err
 	}
 	if err := rekeyGovernanceComposites(ctx, tx); err != nil {
 		return err
 	}
-	if err := coalesceProjectSyncState(ctx, tx, records); err != nil {
+	database.reportProjectMigrationPhase(ProjectMigrationPhaseSyncStateCoalesce)
+	if err := coalesceProjectSyncState(ctx, tx, records, &summary); err != nil {
 		return err
 	}
 	// Propagation is enqueued BEFORE the rekey, while each row still carries the
 	// raw spelling that identifies which old literal the server holds for it.
 	// After the rekey two folded spellings ("Foo.Bar" and "foo.bar") are
 	// indistinguishable, and from_project would be a guess.
+	database.reportProjectMigrationPhase(ProjectMigrationPhasePropagationEnqueue)
 	if err := enqueueProjectRelocationPropagation(ctx, tx, records, &summary); err != nil {
 		return err
 	}
+	database.reportProjectMigrationPhase(ProjectMigrationPhaseRekey)
 	// Re-key each raw spelling separately: SQLite deliberately does not derive keys.
 	for _, rekey := range planProjectRekeys(records) {
 		result, err := tx.ExecContext(ctx, `UPDATE `+string(rekey.Table)+` SET `+rekey.Column+` = ? WHERE `+rekey.Column+` = ?`, rekey.To, rekey.From)
@@ -358,6 +396,7 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 		}
 	}
 	if ownershipNeeded {
+		database.reportProjectMigrationPhase(ProjectMigrationPhaseOwnershipRebuild)
 		if err := rebuildStandaloneProjectOwnershipTables(ctx, tx); err != nil {
 			return err
 		}
@@ -370,9 +409,11 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 			return err
 		}
 	}
+	database.reportProjectMigrationPhase(ProjectMigrationPhaseRebuildState)
 	if err := rebuildProjectMigrationState(ctx, tx); err != nil {
 		return err
 	}
+	database.reportProjectMigrationPhase(ProjectMigrationPhaseCommit)
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -538,7 +579,7 @@ func projectMigrationNeeded(records []ProjectStateRecord) bool {
 // that decision — a row identical to the survivor's original state cannot carry
 // anything a previous merge into the survivor removed, and the one column a merge
 // can lower, last_sync_at, only ever moves further down.
-func coalesceProjectSyncState(ctx context.Context, tx *sql.Tx, records []ProjectStateRecord) error {
+func coalesceProjectSyncState(ctx context.Context, tx *sql.Tx, records []ProjectStateRecord, summary *ProjectMigrationSummary) error {
 	groups := make(map[string][]ProjectStateRecord)
 	for _, record := range records {
 		if record.Table == ProjectStateSyncState {
@@ -546,12 +587,21 @@ func coalesceProjectSyncState(ctx context.Context, tx *sql.Tx, records []Project
 			groups[key] = append(groups[key], record)
 		}
 	}
-	for key, group := range groups {
+	keys := make([]string, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	// Sorted so the reported reset list is deterministic: it reaches an operator
+	// as a result payload, and a set that reshuffles between reads reads as churn.
+	sort.Strings(keys)
+	for _, key := range keys {
+		group := groups[key]
 		if len(group) < 2 {
 			continue
 		}
 		sort.Slice(group, func(i, j int) bool { return group[i].Project < group[j].Project })
 		survivor := group[0]
+		watermarkReset := false
 		for _, record := range group[1:] {
 			if record.Value == survivor.Value {
 				if _, err := tx.ExecContext(ctx, `DELETE FROM sync_state WHERE project = ?`, record.Project); err != nil {
@@ -559,12 +609,17 @@ func coalesceProjectSyncState(ctx context.Context, tx *sql.Tx, records []Project
 				}
 				continue
 			}
-			if err := mergeSyncStateInto(ctx, tx, record.Project, survivor.Project); err != nil {
+			reset, err := mergeSyncStateInto(ctx, tx, record.Project, survivor.Project)
+			if err != nil {
 				return fmt.Errorf("merge sync_state %s: %w", key, err)
 			}
+			watermarkReset = watermarkReset || reset
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE sync_state SET project = ? WHERE project = ?`, key, survivor.Project); err != nil {
 			return err
+		}
+		if watermarkReset && summary != nil {
+			summary.SyncPositionsReset = append(summary.SyncPositionsReset, key)
 		}
 	}
 	return nil
@@ -830,6 +885,11 @@ type ProjectMigrationSummary struct {
 	ReprojectsEnqueued int64
 	SessionsRequeued   int64
 	PromptsRequeued    int64
+	// SyncPositionsReset names the canonical projects whose sync_state merge gave
+	// up a usable pull watermark, so the full-window re-pull that follows reads as
+	// a reported consequence of the fold rather than as a fault. See
+	// resetsSyncWatermark.
+	SyncPositionsReset []string
 }
 
 // LastProjectMigrationSummary reports what the most recent ExecuteProjectMigration

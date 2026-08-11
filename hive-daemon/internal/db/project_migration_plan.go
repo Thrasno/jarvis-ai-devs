@@ -81,6 +81,22 @@ type ProjectMigrationGroup struct {
 	DisplaySource DisplaySource
 	Records       int
 	Coalesced     int
+	// Variants are the distinct raw spellings this group folds, sorted. Records is
+	// a row count and means nothing to a human; these are the names the operator
+	// chose, and recognizing them is the only way they can approve the fold.
+	Variants []ProjectMigrationVariant
+}
+
+// ProjectMigrationVariant is one stored spelling of a project.
+//
+// Canonical is carried explicitly rather than left for a caller to derive by
+// comparing Spelling against the group Key: whether a spelling is already
+// canonical is what decides if the fold rewrites it, and a client re-deriving that
+// would be reimplementing the rule the daemon just applied. So a wizard can say
+// "these three become that one" by reading the flag.
+type ProjectMigrationVariant struct {
+	Spelling  string
+	Canonical bool
 }
 
 // DisplaySource makes display-name precedence auditable before execution.
@@ -147,7 +163,8 @@ func BuildProjectMigrationPlan(records []ProjectStateRecord) ProjectMigrationPla
 
 func makeMigrationGroup(key string, records []ProjectStateRecord, conflicts *[]MigrationConflict) ProjectMigrationGroup {
 	display, source := displayFor(records)
-	group := ProjectMigrationGroup{Key: key, Records: len(records), Display: display, DisplaySource: source}
+	group := ProjectMigrationGroup{Key: key, Records: len(records), Display: display, DisplaySource: source,
+		Variants: migrationVariants(key, records)}
 	seen := make(map[string]string)
 	for _, record := range records {
 		identity := string(record.Table) + "\x00" + record.Identity
@@ -175,6 +192,34 @@ func makeMigrationGroup(key string, records []ProjectStateRecord, conflicts *[]M
 // contradiction no rule can settle.
 func mergeableOnCollision(table ProjectState) bool {
 	return table == ProjectStateSyncState
+}
+
+// migrationVariants reduces a group's rows to its distinct spellings.
+//
+// Distinct because a project with 148 rows across two spellings is two variants,
+// not 148 — the operator is deciding about names, not rows. Sorted because this
+// feeds planFingerprint, and a variant order that followed the inventory reader's
+// row order would give the same database a different fingerprint on every read,
+// so every approval would come back stale.
+//
+// A group may legitimately have no canonical variant: if every stored spelling
+// needs rewriting, the canonical key is a name that exists nowhere yet.
+func migrationVariants(key string, records []ProjectStateRecord) []ProjectMigrationVariant {
+	seen := make(map[string]bool, len(records))
+	spellings := make([]string, 0, len(records))
+	for _, record := range records {
+		if seen[record.Project] {
+			continue
+		}
+		seen[record.Project] = true
+		spellings = append(spellings, record.Project)
+	}
+	sort.Strings(spellings)
+	variants := make([]ProjectMigrationVariant, 0, len(spellings))
+	for _, spelling := range spellings {
+		variants = append(variants, ProjectMigrationVariant{Spelling: spelling, Canonical: spelling == key})
+	}
+	return variants
 }
 
 func displayFor(records []ProjectStateRecord) (string, DisplaySource) {

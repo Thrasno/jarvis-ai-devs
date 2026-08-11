@@ -40,7 +40,12 @@ func fullyWiredGatedServer(t *testing.T, status project.MigrationStatus) *httpap
 	backups := governance.NewSQLiteBackupStore(dbPath, "", store.RawDB())
 	srv := httpapi.NewServerWithAll("127.0.0.1:0", store, store,
 		governance.NewServiceWithBackup(store, backups), nil, mockHealthSummaryService{}, store)
-	srv.SetMigrationGate(project.NewMigrationGate(status))
+	gate := project.NewMigrationGate(status)
+	srv.SetMigrationGate(gate)
+	// The wizard routes are wired with the real runner so an admitted route has to
+	// reach a served handler rather than the "unavailable" answer an unwired
+	// service would give, which would let the matrix pass without proving anything.
+	srv.SetMigrationExecution(governance.NewProjectMigrationRunner(store, backups, gate))
 	return srv
 }
 
@@ -88,6 +93,11 @@ func TestPendingMigrationGateAdmitsExactlyTheTUISnapshotReadsAndNoWrites(t *test
 		{"snapshot backups", http.MethodGet, "/governance/backups"},
 		{"snapshot project timeline", http.MethodGet, "/governance/projects/alpha/timeline"},
 		{"identity status", http.MethodGet, "/governance/project-identity/status"},
+		// The wizard's own three routes: it cannot review a plan it cannot read,
+		// approve a fold it cannot post, or report a result it cannot poll.
+		{"identity plan", http.MethodGet, "/governance/project-identity/plan"},
+		{"identity progress", http.MethodGet, "/governance/project-identity/progress"},
+		{"identity execute", http.MethodPost, "/governance/project-identity/execute"},
 		{"identity resolve", http.MethodPost, "/governance/project-identity/resolve"},
 		{"restore request", http.MethodPost, "/governance/restores"},
 		{"identity retry", http.MethodPost, "/governance/project-identity/retry"},
@@ -159,6 +169,12 @@ func TestFailedMigrationGateStillAdmitsOnlyTheRecoveryRoutes(t *testing.T) {
 		{http.MethodGet, "/governance/projects"}, {http.MethodGet, "/governance/memories"},
 		{http.MethodGet, "/governance/capabilities"}, {http.MethodGet, "/governance/warnings"},
 		{http.MethodGet, "/governance/backups"}, {http.MethodGet, "/governance/projects/alpha/timeline"},
+		// The wizard routes belong to the pending state only. A migration that
+		// failed mid-flight proves nothing about what is on disk, so reviewing and
+		// approving a fresh fold there is exactly the wrong offer.
+		{http.MethodGet, "/governance/project-identity/plan"},
+		{http.MethodGet, "/governance/project-identity/progress"},
+		{http.MethodPost, "/governance/project-identity/execute"},
 	} {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
 			rr := httptest.NewRecorder()

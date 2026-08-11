@@ -312,7 +312,7 @@ func coalesceMigrationSyncState(t *testing.T, database *DB) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := coalesceProjectSyncState(ctx, tx, records); err != nil {
+	if err := coalesceProjectSyncState(ctx, tx, records, nil); err != nil {
 		t.Fatalf("coalesceProjectSyncState() error = %v", err)
 	}
 	if err := tx.Commit(); err != nil {
