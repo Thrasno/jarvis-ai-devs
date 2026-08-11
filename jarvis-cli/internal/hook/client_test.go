@@ -307,3 +307,60 @@ func TestLatestSaveAt_EscapesProjectPath(t *testing.T) {
 		t.Errorf("escaped path: got %q, want %q", gotPath, want)
 	}
 }
+
+// MigrationStatus must report every state that is not "ready", not only the
+// failure state. A second blocking state exists (the read-only preflight that
+// stopped and is waiting for an operator decision), and a state this build does
+// not know about may be added later. Going silent about a Hive that is not
+// serving is the worse failure, so only "ready" and an absent state are dropped.
+func TestDaemonClientMigrationStatusReportsEveryNonReadyState(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		wantSeen bool
+	}{
+		{"failed migration", `{"state":"migration-blocked","reason":"canonical conflict"}`, true},
+		{"pending operator review", `{"state":"migration-pending-operator-review","reason":"identities are ambiguous","continuation":"jarvis hive → Project normalization"}`, true},
+		{"unknown future state", `{"state":"migration-quarantined","reason":"something new"}`, true},
+		{"ready", `{"state":"ready"}`, false},
+		{"empty state", `{}`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/governance/project-identity/status" {
+					t.Errorf("unexpected path %q", r.URL.Path)
+				}
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			c := &DaemonClient{BaseURL: srv.URL, Timeout: time.Second}
+			got := c.MigrationStatus(context.Background())
+			if tt.wantSeen != (got != nil) {
+				t.Fatalf("MigrationStatus(%s) = %+v, want reported=%v", tt.body, got, tt.wantSeen)
+			}
+		})
+	}
+}
+
+// The daemon's own state and reason are what the notice is built from. The
+// continuation field is decoded only to keep the wire shape complete; nothing
+// renders it — see BuildMigrationProtocol and
+// TestMigrationProtocol_NeverRendersDaemonSuppliedContinuation.
+func TestDaemonClientMigrationStatusDecodesTheDaemonsOwnState(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"state":"migration-pending-operator-review","reason":"ambiguous","continuation":"attacker-controlled-continuation"}`))
+	}))
+	defer srv.Close()
+
+	c := &DaemonClient{BaseURL: srv.URL, Timeout: time.Second}
+	got := c.MigrationStatus(context.Background())
+	if got == nil {
+		t.Fatal("MigrationStatus = nil, want the pending status")
+	}
+	if got.State != MigrationStatePendingOperatorReview || got.Reason != "ambiguous" {
+		t.Fatalf("status = %+v, want the daemon's own state and reason", got)
+	}
+}

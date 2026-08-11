@@ -142,14 +142,24 @@ const RestoreStatusRestartRequested = "restart-requested"
 // earlier start of the same blocked migration may be the one that took it.
 // PlanFingerprint identifies the exact plan the operator was shown and is the
 // guard an identity resolution must echo back.
+//
+// The wire shape is exactly the daemon's project.MigrationStatus. It once also
+// declared conflicts and variants; no daemon has ever emitted those keys, so they
+// only ever decoded as nil and the CLI lines that printed them could never
+// produce output outside a hand-written test fixture (issue #541).
+//
+// Continuation is kept for wire compatibility — an older and a newer daemon both
+// send it — but is deliberately never rendered. It would be printed as a command
+// for the operator to run, and commit 9af78aa9 ("fix(hive): secure global context
+// hooks") settled that the daemon's continuation is untrusted text; see
+// internal/agent.TestOpenCodeMigrationStatusIgnoresAdvisoryContinuation. The
+// printed next step is derived locally from State in cmd/hive.
 type MigrationIdentityStatus struct {
-	State           string   `json:"state"`
-	Reason          string   `json:"reason,omitempty"`
-	Continuation    string   `json:"continuation,omitempty"`
-	BackupID        string   `json:"backup_id,omitempty"`
-	PlanFingerprint string   `json:"plan_fingerprint,omitempty"`
-	Conflicts       []string `json:"conflicts,omitempty"`
-	Variants        []string `json:"variants,omitempty"`
+	State           string `json:"state"`
+	Reason          string `json:"reason,omitempty"`
+	Continuation    string `json:"continuation,omitempty"`
+	BackupID        string `json:"backup_id,omitempty"`
+	PlanFingerprint string `json:"plan_fingerprint,omitempty"`
 }
 
 type IdentityResolutionRequest struct {

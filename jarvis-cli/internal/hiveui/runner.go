@@ -132,6 +132,14 @@ func LoadSnapshot(ctx context.Context, c *hiveclient.Client, baseURL string, sel
 		snap.SyncSummary = &summary
 	}
 
+	// Project-identity gate state — optional. An error leaves it empty, which the
+	// dashboard reads as "nothing pending" rather than blocking every action on a
+	// failed probe.
+	identity, err := c.MigrationIdentityStatus(ctx)
+	if err == nil {
+		snap.MigrationState = identity.State
+	}
+
 	return snap
 }
 
@@ -159,7 +167,7 @@ func RunHiveTUI(ctx context.Context, baseURL string) error {
 	}
 
 	snap := LoadSnapshot(ctx, client, baseURL, "")
-	m := NewModelWithConfig(snap, client, client, client, client, client, client, client)
+	m := NewModelWithConfig(snap, client, client, client, client, client, client, client, client)
 	m.guardWorkflow = client
 	m.guardEnabled = snap.Capabilities != nil && snap.Capabilities.SupportsGuardedDeleteRestore()
 
@@ -190,7 +198,7 @@ func RunTimelineTUI(ctx context.Context, baseURL string, project string) error {
 		}
 	}
 
-	m := NewModelWithConfig(snap, client, client, client, client, client, client, client)
+	m := NewModelWithConfig(snap, client, client, client, client, client, client, client, client)
 	m.guardWorkflow = client
 	m.guardEnabled = snap.Capabilities != nil && snap.Capabilities.SupportsGuardedDeleteRestore()
 	m.screen = ScreenTimeline
