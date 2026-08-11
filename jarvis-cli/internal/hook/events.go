@@ -45,7 +45,7 @@ func RunSessionStart(ctx context.Context, r io.Reader, w io.Writer, baseURL stri
 
 	protocol := BuildHiveProtocolText(canonical)
 	if status := client.MigrationStatus(ctx); status != nil {
-		protocol += "\n\n" + BuildMigrationBlockedProtocol(status.Reason, status.BackupID)
+		protocol += "\n\n" + BuildMigrationProtocol(*status)
 	}
 	WriteResponse(w, HookResponse{AdditionalContext: protocol})
 }

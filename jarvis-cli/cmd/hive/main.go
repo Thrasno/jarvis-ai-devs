@@ -167,6 +167,25 @@ func projectIdentityCommand(client governanceClient) *cobra.Command {
 	return cmd
 }
 
+// The daemon's two non-serving migration states, mirrored from
+// hive-daemon/internal/project.MigrationState*. Both block Hive, so both need the
+// recovery guidance, but only one of them ever touched the database.
+const (
+	migrationStateBlocked               = "migration-blocked"
+	migrationStatePendingOperatorReview = "migration-pending-operator-review"
+)
+
+// The next step printed for each blocking state. These are local literals, and
+// status.Continuation is deliberately not printed even though the daemon sends
+// it: this line invites the operator to run a command, and commit 9af78aa9
+// ("fix(hive): secure global context hooks") settled that the daemon's
+// continuation is untrusted text that must not be rendered as one. Routing on
+// State instead is safe because it is a small closed set validated above.
+const (
+	migrationStatusCommand        = "hive project identity status"
+	migrationNormalizationCommand = "jarvis hive → Project normalization"
+)
+
 func projectIdentityStatusCommand(client governanceClient) *cobra.Command {
 	return &cobra.Command{Use: "status", Short: "Show canonical identity migration recovery state", RunE: func(cmd *cobra.Command, _ []string) error {
 		status, err := client.MigrationIdentityStatus(cmd.Context())
@@ -174,23 +193,32 @@ func projectIdentityStatusCommand(client governanceClient) *cobra.Command {
 			return err
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "state=%s reason=%s backup=%s plan=%s\n", emptyDash(status.State), emptyDash(status.Reason), emptyDash(status.BackupID), emptyDash(status.PlanFingerprint))
-		for _, conflict := range status.Conflicts {
-			fmt.Fprintf(cmd.OutOrStdout(), "conflict=%s\n", conflict)
+		if status.State != migrationStateBlocked && status.State != migrationStatePendingOperatorReview {
+			return nil
 		}
-		for _, variant := range status.Variants {
-			fmt.Fprintf(cmd.OutOrStdout(), "variant=%s\n", variant)
+		// The state selects the next step: the failure state is recovered from this
+		// CLI, while an ambiguous identity can only be resolved in the TUI wizard.
+		// A fixed command for both was wrong; the daemon's own text is not the fix.
+		continuation := migrationStatusCommand
+		if status.State == migrationStatePendingOperatorReview {
+			continuation = migrationNormalizationCommand
 		}
-		if status.State == "migration-blocked" {
-			fmt.Fprintln(cmd.OutOrStdout(), "continuation=hive project identity status")
-			if status.BackupID == "" {
-				// An empty backup id covers three outcomes the daemon cannot tell
-				// apart on the wire: none was created, the archive passed its
-				// retention, or it failed its checksum. Naming only the first
-				// would contradict the daemon's own corruption log.
-				fmt.Fprintln(cmd.OutOrStdout(), "No migration backup is available for this block (none was created, its retention expired, or its archive failed checksum validation); rollback is unavailable.")
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), "Choose explicit --source and --target before a concrete resolve command can exist.")
+		fmt.Fprintf(cmd.OutOrStdout(), "continuation=%s\n", continuation)
+		// Everything below is specific to a migration that ran and failed. A
+		// pending operator review attempted nothing, so it took no archive and
+		// there is nothing to roll back or to aim a resolve command at; saying so
+		// there would describe a failure that never happened.
+		if status.State != migrationStateBlocked {
+			return nil
 		}
+		if status.BackupID == "" {
+			// An empty backup id covers three outcomes the daemon cannot tell
+			// apart on the wire: none was created, the archive passed its
+			// retention, or it failed its checksum. Naming only the first
+			// would contradict the daemon's own corruption log.
+			fmt.Fprintln(cmd.OutOrStdout(), "No migration backup is available for this block (none was created, its retention expired, or its archive failed checksum validation); rollback is unavailable.")
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "Choose explicit --source and --target before a concrete resolve command can exist.")
 		return nil
 	}}
 }

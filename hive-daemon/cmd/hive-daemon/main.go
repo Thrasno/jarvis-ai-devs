@@ -50,6 +50,8 @@ func run() int {
 
 	logger.Log.Printf("database: %s", dbPath)
 
+	adoptInterruptedMigrationRuns(rootCtx, store)
+
 	recoveryTTL, err := project.ParseRecoveryTokenTTL(os.Getenv("HIVE_RECOVERY_TOKEN_TTL"))
 	if err != nil {
 		logger.Log.Fatalf("invalid HIVE_RECOVERY_TOKEN_TTL: %v", err)
@@ -85,6 +87,11 @@ func run() int {
 			return governance.ScheduleRestore(dbPath, req)
 		})
 		srv.SetMigrationIdentityResolver(newMigrationIdentityResolver(store, gate))
+		// The wizard's fold owner holds the same gate pointer every other surface
+		// holds, so a successful fold opens Hive back up in place — MCP tools
+		// included — without asking the operator to restart the editor session that
+		// spawned this daemon.
+		srv.SetMigrationExecution(governance.NewProjectMigrationRunner(store, backupStore, gate))
 		if err := srv.Start(rootCtx); err != nil {
 			logger.Log.Printf("http server stopped: %v (mcp continues)", err)
 		}
@@ -192,6 +199,23 @@ func newMigrationIdentityResolver(store *db.DB, gate *project.MigrationGate) fun
 	}
 }
 
+// adoptInterruptedMigrationRuns settles a fold record left behind by a process
+// that died mid-transaction.
+//
+// hive-daemon is spawned per MCP client session, so a fold can genuinely be cut
+// off by the client going away. The transaction rolled back with the process, so
+// nothing was applied, but the persisted record still claims a fold is in flight
+// and nothing would ever contradict it. This runs before anything is served so the
+// first progress read an operator makes already tells them the truth.
+//
+// A failure here is logged and survived: it costs one stale progress line, and
+// refusing to serve Hive over it would be a far worse trade.
+func adoptInterruptedMigrationRuns(ctx context.Context, store *db.DB) {
+	if err := store.FailInterruptedProjectMigrationRuns(ctx); err != nil {
+		logger.Log.Printf("could not settle an interrupted project migration run: %v", err)
+	}
+}
+
 func runStartupMigration(ctx context.Context, store *db.DB, dbPath string) *project.MigrationGate {
 	backups := governance.NewSQLiteBackupStore(dbPath, "", store.RawDB())
 	return runStartupMigrationWithBackup(ctx, store, func(ctx context.Context, plan db.ProjectMigrationPlan) error {
@@ -220,15 +244,47 @@ func migrationBackupIDForPlan(ctx context.Context, backups *governance.BackupSto
 	return backup.ID
 }
 
-func planAndExecuteMigration(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error) (db.ProjectMigrationPlan, error) {
-	plan, err := db.ReadProjectMigrationPlan(ctx, store)
-	if err == nil && !plan.Executable {
-		err = db.ErrProjectMigrationPlanUnsafe
+// preflightAndMaintainMigration looks before it writes, and writes only what
+// needs no permission.
+//
+// Startup used to plan and execute in one breath, which meant a daemon start
+// silently folded two spellings of a project into one. That is a decision about
+// the operator's own names and it is not startup's to make, so a preflight that
+// finds duplicate spellings — or a plan the planner refused — returns without
+// executing and lets the caller install a gate.
+//
+// The rest of the executor's work is not a decision: populating the canonical
+// identity registry is an idempotent INSERT ... ON CONFLICT DO NOTHING, and the
+// schema-ownership rebuild only moves the same rows into tables that declare the
+// foreign key. Neither folds an identity, so both still run unattended with the
+// executor's own mandatory pre-mutation backup. Holding them for a confirmation
+// would wedge Hive on a routine upgrade with nothing for the operator to decide.
+func preflightAndMaintainMigration(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error) (db.ProjectMigrationPreflight, error) {
+	preflight, err := db.ReadProjectMigrationPreflight(ctx, store)
+	if err != nil || preflight.NeedsOperatorReview() {
+		return preflight, err
 	}
-	if err == nil {
-		err = execute(ctx, plan)
+	return preflight, execute(ctx, preflight.Plan)
+}
+
+// pendingProjectMigrationStatus describes a plan nobody has approved yet.
+//
+// BackupID is deliberately absent: this path never reached a mutation, so it
+// never took an archive, and an unrelated older backup must never be offered as
+// this plan's rollback. PlanFingerprint stays, because it is the guard the
+// operator's resolution is checked against.
+func pendingProjectMigrationStatus(preflight db.ProjectMigrationPreflight) project.MigrationStatus {
+	reason := "project identity migration would fold duplicate project spellings and needs an explicit operator decision"
+	if len(preflight.Plan.Conflicts) != 0 {
+		reason = fmt.Sprintf(
+			"project identity migration reports %d unresolved identity conflict(s) and needs an explicit operator decision",
+			len(preflight.Plan.Conflicts))
 	}
-	return plan, err
+	return project.MigrationStatus{
+		State:           project.MigrationStatePendingOperatorReview,
+		Reason:          reason,
+		PlanFingerprint: preflight.Plan.Fingerprint,
+	}
 }
 
 func runStartupMigrationWith(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error) *project.MigrationGate {
@@ -258,13 +314,22 @@ func logProjectMigrationSummary(summary db.ProjectMigrationSummary, elapsed time
 
 func runStartupMigrationWithBackup(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error, backups *governance.BackupStore) *project.MigrationGate {
 	started := time.Now()
-	plan, err := planAndExecuteMigration(ctx, store, execute)
+	preflight, err := preflightAndMaintainMigration(ctx, store, execute)
 	if db.IsProjectMigrationContention(err) {
-		// Another daemon process was migrating the same database. Its
-		// transaction has committed or rolled back by now, so re-planning
-		// against the current state either finds nothing left to do or applies
-		// cleanly; only a second failure is a real block on this session.
-		plan, err = planAndExecuteMigration(ctx, store, execute)
+		// Another daemon process was writing the same database. Its transaction
+		// has committed or rolled back by now, so a fresh preflight either finds
+		// nothing left to do or applies cleanly; only a second failure is a real
+		// block on this session. The whole preflight repeats rather than just the
+		// execution, because the peer may have changed what the plan should be —
+		// including turning maintenance into something that now needs review.
+		preflight, err = preflightAndMaintainMigration(ctx, store, execute)
+	}
+	plan := preflight.Plan
+	if err == nil && preflight.NeedsOperatorReview() {
+		// Nothing was written, so nothing is persisted either: a HiveWarning row
+		// would itself be the mutation this path promises not to make. The gate
+		// carries the whole story to every surface instead.
+		return project.NewMigrationGate(pendingProjectMigrationStatus(preflight))
 	}
 	if err == nil {
 		logProjectMigrationSummary(store.LastProjectMigrationSummary(), time.Since(started))

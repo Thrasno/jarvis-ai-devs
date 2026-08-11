@@ -39,6 +39,16 @@ type DaemonClient struct {
 	Timeout time.Duration
 }
 
+// MigrationStatus is the daemon's migration-gate status as it arrives on the wire.
+//
+// Continuation is decoded to keep the wire shape complete — an older and a newer
+// daemon both send it — but it is deliberately never rendered. It would land in
+// the model's session context as a command to act on, and commit 9af78aa9
+// ("fix(hive): secure global context hooks") settled that the daemon's
+// continuation is untrusted text for exactly that reason; see
+// internal/agent.TestOpenCodeMigrationStatusIgnoresAdvisoryContinuation, which
+// pins the same rule for the OpenCode plugin. The rendered next step is derived
+// locally from State — see migrationProtocolContinuation.
 type MigrationStatus struct {
 	State        string `json:"state"`
 	Reason       string `json:"reason"`
@@ -133,13 +143,27 @@ func (c *DaemonClient) get(ctx context.Context, path string) ([]byte, bool) {
 	return data, true
 }
 
+// MigrationStatus reports the daemon's migration-gate status whenever Hive is not
+// serving, and nil otherwise.
+//
+// The test is deliberately inverted: everything except MigrationStateReady (and
+// an absent state, which an unrelated response body also produces) is reported.
+// Matching one known failure literal instead went silent for the second blocking
+// state the daemon later added, so a normalization waiting on the operator
+// reached no session context at all and nobody was told. A state this build does
+// not recognize surfaces for the same reason — an over-reported block is a
+// nuisance, a silent one is undiagnosable.
 func (c *DaemonClient) MigrationStatus(ctx context.Context) *MigrationStatus {
 	data, ok := c.get(ctx, "/governance/project-identity/status")
 	if !ok {
 		return nil
 	}
 	var status MigrationStatus
-	if json.Unmarshal(data, &status) != nil || status.State != "migration-blocked" {
+	if json.Unmarshal(data, &status) != nil {
+		return nil
+	}
+	state := strings.TrimSpace(status.State)
+	if state == "" || state == MigrationStateReady {
 		return nil
 	}
 	return &status

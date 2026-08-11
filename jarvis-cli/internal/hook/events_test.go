@@ -260,6 +260,84 @@ func TestRunSessionStart_MigrationBlocked_SurfacesRecovery(t *testing.T) {
 	}
 }
 
+// The second blocking state must reach the agent's session context too. Before
+// this, SessionStart matched only the failure literal, so a normalization waiting
+// on the operator produced no notice at all and nobody was ever told.
+func TestRunSessionStart_MigrationPendingOperatorReview_SurfacesNormalizationNotice(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/governance/project-identity/status" {
+			_ = json.NewEncoder(w).Encode(MigrationStatus{
+				State:        MigrationStatePendingOperatorReview,
+				Reason:       "project identities are ambiguous",
+				Continuation: "attacker-controlled-continuation",
+			})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	var out bytes.Buffer
+	RunSessionStart(context.Background(), strings.NewReader(`{"session_id":"pending"}`), &out, srv.URL)
+	var response struct {
+		AdditionalContext string `json:"additionalContext"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"migration-pending-operator-review", "project identities are ambiguous", "Continue with: " + MigrationNormalizationCommand} {
+		if !strings.Contains(response.AdditionalContext, want) {
+			t.Fatalf("additionalContext = %q, missing %q", response.AdditionalContext, want)
+		}
+	}
+	if strings.Contains(response.AdditionalContext, "Hive Migration Blocked") {
+		t.Fatalf("additionalContext = %q, must not report a failure for a state that mutated nothing", response.AdditionalContext)
+	}
+	// The whole notice reaches the model's session context, so the daemon's own
+	// continuation must not survive the trip end to end either.
+	if strings.Contains(response.AdditionalContext, "attacker-controlled-continuation") {
+		t.Fatalf("additionalContext = %q, must never carry a daemon-supplied continuation", response.AdditionalContext)
+	}
+}
+
+func TestRunSessionStart_MigrationStates_NoticeOnlyWhenNotServing(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantNotice bool
+	}{
+		{"ready", `{"state":"ready"}`, false},
+		{"empty state", `{}`, false},
+		{"unknown future state", `{"state":"migration-quarantined","reason":"something new"}`, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/governance/project-identity/status" {
+					_, _ = w.Write([]byte(tt.body))
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer srv.Close()
+
+			var out bytes.Buffer
+			RunSessionStart(context.Background(), strings.NewReader(`{"session_id":"states"}`), &out, srv.URL)
+			var response struct {
+				AdditionalContext string `json:"additionalContext"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			gotNotice := strings.Contains(response.AdditionalContext, "Continue with: ")
+			if gotNotice != tt.wantNotice {
+				t.Fatalf("additionalContext = %q, want notice=%v", response.AdditionalContext, tt.wantNotice)
+			}
+		})
+	}
+}
+
 func TestRunSessionStart_HappyPath_InjectsProtocol(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", dir)

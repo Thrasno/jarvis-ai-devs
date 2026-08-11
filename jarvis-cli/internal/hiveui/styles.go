@@ -40,6 +40,10 @@ var (
 	readOnlyBanner = lipgloss.NewStyle().Foreground(terminalui.ColorTeal)
 	guardPending   = lipgloss.NewStyle().Foreground(terminalui.ColorYellow).Bold(true)
 
+	// Live confirmation-match feedback for typed-confirmation destructive flows.
+	confirmationMatchStyle   = lipgloss.NewStyle().Foreground(terminalui.ColorGreen).Bold(true)
+	confirmationPendingStyle = lipgloss.NewStyle().Foreground(terminalui.ColorOverlay2)
+
 	// Mode/status badges — aliases to terminalui
 	badgeNormal      = terminalui.BadgeNormal
 	badgeAuthFailed  = terminalui.BadgeAuthFailed

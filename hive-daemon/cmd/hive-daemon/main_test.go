@@ -510,6 +510,15 @@ func TestRunStartup_ManualSaveSessionExempt(t *testing.T) {
 	}
 }
 
+// TestRunStartupMigrationExecutesOnceAndExposesReadyGate covers the maintenance
+// half of the startup migration: schema-ownership rebuild and canonical identity
+// registration, which fold no identity and therefore still run unattended behind
+// their mandatory pre-mutation backup.
+//
+// The fixture used to carry the non-canonical spelling " Foo.Bar ". Startup no
+// longer folds spellings on its own authority, so that fixture now expresses the
+// pending-review case instead and this test would have been asserting the wrong
+// path. The project is written already-canonical so only maintenance is owed.
 func TestRunStartupMigrationExecutesOnceAndExposesReadyGate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "memory.db")
 	store, err := db.Open(path)
@@ -517,10 +526,10 @@ func TestRunStartupMigrationExecutesOnceAndExposesReadyGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	if _, err := store.RawDB().Exec(`INSERT INTO sessions (id, sync_id, project, dev_id, client) VALUES ('s', 'session', ' Foo.Bar ', 'dev', 'test')`); err != nil {
+	if _, err := store.RawDB().Exec(`INSERT INTO sessions (id, sync_id, project, dev_id, client) VALUES ('s', 'session', 'foobar', 'dev', 'test')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.RawDB().Exec(`INSERT INTO memories (sync_id, project, title, content, session_id) VALUES ('memory', ' Foo.Bar ', 'title', 'content', 's')`); err != nil {
+	if _, err := store.RawDB().Exec(`INSERT INTO memories (sync_id, project, title, content, session_id) VALUES ('memory', 'foobar', 'title', 'content', 's')`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -568,33 +577,34 @@ func TestRunStartupMigrationBlocksAndPersistsContinuationOnFailure(t *testing.T)
 	}
 }
 
-func TestRunStartupMigrationAmbiguityRetainsDatabaseAndBackup(t *testing.T) {
+// TestRunStartupMigrationExecutorFailureRetainsDatabaseAndBackup covers the seam
+// where the maintenance migration already paid for its pre-mutation backup and
+// then aborted inside its transaction: the rollback it offers must be the archive
+// bound to that exact plan, and the database must be untouched.
+//
+// It was named "Ambiguity" while its fixture was two spellings of one project.
+// Ambiguity is no longer executed at all, so the fixture moved to a failure that
+// the maintenance path can still reach, and the name follows it.
+func TestRunStartupMigrationExecutorFailureRetainsDatabaseAndBackup(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "memory.db")
 	store, err := db.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	if _, err := store.RawDB().Exec(`INSERT INTO sessions (id, sync_id, project, dev_id, client) VALUES ('s', 'session', 'Foo', 'dev', 'test')`); err != nil {
-		t.Fatal(err)
-	}
-	for _, projectName := range []string{"Foo", "foo"} {
-		if _, err := store.RawDB().Exec(`INSERT INTO mutation_cursors (consumer, project, sequence, event_id) VALUES ('daemon', ?, 7, ?)`, projectName, "event-"+projectName); err != nil {
-			t.Fatal(err)
-		}
-	}
+	seedInTransactionMigrationConflict(t, store)
 
 	gate := runStartupMigration(context.Background(), store, path)
 	if err := gate.Check(); err == nil || !strings.Contains(err.Error(), "migration-blocked") {
-		t.Fatalf("migration ambiguity gate = %v, want migration-blocked", err)
+		t.Fatalf("executor failure gate = %v, want migration-blocked", err)
 	}
 	status := gate.Status()
 	if status.BackupID == "" || status.Continuation != "hive project identity status" {
-		t.Fatalf("migration ambiguity status = %+v, want retained backup and continuation", status)
+		t.Fatalf("executor failure status = %+v, want retained backup and continuation", status)
 	}
-	var cursorCount int
-	if err := store.RawDB().QueryRow(`SELECT COUNT(*) FROM mutation_cursors WHERE project IN ('Foo', 'foo')`).Scan(&cursorCount); err != nil || cursorCount != 2 {
-		t.Fatalf("cursor rows after blocked startup = %d, %v; want 2 unchanged rows", cursorCount, err)
+	var sessionCount int
+	if err := store.RawDB().QueryRow(`SELECT COUNT(*) FROM sessions WHERE project = 'foobar'`).Scan(&sessionCount); err != nil || sessionCount != 1 {
+		t.Fatalf("session rows after blocked startup = %d, %v; want the original row unchanged", sessionCount, err)
 	}
 	backups := governance.NewSQLiteBackupStore(path, "", store.RawDB())
 	created, err := backups.List(context.Background())
@@ -614,15 +624,11 @@ func TestRunStartupMigrationPreflightConflictLeavesDatabaseUnmutatedAndCreatesNo
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	for _, projectName := range []string{"Foo.Bar", "foo-bar"} {
-		if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES (?, ?)`, projectName, projectName); err != nil {
-			t.Fatal(err)
-		}
-	}
+	seedPreflightProjectConflict(t, store)
 	gate := runStartupMigration(context.Background(), store, path)
 	status := gate.Status()
-	if status.State != project.MigrationStateBlocked || status.BackupID != "" {
-		t.Fatalf("startup status = %+v, want preflight block before backup", status)
+	if status.State != project.MigrationStatePendingOperatorReview || status.BackupID != "" {
+		t.Fatalf("startup status = %+v, want a pending-review preflight stop before any backup", status)
 	}
 	backups := governance.NewSQLiteBackupStore(path, "", store.RawDB())
 	if created, err := backups.List(context.Background()); err != nil || len(created) != 0 {
@@ -637,22 +643,48 @@ func TestRunStartupMigrationPreflightConflictLeavesDatabaseUnmutatedAndCreatesNo
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	var variants int
-	if err := store.RawDB().QueryRow(`SELECT COUNT(*) FROM sync_state WHERE project IN ('Foo.Bar', 'foo-bar')`).Scan(&variants); err != nil || variants != 2 {
-		t.Fatalf("sync state after blocked restart = %d, %v; want both original variants", variants, err)
+	if err := store.RawDB().QueryRow(`SELECT COUNT(*) FROM user_prompts WHERE project IN ('Foo.Bar', 'foo-bar')`).Scan(&variants); err != nil || variants != 2 {
+		t.Fatalf("prompt rows after blocked restart = %d, %v; want both original variants", variants, err)
 	}
 }
 
-// TestProjectIdentityResolveThroughDaemonResolverUnblocksMigrationWithoutBackup
-// drives recovery through the real resolver closure and the real HTTP recovery
+// seedPreflightProjectConflict writes the two rows that make the PLANNER refuse
+// the whole migration, i.e. a conflict the executor is never allowed to reach.
+//
+// It used to be built out of two divergent sync_state rows; those are merged
+// automatically now, so the fixture moved to the collision that is still
+// unresolvable: two prompts that share a canonical project and an empty sync_id
+// (their inventory identity) while pointing at different rows. Nothing local can
+// decide which of two distinct prompts the shared identity means.
+func seedPreflightProjectConflict(t *testing.T, store *db.DB) {
+	t.Helper()
+	for _, projectName := range []string{"Foo.Bar", "foo-bar"} {
+		if _, err := store.RawDB().Exec(`INSERT INTO user_prompts (sync_id, project, session_id, content) VALUES ('', ?, 'session', ?)`, projectName, projectName); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestProjectIdentityResolveThroughDaemonResolverMergesSyncStateWithoutBackup
+// drives resolution through the real resolver closure and the real HTTP recovery
 // route, because the preflight-conflict path never creates a migration backup
-// and therefore can never present a backup id to authorize resolution.
-func TestProjectIdentityResolveThroughDaemonResolverUnblocksMigrationWithoutBackup(t *testing.T) {
+// and therefore can never present a backup id to authorize resolution: the plan
+// fingerprint is the only guard, and it must reject a stale one without touching
+// the database.
+//
+// The blocked plan is built from a prompt-identity collision rather than from
+// divergent sync_state rows, which the migration now merges on its own. Resolution
+// therefore no longer has to be what unblocks the plan; what it still does, and
+// what this locks down, is fold the operator's two spellings into the target they
+// named.
+func TestProjectIdentityResolveThroughDaemonResolverMergesSyncStateWithoutBackup(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "memory.db")
 	store, err := db.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	seedPreflightProjectConflict(t, store)
 	for _, projectName := range []string{"Foo.Bar", "foo-bar"} {
 		if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES (?, ?)`, projectName, projectName); err != nil {
 			t.Fatal(err)
@@ -660,8 +692,8 @@ func TestProjectIdentityResolveThroughDaemonResolverUnblocksMigrationWithoutBack
 	}
 	gate := runStartupMigration(context.Background(), store, path)
 	status := gate.Status()
-	if status.State != project.MigrationStateBlocked || status.BackupID != "" || status.PlanFingerprint == "" {
-		t.Fatalf("startup status = %+v, want preflight block with plan fingerprint and no backup", status)
+	if status.State != project.MigrationStatePendingOperatorReview || status.BackupID != "" || status.PlanFingerprint == "" {
+		t.Fatalf("startup status = %+v, want a pending-review stop with plan fingerprint and no backup", status)
 	}
 	srv := httpapi.NewServer("127.0.0.1:0", store)
 	srv.SetMigrationGate(gate)
@@ -691,8 +723,16 @@ func TestProjectIdentityResolveThroughDaemonResolverUnblocksMigrationWithoutBack
 	if accepted.Code != http.StatusOK {
 		t.Fatalf("resolve through daemon resolver = %d %s, want 200", accepted.Code, accepted.Body.String())
 	}
-	if err := runStartupMigration(context.Background(), store, path).Check(); err != nil {
-		t.Fatalf("full migration replan after resolution = %v, want ready", err)
+	var resolved int
+	if err := store.RawDB().QueryRow(`SELECT COUNT(*) FROM sync_state WHERE project = 'foo-bar'`).Scan(&resolved); err != nil || resolved != 1 {
+		t.Fatalf("sync state after accepted resolve = %d, %v; want one row under the named target", resolved, err)
+	}
+	var remaining int
+	if err := store.RawDB().QueryRow(`SELECT COUNT(*) FROM sync_state WHERE project = 'Foo.Bar'`).Scan(&remaining); err != nil || remaining != 0 {
+		t.Fatalf("source spelling after accepted resolve = %d, %v; want it folded away", remaining, err)
+	}
+	if created, err := governance.NewSQLiteBackupStore(path, "", store.RawDB()).List(context.Background()); err != nil || len(created) != 0 {
+		t.Fatalf("backups after resolution = %v, %v; want none for a never-mutating preflight block", created, err)
 	}
 }
 
@@ -711,14 +751,10 @@ func TestRunStartupMigrationPreflightBlockNeverReportsUnrelatedBackup(t *testing
 	if err != nil {
 		t.Fatalf("create unrelated backup: %v", err)
 	}
-	for _, projectName := range []string{"Foo.Bar", "foo-bar"} {
-		if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES (?, ?)`, projectName, projectName); err != nil {
-			t.Fatal(err)
-		}
-	}
+	seedPreflightProjectConflict(t, store)
 	status := runStartupMigration(context.Background(), store, path).Status()
-	if status.State != project.MigrationStateBlocked {
-		t.Fatalf("startup status = %+v, want migration-blocked", status)
+	if status.State != project.MigrationStatePendingOperatorReview {
+		t.Fatalf("startup status = %+v, want the pending-review state", status)
 	}
 	if status.BackupID != "" {
 		t.Fatalf("reported backup = %q, want empty; unrelated backup %q must never authorize a rollback", status.BackupID, unrelated.ID)
@@ -1035,7 +1071,7 @@ func TestRunStartupMigrationContentionRetryReportsTheBackupForTheReplannedPlan(t
 			if _, err := backups.EnsureTemporaryMigrationBackup(ctx, plan.Fingerprint); err != nil {
 				t.Fatalf("first attempt backup: %v", err)
 			}
-			if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES ('Other.Project', 'x')`); err != nil {
+			if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES ('other-project', 'x')`); err != nil {
 				t.Fatalf("concurrent write: %v", err)
 			}
 			return db.ErrProjectMigrationPlanStale
@@ -1062,8 +1098,9 @@ func TestRunStartupMigrationContentionRetryReportsTheBackupForTheReplannedPlan(t
 	}
 }
 
-// blockedMigrationStore opens a database whose migration plan is executable,
-// takes its pre-mutation backup, and then fails on an unmergeable composite.
+// blockedMigrationStore opens a database whose migration plan is executable and
+// needs no operator review, takes its pre-mutation backup, and then fails inside
+// its transaction.
 func blockedMigrationStore(t *testing.T) (string, *db.DB) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "memory.db")
@@ -1072,17 +1109,37 @@ func blockedMigrationStore(t *testing.T) (string, *db.DB) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	if _, err := store.RawDB().Exec(`INSERT INTO sessions (id, sync_id, project, dev_id, client) VALUES ('s', 'session', 'Foo', 'dev', 'test')`); err != nil {
-		t.Fatal(err)
-	}
-	for _, projectName := range []string{"Foo", "foo"} {
-		if _, err := store.RawDB().Exec(`INSERT INTO mutation_cursors (consumer, project, sequence, event_id) VALUES ('daemon', ?, 7, ?)`, projectName, "event-"+projectName); err != nil {
-			t.Fatal(err)
-		}
-	}
+	seedInTransactionMigrationConflict(t, store)
 	return path, store
 }
 
+// seedInTransactionMigrationConflict writes state whose plan the read-only
+// preflight approves and whose mutation the executor still aborts, so the tests
+// that need "backup already paid for, then blocked" keep covering that seam.
+//
+// It used to be built out of two mutation cursors sharing a sequence with
+// different event ids, then out of an alias whose two project columns collapse
+// into a self-reference once canonicalized. Both of those needed a non-canonical
+// spelling, which startup now refuses to execute at all, so neither can reach the
+// executor any more.
+//
+// A missing FTS trigger can: the project is already canonical so the preflight
+// approves it and only unattended maintenance is owed, the executor takes its
+// backup, and the schema-ownership rebuild then refuses to rebuild content tables
+// whose triggers it cannot recreate faithfully.
+func seedInTransactionMigrationConflict(t *testing.T, store *db.DB) {
+	t.Helper()
+	if _, err := store.RawDB().Exec(`INSERT INTO sessions (id, sync_id, project, dev_id, client) VALUES ('s', 'session', 'foobar', 'dev', 'test')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RawDB().Exec(`DROP TRIGGER memories_ad`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// migratableStore opens a database whose startup migration reaches execution:
+// the project spelling is already canonical, so only the unattended maintenance
+// work is owed and the contention paths below still exercise a real execute call.
 func migratableStore(t *testing.T) *db.DB {
 	t.Helper()
 	store, err := db.Open(filepath.Join(t.TempDir(), "memory.db"))
@@ -1090,7 +1147,7 @@ func migratableStore(t *testing.T) *db.DB {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES (' Foo.Bar ', 'x')`); err != nil {
+	if _, err := store.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES ('foobar', 'x')`); err != nil {
 		t.Fatal(err)
 	}
 	return store

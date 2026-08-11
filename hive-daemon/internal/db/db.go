@@ -400,6 +400,10 @@ type DB struct {
 	// Observability only — see LastProjectMigrationSummary.
 	migrationSummaryMu sync.Mutex
 	migrationSummary   ProjectMigrationSummary
+
+	// Observability only — see SetProjectMigrationPhaseObserver.
+	migrationPhaseMu sync.Mutex
+	migrationPhase   func(ProjectMigrationPhase)
 }
 
 // sqliteBusyTimeout bounds how long a connection waits for a lock held by
@@ -562,6 +566,11 @@ func initSchema(sqlDB *sql.DB) error {
 		// Nullable/no default beyond '' for the reason column — a project that
 		// never called RecordDrainOutcome (only RecordSyncSuccess/Failure) must
 		// read back empty/zero, not fail.
+		// project_migration_runs: durable progress and result for the operator's
+		// approved identity fold. Additive and project-free on purpose — it must
+		// never appear in the migration's own project inventory, or recording
+		// progress would change the plan the progress describes.
+		projectMigrationRunsSchema,
 		`ALTER TABLE sync_state ADD COLUMN last_drain_state TEXT`,
 		`ALTER TABLE sync_state ADD COLUMN last_drain_reason TEXT`,
 		`ALTER TABLE sync_state ADD COLUMN last_drain_remaining INTEGER`,

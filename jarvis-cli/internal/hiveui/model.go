@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -43,6 +44,7 @@ const (
 	ScreenProjectArchive
 	ScreenProjectMerge
 	ScreenProjectPurge
+	ScreenProjectNormalization
 )
 
 type GuardExecutor interface {
@@ -112,6 +114,10 @@ type Snapshot struct {
 	// SyncSummary holds the aggregate sync health from GET /governance/health/summary.
 	// Nil when the daemon predates T14 or the endpoint failed — degrade gracefully.
 	SyncSummary *hiveclient.SyncSummary
+	// MigrationState is the project-identity gate state from
+	// GET /governance/project-identity/status. Empty when the daemon did not
+	// answer, which is treated as "nothing pending".
+	MigrationState string
 }
 
 type Model struct {
@@ -195,6 +201,19 @@ type Model struct {
 	configEnvActive     bool
 	configTestResult    *hiveclient.ConfigTestResult
 	configLoadErr       error
+
+	// ScreenProjectNormalization state — the daemon-owned project-identity fold.
+	normalizationService ProjectNormalizationService
+	normalizationStep    normalizationStep
+	normalizationPlan    *hiveclient.MigrationPlan
+	// normalizationProgress is the last durable run state read from the daemon.
+	normalizationProgress   *hiveclient.MigrationProgress
+	normalizationConfirm    string
+	normalizationDetail     string
+	normalizationSubmitting bool
+	// normalizationPollSeq invalidates ticks scheduled by a screen that has since
+	// been closed, so the live poll cannot outlive the screen that owns it.
+	normalizationPollSeq int
 }
 
 type memoryGuardStep int
@@ -373,9 +392,10 @@ func NewModelWithAllExecutors(snapshot Snapshot, guard GuardExecutor, archive Pr
 // NewModelWithConfig creates a Model with all executors plus a ConfigService for
 // the interactive ScreenAPIConfig form. Pass a nil ConfigService to fall back to
 // the read-only placeholder view.
-func NewModelWithConfig(snapshot Snapshot, guard GuardExecutor, archive ProjectArchiveExecutor, merge ProjectMergeExecutor, memory MemoryLoader, batchMerge ProjectMergeBatchExecutor, deleteExecutor ProjectDeleteExecutor, config ConfigService) Model {
+func NewModelWithConfig(snapshot Snapshot, guard GuardExecutor, archive ProjectArchiveExecutor, merge ProjectMergeExecutor, memory MemoryLoader, batchMerge ProjectMergeBatchExecutor, deleteExecutor ProjectDeleteExecutor, config ConfigService, normalization ProjectNormalizationService) Model {
 	m := NewModelWithAllExecutors(snapshot, guard, archive, merge, memory, batchMerge, deleteExecutor)
 	m.configService = config
+	m.normalizationService = normalization
 	return m
 }
 
@@ -408,6 +428,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if result, ok := msg.(configTestResultMsg); ok {
 		return m.applyConfigTestResult(result), nil
+	}
+	if result, ok := msg.(normalizationEntryMsg); ok {
+		return m.applyNormalizationEntry(result)
+	}
+	if result, ok := msg.(normalizationExecuteMsg); ok {
+		return m.applyNormalizationExecute(result)
+	}
+	if result, ok := msg.(normalizationProgressMsg); ok {
+		return m.applyNormalizationProgress(result)
+	}
+	if tick, ok := msg.(normalizationTickMsg); ok {
+		return m.applyNormalizationTick(tick)
 	}
 	if sz, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width = sz.Width
@@ -452,6 +484,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		return m.updateMemoryGuard(key)
+	}
+	if m.screen == ScreenProjectNormalization {
+		if key.Type == tea.KeyCtrlC && !m.normalizationSubmitting {
+			return m, tea.Quit
+		}
+		return m.updateProjectNormalization(key)
 	}
 	if m.screen == ScreenAPIConfig {
 		return m.updateAPIConfig(key)
@@ -503,6 +541,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.screen == ScreenAPIConfig && m.configService != nil {
 			return m.startConfigLoad()
+		}
+		if m.screen == ScreenProjectNormalization && m.normalizationService != nil {
+			return m.startNormalizationEntry()
 		}
 	}
 	return m, nil
@@ -561,6 +602,8 @@ func (m Model) View() string {
 		return m.projectMergeView()
 	case ScreenProjectPurge:
 		return m.projectPurgeView()
+	case ScreenProjectNormalization:
+		return m.projectNormalizationView()
 	}
 
 	w := max(m.width, 80)
@@ -609,14 +652,17 @@ func (m Model) View() string {
 
 	// ACTIONS panel
 	var actionsBlock strings.Builder
-	for i, action := range dashboardActions() {
+	for i, action := range m.dashboardActionRows() {
 		cursor := "  "
 		if i == m.cursor {
 			cursor = cursorStyle.Render("▌") + " "
 		}
 		state := ""
+		if action.badge != "" {
+			state = " " + badgeWarning.Render(action.badge)
+		}
 		if action.disabled {
-			state = dimTextStyle.Render(" (disabled)")
+			state += dimTextStyle.Render(" (disabled)")
 		}
 		var row string
 		if i == m.cursor {
@@ -647,7 +693,7 @@ func (m Model) move(delta int) Model {
 	case ScreenBackups:
 		m.backupIndex = wrapIndex(m.backupIndex+delta, len(m.snapshot.Backups))
 	default:
-		m.cursor = wrapIndex(m.cursor+delta, len(dashboardActions()))
+		m.cursor = wrapIndex(m.cursor+delta, len(m.dashboardActionRows()))
 	}
 	return m
 }
@@ -682,8 +728,13 @@ func (m Model) open() Model {
 	if m.screen != ScreenDashboard {
 		return m
 	}
-	action := dashboardActions()[m.cursor]
+	action := m.dashboardActionRows()[m.cursor]
 	if action.disabled {
+		if normalizationPending(m.snapshot) && action.label != normalizationActionLabel {
+			m.message = action.label + " is unavailable until project normalization finishes. " +
+				"Your data is intact — Hive is only refusing writes under an ambiguous project identity."
+			return m
+		}
 		m.message = action.label + " is disabled in this read-only TUI slice. No local Hive state was changed."
 		return m
 	}
@@ -704,6 +755,12 @@ func (m Model) open() Model {
 		m.screen = ScreenBackups
 	case "Purge archived":
 		m = m.startProjectPurge()
+	case normalizationActionLabel:
+		if m.normalizationService == nil {
+			m.message = normalizationActionLabel + " needs a hive-daemon that supports the project-identity fold. No local Hive state was changed."
+			return m
+		}
+		m.screen = ScreenProjectNormalization
 	default:
 		m.message = action.label + " is not available in this navigation sub-slice. No local Hive state was changed."
 	}
@@ -763,6 +820,16 @@ func (m Model) back() Model {
 		m.configEnvActive = false
 		m.configLoadErr = nil
 		m.configLoading = false
+	case ScreenProjectNormalization:
+		m.screen = ScreenDashboard
+		m.normalizationStep = normalizationStepLoading
+		m.normalizationPlan = nil
+		m.normalizationProgress = nil
+		m.normalizationConfirm = ""
+		m.normalizationDetail = ""
+		m.normalizationSubmitting = false
+		// Retire the live poll: any tick already in flight is now stale.
+		m.normalizationPollSeq++
 	case ScreenWarnings, ScreenBackups, ScreenAPIHealth:
 		m.screen = ScreenDashboard
 	case ScreenProjects:
@@ -973,7 +1040,7 @@ func (m Model) updateMemoryGuard(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Type == tea.KeyEnter:
 		return m.submitMemoryGuard()
-	case key.Type == tea.KeySpace:
+	case key.Type == tea.KeySpace, key.Type == tea.KeyTab:
 		m = m.appendGuardText(" ")
 		return m, nil
 	case key.Type == tea.KeyRunes:
@@ -1012,8 +1079,8 @@ func (m Model) submitMemoryGuard() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	expected := memoryGuardConfirmationPhrase(m.guardOperation, m.guardMemory)
-	if m.guardConfirmation != expected {
-		m.message = "Confirmation mismatch. Type the phrase exactly; input is not trimmed."
+	if !confirmationMatches(m.guardConfirmation, expected) {
+		m.message = confirmationMismatchMessage
 		return m, nil
 	}
 	if m.guardExecutor == nil {
@@ -1026,7 +1093,7 @@ func (m Model) submitMemoryGuard() (tea.Model, tea.Cmd) {
 		TargetType:   "memory",
 		TargetID:     m.guardMemory.ID,
 		BackupID:     strings.TrimSpace(m.guardBackupID),
-		Confirmation: m.guardConfirmation,
+		Confirmation: expected,
 	}
 	if m.guardOperation == "delete" || m.hasGuardedWorkflow() {
 		request.Reason = strings.TrimSpace(m.guardReason)
@@ -1222,6 +1289,7 @@ func (m Model) applyMemoryLoadResult(msg memoryLoadResultMsg) Model {
 }
 
 func (m Model) appendGuardText(text string) Model {
+	text = sanitizeInputText(text)
 	switch m.guardStep {
 	case memoryGuardBackupID:
 		m.guardBackupID += text
@@ -1272,7 +1340,7 @@ func (m Model) memoryGuardView() string {
 		safetyContent += fmt.Sprintf("Confirmation must match exactly. Type exactly: %s\n", memoryGuardConfirmationPhrase(m.guardOperation, memory))
 	}
 	if m.guardStep == memoryGuardConfirmation {
-		safetyContent += fmt.Sprintf("confirmation: %s\n", visibleInput(m.guardConfirmation))
+		safetyContent += fmt.Sprintf("confirmation: %s\n", confirmationField(m.guardConfirmation, memoryGuardConfirmationPhrase(m.guardOperation, memory)))
 	}
 	fieldScope := "both fields"
 	if m.guardOperation == "delete" || m.hasGuardedWorkflow() {
@@ -1327,7 +1395,7 @@ func (m Model) updateProjectArchive(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Type == tea.KeyEnter:
 		return m.submitProjectArchive()
-	case key.Type == tea.KeySpace:
+	case key.Type == tea.KeySpace, key.Type == tea.KeyTab:
 		m = m.appendProjectArchiveText(" ")
 		return m, nil
 	case key.Type == tea.KeyRunes:
@@ -1348,8 +1416,8 @@ func (m Model) submitProjectArchive() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	expected := projectArchiveConfirmationPhrase(m.projectArchiveProject.Name)
-	if m.projectArchiveConfirmation != expected {
-		m.message = "Confirmation mismatch. Type the phrase exactly; input is not trimmed."
+	if !confirmationMatches(m.projectArchiveConfirmation, expected) {
+		m.message = confirmationMismatchMessage
 		return m, nil
 	}
 	if m.projectArchiveExecutor == nil {
@@ -1357,7 +1425,7 @@ func (m Model) submitProjectArchive() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	executor := m.projectArchiveExecutor
-	request := hiveclient.ProjectArchiveRequest{Project: m.projectArchiveProject.Name, BackupID: strings.TrimSpace(m.projectArchiveBackupID), Confirmation: m.projectArchiveConfirmation}
+	request := hiveclient.ProjectArchiveRequest{Project: m.projectArchiveProject.Name, BackupID: strings.TrimSpace(m.projectArchiveBackupID), Confirmation: expected}
 	m.projectArchiveSubmitting = true
 	return m, func() tea.Msg {
 		result, err := executor.ArchiveProject(context.Background(), request)
@@ -1387,6 +1455,7 @@ func (m Model) applyProjectArchiveResult(msg projectArchiveResultMsg) Model {
 }
 
 func (m Model) appendProjectArchiveText(text string) Model {
+	text = sanitizeInputText(text)
 	if m.projectArchiveStep == memoryGuardBackupID {
 		m.projectArchiveBackupID += text
 		return m
@@ -1424,7 +1493,7 @@ func (m Model) projectArchiveView() string {
 	reasonContent := fmt.Sprintf("Backup ID is required: %s\n", visibleInput(m.projectArchiveBackupID)) +
 		fmt.Sprintf("Confirmation must match exactly. Type exactly: %s\n", projectArchiveConfirmationPhrase(project))
 	if m.projectArchiveStep == memoryGuardConfirmation {
-		reasonContent += fmt.Sprintf("confirmation: %s\n", visibleInput(m.projectArchiveConfirmation))
+		reasonContent += fmt.Sprintf("confirmation: %s\n", confirmationField(m.projectArchiveConfirmation, projectArchiveConfirmationPhrase(project)))
 	}
 	reasonContent += "No archive will run until both fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation."
 	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("REASON — REQUIRED", panelW)+reasonContent, panelW))
@@ -1496,7 +1565,7 @@ func (m Model) updateProjectPurge(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Type == tea.KeyEnter:
 		return m.submitProjectPurge()
-	case key.Type == tea.KeySpace:
+	case key.Type == tea.KeySpace, key.Type == tea.KeyTab:
 		m = m.appendProjectPurgeText(" ")
 		return m, nil
 	case key.Type == tea.KeyRunes:
@@ -1527,8 +1596,8 @@ func (m Model) submitProjectPurge() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	expected := projectPurgeConfirmationPhrase(m.projectDeleteProject.Name)
-	if m.projectDeleteConfirmation != expected {
-		m.message = "Confirmation mismatch. Type the phrase exactly; input is not trimmed."
+	if !confirmationMatches(m.projectDeleteConfirmation, expected) {
+		m.message = confirmationMismatchMessage
 		return m, nil
 	}
 	if m.projectDeleteExecutor == nil {
@@ -1539,7 +1608,7 @@ func (m Model) submitProjectPurge() (tea.Model, tea.Cmd) {
 	request := hiveclient.ProjectDeleteRequest{
 		Project:      m.projectDeleteProject.Name,
 		BackupID:     strings.TrimSpace(m.projectDeleteBackupID),
-		Confirmation: m.projectDeleteConfirmation,
+		Confirmation: expected,
 	}
 	m.projectDeleteSubmitting = true
 	return m, func() tea.Msg {
@@ -1566,6 +1635,7 @@ func (m Model) applyProjectDeleteResult(msg projectDeleteResultMsg) Model {
 }
 
 func (m Model) appendProjectPurgeText(text string) Model {
+	text = sanitizeInputText(text)
 	if m.projectDeleteStep == projectPurgeSelect {
 		return m
 	}
@@ -1631,7 +1701,7 @@ func (m Model) projectPurgeView() string {
 		reasonContent := fmt.Sprintf("Backup ID is required: %s\n", visibleInput(m.projectDeleteBackupID)) +
 			fmt.Sprintf("Confirmation must match exactly. Type exactly: %s\n", projectPurgeConfirmationPhrase(project))
 		if m.projectDeleteStep == projectPurgeConfirmation {
-			reasonContent += fmt.Sprintf("confirmation: %s\n", visibleInput(m.projectDeleteConfirmation))
+			reasonContent += fmt.Sprintf("confirmation: %s\n", confirmationField(m.projectDeleteConfirmation, projectPurgeConfirmationPhrase(project)))
 		}
 		reasonContent += "No purge will run until both fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation."
 		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("REASON — REQUIRED", panelW)+reasonContent, panelW))
@@ -1684,7 +1754,7 @@ func (m Model) updateProjectMerge(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Type == tea.KeyEnter:
 		return m.submitProjectMerge()
-	case key.Type == tea.KeySpace:
+	case key.Type == tea.KeySpace, key.Type == tea.KeyTab:
 		m = m.appendProjectMergeText(" ")
 		return m, nil
 	case key.Type == tea.KeyRunes:
@@ -1734,8 +1804,8 @@ func (m Model) submitProjectMerge() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	expected := projectMergeConfirmationPhrase(source, target)
-	if m.projectMergeConfirmation != expected {
-		m.message = "Confirmation mismatch. Type the phrase exactly; input is not trimmed."
+	if !confirmationMatches(m.projectMergeConfirmation, expected) {
+		m.message = confirmationMismatchMessage
 		return m, nil
 	}
 	if m.projectMergeExecutor == nil {
@@ -1743,7 +1813,7 @@ func (m Model) submitProjectMerge() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	executor := m.projectMergeExecutor
-	request := hiveclient.ProjectMergeRequest{SourceProject: source, TargetProject: target, BackupID: strings.TrimSpace(m.projectMergeBackupID), Confirmation: m.projectMergeConfirmation}
+	request := hiveclient.ProjectMergeRequest{SourceProject: source, TargetProject: target, BackupID: strings.TrimSpace(m.projectMergeBackupID), Confirmation: expected}
 	m.projectMergeSubmitting = true
 	return m, func() tea.Msg {
 		result, err := executor.MergeProject(context.Background(), request)
@@ -1773,6 +1843,7 @@ func (m Model) applyProjectMergeResult(msg projectMergeResultMsg) Model {
 }
 
 func (m Model) appendProjectMergeText(text string) Model {
+	text = sanitizeInputText(text)
 	switch m.projectMergeStep {
 	case projectMergeTarget:
 		m.projectMergeTarget += text
@@ -1825,7 +1896,7 @@ func (m Model) projectMergeView() string {
 		safetyContent += fmt.Sprintf("Type exactly: %s\n", projectMergeConfirmationPhrase(source, target))
 	}
 	if m.projectMergeStep == projectMergeConfirmation {
-		safetyContent += fmt.Sprintf("confirmation: %s\n", visibleInput(m.projectMergeConfirmation))
+		safetyContent += fmt.Sprintf("confirmation: %s\n", confirmationField(m.projectMergeConfirmation, projectMergeConfirmationPhrase(source, target)))
 	}
 	safetyContent += "No merge will run until all fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation."
 	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("SAFETY", panelW)+safetyContent, panelW))
@@ -1888,6 +1959,13 @@ func (m Model) updateBatchProjectMerge(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// text-input steps — append space
 		m = m.appendBatchMergeText(" ")
+		return m, nil
+	case key.Type == tea.KeyTab:
+		// A typed or pasted tab is a space in the text-input steps; it never
+		// toggles a source selection.
+		if m.mergeStep != mergeStepSelectSources {
+			m = m.appendBatchMergeText(" ")
+		}
 		return m, nil
 	case key.Type == tea.KeyDown:
 		if m.mergeStep == mergeStepSelectSources {
@@ -1970,8 +2048,8 @@ func (m Model) submitBatchMergeStep() (tea.Model, tea.Cmd) {
 
 	case mergeStepConfirm:
 		expected := mergeBatchConfirmationPhrase(m.mergeTarget)
-		if m.mergeConfirmText != expected {
-			m.message = "Confirmation mismatch. Type the phrase exactly; input is not trimmed."
+		if !confirmationMatches(m.mergeConfirmText, expected) {
+			m.message = confirmationMismatchMessage
 			return m, nil
 		}
 		if m.projectMergeBatchExecutor == nil {
@@ -1985,7 +2063,7 @@ func (m Model) submitBatchMergeStep() (tea.Model, tea.Cmd) {
 			Sources:      sourcesCopy,
 			Target:       m.mergeTarget,
 			BackupID:     strings.TrimSpace(m.mergeBackupID),
-			Confirmation: m.mergeConfirmText,
+			Confirmation: expected,
 		}
 		m.mergeStep = mergeStepExecuting
 		m.mergeBatchSubmitting = true
@@ -2023,6 +2101,7 @@ func (m Model) applyProjectMergeBatchResult(msg projectMergeBatchResultMsg) Mode
 }
 
 func (m Model) appendBatchMergeText(text string) Model {
+	text = sanitizeInputText(text)
 	switch m.mergeStep {
 	case mergeStepPickTarget:
 		m.mergeTarget += text
@@ -2197,7 +2276,7 @@ func (m Model) renderBatchConfirmPanel(sb *strings.Builder, panelW int) {
 	phrase := mergeBatchConfirmationPhrase(m.mergeTarget)
 	content := fmt.Sprintf("Type exactly to confirm: %s\n\nconfirmation: %s\n",
 		phrase,
-		visibleInput(m.mergeConfirmText),
+		confirmationField(m.mergeConfirmText, phrase),
 	)
 	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("CONFIRM", panelW)+content, panelW))
 }
@@ -2271,6 +2350,55 @@ func visibleInput(value string) string {
 		return "-"
 	}
 	return value
+}
+
+// confirmationMismatchMessage is shown when a typed confirmation does not match
+// the required phrase. It states the real rule: only spacing is forgiven.
+const confirmationMismatchMessage = "Confirmation mismatch. Type the phrase shown above; spacing is ignored, wording and capitalization are not."
+
+// normalizeConfirmation reduces a typed confirmation to its comparable form:
+// leading and trailing whitespace is trimmed and every internal whitespace run
+// collapses to a single space. Casing is deliberately preserved — typing the
+// phrase in the right case is part of the friction these flows exist for. Both
+// the typed value and the expected phrase go through it so a phrase built from
+// a project name with odd spacing still matches what the operator can type.
+func normalizeConfirmation(value string) string {
+	return strings.Join(strings.Fields(value), " ")
+}
+
+// confirmationMatches reports whether the typed confirmation is equivalent to
+// the expected phrase once both sides are normalized. Comparison is
+// case-sensitive. An empty expected phrase never matches, so an unset phrase
+// cannot wave a destructive operation through.
+func confirmationMatches(typed, expected string) bool {
+	normalizedExpected := normalizeConfirmation(expected)
+	if normalizedExpected == "" {
+		return false
+	}
+	return normalizeConfirmation(typed) == normalizedExpected
+}
+
+// sanitizeInputText drops non-printable runes so an invisible control character
+// can never make a visually correct confirmation fail. Tabs are not expected
+// here: key handling turns them into spaces before the text reaches this point.
+func sanitizeInputText(text string) string {
+	var sb strings.Builder
+	for _, r := range text {
+		if unicode.IsPrint(r) {
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
+}
+
+// confirmationField renders a confirmation input with visible delimiters, so
+// stray whitespace is apparent, plus a live indicator telling the operator
+// whether the value would be accepted. Enter is still required to submit.
+func confirmationField(value, expected string) string {
+	if confirmationMatches(value, expected) {
+		return "[" + value + "] " + confirmationMatchStyle.Render("matches")
+	}
+	return "[" + value + "] " + confirmationPendingStyle.Render("not yet matching")
 }
 
 func trimLastRune(value string) string {
@@ -2712,6 +2840,12 @@ func (m Model) updateAPIConfig(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case key.Type == tea.KeyTab:
+		if m.configCursor == configFieldAPIURL || m.configCursor == configFieldEmail || m.configCursor == configFieldPassword {
+			m = m.appendConfigFieldRune(' ')
+		}
+		return m, nil
+
 	case key.Type == tea.KeyBackspace:
 		m = m.removeConfigFieldRune()
 		return m, nil
@@ -2725,6 +2859,9 @@ func (m Model) updateAPIConfig(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // appendConfigFieldRune appends a rune to the currently focused text field.
 func (m Model) appendConfigFieldRune(r rune) Model {
+	if sanitizeInputText(string(r)) == "" {
+		return m
+	}
 	switch m.configCursor {
 	case configFieldAPIURL:
 		m.configAPIURL += string(r)
@@ -2996,20 +3133,24 @@ type dashboardAction struct {
 	label       string
 	description string
 	disabled    bool
+	// badge is a short status marker rendered next to the label, used by the
+	// normalization row to show the migration state without opening it.
+	badge string
 }
 
 func dashboardActions() []dashboardAction {
 	return []dashboardAction{
-		{"Project viewer", "browse projects and memories", false},
-		{"Project timeline", "chronological project memories", false},
-		{"Merge projects", "destructive operation deferred", true},
-		{"Delete projects", "archive then delete project memories and sessions", false},
-		{"Purge archived", "permanently remove all data for an archived project", false},
-		{"Delete memories", "destructive operation deferred", true},
-		{"Hive API config", "read-only configuration state", false},
-		{"Hive API health", "connectivity and sync health", false},
-		{"Memory warnings", "triage active warnings", false},
-		{"Backup snapshots", "inspect snapshots of memory.db", false},
+		{label: "Project viewer", description: "browse projects and memories"},
+		{label: "Project timeline", description: "chronological project memories"},
+		{label: normalizationActionLabel, description: "fold duplicate project spellings into one identity"},
+		{label: "Merge projects", description: "destructive operation deferred", disabled: true},
+		{label: "Delete projects", description: "archive then delete project memories and sessions"},
+		{label: "Purge archived", description: "permanently remove all data for an archived project"},
+		{label: "Delete memories", description: "destructive operation deferred", disabled: true},
+		{label: "Hive API config", description: "read-only configuration state"},
+		{label: "Hive API health", description: "connectivity and sync health"},
+		{label: "Memory warnings", description: "triage active warnings"},
+		{label: "Backup snapshots", description: "inspect snapshots of memory.db"},
 	}
 }
 

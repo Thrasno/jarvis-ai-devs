@@ -127,7 +127,7 @@ func (d *DB) ResolveProjectIdentityConflict(ctx context.Context, source, target 
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := mergeSyncStateInto(ctx, tx, source, target); err != nil {
+	if _, err := mergeSyncStateInto(ctx, tx, source, target); err != nil {
 		return err
 	}
 	key, err := registerProjectIdentity(ctx, tx, target)
@@ -140,16 +140,19 @@ func (d *DB) ResolveProjectIdentityConflict(ctx context.Context, source, target 
 	return tx.Commit()
 }
 
-func mergeSyncStateInto(ctx context.Context, tx *sql.Tx, source, target string) error {
+// mergeSyncStateInto folds source's sync_state row into target's and reports
+// whether the merge gave up a usable pull watermark — see resetsSyncWatermark.
+func mergeSyncStateInto(ctx context.Context, tx *sql.Tx, source, target string) (bool, error) {
 	sourceRow, err := readSyncStateRow(ctx, tx, source)
 	if err != nil {
-		return err
+		return false, err
 	}
 	targetRow, err := readSyncStateRow(ctx, tx, target)
 	if err != nil {
-		return err
+		return false, err
 	}
 	merged := mergeSyncStateRows(sourceRow, targetRow)
+	watermarkReset := resetsSyncWatermark(sourceRow, targetRow, merged)
 	columns := merged.columns()
 	assignments := make([]string, len(columns))
 	args := make([]any, len(columns)+1)
@@ -161,10 +164,39 @@ func mergeSyncStateInto(ctx context.Context, tx *sql.Tx, source, target string) 
 	}
 	args[len(columns)] = target
 	if _, err := tx.ExecContext(ctx, `UPDATE sync_state SET `+strings.Join(assignments, ",")+` WHERE project = ?`, args...); err != nil {
-		return err
+		return false, err
 	}
-	_, err = tx.ExecContext(ctx, `DELETE FROM sync_state WHERE project = ?`, source)
-	return err
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sync_state WHERE project = ?`, source); err != nil {
+		return false, err
+	}
+	return watermarkReset, nil
+}
+
+// resetsSyncWatermark reports a merge that cleared a pull position the project
+// could actually have used.
+//
+// keepEarlierSyncWatermark clears last_sync_at whenever the two rows cannot be
+// ordered, which makes that project re-pull its full window on its next sync. That
+// is safe and idempotent — SaveFromRemote uses INSERT OR IGNORE — but from the
+// outside it is indistinguishable from a fold that lost the sync position, so it
+// has to be reported by name rather than left for the operator to notice.
+//
+// "Could actually have used" is the whole condition: a watermark that was already
+// NULL or already unparseable was never a usable position, so clearing it gives up
+// nothing and reporting it would cry wolf on every merge of two never-synced rows.
+func resetsSyncWatermark(source, target, merged syncStateMergeRow) bool {
+	if merged.LastSyncAt.Valid {
+		return false
+	}
+	for _, candidate := range []sql.NullString{source.LastSyncAt, target.LastSyncAt} {
+		if !candidate.Valid {
+			continue
+		}
+		if _, err := parseTimeStr(candidate.String); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func readSyncStateRow(ctx context.Context, tx *sql.Tx, project string) (syncStateMergeRow, error) {
@@ -183,14 +215,14 @@ func readSyncStateRow(ctx context.Context, tx *sql.Tx, project string) (syncStat
 	return row, nil
 }
 
-// mergeSyncStateRows keeps the more valuable value per column: cursor timestamps only
-// advance, credentials move as a token/expiry pair, and drain telemetry follows the
-// surviving cursor. The failure triple resets, because a stale backoff_until inherited
-// from a spelling that no longer exists would wedge the identity just repaired.
+// mergeSyncStateRows keeps the more valuable value per column: display timestamps
+// only advance, the pull watermark only retreats, and credentials move as a
+// token/expiry pair. The failure triple resets, because a stale backoff_until
+// inherited from a spelling that no longer exists would wedge the identity just
+// repaired.
 func mergeSyncStateRows(source, target syncStateMergeRow) syncStateMergeRow {
 	merged := target
-	sourceOwnsCursor := advancesSyncValue(source.LastSyncAt, target.LastSyncAt)
-	keepLaterSyncValue(&merged.LastSyncAt, source.LastSyncAt)
+	keepEarlierSyncWatermark(&merged.LastSyncAt, source.LastSyncAt)
 	keepLaterSyncValue(&merged.LastAttemptAt, source.LastAttemptAt)
 	keepLaterSyncValue(&merged.LastSuccessAt, source.LastSuccessAt)
 	keepLaterSyncValue(&merged.LastFailureAt, source.LastFailureAt)
@@ -201,23 +233,79 @@ func mergeSyncStateRows(source, target syncStateMergeRow) syncStateMergeRow {
 	merged.ConsecutiveFailures = sql.NullString{String: "0", Valid: true}
 	merged.BackoffUntil = sql.NullString{}
 	merged.LastError = sql.NullString{Valid: true}
-	// Drain telemetry is only meaningful next to the cursor that produced it.
-	if sourceOwnsCursor {
-		merged.LastDrainState, merged.LastDrainReason, merged.LastDrainRemaining = source.LastDrainState, source.LastDrainReason, source.LastDrainRemaining
-	}
+	// last_drain_* keeps the target's values. It is pure display state — the only
+	// readers render it — so tying it to whichever row won the cursor comparison
+	// buys nothing, and the comparison it used to follow (last_sync_at) now
+	// resolves in the opposite direction, which would have inverted its meaning
+	// silently.
 	return merged
 }
 
-// keepLaterSyncValue advances a merged timestamp only when the candidate is
-// later; any real value beats NULL.
+// keepEarlierSyncWatermark merges last_sync_at DOWNWARD, the opposite of every
+// other timestamp in this policy, and clears it whenever the two rows cannot be
+// ordered.
+//
+// last_sync_at is not telemetry: GetLastSync feeds it to the syncer as the pull
+// request's `last_sync`, which the server turns into `WHERE synced_at >= since`.
+// Keeping the LATER of two watermarks would therefore advance the live cursor
+// past everything the other spelling had not pulled yet, and nothing in the
+// protocol ever lowers `since` again — those remote rows would be skipped
+// permanently. Pulling the same window twice costs one request and inserts
+// nothing new (SaveFromRemote uses INSERT OR IGNORE), so the earlier watermark is
+// the only lossless choice and NULL — re-check the full window — is its safe
+// limit case.
+//
+// NULL on either side therefore wins, and so does an unparseable value: a
+// timestamp that cannot be ordered cannot be proven to be no later than the
+// other, and a value that merely looks bigger as TEXT must never advance a
+// watermark by accident.
+func keepEarlierSyncWatermark(current *sql.NullString, candidate sql.NullString) {
+	if !current.Valid || !candidate.Valid {
+		*current = sql.NullString{}
+		return
+	}
+	currentAt, currentErr := parseTimeStr(current.String)
+	candidateAt, candidateErr := parseTimeStr(candidate.String)
+	if currentErr != nil || candidateErr != nil {
+		*current = sql.NullString{}
+		return
+	}
+	if candidateAt.Before(currentAt) {
+		*current = candidate
+	}
+}
+
+// keepLaterSyncValue advances a merged display timestamp only when the candidate
+// is later; any real value beats NULL.
 func keepLaterSyncValue(current *sql.NullString, candidate sql.NullString) {
 	if advancesSyncValue(candidate, *current) {
 		*current = candidate
 	}
 }
 
+// advancesSyncValue compares two stored timestamps by instant rather than by
+// bytes. Both layouts really coexist in these columns — timePtr writes
+// "2006-01-02 15:04:05" while parseTimeStr also accepts RFC3339 — and because
+// 'T' > ' ', a raw TEXT compare let a same-day RFC3339 value beat a later spaced
+// one.
+//
+// A present-but-unparseable value never advances a present value: there is no
+// evidence it is later, so the target keeps what it has. Over a NULL it still
+// wins, because for the display timestamps this policy governs an unorderable
+// timestamp is strictly more informative than nothing.
 func advancesSyncValue(candidate, current sql.NullString) bool {
-	return candidate.Valid && (!current.Valid || candidate.String > current.String)
+	if !candidate.Valid {
+		return false
+	}
+	if !current.Valid {
+		return true
+	}
+	candidateAt, candidateErr := parseTimeStr(candidate.String)
+	currentAt, currentErr := parseTimeStr(current.String)
+	if candidateErr != nil || currentErr != nil {
+		return false
+	}
+	return candidateAt.After(currentAt)
 }
 
 // ExecuteProjectMigration rekeys the lossless SQLite subset in one transaction.
@@ -256,6 +344,7 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 		return nil
 	}
 	summary := ProjectMigrationSummary{Ran: true}
+	database.reportProjectMigrationPhase(ProjectMigrationPhaseBackup)
 	if err := backup(ctx); err != nil {
 		return fmt.Errorf("create pre-mutation backup: %w", err)
 	}
@@ -264,6 +353,7 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	database.reportProjectMigrationPhase(ProjectMigrationPhaseRevalidate)
 	records, err = readProjectMigrationRecords(ctx, tx)
 	if err != nil {
 		return err
@@ -271,25 +361,30 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 	if BuildProjectMigrationPlan(records).Fingerprint != plan.Fingerprint {
 		return ErrProjectMigrationPlanStale
 	}
+	database.reportProjectMigrationPhase(ProjectMigrationPhaseRegistry)
 	if err := populateProjectIdentityRegistry(ctx, tx, records); err != nil {
 		return err
 	}
+	database.reportProjectMigrationPhase(ProjectMigrationPhaseCompositeCursors)
 	if err := rekeyCompositeCursors(ctx, tx); err != nil {
 		return err
 	}
 	if err := rekeyGovernanceComposites(ctx, tx); err != nil {
 		return err
 	}
-	if err := coalesceEquivalentSyncState(ctx, tx, records); err != nil {
+	database.reportProjectMigrationPhase(ProjectMigrationPhaseSyncStateCoalesce)
+	if err := coalesceProjectSyncState(ctx, tx, records, &summary); err != nil {
 		return err
 	}
 	// Propagation is enqueued BEFORE the rekey, while each row still carries the
 	// raw spelling that identifies which old literal the server holds for it.
 	// After the rekey two folded spellings ("Foo.Bar" and "foo.bar") are
 	// indistinguishable, and from_project would be a guess.
+	database.reportProjectMigrationPhase(ProjectMigrationPhasePropagationEnqueue)
 	if err := enqueueProjectRelocationPropagation(ctx, tx, records, &summary); err != nil {
 		return err
 	}
+	database.reportProjectMigrationPhase(ProjectMigrationPhaseRekey)
 	// Re-key each raw spelling separately: SQLite deliberately does not derive keys.
 	for _, rekey := range planProjectRekeys(records) {
 		result, err := tx.ExecContext(ctx, `UPDATE `+string(rekey.Table)+` SET `+rekey.Column+` = ? WHERE `+rekey.Column+` = ?`, rekey.To, rekey.From)
@@ -301,6 +396,7 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 		}
 	}
 	if ownershipNeeded {
+		database.reportProjectMigrationPhase(ProjectMigrationPhaseOwnershipRebuild)
 		if err := rebuildStandaloneProjectOwnershipTables(ctx, tx); err != nil {
 			return err
 		}
@@ -313,9 +409,11 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 			return err
 		}
 	}
+	database.reportProjectMigrationPhase(ProjectMigrationPhaseRebuildState)
 	if err := rebuildProjectMigrationState(ctx, tx); err != nil {
 		return err
 	}
+	database.reportProjectMigrationPhase(ProjectMigrationPhaseCommit)
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -465,7 +563,23 @@ func projectMigrationNeeded(records []ProjectStateRecord) bool {
 	return false
 }
 
-func coalesceEquivalentSyncState(ctx context.Context, tx *sql.Tx, records []ProjectStateRecord) error {
+// coalesceProjectSyncState folds every sync_state row that shares a canonical
+// project key into one row under that key.
+//
+// sync_state is a singleton per project, so two spellings of the same project
+// always collide here and there is no composite identity to disambiguate them.
+// Divergent values used to abort the whole migration and leave the operator with
+// a database that could not be normalized at all; they are merged instead, by the
+// same deterministic mergeSyncStateRows policy ResolveProjectIdentityConflict
+// already used, so a divergence is ordinary work rather than a dead end.
+//
+// Byte-identical rows keep their fast path: they have nothing to merge, and
+// running the merge over them would reset a failure triple that both rows agreed
+// on. The recorded Values are the pre-transaction snapshot, which is enough for
+// that decision — a row identical to the survivor's original state cannot carry
+// anything a previous merge into the survivor removed, and the one column a merge
+// can lower, last_sync_at, only ever moves further down.
+func coalesceProjectSyncState(ctx context.Context, tx *sql.Tx, records []ProjectStateRecord, summary *ProjectMigrationSummary) error {
 	groups := make(map[string][]ProjectStateRecord)
 	for _, record := range records {
 		if record.Table == ProjectStateSyncState {
@@ -473,21 +587,39 @@ func coalesceEquivalentSyncState(ctx context.Context, tx *sql.Tx, records []Proj
 			groups[key] = append(groups[key], record)
 		}
 	}
-	for key, group := range groups {
+	keys := make([]string, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	// Sorted so the reported reset list is deterministic: it reaches an operator
+	// as a result payload, and a set that reshuffles between reads reads as churn.
+	sort.Strings(keys)
+	for _, key := range keys {
+		group := groups[key]
 		if len(group) < 2 {
 			continue
 		}
 		sort.Slice(group, func(i, j int) bool { return group[i].Project < group[j].Project })
+		survivor := group[0]
+		watermarkReset := false
 		for _, record := range group[1:] {
-			if record.Value != group[0].Value {
-				return fmt.Errorf("%w: sync_state %s", ErrProjectMigrationConflict, key)
+			if record.Value == survivor.Value {
+				if _, err := tx.ExecContext(ctx, `DELETE FROM sync_state WHERE project = ?`, record.Project); err != nil {
+					return err
+				}
+				continue
 			}
-			if _, err := tx.ExecContext(ctx, `DELETE FROM sync_state WHERE project = ?`, record.Project); err != nil {
-				return err
+			reset, err := mergeSyncStateInto(ctx, tx, record.Project, survivor.Project)
+			if err != nil {
+				return fmt.Errorf("merge sync_state %s: %w", key, err)
 			}
+			watermarkReset = watermarkReset || reset
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE sync_state SET project = ? WHERE project = ?`, key, group[0].Project); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE sync_state SET project = ? WHERE project = ?`, key, survivor.Project); err != nil {
 			return err
+		}
+		if watermarkReset && summary != nil {
+			summary.SyncPositionsReset = append(summary.SyncPositionsReset, key)
 		}
 	}
 	return nil
@@ -753,6 +885,11 @@ type ProjectMigrationSummary struct {
 	ReprojectsEnqueued int64
 	SessionsRequeued   int64
 	PromptsRequeued    int64
+	// SyncPositionsReset names the canonical projects whose sync_state merge gave
+	// up a usable pull watermark, so the full-window re-pull that follows reads as
+	// a reported consequence of the fold rather than as a fault. See
+	// resetsSyncWatermark.
+	SyncPositionsReset []string
 }
 
 // LastProjectMigrationSummary reports what the most recent ExecuteProjectMigration
@@ -999,8 +1136,16 @@ func readProjectMigrationRecords(ctx context.Context, queryer projectMigrationQu
 		{ProjectStateSyncState, `SELECT project, 'canonical-project', json_array(last_sync_at, jwt_token, jwt_expires_at, last_attempt_at, last_success_at, last_failure_at, consecutive_failures, backoff_until, last_error, last_drain_state, last_drain_reason, last_drain_remaining), '' FROM sync_state WHERE project != '__auth__'`},
 		{ProjectStateMemoryMutations, `SELECT project, event_id, CAST(sequence AS TEXT), occurred_at FROM memory_mutations`},
 		{ProjectStateMutationReceipts, `SELECT project, request_id, event_id, created_at FROM mutation_receipts`},
-		{ProjectStateMutationCursors, `SELECT project, consumer || ':' || CAST(sequence AS TEXT) || ':' || event_id, event_id, updated_at FROM mutation_cursors`},
-		{ProjectStatePullCursors, `SELECT project, consumer || ':' || channel || ':' || synced_at || ':' || sync_id, sync_id, updated_at FROM pull_cursors`},
+		// A cursor identity must carry only the coordinates readMutationCursors and
+		// readPullCursors require to be unique, and the value must carry exactly
+		// what they refuse to see disagree. Embedding event_id or sync_id in the
+		// identity would make same-identity imply same-value, so the planner could
+		// never report a collision those readers still abort the transaction on.
+		// A strictly higher sequence or later synced_at is not a collision: the
+		// readers keep the winner, so those rows stay distinct identities and the
+		// plan stays executable.
+		{ProjectStateMutationCursors, `SELECT project, consumer || ':' || CAST(sequence AS TEXT), event_id, updated_at FROM mutation_cursors`},
+		{ProjectStatePullCursors, `SELECT project, consumer || ':' || channel || ':' || synced_at, sync_id, updated_at FROM pull_cursors`},
 		{ProjectStatePrompts, `SELECT project, sync_id, CAST(id AS TEXT), created_at FROM user_prompts`},
 		{ProjectStateAliases, `SELECT source_project, source_project, target_project, created_at FROM project_aliases`},
 		{ProjectStateBlocks, `SELECT project, canonical_project_key, command_id, created_at FROM project_blocks`},
