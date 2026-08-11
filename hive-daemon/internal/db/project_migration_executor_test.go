@@ -27,7 +27,12 @@ func TestProjectMigrationExecutorRejectsUnsafePlansBeforeBackup(t *testing.T) {
 	}
 }
 
-func TestProjectMigrationPlanRejectsDivergentCanonicalSyncStateRowsBeforeExecution(t *testing.T) {
+// TestProjectMigrationPlanMergesDivergentCanonicalSyncStateRows is the inverse of
+// the rejection this used to assert: a sync_state divergence is the one collision
+// the executor can settle by itself, so it must never block normalization. The
+// invariant kept is that no divergent row survives the migration and no value the
+// merge policy owns is invented.
+func TestProjectMigrationPlanMergesDivergentCanonicalSyncStateRows(t *testing.T) {
 	database := newMigrationExecutorDB(t)
 	for _, statement := range []string{
 		`INSERT INTO sync_state (project, jwt_token, consecutive_failures, last_error) VALUES ('Foo', 'left-token', 1, 'left-error')`,
@@ -41,23 +46,30 @@ func TestProjectMigrationPlanRejectsDivergentCanonicalSyncStateRowsBeforeExecuti
 	if err != nil {
 		t.Fatalf("ReadProjectMigrationPlan() error = %v", err)
 	}
-	if plan.Executable || len(plan.Conflicts) != 1 || plan.Conflicts[0].Kind != ConflictDivergentSyncState {
-		t.Fatalf("plan = %#v, want divergent sync-state conflict", plan)
+	if !plan.Executable || len(plan.Conflicts) != 0 {
+		t.Fatalf("plan = %#v, want an executable plan without conflicts", plan)
 	}
 	backedUp := false
-	err = ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error {
+	if err := ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error {
 		backedUp = true
 		return nil
-	}, nil)
-	if !errors.Is(err, ErrProjectMigrationPlanUnsafe) || backedUp {
-		t.Fatalf("ExecuteProjectMigration() error = %v, backedUp = %v", err, backedUp)
+	}, nil); err != nil {
+		t.Fatalf("ExecuteProjectMigration() error = %v", err)
+	}
+	if !backedUp {
+		t.Fatal("no pre-mutation backup was taken for a mutating migration")
 	}
 	var rows int
 	if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM sync_state WHERE project IN ('Foo', 'foo')`).Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
-	if rows != 2 {
-		t.Fatalf("sync-state rows after preflight = %d, want 2", rows)
+	if rows != 1 {
+		t.Fatalf("sync-state rows after migration = %d, want 1 canonical row", rows)
+	}
+	// 'Foo' sorts before 'foo', so the surviving row is the one the merge kept as
+	// its target and the failure triple is reset either way.
+	if got := syncStateRowValues(t, database, "foo"); got != "|left-token|||||0|||||" {
+		t.Fatalf("merged sync_state = %q", got)
 	}
 }
 
@@ -94,34 +106,55 @@ func TestProjectMigrationExecutorCoalescesEquivalentCanonicalSyncStateRows(t *te
 	}
 }
 
-func TestProjectMigrationExecutorRetriesAfterExplicitSyncStateResolution(t *testing.T) {
-	database := newMigrationExecutorDB(t)
-	for _, statement := range []string{
-		`INSERT INTO sync_state (project, jwt_token) VALUES ('Foo', 'loser')`,
-		`INSERT INTO sync_state (project, jwt_token) VALUES ('foo', 'winner')`,
-	} {
-		if _, err := database.sqlDB.Exec(statement); err != nil {
-			t.Fatal(err)
+// TestProjectMigrationExecutorHonoursExplicitSyncStateResolution keeps what the
+// blocking version of this test protected: an explicit operator resolution still
+// decides which spelling's credentials survive. The plan is executable either way
+// now — a divergence no longer needs a human to unblock it — so the invariant is
+// the difference between the two outcomes.
+func TestProjectMigrationExecutorHonoursExplicitSyncStateResolution(t *testing.T) {
+	seed := func(t *testing.T) *DB {
+		database := newMigrationExecutorDB(t)
+		for _, statement := range []string{
+			`INSERT INTO sync_state (project, jwt_token) VALUES ('Foo', 'loser')`,
+			`INSERT INTO sync_state (project, jwt_token) VALUES ('foo', 'winner')`,
+		} {
+			if _, err := database.sqlDB.Exec(statement); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return database
+	}
+	migrate := func(t *testing.T, database *DB) {
+		t.Helper()
+		plan, err := ReadProjectMigrationPlan(context.Background(), database)
+		if err != nil || !plan.Executable {
+			t.Fatalf("plan = %#v, error = %v; want an executable plan", plan, err)
+		}
+		if err := ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error { return nil }, nil); err != nil {
+			t.Fatalf("ExecuteProjectMigration() error = %v", err)
 		}
 	}
-	blocked, err := ReadProjectMigrationPlan(context.Background(), database)
-	if err != nil || blocked.Executable {
-		t.Fatalf("blocked plan = %#v, error = %v", blocked, err)
-	}
-	if err := database.ResolveProjectIdentityConflict(context.Background(), "Foo", "foo"); err != nil {
-		t.Fatalf("ResolveProjectIdentityConflict() error = %v", err)
-	}
-	resolved, err := ReadProjectMigrationPlan(context.Background(), database)
-	if err != nil || !resolved.Executable {
-		t.Fatalf("resolved plan = %#v, error = %v", resolved, err)
-	}
-	if err := ExecuteProjectMigration(context.Background(), database, resolved, func(context.Context) error { return nil }, nil); err != nil {
-		t.Fatalf("retry ExecuteProjectMigration() error = %v", err)
-	}
-	var token string
-	if err := database.sqlDB.QueryRow(`SELECT jwt_token FROM sync_state WHERE project = 'foo'`).Scan(&token); err != nil || token != "winner" {
-		t.Fatalf("resolved token = %q, error = %v", token, err)
-	}
+
+	t.Run("without resolution the deterministic survivor keeps its token", func(t *testing.T) {
+		database := seed(t)
+		migrate(t, database)
+		var token string
+		if err := database.sqlDB.QueryRow(`SELECT jwt_token FROM sync_state WHERE project = 'foo'`).Scan(&token); err != nil || token != "loser" {
+			t.Fatalf("merged token = %q, error = %v; want the sorted survivor's token", token, err)
+		}
+	})
+
+	t.Run("explicit resolution promotes the operator's target", func(t *testing.T) {
+		database := seed(t)
+		if err := database.ResolveProjectIdentityConflict(context.Background(), "Foo", "foo"); err != nil {
+			t.Fatalf("ResolveProjectIdentityConflict() error = %v", err)
+		}
+		migrate(t, database)
+		var token string
+		if err := database.sqlDB.QueryRow(`SELECT jwt_token FROM sync_state WHERE project = 'foo'`).Scan(&token); err != nil || token != "winner" {
+			t.Fatalf("resolved token = %q, error = %v", token, err)
+		}
+	})
 }
 
 func TestProjectMigrationExecutorRollsBackFailpointAndRetries(t *testing.T) {
@@ -345,7 +378,12 @@ func TestProjectMigrationExecutorCoalescesCompositeCursors(t *testing.T) {
 	}
 }
 
-func TestProjectMigrationExecutorRejectsAmbiguousCompositeCursor(t *testing.T) {
+// TestProjectMigrationPreflightAndExecutorAgreeOnAmbiguousCompositeCursor pins
+// the property the wizard depends on: an ambiguous cursor is reported by the
+// read-only preflight, so the plan an operator confirms can never claim to be
+// conflict-free and then abort mid-execution. The refusal must therefore land
+// before the pre-mutation backup is taken, with the database untouched.
+func TestProjectMigrationPreflightAndExecutorAgreeOnAmbiguousCompositeCursor(t *testing.T) {
 	database := newMigrationExecutorDB(t)
 	seedMigrationProject(t, database, "Foo")
 	for _, project := range []string{"Foo", "foo"} {
@@ -357,16 +395,29 @@ func TestProjectMigrationExecutorRejectsAmbiguousCompositeCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error { return nil }, nil)
-	if !errors.Is(err, ErrProjectMigrationConflict) {
-		t.Fatalf("ExecuteProjectMigration() error = %v, want composite conflict", err)
+	if plan.Executable || len(plan.Conflicts) != 1 || plan.Conflicts[0].Kind != ConflictNonMonotonicCursorProtocol {
+		t.Fatalf("plan = %#v, want the cursor conflict reported by the preflight", plan)
+	}
+	backedUp := false
+	err = ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error {
+		backedUp = true
+		return nil
+	}, nil)
+	if !errors.Is(err, ErrProjectMigrationPlanUnsafe) {
+		t.Fatalf("ExecuteProjectMigration() error = %v, want unsafe-plan refusal", err)
+	}
+	if backedUp {
+		t.Fatal("a pre-mutation backup was taken for a plan the preflight already refused")
 	}
 	var count int
 	if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM mutation_cursors WHERE project IN ('Foo', 'foo')`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 2 {
-		t.Fatalf("cursor rows after conflict = %d, want 2", count)
+		t.Fatalf("cursor rows after refusal = %d, want 2 unchanged rows", count)
+	}
+	if got := migrationProjectValues(t, database); got != [2]string{"Foo", "Foo"} {
+		t.Fatalf("project spellings after refusal = %v, want the database unmutated", got)
 	}
 }
 
@@ -700,20 +751,28 @@ func migrationProjectValues(t *testing.T, database *DB) [2]string {
 
 func TestResolveProjectIdentityConflictMergesSyncStateIntoTarget(t *testing.T) {
 	const columns = `(project, last_sync_at, jwt_token, jwt_expires_at, last_attempt_at, last_success_at, last_failure_at, consecutive_failures, backoff_until, last_error, last_drain_state, last_drain_reason, last_drain_remaining)`
-	const source = `('Foo', '2026-01-10', 'source-token', '2026-03-01', '2026-01-11', '2026-01-10', '2026-01-30', 4, '2099-01-01', 'boom', 'partial', 'budget', 7)`
+	// Every timestamp is stored in the layout the daemon writes, so the merge
+	// really compares instants here instead of silently falling back to "cannot
+	// be ordered, keep the target".
+	const source = `('Foo', '2026-01-10 00:00:00', 'source-token', '2026-03-01 00:00:00', '2026-01-11 00:00:00', '2026-01-10 00:00:00', '2026-01-30 00:00:00', 4, '2099-01-01 00:00:00', 'boom', 'partial', 'budget', 7)`
 	for _, testCase := range []struct {
 		name, target string
 		want         string
 	}{
 		{
-			name:   "never synced target adopts the losing cursor and credentials",
+			// The pull watermark is the exception: with one side unset the merged
+			// row must re-check the full window rather than adopt a cursor the
+			// target never reached.
+			name:   "never synced target adopts the losing credentials and clears the watermark",
 			target: `('foo', NULL, '', NULL, NULL, NULL, NULL, 0, NULL, '', NULL, NULL, NULL)`,
-			want:   "2026-01-10|source-token|2026-03-01|2026-01-11|2026-01-10|2026-01-30|0|||partial|budget|7",
+			want:   "|source-token|2026-03-01 00:00:00|2026-01-11 00:00:00|2026-01-10 00:00:00|2026-01-30 00:00:00|0|||||",
 		},
 		{
-			name:   "already synced target keeps its own advanced cursor and token",
-			target: `('foo', '2026-02-20', 'target-token', '2026-04-01', '2026-02-21', '2026-02-20', NULL, 1, NULL, '', 'complete', 'drained', 0)`,
-			want:   "2026-02-20|target-token|2026-04-01|2026-02-21|2026-02-20|2026-01-30|0|||complete|drained|0",
+			// Display timestamps advance to the later value, the watermark retreats
+			// to the earlier one, and drain telemetry stays with the target.
+			name:   "already synced target keeps its own token and takes the earlier watermark",
+			target: `('foo', '2026-02-20 00:00:00', 'target-token', '2026-04-01 00:00:00', '2026-02-21 00:00:00', '2026-02-20 00:00:00', NULL, 1, NULL, '', 'complete', 'drained', 0)`,
+			want:   "2026-01-10 00:00:00|target-token|2026-04-01 00:00:00|2026-02-21 00:00:00|2026-02-20 00:00:00|2026-01-30 00:00:00|0|||complete|drained|0",
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
