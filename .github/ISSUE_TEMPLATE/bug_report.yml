@@ -1,0 +1,118 @@
+name: Bug Report / Informe de error
+description: Report a reproducible problem in the Jarvis Dev ecosystem / Informa de un problema reproducible en el ecosistema Jarvis Dev
+title: "fix: "
+labels: ["bug", "status:needs-review"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## How this works
+
+        1. Submit the report. It receives `status:needs-review` automatically.
+        2. A maintainer reviews it and, when accepted, applies `status:approved`.
+        3. Open a pull request only after approval. The pull request must close the approved issue and have exactly one `type:*` label.
+
+        ## Cómo funciona
+
+        1. Envía el informe. Recibirá `status:needs-review` automáticamente.
+        2. Una persona responsable del mantenimiento lo revisará y, si lo acepta, aplicará `status:approved`.
+        3. Abre una pull request únicamente después de la aprobación. La pull request debe cerrar la issue aprobada y tener exactamente una etiqueta `type:*`.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight checklist / Lista de comprobación previa
+      options:
+        - label: I searched the existing issues and found no duplicate. / He buscado entre las issues existentes y no he encontrado ningún duplicado.
+          required: true
+        - label: I understand that implementation must wait until this issue has `status:approved`. / Entiendo que la implementación debe esperar hasta que esta issue tenga `status:approved`.
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug description / Descripción del error
+      description: Describe the problem and its impact. / Describe el problema y su impacto.
+      placeholder: What happened, and who or what is affected? / ¿Qué ha ocurrido y a quién o a qué afecta?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / Pasos para reproducirlo
+      description: Provide the smallest reliable reproduction. Remove secrets and private data. / Proporciona la reproducción fiable más breve posible. Elimina secretos y datos privados.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour / Comportamiento esperado
+      description: What should have happened? / ¿Qué debería haber ocurrido?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour / Comportamiento real
+      description: What happened instead? / ¿Qué ocurrió en su lugar?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area / Área afectada
+      options:
+        - CLI and installation / CLI e instalación
+        - Hive local memory / Memoria local de Hive
+        - Hive API and shared memory / Hive API y memoria compartida
+        - Hive sync / Sincronización de Hive
+        - Hive dashboard / Panel de Hive
+        - SDD prompts and skills / Prompts y skills de SDD
+        - Diagnostics and reconfiguration / Diagnóstico y reconfiguración
+        - Documentation / Documentación
+        - Other / Otra
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit / Versión o commit
+      description: Provide the release tag, `beta`, or commit SHA where the problem occurs. / Indica la etiqueta de la versión, `beta` o el SHA del commit en el que aparece el problema.
+      placeholder: "e.g. beta or abc1234 / p. ej., beta o abc1234"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system / Sistema operativo
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Windows with WSL / Windows con WSL
+        - Other / Otro
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output / Registros o salida de error
+      description: Paste relevant output after removing secrets and private data. / Pega la salida pertinente después de eliminar secretos y datos privados.
+      render: shell
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context / Contexto adicional
+      description: Add screenshots, configuration details, or other useful evidence. / Añade capturas de pantalla, detalles de configuración u otras pruebas útiles.

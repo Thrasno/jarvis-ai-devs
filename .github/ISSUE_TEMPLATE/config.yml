@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation / Documentación
+    url: https://github.com/Thrasno/jarvis-ai-devs/tree/master/docs
+    about: Check the guides before filing an issue. / Consulta las guías antes de abrir una issue.
