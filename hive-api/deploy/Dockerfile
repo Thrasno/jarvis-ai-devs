@@ -27,9 +27,11 @@ WORKDIR /app/hive-api
 
 # Copy module files before source so Docker can cache dependency downloads.
 COPY hive-api/go.mod hive-api/go.sum ./
+COPY hivederive/go.mod hivederive/go.sum /app/hivederive/
 RUN go mod download
 
 COPY hive-api/ ./
+COPY hivederive/ /app/hivederive/
 
 # -ldflags="-w -s" strips debug/symbol tables for a smaller runtime binary.
 # CGO_ENABLED=0 keeps the binary static for the distroless runtime image.
