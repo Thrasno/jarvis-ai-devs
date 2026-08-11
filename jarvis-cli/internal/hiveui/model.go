@@ -44,6 +44,7 @@ const (
 	ScreenProjectArchive
 	ScreenProjectMerge
 	ScreenProjectPurge
+	ScreenProjectNormalization
 )
 
 type GuardExecutor interface {
@@ -113,6 +114,10 @@ type Snapshot struct {
 	// SyncSummary holds the aggregate sync health from GET /governance/health/summary.
 	// Nil when the daemon predates T14 or the endpoint failed — degrade gracefully.
 	SyncSummary *hiveclient.SyncSummary
+	// MigrationState is the project-identity gate state from
+	// GET /governance/project-identity/status. Empty when the daemon did not
+	// answer, which is treated as "nothing pending".
+	MigrationState string
 }
 
 type Model struct {
@@ -196,6 +201,19 @@ type Model struct {
 	configEnvActive     bool
 	configTestResult    *hiveclient.ConfigTestResult
 	configLoadErr       error
+
+	// ScreenProjectNormalization state — the daemon-owned project-identity fold.
+	normalizationService ProjectNormalizationService
+	normalizationStep    normalizationStep
+	normalizationPlan    *hiveclient.MigrationPlan
+	// normalizationProgress is the last durable run state read from the daemon.
+	normalizationProgress   *hiveclient.MigrationProgress
+	normalizationConfirm    string
+	normalizationDetail     string
+	normalizationSubmitting bool
+	// normalizationPollSeq invalidates ticks scheduled by a screen that has since
+	// been closed, so the live poll cannot outlive the screen that owns it.
+	normalizationPollSeq int
 }
 
 type memoryGuardStep int
@@ -374,9 +392,10 @@ func NewModelWithAllExecutors(snapshot Snapshot, guard GuardExecutor, archive Pr
 // NewModelWithConfig creates a Model with all executors plus a ConfigService for
 // the interactive ScreenAPIConfig form. Pass a nil ConfigService to fall back to
 // the read-only placeholder view.
-func NewModelWithConfig(snapshot Snapshot, guard GuardExecutor, archive ProjectArchiveExecutor, merge ProjectMergeExecutor, memory MemoryLoader, batchMerge ProjectMergeBatchExecutor, deleteExecutor ProjectDeleteExecutor, config ConfigService) Model {
+func NewModelWithConfig(snapshot Snapshot, guard GuardExecutor, archive ProjectArchiveExecutor, merge ProjectMergeExecutor, memory MemoryLoader, batchMerge ProjectMergeBatchExecutor, deleteExecutor ProjectDeleteExecutor, config ConfigService, normalization ProjectNormalizationService) Model {
 	m := NewModelWithAllExecutors(snapshot, guard, archive, merge, memory, batchMerge, deleteExecutor)
 	m.configService = config
+	m.normalizationService = normalization
 	return m
 }
 
@@ -409,6 +428,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if result, ok := msg.(configTestResultMsg); ok {
 		return m.applyConfigTestResult(result), nil
+	}
+	if result, ok := msg.(normalizationEntryMsg); ok {
+		return m.applyNormalizationEntry(result)
+	}
+	if result, ok := msg.(normalizationExecuteMsg); ok {
+		return m.applyNormalizationExecute(result)
+	}
+	if result, ok := msg.(normalizationProgressMsg); ok {
+		return m.applyNormalizationProgress(result)
+	}
+	if tick, ok := msg.(normalizationTickMsg); ok {
+		return m.applyNormalizationTick(tick)
 	}
 	if sz, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width = sz.Width
@@ -453,6 +484,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		return m.updateMemoryGuard(key)
+	}
+	if m.screen == ScreenProjectNormalization {
+		if key.Type == tea.KeyCtrlC && !m.normalizationSubmitting {
+			return m, tea.Quit
+		}
+		return m.updateProjectNormalization(key)
 	}
 	if m.screen == ScreenAPIConfig {
 		return m.updateAPIConfig(key)
@@ -504,6 +541,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.screen == ScreenAPIConfig && m.configService != nil {
 			return m.startConfigLoad()
+		}
+		if m.screen == ScreenProjectNormalization && m.normalizationService != nil {
+			return m.startNormalizationEntry()
 		}
 	}
 	return m, nil
@@ -562,6 +602,8 @@ func (m Model) View() string {
 		return m.projectMergeView()
 	case ScreenProjectPurge:
 		return m.projectPurgeView()
+	case ScreenProjectNormalization:
+		return m.projectNormalizationView()
 	}
 
 	w := max(m.width, 80)
@@ -610,14 +652,17 @@ func (m Model) View() string {
 
 	// ACTIONS panel
 	var actionsBlock strings.Builder
-	for i, action := range dashboardActions() {
+	for i, action := range m.dashboardActionRows() {
 		cursor := "  "
 		if i == m.cursor {
 			cursor = cursorStyle.Render("▌") + " "
 		}
 		state := ""
+		if action.badge != "" {
+			state = " " + badgeWarning.Render(action.badge)
+		}
 		if action.disabled {
-			state = dimTextStyle.Render(" (disabled)")
+			state += dimTextStyle.Render(" (disabled)")
 		}
 		var row string
 		if i == m.cursor {
@@ -648,7 +693,7 @@ func (m Model) move(delta int) Model {
 	case ScreenBackups:
 		m.backupIndex = wrapIndex(m.backupIndex+delta, len(m.snapshot.Backups))
 	default:
-		m.cursor = wrapIndex(m.cursor+delta, len(dashboardActions()))
+		m.cursor = wrapIndex(m.cursor+delta, len(m.dashboardActionRows()))
 	}
 	return m
 }
@@ -683,8 +728,13 @@ func (m Model) open() Model {
 	if m.screen != ScreenDashboard {
 		return m
 	}
-	action := dashboardActions()[m.cursor]
+	action := m.dashboardActionRows()[m.cursor]
 	if action.disabled {
+		if normalizationPending(m.snapshot) && action.label != normalizationActionLabel {
+			m.message = action.label + " is unavailable until project normalization finishes. " +
+				"Your data is intact — Hive is only refusing writes under an ambiguous project identity."
+			return m
+		}
 		m.message = action.label + " is disabled in this read-only TUI slice. No local Hive state was changed."
 		return m
 	}
@@ -705,6 +755,12 @@ func (m Model) open() Model {
 		m.screen = ScreenBackups
 	case "Purge archived":
 		m = m.startProjectPurge()
+	case normalizationActionLabel:
+		if m.normalizationService == nil {
+			m.message = normalizationActionLabel + " needs a hive-daemon that supports the project-identity fold. No local Hive state was changed."
+			return m
+		}
+		m.screen = ScreenProjectNormalization
 	default:
 		m.message = action.label + " is not available in this navigation sub-slice. No local Hive state was changed."
 	}
@@ -764,6 +820,16 @@ func (m Model) back() Model {
 		m.configEnvActive = false
 		m.configLoadErr = nil
 		m.configLoading = false
+	case ScreenProjectNormalization:
+		m.screen = ScreenDashboard
+		m.normalizationStep = normalizationStepLoading
+		m.normalizationPlan = nil
+		m.normalizationProgress = nil
+		m.normalizationConfirm = ""
+		m.normalizationDetail = ""
+		m.normalizationSubmitting = false
+		// Retire the live poll: any tick already in flight is now stale.
+		m.normalizationPollSeq++
 	case ScreenWarnings, ScreenBackups, ScreenAPIHealth:
 		m.screen = ScreenDashboard
 	case ScreenProjects:
@@ -3067,20 +3133,24 @@ type dashboardAction struct {
 	label       string
 	description string
 	disabled    bool
+	// badge is a short status marker rendered next to the label, used by the
+	// normalization row to show the migration state without opening it.
+	badge string
 }
 
 func dashboardActions() []dashboardAction {
 	return []dashboardAction{
-		{"Project viewer", "browse projects and memories", false},
-		{"Project timeline", "chronological project memories", false},
-		{"Merge projects", "destructive operation deferred", true},
-		{"Delete projects", "archive then delete project memories and sessions", false},
-		{"Purge archived", "permanently remove all data for an archived project", false},
-		{"Delete memories", "destructive operation deferred", true},
-		{"Hive API config", "read-only configuration state", false},
-		{"Hive API health", "connectivity and sync health", false},
-		{"Memory warnings", "triage active warnings", false},
-		{"Backup snapshots", "inspect snapshots of memory.db", false},
+		{label: "Project viewer", description: "browse projects and memories"},
+		{label: "Project timeline", description: "chronological project memories"},
+		{label: normalizationActionLabel, description: "fold duplicate project spellings into one identity"},
+		{label: "Merge projects", description: "destructive operation deferred", disabled: true},
+		{label: "Delete projects", description: "archive then delete project memories and sessions"},
+		{label: "Purge archived", description: "permanently remove all data for an archived project"},
+		{label: "Delete memories", description: "destructive operation deferred", disabled: true},
+		{label: "Hive API config", description: "read-only configuration state"},
+		{label: "Hive API health", description: "connectivity and sync health"},
+		{label: "Memory warnings", description: "triage active warnings"},
+		{label: "Backup snapshots", description: "inspect snapshots of memory.db"},
 	}
 }
 

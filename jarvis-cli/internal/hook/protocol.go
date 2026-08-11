@@ -18,7 +18,36 @@ const (
 	// MemoryReminderCooldown is the minimum interval between consecutive
 	// reminders (aligns with engram's 900s save cadence).
 	MemoryReminderCooldown = 15 * time.Minute
+	// MigrationStatusCommand is the local recovery surface for a migration that
+	// ran and failed.
 	MigrationStatusCommand = "hive project identity status"
+	// MigrationNormalizationCommand is the local entry point for an ambiguous
+	// project identity. The CLI status command can report the ambiguity but
+	// cannot resolve it; the wizard is a screen inside the Hive TUI.
+	//
+	// It is defined HERE, not read from the daemon's status payload, for the same
+	// reason MigrationStatusCommand is: see migrationProtocolContinuation.
+	MigrationNormalizationCommand = "jarvis hive → Project normalization"
+)
+
+// The daemon's migration-gate state literals, mirrored from
+// hive-daemon/internal/project.MigrationState*. They are wire values, so they
+// are duplicated rather than imported: jarvis-cli does not depend on the daemon
+// module, and the hook must keep working against an older or newer daemon.
+//
+// Only two of them are named here because only two change what the hook renders.
+// Every other value — including one this build has never heard of — is treated as
+// a failure, which is the cautious reading: this build cannot prove the database
+// was left intact, so it must not claim it was.
+const (
+	// MigrationStateReady is the one state that means Hive is serving normally.
+	MigrationStateReady = "ready"
+	// MigrationStateBlocked means a migration was attempted and failed.
+	MigrationStateBlocked = "migration-blocked"
+	// MigrationStatePendingOperatorReview means a read-only preflight found
+	// ambiguous project identities and stopped before writing anything. Nothing
+	// failed and nothing was migrated; what is missing is a human decision.
+	MigrationStatePendingOperatorReview = "migration-pending-operator-review"
 )
 
 // Marker file base names. markerPath composes "<name>-<safeSessionID>.done".
@@ -118,9 +147,12 @@ const ProtocolValueTruncated = " […truncated]"
 // Injected-value bounds. A migration reason is a sentence or two in every real
 // case; a backup id is a timestamp and a uuid. There is deliberately NO bound
 // for the project pin — see sanitizeProtocolIdentifier.
+// There is no continuation bound because the continuation is never
+// daemon-supplied — it is one of two local constants.
 const (
 	maxProtocolReasonLength   = 500
 	maxProtocolBackupIDLength = 128
+	maxProtocolStateLength    = 128
 )
 
 // The two kinds of value this package interpolates into the session context are
@@ -181,13 +213,55 @@ func flattenLineBreaks(value string) string {
 	}, value)
 }
 
-// BuildMigrationBlockedProtocol renders the migration-blocked notice appended to
-// the session-start context. Both interpolated values come from the daemon over
-// HTTP and are prose a human reads, so both go through sanitizeProtocolProse.
-func BuildMigrationBlockedProtocol(reason, backupID string) string {
-	return "## Hive Migration Blocked\n\n" +
-		"State: migration-blocked\n" +
-		"Reason: " + sanitizeProtocolProse(reason, maxProtocolReasonLength) + "\n" +
-		"Backup: " + sanitizeProtocolProse(backupID, maxProtocolBackupIDLength) + "\n" +
-		"Continue with: " + MigrationStatusCommand
+// BuildMigrationProtocol renders the notice appended to the session-start context
+// while Hive is not serving. The state, reason, and backup id come from the daemon
+// over HTTP and are prose a human reads, so all three go through
+// sanitizeProtocolProse. The continuation does not come from the daemon at all.
+//
+// The state is no longer hardcoded because there is more than one non-serving
+// state, and they need different words: a failed migration may have left the
+// database in any shape, while a pending operator review never wrote to it at
+// all. Naming the wrong one sends the operator to the wrong surface.
+func BuildMigrationProtocol(status MigrationStatus) string {
+	state := sanitizeProtocolProse(status.State, maxProtocolStateLength)
+	notice := migrationProtocolHeading(state) + "\n\n" +
+		"State: " + state + "\n" +
+		"Reason: " + sanitizeProtocolProse(status.Reason, maxProtocolReasonLength) + "\n"
+	// A pending review took no archive because it attempted no migration, so an
+	// empty Backup line would only suggest a rollback artifact went missing.
+	if state != MigrationStatePendingOperatorReview {
+		notice += "Backup: " + sanitizeProtocolProse(status.BackupID, maxProtocolBackupIDLength) + "\n"
+	}
+	return notice + "Continue with: " + migrationProtocolContinuation(state)
+}
+
+// migrationProtocolHeading names the state in the operator's terms. Anything this
+// build does not recognize gets the cautious heading, never the reassuring one.
+func migrationProtocolHeading(state string) string {
+	if state == MigrationStatePendingOperatorReview {
+		return "## Hive Project Normalization — Waiting For Operator Decision"
+	}
+	return "## Hive Migration Blocked"
+}
+
+// migrationProtocolContinuation derives the next step from the state alone. The
+// daemon's own status.Continuation is deliberately NOT used, and no amount of
+// sanitizing would make it safe to use.
+//
+// "Continue with:" is a command the model, and through it the operator, may act
+// on. Commit 9af78aa9 ("fix(hive): secure global context hooks") established that
+// the daemon's continuation is untrusted text and must never be rendered into an
+// agent's context — its test feeds "attacker-controlled-continuation" through the
+// OpenCode plugin and asserts it never appears. This notice goes into the same
+// kind of context, so it holds the same rule.
+//
+// The state is safe to route on where the continuation is not, because the state
+// is a small closed set this package validates against its own constants: an
+// unrecognized value cannot invent a new command, it only selects the cautious
+// one.
+func migrationProtocolContinuation(state string) string {
+	if state == MigrationStatePendingOperatorReview {
+		return MigrationNormalizationCommand
+	}
+	return MigrationStatusCommand
 }

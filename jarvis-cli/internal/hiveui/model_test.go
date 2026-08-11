@@ -99,8 +99,9 @@ func TestDashboardShowsReadOnlyActionsAndBlocksDestructiveEntries(t *testing.T) 
 	m := NewModelWithSnapshot(Snapshot{DashboardState: DashboardHealthy})
 	assertContains(t, m.View(), "Project viewer", "Memory warnings", "Backup snapshots", "Merge projects (disabled)", "Delete memories (disabled)")
 
-	m = sendKey(m, tea.KeyDown)
-	m = sendKey(m, tea.KeyDown)
+	// Reach the row by label: the action list grows, and a hardcoded offset would
+	// silently start asserting about a different action.
+	m.cursor = dashboardActionIndex(t, "Merge projects")
 	m = sendKey(m, tea.KeyEnter)
 
 	if m.Screen() != ScreenDashboard {

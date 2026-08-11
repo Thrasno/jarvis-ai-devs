@@ -41,7 +41,7 @@ func TestClientReadsMigrationIdentityStatusAndRequestsRollback(t *testing.T) {
 			if r.Method != http.MethodGet {
 				t.Fatalf("method = %s, want GET", r.Method)
 			}
-			_, _ = w.Write([]byte(`{"state":"migration-blocked","reason":"duplicate canonical project","backup_id":"migration-backup-1","conflicts":["project_aliases"],"variants":["Foo-Bar"]}`))
+			_, _ = w.Write([]byte(`{"state":"migration-blocked","reason":"duplicate canonical project","continuation":"hive project identity status","backup_id":"migration-backup-1"}`))
 		case "/governance/restores":
 			if r.Method != http.MethodPost {
 				t.Fatalf("method = %s, want POST", r.Method)
@@ -75,7 +75,7 @@ func TestClientReadsMigrationIdentityStatusAndRequestsRollback(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	status, err := client.MigrationIdentityStatus(context.Background())
-	if err != nil || status.BackupID != "migration-backup-1" || len(status.Conflicts) != 1 || len(status.Variants) != 1 {
+	if err != nil || status.BackupID != "migration-backup-1" || status.Continuation != "hive project identity status" {
 		t.Fatalf("status = %+v, err = %v", status, err)
 	}
 	restore, err := client.RestoreMigrationBackup(context.Background(), "migration-backup-1", "RESTORE migration-backup-1")
