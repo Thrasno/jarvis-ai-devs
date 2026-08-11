@@ -220,15 +220,47 @@ func migrationBackupIDForPlan(ctx context.Context, backups *governance.BackupSto
 	return backup.ID
 }
 
-func planAndExecuteMigration(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error) (db.ProjectMigrationPlan, error) {
-	plan, err := db.ReadProjectMigrationPlan(ctx, store)
-	if err == nil && !plan.Executable {
-		err = db.ErrProjectMigrationPlanUnsafe
+// preflightAndMaintainMigration looks before it writes, and writes only what
+// needs no permission.
+//
+// Startup used to plan and execute in one breath, which meant a daemon start
+// silently folded two spellings of a project into one. That is a decision about
+// the operator's own names and it is not startup's to make, so a preflight that
+// finds duplicate spellings — or a plan the planner refused — returns without
+// executing and lets the caller install a gate.
+//
+// The rest of the executor's work is not a decision: populating the canonical
+// identity registry is an idempotent INSERT ... ON CONFLICT DO NOTHING, and the
+// schema-ownership rebuild only moves the same rows into tables that declare the
+// foreign key. Neither folds an identity, so both still run unattended with the
+// executor's own mandatory pre-mutation backup. Holding them for a confirmation
+// would wedge Hive on a routine upgrade with nothing for the operator to decide.
+func preflightAndMaintainMigration(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error) (db.ProjectMigrationPreflight, error) {
+	preflight, err := db.ReadProjectMigrationPreflight(ctx, store)
+	if err != nil || preflight.NeedsOperatorReview() {
+		return preflight, err
 	}
-	if err == nil {
-		err = execute(ctx, plan)
+	return preflight, execute(ctx, preflight.Plan)
+}
+
+// pendingProjectMigrationStatus describes a plan nobody has approved yet.
+//
+// BackupID is deliberately absent: this path never reached a mutation, so it
+// never took an archive, and an unrelated older backup must never be offered as
+// this plan's rollback. PlanFingerprint stays, because it is the guard the
+// operator's resolution is checked against.
+func pendingProjectMigrationStatus(preflight db.ProjectMigrationPreflight) project.MigrationStatus {
+	reason := "project identity migration would fold duplicate project spellings and needs an explicit operator decision"
+	if len(preflight.Plan.Conflicts) != 0 {
+		reason = fmt.Sprintf(
+			"project identity migration reports %d unresolved identity conflict(s) and needs an explicit operator decision",
+			len(preflight.Plan.Conflicts))
 	}
-	return plan, err
+	return project.MigrationStatus{
+		State:           project.MigrationStatePendingOperatorReview,
+		Reason:          reason,
+		PlanFingerprint: preflight.Plan.Fingerprint,
+	}
 }
 
 func runStartupMigrationWith(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error) *project.MigrationGate {
@@ -258,13 +290,22 @@ func logProjectMigrationSummary(summary db.ProjectMigrationSummary, elapsed time
 
 func runStartupMigrationWithBackup(ctx context.Context, store *db.DB, execute func(context.Context, db.ProjectMigrationPlan) error, backups *governance.BackupStore) *project.MigrationGate {
 	started := time.Now()
-	plan, err := planAndExecuteMigration(ctx, store, execute)
+	preflight, err := preflightAndMaintainMigration(ctx, store, execute)
 	if db.IsProjectMigrationContention(err) {
-		// Another daemon process was migrating the same database. Its
-		// transaction has committed or rolled back by now, so re-planning
-		// against the current state either finds nothing left to do or applies
-		// cleanly; only a second failure is a real block on this session.
-		plan, err = planAndExecuteMigration(ctx, store, execute)
+		// Another daemon process was writing the same database. Its transaction
+		// has committed or rolled back by now, so a fresh preflight either finds
+		// nothing left to do or applies cleanly; only a second failure is a real
+		// block on this session. The whole preflight repeats rather than just the
+		// execution, because the peer may have changed what the plan should be —
+		// including turning maintenance into something that now needs review.
+		preflight, err = preflightAndMaintainMigration(ctx, store, execute)
+	}
+	plan := preflight.Plan
+	if err == nil && preflight.NeedsOperatorReview() {
+		// Nothing was written, so nothing is persisted either: a HiveWarning row
+		// would itself be the mutation this path promises not to make. The gate
+		// carries the whole story to every surface instead.
+		return project.NewMigrationGate(pendingProjectMigrationStatus(preflight))
 	}
 	if err == nil {
 		logProjectMigrationSummary(store.LastProjectMigrationSummary(), time.Since(started))

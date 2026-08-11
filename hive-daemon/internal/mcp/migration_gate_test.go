@@ -46,6 +46,36 @@ func TestMigrationGateBlocksEveryMCPMemoryToolWithStructuredRecovery(t *testing.
 	}
 }
 
+// TestMigrationGatePendingOperatorReviewBlocksMCPToolsWithTheTUIContinuation
+// keeps the MCP surface gated while the operator has not decided yet, and sends
+// the assistant's own error text to the wizard that can decide — the CLI status
+// command cannot resolve anything.
+func TestMigrationGatePendingOperatorReviewBlocksMCPToolsWithTheTUIContinuation(t *testing.T) {
+	gate := project.NewMigrationGate(project.MigrationStatus{
+		State:           project.MigrationStatePendingOperatorReview,
+		Reason:          "two spellings of one project",
+		PlanFingerprint: "fingerprint-1",
+	})
+	session := connectMigrationGateServer(t, gate)
+	res := callTool(t, session, "mem_search", map[string]any{"query": "query"})
+	if !res.IsError {
+		t.Fatal("mem_search succeeded while the migration was pending operator review")
+	}
+	body := decodeJSONResponse(t, res)
+	if body["state"] != project.MigrationStatePendingOperatorReview {
+		t.Fatalf("state = %v, want %q", body["state"], project.MigrationStatePendingOperatorReview)
+	}
+	if body["continuation"] != project.MigrationPendingOperatorContinuation {
+		t.Fatalf("continuation = %v, want %q", body["continuation"], project.MigrationPendingOperatorContinuation)
+	}
+	if body["plan_fingerprint"] != "fingerprint-1" {
+		t.Fatalf("plan fingerprint = %v, want it surfaced to the assistant", body["plan_fingerprint"])
+	}
+	if _, present := body["backup_id"]; present {
+		t.Fatalf("backup id present in %#v, want it absent when nothing was backed up", body)
+	}
+}
+
 func TestMigrationGateAllowsMCPMemoryToolsWhenReady(t *testing.T) {
 	session := connectMigrationGateServer(t, project.NewMigrationGate(project.MigrationStatus{State: project.MigrationStateReady}))
 	res := callTool(t, session, "mem_suggest_topic_key", map[string]any{"title": "Gate wiring", "type": "discovery"})

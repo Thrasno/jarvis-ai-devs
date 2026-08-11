@@ -8,8 +8,27 @@ import (
 const MigrationStateReady = "ready"
 const MigrationStateBlocked = "migration-blocked"
 
+// MigrationStatePendingOperatorReview is the closed-but-intact state: the
+// preflight found project identities it cannot fold on its own authority, and it
+// stopped before writing anything at all.
+//
+// It is deliberately not MigrationStateBlocked. That state means a migration was
+// attempted and failed, so the database may be anything the executor left behind
+// and only the narrow recovery surface is safe. This state means nothing was
+// attempted: the database is exactly as the operator left it, so read-only
+// surfaces stay reachable and what is missing is a human decision, not a repair.
+const MigrationStatePendingOperatorReview = "migration-pending-operator-review"
+
 const defaultMigrationBlockedReason = "migration status is unavailable"
 const defaultMigrationContinuation = "hive project identity status"
+
+// MigrationPendingOperatorContinuation names the only surface that can actually
+// make this decision. The CLI status command can report the ambiguity but cannot
+// resolve it, so pointing there leaves the operator with a dead end; the wizard
+// lives in the Hive TUI.
+const MigrationPendingOperatorContinuation = "jarvis hive → Project normalization"
+
+const defaultMigrationPendingOperatorReason = "project identities are ambiguous and need an explicit operator decision"
 
 var ErrIdentityResolutionStale = errors.New("project identity resolution is stale or unrelated")
 
@@ -54,26 +73,55 @@ type MigrationBlockedError struct {
 }
 
 func (e *MigrationBlockedError) Error() string {
-	return fmt.Sprintf("migration-blocked: %s", e.Status.Reason)
+	return fmt.Sprintf("%s: %s", e.Status.State, e.Status.Reason)
 }
 
+// NewMigrationGate normalizes a status into exactly one of the three states this
+// package recognizes. Every unknown state still folds into MigrationStateBlocked
+// with its own reason and continuation, so a status this package does not
+// understand can never come up permissive or under-described.
 func NewMigrationGate(status MigrationStatus) *MigrationGate {
-	if status.State != MigrationStateReady {
+	return &MigrationGate{status: normalizeMigrationStatus(status)}
+}
+
+func normalizeMigrationStatus(status MigrationStatus) MigrationStatus {
+	switch status.State {
+	case MigrationStateReady:
+	case MigrationStatePendingOperatorReview:
+		if status.Reason == "" {
+			status.Reason = defaultMigrationPendingOperatorReason
+		}
+		status.Continuation = MigrationPendingOperatorContinuation
+	default:
 		status.State = MigrationStateBlocked
 		if status.Reason == "" {
 			status.Reason = defaultMigrationBlockedReason
 		}
 		status.Continuation = defaultMigrationContinuation
 	}
-	return &MigrationGate{status: status}
+	return status
 }
 
 func (g *MigrationGate) Status() MigrationStatus {
+	if g == nil {
+		return MigrationStatus{State: MigrationStateReady}
+	}
 	return g.status
 }
 
+// Blocking reports a gate that is not serving, whichever closed state it is in.
+// Callers that must treat "waiting for a decision" and "the migration failed"
+// alike — the recovery handlers, the request gate — ask this instead of comparing
+// against one state and silently letting the other through.
+func (g *MigrationGate) Blocking() bool {
+	return g.Check() != nil
+}
+
 func (g *MigrationGate) Check() error {
-	if g == nil || g.status.State == MigrationStateReady {
+	if g == nil {
+		return nil
+	}
+	if g.status.State == MigrationStateReady {
 		return nil
 	}
 	return &MigrationBlockedError{Status: g.status}
