@@ -152,7 +152,7 @@ func makeMigrationGroup(key string, records []ProjectStateRecord, conflicts *[]M
 	for _, record := range records {
 		identity := string(record.Table) + "\x00" + record.Identity
 		if value, exists := seen[identity]; exists {
-			if value == record.Value {
+			if value == record.Value || mergeableOnCollision(record.Table) {
 				group.Coalesced++
 				continue
 			}
@@ -162,6 +162,19 @@ func makeMigrationGroup(key string, records []ProjectStateRecord, conflicts *[]M
 		seen[identity] = record.Value
 	}
 	return group
+}
+
+// mergeableOnCollision reports state whose colliding rows the executor can merge
+// on its own, so a value divergence is coalescible work rather than a conflict
+// that blocks the whole plan.
+//
+// sync_state is the only such state: it is a singleton per project, so two
+// spellings always collide on its constant identity, and coalesceProjectSyncState
+// folds them through one deterministic per-column policy. Every other table here
+// carries a real composite identity, so a divergence there is a genuine
+// contradiction no rule can settle.
+func mergeableOnCollision(table ProjectState) bool {
+	return table == ProjectStateSyncState
 }
 
 func displayFor(records []ProjectStateRecord) (string, DisplaySource) {
@@ -179,6 +192,11 @@ func displayFor(records []ProjectStateRecord) (string, DisplaySource) {
 
 func conflictKind(table ProjectState) MigrationConflictKind {
 	switch table {
+	// Unreachable from the planner: mergeableOnCollision coalesces a divergent
+	// sync_state row instead of reporting it. The kind stays mapped so a
+	// persisted or replayed conflict from before the merge existed still
+	// classifies, and so a future non-mergeable sync_state collision would not
+	// silently fall through to divergent-global-entity.
 	case ProjectStateSyncState:
 		return ConflictDivergentSyncState
 	case ProjectStateSessions:
