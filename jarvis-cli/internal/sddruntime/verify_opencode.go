@@ -104,8 +104,8 @@ func verifyOpenCodeConfigInvariants(oc ObservedOpenCodeConfig, storeMode string)
 	})
 
 	// --- R6: Task Allowlist ---
-	// 10 SDD + 3 Judgment Day + 4 Review named allows required.
-	missingTaskAllows, unexpectedTaskAllows := diffRequiredOpenCodeSubagents(oc.TaskAllows)
+	// Built-in general/explore routes plus 10 SDD, 3 Judgment Day, and 4 Review allows are required.
+	missingTaskAllows, unexpectedTaskAllows := diffRequiredOpenCodeTaskAllows(oc.TaskAllows)
 	taskStatus := StatusPass
 	taskMsg := fmt.Sprintf("orchestrator task allowlist complete: wildcard deny=true, %d named allows", len(oc.TaskAllows))
 	taskObserved := fmt.Sprintf("wildcard_deny=%v, allows=%d", oc.TaskWildcardDeny, len(oc.TaskAllows))
@@ -118,7 +118,7 @@ func verifyOpenCodeConfigInvariants(oc ObservedOpenCodeConfig, storeMode string)
 		Key:        "invariant.opencode.task_allowlist",
 		Status:     taskStatus,
 		DriftClass: driftClassFromStatus(taskStatus),
-		Expected:   `task["*"]="deny" and named allows: ` + strings.Join(requiredOpenCodeSubagents(), ","),
+		Expected:   `task["*"]="deny" and named allows: ` + strings.Join(requiredOpenCodeTaskAllows(), ","),
 		Observed:   taskObserved,
 		Message:    taskMsg,
 	})
@@ -383,19 +383,31 @@ func requiredOpenCodeSubagents() []string {
 	}
 }
 
+func requiredOpenCodeTaskAllows() []string {
+	return append([]string{"general", "explore"}, requiredOpenCodeSubagents()...)
+}
+
+func diffRequiredOpenCodeTaskAllows(observed []string) ([]string, []string) {
+	return diffRequiredOpenCodeNames(requiredOpenCodeTaskAllows(), observed)
+}
+
 func diffRequiredOpenCodeSubagents(observed []string) ([]string, []string) {
+	return diffRequiredOpenCodeNames(requiredOpenCodeSubagents(), observed)
+}
+
+func diffRequiredOpenCodeNames(required, observed []string) ([]string, []string) {
 	requiredSet := make(map[string]struct{})
-	for _, required := range requiredOpenCodeSubagents() {
-		requiredSet[required] = struct{}{}
+	for _, name := range required {
+		requiredSet[name] = struct{}{}
 	}
 	present := make(map[string]struct{}, len(observed))
 	for _, name := range observed {
 		present[name] = struct{}{}
 	}
 	missing := make([]string, 0)
-	for _, required := range requiredOpenCodeSubagents() {
-		if _, ok := present[required]; !ok {
-			missing = append(missing, required)
+	for _, name := range required {
+		if _, ok := present[name]; !ok {
+			missing = append(missing, name)
 		}
 	}
 	unexpected := make([]string, 0)

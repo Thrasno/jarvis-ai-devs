@@ -155,7 +155,7 @@ func (a *OpenCodeAgent) renderGeneratedConfigPatch(cfg *config.AppConfig, includ
 		OrchestratorModel:   modelForGeneratedAgent(assignments, "orchestrator"),
 		OrchestratorVariant: variants["orchestrator"],
 		Agents:              agents,
-		TaskAllows:          append(openCodeSDDSubagents(), append(openCodeJudgmentDaySubagents(), openCodeReviewSubagents()...)...),
+		TaskAllows:          append([]string{"general", "explore"}, append(openCodeSDDSubagents(), append(openCodeJudgmentDaySubagents(), openCodeReviewSubagents()...)...)...),
 	}
 
 	tmpl, err := template.New("opencode.json.tmpl").Funcs(template.FuncMap{"json": jsonTemplateValue}).Parse(string(templateBytes))

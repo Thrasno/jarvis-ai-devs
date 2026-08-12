@@ -97,7 +97,7 @@ func fakeCompliantOpenCodeConfig() sddruntime.ObservedOpenCodeConfig {
 		OrchestratorPrompt:           "{file:./sdd-orchestrator.md}",
 		AgentNames:                   append([]string{"sdd-orchestrator"}, subagents...),
 		HiddenSubagents:              subagents,
-		TaskAllows:                   subagents,
+		TaskAllows:                   append([]string{"general", "explore"}, subagents...),
 		TaskWildcardDeny:             true,
 		BashWildcardAllow:            true,
 		ReadSecretDenies:             true,

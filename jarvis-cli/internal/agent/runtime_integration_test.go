@@ -769,7 +769,7 @@ func installOptionalManagedArtifacts(configDir string) error {
 func compliantOpenCodeJSON() string {
 	subagents := append(openCodeSDDSubagents(), append(openCodeJudgmentDaySubagents(), openCodeReviewSubagents()...)...)
 
-	taskAllows := ""
+	taskAllows := `, "general": "allow", "explore": "allow"`
 	for _, name := range subagents {
 		taskAllows += `, "` + name + `": "allow"`
 	}

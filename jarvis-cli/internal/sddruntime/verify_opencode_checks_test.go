@@ -337,6 +337,42 @@ func TestVerifyOpenCode_TaskAllowlist_FailsWhenWildcardDenyMissing(t *testing.T)
 	}
 }
 
+func TestVerifyOpenCode_TaskAllowlist_FailsWithoutGeneralAndExplore(t *testing.T) {
+	tests := []struct {
+		name    string
+		missing string
+	}{
+		{name: "general writer", missing: "general"},
+		{name: "read-only explorer", missing: "explore"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			observed := compliantOpenCodeRuntime(t)
+			observed.OpenCode.TaskAllows = removeString(observed.OpenCode.TaskAllows, tt.missing)
+
+			report := Verify("opencode", observed)
+			check := findCheckByKey(report.Checks, "invariant.opencode.task_allowlist")
+			if check == nil || check.Status != StatusFail {
+				t.Fatalf("expected task allowlist failure without %q, got %#v", tt.missing, check)
+			}
+			if !strings.Contains(check.Observed, tt.missing) {
+				t.Fatalf("expected missing route diagnostic for %q, got %q", tt.missing, check.Observed)
+			}
+		})
+	}
+}
+
+func removeString(values []string, target string) []string {
+	result := make([]string, 0, len(values)-1)
+	for _, value := range values {
+		if value != target {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
 func TestVerifyOpenCode_TaskAllowlist_FailsWhenAllowsBelow17(t *testing.T) {
 	observed := compliantOpenCodeRuntime(t)
 	observed.OpenCode.TaskAllows = observed.OpenCode.TaskAllows[:16]
@@ -352,7 +388,7 @@ func TestVerifyOpenCode_TaskAllowlist_FailsWhenAllowsBelow17(t *testing.T) {
 	}
 }
 
-func TestVerifyOpenCode_TaskAllowlist_PassesWhenDenyAndExactly17Allows(t *testing.T) {
+func TestVerifyOpenCode_TaskAllowlist_PassesWhenDenyAndAllRequiredAllows(t *testing.T) {
 	observed := compliantOpenCodeRuntime(t)
 
 	report := Verify("opencode", observed)
@@ -398,7 +434,7 @@ func TestVerifyOpenCode_TaskAllowlist_FailsWhen17WrongNames(t *testing.T) {
 	if check.Status != StatusFail {
 		t.Fatalf("expected StatusFail for wrong task allow names, got %q", check.Status)
 	}
-	if !strings.Contains(check.Observed, "missing=sdd-init") || !strings.Contains(check.Observed, "unexpected=wrong-01") {
+	if !strings.Contains(check.Observed, "sdd-init") || !strings.Contains(check.Observed, "unexpected=wrong-01") {
 		t.Fatalf("expected useful missing/unexpected diagnostic, got observed=%q message=%q", check.Observed, check.Message)
 	}
 }
