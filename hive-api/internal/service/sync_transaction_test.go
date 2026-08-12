@@ -1,8 +1,11 @@
 package service_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,6 +67,39 @@ func TestSyncService_SyncRequiresTransactionManager(t *testing.T) {
 	_, err := svc.Sync(ctx, model.SyncRequest{Project: "jarvis-dev"}, "user-1")
 
 	require.ErrorIs(t, err, service.ErrProjectBlockUnavailable)
+}
+
+func TestSyncService_SyncLockContentionLogsProjectKeysOnOneLine(t *testing.T) {
+	ctx := context.Background()
+	txLocks := &repository.MockProjectKeyLockRepository{}
+	tx := repository.NewMockTxManager(nil, &repository.MockAuditRepository{})
+	tx.Memory = &repository.MockMemoryRepository{}
+	tx.Prompt = &repository.MockPromptRepository{}
+	tx.Session = &repository.MockSessionRepository{}
+	tx.ProjectBlocks = &repository.MockProjectBlockRepository{}
+	tx.ProjectKeyLocks = txLocks
+	svc := service.NewSyncService(&repository.MockMemoryRepository{}, &repository.MockPromptRepository{}, &repository.MockSessionRepository{}, nil, &repository.MockProjectBlockRepository{}, tx)
+	project := "trusted\nforged log entry"
+	txLocks.On("LockProjectKeys", ctx, []string{project}).Return(repository.ErrProjectKeyLockBusy).Once()
+
+	var logs bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	previousPrefix := log.Prefix()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+		log.SetPrefix(previousPrefix)
+	})
+
+	_, err := svc.Sync(ctx, model.SyncRequest{Project: project}, "user-1")
+
+	require.ErrorIs(t, err, repository.ErrProjectKeyLockBusy)
+	require.Equal(t, 1, strings.Count(logs.String(), "\n"), "wire-controlled project names must not forge log lines")
+	require.Contains(t, logs.String(), `trusted\nforged log entry`)
 }
 
 func TestSyncService_SyncRollsBackWhenRequiredAuditFails(t *testing.T) {
