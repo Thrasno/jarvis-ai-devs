@@ -25,8 +25,7 @@ const (
 	RegistryReasonUnchanged = "unchanged"
 	RegistryReasonForced    = "forced"
 
-	RegistryWarningLegacyImported = "legacy-registry-imported"
-	RegistrySeverityWarning       = "warning"
+	RegistrySeverityWarning = "warning"
 )
 
 type RegistrySource string
@@ -136,12 +135,6 @@ func WriteRegistryWithResult(dir, projectName string, registrySkills []RegistryS
 		legacyRegistryPath := filepath.Join(dir, LegacyRegistryPathATL)
 		if existing, err := os.ReadFile(legacyRegistryPath); err == nil {
 			customSection = extractCustomSection(string(existing))
-			result.Warnings = append([]RegistryWarning{{
-				Code:     RegistryWarningLegacyImported,
-				Severity: RegistrySeverityWarning,
-				Path:     LegacyRegistryPathATL,
-				Message:  "Imported legacy custom content into canonical registry.",
-			}}, result.Warnings...)
 		}
 	} else {
 		return result, fmt.Errorf("read existing registry: %w", err)

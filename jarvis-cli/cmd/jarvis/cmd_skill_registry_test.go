@@ -194,7 +194,7 @@ func TestSkillRegistryRefreshCommand(t *testing.T) {
 		}
 	})
 
-	t.Run("prints concise non-fatal warnings", func(t *testing.T) {
+	t.Run("successful legacy migration is silent", func(t *testing.T) {
 		isolateTestHome(t)
 		root := initCommandGitWorktree(t)
 		legacyPath := filepath.Join(root, ".atl", "skill-registry.md")
@@ -210,8 +210,8 @@ func TestSkillRegistryRefreshCommand(t *testing.T) {
 		if err != nil {
 			t.Fatalf("warning refresh returned error: %v\noutput:\n%s", err, output)
 		}
-		if !strings.Contains(output, "Warning:") || !strings.Contains(output, "legacy") {
-			t.Fatalf("expected concise legacy warning output, got:\n%s", output)
+		if strings.Contains(output, "Warning:") {
+			t.Fatalf("expected successful legacy migration to be silent, got:\n%s", output)
 		}
 		assertCommandFileContains(t, filepath.Join(root, ".jarvis", "skill-registry.md"), "- **legacy-custom**")
 	})
