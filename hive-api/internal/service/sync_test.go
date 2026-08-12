@@ -1306,6 +1306,35 @@ func TestSyncService_Push_MutationProtocolV2ClassifiesRejectedAndDuplicateEvents
 	mockRepo.AssertExpectations(t)
 }
 
+func TestSyncService_Push_RejectsInvalidMutationResultTerminalFlags(t *testing.T) {
+	tests := []struct {
+		name   string
+		result *model.MutationApplyResult
+	}{
+		{name: "no terminal flag", result: &model.MutationApplyResult{EventID: "invalid-none", Op: model.MutationOpUpdate}},
+		{name: "multiple terminal flags", result: &model.MutationApplyResult{EventID: "invalid-many", Op: model.MutationOpUpdate, Applied: true, Duplicate: true}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, mockRepo, _ := newTestSyncService(t)
+			ctx := context.Background()
+			mutation := model.MutationEnvelope{EventID: tt.result.EventID, EntityType: model.MutationEntityMemory,
+				EntitySyncID: "990e8400-e29b-41d4-a716-446655440101", Project: "jarvis-dev", Op: model.MutationOpUpdate}
+			mockRepo.On("ApplyMemoryMutation", ctx, mutation).Return(tt.result, nil).Once()
+			mockRepo.On("ListMemoryMutations", ctx, "jarvis-dev", model.MutationCursor{}, 100).
+				Return(&model.MutationBatch{}, nil).Maybe()
+
+			resp, err := svc.Push(ctx, model.SyncRequest{Project: "jarvis-dev", ProtocolVersion: model.MutationProtocolVersion, Mutations: []model.MutationEnvelope{mutation}}, "user-1")
+
+			require.Error(t, err)
+			assert.Nil(t, resp)
+			assert.Contains(t, err.Error(), "exactly one terminal flag")
+			mockRepo.AssertNotCalled(t, "ListMemoryMutations", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		})
+	}
+}
+
 func TestSyncService_Push_LegacyRequestDoesNotCallMutationRepository(t *testing.T) {
 	svc, mockRepo, _ := newTestSyncService(t)
 	ctx := context.Background()

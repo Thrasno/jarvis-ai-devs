@@ -2294,6 +2294,25 @@ func TestSyncer_Sync_EmptyV2MutationResultsLeaveMutationsPending(t *testing.T) {
 	assert.Empty(t, store.markedMutationsSynced)
 }
 
+func TestSyncer_Sync_AllFalseMutationResultLeavesMutationPending(t *testing.T) {
+	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	mutation := db.MutationEnvelope{EventID: "all-false", EntityType: "memory", EntitySyncID: "memory-all-false", Project: "test-project", Op: db.MutationOpUpdate, OccurredAt: now}
+	store := &mockSyncStore{jwt: "valid-token", pendingMutations: []db.MutationEnvelope{mutation}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{CompatibilityMode: compatibilityModeMutationV2, MutationResults: []mutationResult{{EventID: mutation.EventID}}, Pulled: []apiMemory{}}))
+	}))
+	defer server.Close()
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{now: func() time.Time { return now }, jitter: func(time.Duration) time.Duration { return 0 }})
+
+	result, err := syncer.Sync(context.Background(), "test-project")
+
+	require.NoError(t, err)
+	assert.Zero(t, result.MutationsPushed)
+	assert.Empty(t, store.markedMutationsSynced)
+	assert.Empty(t, store.markedMutationsRejected)
+	assert.Equal(t, []db.MutationEnvelope{mutation}, store.pendingMutations)
+}
+
 func TestSyncer_Sync_IgnoresUnknownAppliedAndDuplicateMutationResults(t *testing.T) {
 	now := time.Date(2026, 7, 16, 11, 0, 0, 0, time.UTC)
 	mutation := db.MutationEnvelope{EventID: "local-pending", EntityType: "memory", EntitySyncID: "memory-pending", Project: "test-project", Op: db.MutationOpDelete, OccurredAt: now}
