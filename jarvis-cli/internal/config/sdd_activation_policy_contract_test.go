@@ -43,14 +43,52 @@ func TestSDDOrchestrator_ActivationPolicyContract(t *testing.T) {
 		t.Fatalf("explicit override rule must be documented before complexity heuristic (precedence order)")
 	}
 
-	// Must document that the model waits before proceeding when recommending SDD.
-	if !strings.Contains(orchestrator, "do not write code or plans until the user responds") {
-		t.Fatalf("orchestrator policy must require waiting for user response before writing code")
+	// Recommendation alone must not block ordinary non-SDD execution.
+	if !strings.Contains(orchestrator, "the recommendation does not block direct execution") {
+		t.Fatalf("orchestrator policy must keep SDD recommendations advisory")
+	}
+	if strings.Contains(orchestrator, "do not write code or plans until the user responds") {
+		t.Fatalf("orchestrator policy must not block direct execution while awaiting SDD opt-in")
 	}
 
 	// Confirmation must not bypass session preflight.
 	if !strings.Contains(orchestrator, "confirmation does not satisfy preflight") {
 		t.Fatalf("orchestrator policy must state that SDD confirmation does not satisfy session preflight")
+	}
+}
+
+func TestSDDOrchestrator_AtomicUnderstoodOneFileEditRunsInline(t *testing.T) {
+	orchestrator := readPolicyFile(t, "embed/orchestrator/sdd-orchestrator.md")
+
+	for _, required := range []string{
+		"atomic one-file inline exception takes precedence",
+		"already-understood mechanical edit",
+		"must run inline",
+	} {
+		if !strings.Contains(orchestrator, required) {
+			t.Fatalf("orchestrator atomic inline contract missing %q", required)
+		}
+	}
+}
+
+func TestSDDOrchestrator_NonSDDDelegationNamesRunnableAgentTargets(t *testing.T) {
+	orchestrator := readPolicyFile(t, "embed/orchestrator/sdd-orchestrator.md")
+
+	for _, required := range []string{
+		"delegate broad non-sdd exploration to `explore`",
+		"delegate non-sdd implementation to `general`",
+	} {
+		if !strings.Contains(orchestrator, required) {
+			t.Fatalf("orchestrator non-SDD delegation contract missing %q", required)
+		}
+	}
+}
+
+func TestSDDOrchestrator_RecommendationOnlyDoesNotBlockDirectExecution(t *testing.T) {
+	orchestrator := readPolicyFile(t, "embed/orchestrator/sdd-orchestrator.md")
+
+	if !strings.Contains(orchestrator, "sdd is recommendation-only until the user explicitly accepts or requests it") {
+		t.Fatal("orchestrator must not require an explicit non-SDD opt-out")
 	}
 }
 

@@ -1409,6 +1409,9 @@ func TestGeneratedRuntimeAcceptance_ConfigArtifactsProveRolloutSafety(t *testing
 		if permission != "allow" || target == "*" {
 			continue
 		}
+		if target == "general" || target == "explore" {
+			continue
+		}
 		if _, ok := agents[target]; !ok {
 			t.Fatalf("sdd-orchestrator task permission allows undefined agent %q", target)
 		}

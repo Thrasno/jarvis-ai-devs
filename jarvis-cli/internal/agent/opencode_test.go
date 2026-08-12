@@ -473,7 +473,7 @@ func TestOpenCodeAgent_MergeGeneratedConfig_RendersTopologyPermissionsAndPreserv
 		t.Fatalf("sdd-orchestrator question permission = %v, want allow", orchestratorPerm["question"])
 	}
 	taskPerm := orchestratorPerm["task"].(map[string]any)
-	if taskPerm["*"] != "deny" || taskPerm["sdd-apply"] != "allow" || taskPerm["jd-judge-a"] != "allow" {
+	if taskPerm["*"] != "deny" || taskPerm["sdd-apply"] != "allow" || taskPerm["jd-judge-a"] != "allow" || taskPerm["general"] != "allow" || taskPerm["explore"] != "allow" {
 		t.Fatalf("unexpected orchestrator task permission: %#v", taskPerm)
 	}
 	if _, ok := taskPerm["sdd-orchestrator"]; ok {
