@@ -347,7 +347,16 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 				return nil, err
 			}
 			if result == nil {
-				continue
+				return nil, fmt.Errorf("mutation %q returned no result", mutation.EventID)
+			}
+			terminalFlags := 0
+			for _, terminal := range []bool{result.Applied, result.Duplicate, result.Rejected} {
+				if terminal {
+					terminalFlags++
+				}
+			}
+			if terminalFlags != 1 {
+				return nil, fmt.Errorf("mutation %q result must have exactly one terminal flag", mutation.EventID)
 			}
 			mutationResults = append(mutationResults, *result)
 			if result.Applied {

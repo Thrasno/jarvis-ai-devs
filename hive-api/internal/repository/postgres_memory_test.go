@@ -2133,6 +2133,67 @@ func TestPostgresMemoryRepository_ApplyMemoryMutation_CreateAndUpdateEventIDsRec
 	assert.Equal(t, "update content", found.Content)
 }
 
+func TestPostgresMemoryRepository_ApplyMemoryMutation_ClassifiesTerminalNoOpsAsDuplicateWithoutJournal(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+	sessionID := ensureManualSavePtr(t, pool, "terminal-no-op")
+	now := time.Now().UTC()
+	syncID := "780e8400-e29b-41d4-a716-446655440101"
+	created, err := repo.Create(ctx, &model.Memory{
+		SyncID: syncID, Project: "terminal-no-op", TopicKey: stringPtr("terminal/no-op"),
+		Category: model.CatDecision, Title: "server title", Content: "server content",
+		CreatedBy: "server", CreatedAt: now, UpdatedAt: now, SessionID: sessionID,
+	})
+	require.NoError(t, err)
+	baseline, err := repo.GetBySyncID(ctx, syncID)
+	require.NoError(t, err)
+	require.NotNil(t, baseline)
+
+	tests := []struct {
+		name     string
+		mutation model.MutationEnvelope
+	}{
+		{
+			name: "create for existing entity",
+			mutation: model.MutationEnvelope{EventID: "780e8400-e29b-41d4-a716-446655440001", EntityType: model.MutationEntityMemory,
+				EntitySyncID: syncID, Project: "terminal-no-op", Op: model.MutationOpCreate, OccurredAt: now,
+				Memory: &model.MemoryPayload{SyncID: syncID, Project: "terminal-no-op", Title: "replacement", Content: "replacement", UpdatedAt: now, SessionID: *sessionID}},
+		},
+		{
+			name: "stale update",
+			mutation: model.MutationEnvelope{EventID: "780e8400-e29b-41d4-a716-446655440002", EntityType: model.MutationEntityMemory,
+				EntitySyncID: syncID, Project: "terminal-no-op", Op: model.MutationOpUpdate, OccurredAt: now.Add(time.Minute),
+				Memory: &model.MemoryPayload{SyncID: syncID, Project: "terminal-no-op", Title: "stale", Content: "stale", UpdatedAt: baseline.UpdatedAt.Add(-time.Minute), SessionID: *sessionID}},
+		},
+		{
+			name: "equal timestamp update with different content",
+			mutation: model.MutationEnvelope{EventID: "780e8400-e29b-41d4-a716-446655440003", EntityType: model.MutationEntityMemory,
+				EntitySyncID: syncID, Project: "terminal-no-op", Op: model.MutationOpUpdate, OccurredAt: now.Add(time.Minute),
+				Memory: &model.MemoryPayload{SyncID: syncID, Project: "terminal-no-op", Title: "equal but different", Content: "equal but different", UpdatedAt: baseline.UpdatedAt, SessionID: *sessionID}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := repo.ApplyMemoryMutation(ctx, tt.mutation)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			assert.True(t, result.Duplicate)
+			assert.False(t, result.Applied)
+			assert.False(t, result.Rejected)
+			assertNoMemoryMutationRow(t, pool, tt.mutation.EventID)
+		})
+	}
+
+	stored, err := repo.GetBySyncID(ctx, syncID)
+	require.NoError(t, err)
+	assert.Equal(t, created.Title, stored.Title)
+	assert.Equal(t, created.Content, stored.Content)
+}
+
 func TestPostgresMemoryRepository_ApplyMemoryMutation_RestoreClearsTombstone(t *testing.T) {
 	pool, cleanup := startPostgresWithSessions(t)
 	defer cleanup()

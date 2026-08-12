@@ -417,7 +417,7 @@ func (r *postgresMemoryRepository) applyMemoryMutationInTx(ctx context.Context, 
 		if mutation.Op == model.MutationOpReproject {
 			return reprojectNotAppliedResult(mutation, storedProject), nil
 		}
-		return &model.MutationApplyResult{EventID: mutation.EventID, Op: mutation.Op, Applied: false}, nil
+		return &model.MutationApplyResult{EventID: mutation.EventID, Op: mutation.Op, Duplicate: true}, nil
 	}
 
 	sequence, err := insertMemoryMutation(ctx, tx, mutation)
