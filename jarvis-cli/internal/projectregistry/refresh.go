@@ -17,8 +17,7 @@ const (
 	ReasonUnchanged = project.RegistryReasonUnchanged
 	ReasonForced    = project.RegistryReasonForced
 
-	WarningLegacyRegistryImported = project.RegistryWarningLegacyImported
-	SeverityWarning               = project.RegistrySeverityWarning
+	SeverityWarning = project.RegistrySeverityWarning
 )
 
 // RefreshOptions configures a Refresh run.

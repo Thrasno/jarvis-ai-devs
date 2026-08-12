@@ -444,7 +444,7 @@ func TestFormatWarningLineIsSharedAndConcise(t *testing.T) {
 	}
 }
 
-func TestRefreshReportsLegacyImportWarning(t *testing.T) {
+func TestRefreshSilentlyImportsLegacyRegistry(t *testing.T) {
 	isolateHome(t)
 	root := initGitWorktree(t)
 	legacyPath := filepath.Join(root, ".atl", "skill-registry.md")
@@ -460,11 +460,8 @@ func TestRefreshReportsLegacyImportWarning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Refresh returned error: %v", err)
 	}
-	if len(first.Warnings) != 1 {
-		t.Fatalf("Warnings len = %d, want 1: %+v", len(first.Warnings), first.Warnings)
-	}
-	if first.Warnings[0].Code != WarningLegacyRegistryImported || first.Warnings[0].Severity != SeverityWarning {
-		t.Fatalf("legacy warning = %+v", first.Warnings[0])
+	if len(first.Warnings) != 0 {
+		t.Fatalf("Warnings = %+v, want none after successful legacy migration", first.Warnings)
 	}
 	assertFileContains(t, first.Path, "- **legacy-custom**")
 	if string(mustReadFile(t, legacyPath)) != legacyContent {
@@ -582,8 +579,8 @@ func TestRefreshPostMigrationIsStable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Refresh returned error: %v", err)
 	}
-	if len(first.Warnings) != 1 || first.Warnings[0].Code != WarningLegacyRegistryImported {
-		t.Fatalf("first warnings = %+v, want one result-only legacy warning", first.Warnings)
+	if len(first.Warnings) != 0 {
+		t.Fatalf("first warnings = %+v, want none after successful legacy migration", first.Warnings)
 	}
 	assertFileNotContains(t, first.Path, "## Registry Warnings")
 	infoBefore, err := os.Stat(first.Path)

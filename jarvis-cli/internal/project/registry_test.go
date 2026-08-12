@@ -256,7 +256,7 @@ func TestWriteRegistry_CanonicalCustomSectionWinsOverLegacy(t *testing.T) {
 	}
 }
 
-func TestWriteRegistryWithResultReportsLegacyImportAndExplicitWarningSection(t *testing.T) {
+func TestWriteRegistryWithResultSilentlyImportsLegacyAndPreservesExplicitWarnings(t *testing.T) {
 	dir := t.TempDir()
 	legacyPath := filepath.Join(dir, ".atl", "skill-registry.md")
 	if err := os.MkdirAll(filepath.Dir(legacyPath), 0755); err != nil {
@@ -289,11 +289,11 @@ func TestWriteRegistryWithResultReportsLegacyImportAndExplicitWarningSection(t *
 	if result.SkillCount != 1 {
 		t.Fatalf("SkillCount = %d, want 1", result.SkillCount)
 	}
-	if len(result.Warnings) != 2 {
-		t.Fatalf("Warnings = %+v, want explicit warning plus legacy import warning", result.Warnings)
+	if len(result.Warnings) != 1 {
+		t.Fatalf("Warnings = %+v, want only explicit warning", result.Warnings)
 	}
-	if result.Warnings[0].Code != RegistryWarningLegacyImported {
-		t.Fatalf("first warning = %+v, want legacy import warning", result.Warnings[0])
+	if result.Warnings[0].Code != "metadata-gap" {
+		t.Fatalf("warning = %+v, want explicit metadata warning", result.Warnings[0])
 	}
 
 	content := string(mustReadRegistryFile(t, canonicalPath))
@@ -305,9 +305,6 @@ func TestWriteRegistryWithResultReportsLegacyImportAndExplicitWarningSection(t *
 		if !strings.Contains(content, want) {
 			t.Fatalf("expected registry to contain %q, got:\n%s", want, content)
 		}
-	}
-	if strings.Contains(content, "legacy-registry-imported") {
-		t.Fatalf("legacy import warning should be result-only to keep post-migration refresh stable, got:\n%s", content)
 	}
 }
 
