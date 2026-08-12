@@ -60,6 +60,8 @@ func Derive(dir string) (string, error) {
 	if name := gitRemoteName(resolved); name != "" {
 		return name, nil
 	}
+	// Keep the observed basename literal; operator-reviewed project folding belongs
+	// to the explicit normalization wizard, not derivation.
 	if base := filepath.Base(resolved); base != "" && base != "." && base != "/" {
 		return base, nil
 	}

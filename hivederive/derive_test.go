@@ -40,9 +40,10 @@ func TestDerive(t *testing.T) {
 		}
 	})
 
-	t.Run("no-remote basename fallback", func(t *testing.T) {
+	t.Run("no-remote basename fallback preserves literal name", func(t *testing.T) {
 		dir := t.TempDir()
-		sub := filepath.Join(dir, "myproj")
+		const literalName = "Mi_Proyecto.v2"
+		sub := filepath.Join(dir, literalName)
 		if err := os.Mkdir(sub, 0o755); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
@@ -50,8 +51,8 @@ func TestDerive(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Derive(non-git dir) error = %v, want nil", err)
 		}
-		if name != "myproj" {
-			t.Errorf("Derive(non-git dir) = %q, want %q", name, "myproj")
+		if name != literalName {
+			t.Errorf("Derive(non-git dir) = %q, want literal basename %q", name, literalName)
 		}
 	})
 
