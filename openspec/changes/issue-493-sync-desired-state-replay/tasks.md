@@ -141,10 +141,10 @@ PR 4a fixes the sequencing and reporting contract behind `ComponentRunner`, so
 
 ## Phase 5: Lifecycle Safety and Measured Idempotency (PR 5)
 
-- [ ] 5.1 RED: `internal/sync/snapshot_test.go` — diff compares content+mode, never mtime (idempotency correctness given `InstallStatusline` rewrites unconditionally, claude.go:882-885).
-- [ ] 5.2 GREEN: `internal/sync/snapshot.go` — content+mode snapshot/diff over the plan's own path list.
-- [ ] 5.3 RED: threat-matrix mode assertion — statusline stays 0755, skills/instructions stay 0644 after sync, including reinstall-after-delete.
-- [ ] 5.4 GREEN: mode assertion (not inheritance) in snapshot/apply write paths.
+- [x] 5.1 RED: `internal/sync/snapshot_test.go` — diff compares content+mode, never mtime (idempotency correctness given `InstallStatusline` rewrites unconditionally, claude.go:882-885).
+- [x] 5.2 GREEN: `internal/sync/snapshot.go` — content+mode snapshot/diff over the plan's own path list.
+- [x] 5.3 RED: threat-matrix mode assertion — statusline stays 0755, skills/instructions stay 0644 after sync, including reinstall-after-delete.
+- [x] 5.4 GREEN: mode assertion (not inheritance) in snapshot/apply write paths.
 - [ ] 5.5 RED: backup precedes first mutation; backup failure blocks all mutation and is reported (Backup Precedes Mutation).
 - [ ] 5.6 GREEN: `internal/lifecycle/backup.go` — accept explicit target list sourced from sync's plan (same list feeding the diff).
 - [ ] 5.7 RED: second consecutive run against unchanged manifest/version reports zero changed files, zero writes (Measured Idempotency).

@@ -53,11 +53,55 @@ type PlannedArtifact struct {
 	Location string
 	Bytes    []byte
 	Proof    Proof
+	// Mode is the permission Jarvis asserts, not whatever the file carries today.
+	Mode fs.FileMode
 }
 
 // Plan is the read-only result of planning a sync run.
 type Plan struct {
 	Artifacts []PlannedArtifact
+	// Tracked is the single list of absolute paths this run is responsible for:
+	// one producer, two consumers (the snapshot/diff that measures idempotency,
+	// and the pre-apply backup). A second list built anywhere else would let
+	// backup coverage and measurement drift apart in silence.
+	Tracked []TrackedPath
+}
+
+// Managed artifact names living beside an agent's instruction file, the only
+// per-agent location the manifest records.
+const (
+	statuslineScriptName = "statusline-command.sh"
+	skillsDirName        = "skills"
+	skillFileName        = "SKILL.md"
+)
+
+func trackedPaths(in PlanInput, artifacts []PlannedArtifact) []TrackedPath {
+	tracked := make([]TrackedPath, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		tracked = append(tracked, TrackedPath{
+			Path: filepath.Join(in.Root, filepath.FromSlash(artifact.Location)),
+			Mode: artifact.Mode,
+		})
+	}
+	for _, configured := range in.State.InstalledAgents {
+		location, err := managedLocation(in.Root, configured.InstructionsPath)
+		if err != nil {
+			continue
+		}
+		dir := filepath.Dir(filepath.Join(in.Root, filepath.FromSlash(location)))
+		for _, id := range in.State.Skills {
+			tracked = append(tracked, TrackedPath{
+				Path: filepath.Join(dir, skillsDirName, id, skillFileName),
+				Mode: ManagedFileMode,
+			})
+		}
+		// Undecided and decided-against consent both mean "do not touch", so an
+		// unauthorized statusline is not a path this run is responsible for.
+		if configured.ID == "claude" && in.State.Statusline.ShouldManage() {
+			tracked = append(tracked, TrackedPath{Path: filepath.Join(dir, statuslineScriptName), Mode: ManagedExecutableMode})
+		}
+	}
+	return tracked
 }
 
 // PlanInput carries everything the planner is allowed to read. Every target is
@@ -148,8 +192,10 @@ func BuildPlan(in PlanInput) (Plan, error) {
 			// manifest lists this agent, which is exactly the rule ApplyInstructions
 			// enforces before any write.
 			Proof: IdentityProof{Source: IdentitySourceManifest},
+			Mode:  ManagedFileMode,
 		})
 	}
+	plan.Tracked = trackedPaths(in, plan.Artifacts)
 	return plan, nil
 }
 
