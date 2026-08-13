@@ -84,12 +84,29 @@ source without importing Bubbletea.
 
 ## Phase 3: Extract `internal/agentapply` (PR 3 — lands before PR 4)
 
-- [ ] 3.1 Confirm `internal/tui` test suite is green before touching `agent_setup.go:77-202`.
-- [ ] 3.2 Move `configureWizardAgent` (`agent_setup.go:77-150`) and `reconcileWizardMCPs` (`:169-202`) verbatim into `internal/agentapply/apply.go`.
-- [ ] 3.3 `internal/tui/agent_setup.go` delegates to `internal/agentapply`; `configureWizardAgents` (live caller) unchanged in behavior.
-- [ ] 3.4 GREEN: re-run existing `internal/tui` tests unmodified — must stay green (regression gate for the extraction).
-- [ ] 3.5 RED: `internal/agentapply/apply_test.go` — statusline decision derived from tri-state is never `nil`, and `confirm()` is not invoked when undecided (Decided/Enabled table, claude.go:868).
-- [ ] 3.6 GREEN: statusline decision switch in `agentapply/apply.go` per design's tri-state snippet.
+- [x] 3.1 Confirm `internal/tui` test suite is green before touching `agent_setup.go:77-202`.
+- [x] 3.2 Move `configureWizardAgent` (`agent_setup.go:77-150`) and `reconcileWizardMCPs` (`:169-202`) verbatim into `internal/agentapply/apply.go`.
+- [x] 3.3 `internal/tui/agent_setup.go` delegates to `internal/agentapply`; `configureWizardAgents` (live caller) unchanged in behavior.
+- [x] 3.4 GREEN: re-run existing `internal/tui` tests unmodified — must stay green (regression gate for the extraction).
+- [x] 3.5 RED: `internal/agentapply/apply_test.go` — statusline decision derived from tri-state is never `nil`, and `confirm()` is not invoked when undecided (Decided/Enabled table, claude.go:868).
+- [x] 3.6 GREEN: statusline decision switch in `agentapply/apply.go` per design's tri-state snippet.
+
+### Phase 3 PR boundary: one slice, two PRs
+
+A verbatim move is counted twice by `git diff --numstat` (deletion at the source
+plus addition at the destination), so Phase 3 cannot land as a single PR under
+the 400-line budget. The two commits split exactly on that line and each is
+autonomous:
+
+| PR | Commit | Tasks | Changed lines |
+|---|---|---|---|
+| 3a | `refactor(agentapply): extract the wizard agent pipeline into its own package` | 3.1-3.4 | 354 |
+| 3b | `feat(agentapply): derive the statusline decision from the persisted tri-state` | 3.5-3.6 | 153 |
+
+Trimming will not rescue a single PR: 147 deletions and ~150 addition lines of
+moved code are irreducible, putting the floor near 432 before any statusline
+test. PR 3a is green on its own (`internal/tui` unmodified and passing), so 3b
+stacks on it cleanly.
 
 ## Phase 4: Machine-Scoped Replay Applier (PR 4)
 
