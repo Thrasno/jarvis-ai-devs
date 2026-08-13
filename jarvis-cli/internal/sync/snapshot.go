@@ -108,6 +108,29 @@ func readFileState(path string) (fileState, error) {
 	return fileState{exists: true, digest: digestOf(content), mode: info.Mode()}, nil
 }
 
+// Matches reports whether every tracked path already holds exactly the content
+// and mode replay would write, which is the only sound licence to skip the
+// applier. It is all-or-nothing: components apply as a whole in a fixed order,
+// so one drifted path means the run applies. A path with no recorded desired
+// digest never matches, because an unknown desired state is not evidence of
+// convergence; that partial picture is what made an earlier pre-apply
+// comparison unsafe.
+func (s Snapshot) Matches(paths []TrackedPath) bool {
+	if len(paths) == 0 {
+		return false
+	}
+	for _, tracked := range paths {
+		state, recorded := s.states[tracked.Path]
+		if tracked.Desired == "" || !recorded || !state.exists {
+			return false
+		}
+		if state.digest != tracked.Desired || state.mode.Perm() != tracked.Mode.Perm() {
+			return false
+		}
+	}
+	return true
+}
+
 // Diff reports every path whose content or mode differs between the two
 // snapshots, sorted for a stable, reviewable report. A path present in only one
 // snapshot counts as changed; a path absent from both never does.

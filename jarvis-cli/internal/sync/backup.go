@@ -64,12 +64,15 @@ func BackupTargets(plan Plan) []lifecycle.BackupTarget {
 // path through here. The same is true of the opening snapshot, which fails
 // closed for the same reason: an unmeasurable path list cannot be reported on.
 //
-// The changed-path report is still measured after the fact rather than
-// short-circuited before it, so an unchanged machine gets its files rewritten
-// with identical bytes and what this guarantees is that the report says zero,
-// truthfully. Every tracked path now carries the digest of the content replay
-// would write, which is what a pre-apply comparison needs; consuming it here is
-// the next step.
+// The opening measurement also decides whether there is anything to do at all.
+// Every tracked path carries the digest of the content replay would write, so a
+// machine already holding that content and mode is converged before the applier
+// is ever called and the run skips it. Zero changed files is not the same
+// promise as zero writes: the components rewrite unconditionally, so measuring
+// after the fact still removes and recreates every managed file on an unchanged
+// machine. A short-circuited run takes no backup either, because the backup
+// exists to make the destructive instruction writer defensible and nothing on
+// this path mutates anything.
 func Run(in RunInput) (RunResult, error) {
 	if in.Backup == nil {
 		return RunResult{}, ErrNoBackup
@@ -77,6 +80,9 @@ func Run(in RunInput) (RunResult, error) {
 	before, err := TakeSnapshot(in.Plan.Tracked)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("measure %d tracked paths before replay: %w", len(in.Plan.Tracked), err)
+	}
+	if before.Matches(in.Plan.Tracked) {
+		return RunResult{Report: convergedWithoutApplying(in.Apply.Targets)}, nil
 	}
 	manifest, err := in.Backup(BackupSourceOperation, BackupTargets(in.Plan))
 	if err != nil {
@@ -95,4 +101,16 @@ func Run(in RunInput) (RunResult, error) {
 	}
 	result.Report = attributeChanges(result.Report, in.Plan.Tracked, Diff(before, after))
 	return result, nil
+}
+
+// convergedWithoutApplying is the honest report of a run that found nothing to
+// do: every agent is already in its desired state and no path changed. The
+// claim is measured, not assumed — it comes from comparing the machine against
+// the plan's own desired digests.
+func convergedWithoutApplying(targets []AgentTarget) Report {
+	report := Report{Agents: make([]AgentResult, 0, len(targets)), Changed: []string{}}
+	for _, target := range targets {
+		report.Agents = append(report.Agents, AgentResult{Agent: target.ID, Converged: true, Changed: []string{}})
+	}
+	return report
 }

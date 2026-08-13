@@ -147,28 +147,37 @@ PR 4a fixes the sequencing and reporting contract behind `ComponentRunner`, so
 - [x] 5.4 GREEN: mode assertion (not inheritance) in snapshot/apply write paths.
 - [x] 5.5 RED: backup precedes first mutation; backup failure blocks all mutation and is reported (Backup Precedes Mutation).
 - [x] 5.6 GREEN: `internal/lifecycle/backup.go` — accept explicit target list sourced from sync's plan (same list feeding the diff).
-- [x] 5.7 RED: second consecutive run against unchanged manifest/version reports zero changed files, zero writes (Measured Idempotency). **Delivered as zero *changed files*, not zero writes — see the Phase 5 measurement note below.**
-- [x] 5.8 GREEN: zero-diff short-circuit wired through `apply.go`. **Delivered as apply-then-diff in `Run`, not as a pre-apply short-circuit — see the note below.**
+- [x] 5.7 RED: second consecutive run against unchanged manifest/version reports zero changed files, zero writes (Measured Idempotency).
+- [x] 5.8 GREEN: zero-diff short-circuit wired through `Run`.
 - [x] 5.9 RED: changed-path report is required output, not optional (Required Changed-Path Output).
 - [ ] 5.10 RED: no-op run writes no bookkeeping; changed run writes bookkeeping under lock (Bookkeeping Under Lock).
 - [ ] 5.11 GREEN: locked bookkeeping writer, changed-path reporter.
 - [ ] 5.12 RED: post-apply verification names `jarvis` as recovery command for an agent-less manifest (Post-Apply Verification and Recovery Naming).
 - [ ] 5.13 GREEN: verification pass + recovery-command naming.
 
-### Phase 5 measurement note: apply-then-diff, not a pre-apply short-circuit
+### Phase 5 measurement note: zero writes closed by PR 5e
 
-Task 5.8 asked for a zero-diff short-circuit. It is not safely reachable at the
-current seams and was **not** delivered: `Run` applies, asserts modes, then
-diffs. The plan renders bytes only for instruction files; skills and the
-statusline are tracked paths with no desired bytes attached (`plan.go`
-`trackedPaths` derives them from the manifest). Deciding "nothing to do" before
-applying would therefore skip components whose desired state was never computed.
+PR 5c delivered zero *changed files* through apply-then-diff, not zero writes.
+PR 5e closed the gap in two stacked slices:
 
-Consequence: an unchanged machine still has its files rewritten with identical
-bytes, so this slice guarantees **zero changed files**, not zero writes. Making
-the real short-circuit safe requires rendering skills and the statusline as real
-`PlannedArtifact`s with bytes, which is the same change that must remove the two
-derivations in `trackedPaths` before they double-count.
+| PR | Commit | Scope | Changed lines |
+|---|---|---|---|
+| 5e-1 | `feat(sync): render desired content for every tracked path` | `TrackedPath.Desired` digests; skills rendered through the installer's own walk; statusline from the embedded script; both `trackedPaths` derivations removed; fail-closed when a recorded artifact cannot be rendered | 344 |
+| 5e-2 | `feat(sync): skip the applier when the machine already matches` | `Snapshot.Matches` and the pre-apply short-circuit in `Run` | ~130 |
+
+Design notes carried forward:
+
+- Desired content is carried as a **SHA-256 digest**, not bytes: the only
+  question asked of it is equality, so a hash keeps memory flat.
+- The short-circuit is **all-or-nothing** — one drifted tracked path and the
+  whole run applies, because components apply as a whole in a fixed order.
+- A short-circuited run takes **no backup**: nothing mutates, so there is no
+  prior state to preserve.
+- Known gap: `settings.json` is not a tracked path, so a statusline
+  registration removed by hand from `settings.json` alone is not repaired until
+  some tracked path also drifts. Its desired content is a merge of on-disk
+  bytes, which is not a pure desired-state digest; tracking it belongs to a
+  later slice.
 
 ## Phase 6: Compatibility and Docs (PR 6)
 
