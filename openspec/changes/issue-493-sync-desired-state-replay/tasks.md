@@ -112,11 +112,11 @@ stacks on it cleanly.
 
 - [x] 4.1 RED: `internal/sync/apply_test.go` — recorder fake asserts exact ordered component-ID slice: models → skills → orchestrator/agents/hooks → MCPs → persona+instructions → statusline (Component Application Order Contract).
 - [x] 4.2 GREEN: `internal/sync/apply.go` — ordered applier calling `internal/agentapply`, persona/instructions last.
-- [ ] 4.3 RED: sentinel-loss regression — CLAUDE.md with no sentinels → full order → assert sentinels, all installed skills, Hive protocol, orchestrator import present after.
-- [ ] 4.4 GREEN: wire fresh-render fallback per `WriteInstructions` (claude.go:350-356, opencode.go:445-452).
-- [ ] 4.5 RED: sentinel-bearing file preserves content outside managed sections byte-for-byte (Managed Instruction File Ownership Scope).
-- [ ] 4.6 RED: unowned-path file is never read/modified/replaced.
-- [ ] 4.7 GREEN: ownership-scope guard in `apply.go`.
+- [x] 4.3 RED: sentinel-loss regression — CLAUDE.md with no sentinels → full order → assert sentinels, all installed skills, Hive protocol, orchestrator import present after.
+- [x] 4.4 GREEN: wire fresh-render fallback per `WriteInstructions` (claude.go:350-356, opencode.go:445-452).
+- [x] 4.5 RED: sentinel-bearing file preserves content outside managed sections byte-for-byte (Managed Instruction File Ownership Scope).
+- [x] 4.6 RED: unowned-path file is never read/modified/replaced.
+- [x] 4.7 GREEN: ownership-scope guard in `apply.go`.
 - [ ] 4.8 RED: Jarvis-managed MCPs replaced unconditionally, never treated as a persisted user choice (Machine-Scoped Artifact Replay).
 - [ ] 4.9 GREEN: unconditional MCP replacement call into existing `reconcile`/executor seams.
 - [ ] 4.10 RED: statusline drift — decided-enabled + script absent on disk → reinstalled, manifest unchanged (Statusline Reinstallation on Drift).
