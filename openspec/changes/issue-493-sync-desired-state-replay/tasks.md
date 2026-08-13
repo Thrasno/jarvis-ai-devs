@@ -65,14 +65,20 @@ slice that calls `Migrate()`, not optional cleanup.
 
 ## Phase 2: Read-Only Planner (PR 2)
 
+Split for the 400-line budget: **PR 2a** = ownership (2.3-2.8), **PR 2b** = target
+rendering and the block path (2.1, 2.2, 2.9, 2.10). PR 2a resolved the
+`interactiveSkillIDs` layering problem by moving the list from `internal/tui`
+into `internal/skills.IsInteractive`, so `internal/sync` reads the same single
+source without importing Bubbletea.
+
 - [ ] 2.1 RED: `internal/sync/plan_test.go` — rendered targets match installed binary's embedded assets only (Target Rendering).
 - [ ] 2.2 GREEN: `internal/sync/plan.go` — render `PlannedArtifact{Identity, Location, Bytes, Proof}` from embedded assets.
-- [ ] 2.3 RED: `internal/sync/ownership_test.go` — frontmatter `scope:` never decides ownership; only catalog/manifest membership (Identity-Based Ownership Classification).
-- [ ] 2.4 GREEN: `internal/sync/ownership.go` — `IdentityProof` two-list membership check.
-- [ ] 2.5 RED: table-driven skill lifecycle over all 5 rows (manifest×catalog×interactive) — update/delete/install/skip/untouched (Skill Lifecycle Rules).
-- [ ] 2.6 GREEN: skill lifecycle resolver in `ownership.go`.
-- [ ] 2.7 RED: manifest `skills` write never filters against catalog — dropped skill stays listed until deleted (Manifest Skills List Is Never Filtered on Write).
-- [ ] 2.8 GREEN: manifest writer preserves unfiltered `skills` list.
+- [x] 2.3 RED: `internal/sync/ownership_test.go` — frontmatter `scope:` never decides ownership; only catalog/manifest membership (Identity-Based Ownership Classification).
+- [x] 2.4 GREEN: `internal/sync/ownership.go` — `IdentityProof` two-list membership check.
+- [x] 2.5 RED: table-driven skill lifecycle over all 5 rows (manifest×catalog×interactive) — update/delete/install/skip/untouched (Skill Lifecycle Rules).
+- [x] 2.6 GREEN: skill lifecycle resolver in `ownership.go`.
+- [x] 2.7 RED: manifest `skills` write never filters against catalog — dropped skill stays listed until deleted (Manifest Skills List Is Never Filtered on Write). **Already satisfied by PR 1** — `TestSave_RetainsSkillIDsAbsentFromCurrentCatalog` (`jarvis-cli/internal/state/state_test.go:141`).
+- [x] 2.8 GREEN: manifest writer preserves unfiltered `skills` list. **Already satisfied by PR 1** — same test; `state.Save` writes `Skills` verbatim.
 - [ ] 2.9 RED: agent-less manifest blocks, names `jarvis` recovery command, zero writes (No Filesystem Redetection).
 - [ ] 2.10 GREEN: block path in `plan.go`.
 
