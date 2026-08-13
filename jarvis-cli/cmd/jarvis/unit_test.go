@@ -95,16 +95,22 @@ func TestRunWizard_NoConfig_InProcess(t *testing.T) {
 	}
 }
 
-// TestSyncCmd_RunE_InProcess exercises the syncCmd RunE handler directly.
-func TestSyncCmd_RunE_InProcess(t *testing.T) {
-	out := captureStdout(t, func() {
-		if err := syncCmd.RunE(syncCmd, nil); err != nil {
-			t.Errorf("syncCmd.RunE: %v", err)
-		}
-	})
+// TestSyncCmd_RunE_MutatesNothingWithoutADesiredState replaces the old no-op
+// message assertion: preflight must fail before anything is planned or written,
+// and must not fall back to exiting 0 with advice about Hive's memory sync.
+func TestSyncCmd_RunE_MutatesNothingWithoutADesiredState(t *testing.T) {
+	home := isolateTestHome(t)
+	var err error
+	out := captureStdout(t, func() { err = syncCmd.RunE(syncCmd, nil) })
 
-	if !strings.Contains(out, "hive-daemon") {
-		t.Errorf("expected 'hive-daemon' in sync output:\n%s", out)
+	if err == nil {
+		t.Fatal("expected sync to fail with no desired-state manifest")
+	}
+	if strings.Contains(out, "hive-daemon") || strings.Contains(out, "no-op") {
+		t.Errorf("sync still prints the retired no-op message:\n%s", out)
+	}
+	if entries, readErr := os.ReadDir(filepath.Join(home, ".claude")); readErr == nil && len(entries) > 0 {
+		t.Errorf("preflight failure must mutate nothing, found %d entries under .claude", len(entries))
 	}
 }
 
