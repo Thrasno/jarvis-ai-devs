@@ -255,8 +255,24 @@ Findings carried forward for 6a-2:
   test that catches divergence before it becomes permanent reported drift.
 - Persona output styles are not replayed by `sync.ApplyInstructions` and are not
   tracked paths either; that gap belongs to a later slice.
-- [ ] 6.5 Update `docs/` — sync behavior, upgrade notes, `state.yaml` vs `config.yaml` split, recovery command.
-- [ ] 6.6 Update `AGENTS.md`/`CLAUDE.md` parity note if sync behavior is referenced there.
+- [x] 6.5 Update `docs/` — sync behavior, upgrade notes, `state.yaml` vs `config.yaml` split, recovery command. Landed as PR 6b across `README.md`, `docs/cli-reference.md`, `docs/configuration.md`, `docs/generated-artifacts.md`, `docs/troubleshooting.md`, `docs/reference/architecture.md`, `docs/hive/sync-guide.md`.
+- [x] 6.6 Update `AGENTS.md`/`CLAUDE.md` parity note if sync behavior is referenced there. Both files carry the identical `jarvis sync` is not Hive sync note under the CLI section, plus the disjoint-store and no-`config.Save()` rules.
+
+### Phase 6b: documentation
+
+Documentation-only slice, 170 changed lines, no `.go` file touched. Three known
+gaps are documented rather than implied away, because a user who hits one and
+finds it written down trusts the tool more than one who does not:
+
+| Gap | Where |
+|---|---|
+| `settings.json` is not a tracked path, so a hand-removed statusline entry is not repaired | `docs/troubleshooting.md` → Known gaps |
+| Persona output styles are not replayed | same section |
+| The managed-asset digest is not produced yet | same section |
+
+The destructive case is stated before it can happen rather than after: an
+instruction file carrying no Jarvis sentinels is rendered fresh and its previous
+content discarded, with `~/.jarvis/backups/` as the recovery path.
 
 ## Review Workload Forecast
 
