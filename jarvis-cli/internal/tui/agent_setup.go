@@ -62,7 +62,10 @@ func configureWizardAgent(
 	agentsSubFS fs.FS,
 	statuslineConfirm func() bool,
 ) ([]string, error) {
-	return agentapply.ConfigureAgent(a, cfg, hiveEntry, context7Entry, skillsSubFS, selectedIDs, agentsSubFS, statuslineConfirm)
+	return agentapply.ConfigureAgent(a, cfg, hiveEntry, context7Entry, skillsSubFS, selectedIDs, agentsSubFS, agentapply.StatuslineDecision{
+		Install: true,
+		Confirm: statuslineConfirm,
+	})
 }
 
 func requiresMCPReplacementAcknowledgement(agents []agent.Agent) bool {

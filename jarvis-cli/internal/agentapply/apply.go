@@ -14,6 +14,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 // ClaudeRestartGuidance is the warning emitted after Claude SDD phase agents
@@ -37,6 +38,43 @@ type sddPhaseAgentInstaller interface {
 // the script already exists; it is never called on a fresh install.
 type StatuslineInstaller interface {
 	InstallStatusline(hooksFS fs.FS, confirm func() bool) error
+}
+
+// StatuslineDecision tells the pipeline whether to touch the statusline and,
+// when it does, how to answer an already-present script. Confirm is never nil:
+// InstallStatusline invokes it unguarded whenever the script exists, which is
+// every upgrade.
+type StatuslineDecision struct {
+	Install bool
+	Confirm func() bool
+}
+
+// StatuslineDecisionFromState derives the decision from the persisted
+// tri-state. "Never asked" and "decided against" both mean do not touch, so the
+// install is skipped entirely rather than answered with a false confirm. Once
+// the decision is recorded and enabled, the manifest is the authority: a script
+// missing from disk is drift and is reinstalled, not a revoked consent.
+func StatuslineDecisionFromState(st state.StatuslineState) StatuslineDecision {
+	if !st.ShouldManage() {
+		return StatuslineDecision{Install: false, Confirm: func() bool { return false }}
+	}
+	return StatuslineDecision{Install: true, Confirm: func() bool { return true }}
+}
+
+// ApplyStatusline runs the decision against one agent. Agents without
+// statusline support and unauthorized decisions are both no-ops.
+func ApplyStatusline(a any, hooksFS fs.FS, decision StatuslineDecision) error {
+	if !decision.Install {
+		return nil
+	}
+	slAgent, ok := a.(StatuslineInstaller)
+	if !ok {
+		return nil
+	}
+	if err := slAgent.InstallStatusline(hooksFS, decision.Confirm); err != nil {
+		return fmt.Errorf("install statusline: %w", err)
+	}
+	return nil
 }
 
 // MCPExecutor is the production boundary for the managed-MCP handoff.
@@ -66,7 +104,7 @@ func ConfigureAgent(
 	skillsSubFS fs.FS,
 	selectedIDs []string,
 	agentsSubFS fs.FS,
-	statuslineConfirm func() bool,
+	statusline StatuslineDecision,
 ) ([]string, error) {
 	// MCP reconciliation is intentionally performed once by ExecuteWizard before
 	// this per-agent artifact pipeline. Keep these legacy parameters while callers
@@ -125,10 +163,8 @@ func ConfigureAgent(
 	if _, err := agent.InstallRegistryAutomationIfSupported(a, jarvis.HooksFS); err != nil {
 		warnings = append(warnings, fmt.Sprintf("Project skill registry warning: automation not installed for %s: %v", a.Name(), err))
 	}
-	if slAgent, ok := a.(StatuslineInstaller); ok {
-		if err := slAgent.InstallStatusline(jarvis.HooksFS, statuslineConfirm); err != nil {
-			return warnings, fmt.Errorf("install statusline: %w", err)
-		}
+	if err := ApplyStatusline(a, jarvis.HooksFS, statusline); err != nil {
+		return warnings, err
 	}
 	return warnings, nil
 }
