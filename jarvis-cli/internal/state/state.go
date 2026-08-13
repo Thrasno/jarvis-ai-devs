@@ -73,32 +73,11 @@ type StatuslineState struct {
 	Enabled bool `yaml:"statusline_enabled"`
 }
 
-// StatuslineResolution names the three distinguishable consent states.
-type StatuslineResolution string
-
-const (
-	StatuslineNotDecided StatuslineResolution = "not-decided"
-	StatuslineDisabled   StatuslineResolution = "decided-disabled"
-	StatuslineEnabled    StatuslineResolution = "decided-enabled"
-)
-
-// Resolve reports which of the three consent states this manifest records.
-func (s StatuslineState) Resolve() StatuslineResolution {
-	switch {
-	case !s.Decided:
-		return StatuslineNotDecided
-	case !s.Enabled:
-		return StatuslineDisabled
-	default:
-		return StatuslineEnabled
-	}
-}
-
 // ShouldManage reports whether replay is authorized to install or maintain the
-// statusline. Only decided-enabled authorizes it; the other two states mean
-// "do not touch".
+// statusline. Only a recorded, enabled decision authorizes it: "never asked"
+// and "decided against" both mean "do not touch".
 func (s StatuslineState) ShouldManage() bool {
-	return s.Resolve() == StatuslineEnabled
+	return s.Decided && s.Enabled
 }
 
 // PhaseModelSelection stores per-platform model aliases for a single SDD phase.

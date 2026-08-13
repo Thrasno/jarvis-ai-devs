@@ -176,40 +176,32 @@ func TestStatuslineResolution(t *testing.T) {
 	tests := []struct {
 		name       string
 		statusline StatuslineState
-		want       StatuslineResolution
 		manage     bool
 	}{
 		{
 			name:       "never asked leaves the statusline untouched",
 			statusline: StatuslineState{Decided: false, Enabled: false},
-			want:       StatuslineNotDecided,
 			manage:     false,
 		},
 		{
 			name:       "enabled without a decision is still never asked",
 			statusline: StatuslineState{Decided: false, Enabled: true},
-			want:       StatuslineNotDecided,
 			manage:     false,
 		},
 		{
 			name:       "decided disabled leaves the statusline untouched",
 			statusline: StatuslineState{Decided: true, Enabled: false},
-			want:       StatuslineDisabled,
 			manage:     false,
 		},
 		{
 			name:       "decided enabled authorizes the statusline",
 			statusline: StatuslineState{Decided: true, Enabled: true},
-			want:       StatuslineEnabled,
 			manage:     true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.statusline.Resolve(); got != tt.want {
-				t.Errorf("Resolve() = %q, want %q", got, tt.want)
-			}
 			if got := tt.statusline.ShouldManage(); got != tt.manage {
 				t.Errorf("ShouldManage() = %v, want %v", got, tt.manage)
 			}
