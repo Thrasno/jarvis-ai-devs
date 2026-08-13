@@ -117,10 +117,10 @@ stacks on it cleanly.
 - [x] 4.5 RED: sentinel-bearing file preserves content outside managed sections byte-for-byte (Managed Instruction File Ownership Scope).
 - [x] 4.6 RED: unowned-path file is never read/modified/replaced.
 - [x] 4.7 GREEN: ownership-scope guard in `apply.go`.
-- [ ] 4.8 RED: Jarvis-managed MCPs replaced unconditionally, never treated as a persisted user choice (Machine-Scoped Artifact Replay).
-- [ ] 4.9 GREEN: unconditional MCP replacement call into existing `reconcile`/executor seams.
-- [ ] 4.10 RED: statusline drift — decided-enabled + script absent on disk → reinstalled, manifest unchanged (Statusline Reinstallation on Drift).
-- [ ] 4.11 GREEN: drift reinstall path in `apply.go`.
+- [x] 4.8 RED: Jarvis-managed MCPs replaced unconditionally, never treated as a persisted user choice (Machine-Scoped Artifact Replay).
+- [x] 4.9 GREEN: unconditional MCP replacement call into existing `reconcile`/executor seams.
+- [x] 4.10 RED: statusline drift — decided-enabled + script absent on disk → reinstalled, manifest unchanged (Statusline Reinstallation on Drift).
+- [x] 4.11 GREEN: drift reinstall path in `apply.go`.
 - [x] 4.12 RED: D1 partial failure — agent A converges, agent B fails midway; A's changes remain, report names both outcomes, non-zero exit, no global-convergence claim, no cross-agent rollback (Partial Failure Reporting Across Agents).
 - [x] 4.13 GREEN: per-agent `ReconcileInstallRequest` scoping + loop-continue-on-failure in `apply.go`.
 
