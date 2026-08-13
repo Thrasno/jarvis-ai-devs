@@ -191,10 +191,49 @@ Design notes carried forward:
 
 ## Phase 6: Compatibility and Docs (PR 6)
 
-- [ ] 6.1 RED: `cmd/jarvis/cmd_sync.go` — any flag is a usage error, zero mutation (Domain and CLI Boundary Exclusions).
-- [ ] 6.2 RED: sync never calls Hive memory sync; call graph contains no Hive reference.
-- [ ] 6.3 RED: `local+cloud` scope with missing/unparseable `sync.json` reports `jarvis login` for the cloud portion without aborting local scope.
+- [x] 6.1 RED/GREEN: `cmd/jarvis/cmd_sync.go` — any flag is a usage error, zero mutation (Domain and CLI Boundary Exclusions). Landed as PR 6a-1.
+- [ ] 6.2 RED: sync never calls Hive memory sync; call graph contains no Hive reference. **Blocked on 6.4**: the structural proof reads `cmd_sync.go`'s import closure, which is empty of Jarvis packages until the wiring lands, so the test can only be vacuous before then.
+- [ ] 6.3 RED: `local+cloud` scope with missing/unparseable `sync.json` reports `jarvis login` for the cloud portion without aborting local scope. **Half landed as PR 6a-1**: `internal/sync.CloudManualAction` decides the message and proves `sync.json` is read-only; the "does not abort the local replay" half needs 6.4's wiring to be observable.
 - [ ] 6.4 GREEN: `cmd_sync.go` — replace no-op with planner+applier wiring, flag rejection, scope-partial reporting.
+
+### Phase 6 PR boundary: the wiring does not fit with the boundary rules
+
+A complete 6.4 was implemented and verified green, then withdrawn because it
+measured far past the 400-line budget:
+
+| Piece | Changed lines |
+|---|---|
+| `cmd_sync.go` wiring (production `ComponentRunner`, `buildReplay`, `runSync`, report) | 348 |
+| `cmd_sync_test.go` (call graph, config identity, partial cloud scope) | 251 |
+| Replacing the two no-op contract tests (`main_test.go`, `unit_test.go`) | 55 |
+
+That is ~654 changed lines with 474 of them non-comment code, so no amount of
+comment trimming brings 6.1-6.4 under one budget. The split is therefore:
+
+| PR | Tasks | Scope | Changed lines |
+|---|---|---|---|
+| 6a-1 | 6.1, half of 6.3 | No-flags guard behind `newSyncCommand`; `internal/sync.CloudManualAction` | 213 |
+| 6a-2 | 6.2, rest of 6.3, 6.4 | `runSync`, `buildReplay`, the production `ComponentRunner`, replacing the no-op contract tests | ~450, itself likely two slices |
+
+Findings carried forward for 6a-2:
+
+- The applier's `models`/`skills`/`orchestrator-agents-hooks` IDs map onto a
+  single `agentapply.ConfigureAgent` call, which performs all three in exactly
+  the order this design locks. Splitting them would mean reimplementing the
+  installer, so the call runs under the first ID and the other two are no-ops.
+  Component-level failure attribution is coarser than the ID list suggests.
+- `ConfigureAgent` must be handed `StatuslineDecision{Install: false}`: the
+  statusline is the last component and runs after the instruction write, not
+  inside it.
+- Nothing on the command path may call `config.Save()`. Its PR 7a bridge takes
+  `state.WithLock` internally and the lock is fail-fast, so a nested
+  acquisition deadlocks sync against itself. Persona therefore goes through
+  `sync.ApplyInstructions`, never `persona.ApplyProfile(PersistConfig: true)`.
+- One `*config.AppConfig` and one rendered `[]config.SkillInfo` must reach both
+  `PlanInput` and the applier. Pointer-identity assertions on both ends are the
+  test that catches divergence before it becomes permanent reported drift.
+- Persona output styles are not replayed by `sync.ApplyInstructions` and are not
+  tracked paths either; that gap belongs to a later slice.
 - [ ] 6.5 Update `docs/` — sync behavior, upgrade notes, `state.yaml` vs `config.yaml` split, recovery command.
 - [ ] 6.6 Update `AGENTS.md`/`CLAUDE.md` parity note if sync behavior is referenced there.
 
