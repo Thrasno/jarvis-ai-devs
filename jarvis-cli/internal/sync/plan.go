@@ -5,8 +5,13 @@ package sync
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
+	"path/filepath"
+	"strings"
 
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/reconcile"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
@@ -61,12 +66,90 @@ type PlanInput struct {
 	Templates fs.FS
 	Layer1    string
 	Layer2    string
+	Skills    []config.SkillInfo
+}
+
+// renderInstructions renders one agent's managed instruction file.
+type renderInstructions func(fsys fs.FS, layer1, layer2, expertise string, skills []config.SkillInfo) (string, error)
+
+// instructionTemplates binds a manifest agent ID to the embedded template that
+// renders its instruction file. An ID absent from this map has no embedded
+// target in the installed binary, so planning fails closed rather than guessing.
+var instructionTemplates = map[string]renderInstructions{
+	"claude":   config.RenderCLAUDEMd,
+	"opencode": config.RenderAGENTSMd,
 }
 
 // BuildPlan renders the desired targets recorded by the last installation.
+//
+// Every target comes from in.Templates, the assets embedded in the running
+// binary, so the plan always describes the installed version. Nothing already on
+// disk contributes content, and nothing is written.
 func BuildPlan(in PlanInput) (Plan, error) {
 	if in.State == nil || len(in.State.InstalledAgents) == 0 {
 		return Plan{}, ErrNoConfiguredAgents
 	}
-	return Plan{}, nil
+
+	outputs := make([]agent.RenderedManagedOutput, 0, len(in.State.InstalledAgents))
+	for _, configured := range in.State.InstalledAgents {
+		render, embedded := instructionTemplates[configured.ID]
+		if !embedded {
+			return Plan{}, fmt.Errorf("state.yaml records agent %q, for which this Jarvis version embeds no instruction template", configured.ID)
+		}
+		content, err := render(in.Templates, in.Layer1, in.Layer2, "", in.Skills)
+		if err != nil {
+			return Plan{}, fmt.Errorf("render %s instructions: %w", configured.ID, err)
+		}
+		location, err := managedLocation(in.Root, configured.InstructionsPath)
+		if err != nil {
+			return Plan{}, fmt.Errorf("agent %q instructions_path %q: %w", configured.ID, configured.InstructionsPath, err)
+		}
+		outputs = append(outputs, agent.RenderedManagedOutput{
+			Identity: "jarvis-instructions-" + configured.ID,
+			Location: location,
+			Bytes:    []byte(content),
+		})
+	}
+
+	// Marker-backed ownership stays on the one existing seam. Routing through the
+	// production bridge means reconcile derives each provenance marker under its
+	// own unchanged rules instead of this package minting proofs of its own.
+	request, err := agent.BuildProductionReconcileRequest(agent.ProductionReconcileInput{
+		Root:            in.Root,
+		RenderedOutputs: outputs,
+	})
+	if err != nil {
+		return Plan{}, fmt.Errorf("plan managed instruction targets: %w", err)
+	}
+	if request.StorePlan.Blocked() {
+		return Plan{}, errors.New("the recorded instruction targets do not authorize a managed write; run `jarvis` to reinstall")
+	}
+
+	bytesByLocation := make(map[string][]byte, len(outputs))
+	for _, output := range outputs {
+		bytesByLocation[output.Location] = output.Bytes
+	}
+	plan := Plan{Artifacts: make([]PlannedArtifact, 0, len(request.StorePlan.Operations))}
+	for _, operation := range request.StorePlan.Operations {
+		plan.Artifacts = append(plan.Artifacts, PlannedArtifact{
+			Identity: operation.Identity,
+			Location: operation.Location,
+			Bytes:    bytesByLocation[operation.Location],
+			Proof:    MarkerProof{Provenance: operation.Provenance},
+		})
+	}
+	return plan, nil
+}
+
+// managedLocation projects a manifest-recorded path onto a root-relative
+// managed location. A path outside the managed root is refused, never clamped.
+func managedLocation(root, path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return filepath.ToSlash(filepath.Clean(path)), nil
+	}
+	relative, err := filepath.Rel(root, path)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", errors.New("is outside the managed root")
+	}
+	return filepath.ToSlash(relative), nil
 }

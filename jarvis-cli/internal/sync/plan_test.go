@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
@@ -96,6 +97,120 @@ func TestBuildPlan_AgentlessManifestBlocksAndNeverRedetects(t *testing.T) {
 			}
 			if after := snapshotTree(t, root); !reflect.DeepEqual(before, after) {
 				t.Fatalf("planner mutated the filesystem:\nbefore %v\nafter  %v", before, after)
+			}
+		})
+	}
+}
+
+// Targets come from the assets embedded in the running binary. Whatever a
+// previous version left on disk is never a source, and planning stays read-only.
+func TestBuildPlan_RendersTargetsFromInstalledBinaryAssetsOnly(t *testing.T) {
+	root := t.TempDir()
+	claudePath := filepath.Join(root, ".claude", "CLAUDE.md")
+	agentsPath := filepath.Join(root, ".config", "opencode", "AGENTS.md")
+	writeFile(t, claudePath, "stale instructions rendered by an older version")
+	writeFile(t, agentsPath, "stale instructions rendered by an older version")
+	before := snapshotTree(t, root)
+
+	in := PlanInput{
+		Root: root,
+		State: replayableState(
+			state.Agent{ID: "claude", InstructionsPath: claudePath, ConfigPath: "settings.json"},
+			state.Agent{ID: "opencode", InstructionsPath: agentsPath, ConfigPath: "opencode.json"},
+		),
+		Templates: jarvis.TemplatesFS,
+		Layer1:    "layer one",
+		Layer2:    "layer two",
+		Skills:    []config.SkillInfo{{Name: "sdd-apply", Description: "implements tasks", Trigger: "apply"}},
+	}
+
+	plan, err := BuildPlan(in)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+
+	wantClaude, err := config.RenderCLAUDEMd(jarvis.TemplatesFS, in.Layer1, in.Layer2, "", in.Skills)
+	if err != nil {
+		t.Fatalf("render CLAUDE.md: %v", err)
+	}
+	wantAgents, err := config.RenderAGENTSMd(jarvis.TemplatesFS, in.Layer1, in.Layer2, "", in.Skills)
+	if err != nil {
+		t.Fatalf("render AGENTS.md: %v", err)
+	}
+	want := map[string]string{
+		".claude/CLAUDE.md":          wantClaude,
+		".config/opencode/AGENTS.md": wantAgents,
+	}
+
+	got := map[string]string{}
+	for _, artifact := range plan.Artifacts {
+		got[artifact.Location] = string(artifact.Bytes)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("planned targets do not match the embedded assets; got locations %v", got)
+	}
+	if after := snapshotTree(t, root); !reflect.DeepEqual(before, after) {
+		t.Fatal("planner mutated the filesystem; planning is read-only")
+	}
+}
+
+// Instruction files carry provenance markers, so their ownership proof is the
+// marker reconcile derives, bound to that exact identity and location.
+func TestBuildPlan_InstructionTargetsCarryMarkerProof(t *testing.T) {
+	root := t.TempDir()
+	in := PlanInput{
+		Root:      root,
+		State:     replayableState(state.Agent{ID: "claude", InstructionsPath: ".claude/CLAUDE.md", ConfigPath: "settings.json"}),
+		Templates: jarvis.TemplatesFS,
+	}
+
+	plan, err := BuildPlan(in)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if len(plan.Artifacts) != 1 {
+		t.Fatalf("planned %d artifacts, want 1", len(plan.Artifacts))
+	}
+
+	artifact := plan.Artifacts[0]
+	proof, isMarker := artifact.Proof.(MarkerProof)
+	if !isMarker {
+		t.Fatalf("proof is %T, want MarkerProof", artifact.Proof)
+	}
+	if proof.Provenance.ManagedIdentity != artifact.Identity || proof.Provenance.Location != artifact.Location {
+		t.Fatalf("provenance %+v is not bound to identity %q at %q", proof.Provenance, artifact.Identity, artifact.Location)
+	}
+	if proof.Provenance.Version == "" || proof.Provenance.ManifestDigest == "" {
+		t.Fatalf("provenance %+v is missing its version or manifest digest", proof.Provenance)
+	}
+}
+
+func TestBuildPlan_FailsClosedOnUnrenderableAgents(t *testing.T) {
+	root := t.TempDir()
+	outsideRoot := filepath.Join(t.TempDir(), "CLAUDE.md")
+
+	tests := []struct {
+		name  string
+		agent state.Agent
+	}{
+		{
+			name:  "the installed binary embeds no instruction template for the agent",
+			agent: state.Agent{ID: "cursor", InstructionsPath: ".cursor/rules.md", ConfigPath: "cursor.json"},
+		},
+		{
+			name:  "the recorded instructions path escapes the managed root",
+			agent: state.Agent{ID: "claude", InstructionsPath: outsideRoot, ConfigPath: "settings.json"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan, err := BuildPlan(PlanInput{Root: root, State: replayableState(tt.agent), Templates: jarvis.TemplatesFS})
+			if err == nil {
+				t.Fatal("BuildPlan succeeded, want a fail-closed error")
+			}
+			if len(plan.Artifacts) != 0 {
+				t.Fatalf("failed plan carries %d artifacts, want 0", len(plan.Artifacts))
 			}
 		})
 	}
