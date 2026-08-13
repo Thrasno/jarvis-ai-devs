@@ -5,7 +5,11 @@
 package sync
 
 import (
+	"path/filepath"
+	"strings"
+
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 // IdentitySource names the membership list that proved ownership.
@@ -27,6 +31,63 @@ const (
 // MarkerProof, covers artifacts a provenance marker binds.
 type IdentityProof struct {
 	Source IdentitySource
+}
+
+// InstructionOwnership answers a single question: may replay write this
+// instruction-file path for this agent?
+//
+// It is the same kind of evidence Ownership uses for skills — membership in a
+// recorded list, never a path convention — applied to the one file each agent
+// keeps its managed instructions in. The manifest is the whole list: a path it
+// does not record belongs to nobody, and replay never touches it.
+//
+// It deliberately says nothing about the file's contents. Inside an owned path,
+// the installer's own rules apply: a sentinel-bearing file is patched in place
+// and everything outside the managed sections survives, while a file that lost
+// its sentinels is rendered fresh and its previous content is discarded.
+type InstructionOwnership struct {
+	// agentByPath maps a canonical instruction path to the agent that owns it,
+	// so a path recorded for one agent cannot be written on another's behalf.
+	agentByPath map[string]string
+}
+
+// NewInstructionOwnership captures the instruction paths the manifest records.
+// Agents with no recorded path contribute nothing: an agent whose instruction
+// file was never recorded has no owned path to replay.
+func NewInstructionOwnership(agents []state.Agent) InstructionOwnership {
+	own := InstructionOwnership{agentByPath: make(map[string]string, len(agents))}
+	for _, configured := range agents {
+		id := strings.TrimSpace(configured.ID)
+		path := canonicalInstructionPath(configured.InstructionsPath)
+		if id == "" || path == "" {
+			continue
+		}
+		own.agentByPath[path] = id
+	}
+	return own
+}
+
+// OwnsInstructions reports whether replay may write path on agentID's behalf.
+// Both must match a single manifest record: an unrecorded path is refused, and
+// so is a recorded path claimed for a different agent.
+func (o InstructionOwnership) OwnsInstructions(agentID, path string) bool {
+	canonical := canonicalInstructionPath(path)
+	if canonical == "" {
+		return false
+	}
+	owner, recorded := o.agentByPath[canonical]
+	return recorded && owner == strings.TrimSpace(agentID)
+}
+
+// canonicalInstructionPath normalizes a path for comparison. It never resolves
+// symlinks and never touches the filesystem: deciding ownership must not read
+// anything, least of all a path Jarvis may turn out not to own.
+func canonicalInstructionPath(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	return filepath.Clean(trimmed)
 }
 
 // SkillAction is the lifecycle action the planner resolves for one skill ID.

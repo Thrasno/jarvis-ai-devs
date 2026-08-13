@@ -4,7 +4,12 @@
 // lives behind ComponentRunner.
 package sync
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+)
 
 // Component IDs are stable strings. They appear in reports and in the order
 // contract test, so renaming one is a visible, deliberate change.
@@ -27,6 +32,10 @@ type AgentTarget struct {
 	ID string
 	// Root is the machine root the agent's artifacts live under.
 	Root string
+	// InstructionsPath is the manifest-recorded location of this agent's
+	// managed instruction file. It is the only path the instructions component
+	// is ever allowed to write.
+	InstructionsPath string
 }
 
 // ComponentRunner performs one component for one agent. The applier owns the
@@ -136,6 +145,46 @@ func Apply(in ApplyInput) Report {
 		report.Agents = append(report.Agents, applyAgent(in.Runner, target))
 	}
 	return report
+}
+
+// ErrUnownedInstructionsPath refuses an instruction write outside Jarvis's
+// ownership scope. Replay owns the whole path of a managed instruction file for
+// a manifest-listed agent, and nothing else: any other path belongs to its
+// author and is never read, modified or replaced.
+var ErrUnownedInstructionsPath = errors.New("path is not a managed instruction file for a manifest-listed agent")
+
+// InstructionsWriter is the sole writer of one agent's managed instruction
+// file. It is satisfied by agent.Agent, so replay reuses the installer's
+// WriteInstructions verbatim instead of re-deciding how the file is assembled:
+// the sentinel-bearing branch patches in place and the no-sentinel branch
+// renders fresh (agent/claude.go:344-356, agent/opencode.go:441-453), and the
+// same pass re-injects the Hive protocol and the orchestrator import.
+type InstructionsWriter interface {
+	WriteInstructions(layer1, layer2 string, skills []config.SkillInfo) error
+}
+
+// ApplyInstructions performs the instruction write for one agent, and only
+// after the ownership-scope guard authorizes the target path.
+func ApplyInstructions(
+	own InstructionOwnership,
+	target AgentTarget,
+	writer InstructionsWriter,
+	layer1, layer2 string,
+	skills []config.SkillInfo,
+) error {
+	// The guard runs before the writer, and the writer is the only thing in this
+	// path that opens the file. A refused target is therefore never read, never
+	// modified and never replaced.
+	if !own.OwnsInstructions(target.ID, target.InstructionsPath) {
+		return fmt.Errorf(
+			"refusing to apply instructions for agent %q at %q: %w",
+			target.ID, target.InstructionsPath, ErrUnownedInstructionsPath,
+		)
+	}
+	if err := writer.WriteInstructions(layer1, layer2, skills); err != nil {
+		return fmt.Errorf("write %s instructions: %w", target.ID, err)
+	}
+	return nil
 }
 
 // applyAgent walks the locked order for a single agent and stops that agent at
