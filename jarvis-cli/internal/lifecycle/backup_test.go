@@ -235,6 +235,66 @@ func TestBackupStore_CreateSnapshotFailsWhenTargetMissing(t *testing.T) {
 	}
 }
 
+// A replay command computes its own target list from desired state, so it names
+// paths that do not exist yet: a skill this version added, or a statusline a
+// user deleted. There is nothing to preserve for a file that is not there, and
+// refusing the whole backup over one would block every mutation forever.
+func TestBackupStore_CreateSnapshotOfTargetsSkipsPathsThatDoNotExistYet(t *testing.T) {
+	home := t.TempDir()
+	store := NewBackupStore(home)
+
+	root := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	present := filepath.Join(root, "CLAUDE.md")
+	if err := os.WriteFile(present, []byte("managed instructions"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	// Neither the file nor its parent directories exist.
+	absent := filepath.Join(root, "skills", "go-testing", "SKILL.md")
+
+	manifest, err := store.CreateSnapshotOfTargets("sync", []BackupTarget{{Path: absent}, {Path: present}})
+	if err != nil {
+		t.Fatalf("CreateSnapshotOfTargets returned error: %v", err)
+	}
+	if len(manifest.Entries) != 1 || manifest.Entries[0].Path != present {
+		t.Fatalf("expected only the existing target archived, got %#v", manifest.Entries)
+	}
+	if manifest.Entries[0].Checksum != checksumHex([]byte("managed instructions")) {
+		t.Fatalf("archived checksum does not match on-disk content: %#v", manifest.Entries[0])
+	}
+	if err := store.ValidateSnapshot(manifest); err != nil {
+		t.Fatalf("ValidateSnapshot returned error: %v", err)
+	}
+}
+
+// The allowed roots are the boundary of what a backup may read. A target list
+// built outside this package does not get to widen it.
+func TestBackupStore_CreateSnapshotOfTargetsRejectsTargetOutsideAllowedRoots(t *testing.T) {
+	home := t.TempDir()
+	store := NewBackupStore(home)
+
+	outside := filepath.Join(home, "Documents", "taxes.txt")
+	if err := os.MkdirAll(filepath.Dir(outside), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(outside, []byte("private"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+
+	_, err := store.CreateSnapshotOfTargets("sync", []BackupTarget{{Path: outside}})
+	if err == nil {
+		t.Fatal("expected a target outside the allowed roots to be refused")
+	}
+	if !strings.Contains(err.Error(), "allowed roots") {
+		t.Fatalf("expected an actionable out-of-roots error, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(home, ".jarvis", "backups")); !os.IsNotExist(statErr) {
+		t.Fatalf("a refused target list must write no archive, stat = %v", statErr)
+	}
+}
+
 func TestBackupStore_ValidateManifestRejectsSymlinkEscape(t *testing.T) {
 	home := t.TempDir()
 	store := NewBackupStore(home)
