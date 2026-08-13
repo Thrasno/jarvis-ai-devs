@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/atomicfile"
 )
 
 type syncJSON struct {
@@ -68,7 +70,7 @@ func WriteSyncCredentials(apiURL, email, password string, autoSync *bool) error 
 		return fmt.Errorf("marshal sync.json: %w", err)
 	}
 
-	if err := atomicWriteFile(path, data, 0600); err != nil {
+	if err := atomicfile.Write(path, data, 0600); err != nil {
 		return fmt.Errorf("write sync.json: %w", err)
 	}
 	return nil

@@ -1,0 +1,241 @@
+package state
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/atomicfile"
+)
+
+// configSchemaVersionAfterMigration is the config.yaml schema version that
+// records the replay fields as moved out.
+const configSchemaVersionAfterMigration = 3
+
+const configFileName = "config.yaml"
+
+// replayConfigKeys are the top-level config.yaml keys the manifest takes over.
+// They are deleted from config.yaml so no value is readable from both stores.
+var replayConfigKeys = []string{
+	"persona_preset",
+	"persona_preset_source",
+	"preset",
+	"selected_skills",
+	"configured_agents",
+	"scope",
+	"sdd",
+}
+
+// Result reports the outcome of a migration attempt.
+//
+// Notice is populated only after the manifest and the rewritten config.yaml are
+// both durably on disk. Callers print it verbatim and must never announce a
+// migration from any other signal.
+type Result struct {
+	Migrated bool
+	Notice   string
+}
+
+// legacyConfig mirrors only the config.yaml fields the manifest takes over.
+// It deliberately ignores everything else so unrelated config keys are never
+// decoded, reshaped, or lost.
+type legacyConfig struct {
+	SchemaVersion       int      `yaml:"schema_version"`
+	PersonaPreset       string   `yaml:"persona_preset"`
+	Preset              string   `yaml:"preset"`
+	PersonaPresetSource string   `yaml:"persona_preset_source"`
+	SelectedSkills      []string `yaml:"selected_skills"`
+	ConfiguredAgents    []string `yaml:"configured_agents"`
+	Scope               string   `yaml:"scope"`
+
+	Install struct {
+		Agents map[string]struct {
+			Configured       bool   `yaml:"configured"`
+			InstructionsPath string `yaml:"instructions_path"`
+			ConfigPath       string `yaml:"config_path"`
+		} `yaml:"agents"`
+	} `yaml:"install"`
+
+	SDD struct {
+		PhaseModels         map[string]PhaseModelSelection     `yaml:"phase_models"`
+		OpenCodePhaseModels map[string]OpenCodeModelAssignment `yaml:"opencode_phase_models"`
+		ClaudePhaseModels   map[string]ClaudeModelAssignment   `yaml:"claude_phase_models"`
+	} `yaml:"sdd"`
+}
+
+// Migrate moves the replay fields out of ~/.jarvis/config.yaml into
+// ~/.jarvis/state.yaml exactly once and advances config.yaml to schema 3.
+//
+// The move is one-way: after a successful migration no replay field is readable
+// from config.yaml. Migration is never gated on replay-readiness, so a config
+// whose replay fields were never populated still migrates; replay blocks
+// afterwards through State.ValidateForReplay.
+//
+// The manifest is written and fsynced before config.yaml is rewritten. If the
+// manifest write fails, config.yaml is left untouched at its pre-migration
+// schema version and no notice is produced.
+func Migrate() (Result, error) {
+	configPath, err := configFilePath()
+	if err != nil {
+		return Result{}, err
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Nothing to migrate on a fresh machine.
+			return Result{}, nil
+		}
+		return Result{}, fmt.Errorf("read %s: %w", configFileName, err)
+	}
+
+	var legacy legacyConfig
+	if err := yaml.Unmarshal(data, &legacy); err != nil {
+		return Result{}, fmt.Errorf("parse %s: %w", configFileName, err)
+	}
+	if legacy.SchemaVersion >= configSchemaVersionAfterMigration {
+		// Already migrated; the manifest owns these fields.
+		return Result{}, nil
+	}
+
+	raw := map[string]any{}
+	if strings.TrimSpace(string(data)) != "" {
+		if err := yaml.Unmarshal(data, &raw); err != nil {
+			return Result{}, fmt.Errorf("parse %s: %w", configFileName, err)
+		}
+	}
+
+	manifest := manifestFromLegacyConfig(legacy)
+	if err := manifest.Validate(); err != nil {
+		return Result{}, fmt.Errorf("migrate %s: %w", configFileName, err)
+	}
+
+	// Durability gate: the manifest lands first. Everything after this point is
+	// reachable only because the replay fields are already safe on disk.
+	if err := Save(manifest); err != nil {
+		return Result{}, fmt.Errorf("write %s during migration: %w", stateFileName, err)
+	}
+
+	stripReplayFields(raw)
+	raw["schema_version"] = configSchemaVersionAfterMigration
+
+	rewritten, err := yaml.Marshal(raw)
+	if err != nil {
+		return Result{}, fmt.Errorf("marshal %s: %w", configFileName, err)
+	}
+	if err := atomicfile.WriteYAML(configPath, rewritten); err != nil {
+		return Result{}, fmt.Errorf("write %s during migration: %w", configFileName, err)
+	}
+
+	return Result{
+		Migrated: true,
+		Notice: fmt.Sprintf(
+			"Moved installation state out of %s into %s; %s is now at schema version %d.",
+			configFileName, stateFileName, configFileName, configSchemaVersionAfterMigration,
+		),
+	}, nil
+}
+
+// manifestFromLegacyConfig builds the manifest from the legacy config's replay
+// fields. Values are carried over verbatim; nothing is filtered or defaulted.
+func manifestFromLegacyConfig(legacy legacyConfig) *State {
+	manifest := New()
+
+	manifest.Persona = firstNonEmpty(legacy.PersonaPreset, legacy.Preset)
+	manifest.PersonaSource = PersonaSource(legacy.PersonaPresetSource)
+
+	if legacy.SelectedSkills != nil {
+		manifest.Skills = legacy.SelectedSkills
+	}
+
+	manifest.InstalledAgents = migrateAgents(legacy)
+	manifest.SelectionConfigured = len(legacy.ConfiguredAgents) > 0 || len(legacy.Install.Agents) > 0
+
+	if legacy.SDD.PhaseModels != nil {
+		manifest.PhaseModels.Aliases = legacy.SDD.PhaseModels
+	}
+	if legacy.SDD.OpenCodePhaseModels != nil {
+		manifest.PhaseModels.OpenCode = legacy.SDD.OpenCodePhaseModels
+	}
+	if legacy.SDD.ClaudePhaseModels != nil {
+		manifest.PhaseModels.Claude = legacy.SDD.ClaudePhaseModels
+	}
+
+	manifest.Scope = Scope(legacy.Scope)
+	return manifest
+}
+
+// migrateAgents merges the ordered configured_agents list with the per-agent
+// paths recorded under install.agents. An agent that was never configured is
+// not installed and is therefore not carried over.
+func migrateAgents(legacy legacyConfig) []Agent {
+	seen := map[string]bool{}
+	agents := make([]Agent, 0, len(legacy.ConfiguredAgents))
+
+	appendAgent := func(id string) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		details := legacy.Install.Agents[id]
+		agents = append(agents, Agent{
+			ID:               id,
+			InstructionsPath: details.InstructionsPath,
+			ConfigPath:       details.ConfigPath,
+		})
+	}
+
+	for _, id := range legacy.ConfiguredAgents {
+		appendAgent(id)
+	}
+
+	// install.agents may record a configured agent the list forgot. Sorting keeps
+	// the migration deterministic across runs.
+	extra := make([]string, 0, len(legacy.Install.Agents))
+	for id, details := range legacy.Install.Agents {
+		if details.Configured && !seen[id] {
+			extra = append(extra, id)
+		}
+	}
+	sort.Strings(extra)
+	for _, id := range extra {
+		appendAgent(id)
+	}
+
+	if len(agents) == 0 {
+		return nil
+	}
+	return agents
+}
+
+// stripReplayFields deletes every migrated key from the decoded config.yaml,
+// leaving all other keys exactly as they were.
+func stripReplayFields(raw map[string]any) {
+	for _, key := range replayConfigKeys {
+		delete(raw, key)
+	}
+	if install, ok := raw["install"].(map[string]any); ok {
+		delete(install, "agents")
+	}
+}
+
+func configFilePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("get home dir: %w", err)
+	}
+	return filepath.Join(home, jarvisDirName, configFileName), nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
