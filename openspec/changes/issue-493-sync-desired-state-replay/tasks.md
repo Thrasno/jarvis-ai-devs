@@ -150,10 +150,10 @@ PR 4a fixes the sequencing and reporting contract behind `ComponentRunner`, so
 - [x] 5.7 RED: second consecutive run against unchanged manifest/version reports zero changed files, zero writes (Measured Idempotency).
 - [x] 5.8 GREEN: zero-diff short-circuit wired through `Run`.
 - [x] 5.9 RED: changed-path report is required output, not optional (Required Changed-Path Output).
-- [ ] 5.10 RED: no-op run writes no bookkeeping; changed run writes bookkeeping under lock (Bookkeeping Under Lock).
-- [ ] 5.11 GREEN: locked bookkeeping writer, changed-path reporter.
-- [ ] 5.12 RED: post-apply verification names `jarvis` as recovery command for an agent-less manifest (Post-Apply Verification and Recovery Naming).
-- [ ] 5.13 GREEN: verification pass + recovery-command naming.
+- [x] 5.10 RED: no-op run writes no bookkeeping; changed run writes bookkeeping under lock (Bookkeeping Under Lock).
+- [x] 5.11 GREEN: locked bookkeeping writer, changed-path reporter.
+- [x] 5.12 RED: post-apply verification names `jarvis` as recovery command for an agent-less manifest (Post-Apply Verification and Recovery Naming).
+- [x] 5.13 GREEN: verification pass + recovery-command naming.
 
 ### Phase 5 measurement note: zero writes closed by PR 5e
 

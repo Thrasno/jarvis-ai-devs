@@ -35,6 +35,9 @@ type RunInput struct {
 	Plan   Plan
 	Apply  ApplyInput
 	Backup SnapshotCreator
+	// Bookkeeping is optional: nil records nothing, which is what a caller
+	// driving the applier directly wants.
+	Bookkeeping *Bookkeeping
 }
 
 // RunResult pairs the recovery point with the outcome it protects.
@@ -92,15 +95,24 @@ func Run(in RunInput) (RunResult, error) {
 	// Mode assertion is part of the mutation pass and runs before the closing
 	// snapshot, so a mode a writer left behind is corrected rather than merely
 	// reported as drift on every run.
+	// Both failure paths below leave the diff unmeasured, which is not evidence
+	// that nothing changed: the applier already ran, so the record is still written.
 	if err := EnforceModes(in.Plan.Tracked); err != nil {
-		return result, err
+		return result, errors.Join(err, in.Bookkeeping.record())
 	}
 	after, err := TakeSnapshot(in.Plan.Tracked)
 	if err != nil {
-		return result, fmt.Errorf("measure %d tracked paths after replay: %w", len(in.Plan.Tracked), err)
+		measured := fmt.Errorf("measure %d tracked paths after replay: %w", len(in.Plan.Tracked), err)
+		return result, errors.Join(measured, in.Bookkeeping.record())
 	}
-	result.Report = attributeChanges(result.Report, in.Plan.Tracked, Diff(before, after))
-	return result, nil
+	changed := Diff(before, after)
+	result.Report = attributeChanges(result.Report, in.Plan.Tracked, changed)
+	if len(changed) > 0 {
+		if err := in.Bookkeeping.record(); err != nil {
+			return result, err
+		}
+	}
+	return result, verifyApplied(after, in.Plan.Tracked, in.Apply.Targets)
 }
 
 // convergedWithoutApplying is the honest report of a run that found nothing to
