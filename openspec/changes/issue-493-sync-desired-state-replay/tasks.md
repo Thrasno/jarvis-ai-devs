@@ -192,9 +192,9 @@ Design notes carried forward:
 ## Phase 6: Compatibility and Docs (PR 6)
 
 - [x] 6.1 RED/GREEN: `cmd/jarvis/cmd_sync.go` — any flag is a usage error, zero mutation (Domain and CLI Boundary Exclusions). Landed as PR 6a-1.
-- [ ] 6.2 RED: sync never calls Hive memory sync; call graph contains no Hive reference. **Blocked on 6.4**: the structural proof reads `cmd_sync.go`'s import closure, which is empty of Jarvis packages until the wiring lands, so the test can only be vacuous before then.
-- [ ] 6.3 RED: `local+cloud` scope with missing/unparseable `sync.json` reports `jarvis login` for the cloud portion without aborting local scope. **Half landed as PR 6a-1**: `internal/sync.CloudManualAction` decides the message and proves `sync.json` is read-only; the "does not abort the local replay" half needs 6.4's wiring to be observable.
-- [ ] 6.4 GREEN: `cmd_sync.go` — replace no-op with planner+applier wiring, flag rejection, scope-partial reporting.
+- [x] 6.2 RED: sync never calls Hive memory sync; call graph contains no Hive reference. Closed by PR 6a-4 as its own slice: folding it into 6a-3 would have measured 437 changed lines. Both guards were proven to fire before the test was accepted — an empty seed and a deliberately forbidden package each fail it.
+- [x] 6.3 RED: `local+cloud` scope with missing/unparseable `sync.json` reports `jarvis login` for the cloud portion without aborting local scope. Closed by PR 6a-3: `runSync` consults `CloudManualAction` after the plan and prints it beside the local outcome, and `syncExit` takes no cloud argument at all, so there is no shape through which the cloud portion could abort a converged local replay.
+- [x] 6.4 GREEN: `cmd_sync.go` — replace no-op with planner+applier wiring, flag rejection, scope-partial reporting.
 
 ### Phase 6 PR boundary: the wiring does not fit with the boundary rules
 
@@ -214,7 +214,22 @@ comment trimming brings 6.1-6.4 under one budget. The split is therefore:
 |---|---|---|---|
 | 6a-1 | 6.1, half of 6.3 | No-flags guard behind `newSyncCommand`; `internal/sync.CloudManualAction` | 213 |
 | 6a-2 | half of 6.4 | `internal/sync.Runner`, `ReplayInput`, `PlanInputFor`/`TargetsFor`/`NewRunner` | landed |
-| 6a-3 | 6.2, rest of 6.3, rest of 6.4 | `cmd_sync.go`: `runSync` on top of the runner, replacing the no-op contract tests | pending |
+| 6a-3 | rest of 6.3, rest of 6.4 | `cmd_sync.go`: `runSync` on top of the runner, the report, and the two replaced no-op contract tests | 383 |
+| 6a-4 | 6.2 | The Hive-boundary import-closure proof over `cmd_sync.go` | ~50 |
+
+Findings carried forward from 6a-3:
+
+- The observability report is required output, so it is a pure function of the
+  manifest, the run result, the cloud notice and the run error. That keeps every
+  fact the issue asks for under test without a real home or a live agent.
+- `syncExit` deliberately has no cloud parameter. The signature is the proof
+  that an unusable cloud portion cannot abort a local replay; a boolean would
+  only have been a convention.
+- Bookkeeping is wired as nil. `sync.Bookkeeping` needs the digest of the asset
+  set a run replayed and nothing in the tree produces one yet, so a locked write
+  that could only ever be a no-op would have been dishonest machinery.
+- 6.2 was split out on measurement, not on preference: the closure proof is 50
+  changed lines and 6a-3 is 383, and 437 is over the review budget.
 
 6a-2 landed the production `ComponentRunner` as its own `internal/sync` unit,
 which is the seam that keeps 6a-3 thin: the command builds one `ReplayInput`,

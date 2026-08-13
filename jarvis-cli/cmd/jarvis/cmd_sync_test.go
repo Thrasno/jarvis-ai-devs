@@ -2,8 +2,12 @@ package main
 
 import (
 	"errors"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
+	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -205,5 +209,55 @@ func TestAgentsSubFS_ResolvesOnlyTheTreesThisBinaryEmbeds(t *testing.T) {
 	}
 	if openCode, err := agentsSubFS("opencode"); err != nil || openCode != nil {
 		t.Fatalf("agentsSubFS(opencode) = (%v, %v), want (nil, nil)", openCode, err)
+	}
+}
+
+// TestSyncImportClosure_NeverReachesHiveMemorySync proves the domain boundary
+// structurally rather than by reading the command body. The closure is seeded
+// per file, not per package: cmd/jarvis as a whole reaches Hive through sibling
+// commands such as `jarvis login`, and the question here is what sync reaches.
+// The toolchain resolves the transitive half, so build tags and module
+// replacements are honoured rather than re-implemented.
+//
+// The vacuity guard is the important half: a closure seeded from a file that
+// imports no Jarvis package is empty, and an empty input set satisfies every
+// "contains no X" assertion without proving anything at all.
+//
+// `hivederive` is deliberately not forbidden despite its name: it derives a
+// project name from a git remote and carries no memory, transport or
+// credential, so listing it would fail this test on a word, not a dependency.
+func TestSyncImportClosure_NeverReachesHiveMemorySync(t *testing.T) {
+	const module = "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
+
+	parsed, err := parser.ParseFile(token.NewFileSet(), "cmd_sync.go", nil, parser.ImportsOnly)
+	if err != nil {
+		t.Fatalf("parse cmd_sync.go: %v", err)
+	}
+	seed := make([]string, 0, len(parsed.Imports))
+	for _, spec := range parsed.Imports {
+		imported, err := strconv.Unquote(spec.Path.Value)
+		if err != nil {
+			t.Fatalf("unquote %s: %v", spec.Path.Value, err)
+		}
+		if strings.HasPrefix(imported, module) {
+			seed = append(seed, imported)
+		}
+	}
+	if len(seed) == 0 {
+		t.Fatal("cmd_sync.go imports no Jarvis package, so this closure proves nothing")
+	}
+
+	listed, err := exec.Command("go", append([]string{"list", "-deps"}, seed...)...).Output()
+	if err != nil {
+		t.Fatalf("go list -deps: %v", err)
+	}
+	closure := string(listed)
+	if !strings.Contains(closure, module+"/internal/sync\n") {
+		t.Fatal("the replay package is absent from the closure, so this proves nothing about replay")
+	}
+	for _, forbidden := range []string{"internal/hiveclient", "internal/hiveui", "internal/importui", "internal/apiclient"} {
+		if strings.Contains(closure, forbidden) {
+			t.Errorf("jarvis sync reaches Hive memory synchronization through %q", forbidden)
+		}
 	}
 }
