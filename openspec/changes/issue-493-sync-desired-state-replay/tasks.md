@@ -110,8 +110,8 @@ stacks on it cleanly.
 
 ## Phase 4: Machine-Scoped Replay Applier (PR 4)
 
-- [ ] 4.1 RED: `internal/sync/apply_test.go` — recorder fake asserts exact ordered component-ID slice: models → skills → orchestrator/agents/hooks → MCPs → persona+instructions → statusline (Component Application Order Contract).
-- [ ] 4.2 GREEN: `internal/sync/apply.go` — ordered applier calling `internal/agentapply`, persona/instructions last.
+- [x] 4.1 RED: `internal/sync/apply_test.go` — recorder fake asserts exact ordered component-ID slice: models → skills → orchestrator/agents/hooks → MCPs → persona+instructions → statusline (Component Application Order Contract).
+- [x] 4.2 GREEN: `internal/sync/apply.go` — ordered applier calling `internal/agentapply`, persona/instructions last.
 - [ ] 4.3 RED: sentinel-loss regression — CLAUDE.md with no sentinels → full order → assert sentinels, all installed skills, Hive protocol, orchestrator import present after.
 - [ ] 4.4 GREEN: wire fresh-render fallback per `WriteInstructions` (claude.go:350-356, opencode.go:445-452).
 - [ ] 4.5 RED: sentinel-bearing file preserves content outside managed sections byte-for-byte (Managed Instruction File Ownership Scope).
@@ -121,8 +121,23 @@ stacks on it cleanly.
 - [ ] 4.9 GREEN: unconditional MCP replacement call into existing `reconcile`/executor seams.
 - [ ] 4.10 RED: statusline drift — decided-enabled + script absent on disk → reinstalled, manifest unchanged (Statusline Reinstallation on Drift).
 - [ ] 4.11 GREEN: drift reinstall path in `apply.go`.
-- [ ] 4.12 RED: D1 partial failure — agent A converges, agent B fails midway; A's changes remain, report names both outcomes, non-zero exit, no global-convergence claim, no cross-agent rollback (Partial Failure Reporting Across Agents).
-- [ ] 4.13 GREEN: per-agent `ReconcileInstallRequest` scoping + loop-continue-on-failure in `apply.go`.
+- [x] 4.12 RED: D1 partial failure — agent A converges, agent B fails midway; A's changes remain, report names both outcomes, non-zero exit, no global-convergence claim, no cross-agent rollback (Partial Failure Reporting Across Agents).
+- [x] 4.13 GREEN: per-agent `ReconcileInstallRequest` scoping + loop-continue-on-failure in `apply.go`.
+
+### Phase 4 PR boundary: three slices
+
+Phase 4's 13 tasks cannot fit the 400-line budget as one PR, so it is split on
+behaviour rather than file type. Each slice is autonomous and stacks on the
+previous one:
+
+| PR | Tasks | Scope |
+|---|---|---|
+| 4a | 4.1, 4.2, 4.12, 4.13 | Applier spine: locked component order, per-agent isolation, `AgentResult`/`Report` |
+| 4b | 4.3-4.7 | Instruction-file ownership scope and sentinel handling |
+| 4c | 4.8-4.11 | Unconditional MCP replacement and statusline drift reinstall |
+
+PR 4a fixes the sequencing and reporting contract behind `ComponentRunner`, so
+4b and 4c add component behaviour without reshaping the applier.
 
 ## Phase 5: Lifecycle Safety and Measured Idempotency (PR 5)
 
