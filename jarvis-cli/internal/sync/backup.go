@@ -56,19 +56,46 @@ func BackupTargets(plan Plan) []lifecycle.BackupTarget {
 	return targets
 }
 
-// Run takes the backup and only then replays.
+// Run measures, protects, replays, then measures again.
 //
 // A backup failure returns before the applier is ever called, so the run mutates
 // nothing at all and the cause is reported rather than downgraded to a warning.
 // Partial protection is not on the menu: there is no per-agent or best-effort
-// path through here.
+// path through here. The same is true of the opening snapshot, which fails
+// closed for the same reason: an unmeasurable path list cannot be reported on.
+//
+// The changed-path report is measured after the fact rather than short-circuited
+// before it. Apply-then-diff is the only sound option at this seam: the plan
+// renders bytes for instruction files alone, while skills and the statusline are
+// tracked paths with no desired bytes attached, so a pre-apply comparison would
+// be deciding "nothing to do" from a partial picture and would skip components
+// whose desired state it never computed. Rendering those two as real
+// PlannedArtifacts is what would make a genuine pre-apply short-circuit safe.
+// Until then, an unchanged machine still gets its files rewritten with identical
+// bytes; what this guarantees is that the report says zero, truthfully.
 func Run(in RunInput) (RunResult, error) {
 	if in.Backup == nil {
 		return RunResult{}, ErrNoBackup
+	}
+	before, err := TakeSnapshot(in.Plan.Tracked)
+	if err != nil {
+		return RunResult{}, fmt.Errorf("measure %d tracked paths before replay: %w", len(in.Plan.Tracked), err)
 	}
 	manifest, err := in.Backup(BackupSourceOperation, BackupTargets(in.Plan))
 	if err != nil {
 		return RunResult{}, fmt.Errorf("back up %d tracked paths before replay: %w", len(in.Plan.Tracked), err)
 	}
-	return RunResult{Backup: manifest, Report: Apply(in.Apply)}, nil
+	result := RunResult{Backup: manifest, Report: Apply(in.Apply)}
+	// Mode assertion is part of the mutation pass and runs before the closing
+	// snapshot, so a mode a writer left behind is corrected rather than merely
+	// reported as drift on every run.
+	if err := EnforceModes(in.Plan.Tracked); err != nil {
+		return result, err
+	}
+	after, err := TakeSnapshot(in.Plan.Tracked)
+	if err != nil {
+		return result, fmt.Errorf("measure %d tracked paths after replay: %w", len(in.Plan.Tracked), err)
+	}
+	result.Report = attributeChanges(result.Report, in.Plan.Tracked, Diff(before, after))
+	return result, nil
 }

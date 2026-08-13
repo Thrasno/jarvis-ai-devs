@@ -90,10 +90,10 @@ type AgentResult struct {
 	// FailedAt is the component ID that stopped this agent, empty on success.
 	FailedAt string
 	Err      error
-	// Changed lists the paths this agent actually modified. It stays empty in
-	// this slice: measuring real change needs the snapshot/diff pass, and the
-	// plan describes desired state rather than drift, so counting planned
-	// artifacts here would report a change on every run. PR 5 populates it.
+	// Changed lists the paths this agent actually modified, measured by the
+	// content+mode diff around the mutation pass and never counted from the
+	// plan, which describes desired state rather than drift. Apply leaves it
+	// empty because Apply does not measure; Run fills it in.
 	Changed []string
 }
 
@@ -106,6 +106,11 @@ type ApplyInput struct {
 // Report is the honest outcome of a replay pass.
 type Report struct {
 	Agents []AgentResult
+	// Changed names every tracked path this run actually changed, sorted. It is
+	// required output rather than a debugging extra: a run that reports only a
+	// count cannot be checked against the machine, and a count that did not come
+	// from the diff would be a fresh claim of change on every single run.
+	Changed []string
 }
 
 // Converged reports global convergence, which requires at least one agent and

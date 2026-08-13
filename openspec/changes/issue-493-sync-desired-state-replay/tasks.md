@@ -147,13 +147,28 @@ PR 4a fixes the sequencing and reporting contract behind `ComponentRunner`, so
 - [x] 5.4 GREEN: mode assertion (not inheritance) in snapshot/apply write paths.
 - [x] 5.5 RED: backup precedes first mutation; backup failure blocks all mutation and is reported (Backup Precedes Mutation).
 - [x] 5.6 GREEN: `internal/lifecycle/backup.go` — accept explicit target list sourced from sync's plan (same list feeding the diff).
-- [ ] 5.7 RED: second consecutive run against unchanged manifest/version reports zero changed files, zero writes (Measured Idempotency).
-- [ ] 5.8 GREEN: zero-diff short-circuit wired through `apply.go`.
-- [ ] 5.9 RED: changed-path report is required output, not optional (Required Changed-Path Output).
+- [x] 5.7 RED: second consecutive run against unchanged manifest/version reports zero changed files, zero writes (Measured Idempotency). **Delivered as zero *changed files*, not zero writes — see the Phase 5 measurement note below.**
+- [x] 5.8 GREEN: zero-diff short-circuit wired through `apply.go`. **Delivered as apply-then-diff in `Run`, not as a pre-apply short-circuit — see the note below.**
+- [x] 5.9 RED: changed-path report is required output, not optional (Required Changed-Path Output).
 - [ ] 5.10 RED: no-op run writes no bookkeeping; changed run writes bookkeeping under lock (Bookkeeping Under Lock).
 - [ ] 5.11 GREEN: locked bookkeeping writer, changed-path reporter.
 - [ ] 5.12 RED: post-apply verification names `jarvis` as recovery command for an agent-less manifest (Post-Apply Verification and Recovery Naming).
 - [ ] 5.13 GREEN: verification pass + recovery-command naming.
+
+### Phase 5 measurement note: apply-then-diff, not a pre-apply short-circuit
+
+Task 5.8 asked for a zero-diff short-circuit. It is not safely reachable at the
+current seams and was **not** delivered: `Run` applies, asserts modes, then
+diffs. The plan renders bytes only for instruction files; skills and the
+statusline are tracked paths with no desired bytes attached (`plan.go`
+`trackedPaths` derives them from the manifest). Deciding "nothing to do" before
+applying would therefore skip components whose desired state was never computed.
+
+Consequence: an unchanged machine still has its files rewritten with identical
+bytes, so this slice guarantees **zero changed files**, not zero writes. Making
+the real short-circuit safe requires rendering skills and the statusline as real
+`PlannedArtifact`s with bytes, which is the same change that must remove the two
+derivations in `trackedPaths` before they double-count.
 
 ## Phase 6: Compatibility and Docs (PR 6)
 

@@ -75,12 +75,17 @@ const (
 	skillFileName        = "SKILL.md"
 )
 
-func trackedPaths(in PlanInput, artifacts []PlannedArtifact) []TrackedPath {
+// trackedPaths lists what this run is responsible for. Instruction files are
+// rendered artifacts; skills and the statusline are still derived here from the
+// manifest, because neither is a PlannedArtifact yet. When they become one,
+// these two derivations must go, or the list will count them twice.
+func trackedPaths(in PlanInput, artifacts []PlannedArtifact, ownerByLocation map[string]string) []TrackedPath {
 	tracked := make([]TrackedPath, 0, len(artifacts))
 	for _, artifact := range artifacts {
 		tracked = append(tracked, TrackedPath{
-			Path: filepath.Join(in.Root, filepath.FromSlash(artifact.Location)),
-			Mode: artifact.Mode,
+			Agent: ownerByLocation[artifact.Location],
+			Path:  filepath.Join(in.Root, filepath.FromSlash(artifact.Location)),
+			Mode:  artifact.Mode,
 		})
 	}
 	for _, configured := range in.State.InstalledAgents {
@@ -91,14 +96,15 @@ func trackedPaths(in PlanInput, artifacts []PlannedArtifact) []TrackedPath {
 		dir := filepath.Dir(filepath.Join(in.Root, filepath.FromSlash(location)))
 		for _, id := range in.State.Skills {
 			tracked = append(tracked, TrackedPath{
-				Path: filepath.Join(dir, skillsDirName, id, skillFileName),
-				Mode: ManagedFileMode,
+				Agent: configured.ID,
+				Path:  filepath.Join(dir, skillsDirName, id, skillFileName),
+				Mode:  ManagedFileMode,
 			})
 		}
 		// Undecided and decided-against consent both mean "do not touch", so an
 		// unauthorized statusline is not a path this run is responsible for.
 		if configured.ID == "claude" && in.State.Statusline.ShouldManage() {
-			tracked = append(tracked, TrackedPath{Path: filepath.Join(dir, statuslineScriptName), Mode: ManagedExecutableMode})
+			tracked = append(tracked, TrackedPath{Agent: configured.ID, Path: filepath.Join(dir, statuslineScriptName), Mode: ManagedExecutableMode})
 		}
 	}
 	return tracked
@@ -139,6 +145,9 @@ func BuildPlan(in PlanInput) (Plan, error) {
 	}
 
 	outputs := make([]agent.RenderedManagedOutput, 0, len(in.State.InstalledAgents))
+	// The owner is recorded here, where the manifest entry is in hand, rather
+	// than recovered later by parsing an identity or matching a path prefix.
+	ownerByLocation := make(map[string]string, len(in.State.InstalledAgents))
 	for _, configured := range in.State.InstalledAgents {
 		render, embedded := instructionTemplates[configured.ID]
 		if !embedded {
@@ -152,6 +161,7 @@ func BuildPlan(in PlanInput) (Plan, error) {
 		if err != nil {
 			return Plan{}, fmt.Errorf("agent %q instructions_path %q: %w", configured.ID, configured.InstructionsPath, err)
 		}
+		ownerByLocation[location] = configured.ID
 		outputs = append(outputs, agent.RenderedManagedOutput{
 			Identity: "jarvis-instructions-" + configured.ID,
 			Location: location,
@@ -195,7 +205,7 @@ func BuildPlan(in PlanInput) (Plan, error) {
 			Mode:  ManagedFileMode,
 		})
 	}
-	plan.Tracked = trackedPaths(in, plan.Artifacts)
+	plan.Tracked = trackedPaths(in, plan.Artifacts, ownerByLocation)
 	return plan, nil
 }
 

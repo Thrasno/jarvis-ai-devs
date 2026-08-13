@@ -26,10 +26,14 @@ const (
 )
 
 // TrackedPath is one path replay is responsible for, with the mode Jarvis
-// asserts on it.
+// asserts on it and the agent it belongs to.
 type TrackedPath struct {
-	Path string
-	Mode fs.FileMode
+	// Agent is the manifest agent ID that owns this path. It is recorded by the
+	// planner, where the owner is already known, so the per-agent changed-path
+	// report never has to guess an owner back out of a path prefix.
+	Agent string
+	Path  string
+	Mode  fs.FileMode
 }
 
 // fileState is the whole evidence set the diff compares; a path that does not
@@ -107,6 +111,28 @@ func Diff(before, after Snapshot) []string {
 	}
 	sort.Strings(changed)
 	return changed
+}
+
+// attributeChanges records the measured diff on the report: the whole list on
+// the run, and each path on the agent that tracks it.
+//
+// Report.Changed stays authoritative. A changed path whose owner is absent from
+// the report, which a target list narrower than the plan would produce, is still
+// named there rather than dropped on the floor.
+func attributeChanges(report Report, tracked []TrackedPath, changed []string) Report {
+	owners := make(map[string]string, len(tracked))
+	for _, path := range tracked {
+		owners[path.Path] = path.Agent
+	}
+	byAgent := make(map[string][]string, len(report.Agents))
+	for _, path := range changed {
+		byAgent[owners[path]] = append(byAgent[owners[path]], path)
+	}
+	report.Changed = changed
+	for i, result := range report.Agents {
+		report.Agents[i].Changed = byAgent[result.Agent]
+	}
+	return report
 }
 
 // EnforceModes is the counterpart to the diff's mode comparison: the diff
