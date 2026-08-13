@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
@@ -146,12 +147,22 @@ func TestBuildPlan_TrackedPathsCoverEveryManagedArtifactWithItsAssertedMode(t *t
 	)
 	st.Skills = []string{"sdd-apply"}
 	st.Statusline = state.StatuslineState{Decided: true}
-	in := PlanInput{Root: root, State: st, Templates: jarvis.TemplatesFS}
+	in := PlanInput{
+		Root:      root,
+		State:     st,
+		Templates: jarvis.TemplatesFS,
+		SkillsFS:  skillsSourceFS(),
+		HooksFS:   hooksSourceFS("#!/bin/sh\n"),
+	}
 	want := map[string]os.FileMode{
-		filepath.Join(root, ".claude", "CLAUDE.md"):                                   ManagedFileMode,
-		filepath.Join(root, ".claude", "skills", "sdd-apply", "SKILL.md"):             ManagedFileMode,
-		filepath.Join(root, ".config", "opencode", "AGENTS.md"):                       ManagedFileMode,
-		filepath.Join(root, ".config", "opencode", "skills", "sdd-apply", "SKILL.md"): ManagedFileMode,
+		filepath.Join(root, ".claude", "CLAUDE.md"):                                                 ManagedFileMode,
+		filepath.Join(root, ".config", "opencode", "AGENTS.md"):                                     ManagedFileMode,
+		filepath.Join(root, ".claude", "skills", "sdd-apply", "SKILL.md"):                           ManagedFileMode,
+		filepath.Join(root, ".claude", "skills", "sdd-apply", "references", "notes.md"):             ManagedFileMode,
+		filepath.Join(root, ".claude", "skills", "_shared", "sdd-phase-common.md"):                  ManagedFileMode,
+		filepath.Join(root, ".config", "opencode", "skills", "sdd-apply", "SKILL.md"):               ManagedFileMode,
+		filepath.Join(root, ".config", "opencode", "skills", "sdd-apply", "references", "notes.md"): ManagedFileMode,
+		filepath.Join(root, ".config", "opencode", "skills", "_shared", "sdd-phase-common.md"):      ManagedFileMode,
 	}
 
 	// Consent asked and declined: the script is nobody's business here.
@@ -172,6 +183,15 @@ func assertTrackedPaths(t *testing.T, in PlanInput, want map[string]os.FileMode)
 	got := map[string]os.FileMode{}
 	for _, tracked := range plan.Tracked {
 		got[tracked.Path] = tracked.Mode
+		// Ownership is recorded where the manifest entry is in hand, never
+		// recovered later by matching a path prefix.
+		wantAgent := "opencode"
+		if strings.HasPrefix(tracked.Path, filepath.Join(in.Root, ".claude")+string(filepath.Separator)) {
+			wantAgent = "claude"
+		}
+		if tracked.Agent != wantAgent {
+			t.Fatalf("%s is owned by %q, want %q", tracked.Path, tracked.Agent, wantAgent)
+		}
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("plan.Tracked = %v, want %v", got, want)

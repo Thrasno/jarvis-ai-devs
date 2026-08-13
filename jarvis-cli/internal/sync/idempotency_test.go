@@ -8,9 +8,7 @@ import (
 	"runtime"
 	"testing"
 
-	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/lifecycle"
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 type plannedWrite struct {
@@ -182,35 +180,7 @@ func TestRun_AssertsManagedModesBeforeItMeasuresTheDiff(t *testing.T) {
 	}
 }
 
-// Attribution is recorded where the owner is known, not derived later from a
-// path prefix or an identity string, so the per-agent report cannot drift from
-// the manifest.
-func TestBuildPlan_TrackedPathsRecordTheAgentThatOwnsThem(t *testing.T) {
-	root := t.TempDir()
-	st := replayableState(
-		state.Agent{ID: "claude", InstructionsPath: ".claude/CLAUDE.md", ConfigPath: "settings.json"},
-		state.Agent{ID: "opencode", InstructionsPath: ".config/opencode/AGENTS.md", ConfigPath: "opencode.json"},
-	)
-	st.Skills = []string{"sdd-apply"}
-	st.Statusline = state.StatuslineState{Decided: true, Enabled: true}
-
-	plan, err := BuildPlan(PlanInput{Root: root, State: st, Templates: jarvis.TemplatesFS})
-	if err != nil {
-		t.Fatalf("BuildPlan: %v", err)
-	}
-
-	got := map[string]string{}
-	for _, tracked := range plan.Tracked {
-		got[tracked.Path] = tracked.Agent
-	}
-	want := map[string]string{
-		filepath.Join(root, ".claude", "CLAUDE.md"):                                   "claude",
-		filepath.Join(root, ".claude", "skills", "sdd-apply", "SKILL.md"):             "claude",
-		filepath.Join(root, ".claude", statuslineScriptName):                          "claude",
-		filepath.Join(root, ".config", "opencode", "AGENTS.md"):                       "opencode",
-		filepath.Join(root, ".config", "opencode", "skills", "sdd-apply", "SKILL.md"): "opencode",
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("tracked owners = %v, want %v", got, want)
-	}
-}
+// Attribution is asserted alongside desired content in
+// TestBuildPlan_TracksDesiredContentForEveryPathIncludingSkillsAndStatusline:
+// both are recorded by the same producer over the same rendered path list, so
+// splitting them across two tests would only duplicate the expectation.

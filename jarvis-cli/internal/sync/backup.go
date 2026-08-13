@@ -64,15 +64,12 @@ func BackupTargets(plan Plan) []lifecycle.BackupTarget {
 // path through here. The same is true of the opening snapshot, which fails
 // closed for the same reason: an unmeasurable path list cannot be reported on.
 //
-// The changed-path report is measured after the fact rather than short-circuited
-// before it. Apply-then-diff is the only sound option at this seam: the plan
-// renders bytes for instruction files alone, while skills and the statusline are
-// tracked paths with no desired bytes attached, so a pre-apply comparison would
-// be deciding "nothing to do" from a partial picture and would skip components
-// whose desired state it never computed. Rendering those two as real
-// PlannedArtifacts is what would make a genuine pre-apply short-circuit safe.
-// Until then, an unchanged machine still gets its files rewritten with identical
-// bytes; what this guarantees is that the report says zero, truthfully.
+// The changed-path report is still measured after the fact rather than
+// short-circuited before it, so an unchanged machine gets its files rewritten
+// with identical bytes and what this guarantees is that the report says zero,
+// truthfully. Every tracked path now carries the digest of the content replay
+// would write, which is what a pre-apply comparison needs; consuming it here is
+// the next step.
 func Run(in RunInput) (RunResult, error) {
 	if in.Backup == nil {
 		return RunResult{}, ErrNoBackup

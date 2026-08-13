@@ -13,6 +13,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/reconcile"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
@@ -72,20 +73,32 @@ type Plan struct {
 const (
 	statuslineScriptName = "statusline-command.sh"
 	skillsDirName        = "skills"
-	skillFileName        = "SKILL.md"
 )
 
-// trackedPaths lists what this run is responsible for. Instruction files are
-// rendered artifacts; skills and the statusline are still derived here from the
-// manifest, because neither is a PlannedArtifact yet. When they become one,
-// these two derivations must go, or the list will count them twice.
-func trackedPaths(in PlanInput, artifacts []PlannedArtifact, ownerByLocation map[string]string) []TrackedPath {
+// agentPlatforms binds a manifest agent ID to the runtime platform whose model
+// assignments decide how that agent's skill files render.
+var agentPlatforms = map[string]sddruntime.Platform{
+	"claude":   sddruntime.PlatformClaude,
+	"opencode": sddruntime.PlatformOpenCode,
+}
+
+// trackedPaths lists what this run is responsible for, and what each of those
+// paths should contain.
+//
+// Every entry carries a desired digest, because a path list alone cannot answer
+// whether a run has anything to do. Skills and the statusline are therefore
+// rendered here rather than derived from the manifest: the skills walk is the
+// installer's own, so one skill contributes every file it actually installs
+// instead of a guessed SKILL.md, and the statusline carries the embedded
+// script's bytes.
+func trackedPaths(in PlanInput, artifacts []PlannedArtifact, ownerByLocation map[string]string) ([]TrackedPath, error) {
 	tracked := make([]TrackedPath, 0, len(artifacts))
 	for _, artifact := range artifacts {
 		tracked = append(tracked, TrackedPath{
-			Agent: ownerByLocation[artifact.Location],
-			Path:  filepath.Join(in.Root, filepath.FromSlash(artifact.Location)),
-			Mode:  artifact.Mode,
+			Agent:   ownerByLocation[artifact.Location],
+			Path:    filepath.Join(in.Root, filepath.FromSlash(artifact.Location)),
+			Mode:    artifact.Mode,
+			Desired: digestOf(artifact.Bytes),
 		})
 	}
 	for _, configured := range in.State.InstalledAgents {
@@ -94,20 +107,54 @@ func trackedPaths(in PlanInput, artifacts []PlannedArtifact, ownerByLocation map
 			continue
 		}
 		dir := filepath.Dir(filepath.Join(in.Root, filepath.FromSlash(location)))
-		for _, id := range in.State.Skills {
+		skillFiles, err := renderSkills(in, configured.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, file := range skillFiles {
 			tracked = append(tracked, TrackedPath{
-				Agent: configured.ID,
-				Path:  filepath.Join(dir, skillsDirName, id, skillFileName),
-				Mode:  ManagedFileMode,
+				Agent:   configured.ID,
+				Path:    filepath.Join(dir, skillsDirName, filepath.FromSlash(file.RelPath)),
+				Mode:    ManagedFileMode,
+				Desired: digestOf(file.Bytes),
 			})
 		}
 		// Undecided and decided-against consent both mean "do not touch", so an
 		// unauthorized statusline is not a path this run is responsible for.
-		if configured.ID == "claude" && in.State.Statusline.ShouldManage() {
-			tracked = append(tracked, TrackedPath{Agent: configured.ID, Path: filepath.Join(dir, statuslineScriptName), Mode: ManagedExecutableMode})
+		if configured.ID != "claude" || !in.State.Statusline.ShouldManage() {
+			continue
 		}
+		if in.HooksFS == nil {
+			return nil, errors.New("state.yaml records a managed statusline, for which this Jarvis version embeds no hooks source")
+		}
+		script, err := fs.ReadFile(in.HooksFS, agent.StatuslineScriptSource)
+		if err != nil {
+			return nil, fmt.Errorf("read embedded statusline script: %w", err)
+		}
+		tracked = append(tracked, TrackedPath{
+			Agent:   configured.ID,
+			Path:    filepath.Join(dir, statuslineScriptName),
+			Mode:    ManagedExecutableMode,
+			Desired: digestOf(script),
+		})
 	}
-	return tracked
+	return tracked, nil
+}
+
+// renderSkills reuses the installer's walk and model-section rendering, so the
+// content sync compares against is the content the installer writes.
+func renderSkills(in PlanInput, agentID string) ([]agent.RenderedSkillFile, error) {
+	if len(in.State.Skills) == 0 {
+		return nil, nil
+	}
+	if in.SkillsFS == nil {
+		return nil, fmt.Errorf("state.yaml records %d skills, for which this Jarvis version embeds no skills source", len(in.State.Skills))
+	}
+	files, err := agent.RenderSkillFilesForPlatform(in.SkillsFS, in.State.Skills, agentPlatforms[agentID], in.Config)
+	if err != nil {
+		return nil, fmt.Errorf("render skills for agent %q: %w", agentID, err)
+	}
+	return files, nil
 }
 
 // PlanInput carries everything the planner is allowed to read. Every target is
@@ -121,6 +168,15 @@ type PlanInput struct {
 	Layer1    string
 	Layer2    string
 	Skills    []config.SkillInfo
+	// SkillsFS is the embedded skill tree, rooted the way the installer expects
+	// it (a sub-FS of embed/skills), and HooksFS is the root FS carrying the
+	// embedded statusline script. Both are read to render desired content, never
+	// to discover what a previous version installed.
+	SkillsFS fs.FS
+	HooksFS  fs.FS
+	// Config supplies the per-phase model assignments the skill files render
+	// against. A nil Config renders skill files verbatim, matching InstallSkills.
+	Config *config.AppConfig
 }
 
 // renderInstructions renders one agent's managed instruction file.
@@ -205,7 +261,9 @@ func BuildPlan(in PlanInput) (Plan, error) {
 			Mode:  ManagedFileMode,
 		})
 	}
-	plan.Tracked = trackedPaths(in, plan.Artifacts, ownerByLocation)
+	if plan.Tracked, err = trackedPaths(in, plan.Artifacts, ownerByLocation); err != nil {
+		return Plan{}, err
+	}
 	return plan, nil
 }
 

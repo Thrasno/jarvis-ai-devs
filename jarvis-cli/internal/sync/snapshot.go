@@ -34,6 +34,19 @@ type TrackedPath struct {
 	Agent string
 	Path  string
 	Mode  fs.FileMode
+	// Desired is the SHA-256 of the bytes replay would write here, recorded by
+	// the planner where the content is rendered. A digest, not the bytes: the
+	// only question asked of it is equality, and holding the whole managed tree
+	// in memory answers nothing a 32-byte hash does not. Empty means unknown,
+	// which is never a match.
+	Desired string
+}
+
+// digestOf is the desired-content side of the same hash readFileState computes
+// for what is on disk, so the two are directly comparable.
+func digestOf(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
 }
 
 // fileState is the whole evidence set the diff compares; a path that does not
@@ -92,8 +105,7 @@ func readFileState(path string) (fileState, error) {
 	} else if content, err = os.ReadFile(path); err != nil {
 		return fileState{}, err
 	}
-	sum := sha256.Sum256(content)
-	return fileState{exists: true, digest: hex.EncodeToString(sum[:]), mode: info.Mode()}, nil
+	return fileState{exists: true, digest: digestOf(content), mode: info.Mode()}, nil
 }
 
 // Diff reports every path whose content or mode differs between the two
