@@ -350,3 +350,31 @@ install:
 		t.Fatalf("installed_agents = %#v, want only the configured claude agent", st.InstalledAgents)
 	}
 }
+
+func TestMigrate_LeavesAnExistingManifestAlone(t *testing.T) {
+	home := isolateHome(t)
+	// A config.yaml the bridge already emptied: still schema 2, no replay keys.
+	writeConfig(t, home, "schema_version: 2\napi_url: https://hivemem.dev\n")
+
+	owned := New()
+	owned.Persona = "neutra"
+	owned.Skills = []string{"go-testing"}
+	if err := Save(owned); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+
+	res, err := Migrate()
+	if err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if res.Migrated {
+		t.Error("Migrated = true, want false when the manifest already owns the fields")
+	}
+	got, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Persona != "neutra" || len(got.Skills) != 1 {
+		t.Fatalf("Migrate overwrote the manifest from a stripped config.yaml: %+v", got)
+	}
+}

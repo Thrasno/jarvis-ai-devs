@@ -164,6 +164,11 @@ func Load() (*AppConfig, error) {
 		}
 	}
 
+	// Bridge: ~/.jarvis/state.yaml owns the replay fields once it exists.
+	if err := applyStateManifest(cfg); err != nil {
+		return nil, err
+	}
+
 	normalizeAndMigrate(cfg)
 	applyEnvOverrides(cfg)
 	return cfg, nil
@@ -185,9 +190,16 @@ func Save(cfg *AppConfig) error {
 		return fmt.Errorf("create jarvis dir: %w", err)
 	}
 
-	data, err := yaml.Marshal(cfg)
+	// Bridge: the replay fields land in ~/.jarvis/state.yaml first. Only once
+	// they are durably there are they dropped from config.yaml, so a failed
+	// manifest write can never lose them.
+	if err := saveStateManifest(cfg); err != nil {
+		return err
+	}
+
+	data, err := marshalWithoutReplayFields(cfg)
 	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
+		return err
 	}
 
 	if err := atomicfile.Write(path, data, 0600); err != nil {

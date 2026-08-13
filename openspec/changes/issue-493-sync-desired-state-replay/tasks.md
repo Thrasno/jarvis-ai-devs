@@ -36,7 +36,7 @@ Chain strategy: pending
 - [x] 1.7 RED: `internal/state/migrate_test.go` — v2 `config.yaml` fixture → migration writes `state.yaml`, bumps `config.yaml` to `schema_version: 3`, fields absent from `config.yaml` after (One-Way Field Migration, Store Disjointness).
 - [x] 1.8 RED: migration runs before validation early-return; notice withheld until write is durable (Migration precedes validation blocking; Notice withheld).
 - [x] 1.9 GREEN: `internal/state/migrate.go` — one-way move, durable-write-gated notice, runs pre-return.
-- [ ] 1.10 GREEN: `internal/config/config.go` — `schema_version: 3`, remove migrated fields. **BLOCKED — see Phase 1 Blocker below; deferred to its own slice.**
+- [ ] 1.10 GREEN: `internal/config/config.go` — `schema_version: 3`, remove migrated fields. **Partially unblocked by PR 7a — see Phase 1 Blocker below.** The store-level move is done and `state.yaml` now owns the replay fields at runtime; what remains is deleting them from the `AppConfig` struct, which still waits on the package-by-package consumer cutover.
 - [x] 1.11 Refactor: dedupe shared YAML helpers between `state.go`/`config.go` once green.
 
 ### Phase 1 Blocker: task 1.10 does not fit this slice
@@ -62,6 +62,16 @@ Consequence to schedule before `Migrate()` is wired into a command (PR 6): while
 would rewrite them into `config.yaml` and break disjointness at runtime. The
 consumer cutover onto `internal/state` is therefore a hard prerequisite for the
 slice that calls `Migrate()`, not optional cleanup.
+
+### PR 7a: the config bridge (unblocks Phase 6)
+
+- [x] 7a.1 RED/GREEN: `internal/config/bridge.go` — `Load()` projects `state.yaml`
+  onto `AppConfig`; `Save()` routes the replay fields back into the manifest under
+  `state.WithLock`, preserving the fields config never owned, then rewrites
+  `config.yaml` without them — manifest first, so a failed write loses nothing.
+- [x] 7a.2 RED/GREEN: `state.Migrate()` leaves an existing manifest alone, and
+  `InstalledAgentsFrom`/`ReplayConfigKeys` are shared so the two cannot disagree.
+  `config.Load()` still serves every replay field after `Migrate()` runs.
 
 ## Phase 2: Read-Only Planner (PR 2)
 

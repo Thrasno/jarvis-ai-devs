@@ -30,6 +30,13 @@ var replayConfigKeys = []string{
 	"sdd",
 }
 
+// ReplayConfigKeys copies the keys above for other writers keeping them disjoint.
+func ReplayConfigKeys() []string {
+	out := make([]string, len(replayConfigKeys))
+	copy(out, replayConfigKeys)
+	return out
+}
+
 // Result reports the outcome of a migration attempt.
 //
 // Notice is populated only after the manifest and the rewritten config.yaml are
@@ -53,11 +60,7 @@ type legacyConfig struct {
 	Scope               string   `yaml:"scope"`
 
 	Install struct {
-		Agents map[string]struct {
-			Configured       bool   `yaml:"configured"`
-			InstructionsPath string `yaml:"instructions_path"`
-			ConfigPath       string `yaml:"config_path"`
-		} `yaml:"agents"`
+		Agents map[string]AgentRecord `yaml:"agents"`
 	} `yaml:"install"`
 
 	SDD struct {
@@ -79,6 +82,20 @@ type legacyConfig struct {
 // manifest write fails, config.yaml is left untouched at its pre-migration
 // schema version and no notice is produced.
 func Migrate() (Result, error) {
+	statePath, err := Path()
+	if err != nil {
+		return Result{}, err
+	}
+	// A manifest on disk already owns the replay fields; re-deriving them from a
+	// config.yaml they have already left would erase them.
+	if info, err := os.Stat(statePath); err == nil {
+		if info.Mode().IsRegular() {
+			return Result{}, nil
+		}
+	} else if !os.IsNotExist(err) {
+		return Result{}, fmt.Errorf("stat %s: %w", stateFileName, err)
+	}
+
 	configPath, err := configFilePath()
 	if err != nil {
 		return Result{}, err
@@ -152,7 +169,7 @@ func manifestFromLegacyConfig(legacy legacyConfig) *State {
 		manifest.Skills = legacy.SelectedSkills
 	}
 
-	manifest.InstalledAgents = migrateAgents(legacy)
+	manifest.InstalledAgents = InstalledAgentsFrom(legacy.ConfiguredAgents, legacy.Install.Agents)
 	manifest.SelectionConfigured = len(legacy.ConfiguredAgents) > 0 || len(legacy.Install.Agents) > 0
 
 	if legacy.SDD.PhaseModels != nil {
@@ -169,19 +186,27 @@ func manifestFromLegacyConfig(legacy legacyConfig) *State {
 	return manifest
 }
 
-// migrateAgents merges the ordered configured_agents list with the per-agent
-// paths recorded under install.agents. An agent that was never configured is
-// not installed and is therefore not carried over.
-func migrateAgents(legacy legacyConfig) []Agent {
+// AgentRecord mirrors one config.yaml `install.agents` entry.
+type AgentRecord struct {
+	Configured       bool   `yaml:"configured"`
+	InstructionsPath string `yaml:"instructions_path"`
+	ConfigPath       string `yaml:"config_path"`
+}
+
+// InstalledAgentsFrom merges the ordered configured_agents list with the
+// per-agent paths recorded under install.agents. An agent that was never
+// configured is not installed and is therefore not carried over. Migration and
+// the config bridge both go through here, so they cannot disagree.
+func InstalledAgentsFrom(order []string, records map[string]AgentRecord) []Agent {
 	seen := map[string]bool{}
-	agents := make([]Agent, 0, len(legacy.ConfiguredAgents))
+	agents := make([]Agent, 0, len(order))
 
 	appendAgent := func(id string) {
 		if id == "" || seen[id] {
 			return
 		}
 		seen[id] = true
-		details := legacy.Install.Agents[id]
+		details := records[id]
 		agents = append(agents, Agent{
 			ID:               id,
 			InstructionsPath: details.InstructionsPath,
@@ -189,14 +214,14 @@ func migrateAgents(legacy legacyConfig) []Agent {
 		})
 	}
 
-	for _, id := range legacy.ConfiguredAgents {
+	for _, id := range order {
 		appendAgent(id)
 	}
 
 	// install.agents may record a configured agent the list forgot. Sorting keeps
 	// the migration deterministic across runs.
-	extra := make([]string, 0, len(legacy.Install.Agents))
-	for id, details := range legacy.Install.Agents {
+	extra := make([]string, 0, len(records))
+	for id, details := range records {
 		if details.Configured && !seen[id] {
 			extra = append(extra, id)
 		}
