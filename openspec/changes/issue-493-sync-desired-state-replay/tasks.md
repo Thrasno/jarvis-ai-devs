@@ -213,7 +213,13 @@ comment trimming brings 6.1-6.4 under one budget. The split is therefore:
 | PR | Tasks | Scope | Changed lines |
 |---|---|---|---|
 | 6a-1 | 6.1, half of 6.3 | No-flags guard behind `newSyncCommand`; `internal/sync.CloudManualAction` | 213 |
-| 6a-2 | 6.2, rest of 6.3, 6.4 | `runSync`, `buildReplay`, the production `ComponentRunner`, replacing the no-op contract tests | ~450, itself likely two slices |
+| 6a-2 | half of 6.4 | `internal/sync.Runner`, `ReplayInput`, `PlanInputFor`/`TargetsFor`/`NewRunner` | landed |
+| 6a-3 | 6.2, rest of 6.3, rest of 6.4 | `cmd_sync.go`: `runSync` on top of the runner, replacing the no-op contract tests | pending |
+
+6a-2 landed the production `ComponentRunner` as its own `internal/sync` unit,
+which is the seam that keeps 6a-3 thin: the command builds one `ReplayInput`,
+and both the planner and the runner are projected from it, so the config
+identity trap is closed structurally rather than by convention.
 
 Findings carried forward for 6a-2:
 
