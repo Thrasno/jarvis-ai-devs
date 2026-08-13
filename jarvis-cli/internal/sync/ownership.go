@@ -23,8 +23,8 @@ const (
 // appears in the embedded catalog or in the manifest's skills list. It is the
 // proof used where no provenance marker exists, such as skill directories.
 //
-// It becomes one member of the planner's closed Proof sum once MarkerProof
-// lands with the target-rendering slice.
+// It is one of the two members of the planner's closed Proof sum; the other,
+// MarkerProof, covers artifacts a provenance marker binds.
 type IdentityProof struct {
 	Source IdentitySource
 }
