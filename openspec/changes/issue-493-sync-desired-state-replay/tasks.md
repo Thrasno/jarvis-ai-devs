@@ -145,8 +145,8 @@ PR 4a fixes the sequencing and reporting contract behind `ComponentRunner`, so
 - [x] 5.2 GREEN: `internal/sync/snapshot.go` — content+mode snapshot/diff over the plan's own path list.
 - [x] 5.3 RED: threat-matrix mode assertion — statusline stays 0755, skills/instructions stay 0644 after sync, including reinstall-after-delete.
 - [x] 5.4 GREEN: mode assertion (not inheritance) in snapshot/apply write paths.
-- [ ] 5.5 RED: backup precedes first mutation; backup failure blocks all mutation and is reported (Backup Precedes Mutation).
-- [ ] 5.6 GREEN: `internal/lifecycle/backup.go` — accept explicit target list sourced from sync's plan (same list feeding the diff).
+- [x] 5.5 RED: backup precedes first mutation; backup failure blocks all mutation and is reported (Backup Precedes Mutation).
+- [x] 5.6 GREEN: `internal/lifecycle/backup.go` — accept explicit target list sourced from sync's plan (same list feeding the diff).
 - [ ] 5.7 RED: second consecutive run against unchanged manifest/version reports zero changed files, zero writes (Measured Idempotency).
 - [ ] 5.8 GREEN: zero-diff short-circuit wired through `apply.go`.
 - [ ] 5.9 RED: changed-path report is required output, not optional (Required Changed-Path Output).
