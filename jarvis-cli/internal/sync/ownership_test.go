@@ -170,15 +170,24 @@ func TestOwnership_ResolveSkillLifecycle(t *testing.T) {
 	}
 }
 
-// _shared/ is installed unconditionally and is not a skill, so it must never
-// reach the lifecycle resolver as an owned identity.
+// _shared/ is installed unconditionally and is not a skill. Both input lists
+// carry it here on purpose: the filtering in NewOwnership is the code under
+// test, and an input that never contains _shared would pass this test whether
+// or not that filtering exists.
 func TestOwnership_SharedDirectoryIsNotASkill(t *testing.T) {
-	own := NewOwnership([]skills.Skill{catalogEntry("sdd-spec", "optional")}, []string{"sdd-spec"})
+	own := NewOwnership(
+		[]skills.Skill{catalogEntry("sdd-spec", "optional"), catalogEntry(sharedDirName, "core")},
+		[]string{"sdd-spec", sharedDirName},
+	)
 
 	if _, owned := own.Classify("_shared"); owned {
 		t.Fatal("Classify(\"_shared\") reported Jarvis ownership; _shared is not a skill")
 	}
 	if got := own.ResolveSkill("_shared"); got != SkillActionUntouched {
 		t.Fatalf("ResolveSkill(\"_shared\") = %q, want %q", got, SkillActionUntouched)
+	}
+	// Filtering _shared must not disturb the identities around it.
+	if got := own.ResolveSkill("sdd-spec"); got != SkillActionUpdate {
+		t.Fatalf("ResolveSkill(%q) = %q, want %q", "sdd-spec", got, SkillActionUpdate)
 	}
 }
