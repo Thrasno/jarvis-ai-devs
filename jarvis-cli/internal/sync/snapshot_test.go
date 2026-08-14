@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
@@ -44,6 +45,10 @@ func TestDiff_ComparesContentAndModeAndNeverModificationTime(t *testing.T) {
 		mutate          func(t *testing.T, seeded, uninstalled string)
 		wantSeeded      bool
 		wantUninstalled bool
+		// posixModes marks a case whose only signal is a permission change.
+		// Windows has no POSIX permission bits, so Perm always reads 0666 or
+		// 0444 and no mode mutation is observable there.
+		posixModes bool
 	}{
 		{
 			// Exactly what InstallStatusline does: remove, then write fresh.
@@ -62,6 +67,7 @@ func TestDiff_ComparesContentAndModeAndNeverModificationTime(t *testing.T) {
 			name:       "the same content with a different mode is a change",
 			mutate:     func(t *testing.T, seeded, _ string) { seedFile(t, seeded, 0o644) },
 			wantSeeded: true,
+			posixModes: true,
 		},
 		{
 			name:       "deleting the file is a change",
@@ -77,6 +83,9 @@ func TestDiff_ComparesContentAndModeAndNeverModificationTime(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.posixModes && runtime.GOOS == "windows" {
+				t.Skip("Windows has no POSIX permission bits, so a mode-only mutation is not observable")
+			}
 			root := t.TempDir()
 			seeded := filepath.Join(root, statuslineScriptName)
 			uninstalled := filepath.Join(root, "never-installed.sh")
@@ -174,6 +183,10 @@ func assertTrackedPaths(t *testing.T, in PlanInput, want map[string]os.FileMode)
 // (claude.go:918-923) and D2's reinstall-after-delete path lets the umask
 // decide; neither may choose the final mode.
 func TestEnforceModes_AssertsTheManagedModeInsteadOfInheritingIt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no POSIX permission bits: Chmod only toggles the read-only attribute and Perm always reads 0666 or 0444")
+	}
+
 	root := t.TempDir()
 	instructions := filepath.Join(root, "CLAUDE.md")
 	skill := filepath.Join(root, "skills", "sdd-apply", "SKILL.md")
