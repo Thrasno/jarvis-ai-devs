@@ -154,9 +154,10 @@ func TestBuildPlan_RendersTargetsFromInstalledBinaryAssetsOnly(t *testing.T) {
 	}
 }
 
-// Instruction files carry provenance markers, so their ownership proof is the
-// marker reconcile derives, bound to that exact identity and location.
-func TestBuildPlan_InstructionTargetsCarryMarkerProof(t *testing.T) {
+// Managed instruction files carry no provenance marker on disk, so no marker was
+// ever observed and none may be claimed. Their ownership proof is manifest
+// membership, the same rule ApplyInstructions enforces before it writes.
+func TestBuildPlan_InstructionTargetsAreProvenByManifestNotByMarker(t *testing.T) {
 	root := t.TempDir()
 	in := PlanInput{
 		Root:      root,
@@ -173,15 +174,41 @@ func TestBuildPlan_InstructionTargetsCarryMarkerProof(t *testing.T) {
 	}
 
 	artifact := plan.Artifacts[0]
-	proof, isMarker := artifact.Proof.(MarkerProof)
-	if !isMarker {
-		t.Fatalf("proof is %T, want MarkerProof", artifact.Proof)
+	proof, isIdentity := artifact.Proof.(IdentityProof)
+	if !isIdentity {
+		t.Fatalf("proof is %T, want IdentityProof", artifact.Proof)
 	}
-	if proof.Provenance.ManagedIdentity != artifact.Identity || proof.Provenance.Location != artifact.Location {
-		t.Fatalf("provenance %+v is not bound to identity %q at %q", proof.Provenance, artifact.Identity, artifact.Location)
+	if proof.Source != IdentitySourceManifest {
+		t.Fatalf("proof source is %q, want %q", proof.Source, IdentitySourceManifest)
 	}
-	if proof.Provenance.Version == "" || proof.Provenance.ManifestDigest == "" {
-		t.Fatalf("provenance %+v is missing its version or manifest digest", proof.Provenance)
+}
+
+// A marker proof asserts that reconcile compared an observed on-disk marker
+// against the manifest. That comparison never runs for instruction targets,
+// because nothing populates the inventory reconcile classifies against. Planning
+// must therefore never hand back a MarkerProof for one, whatever is on disk.
+func TestBuildPlan_NeverClaimsAnUnobservedMarkerProof(t *testing.T) {
+	root := t.TempDir()
+	claudePath := filepath.Join(root, ".claude", "CLAUDE.md")
+	// Content owned by someone else: no Jarvis marker, no Jarvis bytes.
+	writeFile(t, claudePath, "# my own notes\nhand-written by the user, never by Jarvis\n")
+
+	plan, err := BuildPlan(PlanInput{
+		Root:      root,
+		State:     replayableState(state.Agent{ID: "claude", InstructionsPath: claudePath, ConfigPath: "settings.json"}),
+		Templates: jarvis.TemplatesFS,
+	})
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	// Without this the loop below would pass on an empty plan, asserting nothing.
+	if len(plan.Artifacts) != 1 {
+		t.Fatalf("planned %d artifacts, want 1", len(plan.Artifacts))
+	}
+	for _, artifact := range plan.Artifacts {
+		if _, isMarker := artifact.Proof.(MarkerProof); isMarker {
+			t.Fatalf("artifact %q at %q claims MarkerProof, but no marker was ever read from disk", artifact.Identity, artifact.Location)
+		}
 	}
 }
 

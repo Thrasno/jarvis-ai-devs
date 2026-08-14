@@ -33,6 +33,10 @@ type Proof interface{ isProof() }
 // current manifest. It is produced through reconcile's planner, whose Classify
 // rule stays exactly as strict as it is: names, paths and conventions are not
 // evidence.
+//
+// It applies only to artifacts that actually carry a marker on disk, which today
+// means the OpenCode global document. Managed instruction files carry none, so
+// they are proven by manifest membership instead and never by this.
 type MarkerProof struct{ Provenance reconcile.Provenance }
 
 func (MarkerProof) isProof() {}
@@ -111,9 +115,10 @@ func BuildPlan(in PlanInput) (Plan, error) {
 		})
 	}
 
-	// Marker-backed ownership stays on the one existing seam. Routing through the
-	// production bridge means reconcile derives each provenance marker under its
-	// own unchanged rules instead of this package minting proofs of its own.
+	// The bridge is used for what it can actually prove here: it rejects a
+	// location outside the managed root, refuses a duplicate managed identity,
+	// and keeps the OpenCode global document off this path. It is not used as an
+	// ownership oracle, because for these targets it cannot be one.
 	request, err := agent.BuildProductionReconcileRequest(agent.ProductionReconcileInput{
 		Root:            in.Root,
 		RenderedOutputs: outputs,
@@ -135,7 +140,14 @@ func BuildPlan(in PlanInput) (Plan, error) {
 			Identity: operation.Identity,
 			Location: operation.Location,
 			Bytes:    bytesByLocation[operation.Location],
-			Proof:    MarkerProof{Provenance: operation.Provenance},
+			// Manifest membership, not a marker. Instruction files carry no
+			// provenance marker on disk, so reconcile never observed one and the
+			// operation's Provenance is the marker this run would write, not
+			// evidence about what is already there. Claiming MarkerProof here
+			// would assert a check that never ran; the honest proof is that the
+			// manifest lists this agent, which is exactly the rule ApplyInstructions
+			// enforces before any write.
+			Proof: IdentityProof{Source: IdentitySourceManifest},
 		})
 	}
 	return plan, nil
