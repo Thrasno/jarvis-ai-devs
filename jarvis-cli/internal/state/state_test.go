@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -157,6 +158,10 @@ func TestSave_RetainsSkillIDsAbsentFromCurrentCatalog(t *testing.T) {
 }
 
 func TestSave_WritesOwnerOnlyPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no POSIX permission bits: Chmod only toggles the read-only attribute and Perm always reads 0666 or 0444")
+	}
+
 	home := isolateHome(t)
 
 	if err := Save(fullState()); err != nil {
