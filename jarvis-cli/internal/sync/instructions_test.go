@@ -44,6 +44,9 @@ func claudeReplayFixture(t *testing.T) (agent.Agent, string) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// os.UserHomeDir reads USERPROFILE on Windows, so HOME alone leaves the
+	// real home in play and the agent is never detected under the fixture.
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
 		t.Fatalf("create claude config dir: %v", err)
