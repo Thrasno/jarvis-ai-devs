@@ -30,6 +30,9 @@ func mcpReplayFixture(t *testing.T) (string, map[string]agent.Agent, string) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// os.UserHomeDir reads USERPROFILE on Windows, so HOME alone leaves the
+	// real home in play and neither agent is detected under the fixture.
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	for _, dir := range []string{filepath.Join(home, ".claude"), filepath.Join(home, ".config", "opencode")} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {

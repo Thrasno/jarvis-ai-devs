@@ -3,6 +3,7 @@ package sync
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
@@ -80,7 +81,8 @@ func TestStatuslineComponent_ReinstallsADeletedScriptWithoutTouchingTheManifest(
 	if err != nil {
 		t.Fatalf("a decided-enabled manifest must reinstall the drifted script: %v", err)
 	}
-	if info.Mode().Perm() != 0o755 {
+	// Windows has no POSIX permission bits: Perm always reads 0666 or 0444.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o755 {
 		t.Fatalf("statusline script mode = %04o, want 0755", info.Mode().Perm())
 	}
 	// Rule 9: replay writes bookkeeping only. Reinstalling a drifted artifact is
