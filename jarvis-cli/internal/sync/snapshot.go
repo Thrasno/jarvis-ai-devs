@@ -124,7 +124,7 @@ func (s Snapshot) Matches(paths []TrackedPath) bool {
 		if tracked.Desired == "" || !recorded || !state.exists {
 			return false
 		}
-		if state.digest != tracked.Desired || state.mode.Perm() != tracked.Mode.Perm() {
+		if state.digest != tracked.Desired || !sameManagedMode(state.mode, tracked.Mode) {
 			return false
 		}
 	}
