@@ -107,12 +107,15 @@ func Run(in RunInput) (RunResult, error) {
 	}
 	changed := Diff(before, after)
 	result.Report = attributeChanges(result.Report, in.Plan.Tracked, changed)
+	// Verification is not conditional on bookkeeping succeeding. A failed record
+	// says nothing about what landed on disk, and this run just wrote to it, so
+	// letting a busy manifest lock swallow the check would hide exactly the
+	// silent broken-output failure the check exists to catch. Both are reported.
+	var recorded error
 	if len(changed) > 0 {
-		if err := in.Bookkeeping.record(); err != nil {
-			return result, err
-		}
+		recorded = in.Bookkeeping.record()
 	}
-	return result, verifyApplied(after, in.Plan.Tracked, in.Apply.Targets)
+	return result, errors.Join(recorded, verifyApplied(after, in.Plan.Tracked, in.Apply.Targets))
 }
 
 // convergedWithoutApplying is the honest report of a run that found nothing to

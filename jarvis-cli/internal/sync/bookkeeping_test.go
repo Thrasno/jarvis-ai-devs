@@ -1,10 +1,12 @@
 package sync
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/lifecycle"
@@ -144,5 +146,42 @@ func TestRun_WritesBookkeepingWhenTheDiffCouldNotBeMeasured(t *testing.T) {
 	}
 	if loaded, loadErr := state.Load(); loadErr != nil || loaded.ManagedAssetDigest != "sha256:current" {
 		t.Fatalf("manifest after an unmeasured diff = %+v (%v); that is not a no-op run", loaded, loadErr)
+	}
+}
+
+// A failed record says nothing about what landed on disk, and the run that
+// failed it just wrote to that disk. The likeliest cause is the one the lock is
+// built for — a second jarvis process holding the manifest — so letting a busy
+// lock swallow the post-apply check would hide the silent broken-output failure
+// that check exists to catch, in exactly the runs that mutated something.
+func TestRun_ReportsBothTheBookkeepingFailureAndTheVerificationVerdict(t *testing.T) {
+	home := t.TempDir()
+	seedManifest(t, home, "sha256:previous")
+
+	const desired = "claude instructions\n"
+	tracked := filepath.Join(home, ".claude", "CLAUDE.md")
+	plan := Plan{Tracked: []TrackedPath{
+		{Agent: "claude", Path: tracked, Mode: ManagedFileMode, Desired: digestOf([]byte(desired))},
+	}}
+	// The component writes something, so the run changed a path and reaches the
+	// record, but writes the wrong bytes, so verification must fail too.
+	runner := &desiredStateRunner{recordingRunner: &recordingRunner{}, writes: map[string][]plannedWrite{
+		"claude": {{path: tracked, body: "stale\n", mode: 0o644}},
+	}}
+	busy := errors.New("state.yaml is locked by another jarvis process")
+
+	_, err := bookkeptRun(t, home, plan, runner, &Bookkeeping{
+		ManagedAssetDigest: "sha256:current",
+		Lock:               func(func() error) error { return busy },
+	})
+
+	if err == nil {
+		t.Fatal("a busy lock and an invalid output must both be reported")
+	}
+	if !errors.Is(err, busy) {
+		t.Fatalf("error = %v, want it to carry the bookkeeping failure", err)
+	}
+	if !strings.Contains(err.Error(), tracked) || !strings.Contains(err.Error(), "run `jarvis sync` to repair") {
+		t.Fatalf("error = %q, want it to also carry the verification verdict naming %s", err, tracked)
 	}
 }
