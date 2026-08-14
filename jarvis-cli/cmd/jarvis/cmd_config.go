@@ -9,6 +9,7 @@ import (
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 // settableKeys lists the config keys that users are allowed to change.
@@ -68,6 +69,12 @@ func runConfigSet(key, value string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	// recordInManifest carries the replay fields ~/.jarvis/state.yaml owns. It
+	// runs after config.Save, never around it: config.Save's temporary bridge
+	// takes the fail-fast manifest lock internally, so nesting would deadlock,
+	// and going last keeps the bridge's re-derivation from overwriting it.
+	var recordInManifest func(*state.State)
+
 	switch key {
 	case "preset":
 		resolved, err := persona.ResolveProfile(jarvis.PersonaFS, value)
@@ -78,6 +85,10 @@ func runConfigSet(key, value string) error {
 		cfg.Preset = resolved.Slug
 		cfg.PersonaPresetSource = string(resolved.Source)
 		value = resolved.Slug
+		recordInManifest = func(st *state.State) {
+			st.Persona = cfg.PersonaPreset
+			st.PersonaSource = state.PersonaSource(cfg.PersonaPresetSource)
+		}
 	case "api_url":
 		cfg.APIURL = value
 	case "email":
@@ -92,6 +103,11 @@ func runConfigSet(key, value string) error {
 
 	if err := config.Save(cfg); err != nil {
 		return fmt.Errorf("save config: %w", err)
+	}
+	if recordInManifest != nil {
+		if err := state.Update(recordInManifest); err != nil {
+			return fmt.Errorf("record %s in the desired-state manifest: %w", key, err)
+		}
 	}
 
 	fmt.Printf("✓ %s updated to: %s\n", key, value)

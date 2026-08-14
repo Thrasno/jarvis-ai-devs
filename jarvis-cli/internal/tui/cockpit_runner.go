@@ -14,6 +14,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/lifecycle"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 type cockpitRunner interface {
@@ -122,6 +123,15 @@ func (defaultCockpitRunner) LoginHiveCloud(_ context.Context, email, password st
 	cfg.Scope = config.ScopeLocalCloud
 	if err := config.Save(cfg); err != nil {
 		return "", fmt.Errorf("save config: %w", err)
+	}
+	// ~/.jarvis/state.yaml owns the scope. Sequenced after config.Save and never
+	// around it: config.Save's temporary bridge takes the fail-fast manifest lock
+	// internally, so nesting would deadlock, and going last keeps the bridge's
+	// re-derivation from overwriting it.
+	if err := state.Update(func(st *state.State) {
+		st.Scope = state.Scope(cfg.Scope)
+	}); err != nil {
+		return "", fmt.Errorf("record the scope in the desired-state manifest: %w", err)
 	}
 	return resolvedEmail, nil
 }

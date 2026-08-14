@@ -219,6 +219,26 @@ func Save(st *State) error {
 	return atomicfile.WriteYAML(path, data)
 }
 
+// Update applies mutate to the manifest and writes the result back. A machine
+// with no manifest yet gets a fresh one, so a first writer never has to special-
+// case the pre-migration state.
+//
+// It deliberately does not take WithLock. config.Save's temporary bridge takes
+// that lock internally, and it is fail-fast and non-reentrant, so a caller that
+// writes both stores would deadlock on the first run if this acquired it too.
+// Callers therefore sequence the two writes rather than nesting them. Once the
+// bridge is gone and config.Save no longer holds the lock, this can take it.
+func Update(mutate func(*State)) error {
+	st, err := Load()
+	if errors.Is(err, ErrNotFound) {
+		st = New()
+	} else if err != nil {
+		return err
+	}
+	mutate(st)
+	return Save(st)
+}
+
 // Validate reports structural problems that make the manifest unsafe to trust.
 // It deliberately does not require any field to be populated: a manifest
 // migrated from a config.yaml with unpopulated replay fields is structurally

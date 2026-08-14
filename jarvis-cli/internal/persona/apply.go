@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 // ProfileAgent is the adapter contract for validated presentation profiles.
@@ -73,6 +74,17 @@ func ApplyProfile(agents []ProfileAgent, resolved *ResolvedProfile, opts ApplyOp
 
 	if err := config.Save(cfg); err != nil {
 		return fmt.Errorf("save config: %w", err)
+	}
+
+	// ~/.jarvis/state.yaml owns the persona. The write is sequenced after
+	// config.Save and never wrapped around it: config.Save's temporary bridge
+	// takes the fail-fast manifest lock internally, so nesting would deadlock.
+	// Going last also means the bridge's own re-derivation cannot overwrite it.
+	if err := state.Update(func(st *state.State) {
+		st.Persona = resolvedSlug
+		st.PersonaSource = state.PersonaSource(cfg.PersonaPresetSource)
+	}); err != nil {
+		return fmt.Errorf("record the persona in the desired-state manifest: %w", err)
 	}
 
 	return nil
