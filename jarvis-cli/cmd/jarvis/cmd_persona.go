@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 var personaCmd = &cobra.Command{
@@ -31,17 +33,22 @@ var personaSetCmd = &cobra.Command{
 			return fmt.Errorf("resolve preset %q: %w", presetName, err)
 		}
 
-		cfg, err := config.Load()
-		if err != nil {
-			return fmt.Errorf("load config: %w", err)
+		// ~/.jarvis/state.yaml owns the persona and the selected skills. A machine
+		// that has never written one is read as an empty manifest, exactly the
+		// unpopulated replay state it represents.
+		manifest, err := state.Load()
+		if errors.Is(err, state.ErrNotFound) {
+			manifest = state.New()
+		} else if err != nil {
+			return fmt.Errorf("load the desired-state manifest: %w", err)
 		}
 
 		skillList, err := skills.ListSkills(jarvis.SkillsFS)
 		if err != nil {
 			return fmt.Errorf("list skills: %w", err)
 		}
-		selectedSkills := make(map[string]bool, len(cfg.SelectedSkills))
-		for _, id := range cfg.SelectedSkills {
+		selectedSkills := make(map[string]bool, len(manifest.Skills))
+		for _, id := range manifest.Skills {
 			selectedSkills[id] = true
 		}
 		var skillInfos []config.SkillInfo
@@ -60,8 +67,8 @@ var personaSetCmd = &cobra.Command{
 		if err := applyPersonaProfile(agents, resolved, persona.ApplyOptions{
 			Layer1:               config.Layer1Content(),
 			Skills:               skillInfos,
-			PreviousPresetSlug:   cfg.PersonaPreset,
-			PreviousPresetSource: normalizePersonaPresetSource(cfg.PersonaPresetSource),
+			PreviousPresetSlug:   manifest.Persona,
+			PreviousPresetSource: normalizePersonaPresetSource(string(manifest.PersonaSource)),
 			PersistConfig:        true,
 		}); err != nil {
 			return fmt.Errorf("apply persona preset %q: %w", resolved.Slug, err)

@@ -57,11 +57,15 @@ func newReplayFixture(t *testing.T) (ReplayInput, *capturingConfigure) {
 				{ID: "opencode", InstructionsPath: filepath.Join(home, ".config", "opencode", "AGENTS.md")},
 			},
 			Skills: []string{"go-testing"},
+			// Populated so the hazard-1 assertion below compares a real value
+			// rather than passing on two empty structs.
+			PhaseModels: state.PhaseModels{
+				Aliases: map[string]state.PhaseModelSelection{"default": {Claude: "opus", OpenCode: "gpt-5"}},
+			},
 		},
 		Templates: jarvis.TemplatesFS,
 		SkillsFS:  skillsSubFS,
 		HooksFS:   jarvis.HooksFS,
-		Config:    &config.AppConfig{},
 		Skills:    []config.SkillInfo{{Name: "go-testing"}},
 		Layer1:    "layer one",
 		Layer2:    "layer two",
@@ -75,9 +79,10 @@ func newReplayFixture(t *testing.T) (ReplayInput, *capturingConfigure) {
 	return in, configure
 }
 
-// Hazard 1, the config identity trap. If the planner digests skill files
-// rendered from one config while the installer writes files rendered from
-// another, every run reports drift forever. One value reaches both ends.
+// Hazard 1, the model-assignment identity trap. If the planner digests skill
+// files rendered from one set of per-phase assignments while the installer
+// writes files rendered from another, every run reports drift forever. One
+// value, the manifest's, reaches both ends.
 func TestReplayInput_HandsTheSamePointerToThePlannerAndTheSkillInstall(t *testing.T) {
 	in, configure := newReplayFixture(t)
 
@@ -89,8 +94,8 @@ func TestReplayInput_HandsTheSamePointerToThePlannerAndTheSkillInstall(t *testin
 	if len(configure.phaseModels) != 1 {
 		t.Fatalf("configure calls = %d, want 1", len(configure.phaseModels))
 	}
-	if !reflect.DeepEqual(configure.phaseModels[0], planned.Config.PhaseModelsForState()) {
-		t.Fatalf("installer phase models %+v are not the planner's %+v", configure.phaseModels[0], planned.Config.PhaseModelsForState())
+	if !reflect.DeepEqual(configure.phaseModels[0], planned.State.PhaseModels) {
+		t.Fatalf("installer phase models %+v are not the planner's %+v", configure.phaseModels[0], planned.State.PhaseModels)
 	}
 	if !reflect.DeepEqual(configure.selected[0], in.State.Skills) {
 		t.Fatalf("installed skill IDs = %v, want the manifest's %v", configure.selected[0], in.State.Skills)
