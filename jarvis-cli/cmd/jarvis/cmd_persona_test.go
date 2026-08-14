@@ -332,3 +332,39 @@ func findSubstring(s, substr string) bool {
 	}
 	return false
 }
+
+// TestPersonaSetCmd_MigratesBeforeReadingTheManifest covers the upgrade path:
+// a machine that still has its replay fields in config.yaml and no manifest
+// yet. Reading the manifest without migrating first sees an empty one, and the
+// skills section of every instruction file is then rendered from an empty
+// selection -- silently dropping every skill the user had chosen.
+//
+// jarvis sync already migrates before it reads. This asserts persona does too.
+func TestPersonaSetCmd_MigratesBeforeReadingTheManifest(t *testing.T) {
+	home := isolateTestHome(t)
+	configPath := filepath.Join(home, ".jarvis", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir .jarvis: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(`schema_version: 2
+persona_preset: gentleman
+persona_preset_source: builtin
+selected_skills:
+  - go-testing
+  - work-unit-commits
+`), 0o600); err != nil {
+		t.Fatalf("seed config.yaml: %v", err)
+	}
+
+	manifest, err := loadManifestForPersona()
+	if err != nil {
+		t.Fatalf("loadManifestForPersona: %v", err)
+	}
+
+	if manifest.Persona != "gentleman" {
+		t.Errorf("persona = %q, want the value recorded in config.yaml", manifest.Persona)
+	}
+	if len(manifest.Skills) != 2 {
+		t.Errorf("skills = %#v, want the two recorded in config.yaml", manifest.Skills)
+	}
+}

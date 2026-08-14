@@ -33,14 +33,9 @@ var personaSetCmd = &cobra.Command{
 			return fmt.Errorf("resolve preset %q: %w", presetName, err)
 		}
 
-		// ~/.jarvis/state.yaml owns the persona and the selected skills. A machine
-		// that has never written one is read as an empty manifest, exactly the
-		// unpopulated replay state it represents.
-		manifest, err := state.Load()
-		if errors.Is(err, state.ErrNotFound) {
-			manifest = state.New()
-		} else if err != nil {
-			return fmt.Errorf("load the desired-state manifest: %w", err)
+		manifest, err := loadManifestForPersona()
+		if err != nil {
+			return err
 		}
 
 		skillList, err := skills.ListSkills(jarvis.SkillsFS)
@@ -118,4 +113,32 @@ func normalizePersonaPresetSource(value string) persona.PresetSource {
 
 func init() {
 	personaCmd.AddCommand(personaSetCmd)
+}
+
+// loadManifestForPersona reads the desired state this command renders from,
+// migrating first for the same reason `jarvis sync` does.
+//
+// A machine upgrading into this version still has its persona and skills in
+// config.yaml and no manifest at all. Reading the manifest without migrating
+// would see an empty one and render the Skills section of every instruction
+// file from an empty selection, silently dropping every skill the user chose.
+// The migration is one-way and returns early once a manifest exists, so this
+// costs one stat call on every later run.
+func loadManifestForPersona() (*state.State, error) {
+	migration, err := state.Migrate()
+	if err != nil {
+		return nil, fmt.Errorf("migrate configuration into the desired-state manifest: %w", err)
+	}
+	if migration.Notice != "" {
+		fmt.Println(migration.Notice)
+	}
+
+	manifest, err := state.Load()
+	if errors.Is(err, state.ErrNotFound) {
+		return state.New(), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load the desired-state manifest: %w", err)
+	}
+	return manifest, nil
 }
