@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -210,13 +211,21 @@ func (s BackupStore) isAllowedRoot(path string) (bool, error) {
 	}
 	for _, root := range allowed {
 		canonRoot, err := canonicalizePath(root)
-		if err != nil {
+		if errors.Is(err, errPathAbsent) {
 			// A root absent from this machine matches nothing. Not every user has
-			// ~/.config/opencode, and canonicalizing a path whose parent directory
-			// does not exist is an error, so treating that as fatal would refuse
-			// every legitimate ~/.claude path on such a machine. Skipping can only
-			// narrow what is allowed, never widen it.
+			// ~/.config/opencode, and treating its absence as fatal would refuse
+			// every legitimate ~/.claude path on such a machine. Skipping an absent
+			// root can only narrow what is allowed, never widen it.
 			continue
+		}
+		if err != nil {
+			// Anything else is a real problem with this machine rather than an
+			// absent root: a permission failure, a symlink loop, an I/O error.
+			// Swallowing it would deny a legitimate path as "outside allowed
+			// roots", and Restore turns that refusal into restore_unsafe_path
+			// advising the user to remove manifest entries — telling them to
+			// destroy their recovery point over a permission bit.
+			return false, fmt.Errorf("canonicalize allowed root %q: %w", root, err)
 		}
 		if canonPath == canonRoot || strings.HasPrefix(canonPath, canonRoot+string(os.PathSeparator)) {
 			return true, nil
@@ -365,6 +374,11 @@ func isWindowsDrivePrefix(prefix string) bool {
 	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 }
 
+// errPathAbsent marks the one canonicalization failure that is ordinary rather
+// than broken: the path, or its parent, is simply not on this machine. Every
+// other failure means something is wrong here and must not be mistaken for it.
+var errPathAbsent = errors.New("path is absent")
+
 func canonicalizePath(path string) (string, error) {
 	abs, err := filepath.Abs(filepath.Clean(path))
 	if err != nil {
@@ -383,7 +397,7 @@ func canonicalizePath(path string) (string, error) {
 	resolvedParent, err := filepath.EvalSymlinks(parent)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", fmt.Errorf("parent path does not exist: %s", parent)
+			return "", fmt.Errorf("%w: parent path does not exist: %s", errPathAbsent, parent)
 		}
 		return "", err
 	}

@@ -295,6 +295,60 @@ func TestBackupStore_CreateSnapshotOfTargetsRejectsTargetOutsideAllowedRoots(t *
 	}
 }
 
+// An allowed root that is absent from this machine matches nothing and is
+// skipped, but a root that exists and cannot be read is a real problem with the
+// machine. Denying a legitimate path as "outside allowed roots" over it would be
+// a lie, and Restore turns that refusal into restore_unsafe_path, advising the
+// user to remove manifest entries — destroying their recovery point over a
+// permission bit. So the two cases must not share an exit.
+func TestBackupStore_UnreadableAllowedRootIsReportedInsteadOfDeniedSilently(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permission bits, so an unreadable root cannot be simulated")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no POSIX permission bits: Chmod only toggles the read-only attribute")
+	}
+	home := t.TempDir()
+	store := NewBackupStore(home)
+
+	// The target lives under ~/.jarvis, the third allowed root, so the loop must
+	// pass through ~/.config/opencode to reach it.
+	jarvisRoot := filepath.Join(home, ".jarvis")
+	if err := os.MkdirAll(jarvisRoot, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	target := filepath.Join(jarvisRoot, "managed.md")
+	if err := os.WriteFile(target, []byte("managed content"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	// ~/.config exists but cannot be traversed, so canonicalizing the
+	// ~/.config/opencode root fails with a permission error. An absent root would
+	// not do: canonicalizePath falls back to resolving the parent, so a root whose
+	// parent exists produces no error at all.
+	configDir := filepath.Join(home, ".config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(configDir, 0o000); err != nil {
+		t.Fatalf("chmod config: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(configDir, 0o755) })
+
+	_, err := store.CreateSnapshotOfTargets("sync", []BackupTarget{{Path: target}})
+
+	if err == nil {
+		t.Fatal("an unreadable allowed root must be reported, not swallowed into a denial")
+	}
+	// The message must name the real cause. "outside allowed roots" would send the
+	// user hunting a path problem they do not have.
+	if strings.Contains(err.Error(), "outside allowed roots") {
+		t.Fatalf("a permission failure was reported as a path-scope denial: %v", err)
+	}
+	if !strings.Contains(err.Error(), "canonicalize") {
+		t.Fatalf("error does not name the canonicalization failure: %v", err)
+	}
+}
+
 func TestBackupStore_ValidateManifestRejectsSymlinkEscape(t *testing.T) {
 	home := t.TempDir()
 	store := NewBackupStore(home)
