@@ -248,7 +248,7 @@ func TestInstallSkillsFromEmbeddedSDDVerify_RendersModelSpecificSections(t *test
 					"sdd-verify": {ProviderID: providerID, ModelID: modelID},
 				}
 			}
-			sectionClass, err := skillModelSectionClassForPlatform(sddruntime.PlatformOpenCode, cfg)
+			sectionClass, err := skillModelSectionClassForPlatform(sddruntime.PlatformOpenCode, cfg.PhaseModelsForState())
 			if err != nil {
 				t.Fatalf("resolve model section class: %v", err)
 			}
@@ -286,7 +286,7 @@ func TestInstallSkillsFromEmbeddedSDDApply_PreservesJarvisStatusAndWorkspaceGuar
 	cfg := &config.AppConfig{SDD: config.SDDConfig{PhaseModels: map[string]config.PhaseModelSelection{
 		"sdd-apply": {OpenCode: "sonnet"},
 	}}}
-	sectionClass, err := skillModelSectionClassForPlatform(sddruntime.PlatformOpenCode, cfg)
+	sectionClass, err := skillModelSectionClassForPlatform(sddruntime.PlatformOpenCode, cfg.PhaseModelsForState())
 	if err != nil {
 		t.Fatalf("resolve model section class: %v", err)
 	}

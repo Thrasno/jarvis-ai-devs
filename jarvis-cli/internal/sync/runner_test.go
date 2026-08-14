@@ -17,16 +17,16 @@ import (
 // capturingConfigure stands in for agentapply.ConfigureAgent so a test can see
 // exactly what the runner hands the installer without installing anything.
 type capturingConfigure struct {
-	agents     []string
-	configs    []*config.AppConfig
-	selected   [][]string
-	statusline []agentapply.StatuslineDecision
-	err        map[string]error
+	agents      []string
+	phaseModels []state.PhaseModels
+	selected    [][]string
+	statusline  []agentapply.StatuslineDecision
+	err         map[string]error
 }
 
 func (c *capturingConfigure) configure(
 	a agent.Agent,
-	cfg *config.AppConfig,
+	phaseModels state.PhaseModels,
 	_ agent.MCPEntry,
 	_ agent.MCPEntry,
 	_ fs.FS,
@@ -35,7 +35,7 @@ func (c *capturingConfigure) configure(
 	statusline agentapply.StatuslineDecision,
 ) ([]string, error) {
 	c.agents = append(c.agents, a.Name())
-	c.configs = append(c.configs, cfg)
+	c.phaseModels = append(c.phaseModels, phaseModels)
 	c.selected = append(c.selected, selectedIDs)
 	c.statusline = append(c.statusline, statusline)
 	return nil, c.err[a.Name()]
@@ -86,11 +86,11 @@ func TestReplayInput_HandsTheSamePointerToThePlannerAndTheSkillInstall(t *testin
 		t.Fatalf("ApplyModels: %v", err)
 	}
 
-	if len(configure.configs) != 1 {
-		t.Fatalf("configure calls = %d, want 1", len(configure.configs))
+	if len(configure.phaseModels) != 1 {
+		t.Fatalf("configure calls = %d, want 1", len(configure.phaseModels))
 	}
-	if configure.configs[0] != planned.Config {
-		t.Fatalf("installer config %p is not the planner's config %p", configure.configs[0], planned.Config)
+	if !reflect.DeepEqual(configure.phaseModels[0], planned.Config.PhaseModelsForState()) {
+		t.Fatalf("installer phase models %+v are not the planner's %+v", configure.phaseModels[0], planned.Config.PhaseModelsForState())
 	}
 	if !reflect.DeepEqual(configure.selected[0], in.State.Skills) {
 		t.Fatalf("installed skill IDs = %v, want the manifest's %v", configure.selected[0], in.State.Skills)

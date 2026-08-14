@@ -396,7 +396,7 @@ func (m Model) View() string {
 
 func initializePhaseModelEditor(m Model) Model {
 	contract := sddruntime.DefaultContract()
-	resolved := sddruntime.ResolvePhaseModels(m.cfg)
+	resolved := sddruntime.ResolvePhaseModels(m.cfg.PhaseModelsForState())
 	openCodePhaseModelDiscoveryDiagnostics = nil
 	openCodePhaseModelProviderOptions = nil
 	m.phaseModelHasOpenCode, m.phaseModelHasClaude = detectPhaseModelAgentTargets(m.Agents)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 var loadAppConfig = config.Load
@@ -17,25 +18,27 @@ func runtimePlanFor(name string) (sddruntime.RuntimePlan, error) {
 }
 
 type runtimeObserverWithConfig interface {
-	ObserveRuntimeWithConfig(*config.AppConfig) (sddruntime.ObservedRuntime, error)
+	ObserveRuntimeWithConfig(*state.PhaseModels) (sddruntime.ObservedRuntime, error)
 }
 
-// ObserveRuntimeWithConfig collects adapter-normalized runtime state using cfg
-// as the pending expected model-assignment source when the adapter supports it.
-func ObserveRuntimeWithConfig(a Agent, cfg *config.AppConfig) (sddruntime.ObservedRuntime, error) {
+// ObserveRuntimeWithConfig collects adapter-normalized runtime state using
+// models as the pending expected model-assignment source when the adapter
+// supports it. A nil models means "no pending assignments to apply", exactly as
+// a nil config did.
+func ObserveRuntimeWithConfig(a Agent, models *state.PhaseModels) (sddruntime.ObservedRuntime, error) {
 	if observer, ok := a.(runtimeObserverWithConfig); ok {
-		return observer.ObserveRuntimeWithConfig(cfg)
+		return observer.ObserveRuntimeWithConfig(models)
 	}
 
 	observed, err := a.ObserveRuntime()
 	if err != nil {
 		return sddruntime.ObservedRuntime{}, err
 	}
-	if cfg == nil {
+	if models == nil {
 		return observed, nil
 	}
 
-	resolvedAssignments, err := resolvedAssignmentsForAgentWithConfig(a.Name(), cfg)
+	resolvedAssignments, err := resolvedAssignmentsForAgentWithConfig(a.Name(), models)
 	if err != nil {
 		return sddruntime.ObservedRuntime{}, err
 	}
@@ -50,7 +53,7 @@ func observeRuntime(configDir string, plan sddruntime.RuntimePlan) (sddruntime.O
 	return observeRuntimeWithConfig(configDir, plan, nil)
 }
 
-func observeRuntimeWithConfig(configDir string, plan sddruntime.RuntimePlan, cfg *config.AppConfig) (sddruntime.ObservedRuntime, error) {
+func observeRuntimeWithConfig(configDir string, plan sddruntime.RuntimePlan, models *state.PhaseModels) (sddruntime.ObservedRuntime, error) {
 	artifacts := map[string]sddruntime.ObservedArtifact{}
 	presentIDs := make([]string, 0, len(plan.Contract.ManagedArtifacts))
 
@@ -86,7 +89,7 @@ func observeRuntimeWithConfig(configDir string, plan sddruntime.RuntimePlan, cfg
 		manifestVersion = plan.Contract.Version
 	}
 
-	resolvedAssignments, err := resolvedAssignmentsForAgentWithConfig(plan.Agent, cfg)
+	resolvedAssignments, err := resolvedAssignmentsForAgentWithConfig(plan.Agent, models)
 	if err != nil {
 		return sddruntime.ObservedRuntime{}, err
 	}
@@ -228,13 +231,19 @@ func resolvedAssignmentsForAgent(agent string) (map[string]string, error) {
 	return resolvedAssignmentsForAgentWithConfig(agent, nil)
 }
 
-func resolvedAssignmentsForAgentWithConfig(agent string, cfg *config.AppConfig) (map[string]string, error) {
-	var err error
-	if cfg == nil {
-		cfg, err = loadAppConfig()
+// resolvedAssignmentsForAgentWithConfig resolves an agent's phase assignments.
+// A nil models keeps the historical fallback of loading the persisted config,
+// so callers with no pending assignments still verify against what is on disk.
+func resolvedAssignmentsForAgentWithConfig(agent string, models *state.PhaseModels) (map[string]string, error) {
+	resolved := state.PhaseModels{}
+	if models == nil {
+		cfg, err := loadAppConfig()
 		if err != nil {
 			return nil, fmt.Errorf("load config for runtime verification: %w", err)
 		}
+		resolved = cfg.PhaseModelsForState()
+	} else {
+		resolved = *models
 	}
 
 	platform, err := platformForAgent(agent)
@@ -242,7 +251,7 @@ func resolvedAssignmentsForAgentWithConfig(agent string, cfg *config.AppConfig) 
 		return nil, err
 	}
 
-	return sddruntime.ResolveAssignmentsForPlatform(platform, cfg)
+	return sddruntime.ResolveAssignmentsForPlatform(platform, resolved)
 }
 
 func platformForAgent(agent string) (sddruntime.Platform, error) {

@@ -1591,7 +1591,7 @@ func viewReview(m Model) string {
 		summarySB.WriteString("Cloud email: (omitido por alcance local-only)\n")
 	}
 
-	resolved := sddruntime.ResolvePhaseModels(m.cfg)
+	resolved := sddruntime.ResolvePhaseModels(m.cfg.PhaseModelsForState())
 	summarySB.WriteString("SDD phase models:\n")
 	for _, phase := range sddruntime.DefaultContract().Phases {
 		sel := resolved[phase]

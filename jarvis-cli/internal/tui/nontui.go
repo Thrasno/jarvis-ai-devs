@@ -18,6 +18,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 var (
@@ -220,7 +221,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 
 	// ── Step 5: SDD Phase Models ──────────────────────────────────────────────
 	fmt.Println("\n=== Jarvis-Dev Setup [5/7] SDD Phase Models ===")
-	resolvedPhaseModels := sddruntime.ResolvePhaseModels(cfg)
+	resolvedPhaseModels := sddruntime.ResolvePhaseModels(cfg.PhaseModelsForState())
 	openCodePhaseModelDiscoveryDiagnostics = nil
 	opencodeAssignments := discoverOpenCodePhaseModelOptions()
 	for _, diagnostic := range openCodePhaseModelDiscoveryDiagnostics {
@@ -284,7 +285,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		cfg.SDD.ClaudePhaseModels = map[string]config.ClaudeModelAssignment{}
 	}
 	for phase, row := range resolvedPhaseModels {
-		cfg.SDD.PhaseModels[phase] = row
+		cfg.SDD.PhaseModels[phase] = config.PhaseModelSelection(row)
 		if assignment, ok := cfg.SDD.ClaudePhaseModels[phase]; ok && (strings.TrimSpace(assignment.Model) != "" || strings.TrimSpace(assignment.Effort) != "") {
 			if strings.TrimSpace(assignment.Model) == "" {
 				assignment.Model = row.Claude
@@ -308,7 +309,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	if applyAnswer == "edit" {
 		applyPhaseModelEdits()
 		for phase, row := range resolvedPhaseModels {
-			cfg.SDD.PhaseModels[phase] = row
+			cfg.SDD.PhaseModels[phase] = config.PhaseModelSelection(row)
 		}
 		printNoTUIPhaseModelReview(resolvedPhaseModels, cfg.SDD.OpenCodePhaseModels, cfg.SDD.ClaudePhaseModels)
 		fmt.Print("Apply these changes now? [type 'yes' to continue]: ")
@@ -504,7 +505,7 @@ func readLine(scanner *bufio.Scanner) string {
 	return ""
 }
 
-func printNoTUIPhaseModelReview(resolved map[string]config.PhaseModelSelection, assignments map[string]config.OpenCodeModelAssignment, claudeAssignments map[string]config.ClaudeModelAssignment) {
+func printNoTUIPhaseModelReview(resolved map[string]state.PhaseModelSelection, assignments map[string]config.OpenCodeModelAssignment, claudeAssignments map[string]config.ClaudeModelAssignment) {
 	fmt.Fprintln(noTUIStdout, "SDD phase models:")
 	for _, phase := range sddruntime.DefaultContract().Phases {
 		sel := resolved[phase]

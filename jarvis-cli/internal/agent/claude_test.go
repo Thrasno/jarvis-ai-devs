@@ -521,10 +521,10 @@ func TestClaudeAgent_MergeGeneratedConfig_DeepMergesPermissionsAndPreservesHooks
 		t.Fatalf("write settings.json: %v", err)
 	}
 
-	if err := a.MergeGeneratedConfig(defaultRuntimeConfig()); err != nil {
+	if err := a.MergeGeneratedConfig(defaultRuntimeConfig().PhaseModelsForState()); err != nil {
 		t.Fatalf("MergeGeneratedConfig: %v", err)
 	}
-	if err := a.MergeGeneratedConfig(defaultRuntimeConfig()); err != nil {
+	if err := a.MergeGeneratedConfig(defaultRuntimeConfig().PhaseModelsForState()); err != nil {
 		t.Fatalf("MergeGeneratedConfig rerun: %v", err)
 	}
 
@@ -567,7 +567,7 @@ func TestClaudeAgent_MergeGeneratedConfig_SetsBypassDefaultModeWhenMissing(t *te
 		t.Fatalf("write settings.json: %v", err)
 	}
 
-	if err := a.MergeGeneratedConfig(defaultRuntimeConfig()); err != nil {
+	if err := a.MergeGeneratedConfig(defaultRuntimeConfig().PhaseModelsForState()); err != nil {
 		t.Fatalf("MergeGeneratedConfig: %v", err)
 	}
 	settings := readJSONFile(t, settingsPath)

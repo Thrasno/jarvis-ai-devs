@@ -12,7 +12,6 @@ import (
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
@@ -22,15 +21,15 @@ import (
 const ClaudeRestartGuidance = "Restart Claude Code to discover refreshed Jarvis-managed SDD agents."
 
 type generatedConfigAgent interface {
-	MergeGeneratedConfig(*config.AppConfig) error
+	MergeGeneratedConfig(state.PhaseModels) error
 }
 
 type configAwareSkillInstaller interface {
-	InstallSkillsWithConfig(fs.FS, []string, *config.AppConfig) error
+	InstallSkillsWithConfig(fs.FS, []string, state.PhaseModels) error
 }
 
 type sddPhaseAgentInstaller interface {
-	InstallSDDPhaseAgents(*config.AppConfig) error
+	InstallSDDPhaseAgents(state.PhaseModels) error
 }
 
 // StatuslineInstaller is implemented by agents that support the Jarvis-managed
@@ -98,7 +97,7 @@ type MCPDeps struct {
 // builder path instead (OpenCodeAgent).
 func ConfigureAgent(
 	a agent.Agent,
-	cfg *config.AppConfig,
+	phaseModels state.PhaseModels,
 	hiveEntry agent.MCPEntry,
 	context7Entry agent.MCPEntry,
 	skillsSubFS fs.FS,
@@ -112,12 +111,12 @@ func ConfigureAgent(
 	_ = hiveEntry
 	_ = context7Entry
 	if generatedAgent, ok := a.(generatedConfigAgent); ok {
-		if err := generatedAgent.MergeGeneratedConfig(cfg); err != nil {
+		if err := generatedAgent.MergeGeneratedConfig(phaseModels); err != nil {
 			return nil, fmt.Errorf("generated config guardrails: %w", err)
 		}
 	}
 	if skillInstaller, ok := a.(configAwareSkillInstaller); ok {
-		if err := skillInstaller.InstallSkillsWithConfig(skillsSubFS, selectedIDs, cfg); err != nil {
+		if err := skillInstaller.InstallSkillsWithConfig(skillsSubFS, selectedIDs, phaseModels); err != nil {
 			return nil, fmt.Errorf("install skills: %w", err)
 		}
 	} else if err := a.InstallSkills(skillsSubFS, selectedIDs); err != nil {
@@ -127,7 +126,7 @@ func ConfigureAgent(
 	if err != nil {
 		return nil, fmt.Errorf("read orchestrator template: %w", err)
 	}
-	renderedOrchestrator, err := sddruntime.RenderOrchestrator(a.Name(), cfg, string(orchestratorTemplate))
+	renderedOrchestrator, err := sddruntime.RenderOrchestrator(a.Name(), phaseModels, string(orchestratorTemplate))
 	if err != nil {
 		return nil, fmt.Errorf("render orchestrator: %w", err)
 	}
@@ -140,7 +139,7 @@ func ConfigureAgent(
 		}
 	}
 	if sddInstaller, ok := a.(sddPhaseAgentInstaller); ok {
-		if err := sddInstaller.InstallSDDPhaseAgents(cfg); err != nil {
+		if err := sddInstaller.InstallSDDPhaseAgents(phaseModels); err != nil {
 			return nil, fmt.Errorf("install Claude SDD agents: %w", err)
 		}
 	}

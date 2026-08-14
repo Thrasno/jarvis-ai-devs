@@ -112,11 +112,3 @@ func marshalWithoutReplayFields(cfg *AppConfig) ([]byte, error) {
 	}
 	return yaml.Marshal(raw)
 }
-
-func convertMap[In, Out any](in map[string]In, convert func(In) Out) map[string]Out {
-	out := make(map[string]Out, len(in))
-	for key, value := range in {
-		out[key] = convert(value)
-	}
-	return out
-}

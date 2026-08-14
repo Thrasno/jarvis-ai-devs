@@ -269,7 +269,7 @@ func TestOpenCodeAgent_ObserveRuntimeWithConfigUsesPendingAssignments(t *testing
 |-------|---------------|--------|--------|
 {{ range .ModelRows }}| {{ .Phase }} | {{ .Model }} | {{ .Effort }} | {{ .Reason }} |
 {{ end }}`
-	rendered, err := sddruntime.RenderOrchestrator(a.Name(), pendingCfg, orchestratorTemplate)
+	rendered, err := sddruntime.RenderOrchestrator(a.Name(), pendingCfg.PhaseModelsForState(), orchestratorTemplate)
 	if err != nil {
 		t.Fatalf("RenderOrchestrator: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestOpenCodeAgent_ObserveRuntimeWithConfigUsesPendingAssignments(t *testing
 		t.Fatalf("stale disk/default config check status = %q, want fail", got)
 	}
 
-	observed, err := a.ObserveRuntimeWithConfig(pendingCfg)
+	observed, err := a.ObserveRuntimeWithConfig(phaseModelsOf(pendingCfg))
 	if err != nil {
 		t.Fatalf("ObserveRuntimeWithConfig: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestOpenCodeAgent_MergeGeneratedConfigKeepsRuntimeVerificationPassing(t *te
 		t.Fatalf("install optional artifacts: %v", err)
 	}
 	// MergeGeneratedConfig writes the real opencode.json, overwriting the stub from above.
-	if err := a.MergeGeneratedConfig(cfg); err != nil {
+	if err := a.MergeGeneratedConfig(cfg.PhaseModelsForState()); err != nil {
 		t.Fatalf("MergeGeneratedConfig: %v", err)
 	}
 	if err := a.WriteInstructions("# Layer1", "# Layer2", nil); err != nil {
@@ -331,7 +331,7 @@ func TestOpenCodeAgent_MergeGeneratedConfigKeepsRuntimeVerificationPassing(t *te
 	if err := a.InstallSkills(fstest.MapFS{"_shared/SKILL.md": {Data: []byte("# shared")}}, nil); err != nil {
 		t.Fatalf("InstallSkills: %v", err)
 	}
-	observed, err := a.ObserveRuntimeWithConfig(cfg)
+	observed, err := a.ObserveRuntimeWithConfig(phaseModelsOf(cfg))
 	if err != nil {
 		t.Fatalf("ObserveRuntimeWithConfig: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestClaudeAgent_ObserveRuntimeWithConfigUsesPendingAssignments(t *testing.T
 |-------|---------------|--------|--------|
 {{ range .ModelRows }}| {{ .Phase }} | {{ .Model }} | {{ .Effort }} | {{ .Reason }} |
 {{ end }}`
-	rendered, err := sddruntime.RenderOrchestrator(a.Name(), pendingCfg, orchestratorTemplate)
+	rendered, err := sddruntime.RenderOrchestrator(a.Name(), pendingCfg.PhaseModelsForState(), orchestratorTemplate)
 	if err != nil {
 		t.Fatalf("RenderOrchestrator: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestClaudeAgent_ObserveRuntimeWithConfigUsesPendingAssignments(t *testing.T
 		t.Fatalf("stale disk/default config check status = %q, want fail", got)
 	}
 
-	observed, err := a.ObserveRuntimeWithConfig(pendingCfg)
+	observed, err := a.ObserveRuntimeWithConfig(phaseModelsOf(pendingCfg))
 	if err != nil {
 		t.Fatalf("ObserveRuntimeWithConfig: %v", err)
 	}

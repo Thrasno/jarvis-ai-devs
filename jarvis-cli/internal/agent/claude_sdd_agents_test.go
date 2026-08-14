@@ -17,7 +17,7 @@ func TestRenderClaudeSDDPhaseAgents_GeneratesAllPhaseWrappersWithContracts(t *te
 		"sdd-design": {Model: "opus", Effort: "high"},
 	}
 
-	files, err := RenderClaudeSDDPhaseAgents(testTemplatesFS, cfg)
+	files, err := RenderClaudeSDDPhaseAgents(testTemplatesFS, cfg.PhaseModelsForState())
 	if err != nil {
 		t.Fatalf("RenderClaudeSDDPhaseAgents: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestRenderClaudeSDDPhaseAgents_GeneratesAllPhaseWrappersWithContracts(t *te
 		t.Fatalf("sdd-design did not use configured Claude route:\n%s", design)
 	}
 
-	embeddedFiles, err := RenderClaudeSDDPhaseAgents(jarvis.TemplatesFS, cfg)
+	embeddedFiles, err := RenderClaudeSDDPhaseAgents(jarvis.TemplatesFS, cfg.PhaseModelsForState())
 	if err != nil {
 		t.Fatalf("RenderClaudeSDDPhaseAgents with embedded template: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestRenderClaudeSDDPhaseAgents_GeneratesAllPhaseWrappersWithContracts(t *te
 }
 
 func TestRenderClaudeSDDPhaseAgents_UsesPhaseSpecificToolBoundaries(t *testing.T) {
-	files, err := RenderClaudeSDDPhaseAgents(testTemplatesFS, defaultRuntimeConfig())
+	files, err := RenderClaudeSDDPhaseAgents(testTemplatesFS, defaultRuntimeConfig().PhaseModelsForState())
 	if err != nil {
 		t.Fatalf("RenderClaudeSDDPhaseAgents: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestClaudeAgent_InstallSDDPhaseAgents_OverwritesManagedNamesAndPreservesOth
 	cfg.SDD.ClaudePhaseModels = map[string]config.ClaudeModelAssignment{
 		"sdd-design": {Model: "sonnet", Effort: "max"},
 	}
-	if err := agent.InstallSDDPhaseAgents(cfg); err != nil {
+	if err := agent.InstallSDDPhaseAgents(cfg.PhaseModelsForState()); err != nil {
 		t.Fatalf("InstallSDDPhaseAgents: %v", err)
 	}
 

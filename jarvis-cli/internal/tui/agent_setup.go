@@ -12,6 +12,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 // AgentApplyResult captures per-agent setup outcome before final config commit.
@@ -62,7 +63,7 @@ func configureWizardAgent(
 	agentsSubFS fs.FS,
 	statuslineConfirm func() bool,
 ) ([]string, error) {
-	return agentapply.ConfigureAgent(a, cfg, hiveEntry, context7Entry, skillsSubFS, selectedIDs, agentsSubFS, agentapply.StatuslineDecision{
+	return agentapply.ConfigureAgent(a, cfg.PhaseModelsForState(), hiveEntry, context7Entry, skillsSubFS, selectedIDs, agentsSubFS, agentapply.StatuslineDecision{
 		Install: true,
 		Confirm: statuslineConfirm,
 	})
@@ -144,8 +145,9 @@ func configureWizardAgents(
 		}
 	}
 
+	phaseModels := cfg.PhaseModelsForState()
 	for i, a := range agents {
-		if err := verifyConfiguredAgentRuntime(a, cfg); err != nil {
+		if err := verifyConfiguredAgentRuntime(a, &phaseModels); err != nil {
 			results[i].State.Configured = false
 			results[i].Err = err
 			return results
@@ -176,8 +178,8 @@ func applyWizardProfile(agents []agent.Agent, resolved *persona.ResolvedProfile,
 	})
 }
 
-func verifyConfiguredAgentRuntime(a agent.Agent, cfg *config.AppConfig) error {
-	observed, err := agent.ObserveRuntimeWithConfig(a, cfg)
+func verifyConfiguredAgentRuntime(a agent.Agent, models *state.PhaseModels) error {
+	observed, err := agent.ObserveRuntimeWithConfig(a, models)
 	if err != nil {
 		return fmt.Errorf("runtime verification observe failed: %w", err)
 	}

@@ -23,7 +23,7 @@ type AgentsSubFS func(agentID string) (fs.FS, error)
 // ConfigureAgentFunc is the artifact-pipeline seam, whose parameters are
 // documented on the function that satisfies it, agentapply.ConfigureAgent.
 // Keeping it a seam lets replay be driven without installing anything.
-type ConfigureAgentFunc func(agent.Agent, *config.AppConfig, agent.MCPEntry, agent.MCPEntry, fs.FS, []string, fs.FS, agentapply.StatuslineDecision) ([]string, error)
+type ConfigureAgentFunc func(agent.Agent, state.PhaseModels, agent.MCPEntry, agent.MCPEntry, fs.FS, []string, fs.FS, agentapply.StatuslineDecision) ([]string, error)
 
 // ReplayInput is the single source both halves of a replay pass read.
 //
@@ -153,7 +153,7 @@ func (r *Runner) ApplyModels(target AgentTarget) error {
 	// The statusline is the last component and runs after the instruction write,
 	// so this pass is told explicitly not to touch it.
 	if _, err := r.configure(
-		resolved, r.config, agent.MCPEntry{}, agent.MCPEntry{},
+		resolved, r.config.PhaseModelsForState(), agent.MCPEntry{}, agent.MCPEntry{},
 		r.skillsFS, r.skillIDs, agentsSubFS,
 		agentapply.StatuslineDecision{Install: false, Confirm: func() bool { return false }},
 	); err != nil {

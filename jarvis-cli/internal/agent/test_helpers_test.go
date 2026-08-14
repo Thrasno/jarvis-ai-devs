@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 func isolateTestHome(t *testing.T) string {
@@ -30,6 +31,14 @@ func stubRuntimeConfig(t *testing.T, cfg *config.AppConfig) {
 	previous := loadAppConfig
 	loadAppConfig = func() (*config.AppConfig, error) { return cfg, nil }
 	t.Cleanup(func() { loadAppConfig = previous })
+}
+
+// phaseModelsOf projects a test config onto the pending-assignment pointer the
+// runtime observers now take. A nil pointer still means "no pending
+// assignments", so tests keep the nil/non-nil distinction they rely on.
+func phaseModelsOf(cfg *config.AppConfig) *state.PhaseModels {
+	models := cfg.PhaseModelsForState()
+	return &models
 }
 
 func defaultRuntimeConfig() *config.AppConfig {

@@ -17,6 +17,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 // Ensure ClaudeAgent implements Agent at compile time.
@@ -75,12 +76,12 @@ func (a *ClaudeAgent) ObserveRuntime() (sddruntime.ObservedRuntime, error) {
 	return a.ObserveRuntimeWithConfig(nil)
 }
 
-func (a *ClaudeAgent) ObserveRuntimeWithConfig(cfg *config.AppConfig) (sddruntime.ObservedRuntime, error) {
+func (a *ClaudeAgent) ObserveRuntimeWithConfig(models *state.PhaseModels) (sddruntime.ObservedRuntime, error) {
 	plan, err := a.RuntimePlan()
 	if err != nil {
 		return sddruntime.ObservedRuntime{}, err
 	}
-	return observeRuntimeWithConfig(a.ConfigDir(), plan, cfg)
+	return observeRuntimeWithConfig(a.ConfigDir(), plan, models)
 }
 
 func (a *ClaudeAgent) IsInstalled() bool {
@@ -108,7 +109,7 @@ func (a *ClaudeAgent) skillsDir() string {
 // MCP registrations. It deep-merges permission guardrails while preserving
 // outputStyle, the Hive prompt-capture hook, and user-owned settings. The
 // optional skill-registry refresh hook is intentionally not emitted.
-func (a *ClaudeAgent) MergeGeneratedConfig(_ *config.AppConfig) error {
+func (a *ClaudeAgent) MergeGeneratedConfig(_ state.PhaseModels) error {
 	existing, err := readFileOrEmpty(a.settingsPath())
 	if err != nil {
 		return fmt.Errorf("read settings.json: %w", err)
@@ -493,8 +494,8 @@ func (a *ClaudeAgent) InstallAgents(agentsFS fs.FS) error {
 	return installAgentsFromFS(dir, agentsFS)
 }
 
-func (a *ClaudeAgent) InstallSDDPhaseAgents(cfg *config.AppConfig) error {
-	files, err := RenderClaudeSDDPhaseAgents(a.templatesFS, cfg)
+func (a *ClaudeAgent) InstallSDDPhaseAgents(models state.PhaseModels) error {
+	files, err := RenderClaudeSDDPhaseAgents(a.templatesFS, models)
 	if err != nil {
 		return err
 	}
@@ -524,12 +525,12 @@ func (a *ClaudeAgent) InstallSkills(skillsFS fs.FS, selected []string) error {
 	return installSkillsFromFS(dir, skillsFS, selected)
 }
 
-func (a *ClaudeAgent) InstallSkillsWithConfig(skillsFS fs.FS, selected []string, cfg *config.AppConfig) error {
+func (a *ClaudeAgent) InstallSkillsWithConfig(skillsFS fs.FS, selected []string, models state.PhaseModels) error {
 	dir := a.skillsDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create skills dir: %w", err)
 	}
-	sectionClass, err := skillModelSectionClassForPlatform(sddruntime.PlatformClaude, cfg)
+	sectionClass, err := skillModelSectionClassForPlatform(sddruntime.PlatformClaude, models)
 	if err != nil {
 		return fmt.Errorf("resolve skill model sections: %w", err)
 	}

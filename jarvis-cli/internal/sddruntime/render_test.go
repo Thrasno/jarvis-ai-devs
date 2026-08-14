@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 func TestRenderOrchestrator_AssignmentsUseResolvedCrossPlatformMap(t *testing.T) {
@@ -16,16 +16,16 @@ func TestRenderOrchestrator_AssignmentsUseResolvedCrossPlatformMap(t *testing.T)
 | {{ .Phase }} | {{ .Model }} | {{ .Reason }} |
 {{- end }}`
 
-	cfg := &config.AppConfig{}
-	cfg.SDD.PhaseModels = map[string]config.PhaseModelSelection{
+	models := state.PhaseModels{}
+	models.Aliases = map[string]state.PhaseModelSelection{
 		"sdd-apply": {OpenCode: "opus", Claude: "haiku"},
 	}
 
-	opencodeContent, err := RenderOrchestrator("opencode", cfg, template)
+	opencodeContent, err := RenderOrchestrator("opencode", models, template)
 	if err != nil {
 		t.Fatalf("RenderOrchestrator opencode error: %v", err)
 	}
-	claudeContent, err := RenderOrchestrator("claude", cfg, template)
+	claudeContent, err := RenderOrchestrator("claude", models, template)
 	if err != nil {
 		t.Fatalf("RenderOrchestrator claude error: %v", err)
 	}
@@ -46,19 +46,19 @@ func TestRenderOrchestrator_OpenCodeUsesProviderQualifiedAssignments(t *testing.
 | {{ .Phase }} | {{ .Model }} | {{ .Effort }} | {{ .Reason }} |
 {{- end }}`
 
-	cfg := &config.AppConfig{}
-	cfg.SDD.PhaseModels = map[string]config.PhaseModelSelection{
+	models := state.PhaseModels{}
+	models.Aliases = map[string]state.PhaseModelSelection{
 		"sdd-apply": {OpenCode: "opus", Claude: "haiku"},
 	}
-	cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
+	models.OpenCode = map[string]state.OpenCodeModelAssignment{
 		"sdd-apply": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"},
 	}
 
-	opencodeContent, err := RenderOrchestrator("opencode", cfg, template)
+	opencodeContent, err := RenderOrchestrator("opencode", models, template)
 	if err != nil {
 		t.Fatalf("RenderOrchestrator opencode error: %v", err)
 	}
-	claudeContent, err := RenderOrchestrator("claude", cfg, template)
+	claudeContent, err := RenderOrchestrator("claude", models, template)
 	if err != nil {
 		t.Fatalf("RenderOrchestrator claude error: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestRenderOrchestrator_OpenCodeUsesProviderQualifiedAssignments(t *testing.
 }
 
 func TestRenderOrchestrator_RejectsUnsupportedAgent(t *testing.T) {
-	_, err := RenderOrchestrator("cursor", &config.AppConfig{}, "{{ range .ModelRows }}{{ end }}")
+	_, err := RenderOrchestrator("cursor", state.PhaseModels{}, "{{ range .ModelRows }}{{ end }}")
 	if err == nil {
 		t.Fatal("expected error for unsupported agent")
 	}
@@ -229,7 +229,7 @@ func TestRenderOrchestrator_AppliesModelSectionsFromResolvedOrchestratorModel(t 
 		"Neutral after",
 	}, "\n")
 
-	capableContent, err := RenderOrchestrator("opencode", &config.AppConfig{}, template)
+	capableContent, err := RenderOrchestrator("opencode", state.PhaseModels{}, template)
 	if err != nil {
 		t.Fatalf("RenderOrchestrator capable: %v", err)
 	}
@@ -237,10 +237,10 @@ func TestRenderOrchestrator_AppliesModelSectionsFromResolvedOrchestratorModel(t 
 		t.Fatalf("capable orchestrator render did not select the capable section cleanly:\n%s", capableContent)
 	}
 
-	cfg := &config.AppConfig{SDD: config.SDDConfig{PhaseModels: map[string]config.PhaseModelSelection{
+	models := state.PhaseModels{Aliases: map[string]state.PhaseModelSelection{
 		"orchestrator": {OpenCode: "haiku"},
-	}}}
-	smallContent, err := RenderOrchestrator("opencode", cfg, template)
+	}}
+	smallContent, err := RenderOrchestrator("opencode", models, template)
 	if err != nil {
 		t.Fatalf("RenderOrchestrator small: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestRenderOrchestrator_IncludesPhaseLaunchGuardrailsWithoutDuplicatingRunti
 		t.Fatalf("read orchestrator template: %v", err)
 	}
 
-	content, err := RenderOrchestrator("opencode", &config.AppConfig{}, string(templateContent))
+	content, err := RenderOrchestrator("opencode", state.PhaseModels{}, string(templateContent))
 	if err != nil {
 		t.Fatalf("RenderOrchestrator error: %v", err)
 	}

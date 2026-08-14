@@ -150,7 +150,12 @@ func renderSkills(in PlanInput, agentID string) ([]agent.RenderedSkillFile, erro
 	if in.SkillsFS == nil {
 		return nil, fmt.Errorf("state.yaml records %d skills, for which this Jarvis version embeds no skills source", len(in.State.Skills))
 	}
-	files, err := agent.RenderSkillFilesForPlatform(in.SkillsFS, in.State.Skills, agentPlatforms[agentID], in.Config)
+	var phaseModels *state.PhaseModels
+	if in.Config != nil {
+		models := in.Config.PhaseModelsForState()
+		phaseModels = &models
+	}
+	files, err := agent.RenderSkillFilesForPlatform(in.SkillsFS, in.State.Skills, agentPlatforms[agentID], phaseModels)
 	if err != nil {
 		return nil, fmt.Errorf("render skills for agent %q: %w", agentID, err)
 	}

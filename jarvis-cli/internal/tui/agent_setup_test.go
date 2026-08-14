@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -265,13 +267,13 @@ func (a *setupAgentStub) ObserveRuntime() (sddruntime.ObservedRuntime, error) {
 
 type setupConfigAwareAgentStub struct {
 	*setupAgentStub
-	observeRuntimeWithConfig func(*config.AppConfig) (sddruntime.ObservedRuntime, error)
+	observeRuntimeWithConfig func(*state.PhaseModels) (sddruntime.ObservedRuntime, error)
 }
 
-func (a *setupConfigAwareAgentStub) ObserveRuntimeWithConfig(cfg *config.AppConfig) (sddruntime.ObservedRuntime, error) {
+func (a *setupConfigAwareAgentStub) ObserveRuntimeWithConfig(models *state.PhaseModels) (sddruntime.ObservedRuntime, error) {
 	if a.observeRuntimeWithConfig != nil {
 		a.observeCalls++
-		return a.observeRuntimeWithConfig(cfg)
+		return a.observeRuntimeWithConfig(models)
 	}
 	return a.ObserveRuntime()
 }
@@ -279,14 +281,14 @@ func (a *setupConfigAwareAgentStub) ObserveRuntimeWithConfig(cfg *config.AppConf
 type setupConfigAwareSkillInstallerStub struct {
 	*setupAgentStub
 	installSkillsWithConfigCalls    int
-	installSkillsWithConfigCfg      *config.AppConfig
+	installSkillsWithConfigModels   state.PhaseModels
 	installSkillsWithConfigSelected []string
 	installSkillsWithConfigErr      error
 }
 
-func (a *setupConfigAwareSkillInstallerStub) InstallSkillsWithConfig(_ fs.FS, selected []string, cfg *config.AppConfig) error {
+func (a *setupConfigAwareSkillInstallerStub) InstallSkillsWithConfig(_ fs.FS, selected []string, models state.PhaseModels) error {
 	a.installSkillsWithConfigCalls++
-	a.installSkillsWithConfigCfg = cfg
+	a.installSkillsWithConfigModels = models
 	a.installSkillsWithConfigSelected = append([]string(nil), selected...)
 	return a.installSkillsWithConfigErr
 }
@@ -580,8 +582,8 @@ func TestConfigureWizardAgent_PrefersConfigAwareSkillInstallation(t *testing.T) 
 			if a.installSkillsWithConfigCalls != 1 {
 				t.Fatalf("InstallSkillsWithConfig calls = %d, want 1", a.installSkillsWithConfigCalls)
 			}
-			if a.installSkillsWithConfigCfg != cfg {
-				t.Fatalf("InstallSkillsWithConfig cfg = %p, want %p", a.installSkillsWithConfigCfg, cfg)
+			if !reflect.DeepEqual(a.installSkillsWithConfigModels, cfg.PhaseModelsForState()) {
+				t.Fatalf("InstallSkillsWithConfig models = %+v, want %+v", a.installSkillsWithConfigModels, cfg.PhaseModelsForState())
 			}
 			if got := strings.Join(a.installSkillsWithConfigSelected, ","); got != strings.Join(selectedIDs, ",") {
 				t.Fatalf("InstallSkillsWithConfig selected = %q, want %q", got, strings.Join(selectedIDs, ","))
@@ -924,7 +926,7 @@ func TestConfigureWizardAgents_RuntimeVerificationUsesPendingConfigForOpenCodeDe
 		"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"},
 	}
 
-	pendingAssignments, err := sddruntime.ResolveAssignmentsForPlatform(sddruntime.PlatformOpenCode, pendingCfg)
+	pendingAssignments, err := sddruntime.ResolveAssignmentsForPlatform(sddruntime.PlatformOpenCode, pendingCfg.PhaseModelsForState())
 	if err != nil {
 		t.Fatalf("resolve pending assignments: %v", err)
 	}
@@ -940,8 +942,8 @@ func TestConfigureWizardAgents_RuntimeVerificationUsesPendingConfigForOpenCodeDe
 			observeRuntime: staleObserved,
 		},
 	}
-	a.observeRuntimeWithConfig = func(cfg *config.AppConfig) (sddruntime.ObservedRuntime, error) {
-		resolved, err := sddruntime.ResolveAssignmentsForPlatform(sddruntime.PlatformOpenCode, cfg)
+	a.observeRuntimeWithConfig = func(models *state.PhaseModels) (sddruntime.ObservedRuntime, error) {
+		resolved, err := sddruntime.ResolveAssignmentsForPlatform(sddruntime.PlatformOpenCode, *models)
 		if err != nil {
 			return sddruntime.ObservedRuntime{}, err
 		}

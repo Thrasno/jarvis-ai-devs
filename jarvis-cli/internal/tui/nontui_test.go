@@ -23,6 +23,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 // embeddedTestPersonaFS and testSkillsFS embed the minimal fixture files used
@@ -459,7 +460,7 @@ func TestResolveNoTUIPresetRejectsLegacyCustomProfileWithMigrationGuidance(t *te
 }
 
 func TestPrintNoTUIPhaseModelReview_IncludesOpenCodeProviderModelAssignments(t *testing.T) {
-	resolved := sddruntime.ResolvePhaseModels(&config.AppConfig{})
+	resolved := sddruntime.ResolvePhaseModels(state.PhaseModels{})
 	assignments := map[string]config.OpenCodeModelAssignment{
 		"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"},
 	}
@@ -479,7 +480,7 @@ func TestPrintNoTUIPhaseModelReview_IncludesOpenCodeProviderModelAssignments(t *
 }
 
 func TestPrintNoTUIPhaseModelReview_IncludesClaudeSpecificModelAndEffort(t *testing.T) {
-	resolved := sddruntime.ResolvePhaseModels(&config.AppConfig{})
+	resolved := sddruntime.ResolvePhaseModels(state.PhaseModels{})
 	claudeAssignments := map[string]config.ClaudeModelAssignment{
 		"default": {Model: "haiku", Effort: "max"},
 	}
@@ -703,7 +704,7 @@ func TestRunNoTUI_PersistsEditedOpenCodeProviderModelAssignment(t *testing.T) {
 	if assignment.ProviderID != "openai" || assignment.ModelID != "gpt-5.1-codex-max" || assignment.Effort != "high" {
 		t.Fatalf("unexpected OpenCode assignment: %+v", assignment)
 	}
-	if resolved := sddruntime.ResolvePhaseModels(loaded); resolved["default"].OpenCode == "" {
+	if resolved := sddruntime.ResolvePhaseModels(loaded.PhaseModelsForState()); resolved["default"].OpenCode == "" {
 		t.Fatal("expected legacy OpenCode alias to remain populated")
 	}
 }
@@ -729,7 +730,7 @@ func TestRunNoTUI_PersistsEditedPhaseModels(t *testing.T) {
 		t.Fatalf("load config: %v", err)
 	}
 
-	resolved := sddruntime.ResolvePhaseModels(loaded)
+	resolved := sddruntime.ResolvePhaseModels(loaded.PhaseModelsForState())
 	if resolved["default"].Claude != "haiku" {
 		t.Fatalf("expected default.claude=haiku after no-tui edit, got %q", resolved["default"].Claude)
 	}
@@ -1049,8 +1050,8 @@ type sddInstallingMockAgent struct {
 	home string
 }
 
-func (m *sddInstallingMockAgent) InstallSDDPhaseAgents(cfg *config.AppConfig) error {
-	files, err := agent.RenderClaudeSDDPhaseAgents(jarvis.TemplatesFS, cfg)
+func (m *sddInstallingMockAgent) InstallSDDPhaseAgents(models state.PhaseModels) error {
+	files, err := agent.RenderClaudeSDDPhaseAgents(jarvis.TemplatesFS, models)
 	if err != nil {
 		return err
 	}
@@ -1061,12 +1062,12 @@ func (m *sddInstallingMockAgent) InstallSDDPhaseAgents(cfg *config.AppConfig) er
 	return os.WriteFile(filepath.Join(dir, "sdd-design.md"), files["sdd-design.md"], 0644)
 }
 
-func (m *sddInstallingMockAgent) ObserveRuntimeWithConfig(cfg *config.AppConfig) (sddruntime.ObservedRuntime, error) {
+func (m *sddInstallingMockAgent) ObserveRuntimeWithConfig(models *state.PhaseModels) (sddruntime.ObservedRuntime, error) {
 	plan, err := sddruntime.Build("claude")
 	if err != nil {
 		return sddruntime.ObservedRuntime{}, err
 	}
-	assignments, err := sddruntime.ResolveAssignmentsForPlatform(sddruntime.PlatformClaude, cfg)
+	assignments, err := sddruntime.ResolveAssignmentsForPlatform(sddruntime.PlatformClaude, *models)
 	if err != nil {
 		return sddruntime.ObservedRuntime{}, err
 	}
