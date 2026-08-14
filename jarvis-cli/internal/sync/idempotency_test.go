@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
@@ -152,6 +153,10 @@ func TestRun_NamesTheExactPathsItChangedAndAttributesThemToTheirAgent(t *testing
 // asserted 0755 must be back before the after-snapshot is taken. Restoring it
 // makes the run genuinely idempotent instead of merely reporting the drift.
 func TestRun_AssertsManagedModesBeforeItMeasuresTheDiff(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no POSIX permission bits: Chmod only toggles the read-only attribute and Perm always reads 0666 or 0444")
+	}
+
 	home := t.TempDir()
 	script := filepath.Join(home, ".claude", statuslineScriptName)
 	writeFile(t, script, "#!/bin/sh\n")
