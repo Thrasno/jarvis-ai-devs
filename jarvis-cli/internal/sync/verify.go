@@ -29,7 +29,7 @@ func verifyApplied(after Snapshot, tracked []TrackedPath, targets []AgentTarget)
 	for _, path := range tracked {
 		observed, recorded := after.states[path.Path]
 		valid := recorded && observed.exists &&
-			observed.digest == path.Desired && observed.mode.Perm() == path.Mode.Perm()
+			observed.digest == path.Desired && sameManagedMode(observed.mode, path.Mode)
 		if path.Desired == "" || valid {
 			continue
 		}
