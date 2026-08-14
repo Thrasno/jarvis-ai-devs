@@ -99,6 +99,13 @@ func TestSyncReport_IsTheWholeObservabilityContract(t *testing.T) {
 		Agents:  []sync.AgentResult{{Agent: "claude", Converged: true}},
 		Changed: []string{},
 	}}
+	// What sync.Run returns when it fails after the applier already wrote: the
+	// agent outcomes are populated and Changed is nil, because the closing
+	// measurement never ran. Nil is what distinguishes it from a measured zero.
+	unmeasured := sync.RunResult{
+		Backup: lifecycle.BackupManifest{SnapshotID: "snap-7"},
+		Report: sync.Report{Agents: []sync.AgentResult{{Agent: "claude", Converged: true}}},
+	}
 
 	for _, tc := range []struct {
 		name           string
@@ -128,6 +135,17 @@ func TestSyncReport_IsTheWholeObservabilityContract(t *testing.T) {
 			result:   converged,
 			want:     []string{"already current", "changed paths: 0", "verification: passed"},
 			unwanted: []string{"snapshot", changedPath},
+		},
+		{
+			// A failure after the applier ran must never be reported as a
+			// measured zero: the diff was not taken, which is not evidence that
+			// nothing changed, and the operator needs that distinction to decide
+			// whether to restore the snapshot named above it.
+			name:     "a run that failed after mutating says the diff was not measured",
+			result:   unmeasured,
+			runErr:   errors.New("assert mode on /home/u/.claude/CLAUDE.md: permission denied"),
+			want:     []string{"not measured", "not evidence that nothing changed", "snap-7", "verification: failed"},
+			unwanted: []string{"changed paths: 0", "already current"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

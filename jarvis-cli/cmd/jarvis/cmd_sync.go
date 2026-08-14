@@ -214,9 +214,18 @@ func renderSyncReport(manifest *state.State, result sync.RunResult, cloud string
 	if cloud != "" {
 		fmt.Fprintln(&out, cloud)
 	}
-	fmt.Fprintf(&out, "changed paths: %d\n", len(result.Report.Changed))
-	for _, path := range result.Report.Changed {
-		fmt.Fprintf(&out, "  %s\n", path)
+	// A nil Changed means the closing measurement never ran, which every failure
+	// after the applier produces. Reporting that as a measured zero would say
+	// nothing changed about the one case where something just did, so the two are
+	// told apart: every path that measures leaves a non-nil list behind, even an
+	// empty one, so nil is a reliable marker rather than a guess.
+	if result.Report.Changed == nil {
+		fmt.Fprintln(&out, "changed paths: not measured (the run ended before the closing measurement; this is not evidence that nothing changed)")
+	} else {
+		fmt.Fprintf(&out, "changed paths: %d\n", len(result.Report.Changed))
+		for _, path := range result.Report.Changed {
+			fmt.Fprintf(&out, "  %s\n", path)
+		}
 	}
 	for _, outcome := range result.Report.Agents {
 		if outcome.Converged {
