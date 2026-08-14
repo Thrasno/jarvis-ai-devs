@@ -122,7 +122,7 @@ func EnforceModes(paths []TrackedPath) error {
 		if err != nil {
 			return fmt.Errorf("assert mode on %s: %w", tracked.Path, err)
 		}
-		if info.Mode()&os.ModeSymlink != 0 || info.IsDir() || info.Mode().Perm() == tracked.Mode.Perm() {
+		if info.Mode()&os.ModeSymlink != 0 || info.IsDir() || sameManagedMode(info.Mode(), tracked.Mode) {
 			continue
 		}
 		if err := os.Chmod(tracked.Path, tracked.Mode.Perm()); err != nil {
