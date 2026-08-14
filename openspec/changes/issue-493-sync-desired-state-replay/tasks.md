@@ -1,0 +1,289 @@
+# Tasks: `jarvis sync` replays the last installation's desired state
+
+Decision needed before apply: No
+Chained PRs recommended: Yes
+Chain strategy: pending
+400-line budget risk: High
+
+| Field | Value |
+|---|---|
+| Estimated changed lines | ~2,900 (additions+deletions, TDD-inflated) |
+| 400-line budget risk | High |
+| Chained PRs recommended | Yes |
+| Suggested split | PR 1 → PR 2 → PR 3 → PR 4 → PR 5 → PR 6 |
+| Delivery strategy | auto-chain |
+| Chain strategy | pending — orchestrator resolves stacked-to-main vs feature-branch-chain before PR 1 lands |
+
+### Suggested Work Units
+
+| Unit | Goal | PR | Focused test command | Runtime harness | Rollback boundary |
+|---|---|---|---|---|---|
+| 1 | `state.yaml` store, tri-state, migration, `config.yaml` v3 | PR 1 | `go test ./internal/state/... ./internal/config/...` | N/A — pure load/validate/migrate, no live agent | Revert `internal/state/`, config.go schema bump |
+| 2 | Read-only planner: render, ownership, skill lifecycle | PR 2 | `go test ./internal/sync/... -run Plan\|Ownership` | N/A — planner never mutates | Revert `internal/sync/plan.go`, `ownership.go` |
+| 3 | Extract `internal/agentapply` from `tui/agent_setup.go` | PR 3 | `go test ./internal/tui/... ./internal/agentapply/...` | `jarvis` wizard non-TUI smoke run | Revert extraction; `tui` keeps its own copy |
+| 4 | Machine-scoped replay applier + component order | PR 4 | `go test ./internal/sync/... -run Apply\|Order` | `jarvis sync` against `t.TempDir()` home | Revert `internal/sync/apply.go`; sync stays no-op |
+| 5 | Snapshot/diff, backup targets, verify, bookkeeping | PR 5 | `go test ./internal/sync/... ./internal/lifecycle/...` | Two consecutive `jarvis sync` runs, zero-diff assertion | Revert `snapshot.go`, backup.go target-list change |
+| 6 | `cmd_sync.go` wiring, flag rejection, docs | PR 6 | `go test ./cmd/jarvis/...` | `jarvis sync`, `jarvis sync --dry-run` (expect usage error) | Revert `cmd_sync.go`; restore no-op message |
+
+## Phase 1: Desired-State Store and Migration (PR 1)
+
+- [x] 1.1 RED: `internal/state/state_test.go` — schema round-trip holds agents, skills, models, persona, scope, statusline (desired-state-manifest: State Store Schema).
+- [x] 1.2 GREEN: `internal/state/state.go` — `StatuslineState{Decided, Enabled bool}` + full manifest struct, YAML load/save.
+- [x] 1.3 RED: table-driven tri-state test — not-decided / decided-disabled / decided-enabled resolve correctly (Statusline Tri-State Consent).
+- [x] 1.4 GREEN: tri-state resolution helper in `state.go`.
+- [x] 1.5 RED: fail-closed load test — missing file OK, corrupt/incompatible-version/whitespace/unrecognized value all abort, zero writes (Fail-Closed State Load).
+- [x] 1.6 GREEN: `Load()` validation in `state.go`.
+- [x] 1.7 RED: `internal/state/migrate_test.go` — v2 `config.yaml` fixture → migration writes `state.yaml`, bumps `config.yaml` to `schema_version: 3`, fields absent from `config.yaml` after (One-Way Field Migration, Store Disjointness).
+- [x] 1.8 RED: migration runs before validation early-return; notice withheld until write is durable (Migration precedes validation blocking; Notice withheld).
+- [x] 1.9 GREEN: `internal/state/migrate.go` — one-way move, durable-write-gated notice, runs pre-return.
+- [ ] 1.10 GREEN: `internal/config/config.go` — `schema_version: 3`, remove migrated fields. **Partially unblocked by PR 7a — see Phase 1 Blocker below.** The store-level move is done and `state.yaml` now owns the replay fields at runtime; what remains is deleting them from the `AppConfig` struct, which still waits on the package-by-package consumer cutover.
+- [x] 1.11 Refactor: dedupe shared YAML helpers between `state.go`/`config.go` once green.
+
+### Phase 1 Blocker: task 1.10 does not fit this slice
+
+`state.Migrate()` strips the replay fields from `config.yaml` on disk, so the
+store-level disjointness the spec requires is already satisfied and proven by
+`TestMigrate_StoresAreDisjointAfterMigration`. Deleting the same fields from the
+`AppConfig` **struct** is a separate, much larger change:
+
+| Evidence | Value |
+|---|---|
+| Production references to the removed fields | ~200 across ~55 files (`internal/tui`, `internal/persona`, `internal/sddruntime`, `internal/agent`, `cmd/jarvis`) |
+| Test references | ~200 more |
+| Compile errors inside `internal/config` alone | 40 (`go build -gcflags=-e`) |
+| PR 1 budget in this plan | ~600 lines, two paths |
+
+It is also **not safe to land alone**: nothing reads `state.yaml` until PR 2-6, so
+removing the fields from `AppConfig` today would regress persona, skill selection,
+per-phase model assignment, and scope persistence for every existing user.
+
+Consequence to schedule before `Migrate()` is wired into a command (PR 6): while
+`internal/config` still persists these keys, a `config.Save()` after a migration
+would rewrite them into `config.yaml` and break disjointness at runtime. The
+consumer cutover onto `internal/state` is therefore a hard prerequisite for the
+slice that calls `Migrate()`, not optional cleanup.
+
+### PR 7a: the config bridge (unblocks Phase 6)
+
+- [x] 7a.1 RED/GREEN: `internal/config/bridge.go` — `Load()` projects `state.yaml`
+  onto `AppConfig`; `Save()` routes the replay fields back into the manifest under
+  `state.WithLock`, preserving the fields config never owned, then rewrites
+  `config.yaml` without them — manifest first, so a failed write loses nothing.
+- [x] 7a.2 RED/GREEN: `state.Migrate()` leaves an existing manifest alone, and
+  `InstalledAgentsFrom`/`ReplayConfigKeys` are shared so the two cannot disagree.
+  `config.Load()` still serves every replay field after `Migrate()` runs.
+
+## Phase 2: Read-Only Planner (PR 2)
+
+Split for the 400-line budget: **PR 2a** = ownership (2.3-2.8), **PR 2b** = target
+rendering and the block path (2.1, 2.2, 2.9, 2.10). PR 2a resolved the
+`interactiveSkillIDs` layering problem by moving the list from `internal/tui`
+into `internal/skills.IsInteractive`, so `internal/sync` reads the same single
+source without importing Bubbletea.
+
+- [x] 2.1 RED: `internal/sync/plan_test.go` — rendered targets match installed binary's embedded assets only (Target Rendering).
+- [x] 2.2 GREEN: `internal/sync/plan.go` — render `PlannedArtifact{Identity, Location, Bytes, Proof}` from embedded assets.
+- [x] 2.3 RED: `internal/sync/ownership_test.go` — frontmatter `scope:` never decides ownership; only catalog/manifest membership (Identity-Based Ownership Classification).
+- [x] 2.4 GREEN: `internal/sync/ownership.go` — `IdentityProof` two-list membership check.
+- [x] 2.5 RED: table-driven skill lifecycle over all 5 rows (manifest×catalog×interactive) — update/delete/install/skip/untouched (Skill Lifecycle Rules).
+- [x] 2.6 GREEN: skill lifecycle resolver in `ownership.go`.
+- [x] 2.7 RED: manifest `skills` write never filters against catalog — dropped skill stays listed until deleted (Manifest Skills List Is Never Filtered on Write). **Already satisfied by PR 1** — `TestSave_RetainsSkillIDsAbsentFromCurrentCatalog` (`jarvis-cli/internal/state/state_test.go:141`).
+- [x] 2.8 GREEN: manifest writer preserves unfiltered `skills` list. **Already satisfied by PR 1** — same test; `state.Save` writes `Skills` verbatim.
+- [x] 2.9 RED: agent-less manifest blocks, names `jarvis` recovery command, zero writes (No Filesystem Redetection).
+- [x] 2.10 GREEN: block path in `plan.go`.
+
+## Phase 3: Extract `internal/agentapply` (PR 3 — lands before PR 4)
+
+- [x] 3.1 Confirm `internal/tui` test suite is green before touching `agent_setup.go:77-202`.
+- [x] 3.2 Move `configureWizardAgent` (`agent_setup.go:77-150`) and `reconcileWizardMCPs` (`:169-202`) verbatim into `internal/agentapply/apply.go`.
+- [x] 3.3 `internal/tui/agent_setup.go` delegates to `internal/agentapply`; `configureWizardAgents` (live caller) unchanged in behavior.
+- [x] 3.4 GREEN: re-run existing `internal/tui` tests unmodified — must stay green (regression gate for the extraction).
+- [x] 3.5 RED: `internal/agentapply/apply_test.go` — statusline decision derived from tri-state is never `nil`, and `confirm()` is not invoked when undecided (Decided/Enabled table, claude.go:868).
+- [x] 3.6 GREEN: statusline decision switch in `agentapply/apply.go` per design's tri-state snippet.
+
+### Phase 3 PR boundary: one slice, two PRs
+
+A verbatim move is counted twice by `git diff --numstat` (deletion at the source
+plus addition at the destination), so Phase 3 cannot land as a single PR under
+the 400-line budget. The two commits split exactly on that line and each is
+autonomous:
+
+| PR | Commit | Tasks | Changed lines |
+|---|---|---|---|
+| 3a | `refactor(agentapply): extract the wizard agent pipeline into its own package` | 3.1-3.4 | 354 |
+| 3b | `feat(agentapply): derive the statusline decision from the persisted tri-state` | 3.5-3.6 | 153 |
+
+Trimming will not rescue a single PR: 147 deletions and ~150 addition lines of
+moved code are irreducible, putting the floor near 432 before any statusline
+test. PR 3a is green on its own (`internal/tui` unmodified and passing), so 3b
+stacks on it cleanly.
+
+## Phase 4: Machine-Scoped Replay Applier (PR 4)
+
+- [x] 4.1 RED: `internal/sync/apply_test.go` — recorder fake asserts exact ordered component-ID slice: models → skills → orchestrator/agents/hooks → MCPs → persona+instructions → statusline (Component Application Order Contract).
+- [x] 4.2 GREEN: `internal/sync/apply.go` — ordered applier calling `internal/agentapply`, persona/instructions last.
+- [x] 4.3 RED: sentinel-loss regression — CLAUDE.md with no sentinels → full order → assert sentinels, all installed skills, Hive protocol, orchestrator import present after.
+- [x] 4.4 GREEN: wire fresh-render fallback per `WriteInstructions` (claude.go:350-356, opencode.go:445-452).
+- [x] 4.5 RED: sentinel-bearing file preserves content outside managed sections byte-for-byte (Managed Instruction File Ownership Scope).
+- [x] 4.6 RED: unowned-path file is never read/modified/replaced.
+- [x] 4.7 GREEN: ownership-scope guard in `apply.go`.
+- [x] 4.8 RED: Jarvis-managed MCPs replaced unconditionally, never treated as a persisted user choice (Machine-Scoped Artifact Replay).
+- [x] 4.9 GREEN: unconditional MCP replacement call into existing `reconcile`/executor seams.
+- [x] 4.10 RED: statusline drift — decided-enabled + script absent on disk → reinstalled, manifest unchanged (Statusline Reinstallation on Drift).
+- [x] 4.11 GREEN: drift reinstall path in `apply.go`.
+- [x] 4.12 RED: D1 partial failure — agent A converges, agent B fails midway; A's changes remain, report names both outcomes, non-zero exit, no global-convergence claim, no cross-agent rollback (Partial Failure Reporting Across Agents).
+- [x] 4.13 GREEN: per-agent `ReconcileInstallRequest` scoping + loop-continue-on-failure in `apply.go`.
+
+### Phase 4 PR boundary: three slices
+
+Phase 4's 13 tasks cannot fit the 400-line budget as one PR, so it is split on
+behaviour rather than file type. Each slice is autonomous and stacks on the
+previous one:
+
+| PR | Tasks | Scope |
+|---|---|---|
+| 4a | 4.1, 4.2, 4.12, 4.13 | Applier spine: locked component order, per-agent isolation, `AgentResult`/`Report` |
+| 4b | 4.3-4.7 | Instruction-file ownership scope and sentinel handling |
+| 4c | 4.8-4.11 | Unconditional MCP replacement and statusline drift reinstall |
+
+PR 4a fixes the sequencing and reporting contract behind `ComponentRunner`, so
+4b and 4c add component behaviour without reshaping the applier.
+
+## Phase 5: Lifecycle Safety and Measured Idempotency (PR 5)
+
+- [x] 5.1 RED: `internal/sync/snapshot_test.go` — diff compares content+mode, never mtime (idempotency correctness given `InstallStatusline` rewrites unconditionally, claude.go:882-885).
+- [x] 5.2 GREEN: `internal/sync/snapshot.go` — content+mode snapshot/diff over the plan's own path list.
+- [x] 5.3 RED: threat-matrix mode assertion — statusline stays 0755, skills/instructions stay 0644 after sync, including reinstall-after-delete.
+- [x] 5.4 GREEN: mode assertion (not inheritance) in snapshot/apply write paths.
+- [x] 5.5 RED: backup precedes first mutation; backup failure blocks all mutation and is reported (Backup Precedes Mutation).
+- [x] 5.6 GREEN: `internal/lifecycle/backup.go` — accept explicit target list sourced from sync's plan (same list feeding the diff).
+- [x] 5.7 RED: second consecutive run against unchanged manifest/version reports zero changed files, zero writes (Measured Idempotency).
+- [x] 5.8 GREEN: zero-diff short-circuit wired through `Run`.
+- [x] 5.9 RED: changed-path report is required output, not optional (Required Changed-Path Output).
+- [x] 5.10 RED: no-op run writes no bookkeeping; changed run writes bookkeeping under lock (Bookkeeping Under Lock).
+- [x] 5.11 GREEN: locked bookkeeping writer, changed-path reporter.
+- [x] 5.12 RED: post-apply verification names `jarvis` as recovery command for an agent-less manifest (Post-Apply Verification and Recovery Naming).
+- [x] 5.13 GREEN: verification pass + recovery-command naming.
+
+### Phase 5 measurement note: zero writes closed by PR 5e
+
+PR 5c delivered zero *changed files* through apply-then-diff, not zero writes.
+PR 5e closed the gap in two stacked slices:
+
+| PR | Commit | Scope | Changed lines |
+|---|---|---|---|
+| 5e-1 | `feat(sync): render desired content for every tracked path` | `TrackedPath.Desired` digests; skills rendered through the installer's own walk; statusline from the embedded script; both `trackedPaths` derivations removed; fail-closed when a recorded artifact cannot be rendered | 344 |
+| 5e-2 | `feat(sync): skip the applier when the machine already matches` | `Snapshot.Matches` and the pre-apply short-circuit in `Run` | ~130 |
+
+Design notes carried forward:
+
+- Desired content is carried as a **SHA-256 digest**, not bytes: the only
+  question asked of it is equality, so a hash keeps memory flat.
+- The short-circuit is **all-or-nothing** — one drifted tracked path and the
+  whole run applies, because components apply as a whole in a fixed order.
+- A short-circuited run takes **no backup**: nothing mutates, so there is no
+  prior state to preserve.
+- Known gap: `settings.json` is not a tracked path, so a statusline
+  registration removed by hand from `settings.json` alone is not repaired until
+  some tracked path also drifts. Its desired content is a merge of on-disk
+  bytes, which is not a pure desired-state digest; tracking it belongs to a
+  later slice.
+
+## Phase 6: Compatibility and Docs (PR 6)
+
+- [x] 6.1 RED/GREEN: `cmd/jarvis/cmd_sync.go` — any flag is a usage error, zero mutation (Domain and CLI Boundary Exclusions). Landed as PR 6a-1.
+- [x] 6.2 RED: sync never calls Hive memory sync; call graph contains no Hive reference. Closed by PR 6a-4 as its own slice: folding it into 6a-3 would have measured 437 changed lines. Both guards were proven to fire before the test was accepted — an empty seed and a deliberately forbidden package each fail it.
+- [x] 6.3 RED: `local+cloud` scope with missing/unparseable `sync.json` reports `jarvis login` for the cloud portion without aborting local scope. Closed by PR 6a-3: `runSync` consults `CloudManualAction` after the plan and prints it beside the local outcome, and `syncExit` takes no cloud argument at all, so there is no shape through which the cloud portion could abort a converged local replay.
+- [x] 6.4 GREEN: `cmd_sync.go` — replace no-op with planner+applier wiring, flag rejection, scope-partial reporting.
+
+### Phase 6 PR boundary: the wiring does not fit with the boundary rules
+
+A complete 6.4 was implemented and verified green, then withdrawn because it
+measured far past the 400-line budget:
+
+| Piece | Changed lines |
+|---|---|
+| `cmd_sync.go` wiring (production `ComponentRunner`, `buildReplay`, `runSync`, report) | 348 |
+| `cmd_sync_test.go` (call graph, config identity, partial cloud scope) | 251 |
+| Replacing the two no-op contract tests (`main_test.go`, `unit_test.go`) | 55 |
+
+That is ~654 changed lines with 474 of them non-comment code, so no amount of
+comment trimming brings 6.1-6.4 under one budget. The split is therefore:
+
+| PR | Tasks | Scope | Changed lines |
+|---|---|---|---|
+| 6a-1 | 6.1, half of 6.3 | No-flags guard behind `newSyncCommand`; `internal/sync.CloudManualAction` | 213 |
+| 6a-2 | half of 6.4 | `internal/sync.Runner`, `ReplayInput`, `PlanInputFor`/`TargetsFor`/`NewRunner` | landed |
+| 6a-3 | rest of 6.3, rest of 6.4 | `cmd_sync.go`: `runSync` on top of the runner, the report, and the two replaced no-op contract tests | 383 |
+| 6a-4 | 6.2 | The Hive-boundary import-closure proof over `cmd_sync.go` | ~50 |
+
+Findings carried forward from 6a-3:
+
+- The observability report is required output, so it is a pure function of the
+  manifest, the run result, the cloud notice and the run error. That keeps every
+  fact the issue asks for under test without a real home or a live agent.
+- `syncExit` deliberately has no cloud parameter. The signature is the proof
+  that an unusable cloud portion cannot abort a local replay; a boolean would
+  only have been a convention.
+- Bookkeeping is wired as nil. `sync.Bookkeeping` needs the digest of the asset
+  set a run replayed and nothing in the tree produces one yet, so a locked write
+  that could only ever be a no-op would have been dishonest machinery.
+- 6.2 was split out on measurement, not on preference: the closure proof is 50
+  changed lines and 6a-3 is 383, and 437 is over the review budget.
+
+6a-2 landed the production `ComponentRunner` as its own `internal/sync` unit,
+which is the seam that keeps 6a-3 thin: the command builds one `ReplayInput`,
+and both the planner and the runner are projected from it, so the config
+identity trap is closed structurally rather than by convention.
+
+Findings carried forward for 6a-2:
+
+- The applier's `models`/`skills`/`orchestrator-agents-hooks` IDs map onto a
+  single `agentapply.ConfigureAgent` call, which performs all three in exactly
+  the order this design locks. Splitting them would mean reimplementing the
+  installer, so the call runs under the first ID and the other two are no-ops.
+  Component-level failure attribution is coarser than the ID list suggests.
+- `ConfigureAgent` must be handed `StatuslineDecision{Install: false}`: the
+  statusline is the last component and runs after the instruction write, not
+  inside it.
+- Nothing on the command path may call `config.Save()`. Its PR 7a bridge takes
+  `state.WithLock` internally and the lock is fail-fast, so a nested
+  acquisition deadlocks sync against itself. Persona therefore goes through
+  `sync.ApplyInstructions`, never `persona.ApplyProfile(PersistConfig: true)`.
+- One `*config.AppConfig` and one rendered `[]config.SkillInfo` must reach both
+  `PlanInput` and the applier. Pointer-identity assertions on both ends are the
+  test that catches divergence before it becomes permanent reported drift.
+- Persona output styles are not replayed by `sync.ApplyInstructions` and are not
+  tracked paths either; that gap belongs to a later slice.
+- [x] 6.5 Update `docs/` — sync behavior, upgrade notes, `state.yaml` vs `config.yaml` split, recovery command. Landed as PR 6b across `README.md`, `docs/cli-reference.md`, `docs/configuration.md`, `docs/generated-artifacts.md`, `docs/troubleshooting.md`, `docs/reference/architecture.md`, `docs/hive/sync-guide.md`.
+- [x] 6.6 Update `AGENTS.md`/`CLAUDE.md` parity note if sync behavior is referenced there. Both files carry the identical `jarvis sync` is not Hive sync note under the CLI section, plus the disjoint-store and no-`config.Save()` rules.
+
+### Phase 6b: documentation
+
+Documentation-only slice, 170 changed lines, no `.go` file touched. Three known
+gaps are documented rather than implied away, because a user who hits one and
+finds it written down trusts the tool more than one who does not:
+
+| Gap | Where |
+|---|---|
+| `settings.json` is not a tracked path, so a hand-removed statusline entry is not repaired | `docs/troubleshooting.md` → Known gaps |
+| Persona output styles are not replayed | same section |
+| The managed-asset digest is not produced yet | same section |
+
+The destructive case is stated before it can happen rather than after: an
+instruction file carrying no Jarvis sentinels is rendered fresh and its previous
+content discarded, with `~/.jarvis/backups/` as the recovery path.
+
+## Review Workload Forecast
+
+- Estimated changed lines: ~2,900 (additions + deletions, TDD roughly doubles production line count)
+- 400-line budget risk: High
+- Chained PRs recommended: Yes
+- Decision needed before apply: No — `auto-chain` delivery strategy proceeds with PR 1 once the orchestrator resolves chain strategy
+- PR boundaries and per-slice estimate:
+  - PR 1 (state store + migration): ~600 lines — `internal/state/`, `internal/config/config.go`
+  - PR 2 (planner + ownership): ~500 lines — `internal/sync/plan.go`, `ownership.go`
+  - PR 3 (agentapply extraction): ~250 lines — `internal/agentapply/apply.go`, `internal/tui/agent_setup.go` delegation
+  - PR 4 (replay applier): ~700 lines — `internal/sync/apply.go`
+  - PR 5 (lifecycle safety): ~600 lines — `internal/sync/snapshot.go`, `internal/lifecycle/backup.go`
+  - PR 6 (CLI + docs): ~280 lines — `cmd/jarvis/cmd_sync.go`, `docs/`

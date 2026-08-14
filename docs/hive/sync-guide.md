@@ -32,7 +32,18 @@ Test Connection is read-only. A successful test does not update the running daem
 
 ## Manual vs automatic sync
 
-`jarvis sync` currently prints guidance and is a no-op. Sync behavior is handled through `hive-daemon` and its tools. Manual sync can be requested through the agent-facing Hive tools when available. Automatic background sync only runs when explicitly enabled/configured.
+Memory sync is handled through `hive-daemon` and its tools. Manual sync can be requested through the agent-facing Hive tools when available; `mem_sync` is the only thing that moves memory data. Automatic background sync only runs when explicitly enabled/configured.
+
+## `jarvis sync` is configuration replay, not memory sync
+
+Despite the name, `jarvis sync` never touches Hive memory data. It replays this machine's recorded agent configuration — model assignments, managed MCPs, skills, persona, statusline — from `~/.jarvis/state.yaml`. Every run says so explicitly in its report.
+
+| Concern | Command |
+|---------|---------|
+| Reapply this machine's recorded configuration after an upgrade | `jarvis sync` |
+| Move memory between local Hive and Hive API | `mem_sync`, or automatic daemon sync when enabled |
+
+One overlap is worth knowing: when the manifest records `local+cloud` scope and `~/.jarvis/sync.json` is missing or unreadable, `jarvis sync` reports that `jarvis login` is needed for the cloud portion and still completes the local replay. It reads that file at most once and never writes, creates, or repairs it; credentials belong to `jarvis login`.
 
 ## Installation is not sync
 

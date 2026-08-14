@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -54,6 +55,41 @@ func (s BackupStore) CreateSnapshot(sourceOperation string, targets []BackupTarg
 		return BackupManifest{}, err
 	}
 	return manifest, nil
+}
+
+// CreateSnapshotOfTargets snapshots a target list the caller computed itself,
+// rather than one derived from doctor observations. A replay command knows what
+// it is about to write and must back up exactly that, which differs from what
+// doctor happens to consider managed today.
+//
+// Such a list describes desired state, so it names paths that do not exist yet:
+// a skill this version added, or a statusline the user deleted. There is nothing
+// to preserve for a missing file, and refusing over one would block every
+// mutation permanently, so absent paths are skipped. Existing targets are still
+// checked against the allowed roots first, so a list assembled outside this
+// package can never widen what a backup reads, and a refusal writes nothing.
+func (s BackupStore) CreateSnapshotOfTargets(sourceOperation string, targets []BackupTarget) (BackupManifest, error) {
+	present := make([]BackupTarget, 0, len(targets))
+	for _, target := range targets {
+		// Existence is checked before the root check on purpose: canonicalizing a
+		// path whose parent directory is absent is an error, and that absence is
+		// precisely the ordinary case this method exists to tolerate.
+		if _, err := os.Lstat(target.Path); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return BackupManifest{}, err
+		}
+		allowed, err := s.isAllowedRoot(target.Path)
+		if err != nil {
+			return BackupManifest{}, err
+		}
+		if !allowed {
+			return BackupManifest{}, fmt.Errorf("backup target outside allowed roots: %s", target.Path)
+		}
+		present = append(present, target)
+	}
+	return s.CreateSnapshot(sourceOperation, present)
 }
 
 func (s BackupStore) ValidateManifest(manifest BackupManifest) error {
@@ -175,7 +211,20 @@ func (s BackupStore) isAllowedRoot(path string) (bool, error) {
 	}
 	for _, root := range allowed {
 		canonRoot, err := canonicalizePath(root)
+		if errors.Is(err, errPathAbsent) {
+			// A root absent from this machine matches nothing. Not every user has
+			// ~/.config/opencode, and treating its absence as fatal would refuse
+			// every legitimate ~/.claude path on such a machine. Skipping an absent
+			// root can only narrow what is allowed, never widen it.
+			continue
+		}
 		if err != nil {
+			// Anything else is a real problem with this machine rather than an
+			// absent root: a permission failure, a symlink loop, an I/O error.
+			// Swallowing it would deny a legitimate path as "outside allowed
+			// roots", and Restore turns that refusal into restore_unsafe_path
+			// advising the user to remove manifest entries — telling them to
+			// destroy their recovery point over a permission bit.
 			return false, fmt.Errorf("canonicalize allowed root %q: %w", root, err)
 		}
 		if canonPath == canonRoot || strings.HasPrefix(canonPath, canonRoot+string(os.PathSeparator)) {
@@ -325,6 +374,11 @@ func isWindowsDrivePrefix(prefix string) bool {
 	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 }
 
+// errPathAbsent marks the one canonicalization failure that is ordinary rather
+// than broken: the path, or its parent, is simply not on this machine. Every
+// other failure means something is wrong here and must not be mistaken for it.
+var errPathAbsent = errors.New("path is absent")
+
 func canonicalizePath(path string) (string, error) {
 	abs, err := filepath.Abs(filepath.Clean(path))
 	if err != nil {
@@ -343,7 +397,7 @@ func canonicalizePath(path string) (string, error) {
 	resolvedParent, err := filepath.EvalSymlinks(parent)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", fmt.Errorf("parent path does not exist: %s", parent)
+			return "", fmt.Errorf("%w: parent path does not exist: %s", errPathAbsent, parent)
 		}
 		return "", err
 	}

@@ -25,13 +25,6 @@ var interactiveSkillPrompts = []skillPromptTemplate{
 	{Label: "Go Testing", Description: "Go testing and Bubbletea testing patterns", SkillIDs: []string{"go-testing"}},
 }
 
-var interactiveSkillIDs = map[string]bool{
-	"zoho-deluge":          true,
-	"phpunit-testing":      true,
-	"laravel-architecture": true,
-	"go-testing":           true,
-}
-
 func buildSkillSelectionPlan(skillList []skills.Skill, existingSelected []string) skillSelectionPlan {
 	existingSet := make(map[string]bool, len(existingSelected))
 	for _, id := range existingSelected {
@@ -46,7 +39,7 @@ func buildSkillSelectionPlan(skillList []skills.Skill, existingSelected []string
 			selected[s.ID] = true
 			continue
 		}
-		if !interactiveSkillIDs[s.ID] {
+		if !skills.IsInteractive(s.ID) {
 			// All non stack-specific skills are auto-installed.
 			selected[s.ID] = true
 		}

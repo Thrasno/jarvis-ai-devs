@@ -449,21 +449,25 @@ func TestPersonaSet_ValidPreset_ExitsZero(t *testing.T) {
 	}
 }
 
-// TestSync_PrintsInfoMessage verifies that `jarvis sync` exits 0 and prints the
-// stub message directing the user to use hive-daemon / mem_sync.
-func TestSync_PrintsInfoMessage(t *testing.T) {
+// TestSync_WithoutAManifest_FailsAndNamesIt replaces the old no-op contract
+// test. `jarvis sync` no longer points at Hive's memory sync: it replays the
+// recorded desired state, so a machine with no manifest must say so with a
+// non-zero status rather than exiting 0 on a mutation it never performed.
+func TestSync_WithoutAManifest_FailsAndNamesIt(t *testing.T) {
 	if _, err := os.Stat(jarvisBin); os.IsNotExist(err) {
 		t.Skip("jarvis binary not available")
 	}
-
 	home := t.TempDir()
-	// sync command doesn't require config, but set HOME for isolation.
 	out, code := runJarvis(t, home, "sync")
-	if code != 0 {
-		t.Errorf("expected exit code 0 for sync, got %d\noutput: %s", code, out)
+
+	if code == 0 {
+		t.Errorf("expected a non-zero exit with no desired-state manifest, got 0\noutput: %s", out)
 	}
-	if !strings.Contains(out, "hive-daemon") && !strings.Contains(out, "mem_sync") {
-		t.Errorf("expected sync output to mention hive-daemon or mem_sync, got:\n%s", out)
+	if !strings.Contains(out, "state.yaml") {
+		t.Errorf("expected sync to name the missing manifest, got:\n%s", out)
+	}
+	if strings.Contains(out, "no-op") {
+		t.Errorf("sync is no longer a no-op, but it still says so:\n%s", out)
 	}
 }
 

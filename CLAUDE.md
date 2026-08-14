@@ -81,7 +81,20 @@ Expected capabilities include:
 - reconfiguration,
 - token/config validation,
 - local environment checks,
-- sync status and diagnostics.
+- sync status and diagnostics,
+- configuration replay through `jarvis sync`.
+
+#### `jarvis sync` is not Hive sync
+
+`jarvis sync` replays this machine's recorded agent configuration from `~/.jarvis/state.yaml`: model assignments, Jarvis-managed MCPs, installer-managed skills, persona, and the statusline when installation enabled it. It takes no flags, never prompts, and never synchronizes Hive memory data.
+
+Keep these three apart when writing code or docs:
+
+- `jarvis reconcile` repairs observed drift.
+- `jarvis sync` replays recorded desired state.
+- `mem_sync` and daemon background sync move memory data.
+
+`~/.jarvis/config.yaml` and `~/.jarvis/state.yaml` are disjoint stores. Do not reintroduce a replay field into `config.yaml`, and do not call `config.Save()` on the sync command path: its bridge takes the fail-fast manifest lock and would deadlock sync against itself.
 
 ## Architecture Rules
 

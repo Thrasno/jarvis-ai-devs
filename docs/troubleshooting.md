@@ -29,6 +29,10 @@ jarvis reconcile --provider all --yes
 | Dashboard returns 404 | Dashboard assets are not configured or not built. | Set `DASHBOARD_ASSETS_DIR` to a valid compiled dashboard directory and restart `hive-api`. |
 | Dashboard login fails | Invalid credentials, missing server configuration, or expired session. | Check Hive API health, credentials, `JWT_SECRET`, and deployment logs. |
 | `hive-daemon` stops at `pending migration restore` on every start | A scheduled restore replaced the database but could not clear its own request. | Follow [Recovery from a stuck pending restore](#recovery-from-a-stuck-pending-restore). |
+| `jarvis sync` reports nothing to replay | `~/.jarvis/state.yaml` records no configured agents. | Run `jarvis`. Sync never redetects agents from the filesystem. |
+| `jarvis sync accepts no flags` | A flag was passed, including an inherited one such as `--no-tui`. | Run `jarvis sync` with no arguments. Nothing was written. |
+| `jarvis sync` names `jarvis login` | Scope is `local+cloud` but `~/.jarvis/sync.json` is missing or unreadable. | Run `jarvis login`. The local replay already completed. |
+| `jarvis sync` says converged but something is still wrong | The affected file may not be a tracked path. | See [Known gaps in `jarvis sync`](#known-gaps-in-jarvis-sync). |
 
 ## Recovery from a stuck pending restore
 
@@ -50,6 +54,30 @@ Fix the underlying cause first — free disk space or restore write access to
 `~/.jarvis` — otherwise the next scheduled restore stops in the same place. Then
 start `hive-daemon` again. The restore itself already succeeded, so nothing is
 lost by deleting the request.
+
+## `jarvis sync` replaces an unmarked instruction file
+
+Read this before running `jarvis sync` on a machine whose agent instruction files you edited by hand.
+
+A `CLAUDE.md` or `AGENTS.md` belonging to a configured agent is a managed file. If it carries the Jarvis sentinel markers, replay rewrites only the managed sections and leaves everything outside them byte-for-byte intact. **If it carries no sentinel markers at all, it is rendered fresh and its previous content is discarded.** This is the same thing the setup wizard does today; sync does not add the behavior, it inherits it.
+
+The recovery path is the pre-apply snapshot in `~/.jarvis/backups/`, taken before the first write of every run that changes anything:
+
+```bash
+jarvis restore --provider claude --snapshot <id> --yes
+```
+
+Files outside the recorded instruction targets are never read, modified, or replaced.
+
+## Known gaps in `jarvis sync`
+
+`jarvis sync` is honest about the paths it tracks, and there are three it does not.
+
+1. **`settings.json` is not tracked.** Installing the statusline also merges an entry into `~/.claude/settings.json`, whose final content is a merge with your own bytes rather than a computable desired state. If you remove that entry by hand while every tracked path is current, `jarvis sync` reports converged and does not restore it. Workaround: rerun `jarvis`.
+2. **Persona output styles are not replayed.** Changing persona and then upgrading leaves the generated output-style file stale. Workaround: `jarvis persona set <preset>`.
+3. **Asset-set bookkeeping is not recorded yet.** The managed-asset digest that would let a run recognize that the installed version ships a different asset set is not produced yet, so an upgrade is detected through the tracked paths themselves rather than through a version comparison.
+
+None of these three block a replay. They mean a converged report is a statement about the tracked paths, not about every byte Jarvis has ever written.
 
 ## Recovery workflow for managed agent configuration
 

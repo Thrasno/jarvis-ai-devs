@@ -36,7 +36,47 @@ func installSkillsFromFS(destDir string, skillsFS fs.FS, selected []string) erro
 	return installSkillsFromFSWithModelSections(destDir, skillsFS, selected, nil)
 }
 
+// RenderedSkillFile is one file the skills installer would write, named by a
+// slash-separated path relative to the agent's skills directory.
+type RenderedSkillFile struct {
+	RelPath string
+	Bytes   []byte
+}
+
+// RenderSkillFilesForPlatform produces the exact files InstallSkillsWithConfig
+// would write for a platform, without writing any of them, so a caller needing
+// the desired content of an installed skill tree reuses the installer's own
+// walk and model-section rendering instead of guessing at one SKILL.md per
+// skill. A nil cfg renders verbatim, matching InstallSkills.
+func RenderSkillFilesForPlatform(skillsFS fs.FS, selected []string, platform sddruntime.Platform, cfg *config.AppConfig) ([]RenderedSkillFile, error) {
+	var sectionClass skillModelSectionClass
+	if cfg != nil {
+		var err error
+		if sectionClass, err = skillModelSectionClassForPlatform(platform, cfg); err != nil {
+			return nil, fmt.Errorf("resolve skill model sections: %w", err)
+		}
+	}
+	files := make([]RenderedSkillFile, 0, len(selected))
+	err := walkSkillFiles(skillsFS, selected, sectionClass, func(relPath string, content []byte) error {
+		files = append(files, RenderedSkillFile{RelPath: relPath, Bytes: content})
+		return nil
+	})
+	return files, err
+}
+
 func installSkillsFromFSWithModelSections(destDir string, skillsFS fs.FS, selected []string, sectionClass skillModelSectionClass) error {
+	return walkSkillFiles(skillsFS, selected, sectionClass, func(relPath string, content []byte) error {
+		destPath := filepath.Join(destDir, filepath.FromSlash(relPath))
+		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			return fmt.Errorf("create dir for %s: %w", relPath, err)
+		}
+		return writeFileAtomic(destPath, content, 0644)
+	})
+}
+
+// walkSkillFiles is the single walk both the installer and the desired-state
+// planner read from, so what sync compares against is what the installer writes.
+func walkSkillFiles(skillsFS fs.FS, selected []string, sectionClass skillModelSectionClass, emit func(relPath string, content []byte) error) error {
 	selectedSet := make(map[string]bool, len(selected))
 	for _, id := range selected {
 		selectedSet[id] = true
@@ -64,11 +104,7 @@ func installSkillsFromFSWithModelSections(destDir string, skillsFS fs.FS, select
 			return nil
 		}
 
-		// It's a file — install it.
-		destPath := filepath.Join(destDir, filepath.FromSlash(path))
-		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-			return fmt.Errorf("create dir for %s: %w", path, err)
-		}
+		// It's a file — render it.
 		content, err := fs.ReadFile(skillsFS, path)
 		if err != nil {
 			return fmt.Errorf("read skill file %s: %w", path, err)
@@ -80,7 +116,7 @@ func installSkillsFromFSWithModelSections(destDir string, skillsFS fs.FS, select
 			}
 			content = []byte(rendered)
 		}
-		return writeFileAtomic(destPath, content, 0644)
+		return emit(path, content)
 	})
 }
 

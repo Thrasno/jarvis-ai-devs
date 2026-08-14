@@ -49,6 +49,18 @@ Generated user-machine files are outputs. Sources of truth live in `jarvis-cli/e
 
 Installing or rerunning Jarvis updates binaries and regenerates configuration. Hive ↔ Hive API sync is a separate behavior controlled by daemon configuration and credentials.
 
+### Command boundary: `sync`, `reconcile`, and memory sync
+
+Three commands are easy to confuse; each has one authority and one question.
+
+| Command | Question | Authority | Scope |
+|---------|----------|-----------|-------|
+| `jarvis reconcile` | Is managed configuration broken? | Doctor observations of the current filesystem. | Owned drift repair. |
+| `jarvis sync` | Is managed configuration stale? | `~/.jarvis/state.yaml` plus the installed version's embedded assets. | Local machine artifacts only. |
+| `mem_sync` | Is memory data out of date? | `hive-daemon` and Hive API credentials. | Product memory data. |
+
+`jarvis sync` is machine-scoped configuration replay. It never reaches Hive memory synchronization, and that boundary is proven by an import-closure test over the command's call graph rather than by convention.
+
 ### Dashboard vs daemon
 
 The dashboard is served by Hive API when enabled. It does not start, stop, or configure local `hive-daemon` processes.

@@ -2,14 +2,14 @@
 package config
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/atomicfile"
 )
 
 const (
@@ -164,6 +164,11 @@ func Load() (*AppConfig, error) {
 		}
 	}
 
+	// Bridge: ~/.jarvis/state.yaml owns the replay fields once it exists.
+	if err := applyStateManifest(cfg); err != nil {
+		return nil, err
+	}
+
 	normalizeAndMigrate(cfg)
 	applyEnvOverrides(cfg)
 	return cfg, nil
@@ -185,12 +190,19 @@ func Save(cfg *AppConfig) error {
 		return fmt.Errorf("create jarvis dir: %w", err)
 	}
 
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
+	// Bridge: the replay fields land in ~/.jarvis/state.yaml first. Only once
+	// they are durably there are they dropped from config.yaml, so a failed
+	// manifest write can never lose them.
+	if err := saveStateManifest(cfg); err != nil {
+		return err
 	}
 
-	if err := atomicWriteFile(path, data, 0600); err != nil {
+	data, err := marshalWithoutReplayFields(cfg)
+	if err != nil {
+		return err
+	}
+
+	if err := atomicfile.Write(path, data, 0600); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
@@ -405,57 +417,4 @@ func (c *AppConfig) hasAnyState() bool {
 		return true
 	}
 	return false
-}
-
-func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	base := filepath.Base(path)
-
-	tmp, err := os.CreateTemp(dir, base+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod temp file: %w", err)
-	}
-	if _, err := bytes.NewReader(data).WriteTo(tmp); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("fsync temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp file: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("rename temp file: %w", err)
-	}
-
-	d, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("open parent dir: %w", err)
-	}
-	defer func() {
-		_ = d.Close()
-	}()
-	if runtime.GOOS != "windows" {
-		if err := d.Sync(); err != nil {
-			return fmt.Errorf("fsync parent dir: %w", err)
-		}
-	}
-
-	cleanup = false
-	return nil
 }

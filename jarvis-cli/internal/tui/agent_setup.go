@@ -2,14 +2,12 @@ package tui
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io/fs"
-	"path/filepath"
 	"strings"
 
-	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agentapply"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
@@ -31,19 +29,7 @@ type wizardPresetApplyContext struct {
 	PreviousPresetSource persona.PresetSource
 }
 
-type generatedConfigAgent interface {
-	MergeGeneratedConfig(*config.AppConfig) error
-}
-
-type configAwareSkillInstaller interface {
-	InstallSkillsWithConfig(fs.FS, []string, *config.AppConfig) error
-}
-
-type sddPhaseAgentInstaller interface {
-	InstallSDDPhaseAgents(*config.AppConfig) error
-}
-
-const claudeRestartGuidance = "Restart Claude Code to discover refreshed Jarvis-managed SDD agents."
+const claudeRestartGuidance = agentapply.ClaudeRestartGuidance
 
 const mcpReplacementAcknowledgement = "I ACKNOWLEDGE"
 
@@ -54,23 +40,15 @@ var refreshProjectSkillRegistry = projectregistry.Refresh
 // wizardMCPExecutor is the production boundary for the wizard's managed-MCP
 // handoff. Production uses the concrete executor; tests can drive the same
 // TUI and no-TUI routes without a real home or native CLI.
-type wizardMCPExecutor interface {
-	ExecuteWizard(agent.WizardReconcileInput) (agent.ReconcileInstallResult, error)
-}
+type wizardMCPExecutor = agentapply.MCPExecutor
 
 var newWizardMCPExecutor = func() wizardMCPExecutor { return agent.NewProductionExecutor() }
 
 var wizardHiveDaemonPath = agent.HiveDaemonBinaryPath
 
-// statuslineInstaller is implemented by agents that support the Jarvis-managed
-// Claude Code statusline. The confirm callback decides overwrite vs. skip when
-// the script already exists; it is never called on a fresh install.
-type statuslineInstaller interface {
-	InstallStatusline(hooksFS fs.FS, confirm func() bool) error
-}
-
 // configureWizardAgent applies the same MCP + instruction + skills setup flow
-// for both TUI and no-TUI wizards.
+// for both TUI and no-TUI wizards. The wizard always attempts the statusline
+// install and answers an existing script with its own interactive prompt.
 // agentsSubFS is the sub-FS rooted at embed/agents/<platform> for file-based
 // agent install (ClaudeAgent). Pass nil for platforms that use the JSON config
 // builder path instead (OpenCodeAgent).
@@ -84,69 +62,10 @@ func configureWizardAgent(
 	agentsSubFS fs.FS,
 	statuslineConfirm func() bool,
 ) ([]string, error) {
-	// MCP reconciliation is intentionally performed once by ExecuteWizard before
-	// this per-agent artifact pipeline. Keep these legacy parameters while callers
-	// converge so no agent can directly merge a managed MCP configuration here.
-	_ = hiveEntry
-	_ = context7Entry
-	if generatedAgent, ok := a.(generatedConfigAgent); ok {
-		if err := generatedAgent.MergeGeneratedConfig(cfg); err != nil {
-			return nil, fmt.Errorf("generated config guardrails: %w", err)
-		}
-	}
-	if skillInstaller, ok := a.(configAwareSkillInstaller); ok {
-		if err := skillInstaller.InstallSkillsWithConfig(skillsSubFS, selectedIDs, cfg); err != nil {
-			return nil, fmt.Errorf("install skills: %w", err)
-		}
-	} else if err := a.InstallSkills(skillsSubFS, selectedIDs); err != nil {
-		return nil, fmt.Errorf("install skills: %w", err)
-	}
-	orchestratorTemplate, err := fs.ReadFile(jarvis.OrchestratorFS, "embed/orchestrator/sdd-orchestrator.md")
-	if err != nil {
-		return nil, fmt.Errorf("read orchestrator template: %w", err)
-	}
-	renderedOrchestrator, err := sddruntime.RenderOrchestrator(a.Name(), cfg, string(orchestratorTemplate))
-	if err != nil {
-		return nil, fmt.Errorf("render orchestrator: %w", err)
-	}
-	if err := a.InstallOrchestrator([]byte(renderedOrchestrator)); err != nil {
-		return nil, fmt.Errorf("install orchestrator: %w", err)
-	}
-	if ai, ok := a.(agent.AgentInstaller); ok {
-		if err := ai.InstallAgents(agentsSubFS); err != nil {
-			return nil, fmt.Errorf("install agents: %w", err)
-		}
-	}
-	if sddInstaller, ok := a.(sddPhaseAgentInstaller); ok {
-		if err := sddInstaller.InstallSDDPhaseAgents(cfg); err != nil {
-			return nil, fmt.Errorf("install Claude SDD agents: %w", err)
-		}
-	}
-	if err := a.InstallPromptHook(jarvis.HooksFS); err != nil {
-		return nil, fmt.Errorf("install prompt hook: %w", err)
-	}
-	if err := a.InstallSessionHooks(jarvis.HooksFS); err != nil {
-		return nil, fmt.Errorf("install session hooks: %w", err)
-	}
-	if err := agent.InstallCompactHookIfSupported(a); err != nil {
-		return nil, fmt.Errorf("install compact hook: %w", err)
-	}
-	if err := agent.InstallSubagentStopHookIfSupported(a); err != nil {
-		return nil, fmt.Errorf("install subagent stop hook: %w", err)
-	}
-	warnings := []string(nil)
-	if _, ok := a.(sddPhaseAgentInstaller); ok && strings.EqualFold(strings.TrimSpace(a.Name()), "claude") {
-		warnings = append(warnings, claudeRestartGuidance)
-	}
-	if _, err := agent.InstallRegistryAutomationIfSupported(a, jarvis.HooksFS); err != nil {
-		warnings = append(warnings, fmt.Sprintf("Project skill registry warning: automation not installed for %s: %v", a.Name(), err))
-	}
-	if slAgent, ok := a.(statuslineInstaller); ok {
-		if err := slAgent.InstallStatusline(jarvis.HooksFS, statuslineConfirm); err != nil {
-			return warnings, fmt.Errorf("install statusline: %w", err)
-		}
-	}
-	return warnings, nil
+	return agentapply.ConfigureAgent(a, cfg, hiveEntry, context7Entry, skillsSubFS, selectedIDs, agentsSubFS, agentapply.StatuslineDecision{
+		Install: true,
+		Confirm: statuslineConfirm,
+	})
 }
 
 func requiresMCPReplacementAcknowledgement(agents []agent.Agent) bool {
@@ -163,65 +82,14 @@ func mcpReplacementAcknowledged(input string) bool {
 	return strings.TrimSpace(input) == mcpReplacementAcknowledgement
 }
 
-// reconcileWizardMCPs is the sole setup handoff for managed MCPs. It renders
-// OpenCode's fixed user-global JSON target and supplies canonical Claude
-// definitions to the agent-layer executor; it never calls Agent.MergeConfig.
+// reconcileWizardMCPs is the sole setup handoff for managed MCPs. The wizard
+// supplies its own executor and daemon-path seams so tests can drive both the
+// TUI and no-TUI routes without a real home or native CLI.
 func reconcileWizardMCPs(agents []agent.Agent, home string) error {
-	selected := make([]string, 0, 2)
-	for _, configured := range agents {
-		name := strings.ToLower(strings.TrimSpace(configured.Name()))
-		if name == "claude" || name == "opencode" {
-			selected = append(selected, name)
-		}
-	}
-	if len(selected) == 0 {
-		return nil
-	}
-
-	input := agent.WizardReconcileInput{
-		SelectedAgents: selected,
-		Root:           home,
-		EvidencePath:   filepath.Join(home, ".jarvis", "metadata", "reconcile", "recovery.json"),
-	}
-	if hasSelectedAgent(selected, "claude") {
-		hive, context7, err := agent.ClaudeUserMCPDefinitions(wizardHiveDaemonPath(home))
-		if err != nil {
-			return err
-		}
-		input.ClaudeHive, input.ClaudeContext7 = hive, context7
-	}
-	if hasSelectedAgent(selected, "opencode") {
-		managed, err := renderWizardOpenCodeMCPs(home)
-		if err != nil {
-			return err
-		}
-		input.OpenCodeMCPs = managed
-	}
-	_, err := newWizardMCPExecutor().ExecuteWizard(input)
-	return err
-}
-
-func hasSelectedAgent(selected []string, wanted string) bool {
-	for _, name := range selected {
-		if name == wanted {
-			return true
-		}
-	}
-	return false
-}
-
-func renderWizardOpenCodeMCPs(home string) (agent.OpenCodeManagedMCPs, error) {
-	hive, err := json.Marshal(map[string]any{
-		"type":    "local",
-		"command": []string{wizardHiveDaemonPath(home)},
+	return agentapply.ReconcileMCPs(agents, home, agentapply.MCPDeps{
+		NewExecutor:    newWizardMCPExecutor,
+		HiveDaemonPath: wizardHiveDaemonPath,
 	})
-	if err != nil {
-		return nil, fmt.Errorf("render OpenCode Hive MCP desired state: %w", err)
-	}
-	return agent.OpenCodeManagedMCPs{
-		"hive":     string(hive),
-		"context7": `{"type":"remote","url":"https://mcp.context7.com/mcp","enabled":true}`,
-	}, nil
 }
 
 // configureWizardAgents applies setup to all detected agents and returns

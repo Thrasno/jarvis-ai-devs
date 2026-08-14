@@ -35,9 +35,42 @@ jarvis timeline --project <project>
 | `jarvis hive` | Yes | Open Hive governance TUI using live daemon data. | `jarvis hive` |
 | `jarvis hive import-engram` | Advanced | Preview or execute local Engram-to-Hive import. | `jarvis hive import-engram --dry-run` |
 | `jarvis timeline` | Yes | Open Hive timeline TUI for a project. Requires `--project`. | `jarvis timeline --project jarvis-ai-devs` |
-| `jarvis sync` | Legacy/no-op | Prints sync guidance; sync is handled through Hive daemon tools. | `jarvis sync` |
+| `jarvis sync` | Yes | Replay this machine's recorded configuration. Takes no flags. | `jarvis sync` |
 | `jarvis sdd status` | Yes | Show SDD phase status for a change. | `jarvis sdd status <change> --project <project>` |
 | `jarvis sdd continue` | Yes | Print next recommended SDD phase. | `jarvis sdd continue <change> --json` |
+
+## `jarvis sync`
+
+`jarvis sync` reinstalls exactly what the setup wizard installed on this machine: model assignments, Jarvis-managed MCPs, installer-managed skills, the active persona, and the statusline only when you answered yes to it during installation. It reads the recorded manifest at `~/.jarvis/state.yaml` and the assets embedded in the installed binary; it never inspects the filesystem to guess what you once chose.
+
+```bash
+jarvis sync
+```
+
+| Property | Behavior |
+|----------|----------|
+| Flags | None. `jarvis sync --dry-run` and any other flag are usage errors, and nothing is written. |
+| Prompts | None. The run is non-interactive from start to finish. |
+| Already current | Zero writes, and the report says `this machine is already current; nothing was changed.` |
+| Backup | A snapshot lands in `~/.jarvis/backups/` before the first write. A converged run takes none, because it mutates nothing. |
+| Output | Always reports the changed paths, each agent's outcome, and the verification result. |
+| Exit code | Non-zero when any configured agent failed to converge, or when verification failed. |
+
+There is no `--dry-run` on purpose. Replay is the whole command, and describing changes without making them would require a second path through the applier that could drift from the real one.
+
+### `sync` versus `reconcile`
+
+| Command | Question it answers | Source of the answer |
+|---------|---------------------|----------------------|
+| `jarvis reconcile` | Is my managed configuration broken? | What `jarvis doctor` observes on disk. |
+| `jarvis sync` | Is my managed configuration stale? | The recorded manifest plus the installed version's embedded assets. |
+
+Neither command synchronizes Hive memory. The agent-facing `mem_sync` tool remains the only thing that moves memory data between local Hive and Hive API; `jarvis sync` never touches it, and says so in every report.
+
+### Partial scope and recovery
+
+- **Nothing recorded to replay.** A manifest with no configured agents blocks the run and names `jarvis` as the recovery command. Nothing is written.
+- **Cloud portion unavailable.** When the manifest records `local+cloud` scope and `~/.jarvis/sync.json` is missing or unreadable, the run reports `jarvis login` for the cloud portion and still replays the local configuration. The cloud portion never aborts a local replay.
 
 ## Hive daemon URL resolution
 

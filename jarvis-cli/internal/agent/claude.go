@@ -849,6 +849,11 @@ func (a *ClaudeAgent) statuslinePath() string {
 	return filepath.Join(a.ConfigDir(), "statusline-command.sh")
 }
 
+// StatuslineScriptSource is where the embedded statusline script lives inside a
+// hooks FS. It is exported so a caller computing the script's desired content
+// reads the same location InstallStatusline writes from.
+const StatuslineScriptSource = "embed/hooks/claude/statusline-command.sh"
+
 // statusLineSettingsPatch returns the JSON patch that registers the statusline command.
 func (a *ClaudeAgent) statusLineSettingsPatch() []byte {
 	return []byte(`{"statusLine":{"type":"command","command":"bash ~/.claude/statusline-command.sh"}}`)
@@ -873,7 +878,7 @@ func (a *ClaudeAgent) InstallStatusline(hooksFS fs.FS, confirm func() bool) erro
 	}
 
 	// Proceed: write script and merge settings.
-	content, err := fs.ReadFile(hooksFS, "embed/hooks/claude/statusline-command.sh")
+	content, err := fs.ReadFile(hooksFS, StatuslineScriptSource)
 	if err != nil {
 		return fmt.Errorf("read embedded statusline script: %w", err)
 	}

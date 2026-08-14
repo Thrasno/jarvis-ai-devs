@@ -136,9 +136,11 @@ Every Jarvis release is a complete ecosystem pack. A rollout is valid only when 
 
 1. **Announce the release**: publish the release notice in an explicit team channel (physical notice, Teams, mailing list, or equivalent) before treating rollout as started.
 2. **Apply the release through the normal install/update channel**: use the release scripts or the team-approved package channel. The channel must install or update the full pack: `jarvis` + `hive-daemon` + version-matched embedded assets.
-3. **Rerun `jarvis`**: after the update finishes, execute root `jarvis` so the setup/reconfiguration wizard reapplies managed configuration from the release you just installed.
+3. **Reapply managed configuration**: after the update finishes, run `jarvis sync` to replay exactly what this machine already recorded, or rerun `jarvis` when you want the wizard so you can change your answers.
 
 Do not use or document nonexistent release commands such as `jarvis update`, `jarvis upgrade`, or `jarvis setup`. Release rollout governs ecosystem installation and reconfiguration only; Hive ↔ Hive API sync remains a separate product behavior.
+
+`jarvis sync` is non-interactive and takes no flags. It replays the manifest at `~/.jarvis/state.yaml` against the installed version's embedded assets: model assignments, Jarvis-managed MCPs, installer-managed skills, persona, and the statusline when it was enabled at install time. A machine that is already current performs zero writes and says so. See [`docs/cli-reference.md`](docs/cli-reference.md) for the full contract and [`docs/troubleshooting.md`](docs/troubleshooting.md) for its known gaps.
 
 ### Single installer contract
 
@@ -150,6 +152,7 @@ jarvis
 
 - First run: launches full setup wizard.
 - Re-run: launches reconfiguration wizard with previous values prefilled.
+- After an upgrade with no answers to change: `jarvis sync` replays the recorded configuration without prompting.
 - Advanced commands (`jarvis persona`, `jarvis login`, `jarvis config`, etc.) remain optional power-user paths.
 
 ## Project status

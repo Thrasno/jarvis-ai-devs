@@ -1,0 +1,244 @@
+package sync
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
+)
+
+// replayableState is a manifest that passes validation, so every planner test
+// exercises the planner's own rules rather than state validation.
+func replayableState(agents ...state.Agent) *state.State {
+	st := state.New()
+	st.Persona = "gentleman"
+	st.ManagedAssetDigest = "sha256:embedded-assets"
+	st.InstalledAgents = agents
+	return st
+}
+
+// snapshotTree records every file under root with its permission bits, so a
+// test can prove the read-only planner wrote nothing.
+func snapshotTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+	tree := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return infoErr
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		tree[filepath.ToSlash(rel)] = fmt.Sprintf("%04o:%s", info.Mode().Perm(), data)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot %s: %v", root, err)
+	}
+	return tree
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// An agent-less manifest must block. The planner must never recover by looking
+// for agent files on disk, so both installed agents are present on the
+// filesystem and neither may be planned.
+func TestBuildPlan_AgentlessManifestBlocksAndNeverRedetects(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, ".claude", "CLAUDE.md"), "installed claude instructions")
+	writeFile(t, filepath.Join(root, ".config", "opencode", "AGENTS.md"), "installed opencode instructions")
+	before := snapshotTree(t, root)
+
+	tests := []struct {
+		name  string
+		state *state.State
+	}{
+		{name: "manifest records no agents", state: replayableState()},
+		{name: "manifest is absent", state: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan, err := BuildPlan(PlanInput{Root: root, State: tt.state, Templates: jarvis.TemplatesFS})
+
+			if !errors.Is(err, ErrNoConfiguredAgents) {
+				t.Fatalf("BuildPlan error = %v, want ErrNoConfiguredAgents", err)
+			}
+			if !strings.Contains(err.Error(), "jarvis") {
+				t.Fatalf("block message %q does not name the recovery command %q", err, "jarvis")
+			}
+			if len(plan.Artifacts) != 0 {
+				t.Fatalf("blocked plan carries %d artifacts, want 0", len(plan.Artifacts))
+			}
+			if after := snapshotTree(t, root); !reflect.DeepEqual(before, after) {
+				t.Fatalf("planner mutated the filesystem:\nbefore %v\nafter  %v", before, after)
+			}
+		})
+	}
+}
+
+// Targets come from the assets embedded in the running binary. Whatever a
+// previous version left on disk is never a source, and planning stays read-only.
+func TestBuildPlan_RendersTargetsFromInstalledBinaryAssetsOnly(t *testing.T) {
+	root := t.TempDir()
+	claudePath := filepath.Join(root, ".claude", "CLAUDE.md")
+	agentsPath := filepath.Join(root, ".config", "opencode", "AGENTS.md")
+	writeFile(t, claudePath, "stale instructions rendered by an older version")
+	writeFile(t, agentsPath, "stale instructions rendered by an older version")
+	before := snapshotTree(t, root)
+
+	in := PlanInput{
+		Root: root,
+		State: replayableState(
+			state.Agent{ID: "claude", InstructionsPath: claudePath, ConfigPath: "settings.json"},
+			state.Agent{ID: "opencode", InstructionsPath: agentsPath, ConfigPath: "opencode.json"},
+		),
+		Templates: jarvis.TemplatesFS,
+		Layer1:    "layer one",
+		Layer2:    "layer two",
+		Skills:    []config.SkillInfo{{Name: "sdd-apply", Description: "implements tasks", Trigger: "apply"}},
+	}
+
+	plan, err := BuildPlan(in)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+
+	wantClaude, err := config.RenderCLAUDEMd(jarvis.TemplatesFS, in.Layer1, in.Layer2, "", in.Skills)
+	if err != nil {
+		t.Fatalf("render CLAUDE.md: %v", err)
+	}
+	wantAgents, err := config.RenderAGENTSMd(jarvis.TemplatesFS, in.Layer1, in.Layer2, "", in.Skills)
+	if err != nil {
+		t.Fatalf("render AGENTS.md: %v", err)
+	}
+	want := map[string]string{
+		".claude/CLAUDE.md":          wantClaude,
+		".config/opencode/AGENTS.md": wantAgents,
+	}
+
+	got := map[string]string{}
+	for _, artifact := range plan.Artifacts {
+		got[artifact.Location] = string(artifact.Bytes)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("planned targets do not match the embedded assets; got locations %v", got)
+	}
+	if after := snapshotTree(t, root); !reflect.DeepEqual(before, after) {
+		t.Fatal("planner mutated the filesystem; planning is read-only")
+	}
+}
+
+// Managed instruction files carry no provenance marker on disk, so no marker was
+// ever observed and none may be claimed. Their ownership proof is manifest
+// membership, the same rule ApplyInstructions enforces before it writes.
+func TestBuildPlan_InstructionTargetsAreProvenByManifestNotByMarker(t *testing.T) {
+	root := t.TempDir()
+	in := PlanInput{
+		Root:      root,
+		State:     replayableState(state.Agent{ID: "claude", InstructionsPath: ".claude/CLAUDE.md", ConfigPath: "settings.json"}),
+		Templates: jarvis.TemplatesFS,
+	}
+
+	plan, err := BuildPlan(in)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if len(plan.Artifacts) != 1 {
+		t.Fatalf("planned %d artifacts, want 1", len(plan.Artifacts))
+	}
+
+	artifact := plan.Artifacts[0]
+	proof, isIdentity := artifact.Proof.(IdentityProof)
+	if !isIdentity {
+		t.Fatalf("proof is %T, want IdentityProof", artifact.Proof)
+	}
+	if proof.Source != IdentitySourceManifest {
+		t.Fatalf("proof source is %q, want %q", proof.Source, IdentitySourceManifest)
+	}
+}
+
+// A marker proof asserts that reconcile compared an observed on-disk marker
+// against the manifest. That comparison never runs for instruction targets,
+// because nothing populates the inventory reconcile classifies against. Planning
+// must therefore never hand back a MarkerProof for one, whatever is on disk.
+func TestBuildPlan_NeverClaimsAnUnobservedMarkerProof(t *testing.T) {
+	root := t.TempDir()
+	claudePath := filepath.Join(root, ".claude", "CLAUDE.md")
+	// Content owned by someone else: no Jarvis marker, no Jarvis bytes.
+	writeFile(t, claudePath, "# my own notes\nhand-written by the user, never by Jarvis\n")
+
+	plan, err := BuildPlan(PlanInput{
+		Root:      root,
+		State:     replayableState(state.Agent{ID: "claude", InstructionsPath: claudePath, ConfigPath: "settings.json"}),
+		Templates: jarvis.TemplatesFS,
+	})
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	// Without this the loop below would pass on an empty plan, asserting nothing.
+	if len(plan.Artifacts) != 1 {
+		t.Fatalf("planned %d artifacts, want 1", len(plan.Artifacts))
+	}
+	for _, artifact := range plan.Artifacts {
+		if _, isMarker := artifact.Proof.(MarkerProof); isMarker {
+			t.Fatalf("artifact %q at %q claims MarkerProof, but no marker was ever read from disk", artifact.Identity, artifact.Location)
+		}
+	}
+}
+
+func TestBuildPlan_FailsClosedOnUnrenderableAgents(t *testing.T) {
+	root := t.TempDir()
+	outsideRoot := filepath.Join(t.TempDir(), "CLAUDE.md")
+
+	tests := []struct {
+		name  string
+		agent state.Agent
+	}{
+		{
+			name:  "the installed binary embeds no instruction template for the agent",
+			agent: state.Agent{ID: "cursor", InstructionsPath: ".cursor/rules.md", ConfigPath: "cursor.json"},
+		},
+		{
+			name:  "the recorded instructions path escapes the managed root",
+			agent: state.Agent{ID: "claude", InstructionsPath: outsideRoot, ConfigPath: "settings.json"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan, err := BuildPlan(PlanInput{Root: root, State: replayableState(tt.agent), Templates: jarvis.TemplatesFS})
+			if err == nil {
+				t.Fatal("BuildPlan succeeded, want a fail-closed error")
+			}
+			if len(plan.Artifacts) != 0 {
+				t.Fatalf("failed plan carries %d artifacts, want 0", len(plan.Artifacts))
+			}
+		})
+	}
+}

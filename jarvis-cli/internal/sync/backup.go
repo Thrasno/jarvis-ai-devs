@@ -1,0 +1,131 @@
+// This file puts the pre-apply backup in front of replay, and makes that
+// ordering the only way to reach the applier.
+//
+// Replay is destructive by design: WriteInstructions discards a managed
+// instruction file that carries no Jarvis sentinels and renders it fresh
+// (agent/claude.go:350-356, agent/opencode.go:445-452). That behaviour is only
+// defensible because the archive taken here holds the previous bytes, so the
+// backup is a hard precondition rather than a courtesy. Run is therefore the
+// entry point a command uses; Apply stays available for tests that drive the
+// component order directly.
+package sync
+
+import (
+	"errors"
+	"fmt"
+
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/lifecycle"
+)
+
+// BackupSourceOperation labels every snapshot replay takes, so a recovering user
+// can tell a sync archive from a reconcile or restore one in ~/.jarvis/backups.
+const BackupSourceOperation = "sync"
+
+// ErrNoBackup refuses a replay pass that was handed no way to take a backup.
+// Failing closed matters more than convenience here: a nil seam would otherwise
+// read as "no backup needed" and silently mutate.
+var ErrNoBackup = errors.New("replay requires a backup before it may mutate anything")
+
+// SnapshotCreator is the pre-apply backup seam, satisfied by
+// lifecycle.BackupStore.CreateSnapshotOfTargets.
+type SnapshotCreator func(sourceOperation string, targets []lifecycle.BackupTarget) (lifecycle.BackupManifest, error)
+
+// RunInput is a replay pass with its safety machinery attached.
+type RunInput struct {
+	Plan   Plan
+	Apply  ApplyInput
+	Backup SnapshotCreator
+	// Bookkeeping is optional: nil records nothing, which is what a caller
+	// driving the applier directly wants.
+	Bookkeeping *Bookkeeping
+}
+
+// RunResult pairs the recovery point with the outcome it protects.
+type RunResult struct {
+	Backup lifecycle.BackupManifest
+	Report Report
+}
+
+// BackupTargets projects the plan's tracked-path list onto backup targets.
+//
+// It reads Plan.Tracked and builds nothing of its own. That list has one
+// producer and two consumers, the backup and the idempotency diff, so a path
+// this run is responsible for cannot end up measured but unprotected.
+func BackupTargets(plan Plan) []lifecycle.BackupTarget {
+	targets := make([]lifecycle.BackupTarget, 0, len(plan.Tracked))
+	for _, tracked := range plan.Tracked {
+		targets = append(targets, lifecycle.BackupTarget{Path: tracked.Path})
+	}
+	return targets
+}
+
+// Run measures, protects, replays, then measures again.
+//
+// A backup failure returns before the applier is ever called, so the run mutates
+// nothing at all and the cause is reported rather than downgraded to a warning.
+// Partial protection is not on the menu: there is no per-agent or best-effort
+// path through here. The same is true of the opening snapshot, which fails
+// closed for the same reason: an unmeasurable path list cannot be reported on.
+//
+// The opening measurement also decides whether there is anything to do at all.
+// Every tracked path carries the digest of the content replay would write, so a
+// machine already holding that content and mode is converged before the applier
+// is ever called and the run skips it. Zero changed files is not the same
+// promise as zero writes: the components rewrite unconditionally, so measuring
+// after the fact still removes and recreates every managed file on an unchanged
+// machine. A short-circuited run takes no backup either, because the backup
+// exists to make the destructive instruction writer defensible and nothing on
+// this path mutates anything.
+func Run(in RunInput) (RunResult, error) {
+	if in.Backup == nil {
+		return RunResult{}, ErrNoBackup
+	}
+	before, err := TakeSnapshot(in.Plan.Tracked)
+	if err != nil {
+		return RunResult{}, fmt.Errorf("measure %d tracked paths before replay: %w", len(in.Plan.Tracked), err)
+	}
+	if before.Matches(in.Plan.Tracked) {
+		return RunResult{Report: convergedWithoutApplying(in.Apply.Targets)}, nil
+	}
+	manifest, err := in.Backup(BackupSourceOperation, BackupTargets(in.Plan))
+	if err != nil {
+		return RunResult{}, fmt.Errorf("back up %d tracked paths before replay: %w", len(in.Plan.Tracked), err)
+	}
+	result := RunResult{Backup: manifest, Report: Apply(in.Apply)}
+	// Mode assertion is part of the mutation pass and runs before the closing
+	// snapshot, so a mode a writer left behind is corrected rather than merely
+	// reported as drift on every run.
+	// Both failure paths below leave the diff unmeasured, which is not evidence
+	// that nothing changed: the applier already ran, so the record is still written.
+	if err := EnforceModes(in.Plan.Tracked); err != nil {
+		return result, errors.Join(err, in.Bookkeeping.record())
+	}
+	after, err := TakeSnapshot(in.Plan.Tracked)
+	if err != nil {
+		measured := fmt.Errorf("measure %d tracked paths after replay: %w", len(in.Plan.Tracked), err)
+		return result, errors.Join(measured, in.Bookkeeping.record())
+	}
+	changed := Diff(before, after)
+	result.Report = attributeChanges(result.Report, in.Plan.Tracked, changed)
+	// Verification is not conditional on bookkeeping succeeding. A failed record
+	// says nothing about what landed on disk, and this run just wrote to it, so
+	// letting a busy manifest lock swallow the check would hide exactly the
+	// silent broken-output failure the check exists to catch. Both are reported.
+	var recorded error
+	if len(changed) > 0 {
+		recorded = in.Bookkeeping.record()
+	}
+	return result, errors.Join(recorded, verifyApplied(after, in.Plan.Tracked, in.Apply.Targets))
+}
+
+// convergedWithoutApplying is the honest report of a run that found nothing to
+// do: every agent is already in its desired state and no path changed. The
+// claim is measured, not assumed — it comes from comparing the machine against
+// the plan's own desired digests.
+func convergedWithoutApplying(targets []AgentTarget) Report {
+	report := Report{Agents: make([]AgentResult, 0, len(targets)), Changed: []string{}}
+	for _, target := range targets {
+		report.Agents = append(report.Agents, AgentResult{Agent: target.ID, Converged: true, Changed: []string{}})
+	}
+	return report
+}

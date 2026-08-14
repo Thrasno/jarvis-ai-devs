@@ -235,6 +235,120 @@ func TestBackupStore_CreateSnapshotFailsWhenTargetMissing(t *testing.T) {
 	}
 }
 
+// A replay command computes its own target list from desired state, so it names
+// paths that do not exist yet: a skill this version added, or a statusline a
+// user deleted. There is nothing to preserve for a file that is not there, and
+// refusing the whole backup over one would block every mutation forever.
+func TestBackupStore_CreateSnapshotOfTargetsSkipsPathsThatDoNotExistYet(t *testing.T) {
+	home := t.TempDir()
+	store := NewBackupStore(home)
+
+	root := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	present := filepath.Join(root, "CLAUDE.md")
+	if err := os.WriteFile(present, []byte("managed instructions"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	// Neither the file nor its parent directories exist.
+	absent := filepath.Join(root, "skills", "go-testing", "SKILL.md")
+
+	manifest, err := store.CreateSnapshotOfTargets("sync", []BackupTarget{{Path: absent}, {Path: present}})
+	if err != nil {
+		t.Fatalf("CreateSnapshotOfTargets returned error: %v", err)
+	}
+	if len(manifest.Entries) != 1 || manifest.Entries[0].Path != present {
+		t.Fatalf("expected only the existing target archived, got %#v", manifest.Entries)
+	}
+	if manifest.Entries[0].Checksum != checksumHex([]byte("managed instructions")) {
+		t.Fatalf("archived checksum does not match on-disk content: %#v", manifest.Entries[0])
+	}
+	if err := store.ValidateSnapshot(manifest); err != nil {
+		t.Fatalf("ValidateSnapshot returned error: %v", err)
+	}
+}
+
+// The allowed roots are the boundary of what a backup may read. A target list
+// built outside this package does not get to widen it.
+func TestBackupStore_CreateSnapshotOfTargetsRejectsTargetOutsideAllowedRoots(t *testing.T) {
+	home := t.TempDir()
+	store := NewBackupStore(home)
+
+	outside := filepath.Join(home, "Documents", "taxes.txt")
+	if err := os.MkdirAll(filepath.Dir(outside), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(outside, []byte("private"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+
+	_, err := store.CreateSnapshotOfTargets("sync", []BackupTarget{{Path: outside}})
+	if err == nil {
+		t.Fatal("expected a target outside the allowed roots to be refused")
+	}
+	if !strings.Contains(err.Error(), "allowed roots") {
+		t.Fatalf("expected an actionable out-of-roots error, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(home, ".jarvis", "backups")); !os.IsNotExist(statErr) {
+		t.Fatalf("a refused target list must write no archive, stat = %v", statErr)
+	}
+}
+
+// An allowed root that is absent from this machine matches nothing and is
+// skipped, but a root that exists and cannot be read is a real problem with the
+// machine. Denying a legitimate path as "outside allowed roots" over it would be
+// a lie, and Restore turns that refusal into restore_unsafe_path, advising the
+// user to remove manifest entries — destroying their recovery point over a
+// permission bit. So the two cases must not share an exit.
+func TestBackupStore_UnreadableAllowedRootIsReportedInsteadOfDeniedSilently(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permission bits, so an unreadable root cannot be simulated")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no POSIX permission bits: Chmod only toggles the read-only attribute")
+	}
+	home := t.TempDir()
+	store := NewBackupStore(home)
+
+	// The target lives under ~/.jarvis, the third allowed root, so the loop must
+	// pass through ~/.config/opencode to reach it.
+	jarvisRoot := filepath.Join(home, ".jarvis")
+	if err := os.MkdirAll(jarvisRoot, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	target := filepath.Join(jarvisRoot, "managed.md")
+	if err := os.WriteFile(target, []byte("managed content"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	// ~/.config exists but cannot be traversed, so canonicalizing the
+	// ~/.config/opencode root fails with a permission error. An absent root would
+	// not do: canonicalizePath falls back to resolving the parent, so a root whose
+	// parent exists produces no error at all.
+	configDir := filepath.Join(home, ".config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(configDir, 0o000); err != nil {
+		t.Fatalf("chmod config: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(configDir, 0o755) })
+
+	_, err := store.CreateSnapshotOfTargets("sync", []BackupTarget{{Path: target}})
+
+	if err == nil {
+		t.Fatal("an unreadable allowed root must be reported, not swallowed into a denial")
+	}
+	// The message must name the real cause. "outside allowed roots" would send the
+	// user hunting a path problem they do not have.
+	if strings.Contains(err.Error(), "outside allowed roots") {
+		t.Fatalf("a permission failure was reported as a path-scope denial: %v", err)
+	}
+	if !strings.Contains(err.Error(), "canonicalize") {
+		t.Fatalf("error does not name the canonicalization failure: %v", err)
+	}
+}
+
 func TestBackupStore_ValidateManifestRejectsSymlinkEscape(t *testing.T) {
 	home := t.TempDir()
 	store := NewBackupStore(home)
