@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/lifecycle"
@@ -118,6 +119,10 @@ func TestRun_WritesBookkeepingUnderLockOnlyWhenATargetChanged(t *testing.T) {
 // skipped. EnforceModes fails here because a tracked path sits under what the
 // applier just made a regular file.
 func TestRun_WritesBookkeepingWhenTheDiffCouldNotBeMeasured(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("this forces the failure through ENOTDIR on a path under a regular file, which Windows does not report the same way")
+	}
+
 	home := t.TempDir()
 	seedManifest(t, home, "sha256:previous")
 
