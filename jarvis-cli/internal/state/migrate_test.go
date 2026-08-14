@@ -378,3 +378,74 @@ func TestMigrate_LeavesAnExistingManifestAlone(t *testing.T) {
 		t.Fatalf("Migrate overwrote the manifest from a stripped config.yaml: %+v", got)
 	}
 }
+
+// TestMigrate_SelectionConfiguredRecordsBeingAskedNotMerelyBeingDetected holds
+// the distinction the field exists for: "asked, selected nothing" is not the
+// same as "never asked". Migration is one-way and runs once per machine, so a
+// value derived from the wrong evidence is written permanently.
+//
+// The two table cases are the two directions the presence-counting derivation
+// gets wrong. Detected-but-unconfigured agents are not a selection: the wizard
+// records what it found before the user answers. An explicitly empty
+// configured_agents list is one: the wizard only writes the key after asking.
+func TestMigrate_SelectionConfiguredRecordsBeingAskedNotMerelyBeingDetected(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config string
+		want   bool
+	}{
+		{
+			name: "agents detected but none configured is not a selection",
+			config: `schema_version: 2
+install:
+  agents:
+    claude:
+      configured: false
+    opencode:
+      configured: false
+`,
+			want: false,
+		},
+		{
+			name: "an explicitly empty list is a selection of nothing",
+			config: `schema_version: 2
+configured_agents: []
+`,
+			want: true,
+		},
+		{
+			name: "a configured agent is a selection",
+			config: `schema_version: 2
+install:
+  agents:
+    claude:
+      configured: true
+`,
+			want: true,
+		},
+		{
+			name: "no agent evidence at all is not a selection",
+			config: `schema_version: 2
+persona_preset: neutral
+`,
+			want: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := isolateHome(t)
+			writeConfig(t, home, tc.config)
+
+			if _, err := Migrate(); err != nil {
+				t.Fatalf("Migrate: %v", err)
+			}
+			st, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if st.SelectionConfigured != tc.want {
+				t.Errorf("selection_configured = %v, want %v (installed_agents = %#v)",
+					st.SelectionConfigured, tc.want, st.InstalledAgents)
+			}
+		})
+	}
+}

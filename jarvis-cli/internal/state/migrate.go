@@ -170,7 +170,7 @@ func manifestFromLegacyConfig(legacy legacyConfig) *State {
 	}
 
 	manifest.InstalledAgents = InstalledAgentsFrom(legacy.ConfiguredAgents, legacy.Install.Agents)
-	manifest.SelectionConfigured = len(legacy.ConfiguredAgents) > 0 || len(legacy.Install.Agents) > 0
+	manifest.SelectionConfigured = selectionWasMade(legacy)
 
 	if legacy.SDD.PhaseModels != nil {
 		manifest.PhaseModels.Aliases = legacy.SDD.PhaseModels
@@ -187,6 +187,38 @@ func manifestFromLegacyConfig(legacy legacyConfig) *State {
 }
 
 // AgentRecord mirrors one config.yaml `install.agents` entry.
+// selectionWasMade reports whether the legacy config carries evidence that the
+// user was actually asked to choose agents. That is what SelectionConfigured
+// records, and the field exists to tell "selected nothing" apart from "never
+// asked", so counting how many agents happen to be mentioned answers a
+// different question than the one being asked.
+//
+// Two kinds of evidence count, and one does not:
+//
+//   - A present configured_agents key counts even when the list is empty. The
+//     wizard writes that key only after asking, so an empty list is a recorded
+//     answer of "none" rather than an absent answer.
+//   - A record marked configured counts, for the same reason it is the thing
+//     InstalledAgentsFrom carries over.
+//   - install.agents entries that are not configured do not count. The
+//     installer writes them from what it detected on the machine, before the
+//     user answers anything, so they are evidence of detection and nothing else.
+//
+// This runs inside a one-way migration that executes once per machine, so a
+// value derived from the wrong evidence is not a bug a later release can fix by
+// changing this function; it would need a second migration to undo.
+func selectionWasMade(legacy legacyConfig) bool {
+	if legacy.ConfiguredAgents != nil {
+		return true
+	}
+	for _, record := range legacy.Install.Agents {
+		if record.Configured {
+			return true
+		}
+	}
+	return false
+}
+
 type AgentRecord struct {
 	Configured       bool   `yaml:"configured"`
 	InstructionsPath string `yaml:"instructions_path"`
