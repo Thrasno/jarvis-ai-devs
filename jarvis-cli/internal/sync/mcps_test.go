@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"testing"
 
@@ -39,7 +40,13 @@ func mcpReplayFixture(t *testing.T) (string, map[string]agent.Agent, string) {
 			t.Fatalf("create %s: %v", dir, err)
 		}
 	}
-	daemon := filepath.Join(home, ".jarvis", "bin", "hive-daemon")
+	// validHiveDaemonExecutable checks the executable bit on Unix and the .exe
+	// extension on Windows, so the stand-in must be valid under both rules.
+	daemonName := "hive-daemon"
+	if runtime.GOOS == "windows" {
+		daemonName += ".exe"
+	}
+	daemon := filepath.Join(home, ".jarvis", "bin", daemonName)
 	writeFile(t, daemon, "#!/bin/sh\n")
 	if err := os.Chmod(daemon, 0o755); err != nil {
 		t.Fatalf("chmod %s: %v", daemon, err)
