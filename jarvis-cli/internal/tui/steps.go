@@ -1497,6 +1497,12 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		if err := config.Save(m.cfg); err != nil {
 			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: save config: %v. Ver docs/setup-recovery.md", err), done: true, failed: true}
 		}
+		// ~/.jarvis/state.yaml owns the replay fields the wizard just decided.
+		// Strictly after config.Save, never around it: the bridge inside
+		// config.Save takes the fail-fast, non-reentrant manifest lock.
+		if err := recordWizardDesiredState(m.cfg); err != nil {
+			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: record the desired-state manifest: %v. Ver docs/setup-recovery.md", err), done: true, failed: true}
+		}
 		registryWarnings, registryErr := refreshProjectRegistryForApply(context.Background(), m.ProjectCWD)
 		if registryErr != nil {
 			return agentProgressMsg{line: fmt.Sprintf("Project skill registry refresh failed: %v", registryErr), done: true, failed: true}

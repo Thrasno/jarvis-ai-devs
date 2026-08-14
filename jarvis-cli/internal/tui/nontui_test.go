@@ -267,6 +267,35 @@ func TestRunNoTUI_RerunKeepsExistingSelectionsOnBlankInput(t *testing.T) {
 	}
 }
 
+// TestRunNoTUI_MigratesBeforeReadingTheManifest is the persisted-result half of
+// TestNewModel_MigratesBeforeReadingTheManifest. A machine upgrading into this
+// version has its persona in config.yaml and no manifest at all; if the wizard
+// reads the manifest without migrating first, accepting the default at the
+// persona prompt silently replaces the user's persona with the catalog's first
+// entry and writes that into state.yaml on apply.
+func TestRunNoTUI_MigratesBeforeReadingTheManifest(t *testing.T) {
+	home := isolateTestHome(t)
+	t.Setenv("PATH", "")
+	seedPreMigrationConfig(t, home, `schema_version: 2
+api_url: https://example.invalid
+persona_preset: second
+persona_preset_source: builtin
+`)
+
+	// scope keep default, persona keep default, extra skills keep defaults, apply=yes.
+	if err := runNoTUI(testWizardConfig(), strings.NewReader("\n\nyes\n")); err != nil {
+		t.Fatalf("runNoTUI on a pre-migration machine: %v", err)
+	}
+
+	manifest, err := state.Load()
+	if err != nil {
+		t.Fatalf("load state.yaml after apply: %v", err)
+	}
+	if manifest.Persona != "second" {
+		t.Fatalf("state.yaml persona = %q, want the one recorded in config.yaml", manifest.Persona)
+	}
+}
+
 func TestRunNoTUI_BlankPersonaInputBlocksLegacyV1PresetAndPreservesConfig(t *testing.T) {
 	home := isolateTestHome(t)
 	t.Setenv("PATH", "")

@@ -39,15 +39,27 @@ func RunNoTUI(wcfg WizardConfig) error {
 // runNoTUI is the testable implementation that accepts any io.Reader as input.
 func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	scanner := bufio.NewScanner(input)
+
+	// The manifest is read before the config for two reasons: the migration it
+	// performs must have run by the time the bridge inside config.Load projects
+	// the manifest back onto AppConfig, and a machine upgrading into this version
+	// still has its persona, skills and phase models in config.yaml alone.
+	manifest, migration, err := loadWizardManifest()
+	if err != nil {
+		return err
+	}
+	if migration.Notice != "" {
+		fmt.Fprintln(noTUIStdout, migration.Notice)
+	}
+
 	cfg, err := loadAppConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	previousPresetSlug := cfg.PersonaPreset
-	previousPresetSource := persona.PresetSourceBuiltin
-	if strings.TrimSpace(cfg.PersonaPresetSource) == string(persona.PresetSourceUser) {
-		previousPresetSource = persona.PresetSourceUser
-	}
+	// The persona the manifest recorded is both what the prompts prefill and the
+	// profile the apply step replaces.
+	configuredPersona, previousPresetSource := wizardPersonaSelection(manifest)
+	previousPresetSlug := configuredPersona
 	mode := cfg.ConfigStatus()
 
 	// ── Step 1: Scope ─────────────────────────────────────────────────────────
@@ -131,7 +143,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		return err
 	}
 	if configExists {
-		if err := validateConfiguredPersonaPresetForV2Selection(wcfg.PersonaFS, cfg.PersonaPreset); err != nil {
+		if err := validateConfiguredPersonaPresetForV2Selection(wcfg.PersonaFS, configuredPersona); err != nil {
 			return err
 		}
 	}
@@ -139,10 +151,9 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		Name:        "custom",
 		DisplayName: "Custom (crear nuevo)",
 	})
-	defaultPreset := cfg.PersonaPreset
-	if defaultPreset == "" {
-		defaultPreset = cfg.Preset
-	}
+	// The manifest already merged the legacy `preset` key into its persona at
+	// migration time, so there is no second key left to fall back to.
+	defaultPreset := configuredPersona
 	defaultIdx := 0
 	for i, p := range presets {
 		if p.Name == defaultPreset {
@@ -194,7 +205,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("list skills: %w", err)
 	}
-	plan := buildSkillSelectionPlan(skillList, cfg.SelectedSkills)
+	plan := buildSkillSelectionPlan(skillList, wizardSelectedSkills(manifest))
 	selected := plan.Selected
 	for _, prompt := range plan.Prompts {
 		defaultYes := false
@@ -221,7 +232,10 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 
 	// ── Step 5: SDD Phase Models ──────────────────────────────────────────────
 	fmt.Println("\n=== Jarvis-Dev Setup [5/7] SDD Phase Models ===")
-	resolvedPhaseModels := sddruntime.ResolvePhaseModels(cfg.PhaseModelsForState())
+	// The manifest owns the per-phase models; the editor seeds its working state
+	// from it and hands the result back through cfg, which config.Save consumes.
+	manifestPhaseModels := wizardPhaseModels(manifest)
+	resolvedPhaseModels := sddruntime.ResolvePhaseModels(manifestPhaseModels)
 	openCodePhaseModelDiscoveryDiagnostics = nil
 	opencodeAssignments := discoverOpenCodePhaseModelOptions()
 	for _, diagnostic := range openCodePhaseModelDiscoveryDiagnostics {
@@ -275,14 +289,17 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 			cfg.SDD.ClaudePhaseModels[phase] = claudeAssignment
 		}
 	}
-	if cfg.SDD.PhaseModels == nil {
-		cfg.SDD.PhaseModels = map[string]config.PhaseModelSelection{}
+	cfg.SDD.PhaseModels = make(map[string]config.PhaseModelSelection, len(manifestPhaseModels.Aliases))
+	for phase, sel := range manifestPhaseModels.Aliases {
+		cfg.SDD.PhaseModels[phase] = config.PhaseModelSelection(sel)
 	}
-	if cfg.SDD.OpenCodePhaseModels == nil {
-		cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{}
+	cfg.SDD.OpenCodePhaseModels = make(map[string]config.OpenCodeModelAssignment, len(manifestPhaseModels.OpenCode))
+	for phase, assignment := range manifestPhaseModels.OpenCode {
+		cfg.SDD.OpenCodePhaseModels[phase] = config.OpenCodeModelAssignment(assignment)
 	}
-	if cfg.SDD.ClaudePhaseModels == nil {
-		cfg.SDD.ClaudePhaseModels = map[string]config.ClaudeModelAssignment{}
+	cfg.SDD.ClaudePhaseModels = make(map[string]config.ClaudeModelAssignment, len(manifestPhaseModels.Claude))
+	for phase, assignment := range manifestPhaseModels.Claude {
+		cfg.SDD.ClaudePhaseModels[phase] = config.ClaudeModelAssignment(assignment)
 	}
 	for phase, row := range resolvedPhaseModels {
 		cfg.SDD.PhaseModels[phase] = config.PhaseModelSelection(row)
@@ -464,6 +481,12 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	cfg.Version = "1.0.0"
 	if saveErr := config.Save(cfg); saveErr != nil {
 		return fmt.Errorf("save config: %w", saveErr)
+	}
+	// ~/.jarvis/state.yaml owns the replay fields the wizard just decided.
+	// Strictly after config.Save, never around it: the bridge inside config.Save
+	// takes the fail-fast, non-reentrant manifest lock.
+	if err := recordWizardDesiredState(cfg); err != nil {
+		return fmt.Errorf("record the desired-state manifest: %w", err)
 	}
 	registryWarnings, registryErr := refreshProjectRegistryForApply(context.Background(), wcfg.ProjectCWD)
 	if registryErr != nil {

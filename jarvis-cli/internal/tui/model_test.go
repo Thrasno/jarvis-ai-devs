@@ -20,7 +20,17 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/opencode"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
+
+// manifestWithOpenCodePhaseModel returns a manifest carrying one recorded
+// OpenCode provider/model assignment, the store the phase-model editor seeds
+// its rows from.
+func manifestWithOpenCodePhaseModel(phase string, assignment state.OpenCodeModelAssignment) *state.State {
+	manifest := state.New()
+	manifest.PhaseModels.OpenCode[phase] = assignment
+	return manifest
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Test helpers
@@ -367,6 +377,65 @@ func TestNewModel_PrefillsExistingConfigAndMode(t *testing.T) {
 	}
 }
 
+// seedPreMigrationConfig writes a schema-2 ~/.jarvis/config.yaml that still owns
+// the replay fields, with no ~/.jarvis/state.yaml beside it. This is the machine
+// upgrading into the version that moved those fields into the manifest.
+func seedPreMigrationConfig(t *testing.T, home, body string) {
+	t.Helper()
+	path := filepath.Join(home, ".jarvis", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create .jarvis: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("seed config.yaml: %v", err)
+	}
+	statePath, err := state.Path()
+	if err != nil {
+		t.Fatalf("state path: %v", err)
+	}
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Fatalf("state.yaml must not exist before migration, stat err = %v", err)
+	}
+}
+
+// TestNewModel_MigratesBeforeReadingTheManifest covers the upgrade path for the
+// wizard, the same one `jarvis persona set` regressed on: a machine whose
+// persona and phase models still live in config.yaml with no manifest yet. The
+// wizard now prefills from the manifest, so reading it without migrating first
+// sees an empty one and offers the user the built-in defaults instead of the
+// choices they already made -- and then writes those defaults back on apply.
+func TestNewModel_MigratesBeforeReadingTheManifest(t *testing.T) {
+	home := isolateTestHome(t)
+	seedPreMigrationConfig(t, home, `schema_version: 2
+api_url: https://example.invalid
+persona_preset: second
+persona_preset_source: builtin
+sdd:
+  claude_phase_models:
+    default:
+      model: haiku
+      effort: high
+`)
+
+	m := NewModel(testWizardConfig(), false)
+
+	if m.presetCur != 1 {
+		t.Fatalf("preset cursor = %d, want 1 (the persona recorded in config.yaml)", m.presetCur)
+	}
+	if m.previousPresetSlug != "second" {
+		t.Fatalf("previousPresetSlug = %q, want the persona recorded in config.yaml", m.previousPresetSlug)
+	}
+	var defaultRow phaseModelRow
+	for _, row := range m.phaseModelRows {
+		if row.Phase == "default" {
+			defaultRow = row
+		}
+	}
+	if defaultRow.Claude != "haiku" || defaultRow.ClaudeEffort != "high" {
+		t.Fatalf("default phase row = %+v, want the Claude model and effort recorded in config.yaml", defaultRow)
+	}
+}
+
 func TestNewModel_FreshDefaultsSelectFirstProfile(t *testing.T) {
 	isolateTestHome(t)
 
@@ -707,9 +776,8 @@ func TestStep_PhaseModels_ClearsOpenCodeProviderModelAssignmentWhenCyclingToLega
 	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
 		&mockAgent{name: "opencode", configDir: t.TempDir()},
 	}}
-	m.cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
-		"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max"},
-	}
+	// ~/.jarvis/state.yaml is the store the editor seeds its rows from.
+	m.manifest = manifestWithOpenCodePhaseModel("default", state.OpenCodeModelAssignment{ProviderID: "openai", ModelID: "gpt-5.1-codex-max"})
 	m = initializePhaseModelEditor(m)
 	m.phaseModelActiveRow = 0
 	m.phaseModelActiveCol = 1
@@ -736,9 +804,8 @@ func TestStep_PhaseModels_KeepsStoredOpenCodeProviderModelAssignmentWhenDiscover
 	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
 		&mockAgent{name: "opencode", configDir: t.TempDir()},
 	}}
-	m.cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
-		"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max"},
-	}
+	// ~/.jarvis/state.yaml is the store the editor seeds its rows from.
+	m.manifest = manifestWithOpenCodePhaseModel("default", state.OpenCodeModelAssignment{ProviderID: "openai", ModelID: "gpt-5.1-codex-max"})
 	m = initializePhaseModelEditor(m)
 	m.phaseModelActiveRow = 0
 	m.phaseModelActiveCol = 1
@@ -782,9 +849,8 @@ func TestStep_PhaseModels_UsesStoredOpenCodeProviderModelAssignment(t *testing.T
 	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Agents: []agent.Agent{
 		&mockAgent{name: "opencode", configDir: t.TempDir()},
 	}}
-	m.cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
-		"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max"},
-	}
+	// ~/.jarvis/state.yaml is the store the editor seeds its rows from.
+	m.manifest = manifestWithOpenCodePhaseModel("default", state.OpenCodeModelAssignment{ProviderID: "openai", ModelID: "gpt-5.1-codex-max"})
 	m = initializePhaseModelEditor(m)
 
 	if got := m.phaseModelRows[0].OpenCodeAssignment; got.ProviderID != "openai" || got.ModelID != "gpt-5.1-codex-max" {
