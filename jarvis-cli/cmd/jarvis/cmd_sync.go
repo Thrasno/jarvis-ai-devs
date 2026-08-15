@@ -161,7 +161,7 @@ func replayInput(home string, manifest *state.State) (sync.ReplayInput, error) {
 	}
 	installed := make(map[string]agent.Agent)
 	for _, detected := range agent.Detect(jarvis.TemplatesFS) {
-		installed[strings.ToLower(strings.TrimSpace(detected.Name()))] = detected
+		installed[normalizeAgentID(detected.Name())] = detected
 	}
 	return sync.ReplayInput{
 		Root:      home,
@@ -175,7 +175,7 @@ func replayInput(home string, manifest *state.State) (sync.ReplayInput, error) {
 		Layer2:    persona.RenderLayer2(resolved.Preset),
 		Profile:   resolved.Preset,
 		Resolve: func(id string) (agent.Agent, bool) {
-			found, ok := installed[strings.ToLower(strings.TrimSpace(id))]
+			found, ok := installed[normalizeAgentID(id)]
 			return found, ok
 		},
 		MCPDeps: agentapply.MCPDeps{
@@ -185,11 +185,22 @@ func replayInput(home string, manifest *state.State) (sync.ReplayInput, error) {
 	}, nil
 }
 
+// normalizeAgentID is the one spelling rule this command applies to an agent
+// identifier, and it exists so that every site applies the same one. Detection
+// keys its map with it and resolution looks up with it; written out twice
+// instead, the two would agree only by convention, and the first change to
+// either copy would silently desynchronise them -- an agent recorded in the
+// manifest would resolve to nothing and be refused as not installed, with
+// neither the compiler nor a type able to point at the mismatch.
+func normalizeAgentID(id string) string {
+	return strings.ToLower(strings.TrimSpace(id))
+}
+
 // agentsSubFS resolves the embedded agent-definition tree for one agent ID.
 // Claude installs file-based definitions from embed/agents/claude; the
 // JSON-config platforms have no such tree, which is a nil FS, not an error.
 func agentsSubFS(agentID string) (fs.FS, error) {
-	if strings.ToLower(strings.TrimSpace(agentID)) != "claude" {
+	if normalizeAgentID(agentID) != "claude" {
 		return nil, nil
 	}
 	return fs.Sub(jarvis.AgentsFS, "embed/agents/claude")

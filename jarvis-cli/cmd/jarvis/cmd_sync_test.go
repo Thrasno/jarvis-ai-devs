@@ -6,7 +6,9 @@ import (
 	"go/token"
 	"io"
 	"io/fs"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -181,10 +183,14 @@ func TestSyncReport_IsTheWholeObservabilityContract(t *testing.T) {
 			name:   "a run that failed after mutating says the diff was not measured",
 			result: unmeasured,
 			runErr: errors.New("assert mode on /home/u/.claude/CLAUDE.md: permission denied"),
+			// The component lines are matched whole, label included: an assertion
+			// on the tail alone ("completed: models") passes for any label that
+			// happens to end in it, and so verifies less than the full-line
+			// assertions beside it appear to promise.
 			want: []string{
 				"not measured", "not evidence that nothing changed", "snap-7", "verification: failed",
-				"claude: converged", "completed: models, skills",
-				"opencode: failed at mcps", "completed: models\n",
+				"claude: converged", "    components completed: models, skills\n",
+				"opencode: failed at mcps", "    components completed: models\n",
 			},
 			unwanted: []string{"changed paths: 0", "already current"},
 		},
@@ -249,6 +255,54 @@ func TestAgentsSubFS_ResolvesOnlyTheTreesThisBinaryEmbeds(t *testing.T) {
 	}
 }
 
+// TestReplayInput_ResolvesEveryDetectedAgentThroughTheSharedIdentifierRule
+// covers the seam between detection and resolution. The map that indexes the
+// detected agents and the closure that looks an identifier up in it must apply
+// the same normalisation, and nothing in the compiler or the type system says
+// so: a rule applied twice desynchronises the moment one copy changes, and an
+// agent recorded in the manifest then resolves to nothing and is refused as
+// "not installed on this machine". The test therefore drives both halves
+// through normalizeAgentID, so a rule that stops being shared stops passing.
+func TestReplayInput_ResolvesEveryDetectedAgentThroughTheSharedIdentifierRule(t *testing.T) {
+	home := t.TempDir()
+	// Detection reads the agent config directories under the home dir, so the
+	// set of detected agents is fixed here rather than inherited from whatever
+	// the machine running the suite happens to have installed.
+	t.Setenv("HOME", home)
+	// os.UserHomeDir reads USERPROFILE on Windows, so HOME alone leaves the real
+	// home in play and the fixture below detects nothing. This suite runs on
+	// windows-latest in CI, so pinning only HOME would make the test assert
+	// against the developer's own machine there. Same reason as mcpReplayFixture.
+	t.Setenv("USERPROFILE", home)
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatalf("create the Claude config dir: %v", err)
+	}
+
+	input, err := replayInput(home, &state.State{SchemaVersion: 1, Persona: "neutra", Skills: []string{"go-testing"}})
+	if err != nil {
+		t.Fatalf("replayInput: %v", err)
+	}
+
+	for _, spelling := range []string{"claude", "CLAUDE", "  Claude\t"} {
+		if got := normalizeAgentID(spelling); got != "claude" {
+			t.Fatalf("normalizeAgentID(%q) = %q, want %q", spelling, got, "claude")
+		}
+		found, ok := input.Resolve(spelling)
+		if !ok {
+			t.Fatalf("the detected Claude agent is unreachable through %q, so detection and resolution disagree", spelling)
+		}
+		if found.Name() != "claude" {
+			t.Fatalf("Resolve(%q) returned the %q agent", spelling, found.Name())
+		}
+	}
+	// The other half: resolution must stay a lookup, not a fallback. An agent
+	// this machine does not have is a miss, which is what makes the runner
+	// refuse it instead of replaying into nothing.
+	if found, ok := input.Resolve("no-such-agent"); ok {
+		t.Fatalf("Resolve(no-such-agent) = (%v, true), want a miss", found.Name())
+	}
+}
+
 // TestSyncImportClosure_NeverReachesHiveMemorySync proves the domain boundary
 // structurally rather than by reading the command body. The closure is seeded
 // per file, not per package: cmd/jarvis as a whole reaches Hive through sibling
@@ -259,10 +313,6 @@ func TestAgentsSubFS_ResolvesOnlyTheTreesThisBinaryEmbeds(t *testing.T) {
 // The vacuity guard is the important half: a closure seeded from a file that
 // imports no Jarvis package is empty, and an empty input set satisfies every
 // "contains no X" assertion without proving anything at all.
-//
-// `hivederive` is deliberately not forbidden despite its name: it derives a
-// project name from a git remote and carries no memory, transport or
-// credential, so listing it would fail this test on a word, not a dependency.
 func TestSyncImportClosure_NeverReachesHiveMemorySync(t *testing.T) {
 	const module = "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 
@@ -286,14 +336,33 @@ func TestSyncImportClosure_NeverReachesHiveMemorySync(t *testing.T) {
 
 	listed, err := exec.Command("go", append([]string{"list", "-deps"}, seed...)...).Output()
 	if err != nil {
-		t.Fatalf("go list -deps: %v", err)
+		// This test has two failure classes that must be told apart: a genuine
+		// forbidden dependency, and a cold module cache, a restricted resolve or
+		// a missing toolchain. Only the child's stderr distinguishes them, and
+		// Output() captured it into ExitError.Stderr precisely because Cmd.Stderr
+		// is nil here; %v alone would render "exit status 1" and discard it.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			t.Fatalf("go list -deps %s: %v: %s", strings.Join(seed, " "), err, exit.Stderr)
+		}
+		t.Fatalf("go list -deps %s: %v", strings.Join(seed, " "), err)
 	}
 	closure := string(listed)
 	if !strings.Contains(closure, module+"/internal/sync\n") {
 		t.Fatal("the replay package is absent from the closure, so this proves nothing about replay")
 	}
+	// The inclusion criterion, so the list stays extensible by reading rather
+	// than by archaeology: a package belongs here when it carries Hive memory
+	// content, the transport that moves it, or the credentials that reach it.
+	// `hivederive` fails that criterion despite its name -- it derives a project
+	// name from a git remote and carries none of the three -- and listing it
+	// would fail this test on a word rather than on a dependency.
+	//
+	// Each entry is matched exactly as strictly as the positive anchor above:
+	// module-qualified and newline-terminated, so a package of another module
+	// whose path merely contains one of these names cannot trip the guard.
 	for _, forbidden := range []string{"internal/hiveclient", "internal/hiveui", "internal/importui", "internal/apiclient"} {
-		if strings.Contains(closure, forbidden) {
+		if strings.Contains(closure, module+"/"+forbidden+"\n") {
 			t.Errorf("jarvis sync reaches Hive memory synchronization through %q", forbidden)
 		}
 	}
