@@ -225,17 +225,6 @@ type PlanInput struct {
 	Profile  *persona.Profile
 }
 
-// renderInstructions renders one agent's managed instruction file.
-type renderInstructions func(fsys fs.FS, layer1, layer2, expertise string, skills []config.SkillInfo) (string, error)
-
-// instructionTemplates binds a manifest agent ID to the embedded template that
-// renders its instruction file. An ID absent from this map has no embedded
-// target in the installed binary, so planning fails closed rather than guessing.
-var instructionTemplates = map[string]renderInstructions{
-	"claude":   config.RenderCLAUDEMd,
-	"opencode": config.RenderAGENTSMd,
-}
-
 // BuildPlan renders the desired targets recorded by the last installation.
 //
 // Every target comes from in.Templates, the assets embedded in the running
@@ -251,13 +240,19 @@ func BuildPlan(in PlanInput) (Plan, error) {
 	// than recovered later by parsing an identity or matching a path prefix.
 	ownerByLocation := make(map[string]string, len(in.State.InstalledAgents))
 	for _, configured := range in.State.InstalledAgents {
-		render, embedded := instructionTemplates[configured.ID]
-		if !embedded {
-			return Plan{}, fmt.Errorf("state.yaml records agent %q, for which this Jarvis version embeds no instruction template", configured.ID)
-		}
-		content, err := render(in.Templates, in.Layer1, in.Layer2, "", in.Skills)
+		// The same function the writer composes with, asked for the same file. A
+		// plan that rendered the template itself would describe a file no writer
+		// produces, and the difference is invisible until a run measures it: the
+		// planner's digest would never match what landed, so every managed
+		// instruction file would fail verification on a machine that had just been
+		// replayed correctly. Nothing on disk is passed in, which is this planner's
+		// standing contract: a plan describes the installed version's assets.
+		content, err := agent.ComposeInstructions(configured.ID, in.Templates, nil, in.Layer1, in.Layer2, in.Skills)
 		if err != nil {
-			return Plan{}, fmt.Errorf("render %s instructions: %w", configured.ID, err)
+			if errors.Is(err, agent.ErrNoInstructionTemplate) {
+				return Plan{}, fmt.Errorf("state.yaml records agent %q, for which this Jarvis version embeds no instruction template", configured.ID)
+			}
+			return Plan{}, err
 		}
 		location, err := managedLocation(in.Root, configured.InstructionsPath)
 		if err != nil {
