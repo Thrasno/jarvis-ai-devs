@@ -428,7 +428,6 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		_ = f.Close()
 	}
 
-	cfg.SchemaVersion = 2
 	cfg.Install.Mode = string(config.ConfigStatusReconfigure)
 	cfg.Install.Completed = true
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/reconcile"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
@@ -95,10 +96,11 @@ func trackedPaths(in PlanInput, artifacts []PlannedArtifact, ownerByLocation map
 	tracked := make([]TrackedPath, 0, len(artifacts))
 	for _, artifact := range artifacts {
 		tracked = append(tracked, TrackedPath{
-			Agent:   ownerByLocation[artifact.Location],
-			Path:    filepath.Join(in.Root, filepath.FromSlash(artifact.Location)),
-			Mode:    artifact.Mode,
-			Desired: digestOf(artifact.Bytes),
+			Agent:    ownerByLocation[artifact.Location],
+			Identity: filepath.ToSlash(filepath.Clean(artifact.Location)),
+			Path:     filepath.Join(in.Root, filepath.FromSlash(artifact.Location)),
+			Mode:     artifact.Mode,
+			Desired:  digestOf(artifact.Bytes),
 		})
 	}
 	for _, configured := range in.State.InstalledAgents {
@@ -113,11 +115,39 @@ func trackedPaths(in PlanInput, artifacts []PlannedArtifact, ownerByLocation map
 		}
 		for _, file := range skillFiles {
 			tracked = append(tracked, TrackedPath{
-				Agent:   configured.ID,
-				Path:    filepath.Join(dir, skillsDirName, filepath.FromSlash(file.RelPath)),
-				Mode:    ManagedFileMode,
-				Desired: digestOf(file.Bytes),
+				Agent:    configured.ID,
+				Identity: filepath.ToSlash(filepath.Join(filepath.Dir(location), skillsDirName, filepath.FromSlash(file.RelPath))),
+				Path:     filepath.Join(dir, skillsDirName, filepath.FromSlash(file.RelPath)),
+				Mode:     ManagedFileMode,
+				Desired:  digestOf(file.Bytes),
 			})
+		}
+		if configured.ID == "claude" {
+			settingsPath := filepath.Join(dir, "settings.json")
+			if configured.ConfigPath != "" {
+				configLocation, configErr := managedLocation(in.Root, configured.ConfigPath)
+				if configErr != nil {
+					return nil, fmt.Errorf("agent %q config_path %q: %w", configured.ID, configured.ConfigPath, configErr)
+				}
+				settingsPath = filepath.Join(in.Root, filepath.FromSlash(configLocation))
+			}
+			managed := map[string]any{}
+			if in.State.Statusline.ShouldManage() {
+				managed["statusLine"] = map[string]any{"type": "command", "command": "bash ~/.claude/statusline-command.sh"}
+			}
+			if in.Profile != nil {
+				styleName := persona.OutputStyleName(in.Profile.Name)
+				managed["outputStyle"] = styleName
+				content := []byte(persona.RenderOutputStyle(in.Profile))
+				tracked = append(tracked, TrackedPath{Agent: configured.ID, Identity: filepath.ToSlash(filepath.Join(filepath.Dir(location), "output-styles", styleName+".md")), Path: filepath.Join(dir, "output-styles", styleName+".md"), Mode: ManagedFileMode, Desired: digestOf(content)})
+			}
+			if len(managed) > 0 {
+				settingsIdentity, identityErr := managedLocation(in.Root, settingsPath)
+				if identityErr != nil {
+					return nil, fmt.Errorf("derive stable identity for %s: %w", settingsPath, identityErr)
+				}
+				tracked = append(tracked, TrackedPath{Agent: configured.ID, Identity: filepath.ToSlash(filepath.Clean(settingsIdentity)), Path: settingsPath, Mode: ManagedFileMode, Semantic: &ManagedJSON{Fragments: managed}})
+			}
 		}
 		// Undecided and decided-against consent both mean "do not touch", so an
 		// unauthorized statusline is not a path this run is responsible for.
@@ -132,10 +162,11 @@ func trackedPaths(in PlanInput, artifacts []PlannedArtifact, ownerByLocation map
 			return nil, fmt.Errorf("read embedded statusline script: %w", err)
 		}
 		tracked = append(tracked, TrackedPath{
-			Agent:   configured.ID,
-			Path:    filepath.Join(dir, statuslineScriptName),
-			Mode:    ManagedExecutableMode,
-			Desired: digestOf(script),
+			Agent:    configured.ID,
+			Identity: filepath.ToSlash(filepath.Join(filepath.Dir(location), statuslineScriptName)),
+			Path:     filepath.Join(dir, statuslineScriptName),
+			Mode:     ManagedExecutableMode,
+			Desired:  digestOf(script),
 		})
 	}
 	return tracked, nil
@@ -181,6 +212,7 @@ type PlanInput struct {
 	// to discover what a previous version installed.
 	SkillsFS fs.FS
 	HooksFS  fs.FS
+	Profile  *persona.Profile
 }
 
 // renderInstructions renders one agent's managed instruction file.

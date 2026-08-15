@@ -1502,7 +1502,6 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: record the desired-state manifest: %v. Ver docs/setup-recovery.md", err), done: true, failed: true}
 		}
 
-		m.cfg.SchemaVersion = 2
 		m.cfg.Install.Mode = string(config.ConfigStatusReconfigure)
 		m.cfg.Install.Completed = true
 		m.cfg.Version = "1.0.0"

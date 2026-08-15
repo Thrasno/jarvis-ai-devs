@@ -33,7 +33,7 @@ func hooksSourceFS(script string) fstest.MapFS {
 // so skills and the statusline are rendered rather than derived.
 func TestBuildPlan_TracksDesiredContentForEveryPathIncludingSkillsAndStatusline(t *testing.T) {
 	root := t.TempDir()
-	st := replayableState(state.Agent{ID: "claude", InstructionsPath: ".claude/CLAUDE.md", ConfigPath: "settings.json"})
+	st := replayableState(state.Agent{ID: "claude", InstructionsPath: ".claude/CLAUDE.md", ConfigPath: ".claude/settings.json"})
 	st.Skills = []string{"sdd-apply"}
 	st.Statusline = state.StatuslineState{Decided: true, Enabled: true}
 	const scriptBody = "#!/bin/sh\necho jarvis\n"
@@ -53,6 +53,7 @@ func TestBuildPlan_TracksDesiredContentForEveryPathIncludingSkillsAndStatusline(
 		filepath.Join(claudeDir, "skills", "sdd-apply", "references", "notes.md"): digestOf([]byte("notes\n")),
 		filepath.Join(claudeDir, "skills", "_shared", "sdd-phase-common.md"):      digestOf([]byte("shared\n")),
 		filepath.Join(claudeDir, statuslineScriptName):                            digestOf([]byte(scriptBody)),
+		filepath.Join(claudeDir, "settings.json"):                                 "",
 	}
 	got := map[string]string{}
 	for _, tracked := range plan.Tracked {
@@ -82,7 +83,7 @@ func TestBuildPlan_FailsClosedWhenDesiredContentCannotBeRendered(t *testing.T) {
 	}
 	for name, setUp := range tests {
 		t.Run(name, func(t *testing.T) {
-			st := replayableState(state.Agent{ID: "claude", InstructionsPath: ".claude/CLAUDE.md", ConfigPath: "settings.json"})
+			st := replayableState(state.Agent{ID: "claude", InstructionsPath: ".claude/CLAUDE.md", ConfigPath: ".claude/settings.json"})
 			in := PlanInput{Root: t.TempDir(), State: st, Templates: jarvis.TemplatesFS}
 			setUp(st, &in)
 

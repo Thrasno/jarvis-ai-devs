@@ -12,6 +12,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agentapply"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
@@ -49,6 +50,7 @@ type ReplayInput struct {
 	Skills   []config.SkillInfo
 	Layer1   string
 	Layer2   string
+	Profile  *persona.Profile
 	Resolve  AgentResolver
 	MCPDeps  agentapply.MCPDeps
 	// Configure defaults to agentapply.ConfigureAgent.
@@ -66,6 +68,7 @@ func PlanInputFor(in ReplayInput) PlanInput {
 		Skills:    in.Skills,
 		SkillsFS:  in.SkillsFS,
 		HooksFS:   in.HooksFS,
+		Profile:   in.Profile,
 	}
 }
 
@@ -111,6 +114,7 @@ type Runner struct {
 	ownership   InstructionOwnership
 	mcps        MCPComponent
 	statusline  StatuslineComponent
+	profile     *persona.Profile
 }
 
 // NewRunner builds the production runner from the same input the planner reads.
@@ -127,6 +131,7 @@ func NewRunner(in ReplayInput) *Runner {
 		agentsFS:  in.AgentsFS,
 		layer1:    in.Layer1,
 		layer2:    in.Layer2,
+		profile:   in.Profile,
 		mcps:      MCPComponent{Resolve: in.Resolve, Deps: in.MCPDeps},
 	}
 	if in.State != nil {
@@ -178,7 +183,15 @@ func (r *Runner) ApplyPersonaInstructions(target AgentTarget) error {
 	if err != nil {
 		return err
 	}
-	return ApplyInstructions(r.ownership, target, resolved, r.layer1, r.layer2, r.skills)
+	if err := ApplyInstructions(r.ownership, target, resolved, r.layer1, r.layer2, r.skills); err != nil {
+		return err
+	}
+	if r.profile != nil && resolved.SupportsOutputStyles() {
+		if err := resolved.WriteOutputStyle(r.profile); err != nil {
+			return fmt.Errorf("replay output style for %q: %w", target.ID, err)
+		}
+	}
+	return nil
 }
 
 // ApplyStatusline converges this agent's statusline from the manifest's

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
@@ -19,6 +20,34 @@ func snapshotOrFail(t *testing.T, tracked []TrackedPath) Snapshot {
 		t.Fatalf("TakeSnapshot: %v", err)
 	}
 	return snapshot
+}
+
+func TestBuildPlanTracksClaudeOutputStyleAndSettingsButSkipsUnsupportedAgents(t *testing.T) {
+	root := t.TempDir()
+	st := replayableState(
+		state.Agent{ID: "claude", InstructionsPath: ".claude/CLAUDE.md"},
+		state.Agent{ID: "opencode", InstructionsPath: ".config/opencode/AGENTS.md"},
+	)
+	in := PlanInput{Root: root, State: st, Templates: jarvis.TemplatesFS, Profile: &persona.Profile{Name: "tony-stark"}}
+	plan, err := BuildPlan(in)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	wantStyle := filepath.Join(root, ".claude", "output-styles", "TonyStark.md")
+	wantSettings := filepath.Join(root, ".claude", "settings.json")
+	seen := map[string]TrackedPath{}
+	for _, tracked := range plan.Tracked {
+		seen[tracked.Path] = tracked
+		if strings.Contains(tracked.Path, filepath.Join("opencode", "output-styles")) {
+			t.Fatalf("unsupported agent tracks output style: %s", tracked.Path)
+		}
+	}
+	if seen[wantStyle].Desired != digestOf([]byte(persona.RenderOutputStyle(in.Profile))) {
+		t.Fatal("Claude output-style file is not tracked with rendered content")
+	}
+	if seen[wantSettings].Semantic.Fragments["outputStyle"] != "TonyStark" {
+		t.Fatalf("settings outputStyle = %v, want TonyStark", seen[wantSettings].Semantic.Fragments["outputStyle"])
+	}
 }
 
 func seedFile(t *testing.T, path string, mode os.FileMode) {
@@ -142,7 +171,7 @@ func TestTakeSnapshot_DoesNotFollowASymlinkAtAManagedPath(t *testing.T) {
 func TestBuildPlan_TrackedPathsCoverEveryManagedArtifactWithItsAssertedMode(t *testing.T) {
 	root := t.TempDir()
 	st := replayableState(
-		state.Agent{ID: "claude", InstructionsPath: ".claude/CLAUDE.md", ConfigPath: "settings.json"},
+		state.Agent{ID: "claude", InstructionsPath: ".claude/CLAUDE.md", ConfigPath: ".claude/settings.json"},
 		state.Agent{ID: "opencode", InstructionsPath: ".config/opencode/AGENTS.md", ConfigPath: "opencode.json"},
 	)
 	st.Skills = []string{"sdd-apply"}
@@ -171,7 +200,25 @@ func TestBuildPlan_TrackedPathsCoverEveryManagedArtifactWithItsAssertedMode(t *t
 	// Consent decided and enabled: the script joins the list as an executable.
 	st.Statusline.Enabled = true
 	want[filepath.Join(root, ".claude", statuslineScriptName)] = ManagedExecutableMode
+	want[filepath.Join(root, ".claude", "settings.json")] = ManagedFileMode
 	assertTrackedPaths(t, in, want)
+}
+
+func TestSnapshotMatchesManagedJSONFragmentsOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	tracked := []TrackedPath{{Path: path, Mode: ManagedFileMode, Semantic: &ManagedJSON{Fragments: map[string]any{"statusLine": map[string]any{"type": "command", "command": "run"}}}}}
+	writeFile(t, path, "{\n  \"userKey\": true, \"statusLine\": {\"command\": \"run\", \"type\": \"command\"}\n}")
+	if !snapshotOrFail(t, tracked).Matches(tracked) {
+		t.Fatal("managed fragment with foreign siblings and reordered JSON must converge")
+	}
+	writeFile(t, path, `{"userKey":true,"statusLine":{"type":"command","command":"stale"}}`)
+	if snapshotOrFail(t, tracked).Matches(tracked) {
+		t.Fatal("stale managed fragment must not converge")
+	}
+	writeFile(t, path, `{invalid`)
+	if _, err := TakeSnapshot(tracked); err == nil {
+		t.Fatal("invalid managed JSON must fail explicitly")
+	}
 }
 
 func assertTrackedPaths(t *testing.T, in PlanInput, want map[string]os.FileMode) {
