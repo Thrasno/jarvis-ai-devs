@@ -181,3 +181,99 @@ func TestValidateSentinels(t *testing.T) {
 		})
 	}
 }
+
+// PatchFile rebuilds both sentinel blocks, and the line ending it rebuilds them
+// with has to be the one the file already uses.
+//
+// It used to hardcode "\n" at all four boundaries. On a checkout that converts
+// the embedded template to CRLF, the renderer produced "\r\n" there and the
+// patch produced "\n", so rendering and patching the same content disagreed by
+// exactly four bytes. That is a file that differs from itself every time it is
+// rewritten, which is why the Windows CI job -- and nothing on Linux -- caught
+// it. The defect is about content, not about the platform, so this test builds
+// the CRLF content directly and therefore runs everywhere.
+//
+// The same rule covers the second source of CRLF, which no checkout setting can
+// rule out: a user's own instruction file saved by a Windows editor.
+func TestPatchFile_PreservesTheLineEndingEachBlockAlreadyUses(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{name: "LF file", content: testFullContent, want: "\n"},
+		{name: "CRLF file", content: strings.ReplaceAll(testFullContent, "\n", "\r\n"), want: "\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			patched, err := PatchFile(tc.content, "new layer one", "new layer two")
+			if err != nil {
+				t.Fatalf("PatchFile: %v", err)
+			}
+
+			for _, boundary := range []string{
+				Layer1Start + tc.want + "new layer one" + tc.want + Layer1End,
+				Layer2Start + tc.want + "new layer two" + tc.want + Layer2End,
+			} {
+				if !strings.Contains(patched, boundary) {
+					t.Errorf("patched block does not read %q", boundary)
+				}
+			}
+			// The other half of the promise: a rebuilt block must not rewrite the
+			// line endings of content it does not own. Counting the file's CRLFs
+			// would not say this -- replacing a multi-line payload with a one-line
+			// one legitimately removes some -- so the untouched regions are compared
+			// directly, byte for byte.
+			for _, region := range []struct{ name, want, got string }{
+				{"content above the first sentinel", before(tc.content, Layer1Start), before(patched, Layer1Start)},
+				{"content between the two blocks", between(tc.content, Layer1End, Layer2Start), between(patched, Layer1End, Layer2Start)},
+				{"content below the last sentinel", after(tc.content, Layer2End), after(patched, Layer2End)},
+			} {
+				if region.got != region.want {
+					t.Errorf("%s was rewritten:\n got %q\nwant %q", region.name, region.got, region.want)
+				}
+			}
+		})
+	}
+}
+
+// A boundary that carries no line ending at all is rebuilt with LF, the same
+// way it always was. A hand-edited file is not a reason to fail, and guessing
+// CRLF for a file that shows no evidence of it would be a fresh claim.
+func TestPatchFile_FallsBackToLFWhenABoundaryShowsNoLineEnding(t *testing.T) {
+	collapsed := Layer1Start + "old one" + Layer1End + "\n\n" + Layer2Start + "old two" + Layer2End
+
+	patched, err := PatchFile(collapsed, "one", "two")
+	if err != nil {
+		t.Fatalf("PatchFile: %v", err)
+	}
+
+	if want := Layer1Start + "\none\n" + Layer1End; !strings.Contains(patched, want) {
+		t.Errorf("patched content does not read %q:\n%s", want, patched)
+	}
+	if strings.Contains(patched, "\r") {
+		t.Errorf("a file with no CRLF anywhere must not gain one:\n%s", patched)
+	}
+}
+
+// Slicing helpers for the untouched-region comparison above. They return the
+// empty string when a marker is absent, which the assertions treat as a
+// difference rather than as a pass.
+func before(content, marker string) string {
+	index := strings.Index(content, marker)
+	if index == -1 {
+		return ""
+	}
+	return content[:index]
+}
+
+func after(content, marker string) string {
+	index := strings.Index(content, marker)
+	if index == -1 {
+		return ""
+	}
+	return content[index+len(marker):]
+}
+
+func between(content, startMarker, endMarker string) string {
+	return before(after(content, startMarker), endMarker)
+}

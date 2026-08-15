@@ -69,6 +69,67 @@ func TestComposeInstructions_RecomposingItsOwnOutputChangesNothing(t *testing.T)
 	}
 }
 
+// The CRLF half of idempotence, and it runs on every platform on purpose.
+//
+// The failure it guards was found by the Windows CI job alone: a checkout that
+// converts the embedded template to CRLF makes the renderer emit "\r\n" at each
+// of the four sentinel boundaries, while the patch path rebuilt them with a
+// hardcoded "\n". Composing an already-composed file therefore dropped exactly
+// four bytes -- 7800 became 7796, on both agents -- so a Windows machine's
+// instruction file never matched its own digest and never converged.
+//
+// A test that can only fail on the Windows runner is a test nobody can iterate
+// on, and the platform was never the cause: the cause is content whose line
+// endings are CRLF, which is equally constructible here. Feeding a CRLF file to
+// the composer reproduces the defect on any platform, and pins the fix for both
+// sources of CRLF -- the checked-out template and a user's own file saved by a
+// Windows editor.
+func TestComposeInstructions_PreservesTheLineEndingsTheFileAlreadyUses(t *testing.T) {
+	// The fixture carries CRLF exactly where the defect put it: at the four
+	// sentinel boundaries, which are the template's own bytes. It is built by
+	// converting those boundaries rather than the whole file, because that is
+	// what a CRLF checkout actually produces -- the payloads come from Go
+	// strings and the protocol block from an embedded asset, and a blanket
+	// conversion would assert that the composer must preserve line endings in
+	// content it legitimately re-renders from those sources.
+	crlfBoundaries := func(content string) string {
+		for _, marker := range []string{Layer1Start, Layer2Start} {
+			content = strings.ReplaceAll(content, marker+"\n", marker+"\r\n")
+		}
+		for _, marker := range []string{Layer1End, Layer2End} {
+			content = strings.ReplaceAll(content, "\n"+marker, "\r\n"+marker)
+		}
+		return content
+	}
+
+	for _, id := range []string{"claude", "opencode"} {
+		t.Run(id, func(t *testing.T) {
+			windows := crlfBoundaries(composeFor(t, id, nil))
+			if !strings.Contains(windows, Layer1Start+"\r\n") {
+				t.Fatalf("the CRLF fixture does not carry a CRLF boundary, so it proves nothing")
+			}
+
+			recomposed := composeFor(t, id, []byte(windows))
+
+			if recomposed != windows {
+				t.Fatalf("recomposing a CRLF file changed it: %d bytes became %d (%d line endings lost)",
+					len(windows), len(recomposed),
+					strings.Count(windows, "\r\n")-strings.Count(recomposed, "\r\n"))
+			}
+			// Named directly as well as by length, so a future failure says which
+			// boundary regressed rather than only that the byte count moved.
+			for _, boundary := range []string{
+				Layer1Start + "\r\n", "\r\n" + Layer1End,
+				Layer2Start + "\r\n", "\r\n" + Layer2End,
+			} {
+				if !strings.Contains(recomposed, boundary) {
+					t.Errorf("boundary %q lost its CRLF line ending", boundary)
+				}
+			}
+		})
+	}
+}
+
 // The three ways the existing file decides the base content. existing is data,
 // not a mode switch: the same call handles all three, so no caller chooses a
 // branch and no caller can choose a different one from its sibling.
