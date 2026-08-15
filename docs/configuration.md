@@ -41,17 +41,25 @@ Jarvis keeps user configuration and replay state in separate files, and they sha
 | `~/.jarvis/config.yaml` | User configuration: `api_url`, `email`, `version`, and other settings you choose. | Every command. |
 | `~/.jarvis/state.yaml` | The desired-state manifest: installed agents and their instruction/config paths, installer-managed skill IDs, persona and its source, per-phase model assignments, scope, and the statusline decision. | `jarvis sync`. |
 
-The split is enforced, not conventional: a value readable from one store is absent from the other. That is what makes a replay reproducible — `jarvis sync` has exactly one authority for what to reinstall.
+The split is enforced by the write paths rather than by convention. `state.ReplayConfigKeys()` in `jarvis-cli/internal/state/migrate.go` is the single list of keys the manifest took over; migration deletes exactly those keys from `config.yaml`, and tests re-read `config.yaml` after each write path and fail if any of them reappears — `jarvis-cli/internal/config/disjoint_test.go`, `jarvis-cli/cmd/jarvis/cmd_config_test.go`, and `jarvis-cli/internal/tui/nontui_test.go` all iterate that same list. `config.Save` is pinned separately to never create or modify `state.yaml`. That is what makes a replay reproducible — `jarvis sync` has exactly one authority for what to reinstall.
 
 ### Migration to `config.yaml` schema 3
 
 The first run of a version that ships this split migrates automatically:
 
-1. The replay fields are written to `~/.jarvis/state.yaml` and flushed to disk.
-2. Only then are those keys deleted from `config.yaml` and its `schema_version` set to `3`.
-3. A one-line notice is printed, and only after both writes are durable.
+1. Migration first checks for `~/.jarvis/state.yaml`. If a regular file is already there, it stops at once and nothing below runs.
+2. The replay fields are written to `~/.jarvis/state.yaml` and flushed to disk.
+3. Only then are those keys deleted from `config.yaml` and its `schema_version` set to `3`.
+4. A one-line notice is printed, and only after both writes are durable.
 
-The move is one-way and happens once. If the manifest write fails, `config.yaml` is left untouched at its previous schema version and no notice is printed. An existing `state.yaml` is never overwritten by migration. Keys `config.yaml` never owned are preserved exactly as they were.
+The move is one-way and happens once. Keys `config.yaml` never owned are preserved exactly as they were.
+
+Two different situations leave `config.yaml` at its previous schema version with no notice printed, and they are easy to confuse:
+
+- **The manifest write failed.** `config.yaml` is left untouched, and migration returns the write error to its caller, so the command that triggered it fails visibly.
+- **A `state.yaml` already existed.** Migration returned at step 1 without an error and without opening `config.yaml` at all, so its `schema_version` stays where it was, permanently. The manifest is deliberately never overwritten: re-deriving the replay fields from a `config.yaml` they have already left would erase them.
+
+So a machine still on the old schema version that never reported a migration error is in the second situation, not the first. There is no failed write to go looking for.
 
 ### The statusline decision is tri-state
 

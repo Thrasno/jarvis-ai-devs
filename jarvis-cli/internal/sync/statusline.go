@@ -1,6 +1,6 @@
 // This file holds the statusline component of replay.
 //
-// D2: the manifest is the sole authority for statusline intent. A recorded,
+// The manifest is the sole authority for statusline intent: a recorded,
 // enabled decision whose script is missing from disk is drift, not revocation.
 // Treating the absent file as revoked consent would make sync infer intent from
 // disk state and would leave the manifest lying about what this machine wants.
