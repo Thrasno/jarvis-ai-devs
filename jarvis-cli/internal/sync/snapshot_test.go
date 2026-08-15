@@ -183,15 +183,15 @@ func TestBuildPlan_TrackedPathsCoverEveryManagedArtifactWithItsAssertedMode(t *t
 		SkillsFS:  skillsSourceFS(),
 		HooksFS:   hooksSourceFS("#!/bin/sh\n"),
 	}
-	want := map[string]os.FileMode{
-		filepath.Join(root, ".claude", "CLAUDE.md"):                                                 ManagedFileMode,
-		filepath.Join(root, ".config", "opencode", "AGENTS.md"):                                     ManagedFileMode,
-		filepath.Join(root, ".claude", "skills", "sdd-apply", "SKILL.md"):                           ManagedFileMode,
-		filepath.Join(root, ".claude", "skills", "sdd-apply", "references", "notes.md"):             ManagedFileMode,
-		filepath.Join(root, ".claude", "skills", "_shared", "sdd-phase-common.md"):                  ManagedFileMode,
-		filepath.Join(root, ".config", "opencode", "skills", "sdd-apply", "SKILL.md"):               ManagedFileMode,
-		filepath.Join(root, ".config", "opencode", "skills", "sdd-apply", "references", "notes.md"): ManagedFileMode,
-		filepath.Join(root, ".config", "opencode", "skills", "_shared", "sdd-phase-common.md"):      ManagedFileMode,
+	want := map[string]trackedExpectation{
+		filepath.Join(root, ".claude", "CLAUDE.md"):                                                 {agent: "claude", mode: ManagedFileMode},
+		filepath.Join(root, ".config", "opencode", "AGENTS.md"):                                     {agent: "opencode", mode: ManagedFileMode},
+		filepath.Join(root, ".claude", "skills", "sdd-apply", "SKILL.md"):                           {agent: "claude", mode: ManagedFileMode},
+		filepath.Join(root, ".claude", "skills", "sdd-apply", "references", "notes.md"):             {agent: "claude", mode: ManagedFileMode},
+		filepath.Join(root, ".claude", "skills", "_shared", "sdd-phase-common.md"):                  {agent: "claude", mode: ManagedFileMode},
+		filepath.Join(root, ".config", "opencode", "skills", "sdd-apply", "SKILL.md"):               {agent: "opencode", mode: ManagedFileMode},
+		filepath.Join(root, ".config", "opencode", "skills", "sdd-apply", "references", "notes.md"): {agent: "opencode", mode: ManagedFileMode},
+		filepath.Join(root, ".config", "opencode", "skills", "_shared", "sdd-phase-common.md"):      {agent: "opencode", mode: ManagedFileMode},
 	}
 
 	// Consent asked and declined: the script is nobody's business here.
@@ -199,8 +199,8 @@ func TestBuildPlan_TrackedPathsCoverEveryManagedArtifactWithItsAssertedMode(t *t
 
 	// Consent decided and enabled: the script joins the list as an executable.
 	st.Statusline.Enabled = true
-	want[filepath.Join(root, ".claude", statuslineScriptName)] = ManagedExecutableMode
-	want[filepath.Join(root, ".claude", "settings.json")] = ManagedFileMode
+	want[filepath.Join(root, ".claude", statuslineScriptName)] = trackedExpectation{agent: "claude", mode: ManagedExecutableMode}
+	want[filepath.Join(root, ".claude", "settings.json")] = trackedExpectation{agent: "claude", mode: ManagedFileMode}
 	assertTrackedPaths(t, in, want)
 }
 
@@ -221,24 +221,27 @@ func TestSnapshotMatchesManagedJSONFragmentsOnly(t *testing.T) {
 	}
 }
 
-func assertTrackedPaths(t *testing.T, in PlanInput, want map[string]os.FileMode) {
+// trackedExpectation is everything one tracked path must carry: the mode the
+// plan asserts, and the agent that owns it.
+//
+// The owner is spelled out per path rather than computed from the path, because
+// computing it here would be the very rule the planner refuses to use. A test
+// that derives ownership by prefix agrees with a planner that derives it by
+// prefix, and stays green through exactly the regression it exists to catch.
+type trackedExpectation struct {
+	agent string
+	mode  os.FileMode
+}
+
+func assertTrackedPaths(t *testing.T, in PlanInput, want map[string]trackedExpectation) {
 	t.Helper()
 	plan, err := BuildPlan(in)
 	if err != nil {
 		t.Fatalf("BuildPlan: %v", err)
 	}
-	got := map[string]os.FileMode{}
+	got := map[string]trackedExpectation{}
 	for _, tracked := range plan.Tracked {
-		got[tracked.Path] = tracked.Mode
-		// Ownership is recorded where the manifest entry is in hand, never
-		// recovered later by matching a path prefix.
-		wantAgent := "opencode"
-		if strings.HasPrefix(tracked.Path, filepath.Join(in.Root, ".claude")+string(filepath.Separator)) {
-			wantAgent = "claude"
-		}
-		if tracked.Agent != wantAgent {
-			t.Fatalf("%s is owned by %q, want %q", tracked.Path, tracked.Agent, wantAgent)
-		}
+		got[tracked.Path] = trackedExpectation{agent: tracked.Agent, mode: tracked.Mode}
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("plan.Tracked = %v, want %v", got, want)
@@ -290,4 +293,34 @@ func TestEnforceModes_AssertsTheManagedModeInsteadOfInheritingIt(t *testing.T) {
 	if _, err := os.Lstat(absent); !os.IsNotExist(err) {
 		t.Fatalf("EnforceModes created the absent tracked path %s", absent)
 	}
+}
+
+// Nothing forbids a manifest from recording one agent's managed directory inside
+// another's, and then the two answers diverge: the path prefix says "claude" and
+// the manifest says "opencode". The manifest is the only evidence, so the nested
+// agent keeps its own files. Getting this wrong hands one agent's tracked paths
+// to its sibling, and with them the ownership check that authorizes the write.
+func TestBuildPlan_OwnershipFollowsTheManifestWhenOneAgentDirectoryNestsInsideAnother(t *testing.T) {
+	root := t.TempDir()
+	st := replayableState(
+		state.Agent{ID: "claude", InstructionsPath: filepath.Join(".claude", "CLAUDE.md")},
+		state.Agent{ID: "opencode", InstructionsPath: filepath.Join(".claude", "nested", "AGENTS.md")},
+	)
+	st.Skills = []string{"sdd-apply"}
+
+	assertTrackedPaths(t, PlanInput{
+		Root:      root,
+		State:     st,
+		Templates: jarvis.TemplatesFS,
+		SkillsFS:  skillsSourceFS(),
+	}, map[string]trackedExpectation{
+		filepath.Join(root, ".claude", "CLAUDE.md"):                                               {agent: "claude", mode: ManagedFileMode},
+		filepath.Join(root, ".claude", "skills", "sdd-apply", "SKILL.md"):                         {agent: "claude", mode: ManagedFileMode},
+		filepath.Join(root, ".claude", "skills", "sdd-apply", "references", "notes.md"):           {agent: "claude", mode: ManagedFileMode},
+		filepath.Join(root, ".claude", "skills", "_shared", "sdd-phase-common.md"):                {agent: "claude", mode: ManagedFileMode},
+		filepath.Join(root, ".claude", "nested", "AGENTS.md"):                                     {agent: "opencode", mode: ManagedFileMode},
+		filepath.Join(root, ".claude", "nested", "skills", "sdd-apply", "SKILL.md"):               {agent: "opencode", mode: ManagedFileMode},
+		filepath.Join(root, ".claude", "nested", "skills", "sdd-apply", "references", "notes.md"): {agent: "opencode", mode: ManagedFileMode},
+		filepath.Join(root, ".claude", "nested", "skills", "_shared", "sdd-phase-common.md"):      {agent: "opencode", mode: ManagedFileMode},
+	})
 }

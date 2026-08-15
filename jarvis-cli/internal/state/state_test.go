@@ -528,3 +528,45 @@ func TestRecordsAnyState_TellsADamagedInstallFromAFreshMachine(t *testing.T) {
 		}
 	}
 }
+
+// Two agents cannot own the same instruction file. Ownership downstream is a
+// path-to-agent map, so the second record silently replaces the first: the loser
+// can no longer write the file the manifest recorded for it, and the winner may
+// write a file recorded for its sibling. Nothing further down can tell the two
+// apart afterwards, so the collision is refused where the manifest is validated.
+func TestValidate_RejectsTwoAgentsRecordingTheSameInstructionsPath(t *testing.T) {
+	tests := []struct {
+		name   string
+		second string
+	}{
+		{name: "byte-identical paths", second: "/home/u/.claude/CLAUDE.md"},
+		{name: "paths that differ only before cleaning", second: "/home/u/.claude/./skills/../CLAUDE.md"},
+		{name: "paths that differ only by surrounding whitespace", second: "  /home/u/.claude/CLAUDE.md\t"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := fullState()
+			st.InstalledAgents[1].InstructionsPath = tt.second
+
+			err := st.Validate()
+			if err == nil {
+				t.Fatal("Validate accepted two agents owning one instruction file")
+			}
+			// Validate runs inside decode, so this refusal rejects a manifest that
+			// loaded fine until now and blocks every command that reads it. It is
+			// the one validation failure a user can reach without having just
+			// written the file, so unlike its siblings it has to name the way out.
+			for _, want := range []string{"instructions_path", "claude", "opencode", "run `jarvis` to reinstall"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
+			}
+		})
+	}
+
+	// Distinct paths remain valid: this rejects a collision, not a shared prefix.
+	if err := fullState().Validate(); err != nil {
+		t.Fatalf("Validate rejected distinct instruction paths: %v", err)
+	}
+}

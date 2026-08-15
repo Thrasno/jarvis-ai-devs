@@ -104,9 +104,14 @@ func trackedPaths(in PlanInput, artifacts []PlannedArtifact, ownerByLocation map
 		})
 	}
 	for _, configured := range in.State.InstalledAgents {
+		// BuildPlan already refused this path before calling here, so today this
+		// can only fire for a caller that skipped that step. It still fails closed
+		// rather than dropping the agent: skipping one would shorten Plan.Tracked,
+		// and Tracked is both what the pre-apply backup captures and what the diff
+		// measures, so the agent would silently lose its backup coverage.
 		location, err := managedLocation(in.Root, configured.InstructionsPath)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("agent %q instructions_path %q: %w", configured.ID, configured.InstructionsPath, err)
 		}
 		dir := filepath.Dir(filepath.Join(in.Root, filepath.FromSlash(location)))
 		skillFiles, err := renderSkills(in, configured.ID)
@@ -307,11 +312,28 @@ func BuildPlan(in PlanInput) (Plan, error) {
 // managed location. A path outside the managed root is refused, never clamped.
 func managedLocation(root, path string) (string, error) {
 	if !filepath.IsAbs(path) {
-		return filepath.ToSlash(filepath.Clean(path)), nil
+		// A relative path leaves the root exactly as easily as an absolute one,
+		// and what comes back here does not stay a string: every call site joins
+		// it onto the root again, so an escaped location becomes a tracked path,
+		// a snapshot entry, a diff subject and a backup target. The only refusal
+		// downstream is the backup's allowed-root check, and that one never sees
+		// a path that does not exist yet.
+		cleaned := filepath.Clean(path)
+		if escapesRoot(cleaned) {
+			return "", errors.New("is outside the managed root")
+		}
+		return filepath.ToSlash(cleaned), nil
 	}
 	relative, err := filepath.Rel(root, path)
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+	if err != nil || escapesRoot(relative) {
 		return "", errors.New("is outside the managed root")
 	}
 	return filepath.ToSlash(relative), nil
+}
+
+// escapesRoot reports whether a cleaned root-relative path climbs above the
+// root. Clean has already collapsed every interior "..", so a remaining one can
+// only be leading, and it can only mean an escape.
+func escapesRoot(relative string) bool {
+	return relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }

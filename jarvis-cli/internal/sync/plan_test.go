@@ -242,3 +242,60 @@ func TestBuildPlan_FailsClosedOnUnrenderableAgents(t *testing.T) {
 		})
 	}
 }
+
+// A relative recorded path can leave the managed root exactly as an absolute one
+// can, and the doc comment promises both are refused rather than clamped. What
+// managedLocation returns is joined back onto the root at every call site, so an
+// escaped location does not stay a string: it becomes a tracked path, a snapshot
+// entry, a diff subject and a backup target.
+func TestManagedLocation_RefusesARelativePathThatLeavesTheManagedRoot(t *testing.T) {
+	root := t.TempDir()
+
+	for _, escaping := range []string{
+		"..",
+		filepath.Join("..", "outside", "CLAUDE.md"),
+		filepath.Join("..", "..", "etc", "CLAUDE.md"),
+		filepath.Join(".", "..", "outside", "CLAUDE.md"),
+		filepath.Join(".claude", "..", "..", "outside", "CLAUDE.md"),
+	} {
+		if location, err := managedLocation(root, escaping); err == nil {
+			t.Fatalf("managedLocation(%q) = %q, want a refusal: the location leaves the managed root", escaping, location)
+		}
+	}
+
+	// A relative path that stays inside is still normalized, not refused. The
+	// leading "..name" is a directory whose name starts with dots, not a climb.
+	for path, want := range map[string]string{
+		filepath.Join(".claude", "CLAUDE.md"):              ".claude/CLAUDE.md",
+		filepath.Join(".claude", "sub", "..", "CLAUDE.md"): ".claude/CLAUDE.md",
+		filepath.Join("..config", "AGENTS.md"):             "..config/AGENTS.md",
+	} {
+		got, err := managedLocation(root, path)
+		if err != nil {
+			t.Fatalf("managedLocation(%q) refused a location inside the root: %v", path, err)
+		}
+		if got != want {
+			t.Fatalf("managedLocation(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+// Dropping an agent whose recorded path cannot be projected would remove it from
+// Plan.Tracked, and Tracked is what the pre-apply backup captures and what the
+// diff measures. A silently shortened list is the one outcome the single-list
+// invariant exists to prevent, so the derivation fails closed like every other
+// step in this function.
+func TestTrackedPaths_FailsClosedOnAnAgentPathItCannotProject(t *testing.T) {
+	in := PlanInput{
+		Root:  t.TempDir(),
+		State: replayableState(state.Agent{ID: "claude", InstructionsPath: filepath.Join("..", "outside", "CLAUDE.md"), ConfigPath: "settings.json"}),
+	}
+
+	tracked, err := trackedPaths(in, nil, nil)
+	if err == nil {
+		t.Fatalf("trackedPaths succeeded with %d paths, want a refusal: the agent's recorded path leaves the managed root", len(tracked))
+	}
+	if !strings.Contains(err.Error(), "claude") {
+		t.Fatalf("error %q does not name the agent it refused", err)
+	}
+}

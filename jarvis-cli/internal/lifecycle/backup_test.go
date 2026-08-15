@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -420,4 +421,78 @@ func writeTestArchive(t *testing.T, name string, content []byte) string {
 func checksumHex(content []byte) string {
 	sum := sha256.Sum256(content)
 	return hex.EncodeToString(sum[:])
+}
+
+// Tolerating an absent target is about files that are not written yet, not about
+// where they are. A path that neither exists nor lies inside the allowed roots
+// was silently skipped: the caller's list widened past the boundary and only the
+// accident of the file being absent kept anything from being read.
+func TestBackupStore_CreateSnapshotOfTargetsRefusesAnAbsentTargetOutsideAllowedRoots(t *testing.T) {
+	home := t.TempDir()
+	store := NewBackupStore(home)
+
+	// Neither the file nor any of its parents exist, so the only thing that can
+	// refuse it is the boundary itself.
+	absent := filepath.Join(home, "Documents", "taxes", "2026.txt")
+
+	_, err := store.CreateSnapshotOfTargets("sync", []BackupTarget{{Path: absent}})
+	if err == nil {
+		t.Fatal("an absent target outside the allowed roots was accepted, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "allowed roots") {
+		t.Fatalf("expected an actionable out-of-roots error, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(home, ".jarvis", "backups")); !os.IsNotExist(statErr) {
+		t.Fatalf("a refused target list must write no archive, stat = %v", statErr)
+	}
+}
+
+// A target Jarvis cannot even look at is a problem with this machine, and it is
+// reported as itself. Reaching the allowed-root loop first would replace it with
+// either a canonicalization failure about some unrelated root or a path-scope
+// denial, and both send the user after the wrong thing.
+func TestBackupStore_CreateSnapshotOfTargetsReportsAnUnreadableTargetAsItself(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permission bits, so an unreadable target cannot be simulated")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no POSIX permission bits: Chmod only toggles the read-only attribute")
+	}
+	home := t.TempDir()
+	store := NewBackupStore(home)
+
+	private := filepath.Join(home, ".claude", "private")
+	if err := os.MkdirAll(private, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	target := filepath.Join(private, "notes.md")
+	if err := os.WriteFile(target, []byte("managed content"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Chmod(private, 0o000); err != nil {
+		t.Fatalf("chmod private: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(private, 0o755) })
+
+	// An unreadable allowed root as well, so a run that consulted the roots first
+	// would fail with that instead and this test would notice.
+	configDir := filepath.Join(home, ".config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(configDir, 0o000); err != nil {
+		t.Fatalf("chmod config: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(configDir, 0o755) })
+
+	_, err := store.CreateSnapshotOfTargets("sync", []BackupTarget{{Path: target}})
+	if err == nil {
+		t.Fatal("an unreadable target must be reported, not skipped")
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("error does not carry the target's permission failure: %v", err)
+	}
+	if strings.Contains(err.Error(), "allowed root") {
+		t.Fatalf("the target's own failure was replaced by an allowed-root verdict: %v", err)
+	}
 }

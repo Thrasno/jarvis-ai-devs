@@ -65,20 +65,41 @@ func (s BackupStore) CreateSnapshot(sourceOperation string, targets []BackupTarg
 // Such a list describes desired state, so it names paths that do not exist yet:
 // a skill this version added, or a statusline the user deleted. There is nothing
 // to preserve for a missing file, and refusing over one would block every
-// mutation permanently, so absent paths are skipped. Existing targets are still
-// checked against the allowed roots first, so a list assembled outside this
-// package can never widen what a backup reads, and a refusal writes nothing.
+// mutation permanently, so absent paths are skipped. Every target is still
+// confined to the allowed roots, so a list assembled outside this package can
+// never widen what a backup reads, and a refusal writes nothing.
+//
+// Existence decides which confinement check answers, because the two questions
+// need different tools and only one of them works on an absent path:
+//
+//	the target cannot be looked at   -> report that failure as itself
+//	the target exists                -> canonicalizing confinement (symlink-aware)
+//	the target is absent, inside      -> skip: nothing to preserve
+//	the target is absent, outside     -> refuse: the list overstepped
+//
+// The existence check therefore comes first, and its own failure is returned
+// before any root is consulted: a permission error on the target is a fact about
+// this machine, and answering it with a canonicalization failure about an
+// unrelated root, or with a path-scope denial, sends the user after the wrong
+// problem.
+//
+// An absent target is confined lexically because canonicalizing a path whose
+// parent directory is absent is itself an error, and that absence is precisely
+// the ordinary case this method exists to tolerate. The weaker check is enough
+// here and only here: nothing is read for a path that is not there, so a
+// symlinked ancestor cannot smuggle bytes past it. The moment the path exists,
+// the canonicalizing check is the one that runs.
 func (s BackupStore) CreateSnapshotOfTargets(sourceOperation string, targets []BackupTarget) (BackupManifest, error) {
 	present := make([]BackupTarget, 0, len(targets))
 	for _, target := range targets {
-		// Existence is checked before the root check on purpose: canonicalizing a
-		// path whose parent directory is absent is an error, and that absence is
-		// precisely the ordinary case this method exists to tolerate.
 		if _, err := os.Lstat(target.Path); err != nil {
-			if os.IsNotExist(err) {
-				continue
+			if !os.IsNotExist(err) {
+				return BackupManifest{}, err
 			}
-			return BackupManifest{}, err
+			if !s.isLexicallyAllowedRoot(target.Path) {
+				return BackupManifest{}, fmt.Errorf("backup target outside allowed roots: %s", target.Path)
+			}
+			continue
 		}
 		allowed, err := s.isAllowedRoot(target.Path)
 		if err != nil {
@@ -199,17 +220,42 @@ func (s BackupStore) manifestPath(snapshotID string) string {
 	return filepath.Join(s.backupDir(), snapshotID+".manifest.json")
 }
 
+// allowedRoots is the one list both confinement checks read, so the boundary
+// cannot mean one thing for a path that exists and another for one that does not.
+func (s BackupStore) allowedRoots() []string {
+	return []string{
+		filepath.Join(s.homeDir, ".claude"),
+		filepath.Join(s.homeDir, ".config", "opencode"),
+		filepath.Join(s.homeDir, ".jarvis"),
+	}
+}
+
+// isLexicallyAllowedRoot answers confinement without touching the filesystem,
+// for a path that is not there to be touched. Clean collapses every ".." the
+// caller wrote, so a path that climbs out of a root cannot climb back in on
+// paper. What it cannot see is a symlinked ancestor, which is why it is only
+// ever asked about a path with nothing behind it to read: it is a check on the
+// caller's list, not on the machine.
+//
+// A relative path matches no root and is refused, which is the right answer for
+// a target list that is supposed to name absolute managed paths.
+func (s BackupStore) isLexicallyAllowedRoot(path string) bool {
+	cleaned := filepath.Clean(path)
+	for _, root := range s.allowedRoots() {
+		canonRoot := filepath.Clean(root)
+		if cleaned == canonRoot || strings.HasPrefix(cleaned, canonRoot+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s BackupStore) isAllowedRoot(path string) (bool, error) {
 	canonPath, err := canonicalizePath(path)
 	if err != nil {
 		return false, fmt.Errorf("canonicalize restore path %q: %w", path, err)
 	}
-	allowed := []string{
-		filepath.Join(s.homeDir, ".claude"),
-		filepath.Join(s.homeDir, ".config", "opencode"),
-		filepath.Join(s.homeDir, ".jarvis"),
-	}
-	for _, root := range allowed {
+	for _, root := range s.allowedRoots() {
 		canonRoot, err := canonicalizePath(root)
 		if errors.Is(err, errPathAbsent) {
 			// A root absent from this machine matches nothing. Not every user has
