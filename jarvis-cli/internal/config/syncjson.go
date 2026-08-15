@@ -17,6 +17,30 @@ type syncJSON struct {
 	AutoSync *bool  `json:"auto_sync,omitempty"`
 }
 
+// SyncCredentialsComplete reports whether the given sync.json contents carry the
+// credentials a login actually produces, rather than merely being valid JSON.
+//
+// It lives next to the writer on purpose: the answer is "does this match what
+// WriteSyncCredentials emits", so it decodes into that same struct instead of a
+// second, drifting copy of the field names. api_url, email and password are the
+// three fields the writer always emits and the three hive-daemon refuses the
+// file without; auto_sync is optional at both ends. Unknown fields are ignored
+// so a newer-format file is not mistaken for a broken one, which mirrors the
+// tolerance WriteSyncCredentials already grants an existing file.
+//
+// api_url and email are compared after trimming because the writer trims them,
+// so blanks could never have come from a real login. The password is compared
+// verbatim, because the writer deliberately preserves its whitespace.
+func SyncCredentialsComplete(contents []byte) bool {
+	var credentials syncJSON
+	if err := json.Unmarshal(contents, &credentials); err != nil {
+		return false
+	}
+	return strings.TrimSpace(credentials.APIURL) != "" &&
+		strings.TrimSpace(credentials.Email) != "" &&
+		credentials.Password != ""
+}
+
 // WriteSyncCredentials writes ~/.jarvis/sync.json with cloud credentials.
 //
 // The autoSync parameter controls the auto_sync field using a tri-state:

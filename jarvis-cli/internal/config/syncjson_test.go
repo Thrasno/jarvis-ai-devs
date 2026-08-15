@@ -309,3 +309,32 @@ func TestWriteSyncCredentials_NilPreservesExistingAutoSyncTrue(t *testing.T) {
 		t.Fatalf("expected updated credentials, got: %s", body)
 	}
 }
+
+func TestSyncCredentialsComplete(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		contents string
+		want     bool
+	}{
+		{name: "the shape WriteSyncCredentials produces", contents: `{"api_url":"https://hivemem.dev","email":"a@b.c","password":"s3cr3t"}`, want: true},
+		{name: "with auto_sync", contents: `{"api_url":"https://hivemem.dev","email":"a@b.c","password":"s3cr3t","auto_sync":true}`, want: true},
+		{name: "with a field this build does not know", contents: `{"api_url":"https://hivemem.dev","email":"a@b.c","password":"s3cr3t","daemon_id":"d-1"}`, want: true},
+		{name: "whitespace-only password is a real password", contents: `{"api_url":"https://hivemem.dev","email":"a@b.c","password":"   "}`, want: true},
+		{name: "null", contents: "null"},
+		{name: "empty object", contents: "{}"},
+		{name: "unrelated object", contents: `{"foo":1}`},
+		{name: "missing password", contents: `{"api_url":"https://hivemem.dev","email":"a@b.c"}`},
+		{name: "blank email", contents: `{"api_url":"https://hivemem.dev","email":"  ","password":"s3cr3t"}`},
+		{name: "blank api_url", contents: `{"api_url":" ","email":"a@b.c","password":"s3cr3t"}`},
+		{name: "array", contents: `[1,2]`},
+		{name: "string", contents: `"str"`},
+		{name: "invalid syntax", contents: `{`},
+		{name: "empty file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SyncCredentialsComplete([]byte(tc.contents)); got != tc.want {
+				t.Fatalf("SyncCredentialsComplete(%q) = %v, want %v", tc.contents, got, tc.want)
+			}
+		})
+	}
+}
