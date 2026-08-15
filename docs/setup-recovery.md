@@ -88,12 +88,20 @@ Flujo operativo:
 
 ## Limpieza manual extrema (último recurso)
 
-Si necesitás reset completo local:
+Si necesitás reset completo local.
+
+`~/.jarvis/state.yaml` es el manifiesto de estado deseado y hay que borrarlo
+junto con el resto. Es el fichero que guarda la persona, las skills
+seleccionadas, los agentes configurados con sus rutas, el ámbito y los modelos
+por fase. Borrar sólo `config.yaml` no resetea la máquina: el manifiesto
+sobrevive, el asistente vuelve a precargar esas mismas elecciones y
+`selection_configured` sigue indicando que ya se preguntó.
 
 ### Linux/macOS (Bash)
 
 ```bash
 rm -f ~/.jarvis/config.yaml
+rm -f ~/.jarvis/state.yaml
 rm -f ~/.jarvis/sync.json
 rm -f ~/.jarvis/memory.db
 ```
@@ -102,9 +110,13 @@ rm -f ~/.jarvis/memory.db
 
 ```powershell
 Remove-Item -Force "$HOME/.jarvis/config.yaml" -ErrorAction SilentlyContinue
+Remove-Item -Force "$HOME/.jarvis/state.yaml" -ErrorAction SilentlyContinue
 Remove-Item -Force "$HOME/.jarvis/sync.json" -ErrorAction SilentlyContinue
 Remove-Item -Force "$HOME/.jarvis/memory.db" -ErrorAction SilentlyContinue
 ```
+
+Para quitar un solo agente del manifiesto sin resetear nada más, usá
+`jarvis config forget-agent <agente>`.
 
 Luego:
 
