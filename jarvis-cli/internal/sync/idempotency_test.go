@@ -45,17 +45,29 @@ func (r *desiredStateRunner) ApplyPersonaInstructions(target AgentTarget) error 
 	return nil
 }
 
-func measuredRun(t *testing.T, home string, plan Plan, runner ComponentRunner, agents ...string) RunResult {
-	t.Helper()
+// runReportingFailures drives a replay pass over a real backup store and hands
+// back both halves of Run's answer.
+//
+// Both halves, because Run reports a post-apply failure alongside the report the
+// applier already produced: a helper that only returned the result, or that
+// stopped the test on the error, would leave every one of those failure branches
+// undescribed by any test.
+func runReportingFailures(home string, plan Plan, runner ComponentRunner, agents ...string) (RunResult, error) {
 	targets := make([]AgentTarget, 0, len(agents))
 	for _, id := range agents {
 		targets = append(targets, AgentTarget{ID: id})
 	}
-	result, err := Run(RunInput{
+	return Run(RunInput{
 		Plan:   plan,
 		Apply:  ApplyInput{Runner: runner, Targets: targets},
 		Backup: lifecycle.NewBackupStore(home).CreateSnapshotOfTargets,
 	})
+}
+
+// measuredRun is runReportingFailures for the runs that must succeed outright.
+func measuredRun(t *testing.T, home string, plan Plan, runner ComponentRunner, agents ...string) RunResult {
+	t.Helper()
+	result, err := runReportingFailures(home, plan, runner, agents...)
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}

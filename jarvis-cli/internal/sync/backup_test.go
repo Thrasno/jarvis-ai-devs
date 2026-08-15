@@ -112,6 +112,39 @@ func TestRun_BackupFailureBlocksEveryMutation(t *testing.T) {
 	}
 }
 
+// D1, over the combination that actually exercises it: the backup succeeded and
+// an agent then failed. Run still returns no error, because a per-agent failure
+// is the report's own content and the command derives its exit status from
+// there. Raising it here would claim the replay pass itself broke, which the
+// recovery point and the sibling agent's outcome both disprove.
+func TestRun_ReportsAPerAgentFailureWithoutRaisingItWhenTheBackupSucceeded(t *testing.T) {
+	home := t.TempDir()
+	plan, _ := planWithTrackedFile(t, home, "hand-written notes")
+	boom := errors.New("native MCP replacement failed")
+	runner := &recordingRunner{failAt: map[string]error{"claude/" + ComponentMCPs: boom}}
+
+	result, err := runReportingFailures(home, plan, runner, "claude")
+
+	if err != nil {
+		t.Fatalf("a per-agent failure must be reported, not raised: %v", err)
+	}
+	if result.Backup.SnapshotID == "" {
+		t.Fatal("the backup succeeded, so the report must still name its recovery point")
+	}
+	if result.Report.Converged() {
+		t.Fatalf("a failed agent must not converge the run: %+v", result.Report)
+	}
+	if len(result.Report.Agents) != 1 || result.Report.Agents[0].FailedAt != ComponentMCPs {
+		t.Fatalf("the report must name the component that failed: %+v", result.Report.Agents)
+	}
+	if !errors.Is(result.Report.Agents[0].Err, boom) {
+		t.Fatalf("agent error = %v, want it to wrap %v", result.Report.Agents[0].Err, boom)
+	}
+	if result.Report.ExitCode() == 0 {
+		t.Fatal("the exit status is derived from the report, so it must be non-zero")
+	}
+}
+
 // A missing backup seam must read as "cannot proceed", never as "no backup
 // needed".
 func TestRun_RefusesToMutateWithoutABackupSeam(t *testing.T) {
