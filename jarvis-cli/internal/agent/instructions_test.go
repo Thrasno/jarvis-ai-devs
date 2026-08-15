@@ -86,18 +86,26 @@ func TestComposeInstructions_RecomposingItsOwnOutputChangesNothing(t *testing.T)
 // Windows editor.
 func TestComposeInstructions_PreservesTheLineEndingsTheFileAlreadyUses(t *testing.T) {
 	// The fixture carries CRLF exactly where the defect put it: at the four
-	// sentinel boundaries, which are the template's own bytes. It is built by
-	// converting those boundaries rather than the whole file, because that is
-	// what a CRLF checkout actually produces -- the payloads come from Go
+	// sentinel boundaries, which are the template's own bytes. Only those
+	// boundaries are converted, not the whole file -- the payloads come from Go
 	// strings and the protocol block from an embedded asset, and a blanket
-	// conversion would assert that the composer must preserve line endings in
-	// content it legitimately re-renders from those sources.
+	// conversion would demand that the composer preserve line endings in content
+	// it legitimately re-renders from those sources.
+	//
+	// The conversion normalizes each boundary before setting it, which makes it
+	// idempotent and so correct on both kinds of checkout. Setting it directly
+	// would match the "\n" inside an already-CRLF boundary and double its "\r",
+	// producing a fixture no correct composer could reproduce -- a test failing
+	// on its own fixture rather than on the code.
+	crlfBoundary := func(content, lf, crlf string) string {
+		return strings.ReplaceAll(strings.ReplaceAll(content, crlf, lf), lf, crlf)
+	}
 	crlfBoundaries := func(content string) string {
 		for _, marker := range []string{Layer1Start, Layer2Start} {
-			content = strings.ReplaceAll(content, marker+"\n", marker+"\r\n")
+			content = crlfBoundary(content, marker+"\n", marker+"\r\n")
 		}
 		for _, marker := range []string{Layer1End, Layer2End} {
-			content = strings.ReplaceAll(content, "\n"+marker, "\r\n"+marker)
+			content = crlfBoundary(content, "\n"+marker, "\r\n"+marker)
 		}
 		return content
 	}
@@ -105,26 +113,36 @@ func TestComposeInstructions_PreservesTheLineEndingsTheFileAlreadyUses(t *testin
 	for _, id := range []string{"claude", "opencode"} {
 		t.Run(id, func(t *testing.T) {
 			windows := crlfBoundaries(composeFor(t, id, nil))
-			if !strings.Contains(windows, Layer1Start+"\r\n") {
-				t.Fatalf("the CRLF fixture does not carry a CRLF boundary, so it proves nothing")
+			for _, boundary := range []string{
+				Layer1Start + "\r\n", "\r\n" + Layer1End,
+				Layer2Start + "\r\n", "\r\n" + Layer2End,
+			} {
+				if !strings.Contains(windows, boundary) {
+					t.Fatalf("the fixture lacks the CRLF boundary %q, so it proves nothing", boundary)
+				}
 			}
 
 			recomposed := composeFor(t, id, []byte(windows))
 
-			if recomposed != windows {
-				t.Fatalf("recomposing a CRLF file changed it: %d bytes became %d (%d line endings lost)",
-					len(windows), len(recomposed),
-					strings.Count(windows, "\r\n")-strings.Count(recomposed, "\r\n"))
-			}
-			// Named directly as well as by length, so a future failure says which
-			// boundary regressed rather than only that the byte count moved.
+			// The claim is about the boundaries, and it is asserted on the
+			// boundaries. Whole-file equality would say the same thing on a
+			// LF checkout and something stricter on a CRLF one, where the
+			// embedded protocol asset arrives with its own endings: the test would
+			// then be asserting the checkout's configuration rather than this
+			// function's behaviour.
 			for _, boundary := range []string{
 				Layer1Start + "\r\n", "\r\n" + Layer1End,
 				Layer2Start + "\r\n", "\r\n" + Layer2End,
 			} {
 				if !strings.Contains(recomposed, boundary) {
-					t.Errorf("boundary %q lost its CRLF line ending", boundary)
+					t.Errorf("boundary %q lost its CRLF line ending when the file was recomposed", boundary)
 				}
+			}
+			// Stated once from the other side too. Only the START marker can carry
+			// this check: a CRLF END boundary contains "\n"+marker as a substring,
+			// so the same assertion there would fire on correct output.
+			if strings.Contains(recomposed, Layer1Start+"\n") {
+				t.Error("a boundary was rewritten as LF in a file that uses CRLF, so the two disagree by a byte")
 			}
 		})
 	}
