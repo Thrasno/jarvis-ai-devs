@@ -62,6 +62,32 @@ func TestSyncCommand_RunsWhenInvokedWithNoFlags(t *testing.T) {
 	}
 }
 
+// The guard must belong to the run, not to cobra's dispatch. A PreRunE-only
+// check holds solely for callers that go through Execute, and this binary is
+// driven directly through RunE elsewhere in its own test suite, so a supplied
+// flag would reach the replay seam with nothing left to stop it.
+func TestSyncCommand_RejectsASuppliedFlagOnADirectRunECall(t *testing.T) {
+	runs := 0
+	root := newSyncTestRoot(func() error { runs++; return nil })
+	// Cobra's flag values outlive the invocation that parsed them, which is how a
+	// supplied flag reaches a later direct call at all.
+	root.SetArgs([]string{"sync", "--no-tui"})
+	if err := root.Execute(); err == nil {
+		t.Fatal("expected the dispatched invocation to be refused")
+	}
+	cmd, _, err := root.Find([]string{"sync"})
+	if err != nil {
+		t.Fatalf("find sync: %v", err)
+	}
+
+	if err := cmd.RunE(cmd, nil); err == nil {
+		t.Fatal("a supplied flag must be refused by RunE itself, not only by cobra's dispatch")
+	}
+	if runs != 0 {
+		t.Fatalf("the run seam must not be reached, got %d runs", runs)
+	}
+}
+
 // newSyncTestRoot mirrors the production wiring: a root command carrying the
 // same persistent flag, with sync mounted underneath it.
 func newSyncTestRoot(run func() error) *cobra.Command {

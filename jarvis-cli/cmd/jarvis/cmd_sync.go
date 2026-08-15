@@ -30,22 +30,28 @@ import (
 //
 // Cobra rejects an unknown flag on its own, but an inherited persistent flag
 // such as the root command's --no-tui parses happily and would otherwise be
-// accepted silently. The guard therefore refuses any flag that was set at all,
-// and it runs in PreRunE, before the run seam and so before any mutation.
+// accepted silently. The guard therefore refuses any flag that was set at all.
+//
+// It lives inside RunE rather than in PreRunE, because PreRunE only runs for
+// callers that reach the command through cobra's dispatch. RunE is a plain
+// field, and this binary's own tests call it directly; a guard those callers
+// skip is not a guard on the command, only on one way of invoking it. Cobra's
+// parsed flag values also outlive the invocation that set them, so a later
+// direct call inherits a flag nobody passed to it. Refusing first thing inside
+// the run keeps the check ahead of the run seam, and so ahead of any mutation.
 func newSyncCommand(run func() error) *cobra.Command {
 	return &cobra.Command{
 		Use:   "sync",
 		Short: "Replay this machine's recorded Jarvis configuration",
 		Args:  cobra.NoArgs,
-		PreRunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			supplied := make([]string, 0, 1)
 			cmd.Flags().Visit(func(flag *pflag.Flag) { supplied = append(supplied, "--"+flag.Name) })
-			if len(supplied) == 0 {
-				return nil
+			if len(supplied) > 0 {
+				return fmt.Errorf("jarvis sync accepts no flags, got %s", strings.Join(supplied, ", "))
 			}
-			return fmt.Errorf("jarvis sync accepts no flags, got %s", strings.Join(supplied, ", "))
+			return run()
 		},
-		RunE: func(*cobra.Command, []string) error { return run() },
 	}
 }
 
