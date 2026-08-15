@@ -1,6 +1,8 @@
 // This file holds sync's own bookkeeping: the small, compatible record replay
-// leaves behind about the asset set it applied. It is written only when a
-// target actually changed, so a converged machine is left byte-identical, and
+// leaves behind about the asset set it applied. It is written only after a run
+// that measured its own outcome and found a target changed, so a converged
+// machine is left byte-identical and a run that failed before that measurement
+// leaves the previous digest exactly where it was (see Run), and
 // only under the manifest lock, from a manifest re-read inside that lock so a
 // concurrent writer is not clobbered by stale in-memory state.
 package sync

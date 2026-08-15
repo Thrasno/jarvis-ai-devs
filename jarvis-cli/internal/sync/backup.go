@@ -95,15 +95,27 @@ func Run(in RunInput) (RunResult, error) {
 	// Mode assertion is part of the mutation pass and runs before the closing
 	// snapshot, so a mode a writer left behind is corrected rather than merely
 	// reported as drift on every run.
-	// Both failure paths below leave the diff unmeasured, which is not evidence
-	// that nothing changed: the applier already ran, so the record is still written.
+	//
+	// Neither failure below records anything. That reverses an earlier decision,
+	// which wrote the record on both paths on the grounds that an unmeasured diff
+	// is not evidence that nothing changed. That premise still holds -- the
+	// applier already ran, and the report says so -- but the record is not a log
+	// of attempts: ManagedAssetDigest is a claim that this machine holds the asset
+	// set the digest names, and a run that never asserted a mode or never measured
+	// what it produced has no evidence for that claim. Advancing it anyway lets the
+	// digest run ahead of the machine, and the next run reads it back as convergence.
+	//
+	// The rule is therefore temporal, not a state: the digest is written only
+	// after a sufficient final measurement, and never marked pending, failed or
+	// attempted. A second persisted state would have to be interpreted, migrated
+	// and kept honest by every later reader; leaving the previous digest in place
+	// needs none of that, and the next run re-measures from scratch anyway.
 	if err := EnforceModes(in.Plan.Tracked); err != nil {
-		return result, errors.Join(err, in.Bookkeeping.record())
+		return result, err
 	}
 	after, err := TakeSnapshot(in.Plan.Tracked)
 	if err != nil {
-		measured := fmt.Errorf("measure %d tracked paths after replay: %w", len(in.Plan.Tracked), err)
-		return result, errors.Join(measured, in.Bookkeeping.record())
+		return result, fmt.Errorf("measure %d tracked paths after replay: %w", len(in.Plan.Tracked), err)
 	}
 	changed := Diff(before, after)
 	result.Report = attributeChanges(result.Report, in.Plan.Tracked, changed)
