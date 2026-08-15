@@ -166,3 +166,136 @@ func TestReplayComponents_RefuseAnAgentThatIsNotInstalled(t *testing.T) {
 		t.Fatalf("executor was invoked %d times for an unresolvable agent", len(exec.inputs))
 	}
 }
+
+// AgentResolver is a nilable func type, so a caller that never wired one must
+// fail closed instead of panicking mid-replay.
+//
+// It must fail closed into its own sentinel, not ErrUnknownAgent. The two say
+// different things to whoever reads the failure: ErrUnknownAgent means "this
+// machine does not have that agent", which is a statement about the user's
+// installation, while an unwired resolver is a construction defect and the
+// agent may well be installed. Collapsing them would hand the operator a
+// diagnosis that is not merely vague but wrong.
+func TestRunnerComponents_RejectNilResolverWithoutPanicking(t *testing.T) {
+	target := AgentTarget{ID: "claude", Root: t.TempDir()}
+
+	for _, seam := range unwiredSeams() {
+		err := seam.apply(target)
+		if !errors.Is(err, ErrDependencyUnwired) {
+			t.Fatalf("%s error = %v, want it to wrap ErrDependencyUnwired", seam.name, err)
+		}
+		if errors.Is(err, ErrUnknownAgent) {
+			t.Fatalf("%s error = %v, must not be mistakable for an agent that is not installed", seam.name, err)
+		}
+	}
+}
+
+// The mirror of the case above: a resolver that *was* wired and returns false is
+// an uninstalled agent, and that must stay separable from never having wired one.
+func TestRunnerComponents_SeparateAnUnwiredResolverFromAnUninstalledAgent(t *testing.T) {
+	target := AgentTarget{ID: "cursor", Root: t.TempDir()}
+
+	for _, seam := range wiredButUnresolvableSeams() {
+		err := seam.apply(target)
+		if !errors.Is(err, ErrUnknownAgent) {
+			t.Fatalf("%s error = %v, want it to wrap ErrUnknownAgent", seam.name, err)
+		}
+		if errors.Is(err, ErrDependencyUnwired) {
+			t.Fatalf("%s error = %v, must not report a missing dependency", seam.name, err)
+		}
+	}
+}
+
+type resolverSeam struct {
+	name  string
+	apply func(AgentTarget) error
+}
+
+func unwiredSeams() []resolverSeam {
+	return []resolverSeam{
+		{"MCP component", MCPComponent{}.Apply},
+		{"statusline component", StatuslineComponent{}.Apply},
+		{"runner agentFor", func(target AgentTarget) error {
+			_, err := (&Runner{}).agentFor(target, "replay")
+			return err
+		}},
+	}
+}
+
+func wiredButUnresolvableSeams() []resolverSeam {
+	unresolvable := func(string) (agent.Agent, bool) { return nil, false }
+	return []resolverSeam{
+		{"MCP component", MCPComponent{Resolve: unresolvable}.Apply},
+		{"statusline component", StatuslineComponent{Resolve: unresolvable}.Apply},
+		{"runner agentFor", func(target AgentTarget) error {
+			_, err := (&Runner{resolve: unresolvable}).agentFor(target, "replay")
+			return err
+		}},
+	}
+}
+
+// Reconcile is an exported override seam. A caller that supplies one must see it
+// used: silently falling back to agentapply.ReconcileMCPs would ignore the
+// injected handoff and reach the real machine instead.
+// Deps is MCPComponent's other nilable dependency, and it reaches further than
+// Resolve: agentapply.ReconcileMCPs calls deps.HiveDaemonPath and
+// deps.NewExecutor with no guard of its own. A component built with a resolver
+// but no Deps therefore resolves successfully and then panics inside the default
+// reconciler — the same construction defect, one field over.
+func TestMCPComponent_RefusesTheDefaultReconcilerWithoutItsDependencies(t *testing.T) {
+	home, agents, _ := mcpReplayFixture(t)
+	resolve := func(id string) (agent.Agent, bool) { a, ok := agents[id]; return a, ok }
+
+	err := MCPComponent{Resolve: resolve}.Apply(AgentTarget{ID: "claude", Root: home})
+	if !errors.Is(err, ErrDependencyUnwired) {
+		t.Fatalf("error = %v, want it to wrap ErrDependencyUnwired", err)
+	}
+	if errors.Is(err, ErrUnknownAgent) {
+		t.Fatalf("error = %v, must not be mistakable for an agent that is not installed", err)
+	}
+}
+
+// The guard above belongs to the default reconciler, not to the component. An
+// injected reconciler is free to need nothing from Deps, so refusing a zero Deps
+// unconditionally would break the override seam §7.9 exists to protect.
+func TestMCPComponent_AcceptsAnInjectedReconcilerWithoutDependencies(t *testing.T) {
+	home, agents, _ := mcpReplayFixture(t)
+	resolve := func(id string) (agent.Agent, bool) { a, ok := agents[id]; return a, ok }
+
+	called := false
+	component := MCPComponent{
+		Resolve:   resolve,
+		Reconcile: func([]agent.Agent, string, agentapply.MCPDeps) error { called = true; return nil },
+	}
+
+	if err := component.Apply(AgentTarget{ID: "claude", Root: home}); err != nil {
+		t.Fatalf("Apply() error = %v, want an injected reconciler to run without Deps", err)
+	}
+	if !called {
+		t.Fatal("the injected reconciler never ran")
+	}
+}
+
+func TestMCPComponent_UsesInjectedReconciler(t *testing.T) {
+	home, agents, daemon := mcpReplayFixture(t)
+	exec := &capturingExecutor{}
+	component := newMCPComponent(agents, daemon, exec)
+
+	var got []agent.Agent
+	injected := errors.New("injected reconciler")
+	component.Reconcile = func(reconciled []agent.Agent, home string, _ agentapply.MCPDeps) error {
+		got = reconciled
+		return injected
+	}
+
+	err := component.Apply(AgentTarget{ID: "claude", Root: home})
+	if !errors.Is(err, injected) {
+		t.Fatalf("error = %v, want it to wrap the injected reconciler's error", err)
+	}
+	if len(got) != 1 || got[0].Name() != "claude" {
+		t.Fatalf("injected reconciler received %v, want exactly the resolved claude agent", got)
+	}
+	if len(exec.inputs) != 0 {
+		t.Fatalf("the default reconciler ran %d times despite an injected override", len(exec.inputs))
+	}
+}

@@ -133,12 +133,17 @@ func NewRunner(in ReplayInput) *Runner {
 		layer2:    in.Layer2,
 		profile:   in.Profile,
 		mcps:      MCPComponent{Resolve: in.Resolve, Deps: in.MCPDeps},
+		// Only Consent comes from the manifest, so the statusline's own
+		// dependencies are wired alongside its sibling component's. The zero
+		// StatuslineState is "never asked", which already leaves the statusline
+		// untouched, so a nil State needs no flag of its own.
+		statusline: StatuslineComponent{Resolve: in.Resolve, HooksFS: in.HooksFS},
 	}
 	if in.State != nil {
 		runner.phaseModels = in.State.PhaseModels
 		runner.skillIDs = in.State.Skills
 		runner.ownership = NewInstructionOwnership(in.State.InstalledAgents)
-		runner.statusline = StatuslineComponent{Resolve: in.Resolve, HooksFS: in.HooksFS, Consent: in.State.Statusline}
+		runner.statusline.Consent = in.State.Statusline
 	}
 	return runner
 }
@@ -198,13 +203,17 @@ func (r *Runner) ApplyPersonaInstructions(target AgentTarget) error {
 // recorded consent.
 func (r *Runner) ApplyStatusline(target AgentTarget) error { return r.statusline.Apply(target) }
 
+// agentFor resolves the installed agent a target names. It separates the two
+// ways that can fail: see ErrDependencyUnwired for why they must not collapse.
 func (r *Runner) agentFor(target AgentTarget, what string) (agent.Agent, error) {
-	if r.resolve != nil {
-		if resolved, ok := r.resolve(target.ID); ok {
-			return resolved, nil
-		}
+	if r.resolve == nil {
+		return nil, fmt.Errorf("%s for %q: agent resolver: %w", what, target.ID, ErrDependencyUnwired)
 	}
-	return nil, fmt.Errorf("%s for %q: %w", what, target.ID, ErrUnknownAgent)
+	resolved, ok := r.resolve(target.ID)
+	if !ok {
+		return nil, fmt.Errorf("%s for %q: %w", what, target.ID, ErrUnknownAgent)
+	}
+	return resolved, nil
 }
 
 func (r *Runner) agentsSubFS(agentID string) (fs.FS, error) {

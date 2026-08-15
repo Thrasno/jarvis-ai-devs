@@ -236,6 +236,27 @@ func TestRunner_RefusesAManifestAgentThisMachineDoesNotHave(t *testing.T) {
 	}
 }
 
+// The statusline component's resolver and hooks FS do not come from the
+// manifest, so a nil State must not leave them unwired: only Consent is
+// State-derived, and its zero value already means "never asked".
+func TestNewRunner_WiresStatuslineResolverWhenStateIsNil(t *testing.T) {
+	fake := &outputStyleReplayAgent{}
+	runner := NewRunner(ReplayInput{
+		HooksFS: jarvis.HooksFS,
+		Resolve: func(string) (agent.Agent, bool) { return fake, true },
+	})
+
+	if runner.statusline.Resolve == nil {
+		t.Fatal("statusline resolver is unwired, so replay would refuse every agent it can resolve")
+	}
+	if runner.statusline.HooksFS == nil {
+		t.Fatal("statusline hooks FS is unwired, so the embedded script is unreachable")
+	}
+	if runner.statusline.Consent != (state.StatuslineState{}) {
+		t.Fatalf("statusline consent = %+v, want the zero \"never asked\" value without a manifest", runner.statusline.Consent)
+	}
+}
+
 // Targets come from the manifest in order, with its recorded instruction path.
 func TestTargetsFor_ProjectsTheManifestOntoPerAgentTargets(t *testing.T) {
 	in, _ := newReplayFixture(t)
