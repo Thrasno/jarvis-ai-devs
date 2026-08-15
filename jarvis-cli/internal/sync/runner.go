@@ -133,12 +133,17 @@ func NewRunner(in ReplayInput) *Runner {
 		layer2:    in.Layer2,
 		profile:   in.Profile,
 		mcps:      MCPComponent{Resolve: in.Resolve, Deps: in.MCPDeps},
+		// Only Consent comes from the manifest, so the statusline's own
+		// dependencies are wired alongside its sibling component's. The zero
+		// StatuslineState is "never asked", which already leaves the statusline
+		// untouched, so a nil State needs no flag of its own.
+		statusline: StatuslineComponent{Resolve: in.Resolve, HooksFS: in.HooksFS},
 	}
 	if in.State != nil {
 		runner.phaseModels = in.State.PhaseModels
 		runner.skillIDs = in.State.Skills
 		runner.ownership = NewInstructionOwnership(in.State.InstalledAgents)
-		runner.statusline = StatuslineComponent{Resolve: in.Resolve, HooksFS: in.HooksFS, Consent: in.State.Statusline}
+		runner.statusline.Consent = in.State.Statusline
 	}
 	return runner
 }

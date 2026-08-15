@@ -166,3 +166,44 @@ func TestReplayComponents_RefuseAnAgentThatIsNotInstalled(t *testing.T) {
 		t.Fatalf("executor was invoked %d times for an unresolvable agent", len(exec.inputs))
 	}
 }
+
+// AgentResolver is a nilable func type, so a caller that never wired one must
+// meet the same refusal every other component gives an unresolvable agent. A
+// nil resolver is a missing dependency, not a reason to panic mid-replay.
+func TestRunnerComponents_RejectNilResolverWithoutPanicking(t *testing.T) {
+	target := AgentTarget{ID: "claude", Root: t.TempDir()}
+
+	if err := (MCPComponent{}).Apply(target); !errors.Is(err, ErrUnknownAgent) {
+		t.Fatalf("MCP component error = %v, want it to wrap ErrUnknownAgent", err)
+	}
+	if err := (StatuslineComponent{}).Apply(target); !errors.Is(err, ErrUnknownAgent) {
+		t.Fatalf("statusline component error = %v, want it to wrap ErrUnknownAgent", err)
+	}
+}
+
+// Reconcile is an exported override seam. A caller that supplies one must see it
+// used: silently falling back to agentapply.ReconcileMCPs would ignore the
+// injected handoff and reach the real machine instead.
+func TestMCPComponent_UsesInjectedReconciler(t *testing.T) {
+	home, agents, daemon := mcpReplayFixture(t)
+	exec := &capturingExecutor{}
+	component := newMCPComponent(agents, daemon, exec)
+
+	var got []agent.Agent
+	injected := errors.New("injected reconciler")
+	component.Reconcile = func(reconciled []agent.Agent, home string, _ agentapply.MCPDeps) error {
+		got = reconciled
+		return injected
+	}
+
+	err := component.Apply(AgentTarget{ID: "claude", Root: home})
+	if !errors.Is(err, injected) {
+		t.Fatalf("error = %v, want it to wrap the injected reconciler's error", err)
+	}
+	if len(got) != 1 || got[0].Name() != "claude" {
+		t.Fatalf("injected reconciler received %v, want exactly the resolved claude agent", got)
+	}
+	if len(exec.inputs) != 0 {
+		t.Fatalf("the default reconciler ran %d times despite an injected override", len(exec.inputs))
+	}
+}

@@ -29,6 +29,12 @@ type StatuslineComponent struct {
 // Apply converges this agent's statusline: an absent script is written fresh and
 // a present one is overwritten with the embedded bytes.
 func (c StatuslineComponent) Apply(target AgentTarget) error {
+	// AgentResolver is a nilable func type, so an unwired one is a missing
+	// dependency rather than a resolution failure. It fails closed into the same
+	// refusal as an unknown ID: replay must not panic mid-pass.
+	if c.Resolve == nil {
+		return fmt.Errorf("replay statusline for %q: %w", target.ID, ErrUnknownAgent)
+	}
 	resolved, ok := c.Resolve(target.ID)
 	if !ok {
 		return fmt.Errorf("replay statusline for %q: %w", target.ID, ErrUnknownAgent)

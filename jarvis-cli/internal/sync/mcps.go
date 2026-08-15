@@ -47,6 +47,12 @@ type MCPComponent struct {
 // keeps reconcile's transactional compensation from rolling back a sibling
 // agent's marker-backed artifacts.
 func (c MCPComponent) Apply(target AgentTarget) error {
+	// AgentResolver is a nilable func type, so an unwired one is a missing
+	// dependency rather than a resolution failure. It fails closed into the same
+	// refusal as an unknown ID: replay must not panic mid-pass.
+	if c.Resolve == nil {
+		return fmt.Errorf("replay managed MCPs for %q: %w", target.ID, ErrUnknownAgent)
+	}
 	resolved, ok := c.Resolve(target.ID)
 	if !ok {
 		return fmt.Errorf("replay managed MCPs for %q: %w", target.ID, ErrUnknownAgent)
