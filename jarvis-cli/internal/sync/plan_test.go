@@ -102,12 +102,36 @@ func TestBuildPlan_AgentlessManifestBlocksAndNeverRedetects(t *testing.T) {
 	}
 }
 
-// Targets come from the assets embedded in the running binary. Whatever a
-// previous version left on disk is never a source, and planning stays read-only.
-func TestBuildPlan_RendersTargetsFromInstalledBinaryAssetsOnly(t *testing.T) {
-	root := t.TempDir()
+// A planned instruction target must equal the bytes the writer actually
+// produces for it. That is the contract, and it is the whole point of planning:
+// the plan's digests are what a run measures the machine against, so a plan
+// describing a file no writer produces makes every replayed machine fail its own
+// verification and report drift forever.
+//
+// This assertion used to compare the plan against config.RenderCLAUDEMd and
+// config.RenderAGENTSMd -- the raw template renderers -- and it was wrong. The
+// writers render the template and then inject the Hive protocol block, and
+// Claude additionally the orchestrator @import, so the planned bytes were a
+// strict prefix of the written ones. Comparing against the renderer instead of
+// against the writer is precisely what let that gap look correct: the test
+// passed, the digests never matched on a real machine, and `jarvis sync` exited
+// non-zero on every run telling the user to run `jarvis sync` to repair.
+//
+// So the comparison is against the real writers, driven over a real home. A
+// planner-side rewrite that stops agreeing with the writer fails here, and so
+// does a writer that grows an assembly step the planner does not know about --
+// which no comparison against a renderer, and no test in this package driving a
+// fake ComponentRunner, is able to catch.
+//
+// The read-only claim rides along: the targets still come from the assets
+// embedded in the running binary, whatever a previous version left on disk, and
+// planning writes nothing.
+func TestBuildPlan_PlansExactlyWhatTheWriterProduces(t *testing.T) {
+	root, agents, _ := mcpReplayFixture(t)
 	claudePath := filepath.Join(root, ".claude", "CLAUDE.md")
 	agentsPath := filepath.Join(root, ".config", "opencode", "AGENTS.md")
+	// Stale content from an older version, so the plan is proven to come from the
+	// embedded assets rather than from what is already there.
 	writeFile(t, claudePath, "stale instructions rendered by an older version")
 	writeFile(t, agentsPath, "stale instructions rendered by an older version")
 	before := snapshotTree(t, root)
@@ -128,29 +152,40 @@ func TestBuildPlan_RendersTargetsFromInstalledBinaryAssetsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildPlan: %v", err)
 	}
-
-	wantClaude, err := config.RenderCLAUDEMd(jarvis.TemplatesFS, in.Layer1, in.Layer2, "", in.Skills)
-	if err != nil {
-		t.Fatalf("render CLAUDE.md: %v", err)
-	}
-	wantAgents, err := config.RenderAGENTSMd(jarvis.TemplatesFS, in.Layer1, in.Layer2, "", in.Skills)
-	if err != nil {
-		t.Fatalf("render AGENTS.md: %v", err)
-	}
-	want := map[string]string{
-		".claude/CLAUDE.md":          wantClaude,
-		".config/opencode/AGENTS.md": wantAgents,
-	}
-
-	got := map[string]string{}
-	for _, artifact := range plan.Artifacts {
-		got[artifact.Location] = string(artifact.Bytes)
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("planned targets do not match the embedded assets; got locations %v", got)
-	}
 	if after := snapshotTree(t, root); !reflect.DeepEqual(before, after) {
 		t.Fatal("planner mutated the filesystem; planning is read-only")
+	}
+
+	planned := map[string]string{}
+	for _, artifact := range plan.Artifacts {
+		planned[artifact.Location] = string(artifact.Bytes)
+	}
+	// Without this the loop below would pass on an empty plan, asserting nothing.
+	if len(planned) != 2 {
+		t.Fatalf("planned %d instruction targets, want 2: %v", len(planned), planned)
+	}
+
+	for _, tc := range []struct{ id, location, path string }{
+		{"claude", ".claude/CLAUDE.md", claudePath},
+		{"opencode", ".config/opencode/AGENTS.md", agentsPath},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			installed, detected := agents[tc.id]
+			if !detected {
+				t.Fatalf("%s is not detected under the fixture home, so this proves nothing", tc.id)
+			}
+			if err := installed.WriteInstructions(in.Layer1, in.Layer2, in.Skills); err != nil {
+				t.Fatalf("WriteInstructions: %v", err)
+			}
+			written, err := os.ReadFile(tc.path)
+			if err != nil {
+				t.Fatalf("read the written instruction file: %v", err)
+			}
+			if planned[tc.location] != string(written) {
+				t.Fatalf("the plan for %s does not describe what the writer produced\nplanned %d bytes, written %d bytes",
+					tc.location, len(planned[tc.location]), len(written))
+			}
+		})
 	}
 }
 
