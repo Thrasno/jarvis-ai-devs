@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"runtime"
 	"sort"
+	"strings"
 	"testing"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
@@ -274,6 +275,79 @@ func TestMCPComponent_AcceptsAnInjectedReconcilerWithoutDependencies(t *testing.
 	if !called {
 		t.Fatal("the injected reconciler never ran")
 	}
+}
+
+// An interrupted install, a half-finished upgrade or an antivirus quarantine
+// leaves the recorded Hive daemon binary missing or stripped of its executable
+// bit, and that is the failure a real machine meets on this path. The fixture
+// above always writes a valid stand-in, so nothing proved what replay reports
+// when the binary is unusable.
+//
+// The diagnostic must separate that case from the rest. It is the one class the
+// handoff genuinely exposes -- everything below it returns bare errors.New
+// values -- and it is also the one an operator can act on directly, so
+// collapsing it into the generic wrapped string is what makes a failed replay
+// untriageable on someone else's machine.
+func TestMCPComponent_DistinguishesAnUnusableHiveDaemonBinary(t *testing.T) {
+	home, agents, valid := mcpReplayFixture(t)
+
+	for name, daemon := range unusableHiveDaemons(t, home) {
+		t.Run(name, func(t *testing.T) {
+			exec := &capturingExecutor{}
+			err := newMCPComponent(agents, daemon, exec).Apply(AgentTarget{ID: "claude", Root: home})
+
+			if !errors.Is(err, ErrHiveDaemonUnavailable) {
+				t.Fatalf("error = %v, want it to wrap ErrHiveDaemonUnavailable", err)
+			}
+			// The other two sentinels describe different worlds: a machine without
+			// that agent installed, and a component that was never wired. Reporting
+			// an unusable binary as either sends the operator to inspect the wrong
+			// thing.
+			if errors.Is(err, ErrUnknownAgent) || errors.Is(err, ErrDependencyUnwired) {
+				t.Fatalf("error = %v, must not be mistakable for an uninstalled agent or an unwired dependency", err)
+			}
+			if !strings.Contains(err.Error(), daemon) {
+				t.Fatalf("error = %v, want it to name the binary it could not use (%s)", err, daemon)
+			}
+			if !strings.Contains(err.Error(), "run `jarvis` to reinstall") {
+				t.Fatalf("error = %v, want it to name the recovery action", err)
+			}
+			if len(exec.inputs) != 0 {
+				t.Fatalf("executor was invoked %d times despite an unusable daemon binary", len(exec.inputs))
+			}
+		})
+	}
+
+	// The mirror: a usable binary must not be blamed for an unrelated failure.
+	exec := &capturingExecutor{}
+	component := newMCPComponent(agents, valid, exec)
+	unrelated := errors.New("native reconciliation refused")
+	component.Reconcile = func([]agent.Agent, string, agentapply.MCPDeps) error { return unrelated }
+	err := component.Apply(AgentTarget{ID: "claude", Root: home})
+	if !errors.Is(err, unrelated) {
+		t.Fatalf("error = %v, want it to wrap the reconciler's own error", err)
+	}
+	if errors.Is(err, ErrHiveDaemonUnavailable) {
+		t.Fatalf("error = %v, must not blame a binary that is perfectly usable", err)
+	}
+}
+
+// unusableHiveDaemons returns the two shapes of a broken daemon binary, each
+// invalid under the rules agent.validHiveDaemonPath applies on this platform:
+// the executable bit on Unix, the .exe extension on Windows.
+func unusableHiveDaemons(t *testing.T, home string) map[string]string {
+	t.Helper()
+	missing := filepath.Join(home, ".jarvis", "bin", "absent-hive-daemon")
+	// The quarantined stand-in exists but cannot be run: on Windows it carries no
+	// .exe extension, and on Unix it is written without the executable bit.
+	present := filepath.Join(home, ".jarvis", "bin", "quarantined-hive-daemon")
+	writeFile(t, present, "#!/bin/sh\n")
+	if runtime.GOOS == "windows" {
+		missing += ".exe"
+	} else if err := os.Chmod(present, 0o644); err != nil {
+		t.Fatalf("chmod %s: %v", present, err)
+	}
+	return map[string]string{"the binary is missing": missing, "the binary is not executable": present}
 }
 
 func TestMCPComponent_UsesInjectedReconciler(t *testing.T) {
