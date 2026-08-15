@@ -197,7 +197,7 @@ func ResolvePhaseModels(models state.PhaseModels) map[string]state.PhaseModelSel
 	resolved := make(map[string]state.PhaseModelSelection, len(contract.Phases))
 
 	for _, phase := range contract.Phases {
-		resolved[phase] = state.PhaseModelSelection(contract.DefaultPhaseModels[phase])
+		resolved[phase] = contract.DefaultPhaseModels[phase]
 	}
 
 	if models.Aliases == nil {

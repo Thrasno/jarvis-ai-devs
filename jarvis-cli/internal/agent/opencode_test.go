@@ -10,6 +10,7 @@ import (
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 // TestOpenCodeAgent_SupportsOutputStyles verifies OpenCodeAgent returns false (SPEC-001).
@@ -377,9 +378,10 @@ func TestOpenCodeAgent_InstallOrchestrator_WritesToConfigDir(t *testing.T) {
 func TestOpenCodeAgent_InstallSkillsWithConfig_UsesResolvedPhaseModelSections(t *testing.T) {
 	tmpHome := t.TempDir()
 	a := &OpenCodeAgent{home: tmpHome}
-	cfg := &config.AppConfig{SDD: config.SDDConfig{PhaseModels: map[string]config.PhaseModelSelection{
+	models := defaultRuntimePhaseModels()
+	models.Aliases = map[string]state.PhaseModelSelection{
 		"sdd-verify": {OpenCode: "haiku"},
-	}}}
+	}
 	skillsFS := fstest.MapFS{
 		"sdd-verify/SKILL.md": {Data: []byte(strings.Join([]string{
 			"Neutral verify intro",
@@ -392,7 +394,7 @@ func TestOpenCodeAgent_InstallSkillsWithConfig_UsesResolvedPhaseModelSections(t 
 		}, "\n"))},
 	}
 
-	if err := a.InstallSkillsWithConfig(skillsFS, []string{"sdd-verify"}, cfg.PhaseModelsForState()); err != nil {
+	if err := a.InstallSkillsWithConfig(skillsFS, []string{"sdd-verify"}, models); err != nil {
 		t.Fatalf("InstallSkillsWithConfig: %v", err)
 	}
 
@@ -428,16 +430,16 @@ func TestOpenCodeAgent_MergeGeneratedConfig_RendersTopologyPermissionsAndPreserv
 		t.Fatalf("write opencode.json: %v", err)
 	}
 
-	cfg := defaultRuntimeConfig()
-	cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
+	models := defaultRuntimePhaseModels()
+	models.OpenCode = map[string]state.OpenCodeModelAssignment{
 		"orchestrator": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"},
 		"sdd-apply":    {ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "medium"},
 	}
 
-	if err := a.MergeGeneratedConfig(cfg.PhaseModelsForState()); err != nil {
+	if err := a.MergeGeneratedConfig(models); err != nil {
 		t.Fatalf("MergeGeneratedConfig: %v", err)
 	}
-	if err := a.MergeGeneratedConfig(cfg.PhaseModelsForState()); err != nil {
+	if err := a.MergeGeneratedConfig(models); err != nil {
 		t.Fatalf("MergeGeneratedConfig rerun: %v", err)
 	}
 
@@ -521,7 +523,7 @@ func TestOpenCodeAgent_MergeGeneratedConfig_RendersTopologyPermissionsAndPreserv
 	if err := os.WriteFile(missingSchemaPath, []byte(`{}`), 0644); err != nil {
 		t.Fatalf("write opencode.json without schema: %v", err)
 	}
-	if err := missingSchemaAgent.MergeGeneratedConfig(defaultRuntimeConfig().PhaseModelsForState()); err != nil {
+	if err := missingSchemaAgent.MergeGeneratedConfig(defaultRuntimePhaseModels()); err != nil {
 		t.Fatalf("MergeGeneratedConfig: %v", err)
 	}
 	missingSchemaSettings := readJSONFile(t, missingSchemaPath)
@@ -541,7 +543,7 @@ func TestOpenCodeAgent_MergeGeneratedConfig_DefaultModelsAreProviderQualified(t 
 		t.Fatalf("write opencode.json: %v", err)
 	}
 
-	if err := a.MergeGeneratedConfig(defaultRuntimeConfig().PhaseModelsForState()); err != nil {
+	if err := a.MergeGeneratedConfig(defaultRuntimePhaseModels()); err != nil {
 		t.Fatalf("MergeGeneratedConfig: %v", err)
 	}
 
@@ -573,10 +575,10 @@ func TestOpenCodeAgent_MergeGeneratedConfig_PreservesExistingPermissionGuardrail
 		t.Fatalf("write opencode.json: %v", err)
 	}
 
-	if err := a.MergeGeneratedConfig(defaultRuntimeConfig().PhaseModelsForState()); err != nil {
+	if err := a.MergeGeneratedConfig(defaultRuntimePhaseModels()); err != nil {
 		t.Fatalf("MergeGeneratedConfig: %v", err)
 	}
-	if err := a.MergeGeneratedConfig(defaultRuntimeConfig().PhaseModelsForState()); err != nil {
+	if err := a.MergeGeneratedConfig(defaultRuntimePhaseModels()); err != nil {
 		t.Fatalf("MergeGeneratedConfig rerun: %v", err)
 	}
 
@@ -616,7 +618,7 @@ func TestOpenCodeAgent_MergeGeneratedConfig_PreservesStrictHiveWildcardGuardrail
 		t.Fatalf("write opencode.json: %v", err)
 	}
 
-	if err := a.MergeGeneratedConfig(defaultRuntimeConfig().PhaseModelsForState()); err != nil {
+	if err := a.MergeGeneratedConfig(defaultRuntimePhaseModels()); err != nil {
 		t.Fatalf("MergeGeneratedConfig: %v", err)
 	}
 
@@ -681,10 +683,10 @@ func TestOpenCodeAgent_MergeGeneratedConfig_PreservesUserOwnedOrchestratorTaskAl
 		t.Fatalf("write opencode.json: %v", err)
 	}
 
-	if err := a.MergeGeneratedConfig(defaultRuntimeConfig().PhaseModelsForState()); err != nil {
+	if err := a.MergeGeneratedConfig(defaultRuntimePhaseModels()); err != nil {
 		t.Fatalf("MergeGeneratedConfig: %v", err)
 	}
-	if err := a.MergeGeneratedConfig(defaultRuntimeConfig().PhaseModelsForState()); err != nil {
+	if err := a.MergeGeneratedConfig(defaultRuntimePhaseModels()); err != nil {
 		t.Fatalf("MergeGeneratedConfig rerun: %v", err)
 	}
 
@@ -722,7 +724,7 @@ func TestOpenCodeAgent_MergeGeneratedConfig_IgnoresMalformedTaskPermissionValues
 		t.Fatalf("write opencode.json: %v", err)
 	}
 
-	if err := a.MergeGeneratedConfig(defaultRuntimeConfig().PhaseModelsForState()); err != nil {
+	if err := a.MergeGeneratedConfig(defaultRuntimePhaseModels()); err != nil {
 		t.Fatalf("MergeGeneratedConfig should not panic or fail on malformed task permission values: %v", err)
 	}
 

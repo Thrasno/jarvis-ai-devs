@@ -23,6 +23,8 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
+	"gopkg.in/yaml.v3"
+
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
@@ -234,19 +236,23 @@ func TestRunNoTUI_RerunKeepsExistingSelectionsOnBlankInput(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	seed := &config.AppConfig{
-		SchemaVersion:    2,
-		APIURL:           config.DefaultAPIURL,
-		PersonaPreset:    "second",
-		SelectedSkills:   []string{"fixture-skill"},
-		ConfiguredAgents: []string{},
+		SchemaVersion: 3,
+		APIURL:        config.DefaultAPIURL,
 		Install: config.InstallState{
 			Mode:      "reconfigure",
 			Completed: true,
-			Agents:    map[string]config.AgentState{},
 		},
 	}
 	if err := config.Save(seed); err != nil {
 		t.Fatalf("save seed config: %v", err)
+	}
+	// ~/.jarvis/state.yaml owns the persona and the selected skills the rerun
+	// must keep.
+	seedManifest := state.New()
+	seedManifest.Persona = "second"
+	seedManifest.Skills = []string{"fixture-skill"}
+	if err := state.Save(seedManifest); err != nil {
+		t.Fatalf("save seed manifest: %v", err)
 	}
 
 	// scope keep default, persona keep default, extra skills keep defaults, apply=yes.
@@ -255,15 +261,15 @@ func TestRunNoTUI_RerunKeepsExistingSelectionsOnBlankInput(t *testing.T) {
 		t.Fatalf("runNoTUI rerun: %v", err)
 	}
 
-	loaded, err := config.Load()
+	loaded, err := state.Load()
 	if err != nil {
-		t.Fatalf("load config after rerun: %v", err)
+		t.Fatalf("load manifest after rerun: %v", err)
 	}
-	if loaded.PersonaPreset != "second" {
-		t.Fatalf("expected persona preset to remain second, got %q", loaded.PersonaPreset)
+	if loaded.Persona != "second" {
+		t.Fatalf("expected persona to remain second, got %q", loaded.Persona)
 	}
-	if len(loaded.SelectedSkills) != 1 || loaded.SelectedSkills[0] != "fixture-skill" {
-		t.Fatalf("expected existing selected skills preserved, got %v", loaded.SelectedSkills)
+	if len(loaded.Skills) != 1 || loaded.Skills[0] != "fixture-skill" {
+		t.Fatalf("expected existing selected skills preserved, got %v", loaded.Skills)
 	}
 }
 
@@ -307,44 +313,26 @@ func TestRunNoTUI_BlankPersonaInputBlocksLegacyV1PresetAndPreservesConfig(t *tes
 		t.Fatalf("write legacy preset: %v", err)
 	}
 
-	seed := &config.AppConfig{
-		SchemaVersion:       2,
-		APIURL:              config.DefaultAPIURL,
-		PersonaPreset:       "legacy-custom",
-		PersonaPresetSource: string(persona.PresetSourceUser),
-		Install:             config.InstallState{Agents: map[string]config.AgentState{}},
-	}
-	if err := config.Save(seed); err != nil {
-		t.Fatalf("save seed config: %v", err)
-	}
+	seedRecordedPersona(t, "legacy-custom", state.PersonaSourceUser)
 
 	err := runNoTUI(testWizardConfig(), strings.NewReader("\n\n"))
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "migrate") {
 		t.Fatalf("runNoTUI() error = %v, want schema-v2 migration guidance", err)
 	}
 
-	loaded, err := config.Load()
+	loaded, err := state.Load()
 	if err != nil {
-		t.Fatalf("load config after blocked default: %v", err)
+		t.Fatalf("load manifest after blocked default: %v", err)
 	}
-	if loaded.PersonaPreset != "legacy-custom" || loaded.PersonaPresetSource != string(persona.PresetSourceUser) {
-		t.Fatalf("legacy persona config was overwritten: %+v", loaded)
+	if loaded.Persona != "legacy-custom" || loaded.PersonaSource != state.PersonaSourceUser {
+		t.Fatalf("legacy persona was overwritten: %+v", loaded)
 	}
 }
 
 func TestRunNoTUI_BlankPersonaInputBlocksMissingPresetAndPreservesConfig(t *testing.T) {
 	isolateTestHome(t)
 	t.Setenv("PATH", "")
-	seed := &config.AppConfig{
-		SchemaVersion:       2,
-		APIURL:              config.DefaultAPIURL,
-		PersonaPreset:       "deleted-custom",
-		PersonaPresetSource: string(persona.PresetSourceUser),
-		Install:             config.InstallState{Agents: map[string]config.AgentState{}},
-	}
-	if err := config.Save(seed); err != nil {
-		t.Fatalf("save seed config: %v", err)
-	}
+	seedRecordedPersona(t, "deleted-custom", state.PersonaSourceUser)
 
 	err := runNoTUI(testWizardConfig(), strings.NewReader("\n\n"))
 	if err == nil {
@@ -359,12 +347,12 @@ func TestRunNoTUI_BlankPersonaInputBlocksMissingPresetAndPreservesConfig(t *test
 		t.Fatalf("missing preset error = %q, must not use V1 migration guidance", err)
 	}
 
-	loaded, err := config.Load()
+	loaded, err := state.Load()
 	if err != nil {
-		t.Fatalf("load config after blocked default: %v", err)
+		t.Fatalf("load manifest after blocked default: %v", err)
 	}
-	if loaded.PersonaPreset != "deleted-custom" || loaded.PersonaPresetSource != string(persona.PresetSourceUser) {
-		t.Fatalf("missing persona config was overwritten: %+v", loaded)
+	if loaded.Persona != "deleted-custom" || loaded.PersonaSource != state.PersonaSourceUser {
+		t.Fatalf("missing persona was overwritten: %+v", loaded)
 	}
 }
 
@@ -379,23 +367,14 @@ func TestRunNoTUI_BlankPersonaInputBlocksMalformedPresetAndPreservesConfig(t *te
 		t.Fatalf("write malformed preset: %v", err)
 	}
 
-	seed := &config.AppConfig{
-		SchemaVersion:       2,
-		APIURL:              config.DefaultAPIURL,
-		PersonaPreset:       "broken-custom",
-		PersonaPresetSource: string(persona.PresetSourceUser),
-		Install:             config.InstallState{Agents: map[string]config.AgentState{}},
-	}
-	if err := config.Save(seed); err != nil {
-		t.Fatalf("save seed config: %v", err)
-	}
-	configPath, err := config.ConfigPath()
+	seedRecordedPersona(t, "broken-custom", state.PersonaSourceUser)
+	statePath, err := state.Path()
 	if err != nil {
-		t.Fatalf("config path: %v", err)
+		t.Fatalf("state path: %v", err)
 	}
-	before, err := os.ReadFile(configPath)
+	before, err := os.ReadFile(statePath)
 	if err != nil {
-		t.Fatalf("read seeded config: %v", err)
+		t.Fatalf("read seeded manifest: %v", err)
 	}
 
 	err = runNoTUI(testWizardConfig(), strings.NewReader("\n\n"))
@@ -403,12 +382,12 @@ func TestRunNoTUI_BlankPersonaInputBlocksMalformedPresetAndPreservesConfig(t *te
 		t.Fatalf("runNoTUI() error = %v, want malformed schema-v2 repair guidance", err)
 	}
 
-	after, err := os.ReadFile(configPath)
+	after, err := os.ReadFile(statePath)
 	if err != nil {
-		t.Fatalf("read config after blocked default: %v", err)
+		t.Fatalf("read manifest after blocked default: %v", err)
 	}
 	if !bytes.Equal(after, before) {
-		t.Fatalf("malformed persona config was rewritten:\nbefore:\n%s\nafter:\n%s", before, after)
+		t.Fatalf("malformed persona was rewritten:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
 
@@ -424,15 +403,15 @@ func TestRunNoTUI_CustomPresetPersistsUserFileAndCanonicalIdentity(t *testing.T)
 		t.Fatalf("runNoTUI custom preset: %v", err)
 	}
 
-	loaded, err := config.Load()
+	loaded, err := state.Load()
 	if err != nil {
-		t.Fatalf("load config: %v", err)
+		t.Fatalf("load manifest: %v", err)
 	}
-	if loaded.PersonaPreset != "mi-persona" {
-		t.Fatalf("expected canonical custom slug mi-persona, got %q", loaded.PersonaPreset)
+	if loaded.Persona != "mi-persona" {
+		t.Fatalf("expected canonical custom slug mi-persona, got %q", loaded.Persona)
 	}
-	if loaded.PersonaPresetSource != string(persona.PresetSourceUser) {
-		t.Fatalf("expected persona_preset_source=user, got %q", loaded.PersonaPresetSource)
+	if loaded.PersonaSource != state.PersonaSourceUser {
+		t.Fatalf("expected persona_source=user, got %q", loaded.PersonaSource)
 	}
 
 	customPath := filepath.Join(tmpHome, ".jarvis", "personas", "mi-persona.yaml")
@@ -490,7 +469,7 @@ func TestResolveNoTUIPresetRejectsLegacyCustomProfileWithMigrationGuidance(t *te
 
 func TestPrintNoTUIPhaseModelReview_IncludesOpenCodeProviderModelAssignments(t *testing.T) {
 	resolved := sddruntime.ResolvePhaseModels(state.PhaseModels{})
-	assignments := map[string]config.OpenCodeModelAssignment{
+	assignments := map[string]state.OpenCodeModelAssignment{
 		"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"},
 	}
 	var output bytes.Buffer
@@ -510,7 +489,7 @@ func TestPrintNoTUIPhaseModelReview_IncludesOpenCodeProviderModelAssignments(t *
 
 func TestPrintNoTUIPhaseModelReview_IncludesClaudeSpecificModelAndEffort(t *testing.T) {
 	resolved := sddruntime.ResolvePhaseModels(state.PhaseModels{})
-	claudeAssignments := map[string]config.ClaudeModelAssignment{
+	claudeAssignments := map[string]state.ClaudeModelAssignment{
 		"default": {Model: "haiku", Effort: "max"},
 	}
 	var output bytes.Buffer
@@ -530,8 +509,8 @@ func TestPrintNoTUIPhaseModelReview_IncludesClaudeSpecificModelAndEffort(t *test
 
 func TestRunNoTUI_PrintsOpenCodeProviderModelOptionsBeforeNumericSelection(t *testing.T) {
 	previousDiscover := discoverOpenCodePhaseModelOptions
-	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
-		return []config.OpenCodeModelAssignment{{ProviderID: "openai", ModelID: "gpt-5.1-codex-max"}}
+	discoverOpenCodePhaseModelOptions = func() []state.OpenCodeModelAssignment {
+		return []state.OpenCodeModelAssignment{{ProviderID: "openai", ModelID: "gpt-5.1-codex-max"}}
 	}
 	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
 
@@ -558,7 +537,7 @@ func TestRunNoTUI_PrintsOpenCodeDiscoveryDiagnostics(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	previousDiscover := discoverOpenCodePhaseModelOptions
-	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
+	discoverOpenCodePhaseModelOptions = func() []state.OpenCodeModelAssignment {
 		openCodePhaseModelDiscoveryDiagnostics = []string{"OpenCode settings file /home/me/.config/opencode/opencode.jsonc uses unsupported JSONC"}
 		return nil
 	}
@@ -578,7 +557,7 @@ func TestRunNoTUI_PrintsOpenCodeDiscoveryDiagnostics(t *testing.T) {
 }
 
 func TestSelectOpenCodeAssignmentForPrompt_AcceptsLegacyClear(t *testing.T) {
-	options := []config.OpenCodeModelAssignment{{ProviderID: "openai", ModelID: "gpt-5.1-codex-max"}}
+	options := []state.OpenCodeModelAssignment{{ProviderID: "openai", ModelID: "gpt-5.1-codex-max"}}
 
 	for _, input := range []string{"0", "legacy"} {
 		assignment, ok := selectOpenCodeAssignmentForPrompt(input, options)
@@ -592,7 +571,7 @@ func TestSelectOpenCodeAssignmentForPrompt_AcceptsLegacyClear(t *testing.T) {
 }
 
 func TestOpenCodeAssignmentPromptValue_ShowsLegacyAliasWhenNoProviderAssignment(t *testing.T) {
-	assignment := config.OpenCodeModelAssignment{}
+	assignment := state.OpenCodeModelAssignment{}
 
 	if got, want := openCodeAssignmentPromptValue(assignment, "sonnet"), "legacy=sonnet"; got != want {
 		t.Fatalf("openCodeAssignmentPromptValue = %q, want %q", got, want)
@@ -605,7 +584,7 @@ func TestPrintOpenCodeAssignmentOptions_FiltersCatalogLegacyOption(t *testing.T)
 	noTUIStdout = &output
 	t.Cleanup(func() { noTUIStdout = previousStdout })
 
-	printOpenCodeAssignmentOptions([]config.OpenCodeModelAssignment{
+	printOpenCodeAssignmentOptions([]state.OpenCodeModelAssignment{
 		{},
 		{ProviderID: "openai", ModelID: "gpt-5.1-codex-max"},
 	})
@@ -625,7 +604,7 @@ func TestPrintOpenCodeAssignmentOptions_IncludesEffortWhenPresent(t *testing.T) 
 	noTUIStdout = &output
 	t.Cleanup(func() { noTUIStdout = previousStdout })
 
-	printOpenCodeAssignmentOptions([]config.OpenCodeModelAssignment{
+	printOpenCodeAssignmentOptions([]state.OpenCodeModelAssignment{
 		{ProviderID: "openai", ModelID: "gpt-5.1-codex-max"},
 		{ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"},
 	})
@@ -643,34 +622,26 @@ func TestPrintOpenCodeAssignmentOptions_IncludesEffortWhenPresent(t *testing.T) 
 
 func TestRunNoTUI_KeepsExistingOpenCodeProviderAssignmentWhenDiscoveryUnavailable(t *testing.T) {
 	previousDiscover := discoverOpenCodePhaseModelOptions
-	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment { return nil }
+	discoverOpenCodePhaseModelOptions = func() []state.OpenCodeModelAssignment { return nil }
 	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
 
 	isolateTestHome(t)
 	t.Setenv("PATH", "")
 
-	seed := &config.AppConfig{
-		SchemaVersion:  2,
-		APIURL:         config.DefaultAPIURL,
-		PersonaPreset:  "fixture",
-		SelectedSkills: []string{},
-	}
-	seed.SDD.PhaseModels = map[string]config.PhaseModelSelection{"default": {OpenCode: "sonnet", Claude: "sonnet"}}
-	seed.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"}}
-	if err := config.Save(seed); err != nil {
-		t.Fatalf("save seed config: %v", err)
-	}
+	seedPhaseModelManifest(t, "fixture",
+		map[string]state.PhaseModelSelection{"default": {OpenCode: "sonnet", Claude: "sonnet"}},
+		map[string]state.OpenCodeModelAssignment{"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"}})
 
 	input := strings.NewReader("\n\n" + "edit\n" + "\n\n\n" + remainingPhasePromptNewlines() + "yes\nyes\n")
 	if err := runNoTUI(testWizardConfig(), input); err != nil {
 		t.Fatalf("runNoTUI keep provider assignment: %v", err)
 	}
 
-	loaded, err := config.Load()
+	loaded, err := state.Load()
 	if err != nil {
-		t.Fatalf("load config: %v", err)
+		t.Fatalf("load manifest: %v", err)
 	}
-	assignment := loaded.SDD.OpenCodePhaseModels["default"]
+	assignment := loaded.PhaseModels.OpenCode["default"]
 	if assignment.ProviderID != "openai" || assignment.ModelID != "gpt-5.1-codex-max" || assignment.Effort != "high" {
 		t.Fatalf("expected existing assignment kept, got %+v", assignment)
 	}
@@ -678,39 +649,36 @@ func TestRunNoTUI_KeepsExistingOpenCodeProviderAssignmentWhenDiscoveryUnavailabl
 
 func TestRunNoTUI_LegacySelectionDeletesExistingOpenCodeProviderAssignment(t *testing.T) {
 	previousDiscover := discoverOpenCodePhaseModelOptions
-	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
-		return []config.OpenCodeModelAssignment{{}, {ProviderID: "openai", ModelID: "gpt-5.1-codex-max"}}
+	discoverOpenCodePhaseModelOptions = func() []state.OpenCodeModelAssignment {
+		return []state.OpenCodeModelAssignment{{}, {ProviderID: "openai", ModelID: "gpt-5.1-codex-max"}}
 	}
 	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
 
 	isolateTestHome(t)
 	t.Setenv("PATH", "")
 
-	seed := &config.AppConfig{SchemaVersion: 2, APIURL: config.DefaultAPIURL, PersonaPreset: "fixture"}
-	seed.SDD.PhaseModels = map[string]config.PhaseModelSelection{"default": {OpenCode: "sonnet", Claude: "sonnet"}}
-	seed.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max"}}
-	if err := config.Save(seed); err != nil {
-		t.Fatalf("save seed config: %v", err)
-	}
+	seedPhaseModelManifest(t, "fixture",
+		map[string]state.PhaseModelSelection{"default": {OpenCode: "sonnet", Claude: "sonnet"}},
+		map[string]state.OpenCodeModelAssignment{"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max"}})
 
 	input := strings.NewReader("\n\n" + "edit\n" + "0\n\n\n" + remainingPhasePromptNewlines() + "yes\nyes\n")
 	if err := runNoTUI(testWizardConfig(), input); err != nil {
 		t.Fatalf("runNoTUI legacy clear: %v", err)
 	}
 
-	loaded, err := config.Load()
+	loaded, err := state.Load()
 	if err != nil {
-		t.Fatalf("load config: %v", err)
+		t.Fatalf("load manifest: %v", err)
 	}
-	if _, ok := loaded.SDD.OpenCodePhaseModels["default"]; ok {
-		t.Fatalf("expected legacy selection to delete provider assignment, got %#v", loaded.SDD.OpenCodePhaseModels)
+	if _, ok := loaded.PhaseModels.OpenCode["default"]; ok {
+		t.Fatalf("expected legacy selection to delete provider assignment, got %#v", loaded.PhaseModels.OpenCode)
 	}
 }
 
 func TestRunNoTUI_PersistsEditedOpenCodeProviderModelAssignment(t *testing.T) {
 	previousDiscover := discoverOpenCodePhaseModelOptions
-	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
-		return []config.OpenCodeModelAssignment{{ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"}}
+	discoverOpenCodePhaseModelOptions = func() []state.OpenCodeModelAssignment {
+		return []state.OpenCodeModelAssignment{{ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"}}
 	}
 	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
 
@@ -725,15 +693,15 @@ func TestRunNoTUI_PersistsEditedOpenCodeProviderModelAssignment(t *testing.T) {
 		t.Fatalf("runNoTUI provider model assignment: %v", err)
 	}
 
-	loaded, err := config.Load()
+	loaded, err := state.Load()
 	if err != nil {
-		t.Fatalf("load config: %v", err)
+		t.Fatalf("load manifest: %v", err)
 	}
-	assignment := loaded.SDD.OpenCodePhaseModels["default"]
+	assignment := loaded.PhaseModels.OpenCode["default"]
 	if assignment.ProviderID != "openai" || assignment.ModelID != "gpt-5.1-codex-max" || assignment.Effort != "high" {
 		t.Fatalf("unexpected OpenCode assignment: %+v", assignment)
 	}
-	if resolved := sddruntime.ResolvePhaseModels(loaded.PhaseModelsForState()); resolved["default"].OpenCode == "" {
+	if resolved := sddruntime.ResolvePhaseModels(loaded.NormalizedPhaseModels()); resolved["default"].OpenCode == "" {
 		t.Fatal("expected legacy OpenCode alias to remain populated")
 	}
 }
@@ -754,16 +722,16 @@ func TestRunNoTUI_PersistsEditedPhaseModels(t *testing.T) {
 		t.Fatalf("runNoTUI phase models: %v", err)
 	}
 
-	loaded, err := config.Load()
+	loaded, err := state.Load()
 	if err != nil {
-		t.Fatalf("load config: %v", err)
+		t.Fatalf("load manifest: %v", err)
 	}
 
-	resolved := sddruntime.ResolvePhaseModels(loaded.PhaseModelsForState())
+	resolved := sddruntime.ResolvePhaseModels(loaded.NormalizedPhaseModels())
 	if resolved["default"].Claude != "haiku" {
 		t.Fatalf("expected default.claude=haiku after no-tui edit, got %q", resolved["default"].Claude)
 	}
-	if got := loaded.SDD.ClaudePhaseModels["default"].Effort; got != "high" {
+	if got := loaded.PhaseModels.Claude["default"].Effort; got != "high" {
 		t.Fatalf("expected default Claude effort=high after no-tui edit, got %q", got)
 	}
 	if !strings.Contains(output.String(), "- default: opencode=") || !strings.Contains(output.String(), "claude=haiku, effort=high") {
@@ -826,8 +794,13 @@ func TestRunNoTUIManagedMCPRoutesUseConcreteExecutorForInstallAndReconfigure(t *
 			home := isolateTestHome(t)
 			t.Setenv("PATH", "")
 			if tt.seedConfigure {
-				if err := config.Save(&config.AppConfig{APIURL: config.DefaultAPIURL, PersonaPreset: "fixture"}); err != nil {
+				if err := config.Save(&config.AppConfig{APIURL: config.DefaultAPIURL}); err != nil {
 					t.Fatalf("seed reconfigure config: %v", err)
+				}
+				// ~/.jarvis/state.yaml owns the persona the reconfigure run
+				// validates against the test catalog.
+				if err := state.Save(manifestWithPersona("fixture", state.PersonaSourceBuiltin)); err != nil {
+					t.Fatalf("seed reconfigure manifest: %v", err)
 				}
 			}
 			replacement := &nativeMCPReplacerStub{}
@@ -1184,9 +1157,14 @@ func TestRunNoTUI_LocalOnlyPurgesStoredCredentialsOnApply(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	seed := &config.AppConfig{Scope: config.ScopeLocalCloud, Cloud: &config.CloudConfig{Email: "old@example.com", SyncConfigured: true}, Email: "old@example.com", APIURL: config.DefaultAPIURL, PersonaPreset: "fixture"}
+	seed := &config.AppConfig{Cloud: &config.CloudConfig{Email: "old@example.com", SyncConfigured: true}, Email: "old@example.com", APIURL: config.DefaultAPIURL}
 	if err := config.Save(seed); err != nil {
 		t.Fatalf("save seed config: %v", err)
+	}
+	// ~/.jarvis/state.yaml owns the persona this run validates against the test
+	// catalog.
+	if err := state.Save(manifestWithPersona("fixture", state.PersonaSourceBuiltin)); err != nil {
+		t.Fatalf("save seed manifest: %v", err)
 	}
 
 	// scope=local-only, persona default, skill default, apply=yes.
@@ -1225,9 +1203,14 @@ func TestRunNoTUI_LocalCloudAuthFailureContinuesToApply(t *testing.T) {
 	}))
 	defer server.Close()
 
-	seed := &config.AppConfig{APIURL: server.URL, Scope: config.ScopeLocalOnly, PersonaPreset: "fixture"}
+	seed := &config.AppConfig{APIURL: server.URL}
 	if err := config.Save(seed); err != nil {
 		t.Fatalf("save seed config: %v", err)
+	}
+	// ~/.jarvis/state.yaml owns the persona this run validates against the test
+	// catalog.
+	if err := state.Save(manifestWithPersona("fixture", state.PersonaSourceBuiltin)); err != nil {
+		t.Fatalf("save seed manifest: %v", err)
 	}
 
 	// scope local+cloud + credentials (auth fails), then persona default, skill default, apply yes.
@@ -1285,9 +1268,14 @@ func TestRunNoTUI_LocalCloudSuccessfulAuthWritesSyncJSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	seed := &config.AppConfig{APIURL: server.URL, Scope: config.ScopeLocalOnly, PersonaPreset: "fixture"}
+	seed := &config.AppConfig{APIURL: server.URL}
 	if err := config.Save(seed); err != nil {
 		t.Fatalf("save seed config: %v", err)
+	}
+	// ~/.jarvis/state.yaml owns the persona this run validates against the test
+	// catalog.
+	if err := state.Save(manifestWithPersona("fixture", state.PersonaSourceBuiltin)); err != nil {
+		t.Fatalf("save seed manifest: %v", err)
 	}
 
 	input := strings.NewReader("local+cloud\nuser@example.com\nsecret\n\nyes\n")
@@ -1333,9 +1321,14 @@ func TestRunNoTUI_LocalCloudLoginWithoutResolvedEmailFallsBackToInput(t *testing
 	}))
 	defer server.Close()
 
-	seed := &config.AppConfig{APIURL: server.URL, Scope: config.ScopeLocalOnly, PersonaPreset: "fixture"}
+	seed := &config.AppConfig{APIURL: server.URL}
 	if err := config.Save(seed); err != nil {
 		t.Fatalf("save seed config: %v", err)
+	}
+	// ~/.jarvis/state.yaml owns the persona this run validates against the test
+	// catalog.
+	if err := state.Save(manifestWithPersona("fixture", state.PersonaSourceBuiltin)); err != nil {
+		t.Fatalf("save seed manifest: %v", err)
 	}
 
 	input := strings.NewReader("local+cloud\ninput@example.com\nsecret\n\nyes\n")
@@ -1543,5 +1536,67 @@ func TestRunNoTUI_ListSkillsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "list skills") {
 		t.Fatalf("expected wrapped list skills error, got %v", err)
+	}
+}
+
+// TestRunNoTUI_RecordsEveryReplayFieldInTheManifest is the proof that dropping
+// the wizard's AppConfig writes lost nothing. The wizard no longer sets the
+// persona, the scope, the selected skills or the per-phase models on the
+// AppConfig it saves; ~/.jarvis/state.yaml is the only store that holds them,
+// and config.yaml must carry none of them.
+func TestRunNoTUI_RecordsEveryReplayFieldInTheManifest(t *testing.T) {
+	home := isolateTestHome(t)
+	t.Setenv("PATH", "")
+
+	// scope=local+cloud, email skipped, persona keeps default, skills keep
+	// defaults, apply=yes.
+	if err := runNoTUI(testWizardConfig(), strings.NewReader("local+cloud\n\n\nyes\n")); err != nil {
+		t.Fatalf("runNoTUI: %v", err)
+	}
+
+	manifest, err := state.Load()
+	if err != nil {
+		t.Fatalf("load state.yaml after apply: %v", err)
+	}
+	if manifest.Persona != "fixture" {
+		t.Errorf("state.yaml persona = %q, want the persona accepted at the prompt", manifest.Persona)
+	}
+	if manifest.Scope != state.ScopeLocalCloud {
+		t.Errorf("state.yaml scope = %q, want the scope accepted at the prompt", manifest.Scope)
+	}
+	if len(manifest.PhaseModels.Aliases) == 0 {
+		t.Error("state.yaml recorded no per-phase models")
+	}
+
+	data, err := os.ReadFile(filepath.Join(home, ".jarvis", "config.yaml"))
+	if err != nil {
+		t.Fatalf("read config.yaml: %v", err)
+	}
+	raw := map[string]any{}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("parse config.yaml: %v", err)
+	}
+	for _, key := range state.ReplayConfigKeys() {
+		if _, present := raw[key]; present {
+			t.Errorf("config.yaml still carries replay key %q", key)
+		}
+	}
+}
+
+// seedPhaseModelManifest writes the manifest of a machine that already recorded
+// a persona and a set of per-phase model assignments, which is the store the
+// wizard seeds its phase-model editor from.
+func seedPhaseModelManifest(t *testing.T, persona string, aliases map[string]state.PhaseModelSelection, openCode map[string]state.OpenCodeModelAssignment) {
+	t.Helper()
+	manifest := state.New()
+	manifest.Persona = persona
+	if aliases != nil {
+		manifest.PhaseModels.Aliases = aliases
+	}
+	if openCode != nil {
+		manifest.PhaseModels.OpenCode = openCode
+	}
+	if err := state.Save(manifest); err != nil {
+		t.Fatalf("save seed manifest: %v", err)
 	}
 }

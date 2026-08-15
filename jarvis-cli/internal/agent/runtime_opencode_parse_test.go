@@ -344,10 +344,10 @@ func TestOpenCodeMergeGeneratedConfig_PreservesOrderSensitiveHivePermissionGuard
 		t.Fatalf("write opencode.json: %v", err)
 	}
 
-	if err := a.MergeGeneratedConfig(defaultRuntimeConfig().PhaseModelsForState()); err != nil {
+	if err := a.MergeGeneratedConfig(defaultRuntimePhaseModels()); err != nil {
 		t.Fatalf("MergeGeneratedConfig: %v", err)
 	}
-	if err := a.MergeGeneratedConfig(defaultRuntimeConfig().PhaseModelsForState()); err != nil {
+	if err := a.MergeGeneratedConfig(defaultRuntimePhaseModels()); err != nil {
 		t.Fatalf("MergeGeneratedConfig rerun: %v", err)
 	}
 

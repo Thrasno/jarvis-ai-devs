@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 type pipelineAgentStub struct {
@@ -87,8 +88,12 @@ func newResolvedProfile(slug string) *ResolvedProfile {
 func TestApplyProfileReplacesOutputStyleAndPersistsCanonicalIdentity(t *testing.T) {
 	isolateTestHome(t)
 
-	if err := config.Save(&config.AppConfig{PersonaPreset: "argentino", PersonaPresetSource: "builtin", Preset: "argentino"}); err != nil {
-		t.Fatalf("seed config: %v", err)
+	// ~/.jarvis/state.yaml owns the persona being replaced.
+	seed := state.New()
+	seed.Persona = "argentino"
+	seed.PersonaSource = state.PersonaSourceBuiltin
+	if err := state.Save(seed); err != nil {
+		t.Fatalf("seed manifest: %v", err)
 	}
 
 	agent := newPipelineAgentStub("claude", true)
@@ -127,12 +132,14 @@ func TestApplyProfileReplacesOutputStyleAndPersistsCanonicalIdentity(t *testing.
 		t.Fatalf("schema-v2 output style must retain coding instructions:\n%s", outputStyle)
 	}
 
-	cfg, err := config.Load()
+	// ~/.jarvis/state.yaml owns the persona; it is the store that must carry the
+	// canonical identity, not the AppConfig config.Load projects it onto.
+	manifest, err := state.Load()
 	if err != nil {
-		t.Fatalf("load persisted config: %v", err)
+		t.Fatalf("load persisted manifest: %v", err)
 	}
-	if cfg.PersonaPreset != "custom-mentor" || cfg.Preset != "custom-mentor" || cfg.PersonaPresetSource != "user" {
-		t.Fatalf("persisted config = %+v, want canonical schema-v2 user identity", cfg)
+	if manifest.Persona != "custom-mentor" || manifest.PersonaSource != state.PersonaSourceUser {
+		t.Fatalf("persisted manifest = %+v, want canonical schema-v2 user identity", manifest)
 	}
 }
 

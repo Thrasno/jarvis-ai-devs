@@ -10,6 +10,7 @@ import (
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 // captureStdout redirects os.Stdout to a pipe, runs fn, then restores stdout
@@ -165,13 +166,14 @@ func TestRunConfigSet_Preset_InProcess(t *testing.T) {
 		t.Errorf("expected 'neutra' in output:\n%s", out)
 	}
 
-	// Verify the file was actually updated.
-	cfg, loadErr := config.Load()
+	// ~/.jarvis/state.yaml owns the persona, so that is where the new value has
+	// to land.
+	manifest, loadErr := state.Load()
 	if loadErr != nil {
-		t.Fatalf("Load after set: %v", loadErr)
+		t.Fatalf("load manifest after set: %v", loadErr)
 	}
-	if cfg.Preset != "neutra" {
-		t.Errorf("expected preset=neutra in saved config, got %q", cfg.Preset)
+	if manifest.Persona != "neutra" {
+		t.Errorf("expected persona=neutra in the manifest, got %q", manifest.Persona)
 	}
 }
 
@@ -224,15 +226,15 @@ func TestRunConfigSet_Preset_Valid_DoesNotApplyAgentsOrMutateArtifacts(t *testin
 		}
 	}
 
-	cfg, err := config.Load()
+	manifest, err := state.Load()
 	if err != nil {
-		t.Fatalf("load config after valid preset set: %v", err)
+		t.Fatalf("load manifest after valid preset set: %v", err)
 	}
-	if cfg.PersonaPreset != "argentino" || cfg.Preset != "argentino" {
-		t.Fatalf("expected canonical preset argentino, got persona=%q preset=%q", cfg.PersonaPreset, cfg.Preset)
+	if manifest.Persona != "argentino" {
+		t.Fatalf("expected canonical persona argentino, got %q", manifest.Persona)
 	}
-	if cfg.PersonaPresetSource != "builtin" {
-		t.Fatalf("expected builtin source, got %q", cfg.PersonaPresetSource)
+	if manifest.PersonaSource != state.PersonaSourceBuiltin {
+		t.Fatalf("expected builtin source, got %q", manifest.PersonaSource)
 	}
 }
 
@@ -245,19 +247,17 @@ func TestRunConfigSet_Preset_InvalidSlug_DoesNotMutateState(t *testing.T) {
 		t.Fatal("expected error for invalid preset slug")
 	}
 
-	cfg, loadErr := config.Load()
-	if loadErr != nil {
-		t.Fatalf("load config after failed set: %v", loadErr)
+	// The rejection happens before anything is written, so the manifest must not
+	// exist yet and config.yaml must still carry the original persona.
+	if _, loadErr := state.Load(); loadErr == nil {
+		t.Fatal("a rejected preset must not create a manifest")
 	}
-
-	if cfg.PersonaPreset != "neutra" {
-		t.Fatalf("persona_preset mutated on failure: got %q want %q", cfg.PersonaPreset, "neutra")
+	raw, readErr := os.ReadFile(filepath.Join(home, ".jarvis", "config.yaml"))
+	if readErr != nil {
+		t.Fatalf("read config.yaml after failed set: %v", readErr)
 	}
-	if cfg.Preset != "neutra" {
-		t.Fatalf("preset mutated on failure: got %q want %q", cfg.Preset, "neutra")
-	}
-	if cfg.PersonaPresetSource != "builtin" {
-		t.Fatalf("persona_preset_source mutated on failure: got %q want %q", cfg.PersonaPresetSource, "builtin")
+	if !strings.Contains(string(raw), "persona_preset: neutra") {
+		t.Fatalf("persona mutated on failure:\n%s", raw)
 	}
 }
 
@@ -277,12 +277,15 @@ func TestRunConfigSet_Preset_RejectsLegacyCustomProfileWithMigrationGuidance(t *
 		t.Fatalf("runConfigSet() error = %v, want actionable migration guidance", err)
 	}
 
-	cfg, err := config.Load()
-	if err != nil {
-		t.Fatalf("load config after failed preset set: %v", err)
+	if _, err := state.Load(); err == nil {
+		t.Fatal("a rejected legacy custom profile must not create a manifest")
 	}
-	if cfg.PersonaPreset != "neutra" || cfg.Preset != "neutra" || cfg.PersonaPresetSource != "builtin" {
-		t.Fatalf("legacy custom rejection mutated config: %+v", cfg)
+	raw, readErr := os.ReadFile(filepath.Join(home, ".jarvis", "config.yaml"))
+	if readErr != nil {
+		t.Fatalf("read config.yaml after failed preset set: %v", readErr)
+	}
+	if !strings.Contains(string(raw), "persona_preset: neutra") {
+		t.Fatalf("legacy custom rejection mutated the recorded persona:\n%s", raw)
 	}
 }
 

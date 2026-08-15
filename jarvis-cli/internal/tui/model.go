@@ -61,7 +61,7 @@ type Model struct {
 	Screen Screen
 	Step   Step
 	Mode   string
-	Scope  config.SetupScope
+	Scope  state.Scope
 
 	PersonaFS  fs.FS
 	SkillsFS   embed.FS
@@ -103,7 +103,7 @@ type Model struct {
 	phaseModelActiveCol           int
 	phaseModelOpenCode            []string
 	phaseModelClaude              []string
-	phaseModelOpenCodeAssignments []config.OpenCodeModelAssignment
+	phaseModelOpenCodeAssignments []state.OpenCodeModelAssignment
 	phaseModelOpenCodeDiagnostics []string
 	phaseModelHasOpenCode         bool
 	phaseModelHasClaude           bool
@@ -113,8 +113,8 @@ type Model struct {
 	phaseModelEffortCursor        int
 	phaseModelModelSearch         string
 	phaseModelOpenCodeProviders   []openCodeProviderOption
-	phaseModelPendingOpenCode     config.OpenCodeModelAssignment
-	phaseModelPendingClaude       config.ClaudeModelAssignment
+	phaseModelPendingOpenCode     state.OpenCodeModelAssignment
+	phaseModelPendingClaude       state.ClaudeModelAssignment
 
 	cfg *config.AppConfig
 	// manifest is the desired state the wizard prefills from. ~/.jarvis/state.yaml
@@ -122,6 +122,19 @@ type Model struct {
 	// carries them because config.Load's temporary bridge projects them back.
 	// It is never nil: a machine with no manifest yet reads as an empty one.
 	manifest *state.State
+	// manifestErr records that the manifest could not be read. A manifest the
+	// wizard failed to read is not an empty manifest: the empty one it falls back
+	// to prefills the built-in defaults and an empty skill list, and applying
+	// would record those defaults over desired state the wizard never saw, after
+	// which the migration early-returns forever because a manifest now exists.
+	// The apply step refuses while this is set. It is a field rather than a
+	// returned error because a Bubbletea constructor has no error channel.
+	manifestErr error
+	// migrationNotice carries what the migration had to report about this
+	// machine, most importantly that an unreadable config.yaml was preserved and
+	// moved aside. The plain-text run prints it; the wizard shows it above every
+	// step so no recovery happens without the user seeing it.
+	migrationNotice string
 
 	Err  error
 	Done bool
@@ -141,6 +154,36 @@ type Model struct {
 	cockpitInput          string
 	cockpitSnapshot       string
 	cockpitPlan           string
+}
+
+// manifestWriteGuard reports why no action may write anything yet.
+//
+// A manifest the run could not read is not an empty manifest, so any action
+// that renders managed files or records desired state has to refuse while the
+// failure stands. It must be consulted before the first file is written: the
+// state.Update inside those actions refuses too, but only after the agent
+// instructions, output styles or sync credentials are already on disk, which
+// leaves the machine's rendered files disagreeing with the manifest jarvis sync
+// replays from.
+func (m Model) manifestWriteGuard() error {
+	if m.manifestErr == nil {
+		return nil
+	}
+	return fmt.Errorf(
+		"%w. Nothing was written; %s and re-run jarvis. Ver docs/setup-recovery.md",
+		m.manifestErr, manifestFailureGuidance(m.manifestErr),
+	)
+}
+
+// manifestFailureGuidance names the file the user actually has to look at. A
+// manifest read that failed because ~/.jarvis/config.yaml could not be read
+// points at config.yaml, which on such a machine is often the only file of the
+// two that exists.
+func manifestFailureGuidance(err error) string {
+	if errors.Is(err, state.ErrConfigUnreadable) {
+		return "fix ~/.jarvis/config.yaml"
+	}
+	return "fix ~/.jarvis/state.yaml"
 }
 
 // wizardProfile returns the validated schema-v2 profile selected by the wizard.
@@ -199,13 +242,13 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 		Screen:     ScreenWizard,
 		Step:       StepScope,
 		Mode:       string(config.ConfigStatusSetup),
-		Scope:      config.ScopeLocalOnly,
+		Scope:      state.ScopeLocalOnly,
 		PersonaFS:  wcfg.PersonaFS,
 		SkillsFS:   wcfg.SkillsFS,
 		TemplateFS: wcfg.TemplateFS,
 		ProjectCWD: wcfg.ProjectCWD,
 		Selected:   make(map[string]bool),
-		cfg:        &config.AppConfig{APIURL: config.DefaultAPIURL, Scope: config.ScopeLocalOnly},
+		cfg:        &config.AppConfig{APIURL: config.DefaultAPIURL},
 		manifest:   state.New(),
 		noTUI:      noTUI,
 	}
@@ -214,25 +257,34 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 	// performs must have run by the time the bridge projects the manifest back
 	// onto AppConfig, and reading it separately means a config.yaml that fails to
 	// load no longer takes the user's recorded persona, skills and phase models
-	// down with it. A failed manifest read leaves the empty manifest above, which
-	// is the same "nothing recorded" state a fresh machine starts from; this
-	// constructor has always continued past a failed load rather than aborting
-	// the wizard, and a TUI constructor has no channel to report on.
-	if manifest, _, err := loadWizardManifest(); err == nil {
+	// down with it.
+	//
+	// A failed read is recorded rather than swallowed. The wizard still opens on
+	// the empty manifest above so the user can see and diagnose the machine, but
+	// the apply step refuses while the failure stands: writing the built-in
+	// defaults into a new manifest would strand the persona, skills and agents
+	// this read could not reach in a config.yaml the migration will never look at
+	// again.
+	manifest, migration, err := loadWizardManifest()
+	if err == nil {
 		m.manifest = manifest
+	} else {
+		m.manifestErr = err
 	}
+	// The migration reports what it had to do to this machine -- notably that an
+	// unreadable config.yaml was preserved and moved aside. Recording it here is
+	// what keeps that recovery from happening silently in a TTY run, which has no
+	// stdout to print to.
+	m.migrationNotice = migration.Notice
 
 	if loaded, err := config.Load(); err == nil {
 		m.cfg = loaded
-		m.Mode = string(loaded.ConfigStatus())
-		m.Scope = loaded.Scope
+		m.Mode = string(loaded.ConfigStatus(recordedInstallFrom(m.manifest)))
 		if loaded.Cloud != nil {
 			m.Email = loaded.Cloud.Email
 		}
 	}
-	if m.Scope == "" {
-		m.Scope = config.ScopeLocalOnly
-	}
+	m.Scope = wizardScope(m.manifest, m.cfg)
 
 	presets, err := persona.ListProfiles(m.PersonaFS)
 	if err == nil {
@@ -272,15 +324,8 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 	}
 
 	if m.cfg == nil {
-		m.cfg = &config.AppConfig{APIURL: config.DefaultAPIURL, Scope: config.ScopeLocalOnly}
+		m.cfg = &config.AppConfig{APIURL: config.DefaultAPIURL}
 	}
-	if m.cfg.SelectedSkills == nil {
-		m.cfg.SelectedSkills = []string{}
-	}
-	if m.cfg.Install.Agents == nil {
-		m.cfg.Install.Agents = map[string]config.AgentState{}
-	}
-	m.cfg.Scope = m.Scope
 	// The persona being replaced is whatever the manifest recorded, so the apply
 	// step cleans up the right previous profile even when config.yaml failed to
 	// load or never carried one.
@@ -291,11 +336,6 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 
 	return m
 }
-
-// defaultWizardPersona is the persona slug config.Load falls back to when none
-// is recorded. The wizard has always prefilled that value, so reading the
-// persona out of the manifest has to keep falling back to it.
-const defaultWizardPersona = "argentino"
 
 // loadWizardManifest reads the desired state the wizard prefills from and
 // records into.
@@ -328,27 +368,62 @@ func loadWizardManifest() (*state.State, state.Result, error) {
 }
 
 // wizardPersonaSelection returns the persona slug and source the wizard prefills
-// from.
+// from, in the persona package's vocabulary.
 //
-// The defaults it applies -- a blank slug becomes the default persona, and any
-// source that is not "user" becomes "builtin" -- are the ones config.Load
-// applied to these fields while AppConfig still owned them. Reproducing them
-// here is deliberate and temporary: the wizard must not start prefilling a
-// different persona than it did yesterday, and the duplication disappears with
-// the AppConfig bridge, not before.
+// ~/.jarvis/state.yaml owns the persona and the defaults an unrecorded one falls
+// back to, so this only translates its answer.
 func wizardPersonaSelection(manifest *state.State) (string, persona.PresetSource) {
-	slug := ""
-	source := persona.PresetSourceBuiltin
-	if manifest != nil {
-		slug = strings.TrimSpace(manifest.Persona)
-		if strings.ToLower(strings.TrimSpace(string(manifest.PersonaSource))) == string(persona.PresetSourceUser) {
-			source = persona.PresetSourceUser
-		}
+	slug, source := manifest.ResolvedPersona()
+	if source == state.PersonaSourceUser {
+		return slug, persona.PresetSourceUser
 	}
-	if slug == "" {
-		slug = defaultWizardPersona
+	return slug, persona.PresetSourceBuiltin
+}
+
+// recordWizardPersona stores a persona choice on the wizard's working copy of
+// the desired-state manifest, which owns it. A model built outside NewModel
+// carries no working manifest, so one is created rather than dropping the
+// choice; an empty manifest is the same "nothing recorded yet" state a fresh
+// machine starts from.
+func recordWizardPersona(desired *state.State, slug string, source persona.PresetSource) *state.State {
+	if desired == nil {
+		desired = state.New()
 	}
-	return slug, source
+	desired.Persona = slug
+	desired.PersonaSource = state.PersonaSource(source)
+	return desired
+}
+
+// wizardScope returns the scope the wizard starts from.
+//
+// ~/.jarvis/state.yaml owns the scope and what an unrecorded one falls back to;
+// the stored cloud link that fallback turns on lives in config.yaml. This joins
+// the two halves and owns neither.
+func wizardScope(manifest *state.State, cfg *config.AppConfig) state.Scope {
+	return manifest.ResolvedScope(cfg.HasStoredCloudLink())
+}
+
+// recordedInstallFrom answers the half of the install-status question config.yaml
+// cannot: whether the manifest records a complete installation, and whether it
+// records anything at all.
+func recordedInstallFrom(manifest *state.State) config.RecordedInstall {
+	return config.RecordedInstall{
+		Complete:  manifest.RecordsCompleteInstall(),
+		Populated: manifest.RecordsAnyState(),
+	}
+}
+
+// wizardAgentIDs returns the configured agent IDs in the order the manifest
+// records them.
+func wizardAgentIDs(manifest *state.State) []string {
+	if manifest == nil {
+		return nil
+	}
+	ids := make([]string, 0, len(manifest.InstalledAgents))
+	for _, agent := range manifest.InstalledAgents {
+		ids = append(ids, agent.ID)
+	}
+	return ids
 }
 
 // wizardSelectedSkills returns the skill IDs this machine already owns.
@@ -361,94 +436,105 @@ func wizardSelectedSkills(manifest *state.State) []string {
 
 // wizardPhaseModels returns the manifest's per-phase model assignments keyed the
 // way the SDD contract names its phases.
-//
-// config.Load lowercased and trimmed these keys and values on the way in, and
-// the wizard looks them up by contract phase name, so the same normalization has
-// to happen at this read. The manifest stores what was written: migration copies
-// config.yaml verbatim, so a hand-edited `Apply:` key would otherwise stop
-// matching the contract's `apply`.
 func wizardPhaseModels(manifest *state.State) state.PhaseModels {
-	out := state.PhaseModels{
-		Aliases:  map[string]state.PhaseModelSelection{},
-		OpenCode: map[string]state.OpenCodeModelAssignment{},
-		Claude:   map[string]state.ClaudeModelAssignment{},
-	}
-	if manifest == nil {
-		return out
-	}
-	for rawPhase, sel := range manifest.PhaseModels.Aliases {
-		phase := normalizeWizardPhaseKey(rawPhase)
-		if phase == "" {
-			continue
-		}
-		sel.OpenCode = strings.ToLower(strings.TrimSpace(sel.OpenCode))
-		sel.Claude = strings.ToLower(strings.TrimSpace(sel.Claude))
-		out.Aliases[phase] = sel
-	}
-	for rawPhase, assignment := range manifest.PhaseModels.OpenCode {
-		phase := normalizeWizardPhaseKey(rawPhase)
-		if phase == "" {
-			continue
-		}
-		assignment.ProviderID = strings.TrimSpace(assignment.ProviderID)
-		assignment.ModelID = strings.TrimSpace(assignment.ModelID)
-		assignment.Effort = strings.TrimSpace(assignment.Effort)
-		out.OpenCode[phase] = assignment
-	}
-	for rawPhase, assignment := range manifest.PhaseModels.Claude {
-		phase := normalizeWizardPhaseKey(rawPhase)
-		if phase == "" {
-			continue
-		}
-		assignment.Model = strings.TrimSpace(assignment.Model)
-		assignment.Effort = strings.TrimSpace(assignment.Effort)
-		out.Claude[phase] = assignment
-	}
-	return out
-}
-
-func normalizeWizardPhaseKey(phase string) string {
-	return strings.ToLower(strings.TrimSpace(phase))
+	return manifest.NormalizedPhaseModels()
 }
 
 // recordWizardDesiredState writes the choices the wizard just applied into
-// ~/.jarvis/state.yaml, which owns them.
+// ~/.jarvis/state.yaml, which owns them. desired is the wizard's working copy of
+// the manifest: every step edits it, and this commits it.
 //
-// The write is sequenced strictly after config.Save and never wrapped around it.
-// config.Save's temporary bridge takes the fail-fast, non-reentrant manifest
-// lock internally, so nesting would deadlock the process on the first setup run,
-// and going last keeps the bridge's own re-derivation from overwriting these
-// values. state.Update is unlocked for the same reason and says so.
-func recordWizardDesiredState(cfg *config.AppConfig) error {
-	if cfg == nil {
+// The write is sequenced with config.Save and never wrapped around it:
+// state.Update takes the fail-fast, non-reentrant manifest lock internally, so
+// nesting it inside another holder of that lock would fail the write. It runs
+// before config.Save so that the install.mode and install.completed keys
+// config.yaml still owns are derived from the choices recorded here.
+func recordWizardDesiredState(desired *state.State) error {
+	if desired == nil {
 		return nil
 	}
-	slug, source := cfg.PersonaPreset, cfg.PersonaPresetSource
-	skillIDs := append([]string(nil), cfg.SelectedSkills...)
-	scope := cfg.Scope
-	order := append([]string(nil), cfg.ConfiguredAgents...)
-
-	records := make(map[string]state.AgentRecord, len(cfg.Install.Agents))
-	for id, agentState := range cfg.Install.Agents {
-		records[id] = state.AgentRecord{
-			Configured:       agentState.Configured,
-			InstructionsPath: agentState.InstructionsPath,
-			ConfigPath:       agentState.ConfigPath,
-		}
-	}
-	phaseModels := cfg.PhaseModelsForState()
+	slug, source := desired.Persona, desired.PersonaSource
+	skillIDs := append([]string(nil), desired.Skills...)
+	scope := desired.Scope
+	agents := append([]state.Agent(nil), desired.InstalledAgents...)
+	phaseModels := desired.PhaseModels
 
 	return state.Update(func(st *state.State) {
 		st.Persona = slug
-		st.PersonaSource = state.PersonaSource(source)
+		st.PersonaSource = source
 		st.Skills = skillIDs
-		st.Scope = state.Scope(scope)
-		st.InstalledAgents = state.InstalledAgentsFrom(order, records)
+		st.Scope = scope
+		st.InstalledAgents = mergeAgentRecords(agents, st.InstalledAgents)
 		if len(st.InstalledAgents) > 0 {
 			st.SelectionConfigured = true
 		}
 		st.PhaseModels = phaseModels
 	})
+}
+
+// recordWizardAgents stores the agents an apply just configured on the wizard's
+// working manifest, in the order they were configured, merged over the agents
+// the manifest already records.
+//
+// The merge is the point. The wizard configures whatever agent.Detect found on
+// this machine, and detection is presence-based: a config directory that moved
+// or an executable that left $PATH makes an agent invisible to this run without
+// saying anything about whether the user still owns it. Replacing the record
+// with what this run happened to see would delete the only ownership proof that
+// authorizes cleaning that agent's managed files up later -- the same reason the
+// manifest never filters its skill list on write.
+//
+// So an agent leaves the record only through an explicit removal, never as a
+// side effect of a run failing to detect it. That removal is
+// `jarvis config forget-agent <agent>`: the user says the agent is gone, and
+// nothing on this path infers it.
+func recordWizardAgents(desired *state.State, results []AgentApplyResult) {
+	if desired == nil {
+		return
+	}
+	order := make([]string, 0, len(results))
+	records := make(map[string]state.AgentRecord, len(results))
+	for _, res := range results {
+		order = append(order, res.AgentName)
+		records[res.AgentName] = state.AgentRecord{
+			Configured:       res.State.Configured,
+			InstructionsPath: res.State.InstructionsPath,
+			ConfigPath:       res.State.ConfigPath,
+		}
+	}
+	desired.InstalledAgents = mergeAgentRecords(
+		state.InstalledAgentsFrom(order, records),
+		desired.InstalledAgents,
+	)
+}
+
+// mergeAgentRecords returns the agents observed by the current run followed by
+// the previously recorded agents it did not observe, each ID appearing once.
+//
+// Observed wins on collision so a reconfigured agent carries the paths this run
+// wrote rather than the stale ones it replaced.
+func mergeAgentRecords(observed, recorded []state.Agent) []state.Agent {
+	merged := make([]state.Agent, 0, len(observed)+len(recorded))
+	seen := make(map[string]bool, len(observed)+len(recorded))
+
+	appendAgents := func(agents []state.Agent) {
+		for _, agent := range agents {
+			id := strings.TrimSpace(agent.ID)
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			agent.ID = id
+			merged = append(merged, agent)
+		}
+	}
+	appendAgents(observed)
+	appendAgents(recorded)
+
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
 }
 
 func profileOptions(presets []persona.Profile) []persona.ProfileOption {
@@ -537,6 +623,20 @@ func (m Model) updateStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
+	return m.migrationNoticeBanner() + m.stepView()
+}
+
+// migrationNoticeBanner renders what the migration had to report, above every
+// screen. A recovery that moved the user's config.yaml aside must be visible,
+// not inferred from a file that quietly stopped existing.
+func (m Model) migrationNoticeBanner() string {
+	if strings.TrimSpace(m.migrationNotice) == "" {
+		return ""
+	}
+	return m.migrationNotice + "\n\n"
+}
+
+func (m Model) stepView() string {
 	if m.Screen == ScreenCockpit {
 		return viewCockpit(m)
 	}
@@ -567,6 +667,12 @@ func (m Model) View() string {
 }
 
 func initializePhaseModelEditor(m Model) Model {
+	// A model built outside NewModel carries no working manifest. An empty one is
+	// the same "nothing recorded yet" state a fresh machine starts from, and the
+	// editor needs somewhere to record its rows.
+	if m.manifest == nil {
+		m.manifest = state.New()
+	}
 	contract := sddruntime.DefaultContract()
 	// The manifest owns the per-phase models; the editor seeds its rows from it.
 	phaseModels := wizardPhaseModels(m.manifest)
@@ -587,7 +693,7 @@ func initializePhaseModelEditor(m Model) Model {
 	for _, phase := range contract.Phases {
 		sel := resolved[phase]
 		row := phaseModelRow{Phase: phase, OpenCode: sel.OpenCode, Claude: sel.Claude}
-		row.OpenCodeAssignment = config.OpenCodeModelAssignment(phaseModels.OpenCode[phase])
+		row.OpenCodeAssignment = state.OpenCodeModelAssignment(phaseModels.OpenCode[phase])
 		assignment := phaseModels.Claude[phase]
 		if strings.TrimSpace(assignment.Model) != "" {
 			row.Claude = strings.TrimSpace(assignment.Model)
@@ -600,15 +706,20 @@ func initializePhaseModelEditor(m Model) Model {
 	if m.phaseModelActiveCol == phaseModelNoColumn || !m.phaseModelColumnEnabled(m.phaseModelActiveCol) {
 		m.phaseModelActiveCol = m.firstPhaseModelColumn()
 	}
-	if m.cfg != nil {
-		if m.cfg.SDD.PhaseModels == nil {
-			m.cfg.SDD.PhaseModels = map[string]config.PhaseModelSelection{}
+	// The resolved rows are seeded back onto the working manifest so a run that
+	// never opens the phase-model step still records the selection it displayed.
+	if m.manifest != nil {
+		if m.manifest.PhaseModels.Aliases == nil {
+			m.manifest.PhaseModels.Aliases = map[string]state.PhaseModelSelection{}
 		}
-		if m.cfg.SDD.OpenCodePhaseModels == nil {
-			m.cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{}
+		if m.manifest.PhaseModels.OpenCode == nil {
+			m.manifest.PhaseModels.OpenCode = map[string]state.OpenCodeModelAssignment{}
+		}
+		if m.manifest.PhaseModels.Claude == nil {
+			m.manifest.PhaseModels.Claude = map[string]state.ClaudeModelAssignment{}
 		}
 		for _, row := range m.phaseModelRows {
-			m.cfg.SDD.PhaseModels[row.Phase] = config.PhaseModelSelection{OpenCode: row.OpenCode, Claude: row.Claude}
+			m.manifest.PhaseModels.Aliases[row.Phase] = state.PhaseModelSelection{OpenCode: row.OpenCode, Claude: row.Claude}
 		}
 	}
 	return m
@@ -654,12 +765,12 @@ func (m Model) phaseModelColumnEnabled(col int) bool {
 	}
 }
 
-func ensureOpenCodeLegacyOption(options []config.OpenCodeModelAssignment) []config.OpenCodeModelAssignment {
-	if len(options) == 0 || options[0] == (config.OpenCodeModelAssignment{}) {
+func ensureOpenCodeLegacyOption(options []state.OpenCodeModelAssignment) []state.OpenCodeModelAssignment {
+	if len(options) == 0 || options[0] == (state.OpenCodeModelAssignment{}) {
 		return options
 	}
-	out := make([]config.OpenCodeModelAssignment, 0, len(options)+1)
-	out = append(out, config.OpenCodeModelAssignment{})
+	out := make([]state.OpenCodeModelAssignment, 0, len(options)+1)
+	out = append(out, state.OpenCodeModelAssignment{})
 	out = append(out, options...)
 	return out
 }
@@ -667,7 +778,7 @@ func ensureOpenCodeLegacyOption(options []config.OpenCodeModelAssignment) []conf
 var openCodePhaseModelDiscoveryDiagnostics []string
 var openCodePhaseModelProviderOptions []openCodeProviderOption
 
-var discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
+var discoverOpenCodePhaseModelOptions = func() []state.OpenCodeModelAssignment {
 	openCodePhaseModelDiscoveryDiagnostics = nil
 	result, err := opencode.DiscoverAvailableProviders(opencode.ResolvePaths(defaultOpenCodePathRoots()), nil)
 	if err != nil {
@@ -741,12 +852,12 @@ func defaultOpenCodePathRoots() opencode.PathRoots {
 	return opencode.PathRoots{HomeDir: home, CacheDir: cache, ConfigDir: configDir, DataDir: data}
 }
 
-func openCodePhaseModelOptionsFromDiscovery(result opencode.DiscoveryResult) []config.OpenCodeModelAssignment {
+func openCodePhaseModelOptionsFromDiscovery(result opencode.DiscoveryResult) []state.OpenCodeModelAssignment {
 	providers := append([]opencode.AvailableProvider(nil), result.Providers...)
 	sort.Slice(providers, func(i, j int) bool {
 		return providers[i].Provider.ID < providers[j].Provider.ID
 	})
-	options := []config.OpenCodeModelAssignment{}
+	options := []state.OpenCodeModelAssignment{}
 	for _, available := range providers {
 		providerID := available.Provider.ID
 		modelsByID := map[string]opencode.Model{}
@@ -764,7 +875,7 @@ func openCodePhaseModelOptionsFromDiscovery(result opencode.DiscoveryResult) []c
 		sort.Strings(modelIDs)
 		for _, modelID := range modelIDs {
 			for _, effort := range opencode.EffortOptions(providerID, modelsByID[modelID]) {
-				options = append(options, config.OpenCodeModelAssignment{ProviderID: providerID, ModelID: modelID, Effort: effort})
+				options = append(options, state.OpenCodeModelAssignment{ProviderID: providerID, ModelID: modelID, Effort: effort})
 			}
 		}
 	}

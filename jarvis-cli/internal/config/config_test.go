@@ -27,15 +27,27 @@ func setHomeEnv(t *testing.T, home string) {
 	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
 }
 
-func TestIsConfigured_ReturnsFalseWhenNoFile(t *testing.T) {
+// completeManifest is the manifest half of a machine that finished an install.
+// ~/.jarvis/state.yaml owns the persona, the skills and the agents, so readiness
+// is a joint question and this stands in for that store.
+var completeManifest = RecordedInstall{Complete: true, Populated: true}
+
+func TestReconfigureReadiness_FalseWhenNoFile(t *testing.T) {
 	isolateHome(t)
 
-	if IsConfigured() {
-		t.Fatal("expected IsConfigured()=false for a fresh home dir with no config file")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.IsReadyForReconfigure(completeManifest) {
+		t.Fatal("expected not ready for a fresh home dir with no config file")
+	}
+	if got := cfg.ConfigStatus(RecordedInstall{}); got != ConfigStatusSetup {
+		t.Fatalf("expected setup for a fresh home dir, got %q", got)
 	}
 }
 
-func TestIsConfigured_ReturnsFalseWhenEmpty(t *testing.T) {
+func TestReconfigureReadiness_FalseWhenEmpty(t *testing.T) {
 	home := isolateHome(t)
 
 	// Create the directory and an empty config file.
@@ -48,33 +60,35 @@ func TestIsConfigured_ReturnsFalseWhenEmpty(t *testing.T) {
 		t.Fatalf("write empty config: %v", err)
 	}
 
-	// Empty file means no email — should not be considered configured.
-	if IsConfigured() {
-		t.Fatal("expected IsConfigured()=false when config file is empty")
+	// An empty file records no completed install, so the machine is not ready
+	// however complete the manifest is.
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.IsReadyForReconfigure(completeManifest) {
+		t.Fatal("expected not ready when config file is empty")
 	}
 }
 
-func TestIsConfigured_ReturnsTrueWhenValid(t *testing.T) {
+func TestReconfigureReadiness_TrueWhenValid(t *testing.T) {
 	isolateHome(t)
 
 	cfg := &AppConfig{
-		SchemaVersion:  2,
-		APIURL:         DefaultAPIURL,
-		PersonaPreset:  "tony-stark",
-		SelectedSkills: []string{"core-memory"},
-		Install: InstallState{
-			Completed: true,
-			Agents: map[string]AgentState{
-				"claude": {Configured: true, InstructionsPath: "/tmp/CLAUDE.md"},
-			},
-		},
+		SchemaVersion: currentSchemaVersion,
+		APIURL:        DefaultAPIURL,
+		Install:       InstallState{Completed: true},
 	}
 	if err := Save(cfg); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	if !IsConfigured() {
-		t.Fatal("expected IsConfigured()=true after saving a valid config")
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !loaded.IsReadyForReconfigure(completeManifest) {
+		t.Fatal("expected ready after saving a completed install with a complete manifest")
 	}
 }
 
@@ -88,10 +102,8 @@ func TestSave_CreatesDirectoryIfMissing(t *testing.T) {
 	}
 
 	cfg := &AppConfig{
-		SchemaVersion:  2,
-		APIURL:         DefaultAPIURL,
-		PersonaPreset:  "argentino",
-		SelectedSkills: []string{"core-memory"},
+		SchemaVersion: currentSchemaVersion,
+		APIURL:        DefaultAPIURL,
 	}
 	if err := Save(cfg); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -112,19 +124,12 @@ func TestSave_RoundTrip(t *testing.T) {
 	isolateHome(t)
 
 	original := &AppConfig{
-		SchemaVersion:    2,
-		APIURL:           "https://custom.api.example.com",
-		PersonaPreset:    "tony-stark",
-		SelectedSkills:   []string{"core-memory", "testing"},
-		ConfiguredAgents: []string{"claude", "opencode"},
-		Cloud:            &CloudConfig{Email: "rhodey@war.machine", SyncConfigured: true},
+		SchemaVersion: currentSchemaVersion,
+		APIURL:        "https://custom.api.example.com",
+		Cloud:         &CloudConfig{Email: "rhodey@war.machine", SyncConfigured: true},
 		Install: InstallState{
 			Mode:      "reconfigure",
 			Completed: true,
-			Agents: map[string]AgentState{
-				"claude":   {Configured: true, InstructionsPath: "/a", ConfigPath: "/b"},
-				"opencode": {Configured: true, InstructionsPath: "/c", ConfigPath: "/d"},
-			},
 		},
 		Version: "2.0.0",
 	}
@@ -144,29 +149,18 @@ func TestSave_RoundTrip(t *testing.T) {
 	if loaded.APIURL != original.APIURL {
 		t.Errorf("APIURL: got %q, want %q", loaded.APIURL, original.APIURL)
 	}
-	if loaded.PersonaPreset != original.PersonaPreset {
-		t.Errorf("PersonaPreset: got %q, want %q", loaded.PersonaPreset, original.PersonaPreset)
-	}
-	if len(loaded.SelectedSkills) != len(original.SelectedSkills) {
-		t.Fatalf("SelectedSkills length: got %d, want %d", len(loaded.SelectedSkills), len(original.SelectedSkills))
-	}
 	if loaded.Version != original.Version {
 		t.Errorf("Version: got %q, want %q", loaded.Version, original.Version)
 	}
-	if len(loaded.ConfiguredAgents) != len(original.ConfiguredAgents) {
-		t.Errorf("ConfiguredAgents length: got %d, want %d",
-			len(loaded.ConfiguredAgents), len(original.ConfiguredAgents))
-	} else {
-		for i, a := range original.ConfiguredAgents {
-			if loaded.ConfiguredAgents[i] != a {
-				t.Errorf("ConfiguredAgents[%d]: got %q, want %q",
-					i, loaded.ConfiguredAgents[i], a)
-			}
-		}
+	if loaded.Install.Mode != original.Install.Mode || !loaded.Install.Completed {
+		t.Errorf("Install: got %+v, want %+v", loaded.Install, original.Install)
+	}
+	if !loaded.Cloud.SyncConfigured {
+		t.Error("Cloud.SyncConfigured did not survive the round trip")
 	}
 }
 
-func TestLoad_MigratesLegacyV1ConfigToV2(t *testing.T) {
+func TestLoad_MigratesLegacyV1ConfigToTheCurrentSchema(t *testing.T) {
 	home := isolateHome(t)
 	legacy := strings.Join([]string{
 		"api_url: https://hivemem.dev",
@@ -187,266 +181,112 @@ func TestLoad_MigratesLegacyV1ConfigToV2(t *testing.T) {
 		t.Fatalf("Load legacy config: %v", err)
 	}
 
-	if cfg.SchemaVersion != 2 {
-		t.Fatalf("expected schema_version=2 after migration, got %d", cfg.SchemaVersion)
+	if cfg.SchemaVersion != currentSchemaVersion {
+		t.Fatalf("expected schema_version=%d after migration, got %d", currentSchemaVersion, cfg.SchemaVersion)
 	}
 	if cfg.Cloud == nil || cfg.Cloud.Email != "legacy@example.com" {
 		t.Fatalf("expected migrated cloud email, got %#v", cfg.Cloud)
 	}
-	if cfg.PersonaPreset != "argentino" {
-		t.Fatalf("expected migrated persona_preset=argentino, got %q", cfg.PersonaPreset)
-	}
-	if len(cfg.ConfiguredAgents) != 1 || cfg.ConfiguredAgents[0] != "claude" {
-		t.Fatalf("expected migrated configured_agents=[claude], got %v", cfg.ConfiguredAgents)
-	}
-}
-
-func TestLoad_DefaultsPersonaPresetSourceToBuiltinForLegacyConfig(t *testing.T) {
-	home := isolateHome(t)
-	legacy := strings.Join([]string{
-		"api_url: https://hivemem.dev",
-		"persona_preset: argentino",
-	}, "\n")
-	if err := os.MkdirAll(filepath.Join(home, ".jarvis"), 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".jarvis", "config.yaml"), []byte(legacy), 0644); err != nil {
-		t.Fatalf("write legacy config: %v", err)
-	}
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load legacy config: %v", err)
-	}
-
-	if cfg.PersonaPresetSource != "builtin" {
-		t.Fatalf("expected persona_preset_source=builtin, got %q", cfg.PersonaPresetSource)
-	}
-}
-
-func TestLoad_NormalizesPersonaPresetSourceValues(t *testing.T) {
-	tests := []struct {
-		name     string
-		rawValue string
-		want     string
-	}{
-		{name: "valid user source", rawValue: " user ", want: "user"},
-		{name: "invalid source falls back to builtin", rawValue: "external", want: "builtin"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			home := isolateHome(t)
-			raw := strings.Join([]string{
-				"api_url: https://hivemem.dev",
-				"persona_preset: custom-mentor",
-				"persona_preset_source: " + tt.rawValue,
-			}, "\n")
-			if err := os.MkdirAll(filepath.Join(home, ".jarvis"), 0755); err != nil {
-				t.Fatalf("mkdir: %v", err)
-			}
-			if err := os.WriteFile(filepath.Join(home, ".jarvis", "config.yaml"), []byte(raw), 0644); err != nil {
-				t.Fatalf("write config: %v", err)
-			}
-
-			cfg, err := Load()
-			if err != nil {
-				t.Fatalf("Load: %v", err)
-			}
-
-			if cfg.PersonaPresetSource != tt.want {
-				t.Fatalf("PersonaPresetSource = %q, want %q", cfg.PersonaPresetSource, tt.want)
-			}
-		})
-	}
+	// The legacy preset and configured_agents keys belong to the manifest now.
+	// state.Migrate carries them across; this store must not decode them, and it
+	// must not drop them from the file either, which
+	// TestSaveThenMigrate_DoesNotStrandReplayFieldsOnAnUnmigratedMachine covers.
 }
 
 func TestConfigStatus_ReadyWithoutCloudEmail(t *testing.T) {
 	cfg := &AppConfig{
-		SchemaVersion:  2,
-		APIURL:         DefaultAPIURL,
-		PersonaPreset:  "argentino",
-		SelectedSkills: []string{"core-memory"},
-		Install: InstallState{
-			Completed: true,
-			Agents: map[string]AgentState{
-				"claude": {Configured: true, InstructionsPath: "/tmp/CLAUDE.md", ConfigPath: "/tmp/settings.json"},
-			},
-		},
-	}
-
-	if !cfg.IsReadyForReconfigure() {
-		t.Fatal("expected IsReadyForReconfigure=true for complete local config without cloud email")
-	}
-	if got := cfg.ConfigStatus(); got != ConfigStatusReconfigure {
-		t.Fatalf("expected ConfigStatusReconfigure, got %q", got)
-	}
-}
-
-func TestConfigStatus_RecoverWhenPartiallyConfigured(t *testing.T) {
-	cfg := &AppConfig{
-		SchemaVersion: 2,
+		SchemaVersion: currentSchemaVersion,
 		APIURL:        DefaultAPIURL,
 		Install:       InstallState{Completed: true},
 	}
 
-	if cfg.IsReadyForReconfigure() {
-		t.Fatal("expected IsReadyForReconfigure=false when required local fields are missing")
+	if !cfg.IsReadyForReconfigure(completeManifest) {
+		t.Fatal("expected ready for a complete local install without a cloud email")
 	}
-	if got := cfg.ConfigStatus(); got != ConfigStatusRecover {
+	if got := cfg.ConfigStatus(completeManifest); got != ConfigStatusReconfigure {
+		t.Fatalf("expected ConfigStatusReconfigure, got %q", got)
+	}
+}
+
+// TestConfigStatus_RecoverWhenPartiallyConfigured covers the half-installed
+// machine: config.yaml records a completed install but the manifest records no
+// persona, skills or agents, so the installation is damaged rather than absent.
+func TestConfigStatus_RecoverWhenPartiallyConfigured(t *testing.T) {
+	cfg := &AppConfig{
+		SchemaVersion: currentSchemaVersion,
+		APIURL:        DefaultAPIURL,
+		Install:       InstallState{Completed: true},
+	}
+
+	partial := RecordedInstall{Complete: false, Populated: false}
+	if cfg.IsReadyForReconfigure(partial) {
+		t.Fatal("expected not ready when the manifest records no installation")
+	}
+	if got := cfg.ConfigStatus(partial); got != ConfigStatusRecover {
 		t.Fatalf("expected ConfigStatusRecover for partial state, got %q", got)
 	}
 }
 
-func TestLoad_DefaultsScopeFromLegacyCloudState(t *testing.T) {
-	home := isolateHome(t)
-	legacy := strings.Join([]string{
-		"api_url: https://hivemem.dev",
-		"email: legacy@example.com",
-	}, "\n")
-	if err := os.MkdirAll(filepath.Join(home, ".jarvis"), 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".jarvis", "config.yaml"), []byte(legacy), 0644); err != nil {
-		t.Fatalf("write legacy config: %v", err)
-	}
+// TestConfigStatus_RecoverWhenOnlyTheManifestCarriesState covers the mirror
+// case: config.yaml looks untouched but the manifest records real choices, which
+// is a damaged installation and not a fresh machine.
+func TestConfigStatus_RecoverWhenOnlyTheManifestCarriesState(t *testing.T) {
+	cfg := &AppConfig{SchemaVersion: currentSchemaVersion, APIURL: DefaultAPIURL}
 
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load legacy config: %v", err)
+	got := cfg.ConfigStatus(RecordedInstall{Populated: true})
+	if got != ConfigStatusRecover {
+		t.Fatalf("config status = %q, want recover when only the manifest carries state", got)
 	}
-
-	if cfg.Scope != ScopeLocalCloud {
-		t.Fatalf("expected scope=%q from legacy cloud state, got %q", ScopeLocalCloud, cfg.Scope)
+	if fresh := cfg.ConfigStatus(RecordedInstall{}); fresh != ConfigStatusSetup {
+		t.Fatalf("config status = %q, want setup when neither store carries state", fresh)
 	}
 }
 
-func TestLoad_DefaultsScopeToLocalOnlyWithoutCloudState(t *testing.T) {
-	home := isolateHome(t)
-	legacy := strings.Join([]string{
-		"api_url: https://hivemem.dev",
-		"persona_preset: argentino",
-	}, "\n")
-	if err := os.MkdirAll(filepath.Join(home, ".jarvis"), 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".jarvis", "config.yaml"), []byte(legacy), 0644); err != nil {
-		t.Fatalf("write legacy config: %v", err)
-	}
+// TestHasStoredCloudLink_IsTheSeamTheScopeDefaultReadsFrom covers what used to
+// be an unexported helper behind the scope default. ~/.jarvis/state.yaml owns
+// the scope and decides what an unrecorded one means, but the evidence lives
+// here, so this store has to expose it and get it right for a legacy config
+// whose only cloud trace is the flat email key.
+func TestHasStoredCloudLink_IsTheSeamTheScopeDefaultReadsFrom(t *testing.T) {
+	t.Run("legacy flat email counts", func(t *testing.T) {
+		home := isolateHome(t)
+		writeRawConfig(t, home, "api_url: https://hivemem.dev\nemail: legacy@example.com\n")
 
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load legacy config: %v", err)
-	}
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if !cfg.HasStoredCloudLink() {
+			t.Fatalf("expected a stored cloud link for a legacy email config, got %+v", cfg.Cloud)
+		}
+	})
 
-	if cfg.Scope != ScopeLocalOnly {
-		t.Fatalf("expected scope=%q without cloud state, got %q", ScopeLocalOnly, cfg.Scope)
-	}
-}
+	t.Run("no cloud trace", func(t *testing.T) {
+		home := isolateHome(t)
+		writeRawConfig(t, home, "api_url: https://hivemem.dev\n")
 
-func TestLoad_InitializesSDDPhaseModelsContainerForLegacyConfig(t *testing.T) {
-	home := isolateHome(t)
-	legacy := strings.Join([]string{
-		"api_url: https://hivemem.dev",
-		"persona_preset: argentino",
-	}, "\n")
-	if err := os.MkdirAll(filepath.Join(home, ".jarvis"), 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".jarvis", "config.yaml"), []byte(legacy), 0644); err != nil {
-		t.Fatalf("write legacy config: %v", err)
-	}
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.HasStoredCloudLink() {
+			t.Fatal("expected no stored cloud link without any cloud trace")
+		}
+	})
 
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
+	t.Run("sync configured without an email counts", func(t *testing.T) {
+		cfg := &AppConfig{Cloud: &CloudConfig{SyncConfigured: true}}
+		if !cfg.HasStoredCloudLink() {
+			t.Fatal("a configured sync is a stored cloud link even without an email")
+		}
+	})
 
-	if cfg.SDD.PhaseModels == nil {
-		t.Fatal("expected SDD.PhaseModels to be initialized")
-	}
-}
-
-func TestSaveLoad_PersistsSDDPhaseModels(t *testing.T) {
-	isolateHome(t)
-	cfg := defaultConfig()
-	cfg.SDD.PhaseModels = map[string]PhaseModelSelection{
-		"default":   {OpenCode: "sonnet", Claude: "haiku"},
-		"sdd-apply": {OpenCode: "opus", Claude: "sonnet"},
-	}
-
-	if err := Save(cfg); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	loaded, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	got := loaded.SDD.PhaseModels["sdd-apply"]
-	if got.OpenCode != "opus" || got.Claude != "sonnet" {
-		t.Fatalf("unexpected sdd-apply phase models: %+v", got)
-	}
-}
-
-func TestSaveLoad_PersistsOpenCodePhaseModelAssignments(t *testing.T) {
-	isolateHome(t)
-	cfg := defaultConfig()
-	cfg.SDD.OpenCodePhaseModels = map[string]OpenCodeModelAssignment{
-		"sdd-apply": {
-			ProviderID: "openai",
-			ModelID:    "gpt-5.1-codex-max",
-			Effort:     "high",
-		},
-	}
-
-	if err := Save(cfg); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	loaded, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	got := loaded.SDD.OpenCodePhaseModels["sdd-apply"]
-	if got.ProviderID != "openai" || got.ModelID != "gpt-5.1-codex-max" || got.Effort != "high" {
-		t.Fatalf("unexpected OpenCode assignment: %+v", got)
-	}
-}
-
-func TestLoad_LegacyPhaseModelsClaudeLoadsWithEmptyClaudeEffort(t *testing.T) {
-	home := isolateHome(t)
-	raw := strings.Join([]string{
-		"api_url: https://hivemem.dev",
-		"persona_preset: argentino",
-		"sdd:",
-		"  phase_models:",
-		"    sdd-design:",
-		"      claude: opus",
-	}, "\n")
-	if err := os.MkdirAll(filepath.Join(home, ".jarvis"), 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".jarvis", "config.yaml"), []byte(raw), 0644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	if cfg.SDD.PhaseModels["sdd-design"].Claude != "opus" {
-		t.Fatalf("legacy PhaseModels Claude = %q, want opus", cfg.SDD.PhaseModels["sdd-design"].Claude)
-	}
-	if cfg.SDD.ClaudePhaseModels == nil {
-		t.Fatal("expected SDD.ClaudePhaseModels to be initialized")
-	}
-	if got := cfg.SDD.ClaudePhaseModels["sdd-design"].Effort; got != "" {
-		t.Fatalf("Claude effort = %q, want empty inherited/default effort", got)
-	}
+	t.Run("nil config", func(t *testing.T) {
+		var cfg *AppConfig
+		if cfg.HasStoredCloudLink() {
+			t.Fatal("a nil config has no stored cloud link")
+		}
+	})
 }
 
 func TestLoad_ReturnsErrorWhenFileCorrupt(t *testing.T) {
@@ -492,26 +332,38 @@ func TestLoad_DefaultConfigRespectsEnvOverride(t *testing.T) {
 
 func TestConfigStatusSetupWhenConfigNil(t *testing.T) {
 	var cfg *AppConfig
-	if got := cfg.ConfigStatus(); got != ConfigStatusSetup {
+	if got := cfg.ConfigStatus(completeManifest); got != ConfigStatusSetup {
 		t.Fatalf("expected ConfigStatusSetup for nil cfg, got %q", got)
 	}
 }
 
-func TestIsReadyForReconfigure_FailsWhenConfiguredAgentStateMissing(t *testing.T) {
+// TestIsReadyForReconfigure_FailsWhenTheManifestRecordsNoInstall keeps the
+// guarantee the old per-agent check carried: a machine whose recorded agents are
+// missing is not ready. Which parts make the manifest half complete is
+// State.RecordsCompleteInstall's business; this asserts the joint answer honours
+// it even when config.yaml looks finished.
+func TestIsReadyForReconfigure_FailsWhenTheManifestRecordsNoInstall(t *testing.T) {
 	cfg := &AppConfig{
-		SchemaVersion:    2,
-		APIURL:           DefaultAPIURL,
-		PersonaPreset:    "argentino",
-		SelectedSkills:   []string{"core-memory"},
-		ConfiguredAgents: []string{"claude"},
-		Install: InstallState{
-			Completed: true,
-			Agents:    map[string]AgentState{},
-		},
+		SchemaVersion: currentSchemaVersion,
+		APIURL:        DefaultAPIURL,
+		Install:       InstallState{Completed: true},
 	}
 
-	if cfg.IsReadyForReconfigure() {
-		t.Fatal("expected IsReadyForReconfigure=false when configured agent state is missing")
+	if cfg.IsReadyForReconfigure(RecordedInstall{Complete: false, Populated: true}) {
+		t.Fatal("expected not ready when the manifest records no complete install")
+	}
+}
+
+// TestIsReadyForReconfigure_FailsOnAnOlderSchema keeps the schema gate.
+func TestIsReadyForReconfigure_FailsOnAnOlderSchema(t *testing.T) {
+	cfg := &AppConfig{
+		SchemaVersion: currentSchemaVersion - 1,
+		APIURL:        DefaultAPIURL,
+		Install:       InstallState{Completed: true},
+	}
+
+	if cfg.IsReadyForReconfigure(completeManifest) {
+		t.Fatal("expected not ready before the config has been migrated to the current schema")
 	}
 }
 

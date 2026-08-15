@@ -63,28 +63,24 @@ func ApplyProfile(agents []ProfileAgent, resolved *ResolvedProfile, opts ApplyOp
 		return nil
 	}
 
+	// ~/.jarvis/state.yaml owns the persona, so it is recorded there first and
+	// config.yaml is rewritten afterwards from what the manifest now holds. The
+	// two writes are sequenced, never nested: state.Update takes the fail-fast,
+	// non-reentrant manifest lock internally, so wrapping it inside another
+	// holder of that lock would fail the write.
+	if err := state.Update(func(st *state.State) {
+		st.Persona = resolvedSlug
+		st.PersonaSource = state.PersonaSource(normalizePresetSourceForManifest(resolved.Source))
+	}); err != nil {
+		return fmt.Errorf("record the persona in the desired-state manifest: %w", err)
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-
-	cfg.PersonaPreset = resolvedSlug
-	cfg.Preset = resolvedSlug
-	cfg.PersonaPresetSource = normalizePresetSourceForConfig(resolved.Source)
-
 	if err := config.Save(cfg); err != nil {
 		return fmt.Errorf("save config: %w", err)
-	}
-
-	// ~/.jarvis/state.yaml owns the persona. The write is sequenced after
-	// config.Save and never wrapped around it: config.Save's temporary bridge
-	// takes the fail-fast manifest lock internally, so nesting would deadlock.
-	// Going last also means the bridge's own re-derivation cannot overwrite it.
-	if err := state.Update(func(st *state.State) {
-		st.Persona = resolvedSlug
-		st.PersonaSource = state.PersonaSource(cfg.PersonaPresetSource)
-	}); err != nil {
-		return fmt.Errorf("record the persona in the desired-state manifest: %w", err)
 	}
 
 	return nil
@@ -98,7 +94,9 @@ func AdaptProfileAgent(candidate any) (ProfileAgent, bool) {
 	return nil, false
 }
 
-func normalizePresetSourceForConfig(source PresetSource) string {
+// normalizePresetSourceForManifest maps a resolved source onto the two values
+// the manifest's persona_source accepts, defaulting to builtin.
+func normalizePresetSourceForManifest(source PresetSource) string {
 	trimmed := strings.ToLower(strings.TrimSpace(string(source)))
 	if trimmed == "user" {
 		return "user"

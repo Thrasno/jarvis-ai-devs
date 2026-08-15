@@ -8,6 +8,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/lifecycle"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 type cockpitMode int
@@ -177,6 +178,13 @@ func updateCockpitPersona(m Model, key keyInput) Model {
 		return cockpitResult(m, "Custom persona", "Custom persona editing keeps the installer-equivalent validation path in Install/Reconfigure. Cockpit custom editing is an extension seam and is not applied here.")
 	}
 
+	// ApplyPersonaPreset rewrites every agent's instructions and output styles
+	// before its own state.Update refuses, so the refusal has to happen here,
+	// before the first file is written.
+	if err := m.manifestWriteGuard(); err != nil {
+		return cockpitError(m, "Persona", err)
+	}
+
 	summary, err := m.runner().ApplyPersonaPreset(context.Background(), personaApplyRequest{
 		PresetName:           selected.Name,
 		PersonaFS:            m.PersonaFS,
@@ -191,9 +199,12 @@ func updateCockpitPersona(m Model, key keyInput) Model {
 	if summary == "" {
 		summary = "preset=" + persona.NormalizeSlug(selected.Name)
 	}
-	m.cfg.PersonaPreset = persona.NormalizeSlug(selected.Name)
-	m.cfg.Preset = m.cfg.PersonaPreset
-	m.cfg.PersonaPresetSource = string(persona.PresetSourceBuiltin)
+	// ApplyPersonaPreset already recorded the persona in ~/.jarvis/state.yaml.
+	// This keeps the in-memory manifest the cockpit reads from in step with it.
+	if m.manifest != nil {
+		m.manifest.Persona = persona.NormalizeSlug(selected.Name)
+		m.manifest.PersonaSource = state.PersonaSource(persona.PresetSourceBuiltin)
+	}
 	return cockpitResult(m, "Persona result", summary)
 }
 
@@ -229,6 +240,11 @@ func updateCockpitLogin(m Model, key keyInput) Model {
 		m.cockpitMessage = "Email and password are required."
 		return m
 	}
+	// LoginHiveCloud writes the sync credentials before its own state.Update
+	// refuses, so the refusal has to happen here, before that write.
+	if err := m.manifestWriteGuard(); err != nil {
+		return cockpitError(m, "Hive Cloud Login", err)
+	}
 	resolvedEmail, err := m.runner().LoginHiveCloud(context.Background(), email, password)
 	if err != nil {
 		return cockpitError(m, "Hive Cloud Login", err)
@@ -243,8 +259,12 @@ func updateCockpitLogin(m Model, key keyInput) Model {
 		}
 		m.cfg.Cloud.Email = resolvedEmail
 		m.cfg.Cloud.SyncConfigured = true
-		m.Scope = config.ScopeLocalCloud
-		m.cfg.Scope = config.ScopeLocalCloud
+		m.Scope = state.ScopeLocalCloud
+	}
+	// LoginHiveCloud already recorded the scope in ~/.jarvis/state.yaml, which
+	// owns it. This keeps the in-memory manifest in step with it.
+	if m.manifest != nil {
+		m.manifest.Scope = state.ScopeLocalCloud
 	}
 	m.Email = resolvedEmail
 	m.Password = ""

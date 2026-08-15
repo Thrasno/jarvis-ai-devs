@@ -117,7 +117,9 @@ func TestTUIManagedMCPAcknowledgementGatesConcreteExecutorMutation(t *testing.T)
 		},
 		PersonaFS: testPersonaFS,
 		Selected:  map[string]bool{},
-		cfg:       &config.AppConfig{APIURL: config.DefaultAPIURL, PersonaPreset: "fixture"},
+		cfg:       &config.AppConfig{APIURL: config.DefaultAPIURL},
+		// ~/.jarvis/state.yaml owns the persona the apply step resolves.
+		manifest: manifestWithPersona("fixture", state.PersonaSourceBuiltin),
 	}
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -387,7 +389,7 @@ func TestConfigureWizardAgent_InstallsAgents(t *testing.T) {
 		}
 		agentsSubFS := fstest.MapFS{"review-risk.md": {Data: []byte("# review-risk")}}
 
-		_, err := configureWizardAgent(stub, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, agentsSubFS, func() bool { return true })
+		_, err := configureWizardAgent(stub, state.PhaseModels{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, agentsSubFS, func() bool { return true })
 		if err != nil {
 			t.Fatalf("configureWizardAgent returned error: %v", err)
 		}
@@ -402,7 +404,7 @@ func TestConfigureWizardAgent_InstallsAgents(t *testing.T) {
 	t.Run("does not call InstallAgents when agent does not implement AgentInstaller", func(t *testing.T) {
 		stub := &setupAgentStub{name: "opencode"}
 
-		_, err := configureWizardAgent(stub, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
+		_, err := configureWizardAgent(stub, state.PhaseModels{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
 		if err != nil {
 			t.Fatalf("configureWizardAgent returned error for non-AgentInstaller agent: %v", err)
 		}
@@ -415,7 +417,7 @@ func TestConfigureWizardAgent_InstallsAgents(t *testing.T) {
 		}
 		agentsSubFS := fstest.MapFS{"review-risk.md": {Data: []byte("# review-risk")}}
 
-		_, err := configureWizardAgent(stub, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, agentsSubFS, func() bool { return true })
+		_, err := configureWizardAgent(stub, state.PhaseModels{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, agentsSubFS, func() bool { return true })
 		if err == nil {
 			t.Fatal("expected error when InstallAgents fails")
 		}
@@ -436,7 +438,7 @@ func TestConfigureWizardAgent_InstallsClaudeOnlyHooks(t *testing.T) {
 			setupAgentStub: &setupAgentStub{name: "claude"},
 		}
 
-		_, err := configureWizardAgent(stub, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
+		_, err := configureWizardAgent(stub, state.PhaseModels{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
 		if err != nil {
 			t.Fatalf("configureWizardAgent returned error: %v", err)
 		}
@@ -451,7 +453,7 @@ func TestConfigureWizardAgent_InstallsClaudeOnlyHooks(t *testing.T) {
 	t.Run("does not fail when agent does not implement Claude-only hook interfaces", func(t *testing.T) {
 		stub := &setupAgentStub{name: "opencode"}
 
-		_, err := configureWizardAgent(stub, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
+		_, err := configureWizardAgent(stub, state.PhaseModels{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
 		if err != nil {
 			t.Fatalf("configureWizardAgent returned error for agent without Claude-only hooks: %v", err)
 		}
@@ -478,7 +480,7 @@ func TestConfigureWizardAgent_ErrorPropagation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := configureWizardAgent(tt.agent, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
+			_, err := configureWizardAgent(tt.agent, state.PhaseModels{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
 			if err == nil {
 				t.Fatalf("configureWizardAgent expected error containing %q", tt.wantErr)
 			}
@@ -492,7 +494,7 @@ func TestConfigureWizardAgent_ErrorPropagation(t *testing.T) {
 func TestConfigureWizardAgent_InstallsSupportedRegistryAutomation(t *testing.T) {
 	a := &setupAgentStub{name: "claude"}
 
-	warnings, err := configureWizardAgent(a, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
+	warnings, err := configureWizardAgent(a, state.PhaseModels{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
 	if err != nil {
 		t.Fatalf("configureWizardAgent returned error: %v", err)
 	}
@@ -507,7 +509,7 @@ func TestConfigureWizardAgent_InstallsSupportedRegistryAutomation(t *testing.T) 
 func TestConfigureWizardAgent_RegistryAutomationFailureIsWarningOnly(t *testing.T) {
 	a := &setupAgentStub{name: "claude", registryAutomationErr: errors.New("disk full")}
 
-	warnings, err := configureWizardAgent(a, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
+	warnings, err := configureWizardAgent(a, state.PhaseModels{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, nil, func() bool { return true })
 	if err != nil {
 		t.Fatalf("configureWizardAgent returned error for optional registry automation failure: %v", err)
 	}
@@ -530,7 +532,7 @@ func TestConfigureWizardAgents_SurfacesRegistryAutomationWarningsWithoutFailing(
 		observeRuntime:        passingRuntimeObservation(t, "claude", assignments, nil),
 	}
 
-	results := configureWizardAgents([]agent.Agent{a}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
+	results := configureWizardAgents([]agent.Agent{a}, state.PhaseModels{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
 	if len(results) != 1 {
 		t.Fatalf("len(results) = %d, want 1", len(results))
 	}
@@ -554,7 +556,7 @@ func TestConfigureWizardAgent_PrefersConfigAwareSkillInstallation(t *testing.T) 
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := &config.AppConfig{}
+			models := state.New().PhaseModels
 			selectedIDs := []string{"sdd-apply", "sdd-verify"}
 			a := &setupConfigAwareSkillInstallerStub{
 				setupAgentStub: &setupAgentStub{
@@ -564,7 +566,7 @@ func TestConfigureWizardAgent_PrefersConfigAwareSkillInstallation(t *testing.T) 
 				installSkillsWithConfigErr: tt.installSkillsWithConfigErr,
 			}
 
-			warnings, err := configureWizardAgent(a, cfg, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, selectedIDs, nil, func() bool { return true })
+			warnings, err := configureWizardAgent(a, models, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, selectedIDs, nil, func() bool { return true })
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("configureWizardAgent expected error containing %q", tt.wantErr)
@@ -582,8 +584,8 @@ func TestConfigureWizardAgent_PrefersConfigAwareSkillInstallation(t *testing.T) 
 			if a.installSkillsWithConfigCalls != 1 {
 				t.Fatalf("InstallSkillsWithConfig calls = %d, want 1", a.installSkillsWithConfigCalls)
 			}
-			if !reflect.DeepEqual(a.installSkillsWithConfigModels, cfg.PhaseModelsForState()) {
-				t.Fatalf("InstallSkillsWithConfig models = %+v, want %+v", a.installSkillsWithConfigModels, cfg.PhaseModelsForState())
+			if !reflect.DeepEqual(a.installSkillsWithConfigModels, models) {
+				t.Fatalf("InstallSkillsWithConfig models = %+v, want %+v", a.installSkillsWithConfigModels, models)
 			}
 			if got := strings.Join(a.installSkillsWithConfigSelected, ","); got != strings.Join(selectedIDs, ",") {
 				t.Fatalf("InstallSkillsWithConfig selected = %q, want %q", got, strings.Join(selectedIDs, ","))
@@ -613,7 +615,7 @@ func TestRunAgentConfigSequence_RefreshesProjectRegistryAfterSuccessfulApplyAndR
 	m := Model{
 		Step:       StepAgentConfig,
 		Selected:   make(map[string]bool),
-		cfg:        &config.AppConfig{APIURL: config.DefaultAPIURL, Scope: config.ScopeLocalOnly},
+		cfg:        &config.AppConfig{APIURL: config.DefaultAPIURL},
 		ProjectCWD: projectRoot,
 	}
 
@@ -646,7 +648,7 @@ func TestRunAgentConfigSequence_ProjectRegistryNonProjectFailureIsWarningOnly(t 
 	m := Model{
 		Step:       StepAgentConfig,
 		Selected:   make(map[string]bool),
-		cfg:        &config.AppConfig{APIURL: config.DefaultAPIURL, Scope: config.ScopeLocalOnly},
+		cfg:        &config.AppConfig{APIURL: config.DefaultAPIURL},
 		ProjectCWD: projectRoot,
 	}
 
@@ -676,7 +678,7 @@ func TestRunAgentConfigSequence_ProjectRegistryWriteFailureIsBlocking(t *testing
 	m := Model{
 		Step:       StepAgentConfig,
 		Selected:   make(map[string]bool),
-		cfg:        &config.AppConfig{APIURL: config.DefaultAPIURL, Scope: config.ScopeLocalOnly},
+		cfg:        &config.AppConfig{APIURL: config.DefaultAPIURL},
 		ProjectCWD: projectRoot,
 	}
 
@@ -738,7 +740,7 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			results := configureWizardAgents(tt.agents, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, tt.resolved, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
+			results := configureWizardAgents(tt.agents, state.PhaseModels{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, tt.resolved, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
 			if len(results) != tt.wantLen {
 				t.Fatalf("len(results) = %d, want %d", len(results), tt.wantLen)
 			}
@@ -802,7 +804,7 @@ func TestConfigureWizardAgentsUsesCanonicalProfile(t *testing.T) {
 		},
 	}
 
-	results := configureWizardAgents([]agent.Agent{stub}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, resolved, wizardPresetApplyContext{Layer1: "layer1"}, testSkillsFS, nil, nil, func() bool { return true })
+	results := configureWizardAgents([]agent.Agent{stub}, state.PhaseModels{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, resolved, wizardPresetApplyContext{Layer1: "layer1"}, testSkillsFS, nil, nil, func() bool { return true })
 	if len(results) != 1 || results[0].Err == nil || !strings.Contains(results[0].Err.Error(), "apply preset pipeline") {
 		t.Fatalf("profile selection was not forwarded through the agent setup seam: %+v", results)
 	}
@@ -874,7 +876,7 @@ func TestConfigureWizardAgents_RuntimeVerification(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			results := configureWizardAgents([]agent.Agent{tt.agent}, &config.AppConfig{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
+			results := configureWizardAgents([]agent.Agent{tt.agent}, state.PhaseModels{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
 			if len(results) != 1 {
 				t.Fatalf("len(results) = %d, want 1", len(results))
 			}
@@ -921,12 +923,12 @@ func TestVerifyConfiguredAgentRuntime_NilConfigFallsBackToObservedRuntime(t *tes
 }
 
 func TestConfigureWizardAgents_RuntimeVerificationUsesPendingConfigForOpenCodeDefault(t *testing.T) {
-	pendingCfg := &config.AppConfig{}
-	pendingCfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
+	pendingModels := state.New().PhaseModels
+	pendingModels.OpenCode = map[string]state.OpenCodeModelAssignment{
 		"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"},
 	}
 
-	pendingAssignments, err := sddruntime.ResolveAssignmentsForPlatform(sddruntime.PlatformOpenCode, pendingCfg.PhaseModelsForState())
+	pendingAssignments, err := sddruntime.ResolveAssignmentsForPlatform(sddruntime.PlatformOpenCode, pendingModels)
 	if err != nil {
 		t.Fatalf("resolve pending assignments: %v", err)
 	}
@@ -952,7 +954,7 @@ func TestConfigureWizardAgents_RuntimeVerificationUsesPendingConfigForOpenCodeDe
 		return observed, nil
 	}
 
-	results := configureWizardAgents([]agent.Agent{a}, pendingCfg, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
+	results := configureWizardAgents([]agent.Agent{a}, pendingModels, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
 	if len(results) != 1 {
 		t.Fatalf("len(results) = %d, want 1", len(results))
 	}

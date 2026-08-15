@@ -36,3 +36,59 @@ func TestWithLock_HoldsTheManifestExclusivelyAndReleasesItAfterwards(t *testing.
 		t.Fatalf("lock file survived the critical section: %v", err)
 	}
 }
+
+// Update is itself a read-modify-write, so it has to run inside the same
+// critical section the other writers take. Without it, a `jarvis sync`
+// bookkeeping write and a concurrent `jarvis persona set` are not mutually
+// exclusive and the later save silently discards the earlier one.
+func TestUpdate_RunsInsideTheManifestLock(t *testing.T) {
+	isolateHome(t)
+	seed := New()
+	seed.Persona = "recorded"
+	if err := Save(seed); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+
+	var updateErr error
+	if err := WithLock(func() error {
+		updateErr = Update(func(st *State) {
+			st.Persona = "written-by-a-second-writer"
+		})
+		return nil
+	}); err != nil {
+		t.Fatalf("WithLock: %v", err)
+	}
+
+	if updateErr == nil {
+		t.Fatal("Update wrote the manifest while another writer held the lock")
+	}
+
+	after, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if after.Persona != "recorded" {
+		t.Fatalf("persona = %q; the locked-out writer must change nothing", after.Persona)
+	}
+}
+
+// The lock is released once Update returns, so an ordinary sequential caller is
+// never blocked by its own earlier write.
+func TestUpdate_ReleasesTheLockForTheNextWriter(t *testing.T) {
+	isolateHome(t)
+
+	if err := Update(func(st *State) { st.Persona = "first" }); err != nil {
+		t.Fatalf("first Update: %v", err)
+	}
+	if err := Update(func(st *State) { st.Skills = []string{"go-testing"} }); err != nil {
+		t.Fatalf("second Update: %v", err)
+	}
+
+	after, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if after.Persona != "first" || len(after.Skills) != 1 {
+		t.Fatalf("manifest = %+v; both sequential updates must be recorded", after)
+	}
+}

@@ -11,8 +11,8 @@ import (
 	"testing/fstest"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 func TestInstallSkillsFromFS(t *testing.T) {
@@ -240,15 +240,16 @@ func TestInstallSkillsFromEmbeddedSDDVerify_RendersModelSpecificSections(t *test
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dest := t.TempDir()
-			cfg := &config.AppConfig{SDD: config.SDDConfig{PhaseModels: map[string]config.PhaseModelSelection{
+			models := defaultRuntimePhaseModels()
+			models.Aliases = map[string]state.PhaseModelSelection{
 				"sdd-verify": {OpenCode: tt.model},
-			}}}
+			}
 			if providerID, modelID, ok := strings.Cut(tt.model, "/"); ok {
-				cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
+				models.OpenCode = map[string]state.OpenCodeModelAssignment{
 					"sdd-verify": {ProviderID: providerID, ModelID: modelID},
 				}
 			}
-			sectionClass, err := skillModelSectionClassForPlatform(sddruntime.PlatformOpenCode, cfg.PhaseModelsForState())
+			sectionClass, err := skillModelSectionClassForPlatform(sddruntime.PlatformOpenCode, models)
 			if err != nil {
 				t.Fatalf("resolve model section class: %v", err)
 			}
@@ -283,10 +284,11 @@ func TestInstallSkillsFromEmbeddedSDDApply_PreservesJarvisStatusAndWorkspaceGuar
 	}
 
 	dest := t.TempDir()
-	cfg := &config.AppConfig{SDD: config.SDDConfig{PhaseModels: map[string]config.PhaseModelSelection{
+	models := defaultRuntimePhaseModels()
+	models.Aliases = map[string]state.PhaseModelSelection{
 		"sdd-apply": {OpenCode: "sonnet"},
-	}}}
-	sectionClass, err := skillModelSectionClassForPlatform(sddruntime.PlatformOpenCode, cfg.PhaseModelsForState())
+	}
+	sectionClass, err := skillModelSectionClassForPlatform(sddruntime.PlatformOpenCode, models)
 	if err != nil {
 		t.Fatalf("resolve model section class: %v", err)
 	}

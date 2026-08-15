@@ -32,6 +32,29 @@ func manifestWithOpenCodePhaseModel(phase string, assignment state.OpenCodeModel
 	return manifest
 }
 
+// seedRecordedPersona writes the two files a machine that already chose a
+// persona has: a config.yaml, which is what makes the wizard treat the machine
+// as configured and validate the recorded preset, and the manifest that owns
+// the persona itself.
+func seedRecordedPersona(t *testing.T, slug string, source state.PersonaSource) {
+	t.Helper()
+	if err := config.Save(&config.AppConfig{SchemaVersion: 3, APIURL: config.DefaultAPIURL}); err != nil {
+		t.Fatalf("save seed config: %v", err)
+	}
+	if err := state.Save(manifestWithPersona(slug, source)); err != nil {
+		t.Fatalf("save seed manifest: %v", err)
+	}
+}
+
+// manifestWithPersona returns a manifest carrying one recorded persona, the
+// store the wizard reads the selected persona from.
+func manifestWithPersona(slug string, source state.PersonaSource) *state.State {
+	manifest := state.New()
+	manifest.Persona = slug
+	manifest.PersonaSource = source
+	return manifest
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Test helpers
 // ──────────────────────────────────────────────────────────────────────────────
@@ -337,22 +360,25 @@ func TestNewModel_PrefillsExistingConfigAndMode(t *testing.T) {
 	setTestHome(t, tmpHome)
 
 	cfg := &config.AppConfig{
-		SchemaVersion:    2,
-		APIURL:           config.DefaultAPIURL,
-		PersonaPreset:    "second",
-		SelectedSkills:   []string{"fixture-skill"},
-		Cloud:            &config.CloudConfig{Email: "prefill@example.com"},
-		ConfiguredAgents: []string{"claude"},
+		SchemaVersion: 3,
+		APIURL:        config.DefaultAPIURL,
+		Cloud:         &config.CloudConfig{Email: "prefill@example.com"},
 		Install: config.InstallState{
 			Completed: true,
 			Mode:      "reconfigure",
-			Agents: map[string]config.AgentState{
-				"claude": {Configured: true, InstructionsPath: "/tmp/CLAUDE.md", ConfigPath: "/tmp/settings.json"},
-			},
 		},
 	}
 	if err := config.Save(cfg); err != nil {
 		t.Fatalf("save config: %v", err)
+	}
+	// ~/.jarvis/state.yaml owns the persona, the skills and the agents the
+	// wizard prefills from.
+	manifest := state.New()
+	manifest.Persona = "second"
+	manifest.Skills = []string{"fixture-skill"}
+	manifest.InstalledAgents = []state.Agent{{ID: "claude", InstructionsPath: "/tmp/CLAUDE.md", ConfigPath: "/tmp/settings.json"}}
+	if err := state.Save(manifest); err != nil {
+		t.Fatalf("save manifest: %v", err)
 	}
 
 	m := NewModel(testWizardConfig(), false)
@@ -363,7 +389,7 @@ func TestNewModel_PrefillsExistingConfigAndMode(t *testing.T) {
 	if m.Email != "prefill@example.com" {
 		t.Fatalf("expected prefilled email, got %q", m.Email)
 	}
-	if m.cfg == nil || m.cfg.PersonaPreset != "second" {
+	if m.manifest == nil || m.manifest.Persona != "second" {
 		t.Fatalf("expected prefilled persona preset second, got %+v", m.cfg)
 	}
 	if m.presetCur != 1 {
@@ -372,7 +398,7 @@ func TestNewModel_PrefillsExistingConfigAndMode(t *testing.T) {
 
 	m.Step = StepPersona
 	m = sendKey(m, tea.KeyEnter)
-	if m.Step != StepExtraSkills || m.cfg.PersonaPreset != "second" || m.selectedProfile == nil || m.selectedProfile.Slug != "second" {
+	if m.Step != StepExtraSkills || m.manifest.Persona != "second" || m.selectedProfile == nil || m.selectedProfile.Slug != "second" {
 		t.Fatalf("blank persona acceptance changed existing profile selection: step=%v cfg=%+v selected=%+v", m.Step, m.cfg, m.selectedProfile)
 	}
 }
@@ -446,7 +472,7 @@ func TestNewModel_FreshDefaultsSelectFirstProfile(t *testing.T) {
 
 	m.Step = StepPersona
 	m = sendKey(m, tea.KeyEnter)
-	if m.Step != StepExtraSkills || m.cfg.PersonaPreset != "fixture" || m.selectedProfile == nil || m.selectedProfile.Slug != "fixture" {
+	if m.Step != StepExtraSkills || m.manifest.Persona != "fixture" || m.selectedProfile == nil || m.selectedProfile.Slug != "fixture" {
 		t.Fatalf("fresh default persona acceptance selected unexpected profile: step=%v cfg=%+v selected=%+v", m.Step, m.cfg, m.selectedProfile)
 	}
 }
@@ -460,15 +486,7 @@ func TestNewModel_BlankPersonaAcceptanceBlocksLegacyV1PresetAndPreservesConfig(t
 	if err := os.WriteFile(legacyPath, []byte("name: legacy-custom\ndisplay_name: Legacy Custom\ntone: {}\n"), 0o644); err != nil {
 		t.Fatalf("write legacy preset: %v", err)
 	}
-	if err := config.Save(&config.AppConfig{
-		SchemaVersion:       2,
-		APIURL:              config.DefaultAPIURL,
-		PersonaPreset:       "legacy-custom",
-		PersonaPresetSource: string(persona.PresetSourceUser),
-		Install:             config.InstallState{Agents: map[string]config.AgentState{}},
-	}); err != nil {
-		t.Fatalf("save seed config: %v", err)
-	}
+	seedRecordedPersona(t, "legacy-custom", state.PersonaSourceUser)
 
 	m := NewModel(testWizardConfig(), false)
 	if m.presetCur != -1 {
@@ -486,30 +504,22 @@ func TestNewModel_BlankPersonaAcceptanceBlocksLegacyV1PresetAndPreservesConfig(t
 	if m.Err == nil || !strings.Contains(strings.ToLower(m.Err.Error()), "migrate") {
 		t.Fatalf("persona selection error = %v, want schema-v2 migration guidance", m.Err)
 	}
-	if m.cfg.PersonaPreset != "legacy-custom" || m.selectedProfile != nil {
+	if m.manifest.Persona != "legacy-custom" || m.selectedProfile != nil {
 		t.Fatalf("legacy persona selection was overwritten in memory: cfg=%+v selected=%+v", m.cfg, m.selectedProfile)
 	}
 
-	loaded, err := config.Load()
+	loaded, err := state.Load()
 	if err != nil {
-		t.Fatalf("load config after blocked default: %v", err)
+		t.Fatalf("load manifest after blocked default: %v", err)
 	}
-	if loaded.PersonaPreset != "legacy-custom" || loaded.PersonaPresetSource != string(persona.PresetSourceUser) {
-		t.Fatalf("legacy persona config was overwritten on disk: %+v", loaded)
+	if loaded.Persona != "legacy-custom" || loaded.PersonaSource != state.PersonaSourceUser {
+		t.Fatalf("legacy persona was overwritten on disk: %+v", loaded)
 	}
 }
 
 func TestNewModel_BlankPersonaAcceptanceBlocksMissingPresetAndPreservesConfig(t *testing.T) {
 	isolateTestHome(t)
-	if err := config.Save(&config.AppConfig{
-		SchemaVersion:       2,
-		APIURL:              config.DefaultAPIURL,
-		PersonaPreset:       "deleted-custom",
-		PersonaPresetSource: string(persona.PresetSourceUser),
-		Install:             config.InstallState{Agents: map[string]config.AgentState{}},
-	}); err != nil {
-		t.Fatalf("save seed config: %v", err)
-	}
+	seedRecordedPersona(t, "deleted-custom", state.PersonaSourceUser)
 
 	m := NewModel(testWizardConfig(), false)
 	if m.presetCur != -1 {
@@ -535,16 +545,16 @@ func TestNewModel_BlankPersonaAcceptanceBlocksMissingPresetAndPreservesConfig(t 
 	if strings.Contains(strings.ToLower(m.Err.Error()), "migrate") {
 		t.Fatalf("missing preset error = %q, must not use V1 migration guidance", m.Err)
 	}
-	if m.cfg.PersonaPreset != "deleted-custom" || m.selectedProfile != nil {
+	if m.manifest.Persona != "deleted-custom" || m.selectedProfile != nil {
 		t.Fatalf("missing persona selection was overwritten in memory: cfg=%+v selected=%+v", m.cfg, m.selectedProfile)
 	}
 
-	loaded, err := config.Load()
+	loaded, err := state.Load()
 	if err != nil {
-		t.Fatalf("load config after blocked default: %v", err)
+		t.Fatalf("load manifest after blocked default: %v", err)
 	}
-	if loaded.PersonaPreset != "deleted-custom" || loaded.PersonaPresetSource != string(persona.PresetSourceUser) {
-		t.Fatalf("missing persona config was overwritten on disk: %+v", loaded)
+	if loaded.Persona != "deleted-custom" || loaded.PersonaSource != state.PersonaSourceUser {
+		t.Fatalf("missing persona was overwritten on disk: %+v", loaded)
 	}
 }
 
@@ -561,8 +571,8 @@ func TestStep_HiveLocal_AdvancesOnEnter(t *testing.T) {
 
 	m := Model{
 		Step:     StepHiveLocal,
-		Scope:    config.ScopeLocalOnly,
-		cfg:      &config.AppConfig{Scope: config.ScopeLocalOnly},
+		Scope:    state.ScopeLocalOnly,
+		cfg:      &config.AppConfig{},
 		Selected: make(map[string]bool),
 	}
 
@@ -725,7 +735,7 @@ func TestStep_PhaseModels_ApplyAllAndCycling(t *testing.T) {
 func TestPhaseModelOpenCodeDisplay_IncludesEffortWhenPresent(t *testing.T) {
 	row := phaseModelRow{
 		OpenCode: "sonnet",
-		OpenCodeAssignment: config.OpenCodeModelAssignment{
+		OpenCodeAssignment: state.OpenCodeModelAssignment{
 			ProviderID: "openai",
 			ModelID:    "gpt-5.1-codex-max",
 			Effort:     "high",
@@ -739,8 +749,8 @@ func TestPhaseModelOpenCodeDisplay_IncludesEffortWhenPresent(t *testing.T) {
 
 func TestStep_PhaseModels_PersistsOpenCodeProviderModelAssignment(t *testing.T) {
 	previousDiscover := discoverOpenCodePhaseModelOptions
-	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
-		return []config.OpenCodeModelAssignment{
+	discoverOpenCodePhaseModelOptions = func() []state.OpenCodeModelAssignment {
+		return []state.OpenCodeModelAssignment{
 			{ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"},
 		}
 	}
@@ -753,23 +763,23 @@ func TestStep_PhaseModels_PersistsOpenCodeProviderModelAssignment(t *testing.T) 
 	m.phaseModelActiveRow = 0
 	m.phaseModelActiveCol = 1
 	phase := m.phaseModelRows[0].Phase
-	legacyAlias := m.cfg.SDD.PhaseModels[phase].OpenCode
+	legacyAlias := m.manifest.PhaseModels.Aliases[phase].OpenCode
 
 	m = sendKey(m, tea.KeyEnter)
 
-	assignment := m.cfg.SDD.OpenCodePhaseModels[phase]
+	assignment := m.manifest.PhaseModels.OpenCode[phase]
 	if assignment.ProviderID != "openai" || assignment.ModelID != "gpt-5.1-codex-max" || assignment.Effort != "high" {
 		t.Fatalf("unexpected OpenCode assignment: %+v", assignment)
 	}
-	if got := m.cfg.SDD.PhaseModels[phase].OpenCode; got != legacyAlias {
+	if got := m.manifest.PhaseModels.Aliases[phase].OpenCode; got != legacyAlias {
 		t.Fatalf("legacy OpenCode alias changed: got %q, want %q", got, legacyAlias)
 	}
 }
 
 func TestStep_PhaseModels_ClearsOpenCodeProviderModelAssignmentWhenCyclingToLegacy(t *testing.T) {
 	previousDiscover := discoverOpenCodePhaseModelOptions
-	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
-		return []config.OpenCodeModelAssignment{{ProviderID: "openai", ModelID: "gpt-5.1-codex-max"}}
+	discoverOpenCodePhaseModelOptions = func() []state.OpenCodeModelAssignment {
+		return []state.OpenCodeModelAssignment{{ProviderID: "openai", ModelID: "gpt-5.1-codex-max"}}
 	}
 	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
 
@@ -788,8 +798,8 @@ func TestStep_PhaseModels_ClearsOpenCodeProviderModelAssignmentWhenCyclingToLega
 	if got := m.phaseModelRows[0].OpenCodeAssignment; got.ProviderID != "" || got.ModelID != "" {
 		t.Fatalf("expected row assignment cleared by legacy option, got %+v", got)
 	}
-	if _, ok := m.cfg.SDD.OpenCodePhaseModels[phase]; ok {
-		t.Fatalf("expected config assignment deleted by legacy option, got %#v", m.cfg.SDD.OpenCodePhaseModels)
+	if _, ok := m.manifest.PhaseModels.OpenCode[phase]; ok {
+		t.Fatalf("expected config assignment deleted by legacy option, got %#v", m.manifest.PhaseModels.OpenCode)
 	}
 	if display := phaseModelOpenCodeDisplay(m.phaseModelRows[0]); strings.Contains(display, "openai/") {
 		t.Fatalf("expected legacy display to hide provider assignment, got %q", display)
@@ -798,7 +808,7 @@ func TestStep_PhaseModels_ClearsOpenCodeProviderModelAssignmentWhenCyclingToLega
 
 func TestStep_PhaseModels_KeepsStoredOpenCodeProviderModelAssignmentWhenDiscoveryUnavailable(t *testing.T) {
 	previousDiscover := discoverOpenCodePhaseModelOptions
-	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment { return nil }
+	discoverOpenCodePhaseModelOptions = func() []state.OpenCodeModelAssignment { return nil }
 	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
 
 	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
@@ -813,14 +823,14 @@ func TestStep_PhaseModels_KeepsStoredOpenCodeProviderModelAssignmentWhenDiscover
 
 	m = sendKey(m, tea.KeyEnter)
 
-	if got := m.cfg.SDD.OpenCodePhaseModels[phase]; got.ProviderID != "openai" || got.ModelID != "gpt-5.1-codex-max" {
+	if got := m.manifest.PhaseModels.OpenCode[phase]; got.ProviderID != "openai" || got.ModelID != "gpt-5.1-codex-max" {
 		t.Fatalf("expected stored assignment kept when discovery unavailable, got %+v", got)
 	}
 }
 
 func TestStep_PhaseModels_ShowsOpenCodeDiscoveryDiagnostics(t *testing.T) {
 	previousDiscover := discoverOpenCodePhaseModelOptions
-	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
+	discoverOpenCodePhaseModelOptions = func() []state.OpenCodeModelAssignment {
 		openCodePhaseModelDiscoveryDiagnostics = []string{"OpenCode settings file /home/me/.config/opencode/opencode.jsonc uses unsupported JSONC"}
 		return nil
 	}
@@ -839,8 +849,8 @@ func TestStep_PhaseModels_ShowsOpenCodeDiscoveryDiagnostics(t *testing.T) {
 
 func TestStep_PhaseModels_UsesStoredOpenCodeProviderModelAssignment(t *testing.T) {
 	previousDiscover := discoverOpenCodePhaseModelOptions
-	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
-		return []config.OpenCodeModelAssignment{
+	discoverOpenCodePhaseModelOptions = func() []state.OpenCodeModelAssignment {
+		return []state.OpenCodeModelAssignment{
 			{ProviderID: "openai", ModelID: "gpt-5.1-codex-max"},
 		}
 	}
@@ -865,7 +875,7 @@ func TestOpenCodePhaseModelOptionsFromDiscovery_SortsProvidersModelsAndEfforts(t
 	}}
 
 	got := openCodePhaseModelOptionsFromDiscovery(result)
-	want := []config.OpenCodeModelAssignment{
+	want := []state.OpenCodeModelAssignment{
 		{},
 		{ProviderID: "anthropic", ModelID: "claude"},
 		{ProviderID: "anthropic", ModelID: "claude", Effort: "high"},
@@ -927,7 +937,7 @@ func TestOpenCodeProviderOptionsFromDiscovery_GroupsSortsFiltersAndDerivesEffort
 
 func TestInitializePhaseModelEditor_GatesColumnsByDetectedAgentWithoutJDTargets(t *testing.T) {
 	previousDiscover := discoverOpenCodePhaseModelOptions
-	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment { return nil }
+	discoverOpenCodePhaseModelOptions = func() []state.OpenCodeModelAssignment { return nil }
 	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
 
 	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
@@ -966,7 +976,7 @@ func TestViewPhaseModels_RendersPickerModes(t *testing.T) {
 		{name: "opencode provider", mode: phaseModelModeOpenCodeProvider, want: []string{"Phase Models", "Provider", "OpenAI"}},
 		{name: "opencode model", mode: phaseModelModeOpenCodeModel, want: []string{"Phase Models", "Model", "Search:", "plain", "reasoning"}},
 		{name: "opencode effort", mode: phaseModelModeOpenCodeEffort, prepare: func(m *Model) {
-			m.phaseModelPendingOpenCode = config.OpenCodeModelAssignment{ProviderID: "openai", ModelID: "reasoning"}
+			m.phaseModelPendingOpenCode = state.OpenCodeModelAssignment{ProviderID: "openai", ModelID: "reasoning"}
 		}, want: []string{"Phase Models", "Effort", "minimal", "high"}},
 		{name: "claude model", mode: phaseModelModeClaudeModel, want: []string{"Phase Models", "Claude", "claude-haiku", "claude-sonnet"}},
 	}
@@ -992,19 +1002,17 @@ func TestViewPhaseModels_RendersPickerModes(t *testing.T) {
 func TestInitializePhaseModelEditor_SkipsOpenCodeDiscoveryWhenOpenCodeUnavailable(t *testing.T) {
 	called := false
 	previousDiscover := discoverOpenCodePhaseModelOptions
-	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment {
+	discoverOpenCodePhaseModelOptions = func() []state.OpenCodeModelAssignment {
 		called = true
 		openCodePhaseModelDiscoveryDiagnostics = []string{"must not show"}
-		return []config.OpenCodeModelAssignment{{ProviderID: "openai", ModelID: "gpt"}}
+		return []state.OpenCodeModelAssignment{{ProviderID: "openai", ModelID: "gpt"}}
 	}
 	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
 
 	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
 		&mockAgent{name: "claude", configDir: t.TempDir()},
 	}}
-	m.cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
-		"default": {ProviderID: "stored", ModelID: "kept"},
-	}
+	m.manifest = manifestWithOpenCodePhaseModel("default", state.OpenCodeModelAssignment{ProviderID: "stored", ModelID: "kept"})
 
 	m = initializePhaseModelEditor(m)
 
@@ -1014,7 +1022,7 @@ func TestInitializePhaseModelEditor_SkipsOpenCodeDiscoveryWhenOpenCodeUnavailabl
 	if len(m.phaseModelOpenCodeDiagnostics) != 0 || strings.Contains(viewPhaseModels(m), "must not show") {
 		t.Fatalf("expected OpenCode diagnostics suppressed, got diagnostics=%v view=\n%s", m.phaseModelOpenCodeDiagnostics, viewPhaseModels(m))
 	}
-	if got := m.cfg.SDD.OpenCodePhaseModels["default"]; got.ProviderID != "stored" || got.ModelID != "kept" {
+	if got := m.manifest.PhaseModels.OpenCode["default"]; got.ProviderID != "stored" || got.ModelID != "kept" {
 		t.Fatalf("stored OpenCode assignment must be preserved, got %+v", got)
 	}
 }
@@ -1092,13 +1100,13 @@ func TestStepPhaseModels_OpenCodeProviderModelEffortPersistsOnlyAfterConfirm(t *
 	if m.phaseModelMode != phaseModelModeOpenCodeEffort {
 		t.Fatalf("expected effort mode for reasoning model, got %v", m.phaseModelMode)
 	}
-	if _, ok := m.cfg.SDD.OpenCodePhaseModels[phase]; ok {
-		t.Fatalf("expected no persistence before effort confirmation, got %#v", m.cfg.SDD.OpenCodePhaseModels)
+	if _, ok := m.manifest.PhaseModels.OpenCode[phase]; ok {
+		t.Fatalf("expected no persistence before effort confirmation, got %#v", m.manifest.PhaseModels.OpenCode)
 	}
 	m.phaseModelEffortCursor = 4
 	m = sendKey(m, tea.KeyEnter)
 
-	assignment := m.cfg.SDD.OpenCodePhaseModels[phase]
+	assignment := m.manifest.PhaseModels.OpenCode[phase]
 	if assignment.ProviderID != "openai" || assignment.ModelID != "reasoning" || assignment.Effort != "high" {
 		t.Fatalf("unexpected persisted assignment: %+v", assignment)
 	}
@@ -1126,13 +1134,13 @@ func TestStepPhaseModels_OpenCodeModelWithoutEffortCommitsDirectlyAndEscPreserve
 	if m.phaseModelPendingOpenCode.ProviderID != "openai" || m.phaseModelPendingOpenCode.ModelID != "reasoning" {
 		t.Fatalf("expected pending provider/model preserved after Esc, got %+v", m.phaseModelPendingOpenCode)
 	}
-	if _, ok := m.cfg.SDD.OpenCodePhaseModels[phase]; ok {
-		t.Fatalf("expected Esc from effort not to persist assignment, got %#v", m.cfg.SDD.OpenCodePhaseModels)
+	if _, ok := m.manifest.PhaseModels.OpenCode[phase]; ok {
+		t.Fatalf("expected Esc from effort not to persist assignment, got %#v", m.manifest.PhaseModels.OpenCode)
 	}
 
 	m.phaseModelModelCursor = 0
 	m = sendKey(m, tea.KeyEnter)
-	assignment := m.cfg.SDD.OpenCodePhaseModels[phase]
+	assignment := m.manifest.PhaseModels.OpenCode[phase]
 	if assignment.ProviderID != "openai" || assignment.ModelID != "plain" || assignment.Effort != "" {
 		t.Fatalf("expected direct commit for model without effort, got %+v", assignment)
 	}
@@ -1156,10 +1164,10 @@ func TestStepPhaseModels_ClaudePickerUsesClaudeCatalogOnly(t *testing.T) {
 	m = sendKey(m, tea.KeyEnter)
 	m = sendKey(m, tea.KeyEnter)
 
-	if got := m.cfg.SDD.PhaseModels[phase].Claude; got != "claude-sonnet" {
+	if got := m.manifest.PhaseModels.Aliases[phase].Claude; got != "claude-sonnet" {
 		t.Fatalf("expected Claude assignment from Claude catalog, got %q", got)
 	}
-	if got := m.cfg.SDD.PhaseModels[phase].OpenCode; got == "opencode-only" {
+	if got := m.manifest.PhaseModels.Aliases[phase].OpenCode; got == "opencode-only" {
 		t.Fatalf("Claude selection must not use or rewrite OpenCode catalog, got OpenCode %q", got)
 	}
 }
@@ -1179,14 +1187,14 @@ func TestStepPhaseModels_ClaudeModelAndEffortPersistAfterEffortConfirm(t *testin
 	if m.phaseModelMode != phaseModelModeClaudeEffort {
 		t.Fatalf("expected Claude effort picker after model confirmation, got %v", m.phaseModelMode)
 	}
-	if got := m.cfg.SDD.ClaudePhaseModels[phase]; got.Model != "" || got.Effort != "" {
+	if got := m.manifest.PhaseModels.Claude[phase]; got.Model != "" || got.Effort != "" {
 		t.Fatalf("expected Claude route to wait for effort confirmation, got %+v", got)
 	}
 
 	m.phaseModelEffortCursor = 5
 	m = sendKey(m, tea.KeyEnter)
 
-	route := m.cfg.SDD.ClaudePhaseModels[phase]
+	route := m.manifest.PhaseModels.Claude[phase]
 	if route.Model != "claude-sonnet" || route.Effort != "max" {
 		t.Fatalf("expected selected Claude model+effort persisted, got %+v", route)
 	}
@@ -1199,9 +1207,7 @@ func TestConfigureWizardAgents_AddsClaudeRestartGuidanceOnlyForClaude(t *testing
 	claudeHome := t.TempDir()
 	claude := &sddInstallingMockAgent{mockAgent: mockAgent{name: "claude", configDir: filepath.Join(claudeHome, ".claude")}, home: claudeHome}
 	opencode := &mockAgent{name: "opencode", configDir: t.TempDir()}
-	cfg := &config.AppConfig{APIURL: config.DefaultAPIURL}
-
-	results := configureWizardAgents([]agent.Agent{claude, opencode}, cfg, agent.MCPEntry{Name: "hive", DaemonPath: "/tmp/hive-daemon"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, nil, nil, nil, func() bool { return true })
+	results := configureWizardAgents([]agent.Agent{claude, opencode}, state.New().PhaseModels, agent.MCPEntry{Name: "hive", DaemonPath: "/tmp/hive-daemon"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, nil, nil, nil, func() bool { return true })
 
 	if len(results) != 2 {
 		t.Fatalf("expected two results, got %#v", results)
@@ -1234,7 +1240,7 @@ func TestViewReview_IncludesOpenCodeProviderModelAssignments(t *testing.T) {
 	m := Model{Step: StepReview, cfg: &config.AppConfig{}, Selected: map[string]bool{}}
 	m = initializePhaseModelEditor(m)
 	phase := m.phaseModelRows[0].Phase
-	m.cfg.SDD.OpenCodePhaseModels[phase] = config.OpenCodeModelAssignment{ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"}
+	m.manifest.PhaseModels.OpenCode[phase] = state.OpenCodeModelAssignment{ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"}
 
 	v := viewReview(m)
 	if !strings.Contains(v, "opencode=openai/gpt-5.1-codex-max") {
@@ -1276,7 +1282,7 @@ func TestStepReview_BackRoutesByRuntimeModelTarget(t *testing.T) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 // TestStep_Persona_SelectAndAdvance verifies that pressing Enter at StepPersona
-// advances to StepSkills and records the selected preset in cfg.
+// advances to StepSkills and records the selected preset in the manifest.
 func TestStep_Persona_SelectAndAdvance(t *testing.T) {
 	m := buildPersonaModel(3)
 	// cfg must be initialised so the step handler can write to it.
@@ -1292,8 +1298,8 @@ func TestStep_Persona_SelectAndAdvance(t *testing.T) {
 	if m.Step != StepExtraSkills {
 		t.Errorf("expected StepExtraSkills after Enter, got %v", m.Step)
 	}
-	if m.cfg.PersonaPreset != "preset-0" {
-		t.Errorf("expected cfg.PersonaPreset=preset-0, got %q", m.cfg.PersonaPreset)
+	if m.manifest.Persona != "preset-0" {
+		t.Errorf("expected manifest persona=preset-0, got %q", m.manifest.Persona)
 	}
 }
 
@@ -1309,7 +1315,7 @@ func TestEnsureProfileForApplyRejectsLegacyCustomProfileWithMigrationGuidance(t 
 
 	_, err := ensureProfileForApply(Model{
 		PersonaFS: testPersonaFS,
-		cfg:       &config.AppConfig{PersonaPreset: "legacy-custom", PersonaPresetSource: string(persona.PresetSourceUser)},
+		manifest:  manifestWithPersona("legacy-custom", state.PersonaSourceUser),
 	})
 	if err == nil || !strings.Contains(err.Error(), "migrate") {
 		t.Fatalf("ensureProfileForApply() error = %v, want actionable migration guidance", err)
@@ -1379,7 +1385,7 @@ func TestPhaseModelsView_V1HasNoProfileCRUDOrSwitchActions(t *testing.T) {
 
 func TestStep_PhaseModels_RejectsCrossCatalogInvalidValuesInTUIEditingPath(t *testing.T) {
 	previousDiscover := discoverOpenCodePhaseModelOptions
-	discoverOpenCodePhaseModelOptions = func() []config.OpenCodeModelAssignment { return nil }
+	discoverOpenCodePhaseModelOptions = func() []state.OpenCodeModelAssignment { return nil }
 	t.Cleanup(func() { discoverOpenCodePhaseModelOptions = previousDiscover })
 
 	m := Model{Step: StepPhaseModels, cfg: &config.AppConfig{}, Selected: map[string]bool{}, Agents: []agent.Agent{
@@ -1497,8 +1503,8 @@ func TestStep_Persona_BackNavigation(t *testing.T) {
 	if m.Step != StepSkills {
 		t.Errorf("expected StepSkills after Enter, got %v", m.Step)
 	}
-	if m.cfg.Preset != "preset-1" {
-		t.Errorf("expected cfg.Preset=preset-1, got %q", m.cfg.Preset)
+	if m.manifest.Persona != "preset-1" {
+		t.Errorf("expected manifest persona=preset-1, got %q", m.manifest.Persona)
 	}
 }
 
@@ -2024,14 +2030,14 @@ func TestUpdatePersonaCustomEdit_CtrlS_PersistsCustomAsUserPreset(t *testing.T) 
 	if m.Err != nil {
 		t.Fatalf("expected Ctrl+S custom creation to succeed, got %v", m.Err)
 	}
-	if m.cfg.PersonaPreset == "custom" {
-		t.Fatalf("expected persisted custom slug identity, got legacy %q", m.cfg.PersonaPreset)
+	if m.manifest.Persona == "custom" {
+		t.Fatalf("expected persisted custom slug identity, got legacy %q", m.manifest.Persona)
 	}
-	if m.cfg.PersonaPreset != "mi-persona" {
-		t.Fatalf("expected canonical custom slug mi-persona, got %q", m.cfg.PersonaPreset)
+	if m.manifest.Persona != "mi-persona" {
+		t.Fatalf("expected canonical custom slug mi-persona, got %q", m.manifest.Persona)
 	}
-	if m.cfg.PersonaPresetSource != string(persona.PresetSourceUser) {
-		t.Fatalf("expected persona_preset_source=user, got %q", m.cfg.PersonaPresetSource)
+	if string(m.manifest.PersonaSource) != string(persona.PresetSourceUser) {
+		t.Fatalf("expected persona_preset_source=user, got %q", string(m.manifest.PersonaSource))
 	}
 	if m.Step != StepExtraSkills {
 		t.Fatalf("expected to advance to extra skills after valid custom save, got %v", m.Step)
@@ -2195,9 +2201,10 @@ func TestHandleStepMsg_AgentProgress_Failed(t *testing.T) {
 func TestViewReview_LocalOnlyShowsExactWarning(t *testing.T) {
 	m := Model{
 		Step:         StepReview,
-		Scope:        config.ScopeLocalOnly,
+		Scope:        state.ScopeLocalOnly,
 		reviewChoice: 2,
-		cfg:          &config.AppConfig{PersonaPreset: "fixture"},
+		cfg:          &config.AppConfig{},
+		manifest:     manifestWithPersona("fixture", state.PersonaSourceBuiltin),
 	}
 
 	view := viewReview(m)
@@ -2212,7 +2219,7 @@ func TestViewReview_LocalOnlyShowsExactWarning(t *testing.T) {
 func TestViewReview_BoundedPolishKeepsCheckpointLayout(t *testing.T) {
 	tests := []struct {
 		name              string
-		scope             config.SetupScope
+		scope             state.Scope
 		email             string
 		expectCloudLine   string
 		expectWarning     bool
@@ -2220,7 +2227,7 @@ func TestViewReview_BoundedPolishKeepsCheckpointLayout(t *testing.T) {
 	}{
 		{
 			name:              "local-only includes warning and omitted cloud label",
-			scope:             config.ScopeLocalOnly,
+			scope:             state.ScopeLocalOnly,
 			email:             "",
 			expectCloudLine:   "Cloud email: (omitido por alcance local-only)",
 			expectWarning:     true,
@@ -2228,7 +2235,7 @@ func TestViewReview_BoundedPolishKeepsCheckpointLayout(t *testing.T) {
 		},
 		{
 			name:              "local+cloud keeps cloud summary without warning",
-			scope:             config.ScopeLocalCloud,
+			scope:             state.ScopeLocalCloud,
 			email:             "dev@example.com",
 			expectCloudLine:   "Cloud email: dev@example.com",
 			expectWarning:     false,
@@ -2243,7 +2250,8 @@ func TestViewReview_BoundedPolishKeepsCheckpointLayout(t *testing.T) {
 				Scope:        tt.scope,
 				Email:        tt.email,
 				reviewChoice: 2,
-				cfg:          &config.AppConfig{PersonaPreset: "fixture"},
+				cfg:          &config.AppConfig{},
+				manifest:     manifestWithPersona("fixture", state.PersonaSourceBuiltin),
 			}
 
 			view := viewReview(m)
@@ -2283,19 +2291,19 @@ func TestViewReview_BoundedPolishKeepsCheckpointLayout(t *testing.T) {
 func TestRunAgentConfigSequence_FailureMessageReferencesRecoveryWithoutRollbackClaim(t *testing.T) {
 	tests := []struct {
 		name     string
-		scope    config.SetupScope
+		scope    state.Scope
 		email    string
 		password string
 		apiURL   string
 	}{
 		{
 			name:   "local-only cleanup failure points to manual recovery",
-			scope:  config.ScopeLocalOnly,
+			scope:  state.ScopeLocalOnly,
 			apiURL: config.DefaultAPIURL,
 		},
 		{
 			name:     "local+cloud sync write failure points to manual recovery",
-			scope:    config.ScopeLocalCloud,
+			scope:    state.ScopeLocalCloud,
 			email:    "dev@example.com",
 			password: "secret",
 			apiURL:   config.DefaultAPIURL,
@@ -2409,10 +2417,10 @@ func TestUpdateReview_BackCancel_NoApplyArtifactsCreated(t *testing.T) {
 			m := Model{
 				Step:         StepReview,
 				reviewChoice: tt.reviewSlot,
-				Scope:        config.ScopeLocalCloud,
+				Scope:        state.ScopeLocalCloud,
 				Email:        "dev@example.com",
 				Password:     "secret",
-				cfg:          &config.AppConfig{APIURL: config.DefaultAPIURL, Scope: config.ScopeLocalCloud},
+				cfg:          &config.AppConfig{APIURL: config.DefaultAPIURL},
 				Selected:     map[string]bool{},
 			}
 
@@ -2447,7 +2455,7 @@ func TestRunAgentConfigSequence_LocalCloudHappyPathPersistsCloudArtifacts(t *tes
 	cfg := &config.AppConfig{APIURL: config.DefaultAPIURL}
 	m := Model{
 		Step:     StepApply,
-		Scope:    config.ScopeLocalCloud,
+		Scope:    state.ScopeLocalCloud,
 		Email:    "happy@example.com",
 		Password: "secret",
 		cfg:      cfg,
@@ -2499,11 +2507,16 @@ func TestRunAgentConfigSequence_LocalCloudHappyPathPersistsCloudArtifacts(t *tes
 	if err != nil {
 		t.Fatalf("load persisted config: %v", err)
 	}
-	if loaded.Scope != config.ScopeLocalCloud {
-		t.Fatalf("expected persisted scope local+cloud, got %q", loaded.Scope)
-	}
 	if loaded.Cloud == nil || loaded.Cloud.Email != "happy@example.com" {
 		t.Fatalf("expected persisted cloud linkage, got %+v", loaded.Cloud)
+	}
+	// ~/.jarvis/state.yaml owns the scope the apply recorded.
+	manifest, err := state.Load()
+	if err != nil {
+		t.Fatalf("load persisted manifest: %v", err)
+	}
+	if manifest.Scope != state.ScopeLocalCloud {
+		t.Fatalf("expected persisted scope local+cloud, got %q", manifest.Scope)
 	}
 }
 
@@ -2653,28 +2666,27 @@ func TestNewModel_EmptyStoredScopeFallsBackToLocalOnly(t *testing.T) {
 	setTestHome(t, tmpHome)
 
 	cfg := &config.AppConfig{
-		SchemaVersion: 2,
+		SchemaVersion: 3,
 		APIURL:        config.DefaultAPIURL,
-		Scope:         "",
 	}
 	if err := config.Save(cfg); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
 
 	m := NewModel(testWizardConfig(), false)
-	if m.Scope != config.ScopeLocalOnly {
+	if m.Scope != state.ScopeLocalOnly {
 		t.Fatalf("expected fallback scope local-only, got %q", m.Scope)
 	}
 }
 
 func TestUpdate_DefaultMessageNoOp(t *testing.T) {
-	m := Model{Step: StepScope, Scope: config.ScopeLocalOnly, cfg: &config.AppConfig{Scope: config.ScopeLocalOnly}}
+	m := Model{Step: StepScope, Scope: state.ScopeLocalOnly, cfg: &config.AppConfig{}}
 	updated, cmd := m.Update(struct{ Name string }{Name: "unknown"})
 	if cmd != nil {
 		t.Fatalf("expected nil cmd for unknown message, got %v", cmd)
 	}
 	m2 := updated.(Model)
-	if m2.Step != StepScope || m2.Scope != config.ScopeLocalOnly {
+	if m2.Step != StepScope || m2.Scope != state.ScopeLocalOnly {
 		t.Fatalf("unexpected state mutation on unknown message: %+v", m2)
 	}
 }
@@ -2736,23 +2748,23 @@ func TestViewApply_States(t *testing.T) {
 }
 
 func TestUpdateScope_KeyPaths(t *testing.T) {
-	m := Model{Step: StepScope, Scope: config.ScopeLocalOnly, cfg: &config.AppConfig{Scope: config.ScopeLocalOnly}}
+	m := Model{Step: StepScope, Scope: state.ScopeLocalOnly, cfg: &config.AppConfig{}}
 
 	updated, _ := updateScope(m, tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
-	if m.Scope != config.ScopeLocalCloud {
+	if m.Scope != state.ScopeLocalCloud {
 		t.Fatalf("expected scope local+cloud after KeyDown, got %q", m.Scope)
 	}
 
 	updated, _ = updateScope(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
 	m = updated.(Model)
-	if m.Scope != config.ScopeLocalOnly {
+	if m.Scope != state.ScopeLocalOnly {
 		t.Fatalf("expected scope local-only after k, got %q", m.Scope)
 	}
 
 	updated, _ = updateScope(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	m = updated.(Model)
-	if m.Scope != config.ScopeLocalCloud {
+	if m.Scope != state.ScopeLocalCloud {
 		t.Fatalf("expected scope local+cloud after j, got %q", m.Scope)
 	}
 
@@ -2850,11 +2862,11 @@ func TestUpdatePersona_ResolveFailureFallsBackToBuiltinSlug(t *testing.T) {
 
 	updated, _ := updatePersona(m, tea.KeyMsg{Type: tea.KeyEnter})
 	m2 := updated.(Model)
-	if m2.cfg.PersonaPreset != "non-existent-preset" {
-		t.Fatalf("expected fallback persona slug, got %q", m2.cfg.PersonaPreset)
+	if m2.manifest.Persona != "non-existent-preset" {
+		t.Fatalf("expected fallback persona slug, got %q", m2.manifest.Persona)
 	}
-	if m2.cfg.PersonaPresetSource != string(persona.PresetSourceBuiltin) {
-		t.Fatalf("expected builtin source fallback, got %q", m2.cfg.PersonaPresetSource)
+	if string(m2.manifest.PersonaSource) != string(persona.PresetSourceBuiltin) {
+		t.Fatalf("expected builtin source fallback, got %q", m2.manifest.PersonaSource)
 	}
 }
 

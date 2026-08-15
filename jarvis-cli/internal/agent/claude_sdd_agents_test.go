@@ -8,16 +8,16 @@ import (
 	"testing"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 func TestRenderClaudeSDDPhaseAgents_GeneratesAllPhaseWrappersWithContracts(t *testing.T) {
-	cfg := defaultRuntimeConfig()
-	cfg.SDD.ClaudePhaseModels = map[string]config.ClaudeModelAssignment{
+	models := defaultRuntimePhaseModels()
+	models.Claude = map[string]state.ClaudeModelAssignment{
 		"sdd-design": {Model: "opus", Effort: "high"},
 	}
 
-	files, err := RenderClaudeSDDPhaseAgents(testTemplatesFS, cfg.PhaseModelsForState())
+	files, err := RenderClaudeSDDPhaseAgents(testTemplatesFS, models)
 	if err != nil {
 		t.Fatalf("RenderClaudeSDDPhaseAgents: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestRenderClaudeSDDPhaseAgents_GeneratesAllPhaseWrappersWithContracts(t *te
 		t.Fatalf("sdd-design did not use configured Claude route:\n%s", design)
 	}
 
-	embeddedFiles, err := RenderClaudeSDDPhaseAgents(jarvis.TemplatesFS, cfg.PhaseModelsForState())
+	embeddedFiles, err := RenderClaudeSDDPhaseAgents(jarvis.TemplatesFS, models)
 	if err != nil {
 		t.Fatalf("RenderClaudeSDDPhaseAgents with embedded template: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestRenderClaudeSDDPhaseAgents_GeneratesAllPhaseWrappersWithContracts(t *te
 }
 
 func TestRenderClaudeSDDPhaseAgents_UsesPhaseSpecificToolBoundaries(t *testing.T) {
-	files, err := RenderClaudeSDDPhaseAgents(testTemplatesFS, defaultRuntimeConfig().PhaseModelsForState())
+	files, err := RenderClaudeSDDPhaseAgents(testTemplatesFS, defaultRuntimePhaseModels())
 	if err != nil {
 		t.Fatalf("RenderClaudeSDDPhaseAgents: %v", err)
 	}
@@ -143,11 +143,11 @@ func TestClaudeAgent_InstallSDDPhaseAgents_OverwritesManagedNamesAndPreservesOth
 		t.Fatalf("write custom agent: %v", err)
 	}
 
-	cfg := defaultRuntimeConfig()
-	cfg.SDD.ClaudePhaseModels = map[string]config.ClaudeModelAssignment{
+	models := defaultRuntimePhaseModels()
+	models.Claude = map[string]state.ClaudeModelAssignment{
 		"sdd-design": {Model: "sonnet", Effort: "max"},
 	}
-	if err := agent.InstallSDDPhaseAgents(cfg.PhaseModelsForState()); err != nil {
+	if err := agent.InstallSDDPhaseAgents(models); err != nil {
 		t.Fatalf("InstallSDDPhaseAgents: %v", err)
 	}
 

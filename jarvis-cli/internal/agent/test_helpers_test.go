@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
@@ -26,32 +25,25 @@ func setTestHome(t *testing.T, home string) {
 	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
 }
 
-func stubRuntimeConfig(t *testing.T, cfg *config.AppConfig) {
+// stubRuntimePhaseModels stands in for the desired-state manifest the runtime
+// verification falls back to when no pending assignments are passed.
+// ~/.jarvis/state.yaml owns those assignments.
+func stubRuntimePhaseModels(t *testing.T, models state.PhaseModels) {
 	t.Helper()
-	previous := loadAppConfig
-	loadAppConfig = func() (*config.AppConfig, error) { return cfg, nil }
-	t.Cleanup(func() { loadAppConfig = previous })
+	previous := loadDesiredPhaseModels
+	loadDesiredPhaseModels = func() (state.PhaseModels, error) { return models, nil }
+	t.Cleanup(func() { loadDesiredPhaseModels = previous })
 }
 
-// phaseModelsOf projects a test config onto the pending-assignment pointer the
-// runtime observers now take. A nil pointer still means "no pending
-// assignments", so tests keep the nil/non-nil distinction they rely on.
-func phaseModelsOf(cfg *config.AppConfig) *state.PhaseModels {
-	models := cfg.PhaseModelsForState()
+// phaseModelsPtr wraps assignments in the pending-assignment pointer the runtime
+// observers take. A nil pointer still means "no pending assignments", so tests
+// keep the nil/non-nil distinction they rely on.
+func phaseModelsPtr(models state.PhaseModels) *state.PhaseModels {
 	return &models
 }
 
-func defaultRuntimeConfig() *config.AppConfig {
-	return &config.AppConfig{
-		SchemaVersion:    2,
-		APIURL:           config.DefaultAPIURL,
-		PersonaPreset:    "argentino",
-		SelectedSkills:   []string{},
-		ConfiguredAgents: []string{},
-		Scope:            config.ScopeLocalOnly,
-		Install: config.InstallState{
-			Mode:   string(config.ConfigStatusSetup),
-			Agents: map[string]config.AgentState{},
-		},
-	}
+// defaultRuntimePhaseModels is a manifest that records no assignment at all, so
+// every phase resolves to its contract default.
+func defaultRuntimePhaseModels() state.PhaseModels {
+	return state.New().PhaseModels
 }

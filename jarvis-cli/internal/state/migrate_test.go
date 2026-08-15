@@ -1,6 +1,7 @@
 package state
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -351,6 +352,37 @@ install:
 	}
 }
 
+// The other half of the same rule: install.agents may record a configured agent
+// that configured_agents forgot, and that record is the only evidence the agent
+// was ever installed. Dropping it would lose the ownership proof a later
+// cleanup needs.
+func TestMigrate_CarriesOverAConfiguredAgentTheOrderedListForgot(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `schema_version: 2
+configured_agents:
+  - claude
+install:
+  agents:
+    claude:
+      configured: true
+    opencode:
+      configured: true
+      config_path: /home/u/.config/opencode/opencode.json
+`)
+
+	if _, err := Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	st, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(st.InstalledAgents) != 2 || st.InstalledAgents[1].ID != "opencode" {
+		t.Fatalf("installed_agents = %#v, want opencode carried over after claude", st.InstalledAgents)
+	}
+}
+
 func TestMigrate_LeavesAnExistingManifestAlone(t *testing.T) {
 	home := isolateHome(t)
 	// A config.yaml the bridge already emptied: still schema 2, no replay keys.
@@ -446,6 +478,359 @@ persona_preset: neutral
 				t.Errorf("selection_configured = %v, want %v (installed_agents = %#v)",
 					st.SelectionConfigured, tc.want, st.InstalledAgents)
 			}
+		})
+	}
+}
+
+// TestMigrate_StillMovesReplayFieldsFromASchema3ConfigThatStillCarriesThem
+// closes the window between config.yaml losing the replay fields from the
+// AppConfig struct and the manifest existing.
+//
+// On a machine that has not migrated yet, any plain config.Save advances
+// config.yaml to the current schema version while the replay keys are still in
+// the file. Keying the no-op purely off that version number would then declare
+// the migration already done and strand the user's persona, skills, agents,
+// scope and phase models in a file nothing reads any more. The keys themselves
+// are the honest signal, so the version alone is not allowed to stop the move.
+func TestMigrate_StillMovesReplayFieldsFromASchema3ConfigThatStillCarriesThem(t *testing.T) {
+	home := isolateHome(t)
+	configPath := writeConfig(t, home, `schema_version: 3
+api_url: https://hivemem.dev
+persona_preset: neutra
+persona_preset_source: user
+selected_skills:
+  - go-testing
+configured_agents:
+  - claude
+install:
+  completed: true
+  agents:
+    claude:
+      configured: true
+      instructions_path: /home/u/.claude/CLAUDE.md
+      config_path: /home/u/.claude/settings.json
+`)
+
+	result, err := Migrate()
+	if err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if !result.Migrated {
+		t.Fatal("a schema-3 config that still carries the replay keys has not migrated yet")
+	}
+
+	manifest, err := Load()
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	if manifest.Persona != "neutra" || manifest.PersonaSource != PersonaSourceUser {
+		t.Errorf("manifest persona = (%q, %q), want the values stranded in config.yaml", manifest.Persona, manifest.PersonaSource)
+	}
+	if len(manifest.Skills) != 1 || manifest.Skills[0] != "go-testing" {
+		t.Errorf("manifest skills = %v, want the value stranded in config.yaml", manifest.Skills)
+	}
+	if len(manifest.InstalledAgents) != 1 || manifest.InstalledAgents[0].ID != "claude" {
+		t.Errorf("manifest agents = %+v, want the value stranded in config.yaml", manifest.InstalledAgents)
+	}
+
+	rewritten, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config.yaml: %v", err)
+	}
+	for _, key := range ReplayConfigKeys() {
+		if strings.Contains(string(rewritten), key+":") {
+			t.Errorf("config.yaml still carries replay key %q:\n%s", key, rewritten)
+		}
+	}
+}
+
+// TestMigrate_IsStillANoOpOnACleanAlreadyMigratedConfig is the other half of the
+// rule above: once the keys are gone, the migration must not run again.
+func TestMigrate_IsStillANoOpOnACleanAlreadyMigratedConfig(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "schema_version: 3\napi_url: https://hivemem.dev\ninstall:\n  completed: true\n")
+
+	result, err := Migrate()
+	if err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if result.Migrated || result.Notice != "" {
+		t.Fatalf("a clean migrated config must not migrate again, got %+v", result)
+	}
+	if _, err := Load(); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("no manifest must be written, got err=%v", err)
+	}
+}
+
+// Migration is a compatibility boundary: it must accept whatever an older
+// release or a hand-edited config.yaml holds. The release this replaces
+// normalized a non-canonical persona_preset_source and scope on every load, so
+// values the manifest does not recognize reached nobody. Copying them verbatim
+// makes Validate reject them and the migration fail, which strands every replay
+// field in a file nothing reads any more.
+func TestMigrate_NormalizesNonCanonicalPersonaSourceAndScope(t *testing.T) {
+	cases := []struct {
+		name       string
+		config     string
+		wantSource PersonaSource
+		wantScope  Scope
+	}{
+		{
+			name: "unrecognized values with no cloud link",
+			config: `schema_version: 2
+persona_preset: gentleman
+persona_preset_source: external
+scope: weird
+`,
+			wantSource: PersonaSourceBuiltin,
+			wantScope:  ScopeLocalOnly,
+		},
+		{
+			name: "case and padding are not a different value",
+			config: `schema_version: 2
+persona_preset: gentleman
+persona_preset_source: "  User  "
+scope: weird
+cloud:
+  email: dev@example.com
+`,
+			wantSource: PersonaSourceUser,
+			wantScope:  ScopeLocalCloud,
+		},
+		{
+			name: "a configured sync is a stored cloud link",
+			config: `schema_version: 2
+persona_preset: gentleman
+scope: nonsense
+cloud:
+  sync_configured: true
+`,
+			wantSource: PersonaSourceBuiltin,
+			wantScope:  ScopeLocalCloud,
+		},
+		{
+			name: "a legacy top-level email is a stored cloud link",
+			config: `schema_version: 2
+persona_preset: gentleman
+email: dev@example.com
+`,
+			wantSource: PersonaSourceBuiltin,
+			wantScope:  ScopeLocalCloud,
+		},
+		{
+			name: "an absent scope with no cloud link is local-only",
+			config: `schema_version: 2
+persona_preset: gentleman
+`,
+			wantSource: PersonaSourceBuiltin,
+			wantScope:  ScopeLocalOnly,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := isolateHome(t)
+			writeConfig(t, home, tc.config)
+
+			result, err := Migrate()
+			if err != nil {
+				t.Fatalf("Migrate must tolerate a non-canonical config.yaml: %v", err)
+			}
+			if !result.Migrated {
+				t.Fatal("Migrated = false; the replay fields must still move")
+			}
+
+			manifest, err := Load()
+			if err != nil {
+				t.Fatalf("Load after migrating: %v", err)
+			}
+			if manifest.PersonaSource != tc.wantSource {
+				t.Errorf("persona_source = %q, want %q", manifest.PersonaSource, tc.wantSource)
+			}
+			if manifest.Scope != tc.wantScope {
+				t.Errorf("scope = %q, want %q", manifest.Scope, tc.wantScope)
+			}
+			if manifest.Persona != "gentleman" {
+				t.Errorf("persona = %q, want gentleman; normalization must not drop the recorded choice", manifest.Persona)
+			}
+		})
+	}
+}
+
+// Migration is a compatibility boundary: every legacy string it carries over
+// reaches State.Validate, which rejects a whitespace-only value. A value the
+// previous release normalized away must not become a hard migration failure
+// that strands every replay field in a file nothing reads any more.
+func TestMigrate_NormalizesWhitespaceOnlyLegacyValues(t *testing.T) {
+	cases := []struct {
+		name   string
+		config string
+		assert func(t *testing.T, manifest *State)
+	}{
+		{
+			name: "a whitespace-only persona_preset falls back to preset",
+			config: `schema_version: 2
+persona_preset: "   "
+preset: "  gentleman  "
+`,
+			assert: func(t *testing.T, manifest *State) {
+				if manifest.Persona != "gentleman" {
+					t.Errorf("persona = %q, want gentleman carried over from preset", manifest.Persona)
+				}
+			},
+		},
+		{
+			name: "a whitespace-only persona reads as an unrecorded one",
+			config: `schema_version: 2
+persona_preset: "   "
+preset: "  "
+selected_skills:
+  - go-testing
+`,
+			assert: func(t *testing.T, manifest *State) {
+				if manifest.Persona != "" {
+					t.Errorf("persona = %q, want the unrecorded value", manifest.Persona)
+				}
+				if slug, _ := manifest.ResolvedPersona(); slug != DefaultPersona {
+					t.Errorf("ResolvedPersona = %q, want %q", slug, DefaultPersona)
+				}
+			},
+		},
+		{
+			name: "a whitespace-only skill entry is dropped without touching the others",
+			config: `schema_version: 2
+persona_preset: gentleman
+selected_skills:
+  - go-testing
+  - "   "
+  - retired-skill-no-longer-in-catalog
+`,
+			assert: func(t *testing.T, manifest *State) {
+				if strings.Join(manifest.Skills, ",") != "go-testing,retired-skill-no-longer-in-catalog" {
+					t.Errorf("skills = %#v; only the blank entry may be dropped", manifest.Skills)
+				}
+			},
+		},
+		{
+			name: "a skills list of nothing but blanks stays a recorded answer of none",
+			config: `schema_version: 2
+persona_preset: gentleman
+selected_skills:
+  - "   "
+`,
+			assert: func(t *testing.T, manifest *State) {
+				if manifest.Skills == nil || len(manifest.Skills) != 0 {
+					t.Errorf("skills = %#v, want a present but empty list", manifest.Skills)
+				}
+			},
+		},
+		{
+			name: "a whitespace-only agent id is not an installed agent",
+			config: `schema_version: 2
+persona_preset: gentleman
+configured_agents:
+  - "   "
+  - claude
+install:
+  agents:
+    claude:
+      configured: true
+      instructions_path: /home/u/.claude/CLAUDE.md
+      config_path: /home/u/.claude/settings.json
+`,
+			assert: func(t *testing.T, manifest *State) {
+				if len(manifest.InstalledAgents) != 1 || manifest.InstalledAgents[0].ID != "claude" {
+					t.Errorf("installed_agents = %#v, want only claude", manifest.InstalledAgents)
+				}
+			},
+		},
+		{
+			name: "whitespace-only agent paths read as unrecorded paths",
+			config: `schema_version: 2
+persona_preset: gentleman
+configured_agents:
+  - claude
+install:
+  agents:
+    claude:
+      configured: true
+      instructions_path: "   "
+      config_path: "  /home/u/.claude/settings.json  "
+`,
+			assert: func(t *testing.T, manifest *State) {
+				if len(manifest.InstalledAgents) != 1 {
+					t.Fatalf("installed_agents = %#v, want one entry", manifest.InstalledAgents)
+				}
+				if manifest.InstalledAgents[0].InstructionsPath != "" {
+					t.Errorf("instructions_path = %q, want the unrecorded value", manifest.InstalledAgents[0].InstructionsPath)
+				}
+				if manifest.InstalledAgents[0].ConfigPath != "/home/u/.claude/settings.json" {
+					t.Errorf("config_path = %q, want the padding removed", manifest.InstalledAgents[0].ConfigPath)
+				}
+			},
+		},
+		{
+			// The release being replaced dropped an unnamed phase on every
+			// config.Load. Carrying one into the manifest fails Validate, which
+			// aborts the migration and then blocks every manifest write, leaving
+			// no self-service exit.
+			name: "an unnamed phase is not a phase-model assignment",
+			config: `schema_version: 2
+persona_preset: gentleman
+sdd:
+  phase_models:
+    "  ":
+      opencode: sonnet
+      claude: sonnet
+    "  Apply  ":
+      opencode: "  Sonnet  "
+      claude: opus
+  opencode_phase_models:
+    "":
+      provider_id: "  anthropic  "
+      model_id: "  sonnet  "
+  claude_phase_models:
+    "  VERIFY  ":
+      model: "  opus  "
+`,
+			assert: func(t *testing.T, manifest *State) {
+				if _, ok := manifest.PhaseModels.Aliases["apply"]; !ok {
+					t.Errorf("phase_models.aliases = %#v, want the padded phase carried over as apply", manifest.PhaseModels.Aliases)
+				}
+				if got := manifest.PhaseModels.Aliases["apply"].OpenCode; got != "sonnet" {
+					t.Errorf("aliases[apply].opencode = %q, want the padding removed", got)
+				}
+				if len(manifest.PhaseModels.Aliases) != 1 {
+					t.Errorf("phase_models.aliases = %#v, want the unnamed phase dropped", manifest.PhaseModels.Aliases)
+				}
+				if len(manifest.PhaseModels.OpenCode) != 0 {
+					t.Errorf("opencode_phase_models = %#v, want the unnamed phase dropped", manifest.PhaseModels.OpenCode)
+				}
+				if got := manifest.PhaseModels.Claude["verify"].Model; got != "opus" {
+					t.Errorf("claude_phase_models[verify].model = %q, want the padding removed", got)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := isolateHome(t)
+			writeConfig(t, home, tc.config)
+
+			result, err := Migrate()
+			if err != nil {
+				t.Fatalf("Migrate must tolerate whitespace-only legacy values: %v", err)
+			}
+			if !result.Migrated {
+				t.Fatal("Migrated = false; the replay fields must still move")
+			}
+
+			manifest, err := Load()
+			if err != nil {
+				t.Fatalf("Load after migrating: %v", err)
+			}
+			tc.assert(t, manifest)
 		})
 	}
 }

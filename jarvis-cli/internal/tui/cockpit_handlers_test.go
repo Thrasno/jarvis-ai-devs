@@ -21,6 +21,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/lifecycle"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 func TestCockpitHandlers_ProviderSelectorExecutesReadOnlyActionAndReturnsToMenu(t *testing.T) {
@@ -454,15 +455,24 @@ func TestCockpitHandlers_BackupErrorAndConfirmTypingFailuresStaySafe(t *testing.
 func TestDefaultCockpitRunner_ConfigSummaryUsesStructuredReadOnlyFields(t *testing.T) {
 	setTestHome(t, t.TempDir())
 	cfg := &config.AppConfig{
-		SchemaVersion:    2,
-		APIURL:           "https://hivemem.dev",
-		PersonaPreset:    "argentino",
-		Email:            "dev@example.com",
-		ConfiguredAgents: []string{"claude", "opencode"},
-		Version:          "1.0.0",
+		SchemaVersion: 3,
+		APIURL:        "https://hivemem.dev",
+		Email:         "dev@example.com",
+		Version:       "1.0.0",
 	}
 	if err := config.Save(cfg); err != nil {
 		t.Fatalf("save config fixture: %v", err)
+	}
+	// ~/.jarvis/state.yaml owns the persona and the configured agents the
+	// summary reports.
+	manifest := state.New()
+	manifest.Persona = "argentino"
+	manifest.InstalledAgents = []state.Agent{
+		{ID: "claude", InstructionsPath: "/i/claude", ConfigPath: "/c/claude"},
+		{ID: "opencode", InstructionsPath: "/i/opencode", ConfigPath: "/c/opencode"},
+	}
+	if err := state.Save(manifest); err != nil {
+		t.Fatalf("save manifest fixture: %v", err)
 	}
 
 	summary, err := (defaultCockpitRunner{}).ConfigSummary(context.Background())
@@ -574,7 +584,7 @@ func TestDefaultCockpitRunner_LoginHiveCloudWritesConfigAndSyncCredentials(t *te
 	}))
 	t.Cleanup(server.Close)
 
-	if err := config.Save(&config.AppConfig{SchemaVersion: 2, APIURL: server.URL, Scope: config.ScopeLocalOnly}); err != nil {
+	if err := config.Save(&config.AppConfig{SchemaVersion: 3, APIURL: server.URL}); err != nil {
 		t.Fatalf("save config fixture: %v", err)
 	}
 
@@ -593,8 +603,16 @@ func TestDefaultCockpitRunner_LoginHiveCloudWritesConfigAndSyncCredentials(t *te
 	if err != nil {
 		t.Fatalf("load saved config: %v", err)
 	}
-	if cfg.Email != "resolved@example.com" || cfg.Scope != config.ScopeLocalCloud || cfg.Cloud == nil || !cfg.Cloud.SyncConfigured {
+	if cfg.Email != "resolved@example.com" || cfg.Cloud == nil || !cfg.Cloud.SyncConfigured {
 		t.Fatalf("login did not persist cloud config: %+v", cfg)
+	}
+	// ~/.jarvis/state.yaml owns the scope the login switches to.
+	manifest, err := state.Load()
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	if manifest.Scope != state.ScopeLocalCloud {
+		t.Fatalf("login did not record the scope in the manifest: %+v", manifest)
 	}
 
 	syncJSON, err := os.ReadFile(filepath.Join(home, ".jarvis", "sync.json"))
@@ -611,7 +629,7 @@ func TestDefaultCockpitRunner_LoginHiveCloudFallsBackToInputEmailWhenResponseEma
 		_, _ = w.Write([]byte(`{"token":"tok","user":{"email":""}}`))
 	}))
 	t.Cleanup(server.Close)
-	if err := config.Save(&config.AppConfig{SchemaVersion: 2, APIURL: server.URL}); err != nil {
+	if err := config.Save(&config.AppConfig{SchemaVersion: 3, APIURL: server.URL}); err != nil {
 		t.Fatalf("save config fixture: %v", err)
 	}
 
@@ -630,8 +648,13 @@ func TestDefaultCockpitRunner_LoginHiveCloudSurfacesAuthErrorsWithoutPersistingC
 		http.Error(w, `{"error":"bad credentials"}`, http.StatusUnauthorized)
 	}))
 	t.Cleanup(server.Close)
-	if err := config.Save(&config.AppConfig{SchemaVersion: 2, APIURL: server.URL, Scope: config.ScopeLocalOnly}); err != nil {
+	if err := config.Save(&config.AppConfig{SchemaVersion: 3, APIURL: server.URL}); err != nil {
 		t.Fatalf("save config fixture: %v", err)
+	}
+	seed := state.New()
+	seed.Scope = state.ScopeLocalOnly
+	if err := state.Save(seed); err != nil {
+		t.Fatalf("save manifest fixture: %v", err)
 	}
 
 	_, err := (defaultCockpitRunner{}).LoginHiveCloud(context.Background(), "input@example.com", "bad")
@@ -642,15 +665,25 @@ func TestDefaultCockpitRunner_LoginHiveCloudSurfacesAuthErrorsWithoutPersistingC
 	if loadErr != nil {
 		t.Fatalf("load config: %v", loadErr)
 	}
-	if cfg.Scope != config.ScopeLocalOnly || cfg.Cloud != nil {
+	if cfg.Cloud != nil {
 		t.Fatalf("failed login must not persist cloud state: %+v", cfg)
+	}
+	manifest, loadErr := state.Load()
+	if loadErr != nil {
+		t.Fatalf("load manifest: %v", loadErr)
+	}
+	if manifest.Scope != state.ScopeLocalOnly {
+		t.Fatalf("failed login must not switch the recorded scope: %+v", manifest)
 	}
 }
 
 func TestDefaultCockpitRunner_ApplyPersonaPresetPersistsConfigAndWritesAgentArtifacts(t *testing.T) {
 	setTestHome(t, t.TempDir())
-	if err := config.Save(&config.AppConfig{SchemaVersion: 2, PersonaPreset: "old", PersonaPresetSource: "builtin"}); err != nil {
-		t.Fatalf("save config fixture: %v", err)
+	seed := state.New()
+	seed.Persona = "old"
+	seed.PersonaSource = state.PersonaSourceBuiltin
+	if err := state.Save(seed); err != nil {
+		t.Fatalf("save manifest fixture: %v", err)
 	}
 	previousResolver := resolveProfileForWizard
 	resolveProfileForWizard = func(fs.FS, string) (*persona.ResolvedProfile, error) {
@@ -678,12 +711,12 @@ func TestDefaultCockpitRunner_ApplyPersonaPresetPersistsConfigAndWritesAgentArti
 	if fakeAgent.instructionsWrites != 1 || fakeAgent.outputStyleWrites != 1 || fakeAgent.clearedStyle != "Old" {
 		t.Fatalf("persona agent artifacts not updated: %+v", fakeAgent)
 	}
-	cfg, err := config.Load()
+	manifest, err := state.Load()
 	if err != nil {
-		t.Fatalf("load saved config: %v", err)
+		t.Fatalf("load saved manifest: %v", err)
 	}
-	if cfg.PersonaPreset != "neutra" || cfg.Preset != "neutra" || cfg.PersonaPresetSource != "builtin" {
-		t.Fatalf("persona config not persisted: %+v", cfg)
+	if manifest.Persona != "neutra" || manifest.PersonaSource != state.PersonaSourceBuiltin {
+		t.Fatalf("persona not persisted in the manifest: %+v", manifest)
 	}
 }
 

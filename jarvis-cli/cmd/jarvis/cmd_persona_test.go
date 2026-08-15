@@ -9,6 +9,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 func TestPersonaSetCmd_UsesResolverAndPipeline_ForBuiltinAndUserPreset(t *testing.T) {
@@ -65,28 +66,28 @@ presentation:
 				}
 			}
 
-			if err := config.Save(&config.AppConfig{
-				PersonaPreset:       "argentino",
-				PersonaPresetSource: "user",
-				Preset:              "argentino",
-			}); err != nil {
-				t.Fatalf("seed config: %v", err)
+			// ~/.jarvis/state.yaml owns the persona this command replaces.
+			seed := state.New()
+			seed.Persona = "argentino"
+			seed.PersonaSource = state.PersonaSourceUser
+			if err := state.Save(seed); err != nil {
+				t.Fatalf("seed manifest: %v", err)
 			}
 
 			if err := personaSetCmd.RunE(personaSetCmd, []string{tt.inputSlug}); err != nil {
 				t.Fatalf("persona set returned error: %v", err)
 			}
 
-			cfg, err := config.Load()
+			manifest, err := state.Load()
 			if err != nil {
-				t.Fatalf("load config after persona set: %v", err)
+				t.Fatalf("load manifest after persona set: %v", err)
 			}
 
-			if cfg.PersonaPreset != tt.expectedSlug {
-				t.Fatalf("persona_preset = %q, want %q", cfg.PersonaPreset, tt.expectedSlug)
+			if manifest.Persona != tt.expectedSlug {
+				t.Fatalf("manifest persona = %q, want %q", manifest.Persona, tt.expectedSlug)
 			}
-			if cfg.PersonaPresetSource != tt.expectedSource {
-				t.Fatalf("persona_preset_source = %q, want %q", cfg.PersonaPresetSource, tt.expectedSource)
+			if string(manifest.PersonaSource) != tt.expectedSource {
+				t.Fatalf("manifest persona_source = %q, want %q", manifest.PersonaSource, tt.expectedSource)
 			}
 
 			if _, err := os.Stat(filepath.Join(tempHome, ".claude", "CLAUDE.md")); err != nil {
