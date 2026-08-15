@@ -269,6 +269,11 @@ func TestReplayInput_ResolvesEveryDetectedAgentThroughTheSharedIdentifierRule(t 
 	// set of detected agents is fixed here rather than inherited from whatever
 	// the machine running the suite happens to have installed.
 	t.Setenv("HOME", home)
+	// os.UserHomeDir reads USERPROFILE on Windows, so HOME alone leaves the real
+	// home in play and the fixture below detects nothing. This suite runs on
+	// windows-latest in CI, so pinning only HOME would make the test assert
+	// against the developer's own machine there. Same reason as mcpReplayFixture.
+	t.Setenv("USERPROFILE", home)
 	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
 		t.Fatalf("create the Claude config dir: %v", err)
 	}
