@@ -58,7 +58,7 @@ func runStatuslineReplay(t *testing.T, a agent.Agent, consent state.StatuslineSt
 	})
 }
 
-// D2: the manifest is the sole authority for statusline intent. A recorded,
+// The manifest is the sole authority for statusline intent: a recorded,
 // enabled decision whose script is missing from disk is drift, not revocation,
 // so replay reinstalls it rather than inferring intent from disk state.
 func TestStatuslineComponent_ReinstallsADeletedScriptWithoutTouchingTheManifest(t *testing.T) {
@@ -85,8 +85,9 @@ func TestStatuslineComponent_ReinstallsADeletedScriptWithoutTouchingTheManifest(
 	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o755 {
 		t.Fatalf("statusline script mode = %04o, want 0755", info.Mode().Perm())
 	}
-	// Rule 9: replay writes bookkeeping only. Reinstalling a drifted artifact is
-	// not a reason to rewrite the stored decision.
+	// The only manifest write replay is allowed to make is its own bookkeeping
+	// record (bookkeeping.go:1-7), so reinstalling a drifted artifact is not a
+	// reason to rewrite the stored decision.
 	if got := readFileString(t, manifestPath); got != before {
 		t.Fatalf("replay rewrote the manifest.\n got: %q\nwant: %q", got, before)
 	}
