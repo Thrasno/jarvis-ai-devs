@@ -310,6 +310,11 @@ func (s *State) Validate() error {
 	return nil
 }
 
+// ErrNoInstalledAgents reports the one replay precondition a caller can repair,
+// so a command can recognize it and name the recovery instead of surfacing a
+// bare field check the user cannot act on.
+var ErrNoInstalledAgents = errors.New(stateFileName + " installed_agents is empty; nothing to replay")
+
 // ValidateForReplay reports whether the manifest carries enough desired state to
 // replay an installation. It is separate from Validate because migration must
 // succeed on a config.yaml whose replay fields were never populated; replay then
@@ -319,7 +324,7 @@ func (s *State) ValidateForReplay() error {
 		return err
 	}
 	if len(s.InstalledAgents) == 0 {
-		return fmt.Errorf("%s installed_agents is empty; nothing to replay", stateFileName)
+		return ErrNoInstalledAgents
 	}
 	return nil
 }

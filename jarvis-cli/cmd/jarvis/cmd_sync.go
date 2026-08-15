@@ -78,6 +78,13 @@ func runSync() error {
 		return fmt.Errorf("load the desired-state manifest: %w", err)
 	}
 	if err := manifest.ValidateForReplay(); err != nil {
+		// The planner already names the command that repairs a machine recording
+		// no agents, but this guard blocks before BuildPlan ever runs. Surfacing
+		// the bare precondition here would leave the user correctly stopped and
+		// with nothing to type.
+		if errors.Is(err, state.ErrNoInstalledAgents) {
+			return sync.ErrNoConfiguredAgents
+		}
 		return err
 	}
 	input, err := replayInput(home, manifest)
