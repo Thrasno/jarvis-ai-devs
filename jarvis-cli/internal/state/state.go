@@ -267,6 +267,13 @@ func (s *State) Validate() error {
 		)
 	}
 
+	// An instruction path is what proves an agent may write a file, and that
+	// proof is looked up by path: two agents recording the same one collapse into
+	// a single entry there, so one of them loses the file the manifest recorded
+	// for it and the other gains permission over its sibling's. Neither is
+	// detectable once the manifest is loaded, so the collision is refused here,
+	// at the boundary, rather than by making every ownership constructor fallible.
+	agentByPath := make(map[string]string, len(s.InstalledAgents))
 	for i, agent := range s.InstalledAgents {
 		if isBlank(agent.ID) {
 			return fmt.Errorf("%s installed_agents[%d] has a blank id", stateFileName, i)
@@ -276,6 +283,25 @@ func (s *State) Validate() error {
 		}
 		if isBlank(agent.ConfigPath) {
 			return fmt.Errorf("%s installed_agents[%d] (%s) has a blank config_path", stateFileName, i, agent.ID)
+		}
+		// Normalized exactly the way the ownership map keys these paths (trim,
+		// then Clean, and never a filesystem lookup), because a collision this
+		// misses is a collision that map still makes. The rule is deliberately
+		// restated here rather than imported: the ownership package depends on
+		// this one, so the dependency cannot run the other way.
+		//
+		// An unrecorded path is skipped rather than normalized: Clean turns the
+		// empty string into ".", which would make two agents that record no path
+		// at all collide with each other.
+		if trimmed := strings.TrimSpace(agent.InstructionsPath); trimmed != "" {
+			path := filepath.Clean(trimmed)
+			if owner, taken := agentByPath[path]; taken {
+				return fmt.Errorf(
+					"%s installed_agents[%d] (%s) records instructions_path %q, already recorded for agent %s",
+					stateFileName, i, agent.ID, agent.InstructionsPath, owner,
+				)
+			}
+			agentByPath[path] = agent.ID
 		}
 	}
 
