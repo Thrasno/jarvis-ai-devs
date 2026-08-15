@@ -347,8 +347,8 @@ func assertTrackedPaths(t *testing.T, in PlanInput, want map[string]trackedExpec
 
 // Threat matrix, documentation-like paths: the mode is asserted, never
 // inherited. writeFileAtomic reuses an existing file's permission bits
-// (claude.go:918-923) and D2's reinstall-after-delete path lets the umask
-// decide; neither may choose the final mode.
+// (claude.go:918-923), and a reinstall that recreates a file the user deleted
+// lets the umask decide instead; neither may choose the final mode.
 func TestEnforceModes_AssertsTheManagedModeInsteadOfInheritingIt(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows has no POSIX permission bits: Chmod only toggles the read-only attribute and Perm always reads 0666 or 0444")
