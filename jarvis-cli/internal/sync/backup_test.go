@@ -145,6 +145,43 @@ func TestRun_ReportsAPerAgentFailureWithoutRaisingItWhenTheBackupSucceeded(t *te
 	}
 }
 
+// A failure after the applier ran keeps everything the run already knows.
+//
+// The changed-path diff is deliberately not among it: nothing measured it, and
+// a list of paths that were "possibly modified" would be a fresh claim rather
+// than a measurement. What the run does know is which agents executed which
+// components, and that is what the report must still carry so an operator
+// deciding whether to restore the snapshot has something to decide with.
+func TestRun_KeepsTheExecutedComponentOutcomesWhenTheClosingMeasurementFails(t *testing.T) {
+	home := t.TempDir()
+	settings := filepath.Join(home, ".claude", "settings.json")
+	plan := Plan{Tracked: []TrackedPath{{
+		Agent:    "claude",
+		Path:     settings,
+		Mode:     ManagedFileMode,
+		Semantic: &ManagedJSON{Fragments: map[string]any{"outputStyle": "neutral"}},
+	}}}
+	runner := &desiredStateRunner{recordingRunner: &recordingRunner{}, writes: map[string][]plannedWrite{
+		"claude": {{path: settings, body: "not json at all\n", mode: 0o644}},
+	}}
+
+	result, err := runReportingFailures(home, plan, runner, "claude")
+
+	if err == nil {
+		t.Fatal("an undecodable managed JSON document must fail the closing measurement")
+	}
+	if result.Report.Changed != nil {
+		t.Fatalf("an unmeasured diff must stay nil rather than claim paths, got %v", result.Report.Changed)
+	}
+	if len(result.Report.Agents) != 1 {
+		t.Fatalf("the applier's outcome must survive the failure: %+v", result.Report.Agents)
+	}
+	if !reflect.DeepEqual(result.Report.Agents[0].Completed, orderedComponentIDs) {
+		t.Fatalf("completed components = %v, want the whole order %v",
+			result.Report.Agents[0].Completed, orderedComponentIDs)
+	}
+}
+
 // A missing backup seam must read as "cannot proceed", never as "no backup
 // needed".
 func TestRun_RefusesToMutateWithoutABackupSeam(t *testing.T) {

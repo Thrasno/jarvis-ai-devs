@@ -113,6 +113,30 @@ func TestApply_ContinuesWithTheNextAgentAfterAFailure(t *testing.T) {
 	}
 }
 
+// What each agent actually executed is recorded, not left to be inferred.
+//
+// It survives where the changed-path diff does not: a failure between the
+// applier and the closing measurement leaves Changed nil for the whole run, and
+// then this list is the only thing that says how far each agent got. Reading it
+// back out of FailedAt and the locked order would ask a reader to reconstruct
+// what the run already knew.
+func TestApply_RecordsTheComponentsEachAgentCompleted(t *testing.T) {
+	boom := errors.New("managed MCP write refused")
+	runner := &recordingRunner{failAt: map[string]error{"claude/" + ComponentMCPs: boom}}
+
+	report := Apply(ApplyInput{Runner: runner, Targets: []AgentTarget{{ID: "claude"}, {ID: "opencode"}}})
+
+	wantFailed := []string{ComponentModels, ComponentSkills, ComponentRuntimeAssets}
+	if !reflect.DeepEqual(report.Agents[0].Completed, wantFailed) {
+		t.Fatalf("completed for the failed agent = %v, want %v; the failing component is not one of them",
+			report.Agents[0].Completed, wantFailed)
+	}
+	if !reflect.DeepEqual(report.Agents[1].Completed, orderedComponentIDs) {
+		t.Fatalf("completed for the healthy agent = %v, want the whole order %v",
+			report.Agents[1].Completed, orderedComponentIDs)
+	}
+}
+
 // Each component call carries exactly one agent, so a ReconcileInstallRequest
 // built from a target can never span agents and reconcile's compensation can
 // never roll back a sibling's marker-backed artifacts.

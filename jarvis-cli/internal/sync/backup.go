@@ -137,7 +137,12 @@ func Run(in RunInput) (RunResult, error) {
 func convergedWithoutApplying(targets []AgentTarget) Report {
 	report := Report{Agents: make([]AgentResult, 0, len(targets)), Changed: []string{}}
 	for _, target := range targets {
-		report.Agents = append(report.Agents, AgentResult{Agent: target.ID, Converged: true, Changed: []string{}})
+		// Completed is empty rather than the whole order: this run skipped the
+		// applier, so no component executed. Convergence here is measured against
+		// the plan's desired digests, not claimed from work that was never done.
+		report.Agents = append(report.Agents, AgentResult{
+			Agent: target.ID, Converged: true, Changed: []string{}, Completed: []string{},
+		})
 	}
 	return report
 }

@@ -232,9 +232,22 @@ func renderSyncReport(manifest *state.State, result sync.RunResult, cloud string
 	for _, outcome := range result.Report.Agents {
 		if outcome.Converged {
 			fmt.Fprintf(&out, "  %s: converged\n", outcome.Agent)
-			continue
+		} else {
+			fmt.Fprintf(&out, "  %s: failed at %s: %v\n", outcome.Agent, outcome.FailedAt, outcome.Err)
 		}
-		fmt.Fprintf(&out, "  %s: failed at %s: %v\n", outcome.Agent, outcome.FailedAt, outcome.Err)
+		// Only when the diff was never measured. A measured run already names
+		// every path that moved, which answers the same question better; an
+		// unmeasured one can name none, and the components each agent actually
+		// completed are then the whole of what this run honestly knows. They are
+		// not a substitute list of "possibly modified" paths, which would be a
+		// fresh claim rather than a measurement.
+		if result.Report.Changed == nil {
+			completed := "none"
+			if len(outcome.Completed) > 0 {
+				completed = strings.Join(outcome.Completed, ", ")
+			}
+			fmt.Fprintf(&out, "    components completed: %s\n", completed)
+		}
 	}
 	if runErr != nil {
 		fmt.Fprintf(&out, "verification: failed: %v\n", runErr)

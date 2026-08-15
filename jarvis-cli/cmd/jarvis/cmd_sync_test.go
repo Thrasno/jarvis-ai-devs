@@ -108,7 +108,10 @@ func TestSyncReport_IsTheWholeObservabilityContract(t *testing.T) {
 	// measurement never ran. Nil is what distinguishes it from a measured zero.
 	unmeasured := sync.RunResult{
 		Backup: lifecycle.BackupManifest{SnapshotID: "snap-7"},
-		Report: sync.Report{Agents: []sync.AgentResult{{Agent: "claude", Converged: true}}},
+		Report: sync.Report{Agents: []sync.AgentResult{
+			{Agent: "claude", Converged: true, Completed: []string{"models", "skills"}},
+			{Agent: "opencode", FailedAt: "mcps", Err: errors.New("boom"), Completed: []string{"models"}},
+		}},
 	}
 
 	for _, tc := range []struct {
@@ -132,23 +135,31 @@ func TestSyncReport_IsTheWholeObservabilityContract(t *testing.T) {
 				"opencode: failed at mcps", "native MCP replacement failed",
 				"jarvis sync", hiveNotSynchronizedNotice,
 			},
-			unwanted: []string{"already current"},
+			// A measured run names the paths that moved, so repeating the component
+			// list would add noise to the one report that does not need it.
+			unwanted: []string{"already current", "components completed"},
 		},
 		{
 			name:     "a converged machine is already current and lists nothing",
 			result:   converged,
 			want:     []string{"already current", "changed paths: 0", "verification: passed"},
-			unwanted: []string{"snapshot", changedPath},
+			unwanted: []string{"snapshot", changedPath, "components completed"},
 		},
 		{
 			// A failure after the applier ran must never be reported as a
 			// measured zero: the diff was not taken, which is not evidence that
 			// nothing changed, and the operator needs that distinction to decide
-			// whether to restore the snapshot named above it.
-			name:     "a run that failed after mutating says the diff was not measured",
-			result:   unmeasured,
-			runErr:   errors.New("assert mode on /home/u/.claude/CLAUDE.md: permission denied"),
-			want:     []string{"not measured", "not evidence that nothing changed", "snap-7", "verification: failed"},
+			// whether to restore the snapshot named above it. Since no path can
+			// honestly be named, the report falls back to what the run does know:
+			// which components each agent actually completed before it stopped.
+			name:   "a run that failed after mutating says the diff was not measured",
+			result: unmeasured,
+			runErr: errors.New("assert mode on /home/u/.claude/CLAUDE.md: permission denied"),
+			want: []string{
+				"not measured", "not evidence that nothing changed", "snap-7", "verification: failed",
+				"claude: converged", "completed: models, skills",
+				"opencode: failed at mcps", "completed: models\n",
+			},
 			unwanted: []string{"changed paths: 0", "already current"},
 		},
 	} {
