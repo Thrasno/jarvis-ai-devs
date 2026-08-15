@@ -183,10 +183,14 @@ func TestSyncReport_IsTheWholeObservabilityContract(t *testing.T) {
 			name:   "a run that failed after mutating says the diff was not measured",
 			result: unmeasured,
 			runErr: errors.New("assert mode on /home/u/.claude/CLAUDE.md: permission denied"),
+			// The component lines are matched whole, label included: an assertion
+			// on the tail alone ("completed: models") passes for any label that
+			// happens to end in it, and so verifies less than the full-line
+			// assertions beside it appear to promise.
 			want: []string{
 				"not measured", "not evidence that nothing changed", "snap-7", "verification: failed",
-				"claude: converged", "completed: models, skills",
-				"opencode: failed at mcps", "completed: models\n",
+				"claude: converged", "    components completed: models, skills\n",
+				"opencode: failed at mcps", "    components completed: models\n",
 			},
 			unwanted: []string{"changed paths: 0", "already current"},
 		},
@@ -304,10 +308,6 @@ func TestReplayInput_ResolvesEveryDetectedAgentThroughTheSharedIdentifierRule(t 
 // The vacuity guard is the important half: a closure seeded from a file that
 // imports no Jarvis package is empty, and an empty input set satisfies every
 // "contains no X" assertion without proving anything at all.
-//
-// `hivederive` is deliberately not forbidden despite its name: it derives a
-// project name from a git remote and carries no memory, transport or
-// credential, so listing it would fail this test on a word, not a dependency.
 func TestSyncImportClosure_NeverReachesHiveMemorySync(t *testing.T) {
 	const module = "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 
@@ -331,14 +331,33 @@ func TestSyncImportClosure_NeverReachesHiveMemorySync(t *testing.T) {
 
 	listed, err := exec.Command("go", append([]string{"list", "-deps"}, seed...)...).Output()
 	if err != nil {
-		t.Fatalf("go list -deps: %v", err)
+		// This test has two failure classes that must be told apart: a genuine
+		// forbidden dependency, and a cold module cache, a restricted resolve or
+		// a missing toolchain. Only the child's stderr distinguishes them, and
+		// Output() captured it into ExitError.Stderr precisely because Cmd.Stderr
+		// is nil here; %v alone would render "exit status 1" and discard it.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			t.Fatalf("go list -deps %s: %v: %s", strings.Join(seed, " "), err, exit.Stderr)
+		}
+		t.Fatalf("go list -deps %s: %v", strings.Join(seed, " "), err)
 	}
 	closure := string(listed)
 	if !strings.Contains(closure, module+"/internal/sync\n") {
 		t.Fatal("the replay package is absent from the closure, so this proves nothing about replay")
 	}
+	// The inclusion criterion, so the list stays extensible by reading rather
+	// than by archaeology: a package belongs here when it carries Hive memory
+	// content, the transport that moves it, or the credentials that reach it.
+	// `hivederive` fails that criterion despite its name -- it derives a project
+	// name from a git remote and carries none of the three -- and listing it
+	// would fail this test on a word rather than on a dependency.
+	//
+	// Each entry is matched exactly as strictly as the positive anchor above:
+	// module-qualified and newline-terminated, so a package of another module
+	// whose path merely contains one of these names cannot trip the guard.
 	for _, forbidden := range []string{"internal/hiveclient", "internal/hiveui", "internal/importui", "internal/apiclient"} {
-		if strings.Contains(closure, forbidden) {
+		if strings.Contains(closure, module+"/"+forbidden+"\n") {
 			t.Errorf("jarvis sync reaches Hive memory synchronization through %q", forbidden)
 		}
 	}
