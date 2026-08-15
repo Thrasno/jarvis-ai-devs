@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/lifecycle"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
@@ -218,6 +219,102 @@ func TestSnapshotMatchesManagedJSONFragmentsOnly(t *testing.T) {
 	writeFile(t, path, `{invalid`)
 	if _, err := TakeSnapshot(tracked); err == nil {
 		t.Fatal("invalid managed JSON must fail explicitly")
+	}
+}
+
+// An empty tracked list is not convergence. "Every path already holds its
+// desired content" is vacuously true of no paths at all, and answering yes there
+// would hand a plan that tracks nothing the one licence that skips the applier:
+// the run would report a converged machine it never looked at.
+func TestSnapshot_MatchesRefusesAnEmptyPathListSoTheRunStillApplies(t *testing.T) {
+	for _, empty := range [][]TrackedPath{nil, {}} {
+		if snapshotOrFail(t, empty).Matches(empty) {
+			t.Fatalf("a tracked list of %d paths must not report convergence", len(empty))
+		}
+	}
+
+	// The consequence, measured rather than argued: a short-circuited run takes
+	// no backup (backup.go:84-86), so a backup here is proof the run went past
+	// the skip and into the mutation pass.
+	backedUp := false
+	result, err := Run(RunInput{
+		Plan:  Plan{},
+		Apply: ApplyInput{Runner: &recordingRunner{}},
+		Backup: func(string, []lifecycle.BackupTarget) (lifecycle.BackupManifest, error) {
+			backedUp = true
+			return lifecycle.BackupManifest{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run over an empty plan: %v", err)
+	}
+	if !backedUp {
+		t.Fatal("the run short-circuited on an empty plan instead of proceeding to backup and apply")
+	}
+	if result.Report.Converged() {
+		t.Fatal("a plan tracking nothing converged nothing; it must not claim convergence")
+	}
+}
+
+// The other two EnforceModes skips, both of which protect a path this package
+// must not reassert a mode on.
+//
+// A managed path can be a symlink into a dotfiles repo, and Chmod follows it:
+// asserting the mode through the link would silently rewrite the permissions of
+// a file Jarvis does not own. Both jarvis writers replace the link instead
+// (skills/installer.go:102-117; writeFileAtomic renames over it), so the link is
+// left exactly as found. A directory is never a managed artifact either, and
+// forcing ManagedFileMode on one would strip the traversal bit and make
+// everything under it unreachable.
+func TestEnforceModes_SkipsASymlinkAndADirectoryInsteadOfAssertingThrough(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "dotfiles", "CLAUDE.md")
+	link := filepath.Join(root, "CLAUDE.md")
+	seedFile(t, target, 0o600)
+	if err := os.Symlink(target, link); err != nil {
+		// Windows only creates symlinks with Developer Mode or the privilege
+		// enabled, so the skip is expected there rather than a gap in coverage.
+		t.Skipf("symlinks unavailable on %s: %v", runtime.GOOS, err)
+	}
+	dir := filepath.Join(root, "skills")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+
+	if err := EnforceModes([]TrackedPath{
+		{Path: link, Mode: ManagedFileMode},
+		{Path: dir, Mode: ManagedFileMode},
+	}); err != nil {
+		t.Fatalf("EnforceModes: %v", err)
+	}
+
+	linkInfo, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("lstat %s: %v", link, err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("%s is no longer a symlink; EnforceModes must leave it for the writer to replace", link)
+	}
+	dirInfo, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatalf("lstat %s: %v", dir, err)
+	}
+	if !dirInfo.IsDir() {
+		t.Fatalf("%s is no longer a directory", dir)
+	}
+	if runtime.GOOS == "windows" {
+		// Perm always reads 0666 or 0444 here, so the two mode assertions below
+		// would compare constants rather than behaviour. The structural checks
+		// above still run.
+		return
+	}
+	if info, err := os.Lstat(target); err != nil {
+		t.Fatalf("lstat %s: %v", target, err)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Fatalf("the symlink target has mode %04o, want 0600: EnforceModes chmodded through the link", info.Mode().Perm())
+	}
+	if dirInfo.Mode().Perm() != 0o700 {
+		t.Fatalf("%s has mode %04o, want 0700: a directory must keep its traversal bit", dir, dirInfo.Mode().Perm())
 	}
 }
 
