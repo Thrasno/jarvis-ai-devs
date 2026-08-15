@@ -38,6 +38,20 @@ var ErrUnknownAgent = errors.New("agent is not installed on this machine")
 // the message carries the rest.
 var ErrDependencyUnwired = errors.New("replay component was built without a required dependency")
 
+// ErrHiveDaemonUnavailable reports that the Hive daemon binary this machine
+// records is missing, is not a regular file, or cannot be executed, so the
+// managed-MCP desired state cannot be rendered at all. An interrupted install,
+// a half-applied upgrade or an antivirus quarantine all land here.
+//
+// It is the only failure class the handoff below actually separates. Everything
+// under agentapply.ReconcileMCPs -- the daemon check, the recovery-evidence
+// directory, the native reconciliation itself -- returns bare errors.New values
+// with no sentinel, no type and no wrapping, so a caller has nothing to key on
+// and a taxonomy invented here would be a claim the code cannot back. This one
+// class is different because its condition is decidable independently of the
+// error value, by asking the same authority the reconciler consults.
+var ErrHiveDaemonUnavailable = errors.New("the recorded Hive daemon binary is missing or not executable")
+
 // AgentResolver maps a manifest agent ID onto the installed agent it names.
 type AgentResolver func(id string) (agent.Agent, bool)
 
@@ -81,7 +95,39 @@ func (c MCPComponent) Apply(target AgentTarget) error {
 		reconcile = agentapply.ReconcileMCPs
 	}
 	if err := reconcile([]agent.Agent{resolved}, target.Root, c.Deps); err != nil {
+		if path, unusable := c.unusableHiveDaemon(target.Root); unusable {
+			// Both are wrapped: the sentinel makes the class checkable, and the
+			// reconciler's own error keeps whatever specifics it carried, because a
+			// classification that swallowed them would trade one blind spot for
+			// another.
+			return fmt.Errorf("replay managed MCPs for %q: %w (%s); run `jarvis` to reinstall it: %w", target.ID, ErrHiveDaemonUnavailable, path, err)
+		}
 		return fmt.Errorf("replay managed MCPs for %q: %w", target.ID, err)
 	}
 	return nil
+}
+
+// unusableHiveDaemon reports whether this machine's recorded Hive daemon binary
+// is one the managed-MCP handoff can use, and where it looked.
+//
+// It asks agent.ClaudeUserMCPDefinitions rather than stat-ing the path itself,
+// because that function *is* the rule: a daemon path is the only thing it
+// rejects, and what counts as executable differs by platform (the permission
+// bits on Unix, the .exe extension on Windows). Re-deriving those rules here
+// would let the diagnostic drift away from the check it claims to describe.
+//
+// It runs only after a failure, so it never makes replay stricter than the
+// reconciler -- notably the OpenCode path renders its desired state without
+// consulting the daemon at all. What it asserts when it fires is a fact about
+// this machine that is true regardless of which condition the reconciler
+// tripped on, and it is the first thing worth repairing either way.
+func (c MCPComponent) unusableHiveDaemon(root string) (string, bool) {
+	if c.Deps.HiveDaemonPath == nil {
+		return "", false
+	}
+	path := c.Deps.HiveDaemonPath(root)
+	if _, _, err := agent.ClaudeUserMCPDefinitions(path); err != nil {
+		return path, true
+	}
+	return "", false
 }

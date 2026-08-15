@@ -243,6 +243,44 @@ func TestBuildPlan_FailsClosedOnUnrenderableAgents(t *testing.T) {
 	}
 }
 
+// Failing closed is the right call when the installed binary embeds no source
+// for something state.yaml records, but an abort that only names the problem
+// leaves the operator with nowhere to go. The way in is a downgrade: a binary
+// whose embedded assets no longer cover a statusline or the skills the previous
+// installation recorded, which reinstalling from the running binary resolves.
+//
+// Every other fail-closed error on this path already ends by naming that
+// command, so this is about parity as much as actionability: an operator who
+// meets one of these two must not be the only one left guessing.
+func TestBuildPlan_NamesTheRecoveryActionWhenTheBinaryEmbedsNoSourceForRecordedState(t *testing.T) {
+	tests := map[string]func(*state.State, *PlanInput){
+		"skills are recorded but the binary embeds no skills source": func(st *state.State, in *PlanInput) {
+			st.Skills = []string{"sdd-apply"}
+			in.SkillsFS = nil
+		},
+		"the statusline is managed but the binary embeds no hooks source": func(st *state.State, in *PlanInput) {
+			st.Statusline = state.StatuslineState{Decided: true, Enabled: true}
+			in.HooksFS = nil
+		},
+	}
+
+	for name, setUp := range tests {
+		t.Run(name, func(t *testing.T) {
+			st := replayableState(state.Agent{ID: "claude", InstructionsPath: ".claude/CLAUDE.md", ConfigPath: ".claude/settings.json"})
+			in := PlanInput{Root: t.TempDir(), State: st, Templates: jarvis.TemplatesFS}
+			setUp(st, &in)
+
+			_, err := BuildPlan(in)
+			if err == nil {
+				t.Fatal("BuildPlan succeeded, want a fail-closed error")
+			}
+			if !strings.Contains(err.Error(), "run `jarvis` to reinstall") {
+				t.Fatalf("error = %q, want it to name the recovery action every sibling fail-closed error names", err)
+			}
+		})
+	}
+}
+
 // A relative recorded path can leave the managed root exactly as an absolute one
 // can, and the doc comment promises both are refused rather than clamped. What
 // managedLocation returns is joined back onto the root at every call site, so an

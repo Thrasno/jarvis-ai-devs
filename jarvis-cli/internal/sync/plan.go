@@ -160,7 +160,11 @@ func trackedPaths(in PlanInput, artifacts []PlannedArtifact, ownerByLocation map
 			continue
 		}
 		if in.HooksFS == nil {
-			return nil, errors.New("state.yaml records a managed statusline, for which this Jarvis version embeds no hooks source")
+			// The recovery command is named for the same reason every sibling
+			// fail-closed error names it: the way in is a downgrade to a binary
+			// whose embedded assets no longer cover what state.yaml records, and
+			// reinstalling from the running binary is what resolves it.
+			return nil, errors.New("state.yaml records a managed statusline, for which this Jarvis version embeds no hooks source; run `jarvis` to reinstall")
 		}
 		script, err := fs.ReadFile(in.HooksFS, agent.StatuslineScriptSource)
 		if err != nil {
@@ -184,7 +188,8 @@ func renderSkills(in PlanInput, agentID string) ([]agent.RenderedSkillFile, erro
 		return nil, nil
 	}
 	if in.SkillsFS == nil {
-		return nil, fmt.Errorf("state.yaml records %d skills, for which this Jarvis version embeds no skills source", len(in.State.Skills))
+		// Same downgrade, same exit: see the statusline refusal above.
+		return nil, fmt.Errorf("state.yaml records %d skills, for which this Jarvis version embeds no skills source; run `jarvis` to reinstall", len(in.State.Skills))
 	}
 	// Always non-nil, and deliberately so. RenderSkillFilesForPlatform renders
 	// verbatim for a nil models, which is right for InstallSkills but never for
