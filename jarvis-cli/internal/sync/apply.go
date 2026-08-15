@@ -90,6 +90,13 @@ type AgentResult struct {
 	// FailedAt is the component ID that stopped this agent, empty on success.
 	FailedAt string
 	Err      error
+	// Completed lists the component IDs this agent finished, in the order they
+	// ran, and never includes the one that failed. It is recorded rather than
+	// inferred because it is the only per-agent evidence that survives a failure
+	// between the applier and the closing measurement: on those paths Changed
+	// stays nil for the whole run, and "how far did each agent get" would
+	// otherwise have to be reconstructed from FailedAt and the locked order.
+	Completed []string
 	// Changed lists the paths this agent actually modified, measured by the
 	// content+mode diff around the mutation pass and never counted from the
 	// plan, which describes desired state rather than drift. Apply leaves it
@@ -195,13 +202,14 @@ func ApplyInstructions(
 // applyAgent walks the locked order for a single agent and stops that agent at
 // its first failure.
 func applyAgent(runner ComponentRunner, target AgentTarget) AgentResult {
-	result := AgentResult{Agent: target.ID}
+	result := AgentResult{Agent: target.ID, Completed: make([]string, 0, len(components))}
 	for _, c := range components {
 		if err := c.apply(runner, target); err != nil {
 			result.FailedAt = c.id
 			result.Err = fmt.Errorf("apply %s for agent %s: %w", c.id, target.ID, err)
 			return result
 		}
+		result.Completed = append(result.Completed, c.id)
 	}
 	result.Converged = true
 	return result

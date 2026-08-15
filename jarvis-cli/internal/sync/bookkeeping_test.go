@@ -45,7 +45,9 @@ func bookkeptRun(t *testing.T, home string, plan Plan, runner ComponentRunner, b
 	})
 }
 
-// Both halves of the rule, over the same machine. The first run changes a
+// Both halves of the rule, over the same machine, and the positive counterpart
+// of the two "does not advance" tests below: the digest moves only after a
+// measured run that changed something. The first run changes a
 // target and writes the record through the lock, rebuilt from a manifest
 // re-read inside it: the concurrent writer landing while the lock is taken
 // proves the re-read, because its skill survives where a stale in-memory copy
@@ -116,11 +118,12 @@ func TestRun_WritesBookkeepingUnderLockOnlyWhenATargetChanged(t *testing.T) {
 	}
 }
 
-// A failure that leaves the diff unmeasured is not evidence that nothing
-// changed: the applier already ran, so the record is written rather than
-// skipped. EnforceModes fails here because a tracked path sits under what the
-// applier just made a regular file.
-func TestRun_WritesBookkeepingWhenTheDiffCouldNotBeMeasured(t *testing.T) {
+// The mode-assertion half of the temporal rule. EnforceModes fails here because
+// a tracked path sits under what the applier just made a regular file, so the
+// run never reaches a closing measurement and the digest must stay where it was.
+// The applier's own outcome is still reported: not advancing the record is not
+// the same as pretending the run never happened.
+func TestRun_DoesNotAdvanceManagedAssetDigestWhenModeEnforcementFails(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("this forces the failure through ENOTDIR on a path under a regular file, which Windows does not report the same way")
 	}
@@ -144,8 +147,41 @@ func TestRun_WritesBookkeepingWhenTheDiffCouldNotBeMeasured(t *testing.T) {
 	if len(result.Report.Agents) != 1 || !result.Report.Agents[0].Converged {
 		t.Fatalf("the applier ran and its outcome must still be reported: %+v", result.Report)
 	}
-	if loaded, loadErr := state.Load(); loadErr != nil || loaded.ManagedAssetDigest != "sha256:current" {
-		t.Fatalf("manifest after an unmeasured diff = %+v (%v); that is not a no-op run", loaded, loadErr)
+	if loaded, loadErr := state.Load(); loadErr != nil || loaded.ManagedAssetDigest != "sha256:previous" {
+		t.Fatalf("managed_asset_digest = %+v (%v); an unasserted mode is no evidence of convergence", loaded, loadErr)
+	}
+}
+
+// The measurement half of the same rule, and the one that does not depend on
+// POSIX modes: the applier writes a tracked JSON document the closing snapshot
+// cannot decode, so the diff is never taken and the digest must not move.
+func TestRun_DoesNotAdvanceManagedAssetDigestWhenClosingSnapshotFails(t *testing.T) {
+	home := t.TempDir()
+	seedManifest(t, home, "sha256:previous")
+
+	settings := filepath.Join(home, ".claude", "settings.json")
+	plan := Plan{Tracked: []TrackedPath{{
+		Agent:    "claude",
+		Path:     settings,
+		Mode:     ManagedFileMode,
+		Semantic: &ManagedJSON{Fragments: map[string]any{"outputStyle": "neutral"}},
+	}}}
+	runner := &desiredStateRunner{recordingRunner: &recordingRunner{}, writes: map[string][]plannedWrite{
+		"claude": {{path: settings, body: "not json at all\n", mode: 0o644}},
+	}}
+
+	result, err := bookkeptRun(t, home, plan, runner, &Bookkeeping{ManagedAssetDigest: "sha256:current"})
+	if err == nil {
+		t.Fatal("an undecodable managed JSON document must fail the closing measurement")
+	}
+	if len(result.Report.Agents) != 1 || !result.Report.Agents[0].Converged {
+		t.Fatalf("the applier ran and its outcome must still be reported: %+v", result.Report)
+	}
+	if result.Report.Changed != nil {
+		t.Fatalf("an unmeasured diff must stay nil, got %v", result.Report.Changed)
+	}
+	if loaded, loadErr := state.Load(); loadErr != nil || loaded.ManagedAssetDigest != "sha256:previous" {
+		t.Fatalf("managed_asset_digest = %+v (%v); an unmeasured run proves nothing about the asset set", loaded, loadErr)
 	}
 }
 

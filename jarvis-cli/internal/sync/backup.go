@@ -26,6 +26,14 @@ const BackupSourceOperation = "sync"
 // read as "no backup needed" and silently mutate.
 var ErrNoBackup = errors.New("replay requires a backup before it may mutate anything")
 
+// ErrUnprotectedAgent refuses a run whose two halves describe different work.
+// The backup covers Plan.Tracked while the mutation covers Apply.Targets, and
+// nothing about those two fields forces them to belong to the same run: a
+// caller that plans one agent's paths and applies another's still mutates, and
+// the archive holds none of what was overwritten. That is the archive's entire
+// purpose defeated, so the pair is refused rather than reconciled.
+var ErrUnprotectedAgent = errors.New("the plan tracks no path for an agent this run would mutate, so the backup cannot protect it")
+
 // SnapshotCreator is the pre-apply backup seam, satisfied by
 // lifecycle.BackupStore.CreateSnapshotOfTargets.
 type SnapshotCreator func(sourceOperation string, targets []lifecycle.BackupTarget) (lifecycle.BackupManifest, error)
@@ -80,6 +88,9 @@ func Run(in RunInput) (RunResult, error) {
 	if in.Backup == nil {
 		return RunResult{}, ErrNoBackup
 	}
+	if err := protectsEveryTarget(in.Plan, in.Apply.Targets); err != nil {
+		return RunResult{}, err
+	}
 	before, err := TakeSnapshot(in.Plan.Tracked)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("measure %d tracked paths before replay: %w", len(in.Plan.Tracked), err)
@@ -95,15 +106,27 @@ func Run(in RunInput) (RunResult, error) {
 	// Mode assertion is part of the mutation pass and runs before the closing
 	// snapshot, so a mode a writer left behind is corrected rather than merely
 	// reported as drift on every run.
-	// Both failure paths below leave the diff unmeasured, which is not evidence
-	// that nothing changed: the applier already ran, so the record is still written.
+	//
+	// Neither failure below records anything. That reverses an earlier decision,
+	// which wrote the record on both paths on the grounds that an unmeasured diff
+	// is not evidence that nothing changed. That premise still holds -- the
+	// applier already ran, and the report says so -- but the record is not a log
+	// of attempts: ManagedAssetDigest is a claim that this machine holds the asset
+	// set the digest names, and a run that never asserted a mode or never measured
+	// what it produced has no evidence for that claim. Advancing it anyway lets the
+	// digest run ahead of the machine, and the next run reads it back as convergence.
+	//
+	// The rule is therefore temporal, not a state: the digest is written only
+	// after a sufficient final measurement, and never marked pending, failed or
+	// attempted. A second persisted state would have to be interpreted, migrated
+	// and kept honest by every later reader; leaving the previous digest in place
+	// needs none of that, and the next run re-measures from scratch anyway.
 	if err := EnforceModes(in.Plan.Tracked); err != nil {
-		return result, errors.Join(err, in.Bookkeeping.record())
+		return result, err
 	}
 	after, err := TakeSnapshot(in.Plan.Tracked)
 	if err != nil {
-		measured := fmt.Errorf("measure %d tracked paths after replay: %w", len(in.Plan.Tracked), err)
-		return result, errors.Join(measured, in.Bookkeeping.record())
+		return result, fmt.Errorf("measure %d tracked paths after replay: %w", len(in.Plan.Tracked), err)
 	}
 	changed := Diff(before, after)
 	result.Report = attributeChanges(result.Report, in.Plan.Tracked, changed)
@@ -118,6 +141,28 @@ func Run(in RunInput) (RunResult, error) {
 	return result, errors.Join(recorded, verifyApplied(after, in.Plan.Tracked, in.Apply.Targets))
 }
 
+// protectsEveryTarget checks that the plan and the applier describe the same
+// run, before anything is backed up or mutated.
+//
+// The check is agent ownership, and it reuses what the planner already recorded:
+// every tracked path carries the agent it belongs to, so an agent about to be
+// mutated with no tracked path of its own is an agent this backup cannot cover.
+// No second identity is introduced for the pairing -- a run token or a plan ID
+// would be one more thing to keep in step with the very lists it claims to
+// bind. An empty target list mutates nothing and is therefore covered trivially.
+func protectsEveryTarget(plan Plan, targets []AgentTarget) error {
+	protected := make(map[string]bool, len(plan.Tracked))
+	for _, tracked := range plan.Tracked {
+		protected[tracked.Agent] = true
+	}
+	for _, target := range targets {
+		if !protected[target.ID] {
+			return fmt.Errorf("agent %q: %w", target.ID, ErrUnprotectedAgent)
+		}
+	}
+	return nil
+}
+
 // convergedWithoutApplying is the honest report of a run that found nothing to
 // do: every agent is already in its desired state and no path changed. The
 // claim is measured, not assumed — it comes from comparing the machine against
@@ -125,7 +170,12 @@ func Run(in RunInput) (RunResult, error) {
 func convergedWithoutApplying(targets []AgentTarget) Report {
 	report := Report{Agents: make([]AgentResult, 0, len(targets)), Changed: []string{}}
 	for _, target := range targets {
-		report.Agents = append(report.Agents, AgentResult{Agent: target.ID, Converged: true, Changed: []string{}})
+		// Completed is empty rather than the whole order: this run skipped the
+		// applier, so no component executed. Convergence here is measured against
+		// the plan's desired digests, not claimed from work that was never done.
+		report.Agents = append(report.Agents, AgentResult{
+			Agent: target.ID, Converged: true, Changed: []string{}, Completed: []string{},
+		})
 	}
 	return report
 }
