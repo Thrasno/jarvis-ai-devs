@@ -10,16 +10,16 @@
 package sync
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 // CloudManualActionMessage is the report line for a cloud portion sync cannot
 // carry out itself.
-const CloudManualActionMessage = "Cloud scope is recorded but ~/.jarvis/sync.json is missing or unreadable: " +
+const CloudManualActionMessage = "Cloud scope is recorded but ~/.jarvis/sync.json is missing, unreadable or incomplete: " +
 	"run `jarvis login` to restore the cloud portion. The local replay continues."
 
 // CloudManualAction reports the manual step the cloud portion needs, or an
@@ -33,8 +33,12 @@ func CloudManualAction(home string, scope state.Scope) string {
 	if err != nil {
 		return CloudManualActionMessage
 	}
-	fields := map[string]any{}
-	if json.Unmarshal(credentials, &fields) != nil {
+	// Parseability is not the question. A truncated or emptied sync.json — the
+	// shape a half-finished `jarvis login` leaves behind — still decodes, and
+	// `null` decodes without an error at all, so a syntax check would call an
+	// unusable cloud portion fine and never name the command that repairs it.
+	// The judgement belongs to the writer's own contract, so ask it directly.
+	if !config.SyncCredentialsComplete(credentials) {
 		return CloudManualActionMessage
 	}
 	return ""
