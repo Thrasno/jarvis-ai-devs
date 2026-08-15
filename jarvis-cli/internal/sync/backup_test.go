@@ -7,9 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/lifecycle"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 // mutatingRunner writes to a real path on its first component, so a backup taken
@@ -37,7 +40,7 @@ func planWithTrackedFile(t *testing.T, home, content string) (Plan, string) {
 	if err := os.WriteFile(tracked, []byte(content), 0o644); err != nil {
 		t.Fatalf("write tracked file: %v", err)
 	}
-	return Plan{Tracked: []TrackedPath{{Path: tracked, Mode: ManagedFileMode}}}, tracked
+	return Plan{Tracked: []TrackedPath{{Agent: "claude", Path: tracked, Mode: ManagedFileMode}}}, tracked
 }
 
 // The backup is only a recovery path if it holds what was on disk BEFORE replay
@@ -84,6 +87,13 @@ func TestRun_ArchivesTrackedPathsAsTheyWereBeforeTheFirstMutation(t *testing.T) 
 func TestRun_BackupFailureBlocksEveryMutation(t *testing.T) {
 	home := t.TempDir()
 	plan, tracked := planWithTrackedFile(t, home, "hand-written notes")
+	// Both agents this run would mutate are tracked, so the pair is coherent and
+	// the backup is the only thing that fails.
+	plan.Tracked = append(plan.Tracked, TrackedPath{
+		Agent: "opencode",
+		Path:  filepath.Join(home, ".config", "opencode", "AGENTS.md"),
+		Mode:  ManagedFileMode,
+	})
 	boom := errors.New("backup archive is not writable")
 	runner := &recordingRunner{}
 
@@ -194,6 +204,65 @@ func TestRun_RefusesToMutateWithoutABackupSeam(t *testing.T) {
 	}
 	if len(runner.calls) != 0 {
 		t.Fatalf("no component may run, got calls %v", runner.calls)
+	}
+}
+
+// Plan and Apply arrive as two independent fields, and nothing about their
+// shapes forces them to describe the same run. A caller that plans one agent's
+// paths and applies another's defeats the archive completely: the applier still
+// mutates, and the snapshot holds nothing it overwrote. The pair is therefore
+// cross-checked before the backup is taken and before any component runs.
+func TestRun_RefusesToMutateAnAgentThePlanDoesNotTrack(t *testing.T) {
+	home := t.TempDir()
+	plan, tracked := planWithTrackedFile(t, home, "hand-written notes")
+	runner := &recordingRunner{}
+	backups := 0
+
+	result, err := Run(RunInput{
+		Plan:  plan,
+		Apply: ApplyInput{Runner: runner, Targets: []AgentTarget{{ID: "claude"}, {ID: "opencode"}}},
+		Backup: func(string, []lifecycle.BackupTarget) (lifecycle.BackupManifest, error) {
+			backups++
+			return lifecycle.BackupManifest{}, nil
+		},
+	})
+
+	if !errors.Is(err, ErrUnprotectedAgent) {
+		t.Fatalf("err = %v, want %v", err, ErrUnprotectedAgent)
+	}
+	if !strings.Contains(err.Error(), "opencode") {
+		t.Fatalf("err = %q, want it to name the agent the plan does not track", err)
+	}
+	if backups != 0 || len(runner.calls) != 0 {
+		t.Fatalf("a mismatched pair must not back up or apply anything: %d backups, calls %v", backups, runner.calls)
+	}
+	if len(result.Report.Agents) != 0 {
+		t.Fatalf("a refused run reports no agent outcome: %+v", result.Report.Agents)
+	}
+	if got, err := os.ReadFile(tracked); err != nil || string(got) != "hand-written notes" {
+		t.Fatalf("tracked path was mutated by a refused run: got %q err %v", got, err)
+	}
+}
+
+// The other half of the cross-check: the pair production actually builds must
+// pass it. Both halves are projected from one manifest, so a guard that refused
+// them would block every real `jarvis sync` rather than a mismatched caller.
+func TestRun_AcceptsThePlanAndTargetsProjectedFromOneManifest(t *testing.T) {
+	in := ReplayInput{
+		Root: t.TempDir(),
+		State: replayableState(
+			state.Agent{ID: "claude", InstructionsPath: ".claude/CLAUDE.md"},
+			state.Agent{ID: "opencode", InstructionsPath: ".config/opencode/AGENTS.md"},
+		),
+		Templates: jarvis.TemplatesFS,
+	}
+
+	plan, err := BuildPlan(PlanInputFor(in))
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if err := protectsEveryTarget(plan, TargetsFor(in)); err != nil {
+		t.Fatalf("the manifest's own plan and targets must pair: %v", err)
 	}
 }
 
