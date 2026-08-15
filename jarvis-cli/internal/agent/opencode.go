@@ -413,15 +413,13 @@ func hasCompleteHiveCloudCreds(entry MCPEntry) bool {
 		strings.TrimSpace(entry.Password) != ""
 }
 
-// WriteInstructions writes ~/.config/opencode/AGENTS.md with Layer1+Layer2 sentinel blocks.
+// WriteInstructions writes ~/.config/opencode/AGENTS.md with Layer1+Layer2
+// sentinel blocks.
 //
-// Decision logic:
-//   - File absent or empty → render fresh via RenderAGENTSMd ("created")
-//   - File exists with Jarvis sentinels → patch in-place via PatchFile ("updated")
-//   - File exists without sentinels → render fresh via RenderAGENTSMd, replacing foreign content ("replaced")
-//
-// After determining the final content, the Hive protocol is injected via InjectProtocol.
-// Any legacy gentle-ai protocol blocks are cleaned up first via CleanupOldProtocol.
+// This agent reads its file and writes it; how the content is composed belongs
+// to ComposeInstructions, which is the single description of a managed
+// instruction file that the replay planner also reads. See the note on
+// ClaudeAgent.WriteInstructions for why it is not restated here.
 func (a *OpenCodeAgent) WriteInstructions(layer1, layer2 string, skills []config.SkillInfo) error {
 	path := a.instructionsPath()
 
@@ -430,33 +428,10 @@ func (a *OpenCodeAgent) WriteInstructions(layer1, layer2 string, skills []config
 		return fmt.Errorf("read AGENTS.md: %w", err)
 	}
 
-	var content string
-	if os.IsNotExist(err) || len(existing) == 0 {
-		// Create new file from scratch using the canonical template renderer.
-		content, err = config.RenderAGENTSMd(a.templatesFS, layer1, layer2, "", skills)
-		if err != nil {
-			return fmt.Errorf("render AGENTS.md: %w", err)
-		}
-	} else {
-		existingStr := string(existing)
-		if err := ValidateSentinels(existingStr); err == nil {
-			// Sentinels present — patch in-place (preserves user content outside blocks).
-			content, err = PatchFile(existingStr, layer1, layer2)
-			if err != nil {
-				return fmt.Errorf("patch AGENTS.md sentinels: %w", err)
-			}
-		} else {
-			// Sentinels missing — discard foreign content and render a clean Jarvis file.
-			content, err = config.RenderAGENTSMd(a.templatesFS, layer1, layer2, "", skills)
-			if err != nil {
-				return fmt.Errorf("render AGENTS.md (replace): %w", err)
-			}
-		}
+	content, err := ComposeInstructions("opencode", a.templatesFS, existing, layer1, layer2, skills)
+	if err != nil {
+		return err
 	}
-
-	// Clean up legacy gentle-ai protocol blocks and inject Hive protocol
-	content = CleanupOldProtocol(content)
-	content = InjectProtocol(content, getHiveProtocol())
 
 	return writeFileAtomic(path, []byte(content), 0644)
 }
