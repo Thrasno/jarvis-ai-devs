@@ -30,6 +30,7 @@ jarvis reconcile --provider all --yes
 | Dashboard login fails | Invalid credentials, missing server configuration, or expired session. | Check Hive API health, credentials, `JWT_SECRET`, and deployment logs. |
 | `hive-daemon` stops at `pending migration restore` on every start | A scheduled restore replaced the database but could not clear its own request. | Follow [Recovery from a stuck pending restore](#recovery-from-a-stuck-pending-restore). |
 | `jarvis sync` reports nothing to replay | `~/.jarvis/state.yaml` records no configured agents. | Run `jarvis`. Sync never redetects agents from the filesystem. |
+| `jarvis sync` keeps rebuilding an agent you removed | `~/.jarvis/state.yaml` still records it. Sync replays what the manifest records, and never drops an entry because the agent's files went missing — an unobserved record is the only proof that authorizes cleaning it up later. | `jarvis config forget-agent <agent>`. Re-running `jarvis` will not clear it. |
 | `jarvis sync accepts no flags` | A flag was passed, including an inherited one such as `--no-tui`. | Run `jarvis sync` with no arguments. Nothing was written. |
 | `jarvis sync` names `jarvis login` | Scope is `local+cloud` but `~/.jarvis/sync.json` is missing or unreadable. | Run `jarvis login`. The local replay already completed. |
 | `jarvis sync` says converged but something is still wrong | The affected file may not be a tracked path. | See [Known gaps in `jarvis sync`](#known-gaps-in-jarvis-sync). |

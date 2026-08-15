@@ -28,6 +28,7 @@ jarvis timeline --project <project>
 | `jarvis uninstall` | Yes, advanced | Remove managed lifecycle assets. | `jarvis uninstall --provider all --dry-run` |
 | `jarvis config` | Yes | View current Jarvis configuration. | `jarvis config` |
 | `jarvis config set` | Yes | Set supported keys: `preset`, `api_url`, `email`. | `jarvis config set api_url https://hive.example.com` |
+| `jarvis config forget-agent` | Yes | Remove one agent from `~/.jarvis/state.yaml` so `jarvis sync` stops managing its files. Deletes no files. | `jarvis config forget-agent opencode` |
 | `jarvis login` | Yes | Re-authenticate with Hive API credentials. | `jarvis login` |
 | `jarvis persona set` | Yes | Change active persona preset and regenerate managed config. | `jarvis persona set default` |
 | `jarvis init` | Yes | Create or refresh project `.jarvis/skill-registry.md`. | `jarvis init` |
