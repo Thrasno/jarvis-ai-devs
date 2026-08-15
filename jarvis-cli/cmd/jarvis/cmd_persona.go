@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 var personaCmd = &cobra.Command{
@@ -31,17 +33,17 @@ var personaSetCmd = &cobra.Command{
 			return fmt.Errorf("resolve preset %q: %w", presetName, err)
 		}
 
-		cfg, err := config.Load()
+		manifest, err := loadManifestForPersona()
 		if err != nil {
-			return fmt.Errorf("load config: %w", err)
+			return err
 		}
 
 		skillList, err := skills.ListSkills(jarvis.SkillsFS)
 		if err != nil {
 			return fmt.Errorf("list skills: %w", err)
 		}
-		selectedSkills := make(map[string]bool, len(cfg.SelectedSkills))
-		for _, id := range cfg.SelectedSkills {
+		selectedSkills := make(map[string]bool, len(manifest.Skills))
+		for _, id := range manifest.Skills {
 			selectedSkills[id] = true
 		}
 		var skillInfos []config.SkillInfo
@@ -60,8 +62,8 @@ var personaSetCmd = &cobra.Command{
 		if err := applyPersonaProfile(agents, resolved, persona.ApplyOptions{
 			Layer1:               config.Layer1Content(),
 			Skills:               skillInfos,
-			PreviousPresetSlug:   cfg.PersonaPreset,
-			PreviousPresetSource: normalizePersonaPresetSource(cfg.PersonaPresetSource),
+			PreviousPresetSlug:   manifest.Persona,
+			PreviousPresetSource: normalizePersonaPresetSource(string(manifest.PersonaSource)),
 			PersistConfig:        true,
 		}); err != nil {
 			return fmt.Errorf("apply persona preset %q: %w", resolved.Slug, err)
@@ -111,4 +113,32 @@ func normalizePersonaPresetSource(value string) persona.PresetSource {
 
 func init() {
 	personaCmd.AddCommand(personaSetCmd)
+}
+
+// loadManifestForPersona reads the desired state this command renders from,
+// migrating first for the same reason `jarvis sync` does.
+//
+// A machine upgrading into this version still has its persona and skills in
+// config.yaml and no manifest at all. Reading the manifest without migrating
+// would see an empty one and render the Skills section of every instruction
+// file from an empty selection, silently dropping every skill the user chose.
+// The migration is one-way and returns early once a manifest exists, so this
+// costs one stat call on every later run.
+func loadManifestForPersona() (*state.State, error) {
+	migration, err := state.Migrate()
+	if err != nil {
+		return nil, fmt.Errorf("migrate configuration into the desired-state manifest: %w", err)
+	}
+	if migration.Notice != "" {
+		fmt.Println(migration.Notice)
+	}
+
+	manifest, err := state.Load()
+	if errors.Is(err, state.ErrNotFound) {
+		return state.New(), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load the desired-state manifest: %w", err)
+	}
+	return manifest, nil
 }

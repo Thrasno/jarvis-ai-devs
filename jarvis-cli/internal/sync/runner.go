@@ -23,14 +23,15 @@ type AgentsSubFS func(agentID string) (fs.FS, error)
 // ConfigureAgentFunc is the artifact-pipeline seam, whose parameters are
 // documented on the function that satisfies it, agentapply.ConfigureAgent.
 // Keeping it a seam lets replay be driven without installing anything.
-type ConfigureAgentFunc func(agent.Agent, *config.AppConfig, agent.MCPEntry, agent.MCPEntry, fs.FS, []string, fs.FS, agentapply.StatuslineDecision) ([]string, error)
+type ConfigureAgentFunc func(agent.Agent, state.PhaseModels, agent.MCPEntry, agent.MCPEntry, fs.FS, []string, fs.FS, agentapply.StatuslineDecision) ([]string, error)
 
 // ReplayInput is the single source both halves of a replay pass read.
 //
 // It exists to close one hazard: the planner digests the skill files it renders
-// from Config while the installer writes the files it renders from the config
-// the runner hands it, so two different values would make the desired digest and
-// the actual write disagree and every run report drift forever. One struct feeds
+// from the per-phase model assignments while the installer writes the files it
+// renders from the assignments the runner hands it, so two different values would
+// make the desired digest and the actual write disagree and every run report
+// drift forever. Both now read State.PhaseModels off this one struct, which feeds
 // PlanInputFor and NewRunner, so a caller has no shape here to supply two.
 //
 // Nothing on this path may call config.Save(): its bridge takes state.WithLock
@@ -45,7 +46,6 @@ type ReplayInput struct {
 	SkillsFS fs.FS
 	HooksFS  fs.FS
 	AgentsFS AgentsSubFS
-	Config   *config.AppConfig
 	Skills   []config.SkillInfo
 	Layer1   string
 	Layer2   string
@@ -66,7 +66,6 @@ func PlanInputFor(in ReplayInput) PlanInput {
 		Skills:    in.Skills,
 		SkillsFS:  in.SkillsFS,
 		HooksFS:   in.HooksFS,
-		Config:    in.Config,
 	}
 }
 
@@ -100,18 +99,18 @@ func TargetsFor(in ReplayInput) []AgentTarget {
 // reported at models. The agent is still named exactly, and the last three
 // components keep their own precise attribution.
 type Runner struct {
-	resolve    AgentResolver
-	configure  ConfigureAgentFunc
-	config     *config.AppConfig
-	skills     []config.SkillInfo
-	skillIDs   []string
-	skillsFS   fs.FS
-	agentsFS   AgentsSubFS
-	layer1     string
-	layer2     string
-	ownership  InstructionOwnership
-	mcps       MCPComponent
-	statusline StatuslineComponent
+	resolve     AgentResolver
+	configure   ConfigureAgentFunc
+	phaseModels state.PhaseModels
+	skills      []config.SkillInfo
+	skillIDs    []string
+	skillsFS    fs.FS
+	agentsFS    AgentsSubFS
+	layer1      string
+	layer2      string
+	ownership   InstructionOwnership
+	mcps        MCPComponent
+	statusline  StatuslineComponent
 }
 
 // NewRunner builds the production runner from the same input the planner reads.
@@ -123,7 +122,6 @@ func NewRunner(in ReplayInput) *Runner {
 	runner := &Runner{
 		resolve:   in.Resolve,
 		configure: configure,
-		config:    in.Config,
 		skills:    in.Skills,
 		skillsFS:  in.SkillsFS,
 		agentsFS:  in.AgentsFS,
@@ -132,6 +130,7 @@ func NewRunner(in ReplayInput) *Runner {
 		mcps:      MCPComponent{Resolve: in.Resolve, Deps: in.MCPDeps},
 	}
 	if in.State != nil {
+		runner.phaseModels = in.State.PhaseModels
 		runner.skillIDs = in.State.Skills
 		runner.ownership = NewInstructionOwnership(in.State.InstalledAgents)
 		runner.statusline = StatuslineComponent{Resolve: in.Resolve, HooksFS: in.HooksFS, Consent: in.State.Statusline}
@@ -153,7 +152,7 @@ func (r *Runner) ApplyModels(target AgentTarget) error {
 	// The statusline is the last component and runs after the instruction write,
 	// so this pass is told explicitly not to touch it.
 	if _, err := r.configure(
-		resolved, r.config, agent.MCPEntry{}, agent.MCPEntry{},
+		resolved, r.phaseModels, agent.MCPEntry{}, agent.MCPEntry{},
 		r.skillsFS, r.skillIDs, agentsSubFS,
 		agentapply.StatuslineDecision{Install: false, Confirm: func() bool { return false }},
 	); err != nil {

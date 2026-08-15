@@ -1373,7 +1373,7 @@ func TestGeneratedRuntimeAcceptance_ConfigArtifactsProveRolloutSafety(t *testing
 	if err := os.MkdirAll(openCode.ConfigDir(), 0755); err != nil {
 		t.Fatalf("mkdir opencode dir: %v", err)
 	}
-	if err := openCode.MergeGeneratedConfig(defaultRuntimeConfig()); err != nil {
+	if err := openCode.MergeGeneratedConfig(defaultRuntimePhaseModels()); err != nil {
 		t.Fatalf("OpenCode MergeGeneratedConfig: %v", err)
 	}
 	opencodeSettings := readJSONFile(t, filepath.Join(openCode.ConfigDir(), "opencode.json"))
@@ -1431,7 +1431,7 @@ func TestGeneratedRuntimeAcceptance_ConfigArtifactsProveRolloutSafety(t *testing
 	if err := claude.InstallPromptHook(testHooksFS); err != nil {
 		t.Fatalf("InstallPromptHook: %v", err)
 	}
-	if err := claude.MergeGeneratedConfig(defaultRuntimeConfig()); err != nil {
+	if err := claude.MergeGeneratedConfig(defaultRuntimePhaseModels()); err != nil {
 		t.Fatalf("Claude MergeGeneratedConfig: %v", err)
 	}
 	claudeSettings := readJSONFile(t, filepath.Join(claude.ConfigDir(), "settings.json"))

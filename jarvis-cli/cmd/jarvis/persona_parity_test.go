@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/tui"
 )
 
@@ -48,14 +48,7 @@ func runWizardNoTUIAndCaptureSnapshot(t *testing.T, home string, targetPreset st
 		t.Fatalf("create opencode dir for wizard flow: %v", err)
 	}
 
-	seed := &config.AppConfig{
-		PersonaPreset:       targetPreset,
-		PersonaPresetSource: "builtin",
-		Preset:              targetPreset,
-	}
-	if err := config.Save(seed); err != nil {
-		t.Fatalf("seed config for wizard flow: %v", err)
-	}
+	seedPersonaManifest(t, targetPreset, nil)
 
 	input := "\n\n\n\n\nyes\nI ACKNOWLEDGE\n"
 	if err := runWithStdinString(input, func() error {
@@ -80,15 +73,7 @@ func runPersonaSetAndCaptureSnapshot(t *testing.T, home string, targetPreset str
 		t.Fatalf("create opencode dir for persona set flow: %v", err)
 	}
 
-	seed := &config.AppConfig{
-		PersonaPreset:       "argentino",
-		PersonaPresetSource: "builtin",
-		SelectedSkills:      append([]string(nil), selectedSkills...),
-		Preset:              "argentino",
-	}
-	if err := config.Save(seed); err != nil {
-		t.Fatalf("seed config for persona set flow: %v", err)
-	}
+	seedPersonaManifest(t, "argentino", selectedSkills)
 
 	if err := personaSetCmd.RunE(personaSetCmd, []string{targetPreset}); err != nil {
 		t.Fatalf("persona set %q: %v", targetPreset, err)
@@ -97,12 +82,25 @@ func runPersonaSetAndCaptureSnapshot(t *testing.T, home string, targetPreset str
 	return readSnapshot(t, home)
 }
 
+// seedPersonaManifest records the starting persona and skills in
+// ~/.jarvis/state.yaml, which owns both.
+func seedPersonaManifest(t *testing.T, persona string, selectedSkills []string) {
+	t.Helper()
+	seed := state.New()
+	seed.Persona = persona
+	seed.PersonaSource = state.PersonaSourceBuiltin
+	seed.Skills = append([]string(nil), selectedSkills...)
+	if err := state.Save(seed); err != nil {
+		t.Fatalf("seed manifest: %v", err)
+	}
+}
+
 func readSnapshot(t *testing.T, home string) personaFlowSnapshot {
 	t.Helper()
 
-	cfg, err := config.Load()
+	manifest, err := state.Load()
 	if err != nil {
-		t.Fatalf("load config: %v", err)
+		t.Fatalf("load manifest: %v", err)
 	}
 
 	agentsPath := filepath.Join(home, ".config", "opencode", "AGENTS.md")
@@ -111,10 +109,11 @@ func readSnapshot(t *testing.T, home string) personaFlowSnapshot {
 		t.Fatalf("read %s: %v", agentsPath, err)
 	}
 
+	persona, source := manifest.ResolvedPersona()
 	return personaFlowSnapshot{
-		personaPreset:       cfg.PersonaPreset,
-		personaPresetSource: cfg.PersonaPresetSource,
-		selectedSkills:      append([]string(nil), cfg.SelectedSkills...),
+		personaPreset:       persona,
+		personaPresetSource: string(source),
+		selectedSkills:      append([]string(nil), manifest.Skills...),
 		agentsMD:            string(agentsBody),
 	}
 }

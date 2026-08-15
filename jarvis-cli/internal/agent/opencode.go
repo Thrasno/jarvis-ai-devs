@@ -14,6 +14,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 // Ensure OpenCodeAgent implements Agent at compile time.
@@ -44,12 +45,12 @@ func (a *OpenCodeAgent) ObserveRuntime() (sddruntime.ObservedRuntime, error) {
 	return a.ObserveRuntimeWithConfig(nil)
 }
 
-func (a *OpenCodeAgent) ObserveRuntimeWithConfig(cfg *config.AppConfig) (sddruntime.ObservedRuntime, error) {
+func (a *OpenCodeAgent) ObserveRuntimeWithConfig(models *state.PhaseModels) (sddruntime.ObservedRuntime, error) {
 	plan, err := a.RuntimePlan()
 	if err != nil {
 		return sddruntime.ObservedRuntime{}, err
 	}
-	return observeRuntimeWithConfig(a.ConfigDir(), plan, cfg)
+	return observeRuntimeWithConfig(a.ConfigDir(), plan, models)
 }
 
 func (a *OpenCodeAgent) IsInstalled() bool {
@@ -98,7 +99,7 @@ type opencodeGeneratedAgent struct {
 // server entries: share-disabled behavior, global safety permissions, and the
 // SDD/Judgment Day agent topology. The patch is rendered from the embedded
 // template and deep-merged so user-owned keys and existing MCP servers remain.
-func (a *OpenCodeAgent) MergeGeneratedConfig(cfg *config.AppConfig) error {
+func (a *OpenCodeAgent) MergeGeneratedConfig(models state.PhaseModels) error {
 	existingBytes, err := readFileOrEmpty(a.settingsPath())
 	if err != nil {
 		return fmt.Errorf("read opencode.json: %w", err)
@@ -108,7 +109,7 @@ func (a *OpenCodeAgent) MergeGeneratedConfig(cfg *config.AppConfig) error {
 		return fmt.Errorf("inspect opencode.json schema: %w", err)
 	}
 
-	patchBytes, err := a.renderGeneratedConfigPatch(cfg, includeSchema)
+	patchBytes, err := a.renderGeneratedConfigPatch(models, includeSchema)
 	if err != nil {
 		return err
 	}
@@ -127,12 +128,12 @@ func cleanupOpenCodeGeneratedConfig(configBytes []byte) ([]byte, error) {
 	return configBytes, nil
 }
 
-func (a *OpenCodeAgent) renderGeneratedConfigPatch(cfg *config.AppConfig, includeSchema bool) ([]byte, error) {
-	assignments, err := sddruntime.ResolveOpenCodeProviderQualifiedAssignments(cfg)
+func (a *OpenCodeAgent) renderGeneratedConfigPatch(models state.PhaseModels, includeSchema bool) ([]byte, error) {
+	assignments, err := sddruntime.ResolveOpenCodeProviderQualifiedAssignments(models)
 	if err != nil {
 		return nil, fmt.Errorf("resolve OpenCode model assignments: %w", err)
 	}
-	variants, err := sddruntime.ResolveVariantsForPlatform(sddruntime.PlatformOpenCode, cfg)
+	variants, err := sddruntime.ResolveVariantsForPlatform(sddruntime.PlatformOpenCode, models)
 	if err != nil {
 		return nil, fmt.Errorf("resolve OpenCode model variants: %w", err)
 	}
@@ -472,12 +473,12 @@ func (a *OpenCodeAgent) InstallSkills(skillsFS fs.FS, selected []string) error {
 	return installSkillsFromFS(dir, skillsFS, selected)
 }
 
-func (a *OpenCodeAgent) InstallSkillsWithConfig(skillsFS fs.FS, selected []string, cfg *config.AppConfig) error {
+func (a *OpenCodeAgent) InstallSkillsWithConfig(skillsFS fs.FS, selected []string, models state.PhaseModels) error {
 	dir := a.skillsDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create skills dir: %w", err)
 	}
-	sectionClass, err := skillModelSectionClassForPlatform(sddruntime.PlatformOpenCode, cfg)
+	sectionClass, err := skillModelSectionClassForPlatform(sddruntime.PlatformOpenCode, models)
 	if err != nil {
 		return fmt.Errorf("resolve skill model sections: %w", err)
 	}

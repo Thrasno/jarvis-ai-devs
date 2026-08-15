@@ -4,19 +4,19 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 func TestResolvePhaseModels(t *testing.T) {
 	tests := []struct {
 		name   string
-		cfg    *config.AppConfig
-		assert func(t *testing.T, got map[string]config.PhaseModelSelection)
+		models state.PhaseModels
+		assert func(t *testing.T, got map[string]state.PhaseModelSelection)
 	}{
 		{
-			name: "nil config returns full defaults",
-			cfg:  nil,
-			assert: func(t *testing.T, got map[string]config.PhaseModelSelection) {
+			name:   "nil config returns full defaults",
+			models: state.PhaseModels{},
+			assert: func(t *testing.T, got map[string]state.PhaseModelSelection) {
 				t.Helper()
 				if len(got) != len(DefaultContract().Phases) {
 					t.Fatalf("expected %d resolved phases, got %d", len(DefaultContract().Phases), len(got))
@@ -28,10 +28,10 @@ func TestResolvePhaseModels(t *testing.T) {
 		},
 		{
 			name: "partial map fills missing entries from defaults",
-			cfg: &config.AppConfig{SDD: config.SDDConfig{PhaseModels: map[string]config.PhaseModelSelection{
+			models: state.PhaseModels{Aliases: map[string]state.PhaseModelSelection{
 				"default": {OpenCode: "opus"},
-			}}},
-			assert: func(t *testing.T, got map[string]config.PhaseModelSelection) {
+			}},
+			assert: func(t *testing.T, got map[string]state.PhaseModelSelection) {
 				t.Helper()
 				if got["default"].OpenCode != "opus" {
 					t.Fatalf("expected persisted opencode default to be preserved, got %+v", got["default"])
@@ -46,16 +46,16 @@ func TestResolvePhaseModels(t *testing.T) {
 		},
 		{
 			name: "unknown phase and invalid catalog values are normalized",
-			cfg: &config.AppConfig{SDD: config.SDDConfig{PhaseModels: map[string]config.PhaseModelSelection{
+			models: state.PhaseModels{Aliases: map[string]state.PhaseModelSelection{
 				"unknown-phase": {OpenCode: "sonnet", Claude: "sonnet"},
 				"sdd-apply":     {OpenCode: "NOT-IN-CATALOG", Claude: "ALSO-BAD"},
-			}}},
-			assert: func(t *testing.T, got map[string]config.PhaseModelSelection) {
+			}},
+			assert: func(t *testing.T, got map[string]state.PhaseModelSelection) {
 				t.Helper()
 				if _, ok := got["unknown-phase"]; ok {
 					t.Fatal("expected unknown phase to be ignored")
 				}
-				defaults := DefaultContract().DefaultPhaseModels["sdd-apply"]
+				defaults := state.PhaseModelSelection(DefaultContract().DefaultPhaseModels["sdd-apply"])
 				if got["sdd-apply"] != defaults {
 					t.Fatalf("expected invalid values to fallback to defaults, got %+v want %+v", got["sdd-apply"], defaults)
 				}
@@ -65,14 +65,14 @@ func TestResolvePhaseModels(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ResolvePhaseModels(tt.cfg)
+			got := ResolvePhaseModels(tt.models)
 			tt.assert(t, got)
 		})
 	}
 }
 
 func TestResolveOpenCodeProviderQualifiedAssignments_DefaultsAreProviderQualified(t *testing.T) {
-	got, err := ResolveOpenCodeProviderQualifiedAssignments(nil)
+	got, err := ResolveOpenCodeProviderQualifiedAssignments(state.PhaseModels{})
 	if err != nil {
 		t.Fatalf("ResolveOpenCodeProviderQualifiedAssignments: %v", err)
 	}
@@ -113,16 +113,16 @@ func TestDefaultPhaseRoutesForPlatform_IncludesInitAndOnboard(t *testing.T) {
 }
 
 func TestResolvePhaseRoutesForPlatform_ClaudeReturnsModelAndEffort(t *testing.T) {
-	cfg := &config.AppConfig{SDD: config.SDDConfig{
-		PhaseModels: map[string]config.PhaseModelSelection{
+	models := state.PhaseModels{
+		Aliases: map[string]state.PhaseModelSelection{
 			"sdd-design": {Claude: "haiku"},
 		},
-		ClaudePhaseModels: map[string]config.ClaudeModelAssignment{
+		Claude: map[string]state.ClaudeModelAssignment{
 			"sdd-design": {Effort: "max"},
 		},
-	}}
+	}
 
-	routes, err := ResolvePhaseRoutesForPlatform(PlatformClaude, cfg)
+	routes, err := ResolvePhaseRoutesForPlatform(PlatformClaude, models)
 	if err != nil {
 		t.Fatalf("ResolvePhaseRoutesForPlatform: %v", err)
 	}

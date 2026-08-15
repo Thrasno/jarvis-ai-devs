@@ -36,10 +36,13 @@ Chain strategy: pending
 - [x] 1.7 RED: `internal/state/migrate_test.go` — v2 `config.yaml` fixture → migration writes `state.yaml`, bumps `config.yaml` to `schema_version: 3`, fields absent from `config.yaml` after (One-Way Field Migration, Store Disjointness).
 - [x] 1.8 RED: migration runs before validation early-return; notice withheld until write is durable (Migration precedes validation blocking; Notice withheld).
 - [x] 1.9 GREEN: `internal/state/migrate.go` — one-way move, durable-write-gated notice, runs pre-return.
-- [ ] 1.10 GREEN: `internal/config/config.go` — `schema_version: 3`, remove migrated fields. **Partially unblocked by PR 7a — see Phase 1 Blocker below.** The store-level move is done and `state.yaml` now owns the replay fields at runtime; what remains is deleting them from the `AppConfig` struct, which still waits on the package-by-package consumer cutover.
+- [x] 1.10 GREEN: `internal/config/config.go` — `schema_version: 3`, migrated fields removed from the `AppConfig` struct. Landed in two stages after the consumer cutover (see "Task 1.10: how it landed" below). `internal/config/bridge.go` and `phase_models.go` are deleted, and `internal/config` no longer imports `internal/state` at all: the two stores are now disjoint in the import graph as well as on disk.
 - [x] 1.11 Refactor: dedupe shared YAML helpers between `state.go`/`config.go` once green.
 
-### Phase 1 Blocker: task 1.10 does not fit this slice
+### Phase 1 Blocker: task 1.10 does not fit this slice — RESOLVED
+
+**Resolved.** The record below is kept as written; the cutover it describes is
+done and task 1.10 is complete. See "Task 1.10: how it landed" for what shipped.
 
 `state.Migrate()` strips the replay fields from `config.yaml` on disk, so the
 store-level disjointness the spec requires is already satisfied and proven by
@@ -72,6 +75,58 @@ slice that calls `Migrate()`, not optional cleanup.
 - [x] 7a.2 RED/GREEN: `state.Migrate()` leaves an existing manifest alone, and
   `InstalledAgentsFrom`/`ReplayConfigKeys` are shared so the two cannot disagree.
   `config.Load()` still serves every replay field after `Migrate()` runs.
+
+### Task 1.10: how it landed
+
+The bridge was always scaffolding. Removing it took two stages.
+
+**Stage 1 — consumer cutover.** Every production read and write of the replay
+fields outside `internal/config` and `internal/state` moved onto the manifest:
+both wizard front ends, the cockpit, `jarvis config`, `internal/persona`, and the
+runtime verification fallback in `internal/agent`. The wizard now edits a working
+`*state.State` and commits it through `state.Update`, sequenced with `config.Save`
+and never nested inside it, because the manifest lock is fail-fast and
+non-reentrant.
+
+**Stage 2 — the amputation.**
+
+- `internal/config/bridge.go` and `internal/config/phase_models.go` are deleted,
+  along with `applyStateManifest`, `saveStateManifest`,
+  `marshalWithoutReplayFields` and `AppConfig.PhaseModelsForState`.
+- `AppConfig` lost `PersonaPreset`, `PersonaPresetSource`, `Preset`,
+  `SelectedSkills`, `ConfiguredAgents`, `Scope`, `SDD` and `Install.Agents`.
+  `Install.Mode` and `Install.Completed` stayed: they describe config.yaml's own
+  history rather than desired state to replay.
+- `config.currentSchemaVersion` is 3.
+- The duplicated type pairs collapsed. `PhaseModelSelection`,
+  `OpenCodeModelAssignment`, `ClaudeModelAssignment`, `SetupScope` and
+  `AgentState` are gone from `internal/config`; `internal/state` owns them, and
+  `sddruntime.Contract.DefaultPhaseModels` follows.
+- The defaults did not evaporate with the duplication. `internal/state` owns them
+  now: `DefaultPersona`, `State.ResolvedPersona` and `State.ResolvedScope`. The
+  scope default depends on a stored cloud link, which config legitimately still
+  owns, so it arrives through the explicit `AppConfig.HasStoredCloudLink` seam
+  rather than being read across the boundary.
+- Reconfigure readiness became a joint question. `IsReadyForReconfigure` and
+  `ConfigStatus` take a `config.RecordedInstall` built from
+  `State.RecordsCompleteInstall` and `State.RecordsAnyState`. The unused
+  `config.IsConfigured()` was removed rather than given a new signature.
+- `install.completed` is no longer self-referential. It used to be recomputed
+  from `IsReadyForReconfigure` on every load and save while that predicate itself
+  required it, so a save before the manifest was populated persisted `false` and
+  the machine could never report ready again. It is now recorded by the installer
+  and only read. `TestInstallCompleted_IsNotSticky` guards it.
+- `config.Save` preserves keys the struct does not spell. Without that, a plain
+  load-then-save on a machine that has not migrated yet would erase the replay
+  keys before `state.Migrate()` ever saw them; `state.Migrate` also stopped
+  trusting `schema_version` alone, because that same save advances it while the
+  keys are still in the file. `TestSaveThenMigrate_DoesNotStrandReplayFieldsOnAnUnmigratedMachine`
+  and `TestMigrate_StillMovesReplayFieldsFromASchema3ConfigThatStillCarriesThem`
+  cover both halves.
+- `jarvis config set preset` gained the migrate-before-write guard `jarvis persona
+  set` had to learn in `d687739a`: writing the manifest without migrating first
+  created one carrying only the persona, after which migration would find a
+  manifest already in place and never carry the skills or agents across.
 
 ## Phase 2: Read-Only Planner (PR 2)
 

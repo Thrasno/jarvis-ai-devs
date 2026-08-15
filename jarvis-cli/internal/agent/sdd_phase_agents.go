@@ -8,8 +8,8 @@ import (
 	"text/template"
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 type SDDPhaseAgentDefinition struct {
@@ -157,7 +157,7 @@ func withClaudeHiveMCPTools(tools ...string) []string {
 	return append(append([]string{}, tools...), RequiredClaudeHiveMCPTools()...)
 }
 
-func RenderClaudeSDDPhaseAgents(templatesFS fs.FS, cfg *config.AppConfig) (map[string][]byte, error) {
+func RenderClaudeSDDPhaseAgents(templatesFS fs.FS, models state.PhaseModels) (map[string][]byte, error) {
 	templateBytes, err := fs.ReadFile(templatesFS, "embed/templates/claude-sdd-agent.md.tmpl")
 	if err != nil {
 		templateBytes, err = fs.ReadFile(jarvis.TemplatesFS, "embed/templates/claude-sdd-agent.md.tmpl")
@@ -165,7 +165,7 @@ func RenderClaudeSDDPhaseAgents(templatesFS fs.FS, cfg *config.AppConfig) (map[s
 			return nil, fmt.Errorf("read Claude SDD agent template: %w", err)
 		}
 	}
-	routes, err := sddruntime.ResolvePhaseRoutesForPlatform(sddruntime.PlatformClaude, cfg)
+	routes, err := sddruntime.ResolvePhaseRoutesForPlatform(sddruntime.PlatformClaude, models)
 	if err != nil {
 		return nil, fmt.Errorf("resolve Claude phase routes: %w", err)
 	}

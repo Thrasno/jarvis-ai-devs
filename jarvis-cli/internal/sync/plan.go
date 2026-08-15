@@ -150,7 +150,14 @@ func renderSkills(in PlanInput, agentID string) ([]agent.RenderedSkillFile, erro
 	if in.SkillsFS == nil {
 		return nil, fmt.Errorf("state.yaml records %d skills, for which this Jarvis version embeds no skills source", len(in.State.Skills))
 	}
-	files, err := agent.RenderSkillFilesForPlatform(in.SkillsFS, in.State.Skills, agentPlatforms[agentID], in.Config)
+	// Always non-nil, and deliberately so. RenderSkillFilesForPlatform renders
+	// verbatim for a nil models, which is right for InstallSkills but never for
+	// the planner: the installer this plan is compared against always renders
+	// with the manifest's assignments, so a verbatim plan would digest content no
+	// run ever writes and report drift forever. The manifest is the authority and
+	// it always has assignments, even empty ones.
+	models := in.State.PhaseModels
+	files, err := agent.RenderSkillFilesForPlatform(in.SkillsFS, in.State.Skills, agentPlatforms[agentID], &models)
 	if err != nil {
 		return nil, fmt.Errorf("render skills for agent %q: %w", agentID, err)
 	}
@@ -174,9 +181,6 @@ type PlanInput struct {
 	// to discover what a previous version installed.
 	SkillsFS fs.FS
 	HooksFS  fs.FS
-	// Config supplies the per-phase model assignments the skill files render
-	// against. A nil Config renders skill files verbatim, matching InstallSkills.
-	Config *config.AppConfig
 }
 
 // renderInstructions renders one agent's managed instruction file.

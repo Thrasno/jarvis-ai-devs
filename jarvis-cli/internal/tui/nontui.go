@@ -18,6 +18,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 var (
@@ -38,32 +39,42 @@ func RunNoTUI(wcfg WizardConfig) error {
 // runNoTUI is the testable implementation that accepts any io.Reader as input.
 func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	scanner := bufio.NewScanner(input)
+
+	// The manifest is read before the config for two reasons: the migration it
+	// performs must have run by the time the bridge inside config.Load projects
+	// the manifest back onto AppConfig, and a machine upgrading into this version
+	// still has its persona, skills and phase models in config.yaml alone.
+	manifest, migration, err := loadWizardManifest()
+	if err != nil {
+		return err
+	}
+	if migration.Notice != "" {
+		fmt.Fprintln(noTUIStdout, migration.Notice)
+	}
+
 	cfg, err := loadAppConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	previousPresetSlug := cfg.PersonaPreset
-	previousPresetSource := persona.PresetSourceBuiltin
-	if strings.TrimSpace(cfg.PersonaPresetSource) == string(persona.PresetSourceUser) {
-		previousPresetSource = persona.PresetSourceUser
-	}
-	mode := cfg.ConfigStatus()
+	// The persona the manifest recorded is both what the prompts prefill and the
+	// profile the apply step replaces.
+	configuredPersona, previousPresetSource := wizardPersonaSelection(manifest)
+	previousPresetSlug := configuredPersona
+	mode := cfg.ConfigStatus(recordedInstallFrom(manifest))
 
 	// ── Step 1: Scope ─────────────────────────────────────────────────────────
+	// The manifest owns the scope; wizardScope reproduces the fallback config.Load
+	// used to apply to the AppConfig field this prompt used to read.
+	scope := wizardScope(manifest, cfg)
 	fmt.Println("=== Jarvis-Dev Setup [1/7] Scope ===")
-	fmt.Printf("Scope [local-only/local+cloud] (default: %s): ", cfg.Scope)
+	fmt.Printf("Scope [local-only/local+cloud] (default: %s): ", scope)
 	scopeInput := strings.TrimSpace(readLine(scanner))
-	scope := cfg.Scope
-	if scope == "" {
-		scope = config.ScopeLocalOnly
+	if scopeInput == string(state.ScopeLocalOnly) {
+		scope = state.ScopeLocalOnly
 	}
-	if scopeInput == string(config.ScopeLocalOnly) {
-		scope = config.ScopeLocalOnly
+	if scopeInput == string(state.ScopeLocalCloud) {
+		scope = state.ScopeLocalCloud
 	}
-	if scopeInput == string(config.ScopeLocalCloud) {
-		scope = config.ScopeLocalCloud
-	}
-	cfg.Scope = scope
 
 	// ── Step 2: HiveCloud ─────────────────────────────────────────────────────
 	header := "\n=== Jarvis-Dev Setup [2/7] Hive Cloud Authentication ==="
@@ -78,7 +89,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	email := ""
 	var pendingPassword string
 
-	if cfg.Scope == config.ScopeLocalCloud {
+	if scope == state.ScopeLocalCloud {
 		if currentEmail == "" {
 			fmt.Print("Email (press Enter to skip): ")
 		} else {
@@ -130,7 +141,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		return err
 	}
 	if configExists {
-		if err := validateConfiguredPersonaPresetForV2Selection(wcfg.PersonaFS, cfg.PersonaPreset); err != nil {
+		if err := validateConfiguredPersonaPresetForV2Selection(wcfg.PersonaFS, configuredPersona); err != nil {
 			return err
 		}
 	}
@@ -138,10 +149,9 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		Name:        "custom",
 		DisplayName: "Custom (crear nuevo)",
 	})
-	defaultPreset := cfg.PersonaPreset
-	if defaultPreset == "" {
-		defaultPreset = cfg.Preset
-	}
+	// The manifest already merged the legacy `preset` key into its persona at
+	// migration time, so there is no second key left to fall back to.
+	defaultPreset := configuredPersona
 	defaultIdx := 0
 	for i, p := range presets {
 		if p.Name == defaultPreset {
@@ -182,9 +192,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		return fmt.Errorf("resolve selected preset: %w", err)
 	}
 
-	cfg.PersonaPreset = resolvedPreset.Slug
-	cfg.Preset = resolvedPreset.Slug
-	cfg.PersonaPresetSource = string(resolvedPreset.Source)
+	manifest = recordWizardPersona(manifest, resolvedPreset.Slug, resolvedPreset.Source)
 	fmt.Printf("Selected: %s (%s)\n", resolvedPreset.Slug, resolvedPreset.Source)
 
 	// ── Step 4: Extra Skills ──────────────────────────────────────────────────
@@ -193,7 +201,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("list skills: %w", err)
 	}
-	plan := buildSkillSelectionPlan(skillList, cfg.SelectedSkills)
+	plan := buildSkillSelectionPlan(skillList, wizardSelectedSkills(manifest))
 	selected := plan.Selected
 	for _, prompt := range plan.Prompts {
 		defaultYes := false
@@ -220,7 +228,10 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 
 	// ── Step 5: SDD Phase Models ──────────────────────────────────────────────
 	fmt.Println("\n=== Jarvis-Dev Setup [5/7] SDD Phase Models ===")
-	resolvedPhaseModels := sddruntime.ResolvePhaseModels(cfg)
+	// The manifest owns the per-phase models; the editor edits a working copy of
+	// them and hands the result back to the manifest at the end of the run.
+	manifestPhaseModels := wizardPhaseModels(manifest)
+	resolvedPhaseModels := sddruntime.ResolvePhaseModels(manifestPhaseModels)
 	openCodePhaseModelDiscoveryDiagnostics = nil
 	opencodeAssignments := discoverOpenCodePhaseModelOptions()
 	for _, diagnostic := range openCodePhaseModelDiscoveryDiagnostics {
@@ -229,29 +240,29 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	applyPhaseModelEdits := func() {
 		contract := sddruntime.DefaultContract()
 		printOpenCodeAssignmentOptions(opencodeAssignments)
-		if cfg.SDD.OpenCodePhaseModels == nil {
-			cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{}
+		if manifestPhaseModels.OpenCode == nil {
+			manifestPhaseModels.OpenCode = map[string]state.OpenCodeModelAssignment{}
 		}
-		if cfg.SDD.ClaudePhaseModels == nil {
-			cfg.SDD.ClaudePhaseModels = map[string]config.ClaudeModelAssignment{}
+		if manifestPhaseModels.Claude == nil {
+			manifestPhaseModels.Claude = map[string]state.ClaudeModelAssignment{}
 		}
 		for _, phase := range contract.Phases {
 			current := resolvedPhaseModels[phase]
-			claudeAssignment := cfg.SDD.ClaudePhaseModels[phase]
+			claudeAssignment := manifestPhaseModels.Claude[phase]
 			currentClaude := current.Claude
 			if strings.TrimSpace(claudeAssignment.Model) != "" {
 				currentClaude = strings.TrimSpace(claudeAssignment.Model)
 			}
 			fmt.Printf("%s [opencode=%s claude=%s]\n", phase, current.OpenCode, currentClaude)
 			if len(opencodeAssignments) > 0 {
-				currentAssignment := cfg.SDD.OpenCodePhaseModels[phase]
+				currentAssignment := state.OpenCodeModelAssignment(manifestPhaseModels.OpenCode[phase])
 				fmt.Printf("  OpenCode provider/model [%s] (Enter keeps, number selects): ", openCodeAssignmentPromptValue(currentAssignment, current.OpenCode))
 				opencodeInput := strings.TrimSpace(readLine(scanner))
 				if assignment, ok := selectOpenCodeAssignmentForPrompt(opencodeInput, opencodeAssignments); ok {
 					if assignment.ProviderID == "" || assignment.ModelID == "" {
-						delete(cfg.SDD.OpenCodePhaseModels, phase)
+						delete(manifestPhaseModels.OpenCode, phase)
 					} else {
-						cfg.SDD.OpenCodePhaseModels[phase] = assignment
+						manifestPhaseModels.OpenCode[phase] = state.OpenCodeModelAssignment(assignment)
 					}
 				}
 			} else {
@@ -259,7 +270,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 				opencodeInput := strings.ToLower(strings.TrimSpace(readLine(scanner)))
 				if opencodeInput != "" {
 					current.OpenCode = normalizePlatformValueForPrompt(opencodeInput, current.OpenCode, contract.PlatformCatalogs[sddruntime.PlatformOpenCode])
-					delete(cfg.SDD.OpenCodePhaseModels, phase)
+					delete(manifestPhaseModels.OpenCode, phase)
 				}
 			}
 			fmt.Printf("  Claude model [%s] (Enter keeps): ", currentClaude)
@@ -271,46 +282,37 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 			effortInput := strings.ToLower(strings.TrimSpace(readLine(scanner)))
 			claudeAssignment.Model = row.Claude
 			claudeAssignment.Effort = normalizeClaudeEffortForPrompt(effortInput, claudeAssignment.Effort)
-			cfg.SDD.ClaudePhaseModels[phase] = claudeAssignment
+			manifestPhaseModels.Claude[phase] = claudeAssignment
 		}
 	}
-	if cfg.SDD.PhaseModels == nil {
-		cfg.SDD.PhaseModels = map[string]config.PhaseModelSelection{}
-	}
-	if cfg.SDD.OpenCodePhaseModels == nil {
-		cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{}
-	}
-	if cfg.SDD.ClaudePhaseModels == nil {
-		cfg.SDD.ClaudePhaseModels = map[string]config.ClaudeModelAssignment{}
-	}
 	for phase, row := range resolvedPhaseModels {
-		cfg.SDD.PhaseModels[phase] = row
-		if assignment, ok := cfg.SDD.ClaudePhaseModels[phase]; ok && (strings.TrimSpace(assignment.Model) != "" || strings.TrimSpace(assignment.Effort) != "") {
+		manifestPhaseModels.Aliases[phase] = row
+		if assignment, ok := manifestPhaseModels.Claude[phase]; ok && (strings.TrimSpace(assignment.Model) != "" || strings.TrimSpace(assignment.Effort) != "") {
 			if strings.TrimSpace(assignment.Model) == "" {
 				assignment.Model = row.Claude
 			}
-			cfg.SDD.ClaudePhaseModels[phase] = assignment
+			manifestPhaseModels.Claude[phase] = assignment
 		}
 	}
 
 	// ── Step 6: Review/Apply ──────────────────────────────────────────────────
 	fmt.Println("\n=== Jarvis-Dev Setup [6/7] Review & Apply ===")
-	fmt.Printf("Scope: %s\n", cfg.Scope)
-	if cfg.Scope == config.ScopeLocalOnly {
+	fmt.Printf("Scope: %s\n", scope)
+	if scope == state.ScopeLocalOnly {
 		fmt.Println(localOnlyReviewWarning)
 	}
 	fmt.Printf("Mode: %s\n", mode)
-	fmt.Printf("Persona: %s\n", cfg.PersonaPreset)
+	fmt.Printf("Persona: %s\n", resolvedPreset.Slug)
 	fmt.Printf("Cloud: %s\n", strings.TrimSpace(cfg.Email))
-	printNoTUIPhaseModelReview(resolvedPhaseModels, cfg.SDD.OpenCodePhaseModels, cfg.SDD.ClaudePhaseModels)
+	printNoTUIPhaseModelReview(resolvedPhaseModels, manifestPhaseModels.OpenCode, manifestPhaseModels.Claude)
 	fmt.Print("Apply these changes now? [type 'yes' to continue, 'edit' to edit phase models]: ")
 	applyAnswer := strings.ToLower(strings.TrimSpace(readLine(scanner)))
 	if applyAnswer == "edit" {
 		applyPhaseModelEdits()
 		for phase, row := range resolvedPhaseModels {
-			cfg.SDD.PhaseModels[phase] = row
+			manifestPhaseModels.Aliases[phase] = row
 		}
-		printNoTUIPhaseModelReview(resolvedPhaseModels, cfg.SDD.OpenCodePhaseModels, cfg.SDD.ClaudePhaseModels)
+		printNoTUIPhaseModelReview(resolvedPhaseModels, manifestPhaseModels.OpenCode, manifestPhaseModels.Claude)
 		fmt.Print("Apply these changes now? [type 'yes' to continue]: ")
 		applyAnswer = strings.ToLower(strings.TrimSpace(readLine(scanner)))
 	}
@@ -381,7 +383,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		return fmt.Errorf("check statusline script: %w", err)
 	}
 
-	results := configureWizardAgents(agents, cfg, agent.MCPEntry{}, agent.MCPEntry{}, resolvedPreset, wizardPresetApplyContext{
+	results := configureWizardAgents(agents, manifestPhaseModels, agent.MCPEntry{}, agent.MCPEntry{}, resolvedPreset, wizardPresetApplyContext{
 		Layer1:               config.Layer1Content(),
 		Skills:               skillInfos,
 		PreviousPresetSlug:   previousPresetSlug,
@@ -400,7 +402,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		configuredAgents = append(configuredAgents, res.AgentName)
 	}
 
-	if cfg.Scope == config.ScopeLocalOnly {
+	if scope == state.ScopeLocalOnly {
 		if err := config.DeleteSyncCredentials(); err != nil {
 			return fmt.Errorf("cleanup cloud credentials: %w. Ver docs/setup-recovery.md", err)
 		}
@@ -426,20 +428,12 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		_ = f.Close()
 	}
 
-	cfg.ConfiguredAgents = configuredAgents
 	cfg.SchemaVersion = 2
-	cfg.Scope = scope
 	cfg.Install.Mode = string(config.ConfigStatusReconfigure)
 	cfg.Install.Completed = true
-	if cfg.Install.Agents == nil {
-		cfg.Install.Agents = map[string]config.AgentState{}
-	}
-	for _, res := range results {
-		cfg.Install.Agents[res.AgentName] = res.State
-	}
 
 	selectedSet := make(map[string]bool)
-	for _, id := range cfg.SelectedSkills {
+	for _, id := range wizardSelectedSkills(manifest) {
 		selectedSet[id] = true
 	}
 	for _, s := range skillList {
@@ -459,8 +453,20 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 			selectedIDsForConfig = append(selectedIDsForConfig, id)
 		}
 	}
-	cfg.SelectedSkills = selectedIDsForConfig
 	cfg.Version = "1.0.0"
+
+	// ~/.jarvis/state.yaml owns the replay fields the wizard just decided, so
+	// they are recorded there first and config.yaml is written afterwards from
+	// what config.Save reads back. The two writes are sequenced, never nested:
+	// state.Update takes the fail-fast, non-reentrant manifest lock.
+	manifest.Scope = state.Scope(scope)
+	manifest.Skills = selectedIDsForConfig
+	manifest.PhaseModels = manifestPhaseModels
+	recordWizardAgents(manifest, results)
+	if err := recordWizardDesiredState(manifest); err != nil {
+		return fmt.Errorf("record the desired-state manifest: %w", err)
+	}
+
 	if saveErr := config.Save(cfg); saveErr != nil {
 		return fmt.Errorf("save config: %w", saveErr)
 	}
@@ -504,7 +510,7 @@ func readLine(scanner *bufio.Scanner) string {
 	return ""
 }
 
-func printNoTUIPhaseModelReview(resolved map[string]config.PhaseModelSelection, assignments map[string]config.OpenCodeModelAssignment, claudeAssignments map[string]config.ClaudeModelAssignment) {
+func printNoTUIPhaseModelReview(resolved map[string]state.PhaseModelSelection, assignments map[string]state.OpenCodeModelAssignment, claudeAssignments map[string]state.ClaudeModelAssignment) {
 	fmt.Fprintln(noTUIStdout, "SDD phase models:")
 	for _, phase := range sddruntime.DefaultContract().Phases {
 		sel := resolved[phase]
@@ -549,7 +555,7 @@ func normalizeClaudeEffortForPrompt(input, fallback string) string {
 	return strings.TrimSpace(fallback)
 }
 
-func printOpenCodeAssignmentOptions(options []config.OpenCodeModelAssignment) {
+func printOpenCodeAssignmentOptions(options []state.OpenCodeModelAssignment) {
 	options = providerOnlyOpenCodeAssignments(options)
 	if len(options) == 0 {
 		return
@@ -561,8 +567,8 @@ func printOpenCodeAssignmentOptions(options []config.OpenCodeModelAssignment) {
 	}
 }
 
-func providerOnlyOpenCodeAssignments(options []config.OpenCodeModelAssignment) []config.OpenCodeModelAssignment {
-	out := make([]config.OpenCodeModelAssignment, 0, len(options))
+func providerOnlyOpenCodeAssignments(options []state.OpenCodeModelAssignment) []state.OpenCodeModelAssignment {
+	out := make([]state.OpenCodeModelAssignment, 0, len(options))
 	for _, option := range options {
 		if option.ProviderID == "" || option.ModelID == "" {
 			continue
@@ -572,7 +578,7 @@ func providerOnlyOpenCodeAssignments(options []config.OpenCodeModelAssignment) [
 	return out
 }
 
-func openCodeAssignmentPromptValue(assignment config.OpenCodeModelAssignment, legacyAlias string) string {
+func openCodeAssignmentPromptValue(assignment state.OpenCodeModelAssignment, legacyAlias string) string {
 	if assignment.ProviderID != "" && assignment.ModelID != "" {
 		display := assignment.ProviderID + "/" + assignment.ModelID
 		if strings.TrimSpace(assignment.Effort) != "" {
@@ -586,20 +592,20 @@ func openCodeAssignmentPromptValue(assignment config.OpenCodeModelAssignment, le
 	return "none"
 }
 
-func selectOpenCodeAssignmentForPrompt(input string, options []config.OpenCodeModelAssignment) (config.OpenCodeModelAssignment, bool) {
+func selectOpenCodeAssignmentForPrompt(input string, options []state.OpenCodeModelAssignment) (state.OpenCodeModelAssignment, bool) {
 	if input == "" {
-		return config.OpenCodeModelAssignment{}, false
+		return state.OpenCodeModelAssignment{}, false
 	}
 	if strings.EqualFold(strings.TrimSpace(input), "legacy") {
-		return config.OpenCodeModelAssignment{}, true
+		return state.OpenCodeModelAssignment{}, true
 	}
 	options = providerOnlyOpenCodeAssignments(options)
 	selected, err := strconv.Atoi(input)
 	if err != nil || selected < 0 || selected > len(options) {
-		return config.OpenCodeModelAssignment{}, false
+		return state.OpenCodeModelAssignment{}, false
 	}
 	if selected == 0 {
-		return config.OpenCodeModelAssignment{}, true
+		return state.OpenCodeModelAssignment{}, true
 	}
 	return options[selected-1], true
 }

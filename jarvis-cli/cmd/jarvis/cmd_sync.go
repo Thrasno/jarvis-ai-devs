@@ -80,11 +80,7 @@ func runSync() error {
 	if err := manifest.ValidateForReplay(); err != nil {
 		return err
 	}
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	input, err := replayInput(home, manifest, cfg)
+	input, err := replayInput(home, manifest)
 	if err != nil {
 		return err
 	}
@@ -123,10 +119,10 @@ func syncExit(report sync.Report, runErr error) error {
 
 // replayInput builds the one value both halves of a replay pass read. Deriving
 // it twice would make the planner's desired digests and the installer's writes
-// disagree and report drift forever. Nothing on this path calls config.Save,
-// whose bridge takes the fail-fast manifest lock and would deadlock sync
-// against itself.
-func replayInput(home string, manifest *state.State, cfg *config.AppConfig) (sync.ReplayInput, error) {
+// disagree and report drift forever. Nothing on this path reads or writes
+// config.yaml: the manifest carries every replay field, and config.Save's bridge
+// takes the fail-fast manifest lock and would deadlock sync against itself.
+func replayInput(home string, manifest *state.State) (sync.ReplayInput, error) {
 	skillsSubFS, err := fs.Sub(jarvis.SkillsFS, "embed/skills")
 	if err != nil {
 		return sync.ReplayInput{}, fmt.Errorf("open the embedded skill tree: %w", err)
@@ -162,7 +158,6 @@ func replayInput(home string, manifest *state.State, cfg *config.AppConfig) (syn
 		SkillsFS:  skillsSubFS,
 		HooksFS:   jarvis.HooksFS,
 		AgentsFS:  agentsSubFS,
-		Config:    cfg,
 		Skills:    skillInfos,
 		Layer1:    config.Layer1Content(),
 		Layer2:    persona.RenderLayer2(resolved.Preset),

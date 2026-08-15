@@ -7,6 +7,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 // TestViewScope_HasHeaderAndHelpBar verifies that viewScope renders a breadcrumb
@@ -14,7 +15,7 @@ import (
 func TestViewScope_HasHeaderAndHelpBar(t *testing.T) {
 	m := Model{
 		Step:     StepScope,
-		Scope:    config.ScopeLocalOnly,
+		Scope:    state.ScopeLocalOnly,
 		width:    100,
 		cfg:      &config.AppConfig{},
 		Selected: make(map[string]bool),
@@ -37,7 +38,7 @@ func TestViewScope_HasHeaderAndHelpBar(t *testing.T) {
 func TestViewScope_WidthFloor80(t *testing.T) {
 	m := Model{
 		Step:     StepScope,
-		Scope:    config.ScopeLocalOnly,
+		Scope:    state.ScopeLocalOnly,
 		width:    0,
 		cfg:      &config.AppConfig{},
 		Selected: make(map[string]bool),

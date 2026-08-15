@@ -1,41 +1,65 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
-var loadAppConfig = config.Load
+// loadDesiredPhaseModels reads the per-phase model assignments from
+// ~/.jarvis/state.yaml, which owns them.
+//
+// This is the observation path: `jarvis doctor`, `jarvis verify` and a dry-run
+// reconcile all reach it, and none of them may change the machine they are
+// looking at. It therefore does not migrate. It cannot simply read the manifest
+// either, because a machine upgrading into this version still has these
+// assignments in config.yaml and no manifest at all, and an empty manifest would
+// verify the runtime against the contract defaults instead of the models the
+// user chose. state.LoadWithoutMigrating answers that question without writing:
+// it reads the manifest when there is one and derives the same values from
+// config.yaml in memory when there is not.
+var loadDesiredPhaseModels = func() (state.PhaseModels, error) {
+	manifest, err := state.LoadWithoutMigrating()
+	if errors.Is(err, state.ErrNotFound) {
+		return state.New().NormalizedPhaseModels(), nil
+	}
+	if err != nil {
+		return state.PhaseModels{}, err
+	}
+	return manifest.NormalizedPhaseModels(), nil
+}
 
 func runtimePlanFor(name string) (sddruntime.RuntimePlan, error) {
 	return sddruntime.Build(name)
 }
 
 type runtimeObserverWithConfig interface {
-	ObserveRuntimeWithConfig(*config.AppConfig) (sddruntime.ObservedRuntime, error)
+	ObserveRuntimeWithConfig(*state.PhaseModels) (sddruntime.ObservedRuntime, error)
 }
 
-// ObserveRuntimeWithConfig collects adapter-normalized runtime state using cfg
-// as the pending expected model-assignment source when the adapter supports it.
-func ObserveRuntimeWithConfig(a Agent, cfg *config.AppConfig) (sddruntime.ObservedRuntime, error) {
+// ObserveRuntimeWithConfig collects adapter-normalized runtime state using
+// models as the pending expected model-assignment source when the adapter
+// supports it. A nil models means "no pending assignments to apply", exactly as
+// a nil config did.
+func ObserveRuntimeWithConfig(a Agent, models *state.PhaseModels) (sddruntime.ObservedRuntime, error) {
 	if observer, ok := a.(runtimeObserverWithConfig); ok {
-		return observer.ObserveRuntimeWithConfig(cfg)
+		return observer.ObserveRuntimeWithConfig(models)
 	}
 
 	observed, err := a.ObserveRuntime()
 	if err != nil {
 		return sddruntime.ObservedRuntime{}, err
 	}
-	if cfg == nil {
+	if models == nil {
 		return observed, nil
 	}
 
-	resolvedAssignments, err := resolvedAssignmentsForAgentWithConfig(a.Name(), cfg)
+	resolvedAssignments, err := resolvedAssignmentsForAgentWithConfig(a.Name(), models)
 	if err != nil {
 		return sddruntime.ObservedRuntime{}, err
 	}
@@ -50,7 +74,7 @@ func observeRuntime(configDir string, plan sddruntime.RuntimePlan) (sddruntime.O
 	return observeRuntimeWithConfig(configDir, plan, nil)
 }
 
-func observeRuntimeWithConfig(configDir string, plan sddruntime.RuntimePlan, cfg *config.AppConfig) (sddruntime.ObservedRuntime, error) {
+func observeRuntimeWithConfig(configDir string, plan sddruntime.RuntimePlan, models *state.PhaseModels) (sddruntime.ObservedRuntime, error) {
 	artifacts := map[string]sddruntime.ObservedArtifact{}
 	presentIDs := make([]string, 0, len(plan.Contract.ManagedArtifacts))
 
@@ -86,7 +110,7 @@ func observeRuntimeWithConfig(configDir string, plan sddruntime.RuntimePlan, cfg
 		manifestVersion = plan.Contract.Version
 	}
 
-	resolvedAssignments, err := resolvedAssignmentsForAgentWithConfig(plan.Agent, cfg)
+	resolvedAssignments, err := resolvedAssignmentsForAgentWithConfig(plan.Agent, models)
 	if err != nil {
 		return sddruntime.ObservedRuntime{}, err
 	}
@@ -228,13 +252,20 @@ func resolvedAssignmentsForAgent(agent string) (map[string]string, error) {
 	return resolvedAssignmentsForAgentWithConfig(agent, nil)
 }
 
-func resolvedAssignmentsForAgentWithConfig(agent string, cfg *config.AppConfig) (map[string]string, error) {
-	var err error
-	if cfg == nil {
-		cfg, err = loadAppConfig()
+// resolvedAssignmentsForAgentWithConfig resolves an agent's phase assignments.
+// A nil models keeps the historical fallback of loading the persisted desired
+// state, so callers with no pending assignments still verify against what is on
+// disk.
+func resolvedAssignmentsForAgentWithConfig(agent string, models *state.PhaseModels) (map[string]string, error) {
+	resolved := state.PhaseModels{}
+	if models == nil {
+		loaded, err := loadDesiredPhaseModels()
 		if err != nil {
-			return nil, fmt.Errorf("load config for runtime verification: %w", err)
+			return nil, fmt.Errorf("load the desired-state manifest for runtime verification: %w", err)
 		}
+		resolved = loaded
+	} else {
+		resolved = *models
 	}
 
 	platform, err := platformForAgent(agent)
@@ -242,7 +273,7 @@ func resolvedAssignmentsForAgentWithConfig(agent string, cfg *config.AppConfig) 
 		return nil, err
 	}
 
-	return sddruntime.ResolveAssignmentsForPlatform(platform, cfg)
+	return sddruntime.ResolveAssignmentsForPlatform(platform, resolved)
 }
 
 func platformForAgent(agent string) (sddruntime.Platform, error) {

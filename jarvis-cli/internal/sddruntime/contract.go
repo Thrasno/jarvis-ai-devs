@@ -1,6 +1,6 @@
 package sddruntime
 
-import "github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+import "github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 
 const (
 	DefaultContractVersion = "2026.05"
@@ -15,7 +15,7 @@ type Contract struct {
 	RegistryPath          string
 	Phases                []string
 	PlatformCatalogs      map[Platform][]string
-	DefaultPhaseModels    map[string]config.PhaseModelSelection
+	DefaultPhaseModels    map[string]state.PhaseModelSelection
 	// ModelAssignments is retained as legacy compatibility data.
 	// Production fallback/verification behavior must derive defaults from DefaultPhaseModels.
 	ModelAssignments map[string]string
@@ -72,7 +72,7 @@ func DefaultContract() Contract {
 			PlatformOpenCode: []string{"opus", "sonnet", "haiku"},
 			PlatformClaude:   []string{"opus", "sonnet", "haiku"},
 		},
-		DefaultPhaseModels: map[string]config.PhaseModelSelection{
+		DefaultPhaseModels: map[string]state.PhaseModelSelection{
 			"orchestrator": {OpenCode: "opus", Claude: "opus"},
 			"sdd-init":     {OpenCode: "sonnet", Claude: "sonnet"},
 			"sdd-explore":  {OpenCode: "sonnet", Claude: "sonnet"},

@@ -23,16 +23,12 @@ const (
 	configFileExt = "yaml"
 )
 
-const currentSchemaVersion = 2
+// currentSchemaVersion is 3: the version at which the replay fields left
+// config.yaml for ~/.jarvis/state.yaml. state.Migrate is what moves them and
+// stamps an existing file; this is what a file written from scratch carries.
+const currentSchemaVersion = 3
 
 type ConfigStatus string
-
-type SetupScope string
-
-const (
-	ScopeLocalOnly  SetupScope = "local-only"
-	ScopeLocalCloud SetupScope = "local+cloud"
-)
 
 const (
 	ConfigStatusSetup       ConfigStatus = "setup"
@@ -46,70 +42,35 @@ type CloudConfig struct {
 	SyncConfigured bool   `mapstructure:"sync_configured" yaml:"sync_configured"`
 }
 
-// AgentState stores setup status per detected agent.
-type AgentState struct {
-	Configured       bool   `mapstructure:"configured" yaml:"configured"`
-	InstructionsPath string `mapstructure:"instructions_path" yaml:"instructions_path,omitempty"`
-	ConfigPath       string `mapstructure:"config_path" yaml:"config_path,omitempty"`
-}
-
 // InstallState stores machine-scoped setup completion metadata.
+//
+// The per-agent records this used to carry moved to ~/.jarvis/state.yaml, which
+// owns what the last installation configured. Mode and Completed stay because
+// they describe config.yaml's own history, not the desired state to replay.
 type InstallState struct {
-	Mode      string                `mapstructure:"mode" yaml:"mode,omitempty"`
-	Completed bool                  `mapstructure:"completed" yaml:"completed"`
-	Agents    map[string]AgentState `mapstructure:"agents" yaml:"agents,omitempty"`
+	Mode      string `mapstructure:"mode" yaml:"mode,omitempty"`
+	Completed bool   `mapstructure:"completed" yaml:"completed"`
 }
 
-// PhaseModelSelection stores per-platform model aliases for a single SDD phase.
-type PhaseModelSelection struct {
-	OpenCode string `mapstructure:"opencode" yaml:"opencode,omitempty"`
-	Claude   string `mapstructure:"claude" yaml:"claude,omitempty"`
-}
-
-// OpenCodeModelAssignment stores a provider-qualified OpenCode model assignment for a single SDD phase.
-type OpenCodeModelAssignment struct {
-	ProviderID string `mapstructure:"provider_id" yaml:"provider_id,omitempty"`
-	ModelID    string `mapstructure:"model_id" yaml:"model_id,omitempty"`
-	Effort     string `mapstructure:"effort" yaml:"effort,omitempty"`
-}
-
-// ClaudeModelAssignment stores Claude-specific model routing details for a single SDD phase.
-type ClaudeModelAssignment struct {
-	Model  string `mapstructure:"model" yaml:"model,omitempty"`
-	Effort string `mapstructure:"effort" yaml:"effort,omitempty"`
-}
-
-// SDDConfig stores persisted SDD runtime preferences.
-type SDDConfig struct {
-	PhaseModels         map[string]PhaseModelSelection     `mapstructure:"phase_models" yaml:"phase_models,omitempty"`
-	OpenCodePhaseModels map[string]OpenCodeModelAssignment `mapstructure:"opencode_phase_models" yaml:"opencode_phase_models,omitempty"`
-	ClaudePhaseModels   map[string]ClaudeModelAssignment   `mapstructure:"claude_phase_models" yaml:"claude_phase_models,omitempty"`
-}
-
-// AppConfig holds all Jarvis-CLI configuration.
+// AppConfig holds the Jarvis-CLI configuration stored in ~/.jarvis/config.yaml.
+//
+// ~/.jarvis/config.yaml and ~/.jarvis/state.yaml are disjoint stores. The
+// persona, the selected skills, the configured agents, the scope and the
+// per-phase SDD models are desired state to replay, so internal/state owns them
+// and this struct deliberately has no field for any of them: a value that cannot
+// be spelled here cannot drift from the store that owns it.
 type AppConfig struct {
 	SchemaVersion int `mapstructure:"schema_version" yaml:"schema_version"`
 
 	// APIURL is the Hive Cloud API base URL.
-	APIURL string `mapstructure:"api_url" yaml:"api_url"`
-	// PersonaPreset is the active persona preset name.
-	PersonaPreset string `mapstructure:"persona_preset" yaml:"persona_preset,omitempty"`
-	// PersonaPresetSource identifies where PersonaPreset was resolved from.
-	// Allowed values: "builtin" or "user".
-	PersonaPresetSource string `mapstructure:"persona_preset_source" yaml:"persona_preset_source,omitempty"`
-	// SelectedSkills stores selected skill IDs.
-	SelectedSkills []string `mapstructure:"selected_skills" yaml:"selected_skills,omitempty"`
+	APIURL string       `mapstructure:"api_url" yaml:"api_url"`
+	Cloud  *CloudConfig `mapstructure:"cloud" yaml:"cloud,omitempty"`
 
-	// ConfiguredAgents lists agents that have been fully configured by the wizard.
-	ConfiguredAgents []string     `mapstructure:"configured_agents" yaml:"configured_agents"`
-	Cloud            *CloudConfig `mapstructure:"cloud" yaml:"cloud,omitempty"`
-	Scope            SetupScope   `mapstructure:"scope" yaml:"scope,omitempty"`
-	Install          InstallState `mapstructure:"install" yaml:"install,omitempty"`
-	SDD              SDDConfig    `mapstructure:"sdd" yaml:"sdd,omitempty"`
+	Install InstallState `mapstructure:"install" yaml:"install,omitempty"`
 
-	// Legacy compatibility fields (v1 schema). These are normalized on load.
-	Email  string `mapstructure:"email" yaml:"email,omitempty"`
-	Preset string `mapstructure:"preset" yaml:"preset,omitempty"`
+	// Email is a legacy compatibility field (v1 schema), normalized on load
+	// against Cloud.
+	Email string `mapstructure:"email" yaml:"email,omitempty"`
 
 	// Version is the jarvis-cli version that wrote this config (for future migrations).
 	Version string `mapstructure:"version" yaml:"version"`
@@ -126,16 +87,10 @@ func ConfigPath() (string, error) {
 
 func defaultConfig() *AppConfig {
 	return &AppConfig{
-		SchemaVersion:       currentSchemaVersion,
-		APIURL:              DefaultAPIURL,
-		PersonaPreset:       "argentino",
-		PersonaPresetSource: "builtin",
-		SelectedSkills:      []string{},
-		Scope:               ScopeLocalOnly,
-		ConfiguredAgents:    []string{},
+		SchemaVersion: currentSchemaVersion,
+		APIURL:        DefaultAPIURL,
 		Install: InstallState{
-			Mode:   string(ConfigStatusSetup),
-			Agents: map[string]AgentState{},
+			Mode: string(ConfigStatusSetup),
 		},
 		Version: "",
 	}
@@ -164,11 +119,6 @@ func Load() (*AppConfig, error) {
 		}
 	}
 
-	// Bridge: ~/.jarvis/state.yaml owns the replay fields once it exists.
-	if err := applyStateManifest(cfg); err != nil {
-		return nil, err
-	}
-
 	normalizeAndMigrate(cfg)
 	applyEnvOverrides(cfg)
 	return cfg, nil
@@ -179,6 +129,7 @@ func Save(cfg *AppConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
 	}
+
 	normalizeAndMigrate(cfg)
 
 	path, err := ConfigPath()
@@ -190,14 +141,7 @@ func Save(cfg *AppConfig) error {
 		return fmt.Errorf("create jarvis dir: %w", err)
 	}
 
-	// Bridge: the replay fields land in ~/.jarvis/state.yaml first. Only once
-	// they are durably there are they dropped from config.yaml, so a failed
-	// manifest write can never lose them.
-	if err := saveStateManifest(cfg); err != nil {
-		return err
-	}
-
-	data, err := marshalWithoutReplayFields(cfg)
+	data, err := marshalPreservingUnknownKeys(cfg, path)
 	if err != nil {
 		return err
 	}
@@ -209,20 +153,50 @@ func Save(cfg *AppConfig) error {
 	return nil
 }
 
-func (c *AppConfig) ConfigStatus() ConfigStatus {
+// RecordedInstall is the half of a recorded installation that config.yaml does
+// not own.
+//
+// ~/.jarvis/state.yaml owns the persona, the selected skills and the configured
+// agents, so "is this machine installed" is a question neither store can answer
+// alone. Passing that half in as a plain value is what lets this package stay
+// independent of the manifest package: the two stores are disjoint in the import
+// graph as well as on disk, and every caller can see at the call site that the
+// answer needs both.
+//
+// Build it from the manifest with State.RecordsCompleteInstall and
+// State.RecordsAnyState.
+type RecordedInstall struct {
+	// Complete reports that the manifest records a persona, at least one skill
+	// and at least one configured agent.
+	Complete bool
+	// Populated reports that the manifest records any choice at all, which is
+	// what tells a damaged installation apart from a machine never set up.
+	Populated bool
+}
+
+// ConfigStatus reports which flow this machine is in, given what the manifest
+// recorded.
+func (c *AppConfig) ConfigStatus(recorded RecordedInstall) ConfigStatus {
 	if c == nil {
 		return ConfigStatusSetup
 	}
-	if c.IsReadyForReconfigure() {
+	if c.IsReadyForReconfigure(recorded) {
 		return ConfigStatusReconfigure
 	}
-	if c.hasAnyState() {
+	if recorded.Populated || c.hasAnyState() {
 		return ConfigStatusRecover
 	}
 	return ConfigStatusSetup
 }
 
-func (c *AppConfig) IsReadyForReconfigure() bool {
+// IsReadyForReconfigure reports whether this machine carries a complete recorded
+// installation, combining what config.yaml owns with what the manifest recorded.
+//
+// Install.Completed is read here and never written back. It used to be
+// recomputed from this same predicate on every load and save, which made it
+// self-referential: once a save persisted false the machine could never report
+// ready again. It is now simply what the installer recorded when it finished.
+func (c *AppConfig) IsReadyForReconfigure(recorded RecordedInstall) bool {
 	if c == nil {
 		return false
 	}
@@ -232,31 +206,10 @@ func (c *AppConfig) IsReadyForReconfigure() bool {
 	if strings.TrimSpace(c.APIURL) == "" {
 		return false
 	}
-	if strings.TrimSpace(c.PersonaPreset) == "" {
-		return false
-	}
-	if len(c.SelectedSkills) == 0 {
-		return false
-	}
 	if !c.Install.Completed {
 		return false
 	}
-	for _, name := range c.ConfiguredAgents {
-		st, ok := c.Install.Agents[name]
-		if !ok || !st.Configured {
-			return false
-		}
-	}
-	return true
-}
-
-// IsConfigured reports if machine state is ready for reconfiguration.
-func IsConfigured() bool {
-	cfg, err := Load()
-	if err != nil {
-		return false
-	}
-	return cfg.IsReadyForReconfigure()
+	return recorded.Complete
 }
 
 func normalizeAndMigrate(cfg *AppConfig) {
@@ -265,45 +218,6 @@ func normalizeAndMigrate(cfg *AppConfig) {
 	}
 	if strings.TrimSpace(cfg.APIURL) == "" {
 		cfg.APIURL = DefaultAPIURL
-	}
-	if cfg.Install.Agents == nil {
-		cfg.Install.Agents = map[string]AgentState{}
-	}
-	if cfg.ConfiguredAgents == nil {
-		cfg.ConfiguredAgents = []string{}
-	}
-	if cfg.SelectedSkills == nil {
-		cfg.SelectedSkills = []string{}
-	}
-	if cfg.SDD.PhaseModels == nil {
-		cfg.SDD.PhaseModels = map[string]PhaseModelSelection{}
-	} else {
-		cfg.SDD.PhaseModels = normalizePhaseModelsMap(cfg.SDD.PhaseModels)
-	}
-	if cfg.SDD.OpenCodePhaseModels == nil {
-		cfg.SDD.OpenCodePhaseModels = map[string]OpenCodeModelAssignment{}
-	} else {
-		cfg.SDD.OpenCodePhaseModels = normalizeOpenCodePhaseModelsMap(cfg.SDD.OpenCodePhaseModels)
-	}
-	if cfg.SDD.ClaudePhaseModels == nil {
-		cfg.SDD.ClaudePhaseModels = map[string]ClaudeModelAssignment{}
-	} else {
-		cfg.SDD.ClaudePhaseModels = normalizeClaudePhaseModelsMap(cfg.SDD.ClaudePhaseModels)
-	}
-
-	if strings.TrimSpace(cfg.PersonaPreset) == "" {
-		cfg.PersonaPreset = strings.TrimSpace(cfg.Preset)
-	}
-	if strings.TrimSpace(cfg.PersonaPreset) == "" {
-		cfg.PersonaPreset = "argentino"
-	}
-
-	source := strings.ToLower(strings.TrimSpace(cfg.PersonaPresetSource))
-	switch source {
-	case "builtin", "user":
-		cfg.PersonaPresetSource = source
-	default:
-		cfg.PersonaPresetSource = "builtin"
 	}
 
 	if cfg.Cloud == nil && strings.TrimSpace(cfg.Email) != "" {
@@ -315,76 +229,31 @@ func normalizeAndMigrate(cfg *AppConfig) {
 	} else {
 		cfg.Email = ""
 	}
-	cfg.Preset = cfg.PersonaPreset
 
-	switch cfg.Scope {
-	case ScopeLocalOnly, ScopeLocalCloud:
-		// valid value
-	default:
-		if hasStoredCloudLink(cfg) {
-			cfg.Scope = ScopeLocalCloud
-		} else {
-			cfg.Scope = ScopeLocalOnly
-		}
-	}
-
+	// install.mode records which flow last touched this file. It cannot be
+	// derived from the full status any more, because that needs the manifest and
+	// this store does not read it; the config-owned signals still separate a
+	// machine carrying state from a fresh one.
 	if cfg.Install.Mode == "" {
-		cfg.Install.Mode = string(cfg.ConfigStatus())
-	}
-	cfg.Install.Completed = cfg.IsReadyForReconfigure()
-}
-
-func normalizePhaseModelsMap(in map[string]PhaseModelSelection) map[string]PhaseModelSelection {
-	out := make(map[string]PhaseModelSelection, len(in))
-	for rawPhase, sel := range in {
-		phase := strings.ToLower(strings.TrimSpace(rawPhase))
-		if phase == "" {
-			continue
+		if cfg.hasAnyState() {
+			cfg.Install.Mode = string(ConfigStatusRecover)
+		} else {
+			cfg.Install.Mode = string(ConfigStatusSetup)
 		}
-		sel.OpenCode = strings.ToLower(strings.TrimSpace(sel.OpenCode))
-		sel.Claude = strings.ToLower(strings.TrimSpace(sel.Claude))
-		out[phase] = sel
 	}
-	return out
 }
 
-func normalizeOpenCodePhaseModelsMap(in map[string]OpenCodeModelAssignment) map[string]OpenCodeModelAssignment {
-	out := make(map[string]OpenCodeModelAssignment, len(in))
-	for rawPhase, assignment := range in {
-		phase := strings.ToLower(strings.TrimSpace(rawPhase))
-		if phase == "" {
-			continue
-		}
-		assignment.ProviderID = strings.TrimSpace(assignment.ProviderID)
-		assignment.ModelID = strings.TrimSpace(assignment.ModelID)
-		assignment.Effort = strings.TrimSpace(assignment.Effort)
-		out[phase] = assignment
-	}
-	return out
-}
-
-func normalizeClaudePhaseModelsMap(in map[string]ClaudeModelAssignment) map[string]ClaudeModelAssignment {
-	out := make(map[string]ClaudeModelAssignment, len(in))
-	for rawPhase, assignment := range in {
-		phase := strings.ToLower(strings.TrimSpace(rawPhase))
-		if phase == "" {
-			continue
-		}
-		assignment.Model = strings.TrimSpace(assignment.Model)
-		assignment.Effort = strings.TrimSpace(assignment.Effort)
-		out[phase] = assignment
-	}
-	return out
-}
-
-func hasStoredCloudLink(cfg *AppConfig) bool {
-	if cfg == nil {
+// HasStoredCloudLink reports whether this machine already has a Hive Cloud link
+// recorded in config.yaml.
+//
+// It is the seam the scope default needs. ~/.jarvis/state.yaml owns the scope
+// and decides what an unrecorded one means, but the evidence it decides on lives
+// here, so callers read it from the config and hand it to State.ResolvedScope.
+func (c *AppConfig) HasStoredCloudLink() bool {
+	if c == nil || c.Cloud == nil {
 		return false
 	}
-	if cfg.Cloud == nil {
-		return false
-	}
-	return strings.TrimSpace(cfg.Cloud.Email) != "" || cfg.Cloud.SyncConfigured
+	return strings.TrimSpace(c.Cloud.Email) != "" || c.Cloud.SyncConfigured
 }
 
 func applyEnvOverrides(cfg *AppConfig) *AppConfig {
@@ -397,6 +266,10 @@ func applyEnvOverrides(cfg *AppConfig) *AppConfig {
 	return cfg
 }
 
+// hasAnyState reports whether config.yaml carries anything beyond a fresh
+// machine's defaults. It covers only the keys this store owns; the manifest
+// answers for its own half through State.RecordsAnyState, and ConfigStatus
+// combines them.
 func (c *AppConfig) hasAnyState() bool {
 	if c == nil {
 		return false
@@ -404,17 +277,8 @@ func (c *AppConfig) hasAnyState() bool {
 	if strings.TrimSpace(c.APIURL) != "" && c.APIURL != DefaultAPIURL {
 		return true
 	}
-	if strings.TrimSpace(c.PersonaPreset) != "" && c.PersonaPreset != "argentino" {
-		return true
-	}
-	if len(c.SelectedSkills) > 0 || len(c.ConfiguredAgents) > 0 {
-		return true
-	}
 	if c.Cloud != nil && strings.TrimSpace(c.Cloud.Email) != "" {
 		return true
 	}
-	if c.Install.Completed || len(c.Install.Agents) > 0 {
-		return true
-	}
-	return false
+	return c.Install.Completed
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/lifecycle"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 type cockpitRunner interface {
@@ -56,7 +57,12 @@ func (defaultCockpitRunner) ConfigSummary(context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("load config: %w", err)
 	}
-	agents := strings.Join(cfg.ConfiguredAgents, ", ")
+	// ~/.jarvis/state.yaml owns the persona and the configured agents.
+	manifest, _, err := loadWizardManifest()
+	if err != nil {
+		return "", err
+	}
+	agents := strings.Join(wizardAgentIDs(manifest), ", ")
 	if agents == "" {
 		agents = "(none)"
 	}
@@ -64,7 +70,8 @@ func (defaultCockpitRunner) ConfigSummary(context.Context) (string, error) {
 	if version == "" {
 		version = "(unset)"
 	}
-	return fmt.Sprintf("preset=%s\napi_url=%s\nemail=%s\nconfigured_agents=%s\nversion=%s", cfg.PersonaPreset, cfg.APIURL, cfg.Email, agents, version), nil
+	preset, _ := wizardPersonaSelection(manifest)
+	return fmt.Sprintf("preset=%s\napi_url=%s\nemail=%s\nconfigured_agents=%s\nversion=%s", preset, cfg.APIURL, cfg.Email, agents, version), nil
 }
 
 func (defaultCockpitRunner) ApplyPersonaPreset(_ context.Context, req personaApplyRequest) (string, error) {
@@ -119,7 +126,15 @@ func (defaultCockpitRunner) LoginHiveCloud(_ context.Context, email, password st
 	cfg.Cloud.Email = resolvedEmail
 	cfg.Cloud.SyncConfigured = true
 	cfg.Email = resolvedEmail
-	cfg.Scope = config.ScopeLocalCloud
+	// ~/.jarvis/state.yaml owns the scope, so it is recorded there first and
+	// config.yaml is rewritten afterwards. The two writes are sequenced, never
+	// nested: state.Update takes the fail-fast, non-reentrant manifest lock
+	// internally.
+	if err := state.Update(func(st *state.State) {
+		st.Scope = state.ScopeLocalCloud
+	}); err != nil {
+		return "", fmt.Errorf("record the scope in the desired-state manifest: %w", err)
+	}
 	if err := config.Save(cfg); err != nil {
 		return "", fmt.Errorf("save config: %w", err)
 	}

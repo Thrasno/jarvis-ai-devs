@@ -12,12 +12,13 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 // AgentApplyResult captures per-agent setup outcome before final config commit.
 type AgentApplyResult struct {
 	AgentName string
-	State     config.AgentState
+	State     state.AgentRecord
 	Warnings  []string
 	Err       error
 }
@@ -54,7 +55,7 @@ var wizardHiveDaemonPath = agent.HiveDaemonBinaryPath
 // builder path instead (OpenCodeAgent).
 func configureWizardAgent(
 	a agent.Agent,
-	cfg *config.AppConfig,
+	phaseModels state.PhaseModels,
 	hiveEntry agent.MCPEntry,
 	context7Entry agent.MCPEntry,
 	skillsSubFS fs.FS,
@@ -62,7 +63,7 @@ func configureWizardAgent(
 	agentsSubFS fs.FS,
 	statuslineConfirm func() bool,
 ) ([]string, error) {
-	return agentapply.ConfigureAgent(a, cfg, hiveEntry, context7Entry, skillsSubFS, selectedIDs, agentsSubFS, agentapply.StatuslineDecision{
+	return agentapply.ConfigureAgent(a, phaseModels, hiveEntry, context7Entry, skillsSubFS, selectedIDs, agentsSubFS, agentapply.StatuslineDecision{
 		Install: true,
 		Confirm: statuslineConfirm,
 	})
@@ -99,7 +100,7 @@ func reconcileWizardMCPs(agents []agent.Agent, home string) error {
 // configureWizardAgent for file-based agent install (ClaudeAgent).
 func configureWizardAgents(
 	agents []agent.Agent,
-	cfg *config.AppConfig,
+	phaseModels state.PhaseModels,
 	hiveEntry agent.MCPEntry,
 	context7Entry agent.MCPEntry,
 	resolved *persona.ResolvedProfile,
@@ -113,12 +114,12 @@ func configureWizardAgents(
 	for _, a := range agents {
 		res := AgentApplyResult{
 			AgentName: a.Name(),
-			State: config.AgentState{
+			State: state.AgentRecord{
 				Configured: false,
 				ConfigPath: a.ConfigDir(),
 			},
 		}
-		warnings, err := configureWizardAgent(a, cfg, hiveEntry, context7Entry, skillsSubFS, selectedIDs, agentsSubFS, statuslineConfirm)
+		warnings, err := configureWizardAgent(a, phaseModels, hiveEntry, context7Entry, skillsSubFS, selectedIDs, agentsSubFS, statuslineConfirm)
 		res.Warnings = append(res.Warnings, warnings...)
 		if err != nil {
 			res.Err = err
@@ -145,7 +146,7 @@ func configureWizardAgents(
 	}
 
 	for i, a := range agents {
-		if err := verifyConfiguredAgentRuntime(a, cfg); err != nil {
+		if err := verifyConfiguredAgentRuntime(a, &phaseModels); err != nil {
 			results[i].State.Configured = false
 			results[i].Err = err
 			return results
@@ -176,8 +177,8 @@ func applyWizardProfile(agents []agent.Agent, resolved *persona.ResolvedProfile,
 	})
 }
 
-func verifyConfiguredAgentRuntime(a agent.Agent, cfg *config.AppConfig) error {
-	observed, err := agent.ObserveRuntimeWithConfig(a, cfg)
+func verifyConfiguredAgentRuntime(a agent.Agent, models *state.PhaseModels) error {
+	observed, err := agent.ObserveRuntimeWithConfig(a, models)
 	if err != nil {
 		return fmt.Errorf("runtime verification observe failed: %w", err)
 	}

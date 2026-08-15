@@ -18,6 +18,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/terminalui"
 )
 
@@ -41,23 +42,19 @@ var (
 func updateScope(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyUp:
-		m.Scope = config.ScopeLocalOnly
-		m.cfg.Scope = m.Scope
+		m.Scope = state.ScopeLocalOnly
 	case tea.KeyDown:
-		m.Scope = config.ScopeLocalCloud
-		m.cfg.Scope = m.Scope
+		m.Scope = state.ScopeLocalCloud
 	case tea.KeyRunes:
 		switch string(msg.Runes) {
 		case "k":
-			m.Scope = config.ScopeLocalOnly
-			m.cfg.Scope = m.Scope
+			m.Scope = state.ScopeLocalOnly
 		case "j":
-			m.Scope = config.ScopeLocalCloud
-			m.cfg.Scope = m.Scope
+			m.Scope = state.ScopeLocalCloud
 		}
 	case tea.KeyEnter:
 		m.Err = nil
-		if m.Scope == config.ScopeLocalCloud {
+		if m.Scope == state.ScopeLocalCloud {
 			m.Step = StepHiveCloud
 		} else {
 			m.Step = StepPersona
@@ -76,7 +73,7 @@ func viewScope(m Model) string {
 
 	var localLine string
 	var cloudLine string
-	if m.Scope == config.ScopeLocalOnly {
+	if m.Scope == state.ScopeLocalOnly {
 		localLine = terminalui.SelectedRow("local-only", w)
 		cloudLine = terminalui.DimTextStyle.Render("  local+cloud")
 	} else {
@@ -322,13 +319,9 @@ func updatePersona(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		resolved, err := resolveWizardPresetSelection(m.PersonaFS, selected.Name, nil)
 		if err == nil {
 			m.selectedProfile = resolved
-			m.cfg.PersonaPreset = resolved.Slug
-			m.cfg.Preset = resolved.Slug
-			m.cfg.PersonaPresetSource = string(resolved.Source)
+			m.manifest = recordWizardPersona(m.manifest, resolved.Slug, resolved.Source)
 		} else {
-			m.cfg.PersonaPreset = selected.Name
-			m.cfg.Preset = selected.Name
-			m.cfg.PersonaPresetSource = string(persona.PresetSourceBuiltin)
+			m.manifest = recordWizardPersona(m.manifest, selected.Name, persona.PresetSourceBuiltin)
 		}
 		m.Err = nil
 		m.Step = StepExtraSkills
@@ -351,9 +344,7 @@ func updatePersonaCustomEdit(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.selectedProfile = resolved
-		m.cfg.PersonaPreset = resolved.Slug
-		m.cfg.Preset = resolved.Slug
-		m.cfg.PersonaPresetSource = string(resolved.Source)
+		m.manifest = recordWizardPersona(m.manifest, resolved.Slug, resolved.Source)
 		m.customEdit = false
 		m.Err = nil
 		m.Step = StepExtraSkills
@@ -584,7 +575,7 @@ func viewSkills(m Model) string {
 type phaseModelRow struct {
 	Phase              string
 	OpenCode           string
-	OpenCodeAssignment config.OpenCodeModelAssignment
+	OpenCodeAssignment state.OpenCodeModelAssignment
 	Claude             string
 	ClaudeEffort       string
 }
@@ -664,14 +655,14 @@ func openOrCycleActivePhaseModel(m Model) (Model, bool) {
 		m.phaseModelModelCursor = 0
 		m.phaseModelEffortCursor = 0
 		m.phaseModelModelSearch = ""
-		m.phaseModelPendingOpenCode = config.OpenCodeModelAssignment{}
+		m.phaseModelPendingOpenCode = state.OpenCodeModelAssignment{}
 		return m, false
 	}
 	if m.phaseModelColumnEnabled(m.phaseModelActiveCol) && m.phaseModelActiveCol == phaseModelClaudeColumn && len(m.phaseModelClaude) > 0 {
 		m.phaseModelMode = phaseModelModeClaudeModel
 		m.phaseModelModelCursor = catalogIndex(m.phaseModelRows[m.phaseModelActiveRow].Claude, m.phaseModelClaude)
 		m.phaseModelEffortCursor = catalogIndex(m.phaseModelRows[m.phaseModelActiveRow].ClaudeEffort, claudeEffortOptions())
-		m.phaseModelPendingClaude = config.ClaudeModelAssignment{}
+		m.phaseModelPendingClaude = state.ClaudeModelAssignment{}
 		return m, false
 	}
 	m = cycleActivePhaseModel(m)
@@ -726,7 +717,7 @@ func updateOpenCodeModelPicker(m Model, msg tea.KeyMsg) Model {
 			return m
 		}
 		selected := models[clampIndex(m.phaseModelModelCursor, len(models))]
-		m.phaseModelPendingOpenCode = config.OpenCodeModelAssignment{ProviderID: selected.ProviderID, ModelID: selected.Model.ID}
+		m.phaseModelPendingOpenCode = state.OpenCodeModelAssignment{ProviderID: selected.ProviderID, ModelID: selected.Model.ID}
 		efforts := phaseModelEffortOptions(selected.ProviderID, selected.Model)
 		if len(efforts) > 1 {
 			m.phaseModelEffortCursor = 0
@@ -774,7 +765,7 @@ func updateClaudeModelPicker(m Model, msg tea.KeyMsg) Model {
 		}
 	case tea.KeyEnter:
 		if len(m.phaseModelClaude) > 0 {
-			m.phaseModelPendingClaude = config.ClaudeModelAssignment{
+			m.phaseModelPendingClaude = state.ClaudeModelAssignment{
 				Model:  m.phaseModelClaude[clampIndex(m.phaseModelModelCursor, len(m.phaseModelClaude))],
 				Effort: m.phaseModelRows[m.phaseModelActiveRow].ClaudeEffort,
 			}
@@ -818,7 +809,7 @@ func commitPendingClaudePhaseModel(m Model) Model {
 		row.ClaudeEffort = strings.TrimSpace(m.phaseModelPendingClaude.Effort)
 		persistPhaseModelRows(&m)
 	}
-	m.phaseModelPendingClaude = config.ClaudeModelAssignment{}
+	m.phaseModelPendingClaude = state.ClaudeModelAssignment{}
 	m.phaseModelMode = phaseModelModeList
 	return m
 }
@@ -853,7 +844,7 @@ func commitPendingOpenCodePhaseModel(m Model) Model {
 		m.phaseModelRows[m.phaseModelActiveRow].OpenCodeAssignment = m.phaseModelPendingOpenCode
 		persistPhaseModelRows(&m)
 	}
-	m.phaseModelPendingOpenCode = config.OpenCodeModelAssignment{}
+	m.phaseModelPendingOpenCode = state.OpenCodeModelAssignment{}
 	m.phaseModelMode = phaseModelModeList
 	return m
 }
@@ -924,7 +915,7 @@ func nextCatalogValue(current string, catalog []string) string {
 	return catalog[0]
 }
 
-func nextOpenCodeAssignment(current config.OpenCodeModelAssignment, catalog []config.OpenCodeModelAssignment) config.OpenCodeModelAssignment {
+func nextOpenCodeAssignment(current state.OpenCodeModelAssignment, catalog []state.OpenCodeModelAssignment) state.OpenCodeModelAssignment {
 	if len(catalog) == 0 {
 		return current
 	}
@@ -936,26 +927,28 @@ func nextOpenCodeAssignment(current config.OpenCodeModelAssignment, catalog []co
 	return catalog[0]
 }
 
+// persistPhaseModelRows records the edited rows on the wizard's working copy of
+// the desired-state manifest, which owns the per-phase models.
 func persistPhaseModelRows(m *Model) {
-	if m == nil || m.cfg == nil {
+	if m == nil || m.manifest == nil {
 		return
 	}
-	if m.cfg.SDD.PhaseModels == nil {
-		m.cfg.SDD.PhaseModels = map[string]config.PhaseModelSelection{}
+	if m.manifest.PhaseModels.Aliases == nil {
+		m.manifest.PhaseModels.Aliases = map[string]state.PhaseModelSelection{}
 	}
-	if m.cfg.SDD.OpenCodePhaseModels == nil {
-		m.cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{}
+	if m.manifest.PhaseModels.OpenCode == nil {
+		m.manifest.PhaseModels.OpenCode = map[string]state.OpenCodeModelAssignment{}
 	}
-	if m.cfg.SDD.ClaudePhaseModels == nil {
-		m.cfg.SDD.ClaudePhaseModels = map[string]config.ClaudeModelAssignment{}
+	if m.manifest.PhaseModels.Claude == nil {
+		m.manifest.PhaseModels.Claude = map[string]state.ClaudeModelAssignment{}
 	}
 	for _, row := range m.phaseModelRows {
-		m.cfg.SDD.PhaseModels[row.Phase] = config.PhaseModelSelection{OpenCode: row.OpenCode, Claude: row.Claude}
-		m.cfg.SDD.ClaudePhaseModels[row.Phase] = config.ClaudeModelAssignment{Model: row.Claude, Effort: row.ClaudeEffort}
+		m.manifest.PhaseModels.Aliases[row.Phase] = state.PhaseModelSelection{OpenCode: row.OpenCode, Claude: row.Claude}
+		m.manifest.PhaseModels.Claude[row.Phase] = state.ClaudeModelAssignment{Model: row.Claude, Effort: row.ClaudeEffort}
 		if row.OpenCodeAssignment.ProviderID != "" && row.OpenCodeAssignment.ModelID != "" {
-			m.cfg.SDD.OpenCodePhaseModels[row.Phase] = row.OpenCodeAssignment
+			m.manifest.PhaseModels.OpenCode[row.Phase] = state.OpenCodeModelAssignment(row.OpenCodeAssignment)
 		} else {
-			delete(m.cfg.SDD.OpenCodePhaseModels, row.Phase)
+			delete(m.manifest.PhaseModels.OpenCode, row.Phase)
 		}
 	}
 }
@@ -1370,6 +1363,24 @@ func runAgentConfigCmd(m Model) tea.Cmd {
 // This is called from the view/update flow after the first agentProgressMsg arrives.
 func runAgentConfigSequence(m Model) tea.Cmd {
 	return func() tea.Msg {
+		// The desired state this apply is about to record is the same state it was
+		// supposed to start from. If reading it failed, the wizard is holding the
+		// built-in defaults instead of the user's choices, and recording them would
+		// overwrite what it could not read. Refuse before anything is written.
+		if err := m.manifestWriteGuard(); err != nil {
+			return agentProgressMsg{
+				line:   fmt.Sprintf("Configuration FAILED: %v", err),
+				done:   true,
+				failed: true,
+			}
+		}
+
+		// A model built outside NewModel carries no working manifest. An empty one
+		// is the same "nothing recorded yet" state a fresh machine starts from.
+		if m.manifest == nil {
+			m.manifest = state.New()
+		}
+
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return agentProgressMsg{line: fmt.Sprintf("resolve home dir: %v", err), failed: true, done: true}
@@ -1398,18 +1409,18 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			var err error
 			resolvedPreset, err = ensureProfileForApply(m)
 			if err != nil {
-				return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: resolve preset %q: %v", m.cfg.PersonaPreset, err), done: true, failed: true}
+				requested, _ := wizardPersonaSelection(m.manifest)
+				return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: resolve preset %q: %v", requested, err), done: true, failed: true}
 			}
 		}
 
+		manifestSlug, manifestSource := wizardPersonaSelection(m.manifest)
 		previousSlug := m.previousPresetSlug
 		if previousSlug == "" {
-			if m.cfg != nil {
-				previousSlug = m.cfg.PersonaPreset
-			}
+			previousSlug = manifestSlug
 		}
 		previousSource := m.previousPresetSource
-		if previousSource == "" && m.cfg != nil && strings.TrimSpace(m.cfg.PersonaPresetSource) == string(persona.PresetSourceUser) {
+		if previousSource == "" && manifestSource == persona.PresetSourceUser {
 			previousSource = persona.PresetSourceUser
 		}
 
@@ -1428,7 +1439,7 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		}
 
 		// Configure each detected agent and collect structured outcomes.
-		results := configureWizardAgents(m.Agents, m.cfg, agent.MCPEntry{}, agent.MCPEntry{}, resolvedPreset, wizardPresetApplyContext{
+		results := configureWizardAgents(m.Agents, wizardPhaseModels(m.manifest), agent.MCPEntry{}, agent.MCPEntry{}, resolvedPreset, wizardPresetApplyContext{
 			Layer1:               config.Layer1Content(),
 			Skills:               skillInfos,
 			PreviousPresetSlug:   previousSlug,
@@ -1444,7 +1455,7 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			automationWarnings = append(automationWarnings, res.Warnings...)
 		}
 
-		if m.Scope == config.ScopeLocalOnly {
+		if m.Scope == state.ScopeLocalOnly {
 			if err := config.DeleteSyncCredentials(); err != nil {
 				return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: cleanup local credentials: %v. Ver docs/setup-recovery.md", err), done: true, failed: true}
 			}
@@ -1480,19 +1491,20 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			_ = f.Close()
 		}
 
-		// Save canonical config as the final commit step.
+		// ~/.jarvis/state.yaml owns the replay fields the wizard just decided, so
+		// they are recorded there first and config.yaml is written afterwards from
+		// what config.Save reads back. The two writes are sequenced, never nested:
+		// state.Update takes the fail-fast, non-reentrant manifest lock.
+		m.manifest.Scope = state.Scope(m.Scope)
+		m.manifest.Skills = selectedIDs
+		recordWizardAgents(m.manifest, results)
+		if err := recordWizardDesiredState(m.manifest); err != nil {
+			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: record the desired-state manifest: %v. Ver docs/setup-recovery.md", err), done: true, failed: true}
+		}
+
 		m.cfg.SchemaVersion = 2
-		m.cfg.Scope = m.Scope
-		m.cfg.ConfiguredAgents = configuredAgents
-		m.cfg.SelectedSkills = selectedIDs
 		m.cfg.Install.Mode = string(config.ConfigStatusReconfigure)
 		m.cfg.Install.Completed = true
-		if m.cfg.Install.Agents == nil {
-			m.cfg.Install.Agents = map[string]config.AgentState{}
-		}
-		for _, res := range results {
-			m.cfg.Install.Agents[res.AgentName] = res.State
-		}
 		m.cfg.Version = "1.0.0"
 		if err := config.Save(m.cfg); err != nil {
 			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: save config: %v. Ver docs/setup-recovery.md", err), done: true, failed: true}
@@ -1519,10 +1531,8 @@ func ensureProfileForApply(m Model) (*persona.ResolvedProfile, error) {
 		return resolved, nil
 	}
 
-	requested := ""
-	if m.cfg != nil {
-		requested = strings.TrimSpace(m.cfg.PersonaPreset)
-	}
+	requested, _ := wizardPersonaSelection(m.manifest)
+	requested = strings.TrimSpace(requested)
 	if requested == "" {
 		presets, err := persona.ListProfiles(m.PersonaFS)
 		if err == nil && len(presets) > 0 {
@@ -1580,24 +1590,26 @@ func viewReview(m Model) string {
 	summarySB.WriteString(terminalui.TitleStyle.Render("Resumen de configuración") + "\n\n")
 
 	fmt.Fprintf(&summarySB, "Scope: %s", m.Scope)
-	if m.Scope == config.ScopeLocalOnly {
+	if m.Scope == state.ScopeLocalOnly {
 		summarySB.WriteString("  " + errorStyle.Render(localOnlyReviewWarning))
 	}
 	summarySB.WriteString("\n")
-	fmt.Fprintf(&summarySB, "Persona: %s\n", m.cfg.PersonaPreset)
-	if m.Scope == config.ScopeLocalCloud {
+	personaSlug, _ := wizardPersonaSelection(m.manifest)
+	fmt.Fprintf(&summarySB, "Persona: %s\n", personaSlug)
+	if m.Scope == state.ScopeLocalCloud {
 		fmt.Fprintf(&summarySB, "Cloud email: %s\n", strings.TrimSpace(m.Email))
 	} else {
 		summarySB.WriteString("Cloud email: (omitido por alcance local-only)\n")
 	}
 
-	resolved := sddruntime.ResolvePhaseModels(m.cfg)
+	phaseModels := wizardPhaseModels(m.manifest)
+	resolved := sddruntime.ResolvePhaseModels(phaseModels)
 	summarySB.WriteString("SDD phase models:\n")
 	for _, phase := range sddruntime.DefaultContract().Phases {
 		sel := resolved[phase]
 		opencodeDisplay := sel.OpenCode
 		effortDisplay := ""
-		if assignment := m.cfg.SDD.OpenCodePhaseModels[phase]; assignment.ProviderID != "" && assignment.ModelID != "" {
+		if assignment := phaseModels.OpenCode[phase]; assignment.ProviderID != "" && assignment.ModelID != "" {
 			opencodeDisplay = assignment.ProviderID + "/" + assignment.ModelID
 			if strings.TrimSpace(assignment.Effort) != "" {
 				effortDisplay = ", effort=" + strings.TrimSpace(assignment.Effort)
@@ -1605,7 +1617,7 @@ func viewReview(m Model) string {
 		}
 		claudeDisplay := sel.Claude
 		claudeEffortDisplay := ""
-		if assignment := m.cfg.SDD.ClaudePhaseModels[phase]; strings.TrimSpace(assignment.Model) != "" || strings.TrimSpace(assignment.Effort) != "" {
+		if assignment := phaseModels.Claude[phase]; strings.TrimSpace(assignment.Model) != "" || strings.TrimSpace(assignment.Effort) != "" {
 			if strings.TrimSpace(assignment.Model) != "" {
 				claudeDisplay = strings.TrimSpace(assignment.Model)
 			}

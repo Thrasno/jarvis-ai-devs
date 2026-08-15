@@ -6,7 +6,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 type RuntimePaths struct {
@@ -61,20 +61,20 @@ type orchestratorTemplateData struct {
 
 // RenderOrchestrator renders the orchestrator template using the resolved
 // cross-platform phase map, selecting the active platform column by agent.
-func RenderOrchestrator(agent string, cfg *config.AppConfig, templateContent string) (string, error) {
+func RenderOrchestrator(agent string, models state.PhaseModels, templateContent string) (string, error) {
 	platform, err := platformForAgent(agent)
 	if err != nil {
 		return "", err
 	}
 
-	assignments, err := ResolveAssignmentsForPlatform(platform, cfg)
+	assignments, err := ResolveAssignmentsForPlatform(platform, models)
 	if err != nil {
 		return "", err
 	}
 	contract := DefaultContract()
 	rows := make([]modelAssignmentRow, 0, len(contract.Phases))
 	for _, phase := range contract.Phases {
-		rows = append(rows, modelAssignmentRow{Phase: phase, Model: assignments[phase], Effort: assignmentEffort(platform, cfg, phase), Reason: phaseReason(phase)})
+		rows = append(rows, modelAssignmentRow{Phase: phase, Model: assignments[phase], Effort: assignmentEffort(platform, models, phase), Reason: phaseReason(phase)})
 	}
 	selectedTemplate, err := RenderModelSections(templateContent, ModelSectionClassForModel(assignments["orchestrator"]))
 	if err != nil {
@@ -94,11 +94,11 @@ func RenderOrchestrator(agent string, cfg *config.AppConfig, templateContent str
 	return out.String(), nil
 }
 
-func assignmentEffort(platform Platform, cfg *config.AppConfig, phase string) string {
-	if platform != PlatformOpenCode || cfg == nil || cfg.SDD.OpenCodePhaseModels == nil {
+func assignmentEffort(platform Platform, models state.PhaseModels, phase string) string {
+	if platform != PlatformOpenCode || models.OpenCode == nil {
 		return "-"
 	}
-	assignment := cfg.SDD.OpenCodePhaseModels[phase]
+	assignment := models.OpenCode[phase]
 	if strings.TrimSpace(assignment.ProviderID) == "" || strings.TrimSpace(assignment.ModelID) == "" {
 		return "-"
 	}

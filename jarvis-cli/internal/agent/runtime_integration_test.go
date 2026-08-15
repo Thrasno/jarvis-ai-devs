@@ -7,8 +7,8 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 func TestAgentRuntimePlan_UsesCanonicalBuilder(t *testing.T) {
@@ -213,18 +213,18 @@ func TestObserveRuntime_ParsesProviderQualifiedAssignmentsWithoutLowercasingMode
 }
 
 func TestObserveRuntime_FallbackUsesConfiguredOpenCodeProviderQualifiedAssignments(t *testing.T) {
-	previousLoad := loadAppConfig
-	loadAppConfig = func() (*config.AppConfig, error) {
-		cfg := &config.AppConfig{}
-		cfg.SDD.PhaseModels = map[string]config.PhaseModelSelection{
-			"sdd-apply": {OpenCode: "opus", Claude: "haiku"},
-		}
-		cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
-			"sdd-apply": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max"},
-		}
-		return cfg, nil
+	previousLoad := loadDesiredPhaseModels
+	loadDesiredPhaseModels = func() (state.PhaseModels, error) {
+		return state.PhaseModels{
+			Aliases: map[string]state.PhaseModelSelection{
+				"sdd-apply": {OpenCode: "opus", Claude: "haiku"},
+			},
+			OpenCode: map[string]state.OpenCodeModelAssignment{
+				"sdd-apply": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max"},
+			},
+		}, nil
 	}
-	t.Cleanup(func() { loadAppConfig = previousLoad })
+	t.Cleanup(func() { loadDesiredPhaseModels = previousLoad })
 
 	plan, err := sddruntime.Build("opencode")
 	if err != nil {
@@ -244,10 +244,10 @@ func TestObserveRuntime_FallbackUsesConfiguredOpenCodeProviderQualifiedAssignmen
 }
 
 func TestOpenCodeAgent_ObserveRuntimeWithConfigUsesPendingAssignments(t *testing.T) {
-	stubRuntimeConfig(t, defaultRuntimeConfig())
+	stubRuntimePhaseModels(t, defaultRuntimePhaseModels())
 
-	pendingCfg := defaultRuntimeConfig()
-	pendingCfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
+	pendingModels := defaultRuntimePhaseModels()
+	pendingModels.OpenCode = map[string]state.OpenCodeModelAssignment{
 		"default": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"},
 	}
 
@@ -269,7 +269,7 @@ func TestOpenCodeAgent_ObserveRuntimeWithConfigUsesPendingAssignments(t *testing
 |-------|---------------|--------|--------|
 {{ range .ModelRows }}| {{ .Phase }} | {{ .Model }} | {{ .Effort }} | {{ .Reason }} |
 {{ end }}`
-	rendered, err := sddruntime.RenderOrchestrator(a.Name(), pendingCfg, orchestratorTemplate)
+	rendered, err := sddruntime.RenderOrchestrator(a.Name(), pendingModels, orchestratorTemplate)
 	if err != nil {
 		t.Fatalf("RenderOrchestrator: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestOpenCodeAgent_ObserveRuntimeWithConfigUsesPendingAssignments(t *testing
 		t.Fatalf("stale disk/default config check status = %q, want fail", got)
 	}
 
-	observed, err := a.ObserveRuntimeWithConfig(pendingCfg)
+	observed, err := a.ObserveRuntimeWithConfig(phaseModelsPtr(pendingModels))
 	if err != nil {
 		t.Fatalf("ObserveRuntimeWithConfig: %v", err)
 	}
@@ -304,8 +304,8 @@ func TestOpenCodeAgent_ObserveRuntimeWithConfigUsesPendingAssignments(t *testing
 }
 
 func TestOpenCodeAgent_MergeGeneratedConfigKeepsRuntimeVerificationPassing(t *testing.T) {
-	cfg := defaultRuntimeConfig()
-	cfg.SDD.OpenCodePhaseModels = map[string]config.OpenCodeModelAssignment{
+	models := defaultRuntimePhaseModels()
+	models.OpenCode = map[string]state.OpenCodeModelAssignment{
 		"orchestrator": {ProviderID: "openai", ModelID: "gpt-5.1-codex-max", Effort: "high"},
 	}
 	home := t.TempDir()
@@ -319,7 +319,7 @@ func TestOpenCodeAgent_MergeGeneratedConfigKeepsRuntimeVerificationPassing(t *te
 		t.Fatalf("install optional artifacts: %v", err)
 	}
 	// MergeGeneratedConfig writes the real opencode.json, overwriting the stub from above.
-	if err := a.MergeGeneratedConfig(cfg); err != nil {
+	if err := a.MergeGeneratedConfig(models); err != nil {
 		t.Fatalf("MergeGeneratedConfig: %v", err)
 	}
 	if err := a.WriteInstructions("# Layer1", "# Layer2", nil); err != nil {
@@ -331,7 +331,7 @@ func TestOpenCodeAgent_MergeGeneratedConfigKeepsRuntimeVerificationPassing(t *te
 	if err := a.InstallSkills(fstest.MapFS{"_shared/SKILL.md": {Data: []byte("# shared")}}, nil); err != nil {
 		t.Fatalf("InstallSkills: %v", err)
 	}
-	observed, err := a.ObserveRuntimeWithConfig(cfg)
+	observed, err := a.ObserveRuntimeWithConfig(phaseModelsPtr(models))
 	if err != nil {
 		t.Fatalf("ObserveRuntimeWithConfig: %v", err)
 	}
@@ -341,10 +341,10 @@ func TestOpenCodeAgent_MergeGeneratedConfigKeepsRuntimeVerificationPassing(t *te
 }
 
 func TestClaudeAgent_ObserveRuntimeWithConfigUsesPendingAssignments(t *testing.T) {
-	stubRuntimeConfig(t, defaultRuntimeConfig())
+	stubRuntimePhaseModels(t, defaultRuntimePhaseModels())
 
-	pendingCfg := defaultRuntimeConfig()
-	pendingCfg.SDD.PhaseModels = map[string]config.PhaseModelSelection{
+	pendingModels := defaultRuntimePhaseModels()
+	pendingModels.Aliases = map[string]state.PhaseModelSelection{
 		"default": {Claude: "haiku"},
 	}
 
@@ -361,7 +361,7 @@ func TestClaudeAgent_ObserveRuntimeWithConfigUsesPendingAssignments(t *testing.T
 |-------|---------------|--------|--------|
 {{ range .ModelRows }}| {{ .Phase }} | {{ .Model }} | {{ .Effort }} | {{ .Reason }} |
 {{ end }}`
-	rendered, err := sddruntime.RenderOrchestrator(a.Name(), pendingCfg, orchestratorTemplate)
+	rendered, err := sddruntime.RenderOrchestrator(a.Name(), pendingModels, orchestratorTemplate)
 	if err != nil {
 		t.Fatalf("RenderOrchestrator: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestClaudeAgent_ObserveRuntimeWithConfigUsesPendingAssignments(t *testing.T
 		t.Fatalf("stale disk/default config check status = %q, want fail", got)
 	}
 
-	observed, err := a.ObserveRuntimeWithConfig(pendingCfg)
+	observed, err := a.ObserveRuntimeWithConfig(phaseModelsPtr(pendingModels))
 	if err != nil {
 		t.Fatalf("ObserveRuntimeWithConfig: %v", err)
 	}
@@ -565,7 +565,7 @@ func TestObserveRuntime_ParsesRenderedOrchestratorAssignments(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			stubRuntimeConfig(t, defaultRuntimeConfig())
+			stubRuntimePhaseModels(t, defaultRuntimePhaseModels())
 
 			home := t.TempDir()
 			a := &OpenCodeAgent{home: home, templatesFS: testTemplatesFS}
@@ -613,7 +613,7 @@ func TestObserveRuntime_FallbackIgnoresStaleLegacyContractAssignments(t *testing
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			stubRuntimeConfig(t, defaultRuntimeConfig())
+			stubRuntimePhaseModels(t, defaultRuntimePhaseModels())
 
 			home := t.TempDir()
 			configDir := home

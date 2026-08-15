@@ -7,14 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 type skillModelSectionClass func(skillID string) sddruntime.ModelSectionClass
 
-func skillModelSectionClassForPlatform(platform sddruntime.Platform, cfg *config.AppConfig) (skillModelSectionClass, error) {
-	assignments, err := sddruntime.ResolveAssignmentsForPlatform(platform, cfg)
+func skillModelSectionClassForPlatform(platform sddruntime.Platform, models state.PhaseModels) (skillModelSectionClass, error) {
+	assignments, err := sddruntime.ResolveAssignmentsForPlatform(platform, models)
 	if err != nil {
 		return nil, err
 	}
@@ -47,12 +47,12 @@ type RenderedSkillFile struct {
 // would write for a platform, without writing any of them, so a caller needing
 // the desired content of an installed skill tree reuses the installer's own
 // walk and model-section rendering instead of guessing at one SKILL.md per
-// skill. A nil cfg renders verbatim, matching InstallSkills.
-func RenderSkillFilesForPlatform(skillsFS fs.FS, selected []string, platform sddruntime.Platform, cfg *config.AppConfig) ([]RenderedSkillFile, error) {
+// skill. A nil models renders verbatim, matching InstallSkills.
+func RenderSkillFilesForPlatform(skillsFS fs.FS, selected []string, platform sddruntime.Platform, models *state.PhaseModels) ([]RenderedSkillFile, error) {
 	var sectionClass skillModelSectionClass
-	if cfg != nil {
+	if models != nil {
 		var err error
-		if sectionClass, err = skillModelSectionClassForPlatform(platform, cfg); err != nil {
+		if sectionClass, err = skillModelSectionClassForPlatform(platform, *models); err != nil {
 			return nil, fmt.Errorf("resolve skill model sections: %w", err)
 		}
 	}

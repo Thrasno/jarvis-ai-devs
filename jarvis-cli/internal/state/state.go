@@ -219,6 +219,39 @@ func Save(st *State) error {
 	return atomicfile.WriteYAML(path, data)
 }
 
+// Update applies mutate to the manifest and writes the result back. A machine
+// with no manifest yet gets a fresh one, so a first writer never has to special-
+// case the pre-migration state.
+//
+// The read, the mutation and the write are one critical section under WithLock:
+// without it, this writer and a concurrent one each save a manifest the other
+// has already replaced, and the later save silently discards the earlier one.
+// The lock is fail-fast and non-reentrant, so no caller may reach this from
+// inside a WithLock block of its own.
+//
+// The fresh manifest is only correct for a genuinely fresh machine. An absent
+// manifest also describes a machine whose migration failed, and there the fresh
+// manifest would carry nothing but the field this writer touched: Migrate's
+// regular-file gate then early-returns forever and the persona, skills, agents,
+// scope and phase models still in config.yaml become unreachable. The two are
+// told apart by config.yaml itself, so every writer refuses before writing
+// anything while it still carries state that has not moved.
+func Update(mutate func(*State)) error {
+	return WithLock(func() error {
+		st, err := Load()
+		if errors.Is(err, ErrNotFound) {
+			if pendingErr := errIfMigrationPending(); pendingErr != nil {
+				return pendingErr
+			}
+			st = New()
+		} else if err != nil {
+			return err
+		}
+		mutate(st)
+		return Save(st)
+	})
+}
+
 // Validate reports structural problems that make the manifest unsafe to trust.
 // It deliberately does not require any field to be populated: a manifest
 // migrated from a config.yaml with unpopulated replay fields is structurally
@@ -289,6 +322,149 @@ func (s *State) ValidateForReplay() error {
 		return fmt.Errorf("%s installed_agents is empty; nothing to replay", stateFileName)
 	}
 	return nil
+}
+
+// DefaultPersona is the persona a machine replays when the manifest records
+// none. It is the product default, not a placeholder: an installation that was
+// never asked which persona to use still renders instruction files, and this is
+// the one it renders.
+const DefaultPersona = "argentino"
+
+// ResolvedPersona returns the persona slug and source this machine replays,
+// applying the defaults an unpopulated manifest falls back to: the built-in
+// default persona, and a builtin source for anything that is not exactly "user".
+//
+// Validate only rejects an unrecognized persona_source; it does not default one,
+// because a manifest is allowed to record nothing. Every reader needs the same
+// answer for "nothing recorded", so it is resolved here rather than at each
+// call site.
+func (s *State) ResolvedPersona() (string, PersonaSource) {
+	if s == nil {
+		return DefaultPersona, PersonaSourceBuiltin
+	}
+	slug := strings.TrimSpace(s.Persona)
+	if slug == "" {
+		slug = DefaultPersona
+	}
+	source := PersonaSourceBuiltin
+	if strings.ToLower(strings.TrimSpace(string(s.PersonaSource))) == string(PersonaSourceUser) {
+		source = PersonaSourceUser
+	}
+	return slug, source
+}
+
+// ResolvedScope returns the scope this machine replays.
+//
+// A manifest that records no scope, or one Validate tolerates but does not
+// recognize, falls back to local+cloud when the machine already has a stored
+// cloud link and to local-only otherwise. That link lives in ~/.jarvis/config.yaml,
+// which this package deliberately does not read, so it arrives as an argument:
+// the caller that owns the config answers "is there a cloud link" and this owns
+// what the answer means for the scope.
+func (s *State) ResolvedScope(hasStoredCloudLink bool) Scope {
+	if s != nil {
+		switch s.Scope {
+		case ScopeLocalOnly, ScopeLocalCloud:
+			return s.Scope
+		}
+	}
+	if hasStoredCloudLink {
+		return ScopeLocalCloud
+	}
+	return ScopeLocalOnly
+}
+
+// RecordsCompleteInstall reports whether the manifest carries every part of a
+// recorded installation that it owns: a persona, at least one selected skill and
+// at least one configured agent.
+//
+// It answers only half the question. config.yaml owns the API URL, the schema
+// version and the install-completion flag, so a caller deciding whether a
+// machine can be reconfigured has to combine this with those.
+func (s *State) RecordsCompleteInstall() bool {
+	if s == nil {
+		return false
+	}
+	if strings.TrimSpace(s.Persona) == "" {
+		return false
+	}
+	if len(s.Skills) == 0 {
+		return false
+	}
+	return len(s.InstalledAgents) > 0
+}
+
+// RecordsAnyState reports whether the manifest carries any recorded choice at
+// all. It is what tells a damaged installation apart from a machine that was
+// never set up.
+//
+// A persona equal to DefaultPersona does not count: that is what an unpopulated
+// manifest reads as, so treating it as a choice would report every fresh machine
+// as damaged.
+func (s *State) RecordsAnyState() bool {
+	if s == nil {
+		return false
+	}
+	if persona := strings.TrimSpace(s.Persona); persona != "" && persona != DefaultPersona {
+		return true
+	}
+	if len(s.Skills) > 0 || len(s.InstalledAgents) > 0 {
+		return true
+	}
+	return s.SelectionConfigured
+}
+
+// NormalizedPhaseModels returns the manifest's per-phase model assignments with
+// phase keys lowercased and trimmed, platform aliases lowercased and trimmed,
+// provider and model identifiers trimmed, and unnamed phases dropped.
+//
+// The manifest stores what was written: migration copies config.yaml verbatim,
+// so a hand-edited `Apply:` key would otherwise stop matching the SDD contract's
+// `apply`. config.Load applied exactly this normalization to the AppConfig
+// fields these values used to be read from, so reading them here must not change
+// the effective value.
+func (s *State) NormalizedPhaseModels() PhaseModels {
+	out := PhaseModels{
+		Aliases:  map[string]PhaseModelSelection{},
+		OpenCode: map[string]OpenCodeModelAssignment{},
+		Claude:   map[string]ClaudeModelAssignment{},
+	}
+	if s == nil {
+		return out
+	}
+	for rawPhase, sel := range s.PhaseModels.Aliases {
+		phase := normalizePhaseKey(rawPhase)
+		if phase == "" {
+			continue
+		}
+		sel.OpenCode = strings.ToLower(strings.TrimSpace(sel.OpenCode))
+		sel.Claude = strings.ToLower(strings.TrimSpace(sel.Claude))
+		out.Aliases[phase] = sel
+	}
+	for rawPhase, assignment := range s.PhaseModels.OpenCode {
+		phase := normalizePhaseKey(rawPhase)
+		if phase == "" {
+			continue
+		}
+		assignment.ProviderID = strings.TrimSpace(assignment.ProviderID)
+		assignment.ModelID = strings.TrimSpace(assignment.ModelID)
+		assignment.Effort = strings.TrimSpace(assignment.Effort)
+		out.OpenCode[phase] = assignment
+	}
+	for rawPhase, assignment := range s.PhaseModels.Claude {
+		phase := normalizePhaseKey(rawPhase)
+		if phase == "" {
+			continue
+		}
+		assignment.Model = strings.TrimSpace(assignment.Model)
+		assignment.Effort = strings.TrimSpace(assignment.Effort)
+		out.Claude[phase] = assignment
+	}
+	return out
+}
+
+func normalizePhaseKey(phase string) string {
+	return strings.ToLower(strings.TrimSpace(phase))
 }
 
 func validatePhaseModels(pm PhaseModels) error {

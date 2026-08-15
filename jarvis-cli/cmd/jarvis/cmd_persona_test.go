@@ -9,6 +9,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
 func TestPersonaSetCmd_UsesResolverAndPipeline_ForBuiltinAndUserPreset(t *testing.T) {
@@ -65,28 +66,28 @@ presentation:
 				}
 			}
 
-			if err := config.Save(&config.AppConfig{
-				PersonaPreset:       "argentino",
-				PersonaPresetSource: "user",
-				Preset:              "argentino",
-			}); err != nil {
-				t.Fatalf("seed config: %v", err)
+			// ~/.jarvis/state.yaml owns the persona this command replaces.
+			seed := state.New()
+			seed.Persona = "argentino"
+			seed.PersonaSource = state.PersonaSourceUser
+			if err := state.Save(seed); err != nil {
+				t.Fatalf("seed manifest: %v", err)
 			}
 
 			if err := personaSetCmd.RunE(personaSetCmd, []string{tt.inputSlug}); err != nil {
 				t.Fatalf("persona set returned error: %v", err)
 			}
 
-			cfg, err := config.Load()
+			manifest, err := state.Load()
 			if err != nil {
-				t.Fatalf("load config after persona set: %v", err)
+				t.Fatalf("load manifest after persona set: %v", err)
 			}
 
-			if cfg.PersonaPreset != tt.expectedSlug {
-				t.Fatalf("persona_preset = %q, want %q", cfg.PersonaPreset, tt.expectedSlug)
+			if manifest.Persona != tt.expectedSlug {
+				t.Fatalf("manifest persona = %q, want %q", manifest.Persona, tt.expectedSlug)
 			}
-			if cfg.PersonaPresetSource != tt.expectedSource {
-				t.Fatalf("persona_preset_source = %q, want %q", cfg.PersonaPresetSource, tt.expectedSource)
+			if string(manifest.PersonaSource) != tt.expectedSource {
+				t.Fatalf("manifest persona_source = %q, want %q", manifest.PersonaSource, tt.expectedSource)
 			}
 
 			if _, err := os.Stat(filepath.Join(tempHome, ".claude", "CLAUDE.md")); err != nil {
@@ -331,4 +332,40 @@ func findSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestPersonaSetCmd_MigratesBeforeReadingTheManifest covers the upgrade path:
+// a machine that still has its replay fields in config.yaml and no manifest
+// yet. Reading the manifest without migrating first sees an empty one, and the
+// skills section of every instruction file is then rendered from an empty
+// selection -- silently dropping every skill the user had chosen.
+//
+// jarvis sync already migrates before it reads. This asserts persona does too.
+func TestPersonaSetCmd_MigratesBeforeReadingTheManifest(t *testing.T) {
+	home := isolateTestHome(t)
+	configPath := filepath.Join(home, ".jarvis", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir .jarvis: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(`schema_version: 2
+persona_preset: gentleman
+persona_preset_source: builtin
+selected_skills:
+  - go-testing
+  - work-unit-commits
+`), 0o600); err != nil {
+		t.Fatalf("seed config.yaml: %v", err)
+	}
+
+	manifest, err := loadManifestForPersona()
+	if err != nil {
+		t.Fatalf("loadManifestForPersona: %v", err)
+	}
+
+	if manifest.Persona != "gentleman" {
+		t.Errorf("persona = %q, want the value recorded in config.yaml", manifest.Persona)
+	}
+	if len(manifest.Skills) != 2 {
+		t.Errorf("skills = %#v, want the two recorded in config.yaml", manifest.Skills)
+	}
 }

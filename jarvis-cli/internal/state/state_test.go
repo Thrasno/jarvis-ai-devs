@@ -358,3 +358,173 @@ func sortedKeys(m map[string]any) []string {
 	}
 	return out
 }
+
+// TestNormalizedPhaseModels_ReproducesTheNormalizationConfigLoadApplied covers
+// the read every phase-model consumer now performs. The manifest stores what was
+// written -- migration copies config.yaml verbatim -- while consumers look
+// phases up by the SDD contract's names, so a hand-edited `Apply:` key must
+// still match `apply`, exactly as config.Load's normalization made it.
+func TestNormalizedPhaseModels_ReproducesTheNormalizationConfigLoadApplied(t *testing.T) {
+	manifest := New()
+	manifest.PhaseModels.Aliases[" Apply "] = PhaseModelSelection{OpenCode: " Sonnet ", Claude: " OPUS "}
+	manifest.PhaseModels.OpenCode["  VERIFY"] = OpenCodeModelAssignment{ProviderID: " openai ", ModelID: " gpt ", Effort: " high "}
+	manifest.PhaseModels.Claude["Spec  "] = ClaudeModelAssignment{Model: " haiku ", Effort: " max "}
+	manifest.PhaseModels.Aliases["   "] = PhaseModelSelection{OpenCode: "dropped"}
+
+	got := manifest.NormalizedPhaseModels()
+
+	if sel := got.Aliases["apply"]; sel.OpenCode != "sonnet" || sel.Claude != "opus" {
+		t.Errorf("aliases[apply] = %+v, want lowercased and trimmed values", sel)
+	}
+	if assignment := got.OpenCode["verify"]; assignment.ProviderID != "openai" || assignment.ModelID != "gpt" || assignment.Effort != "high" {
+		t.Errorf("opencode[verify] = %+v, want trimmed values", assignment)
+	}
+	if assignment := got.Claude["spec"]; assignment.Model != "haiku" || assignment.Effort != "max" {
+		t.Errorf("claude[spec] = %+v, want trimmed values", assignment)
+	}
+	if len(got.Aliases) != 1 {
+		t.Errorf("aliases = %#v, want the unnamed phase dropped", got.Aliases)
+	}
+
+	if empty := (*State)(nil).NormalizedPhaseModels(); empty.Aliases == nil || empty.OpenCode == nil || empty.Claude == nil {
+		t.Error("a nil manifest must still return usable empty maps")
+	}
+}
+
+// TestResolvedPersona_AppliesTheDefaultsAnUnpopulatedManifestFallsBackTo pins
+// the persona defaults down in the one place that now owns them. config.Load
+// used to apply exactly this chain to the AppConfig fields the manifest
+// replaced: an unrecorded persona reads as the built-in default, and any source
+// that is not exactly "user" reads as "builtin".
+func TestResolvedPersona_AppliesTheDefaultsAnUnpopulatedManifestFallsBackTo(t *testing.T) {
+	tests := []struct {
+		name       string
+		manifest   *State
+		wantSlug   string
+		wantSource PersonaSource
+	}{
+		{name: "nil manifest", manifest: nil, wantSlug: DefaultPersona, wantSource: PersonaSourceBuiltin},
+		{name: "empty manifest", manifest: New(), wantSlug: DefaultPersona, wantSource: PersonaSourceBuiltin},
+		{
+			name:       "recorded user persona",
+			manifest:   &State{Persona: " neutra ", PersonaSource: " USER "},
+			wantSlug:   "neutra",
+			wantSource: PersonaSourceUser,
+		},
+		{
+			name:       "unrecognized source reads as builtin",
+			manifest:   &State{Persona: "neutra", PersonaSource: "nonsense"},
+			wantSlug:   "neutra",
+			wantSource: PersonaSourceBuiltin,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			slug, source := tt.manifest.ResolvedPersona()
+			if slug != tt.wantSlug || source != tt.wantSource {
+				t.Errorf("ResolvedPersona() = (%q, %q), want (%q, %q)", slug, source, tt.wantSlug, tt.wantSource)
+			}
+		})
+	}
+}
+
+// TestResolvedScope_FallsBackThroughTheStoredCloudLink pins the scope default.
+// config.Load defaulted an absent or unrecognized scope to local+cloud when the
+// machine already had a stored cloud link and to local-only otherwise. The cloud
+// link lives in config.yaml, which this package does not read, so it arrives as
+// an argument.
+func TestResolvedScope_FallsBackThroughTheStoredCloudLink(t *testing.T) {
+	tests := []struct {
+		name         string
+		manifest     *State
+		hasCloudLink bool
+		want         Scope
+	}{
+		{name: "recorded scope wins over the cloud link", manifest: &State{Scope: ScopeLocalOnly}, hasCloudLink: true, want: ScopeLocalOnly},
+		{name: "recorded local+cloud", manifest: &State{Scope: ScopeLocalCloud}, want: ScopeLocalCloud},
+		{name: "unset with a cloud link", manifest: New(), hasCloudLink: true, want: ScopeLocalCloud},
+		{name: "unset without a cloud link", manifest: New(), want: ScopeLocalOnly},
+		{name: "unrecognized with a cloud link", manifest: &State{Scope: "nonsense"}, hasCloudLink: true, want: ScopeLocalCloud},
+		{name: "nil manifest", manifest: nil, want: ScopeLocalOnly},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.manifest.ResolvedScope(tt.hasCloudLink); got != tt.want {
+				t.Errorf("ResolvedScope(%t) = %q, want %q", tt.hasCloudLink, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRecordsCompleteInstall_RequiresEveryPartTheManifestOwns covers the half of
+// the reconfigure-readiness question this store can answer. config.yaml owns the
+// other half.
+func TestRecordsCompleteInstall_RequiresEveryPartTheManifestOwns(t *testing.T) {
+	complete := func() *State {
+		manifest := New()
+		manifest.Persona = "neutra"
+		manifest.Skills = []string{"go-testing"}
+		manifest.InstalledAgents = []Agent{{ID: "claude", InstructionsPath: "/i", ConfigPath: "/c"}}
+		return manifest
+	}
+
+	if !complete().RecordsCompleteInstall() {
+		t.Fatal("a manifest with a persona, a skill and an agent records a complete install")
+	}
+
+	noPersona := complete()
+	noPersona.Persona = ""
+	noSkills := complete()
+	noSkills.Skills = nil
+	noAgents := complete()
+	noAgents.InstalledAgents = nil
+
+	for name, manifest := range map[string]*State{
+		"nil":        nil,
+		"empty":      New(),
+		"no persona": noPersona,
+		"no skills":  noSkills,
+		"no agents":  noAgents,
+	} {
+		if manifest.RecordsCompleteInstall() {
+			t.Errorf("%s must not record a complete install", name)
+		}
+	}
+}
+
+// TestRecordsAnyState_TellsADamagedInstallFromAFreshMachine covers the signal
+// behind the recover status. A persona equal to the built-in default is not a
+// recorded choice: it is what an unpopulated manifest reads as.
+func TestRecordsAnyState_TellsADamagedInstallFromAFreshMachine(t *testing.T) {
+	if (*State)(nil).RecordsAnyState() || New().RecordsAnyState() {
+		t.Fatal("nothing recorded must not read as recorded state")
+	}
+
+	defaulted := New()
+	defaulted.Persona = DefaultPersona
+	if defaulted.RecordsAnyState() {
+		t.Error("the built-in default persona is not a recorded choice")
+	}
+
+	chosen := New()
+	chosen.Persona = "neutra"
+	withSkills := New()
+	withSkills.Skills = []string{"go-testing"}
+	withAgents := New()
+	withAgents.InstalledAgents = []Agent{{ID: "claude", InstructionsPath: "/i", ConfigPath: "/c"}}
+	withSelection := New()
+	withSelection.SelectionConfigured = true
+
+	for name, manifest := range map[string]*State{
+		"chosen persona":     chosen,
+		"selected skills":    withSkills,
+		"configured agent":   withAgents,
+		"asked about agents": withSelection,
+	} {
+		if !manifest.RecordsAnyState() {
+			t.Errorf("%s must read as recorded state", name)
+		}
+	}
+}
