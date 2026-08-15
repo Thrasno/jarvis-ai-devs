@@ -11,6 +11,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agentapply"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
@@ -22,6 +23,66 @@ type capturingConfigure struct {
 	selected    [][]string
 	statusline  []agentapply.StatuslineDecision
 	err         map[string]error
+}
+
+type outputStyleReplayAgent struct {
+	agent.Agent
+	supports          bool
+	instructionWrites int
+	outputWrites      int
+	outputErr         error
+}
+
+func (a *outputStyleReplayAgent) WriteInstructions(string, string, []config.SkillInfo) error {
+	a.instructionWrites++
+	return nil
+}
+
+func (a *outputStyleReplayAgent) SupportsOutputStyles() bool { return a.supports }
+
+func (a *outputStyleReplayAgent) WriteOutputStyle(*persona.Profile) error {
+	a.outputWrites++
+	return a.outputErr
+}
+
+func TestRunnerApplyPersonaInstructionsOutputStyleWiring(t *testing.T) {
+	boom := errors.New("write output style")
+	tests := []struct {
+		name       string
+		supports   bool
+		profile    *persona.Profile
+		outputErr  error
+		wantWrites int
+		wantErr    error
+	}{
+		{name: "supported agent writes output style", supports: true, profile: &persona.Profile{Name: "neutra"}, wantWrites: 1},
+		{name: "unsupported agent is excluded", profile: &persona.Profile{Name: "neutra"}},
+		{name: "nil profile skips output style", supports: true},
+		{name: "write error propagates", supports: true, profile: &persona.Profile{Name: "neutra"}, outputErr: boom, wantWrites: 1, wantErr: boom},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			instructions := filepath.Join(root, ".agent", "AGENTS.md")
+			fake := &outputStyleReplayAgent{supports: tt.supports, outputErr: tt.outputErr}
+			runner := NewRunner(ReplayInput{
+				Root:    root,
+				State:   &state.State{InstalledAgents: []state.Agent{{ID: "test", InstructionsPath: instructions}}},
+				Profile: tt.profile,
+				Resolve: func(string) (agent.Agent, bool) { return fake, true },
+			})
+			err := runner.ApplyPersonaInstructions(AgentTarget{ID: "test", Root: root, InstructionsPath: instructions})
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			if fake.instructionWrites != 1 {
+				t.Fatalf("instruction writes = %d, want 1", fake.instructionWrites)
+			}
+			if fake.outputWrites != tt.wantWrites {
+				t.Fatalf("output-style writes = %d, want %d", fake.outputWrites, tt.wantWrites)
+			}
+		})
+	}
 }
 
 func (c *capturingConfigure) configure(

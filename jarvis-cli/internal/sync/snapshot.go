@@ -9,9 +9,11 @@ package sync
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
+	"reflect"
 	"sort"
 )
 
@@ -32,15 +34,25 @@ type TrackedPath struct {
 	// planner, where the owner is already known, so the per-agent changed-path
 	// report never has to guess an owner back out of a path prefix.
 	Agent string
-	Path  string
-	Mode  fs.FileMode
+	// Identity is the canonical root-relative managed location used for durable
+	// asset-set identity. Path remains the absolute location used for I/O.
+	Identity string
+	Path     string
+	Mode     fs.FileMode
 	// Desired is the SHA-256 of the bytes replay would write here, recorded by
 	// the planner where the content is rendered. A digest, not the bytes: the
 	// only question asked of it is equality, and holding the whole managed tree
 	// in memory answers nothing a 32-byte hash does not. Empty means unknown,
 	// which is never a match.
 	Desired string
+	// Semantic contains only the managed top-level fragments of a shared JSON file.
+	// Unmanaged siblings are deliberately excluded from convergence.
+	Semantic *ManagedJSON
 }
+
+// ManagedJSON defines semantic convergence for a shared JSON document. Only
+// Fragments are owned; every other key remains user-controlled.
+type ManagedJSON struct{ Fragments map[string]any }
 
 // digestOf is the desired-content side of the same hash readFileState computes
 // for what is on disk, so the two are directly comparable.
@@ -56,6 +68,7 @@ type fileState struct {
 	exists bool
 	digest string
 	mode   fs.FileMode
+	json   map[string]any
 }
 
 // Snapshot is the recorded state of one path list at one moment.
@@ -77,7 +90,7 @@ func TakeSnapshot(paths []TrackedPath) (Snapshot, error) {
 		if _, recorded := snapshot.states[tracked.Path]; recorded {
 			continue
 		}
-		state, err := readFileState(tracked.Path)
+		state, err := readFileState(tracked)
 		if err != nil {
 			return Snapshot{}, fmt.Errorf("snapshot %s: %w", tracked.Path, err)
 		}
@@ -87,7 +100,8 @@ func TakeSnapshot(paths []TrackedPath) (Snapshot, error) {
 	return snapshot, nil
 }
 
-func readFileState(path string) (fileState, error) {
+func readFileState(tracked TrackedPath) (fileState, error) {
+	path := tracked.Path
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		return fileState{}, nil
@@ -105,7 +119,13 @@ func readFileState(path string) (fileState, error) {
 	} else if content, err = os.ReadFile(path); err != nil {
 		return fileState{}, err
 	}
-	return fileState{exists: true, digest: digestOf(content), mode: info.Mode()}, nil
+	state := fileState{exists: true, digest: digestOf(content), mode: info.Mode()}
+	if tracked.Semantic != nil && info.Mode()&os.ModeSymlink == 0 {
+		if err := json.Unmarshal(content, &state.json); err != nil {
+			return fileState{}, fmt.Errorf("decode managed JSON %s: %w", path, err)
+		}
+	}
+	return state, nil
 }
 
 // Matches reports whether every tracked path already holds exactly the content
@@ -121,10 +141,25 @@ func (s Snapshot) Matches(paths []TrackedPath) bool {
 	}
 	for _, tracked := range paths {
 		state, recorded := s.states[tracked.Path]
-		if tracked.Desired == "" || !recorded || !state.exists {
+		if !recorded || !state.exists {
 			return false
 		}
-		if state.digest != tracked.Desired || !sameManagedMode(state.mode, tracked.Mode) {
+		if tracked.Semantic != nil {
+			if state.mode&os.ModeSymlink != 0 || !managedJSONMatches(state.json, tracked.Semantic.Fragments) || !sameManagedMode(state.mode, tracked.Mode) {
+				return false
+			}
+			continue
+		}
+		if tracked.Desired == "" || state.digest != tracked.Desired || !sameManagedMode(state.mode, tracked.Mode) {
+			return false
+		}
+	}
+	return true
+}
+
+func managedJSONMatches(actual, desired map[string]any) bool {
+	for key, want := range desired {
+		if !reflect.DeepEqual(actual[key], want) {
 			return false
 		}
 	}
@@ -138,7 +173,7 @@ func Diff(before, after Snapshot) []string {
 	seen := make(map[string]bool, len(before.order)+len(after.order))
 	changed := make([]string, 0)
 	for _, path := range append(append([]string{}, before.order...), after.order...) {
-		if seen[path] || before.states[path] == after.states[path] {
+		if seen[path] || reflect.DeepEqual(before.states[path], after.states[path]) {
 			continue
 		}
 		seen[path] = true

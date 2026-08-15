@@ -99,11 +99,10 @@ func runSync() error {
 	// before the report and never gates it: `jarvis login` owns what it names.
 	cloud := sync.CloudManualAction(home, manifest.Scope)
 	result, runErr := sync.Run(sync.RunInput{
-		Plan:   plan,
-		Apply:  sync.ApplyInput{Runner: sync.NewRunner(input), Targets: sync.TargetsFor(input)},
-		Backup: lifecycle.NewBackupStore(home).CreateSnapshotOfTargets,
-		// Bookkeeping stays nil until something produces the digest of the asset
-		// set a run replayed. Nothing does yet, so there is nothing to record.
+		Plan:        plan,
+		Apply:       sync.ApplyInput{Runner: sync.NewRunner(input), Targets: sync.TargetsFor(input)},
+		Backup:      lifecycle.NewBackupStore(home).CreateSnapshotOfTargets,
+		Bookkeeping: &sync.Bookkeeping{ManagedAssetDigest: sync.ManagedAssetDigest(plan)},
 	})
 	fmt.Print(renderSyncReport(manifest, result, cloud, runErr))
 	return syncExit(result.Report, runErr)
@@ -168,6 +167,7 @@ func replayInput(home string, manifest *state.State) (sync.ReplayInput, error) {
 		Skills:    skillInfos,
 		Layer1:    config.Layer1Content(),
 		Layer2:    persona.RenderLayer2(resolved.Preset),
+		Profile:   resolved.Preset,
 		Resolve: func(id string) (agent.Agent, bool) {
 			found, ok := installed[strings.ToLower(strings.TrimSpace(id))]
 			return found, ok

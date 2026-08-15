@@ -238,3 +238,7 @@ func toTitleCase(name string) string {
 	}
 	return strings.Join(parts, "")
 }
+
+// OutputStyleName returns the canonical Claude output-style identity derived
+// from a profile name.
+func OutputStyleName(name string) string { return toTitleCase(name) }
