@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -126,22 +127,21 @@ func TestApplyInstructions_PreservesContentOutsideManagedSectionsByteForByte(t *
 		t.Fatalf("replay must converge, got %+v", report.Agents)
 	}
 	// The exact bytes the patch must produce: the user's prose untouched in
-	// place, with only the two managed blocks rewritten.
+	// place, only the two managed blocks rewritten, and the protocol and
+	// orchestrator blocks appended after it.
+	//
+	// Whole-file equality, not a prefix: a prefix check leaves the whole tail
+	// unexamined, and a writer that moved, duplicated or rewrote the user's
+	// prose down there would still pass while the name promises the opposite.
+	// Every managed block below is spelled from the same source of truth
+	// production renders it from, so this asserts placement, not protocol text.
 	want := above +
 		agent.Layer1Start + "\nlayer one\n" + agent.Layer1End + between +
-		agent.Layer2Start + "\nlayer two\n" + agent.Layer2End + below
-	content := readFileString(t, path)
-	if !strings.HasPrefix(content, want) {
-		t.Fatalf("content outside the managed sections was not preserved byte-for-byte.\n got: %q\nwant prefix: %q", content, want)
-	}
-	// Whatever follows is appended managed content only, never user prose moved
-	// or rewritten.
-	appended := strings.TrimPrefix(content, want)
-	if !strings.Contains(appended, agent.HiveProtocolStart) || !strings.Contains(appended, agent.OrchestratorImportStart) {
-		t.Errorf("appended tail must hold the managed protocol and orchestrator blocks, got %q", appended)
-	}
-	if strings.Count(content, "Keep this exact text.") != 1 || strings.Count(content, "Also exact.") != 1 {
-		t.Error("user prose must appear exactly once; it was duplicated or rewritten")
+		agent.Layer2Start + "\nlayer two\n" + agent.Layer2End + below +
+		agent.HiveProtocolStart + "\n" + strings.TrimSuffix(jarvis.HiveProtocol, "\n") + "\n" + agent.HiveProtocolEnd + "\n" +
+		agent.OrchestratorImportStart + "\n@./sdd-orchestrator.md\n" + agent.OrchestratorImportEnd + "\n"
+	if content := readFileString(t, path); content != want {
+		t.Fatalf("content outside the managed sections was not preserved byte-for-byte.\n got: %q\nwant: %q", content, want)
 	}
 }
 
@@ -158,9 +158,10 @@ func (w *countingWriter) WriteInstructions(string, string, []config.SkillInfo) e
 // "Does not own" is decided by the manifest alone: a path it never recorded, or
 // a recorded path claimed on behalf of a different agent.
 func TestApplyInstructions_NeverTouchesAPathJarvisDoesNotOwn(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("the unreadable-file probe cannot prove anything while running as root")
-	}
+	// The unreadable-file probe below is an extra, not the proof, so the test
+	// still runs where the probe cannot: root ignores the permission bits and
+	// Windows Chmod only toggles the read-only attribute.
+	probeUnreadable := runtime.GOOS != "windows" && os.Geteuid() != 0
 	home := t.TempDir()
 	ownedPath := filepath.Join(home, ".claude", "CLAUDE.md")
 	own := NewInstructionOwnership([]state.Agent{{ID: "claude", InstructionsPath: ownedPath}})
@@ -191,13 +192,19 @@ func TestApplyInstructions_NeverTouchesAPathJarvisDoesNotOwn(t *testing.T) {
 				path = filepath.Join(home, "unrecorded", "CLAUDE.md")
 			}
 			writeFile(t, path, userContent)
-			// Mode 000 turns any read attempt into a permission error, so a
-			// refusal that still names the ownership rule proves the guard
-			// decided before the file was opened.
-			if err := os.Chmod(path, 0o000); err != nil {
-				t.Fatalf("chmod %s: %v", path, err)
+			// Mode 000 turns any read attempt into a permission error. It says
+			// nothing about the writer, which is a counter that never opens a
+			// file: it is a regression barrier on ApplyInstructions itself, so
+			// that a guard rewritten to inspect the file before deciding would
+			// surface a permission error here instead of the ownership refusal.
+			// The proof that no writer ran is writer.calls, which holds on every
+			// platform and is what this test actually rests on.
+			if probeUnreadable {
+				if err := os.Chmod(path, 0o000); err != nil {
+					t.Fatalf("chmod %s: %v", path, err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
 			}
-			t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
 
 			writer := &countingWriter{}
 			err := ApplyInstructions(own, tt.target, writer, "layer one", "layer two", replaySkills)
@@ -208,8 +215,10 @@ func TestApplyInstructions_NeverTouchesAPathJarvisDoesNotOwn(t *testing.T) {
 			if writer.calls != 0 {
 				t.Fatalf("writer was invoked %d times for an unowned path; it must not be reached at all", writer.calls)
 			}
-			if err := os.Chmod(path, 0o644); err != nil {
-				t.Fatalf("restore mode on %s: %v", path, err)
+			if probeUnreadable {
+				if err := os.Chmod(path, 0o644); err != nil {
+					t.Fatalf("restore mode on %s: %v", path, err)
+				}
 			}
 			if got := readFileString(t, path); got != userContent {
 				t.Fatalf("unowned file content = %q, want it untouched (%q)", got, userContent)

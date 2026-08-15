@@ -565,8 +565,27 @@ func TestValidate_RejectsTwoAgentsRecordingTheSameInstructionsPath(t *testing.T)
 		})
 	}
 
-	// Distinct paths remain valid: this rejects a collision, not a shared prefix.
-	if err := fullState().Validate(); err != nil {
-		t.Fatalf("Validate rejected distinct instruction paths: %v", err)
+	// The rule rejects a collision, never a resemblance. The fixture's two paths
+	// share nothing past the home directory, so re-validating it unchanged cannot
+	// make that point; each pair below shares as much as two distinct paths can
+	// and still names a different file.
+	for _, tt := range []struct {
+		name   string
+		first  string
+		second string
+	}{
+		{name: "the same directory", first: "/home/u/.claude/CLAUDE.md", second: "/home/u/.claude/AGENTS.md"},
+		{name: "one agent's directory nested inside the other's", first: "/home/u/.claude/CLAUDE.md", second: "/home/u/.claude/nested/AGENTS.md"},
+		{name: "one path a literal string prefix of the other", first: "/home/u/.claude/CLAUDE.md", second: "/home/u/.claude/CLAUDE.md.local"},
+	} {
+		t.Run("accepts two agents sharing "+tt.name, func(t *testing.T) {
+			st := fullState()
+			st.InstalledAgents[0].InstructionsPath = tt.first
+			st.InstalledAgents[1].InstructionsPath = tt.second
+
+			if err := st.Validate(); err != nil {
+				t.Fatalf("Validate rejected %q and %q, which are distinct files: %v", tt.first, tt.second, err)
+			}
+		})
 	}
 }

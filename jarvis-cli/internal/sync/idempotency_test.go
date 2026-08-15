@@ -192,7 +192,9 @@ func TestRun_AssertsManagedModesBeforeItMeasuresTheDiff(t *testing.T) {
 	}
 }
 
-// Attribution is asserted alongside desired content in
-// TestBuildPlan_TracksDesiredContentForEveryPathIncludingSkillsAndStatusline:
-// both are recorded by the same producer over the same rendered path list, so
-// splitting them across two tests would only duplicate the expectation.
+// The producer side of what this file measures is asserted next door, over the
+// same rendered path list: assertTrackedPaths in snapshot_test.go pins the
+// owning agent of every tracked path, and
+// TestBuildPlan_TracksDesiredContentForEveryPathIncludingSkillsAndStatusline in
+// desiredcontent_test.go pins the desired content. Restating either here would
+// only duplicate an expectation that already has a home.

@@ -22,6 +22,16 @@ func TestRun_PostApplyVerificationDetectsInvalidOutputsAndNamesTheRecovery(t *te
 		want    string
 	}{
 		{name: "stale output", written: "stale\n", targets: []AgentTarget{{ID: "claude"}}, want: "run `jarvis sync` to repair"},
+		// This second case is synthetic, and deliberately so. Production cannot
+		// reach Run with an empty target list: BuildPlan refuses a manifest with
+		// no configured agents (plan.go:26) and cmd_sync.go builds its ApplyInput
+		// only from a plan that survived that refusal, so the agent-less machine
+		// is blocked one layer earlier. Setting Targets directly is the only way
+		// to exercise RecoveryCommand's empty-list branch from this side of the
+		// boundary, and the branch is worth exercising because it is what makes
+		// an agent-less machine actionable at all. The production half of that
+		// promise, that the block still names `jarvis`, is covered next door by
+		// cmd/jarvis TestRunSync_NamesTheRecoveryCommandWhenNoAgentIsRecorded.
 		{name: "missing output, agent-less manifest", targets: nil, want: "run `jarvis` to repair"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

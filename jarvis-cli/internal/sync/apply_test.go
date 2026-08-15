@@ -62,6 +62,34 @@ func TestApply_LocksTheComponentOrderWithPersonaAfterContentInjectors(t *testing
 	}
 }
 
+// "Nothing ran" is not "everything converged". A run with no targets applies no
+// component and produces no per-agent evidence, so the only honest answer is a
+// non-zero exit: vacuous truth over an empty agent list would let a caller that
+// lost its targets report a healthy sync.
+//
+// The empty list does not arrive here from production today, because BuildPlan
+// refuses a manifest with no configured agents (plan.go:26) long before an
+// ApplyInput is built. This pins the type's own contract, which is what the
+// caller in cmd_sync.go relies on rather than re-deriving.
+func TestApply_WithNoTargetsRefusesToClaimConvergence(t *testing.T) {
+	runner := &recordingRunner{}
+
+	report := Apply(ApplyInput{Runner: runner, Targets: nil})
+
+	if len(report.Agents) != 0 {
+		t.Fatalf("report.Agents = %+v, want no per-agent results", report.Agents)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("components ran without a target: %v", runner.calls)
+	}
+	if report.Converged() {
+		t.Fatal("a run with no target converged nothing; it must not claim convergence")
+	}
+	if report.ExitCode() != 1 {
+		t.Fatalf("exit code = %d, want 1", report.ExitCode())
+	}
+}
+
 // D1: sync deliberately differs from the wizard, which early-returns on the
 // first agent failure (internal/tui/agent_setup.go:255-259). The wizard is
 // interactive and the user can retry; sync is not, so stranding a healthy agent
