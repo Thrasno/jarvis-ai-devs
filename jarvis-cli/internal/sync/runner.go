@@ -204,10 +204,10 @@ func (r *Runner) ApplyPersonaInstructions(target AgentTarget) error {
 func (r *Runner) ApplyStatusline(target AgentTarget) error { return r.statusline.Apply(target) }
 
 // agentFor resolves the installed agent a target names. It separates the two
-// ways that can fail: see ErrResolverUnwired for why they must not collapse.
+// ways that can fail: see ErrDependencyUnwired for why they must not collapse.
 func (r *Runner) agentFor(target AgentTarget, what string) (agent.Agent, error) {
 	if r.resolve == nil {
-		return nil, fmt.Errorf("%s for %q: %w", what, target.ID, ErrResolverUnwired)
+		return nil, fmt.Errorf("%s for %q: agent resolver: %w", what, target.ID, ErrDependencyUnwired)
 	}
 	resolved, ok := r.resolve(target.ID)
 	if !ok {

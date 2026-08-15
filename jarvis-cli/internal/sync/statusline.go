@@ -32,7 +32,7 @@ func (c StatuslineComponent) Apply(target AgentTarget) error {
 	// AgentResolver is a nilable func type, so an unwired one is a missing
 	// dependency rather than a resolution failure: replay must not panic mid-pass.
 	if c.Resolve == nil {
-		return fmt.Errorf("replay statusline for %q: %w", target.ID, ErrResolverUnwired)
+		return fmt.Errorf("replay statusline for %q: agent resolver: %w", target.ID, ErrDependencyUnwired)
 	}
 	resolved, ok := c.Resolve(target.ID)
 	if !ok {

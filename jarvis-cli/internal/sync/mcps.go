@@ -24,14 +24,19 @@ import (
 // installed. Replay refuses rather than guessing at a substitute.
 var ErrUnknownAgent = errors.New("agent is not installed on this machine")
 
-// ErrResolverUnwired reports a component constructed without an AgentResolver.
+// ErrDependencyUnwired reports a replay component constructed without one of the
+// nilable dependencies it needs. The wrapping message names which one.
 //
 // It is deliberately separate from ErrUnknownAgent. Both refuse the same work,
 // but they describe different worlds: ErrUnknownAgent is a fact about the user's
 // machine, while this is a fact about how the component was built, and the agent
 // it names may be installed perfectly well. Reporting one as the other would
 // send whoever reads the failure to inspect the wrong thing.
-var ErrResolverUnwired = errors.New("replay component was built without an agent resolver")
+//
+// One sentinel covers the class rather than one per field: the distinction worth
+// making in an error value is construction defect versus installation fact, and
+// the message carries the rest.
+var ErrDependencyUnwired = errors.New("replay component was built without a required dependency")
 
 // AgentResolver maps a manifest agent ID onto the installed agent it names.
 type AgentResolver func(id string) (agent.Agent, bool)
@@ -59,7 +64,7 @@ func (c MCPComponent) Apply(target AgentTarget) error {
 	// AgentResolver is a nilable func type, so an unwired one is a missing
 	// dependency rather than a resolution failure: replay must not panic mid-pass.
 	if c.Resolve == nil {
-		return fmt.Errorf("replay managed MCPs for %q: %w", target.ID, ErrResolverUnwired)
+		return fmt.Errorf("replay managed MCPs for %q: agent resolver: %w", target.ID, ErrDependencyUnwired)
 	}
 	resolved, ok := c.Resolve(target.ID)
 	if !ok {
@@ -67,6 +72,12 @@ func (c MCPComponent) Apply(target AgentTarget) error {
 	}
 	reconcile := c.Reconcile
 	if reconcile == nil {
+		// Deps belongs to the default reconciler, not to the component: an
+		// injected one is free to need nothing from it. Guard it only where it is
+		// actually about to be dereferenced, or the override seam breaks.
+		if c.Deps.HiveDaemonPath == nil || c.Deps.NewExecutor == nil {
+			return fmt.Errorf("replay managed MCPs for %q: managed-MCP dependencies: %w", target.ID, ErrDependencyUnwired)
+		}
 		reconcile = agentapply.ReconcileMCPs
 	}
 	if err := reconcile([]agent.Agent{resolved}, target.Root, c.Deps); err != nil {
