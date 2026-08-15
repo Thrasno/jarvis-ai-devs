@@ -168,16 +168,69 @@ func TestReplayComponents_RefuseAnAgentThatIsNotInstalled(t *testing.T) {
 }
 
 // AgentResolver is a nilable func type, so a caller that never wired one must
-// meet the same refusal every other component gives an unresolvable agent. A
-// nil resolver is a missing dependency, not a reason to panic mid-replay.
+// fail closed instead of panicking mid-replay.
+//
+// It must fail closed into its own sentinel, not ErrUnknownAgent. The two say
+// different things to whoever reads the failure: ErrUnknownAgent means "this
+// machine does not have that agent", which is a statement about the user's
+// installation, while an unwired resolver is a construction defect and the
+// agent may well be installed. Collapsing them would hand the operator a
+// diagnosis that is not merely vague but wrong.
 func TestRunnerComponents_RejectNilResolverWithoutPanicking(t *testing.T) {
 	target := AgentTarget{ID: "claude", Root: t.TempDir()}
 
-	if err := (MCPComponent{}).Apply(target); !errors.Is(err, ErrUnknownAgent) {
-		t.Fatalf("MCP component error = %v, want it to wrap ErrUnknownAgent", err)
+	for _, seam := range unwiredSeams() {
+		err := seam.apply(target)
+		if !errors.Is(err, ErrResolverUnwired) {
+			t.Fatalf("%s error = %v, want it to wrap ErrResolverUnwired", seam.name, err)
+		}
+		if errors.Is(err, ErrUnknownAgent) {
+			t.Fatalf("%s error = %v, must not be mistakable for an agent that is not installed", seam.name, err)
+		}
 	}
-	if err := (StatuslineComponent{}).Apply(target); !errors.Is(err, ErrUnknownAgent) {
-		t.Fatalf("statusline component error = %v, want it to wrap ErrUnknownAgent", err)
+}
+
+// The mirror of the case above: a resolver that *was* wired and returns false is
+// an uninstalled agent, and that must stay separable from never having wired one.
+func TestRunnerComponents_SeparateAnUnwiredResolverFromAnUninstalledAgent(t *testing.T) {
+	target := AgentTarget{ID: "cursor", Root: t.TempDir()}
+
+	for _, seam := range wiredButUnresolvableSeams() {
+		err := seam.apply(target)
+		if !errors.Is(err, ErrUnknownAgent) {
+			t.Fatalf("%s error = %v, want it to wrap ErrUnknownAgent", seam.name, err)
+		}
+		if errors.Is(err, ErrResolverUnwired) {
+			t.Fatalf("%s error = %v, must not report a missing dependency", seam.name, err)
+		}
+	}
+}
+
+type resolverSeam struct {
+	name  string
+	apply func(AgentTarget) error
+}
+
+func unwiredSeams() []resolverSeam {
+	return []resolverSeam{
+		{"MCP component", MCPComponent{}.Apply},
+		{"statusline component", StatuslineComponent{}.Apply},
+		{"runner agentFor", func(target AgentTarget) error {
+			_, err := (&Runner{}).agentFor(target, "replay")
+			return err
+		}},
+	}
+}
+
+func wiredButUnresolvableSeams() []resolverSeam {
+	unresolvable := func(string) (agent.Agent, bool) { return nil, false }
+	return []resolverSeam{
+		{"MCP component", MCPComponent{Resolve: unresolvable}.Apply},
+		{"statusline component", StatuslineComponent{Resolve: unresolvable}.Apply},
+		{"runner agentFor", func(target AgentTarget) error {
+			_, err := (&Runner{resolve: unresolvable}).agentFor(target, "replay")
+			return err
+		}},
 	}
 }
 

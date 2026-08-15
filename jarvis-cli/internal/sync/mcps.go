@@ -24,6 +24,15 @@ import (
 // installed. Replay refuses rather than guessing at a substitute.
 var ErrUnknownAgent = errors.New("agent is not installed on this machine")
 
+// ErrResolverUnwired reports a component constructed without an AgentResolver.
+//
+// It is deliberately separate from ErrUnknownAgent. Both refuse the same work,
+// but they describe different worlds: ErrUnknownAgent is a fact about the user's
+// machine, while this is a fact about how the component was built, and the agent
+// it names may be installed perfectly well. Reporting one as the other would
+// send whoever reads the failure to inspect the wrong thing.
+var ErrResolverUnwired = errors.New("replay component was built without an agent resolver")
+
 // AgentResolver maps a manifest agent ID onto the installed agent it names.
 type AgentResolver func(id string) (agent.Agent, bool)
 
@@ -48,10 +57,9 @@ type MCPComponent struct {
 // agent's marker-backed artifacts.
 func (c MCPComponent) Apply(target AgentTarget) error {
 	// AgentResolver is a nilable func type, so an unwired one is a missing
-	// dependency rather than a resolution failure. It fails closed into the same
-	// refusal as an unknown ID: replay must not panic mid-pass.
+	// dependency rather than a resolution failure: replay must not panic mid-pass.
 	if c.Resolve == nil {
-		return fmt.Errorf("replay managed MCPs for %q: %w", target.ID, ErrUnknownAgent)
+		return fmt.Errorf("replay managed MCPs for %q: %w", target.ID, ErrResolverUnwired)
 	}
 	resolved, ok := c.Resolve(target.ID)
 	if !ok {

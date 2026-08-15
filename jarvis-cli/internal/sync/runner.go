@@ -203,13 +203,17 @@ func (r *Runner) ApplyPersonaInstructions(target AgentTarget) error {
 // recorded consent.
 func (r *Runner) ApplyStatusline(target AgentTarget) error { return r.statusline.Apply(target) }
 
+// agentFor resolves the installed agent a target names. It separates the two
+// ways that can fail: see ErrResolverUnwired for why they must not collapse.
 func (r *Runner) agentFor(target AgentTarget, what string) (agent.Agent, error) {
-	if r.resolve != nil {
-		if resolved, ok := r.resolve(target.ID); ok {
-			return resolved, nil
-		}
+	if r.resolve == nil {
+		return nil, fmt.Errorf("%s for %q: %w", what, target.ID, ErrResolverUnwired)
 	}
-	return nil, fmt.Errorf("%s for %q: %w", what, target.ID, ErrUnknownAgent)
+	resolved, ok := r.resolve(target.ID)
+	if !ok {
+		return nil, fmt.Errorf("%s for %q: %w", what, target.ID, ErrUnknownAgent)
+	}
+	return resolved, nil
 }
 
 func (r *Runner) agentsSubFS(agentID string) (fs.FS, error) {
