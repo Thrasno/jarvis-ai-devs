@@ -553,7 +553,11 @@ func TestValidate_RejectsTwoAgentsRecordingTheSameInstructionsPath(t *testing.T)
 			if err == nil {
 				t.Fatal("Validate accepted two agents owning one instruction file")
 			}
-			for _, want := range []string{"instructions_path", "claude", "opencode"} {
+			// Validate runs inside decode, so this refusal rejects a manifest that
+			// loaded fine until now and blocks every command that reads it. It is
+			// the one validation failure a user can reach without having just
+			// written the file, so unlike its siblings it has to name the way out.
+			for _, want := range []string{"instructions_path", "claude", "opencode", "run `jarvis` to reinstall"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("error %q does not mention %q", err, want)
 				}

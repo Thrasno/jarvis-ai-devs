@@ -296,8 +296,14 @@ func (s *State) Validate() error {
 		if trimmed := strings.TrimSpace(agent.InstructionsPath); trimmed != "" {
 			path := filepath.Clean(trimmed)
 			if owner, taken := agentByPath[path]; taken {
+				// Validate runs inside decode, so this refusal rejects a manifest
+				// that loaded fine until now: unlike its siblings, which a writer
+				// meets while it still holds the values, this one meets a user
+				// whose machine stopped working. It names the way out for that
+				// reason, following the same convention as the planner's refusals.
 				return fmt.Errorf(
-					"%s installed_agents[%d] (%s) records instructions_path %q, already recorded for agent %s",
+					"%s installed_agents[%d] (%s) records instructions_path %q, already recorded for agent %s; "+
+						"one file cannot be owned twice, so run `jarvis` to reinstall and record this machine's configuration",
 					stateFileName, i, agent.ID, agent.InstructionsPath, owner,
 				)
 			}
