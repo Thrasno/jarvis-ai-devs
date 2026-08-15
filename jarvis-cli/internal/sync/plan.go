@@ -104,9 +104,14 @@ func trackedPaths(in PlanInput, artifacts []PlannedArtifact, ownerByLocation map
 		})
 	}
 	for _, configured := range in.State.InstalledAgents {
+		// BuildPlan already refused this path before calling here, so today this
+		// can only fire for a caller that skipped that step. It still fails closed
+		// rather than dropping the agent: skipping one would shorten Plan.Tracked,
+		// and Tracked is both what the pre-apply backup captures and what the diff
+		// measures, so the agent would silently lose its backup coverage.
 		location, err := managedLocation(in.Root, configured.InstructionsPath)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("agent %q instructions_path %q: %w", configured.ID, configured.InstructionsPath, err)
 		}
 		dir := filepath.Dir(filepath.Join(in.Root, filepath.FromSlash(location)))
 		skillFiles, err := renderSkills(in, configured.ID)

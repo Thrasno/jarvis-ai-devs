@@ -279,3 +279,23 @@ func TestManagedLocation_RefusesARelativePathThatLeavesTheManagedRoot(t *testing
 		}
 	}
 }
+
+// Dropping an agent whose recorded path cannot be projected would remove it from
+// Plan.Tracked, and Tracked is what the pre-apply backup captures and what the
+// diff measures. A silently shortened list is the one outcome the single-list
+// invariant exists to prevent, so the derivation fails closed like every other
+// step in this function.
+func TestTrackedPaths_FailsClosedOnAnAgentPathItCannotProject(t *testing.T) {
+	in := PlanInput{
+		Root:  t.TempDir(),
+		State: replayableState(state.Agent{ID: "claude", InstructionsPath: filepath.Join("..", "outside", "CLAUDE.md"), ConfigPath: "settings.json"}),
+	}
+
+	tracked, err := trackedPaths(in, nil, nil)
+	if err == nil {
+		t.Fatalf("trackedPaths succeeded with %d paths, want a refusal: the agent's recorded path leaves the managed root", len(tracked))
+	}
+	if !strings.Contains(err.Error(), "claude") {
+		t.Fatalf("error %q does not name the agent it refused", err)
+	}
+}
