@@ -6,7 +6,9 @@ import (
 	"go/token"
 	"io"
 	"io/fs"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -246,6 +248,49 @@ func TestAgentsSubFS_ResolvesOnlyTheTreesThisBinaryEmbeds(t *testing.T) {
 	}
 	if openCode, err := agentsSubFS("opencode"); err != nil || openCode != nil {
 		t.Fatalf("agentsSubFS(opencode) = (%v, %v), want (nil, nil)", openCode, err)
+	}
+}
+
+// TestReplayInput_ResolvesEveryDetectedAgentThroughTheSharedIdentifierRule
+// covers the seam between detection and resolution. The map that indexes the
+// detected agents and the closure that looks an identifier up in it must apply
+// the same normalisation, and nothing in the compiler or the type system says
+// so: a rule applied twice desynchronises the moment one copy changes, and an
+// agent recorded in the manifest then resolves to nothing and is refused as
+// "not installed on this machine". The test therefore drives both halves
+// through normalizeAgentID, so a rule that stops being shared stops passing.
+func TestReplayInput_ResolvesEveryDetectedAgentThroughTheSharedIdentifierRule(t *testing.T) {
+	home := t.TempDir()
+	// Detection reads the agent config directories under the home dir, so the
+	// set of detected agents is fixed here rather than inherited from whatever
+	// the machine running the suite happens to have installed.
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatalf("create the Claude config dir: %v", err)
+	}
+
+	input, err := replayInput(home, &state.State{SchemaVersion: 1, Persona: "neutra", Skills: []string{"go-testing"}})
+	if err != nil {
+		t.Fatalf("replayInput: %v", err)
+	}
+
+	for _, spelling := range []string{"claude", "CLAUDE", "  Claude\t"} {
+		if got := normalizeAgentID(spelling); got != "claude" {
+			t.Fatalf("normalizeAgentID(%q) = %q, want %q", spelling, got, "claude")
+		}
+		found, ok := input.Resolve(spelling)
+		if !ok {
+			t.Fatalf("the detected Claude agent is unreachable through %q, so detection and resolution disagree", spelling)
+		}
+		if found.Name() != "claude" {
+			t.Fatalf("Resolve(%q) returned the %q agent", spelling, found.Name())
+		}
+	}
+	// The other half: resolution must stay a lookup, not a fallback. An agent
+	// this machine does not have is a miss, which is what makes the runner
+	// refuse it instead of replaying into nothing.
+	if found, ok := input.Resolve("no-such-agent"); ok {
+		t.Fatalf("Resolve(no-such-agent) = (%v, true), want a miss", found.Name())
 	}
 }
 
