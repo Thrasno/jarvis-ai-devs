@@ -15,6 +15,8 @@ import (
 	"os"
 	"reflect"
 	"sort"
+
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 )
 
 // Managed modes are asserted on every tracked path, never inherited from what
@@ -48,6 +50,14 @@ type TrackedPath struct {
 	// Semantic contains only the managed top-level fragments of a shared JSON file.
 	// Unmanaged siblings are deliberately excluded from convergence.
 	Semantic *ManagedJSON
+	// Instructions marks the agent's managed instruction file, the one managed
+	// output Jarvis owns in parts rather than whole: the writer patches the
+	// marker-delimited blocks and preserves the user's own prose around them. For
+	// such a path Desired and the observed digest both cover the managed regions
+	// alone, which is the Markdown counterpart of what Semantic does for a shared
+	// JSON document. Every other tracked path -- skills, the statusline, the
+	// output style -- is a file Jarvis owns whole and stays compared whole.
+	Instructions bool
 }
 
 // ManagedJSON defines semantic convergence for a shared JSON document. Only
@@ -59,6 +69,21 @@ type ManagedJSON struct{ Fragments map[string]any }
 func digestOf(content []byte) string {
 	sum := sha256.Sum256(content)
 	return hex.EncodeToString(sum[:])
+}
+
+// managedDigest hashes exactly as much of a path's content as Jarvis owns: the
+// whole file for the paths it writes whole, and the marker-delimited regions of
+// a shared instruction file. Both the planner's desired digest and the observed
+// one go through here, so the two sides can never narrow the comparison
+// differently.
+//
+// A symlink is digested whole either way: what was read is the link target, not
+// a document with markers in it.
+func managedDigest(tracked TrackedPath, content []byte, symlink bool) string {
+	if !tracked.Instructions || symlink {
+		return digestOf(content)
+	}
+	return digestOf([]byte(agent.ExtractManagedRegions(tracked.Agent, string(content))))
 }
 
 // fileState is the whole evidence set the diff compares; a path that does not
@@ -110,7 +135,8 @@ func readFileState(tracked TrackedPath) (fileState, error) {
 		return fileState{}, err
 	}
 	var content []byte
-	if info.Mode()&os.ModeSymlink != 0 {
+	symlink := info.Mode()&os.ModeSymlink != 0
+	if symlink {
 		target, linkErr := os.Readlink(path)
 		if linkErr != nil {
 			return fileState{}, linkErr
@@ -119,8 +145,8 @@ func readFileState(tracked TrackedPath) (fileState, error) {
 	} else if content, err = os.ReadFile(path); err != nil {
 		return fileState{}, err
 	}
-	state := fileState{exists: true, digest: digestOf(content), mode: info.Mode()}
-	if tracked.Semantic != nil && info.Mode()&os.ModeSymlink == 0 {
+	state := fileState{exists: true, digest: managedDigest(tracked, content, symlink), mode: info.Mode()}
+	if tracked.Semantic != nil && !symlink {
 		if err := json.Unmarshal(content, &state.json); err != nil {
 			return fileState{}, fmt.Errorf("decode managed JSON %s: %w", path, err)
 		}

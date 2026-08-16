@@ -61,6 +61,86 @@ var instructionComposers = map[string]instructionComposer{
 	"opencode": {render: config.RenderAGENTSMd},
 }
 
+// managedRegion is one marker-delimited block Jarvis owns inside an instruction
+// file. The pair is exactly the markers the injections above write, so a region
+// cannot drift from the block it describes without the constants moving too.
+type managedRegion struct{ start, end string }
+
+// sharedManagedRegions are the blocks every managed instruction file carries,
+// in the order ComposeInstructions produces them.
+var sharedManagedRegions = []managedRegion{
+	{start: Layer1Start, end: Layer1End},
+	{start: Layer2Start, end: Layer2End},
+	{start: HiveProtocolStart, end: HiveProtocolEnd},
+}
+
+// managedRegionsByAgent keys the per-agent region set the same way
+// instructionComposers keys the composition, because it is describing the same
+// per-agent difference: Claude's finalize step injects the orchestrator @import,
+// so Claude's file has a fourth managed block and OpenCode's does not.
+var managedRegionsByAgent = map[string][]managedRegion{
+	"claude":   append(append([]managedRegion(nil), sharedManagedRegions...), managedRegion{start: OrchestratorImportStart, end: OrchestratorImportEnd}),
+	"opencode": sharedManagedRegions,
+}
+
+// regionSeparator joins the extracted regions. The regions of one agent are a
+// fixed list in a fixed order, so position identifies a region and the join only
+// has to keep two adjacent blocks from running together.
+const regionSeparator = "\n"
+
+// ExtractManagedRegions reduces an instruction file's content to the blocks
+// Jarvis actually owns, in a fixed order.
+//
+// It exists because a managed instruction file is shared: ComposeInstructions
+// patches the Jarvis blocks and deliberately preserves everything around them,
+// which is the product's promise, while the replay planner composes from the
+// installed binary's assets alone and reads nothing from disk, which is its
+// standing contract. Both halves are right, and comparing the whole file made
+// them disagree by exactly the user's own prose -- so a user with a note in
+// their own CLAUDE.md saw `jarvis sync` report a managed output as invalid on
+// every run, and repairing it never helped because the note was still there.
+//
+// So the comparison is narrowed rather than either half changed, and it is
+// narrowed here, once: the planner reduces the content it composed and the
+// snapshot reduces the bytes on disk through this same function. A second
+// description of which blocks are managed would re-create the class of defect
+// ComposeInstructions was written to remove.
+//
+// What it must keep is the other direction. An edit inside a managed block
+// changes what comes back, so tampering with Jarvis's own sections is still
+// measured and still repaired; a missing or truncated block is still a file
+// that does not match.
+//
+// An agent this binary knows no region set for falls back to the whole content:
+// the strictest available answer, never a lenient one.
+func ExtractManagedRegions(agentID, content string) string {
+	regions, known := managedRegionsByAgent[strings.ToLower(strings.TrimSpace(agentID))]
+	if !known {
+		return content
+	}
+	extracted := make([]string, 0, len(regions))
+	for _, region := range regions {
+		extracted = append(extracted, extractRegion(content, region))
+	}
+	return strings.Join(extracted, regionSeparator)
+}
+
+// extractRegion returns one block including its markers, or the empty string
+// when the block is absent or malformed. Absence is a value rather than an
+// error: a file missing a block simply does not match one that has it, which is
+// the answer both callers want.
+func extractRegion(content string, region managedRegion) string {
+	start := strings.Index(content, region.start)
+	if start == -1 {
+		return ""
+	}
+	end := strings.Index(content[start:], region.end)
+	if end == -1 {
+		return ""
+	}
+	return content[start : start+end+len(region.end)]
+}
+
 // ComposeInstructions assembles the complete content of one agent's managed
 // instruction file: the whole file, injections included, ready to be written or
 // digested.
