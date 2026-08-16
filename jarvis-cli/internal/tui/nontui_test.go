@@ -955,6 +955,8 @@ func (m *mockAgent) Name() string      { return m.name }
 func (m *mockAgent) IsInstalled() bool { return true }
 func (m *mockAgent) ConfigDir() string { return m.configDir }
 
+func (m *mockAgent) InstructionsPath() string { return filepath.Join(m.configDir, "AGENTS.md") }
+
 func (m *mockAgent) MergeConfig(entry agent.MCPEntry) error {
 	m.mergedEntries = append(m.mergedEntries, entry)
 	// Write to a test file to verify the config was written

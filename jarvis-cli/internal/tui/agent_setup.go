@@ -116,7 +116,12 @@ func configureWizardAgents(
 			AgentName: a.Name(),
 			State: state.AgentRecord{
 				Configured: false,
-				ConfigPath: a.ConfigDir(),
+				// Recorded from the agent itself, because the manifest's
+				// instructions_path is what replay projects onto the managed root
+				// and what instruction ownership is keyed by. A machine that never
+				// migrated has no other source for it.
+				InstructionsPath: a.InstructionsPath(),
+				ConfigPath:       a.ConfigDir(),
 			},
 		}
 		warnings, err := configureWizardAgent(a, phaseModels, hiveEntry, context7Entry, skillsSubFS, selectedIDs, agentsSubFS, statuslineConfirm)
