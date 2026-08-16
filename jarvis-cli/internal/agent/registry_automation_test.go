@@ -316,6 +316,9 @@ func (a *unsupportedRegistryAutomationAgent) IsInstalled() bool { return true }
 func (a *unsupportedRegistryAutomationAgent) ConfigDir() string {
 	return filepath.Join(a.home, ".unsupported")
 }
+func (a *unsupportedRegistryAutomationAgent) InstructionsPath() string {
+	return filepath.Join(a.ConfigDir(), "AGENTS.md")
+}
 func (a *unsupportedRegistryAutomationAgent) MergeConfig(MCPEntry) error { return nil }
 func (a *unsupportedRegistryAutomationAgent) WriteInstructions(string, string, []config.SkillInfo) error {
 	return nil

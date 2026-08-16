@@ -97,7 +97,8 @@ func (a *ClaudeAgent) settingsPath() string {
 	return filepath.Join(a.ConfigDir(), "settings.json")
 }
 
-func (a *ClaudeAgent) instructionsPath() string {
+// InstructionsPath returns ~/.claude/CLAUDE.md, the file WriteInstructions writes.
+func (a *ClaudeAgent) InstructionsPath() string {
 	return filepath.Join(a.ConfigDir(), "CLAUDE.md")
 }
 
@@ -324,7 +325,7 @@ func isMissingClaudeMCP(result claudeCommandResult, identity string) bool {
 // instead is what once made the planner and this writer disagree, so the
 // composition is deliberately not restated in either place.
 func (a *ClaudeAgent) WriteInstructions(layer1, layer2 string, skills []config.SkillInfo) error {
-	path := a.instructionsPath()
+	path := a.InstructionsPath()
 
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {

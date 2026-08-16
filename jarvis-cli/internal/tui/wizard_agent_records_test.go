@@ -3,6 +3,8 @@ package tui
 import (
 	"testing"
 
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
@@ -98,5 +100,40 @@ func TestRecordWizardDesiredState_DoesNotEraseAgentsAlreadyOnDisk(t *testing.T) 
 	}
 	if got := agentIDs(manifest.InstalledAgents); len(got) != 2 {
 		t.Fatalf("installed agents = %v, want opencode's record preserved", got)
+	}
+}
+
+// A fresh (non-migrated) machine has no migration to source instructions_path
+// from, so the wizard's own record is the only place it can come from. When the
+// wizard left it empty every downstream consumer keyed on that path broke
+// silently: the replay planner projected "" onto the managed root and tracked
+// the home directory itself, and instruction ownership skipped the agent
+// entirely. The record has to carry the agent's real instruction file.
+func TestConfigureWizardAgents_RecordsTheAgentsInstructionsPath(t *testing.T) {
+	isolateTestHome(t)
+
+	assignments, err := sddruntime.DefaultAssignmentsForPlatform(sddruntime.PlatformClaude)
+	if err != nil {
+		t.Fatalf("resolve default assignments: %v", err)
+	}
+	a := &setupAgentStub{name: "claude", observeRuntime: passingRuntimeObservation(t, "claude", assignments, nil)}
+
+	results := configureWizardAgents([]agent.Agent{a}, state.PhaseModels{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
+	if len(results) != 1 || results[0].Err != nil {
+		t.Fatalf("configureWizardAgents = %+v, want a single successful result", results)
+	}
+
+	desired := state.New()
+	recordWizardAgents(desired, results)
+
+	if len(desired.InstalledAgents) != 1 {
+		t.Fatalf("installed agents = %v, want a single claude record", agentIDs(desired.InstalledAgents))
+	}
+	recorded := desired.InstalledAgents[0].InstructionsPath
+	if recorded == "" {
+		t.Fatal("recorded instructions_path is empty; sync would project it onto the managed root and track the home directory")
+	}
+	if recorded != a.InstructionsPath() {
+		t.Fatalf("recorded instructions_path = %q, want the agent's own instruction file %q", recorded, a.InstructionsPath())
 	}
 }

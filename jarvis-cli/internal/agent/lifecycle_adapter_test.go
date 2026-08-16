@@ -220,9 +220,12 @@ type stubLifecycleAgent struct {
 	observed  sddruntime.ObservedRuntime
 }
 
-func (a *stubLifecycleAgent) Name() string                                               { return a.name }
-func (a *stubLifecycleAgent) IsInstalled() bool                                          { return true }
-func (a *stubLifecycleAgent) ConfigDir() string                                          { return a.configDir }
+func (a *stubLifecycleAgent) Name() string      { return a.name }
+func (a *stubLifecycleAgent) IsInstalled() bool { return true }
+func (a *stubLifecycleAgent) ConfigDir() string { return a.configDir }
+func (a *stubLifecycleAgent) InstructionsPath() string {
+	return filepath.Join(a.configDir, "AGENTS.md")
+}
 func (a *stubLifecycleAgent) MergeConfig(MCPEntry) error                                 { return nil }
 func (a *stubLifecycleAgent) WriteInstructions(string, string, []config.SkillInfo) error { return nil }
 func (a *stubLifecycleAgent) InstallSkills(fs.FS, []string) error                        { return nil }

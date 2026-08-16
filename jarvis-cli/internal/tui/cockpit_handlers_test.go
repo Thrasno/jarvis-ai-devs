@@ -934,6 +934,7 @@ type fakePersonaAgent struct {
 func (f *fakePersonaAgent) Name() string                     { return f.name }
 func (f *fakePersonaAgent) IsInstalled() bool                { return true }
 func (f *fakePersonaAgent) ConfigDir() string                { return "" }
+func (f *fakePersonaAgent) InstructionsPath() string         { return "" }
 func (f *fakePersonaAgent) MergeConfig(agent.MCPEntry) error { return nil }
 func (f *fakePersonaAgent) WriteInstructions(string, string, []config.SkillInfo) error {
 	f.instructionsWrites++

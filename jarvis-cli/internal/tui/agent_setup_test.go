@@ -251,6 +251,7 @@ func TestMCPReplacementAcknowledgementIsExactAndOnlyRequiredForManagedAgents(t *
 func (a *setupAgentStub) Name() string                  { return a.name }
 func (a *setupAgentStub) IsInstalled() bool             { return true }
 func (a *setupAgentStub) ConfigDir() string             { return "/tmp/" + a.name }
+func (a *setupAgentStub) InstructionsPath() string      { return filepath.Join(a.ConfigDir(), "AGENTS.md") }
 func (a *setupAgentStub) SupportsOutputStyles() bool    { return true }
 func (a *setupAgentStub) ClearOutputStyle(string) error { return nil }
 func (a *setupAgentStub) RuntimePlan() (sddruntime.RuntimePlan, error) {
