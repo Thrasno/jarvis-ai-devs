@@ -14,14 +14,14 @@ import (
 
 // stubHealthStore provides a controllable implementation of HealthStore for tests.
 type stubHealthStore struct {
-	rows               []db.SyncHealth
-	listErr            error
-	unsyncedMemories   int
-	unsyncedPrompts    int
-	unsyncedSessions   int
-	countMemoriesErr   error
-	countPromptsErr    error
-	countSessionsErr   error
+	rows             []db.SyncHealth
+	listErr          error
+	unsyncedMemories int
+	unsyncedPrompts  int
+	unsyncedSessions int
+	countMemoriesErr error
+	countPromptsErr  error
+	countSessionsErr error
 }
 
 func (s *stubHealthStore) ListGovernanceSyncHealth(_ context.Context) ([]db.SyncHealth, error) {
@@ -42,9 +42,9 @@ func (s *stubHealthStore) CountUnsyncedSessions(_ context.Context) (int, error) 
 
 // stubConfigLoader allows tests to control LoadWithStatus output.
 type stubConfigLoader struct {
-	cfg      *hivesync.Config
-	status   hivesync.SyncConfigStatus
-	err      error
+	cfg    *hivesync.Config
+	status hivesync.SyncConfigStatus
+	err    error
 }
 
 func (l *stubConfigLoader) Load() (*hivesync.Config, hivesync.SyncConfigStatus, error) {
@@ -57,19 +57,19 @@ func TestHealthService_Summary_States(t *testing.T) {
 	failureAt := now.Add(-30 * time.Minute)
 
 	tests := []struct {
-		name           string
-		rows           []db.SyncHealth
-		cfg            *hivesync.Config
-		status         hivesync.SyncConfigStatus
-		loaderErr      error
-		wantReachable  bool
-		wantAuthOK     bool
-		wantAutoSync   bool
-		wantLastError  string
-		wantConsec     int
-		wantMemories   int
-		wantPrompts    int
-		wantSessions   int
+		name          string
+		rows          []db.SyncHealth
+		cfg           *hivesync.Config
+		status        hivesync.SyncConfigStatus
+		loaderErr     error
+		wantReachable bool
+		wantAuthOK    bool
+		wantAutoSync  bool
+		wantLastError string
+		wantConsec    int
+		wantMemories  int
+		wantPrompts   int
+		wantSessions  int
 	}{
 		{
 			name: "healthy: configured, no errors, recent success",
@@ -146,8 +146,8 @@ func TestHealthService_Summary_States(t *testing.T) {
 			wantConsec:    2,
 		},
 		{
-			name: "sync disabled: no config",
-			rows: []db.SyncHealth{},
+			name:          "sync disabled: no config",
+			rows:          []db.SyncHealth{},
 			cfg:           nil,
 			status:        hivesync.SyncConfigStatus{Configured: false},
 			wantReachable: false,

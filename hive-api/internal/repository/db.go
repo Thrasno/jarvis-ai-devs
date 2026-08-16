@@ -29,10 +29,10 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 
 	// Configuración del pool para un equipo pequeño (8 developers).
 	// Estos valores están calibrados para no saturar PostgreSQL en un VPS pequeño.
-	cfg.MaxConns = 20                      // máximo 20 conexiones simultáneas
-	cfg.MinConns = 2                       // mínimo 2 siempre abiertas (warm pool)
-	cfg.MaxConnLifetime = 30 * time.Minute // reciclar conexiones cada 30 minutos
-	cfg.MaxConnIdleTime = 5 * time.Minute  // cerrar conexiones inactivas tras 5 min
+	cfg.MaxConns = 20                        // máximo 20 conexiones simultáneas
+	cfg.MinConns = 2                         // mínimo 2 siempre abiertas (warm pool)
+	cfg.MaxConnLifetime = 30 * time.Minute   // reciclar conexiones cada 30 minutos
+	cfg.MaxConnIdleTime = 5 * time.Minute    // cerrar conexiones inactivas tras 5 min
 	cfg.HealthCheckPeriod = 30 * time.Second // verificar conexiones cada 30 seg
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)

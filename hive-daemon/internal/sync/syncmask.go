@@ -10,8 +10,8 @@ const MaskedSecret = "********"
 
 // Error sentinels returned by resolvePassword and the ConfigService layer.
 var (
-	ErrNoStoredSecret    = errors.New("password required: no stored secret to reuse")
-	ErrConfigInvalidURL  = errors.New("api_url is required and must include a scheme and host")
+	ErrNoStoredSecret      = errors.New("password required: no stored secret to reuse")
+	ErrConfigInvalidURL    = errors.New("api_url is required and must include a scheme and host")
 	ErrConfigEmailRequired = errors.New("email is required")
 )
 

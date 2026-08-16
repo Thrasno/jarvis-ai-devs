@@ -50,7 +50,7 @@ func scan(s string) (clean string, count int) {
 		// Depth tracking: find the matching close for this open.
 		depth := 1
 		k := contentStart
-		closeAt := -1   // absolute position of byte AFTER the matching close tag
+		closeAt := -1    // absolute position of byte AFTER the matching close tag
 		closeBegin := -1 // absolute position where matching close tag starts
 
 		for k < n {

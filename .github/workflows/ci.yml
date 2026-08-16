@@ -57,6 +57,21 @@ jobs:
         working-directory: ${{ matrix.module }}
         run: go vet ./...
 
+      # gofmt ships with Go, so this needs no extra tooling. It is only useful
+      # once every module is already formatted: while any file was unformatted,
+      # `gofmt -l` could never return empty and a genuinely badly formatted file
+      # was indistinguishable from the standing noise.
+      - name: Format
+        working-directory: ${{ matrix.module }}
+        shell: bash
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-formatted. Run 'gofmt -w .' in ${{ matrix.module }}:"
+            echo "$unformatted"
+            exit 1
+          fi
+
   hive-dashboard:
     name: Hive dashboard frontend
     runs-on: ubuntu-latest
