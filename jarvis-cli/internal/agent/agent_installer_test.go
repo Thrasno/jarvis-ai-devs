@@ -54,9 +54,10 @@ type stubAgentInstaller struct {
 	lastFS    fs.FS
 }
 
-func (s *stubAgentInstaller) Name() string      { return "stub" }
-func (s *stubAgentInstaller) IsInstalled() bool { return true }
-func (s *stubAgentInstaller) ConfigDir() string { return "" }
+func (s *stubAgentInstaller) Name() string             { return "stub" }
+func (s *stubAgentInstaller) IsInstalled() bool        { return true }
+func (s *stubAgentInstaller) ConfigDir() string        { return "" }
+func (s *stubAgentInstaller) InstructionsPath() string { return "" }
 func (s *stubAgentInstaller) MergeConfig(MCPEntry) error {
 	return nil
 }
@@ -89,6 +90,9 @@ func (a *unsupportedAgentInstaller) Name() string      { return "unsupported-ins
 func (a *unsupportedAgentInstaller) IsInstalled() bool { return true }
 func (a *unsupportedAgentInstaller) ConfigDir() string {
 	return a.home + "/.unsupported-installer"
+}
+func (a *unsupportedAgentInstaller) InstructionsPath() string {
+	return a.ConfigDir() + "/AGENTS.md"
 }
 func (a *unsupportedAgentInstaller) MergeConfig(MCPEntry) error { return nil }
 func (a *unsupportedAgentInstaller) WriteInstructions(string, string, []config.SkillInfo) error {

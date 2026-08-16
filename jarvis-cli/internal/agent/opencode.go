@@ -66,7 +66,9 @@ func (a *OpenCodeAgent) settingsPath() string {
 	return filepath.Join(a.ConfigDir(), "opencode.json")
 }
 
-func (a *OpenCodeAgent) instructionsPath() string {
+// InstructionsPath returns ~/.config/opencode/AGENTS.md, the file
+// WriteInstructions writes.
+func (a *OpenCodeAgent) InstructionsPath() string {
 	return filepath.Join(a.ConfigDir(), "AGENTS.md")
 }
 
@@ -421,7 +423,7 @@ func hasCompleteHiveCloudCreds(entry MCPEntry) bool {
 // instruction file that the replay planner also reads. See the note on
 // ClaudeAgent.WriteInstructions for why it is not restated here.
 func (a *OpenCodeAgent) WriteInstructions(layer1, layer2 string, skills []config.SkillInfo) error {
-	path := a.instructionsPath()
+	path := a.InstructionsPath()
 
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {

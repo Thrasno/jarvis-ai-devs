@@ -32,6 +32,12 @@ type Agent interface {
 	// ConfigDir returns the absolute path to the agent's config directory.
 	ConfigDir() string
 
+	// InstructionsPath returns the absolute path to the agent's managed
+	// instruction file (CLAUDE.md or AGENTS.md). It is the same path
+	// WriteInstructions writes to, so a caller recording where an agent's
+	// instructions live never has to restate that knowledge.
+	InstructionsPath() string
+
 	// MergeConfig adds the hive-daemon MCP entry to the agent's config file.
 	// It performs a deep JSON merge, preserving all existing keys.
 	MergeConfig(entry MCPEntry) error
