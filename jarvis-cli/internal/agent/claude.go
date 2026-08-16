@@ -318,13 +318,11 @@ func isMissingClaudeMCP(result claudeCommandResult, identity string) bool {
 
 // WriteInstructions writes ~/.claude/CLAUDE.md with Layer1+Layer2 sentinel blocks.
 //
-// Decision logic:
-//   - File absent or empty → render fresh via RenderCLAUDEMd ("created")
-//   - File exists with Jarvis sentinels → patch in-place via PatchFile ("updated")
-//   - File exists without sentinels → render fresh via RenderCLAUDEMd, replacing foreign content ("replaced")
-//
-// After determining the final content, the Hive protocol is injected via InjectProtocol.
-// Any legacy gentle-ai protocol blocks are cleaned up first via CleanupOldProtocol.
+// This agent reads its file and writes it; how the content is composed belongs
+// to ComposeInstructions, which is the single description of a managed
+// instruction file that the replay planner also reads. Assembling the file here
+// instead is what once made the planner and this writer disagree, so the
+// composition is deliberately not restated in either place.
 func (a *ClaudeAgent) WriteInstructions(layer1, layer2 string, skills []config.SkillInfo) error {
 	path := a.instructionsPath()
 
@@ -333,37 +331,10 @@ func (a *ClaudeAgent) WriteInstructions(layer1, layer2 string, skills []config.S
 		return fmt.Errorf("read CLAUDE.md: %w", err)
 	}
 
-	var content string
-	if os.IsNotExist(err) || len(existing) == 0 {
-		// Create new file from scratch using the canonical template renderer.
-		content, err = config.RenderCLAUDEMd(a.templatesFS, layer1, layer2, "", skills)
-		if err != nil {
-			return fmt.Errorf("render CLAUDE.md: %w", err)
-		}
-	} else {
-		existingStr := string(existing)
-		if err := ValidateSentinels(existingStr); err == nil {
-			// Sentinels present — patch in-place (preserves user content outside blocks).
-			content, err = PatchFile(existingStr, layer1, layer2)
-			if err != nil {
-				return fmt.Errorf("patch CLAUDE.md sentinels: %w", err)
-			}
-		} else {
-			// Sentinels missing — discard foreign content and render a clean Jarvis file.
-			content, err = config.RenderCLAUDEMd(a.templatesFS, layer1, layer2, "", skills)
-			if err != nil {
-				return fmt.Errorf("render CLAUDE.md (replace): %w", err)
-			}
-		}
+	content, err := ComposeInstructions("claude", a.templatesFS, existing, layer1, layer2, skills)
+	if err != nil {
+		return err
 	}
-
-	// Clean up legacy gentle-ai protocol blocks and inject Hive protocol
-	content = CleanupOldProtocol(content)
-	content = InjectProtocol(content, getHiveProtocol())
-
-	// Clean up legacy orchestrator prose link and upsert the @import block
-	content = CleanupOldOrchestratorLink(content)
-	content = InjectOrchestratorImport(content)
 
 	return writeFileAtomic(path, []byte(content), 0644)
 }

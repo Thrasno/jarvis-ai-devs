@@ -93,8 +93,54 @@ func ValidateSentinels(content string) error {
 	return nil
 }
 
+// The two line endings a managed instruction file can use at a sentinel
+// boundary. Which one a given file uses is observed, never assumed: see
+// patchedBlock.
+const (
+	crlfEnding = "\r\n"
+	lfEnding   = "\n"
+)
+
+// patchedBlock rebuilds one sentinel block around a new payload, reproducing
+// what the template renderer would have produced for it.
+//
+// The renderer emits marker, separator, payload, separator, marker, where the
+// separator is whatever line ending the embedded template carries. A patch that
+// hardcoded "\n" therefore rewrote a CRLF file into a mixed one, dropping one
+// byte per boundary and four per file -- invisible on a Linux checkout, and on a
+// Windows checkout enough to make an instruction file differ from itself every
+// time it was rewritten. So the separators are read back out of the block being
+// replaced rather than imposed, which covers both sources of CRLF: an embedded
+// template checked out with CRLF, and a user's own file saved by a Windows
+// editor.
+//
+// The payload goes in verbatim and the closing separator is unconditional,
+// which is exactly what the renderer does. Both halves matter: a payload that
+// already ends in a newline used to suppress the closing separator here while
+// the renderer still emitted it, so the same content rendered and patched
+// disagreed by one byte on every platform.
+func patchedBlock(startMarker, endMarker, payload, opening, closing string) string {
+	return startMarker + opening + payload + closing + endMarker
+}
+
+// boundarySeparators reports the line endings an existing block already uses:
+// the one following its START marker and the one preceding its END marker. A
+// boundary carrying neither is treated as LF, which is what a hand-edited file
+// missing its separator would have been rebuilt with before.
+func boundarySeparators(content string, afterStart, beforeEnd int) (opening, closing string) {
+	opening, closing = lfEnding, lfEnding
+	if strings.HasPrefix(content[afterStart:], crlfEnding) {
+		opening = crlfEnding
+	}
+	if beforeEnd >= len(crlfEnding) && content[beforeEnd-len(crlfEnding):beforeEnd] == crlfEnding {
+		closing = crlfEnding
+	}
+	return opening, closing
+}
+
 // PatchFile patches both Layer1 and Layer2 blocks in an existing file's content.
-// Content outside the sentinel markers is preserved unchanged.
+// Content outside the sentinel markers is preserved unchanged, and so is the
+// line ending each block already uses.
 func PatchFile(content, layer1, layer2 string) (string, error) {
 	if err := ValidateSentinels(content); err != nil {
 		return "", fmt.Errorf("validate sentinels: %w", err)
@@ -103,11 +149,8 @@ func PatchFile(content, layer1, layer2 string) (string, error) {
 	// Patch Layer1
 	l1Start := strings.Index(content, Layer1Start)
 	l1End := strings.Index(content, Layer1End)
-	newL1Block := Layer1Start + "\n" + layer1
-	if !strings.HasSuffix(layer1, "\n") {
-		newL1Block += "\n"
-	}
-	newL1Block += Layer1End
+	l1Opening, l1Closing := boundarySeparators(content, l1Start+len(Layer1Start), l1End)
+	newL1Block := patchedBlock(Layer1Start, Layer1End, layer1, l1Opening, l1Closing)
 	content = content[:l1Start] + newL1Block + content[l1End+len(Layer1End):]
 
 	// Re-find Layer2 markers after Layer1 patch
@@ -117,11 +160,8 @@ func PatchFile(content, layer1, layer2 string) (string, error) {
 		return "", fmt.Errorf("Layer2 sentinels lost after Layer1 patch")
 	}
 
-	newL2Block := Layer2Start + "\n" + layer2
-	if !strings.HasSuffix(layer2, "\n") {
-		newL2Block += "\n"
-	}
-	newL2Block += Layer2End
+	l2Opening, l2Closing := boundarySeparators(content, l2Start+len(Layer2Start), l2End)
+	newL2Block := patchedBlock(Layer2Start, Layer2End, layer2, l2Opening, l2Closing)
 	content = content[:l2Start] + newL2Block + content[l2End+len(Layer2End):]
 
 	return content, nil
