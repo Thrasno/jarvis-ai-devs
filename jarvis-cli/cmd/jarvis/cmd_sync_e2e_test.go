@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
@@ -180,5 +181,113 @@ func TestRunSync_ReportsAnUninstalledAgentWithoutAbortingTheRun(t *testing.T) {
 	}
 	if strings.Contains(out, "already current") {
 		t.Errorf("a failed run must never claim the machine is current:\n%s", out)
+	}
+}
+
+// appendToFile adds content at the end of an existing file, the way a user
+// editing their own instruction file does.
+func appendToFile(t *testing.T, path, content string) {
+	t.Helper()
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, append(existing, []byte(content)...), 0o644); err != nil {
+		t.Fatalf("append to %s: %v", path, err)
+	}
+}
+
+// readFileOrFail reads a file the run is expected to have written.
+func readFileOrFail(t *testing.T, path string) string {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(body)
+}
+
+// The user's own prose. An instruction file is a document the user shares with
+// Jarvis: the writer deliberately preserves everything outside the markers, so
+// a run that compared the whole file measured a file it had just written
+// correctly as invalid and told the user to repair it -- forever, because the
+// prose is still there on the next run.
+//
+// This is the case that can only be made end to end. The planner composes with
+// nothing from disk and the writer composes with the user's file, and only a
+// run that drives both against a real home shows the two answers being
+// compared.
+func TestRunSync_ConvergesWhenTheUserWritesTheirOwnProseOutsideTheManagedRegions(t *testing.T) {
+	home := newSyncFixtureHome(t)
+	seedReplayManifest(t, openCodeAgent(home))
+	instructions := filepath.Join(home, ".config", "opencode", "AGENTS.md")
+
+	var first error
+	firstOut := captureStdout(t, func() { first = runSync() })
+	if first != nil {
+		t.Fatalf("the first replay returned %v\n%s", first, firstOut)
+	}
+	const prose = "\n## My own conventions\n\nAlways review the migration plan first.\n"
+	appendToFile(t, instructions, prose)
+
+	var second error
+	out := captureStdout(t, func() { second = runSync() })
+
+	if second != nil {
+		t.Fatalf("a user's own prose outside the markers must not fail sync: %v\n%s", second, out)
+	}
+	for _, want := range []string{"opencode: converged", "verification: passed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the second run is missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "missing or invalid") {
+		t.Errorf("the run reported a managed output as invalid:\n%s", out)
+	}
+	if !strings.Contains(readFileOrFail(t, instructions), "Always review the migration plan first.") {
+		t.Error("sync dropped the user's own prose, which is the promise this fix must not break")
+	}
+}
+
+// The other direction, end to end: an edit inside the Jarvis markers is Jarvis's
+// own content being tampered with, and the run must still notice it and put it
+// back. A fix that bought convergence by ignoring the managed regions would be
+// worse than the bug it removes.
+func TestRunSync_StillRepairsAnEditInsideTheManagedRegions(t *testing.T) {
+	home := newSyncFixtureHome(t)
+	seedReplayManifest(t, openCodeAgent(home))
+	instructions := filepath.Join(home, ".config", "opencode", "AGENTS.md")
+
+	var first error
+	firstOut := captureStdout(t, func() { first = runSync() })
+	if first != nil {
+		t.Fatalf("the first replay returned %v\n%s", first, firstOut)
+	}
+	composed := readFileOrFail(t, instructions)
+	start := strings.Index(composed, agent.HiveProtocolStart)
+	end := strings.Index(composed, agent.HiveProtocolEnd)
+	if start == -1 || end == -1 {
+		t.Fatalf("the replayed file carries no Hive protocol block:\n%s", composed)
+	}
+	tampered := composed[:start+len(agent.HiveProtocolStart)] + "\nthe user deleted the protocol\n" + composed[end:]
+	if err := os.WriteFile(instructions, []byte(tampered), 0o644); err != nil {
+		t.Fatalf("tamper with %s: %v", instructions, err)
+	}
+
+	var second error
+	out := captureStdout(t, func() { second = runSync() })
+
+	if second != nil {
+		t.Fatalf("the repairing run returned %v\n%s", second, out)
+	}
+	repaired := readFileOrFail(t, instructions)
+	if strings.Contains(repaired, "the user deleted the protocol") {
+		t.Errorf("sync left a tampered managed region in place:\n%s", out)
+	}
+	if repaired != composed {
+		t.Errorf("the repaired file does not match what sync composes:\n%s", out)
+	}
+	if strings.Contains(out, "changed paths: 0") {
+		t.Errorf("a run that repaired a tampered file must report it as changed:\n%s", out)
 	}
 }

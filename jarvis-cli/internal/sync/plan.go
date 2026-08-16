@@ -95,13 +95,24 @@ var agentPlatforms = map[string]sddruntime.Platform{
 func trackedPaths(in PlanInput, artifacts []PlannedArtifact, ownerByLocation map[string]string) ([]TrackedPath, error) {
 	tracked := make([]TrackedPath, 0, len(artifacts))
 	for _, artifact := range artifacts {
-		tracked = append(tracked, TrackedPath{
-			Agent:    ownerByLocation[artifact.Location],
-			Identity: filepath.ToSlash(filepath.Clean(artifact.Location)),
-			Path:     filepath.Join(in.Root, filepath.FromSlash(artifact.Location)),
-			Mode:     artifact.Mode,
-			Desired:  digestOf(artifact.Bytes),
-		})
+		// Every planned artifact is an agent's managed instruction file: BuildPlan
+		// builds Artifacts from the composed instruction outputs alone, and every
+		// other managed path is appended below. That is the seam, and it is the
+		// honest one -- ownership is recorded where it is known rather than
+		// guessed back out of a file extension or a path prefix.
+		//
+		// So these paths, and only these, are compared on their managed regions.
+		// The bytes stay whole because they are still what gets written; it is the
+		// digest that narrows.
+		instructions := TrackedPath{
+			Agent:        ownerByLocation[artifact.Location],
+			Identity:     filepath.ToSlash(filepath.Clean(artifact.Location)),
+			Path:         filepath.Join(in.Root, filepath.FromSlash(artifact.Location)),
+			Mode:         artifact.Mode,
+			Instructions: true,
+		}
+		instructions.Desired = managedDigest(instructions, artifact.Bytes, false)
+		tracked = append(tracked, instructions)
 	}
 	for _, configured := range in.State.InstalledAgents {
 		// BuildPlan already refused this path before calling here, so today this

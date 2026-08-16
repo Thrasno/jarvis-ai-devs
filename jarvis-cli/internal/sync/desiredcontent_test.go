@@ -48,7 +48,11 @@ func TestBuildPlan_TracksDesiredContentForEveryPathIncludingSkillsAndStatusline(
 
 	claudeDir := filepath.Join(root, ".claude")
 	want := map[string]string{
-		filepath.Join(claudeDir, "CLAUDE.md"):                                     digestOf(plan.Artifacts[0].Bytes),
+		// The instruction file is the one managed output Jarvis owns in parts: the
+		// writer preserves the user's own prose around the markers, so what is
+		// compared is the managed regions of those bytes rather than the whole
+		// document. Everything else here is a file Jarvis owns whole.
+		filepath.Join(claudeDir, "CLAUDE.md"):                                     digestOf([]byte(agent.ExtractManagedRegions("claude", string(plan.Artifacts[0].Bytes)))),
 		filepath.Join(claudeDir, "skills", "sdd-apply", "SKILL.md"):               digestOf([]byte("# sdd-apply\n")),
 		filepath.Join(claudeDir, "skills", "sdd-apply", "references", "notes.md"): digestOf([]byte("notes\n")),
 		filepath.Join(claudeDir, "skills", "_shared", "sdd-phase-common.md"):      digestOf([]byte("shared\n")),
