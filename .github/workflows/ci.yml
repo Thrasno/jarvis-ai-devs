@@ -61,7 +61,15 @@ jobs:
       # once every module is already formatted: while any file was unformatted,
       # `gofmt -l` could never return empty and a genuinely badly formatted file
       # was indistinguishable from the standing noise.
+      #
+      # Linux only, and not as a shortcut. A Windows checkout carries CRLF, and
+      # `gofmt -l` flags every file whose line endings it would rewrite -- so on
+      # that runner this step reports the checkout's configuration rather than
+      # the source's formatting. Formatting does not vary by operating system,
+      # so one runner answers the question and the others would answer a
+      # different one.
       - name: Format
+        if: matrix.os == 'ubuntu-latest'
         working-directory: ${{ matrix.module }}
         shell: bash
         run: |
