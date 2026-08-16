@@ -42,7 +42,6 @@ type Skill struct {
 	Path string
 }
 
-
 // ListSkills returns all available embedded skills with their metadata and content.
 // fsys must be the root-package SkillsFS (embed/skills directory embedded at root).
 // Only files named SKILL.md are registered. Supporting files (e.g. strict-tdd.md)
@@ -111,7 +110,6 @@ func ListSkills(fsys embed.FS) ([]Skill, error) {
 
 	return skills, nil
 }
-
 
 // GetSkill returns a single skill by ID, or an error if not found.
 // fsys must be the root-package SkillsFS (embed/skills directory embedded at root).

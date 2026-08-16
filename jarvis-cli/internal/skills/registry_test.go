@@ -124,7 +124,6 @@ func TestRegistry_SharedNotRegistered(t *testing.T) {
 	}
 }
 
-
 func TestRegistry_QAChecklistIsDiscoverableButNotCore(t *testing.T) {
 	skills, err := ListSkills(jarvis.SkillsFS)
 	if err != nil {
@@ -286,7 +285,6 @@ func TestListSkills_DoesNotDuplicateSkillCreator(t *testing.T) {
 	}
 }
 
-
 func TestGetSkillReturnsEmbeddedSkillByID(t *testing.T) {
 	skill, err := GetSkill(jarvis.SkillsFS, "go-testing")
 	if err != nil {
@@ -351,7 +349,6 @@ func TestGetSkillReturnsNotFoundError(t *testing.T) {
 		t.Fatalf("expected missing skill error, got %v", err)
 	}
 }
-
 
 // listSkillsFromFS is a testable variant of ListSkills that accepts a root prefix.
 // This allows tests to use testdata/ instead of embed/skills/ as the root.

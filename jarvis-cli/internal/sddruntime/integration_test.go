@@ -6,12 +6,12 @@ import (
 
 func TestRuntimeIntegrity_ManagedArtifactCompletenessAndContractVersion(t *testing.T) {
 	tests := []struct {
-		name              string
-		mutate            func(*ObservedRuntime)
-		expectedStatus    IntegrityStatus
-		expectedCheckKey  string
-		expectedDrift     DriftClass
-		expectedObserved  string
+		name             string
+		mutate           func(*ObservedRuntime)
+		expectedStatus   IntegrityStatus
+		expectedCheckKey string
+		expectedDrift    DriftClass
+		expectedObserved string
 	}{
 		{
 			name:           "passes when manifest and managed artifacts are complete",

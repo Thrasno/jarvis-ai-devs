@@ -604,6 +604,5 @@ func TestLoadSnapshot_SyncSummaryIsNilWhenEndpointReturns404(t *testing.T) {
 
 // ─── RunHiveTUI ──────────────────────────────────────────────────────────────
 
-
 // Ensure errors package is used (for the transport-error test).
 var _ = errors.New

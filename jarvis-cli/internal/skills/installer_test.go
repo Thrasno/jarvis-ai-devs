@@ -358,8 +358,8 @@ func TestInstallSelected_CoreDerivedFromFrontmatter(t *testing.T) {
 	// Provide a minimal FS with one core skill and one optional skill.
 	// The core skill must be installed even though it is NOT in the selected list.
 	fsys := fstest.MapFS{
-		"embed/skills/my-core/SKILL.md":     {Data: []byte("---\nname: my-core\ndisplay_name: My Core\ndescription: \"Core skill. Trigger: always.\"\nscope: core\n---\n# Core\n")},
-		"embed/skills/my-optional/SKILL.md": {Data: []byte("---\nname: my-optional\ndisplay_name: My Optional\ndescription: \"Optional skill. Trigger: when selected.\"\nscope: optional\n---\n# Optional\n")},
+		"embed/skills/my-core/SKILL.md":           {Data: []byte("---\nname: my-core\ndisplay_name: My Core\ndescription: \"Core skill. Trigger: always.\"\nscope: core\n---\n# Core\n")},
+		"embed/skills/my-optional/SKILL.md":       {Data: []byte("---\nname: my-optional\ndisplay_name: My Optional\ndescription: \"Optional skill. Trigger: when selected.\"\nscope: optional\n---\n# Optional\n")},
 		"embed/skills/_shared/hive-convention.md": {Data: []byte("# shared")},
 	}
 

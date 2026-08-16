@@ -75,7 +75,7 @@ func removeHookEntriesByCommandToken(settings []byte, event, token string) []byt
 
 // containsTokenAtWordBoundary reports whether command contains token such
 // that the character immediately following the match, if any, is a word
-// boundary: a space, a shell quote ('\'' or '"'), or end-of-string. This
+// boundary: a space, a shell quote ('\” or '"'), or end-of-string. This
 // prevents a managed token like " hook subagent-stop" from over-matching a
 // longer subcommand such as " hook subagent-stopwatch".
 func containsTokenAtWordBoundary(command, token string) bool {

@@ -22,7 +22,7 @@ func TestClaudeAgent_InstallAgents_WritesAllFiles(t *testing.T) {
 	testFS := fstest.MapFS{
 		"review-risk.md":        {Data: []byte("# Review Risk")},
 		"review-readability.md": {Data: []byte("# Review Readability")},
-		"jd-judge-a.md":        {Data: []byte("# JD Judge A")},
+		"jd-judge-a.md":         {Data: []byte("# JD Judge A")},
 	}
 
 	if err := a.InstallAgents(testFS); err != nil {
@@ -34,7 +34,7 @@ func TestClaudeAgent_InstallAgents_WritesAllFiles(t *testing.T) {
 	wantFiles := map[string]string{
 		"review-risk.md":        "# Review Risk",
 		"review-readability.md": "# Review Readability",
-		"jd-judge-a.md":        "# JD Judge A",
+		"jd-judge-a.md":         "# JD Judge A",
 	}
 
 	for relPath, wantContent := range wantFiles {
