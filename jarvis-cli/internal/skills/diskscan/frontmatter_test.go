@@ -360,6 +360,15 @@ func TestExtractTriggerFromDescription_SentenceBoundary(t *testing.T) {
 			text: "Trigger: When doing something.",
 			want: "When doing something.",
 		},
+		{
+			// Real zoho-deluge description. The periods inside the file
+			// extensions (.dg, .deluge, .ds) are followed by letters, so they
+			// are not sentence boundaries and must not cut the trigger. Only
+			// the period after ".ds" — followed by a space — ends it.
+			name: "file extensions do not cut the trigger",
+			text: "Trigger: writing, reviewing, debugging, or optimizing Deluge in any Zoho application, including files named .dg, .deluge, or .ds. Application-neutral Deluge language core — routes application specifics to the matching zoho-[app] skill.",
+			want: "writing, reviewing, debugging, or optimizing Deluge in any Zoho application, including files named .dg, .deluge, or .ds.",
+		},
 	}
 
 	for _, tc := range tests {

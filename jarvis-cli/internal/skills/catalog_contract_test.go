@@ -2089,6 +2089,336 @@ func requireAllTerms(t *testing.T, content string, terms ...string) {
 	}
 }
 
+// zohoDelugeReferenceFiles lists the five focused references that carry the
+// detailed, version-sensitive Deluge material out of SKILL.md.
+var zohoDelugeReferenceFiles = []string{
+	"collections.md",
+	"types-and-dates.md",
+	"error-handling.md",
+	"invokeurl.md",
+	"conventions.md",
+}
+
+// TestCatalogContract_ZohoDelugeFrontmatterDeclaresLanguageCore asserts the
+// activation contract of the application-neutral Deluge language core: the
+// skill keeps its identity keys and carries a single-line description whose
+// embedded "Trigger:" text is what the resolver matches on.
+func TestCatalogContract_ZohoDelugeFrontmatterDeclaresLanguageCore(t *testing.T) {
+	t.Parallel()
+
+	const skillPath = "embed/skills/zoho-deluge/SKILL.md"
+	content := readEmbeddedSkillAsset(t, skillPath)
+
+	if !hasYAMLFrontmatter(content) {
+		t.Fatalf("expected %s to include YAML frontmatter", skillPath)
+	}
+	if name := extractFrontmatterKey(content, "name"); name != "zoho-deluge" {
+		t.Fatalf("%s: frontmatter name = %q, want %q", skillPath, name, "zoho-deluge")
+	}
+	if displayName := extractFrontmatterKey(content, "display_name"); displayName == "" {
+		t.Fatalf("%s: frontmatter display_name must not be empty", skillPath)
+	}
+	if scope := extractFrontmatterKey(content, "scope"); scope != "optional" {
+		t.Fatalf("%s: frontmatter scope = %q, want %q", skillPath, scope, "optional")
+	}
+
+	// extractFrontmatterKey reads a single frontmatter line, so requiring both
+	// the trigger prefix and the closing prose proves the description is not
+	// folded or wrapped across continuation lines.
+	description := extractFrontmatterKey(content, "description")
+	for _, required := range []string{
+		"Trigger:",
+		"writing, reviewing, debugging, or optimizing Deluge in any Zoho application",
+		"including files named .dg, .deluge, or .ds.",
+		"Application-neutral Deluge language core",
+		"routes application specifics to the matching zoho-[app] skill.",
+	} {
+		if !strings.Contains(description, required) {
+			t.Fatalf("%s: single-line description %q must contain %q", skillPath, description, required)
+		}
+	}
+
+	// The standalone trigger: frontmatter key is dormant in this repository —
+	// the convention is "Trigger:" inside description.
+	if standalone := extractFrontmatterKey(content, "trigger"); standalone != "" {
+		t.Fatalf("%s: must not declare a standalone trigger: key, found %q", skillPath, standalone)
+	}
+}
+
+// TestCatalogContract_ZohoDelugeCarriesNoAuditedDefect is the regression guard
+// for the defects the language-core refactor removed: two syntax errors, an
+// inverted response check, an unsupported search comparator, CRM leakage, and
+// the false "never nest loops" prohibition.
+func TestCatalogContract_ZohoDelugeCarriesNoAuditedDefect(t *testing.T) {
+	t.Parallel()
+
+	// Entry criterion: a string belongs here only when it was verified against
+	// official Zoho documentation to be WRONG — a syntax error, an inverted
+	// check, an unsupported comparator, or a member with no documented
+	// existence. A form we merely chose against does not qualify; forbidding
+	// one would block legitimate future content and misrepresent the evidence.
+	forbidden := []string{
+		"toLowercase(",
+		"ifnull(",
+		"zoho.crm.",
+		"id:in:",
+		`"code") != "SUCCESS"`,
+		"Never nest",
+		// Wrong casing. The documented text function is leftpad, all lowercase,
+		// and subString, camelCase — the lowercase URL slug is not the name.
+		"leftPad(",
+		".substring(",
+		// No documented existence: no page, and absent from the type index.
+		"toDateTime(",
+		"toBoolean(",
+		"datePart",
+		"timePart",
+		".union(",
+	}
+
+	forEachZohoDelugeAsset(t, func(filePath, content string) {
+		for _, needle := range forbidden {
+			if strings.Contains(content, needle) {
+				t.Errorf("%s: must not contain audited defect %q", filePath, needle)
+			}
+		}
+	})
+}
+
+// TestCatalogContract_ZohoDelugeIsApplicationNeutral asserts that the language
+// core carries no application integration task. Application specifics belong to
+// the matching zoho-[app] skill.
+func TestCatalogContract_ZohoDelugeIsApplicationNeutral(t *testing.T) {
+	t.Parallel()
+
+	applicationCalls := []string{
+		"zoho.crm.",
+		"zoho.creator.",
+		"zoho.books.",
+		"zoho.desk.",
+	}
+
+	forEachZohoDelugeAsset(t, func(filePath, content string) {
+		for _, call := range applicationCalls {
+			if strings.Contains(content, call) {
+				t.Errorf("%s: application-neutral skill must not call %q", filePath, call)
+			}
+		}
+	})
+}
+
+// TestCatalogContract_ZohoDelugeReferencesArePackaged asserts that the five
+// focused references exist, each carrying official Zoho provenance and the
+// verification date the refactor recorded.
+func TestCatalogContract_ZohoDelugeReferencesArePackaged(t *testing.T) {
+	t.Parallel()
+
+	for _, reference := range zohoDelugeReferenceFiles {
+		referencePath := "embed/skills/zoho-deluge/references/" + reference
+		if _, err := fs.Stat(jarvis.SkillsFS, referencePath); err != nil {
+			t.Fatalf("expected reference %s to be embedded: %v", referencePath, err)
+		}
+
+		content := readEmbeddedSkillAsset(t, referencePath)
+		if !strings.Contains(content, "https://www.zoho.com/deluge/help") {
+			t.Errorf("%s: must cite official Zoho Deluge documentation", referencePath)
+		}
+		if !strings.Contains(content, "Verified: 2026-08-16") {
+			t.Errorf("%s: must record the verification date", referencePath)
+		}
+	}
+}
+
+// TestCatalogContract_ZohoDelugeSkillCarriesRoutingAnchors asserts the stable
+// structure SKILL.md keeps: the three-level escalation chain, the universal
+// no-gos, and reference routing to every packaged reference.
+func TestCatalogContract_ZohoDelugeSkillCarriesRoutingAnchors(t *testing.T) {
+	t.Parallel()
+
+	const skillPath = "embed/skills/zoho-deluge/SKILL.md"
+	content := readEmbeddedSkillAsset(t, skillPath)
+
+	requiredSnippets := []string{
+		"## Escalation Chain",
+		"## Universal No-Gos",
+		"## Reference Routing",
+		"ask the user before writing code",
+		"zoho-[app]",
+	}
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(content, snippet) {
+			t.Errorf("%s: expected to contain %q", skillPath, snippet)
+		}
+	}
+
+	for _, reference := range zohoDelugeReferenceFiles {
+		link := fmt.Sprintf("[references/%s](references/%s)", reference, reference)
+		if !strings.Contains(content, link) {
+			t.Errorf("%s: expected reference routing link %q", skillPath, link)
+		}
+	}
+}
+
+// zohoDelugeVerifiedDocumentationURLs is the closed set of Zoho documentation
+// URLs the skill tree may cite. Every entry was requested and answered 200 on
+// 2026-08-16. A citation outside this set is treated as unverified: the skill
+// asserts that its references carry official provenance, and a dead link
+// destroys that claim for the whole reference set.
+var zohoDelugeVerifiedDocumentationURLs = map[string]bool{
+	"https://www.zoho.com/deluge/help":                                                         true,
+	"https://www.zoho.com/deluge/help/deluge-connections.html":                                 true,
+	"https://www.zoho.com/deluge/help/debug/info.html":                                         true,
+	"https://www.zoho.com/deluge/help/misc-statements/try-catch.html":                          true,
+	"https://www.zoho.com/deluge/help/misc-statements/return-statement.html":                   true,
+	"https://www.zoho.com/deluge/help/webhook/invokeurl-api-task.html":                         true,
+	"https://www.zoho.com/deluge/help/functions/collection.html":                               true,
+	"https://www.zoho.com/deluge/help/functions/collection/containskey.html":                   true,
+	"https://www.zoho.com/deluge/help/functions/list.html":                                     true,
+	"https://www.zoho.com/deluge/help/functions/list/distinct.html":                            true,
+	"https://www.zoho.com/deluge/help/functions/list/intersect.html":                           true,
+	"https://www.zoho.com/deluge/help/functions/list/removeelement.html":                       true,
+	"https://www.zoho.com/deluge/help/functions/list/sort.html":                                true,
+	"https://www.zoho.com/deluge/help/functions/list/sublist.html":                             true,
+	"https://www.zoho.com/deluge/help/functions/map/containkey.html":                           true,
+	"https://www.zoho.com/deluge/help/functions/map/put.html":                                  true,
+	"https://www.zoho.com/deluge/help/functions/text.html":                                     true,
+	"https://www.zoho.com/deluge/help/functions/text/is-empty.html":                            true,
+	"https://www.zoho.com/deluge/help/functions/number.html":                                   true,
+	"https://www.zoho.com/deluge/help/functions/logical.html":                                  true,
+	"https://www.zoho.com/deluge/help/functions/date-time.html":                                true,
+	"https://www.zoho.com/deluge/help/functions/datetime/addday.html":                          true,
+	"https://www.zoho.com/deluge/help/functions/datetime/days360.html":                         true,
+	"https://www.zoho.com/deluge/help/functions/datetime/daysbetween.html":                     true,
+	"https://www.zoho.com/deluge/help/functions/datetime/now.html":                             true,
+	"https://www.zoho.com/deluge/help/functions/datetime/today.html":                           true,
+	"https://www.zoho.com/deluge/help/functions/datetime/weekday.html":                         true,
+	"https://www.zoho.com/deluge/help/functions/common/isblank.html":                           true,
+	"https://www.zoho.com/deluge/help/functions/common/isnull.html":                            true,
+	"https://www.zoho.com/deluge/help/functions/common/isnull-isblank-isempty-difference.html": true,
+	"https://www.zoho.com/deluge/help/functions/common/todate.html":                            true,
+	"https://www.zoho.com/deluge/help/functions/common/todecimal.html":                         true,
+	"https://www.zoho.com/deluge/help/functions/common/tolong.html":                            true,
+	"https://www.zoho.com/deluge/help/functions/common/tostring.html":                          true,
+	"https://www.zoho.com/deluge/help/functions/string/leftpad.html":                           true,
+	"https://www.zoho.com/deluge/help/functions/string/replaceall.html":                        true,
+	"https://www.zoho.com/deluge/help/functions/string/substring.html":                         true,
+	"https://www.zoho.com/deluge/help/functions/string/tolist.html":                            true,
+	"https://www.zoho.com/deluge/help/functions/string/trim.html":                              true,
+}
+
+// TestCatalogContract_ZohoDelugeCitesOnlyVerifiedDocumentationURLs asserts that
+// every Zoho URL in the skill tree belongs to the verified set. Extensionless
+// section paths and the retired /statements/, /web-data/, and /misc/ prefixes
+// return 404 and must never come back.
+func TestCatalogContract_ZohoDelugeCitesOnlyVerifiedDocumentationURLs(t *testing.T) {
+	t.Parallel()
+
+	urlPattern := regexp.MustCompile(`https://www\.zoho\.com/[^\s)\]"'>,]+`)
+
+	forEachZohoDelugeAsset(t, func(filePath, content string) {
+		for _, cited := range urlPattern.FindAllString(content, -1) {
+			cited = normalizeCitedDocumentationURL(cited)
+			if !zohoDelugeVerifiedDocumentationURLs[cited] {
+				t.Errorf("%s: cites unverified documentation URL %q", filePath, cited)
+			}
+		}
+	})
+}
+
+// normalizeCitedDocumentationURL strips the Markdown and sentence punctuation
+// that can trail a bare URL in prose. No verified documentation URL ends in
+// any of these, so trimming them cannot shorten a legitimate citation.
+//
+// Trailing-trim is deliberately preferred over widening the capture pattern's
+// negated character class: underscores and other punctuation are valid inside
+// a URL, so excluding them from the capture would truncate a legitimate
+// citation and report a documentation problem that does not exist.
+func normalizeCitedDocumentationURL(cited string) string {
+	return strings.TrimRight(cited, "`*_.,;:!?)]}\"'>")
+}
+
+// TestNormalizeCitedDocumentationURL covers the trailing characters a bare URL
+// picks up in prose: Markdown inline code and emphasis, and sentence
+// punctuation. A clean URL must survive unchanged.
+func TestNormalizeCitedDocumentationURL(t *testing.T) {
+	t.Parallel()
+
+	const page = "https://www.zoho.com/deluge/help/functions/text.html"
+	const root = "https://www.zoho.com/deluge/help"
+
+	tests := []struct {
+		name  string
+		cited string
+		want  string
+	}{
+		{name: "wrapped in inline code", cited: page + "`", want: page},
+		{name: "followed by a colon", cited: page + ":", want: page},
+		{name: "followed by a semicolon", cited: page + ";", want: page},
+		{name: "bolded with trailing asterisk", cited: page + "*", want: page},
+		{name: "underscore emphasis", cited: page + "_", want: page},
+		{name: "sentence period", cited: page + ".", want: page},
+		{name: "already clean", cited: page, want: page},
+		{name: "bare root unchanged", cited: root, want: root},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeCitedDocumentationURL(tc.cited); got != tc.want {
+				t.Errorf("normalizeCitedDocumentationURL(%q) = %q, want %q", tc.cited, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCatalogContract_ZohoDelugeAssetWalkVisitsOnlyMarkdown asserts that the
+// walk hands over markdown only. The forbidden-substring and URL checks decode
+// what they receive as text, so the first image or data asset added to the
+// skill tree would be scanned as text and could produce an unreadable failure
+// from stray bytes. The count assertion also proves the walk is not silently
+// visiting nothing.
+func TestCatalogContract_ZohoDelugeAssetWalkVisitsOnlyMarkdown(t *testing.T) {
+	t.Parallel()
+
+	var visited []string
+	forEachZohoDelugeAsset(t, func(filePath, _ string) {
+		visited = append(visited, filePath)
+	})
+
+	for _, filePath := range visited {
+		if !strings.HasSuffix(filePath, ".md") {
+			t.Errorf("walk visited non-markdown asset %q", filePath)
+		}
+	}
+
+	// SKILL.md plus the five references.
+	const wantCount = 6
+	if len(visited) != wantCount {
+		t.Errorf("walk visited %d markdown assets %v, want %d", len(visited), visited, wantCount)
+	}
+}
+
+// forEachZohoDelugeAsset walks every markdown asset in the zoho-deluge skill
+// tree and hands its path and content to check. Non-markdown files are skipped:
+// callers scan the content as text, and binary assets would be decoded as text
+// and could match a forbidden needle by accident.
+func forEachZohoDelugeAsset(t *testing.T, check func(filePath, content string)) {
+	t.Helper()
+
+	err := fs.WalkDir(jarvis.SkillsFS, "embed/skills/zoho-deluge", func(filePath string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
+			return walkErr
+		}
+		if !strings.HasSuffix(filePath, ".md") {
+			return nil
+		}
+		check(filePath, readEmbeddedSkillAsset(t, filePath))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir(embed/skills/zoho-deluge): %v", err)
+	}
+}
+
 func jsonFieldNames(structType reflect.Type) map[string]bool {
 	fields := make(map[string]bool, structType.NumField())
 	for i := 0; i < structType.NumField(); i++ {
