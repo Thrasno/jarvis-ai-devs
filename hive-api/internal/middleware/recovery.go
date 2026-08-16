@@ -11,9 +11,9 @@ import (
 // ¿Por qué no usar gin.Recovery() directamente?
 // Gin tiene su propio middleware de recovery, pero devuelve HTML y escribe el
 // stack trace en el log. Nosotros queremos:
-//   1. Siempre responder JSON (nunca HTML ni texto plano)
-//   2. Nunca filtrar información interna (stack trace) al cliente
-//   3. Usar el formato ErrorResponse estándar de esta API
+//  1. Siempre responder JSON (nunca HTML ni texto plano)
+//  2. Nunca filtrar información interna (stack trace) al cliente
+//  3. Usar el formato ErrorResponse estándar de esta API
 //
 // El stack trace sigue siendo útil en el servidor — lo imprimimos en stderr
 // para que aparezca en los logs del sistema, pero NO en la respuesta HTTP.

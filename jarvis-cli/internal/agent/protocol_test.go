@@ -265,27 +265,27 @@ func TestCleanupOldOrchestratorLink(t *testing.T) {
 			want:    "",
 		},
 		{
-			name: "line in middle of content",
+			name:    "line in middle of content",
 			content: "before\nFor detailed SDD orchestration logic, see: [sdd-orchestrator.md](./sdd-orchestrator.md)\nafter",
 			want:    "before\nafter",
 		},
 		{
-			name: "line at start of content",
+			name:    "line at start of content",
 			content: "For detailed SDD orchestration logic, see: [sdd-orchestrator.md](./sdd-orchestrator.md)\nafter",
 			want:    "after",
 		},
 		{
-			name: "line at end of content",
+			name:    "line at end of content",
 			content: "before\nFor detailed SDD orchestration logic, see: [sdd-orchestrator.md](./sdd-orchestrator.md)",
 			want:    "before",
 		},
 		{
-			name: "line surrounded by blank lines — collapses double blank",
+			name:    "line surrounded by blank lines — collapses double blank",
 			content: "before\n\nFor detailed SDD orchestration logic, see: [sdd-orchestrator.md](./sdd-orchestrator.md)\n\nafter",
 			want:    "before\n\nafter",
 		},
 		{
-			name: "line with blank line before only",
+			name:    "line with blank line before only",
 			content: "before\n\nFor detailed SDD orchestration logic, see: [sdd-orchestrator.md](./sdd-orchestrator.md)\nafter",
 			want:    "before\n\nafter",
 		},
@@ -323,12 +323,12 @@ func TestInjectOrchestratorImport(t *testing.T) {
 			want:    "existing content\n<!-- jarvis:orchestrator-import -->\n@./sdd-orchestrator.md\n<!-- /jarvis:orchestrator-import -->\n",
 		},
 		{
-			name: "markers exist — replaces content between them",
+			name:    "markers exist — replaces content between them",
 			content: "before\n<!-- jarvis:orchestrator-import -->\nold content\n<!-- /jarvis:orchestrator-import -->\nafter",
 			want:    "before\n<!-- jarvis:orchestrator-import -->\n@./sdd-orchestrator.md\n<!-- /jarvis:orchestrator-import -->\nafter",
 		},
 		{
-			name: "markers exist with same content — idempotent",
+			name:    "markers exist with same content — idempotent",
 			content: "before\n<!-- jarvis:orchestrator-import -->\n@./sdd-orchestrator.md\n<!-- /jarvis:orchestrator-import -->\nafter",
 			want:    "before\n<!-- jarvis:orchestrator-import -->\n@./sdd-orchestrator.md\n<!-- /jarvis:orchestrator-import -->\nafter",
 		},

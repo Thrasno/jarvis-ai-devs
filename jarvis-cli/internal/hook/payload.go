@@ -10,11 +10,11 @@ import (
 // Claude Code versions may emit.
 type HookPayload struct {
 	SessionID      string `json:"session_id"`
-	SessionId      string `json:"sessionId"`          // alternate casing
+	SessionId      string `json:"sessionId"` // alternate casing
 	TranscriptPath string `json:"transcript_path"`
 	CWD            string `json:"cwd"`
-	Prompt         string `json:"prompt"`             // UserPromptSubmit only
-	Stdout         string `json:"stdout"`             // SubagentStop only
+	Prompt         string `json:"prompt"` // UserPromptSubmit only
+	Stdout         string `json:"stdout"` // SubagentStop only
 	Project        string `json:"project"`
 	Directory      string `json:"directory"`
 }

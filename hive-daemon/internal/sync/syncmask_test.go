@@ -34,11 +34,11 @@ func TestResolvePassword(t *testing.T) {
 	emptyStoredCfg := &Config{Password: ""}
 
 	cases := []struct {
-		name        string
-		incoming    string
-		stored      *Config
-		want        string
-		wantErr     error
+		name     string
+		incoming string
+		stored   *Config
+		want     string
+		wantErr  error
 	}{
 		{
 			name:     "new password (not sentinel) returns incoming",
@@ -59,16 +59,16 @@ func TestResolvePassword(t *testing.T) {
 			want:     storedPass,
 		},
 		{
-			name:    "sentinel with nil stored config returns ErrNoStoredSecret",
+			name:     "sentinel with nil stored config returns ErrNoStoredSecret",
 			incoming: MaskedSecret,
-			stored:  nil,
-			wantErr: ErrNoStoredSecret,
+			stored:   nil,
+			wantErr:  ErrNoStoredSecret,
 		},
 		{
-			name:    "sentinel with empty stored password returns ErrNoStoredSecret",
+			name:     "sentinel with empty stored password returns ErrNoStoredSecret",
 			incoming: MaskedSecret,
-			stored:  emptyStoredCfg,
-			wantErr: ErrNoStoredSecret,
+			stored:   emptyStoredCfg,
+			wantErr:  ErrNoStoredSecret,
 		},
 	}
 

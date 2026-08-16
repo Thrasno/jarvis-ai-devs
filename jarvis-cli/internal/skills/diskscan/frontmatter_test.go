@@ -428,9 +428,9 @@ func TestParseFrontmatter_RealSkillFrontmatters(t *testing.T) {
 		want    string
 	}{
 		{
-			name: "go-testing (folded)",
+			name:    "go-testing (folded)",
 			content: "---\nname: go-testing\ndescription: >\n  Go testing patterns for Gentleman.Dots, including Bubbletea TUI testing.\n  Trigger: When writing Go tests, using teatest, or adding test coverage.\nlicense: Apache-2.0\n---\n",
-			want: "When writing Go tests, using teatest, or adding test coverage.",
+			want:    "When writing Go tests, using teatest, or adding test coverage.",
 		},
 		{
 			name:    "branch-pr (folded)",
