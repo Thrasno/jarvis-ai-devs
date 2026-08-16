@@ -49,8 +49,11 @@ func PatchLayer2(content, newLayer2 string) (string, error) {
 	start := strings.Index(content, Layer2Start)
 	end := strings.Index(content, Layer2End)
 
-	// Build the new Layer2 block
-	newBlock := Layer2Start + "\n" + newLayer2 + "\n" + Layer2End
+	// Built with the line endings the block already uses, for the same reason
+	// PatchFile does it: a hardcoded "\n" rewrites a CRLF file into a mixed one
+	// and the file stops matching itself.
+	opening, closing := boundarySeparators(content, start+len(Layer2Start), end)
+	newBlock := patchedBlock(Layer2Start, Layer2End, newLayer2, opening, closing)
 
 	// Replace the entire Layer2 block (including markers)
 	before := content[:start]
