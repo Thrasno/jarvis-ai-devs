@@ -311,6 +311,15 @@ func BuildPlan(in PlanInput) (Plan, error) {
 // managedLocation projects a manifest-recorded path onto a root-relative
 // managed location. A path outside the managed root is refused, never clamped.
 func managedLocation(root, path string) (string, error) {
+	// An unrecorded path is refused before anything normalizes it. Clean turns
+	// the empty string into ".", and every call site joins what comes back onto
+	// the root again, so a missing path would silently name the managed root
+	// itself: the plan would track the user's home directory as a managed
+	// instruction file, and the only refusal left is the backup's allowed-root
+	// check, which aborts the whole run naming that home.
+	if strings.TrimSpace(path) == "" {
+		return "", errors.New("is not recorded")
+	}
 	if !filepath.IsAbs(path) {
 		// A relative path leaves the root exactly as easily as an absolute one,
 		// and what comes back here does not stay a string: every call site joins

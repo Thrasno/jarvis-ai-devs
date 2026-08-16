@@ -372,3 +372,34 @@ func TestTrackedPaths_FailsClosedOnAnAgentPathItCannotProject(t *testing.T) {
 		t.Fatalf("error %q does not name the agent it refused", err)
 	}
 }
+
+// An unrecorded instructions_path is not a location. filepath.Clean turns "" into
+// ".", which every call site joins back onto the root: the managed instruction
+// file of that agent becomes the root itself, so the plan tracks the user's home
+// directory as a managed artifact. The backup then refuses it as outside the
+// allowed roots and the whole replay aborts naming the user's home. Refusing it
+// here fails closed on the agent that recorded nothing instead.
+func TestManagedLocation_RefusesAnUnrecordedPath(t *testing.T) {
+	root := t.TempDir()
+
+	for _, unrecorded := range []string{"", "   "} {
+		if location, err := managedLocation(root, unrecorded); err == nil {
+			t.Fatalf("managedLocation(%q) = %q, want a refusal: an unrecorded path is not a managed location", unrecorded, location)
+		}
+	}
+}
+
+// The same refusal seen from the command: a manifest whose agent records no
+// instructions_path fails the plan, and the error names the agent so the user
+// knows which record to repair.
+func TestBuildPlan_FailsClosedOnAnAgentWithNoRecordedInstructionsPath(t *testing.T) {
+	st := replayableState(state.Agent{ID: "claude", ConfigPath: ".claude/settings.json"})
+
+	_, err := BuildPlan(PlanInput{Root: t.TempDir(), State: st, Templates: jarvis.TemplatesFS})
+	if err == nil {
+		t.Fatal("BuildPlan succeeded on an agent with no recorded instructions_path, want a fail-closed error")
+	}
+	if !strings.Contains(err.Error(), "claude") || !strings.Contains(err.Error(), "instructions_path") {
+		t.Fatalf("error = %q, want it to name the agent and the field that has to be repaired", err)
+	}
+}
