@@ -20,7 +20,7 @@ type skillPromptTemplate struct {
 }
 
 var interactiveSkillPrompts = []skillPromptTemplate{
-	{Label: "Zoho-Deluge", Description: "Zoho Deluge scripting conventions", SkillIDs: []string{"zoho-deluge"}},
+	{Label: "Zoho Skills Pack", Description: "Application and language skills for supported Zoho products", SkillIDs: []string{"zoho-deluge", "zoho-crm"}},
 	{Label: "PHP", Description: "PHP stack helpers (Laravel + PHPUnit)", SkillIDs: []string{"phpunit-testing", "laravel-architecture"}},
 	{Label: "Go Testing", Description: "Go testing and Bubbletea testing patterns", SkillIDs: []string{"go-testing"}},
 }
