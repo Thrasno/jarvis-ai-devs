@@ -3,7 +3,7 @@ package skills
 import (
 	"io/fs"
 	"os"
-	"path/filepath"
+	"path"
 	"strings"
 	"testing"
 
@@ -38,7 +38,7 @@ func TestZohoCRMEmbeddedSkill_RegistersAndInstallsItsCompleteTree(t *testing.T) 
 		t.Fatalf("InstallSelected CRM tree: %v", err)
 	}
 	for _, name := range zohoCRMAssetNames {
-		if _, err := fs.Stat(os.DirFS(destination), filepath.Join("zoho-crm", name)); err != nil {
+		if _, err := fs.Stat(os.DirFS(destination), path.Join("zoho-crm", name)); err != nil {
 			t.Fatalf("installed CRM asset %q: %v", name, err)
 		}
 	}
