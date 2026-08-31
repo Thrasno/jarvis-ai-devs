@@ -280,6 +280,7 @@ func TestBuildSkillSelectionPlan_OnlyPromptsStackSpecificSkills(t *testing.T) {
 		{ID: "branch-pr", Name: "Branch & PR", IsCore: false},
 		{ID: "issue-creation", Name: "Issue Creation", IsCore: false},
 		{ID: "zoho-deluge", Name: "Zoho Deluge", IsCore: false},
+		{ID: "zoho-crm", Name: "Zoho CRM", IsCore: false},
 		{ID: "phpunit-testing", Name: "PHPUnit Testing", IsCore: false},
 		{ID: "laravel-architecture", Name: "Laravel Architecture", IsCore: false},
 		{ID: "go-testing", Name: "Go Testing", IsCore: false},
@@ -291,8 +292,17 @@ func TestBuildSkillSelectionPlan_OnlyPromptsStackSpecificSkills(t *testing.T) {
 		t.Fatalf("expected exactly 3 interactive prompts, got %d", len(plan.Prompts))
 	}
 
-	if plan.Prompts[0].Label != "Zoho-Deluge" {
-		t.Fatalf("expected first prompt to be Zoho-Deluge, got %q", plan.Prompts[0].Label)
+	if plan.Prompts[0].Label != "Zoho Skills Pack" {
+		t.Fatalf("expected first prompt to be Zoho Skills Pack, got %q", plan.Prompts[0].Label)
+	}
+	if plan.Prompts[0].Description != "Application and language skills for supported Zoho products" {
+		t.Fatalf("unexpected Zoho Skills Pack description: %q", plan.Prompts[0].Description)
+	}
+	if got := plan.Prompts[0].SkillIDs; !slices.Equal(got, []string{"zoho-deluge", "zoho-crm"}) {
+		t.Fatalf("expected grouped Zoho skill IDs, got %v", got)
+	}
+	if plan.Selected["zoho-deluge"] || plan.Selected["zoho-crm"] {
+		t.Fatalf("expected grouped Zoho skills to default off, got %+v", plan.Selected)
 	}
 	if plan.Prompts[1].Label != "PHP" {
 		t.Fatalf("expected second prompt to be PHP, got %q", plan.Prompts[1].Label)
@@ -307,12 +317,45 @@ func TestBuildSkillSelectionPlan_OnlyPromptsStackSpecificSkills(t *testing.T) {
 	}
 }
 
+func TestZohoSkillPrompt_TogglesCRMAndDelugeTogether(t *testing.T) {
+	m := Model{
+		Step: StepSkills,
+		SkillPrompts: []skillPrompt{
+			{Label: "Zoho Skills Pack", SkillIDs: []string{"zoho-deluge", "zoho-crm"}},
+		},
+		Selected: map[string]bool{
+			"zoho-deluge": false,
+			"zoho-crm":    false,
+			"branch-pr":   true,
+		},
+	}
+
+	updated, _ := updateSkills(m, tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(Model)
+	if !m.Selected["zoho-deluge"] || !m.Selected["zoho-crm"] {
+		t.Fatalf("expected Zoho prompt toggle to select both skills, got %+v", m.Selected)
+	}
+	if !m.Selected["branch-pr"] {
+		t.Fatalf("Zoho toggle must not change non-Zoho selection, got %+v", m.Selected)
+	}
+
+	updated, _ = updateSkills(m, tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(Model)
+	if m.Selected["zoho-deluge"] || m.Selected["zoho-crm"] {
+		t.Fatalf("expected second Zoho prompt toggle to deselect both skills, got %+v", m.Selected)
+	}
+	if !m.Selected["branch-pr"] {
+		t.Fatalf("Zoho toggle must preserve non-Zoho selection, got %+v", m.Selected)
+	}
+}
+
 func TestViewSkills_DoesNotLeakLargeCatalog(t *testing.T) {
 	skillList := []skills.Skill{
 		{ID: "hive", Name: "Hive", IsCore: true},
 		{ID: "branch-pr", Name: "Branch & PR", IsCore: false},
 		{ID: "issue-creation", Name: "Issue Creation", IsCore: false},
 		{ID: "zoho-deluge", Name: "Zoho Deluge", IsCore: false},
+		{ID: "zoho-crm", Name: "Zoho CRM", IsCore: false},
 		{ID: "phpunit-testing", Name: "PHPUnit Testing", IsCore: false},
 		{ID: "laravel-architecture", Name: "Laravel Architecture", IsCore: false},
 		{ID: "go-testing", Name: "Go Testing", IsCore: false},
@@ -328,7 +371,7 @@ func TestViewSkills_DoesNotLeakLargeCatalog(t *testing.T) {
 	}
 
 	v := viewSkills(m)
-	if !strings.Contains(v, "Zoho-Deluge") || !strings.Contains(v, "PHP") || !strings.Contains(v, "Go Testing") {
+	if !strings.Contains(v, "Zoho Skills Pack") || !strings.Contains(v, "PHP") || !strings.Contains(v, "Go Testing") {
 		t.Fatalf("expected stack-specific prompts in view, got:\n%s", v)
 	}
 	if strings.Contains(v, "Judgment Day") || strings.Contains(v, "Branch & PR") {

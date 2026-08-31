@@ -12,6 +12,7 @@ package skills
 // takes part: sdd-spec declares scope: optional and is still auto-installed.
 var interactiveSkillIDs = map[string]bool{
 	"zoho-deluge":          true,
+	"zoho-crm":             true,
 	"phpunit-testing":      true,
 	"laravel-architecture": true,
 	"go-testing":           true,
