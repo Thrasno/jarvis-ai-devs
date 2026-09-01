@@ -598,7 +598,7 @@ func TestQuarantineRemovesTheBlockedProjectFromAggregateCounts(t *testing.T) {
 	liveBefore, _, err := repo.CountLiveActivity(ctx, scopeBaseTime.Add(-time.Hour))
 	require.NoError(t, err)
 	require.Equal(t, seeded, liveBefore, "the fixture seeds one memory per project")
-	require.Equal(t, seeded, totalGrowth(t, ctx, repo))
+	require.Equal(t, seeded, latestGrowthTotal(t, ctx, repo))
 
 	_, err = NewPostgresProjectBlockRepository(pool).BlockProject(ctx, model.ProjectBlockCreate{
 		Project:      storedProject,
@@ -612,19 +612,16 @@ func TestQuarantineRemovesTheBlockedProjectFromAggregateCounts(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, seeded-1, liveAfter,
 		"CountLiveActivity must drop the blocked project's memory and keep every sibling's")
-	require.Equal(t, seeded-1, totalGrowth(t, ctx, repo),
+	require.Equal(t, seeded-1, latestGrowthTotal(t, ctx, repo),
 		"CountGrowthByMonth must drop the blocked project's memory and keep every sibling's")
 }
 
-func totalGrowth(t *testing.T, ctx context.Context, repo MemoryRepository) int {
+func latestGrowthTotal(t *testing.T, ctx context.Context, repo MemoryRepository) int {
 	t.Helper()
 	months, err := repo.CountGrowthByMonth(ctx, 24)
 	require.NoError(t, err)
-	total := 0
-	for _, month := range months {
-		total += month.Value
-	}
-	return total
+	require.NotEmpty(t, months)
+	return months[len(months)-1].Value
 }
 
 // --- fixture ---
