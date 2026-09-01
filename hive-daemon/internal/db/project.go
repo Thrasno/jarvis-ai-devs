@@ -174,7 +174,11 @@ func (d *DB) ListGovernanceMemories(ctx context.Context, filter GovernanceMemory
 	if project == "" {
 		return nil, ErrGovernanceProjectRequired
 	}
-	blocked, err := d.IsProjectBlocked(ctx, project)
+	project = canonicalProjectKey(project)
+	if project == "" {
+		return nil, ErrGovernanceProjectRequired
+	}
+	blocked, err := d.isCanonicalProjectBlocked(ctx, project)
 	if err != nil {
 		return nil, err
 	}
