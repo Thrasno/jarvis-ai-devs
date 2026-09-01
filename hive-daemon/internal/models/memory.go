@@ -28,6 +28,18 @@ type Memory struct {
 	PromptID int64 `json:"prompt_id,omitempty"`
 }
 
+// MemorySearchCriteria describes full-text and structured topic filters for a
+// local memory search. TopicKey and TopicPrefix preserve presence so callers
+// can distinguish an omitted selector from an explicitly blank one.
+type MemorySearchCriteria struct {
+	Query       string
+	Project     string
+	Category    string
+	TopicKey    *string
+	TopicPrefix *string
+	Limit       int
+}
+
 // Validate checks that all required fields are present.
 func (m *Memory) Validate() error {
 	if m.Project == "" {

@@ -24,6 +24,7 @@ type TopicSelector struct {
 
 type sqliteTopicSelection struct {
 	candidateQuery string
+	exact          bool
 	values         []string
 }
 
@@ -64,15 +65,9 @@ func newSQLiteTopicSelection(selector TopicSelector) (sqliteTopicSelection, erro
 
 	if hasExact {
 		return sqliteTopicSelection{
-			candidateQuery: withLogicalTopicTrim(`
-				SELECT ` + topicCandidateColumns + ` FROM memories
-				WHERE project = ? AND topic_key = ? AND deleted_at IS NULL
-				UNION ALL
-				SELECT ` + topicCandidateColumns + ` FROM memories
-				WHERE project = ? AND topic_key IS NOT NULL
-				  AND topic_key <> trim(topic_key) AND trim(topic_key) = ?
-				  AND deleted_at IS NULL`),
-			values: []string{value, value},
+			candidateQuery: buildTopicCandidateQuery(true, true),
+			exact:          true,
+			values:         []string{value, value},
 		}, nil
 	}
 
@@ -81,21 +76,39 @@ func newSQLiteTopicSelection(selector TopicSelector) (sqliteTopicSelection, erro
 	// value+"/" is below value+"0" because '/' immediately precedes '0'.
 	descendantEnd := value + "0"
 	return sqliteTopicSelection{
-		candidateQuery: withLogicalTopicTrim(`
-			SELECT ` + topicCandidateColumns + ` FROM memories
-			WHERE project = ? AND topic_key = ? AND deleted_at IS NULL
-			UNION ALL
-			SELECT ` + topicCandidateColumns + ` FROM memories
-			WHERE project = ? AND topic_key >= ? AND topic_key < ?
-			  AND topic_key = trim(topic_key) AND deleted_at IS NULL
-			UNION ALL
-			SELECT ` + topicCandidateColumns + ` FROM memories
-			WHERE project = ? AND topic_key IS NOT NULL
-			  AND topic_key <> trim(topic_key)
-			  AND (trim(topic_key) = ? OR (trim(topic_key) >= ? AND trim(topic_key) < ?))
-			  AND deleted_at IS NULL`),
-		values: []string{value, descendantStart, descendantEnd, value, descendantStart, descendantEnd},
+		candidateQuery: buildTopicCandidateQuery(false, true),
+		values:         []string{value, descendantStart, descendantEnd, value, descendantStart, descendantEnd},
 	}, nil
+}
+
+func buildTopicCandidateQuery(exact, scoped bool) string {
+	project := ""
+	if scoped {
+		project = "project = ? AND "
+	}
+	if exact {
+		return withLogicalTopicTrim(`
+			SELECT ` + topicCandidateColumns + ` FROM memories
+			WHERE ` + project + `topic_key = ? AND deleted_at IS NULL
+			UNION ALL
+			SELECT ` + topicCandidateColumns + ` FROM memories
+			WHERE ` + project + `topic_key IS NOT NULL
+			  AND topic_key <> trim(topic_key) AND trim(topic_key) = ?
+			  AND deleted_at IS NULL`)
+	}
+	return withLogicalTopicTrim(`
+		SELECT ` + topicCandidateColumns + ` FROM memories
+		WHERE ` + project + `topic_key = ? AND deleted_at IS NULL
+		UNION ALL
+		SELECT ` + topicCandidateColumns + ` FROM memories
+		WHERE ` + project + `topic_key >= ? AND topic_key < ?
+		  AND topic_key = trim(topic_key) AND deleted_at IS NULL
+		UNION ALL
+		SELECT ` + topicCandidateColumns + ` FROM memories
+		WHERE ` + project + `topic_key IS NOT NULL
+		  AND topic_key <> trim(topic_key)
+		  AND (trim(topic_key) = ? OR (trim(topic_key) >= ? AND trim(topic_key) < ?))
+		  AND deleted_at IS NULL`)
 }
 
 func (s sqliteTopicSelection) args(project string) []any {
@@ -107,6 +120,17 @@ func (s sqliteTopicSelection) args(project string) []any {
 		project, s.values[1], s.values[2],
 		project, s.values[3], s.values[4], s.values[5],
 	}
+}
+
+func (s sqliteTopicSelection) queryAndArgs(project string) (string, []any) {
+	if project != "" {
+		return s.candidateQuery, s.args(project)
+	}
+	args := make([]any, len(s.values))
+	for i, value := range s.values {
+		args[i] = value
+	}
+	return buildTopicCandidateQuery(s.exact, false), args
 }
 
 // SelectLatestTopicMemories returns one latest active revision per selected

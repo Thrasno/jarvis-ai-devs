@@ -30,7 +30,7 @@ type mockStore struct {
 	saveMemoryWithManualSessionFn func(*models.Memory) (int64, error)
 	getMemoryFn                   func(int64) (*models.Memory, error)
 	listMemoriesFn                func(string, int) ([]*models.Memory, error)
-	searchFn                      func(string, string, string, int) ([]*models.Memory, error)
+	searchFn                      func(models.MemorySearchCriteria) ([]*models.Memory, error)
 	savePromptFn                  func(context.Context, string, string) (*models.Prompt, error)
 	savePromptForSessionFn        func(context.Context, string, string, string) (*models.Prompt, error)
 	latestPromptForSessionFn      func(context.Context, string, string) (*models.Prompt, error)
@@ -80,9 +80,9 @@ func (m *mockStore) ListMemories(project string, limit int) ([]*models.Memory, e
 	return []*models.Memory{}, nil
 }
 
-func (m *mockStore) Search(query, project, category string, limit int) ([]*models.Memory, error) {
+func (m *mockStore) Search(criteria models.MemorySearchCriteria) ([]*models.Memory, error) {
 	if m.searchFn != nil {
-		return m.searchFn(query, project, category, limit)
+		return m.searchFn(criteria)
 	}
 	return []*models.Memory{}, nil
 }
@@ -346,6 +346,45 @@ func TestMemContextSchema_DescribesIntentionalGlobalScope(t *testing.T) {
 		return
 	}
 	t.Fatal("mem_context not found")
+}
+
+func TestMemSearchSchemaSupportsStructuredCriteria(t *testing.T) {
+	session := connectTestServer(t, &mockStore{})
+	for tool, err := range session.Tools(context.Background(), nil) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tool.Name != "mem_search" {
+			continue
+		}
+		raw, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var schema struct {
+			Required   []string       `json:"required"`
+			Properties map[string]any `json:"properties"`
+		}
+		requireNoQuery := true
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range schema.Required {
+			if name == "query" {
+				requireNoQuery = false
+			}
+		}
+		if !requireNoQuery {
+			t.Fatal("query must be optional in mem_search schema")
+		}
+		for _, name := range []string{"query", "topic_key", "topic_prefix"} {
+			if _, ok := schema.Properties[name]; !ok {
+				t.Errorf("mem_search schema missing %q", name)
+			}
+		}
+		return
+	}
+	t.Fatal("mem_search not found")
 }
 
 func TestNewServer_DoesNotExposeMemoryDeleteOrGuardExecuteTools(t *testing.T) {

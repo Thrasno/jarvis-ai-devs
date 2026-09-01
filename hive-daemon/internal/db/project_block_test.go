@@ -231,12 +231,12 @@ func TestDB_BlockedProjectReadFilters(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, memories)
 
-	searchAll, err := d.Search("token", "", "", 10)
+	searchAll, err := d.Search(models.MemorySearchCriteria{Query: "token", Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, searchAll, 1)
 	require.Equal(t, "open", searchAll[0].Project)
 
-	searchBlocked, err := d.Search("secret", "blocked", "", 10)
+	searchBlocked, err := d.Search(models.MemorySearchCriteria{Query: "secret", Project: "blocked", Limit: 10})
 	require.NoError(t, err)
 	require.Empty(t, searchBlocked)
 
