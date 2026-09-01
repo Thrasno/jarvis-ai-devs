@@ -48,7 +48,7 @@ func TestImportEngramBatchInsertsRowsAliasesAndMemoryMutation(t *testing.T) {
 	}, ImportBatch{
 		Sessions: []ImportSession{{SourceID: "engram-session-1", Project: "proj", Directory: "C:/src/proj", DevID: "dev", Client: "opencode", StartedAt: "2026-06-11 10:00:00", Summary: "summary"}},
 		Prompts:  []ImportPrompt{{SourceID: "42", Project: "proj", Content: "import this", CreatedAt: "2026-06-11 10:01:00", ContentHash: "prompt-hash"}},
-		Memories: []ImportMemory{{SourceID: "7", Project: "proj", TopicKey: stringPtr("topic"), Category: "decision", Title: "Imported", Content: "Imported content", SessionSourceID: "engram-session-1", CreatedAt: "2026-06-11 10:02:00", UpdatedAt: "2026-06-11 10:03:00", ContentHash: "memory-hash"}},
+		Memories: []ImportMemory{{SourceID: "7", Project: "proj", TopicKey: stringPtr("  topic  "), Category: "decision", Title: "Imported", Content: "Imported content", SessionSourceID: "engram-session-1", CreatedAt: "2026-06-11 10:02:00", UpdatedAt: "2026-06-11 10:03:00", ContentHash: "memory-hash"}},
 	})
 	require.NoError(t, err)
 	require.Equal(t, ImportCounts{Imported: 3}, result.Counts)
@@ -66,18 +66,21 @@ func TestImportEngramBatchInsertsRowsAliasesAndMemoryMutation(t *testing.T) {
 	require.Equal(t, "memories", memoryAlias.HiveTable)
 	require.NoError(t, uuid.Validate(memoryAlias.HiveSyncID))
 	require.Equal(t, sessionAlias.HivePK, queryString(t, d.sqlDB, `SELECT session_id FROM memories WHERE sync_id = ?`, memoryAlias.HiveSyncID))
+	require.Equal(t, "topic", queryString(t, d.sqlDB, `SELECT topic_key FROM memories WHERE sync_id = ?`, memoryAlias.HiveSyncID))
 
 	mutationPayload := queryString(t, d.sqlDB, `SELECT payload_json FROM memory_mutations WHERE entity_sync_id = ? AND op = 'create'`, memoryAlias.HiveSyncID)
 	var payload struct {
 		Memory struct {
 			SyncID    string `json:"sync_id"`
 			Project   string `json:"project"`
+			TopicKey  string `json:"topic_key"`
 			SessionID string `json:"session_id"`
 		} `json:"memory"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(mutationPayload), &payload))
 	require.Equal(t, memoryAlias.HiveSyncID, payload.Memory.SyncID)
 	require.Equal(t, "proj", payload.Memory.Project)
+	require.Equal(t, "topic", payload.Memory.TopicKey)
 	require.Equal(t, sessionAlias.HivePK, payload.Memory.SessionID)
 }
 
@@ -144,6 +147,24 @@ func TestImportEngramBatchReusesExistingAliasesWithoutDuplicatingRows(t *testing
 	require.Equal(t, 1, queryInt(t, d.sqlDB, `SELECT COUNT(*) FROM sessions WHERE project = 'proj'`))
 	require.Equal(t, 1, queryInt(t, d.sqlDB, `SELECT COUNT(*) FROM user_prompts WHERE project = 'proj'`))
 	require.Equal(t, 1, queryInt(t, d.sqlDB, `SELECT COUNT(*) FROM memories WHERE project = 'proj'`))
+}
+
+func TestImportEngramBatchAcceptsHistoricalPaddedTopicKeyHash(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	base := ImportBatch{
+		Sessions: []ImportSession{{SourceID: "s1", Project: "proj", StartedAt: "2026-06-11 10:00:00"}},
+		Memories: []ImportMemory{{SourceID: "m1", Project: "proj", TopicKey: stringPtr("  topic  "), Title: "Title", Content: "Body", SessionSourceID: "s1", CreatedAt: "2026-06-11 10:02:00", ContentHash: "legacy-padded-hash"}},
+	}
+	_, err := d.ImportEngramBatch(ctx, ImportRun{ID: "run-1", SourceSystem: "engram", SourcePath: "one.db", Mode: "execute"}, base)
+	require.NoError(t, err)
+
+	base.Memories[0].TopicKey = stringPtr("topic")
+	base.Memories[0].ContentHash = "normalized-hash"
+	base.Memories[0].LegacyContentHash = "legacy-padded-hash"
+	result, err := d.ImportEngramBatch(ctx, ImportRun{ID: "run-2", SourceSystem: "engram", SourcePath: "one.db", Mode: "execute"}, base)
+	require.NoError(t, err)
+	require.Equal(t, ImportCounts{Reused: 2}, result.Counts)
 }
 
 func TestImportEngramBatchRollsBackWhenMemorySessionAliasIsMissing(t *testing.T) {

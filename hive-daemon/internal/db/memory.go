@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/topickey"
 	"github.com/google/uuid"
 )
 
@@ -81,6 +82,7 @@ func (d *DB) saveMemory(mem *models.Memory, prepareTx func(*sql.Tx) error) (int6
 	}
 	rawProject := mem.Project
 	mem.Project = canonicalProjectKey(rawProject)
+	mem.TopicKey = topickey.Normalize(mem.TopicKey)
 	if mem.Project == "" {
 		return 0, fmt.Errorf("invalid memory: project is required")
 	}

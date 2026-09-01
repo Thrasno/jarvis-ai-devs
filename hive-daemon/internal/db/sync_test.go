@@ -1320,6 +1320,35 @@ func TestSyncDB_ApplyRemoteMutationIdempotent(t *testing.T) {
 	assert.Equal(t, 1, mutationCount)
 }
 
+func TestApplyRemoteMutationNormalizesTopicKeyBeforePersistenceAndJournal(t *testing.T) {
+	d := openTestDB(t)
+	ensureManualSaveSessions(t, d, "proj")
+	topicKey := "  remote/topic  "
+	event := MutationEnvelope{
+		EventID: "event-topic-normalization", EntityType: "memory", EntitySyncID: "sync-topic-normalization",
+		Project: "proj", Op: MutationOpCreate, OccurredAt: time.Now().UTC(),
+		Memory: &MutationMemoryPayload{Project: "proj", TopicKey: &topicKey, Category: "decision", Title: "Remote", Content: "Content", SessionID: "manual-save-proj"},
+	}
+
+	applied, err := d.ApplyRemoteMutation(event)
+	require.NoError(t, err)
+	require.True(t, applied)
+	require.Equal(t, "remote/topic", queryString(t, d.sqlDB, `SELECT topic_key FROM memories WHERE sync_id = ?`, event.EntitySyncID))
+	require.Contains(t, queryString(t, d.sqlDB, `SELECT payload_json FROM memory_mutations WHERE event_id = ?`, event.EventID), `"topic_key":"remote/topic"`)
+}
+
+func TestSaveFromRemoteMapsBlankTopicKeyToNull(t *testing.T) {
+	d := openTestDB(t)
+	ensureManualSaveSessions(t, d, "proj")
+	topicKey := " \t\n "
+	err := d.SaveFromRemote(&models.Memory{SyncID: "remote-blank-topic", Project: "proj", TopicKey: &topicKey, Category: "decision", Title: "Remote", Content: "Content", CreatedAt: time.Now(), UpdatedAt: time.Now(), SessionID: "manual-save-proj"})
+	require.NoError(t, err)
+
+	var stored sql.NullString
+	require.NoError(t, d.sqlDB.QueryRow(`SELECT topic_key FROM memories WHERE sync_id = ?`, "remote-blank-topic").Scan(&stored))
+	require.False(t, stored.Valid)
+}
+
 func TestSyncDB_ApplyRemoteMutationNonCreateBranches(t *testing.T) {
 	baseTime := time.Date(2026, 5, 11, 11, 0, 0, 0, time.UTC)
 

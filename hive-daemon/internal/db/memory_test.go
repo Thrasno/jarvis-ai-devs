@@ -148,6 +148,37 @@ func TestSaveMemory_PopulatesSyncIDAndCreatedBy(t *testing.T) {
 	}
 }
 
+func TestSaveMemory_NormalizesTopicKeyBeforePersistenceAndJournal(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  any
+	}{
+		{name: "trims surrounding whitespace", input: "  sdd/change/spec  ", want: "sdd/change/spec"},
+		{name: "maps blank to null", input: " \t\n ", want: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := openTestDB(t)
+			mem := newMemory("proj", "Title", "Content")
+			mem.TopicKey = &tt.input
+			id, err := saveTestMemory(t, d, mem)
+			require.NoError(t, err)
+
+			var stored sql.NullString
+			require.NoError(t, d.sqlDB.QueryRow(`SELECT topic_key FROM memories WHERE id = ?`, id).Scan(&stored))
+			if tt.want == nil {
+				require.False(t, stored.Valid)
+				require.NotContains(t, queryString(t, d.sqlDB, `SELECT payload_json FROM memory_mutations LIMIT 1`), `"topic_key"`)
+				return
+			}
+			require.Equal(t, tt.want, stored.String)
+			require.Contains(t, queryString(t, d.sqlDB, `SELECT payload_json FROM memory_mutations LIMIT 1`), `"topic_key":"sdd/change/spec"`)
+		})
+	}
+}
+
 // TestSaveMemory_TopicKeyAlwaysInserts asserts that saving twice with the same
 // topic_key creates two distinct rows (Issue #119: topic_key is a grouping key,
 // not an upsert/identity key).

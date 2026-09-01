@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	hivedb "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/topickey"
 	_ "modernc.org/sqlite"
 )
 
@@ -363,7 +364,17 @@ func readObservations(ctx context.Context, sqlDB *sql.DB, analysis *Analysis, pr
 		}
 		projects[project] = struct{}{}
 		analysis.Counts.Observations++
-		analysis.Memories = append(analysis.Memories, hivedb.ImportMemory{SourceID: sourceID, Project: project, TopicKey: nullableStringPtr(topicKey), Category: category, Title: title, Content: content, SessionSourceID: sessionID.String, CreatedAt: createdAt, UpdatedAt: nullableString(updatedAt), ContentHash: hashStrings(sourceID, project, title, content, category, nullableString(topicKey), sessionID.String, createdAt, nullableString(updatedAt))})
+		normalizedTopicKey := topickey.Normalize(nullableStringPtr(topicKey))
+		topicKeyValue := ""
+		if normalizedTopicKey != nil {
+			topicKeyValue = *normalizedTopicKey
+		}
+		contentHash := hashStrings(sourceID, project, title, content, category, topicKeyValue, sessionID.String, createdAt, nullableString(updatedAt))
+		legacyContentHash := ""
+		if rawTopicKey := nullableString(topicKey); rawTopicKey != topicKeyValue {
+			legacyContentHash = hashStrings(sourceID, project, title, content, category, rawTopicKey, sessionID.String, createdAt, nullableString(updatedAt))
+		}
+		analysis.Memories = append(analysis.Memories, hivedb.ImportMemory{SourceID: sourceID, Project: project, TopicKey: normalizedTopicKey, Category: category, Title: title, Content: content, SessionSourceID: sessionID.String, CreatedAt: createdAt, UpdatedAt: nullableString(updatedAt), ContentHash: contentHash, LegacyContentHash: legacyContentHash})
 	}
 	return rows.Err()
 }

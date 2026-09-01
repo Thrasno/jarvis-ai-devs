@@ -14,6 +14,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/topickey"
 )
 
 const mutationProtocolVersion = 2
@@ -420,6 +421,7 @@ func canonicalizedMutations(mutations []db.MutationEnvelope) []db.MutationEnvelo
 		if mutation.Memory != nil {
 			memory := *mutation.Memory
 			memory.Project = projectidentity.Canonical(memory.Project).String()
+			memory.TopicKey = topickey.Normalize(memory.TopicKey)
 			mutation.Memory = &memory
 		}
 		canonical[i] = mutation
@@ -461,7 +463,7 @@ func (c *client) sync(ctx context.Context, token, project string,
 		payloads = append(payloads, memoryPayload{
 			SyncID:        m.SyncID,
 			Project:       projectidentity.Canonical(m.Project).String(),
-			TopicKey:      m.TopicKey,
+			TopicKey:      topickey.Normalize(m.TopicKey),
 			Category:      m.Category,
 			Title:         m.Title,
 			Content:       m.Content,

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/topickey"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,6 +31,7 @@ func newPostgresMemoryRepositoryWithQuerier(db pgxQuerier) MemoryRepository {
 
 // Create inserta una nueva memoria y devuelve el registro completo (con ID del servidor).
 func (r *postgresMemoryRepository) Create(ctx context.Context, mem *model.Memory) (*model.Memory, error) {
+	mem.TopicKey = topickey.Normalize(mem.TopicKey)
 	if err := r.rejectBlockedProject(ctx, mem.Project); err != nil {
 		return nil, err
 	}
@@ -182,6 +184,7 @@ func (r *postgresMemoryRepository) CountSearch(ctx context.Context, query string
 // Upsert implementa el algoritmo de 4 ramas del protocolo de sync.
 // Ver la documentación en la interfaz MemoryRepository para los detalles de cada rama.
 func (r *postgresMemoryRepository) Upsert(ctx context.Context, mem *model.Memory) (*model.Memory, bool, error) {
+	mem.TopicKey = topickey.Normalize(mem.TopicKey)
 	if err := r.rejectBlockedProject(ctx, mem.Project); err != nil {
 		return nil, false, err
 	}
@@ -220,6 +223,7 @@ func (r *postgresMemoryRepository) Upsert(ctx context.Context, mem *model.Memory
 
 // update aplica los cambios del cliente sobre una memoria existente.
 func (r *postgresMemoryRepository) update(ctx context.Context, id string, mem *model.Memory) (*model.Memory, error) {
+	mem.TopicKey = topickey.Normalize(mem.TopicKey)
 	const q = `UPDATE memories
 	           SET topic_key=$1, category=$2, title=$3, content=$4,
 	               tags=$5, files_affected=$6, updated_at=$7,
@@ -319,6 +323,11 @@ func (r *postgresMemoryRepository) PullSince(ctx context.Context, project string
 }
 
 func (r *postgresMemoryRepository) ApplyMemoryMutation(ctx context.Context, mutation model.MutationEnvelope) (*model.MutationApplyResult, error) {
+	if mutation.Memory != nil {
+		memory := *mutation.Memory
+		memory.TopicKey = topickey.Normalize(memory.TopicKey)
+		mutation.Memory = &memory
+	}
 	if mutation.EventID == "" || mutation.EntityType != model.MutationEntityMemory || mutation.EntitySyncID == "" || mutation.Project == "" {
 		return nil, fmt.Errorf("invalid memory mutation envelope")
 	}

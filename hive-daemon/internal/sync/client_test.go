@@ -489,18 +489,24 @@ func TestClient_Sync_CanonicalizesProjectIdentityAndRejectsIncompatibleResponse(
 			require.Equal(t, "jarvis-dev", req.Memories[0].Project)
 			require.Equal(t, "jarvis-dev", req.Prompts[0].Project)
 			require.Equal(t, "jarvis-dev", req.Mutations[0].Project)
+			require.Equal(t, "sdd/change/spec", *req.Memories[0].TopicKey)
+			require.Equal(t, "sdd/change/spec", *req.Mutations[0].Memory.TopicKey)
 			require.NoError(t, json.NewEncoder(w).Encode(syncResponse{ProjectIdentityVersion: "v1", Pulled: []apiMemory{}}))
 		}))
 		defer server.Close()
 
 		memory := createTestSyncMemory("local-sync-canonical")
 		memory.Project = "jarvis/dev"
+		dirtyTopicKey := "  sdd/change/spec  "
+		memory.TopicKey = &dirtyTopicKey
 		session := &models.Session{Project: "JARVIS_DEV"}
 		prompt := createTestPrompt("prompt-sync-canonical", "Jarvis Dev", "prompt")
-		mutation := db.MutationEnvelope{Project: "jarvis.dev"}
+		mutation := db.MutationEnvelope{Project: "jarvis.dev", Memory: &db.MutationMemoryPayload{TopicKey: &dirtyTopicKey}}
 		client := newClient(&Config{APIURL: server.URL})
 		_, err := client.sync(context.Background(), "test-token", " Jarvis.Dev ", []*models.Session{session}, []*models.Memory{memory}, []*models.Prompt{prompt}, nil, []db.MutationEnvelope{mutation}, nil, pullOptions{})
 		require.NoError(t, err)
+		require.Equal(t, "  sdd/change/spec  ", *memory.TopicKey)
+		require.Equal(t, "  sdd/change/spec  ", *mutation.Memory.TopicKey)
 	})
 
 	t.Run("fails safely when the API reports an incompatible identity contract", func(t *testing.T) {
