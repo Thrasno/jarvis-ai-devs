@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Thrasno/jarvis-ai-devs/hivederive"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
@@ -32,11 +33,15 @@ var sddStatusCmd = &cobra.Command{
 		asJSON, _ := cmd.Flags().GetBool("json")
 		withInstructions, _ := cmd.Flags().GetBool("instructions")
 		project, _ := cmd.Flags().GetString("project")
+		workingDir, err := sddWorkingDirectory(project)
+		if err != nil {
+			return err
+		}
 		changeName := ""
 		if len(args) > 0 {
 			changeName = args[0]
 		}
-		return runSddStatus(changeName, project, asJSON, withInstructions)
+		return runSddStatus(changeName, project, workingDir, asJSON, withInstructions)
 	},
 }
 
@@ -47,35 +52,40 @@ var sddContinueCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		asJSON, _ := cmd.Flags().GetBool("json")
 		project, _ := cmd.Flags().GetString("project")
+		workingDir, err := sddWorkingDirectory(project)
+		if err != nil {
+			return err
+		}
 		changeName := ""
 		if len(args) > 0 {
 			changeName = args[0]
 		}
-		return runSddContinue(changeName, project, asJSON)
+		return runSddContinue(changeName, project, workingDir, asJSON)
 	},
 }
 
 func init() {
 	sddStatusCmd.Flags().Bool("json", false, "emit JSON output")
 	sddStatusCmd.Flags().Bool("instructions", false, "include phase instructions for next recommended phase")
-	sddStatusCmd.Flags().String("project", "", "hive project name (defaults to git repo directory name)")
+	sddStatusCmd.Flags().String("project", "", "hive project name (overrides origin repository or working-directory basename derivation)")
 	sddContinueCmd.Flags().Bool("json", false, "emit JSON output")
-	sddContinueCmd.Flags().String("project", "", "hive project name (defaults to git repo directory name)")
+	sddContinueCmd.Flags().String("project", "", "hive project name (overrides origin repository or working-directory basename derivation)")
 	sddCmd.AddCommand(sddStatusCmd, sddContinueCmd)
 }
 
-// detectProjectName returns the project name for Hive queries.
-// It uses the git repository root's directory name, falling back to the
-// current working directory name when not inside a git repo.
-func detectProjectName() string {
-	if root, ok := detectGitRoot(); ok {
-		return filepath.Base(root)
+func sddWorkingDirectory(projectFlag string) (string, error) {
+	if strings.TrimSpace(projectFlag) != "" {
+		return "", nil
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "unknown"
+	return os.Getwd()
+}
+
+// resolveSddProject is the shared project identity boundary for status and continue.
+func resolveSddProject(projectFlag, workingDir string) (string, error) {
+	if project := strings.TrimSpace(projectFlag); project != "" {
+		return project, nil
 	}
-	return filepath.Base(cwd)
+	return hivederive.Derive(workingDir)
 }
 
 func detectGitRoot() (string, bool) {
@@ -92,8 +102,7 @@ func detectGitRoot() (string, bool) {
 }
 
 // resolveSource returns an ArtifactSource and the active store mode label.
-// projectName is used when querying Hive; it is derived from detectProjectName
-// when not explicitly provided.
+// projectName is used when querying Hive and must already be resolved.
 func resolveSource(projectName string) (sddstatus.ArtifactSource, string, error) {
 	contract, err := sddruntime.ResolveRuntimeStoreContract(sddruntime.StoreModeHive)
 	if err != nil {
@@ -197,10 +206,10 @@ func validatedEditRootsForProject(projectName, workspaceRoot string) []string {
 	return []string{root}
 }
 
-func runSddStatus(given, projectFlag string, asJSON, withInstructions bool) error {
-	project := projectFlag
-	if project == "" {
-		project = detectProjectName()
+func runSddStatus(given, projectFlag, workingDir string, asJSON, withInstructions bool) error {
+	project, err := resolveSddProject(projectFlag, workingDir)
+	if err != nil {
+		return err
 	}
 
 	src, storeMode, err := resolveSource(project)
@@ -227,10 +236,10 @@ func runSddStatus(given, projectFlag string, asJSON, withInstructions bool) erro
 	return nil
 }
 
-func runSddContinue(given, projectFlag string, asJSON bool) error {
-	project := projectFlag
-	if project == "" {
-		project = detectProjectName()
+func runSddContinue(given, projectFlag, workingDir string, asJSON bool) error {
+	project, err := resolveSddProject(projectFlag, workingDir)
+	if err != nil {
+		return err
 	}
 
 	src, storeMode, err := resolveSource(project)

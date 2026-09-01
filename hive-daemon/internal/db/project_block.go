@@ -124,6 +124,10 @@ func (d *DB) GetProjectBlock(ctx context.Context, project string) (ProjectBlock,
 	if canonical == "" {
 		return ProjectBlock{}, sql.ErrNoRows
 	}
+	return d.getProjectBlockByCanonicalKey(ctx, canonical)
+}
+
+func (d *DB) getProjectBlockByCanonicalKey(ctx context.Context, canonical string) (ProjectBlock, error) {
 	var (
 		block                         ProjectBlock
 		blockedAtStr, ackAppliedAtStr sql.NullString
@@ -152,6 +156,15 @@ WHERE canonical_project_key = ?`, canonical).Scan(
 
 func (d *DB) IsProjectBlocked(ctx context.Context, project string) (bool, error) {
 	block, err := d.GetProjectBlock(ctx, project)
+	return projectBlocked(block, err)
+}
+
+func (d *DB) isCanonicalProjectBlocked(ctx context.Context, canonical string) (bool, error) {
+	block, err := d.getProjectBlockByCanonicalKey(ctx, canonical)
+	return projectBlocked(block, err)
+}
+
+func projectBlocked(block ProjectBlock, err error) (bool, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

@@ -172,6 +172,53 @@ func TestGovernanceMemoryReadModelsRespectTombstoneFilter(t *testing.T) {
 	}
 }
 
+func TestGovernanceMemoryReadModelsCanonicalizeProjectRequest(t *testing.T) {
+	t.Parallel()
+
+	d, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	memoryID := saveGovernanceTestMemory(t, d, "Jarvis_AI.Devs", "Canonical project memory")
+
+	memories, err := d.ListGovernanceMemories(context.Background(), hivedb.GovernanceMemoryFilter{
+		Project: "  JARVIS.AI_DEVS  ",
+		Limit:   10,
+	})
+	if err != nil {
+		t.Fatalf("ListGovernanceMemories canonical request: %v", err)
+	}
+	if len(memories) != 1 || memories[0].ID != memoryID {
+		t.Fatalf("ListGovernanceMemories canonical request = %+v, want memory id %d", memories, memoryID)
+	}
+	if memories[0].Project != "jarvis-ai-devs" {
+		t.Fatalf("stored memory project = %q, want canonical jarvis-ai-devs", memories[0].Project)
+	}
+
+	if _, err := d.RecordProjectBlock(context.Background(), hivedb.ProjectBlockCommand{
+		CommandID:           "block-canonical-project",
+		AckToken:            "ack-canonical-project",
+		CanonicalProjectKey: "JARVIS_AI.DEVS",
+		Project:             "Jarvis AI Devs",
+		Action:              "block",
+		Generation:          1,
+	}); err != nil {
+		t.Fatalf("RecordProjectBlock: %v", err)
+	}
+	memories, err = d.ListGovernanceMemories(context.Background(), hivedb.GovernanceMemoryFilter{
+		Project: "Jarvis.AI_Devs",
+		Limit:   10,
+	})
+	if err != nil {
+		t.Fatalf("ListGovernanceMemories blocked canonical request: %v", err)
+	}
+	if len(memories) != 0 {
+		t.Fatalf("ListGovernanceMemories blocked canonical request = %+v, want empty", memories)
+	}
+}
+
 func TestGovernanceMemoryDeletedOnlyFilterExcludesActiveRows(t *testing.T) {
 	d, err := hivedb.Open(":memory:")
 	if err != nil {
