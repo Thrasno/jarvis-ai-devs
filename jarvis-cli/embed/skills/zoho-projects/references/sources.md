@@ -1,8 +1,10 @@
 # Official sources
 
-Use official Zoho Projects and Zoho Deluge sources. Reinspect the exact operation page and runtime metadata before generating a REST call or adding a fact outside the approved contracts.
+Evidence snapshot: 2026-09-01. The approved contract uses official Zoho Projects and Zoho Deluge sources only.
 
 - Current Projects API index: <https://projects.zoho.com/api-docs>
+  - Official source snapshot observed on `2026-09-01`; SHA-256: `ad063863d5751caa6fa94bac27fc5b222fdbeedb0a172873d0c6964836710259`.
+  - [Operation-level catalog](current-rest-operations.csv): section-level transcription of this index; every row retains its official fragment URL and the approved snapshot date.
 - Legacy tickets API: <https://www.zoho.com/projects/help/rest-api/get-tickets-api.html>
 - Legacy projects API: <https://www.zoho.com/projects/help/rest-api/projects-api.html>
 - Legacy tasks API: <https://www.zoho.com/projects/help/rest-api/tasks-api.html>
@@ -18,4 +20,4 @@ Use official Zoho Projects and Zoho Deluge sources. Reinspect the exact operatio
 - Associate logs: <https://www.zoho.com/deluge/help/projects/associate-logs.html>
 - Update associated logs: <https://www.zoho.com/deluge/help/projects/update-associated-logs.html>
 
-Official operation evidence and runtime metadata are endpoint authority. Keep contradictory, unavailable, and `TBD` evidence explicit; never infer an endpoint from a family label or legacy example.
+The family manifest is recognition and routing evidence, not endpoint authority. Reinspect the exact official operation fragment and runtime metadata before adding or generating a fact outside the approved contracts. Keep contradictory, unavailable, and `TBD` evidence explicit.
