@@ -81,6 +81,68 @@ func phaseEditorPromptNewlinesAfter(target string) string {
 	return ""
 }
 
+func TestSelectedSkillIDsPreservesUnrelatedSkillsAndReducesZohoPack(t *testing.T) {
+	catalog := []skills.Skill{
+		{ID: "hive", IsCore: true},
+		{ID: "branch-pr"},
+		{ID: "go-testing"},
+		{ID: "zoho-projects"},
+		{ID: "zoho-deluge"},
+		{ID: "zoho-crm"},
+	}
+	tests := []struct {
+		name     string
+		recorded []string
+		selected map[string]bool
+		want     []string
+	}{
+		{
+			name:     "deselected pack preserves unrelated catalog absent ownership",
+			recorded: []string{"missing-skill", "zoho-deluge", "zoho-orphan"},
+			selected: map[string]bool{"hive": true, "branch-pr": true, "zoho-projects": false, "zoho-deluge": false, "zoho-crm": false},
+			want:     []string{"missing-skill", "hive", "branch-pr"},
+		},
+		{
+			name:     "selected pack preserves selected current Go testing",
+			recorded: []string{"missing-skill", "zoho-deluge", "zoho-orphan"},
+			selected: map[string]bool{"hive": true, "branch-pr": true, "go-testing": true, "zoho-projects": true, "zoho-deluge": true, "zoho-crm": true},
+			want:     []string{"missing-skill", "hive", "branch-pr", "go-testing", "zoho-crm", "zoho-deluge", "zoho-orphan", "zoho-projects"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := selectedSkillIDs(catalog, tt.recorded, tt.selected); strings.Join(got, ",") != strings.Join(tt.want, ",") {
+				t.Fatalf("selectedSkillIDs() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSelectedSkillIDsFreshV0SelectionIsDeterministic(t *testing.T) {
+	zohoIDs := []string{"zoho-analytics", "zoho-books", "zoho-creator", "zoho-crm", "zoho-deluge", "zoho-people", "zoho-projects"}
+	catalog := make([]skills.Skill, 0, len(zohoIDs)+1)
+	catalog = append(catalog, skills.Skill{ID: "branch-pr"})
+	for i := len(zohoIDs) - 1; i >= 0; i-- {
+		catalog = append(catalog, skills.Skill{ID: zohoIDs[i]})
+	}
+
+	selected := map[string]bool{"branch-pr": true}
+	for _, id := range zohoIDs {
+		selected[id] = true
+	}
+	if got, want := selectedSkillIDs(catalog, nil, selected), append([]string{"branch-pr"}, zohoIDs...); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("fresh selected IDs = %v, want %v", got, want)
+	}
+
+	for _, id := range zohoIDs {
+		selected[id] = false
+	}
+	if got, want := selectedSkillIDs(catalog, nil, selected), []string{"branch-pr"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("fresh unselected IDs = %v, want %v", got, want)
+	}
+}
+
 func TestRunNoTUI_RefreshesProjectRegistryAfterSuccessfulApplyAndPrintsWarnings(t *testing.T) {
 	tmpHome := isolateTestHome(t)
 	t.Setenv("PATH", "")

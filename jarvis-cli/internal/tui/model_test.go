@@ -275,12 +275,18 @@ func TestCockpitView_RenderContractUsesTextLogoAndNoBackgroundFill(t *testing.T)
 }
 
 func TestBuildSkillSelectionPlan_OnlyPromptsStackSpecificSkills(t *testing.T) {
+	zohoIDs := []string{"zoho-analytics", "zoho-books", "zoho-creator", "zoho-crm", "zoho-deluge", "zoho-people", "zoho-projects"}
 	skillList := []skills.Skill{
 		{ID: "hive", Name: "Hive", IsCore: true},
 		{ID: "branch-pr", Name: "Branch & PR", IsCore: false},
 		{ID: "issue-creation", Name: "Issue Creation", IsCore: false},
+		{ID: "zoho-projects", Name: "Zoho Projects", IsCore: false},
 		{ID: "zoho-deluge", Name: "Zoho Deluge", IsCore: false},
 		{ID: "zoho-crm", Name: "Zoho CRM", IsCore: false},
+		{ID: "zoho-analytics", Name: "Zoho Analytics", IsCore: false},
+		{ID: "zoho-books", Name: "Zoho Books", IsCore: false},
+		{ID: "zoho-creator", Name: "Zoho Creator", IsCore: false},
+		{ID: "zoho-people", Name: "Zoho People", IsCore: false},
 		{ID: "phpunit-testing", Name: "PHPUnit Testing", IsCore: false},
 		{ID: "laravel-architecture", Name: "Laravel Architecture", IsCore: false},
 		{ID: "go-testing", Name: "Go Testing", IsCore: false},
@@ -291,58 +297,61 @@ func TestBuildSkillSelectionPlan_OnlyPromptsStackSpecificSkills(t *testing.T) {
 	if len(plan.Prompts) != 3 {
 		t.Fatalf("expected exactly 3 interactive prompts, got %d", len(plan.Prompts))
 	}
-
-	if plan.Prompts[0].Label != "Zoho Skills Pack" {
-		t.Fatalf("expected first prompt to be Zoho Skills Pack, got %q", plan.Prompts[0].Label)
+	if plan.Prompts[0].Label != "Zoho Skills Pack" || !slices.Equal(plan.Prompts[0].SkillIDs, zohoIDs) {
+		t.Fatalf("Zoho prompt = %+v, want ordered V0 pack %v", plan.Prompts[0], zohoIDs)
 	}
-	if plan.Prompts[0].Description != "Application and language skills for supported Zoho products" {
-		t.Fatalf("unexpected Zoho Skills Pack description: %q", plan.Prompts[0].Description)
+	for _, id := range zohoIDs {
+		if plan.Selected[id] {
+			t.Fatalf("expected grouped Zoho skills to default off, got %+v", plan.Selected)
+		}
 	}
-	if got := plan.Prompts[0].SkillIDs; !slices.Equal(got, []string{"zoho-deluge", "zoho-crm"}) {
-		t.Fatalf("expected grouped Zoho skill IDs, got %v", got)
+	if plan.Prompts[1].Label != "PHP" || plan.Prompts[2].Label != "Go Testing" {
+		t.Fatalf("expected PHP and Go prompts after Zoho, got %+v", plan.Prompts)
 	}
-	if plan.Selected["zoho-deluge"] || plan.Selected["zoho-crm"] {
-		t.Fatalf("expected grouped Zoho skills to default off, got %+v", plan.Selected)
-	}
-	if plan.Prompts[1].Label != "PHP" {
-		t.Fatalf("expected second prompt to be PHP, got %q", plan.Prompts[1].Label)
-	}
-	if plan.Prompts[2].Label != "Go Testing" {
-		t.Fatalf("expected third prompt to be Go Testing, got %q", plan.Prompts[2].Label)
-	}
-
-	// Non stack-specific skills must be auto-enabled and not shown interactively.
 	if !plan.Selected["branch-pr"] || !plan.Selected["issue-creation"] {
 		t.Fatalf("expected non stack-specific skills to be auto-selected: %+v", plan.Selected)
 	}
 }
 
-func TestZohoSkillPrompt_TogglesCRMAndDelugeTogether(t *testing.T) {
-	m := Model{
-		Step: StepSkills,
-		SkillPrompts: []skillPrompt{
-			{Label: "Zoho Skills Pack", SkillIDs: []string{"zoho-deluge", "zoho-crm"}},
-		},
-		Selected: map[string]bool{
-			"zoho-deluge": false,
-			"zoho-crm":    false,
-			"branch-pr":   true,
-		},
+func TestZohoPackPromptIncludesFutureMemberAndIgnoresOrphanDefault(t *testing.T) {
+	plan := buildSkillSelectionPlan([]skills.Skill{
+		{ID: "zoho-deluge"},
+		{ID: "zoho-expense"},
+		{ID: "branch-pr"},
+	}, []string{"zoho-crm"})
+
+	if len(plan.Prompts) != 1 || !slices.Equal(plan.Prompts[0].SkillIDs, []string{"zoho-deluge", "zoho-expense"}) {
+		t.Fatalf("prompts = %+v, want one future-aware Zoho pack prompt", plan.Prompts)
+	}
+	if plan.Selected["zoho-deluge"] || plan.Selected["zoho-expense"] {
+		t.Fatalf("orphan Zoho state must not default the pack on: %+v", plan.Selected)
+	}
+}
+
+func TestZohoSkillPrompt_TogglesAllPackMembersTogether(t *testing.T) {
+	zohoIDs := []string{"zoho-analytics", "zoho-books", "zoho-creator", "zoho-crm", "zoho-deluge", "zoho-people", "zoho-projects"}
+	m := Model{Step: StepSkills, SkillPrompts: []skillPrompt{{Label: "Zoho Skills Pack", SkillIDs: zohoIDs}}, Selected: map[string]bool{"branch-pr": true}}
+	for _, id := range zohoIDs {
+		m.Selected[id] = false
 	}
 
-	updated, _ := updateSkills(m, tea.KeyMsg{Type: tea.KeySpace})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace})
 	m = updated.(Model)
-	if !m.Selected["zoho-deluge"] || !m.Selected["zoho-crm"] {
-		t.Fatalf("expected Zoho prompt toggle to select both skills, got %+v", m.Selected)
+	for _, id := range zohoIDs {
+		if !m.Selected[id] {
+			t.Fatalf("expected Zoho prompt toggle to select %q, got %+v", id, m.Selected)
+		}
 	}
 	if !m.Selected["branch-pr"] {
 		t.Fatalf("Zoho toggle must not change non-Zoho selection, got %+v", m.Selected)
 	}
 
-	updated, _ = updateSkills(m, tea.KeyMsg{Type: tea.KeySpace})
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace})
 	m = updated.(Model)
-	if m.Selected["zoho-deluge"] || m.Selected["zoho-crm"] {
-		t.Fatalf("expected second Zoho prompt toggle to deselect both skills, got %+v", m.Selected)
+	for _, id := range zohoIDs {
+		if m.Selected[id] {
+			t.Fatalf("expected second Zoho toggle to deselect %q, got %+v", id, m.Selected)
+		}
 	}
 	if !m.Selected["branch-pr"] {
 		t.Fatalf("Zoho toggle must preserve non-Zoho selection, got %+v", m.Selected)

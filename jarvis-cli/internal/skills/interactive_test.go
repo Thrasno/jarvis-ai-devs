@@ -10,6 +10,7 @@ func TestIsInteractive(t *testing.T) {
 	}{
 		{name: "zoho deluge is stack specific", id: "zoho-deluge", want: true},
 		{name: "zoho crm is stack specific", id: "zoho-crm", want: true},
+		{name: "future zoho skill is stack specific", id: "zoho-expense", want: true},
 		{name: "phpunit testing is stack specific", id: "phpunit-testing", want: true},
 		{name: "laravel architecture is stack specific", id: "laravel-architecture", want: true},
 		{name: "go testing is stack specific", id: "go-testing", want: true},

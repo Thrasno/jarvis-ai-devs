@@ -1550,16 +1550,9 @@ func ensureProfileForApply(m Model) (*persona.ResolvedProfile, error) {
 	return resolved, nil
 }
 
-// buildSelectedIDs returns a slice of skill IDs for all selected and core skills.
-// Used to pass to InstallSkills(skillsFS, selected).
+// buildSelectedIDs reduces the TUI selection to concrete desired-state IDs.
 func buildSelectedIDs(m Model) []string {
-	var ids []string
-	for _, s := range m.SkillList {
-		if m.Selected[s.ID] || s.IsCore {
-			ids = append(ids, s.ID)
-		}
-	}
-	return ids
+	return selectedSkillIDs(m.SkillList, wizardSelectedSkills(m.manifest), m.Selected)
 }
 
 // buildSkillInfoList returns a slice of SkillInfo structs for template rendering.
