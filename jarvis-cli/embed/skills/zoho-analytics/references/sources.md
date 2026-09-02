@@ -1,9 +1,9 @@
 # Sources
 
-Evidence date: 2026-09-01. This routing and execution-contract snapshot uses the official REST v2 menu, Deluge task documentation, API limit pages, SQL documentation, and Creator Advanced Analytics connector page. Verify exact REST methods, paths, and scopes against current official documentation before execution.
+Evidence date: 2026-09-01. This V0 boundary uses the official REST v2 menu, seven official OpenAPI files, Deluge task documentation, API limit pages, SQL documentation, and Creator Advanced Analytics connector page. The 176-operation completeness claim is limited to those dated REST/OpenAPI assets; it does not claim that separately licensed or undocumented features do not exist.
 
 - REST v2 menu: <https://www.zoho.com/analytics/api/v2/>
-- OpenAPI definitions: <https://github.com/zoho/analytics-oas/tree/main/v2.0>
+- OpenAPI catalog: <https://github.com/zoho/analytics-oas/tree/main/v2.0>
 - Deluge task allowlist: <https://www.zoho.com/deluge/help/analytics-tasks.html>
 - Data API: <https://www.zoho.com/analytics/api/v2/data-api.html>
 - Bulk API: <https://www.zoho.com/analytics/api/v2/bulk-api.html>

@@ -17,6 +17,7 @@ var zohoAnalyticsAssetNames = []string{
 	"references/routing.md",
 	"references/entities-and-identifiers.md",
 	"references/deluge-tasks.md",
+	"references/rest-v2-catalog.md",
 	"references/async-and-sql.md",
 	"references/authentication-and-limits.md",
 	"references/uncertainty-and-errors.md",
@@ -32,7 +33,7 @@ func readZohoAnalyticsAsset(t *testing.T, name string) string {
 	return string(content)
 }
 
-func TestZohoAnalyticsEmbeddedSkill_RegistersAndInstallsItsRoutingTree(t *testing.T) {
+func TestZohoAnalyticsEmbeddedSkill_RegistersAndInstallsItsCompleteTree(t *testing.T) {
 	skill, err := GetSkill(jarvis.SkillsFS, "zoho-analytics")
 	if err != nil {
 		t.Fatalf("GetSkill(zoho-analytics): %v", err)
@@ -62,8 +63,76 @@ func TestZohoAnalyticsEmbeddedSkill_UsesOnlyInstalledLocalReferences(t *testing.
 			t.Fatalf("SKILL.md must link installed reference %q", name)
 		}
 	}
-	if strings.Contains(content, "references/rest-v2-catalog.md") {
-		t.Fatal("routing contract snapshot must not link the deferred REST v2 catalog")
+}
+
+func TestZohoAnalyticsEmbeddedSkill_FreezesCompleteRESTV2Catalog(t *testing.T) {
+	content := readZohoAnalyticsAsset(t, "references/rest-v2-catalog.md")
+	families := map[string]int{
+		"Data":                      3,
+		"Bulk":                      12,
+		"Modeling":                  65,
+		"Metadata":                  47,
+		"Sharing and collaboration": 17,
+		"Embed":                     15,
+		"User management":           17,
+	}
+	for family, count := range families {
+		heading := "## " + family + " — "
+		start := strings.Index(content, heading)
+		if start < 0 {
+			t.Fatalf("REST catalog missing family %q", family)
+		}
+		section := content[start:]
+		if next := strings.Index(section[len(heading):], "\n## "); next >= 0 {
+			section = section[:len(heading)+next]
+		}
+		rows := 0
+		for _, line := range strings.Split(section, "\n") {
+			if strings.HasPrefix(line, "| `GET` |") || strings.HasPrefix(line, "| `POST` |") || strings.HasPrefix(line, "| `PUT` |") || strings.HasPrefix(line, "| `DELETE` |") || strings.HasPrefix(line, "| `PATCH` |") {
+				rows++
+			}
+		}
+		if rows != count {
+			t.Fatalf("%s catalog has %d operations; want %d", family, rows, count)
+		}
+	}
+
+	seen := make(map[string]struct{})
+	for _, line := range strings.Split(content, "\n") {
+		if !(strings.HasPrefix(line, "| `GET` |") || strings.HasPrefix(line, "| `POST` |") || strings.HasPrefix(line, "| `PUT` |") || strings.HasPrefix(line, "| `DELETE` |") || strings.HasPrefix(line, "| `PATCH` |")) {
+			continue
+		}
+		fields := strings.Split(line, " | ")
+		if len(fields) < 5 {
+			t.Fatalf("malformed operation row: %q", line)
+		}
+		key := fields[0] + " " + fields[1]
+		if _, duplicate := seen[key]; duplicate {
+			t.Fatalf("duplicate method/path operation %q", key)
+		}
+		seen[key] = struct{}{}
+		if !strings.Contains(fields[4], "ZohoAnalytics.") {
+			t.Fatalf("operation %q has no exact OpenAPI scope: %q", key, fields[4])
+		}
+	}
+	if len(seen) != 176 {
+		t.Fatalf("REST catalog has %d unique method/path operations; want 176", len(seen))
+	}
+
+	for _, want := range []string{
+		"176 active verified REST v2 operations",
+		"import-job scope",
+		"Save As scope",
+		"nine group/permission paths",
+		"mutation scopes",
+		"metadata.updatde",
+		"`/resourceDetails`",
+		"`/resources`",
+		"fail closed",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("REST catalog must preserve %q", want)
+		}
 	}
 }
 
@@ -115,7 +184,7 @@ func TestZohoAnalyticsEmbeddedSkill_PreservesRoutingAndCapabilityBoundaries(t *t
 			asset: "references/async-and-sql.md",
 			want: []string{
 				"poll", "download", "callbackUrl", "job notification", "not evidence of a general Analytics event/webhook subsystem",
-				"CONFIG.sqlQuery", "SQL `SELECT`", "persistent Query Table", "CloudSQL JDBC", "outside this routing and execution-contract snapshot",
+				"CONFIG.sqlQuery", "SQL `SELECT`", "persistent Query Table", "CloudSQL JDBC", "outside V0 routing, generation, and catalog scope",
 			},
 		},
 		{

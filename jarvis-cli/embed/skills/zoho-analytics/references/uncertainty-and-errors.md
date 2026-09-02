@@ -10,6 +10,6 @@ Keep these non-decision states explicit:
 - Keep unknown plan gates, quotas, and unlisted costs explicit; warn and require runtime validation, and never invent values.
 - Connector cadence, entity coverage, plan gate, conflict handling, and failure/recovery semantics remain `TBD`; never promise real-time behavior.
 - Async callbacks are job notifications, not a general event/webhook capability.
-- CloudSQL JDBC is excluded from this routing and execution-contract snapshot.
+- CloudSQL JDBC is excluded from V0 routing, generation, and catalog scope.
 
 When a verified surface cannot satisfy the request, return unsupported and explain the missing capability or evidence. Offer a safe clarification or verified alternative without silently changing host, identity model, cadence, or semantics.
